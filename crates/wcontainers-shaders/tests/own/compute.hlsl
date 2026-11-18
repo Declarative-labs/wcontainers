@@ -69,6 +69,9 @@ void cs_atomics(uint t : SV_GroupIndex, uint3 group : SV_GroupID, uint3 id : SV_
     uint swapped;
     raw.InterlockedExchange(2592, id.x + 1, swapped);
     raw.Store(4096 + 4 * swapped, 1);
+    // Signed ones on the same unsigned words.
+    raw.InterlockedMin(2596, int(v));
+    raw.InterlockedMax(2600, int(v));
     InterlockedMin(signed_words[0], int(v));
     InterlockedMax(signed_words[1], int(v));
     InterlockedAdd(signed_words[2], -int(t));
@@ -108,4 +111,23 @@ void cs_images(uint3 id : SV_DispatchThreadID) {
         layers[uint3(id.xy, l)] = uint4(id.xy, l, w * h + n);
     }
     pairs[id.xy] = int2(int(id.x) - int(id.y), -int(id.x * 3));
+}
+
+// Structured group-shared memory of members of several types (a float, an unsigned integer, a
+// float pair, indexed at run time), written by one invocation and read by another.
+struct Shared {
+    float f;
+    uint u;
+    float2 v;
+};
+groupshared Shared shared_structs[64];
+
+[numthreads(64, 1, 1)]
+void cs_shared(uint t : SV_GroupIndex, uint3 group : SV_GroupID) {
+    shared_structs[t].f = t * 0.5 + group.x;
+    shared_structs[t].u = t * 3 + 1;
+    shared_structs[t].v = float2(t, -float(t) * 0.25);
+    GroupMemoryBarrierWithGroupSync();
+    Shared s = shared_structs[(t * 7 + 5) % 64];
+    raw.Store4(16 * (group.x * 64 + t), uint4(asuint(s.f), s.u, asuint(s.v)));
 }

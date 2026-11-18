@@ -6,10 +6,10 @@ crates/wcontainers-direct3d-12.
 
 ## Where things stand
 
-G5 is not complete: 28 test files wait on the shaders track (G6) and 3 on a view swizzle (G1
+G5 is not complete: 21 test files wait on the shaders track (G6) and 3 on a view swizzle (G1
 and G6); see "Gap list" and "Next". A real Direct3D 12 program now draws matching frames (run
-21: four of bgfx's examples, "Real program"). Run history (runs 1 to 20 on 2026-11-17, runs 21
-to 23 on 2026-11-18): runs 1 to 4 the
+21: four of bgfx's examples, run 25 a fifth, "Real program"). Run history (runs 1 to 20 on
+2026-11-17, runs 21 to 25 on 2026-11-18): runs 1 to 4 the
 first slice; 5 Wine's and vkd3d's tests through ours, root signatures; 6 compute, UAVs, queue
 waits, occlusion, predication, heaps; 7 alias copies, `ExecuteIndirect`, the pass bar's cases;
 8 to 10 allocators, resolves, twin textures, null descriptors, custom heaps, bundles, newer
@@ -86,6 +86,33 @@ rewrites, render passes; 16 custom heap buffers, scaling-none swap chains, bgfx 
   it lacks, which was Godot's crash at start; Godot now runs its 120 frames ("Real program").
   Test files 157 of 198 (the same 41), 24 of 24 own cases, shader runner 204 of 302 (the same
   98), the crates' 40 tests pass.
+- Run 24 (eighth run of the milestone): merged webgpu and shaders (vertex shaders without a
+  position; hull and domain shaders through `Stages::tessellated`; `Stages::destroy`); the rig
+  and the shared line had nothing new. The front now routes hull and domain shaders through the
+  stage helper (below, "Hull and domain shaders") and reads back `ExecuteIndirect` draws of
+  pipelines through the helper. Test files 162 of 198 (run24/full1.log): newly passing
+  hull_shader_fork_phase, nop_tessellation_shaders, tessellation_dcl_index_range,
+  tessellation_primitive_id and vertex_id, none lost. 24 of 24 own cases (run24/check2.log),
+  shader runner 204 of 302 (the same 98; hlsl tessellation-patch-vars now passes its shader
+  model 5 section and stops at DXIL hull shaders, G6), the crates' 40 tests pass.
+- Run 25 (ninth run of the milestone): merged webgpu, shaders (DXIL atomics on typed buffers,
+  storage textures and counters; DXIL raw and structured buffers as storage buffers; pixel
+  shaders reading their layer and viewport index, interface `HelperValue::Layer` and
+  `Viewport`; structured group-shared memory) and rig; the shared line had nothing new. The
+  front now writes zero for a pixel shader's layer and viewport (no earlier stage can write
+  them here), holds multisampled texture arrays as a texture per layer (below), takes
+  `DiscardResource` (contents kept, which "undefined" allows) and takes component mappings that
+  read what the identity reads for the view's format. Test files 164 of 198 (tgsm and
+  clear_render_target_view newly pass, none lost); own cases 25 of 25 (new `ms-array`); shader
+  runner 204 of 302 (the same 98); bgfx 37-gpudrivenrendering now draws every frame as real
+  Direct3D 12 does; Godot's 3D platformer was tried for the first time ("Real program").
+- Multisampled texture arrays (run 25): the interface's multisampled textures have one layer
+  (plan 4.1: a front holds such an array as a texture per layer), so `Storage::Texture` keeps
+  the first layer's texture and `layers`, the others'. Views, render targets, clears, resolves,
+  copies (`CopyResource`, `CopyTextureRegion` of whole subresources) and alias copies take each
+  layer's own texture (`Storage::layer`). Refused by name: a view of several layers of one (a
+  shader's `Texture2DMSArray`, which the converter refuses too, `MultisampledArrayTexture`), and
+  one viewed in a format needing a twin.
 
 - `wcontainers-directx-graphics-infrastructure`, the portable core: the adapter description from the
   back end's `Caps`; output descriptions, their modes, and the colour spaces swap chains present in
@@ -164,8 +191,8 @@ rewrites, render passes; 16 custom heap buffers, scaling-none swap chains, bgfx 
   draws and read its count back at every pass end). Refused by name: a counted draw fetching
   its streams in the program, and one inside a running binary occlusion query (the counting
   draw would be counted by it). `D3D12CreateDevice` now also requires the back end's
-  `FRAGMENT_STORAGE_WRITE` (feature level 11_0 has unordered access views in pixel shaders). Geometry, hull and domain counts are zero (those stages are refused). Stream output
-  statistics are zero: stream output pipelines are refused. Heap types 4, 5 and 7 (video
+  `FRAGMENT_STORAGE_WRITE` (feature level 11_0 has unordered access views in pixel shaders). Geometry, hull and domain counts are zero: draws through those stages are refused while a
+  statistics query runs. Heap types 4, 5 and 7 (video
   decode statistics, copy queue timestamps, mesh shader statistics) answer E_NOTIMPL.
 - Queries and predication (run 6, `src/device/query.rs`): occlusion heaps are `OcclusionAny` query
   sets; a pass opens with the set of a begun query, and a query begun with no draw writes its zero
@@ -269,6 +296,22 @@ rewrites, render passes; 16 custom heap buffers, scaling-none swap chains, bgfx 
   stay zero (the helper writes stream 0 only). Refused by name: buffers whose start the back end
   cannot bind as storage (WebGPU: multiples of 256 bytes), other rasterized streams, and what
   the helper refuses (streams other than 0, system values other than the position, adjacency).
+- Hull and domain shaders (run 24, `src/device/geometry.rs`): a pipeline with both (and the
+  patch topology type; one without the other, or patches without them, is E_INVALIDARG)
+  converts the vertex shader with every input pulled, the hull shader plain and the domain
+  shader with the pixel stage's interpolation, and makes `Stages::tessellated`; its program is
+  the domain program with the pixel program. Each draw runs the vertex and hull stages and the
+  tessellator (`TessellationAsCompute`) with the vertex bindings (visibility vertex) and the
+  hull's (visibility hull, its helper block in set 3), then draws in the pass with the domain
+  and pixel stages' bindings: one indexed indirect draw of the tessellator's indices, the
+  helper set holding the domain block, the pixel block and the helper's patches and points
+  (`DOMAIN_PATCHES_BINDING`, `DOMAIN_POINTS_BINDING`). `IASetPrimitiveTopology` takes patch lists;
+  without a hull shader they are E_NOTIMPL at the draw, as adjacency is. The geometry stage's
+  helper block is now bound the same way (before, none was). `ExecuteIndirect` draws of any
+  pipeline through the stage helper read their arguments back (`IndirectReadBack`; the helper
+  takes direct draws only), which made vertex_id pass. Pipelines' `Stages` are released with
+  them (`Stages::destroy`). Refused by name: geometry shaders and stream output after a domain
+  shader (the helper has no constructor for them yet, G6), and what the helper refuses.
 - Helper blocks of pixel and compute stages (run 19, `src/device/pull.rs`): while the binding
   sets are made, each binding notes the helper values it gives (`Device::bound_helpers`, by API
   stage); the vertex block, the pixel block and the merged samplers go into one set at
@@ -311,16 +354,18 @@ rewrites, render passes; 16 custom heap buffers, scaling-none swap chains, bgfx 
   written to its helper block (`FilterInShader`). Before, such a draw failed WebGPU's validation
   (a filtering sampler in a non-filtering slot). Own case `filter-depth`.
 - Refused with E_NOTIMPL and the reason printed (`wcontainers: <reason>: not implemented`):
-  multisampled texture arrays (run 20; at creation: the interface's multisampled textures have
-  one layer, and before, the texture was made invalid on wgpu and the call answered S_OK), arrays
-  of resources, component mappings other than identity, min/max filters, alpha-antialiased lines,
+  views of several layers of a multisampled texture array (run 25; run 20 refused such arrays
+  at creation), arrays of resources, component mappings that read other than the identity
+  does for the view's format (run 25: forcing zero or one where the format lacks the
+  component, or naming one it lacks, reads the same and is taken; a refused one is printed
+  with its value), min/max filters, alpha-antialiased lines,
   depth bias on lines and points, forced sample counts, conservative rasterisation, raw and
   structured views at offsets the back end cannot bind, unordered access buffers in custom
   heaps the CPU sees,
   timestamps where the back end lacks `TIMESTAMPS` (`GetTimestampFrequency` and
   `GetClockCalibration` then answer E_FAIL as for a queue without them), stream output from
   streams other than 0 and drawing a stream other than 0, rectangles in UAV clears of a 3D texture's view in another
-  format than its own, an occlusion query across passes, video command lists, pipeline libraries (`DXGI_ERROR_UNSUPPORTED`), protected sessions, hull and domain stages, state objects (ray
+  format than its own, an occlusion query across passes, video command lists, pipeline libraries (`DXGI_ERROR_UNSUPPORTED`), protected sessions, geometry shaders and stream output after a domain shader, state objects (ray
   tracing), depth bounds, programmable sample positions, view instancing, sampler feedback.
 - Newer interfaces (run 10): the device is `ID3D12Device8`, command lists
   `ID3D12GraphicsCommandList2` (since run 15 `ID3D12GraphicsCommandList4`), resources
@@ -401,6 +446,10 @@ The cases and what each covers:
   fetch, strip cut values with 16-bit and 32-bit indices, direct and indirect.
 - render-pass: clearing, keeping and resolving passes. custom-heap: CPU-visible custom heap
   buffers written and read both ways, two overlapping.
+- ms-array (run 25): a 4-sample array of three layers, layer 0 cleared by a view of it alone,
+  layers 1 and 2 by one view of every layer from 1 (`ArraySize` -1), a triangle drawn into
+  layer 2, the array copied whole by `CopyResource` and each layer of the copy resolved;
+  colour counts of the three resolved layers.
 - geometry (run 17): five geometry shaders (see "Where things stand"), compared pixel by pixel
   (a hash of the picture) and by colour counts.
 - timestamps (run 18): timestamps around a dispatch on the direct queue and around a copy on a
@@ -415,7 +464,7 @@ The cases and what each covers:
   and the picture having more than 16 shades. Real Direct3D 12 filters in hardware, ours in the
   program.
 - History: run 7 11 of 13, runs 10 and 11 12 of 13, run 12 13 of 14, every case equal since run
-  13 (15, then 16, 17, 20, 21, 22, 23).
+  13 (15, then 16, 17, 20, 21, 22, 23, 24 in run 24, 25 in run 25: run25/m1-check.log).
 
 ## Test files (Wine's and vkd3d's, through our libraries, RTX 3080)
 
@@ -424,6 +473,23 @@ How a file counts: the rig compares each test's verdict with real Direct3D 12's 
 fails. Since the rig's run of 2026-11-17 19:11 (its commit 4ffedc6), tests that fail some
 checks on real Direct3D 12 are counted too, held to every other check, so the counted set is
 198 (it was 193).
+
+Run 25 (2026-11-18, desktop shared with other tracks; scratch run25/full1.log built at
+84fedb3, the layer commit, after the merges; run25/full2.log at 33a913d, the run's last
+commit): 164 of 198. d3d12 (Wine) 10 of 10, vkd3d-d3d12 142 of 176, vkd3d-d3d12_invalid_usage
+3 of 3, vkd3d-hlsl_d3d12 9 of 9. Newly passing (2): tgsm (the converter's structured
+group-shared memory, full1) and clear_render_target_view (multisampled arrays held per layer,
+full2). No test lost. ps_layer now counts as an absent feature (the vertex shader's layer,
+below), not the converter's.
+
+Run 24 (2026-11-18, desktop shared with other tracks; scratch run24/full1.log, built at
+78b8525, the tessellation commit): 162 of 198. d3d12 (Wine) 10 of 10, vkd3d-d3d12 140 of 176,
+vkd3d-d3d12_invalid_usage 3 of 3, vkd3d-hlsl_d3d12 9 of 9. Newly passing (5):
+hull_shader_fork_phase, nop_tessellation_shaders, tessellation_dcl_index_range,
+tessellation_primitive_id (hull and domain shaders through the stage helper), vertex_id (a
+vertex shader without a position, now converted, streamed out by `ExecuteIndirect` draws read
+back). No test lost. The other 9 tessellation files stop at what the helper or converter lacks
+(below).
 
 Run 23 (2026-11-18, desktop shared with other tracks; scratch run23/full1.log, built at e148d28,
 the slots commit, with the two new exports uncommitted then, and full2.log at e2d1b4e, after
@@ -455,34 +521,32 @@ sample_instructions; with storage textures through buffers coverage and draw_uav
 lost. Run 18: 145 of 198 (scratch run18/full1.log).
 
 Files passing, by test file: d3d12 (Wine) all 10; vkd3d-d3d12_invalid_usage all 3;
-vkd3d-hlsl_d3d12 all 9; vkd3d-d3d12 all but the 41 below. The failing ones, each by what it
-stops at first:
-- The converter (G6), 14: `StorageOffset` (buffer_srv: a structured view at byte 240; its
-  typed views now pass), `StructType` (tgsm: structured group shared memory),
-  `[earlydepthstencil]` left out of DXBC programs (`lower.rs` sets no `early_depth_test`), so
-  pixels the depth test rejects still run the shader's atomics (early_depth_stencil_tests, 1
-  check), `AtomicSignedness` (atomic_instructions), `RegisterSpace` 2 (register_space,
-  sampler_register_space), `DynamicOffset` 2 (gather, gather_c), `CullDistance`
-  (combined_clip_and_cull_distances), `MultisampledArrayTexture` (multisample_array_texture),
-  `RenderTargetArrayIndex` (ps_layer), `InterpolateAt` (shader_eval_attribute), resource arrays
-  (resource_arrays), `VertexWithoutPosition` (vertex_id: a stream output vertex shader writing
-  no position).
-- The stage helper's other parts (G6), 14: hull and domain shaders (clip_distance,
-  domain_shader_inputs, domain_shader_one_patch_constant_input, hull_shader_control_point_phase,
-  hull_shader_fork_phase, hull_shader_patch_constant_inputs, hull_shader_punned_array,
-  hull_shader_relative_addressing, line_tessellation, nop_tessellation_shaders,
-  quad_tessellation, tessellation_dcl_index_range, tessellation_primitive_id), a geometry shader
-  writing `SV_RenderTargetArrayIndex` (layered_rendering).
+vkd3d-hlsl_d3d12 all 9; vkd3d-d3d12 all but the 34 below (run 25). The failing ones, each by
+what it stops at first:
+- The converter (G6), 11: `StorageOffset` (buffer_srv: a structured view at byte 240; its
+  typed views pass), `[earlydepthstencil]` left out of DXBC programs (`lower.rs` sets no
+  `early_depth_test`), so pixels the depth test rejects still run the shader's atomics
+  (early_depth_stencil_tests, 1 check), `AtomicSignedness` (atomic_instructions), `RegisterSpace`
+  2 (register_space, sampler_register_space), `DynamicOffset` 2 (gather, gather_c),
+  `CullDistance` (combined_clip_and_cull_distances), `MultisampledArrayTexture`
+  (multisample_array_texture), `InterpolateAt` (shader_eval_attribute), resource arrays
+  (resource_arrays).
+- The stage helper's other parts (G6), 10: geometry shaders and stream output after a domain
+  shader (domain_shader_inputs, domain_shader_one_patch_constant_input,
+  hull_shader_patch_constant_inputs, hull_shader_relative_addressing, line_tessellation,
+  quad_tessellation), patches of another control point count than the hull shader declares,
+  drawn by real Direct3D 12 and not by the helper (hull_shader_control_point_phase),
+  `VertexOutputShape` (clip_distance), `StructType` in a hull shader (hull_shader_punned_array),
+  a geometry shader writing `SV_RenderTargetArrayIndex` (layered_rendering).
 - A view swizzle (interface and G6), 3: depth_stencil_sampling (stencil views),
   srv_component_mapping, stencil_load (at its stencil view).
-- Multisampled texture arrays (absent in WebGPU, refused at creation since run 20), 1:
-  clear_render_target_view (it then uses the null texture and crashes).
 - A listed loss, 1: execute_indirect (vertices past a vertex buffer's end in an indirect draw).
-- Reported absent as Direct3D 12 expects, the test then running fewer checks or stopping, 7:
+- Reported absent as Direct3D 12 expects, the test then running fewer checks or stopping, 8:
   create_reserved_resource, get_resource_tiling (tiled resources),
   create_graphics_pipeline_state and output_merger_logic_op (logic operations; the first
   stops where real Direct3D 12 makes a pipeline with one and then releases the null pipeline),
-  shader_instructions (float64), unbounded_resource_arrays, unbounded_samplers (binding tier 2).
+  shader_instructions (float64), unbounded_resource_arrays, unbounded_samplers (binding tier 2),
+  ps_layer (the layer from a vertex shader).
 - Real Direct3D 12 crashes, 1: copy_block_compressed_texture. Creating a block-compressed texture
   of part of a block fails on both (this Windows 10 runtime refuses it); the test then copies
   from the null texture: real Direct3D 12 crashes there, ours fails the list's `Close` and the
@@ -491,8 +555,9 @@ stops at first:
 History (tests passing on real Direct3D 12 that pass through ours, vkd3d-d3d12 of 172 to 174):
 run 5 54, 6 66, 7 80, 8 87, 9 74 (the rig's stricter rule began), 10 87, 11 94, 12 98, 13 103,
 14 104, 15 106, 16 106; run 17 108 of 176 under the newer rule, run 18 123 of 176, run 19 133,
-run 20 135. Whole counts: run 12 116 of 193, 13 121, 14 122, 15 124, 16 124; run 17 129 of 198,
-run 18 145, run 19 155, run 20 157.
+run 20 135, runs 21 to 23 135, run 24 140, run 25 142. Whole counts: run 12 116 of 193, 13
+121, 14 122, 15 124, 16 124; run 17 129 of 198, run 18 145, run 19 155, run 20 157, runs 21 to
+23 157, run 24 162, run 25 164.
 
 ## Shader runner (vkd3d-shader_runner, 302 files)
 
@@ -502,8 +567,15 @@ in its Direct3D 11 part before reaching Direct3D 12 (our dxgi.dll serves only Di
 tools/graphics-rig/wine-tests run --dll "wcontainers_d3d12.dll=$E\wcontainers_d3d12.dll" --dll
 "d3d12.dll=$E\d3d12.dll" vkd3d-shader_runner`.
 
-Run 23 (run23/runner1.log, built at e148d28, the slots commit, 234 s): 204 of 302, the same
-98 failing files. sm6-uav-rwtexture now binds its one view (u1) at slot 0, the converter's new
+Run 24 (run24/runner1.log, built at 78b8525, the tessellation commit, 234 s): 204 of 302, the
+same 98 failing files. The two tessellation files now get past their shader model 5 pipelines:
+hlsl tessellation-patch-vars passes its 5.0 section and stops at 6.0 (a DXIL hull shader,
+"spirv-reader: unsupported execution model", G6); hlsl tessellation stops at the converter's
+`PackedStageValues` (pixel shaders) and `StructType` (hull shaders), G6.
+
+Run 23 (run23/runner1.log, built at e148d28, the slots commit, 234 s; runner2.log at
+e2d1b4e, after the occlusion commits, 244 s): 204 of 302 both times, the same 98 failing
+files. sm6-uav-rwtexture now binds its one view (u1) at slot 0, the converter's new
 numbering, and still fails as in run 22: the draw's bind group is made for a program whose
 storage texture is `R32Float` while the bound view is `R32G32B32A32_FLOAT` (WebGPU validation
 error; nothing written). With a temporary trace (not committed, run23/d1-sm6.log): the front
@@ -610,6 +682,31 @@ and mesh shader subobjects, which the stream reader refused. The 105 failing:
   file stops there (crash after the device is removed).
 
 ## Real program
+
+Run 25 (2026-11-18, desktop shared with other tracks, not `--alone`, debug builds; scratch
+run25/p1-*.log built at 84fedb3, the layer commit, and m1-*.log, m2-*.log after the
+multisampled array, `DiscardResource` and mapping commits):
+- bgfx 37-gpudrivenrendering (GPU-driven culling by compute and `ExecuteIndirect`): with the
+  shaders branch's DXIL atomics it now runs, and every frame of both runs through ours passes
+  (782 to 894 pixels beyond 8, all in the overlay's text, allowed 20480; largest difference
+  217). 120 frames in 2.6 and 2.5 s (real 2.4 s twice in the same job). Its slow paths' warnings:
+  indirect arguments read back, read back waited for the GPU, pixel shader invocations counted
+  by drawing again, typed buffer read through a storage buffer, unaligned buffer edge merged by
+  a program, mapped range uploaded whole. 80 of 3600 tiles change between real runs; the rig's rule ignores
+  them. Command as in run 21 (bgfx-compare.ps1 37-gpudrivenrendering).
+- Godot's 2D platformer: as run 23 (120 frames, every frame differs, 409,222 of 518,400 pixels
+  beyond 8 at frame 10). Its refusals now are all the converter's (G6): 45 compute shaders
+  `ResourceArray`, 20 `NonFiniteConstant`, 2 fragment shaders naga's reader refuses
+  (`IsHelperInvocationEXT`), 3 "memory access outside workgroup memory", 4 "Bindings ... conflict",
+  2 image operands, and one alpha-antialiased line pipeline (`AntialiasedLinesAsQuads`, which
+  the converter's `LINE_COVERAGE` and the stage helper do not do yet). `TypedBuffer` and the
+  atomics' "unsupported storage class" of run 23 are gone.
+- Godot's 3D platformer (first tried): crashed after 6.7 s at its first frame. First a list
+  with `DiscardResource` failed `Close` (now taken, `db697cb`); then (m2) a shader resource view
+  of `R8G8B8A8_UNORM_SRGB` with mapping 0x1a88 (red, green, blue, one: alpha forced to one on a
+  format that has alpha), which needs the view swizzle (G1 and G6); the device is removed
+  there and Godot crashes on the failed buffers that follow. Besides, as the 2D one, plus 17
+  fragment shaders `IsHelperInvocationEXT` and 14 vertex shaders "Bindings ... conflict" (G6).
 
 Run 23 (2026-11-18, desktop shared with other tracks, not `--alone`, debug build at e2d1b4e's
 sources; scratch run23/o1-bgfx26.log, o1-godot.log, godot1-output.log):
@@ -762,13 +859,13 @@ Command: `tools/graphics-rig/programs run --dll "wcontainers_d3d12.dll=%CARGO_TA
   crates/wcontainers-shaders/src/lower.rs and dxil.rs at origin/phase-2-graphics-shaders as of
   run 13), so the run would end as in run 10.
 
-## Gap list (the pass bar's written list, as of run 23; the test files unchanged since run 20)
+## Gap list (the pass bar's written list, as of run 25)
 
 The final list may hold only gaps that are absent features: what the back end or browser lacks,
-reported absent as Direct3D 12 expects. Run 20's failing test files, by that rule:
+reported absent as Direct3D 12 expects. Run 25's failing test files (34), by that rule:
 
 Absent features (final; reported absent through Direct3D 12's own mechanism, or refused by name
-where Direct3D 12 has none):
+where Direct3D 12 has none), 8 files:
 - Tiled resources (`TiledResourcesTier` 0): create_reserved_resource, get_resource_tiling.
 - Logic operations (`OutputMergerLogicOp` false): output_merger_logic_op, and
   create_graphics_pipeline_state, which makes a pipeline with one without asking and then uses
@@ -776,8 +873,11 @@ where Direct3D 12 has none):
 - Float64 in shaders (`DoublePrecisionFloatShaderOps` false): shader_instructions.
 - Resource binding tier 2 and descriptor arrays where the back end lacks big tables (tier 1
   answered): unbounded_resource_arrays, unbounded_samplers.
-- Multisampled texture arrays (WebGPU's multisampled textures have one layer; Direct3D 12 has no
-  capability for them, so creation answers E_NOTIMPL): clear_render_target_view.
+- The layer from the vertex shader
+  (`VPAndRTArrayIndexFromAnyShaderFeedingRasterizerSupportedWithoutGSEmulation` false, plan
+  4.12): ps_layer, whose context makes such a pipeline before asking (E_NOTIMPL) and then skips
+  its checks. Listed under the converter before run 25; its pixel shader's layer input now
+  converts.
 - Minimum and maximum filters (WebGPU has no reduction samplers): the shader runner's
   sample-minmax. Direct3D 12 has no query for them: Microsoft's `D3D12_FILTER` page (read
   2026-11-17) sends the reader to Direct3D 11's `D3D11_FEATURE_DATA_D3D11_OPTIONS1::MinMaxFiltering`,
@@ -785,10 +885,9 @@ where Direct3D 12 has none):
   Direct3D 12 leaves.
 - Shader models above 6.0 (plan section 9's answer): 37 shader runner files run fewer checks.
 - Also reported absent with no failing test here: conservative rasterisation, raster order
-  views, ray tracing, mesh shaders, variable rate shading, sampler feedback,
-  `SV_RenderTargetArrayIndex` from the vertex stage, timestamps where the adapter lacks
-  `timestamp-query` (present on the RTX 3080 natively), drawing into and storing into
-  `B5G6R5`, `B5G5R5A1`, `B4G4R4A4`.
+  views, ray tracing, mesh shaders, variable rate shading, sampler feedback, timestamps where
+  the adapter lacks `timestamp-query` (present on the RTX 3080 natively), drawing into and
+  storing into `B5G6R5`, `B5G5R5A1`, `B4G4R4A4`.
 
 A listed loss (not an absent feature; kept on the list with its reason):
 - execute_indirect, 2 checks: `ExecuteIndirect` draws reading vertices past a vertex buffer's
@@ -801,66 +900,67 @@ Not to be matched:
   is refused on both; the test then uses the null texture).
 
 Not absent features, so not yet allowed on the list (others' work, then this front's routing):
-- G6, the converter, 14 files: `StorageOffset` (buffer_srv), `StructType` (tgsm),
-  `[earlydepthstencil]` in DXBC (early_depth_stencil_tests), `AtomicSignedness`
-  (atomic_instructions), `RegisterSpace` (register_space, sampler_register_space),
-  `DynamicOffset` (gather, gather_c), `CullDistance` (combined_clip_and_cull_distances),
-  `MultisampledArrayTexture` (multisample_array_texture), `RenderTargetArrayIndex` (ps_layer),
-  `InterpolateAt` (shader_eval_attribute), resource arrays (resource_arrays),
-  `VertexWithoutPosition` (vertex_id).
-- G6, the stage helper's hull and domain stages (run 20 brought the tessellator only) and layer
-  outputs, 14 files: clip_distance, domain_shader_inputs,
-  domain_shader_one_patch_constant_input, hull_shader_control_point_phase,
-  hull_shader_fork_phase, hull_shader_patch_constant_inputs, hull_shader_punned_array,
-  hull_shader_relative_addressing, line_tessellation, nop_tessellation_shaders,
-  quad_tessellation, tessellation_dcl_index_range, tessellation_primitive_id,
-  layered_rendering.
-- G1 and G6, a view swizzle (wgpu 30 has none, so a program rewrite), 3 files:
-  depth_stencil_sampling, srv_component_mapping, stencil_load. Direct3D's stencil views give
-  the stencil in the second component, WebGPU's stencil-aspect views in the first.
+- G6, the converter, 11 files: `StorageOffset` (buffer_srv), `[earlydepthstencil]` in DXBC
+  (early_depth_stencil_tests), `AtomicSignedness` (atomic_instructions), `RegisterSpace`
+  (register_space, sampler_register_space), `DynamicOffset` (gather, gather_c), `CullDistance`
+  (combined_clip_and_cull_distances), `MultisampledArrayTexture` (multisample_array_texture:
+  since run 25 the front holds such arrays, a texture per layer; reading one in a shader then
+  needs a binding form for several textures, to be settled with G1 and G6), `InterpolateAt`
+  (shader_eval_attribute), resource arrays (resource_arrays). tgsm passes since run 25.
+- G6, the stage helper after a domain stage and layer outputs, 10 files: geometry shaders and
+  stream output after a domain shader (domain_shader_inputs,
+  domain_shader_one_patch_constant_input, hull_shader_patch_constant_inputs,
+  hull_shader_relative_addressing, line_tessellation, quad_tessellation), patches of another
+  control point count than the hull shader declares (hull_shader_control_point_phase),
+  `VertexOutputShape` (clip_distance), `StructType` in a hull shader (hull_shader_punned_array:
+  "struct value 75 used as a value"), a geometry shader's layer output (layered_rendering,
+  `LayerSplit`).
+- G1 and G6, a view swizzle, 3 files: depth_stencil_sampling, srv_component_mapping,
+  stencil_load; also what stops Godot's 3D platformer (run 25). Direct3D's stencil views give
+  the stencil in the second component, WebGPU's stencil-aspect views in the first, and
+  component mappings choose any. wgpu 30 has no view swizzle and `TextureViewDesc` none, so the
+  default is a program rewrite (the converter reading each swizzled slot's mapping, as the
+  Direct3D 11 track's status asks too). Since run 25 the front takes mappings equal to the
+  identity for the view's format.
 - The shader runner's other failures are G6's (DXIL storage images, typed buffers and compute
   shaders in naga's SPIR-V reader, `PackedStageValues`, `NonFiniteConstant`,
   `ConstantComponentIndexing`, `SampleClamp`, wrong values in converted shaders), plus the two
   files binding views of another kind than declared (uav-atomics, length-property), undefined
   in Direct3D 12.
 - The real program: done for bgfx 01-cubes, 38-bloom, 26-occlusion and 35-dynamic (runs 21 to
-  23) and Microsoft's D3D12HelloTriangle and D3D12HelloConstBuffers (run 22). bgfx 24-nbody runs
-  (run 22) but draws differently on every real run, so it has no frames to compare;
-  37-gpudrivenrendering waits on G6 (DXIL atomics on typed buffers and images) and Godot, which
-  runs since run 23, on G6 (raw buffers made typed, resource arrays, `NonFiniteConstant`,
-  atomics).
+  23), 37-gpudrivenrendering (run 25) and Microsoft's D3D12HelloTriangle and
+  D3D12HelloConstBuffers (run 22). bgfx 24-nbody runs (run 22) but draws differently on every
+  real run, so it has no frames to compare. Godot's 2D platformer runs and waits on G6 (resource
+  arrays, `NonFiniteConstant`, helper invocations, binding conflicts, antialiased lines); its 3D
+  platformer on the view swizzle first.
 - Front, refused by name with no failing test here: sampling in the program, typed views of other
   formats and the minimum level-of-detail clamp in vertex and geometry shaders, storage texture
   format variants with pulled vertex programs or geometry stages, stream output buffers not
   starting at a multiple of 256 bytes, unordered access buffers in CPU-visible custom heaps,
-  comparison sampling of a texture whose bits match no depth format and of a multisampled one.
-  `Stages` has no way to release its programs and buffers (asked of G6).
+  comparison sampling of a texture whose bits match no depth format and of a multisampled one,
+  views of several layers of a multisampled array.
 
 ## Next, in this order
 
 1. At the start of each run merge the shared line, webgpu, shaders and rig. Check whether the
    rig fixed its comparison (`tools/graphics-rig/desktop/wine-run.ps1`, "How to run"); until it
    does, apply the one-line patch uncommitted for the run and never commit that file.
-2. hlsl sm6-uav-rwtexture (shader runner, "Shader runner" run 23): the variant with slot 0 as
+2. After each shaders merge rerun every test file (bin/full25.sh), Godot's two platformers
+   (bin/programs25.sh) and read their refusals; the front's part where a converter item lands:
+   `StorageOffset` lets `storage_range` bind any offset; a view swizzle (with G1) means converting
+   programs with each swizzled slot's mapping and writing it per draw; `MultisampledArrayTexture`
+   needs the binding form for a texture per layer.
+3. Tessellation, waiting on the stage helper (G6): a constructor taking a geometry shader or
+   stream output after the domain stage goes where `geometry_stage` refuses them now; patches
+   whose control point count differs from the hull shader's declared input count, which real
+   Direct3D 12 draws (hull_shader_control_point_phase: input count 1, drawn with
+   3-control-point patches, `Stages::run` answers `TopologyMismatch`).
+4. hlsl sm6-uav-rwtexture (shader runner, "Shader runner" run 23): the variant with slot 0 as
    `Rgba32Float` is asked for and converts, yet the bind group is checked against an
-   `R32Float` layout, so nothing is written and nothing refused. Likely the converter's (G6):
-   a DXIL storage image the program reads keeps dxil-spirv's own `R32f` format. Ask G6 (its
-   status) and rerun that one file after the fix (`wine-tests run --dll ...
-   "vkd3d-shader_runner:hlsl+sm6-uav-rwtexture.shader_test"`, as bin/debug23.sh).
-3. The real program: Godot now runs (run 23) and waits on G6: raw buffers the converter turns
-   into typed buffers (`TypedBuffer` with no typed buffer in the shader; bytecode in scratch
-   run23/dump), resource arrays, `NonFiniteConstant`, atomics on typed buffers and images
-   (`OpImageTexelPointer`, also bgfx 37-gpudrivenrendering). After each shaders merge, run
-   Godot (bin programs22.sh) and bgfx 37 (bgfx-compare.ps1) and read the refusals.
-4. When the stage helper's `Stages` takes hull and domain shaders (the shaders status, "Next":
-   a constructor, a patch list topology, a `FinalDraw` of the tessellator's indices binding
-   `DOMAIN_PATCHES_BINDING` and `DOMAIN_POINTS_BINDING`), route them as `geometry.rs` routes
-   geometry shaders (13 files), and layer outputs (1).
-5. The converter items above as they land (`StorageOffset` would let `storage_range` bind any
-   offset).
-6. Turn this gap list into the final one as the G6 items land.
-7. The view swizzle once the interface and converter have one.
-8. Later: `ID3D12GraphicsCommandList5` and later, `ID3D12Fence1`; render pass resolves of part
+   `R32Float` layout. Likely the converter's (G6): a DXIL storage image the program reads keeps
+   dxil-spirv's own `R32f` format. Rerun that one file after the fix (bin/debug23.sh).
+5. Turn this gap list into the final one as the G6 items land.
+6. Later: `ID3D12GraphicsCommandList5` and later, `ID3D12Fence1`; render pass resolves of part
    of a subresource and of depth-stencil targets; the built-in storage clear for UAV clears of
    formats that do not render (`builtin::storage_clear`); recording without allocating per
    command, the call buffer of plan 4.8; moving `examples/directx` into
@@ -906,8 +1006,8 @@ A working example of all of it is this track's Windows library: `examples/direct
 - Tests (one draws on the GPU): `tools/graphics-rig/gpu-job --build "cargo test -j 3 -p
   wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12 --no-run" -- "cargo test
   -j 3 --no-fail-fast -p wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12"`
-  (40 tests: 9 infrastructure, 9 front, 11 device on the recorder, 1 on the GPU, 10 unit; run 23:
-  all pass, run23/test1.log and o1-test.log). Put `set CARGO_INCREMENTAL=0&& ` before both commands (see the note further down).
+  (41 tests: 9 infrastructure, 9 front, 11 device on the recorder, 1 on the GPU, 11 unit; run 25:
+  all pass, run25/test2.log). Put `set CARGO_INCREMENTAL=0&& ` before both commands (see the note further down).
   `WEBGPU_API=dx12|vulkan` picks wgpu's path for the GPU test.
 - Lint: `tools/graphics-rig/remote "cargo clippy -j 3 --all-targets -p
   wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12 -- -D warnings"`.
@@ -961,6 +1061,9 @@ A working example of all of it is this track's Windows library: `examples/direct
   `Fresh` and kept the old library (clippy then checked nothing new). When a result looks stale,
   `tools/graphics-rig/remote "cargo clean -p wcontainers-direct3d-12 && ..."`.
 - One case of the own program: `check_d3d12 case <name>` (names in `examples/check/cases.rs`).
+- Everything at once (run 25): scratch `bin/full25.sh <n>` runs the crates' tests, every test
+  file, the own program and the shader runner into run25/*<n>.log; `bin/programs25.sh <n>` runs
+  Godot's two platformers and bgfx 37 (copy them to a new run's folder name first).
 - Seen in run 10: running a `remote` command (clippy) while a queued test build used the same
   source directory left the shaders library half-built (unresolved `wcs_dxil_constant_sizes` and
   `anon.*` symbols). Run one rig command of this branch at a time; the test command needs
@@ -1075,6 +1178,16 @@ Run 11's entries:
   it could call this (G1 owns helpers.rs, so this track did not change it).
 
 ## Measurements
+
+- Run 25 (2026-11-18, RTX 3080, desktop shared with other tracks, not `--alone`, load not
+  taken; built at 33a913d's sources): own program 25 of 25 cases equal (run25/check3.log;
+  check2.log did not run: the status file changed under the job's tree); draw 0 of 4096 pixels
+  beyond 1; features 253 of 872 differ, none beyond real; fence events, 2000 rounds: real first
+  6 µs, mean 1 µs, 99th percentile 1 µs, largest 6 µs; ours first 68 µs, mean 17 µs, 99th
+  percentile 19 µs, largest 68 µs. Test files 164 of 198 (full2.log); shader runner 204 of 302,
+  the same 98 failing (runner2.log; job 03:51:30 to 04:00:49). Microsoft's two samples: every
+  frame equal, 0 pixels beyond 8 (f2-samples.log; 2.6 and 2.5 s for 120 frames). bgfx 37 2.5 s
+  twice against real 2.4 s twice (f2-bgfx37.log), every frame passing.
 
 - Run 23 (2026-11-18, RTX 3080, desktop shared with other tracks, not `--alone`, load not
   taken; run23/check1.log at e148d28 and o1-check.log at e2d1b4e): own program 24 of 24 cases
@@ -1435,6 +1548,14 @@ Run 16's entries:
 
 ## Installed on the desktop
 
+Run 25: nothing installed. The rig's build folder of this branch,
+C:\wc\target\phase-2-graphics-direct3d-12 (7.1 GB), was deleted at the end of the run, so the
+next run builds from clean. On the Mac a `cargo check` made target/ in this checkout (218 MB,
+it fails at the shaders crate's missing submodules); deleted. Logs stay in scratch run25.
+
+Run 24: nothing installed. The rig's build folder of this branch, C:\wc\target\phase-2-graphics-direct3d-12
+(20.0 GB), was deleted at the end of the run, so the next run builds from clean (about 8 minutes
+more). No build folder was made on the Mac.
 Run 23: nothing installed; no build folder made besides the rig's (kept, the rig reuses it). A
 temporary folder C:\wc\out\phase-2-graphics-direct3d-12\dump (Godot's refused shaders, 684 KB)
 was made and deleted in the run; its copy is in scratch run23/dump. On the Mac two `cargo

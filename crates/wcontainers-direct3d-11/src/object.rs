@@ -218,6 +218,9 @@ pub struct View<B: Backend> {
     /// bits; its levels and layers are copied in before each use and out after each write
     /// (`ReinterpretCopy`).
     pub twin: Option<Kept<B, B::Texture>>,
+    /// The twin holds only the view's slices of its 3D level, as the twin's one level from its
+    /// first slice (a storage view of some slices, which no back end's view sees).
+    pub window: bool,
 }
 
 impl<B: Backend> View<B> {
@@ -303,6 +306,9 @@ pub struct Blend<B: Backend> {
 pub struct DepthStencil<B: Backend> {
     pub desc: DepthStencilDesc,
     pub gpu: Kept<B, B::DepthStencil>,
+    /// The state writing nothing in the aspects of a read-only depth-stencil view, by the view's
+    /// flags; made at the first draw through each.
+    pub read_only: RefCell<Vec<(u32, Rc<DepthStencil<B>>)>>,
 }
 
 /// A sampler made with its minimum level raised, by that minimum's bits.

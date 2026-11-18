@@ -164,6 +164,25 @@ impl<B: Backend> Device<B> {
             return;
         };
         let t = &v.texture;
+        if v.window {
+            let mut extent = t.mip_extent(v.desc.first_mip);
+            extent.depth_or_layers = v.desc.layer_count;
+            let at = |texture, mip, z| TextureRegion {
+                texture,
+                mip,
+                layer: 0,
+                origin: Origin { x: 0, y: 0, z },
+                stencil: false,
+            };
+            let stored = at(&t.gpu.handle, v.desc.first_mip, v.desc.first_layer);
+            let other = at(&twin.handle, 0, 0);
+            if into {
+                self.backend.copy_texture(&stored, &other, extent);
+            } else {
+                self.backend.copy_texture(&other, &stored, extent);
+            }
+            return;
+        }
         let three_d = t.desc.dimension == crate::desc::TexDim::D3;
         for mip in v.desc.first_mip..v.desc.first_mip + v.desc.mip_count {
             let mut extent = t.mip_extent(mip);

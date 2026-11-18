@@ -178,7 +178,7 @@ pub(crate) struct Queries<B: Backend> {
     stretch: Option<u32>,
     /// Submits so far, and the fence of the last.
     submits: u64,
-    fence: Option<B::Fence>,
+    pub(crate) fence: Option<B::Fence>,
 }
 
 impl<B: Backend> Queries<B> {

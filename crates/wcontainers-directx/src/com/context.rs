@@ -27,11 +27,11 @@ const MAP_WITHOUT_INITIAL_DISCARD: windows::core::HRESULT =
     windows::core::HRESULT(0x887C_0004_u32 as i32);
 
 /// A deferred context, whose table refuses `ID3D11Multithread` as Direct3D's deferred contexts do.
-pub(super) fn deferred_context(front: Shared, device: ID3D11Device) -> ID3D11DeviceContext1 {
-    let c: ID3D11DeviceContext1 = Context::deferred(front, device).into();
-    // The object's table of ID3D11DeviceContext1 is ours to point elsewhere.
+pub(super) fn deferred_context(front: Shared, device: ID3D11Device) -> ID3D11DeviceContext3 {
+    let c: ID3D11DeviceContext3 = Context::deferred(front, device).into();
+    // The object's table of ID3D11DeviceContext3 is ours to point elsewhere.
     unsafe {
-        let table = c.as_raw() as *mut *const ID3D11DeviceContext1_Vtbl;
+        let table = c.as_raw() as *mut *const ID3D11DeviceContext3_Vtbl;
         *table = deferred_table(*table);
     }
     c
@@ -45,8 +45,8 @@ type QueryInterface = unsafe extern "system" fn(
 static QUERY_INTERFACE: std::sync::OnceLock<QueryInterface> = std::sync::OnceLock::new();
 
 /// The context's table with `QueryInterface` refusing `ID3D11Multithread`, made once.
-fn deferred_table(original: *const ID3D11DeviceContext1_Vtbl) -> *const ID3D11DeviceContext1_Vtbl {
-    struct Table(ID3D11DeviceContext1_Vtbl);
+fn deferred_table(original: *const ID3D11DeviceContext3_Vtbl) -> *const ID3D11DeviceContext3_Vtbl {
+    struct Table(ID3D11DeviceContext3_Vtbl);
     // SAFETY: a table of function pointers, never written after it is made.
     unsafe impl Sync for Table {}
     unsafe impl Send for Table {}
@@ -55,7 +55,7 @@ fn deferred_table(original: *const ID3D11DeviceContext1_Vtbl) -> *const ID3D11De
         .get_or_init(|| {
             // SAFETY: the windows crate's table, copied bit for bit.
             let mut table = unsafe { std::ptr::read(original) };
-            let unknown = &mut table.base__.base__.base__;
+            let unknown = &mut table.base__.base__.base__.base__.base__;
             let _ = QUERY_INTERFACE.set(unknown.QueryInterface);
             unknown.QueryInterface = query_deferred;
             Table(table)
@@ -82,7 +82,7 @@ unsafe extern "system" fn query_deferred(
 /// executed (as often as it is executed).
 pub type Command = Box<dyn Fn(&mut Front)>;
 
-#[implement(ID3D11DeviceContext1, ID3D11Multithread, ID3DUserDefinedAnnotation)]
+#[implement(ID3D11DeviceContext3, ID3D11Multithread, ID3DUserDefinedAnnotation)]
 pub struct Context {
     front: Locked<Shared>,
     pub(super) child: Child,
@@ -1291,6 +1291,39 @@ impl Context {
 
     pub(super) fn get_status(&self) -> BOOL {
         false.into()
+    }
+
+    pub(super) fn is_annotation_enabled(&self) -> BOOL {
+        self.get_status()
+    }
+
+    pub(super) fn set_marker_int(&self, _name: &PCWSTR, _data: i32) {}
+
+    pub(super) fn begin_event_int(&self, _name: &PCWSTR, _data: i32) {}
+
+    /// `Flush1`: one queue runs every kind of work; an event given is signalled once the GPU has
+    /// done what was flushed.
+    pub(super) fn flush1(
+        &self,
+        _kind: D3D11_CONTEXT_TYPE,
+        event: windows::Win32::Foundation::HANDLE,
+    ) {
+        if self.is_deferred() {
+            return;
+        }
+        if event.is_invalid() {
+            self.front.borrow_mut().flush();
+        } else {
+            self.front.borrow_mut().finish();
+            let _ = unsafe { windows::Win32::System::Threading::SetEvent(event) };
+        }
+    }
+
+    /// No protected content is served, so protection is never on.
+    pub(super) fn get_hardware_protection_state(&self, out: *mut BOOL) {
+        if let Some(out) = unsafe { out.as_mut() } {
+            *out = false.into();
+        }
     }
 
     pub(super) fn update_subresource(

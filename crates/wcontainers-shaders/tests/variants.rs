@@ -775,3 +775,137 @@ fn filtering_in_the_program_reads_texels_with_loads() {
         );
     }
 }
+
+/// A four-channel float storage texture both read and written (shader model 6's half writes) has
+/// no read-write storage form in WebGPU: plain, it is refused by name; through a buffer, it is
+/// read and written there.
+#[test]
+fn read_written_four_channel_storage_goes_through_a_buffer() {
+    let code = read("tests/own/ps_halves.dxil");
+    let mut key = VariantKey {
+        storage_formats: vec![(0, wcontainers_gpu::Format::Rgba32Float)],
+        ..VariantKey::default()
+    };
+    let refused = convert(Source::Dxil(&code), &key, None).map(|c| wgsl(&c));
+    assert!(
+        matches!(
+            refused,
+            Err(ConvertError::Unsupported("ReadWriteStorageFormat"))
+        ),
+        "{refused:?}"
+    );
+    key.texels_through_buffer = 1;
+    let text = wgsl(&convert(Source::Dxil(&code), &key, None).unwrap());
+    assert!(!text.contains("texture_storage"), "{text}");
+}
+
+/// An array of textures is one texture per element, at the registers Direct3D 12 gives the range,
+/// and an element picked at run time is chosen by a switch.
+#[test]
+fn texture_arrays_are_a_texture_per_element() {
+    let c = convert(
+        Source::Dxil(&read("tests/own/ps_array.dxil")),
+        &VariantKey::default(),
+        None,
+    )
+    .unwrap();
+    let mut textures: Vec<_> = c
+        .reflection
+        .bindings
+        .iter()
+        .filter(|b| b.kind == SlotKind::Texture)
+        .map(|b| (b.register, b.slot()))
+        .collect();
+    textures.sort_unstable();
+    assert_eq!(textures, [(0, 0), (1, 1), (2, 2), (3, 3)]);
+    let text = wgsl(&c);
+    assert!(text.contains("switch"), "{text}");
+    assert_eq!(text.matches("texture_2d<f32>;").count(), 4, "{text}");
+}
+
+/// A multisampled array texture is refused by name until the key gives its layer count; then each
+/// layer after the first is an added texture binding, and loads switch on the layer, by both routes.
+#[test]
+fn multisampled_array_layers_are_a_texture_each() {
+    let code = own_pair("ps_msarray");
+    for (route, source) in [
+        ("dxbc", Source::Dxbc(&code[0])),
+        ("dxil", Source::Dxil(&code[1])),
+    ] {
+        assert_eq!(
+            convert(source, &VariantKey::default(), None).unwrap_err(),
+            ConvertError::Unsupported("MultisampledArrayTexture"),
+            "{route}"
+        );
+        let key = VariantKey {
+            texture_layers: vec![(0, 3)],
+            ..VariantKey::default()
+        };
+        let c = convert(source, &key, None).unwrap();
+        let mut textures: Vec<_> = c
+            .reflection
+            .bindings
+            .iter()
+            .filter(|b| b.kind == SlotKind::Texture)
+            .map(|b| (b.binding, b.added))
+            .collect();
+        textures.sort_unstable_by_key(|t| t.0);
+        let first = SlotKind::Texture.first_binding();
+        assert_eq!(
+            textures,
+            [
+                (first, None),
+                (first + 1, Some(AddedBinding::TextureLayer(0, 1))),
+                (first + 2, Some(AddedBinding::TextureLayer(0, 2))),
+            ],
+            "{route}"
+        );
+        let text = wgsl(&c);
+        assert_eq!(
+            text.matches("texture_multisampled_2d<f32>;").count(),
+            3,
+            "{route}: {text}"
+        );
+        assert!(text.contains("switch"), "{route}: {text}");
+    }
+}
+
+/// A view's component mapping: reads of the slot are composed from the mapping, by both routes; a
+/// gather of a component gathers the one it maps to, or is the constant it maps to.
+#[test]
+fn swizzled_slots_compose_what_they_read() {
+    use wcontainers_gpu::ViewComponent as C;
+    for (name, map) in [
+        ("ps_textured", [C::B, C::One, C::Zero, C::R]),
+        ("ps_mingather", [C::G, C::R, C::Zero, C::A]),
+        ("ps_mingather", [C::One, C::One, C::One, C::One]),
+    ] {
+        let code = own_pair(name);
+        let key = VariantKey {
+            swizzled: vec![(0, map)],
+            ..VariantKey::default()
+        };
+        let plain = both(&code, &VariantKey::default());
+        for (c, plain) in both(&code, &key).iter().zip(&plain) {
+            assert_ne!(wgsl(c), wgsl(plain), "{name} {map:?}");
+        }
+    }
+}
+
+/// Atomic minimums and maximums of the other signedness than their memory's other operations are
+/// compare-exchange loops, reported as the program's own slow path, by both routes.
+#[test]
+fn atomics_of_the_other_signedness_are_exchange_loops() {
+    for c in both(&own_pair("cs_atomics"), &VariantKey::default()) {
+        assert_eq!(
+            c.reflection.slow_paths,
+            [wcontainers_gpu::SlowPath::AtomicExchangeLoop]
+        );
+        assert!(wgsl(&c).contains("atomicCompareExchangeWeak"));
+    }
+    for name in ["ps_textured", "cs_shared"] {
+        for c in both(&own_pair(name), &VariantKey::default()) {
+            assert!(c.reflection.slow_paths.is_empty(), "{name}");
+        }
+    }
+}

@@ -202,6 +202,37 @@ fn variants_draw_as_the_native_feature_does() {
             }
         }
 
+        // A view's component mapping: the plain program reading texels uploaded already mapped, as a
+        // view with the mapping reads them, and the variant applying it to the texels as they are.
+        {
+            use wcontainers_gpu::ViewComponent as C;
+            let map = [C::B, C::One, C::Zero, C::R];
+            let mut native = plain.clone();
+            native.setup.texel_map = Some(map);
+            let mut variant = plain.clone();
+            variant.setup.ps_key.swizzled = vec![(0, map)];
+            for (back_end, reference, texels) in [
+                (
+                    "webgpu",
+                    ours(&mut gpu, &native, ProvokingVertex::First),
+                    ours(&mut gpu, &variant, ProvokingVertex::First),
+                ),
+                (
+                    "webgl",
+                    ours(&mut gl, &native, ProvokingVertex::Last),
+                    ours(&mut gl, &variant, ProvokingVertex::Last),
+                ),
+            ] {
+                results.push(compare(
+                    format!("swizzled {route} {back_end}"),
+                    &reference,
+                    &texels,
+                    Format::Rgba8Unorm,
+                    (0, 0),
+                ));
+            }
+        }
+
         // A swapped depth range (near 1, far 0, as Vulkan and OpenGL allow and WebGPU does not), on
         // WebGPU as (0, 1) with the program flipping z. Neither Direct3D 11 nor ANGLE here draws a
         // swapped range as those APIs define it (window depth near + (far - near) z), so the reference
@@ -1159,4 +1190,225 @@ fn typed_buffers_draw_as_direct3d_does() {
     }
     eprintln!("{} comparisons, {failed} failed", results.len());
     assert_eq!(failed, 0);
+}
+
+/// A pixel program's layer and viewport index: real Direct3D 11 draws the full-screen triangle into
+/// each of four layers through `gs_layers` (layer n through viewport n % 2); ours draws each layer
+/// alone, with the run's layer and viewport as helper values, as a front splitting the draw does.
+#[test]
+fn layer_and_viewport_inputs_read_the_draws_run() {
+    use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM;
+    use windows::core::Interface;
+    const LAYERS: u32 = 4;
+    let viewports = [
+        [0.0f32, 0.0, SIZE as f32, SIZE as f32],
+        [8.0, 4.0, 40.0, 48.0],
+    ];
+    let mut gpu = webgpu();
+    let d3d = wcontainers_graphics_test::d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let (vs, ps, gs) = (
+        bytecode("vs_fullscreen.dxbc"),
+        bytecode("ps_layer.dxbc"),
+        bytecode("gs_layers.dxbc"),
+    );
+    d3d.program(&vs, &ps, &[]).unwrap();
+    let geometry = d3d.gs(&gs).unwrap();
+    let mut desc = wcontainers_graphics_test::d3d11::tex2d(
+        SIZE,
+        SIZE,
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+        D3D11_BIND_RENDER_TARGET,
+    );
+    desc.ArraySize = LAYERS;
+    let target = d3d.texture2d(&desc, &[]).unwrap();
+    let rtv = d3d.rtv(&target.cast().unwrap(), None).unwrap();
+    let rects: Vec<D3D11_VIEWPORT> = viewports
+        .iter()
+        .map(|v| D3D11_VIEWPORT {
+            TopLeftX: v[0],
+            TopLeftY: v[1],
+            Width: v[2],
+            Height: v[3],
+            MinDepth: 0.0,
+            MaxDepth: 1.0,
+        })
+        .collect();
+    unsafe {
+        let c = &d3d.context;
+        c.GSSetShader(&geometry, None);
+        c.ClearRenderTargetView(&rtv, &CLEAR);
+        c.OMSetRenderTargets(Some(&[Some(rtv.clone())]), None);
+        c.RSSetViewports(Some(&rects));
+        c.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        c.Draw(3, 0);
+        c.GSSetShader(None, None);
+    }
+    let mut failed = Vec::new();
+    for layer in 0..LAYERS {
+        let reference = d3d.read(&target, 0, layer).unwrap().to_rgba8().into_raw();
+        let viewport = layer % 2;
+        let v = viewports[viewport as usize];
+        let block = helper_block(
+            Source::Dxbc(&ps),
+            &VariantKey::default(),
+            &[
+                (HelperValue::Layer, &layer.to_le_bytes()),
+                (HelperValue::Viewport, &viewport.to_le_bytes()),
+            ],
+        );
+        let mut setup = Setup::plain(SIZE);
+        setup.helpers = [Vec::new(), block];
+        setup.viewport = [v[0], v[1], v[2], v[3], 0.0, 1.0];
+        let draw = Draw {
+            vs: Source::Dxbc(&vs),
+            ps: Source::Dxbc(&ps),
+            format: Format::Rgba8Unorm,
+            size: SIZE,
+            vertices: &[],
+            stride: 0,
+            attributes: &[],
+            count: 3,
+            constants: constants([1.0; 4]),
+            clear: CLEAR.map(f32::to_bits),
+            setup,
+        };
+        let made = ours(&mut gpu, &draw, ProvokingVertex::First);
+        let c = compare(
+            format!("layer {layer}"),
+            &reference,
+            &made,
+            Format::Rgba8Unorm,
+            (0, 0),
+        );
+        eprintln!(
+            "{}: {} texels apart, largest {}",
+            c.name, c.count, c.largest
+        );
+        if c.count > 0 {
+            failed.push(c.name);
+        }
+    }
+    assert!(failed.is_empty(), "{failed:?}");
+}
+
+/// A multisampled array texture (`VariantKey::texture_layers`): real Direct3D 11 fills each layer of a
+/// `Texture2DMSArray` with `ps_fill` and reads it through `ps_msarray` (layers picked at run time,
+/// past the count too, and its dimensions); ours fills a texture per layer and reads them through
+/// the variant, by both routes.
+#[test]
+fn multisampled_array_layers_read_as_direct3d_does() {
+    use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC};
+    use windows::core::Interface;
+    const LAYERS: u32 = 3;
+    let d3d = wcontainers_graphics_test::d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let vs = bytecode("vs_fullscreen.dxbc");
+    let mut desc = wcontainers_graphics_test::d3d11::tex2d(
+        TEXTURE_SIZE,
+        TEXTURE_SIZE,
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+        D3D11_BIND_FLAG(D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0),
+    );
+    desc.ArraySize = LAYERS;
+    desc.SampleDesc = DXGI_SAMPLE_DESC {
+        Count: LAYER_SAMPLES,
+        Quality: 0,
+    };
+    let layered = d3d.texture2d(&desc, &[]).unwrap();
+    d3d.program(&vs, &bytecode("ps_fill.dxbc"), &[]).unwrap();
+    d3d.viewport(TEXTURE_SIZE, TEXTURE_SIZE);
+    let mut kept = Vec::new();
+    for layer in 0..LAYERS {
+        let mut view = D3D11_RENDER_TARGET_VIEW_DESC {
+            Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+            ViewDimension: D3D11_RTV_DIMENSION_TEXTURE2DMSARRAY,
+            ..Default::default()
+        };
+        view.Anonymous.Texture2DMSArray = D3D11_TEX2DMS_ARRAY_RTV {
+            FirstArraySlice: layer,
+            ArraySize: 1,
+        };
+        let rtv = d3d.rtv(&layered.cast().unwrap(), Some(&view)).unwrap();
+        let constants = d3d
+            .immutable(&fill_constants(layer), D3D11_BIND_CONSTANT_BUFFER)
+            .unwrap();
+        unsafe {
+            let c = &d3d.context;
+            c.PSSetConstantBuffers(0, Some(&[Some(constants.clone())]));
+            c.ClearRenderTargetView(&rtv, &[0.0; 4]);
+            c.OMSetRenderTargets(Some(&[Some(rtv.clone())]), None);
+            c.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            c.Draw(3, 0);
+        }
+        kept.push((rtv, constants));
+    }
+    let srv = d3d.srv(&layered.cast().unwrap(), None).unwrap();
+    let (target, rtv) = d3d.target(SIZE, SIZE, DXGI_FORMAT_R8G8B8A8_UNORM).unwrap();
+    d3d.program(&vs, &bytecode("ps_msarray.dxbc"), &[]).unwrap();
+    d3d.viewport(SIZE, SIZE);
+    unsafe {
+        let c = &d3d.context;
+        c.ClearRenderTargetView(&rtv, &CLEAR);
+        c.OMSetRenderTargets(Some(&[Some(rtv.clone())]), None);
+        c.PSSetShaderResources(0, Some(&[Some(srv.clone())]));
+        c.Draw(3, 0);
+    }
+    let reference = d3d.read(&target, 0, 0).unwrap().to_rgba8().into_raw();
+
+    let mut gpu = webgpu();
+    let mut failed = Vec::new();
+    for route in ["dxbc", "dxil"] {
+        let ps = bytecode(&format!("ps_msarray.{route}"));
+        let source = match route {
+            "dxil" => Source::Dxil(&ps),
+            _ => Source::Dxbc(&ps),
+        };
+        assert_eq!(
+            convert(source, &VariantKey::default(), None).unwrap_err(),
+            wcontainers_shaders::ConvertError::Unsupported("MultisampledArrayTexture")
+        );
+        let mut setup = Setup::plain(SIZE);
+        setup.layers = LAYERS;
+        setup.ps_key.texture_layers = vec![(0, LAYERS)];
+        let draw = Draw {
+            vs: Source::Dxbc(&vs),
+            ps: source,
+            format: Format::Rgba8Unorm,
+            size: SIZE,
+            vertices: &[],
+            stride: 0,
+            attributes: &[],
+            count: 3,
+            constants: constants([1.0; 4]),
+            clear: CLEAR.map(f32::to_bits),
+            setup,
+        };
+        let made = ours(&mut gpu, &draw, ProvokingVertex::First);
+        let c = compare(
+            format!("multisampled array {route}"),
+            &reference,
+            &made,
+            Format::Rgba8Unorm,
+            (0, 0),
+        );
+        eprintln!(
+            "{}: {} texels apart, largest {}",
+            c.name, c.count, c.largest
+        );
+        if c.count > 0 {
+            failed.push(c.name);
+        }
+    }
+    assert!(failed.is_empty(), "{failed:?}");
 }

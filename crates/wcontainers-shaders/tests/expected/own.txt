@@ -1,6 +1,7 @@
 cs_atomics.dxbc	ok-wgsl glsl-write
 cs_decrement.dxbc	ok-wgsl glsl-write
 cs_images.dxbc	unsupported StorageFormatKind
+cs_shared.dxbc	ok-wgsl glsl-write
 cs_texels.dxbc	unsupported TypedBufferFormatKind
 cs_through.dxbc	unsupported StorageFormatKind
 ds_line.dxbc	ok-wgsl glsl-write
@@ -9,6 +10,7 @@ ds_tri.dxbc	ok-wgsl glsl-write
 gs_adjacent.dxbc	ok-wgsl glsl-write
 gs_cut.dxbc	ok-wgsl glsl-write
 gs_instances.dxbc	ok-wgsl glsl-write
+gs_layers.dxbc	unsupported RenderTargetArrayIndex
 gs_line_adjacent.dxbc	ok-wgsl glsl-write
 gs_lines.dxbc	ok-wgsl glsl-write
 gs_points.dxbc	ok-wgsl glsl-write
@@ -51,18 +53,21 @@ ps_coarse.dxbc	ok
 ps_depth.dxbc	ok
 ps_deriv.dxbc	ok-wgsl glsl-write
 ps_dual.dxbc	ok
+ps_fill.dxbc	ok
 ps_filter.dxbc	ok-wgsl glsl-compile
 ps_flat.dxbc	ok
 ps_ftoi.dxbc	ok
 ps_geometry.dxbc	ok
 ps_ids.dxbc	ok
 ps_integer.dxbc	ok-wgsl glsl-compile
+ps_layer.dxbc	ok
 ps_levels.dxbc	ok-wgsl glsl-write
 ps_local.dxbc	ok
 ps_loop.dxbc	ok
 ps_mingather.dxbc	ok-wgsl glsl-compile
 ps_minlod.dxbc	ok
 ps_mirror.dxbc	ok
+ps_msarray.dxbc	unsupported MultisampledArrayTexture
 ps_negate.dxbc	ok
 ps_offset.dxbc	ok
 ps_pack.dxbc	ok

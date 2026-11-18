@@ -28,7 +28,7 @@
 134937cfa72159ac.dxil	ok
 147fdd03ba57dbf2.dxil	ok
 1495dd46c01d5739.dxil	unsupported TypedBufferFormatKind
-14dd4b0c20eb7f6e.dxil	spirv-reader unsupported
+14dd4b0c20eb7f6e.dxil	ok-wgsl glsl-write
 15f6a483af9cf0bc.dxil	ok
 164e085c567ecd86.dxil	ok
 1692a7991b2487af.dxil	ok
@@ -57,7 +57,7 @@
 26218b2c83db3773.dxil	ok
 26480ad9d7d2ad54.dxil	ok
 269d549e10248fad.dxil	ok
-26ed1860124e3c43.dxil	spirv-reader unsupported
+26ed1860124e3c43.dxil	unsupported StorageFormatKind
 277e12b2f0fb2fa7.dxil	spirv-reader invalid
 28df654177b8f65a.dxil	ok
 2af882d6fd50d4ff.dxil	ok
@@ -100,7 +100,7 @@
 4633f955425fa0e6.dxil	ok
 464a81329e22ad59.dxil	ok
 46705dae4c3ecb65.dxil	ok
-46be5c555774d134.dxil	spirv-reader unsupported
+46be5c555774d134.dxil	unsupported TypedBufferFormatKind
 46cbd7ce995909d1.dxil	ok
 46f1e6ee9d81688e.dxil	ok-wgsl glsl-write
 471d776c732b966d.dxil	ok
@@ -154,7 +154,7 @@
 668cc56e38f7976a.dxil	unsupported MultisampledArrayTexture
 6701c373a2026488.dxil	ok
 685b1bd13a9db30c.dxil	ok
-693a4c4bfbecdba1.dxil	spirv-reader unsupported
+693a4c4bfbecdba1.dxil	ok-wgsl glsl-write
 6a3674588b532a90.dxil	ok
 6af942d4b95ee588.dxil	ok
 6e36319055c7f9e4.dxil	ok
@@ -186,7 +186,7 @@
 7db6ce348412e5b7.dxil	ok
 7e13c2d32fa803da.dxil	ok
 7f2a3e7fd1ae56c3.dxil	ok
-7f90d7ebb19b5d14.dxil	spirv-reader unsupported
+7f90d7ebb19b5d14.dxil	unsupported ConstantComponentIndexing
 7fbd955e876d9f01.dxil	ok-wgsl glsl-write
 802ec03830b6f5dc.dxil	ok
 80aa9bff211c2f81.dxil	ok
@@ -359,3 +359,72 @@ ff10302181e28fa2.dxil	ok-wgsl glsl-write
 ff82239c939e3cd9.dxil	ok
 ffa65a1fcae35ac8.dxil	ok-wgsl glsl-write
 ffe757fc29d2bab9.dxil	ok
+godot-compute-0082c1c4c671cc8e.dxil	ok-wgsl glsl-write
+godot-compute-01816306e145ade4.dxil	ok-wgsl glsl-write
+godot-compute-0518c1e84f3e0b23.dxil	ok-wgsl glsl-write
+godot-compute-0df9b11db39267fd.dxil	unsupported StorageFormatKind
+godot-compute-0eef579f44800343.dxil	ok-wgsl glsl-write
+godot-compute-185fdb52c4bd7874.dxil	ok-wgsl glsl-write
+godot-compute-1b99d1e8f71342c7.dxil	ok-wgsl glsl-write
+godot-compute-1e6666ec4a34655a.dxil	ok-wgsl glsl-write
+godot-compute-204f224c5cbf4656.dxil	ok-wgsl glsl-write
+godot-compute-210dd4eea238dc92.dxil	ok-wgsl glsl-write
+godot-compute-2198e562377632e0.dxil	spirv-reader unsupported
+godot-compute-28134d68c0086525.dxil	ok-wgsl glsl-write
+godot-compute-2920d3213f30d3f0.dxil	ok-wgsl glsl-write
+godot-compute-29d5e4260805dfa2.dxil	ok-wgsl glsl-write
+godot-compute-40fc3cc4f0e1637d.dxil	ok-wgsl glsl-write
+godot-compute-473c79557e001618.dxil	ok-wgsl glsl-write
+godot-compute-49451cfda1426c6d.dxil	ok-wgsl glsl-write
+godot-compute-576b670822c0d48b.dxil	ok-wgsl glsl-write
+godot-compute-5a0d6b7563eea260.dxil	ok-wgsl glsl-write
+godot-compute-5e07824a4ca1f57e.dxil	ok-wgsl glsl-write
+godot-compute-5e305787c38f97ab.dxil	unsupported StorageFormatKind
+godot-compute-6205533d7c5b01ef.dxil	ok-wgsl glsl-write
+godot-compute-64486778a66160db.dxil	ok-wgsl glsl-write
+godot-compute-69e6c6e5564b6bd2.dxil	ok-wgsl glsl-write
+godot-compute-6a87c9d74a12cf84.dxil	ok-wgsl glsl-write
+godot-compute-6b062b5823a3d10f.dxil	ok-wgsl glsl-write
+godot-compute-6f4fd1eda50abd4b.dxil	ok-wgsl glsl-write
+godot-compute-7002841a5274ea38.dxil	spirv-reader unsupported
+godot-compute-719f9c9048834d76.dxil	ok-wgsl glsl-write
+godot-compute-76b0d495b396c0bd.dxil	ok-wgsl glsl-write
+godot-compute-776eac4e2eb4fb62.dxil	unsupported StorageFormatKind
+godot-compute-84b318874709b503.dxil	ok-wgsl glsl-write
+godot-compute-861134a4d98b0b1b.dxil	spirv-reader unsupported
+godot-compute-88a0ad427a621385.dxil	ok-wgsl glsl-write
+godot-compute-89080d2fc83c7f7c.dxil	ok-wgsl glsl-write
+godot-compute-8ea2febf526f8e07.dxil	ok-wgsl glsl-write
+godot-compute-90e30aff61e4e4ef.dxil	ok-wgsl glsl-write
+godot-compute-94d32050e5721da7.dxil	ok-wgsl glsl-write
+godot-compute-9a33f112834c6a5a.dxil	ok-wgsl glsl-write
+godot-compute-9d644732befa3a5a.dxil	spirv-reader unsupported
+godot-compute-9ddbf8fb53080b38.dxil	ok-wgsl glsl-write
+godot-compute-9e4324cf0d8b5a41.dxil	ok-wgsl glsl-write
+godot-compute-9eff76780700078c.dxil	ok-wgsl glsl-write
+godot-compute-a96297a6c96a8a31.dxil	ok-wgsl glsl-write
+godot-compute-ad59882c76132cf8.dxil	ok-wgsl glsl-write
+godot-compute-b023856aa081c9ff.dxil	ok-wgsl glsl-write
+godot-compute-b2a26b181a2a4582.dxil	ok-wgsl glsl-write
+godot-compute-b999b50b1beeecf1.dxil	ok-wgsl glsl-write
+godot-compute-b9b62fafebbbb078.dxil	unsupported StorageFormatKind
+godot-compute-bbe957ff5b788e38.dxil	ok-wgsl glsl-write
+godot-compute-caccfcb1332efbab.dxil	ok-wgsl glsl-write
+godot-compute-cb3dc639abff6a77.dxil	ok-wgsl glsl-write
+godot-compute-cefcbf1a4c1feb3e.dxil	ok-wgsl glsl-write
+godot-compute-d4292ed9b7033dd2.dxil	ok-wgsl glsl-write
+godot-compute-d865cbafa745ea18.dxil	ok-wgsl glsl-write
+godot-compute-dd8af3db8f1b00ea.dxil	ok-wgsl glsl-write
+godot-compute-e062e39ff3b02aa7.dxil	ok-wgsl glsl-write
+godot-compute-e25669659a742bd9.dxil	ok-wgsl glsl-write
+godot-compute-e25802453ecf855f.dxil	ok-wgsl glsl-write
+godot-compute-e5584abf6cac9874.dxil	ok-wgsl glsl-write
+godot-compute-e632254d7b6d7950.dxil	ok-wgsl glsl-write
+godot-compute-e9979b34ae5da997.dxil	ok-wgsl glsl-write
+godot-compute-ef54067cd5606132.dxil	ok-wgsl glsl-write
+godot-compute-f1bbd623757d7a64.dxil	ok-wgsl glsl-write
+godot-compute-f8ba5aa849fe70e5.dxil	unsupported ResourceArray
+godot-compute-fcdd20873fda5f78.dxil	ok-wgsl glsl-write
+godot-fragment-2893de73bed23900.dxil	unsupported ResourceArray
+godot-fragment-f0e16912c4aaaddb.dxil	spirv-reader unsupported
+godot-vertex-ae47f85da0f11cca.dxil	ok-wgsl glsl-write
