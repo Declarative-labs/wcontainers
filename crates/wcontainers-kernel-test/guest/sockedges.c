@@ -379,6 +379,39 @@ static void unacted(void) {
     close(s);
 }
 
+// A local datagram socket that finds its peer gone, or connects to another, loses what it held;
+// a live peer connected back is told ECONNRESET.
+static void dgram_disconnects(void) {
+    int p[2];
+    socketpair(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK, 0, p);
+    send(p[0], "", 0, 0);
+    send(p[0], "ab", 2, 0);
+    close(p[0]);
+    result("send to the gone peer", send(p[1], "x", 1, MSG_DONTWAIT));
+    char buf[8];
+    result("receive after", recv(p[1], buf, sizeof buf, MSG_DONTWAIT));
+    result("send again", send(p[1], "x", 1, MSG_DONTWAIT));
+    int a = socket(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK, 0), b = socket(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK, 0),
+        c = socket(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK, 0);
+    struct sockaddr_un na = {AF_UNIX, "\0dga"}, nb = {AF_UNIX, "\0dgb"}, nc = {AF_UNIX, "\0dgc"};
+    socklen_t length = offsetof(struct sockaddr_un, sun_path) + 4;
+    bind(a, (void *)&na, length);
+    bind(b, (void *)&nb, length);
+    bind(c, (void *)&nc, length);
+    connect(a, (void *)&nb, length);
+    connect(b, (void *)&na, length);
+    send(b, "to a", 4, 0);
+    result("reconnect", connect(a, (void *)&nc, length));
+    result("a receives", recv(a, buf, sizeof buf, MSG_DONTWAIT));
+    int error = 0;
+    socklen_t size = sizeof error;
+    getsockopt(b, SOL_SOCKET, SO_ERROR, &error, &size);
+    printf("b's error %d\n", error);
+    close(a);
+    close(b);
+    close(c);
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     signal(SIGPIPE, SIG_IGN);
@@ -394,5 +427,6 @@ int main(int argc, char **argv) {
     udp_options();
     closed_with_unread();
     all_hosts();
+    dgram_disconnects();
     return 0;
 }

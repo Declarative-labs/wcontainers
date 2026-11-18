@@ -1024,10 +1024,41 @@ fn dgram_connect(
     if socket.borrow().may_pass_cred() && socket.borrow().name.is_none() {
         autobind(kernel, cx, socket)?;
     }
-    let mut own = socket.borrow_mut();
-    own.peer = Some(other);
-    own.state = State::Connected;
+    let old = socket.borrow_mut().peer.replace(other.clone());
+    socket.borrow_mut().state = State::Connected;
+    if let Some(old) = old
+        && !Rc::ptr_eq(&old, &other)
+    {
+        dgram_disconnected(kernel, cx, socket, &old);
+    }
     Ok(0)
+}
+
+/// `unix_dgram_disconnected`: a datagram socket no longer connected to `other` loses what it
+/// held, and if `other` lives and was connected back, `other` is told ECONNRESET.
+fn dgram_disconnected(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    socket: &SocketRef,
+    other: &SocketRef,
+) {
+    let queue = core::mem::take(&mut socket.borrow_mut().queue);
+    if queue.is_empty() {
+        return;
+    }
+    for packet in queue {
+        drop_packet(kernel, cx, packet);
+    }
+    kernel.wake(channel(socket));
+    let back = other
+        .borrow()
+        .peer
+        .as_ref()
+        .is_some_and(|back| Rc::ptr_eq(back, socket));
+    if !other.borrow().dead && back {
+        other.borrow_mut().error = Errno::ECONNRESET.0 as i32;
+        kernel.wake(channel(other));
+    }
 }
 
 pub(super) fn accept(
@@ -1802,11 +1833,20 @@ fn send_packet(
         },
     };
     if target.borrow().dead {
-        // A connected datagram socket whose peer went is disconnected.
-        if kind == SOCK_DGRAM && name.is_none() {
-            let mut own = socket.borrow_mut();
-            own.peer = None;
-            own.state = State::Closed;
+        // A datagram socket whose peer went is disconnected, by name or not, and what it held
+        // is lost.
+        let is_peer = socket
+            .borrow()
+            .peer
+            .as_ref()
+            .is_some_and(|peer| Rc::ptr_eq(peer, &target));
+        if kind == SOCK_DGRAM && is_peer {
+            {
+                let mut own = socket.borrow_mut();
+                own.peer = None;
+                own.state = State::Closed;
+            }
+            dgram_disconnected(kernel, cx, socket, &target);
             return Err(Errno::ECONNREFUSED);
         }
         return Err(if kind == SOCK_SEQPACKET {
