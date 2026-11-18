@@ -69,6 +69,27 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   too. Tested by tests/cache.rs `a_file_that_is_refused_is_a_slow_path` (every file cut in half: made again
   and warned; then a new compiler finds it on disk).
 
+## J2 run 3: the bars on the fixed tree (this Mac, Apple M5 Max; other tracks running)
+
+The code of every run below is f685bfdf's back end with 2dcdad96's test (later commits change only docs).
+- J2's bar (scratch j2/bar.sh): full 42 passed, 2 ignored, 129.9 s (load 30.9 to 70.5; j2/run3-full.log, at
+  7b3c359c); none 42 passed, 2 ignored, 218.6 s (load 70.5 to 92.1; run3-none.log, at 01ea3121); bounded 42
+  passed, 2 ignored, 140.6 s (load 92.1 to 54.5; run3-bounded.log, at 01ea3121). Ignored as in run 2:
+  align's exclusive load (the translator's known failure) and memfd's huge pages.
+- The back end's own tests on this Mac: 18 passed (load 54.5 to 60.2; j2run3/backend.log). On Linux (Docker,
+  linux/arm64, 7.0.14-linuxkit; scratch j2/linux/check.sh): 18 passed at 7b3c359c, the paged out page
+  "present 0, swapped 1" (load 32.0 to 93.2; j2/linux/linux-check-5.log); its target, registry and image
+  are deleted.
+- The stand-in: the whole kernel test crate without the feature, 540.1 s (load 60.2 to 69.0;
+  j2run3/verdicts.log, verdicts.txt): 193 passed, 1 failed, 5 ignored. Against run 2's verdict lines the
+  differences are the two new counterclock tests (ok) and `threads_match_reference_on_backend_root`, which
+  failed on the reference's side (its run gave "exec /wc/threads: no such file or directory", exit 255;
+  ours matched the usual output) and passes when run again alone (load 55.6 to 49.2;
+  j2run3/threads-rerun.log). The driver did not change in this run.
+- Not run again, since nothing they depend on changed: layer 1 (it uses the back end's memories and copies,
+  not the clock hook or the cache) and the system call and fork costs (the clock hook's added test is on
+  counter reads only, and the call and fork paths did not change).
+
 ## Findings of J2 run 1's check, and how each was settled (J2 run 2)
 
 - Fork copy not exact on Linux after the host process forked (blocking): `/proc/self/pagemap` was opened
