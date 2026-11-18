@@ -1904,11 +1904,6 @@ impl<B: Backend> Device<B> {
             .get(v.resource.0 as usize)
             .map(|r| &r.storage)
         {
-            Some(Storage::Buffer { .. }) if !rects.is_empty() => {
-                return Err(Error::NotImplemented(
-                    "clearing rectangles of a buffer's unordered access view",
-                ));
-            }
             Some(Storage::Buffer { buffer, .. }) => {
                 let buffer = buffer.clone();
                 let raw = v.flags & 1 != 0;
@@ -1927,14 +1922,35 @@ impl<B: Backend> Device<B> {
                     )?;
                     (u64::from(format.block().2), bytes)
                 };
-                let size = u64::from(v.count) * element;
-                if !size.is_multiple_of(pattern.len() as u64) {
+                if !element.is_multiple_of(pattern.len() as u64) {
                     return Err(Error::NotImplemented(
                         "clearing a structured buffer view whose stride is no multiple of 4",
                     ));
                 }
-                self.backend
-                    .clear_buffer(&buffer, v.first_element * element, size, &pattern);
+                // A buffer view is one row of its elements; each rectangle clears the elements
+                // from its left to its right edge where it covers that row.
+                let count = u64::from(v.count);
+                let ranges: Vec<(u64, u64)> = if rects.is_empty() {
+                    vec![(0, count)]
+                } else {
+                    rects
+                        .iter()
+                        .filter(|r| r[1] <= 0 && r[3] > 0)
+                        .map(|r| {
+                            let at = |x: i32| (x.max(0) as u64).min(count);
+                            (at(r[0]), at(r[2]))
+                        })
+                        .filter(|(l, r)| l < r)
+                        .collect()
+                };
+                for (left, right) in ranges {
+                    self.backend.clear_buffer(
+                        &buffer,
+                        (v.first_element + left) * element,
+                        (right - left) * element,
+                        &pattern,
+                    );
+                }
             }
             Some(Storage::Texture { texture, desc, .. }) => {
                 let (texture, desc) = (texture.clone(), *desc);
@@ -1950,9 +1966,14 @@ impl<B: Backend> Device<B> {
                 };
                 if !rects.is_empty() {
                     if desc.dimension == TextureDimension::D3 {
-                        return Err(Error::NotImplemented(
-                            "clearing rectangles of a 3D texture's unordered access view",
-                        ));
+                        return self.clear_volume_rects(
+                            &texture,
+                            &desc,
+                            format,
+                            v,
+                            ClearValue::Color(value),
+                            rects,
+                        );
                     }
                     let layers = layers.start..layers.end.min(desc.depth_or_layers);
                     let target = TargetView {
@@ -1985,6 +2006,96 @@ impl<B: Backend> Device<B> {
             None => return Err(Error::Invalid("clearing a view of no resource")),
         }
         Ok(())
+    }
+
+    /// Rectangles of a 3D texture's unordered access view, cleared in each of its depth slices: a
+    /// scratch texture of the level's size is cleared and its rectangles copied in.
+    fn clear_volume_rects(
+        &mut self,
+        texture: &B::Texture,
+        desc: &TextureDesc,
+        format: Format,
+        v: &crate::list::ResourceView,
+        value: ClearValue,
+        rects: &[Rect],
+    ) -> Result<(), Error> {
+        if format.linear() != desc.format.linear() {
+            return Err(Error::NotImplemented(
+                "clearing rectangles of a 3D texture's view in another format",
+            ));
+        }
+        let (width, height) = ((desc.width >> v.mip).max(1), (desc.height >> v.mip).max(1));
+        let depth = (desc.depth_or_layers >> v.mip).max(1);
+        let slices = v.first_layer.min(depth)..v.first_layer.saturating_add(v.layers).min(depth);
+        let clipped: Vec<ScissorRect> = rects
+            .iter()
+            .map(scissor)
+            .filter_map(|r| {
+                let (x, y) = (r.x.min(width), r.y.min(height));
+                let (w, h) = (
+                    (r.x + r.width).min(width) - x,
+                    (r.y + r.height).min(height) - y,
+                );
+                (w > 0 && h > 0).then_some(ScissorRect {
+                    x,
+                    y,
+                    width: w,
+                    height: h,
+                })
+            })
+            .collect();
+        if clipped.is_empty() || slices.is_empty() {
+            return Ok(());
+        }
+        let scratch_desc = TextureDesc {
+            dimension: TextureDimension::D2,
+            format,
+            width,
+            height,
+            depth_or_layers: 1,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER | TextureUsage::COPY_SRC,
+            cube: false,
+            reinterpret: false,
+        };
+        let scratch = self.backend.create_texture(&scratch_desc)?;
+        let result = self
+            .backend
+            .clear_texture(&scratch, &scratch_desc, format, 0..1, 0..1, value);
+        if result.is_ok() {
+            for r in &clipped {
+                for z in slices.clone() {
+                    self.backend.copy_texture(
+                        &TextureRegion {
+                            texture: &scratch,
+                            mip: 0,
+                            layer: 0,
+                            origin: Origin {
+                                x: r.x,
+                                y: r.y,
+                                z: 0,
+                            },
+                            stencil: false,
+                        },
+                        &TextureRegion {
+                            texture,
+                            mip: v.mip,
+                            layer: 0,
+                            origin: Origin { x: r.x, y: r.y, z },
+                            stencil: false,
+                        },
+                        Extent {
+                            width: r.width,
+                            height: r.height,
+                            depth_or_layers: 1,
+                        },
+                    );
+                }
+            }
+        }
+        self.backend.destroy(Object::Texture(scratch));
+        Ok(result?)
     }
 
     fn read_into(&mut self, id: ResourceId, offset: u64, size: u64) -> Result<(), Error> {
