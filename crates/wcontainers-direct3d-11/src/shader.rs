@@ -1,7 +1,9 @@
 //! DXBC handed to the device: its stage from the container, and its conversion through the shaders
 //! crate into the common form.
 
-use wcontainers_gpu::{DrawBaseSource, HelperValue, SourceStage, VariantKey};
+use wcontainers_gpu::{
+    DrawBaseSource, HelperSlot, HelperValue, SlotKind, SourceStage, VariantFlags, VariantKey,
+};
 use wcontainers_shaders::{ConvertError, Converted, Source};
 
 use crate::error::{Error, Result, not_implemented};
@@ -38,10 +40,69 @@ pub fn stage(bytecode: &[u8]) -> Result<SourceStage> {
     Err(bad)
 }
 
+/// What a draw asks of one stage's program beyond the plain conversion, from the state bound at the
+/// draw. The default is the plain program.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct StageVariant {
+    /// Sampler slots whose bound sampler has a level-of-detail bias (`LodBiasInShader`).
+    pub lod_bias: u16,
+    /// The targets' sample count, for a program that reads it; zero otherwise.
+    pub samples: u8,
+    /// The pixel program's second output feeds the blend.
+    pub dual_source: bool,
+    /// The vertex program reads the draw's bases from an indirect draw's arguments
+    /// (`DrawBaseFromArguments`).
+    pub from_arguments: bool,
+}
+
+impl StageVariant {
+    /// The shaders crate's key for this variant of a shader of `stage`.
+    pub fn key(self, stage: SourceStage) -> VariantKey {
+        let mut key = base_key(stage);
+        key.lod_bias = self.lod_bias;
+        key.samples = self.samples;
+        if self.dual_source {
+            key.flags |= VariantFlags::DUAL_SOURCE;
+        }
+        if self.from_arguments {
+            key.draw_base = DrawBaseSource::Arguments;
+        }
+        key
+    }
+}
+
+/// Where a converted program reads its helper constants: the block's size and each value's offset.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Helpers {
+    pub size: u32,
+    pub values: Vec<HelperSlot>,
+}
+
+impl Helpers {
+    pub fn of(c: &Converted) -> Self {
+        Helpers {
+            size: c.reflection.helper_size,
+            values: c.reflection.helpers.clone(),
+        }
+    }
+}
+
 /// Converts a shader of `expected` stage. Bytecode the converter refuses is invalid to Direct3D too;
-/// what it cannot convert yet is not implemented.
-pub fn convert(bytecode: &[u8], expected: SourceStage) -> Result<Converted> {
-    convert_variant(bytecode, expected, &base_key(expected))
+/// what it cannot convert yet is not implemented. The flag says the program reads the targets'
+/// sample count, which it is converted with at each draw; here it is converted for one sample, so its
+/// reflection is known.
+pub fn convert(bytecode: &[u8], expected: SourceStage) -> Result<(Converted, bool)> {
+    match raw(bytecode, expected, &base_key(expected))? {
+        Err(ConvertError::Unsupported("SampleCount")) => {
+            let key = StageVariant {
+                samples: 1,
+                ..StageVariant::default()
+            }
+            .key(expected);
+            Ok((answer(raw(bytecode, expected, &key)?)?, true))
+        }
+        r => Ok((answer(r)?, false)),
+    }
 }
 
 /// The variant every shader of `stage` is converted as: vertex shaders read the draw's bases from
@@ -57,28 +118,59 @@ pub fn base_key(stage: SourceStage) -> VariantKey {
     }
 }
 
+/// The sampler slots a converted program reads, one bit each.
+pub fn sampler_slots(c: &Converted) -> u16 {
+    c.reflection
+        .bindings
+        .iter()
+        .filter(|b| b.kind == SlotKind::Sampler && b.added.is_none() && b.register < 16)
+        .fold(0, |m, b| m | (1 << b.register))
+}
+
 /// Converts a shader of `expected` stage as the variant `key` asks.
 pub fn convert_variant(
     bytecode: &[u8],
     expected: SourceStage,
     key: &VariantKey,
 ) -> Result<Converted> {
+    answer(raw(bytecode, expected, key)?)
+}
+
+/// The converter's own answer for bytecode of `expected` stage.
+fn raw(
+    bytecode: &[u8],
+    expected: SourceStage,
+    key: &VariantKey,
+) -> Result<core::result::Result<Converted, ConvertError>> {
     if stage(bytecode)? != expected {
         return Err(Error::InvalidArg(
             "the bytecode is a shader of another stage",
         ));
     }
-    match wcontainers_shaders::convert(Source::Dxbc(bytecode), key, None) {
+    Ok(wcontainers_shaders::convert(
+        Source::Dxbc(bytecode),
+        key,
+        None,
+    ))
+}
+
+/// The converter's answer in Direct3D's terms.
+fn answer(r: core::result::Result<Converted, ConvertError>) -> Result<Converted> {
+    match r {
         Ok(c) if c.modules.len() != 1 => {
             not_implemented("shaders converted into several program stages")
         }
         Ok(c)
-            if c.reflection
-                .helpers
-                .iter()
-                .any(|h| h.value != HelperValue::DrawBase) =>
+            if c.reflection.helpers.iter().any(|h| {
+                !matches!(
+                    h.value,
+                    HelperValue::DrawBase
+                        | HelperValue::DrawArguments
+                        | HelperValue::LodBias { .. }
+                )
+            }) =>
         {
-            not_implemented("shaders that read helper constants other than the draw's bases")
+            not_implemented("shaders that read helper constants the front does not write")
         }
         Ok(c) => Ok(c),
         Err(ConvertError::Rejected(why)) => {

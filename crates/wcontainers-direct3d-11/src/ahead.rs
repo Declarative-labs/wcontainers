@@ -274,7 +274,8 @@ impl<B: Backend> Device<B> {
             return;
         }
         // A pair the back end cannot build is left to its first draw, which reports it.
-        let Ok(program) = self.program(&vs, Some(&ps)) else {
+        let plain = crate::shader::StageVariant::default();
+        let Ok((program, _)) = self.program(&vs, plain, Some(&ps), plain) else {
             return;
         };
         for t in picked {

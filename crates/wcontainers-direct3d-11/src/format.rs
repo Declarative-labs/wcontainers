@@ -96,6 +96,19 @@ pub fn view_format(view: u32, texture: u32, storage: Format) -> Result<(Format, 
     }
 }
 
+/// The sRGB format of a linear one, or the linear one of an sRGB one, where the pair exists.
+pub fn srgb_twin(dxgi: u32) -> Option<u32> {
+    match dxgi {
+        28 => Some(29),
+        29 => Some(28),
+        87 => Some(91),
+        91 => Some(87),
+        88 => Some(93),
+        93 => Some(88),
+        _ => None,
+    }
+}
+
 /// Whether `dxgi` is the typeless format heading a group.
 pub fn is_typeless(dxgi: u32) -> bool {
     matches!(

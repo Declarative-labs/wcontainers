@@ -19,11 +19,31 @@ use crate::desc::*;
 use crate::error::{Error, Result, not_implemented};
 use crate::format;
 use crate::object::*;
-use crate::shader;
+use crate::shader::{self, Helpers, StageVariant};
 
-/// Helper constants written into the back end's data ring: what they hold (base vertex, first
-/// instance, block size, offset of the bases) and the set binding them.
-pub(crate) type HelperBlock<B> = ([u32; 4], Kept<B, <B as Backend>::BindingSet>);
+/// The helper constants of both draw stages as written into the back end's data ring, the indirect
+/// arguments buffer bound beside them (by id, 0 for none), and the set binding them.
+pub(crate) struct HelperBlocks<B: Backend> {
+    pub blocks: [Vec<u8>; 2],
+    pub arguments: u64,
+    pub set: Kept<B, B::BindingSet>,
+}
+
+/// A program's key: its vertex (or compute) shader's id and variant, and its pixel shader's id
+/// (0 for none) and variant.
+pub(crate) type ProgramKey = (u64, StageVariant, u64, StageVariant);
+
+/// A linked program and where its two stages read their helper constants.
+pub(crate) struct Linked<B: Backend> {
+    pub program: Kept<B, B::Program>,
+    pub helpers: [Rc<Helpers>; 2],
+}
+
+/// A shader converted again as a variant, and where it reads its helper constants.
+pub(crate) struct Variant<B: Backend> {
+    pub shader: Kept<B, B::Shader>,
+    pub helpers: Rc<Helpers>,
+}
 
 /// A Direct3D 11 device and its immediate context on back end `B`.
 pub struct Device<B: Backend> {
@@ -34,19 +54,23 @@ pub struct Device<B: Backend> {
     pub(crate) defaults: Defaults<B>,
     pub(crate) ctx: ContextState<B>,
     pub(crate) queries: crate::query::Queries<B>,
-    /// Programs by (vertex shader, pixel shader) id.
-    pub(crate) programs: HashMap<(u64, u64), Kept<B, B::Program>>,
-    /// The vertex shaders converted for one pixel shader's interpolation, by the program's ids.
-    pub(crate) interpolated: HashMap<(u64, u64), Kept<B, B::Shader>>,
-    /// Counting programs of counted occlusion queries, by the program's ids.
-    pub(crate) counting: HashMap<(u64, u64), Kept<B, B::Program>>,
+    /// Programs by their shaders' ids and variants (a compute program by its shader's id and 0).
+    pub(crate) programs: HashMap<ProgramKey, Linked<B>>,
+    /// Vertex shaders converted for one pixel shader's interpolation or for a variant, by the vertex
+    /// shader's id and variant and the pixel shader's id.
+    pub(crate) interpolated: HashMap<(u64, StageVariant, u64), Variant<B>>,
+    /// Pixel shaders converted for a variant, by id.
+    pub(crate) variants: HashMap<(u64, StageVariant), Variant<B>>,
+    /// Counting programs of counted occlusion queries, by the vertex shader's id and variant and the
+    /// pixel shader's id.
+    pub(crate) counting: HashMap<(u64, StageVariant, u64), Kept<B, B::Program>>,
     /// Exact counts of counted occlusion queries, and the targets their draws drew on (the pass
     /// tracker holds them for the counter; the front opens and ends its own passes).
     pub(crate) counter: wcontainers_gpu::OcclusionCounter<B>,
     pub(crate) passes: wcontainers_gpu::PassTracker<B>,
-    /// The vertex stage's helper constants as last written. The front is the only writer of the
-    /// back end's data ring, so the block stays as written until the front's next write.
-    pub(crate) draw_base: Option<HelperBlock<B>>,
+    /// The helper constants as last written. The front is the only writer of the back end's data
+    /// ring, so the blocks stay as written until the front's next write.
+    pub(crate) helper_blocks: Option<HelperBlocks<B>>,
     /// Combinations drawn and built ahead.
     pub(crate) ahead: crate::ahead::Ahead<B>,
     /// Vertex layout blocks by (input layout id, stride of each slot it reads).
@@ -177,10 +201,11 @@ impl<B: Backend> Device<B> {
             queries: crate::query::Queries::new(),
             programs: HashMap::new(),
             interpolated: HashMap::new(),
+            variants: HashMap::new(),
             counting: HashMap::new(),
             counter: Default::default(),
             passes: Default::default(),
-            draw_base: None,
+            helper_blocks: None,
             ahead: crate::ahead::Ahead::new(),
             layouts: HashMap::new(),
             vertex_inputs: HashMap::new(),
@@ -471,11 +496,12 @@ impl<B: Backend> Device<B> {
             self.backend.destroy(object);
         }
         self.programs
-            .retain(|(v, p), _| !ids.contains(v) && !ids.contains(p));
+            .retain(|k, _| !ids.contains(&k.0) && !ids.contains(&k.2));
         self.interpolated
-            .retain(|(v, p), _| !ids.contains(v) && !ids.contains(p));
+            .retain(|(v, _, p), _| !ids.contains(v) && !ids.contains(p));
+        self.variants.retain(|(p, _), _| !ids.contains(p));
         self.counting
-            .retain(|(v, p), _| !ids.contains(v) && !ids.contains(p));
+            .retain(|(v, _, p), _| !ids.contains(v) && !ids.contains(p));
         self.layouts.retain(|(l, _), _| !ids.contains(l));
         self.bury_built();
     }
@@ -761,6 +787,7 @@ impl<B: Backend> Device<B> {
             gpu: Kept::new(gpu, id, Object::Texture, &self.graveyard),
             staged: RefCell::new(Vec::new()),
             shadow: RefCell::new(Vec::new()),
+            chain: false,
         };
         for (i, data) in init.iter().take(subresources).enumerate() {
             let (region, extent) = texture
@@ -970,7 +997,12 @@ impl<B: Backend> Device<B> {
         {
             return Err(Error::InvalidArg("the view reaches past the resource"));
         }
-        let (format, stencil) = format::view_format(v.format, t.format, texture.format)?;
+        let (format, stencil) = match format::srgb_twin(t.format) {
+            Some(twin) if texture.chain && kind == bind::RENDER_TARGET && v.format == twin => {
+                (format::texture_format_of(twin)?, false)
+            }
+            _ => format::view_format(v.format, t.format, texture.format)?,
+        };
         // Depth-stencil views take the D formats and only they; the others read depth through
         // their own members of the group (R24_UNORM_X8_TYPELESS and the like).
         if (kind == bind::DEPTH_STENCIL) != matches!(v.format, 20 | 40 | 45 | 55) {
@@ -1197,9 +1229,6 @@ impl<B: Backend> Device<B> {
         if anisotropic && d.max_anisotropy > 16 {
             return Err(Error::InvalidArg("anisotropy above 16"));
         }
-        if d.mip_lod_bias != 0.0 {
-            return not_implemented("a level-of-detail bias (LodBiasInShader)");
-        }
         let mut address = [AddressMode::Repeat; 3];
         for (a, &mode) in address.iter_mut().zip(&d.address) {
             *a = match mode {
@@ -1244,9 +1273,11 @@ impl<B: Backend> Device<B> {
                 filter(0x1)
             },
             address,
+            // WebGPU takes no minimum above the maximum: such a range holds every level at the
+            // minimum.
             lod_range: [
                 d.min_lod.max(0.0).to_bits(),
-                d.max_lod.clamp(0.0, 32.0).to_bits(),
+                d.max_lod.clamp(0.0, 32.0).max(d.min_lod.max(0.0)).to_bits(),
             ],
             anisotropy: if anisotropic {
                 d.max_anisotropy.max(1) as u16
@@ -1351,7 +1382,9 @@ impl<B: Backend> Device<B> {
         bytecode: &[u8],
         stage: wcontainers_gpu::SourceStage,
     ) -> Result<Rc<Shader<B>>> {
-        let mut converted = shader::convert(bytecode, stage)?;
+        let (mut converted, reads_samples) = shader::convert(bytecode, stage)?;
+        let samplers = shader::sampler_slots(&converted);
+        let helpers = Rc::new(shader::Helpers::of(&converted));
         let module = converted.modules.pop().expect("one module");
         self.live()?;
         self.bury();
@@ -1372,14 +1405,10 @@ impl<B: Backend> Device<B> {
             reflection: converted.reflection,
             constant_sizes,
             stand_ins,
-            bytecode: if matches!(
-                stage,
-                wcontainers_gpu::SourceStage::Vertex | wcontainers_gpu::SourceStage::Pixel
-            ) {
-                bytecode.to_vec()
-            } else {
-                Vec::new()
-            },
+            bytecode: bytecode.to_vec(),
+            samplers,
+            reads_samples,
+            helpers,
         });
         if matches!(
             stage,
@@ -1405,6 +1434,7 @@ impl<B: Backend> Device<B> {
             Some(inputs) => inputs.clone(),
             None => {
                 let inputs = shader::convert(vs_bytecode, wcontainers_gpu::SourceStage::Vertex)?
+                    .0
                     .reflection
                     .inputs;
                 self.vertex_inputs.insert(key, inputs.clone());
@@ -1491,7 +1521,8 @@ pub(crate) fn gpu_buffer(d: &BufferDesc, size: u64) -> GpuBuffer {
         }
     }
     if d.misc_flags & MISC_DRAWINDIRECT_ARGS != 0 {
-        usage |= BufferUsage::INDIRECT;
+        // Read as storage by vertex programs that take the draw's bases from the arguments.
+        usage |= BufferUsage::INDIRECT | BufferUsage::STORAGE;
     }
     if d.usage == usage::STAGING {
         usage |= BufferUsage::READ_BACK;

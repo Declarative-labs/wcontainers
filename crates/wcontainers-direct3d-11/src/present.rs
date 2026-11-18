@@ -100,6 +100,7 @@ impl<B: Backend> Device<B> {
                 gpu: Kept::borrowed(texture.clone(), id, &self.graveyard),
                 shadow: RefCell::new(Vec::new()),
                 staged: RefCell::new(Vec::new()),
+                chain: true,
             }));
             index += 1;
         }
