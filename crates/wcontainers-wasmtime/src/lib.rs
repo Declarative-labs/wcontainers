@@ -53,6 +53,15 @@ pub mod reason {
     pub const LEFT_NEW_REGISTERS: &str = "left run: new registers";
     pub const LEFT_FINISHED: &str = "left run: the container finished";
     pub const LEFT_OUTSIDE_ASKED: &str = "left run: the outside asked";
+    /// A translation could not be written to the cache's directory; the detail is the host's error
+    /// number (`u64::MAX` when it gave none).
+    pub const TRANSLATION_NOT_KEPT: &str = "translation not kept in the cache's directory";
+    /// A file of the cache's directory could not be read whole or wasmtime refused it, so its
+    /// translation is made again; the detail is the host's error number (`u64::MAX` when it gave none).
+    pub const TRANSLATION_REFUSED: &str = "translation in the cache's directory refused";
+    /// The guest read the counter on a back end brought back from a save, whose clock hook answers the
+    /// outside's monotonic clock without the kernel's offset until the kernel makes its clock public.
+    pub const COUNTER_WITHOUT_KERNEL_OFFSET: &str = "counter read without the kernel's offset";
     /// The detail of a leave after an exit that is not a system call.
     pub const NOT_A_CALL: u64 = u64::MAX;
 }
@@ -171,9 +180,23 @@ impl<G: Guest> Compiler<G> {
         directory.join(hasher.finalize().to_hex().as_str())
     }
 
-    /// A translation from the cache's directory; none when it is not there or wasmtime refuses it.
-    fn load(&self, file: &Path) -> Option<Compiled> {
-        let bytes = std::fs::read(file).ok()?;
+    /// A translation from the cache's directory: none when the file is not there, and the host's
+    /// error number (`u64::MAX` when it gave none) when it cannot be read or is refused.
+    fn load(&self, file: &Path) -> Option<Result<Compiled, u64>> {
+        let bytes = match std::fs::read(file) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(error) => {
+                return Some(Err(error
+                    .raw_os_error()
+                    .map_or(u64::MAX, |number| number as u64)));
+            }
+        };
+        Some(Self::parse(&self.engine, &bytes).ok_or(u64::MAX))
+    }
+
+    /// A translation from a file's bytes; none when they are not whole or wasmtime refuses them.
+    fn parse(engine: &Engine, bytes: &[u8]) -> Option<Compiled> {
         let mut rest = bytes.strip_prefix(CACHE_MAGIC)?;
         let mut take = |length: usize| -> Option<&[u8]> {
             let (taken, after) = rest.split_at_checked(length)?;
@@ -194,7 +217,7 @@ impl<G: Guest> Compiler<G> {
             let length = usize::try_from(word(take(8)?)).ok()?;
             // SAFETY: the file was written by `store` from wasmtime's own serialisation, and
             // wasmtime checks it was made by a compatible engine and build.
-            let module = unsafe { Module::deserialize(&self.engine, take(length)?) }.ok()?;
+            let module = unsafe { Module::deserialize(engine, take(length)?) }.ok()?;
             modules.push(module);
             pieces.push(list);
         }
@@ -230,7 +253,7 @@ impl<G: Guest> Compiler<G> {
     }
 
     /// The compiled translation of a blob from its starts, from the cache or made now, where it came
-    /// from, and why it could not be kept in the cache's directory when it could not.
+    /// from, and the slow paths of the cache's directory it took.
     fn compiled(
         &self,
         bytes: &[u8],
@@ -239,7 +262,7 @@ impl<G: Guest> Compiler<G> {
         look_ahead: LookAhead,
         optimise: Optimise,
         offer: G::Offer,
-    ) -> (Arc<Compiled>, Origin, Option<NotKept>) {
+    ) -> (Arc<Compiled>, Origin, Vec<CacheSlowPath>) {
         starts.sort_unstable();
         starts.dedup();
         let key = Key {
@@ -250,18 +273,27 @@ impl<G: Guest> Compiler<G> {
             offer: G::offer_key(offer),
         };
         if let Some(compiled) = self.modules.lock().expect("the cache").get(&key) {
-            return (compiled.clone(), Origin::Memory, None);
+            return (compiled.clone(), Origin::Memory, Vec::new());
         }
         let file = self.directory.as_deref().map(|d| self.file(d, &key));
+        let mut slow = Vec::new();
         let started = Instant::now();
-        if let Some(compiled) = file.as_deref().and_then(|file| self.load(file)) {
-            let compiled = Arc::new(compiled);
-            let nanoseconds = started.elapsed().as_nanos() as u64;
-            self.modules
-                .lock()
-                .expect("the cache")
-                .insert(key, compiled.clone());
-            return (compiled, Origin::Disk(nanoseconds), None);
+        match file.as_deref().and_then(|file| self.load(file)) {
+            Some(Ok(compiled)) => {
+                let compiled = Arc::new(compiled);
+                let nanoseconds = started.elapsed().as_nanos() as u64;
+                self.modules
+                    .lock()
+                    .expect("the cache")
+                    .insert(key, compiled.clone());
+                return (compiled, Origin::Disk(nanoseconds), slow);
+            }
+            Some(Err(error)) => slow.push(CacheSlowPath {
+                reason: reason::TRANSLATION_REFUSED,
+                detail: error,
+                nanoseconds: started.elapsed().as_nanos() as u64,
+            }),
+            None => {}
         }
         let started = Instant::now();
         let length = bytes.len() as u64;
@@ -302,16 +334,18 @@ impl<G: Guest> Compiler<G> {
             count: pieces.iter().map(|p| p.len() as u32).sum(),
             pieces,
         });
-        let not_kept = file.as_deref().and_then(|file| {
+        if let Some(file) = file.as_deref() {
             let started = Instant::now();
-            let error = self.store(file, &compiled).err()?;
-            Some(NotKept {
-                error: error
-                    .raw_os_error()
-                    .map_or(u64::MAX, |number| number as u64),
-                nanoseconds: started.elapsed().as_nanos() as u64,
-            })
-        });
+            if let Err(error) = self.store(file, &compiled) {
+                slow.push(CacheSlowPath {
+                    reason: reason::TRANSLATION_NOT_KEPT,
+                    detail: error
+                        .raw_os_error()
+                        .map_or(u64::MAX, |number| number as u64),
+                    nanoseconds: started.elapsed().as_nanos() as u64,
+                });
+            }
+        }
         self.modules
             .lock()
             .expect("the cache")
@@ -320,14 +354,15 @@ impl<G: Guest> Compiler<G> {
             translating: translated,
             compiling: compiled_in,
         };
-        (compiled, origin, not_kept)
+        (compiled, origin, slow)
     }
 }
 
-/// A translation the cache's directory could not take: the host's error number (`u64::MAX` when it
-/// gave none) and the time spent trying.
-struct NotKept {
-    error: u64,
+/// A slow path the cache's directory took, for the back end to count: why, its detail and the time
+/// it cost. The run goes on either way.
+struct CacheSlowPath {
+    reason: &'static str,
+    detail: u64,
     nanoseconds: u64,
 }
 
@@ -376,6 +411,8 @@ pub struct CpuSide<G: Guest> {
     /// Warnings made while no thread ran, given to the outside at the next run.
     unsent: Vec<Warning<'static>>,
     translated: Vec<Translated>,
+    /// Brought back from a save: the clock hook's answers lack the kernel's offset.
+    restored: bool,
 }
 
 struct Running {
@@ -623,6 +660,7 @@ where
             warned: HashSet::new(),
             unsent: Vec::new(),
             translated: Vec::new(),
+            restored: false,
         }
     }
 
@@ -869,7 +907,7 @@ where
         sources: Option<Sources>,
     ) -> Arc<Compiled> {
         let count = starts.len();
-        let (compiled, origin, not_kept) = self.compiler.compiled(
+        let (compiled, origin, slow) = self.compiler.compiled(
             &code.bytes,
             code.hash,
             starts,
@@ -887,13 +925,8 @@ where
             pieces: compiled.count,
             origin,
         });
-        if let Some(not_kept) = not_kept {
-            // The run goes on; a later one translates the same code again.
-            self.slow_path(
-                "translation not kept in the cache's directory",
-                not_kept.error,
-                not_kept.nanoseconds,
-            );
+        for slow in slow {
+            self.slow_path(slow.reason, slow.detail, slow.nanoseconds);
         }
         compiled
     }
@@ -1767,6 +1800,11 @@ where
         let func = match hook.body {
             HookBody::Clock => Func::wrap(&mut *store, |mut caller: Caller<'_, Data<G>>| -> i64 {
                 let progress = caller.data_mut().report();
+                let side = side(&caller);
+                if side.restored {
+                    side.slow_path(reason::COUNTER_WITHOUT_KERNEL_OFFSET, 0, 0);
+                    side.send_warnings(caller.data().answer.expect("a run"));
+                }
                 answer(&caller).clock(progress) as i64
             }),
             HookBody::CodeChanged => Func::wrap(
@@ -1990,6 +2028,7 @@ where
         side.counters.clone_from(&self.counters);
         side.warned.clone_from(&self.warned);
         side.translated.clone_from(&self.translated);
+        side.restored = true;
         for (&id, source) in &self.processes {
             let mut process = side
                 .new_process(id)

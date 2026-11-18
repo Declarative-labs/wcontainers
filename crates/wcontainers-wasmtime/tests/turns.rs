@@ -1,5 +1,6 @@
-//! A counted turn ends after its progress however often the guest reads the clock, and leaving `run`
-//! from a hook is counted by why.
+//! A counted turn ends after its progress however often the guest reads the clock, leaving `run`
+//! from a hook is counted by why, and a counter read on a back end brought back from a save is a
+//! counted slow path.
 
 use wcontainers_abi::{Cpu, Exit, Permissions, RegisterBlock, Resume, Warning};
 use wcontainers_arm64::Arm64;
@@ -40,7 +41,9 @@ impl Answer for Recorder {
     }
 }
 
-fn spin(look_ahead: LookAhead) {
+/// Runs the spin for one counted turn, on a back end brought back from a save when `restored`; the
+/// back end's warnings.
+fn spin(look_ahead: LookAhead, restored: bool) -> Vec<(String, u64)> {
     let mut cpu = CpuSide::<Arm64>::new(Compiler::new(None), look_ahead, Optimise::Speed, ());
     let memory = cpu.memory_new().unwrap();
     let code: Vec<u8> = SPIN.iter().flat_map(|w| w.to_le_bytes()).collect();
@@ -54,6 +57,9 @@ fn spin(look_ahead: LookAhead) {
     cpu.registers(thread, &mut registers);
     registers.pc = CODE;
     cpu.set_registers(thread, &registers);
+    if restored {
+        cpu = cpu.restored();
+    }
 
     let mut recorder = Recorder::default();
     let turn = Turn { limit: Some(LIMIT) };
@@ -77,14 +83,27 @@ fn spin(look_ahead: LookAhead) {
         "{:?}",
         recorder.warnings
     );
+    recorder.warnings
+}
+
+fn without_offset(warnings: &[(String, u64)]) -> bool {
+    warnings
+        .iter()
+        .any(|(reason, _)| reason == reason::COUNTER_WITHOUT_KERNEL_OFFSET)
 }
 
 #[test]
 fn clock_reads_do_not_hold_a_counted_turn_full() {
-    spin(LookAhead::Full);
+    assert!(!without_offset(&spin(LookAhead::Full, false)));
 }
 
 #[test]
 fn clock_reads_do_not_hold_a_counted_turn_none() {
-    spin(LookAhead::None);
+    assert!(!without_offset(&spin(LookAhead::None, false)));
+}
+
+#[test]
+fn counter_reads_after_a_restore_are_warned() {
+    let warnings = spin(LookAhead::Full, true);
+    assert!(without_offset(&warnings), "{warnings:?}");
 }

@@ -5,7 +5,7 @@ use wcontainers_abi::{
 };
 use wcontainers_arm64::Arm64;
 use wcontainers_runtime::{Answer, Carry, Execution, Leaving, Turn};
-use wcontainers_wasmtime::{Compiler, CpuSide, LookAhead, Optimise, Origin};
+use wcontainers_wasmtime::{Compiler, CpuSide, LookAhead, Optimise, Origin, reason};
 use zerocopy::FromZeros;
 
 const CODE: u64 = 0x10000;
@@ -97,10 +97,36 @@ fn a_directory_that_cannot_be_written_is_a_slow_path() {
     assert_eq!(value, 12);
     assert!(matches!(origin, Origin::Made { .. }), "{origin:?}");
     assert!(
-        warnings
-            .iter()
-            .any(|w| w == "translation not kept in the cache's directory"),
+        warnings.iter().any(|w| w == reason::TRANSLATION_NOT_KEPT),
         "{warnings:?}"
     );
     std::fs::remove_file(&file).unwrap();
+}
+
+/// A file in the cache's directory that is not whole is refused, counted and warned; the translation
+/// is made again and kept in its place.
+#[test]
+fn a_file_that_is_refused_is_a_slow_path() {
+    let directory = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("cache-test-refused");
+    let _ = std::fs::remove_dir_all(&directory);
+    let (_, origin, warnings) = run_warned(Compiler::new(Some(directory.clone())), LookAhead::Full);
+    assert!(matches!(origin, Origin::Made { .. }), "{origin:?}");
+    assert!(!warnings.iter().any(|w| w == reason::TRANSLATION_REFUSED));
+    for entry in std::fs::read_dir(&directory).unwrap() {
+        let path = entry.unwrap().path();
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
+    }
+    let (value, origin, warnings) =
+        run_warned(Compiler::new(Some(directory.clone())), LookAhead::Full);
+    assert_eq!(value, 12);
+    assert!(matches!(origin, Origin::Made { .. }), "{origin:?}");
+    assert!(
+        warnings.iter().any(|w| w == reason::TRANSLATION_REFUSED),
+        "{warnings:?}"
+    );
+    let (value, origin) = run(Compiler::new(Some(directory.clone())), LookAhead::Full);
+    assert_eq!(value, 12);
+    assert!(matches!(origin, Origin::Disk(_)), "{origin:?}");
+    std::fs::remove_dir_all(&directory).unwrap();
 }
