@@ -62,7 +62,9 @@ The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three laye
   (no ledger line). Restarted again 2026-11-16 22:59 on 445e3cf (the layer 2 generator fix), same command;
   it was stopped 2026-11-17 20:34 after layer 3 chunk 55 was stopped at the limit (failure 3 below).
   Restarted 21:21 on de8f4a2 with `WC_LONG_LIMIT=180` added (a chunk may take 3 hours); chunk 55 runs again
-  first. That run (driver pid 84798 at the time of writing) is the one going now. Use `WC_LONG_ACCEPT=c38b4ad
+  first. Stopped 2026-11-18 01:27 with chunk 57 hung (failure 4 below) and restarted 01:29 on 7ec7920 (the
+  run's own zig cache), same command; that run (driver pid 7047 at the time of writing) is the one going
+  now. Use `WC_LONG_ACCEPT=c38b4ad
   WC_LONG_LIMIT=180` on any later restart too. Each restart appends to `driver.log`; the code it runs is the copy in
   `trees/<commit>`, so commits in the checkout do not reach it until it is restarted.
 - Layer 3's progress in programs compared: `awk -F'\t' '$1=="layer=3" && $10=="result=pass" {split($4,c,"=");
