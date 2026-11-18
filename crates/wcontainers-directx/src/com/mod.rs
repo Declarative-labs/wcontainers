@@ -9,6 +9,7 @@ mod convert;
 pub mod counted;
 mod d3d10;
 mod device;
+mod device10;
 mod dxgi;
 mod factory;
 mod generated;

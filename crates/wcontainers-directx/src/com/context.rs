@@ -97,6 +97,10 @@ pub struct Context {
     /// What is bound, as the program's objects, for the `Get` methods; holding a library reference
     /// on each, as Direct3D's context does.
     bound: RefCell<Bound>,
+    /// The default state, which the getters of the API whose behaviour is not active read.
+    empty: RefCell<Bound>,
+    /// Whether the call running came through Direct3D 10's device.
+    pub(super) calling10: Cell<bool>,
     /// The immediate context's state object, once the program swaps one in; a library reference,
     /// as Direct3D's context holds none of the program's on it.
     state: RefCell<Option<Held<DeviceContextState_Impl>>>,
@@ -109,15 +113,18 @@ pub struct Context {
 /// in the immediate context.
 pub struct DeviceContextState {
     bound: Locked<RefCell<Bound>>,
+    /// Whether it emulates Direct3D 10's device (made for `ID3D10Device` or `ID3D10Device1`).
+    emulates10: bool,
     pub(super) child: Child,
 }
 
 super::counted::counted!(DeviceContextState => DeviceContextState_Impl { main: ID3DDeviceContextState, ID3DDeviceContextState_Vtbl });
 
 impl DeviceContextState {
-    pub fn new(device: ID3D11Device) -> Self {
+    pub fn new(device: ID3D11Device, emulates10: bool) -> Self {
         DeviceContextState {
             bound: Locked::new(RefCell::new(Bound::default())),
+            emulates10,
             child: Child::new(device),
         }
     }
@@ -133,6 +140,8 @@ struct Bound {
     ds: Option<Held<DomainShader_Impl>>,
     /// The stream output targets.
     so_targets: [Option<Held<Buffer_Impl>>; 4],
+    /// The offsets the stream output targets were bound at, as given (Direct3D 10 hands them back).
+    so_offsets: [u32; 4],
     /// Per stage (vertex, pixel, compute, geometry, hull, domain), per slot.
     constant_buffers: [Vec<Option<Held<Buffer_Impl>>>; 6],
     /// Per stage and slot, the constants bound (first, count); none for the whole buffer.
@@ -165,6 +174,7 @@ impl Default for Bound {
             hs: None,
             ds: None,
             so_targets: Default::default(),
+            so_offsets: [0; 4],
             constant_buffers: Default::default(),
             constant_ranges: Default::default(),
             resources: Default::default(),
@@ -236,6 +246,8 @@ impl Context {
             recorded: None,
             staged: RefCell::new(HashMap::new()),
             bound: RefCell::new(Bound::default()),
+            empty: RefCell::new(Bound::default()),
+            calling10: Cell::new(false),
             state: RefCell::new(None),
             entered: Cell::new(0),
             protected: Cell::new(false),
@@ -412,7 +424,7 @@ impl Context {
         count: *mut u32,
     ) {
         no_instances(count);
-        let _ = out.write(public(&self.bound.borrow().gs));
+        let _ = out.write(public(&self.seen().gs));
     }
 
     pub(super) fn gs_set_shader_resources(
@@ -430,7 +442,7 @@ impl Context {
         n: u32,
         out: *mut Option<ID3D11ShaderResourceView>,
     ) {
-        load(&self.bound.borrow().resources[GEOMETRY], start, n, out);
+        load(&self.seen().resources[GEOMETRY], start, n, out);
     }
 
     pub(super) fn hs_set_shader(
@@ -455,7 +467,7 @@ impl Context {
         count: *mut u32,
     ) {
         no_instances(count);
-        let _ = out.write(public(&self.bound.borrow().hs));
+        let _ = out.write(public(&self.seen().hs));
     }
 
     pub(super) fn ds_set_shader(
@@ -480,7 +492,7 @@ impl Context {
         count: *mut u32,
     ) {
         no_instances(count);
-        let _ = out.write(public(&self.bound.borrow().ds));
+        let _ = out.write(public(&self.seen().ds));
     }
 
     pub(super) fn hs_set_shader_resources(
@@ -498,7 +510,7 @@ impl Context {
         n: u32,
         out: *mut Option<ID3D11ShaderResourceView>,
     ) {
-        load(&self.bound.borrow().resources[HULL], start, n, out);
+        load(&self.seen().resources[HULL], start, n, out);
     }
 
     pub(super) fn ds_set_shader_resources(
@@ -516,7 +528,7 @@ impl Context {
         n: u32,
         out: *mut Option<ID3D11ShaderResourceView>,
     ) {
-        load(&self.bound.borrow().resources[DOMAIN], start, n, out);
+        load(&self.seen().resources[DOMAIN], start, n, out);
     }
 
     /// `SOSetTargets`: the slots past the buffers given are unbound; an offset of -1 appends where
@@ -542,17 +554,45 @@ impl Context {
         } else {
             (0..h.len()).map(|i| unsafe { *offsets.add(i) }).collect()
         };
+        let mut kept = [0; 4];
+        kept[..o.len()].copy_from_slice(&o);
         if self.run("SOSetTargets", move |f| f.so_set_targets(&b, &o)) {
             let mut targets: [Option<Held<Buffer_Impl>>; 4] = Default::default();
             for (t, h) in targets.iter_mut().zip(h) {
                 *t = h;
             }
-            self.bound.borrow_mut().so_targets = targets;
+            let mut bound = self.bound.borrow_mut();
+            bound.so_targets = targets;
+            bound.so_offsets = kept;
         }
     }
 
+    /// The stream output targets' offsets as bound, for Direct3D 10's `SOGetTargets`.
+    pub(super) fn so_get_offsets(&self, n: u32, out: *mut u32) {
+        let kept = self.seen().so_offsets;
+        for i in 0..n as usize {
+            unsafe { out.add(i).write(kept.get(i).copied().unwrap_or(0)) };
+        }
+    }
+
+    /// The state the getters read: a getter of the API whose behaviour is not active (Direct3D
+    /// 10's or 11's, by the context state) sees the default state, as Direct3D's do.
+    fn seen(&self) -> std::cell::Ref<'_, Bound> {
+        if self.emulates10() != self.calling10.get() {
+            self.empty.borrow()
+        } else {
+            self.bound.borrow()
+        }
+    }
+
+    /// Whether a context state emulating Direct3D 10 is active on this context: Direct3D 11's
+    /// calls on it then do nothing, and Direct3D 10's device's run here.
+    pub(super) fn emulates10(&self) -> bool {
+        self.state.borrow().as_ref().is_some_and(|s| s.emulates10)
+    }
+
     pub(super) fn so_get_targets(&self, n: u32, out: *mut Option<ID3D11Buffer>) {
-        load(&self.bound.borrow().so_targets, 0, n, out);
+        load(&self.seen().so_targets, 0, n, out);
     }
 
     pub(super) fn draw_auto(&self) {
@@ -626,7 +666,7 @@ impl Context {
         first: *mut u32,
         count: *mut u32,
     ) {
-        let bound = self.bound.borrow();
+        let bound = self.seen();
         for i in 0..n as usize {
             let slot = start as usize + i;
             let range = match (
@@ -696,7 +736,7 @@ impl Context {
         count: *mut u32,
     ) {
         load(
-            &self.bound.borrow().constant_buffers[VERTEX],
+            &self.seen().constant_buffers[VERTEX],
             start,
             n,
             out_array(out),
@@ -713,7 +753,7 @@ impl Context {
         count: *mut u32,
     ) {
         load(
-            &self.bound.borrow().constant_buffers[PIXEL],
+            &self.seen().constant_buffers[PIXEL],
             start,
             n,
             out_array(out),
@@ -1110,7 +1150,7 @@ impl Context {
         out: OutRef<ID3D11Predicate>,
         value: *mut windows::core::BOOL,
     ) {
-        let bound = self.bound.borrow();
+        let bound = self.seen();
         let _ = out.write(public(&bound.predication.0));
         if let Some(v) = unsafe { value.as_mut() } {
             *v = bound.predication.1.into();
@@ -1633,7 +1673,7 @@ impl Context {
         count: *mut u32,
     ) {
         no_instances(count);
-        let _ = out.write(public(&self.bound.borrow().cs));
+        let _ = out.write(public(&self.seen().cs));
     }
 
     pub(super) fn cs_set_constant_buffers(
@@ -1662,12 +1702,7 @@ impl Context {
         n: u32,
         out: *mut Option<ID3D11Buffer>,
     ) {
-        load(
-            &self.bound.borrow().constant_buffers[COMPUTE],
-            start,
-            n,
-            out,
-        );
+        load(&self.seen().constant_buffers[COMPUTE], start, n, out);
     }
 
     pub(super) fn cs_get_constant_buffers1(
@@ -1679,7 +1714,7 @@ impl Context {
         count: *mut u32,
     ) {
         load(
-            &self.bound.borrow().constant_buffers[COMPUTE],
+            &self.seen().constant_buffers[COMPUTE],
             start,
             n,
             out_array(out),
@@ -1702,7 +1737,7 @@ impl Context {
         n: u32,
         out: *mut Option<ID3D11ShaderResourceView>,
     ) {
-        load(&self.bound.borrow().resources[COMPUTE], start, n, out);
+        load(&self.seen().resources[COMPUTE], start, n, out);
     }
 
     pub(super) fn cs_set_samplers(
@@ -1715,7 +1750,7 @@ impl Context {
     }
 
     pub(super) fn cs_get_samplers(&self, start: u32, n: u32, out: *mut Option<ID3D11SamplerState>) {
-        load(&self.bound.borrow().samplers[COMPUTE], start, n, out);
+        load(&self.seen().samplers[COMPUTE], start, n, out);
     }
 
     /// Binds unordered access views to `stage` from `start`, with the counters' initial counts.
@@ -1755,7 +1790,7 @@ impl Context {
         n: u32,
         out: *mut Option<ID3D11UnorderedAccessView>,
     ) {
-        load(&self.bound.borrow().uavs[COMPUTE], start, n, out);
+        load(&self.seen().uavs[COMPUTE], start, n, out);
     }
 
     /// Targets (unless `n` is `D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL`) and the pixel
@@ -1801,7 +1836,7 @@ impl Context {
         uavs: *mut Option<ID3D11UnorderedAccessView>,
     ) {
         self.om_get_render_targets(n, targets, depth);
-        load(&self.bound.borrow().uavs[PIXEL], uav_start, uav_n, uavs);
+        load(&self.seen().uavs[PIXEL], uav_start, uav_n, uavs);
     }
 
     pub(super) fn dispatch(&self, x: u32, y: u32, z: u32) {
@@ -1900,7 +1935,7 @@ impl Context {
         count: *mut u32,
     ) {
         no_instances(count);
-        let _ = out.write(public(&self.bound.borrow().vs));
+        let _ = out.write(public(&self.seen().vs));
     }
 
     pub(super) fn ps_get_shader(
@@ -1910,7 +1945,7 @@ impl Context {
         count: *mut u32,
     ) {
         no_instances(count);
-        let _ = out.write(public(&self.bound.borrow().ps));
+        let _ = out.write(public(&self.seen().ps));
     }
 
     pub(super) fn vs_get_constant_buffers(
@@ -1919,7 +1954,7 @@ impl Context {
         n: u32,
         out: *mut Option<ID3D11Buffer>,
     ) {
-        load(&self.bound.borrow().constant_buffers[VERTEX], start, n, out);
+        load(&self.seen().constant_buffers[VERTEX], start, n, out);
     }
 
     pub(super) fn ps_get_constant_buffers(
@@ -1928,7 +1963,7 @@ impl Context {
         n: u32,
         out: *mut Option<ID3D11Buffer>,
     ) {
-        load(&self.bound.borrow().constant_buffers[PIXEL], start, n, out);
+        load(&self.seen().constant_buffers[PIXEL], start, n, out);
     }
 
     pub(super) fn vs_get_shader_resources(
@@ -1937,7 +1972,7 @@ impl Context {
         n: u32,
         out: *mut Option<ID3D11ShaderResourceView>,
     ) {
-        load(&self.bound.borrow().resources[VERTEX], start, n, out);
+        load(&self.seen().resources[VERTEX], start, n, out);
     }
 
     pub(super) fn ps_get_shader_resources(
@@ -1946,19 +1981,19 @@ impl Context {
         n: u32,
         out: *mut Option<ID3D11ShaderResourceView>,
     ) {
-        load(&self.bound.borrow().resources[PIXEL], start, n, out);
+        load(&self.seen().resources[PIXEL], start, n, out);
     }
 
     pub(super) fn vs_get_samplers(&self, start: u32, n: u32, out: *mut Option<ID3D11SamplerState>) {
-        load(&self.bound.borrow().samplers[VERTEX], start, n, out);
+        load(&self.seen().samplers[VERTEX], start, n, out);
     }
 
     pub(super) fn ps_get_samplers(&self, start: u32, n: u32, out: *mut Option<ID3D11SamplerState>) {
-        load(&self.bound.borrow().samplers[PIXEL], start, n, out);
+        load(&self.seen().samplers[PIXEL], start, n, out);
     }
 
     pub(super) fn ia_get_input_layout(&self, out: OutRef<ID3D11InputLayout>) {
-        let _ = out.write(public(&self.bound.borrow().layout));
+        let _ = out.write(public(&self.seen().layout));
     }
 
     pub(super) fn ia_get_vertex_buffers(
@@ -1971,7 +2006,7 @@ impl Context {
     ) {
         // The out reference is the program's array of `n` buffers.
         let buffers: *mut Option<ID3D11Buffer> = unsafe { std::mem::transmute(buffers) };
-        let bound = self.bound.borrow();
+        let bound = self.seen();
         for i in 0..n as usize {
             let (b, stride, offset) = bound
                 .vertex_buffers
@@ -1998,7 +2033,7 @@ impl Context {
         offset: *mut u32,
     ) {
         let (b, f, o) = {
-            let bound = self.bound.borrow();
+            let bound = self.seen();
             (public(&bound.index.0), bound.index.1, bound.index.2)
         };
         let _ = out.write(b);
@@ -2014,7 +2049,7 @@ impl Context {
 
     pub(super) fn ia_get_primitive_topology(&self, out: *mut D3D_PRIMITIVE_TOPOLOGY) {
         if let Some(out) = unsafe { out.as_mut() } {
-            *out = self.bound.borrow().topology;
+            *out = self.seen().topology;
         }
     }
 
@@ -2024,7 +2059,7 @@ impl Context {
         targets: *mut Option<ID3D11RenderTargetView>,
         depth: OutRef<ID3D11DepthStencilView>,
     ) {
-        let bound = self.bound.borrow();
+        let bound = self.seen();
         load(&bound.targets, 0, n, targets);
         let _ = depth.write(public(&bound.depth));
     }
@@ -2036,7 +2071,7 @@ impl Context {
         mask: *mut u32,
     ) {
         let (b, f, m) = {
-            let bound = self.bound.borrow();
+            let bound = self.seen();
             (public(&bound.blend.0), bound.blend.1, bound.blend.2)
         };
         let _ = out.write(b);
@@ -2056,7 +2091,7 @@ impl Context {
         reference: *mut u32,
     ) {
         let (d, r) = {
-            let bound = self.bound.borrow();
+            let bound = self.seen();
             (public(&bound.depth_stencil.0), bound.depth_stencil.1)
         };
         let _ = out.write(d);
@@ -2066,15 +2101,15 @@ impl Context {
     }
 
     pub(super) fn rs_get_state(&self, out: OutRef<ID3D11RasterizerState>) {
-        let _ = out.write(public(&self.bound.borrow().raster));
+        let _ = out.write(public(&self.seen().raster));
     }
 
     pub(super) fn rs_get_viewports(&self, count: *mut u32, out: *mut D3D11_VIEWPORT) {
-        get_list(&self.bound.borrow().viewports, count, out);
+        get_list(&self.seen().viewports, count, out);
     }
 
     pub(super) fn rs_get_scissor_rects(&self, count: *mut u32, out: *mut RECT) {
-        get_list(&self.bound.borrow().scissors, count, out);
+        get_list(&self.seen().scissors, count, out);
     }
 
     /// A call on a stage or feature the front does not serve, which is served while it binds nothing.
@@ -2104,12 +2139,7 @@ impl Context {
         n: u32,
         out: *mut Option<ID3D11Buffer>,
     ) {
-        load(
-            &self.bound.borrow().constant_buffers[GEOMETRY],
-            start,
-            n,
-            out,
-        );
+        load(&self.seen().constant_buffers[GEOMETRY], start, n, out);
     }
 
     pub(super) fn gs_get_constant_buffers1(
@@ -2121,7 +2151,7 @@ impl Context {
         count: *mut u32,
     ) {
         load(
-            &self.bound.borrow().constant_buffers[GEOMETRY],
+            &self.seen().constant_buffers[GEOMETRY],
             start,
             n,
             out_array(out),
@@ -2139,7 +2169,7 @@ impl Context {
     }
 
     pub(super) fn gs_get_samplers(&self, start: u32, n: u32, out: *mut Option<ID3D11SamplerState>) {
-        load(&self.bound.borrow().samplers[GEOMETRY], start, n, out);
+        load(&self.seen().samplers[GEOMETRY], start, n, out);
     }
 
     pub(super) fn hs_set_constant_buffers(
@@ -2168,7 +2198,7 @@ impl Context {
         n: u32,
         out: *mut Option<ID3D11Buffer>,
     ) {
-        load(&self.bound.borrow().constant_buffers[HULL], start, n, out);
+        load(&self.seen().constant_buffers[HULL], start, n, out);
     }
 
     pub(super) fn hs_get_constant_buffers1(
@@ -2180,7 +2210,7 @@ impl Context {
         count: *mut u32,
     ) {
         load(
-            &self.bound.borrow().constant_buffers[HULL],
+            &self.seen().constant_buffers[HULL],
             start,
             n,
             out_array(out),
@@ -2198,7 +2228,7 @@ impl Context {
     }
 
     pub(super) fn hs_get_samplers(&self, start: u32, n: u32, out: *mut Option<ID3D11SamplerState>) {
-        load(&self.bound.borrow().samplers[HULL], start, n, out);
+        load(&self.seen().samplers[HULL], start, n, out);
     }
 
     pub(super) fn ds_set_constant_buffers(
@@ -2227,7 +2257,7 @@ impl Context {
         n: u32,
         out: *mut Option<ID3D11Buffer>,
     ) {
-        load(&self.bound.borrow().constant_buffers[DOMAIN], start, n, out);
+        load(&self.seen().constant_buffers[DOMAIN], start, n, out);
     }
 
     pub(super) fn ds_get_constant_buffers1(
@@ -2239,7 +2269,7 @@ impl Context {
         count: *mut u32,
     ) {
         load(
-            &self.bound.borrow().constant_buffers[DOMAIN],
+            &self.seen().constant_buffers[DOMAIN],
             start,
             n,
             out_array(out),
@@ -2257,7 +2287,7 @@ impl Context {
     }
 
     pub(super) fn ds_get_samplers(&self, start: u32, n: u32, out: *mut Option<ID3D11SamplerState>) {
-        load(&self.bound.borrow().samplers[DOMAIN], start, n, out);
+        load(&self.seen().samplers[DOMAIN], start, n, out);
     }
 
     pub(super) fn get_type(&self) -> D3D11_DEVICE_CONTEXT_TYPE {
@@ -2291,7 +2321,7 @@ impl Context {
         };
         let current = self.state.borrow_mut().take().unwrap_or_else(|| {
             let first: ID3DDeviceContextState =
-                DeviceContextState::new(self.child.device().clone()).into();
+                DeviceContextState::new(self.child.device().clone(), false).into();
             Held::new(ours::<_, DeviceContextState>(Some(&first)).expect("ours"))
         });
         {
