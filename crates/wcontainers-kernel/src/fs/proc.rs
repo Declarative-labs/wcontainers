@@ -123,6 +123,7 @@ pub(crate) enum ProcessFile {
     OomAdj,
     OomScore,
     OomScoreAdj,
+    TimerslackNs,
     Maps,
     Stat,
     Statm,
@@ -275,6 +276,7 @@ const PROCESS_FILES: &[(&[u8], ProcessFile)] = &[
     (b"stat", ProcessFile::Stat),
     (b"statm", ProcessFile::Statm),
     (b"status", ProcessFile::Status),
+    (b"timerslack_ns", ProcessFile::TimerslackNs),
 ];
 
 const PROCESS_LINKS: &[(&[u8], ProcessLink)] = &[
@@ -554,6 +556,8 @@ pub(crate) enum Writing {
     CoredumpFilter,
     /// `oom_score_adj_write` (false) or the older `oom_adj_write` (true).
     OomScoreAdj(bool),
+    /// `timerslack_ns_write`: the process's first thread's timer slack.
+    TimerslackNs,
     /// A sysctl's own write; `/proc/sys` is mounted read-only, so no file is open for it.
     Sysctl,
     /// `EIO`, as `pde_write` for an entry with no write of its own.
@@ -661,6 +665,7 @@ impl Entry {
             Entry::ProcessFile(_, ProcessFile::CoredumpFilter) => Writing::CoredumpFilter,
             Entry::ProcessFile(_, ProcessFile::OomScoreAdj) => Writing::OomScoreAdj(false),
             Entry::ProcessFile(_, ProcessFile::OomAdj) => Writing::OomScoreAdj(true),
+            Entry::ProcessFile(_, ProcessFile::TimerslackNs) => Writing::TimerslackNs,
             Entry::Global(_) if self.style() == Style::Sysctl => Writing::Sysctl,
             // `proc_reg_write` with no `proc_write` of the entry's own.
             Entry::Global(_) | Entry::NetFile(..) => Writing::Io,
@@ -702,6 +707,7 @@ impl Entry {
                 | ProcessFile::OomAdj
                 | ProcessFile::OomScoreAdj,
             ) => S_IFREG | 0o644,
+            Entry::ProcessFile(_, ProcessFile::TimerslackNs) => S_IFREG | 0o666,
             Entry::ProcessFile(_, ProcessFile::Environ | ProcessFile::Auxv) => S_IFREG | 0o400,
             Entry::ProcessFile(..) => S_IFREG | 0o444,
             Entry::SelfLink
@@ -829,6 +835,23 @@ pub(crate) fn ptrace_may_read(
         return false;
     }
     t.permitted & !c.effective == 0 || traces
+}
+
+/// `timerslack_ns_show` and `timerslack_ns_write`: a process's first thread itself, or a caller
+/// that may trace it and holds CAP_SYS_NICE (else EPERM).
+pub(crate) fn timerslack_allowed(
+    processes: &BTreeMap<Pid, Process>,
+    threads: &BTreeMap<Tid, Thread>,
+    caller: Tid,
+    target: Pid,
+) -> Result<(), Errno> {
+    if !ptrace_may_read(processes, threads, caller, target) {
+        return Err(Errno::EPERM);
+    }
+    if caller != target && !threads[&caller].credentials.has(CAP_SYS_NICE) {
+        return Err(Errno::EPERM);
+    }
+    Ok(())
 }
 
 /// Whether `caller` may see the descriptors of `entry`'s process through its `fdinfo` directory
@@ -1149,8 +1172,14 @@ pub(crate) fn list(view: &View<'_>, entry: &Entry) -> Vec<(Vec<u8>, Entry, u64)>
                 out.push((name.to_vec(), child, position));
             };
             for (name, file) in PROCESS_FILES {
-                // A thread's own directory has no coredump_filter (`tid_base_stuff`).
-                if task.own && *file == ProcessFile::CoredumpFilter {
+                // A thread's own directory has no coredump_filter or timerslack_ns
+                // (`tid_base_stuff`).
+                if task.own
+                    && matches!(
+                        file,
+                        ProcessFile::CoredumpFilter | ProcessFile::TimerslackNs
+                    )
+                {
                     continue;
                 }
                 add(name, Entry::ProcessFile(task, *file));
@@ -1692,6 +1721,12 @@ fn process_file(
         }
         ProcessFile::OomScoreAdj => {
             let _ = writeln!(out, "{}", process.oom_score_adj);
+        }
+        ProcessFile::TimerslackNs => {
+            let (processes, threads) = (source.view.processes, source.view.threads);
+            timerslack_allowed(processes, threads, source.view.caller_thread, task.pid)?;
+            let leader = threads.get(&task.pid).ok_or(Errno::ESRCH)?;
+            let _ = writeln!(out, "{}", leader.timer_slack);
         }
         // `oom_adj_read`: the older scale's -17 to 15.
         ProcessFile::OomAdj => {

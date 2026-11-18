@@ -1484,6 +1484,35 @@ fn write_proc(
             }
             Ok(count)
         }
+        // `timerslack_ns_write`: a number in base 10; 0 gives back the slack the thread was born
+        // with; a real-time thread keeps its own.
+        Writing::TimerslackNs => {
+            let bytes = guest(kernel, cx, tid).read(buffer, count.min(PAGE_SIZE))?;
+            let crate::fs::proc::Entry::ProcessFile(task, _) = entry else {
+                return Err(Errno::EINVAL);
+            };
+            let digits = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
+            let digits = digits.strip_prefix(b"+").unwrap_or(digits);
+            let text = core::str::from_utf8(digits).map_err(|_| Errno::EINVAL)?;
+            if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(Errno::EINVAL);
+            }
+            let slack: u64 = text.parse().map_err(|_| Errno::ERANGE)?;
+            let pid = task.pid;
+            crate::fs::proc::timerslack_allowed(&kernel.processes, &kernel.threads, tid, pid)?;
+            let leader = kernel.threads.get_mut(&pid).ok_or(Errno::ESRCH)?;
+            if !matches!(
+                leader.schedule.policy,
+                SCHED_FIFO | SCHED_RR | SCHED_DEADLINE
+            ) {
+                leader.timer_slack = if slack == 0 {
+                    crate::process::TIMER_SLACK
+                } else {
+                    slack
+                };
+            }
+            Ok(count)
+        }
         Writing::Io => Err(Errno::EIO),
         Writing::Sysctl => Err(Errno::EROFS),
         Writing::None => Err(Errno::EINVAL),

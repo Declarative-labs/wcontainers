@@ -22,3 +22,9 @@ fn oom_adjustments_match_reference() {
     let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     wcontainers_kernel_test::assert_same_output(&out, "oomadj", &[]);
 }
+
+#[test]
+fn timer_slack_matches_reference() {
+    let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    wcontainers_kernel_test::assert_same_output(&out, "timerslack", &[]);
+}
