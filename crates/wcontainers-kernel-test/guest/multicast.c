@@ -101,6 +101,22 @@ int main(void) {
     setsockopt(s, IPPROTO_IP, IP_MULTICAST_IF, &lo, sizeof lo);
     unsigned char g[8]; socklen_t gl = 8; memset(g, 0, 8);
     getsockopt(s, IPPROTO_IP, IP_MULTICAST_IF, g, &gl); printf("multicast_if get len %u %d.%d.%d.%d\n", gl, g[0], g[1], g[2], g[3]);
+    // A connection's socket: the ip_mreq forms are refused, the group_req ones taken, and an
+    // accepted socket does not inherit its listener's groups.
+    int listener = socket(AF_INET, SOCK_STREAM, 0);
+    struct ip_mreq tcp_group = {0}; tcp_group.imr_multiaddr = ga->sin_addr;
+    printf("tcp add_membership: %d %s\n", setsockopt(listener, IPPROTO_IP, IP_ADD_MEMBERSHIP, &tcp_group, sizeof tcp_group), strerror(errno));
+    printf("tcp mcast_join_group: %d %s\n", setsockopt(listener, IPPROTO_IP, MCAST_JOIN_GROUP, &gr, sizeof gr), strerror(errno));
+    struct sockaddr_in here = {.sin_family = AF_INET}; inet_pton(AF_INET, "127.0.0.1", &here.sin_addr);
+    socklen_t hl = sizeof here;
+    bind(listener, (void *)&here, sizeof here); getsockname(listener, (void *)&here, &hl); listen(listener, 1);
+    int client = socket(AF_INET, SOCK_STREAM, 0);
+    connect(client, (void *)&here, sizeof here);
+    int accepted = accept(listener, NULL, NULL);
+    errno = 0;
+    printf("accepted mcast_leave_group: %d %s\n", setsockopt(accepted, IPPROTO_IP, MCAST_LEAVE_GROUP, &gr, sizeof gr), strerror(errno));
+    errno = 0;
+    printf("listener mcast_leave_group: %d %s\n", setsockopt(listener, IPPROTO_IP, MCAST_LEAVE_GROUP, &gr, sizeof gr), strerror(errno));
     fflush(stdout);
     return 0;
 }

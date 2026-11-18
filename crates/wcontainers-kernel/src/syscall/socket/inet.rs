@@ -2980,12 +2980,13 @@ fn membership_interface(index: u32, address: [u8; 4]) -> Option<u32> {
 /// IP_ADD_MEMBERSHIP and IP_DROP_MEMBERSHIP (`ip_mreq` or `ip_mreqn`), and MCAST_JOIN_GROUP and
 /// MCAST_LEAVE_GROUP (`group_req`), as `ip_mc_join_group` and `ip_mc_leave_group`.
 fn membership(socket: &SocketRef, name: u32, bytes: &[u8]) -> Result<u64, Errno> {
-    if inet_ref(socket).protocol == Protocol::Tcp {
-        return Err(Errno::EPROTO);
-    }
     let word = |at: usize| -> [u8; 4] { bytes[at..at + 4].try_into().expect("4 bytes") };
     let (group, index, address, join) = match name {
         IP_ADD_MEMBERSHIP | IP_DROP_MEMBERSHIP => {
+            // Only these refuse a connection's socket (`IS_ICSK`); the group_req forms take it.
+            if inet_ref(socket).protocol == Protocol::Tcp {
+                return Err(Errno::EPROTO);
+            }
             if bytes.len() < 8 {
                 return Err(Errno::EINVAL);
             }
