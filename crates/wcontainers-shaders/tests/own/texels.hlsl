@@ -62,3 +62,28 @@ uint4 ps_texels(float4 position : SV_Position) : SV_Target0 {
     }
     return p.x % 2 == 0 ? asuint(floats[i]) : uints[i];
 }
+
+// Storage textures read and written through buffers of their texels: atomics on a 32-bit unsigned
+// texture, a float texture read and written, a 2D array and a 3D texture of formats the test picks
+// written, and their sizes; some invocations reach past the views.
+RWTexture2D<uint> marks : register(u3);
+RWTexture2D<float> heights : register(u4);
+RWTexture2DArray<float4> layered : register(u5);
+RWTexture3D<uint4> volume : register(u6);
+
+[numthreads(8, 8, 1)]
+void cs_through(uint3 id : SV_DispatchThreadID) {
+    uint w, h, l, vw, vh, vd;
+    layered.GetDimensions(w, h, l);
+    volume.GetDimensions(vw, vh, vd);
+    // Each texel takes one kind of atomic, so the result does not depend on their order.
+    InterlockedAdd(marks[uint2(id.x % 8, id.y % 4)], id.x + 1);
+    InterlockedMax(marks[uint2(id.y, 4 + id.x % 3)], id.x * 2654435761u);
+    uint before;
+    InterlockedOr(marks[uint2(id.x % 8, 7)], 1u << id.y, before);
+    heights[id.xy] = heights[id.xy] * 2.0 + float(w + h * 100 + l * 10000);
+    // Exact in f32 however the arithmetic is ordered or fused.
+    float4 v = float4(int3(id.xyx) - 7, 1) * float4(0.25, 0.5, -0.125, 2.0) * float(vw + vh + vd);
+    layered[uint3(id.xy, id.x % 4)] = v;
+    volume[uint3(id.x, id.y, id.x % 3)] = uint4(id.x, id.y, vd, 300 - id.x * 37);
+}

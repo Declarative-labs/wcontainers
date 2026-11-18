@@ -19,6 +19,7 @@ use wcontainers_shaders::{Source, convert};
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
+use windows::core::Interface;
 
 /// One storage view: its bytes before the dispatch, whether it is a raw buffer, the count its
 /// counter starts at (none: no counter), and whether it is an append or consume view.
@@ -1072,6 +1073,338 @@ fn typed_buffers_match_direct3d() {
             eprintln!("seed {seed} {name} ({formats:?}): {apart} words apart");
             if apart > 0 {
                 failures.push(format!("seed {seed} {name}"));
+            }
+        }
+    }
+    eprintln!("{seeds} seeds, {} failed", failures.len());
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// One of `cs_through`'s storage textures: slot, whether 3D (else 2D, arrayed when it has layers),
+/// width, height and layers or depth, format, and its texels before the dispatch, layer by layer.
+struct Through {
+    slot: u32,
+    volume: bool,
+    size: [u32; 3],
+    format: Format,
+    texels: Vec<u8>,
+}
+
+/// Formats `cs_through` writes into its float array and its unsigned volume.
+const THROUGH_FLOATS: [Format; 7] = [
+    Format::Rgba16Float,
+    Format::Rgba32Float,
+    Format::Rg11b10Float,
+    Format::R32Float,
+    Format::Rg16Float,
+    Format::R16Float,
+    Format::Rg32Float,
+];
+const THROUGH_UINTS: [Format; 9] = [
+    Format::Rgba16Uint,
+    Format::Rgba8Uint,
+    Format::Rgba32Uint,
+    Format::R32Uint,
+    Format::Rg32Uint,
+    Format::Rg16Uint,
+    Format::R8Uint,
+    Format::R16Uint,
+    Format::Rg8Uint,
+];
+
+fn through_views(gpu: &Gpu, seed: u64) -> Vec<Through> {
+    let mut next = rng(seed);
+    let can = |f: Format| {
+        let need = D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW.0 as u32;
+        unsafe { gpu.device.CheckFormatSupport(dxgi(f)) }.is_ok_and(|s| s & need == need)
+    };
+    let floats: Vec<Format> = THROUGH_FLOATS.into_iter().filter(|&f| can(f)).collect();
+    let uints: Vec<Format> = THROUGH_UINTS.into_iter().filter(|&f| can(f)).collect();
+    let layered = floats[next() as usize % floats.len()];
+    let volume = uints[next() as usize % uints.len()];
+    [
+        (3, false, [8, 8, 1], Format::R32Uint),
+        (4, false, [12, 12, 1], Format::R32Float),
+        (5, false, [11, 9, 3], layered),
+        (6, true, [10, 10, 2], volume),
+    ]
+    .into_iter()
+    .map(|(slot, volume, size, format)| {
+        let n = size[0] * size[1] * size[2] * format.block().2;
+        let texels = if format == Format::R32Float {
+            (0..n / 4)
+                .flat_map(|_| ((next() % 2000) as f32 / 16.0 - 60.0).to_le_bytes())
+                .collect()
+        } else {
+            (0..n).map(|_| next() as u8).collect()
+        };
+        Through {
+            slot,
+            volume,
+            size,
+            format,
+            texels,
+        }
+    })
+    .collect()
+}
+
+/// Each texture's texels after real Direct3D 11 runs `cs_through`, layer after layer.
+fn direct3d_through(gpu: &Gpu, views: &[Through]) -> Vec<Vec<u8>> {
+    let shader = gpu.cs(&bytecode("cs_through.dxbc")).unwrap();
+    let mut resources: Vec<ID3D11Resource> = Vec::new();
+    let mut uavs = vec![None; 3];
+    for t in views {
+        let [w, h, l] = t.size;
+        let row = w * t.format.block().2;
+        let resource: ID3D11Resource = if t.volume {
+            let desc = D3D11_TEXTURE3D_DESC {
+                Width: w,
+                Height: h,
+                Depth: l,
+                MipLevels: 1,
+                Format: dxgi(t.format),
+                Usage: D3D11_USAGE_DEFAULT,
+                BindFlags: D3D11_BIND_UNORDERED_ACCESS.0 as u32,
+                ..Default::default()
+            };
+            let data = d3d11::data(&t.texels, row, row * h);
+            d3d11::made(|o| unsafe { gpu.device.CreateTexture3D(&desc, Some(&data), Some(o)) })
+                .unwrap()
+                .cast()
+                .unwrap()
+        } else {
+            let mut desc = d3d11::tex2d(w, h, dxgi(t.format), D3D11_BIND_UNORDERED_ACCESS);
+            desc.ArraySize = l;
+            let data: Vec<_> = t
+                .texels
+                .chunks((row * h) as usize)
+                .map(|layer| d3d11::data(layer, row, row * h))
+                .collect();
+            gpu.texture2d(&desc, &data).unwrap().cast().unwrap()
+        };
+        uavs.push(Some(gpu.uav(&resource, None).unwrap()));
+        resources.push(resource);
+    }
+    unsafe {
+        let c = &gpu.context;
+        c.CSSetShader(&shader, None);
+        c.CSSetUnorderedAccessViews(0, uavs.len() as u32, Some(uavs.as_ptr()), None);
+        c.Dispatch(2, 2, 1);
+        let none: Vec<Option<ID3D11UnorderedAccessView>> = vec![None; uavs.len()];
+        c.CSSetUnorderedAccessViews(0, none.len() as u32, Some(none.as_ptr()), None);
+    }
+    views
+        .iter()
+        .zip(&resources)
+        .map(|(t, resource)| {
+            let [w, h, l] = t.size;
+            let row = (w * t.format.block().2) as usize;
+            let staging: ID3D11Resource = if t.volume {
+                let desc = D3D11_TEXTURE3D_DESC {
+                    Width: w,
+                    Height: h,
+                    Depth: l,
+                    MipLevels: 1,
+                    Format: dxgi(t.format),
+                    Usage: D3D11_USAGE_STAGING,
+                    CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+                    ..Default::default()
+                };
+                d3d11::made(|o| unsafe { gpu.device.CreateTexture3D(&desc, None, Some(o)) })
+                    .unwrap()
+                    .cast()
+                    .unwrap()
+            } else {
+                let mut desc = d3d11::tex2d(w, h, dxgi(t.format), D3D11_BIND_FLAG(0));
+                desc.ArraySize = l;
+                desc.Usage = D3D11_USAGE_STAGING;
+                desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+                gpu.texture2d(&desc, &[]).unwrap().cast().unwrap()
+            };
+            let mut out = Vec::new();
+            unsafe {
+                gpu.context.CopyResource(&staging, resource);
+                let subresources = if t.volume { 1 } else { l };
+                for s in 0..subresources {
+                    let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                    gpu.context
+                        .Map(&staging, s, D3D11_MAP_READ, 0, Some(&mut mapped))
+                        .unwrap();
+                    let slices = if t.volume { l } else { 1 };
+                    for z in 0..slices as usize {
+                        for y in 0..h as usize {
+                            let start = mapped
+                                .pData
+                                .cast::<u8>()
+                                .add(z * mapped.DepthPitch as usize + y * mapped.RowPitch as usize);
+                            out.extend_from_slice(std::slice::from_raw_parts(start, row));
+                        }
+                    }
+                    gpu.context.Unmap(&staging, s);
+                }
+            }
+            out
+        })
+        .collect()
+}
+
+/// The same through the WebGPU back end, every texture read and written through a buffer whose rows
+/// are 3 texels longer and layers one row taller than the view, the padding seeded too.
+fn ours_through<B: Backend>(b: &mut B, views: &[Through], seed: u64) -> Vec<Vec<u8>> {
+    let key = VariantKey {
+        texels_through_buffer: views.iter().map(|t| 1u64 << t.slot).sum(),
+        storage_formats: views.iter().map(|t| (t.slot, t.format)).collect(),
+        ..Default::default()
+    };
+    let c = convert(Source::Dxbc(&bytecode("cs_through.dxbc")), &key, None).unwrap();
+    let mut next = rng(seed ^ 0x5eed);
+    let layout = |t: &Through| (t.size[0] + 3, t.size[1] + 1);
+    let usage = BufferUsage::STORAGE | BufferUsage::COPY_SRC;
+    let buffers: Vec<_> = views
+        .iter()
+        .map(|t| {
+            let size = t.format.block().2 as usize;
+            let (pitch, rows) = layout(t);
+            let len = (pitch * rows * t.size[2]) as usize * size;
+            let mut bytes: Vec<u8> = (0..len.next_multiple_of(4)).map(|_| next() as u8).collect();
+            for (n, texel) in t.texels.chunks(size).enumerate() {
+                let n = n as u32;
+                let (x, y, z) = (
+                    n % t.size[0],
+                    n / t.size[0] % t.size[1],
+                    n / t.size[0] / t.size[1],
+                );
+                let at = ((z * rows + y) * pitch + x) as usize * size;
+                bytes[at..at + size].copy_from_slice(texel);
+            }
+            (buffer(b, &bytes, usage), bytes.len())
+        })
+        .collect();
+    let entries: Vec<_> = c
+        .reflection
+        .bindings
+        .iter()
+        .map(|r| {
+            let i = views.iter().position(|t| t.slot == r.register).unwrap();
+            BindingEntry {
+                binding: r.binding,
+                stages: StageSet::COMPUTE,
+                resource: BindingResource::StorageBuffer {
+                    range: BufferRange {
+                        buffer: &buffers[i].0,
+                        offset: 0,
+                        size: buffers[i].1 as u64,
+                    },
+                    writable: true,
+                },
+            }
+        })
+        .collect();
+    let set = b.create_binding_set(&entries).unwrap();
+    let mut helpers = vec![0u8; c.reflection.helper_size as usize];
+    for h in &c.reflection.helpers {
+        let HelperValue::TexelLayout { slot } = h.value else {
+            panic!("{h:?}");
+        };
+        let t = views.iter().find(|t| t.slot == slot).unwrap();
+        let (pitch, rows) = layout(t);
+        let words = [pitch, rows, t.size[0], t.size[1], t.size[2]];
+        for (k, w) in words.iter().enumerate() {
+            let at = h.offset as usize + 4 * k;
+            helpers[at..at + 4].copy_from_slice(&w.to_le_bytes());
+        }
+    }
+    let helper_buffer = buffer(b, &helpers, BufferUsage::UNIFORM);
+    let helper_set = b
+        .create_binding_set(&[BindingEntry {
+            binding: helper_binding(ShaderStage::Compute),
+            stages: StageSet::COMPUTE,
+            resource: BindingResource::UniformBuffer(BufferRange {
+                buffer: &helper_buffer,
+                offset: 0,
+                size: helpers.len() as u64,
+            }),
+        }])
+        .unwrap();
+    let shader = b.create_shader(&c.modules[0]).unwrap();
+    let program = b.create_program(&Program::Compute(&shader)).unwrap();
+    let mut bindings = [Some(&set), None, None, None];
+    bindings[HELPER_SET as usize] = Some(&helper_set);
+    b.dispatch(&DispatchCall {
+        program: &program,
+        bindings,
+        immediates: &[],
+        groups: DispatchGroups::Direct([2, 2, 1]),
+    })
+    .unwrap();
+    let out = views
+        .iter()
+        .zip(&buffers)
+        .map(|(t, (buffer, len))| {
+            let mut bytes = vec![0; *len];
+            b.read_back_now(
+                &ReadSource::Buffer {
+                    buffer,
+                    offset: 0,
+                    size: *len as u64,
+                },
+                &mut bytes,
+            )
+            .unwrap();
+            let size = t.format.block().2 as usize;
+            let (pitch, rows) = layout(t);
+            let mut texels = Vec::new();
+            for z in 0..t.size[2] {
+                for y in 0..t.size[1] {
+                    let at = ((z * rows + y) * pitch) as usize * size;
+                    texels.extend_from_slice(&bytes[at..at + t.size[0] as usize * size]);
+                }
+            }
+            texels
+        })
+        .collect();
+    assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
+    out
+}
+
+#[test]
+fn storage_textures_through_buffers_match_direct3d() {
+    let mut backend = webgpu();
+    let gpu = d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let seed: u64 = std::env::var("WCONTAINERS_COMPUTE_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_COMPUTE_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(4);
+    let mut failures = Vec::new();
+    for seed in seed..seed + seeds {
+        let views = through_views(&gpu, seed);
+        let reference = direct3d_through(&gpu, &views);
+        let made = ours_through(&mut backend, &views, seed);
+        for ((a, o), t) in reference.iter().zip(&made).zip(&views) {
+            let size = t.format.block().2 as usize;
+            let mut apart = 0;
+            for (n, (x, y)) in a.chunks(size).zip(o.chunks(size)).enumerate() {
+                if x != y {
+                    apart += 1;
+                    if apart <= 6 {
+                        eprintln!("  u{} texel {n}: direct3d {x:02x?}, ours {y:02x?}", t.slot);
+                    }
+                }
+            }
+            eprintln!(
+                "seed {seed} u{} {:?}: {apart} texels apart",
+                t.slot, t.format
+            );
+            if apart > 0 {
+                failures.push(format!("seed {seed} u{}", t.slot));
             }
         }
     }

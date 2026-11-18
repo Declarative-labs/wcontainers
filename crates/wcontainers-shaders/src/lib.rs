@@ -174,7 +174,7 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         texel_buffers: _,
         texel_formats: _,
         storage_packed,
-        texels_through_buffer,
+        texels_through_buffer: _,
         decoded,
         targets_in_shader,
         min_lod_clamped: _,
@@ -198,7 +198,6 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
     }
     let asked = [
         (*storage_packed != 0, "StoragePacked"),
-        (*texels_through_buffer != 0, "TexelsThroughBuffer"),
         (!decoded.is_empty(), "NormAsInteger"),
         (!targets_in_shader.is_empty(), "TargetsInShader"),
         (
