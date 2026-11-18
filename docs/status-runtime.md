@@ -11,7 +11,8 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   2. Create `crates/wcontainers-runtime`: host-supplied guest memories (rustix), one wasmtime store and one
      4 GiB state memory per process (16 MiB of permission table and thread blocks, then the array of slots
      from 64 KiB to 0xFF00_0000), `CpuSide<G>` with `impl Cpu for CpuSide<Arm64>`, translation at first use
-     in the load code hook with an in-memory cache, and the run loop answering system calls and stops inside
+     in the load code hook (starts from the notice and from the range's ELF image in memory, plan section
+     6) with an in-memory cache, and the run loop answering system calls and stops inside
      the hooks. `memory_duplicate` answers `NotSupported` until J2.
   3. Make the kernel test driver (crates/wcontainers-kernel-test/src/driver.rs) generic over its CPU side and
      add the crate feature `runtime`, as its own commit; say so here, since the kernel track also edits that
@@ -32,7 +33,8 @@ pyro-parked/wcontainers-scratch/runtime:
   `pooling-allocator` feature.
 - `measure.sh` and `measure2.sh` run them (`nix develop -c cargo test --release -j 4 ... --test
   runtime_measure -- --nocapture --test-threads 1`, with `CARGO_TARGET_DIR` in scratch). Logs:
-  `measure-*.log`, and `forksize/sizes.txt` for the reference's memory sizes.
+  `measure-*.log`, and `forksize/sizes.txt` for the reference's memory sizes. The build output was
+  deleted at the end of J0; a rerun rebuilds it (about 2 minutes at load 35).
 
 ## Measurements (2026-11-17, this Mac: Apple M5, 18 cores; wasmtime 50.0.1; release)
 
