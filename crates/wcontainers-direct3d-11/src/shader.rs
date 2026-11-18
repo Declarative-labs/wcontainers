@@ -127,6 +127,14 @@ pub struct StageVariant {
     pub min_lod_clamped: u128,
     /// The input layout whose pulled elements the vertex program fetches (its id; zero for none).
     pub pulled: u64,
+    /// Sampler slots addressing by a border the back end lacks: the program filters through them
+    /// (`BorderInShader`).
+    pub border_in_shader: u16,
+    /// Sampler slots mirroring once where the back end does not (`MirrorOnceInShader`).
+    pub mirror_once_in_shader: u16,
+    /// Texture slots of formats the back end cannot filter, sampled through a filtering sampler
+    /// (`FilterInShader`).
+    pub filter_in_shader: u128,
 }
 
 impl StageVariant {
@@ -134,6 +142,9 @@ impl StageVariant {
     pub fn key(self, stage: SourceStage) -> VariantKey {
         let mut key = base_key(stage);
         key.lod_bias = self.lod_bias;
+        key.border_in_shader = self.border_in_shader;
+        key.mirror_once_in_shader = self.mirror_once_in_shader;
+        key.filter_in_shader = self.filter_in_shader;
         key.min_lod_clamped = self.min_lod_clamped;
         key.samples = self.samples;
         if self.dual_source {
@@ -230,6 +241,50 @@ pub fn sampler_slots(c: &Converted) -> u16 {
         .fold(0, |m, b| m | (1 << b.register))
 }
 
+/// The sampler slots a converted program gathers, compares or offsets through, one bit each: the
+/// program can mirror once only around plain samples, so through these it filters itself.
+pub fn mirror_filtered_slots(c: &Converted) -> u16 {
+    let mut slots = 0;
+    for m in &c.modules {
+        let module = &m.module;
+        let functions = module
+            .functions
+            .iter()
+            .map(|(_, f)| f)
+            .chain(module.entry_points.iter().map(|e| &e.function));
+        for f in functions {
+            for (_, e) in f.expressions.iter() {
+                let naga::Expression::ImageSample {
+                    sampler,
+                    gather,
+                    offset,
+                    depth_ref,
+                    ..
+                } = *e
+                else {
+                    continue;
+                };
+                if gather.is_none() && offset.is_none() && depth_ref.is_none() {
+                    continue;
+                }
+                let naga::Expression::GlobalVariable(g) = f.expressions[sampler] else {
+                    continue;
+                };
+                let Some(b) = &module.global_variables[g].binding else {
+                    continue;
+                };
+                if let Some(r) = c.reflection.bindings.iter().find(|r| {
+                    r.kind == SlotKind::Sampler && r.set == b.group && r.binding == b.binding
+                }) && r.register < 16
+                {
+                    slots |= 1 << r.register;
+                }
+            }
+        }
+    }
+    slots
+}
+
 /// The texture slots a converted program reads, one bit each.
 pub fn texture_slots(c: &Converted) -> u128 {
     c.reflection
@@ -283,6 +338,9 @@ fn answer(r: core::result::Result<Converted, ConvertError>) -> Result<Converted>
                     HelperValue::DrawBase
                         | HelperValue::DrawArguments
                         | HelperValue::LodBias { .. }
+                        | HelperValue::SamplerState { .. }
+                        | HelperValue::BorderColor { .. }
+                        | HelperValue::TextureComponents { .. }
                         | HelperValue::MinLod { .. }
                         | HelperValue::PulledStream { .. }
                 )

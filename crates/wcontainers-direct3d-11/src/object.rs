@@ -327,6 +327,9 @@ pub struct Shader<B: Backend> {
     pub samplers: u16,
     /// The texture slots the program reads, one bit each.
     pub textures: u128,
+    /// The sampler slots it gathers, compares or offsets through, which it cannot mirror once
+    /// around: through a mirror-once sampler the back end lacks it filters itself.
+    pub mirror_filtered: u16,
     /// The program reads the targets' sample count, so each draw converts it for theirs.
     pub reads_samples: bool,
     /// Where the plain program reads its helper constants.

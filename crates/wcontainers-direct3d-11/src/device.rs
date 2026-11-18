@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use wcontainers_gpu::{
     AddressMode, Backend, BlendComponent, BlendFactor, BlendOp, BorderColor,
-    BufferDesc as GpuBuffer, BufferUsage, ColorWrites, CompareFn, CullMode,
+    BufferDesc as GpuBuffer, BufferUsage, Caps, ColorWrites, CompareFn, CullMode,
     DepthStencilDesc as GpuDepthStencil, DeviceStatus, Extent, Features, FillMode, Filter, Format,
     FormatKind, FormatUse, FrontFace, GpuError, LossReason, MAX_COLOR_TARGETS, MapIntent, Object,
     Origin, ProvokingVertex, RasterDesc, RenderTargetBlend, SamplerDesc as GpuSampler, SlowPath,
@@ -1237,79 +1237,9 @@ impl<B: Backend> Device<B> {
     }
 
     pub fn create_sampler_state(&mut self, d: &SamplerDesc) -> Result<Rc<Sampler<B>>> {
-        let filter = |bit: u32| {
-            if d.filter & bit != 0 {
-                Filter::Linear
-            } else {
-                Filter::Nearest
-            }
-        };
-        if d.filter & !0xd5 != 0 {
-            return not_implemented("minimum and maximum filtering");
-        }
-        let anisotropic = d.filter & 0x40 != 0;
-        // Direct3D takes 0 as 1.
-        if anisotropic && d.max_anisotropy > 16 {
-            return Err(Error::InvalidArg("anisotropy above 16"));
-        }
-        let mut address = [AddressMode::Repeat; 3];
-        for (a, &mode) in address.iter_mut().zip(&d.address) {
-            *a = match mode {
-                1 => AddressMode::Repeat,
-                2 => AddressMode::Mirror,
-                3 => AddressMode::Clamp,
-                4 if self.backend.caps().has(Features::BORDER_COLOR) => AddressMode::Border,
-                5 if self.backend.caps().has(Features::MIRROR_ONCE) => AddressMode::MirrorOnce,
-                4 | 5 => {
-                    return not_implemented("border and mirror-once addressing in the program");
-                }
-                _ => return Err(Error::InvalidArg("unknown address mode")),
-            };
-        }
-        let compare = if d.filter & 0x80 != 0 {
-            Some(compare_fn(d.comparison)?)
-        } else {
-            None
-        };
-        let border = match d.border {
-            [0.0, 0.0, 0.0, 0.0] => BorderColor::TransparentBlack,
-            [0.0, 0.0, 0.0, 1.0] => BorderColor::OpaqueBlack,
-            [1.0, 1.0, 1.0, 1.0] => BorderColor::OpaqueWhite,
-            c => BorderColor::Custom(c.map(f32::to_bits)),
-        };
+        let made = gpu_sampler(d, self.backend.caps())?;
         self.live()?;
         self.bury();
-        let made = GpuSampler {
-            min: if anisotropic {
-                Filter::Linear
-            } else {
-                filter(0x10)
-            },
-            mag: if anisotropic {
-                Filter::Linear
-            } else {
-                filter(0x4)
-            },
-            mip: if anisotropic {
-                Filter::Linear
-            } else {
-                filter(0x1)
-            },
-            address,
-            // WebGPU takes no minimum above the maximum: such a range holds every level at the
-            // minimum.
-            lod_range: [
-                d.min_lod.max(0.0).to_bits(),
-                d.max_lod.clamp(0.0, 32.0).max(d.min_lod.max(0.0)).to_bits(),
-            ],
-            anisotropy: if anisotropic {
-                d.max_anisotropy.max(1) as u16
-            } else {
-                1
-            },
-            compare,
-            border,
-        };
         let gpu = self.backend.create_sampler(&made);
         let gpu = self.gpu(gpu)?;
         let id = self.id();
@@ -1409,6 +1339,7 @@ impl<B: Backend> Device<B> {
         let (mut converted, reads_samples) = shader::convert(bytecode, stage)?;
         let samplers = shader::sampler_slots(&converted);
         let textures = shader::texture_slots(&converted);
+        let mirror_filtered = shader::mirror_filtered_slots(&converted);
         let helpers = Rc::new(shader::Helpers::of(&converted));
         let module = converted.modules.pop().expect("one module");
         if wcontainers_shaders::capabilities(&module.module)
@@ -1433,6 +1364,7 @@ impl<B: Backend> Device<B> {
             bytecode: bytecode.to_vec(),
             samplers,
             textures,
+            mirror_filtered,
             reads_samples,
             helpers,
         });
@@ -1845,4 +1777,101 @@ pub(crate) fn raster_block(d: &RasterizerDesc) -> RasterDesc {
 /// Whether clear values of `format` are integers rather than floats.
 pub(crate) fn integer_format(format: Format) -> bool {
     matches!(format.kind(), FormatKind::Uint | FormatKind::Sint)
+}
+
+/// The back end's sampler for Direct3D's description. Border and mirror-once addressing the back end
+/// lacks clamp; the program applies them (`BorderInShader`, `MirrorOnceInShader`).
+fn gpu_sampler(d: &SamplerDesc, caps: &Caps) -> Result<GpuSampler> {
+    let filter = |bit: u32| {
+        if d.filter & bit != 0 {
+            Filter::Linear
+        } else {
+            Filter::Nearest
+        }
+    };
+    if d.filter & !0xd5 != 0 {
+        return not_implemented("minimum and maximum filtering");
+    }
+    let anisotropic = d.filter & 0x40 != 0;
+    // Direct3D takes 0 as 1.
+    if anisotropic && d.max_anisotropy > 16 {
+        return Err(Error::InvalidArg("anisotropy above 16"));
+    }
+    let mut address = [AddressMode::Repeat; 3];
+    for (a, &mode) in address.iter_mut().zip(&d.address) {
+        *a = match mode {
+            1 => AddressMode::Repeat,
+            2 => AddressMode::Mirror,
+            3 => AddressMode::Clamp,
+            4 if caps.has(Features::BORDER_COLOR) => AddressMode::Border,
+            5 if caps.has(Features::MIRROR_ONCE) => AddressMode::MirrorOnce,
+            4 | 5 => AddressMode::Clamp,
+            _ => return Err(Error::InvalidArg("unknown address mode")),
+        };
+    }
+    let compare = if d.filter & 0x80 != 0 {
+        Some(compare_fn(d.comparison)?)
+    } else {
+        None
+    };
+    let border = match d.border {
+        [0.0, 0.0, 0.0, 0.0] => BorderColor::TransparentBlack,
+        [0.0, 0.0, 0.0, 1.0] => BorderColor::OpaqueBlack,
+        [1.0, 1.0, 1.0, 1.0] => BorderColor::OpaqueWhite,
+        c => BorderColor::Custom(c.map(f32::to_bits)),
+    };
+    Ok(GpuSampler {
+        min: if anisotropic {
+            Filter::Linear
+        } else {
+            filter(0x10)
+        },
+        mag: if anisotropic {
+            Filter::Linear
+        } else {
+            filter(0x4)
+        },
+        mip: if anisotropic {
+            Filter::Linear
+        } else {
+            filter(0x1)
+        },
+        address,
+        // WebGPU takes no minimum above the maximum: such a range holds every level at the
+        // minimum.
+        lod_range: [
+            d.min_lod.max(0.0).to_bits(),
+            d.max_lod.clamp(0.0, 32.0).max(d.min_lod.max(0.0)).to_bits(),
+        ],
+        anisotropy: if anisotropic {
+            d.max_anisotropy.max(1) as u16
+        } else {
+            1
+        },
+        compare,
+        border,
+    })
+}
+
+/// The sampler's state as programs that filter or address in the program read it
+/// (`HelperValue::SamplerState`): filters and address modes as codes in the order of the interface's
+/// enums, the anisotropy, then the level range.
+pub(crate) fn sampler_state(s: &Sampler<impl Backend>) -> [u32; 9] {
+    let m = &s.made;
+    let mut words = [0; 9];
+    for (w, f) in words.iter_mut().zip([m.min, m.mag, m.mip]) {
+        *w = f as u32;
+    }
+    for (w, &mode) in words[3..].iter_mut().zip(&s.desc.address) {
+        *w = match mode {
+            1 => AddressMode::Repeat,
+            2 => AddressMode::Mirror,
+            4 => AddressMode::Border,
+            5 => AddressMode::MirrorOnce,
+            _ => AddressMode::Clamp,
+        } as u32;
+    }
+    words[6] = u32::from(m.anisotropy);
+    words[7..].copy_from_slice(&m.lod_range);
+    words
 }

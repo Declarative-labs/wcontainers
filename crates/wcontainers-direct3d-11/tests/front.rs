@@ -1603,6 +1603,82 @@ fn a_sampler_with_a_level_of_detail_bias_is_read_through_a_program_that_adds_it(
     assert!(!set.contains(&format!(" {fragment}=uniform ")), "{set}");
 }
 
+/// The words of the helper block bound at `binding` in the first binding set of `log` holding one.
+fn helper_words(dev: &Dev, log: &[String], binding: u32) -> Vec<u32> {
+    let key = format!(" {binding}=uniform ");
+    let line = log
+        .iter()
+        .find(|l| l.starts_with("create_binding_set") && l.contains(&key))
+        .unwrap_or_else(|| panic!("no helper block in {log:#?}"));
+    let range = line.split(&key).nth(1).unwrap().split(' ').next().unwrap();
+    let (buffer, rest) = range.split_once('+').unwrap();
+    let (offset, size) = rest.split_once(':').unwrap();
+    let (offset, size): (usize, usize) = (offset.parse().unwrap(), size.parse().unwrap());
+    let bytes = dev.backend.buffer_bytes(buffer.parse().unwrap()).unwrap();
+    bytes[offset..offset + size]
+        .chunks(4)
+        .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+        .collect()
+}
+
+#[test]
+fn border_and_mirror_once_addressing_the_back_end_lacks_is_applied_in_the_program() {
+    let mut dev = device();
+    sampling(&mut dev, "samplers.ps_sample");
+    let fragment = wcontainers_gpu::helper_binding(wcontainers_gpu::ShaderStage::Fragment);
+    // Border in u, mirror-once in v, clamp in w: the program filters through the sampler, which
+    // is made clamping, reading its state, its border colour and the view's components.
+    let border = SamplerDesc {
+        address: [4, 5, 3],
+        border: [0.25, 0.5, 0.75, 1.0],
+        ..SamplerDesc::default_state()
+    };
+    let from = dev.backend.log.len();
+    let border = dev.create_sampler_state(&border).unwrap();
+    dev.set_samplers(PIXEL, 0, &[Some(border)]).unwrap();
+    dev.draw(3, 0);
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    let made = &log[find(&log, "create_sampler")];
+    assert!(made.contains("[Clamp, Clamp, Clamp]"), "{made}");
+    let count = |what: &str| log.iter().filter(|l| l.starts_with(what)).count();
+    assert_eq!(count("create_shader"), 1, "{log:#?}");
+    let words = helper_words(&dev, &log, fragment);
+    let state = [1, 1, 1, 3, 4, 2, 1, 0, 32f32.to_bits()];
+    assert!(words.windows(9).any(|w| w == state), "{words:?}");
+    let colour = [0.25f32, 0.5, 0.75, 1.0].map(f32::to_bits);
+    assert!(words.windows(4).any(|w| w == colour), "{words:?}");
+    assert!(words.contains(&1), "R32_FLOAT has red alone: {words:?}");
+    assert!(dev.backend.slow_paths().count(SlowPath::BorderInShader) >= 2);
+
+    // Mirror-once alone samples natively through the clamping sampler, the program mirroring.
+    let mirror = SamplerDesc {
+        address: [5, 1, 1],
+        ..SamplerDesc::default_state()
+    };
+    let mirror = dev.create_sampler_state(&mirror).unwrap();
+    dev.set_samplers(PIXEL, 0, &[Some(mirror)]).unwrap();
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    assert_eq!(
+        log.iter()
+            .filter(|l| l.starts_with("create_shader"))
+            .count(),
+        1,
+        "{log:#?}"
+    );
+    let words = helper_words(&dev, &log, fragment);
+    let state = [1, 1, 1, 4, 0, 0, 1, 0, 32f32.to_bits()];
+    assert!(words.windows(9).any(|w| w == state), "{words:?}");
+    assert_eq!(
+        dev.backend.slow_paths().count(SlowPath::MirrorOnceInShader),
+        1
+    );
+}
+
 #[test]
 fn a_texture_under_a_minimum_level_clamp_is_sampled_through_a_merged_sampler() {
     let mut dev = device();
@@ -1674,11 +1750,18 @@ fn dual_source_blending_draws_the_programs_second_output_where_the_back_end_blen
 }
 
 #[test]
-fn a_texture_the_back_end_cannot_filter_is_not_sampled_linearly() {
+fn a_texture_the_back_end_cannot_filter_is_filtered_in_the_program() {
     let mut dev = device();
     let uses = &mut dev.backend.caps.formats.uses[wcontainers_gpu::Format::R32Float.index()];
     uses.remove(wcontainers_gpu::FormatUse::FILTER);
     sampling(&mut dev, "samplers.ps_sample");
+    let draws = |dev: &Dev| {
+        dev.backend
+            .log
+            .iter()
+            .filter(|l| l.starts_with("draw "))
+            .count()
+    };
     // Point sampling needs no filtering.
     let point = SamplerDesc {
         filter: 0,
@@ -1688,27 +1771,21 @@ fn a_texture_the_back_end_cannot_filter_is_not_sampled_linearly() {
     dev.set_samplers(PIXEL, 0, &[Some(point)]).unwrap();
     dev.draw(3, 0);
     assert!(dev.removed.is_none());
-    assert_eq!(
-        dev.backend
-            .log
-            .iter()
-            .filter(|l| l.starts_with("draw "))
-            .count(),
-        1
-    );
-    // An empty slot reads Direct3D's default sampler, which filters linearly: the program would
-    // have to filter, which the converter does not build yet.
+    assert_eq!(draws(&dev), 1);
+    assert_eq!(dev.backend.slow_paths().count(SlowPath::FilterInShader), 0);
+    // An empty slot reads Direct3D's default sampler, which filters linearly: the program
+    // filters from loads, reading the default sampler's state.
     dev.set_samplers(PIXEL, 0, &[None]).unwrap();
+    let from = dev.backend.log.len();
     dev.draw(3, 0);
-    assert!(dev.removed.is_some());
-    assert_eq!(
-        dev.backend
-            .log
-            .iter()
-            .filter(|l| l.starts_with("draw "))
-            .count(),
-        1
-    );
+    assert!(dev.removed.is_none());
+    assert_eq!(draws(&dev), 2);
+    let log = log_from(&dev, from);
+    let fragment = wcontainers_gpu::helper_binding(wcontainers_gpu::ShaderStage::Fragment);
+    let words = helper_words(&dev, &log, fragment);
+    let state = [1, 1, 1, 2, 2, 2, 1, 0, 32f32.to_bits()];
+    assert!(words.windows(9).any(|w| w == state), "{words:?}");
+    assert_eq!(dev.backend.slow_paths().count(SlowPath::FilterInShader), 1);
 }
 
 #[test]

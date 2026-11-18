@@ -1403,30 +1403,72 @@ impl<B: Backend> Device<B> {
     /// What a draw asks of `stage`'s program `s`: the sampler slots it reads through a biased
     /// sampler, and the targets' `samples` where it reads them.
     fn stage_variant(&self, stage: usize, s: &Shader<B>, samples: u8) -> StageVariant {
-        let mut lod_bias = 0;
+        let caps = self.backend.caps();
+        let mut v = StageVariant {
+            samples: if s.reads_samples { samples } else { 0 },
+            ..StageVariant::default()
+        };
         if s.samplers != 0 {
             for (i, b) in self.ctx.samplers[stage].iter().enumerate().take(16) {
-                if s.samplers & (1 << i) != 0
-                    && b.as_ref().is_some_and(|b| b.desc.mip_lod_bias != 0.0)
+                let Some(b) = b.as_ref().filter(|_| s.samplers & (1 << i) != 0) else {
+                    continue;
+                };
+                if b.desc.mip_lod_bias != 0.0 {
+                    v.lod_bias |= 1 << i;
+                }
+                // The program filters through a border sampler, every address mode included, and
+                // mirrors once around plain samples.
+                let mirror = b.desc.address.contains(&5) && !caps.has(Features::MIRROR_ONCE);
+                if b.desc.address.contains(&4) && !caps.has(Features::BORDER_COLOR)
+                    || mirror && s.mirror_filtered & (1 << i) != 0
                 {
-                    lod_bias |= 1 << i;
+                    v.border_in_shader |= 1 << i;
+                } else if mirror {
+                    v.mirror_once_in_shader |= 1 << i;
                 }
             }
         }
-        let mut min_lod_clamped = 0;
         if s.textures != 0 {
             for i in 0..self.ctx.resources[stage].len().min(128) {
                 if s.textures & (1 << i) != 0 && self.min_lod_of(stage, i as u32).is_some() {
-                    min_lod_clamped |= 1 << i;
+                    v.min_lod_clamped |= 1 << i;
                 }
             }
         }
-        StageVariant {
-            lod_bias,
-            min_lod_clamped,
-            samples: if s.reads_samples { samples } else { 0 },
-            ..StageVariant::default()
+        // Textures of formats the back end cannot filter, sampled through a filtering sampler (an
+        // empty slot reads Direct3D's default, which filters linearly).
+        for &(t, smp) in &s.reflection.sampled_pairs {
+            let filters = match self.ctx.samplers[stage]
+                .get(smp as usize)
+                .and_then(Option::as_ref)
+            {
+                Some(b) => {
+                    b.made.compare.is_none()
+                        && [b.made.min, b.made.mag, b.made.mip].contains(&Filter::Linear)
+                }
+                None => true,
+            };
+            let unfiltered = match self.ctx.resources[stage]
+                .get(t as usize)
+                .and_then(Option::as_deref)
+            {
+                Some(ShaderView::Texture(view)) => {
+                    !caps.formats.get(view.format).contains(FormatUse::FILTER)
+                }
+                _ => false,
+            };
+            if t < 128 && filters && unfiltered {
+                v.filter_in_shader |= 1 << t;
+            }
         }
+        v
+    }
+
+    /// The sampler bound to `stage`'s `slot`.
+    fn bound_sampler(&self, stage: usize, slot: u32) -> Option<&Sampler<B>> {
+        self.ctx.samplers[stage]
+            .get(slot as usize)
+            .and_then(Option::as_deref)
     }
 
     /// The minimum level-of-detail clamp of the texture view bound to `stage`'s `slot`, in the view's
@@ -1632,7 +1674,7 @@ impl<B: Backend> Device<B> {
         self.update_set(COMPUTE, &[])?;
         if self.stage_variant(COMPUTE, &cs, 1) != StageVariant::default() {
             return not_implemented(
-                "a compute shader sampling through a biased sampler or a clamped texture",
+                "a compute shader sampling in a way the back end's sampler lacks (a bias, a resource clamp, border or mirror-once addressing, an unfilterable format)",
             );
         }
         let key = (
@@ -1883,38 +1925,6 @@ impl<B: Backend> Device<B> {
             };
             if s.made.compare.is_some() != compares {
                 twins.push((b.binding, self.sampler_twin(&s, compares)?));
-            }
-        }
-        // WebGPU and WebGL 2 filter only formats the back end says it filters; the others are
-        // filtered in the program, which the converter does not build yet.
-        for &(t, smp) in &shader.reflection.sampled_pairs {
-            let compares = wanted().any(|b| {
-                b.kind == SlotKind::Sampler
-                    && b.register == smp
-                    && !matches!(stand_in(b.binding), Some(StandIn::DefaultSampler))
-            });
-            // An empty slot reads Direct3D's default sampler, which filters linearly.
-            let linear = !compares
-                && self.ctx.samplers[stage]
-                    .get(smp as usize)
-                    .and_then(Option::as_ref)
-                    .is_none_or(|s| [s.made.min, s.made.mag, s.made.mip].contains(&Filter::Linear));
-            let unfiltered = match self.ctx.resources[stage]
-                .get(t as usize)
-                .and_then(Option::as_deref)
-            {
-                Some(ShaderView::Texture(v)) => !self
-                    .backend
-                    .caps()
-                    .formats
-                    .get(v.format)
-                    .contains(FormatUse::FILTER),
-                _ => false,
-            };
-            if linear && unfiltered {
-                return not_implemented(
-                    "a texture the back end cannot filter sampled linearly (FilterInShader)",
-                );
             }
         }
         let zero_stream = if pulled.is_empty() {
@@ -2247,31 +2257,63 @@ impl<B: Backend> Device<B> {
                 return not_implemented("a helper block larger than 256 bytes");
             }
             for slot in &h.values {
-                let words: [u32; 4] = match slot.value {
-                    HelperValue::DrawBase => [bases[0], bases[1], 0, 0],
+                let mut words = [0u32; 9];
+                let n = match slot.value {
+                    HelperValue::DrawBase => {
+                        words[..3].copy_from_slice(&[bases[0], bases[1], 0]);
+                        3
+                    }
                     HelperValue::DrawArguments => {
                         let (_, offset, indexed) = args.expect("an indirect draw");
-                        [offset / 4, u32::from(indexed), 0, 0]
+                        words[..3].copy_from_slice(&[offset / 4, u32::from(indexed), 0]);
+                        3
                     }
-                    HelperValue::PulledStream { input } => self.pulled_stream(input, bases[1]),
-                    HelperValue::LodBias { sampler } => {
-                        let bias = self.ctx.samplers[stage]
-                            .get(sampler as usize)
-                            .and_then(|s| s.as_ref())
-                            .map_or(0.0, |s| s.desc.mip_lod_bias);
-                        [bias.to_bits(), 0, 0, 0]
+                    HelperValue::PulledStream { input } => {
+                        words[..4].copy_from_slice(&self.pulled_stream(input, bases[1]));
+                        4
+                    }
+                    HelperValue::LodBias { sampler: s } => {
+                        words[0] = self
+                            .bound_sampler(stage, s)
+                            .map_or(0.0, |s| s.desc.mip_lod_bias)
+                            .to_bits();
+                        1
+                    }
+                    HelperValue::SamplerState { sampler: s } => {
+                        words = match self.bound_sampler(stage, s) {
+                            Some(b) => crate::device::sampler_state(b),
+                            None => {
+                                self.default_sampler()?;
+                                crate::device::sampler_state(
+                                    self.zeros.sampler.as_ref().expect("made"),
+                                )
+                            }
+                        };
+                        9
+                    }
+                    HelperValue::BorderColor { sampler: s } => {
+                        let border = self
+                            .bound_sampler(stage, s)
+                            .map_or([0.0; 4], |s| s.desc.border);
+                        words[..4].copy_from_slice(&border.map(f32::to_bits));
+                        4
+                    }
+                    HelperValue::TextureComponents { texture } => {
+                        words[0] = match self.ctx.resources[stage]
+                            .get(texture as usize)
+                            .and_then(Option::as_deref)
+                        {
+                            Some(ShaderView::Texture(v)) => crate::format::components(v.format),
+                            _ => 0b1111,
+                        };
+                        1
                     }
                     HelperValue::MinLod { texture } => {
                         let (clamp, levels) = self.min_lod_of(stage, texture).unwrap_or((0.0, 1));
-                        [clamp.to_bits(), levels, 0, 0]
+                        words[..2].copy_from_slice(&[clamp.to_bits(), levels]);
+                        2
                     }
                     _ => unreachable!("refused at conversion"),
-                };
-                let n = match slot.value {
-                    HelperValue::LodBias { .. } => 1,
-                    HelperValue::MinLod { .. } => 2,
-                    HelperValue::PulledStream { .. } => 4,
-                    _ => 3,
                 };
                 for (k, w) in words[..n].iter().enumerate() {
                     let at = slot.offset as usize + 4 * k;
@@ -2458,6 +2500,15 @@ impl<B: Backend> Device<B> {
         }
         if vk.min_lod_clamped | pk.min_lod_clamped != 0 {
             self.backend.slow_paths().hit(SlowPath::MinLodClamp);
+        }
+        if vk.border_in_shader | pk.border_in_shader != 0 {
+            self.backend.slow_paths().hit(SlowPath::BorderInShader);
+        }
+        if vk.mirror_once_in_shader | pk.mirror_once_in_shader != 0 {
+            self.backend.slow_paths().hit(SlowPath::MirrorOnceInShader);
+        }
+        if vk.filter_in_shader | pk.filter_in_shader != 0 {
+            self.backend.slow_paths().hit(SlowPath::FilterInShader);
         }
         if vk.from_arguments {
             self.backend
