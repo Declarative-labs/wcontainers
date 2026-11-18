@@ -1088,9 +1088,10 @@ run). Scratch is pyro-parked/wcontainers-scratch/runtime; J1's logs are in its `
 - The surface tests at a look-ahead: scratch `j4/surface.sh NAME full|none|bounded`.
 - Reusing a dropped thread's instances: `nix develop -c cargo test -j 4 -p wcontainers-wasmtime --lib --
   --test-threads 3 a_dropped`. Resident size against thread count through the command line program: scratch
-  `j4run2/many.sh LOOK COUNT...` (copy `target/debug/wcontainers` into j4run2/cli first). The check's CPU clock
-  programs: `j4run2/cli/wcontainers --tar j4run2/with-progs4.tar --look-ahead <l> -- /wc/sleepcpu` (or
-  `/wc/cputhreads`). Repeats at bounded ROUNDS times, the first with the translation cache emptied: scratch
+  `j4run2/many.sh LOOK COUNT...` (first copy `target/debug/wcontainers` into j4run2/cli and the check's
+  check-j4a/img/with-progs.tar into j4run2; both copies were deleted at the end of the run). The check's CPU
+  clock programs: `j4run2/cli/wcontainers --tar check-j4a/img/with-progs4.tar --look-ahead <l> --
+  /wc/sleepcpu` (or `/wc/cputhreads`). Repeats at bounded ROUNDS times, the first with the translation cache emptied: scratch
   `j4run2/flake.sh PREFIX ROUNDS`.
 - J3's surface, refusals, back end and runtime tests (Docker with `alpine:3.22` for linux/arm64):
   `nix develop -c cargo test -j 4 -p wcontainers-runtime -p wcontainers-wasmtime -- --test-threads 3`
