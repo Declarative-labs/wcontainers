@@ -342,6 +342,9 @@ pub struct Sampler<B: Backend> {
 pub struct Blend<B: Backend> {
     pub desc: BlendDesc,
     pub gpu: Kept<B, B::Blend>,
+    /// Without the back end's per-target blends: each group of targets that agree (a mask of
+    /// target slots) and the state all of them are drawn with, in a run of their own.
+    pub groups: Vec<(u8, Rc<Blend<B>>)>,
 }
 
 pub struct DepthStencil<B: Backend> {

@@ -59,16 +59,19 @@ pub fn add_public<O: Counted>(o: &O) -> u32 {
     n
 }
 
-/// The program drops a reference: the last gives back the device's and one of the library's.
+/// The program drops a reference: the last gives back the device's and one of the library's. A
+/// release when the program holds none (an object the library still holds, released once too
+/// often) changes nothing and answers 0.
 ///
 /// # Safety
-/// `o` is a live object whose reference the caller held.
+/// `o` is a live object whose reference the caller held, or one the library holds.
 pub unsafe fn release_public<O: Counted>(o: *mut O) -> u32 {
-    let n = unsafe { &*o }
-        .counts()
-        .public
-        .fetch_sub(1, Ordering::Release)
-        - 1;
+    let public = &unsafe { &*o }.counts().public;
+    let Ok(held) = public.try_update(Ordering::Release, Ordering::Relaxed, |n| n.checked_sub(1))
+    else {
+        return 0;
+    };
+    let n = held - 1;
     if n == 0 {
         let device = unsafe { &*o }.child().device().as_raw();
         unsafe { release_private(o) };
