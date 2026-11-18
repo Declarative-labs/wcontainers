@@ -496,6 +496,10 @@ impl<B: Backend> Device<B> {
                 return Err(Error::Invalid("textures live in default or custom heaps"));
             }
             let (format, typeless) = desc.texture_format()?;
+            // The interface's multisampled textures have one layer (WebGPU's rule).
+            if desc.sample_count > 1 && desc.depth_or_array_size > 1 {
+                return Err(Error::NotImplemented("multisampled texture arrays"));
+            }
             let mut usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
             if desc.flags & resource::FLAG_DENY_SHADER_RESOURCE == 0 {
                 usage |= TextureUsage::SAMPLE;
