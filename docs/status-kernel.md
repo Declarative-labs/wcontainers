@@ -84,8 +84,31 @@ Built, each tested against the reference:
 - Backend FLUSH: a file opened with FOPEN_NOFLUSH sends none (no writeback cache here), and an
   ENOSYS answer is remembered (`fc->no_flush`). Not reached by a test: the test server answers
   FLUSH and never sets FOPEN_NOFLUSH. The backend tests passed (18).
+- PROCMAP_QUERY on /proc/<pid>/maps (`do_procmap_query`): the mapping at or after an address with
+  the permissions, sharing and file asked for, its range, flags, offset, device, inode and name;
+  Linux's refusals (E2BIG, EINVAL, ENOENT, ENAMETOOLONG, ESRCH once the memory is gone). A build
+  id is not read: answered as none, counted "proc fields not tracked" detail 7. The maps file's
+  open now refuses one who may not read the process (EACCES, `pid_maps_open`). procaccess
+  `procmap_query_matches_reference`.
+- MSG_MORE on a TCP connection inside the container: bytes short of a whole segment are held
+  back (`TCP_NAGLE_CORK`) until a send without it, a whole segment in the same call (its
+  acknowledgement, at once on loopback, pushes the rest), or the FIN; SIOCOUTQ counts them. A
+  send of nothing pushes nothing, as Linux's. To the outside it stays counted "socket option not
+  acted on". inet `held_back_sends_match_reference`; the counted-options test no longer expects
+  MSG_MORE. Not built: TCP_CORK holding (still counted) and TCP_NODELAY pushing held bytes.
+  Layer 1 seed 9191101 (200 sequences) matched after it; the inet and netprograms tests passed.
 
-Found: msgstress01 forks 2000 processes that each loop msgsnd or msgrcv with IPC_NOWAIT and
+Found: fork09 hung on ours (scratch k6c5/a.tsv, 3038 s): the test backend ran out of its own
+descriptors at 524273 open files (the passthrough server holds two host descriptors per open
+file), so OPEN answered EMFILE and the test stopped opening there; the child's closes then got
+EMFILE from FLUSH (the server dups the descriptor), which Linux's close returns as well; after
+the test killed its processes no backend answer came for 120 s (the watchdog's "hang"). Not yet
+known whether the server stalls under 500000 releases or the kernel waits for an answer it will
+not get. msgstress01 passed in 2328 s with LTP_LIMIT 3600 (reference 18 s; load 60 to 117).
+swapping01 is skipped as the reference's. controllers:controllers still passes where the
+reference skips (below).
+
+Also found: msgstress01 forks 2000 processes that each loop msgsnd or msgrcv with IPC_NOWAIT and
 usleep(10) 100000 times or until the test's 180 s (guest time) run out; on the stand-in a guest
 second is many real seconds, so it is slow, not wrong (rerun with LTP_LIMIT 3600: scratch
 k6c5/a.tsv). Its "Available messages slots" is 15578 on ours (half the free process numbers) where
@@ -3415,7 +3438,17 @@ guest).
 
 ## Questions for the orchestrator (boundary)
 
-None open. (Answered: the alignment fault exit exists now; the machine description stays split.)
+- Page residency: mincore, mlock2's counts (mlock201), smaps' Rss and anon_vma merging after fork
+  (vma01) need to know which pages a program has touched; the Cpu trait does not say. Should the
+  CPU side report touched pages (an addition to the shared crate), or is this a deliberate
+  difference to add to section 15? (K6c, fifth run.)
+- Harness causes of two LTP differences: openat03 (the test backend, fuse-backend-rs's
+  passthrough, has no TMPFILE, so ours answers as Linux's FUSE does with such a server, where the
+  reference's root is overlayfs) and copy_file_range03 (the guest's repeatable clock skips idle
+  waits while the backend stamps real times). Should these be excused as harness causes, or the
+  harness changed (a backend with TMPFILE; LTP runs on a real-time clock)?
+
+Earlier: none open. (Answered: the alignment fault exit exists now; the machine description stays split.)
 
 ## Known issues
 
@@ -3563,32 +3596,37 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-K6c, in this order:
-1. Find why msgstress01 (syscalls and syscalls-ipc) now runs out 900 s (reference 18 s), and
-   why controllers:controllers passes where the reference skips; rerun swapping01 and fork09.
-2. Not section 15, to build, largest first: /proc/<pid>/mem (FOLL_FORCE: reads of PROT_NONE
-   private pages, writes into read-only private mappings copy the page; 4 tests), the cgroup2
-   mount at /sys/fs/cgroup (read only; files in scratch k6c3/cgroup-reference.txt) if the
-   controllers tests still differ, remap_file_pages (4), smaps and pagemap, PROCMAP_QUERY
-   (ioctl10; build ids need the file's notes), IPV6_RTHDR, per-user pipe pages, MSG_MORE on UDP,
-   IOCB_CMD_POLL, /proc/<pid>/attr, /proc/keys, autogroup; then page residency (mincore03,
-   mlock201, vma01) and transparent huge pages, which need the CPU side to say which pages were
-   touched or a decision recorded under Departures.
-3. The slow tests: run the timeouts (k6c4/timeouts-5.txt) with LTP_LIMIT 7200 and 2 jobs, a
-   sample first (gf01, fsx01, rwtest01, creat05, open04, float_bessel, hackbench01,
-   cve-2014-0196), to show each gives the reference's verdict or is slow for a named cause.
-   Fidelity found while looking: `backend::flush` does not honour FOPEN_NOFLUSH (Linux's
-   `fuse_flush` skips the round trip for such a handle without writeback cache) and does not
-   remember an ENOSYS answer (`fc->no_flush`), so it asks again at every close. Fix both; a test
-   server that answers FOPEN_NOFLUSH would then spare the FLUSH per close.
-4. openat03 (O_TMPFILE on the root): the test backend (fuse-backend-rs passthrough) has no
-   TMPFILE; decide whether the test server should answer it, or record it as the backend's.
-5. copy_file_range03: the guest's repeatable clock skips idle waits while the backend stamps
-   real times. Decide (with the orchestrator) whether LTP runs should wait in real time.
-6. A whole LTP comparison at the newest code (about 3.5 hours, 4 jobs), then the independent
-   check (200 random tests plus every test on the gap list).
-7. Whole suite and three fresh layer 1 seeds at the end (seeds used this run: 9191006 to
-   9191012; fresh seeds start at 9191013).
+K6c, in this order (after the fifth run):
+1. Read the whole LTP comparison at b37c8a43 (scratch k6c5/whole.tsv, started 15:31 with 3 jobs,
+   LTP_LIMIT 900; `ltp compare` against crates/wcontainers-kernel-test/ltp/reference-20260930.tsv),
+   commit it as ours-20260930-b37c8a43.tsv, and rerun at the newest code the tests the later
+   commits touch: send02 (MSG_MORE), ioctl10 (PROCMAP_QUERY), cve-2017-2618 (attr), and for the
+   commits before b37c8a43 nothing. Write the table from it.
+2. fork09's hang (K6c, fifth run, Found): find whether the backend server stalls under 500000
+   releases or the kernel waits for an answer it will not get; a kernel wait with no answer coming
+   is a fault to fix.
+3. Not section 15, to build, largest first: the cgroup2 mount at /sys/fs/cgroup (read-only,
+   Docker's: files in scratch k6c3/cgroup-reference.txt, values live: cgroup.procs, pids.current,
+   memory.current, cpu.stat; runtimes read cpu.max and memory.max) for controllers:controllers;
+   Docker's masked paths (/proc/keys, /proc/kcore, /proc/timer_list, /proc/interrupts as /dev/null
+   binds, /proc/scsi and /sys/firmware as empty read-only tmpfs, /proc/bus, /proc/fs, /proc/irq,
+   /proc/sysrq-trigger read-only binds; the reference's mountinfo shows each) for cve-2016-7042;
+   MADV_GUARD_INSTALL and REMOVE (madvise12; per-page markers kept through mprotect, fork and
+   mremap); IOCB_CMD_POLL (io_submit04); smaps and pagemap (mlock05, mmap12; they need page
+   residency, see Questions); hugetlb memfd files (memfd_create04: ours answers ENOSYS, which is
+   wrong for a machine that shows /sys/kernel/mm/hugepages; a hugetlbfs file with none reserved
+   would be made, ENODEV for sizes not offered); layout randomization (aslr01; randomize_va_space
+   is 2 on the reference). Then TCP_CORK holding and TCP_NODELAY pushing held bytes.
+4. IPV6_RTHDR (setsockopt11, cve-2026-53362): a routing header on IPv6 packets the host's
+   connections cannot carry; proposed for the gap list under "the network is not Linux's network
+   stack" (both tests also use UDP_CORK over IPv6 with splice and tst_pollute_memory).
+5. The slow tests: the comparison's timeouts with LTP_LIMIT 7200 and 2 jobs, a sample first (gf01,
+   fsx01, rwtest01, creat05, open04, float_bessel, hackbench01, cve-2014-0196), to show each
+   gives the reference's verdict (msgstress01 did: pass in 2328 s) or is slow for a named cause.
+6. The Questions for the orchestrator (page residency; openat03 and copy_file_range03).
+7. Finalise the gap list, then the independent check (200 random tests plus every test on the
+   gap list), the whole suite and three fresh layer 1 seeds (fresh seeds start at 9191013; this
+   run used 9191100 and 9191101 for its own checks).
 
 After K6b (fifth run), in this order (none of these holds K6b):
 1. inotify on a backend root (tests/inotify.rs, ignored with its reason): IN_EXCL_UNLINK needs
