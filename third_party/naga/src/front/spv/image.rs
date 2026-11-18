@@ -34,7 +34,14 @@ impl super::BlockContext<'_> {
                 Ok(self.module.global_variables[handle].ty)
             }
             crate::Expression::FunctionArgument(i) => Ok(self.arguments[i as usize].ty),
-            crate::Expression::Access { base, .. } => Ok(self.get_image_expr_ty(base)?),
+            // An element of an array of images has the array's element type.
+            crate::Expression::Access { base, .. } | crate::Expression::AccessIndex { base, .. } => {
+                let ty = self.get_image_expr_ty(base)?;
+                match self.module.types[ty].inner {
+                    crate::TypeInner::BindingArray { base, .. } => Ok(base),
+                    _ => Ok(ty),
+                }
+            }
             ref other => Err(Error::InvalidImageExpression(other.clone())),
         }
     }

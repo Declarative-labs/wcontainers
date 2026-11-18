@@ -1,7 +1,9 @@
 //! DXIL through dxil-spirv (C++, built by `build.rs`) to SPIR-V, read by naga's SPIR-V reader, then
 //! given the binding rule of plan section 6.4 and stripped of what WGSL cannot express.
 
+mod arrays;
 mod images;
+mod nonfinite;
 
 use crate::ConvertError;
 use alloc::format;
@@ -206,7 +208,7 @@ pub(crate) fn lower(
     dxil: &[u8],
     variant: &VariantKey,
 ) -> Result<(Module, Reflection, ShaderStage), ConvertError> {
-    let (mut spirv, resources) = to_spirv(dxil, variant.samples)?;
+    let (mut spirv, mut resources) = to_spirv(dxil, variant.samples)?;
     let declared = images::prepare(&mut spirv);
     let options = naga::front::spv::Options {
         adjust_coordinate_space: false,
@@ -216,6 +218,8 @@ pub(crate) fn lower(
     let mut module = naga::front::spv::Frontend::new(spirv.iter().copied(), &options)
         .parse()
         .map_err(|e| ConvertError::Reader(format!("{e}")))?;
+    nonfinite::calls(&mut module)?;
+    arrays::split(&mut module, &mut resources)?;
     let mut atomics = images::texel_atomics(&mut module)?;
     // WebGPU's storage buffers are read-only or read-write; one the program only writes is the latter.
     for (_, v) in module.global_variables.iter_mut() {

@@ -32,8 +32,6 @@ pub(super) struct Declared {
     storage: bool,
     /// A typed buffer, not a storage image.
     buffer: bool,
-    /// A storage image declared without a format (one with a format is one atomics use).
-    formatless: bool,
 }
 
 impl Declared {
@@ -123,7 +121,6 @@ pub(super) fn prepare(words: &mut [u32]) -> Vec<Declared> {
                 binding,
                 storage,
                 buffer: buffer(words, i),
-                formatless: formatless(words, i),
             });
         }
     }
@@ -1338,7 +1335,7 @@ pub(super) fn remap(atomics: &mut [TexelAtomic], moved: &[Handle<Function>]) {
 }
 
 /// Brings the reader's typed buffers and storage images to their final forms: typed buffers by the
-/// variant's route, storage images read through buffers where the variant says, formatless storage
+/// variant's route, storage images read through buffers where the variant says, other storage
 /// images of the bound views' formats, and the stand-ins of `atomics` written. Atomic operations on a
 /// storage image are refused unless it is read through a buffer. Runs after the bindings are
 /// numbered and the helper block for the draw's bases is made.
@@ -1393,7 +1390,8 @@ pub(super) fn finish(
         } else if uses[i].atomic {
             // WebGPU has no atomics on storage textures.
             return Err(ConvertError::Unsupported("StorageImageAtomics"));
-        } else if d.formatless {
+        } else {
+            // dxil-spirv's own format (R32 where the program reads) is not the view's.
             storage_image(module, variant, *var, d, uses[i])?;
         }
     }
