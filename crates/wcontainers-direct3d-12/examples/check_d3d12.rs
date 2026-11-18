@@ -521,6 +521,64 @@ fn answers() -> windows::core::Result<String> {
         };
         line(&format!("heap_flag_{:#x}", 1 << bit), code(result));
     }
+    // `ALLOW_SHADER_ATOMICS` on textures, plain and for unordered access, and on a buffer for
+    // unordered access.
+    for (name, dimension, flags) in [
+        (
+            "texture",
+            D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+            D3D12_RESOURCE_FLAG_NONE,
+        ),
+        (
+            "uav_texture",
+            D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+        ),
+        (
+            "uav_buffer",
+            D3D12_RESOURCE_DIMENSION_BUFFER,
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+        ),
+    ] {
+        let buffer = dimension == D3D12_RESOURCE_DIMENSION_BUFFER;
+        let mut r: Option<ID3D12Resource> = None;
+        let result = unsafe {
+            device.CreateCommittedResource(
+                &D3D12_HEAP_PROPERTIES {
+                    Type: D3D12_HEAP_TYPE_DEFAULT,
+                    ..Default::default()
+                },
+                D3D12_HEAP_FLAG_ALLOW_SHADER_ATOMICS,
+                &D3D12_RESOURCE_DESC {
+                    Dimension: dimension,
+                    Width: if buffer { 65536 } else { 64 },
+                    Height: if buffer { 1 } else { 64 },
+                    DepthOrArraySize: 1,
+                    MipLevels: 1,
+                    Format: if buffer {
+                        DXGI_FORMAT_UNKNOWN
+                    } else {
+                        DXGI_FORMAT_R32_UINT
+                    },
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
+                    },
+                    Layout: if buffer {
+                        D3D12_TEXTURE_LAYOUT_ROW_MAJOR
+                    } else {
+                        D3D12_TEXTURE_LAYOUT_UNKNOWN
+                    },
+                    Flags: flags,
+                    ..Default::default()
+                },
+                D3D12_RESOURCE_STATE_COMMON,
+                None,
+                &mut r,
+            )
+        };
+        line(&format!("heap_flag_atomics_{name}"), code(result));
+    }
     // Buffers in custom heaps the CPU sees, plain and for unordered access.
     for (name, page, flags) in [
         (

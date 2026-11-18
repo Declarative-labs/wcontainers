@@ -67,7 +67,7 @@ pub use reflect::{
     EARLY_DEPTH_BINDING, EARLY_STENCIL_BINDING, HELPER_SET, HelperSlot, HelperValue, Interpolation,
     LinkedValues, ReflectedBinding, Reflection, ScalarKind, SlotKind, SourceStage, StageExtras,
     StageValue, SystemValue, TARGET_COPY_BINDING, TEXEL_BUFFER_TEXTURE_WIDTH, TargetInShader,
-    TexelBufferRoute, VariantFlags, VariantKey, helper_binding,
+    TexelBufferRoute, VariantFlags, VariantKey, ViewComponent, helper_binding,
 };
 pub use resource::{AddressMode, BorderColor, CompareFn, Filter};
 pub use resource::{

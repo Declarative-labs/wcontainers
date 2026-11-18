@@ -11,6 +11,7 @@
 
 mod abi;
 mod base;
+mod cache;
 mod com;
 #[macro_use]
 mod exports;
@@ -36,7 +37,7 @@ use windows::Win32::Foundation::{E_INVALIDARG, E_NOINTERFACE, E_POINTER, S_FALSE
 use windows::Win32::Graphics::Direct3D::ID3DBlob;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::{
-    DXGI_ERROR_UNSUPPORTED, IDXGIAdapter, IDXGIFactory1, IDXGIFactory4,
+    DXGI_ERROR_UNSUPPORTED, IDXGIAdapter, IDXGIFactory1, IDXGIFactory7,
 };
 use windows::core::{GUID, HRESULT, IUnknown, Interface};
 
@@ -97,7 +98,7 @@ pub unsafe extern "system" fn wc_CreateDXGIFactory2(
             None => E_NOINTERFACE,
         };
     }
-    let factory: IDXGIFactory4 = Factory::new(flags).into();
+    let factory: IDXGIFactory7 = Factory::new(flags).into();
     // SAFETY: as the caller passed them.
     unsafe { hand_out(&factory, riid, out) }
 }

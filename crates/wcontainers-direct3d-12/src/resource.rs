@@ -55,11 +55,14 @@ pub enum HeapType {
     Shared,
 }
 
-/// `D3D12_HEAP_FLAGS`: every bit this desktop's Windows 10 runtime takes, and the deny flags. It
-/// refuses `ALLOW_SHADER_ATOMICS` (0x400) as undefined (measured by `check_d3d12 answers`).
+/// `D3D12_HEAP_FLAGS`: every bit this desktop's Windows 10 runtime takes, and the deny flags.
 const HEAP_FLAGS_DEFINED: u32 =
     0x1 | 0x4 | 0x8 | 0x20 | 0x40 | 0x80 | 0x100 | 0x200 | 0x800 | 0x1000 | 0x2000;
 const HEAP_FLAGS_DENY: u32 = 0x4 | 0x40 | 0x80;
+/// `ALLOW_SHADER_ATOMICS`: that runtime takes it for committed resources allowing unordered
+/// access and refuses it otherwise (measured by `check_d3d12 answers`). Atomics on one adapter
+/// need nothing of the memory.
+const HEAP_FLAG_SHADER_ATOMICS: u32 = 0x400;
 
 /// The heap flags asking for an ability the front lacks, each with its reason. The others are
 /// honoured as they are: resources are always resident and memory is zeroed anyway.
@@ -72,10 +75,15 @@ const HEAP_FLAGS_REFUSED: [(u32, &str); 6] = [
     (0x2000, "heaps with manual write tracking"),
 ];
 
-/// Checks heap flags: refuses undefined bits and, for committed resources (`committed`), the deny
-/// flags, as Direct3D 12 does; reports as not done those asking for an ability the front lacks.
-pub fn check_heap_flags(flags: u32, committed: bool) -> Result<(), Error> {
-    if flags & !HEAP_FLAGS_DEFINED != 0 || (committed && flags & HEAP_FLAGS_DENY != 0) {
+/// Checks heap flags: refuses undefined bits and, for committed resources (`committed`, whether
+/// the resource allows unordered access), the deny flags, as Direct3D 12 does; reports as not
+/// done those asking for an ability the front lacks.
+pub fn check_heap_flags(flags: u32, committed: Option<bool>) -> Result<(), Error> {
+    let defined = match committed {
+        Some(true) => HEAP_FLAGS_DEFINED | HEAP_FLAG_SHADER_ATOMICS,
+        _ => HEAP_FLAGS_DEFINED,
+    };
+    if flags & !defined != 0 || (committed.is_some() && flags & HEAP_FLAGS_DENY != 0) {
         return Err(Error::Invalid("heap flags"));
     }
     match HEAP_FLAGS_REFUSED.iter().find(|(bit, _)| flags & bit != 0) {
@@ -93,7 +101,7 @@ pub fn check_heap(alignment: u64, flags: u32) -> Result<(), Error> {
     if flags & 0x8 != 0 {
         return Err(Error::Invalid("a heap allowing display"));
     }
-    check_heap_flags(flags, false)
+    check_heap_flags(flags, None)
 }
 
 /// `D3D12_CPU_PAGE_PROPERTY` values.

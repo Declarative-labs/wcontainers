@@ -67,6 +67,58 @@ fn blit_model_has_one_buffer_and_srgb_is_encoded() {
 }
 
 #[test]
+fn sequential_blit_buffers_move_down_at_each_present() {
+    let mut b = Recorder::new();
+    let mut chain = SwapChain::new(&mut b, 1, &desc(28, 3, Model::Sequential)).unwrap();
+    assert!(chain.buffer(2).is_some() && chain.buffer(3).is_none());
+    let id = |i: u32| format!("{:?}", chain.buffer(i).unwrap());
+    let buffers = [id(0), id(1), id(2)];
+    let start = b.calls.len();
+    chain.present(&mut b, 0).unwrap();
+    assert_eq!(chain.current_index(), 0);
+    let calls = &b.calls[start..];
+    let copies: Vec<(String, String)> = calls
+        .iter()
+        .filter(|c| c.starts_with("copy_texture "))
+        .map(|c| {
+            let ids: Vec<String> = c
+                .match_indices("texture: ")
+                .map(|(at, _)| {
+                    let rest = &c[at + "texture: ".len()..];
+                    rest[..rest.find(',').unwrap()].to_string()
+                })
+                .collect();
+            (ids[0].clone(), ids[1].clone())
+        })
+        .collect();
+    // Buffer 0 to a spare texture, 1 to 0, 2 to 1, the spare to 2; all after the present copy and
+    // before the submit.
+    let spare = copies[0].1.clone();
+    assert!(!buffers.contains(&spare));
+    assert_eq!(
+        copies,
+        [
+            (buffers[0].clone(), spare.clone()),
+            (buffers[1].clone(), buffers[0].clone()),
+            (buffers[2].clone(), buffers[1].clone()),
+            (spare, buffers[2].clone()),
+        ]
+    );
+    let at = |k: &str| calls.iter().position(|c| c.starts_with(k)).unwrap();
+    assert!(at("end_pass") < at("copy_texture") && at("copy_texture") < at("submit"));
+    assert_eq!(
+        b.slow_paths()
+            .count(wcontainers_gpu::SlowPath::SequentialBuffersCopied),
+        1
+    );
+    // One buffer moves nowhere.
+    let mut b = Recorder::new();
+    let mut chain = SwapChain::new(&mut b, 1, &desc(28, 1, Model::Sequential)).unwrap();
+    chain.present(&mut b, 0).unwrap();
+    assert!(b.named("copy_texture").is_empty());
+}
+
+#[test]
 fn descriptions_dxgi_refuses_are_refused() {
     let mut b = Recorder::new();
     for bad in [

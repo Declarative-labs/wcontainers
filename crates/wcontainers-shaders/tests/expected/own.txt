@@ -53,6 +53,7 @@ ps_coarse.dxbc	ok
 ps_depth.dxbc	ok
 ps_deriv.dxbc	ok-wgsl glsl-write
 ps_dual.dxbc	ok
+ps_fill.dxbc	ok
 ps_filter.dxbc	ok-wgsl glsl-compile
 ps_flat.dxbc	ok
 ps_ftoi.dxbc	ok
@@ -66,6 +67,7 @@ ps_loop.dxbc	ok
 ps_mingather.dxbc	ok-wgsl glsl-compile
 ps_minlod.dxbc	ok
 ps_mirror.dxbc	ok
+ps_msarray.dxbc	unsupported MultisampledArrayTexture
 ps_negate.dxbc	ok
 ps_offset.dxbc	ok
 ps_pack.dxbc	ok

@@ -5,6 +5,7 @@
 
 use wcontainers_gpu::{
     BindingEntry, BindingResource, BufferRange, MAX_BINDING_SETS, ReflectedBinding, SlotKind,
+    ViewComponent,
 };
 
 use super::*;
@@ -39,7 +40,7 @@ pub(super) fn null_shapes(bindings: &[StageBinding]) -> Vec<(null::Shape, bool)>
     bindings
         .iter()
         .filter_map(|b| {
-            let writable = matches!(b.form, Form::Image { writable: true });
+            let writable = matches!(b.form, Form::Image { writable: true, .. });
             b.shape.map(|s| (s, writable))
         })
         .collect()
@@ -52,8 +53,8 @@ enum Form {
     Plain,
     /// A buffer of the storage address space (raw and structured views); writable or not.
     Buffer { writable: bool },
-    /// A storage texture; writable or not.
-    Image { writable: bool },
+    /// A storage texture; read, written or both.
+    Image { read: bool, writable: bool },
 }
 
 /// `D3D12_SHADER_VISIBILITY` of each graphics stage.
@@ -113,6 +114,7 @@ pub(super) fn stage_bindings(
                         },
                     ) => {
                         form = Form::Image {
+                            read: access.contains(naga::StorageAccess::LOAD),
                             writable: access.contains(naga::StorageAccess::STORE),
                         };
                     }
@@ -274,6 +276,13 @@ impl RootState {
     }
 }
 
+/// A draw's or dispatch's binding sets, with the program made for what they bind where it is
+/// not the pipeline's own.
+pub(super) type BoundSets<B> = (
+    [Option<<B as Backend>::BindingSet>; MAX_BINDING_SETS],
+    Option<(<B as Backend>::Program, Helpers)>,
+);
+
 /// A resource of a binding set, held while the set is made.
 pub(super) enum Held<B: Backend> {
     Uniform(B::Buffer, u64, u64),
@@ -293,7 +302,9 @@ impl<B: Backend> Device<B> {
     /// of the API stages `only` (`D3D12_SHADER_VISIBILITY`s), or of every stage where it is
     /// empty. `extra` are
     /// read-only storage buffers (binding, buffer, offset, size) of the pulled vertex streams,
-    /// added to set 0 for the back end's stages `extra_stages`.
+    /// added to set 0 for the back end's stages `extra_stages`. With `program` (`Some` of
+    /// `bound_program`'s `vertex_variant`), also the pixel or compute program for what they
+    /// bind, whose added bindings they hold.
     pub(super) fn binding_sets(
         &mut self,
         state: &RootState,
@@ -301,7 +312,8 @@ impl<B: Backend> Device<B> {
         only: &[u32],
         extra: &[(u32, &B::Buffer, u64, u64)],
         extra_stages: StageSet,
-    ) -> Result<[Option<B::BindingSet>; MAX_BINDING_SETS], Error> {
+        program: Option<bool>,
+    ) -> Result<BoundSets<B>, Error> {
         let mut sets: [Option<B::BindingSet>; MAX_BINDING_SETS] = Default::default();
         let mut bindings = std::mem::take(&mut self.pipelines[pid.0 as usize].bindings);
         let mut others = Vec::new();
@@ -316,7 +328,11 @@ impl<B: Backend> Device<B> {
         };
         if bindings.is_empty() && extra.is_empty() {
             restore(self, bindings, others);
-            return Ok(sets);
+            self.clear_bound();
+            return match program {
+                Some(v) => Ok((sets, self.bound_program(pid, v)?)),
+                None => Ok((sets, None)),
+            };
         }
         let result = self.resolve(state, &bindings);
         let held = match result {
@@ -326,6 +342,35 @@ impl<B: Backend> Device<B> {
                 return Err(e);
             }
         };
+        let bound = match program.map(|v| self.bound_program(pid, v)) {
+            Some(Ok(b)) => b,
+            Some(Err(e)) => {
+                restore(self, bindings, others);
+                return Err(e);
+            }
+            None => None,
+        };
+        // The layers after the first of the multisampled arrays the program reads.
+        let mut layers = Vec::new();
+        for &(set, binding, slot, layer) in bound.as_ref().map_or(&[][..], |b| &b.1.layers) {
+            let found = self
+                .bound_layers
+                .iter()
+                .find(|l| l.1 == slot)
+                .and_then(|l| {
+                    l.3.get(layer as usize - 1)
+                        .map(|view| (set, binding, l.2, view))
+                });
+            match found {
+                Some(f) => layers.push(f),
+                None => {
+                    restore(self, bindings, others);
+                    return Err(Error::Invalid(
+                        "a multisampled array's layer the draw lacks",
+                    ));
+                }
+            }
+        }
         for (set, slot) in sets.iter_mut().enumerate() {
             let entries: Vec<BindingEntry<'_, B>> =
                 held.iter()
@@ -365,6 +410,13 @@ impl<B: Backend> Device<B> {
                             }
                         },
                     })
+                    .chain(layers.iter().filter(|l| l.0 as usize == set).map(
+                        |&(_, binding, stages, view)| BindingEntry {
+                            binding,
+                            stages,
+                            resource: BindingResource::Texture(view),
+                        },
+                    ))
                     .chain(extra.iter().filter(|_| set == 0).map(
                         |&(binding, buffer, offset, size)| BindingEntry {
                             binding,
@@ -392,7 +444,7 @@ impl<B: Backend> Device<B> {
             }
         }
         restore(self, bindings, others);
-        Ok(sets)
+        Ok((sets, bound))
     }
 
     /// Whether the root arguments the bindings of pipeline `pid` read are all set. Direct3D 12
@@ -419,6 +471,21 @@ impl<B: Backend> Device<B> {
         set
     }
 
+    /// Forgets what the last binding sets bound.
+    fn clear_bound(&mut self) {
+        self.bound_formats.clear();
+        self.bound_helpers.clear();
+        self.bound_sampling.clear();
+        self.bound_through.clear();
+        self.bound_clamps.clear();
+        self.bound_samplers.clear();
+        self.bound_unfiltered.clear();
+        self.bound_swizzles.clear();
+        self.bound_layers.clear();
+        // Views read through buffers before a binding failed.
+        self.through.clear();
+    }
+
     /// Each binding's resource, by its index in `bindings`.
     fn resolve(
         &mut self,
@@ -430,15 +497,7 @@ impl<B: Backend> Device<B> {
             .clone()
             .ok_or(Error::Invalid("drawing with no root signature"))?;
         let mut held = Vec::with_capacity(bindings.len());
-        self.bound_formats.clear();
-        self.bound_helpers.clear();
-        self.bound_sampling.clear();
-        self.bound_through.clear();
-        self.bound_clamps.clear();
-        self.bound_samplers.clear();
-        self.bound_unfiltered.clear();
-        // Views read through buffers before a binding failed.
-        self.through.clear();
+        self.clear_bound();
         for (index, b) in bindings.iter().enumerate() {
             let source = locate(&root, b).ok_or(Error::Invalid(
                 "the bound root signature lacks a binding a shader reads",
@@ -499,7 +558,7 @@ impl<B: Backend> Device<B> {
                             self.buffer_view(&v, false)?
                         }
                         (SlotKind::Texture, Descriptor::ShaderResource(v)) => {
-                            let view = self.shader_resource(&v, b.compared)?;
+                            let view = self.shader_resource(&v, b)?;
                             self.note_clamp(&v, b)?;
                             self.note_filtering(&v, b)?;
                             let components = dxgi(v.format)?.components();
@@ -525,15 +584,18 @@ impl<B: Backend> Device<B> {
                                 writable,
                                 SlowPath::AtomicsThroughBuffer,
                             )?,
-                            Form::Image { writable } if !self.stores(v.format) => self
-                                .texels_through(
+                            Form::Image { read, writable }
+                                if !self.stores(v.format, read, writable) =>
+                            {
+                                self.texels_through(
                                     &v,
                                     b,
                                     writable,
                                     SlowPath::StorageFormatThroughBuffer,
-                                )?,
+                                )?
+                            }
                             Form::Buffer { writable } => self.buffer_view(&v, writable)?,
-                            Form::Image { writable } => {
+                            Form::Image { writable, .. } => {
                                 self.note(v.resource, writable);
                                 let view = self.storage_texture(&v)?;
                                 self.bound_formats.push((
@@ -597,7 +659,7 @@ impl<B: Backend> Device<B> {
                     writable,
                 }
             }
-            (_, Form::Image { writable }) => {
+            (_, Form::Image { writable, .. }) => {
                 let shape = b
                     .shape
                     .ok_or(Error::NotImplemented("null views of this storage texture"))?;
@@ -859,14 +921,20 @@ impl<B: Backend> Device<B> {
         Ok(s)
     }
 
-    /// The back end stores into textures of DXGI format `value`.
-    fn stores(&self, value: u32) -> bool {
+    /// A storage texture of DXGI format `value` that the program reads, writes or both binds
+    /// as one on the back end. Read and written ones take only the 32-bit single-channel formats,
+    /// WGSL's `read_write` formats, as the converter does.
+    fn stores(&self, value: u32, read: bool, writable: bool) -> bool {
         dxgi(value).is_ok_and(|f| {
-            self.backend
-                .caps()
-                .formats
-                .get(f)
-                .contains(FormatUse::STORAGE_WRITE)
+            let uses = self.backend.caps().formats.get(f);
+            match (read, writable) {
+                (true, true) => {
+                    matches!(f, Format::R32Float | Format::R32Uint | Format::R32Sint)
+                        && uses.contains(FormatUse::STORAGE_READ | FormatUse::STORAGE_WRITE)
+                }
+                (true, false) => uses.contains(FormatUse::STORAGE_READ),
+                _ => uses.contains(FormatUse::STORAGE_WRITE),
+            }
         })
     }
 
@@ -915,28 +983,25 @@ impl<B: Backend> Device<B> {
         )
     }
 
-    /// The texture view a shader resource view names; `compared` for a program reading it by
-    /// comparison.
+    /// The texture view a shader resource view bound for `b` names. A component mapping other
+    /// than what the format reads, and a multisampled array's layer count, are noted for the
+    /// program's variant (`formats.rs`); only pixel and compute programs are converted for them.
     fn shader_resource(
         &mut self,
         v: &ResourceView,
-        compared: bool,
+        b: &StageBinding,
     ) -> Result<B::TextureView, Error> {
-        // The stencil views read their stencil in green, which `components` does not say.
-        let components = match v.format {
-            22 | 47 => 0b1111,
-            f => dxgi(f).map_or(0b1111, |f| f.components()),
+        // Direct3D's stencil views read the stencil in green, the interface's in the first
+        // component.
+        let stencil = matches!(v.format, 22 | 47);
+        let components = dxgi(v.format).map_or(0b1111, |f| f.components());
+        let swizzle = match stencil || !reads_as_identity(v.mapping, components) {
+            true => Some(
+                view_mapping(v.mapping, stencil)
+                    .ok_or(Error::Invalid("a shader resource view's component mapping"))?,
+            ),
+            false => None,
         };
-        if !reads_as_identity(v.mapping, components) {
-            self.messages.push(format!(
-                "a shader resource view's component mapping {:#x} of format {} reads other than \
-                 its texels' components",
-                v.mapping, v.format
-            ));
-            return Err(Error::NotImplemented(
-                "component mappings other than identity",
-            ));
-        }
         let (texture_desc, mips) = match self.resources.get(v.resource.0 as usize) {
             Some(Resource {
                 storage: Storage::Texture { desc, .. },
@@ -944,8 +1009,20 @@ impl<B: Backend> Device<B> {
             }) => (*desc, desc.mip_levels),
             _ => return Err(Error::NotImplemented("buffers read through views")),
         };
+        let reconverted = matches!(b.visibility, 0 | PIXEL);
+        if let Some(map) = swizzle {
+            if !reconverted {
+                return Err(Error::NotImplemented(
+                    "a component mapping or stencil view read in a vertex, geometry, hull or \
+                     domain shader",
+                ));
+            }
+            self.backend.slow_paths().hit(SlowPath::SwizzleInShader);
+            self.bound_swizzles
+                .push((b.visibility, b.binding.slot(), map));
+        }
         // Comparison sampling reads a texture not stored in a depth format through its depth twin.
-        let (resource, depth) = if compared && !texture_desc.format.is_depth_stencil() {
+        let (resource, depth) = if b.compared && !texture_desc.format.is_depth_stencil() {
             let (twin, format) = self.depth_twin(v.resource)?;
             (twin, Some(format))
         } else {
@@ -953,7 +1030,9 @@ impl<B: Backend> Device<B> {
         };
         let (dimension, arrayed) = match v.dimension {
             4 | 6 => (ViewDimension::D2, false),
-            5 | 7 => (ViewDimension::D2Array, true),
+            5 => (ViewDimension::D2Array, true),
+            // A multisampled array is read as a texture per layer (`VariantKey::texture_layers`).
+            7 => (ViewDimension::D2, true),
             8 => (ViewDimension::D3, false),
             9 => (ViewDimension::Cube, false),
             10 => (ViewDimension::CubeArray, true),
@@ -974,29 +1053,46 @@ impl<B: Backend> Device<B> {
             _ => 1,
         };
         self.note(resource, false);
-        // The stencil of a depth-stencil texture, which Direct3D gives in the second component
-        // and the interface's stencil views in the first: refused until views can swizzle.
-        if matches!(v.format, 22 | 47) {
-            return Err(Error::NotImplemented(
-                "stencil read through a view (its component needs a view swizzle)",
-            ));
-        }
         let format = match depth {
             Some(f) => f,
             None => dxgi(v.format)?,
         };
-        self.texture_view(
-            resource,
-            TextureViewDesc {
-                format,
-                dimension,
-                base_mip: v.mip,
-                mip_count,
-                base_layer: v.first_layer,
-                layer_count,
-                stencil: false,
-            },
-        )
+        let desc = TextureViewDesc {
+            format,
+            dimension,
+            base_mip: v.mip,
+            mip_count,
+            base_layer: v.first_layer,
+            layer_count,
+            stencil,
+        };
+        if v.dimension != 7 {
+            return self.texture_view(resource, desc);
+        }
+        if layer_count != 1 && !reconverted {
+            return Err(Error::NotImplemented(
+                "a multisampled array of several layers read in a vertex, geometry, hull or \
+                 domain shader",
+            ));
+        }
+        if layer_count == 0 {
+            return Err(Error::Invalid("a multisampled array view of no layer"));
+        }
+        let one = |layer| TextureViewDesc {
+            base_layer: layer,
+            layer_count: 1,
+            ..desc
+        };
+        let first = self.texture_view(resource, one(v.first_layer))?;
+        let mut rest = Vec::with_capacity(layer_count as usize - 1);
+        for layer in v.first_layer + 1..v.first_layer + layer_count {
+            rest.push(self.texture_view(resource, one(layer))?);
+        }
+        if layer_count > 1 {
+            self.bound_layers
+                .push((b.visibility, b.binding.slot(), b.stages, rest));
+        }
+        Ok(first)
     }
 
     /// The back end's sampler for a sampler descriptor bound for `b`, made once per description;
@@ -1153,9 +1249,47 @@ fn reads_as_identity(mapping: u32, components: u32) -> bool {
     })
 }
 
+/// The components a shader resource view of `mapping` reads, as the program applies them to
+/// the interface's view; `stencil` for Direct3D's stencil views, whose texels hold the stencil in
+/// green and the interface's in the first component (the others read zero, alpha one). `None`
+/// for a mapping naming no component or value.
+fn view_mapping(mapping: u32, stencil: bool) -> Option<[ViewComponent; 4]> {
+    use ViewComponent as C;
+    let mut out = [C::Zero; 4];
+    for (i, c) in out.iter_mut().enumerate() {
+        *c = match ((mapping >> (3 * i)) & 7, stencil) {
+            (0, false) => C::R,
+            (1, false) => C::G,
+            (2, false) => C::B,
+            (3, false) => C::A,
+            (1, true) => C::R,
+            (0 | 2, true) | (4, _) => C::Zero,
+            (3, true) | (5, _) => C::One,
+            _ => return None,
+        };
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::reads_as_identity;
+    use super::{reads_as_identity, view_mapping};
+    use wcontainers_gpu::ViewComponent as C;
+
+    #[test]
+    fn stencil_views_read_the_stencil_where_their_mapping_names_green() {
+        let map = |c: [u32; 4]| c[0] | c[1] << 3 | c[2] << 6 | c[3] << 9 | 1 << 12;
+        assert_eq!(
+            view_mapping(0x1688, true),
+            Some([C::Zero, C::R, C::Zero, C::One])
+        );
+        assert_eq!(view_mapping(map([1, 1, 1, 1]), true), Some([C::R; 4]));
+        assert_eq!(
+            view_mapping(map([2, 1, 0, 5]), false),
+            Some([C::B, C::G, C::R, C::One])
+        );
+        assert_eq!(view_mapping(map([0, 1, 2, 6]), false), None);
+    }
 
     #[test]
     fn mappings_read_as_identity_only_where_each_component_reads_the_same() {

@@ -16,13 +16,14 @@
 use super::*;
 use crate::dxbc::{Kind, TypedView};
 use pull::Helpers;
-use wcontainers_gpu::Filter;
+use wcontainers_gpu::{Filter, ViewComponent};
 
 /// A typed view's slot: a storage slot (else a texture slot) and its place in its kind's range
 /// (`ReflectedBinding::slot`).
 pub(super) type Slot = (bool, u32);
 
-/// What a stage's program is made for: the typed views' formats by slot, the sampler
+/// What a stage's program is made for: the typed views' formats by slot, the texture slots'
+/// component mappings (`swizzled`) and multisampled arrays' layer counts (`layers`), the sampler
 /// slots whose bias (`lod_bias`) and addressing (`border_in_shader`) it applies, the
 /// storage slots it reads through buffers (`texels_through_buffer`), and the texture
 /// slots under a minimum level-of-detail clamp (`min_lod_clamped`) and filtered in the
@@ -30,6 +31,8 @@ pub(super) type Slot = (bool, u32);
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Bound {
     formats: Vec<(Slot, Format)>,
+    swizzled: Vec<(u32, [ViewComponent; 4])>,
+    layers: Vec<(u32, u32)>,
     lod_bias: u16,
     border: u16,
     through: u64,
@@ -63,8 +66,9 @@ fn typed_views(code: &[u8]) -> Vec<TypedView> {
         .unwrap_or_default()
 }
 
-/// The key fields a shader's typed views are first converted with: their formats by slot, and
-/// `route` where it declares typed buffers. Default for shaders declaring none.
+/// The key fields a shader's typed views are first converted with: their formats by slot,
+/// `route` where it declares typed buffers, and its multisampled arrays' layer counts. Default
+/// for shaders declaring none.
 pub(super) fn typed_key(code: &[u8], route: TexelBufferRoute) -> VariantKey {
     let mut key = VariantKey::default();
     for v in typed_views(code) {
@@ -83,6 +87,15 @@ pub(super) fn typed_key(code: &[u8], route: TexelBufferRoute) -> VariantKey {
     }
     key.storage_formats.sort_by_key(|f| f.0);
     key.texel_formats.sort_by_key(|f| f.0);
+    // Converted reading one layer of each; the bound views' layer counts come at the draw.
+    let arrays =
+        crate::dxbc::multisampled_arrays(code).or_else(|| crate::dxil::multisampled_arrays(code));
+    key.texture_layers = arrays
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| (s, 1))
+        .collect();
+    key.texture_layers.sort_unstable();
     key
 }
 
@@ -169,6 +182,21 @@ impl<B: Backend> Device<B> {
             .iter()
             .filter(|t| t.0 == f.visibility)
             .fold(0u64, |m, t| m | (1 << t.1));
+        let mut swizzled: Vec<(u32, [ViewComponent; 4])> = self
+            .bound_swizzles
+            .iter()
+            .filter(|s| s.0 == f.visibility)
+            .map(|s| (s.1, s.2))
+            .collect();
+        swizzled.sort_by_key(|s| s.0);
+        let mut layers = f.key.texture_layers.clone();
+        for (visibility, slot, _, rest) in &self.bound_layers {
+            if *visibility == f.visibility
+                && let Some(l) = layers.iter_mut().find(|l| l.0 == *slot)
+            {
+                l.1 = rest.len() as u32 + 1;
+            }
+        }
         let clamped = self
             .bound_clamps
             .iter()
@@ -208,6 +236,8 @@ impl<B: Backend> Device<B> {
             && clamped == 0
             && filtered == 0
             && through == f.key.texels_through_buffer
+            && swizzled == f.key.swizzled
+            && layers == f.key.texture_layers
         {
             return Ok(None);
         }
@@ -244,6 +274,8 @@ impl<B: Backend> Device<B> {
         }
         let bound = Bound {
             formats,
+            swizzled,
+            layers,
             lod_bias,
             border,
             through,
@@ -261,6 +293,8 @@ impl<B: Backend> Device<B> {
             texels_through_buffer: through,
             min_lod_clamped: clamped,
             filter_in_shader: filtered,
+            swizzled: bound.swizzled.clone(),
+            texture_layers: bound.layers.clone(),
             ..f.key.clone()
         };
         for &((storage, slot), format) in &bound.formats {

@@ -58,6 +58,9 @@ fn cases(seed: u64) -> Vec<Case> {
     let mut raw = vec![0u32; 2048];
     raw[642] = !0;
     raw[645] = !0;
+    // The signed minimum and maximum on the raw view's unsigned words.
+    raw[649] = i32::MAX as u32;
+    raw[650] = i32::MIN as u32;
     let consumed: Vec<u32> = (0..256).map(|_| next() >> 4).collect();
     let returned: Vec<u32> = (0..32).map(|_| next() >> 4).collect();
     vec![
@@ -318,12 +321,8 @@ fn ours<B: Backend>(b: &mut B, case: &Case, dxil: bool) -> Result<Ran, ConvertEr
     Ok(Ran { views, counters })
 }
 
-/// DXIL builds refused today, with the reason: dxil-spirv declares every buffer of unsigned words,
-/// and `cs_atomics` takes a signed minimum on one, which WebGPU's atomics cannot do on unsigned words.
-const DXIL_REFUSED: [(&str, &str); 1] = [(
-    "cs_atomics",
-    "spirv-reader AtomicSMin on integers of the other signedness",
-)];
+/// DXIL builds refused today, with the reason.
+const DXIL_REFUSED: [(&str, &str); 0] = [];
 
 /// Makes what depends on the order invocations ran in comparable: the value the last exchange left
 /// (word 648 of `cs_atomics`' raw view) is marked as the values the exchanges returned are, and the

@@ -155,7 +155,7 @@ Objects, each made from plain data and named by an associated type of the back e
   A multisampled texture is 2D with one level and one layer, never a storage texture, and its bytes
   move only by draws, resolves and whole-subresource copies between equal sample counts (WebGPU's
   rules; a front holds a multisampled array, such as Direct3D's `Texture2DMSArray`, as one texture per
-  layer). A cube texture is 2D and square, its layers a multiple of six; a texture has from one level to
+  layer, which converted programs read through `VariantKey::texture_layers`). A cube texture is 2D and square, its layers a multiple of six; a texture has from one level to
   its full chain, `floor(log2(largest side)) + 1` (a 3D texture's depth counts). A view's dimension fits
   its texture and layers: `D2` one layer and `D2Array` any of a 2D texture, `Cube` six and `CubeArray`
   a multiple of six layers of a cube texture, `D3` a 3D texture (WebGPU's view rules, and WebGL 2's and
@@ -811,7 +811,10 @@ A surface comes from the host's graphics hook (a canvas, transferred to the devi
 browser; a window natively). The DXGI layer gives the program its own back buffer textures and, at
 `Present`, copies the current back buffer into `current_texture(surface)` (converting format or sRGB on
 the way, as one draw) and calls `present`. One copy per frame keeps the program's back buffers ordinary
-textures it can read, copy and keep across frames, which swap chains allow. Frame pacing: `Present` blocks
+textures it can read, copy and keep across frames, which swap chains allow. A blit swap chain with the
+sequential effect gives out every buffer, as DXGI does (those past the first for reading); at each
+present DXGI moves their contents one place down, the first's to the last, which the layer does by
+copies (`SequentialBuffersCopied`). Frame pacing: `Present` blocks
 the guest when more than the swap chain's maximum frame latency (three by default) are queued; the device
 thread learns a frame was shown from the host hook (requestAnimationFrame in the browser, which a worker
 also has). The device worker returns to its event loop after every present, because a transferred canvas
@@ -2063,7 +2066,7 @@ against the same Rust from the start; back ends never read them.
   in its kind's range) is what `VariantKey`'s per-slot fields and the sampled pairs name; under Direct3D
   11's numbering it is the register. Unbounded ranges (bindless) need `RESOURCE_TABLES`.
 - Bindings a variant adds, for every API: pulled vertex streams, constant buffers read as storage or
-  through a texture, and (Direct3D 12) root constants spilled past `immediate_bytes` as one uniform
+  through a texture, the layers after the first of a multisampled array texture, and (Direct3D 12) root constants spilled past `immediate_bytes` as one uniform
   buffer (`ImmediatesSpilled`). Each lives in the set of the one stage that reads it (set 0 for vertex
   and compute programs, set 1 for pixel), numbered in its kind's range from the first binding past the
   highest one of that kind the stage's program already uses, and the reflection names it
@@ -2103,7 +2106,11 @@ the hull stage's patches and the tessellator's points a domain program reads, at
   the program (`CLIP_DISTANCE`, `DEPTH_CLAMP`) and the primitive index from the stage helper
   (`PRIMITIVE_ID_FROM_STAGE`) are its flags; the clamped texture
   slots are `min_lod_clamped`; storage slots run through a buffer are `texels_through_buffer`; where
-  the draw's bases come from is `draw_base`.
+  the draw's bases come from is `draw_base`; a view's component mapping, applied by the program where
+  the back end lacks `VIEW_SWIZZLE` (`SwizzleInShader`), is `swizzled`.
+- Slow paths a program takes by itself, whatever its variant (an atomic minimum or maximum of the
+  other signedness than its memory's, made by a compare-exchange loop: `AtomicExchangeLoop`), are
+  listed in `Reflection::slow_paths`; the front counts and warns of them when it uses the program.
 
 The conversion API G6 provides in `wcontainers-shaders`, which G4 and G5 call:
 
