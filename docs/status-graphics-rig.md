@@ -1238,6 +1238,18 @@ ours; Mac load average 45 to 70):
   command, another test target and an unrelated build did not).
 - Unit tests: 17 on Windows (13 as before, 3 for gt-chrome's argument handling, 1 for the census
   patching a copied table), the 16 that are not Windows-only on the Mac.
+- bgfx-01-cubes-d3d12 and bgfx-38-bloom-d3d12 recorded again (10 runs each, a job each, about 7 s
+  a job) with the GPU time line left out: 80 of 3600 tiles (the left-out rectangle) changed from
+  run to run and no pixel outside it, so their stray allowance is 0, as for their Direct3D 11
+  twins (it was 66 to 133).
+- Whole suite at 8cf0f76 (scratch r2c/suite): fmt, clippy with warnings denied and the unit tests
+  (17 through `remote`, 16 on the Mac); shellcheck of the 11 Mac scripts; `scenes` 255 passed, 0
+  failed, 0 absent (15 s job, which ran in group hazard as the first of a new rig tree, after 78 s
+  waiting behind other tracks' hazard jobs); `scenes --api d3d12 --dll d3d12.dll=<the forwarding
+  library>` 116 passed (8 s); `loop` passes (23 s, in group default); `programs run` all 25 pass
+  (bgfx-24-nbody run but not compared; 1 min 42 s); `wine-tests run --warp` 801 counted, 0 FAIL,
+  dxgi test_swapchain_backbuffer_index run on WARP (2 min 41 s); `wine-tests run` 800 counted, 0
+  FAIL, that test "excluded" on the GPU (8 min 38 s); `queue-check` all six rules pass.
 
 ## Loading a replacement Direct3D library
 
@@ -1628,7 +1640,10 @@ under Microsoft's licence terms, Chrome for Testing under Google's terms.
 
 ## Next
 
-R2 is done (second run) and waits for its independent check. Open points, for later:
+R2 is done (third run: the findings of its first check fixed) and waits for its independent
+check. Open points, for later:
+- Direct3D 12 timestamps are not answered from the frame clock (bgfx's GPU time line is left out
+  instead); only the two samples have a census checked against their source.
 - The 19 Wine tests that need a display nobody uses (Known issues).
 - More Direct3D 12 programs: the bigger DirectX-Graphics-Samples (they load assets and some need
   newer features) and Xbox-ATG-Samples' PC12 samples.
