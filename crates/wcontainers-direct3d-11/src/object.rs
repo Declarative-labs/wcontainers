@@ -361,8 +361,8 @@ pub struct Shader<B: Backend> {
 /// What a draw binds for an empty texture or sampler slot its shader reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StandIn {
-    /// A view of zeros of this dimension and kind.
-    Zeros(ViewDimension, FormatKind),
+    /// A view of zeros of this dimension and kind, multisampled or not.
+    Zeros(ViewDimension, FormatKind, bool),
     /// Direct3D's default sampler state.
     DefaultSampler,
     /// A buffer of zeros read as a structured or raw buffer.

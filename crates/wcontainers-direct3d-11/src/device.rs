@@ -106,7 +106,7 @@ pub(crate) struct Zeros<B: Backend> {
     /// The same bytes for empty structured and raw buffer slots.
     pub storage: Option<Kept<B, B::Buffer>>,
     /// A texture of one zero texel per layer and its view, by view dimension and kind.
-    pub textures: HashMap<(ViewDimension, FormatKind), ZeroView<B>>,
+    pub textures: HashMap<(ViewDimension, FormatKind, u32), ZeroView<B>>,
     pub sampler: Option<Rc<Sampler<B>>>,
 }
 
@@ -431,13 +431,15 @@ impl<B: Backend> Device<B> {
         Ok(Kept::new(gpu, id, Object::Buffer, &self.graveyard))
     }
 
-    /// A view of zeros of `kind` in `dimension`, made at its first use.
+    /// A view of zeros of `kind` in `dimension`, of `samples` samples (one, or four for a
+    /// multisampled 2D slot), made at its first use.
     pub(crate) fn zero_view(
         &mut self,
         dimension: ViewDimension,
         kind: FormatKind,
+        samples: u32,
     ) -> Result<B::TextureView> {
-        if let Some(z) = self.zeros.textures.get(&(dimension, kind)) {
+        if let Some(z) = self.zeros.textures.get(&(dimension, kind, samples)) {
             return Ok(z.view.handle.clone());
         }
         let format = match kind {
@@ -451,6 +453,12 @@ impl<B: Backend> Device<B> {
             ViewDimension::Cube | ViewDimension::CubeArray => (TextureDimension::D2, 6),
             ViewDimension::D3 => (TextureDimension::D3, 1),
         };
+        // Multisampled textures take no writes: they are cleared by a pass.
+        let filled = if samples > 1 {
+            TextureUsage::RENDER
+        } else {
+            TextureUsage::COPY_DST
+        };
         let desc = GpuTexture {
             dimension: texture_dimension,
             format,
@@ -458,31 +466,43 @@ impl<B: Backend> Device<B> {
             height: 1,
             depth_or_layers: layers,
             mip_levels: 1,
-            samples: 1,
-            usage: TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+            samples,
+            usage: TextureUsage::SAMPLE | filled,
             cube: layers == 6,
             reinterpret: false,
         };
         let texture = self.backend.create_texture(&desc);
         let texture = self.gpu(texture)?;
-        self.backend.write_texture(
-            &TextureRegion {
-                texture: &texture,
-                mip: 0,
-                layer: 0,
-                origin: Origin { x: 0, y: 0, z: 0 },
-                stencil: false,
-            },
-            Extent {
-                width: 1,
-                height: 1,
-                depth_or_layers: layers,
-            },
-            &[0; 24],
-            4,
-            1,
-            WriteMode::Discard,
-        );
+        if samples > 1 {
+            let r = self.backend.clear_texture(
+                &texture,
+                &desc,
+                format,
+                0..1,
+                0..1,
+                wcontainers_gpu::ClearValue::Color([0; 4]),
+            );
+            self.gpu(r)?;
+        } else {
+            self.backend.write_texture(
+                &TextureRegion {
+                    texture: &texture,
+                    mip: 0,
+                    layer: 0,
+                    origin: Origin { x: 0, y: 0, z: 0 },
+                    stencil: false,
+                },
+                Extent {
+                    width: 1,
+                    height: 1,
+                    depth_or_layers: layers,
+                },
+                &[0; 24],
+                4,
+                1,
+                WriteMode::Discard,
+            );
+        }
         let view = self.backend.create_view(
             &texture,
             &TextureViewDesc {
@@ -498,7 +518,7 @@ impl<B: Backend> Device<B> {
         let view = self.gpu(view)?;
         let (t, v) = (self.id(), self.id());
         self.zeros.textures.insert(
-            (dimension, kind),
+            (dimension, kind, samples),
             ZeroView {
                 _texture: Kept::new(texture, t, Object::Texture, &self.graveyard),
                 view: Kept::new(view.clone(), v, Object::TextureView, &self.graveyard),
@@ -1638,17 +1658,23 @@ fn stand_ins(module: &naga::Module) -> Vec<(u32, Option<StandIn>)> {
                 (ImageDimension::D3, _) => Some(ViewDimension::D3),
                 (ImageDimension::D1, _) => None,
             };
-            let kind = match class {
-                ImageClass::Sampled { kind, multi: false } => match kind {
-                    ScalarKind::Uint => Some(FormatKind::Uint),
-                    ScalarKind::Sint => Some(FormatKind::Sint),
-                    _ => Some(FormatKind::Float),
-                },
-                _ => None,
+            let (kind, multi) = match class {
+                ImageClass::Sampled { kind, multi } => (
+                    match kind {
+                        ScalarKind::Uint => Some(FormatKind::Uint),
+                        ScalarKind::Sint => Some(FormatKind::Sint),
+                        _ => Some(FormatKind::Float),
+                    },
+                    multi,
+                ),
+                _ => (None, false),
             };
+            let dimension = dimension.filter(|&d| !multi || d == ViewDimension::D2);
             Some((
                 binding,
-                dimension.zip(kind).map(|(d, k)| StandIn::Zeros(d, k)),
+                dimension
+                    .zip(kind)
+                    .map(|(d, k)| StandIn::Zeros(d, k, multi)),
             ))
         })
         .collect()

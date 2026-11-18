@@ -2097,13 +2097,22 @@ impl<B: Backend> Device<B> {
                 SlotKind::Uniform => self.ctx.constant_buffers[stage]
                     .get(slot)
                     .is_some_and(Option::is_some),
-                // A view of the other kind (a texture where a buffer is read) reads as none.
+                // A view of the other kind (a texture where a buffer is read, integers where
+                // floats are) reads as none.
                 SlotKind::Texture => {
                     match self.ctx.resources[stage]
                         .get(slot)
                         .and_then(Option::as_deref)
                     {
-                        Some(ShaderView::Texture(_)) => !reads_buffer(b.binding),
+                        Some(ShaderView::Texture(v)) => {
+                            !reads_buffer(b.binding)
+                                && match stand_in(b.binding) {
+                                    Some(StandIn::Zeros(_, kind, _)) => {
+                                        same_kind(v.format.kind(), kind)
+                                    }
+                                    _ => true,
+                                }
+                        }
                         Some(ShaderView::Buffer(_)) => reads_buffer(b.binding),
                         None => false,
                     }
@@ -2146,14 +2155,14 @@ impl<B: Backend> Device<B> {
                         .map_or(16, |s| s.1);
                     Zero::Buffer(self.zero_buffer()?, declared)
                 }
-                (_, Some(StandIn::Zeros(dimension, kind))) => {
-                    Zero::View(self.zero_view(dimension, kind)?)
+                (_, Some(StandIn::Zeros(dimension, kind, multi))) => {
+                    Zero::View(self.zero_view(dimension, kind, if multi { 4 } else { 1 })?)
                 }
                 (_, Some(StandIn::DefaultSampler)) => Zero::Sampler(self.default_sampler()?),
                 (_, Some(StandIn::ZeroBuffer)) => Zero::Storage(self.zero_storage()?),
                 (_, None) => {
                     return not_implemented(
-                        "an empty slot read as a multisampled or depth texture, or a comparison sampler",
+                        "an empty slot read as a depth texture, a multisampled array or a comparison sampler",
                     );
                 }
             };
@@ -2313,7 +2322,9 @@ impl<B: Backend> Device<B> {
                     views.get(slot).and_then(Option::as_deref),
                     srvs.get(slot).and_then(Option::as_ref),
                 ) {
-                    (Some(ShaderView::Texture(v)), _) if !reads_buffer(b.binding) => {
+                    (Some(ShaderView::Texture(v)), _)
+                        if !empty.iter().any(|(n, _)| *n == b.binding) =>
+                    {
                         Some(BindingResource::Texture(&v.gpu.handle))
                     }
                     (_, Some((buffer, span))) if reads_buffer(b.binding) => {
@@ -3770,7 +3781,10 @@ impl<B: Backend> Device<B> {
             return;
         }
         let t = &view.texture;
-        if t.desc.misc_flags & desc::MISC_GENERATE_MIPS == 0 {
+        // Direct3D generates mips of formats it filters only: integer views take none.
+        if t.desc.misc_flags & desc::MISC_GENERATE_MIPS == 0
+            || matches!(view.format.kind(), FormatKind::Uint | FormatKind::Sint)
+        {
             return;
         }
         let v = &view.desc;
@@ -3898,4 +3912,11 @@ fn channel_values(format: Format, values: [u32; 4]) -> Result<[u32; 4]> {
         };
     }
     Ok(out.map(f32::to_bits))
+}
+
+/// Whether a view of format kind `view` reads as a declaration of kind `declared`: integers as
+/// their own signedness only, the rest (depth included) as floats.
+fn same_kind(view: FormatKind, declared: FormatKind) -> bool {
+    let integer = |k| matches!(k, FormatKind::Uint | FormatKind::Sint);
+    !(integer(view) || integer(declared)) || view == declared
 }
