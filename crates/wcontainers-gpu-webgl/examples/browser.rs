@@ -189,6 +189,7 @@ suite!(
     multisampled_copies_resolve_as_their_source,
     fractional_depth_bias,
     constant_alpha_blends,
+    lists_draw_the_largest_index_as_a_vertex,
     vertices_captured_with_and_without_rasterising,
     captured_indices_drawn_both_ways,
     block_compressed_and_shared_exponent_textures_read_back_as_written,
