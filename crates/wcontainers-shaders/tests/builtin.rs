@@ -135,10 +135,10 @@ fn float_clears_pass_the_floats_and_refuse_integer_formats() {
         assert_eq!(storage_clear_value(f, values, true), Ok(values));
     }
     // Denormals become zeros of their sign.
-    let denormal = [1e-40f32, -1e-40, 1e-38, 0.0].map(f32::to_bits);
+    let denormal = [1e-40f32, -1e-40, 2e-38, 0.0].map(f32::to_bits);
     assert_eq!(
         storage_clear_value(Format::R32Float, denormal, true),
-        Ok([0, 0x8000_0000, 1e-38f32.to_bits(), 0])
+        Ok([0, 0x8000_0000, 2e-38f32.to_bits(), 0])
     );
     for f in [Format::Rgba8Uint, Format::R32Sint] {
         assert_eq!(
