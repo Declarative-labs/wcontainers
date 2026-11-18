@@ -51,6 +51,8 @@ pub const CASES: &[&str] = &[
     "statistics",
     "vertex-past-end",
     "vertex-pulled",
+    "restart",
+    "render-pass",
 ];
 
 /// Runs case `name` and returns its line of results.
@@ -77,6 +79,8 @@ pub fn run(name: &str) -> Result<String> {
             "statistics" => statistics(&c),
             "vertex-past-end" => vertex_past_end(&c),
             "vertex-pulled" => vertex_pulled(&c),
+            "restart" => restart(&c),
+            "render-pass" => render_pass(&c),
             _ => panic!("no case {name}"),
         }
     }
@@ -485,6 +489,42 @@ impl Ctx {
         draws: bool,
         layout: &[D3D12_INPUT_ELEMENT_DESC],
     ) -> Result<(ID3D12RootSignature, ID3D12PipelineState)> {
+        unsafe { self.pso_samples(draws, layout, 1) }
+    }
+
+    /// The same, drawing into targets of `samples` samples.
+    unsafe fn pso_samples(
+        &self,
+        draws: bool,
+        layout: &[D3D12_INPUT_ELEMENT_DESC],
+        samples: u32,
+    ) -> Result<(ID3D12RootSignature, ID3D12PipelineState)> {
+        unsafe {
+            self.pso_full(
+                draws,
+                layout,
+                samples,
+                D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED,
+            )
+        }
+    }
+
+    /// The triangle program with the strip cut value `cut`.
+    unsafe fn pso_cut(
+        &self,
+        layout: &[D3D12_INPUT_ELEMENT_DESC],
+        cut: D3D12_INDEX_BUFFER_STRIP_CUT_VALUE,
+    ) -> Result<(ID3D12RootSignature, ID3D12PipelineState)> {
+        unsafe { self.pso_full(false, layout, 1, cut) }
+    }
+
+    unsafe fn pso_full(
+        &self,
+        draws: bool,
+        layout: &[D3D12_INPUT_ELEMENT_DESC],
+        samples: u32,
+        cut: D3D12_INDEX_BUFFER_STRIP_CUT_VALUE,
+    ) -> Result<(ID3D12RootSignature, ID3D12PipelineState)> {
         unsafe {
             let root = self.root(
                 &[],
@@ -520,9 +560,10 @@ impl Ctx {
                     NumElements: layout.len() as u32,
                 },
                 PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+                IBStripCutValue: cut,
                 NumRenderTargets: 1,
                 SampleDesc: DXGI_SAMPLE_DESC {
-                    Count: 1,
+                    Count: samples,
                     Quality: 0,
                 },
                 ..Default::default()
@@ -1401,6 +1442,213 @@ unsafe fn vertex_pulled(c: &Ctx) -> Result<String> {
             &c.pixels(&target, D3D12_RESOURCE_STATE_RENDER_TARGET)?,
         ));
         Ok(line)
+    }
+}
+
+/// Triangle strips of 16-bit and 32-bit indices holding 0xffff, drawn with each strip cut value:
+/// directly, and the 16-bit ones also through `ExecuteIndirect`.
+unsafe fn restart(c: &Ctx) -> Result<String> {
+    unsafe {
+        let layout = [
+            element(s!("POSITION"), DXGI_FORMAT_R32G32_FLOAT, 0, 0, None),
+            element(s!("COLOR"), DXGI_FORMAT_R32G32B32_FLOAT, 0, 8, None),
+        ];
+        // A quad's corners, with its last at element 0xffff; the rest zero.
+        let mut bytes = vec![0u8; 0x10000 * 20];
+        let corner = |x: f32, y: f32| [x, y, 1.0, 0.5, 0.0].map(f32::to_le_bytes).concat();
+        for (i, (x, y)) in [
+            (0, (-0.9, -0.9)),
+            (1, (-0.9, 0.9)),
+            (2, (0.9, -0.9)),
+            (0xffff, (0.9, 0.9)),
+        ] {
+            bytes[i * 20..i * 20 + 20].copy_from_slice(&corner(x, y));
+        }
+        let vertices = c.upload(&bytes)?;
+        let indices16 = c.upload(&[0u16, 1, 2, 0xffff, 1, 2].map(u16::to_le_bytes).concat())?;
+        let indices32 = c.upload(&u32s(&[0, 1, 2, 0xffff, 1, 2]))?;
+        let (signature, args) = arguments(
+            c,
+            D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED,
+            20,
+            &u32s(&[4, 1, 0, 0, 0]),
+        )?;
+        let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        let (target, _heap, _rtv) = c.target(&list)?;
+        list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+        list.IASetVertexBuffers(
+            0,
+            Some(&[D3D12_VERTEX_BUFFER_VIEW {
+                BufferLocation: vertices.GetGPUVirtualAddress(),
+                SizeInBytes: bytes.len() as u32,
+                StrideInBytes: 20,
+            }]),
+        );
+        let quarter = SIZE / 4;
+        let cuts = [
+            D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED,
+            D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFF,
+            D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFFFFFF,
+        ];
+        let mut psos = Vec::new();
+        for (row, cut) in cuts.into_iter().enumerate() {
+            let (root, pso) = c.pso_cut(&layout, cut)?;
+            list.SetPipelineState(&pso);
+            list.SetGraphicsRootSignature(&root);
+            for (column, (buffer, format)) in [
+                (&indices16, DXGI_FORMAT_R16_UINT),
+                (&indices32, DXGI_FORMAT_R32_UINT),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                list.IASetIndexBuffer(Some(&D3D12_INDEX_BUFFER_VIEW {
+                    BufferLocation: buffer.GetGPUVirtualAddress(),
+                    SizeInBytes: 24,
+                    Format: format,
+                }));
+                viewport(
+                    &list,
+                    column as u32 * quarter,
+                    row as u32 * quarter,
+                    quarter,
+                );
+                list.DrawIndexedInstanced(6, 1, 0, 0, 0);
+            }
+            list.IASetIndexBuffer(Some(&D3D12_INDEX_BUFFER_VIEW {
+                BufferLocation: indices16.GetGPUVirtualAddress(),
+                SizeInBytes: 12,
+                Format: DXGI_FORMAT_R16_UINT,
+            }));
+            viewport(&list, 2 * quarter, row as u32 * quarter, quarter);
+            list.ExecuteIndirect(&signature, 1, &args, 0, None, 0);
+            psos.push((root, pso));
+        }
+        c.run(&list)?;
+        Ok(colours(
+            &c.pixels(&target, D3D12_RESOURCE_STATE_RENDER_TARGET)?,
+        ))
+    }
+}
+
+/// Render passes (`ID3D12GraphicsCommandList4`): one clearing the target and drawing, one keeping
+/// it and drawing, and one clearing a 4-sample target, drawing and resolving it into a second
+/// target at its end.
+unsafe fn render_pass(c: &Ctx) -> Result<String> {
+    unsafe {
+        let layout = [
+            element(s!("POSITION"), DXGI_FORMAT_R32G32_FLOAT, 0, 0, None),
+            element(s!("COLOR"), DXGI_FORMAT_R32G32B32_FLOAT, 0, 8, None),
+        ];
+        let (root, pso) = c.pso(false, &layout)?;
+        let (ms_root, ms_pso) = c.pso_samples(false, &layout, 4)?;
+        let vertices = c.upload(&triangles())?;
+        let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        let list4: ID3D12GraphicsCommandList4 = list.cast()?;
+        let (target, _heap, rtv) = c.target(&list)?;
+        let mut ms_desc = target_desc();
+        ms_desc.SampleDesc.Count = 4;
+        let ms = c.committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &ms_desc,
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+        )?;
+        let resolved = c.committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &target_desc(),
+            D3D12_RESOURCE_STATE_RESOLVE_DEST,
+        )?;
+        let heap: ID3D12DescriptorHeap =
+            c.device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
+                Type: D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+                NumDescriptors: 1,
+                ..Default::default()
+            })?;
+        let ms_rtv = heap.GetCPUDescriptorHandleForHeapStart();
+        c.device.CreateRenderTargetView(&ms, None, ms_rtv);
+        let clear = |color: [f32; 4]| D3D12_RENDER_PASS_BEGINNING_ACCESS {
+            Type: D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR,
+            Anonymous: D3D12_RENDER_PASS_BEGINNING_ACCESS_0 {
+                Clear: D3D12_RENDER_PASS_BEGINNING_ACCESS_CLEAR_PARAMETERS {
+                    ClearValue: D3D12_CLEAR_VALUE {
+                        Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                        Anonymous: D3D12_CLEAR_VALUE_0 { Color: color },
+                    },
+                },
+            },
+        };
+        let keep = D3D12_RENDER_PASS_BEGINNING_ACCESS {
+            Type: D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_PRESERVE,
+            ..Default::default()
+        };
+        let kept = || D3D12_RENDER_PASS_ENDING_ACCESS {
+            Type: D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_PRESERVE,
+            ..Default::default()
+        };
+        let pass = |view, begin, end| D3D12_RENDER_PASS_RENDER_TARGET_DESC {
+            cpuDescriptor: view,
+            BeginningAccess: begin,
+            EndingAccess: end,
+        };
+        let half = SIZE / 2;
+        list.SetPipelineState(&pso);
+        list.SetGraphicsRootSignature(&root);
+        vertex_buffer(&list, &vertices);
+        list4.BeginRenderPass(
+            Some(&[pass(rtv, clear([0.2, 0.4, 0.6, 1.0]), kept())]),
+            None,
+            D3D12_RENDER_PASS_FLAG_NONE,
+        );
+        viewport(&list, 0, 0, half);
+        list.DrawInstanced(3, 1, 3, 0);
+        list4.EndRenderPass();
+        list4.BeginRenderPass(
+            Some(&[pass(rtv, keep, kept())]),
+            None,
+            D3D12_RENDER_PASS_FLAG_NONE,
+        );
+        viewport(&list, half, half, half);
+        list.DrawInstanced(3, 1, 6, 0);
+        list4.EndRenderPass();
+        let whole = D3D12_RENDER_PASS_ENDING_ACCESS_RESOLVE_SUBRESOURCE_PARAMETERS {
+            SrcRect: RECT {
+                left: 0,
+                top: 0,
+                right: SIZE as i32,
+                bottom: SIZE as i32,
+            },
+            ..Default::default()
+        };
+        let resolve = D3D12_RENDER_PASS_ENDING_ACCESS {
+            Type: D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_RESOLVE,
+            Anonymous: D3D12_RENDER_PASS_ENDING_ACCESS_0 {
+                Resolve: ManuallyDrop::new(D3D12_RENDER_PASS_ENDING_ACCESS_RESOLVE_PARAMETERS {
+                    pSrcResource: transmute_copy(&ms),
+                    pDstResource: transmute_copy(&resolved),
+                    SubresourceCount: 1,
+                    pSubresourceParameters: &whole,
+                    Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                    ResolveMode: D3D12_RESOLVE_MODE_AVERAGE,
+                    PreserveResolveSource: false.into(),
+                }),
+            },
+        };
+        list.SetPipelineState(&ms_pso);
+        list.SetGraphicsRootSignature(&ms_root);
+        list4.BeginRenderPass(
+            Some(&[pass(ms_rtv, clear([0.0, 0.0, 0.0, 1.0]), resolve)]),
+            None,
+            D3D12_RENDER_PASS_FLAG_NONE,
+        );
+        viewport(&list, 0, 0, SIZE);
+        list.DrawInstanced(3, 1, 0, 0);
+        list4.EndRenderPass();
+        c.run(&list)?;
+        Ok(format!(
+            "{} | {}",
+            colours(&c.pixels(&target, D3D12_RESOURCE_STATE_RENDER_TARGET)?),
+            colours(&c.pixels(&resolved, D3D12_RESOURCE_STATE_RESOLVE_DEST)?)
+        ))
     }
 }
 

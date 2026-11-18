@@ -542,11 +542,12 @@ impl Device {
             kind: r#type,
             rec: Mutex::new(CommandList::new()),
             allocator: Mutex::new(None),
+            pass_end: Mutex::new(Vec::new()),
             base: Base::child(),
         };
         list.take(allocator)?;
         list.start(initial);
-        give::<ID3D12GraphicsCommandList2>(list.into(), riid, out)
+        give::<ID3D12GraphicsCommandList4>(list.into(), riid, out)
     }
 
     pub fn CreateDescriptorHeap(
@@ -956,9 +957,10 @@ impl Device {
             kind: r#type,
             rec: Mutex::new(rec),
             allocator: Mutex::new(None),
+            pass_end: Mutex::new(Vec::new()),
             base: Base::child(),
         };
-        give::<ID3D12GraphicsCommandList2>(list.into(), riid, out)
+        give::<ID3D12GraphicsCommandList4>(list.into(), riid, out)
     }
 
     /// No protected session can exist (`PROTECTED_RESOURCE_SESSION_SUPPORT` answers none).
@@ -1939,7 +1941,7 @@ impl Queue {
         let lists = unsafe { std::slice::from_raw_parts(lists, count as usize) };
         let mut commands = Vec::with_capacity(lists.len());
         for l in lists.iter().flatten() {
-            let Ok(l) = l.cast::<ID3D12GraphicsCommandList2>() else {
+            let Ok(l) = l.cast::<ID3D12GraphicsCommandList4>() else {
                 self.unsupported("ExecuteCommandLists of a list of another kind");
                 return;
             };
@@ -2552,12 +2554,14 @@ impl Blob {
 
 // ---- Command lists ----
 
-#[implement(ID3D12GraphicsCommandList2)]
+#[implement(ID3D12GraphicsCommandList4)]
 pub struct List {
     kind: D3D12_COMMAND_LIST_TYPE,
     rec: Mutex<CommandList>,
     /// The user slot of the allocator the list records from while it is open.
     allocator: Mutex<Option<Arc<AtomicUsize>>>,
+    /// The resolves the open render pass ends with.
+    pass_end: Mutex<Vec<Command>>,
     base: Base,
 }
 
@@ -2652,6 +2656,132 @@ impl List {
         self.kind
     }
 
+    /// Protected sessions are reported absent, so only none can be set.
+    pub fn SetProtectedResourceSession(&self, session: Ref<ID3D12ProtectedResourceSession>) {
+        if session.is_some() {
+            self.unsupported("SetProtectedResourceSession");
+        }
+    }
+
+    /// A render pass as the calls it stands for: its targets bound, the clears its beginning
+    /// accesses ask, and at `EndRenderPass` the resolves its ending accesses ask. Discarding and
+    /// preserving accesses keep the contents, which Direct3D 12 allows for both.
+    pub fn BeginRenderPass(
+        &self,
+        count: u32,
+        targets: *const D3D12_RENDER_PASS_RENDER_TARGET_DESC,
+        depth: *const D3D12_RENDER_PASS_DEPTH_STENCIL_DESC,
+        _flags: D3D12_RENDER_PASS_FLAGS,
+    ) {
+        // SAFETY: `count` descriptions and an optional one, as the API says.
+        let (targets, depth) = unsafe { (many(targets, count), depth.as_ref()) };
+        let mut end = Vec::new();
+        let mut clears = Vec::new();
+        for t in targets {
+            // SAFETY: a handle of this library's heaps.
+            let view = unsafe { descriptor(t.cpuDescriptor) };
+            if t.BeginningAccess.Type == D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR {
+                // SAFETY: a clear access holds its clear value.
+                let color = unsafe { t.BeginningAccess.Anonymous.Clear.ClearValue.Anonymous.Color };
+                clears.push(Command::ClearTarget {
+                    view,
+                    color,
+                    rects: Vec::new(),
+                });
+            }
+            if let Err(why) = self.resolves(&t.EndingAccess, &mut end) {
+                return self.rec.lock().unwrap().fail(why);
+            }
+        }
+        if let Some(d) = depth {
+            // SAFETY: a handle of this library's heaps; clear accesses hold their clear values.
+            let view = unsafe { descriptor(d.cpuDescriptor) };
+            let clear = |a: &D3D12_RENDER_PASS_BEGINNING_ACCESS| {
+                (a.Type == D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR)
+                    .then_some(unsafe { a.Anonymous.Clear.ClearValue.Anonymous.DepthStencil })
+            };
+            let (depth_clear, stencil_clear) = (
+                clear(&d.DepthBeginningAccess),
+                clear(&d.StencilBeginningAccess),
+            );
+            if depth_clear.is_some() || stencil_clear.is_some() {
+                clears.push(Command::ClearDepth {
+                    view,
+                    depth: depth_clear.map(|v| v.Depth),
+                    stencil: stencil_clear.map(|v| v.Stencil),
+                    rects: Vec::new(),
+                });
+            }
+            for a in [&d.DepthEndingAccess, &d.StencilEndingAccess] {
+                if a.Type == D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_RESOLVE {
+                    self.unsupported("BeginRenderPass resolving a depth-stencil target");
+                    return;
+                }
+            }
+        }
+        self.record(Command::Targets {
+            // SAFETY: handles of this library's heaps.
+            colors: targets
+                .iter()
+                .map(|t| unsafe { descriptor(t.cpuDescriptor) })
+                .collect(),
+            depth: depth.map(|d| unsafe { descriptor(d.cpuDescriptor) }),
+        });
+        clears.into_iter().for_each(|c| self.record(c));
+        *self.pass_end.lock().unwrap() = end;
+    }
+
+    pub fn EndRenderPass(&self) {
+        let end = std::mem::take(&mut *self.pass_end.lock().unwrap());
+        end.into_iter().for_each(|c| self.record(c));
+    }
+
+    /// The resolves an ending access asks: whole subresources averaged (anything else is
+    /// refused when the list closes).
+    fn resolves(
+        &self,
+        a: &D3D12_RENDER_PASS_ENDING_ACCESS,
+        out: &mut Vec<Command>,
+    ) -> std::result::Result<(), Error> {
+        if a.Type != D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_RESOLVE {
+            return Ok(());
+        }
+        // SAFETY: a resolve access holds its parameters.
+        let r = unsafe { &a.Anonymous.Resolve };
+        let (Some(src), Some(dst)) = (r.pSrcResource.as_ref(), r.pDstResource.as_ref()) else {
+            return Err(Error::Invalid("a render pass resolve with no resource"));
+        };
+        if r.ResolveMode != D3D12_RESOLVE_MODE_AVERAGE {
+            return Err(Error::NotImplemented(
+                "render pass resolves other than averaging",
+            ));
+        }
+        // SAFETY: resources come from this library.
+        let (src, dst) = unsafe { (ours(src), ours(dst)) };
+        // SAFETY: as many parameters as the access says.
+        for p in unsafe { many(r.pSubresourceParameters, r.SubresourceCount) } {
+            let whole = p.DstX == 0
+                && p.DstY == 0
+                && p.SrcRect.left <= 0
+                && p.SrcRect.top <= 0
+                && p.SrcRect.right as i64 >= src.desc.Width as i64
+                && p.SrcRect.bottom as i64 >= i64::from(src.desc.Height);
+            if !whole {
+                return Err(Error::NotImplemented(
+                    "render pass resolves of part of a subresource",
+                ));
+            }
+            out.push(Command::Resolve {
+                dst: dst.id,
+                dst_index: p.DstSubresource,
+                src: src.id,
+                src_index: p.SrcSubresource,
+                format: r.Format.0 as u32,
+            });
+        }
+        Ok(())
+    }
+
     /// Starts recording from `allocator`: one of this list's type that no other open list
     /// records from.
     fn take(&self, allocator: Ref<ID3D12CommandAllocator>) -> Result<()> {
@@ -2701,7 +2831,7 @@ impl List {
     pub fn ExecuteBundle(&self, bundle: Ref<ID3D12GraphicsCommandList>) {
         let bundle = bundle
             .as_ref()
-            .and_then(|b| b.cast::<ID3D12GraphicsCommandList2>().ok());
+            .and_then(|b| b.cast::<ID3D12GraphicsCommandList4>().ok());
         let commands = bundle.as_ref().and_then(|b| {
             // SAFETY: command lists come from this library.
             let b: &List = unsafe { b.as_impl() };
