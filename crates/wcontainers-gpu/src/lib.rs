@@ -62,12 +62,12 @@ pub use helpers::Helpers;
 pub use occlusion::{CountedDraw, OcclusionCounter};
 pub use passes::{ColorTarget, PassOps, PassTargets, PassTracker, ScopeUse, Target, cut_scissors};
 pub use reflect::{
-    AddedBinding, CLAMPED_SAMPLER_BINDING, CONSTANTS_TEXTURE_WIDTH, DRAW_ARGUMENTS_BINDING,
-    DrawBaseSource, EARLY_DEPTH_BINDING, EARLY_STENCIL_BINDING, HELPER_SET, HelperSlot,
-    HelperValue, Interpolation, LinkedValues, ReflectedBinding, Reflection, ScalarKind, SlotKind,
-    SourceStage, StageExtras, StageValue, SystemValue, TARGET_COPY_BINDING,
-    TEXEL_BUFFER_TEXTURE_WIDTH, TargetInShader, TexelBufferRoute, VariantFlags, VariantKey,
-    helper_binding,
+    AddedBinding, CLAMPED_SAMPLER_BINDING, CONSTANTS_TEXTURE_WIDTH, DOMAIN_PATCHES_BINDING,
+    DOMAIN_POINTS_BINDING, DRAW_ARGUMENTS_BINDING, DrawBaseSource, EARLY_DEPTH_BINDING,
+    EARLY_STENCIL_BINDING, HELPER_SET, HelperSlot, HelperValue, Interpolation, LinkedValues,
+    ReflectedBinding, Reflection, ScalarKind, SlotKind, SourceStage, StageExtras, StageValue,
+    SystemValue, TARGET_COPY_BINDING, TEXEL_BUFFER_TEXTURE_WIDTH, TargetInShader, TexelBufferRoute,
+    VariantFlags, VariantKey, helper_binding,
 };
 pub use resource::{AddressMode, BorderColor, CompareFn, Filter};
 pub use resource::{

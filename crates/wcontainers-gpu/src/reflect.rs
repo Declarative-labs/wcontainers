@@ -86,6 +86,11 @@ pub const CLAMPED_SAMPLER_BINDING: u32 = 16;
 /// The binding in [`HELPER_SET`] of an indirect draw's argument buffer, bound read-only so the program
 /// reads the draw's bases from it ([`DrawBaseSource::Arguments`]).
 pub const DRAW_ARGUMENTS_BINDING: u32 = 11;
+/// The binding in [`HELPER_SET`] of the hull stage's patches a domain program reads, a read-only
+/// storage buffer the shaders crate's stage helper owns and names with the draw it asks for.
+pub const DOMAIN_PATCHES_BINDING: u32 = 13;
+/// The binding in [`HELPER_SET`] of the tessellator's points a domain program reads, likewise.
+pub const DOMAIN_POINTS_BINDING: u32 = 14;
 /// The width in texels of the texture a constant buffer is read through
 /// ([`AddedBinding::ConstantsAsTexture`]): the buffer's 16-byte row r is texel (r % width, r / width).
 pub const CONSTANTS_TEXTURE_WIDTH: u32 = 256;
