@@ -436,8 +436,8 @@ impl Device_Impl {
         as_one(out, |o| self.create_query(&d, o))
     }
 
-    /// The front texture behind a resource a target view names, refusing buffers (render target
-    /// views of buffers are not served) and foreign objects.
+    /// The front texture behind a resource a target view names, refusing buffers (their views
+    /// are made from a description naming them) and foreign objects.
     fn texture_of(
         resource: &Ref<ID3D11Resource>,
     ) -> Result<Rc<wcontainers_direct3d_11::object::Texture<Chosen>>> {
@@ -524,6 +524,30 @@ impl Device_Impl {
         desc: *const D3D11_RENDER_TARGET_VIEW_DESC,
         out: OutRef<ID3D11RenderTargetView>,
     ) -> Result<()> {
+        let given = unsafe { desc.as_ref() };
+        if let (Some(d), Some(wcontainers_direct3d_11::object::Resource::Buffer(b))) =
+            (given, resource.as_ref().and_then(resource_of))
+            && d.ViewDimension == D3D11_RTV_DIMENSION_BUFFER
+        {
+            let (first, count) = unsafe {
+                (
+                    d.Anonymous.Buffer.Anonymous1.FirstElement,
+                    d.Anonymous.Buffer.Anonymous2.NumElements,
+                )
+            };
+            let view = self
+                .front
+                .borrow_mut()
+                .create_buffer_target_view(&b, d.Format.0 as u32, first, count)
+                .map_err(hresult)?;
+            let r = resource
+                .as_ref()
+                .and_then(HeldResource::of)
+                .ok_or(E_INVALIDARG)?;
+            let mut v = RenderTargetView::new(view, r, self.me());
+            v.buffer = Some(*d);
+            return give(out, v.into());
+        }
         let texture = Self::texture_of(&resource)?;
         let d = unsafe { desc.as_ref() }.map(convert::rtv).transpose()?;
         let view = self

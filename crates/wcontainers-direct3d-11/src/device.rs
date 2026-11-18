@@ -1289,7 +1289,54 @@ impl<B: Backend> Device<B> {
             gpu: Kept::new(gpu, id, Object::TextureView, &self.graveyard),
             twin,
             window,
+            buffer: None,
         }))
+    }
+
+    /// A render target view of `count` elements of `buffer` from element `first`: a view of a
+    /// one-row texture of the elements, copied from and into the buffer around each pass drawing
+    /// into it (`View::buffer`).
+    pub fn create_buffer_target_view(
+        &mut self,
+        buffer: &Rc<Buffer<B>>,
+        format: u32,
+        first: u32,
+        count: u32,
+    ) -> Result<Rc<View<B>>> {
+        let gpu_format = format::texture_format_of(format)
+            .map_err(|_| Error::InvalidArg("a format a buffer's target view cannot have"))?;
+        let (block_width, block_height, bytes) = gpu_format.block();
+        let end = (u64::from(first) + u64::from(count)) * u64::from(bytes);
+        if buffer.desc.bind_flags & bind::RENDER_TARGET == 0
+            || format::is_typeless(format)
+            || (block_width, block_height) != (1, 1)
+            || count == 0
+            || end > u64::from(buffer.desc.byte_width)
+        {
+            return Err(Error::InvalidArg("a target view of a buffer"));
+        }
+        let elements = self.create_texture(
+            &TextureDesc {
+                dimension: TexDim::D2,
+                width: count,
+                height: 1,
+                depth: 1,
+                mip_levels: 1,
+                array_size: 1,
+                format,
+                sample_count: 1,
+                sample_quality: 0,
+                usage: usage::DEFAULT,
+                bind_flags: bind::RENDER_TARGET,
+                cpu_access_flags: 0,
+                misc_flags: 0,
+            },
+            &[],
+        )?;
+        let view = self.create_view(&elements, None, bind::RENDER_TARGET)?;
+        let mut view = Rc::into_inner(view).expect("a view only made here");
+        view.buffer = Some((buffer.clone(), u64::from(first) * u64::from(bytes)));
+        Ok(Rc::new(view))
     }
 
     /// An unordered access view of one level of a texture.

@@ -810,7 +810,7 @@ impl<B: Backend> Device<B> {
             self.queries.pass_set = None;
             // Targets drawn on twins of their textures: what the pass drew copied out.
             for t in self.ctx.targets.clone().iter().flatten() {
-                if t.twin.is_some() {
+                if t.copied() {
                     self.copy_twin(t, false);
                 }
             }
@@ -1189,7 +1189,7 @@ impl<B: Backend> Device<B> {
             {
                 let _ = self.gpu::<()>(Err(e));
             }
-            if v.twin.is_some() {
+            if v.copied() {
                 self.copy_twin(v, false);
             }
         }
@@ -1219,7 +1219,7 @@ impl<B: Backend> Device<B> {
         let depth = self.ctx.depth.clone();
         // Targets on twins of their textures start from the texture's texels.
         for t in targets.iter().flatten() {
-            if t.twin.is_some() && clear_of(t).is_none() {
+            if t.copied() && clear_of(t).is_none() {
                 self.backend.slow_paths().hit(SlowPath::ReinterpretCopy);
                 self.copy_twin(t, true);
             }

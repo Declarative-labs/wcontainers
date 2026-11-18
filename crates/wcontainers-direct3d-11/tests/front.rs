@@ -241,6 +241,71 @@ fn triangle_scene() {
 }
 
 #[test]
+fn a_target_view_of_a_buffer_draws_into_a_row_of_its_elements_copied_into_the_buffer() {
+    let mut dev = device();
+    let buffer = dev
+        .create_buffer(
+            &BufferDesc {
+                byte_width: 1024,
+                usage: usage::DEFAULT,
+                bind_flags: bind::RENDER_TARGET,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+    // Past the buffer's end, of a typeless format, and of a buffer not bound as a target.
+    for (format, first, count) in [(RGBA32F, 1, 64), (1, 0, 64), (RGBA32F, 0, 0)] {
+        assert!(matches!(
+            dev.create_buffer_target_view(&buffer, format, first, count),
+            Err(Error::InvalidArg(_))
+        ));
+    }
+    let vertices = immutable(&mut dev, &[0; 60], bind::VERTEX_BUFFER);
+    assert!(matches!(
+        dev.create_buffer_target_view(&vertices, RGBA32F, 0, 4),
+        Err(Error::InvalidArg(_))
+    ));
+    let rtv = dev
+        .create_buffer_target_view(&buffer, RGBA32F, 16, 48)
+        .unwrap();
+    let start = dev.backend.log.len();
+    begin(&mut dev, &rtv, None, 48.0);
+    program(
+        &mut dev,
+        "triangle.vs",
+        "triangle.ps",
+        &[element("POSITION", RG32F, 0), element("COLOR", RGB32F, 8)],
+    );
+    dev.ia_set_vertex_buffers(0, &[Some((vertices, 20, 0))])
+        .unwrap();
+    dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+    dev.draw(3, 0);
+    dev.flush();
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, start);
+    // Cleared, so nothing is copied in; what the pass drew is copied out from element 16's byte.
+    assert!(
+        !log.iter().any(|l| l.starts_with("copy_buffer_to_texture")),
+        "{log:#?}"
+    );
+    let out = find(&log, "copy_texture_to_buffer");
+    assert!(find(&log, "draw ") < out, "{log:#?}");
+    assert!(log[out].ends_with("48x1"), "{}", log[out]);
+    // Drawn again without a clear, the elements are copied in first.
+    let start = dev.backend.log.len();
+    dev.om_set_render_targets(&[None], None).unwrap();
+    dev.om_set_render_targets(&[Some(rtv)], None).unwrap();
+    dev.draw(3, 0);
+    dev.flush();
+    let log = log_from(&dev, start);
+    assert!(
+        find(&log, "copy_buffer_to_texture") < find(&log, "draw "),
+        "{log:#?}"
+    );
+}
+
+#[test]
 fn quads_scene() {
     let mut dev = device();
     let target = dev

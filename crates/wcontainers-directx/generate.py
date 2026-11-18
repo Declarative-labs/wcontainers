@@ -41,7 +41,7 @@ structs = {
     + ["ID3D10Texture1D"] + D3D10_RESOURCE,
     "Texture2D": ["ID3D11Texture2D1", "ID3D11Texture2D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE
     + ["ID3D10Texture2D"] + D3D10_RESOURCE,
-    "Texture3D": ["ID3D11Texture3D1", "ID3D11Texture3D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE
+    "Texture3D": ["ID3D11Texture3D1", "ID3D11Texture3D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE
     + ["ID3D10Texture3D"] + D3D10_RESOURCE,
     "RenderTargetView": ["ID3D11RenderTargetView1", "ID3D11RenderTargetView", "ID3D11View"] + CHILD
     + ["ID3D10RenderTargetView"] + D3D10_VIEW,

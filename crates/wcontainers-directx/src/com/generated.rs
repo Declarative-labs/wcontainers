@@ -3747,6 +3747,42 @@ impl IDXGIObject_Impl for Texture3D_Impl {
     }
 }
 
+impl IDXGISurface1_Impl for Texture3D_Impl {
+    fn GetDC(
+        &self,
+        discard: windows::core::BOOL,
+    ) -> windows::core::Result<windows::Win32::Graphics::Gdi::HDC> {
+        let _lock = lock();
+        self.get_dc(discard)
+    }
+    fn ReleaseDC(
+        &self,
+        pdirtyrect: *const windows::Win32::Foundation::RECT,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.release_dc(pdirtyrect)
+    }
+}
+
+impl IDXGISurface_Impl for Texture3D_Impl {
+    fn GetDesc(&self) -> windows::core::Result<DXGI_SURFACE_DESC> {
+        let _lock = lock();
+        self.get_desc_dxgi()
+    }
+    fn Map(
+        &self,
+        plockedrect: *mut DXGI_MAPPED_RECT,
+        mapflags: DXGI_MAP_FLAGS,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGISurface::Map"))
+    }
+    fn Unmap(&self) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGISurface::Unmap"))
+    }
+}
+
 impl ID3D10Texture3D_Impl for Texture3D_Impl {
     fn Map(
         &self,

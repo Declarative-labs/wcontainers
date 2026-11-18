@@ -4,15 +4,17 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use wcontainers_direct3d_11::desc;
+use windows::Wdk::Graphics::Direct3D::{
+    D3DDDIFMT_A8R8G8B8, D3DKMT_CREATEDCFROMMEMORY, D3DKMT_DESTROYDCFROMMEMORY,
+    D3DKMTCreateDCFromMemory, D3DKMTDestroyDCFromMemory,
+};
+use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D10::*;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::*;
-use windows::Win32::Graphics::Gdi::{
-    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS,
-    DeleteDC, DeleteObject, GdiFlush, HBITMAP, HDC, HGDIOBJ, SelectObject,
-};
+use windows::Win32::Graphics::Gdi::{CreateCompatibleDC, DeleteDC, GdiFlush, HDC};
 use windows::core::{BOOL, OutRef, Result};
 
 use super::counted::{Held, counted};
@@ -187,7 +189,7 @@ macro_rules! texture {
                 }
             }
 
-            /// `IDXGISurface1::GetDC`: a memory device context on a DIB section holding the
+            /// `IDXGISurface1::GetDC`: a memory device context on a bitmap holding the
             /// texels of the texture's one subresource (left undefined with `discard`), written
             /// back at `ReleaseDC`.
             #[allow(dead_code)]
@@ -196,23 +198,22 @@ macro_rules! texture {
                 if t.desc.misc_flags & desc::MISC_GDI_COMPATIBLE == 0 {
                     return Err(DXGI_ERROR_INVALID_CALL.into());
                 }
-                let Some(dc) = Dc::new(t.desc.width, t.desc.height) else {
-                    return Err(windows::Win32::Foundation::E_OUTOFMEMORY.into());
-                };
-                if let Some(held) = self.dc.replace(Some(dc)) {
+                if let Some(held) = self.dc.take() {
                     self.dc.set(Some(held));
-                    dc.delete();
                     return Err(DXGI_ERROR_INVALID_CALL.into());
                 }
-                if !discard.as_bool() {
-                    let read = dc.read(&self.child.front(), t);
-                    if let Err(e) = read {
-                        self.dc.take();
-                        dc.delete();
-                        return Err(hresult(e));
-                    }
+                let Some(mut dc) = Dc::new(t.desc.width, t.desc.height) else {
+                    return Err(windows::Win32::Foundation::E_OUTOFMEMORY.into());
+                };
+                if !discard.as_bool()
+                    && let Err(e) = dc.read(&self.child.front(), t)
+                {
+                    dc.delete();
+                    return Err(hresult(e));
                 }
-                Ok(dc.dc)
+                let handle = dc.dc;
+                self.dc.set(Some(dc));
+                Ok(handle)
             }
 
             /// `IDXGISurface1::ReleaseDC`: what GDI drew is written into the texture.
@@ -250,11 +251,10 @@ macro_rules! texture {
                 Ok(dxgi_usage(self.front.desc.bind_flags))
             }
 
-            /// Whether DXGI sees the texture as a surface: one level of one layer (3D textures
-            /// never are).
-            #[allow(dead_code)]
+            /// Whether DXGI sees the texture as a surface: one level of one layer or slice.
             fn one_subresource(&self) -> bool {
-                self.front.desc.mip_levels == 1 && self.front.desc.array_size == 1
+                let d = &self.front.desc;
+                d.mip_levels == 1 && d.array_size == 1 && d.depth <= 1
             }
 
             #[allow(dead_code)]
@@ -274,45 +274,44 @@ macro_rules! texture {
     };
 }
 
-/// A memory device context with a top-down 32-bit DIB section selected into it.
-#[derive(Clone, Copy)]
+/// A memory device context on a bitmap of 32-bit texels in our memory, as DXGI makes them
+/// (`D3DKMTCreateDCFromMemory`).
 struct Dc {
+    device: HDC,
     dc: HDC,
-    bitmap: HBITMAP,
-    old: HGDIOBJ,
-    bits: *mut u8,
+    bitmap: HANDLE,
+    bits: Box<[u8]>,
     width: u32,
     height: u32,
 }
 
 impl Dc {
     fn new(width: u32, height: u32) -> Option<Dc> {
-        let info = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: width as i32,
-                biHeight: -(height as i32),
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB.0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let mut bits = std::ptr::null_mut();
-        let bitmap =
-            unsafe { CreateDIBSection(None, &info, DIB_RGB_COLORS, &mut bits, None, 0) }.ok()?;
-        let dc = unsafe { CreateCompatibleDC(None) };
-        if dc.is_invalid() {
-            unsafe { DeleteObject(bitmap.into()).ok().ok()? };
+        let mut bits = vec![0u8; width as usize * height as usize * 4].into_boxed_slice();
+        let device = unsafe { CreateCompatibleDC(None) };
+        if device.is_invalid() {
             return None;
         }
-        let old = unsafe { SelectObject(dc, bitmap.into()) };
+        let mut made = D3DKMT_CREATEDCFROMMEMORY {
+            pMemory: bits.as_mut_ptr().cast(),
+            Format: D3DDDIFMT_A8R8G8B8,
+            Width: width,
+            Height: height,
+            Pitch: width * 4,
+            hDeviceDc: device,
+            ..Default::default()
+        };
+        if unsafe { D3DKMTCreateDCFromMemory(&mut made) }.is_err() {
+            unsafe {
+                let _ = DeleteDC(device);
+            }
+            return None;
+        }
         Some(Dc {
-            dc,
-            bitmap,
-            old,
-            bits: bits.cast(),
+            device,
+            dc: made.hDc,
+            bitmap: made.hBitmap,
+            bits,
             width,
             height,
         })
@@ -322,9 +321,9 @@ impl Dc {
         self.width as usize * 4
     }
 
-    /// Copies the texture's texels into the DIB section, through a staging texture.
+    /// Copies the texture's texels into the bitmap, through a staging texture.
     fn read(
-        &self,
+        &mut self,
         front: &Shared,
         t: &Rc<front::Texture<Chosen>>,
     ) -> wcontainers_direct3d_11::Result<()> {
@@ -354,7 +353,7 @@ impl Dc {
             unsafe {
                 std::ptr::copy_nonoverlapping(
                     mapped.data.add(y * mapped.row_pitch as usize),
-                    self.bits.add(y * self.pitch()),
+                    self.bits.as_mut_ptr().add(y * self.pitch()),
                     self.pitch(),
                 )
             };
@@ -363,30 +362,31 @@ impl Dc {
         Ok(())
     }
 
-    /// Writes the DIB section's texels into the texture.
+    /// Writes the bitmap's texels into the texture.
     fn write(
         &self,
         front: &Shared,
         t: &Rc<front::Texture<Chosen>>,
     ) -> wcontainers_direct3d_11::Result<()> {
         unsafe { GdiFlush().ok().ok() };
-        let bytes =
-            unsafe { std::slice::from_raw_parts(self.bits, self.pitch() * self.height as usize) };
         front.borrow_mut().update_subresource(
             &front::Resource::Texture(t.clone()),
             0,
             None,
-            bytes,
+            &self.bits,
             self.pitch() as u32,
             0,
         )
     }
 
     fn delete(self) {
+        let gone = D3DKMT_DESTROYDCFROMMEMORY {
+            hDc: self.dc,
+            hBitmap: self.bitmap,
+        };
         unsafe {
-            SelectObject(self.dc, self.old);
-            let _ = DeleteDC(self.dc);
-            let _ = DeleteObject(self.bitmap.into());
+            let _ = D3DKMTDestroyDCFromMemory(&gone);
+            let _ = DeleteDC(self.device);
         }
     }
 }
@@ -427,7 +427,8 @@ texture!(
     D3D11_RESOURCE_DIMENSION_TEXTURE3D,
     ID3D10Texture3D,
     ID3D10Texture3D_Vtbl,
-    -3
+    -4,
+    surface
 );
 
 /// Direct3D 11.3's descriptions of textures: no layout but the undefined one is served.
@@ -452,6 +453,8 @@ pub struct RenderTargetView {
     pub front: Locked<Rc<front::View<Chosen>>>,
     pub(super) resource: HeldResource,
     pub(super) child: Child,
+    /// The description of a view of a buffer, as the program gave it.
+    pub(super) buffer: Option<D3D11_RENDER_TARGET_VIEW_DESC>,
 }
 
 counted!(RenderTargetView => RenderTargetView_Impl {
@@ -469,18 +472,24 @@ impl RenderTargetView {
             front: Locked::new(front),
             resource,
             child: Child::new(device),
+            buffer: None,
         }
+    }
+
+    fn desc(&self) -> D3D11_RENDER_TARGET_VIEW_DESC {
+        self.buffer
+            .unwrap_or_else(|| convert::rtv_back(&self.front.desc))
     }
 
     pub(super) fn get_desc(&self, out: *mut D3D11_RENDER_TARGET_VIEW_DESC) {
         if let Some(out) = unsafe { out.as_mut() } {
-            *out = convert::rtv_back(&self.front.desc);
+            *out = self.desc();
         }
     }
 
     pub(super) fn get_desc1(&self, out: *mut D3D11_RENDER_TARGET_VIEW_DESC1) {
         if let Some(out) = unsafe { out.as_mut() } {
-            *out = unsafe { convert::same_fields(&convert::rtv_back(&self.front.desc)) };
+            *out = unsafe { convert::same_fields(&self.desc()) };
         }
     }
 
