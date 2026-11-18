@@ -379,12 +379,7 @@ struct Process<G: Guest> {
     state: SharedMemory,
     state_base: *mut u8,
     hooks: Vec<(&'static str, Func)>,
-    /// What the kernel last said each page allows.
-    permissions: Vec<Permissions>,
-    /// The back end's write locks on each page, by reason bit.
-    locks: Vec<u8>,
-    /// Pages that may hold anything but zeros: given access or written since last zeroed.
-    data: Pages,
+    pages: Pages,
     /// Ranges that show a block of shared pages, by start.
     shown: BTreeMap<u64, Shown>,
     /// Pages showing a block that the guest has written since their copies were last made.
@@ -400,34 +395,90 @@ struct Process<G: Guest> {
 /// Write lock: the page shows a block of shared pages.
 const LOCK_SHARED: u8 = 1;
 
-/// One bit per page.
+/// What the back end keeps about one guest page.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Page {
+    /// What the kernel last said the page allows.
+    allows: Permissions,
+    /// The back end's write locks on it, by reason bit.
+    locks: u8,
+    /// It may hold anything but zeros: given access or written since last zeroed.
+    data: bool,
+}
+
+impl Page {
+    const NOTHING: Page = Page {
+        allows: Permissions::empty(),
+        locks: 0,
+        data: false,
+    };
+}
+
+/// Pages one chunk of the records covers: 16 MiB of guest memory.
+const CHUNK: usize = 4096;
+
+/// Every page's record, in chunks that copies of a process share until one of them changes it, so a
+/// fork copies what the process uses, not its whole address space. A chunk not there holds nothing.
 #[derive(Clone)]
-struct Pages(Vec<u64>);
+struct Pages(Vec<Option<Arc<[Page; CHUNK]>>>);
 
 impl Pages {
     fn new(pages: u64) -> Self {
-        Pages(vec![0; pages.div_ceil(64) as usize])
+        Pages(vec![None; (pages as usize).div_ceil(CHUNK)])
     }
 
-    fn set(&mut self, pages: Range<u64>, on: bool) {
-        for page in pages {
-            let (word, bit) = ((page / 64) as usize, page % 64);
-            if on {
-                self.0[word] |= 1 << bit;
-            } else {
-                self.0[word] &= !(1 << bit);
+    fn get(&self, page: u64) -> Page {
+        let page = page as usize;
+        self.0
+            .get(page / CHUNK)
+            .and_then(Option::as_ref)
+            .map_or(Page::NOTHING, |chunk| chunk[page % CHUNK])
+    }
+
+    /// Changes the records of `pages`; a chunk left holding nothing is dropped.
+    fn update(&mut self, pages: Range<u64>, change: impl Fn(&mut Page)) {
+        let (mut page, end) = (pages.start as usize, pages.end as usize);
+        while page < end {
+            let index = page / CHUNK;
+            let (first, last) = (page % CHUNK, (end - index * CHUNK).min(CHUNK));
+            page = index * CHUNK + last;
+            let slot = &mut self.0[index];
+            if slot.is_none() {
+                let mut nothing = Page::NOTHING;
+                change(&mut nothing);
+                if nothing == Page::NOTHING {
+                    continue;
+                }
+            }
+            let chunk = Arc::make_mut(slot.get_or_insert_with(|| Arc::new([Page::NOTHING; CHUNK])));
+            chunk[first..last].iter_mut().for_each(&change);
+            if first == 0 && last == CHUNK && chunk.iter().all(|p| *p == Page::NOTHING) {
+                *slot = None;
             }
         }
     }
 
-    /// The runs of pages that are set, in order.
-    fn runs(&self) -> Vec<Range<u64>> {
+    /// The pages of every chunk there, in order.
+    fn chunks(&self) -> impl Iterator<Item = Range<u64>> + '_ {
+        self.0.iter().enumerate().filter_map(|(index, chunk)| {
+            chunk
+                .as_ref()
+                .map(|_| (index * CHUNK) as u64..((index + 1) * CHUNK) as u64)
+        })
+    }
+
+    /// The runs of pages that may hold data, in order.
+    fn data_runs(&self) -> Vec<Range<u64>> {
         let mut runs: Vec<Range<u64>> = Vec::new();
-        for (index, &word) in self.0.iter().enumerate() {
-            let mut bits = word;
-            while bits != 0 {
-                let page = index as u64 * 64 + u64::from(bits.trailing_zeros());
-                bits &= bits - 1;
+        for (index, chunk) in self.0.iter().enumerate() {
+            let Some(chunk) = chunk else {
+                continue;
+            };
+            for (offset, record) in chunk.iter().enumerate() {
+                if !record.data {
+                    continue;
+                }
+                let page = (index * CHUNK + offset) as u64;
                 match runs.last_mut() {
                     Some(run) if run.end == page => run.end += 1,
                     _ => runs.push(page..page + 1),
@@ -637,13 +688,11 @@ where
 
     /// What a page allows once the write locks are taken off what the kernel said.
     fn effective(process: &Process<G>, page: u64) -> Permissions {
-        let Some(&permissions) = process.permissions.get(page as usize) else {
-            return Permissions::empty();
-        };
-        if process.locks[page as usize] != 0 {
-            permissions - Permissions::WRITE
+        let page = process.pages.get(page);
+        if page.locks != 0 {
+            page.allows - Permissions::WRITE
         } else {
-            permissions
+            page.allows
         }
     }
 
@@ -724,9 +773,10 @@ where
         let process = self.process(memory);
         let executable = |page: u64| {
             process
-                .permissions
-                .get(page as usize)
-                .is_some_and(|p| p.contains(Permissions::EXECUTE))
+                .pages
+                .get(page)
+                .allows
+                .contains(Permissions::EXECUTE)
         };
         let page = address / PAGE_SIZE;
         let mut first = page;
@@ -1028,9 +1078,7 @@ where
             state,
             state_base,
             hooks,
-            permissions: vec![Permissions::empty(); pages],
-            locks: vec![0; pages],
-            data: Pages::new(pages as u64),
+            pages: Pages::new(pages as u64),
             shown: BTreeMap::new(),
             written: BTreeSet::new(),
             ranges: Vec::new(),
@@ -1069,25 +1117,28 @@ where
             source.base,
             into.base,
             &mut source
-                .data
-                .runs()
+                .pages
+                .data_runs()
                 .into_iter()
                 .map(|pages| pages.start * PAGE_SIZE..pages.end * PAGE_SIZE),
         );
-        into.permissions.clone_from(&source.permissions);
-        into.locks.clone_from(&source.locks);
-        into.data.clone_from(&source.data);
+        into.pages.clone_from(&source.pages);
         into.shown.clone_from(&source.shown);
         let layout = self.layout;
         if code {
-            // The table is the same record's, and its slots are the source's, so both are copied.
-            let table = u64::from(layout.permissions_at)
-                ..u64::from(layout.permissions_at) + layout.permission_pages + 1;
+            // The table is the same records', and its slots are the source's, so both are copied. Its
+            // bytes are zero but where a page or the one after it allows something, so only those of
+            // the records' chunks and the page before each.
+            let at = u64::from(layout.permissions_at);
+            let table = source
+                .pages
+                .chunks()
+                .map(|pages| at + pages.start.saturating_sub(1)..at + pages.end);
             let slots = source.ranges.iter().map(|code| {
                 let entry = |address: u64| u64::from(layout.slots_at) + 4 * (address / G::ALIGN);
                 entry(code.range.start)..entry(code.range.end.min(layout.ceiling))
             });
-            let mut runs: Vec<Range<u64>> = std::iter::once(table).chain(slots).collect();
+            let mut runs: Vec<Range<u64>> = table.chain(slots).collect();
             runs.sort_by_key(|run| run.start);
             copy(source.state_base, into.state_base, &mut runs.into_iter());
             into.ranges.clone_from(&source.ranges);
@@ -1116,7 +1167,10 @@ where
             let mut bytes = vec![0; PAGE_SIZE as usize];
             self.copy_out(memory, address, &mut bytes);
             self.block_write(block, offset, &bytes);
-            self.processes.get_mut(&memory).expect("a memory").locks[page as usize] |= LOCK_SHARED;
+            let process = self.processes.get_mut(&memory).expect("a memory");
+            process
+                .pages
+                .update(page..page + 1, |p| p.locks |= LOCK_SHARED);
             self.write_table(memory, page..page + 1);
         }
     }
@@ -1201,8 +1255,10 @@ where
             }
         }
         let pages = range.start / PAGE_SIZE..range.end.div_ceil(PAGE_SIZE);
+        process
+            .pages
+            .update(pages.clone(), |p| p.locks &= !LOCK_SHARED);
         for page in pages.clone() {
-            process.locks[page as usize] &= !LOCK_SHARED;
             process.written.remove(&page);
         }
         self.write_table(memory, pages);
@@ -1213,7 +1269,9 @@ where
     fn settle_write(&mut self, memory: MemoryId, page: u64) {
         self.slow_path(reason::FIRST_WRITE_TO_SHARED_PAGE, page * PAGE_SIZE, 0);
         let process = self.processes.get_mut(&memory).expect("a memory");
-        process.locks[page as usize] &= !LOCK_SHARED;
+        process
+            .pages
+            .update(page..page + 1, |p| p.locks &= !LOCK_SHARED);
         process.written.insert(page);
         self.write_table(memory, page..page + 1);
     }
@@ -1420,8 +1478,8 @@ where
     let memory = caller.data().memory;
     let page = address / PAGE_SIZE;
     let process = side.process(memory);
-    let locked = process.locks.get(page as usize).is_some_and(|l| *l != 0);
-    if access == 1 && locked && process.permissions[page as usize].contains(Permissions::WRITE) {
+    let record = process.pages.get(page);
+    if access == 1 && record.locks != 0 && record.allows.contains(Permissions::WRITE) {
         caller.data_mut().lock_fault = Some(page);
         return;
     }
@@ -1481,9 +1539,10 @@ where
     let page = address / PAGE_SIZE;
     let runs = side
         .process(memory)
-        .permissions
-        .get(page as usize)
-        .is_some_and(|p| p.contains(Permissions::EXECUTE));
+        .pages
+        .get(page)
+        .allows
+        .contains(Permissions::EXECUTE);
     if !runs {
         side.slow_path(Reason::MemoryFault.name(), address, 0);
         caller.data_mut().pending = Some(Exit::MemoryFault {
@@ -1591,9 +1650,10 @@ impl<G: Guest<Block = RegisterBlock>> starts::Guest for Reader<'_, G> {
     fn readable(&self, address: u64) -> bool {
         self.side
             .process(self.memory)
-            .permissions
-            .get((address / PAGE_SIZE) as usize)
-            .is_some_and(|p| p.contains(Permissions::READ))
+            .pages
+            .get(address / PAGE_SIZE)
+            .allows
+            .contains(Permissions::READ)
     }
 }
 
@@ -1997,7 +2057,7 @@ where
         self.copy_in(memory, address, from);
         let pages = address / PAGE_SIZE..(address + from.len() as u64).div_ceil(PAGE_SIZE);
         let process = self.processes.get_mut(&memory).expect("a memory");
-        process.data.set(pages, true);
+        process.pages.update(pages, |p| p.data = true);
         let end = address + from.len() as u64;
         let shown: Vec<(u64, Shown)> = self
             .process(memory)
@@ -2022,7 +2082,7 @@ where
         let whole = address.div_ceil(PAGE_SIZE)..(address + length) / PAGE_SIZE;
         if whole.start < whole.end {
             let process = self.processes.get_mut(&memory).expect("a memory");
-            process.data.set(whole, false);
+            process.pages.update(whole, |p| p.data = false);
         }
         let host_page = memory::host_page();
         let (first, end) = (
@@ -2055,10 +2115,10 @@ where
         self.check(address, length)?;
         let pages = address / PAGE_SIZE..(address + length).div_ceil(PAGE_SIZE);
         let process = self.processes.get_mut(&memory).expect("a memory");
-        process.permissions[pages.start as usize..pages.end as usize].fill(permissions);
-        if !permissions.is_empty() {
-            process.data.set(pages.clone(), true);
-        }
+        process.pages.update(pages.clone(), |p| {
+            p.allows = permissions;
+            p.data |= !permissions.is_empty();
+        });
         self.write_table(memory, pages);
         Ok(())
     }
@@ -2157,10 +2217,10 @@ where
             },
         );
         let pages = address / PAGE_SIZE..(address + length).div_ceil(PAGE_SIZE);
-        for page in pages.clone() {
-            process.locks[page as usize] |= LOCK_SHARED;
-        }
-        process.data.set(pages.clone(), true);
+        process.pages.update(pages.clone(), |p| {
+            p.locks |= LOCK_SHARED;
+            p.data = true;
+        });
         self.write_table(memory, pages);
         Ok(())
     }
@@ -2260,5 +2320,43 @@ where
         } else {
             self.write_block(&self.threads[&thread], from);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CHUNK, Page, Pages, Permissions};
+
+    /// Records change only where asked, copies share chunks until one side changes, a chunk left
+    /// holding nothing is dropped, and the data runs cross chunk boundaries.
+    #[test]
+    fn page_records_are_kept_in_shared_chunks() {
+        let chunk = CHUNK as u64;
+        let mut pages = Pages::new(4 * chunk);
+        pages.update(chunk - 2..chunk + 3, |p| {
+            p.allows = Permissions::READ;
+            p.data = true;
+        });
+        assert!(pages.get(chunk - 3) == Page::NOTHING);
+        assert_eq!(pages.get(chunk + 2).allows, Permissions::READ);
+        assert!(pages.get(chunk + 3) == Page::NOTHING);
+        assert_eq!(pages.data_runs(), vec![chunk - 2..chunk + 3]);
+        assert_eq!(
+            pages.chunks().collect::<Vec<_>>(),
+            vec![0..chunk, chunk..2 * chunk]
+        );
+        let copy = pages.clone();
+        pages.update(chunk..chunk + 1, |p| p.locks = 1);
+        assert_eq!(copy.get(chunk).locks, 0);
+        assert_eq!(pages.get(chunk).locks, 1);
+        // Taking a lock off pages that hold nothing makes no chunk.
+        pages.update(3 * chunk..4 * chunk, |p| p.locks = 0);
+        assert_eq!(pages.chunks().count(), 2);
+        pages.update(0..2 * chunk, |p| *p = Page::NOTHING);
+        assert_eq!(pages.chunks().count(), 0);
+        assert!(pages.data_runs().is_empty());
+        assert_eq!(copy.data_runs(), vec![chunk - 2..chunk + 3]);
+        // Beyond the records, a page holds nothing.
+        assert!(pages.get(5 * chunk) == Page::NOTHING);
     }
 }
