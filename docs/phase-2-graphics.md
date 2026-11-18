@@ -502,7 +502,10 @@ bound follows from this: one that compares exactly where the program compares th
 and none with a linear filter (min, mag or mip) where the program pairs it with a texture whose bit is
 set. A uniform or storage binding is at least the size of the block the program declares there (a
 runtime-sized array counted as one element), as WebGPU's `minBindingSize` and WebGL 2's
-`UNIFORM_BLOCK_DATA_SIZE` require (`ConstantBufferGrown`, 5.1).
+`UNIFORM_BLOCK_DATA_SIZE` require (`ConstantBufferGrown`, 5.1). A storage binding's size is a
+multiple of four, as WebGPU's bind group rule requires; a front whose API's view or range is not
+rounds its bytes up to it within the buffer (the API's out-of-range rules then cover the bytes
+added), as the Vulkan driver does with a descriptor's range (15.4).
 `prepare` takes the layout keys too (`PrepareDesc::layouts`; the zero key, every texture filterable, is
 what a Direct3D 12 pipeline state is prepared with before any descriptor is known), and the cache
 records them, so a combination first seen with other keys is prepared at the next start. The pipeline
@@ -1429,9 +1432,13 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
   has no such switch.
 - A shader's access to a buffer outside its bound range (Direct3D reads zero and drops the write
   for constant, raw and structured buffers) gets what the back end gives (`BindingResource`'s doc):
-  on WebGPU a value from anywhere in the buffer, zero or (0, 0, 0, x), or the draw or dispatch
-  partly dropped (checked: the WebGPU specification's out-of-bounds access in shaders), and WGSL may
-  end the invocation with its outputs zero (checked: WGSL's out-of-bounds access); a listed loss.
+  on WebGPU a value from anywhere in the WebGPU buffer behind the binding, zero or (0, 0, 0, x), a
+  store landing anywhere in that buffer, or the draw or dispatch partly dropped (checked: the WebGPU
+  specification's out-of-bounds access in shaders; WGSL's out-of-bounds access: "any memory
+  location(s) of the WebGPU GPUBuffer bound"), and WGSL may end the invocation with its outputs
+  zero; a listed loss. The WebGPU back end holds small uniform buffers the program writes often in
+  one shared WebGPU buffer, so such a load may read another of the device's buffers (a read only:
+  that shared buffer holds no buffer a program writes).
   Typed buffers are exact: their route checks each element against the view's length
   (`HelperValue::TexelBufferView`). The exact route for the rest is the check in the program that
   the Vulkan driver makes (`RobustAccessInShader`, 15.4), which every program would pay for. The

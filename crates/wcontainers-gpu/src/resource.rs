@@ -270,9 +270,10 @@ pub struct BufferRange<H> {
 /// One resource in a binding set.
 ///
 /// A program may access a buffer binding outside its bound range: a back end gives what its API
-/// gives, on WebGPU a load from anywhere in the buffer, zero or (0, 0, 0, x), a store kept within
-/// the buffer or dropped, or the draw or dispatch partly dropped (WGSL may end the invocation with
-/// its outputs zero). A front whose API defines the result binds a program that checks its own
+/// gives, on WebGPU a load from anywhere in the API's buffer behind the binding, zero or
+/// (0, 0, 0, x), a store landing anywhere in that buffer or dropped, or the draw or dispatch partly
+/// dropped (WGSL may end the invocation with its outputs zero). A back end may hold several of the
+/// device's buffers in one API buffer, so such an access may reach theirs. A front whose API defines the result binds a program that checks its own
 /// accesses against the range it is given.
 #[derive(Debug)]
 pub enum BindingResource<'a, B: Backend> {
@@ -283,8 +284,8 @@ pub enum BindingResource<'a, B: Backend> {
     /// buffer ([`crate::SlowPath::ConstantBufferGrown`]).
     UniformBuffer(BufferRange<&'a B::Buffer>),
     /// The offset is a multiple of [`crate::Limits::min_storage_offset_alignment`] and the size at most
-    /// [`crate::Limits::max_storage_buffer_size`], and at least the size of the program's block, a
-    /// runtime-sized array counted as one element. A front whose API binds at any offset binds from
+    /// [`crate::Limits::max_storage_buffer_size`], a multiple of four (WebGPU's rule), and at least
+    /// the size of the program's block, a runtime-sized array counted as one element. A front whose API binds at any offset binds from
     /// the largest offset below it that is a multiple of both the alignment and the program's element
     /// stride ([`crate::ReflectedBinding::stride`]), and writes the rest into the program's helper
     /// constants ([`crate::HelperValue::StorageOffset`]), which a program made with
