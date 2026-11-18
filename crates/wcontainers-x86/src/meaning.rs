@@ -21,8 +21,14 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
         return;
     }
     match claim_group(ins.code()) {
+        // At CPL 3 every kernel-only instruction is general protection, but rsm, which exists only in
+        // system management mode and is #UD outside it.
         GROUP_KERNEL => {
-            e.trap(Trap::GeneralProtection);
+            e.trap(if ins.mnemonic() == Mnemonic::Rsm {
+                Trap::Undefined
+            } else {
+                Trap::GeneralProtection
+            });
             return;
         }
         GROUP_NEVER => {

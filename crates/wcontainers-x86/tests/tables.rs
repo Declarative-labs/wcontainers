@@ -19,9 +19,10 @@ fn every_code_is_in_its_claim_group() {
                 .iter()
                 .all(|f| lists.iter().any(|list| list.contains(&f.as_str())))
         };
-        let expected = if code.is_privileged() || code == Code::Rdpmc {
+        let kernel = code.is_privileged() || code == Code::Rdpmc;
+        let expected = if kernel && all_in(&[DEFAULT_FEATURES, KERNEL_FEATURES]) {
             GROUP_KERNEL
-        } else if all_in(&[DEFAULT_FEATURES]) {
+        } else if !kernel && all_in(&[DEFAULT_FEATURES]) {
             GROUP_DEFAULT
         } else if all_in(&[DEFAULT_FEATURES, AVX_FEATURES]) {
             GROUP_AVX
@@ -46,6 +47,9 @@ fn every_code_is_in_its_claim_group() {
         GROUP_NEVER
     );
     assert_eq!(wcontainers_x86::claim_group(Code::Hlt), GROUP_KERNEL);
+    assert_eq!(wcontainers_x86::claim_group(Code::Rdmsr), GROUP_KERNEL);
+    assert_eq!(wcontainers_x86::claim_group(Code::Vmlaunch), GROUP_NEVER);
+    assert_eq!(wcontainers_x86::claim_group(Code::Xsetbv), GROUP_AVX);
 }
 
 /// Every memory size the crate knows has iced's size.

@@ -39,6 +39,10 @@ pub const DEFAULT_FEATURES: &[&str] = &[
     "SYSCALL",
 ];
 
+/// The features of kernel-only instructions that every x86-64 CPU has, and so the CPU presented has: a user
+/// program reaching one gets the fault Linux gives, not illegal instruction.
+pub const KERNEL_FEATURES: &[&str] = &["MSR", "RDPMC", "SMM"];
+
 /// The features the AVX setting adds.
 pub const AVX_FEATURES: &[&str] = &["AVX", "AVX2", "FMA", "F16C", "BMI2", "XSAVE"];
 

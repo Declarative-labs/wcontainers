@@ -6,24 +6,25 @@ use std::fmt::Write;
 
 include!("src/claims.rs");
 
-/// The group of one `Code`: kernel only when the CPU allows it only at CPL 0 (and `rdpmc`, which Linux leaves
-/// to the kernel by keeping CR4.PCE clear), else by its features against the claim lists.
+/// The group of one `Code`, by its features against the claim lists: kernel only when the CPU allows it only
+/// at CPL 0 (and `rdpmc`, which Linux leaves to the kernel by keeping CR4.PCE clear) and the CPU presented
+/// has it by default; an instruction of a feature not presented is one a CPU without it does not have,
+/// kernel only or not.
 fn group(code: Code) -> u8 {
-    if code.is_privileged() || code == Code::Rdpmc {
-        return GROUP_KERNEL;
-    }
+    let kernel = code.is_privileged() || code == Code::Rdpmc;
     let names: Vec<String> = code
         .cpuid_features()
         .iter()
         .map(|f| format!("{f:?}"))
         .collect();
-    let in_list = |list: &[&str], name: &String| list.iter().any(|n| n == name);
-    if names.iter().all(|n| in_list(DEFAULT_FEATURES, n)) {
-        GROUP_DEFAULT
-    } else if names
-        .iter()
-        .all(|n| in_list(DEFAULT_FEATURES, n) || in_list(AVX_FEATURES, n))
-    {
+    let all_in = |lists: &[&[&str]]| {
+        names
+            .iter()
+            .all(|n| lists.iter().any(|list| list.contains(&n.as_str())))
+    };
+    if all_in(&[DEFAULT_FEATURES, KERNEL_FEATURES]) {
+        if kernel { GROUP_KERNEL } else { GROUP_DEFAULT }
+    } else if all_in(&[DEFAULT_FEATURES, AVX_FEATURES]) {
         GROUP_AVX
     } else {
         GROUP_NEVER
