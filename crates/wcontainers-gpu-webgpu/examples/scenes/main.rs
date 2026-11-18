@@ -5,7 +5,8 @@
 //! `webgpu-<api>-<picture>.png`. Built for WebAssembly, web/scenes.html calls `draw_scene` and
 //! `adapter` and saves what they return, times first draws with and without `prepare`
 //! (`prepare_timings`, prepare.rs), checks timestamps (`timestamps`, timestamps.rs) and the formats
-//! held converted (`converted`, converted.rs), and web/suite.html runs the shared suite (suite.rs).
+//! held converted (`converted`, converted.rs) and the vertex formats WebGPU lacks
+//! (`vertex_formats`, vertices.rs), and web/suite.html runs the shared suite (suite.rs).
 
 #[path = "../../../wcontainers-graphics-test/src/scene.rs"]
 #[allow(dead_code)]
@@ -63,6 +64,9 @@ mod timestamps;
 
 #[cfg(target_arch = "wasm32")]
 mod converted;
+
+#[cfg(target_arch = "wasm32")]
+mod vertices;
 
 #[cfg(target_arch = "wasm32")]
 #[macro_use]
@@ -155,6 +159,17 @@ mod web {
     pub fn converted() -> Result<String, JsError> {
         let (mut b, _) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
         super::converted::check(&mut b).map_err(js)
+    }
+
+    /// The vertex formats WebGPU lacks, `n` seeded vertices each, read through shadow streams on
+    /// the browser's WebGPU; fails at the first value read wrong.
+    #[wasm_bindgen(jspi)]
+    pub fn vertex_formats(seed: u64, n: u32) -> Result<String, JsError> {
+        let (mut b, _) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
+        super::vertices::lacking_vertex_formats(&mut b, seed, n);
+        Ok(format!(
+            "vertex formats: seed {seed}, {n} vertices per format, all as they mean"
+        ))
     }
 
     /// Draws the eight-viewport scene (`rounded`: its viewports moved to whole pixels) on the
