@@ -84,6 +84,7 @@ fn images() -> &'static (PathBuf, PathBuf) {
         tar::Archive::new(std::fs::File::open(&saved).unwrap())
             .unpack(&layout)
             .unwrap();
+        std::fs::remove_file(&saved).unwrap();
         let name = format!("wc-surface-{}", std::process::id());
         docker(&[
             "create",
@@ -335,4 +336,16 @@ fn the_command_line_program_runs_a_container() {
         stderr.contains("process.terminal is not supported"),
         "{stderr}"
     );
+}
+
+/// The shipped outside's timer ends a free turn at the kernel's slice: a process that never makes a
+/// system call does not keep the shell from going on.
+#[test]
+fn a_busy_process_is_preempted_by_the_timer() {
+    let (layout, _) = images();
+    let image = Image::oci(layout, "arm64").unwrap();
+    let command = "while :; do :; done & sleep 0.2; kill $!; echo done";
+    let spec = with_args(image.spec().unwrap(), &["sh", "-c", command]);
+    let (outcome, _) = ours(&spec, &image, None);
+    assert_eq!(outcome, reference(command));
 }
