@@ -94,6 +94,11 @@ pub struct Device<B: Backend> {
     pub(crate) layouts: HashMap<(u64, [u32; 32]), Kept<B, B::VertexLayout>>,
     /// What empty slots read.
     pub(crate) zeros: Zeros<B>,
+    /// The stage helpers of geometry shaders and stream output, by the vertex shader's, input
+    /// layout's, geometry shader object's and pixel shader's ids.
+    pub(crate) staged: HashMap<(u64, u64, u64, u64), crate::context::StageRun<B>>,
+    /// The stage helper's filled sizes and primitive counts of a streaming draw.
+    pub(crate) stream_filled: Option<Kept<B, B::Buffer>>,
     /// Set once the device is removed; later work is dropped and the API reports the removal.
     pub removed: Option<Removal>,
 }
@@ -255,6 +260,8 @@ impl<B: Backend> Device<B> {
                 textures: HashMap::new(),
                 sampler: None,
             },
+            staged: HashMap::new(),
+            stream_filled: None,
             removed: None,
         })
     }
@@ -613,9 +620,12 @@ impl<B: Backend> Device<B> {
         let granule = u64::from(self.backend.caps().limits.buffer_copy_alignment.max(1));
         let size = u64::from(d.byte_width).div_ceil(granule) * granule;
         let mut desc = gpu_buffer(d, size);
-        // Vertex programs fetch the streams the back end cannot step by their rate.
-        if d.bind_flags & bind::VERTEX_BUFFER != 0
-            && !self.backend.caps().has(Features::INSTANCE_STEP_RATE)
+        // Vertex programs fetch the streams the back end cannot step by their rate; the stage
+        // helper's compute programs read vertices and indices and write stream output.
+        let caps = self.backend.caps();
+        let staged = bind::VERTEX_BUFFER | bind::INDEX_BUFFER | bind::STREAM_OUTPUT;
+        if d.bind_flags & bind::VERTEX_BUFFER != 0 && !caps.has(Features::INSTANCE_STEP_RATE)
+            || d.bind_flags & staged != 0 && caps.has(Features::COMPUTE)
         {
             desc.usage |= BufferUsage::STORAGE;
         }
@@ -652,6 +662,7 @@ impl<B: Backend> Device<B> {
             staged: RefCell::new(Staged::Current),
             writes: Cell::new(0),
             windows: RefCell::new(Vec::new()),
+            filled: RefCell::new(None),
         }))
     }
 
@@ -1488,6 +1499,78 @@ impl<B: Backend> Device<B> {
         Ok(shader)
     }
 
+    /// A geometry shader, or a vertex shader's bytecode with a stream output declaration `so`.
+    pub fn create_geometry_shader(
+        &mut self,
+        bytecode: &[u8],
+        so: Option<crate::stream::Declaration<'_>>,
+    ) -> Result<Rc<Geometry<B>>> {
+        use wcontainers_gpu::SourceStage;
+        shader::check_model(bytecode, self.level)?;
+        let vertex = match shader::stage(bytecode)? {
+            SourceStage::Geometry => false,
+            SourceStage::Vertex if so.is_some() => true,
+            _ => {
+                return Err(Error::InvalidArg(
+                    "the bytecode is a shader of another stage",
+                ));
+            }
+        };
+        let outputs = shader::output_signature(bytecode)?;
+        let (entries, strides, rasterized) = so.unwrap_or((None, None, 0));
+        let (stream, drawn) =
+            crate::stream::declaration(entries, strides, rasterized, self.level, &outputs, vertex)?;
+        if !self.backend.caps().has(Features::COMPUTE) {
+            return not_implemented(
+                "geometry shaders and stream output without the back end's compute programs",
+            );
+        }
+        let stage = if vertex {
+            None
+        } else {
+            let typed = shader::typed_views(bytecode)?;
+            let key = shader::base_key(SourceStage::Geometry, &typed);
+            let converted = shader::convert_geometry(bytecode, &key)?;
+            Some((self.geometry_stage(bytecode, &converted, typed)?, converted))
+        };
+        let id = self.id();
+        Ok(Rc::new(Geometry {
+            id,
+            stage,
+            stream,
+            drawn,
+        }))
+    }
+
+    /// The geometry stage of `converted`: the slots of its compute form, and its pass-through
+    /// vertex program handed to the back end.
+    pub(crate) fn geometry_stage(
+        &mut self,
+        bytecode: &[u8],
+        converted: &wcontainers_shaders::Converted,
+        typed: Vec<shader::TypedView>,
+    ) -> Result<Rc<Shader<B>>> {
+        let compute = &converted.modules[0];
+        self.live()?;
+        self.bury();
+        let gpu = self.backend.create_shader(&converted.modules[1]);
+        let gpu = self.gpu(gpu)?;
+        let id = self.id();
+        Ok(Rc::new(Shader {
+            gpu: Kept::new(gpu, id, Object::Shader, &self.graveyard),
+            reflection: converted.reflection.clone(),
+            constant_sizes: constant_sizes(&compute.module),
+            stand_ins: stand_ins(&compute.module),
+            bytecode: bytecode.to_vec(),
+            samplers: shader::sampler_slots(converted),
+            textures: shader::texture_slots(converted),
+            mirror_filtered: shader::mirror_filtered_slots(converted),
+            reads_samples: false,
+            helpers: Rc::new(shader::Helpers::of(converted)),
+            typed,
+        }))
+    }
+
     pub fn create_input_layout(
         &mut self,
         elements: &[InputElement],
@@ -1567,10 +1650,12 @@ impl<B: Backend> Device<B> {
             }
         }
         let id = self.id();
+        let all = resolved.iter().chain(&pulled).copied().collect();
         Ok(Rc::new(InputLayout {
             id,
             elements: resolved,
             pulled,
+            all,
             instance_steps,
         }))
     }

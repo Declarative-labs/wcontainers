@@ -27,12 +27,16 @@ use crate::format;
 use crate::object::*;
 use crate::shader::{Helpers, StageVariant};
 
-/// The shader stages whose slots this context keeps: vertex (set 0), pixel (set 1) and compute
-/// (set 0 of its own programs).
+mod geometry;
+pub(crate) use geometry::StageRun;
+
+/// The shader stages whose slots this context keeps: vertex (set 0), pixel (set 1), compute (set 0
+/// of its own programs) and geometry (set 0 of the stage helper's compute programs).
 pub const VERTEX: usize = 0;
 pub const PIXEL: usize = 1;
 pub const COMPUTE: usize = 2;
-const STAGES: usize = 3;
+pub const GEOMETRY: usize = 3;
+const STAGES: usize = 4;
 
 /// Unordered access slots of the pixel and compute stages at feature level 11_0.
 pub const UAV_SLOTS: usize = 8;
@@ -78,6 +82,13 @@ pub struct ContextState<B: Backend> {
     vs: Option<Rc<Shader<B>>>,
     ps: Option<Rc<Shader<B>>>,
     cs: Option<Rc<Shader<B>>>,
+    gs: Option<Rc<Geometry<B>>>,
+    /// The geometry shader's stage, whose slots the geometry set binds.
+    gs_stage: Option<Rc<Shader<B>>>,
+    /// The stream output targets.
+    so_targets: [Option<Rc<Buffer<B>>>; 4],
+    /// The vertex stage's set is made for the stage helper's compute programs.
+    vertex_compute: bool,
     pub(crate) layout: Option<Rc<InputLayout>>,
     topology: u32,
     vertex_buffers: Vec<Option<VertexSlot<B>>>,
@@ -128,6 +139,10 @@ impl<B: Backend> ContextState<B> {
             vs: None,
             ps: None,
             cs: None,
+            gs: None,
+            gs_stage: None,
+            so_targets: Default::default(),
+            vertex_compute: false,
             layout: None,
             topology: topology::UNDEFINED,
             vertex_buffers: vec![None; VERTEX_SLOTS],
@@ -136,7 +151,12 @@ impl<B: Backend> ContextState<B> {
             constant_ranges: std::array::from_fn(|_| vec![None; 14]),
             resources: std::array::from_fn(|_| vec![None; 128]),
             samplers: std::array::from_fn(|_| vec![None; 16]),
-            uavs: [Vec::new(), vec![None; UAV_SLOTS], vec![None; UAV_SLOTS]],
+            uavs: [
+                Vec::new(),
+                vec![None; UAV_SLOTS],
+                vec![None; UAV_SLOTS],
+                Vec::new(),
+            ],
             targets: vec![None; 8],
             depth: None,
             blend: None,
@@ -147,7 +167,7 @@ impl<B: Backend> ContextState<B> {
             raster: None,
             viewports: Vec::new(),
             scissors: Vec::new(),
-            sets: [None, None, None],
+            sets: [None, None, None, None],
             sets_dirty: [true; STAGES],
             windows: Default::default(),
             pulled_set: 0,
@@ -374,6 +394,47 @@ impl<B: Backend> Device<B> {
         }
     }
 
+    pub fn gs_set_shader(&mut self, shader: Option<Rc<Geometry<B>>>) {
+        if !same(&self.ctx.gs, &shader) {
+            self.ctx.gs_stage = shader
+                .as_ref()
+                .and_then(|g| g.stage.as_ref().map(|s| s.0.clone()));
+            self.ctx.gs = shader;
+            self.ctx.sets_dirty[GEOMETRY] = true;
+        }
+    }
+
+    /// `SOSetTargets`: the buffers stream output writes, each from `offsets` (`u32::MAX` appends
+    /// where it was filled to).
+    pub fn so_set_targets(
+        &mut self,
+        buffers: &[Option<Rc<Buffer<B>>>],
+        offsets: &[u32],
+    ) -> Result<()> {
+        if buffers.len() > 4 {
+            return Err(Error::InvalidArg("more than four stream output targets"));
+        }
+        let mut targets: [Option<Rc<Buffer<B>>>; 4] = Default::default();
+        for (i, b) in buffers.iter().enumerate() {
+            let Some(b) = b else { continue };
+            if b.desc.bind_flags & desc::bind::STREAM_OUTPUT == 0 {
+                return Err(Error::InvalidArg(
+                    "a stream output target made without its binding",
+                ));
+            }
+            let offset = offsets.get(i).copied().unwrap_or(0);
+            let filled = self.filled_counter(b)?;
+            if offset != u32::MAX {
+                self.end_pass();
+                self.backend
+                    .write_buffer(&filled, 0, &offset.to_le_bytes(), WriteMode::Ordered);
+            }
+            targets[i] = Some(b.clone());
+        }
+        self.ctx.so_targets = targets;
+        Ok(())
+    }
+
     /// Binds unordered access views to `stage` (pixel or compute) from `start`, setting the hidden
     /// counters of those given an initial count (`u32::MAX` keeps a counter as it is).
     pub fn set_uavs(
@@ -390,7 +451,7 @@ impl<B: Backend> Device<B> {
             if stage == COMPUTE {
                 self.unbind_written(&[COMPUTE]);
             } else {
-                self.unbind_written(&[VERTEX, PIXEL, COMPUTE]);
+                self.unbind_written(&[VERTEX, PIXEL, COMPUTE, GEOMETRY]);
             }
         }
         for (i, v) in views.iter().enumerate() {
@@ -575,7 +636,7 @@ impl<B: Backend> Device<B> {
             self.ctx.targets = new;
             self.ctx.depth = depth;
             // Binding a subresource as a target unbinds its shader resource views, as in Direct3D.
-            self.unbind_written(&[VERTEX, PIXEL, COMPUTE]);
+            self.unbind_written(&[VERTEX, PIXEL, COMPUTE, GEOMETRY]);
         }
         Ok(())
     }
@@ -1194,12 +1255,14 @@ impl<B: Backend> Device<B> {
         if self.removed.is_some() {
             return Ok(());
         }
-        // Fetching in the program steps by the first instance, which only the arguments hold.
+        // Fetching in the program steps by the first instance, which only the arguments hold;
+        // the stage helper sizes its output by the draw's counts.
         let pulls = self
             .ctx
             .layout
             .as_ref()
-            .is_some_and(|l| !l.pulled.is_empty());
+            .is_some_and(|l| !l.pulled.is_empty())
+            || self.ctx.gs.is_some();
         let r = if !pulls
             && self
                 .backend
@@ -1805,6 +1868,7 @@ impl<B: Backend> Device<B> {
         match stage {
             VERTEX => &self.ctx.vs,
             PIXEL => &self.ctx.ps,
+            GEOMETRY => &self.ctx.gs_stage,
             _ => &self.ctx.cs,
         }
     }
@@ -2076,7 +2140,7 @@ impl<B: Backend> Device<B> {
                 .filter(move |b| b.set == set)
         };
         let stages = match stage {
-            VERTEX => StageSet::VERTEX,
+            VERTEX if !self.ctx.vertex_compute => StageSet::VERTEX,
             PIXEL => StageSet::FRAGMENT,
             _ => StageSet::COMPUTE,
         };
@@ -2264,7 +2328,7 @@ impl<B: Backend> Device<B> {
                     .ctx
                     .layout
                     .as_ref()
-                    .and_then(|l| l.pulled.iter().find(|e| e.location == location))
+                    .and_then(|l| l.all.iter().find(|e| e.location == location))
                     .and_then(|e| self.ctx.vertex_buffers[e.slot as usize].as_ref())
                     .map(|(b, _, offset)| (b, u64::from(*offset) / align * align))
                     .filter(|(b, start)| start + 4 <= b.size.get());
@@ -2487,7 +2551,7 @@ impl<B: Backend> Device<B> {
             .ctx
             .layout
             .as_ref()
-            .and_then(|l| l.pulled.iter().find(|e| e.location == location))
+            .and_then(|l| l.all.iter().find(|e| e.location == location))
         else {
             return [0; 4];
         };
@@ -2544,100 +2608,112 @@ impl<B: Backend> Device<B> {
         }
     }
 
+    /// The helper block `h` of `stage`'s program for a draw from `bases` (vertex, instance), with
+    /// an indirect draw's arguments.
+    fn helper_block(
+        &mut self,
+        h: &Helpers,
+        stage: usize,
+        bases: [u32; 2],
+        args: Option<(&Rc<Buffer<B>>, u32, bool)>,
+    ) -> Result<Vec<u8>> {
+        let mut block = vec![0u8; h.size as usize];
+        for slot in &h.values {
+            let mut words = [0u32; 9];
+            let n = match slot.value {
+                HelperValue::DrawBase => {
+                    words[..3].copy_from_slice(&[bases[0], bases[1], 0]);
+                    3
+                }
+                HelperValue::DrawArguments => {
+                    let (_, offset, indexed) = args.expect("an indirect draw");
+                    words[..3].copy_from_slice(&[offset / 4, u32::from(indexed), 0]);
+                    3
+                }
+                HelperValue::PulledStream { input } => {
+                    words[..4].copy_from_slice(&self.pulled_stream(input, bases[1]));
+                    4
+                }
+                HelperValue::LodBias { sampler: s } => {
+                    words[0] = self
+                        .bound_sampler(stage, s)
+                        .map_or(0.0, |s| s.desc.mip_lod_bias)
+                        .to_bits();
+                    1
+                }
+                HelperValue::SamplerState { sampler: s } => {
+                    words = match self.bound_sampler(stage, s) {
+                        Some(b) => crate::device::sampler_state(b),
+                        None => {
+                            self.default_sampler()?;
+                            crate::device::sampler_state(self.zeros.sampler.as_ref().expect("made"))
+                        }
+                    };
+                    9
+                }
+                HelperValue::BorderColor { sampler: s } => {
+                    let border = self
+                        .bound_sampler(stage, s)
+                        .map_or([0.0; 4], |s| s.desc.border);
+                    words[..4].copy_from_slice(&border.map(f32::to_bits));
+                    4
+                }
+                HelperValue::TextureComponents { texture } => {
+                    words[0] = match self.ctx.resources[stage]
+                        .get(texture as usize)
+                        .and_then(Option::as_deref)
+                    {
+                        Some(ShaderView::Texture(v)) => crate::format::components(v.format),
+                        _ => 0b1111,
+                    };
+                    1
+                }
+                HelperValue::DepthBias => {
+                    let r = &self
+                        .ctx
+                        .raster
+                        .as_ref()
+                        .unwrap_or(&self.defaults.raster)
+                        .desc;
+                    let step = self.bias_step()?.unwrap_or(0.0);
+                    let values = [
+                        r.depth_bias as f32,
+                        r.slope_scaled_depth_bias,
+                        r.depth_bias_clamp,
+                        step,
+                    ];
+                    words[..4].copy_from_slice(&values.map(f32::to_bits));
+                    4
+                }
+                HelperValue::MinLod { texture } => {
+                    let (clamp, levels) = self.min_lod_of(stage, texture).unwrap_or((0.0, 1));
+                    words[..2].copy_from_slice(&[clamp.to_bits(), levels]);
+                    2
+                }
+                HelperValue::TexelBufferView { binding, .. } => {
+                    words[..2].copy_from_slice(&self.texel_view(stage, binding));
+                    2
+                }
+                _ => unreachable!("refused at conversion"),
+            };
+            for (k, w) in words[..n].iter().enumerate() {
+                let at = slot.offset as usize + 4 * k;
+                block[at..at + 4].copy_from_slice(&w.to_le_bytes());
+            }
+        }
+        Ok(block)
+    }
+
     fn write_helpers(
         &mut self,
         helpers: &[Rc<Helpers>; 2],
         bases: [u32; 2],
         args: Option<(&Rc<Buffer<B>>, u32, bool)>,
     ) -> Result<()> {
-        let mut blocks = helpers.each_ref().map(|h| vec![0u8; h.size as usize]);
-        for (i, (h, stage)) in helpers.iter().zip([VERTEX, PIXEL]).enumerate() {
-            for slot in &h.values {
-                let mut words = [0u32; 9];
-                let n = match slot.value {
-                    HelperValue::DrawBase => {
-                        words[..3].copy_from_slice(&[bases[0], bases[1], 0]);
-                        3
-                    }
-                    HelperValue::DrawArguments => {
-                        let (_, offset, indexed) = args.expect("an indirect draw");
-                        words[..3].copy_from_slice(&[offset / 4, u32::from(indexed), 0]);
-                        3
-                    }
-                    HelperValue::PulledStream { input } => {
-                        words[..4].copy_from_slice(&self.pulled_stream(input, bases[1]));
-                        4
-                    }
-                    HelperValue::LodBias { sampler: s } => {
-                        words[0] = self
-                            .bound_sampler(stage, s)
-                            .map_or(0.0, |s| s.desc.mip_lod_bias)
-                            .to_bits();
-                        1
-                    }
-                    HelperValue::SamplerState { sampler: s } => {
-                        words = match self.bound_sampler(stage, s) {
-                            Some(b) => crate::device::sampler_state(b),
-                            None => {
-                                self.default_sampler()?;
-                                crate::device::sampler_state(
-                                    self.zeros.sampler.as_ref().expect("made"),
-                                )
-                            }
-                        };
-                        9
-                    }
-                    HelperValue::BorderColor { sampler: s } => {
-                        let border = self
-                            .bound_sampler(stage, s)
-                            .map_or([0.0; 4], |s| s.desc.border);
-                        words[..4].copy_from_slice(&border.map(f32::to_bits));
-                        4
-                    }
-                    HelperValue::TextureComponents { texture } => {
-                        words[0] = match self.ctx.resources[stage]
-                            .get(texture as usize)
-                            .and_then(Option::as_deref)
-                        {
-                            Some(ShaderView::Texture(v)) => crate::format::components(v.format),
-                            _ => 0b1111,
-                        };
-                        1
-                    }
-                    HelperValue::DepthBias => {
-                        let r = &self
-                            .ctx
-                            .raster
-                            .as_ref()
-                            .unwrap_or(&self.defaults.raster)
-                            .desc;
-                        let step = self.bias_step()?.unwrap_or(0.0);
-                        let values = [
-                            r.depth_bias as f32,
-                            r.slope_scaled_depth_bias,
-                            r.depth_bias_clamp,
-                            step,
-                        ];
-                        words[..4].copy_from_slice(&values.map(f32::to_bits));
-                        4
-                    }
-                    HelperValue::MinLod { texture } => {
-                        let (clamp, levels) = self.min_lod_of(stage, texture).unwrap_or((0.0, 1));
-                        words[..2].copy_from_slice(&[clamp.to_bits(), levels]);
-                        2
-                    }
-                    HelperValue::TexelBufferView { binding, .. } => {
-                        words[..2].copy_from_slice(&self.texel_view(stage, binding));
-                        2
-                    }
-                    _ => unreachable!("refused at conversion"),
-                };
-                for (k, w) in words[..n].iter().enumerate() {
-                    let at = slot.offset as usize + 4 * k;
-                    blocks[i][at..at + 4].copy_from_slice(&w.to_le_bytes());
-                }
-            }
-        }
+        let blocks = [
+            self.helper_block(&helpers[0], VERTEX, bases, args)?,
+            self.helper_block(&helpers[1], PIXEL, bases, args)?,
+        ];
         // The merged samplers of textures under a minimum level-of-detail clamp; both stages
         // number theirs from the same binding, so only one of them may have any.
         if !helpers[0].merged.is_empty() && !helpers[1].merged.is_empty() {
@@ -2853,6 +2929,22 @@ impl<B: Backend> Device<B> {
             self.backend
                 .slow_paths()
                 .hit(SlowPath::TexelBufferAsStorage);
+        }
+        if let Some(gs) = self.ctx.gs.clone() {
+            let drawn = self.draw_staged(
+                &gs,
+                &vs,
+                vk,
+                ps.as_ref(),
+                pk,
+                masked.as_ref(),
+                range,
+                first_instance,
+                instances,
+            )?;
+            if !drawn {
+                return Ok(());
+            }
         }
         let (program, helpers) = self.program(&vs, vk, ps.as_ref(), pk)?;
         if !helpers[0].pulled.is_empty() {

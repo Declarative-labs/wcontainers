@@ -85,6 +85,9 @@ pub struct Buffer<B: Backend> {
     pub writes: Cell<u64>,
     /// Copies of its windows read by blocks longer than them.
     pub windows: RefCell<Vec<Window<B>>>,
+    /// Bytes stream output has filled it to (one u32 on the GPU), made at its first binding as a
+    /// stream output target.
+    pub filled: RefCell<Option<Kept<B, B::Buffer>>>,
 }
 
 /// A copy of a constant buffer window of `length` bytes at `offset`, read by a block of `size` bytes:
@@ -329,6 +332,8 @@ pub struct InputLayout {
     /// The elements of slots stepping by instances at a rate the back end cannot step by, which
     /// the vertex program fetches (`InstanceRateInShader`).
     pub pulled: Vec<LayoutElement>,
+    /// Every element, as the vertex stage fetches them behind a geometry shader or stream output.
+    pub all: Vec<LayoutElement>,
     /// Per input slot: none (per vertex) or the instance step rate.
     pub instance_steps: [Option<u32>; 32],
 }
@@ -356,6 +361,18 @@ pub struct Shader<B: Backend> {
     pub helpers: Rc<crate::shader::Helpers>,
     /// The typed views it declares, whose formats each draw converts it for.
     pub typed: Vec<crate::shader::TypedView>,
+}
+
+/// A geometry shader object: the geometry stage and the stream output of its declaration. Made
+/// from a vertex shader's bytecode it has no stage of its own, and streams the vertex stage's
+/// output.
+pub struct Geometry<B: Backend> {
+    pub id: u64,
+    /// The stage's slots and its pass-through vertex program (`gpu`), with its conversion.
+    pub stage: Option<(Rc<Shader<B>>, wcontainers_shaders::Converted)>,
+    pub stream: Option<wcontainers_shaders::stage::StreamOutput>,
+    /// Stream 0 is drawn.
+    pub drawn: bool,
 }
 
 /// What a draw binds for an empty texture or sampler slot its shader reads.

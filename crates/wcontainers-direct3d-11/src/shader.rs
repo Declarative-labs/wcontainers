@@ -187,7 +187,7 @@ pub fn typed_views(bytecode: &[u8]) -> Result<Vec<TypedView>> {
     Ok(views)
 }
 
-/// One element of a DXBC container's input signature.
+/// One element of a DXBC container's input or output signature.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SignatureElement {
     pub semantic: String,
@@ -195,11 +195,32 @@ pub struct SignatureElement {
     pub register: u32,
     /// Direct3D's system value name (`D3D_NAME`): 6 is the vertex id, 8 the instance id.
     pub system: u32,
+    /// The components it takes, a bit each (x = 1).
+    pub mask: u8,
+    /// The geometry stream it is written to (outputs of `OSG5` and `OSG1`; 0 otherwise).
+    pub stream: u32,
 }
 
 /// The input signature (`ISGN`, or `ISG1` of shader model 5.1) of a DXBC container; empty where it
 /// has none. An error if the bytes are not such a container or the chunk is malformed.
 pub fn input_signature(bytecode: &[u8]) -> Result<Vec<SignatureElement>> {
+    signature(bytecode, &[(*b"ISGN", 24, false), (*b"ISG1", 32, true)])
+}
+
+/// The output signature (`OSGN`, `OSG5` of geometry shaders with streams, or `OSG1`).
+pub fn output_signature(bytecode: &[u8]) -> Result<Vec<SignatureElement>> {
+    signature(
+        bytecode,
+        &[
+            (*b"OSGN", 24, false),
+            (*b"OSG5", 28, true),
+            (*b"OSG1", 32, true),
+        ],
+    )
+}
+
+/// The first chunk of `tags` (tag, bytes per element, whether each starts with its stream).
+fn signature(bytecode: &[u8], tags: &[([u8; 4], usize, bool)]) -> Result<Vec<SignatureElement>> {
     let bad = Error::InvalidArg("not DXBC bytecode");
     let word = |at: usize| -> Result<u32> {
         bytecode
@@ -214,15 +235,15 @@ pub fn input_signature(bytecode: &[u8]) -> Result<Vec<SignatureElement>> {
     for i in 0..word(28)? as usize {
         let at = word(32 + 4 * i)? as usize;
         let tag = bytecode.get(at..).and_then(|b| b.get(..4)).ok_or(bad)?;
-        let (stride, first) = match tag {
-            b"ISGN" => (24, 0),
-            b"ISG1" => (32, 4),
-            _ => continue,
+        let Some(&(_, stride, streams)) = tags.iter().find(|t| t.0 == tag) else {
+            continue;
         };
+        let first = if streams { 4 } else { 0 };
         let data = at + 8;
         let mut elements = Vec::new();
         for e in 0..word(data)? as usize {
-            let base = data + 8 + e * stride + first;
+            let start = data + 8 + e * stride;
+            let base = start + first;
             let name_at = data + word(base)? as usize;
             let name = bytecode
                 .get(name_at..)
@@ -233,6 +254,8 @@ pub fn input_signature(bytecode: &[u8]) -> Result<Vec<SignatureElement>> {
                 index: word(base + 4)?,
                 system: word(base + 8)?,
                 register: word(base + 16)?,
+                mask: word(base + 20)? as u8,
+                stream: if streams { word(start)? } else { 0 },
             });
         }
         return Ok(elements);
@@ -382,9 +405,9 @@ pub fn convert(
                 ..StageVariant::default()
             }
             .key(expected, typed, &[]);
-            Ok((answer(raw(bytecode, expected, &key)?)?, true))
+            Ok((answer(raw(bytecode, expected, &key)?, 1)?, true))
         }
-        r => Ok((answer(r)?, false)),
+        r => Ok((answer(r, 1)?, false)),
     }
 }
 
@@ -488,7 +511,13 @@ pub fn convert_variant(
     expected: SourceStage,
     key: &VariantKey,
 ) -> Result<Converted> {
-    answer(raw(bytecode, expected, key)?)
+    answer(raw(bytecode, expected, key)?, 1)
+}
+
+/// Converts a geometry shader as `key` asks: its compute form, which the stage helper runs, and the
+/// vertex program drawing what it made.
+pub fn convert_geometry(bytecode: &[u8], key: &VariantKey) -> Result<Converted> {
+    answer(raw(bytecode, SourceStage::Geometry, key)?, 2)
 }
 
 /// The converter's own answer for bytecode of `expected` stage.
@@ -509,10 +538,10 @@ fn raw(
     ))
 }
 
-/// The converter's answer in Direct3D's terms.
-fn answer(r: core::result::Result<Converted, ConvertError>) -> Result<Converted> {
+/// The converter's answer in Direct3D's terms, which should be a program of `modules` stages.
+fn answer(r: core::result::Result<Converted, ConvertError>, modules: usize) -> Result<Converted> {
     match r {
-        Ok(c) if c.modules.len() != 1 => {
+        Ok(c) if c.modules.len() != modules => {
             not_implemented("shaders converted into several program stages")
         }
         Ok(c)

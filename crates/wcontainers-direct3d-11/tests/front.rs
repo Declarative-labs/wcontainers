@@ -7,7 +7,7 @@ use std::rc::Rc;
 use wcontainers_direct3d_11::desc::*;
 use wcontainers_direct3d_11::object::{Buffer, Resource, ShaderView, Texture, View};
 use wcontainers_direct3d_11::record::Recorder;
-use wcontainers_direct3d_11::{Device, Error, PIXEL, Removal, VERTEX, shader};
+use wcontainers_direct3d_11::{Device, Error, GEOMETRY, PIXEL, Removal, VERTEX, shader};
 use wcontainers_gpu::{Backend, LossReason, SlowPath, SourceStage};
 
 type Dev = Device<Recorder>;
@@ -2123,4 +2123,148 @@ fn a_sample_mask_draws_through_a_raster_block_made_with_it_once() {
     assert_ne!(drawn[0], masked);
     assert_eq!(&drawn[1..4], [masked.clone(), masked.clone(), masked]);
     assert_eq!(drawn[4], drawn[0]);
+}
+
+/// One of the shaders crate's own compiled test shaders.
+fn own(name: &str) -> Vec<u8> {
+    let path = format!(
+        "{}/../wcontainers-shaders/tests/own/{name}.dxbc",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
+}
+
+#[test]
+fn a_geometry_shader_runs_as_compute_before_the_draw_of_its_output() {
+    let mut dev = device();
+    let target = dev
+        .create_texture(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
+        .unwrap();
+    let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
+    begin(&mut dev, &rtv, None, 16.0);
+    let (vsb, gsb, psb) = (own("vs_geometry"), own("gs_quads"), own("ps_geometry"));
+    let vs = dev.create_shader(&vsb, SourceStage::Vertex).unwrap();
+    let ps = dev.create_shader(&psb, SourceStage::Pixel).unwrap();
+    // A geometry shader's bytecode made as a vertex shader, and the reverse, are refused.
+    assert!(matches!(
+        dev.create_geometry_shader(&vsb, None),
+        Err(Error::InvalidArg(_))
+    ));
+    let gs = dev.create_geometry_shader(&gsb, None).unwrap();
+    let mut colour = element("COLOR", RGBA32F, 12);
+    colour.semantic_index = 0;
+    let layout = dev
+        .create_input_layout(&[element("POSITION", RGB32F, 0), colour], &vsb)
+        .unwrap();
+    let vertices = immutable(&mut dev, &[0u8; 28 * 3], bind::VERTEX_BUFFER);
+    let constants = immutable(&mut dev, &[0u8; 32], bind::CONSTANT_BUFFER);
+    dev.vs_set_shader(Some(vs));
+    dev.ps_set_shader(Some(ps));
+    dev.gs_set_shader(Some(gs));
+    dev.ia_set_input_layout(Some(layout));
+    dev.ia_set_vertex_buffers(0, &[Some((vertices, 28, 0))])
+        .unwrap();
+    dev.set_constant_buffers(GEOMETRY, 0, &[Some(constants)])
+        .unwrap();
+    dev.ia_set_primitive_topology(topology::POINTLIST);
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    // The vertex stage's and the geometry stage's dispatches, then the draw of four vertices of
+    // a strip per point, by restarting indices.
+    let vertex = find(&log, "dispatch ");
+    let geometry = vertex + 1 + find(&log[vertex + 1..], "dispatch ");
+    let draw = find(&log, "draw ");
+    assert!(vertex < geometry && geometry < draw, "{log:#?}");
+    assert!(log[vertex].ends_with("groups [1, 1, 1]"), "{}", log[vertex]);
+    assert!(
+        log[draw].contains("TriangleStrip restart true"),
+        "{}",
+        log[draw]
+    );
+    assert!(log[draw].contains("count: 24"), "{}", log[draw]);
+    assert_eq!(
+        dev.backend.slow_paths().count(SlowPath::GeometryAsCompute),
+        1
+    );
+    // Without a geometry shader the same draw is drawn as points.
+    dev.gs_set_shader(None);
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    let log = log_from(&dev, from);
+    assert!(!log.iter().any(|l| l.starts_with("dispatch ")));
+    assert!(log[find(&log, "draw ")].contains("PointList"));
+}
+
+#[test]
+fn stream_output_writes_its_targets_and_draw_auto_draws_what_they_hold() {
+    use wcontainers_direct3d_11::stream::DeclEntry;
+    let mut dev = device();
+    let vsb = own("vs_geometry");
+    let vs = dev.create_shader(&vsb, SourceStage::Vertex).unwrap();
+    let entry = DeclEntry {
+        stream: 0,
+        semantic: Some("SV_Position".into()),
+        semantic_index: 0,
+        start_component: 0,
+        component_count: 4,
+        slot: 0,
+    };
+    let so = dev
+        .create_geometry_shader(&vsb, Some((Some(&[entry]), None, u32::MAX)))
+        .unwrap();
+    let mut colour = element("COLOR", RGBA32F, 12);
+    colour.semantic_index = 0;
+    let layout = dev
+        .create_input_layout(&[element("POSITION", RGB32F, 0), colour], &vsb)
+        .unwrap();
+    let vertices = immutable(&mut dev, &[0u8; 28 * 3], bind::VERTEX_BUFFER);
+    let target = dev
+        .create_buffer(
+            &BufferDesc {
+                byte_width: 256,
+                usage: usage::DEFAULT,
+                bind_flags: bind::STREAM_OUTPUT | bind::VERTEX_BUFFER,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+    // A buffer made without the stream output binding is refused as a target.
+    assert!(dev.so_set_targets(&[Some(vertices.clone())], &[0]).is_err());
+    dev.vs_set_shader(Some(vs));
+    dev.gs_set_shader(Some(so));
+    dev.ia_set_input_layout(Some(layout));
+    dev.ia_set_vertex_buffers(0, &[Some((vertices, 28, 0))])
+        .unwrap();
+    dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+    dev.so_set_targets(&[Some(target.clone())], &[0]).unwrap();
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    // The vertex stage's dispatch and the stream output program's; nothing is drawn, as no
+    // stream is rasterized.
+    assert_eq!(
+        log.iter().filter(|l| l.starts_with("dispatch ")).count(),
+        2,
+        "{log:#?}"
+    );
+    assert!(!log.iter().any(|l| l.starts_with("draw ")));
+    assert_eq!(
+        dev.backend.slow_paths().count(SlowPath::StreamOutAsCompute),
+        1
+    );
+    // DrawAuto reads the filled size back; the recording back end runs no program, so the target
+    // holds what SOSetTargets set: nothing to draw.
+    dev.gs_set_shader(None);
+    dev.so_set_targets(&[], &[]).unwrap();
+    dev.ia_set_vertex_buffers(0, &[Some((target, 16, 0))])
+        .unwrap();
+    let from = dev.backend.log.len();
+    dev.draw_auto();
+    assert!(dev.removed.is_none());
+    assert!(!log_from(&dev, from).iter().any(|l| l.starts_with("draw ")));
+    assert_eq!(dev.backend.slow_paths().count(SlowPath::ReadBackWait), 1);
 }
