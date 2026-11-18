@@ -81,6 +81,21 @@ pub struct Buffer<B: Backend> {
     pub shadow: RefCell<Vec<u8>>,
     /// A staging buffer's shadow against the GPU's bytes.
     pub staged: RefCell<Staged<B>>,
+    /// Counts the writes into it, for the copies of its windows.
+    pub writes: Cell<u64>,
+    /// Copies of its windows read by blocks longer than them.
+    pub windows: RefCell<Vec<Window<B>>>,
+}
+
+/// A copy of a constant buffer window of `length` bytes at `offset`, read by a block of `size` bytes:
+/// its bytes past the window are zero.
+pub struct Window<B: Backend> {
+    pub offset: u64,
+    pub length: u64,
+    pub size: u64,
+    /// The buffer's write count and back-end buffer at the last copy.
+    pub copied: Cell<Option<(u64, u64)>>,
+    pub twin: Kept<B, B::Buffer>,
 }
 
 /// A staging subresource's shadow against the GPU's copy of it.

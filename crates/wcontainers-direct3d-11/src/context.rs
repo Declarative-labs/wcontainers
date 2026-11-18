@@ -1,5 +1,6 @@
 //! The immediate context: its state, passes opened at draws, draws, copies, writes and maps.
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use wcontainers_gpu::{
@@ -37,6 +38,18 @@ const STAGES: usize = 3;
 pub const UAV_SLOTS: usize = 8;
 
 /// The binding set a stage's program reads its slots from.
+/// The bytes a constant buffer window of `(first, count)` 16-byte constants covers: offset and
+/// length, cut at the buffer's end.
+fn window_of<B: Backend>(c: &Buffer<B>, (first, count): (u32, u32)) -> (u64, u64) {
+    let offset = u64::from(first) * 16;
+    let length = (u64::from(count) * 16).min(c.size.get().saturating_sub(offset));
+    (offset, length)
+}
+
+/// A constant buffer window a stage reads through a copy: slot, buffer, offset, length and the
+/// block's size.
+type ConstantWindow<B> = (u32, Rc<Buffer<B>>, u64, u64, u64);
+
 fn set_of(stage: usize) -> u32 {
     if stage == PIXEL { 1 } else { 0 }
 }
@@ -89,6 +102,9 @@ pub struct ContextState<B: Backend> {
     scissors: Vec<ScissorRect>,
     pub(crate) sets: [Option<Kept<B, B::BindingSet>>; STAGES],
     sets_dirty: [bool; STAGES],
+    /// The constant buffer windows each stage's set reads through copies: slot, buffer, offset,
+    /// length and the block's size.
+    windows: [Vec<ConstantWindow<B>>; STAGES],
     /// The input layout whose pulled streams the vertex stage's set binds (its id; zero for none).
     pulled_set: u64,
     pass_open: bool,
@@ -133,6 +149,7 @@ impl<B: Backend> ContextState<B> {
             scissors: Vec::new(),
             sets: [None, None, None],
             sets_dirty: [true; STAGES],
+            windows: Default::default(),
             pulled_set: 0,
             pass_open: false,
             empty_pass: None,
@@ -1637,6 +1654,63 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
+    /// The copy of `c`'s window of `length` bytes at `offset` read by a block of `size` bytes: its
+    /// bytes past the window are zero; copied again where `c` was written since.
+    fn window(&mut self, c: &Buffer<B>, offset: u64, length: u64, size: u64) -> Result<B::Buffer> {
+        let source = (c.writes.get(), c.gpu.borrow().id);
+        let found = c
+            .windows
+            .borrow()
+            .iter()
+            .position(|w| (w.offset, w.length, w.size) == (offset, length, size));
+        let i = match found {
+            Some(i) => i,
+            None => {
+                self.settle();
+                let twin = self.backend.create_buffer(&gpu_buffer(&c.desc, size));
+                let twin = self.gpu(twin)?;
+                self.backend.clear_buffer(&twin, 0, size, &[0]);
+                let id = self.id();
+                let mut windows = c.windows.borrow_mut();
+                windows.push(Window {
+                    offset,
+                    length,
+                    size,
+                    copied: Cell::new(None),
+                    twin: Kept::new(twin, id, Object::Buffer, &self.graveyard),
+                });
+                windows.len() - 1
+            }
+        };
+        let windows = c.windows.borrow();
+        let w = &windows[i];
+        if w.copied.get() != Some(source) {
+            self.backend.slow_paths().hit(SlowPath::ConstantBufferGrown);
+            self.settle();
+            if length > 0 {
+                self.backend
+                    .copy_buffer(&c.handle(), offset, &w.twin.handle, 0, length);
+            }
+            w.copied.set(Some(source));
+        }
+        Ok(w.twin.handle.clone())
+    }
+
+    /// Copies again the constant buffer windows bound shorter than their blocks whose buffers were
+    /// written since.
+    fn refresh_windows(&mut self) -> Result<()> {
+        for stage in [VERTEX, PIXEL, COMPUTE] {
+            if self.ctx.windows[stage].is_empty() {
+                continue;
+            }
+            let windows = self.ctx.windows[stage].clone();
+            for (_, c, offset, length, size) in &windows {
+                self.window(c, *offset, *length, *size)?;
+            }
+        }
+        Ok(())
+    }
+
     /// The shader bound to `stage`.
     fn stage_shader(&self, stage: usize) -> &Option<Rc<Shader<B>>> {
         match stage {
@@ -1671,6 +1745,7 @@ impl<B: Backend> Device<B> {
         };
         self.settle();
         self.grow_constants()?;
+        self.refresh_windows()?;
         self.update_set(COMPUTE, &[])?;
         if self.stage_variant(COMPUTE, &cs, 1) != StageVariant::default() {
             return not_implemented(
@@ -1932,40 +2007,54 @@ impl<B: Backend> Device<B> {
         } else {
             Some(self.zero_storage()?)
         };
-        let mut cbs = Vec::new();
-        for (c, range) in self.ctx.constant_buffers[stage]
-            .iter()
-            .zip(&self.ctx.constant_ranges[stage])
-        {
-            let Some(c) = c else {
-                cbs.push(None);
-                continue;
-            };
-            let (offset, size) = match *range {
-                None => (0, c.size.get()),
-                // A range past the buffer's end is cut at it.
-                Some((first, count)) => {
-                    let offset = u64::from(first) * 16;
-                    let size = (u64::from(count) * 16).min(c.size.get().saturating_sub(offset));
-                    (offset, size)
-                }
-            };
-            cbs.push(Some((c.gpu.borrow(), offset, size)));
-        }
+        // Windows shorter than their shader's block read through a copy of the block's size whose
+        // bytes past the window are zero.
+        let mut windows = Vec::new();
         for b in wanted().filter(|b| b.kind == SlotKind::Uniform) {
+            let slot = b.register as usize;
             let declared = shader
                 .constant_sizes
                 .iter()
                 .find(|(n, _)| *n == b.binding)
                 .map_or(0, |s| s.1);
-            if let Some(Some((_, _, size))) = cbs.get(b.register as usize)
-                && self.ctx.constant_ranges[stage][b.register as usize].is_some()
-                && *size < declared
-            {
-                return not_implemented(
-                    "a constant buffer range shorter than its shader declares, or empty",
-                );
+            if let (Some(Some(c)), Some(Some(range))) = (
+                self.ctx.constant_buffers[stage].get(slot),
+                self.ctx.constant_ranges[stage].get(slot),
+            ) {
+                let (offset, length) = window_of(c, *range);
+                if length < declared {
+                    windows.push((b.register, c.clone(), offset, length, declared));
+                }
             }
+        }
+        let mut copies = Vec::new();
+        for (register, c, offset, length, declared) in &windows {
+            copies.push((
+                *register,
+                self.window(c, *offset, *length, *declared)?,
+                *declared,
+            ));
+        }
+        self.ctx.windows[stage] = windows;
+        let mut cbs = Vec::new();
+        for (slot, (c, range)) in self.ctx.constant_buffers[stage]
+            .iter()
+            .zip(&self.ctx.constant_ranges[stage])
+            .enumerate()
+        {
+            let Some(c) = c else {
+                cbs.push(None);
+                continue;
+            };
+            if let Some((_, twin, size)) = copies.iter().find(|t| t.0 as usize == slot) {
+                cbs.push(Some((twin.clone(), 0, *size)));
+                continue;
+            }
+            let (offset, size) = match *range {
+                None => (0, c.size.get()),
+                Some(range) => window_of(c, range),
+            };
+            cbs.push(Some((c.handle(), offset, size)));
         }
         // The back-end buffers of the buffer views bound for unordered access.
         let spans: Vec<_> = self.ctx.uavs[stage]
@@ -2043,7 +2132,7 @@ impl<B: Backend> Device<B> {
                         .and_then(Option::as_ref)
                         .map(|(c, offset, size)| {
                             BindingResource::UniformBuffer(BufferRange {
-                                buffer: &c.handle,
+                                buffer: c,
                                 offset: *offset,
                                 size: *size,
                             })
@@ -2549,6 +2638,7 @@ impl<B: Backend> Device<B> {
             None
         };
         self.grow_constants()?;
+        self.refresh_windows()?;
         if vk.pulled != self.ctx.pulled_set {
             self.ctx.sets_dirty[VERTEX] = true;
         }
@@ -2862,6 +2952,7 @@ impl<B: Backend> Device<B> {
                     ));
                 }
                 self.settle();
+                d.writes.set(d.writes.get() + 1);
                 self.backend.copy_buffer(
                     &s.handle(),
                     0,
@@ -2927,6 +3018,7 @@ impl<B: Backend> Device<B> {
                     return Ok(());
                 }
                 self.settle();
+                d.writes.set(d.writes.get() + 1);
                 self.backend.copy_buffer(
                     &s.handle(),
                     u64::from(from),
@@ -3077,6 +3169,7 @@ impl<B: Backend> Device<B> {
                     return Ok(());
                 }
                 let bytes = &bytes[..(to - from) as usize];
+                b.writes.set(b.writes.get() + 1);
                 if from == 0 && to == b.desc.byte_width {
                     // A whole write discards; a grown buffer's bytes past the program's stay zero.
                     if b.grown.get() {
@@ -3395,6 +3488,7 @@ impl<B: Backend> Device<B> {
         self.backend.slow_paths().hit(SlowPath::MappedUploadWhole);
         match resource {
             Resource::Buffer(b) => {
+                b.writes.set(b.writes.get() + 1);
                 let mode = match kind {
                     map::WRITE_DISCARD => WriteMode::Discard,
                     map::WRITE_NO_OVERWRITE => WriteMode::NoOverwrite,

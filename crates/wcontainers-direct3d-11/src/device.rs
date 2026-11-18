@@ -599,6 +599,8 @@ impl<B: Backend> Device<B> {
             grown: Cell::new(false),
             shadow: RefCell::new(shadow),
             staged: RefCell::new(Staged::Current),
+            writes: Cell::new(0),
+            windows: RefCell::new(Vec::new()),
         }))
     }
 

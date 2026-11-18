@@ -1836,6 +1836,88 @@ fn a_pass_without_targets_is_as_large_as_the_viewports_it_draws_through() {
 }
 
 #[test]
+fn a_constant_window_shorter_than_its_block_is_read_through_a_copy_zero_past_it() {
+    let mut dev = device();
+    let target = dev
+        .create_texture(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
+        .unwrap();
+    let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
+    begin(&mut dev, &rtv, None, 16.0);
+    let v = dev
+        .create_shader(&corpus("common.vs_full"), SourceStage::Vertex)
+        .unwrap();
+    // A block of 64 constants (1024 bytes).
+    let p = dev
+        .create_shader(&corpus("constants.ps_window"), SourceStage::Pixel)
+        .unwrap();
+    dev.vs_set_shader(Some(v));
+    dev.ps_set_shader(Some(p));
+    dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+    let big = BufferDesc {
+        byte_width: 4096 * 16,
+        usage: usage::DEFAULT,
+        bind_flags: bind::CONSTANT_BUFFER,
+        ..Default::default()
+    };
+    let big = dev.create_buffer(&big, Some(&[7; 4096 * 16])).unwrap();
+    let id = |line: &str| line.split(' ').nth(1).unwrap().to_owned();
+    // A whole block's window binds the buffer itself.
+    let from = dev.backend.log.len();
+    dev.set_constant_ranges(PIXEL, 0, &[Some(big.clone())], &[Some((256, 64))])
+        .unwrap();
+    dev.draw(3, 0);
+    let log = log_from(&dev, from);
+    assert!(
+        !log.iter().any(|l| l.starts_with("copy_buffer")),
+        "{log:#?}"
+    );
+    // The last 16 constants: copied into a buffer of the block's size, zero past them, once while
+    // the buffer is not written.
+    let from = dev.backend.log.len();
+    dev.set_constant_ranges(PIXEL, 0, &[Some(big.clone())], &[Some((4080, 16))])
+        .unwrap();
+    dev.draw(3, 0);
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    let made = &log[find(&log, "create_buffer")];
+    assert!(made.contains("size 1024 "), "{made}");
+    let copy = id(made);
+    let count = |log: &[String], p: &str| log.iter().filter(|l| l.starts_with(p)).count();
+    assert!(
+        log.iter()
+            .any(|l| l.starts_with(&format!("clear_buffer {copy} at 0 1024 bytes"))),
+        "{log:#?}"
+    );
+    let copied = format!("+{} to {copy}+0 256 bytes", 4080 * 16);
+    assert_eq!(
+        log.iter().filter(|l| l.ends_with(&copied)).count(),
+        1,
+        "{log:#?}"
+    );
+    assert!(
+        log.iter().any(|l| l.starts_with("create_binding_set")
+            && l.contains(&format!("=uniform {copy}+0:1024"))),
+        "{log:#?}"
+    );
+    assert_eq!(count(&log, "draw "), 2, "{log:#?}");
+    // Written, it is copied again before the next draw, into the same copy.
+    let from = dev.backend.log.len();
+    let r = Resource::Buffer(big.clone());
+    dev.update_subresource(&r, 0, None, &[9; 4096 * 16], 0, 0)
+        .unwrap();
+    dev.draw(3, 0);
+    let log = log_from(&dev, from);
+    assert_eq!(
+        log.iter().filter(|l| l.ends_with(&copied)).count(),
+        1,
+        "{log:#?}"
+    );
+    assert_eq!(count(&log, "create_buffer"), 0, "{log:#?}");
+    assert_eq!(count(&log, "create_binding_set"), 0, "{log:#?}");
+}
+
+#[test]
 fn constants_rewritten_between_draws_make_no_binding_set_and_split_no_pass() {
     let mut dev = device();
     let elements = [
