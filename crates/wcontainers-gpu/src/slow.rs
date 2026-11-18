@@ -5,7 +5,8 @@
 use alloc::vec::Vec;
 
 /// Why something took the slow way. A variant whose description starts "Refused" names a valid request
-/// that failed because no exact route exists; it is counted and warned the same way.
+/// that failed because no exact route exists; it is counted and warned the same way. Serialised as its
+/// number (the shaders crate's cache), so a new reason goes at the end and none moves.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
@@ -255,7 +256,8 @@ pub enum SlowPath {
     /// as points in list order, one draw per run of consecutive vertices, with indices read back first.
     CaptureExpanded,
     /// A copy between regions of one subresource (as Vulkan and OpenGL allow) made through a
-    /// temporary buffer, where the API copies only between different subresources.
+    /// temporary buffer (or, for depth and stencil, a temporary texture), where the API copies only
+    /// between different subresources.
     CopyWithinTexture,
     /// Pixel shader invocations counted by drawing each draw again, with the depth and stencil tests
     /// off, through a program adding to a counter, where the back end has no statistics queries.
@@ -496,7 +498,9 @@ impl SlowPath {
             SlowPath::StencilWrittenByDraw => "stencil written by a draw per bit",
             SlowPath::PresentConverted => "surface format converted by a draw at present",
             SlowPath::CaptureExpanded => "captured draw expanded into points in list order",
-            SlowPath::CopyWithinTexture => "copy within one subresource made through a buffer",
+            SlowPath::CopyWithinTexture => {
+                "copy within one subresource made through a temporary buffer or texture"
+            }
             SlowPath::PixelInvocationsCounted => {
                 "pixel shader invocations counted by drawing again"
             }
@@ -559,5 +563,45 @@ mod tests {
         names.sort();
         names.dedup();
         assert_eq!(names.len(), SlowPath::ALL.len());
+    }
+
+    /// Every reason keeps the number it had when it was added, the place serialised caches read.
+    #[test]
+    fn reasons_keep_their_numbers() {
+        const HELD: &str = "\
+            FanConverted LoopConverted ReadBackWait PipelineMiss WriteSplitPass ReinterpretCopy \
+            GeometryAsCompute GeometryAsReplay TessellationAsCompute StreamOutAsCompute \
+            VertexStorageAsCompute RestartRewrite ProvokingRewrite DepthBiasInShader \
+            BorderInShader LogicOpInShader FillModeConverted TexelBufferAsStorage StoragePacked \
+            SamplerPairsExpanded ClipDepthRewrite VertexFormatConverted FormatConverted \
+            TexelBufferAsTexture BaseVertexRebind IndirectReadBack IndirectCountExpanded \
+            MappedUploadWhole ImmediatesSpilled MultiviewSerial MultiViewportSplit PointsAsQuads \
+            F64Emulated PredicationWait DepthReadByDraw StencilFacesSplit MirrorOnceInShader \
+            InstanceRateInShader OcclusionCountReplay TimestampSplitPass UnalignedBufferEdge \
+            TargetsSplit FilterInShader StreamOutRepacked TargetReadPerPrimitive LayerSplit \
+            VertexFetchZeroed BindingsBeyondLimit VertexPulledInShader ConstantsAsStorage \
+            ConstantsAsTexture BlockDecoded HostCopyReadBack LodBiasInShader ViewportDepthFlip \
+            VaryingsBeyondLimit AtomicsThroughBuffer NormAsInteger BlendInShader \
+            SampleMaskInShader StencilCopiedByDraw CopyThroughBuffer DepthWrittenByDraw \
+            HostCopyKept QueriesSegmented CopyWithinBuffer EarlyTestsInShader \
+            EarlyTestsPerPrimitive MinLodClamp ViewportInShader StagingRefreshed \
+            AttachmentsFitted IndexBufferTwin IndexTwinReadBack QueryResolveWait \
+            PredicationIndirect IndexWidened AdjacencyDropped TextureInfoInHelpers \
+            DrawBaseInHelpers DrawBaseFromArguments StorageFormatThroughBuffer \
+            MultisampleCopyResolved AliasCopied AntialiasedLinesAsQuads UsageScopeSplit \
+            UsageScopeCopied ClipDistanceInShader DepthClampInShader CullDistanceAsGeometry \
+            PrimitiveIdAsGeometry RowsRepacked ResolveInStoredFormat ResolveByDraw \
+            PatternClearCopied ConstantBufferGrown IntegerClearByDraw StencilWrittenByDraw \
+            PresentConverted CaptureExpanded CopyWithinTexture PixelInvocationsCounted \
+            SwizzleInShader AtomicExchangeLoop SequentialBuffersCopied";
+        let held: Vec<_> = HELD.split_whitespace().collect();
+        assert!(held.len() <= SlowPath::ALL.len());
+        for (i, name) in held.iter().enumerate() {
+            assert_eq!(
+                alloc::format!("{:?}", SlowPath::ALL[i]),
+                *name,
+                "reason {i}"
+            );
+        }
     }
 }

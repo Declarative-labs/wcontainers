@@ -1670,3 +1670,125 @@ pub fn occlusion_queries_answer_whether_samples_passed<H: Host>() {
     assert_eq!(&got[32..], [0xab; 8]);
     ok(&mut b);
 }
+
+/// The occlusion counter's count on the back end: a quad over 37 by 21 pixels of a 40 by 24 target
+/// (sizes no workgroup divides), with one sample and four, through `end` and through `end_into` (a
+/// back end that computes sums it on the GPU and copies it; the default reads back).
+pub fn the_occlusion_counter_counts_every_sample_that_passes<H: Host>() {
+    let mut b = H::make();
+    const COUNTED: &str = "
+    @vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+        return vec4<f32>(p, 0.5, 1.0);
+    }
+    @fragment fn fs() -> @location(0) vec4<f32> {
+        return vec4<f32>(0.5);
+    }
+    @fragment fn counting() -> @location(0) vec4<f32> {
+        return vec4<f32>(1.0);
+    }
+    ";
+    let format = Format::Rgba8Unorm;
+    needs(&b, format, FormatUse::RENDER);
+    let p = program(&mut b, COUNTED, "vs", "fs");
+    let counting = program(&mut b, COUNTED, "vs", "counting");
+    let vb = vertex_buffer(&mut b, &QUAD);
+    let bl = blend(&mut b, opaque());
+    let ds = depth_test(&mut b, None, false);
+    let rs = raster(&mut b, CullMode::None);
+    let vl = positions(&mut b);
+    let heap = buffer(&mut b, 24, BufferUsage::COPY_SRC | BufferUsage::COPY_DST);
+    let streams = [Some(VertexBinding {
+        buffer: &vb,
+        offset: 0,
+    })];
+    let vp = [Viewport {
+        width: 37f32.to_bits(),
+        height: 21f32.to_bits(),
+        ..viewport(40, 24)[0]
+    }];
+    for samples in [1, 4] {
+        let texture = b
+            .create_texture(&TextureDesc {
+                dimension: TextureDimension::D2,
+                format,
+                width: 40,
+                height: 24,
+                depth_or_layers: 1,
+                mip_levels: 1,
+                samples,
+                usage: TextureUsage::RENDER,
+                cube: false,
+                reinterpret: false,
+            })
+            .expect("create_texture");
+        let v = view(&mut b, &texture, format);
+        let mut colors: [Option<ColorTarget<H::Backend>>; MAX_COLOR_TARGETS] = Default::default();
+        colors[0] = Some(ColorTarget {
+            target: Target {
+                view: v,
+                texture,
+                format,
+                mip: 0,
+                layer: 0,
+                depth_slice: 0,
+                width: 40,
+                height: 24,
+                samples,
+            },
+            resolve: None,
+        });
+        let mut passes = PassTracker::default();
+        let mut counter = OcclusionCounter::default();
+        passes
+            .set_targets(
+                &mut b,
+                PassTargets {
+                    colors,
+                    depth: None,
+                    empty: None,
+                },
+            )
+            .expect("set_targets");
+        for into in [false, true] {
+            counter.begin(&mut b, &mut passes).expect("begin");
+            let c = call(
+                &p,
+                &bl,
+                &ds,
+                &rs,
+                &vl,
+                &streams,
+                &vp,
+                Topology::TriangleStrip,
+                vertices(0, 4),
+            );
+            let facts = CountedDraw {
+                counting: &counting,
+                alpha_to_coverage: false,
+                writes_depth_stencil: false,
+                instances_step_by_one: true,
+            };
+            counter.draw(&mut b, &mut passes, &c, &facts).expect("draw");
+            passes.before_draw(&mut b, &[]).expect("before_draw");
+            b.draw(&c);
+            let count = match into {
+                false => counter.end(&mut b, &mut passes).expect("end"),
+                true => {
+                    counter
+                        .end_into(&mut b, &mut passes, &heap, 8)
+                        .expect("end_into");
+                    passes.close(&mut b).expect("close");
+                    let bytes = read_buffer(&mut b, &heap, 8, 8);
+                    u64::from_le_bytes(bytes.try_into().unwrap())
+                }
+            };
+            assert_eq!(
+                count,
+                37 * 21 * u64::from(samples),
+                "{samples} samples, into {into}"
+            );
+        }
+        passes.close(&mut b).expect("close");
+    }
+    ok(&mut b);
+}

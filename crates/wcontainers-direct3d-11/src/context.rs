@@ -1743,13 +1743,8 @@ impl<B: Backend> Device<B> {
         let mut v = StageVariant {
             samples: if s.reads_samples { samples } else { 0 },
             formats,
-            // Made so at creation where the back end cannot query them.
-            texture_info: s.helpers.values.iter().any(|h| {
-                matches!(
-                    h.value,
-                    HelperValue::TextureLevels { .. } | HelperValue::TextureSamples { .. }
-                )
-            }),
+            // Variants filtering in the program read level counts too.
+            texture_info: !caps.has(Features::TEXTURE_LEVEL_QUERY),
             ..StageVariant::default()
         };
         if s.samplers != 0 {
