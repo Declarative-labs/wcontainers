@@ -122,6 +122,7 @@ pub fn create_device(
     flags: u32,
 ) -> Result<(ID3D11Device, ID3D11DeviceContext, u32)> {
     let _lock = lock();
+    super::cache::open_once();
     let backend = backend().ok_or(windows::Win32::Graphics::Dxgi::DXGI_ERROR_UNSUPPORTED)?;
     let front = Front::new(backend, levels).map_err(hresult)?;
     let adapter = Adapter::new(wcontainers_gpu::Backend::caps(&front.backend));

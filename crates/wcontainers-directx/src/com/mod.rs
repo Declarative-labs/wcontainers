@@ -2,6 +2,7 @@
 //! calling thread straight into the front, one call at a time under the library's lock; the call
 //! buffer and device thread come with the channel.
 
+mod cache;
 mod chosen;
 mod context;
 mod convert;
