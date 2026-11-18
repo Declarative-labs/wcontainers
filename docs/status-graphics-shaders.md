@@ -704,7 +704,39 @@ Run 19 (the built-in programs, the corpus with views):
   right to left too, for the Microsoft ABI), so the fix is upstream: each such operand made in its
   own statement. Not changed here (the submodule is upstream's, unpatched); to send upstream.
 
+Run 20 (the tessellator):
+- `src/stage/tessellator.wgsl`: Direct3D's fixed-function tessellator as one compute program, ported
+  from Microsoft's reference tessellator (MIT, "Copyright (c) Microsoft Corporation", as Mesa carries
+  it in src/gallium/auxiliary/tessellator, read at Mesa main on 2026-11-17): triangle, quad and
+  isoline domains, the four partitionings (powers of two as integer, as the reference has it), the
+  four output topologies, in the reference's 16.16 fixed point. One invocation per patch; three
+  passes (`stage::Tessellator::run`): count each patch's points and indices, a one-workgroup scan
+  giving each patch its first point and index and writing an indexed indirect draw, then write the
+  points (u, v, the patch's number, its primitive number) and the indices. The hull stage's output
+  layout (header and patch records) is `stage::tess`; buffers are sized by the largest factor the
+  hull shader declares (`tess::patch_bounds`).
+- One fix found by the test: a factor's cull test reads its bits, since a comparison on the GPU
+  flushed a denormal edge factor to zero and culled a patch both the reference and the GPU keep.
+- `tests/tessellation_draw.rs` (Windows, GPU job): patches of seeded factors (ordinary values, past
+  the largest, whole numbers and a step either side, halves, NaN, zeros, negatives, infinity,
+  denormals) for every domain, partitioning and output topology (32 hull shaders and 3 domain shaders
+  in `tests/own/tessellation.hlsl`, fxc), real Direct3D 11's domain shader output streamed (domain
+  location and primitive number) against our points and indices read back. 16 seeds, 512 draws: in
+  every one each patch's primitives equal the RTX 3080's exactly (every coordinate's bits), patches
+  in draw order. The order of primitives inside a patch, and which vertex a triangle starts at
+  (about a third start at the same one), differ from the GPU's: the test compares each patch as a
+  set of primitives with their winding kept. That start matters for flat-interpolated domain
+  outputs (the provoking vertex); not matched (the GPU's order is its own, not the reference's).
+- fxc (which wgpu's Direct3D 12 path uses here) fails on the program with an internal error
+  ("argument pulled into unrelated predicate"), so the test runs wgpu on Vulkan. Chrome's compile
+  not yet checked (Known gaps).
+
 Next (in order):
+- Tessellation, the rest: hull shaders (DXBC) as compute writing `stage::tess`'s records, domain
+  shaders as the final draw's vertex program reading the points and patches, `Stages` with hull and
+  domain (the indexed indirect draw), a drawn test against real Direct3D 11 (the rig's
+  `tessellation` scene's shaders), then the corpora's hull and domain shaders. Chrome's compile of
+  `tessellator.wgsl`, and fxc's failure on it.
 - Typed buffers from DXIL (naga's SPIR-V reader: `Dim::Buffer` images into the same functions), and
   in geometry shaders (the stage helper fills `TexelBufferView`); the corpora with formats (below).
 - Corpus: run 19 gave the corpus test one view format per kind (Run 19); shaders whose views mix
@@ -1488,6 +1520,8 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test compute_draw --no-run" -- "set WCONTAINERS_COMPUTE_SEED=1&& set WCONTAINERS_COMPUTE_CASES=4&& cargo test -j 3 -p wcontainers-shaders --test compute_draw -- --nocapture --test-threads 1"`.
 - The built-in clear against WARP and the GPU's Direct3D 11 (Windows, one GPU job, about 3 s for
   256 cases): `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test clear_draw --no-run" -- "set WCONTAINERS_CLEAR_SEED=1&& set WCONTAINERS_CLEAR_CASES=256&& cargo test -j 3 -p wcontainers-shaders --test clear_draw -- --nocapture --test-threads 1"`.
+- The tessellator against the GPU's (Windows, one GPU job, about 12 s for 16 seeds):
+  `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test tessellation_draw --no-run" -- "set WCONTAINERS_TESSELLATION_SEED=1&& set WCONTAINERS_TESSELLATION_CASES=16&& cargo test -j 3 -p wcontainers-shaders --test tessellation_draw -- --nocapture --test-threads 1"`.
 - Compiling own shaders: `tests/own/compile.cmd` on the desktop (through `tools/graphics-rig/remote`);
   run 17 fetched the new files back as hex (`certutil -encodehex -f <file> <file>.hex 12`, then
   `type`) and decoded them here.
@@ -1541,6 +1575,10 @@ were already there.
 
 ## Dependencies and licences
 
+- Run 20: `src/stage/tessellator.wgsl` is a port (to WGSL) of Microsoft's reference tessellator,
+  MIT ("Copyright (c) Microsoft Corporation", the licence text at the head of Mesa's
+  src/gallium/auxiliary/tessellator/tessellator.cpp, read 2026-11-17); the program's header names it.
+  No new crate.
 - dxbc-spirv, https://github.com/doitsujin/dxbc-spirv, submodule at 6196cc6c62b7b04acb4f3e713ff3bb1a7e7950fd
   (upstream main's head on 2026-11-17): MIT, "Copyright (c) 2025 Philip Rebohle" (its LICENSE).
 - dxil-spirv, https://github.com/HansKristian-Work/dxil-spirv, submodule at
@@ -1648,6 +1686,12 @@ were already there.
 
 ## Known gaps found so far
 
+- The tessellator program fails fxc (wgpu's Direct3D 12 shader compiler on the desktop) with an
+  internal error, "argument pulled into unrelated predicate"; it runs on wgpu's Vulkan path. Chrome
+  compiles Direct3D 12 shaders with dxc where it can; its compile of the program is not checked yet.
+- Inside a patch the GPU's tessellator gives the primitives in another order than the reference, and
+  starts about two thirds of its triangles at another vertex (winding kept); ours follow the
+  reference. A domain shader's flat outputs (taken from a triangle's first vertex) can then differ.
 - Typed buffers: DXIL's are refused by naga's SPIR-V reader; geometry shaders' are refused
   (`TypedBufferInGeometry`); through a texture, a view reaches at most 2048 times the back end's
   largest texture height elements (32M on ANGLE's 16384), short of Direct3D 10's 2^27, which the

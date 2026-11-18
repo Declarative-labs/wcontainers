@@ -2467,6 +2467,22 @@ unsafe fn timestamps(c: &Ctx) -> Result<String> {
             0,
         );
         c.run(&list)?;
+        // The same queries resolved into a default buffer, then copied to a readback one.
+        let resolved = c.committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &buffer_desc(16, D3D12_RESOURCE_FLAG_NONE),
+            D3D12_RESOURCE_STATE_COPY_DEST,
+        )?;
+        let through = readback(16)?;
+        let (_a3, again) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        again.ResolveQueryData(&direct_heap, D3D12_QUERY_TYPE_TIMESTAMP, 0, 2, &resolved, 0);
+        again.ResourceBarrier(&[transition(
+            &resolved,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_COPY_SOURCE,
+        )]);
+        again.CopyBufferRegion(&through, 0, &resolved, 0, 16);
+        c.run(&again)?;
 
         let fence: ID3D12Fence = c.device.CreateFence(0, D3D12_FENCE_FLAG_NONE)?;
         let (_a2, copying) = c.list(D3D12_COMMAND_LIST_TYPE_COPY)?;
@@ -2492,18 +2508,20 @@ unsafe fn timestamps(c: &Ctx) -> Result<String> {
             ])
         };
         let (d, k) = (read(&direct_out)?, read(&copy_out)?);
+        let copied = read(&through)? == d;
         let gpu_seconds = (gpu1 - gpu0) as f64 / frequency as f64;
         let cpu_seconds = (cpu1 - cpu0) as f64 / qpc as f64;
         let ratio = gpu_seconds / cpu_seconds;
         Ok(format!(
             "frequency set {} copy frequency equal {} direct in order {} copy in order {} \
-             within calibrations {} clocks agree {}",
+             within calibrations {} clocks agree {} copied from a default buffer {}",
             frequency > 0,
             copy_frequency == frequency,
             d[0] <= d[1],
             k[0] <= k[1],
             gpu0 <= d[0] && d[1] <= gpu1 && gpu0 <= k[0] && k[1] <= gpu1,
             (0.9..1.1).contains(&ratio),
+            copied,
         ))
     }
 }
