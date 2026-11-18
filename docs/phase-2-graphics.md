@@ -2893,7 +2893,7 @@ What is reported, by 5.5 (kept) and research Q1 and Q3:
   `InstanceRateInShader`'s route), 128 bytes of push constants (`ImmediatesSpilled`).
 
 What the interface lacks for it (proposed in 15.7): four descriptor sets with the helper set beside
-them, and view component mappings.
+them, view component mappings, and the slow path names `WideLinesAsQuads` and `Int64Emulated`.
 
 How it is proven (G10): VK-GL-CTS's `vk-default` list through deqp-runner with a fails list,
 NotSupported counted as passing (the CTS's own rule), in shards through the queue, natively on the
