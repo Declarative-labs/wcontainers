@@ -256,7 +256,7 @@
 824acbe53f3da598.dxbc	ok-wgsl glsl-compile
 833f6e61c79fcadd.dxbc	ok
 83d814729fb9b2be.dxbc	ok
-84f06ca622671518.dxbc	unsupported TypedBufferFormatKind
+84f06ca622671518.dxbc	ok-wgsl glsl-write
 850aba17e3aea6bf.dxbc	ok
 855bf5b93c7221cd.dxbc	ok
 855fc1b466397cef.dxbc	ok
