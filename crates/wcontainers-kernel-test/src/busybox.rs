@@ -152,6 +152,7 @@ fn run_ours_on(command: &[&str], seed: u64, backend: Option<&str>) -> driver::Ru
         backend,
         cached: false,
         published: &[],
+        root_image: None,
         address_space: crate::standin::SPACE_32_BIT,
     };
     driver::run(&container, seed)

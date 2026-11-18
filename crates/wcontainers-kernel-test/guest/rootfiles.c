@@ -11,6 +11,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
+#include <sys/syscall.h>
 #include <sys/xattr.h>
 #include <sys/uio.h>
 #include <unistd.h>
@@ -188,8 +189,53 @@ static void presents(void) {
     unlink("/presents");
 }
 
+static char direct_buffer[3 * 65536] __attribute__((aligned(65536)));
+
+static void direct_both(int fd, long memory, long length, long offset) {
+    errno = 0;
+    long r = pwrite(fd, direct_buffer + memory, length, offset);
+    printf("direct write memory+%ld length %ld at %ld: %ld %s\n", memory, length, offset, r,
+           r < 0 ? strerror(errno) : "");
+    errno = 0;
+    r = pread(fd, direct_buffer + memory, length, offset);
+    printf("direct read memory+%ld length %ld at %ld: %ld %s\n", memory, length, offset, r,
+           r < 0 ? strerror(errno) : "");
+}
+
+// Direct reads and writes on the root keep its upper layer's alignment.
+static void direct(void) {
+    int fd = open("/direct", O_CREAT | O_RDWR | O_DIRECT, 0600);
+    unsigned char sx[256] = {0};
+    syscall(SYS_statx, fd, "", AT_EMPTY_PATH, 0x2000, sx); // STATX_DIOALIGN
+    unsigned *words = (unsigned *)sx;
+    printf("dioalign %d memory %u offset %u\n", !!(words[0] & 0x2000), words[152 / 4],
+           words[156 / 4]);
+    memset(direct_buffer, 'd', sizeof direct_buffer);
+    direct_both(fd, 0, 4096, 0);
+    direct_both(fd, 512, 512, 512);
+    direct_both(fd, 1, 4096, 0);
+    direct_both(fd, 0, 4095, 0);
+    direct_both(fd, 0, 4096, 1);
+    direct_both(fd, 4, 512, 0);
+    direct_both(fd, 0, 100, 1 << 20);
+    printf("size %ld\n", (long)lseek(fd, 0, SEEK_END));
+    direct_both(fd, 0, 4096, 4096 * 300);
+    struct iovec parts[2] = {{direct_buffer, 512}, {direct_buffer + 1024, 1024}};
+    errno = 0;
+    printf("direct writev %zd %s\n", pwritev(fd, parts, 2, 0), strerror(errno));
+    parts[1].iov_len = 1000;
+    errno = 0;
+    printf("direct writev short segment %zd %s\n", pwritev(fd, parts, 2, 0), strerror(errno));
+    fcntl(fd, F_SETFL, 0);
+    errno = 0;
+    printf("after clearing O_DIRECT %zd %s\n", pwrite(fd, direct_buffer + 1, 10, 3), strerror(errno));
+    close(fd);
+    unlink("/direct");
+}
+
 int main(void) {
     presents();
+    direct();
     epoll_on("/tmp/epollfile");
     epoll_on("/dev/shm/epollfile");
     epoll_on("/root/epollfile");

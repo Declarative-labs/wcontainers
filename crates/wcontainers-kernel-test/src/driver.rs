@@ -286,9 +286,10 @@ pub fn exit_code(wait_status: i32) -> i32 {
     }
 }
 
-/// How many turns on the CPU side this process's runs have ended, for a watchdog that tells a
-/// run that is slow from one stuck inside a single call or turn.
-pub static TURNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// How many turns on the CPU side this process's runs have ended and backend answers they have
+/// taken, for a watchdog that tells a run that is slow from one stuck inside a single call or
+/// turn.
+pub static PROGRESS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// What a container starts with: its files and its first process.
 pub struct Container<'a> {
@@ -300,6 +301,9 @@ pub struct Container<'a> {
     /// Where the file backend is mounted: `/` makes it the root, with the files unpacked into
     /// it; any other path is a volume, empty at the start. None keeps the root in memory.
     pub backend: Option<&'a str>,
+    /// With the root on the backend, an image holding the root's files where the backend serves
+    /// them, served in place of `files`; the files a run leaves are then not read.
+    pub root_image: Option<&'a str>,
     /// Whether the backend opens files for the page cache rather than for direct reads and writes.
     pub cached: bool,
     /// Ports of this machine's loopback that reach the container's ports, as (container port,
@@ -427,10 +431,14 @@ pub fn run_prepared(
     host.network.published = container.published.iter().copied().collect();
     let root_on_backend = container.backend == Some("/");
     if container.backend.is_some() {
-        let image = root_on_backend.then_some(container.files);
+        let served = match container.root_image {
+            _ if !root_on_backend => crate::backend::Served::Empty,
+            Some(image) => crate::backend::Served::Image(image),
+            None => crate::backend::Served::Files(container.files),
+        };
         host.backend = Some(crate::backend::Backend::start(
             &crate::backend::out(),
-            image,
+            served,
             container.cached,
         ));
     }
@@ -487,7 +495,7 @@ pub fn run_prepared(
 
                 kernel.exit(&mut cpu, &mut host, exit);
                 turns += 1;
-                TURNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                PROGRESS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 network_events(&mut kernel, &mut cpu, &mut host, Duration::ZERO);
                 // The backend's answers arrive at moments and in an order drawn from the seed.
                 while host
@@ -584,6 +592,7 @@ pub fn run_prepared(
         return Err(Failure::Start(error));
     }
     let files = match &host.backend {
+        Some(_) if container.root_image.is_some() => Vec::new(),
         Some(backend) if root_on_backend => image::records(&backend.files()),
         _ => kernel.root_files(&mut cpu),
     };
@@ -729,6 +738,7 @@ pub(crate) fn deliver(
     else {
         return;
     };
+    PROGRESS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     match message {
         crate::backend::Message::Answer(unique, reply) => {
             let request = BackendRequestId(unique);

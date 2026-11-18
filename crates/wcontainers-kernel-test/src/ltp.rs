@@ -20,6 +20,12 @@ pub fn image_name() -> String {
     format!("wc-kernel-ltp:{RELEASE}")
 }
 
+/// The image `ltp/build.sh` builds for our kernel's root: the suite's image's files at the
+/// backend's directory, served as the container's root, as a container's root is its image's.
+pub fn served_image_name() -> String {
+    format!("wc-kernel-ltp-served:{RELEASE}")
+}
+
 /// The groups (the suite's `runtest` files) a whole run leaves out: crashme, whose crash02
 /// forks without bound and would exhaust the process numbers of the reference's machine, which
 /// other containers share. Every other test says what it needs and skips itself when that is
@@ -248,7 +254,7 @@ pub fn run_reference(test: &Test, limit: Duration, logs: &Path) -> Line {
 /// Runs tests on our kernel, `jobs` at a time, each under `seed` in a process of its own forked
 /// from one that holds the image's files in a prepared kernel, so the files are loaded once. A
 /// test that runs past `limit` is killed and reported as a timeout; one whose kernel ends no turn
-/// for [`STUCK`], or whose processes all wait with nothing to wake them, is a hang; one whose
+/// and takes no backend answer for [`STUCK`], or whose processes all wait with nothing to wake them, is a hang; one whose
 /// kernel fails is a crash, and one the stand-in CPU cannot run is unsupported. Each finished
 /// test's line goes to `report` as it ends.
 pub fn run_ours(
@@ -260,13 +266,20 @@ pub fn run_ours(
     logs: &Path,
     mut report: impl FnMut(&Line),
 ) -> Vec<Line> {
+    let served = served_image_name();
+    let found = Command::new("docker")
+        .args(["image", "inspect", &served])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("running docker");
+    assert!(found.success(), "no image {served}: run ltp/build.sh");
     let mut prepared = {
         let bytes =
             std::fs::read(tar).unwrap_or_else(|error| panic!("reading {}: {error}", tar.display()));
         let files = image::from_tar(&bytes);
         drop(bytes);
-        let container = container(&files, &[]);
-        Some(driver::prepare(&container))
+        Some(driver::prepare(&container(&files, &[], &served)))
     };
     let mut lines: Vec<Option<Line>> = vec![None; tests.len()];
     let mut running: BTreeMap<libc::pid_t, (usize, Instant)> = BTreeMap::new();
@@ -286,6 +299,7 @@ pub fn run_ours(
                     test,
                     seed,
                     &log,
+                    &served,
                 ),
                 child => {
                     running.insert(child, (next, Instant::now()));
@@ -334,21 +348,30 @@ pub fn run_ours(
         .collect()
 }
 
-fn container<'a>(files: &'a [image::File], arguments: &'a [&'a str]) -> driver::Container<'a> {
+/// A test's container: its root on the backend, served from `root_image`, as the reference's
+/// root is its image's.
+fn container<'a>(
+    files: &'a [image::File],
+    arguments: &'a [&'a str],
+    root_image: &'a str,
+) -> driver::Container<'a> {
     driver::Container {
         files,
         path: "/bin/sh",
         arguments,
         environment: ENVIRONMENT,
         working_directory: "/",
-        backend: None,
-        cached: false,
+        backend: Some("/"),
+        // Opened for the page cache, so files map shared as on the reference's overlay.
+        cached: true,
         published: &[],
+        root_image: Some(root_image),
         address_space: crate::standin::SPACE_32_BIT,
     }
 }
 
-/// How long a run on our kernel may end no turn before it counts as hung.
+/// How long a run on our kernel may end no turn and take no backend answer before it counts as
+/// hung.
 const STUCK: Duration = Duration::from_secs(120);
 
 /// Where a test's process leaves its line.
@@ -357,7 +380,13 @@ fn result_path(log: &Path) -> PathBuf {
 }
 
 /// In the forked process: runs the test with its output to its log, leaves its line and ends.
-fn run_one(mut prepared: driver::Prepared, test: &Test, seed: u64, log: &Path) -> ! {
+fn run_one(
+    mut prepared: driver::Prepared,
+    test: &Test,
+    seed: u64,
+    log: &Path,
+    root_image: &str,
+) -> ! {
     prepared.echo = true;
     let file = std::fs::File::create(log).expect("the log");
     // SAFETY: points this process's standard output and error at the log.
@@ -367,20 +396,21 @@ fn run_one(mut prepared: driver::Prepared, test: &Test, seed: u64, log: &Path) -
         libc::dup2(file.as_raw_fd(), 2);
     }
     let started = Instant::now();
-    // A run whose kernel ends no turn for this long is stuck in one call or one turn: a hang.
+    // A run whose kernel ends no turn and takes no backend answer for this long is stuck in one
+    // call or one turn: a hang.
     // One that goes on ending turns past the harness's limit is only slow (a timeout).
     {
         let log = log.to_path_buf();
         let id = test.id();
         std::thread::spawn(move || {
-            let mut last = (driver::TURNS.load(Ordering::Relaxed), Instant::now());
+            let mut last = (driver::PROGRESS.load(Ordering::Relaxed), Instant::now());
             loop {
                 std::thread::sleep(Duration::from_secs(5));
-                let turns = driver::TURNS.load(Ordering::Relaxed);
+                let turns = driver::PROGRESS.load(Ordering::Relaxed);
                 if turns != last.0 {
                     last = (turns, Instant::now());
                 } else if last.1.elapsed() > STUCK {
-                    eprintln!("no turn ended for {STUCK:?}");
+                    eprintln!("no turn ended and no backend answer came for {STUCK:?}");
                     let line = Line {
                         id: id.clone(),
                         verdict: "hang".into(),
@@ -399,7 +429,7 @@ fn run_one(mut prepared: driver::Prepared, test: &Test, seed: u64, log: &Path) -
     let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         driver::run_prepared(
             prepared,
-            &container(&[], &arguments),
+            &container(&[], &arguments, root_image),
             seed,
             driver::Injections::default(),
         )

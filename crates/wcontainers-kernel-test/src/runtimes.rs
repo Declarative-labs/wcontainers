@@ -202,6 +202,7 @@ pub fn ours(
         // Opened for the page cache, so files map shared as on the reference's overlay.
         cached: true,
         published: &[],
+        root_image: None,
         address_space: SPACE_64_BIT,
     };
     let injections = driver::Injections {

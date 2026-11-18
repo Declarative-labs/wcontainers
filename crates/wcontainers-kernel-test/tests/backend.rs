@@ -36,6 +36,7 @@ fn same_on(name: &str, injections: driver::Injections, cached: bool) -> Vec<driv
             backend: Some(AT),
             cached,
             published: &[],
+            root_image: None,
             address_space: wcontainers_kernel_test::standin::SPACE_32_BIT,
         };
         let ours =
@@ -345,6 +346,7 @@ fn messages_per_call() {
             backend: Some(AT),
             cached: false,
             published: &[],
+            root_image: None,
             address_space: wcontainers_kernel_test::standin::SPACE_32_BIT,
         };
         let run = driver::run(&container, 1).expect("an outcome on our kernel");

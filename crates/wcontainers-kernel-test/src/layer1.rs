@@ -4382,7 +4382,11 @@ pub fn run_ours_with(
     let mut host = TestHost::new(0);
     if sequence.backend {
         host.backend = Some(backend.take().unwrap_or_else(|| {
-            crate::backend::Backend::start(&crate::backend::out(), None, sequence.cached)
+            crate::backend::Backend::start(
+                &crate::backend::out(),
+                crate::backend::Served::Empty,
+                sequence.cached,
+            )
         }));
     }
     let (result, mut host) = run_ours_on(sequence, runner, theirs, host);

@@ -1940,6 +1940,16 @@ pub(super) fn statx(
     } else {
         super::handle::mount_id(&inode)
     };
+    // The root's regular files give the reference's upper layer's direct I/O alignment when
+    // asked (measured).
+    if requested & STATX_DIOALIGN != 0
+        && inode.fs.kind == crate::fs::Kind::Overlay
+        && inode.file_type() == S_IFREG
+    {
+        out.stx_mask |= STATX_DIOALIGN;
+        out.stx_dio_mem_align = 512;
+        out.stx_dio_offset_align = 512;
+    }
     drop(inode);
     guest(kernel, cx, tid).write_value(buffer, &out)?;
     Ok(0)

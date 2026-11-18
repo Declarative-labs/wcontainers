@@ -125,6 +125,7 @@ fn run_ours_on(
         backend,
         cached: false,
         published,
+        root_image: None,
         address_space: standin::SPACE_32_BIT,
     };
     driver::run_injected(&container, seed, injections)

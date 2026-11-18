@@ -117,6 +117,18 @@ pub struct Backend {
     archive: Option<std::path::PathBuf>,
 }
 
+/// The directory a server serves.
+#[derive(Clone, Copy)]
+pub enum Served<'a> {
+    /// An empty one in memory.
+    Empty,
+    /// One in memory with these files unpacked into it.
+    Files(&'a [crate::image::File]),
+    /// The one an image holds at [`SERVED`], which its container changes without changing the
+    /// image: for an image too large to unpack for every run.
+    Image(&'a str),
+}
+
 /// What the server sent: an answer to a request, or a notice nobody asked for.
 pub enum Message {
     Answer(u64, Vec<u8>),
@@ -124,9 +136,9 @@ pub enum Message {
 }
 
 impl Backend {
-    /// Starts a server on a directory in memory, empty or with `image` unpacked into it first,
-    /// opening files for the page cache if `cached`, else for direct reads and writes.
-    pub fn start(out: &Path, image: Option<&[crate::image::File]>, cached: bool) -> Self {
+    /// Starts a server on the directory `served` says, opening files for the page cache if
+    /// `cached`, else for direct reads and writes.
+    pub fn start(out: &Path, served: Served<'_>, cached: bool) -> Self {
         let serve = serve_command(cached);
         static RUNS: AtomicU32 = AtomicU32::new(0);
         let server = server(out);
@@ -146,12 +158,13 @@ impl Backend {
                 "--name",
                 &name,
             ])
-            .args(["--tmpfs", SERVED])
             .arg("--volume")
             .arg(format!("{}:/wcb:ro", server.display()));
         let mut kept = None;
-        let script = match image {
-            Some(files) => {
+        let mut image = IMAGE;
+        let script = match served {
+            Served::Files(files) => {
+                command.args(["--tmpfs", SERVED]);
                 let images = out.join("wc-backend-images");
                 std::fs::create_dir_all(&images).expect("a directory for images");
                 let archive = images
@@ -165,10 +178,17 @@ impl Backend {
                     .arg(format!("{}:/wci/image.tar:ro", archive.display()));
                 format!("tar -xpf /wci/image.tar -C {SERVED} && exec {serve} pipe {SERVED}")
             }
-            None => format!("exec {serve} pipe {SERVED}"),
+            Served::Empty => {
+                command.args(["--tmpfs", SERVED]);
+                format!("exec {serve} pipe {SERVED}")
+            }
+            Served::Image(name) => {
+                image = name;
+                format!("exec {serve} pipe {SERVED}")
+            }
         };
         let mut child = command
-            .args([IMAGE, "sh", "-c", &script])
+            .args([image, "sh", "-c", &script])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()

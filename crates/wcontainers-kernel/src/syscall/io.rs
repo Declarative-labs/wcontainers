@@ -1130,6 +1130,43 @@ fn read_at_unwatched(
     Ok(written as u64)
 }
 
+/// The logical block size of the reference's root's upper layer, to which a direct read or
+/// write's position and every segment's length are aligned (measured).
+const OVERLAY_DIRECT_BLOCK: u64 = 512;
+
+/// The alignment of a direct read or write's buffers there (the block device's DMA alignment;
+/// measured).
+const OVERLAY_DIRECT_MEMORY: u64 = 4;
+
+/// Whether a read or write with `O_DIRECT` on the root at `offset` keeps the reference's
+/// overlay's rules (its upper layer's `iomap_dio_rw`): a read from the end on reads nothing and
+/// is not checked (`Some(false)`), a misaligned one is EINVAL, and any other read or write goes
+/// on (`Some(true)`); `None` when the file is not such a file.
+fn overlay_direct(
+    file: &FileRef,
+    parts: &[(u64, u64)],
+    offset: u64,
+    writing: bool,
+) -> Result<Option<bool>, Errno> {
+    let file = file.borrow();
+    let inode = file.node.borrow();
+    if file.flags & O_DIRECT == 0 || inode.fs.kind != crate::fs::Kind::Overlay {
+        return Ok(None);
+    }
+    if !writing && offset >= inode.size() {
+        return Ok(Some(false));
+    }
+    let misaligned = !offset.is_multiple_of(OVERLAY_DIRECT_BLOCK)
+        || parts.iter().any(|&(base, length)| {
+            !length.is_multiple_of(OVERLAY_DIRECT_BLOCK)
+                || !base.is_multiple_of(OVERLAY_DIRECT_MEMORY)
+        });
+    if misaligned {
+        return Err(Errno::EINVAL);
+    }
+    Ok(Some(true))
+}
+
 /// Whether a file is a regular file on the backend.
 fn on_backend_regular(file: &FileRef) -> bool {
     let file = file.borrow();
@@ -1149,6 +1186,9 @@ fn read_parts(
     at: Option<u64>,
 ) -> Result<u64, Errno> {
     let offset = at.unwrap_or(file.borrow().offset);
+    if overlay_direct(file, parts, offset, false)? == Some(false) {
+        return Ok(0);
+    }
     let total: u64 = parts.iter().map(|(_, length)| length).sum();
     // `fuse_direct_io`: a file the backend opened for direct reads and writes is read into the
     // buffers' pages, taken first: as far as they can be written, EFAULT if not at all.
@@ -1220,6 +1260,7 @@ fn write_parts(
     } else {
         at.unwrap_or(file.borrow().offset)
     };
+    overlay_direct(file, parts, offset, true)?;
     let total = parts.iter().map(|(_, length)| length).sum();
     let count = write_limit(kernel, cx, tid, file, offset, total)?;
     // As much of the buffers as can be read; where it stops, the write ends (`write_bytes`).

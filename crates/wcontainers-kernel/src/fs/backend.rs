@@ -1170,12 +1170,17 @@ pub(crate) fn readlink(node: &Node) -> Result<Vec<u8>, Errno> {
 }
 
 /// The open flags FUSE sends: the access mode and status flags, without those only the kernel
-/// acts on (`fuse_do_open`, `fuse_create_open`), and O_TRUNC only when the backend takes it.
+/// acts on (`fuse_do_open`, `fuse_create_open`), and O_TRUNC only when the backend takes it. The
+/// root's direct reads and writes follow the reference's overlay, checked here
+/// (`syscall::io::overlay_direct`), so the backend is not asked for its own.
 fn open_flags(client: &Client, flags: u32) -> u32 {
-    use crate::linux::general::{O_CREAT, O_EXCL, O_NOCTTY, O_TRUNC};
+    use crate::linux::general::{O_CREAT, O_DIRECT, O_EXCL, O_NOCTTY, O_TRUNC};
     let mut flags = flags & !(O_CREAT | O_EXCL | O_NOCTTY);
     if client.settled().flags & FUSE_ATOMIC_O_TRUNC == 0 {
         flags &= !O_TRUNC;
+    }
+    if client.fs.kind == super::Kind::Overlay {
+        flags &= !O_DIRECT;
     }
     flags
 }
