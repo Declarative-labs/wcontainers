@@ -290,22 +290,25 @@ pub(super) enum Held<B: Backend> {
 
 impl<B: Backend> Device<B> {
     /// The binding sets of a draw or dispatch with pipeline `pid` and root arguments `state`:
-    /// of the API stage `only` (a `D3D12_SHADER_VISIBILITY`), or of every stage. `extra` are
+    /// of the API stages `only` (`D3D12_SHADER_VISIBILITY`s), or of every stage where it is
+    /// empty. `extra` are
     /// read-only storage buffers (binding, buffer, offset, size) of the pulled vertex streams,
     /// added to set 0 for the back end's stages `extra_stages`.
     pub(super) fn binding_sets(
         &mut self,
         state: &RootState,
         pid: PipelineId,
-        only: Option<u32>,
+        only: &[u32],
         extra: &[(u32, &B::Buffer, u64, u64)],
         extra_stages: StageSet,
     ) -> Result<[Option<B::BindingSet>; MAX_BINDING_SETS], Error> {
         let mut sets: [Option<B::BindingSet>; MAX_BINDING_SETS] = Default::default();
         let mut bindings = std::mem::take(&mut self.pipelines[pid.0 as usize].bindings);
         let mut others = Vec::new();
-        if let Some(v) = only {
-            (bindings, others) = bindings.into_iter().partition(|b| b.visibility == v);
+        if !only.is_empty() {
+            (bindings, others) = bindings
+                .into_iter()
+                .partition(|b| only.contains(&b.visibility));
         }
         let restore = |d: &mut Self, mut bindings: Vec<StageBinding>, others: Vec<StageBinding>| {
             bindings.extend(others);

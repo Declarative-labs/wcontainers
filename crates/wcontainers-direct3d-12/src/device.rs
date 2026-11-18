@@ -242,6 +242,8 @@ struct Render<B: Backend> {
 pub struct GraphicsPipelineDesc<'a> {
     pub root: Option<RootSignature>,
     pub vs: &'a [u8],
+    pub hs: &'a [u8],
+    pub ds: &'a [u8],
     pub gs: &'a [u8],
     pub ps: &'a [u8],
     pub blend: Blend,
@@ -873,8 +875,19 @@ impl<B: Backend> Device<B> {
         desc: &GraphicsPipelineDesc<'_>,
     ) -> Result<PipelineId, Error> {
         self.live()?;
-        let root = self.pipeline_root(desc.root.as_ref(), &[desc.vs, desc.gs, desc.ps])?;
-        let has_geometry = !desc.gs.is_empty();
+        let root = self.pipeline_root(
+            desc.root.as_ref(),
+            &[desc.vs, desc.hs, desc.ds, desc.gs, desc.ps],
+        )?;
+        let tessellated = !desc.hs.is_empty();
+        // Hull and domain shaders come together, with patches.
+        if tessellated != !desc.ds.is_empty() || tessellated != (desc.topology_type == 4) {
+            return Err(Error::Invalid(
+                "hull and domain shaders without each other or without patches",
+            ));
+        }
+        // A vertex stage feeding another stage, not the pixel stage.
+        let has_geometry = !desc.gs.is_empty() || tessellated;
         let staged = has_geometry || desc.stream_output.is_some();
         let vs_typed = formats::typed_key(desc.vs, self.texel_route());
         let ps = if desc.ps.is_empty() {
@@ -952,6 +965,8 @@ impl<B: Backend> Device<B> {
         let made = match staged {
             true => Some(self.geometry_stage(
                 desc.vs,
+                desc.hs,
+                desc.ds,
                 desc.gs,
                 &inputs,
                 &interpolation,
@@ -992,8 +1007,15 @@ impl<B: Backend> Device<B> {
                 if let Some(shader) = &m.shader {
                     b.extend(bind::stage_bindings(
                         shader,
-                        bind::GEOMETRY,
+                        m.geometry.middle.0,
                         StageSet::COMPUTE,
+                    ));
+                }
+                if let Some(domain) = &m.domain {
+                    b.extend(bind::stage_bindings(
+                        domain,
+                        geometry::DOMAIN,
+                        StageSet::VERTEX,
                     ));
                 }
                 b
@@ -1014,7 +1036,8 @@ impl<B: Backend> Device<B> {
             1 => Some(Topology::PointList),
             2 => Some(Topology::LineList),
             3 => Some(Topology::TriangleList),
-            4 => return Err(Error::NotImplemented("patch topologies")),
+            // The domain stage's output, below.
+            4 => None,
             _ => return Err(Error::Invalid("unknown primitive topology type")),
         };
         let topology = made.as_ref().and_then(|m| m.output).or(topology);
@@ -1042,6 +1065,10 @@ impl<B: Backend> Device<B> {
             return Err(Error::NotImplemented("alpha-antialiased lines"));
         }
         let vs_shader = match made.as_ref().filter(|m| m.shader.is_some()) {
+            Some(geometry::Made {
+                domain: Some(domain),
+                ..
+            }) => &domain.modules[0],
             Some(m) => m
                 .geometry
                 .stages
@@ -1249,11 +1276,15 @@ impl<B: Backend> Device<B> {
         self.convert(code, stage, key.clone())
     }
 
-    /// A geometry shader in the common form: its compute form and the vertex program drawing
-    /// its output.
-    fn convert_geometry(&mut self, code: &[u8], variant: VariantKey) -> Result<Converted, Error> {
-        let converted = self.convert_any(code, "Geometry", variant)?;
-        if converted.reflection.stage != wcontainers_gpu::SourceStage::Geometry {
+    /// A geometry, hull or domain shader in the common form, as the stage helper takes it.
+    fn convert_staged(
+        &mut self,
+        code: &[u8],
+        stage: wcontainers_gpu::SourceStage,
+        variant: VariantKey,
+    ) -> Result<Converted, Error> {
+        let converted = self.convert_any(code, &format!("{stage:?}"), variant)?;
+        if converted.reflection.stage != stage {
             return Err(Error::Invalid("a shader of another stage"));
         }
         Ok(converted)
@@ -1377,6 +1408,9 @@ impl<B: Backend> Device<B> {
                     .chain(pulled)
                 {
                     self.backend.destroy(Object::Program(c));
+                }
+                if let Some(stages) = r.geometry.and_then(|g| g.stages) {
+                    stages.destroy(&mut self.backend);
                 }
                 self.backend.destroy(Object::Blend(r.blend));
                 self.backend.destroy(Object::DepthStencil(r.depth_stencil));
@@ -2672,7 +2706,7 @@ impl<B: Backend> Replay<B> {
             }
             Command::Topology(t) => {
                 self.api_topology = *t;
-                if !crate::state::adjacency(*t) {
+                if !crate::state::staged_only(*t) {
                     self.topology = crate::state::topology(*t)?;
                 }
             }
@@ -3097,7 +3131,7 @@ impl<B: Backend> Replay<B> {
             }
         }
         self.settle(d)?;
-        let mut sets = d.binding_sets(&self.compute, pid, None, &[], StageSet::COMPUTE)?;
+        let mut sets = d.binding_sets(&self.compute, pid, &[], &[], StageSet::COMPUTE)?;
         let bound = d.bound_program(pid, false)?;
         let pipeline = &d.pipelines[pid.0 as usize];
         let helpers = bound.as_ref().map_or(&pipeline.helpers, |b| &b.1).clone();
@@ -3107,7 +3141,7 @@ impl<B: Backend> Replay<B> {
             let compute = wcontainers_gpu::helper_binding(ShaderStage::Compute);
             sets[HELPER_SET as usize] = Some(d.helper_blocks(
                 &[(compute, StageSet::COMPUTE, block)],
-                None,
+                &[],
                 &merged,
                 None,
             )?);
@@ -3159,9 +3193,9 @@ impl<B: Backend> Replay<B> {
         if geometry && !self.draw_geometry(d, pid, same_range(&range), record)? {
             return Ok(());
         }
-        if crate::state::adjacency(self.api_topology) {
+        if crate::state::staged_only(self.api_topology) {
             return Err(Error::NotImplemented(
-                "adjacency topologies without a geometry shader",
+                "adjacency or patch topologies without a geometry or hull shader",
             ));
         }
         // The bases as `HelperValue::DrawBase` holds them: base vertex, first instance.
@@ -3313,7 +3347,7 @@ impl<B: Backend> Replay<B> {
                 .ok_or(Error::Invalid("a pulled stream the draw does not bind"))?;
             extra.push((binding, buffer, *offset, *size));
         }
-        let mut sets = d.binding_sets(&self.graphics, pid, None, &extra, StageSet::VERTEX)?;
+        let mut sets = d.binding_sets(&self.graphics, pid, &[], &extra, StageSet::VERTEX)?;
         let bound = d.bound_program(pid, variant.is_some() || by_arguments)?;
         d.vertex_formats(pid)?;
         let pipeline = &d.pipelines[pid.0 as usize];
