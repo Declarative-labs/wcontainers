@@ -325,6 +325,8 @@ static TABLE: [Entry; LENGTH] = {
         // Time.
         (__NR_clock_gettime, S(time::clock_gettime)),
         (__NR_clock_getres, S(time::clock_getres)),
+        (__NR_adjtimex, S(time::adjtimex)),
+        (__NR_clock_adjtime, S(time::clock_adjtime)),
         (__NR_gettimeofday, S(time::gettimeofday)),
         (__NR_nanosleep, F(time::nanosleep)),
         (__NR_clock_nanosleep, F(time::clock_nanosleep)),

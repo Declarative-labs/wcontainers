@@ -792,3 +792,51 @@ pub(crate) const DUMP_ANON_SHARED: u32 = 1 << 1;
 pub(crate) const DUMP_MAPPED_PRIVATE: u32 = 1 << 2;
 pub(crate) const DUMP_MAPPED_SHARED: u32 = 1 << 3;
 pub(crate) const DUMP_ELF_HEADERS: u32 = 1 << 4;
+
+/// `struct __kernel_timex` (`linux/timex.h`), which linux-raw-sys does not carry, with its
+/// unnamed padding fields named.
+#[derive(Clone, Copy, zerocopy::FromBytes, zerocopy::IntoBytes, zerocopy::Immutable)]
+#[repr(C)]
+pub(crate) struct kernel_timex {
+    pub modes: u32,
+    pub pad0: u32,
+    pub offset: i64,
+    pub freq: i64,
+    pub maxerror: i64,
+    pub esterror: i64,
+    pub status: i32,
+    pub pad1: u32,
+    pub constant: i64,
+    pub precision: i64,
+    pub tolerance: i64,
+    pub time_sec: i64,
+    pub time_usec: i64,
+    pub tick: i64,
+    pub ppsfreq: i64,
+    pub jitter: i64,
+    pub shift: i32,
+    pub pad2: u32,
+    pub stabil: i64,
+    pub jitcnt: i64,
+    pub calcnt: i64,
+    pub errcnt: i64,
+    pub stbcnt: i64,
+    pub tai: i32,
+    pub pad3: [u32; 11],
+}
+
+/// `adjtimex`'s mode bits as the kernel names them (`linux/timex.h`, kernel side).
+pub(crate) const ADJ_OFFSET_SINGLESHOT: u32 = 0x0001;
+pub(crate) const ADJ_SETOFFSET: u32 = 0x0100;
+pub(crate) const ADJ_OFFSET_READONLY: u32 = 0x2000;
+pub(crate) const ADJ_TICK: u32 = 0x4000;
+pub(crate) const ADJ_ADJTIME: u32 = 0x8000;
+/// The clock is not synchronised (`STA_UNSYNC`), and the state that reports (`TIME_ERROR`).
+pub(crate) const STA_UNSYNC: i32 = 0x0040;
+pub(crate) const TIME_ERROR: u64 = 5;
+/// A never-adjusted clock's error bounds (`NTP_PHASE_LIMIT`), time constant, tick in
+/// microseconds (`USER_TICK_USEC`) and tolerance (`MAXFREQ_SCALED / PPM_SCALE`).
+pub(crate) const NTP_PHASE_LIMIT: i64 = 16_000_000;
+pub(crate) const NTP_TIME_CONSTANT: i64 = 2;
+pub(crate) const USER_TICK_USEC: i64 = 10_000;
+pub(crate) const NTP_TOLERANCE: i64 = 32_768_000;

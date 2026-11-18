@@ -3,8 +3,10 @@
 use super::{Args, Outcome, guest};
 use crate::linux::general::*;
 use crate::linux_extra::{
-    CLOCKFD, CLOCKFD_MASK, CPUCLOCK_CLOCK_MASK, CPUCLOCK_MAX, CPUCLOCK_PERTHREAD_MASK,
-    CPUCLOCK_SCHED,
+    ADJ_ADJTIME, ADJ_OFFSET_READONLY, ADJ_OFFSET_SINGLESHOT, ADJ_SETOFFSET, ADJ_TICK, CLOCKFD,
+    CLOCKFD_MASK, CPUCLOCK_CLOCK_MASK, CPUCLOCK_MAX, CPUCLOCK_PERTHREAD_MASK, CPUCLOCK_SCHED,
+    NTP_PHASE_LIMIT, NTP_TIME_CONSTANT, NTP_TOLERANCE, STA_UNSYNC, TIME_ERROR, USER_TICK_USEC,
+    kernel_timex,
 };
 use crate::process::{Channel, Pid, Restart, Tid};
 use crate::{Context, Errno, Kernel};
@@ -475,4 +477,105 @@ pub(super) fn times(
         guest(kernel, cx, tid).write_value(out, &value)?;
     }
     Ok(ticks(cx.monotonic()))
+}
+
+/// `do_adjtimex` on this machine's clock, which nothing in the container can adjust: setting
+/// anything needs CAP_SYS_TIME, which no container process can hold, and reading gives a clock
+/// never synchronised (the reference's own state, measured). Answers the clock's state.
+fn adjust(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    timex: &mut kernel_timex,
+) -> Result<u64, Errno> {
+    let modes = timex.modes;
+    let may_set = kernel.credentials(tid).has(CAP_SYS_TIME);
+    if modes & ADJ_ADJTIME != 0 {
+        if modes & ADJ_OFFSET_SINGLESHOT == 0 {
+            return Err(Errno::EINVAL);
+        }
+        if modes & ADJ_OFFSET_READONLY == 0 && !may_set {
+            return Err(Errno::EPERM);
+        }
+    } else {
+        if modes != 0 && !may_set {
+            return Err(Errno::EPERM);
+        }
+        if modes & ADJ_TICK != 0 && !(9000..=11000).contains(&timex.tick) {
+            return Err(Errno::EINVAL);
+        }
+    }
+    if modes & ADJ_SETOFFSET != 0 && !may_set {
+        return Err(Errno::EPERM);
+    }
+    let read_only = modes & ADJ_ADJTIME != 0 && modes & ADJ_OFFSET_READONLY != 0;
+    if modes != 0 && !read_only {
+        return Err(kernel.counters.refuse(
+            cx.host,
+            crate::reason::FLAG_NOT_BUILT,
+            (u64::from(__NR_adjtimex) << 32) | u64::from(modes),
+            Errno::EPERM,
+        ));
+    }
+    let now = cx.host.realtime_nanoseconds();
+    *timex = kernel_timex {
+        modes,
+        offset: 0,
+        freq: 0,
+        maxerror: NTP_PHASE_LIMIT,
+        esterror: NTP_PHASE_LIMIT,
+        status: STA_UNSYNC,
+        constant: NTP_TIME_CONSTANT,
+        precision: 1,
+        tolerance: NTP_TOLERANCE,
+        time_sec: (now / 1_000_000_000) as i64,
+        time_usec: (now % 1_000_000_000 / 1000) as i64,
+        tick: USER_TICK_USEC,
+        ppsfreq: 0,
+        jitter: 0,
+        shift: 0,
+        stabil: 0,
+        jitcnt: 0,
+        calcnt: 0,
+        errcnt: 0,
+        stbcnt: 0,
+        tai: 0,
+        ..*timex
+    };
+    Ok(TIME_ERROR)
+}
+
+pub(super) fn adjtimex(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [address, ..]: Args,
+) -> Result<u64, Errno> {
+    let mut timex: kernel_timex = guest(kernel, cx, tid).read_value(address)?;
+    let result = adjust(kernel, cx, tid, &mut timex);
+    // The structure goes back whatever the answer.
+    guest(kernel, cx, tid).write_value(address, &timex)?;
+    result
+}
+
+pub(super) fn clock_adjtime(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [id, address, ..]: Args,
+) -> Result<u64, Errno> {
+    let mut timex: kernel_timex = guest(kernel, cx, tid).read_value(address)?;
+    // `do_clock_adjtime`: only the wall clock adjusts; no clock device is built, and the CPU clocks
+    // and the others have no `clock_adj`.
+    let id = id as i32;
+    match id {
+        _ if id < 0 && is_clock_device(id) => return Err(Errno::EINVAL),
+        _ if id < 0 => return Err(Errno::EOPNOTSUPP),
+        0 => {}
+        1..=9 | 11 => return Err(Errno::EOPNOTSUPP),
+        _ => return Err(Errno::EINVAL),
+    }
+    let result = adjust(kernel, cx, tid, &mut timex)?;
+    guest(kernel, cx, tid).write_value(address, &timex)?;
+    Ok(result)
 }
