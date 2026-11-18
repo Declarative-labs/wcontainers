@@ -16,7 +16,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use wcontainers_gpu::{DrawBaseSource, VariantKey};
-use wcontainers_shaders::{ConvertError, Source, WEBGPU_CAPABILITIES, cache, convert};
+use wcontainers_shaders::{ConvertError, Source, cache, capabilities, convert};
 
 fn shaders(dir: &Path, ext: &str) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
@@ -123,7 +123,7 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
         Err(e) => return format!("wgsl-parse {}", e.message()),
     };
     if let Err(e) =
-        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), WEBGPU_CAPABILITIES)
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), capabilities(&m.module))
             .validate(&reparsed)
     {
         return format!("wgsl-validate {}", e.as_inner());

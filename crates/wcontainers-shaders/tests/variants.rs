@@ -358,6 +358,28 @@ fn min_lod_clamp_samples_through_the_merged_sampler() {
     }
 }
 
+/// A vertex program's clip distances become the common form's built-in array, on both routes.
+#[test]
+fn clip_distances_are_the_built_in_array() {
+    for c in both(&own_pair("vs_clip"), &VariantKey::default()) {
+        let text = wgsl(&c);
+        assert!(text.contains("enable clip_distances;"), "{text}");
+        assert!(
+            text.contains("@builtin(clip_distances) b1_: array<f32, 2>")
+                || text.contains("array<f32, 2>"),
+            "{text}"
+        );
+        assert!(
+            c.reflection
+                .outputs
+                .iter()
+                .any(|o| o.system == Some(wcontainers_gpu::SystemValue::ClipDistance)),
+            "{:?}",
+            c.reflection.outputs
+        );
+    }
+}
+
 /// Constant buffers read as storage move to the storage range, named as added.
 #[test]
 fn constants_read_as_storage_are_added_bindings() {
