@@ -223,7 +223,10 @@ fn webgpu_reports_11_0_and_tier_1() {
     for named_nothing in [0, 0x52, 0x89] {
         assert!(shader_model(named_nothing).is_err());
     }
-    assert!(!depth_bounds(&caps));
+    // Absent for Direct3D 12 whatever the back end has (plan section 9); the front refuses them.
+    let mut wide = caps.clone();
+    wide.features |= Features::SHADER_I64 | Features::DEPTH_BOUNDS;
+    assert!(!options1(&wide).int64_shader_ops);
     assert_eq!(ABSENT_TIER, 0);
     // R8G8B8A8_UNORM, then A8_UNORM, which the recorder lacks.
     assert_eq!(quality_levels(&caps, 28, 4), Some(1));

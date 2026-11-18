@@ -1422,7 +1422,10 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
   (checked: "Optionally (implementation-defined), empty vertexIndexList and return, cancelling the
   draw call"); the recording back end drops such a draw, the harshest of these, and counts it.
   Direct3D reads zero past the end of a vertex buffer: for draws without indices the front draws
-  the part past the end with a zero buffer bound (`VertexFetchZeroed`), exact; for indexed draws,
+  the part past the end with a zero buffer bound (`VertexFetchZeroed`), exact; an indirect one's
+  count is known only on the GPU, and WebGPU skips an indirect draw reading past the end whole, a
+  listed loss (`IndirectFetchPastEnd`, counted at each indirect draw without indices fetching
+  per-vertex streams); for indexed draws,
   indices past the end get what the back end gives; a listed loss. The exact route is the pulled
   variant for the draw's streams (`VariantKey::pulled`), which the Vulkan driver takes when its
   program enables robust access (15.4); here every indexed draw would pay for it, since Direct3D

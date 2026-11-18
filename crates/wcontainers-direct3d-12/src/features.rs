@@ -143,7 +143,8 @@ pub fn options1(caps: &Caps) -> Options1 {
         wave_lane_count_max: if waves { 128 } else { 0 },
         total_lane_count: 0,
         expanded_compute_resource_states: true,
-        int64_shader_ops: caps.has(Features::SHADER_I64),
+        // 64-bit integers are absent for Direct3D 12 (plan section 9).
+        int64_shader_ops: false,
     }
 }
 
@@ -186,10 +187,9 @@ pub struct Architecture {
 /// sampler feedback (OPTIONS7).
 pub const ABSENT_TIER: u32 = 0;
 
-/// `D3D12_FEATURE_DATA_D3D12_OPTIONS2::DepthBoundsTestSupported`.
-pub fn depth_bounds(caps: &Caps) -> bool {
-    caps.has(Features::DEPTH_BOUNDS)
-}
+/// `D3D12_FEATURE_DATA_D3D12_OPTIONS2::DepthBoundsTestSupported`: absent (plan section 9), as the
+/// front refuses depth bounds whatever the back end has.
+pub const DEPTH_BOUNDS: bool = false;
 
 /// `CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS)` for a `DXGI_FORMAT` value, as
 /// Direct3D 12 answers: one quality level for one sample whatever the format; for more, one where a
