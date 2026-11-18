@@ -219,6 +219,9 @@ struct Lowering<'a> {
     tessellation: Option<hull::Tessellation>,
     /// Typed buffers read through storage buffers, by declaring id.
     texels: HashMap<u32, TexelBuffer>,
+    /// Under Direct3D 12's numbering (shader model 5.1), every resource's (kind rank, space,
+    /// register), sorted: a resource's slot is its place among its kind's.
+    spaces: Option<Vec<(u32, u32, u32)>>,
 }
 
 impl<'a> Lowering<'a> {
@@ -248,6 +251,20 @@ impl<'a> Lowering<'a> {
         };
         let mut module = Module::default();
         derivatives_anywhere(&mut module);
+        let spaces = ir.spaces.then(|| {
+            let mut order: Vec<_> = ir
+                .ops
+                .iter()
+                .filter_map(|op| {
+                    let kind = declared_kind(op)?;
+                    let [space, register] = [0, 1].map(|i| op.lits.get(i).map_or(0, |&l| l as u32));
+                    Some((rank(kind), space, register))
+                })
+                .collect();
+            order.sort_unstable();
+            order.dedup();
+            order
+        });
         Ok(Lowering {
             ir,
             variant,
@@ -288,7 +305,29 @@ impl<'a> Lowering<'a> {
                 }
             }),
             texels: HashMap::default(),
+            spaces,
         })
+    }
+
+    /// The slot of a resource of `kind` at `space` and `register`: the register under Direct3D 11's
+    /// numbering, which knows one space, and its place among its kind's in (space, register) order
+    /// under Direct3D 12's (6.4), as the DXIL route numbers them.
+    fn slot(&self, kind: SlotKind, space: u32, register: u32) -> Result<u32> {
+        let Some(order) = &self.spaces else {
+            return match space {
+                0 => Ok(register),
+                _ => Err(unsupported("RegisterSpace")),
+            };
+        };
+        let key = (rank(kind), space, register);
+        let first = order.partition_point(|o| o.0 < key.0);
+        Ok((order.partition_point(|o| *o < key) - first) as u32)
+    }
+
+    /// The slot of the resource declaration `op` of `kind`.
+    fn declared_slot(&self, kind: SlotKind, op: &Op) -> Result<u32> {
+        let [space, register] = [0, 1].map(|i| op.lits.get(i).map_or(0, |&l| l as u32));
+        self.slot(kind, space, register)
     }
 
     // Types.
@@ -567,7 +606,7 @@ impl<'a> Lowering<'a> {
                         self.resource_in(id, op, slot, ty, space, None, false)?;
                     }
                     _ if storage
-                        && op.lits.get(1).is_some_and(|&r| {
+                        && self.declared_slot(SlotKind::Storage, op).is_ok_and(|r| {
                             r < 64 && self.variant.texels_through_buffer >> r & 1 != 0
                         }) =>
                     {
@@ -664,7 +703,12 @@ impl<'a> Lowering<'a> {
         if self.stage == SourceStage::Geometry {
             return Err(unsupported("TypedBufferInGeometry"));
         }
-        let register = op.lits.get(1).copied().unwrap_or(0) as u32;
+        let kind = if storage {
+            SlotKind::Storage
+        } else {
+            SlotKind::Texture
+        };
+        let register = self.declared_slot(kind, op)?;
         let formats = if storage {
             &self.variant.storage_formats
         } else {
@@ -755,7 +799,7 @@ impl<'a> Lowering<'a> {
         if self.stage == SourceStage::Geometry {
             return Err(unsupported("TexelsThroughBufferInGeometry"));
         }
-        let register = op.lits.get(1).copied().unwrap_or(0) as u32;
+        let register = self.declared_slot(SlotKind::Storage, op)?;
         let format = self
             .variant
             .storage_formats
@@ -817,7 +861,7 @@ impl<'a> Lowering<'a> {
         dim: ImageDimension,
         arrayed: bool,
     ) -> Result<Handle<Type>> {
-        let register = op.lits.get(1).copied().unwrap_or(0) as u32;
+        let register = self.declared_slot(SlotKind::Storage, op)?;
         let format = self
             .variant
             .storage_formats
@@ -889,12 +933,8 @@ impl<'a> Lowering<'a> {
         if count != 1 {
             return Err(unsupported("ResourceArray"));
         }
-        // Direct3D 11's numbering knows one space; other spaces are numbered by a root signature.
-        if space_index != 0 {
-            return Err(unsupported("RegisterSpace"));
-        }
         let binding = slot
-            .binding(register)
+            .binding(self.slot(slot, space_index, register)?)
             .ok_or(unsupported("BindingsBeyondLimit"))?;
         let prefix = match slot {
             SlotKind::Uniform => "cb",
@@ -903,8 +943,12 @@ impl<'a> Lowering<'a> {
             SlotKind::Storage => "u",
             SlotKind::Counter => "c",
         };
+        let name = match space_index {
+            0 => format!("{prefix}{register}"),
+            _ => format!("{prefix}{register}_space{space_index}"),
+        };
         let var = self.global(
-            format!("{prefix}{register}"),
+            name,
             space,
             Some(ResourceBinding {
                 group: self.set,
@@ -4057,8 +4101,10 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
     }
 
     fn slot_of(&self, desc: u32) -> Result<u32> {
-        let dcl = self.l.ir.op(desc)?.refs[0];
-        Ok(self.l.ir.op(dcl)?.lits.get(1).copied().unwrap_or(0) as u32)
+        let dcl = self.l.ir.op(self.l.ir.op(desc)?.refs[0])?;
+        let kind =
+            declared_kind(dcl).ok_or_else(|| malformed("a descriptor of no resource".into()))?;
+        self.l.declared_slot(kind, dcl)
     }
 
     fn image_load(&mut self, b: &mut Block, op: &Op) -> Result<Handle<Expression>> {
@@ -4603,4 +4649,23 @@ impl Lowering<'_> {
 fn non_finite(ty: &Ty, lits: &[u64]) -> bool {
     ty.members.iter().all(|m| m.scalar == scalar::F32)
         && lits.iter().any(|&l| !f32::from_bits(l as u32).is_finite())
+}
+
+/// The kind of slot a resource declaration takes, if `op` is one.
+fn declared_kind(op: &Op) -> Option<SlotKind> {
+    Some(match op.code {
+        code::DCL_SAMPLER => SlotKind::Sampler,
+        code::DCL_CBV => SlotKind::Uniform,
+        code::DCL_SRV => SlotKind::Texture,
+        code::DCL_UAV => SlotKind::Storage,
+        _ => return None,
+    })
+}
+
+/// A kind's place in the numbering's order; a counter is numbered by its view.
+fn rank(kind: SlotKind) -> u32 {
+    match kind {
+        SlotKind::Counter => SlotKind::Storage as u32,
+        k => k as u32,
+    }
 }

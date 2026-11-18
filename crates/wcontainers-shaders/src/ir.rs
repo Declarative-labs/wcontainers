@@ -307,6 +307,8 @@ pub mod construct {
 #[derive(Debug)]
 pub struct Ir {
     pub ops: Vec<Op>,
+    /// Shader model 5.1, which only Direct3D 12 runs: resources are numbered by its rule.
+    pub spaces: bool,
 }
 
 impl Ir {
@@ -352,7 +354,7 @@ impl Ir {
                 lits,
             });
         }
-        (ops.len() == count).then_some(Ir { ops })
+        (ops.len() == count).then_some(Ir { ops, spaces: false })
     }
 }
 
