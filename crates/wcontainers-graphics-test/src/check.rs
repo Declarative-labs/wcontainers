@@ -67,9 +67,9 @@ impl Allowance {
     /// compared (the program draws it differently each time), nor one that meets a rectangle
     /// (x, y, width, height) in `ignored`, where the program shows what each implementation
     /// answers differently (a GPU memory readout). Stray pixels: the few pixels real Direct3D draws
-    /// differently (edges of dense meshes under multisampling) can fall in other tiles on every
-    /// run, so each other run is held to the tiles the rest allow, and the most pixels one run had
-    /// beyond those is allowed anywhere.
+    /// differently (edges of dense meshes under multisampling) fall in other tiles from job to job,
+    /// so the most pixels one run had beyond the tolerance outside the ignored tiles may fall
+    /// anywhere.
     pub fn from_repeats(
         first: &image::DynamicImage,
         others: &[image::DynamicImage],
@@ -99,22 +99,19 @@ impl Allowance {
             .iter()
             .map(|other| Ok(compare::compare(first, other, tolerance)?.tiles))
             .collect::<anyhow::Result<Vec<_>>>()?;
-        let changed_by = |skip: Option<usize>, i: usize| {
-            runs.iter()
-                .enumerate()
-                .any(|(k, run)| Some(k) != skip && run[i] > 0)
-        };
-        let stray = (0..runs.len())
-            .map(|k| {
+        let changed = |i: usize| runs.iter().any(|run| run[i] > 0);
+        let stray = runs
+            .iter()
+            .map(|run| {
                 (0..count)
-                    .filter(|&i| !left_out[i] && !changed_by(Some(k), i))
-                    .map(|i| u64::from(runs[k][i]))
+                    .filter(|&i| !left_out[i])
+                    .map(|i| u64::from(run[i]))
                     .sum::<u64>()
             })
             .max()
             .unwrap_or(0);
         let tiles: BTreeMap<usize, u32> = (0..count)
-            .filter(|&i| left_out[i] || changed_by(None, i))
+            .filter(|&i| left_out[i] || changed(i))
             .map(|i| {
                 let (_, _, w, h) = size(i);
                 (i, w * h)
@@ -536,7 +533,6 @@ mod tests {
         assert_eq!(allowance.tolerance, 8.0);
         assert_eq!(allowance.tiles, BTreeMap::from([(2, 8 * 16)]));
         assert_eq!(allowance.pixels, 128);
-        // One run alone: nothing else allows its tile, so its pixel may fall anywhere.
         assert_eq!(allowance.stray, 1);
         let allowance =
             Allowance::from_repeats(&first, &[DynamicImage::from(second)], &[[15, 0, 2, 1]])
@@ -548,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn stray_pixels_are_those_outside_other_runs_tiles() {
+    fn stray_pixels_are_those_outside_ignored_tiles() {
         let first = RgbaImage::from_pixel(64, 16, Rgba([100, 100, 100, 255]));
         let off = |pixels: &[(u32, u32)]| {
             let mut run = first.clone();
@@ -557,23 +553,21 @@ mod tests {
             }
             DynamicImage::from(run)
         };
-        // Tile 0 is ignored; tile 1 changes in both runs; tile 2 in the first run only, by two.
+        // Tile 0 is ignored: the first run has 3 pixels beyond it, the second 1.
         let runs = [
             off(&[(0, 0), (1, 0), (2, 0), (16, 0), (32, 0), (33, 0)]),
             off(&[(0, 1), (17, 1)]),
         ];
-        let allowance =
-            Allowance::from_repeats(&DynamicImage::from(first.clone()), &runs, &[[0, 0, 4, 4]])
-                .unwrap();
+        let first = DynamicImage::from(first.clone());
+        let allowance = Allowance::from_repeats(&first, &runs, &[[0, 0, 4, 4]]).unwrap();
         assert_eq!(
             allowance.tiles.keys().copied().collect::<Vec<_>>(),
             [0, 1, 2]
         );
-        assert_eq!(allowance.stray, 2);
-        // Pixels inside ignored or commonly changed tiles never count as stray.
-        let runs = [off(&[(0, 0), (16, 0)]), off(&[(1, 1), (17, 1)])];
-        let allowance =
-            Allowance::from_repeats(&DynamicImage::from(first), &runs, &[[0, 0, 4, 4]]).unwrap();
+        assert_eq!(allowance.stray, 3);
+        // Pixels inside ignored tiles never count as stray.
+        let runs = [off(&[(0, 0), (1, 1), (2, 2)]), off(&[(3, 3)])];
+        let allowance = Allowance::from_repeats(&first, &runs, &[[0, 0, 4, 4]]).unwrap();
         assert_eq!(allowance.stray, 0);
     }
 
