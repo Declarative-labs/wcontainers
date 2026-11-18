@@ -96,7 +96,8 @@ impl Recorder {
                     | Features::BASE_VERTEX_INSTANCE
                     | Features::TEXTURE_VIEWS
                     | Features::FRACTIONAL_VIEWPORT
-                    | Features::SAMPLE_MASK,
+                    | Features::SAMPLE_MASK
+                    | Features::TEXTURE_LEVEL_QUERY,
                 limits,
                 formats: FormatCaps {
                     uses: [FormatUse::all(); Format::COUNT],
