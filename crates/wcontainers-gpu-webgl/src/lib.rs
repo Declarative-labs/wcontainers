@@ -93,6 +93,10 @@ pub struct TextureObj {
     stencil_mode: Cell<bool>,
     /// Its bytes on the host, for formats GL cannot read back.
     host: Option<host::HostCopy>,
+    /// Draws wrote texels its host copy lacks (signed normalised formats with EXT_render_snorm).
+    drawn: Cell<bool>,
+    /// Its host copy may hold a signed normalised minimum, which a draw reads as the value above.
+    minimum: Cell<bool>,
     /// The format a block-compressed texture is stored in when decoded.
     decoded: Option<Format>,
 }
@@ -840,6 +844,8 @@ impl WebGl {
             stencil_mode: Cell::new(false),
             host: None,
             decoded: None,
+            drawn: Cell::new(false),
+            minimum: Cell::new(false),
         })))
     }
 
@@ -2071,6 +2077,13 @@ impl WebGl {
                 src.texture.desc.format, dst.texture.desc.format
             ));
         }
+        let half = matches!(
+            src.texture.desc.format,
+            Format::R16Float | Format::Rg16Float | Format::Rgba16Float
+        );
+        if half && src.texture.host.is_none() {
+            return self.copy_half_by_host(src, dst, extent);
+        }
         let (cols, rows) = (extent.width.div_ceil(sbw), extent.height.div_ceil(sbh));
         let mut packed = vec![0; (cols * rows * bytes * extent.depth_or_layers) as usize];
         if src.texture.host.is_none() {
@@ -2086,6 +2099,76 @@ impl WebGl {
             depth_or_layers: extent.depth_or_layers,
         };
         self.write_texture(dst, into, &packed, cols * bytes, rows, WriteMode::Ordered);
+    }
+
+    /// Before the host copy of `t` is read: where draws wrote its texels since (signed normalised
+    /// formats with EXT_render_snorm), each level is drawn into a texture of its signed integer twin,
+    /// which reads back as stored, and written into the host copy ([`SlowPath::HostCopyReadBack`]).
+    /// A draw reads the smallest value as the one above it, so where the host copy may hold it,
+    /// the texels are not recovered.
+    fn host_current(&mut self, t: &Texture) -> Result<(), GpuError> {
+        if !t.drawn.get() {
+            return Ok(());
+        }
+        if t.minimum.get() {
+            return Err(self.unbuilt(
+                "the bits of signed normalised texels drawn into after a write of their smallest value",
+            ));
+        }
+        let Some(h) = &t.host else { return Ok(()) };
+        self.slow.hit(SlowPath::HostCopyReadBack);
+        let d = t.desc;
+        let twin = match d.format {
+            Format::R8Snorm => Format::R8Sint,
+            Format::Rg8Snorm => Format::Rg8Sint,
+            Format::Rgba8Snorm => Format::Rgba8Sint,
+            Format::R16Snorm => Format::R16Sint,
+            Format::Rg16Snorm => Format::Rg16Sint,
+            _ => Format::Rgba16Sint,
+        };
+        for mip in 0..d.mip_levels {
+            let extent = Extent {
+                width: (d.width >> mip).max(1),
+                height: (d.height >> mip).max(1),
+                depth_or_layers: if d.dimension == TextureDimension::D3 {
+                    (d.depth_or_layers >> mip).max(1)
+                } else {
+                    d.depth_or_layers
+                },
+            };
+            let held = self.create_texture(&TextureDesc {
+                dimension: TextureDimension::D2,
+                format: twin,
+                width: extent.width,
+                height: extent.height,
+                depth_or_layers: extent.depth_or_layers,
+                mip_levels: 1,
+                samples: 1,
+                usage: TextureUsage::RENDER | TextureUsage::COPY_SRC,
+                cube: false,
+                reinterpret: false,
+            })?;
+            let region = |texture, mip| TextureRegion {
+                texture,
+                mip,
+                layer: 0,
+                origin: Origin::default(),
+                stencil: false,
+            };
+            let (texel, texels) = (twin.block().2, extent.width * extent.height);
+            let mut bytes = vec![0; (texels * extent.depth_or_layers * texel) as usize];
+            let read = match self.copy_by_draw(&region(t, mip), &region(&held, 0), extent) {
+                true => self.read_texture_now(&region(&held, 0), extent, &mut bytes),
+                false => Err(self.unbuilt("draws from this signed normalised format")),
+            };
+            self.destroy(Object::Texture(held));
+            read?;
+            let size = [extent.width, extent.height, extent.depth_or_layers];
+            let row = (extent.width * texel) as usize;
+            h.write(&d, mip, [0; 3], size, &bytes, row, extent.height as usize);
+        }
+        t.drawn.set(false);
+        Ok(())
     }
 
     /// A copy into a 16-bit float texture, whose bits no draw writes (a draw writes 32-bit floats,
@@ -2330,6 +2413,7 @@ impl WebGl {
         dst: &mut [u8],
     ) -> Result<(), GpuError> {
         if let Some(h) = &region.texture.host {
+            self.host_current(region.texture)?;
             let corner = Self::corner(region);
             let size = [extent.width, extent.height, extent.depth_or_layers];
             h.read(&region.texture.desc, region.mip, corner, size, dst);
@@ -3305,6 +3389,8 @@ impl Backend for WebGl {
                 host::HostCopy::new(desc)
             }),
             decoded,
+            drawn: Cell::new(false),
+            minimum: Cell::new(false),
         })))
     }
 
@@ -3801,6 +3887,14 @@ impl Backend for WebGl {
     ) {
         self.fresh(region.texture);
         self.written(region.texture);
+        let t = region.texture;
+        if format::signed_normalised(t.desc.format) && host::holds_minimum(t.desc.format, data) {
+            // Texels drawn since are read back while a draw still reads them exactly.
+            if !t.minimum.get() {
+                let _ = self.host_current(t);
+            }
+            t.minimum.set(true);
+        }
         if let Some(h) = &region.texture.host {
             h.write(
                 &region.texture.desc,
@@ -3883,6 +3977,11 @@ impl Backend for WebGl {
             for v in views.iter().flatten() {
                 self.fresh(&v.texture);
                 self.written(&v.texture);
+            }
+        }
+        for v in views.iter().flatten() {
+            if v.texture.host.is_some() {
+                v.texture.drawn.set(true);
             }
         }
         let fb = self.framebuffer(key, &views);
@@ -4141,7 +4240,10 @@ impl Backend for WebGl {
         dst: &TextureRegion<'_, Self>,
         extent: Extent,
     ) {
-        if src.texture.host.is_some() || dst.texture.host.is_some() {
+        // Signed normalised texels drawn since their host copy was whole are drawn on the GPU where
+        // they hold no smallest value.
+        let by_draw = src.texture.drawn.get() && !src.texture.minimum.get();
+        if (src.texture.host.is_some() && !by_draw) || dst.texture.host.is_some() {
             return self.copy_host_kept(src, dst, extent);
         }
         if src.texture.desc.samples > 1 || dst.texture.desc.samples > 1 {
@@ -4193,7 +4295,7 @@ impl Backend for WebGl {
                 self.copy_half_by_host(src, dst, extent);
             } else if self.copy_by_draw(src, dst, extent) {
                 self.slow.hit(SlowPath::CopyThroughBuffer);
-            } else if float {
+            } else if float || src.texture.host.is_some() {
                 // 32-bit floats are no targets without EXT_color_buffer_float.
                 self.copy_host_kept(src, dst, extent);
             } else {
@@ -4333,6 +4435,9 @@ impl Backend for WebGl {
             );
             let mut packed = vec![0; row * rows * extent.depth_or_layers as usize];
             if let Some(h) = &src.texture.host {
+                if self.host_current(src.texture).is_err() {
+                    return;
+                }
                 let size = [extent.width, extent.height, extent.depth_or_layers];
                 h.read(
                     &src.texture.desc,
@@ -4539,6 +4644,7 @@ impl Backend for WebGl {
         if let ReadSource::Texture { region, extent } = src
             && let Some(h) = &region.texture.host
         {
+            self.host_current(region.texture)?;
             let (bw, bh, bytes) = region.texture.desc.format.block();
             let size = extent.width.div_ceil(bw) * extent.height.div_ceil(bh) * bytes;
             let mut kept = vec![0; (size * extent.depth_or_layers) as usize];

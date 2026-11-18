@@ -985,11 +985,14 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
      from the front, which gets it from the shaders crate (`VariantFlags::COUNTING`); so the helper
      (G1) needs nothing from G6, and G1's tests give it counting programs written in WGSL. Blending happens exactly for the samples that
      pass every per-fragment test, so each sample holds how many fragments passed there.
-  4. A reduction sums the target into the query's result (the helper as built at G1 reads the target
-     back now and sums it on the device thread on every back end, so on WebGPU it waits, counted
-     `ReadBackWait`; a dispatch summing it on the GPU is to come with G2; WebGL 2: a read back
-     summed on the device thread, a multisampled target resolved first and the average multiplied by
-     the sample count). The query's count is the sum over its counting passes. If any pixel's sum over
+  4. A reduction sums the target into the query's result: where the back end computes (with 8 bytes
+     of workgroup memory, and reading multisampled textures for a multisampled target) and the draws'
+     primitives times the sample count stay below the counting format's exact bound, a dispatch adds
+     every sample into a u64 buffer of the helper's, so nothing waits; `end_into` copies it into a
+     buffer of the front's in order (Direct3D 12's query heap), and `end` reads it back. Otherwise
+     (the default; WebGL 2) the target is read back and summed on the device thread, a multisampled
+     target resolved first and the average multiplied by the sample count (`ReadBackWait` where it
+     waits). The query's count is the sum over its counting passes. If any pixel's sum over
      its samples reached the counting format's exact bound (2^24 for `r32float`, 2048 for `r16float`;
      below it the resolved average keeps every count exact), the replay runs
      again with the draws split into halves (of the draws; of one draw's instances, by raising the

@@ -38,10 +38,7 @@ fn main() {
             "wireframe_fill_matches_direct3d",
             wireframe_fill_matches_direct3d,
         ),
-        Trial::test("point_fill_draws_the_corners", || {
-            point_fill_draws_the_corners();
-            Ok(())
-        }),
+        Trial::ignorable_test("point_fill_draws_the_corners", point_fill_draws_the_corners),
     ];
     libtest_mimic::run(&args, trials).exit();
 }
@@ -321,14 +318,14 @@ fn cells(b: &mut WebGpu, fills: &[RasterDesc], vertices: &[[f32; 7]], h: u32) ->
 }
 
 /// Point filling draws a point at each corner of a triangle: on a device declaring it, exactly
-/// the three pixels holding the corners are drawn.
-fn point_fill_draws_the_corners() {
+/// the three pixels holding the corners are drawn. Elsewhere reported ignored, with its reason.
+fn point_fill_draws_the_corners() -> Result<Completion, Failed> {
     let mut b = device();
     if !b.caps().has(Features::POLYGON_MODE_POINT) {
-        eprintln!(
-            "POLYGON_MODE_POINT is absent on this device: refused (tested beside the wireframe)"
-        );
-        return;
+        return Ok(Completion::ignored_with(
+            "POLYGON_MODE_POINT is absent on this device (its refusal is checked beside the \
+             wireframe)",
+        ));
     }
     let size = 16;
     let at = |x: u32, y: u32| {
@@ -348,8 +345,8 @@ fn point_fill_draws_the_corners() {
         .collect();
     let mut want = corners.to_vec();
     want.sort_by_key(|&(x, y)| (y, x));
-    assert_eq!(
-        drawn, want,
-        "point filling drew other pixels than the corners"
-    );
+    if drawn != want {
+        return Err(format!("point filling drew {drawn:?}, not the corners {want:?}").into());
+    }
+    Ok(Completion::Completed)
 }

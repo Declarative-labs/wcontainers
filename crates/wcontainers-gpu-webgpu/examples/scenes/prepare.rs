@@ -184,3 +184,128 @@ pub fn first_draws(
         built: b.counters().pipelines - built,
     }
 }
+
+/// A strip combination prepared, then drawn without indices and with 16-bit and 32-bit indices:
+/// nothing is built while drawing. One line, or the failed check.
+pub fn prepared_strips(b: &mut WebGpu) -> Result<String, String> {
+    use wcontainers_gpu::{BufferUsage, IndexBinding, IndexFormat};
+    let (_target, view) =
+        draw::texture_2d(b, Format::Rgba8Unorm, 64, 64, TextureUsage::RENDER).unwrap();
+    let blend = b.create_blend(&draw::opaque()).unwrap();
+    let depth_stencil = b.create_depth_stencil(&draw::no_depth()).unwrap();
+    let raster = b.create_raster(&draw::solid()).unwrap();
+    let vertex_layout = b.create_vertex_layout(&draw::layout(&[], &[])).unwrap();
+    let program = draw::program(b, &source(5000)).unwrap();
+    let mut targets = TargetLayout {
+        colors: [None; MAX_COLOR_TARGETS],
+        depth_stencil: None,
+        samples: 1,
+    };
+    targets.colors[0] = Some(Format::Rgba8Unorm);
+    let short: Vec<u8> = [0u16, 1, 2, 0xffff, 1, 2, 0]
+        .iter()
+        .flat_map(|i| i.to_le_bytes())
+        .collect();
+    let long: Vec<u8> = [0u32, 1, 2, 0xffff_ffff, 1, 2, 0]
+        .iter()
+        .flat_map(|i| i.to_le_bytes())
+        .collect();
+    let short = draw::buffer(b, &short, BufferUsage::INDEX).unwrap();
+    let long = draw::buffer(b, &long, BufferUsage::INDEX).unwrap();
+    b.prepare(&PrepareDesc {
+        program: &program,
+        blend: &blend,
+        depth_stencil: &depth_stencil,
+        raster: &raster,
+        vertex_layout: &vertex_layout,
+        targets,
+        topology: Topology::TriangleStrip,
+        layouts: Default::default(),
+    });
+    let fence = b.submit();
+    b.wait_fence(&fence);
+    let (misses, built) = (
+        b.slow_paths().count(SlowPath::PipelineMiss),
+        b.counters().pipelines,
+    );
+    let mut pass = PassDesc {
+        colors: Default::default(),
+        depth: None,
+        empty: None,
+        occlusion: None,
+    };
+    pass.colors[0] = Some(ColorAttachment {
+        view: &view,
+        depth_slice: 0,
+        resolve: None,
+        load: LoadOp::Clear([0; 4]),
+        store: StoreOp::Store,
+    });
+    b.begin_pass(&pass);
+    for (index, format) in [
+        (None, IndexFormat::U16),
+        (Some(&short), IndexFormat::U16),
+        (Some(&long), IndexFormat::U32),
+    ] {
+        b.draw(&DrawCall {
+            program: &program,
+            blend: &blend,
+            depth_stencil: &depth_stencil,
+            raster: &raster,
+            vertex_layout: &vertex_layout,
+            bindings: [None; 4],
+            vertex_buffers: &[],
+            index: index.map(|buffer| IndexBinding {
+                buffer,
+                offset: 0,
+                format,
+            }),
+            topology: Topology::TriangleStrip,
+            restart: true,
+            viewports: &[Viewport {
+                x: 0,
+                y: 0,
+                width: 64.0f32.to_bits(),
+                height: 64.0f32.to_bits(),
+                min_depth: 0,
+                max_depth: 1.0f32.to_bits(),
+            }],
+            scissors: &[],
+            blend_constant: [0; 4],
+            stencil_reference: [0; 2],
+            immediates: &[],
+            range: match index {
+                None => DrawRange::Vertices {
+                    first: 0,
+                    count: 3,
+                    first_instance: 0,
+                    instances: 1,
+                },
+                Some(_) => DrawRange::Indexed {
+                    first: 0,
+                    count: 7,
+                    base_vertex: 0,
+                    first_instance: 0,
+                    instances: 1,
+                },
+            },
+        });
+    }
+    b.end_pass();
+    let fence = b.submit();
+    b.wait_fence(&fence);
+    let (misses, built) = (
+        b.slow_paths().count(SlowPath::PipelineMiss) - misses,
+        b.counters().pipelines - built,
+    );
+    if b.status() != DeviceStatus::Ok {
+        return Err(format!("prepared strips: device {:?}", b.status()));
+    }
+    let line = format!(
+        "prepared strips drawn without indices and with 16 and 32-bit indices: {misses} misses, {built} pipelines built while drawing"
+    );
+    match (misses, built) {
+        (0, 0) => Ok(line),
+        _ => Err(line),
+    }
+}

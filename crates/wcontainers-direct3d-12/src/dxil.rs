@@ -150,7 +150,16 @@ impl Reader {
         // resource views the sample count and the extended properties, for unordered access
         // views globally coherent, counter, rasterizer ordered and the extended properties.
         let extended = if storage { 10 } else { 8 };
-        for &resource in self.node(list).unwrap_or_default() {
+        let resources = self.node(list).unwrap_or_default();
+        // Every view of the list as (space, register), for the slots.
+        let mut places = Vec::with_capacity(resources.len());
+        for &resource in resources {
+            let fields = self.node(resource)?;
+            let place = |at: usize| u32::try_from(self.integer(*fields.get(at)?)?).ok();
+            places.push((place(3)?, place(4)?));
+        }
+        let all = sorted_places(&places);
+        for (&resource, place) in resources.iter().zip(places) {
             let fields = self.node(resource)?;
             let kind = self.integer(*fields.get(6)?)?;
             let typed = match storage {
@@ -163,12 +172,26 @@ impl Reader {
             out.push(TypedView {
                 storage,
                 buffer: kind == TYPED_BUFFER,
-                register: u32::try_from(self.integer(*fields.get(4)?)?).ok()?,
+                slot: slot(&all, place),
                 kind: self.kind(*fields.get(extended)?)?,
             });
         }
         Some(())
     }
+}
+
+/// A class's (space, register) places, sorted, each once.
+fn sorted_places(places: &[(u32, u32)]) -> Vec<(u32, u32)> {
+    let mut all = places.to_vec();
+    all.sort_unstable();
+    all.dedup();
+    all
+}
+
+/// The slot of the view at `place` under Direct3D 12's numbering: its place among its class's
+/// views in (space, register) order, as the converter numbers them.
+fn slot(all: &[(u32, u32)], place: (u32, u32)) -> u32 {
+    all.partition_point(|&p| p < place) as u32
 }
 
 /// The typed unordered access views and typed buffers `code` declares (shader resource views of
@@ -197,11 +220,11 @@ pub fn typed_views(code: &[u8]) -> Option<Vec<TypedView>> {
 mod tests {
     use super::*;
 
-    fn view(storage: bool, buffer: bool, register: u32, kind: Kind) -> TypedView {
+    fn view(storage: bool, buffer: bool, slot: u32, kind: Kind) -> TypedView {
         TypedView {
             storage,
             buffer,
-            register,
+            slot,
             kind,
         }
     }
@@ -213,7 +236,7 @@ mod tests {
         // structured buffer at u2 (left out).
         let code = include_bytes!("../../wcontainers-shaders/tests/own/cs_texels.dxil");
         let mut views = typed_views(code).unwrap();
-        views.sort_by_key(|v| (v.storage, v.register));
+        views.sort_by_key(|v| (v.storage, v.slot));
         assert_eq!(
             views,
             [
@@ -233,7 +256,7 @@ mod tests {
         // RWTexture2DArray<uint4> u2, RWTexture2D<int2> u3.
         let code = include_bytes!("../../wcontainers-shaders/tests/own/cs_images.dxil");
         let mut views = typed_views(code).unwrap();
-        views.sort_by_key(|v| v.register);
+        views.sort_by_key(|v| v.slot);
         assert_eq!(
             views,
             [
@@ -243,6 +266,14 @@ mod tests {
                 view(true, false, 3, Kind::Sint),
             ]
         );
+    }
+
+    #[test]
+    fn slots_follow_space_then_register() {
+        // u5 and u0 in space 1, u7 in space 0, u5 again in space 1 (a view and its counter).
+        let all = sorted_places(&[(1, 5), (1, 0), (0, 7), (1, 5)]);
+        let slots: Vec<u32> = [(0, 7), (1, 0), (1, 5)].map(|p| slot(&all, p)).to_vec();
+        assert_eq!(slots, [0, 1, 2]);
     }
 
     #[test]

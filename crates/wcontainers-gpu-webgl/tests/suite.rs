@@ -261,6 +261,11 @@ fn fractional_depth_bias() {
 }
 
 #[test]
+fn signed_normalised_texels_drawn_then_copied() {
+    sampled(checks::signed_normalised_texels_drawn_then_copied::<Angle>);
+}
+
+#[test]
 fn lists_draw_the_largest_index_as_a_vertex() {
     sampled(checks::lists_draw_the_largest_index_as_a_vertex::<Angle>);
 }

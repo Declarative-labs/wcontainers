@@ -70,12 +70,14 @@ pub fn depth_unit(format: Format) -> Option<[f32; 2]> {
 /// The fragment program copying `src` (sampled as `sampler`: "2D", "2DArray", "3D" or "Cube", where
 /// `at.z` is the layer, slice or face) into a target
 /// of `dst`, or None where a format's bits are not recovered this way (sRGB, packed floats, formats
-/// GL ES lacks, signed normalised ones, whose -128 samples as -127 does) or `dst` cannot be drawn into.
+/// GL ES lacks) or `dst` cannot be drawn into. From a signed normalised format the bits are exact
+/// only where it holds no smallest value (-128 samples as -127 does); into one, never (a draw writes
+/// -127 for -1), so it is refused.
 /// Into a depth format the program writes depth only, from the uniform `unit` where it is unorm.
 pub fn program(src: Format, dst: Format, sampler: &str) -> Option<String> {
     let (from, wf) = bits(src)?;
     let (to, wt) = bits(dst)?;
-    if wf != wt || from == Kind::Snorm || to == Kind::Snorm {
+    if wf != wt || to == Kind::Snorm {
         return None;
     }
     let max = uvec(wf, |w| (1u64 << w) - 1);
@@ -109,7 +111,10 @@ pub fn program(src: Format, dst: Format, sampler: &str) -> Option<String> {
         Kind::Single => "floatBitsToUint(v)".into(),
         Kind::Uint => "v".into(),
         Kind::Sint => format!("uvec4(v) & {max}"),
-        Kind::Snorm => unreachable!("refused above"),
+        Kind::Snorm => format!(
+            "uvec4(ivec4(round(v * {}.0))) & {max}",
+            (1u64 << (wf[0] - 1)) - 1
+        ),
     };
     let unhalf = |c: &str| format!("unpackHalf2x16(r.{c}).x");
     let shift = uvec(wt, |w| u64::from(32 - w));

@@ -18,7 +18,10 @@ pub struct TypedView {
     pub storage: bool,
     /// A typed buffer, else a texture.
     pub buffer: bool,
-    pub register: u32,
+    /// Its place in its kind's range (`ReflectedBinding::slot`): the register under Direct3D 11's
+    /// numbering (DXBC), its place among the program's views of its class in (space, register)
+    /// order under Direct3D 12's (DXIL).
+    pub slot: u32,
     pub kind: Kind,
 }
 
@@ -60,7 +63,7 @@ pub fn typed_views(code: &[u8]) -> Option<Vec<TypedView>> {
             views.push(TypedView {
                 storage,
                 buffer,
-                register,
+                slot: register,
                 kind,
             });
         }
@@ -152,11 +155,11 @@ mod tests {
         code
     }
 
-    fn view(storage: bool, buffer: bool, register: u32, kind: Kind) -> TypedView {
+    fn view(storage: bool, buffer: bool, slot: u32, kind: Kind) -> TypedView {
         TypedView {
             storage,
             buffer,
-            register,
+            slot,
             kind,
         }
     }

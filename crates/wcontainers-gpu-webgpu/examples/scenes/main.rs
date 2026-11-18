@@ -6,7 +6,8 @@
 //! `adapter` and saves what they return, times first draws with and without `prepare`
 //! (`prepare_timings`, prepare.rs), checks timestamps (`timestamps`, timestamps.rs) and the formats
 //! held converted (`converted`, converted.rs) and the vertex formats WebGPU lacks
-//! (`vertex_formats`, vertices.rs), measures instance data fetched in the program (`pulled_costs`,
+//! (`vertex_formats`, vertices.rs), checks query sets past 4096 and the query ring (`query_sets`,
+//! queries.rs), measures instance data fetched in the program (`pulled_costs`,
 //! pulled.rs), and web/suite.html runs the shared suite (suite.rs).
 
 #[path = "../../../wcontainers-graphics-test/src/scene.rs"]
@@ -61,6 +62,9 @@ mod viewports;
 mod prepare;
 
 #[cfg(target_arch = "wasm32")]
+mod depth16;
+
+#[cfg(target_arch = "wasm32")]
 mod timestamps;
 
 #[cfg(target_arch = "wasm32")]
@@ -74,6 +78,9 @@ mod renames;
 
 #[cfg(target_arch = "wasm32")]
 mod pulled;
+
+#[cfg(target_arch = "wasm32")]
+mod queries;
 
 #[cfg(target_arch = "wasm32")]
 #[macro_use]
@@ -135,14 +142,16 @@ mod web {
     }
 
     /// `programs` new programs drawn first unprepared and then, others, after `prepare`, on the
-    /// browser's WebGPU: one line per half, as tests/prepare.rs prints natively.
+    /// browser's WebGPU: one line per half, as tests/prepare.rs prints natively, and a line for a
+    /// prepared strip drawn with indices (an error if it built anything while drawing).
     #[wasm_bindgen(jspi)]
     pub fn prepare_timings(programs: u32) -> Result<String, JsError> {
         let (mut b, _) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
         let unprepared = super::prepare::first_draws(&mut b, 0, programs, false, now);
         let prepared = super::prepare::first_draws(&mut b, 1000, programs, true, now);
+        let strips = super::prepare::prepared_strips(&mut b).map_err(js)?;
         Ok(format!(
-            "{}\n{}",
+            "{}\n{}\n{strips}",
             unprepared.line(false),
             prepared.line(true)
         ))
@@ -174,8 +183,9 @@ mod web {
     pub fn vertex_formats(seed: u64, n: u32) -> Result<String, JsError> {
         let (mut b, _) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
         super::vertices::lacking_vertex_formats(&mut b, seed, n);
+        let bgra = super::vertices::bgra_vertices(&mut b, seed, n).map_err(js)?;
         Ok(format!(
-            "vertex formats: seed {seed}, {n} vertices per format, all as they mean"
+            "vertex formats: seed {seed}, {n} vertices per format, all as they mean\n{bgra}"
         ))
     }
 
@@ -190,6 +200,24 @@ mod web {
             from the pool after the first"
                 .into(),
         )
+    }
+
+    /// Copies between `depth16unorm` and its typeless group's colour formats, whole and in part,
+    /// on the browser's WebGPU: one line, or the failed check.
+    #[wasm_bindgen(jspi)]
+    pub fn depth_group_copies() -> Result<String, JsError> {
+        let (mut b, _) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
+        super::depth16::group_copies(&mut b).map_err(js)
+    }
+
+    /// Query sets past WebGPU's 4096 queries a set, and query results from one ring, on the
+    /// browser's WebGPU: one line each, or the failed check.
+    #[wasm_bindgen(jspi)]
+    pub fn query_sets() -> Result<String, JsError> {
+        let (mut b, _) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
+        let paged = super::queries::paged_sets(&mut b).map_err(js)?;
+        let ring = super::queries::results_ring(&mut b, 20).map_err(js)?;
+        Ok(format!("{paged}\n{ring}"))
     }
 
     /// Instance data fetched in the program against vertex buffers on the browser's WebGPU, at 4,

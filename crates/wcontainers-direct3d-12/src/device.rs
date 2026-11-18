@@ -3040,8 +3040,10 @@ impl<B: Backend> Replay<B> {
             }
             self.end_pass(d)?;
             self.counted = None;
-            let count = d.counter.end(&mut d.backend, &mut d.passes)?;
-            return d.write_value(heap, index, &[count]);
+            let (values, at) = d.value_at(heap, index, 0)?;
+            d.counter
+                .end_into(&mut d.backend, &mut d.passes, &values, at)?;
+            return Ok(());
         }
         match self.query.take() {
             Some((h, i, state)) if (h, i) == (heap, index) => match state {
