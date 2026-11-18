@@ -35,7 +35,7 @@ pub(super) fn contents(kernel: &Kernel, task: Task, fd: i32) -> Result<Vec<u8>, 
         "pos:\t{}\nflags:\t0{:o}\nmnt_id:\t{}\nino:\t{}\n",
         open.offset as i64,
         flags,
-        super::handle::mount_id(&inode),
+        super::handle::mount_id(kernel, &inode),
         inode.ino
     );
     locks(&mut out, &inode, &file, lock_owner);

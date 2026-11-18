@@ -1953,9 +1953,9 @@ pub(super) fn statx(
     out.stx_dev_major = major;
     out.stx_dev_minor = minor;
     out.stx_mnt_id = if unique {
-        super::handle::unique_mount_id(&inode)
+        super::handle::unique_mount_id(kernel, &inode)
     } else {
-        super::handle::mount_id(&inode)
+        super::handle::mount_id(kernel, &inode)
     };
     // The root's regular files give the reference's upper layer's direct I/O alignment when
     // asked (measured).

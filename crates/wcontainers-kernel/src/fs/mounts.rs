@@ -65,6 +65,14 @@ pub(crate) fn mounts(table: &[Mount]) -> String {
     out
 }
 
+/// The number `/proc/<pid>/mountinfo` gives the first mount of the file system with `device`.
+pub(crate) fn mount_number(table: &[Mount], device: u64) -> Option<u64> {
+    table
+        .iter()
+        .position(|mount| mount.fs.device == device)
+        .map(|index| u64::from(FIRST_ID) + index as u64)
+}
+
 /// `/proc/<pid>/mountinfo` (`show_mountinfo`): each mount's number and its parent's, the device,
 /// the root and point, the mount's options, no propagation (every mount is private), then the type,
 /// source and the file system's options. A mount's parent is the latest earlier one whose point

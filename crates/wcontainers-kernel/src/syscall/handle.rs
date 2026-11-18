@@ -17,15 +17,18 @@ use crate::linux_extra::{
 use crate::process::Tid;
 use crate::{Context, Errno, Kernel};
 
-/// The number statx reports for the mount a file is on.
-pub(super) fn mount_id(inode: &Inode) -> u64 {
-    (inode.fs.device & 0xff) + 1
+/// The number statx reports for the mount a file is on: the first of the container's mounts of
+/// its file system, numbered as `/proc/<pid>/mountinfo` numbers them; a file system mounted
+/// nowhere the program sees (pipes, sockets) by its device.
+pub(super) fn mount_id(kernel: &Kernel, inode: &Inode) -> u64 {
+    crate::fs::mounts::mount_number(&kernel.files.mounts, inode.fs.device)
+        .unwrap_or((inode.fs.device & 0xff) + 1)
 }
 
 /// The mount's number that is never used again (Linux's `mnt_id_unique`, counted from
 /// `MNT_UNIQUE_ID_OFFSET` as mounts are made; each mount here is made once).
-pub(super) fn unique_mount_id(inode: &Inode) -> u64 {
-    MNT_UNIQUE_ID_OFFSET + mount_id(inode)
+pub(super) fn unique_mount_id(kernel: &Kernel, inode: &Inode) -> u64 {
+    MNT_UNIQUE_ID_OFFSET + mount_id(kernel, inode)
 }
 
 /// The words of a file's handle and their type: tmpfs's own encoding (generation, then the inode
@@ -141,7 +144,7 @@ pub(super) fn name_to_handle_at(
         return Err(Errno::EOPNOTSUPP);
     }
     let (kind, words) = encode(kernel, &inode, flags & AT_HANDLE_FID != 0)?;
-    let (mount_id, unique_mount_id) = (mount_id(&inode), unique_mount_id(&inode));
+    let (mount_id, unique_mount_id) = (mount_id(kernel, &inode), unique_mount_id(kernel, &inode));
     drop(inode);
     let mut guest = guest(kernel, cx, tid);
     let room: u32 = guest.read_value(handle)?;
