@@ -1346,6 +1346,19 @@ let reflection = &converted.reflection;
 
 ## Measurements
 
+Run 27, 2026-11-18, counts only (laptop load about 1; desktop shared through the queue), logs in
+scratch `graphics-shaders/run27`:
+- Laptop: `cargo clippy -p wcontainers-shaders -p wcontainers-gpu --all-targets -- -D warnings`
+  clean; the full suite of both crates with the corpora (`--include-ignored --skip mutated`): every
+  test passes but the own-shaders record of `ps_gatheroff.dxil`, which the reader change made
+  `spirv-reader unsupported` and which was then recorded (suite3.log; the record copied from
+  `classes.txt`).
+- Desktop (one GPU job each): `tessellation_draw` 3 of 3 on wgpu's Direct3D 12, 512 comparisons
+  (tess1.log); `geometry_draw` 2 of 2, 52 and 36 comparisons (geom1.log); `draw` 3 of 3 with the
+  new cases (draw3.log), and the Windows clippy of the crate clean (draw4.log, which also holds the
+  DXIL gather failure that led to the reader change).
+- Not rerun this run: the WebAssembly comparison and Chrome's compile of the written files.
+
 Run 26, 2026-11-18, counts only (desktop shared through the queue; the laptop unreachable), logs in
 scratch `graphics-shaders/run26`:
 - Desktop: `cargo clippy -p wcontainers-shaders -p wcontainers-gpu --all-targets -- -D warnings`
