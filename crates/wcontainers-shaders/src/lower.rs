@@ -3116,13 +3116,8 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             c::F_MUL | c::I_MUL => bin(self, b, B::Multiply, rs)?,
             c::F_DIV | c::U_DIV => bin(self, b, B::Divide, rs)?,
             c::U_MOD => bin(self, b, B::Modulo, rs)?,
-            c::F_MAD => {
-                let x = self.get_as(b, r[0], rs)?;
-                let y = self.get_as(b, r[1], rs)?;
-                let z = self.get_as(b, r[2], rs)?;
-                let m = self.bin(b, B::Multiply, x, y);
-                self.bin(b, B::Add, m, z)
-            }
+            // Direct3D's `mad` may be fused; `fma` leaves the device the same choice it has for it.
+            c::F_MAD => math(self, b, M::Fma, rs)?,
             c::F_RCP => {
                 let x = self.get_as(b, r[0], rs)?;
                 let one = self.splat_lit(b, Literal::F32(1.0), res.size)?;
