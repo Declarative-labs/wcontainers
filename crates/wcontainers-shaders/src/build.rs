@@ -33,7 +33,11 @@ impl Builder {
 
     /// Appends an expression, emitting it where naga wants it emitted.
     pub fn expr(&mut self, e: Expression) -> Expr {
-        let pre = e.needs_pre_emit() || matches!(e, Expression::CallResult(_));
+        let pre = e.needs_pre_emit()
+            || matches!(
+                e,
+                Expression::CallResult(_) | Expression::AtomicResult { .. }
+            );
         let h = self.f.expressions.append(e, Span::UNDEFINED);
         if !pre {
             self.block().push(
@@ -190,6 +194,13 @@ impl Builder {
             continuing,
             break_if: None,
         });
+    }
+
+    /// Runs code written against a function and a block (the variant passes' style) in the open
+    /// block.
+    pub fn raw<R>(&mut self, g: impl FnOnce(&mut Function, &mut Block) -> R) -> R {
+        let block = self.blocks.last_mut().expect("a block is open");
+        g(&mut self.f, block)
     }
 
     pub fn ret(&mut self, value: Option<Expr>) {

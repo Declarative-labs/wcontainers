@@ -1,6 +1,7 @@
 cs_atomics.dxil	spirv-reader unsupported
 cs_decrement.dxil	spirv-reader unsupported
 cs_images.dxil	spirv-reader image
+cs_texels.dxil	spirv-reader unsupported
 gs_adjacent.dxil	spirv-reader unsupported
 gs_cut.dxil	spirv-reader unsupported
 gs_instances.dxil	spirv-reader unsupported

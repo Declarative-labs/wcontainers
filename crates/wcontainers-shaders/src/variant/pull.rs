@@ -14,7 +14,7 @@ use super::*;
 
 /// How a format's components are read and what they become.
 #[derive(Clone, Copy, PartialEq)]
-enum Kind {
+pub(crate) enum Kind {
     Uint,
     Sint,
     Unorm,
@@ -23,10 +23,10 @@ enum Kind {
 }
 
 /// One component: byte offset in the element, bit offset in the word read there, and width in bits.
-type Component = (u32, u32, u32);
+pub(crate) type Component = (u32, u32, u32);
 
 /// A format's kind, components in RGBA order and element size in bytes.
-fn layout(format: VertexFormat) -> (Kind, Vec<Component>, u32) {
+pub(super) fn layout(format: VertexFormat) -> (Kind, Vec<Component>, u32) {
     use Kind::*;
     use VertexFormat as V;
     let packed = |kind, fields: &[(u32, u32)]| {
@@ -362,7 +362,7 @@ fn fetch(
 
 /// One component's value from its `bits` raw bits, as Direct3D converts them: normalised values
 /// correctly rounded, half floats with their NaN payloads.
-fn decode(
+pub(super) fn decode(
     f: &mut Function,
     body: &mut Block,
     kind: Kind,
@@ -410,12 +410,12 @@ fn decode(
     }
 }
 
-fn u(f: &mut Function, v: u32) -> Handle<Expression> {
+pub(super) fn u(f: &mut Function, v: u32) -> Handle<Expression> {
     f.expressions
         .append(Expression::Literal(Literal::U32(v)), Span::UNDEFINED)
 }
 
-fn cast(
+pub(super) fn cast(
     f: &mut Function,
     body: &mut Block,
     expr: Handle<Expression>,
@@ -433,7 +433,7 @@ fn cast(
     )
 }
 
-fn select(
+pub(super) fn select(
     f: &mut Function,
     body: &mut Block,
     condition: Handle<Expression>,

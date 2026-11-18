@@ -173,6 +173,7 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         pulled: _,
         storage_formats: _,
         texel_buffers,
+        texel_formats: _,
         storage_packed,
         texels_through_buffer,
         decoded,
@@ -198,8 +199,8 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
     }
     let asked = [
         (
-            *texel_buffers != TexelBufferRoute::Native,
-            "TexelBufferRoute",
+            *texel_buffers == TexelBufferRoute::Texture,
+            "TexelBufferAsTexture",
         ),
         (*storage_packed != 0, "StoragePacked"),
         (*texels_through_buffer != 0, "TexelsThroughBuffer"),
