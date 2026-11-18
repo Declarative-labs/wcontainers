@@ -16,6 +16,7 @@ test_object_wrapping pass 25 0 0 0.23
 test_factory_check_feature_support pass 23 0 0 0.03
 test_video_memory_budget_notification pass 26 0 0 0.03
 test_swapchain_resize pass 578 0 0 0.14
+test_swapchain_backbuffer_index fail 398 154 0 0.09
 test_swapchain_formats pass 106 0 0 0.08
 test_frame_latency_event fail 199 27 0 1.93
 test_swapchain_present_count fail 146 23 0 0.1

@@ -222,6 +222,8 @@ pub struct GroupObj {
     id: u64,
     raw: wgpu::BindGroup,
     key: GroupKey,
+    /// The pruning count when it was last bound.
+    used: Cell<u64>,
 }
 
 pub struct GroupLayout {
@@ -261,10 +263,13 @@ pub struct Caches {
     sets: HashMap<SetKey, Weak<SetObj>>,
     /// How many binding sets were alive at the last pruning.
     sets_alive: usize,
-    /// Bind groups by what they are made of.
-    groups: HashMap<GroupKey, Weak<GroupObj>>,
-    /// How many bind groups were alive at the last pruning.
+    /// Bind groups by what they are made of, held while a set holds them or since the last
+    /// pruning they were bound, so sets a front makes again each frame find theirs.
+    groups: HashMap<GroupKey, Rc<GroupObj>>,
+    /// How many bind groups were kept at the last pruning.
     groups_alive: usize,
+    /// How many times the bind group table was pruned.
+    group_prunings: u64,
     group_layouts: HashMap<Vec<wgpu::BindGroupLayoutEntry>, Rc<GroupLayout>>,
     layouts: HashMap<(u64, [BindingLayoutKey; MAX_BINDING_SETS]), Rc<ProgramLayout>>,
     pipelines: HashMap<PipelineKey, (u64, wgpu::RenderPipeline, Rc<ProgramLayout>)>,
@@ -303,7 +308,13 @@ impl Caches {
     /// Forgets binding sets and bind groups nothing holds any more.
     pub fn prune(&mut self) {
         prune(&mut self.sets, &mut self.sets_alive);
-        prune(&mut self.groups, &mut self.groups_alive);
+        if self.groups.len() > 2 * self.groups_alive.max(64) {
+            let now = self.group_prunings;
+            self.groups
+                .retain(|_, g| Rc::strong_count(g) > 1 || g.used.get() == now);
+            self.groups_alive = self.groups.len();
+            self.group_prunings += 1;
+        }
     }
 }
 
@@ -590,9 +601,11 @@ impl WebGpu {
             .iter()
             .find(|g| g.layout == gl.id)
             .cloned();
+        let now = self.caches.group_prunings;
         if let Some(g) = &found
             && g.epoch.get() == self.bind_epoch
         {
+            g.group.used.set(now);
             return Ok(g.clone());
         }
         let (key, dynamic) = set.group_key(gl)?;
@@ -600,12 +613,14 @@ impl WebGpu {
             && g.group.key == key
         {
             g.epoch.set(self.bind_epoch);
+            g.group.used.set(now);
             return Ok(g);
         }
-        let group = match self.caches.groups.get(&key).and_then(Weak::upgrade) {
-            Some(g) => g,
+        let group = match self.caches.groups.get(&key) {
+            Some(g) => g.clone(),
             None => self.make_group(set, gl, key)?,
         };
+        group.used.set(now);
         let g = Rc::new(SetGroup {
             layout: gl.id,
             epoch: Cell::new(self.bind_epoch),
@@ -694,8 +709,9 @@ impl WebGpu {
             id: self.id(),
             raw,
             key: key.clone(),
+            used: Cell::new(0),
         });
-        self.caches.groups.insert(key, Rc::downgrade(&g));
+        self.caches.groups.insert(key, g.clone());
         Ok(g)
     }
 

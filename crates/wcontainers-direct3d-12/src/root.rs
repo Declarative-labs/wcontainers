@@ -55,6 +55,10 @@ impl StaticSampler {
     }
 }
 
+/// A root signature object: shared by the program's object, the pipelines made with it and the
+/// lists that set it.
+pub type RootSignature = std::sync::Arc<RootSignatureDesc>;
+
 /// A root signature of version 1.0 (`version` 1) or 1.1 (`version` 2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RootSignatureDesc {

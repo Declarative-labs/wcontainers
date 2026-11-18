@@ -8,6 +8,10 @@ param(
     [switch]$Built,
     [int]$Priority = 0,
     [switch]$Alone,
+    # The command runs only Microsoft's Direct3D, wgpu or Chrome on the rig's own scenes and
+    # programs, a kind never seen to reset the display driver, so it may run beside other jobs; every
+    # other job runs in the group hazard, one at a time.
+    [switch]$Reference,
     # Runs the command on the hidden desktop of the logged-in user's session (see job.ps1).
     [switch]$Desktop,
     # The command, base64 of its UTF-8 text, run by cmd.exe in C:\wc\src\<Name>.
@@ -22,28 +26,34 @@ $checkout = "C:\wc\src\$Name"
 $errors = "C:\wc\pueue\errors\$([guid]::NewGuid()).log"
 New-Item -ItemType Directory -Force C:\wc\pueue\errors | Out-Null
 if (-not (Test-Path $checkout)) { throw "no checkout $checkout; send one with remote first" }
+. $PSScriptRoot\hazard.ps1
+$text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Command))
+$quarantined = (Get-Quarantine)[$text]
+if ($quarantined) { throw "not run: quarantined, as suspected of a display driver reset ($quarantined); see tools/graphics-rig/resets" }
+if (Test-Held) { throw "not run: the queue is held after a display driver reset until its cause is recorded (tools/graphics-rig/resets): $((Get-Content $hazardHeld) -join ' / ')" }
 
-# An alone job pauses the default group and resumes it when it ends; if its wrapper was killed
-# first, the group stays paused, so it is resumed here when no alone job is queued or running.
+# An alone job pauses the other groups and resumes them when it ends; if its wrapper was killed
+# first, they stay paused, so they are resumed here when no alone job is queued or running.
 $state = & $pueue -c $config status --json | ConvertFrom-Json
 $aloneTasks = @($state.tasks.PSObject.Properties.Value | Where-Object { $_.group -eq 'alone' -and
         ($_.status.PSObject.Properties.Name | Where-Object { $_ -in 'Queued', 'Running', 'Stashed', 'Locked' }) })
-if ($state.groups.default.status -ne 'Running' -and $aloneTasks.Count -eq 0) {
-    [Console]::Error.WriteLine('gpu-job: resuming the default group, paused with no alone job')
-    & $pueue -c $config start --group default | Out-Null
+foreach ($other in 'default', 'hazard', 'alone') {
+    if ($state.groups.$other.status -ne 'Running' -and ($other -eq 'alone' -or $aloneTasks.Count -eq 0)) {
+        [Console]::Error.WriteLine("gpu-job: resuming the group $other, paused with no alone job and no hold")
+        & $pueue -c $config start --group $other | Out-Null
+    }
 }
 
 # The job runs with this environment, which pueue records when the job is added.
 . $PSScriptRoot\env.ps1
 $env:CARGO_TARGET_DIR = "C:\wc\target\$Name"
-$text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Command))
 $label = "$Name`: $text"
 if ($label.Length -gt 120) { $label = $label.Substring(0, 120) }
-$group = if ($Alone) { 'alone' } else { 'default' }
+$group = if ($Alone) { 'alone' } elseif ($Reference) { 'default' } else { 'hazard' }
 $arguments = @('-c', $config, 'add', '--print-task-id', '--group', $group, "--priority=$Priority",
     '--working-directory', $checkout, '--label', $label, '--',
     'powershell', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', 'C:\wc\rig\job.ps1',
-    '-Name', $Name, '-Tree', $Tree)
+    '-Name', $Name, '-Tree', $Tree, '-Group', $group)
 if ($Built) { $arguments += '-Built' }
 if ($Alone) { $arguments += '-Alone' }
 if ($Desktop) { $arguments += '-Desktop' }
@@ -54,6 +64,8 @@ $quoted = foreach ($argument in $arguments) {
     if ($argument -and $argument -notmatch '[\s"]') { $argument }
     else { '"' + ($argument -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"' }
 }
+# An alone job holds the other groups back from its submission on; its wrapper resumes them.
+if ($Alone) { foreach ($other in 'default', 'hazard') { & $pueue -c $config pause --group $other --wait | Out-Null } }
 $info = New-Object System.Diagnostics.ProcessStartInfo $pueue, ($quoted -join ' ')
 $info.UseShellExecute = $false
 $info.RedirectStandardOutput = $true

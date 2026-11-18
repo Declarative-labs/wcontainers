@@ -5,7 +5,8 @@
 // chrome-webgpu-<scene>.png into <out-dir>, or <out-dir>\<twist> for a twist other than none, and
 // the eight-viewport scene as chrome-webgpu-viewports.png and, moved to whole pixels,
 // chrome-webgpu-viewports-rounded.png, prints first-draw timings with and without prepare, and checks
-// timestamps, the formats held converted and the vertex formats read through shadows.
+// timestamps, the formats held converted, the vertex formats read through shadows and the cost of
+// instance data fetched in the program.
 // Fails unless WebGPU's adapter is a GPU (discrete or integrated, not a fallback).
 import { writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -101,6 +102,15 @@ try {
     console.log(`chrome ${await page.evaluate(() => window.textureRenames())}`);
   } catch (e) {
     console.log(`chrome texture renames failed: ${e.message}`);
+    failed = true;
+  }
+  // Instance data fetched in the program against vertex buffers (20 frames a route): the routes
+  // draw alike; their timings are printed.
+  try {
+    const lines = (await page.evaluate((n) => window.pulledCosts(n), 20)).split('\n');
+    for (const line of lines) console.log(`chrome instance data: ${line}`);
+  } catch (e) {
+    console.log(`chrome instance data failed: ${e.message}`);
     failed = true;
   }
 } finally {

@@ -13,7 +13,7 @@ pub mod state;
 
 pub use device::{
     Device, FenceId, GraphicsPipelineDesc, HeapId, MemoryId, PipelineId, QueryHeapId, QueueId,
-    ResourceId, RootId,
+    ResourceId,
 };
 
 /// Why a call failed, as the shells turn it into an `HRESULT`.
