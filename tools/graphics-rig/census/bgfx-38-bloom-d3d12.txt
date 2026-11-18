@@ -13,8 +13,8 @@
 d3d12-device GetDescriptorHandleIncrementSize 3390
 d3d12-device QueryInterface 3305
 d3d12-device CheckFeatureSupport 2484
-d3d12-device AddRef 1834
-d3d12-device Release 1250
+d3d12-device AddRef 1831
+d3d12-device Release 1248
 d3d12-device CopyDescriptorsSimple 1045
 d3d12-device GetPrivateData 819
 d3d12-device CreateFence 692
@@ -23,7 +23,7 @@ d3d12-device CreateCommandList 257
 d3d12-device Evict 119
 d3d12-device CreateShaderResourceView 72
 d3d12-device CreateSampler 49
-d3d12-device GetCustomHeapProperties 26
+d3d12-device GetCustomHeapProperties 25
 d3d12-device CreateGraphicsPipelineState 12
 d3d12-device GetResourceAllocationInfo 12
 d3d12-device CreateRenderTargetView 9

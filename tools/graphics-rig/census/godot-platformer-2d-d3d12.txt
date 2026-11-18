@@ -10,8 +10,8 @@
 # counted swap-chain as IDXGISwapChain4
 # counted immediate-context and deferred-context through 0 wrapped contexts
 # not forwarded, so absent from this library: d3d12.dll D3D12DeviceRemovedExtendedData (data)
-d3d12-device AddRef 1300
-d3d12-device Release 779
+d3d12-device AddRef 1298
+d3d12-device Release 777
 d3d12-device CheckFeatureSupport 683
 d3d12-device CreateRootSignature 282
 d3d12-device QueryInterface 235

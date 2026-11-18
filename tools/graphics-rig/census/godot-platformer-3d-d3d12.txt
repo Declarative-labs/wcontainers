@@ -11,9 +11,9 @@
 # counted immediate-context and deferred-context through 0 wrapped contexts
 # not forwarded, so absent from this library: d3d12.dll D3D12DeviceRemovedExtendedData (data)
 d3d12-device CheckFeatureSupport 6888
-d3d12-device AddRef 2531
+d3d12-device AddRef 2536
 d3d12-device CreateShaderResourceView 1626
-d3d12-device Release 1429
+d3d12-device Release 1434
 d3d12-device CreateCommittedResource 668
 d3d12-device CreateUnorderedAccessView 472
 d3d12-device CreateRootSignature 358

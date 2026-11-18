@@ -11,12 +11,12 @@
 # counted immediate-context and deferred-context through 0 wrapped contexts
 # not forwarded, so absent from this library: d3d12.dll D3D12DeviceRemovedExtendedData (data)
 d3d12-device QueryInterface 3305
-d3d12-device CheckFeatureSupport 2474
+d3d12-device CheckFeatureSupport 2477
 d3d12-device AddRef 1717
 d3d12-device Release 1147
 d3d12-device GetPrivateData 819
 d3d12-device GetDescriptorHandleIncrementSize 713
-d3d12-device CreateFence 691
+d3d12-device CreateFence 692
 d3d12-device CreateCommandAllocator 259
 d3d12-device CreateCommandList 257
 d3d12-device Evict 119
@@ -53,10 +53,10 @@ command-queue GetDevice 1
 command-queue GetTimestampFrequency 1
 command-list SetGraphicsRootConstantBufferView 28996
 command-list DrawIndexedInstanced 14498
-command-list ResourceBarrier 2109
+command-list ResourceBarrier 2111
 command-list Close 732
 command-list RSSetScissorRects 694
-command-list CopyTextureRegion 690
+command-list CopyTextureRegion 691
 command-list EndQuery 597
 command-list AddRef 514
 command-list Reset 477
