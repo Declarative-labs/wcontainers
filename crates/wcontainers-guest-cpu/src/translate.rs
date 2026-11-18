@@ -644,8 +644,9 @@ impl StateBytes {
 pub enum HookBody {
     /// The runner's clock, in nanoseconds.
     Clock,
-    /// The runner drops the pieces of the code at the address.
-    CodeChanged,
+    /// The runner drops the pieces of the `line` bytes (a power of two) holding the address the hook is
+    /// given, its one `i64` parameter.
+    CodeChanged { line: u32 },
     /// `Guest::run_hook`.
     Cpu,
 }

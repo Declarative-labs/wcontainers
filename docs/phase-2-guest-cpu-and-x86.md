@@ -884,7 +884,9 @@ pub struct StateBytes { pub at: u16, pub len: u16 }
 /// Who does a hook's work on the host side.
 pub enum HookBody {
     Clock,        // the runner's clock, in nanoseconds
-    CodeChanged,  // the runner drops pieces of the range (ARM64 `ic ivau`, RISC-V `fence.i`)
+    // the runner drops the pieces of the `line` bytes (a power of two) holding the hook's one i64
+    // parameter, an address (ARM64 `ic ivau`, line 64)
+    CodeChanged { line: u32 },
     Cpu,          // `Guest::run_hook`
 }
 /// What `run_hook` did: its results (as many as `HookType::results` says), and the slow path it was, by
@@ -1279,7 +1281,8 @@ ARM64 (`wcontainers_arm64::Arm64`, everything as today):
   private bytes 32.
 - Hooks: Float `(i32, i64, i64, i64) -> i64` (body `Cpu`: `run_hook` reads FPCR and FPSR from the state,
   calls `exact::run`, writes FPSR back and names the reason, today's code in runner.rs and the browser's
-  lib.rs moved into the CPU crate), Clock `() -> i64`, CodeChanged `(i64)`.
+  lib.rs moved into the CPU crate), Clock `() -> i64`, CodeChanged `(i64)` with line 64 (`ic ivau`'s
+  line); the runners step over the line by `ALIGN`.
 - RETURN_ADDRESS `Register` (x30, written by the meaning of `bl` and `blr`); RED_ZONE 0; SP_ALIGNMENT_CHECKED true; data_address and branch_target
   untag (bit 55 rule), as the branch meanings already do; UNREACHABLE_RETURN i64::MIN; Offer `()`; SYSCALL
   x8, x0 to x5, x0; CODE_CHANGES Announced; memory_fault always `Page`.
@@ -1320,7 +1323,9 @@ is special, 4-byte instructions or a special stack pointer):
 - Flags: none. FLAGS, SHAPES empty, `Cond` empty, FLAGS_WANTED 0. Branches compare two registers directly.
 - Controls: fcsr (frm and fflags), the LR/SC reservation (the Exclusive* shape again).
 - Hooks: Float (fcsr; RISC-V instructions may also carry a static rounding mode, so `float_slow` may be
-  answered per instruction), Clock (rdtime), CodeChanged with an "everything" form for `fence.i`.
+  answered per instruction), Clock (rdtime), and for `fence.i` a hook with no parameters whose runner drops every piece: a
+  `HookBody` variant of its own (`AllCodeChanged`), added with the RV64GC crate, since no CPU built
+  before it needs it.
 - RETURN_ADDRESS `Register` (ra by convention, but `jalr` may link to any register: the meaning writes
   it, and a call is recognised by `FlowKind`, so the interface names no register); RED_ZONE 0; SP_ALIGNMENT_CHECKED false; no untag;
   UNREACHABLE_RETURN 1 (no `jalr` target has bit 0 set); Offer `()`; SYSCALL a7, a0 to a5, a0;

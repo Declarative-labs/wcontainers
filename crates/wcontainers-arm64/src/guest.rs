@@ -445,7 +445,8 @@ impl Guest for Arm64 {
             results: &[],
             registers: Registers::NONE,
             state: StateBytes::NONE,
-            body: HookBody::CodeChanged,
+            // `ic ivau` works on the 64-byte line.
+            body: HookBody::CodeChanged { line: 64 },
         },
     ];
 

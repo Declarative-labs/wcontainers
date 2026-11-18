@@ -218,14 +218,16 @@ pub extern "C" fn contract() -> i32 {
     let guest_hooks: Vec<serde_json::Value> = Arm64::HOOKS
         .iter()
         .map(|hook| {
-            let body = match hook.body {
-                HookBody::Clock => "clock",
-                HookBody::CodeChanged => "codeChanged",
-                HookBody::Cpu => "cpu",
+            let (body, line) = match hook.body {
+                HookBody::Clock => ("clock", 0),
+                HookBody::CodeChanged { line } => ("codeChanged", line),
+                HookBody::Cpu => ("cpu", 0),
             };
             serde_json::json!({
                 "name": hook.name,
                 "body": body,
+                // For `codeChanged`, the bytes of code it drops around its address.
+                "line": line,
                 "stateAt": hook.state.at,
                 "stateLength": hook.state.len,
                 // "i32" or "i64" for each result.

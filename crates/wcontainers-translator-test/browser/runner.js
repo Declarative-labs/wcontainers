@@ -325,14 +325,15 @@ function run({
   const wide = (value) => (typeof value === "bigint" ? value : BigInt(value));
   // A result as the hook returns it.
   const narrow = (value, type) => (type === "i32" ? Number(BigInt.asIntN(32, value)) : value);
-  contract.guestHooks.forEach(({ name, body, stateAt, stateLength, results }, index) => {
+  contract.guestHooks.forEach(({ name, body, line, stateAt, stateLength, results }, index) => {
     if (body === "clock") {
       hooks[name] = () => BigInt(Math.round((performance.now() - startedAt) * 1e6));
     } else if (body === "codeChanged") {
-      // Forget the pieces the lookup finds for the 64 byte line at the address.
+      // Forget the pieces the lookup finds for the line of code holding the address.
+      const bytes = BigInt(line);
       hooks[name] = (address) => {
-        const line = BigInt.asUintN(64, address) & ~63n;
-        for (let at = line; at < line + 64n; at += BigInt(contract.align)) {
+        const start = BigInt.asUintN(64, address) & ~(bytes - 1n);
+        for (let at = start; at < start + bytes; at += BigInt(contract.align)) {
           setSlot(at, 0);
           exactPieces.delete(at);
         }

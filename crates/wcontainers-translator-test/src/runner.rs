@@ -1029,13 +1029,13 @@ fn hooks(linker: &mut Linker<Host>) {
                     })
                     .unwrap();
             }
-            HookBody::CodeChanged => {
+            HookBody::CodeChanged { line } => {
                 linker
                     .func_wrap(
                         HOOKS,
                         hook.name,
-                        |mut caller: Caller<'_, Host>, address: i64| {
-                            forget_code(&mut caller, address as u64);
+                        move |mut caller: Caller<'_, Host>, address: i64| {
+                            forget_code(&mut caller, address as u64, u64::from(line));
                         },
                     )
                     .unwrap();
@@ -1108,11 +1108,11 @@ fn lookup_table(store: &mut impl wasmtime::AsContextMut<Data = Host>) -> wasmtim
     table
 }
 
-/// `ic ivau`: the stand-in forgets the pieces the lookup finds for the 64 byte line, so the next jump there
-/// translates the code again.
-fn forget_code(caller: &mut Caller<'_, Host>, address: u64) {
-    let line = address & !63;
-    for at in (line..line + 64).step_by(4) {
+/// The stand-in forgets the pieces the lookup finds for the `line` bytes of code holding the address, so
+/// the next jump there translates the code again.
+fn forget_code(caller: &mut Caller<'_, Host>, address: u64, line: u64) {
+    let start = address & !(line - 1);
+    for at in (start..start + line).step_by(Arm64::ALIGN as usize) {
         caller.data_mut().exact_pieces.remove(&at);
         set_slot(caller.data(), at, 0);
     }
