@@ -585,3 +585,161 @@ fn clean(path: &[u8]) -> Option<Vec<u8>> {
     }
     Some(parts.join(&b'/'))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A tar of (path, contents) pairs: a path ending in `/` is a directory, contents starting with
+    /// `->` a symbolic link.
+    fn layer(entries: &[(&str, &str)]) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        for (path, contents) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_uid(0);
+            header.set_gid(0);
+            header.set_mtime(0);
+            if path.ends_with('/') {
+                header.set_entry_type(tar::EntryType::Directory);
+                header.set_mode(0o755);
+                header.set_size(0);
+                builder
+                    .append_data(&mut header, path, std::io::empty())
+                    .unwrap();
+            } else if let Some(target) = contents.strip_prefix("->") {
+                header.set_entry_type(tar::EntryType::Symlink);
+                header.set_mode(0o777);
+                header.set_size(0);
+                builder.append_link(&mut header, path, target).unwrap();
+            } else {
+                header.set_entry_type(tar::EntryType::Regular);
+                header.set_mode(0o755);
+                header.set_size(contents.len() as u64);
+                builder
+                    .append_data(&mut header, path, contents.as_bytes())
+                    .unwrap();
+            }
+        }
+        builder.into_inner().unwrap()
+    }
+
+    fn image(layers: &[&[(&str, &str)]], config: Option<serde_json::Value>) -> Image {
+        let mut files = BTreeMap::new();
+        for entries in layers {
+            read_layer(
+                layer(entries).as_slice(),
+                Path::new("layer"),
+                true,
+                &mut files,
+            )
+            .unwrap();
+        }
+        let configuration = config.map(|config| {
+            serde_json::from_value(serde_json::json!({
+                "architecture": "arm64", "os": "linux",
+                "rootfs": {"type": "layers", "diff_ids": []},
+                "config": config,
+            }))
+            .unwrap()
+        });
+        Image {
+            files,
+            configuration,
+        }
+    }
+
+    fn paths(image: &Image) -> Vec<String> {
+        image
+            .files
+            .keys()
+            .map(|key| String::from_utf8_lossy(key).into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn whiteouts_remove_what_lower_layers_hold() {
+        let image = image(
+            &[
+                &[
+                    ("a/", ""),
+                    ("a/one", "1"),
+                    ("a/two", "2"),
+                    ("b/", ""),
+                    ("b/three", "3"),
+                    ("c", "4"),
+                ],
+                &[
+                    ("a/.wh.one", ""),
+                    ("b/.wh..wh..opq", ""),
+                    ("b/five", "5"),
+                    ("c/", ""),
+                ],
+            ],
+            None,
+        );
+        assert_eq!(paths(&image), ["a", "a/two", "b", "b/five", "c"]);
+        assert!(matches!(image.files[&b"c".to_vec()].kind, Kind::Directory));
+    }
+
+    #[test]
+    fn programs_are_found_through_path_and_links() {
+        let image = image(
+            &[&[
+                ("bin/", ""),
+                ("bin/busybox", "\x7fELF"),
+                ("bin/sh", "->busybox"),
+                ("usr/", ""),
+                ("usr/bin", "->../bin"),
+            ]],
+            None,
+        );
+        let env = ["PATH=/usr/local/bin:/usr/bin".to_string()];
+        assert_eq!(image.program("sh", &env, "/"), "/usr/bin/sh");
+        assert_eq!(image.program("ls", &env, "/"), "ls");
+        assert_eq!(image.program("./run", &env, "/tmp"), "/tmp/./run");
+    }
+
+    #[test]
+    fn the_image_configuration_is_converted() {
+        let image = image(
+            &[&[
+                ("etc/", ""),
+                (
+                    "etc/passwd",
+                    "root:x:0:0::/root:/bin/sh\nweb:x:100:101::/:/bin/sh\n",
+                ),
+                ("etc/group", "root:x:0:\nweb:x:101:\nlog:x:4:web,root\n"),
+            ]],
+            Some(serde_json::json!({
+                "User": "web", "Entrypoint": ["/serve"], "Cmd": ["--port", "80"],
+                "Env": ["A=1"], "WorkingDir": "/srv", "StopSignal": "SIGQUIT",
+                "Labels": {"name": "web"},
+            })),
+        );
+        let spec = image.spec().unwrap();
+        let process = spec.process().as_ref().unwrap();
+        assert_eq!(
+            process.args().as_ref().unwrap(),
+            &["/serve", "--port", "80"]
+        );
+        assert_eq!(process.env().as_ref().unwrap(), &["A=1"]);
+        assert_eq!(process.cwd(), Path::new("/srv"));
+        assert_eq!((process.user().uid(), process.user().gid()), (100, 101));
+        assert_eq!(process.user().additional_gids().as_ref().unwrap(), &[4]);
+        let annotations = spec.annotations().as_ref().unwrap();
+        assert_eq!(annotations["name"], "web");
+        assert_eq!(
+            annotations["org.opencontainers.image.stopSignal"],
+            "SIGQUIT"
+        );
+    }
+
+    #[test]
+    fn volumes_are_refused_by_name() {
+        let image = image(&[&[]], Some(serde_json::json!({"Volumes": {"/data": {}}})));
+        match image.spec() {
+            Err(Error::Refused { field, .. }) => assert_eq!(field, "config.Volumes"),
+            other => panic!("{:?}", other.map(|_| ())),
+        }
+    }
+}

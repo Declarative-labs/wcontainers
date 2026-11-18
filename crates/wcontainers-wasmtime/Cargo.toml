@@ -36,8 +36,10 @@ cargo-lock = "11.1.0"
 wcontainers-arm64 = { path = "../wcontainers-arm64" }
 # Copies the test process with fork, as the kernel tests' saves do.
 libc = "0.2.191"
-# Unpacks the OCI image `docker save` writes.
+# Unpacks the OCI image `docker save` writes, and makes roots for tests.
 tar = "0.4.46"
+# Writes configurations field by field.
+serde_json = "1.0.154"
 
 [lints]
 workspace = true

@@ -2398,6 +2398,7 @@ dependencies = [
  "object 0.41.0",
  "rayon",
  "rustix",
+ "serde_json",
  "tar",
  "wasm-encoder 0.263.0",
  "wasmtime",
