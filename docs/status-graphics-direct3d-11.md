@@ -38,6 +38,10 @@ passed the front tests on the desktop before any change.
   WebGPU back end's R16 and D16 copies), test_tgsm (structured group-shared memory).
 - atg-simplecomputepc differs only inside the Mandelbrot set (Asked: the division's precision).
 - Results: see the Wine section and Measurements.
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (14.1 GB, debug builds of
+  both back ends), the checkout's own target (590 MB, from `cargo check`) and scratch
+  wincheck/target (1.0 GB, the Mac's check-only Windows build) were deleted; a scratch git
+  worktree used for one change was removed.
 
 G4 run 16 (2026-11-18, about 01:00 to 03:00 Pacific). Merged origin/phase-2-graphics-direct3d-12,
 -shaders and -rig cleanly (the others had nothing new; the shaders crate's change numbering
