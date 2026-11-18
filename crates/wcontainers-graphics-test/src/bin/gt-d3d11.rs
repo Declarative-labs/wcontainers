@@ -52,18 +52,17 @@ fn main() -> anyhow::Result<()> {
         for name in names {
             let (level, scene) = d3d11::scenes::find(name)
                 .with_context(|| format!("no scene {name}; see gt-d3d11 list"))?;
-            let outputs = if gpu.level.0 < level.0 {
-                vec![Output::absent(
-                    "",
-                    format!(
-                        "feature level {}; the device has {}",
-                        d3d11::level_name(level),
-                        d3d11::level_name(gpu.level)
-                    ),
-                )]
+            let outputs = if let Some(why) = gpu.lacks_level(level) {
+                vec![Output::absent("", why)]
             } else {
                 unsafe { gpu.context.ClearState() };
-                scene(&gpu).with_context(|| format!("scene {name}"))?
+                // A failing call's reason, from the debug layer when it is on.
+                scene(&gpu)
+                    .map_err(|e| match gpu.check_debug() {
+                        Err(debug) => e.context(format!("{debug:#}")),
+                        Ok(()) => e,
+                    })
+                    .with_context(|| format!("scene {name}"))?
             };
             gpu.check_debug().with_context(|| format!("scene {name}"))?;
             for output in outputs {

@@ -199,6 +199,17 @@ impl Gpu {
     }
 
     /// Fails on any error or corruption the debug layer reported, printing all its messages.
+    /// Why a part needing feature level `level` is absent: None when the device has it.
+    pub fn lacks_level(&self, level: D3D_FEATURE_LEVEL) -> Option<String> {
+        (self.level.0 < level.0).then(|| {
+            format!(
+                "feature level {}; the device has {}",
+                level_name(level),
+                level_name(self.level)
+            )
+        })
+    }
+
     /// Why a part needing `samples` samples of `format` with the standard pattern is absent: None
     /// when the device has them.
     pub fn lacks_samples(&self, format: DXGI_FORMAT, samples: u32) -> Result<Option<String>> {

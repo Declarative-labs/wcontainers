@@ -29,7 +29,8 @@ pub(crate) mod views;
 
 use anyhow::Result;
 use windows::Win32::Graphics::Direct3D::{
-    D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_9_1, D3D_FEATURE_LEVEL_11_0,
+    D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_9_1, D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_10_1,
+    D3D_FEATURE_LEVEL_11_0,
 };
 use windows::Win32::Graphics::Direct3D11::D3D11_INPUT_ELEMENT_DESC;
 use windows::Win32::Graphics::Dxgi::Common::{
@@ -42,38 +43,40 @@ use crate::output::Output;
 
 pub type Scene = fn(&Gpu) -> Result<Vec<Output>>;
 
-/// Every scene with the lowest feature level it draws at: its shaders are shader model 5 but for
-/// the levels scene's, which makes its own devices. On a device below that level the scene is
-/// absent.
+/// Every scene with the lowest feature level it draws at, below which it is absent: 10_0 where its
+/// shaders are shader model 4.0 (parts needing more say so themselves); 10_1 for standard sample
+/// patterns (msaa) and blending set per target (targets); 11_0 for indirect draws, compute shaders,
+/// tessellation and the device scene's answers about 11_0 devices; 9_1 for the levels scene, which
+/// makes its own devices.
 pub const SCENES: &[(&str, D3D_FEATURE_LEVEL, Scene)] = &[
-    ("triangle", D3D_FEATURE_LEVEL_11_0, basic::triangle),
-    ("quads", D3D_FEATURE_LEVEL_11_0, basic::quads),
-    ("instanced", D3D_FEATURE_LEVEL_11_0, basic::instanced),
-    ("topology", D3D_FEATURE_LEVEL_11_0, topology::run),
+    ("triangle", D3D_FEATURE_LEVEL_10_0, basic::triangle),
+    ("quads", D3D_FEATURE_LEVEL_10_0, basic::quads),
+    ("instanced", D3D_FEATURE_LEVEL_10_0, basic::instanced),
+    ("topology", D3D_FEATURE_LEVEL_10_0, topology::run),
     ("draws", D3D_FEATURE_LEVEL_11_0, draws::run),
-    ("blend", D3D_FEATURE_LEVEL_11_0, blend::run),
-    ("depth", D3D_FEATURE_LEVEL_11_0, depth::run),
-    ("stencil", D3D_FEATURE_LEVEL_11_0, stencil::run),
-    ("raster", D3D_FEATURE_LEVEL_11_0, raster::run),
-    ("msaa", D3D_FEATURE_LEVEL_11_0, msaa::run),
-    ("targets", D3D_FEATURE_LEVEL_11_0, targets::run),
-    ("formats", D3D_FEATURE_LEVEL_11_0, formats::run),
-    ("textures", D3D_FEATURE_LEVEL_11_0, textures::run),
-    ("samplers", D3D_FEATURE_LEVEL_11_0, samplers::run),
-    ("views", D3D_FEATURE_LEVEL_11_0, views::run),
-    ("constants", D3D_FEATURE_LEVEL_11_0, constants::run),
-    ("dynamic", D3D_FEATURE_LEVEL_11_0, dynamic::run),
-    ("copies", D3D_FEATURE_LEVEL_11_0, copies::run),
-    ("queries", D3D_FEATURE_LEVEL_11_0, queries::run),
-    ("mips", D3D_FEATURE_LEVEL_11_0, mips::run),
+    ("blend", D3D_FEATURE_LEVEL_10_0, blend::run),
+    ("depth", D3D_FEATURE_LEVEL_10_0, depth::run),
+    ("stencil", D3D_FEATURE_LEVEL_10_0, stencil::run),
+    ("raster", D3D_FEATURE_LEVEL_10_0, raster::run),
+    ("msaa", D3D_FEATURE_LEVEL_10_1, msaa::run),
+    ("targets", D3D_FEATURE_LEVEL_10_1, targets::run),
+    ("formats", D3D_FEATURE_LEVEL_10_0, formats::run),
+    ("textures", D3D_FEATURE_LEVEL_10_0, textures::run),
+    ("samplers", D3D_FEATURE_LEVEL_10_0, samplers::run),
+    ("views", D3D_FEATURE_LEVEL_10_0, views::run),
+    ("constants", D3D_FEATURE_LEVEL_10_0, constants::run),
+    ("dynamic", D3D_FEATURE_LEVEL_10_0, dynamic::run),
+    ("copies", D3D_FEATURE_LEVEL_10_0, copies::run),
+    ("queries", D3D_FEATURE_LEVEL_10_0, queries::run),
+    ("mips", D3D_FEATURE_LEVEL_10_0, mips::run),
     ("compute", D3D_FEATURE_LEVEL_11_0, compute::run),
-    ("geometry", D3D_FEATURE_LEVEL_11_0, geometry::run),
+    ("geometry", D3D_FEATURE_LEVEL_10_0, geometry::run),
     ("tessellation", D3D_FEATURE_LEVEL_11_0, tessellation::run),
-    ("streamout", D3D_FEATURE_LEVEL_11_0, streamout::run),
-    ("deferred", D3D_FEATURE_LEVEL_11_0, deferred::run),
+    ("streamout", D3D_FEATURE_LEVEL_10_0, streamout::run),
+    ("deferred", D3D_FEATURE_LEVEL_10_0, deferred::run),
     ("levels", D3D_FEATURE_LEVEL_9_1, levels::run),
     ("device", D3D_FEATURE_LEVEL_11_0, device::run),
-    ("swapchain", D3D_FEATURE_LEVEL_11_0, swapchain::run),
+    ("swapchain", D3D_FEATURE_LEVEL_10_0, swapchain::run),
 ];
 
 pub fn find(name: &str) -> Option<(D3D_FEATURE_LEVEL, Scene)> {

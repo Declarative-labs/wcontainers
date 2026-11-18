@@ -151,6 +151,13 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     super::draw_colored(gpu, &fan())?;
     outputs.push(Output::picture("primitive_id", gpu.read(&target, 0, 0)?));
 
+    // Layers chosen by an instanced geometry shader (shader model 5).
+    if let Some(why) = gpu.lacks_level(D3D_FEATURE_LEVEL_11_0) {
+        for layer in 0..3 {
+            outputs.push(Output::absent(&format!("layer{layer}"), why.clone()));
+        }
+        return Ok(outputs);
+    }
     let mut desc = tex2d(64, 64, rgba, D3D11_BIND_RENDER_TARGET);
     desc.ArraySize = 3;
     let layers = gpu.texture2d(&desc, &[])?;

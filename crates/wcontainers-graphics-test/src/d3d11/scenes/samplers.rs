@@ -127,10 +127,13 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
         "address",
         cells(gpu, dxbc!("samplers.ps_sample"), 5, 48, &address, 0)?,
     ));
-    outputs.push(Output::picture(
-        "gather",
-        cells(gpu, dxbc!("samplers.ps_gather"), 5, 48, &address, 0)?,
-    ));
+    match gpu.lacks_level(D3D_FEATURE_LEVEL_10_1) {
+        Some(why) => outputs.push(Output::absent("gather", why)),
+        None => outputs.push(Output::picture(
+            "gather",
+            cells(gpu, dxbc!("samplers.ps_gather"), 5, 48, &address, 0)?,
+        )),
+    }
 
     // A depth texture holding a slope, compared with each function, point and linear filtered.
     let mut desc = tex2d(

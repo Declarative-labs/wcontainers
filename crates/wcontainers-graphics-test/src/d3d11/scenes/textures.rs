@@ -159,11 +159,33 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     }
 
     // 2D arrays, cubes and cube arrays: 4, 6 and 12 layers of 16 by 16.
-    for (part, layers, cube, ps) in [
-        ("2d_array", 4, false, dxbc!("textures.ps_2d_array")),
-        ("cube", 6, true, dxbc!("textures.ps_cube")),
-        ("cube_array", 12, true, dxbc!("textures.ps_cube_array")),
+    for (part, layers, cube, ps, level) in [
+        (
+            "2d_array",
+            4,
+            false,
+            dxbc!("textures.ps_2d_array"),
+            D3D_FEATURE_LEVEL_10_0,
+        ),
+        (
+            "cube",
+            6,
+            true,
+            dxbc!("textures.ps_cube"),
+            D3D_FEATURE_LEVEL_10_0,
+        ),
+        (
+            "cube_array",
+            12,
+            true,
+            dxbc!("textures.ps_cube_array"),
+            D3D_FEATURE_LEVEL_10_1,
+        ),
     ] {
+        if let Some(why) = gpu.lacks_level(level) {
+            outputs.push(Output::absent(part, why));
+            continue;
+        }
         let (bytes, pitches) = subresources(16, 16, 1, 1, layers);
         let mut desc = tex2d(16, 16, rgba, D3D11_BIND_SHADER_RESOURCE);
         desc.ArraySize = layers;
@@ -214,7 +236,12 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
         show(gpu, dxbc!("textures.ps_mips"), &view, rgba, SIZE, SIZE * 2)?,
     ));
 
-    // Block-compressed: 32 by 32 texels of random blocks per format, read exactly.
+    // Block-compressed: 32 by 32 texels of random blocks per format, read exactly (BC6H and BC7
+    // from 11_0).
+    if let Some(why) = gpu.lacks_level(D3D_FEATURE_LEVEL_11_0) {
+        outputs.push(Output::absent("bc", why));
+        return Ok(outputs);
+    }
     let (target, rtv) = gpu.target(128, 128, DXGI_FORMAT_R32G32B32A32_FLOAT)?;
     gpu.begin(&rtv, None, 128, 128);
     gpu.program(dxbc!("common.vs_full"), dxbc!("textures.ps_load"), &[])?;
