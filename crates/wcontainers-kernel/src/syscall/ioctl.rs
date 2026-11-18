@@ -399,6 +399,13 @@ fn own(
             _ => Err(Errno::ENOTTY),
         };
     }
+    let namespace = match file.borrow().node.borrow().content {
+        Content::Namespace(namespace) => Some(namespace),
+        _ => None,
+    };
+    if let Some(namespace) = namespace {
+        return namespace_ioctl(kernel, cx, tid, namespace, request, argument);
+    }
     let (unread, device) = {
         let file = file.borrow();
         let inode = file.node.borrow();
@@ -616,4 +623,53 @@ fn set_attributes(
     inode.fsflags = flags;
     inode.ctime = now;
     Some(Ok(0))
+}
+
+/// `ns_ioctl`: a namespace's type, the user namespace that owns it (the machine's first, which
+/// owns every namespace here and has no owner the caller may reach), its parent (the pid and user
+/// namespaces' are out of reach, the others have none), and the user namespace's owner (root);
+/// the requests of single types are not built.
+fn namespace_ioctl(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    namespace: crate::fs::proc::Namespace,
+    request: u32,
+    argument: u64,
+) -> Result<u64, Errno> {
+    use crate::fs::proc::Namespace;
+    use crate::linux::ioctl::{NS_GET_NSTYPE, NS_GET_OWNER_UID, NS_GET_PARENT, NS_GET_USERNS};
+    match request {
+        NS_GET_NSTYPE => Ok(namespace.clone_flag().into()),
+        NS_GET_USERNS if namespace != Namespace::User => {
+            let user = Namespace::User;
+            let node =
+                crate::fs::proc::namespace_node(kernel.files.nsfs.clone(), kernel.boot, user);
+            let opener = kernel.credentials(tid).serial;
+            let file = crate::file::OpenFile::new(node, O_RDONLY, user.link(), opener);
+            let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
+            Ok(kernel.files_mut(tid).add(file, true, 0, limit)? as u64)
+        }
+        NS_GET_USERNS => Err(Errno::EPERM),
+        NS_GET_PARENT
+            if matches!(
+                namespace,
+                Namespace::Pid | Namespace::PidForChildren | Namespace::User
+            ) =>
+        {
+            Err(Errno::EPERM)
+        }
+        NS_GET_PARENT => Err(Errno::EINVAL),
+        NS_GET_OWNER_UID if namespace == crate::fs::proc::Namespace::User => guest(kernel, cx, tid)
+            .put(argument, &0u32.to_le_bytes())
+            .map(|()| 0),
+        NS_GET_OWNER_UID => Err(Errno::EINVAL),
+        _ if (request >> 8) & 0xff == 0xb7 => Err(kernel.counters.refuse(
+            cx.host,
+            crate::counters::reason::IOCTL_NOT_BUILT,
+            request.into(),
+            Errno::ENOTTY,
+        )),
+        _ => Err(Errno::ENOTTY),
+    }
 }

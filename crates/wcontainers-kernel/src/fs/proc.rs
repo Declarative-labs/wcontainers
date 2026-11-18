@@ -24,6 +24,8 @@ pub(crate) struct View<'a> {
     pub caller: Pid,
     pub caller_thread: Tid,
     pub fs: FileSystem,
+    /// The file system namespaces' inodes are on.
+    pub nsfs: FileSystem,
     pub boot: Time,
     /// Attributes changed on entries that keep them, by inode number.
     pub kept: &'a BTreeMap<u64, Kept>,
@@ -70,6 +72,9 @@ pub(crate) enum Entry {
     /// A process's `fdinfo` directory, and a descriptor's file in it.
     FdInfos(Task),
     FdInfo(Task, i32),
+    /// A process's `ns` directory, and the namespace links in it.
+    Namespaces(Task),
+    Namespace(Task, Namespace),
     /// A process's `net` directory (its network's), and the files in it.
     Net(Task),
     NetFile(Task, NetFile),
@@ -108,6 +113,7 @@ impl Task {
 pub(crate) enum ProcessFile {
     Cmdline,
     Comm,
+    CoredumpFilter,
     Environ,
     Auxv,
     Maps,
@@ -115,6 +121,7 @@ pub(crate) enum ProcessFile {
     Statm,
     Status,
     Mounts,
+    Mountinfo,
     Limits,
     Cgroup,
 }
@@ -150,14 +157,106 @@ pub(crate) enum ProcessLink {
     Root,
 }
 
+/// The links of a process's `ns` directory, in Linux's order (`ns_entries`). The container has one of
+/// each namespace, shared by every process in it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Namespace {
+    Net,
+    Uts,
+    Ipc,
+    Pid,
+    PidForChildren,
+    User,
+    Mnt,
+    Cgroup,
+    Time,
+    TimeForChildren,
+}
+
+impl Namespace {
+    const ALL: [Namespace; 10] = [
+        Namespace::Net,
+        Namespace::Uts,
+        Namespace::Ipc,
+        Namespace::Pid,
+        Namespace::PidForChildren,
+        Namespace::User,
+        Namespace::Mnt,
+        Namespace::Cgroup,
+        Namespace::Time,
+        Namespace::TimeForChildren,
+    ];
+
+    fn name(self) -> &'static [u8] {
+        match self {
+            Namespace::Net => b"net",
+            Namespace::Uts => b"uts",
+            Namespace::Ipc => b"ipc",
+            Namespace::Pid => b"pid",
+            Namespace::PidForChildren => b"pid_for_children",
+            Namespace::User => b"user",
+            Namespace::Mnt => b"mnt",
+            Namespace::Cgroup => b"cgroup",
+            Namespace::Time => b"time",
+            Namespace::TimeForChildren => b"time_for_children",
+        }
+    }
+
+    /// The namespace's type, which its link names (`proc_ns_operations.name`).
+    fn kind(self) -> &'static str {
+        match self {
+            Namespace::PidForChildren => "pid",
+            Namespace::TimeForChildren => "time",
+            other => core::str::from_utf8(other.name()).unwrap_or_default(),
+        }
+    }
+
+    /// The namespace's inode number on nsfs. The user and time namespaces are the machine's first,
+    /// which have Linux's fixed numbers (`PROC_USER_INIT_INO`, `PROC_TIME_INIT_INO`); the others are
+    /// the container's own, numbered as Linux numbers new ones.
+    pub fn ino(self) -> u64 {
+        match self {
+            Namespace::User => 0xEFFF_FFFD,
+            Namespace::Time | Namespace::TimeForChildren => 0xEFFF_FFFA,
+            Namespace::Mnt => 0xF000_0100,
+            Namespace::Uts => 0xF000_0101,
+            Namespace::Ipc => 0xF000_0102,
+            Namespace::Pid | Namespace::PidForChildren => 0xF000_0103,
+            Namespace::Net => 0xF000_0105,
+            Namespace::Cgroup => 0xF000_0106,
+        }
+    }
+
+    /// The `CLONE_NEW*` flag of its type, which `NS_GET_NSTYPE` answers.
+    pub fn clone_flag(self) -> u32 {
+        match self {
+            Namespace::Net => CLONE_NEWNET,
+            Namespace::Uts => CLONE_NEWUTS,
+            Namespace::Ipc => CLONE_NEWIPC,
+            Namespace::Pid | Namespace::PidForChildren => CLONE_NEWPID,
+            Namespace::User => CLONE_NEWUSER,
+            Namespace::Mnt => CLONE_NEWNS,
+            Namespace::Cgroup => CLONE_NEWCGROUP,
+            Namespace::Time | Namespace::TimeForChildren => CLONE_NEWTIME,
+        }
+    }
+
+    /// What its link reads and a descriptor of it shows (`ns_get_name`).
+    pub fn link(self) -> Vec<u8> {
+        format!("{}:[{}]", self.kind(), self.ino()).into_bytes()
+    }
+}
+
 const PROCESS_FILES: &[(&[u8], ProcessFile)] = &[
     (b"auxv", ProcessFile::Auxv),
     (b"cgroup", ProcessFile::Cgroup),
     (b"cmdline", ProcessFile::Cmdline),
     (b"comm", ProcessFile::Comm),
+    (b"coredump_filter", ProcessFile::CoredumpFilter),
     (b"environ", ProcessFile::Environ),
     (b"limits", ProcessFile::Limits),
     (b"maps", ProcessFile::Maps),
+    (b"mountinfo", ProcessFile::Mountinfo),
     (b"mounts", ProcessFile::Mounts),
     (b"stat", ProcessFile::Stat),
     (b"statm", ProcessFile::Statm),
@@ -209,6 +308,8 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/kernel/random/boot_id", Global::File(0o444)),
     ("sys/kernel/random/uuid", Global::File(0o444)),
     ("sys/net", Global::Directory),
+    ("sys/net/core", Global::Directory),
+    ("sys/net/core/somaxconn", Global::File(0o644)),
     ("sys/sunrpc", Global::Directory),
     ("sys/user", Global::Directory),
     ("sys/vm", Global::Directory),
@@ -220,7 +321,8 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
 /// The entries Linux 7.0 has in the directories built here, in the order the reference's `getdents`
 /// lists them, each directory's names separated by spaces; `<pid>` stands for a process directory.
 /// An entry's position in its directory is 2 plus its index here, except in `/proc` itself, where
-/// `self` and `thread-self` come at `FIRST_PROCESS_ENTRY`. Looking up one that is not built is
+/// `self` and `thread-self` come at `FIRST_PROCESS_ENTRY`. A `-` is an entry the reference's
+/// namespace does not see, which still takes a position. Looking up one that is not built is
 /// counted and warned before it answers ENOENT.
 const LINUX_ENTRIES: &[(&str, &str)] = &[
     (
@@ -319,7 +421,15 @@ const LINUX_ENTRIES: &[(&str, &str)] = &[
     ),
     (
         "sys/net",
-        "bridge core ipv4 ipv6 mpls netfilter sctp unix vsock",
+        "bridge - core ipv4 ipv6 mpls - netfilter sctp unix vsock",
+    ),
+    (
+        "sys/net/core",
+        concat!(
+            "bypass_prot_mem optmem_max rmem_default rmem_max rps_default_mask somaxconn ",
+            "tstamp_allow_data txq_reselection_ms txrehash wmem_default wmem_max ",
+            "xfrm_acq_expires xfrm_aevent_etime xfrm_aevent_rseqth xfrm_larval_drop",
+        ),
     ),
     (
         "sys/sunrpc",
@@ -374,6 +484,8 @@ pub(crate) enum Style {
 pub(crate) enum Writing {
     /// `comm_write`: names the process.
     Comm,
+    /// `proc_coredump_filter_write`: chooses what a core dump would hold.
+    CoredumpFilter,
     /// A sysctl's own write; `/proc/sys` is mounted read-only, so no file is open for it.
     Sysctl,
     /// `EIO`, as `pde_write` for an entry with no write of its own.
@@ -396,7 +508,7 @@ pub(crate) fn root_links(processes: usize) -> u32 {
 /// sysctls (`proc_sys_poll`).
 pub(crate) fn polls(entry: &Entry) -> bool {
     match entry {
-        Entry::ProcessFile(_, ProcessFile::Mounts) => true,
+        Entry::ProcessFile(_, ProcessFile::Mounts | ProcessFile::Mountinfo) => true,
         Entry::Global(index) => GLOBAL[*index].0.starts_with("sys/"),
         _ => false,
     }
@@ -416,6 +528,7 @@ impl Entry {
             Entry::Fds(task) => Some(format!("{}/fd", task.path())),
             Entry::FdInfos(task) => Some(format!("{}/fdinfo", task.path())),
             Entry::Net(task) => Some(format!("{}/net", task.path())),
+            Entry::Namespaces(task) => Some(format!("{}/ns", task.path())),
             Entry::Tasks(pid) => Some(format!("/{pid}/task")),
             Entry::Global(index) => Some(format!("/{}", GLOBAL[index].0)),
             _ => None,
@@ -434,7 +547,9 @@ impl Entry {
             | Entry::FdInfos(task)
             | Entry::FdInfo(task, _)
             | Entry::Net(task)
-            | Entry::NetFile(task, _) => Some(task.pid),
+            | Entry::NetFile(task, _)
+            | Entry::Namespaces(task)
+            | Entry::Namespace(task, _) => Some(task.pid),
             Entry::Tasks(pid) => Some(pid),
             Entry::Root | Entry::SelfLink | Entry::ThreadSelfLink | Entry::Global(_) => None,
         }
@@ -473,6 +588,7 @@ impl Entry {
     pub fn writing(&self) -> Writing {
         match self {
             Entry::ProcessFile(_, ProcessFile::Comm) => Writing::Comm,
+            Entry::ProcessFile(_, ProcessFile::CoredumpFilter) => Writing::CoredumpFilter,
             Entry::Global(_) if self.style() == Style::Sysctl => Writing::Sysctl,
             // `proc_reg_write` with no `proc_write` of the entry's own.
             Entry::Global(_) | Entry::NetFile(..) => Writing::Io,
@@ -498,6 +614,7 @@ impl Entry {
                 S_IFDIR | 0o555
             }
             Entry::Fds(_) => S_IFDIR | 0o500,
+            Entry::Namespaces(_) => S_IFDIR | 0o511,
             Entry::FdInfo(..) => S_IFREG | 0o444,
             Entry::Net(_) => S_IFDIR | 0o555,
             Entry::NetFile(..) => S_IFREG | 0o444,
@@ -506,10 +623,15 @@ impl Entry {
                 Global::File(permissions) => S_IFREG | permissions,
                 Global::Link(_) => S_IFLNK | 0o777,
             },
-            Entry::ProcessFile(_, ProcessFile::Comm) => S_IFREG | 0o644,
+            Entry::ProcessFile(_, ProcessFile::Comm | ProcessFile::CoredumpFilter) => {
+                S_IFREG | 0o644
+            }
             Entry::ProcessFile(_, ProcessFile::Environ | ProcessFile::Auxv) => S_IFREG | 0o400,
             Entry::ProcessFile(..) => S_IFREG | 0o444,
-            Entry::SelfLink | Entry::ThreadSelfLink | Entry::ProcessLink(..) => S_IFLNK | 0o777,
+            Entry::SelfLink
+            | Entry::ThreadSelfLink
+            | Entry::ProcessLink(..)
+            | Entry::Namespace(..) => S_IFLNK | 0o777,
             Entry::Fd(..) => S_IFLNK | 0o700,
         }
     }
@@ -533,6 +655,8 @@ impl Entry {
             Entry::ProcessLink(t, link) => task(t, 64 + *link as u64),
             Entry::Fd(t, fd) => task(t, 0x1000 + *fd as u64 % 0xf000),
             Entry::FdInfos(t) => task(t, 5),
+            Entry::Namespaces(t) => task(t, 6),
+            Entry::Namespace(t, namespace) => task(t, 96 + *namespace as u64),
             Entry::FdInfo(t, fd) => task(t, 0x1000 + *fd as u64 % 0xf000) | 1 << 46,
         }
     }
@@ -545,7 +669,9 @@ impl Entry {
             | Entry::Fds(task)
             | Entry::Fd(task, _)
             | Entry::FdInfos(task)
-            | Entry::FdInfo(task, _) => task.tid,
+            | Entry::FdInfo(task, _)
+            | Entry::Namespaces(task)
+            | Entry::Namespace(task, _) => task.tid,
             Entry::Tasks(pid) => pid,
             // The network's entries belong to its owner, root.
             Entry::Root
@@ -799,6 +925,44 @@ pub(crate) fn lookup(
     Ok(node(view, Some(directory), name, child))
 }
 
+/// `kstrtouint` in base 0: an optional `+`, then `0x` and hex digits, `0` and octal ones, or
+/// decimal ones, then at most a newline before the end or a zero byte.
+pub(crate) fn parse_unsigned(bytes: &[u8]) -> Result<u32, Errno> {
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    let mut text = &bytes[..end];
+    if let [b'+', rest @ ..] = text {
+        text = rest;
+    }
+    let radix = match text {
+        [b'0', b'x' | b'X', digit, ..] if digit.is_ascii_hexdigit() => {
+            text = &text[2..];
+            16
+        }
+        [b'0', ..] => 8,
+        _ => 10,
+    };
+    let digits = text
+        .iter()
+        .take_while(|b| char::from(**b).is_digit(radix))
+        .count();
+    if digits == 0 {
+        return Err(Errno::EINVAL);
+    }
+    let rest = &text[digits..];
+    if !(rest.is_empty() || rest == b"\n") {
+        return Err(Errno::EINVAL);
+    }
+    let mut value: u64 = 0;
+    for &b in &text[..digits] {
+        let digit = char::from(b).to_digit(radix).expect("a digit");
+        value = value
+            .checked_mul(u64::from(radix))
+            .and_then(|value| value.checked_add(u64::from(digit)))
+            .ok_or(Errno::ERANGE)?;
+    }
+    u32::try_from(value).map_err(|_| Errno::ERANGE)
+}
+
 /// Counts a lookup that found nothing when Linux has the name there.
 fn not_built(view: &View<'_>, entry: &Entry, name: &[u8]) {
     let directory = match entry {
@@ -898,6 +1062,10 @@ pub(crate) fn list(view: &View<'_>, entry: &Entry) -> Vec<(Vec<u8>, Entry, u64)>
                 out.push((name.to_vec(), child, position));
             };
             for (name, file) in PROCESS_FILES {
+                // A thread's own directory has no coredump_filter (`tid_base_stuff`).
+                if task.own && *file == ProcessFile::CoredumpFilter {
+                    continue;
+                }
                 add(name, Entry::ProcessFile(task, *file));
             }
             for (name, link) in PROCESS_LINKS {
@@ -906,6 +1074,7 @@ pub(crate) fn list(view: &View<'_>, entry: &Entry) -> Vec<(Vec<u8>, Entry, u64)>
             add(b"fd", Entry::Fds(task));
             add(b"fdinfo", Entry::FdInfos(task));
             add(b"net", Entry::Net(task));
+            add(b"ns", Entry::Namespaces(task));
             if !task.own {
                 add(b"task", Entry::Tasks(task.pid));
             }
@@ -936,6 +1105,16 @@ pub(crate) fn list(view: &View<'_>, entry: &Entry) -> Vec<(Vec<u8>, Entry, u64)>
                     };
                     out.push((format!("{fd}").into_bytes(), child, fd as u64 + 2));
                 }
+            }
+        }
+        // `proc_ns_dir_readdir`: every link, whether or not the process still has its namespaces.
+        Entry::Namespaces(task) => {
+            for (index, namespace) in Namespace::ALL.into_iter().enumerate() {
+                out.push((
+                    namespace.name().to_vec(),
+                    Entry::Namespace(*task, namespace),
+                    index as u64 + 2,
+                ));
             }
         }
         Entry::Net(task) => {
@@ -984,6 +1163,51 @@ fn linked<'a>(view: &'a View<'_>, task: &Task) -> Result<(&'a Process, &'a Threa
     Ok((process, thread))
 }
 
+/// The namespace a process's link names, if the caller may see it (`proc_ns_get_link` and
+/// `proc_ns_readlink` ask `ptrace_may_access`) and the process still has it: an ended one keeps its
+/// process number's namespace and its credentials' user namespace, and gave the others back
+/// (`exit_task_namespaces`).
+fn named_namespace(view: &View<'_>, task: &Task, namespace: Namespace) -> Result<(), Errno> {
+    if !ptrace_may_read(view.processes, view.threads, view.caller_thread, task.pid) {
+        return Err(Errno::EACCES);
+    }
+    let ended = view
+        .processes
+        .get(&task.pid)
+        .is_none_or(|process| process.ended.is_some())
+        || !view.threads.contains_key(&task.tid);
+    if ended && !matches!(namespace, Namespace::Pid | Namespace::User) {
+        return Err(Errno::ENOENT);
+    }
+    Ok(())
+}
+
+/// The nsfs inode of a namespace: one number for each, read-only and immutable (`__ns_get_path`).
+fn namespace_inode(view: &View<'_>, namespace: Namespace) -> Node {
+    namespace_node(view.nsfs.clone(), view.boot, namespace)
+}
+
+/// The nsfs inode of a namespace, on `nsfs`, made at `boot`.
+pub(crate) fn namespace_node(nsfs: FileSystem, boot: Time, namespace: Namespace) -> Node {
+    let node = new_inode(
+        nsfs,
+        namespace.ino(),
+        New {
+            mode: S_IFREG | 0o444,
+            uid: 0,
+            gid: 0,
+            rdev: 0,
+            now: boot,
+            content: Content::Namespace(namespace),
+            parent: None,
+            name: namespace.link(),
+        },
+    )
+    .expect("nsfs counts no space");
+    node.borrow_mut().fsflags = FS_IMMUTABLE_FL;
+    node
+}
+
 /// Where a symbolic link of the tree points, as `readlink` gives it.
 pub(crate) fn link_target(
     view: &View<'_>,
@@ -1008,6 +1232,10 @@ pub(crate) fn link_target(
                 ProcessLink::Root => Ok(walk.path_of(&fs.root).unwrap_or_default()),
             }
         }
+        Entry::Namespace(task, namespace) => {
+            named_namespace(view, task, *namespace)?;
+            Ok(namespace.link())
+        }
         Entry::Fd(task, fd) => {
             let thread = view.threads.get(&task.tid).ok_or(Errno::ENOENT)?;
             let file = thread.files.borrow().file(*fd).map_err(|_| Errno::ENOENT)?;
@@ -1017,12 +1245,14 @@ pub(crate) fn link_target(
                 Content::Pipe(_) if inode.fs.kind == super::Kind::Pipe => {
                     format!("pipe:[{}]", inode.ino).into_bytes()
                 }
+                // nsfs names its files itself (`ns_dname`).
+                Content::Namespace(namespace) => namespace.link(),
                 Content::Directory(_) | Content::Proc(_) if inode.is_directory() => {
                     drop(inode);
                     walk.path_of(&file.node)
                         .unwrap_or_else(|| file.path.clone())
                 }
-                _ if inode.shown_deleted() => {
+                _ if inode.shown_deleted() || file.unnamed() => {
                     let mut path = file.path.clone();
                     path.extend_from_slice(b" (deleted)");
                     path
@@ -1038,7 +1268,7 @@ pub(crate) fn link_target(
 /// it names; a file opened through one keeps that path.
 pub(crate) fn magic_path(view: &View<'_>, walk: &Walk<'_>, entry: &Entry) -> Option<Vec<u8>> {
     match entry {
-        Entry::ProcessLink(..) => link_target(view, walk, entry).ok(),
+        Entry::ProcessLink(..) | Entry::Namespace(..) => link_target(view, walk, entry).ok(),
         Entry::Fd(task, fd) => {
             let file = view.threads.get(&task.tid)?.files.borrow().file(*fd).ok()?;
             let file = file.borrow();
@@ -1069,6 +1299,10 @@ pub(crate) fn follow(
                 ProcessLink::Root => thread.fs.borrow().root.clone(),
             })
         }
+        Entry::Namespace(task, namespace) => {
+            named_namespace(view, task, *namespace)?;
+            Ok(namespace_inode(view, *namespace))
+        }
         Entry::Fd(task, fd) => {
             let thread = view.threads.get(&task.tid).ok_or(Errno::ENOENT)?;
             let file = thread.files.borrow().file(*fd).map_err(|_| Errno::ENOENT)?;
@@ -1096,7 +1330,7 @@ pub(crate) fn open_check(processes: &BTreeMap<Pid, Process>, entry: &Entry) -> R
     {
         match file {
             ProcessFile::Environ | ProcessFile::Auxv => return Err(Errno::ESRCH),
-            ProcessFile::Mounts => return Err(Errno::EINVAL),
+            ProcessFile::Mounts | ProcessFile::Mountinfo => return Err(Errno::EINVAL),
             _ => {}
         }
     }
@@ -1123,7 +1357,11 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                          CPU part\t: 0x000\nCPU revision\t: 0\n\n"
                     );
                 }
-                "filesystems" => out.push_str("nodev\ttmpfs\nnodev\tproc\nnodev\tpipefs\n"),
+                // The registered file systems that are built, in Linux's order of registration.
+                "filesystems" => out.push_str(
+                    "nodev\tsysfs\nnodev\ttmpfs\nnodev\tproc\nnodev\tsockfs\nnodev\tpipefs\n\
+                     nodev\tdevpts\nnodev\tfuse\nnodev\tmqueue\n",
+                ),
                 "loadavg" => {
                     let _ = writeln!(
                         out,
@@ -1172,6 +1410,8 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                 // Line disciplines load as modules on demand; TIOCSTI is still built (measured).
                 "sys/dev/tty/ldisc_autoload" | "sys/dev/tty/legacy_tiocsti" => out.push_str("1\n"),
                 "sys/fs/nr_open" => out.push_str("1048576\n"),
+                // The cap `listen` puts on a backlog.
+                "sys/net/core/somaxconn" => out.push_str("4096\n"),
                 "sys/kernel/cap_last_cap" => {
                     let _ = writeln!(out, "{CAP_LAST_CAP}");
                 }
@@ -1223,7 +1463,7 @@ pub(crate) struct Source<'a> {
     /// Reads a range of a process's memory; bytes it cannot read end the result.
     pub read_memory: &'a mut dyn FnMut(&Process, u64, u64) -> Vec<u8>,
     /// The mount table as `/proc/<pid>/mounts` shows it.
-    pub mounts: &'a str,
+    pub mounts: &'a [super::mounts::Mount],
     /// The memory in use and what of it tmpfs holds, in bytes.
     pub memory_in_use: (u64, u64),
 }
@@ -1260,6 +1500,9 @@ fn process_file(
             let mut bytes = shown.name.clone();
             bytes.push(b'\n');
             return Ok(bytes);
+        }
+        ProcessFile::CoredumpFilter => {
+            return Ok(alloc::format!("{:08x}\n", process.coredump_filter).into_bytes());
         }
         ProcessFile::Maps => {
             for mapping in process.map.borrow().iter() {
@@ -1459,7 +1702,8 @@ fn process_file(
                 1 + shown.filters,
             );
         }
-        ProcessFile::Mounts => out.push_str(source.mounts),
+        ProcessFile::Mounts => out.push_str(&super::mounts::mounts(source.mounts)),
+        ProcessFile::Mountinfo => out.push_str(&super::mounts::mountinfo(source.mounts)),
         ProcessFile::Limits => {
             const NAMES: [(&str, &str); 16] = [
                 ("Max cpu time", "seconds"),

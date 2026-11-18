@@ -205,11 +205,14 @@ static void drops(void) {
     sendto(s, data, 10, 0, (void *)&a, sizeof a);
     int got = 0;
     unsigned last = 0;
-    for (;;) {
+    // Until every datagram is received or told dropped: Linux may hand loopback datagrams over
+    // after sendto returns (its receive work deferred under load), so waiting is allowed for.
+    while (got + (int)last < 41) {
         char ctl[64];
         struct iovec io = {data, sizeof data};
         struct msghdr m = {.msg_iov = &io, .msg_iovlen = 1, .msg_control = ctl, .msg_controllen = sizeof ctl};
-        if (recvmsg(r, &m, MSG_DONTWAIT) < 0)
+        struct pollfd p = {r, POLLIN};
+        if (poll(&p, 1, 5000) <= 0 || recvmsg(r, &m, MSG_DONTWAIT) < 0)
             break;
         got++;
         for (struct cmsghdr *c = CMSG_FIRSTHDR(&m); c; c = CMSG_NXTHDR(&m, c))

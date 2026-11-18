@@ -129,3 +129,39 @@ fn route_questions_and_rules_match_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     assert_same_output(&out, "routeget", &[]);
 }
+
+#[test]
+fn socket_edges_match_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "sockedges", &[]);
+}
+
+#[test]
+fn options_not_acted_on_are_counted() {
+    use wcontainers_kernel::reason;
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    let program = wcontainers_kernel_test::guest::build("sockedges", &[], &out);
+    let (ours, theirs) = wcontainers_kernel_test::run_both(&program, &["unacted"]);
+    assert_eq!(ours.outcome.stdout, theirs.stdout);
+    let mut counted: Vec<u64> = ours
+        .counters
+        .iter()
+        .filter(|counter| counter.reason == reason::OPTION_NOT_ACTED_ON)
+        .map(|counter| counter.detail)
+        .collect();
+    counted.sort();
+    // MSG_MORE, then SOL_SOCKET's SO_MAX_PACING_RATE, then TCP_CORK, TCP_SAVE_SYN,
+    // TCP_FASTOPEN_CONNECT and TCP_TX_DELAY.
+    let option = |level: u64, name: u64| (level << 32) | name;
+    assert_eq!(
+        counted,
+        [
+            0x8000,
+            option(1, 47),
+            option(6, 3),
+            option(6, 27),
+            option(6, 30),
+            option(6, 37)
+        ]
+    );
+}

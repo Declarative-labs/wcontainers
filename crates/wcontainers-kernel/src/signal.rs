@@ -1111,8 +1111,66 @@ impl Kernel {
     ) {
         let pid = self.threads[&tid].process;
         let may_lock_any = self.credentials(tid).has(CAP_IPC_LOCK);
+        let wanted = match access {
+            Access::Read => wcontainers_abi::Permissions::READ,
+            Access::Write => wcontainers_abi::Permissions::WRITE,
+            Access::Execute => wcontainers_abi::Permissions::EXECUTE,
+        };
+        let mapping = self.processes[&pid].map.borrow().find(address).cloned();
+        // A page of a backend file the mapping allows this access to, read when first touched.
+        if let Some(mapping) = &mapping
+            && let Backing::File {
+                node,
+                offset,
+                file_end,
+                ..
+            } = &mapping.backing
+            && address < *file_end
+            && crate::memory::cpu_permissions(mapping.permissions).contains(wanted)
+            && crate::fs::backend::remote(node).is_some()
+        {
+            let page = (offset + (address - mapping.start)) / wcontainers_abi::PAGE_SIZE;
+            if !crate::shared::unfilled(node, page..page + 1).is_empty() {
+                // Linux's read-around: the pages about the one touched (`do_sync_mmap_readahead`).
+                let around = crate::shared::readahead_pages(node);
+                let first = page.saturating_sub(around / 2);
+                self.begin_asking(tid);
+                let result = crate::shared::fill(node, first..(first + around).max(page + 1));
+                self.end_asking(tid, result == Err(Errno::PARKED));
+                match result {
+                    Err(Errno::PARKED) => {
+                        self.thread_mut(tid).filling = true;
+                        return;
+                    }
+                    Err(_) => {
+                        self.force_signal(
+                            tid,
+                            fault_info(SIGBUS, BUS_ADRERR as i32, address),
+                            (address, 0),
+                        );
+                        self.return_to_user(cx, tid, Resume::FromRegisters);
+                        return;
+                    }
+                    Ok(()) => {}
+                }
+            }
+            let process = &self.processes[&pid];
+            if !mapping.copies_on_write(address) || access != Access::Write {
+                // The pages read around it, as far as the mapping reaches.
+                let around = crate::shared::readahead_pages(node) * wcontainers_abi::PAGE_SIZE;
+                let refreshed = process.map.borrow_mut().refresh(
+                    cx.cpu,
+                    process.memory,
+                    address.saturating_sub(around / 2).max(mapping.start),
+                    address.saturating_add(around),
+                );
+                if refreshed.is_ok() {
+                    self.return_to_user(cx, tid, Resume::FromRegisters);
+                    return;
+                }
+            }
+        }
         let process = self.processes.get_mut(&pid).expect("process exists");
-        let mapping = process.map.borrow().find(address).cloned();
         // A first write to a private file page: it becomes the process's own copy.
         if access == Access::Write
             && mapping
@@ -1127,11 +1185,6 @@ impl Kernel {
             self.return_to_user(cx, tid, Resume::FromRegisters);
             return;
         }
-        let wanted = match access {
-            Access::Read => wcontainers_abi::Permissions::READ,
-            Access::Write => wcontainers_abi::Permissions::WRITE,
-            Access::Execute => wcontainers_abi::Permissions::EXECUTE,
-        };
         // A page that allows nothing has no valid entry: a translation fault even inside a mapping.
         let present = mapping
             .as_ref()

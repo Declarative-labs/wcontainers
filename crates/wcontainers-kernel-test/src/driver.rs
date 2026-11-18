@@ -38,14 +38,16 @@ pub(crate) type Back = crate::standin::StandIn;
 pub(crate) type Back = wcontainers_wasmtime::CpuSide<wcontainers_arm64::Arm64>;
 
 #[cfg(not(feature = "runtime"))]
-fn back_end(_seed: u64) -> Back {
-    crate::standin::StandIn::new()
+fn back_end(_seed: u64, address_space: u64) -> Back {
+    crate::standin::StandIn::with_space(address_space)
 }
 
 /// One compiler for the test process, so a second container finds the first one's translations, with
 /// its cache's directory under the target directory, so every test binary of a build shares them.
+/// The address space ends at the back end's own ceiling, from its output's widths, whatever the
+/// container asks.
 #[cfg(feature = "runtime")]
-pub(crate) fn back_end(seed: u64) -> Back {
+pub(crate) fn back_end(seed: u64, _address_space: u64) -> Back {
     use wcontainers_wasmtime::{Compiler, CpuSide, Optimise};
     static COMPILER: std::sync::OnceLock<std::sync::Arc<Compiler<wcontainers_arm64::Arm64>>> =
         std::sync::OnceLock::new();
@@ -168,6 +170,8 @@ pub struct Run {
     pub files: Vec<FileRecord>,
     /// How many times it was saved and brought back.
     pub saved: usize,
+    /// How many turns on the CPU side it took.
+    pub turns: u64,
 }
 
 /// The host used in tests. Randomness comes from a seed so runs repeat exactly. When the kernel is idle
@@ -224,7 +228,7 @@ impl Injecting {
         Self {
             seed,
             injections,
-            at: moments(seed ^ 0x5a7e, injections.saves),
+            at: moments_apart(seed ^ 0x5a7e, injections.saves, injections.save_gap),
             signal,
             signal_at: moments(seed ^ 0x5197, signals),
             // Notices come close together, so that a short program meets many of them.
@@ -452,6 +456,9 @@ pub struct Container<'a> {
     /// Ports of this machine's loopback that reach the container's ports, as (container port,
     /// outside port), as `docker run -p` publishes them.
     pub published: &'a [(u16, u16)],
+    /// Where each process's address space ends: the host's memories are 32 or 64 bit
+    /// ([`crate::standin::SPACE_32_BIT`], [`crate::standin::SPACE_64_BIT`]).
+    pub address_space: u64,
 }
 
 /// Runs a container on our kernel and the stand-in CPU until its first process ends.
@@ -460,10 +467,13 @@ pub fn run(container: &Container<'_>, seed: u64) -> Result<Run, Failure> {
 }
 
 /// What a run has done to it at moments drawn from its seed, besides where its turns end.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct Injections {
     /// How many times it is saved and brought back.
     pub saves: usize,
+    /// The most turns between two saves (and before the first): a long run spreads its saves
+    /// over more turns.
+    pub save_gap: u64,
     /// How much more the host's wall clock moves on than its monotonic clock at each save.
     pub wall_step: u64,
     /// A signal sent to the first process from outside, and how many times.
@@ -471,6 +481,18 @@ pub struct Injections {
     /// How many notices the file backend sends unasked, of kinds and about nodes drawn from the
     /// seed, as a backend whose files changed underneath would.
     pub notices: usize,
+}
+
+impl Default for Injections {
+    fn default() -> Self {
+        Self {
+            saves: 0,
+            save_gap: 100,
+            wall_step: 0,
+            signal: None,
+            notices: 0,
+        }
+    }
 }
 
 /// Turn counts at which something is injected: `count` of them, each 1 to 100 turns after the last.
@@ -559,7 +581,7 @@ pub fn run_prepared(
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
     }
-    let mut cpu = back_end(seed);
+    let mut cpu = back_end(seed, container.address_space);
     let mut host = TestHost::repeatable(seed);
     host.injecting = Some(Injecting::new(seed, injections));
     host.echo = echo;
@@ -616,6 +638,7 @@ pub fn run_prepared(
     };
     let report = host.injecting().report;
     let saved = host.injecting().saved;
+    let turns = host.injecting().turns;
     let run = Run {
         outcome: Outcome {
             stdout: host.stdout,
@@ -627,6 +650,7 @@ pub fn run_prepared(
         counters: kernel.counters().collect(),
         files,
         saved,
+        turns,
     };
     Ok(finish(run, report))
 }
@@ -1012,6 +1036,7 @@ fn encode(run: &Run) -> Vec<u8> {
     bytes(&mut out, &run.outcome.stderr);
     number(&mut out, run.outcome.exit_code as u64);
     number(&mut out, run.saved as u64);
+    number(&mut out, run.turns);
     for warnings in [&run.warnings, &run.cpu_warnings] {
         number(&mut out, warnings.len() as u64);
         for warned in warnings {
@@ -1063,6 +1088,7 @@ fn decode(input: &[u8]) -> Run {
     let stderr = reader.bytes();
     let exit_code = reader.number() as i32;
     let saved = reader.number() as usize;
+    let turns = reader.number();
     let mut warned = || -> Vec<Warned> {
         (0..reader.number())
             .map(|_| Warned {
@@ -1104,5 +1130,6 @@ fn decode(input: &[u8]) -> Run {
         counters,
         files,
         saved,
+        turns,
     }
 }

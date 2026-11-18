@@ -118,6 +118,8 @@ fn listings_are_a_subset_of_the_reference() {
         "/proc/sys/kernel/random",
         "/proc/sys/fs",
         "/proc/sys/vm",
+        "/proc/sys/net",
+        "/proc/sys/net/core",
     ]);
 }
 

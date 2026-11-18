@@ -113,6 +113,8 @@ pub struct Backend {
     held: Vec<Message>,
     /// How many messages went each way.
     pub sent: u64,
+    /// The image archive its container unpacked, removed when the backend ends.
+    archive: Option<std::path::PathBuf>,
 }
 
 /// What the server sent: an answer to a request, or a notice nobody asked for.
@@ -147,6 +149,7 @@ impl Backend {
             .args(["--tmpfs", SERVED])
             .arg("--volume")
             .arg(format!("{}:/wcb:ro", server.display()));
+        let mut kept = None;
         let script = match image {
             Some(files) => {
                 let images = out.join("wc-backend-images");
@@ -156,6 +159,7 @@ impl Backend {
                     .expect("the images' directory")
                     .join(format!("{name}.tar"));
                 std::fs::write(&archive, crate::image::to_tar(files)).expect("writing the image");
+                kept = Some(archive.clone());
                 command
                     .arg("--volume")
                     .arg(format!("{}:/wci/image.tar:ro", archive.display()));
@@ -179,6 +183,7 @@ impl Backend {
             outstanding: VecDeque::new(),
             held: Vec::new(),
             sent: 0,
+            archive: kept,
         }
     }
 
@@ -293,6 +298,9 @@ impl Drop for Backend {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if let Some(archive) = &self.archive {
+            let _ = std::fs::remove_file(archive);
+        }
     }
 }
 

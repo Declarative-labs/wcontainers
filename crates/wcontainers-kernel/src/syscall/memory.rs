@@ -171,8 +171,19 @@ pub(super) fn do_mmap(
     }
     let map = kernel.process_of(tid).map.borrow();
     let fixed = flags & (MAP_FIXED | MAP_FIXED_NOREPLACE) != 0;
+    // Past the host's address space and inside Linux's: the plan's small address space.
+    let above = address
+        .checked_add(length)
+        .is_some_and(|end| end > map.end && end <= TASK_SIZE);
+    let mut hint_above = false;
     let start = if fixed {
         if length > map.end || address > map.end - length {
+            if above {
+                drop(map);
+                kernel
+                    .counters
+                    .count(cx.host, crate::reason::ADDRESS_ABOVE_SPACE, address);
+            }
             return Err(Errno::ENOMEM);
         }
         if !address.is_multiple_of(PAGE_SIZE) {
@@ -191,6 +202,7 @@ pub(super) fn do_mmap(
         if hint != 0 && hint_fits {
             hint
         } else {
+            hint_above = hint != 0 && above;
             map.find_free(length).ok_or(Errno::ENOMEM)?
         }
     };
@@ -207,6 +219,11 @@ pub(super) fn do_mmap(
         map.future_lock
     };
     drop(map);
+    if hint_above {
+        kernel
+            .counters
+            .count(cx.host, crate::reason::ADDRESS_ABOVE_SPACE, address);
+    }
     if flags & MAP_LOCKED != 0 && !can_lock(kernel, tid) {
         return Err(Errno::EPERM);
     }
@@ -237,6 +254,8 @@ pub(super) fn do_mmap(
     let mut zero_device = None;
     // A mapping of a backend file: the open file its bytes are read through.
     let mut backend = None;
+    // A mapping of a socket: whether it is TCP's, whose `mmap` is asked after the limits.
+    let mut socket_tcp = None;
     let file = match file {
         None => None,
         Some(file) => {
@@ -288,19 +307,10 @@ pub(super) fn do_mmap(
             if grows_down {
                 return Err(Errno::EINVAL);
             }
-            // `tcp_mmap`: a TCP socket maps for reading only, and never later for more; its pages
-            // come only from TCP_ZEROCOPY_RECEIVE (not built), so touching one is SIGBUS. Every
-            // other protocol has `sock_no_mmap`.
             if socket {
-                let tcp =
-                    matches!(&inode.content, Content::Socket(socket) if socket.borrow().tcp());
-                if !tcp {
-                    return Err(Errno::ENODEV);
-                }
-                if permissions.intersects(Permissions::WRITE | Permissions::EXECUTE) {
-                    return Err(Errno::EPERM);
-                }
-                allowed.remove(Permissions::WRITE | Permissions::EXECUTE);
+                socket_tcp = Some(
+                    matches!(&inode.content, Content::Socket(socket) if socket.borrow().tcp()),
+                );
             }
             // A sealed file is not written through a mapping, then or later (`memfd_check_seals_mmap`).
             if let Content::Regular(regular) = &inode.content
@@ -408,6 +418,31 @@ pub(super) fn do_mmap(
         replaced,
     ) {
         return Err(Errno::ENOMEM);
+    }
+    // `tcp_mmap`: a TCP socket maps for reading only, and never later for more; its pages come
+    // only from TCP_ZEROCOPY_RECEIVE (not built), so touching one is SIGBUS. Every other protocol
+    // has `sock_no_mmap`. The file's `mmap` runs after what a fixed mapping replaces was taken
+    // away, so a refusal leaves the range unmapped (`vms_abort_munmap_vmas`).
+    let refused = match socket_tcp {
+        Some(false) => Some(Errno::ENODEV),
+        Some(true) if permissions.intersects(Permissions::WRITE | Permissions::EXECUTE) => {
+            Some(Errno::EPERM)
+        }
+        _ => None,
+    };
+    if let Some(error) = refused {
+        if fixed {
+            let memory = process.memory;
+            unmap(&mut map, cx, memory, start, length)?;
+            drop(map);
+            crate::shared::release(kernel, cx);
+        }
+        return Err(error);
+    }
+    if socket_tcp == Some(true) {
+        mapping
+            .allowed
+            .remove(Permissions::WRITE | Permissions::EXECUTE);
     }
     // A secret memory file is mapped only shared, and locked, within the limit on locked memory
     // (`secretmem_mmap`).

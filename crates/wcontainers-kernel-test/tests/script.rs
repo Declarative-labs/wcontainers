@@ -49,6 +49,7 @@ fn scripts_match_reference() {
                     backend: None,
                     cached: false,
                     published: &[],
+                    address_space: wcontainers_kernel_test::standin::SPACE_32_BIT,
                 },
                 0,
             );

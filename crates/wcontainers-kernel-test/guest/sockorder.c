@@ -86,6 +86,24 @@ int main(void) {
         close(p[1]);
     }
     result("netlink shutdown of no kind", shutdown(n, 3));
+    // SO_PEEK_OFF: refused on netlink (no `set_peek_off`), kept by the other families.
+    {
+        int kinds[][2] = {{AF_NETLINK, SOCK_RAW}, {AF_NETLINK, SOCK_DGRAM}, {AF_INET, SOCK_DGRAM},
+                          {AF_INET6, SOCK_STREAM}, {AF_UNIX, SOCK_STREAM}, {AF_UNIX, SOCK_DGRAM}};
+        for (int k = 0; k < 6; k++) {
+            int s = socket(kinds[k][0], kinds[k][1], 0);
+            int value = -7, set = 5;
+            socklen_t room = sizeof value;
+            result("peek offset get", getsockopt(s, SOL_SOCKET, SO_PEEK_OFF, &value, &room));
+            printf("value %d\n", value);
+            result("peek offset short set", setsockopt(s, SOL_SOCKET, SO_PEEK_OFF, &set, 2));
+            result("peek offset set", setsockopt(s, SOL_SOCKET, SO_PEEK_OFF, &set, sizeof set));
+            value = -7;
+            getsockopt(s, SOL_SOCKET, SO_PEEK_OFF, &value, &room);
+            printf("value %d\n", value);
+            close(s);
+        }
+    }
     // A peek of local datagrams starts at SO_PEEK_OFF, past whole datagrams.
     {
         int sv[2];

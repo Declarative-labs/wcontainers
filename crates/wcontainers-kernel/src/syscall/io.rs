@@ -43,6 +43,12 @@ pub(super) fn open_file(kernel: &Kernel, tid: Tid, fd: u64) -> Result<FileRef, E
     Ok(found)
 }
 
+/// Whether a read or write of the file in this call answers EAGAIN instead of waiting: the file is
+/// nonblocking or the call may not wait (RWF_NOWAIT).
+pub(super) fn nonblocking(kernel: &Kernel, tid: Tid, file: &FileRef) -> bool {
+    file.borrow().flags & O_NONBLOCK != 0 || kernel.threads[&tid].call.nowait
+}
+
 pub(super) fn read(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -245,15 +251,20 @@ fn vectored2(
     if looped && flags & !RWF_HIPRI != 0 {
         return Err(Errno::EOPNOTSUPP);
     }
-    // `/proc`'s files, tmpfs's regular files, named pipes and terminals do not take reads or
-    // writes that may not wait (`FMODE_NOWAIT` unset; measured: devices and the pipes `pipe2`
-    // makes take them, a named pipe opened by its path does not).
+    // `/proc`'s files, tmpfs's and the backend's regular files, named pipes, terminals and
+    // `/dev/full` do not take reads or writes that may not wait (`FMODE_NOWAIT` unset; measured:
+    // the other devices and the pipes `pipe2` makes take them, a named pipe opened by its path
+    // does not).
     let waits = super::tty::end(&file).is_some() || {
         let file = file.borrow();
         let inode = file.node.borrow();
         matches!(inode.content, Content::Proc(_))
-            || inode.fs.kind == crate::fs::Kind::Tmpfs && inode.file_type() == S_IFREG
+            || (inode.fs.kind == crate::fs::Kind::Tmpfs
+                || matches!(inode.content, Content::Backend(_)))
+                && inode.file_type() == S_IFREG
             || inode.file_type() == S_IFIFO && inode.fs.kind != crate::fs::Kind::Pipe
+            || matches!(inode.content, Content::Special)
+                && matches!(Device::from_number(inode.rdev), Some(Device::Full))
     };
     if waits && flags & RWF_NOWAIT != 0 {
         return Err(Errno::EOPNOTSUPP);
@@ -274,6 +285,7 @@ fn vectored2(
         append = true;
     }
     let at = (!current).then_some(offset);
+    kernel.thread_mut(tid).call.nowait = flags & RWF_NOWAIT != 0;
     vectored(
         kernel,
         cx,
@@ -874,11 +886,13 @@ pub(super) fn file_bytes(
             }
             _ => return Err(Errno::ENXIO),
         },
+        // nsfs files have no read (`ns_file_operations`).
         Content::Pipe(_)
         | Content::Symlink(_)
         | Content::Pidfd(..)
         | Content::Anon
-        | Content::Socket(_) => {
+        | Content::Socket(_)
+        | Content::Namespace(_) => {
             return Err(Errno::EINVAL);
         }
         // `mqueue_read_file`: the queue's size and request, which a read that returns bytes marks
@@ -1372,6 +1386,20 @@ fn write_proc(
             kernel.thread_mut(task.tid).set_name_exact(&bytes);
             Ok(count)
         }
+        // `proc_coredump_filter_write`: a number as `kstrtouint` reads it in base 0, whose
+        // filter bits are kept.
+        Writing::CoredumpFilter => {
+            // The whole write is the number (measured with 29 bytes).
+            let bytes = guest(kernel, cx, tid).read(buffer, count.min(PAGE_SIZE))?;
+            let value = crate::fs::proc::parse_unsigned(&bytes)?;
+            let crate::fs::proc::Entry::ProcessFile(task, _) = entry else {
+                return Err(Errno::EINVAL);
+            };
+            if let Some(process) = kernel.processes.get_mut(&task.pid) {
+                process.coredump_filter = value & 0x1ff;
+            }
+            Ok(count)
+        }
         Writing::Io => Err(Errno::EIO),
         Writing::Sysctl => Err(Errno::EROFS),
         Writing::None => Err(Errno::EINVAL),
@@ -1457,7 +1485,8 @@ pub(super) fn write_bytes(
         | Content::Pidfd(..)
         | Content::Anon
         | Content::Socket(_)
-        | Content::Mqueue(_) => {
+        | Content::Mqueue(_)
+        | Content::Namespace(_) => {
             return Err(Errno::EINVAL);
         }
     };
@@ -1818,7 +1847,10 @@ pub(super) fn lseek(
     let inode = file.node.borrow();
     let mut sequence = None;
     let new = match &inode.content {
-        Content::Pipe(_) | Content::Pidfd(..) | Content::Socket(_) => return Err(Errno::ESPIPE),
+        // nsfs files have no seek.
+        Content::Pipe(_) | Content::Pidfd(..) | Content::Socket(_) | Content::Namespace(_) => {
+            return Err(Errno::ESPIPE);
+        }
         // Signal descriptors keep their position at 0 (`noop_llseek`).
         Content::Anon => file.offset as i64,
         // A queue seeks as `default_llseek` does over the size it shows.
@@ -2923,7 +2955,8 @@ fn sync_file(
         | Content::Pidfd(..)
         | Content::Anon
         | Content::Mqueue(_)
-        | Content::Socket(_) => Err(Errno::EINVAL),
+        | Content::Socket(_)
+        | Content::Namespace(_) => Err(Errno::EINVAL),
         _ if inode.is_secret() => Err(Errno::EINVAL),
         _ => Ok(0),
     }
@@ -2966,7 +2999,9 @@ pub(super) fn poll_mask(kernel: &Kernel, tid: Tid, file: &FileRef) -> u16 {
             (POLLIN | POLLRDNORM) as u16
         }
         // `mounts_poll`: the mount table cannot change within the container.
-        Content::Proc(Entry::ProcessFile(_, ProcessFile::Mounts)) => (POLLIN | POLLRDNORM) as u16,
+        Content::Proc(Entry::ProcessFile(_, ProcessFile::Mounts | ProcessFile::Mountinfo)) => {
+            (POLLIN | POLLRDNORM) as u16
+        }
         Content::Pidfd(..) => {
             drop(node);
             super::pidfd::poll(kernel, &file)

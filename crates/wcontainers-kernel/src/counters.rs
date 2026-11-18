@@ -48,6 +48,10 @@ pub mod reason {
     /// A `/proc` entry Linux has and this kernel does not build was looked up; it answers ENOENT.
     /// Detail: the directory's index in Linux's list of entries, times 1024, plus the name's.
     pub const PROC_ENTRY_NOT_BUILT: &str = "proc entry not built";
+    /// A name Linux has in `/sys` was looked up there; sysfs here holds none of its entries, so it
+    /// answers ENOENT. Detail: the name's index in the reference's `/sys` (block, bus, class, dev,
+    /// devices, firmware, fs, kernel, module).
+    pub const SYS_ENTRY_NOT_BUILT: &str = "sys entry not built";
     /// A `/proc` file was made whose fields this kernel does not track all of (those show 0 or are
     /// left out). Detail: which file (0 `stat`, 1 `statm`, 2 `status`, 3 `mounts`, 4 `meminfo`).
     pub const PROC_FIELDS_NOT_TRACKED: &str = "proc fields not tracked";
@@ -69,9 +73,14 @@ pub mod reason {
     /// A mapped backend file's pages were written back whole, changed or not, since which pages a
     /// shared mapping wrote is not known (Linux writes back only dirty pages). Detail: none.
     pub const BACKEND_PAGES_WRITTEN_WHOLE: &str = "backend pages written whole";
-    /// A backend file was read from its start to the end of a mapping when mapped, or whole when
-    /// run, where Linux reads each page at its first fault. Detail: the bytes read.
-    pub const BACKEND_READ_WHOLE: &str = "backend file read whole when mapped";
+    /// The kernel touched pages of a mapped backend file not read yet where no call or fault runs
+    /// to wait for them (a signal frame written there): they are not asked for, and the touch is a
+    /// fault, where Linux would read them. Detail: none.
+    pub const BACKEND_PAGES_UNASKED: &str = "backend pages needed outside a call";
+    /// A call copied part of its bytes, then reached pages of a mapped backend file not read yet:
+    /// it ends with what it did, as at a fault, where Linux's copy would wait for the pages.
+    /// Detail: the call's number.
+    pub const COPY_SHORT_OF_PAGES: &str = "copy short of backend pages";
     /// The backend said a mapped file's bytes changed (INVAL_INODE): its mapped pages, and reads of
     /// it while mapped, keep the bytes they had, where Linux reads them again (plan section 15).
     /// Detail: the node number.
@@ -156,6 +165,10 @@ pub mod reason {
     /// The CPU side answered that this host cannot make a memory, a thread or a block of shared
     /// pages at all; the guest's call fails with ENOSYS. Detail: none.
     pub const HOST_CANNOT: &str = "host cannot do this";
+    /// A mapping asked for at an address Linux's address space has and the host's does not (plan
+    /// section 15, the address space is small): a fixed one is refused (ENOMEM), a hint is placed
+    /// elsewhere. Detail: the address.
+    pub const ADDRESS_ABOVE_SPACE: &str = "address above the address space";
 
     /// Every reason that means something Linux has is not built here, each answered through
     /// `Counters::refuse`: the status file's list of what is missing comes
@@ -170,6 +183,7 @@ pub mod reason {
         ADVICE_NOT_BUILT,
         DEVICE_NOT_BUILT,
         PROC_ENTRY_NOT_BUILT,
+        SYS_ENTRY_NOT_BUILT,
         SECCOMP_LISTENER_NOT_IMPLEMENTED,
         CROSS_PROCESS_NOT_BUILT,
         FAMILY_NOT_BUILT,

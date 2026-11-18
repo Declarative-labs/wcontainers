@@ -5,7 +5,7 @@
 //! [`inet`].
 
 mod inet;
-mod netlink;
+pub(crate) mod netlink;
 mod outside;
 mod procnet;
 mod resolver;
@@ -221,6 +221,11 @@ impl Socket {
     /// A local socket, not an internet or netlink one.
     pub(crate) fn local(&self) -> bool {
         self.inet.is_none() && self.netlink.is_none()
+    }
+
+    /// A netlink socket, which a message queue's SIGEV_THREAD request names.
+    pub(crate) fn is_netlink(&self) -> bool {
+        self.netlink.is_some()
     }
 
     /// A TCP socket, which `mmap` takes (`tcp_mmap`).
@@ -911,8 +916,13 @@ pub(super) fn listen(
     if !listener.connection() {
         return Err(Errno::EOPNOTSUPP);
     }
-    if listener.name.is_none() || listener.state == State::Connected {
+    if listener.name.is_none() {
         return Err(Errno::EINVAL);
+    }
+    // A named connected socket is left as it is, and the call succeeds (measured on the
+    // reference: socket pairs, connected and accepted sockets, also after the peer closed).
+    if listener.state == State::Connected {
+        return Ok(0);
     }
     // A negative backlog counts as none (`sk_max_ack_backlog` is unsigned, read as an int).
     listener.max_backlog = backlog as u32;
@@ -1019,10 +1029,41 @@ fn dgram_connect(
     if socket.borrow().may_pass_cred() && socket.borrow().name.is_none() {
         autobind(kernel, cx, socket)?;
     }
-    let mut own = socket.borrow_mut();
-    own.peer = Some(other);
-    own.state = State::Connected;
+    let old = socket.borrow_mut().peer.replace(other.clone());
+    socket.borrow_mut().state = State::Connected;
+    if let Some(old) = old
+        && !Rc::ptr_eq(&old, &other)
+    {
+        dgram_disconnected(kernel, cx, socket, &old);
+    }
     Ok(0)
+}
+
+/// `unix_dgram_disconnected`: a datagram socket no longer connected to `other` loses what it
+/// held, and if `other` lives and was connected back, `other` is told ECONNRESET.
+fn dgram_disconnected(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    socket: &SocketRef,
+    other: &SocketRef,
+) {
+    let queue = core::mem::take(&mut socket.borrow_mut().queue);
+    if queue.is_empty() {
+        return;
+    }
+    for packet in queue {
+        drop_packet(kernel, cx, packet);
+    }
+    kernel.wake(channel(socket));
+    let back = other
+        .borrow()
+        .peer
+        .as_ref()
+        .is_some_and(|back| Rc::ptr_eq(back, socket));
+    if !other.borrow().dead && back {
+        other.borrow_mut().error = Errno::ECONNRESET.0 as i32;
+        kernel.wake(channel(other));
+    }
 }
 
 pub(super) fn accept(
@@ -1437,9 +1478,15 @@ fn send(
         && socket.borrow().kind != SOCK_STREAM
         && socket.borrow().inet.is_none()
     {
-        // `unix_seqpacket_sendmsg` wants a connection first.
-        if socket.borrow().kind == SOCK_SEQPACKET && socket.borrow().state != State::Connected {
-            return Err(Errno::ENOTCONN);
+        // `unix_seqpacket_sendmsg` takes a pending error and wants a connection first.
+        if socket.borrow().kind == SOCK_SEQPACKET {
+            let error = core::mem::take(&mut socket.borrow_mut().error);
+            if error != 0 {
+                return Err(Errno(error as u32));
+            }
+            if socket.borrow().state != State::Connected {
+                return Err(Errno::ENOTCONN);
+            }
         }
         return Err(Errno::EOPNOTSUPP);
     }
@@ -1748,9 +1795,16 @@ fn send_packet(
     nonblocking: bool,
 ) -> Result<u64, Errno> {
     let kind = socket.borrow().kind;
-    // `unix_seqpacket_sendmsg`: connected, and any destination given is passed over.
-    if kind == SOCK_SEQPACKET && socket.borrow().state != State::Connected {
-        return Err(Errno::ENOTCONN);
+    // `unix_seqpacket_sendmsg`: a pending error first (taken, as `sock_error` does), then
+    // connected, and any destination given is passed over.
+    if kind == SOCK_SEQPACKET {
+        let error = core::mem::take(&mut socket.borrow_mut().error);
+        if error != 0 {
+            return Err(Errno(error as u32));
+        }
+        if socket.borrow().state != State::Connected {
+            return Err(Errno::ENOTCONN);
+        }
     }
     let name = match &message.address {
         Some(bytes) if kind == SOCK_DGRAM && !bytes.is_empty() => Some(parse_name(bytes)?),
@@ -1784,11 +1838,20 @@ fn send_packet(
         },
     };
     if target.borrow().dead {
-        // A connected datagram socket whose peer went is disconnected.
-        if kind == SOCK_DGRAM && name.is_none() {
-            let mut own = socket.borrow_mut();
-            own.peer = None;
-            own.state = State::Closed;
+        // A datagram socket whose peer went is disconnected, by name or not, and what it held
+        // is lost.
+        let is_peer = socket
+            .borrow()
+            .peer
+            .as_ref()
+            .is_some_and(|peer| Rc::ptr_eq(peer, &target));
+        if kind == SOCK_DGRAM && is_peer {
+            {
+                let mut own = socket.borrow_mut();
+                own.peer = None;
+                own.state = State::Closed;
+            }
+            dgram_disconnected(kernel, cx, socket, &target);
             return Err(Errno::ECONNREFUSED);
         }
         return Err(if kind == SOCK_SEQPACKET {
@@ -2221,8 +2284,12 @@ fn receive_stream(
         0
     } as usize;
     let mut index = 0;
+    // A local stream's peek goes on to each next buffer even once it has all it wants
+    // (`unix_stream_read_generic`'s `goto again`), where it stops at the urgent byte or at a
+    // buffer of other credentials or with descriptors.
+    let walk = peek && !is_inet;
     loop {
-        if copied >= size && size > 0 {
+        if copied >= size && size > 0 && !walk {
             break;
         }
         if socket.borrow().queue.get(index).is_some() {
@@ -2359,6 +2426,12 @@ fn receive_stream(
             }
             skip = 0;
             index += 1;
+            if walk {
+                if index >= socket.borrow().queue.len() {
+                    break;
+                }
+                continue;
+            }
         }
         if size == 0 {
             break;
@@ -2548,14 +2621,25 @@ pub(super) fn read(
     parts: &[(u64, u64)],
 ) -> Result<u64, Errno> {
     let socket = of(file).expect("a socket");
-    // `sock_read_iter`: a read of nothing is nothing, as System V's.
+    // `sock_read_iter`: a read of nothing is nothing, as System V's; one that may not wait is
+    // MSG_DONTWAIT.
     if parts.iter().all(|(_, length)| *length == 0) {
         return Ok(0);
     }
-    let (copied, received) = receive(kernel, cx, tid, file, &socket, Data::Guest(parts), 0)?;
+    let flags = dont_wait(kernel, tid);
+    let (copied, received) = receive(kernel, cx, tid, file, &socket, Data::Guest(parts), flags)?;
     // Descriptors that came with the bytes are let go (`scm_destroy`).
     kernel.released.extend(received.files);
     Ok(copied)
+}
+
+/// MSG_DONTWAIT for a call that may not wait (RWF_NOWAIT), else no flags.
+fn dont_wait(kernel: &Kernel, tid: Tid) -> u32 {
+    if kernel.threads[&tid].call.nowait {
+        MSG_DONTWAIT
+    } else {
+        0
+    }
 }
 
 /// Sends bytes the kernel holds on a socket with `flags` and no address, as a splice or
@@ -2599,7 +2683,8 @@ pub(crate) fn receive_bytes(
     Ok(bytes)
 }
 
-/// write and writev on a socket: a send with no flags.
+/// write and writev on a socket: a send with no flags, or MSG_DONTWAIT for one that may not wait
+/// (`sock_write_iter`).
 pub(super) fn write(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -2614,7 +2699,7 @@ pub(super) fn write(
         control: None,
         files: Vec::new(),
         cred: None,
-        flags: 0,
+        flags: dont_wait(kernel, tid),
     };
     send(kernel, cx, tid, file, &socket, message)
 }
@@ -2738,20 +2823,12 @@ fn read_header(
 /// credentials.
 fn read_control(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
     tid: Tid,
-    header: &Header,
+    control: &[u8],
     local: bool,
 ) -> Result<(Vec<FileRef>, Option<Cred>), Errno> {
     let mut files = Vec::new();
     let mut cred = None;
-    if header.control_length == 0 {
-        return Ok((files, cred));
-    }
-    if header.control_length > i32::MAX as u64 {
-        return Err(Errno::ENOBUFS);
-    }
-    let control = guest(kernel, cx, tid).read(header.control, header.control_length)?;
     let mut at = 0usize;
     while at + CMSG_HEADER as usize <= control.len() {
         let length = u64::from_le_bytes(control[at..at + 8].try_into().expect("8 bytes"));
@@ -2831,17 +2908,20 @@ pub(super) fn sendmsg(
     if header.control_length > i32::MAX as u64 {
         return Err(Errno::ENOBUFS);
     }
-    // `unix_seqpacket_sendmsg` wants a connection before it reads the control messages.
-    if socket.borrow().local()
-        && socket.borrow().kind == SOCK_SEQPACKET
-        && socket.borrow().state != State::Connected
-    {
-        return Err(Errno::ENOTCONN);
+    let control = guest(kernel, cx, tid).read(header.control, header.control_length)?;
+    // `unix_seqpacket_sendmsg` takes a pending error, then wants a connection, before
+    // `unix_dgram_sendmsg` reads the control messages.
+    if socket.borrow().local() && socket.borrow().kind == SOCK_SEQPACKET {
+        let error = core::mem::take(&mut socket.borrow_mut().error);
+        if error != 0 {
+            return Err(Errno(error as u32));
+        }
+        if socket.borrow().state != State::Connected {
+            return Err(Errno::ENOTCONN);
+        }
     }
-    // `netlink_sendmsg` refuses urgent and empty messages before it reads the control messages
-    // `____sys_sendmsg` took in.
+    // `netlink_sendmsg` refuses urgent and empty messages before it reads the control messages.
     if socket.borrow().netlink.is_some() {
-        guest(kernel, cx, tid).read(header.control, header.control_length)?;
         if flags as u32 & MSG_OOB != 0 {
             return Err(Errno::EOPNOTSUPP);
         }
@@ -2850,15 +2930,14 @@ pub(super) fn sendmsg(
         }
     }
     let (files, cred, control) = if socket.borrow().inet.is_some() {
-        let bytes = guest(kernel, cx, tid).read(header.control, header.control_length)?;
         (
             Vec::new(),
             None,
-            Some(bytes).filter(|bytes| !bytes.is_empty()),
+            Some(control).filter(|bytes| !bytes.is_empty()),
         )
     } else {
         let local = socket.borrow().local();
-        let (files, cred) = read_control(kernel, cx, tid, &header, local)?;
+        let (files, cred) = read_control(kernel, tid, &control, local)?;
         (files, cred, None)
     };
     let message = Outgoing {
@@ -3376,6 +3455,8 @@ pub(super) fn setsockopt(
             };
         }
         SO_INQ => return Err(Errno::ENOPROTOOPT),
+        // Netlink's operations have no `set_peek_off`.
+        SO_PEEK_OFF if own.netlink.is_some() => return Err(Errno::EOPNOTSUPP),
         SO_PEEK_OFF => {
             let offset = int()?;
             own.peek_offset = (offset >= 0).then_some(offset as u64);
@@ -3480,16 +3561,23 @@ pub(super) fn setsockopt(
             own.options
                 .insert((level, name), value.to_le_bytes().to_vec());
         }
-        SO_REUSEADDR | SO_REUSEPORT | SO_KEEPALIVE | SO_BROADCAST | SO_OOBINLINE | SO_DONTROUTE
-        | SO_PASSSEC | SO_RCVLOWAT | SO_ZEROCOPY | SO_RCVMARK | SO_RCVPRIORITY => {
+        // A negative low water mark is the most there is; TCP's is capped (`tcp_set_rcvlowat`).
+        SO_RCVLOWAT => {
             let value = int()?;
-            let kept = if name == SO_RCVLOWAT {
-                value.max(1)
-            } else {
-                i32::from(value != 0)
-            };
+            let value = if value < 0 { i32::MAX } else { value };
+            if own.inet.is_some() && own.kind == SOCK_STREAM {
+                drop(own);
+                inet::set_receive_low_water(kernel, cx, &socket, value);
+                return Ok(0);
+            }
             own.options
-                .insert((level, name), kept.to_le_bytes().to_vec());
+                .insert((level, name), value.max(1).to_le_bytes().to_vec());
+        }
+        SO_REUSEADDR | SO_REUSEPORT | SO_KEEPALIVE | SO_BROADCAST | SO_OOBINLINE | SO_DONTROUTE
+        | SO_PASSSEC | SO_ZEROCOPY | SO_RCVMARK | SO_RCVPRIORITY => {
+            let value = int()?;
+            own.options
+                .insert((level, name), i32::from(value != 0).to_le_bytes().to_vec());
         }
         SO_LINGER => {
             if bytes.len() < 8 {
@@ -3779,6 +3867,7 @@ pub(super) fn getsockopt(
             SO_PASSPIDFD => int(i32::from(own.pass_pidfd)),
             SO_PASSRIGHTS => int(i32::from(own.pass_rights)),
             SO_INQ => return Err(Errno::ENOPROTOOPT),
+            SO_PEEK_OFF if own.netlink.is_some() => return Err(Errno::EOPNOTSUPP),
             SO_PEEK_OFF => int(own.peek_offset.map_or(-1, |offset| offset as i32)),
             SO_SNDLOWAT => int(1),
             SO_RCVLOWAT => own

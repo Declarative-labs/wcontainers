@@ -92,6 +92,8 @@ pub(crate) struct Files {
     pub numbers: Numbers,
     pub root: Node,
     pub proc_fs: FileSystem,
+    /// nsfs, mounted at boot with the fourth anonymous device number (measured).
+    pub nsfs: FileSystem,
     pub pipe_fs: FileSystem,
     /// The internal tmpfs memory files and shared anonymous memory live on (Linux's `shm_mnt`, mounted
     /// first at boot, so it has the first anonymous device number).
@@ -120,6 +122,8 @@ pub(crate) struct Files {
     pub backend: Option<Rc<fs::backend::Client>>,
     /// The directories file systems are mounted on.
     pub mount_points: Vec<Node>,
+    /// The mount table, in the order the mounts were made.
+    pub mounts: Vec<fs::mounts::Mount>,
 }
 
 /// All kernel state. It is plain data, so a container is saved by copying it with the guest memories.
@@ -139,6 +143,8 @@ pub struct Kernel {
     /// Files closed with a descriptor table whose last holder has gone, for the kernel to finish
     /// releasing.
     released: Vec<file::FileRef>,
+    /// Notices that such closes took message queue requests away, for the kernel to send.
+    notices: Vec<(syscall::socket::SocketRef, alloc::vec::Vec<u8>)>,
     /// Parked threads whose wait ended, in line to run, whose calls are run again when their turn
     /// comes.
     woken: VecDeque<Tid>,
@@ -225,6 +231,7 @@ impl Kernel {
             running: None,
             parked: schedule::Parked::default(),
             released: Vec::new(),
+            notices: Vec::new(),
             woken: VecDeque::new(),
             signalled: VecDeque::new(),
             monotonic_offset: 0,
@@ -249,6 +256,12 @@ impl Kernel {
                 numbers,
                 root,
                 proc_fs,
+                nsfs: FileSystem {
+                    kind: fs::Kind::Nsfs,
+                    device: fs::encode_device(0, 4),
+                    flags: 0,
+                    space: None,
+                },
                 pipe_fs,
                 memfd_fs: FileSystem {
                     kind: fs::Kind::Tmpfs,
@@ -268,6 +281,7 @@ impl Kernel {
                 terminals: BTreeMap::new(),
                 backend: None,
                 mount_points: Vec::new(),
+                mounts: Vec::new(),
             },
             machine: Machine {
                 release: "7.0.0-wcontainers",
@@ -565,6 +579,7 @@ impl Kernel {
             let mut table = table.into_inner();
             table.close_all(closer);
             self.released.extend(table.take_released());
+            self.notices.append(&mut table.notices);
             if table.take_let_go_locks() {
                 self.wake(process::Channel::Locks);
             }
@@ -596,6 +611,7 @@ impl Kernel {
             caller: pid,
             caller_thread: tid,
             fs: self.files.proc_fs.clone(),
+            nsfs: self.files.nsfs.clone(),
             boot: self.boot,
             kept: &self.files.proc_kept,
             counters: &self.counters,

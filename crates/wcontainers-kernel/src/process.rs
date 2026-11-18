@@ -118,6 +118,9 @@ pub(crate) struct Process {
     pub execed: bool,
     /// How many programs it has run (Linux's `self_exec_id`, which a fork copies).
     pub self_exec_id: u64,
+    /// Which mappings a core dump would hold (`/proc/<pid>/coredump_filter`, the memory's
+    /// `MMF_DUMP_FILTER_MASK` bits), which a fork and an exec keep.
+    pub coredump_filter: u32,
     /// The session's controlling terminal, if the process has one: a pair whose slave it is.
     pub terminal: Option<Rc<core::cell::RefCell<crate::tty::Pty>>>,
     /// For a session leader whose terminal was hung up, the foreground group it had
@@ -301,6 +304,9 @@ pub(crate) struct Thread {
     pub vruntime: u64,
     /// When the thread was woken and has not yet run, on the monotonic clock.
     pub woken_at: Option<u64>,
+    /// Whether it waits for pages of a mapped file its program touched, so once woken it goes on
+    /// from the instruction that touched them instead of running a call again.
+    pub filling: bool,
     /// The address and syndrome of the thread's last fault, which every later frame shows.
     pub fault: (u64, u64),
     /// Signals a fault forced on the thread, which even the first process acts on.
@@ -393,6 +399,9 @@ pub(crate) struct Call {
     /// pipe's, as `splice_file_to_pipe` holds it around a terminal's read, an open file's
     /// position, a backend file's writes.
     pub holds: [Option<Channel>; 2],
+    /// Whether the call may not wait (RWF_NOWAIT, Linux's `IOCB_NOWAIT`): a read or write that
+    /// would wait answers EAGAIN as on a nonblocking file.
+    pub nowait: bool,
 }
 
 /// What a call took from its arguments, in order: the open files its descriptors named (`fdget`)
@@ -481,7 +490,9 @@ impl Taken {
             return path;
         }
         let path = read();
-        self.push(TakenItem::Path(address, path.clone()));
+        if path != Err(crate::Errno::PARKED) {
+            self.push(TakenItem::Path(address, path.clone()));
+        }
         path
     }
 }
@@ -566,6 +577,7 @@ impl Thread {
             runtime: 0,
             vruntime: 0,
             woken_at: None,
+            filling: false,
             fault: (0, 0),
             forced: 0,
             schedule: Schedule::default(),

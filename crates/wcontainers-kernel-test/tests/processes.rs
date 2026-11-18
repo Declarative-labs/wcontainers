@@ -25,3 +25,9 @@ fn writers_waiting_on_a_full_pipe_match_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     assert_same_output(&out, "pipewriters", &[]);
 }
+
+#[test]
+fn a_child_started_as_go_starts_one_matches_reference() {
+    let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    wcontainers_kernel_test::assert_same_output(&out, "spawnpipe", &[]);
+}

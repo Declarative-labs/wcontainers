@@ -120,6 +120,57 @@ static void get(int fd, int family, const char *to, unsigned flags, int oif) {
     answers(fd);
 }
 
+// A question with the header's other fields and one more attribute chosen, for the checks
+// NETLINK_GET_STRICT_CHK turns on.
+static void get_checked(int fd, int family, const char *to, int dst_len, int table, unsigned flags,
+                        int extra) {
+    struct {
+        struct nlmsghdr h;
+        struct rtmsg r;
+        char attributes[64];
+    } req = {.h = {.nlmsg_type = RTM_GETROUTE, .nlmsg_flags = NLM_F_REQUEST, .nlmsg_seq = 8},
+             .r = {.rtm_family = family, .rtm_dst_len = dst_len, .rtm_table = table, .rtm_flags = flags}};
+    int length = NLMSG_ALIGN(NLMSG_LENGTH(sizeof(struct rtmsg)));
+    struct rtattr *a = (void *)((char *)&req + length);
+    int size = family == AF_INET ? 4 : 16;
+    a->rta_type = RTA_DST;
+    a->rta_len = RTA_LENGTH(size);
+    inet_pton(family, to, RTA_DATA(a));
+    length += RTA_ALIGN(a->rta_len);
+    if (extra) {
+        a = (void *)((char *)&req + length);
+        a->rta_type = extra;
+        a->rta_len = RTA_LENGTH(4);
+        memset(RTA_DATA(a), 0, 4);
+        length += RTA_ALIGN(a->rta_len);
+    }
+    req.h.nlmsg_len = length;
+    printf("checked route to %s dst/%d table %d flags %#x extra %d\n", to, dst_len, table, flags, extra);
+    send(fd, &req, length, 0);
+    answers(fd);
+}
+
+static void checks(int fd) {
+    get_checked(fd, AF_INET, "127.0.0.1", 16, 0, 0, 0);
+    get_checked(fd, AF_INET, "127.0.0.1", 0, 0, 0, 0);
+    int on = 1;
+    printf("strict %d\n", setsockopt(fd, SOL_NETLINK, NETLINK_GET_STRICT_CHK, &on, sizeof on));
+    get_checked(fd, AF_INET, "127.0.0.1", 32, 0, 0, 0);
+    get_checked(fd, AF_INET, "127.0.0.1", 16, 0, 0, 0);
+    get_checked(fd, AF_INET, "127.0.0.1", 0, 0, 0, 0);
+    get_checked(fd, AF_INET, "127.0.0.1", 32, 254, 0, 0);
+    get_checked(fd, AF_INET, "127.0.0.1", 32, 0, RTM_F_LOOKUP_TABLE, 0);
+    get_checked(fd, AF_INET, "127.0.0.1", 32, 0, RTM_F_PREFIX, 0);
+    get_checked(fd, AF_INET, "127.0.0.1", 32, 0, 0, RTA_MARK);
+    get_checked(fd, AF_INET, "127.0.0.1", 32, 0, 0, RTA_PRIORITY);
+    get_checked(fd, AF_INET6, "::1", 128, 0, 0, 0);
+    get_checked(fd, AF_INET6, "::1", 64, 0, 0, 0);
+    get_checked(fd, AF_INET6, "::1", 0, 0, 0, 0);
+    get_checked(fd, AF_INET6, "::1", 128, 0, RTM_F_PREFIX, 0);
+    get_checked(fd, AF_INET6, "::1", 128, 0, 0, RTA_PRIORITY);
+    get_checked(fd, AF_INET6, "::1", 128, 0, 0, RTA_MARK);
+}
+
 static void rules(int fd, int family) {
     struct {
         struct nlmsghdr h;
@@ -150,6 +201,11 @@ int main(void) {
     get(fd, AF_INET, "172.17.9.9", 0, 0);
     get(fd, AF_INET, "172.17.255.255", 0, 0);
     get(fd, AF_INET, "224.0.0.1", 0, 0);
+    get(fd, AF_INET, "239.1.2.3", 0, 0);
+    get(fd, AF_INET, "127.255.255.255", 0, 0);
+    get(fd, AF_INET, "172.17.0.0", 0, 0);
+    get(fd, AF_INET, "172.18.0.1", 0, 0);
+    get(fd, AF_INET, "127.255.255.255", 0, 1);
     get(fd, AF_INET, "255.255.255.255", 0, 0);
     get(fd, AF_INET, "0.0.0.0", 0, 0);
     get(fd, AF_INET, "1.1.1.1", RTM_F_FIB_MATCH, 0);
@@ -160,5 +216,6 @@ int main(void) {
     rules(fd, AF_INET);
     rules(fd, AF_INET6);
     rules(fd, AF_UNSPEC);
+    checks(fd);
     return 0;
 }

@@ -1,13 +1,14 @@
 //! Files mapped into memory. While any mapping shows a file, the file's first pages live in a block of
 //! shared pages that every such mapping shows (a private one except where it holds its own copies),
 //! and the file's reads and writes reach the same block, so all see the same bytes as in Linux's page
-//! cache. A backend file's block is read from the backend before a mapping needs it
-//! ([`backend_block`]) and written back while a shared mapping may write it.
+//! cache. A backend file's block takes each page from the backend when it is first touched
+//! ([`fill`]) and is written back while a shared mapping may write it.
 
 use alloc::rc::Rc;
 use alloc::vec;
 use alloc::vec::Vec;
-use wcontainers_abi::{MemoryId, Permissions};
+use core::ops::Range;
+use wcontainers_abi::{MemoryId, PAGE_SIZE, Permissions};
 
 use crate::fs::backend::{Handle, Pages};
 use crate::fs::{Block, Content, Node};
@@ -39,9 +40,9 @@ pub(crate) fn block_for(
     Ok(node.borrow().content.block())
 }
 
-/// Makes a backend file's block hold at least its first `length` bytes, reading what it lacks
-/// through `handle` (or the open file it was read through), which parks the call until the backend
-/// answers. A shared mapping that may write (`writer`) has its file write the pages back.
+/// Makes a backend file's block cover at least its first `length` bytes, its pages read only when
+/// touched ([`fill`]), through `handle` or the open file it was mapped through. A shared mapping
+/// that may write (`writer`) has its file write the pages back.
 pub(crate) fn backend_block(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -57,15 +58,8 @@ pub(crate) fn backend_block(
         },
         _ => return Err(Errno::EIO),
     };
-    let have = old.map_or(0, |old| old.length);
-    if have < length {
-        let bytes = crate::fs::backend::read(&through, have, length - have)?;
-        kernel.counters.count(
-            cx.host,
-            crate::reason::BACKEND_READ_WHOLE,
-            bytes.len() as u64,
-        );
-        backend_grow(kernel, cx, node, old, &through, length, &bytes)?;
+    if old.map_or(0, |old| old.length) < length {
+        backend_grow(kernel, cx, node, old, &through, page_up(length))?;
     }
     if writer
         && let Some(handle) = handle
@@ -78,31 +72,7 @@ pub(crate) fn backend_block(
     Ok(())
 }
 
-/// Makes a backend file's block hold its first pages from `bytes`, the whole file as just read
-/// through `handle`, unless it holds them already.
-pub(crate) fn backend_block_of(
-    kernel: &mut Kernel,
-    cx: &mut Context<'_>,
-    node: &Node,
-    handle: &Rc<Handle>,
-    bytes: &[u8],
-) -> Result<(), Errno> {
-    let old = node.borrow().content.block();
-    let have = old.map_or(0, |old| old.length);
-    let length = page_up(bytes.len() as u64);
-    kernel.counters.count(
-        cx.host,
-        crate::reason::BACKEND_READ_WHOLE,
-        bytes.len() as u64,
-    );
-    if have < length {
-        let tail = &bytes[(have as usize).min(bytes.len())..];
-        backend_grow(kernel, cx, node, old, handle, length, tail)?;
-    }
-    Ok(())
-}
-
-/// Gives a backend file a block of `length` bytes: what its old one held, then `tail`, then zeros.
+/// Gives a backend file a block of `length` bytes holding the pages its old one held.
 fn backend_grow(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -110,62 +80,198 @@ fn backend_grow(
     old: Option<Block>,
     through: &Rc<Handle>,
     length: u64,
-    bytes: &[u8],
 ) -> Result<(), Errno> {
-    let have = old.map_or(0, |old| old.length);
-    {
-        let id = cx
-            .cpu
-            .shared_new(length)
-            .map_err(|error| cx.cpu_error(error))?;
-        let mut held = vec![0; have as usize];
-        if let Some(old) = old {
-            cx.cpu
-                .shared_read(old.id, 0, &mut held)
-                .map_err(errno::from_cpu)?;
-        }
-        held.extend_from_slice(bytes);
-        held.truncate(length as usize);
-        cx.cpu.shared_write(id, 0, &held).map_err(errno::from_cpu)?;
-        let new = Block { id, length };
-        if let Content::Backend(remote) = &mut node.borrow_mut().content {
-            match &mut remote.pages {
-                Some(pages) => pages.block = new,
-                None => {
-                    remote.pages = Some(Pages {
-                        block: new,
-                        handle: through.clone(),
-                        written: false,
-                    });
+    let id = cx
+        .cpu
+        .shared_new(length)
+        .map_err(|error| cx.cpu_error(error))?;
+    let new = Block { id, length };
+    if let Content::Backend(remote) = &mut node.borrow_mut().content {
+        match &mut remote.pages {
+            Some(pages) => {
+                for run in pages.filled.iter() {
+                    let mut held = vec![0; ((run.end - run.start) * PAGE_SIZE) as usize];
+                    cx.cpu
+                        .shared_read(pages.block.id, run.start * PAGE_SIZE, &mut held)
+                        .map_err(errno::from_cpu)?;
+                    cx.cpu
+                        .shared_write(id, run.start * PAGE_SIZE, &held)
+                        .map_err(errno::from_cpu)?;
                 }
+                pages.block = new;
+            }
+            None => {
+                remote.pages = Some(Pages {
+                    block: new,
+                    handle: through.clone(),
+                    written: false,
+                    filled: rangemap::RangeSet::new(),
+                    failed: rangemap::RangeSet::new(),
+                    changes: 0,
+                });
             }
         }
-        moved(kernel, cx, node, old, new)
+    }
+    moved(kernel, cx, node, old, new)
+}
+
+/// The runs of file pages `pages` that a mapped backend file's block lacks; none for another file.
+pub(crate) fn unfilled(node: &Node, pages: Range<u64>) -> Vec<Range<u64>> {
+    if pages.start >= pages.end {
+        return Vec::new();
+    }
+    match &node.borrow().content {
+        Content::Backend(remote) => match &remote.pages {
+            Some(held) => held.filled.gaps(&pages).collect(),
+            None => Vec::new(),
+        },
+        _ => Vec::new(),
     }
 }
 
-/// The bytes a mapped backend file's block holds up to `size` from `offset`, or `None` while
-/// nothing maps it.
-pub(crate) fn backend_bytes(
-    cx: &mut Context<'_>,
-    node: &Node,
-    offset: u64,
-    count: u64,
-    size: u64,
-) -> Option<Vec<u8>> {
-    let block = node.borrow().content.block()?;
-    let end = offset.saturating_add(count).min(size).min(block.length);
-    let mut bytes = vec![0; end.saturating_sub(offset) as usize];
-    cx.cpu
-        .shared_read(block.id, offset, &mut bytes)
-        .expect("the block holds the file's first pages");
-    Some(bytes)
+/// How many pages a touch of a mapped backend file reads around it (Linux's `ra_pages`).
+pub(crate) fn readahead_pages(node: &Node) -> u64 {
+    crate::fs::backend::remote(node)
+        .map_or(1, |(client, _)| client.settled().readahead_pages.max(1))
 }
 
-/// A read of a backend file: from its block while it is mapped, as from Linux's page cache, with
-/// the size asked again first (`fuse_cache_read_iter` with FUSE_AUTO_INVAL_DATA) and what lies past
-/// the block read from the backend; from the backend alone when the backend opened the file for
-/// direct reads.
+/// Makes a mapped backend file's block hold its file pages `pages` (those within the block):
+/// pages wholly past the file's end are zero, the rest are asked for, as from the thread whose
+/// call or fault runs. `PARKED` while any is awaited; EFAULT for a page whose read failed (once,
+/// so the next touch reads again) or when nothing can ask.
+pub(crate) fn fill(node: &Node, pages: Range<u64>) -> Result<(), Errno> {
+    let (client, handle, gaps, changes) = {
+        let mut inode = node.borrow_mut();
+        let Content::Backend(remote) = &mut inode.content else {
+            return Ok(());
+        };
+        let size = remote.size.get();
+        let Some(held) = &mut remote.pages else {
+            return Ok(());
+        };
+        let range = pages.start..pages.end.min(held.block.length / PAGE_SIZE);
+        if range.start >= range.end {
+            return Ok(());
+        }
+        let file_pages = page_up(size) / PAGE_SIZE;
+        if file_pages < range.end {
+            held.filled.insert(file_pages.max(range.start)..range.end);
+        }
+        if held.failed.overlaps(&range) {
+            held.failed.remove(range);
+            return Err(Errno::EFAULT);
+        }
+        let gaps: Vec<Range<u64>> = held.filled.gaps(&range).collect();
+        if gaps.is_empty() {
+            return Ok(());
+        }
+        (
+            remote.client.clone(),
+            held.handle.clone(),
+            gaps,
+            held.changes,
+        )
+    };
+    for gap in gaps {
+        if !client.ask_pages(node, &handle, gap, changes) {
+            return Err(Errno::EFAULT);
+        }
+    }
+    Err(Errno::PARKED)
+}
+
+/// The backend answered for file pages `pages` asked when the file had had `changes` changes:
+/// the pages its block still lacks take the bytes (zeros past what came), unless the file changed
+/// since; a failed read marks them so their next touch faults.
+pub(crate) fn pages_came(
+    cx: &mut Context<'_>,
+    node: &Node,
+    pages: Range<u64>,
+    changes: u64,
+    result: Result<Rc<[u8]>, Errno>,
+) {
+    let mut inode = node.borrow_mut();
+    let Content::Backend(remote) = &mut inode.content else {
+        return;
+    };
+    let Some(held) = &mut remote.pages else {
+        return;
+    };
+    let range = pages.start..pages.end.min(held.block.length / PAGE_SIZE);
+    if range.start >= range.end || held.changes != changes {
+        return;
+    }
+    let gaps: Vec<Range<u64>> = held.filled.gaps(&range).collect();
+    let bytes = match result {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            for gap in gaps {
+                held.failed.insert(gap);
+            }
+            return;
+        }
+    };
+    for gap in gaps {
+        let from = ((gap.start - pages.start) * PAGE_SIZE) as usize;
+        let to = ((gap.end - pages.start) * PAGE_SIZE) as usize;
+        let mut chunk = vec![0; to - from];
+        if from < bytes.len() {
+            let came = &bytes[from..to.min(bytes.len())];
+            chunk[..came.len()].copy_from_slice(came);
+        }
+        cx.cpu
+            .shared_write(held.block.id, gap.start * PAGE_SIZE, &chunk)
+            .expect("the block holds the file's first pages");
+        held.filled.insert(gap);
+    }
+}
+
+/// `[from, to)` of a mapped backend file in runs, each with whether its block holds it; `None`
+/// while nothing maps the file. Runs end at the block's end; what lies past it is not held.
+fn held_runs(node: &Node, from: u64, to: u64) -> Option<Vec<(u64, u64, bool)>> {
+    let inode = node.borrow();
+    let Content::Backend(remote) = &inode.content else {
+        return None;
+    };
+    let held = remote.pages.as_ref()?;
+    let mut runs = Vec::new();
+    let end = to.min(held.block.length);
+    if from < end {
+        let pages = from / PAGE_SIZE..page_up(end) / PAGE_SIZE;
+        let mut parts: Vec<(Range<u64>, bool)> = held
+            .filled
+            .overlapping(&pages)
+            .map(|run| (run.clone(), true))
+            .chain(held.filled.gaps(&pages).map(|gap| (gap, false)))
+            .collect();
+        parts.sort_by_key(|(run, _)| run.start);
+        for (run, filled) in parts {
+            let start = (run.start * PAGE_SIZE).max(from);
+            let stop = (run.end * PAGE_SIZE).min(end);
+            if start < stop {
+                runs.push((start, stop, filled));
+            }
+        }
+    }
+    if end.max(from) < to {
+        runs.push((end.max(from), to, false));
+    }
+    Some(runs)
+}
+
+/// The bytes `[from, to)` of a block.
+fn block_bytes(cx: &mut Context<'_>, block: Block, from: u64, to: u64) -> Vec<u8> {
+    let mut bytes = vec![0; (to - from) as usize];
+    cx.cpu
+        .shared_read(block.id, from, &mut bytes)
+        .expect("the block holds the file's first pages");
+    bytes
+}
+
+/// A read of a backend file: while it is mapped, the pages its block holds come from there, as
+/// from Linux's page cache, with the size asked again first (`fuse_cache_read_iter` with
+/// FUSE_AUTO_INVAL_DATA), and the rest from the backend; from the backend alone when the backend
+/// opened the file for direct reads.
 pub(crate) fn backend_read(
     cx: &mut Context<'_>,
     node: &Node,
@@ -183,27 +289,102 @@ pub(crate) fn backend_read(
     };
     crate::fs::backend::getattr(node, Some(handle.fh))?;
     let size = node.borrow().size();
-    let mut bytes = backend_bytes(cx, node, offset, count, size).unwrap_or_default();
-    let at = offset + bytes.len() as u64;
-    if at >= block.length && at < size && (bytes.len() as u64) < count {
-        bytes.extend(crate::fs::backend::read(
-            handle,
-            at,
-            count - bytes.len() as u64,
-        )?);
+    let end = offset.saturating_add(count).min(size);
+    let runs = held_runs(node, offset, end.max(offset)).unwrap_or_default();
+    let mut bytes = Vec::new();
+    for (from, to, held) in runs {
+        if held {
+            bytes.extend(block_bytes(cx, block, from, to));
+        } else {
+            let came = crate::fs::backend::read(handle, from, to - from)?;
+            let short = (came.len() as u64) < to - from;
+            bytes.extend(came);
+            if short {
+                break;
+            }
+        }
     }
     Ok(bytes)
 }
 
-/// Puts bytes written to a backend file into its block, where it has one.
+/// Puts bytes written to a backend file into the pages its block holds; the others are read
+/// afresh when touched.
 pub(crate) fn backend_written(cx: &mut Context<'_>, node: &Node, offset: u64, bytes: &[u8]) {
-    if let Some(block) = node.borrow().content.block()
-        && offset < block.length
+    let end = offset + bytes.len() as u64;
+    let Some(runs) = held_runs(node, offset, end) else {
+        return;
+    };
+    let block = node.borrow().content.block().expect("a mapped file");
+    for (from, to, held) in runs {
+        if held {
+            cx.cpu
+                .shared_write(
+                    block.id,
+                    from,
+                    &bytes[(from - offset) as usize..(to - offset) as usize],
+                )
+                .expect("the block holds the file's first pages");
+        }
+    }
+    changed_bytes(node);
+}
+
+/// Bytes the backend gave to keep (`fuse_notify_store`): they go into the file's block, and the
+/// pages they cover whole, or up to the file's end, are held from then on.
+pub(crate) fn backend_stored(cx: &mut Context<'_>, node: &Node, offset: u64, bytes: &[u8]) {
+    let mut inode = node.borrow_mut();
+    let Content::Backend(remote) = &mut inode.content else {
+        return;
+    };
+    let size = remote.size.get();
+    let Some(held) = &mut remote.pages else {
+        return;
+    };
+    let end = (offset + bytes.len() as u64).min(held.block.length);
+    if offset >= end {
+        return;
+    }
+    cx.cpu
+        .shared_write(held.block.id, offset, &bytes[..(end - offset) as usize])
+        .expect("the block holds the file's first pages");
+    let first = page_up(offset) / PAGE_SIZE;
+    let last = if end >= size { page_up(end) } else { end } / PAGE_SIZE;
+    if first < last {
+        held.filled.insert(first..last);
+    }
+}
+
+/// The bytes a mapped backend file's block holds from `offset`, up to `count` and the file's end,
+/// stopping at the first page it lacks (`fuse_retrieve`); `None` while nothing maps the file.
+pub(crate) fn backend_held(
+    cx: &mut Context<'_>,
+    node: &Node,
+    offset: u64,
+    count: u64,
+) -> Option<Vec<u8>> {
+    let size = node.borrow().size();
+    let block = node.borrow().content.block()?;
+    let runs = held_runs(
+        node,
+        offset,
+        offset.saturating_add(count).min(size).max(offset),
+    )?;
+    let mut bytes = Vec::new();
+    for (from, to, held) in runs {
+        if !held {
+            break;
+        }
+        bytes.extend(block_bytes(cx, block, from, to));
+    }
+    Some(bytes)
+}
+
+/// Counts a change to a mapped backend file's bytes, so answers asked before it are not taken.
+fn changed_bytes(node: &Node) {
+    if let Content::Backend(remote) = &mut node.borrow_mut().content
+        && let Some(held) = &mut remote.pages
     {
-        let end = (offset + bytes.len() as u64).min(block.length);
-        cx.cpu
-            .shared_write(block.id, offset, &bytes[..(end - offset) as usize])
-            .expect("the block holds the file's first pages");
+        held.changes += 1;
     }
 }
 
@@ -218,11 +399,12 @@ pub(crate) fn backend_cut(cx: &mut Context<'_>, node: &Node, from: u64, to: u64)
             .shared_write(block.id, from, &zeros)
             .expect("the block holds the file's first pages");
     }
+    changed_bytes(node);
 }
 
-/// Writes a backend file's pages in `[from, to)` back, up to its end, if a shared mapping may have
-/// written them: waiting for the answers, or with nothing to wait sending them on their own. Every
-/// page goes, changed or not, since which were written is not known.
+/// Writes the pages a backend file's block holds in `[from, to)` back, up to the file's end, if a
+/// shared mapping may have written them: waiting for the answers, or with nothing to wait sending
+/// them on their own. Every page held goes, changed or not, since which were written is not known.
 pub(crate) fn backend_write_back(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -231,23 +413,29 @@ pub(crate) fn backend_write_back(
     to: u64,
     wait: bool,
 ) -> Result<(), Errno> {
-    let (handle, size) = match &node.borrow().content {
+    let (handle, size, block) = match &node.borrow().content {
         Content::Backend(remote) => match &remote.pages {
-            Some(pages) if pages.written => (pages.handle.clone(), remote.size.get()),
+            Some(pages) if pages.written => (pages.handle.clone(), remote.size.get(), pages.block),
             _ => return Ok(()),
         },
         _ => return Ok(()),
     };
-    let Some(bytes) = backend_bytes(cx, node, from, to.saturating_sub(from), size) else {
+    let Some(runs) = held_runs(node, from, to.min(size).max(from)) else {
         return Ok(());
     };
-    if bytes.is_empty() {
-        return Ok(());
+    let mut wrote = false;
+    for (start, stop, held) in runs {
+        if held {
+            let bytes = block_bytes(cx, block, start, stop);
+            crate::fs::backend::write_back(&handle, start, &bytes, wait)?;
+            wrote = true;
+        }
     }
-    crate::fs::backend::write_back(&handle, from, &bytes, wait)?;
-    kernel
-        .counters
-        .count(cx.host, crate::reason::BACKEND_PAGES_WRITTEN_WHOLE, 0);
+    if wrote {
+        kernel
+            .counters
+            .count(cx.host, crate::reason::BACKEND_PAGES_WRITTEN_WHOLE, 0);
+    }
     Ok(())
 }
 
