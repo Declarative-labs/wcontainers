@@ -15,7 +15,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use wcontainers_gpu::{DrawBaseSource, VariantKey};
+use wcontainers_gpu::{DrawBaseSource, Format, TexelBufferRoute, VariantKey};
 use wcontainers_shaders::{ConvertError, Source, cache, capabilities, convert};
 
 fn shaders(dir: &Path, ext: &str) -> Vec<PathBuf> {
@@ -25,6 +25,21 @@ fn shaders(dir: &Path, ext: &str) -> Vec<PathBuf> {
     v.retain(|p| p.extension().is_some_and(|e| e == ext));
     v.sort();
     v
+}
+
+/// The keys a shader with storage views or typed buffers is converted with, the corpus having no
+/// bound views: every storage and texture slot a view of one 32-bit format (which WebGPU reads and
+/// writes) of each kind, typed buffers through storage buffers.
+fn view_keys() -> [(Format, VariantKey); 3] {
+    [Format::R32Float, Format::R32Uint, Format::R32Sint].map(|format| {
+        let key = VariantKey {
+            storage_formats: (0..64).map(|s| (s, format)).collect(),
+            texel_formats: (0..128).map(|s| (s, format)).collect(),
+            texel_buffers: TexelBufferRoute::Storage,
+            ..VariantKey::default()
+        };
+        (format, key)
+    })
 }
 
 /// One line per variant key a front asks for today under which the shader converts: the key's name,
@@ -37,16 +52,21 @@ fn records(path: &Path, file: &str) -> Result<String, String> {
     } else {
         Source::Dxbc(&bytes)
     };
-    let keys = [
-        ("plain", VariantKey::default()),
+    let mut keys = vec![
+        ("plain".to_string(), VariantKey::default()),
         (
-            "draw-base-helpers",
+            "draw-base-helpers".to_string(),
             VariantKey {
                 draw_base: DrawBaseSource::Helpers,
                 ..VariantKey::default()
             },
         ),
     ];
+    if let Err(ConvertError::Unsupported("StorageFormat" | "TypedBuffer")) =
+        convert(source, &VariantKey::default(), None)
+    {
+        keys.extend(view_keys().map(|(f, k)| (format!("views-{f:?}"), k)));
+    }
     let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
     let mut lines = String::new();
     for (name, variant) in &keys {
@@ -86,11 +106,40 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
             Source::Dxbc(b)
         }
     };
-    let converted = match convert(source(&bytes), &VariantKey::default(), None) {
+    let named = |e: ConvertError| match e {
+        ConvertError::Unsupported(what) => format!("unsupported {what}"),
+        ConvertError::Reader(what) => format!("spirv-reader {what}"),
+        e => format!("convert {e}"),
+    };
+    // A shader with storage views or typed buffers converts with the bound views' formats, which
+    // the corpus does not have: it passes with the first of `view_keys` that converts.
+    let mut key = VariantKey::default();
+    let mut views = None;
+    let converted = match convert(source(&bytes), &key, None) {
         Ok(c) => c,
-        Err(ConvertError::Unsupported(what)) => return format!("unsupported {what}"),
-        Err(ConvertError::Reader(what)) => return format!("spirv-reader {what}"),
-        Err(e) => return format!("convert {e}"),
+        Err(ConvertError::Unsupported("StorageFormat" | "TypedBuffer")) => {
+            let mut last = None;
+            for (format, k) in view_keys() {
+                match convert(source(&bytes), &k, None) {
+                    Ok(c) => {
+                        last = Some(Ok(c));
+                        key = k;
+                        views = Some(format);
+                        break;
+                    }
+                    Err(e) => last = Some(Err(e)),
+                }
+            }
+            match last.unwrap() {
+                Ok(c) => c,
+                Err(e) => return format!("{} (with views)", named(e)),
+            }
+        }
+        Err(e) => return named(e),
+    };
+    let ok = match views {
+        Some(f) => format!("ok views:{f:?}"),
+        None => "ok".into(),
     };
     let m = &converted.modules[0];
     let name = path.file_stem().unwrap().to_string_lossy().into_owned();
@@ -107,7 +156,7 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
         std::fs::write(out.join(format!("{name}.wgsl")), &wgsl).unwrap();
     }
     // The converted module is a function of the source and the variant alone.
-    let again = convert(source(&bytes), &VariantKey::default(), None).unwrap();
+    let again = convert(source(&bytes), &key, None).unwrap();
     let m2 = &again.modules[0];
     let wgsl2 = naga::back::wgsl::write_string(
         &m2.module,
@@ -182,7 +231,7 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
             }
         }
     }
-    "ok".into()
+    ok
 }
 
 fn run(dir: &Path, ext: &str, label: &str) -> BTreeMap<String, usize> {

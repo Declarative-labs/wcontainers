@@ -57,7 +57,7 @@
 056_ps_code_6.dxbc	ok
 057_ps_color_code_1.dxbc	ok
 058_ps_depth_code.dxbc	ok
-059_ps_code_7.dxbc	unsupported StorageFormat
+059_ps_code_7.dxbc	unsupported StorageImageAtomics
 060_ps_code_8.dxbc	ok
 061_ps_code_9.dxbc	ok
 062_ps_partial_input_code.dxbc	ok
@@ -106,21 +106,21 @@
 105_ps_code_ddy_coarse.dxbc	ok
 106_ps_code_ddy_fine.dxbc	ok-wgsl glsl-write
 107_ps_last_register_code.dxbc	ok
-108_ps_ld_2d_float_code.dxbc	unsupported StorageFormat
-109_ps_ld_2d_uint_code.dxbc	unsupported StorageFormat
-110_ps_ld_2d_int_code.dxbc	unsupported StorageFormat
-111_ps_ld_2d_uint_arr_code.dxbc	unsupported StorageFormat
-112_cs_1_thread_code.dxbc	unsupported StorageFormat
-113_cs_1_group_code.dxbc	unsupported StorageFormat
-114_cs_1_store_code.dxbc	unsupported StorageFormat
-115_cs_dispatch_id_code.dxbc	unsupported StorageFormat
-116_cs_group_index_code.dxbc	unsupported StorageFormat
-117_cs_store_int_code.dxbc	unsupported TypedBuffer
-118_cs_store_float_code.dxbc	unsupported TypedBuffer
-119_cs_store_unorm_code.dxbc	unsupported StorageFormat
-120_cs_store_snorm_code.dxbc	unsupported StorageFormat
-121_cs_code_1.dxbc	unsupported StorageFormat
-122_ps_code_16.dxbc	unsupported StorageFormat
+108_ps_ld_2d_float_code.dxbc	ok-wgsl glsl-write
+109_ps_ld_2d_uint_code.dxbc	ok-wgsl glsl-write
+110_ps_ld_2d_int_code.dxbc	ok-wgsl glsl-write
+111_ps_ld_2d_uint_arr_code.dxbc	ok-wgsl glsl-write
+112_cs_1_thread_code.dxbc	ok-wgsl glsl-write
+113_cs_1_group_code.dxbc	ok-wgsl glsl-write
+114_cs_1_store_code.dxbc	ok-wgsl glsl-write
+115_cs_dispatch_id_code.dxbc	ok-wgsl glsl-write
+116_cs_group_index_code.dxbc	ok-wgsl glsl-write
+117_cs_store_int_code.dxbc	ok-wgsl glsl-write
+118_cs_store_float_code.dxbc	ok-wgsl glsl-write
+119_cs_store_unorm_code.dxbc	ok-wgsl glsl-write
+120_cs_store_snorm_code.dxbc	ok-wgsl glsl-write
+121_cs_code_1.dxbc	ok-wgsl glsl-write
+122_ps_code_16.dxbc	ok-wgsl glsl-write
 123_ps_atomics_code.dxbc	unsupported AtomicSignedness
 124_cs_atomics_code.dxbc	unsupported AtomicSignedness
 125_ps_code_17.dxbc	ok
@@ -132,12 +132,12 @@
 131_ps_srv_structured_code.dxbc	ok-wgsl glsl-write
 132_ps_uav_raw_code.dxbc	ok-wgsl glsl-write
 133_ps_srv_raw_code.dxbc	ok-wgsl glsl-write
-134_ps_uav_typed_code.dxbc	unsupported TypedBuffer
-135_ps_srv_typed_code.dxbc	unsupported TypedBuffer
+134_ps_uav_typed_code.dxbc	ok views:R32Float
+135_ps_srv_typed_code.dxbc	ok views:R32Float
 136_ps_uint_code.dxbc	ok-wgsl glsl-write
 137_ps_float_code.dxbc	ok-wgsl glsl-write
 138_ps_rt_code.dxbc	unsupported SampleCount
-139_ps_float4_code.dxbc	unsupported TypedBuffer
+139_ps_float4_code.dxbc	ok-wgsl glsl-write
 140_ps_structured_code.dxbc	ok-wgsl glsl-write
 141_ps_code_18.dxbc	ok-wgsl glsl-write
 142_cs_code_2.dxbc	ok-wgsl glsl-write
@@ -162,7 +162,7 @@
 161_gather4_po_c_code.dxbc	unsupported DynamicOffset
 162_vs_code_11.dxbc	ok
 163_ps_code_21.dxbc	ok
-164_ps_code_22.dxbc	unsupported StorageFormat
+164_ps_code_22.dxbc	unsupported StorageImageAtomics
 165_ps_depth_le_code.dxbc	ok
 166_ps_depth_ge_code.dxbc	ok
 167_hs_code.dxbc	unsupported HullShader
@@ -188,4 +188,4 @@
 187_ps_code_30.dxbc	ok
 188_ps_code_31.dxbc	unsupported StencilRef
 189_ps_sample_code_3.dxbc	ok
-190_ps_code_32.dxbc	unsupported TypedBuffer
+190_ps_code_32.dxbc	ok-wgsl glsl-write

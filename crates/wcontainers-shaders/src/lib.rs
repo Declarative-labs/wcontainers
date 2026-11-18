@@ -4,6 +4,7 @@
 extern crate alloc;
 
 mod build;
+pub mod builtin;
 pub mod cache;
 mod dxbc;
 mod dxil;
@@ -212,10 +213,31 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
 }
 
 /// The capabilities a module needs: WebGPU's core ones, plus the extensions it uses that a front asks
-/// for only where the back end has them (dual-source blending, `VariantFlags::DUAL_SOURCE`, and clip
-/// distances, WebGPU's `clip_distances` and GLSL ES's EXT_clip_cull_distance).
+/// for only where the back end has them (dual-source blending, `VariantFlags::DUAL_SOURCE`, clip
+/// distances, WebGPU's `clip_distances` and GLSL ES's EXT_clip_cull_distance, and storage views of
+/// 16-bit normalised formats, which a front binds only where the format has `STORAGE_WRITE`).
 pub fn capabilities(module: &naga::Module) -> Capabilities {
+    use naga::StorageFormat as S;
     let mut capabilities = WEBGPU_CAPABILITIES;
+    for (_, global) in module.global_variables.iter() {
+        if let naga::TypeInner::Image {
+            class:
+                naga::ImageClass::Storage {
+                    format:
+                        S::R16Unorm
+                        | S::R16Snorm
+                        | S::Rg16Unorm
+                        | S::Rg16Snorm
+                        | S::Rgba16Unorm
+                        | S::Rgba16Snorm,
+                    ..
+                },
+            ..
+        } = module.types[global.ty].inner
+        {
+            capabilities |= Capabilities::STORAGE_TEXTURE_16BIT_NORM_FORMATS;
+        }
+    }
     for ep in &module.entry_points {
         let Some(result) = &ep.function.result else {
             continue;

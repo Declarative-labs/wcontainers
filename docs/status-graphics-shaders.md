@@ -18,8 +18,11 @@ helper of section 7: geometry shaders (DXBC) as compute, drawn against real Dire
 built stream output through the stage helper, atomic operations, view counters (append, consume,
 `IncrementCounter`) and storage textures, each tested against real Direct3D 11 on the RTX 3080;
 run 18 built typed buffers (`texel_buffers`, both routes, DXBC) and storage textures through
-buffers (`texels_through_buffer`, DXBC) with tests against real Direct3D 11; what remains is under Next. Run 18 merged origin/phase-2-graphics and -direct3d-11 (no
-conflicts; the others had nothing new).
+buffers (`texels_through_buffer`, DXBC) with tests against real Direct3D 11; run 19 built the
+built-in program clearing storage texture views (5.1) with a test against WARP and the GPU's
+Direct3D 11, gave the corpus test view formats, and found the cause of the one WebAssembly
+difference; what remains is under Next. Run 19 merged origin/phase-2-graphics, -webgpu, -webgl and
+-direct3d-12 (no conflicts).
 
 Done:
 - naga carried in the tree with the GLSL writer changes G3 needs (below). Other tracks get it by
@@ -660,13 +663,86 @@ Run 18 (typed buffers):
   typed storage views, seeded texels; our buffers' rows 3 texels longer and layers a row taller than
   the views, padding seeded): every texel of every view against real Direct3D 11's textures.
 
+Run 19 (the built-in programs, the corpus with views):
+- `src/builtin.rs`: `storage_clear(format, dimension)` is the compute program a front dispatches for
+  `ClearUnorderedAccessView*` on a texture view: one module per storage format (the 40 WGSL has)
+  and view dimension (`D2`, `D2Array`, `D3`; cube views refused `ClearDimension`), parameters in a
+  48-byte uniform at `CLEAR_PARAMS_BINDING` (`clear_params`: the value words, then the box from
+  origin to end, x, y and layer or slice), the view write-only at `CLEAR_VIEW_BINDING`, set 0,
+  workgroups of 8 by 8 by 1 (`clear_groups`). `storage_clear_value(format, values, float)` gives the
+  words: float clears pass the floats (denormals made zeros of their sign, as Direct3D's clear
+  does, measured) for the store to convert; integer clears give each component's low bits as its
+  own bits (normalised codes as the float the store scales back to the code, floats from their
+  bits). Refused by name, for the front to clear another way: float clears of integer formats
+  (`FloatClearOfInteger`; Direct3D 11 drops them, measured), the most negative code of a signed
+  normalised component (`SnormMostNegative`: a store gives -1.0 the code above it), formats with no
+  storage form.
+- `capabilities(module)` now adds naga's 16-bit normalised storage formats where a module declares
+  such a view.
+- `tests/builtin.rs` (any machine): every format and dimension, the values (every 8- and 16-bit
+  normalised code round trips), the parameters. `tests/clear_draw.rs` (Windows, GPU job): seeded
+  formats among those both have as typed storage views, views (a 2D layer, array layers, 3D
+  slices), texels and values (`WCONTAINERS_CLEAR_SEED`, `WCONTAINERS_CLEAR_CASES`, default 64),
+  against WARP and the RTX 3080's Direct3D 11. The two disagree on integer clears: WARP gives the
+  low bits as the functional specification and Microsoft's documentation say; the GPU saturates
+  each value to the component's bits, and reads the values of B8G8R8A8_UNORM, R10G10B10A2_UNORM and
+  R11G11B10_FLOAT as floats. The test holds integer clears to WARP and counts the GPU's
+  differences; float clears to normalised formats round a value half way between codes up on WARP
+  and down on the GPU (both within the specification's 0.6 of a code), so a float clear passes
+  where it equals either (it equals the GPU's in every case run).
+- The corpus test: a shader refused `StorageFormat` or `TypedBuffer` under the plain key is
+  converted again with every storage and texture slot given a view of R32_FLOAT, then R32_UINT,
+  then R32_SINT (the formats WebGPU reads and writes), typed buffers through storage buffers; the
+  verdict is `ok views:<format>` with the first that converts, or the failure with "(with views)".
+- The one WebAssembly difference (`d599fbc7efa911be.dxbc`, Known gaps) is C++'s unspecified order
+  of evaluating a call's arguments: dxbc-spirv's `ir_pass_arithmetic.cpp` (line 1375) makes the
+  divide helper's result as `CompositeConstruct(type, add(UDiv(a, b)), add(UMod(a, b)))`, so gcc
+  (native, right to left) appends the modulo first and clang (wasi-sdk, left to right) the divide.
+  About ten other statements build operands the same way (`ir_pass_arithmetic.cpp` 937, 1033, 1055;
+  `ir_pass_scratch.cpp` 774; `dxbc_registers.cpp` 573, 626; `dxbc_converter.cpp` 3658;
+  `dxbc_io_map.cpp` 203). No compiler choice makes every build agree (clang on Windows evaluates
+  right to left too, for the Microsoft ABI), so the fix is upstream: each such operand made in its
+  own statement. Not changed here (the submodule is upstream's, unpatched); to send upstream.
+
+Run 20 (the tessellator):
+- `src/stage/tessellator.wgsl`: Direct3D's fixed-function tessellator as one compute program, ported
+  from Microsoft's reference tessellator (MIT, "Copyright (c) Microsoft Corporation", as Mesa carries
+  it in src/gallium/auxiliary/tessellator, read at Mesa main on 2026-11-17): triangle, quad and
+  isoline domains, the four partitionings (powers of two as integer, as the reference has it), the
+  four output topologies, in the reference's 16.16 fixed point. One invocation per patch; three
+  passes (`stage::Tessellator::run`): count each patch's points and indices, a one-workgroup scan
+  giving each patch its first point and index and writing an indexed indirect draw, then write the
+  points (u, v, the patch's number, its primitive number) and the indices. The hull stage's output
+  layout (header and patch records) is `stage::tess`; buffers are sized by the largest factor the
+  hull shader declares (`tess::patch_bounds`).
+- One fix found by the test: a factor's cull test reads its bits, since a comparison on the GPU
+  flushed a denormal edge factor to zero and culled a patch both the reference and the GPU keep.
+- `tests/tessellation_draw.rs` (Windows, GPU job): patches of seeded factors (ordinary values, past
+  the largest, whole numbers and a step either side, halves, NaN, zeros, negatives, infinity,
+  denormals) for every domain, partitioning and output topology (32 hull shaders and 3 domain shaders
+  in `tests/own/tessellation.hlsl`, fxc), real Direct3D 11's domain shader output streamed (domain
+  location and primitive number) against our points and indices read back. 16 seeds, 512 draws: in
+  every one each patch's primitives equal the RTX 3080's exactly (every coordinate's bits), patches
+  in draw order. The order of primitives inside a patch, and which vertex a triangle starts at
+  (about a third start at the same one), differ from the GPU's: the test compares each patch as a
+  set of primitives with their winding kept. That start matters for flat-interpolated domain
+  outputs (the provoking vertex); not matched (the GPU's order is its own, not the reference's).
+- fxc (which wgpu's Direct3D 12 path uses here) fails on the program with an internal error
+  ("argument pulled into unrelated predicate"), so the test runs wgpu on Vulkan. Chrome's compile
+  not yet checked (Known gaps).
+
 Next (in order):
+- Tessellation, the rest: hull shaders (DXBC) as compute writing `stage::tess`'s records, domain
+  shaders as the final draw's vertex program reading the points and patches, `Stages` with hull and
+  domain (the indexed indirect draw), a drawn test against real Direct3D 11 (the rig's
+  `tessellation` scene's shaders), then the corpora's hull and domain shaders. Chrome's compile of
+  `tessellator.wgsl`, and fxc's failure on it.
 - Typed buffers from DXIL (naga's SPIR-V reader: `Dim::Buffer` images into the same functions), and
   in geometry shaders (the stage helper fills `TexelBufferView`); the corpora with formats (below).
-- Corpus records: run 17 updated them for geometry, atomics, counters and storage textures (below).
-  Storage textures in the corpora convert only with a format, so under the default key they are
-  refused `StorageFormat` and not compiled in Chrome; give the corpus test the formats the rig's
-  real programs bind, then compile them in Chrome.
+- Corpus: run 19 gave the corpus test one view format per kind (Run 19); shaders whose views mix
+  kinds are still refused `StorageFormatKind`/`TypedBufferFormatKind` there (10 games, 4 own, 1 rig).
+  To convert them too, the corpus needs each slot's kind: record the formats the rig's real
+  programs bind (an API trace) or read each declaration's type from the bytecode in the test.
 - The WebAssembly build's module differs from the native one for one game shader (Known gaps):
   find which side orders the divide-modulo helper's operations by platform (dxbc-spirv's IR as
   serialised, compared between the two builds, first) and make it deterministic.
@@ -692,11 +768,14 @@ Next (in order):
   replay on WebGL 2, indexed strips into a geometry shader (a pass numbering primitives across
   restarts), triangle strips with adjacency, layer and viewport index outputs, clip distances
   through the stage, DXIL geometry shaders (naga's SPIR-V reader: the geometry execution model),
-  the last vertex stage's variants on the pass-through. Tests against real Direct3D; the built-in
-  compute programs (texture clears of 5.1).
+  the last vertex stage's variants on the pass-through. Tests against real Direct3D.
+- The built-in clear (run 19) in the fronts: G4 and G5 dispatch `builtin::storage_clear` where the
+  view's format has `STORAGE_WRITE` and no pass draws into it (they refuse such clears today), and
+  clear by a copy from a filled buffer where `storage_clear_value` refuses. Its rectangles (Direct3D
+  12) are boxes of the same program.
 - The real programs' shaders (every converted one compiles in Chrome since run 10): their named
-  failures worked down: render target array index 47, storage images 39 DXBC and 38 DXIL (no format), typed
-  buffers 21 and 19, register spaces 10.
+  failures worked down: render target array index 50, storage images and typed buffers from DXIL
+  (naga's SPIR-V reader), DXBC views of mixed kinds 9 (above), register spaces 10.
 - The cache in a front: G4 and G5 call `convert_cached` and `record_combination`; the browser host
   keeps the bytes in the origin private file system. Building ahead from `combinations` at start.
 - Older items, still open:
@@ -876,6 +955,33 @@ let reflection = &converted.reflection;
   conversion.
 
 ## Measurements
+
+Run 19, 2026-11-17, counts only (the desktop shared with the other tracks, no timings taken):
+- `storage_clears_match_direct3d` (`run19-clear4.log` in scratch `graphics-shaders`), seeds 1 to
+  256: every case passes; all 40 storage formats on both (WebGPU on wgpu's Direct3D 12 has
+  `STORAGE_WRITE` for each, the device a typed storage view of each); 62 float clears of integer
+  formats refused `FloatClearOfInteger`, each left unchanged by Direct3D 11 too; 74 cases where the
+  GPU's Direct3D 11 differs from WARP (integer clears saturated or read as floats, float clears
+  rounded down at half a code), ours equal to WARP's integer clears and to the GPU's float clears.
+  The first runs (`run19-clear1.log` to `-3.log`) found the denormal flush (R32_FLOAT, 1e-40 cleared
+  as 0 by both) and the two references' disagreement.
+- The corpora with view formats (laptop, `run19-corpus1.log`, `-2.log`, records updated): of the
+  shaders refused `StorageFormat` or `TypedBuffer` before, games 51 of 60 now convert (9 refused
+  `StorageFormatKind` 1 and `TypedBufferFormatKind` 8: they declare views of more than one kind,
+  which one format for every slot cannot give; a front gives each slot its view's format), the
+  Wine corpus 19 of 21 (2 refused `StorageImageAtomics`: atomics on a storage texture without
+  `texels_through_buffer`), the rig 1 of 2, own shaders 0 of 4 (all four mix kinds). Compute shaders
+  among them are `ok-wgsl glsl-write` (WebGL 2 has no compute), so their class does not show the
+  views; `verdicts.txt` does.
+- Chrome on the desktop (`run19-chrome.log`, one GPU job, RTX 3080): every written WGSL file
+  compiles with WebGPU: corpus 162, games 469, games DXIL 289, own 50, own DXIL 26, rig 65, rig
+  DXIL 49. WebGL 2 refuses 35 GLSL files (corpus 13, games 10, games DXIL 1, own 5, own DXIL 2,
+  rig 2, rig DXIL 2), each for `bitfieldExtract`/`bitfieldInsert`/`bitfieldReverse`/`findMSB`,
+  `textureGather` or `sampler2DMS`, which GLSL ES 3.00 lacks (6.5 gives the first two to the WebGL
+  2 back end's writing); `web/check` exits 1 on them as before.
+- The whole suite on the laptop before the push (`run19-suite2.log`, then the corpus test again
+  after the records): every test passes, the corpora with glslang included; clippy with warnings
+  denied passes on the laptop and on Windows.
 
 Run 18, 2026-11-17, counts only (the desktop shared with the other tracks, no timings taken):
 - `typed_buffers_match_direct3d`: seeds 1 to 64 (`texels-draw-2.txt`, `-3.txt`, `-4.txt` in scratch
@@ -1412,6 +1518,10 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   `WCONTAINERS_TEXEL_CASES`, default 8 seeds, about 1.5 s).
 - Atomics, counters and storage textures (Windows, one GPU job, about 2 s for 4 seeds):
   `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test compute_draw --no-run" -- "set WCONTAINERS_COMPUTE_SEED=1&& set WCONTAINERS_COMPUTE_CASES=4&& cargo test -j 3 -p wcontainers-shaders --test compute_draw -- --nocapture --test-threads 1"`.
+- The built-in clear against WARP and the GPU's Direct3D 11 (Windows, one GPU job, about 3 s for
+  256 cases): `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test clear_draw --no-run" -- "set WCONTAINERS_CLEAR_SEED=1&& set WCONTAINERS_CLEAR_CASES=256&& cargo test -j 3 -p wcontainers-shaders --test clear_draw -- --nocapture --test-threads 1"`.
+- The tessellator against the GPU's (Windows, one GPU job, about 12 s for 16 seeds):
+  `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test tessellation_draw --no-run" -- "set WCONTAINERS_TESSELLATION_SEED=1&& set WCONTAINERS_TESSELLATION_CASES=16&& cargo test -j 3 -p wcontainers-shaders --test tessellation_draw -- --nocapture --test-threads 1"`.
 - Compiling own shaders: `tests/own/compile.cmd` on the desktop (through `tools/graphics-rig/remote`);
   run 17 fetched the new files back as hex (`certutil -encodehex -f <file> <file>.hex 12`, then
   `type`) and decoded them here.
@@ -1465,6 +1575,10 @@ were already there.
 
 ## Dependencies and licences
 
+- Run 20: `src/stage/tessellator.wgsl` is a port (to WGSL) of Microsoft's reference tessellator,
+  MIT ("Copyright (c) Microsoft Corporation", the licence text at the head of Mesa's
+  src/gallium/auxiliary/tessellator/tessellator.cpp, read 2026-11-17); the program's header names it.
+  No new crate.
 - dxbc-spirv, https://github.com/doitsujin/dxbc-spirv, submodule at 6196cc6c62b7b04acb4f3e713ff3bb1a7e7950fd
   (upstream main's head on 2026-11-17): MIT, "Copyright (c) 2025 Philip Rebohle" (its LICENSE).
 - dxil-spirv, https://github.com/HansKristian-Work/dxil-spirv, submodule at
@@ -1572,6 +1686,12 @@ were already there.
 
 ## Known gaps found so far
 
+- The tessellator program fails fxc (wgpu's Direct3D 12 shader compiler on the desktop) with an
+  internal error, "argument pulled into unrelated predicate"; it runs on wgpu's Vulkan path. Chrome
+  compiles Direct3D 12 shaders with dxc where it can; its compile of the program is not checked yet.
+- Inside a patch the GPU's tessellator gives the primitives in another order than the reference, and
+  starts about two thirds of its triangles at another vertex (winding kept); ours follow the
+  reference. A domain shader's flat outputs (taken from a triangle's first vertex) can then differ.
 - Typed buffers: DXIL's are refused by naga's SPIR-V reader; geometry shaders' are refused
   (`TypedBufferInGeometry`); through a texture, a view reaches at most 2048 times the back end's
   largest texture height elements (32M on ANGLE's 16384), short of Direct3D 10's 2^27, which the
@@ -1619,8 +1739,14 @@ were already there.
 - One real program shader (`d599fbc7efa911be.dxbc`, a bgfx shader) converts to a module whose
   expression order differs between the native and WebAssembly builds (run 10): the two results of
   its unsigned divide come out in the other order. Same values, but a cache made natively and one
-  made in the browser would disagree on its entry (counted, the first kept). Cause not found yet:
-  the lowering follows the IR's order, so the IR from dxbc-spirv is the first suspect.
+  made in the browser would disagree on its entry (counted, the first kept). Cause (run 19): C++
+  leaves the order of a call's arguments unspecified, and dxbc-spirv builds some operands inside
+  one call's arguments (Run 19 lists them); gcc and MSVC evaluate them right to left, clang for
+  WebAssembly left to right. Fix upstream; until then the browser's conversion (clang) is the one a
+  shared cache should be made with.
+- The GPU's Direct3D 11 clears integer values into storage views otherwise than WARP and the
+  specification (Run 19); the built-in clear follows the specification, so a program relying on
+  the RTX 3080's saturation would see other texels.
 
 - WebGL 2 cannot write the sample mask (no OES_sample_variables in WebGL), so `SAMPLE_MASK` serves
   only WebGPU, which has the mask natively; the plan's `SampleMaskInShader` route for WebGL 2 does not
