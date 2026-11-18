@@ -2107,13 +2107,14 @@ impl Context {
             return Err(DXGI_ERROR_INVALID_CALL.into());
         };
         let commands = std::mem::take(&mut *recorded.borrow_mut());
-        let list = CommandList::new(Rc::new(commands), self.child.device().clone());
         self.staged.borrow_mut().clear();
         self.after_list(restore.as_bool());
-        // Without an out pointer the recorded calls are dropped all the same.
+        // Without an out pointer the recorded calls are dropped all the same. A list is made only
+        // to be handed out: its device reference is given back by its last release.
         if out.is_null() {
             return Err(windows::Win32::Foundation::E_UNEXPECTED.into());
         }
+        let list = CommandList::new(Rc::new(commands), self.child.device().clone());
         out.write(Some(list.into()))
     }
 
