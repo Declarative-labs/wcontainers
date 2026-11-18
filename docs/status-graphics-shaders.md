@@ -1227,6 +1227,9 @@ Direct3D 12's hull_shader_punned_array and clip_distance):
   their own conversion, `ClipDistance`), and the last stage's own clip. Test
   `narrower_vertex_outputs_fill_their_record_slots`; not drawn (Direct3D 12's clip_distance and the
   fronts' DXIL geometry stages will be the first).
+- At the end of the run the build folders were deleted: the laptop's
+  `~/wcontainers-graphics/target/phase-2-graphics-shaders` (5.4 GB) and `~/wcontainers-graphics/punned`,
+  and the desktop's `C:\wc\target\phase-2-graphics-shaders`. No build output was made in scratch.
 
 Next (in order):
 - The fronts (theirs), now possible: `VariantFlags::STORAGE_OFFSET` where a raw or structured view's
