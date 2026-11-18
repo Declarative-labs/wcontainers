@@ -942,8 +942,8 @@ let ending = container.run()?;   // to the end; or container.step() and containe
   knob for the count).
 - **At every look-ahead.** The kernel test crate's look-ahead comes from the environment, as its seeds do
   (`SCHEDULE_SEED`, lib.rs:150-161): `LOOK_AHEAD` is `full` (also when unset), `none` or `bounded`. At
-  `bounded` the container's N is drawn from 1 to 64 from the run's seed, as the translator plan's "bounded
-  with random N" (phase-1-translator.md line 456), and printed, so the run repeats. One N per container,
+  `bounded` the container's N is drawn from 1 to the translator's default bound (`BOUND`, 256) from the
+  run's seed, as the translator plan's "bounded with random N" (phase-1-translator.md line 456), and printed, so the run repeats. One N per container,
   not per range: the look-ahead is a setting of the container, and drawing it per range would be a test's
   behaviour inside the shipped back end. The back end's surface tests (crates/wcontainers-wasmtime/tests/surface.rs)
   read `LOOK_AHEAD` the same way; having no run seed, their bounded N is drawn from `LOOK_AHEAD_SEED` alone. Which look-aheads each bar runs is named in the
@@ -1092,7 +1092,9 @@ Each bar is checkable by running the named command on this Mac with Docker.
     `rseqabort`, `priorities`, `schedattr` and `shell::runs_repeat_for_a_seed` pass with `--features
     runtime` at full, none and bounded; a seeded run repeats exactly at each look-ahead taken alone
     (the kernel test crate's `repeats`: output, warnings, counters, the CPU side's warnings, the turn
-    count and the files left, with and without saves, `REPEAT_RUNS` times per seed); a test runs a threaded
+    count and the files left, with and without saves, `REPEAT_RUNS` times per seed; programs whose threads
+    switch only at system calls, and one whose threads only compute, so that where the seed ends a turn
+    decides which thread runs next, which it checks happened); a test runs a threaded
     program through the public surface in free turns and matches the reference
     (crates/wcontainers-wasmtime/tests/surface.rs `a_threaded_program_matches_the_reference`, at the
     look-ahead `LOOK_AHEAD` names); a new thread given a dropped thread's block runs on its instances
