@@ -37,6 +37,9 @@ static UNCOUNTED: AtomicU64 = AtomicU64::new(0);
 static FRAMES: AtomicU64 = AtomicU64::new(0);
 static WRITTEN: AtomicBool = AtomicBool::new(false);
 static NOTES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// The command queue each Direct3D 12 swap chain presents on, by the swap chain's identity (its
+/// IUnknown), as given to the factory when it was made.
+static QUEUES: Mutex<Vec<(usize, ID3D12CommandQueue)>> = Mutex::new(Vec::new());
 /// Calls of each context method, immediate contexts first, then deferred ones.
 pub static WRAPPED_COUNTS: [AtomicU64; 2 * CONTEXT_SLOTS] =
     [const { AtomicU64::new(0) }; 2 * CONTEXT_SLOTS];
@@ -521,7 +524,10 @@ unsafe extern "system" fn create_swap_chain(
     ) -> HRESULT = unsafe { std::mem::transmute(enter(this, "CreateSwapChain")) };
     let result = unsafe { original(this, device, desc, out) };
     if result.is_ok() {
-        unsafe { patch(Table::SwapChain, *out) };
+        unsafe {
+            patch(Table::SwapChain, *out);
+            remember_queue(device, *out);
+        }
     }
     result
 }
@@ -547,7 +553,10 @@ unsafe extern "system" fn create_swap_chain_for_hwnd(
     let original: Original = unsafe { std::mem::transmute(enter(this, "CreateSwapChainForHwnd")) };
     let result = unsafe { original(this, device, window, desc, fullscreen, output, out) };
     if result.is_ok() {
-        unsafe { patch(Table::SwapChain, *out) };
+        unsafe {
+            patch(Table::SwapChain, *out);
+            remember_queue(device, *out);
+        }
     }
     result
 }
@@ -572,7 +581,10 @@ unsafe extern "system" fn create_swap_chain_for_core_window(
         unsafe { std::mem::transmute(enter(this, "CreateSwapChainForCoreWindow")) };
     let result = unsafe { original(this, device, window, desc, output, out) };
     if result.is_ok() {
-        unsafe { patch(Table::SwapChain, *out) };
+        unsafe {
+            patch(Table::SwapChain, *out);
+            remember_queue(device, *out);
+        }
     }
     result
 }
@@ -595,7 +607,10 @@ unsafe extern "system" fn create_swap_chain_for_composition(
         unsafe { std::mem::transmute(enter(this, "CreateSwapChainForComposition")) };
     let result = unsafe { original(this, device, desc, output, out) };
     if result.is_ok() {
-        unsafe { patch(Table::SwapChain, *out) };
+        unsafe {
+            patch(Table::SwapChain, *out);
+            remember_queue(device, *out);
+        }
     }
     result
 }
@@ -640,6 +655,30 @@ unsafe extern "system" fn create_command_queue1(
         unsafe { patch(Table::Queue, *out) };
     }
     result
+}
+
+/// A COM object's identity: its IUnknown pointer.
+fn identity(object: *mut c_void) -> Option<usize> {
+    let unknown = unsafe { IUnknown::from_raw_borrowed(&object) }?;
+    unknown.cast::<IUnknown>().ok().map(|u| u.as_raw() as usize)
+}
+
+/// Keeps the queue a swap chain was made on, when the factory was given a Direct3D 12 queue.
+///
+/// # Safety
+/// `device` and `chain` are live COM objects.
+unsafe fn remember_queue(device: *mut c_void, chain: *mut c_void) {
+    if config().is_none() || device.is_null() || chain.is_null() {
+        return;
+    }
+    let Some(queue) = unsafe { IUnknown::from_raw_borrowed(&device) }
+        .and_then(|d| d.cast::<ID3D12CommandQueue>().ok())
+    else {
+        return;
+    };
+    if let Some(id) = identity(chain) {
+        QUEUES.lock().unwrap().push((id, queue));
+    }
 }
 
 /// GetImmediateContext and its versions 1 to 3, which share one shape.
@@ -751,12 +790,17 @@ fn frame(chain: *mut c_void) {
 
 fn save(chain: *mut c_void, frame: u64, config: &Config) -> anyhow::Result<()> {
     let chain = unsafe { IDXGISwapChain::from_raw_borrowed(&chain) }.unwrap();
-    // A Direct3D 12 swap chain's device is the command queue it presents on.
-    let (width, height, format, mut pixels) =
-        match unsafe { chain.GetDevice::<ID3D12CommandQueue>() } {
-            Ok(queue) => read12(chain, &queue)?,
-            Err(_) => read11(chain)?,
-        };
+    let queue = identity(chain.as_raw()).and_then(|id| {
+        let queues = QUEUES.lock().unwrap();
+        queues
+            .iter()
+            .find(|(i, _)| *i == id)
+            .map(|(_, q)| q.clone())
+    });
+    let (width, height, format, mut pixels) = match queue {
+        Some(queue) => read12(chain, &queue)?,
+        None => read11(chain)?,
+    };
     let (bgra, wide) = layout(format)?;
     let (pixels, depth) = if wide {
         // Bits 0-9 red, 10-19 green, 20-29 blue, 30-31 alpha; widened by repeating the top bits.

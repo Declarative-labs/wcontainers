@@ -12,9 +12,9 @@ fixed; the display driver resets are traced and the queue now protects the PC fr
 logons are recorded as they happen, Chrome's wrapper comes back with every Chrome install, and
 every script keeps one SSH connection per branch (see "The owner's PC" below). Partly done: the
 forwarding library now also stands in for d3d12.dll (every Direct3D 12 scene passes through it) and
-counts a Direct3D 12 program's device, queue, factory and swap chain calls, but not yet its command
-lists, and it does not yet save Direct3D 12 frames; so bgfx on Direct3D 12, Godot's Direct3D 12
-census and Microsoft's Direct3D 12 samples are not in yet (see Next). R1's parts:
+counts a Direct3D 12 program's device, queue, factory and swap chain calls and saves its frames,
+but does not count its command lists yet; bgfx on Direct3D 12, Godot's Direct3D 12 census and
+Microsoft's Direct3D 12 samples are not among the programs yet (see Next). R1's parts:
 - Jobs that present run on a hidden desktop ("wc-rig") in the session of the user logged in at the
   console (`gpu-job --desktop`, see How to run): windows and swap chains work there and nothing
   shows on the owner's screen. Session 0, where the queue runs, refuses every swap chain.
@@ -372,9 +372,10 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
 - The forwarding library also stands in for d3d12.dll (copy it under that name): `scenes --api d3d12
   --dll d3d12.dll=%CARGO_TARGET_DIR%\debug\wcontainers_graphics_test_forward.dll` runs the Direct3D 12
   scenes through it; with WC_OUT it counts a Direct3D 12 program's device, command queue, DXGI
-  factory and swap chain calls (not its command lists yet) and WC_D3D12 names a replacement behind
-  it. It does not save Direct3D 12 frames yet (Next), so `programs run` still runs Direct3D 12
-  programs without it.
+  factory and swap chain calls (not its command lists yet), saves the frames WC_CAPTURE lists (the
+  current back buffer copied on the queue the swap chain presents on, after the program's work) and
+  WC_D3D12 names a replacement behind it. `programs run` does not use it for Direct3D 12 programs yet
+  (Next).
 - The census (crates/wcontainers-graphics-test-forward/src/census.rs), on when WC_OUT names a
   directory: the typed D3D11CreateDevice and D3D11CreateDeviceAndSwapChain exports patch the method
   tables of the device, swap chain and DXGI factory with counting thunks (names read from the
@@ -1090,8 +1091,11 @@ exports of both d3d11.dll and d3d12.dll, copied under either name; see Loading a
 - bgfx-01-cubes with `--d3d12` and the library as d3d12.dll (WC_OUT and WC_CAPTURE set; trial,
   not in the program list): 120 frames; census counted the factory (IDXGIFactory7), the device
   (ID3D12Device8, the newest this Windows 10 runtime answers), the queue, the command list
-  (ID3D12GraphicsCommandList6) and the swap chain; no frame saved: "No such interface supported
-  (0x80004002)" from the Direct3D 12 readback (which call is not known yet).
+  (ID3D12GraphicsCommandList6) and the swap chain; no frame saved at first: "No such interface
+  supported (0x80004002)": IDXGISwapChain::GetDevice does not answer with the queue. Now the library
+  keeps the queue each swap chain was made on (from the factory's CreateSwapChain* calls) and copies
+  the current back buffer on it: frames 10 and 60 of bgfx-01-cubes --d3d12 were saved (the overlay
+  reads "Renderer: Direct3D 12 / NVIDIA"; not yet compared with references).
 - Godot's 2D platformer on Direct3D 12 through it: runs with the library alone and with the
   census of device, queue, factory and swap chain; crashes (access violation in the system
   d3d12.dll at +0x122d7, inside d3d12core.dll) as soon as CreateCommandList and CreateCommandList1
@@ -1465,9 +1469,6 @@ under Microsoft's licence terms, Chrome for Testing under Google's terms.
 ## Next
 
 R2 is not complete. In order:
-- Save Direct3D 12 frames: find which call of census.rs `read12` gives E_NOINTERFACE with bgfx
-  (likely IDXGISwapChain::GetDevice asked for the queue; if so, keep the queue each
-  CreateSwapChain* hook is given, by the swap chain's identity).
 - Count Direct3D 12 command lists without the crash in Godot (see Measurements, Direct3D 12 through
   the forwarding library); one route to try: patch the list's table from the queue's
   ExecuteCommandLists instead of from CreateCommandList.
