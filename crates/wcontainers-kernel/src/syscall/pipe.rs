@@ -221,7 +221,9 @@ pub(super) fn signal_ends(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node
 }
 
 /// `pipe_release` of each file given up that was its last holder: a pipe left with readers and no
-/// writers or the other way round sends both kinds of end their I/O signals. Releases run last given
+/// writers or the other way round wakes every waiter and epoll item of either end
+/// (`wake_up_interruptible_all`, which edge-triggered items take as an event) and sends both
+/// kinds of end their I/O signals. Releases run last given
 /// up first, as `fput`'s task works do on the way back to the program, and the file is gone from the
 /// pipe's ends first, as `__fput` takes it off before the release.
 pub(crate) fn released(kernel: &mut Kernel, cx: &mut Context<'_>, files: Vec<FileRef>) {
@@ -234,6 +236,7 @@ pub(crate) fn released(kernel: &mut Kernel, cx: &mut Context<'_>, files: Vec<Fil
             _ => false,
         };
         if lost_a_side {
+            kernel.wake_poll(channel(&node), 0);
             signal_ends(kernel, cx, &node, true);
             signal_ends(kernel, cx, &node, false);
         }
