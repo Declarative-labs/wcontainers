@@ -72,4 +72,6 @@ for %%e in (cs_atomics cs_decrement cs_images) do (
 "%DXC%" -nologo -T cs_6_0 -E cs_texels -Gis -Fo cs_texels.dxil texels.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_texels /Fo ps_texels.dxbc texels.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_texels -Gis -Fo ps_texels.dxil texels.hlsl || exit /b 1
+"%FXC%" /nologo /T cs_5_0 /E cs_through /Fo cs_through.dxbc texels.hlsl || exit /b 1
+"%DXC%" -nologo -T cs_6_0 -E cs_through -Gis -Fo cs_through.dxil texels.hlsl || exit /b 1
 echo %FXC% %DXC%
