@@ -43,10 +43,9 @@ pub mod reason {
     /// The guest reached a page of a block that it was writing through another page of the same memory,
     /// so the copies were made first.
     pub const SHARED_PAGE_WRITTEN_ELSEWHERE: &str = "shared page written through another page";
-    /// Two neighbouring pages were to show the same page of a block and both allow writing, where one
-    /// write could cross from one to the other; refused as not supported.
-    pub const NEIGHBOURING_VIEWS_REFUSED: &str =
-        "a block's page shown at neighbouring pages refused";
+    /// A write to a page of a block that the neighbouring page shows too is made one instruction at
+    /// a time, since one write could cross from one copy of the block's page into the other.
+    pub const WRITE_STEPPED: &str = "write next to another view made one instruction at a time";
     /// Code of a range already translated was announced changed, so it is translated at run time only.
     pub const CODE_CHANGED_AFTER_IT_RAN: &str = "code changed after it ran";
     /// Code ran outside every range the kernel announced.
@@ -412,6 +411,8 @@ pub struct CpuSide<G: Guest> {
     /// The last handle given out, of any kind.
     last: u32,
     running: Option<Running>,
+    /// A write being made one instruction at a time.
+    stepping: Option<Stepping>,
     counters: BTreeMap<&'static str, (u64, u64)>,
     /// The (reason, detail) pairs already warned of.
     warned: HashSet<(&'static str, u64)>,
@@ -420,6 +421,14 @@ pub struct CpuSide<G: Guest> {
     translated: Vec<Translated>,
     /// Brought back from a save: the clock hook's answers lack the kernel's offset.
     restored: bool,
+}
+
+/// A write made one instruction at a time: the lookup sends the instruction's address to its piece alone
+/// and the next address to `load_code`, which ends the step.
+struct Stepping {
+    memory: MemoryId,
+    /// The entries of the array of slots changed for the step, with what they held.
+    slots: [(u64, u32); 2],
 }
 
 struct Running {
@@ -674,6 +683,7 @@ where
             unsent: Vec::new(),
             translated: Vec::new(),
             restored: false,
+            stepping: None,
         }
     }
 
@@ -1222,24 +1232,47 @@ where
     }
 
     /// Makes the copies of every page the guest wrote under a shared lock, and locks them again; the
-    /// pages under the view lock then hold the same and are let go.
+    /// pages under the view lock then hold the same and are let go, and a step ends. Two pages written
+    /// that show the same block's page (only in a step) each give the bytes they changed.
     fn flush(&mut self, memory: MemoryId) {
+        if let Some(step) = self.stepping.take_if(|step| step.memory == memory) {
+            for (address, slot) in step.slots.into_iter().rev() {
+                self.set_slot(memory, address, slot);
+            }
+        }
         let process = self.processes.get_mut(&memory).expect("a memory");
         let pages = std::mem::take(&mut process.written);
         let viewing = std::mem::take(&mut process.viewing);
+        let mut shown: BTreeMap<(SharedId, u64), Vec<u64>> = BTreeMap::new();
         for &page in &pages {
-            let address = page * PAGE_SIZE;
-            let Some((block, offset)) = self.shown_at(memory, address) else {
-                continue;
-            };
+            if let Some(at) = self.shown_at(memory, page * PAGE_SIZE) {
+                shown.entry(at).or_default().push(page);
+            }
+        }
+        for ((block, offset), pages) in shown {
             let mut bytes = vec![0; PAGE_SIZE as usize];
-            self.copy_out(memory, address, &mut bytes);
+            self.copy_out(memory, pages[0] * PAGE_SIZE, &mut bytes);
+            if pages.len() > 1 {
+                let before = &self.blocks[&block][offset as usize..(offset + PAGE_SIZE) as usize];
+                bytes.copy_from_slice(before);
+                let mut view = vec![0; PAGE_SIZE as usize];
+                for &page in &pages {
+                    self.copy_out(memory, page * PAGE_SIZE, &mut view);
+                    for ((byte, new), old) in bytes.iter_mut().zip(&view).zip(before) {
+                        if new != old {
+                            *byte = *new;
+                        }
+                    }
+                }
+            }
             self.block_write(block, offset, &bytes);
-            let process = self.processes.get_mut(&memory).expect("a memory");
-            process
-                .pages
-                .update(page..page + 1, |p| p.locks |= LOCK_SHARED);
-            self.write_table(memory, page..page + 1);
+            for page in pages {
+                let process = self.processes.get_mut(&memory).expect("a memory");
+                process
+                    .pages
+                    .update(page..page + 1, |p| p.locks |= LOCK_SHARED);
+                self.write_table(memory, page..page + 1);
+            }
         }
         for page in viewing {
             let process = self.processes.get_mut(&memory).expect("a memory");
@@ -1360,41 +1393,125 @@ where
     /// A guest access to a locked page that the kernel allows. Reaching a page under the view lock
     /// makes the copies first. A write marks the page written and unlocks it until its copies are next
     /// made, and puts the view lock on the other pages of the memory that show the same block's page,
-    /// so one page at a time holds what the guest wrote there.
-    fn settle(&mut self, memory: MemoryId, page: u64, write: bool) {
+    /// so one page at a time holds what the guest wrote there. When a neighbouring page shows the same
+    /// block's page, both are unlocked and the write is made one instruction at a time: true.
+    fn settle(&mut self, memory: MemoryId, page: u64, write: bool) -> bool {
         if self.process(memory).pages.get(page).locks & LOCK_VIEW != 0 {
             self.slow_path(reason::SHARED_PAGE_WRITTEN_ELSEWHERE, page * PAGE_SIZE, 0);
             self.flush(memory);
         }
         if !write {
-            return;
+            return false;
         }
         self.slow_path(reason::FIRST_WRITE_TO_SHARED_PAGE, page * PAGE_SIZE, 0);
-        let others = self.other_views(memory, page);
+        let mut others = self.other_views(memory, page);
+        let mut unlock = vec![page];
+        let step = others.iter().any(|other| other.abs_diff(page) == 1);
+        if step {
+            self.slow_path(reason::WRITE_STEPPED, page * PAGE_SIZE, 0);
+            self.flush(memory);
+            others.retain(|other| {
+                let neighbour = other.abs_diff(page) == 1;
+                if neighbour {
+                    unlock.push(*other);
+                }
+                !neighbour
+            });
+        }
         let process = self.processes.get_mut(&memory).expect("a memory");
-        process
-            .pages
-            .update(page..page + 1, |p| p.locks &= !LOCK_SHARED);
-        process.written.insert(page);
+        for &page in &unlock {
+            process
+                .pages
+                .update(page..page + 1, |p| p.locks &= !LOCK_SHARED);
+            process.written.insert(page);
+        }
         for &other in &others {
             process
                 .pages
                 .update(other..other + 1, |p| p.locks |= LOCK_VIEW);
             process.viewing.insert(other);
         }
-        self.write_table(memory, page..page + 1);
-        for other in others {
-            self.write_table(memory, other..other + 1);
+        for page in unlock.into_iter().chain(others) {
+            self.write_table(memory, page..page + 1);
         }
+        step
     }
-}
 
-/// Whether two neighbouring pages show the same page of a block and both allow writing: a write that
-/// crosses from one to the other could not be made through two copies of one page at once.
-fn written_next_to_itself(shown: [Option<(SharedId, u64)>; 2], allows: [Permissions; 2]) -> bool {
-    shown[0].is_some()
-        && shown[0] == shown[1]
-        && allows.iter().all(|a| a.contains(Permissions::WRITE))
+    /// The piece of the one instruction at an address, of look-ahead none, made once per thread.
+    fn exact_piece(
+        &mut self,
+        mut store: impl AsContextMut<Data = Data<G>>,
+        thread: ThreadId,
+        address: u64,
+    ) -> Func {
+        if let Some(piece) = self.threads[&thread].exact.get(&address) {
+            return *piece;
+        }
+        let started = Instant::now();
+        let memory = self.threads[&thread].memory;
+        let index = self.range_at(memory, address);
+        let range = self.process(memory).ranges[index].range.clone();
+        let instance = self.threads[&thread]
+            .instance
+            .clone()
+            .expect("a running thread's instances");
+        let code = self.code(memory, &range);
+        let one = LookAhead::Bounded(1);
+        let compiled = self.compile(&code, vec![address - range.start], one, true, None);
+        let load = Load {
+            compiled,
+            load_address: range.start,
+            slot_base: contract::EXACT_SLOT as u32,
+            live: false,
+        };
+        let record = &self.threads[&thread];
+        self.instantiate_load(
+            &mut store,
+            self.process(memory),
+            record,
+            &instance,
+            &load,
+            load.slot_base,
+        );
+        let table_slot = contract::EXACT_SLOT as u64;
+        let Some(Ref::Func(Some(piece))) = instance.table.get(&mut store, table_slot) else {
+            panic!("the piece is in the exact slot");
+        };
+        self.threads
+            .get_mut(&thread)
+            .expect("a thread")
+            .exact
+            .insert(address, piece);
+        let nanoseconds = started.elapsed().as_nanos() as u64;
+        self.slow_path(Reason::TranslatedAtRunTime.name(), address, nanoseconds);
+        piece
+    }
+
+    /// Makes the lookup run the thread's instruction alone from its piece in the exact slot, and send
+    /// the address after it to `load_code`, where the step ends.
+    fn step(&mut self, store: &mut Store<Data<G>>, thread: ThreadId) {
+        let memory = self.threads[&thread].memory;
+        let pc = self.read_block(&self.threads[&thread]).pc;
+        let piece = self.exact_piece(&mut *store, thread, pc);
+        let instance = self.threads[&thread]
+            .instance
+            .clone()
+            .expect("a running thread's instances");
+        let table_slot = contract::EXACT_SLOT as u64;
+        instance
+            .table
+            .set(&mut *store, table_slot, Ref::Func(Some(piece)))
+            .expect("the exact slot");
+        let mut code = vec![0; G::MAX_LENGTH as usize];
+        let length = self.layout.ceiling.saturating_sub(pc).min(G::MAX_LENGTH) as usize;
+        self.copy_out(memory, pc, &mut code[..length]);
+        let (_, length) = G::decode(&code[..length]).expect("the instruction that wrote");
+        let next = pc + u64::from(length);
+        let slots = [(pc, self.slot(memory, pc)), (next, self.slot(memory, next))];
+        self.set_slot(memory, pc, contract::EXACT_SLOT as u32);
+        self.set_slot(memory, next, 0);
+        self.stepping = Some(Stepping { memory, slots });
+    }
 }
 
 /// A thread's stop flag.
@@ -1658,11 +1775,11 @@ fn load_code<G>(caller: &mut Caller<'_, Data<G>>, address: u64, exact: bool) -> 
 where
     G: Guest<Block = RegisterBlock>,
 {
-    let started = Instant::now();
     let side = side(caller);
     let (memory, thread) = (caller.data().memory, caller.data().thread);
-    // Pages under the view lock do not hold what the guest wrote through another page yet.
-    if !side.process(memory).viewing.is_empty() {
+    // Pages under the view lock do not hold what the guest wrote through another page yet; a step ends
+    // here.
+    if !side.process(memory).viewing.is_empty() || side.stepping.is_some() {
         side.flush(memory);
     }
     // Code runs only from pages that allow it, as on Linux.
@@ -1688,42 +1805,15 @@ where
         .clone()
         .expect("a running thread's instances");
     if exact {
-        let table_slot = contract::EXACT_SLOT as u64;
-        if let Some(piece) = side.threads[&thread].exact.get(&address) {
-            instance
-                .table
-                .set(&mut *caller, table_slot, Ref::Func(Some(*piece)))
-                .expect("the exact slot");
-            return 1;
-        }
-        let code = side.code(memory, &range);
-        let one = LookAhead::Bounded(1);
-        let compiled = side.compile(&code, vec![address - range.start], one, true, None);
-        let load = Load {
-            compiled,
-            load_address: range.start,
-            slot_base: contract::EXACT_SLOT as u32,
-            live: false,
-        };
-        let record = &side.threads[&thread];
-        side.instantiate_load(
-            &mut *caller,
-            side.process(memory),
-            record,
-            &instance,
-            &load,
-            load.slot_base,
-        );
-        let Some(Ref::Func(Some(piece))) = instance.table.get(&mut *caller, table_slot) else {
-            panic!("the piece is in the exact slot");
-        };
-        side.threads
-            .get_mut(&thread)
-            .expect("a thread")
-            .exact
-            .insert(address, piece);
-        let nanoseconds = started.elapsed().as_nanos() as u64;
-        side.slow_path(Reason::TranslatedAtRunTime.name(), address, nanoseconds);
+        let piece = side.exact_piece(&mut *caller, thread, address);
+        instance
+            .table
+            .set(
+                &mut *caller,
+                contract::EXACT_SLOT as u64,
+                Ref::Func(Some(piece)),
+            )
+            .expect("the exact slot");
         return 1;
     }
     let code = &side.process(memory).ranges[index];
@@ -2076,7 +2166,9 @@ where
                 break;
             }
             if let Some((page, write)) = lock_fault {
-                self.settle(memory, page, write);
+                if self.settle(memory, page, write) {
+                    self.step(&mut store, thread);
+                }
                 resume = Resume::Continue;
                 continue;
             }
@@ -2267,36 +2359,6 @@ where
     ) -> Result<(), CpuError> {
         self.check(address, length)?;
         let pages = address / PAGE_SIZE..(address + length).div_ceil(PAGE_SIZE);
-        if permissions.contains(Permissions::WRITE) {
-            let process = self.process(memory);
-            let allows = |page: u64| {
-                if pages.contains(&page) {
-                    permissions
-                } else {
-                    process.pages.get(page).allows
-                }
-            };
-            let shown = |page: u64| self.shown_at(memory, page * PAGE_SIZE);
-            // Inside one range shown, neighbouring pages show different pages of the block.
-            let around = address.saturating_sub(PAGE_SIZE)..address + length + PAGE_SIZE;
-            let refused = process
-                .shown
-                .range(..around.end)
-                .filter(|(_, s)| s.end > around.start)
-                .flat_map(|(start, s)| [start / PAGE_SIZE, s.end / PAGE_SIZE - 1])
-                .flat_map(|edge| {
-                    [
-                        edge.checked_sub(1).map(|b| (b, edge)),
-                        Some((edge, edge + 1)),
-                    ]
-                })
-                .flatten()
-                .any(|(a, b)| written_next_to_itself([shown(a), shown(b)], [allows(a), allows(b)]));
-            if refused {
-                self.slow_path(reason::NEIGHBOURING_VIEWS_REFUSED, address, 0);
-                return Err(CpuError::NotSupported);
-            }
-        }
         let process = self.processes.get_mut(&memory).expect("a memory");
         process.pages.update(pages.clone(), |p| {
             p.allows = permissions;
@@ -2385,26 +2447,6 @@ where
             .is_none_or(|end| end > block.len() as u64)
         {
             return Err(CpuError::BadAddress);
-        }
-        if length > 0 {
-            let (first, last) = (address / PAGE_SIZE, (address + length) / PAGE_SIZE - 1);
-            let process = self.process(memory);
-            let allows = |page: u64| process.pages.get(page).allows;
-            let shown = |page: u64| self.shown_at(memory, page * PAGE_SIZE);
-            let before = first.checked_sub(1).is_some_and(|before| {
-                written_next_to_itself(
-                    [shown(before), Some((shared, offset))],
-                    [allows(before), allows(first)],
-                )
-            });
-            let after = written_next_to_itself(
-                [Some((shared, offset + length - PAGE_SIZE)), shown(last + 1)],
-                [allows(last), allows(last + 1)],
-            );
-            if before || after {
-                self.slow_path(reason::NEIGHBOURING_VIEWS_REFUSED, address, 0);
-                return Err(CpuError::NotSupported);
-            }
         }
         self.flush(memory);
         self.unshow(memory, address..address + length);

@@ -1,9 +1,7 @@
 //! One block of shared pages shown at two places of one memory: what the guest writes through one is
 //! what it reads through the other, with no exit between.
 
-use wcontainers_abi::{
-    Cpu, CpuError, Exit, MemoryId, PAGE_SIZE, Permissions, RegisterBlock, Resume,
-};
+use wcontainers_abi::{Cpu, Exit, MemoryId, PAGE_SIZE, Permissions, RegisterBlock, Resume};
 use wcontainers_abi::{SharedId, Warning};
 use wcontainers_arm64::Arm64;
 use wcontainers_runtime::{Answer, Carry, Execution, Leaving, Turn};
@@ -125,60 +123,49 @@ fn a_write_through_one_view_is_read_through_the_other_none() {
     read_through_the_other(LookAhead::None);
 }
 
-/// A ring of two pages shown twice side by side: a store across the seam is read from the first view.
-fn ring(look_ahead: LookAhead) {
+/// A ring of `pages` pages shown twice side by side: a store across the seam is read from the first
+/// view, and the store and the read again from the second.
+fn ring(look_ahead: LookAhead, pages: u64) {
     let (mut cpu, memory) = side(look_ahead);
-    let block = cpu.shared_new(2 * PAGE_SIZE).unwrap();
-    show(&mut cpu, memory, block, 0, VIEWS, 2);
-    show(&mut cpu, memory, block, 0, VIEWS + 2 * PAGE_SIZE, 2);
-    // stp x3, x4, [x1]; ldr x0, [x2]; svc #0
-    let program = [0xa900_1023, 0xf940_0040, 0xd400_0001];
+    let size = pages * PAGE_SIZE;
+    let block = cpu.shared_new(size).unwrap();
+    show(&mut cpu, memory, block, 0, VIEWS, pages);
+    show(&mut cpu, memory, block, 0, VIEWS + size, pages);
+    // stp x3, x4, [x1]; ldr x0, [x2]; ldr x5, [x1]; svc #0
+    let program = [0xa900_1023, 0xf940_0040, 0xf940_0025, 0xd400_0001];
     let (low, high) = (0x0102_0304_0506_0708, 0x1112_1314_1516_1718);
-    let set = [
-        (1, VIEWS + 2 * PAGE_SIZE - 8),
-        (2, VIEWS),
-        (3, low),
-        (4, high),
-    ];
+    let set = [(1, VIEWS + size - 8), (2, VIEWS), (3, low), (4, high)];
     let call = run(&mut cpu, memory, &program, &set);
-    assert_eq!(call[0], high);
-}
-
-#[test]
-fn a_store_across_a_rings_seam_is_seen_through_the_first_view_full() {
-    ring(LookAhead::Full);
-}
-
-#[test]
-fn a_store_across_a_rings_seam_is_seen_through_the_first_view_none() {
-    ring(LookAhead::None);
-}
-
-#[test]
-fn a_page_shown_writable_next_to_itself_is_refused() {
-    let (mut cpu, memory) = side(LookAhead::Full);
-    let block = cpu.shared_new(PAGE_SIZE).unwrap();
-    show(&mut cpu, memory, block, 0, VIEWS, 1);
-    let rw = Permissions::READ | Permissions::WRITE;
-    // Shown writable next to itself, before and after: refused.
-    for at in [VIEWS + PAGE_SIZE, VIEWS - PAGE_SIZE] {
-        cpu.set_permissions(memory, at, PAGE_SIZE, rw).unwrap();
-        let shown = cpu.shared_map(block, 0, memory, at, PAGE_SIZE);
-        assert_eq!(shown, Err(CpuError::NotSupported));
-    }
-    // Shown read only next to itself: allowed, and refused when made writable.
-    let after = VIEWS + PAGE_SIZE;
-    cpu.set_permissions(memory, after, PAGE_SIZE, Permissions::READ)
-        .unwrap();
-    cpu.shared_map(block, 0, memory, after, PAGE_SIZE).unwrap();
-    let writable = cpu.set_permissions(memory, after, PAGE_SIZE, rw);
-    assert_eq!(writable, Err(CpuError::NotSupported));
-    // Not next to itself: allowed.
-    show(&mut cpu, memory, block, 0, VIEWS + 3 * PAGE_SIZE, 1);
+    assert_eq!((call[0], call[5]), (high, low));
+    let mut held = [0u8; 8];
+    cpu.shared_read(block, 0, &mut held).unwrap();
+    assert_eq!(u64::from_le_bytes(held), high);
+    cpu.shared_read(block, size - 8, &mut held).unwrap();
+    assert_eq!(u64::from_le_bytes(held), low);
     let counters = cpu.counters();
-    let refused = counters
+    let stepped = counters
         .iter()
-        .find(|c| c.reason == reason::NEIGHBOURING_VIEWS_REFUSED)
+        .find(|c| c.reason == reason::WRITE_STEPPED)
         .map_or(0, |c| c.count);
-    assert_eq!(refused, 3);
+    assert_eq!(stepped > 0, pages == 1);
+}
+
+#[test]
+fn a_store_across_a_rings_seam_is_seen_through_both_views_full() {
+    ring(LookAhead::Full, 2);
+}
+
+#[test]
+fn a_store_across_a_rings_seam_is_seen_through_both_views_none() {
+    ring(LookAhead::None, 2);
+}
+
+#[test]
+fn a_store_across_a_one_page_rings_seam_is_made_one_instruction_at_a_time_full() {
+    ring(LookAhead::Full, 1);
+}
+
+#[test]
+fn a_store_across_a_one_page_rings_seam_is_made_one_instruction_at_a_time_none() {
+    ring(LookAhead::None, 1);
 }
