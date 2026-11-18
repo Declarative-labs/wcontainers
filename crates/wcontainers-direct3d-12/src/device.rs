@@ -380,6 +380,9 @@ pub struct Device<B: Backend> {
     /// The storage textures the last binding sets made read through buffers: API stage and
     /// register; and the copies around their draw or dispatch.
     bound_through: Vec<(u32, u32)>,
+    /// The API stages a storage view of their own slots is bound to at an offset the back end
+    /// cannot bind (`VariantFlags::STORAGE_OFFSET`).
+    bound_offsets: Vec<u32>,
     /// The textures the last binding sets made bind under a minimum level-of-detail clamp (API
     /// stage, register, clamp in the view's levels), and every sampler they bind (API stage,
     /// register, descriptor), from which a clamped program's merged samplers are made.
@@ -440,6 +443,7 @@ impl<B: Backend> Device<B> {
             bound_helpers: Vec::new(),
             bound_sampling: Vec::new(),
             bound_through: Vec::new(),
+            bound_offsets: Vec::new(),
             bound_clamps: Vec::new(),
             bound_unfiltered: Vec::new(),
             bound_samplers: Vec::new(),
