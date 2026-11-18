@@ -25,7 +25,9 @@ WebGPU back end (G2); see "Gap list" and "Next". Runs, all on 2026-11-17:
   resolve destination; the Direct3D 11 front does the same); transitions checked at `Close`
   (write states combined, no resource, the same state before and after: all E_INVALIDARG as real
   Direct3D 12); block-compressed copies not at a block's corner refused at `Close`. New case
-  `predicated-resolve` equal to real Direct3D 12.
+  `predicated-resolve` equal to real Direct3D 12. Pipeline state streams take empty
+  amplification and mesh shader subobjects; the shader runner then ran through ours for the
+  first time (194 of 299).
 
 - `wcontainers-directx-graphics-infrastructure`, the portable core: the adapter description from the
   back end's `Caps`; output descriptions, their modes, and the colour spaces swap chains present in
@@ -177,7 +179,7 @@ logs in run12/logs-full1):
   conditional_rendering, unused_interpolated_input, zero_vertex_stride.
 - vkd3d-d3d12_invalid_usage: 3 of 3 (newly: invalid_resource_barriers, invalid_copy_texture_region).
 - vkd3d-hlsl_d3d12: 8 of 9 (test_thread_id: `StorageImage`, G6).
-- vkd3d-shader_runner (302 files): 0 of 299 with our dxgi.dll ("Shader runner" below).
+- vkd3d-shader_runner (302 files): 194 of 299 with our d3d12.dll alone ("Shader runner" below).
 
 What the 76 failing vkd3d-d3d12 tests stop at first (run12/fail-reasons-full1.txt):
 - The converter (G6), 36: `StorageImage` 13, `TypedBuffer` 6, `Atomics` 4, `StorageCounter` 3,
@@ -215,14 +217,26 @@ run 12. hlsl_d3d12 8 of 9 throughout.
 
 ## Shader runner (vkd3d-shader_runner, 302 files)
 
-Run 12, first time through ours (scratch run12/runner1.log): with both our d3d12.dll and
-dxgi.dll, 0 of 299 pass: every file crashes in its Direct3D 11 part, before the Direct3D 12 part
-(our dxgi.dll serves only Direct3D 12; the runner's Direct3D 9 part skips here, as on real).
-With our d3d12.dll alone (system dxgi.dll), hlsl+abs.shader_test runs to the end: 22 of 260
-checks fail, every one `CreateGraphicsPipelineState` answering E_INVALIDARG for the runner's
-pipelines (shader models 4.0, 5.0 and 6.0). Our library printed no reason; not found yet. A rig
-option to replace only d3d12.dll for this file, or a dxgi.dll that forwards Direct3D 11's
-calls to the system's, is the way to run all 302.
+Run with our d3d12.dll alone (the system's dxgi.dll): with our dxgi.dll too every file crashes
+in its Direct3D 11 part before reaching Direct3D 12 (our dxgi.dll serves only Direct3D 12), 0 of
+299 (run12/runner1.log). Command: `E='%CARGO_TARGET_DIR%\debug\examples';
+tools/graphics-rig/wine-tests run --dll "d3d12.dll=$E\d3d12.dll" vkd3d-shader_runner`.
+
+Run 12 (built after the mesh subobject fix; run12/runner2.log, logs in run12/logs-runner2,
+first refusal per file in run12/runner2-reasons.txt): 194 of 299 files that pass on real
+Direct3D 12 pass through ours (by the rig's rule; 239 of 302 report no failed check). Before
+the fix every pipeline failed: the runner's pipeline state streams carry empty amplification
+and mesh shader subobjects, which the stream reader refused. The 105 failing:
+- The converter (G6), 58: `StorageImage` 8, `TypedBuffer` 6, `PackedStageValues` 3,
+  `StructType` 2, `NonFiniteConstant` 2, `ConstantComponentIndexing` 2, `StorageCounter` 1,
+  naga's SPIR-V reader or validator 16 (buffer images, 64-bit and 16-bit types, structs as stage
+  values), the stage helper 4, device removed after a refusal 7, others.
+- Fewer checks than real, 43: the runner skips sections needing what `CheckFeatureSupport`
+  reports absent (float64, int64, 16-bit types, wave operations, depth bounds, barycentrics,
+  `SV_RenderTargetArrayIndex`/`SV_ViewportArrayIndex` from the vertex stage, and smaller gaps
+  of 1 to 100 checks not sorted yet).
+- Wrong values, 4: arithmetic-float-uniform (4 checks), arithmetic-float (2), frexp (2),
+  sample-cmp (20); not looked into yet.
 
 ## Real program
 
@@ -285,8 +299,8 @@ list only when it is the back end's or browser's to lack (reported absent as Dir
    variant and G2's `TIMESTAMPS` land; `SV_VertexID` with a base vertex (indirect-vertex-id) when
    `DrawBaseFromArguments` lands; A8 when `FormatConverted` lands.
 4. The stencil view and component mapping route once the interface has a view swizzle.
-5. The shader runner's E_INVALIDARG at `CreateGraphicsPipelineState` ("Shader runner"), then
-   the 302 files with our d3d12.dll alone, sorted by cause.
+5. The shader runner's wrong values (sample-cmp, arithmetic-float, frexp) and the files that run
+   a few checks fewer than real ("Shader runner"): find which capability answer causes each.
 6. Turn the gap list into the pass bar's final written list once the G6 and G2 items land.
 7. Later: `ID3D12GraphicsCommandList3` and later, `ID3D12Fence1`; recording without allocating
    per command, the call buffer of plan 4.8; moving `examples/directx` into
