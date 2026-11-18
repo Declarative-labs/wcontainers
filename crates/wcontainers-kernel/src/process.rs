@@ -532,6 +532,9 @@ pub(crate) enum Channel {
     Held(usize),
     /// An event for an epoll instance (its address), which wakes one waiter at a time.
     Epoll(usize),
+    /// Another thread of the process dumps core (Linux's `coredump_task_exit`): the thread waits,
+    /// woken by nothing, until the process ends.
+    CoreDump,
 }
 
 /// What `restart_syscall` runs again.

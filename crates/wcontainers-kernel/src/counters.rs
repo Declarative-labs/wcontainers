@@ -12,6 +12,8 @@ pub mod reason {
     pub const NOT_IMPLEMENTED: &str = "system call not implemented";
     /// A system call number Linux does not have on ARM64. Detail: the call number.
     pub const UNKNOWN_SYSCALL: &str = "system call number unknown";
+    /// A process died of a signal that dumps core where its registers were lost (a fault the CPU
+    /// side could not return from), so no core file was written. Detail: the signal.
     pub const CORE_DUMP_NOT_WRITTEN: &str = "core dump not written";
     /// An `fcntl` command Linux has and the kernel does not build; it answers EINVAL, as Linux does
     /// for one it has not configured. Commands Linux does not know are a plain EINVAL. Detail: the
@@ -39,8 +41,9 @@ pub mod reason {
     /// Detail: the call number.
     pub const CROSS_PROCESS_NOT_BUILT: &str = "call on another process not built";
     /// `mincore`, `getrusage`, `sysinfo` or `/proc/meminfo` reported every mapped page as in
-    /// memory, or `cachestat` or `statfs` counted a mapped file's pages without those its faults
-    /// brought in: which pages a program has touched is not known here. Detail: none.
+    /// memory, `cachestat` or `statfs` counted a mapped file's pages without those its faults
+    /// brought in, or a core dump took anonymous memory as touched and pages of zeros as never
+    /// touched: which pages a program has touched is not known here. Detail: none.
     pub const RESIDENCY_NOT_TRACKED: &str = "page residency not tracked";
     /// A seccomp filter asked for a listener, through which another process would answer the calls it
     /// stops; not built. Detail: the flags.
@@ -54,7 +57,7 @@ pub mod reason {
     pub const SYS_ENTRY_NOT_BUILT: &str = "sys entry not built";
     /// A `/proc` file was made whose fields this kernel does not track all of (those show 0 or are
     /// left out). Detail: which file (0 `stat`, 1 `statm`, 2 `status`, 3 `mounts`, 4 `meminfo`,
-    /// 5 `oom_score`).
+    /// 5 `oom_score`, 6 a core file's notes).
     pub const PROC_FIELDS_NOT_TRACKED: &str = "proc fields not tracked";
     /// A memory fault's syndrome in a handler's frame: whether the page was present and at which
     /// level a table was missing are Linux's page tables' own, so a level 3 fault of a page present

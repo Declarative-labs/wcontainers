@@ -292,7 +292,7 @@ impl Kernel {
     }
 
     /// Clears a finished call's slot; a named pipe's open still waiting gives up its end.
-    fn finish_call(&mut self, cx: &mut Context<'_>, tid: Tid) {
+    pub(crate) fn finish_call(&mut self, cx: &mut Context<'_>, tid: Tid) {
         let thread = self.thread_mut(tid);
         let holds = core::mem::take(&mut thread.call).holds;
         let taken = thread.taken.get_mut().clear();
@@ -361,6 +361,10 @@ impl Kernel {
                 // The container's start has no registers: it runs on from where it got.
                 if self.is_starting(tid) {
                     self.run_start(cx);
+                    continue;
+                }
+                if self.dumps.contains_key(&tid) {
+                    syscall::coredump::run(self, cx, tid);
                     continue;
                 }
                 let thread = &self.threads[&tid];
@@ -702,6 +706,11 @@ impl Kernel {
             syscall::futex::thread_end(self, cx, tid, shared || index + 1 < threads.len());
         }
         for tid in threads {
+            if self.dumps.remove(&tid).is_some()
+                && let Some(client) = &self.files.backend
+            {
+                client.drop_call(tid);
+            }
             syscall::timer::thread_end(self, tid);
             self.unschedule(tid);
             self.release_vfork(tid);

@@ -14,7 +14,7 @@ wcontainers-abi.workspace = true
 wcontainers-kernel = { path = "../wcontainers-kernel" }
 unicorn-engine = "2.1.5"
 memmap2 = "0.9.12"
-linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "errno", "auxvec", "system", "ioctl", "prctl", "net", "ptrace", "netlink", "if_arp", "no_std"] }
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "errno", "auxvec", "system", "ioctl", "prctl", "net", "ptrace", "netlink", "if_arp", "elf_uapi", "no_std"] }
 cargo_metadata = "0.23.1"
 libc = "0.2.191"
 regex = "1.13.1"

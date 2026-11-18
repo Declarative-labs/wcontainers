@@ -232,15 +232,7 @@ pub(super) fn filter_call(
         // SIGSYS with the call, its address and the filter's data, the call not made and its
         // registers left as they were (`seccomp_send_sigsys`, `syscall_rollback`).
         SECCOMP_RET_TRAP => {
-            let mut registers = wcontainers_abi::RegisterBlock::ZERO;
-            cx.cpu.registers(kernel.threads[&tid].cpu, &mut registers);
-            let mut info = [0u8; 128];
-            info[0..4].copy_from_slice(&SIGSYS.to_le_bytes());
-            info[4..8].copy_from_slice(&value.to_le_bytes());
-            info[8..12].copy_from_slice(&SYS_SECCOMP.to_le_bytes());
-            info[16..24].copy_from_slice(&registers.pc.to_le_bytes());
-            info[24..28].copy_from_slice(&(call.number as u32).to_le_bytes());
-            info[28..32].copy_from_slice(&AUDIT_ARCH_AARCH64.to_le_bytes());
+            let info = sigsys_info(kernel, cx, tid, call.number, value);
             kernel.force_signal(tid, info, (0, 0));
             Some(Outcome::Restart)
         }
@@ -251,9 +243,31 @@ pub(super) fn filter_call(
             if action == SECCOMP_RET_KILL_THREAD && kernel.processes[&pid].threads.len() > 1 {
                 kernel.end_thread(cx, tid);
             } else {
-                kernel.die_of(cx, pid, SIGSYS);
+                // The core shows the call as made (`force_sig_seccomp` dumps core).
+                let info = sigsys_info(kernel, cx, tid, call.number, value);
+                kernel.die_with(cx, tid, SIGSYS, info);
             }
             Some(Outcome::Gone)
         }
     }
+}
+
+/// SIGSYS's information for a call a filter stopped: the call, its address and the filter's data.
+fn sigsys_info(
+    kernel: &Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    number: u64,
+    value: u32,
+) -> [u8; 128] {
+    let mut registers = wcontainers_abi::RegisterBlock::ZERO;
+    cx.cpu.registers(kernel.threads[&tid].cpu, &mut registers);
+    let mut info = [0u8; 128];
+    info[0..4].copy_from_slice(&SIGSYS.to_le_bytes());
+    info[4..8].copy_from_slice(&value.to_le_bytes());
+    info[8..12].copy_from_slice(&SYS_SECCOMP.to_le_bytes());
+    info[16..24].copy_from_slice(&registers.pc.to_le_bytes());
+    info[24..28].copy_from_slice(&(number as u32).to_le_bytes());
+    info[28..32].copy_from_slice(&AUDIT_ARCH_AARCH64.to_le_bytes());
+    info
 }

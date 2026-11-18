@@ -5,6 +5,7 @@
 
 pub(crate) mod aio;
 mod clone;
+pub(crate) mod coredump;
 pub(crate) mod dnotify;
 pub(crate) mod epoll;
 pub(crate) mod eventfd;

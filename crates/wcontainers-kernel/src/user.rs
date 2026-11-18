@@ -66,7 +66,7 @@ impl Guest<'_> {
 
     /// Asks for the pages of mapped backend files in `[start, end)` not read yet; whether all are
     /// there.
-    fn read_in(&self, start: u64, end: u64) -> bool {
+    pub(crate) fn read_in(&self, start: u64, end: u64) -> bool {
         let map = self.map.borrow();
         let mut there = true;
         let mut at = start;

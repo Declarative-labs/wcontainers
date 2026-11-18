@@ -14,11 +14,15 @@ use regex::Regex;
 /// The linux-raw-sys modules the kernel uses.
 const MODULES: &[&str] = &[
     "general", "errno", "auxvec", "system", "ioctl", "prctl", "net", "ptrace", "netlink", "if_arp",
+    "elf_uapi",
 ];
 
 /// Structures the kernel copies to or from guest memory. They get zerocopy's byte conversions, whose
 /// derive also proves they have no padding.
 const BYTES: &[&str] = &[
+    "elf64_hdr",
+    "elf64_phdr",
+    "elf64_note",
     "stat",
     "statx",
     "statx_timestamp",

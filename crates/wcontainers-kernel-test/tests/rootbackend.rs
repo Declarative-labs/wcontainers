@@ -14,6 +14,7 @@ fn directory() -> PathBuf {
         .get_or_init(|| {
             let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("rootbackend");
             guest::build("rootfiles", &[], &out);
+            guest::build("coredump", &[], &out);
             out
         })
         .clone()
@@ -34,4 +35,12 @@ fn root_files_match_reference() {
             run.warnings
         );
     }
+}
+
+/// Core dumps written into the root's /tmp, which waits for the backend: the wait status and the
+/// core file's headers, notes and memory, under several limits, with threads and a fault.
+#[test]
+fn core_dumps_match_reference() {
+    let saves = runtimes::Saves { count: 1, gap: 40 };
+    runtimes::assert_same(IMAGE, &directory(), &["/wc/coredump"], saves);
 }

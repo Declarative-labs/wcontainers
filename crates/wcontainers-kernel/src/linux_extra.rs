@@ -730,3 +730,65 @@ pub(crate) const OOM_SCORE_ADJ_MIN: i32 = -1000;
 pub(crate) const OOM_SCORE_ADJ_MAX: i32 = 1000;
 pub(crate) const OOM_DISABLE: i32 = -17;
 pub(crate) const OOM_ADJUST_MAX: i32 = 15;
+
+/// A core file's notes of a process and its threads (`linux/elfcore.h`, kernel-internal, so not
+/// in linux-raw-sys), as ARM64 lays them out: `struct elf_prstatus` with its signal (`struct
+/// elf_siginfo`), its registers (`elf_gregset_t`, `user_pt_regs`) and padding made explicit.
+#[derive(Clone, Copy, zerocopy::FromZeros, zerocopy::IntoBytes, zerocopy::Immutable)]
+#[repr(C)]
+pub(crate) struct elf_prstatus {
+    pub si_signo: i32,
+    pub si_code: i32,
+    pub si_errno: i32,
+    pub pr_cursig: i16,
+    pub pad0: u16,
+    pub pr_sigpend: u64,
+    pub pr_sighold: u64,
+    pub pr_pid: i32,
+    pub pr_ppid: i32,
+    pub pr_pgrp: i32,
+    pub pr_sid: i32,
+    /// `pr_utime`, `pr_stime`, `pr_cutime` and `pr_cstime`, each seconds then microseconds.
+    pub pr_times: [[i64; 2]; 4],
+    pub pr_reg: [u64; 34],
+    pub pr_fpvalid: i32,
+    pub pad1: u32,
+}
+
+/// `struct elf_prpsinfo`, the process's note in a core file.
+#[derive(Clone, Copy, zerocopy::IntoBytes, zerocopy::Immutable)]
+#[repr(C)]
+pub(crate) struct elf_prpsinfo {
+    pub pr_state: u8,
+    pub pr_sname: u8,
+    pub pr_zomb: u8,
+    pub pr_nice: i8,
+    pub pad0: u32,
+    pub pr_flag: u64,
+    pub pr_uid: u32,
+    pub pr_gid: u32,
+    pub pr_pid: i32,
+    pub pr_ppid: i32,
+    pub pr_pgrp: i32,
+    pub pr_sid: i32,
+    pub pr_fname: [u8; 16],
+    pub pr_psargs: [u8; ELF_PRARGSZ],
+}
+
+/// The length of `pr_psargs`.
+pub(crate) const ELF_PRARGSZ: usize = 80;
+
+/// Task flags a core file's process note shows (`linux/sched.h`'s `PF_*`).
+pub(crate) const PF_EXITING: u64 = 0x4;
+pub(crate) const PF_FORKNOEXEC: u64 = 0x40;
+pub(crate) const PF_SUPERPRIV: u64 = 0x100;
+pub(crate) const PF_DUMPCORE: u64 = 0x200;
+pub(crate) const PF_SIGNALED: u64 = 0x400;
+pub(crate) const PF_RANDOMIZE: u64 = 0x0040_0000;
+
+/// `coredump_filter`'s bits (`MMF_DUMP_*` less `MMF_DUMP_FILTER_SHIFT`).
+pub(crate) const DUMP_ANON_PRIVATE: u32 = 1 << 0;
+pub(crate) const DUMP_ANON_SHARED: u32 = 1 << 1;
+pub(crate) const DUMP_MAPPED_PRIVATE: u32 = 1 << 2;
+pub(crate) const DUMP_MAPPED_SHARED: u32 = 1 << 3;
+pub(crate) const DUMP_ELF_HEADERS: u32 = 1 << 4;

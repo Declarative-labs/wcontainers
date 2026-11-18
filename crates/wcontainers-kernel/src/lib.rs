@@ -177,6 +177,8 @@ pub struct Kernel {
     starting: Option<alloc::boxed::Box<container::Starting>>,
     /// Why the container's start failed.
     start_failure: Option<Errno>,
+    /// The core dumps being written, by the thread that writes each.
+    dumps: BTreeMap<process::Tid, syscall::coredump::Dump>,
     /// The last serial given to committed credentials; 0 is the credentials of whoever opened the
     /// container's first descriptors.
     last_credentials: u64,
@@ -250,6 +252,7 @@ impl Kernel {
             finished: None,
             starting: None,
             start_failure: None,
+            dumps: BTreeMap::new(),
             last_credentials: 0,
             counters: Counters::default(),
             ipc: Default::default(),

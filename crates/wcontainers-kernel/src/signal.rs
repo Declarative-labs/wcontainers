@@ -395,7 +395,10 @@ impl Kernel {
                 None => return Ok(()),
             },
         };
-        // `prepare_signal`.
+        // `prepare_signal`: a process dumping core takes only SIGKILL, which ends the dump.
+        if crate::syscall::coredump::writer(self, pid).is_some() && signal != SIGKILL {
+            return Ok(());
+        }
         if STOPPING & bit(signal) != 0 {
             self.drop_pending(pid, bit(SIGCONT));
         } else if signal == SIGCONT {
@@ -487,8 +490,10 @@ impl Kernel {
             return;
         };
         let handler = self.handler(pid, signal);
+        // A signal that would dump core is left to the thread that takes it, which dumps
+        // (`complete_signal` does not kill the group at once for it).
         let fatal = handler == SIG_DFL
-            && matches!(default_action(signal), Default::Terminate | Default::Core)
+            && default_action(signal) == Default::Terminate
             && !self.dropped(pid, signal);
         if fatal || signal == SIGKILL {
             self.drop_pending(pid, bit(signal));
@@ -595,8 +600,25 @@ impl Kernel {
                         self.stop_process(cx, pid, signal);
                         return None;
                     }
-                    Default::Terminate | Default::Core => {
+                    Default::Terminate => {
                         self.die_of(cx, pid, signal);
+                        return None;
+                    }
+                    Default::Core => {
+                        // The dump shows the registers as arm64's `do_signal` left them before
+                        // `get_signal`: an interrupted call to be restarted is set to run again,
+                        // another call's answer is in x0.
+                        if let Resume::Return(value) = resume {
+                            let mut registers = RegisterBlock::ZERO;
+                            cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
+                            if restart.is_some() {
+                                registers.pc -= 4;
+                            } else {
+                                registers.x[0] = value;
+                            }
+                            cx.cpu.set_registers(self.threads[&tid].cpu, &registers);
+                        }
+                        self.die_with(cx, tid, signal, queued.info);
                         return None;
                     }
                 }
@@ -630,7 +652,7 @@ impl Kernel {
                     self.processes[&pid].actions.borrow_mut()[SIGSEGV as usize - 1]
                         .sa_handler_kernel = SIG_DFL;
                 }
-                self.die_of(cx, pid, SIGSEGV);
+                self.die_with(cx, tid, SIGSEGV, kernel_info(SIGSEGV));
                 return None;
             }
             cx.cpu.set_registers(self.threads[&tid].cpu, &registers);
@@ -665,8 +687,7 @@ impl Kernel {
         cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
         let before = registers.pc;
         if self.rseq_fixup(cx, tid, &mut registers).is_err() {
-            let pid = self.threads[&tid].process;
-            self.die_of(cx, pid, SIGSEGV);
+            self.die_with(cx, tid, SIGSEGV, kernel_info(SIGSEGV));
             return None;
         }
         if registers.pc == before {
@@ -1255,10 +1276,34 @@ impl Kernel {
         self.return_to_user(cx, tid, Resume::FromRegisters);
     }
 
-    /// Ends a process killed by a signal. A signal whose default action dumps core would have Linux
-    /// write a core file and mark the wait status, when the core size limit allows one and the process
-    /// is dumpable; neither is done here (counted).
+    /// Ends thread `tid`'s process, killed by `signal` with `info`: one whose default action dumps
+    /// core writes one first where the process may (`do_coredump`).
+    pub(crate) fn die_with(
+        &mut self,
+        cx: &mut Context<'_>,
+        tid: Tid,
+        signal: u32,
+        info: [u8; 128],
+    ) {
+        let pid = self.threads[&tid].process;
+        if default_action(signal) == Default::Core && crate::syscall::coredump::wanted(self, pid) {
+            crate::syscall::coredump::start(self, cx, tid, signal, info);
+        } else {
+            self.end_process(cx, pid, signal as i32);
+        }
+    }
+
+    /// Ends a process killed by a signal where no thread's registers are left to dump: a signal
+    /// whose default action dumps core would have Linux write a core file and mark the wait
+    /// status, when the core size limit allows one and the process is dumpable; neither is done
+    /// here (counted).
     pub(crate) fn die_of(&mut self, cx: &mut Context<'_>, pid: Pid, signal: u32) {
+        // A dump SIGKILL stops ends the process with the dump's signal and no core bit.
+        if let Some(tid) = crate::syscall::coredump::writer(self, pid) {
+            let dumped = self.dumps.remove(&tid).expect("a dump").signal();
+            self.end_process(cx, pid, dumped as i32);
+            return;
+        }
         let process = &self.processes[&pid];
         if default_action(signal) == Default::Core
             && process.limits[RLIMIT_CORE as usize].current > 0
