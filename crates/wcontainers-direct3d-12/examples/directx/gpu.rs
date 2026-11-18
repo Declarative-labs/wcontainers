@@ -77,8 +77,8 @@ pub fn on_device_thread() -> bool {
     std::thread::current().name() == Some(THREAD_NAME)
 }
 
-/// The back end on wgpu's Vulkan path: in a process whose `d3d12.dll` is this library, wgpu's
-/// Direct3D 12 path would load this library as the system's.
+/// The back end on wgpu's Vulkan path: in a process whose `d3d12.dll` forwards to this library,
+/// wgpu's Direct3D 12 path would load this library as the system's.
 fn start() -> Thread {
     let (tx, rx) = std::sync::mpsc::channel::<Job>();
     // SAFETY: plain object creation.

@@ -1,9 +1,10 @@
-//! d3d12.dll, the Windows library of the Direct3D family on the WebGPU back end: DXGI's and Direct3D
-//! 12's entry points and COM objects over the front, with one device thread owning the back end.
-//! Each entry point is `wc_` and the API's name, which cannot clash with the system's imports this
-//! library links (it imports `CreateDXGIFactory1`); this library exports Direct3D 12's under their
-//! own names too, and `dxgi.dll` (examples/dxgi.rs) forwards DXGI's here. It lives here until the
-//! family's own crate (`wcontainers-directx`, plan section 10) takes it over.
+//! wcontainers_d3d12.dll, the Windows library of the Direct3D family on the WebGPU back end: DXGI's
+//! and Direct3D 12's entry points and COM objects over the front, with one device thread owning the
+//! back end. Each entry point is `wc_` and the API's name, which cannot clash with the system's
+//! imports this library links (it imports `CreateDXGIFactory1`); this library exports Direct3D 12's
+//! under their own names too, and `d3d12.dll` and `dxgi.dll` (examples/d3d12.rs, examples/dxgi.rs)
+//! forward here. It lives here until the family's own crate (`wcontainers-directx`, plan section
+//! 10) takes it over.
 
 #![cfg(windows)]
 #![allow(non_snake_case)]
@@ -11,28 +12,18 @@
 mod abi;
 mod base;
 mod com;
+#[macro_use]
+mod exports;
 mod gpu;
 mod objects;
 mod present;
 mod rootsig;
 mod stream;
 
-const EXPORTS: &str = " /EXPORT:D3D12CreateDevice=wc_D3D12CreateDevice,@101 /EXPORT:D3D12GetDebugInterface=wc_D3D12GetDebugInterface,@102 /EXPORT:D3D12SerializeRootSignature=wc_D3D12SerializeRootSignature,@116 /EXPORT:D3D12SerializeVersionedRootSignature=wc_D3D12SerializeVersionedRootSignature,@117 /EXPORT:D3D12CreateRootSignatureDeserializer=wc_D3D12CreateRootSignatureDeserializer,@107 /EXPORT:D3D12CreateVersionedRootSignatureDeserializer=wc_D3D12CreateVersionedRootSignatureDeserializer,@108 ";
-
-/// Linker directives the linker reads from this section of the object file: Direct3D 12's exports
-/// under their own names and the system library's ordinals.
-#[used]
-#[unsafe(link_section = ".drectve")]
-static DIRECTIVES: [u8; EXPORTS.len()] = {
-    let mut out = [0; EXPORTS.len()];
-    let bytes = EXPORTS.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        out[i] = bytes[i];
-        i += 1;
-    }
-    out
-};
+// Direct3D 12's exports under their own names and the system library's ordinals.
+linker_directives!(
+    " /EXPORT:D3D12CreateDevice=wc_D3D12CreateDevice,@101 /EXPORT:D3D12GetDebugInterface=wc_D3D12GetDebugInterface,@102 /EXPORT:D3D12SerializeRootSignature=wc_D3D12SerializeRootSignature,@116 /EXPORT:D3D12SerializeVersionedRootSignature=wc_D3D12SerializeVersionedRootSignature,@117 /EXPORT:D3D12CreateRootSignatureDeserializer=wc_D3D12CreateRootSignatureDeserializer,@107 /EXPORT:D3D12CreateVersionedRootSignatureDeserializer=wc_D3D12CreateVersionedRootSignatureDeserializer,@108 "
+);
 
 use std::ffi::c_void;
 
