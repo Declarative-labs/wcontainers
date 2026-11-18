@@ -10,8 +10,10 @@ the GPU. Milestone G6 in full (section 12's pass bar) is not done: run 9 (the fi
 the run 8 check's findings and built the cache of section 8; run 10 built ten of the variant key's
 rewrites with drawn tests and the corpus of real programs' shaders; run 11 built depth bias and the
 draw bases from an indirect draw's arguments, with drawn tests; run 12 built the minimum
-level-of-detail clamp with drawn tests; what remains is under Next. Run 12 merged
-origin/phase-2-graphics and -direct3d-11 (no conflicts; the other branches had nothing new).
+level-of-detail clamp with drawn tests; run 13 built clip distances, depth clamping and mirror-once
+addressing in the program with drawn tests; what remains is under Next. Run 13 merged
+origin/phase-2-graphics-webgl, -direct3d-11 and -direct3d-12 (no conflicts; the others had nothing
+new).
 
 Done:
 - naga carried in the tree with the GLSL writer changes G3 needs (below). Other tracks get it by
@@ -300,10 +302,10 @@ Run 10 (variants and the real programs' shaders):
   on a 4-level texture, which shows Direct3D applies it to explicit levels too; comparisons refused
   `LodBiasOnComparison`, depth levels `LodBiasOnDepthLevel`), `constants_as_storage` (read-only
   storage at the first storage binding past the program's, `AddedBinding::ConstantsAsStorage`).
-- Still refused by name (run 11 built `DepthBiasInShader` and `DrawBaseFromArguments`): the flags
-  `ProvokingRewrite`, `EarlyTestsInShader`,
-  `AntialiasedLinesAsQuads`, `ClipDistanceInShader`, `DepthClampInShader`, `PrimitiveIdAsGeometry`,
-  and the fields `FilterInShader`, `BorderInShader`, `MirrorOnceInShader`, `ConstantsAsTexture`,
+- Still refused by name (run 11 built `DepthBiasInShader` and `DrawBaseFromArguments`, run 13
+  `ClipDistanceInShader`, `DepthClampInShader` and `MirrorOnceInShader`): the flags
+  `ProvokingRewrite`, `EarlyTestsInShader`, `AntialiasedLinesAsQuads`, `PrimitiveIdAsGeometry`,
+  and the fields `FilterInShader`, `BorderInShader`, `ConstantsAsTexture`,
   `VertexPulledInShader`, `StorageFormats`, `TexelBufferRoute`, `StoragePacked`,
   `TexelsThroughBuffer`, `NormAsInteger`, `TargetsInShader`, `RootSignatureLayout` (run 12 built `MinLodClamp`).
 - The real programs' shaders: `examples/containers.rs` finds every DXBC and DXIL container in the
@@ -381,20 +383,42 @@ Run 12 (variants):
   on wgpu's Vulkan path (its Direct3D 12 path has no clip distances, wgpu issue 6236) against real
   Direct3D 11. The shared harness gained `webgpu_on(backends)`.
 
+Run 13 (variants):
+- Interface change `VariantKey::linked: LinkedValues { location, clip_distances }` (below): where the
+  values `CLIP_DISTANCE` and `DEPTH_CLAMP` add pass from the vertex to the pixel program, which are
+  converted apart. Four-component f32 perspective values from `location`, the clip distances first,
+  then the unclamped clip z.
+- `CLIP_DISTANCE`, both routes: the vertex program's `clip_distances` output is replaced by those
+  values (`linked_out`); the pixel program reads them (`linked_in`) and, before the program runs,
+  discards where one is negative (`samples` 1), or on four samples takes each distance times the
+  fragment position's w (z over w, affine on the screen) to Direct3D's four standard sample positions
+  from its derivatives, writes the samples where none is negative into the sample mask (combined with
+  the program's own and with `SAMPLE_MASK`'s) and discards where none is (`clipped`). Refused by name:
+  `samples` 0 (`SampleCount`), other counts (`ClipDistanceSamples`), per-sample programs on several
+  samples (`ClipDistancePerSample`), a vertex count other than the key's (`LinkedClipDistanceCount`),
+  a linked location the vertex program already writes (`LinkedLocationTaken`).
+- `DEPTH_CLAMP`, both routes: the vertex program keeps clip z in 0..w (`position`) and passes the
+  unclamped z; the pixel program writes depth = near + (far - near) * z * w_frag from
+  `HelperValue::DepthRange`, plus the depth bias when `DEPTH_BIAS` is set too, clamped to the range
+  (`depth`, which replaced `depth_bias`); a depth the program writes is only clamped.
+- A wrapped program's own result struct loses its bindings when the wrapper changes the outputs, so a
+  replaced output (clip distances) asks nothing of the language (`Wrapped::finish`).
+- `mirror_once_in_shader`, both routes, in the one sample callee of run 12 (`mirror_once`): each
+  coordinate whose address mode in `HelperValue::SamplerState` is mirror-once is folded to its
+  absolute value (the front binds a clamping sampler there), and an implicit level becomes the
+  unfolded coordinate's gradients (times two to a bias). Refused by name: comparisons
+  (`MirrorOnceOnComparison`), gathers (`MirrorOnceOnGather`, their texels would come mirrored),
+  texel offsets (`MirrorOnceWithOffset`), depth textures at an implicit level (`MirrorOnceOnDepth`).
+  Cube coordinates are left alone. Interface: the sampler state's codes are the variants' order of
+  `Filter` and `AddressMode` (a doc change).
+- New own shaders `vs_deep` (`vs_transform` with z/w from -0.2 to 1.15) and `ps_mirror` (a sample at
+  uv * 6 - 3), fxc and dxc; every other own shader recompiled byte for byte as committed.
+- The harness: `Reference::depth_clip_off` and `address`, `Setup::address`.
+
 Next (in order):
 - The rest of the variants (the list above), each with a drawn test as run 10's:
-- `CLIP_DISTANCE` and `DEPTH_CLAMP` pass new values from the vertex to the pixel program, which are
-  converted apart, so the pixel program must be told where they arrive: a variant field the front
-  fills from the vertex program's reflection, as `output_interpolation` does (an interface change).
-  Proposed, one field for both: `linked: (u32, u8)`, the first location neither stage uses and the
-  vertex program's clip distance count; the vertex program writes its distances there as
-  `(count + 3) / 4` four-component perspective values (unused components zero), then the unclamped
-  z, and the pixel program reads them there. The vertex side is `Wrapped` replacing the
-  `clip_distances` output; the pixel side a `Wrapped` prologue reading added inputs (as depth bias
-  does) and discarding where any distance is negative (multisampled targets: refuse by name until
-  the per-sample mask is built). Test: `vs_clip` with the variant on WebGPU (Direct3D 12 path) and
-  WebGL 2 against run 12's native picture; depth clamp against Direct3D 11 with depth clip off.
-- Then filtering, border and mirror-once in the program, decoded textures
+- Filtering and border in the program (both read `HelperValue::SamplerState` as mirror-once does;
+  border with linear filtering needs the filter in the program too), decoded textures
   and targets written in the program, pulled vertices, constants through a texture, typed buffers
   and storage formats (after the storage image and typed buffer support they need), early tests,
   line coverage, the provoking rewrite, the primitive index from the stage helper, root signature
@@ -402,8 +426,8 @@ Next (in order):
 - The stage helper of section 7 (geometry as compute and by replay, hull and domain with a
   tessellator ported from Mesa's MIT code, stream output) with tests against real Direct3D; the
   built-in compute programs (texture clears of 5.1) and the counter operations.
-- The real programs' shaders through `web/check` in Chrome (not run yet), and their named failures
-  worked down: render target array index 47, storage images 39 DXBC and 38 DXIL (no format), typed
+- The real programs' shaders (every converted one compiles in Chrome since run 10): their named
+  failures worked down: render target array index 47, storage images 39 DXBC and 38 DXIL (no format), typed
   buffers 21 and 19, register spaces 10.
 - The cache in a front: G4 and G5 call `convert_cached` and `record_combination`; the browser host
   keeps the bytes in the origin private file system. Building ahead from `combinations` at start.
@@ -441,9 +465,10 @@ let reflection = &converted.reflection;
 ```
 - `variant_key` is `wcontainers_gpu::VariantKey`; `VariantKey::default()` for the plain program. Built:
   `draw_base` (`None`, `Helpers`, `Arguments`), `output_interpolation`, `lod_bias`,
-  `constants_as_storage`, `samples`, and the flags `CLIP_DEPTH_REWRITE`, `VIEWPORT_DEPTH_FLIP`,
-  `VIEWPORT_ADJUST` (vertex programs; ignored on others), `COUNTING`, `SAMPLE_MASK`, `DUAL_SOURCE`,
-  `DEPTH_BIAS` (pixel programs), `TEXTURE_INFO` and `min_lod_clamped`. Every other field or flag
+  `constants_as_storage`, `samples`, `linked`, `mirror_once_in_shader`, and the flags
+  `CLIP_DEPTH_REWRITE`, `VIEWPORT_DEPTH_FLIP`, `VIEWPORT_ADJUST` (vertex programs; ignored on
+  others), `COUNTING`, `SAMPLE_MASK`, `DUAL_SOURCE`, `DEPTH_BIAS` (pixel programs), `CLIP_DISTANCE`
+  and `DEPTH_CLAMP` (both), `TEXTURE_INFO` and `min_lod_clamped`. Every other field or flag
   set, and a root signature, is refused by name (the list is under Run 10). Each helper value a variant needs is in `reflection.helpers` at its offset in the
   stage's block (`helper_size` bytes, bound at `helper_binding(stage)` in set 3), after `DrawBase` when
   both are asked: the front writes `ViewportAdjust` as (scale x, scale y, offset x, offset y) of clip
@@ -459,8 +484,21 @@ let reflection = &converted.reflection;
 - Clip distances: a vertex program writing `SV_ClipDistance` converts to a module with
   `@builtin(clip_distances)`, which needs the back end's `Features::CLIP_DISTANCE` (wgpu's
   `CLIP_DISTANCES`; WebGL's WEBGL_clip_cull_distance); without it the front asks for the
-  `CLIP_DISTANCE` variant (not built yet, refused by name). `wcontainers_shaders::capabilities(module)`
-  gives what a module needs beyond WebGPU's core.
+  `CLIP_DISTANCE` variant in both programs' keys. `wcontainers_shaders::capabilities(module)` gives
+  what a module needs beyond WebGPU's core.
+- `CLIP_DISTANCE` and `DEPTH_CLAMP` (without `Features::DEPTH_CLAMP`): set the flag in both keys and
+  the same `linked` in both: `location` one past every location of the vertex program's
+  `reflection.outputs` and the pixel program's `reflection.inputs` with no `system` value (convert
+  both plain first, as `linked_location` in `tests/variant_draw.rs` does), `clip_distances` the vertex
+  program's count with `CLIP_DISTANCE` (zero otherwise). The pixel program needs `samples` (1 or 4)
+  with `CLIP_DISTANCE`. With `DEPTH_CLAMP` write `DepthRange` as (near, far) f32 of the API's viewport;
+  the raster block keeps depth clipping on (the program keeps z inside), and those draws lose early
+  depth tests (the program writes depth). Check the vertex program's locations plus the added ones
+  against the back end's inter-stage limit.
+- `mirror_once_in_shader` (without `Features::MIRROR_ONCE`): bind the sampler with each mirror-once
+  axis made `Clamp`, and write `SamplerState { sampler }` (nine words: min, mag, mip filter, the three
+  address modes of the API's sampler as `AddressMode as u32`, anisotropy, then the level range as
+  f32) at its offset; the member is 48 bytes (three four-word vectors).
 - `DEPTH_BIAS` writes the depth itself, so the front draws with the raster block's bias at zero and
   without early depth tests for those draws.
 - `draw_base: Arguments` reads the bases from the indirect argument buffer, bound read-only (storage)
@@ -531,6 +569,31 @@ let reflection = &converted.reflection;
   conversion.
 
 ## Measurements
+
+Run 13, 2026-11-17, counts only:
+- `tests/variant_draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, about 2.3 s,
+  scratch `run13/draw8.log`; 96 comparisons, all within their allowances), each by the DXBC and the
+  DXIL route: clip distances in the program (`vs_clip`, `ps_textured`) against real Direct3D 11's
+  native clipping: WebGPU (wgpu's Direct3D 12 path, which has no clip distances) and WebGL 2, 11 of
+  4096 texels differ, by at most 2 (allowance 2 in any number: the same pixels are drawn, an attribute
+  over the unclipped triangle rounds apart; a pixel drawn on one side only would differ by far more);
+  four samples on WebGPU against the native distances on wgpu's Vulkan path, resolved: 12 differ by
+  at most 2. Depth clamping (`vs_deep`, depth range 0.25 to 0.75) against Direct3D 11 with
+  DepthClipEnable false, depth as f32 steps: WebGPU 648 of 4096 within 2 steps, WebGL 2 570 within 2
+  (allowance 2); clipping changes 791 of Direct3D's texels. Mirror-once in u and repeat in v on a
+  4-level texture (`ps_mirror`) against Direct3D 11's MIRROR_ONCE: WebGPU and WebGL 2, 5 of 4096
+  differ by 1 (allowance 1: explicit gradients' level of detail rounds apart); the mode changes 1693
+  of Direct3D's texels against clamping. Every earlier comparison of the file as before.
+- During the run the desktop's shared ANGLE (`C:\wc\tools\angle-mozangle-0.7.1`, rebuilt by another
+  track at 16:30) crashed in libGLESv2.dll at offset 0x1f83f5 on making a context, as did a copy
+  built here from the same recipe (`C:\wc\tools\angle-shaders-track`), the WebGL back end's own
+  suite too, before and after today's merge of that back end. The new comparisons were first drawn
+  on WebGPU alone with the WebGL draws taken out of an uncommitted copy of the test
+  (`run13/draw7.log`, the same numbers as above); after the next rebuild of the shared ANGLE (16:59)
+  the whole test ran and passed as committed (`run13/draw8.log`).
+- Laptop (i7-8750H, load average 0 to 1): the suite without the ignored corpora passes after
+  recording the new own verdicts (`vs_deep`, `ps_mirror`: convert), clippy with warnings denied
+  passes; Windows clippy with warnings denied passes.
 
 Run 12, 2026-11-17, counts only:
 - `tests/variant_draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, scratch
@@ -1098,6 +1161,12 @@ were already there.
   `glGetBufferSubData`, which ANGLE's GLES lacks (`read_back_now` works).
 
 ## Interface changes
+
+- Run 13, `VariantKey::linked: LinkedValues { location: u32, clip_distances: u8 }` (commit
+  "interface: gave the variant key where the values clip distances and depth clamping add pass
+  ..."): the two programs are converted apart and must agree where the added values travel; plan
+  text in 4.12. And `HelperValue::SamplerState`'s codes numbered as the variants' order of `Filter`
+  and `AddressMode` (doc only).
 
 - Run 9, two commits touching only `crates/wcontainers-gpu` (and the lock): serde `Serialize` and
   `Deserialize` derives on the variant key, the reflection and every type they hold (`Format`,
