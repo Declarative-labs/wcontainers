@@ -48,3 +48,13 @@ fn entries_not_built_are_counted() {
         .sum();
     assert_eq!(not_built, 2);
 }
+
+/// The key quotas and the per-user limits, read-only in a container.
+#[test]
+fn limits_match_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    let program = wcontainers_kernel_test::guest::build("procstatus", &[], &out);
+    let (ours, theirs) = wcontainers_kernel_test::run_both(&program, &["limits"]);
+    assert_eq!(ours.outcome, theirs);
+    assert!(ours.warnings.is_empty(), "{:?}", ours.warnings);
+}

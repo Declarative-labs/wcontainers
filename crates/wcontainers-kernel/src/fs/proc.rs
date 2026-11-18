@@ -346,6 +346,16 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/kernel/domainname", Global::File(0o644)),
     ("sys/kernel/hostname", Global::File(0o644)),
     ("sys/kernel/io_uring_disabled", Global::File(0o644)),
+    ("sys/kernel/keys", Global::Directory),
+    ("sys/kernel/keys/gc_delay", Global::File(0o644)),
+    ("sys/kernel/keys/maxbytes", Global::File(0o644)),
+    ("sys/kernel/keys/maxkeys", Global::File(0o644)),
+    (
+        "sys/kernel/keys/persistent_keyring_expiry",
+        Global::File(0o644),
+    ),
+    ("sys/kernel/keys/root_maxbytes", Global::File(0o644)),
+    ("sys/kernel/keys/root_maxkeys", Global::File(0o644)),
     ("sys/kernel/msgmax", Global::File(0o644)),
     ("sys/kernel/msgmnb", Global::File(0o644)),
     ("sys/kernel/msgmni", Global::File(0o644)),
@@ -372,6 +382,18 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/net/core/somaxconn", Global::File(0o644)),
     ("sys/sunrpc", Global::Directory),
     ("sys/user", Global::Directory),
+    ("sys/user/max_cgroup_namespaces", Global::File(0o644)),
+    ("sys/user/max_fanotify_groups", Global::File(0o644)),
+    ("sys/user/max_fanotify_marks", Global::File(0o644)),
+    ("sys/user/max_inotify_instances", Global::File(0o644)),
+    ("sys/user/max_inotify_watches", Global::File(0o644)),
+    ("sys/user/max_ipc_namespaces", Global::File(0o644)),
+    ("sys/user/max_mnt_namespaces", Global::File(0o644)),
+    ("sys/user/max_net_namespaces", Global::File(0o644)),
+    ("sys/user/max_pid_namespaces", Global::File(0o644)),
+    ("sys/user/max_time_namespaces", Global::File(0o644)),
+    ("sys/user/max_user_namespaces", Global::File(0o644)),
+    ("sys/user/max_uts_namespaces", Global::File(0o644)),
     ("sys/vm", Global::Directory),
     ("sys/vm/drop_caches", Global::File(0o200)),
     ("sys/vm/hugetlb_shm_group", Global::File(0o644)),
@@ -539,6 +561,10 @@ const LINUX_ENTRIES: &[(&str, &str)] = &[
     (
         "sys/fs/inotify",
         "max_queued_events max_user_instances max_user_watches",
+    ),
+    (
+        "sys/kernel/keys",
+        "gc_delay maxbytes maxkeys persistent_keyring_expiry root_maxbytes root_maxkeys",
     ),
 ];
 
@@ -1675,6 +1701,33 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                 | "sys/kernel/core_sort_vma" => out.push_str("0\n"),
                 "sys/kernel/threads-max" => {
                     let _ = writeln!(out, "{}", machine.threads_max());
+                }
+                // The key quotas, the reference's values; no container process can make a key
+                // (Docker's filter refuses add_key, request_key and keyctl).
+                "sys/kernel/keys/gc_delay" => out.push_str("300\n"),
+                "sys/kernel/keys/maxbytes" => out.push_str("700000\n"),
+                "sys/kernel/keys/maxkeys" => out.push_str("10000\n"),
+                "sys/kernel/keys/persistent_keyring_expiry" => out.push_str("259200\n"),
+                "sys/kernel/keys/root_maxbytes" => out.push_str("25000000\n"),
+                "sys/kernel/keys/root_maxkeys" => out.push_str("1000000\n"),
+                // The per-user limits: namespaces half of threads-max (`set_max_threads`), as no
+                // container process can make one; inotify's as fs.inotify's; fanotify's groups
+                // Linux's default and marks 1% of memory at two inodes' cost each
+                // (`fanotify_user_setup`, 1216 bytes as the reference's sizes give it).
+                "sys/user/max_inotify_instances" => {
+                    let _ = writeln!(out, "{}", crate::syscall::inotify::MAX_USER_INSTANCES);
+                }
+                "sys/user/max_inotify_watches" => {
+                    let _ = writeln!(out, "{}", crate::syscall::inotify::MAX_USER_WATCHES);
+                }
+                "sys/user/max_fanotify_groups" => out.push_str("128\n"),
+                "sys/user/max_fanotify_marks" => {
+                    let pages = machine.memory_bytes / 4096;
+                    let marks = ((pages / 100) << 12) / 1216;
+                    let _ = writeln!(out, "{}", marks.clamp(8192, 1_048_576));
+                }
+                name if name.starts_with("sys/user/max_") => {
+                    let _ = writeln!(out, "{}", machine.threads_max() / 2);
                 }
                 "sys/kernel/random/boot_id" => out.push_str(&uuid(source.boot_id)),
                 "sys/kernel/random/uuid" => out.push_str(&uuid(source.fresh_random)),

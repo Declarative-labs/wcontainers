@@ -1,10 +1,14 @@
 // Prints the lines of /proc/self/status that follow the descriptor table and the groups, and the
 // /proc/self/maps lines of shared anonymous memory and shared /dev/zero mappings (inode left out), after
 // changing each. With an argument "private", it shows instead whether a private file mapping sees a
-// later write to the file; with "unbuilt", it opens entries of /proc Linux has and one it has not.
+// later write to the file; with "unbuilt", it opens entries of /proc Linux has and one it has not;
+// with "limits", it lists /proc/sys/kernel/keys and /proc/sys/user with the values that do not
+// depend on the machine's memory, and tries to write one.
 
 #define _GNU_SOURCE
 #include <fcntl.h>
+#include <dirent.h>
+#include <errno.h>
 #include <grp.h>
 #include <stdio.h>
 #include <string.h>
@@ -60,7 +64,35 @@ static int private_mapping(void) {
     return 0;
 }
 
+// Lists a directory of sysctls in getdents order with each file's value, or "set" for those that
+// come from the machine's memory (the namespace limits and fanotify's marks).
+static void sysctls(const char *directory) {
+    DIR *dir = opendir(directory);
+    struct dirent *entry;
+    while ((entry = readdir(dir))) {
+        if (entry->d_name[0] == '.')
+            continue;
+        char path[256], value[64] = "";
+        snprintf(path, sizeof path, "%s/%s", directory, entry->d_name);
+        FILE *f = fopen(path, "r");
+        if (f && fgets(value, sizeof value, f) &&
+            (strstr(entry->d_name, "_namespaces") || strcmp(entry->d_name, "max_fanotify_marks") == 0))
+            strcpy(value, "set\n");
+        if (f)
+            fclose(f);
+        printf("%s %s", path, value);
+    }
+    closedir(dir);
+}
+
 int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "limits") == 0) {
+        sysctls("/proc/sys/kernel/keys");
+        sysctls("/proc/sys/user");
+        int fd = open("/proc/sys/kernel/keys/gc_delay", O_WRONLY);
+        printf("write gc_delay %d errno %d\n", fd, fd < 0 ? errno : 0);
+        return 0;
+    }
     if (argc > 1 && strcmp(argv[1], "private") == 0) {
         return private_mapping();
     }
