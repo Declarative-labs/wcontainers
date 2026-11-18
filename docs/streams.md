@@ -116,9 +116,12 @@ On this Mac's Docker (ARM64 Linux), `alpine:3.22`:
 - kernel: a table of ends, each holding the kernel's side as an ordinary open file (the pipe's
   writer or reader, the pty's master), its send credit and whether the kernel closed it. Pipes and
   ptys need nothing special for it (the pipe's old "host reads it" field goes); each pipe and pty
-  keeps the room it promised. The ends are served when the kernel settles after every entry, and a
-  write to a pipe an end reads goes out at once when the pipe is empty and credit allows.
-- test host: the ends' other sides, with input fed in seeded pieces as credit allows, output credit
-  given all at once or slowly, a scripted conversation (wait for some output, then send, resize or
+  keeps the room it promised. The ends are served when the kernel settles, once an event for an
+  end or a wake on one of their pipes or terminals says something may have moved; a write to a pipe
+  an end reads goes out at once when the pipe is empty and credit allows.
+- test host: the ends' other sides, with input fed in seeded pieces as credit allows (when the
+  container waits, or after many turns of one that never does, as a real outside's bytes come
+  slower than a program reaches its next wait), output credit given all at once or slowly (or
+  never), a scripted conversation (wait for some output, then send, resize or
   close) that the Docker reference follows too, and a check that the kernel never sends past
   credit.
