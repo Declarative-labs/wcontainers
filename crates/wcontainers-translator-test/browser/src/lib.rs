@@ -7,13 +7,15 @@ use std::cell::RefCell;
 use wcontainers_abi::Permissions;
 #[cfg(feature = "arm64")]
 use wcontainers_arm64::Arm64 as G;
-#[cfg(not(feature = "arm64"))]
-compile_error!("name the guest with a feature: arm64");
+#[cfg(not(any(feature = "arm64", feature = "x86_64")))]
+compile_error!("name the guest with a feature: arm64 or x86_64");
 use wcontainers_guest_cpu::{GUEST_REASONS, Guest, HookBody, HookDone, HookType, Personality};
 use wcontainers_translator::contract;
 use wcontainers_translator::{
     Error, LookAhead, Omit, Optimise, Translation, translate_in_modules, translate_omitting,
 };
+#[cfg(feature = "x86_64")]
+use wcontainers_x86::X86_64 as G;
 
 thread_local! {
     static INPUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
@@ -76,7 +78,6 @@ pub extern "C" fn translate(
     } else {
         Optimise::Speed
     };
-    let host = G::host_from_probe(probe);
     let code = code_start..code_end;
     let result = INPUT.with_borrow(|blob| {
         translate_for::<G>(
@@ -85,7 +86,7 @@ pub extern "C" fn translate(
             start,
             look_ahead,
             optimise,
-            host,
+            probe,
             omit,
             module_bytes,
         )
@@ -110,10 +111,11 @@ fn translate_for<C: Guest>(
     start: u64,
     look_ahead: LookAhead,
     optimise: Optimise,
-    host: C::Host,
+    probe: i32,
     omit: Omit,
     module_bytes: u32,
 ) -> Result<Translation, Error> {
+    let host = C::host_from_probe(probe);
     let offer = C::Offer::default();
     match module_bytes {
         0 => translate_omitting::<C>(
