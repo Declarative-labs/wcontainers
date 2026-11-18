@@ -12,6 +12,16 @@ fn timers_match_reference() {
     }
 }
 
+/// Timers set to wall clock times from before the kernel's clock began, with an interval: their
+/// first expiry counts every interval since (`hrtimer_forward`).
+#[test]
+fn timers_from_long_ago_count_every_interval() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    for run in assert_same_output_seeded(&out, "timerlongago", &[], 0) {
+        assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+    }
+}
+
 /// Timers whose signal is ignored or blocked when they fire (`posixtimer_sig_ignore`,
 /// `itimer_get_remtime`).
 #[test]

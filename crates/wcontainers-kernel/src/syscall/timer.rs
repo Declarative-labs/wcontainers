@@ -74,6 +74,9 @@ struct Timer {
     /// Expirations missed since its signal was sent, and those its last signal carried.
     overrun: u64,
     overrun_last: u64,
+    /// Intervals that passed before the kernel's clock began, for a timer set to a time on the
+    /// wall clock from before then: its first expiry counts them with its own.
+    credit: u64,
     /// A descriptor's expirations not yet read, and whether it fired and waits to be rearmed by a
     /// read.
     ticks: u64,
@@ -349,6 +352,7 @@ fn fire(kernel: &mut Kernel, cx: &mut Context<'_>, id: u64) {
     };
     let clock_now = now(kernel, timer.clock).unwrap_or(expires);
     kernel.timers.disarm(id);
+    let credit = core::mem::take(&mut kernel.timers.all.get_mut(&id).expect("timer").credit);
     match timer.owner {
         Owner::Posix {
             pid,
@@ -358,7 +362,9 @@ fn fire(kernel: &mut Kernel, cx: &mut Context<'_>, id: u64) {
             // A periodic one is rearmed when its signal is taken (`posixtimer_deliver_signal`)
             // and waits until then; a one-shot one is done (`posix_timer_queue_signal`).
             let periodic = timer.interval > 0;
-            kernel.timers.all.get_mut(&id).expect("timer").expires = periodic.then_some(expires);
+            let entry = kernel.timers.all.get_mut(&id).expect("timer");
+            entry.expires = periodic.then_some(expires);
+            entry.overrun += credit;
             let (target, signal, value) = match notify {
                 Notify::None => return,
                 Notify::Process { signal, value } => (None, signal, value),
@@ -413,7 +419,7 @@ fn fire(kernel: &mut Kernel, cx: &mut Context<'_>, id: u64) {
             // Rearmed by the read that takes its ticks (`timerfd_read_iter`).
             let timer = kernel.timers.all.get_mut(&id).expect("timer");
             timer.expires = Some(expires);
-            timer.ticks += 1;
+            timer.ticks += 1 + credit;
             timer.expired = true;
             let _ = clock_now;
             if let Some(file) = file.upgrade() {
@@ -546,6 +552,7 @@ pub(super) fn start_cpu_sleep(
         interval: 0,
         overrun: 0,
         overrun_last: 0,
+        credit: 0,
         ticks: 0,
         expired: false,
         clock_id: 0,
@@ -576,6 +583,7 @@ pub(crate) fn start_deferral(
         interval: 0,
         overrun: 0,
         overrun_last: 0,
+        credit: 0,
         ticks: 0,
         expired: false,
         clock_id: CLOCK_MONOTONIC as i32,
@@ -667,17 +675,24 @@ fn write_itimerspec(
 }
 
 /// Turns a time given to `settime` into the timer's clock: relative or absolute, the wall clock's
-/// absolute times into the monotonic clock's.
-fn expiry(kernel: &Kernel, cx: &mut Context<'_>, timer: &Timer, value: u64, absolute: bool) -> u64 {
-    let clock_now = now(kernel, timer.clock).unwrap_or(0);
+/// absolute times into the monotonic clock's, which may fall before that clock began (below 0).
+fn expiry(
+    kernel: &Kernel,
+    cx: &mut Context<'_>,
+    timer: &Timer,
+    value: u64,
+    absolute: bool,
+) -> i128 {
+    let clock_now = i128::from(now(kernel, timer.clock).unwrap_or(0));
     if !absolute {
-        return clock_now.saturating_add(value);
+        return (clock_now + i128::from(value)).min(i128::from(u64::MAX));
     }
     match (timer.clock, timer.clock_id as u32) {
         (Clock::Wall, CLOCK_REALTIME | CLOCK_REALTIME_ALARM | CLOCK_TAI) => {
-            clock_now.saturating_add(value.saturating_sub(cx.host.realtime_nanoseconds()))
+            (clock_now + i128::from(value) - i128::from(cx.host.realtime_nanoseconds()))
+                .min(i128::from(u64::MAX))
         }
-        _ => value,
+        _ => i128::from(value),
     }
 }
 
@@ -830,6 +845,7 @@ pub(super) fn timer_create(
         interval: 0,
         overrun: 0,
         overrun_last: 0,
+        credit: 0,
         ticks: 0,
         expired: false,
         sequence: 0,
@@ -896,6 +912,7 @@ fn set(
     timer.interval = if value == 0 { 0 } else { interval };
     timer.overrun = 0;
     timer.overrun_last = 0;
+    timer.credit = 0;
     timer.sequence += 1;
     timer.ticks = 0;
     timer.expired = false;
@@ -912,6 +929,18 @@ fn set(
     }
     let timer = kernel.timers.all[&id].clone();
     let at = expiry(kernel, cx, &timer, value, absolute);
+    // A time from before the kernel's clock began is brought forward by whole intervals, which
+    // its first expiry counts (`hrtimer_forward` from the time as given).
+    let at = if at >= 0 {
+        at as u64
+    } else if timer.interval > 0 {
+        let behind = at.unsigned_abs() as u64;
+        let intervals = behind.div_ceil(timer.interval);
+        kernel.timers.all.get_mut(&id).expect("timer").credit = intervals;
+        intervals * timer.interval - behind
+    } else {
+        0
+    };
     kernel.timers.arm(id, at);
 }
 
@@ -1047,6 +1076,7 @@ pub(super) fn setitimer(
             interval: 0,
             overrun: 0,
             overrun_last: 0,
+            credit: 0,
             ticks: 0,
             expired: false,
             sequence: 0,
@@ -1103,6 +1133,7 @@ pub(super) fn timerfd_create(
         interval: 0,
         overrun: 0,
         overrun_last: 0,
+        credit: 0,
         ticks: 0,
         expired: false,
         sequence: 0,
