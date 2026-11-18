@@ -1,8 +1,11 @@
 //! The scenes of `webgl-scenes` and the shared back-end suite, built for WebAssembly and run on canvases'
 //! WebGL 2 contexts by browser/run.mjs (scenes, page.html) and browser/suite.mjs (the suite,
-//! suite.html).
+//! suite.html); and the comparisons with the WebGPU back end on Chrome's WebGPU, by
+//! browser/against.mjs (against.html).
 #![cfg(target_arch = "wasm32")]
 
+#[path = "common/against.rs"]
+mod against;
 #[path = "common/checks.rs"]
 mod checks;
 #[path = "common/kit.rs"]
@@ -160,6 +163,8 @@ suite!(
     vertices_pulled_from_storage_match_the_fetched_ones,
     constants_read_through_a_texture_lie_256_rows_to_a_texture_row,
     missing_components_read_their_defaults,
+    typed_buffers_through_storage_read_their_views_place_and_length,
+    typed_buffers_through_a_texture_lie_2048_elements_to_a_row,
     captures_write_location_outputs_packed_in_draw_order,
     a_copy_within_one_subresource_moves_the_region,
     present_shows_the_frame;
@@ -250,5 +255,60 @@ pub fn suite_not_run() -> String {
 pub extern "C" fn suite_run() {
     if let Some(test) = CHOSEN.take() {
         test();
+    }
+}
+
+/// The comparisons with the WebGPU back end, by name, separated by spaces.
+#[wasm_bindgen]
+pub fn against_names() -> String {
+    let names: Vec<_> = against::COMPARISONS.iter().map(|c| c.name).collect();
+    names.join(" ")
+}
+
+// JSPI exports, which wasm-bindgen still marks experimental.
+#[allow(deprecated)]
+mod comparisons {
+    use super::*;
+    use wcontainers_gpu_webgpu::{WebGpu, block_on};
+
+    /// Runs the comparison `name`: the reference on the browser's WebGPU, each route on a new
+    /// canvas. One line for the adapter, then `<route>: ok` or `<route>: FAILED <why>` per route, each
+    /// on one line. A
+    /// JSPI export: the WebGPU back end waits for its probe by suspending.
+    #[wasm_bindgen(jspi)]
+    pub fn against_run(name: String) -> Result<String, JsError> {
+        std::panic::set_hook(Box::new(|info| panicked(&info.to_string())));
+        let c = against::COMPARISONS
+            .iter()
+            .find(|c| c.name == name)
+            .ok_or_else(|| JsError::new(&format!("no comparison {name}")))?;
+        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+        desc.backends = wgpu::Backends::BROWSER_WEBGPU;
+        let instance = wgpu::Instance::new(desc);
+        let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            ..Default::default()
+        }))
+        .map_err(|e| JsError::new(&format!("no WebGPU adapter: {e}")))?;
+        let info = adapter.get_info();
+        let mut device_desc = WebGpu::device_descriptor(&adapter);
+        if c.reference == against::Reference::WithoutFloatFiltering {
+            device_desc
+                .required_features
+                .remove(wgpu::Features::FLOAT32_FILTERABLE);
+        }
+        let (device, queue) = block_on(adapter.request_device(&device_desc))
+            .map_err(|e| JsError::new(&format!("no WebGPU device: {e}")))?;
+        let mut gpu = WebGpu::new(&adapter, device, queue);
+        let verdicts = against::compare(c, &mut gpu, |off| WebGl::on_canvas(make_context(), off));
+        let mut lines = vec![format!(
+            "webgpu adapter: {} ({:?}, {:?})",
+            info.name, info.device_type, info.backend
+        )];
+        lines.extend(verdicts.into_iter().map(|(route, v)| match v {
+            Ok(()) => format!("{route}: ok"),
+            Err(e) => format!("{route}: FAILED {}", e.replace('\n', " ")),
+        }));
+        Ok(lines.join("\n"))
     }
 }
