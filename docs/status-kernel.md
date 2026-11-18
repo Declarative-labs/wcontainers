@@ -82,6 +82,27 @@ Built or fixed, each tested against the reference:
   /etc/resolv.conf, written as for a root in memory (getaddrinfo_01 found none). Committed
   inside the CPU time commit by mistake.
 
+Also built: process_vm_readv and process_vm_writev on another process (`mm_access` with
+PTRACE_MODE_ATTACH_REALCREDS: EPERM unless the caller may trace it by its real ids; the counter
+"call on another process not built" is gone), and `ptrace_may_read_as` with real ids now
+compares the caller's permitted powers as `cap_ptrace_access_check` does (processvm test, a
+child as the same user and as another); /proc/sys/kernel/keys (the reference's quotas) and
+/proc/sys/user (namespace limits half of threads-max, inotify's as fs.inotify's, fanotify's
+groups 128 and marks from memory) (getxattr05 and add_key05 now stop where the reference does);
+/proc/cgroups (the reference kernel's 13 controllers, none on a version 1 hierarchy, one group);
+/proc/swaps (no swap area). procstatus `limits_match_reference`.
+
+LTP reruns at this run's code, one by one or in small batches (scratch k6c4, LTP_LIMIT 900, load
+40 to 90), each now matching the reference: cve-2026-43499, readv01, socket01, socketpair01,
+sched_setaffinity01, madvise02, sys_ksm01, times03, process_vm_readv02 and 03,
+process_vm_writev02, getxattr05 (both broken), add_key05 (both skipped), getaddrinfo_01 (both
+broken), waitid10, munmap04 (both broken), and dup03, dup06, dup205 (pass in about 650 s) and
+fcntl36 (397 s). Checked unchanged: getrusage01 to 04, times01, setitimer01 and 02,
+process_vm_readv01, process_vm_writev01. The reference itself passed clock_nanosleep02,
+select02 and prctl09 when run again (it failed them under load in the whole run), as ours does.
+Still slower than 900 s: creat05, epoll_create03, fcntl12, inotify09. fork09 was lost to my
+removing its backend container by mistake (rerun in scratch k6c4/rd.tsv).
+
 Found and not a kernel fault:
 - The math float tests' heap corruption did not come back: float_iperb passed 3 of 3 (seeds 2
   to 4) at 914ec440, float_power and float_trigo passed at 294c1b40. The exclusive monitor was
