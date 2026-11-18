@@ -231,12 +231,15 @@ pub fn memory_use(i: &Instruction) -> Option<AccessKind> {
     let at = (0..ins.op_count()).find(|&n| is_memory(i, n))?;
     use Mnemonic::*;
     Some(match (at, ins.mnemonic()) {
+        // A nop's memory operand is never reached: no access, no check, no fault.
+        (_, Nop | Reservednop | Lea) => return None,
         (0, Cmp | Test | Push | Call | Jmp | Mul | Imul | Div | Idiv | Bt) => AccessKind::Read,
-        (0, Mov | Pop | Movaps | Movups | Movdqa | Movdqu | Movq | Movd) => AccessKind::Write,
+        (0, Mov | Pop | Movaps | Movups | Movapd | Movupd | Movdqa | Movdqu | Movq | Movd) => {
+            AccessKind::Write
+        }
         (0, m) if setcc(m).is_some() => AccessKind::Write,
         (0, _) => AccessKind::ReadWrite,
         (_, Xchg) => AccessKind::ReadWrite,
-        (_, Lea) => return None,
         _ => AccessKind::Read,
     })
 }

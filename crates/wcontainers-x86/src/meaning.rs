@@ -96,7 +96,7 @@ pub fn written(i: &Instruction) -> bool {
                     | Push | Pop | Call | Ret | Jmp | Shl | Sal | Shr | Sar | Rol | Ror | Rcl
                     | Rcr | Mul | Imul | Div | Idiv | Syscall | Nop | Pause | Reservednop | Int3
                     | Int1 | Int | Sysenter | Ud0 | Ud1 | Ud2 | Clc | Stc | Cmc | Cld | Std | Bt | Bts
-                    | Btr | Btc
+                    | Btr | Btc | Jrcxz | Jecxz
             ))
         // Far transfers through memory: a selector with the offset.
         && !(matches!(m, Call | Jmp) && is_memory(i, 0) && memory_bytes(i) != 8)
@@ -246,6 +246,12 @@ fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
             e.sink().local_set(carry);
             let word = word_with(e, &[(Flag::C, carry)]);
             e.set_flags(Flags::Packed(word));
+        }
+        Jrcxz | Jecxz => {
+            // A jump when rcx (ecx with an address-size prefix) is zero; no flag is read.
+            get_general(e, register(RCX, if m == Jrcxz { 64 } else { 32 }));
+            e.sink().i64_eqz();
+            e.jump_if(Target::Relative(ins.near_branch64() as i64));
         }
         Cld | Std => {
             e.get_control(Control::Rflags);
@@ -535,9 +541,9 @@ fn unary<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
 fn not_canonical<E: Emitter<X86_64> + ?Sized>(e: &mut E, local: u32) {
     e.sink()
         .local_get(local)
-        .i64_const(16)
+        .i64_const(crate::CANONICAL_SHIFT.into())
         .i64_shl()
-        .i64_const(16)
+        .i64_const(crate::CANONICAL_SHIFT.into())
         .i64_shr_s()
         .local_get(local)
         .i64_ne();
@@ -580,15 +586,17 @@ fn pop<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
     load(e, from, bytes);
     e.sink().local_set(value);
     let mem = if is_memory(i, 0) {
-        // The destination's address is worked out with the stack pointer already moved.
-        let at = address(e, i);
+        // The destination's address is worked out with the stack pointer already moved, before an
+        // address-size prefix wraps it.
+        let mut moved = *i;
         if general(i.iced.memory_base()).is_some_and(|g| g.number == RSP) {
-            e.sink()
-                .local_get(at)
-                .i64_const(bytes.into())
-                .i64_add()
-                .local_set(at);
+            moved.iced.set_memory_displacement64(
+                i.iced
+                    .memory_displacement64()
+                    .wrapping_add(u64::from(bytes)),
+            );
         }
+        let at = address(e, &moved);
         e.check(at, bytes, Access::Write, 1);
         Some(at)
     } else {
@@ -669,9 +677,9 @@ fn jmp<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
 
 fn int<E: Emitter<X86_64> + ?Sized>(e: &mut E, vector: u8) {
     match vector {
-        3 => e.trap(Trap::Int3),
-        4 => e.trap(Trap::Overflow),
-        0x80 => {
+        crate::BREAKPOINT_VECTOR => e.trap(Trap::Int3),
+        crate::OVERFLOW_VECTOR => e.trap(Trap::Overflow),
+        crate::LINUX_32_BIT_SYSTEM_CALL => {
             // Linux's 32-bit system call gate: this phase has no 32-bit system calls, as a kernel built
             // without 32-bit emulation, where the gate is the kernel's own.
             e.warn(Reason::ThirtyTwoBitSystemCall);

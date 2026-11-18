@@ -21,6 +21,7 @@ mod operand;
 mod simd;
 
 pub mod claims;
+pub mod encoding;
 
 #[cfg(feature = "translate")]
 pub use decode::{Instruction, claim_group, decode};
@@ -81,6 +82,27 @@ pub const TF: u64 = 1 << 8;
 pub const DF: u64 = 1 << 10;
 pub const NT: u64 = 1 << 14;
 pub const ID: u64 = 1 << 21;
+/// Linear address bits under 4-level paging (Intel SDM Vol. 3A 4.5). An address is canonical when the bits
+/// above them copy its top one.
+pub const VIRTUAL_ADDRESS_BITS: u32 = 48;
+/// The first address above the lower canonical half, and the top of user space Linux gives a program, one
+/// page below it (`TASK_SIZE_MAX`).
+pub const USER_END: u64 = 1 << (VIRTUAL_ADDRESS_BITS - 1);
+pub const USER_TOP: u64 = USER_END - wcontainers_abi::PAGE_SIZE;
+/// How far an address is shifted left and back to copy its top canonical bit into the bits above.
+pub const CANONICAL_SHIFT: u32 = u64::BITS - VIRTUAL_ADDRESS_BITS;
+
+/// Whether `address` is canonical.
+pub const fn is_canonical(address: u64) -> bool {
+    ((address << CANONICAL_SHIFT) as i64 >> CANONICAL_SHIFT) as u64 == address
+}
+
+/// Interrupt vectors `int n` names that user code may reach: the breakpoint and overflow traps (Intel SDM
+/// Vol. 3A 6.3.1), and Linux's gate for 32-bit system calls.
+pub const BREAKPOINT_VECTOR: u8 = 3;
+pub const OVERFLOW_VECTOR: u8 = 4;
+pub const LINUX_32_BIT_SYSTEM_CALL: u8 = 0x80;
+
 /// Bits user code always sees set in rflags: the reserved bit 1 and IF.
 pub const ALWAYS: u64 = 0x202;
 

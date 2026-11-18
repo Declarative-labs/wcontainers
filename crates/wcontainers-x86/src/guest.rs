@@ -406,9 +406,8 @@ impl Guest for X86_64 {
             if address.wrapping_sub(start) >= bytes {
                 continue;
             }
-            let canonical = |x: u64| ((x << 16) as i64 >> 16) as u64 == x;
             // An access that wraps past the top of the address space is canonical at both ends.
-            let canonical = canonical(start) && canonical(last);
+            let canonical = crate::is_canonical(start) && crate::is_canonical(last);
             return if canonical {
                 MemoryFault::Page
             } else if rsp_based(&access) {
@@ -466,7 +465,7 @@ impl Guest for X86_64 {
                 kind: FlowKind::Return,
             },
             Int3 | Int1 | Int | Sysenter | Ud0 | Ud1 | Ud2 => plain(false),
-            m if jcc(m).is_some() => Flow {
+            m if jcc(m).is_some() || matches!(m, Jrcxz | Jecxz) => Flow {
                 falls_through: true,
                 target: Some(ins.near_branch64() as i64),
                 kind: FlowKind::Plain,
@@ -601,7 +600,7 @@ impl Guest for X86_64 {
             Add | Sub
                 if writes_rsp
                     && general(ins.op_register(0)).is_some_and(|g| g.width == 64)
-                    && ins.op_kind(1) != OpKind::Register =>
+                    && !matches!(ins.op_kind(1), OpKind::Register | OpKind::Memory) =>
             {
                 let k = ins.immediate(1) as i64;
                 StackMove::By {
@@ -694,29 +693,54 @@ impl Guest for X86_64 {
                 || (ins.mnemonic() == Imul && ins.op_count() > 1))
     }
 
-    /// Where the meaning fixes flags Intel leaves undefined to the reference CPU's: the multiplications, the
-    /// divisions, the shifts and rotates (OF beyond a count of 1, AF, CF beyond the width), and the logic
-    /// instructions' AF.
+    /// Where the meaning fixes flags Intel leaves undefined to the reference CPU's (the multiplications, the
+    /// divisions, the shifts and rotates, the logic instructions' AF, the bit tests' OF, SF, AF and PF), answers
+    /// by design (`int 0x80` and `sysenter`, which Linux runs as 32-bit system calls, give general protection),
+    /// or stops where a CPU with more features runs on: an encoding iced calls invalid, every instruction
+    /// outside the default claims, and one of them whose meaning is not written yet. Kernel-only instructions
+    /// of the claimed features fault on every CPU, and an instruction over 15 bytes too.
     fn may_vary(i: &Instruction) -> bool {
+        use crate::claims::{GROUP_DEFAULT, GROUP_KERNEL};
         use Mnemonic::*;
-        matches!(
-            i.iced.mnemonic(),
-            Mul | Imul
-                | Div
-                | Idiv
-                | Shl
-                | Sal
-                | Shr
-                | Sar
-                | Rol
-                | Ror
-                | Rcl
-                | Rcr
-                | And
-                | Or
-                | Xor
-                | Test
-        )
+        let ins = &i.iced;
+        if i.too_long {
+            return false;
+        }
+        if ins.is_invalid() {
+            return true;
+        }
+        match crate::decode::claim_group(ins.code()) {
+            GROUP_KERNEL => return false,
+            GROUP_DEFAULT if crate::meaning::written(i) => {}
+            // Illegal instruction, where a CPU with the feature (or our own later meaning) runs it.
+            _ => return true,
+        }
+        match ins.mnemonic() {
+            Int => ins.immediate8() == crate::LINUX_32_BIT_SYSTEM_CALL,
+            m => matches!(
+                m,
+                Mul | Imul
+                    | Div
+                    | Idiv
+                    | Shl
+                    | Sal
+                    | Shr
+                    | Sar
+                    | Rol
+                    | Ror
+                    | Rcl
+                    | Rcr
+                    | And
+                    | Or
+                    | Xor
+                    | Test
+                    | Bt
+                    | Bts
+                    | Btr
+                    | Btc
+                    | Sysenter
+            ),
+        }
     }
 
     const RETURN_ADDRESS: ReturnAddress = ReturnAddress::Stack { bytes: 8 };

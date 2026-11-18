@@ -1,6 +1,7 @@
 //! The instruction at the start of some bytes, from iced-x86, with what iced does not say: the address size,
 //! and the length the CPU counts for an encoding iced calls invalid or one of a feature never presented.
 
+use crate::encoding::{ADDRESS_SIZE, LEGACY_PREFIXES, OPERAND_SIZE, REX_W, is_rex};
 use iced_x86::{Code, Decoder, DecoderError, DecoderOptions};
 
 mod groups {
@@ -33,7 +34,7 @@ pub fn decode(code: &[u8]) -> Option<(Instruction, u8)> {
     // iced may want more bytes than the CPU counts for an invalid encoding.
     let cut = decoder.last_error() == DecoderError::NoMoreBytes;
     let prefixes = prefix_run(code);
-    let address32 = code[..prefixes].contains(&0x67);
+    let address32 = code[..prefixes].contains(&ADDRESS_SIZE);
     let mut too_long = false;
     // iced stops reading at 15 bytes and at what makes an encoding invalid; the CPU counts the whole
     // encoding, and its limit wins over every other rule. An instruction of a feature never presented is
@@ -58,15 +59,8 @@ pub fn decode(code: &[u8]) -> Option<(Instruction, u8)> {
 /// How many bytes at the start of `code` are prefixes (legacy ones and REX).
 fn prefix_run(code: &[u8]) -> usize {
     code.iter()
-        .take_while(|&&b| is_legacy_prefix(b) || (0x40..=0x4f).contains(&b))
+        .take_while(|&&b| LEGACY_PREFIXES.contains(&b) || is_rex(b))
         .count()
-}
-
-fn is_legacy_prefix(b: u8) -> bool {
-    matches!(
-        b,
-        0x26 | 0x2e | 0x36 | 0x3e | 0x64 | 0x65 | 0x66 | 0x67 | 0xf0 | 0xf2 | 0xf3
-    )
 }
 
 /// What the CPU's length decoder counts after each opcode of the one-byte map and of the 0F map, one
@@ -129,9 +123,9 @@ fn cpu_length(code: &[u8], prefixes: usize) -> Option<usize> {
     let (mut operand16, mut address32, mut rex) = (false, false, None);
     for &b in &code[..prefixes] {
         match b {
-            0x66 => operand16 = true,
-            0x67 => address32 = true,
-            0x40..=0x4f => {
+            OPERAND_SIZE => operand16 = true,
+            ADDRESS_SIZE => address32 = true,
+            _ if is_rex(b) => {
                 rex = Some(b);
                 continue;
             }
@@ -142,7 +136,7 @@ fn cpu_length(code: &[u8], prefixes: usize) -> Option<usize> {
     let body = &code[prefixes..];
     let first = *body.first()?;
     let vex = matches!(first, 0xc4 | 0xc5 | 0x62);
-    let wide = !vex && rex.is_some_and(|r| r & 8 != 0);
+    let wide = !vex && rex.is_some_and(|r| r & REX_W != 0);
     let operand16 = operand16 && !vex && !wide;
     let (map, at) = match (first, body.get(1)) {
         (0xc5, _) => (1, 2),
