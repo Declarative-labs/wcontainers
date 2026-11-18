@@ -49,11 +49,8 @@ done
 [ ${#programs[@]} -eq 0 ] || options+=" -Programs $(IFS=,; echo "${programs[*]}")"
 [ ${#dlls[@]} -eq 0 ] || options+=" -Dlls \"$(IFS=';'; echo "${dlls[*]}")\""
 out="C:\\wc\\out\\$name\\programs"
-# Real Direct3D under the forwarding library is the reference kind; a replacement may hang the GPU.
-kind=(--reference)
-[ ${#dlls[@]} -eq 0 ] || kind=()
 job() {
-    "$here/gpu-job" ${kind[@]+"${kind[@]}"} --desktop --build "cargo build -q -p wcontainers-graphics-test -p wcontainers-graphics-test-forward" -- \
+    "$here/gpu-job" --desktop --build "cargo build -q -p wcontainers-graphics-test -p wcontainers-graphics-test-forward" -- \
         "$script -Mode run -Out $out -Forward %CARGO_TARGET_DIR%\\debug\\wcontainers_graphics_test_forward.dll -Check %CARGO_TARGET_DIR%\\debug\\gt-run.exe -Launch %CARGO_TARGET_DIR%\\debug\\gt-launch.exe$options$1"
 }
 code=0

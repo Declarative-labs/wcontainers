@@ -74,9 +74,10 @@ function Check-Resets {
     $lines | ForEach-Object { "  $_" }
     exit 1
 }
+# The excluded tests; one marked "(gpu)" runs on WARP.
 $excluded = @{}
 foreach ($line in Get-Content tools\graphics-rig\wine-excluded.txt) {
-    if ($line -match '^(\w+) (\w+): (.*)$') { $excluded["$($Matches[1]) $($Matches[2])"] = $Matches[3] }
+    if ($line -match '^(\w+) (\w+)( \(gpu\))?: (.*)$' -and -not ($Matches[3] -and $Warp)) { $excluded["$($Matches[1]) $($Matches[2])"] = $Matches[4] }
 }
 
 # Runs one test in its own process through gt-launch. Returns its verdict, counts, the checks it

@@ -18,6 +18,8 @@ param(
     [switch]$Desktop,
     # The queue group it runs in, for the job history.
     [Parameter(Mandatory)][string]$Group,
+    # For one of the rig's own runs, the rig's code it runs (Get-RigKey), cleared when no reset follows.
+    [string]$RigKey = '',
     [Parameter(Mandatory)][string]$ErrorFile,
     [Parameter(Mandatory)][string]$Command
 )
@@ -82,13 +84,14 @@ if ($Built) {
 }
 
 $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Command))
-$quarantined = (Get-Quarantine)[$text]
+$quarantined = Find-Quarantine $text
 if ($quarantined) { $lock.Close(); throw "quarantined, as suspected of a display driver reset ($quarantined); lift it with tools/graphics-rig/resets lift" }
 if (Test-Held) { $lock.Close(); throw "the queue is held after a display driver reset: $((Get-Content $hazardHeld) -join ' / ')" }
 $group = $Group
 $suspects = (Get-Quarantine).Count
 $started = Get-Date
 Add-HazardLines "$hazardLogs\jobs.log" @(('{0:yyyy-MM-dd HH:mm:ss.fff} start {1} {2} {3}: {4}' -f $started, $Name, $Tree, $group, $text))
+$completed = $false
 try {
     if ($Alone) {
         foreach ($other in 'default', 'hazard') { & $pueue -c $config pause --group $other --wait | Out-Null }
@@ -108,27 +111,25 @@ try {
         $process.WaitForExit()
         $code = $process.ExitCode
     }
+    $completed = $true
 } finally {
-    if ($Alone -and -not (Test-Held)) { foreach ($other in 'default', 'hazard') { & $pueue -c $config start --group $other | Out-Null } }
+    # An alone job that ran to its end lets the other groups go on once its resets are checked.
+    if ($Alone -and -not $completed -and -not (Test-Held)) { foreach ($other in 'default', 'hazard') { & $pueue -c $config start --group $other | Out-Null } }
     $lock.Close()
 }
 # A reset during the job fails it, whichever job beside it caused it: every job that saw it is a
 # suspect and quarantined, and the queue starts nothing until the cause is recorded.
 $ended = Get-Date
-$resets = Get-DisplayResets $started $ended.AddSeconds(2)
+$seen = "{0:yyyy-MM-dd HH:mm:ss} to {1:HH:mm:ss} job of $Name ($Tree) in group ${group}: {2}" -f $started, $ended, $text
+$resets = Watch-Resets $started $ended $seen $text $suspects
 if ($resets) {
     $notes.Add("job: FAIL, the display driver was reset or logged errors while this job ran (by it or a job beside it):")
     $resets | ForEach-Object { $notes.Add("job:   $_") }
-    $seen = "{0:yyyy-MM-dd HH:mm:ss} to {1:HH:mm:ss} job of $Name ($Tree) in group ${group}: {2}" -f $started, $ended, $text
-    Add-HazardLines "$hazardLogs\display-resets.log" ([string[]](@($seen) + $resets))
-    Set-Hold @($seen)
-    if ((Get-Quarantine).Count -eq $suspects) {
-        Add-Quarantine $text ("display driver reset at {0} during this job of $Name" -f $resets[0].Substring(0, 19))
-        $notes.Add('job: this command is now quarantined; the queue is held until the cause is recorded (tools/graphics-rig/resets)')
-    } else {
-        $notes.Add('job: the command quarantined what ran at the reset; the queue is held until the cause is recorded (tools/graphics-rig/resets)')
-    }
+    $notes.Add('job: what ran is now quarantined (this command, or the Wine test running then); the queue is held until the cause is recorded (tools/graphics-rig/resets)')
     if ($code -eq 0) { $code = 1 }
+} elseif ($RigKey) {
+    Add-Cleared $RigKey
 }
+if ($Alone -and -not (Test-Held)) { foreach ($other in 'default', 'hazard') { & $pueue -c $config start --group $other | Out-Null } }
 Add-HazardLines "$hazardLogs\jobs.log" @(('{0:yyyy-MM-dd HH:mm:ss.fff} end {1} {2} {3} exit {4}{5}' -f $ended, $Name, $Tree, $group, $code, $(if ($resets) { ', display driver reset' } else { '' })))
 Finish $code
