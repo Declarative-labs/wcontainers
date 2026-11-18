@@ -251,6 +251,8 @@ pub struct GraphicsPipelineDesc<'a> {
     pub rtv_formats: Vec<u32>,
     pub dsv_format: u32,
     pub samples: u32,
+    /// The stream output declaration and `RasterizedStream`.
+    pub stream_output: Option<(wcontainers_shaders::stage::StreamOutput, u32)>,
 }
 
 struct Fence<B: Backend> {
@@ -848,6 +850,7 @@ impl<B: Backend> Device<B> {
         self.live()?;
         let root = self.pipeline_root(desc.root, &[desc.vs, desc.gs, desc.ps])?;
         let has_geometry = !desc.gs.is_empty();
+        let staged = has_geometry || desc.stream_output.is_some();
         let ps = if desc.ps.is_empty() {
             None
         } else {
@@ -921,11 +924,17 @@ impl<B: Backend> Device<B> {
                     .map(|i| (e, i.location))
             })
             .collect();
-        let made = match has_geometry {
-            true => Some(self.geometry_stage(desc.vs, desc.gs, &inputs, &interpolation)?),
+        let made = match staged {
+            true => Some(self.geometry_stage(
+                desc.vs,
+                desc.gs,
+                &inputs,
+                &interpolation,
+                desc.stream_output.as_ref(),
+            )?),
             false => None,
         };
-        let reads_bases = vs.reflection.helper_size != 0 && made.is_none();
+        let reads_bases = vs.reflection.helper_size != 0 && !has_geometry;
         let instances_step_by_one = inputs
             .iter()
             .all(|(e, _)| !e.per_instance || e.step_rate == 1);
@@ -943,12 +952,20 @@ impl<B: Backend> Device<B> {
         };
         let mut bindings = match &made {
             Some(m) => {
-                let mut b = bind::stage_bindings(&m.vertex, bind::VERTEX, StageSet::COMPUTE);
-                b.extend(bind::stage_bindings(
-                    &m.shader,
-                    bind::GEOMETRY,
-                    StageSet::COMPUTE,
-                ));
+                // Without a geometry stage the draw after the stream output binds the vertex
+                // stage's sets too.
+                let stages = match m.shader {
+                    Some(_) => StageSet::COMPUTE,
+                    None => StageSet::COMPUTE | StageSet::VERTEX,
+                };
+                let mut b = bind::stage_bindings(&m.vertex, bind::VERTEX, stages);
+                if let Some(shader) = &m.shader {
+                    b.extend(bind::stage_bindings(
+                        shader,
+                        bind::GEOMETRY,
+                        StageSet::COMPUTE,
+                    ));
+                }
                 b
             }
             None => bind::stage_bindings(&vs, bind::VERTEX, StageSet::VERTEX),
@@ -970,7 +987,7 @@ impl<B: Backend> Device<B> {
             4 => return Err(Error::NotImplemented("patch topologies")),
             _ => return Err(Error::Invalid("unknown primitive topology type")),
         };
-        let topology = made.as_ref().map(|m| m.output).or(topology);
+        let topology = made.as_ref().and_then(|m| m.output).or(topology);
         let raster = desc.raster.block(
             caps,
             desc.sample_mask,
@@ -994,7 +1011,7 @@ impl<B: Backend> Device<B> {
         if draws_lines && desc.raster.antialiased_line && !desc.raster.multisample {
             return Err(Error::NotImplemented("alpha-antialiased lines"));
         }
-        let vs_shader = match &made {
+        let vs_shader = match made.as_ref().filter(|m| m.shader.is_some()) {
             Some(m) => m
                 .geometry
                 .stages
@@ -1083,8 +1100,8 @@ impl<B: Backend> Device<B> {
         if let Some(topology) = topology
             && (fetched || render.geometry.is_some())
         {
-            let layout = match &render.geometry {
-                Some(g) => g.layout.clone(),
+            let layout = match render.geometry.as_ref().and_then(|g| g.layout.as_ref()) {
+                Some(l) => l.clone(),
                 None => self.vertex_layout(&render.inputs, &packed)?,
             };
             self.backend.prepare(&PrepareDesc {
@@ -2354,7 +2371,10 @@ struct Replay<B: Backend> {
     /// The pipeline statistics query begun and not ended, and the stream output statistics
     /// queries begun and not ended.
     statistics: Option<statistics::Running>,
-    streams: Vec<(QueryHeapId, u32)>,
+    /// Each: heap, index, stream, and the primitives written and needed so far.
+    streams: Vec<(QueryHeapId, u32, u32, [u64; 2])>,
+    /// The bound stream output buffers.
+    stream_views: [crate::list::StreamView; 4],
     /// The pass tracker holds the bound targets, for the occlusion and pixel counters.
     counted_targets: bool,
     /// The occlusion counter has the depth-stencil target as the kept draws began from it.
@@ -2404,6 +2424,7 @@ impl<B: Backend> Replay<B> {
             counted: None,
             statistics: None,
             streams: Vec::new(),
+            stream_views: Default::default(),
             counted_targets: false,
             counted_copy: false,
             predicate: None,
@@ -2613,6 +2634,13 @@ impl<B: Backend> Replay<B> {
                     .copy_from_slice(views);
             }
             Command::IndexBuffer(v) => self.index = *v,
+            Command::StreamTargets { start, views } => {
+                let at = *start as usize;
+                self.stream_views
+                    .get_mut(at..at + views.len())
+                    .ok_or(Error::Invalid("stream output slot out of range"))?
+                    .copy_from_slice(views);
+            }
             Command::Viewports(v) => {
                 // A pass with no targets is as large as the viewports it began with.
                 if self.empty_pass {
@@ -2911,7 +2939,7 @@ impl<B: Backend> Replay<B> {
         match kind {
             query::QUERY_PIPELINE_STATISTICS => return self.begin_statistics(d, heap, index),
             k if query::QUERY_SO_STATISTICS.contains(&k) => {
-                return self.begin_stream(d, heap, index);
+                return self.begin_stream(d, heap, index, k - query::QUERY_SO_STATISTICS.start());
             }
             query::QUERY_BINARY_OCCLUSION | query::QUERY_OCCLUSION => {}
             _ => return Err(Error::Invalid("BeginQuery of this query type")),
@@ -3058,8 +3086,8 @@ impl<B: Backend> Replay<B> {
         if !d.arguments_set(&self.graphics, pid) {
             return Ok(());
         }
-        if geometry {
-            return self.draw_geometry(d, pid, range, record);
+        if geometry && !self.draw_geometry(d, pid, same_range(&range), record)? {
+            return Ok(());
         }
         if crate::state::adjacency(self.api_topology) {
             return Err(Error::NotImplemented(

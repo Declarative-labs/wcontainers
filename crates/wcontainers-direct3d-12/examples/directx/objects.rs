@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use wcontainers_direct3d_12::address::DESCRIPTOR_SIZE;
 use wcontainers_direct3d_12::list::{
     Command, CommandList, CopyLocation, Descriptor, IndexBufferView, IndirectArgument,
-    ResourceView, RootArgument, SamplerView, TargetView, VertexBufferView, ViewportF,
+    ResourceView, RootArgument, SamplerView, StreamView, TargetView, VertexBufferView, ViewportF,
 };
 use wcontainers_direct3d_12::resource::{
     DIMENSION_BUFFER, Footprint, HeapType, ResourceDesc, check_creation, check_state,
@@ -634,9 +634,6 @@ impl Device {
     ) -> Result<()> {
         // SAFETY: the API requires a description.
         let d = unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
-        if d.StreamOutput.NumEntries != 0 {
-            return Err(hr(Error::NotImplemented("stream output")));
-        }
         if !d.HS.pShaderBytecode.is_null() || !d.DS.pShaderBytecode.is_null() {
             return Err(hr(Error::NotImplemented("hull and domain stages")));
         }
@@ -730,6 +727,8 @@ impl Device {
             d.DSVFormat.0 as u32,
             d.SampleDesc.Count,
         );
+        // SAFETY: the declaration's arrays as the API requires.
+        let stream_output = unsafe { stream_output(&d.StreamOutput) };
         let id = gpu::call(move |dev| {
             dev.create_graphics_pipeline(&GraphicsPipelineDesc {
                 root,
@@ -746,6 +745,7 @@ impl Device {
                 rtv_formats,
                 dsv_format,
                 samples,
+                stream_output,
             })
         })
         .map_err(hr)?;
@@ -3059,6 +3059,29 @@ impl List {
         self.record(Command::VertexBuffers { start, views });
     }
 
+    pub fn SOSetTargets(
+        &self,
+        start: u32,
+        count: u32,
+        views: *const D3D12_STREAM_OUTPUT_BUFFER_VIEW,
+    ) {
+        // SAFETY: `count` views, as the API requires; none unbinds.
+        let given = unsafe { many(views, count) };
+        let views = if given.is_empty() {
+            vec![StreamView::default(); count as usize]
+        } else {
+            given
+                .iter()
+                .map(|v| StreamView {
+                    address: v.BufferLocation,
+                    size: v.SizeInBytes,
+                    filled: v.BufferFilledSizeLocation,
+                })
+                .collect()
+        };
+        self.record(Command::StreamTargets { start, views });
+    }
+
     pub fn IASetIndexBuffer(&self, view: *const D3D12_INDEX_BUFFER_VIEW) {
         // SAFETY: an optional view, as the API allows.
         let view = unsafe { view.as_ref() }.map(|v| IndexBufferView {
@@ -3782,4 +3805,43 @@ fn unordered_access_view(
         }
     }
     Some(v)
+}
+
+/// A pipeline's stream output declaration and `RasterizedStream`; `None` without entries.
+///
+/// # Safety
+/// `d`'s arrays hold as many elements as it says, and its semantic names are C strings.
+unsafe fn stream_output(
+    d: &D3D12_STREAM_OUTPUT_DESC,
+) -> Option<(wcontainers_shaders::stage::StreamOutput, u32)> {
+    if d.NumEntries == 0 {
+        return None;
+    }
+    // SAFETY: as the caller promises.
+    let (entries, strides) = unsafe {
+        (
+            many(d.pSODeclaration, d.NumEntries),
+            many(d.pBufferStrides, d.NumStrides),
+        )
+    };
+    let mut so = wcontainers_shaders::stage::StreamOutput {
+        entries: entries
+            .iter()
+            .map(|e| wcontainers_shaders::stage::StreamOutputEntry {
+                stream: e.Stream as u8,
+                // SAFETY: as the caller promises; a null name is a gap.
+                semantic: (!e.SemanticName.is_null())
+                    .then(|| unsafe { e.SemanticName.to_string() }.unwrap_or_default()),
+                semantic_index: e.SemanticIndex,
+                start_component: e.StartComponent,
+                component_count: e.ComponentCount,
+                slot: e.OutputSlot,
+            })
+            .collect(),
+        strides: [0; 4],
+    };
+    for (s, &stride) in so.strides.iter_mut().zip(strides) {
+        *s = stride;
+    }
+    Some((so, d.RasterizedStream))
 }

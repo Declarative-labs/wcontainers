@@ -4,8 +4,9 @@
 //! cut value read their indices back; indirect arguments are read back); compute invocations from
 //! each dispatch's groups; pixel shader invocations from the pixel counter, an occlusion counter
 //! replaying the draws with the depth and stencil tests off and a program counting each invocation.
-//! No geometry, hull or domain shader and no stream output pipeline is made, so their counts and
-//! the stream output statistics are zero.
+//! Draws through geometry shaders or stream output are refused while a pipeline statistics query
+//! runs and no hull or domain shader is made, so those stages' counts are zero. Stream output
+//! statistics are the stage helper's counts of primitives written and needed, read back.
 
 use wcontainers_gpu::{DepthStencilDesc, Reflection, StageExtras, SystemValue};
 
@@ -183,20 +184,22 @@ impl<B: Backend> Replay<B> {
         d: &mut Device<B>,
         heap: QueryHeapId,
         index: u32,
+        stream: u32,
     ) -> Result<(), Error> {
         if d.heap_kind(heap, index)? != query::HEAP_SO_STATISTICS {
             return Err(Error::Invalid(
                 "a statistics query in a heap of another kind",
             ));
         }
-        if self.streams.contains(&(heap, index)) {
+        if self.streams.iter().any(|q| (q.0, q.1) == (heap, index)) {
             return Err(Error::Invalid("a query begun twice"));
         }
-        self.streams.push((heap, index));
+        self.streams.push((heap, index, stream, [0; 2]));
         Ok(())
     }
 
-    /// `EndQuery` of stream output statistics: nothing was streamed and no stream needed room.
+    /// `EndQuery` of stream output statistics: the primitives stream output draws wrote and
+    /// needed while it ran (only stream 0 is ever written).
     pub(super) fn end_stream(
         &mut self,
         d: &mut Device<B>,
@@ -206,10 +209,10 @@ impl<B: Backend> Replay<B> {
         let at = self
             .streams
             .iter()
-            .position(|q| *q == (heap, index))
+            .position(|q| (q.0, q.1) == (heap, index))
             .ok_or(Error::Invalid("EndQuery of a query not begun"))?;
-        self.streams.swap_remove(at);
-        d.write_value(heap, index, &[0, 0])
+        let q = self.streams.swap_remove(at);
+        d.write_value(heap, index, &q.3)
     }
 
     /// Adds a direct draw of pipeline `pid` to the running statistics query, and gives the pixel

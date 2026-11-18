@@ -103,6 +103,15 @@ pub enum Descriptor {
 
 const _: () = assert!(size_of::<Descriptor>() <= crate::address::DESCRIPTOR_SIZE as usize);
 
+/// One `D3D12_STREAM_OUTPUT_BUFFER_VIEW`: where a stream output buffer starts, its size, and
+/// where its 64-bit filled size lies.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StreamView {
+    pub address: u64,
+    pub size: u64,
+    pub filled: u64,
+}
+
 /// `D3D12_VERTEX_BUFFER_VIEW`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct VertexBufferView {
@@ -287,6 +296,11 @@ pub enum Command {
         views: Vec<VertexBufferView>,
     },
     IndexBuffer(Option<IndexBufferView>),
+    /// `SOSetTargets`.
+    StreamTargets {
+        start: u32,
+        views: Vec<StreamView>,
+    },
     Viewports(Vec<ViewportF>),
     Scissors(Vec<Rect>),
     BlendFactor([f32; 4]),
