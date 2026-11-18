@@ -414,9 +414,9 @@ pub fn topology(value: u32) -> Result<Topology, Error> {
     })
 }
 
-/// `D3D_PRIMITIVE_TOPOLOGY` values with adjacency.
-pub fn adjacency(value: u32) -> bool {
-    (10..=13).contains(&value)
+/// `D3D_PRIMITIVE_TOPOLOGY` values only a geometry or hull stage takes: adjacency and patches.
+pub fn staged_only(value: u32) -> bool {
+    (10..=13).contains(&value) || (33..=64).contains(&value)
 }
 
 /// `D3D_PRIMITIVE_TOPOLOGY` as a geometry stage takes it.
@@ -431,7 +431,7 @@ pub fn input_topology(value: u32) -> Result<InputTopology, Error> {
         11 => InputTopology::LineStripAdjacency,
         12 => InputTopology::TriangleListAdjacency,
         13 => InputTopology::TriangleStripAdjacency,
-        33..=64 => return Err(Error::NotImplemented("patch lists")),
+        33..=64 => InputTopology::PatchList((value - 32) as u8),
         _ => return Err(Error::Invalid("unknown primitive topology")),
     })
 }
