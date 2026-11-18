@@ -5,13 +5,16 @@ not in this checkout yet; this work follows the owner's brief (section "How it i
 
 ## Where things stand
 
-R0 (the Windows GPU machine set up, and the build, run and compare loop proven) is done and checked.
-R1 (the Direct3D reference library): the tenth run (2026-11-17) fixed the three findings of the
-ninth run's check (see "Tenth run" under Measurements): stray pixels no longer count the ignored
-readout, and each run of a program recording is its own job; a GPU job during which the display
-driver resets fails and is logged (which found a Wine test that hangs the GPU on real Direct3D,
-now excluded); Wine tests failing on real Direct3D are held to the exact evaluations it fails,
-and to the checks run before a crash. R1 waits for the orchestrator's check. Its parts:
+R0 (the Windows GPU machine set up, and the build, run and compare loop proven) and R1 (the
+Direct3D reference library) are done and checked. R2 (keeping the owner's PC safe, and what the
+Direct3D 12 track waits for), first run, 2026-11-17: the three findings of R1's last check are
+fixed; the display driver resets are traced and the queue now protects the PC from them, failed
+logons are recorded as they happen, Chrome's wrapper comes back with every Chrome install, and
+every script keeps one SSH connection per branch (see "The owner's PC" below). Partly done: the
+forwarding library now also stands in for d3d12.dll (every Direct3D 12 scene passes through it) and
+counts a Direct3D 12 program's device, queue, factory and swap chain calls and saves its frames,
+but does not count its command lists yet; bgfx on Direct3D 12, Godot's Direct3D 12 census and
+Microsoft's Direct3D 12 samples are not among the programs yet (see Next). R1's parts:
 - Jobs that present run on a hidden desktop ("wc-rig") in the session of the user logged in at the
   console (`gpu-job --desktop`, see How to run): windows and swap chains work there and nothing
   shows on the owner's screen. Session 0, where the queue runs, refuses every swap chain.
@@ -27,7 +30,7 @@ and to the checks run before a crash. R1 waits for the orchestrator's check. Its
   WebGL 2 route's level in the plan) and 1 more at 10_1, with parts needing more marked absent.
 - Part 2, conformance tests: Wine's d3d11, d3d10core, dxgi and d3d12 test files and vkd3d's
   d3d12, d3d12_invalid_usage, hlsl_d3d12 tests and shader runner (8 files), each test in its own
-  process, chosen by name; 20 Wine tests that would change the owner's screen or hang the GPU are never run
+  process, chosen by name; 19 Wine tests that would change the owner's screen are never run, and 1 that hangs the GPU runs on WARP only
   (wine-excluded.txt). Baselines on the RTX 3080 and WARP in tools/graphics-rig/wine-baseline. A
   test passes only if it has no failure and runs at least as many checks, and skips no more, than
   on real Direct3D.
@@ -43,6 +46,59 @@ The plan document, docs/phase-2-graphics.md, is on branch phase-2-graphics and n
 its sections 9 (feature levels: Direct3D 11 reports 11_0 on WebGPU and 10_0 on WebGL 2, Direct3D 12
 11_0 on WebGPU only) and 10 to 12 were read for the eighth run.
 
+## The owner's PC: display resets and failed logons
+
+Display resets. On 2026-11-17 the display driver stopped responding and was reset 8 times (the
+System log's Display 4101 events: 14:40:32, 15:25:53, 16:37:36, 16:38:47, 16:44:35, 17:22:13,
+19:35:34, 20:37:38, Pacific time). Each reset blanks the screen for a moment and can crash a game.
+What caused them, as far as the logs show:
+- 6 of the 8 (14:40, 15:25, 16:37, 16:38, 17:22, 20:37): Wine's dxgi test program dxgi_test.exe on
+  the real GPU. At each of these Windows wrote a Direct3D 12 "device removed" report (WER event
+  D3DDRED2) naming dxgi_test.exe and the reason DXGI_ERROR_DEVICE_HUNG: its Direct3D 12 device hung
+  the GPU. For 20:37 the report's path is this branch's copy (C:\wc\out\phase-2-graphics-rig\wine\bin)
+  and the test running then was test_swapchain_backbuffer_index (its log was written from 20:37:36.7
+  to 20:37:39.8); the webgl track's job logged beside it was a bystander. For the other five the
+  reports are no longer kept, so which branch's run and which dxgi test is not known; the same
+  program and the same hang make that test the likely one. Several branches ran Wine's tests that
+  afternoon.
+- 19:35: the deliberate break of R1's ninth check (a Direct3D 11 program made to hang the GPU, to see
+  that jobs notice resets). Direct3D 11 writes no such report.
+- 16:44: no report names a program, and the queue kept no history then, so the cause is not known.
+  In the minute before, the webgpu track's test against_webgpu crashed inside ANGLE (16:43:44), and
+  right after the reset the Direct3D 12 track's vkd3d tests through its own d3d12.dll crashed
+  (16:44:36); either may have caused it.
+What now prevents a repeat (desktop/hazard.ps1, in C:\wc\rig, which every branch's jobs go through):
+- A job of a kind that may reset the driver runs one at a time, in the queue group "hazard": every
+  job not marked `--reference`, that is conformance tests on the GPU, any replacement Direct3D
+  library, and every other track's own code. Reference jobs (Microsoft's Direct3D, wgpu or Chrome on
+  the rig's own scenes and programs, and anything on WARP) run beside it as before.
+- A reset during a job fails it and holds the queue: no new GPU job starts, and gpu-job refuses new
+  ones with the reason, until someone records the cause with `tools/graphics-rig/resets record
+  "<cause>"`. Running jobs finish.
+- What ran at the reset is quarantined by name until lifted (`resets lift`): the job's command, or,
+  for Wine's tests on the GPU, the very test that was running (the run then stops). A quarantined
+  job is refused; a quarantined Wine test is skipped on the GPU and still runs on WARP.
+- dxgi test_swapchain_backbuffer_index is quarantined on the GPU (it runs on WARP: 398 checks, the
+  154 failed ones being Present's "occluded" answers, as recorded).
+- C:\wc\logs\jobs.log records every GPU job's start and end (branch, tree, group, exit code,
+  command), so the next reset can be matched to the jobs that ran.
+
+Failed logons. The account was locked twice on 2026-11-17 by failed logons from our jobs; one cause
+was Chrome checking for a blank password on each new profile (fixed by the wrapper in C:\wc\chrome),
+the other was never found because the Security log had been overwritten. Now:
+- The scheduled task wc-failed-logons writes every failed logon (event 4625) and lockout (4740) to
+  C:\wc\logs\failed-logons.log as it happens: time, account, logon type, status, the process and
+  its pid, workstation and source address, and the process's command line and parent while it still
+  runs. It only reads the Security log; no security or audit setting was changed (the lockout
+  threshold stays at 10).
+- desktop/install-chrome.ps1 puts the Chrome wrapper (gt-chrome, crates/wcontainers-graphics-test/
+  src/bin/gt-chrome.rs, the source from C:\wc\sshdiag\chrome-wrapper) in front of Chrome whenever it
+  installs or updates Chrome, and whenever the wrapper there is not the current build.
+- Every Mac script reaches the desktop through one long-lived SSH connection per branch (control
+  socket ~/.ssh/wc-rig-<branch>, kept an hour after its last use). Only one script of a branch opens
+  it; after a refused attempt it waits 30 s, then twice as long each time, at most 5 minutes: at most
+  five attempts in ten minutes, where ten failed logons in ten minutes lock the account.
+
 ## How to run
 
 All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (key login).
@@ -55,7 +111,7 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   cmd.exe, with `CARGO_TARGET_DIR=C:\wc\target\<branch>`. Example:
   `tools/graphics-rig/remote cargo build -p wcontainers-graphics-test`. Runs of one branch take turns,
   and wait for that branch's running GPU jobs (each job holds the branch's lock shared).
-- `tools/graphics-rig/gpu-job [--priority N] [--alone] [--desktop] [--build <command>] -- <command>`: runs a
+- `tools/graphics-rig/gpu-job [--priority N] [--alone] [--reference] [--desktop] [--build <command>] -- <command>`: runs a
   command as a GPU job in C:\wc\src\<branch>. That copy must hold this working tree as it is now; the
   job checks the git tree id when it starts and fails with 125 and a message if it differs.
   `--build <command>` sends the working tree and runs the build command there first, as `remote`
@@ -65,7 +121,10 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   `gpu-job --build "cargo build -p wcontainers-graphics-test" -- "%CARGO_TARGET_DIR%\debug\gt-d3d11
   all hardware C:\wc\out\x"`. Without it the job runs whatever the build directory holds, which may
   have been built from an earlier tree. N is any integer, higher starts first; `--alone` waits until
-  no other job runs and holds new ones back until it ends. The command is any cmd.exe command line,
+  no other job runs and holds new ones back from its submission until it ends. Without
+  `--reference` the job runs in the group hazard, one at a time (The owner's PC, above); the rig's
+  scripts pass it for real Direct3D, wgpu, Chrome and WARP runs without replacement libraries. A
+  quarantined command, or any job while the queue is held, is refused with 125 and the reason. The command is any cmd.exe command line,
   quotes and backslashes included. `--desktop` runs the command on the hidden desktop wc-rig of the
   session of whoever is logged in at the desktop's console, for anything that creates a window or
   a swap chain: the job (in session 0) writes the command, its directory and its whole environment
@@ -82,8 +141,15 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
 - `tools/graphics-rig/queue-check`: sends the working tree, then on an idle queue submits sleeping jobs
   and checks that two jobs run together, that of twice as many jobs as slots submitted together
   exactly as many as there are slots run at once, that a later priority-10 job starts before an
-  earlier priority-0 one when every slot is taken, and that an alone job runs with nothing beside it.
-  About 40 s.
+  earlier priority-0 one when every slot is taken, that an alone job runs with nothing beside it,
+  and that two hazard jobs submitted together run one after the other. About 1 min on an idle
+  queue; other tracks' hazard jobs make the alone rule wait for them.
+- `tools/graphics-rig/resets`: prints whether the queue is held, the quarantined names and the end
+  of C:\wc\logs\display-resets.log. `resets record "<cause>"` records what caused the held reset
+  and lets jobs start again; `resets suspect "<name>" "<why>"` quarantines a job's command or a Wine
+  test ("wine <file>:<test>"); `resets lift "<name>"` lifts one. To see the hold without a reset:
+  `ssh tom@192.168.2.183 powershell -ExecutionPolicy Bypass -Command ". C:\wc\rig\hazard.ps1;
+  Set-Hold @('test')"`, then `resets record "test"`.
 - `tools/graphics-rig/loop [picture-dir]`: one `gpu-job --desktop --build` that builds the rig on the desktop
   (and reinstalls the browser driver's packages when package-lock.json's hash changed), then
   (tools/graphics-rig/loop.cmd) checks every scene as `scenes` does, checks triangle, quads and
@@ -208,7 +274,9 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   Logs: C:\wc\out\<branch>\wine\logs, copied to the scratch directory (wine-logs/<branch>, emptied
   first, as other tracks' checkouts run the same command). Example:
   `wine-tests run d3d11:test_blend/test_texture` or
-  `wine-tests run vkd3d-shader_runner:hlsl+abs.shader_test`. A test failing checks on real
+  `wine-tests run vkd3d-shader_runner:hlsl+abs.shader_test`. On the GPU a test quarantined on the
+  desktop is not run, and a display driver reset during a test quarantines it and stops the run.
+  `--record` of chosen tests replaces only their lines in the baseline. A test failing checks on real
   Direct3D is held to every other check, evaluation by evaluation: it runs with every check
   reported (WINETEST_REPORT_SUCCESS=1, VKD3D_TEST_DEBUG=2), so the n-th time a place in the source
   (file:line) is checked is known; the baseline's <file>-<driver>.failures lists, for each place,
@@ -301,6 +369,13 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   scene checks those. bgfx is built with
   BGFX_CONFIG_MULTITHREADED=0 (`programs build`, through MSVC's CL variable), so its examples draw
   on the thread that reads the clock and their frames follow it exactly.
+- The forwarding library also stands in for d3d12.dll (copy it under that name): `scenes --api d3d12
+  --dll d3d12.dll=%CARGO_TARGET_DIR%\debug\wcontainers_graphics_test_forward.dll` runs the Direct3D 12
+  scenes through it; with WC_OUT it counts a Direct3D 12 program's device, command queue, DXGI
+  factory and swap chain calls (not its command lists yet), saves the frames WC_CAPTURE lists (the
+  current back buffer copied on the queue the swap chain presents on, after the program's work) and
+  WC_D3D12 names a replacement behind it. `programs run` does not use it for Direct3D 12 programs yet
+  (Next).
 - The census (crates/wcontainers-graphics-test-forward/src/census.rs), on when WC_OUT names a
   directory: the typed D3D11CreateDevice and D3D11CreateDeviceAndSwapChain exports patch the method
   tables of the device, swap chain and DXGI factory with counting thunks (names read from the
@@ -332,9 +407,13 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   since most of the code is Windows-only; `shellcheck -x tools/graphics-rig/*` (minus the .cmd) for
   the Mac scripts.
 - The Mac scripts share tools/graphics-rig/common.sh: every ssh and scp to the desktop goes through one
-  shared connection per checkout (control socket ~/.ssh/wc-rig-<hash of the git dir>, kept 10 minutes
-  after last use), opened first with a retry every 15 s for up to 20 minutes, so a run started while
-  the desktop refuses new connections waits instead of failing.
+  shared connection per branch (The owner's PC, above), so a run started while the desktop refuses
+  new connections waits, backing off, instead of failing or retrying fast.
+- `tools/graphics-rig/setup-desktop` also registers the failed-logon task (desktop/install-logons.ps1)
+  and runs desktop/install-chrome.ps1 with the gt-chrome it builds. Chrome alone, into any folder:
+  `remote "cargo build -q -p wcontainers-graphics-test --bin gt-chrome && powershell -NoProfile
+  -ExecutionPolicy Bypass -File tools\graphics-rig\desktop\install-chrome.ps1 -Root <folder> -Wrapper
+  %CARGO_TARGET_DIR%\debug\gt-chrome.exe"`.
 
 ## The desktop
 
@@ -381,12 +460,20 @@ versions it finds and writes them to C:\wc\setup\versions.txt; on 2026-11-17 (R1
 - Windows' optional feature Graphics Tools (Tools.Graphics.DirectX~~~~0.0.1.0): the Direct3D 11 and
   12 debug layers (d3d11_3SDKLayers.dll, d3d12SDKLayers.dll). A one-off scheduled task as SYSTEM
   added it (see Departures) and was removed after.
-- pueue 4.0.4 (pueue.exe, pueued.exe in C:\wc\bin), MIT. The scheduled task wc-gpu-queue starts
+- pueue 4.0.4 (pueue.exe, pueued.exe in C:\wc\bin), MIT OR Apache-2.0. Groups: default (4 at once),
+  hazard (1 at once) and alone (1, with nothing beside it). The scheduled task wc-gpu-queue starts
   `pueued -c C:\wc\pueue\pueue.yml` at boot as tom (logon type S4U, so in session 0, without a window,
   whether or not anyone is logged in). Queue state and logs are in C:\wc\pueue.
 - Chrome for Testing 157.0.8103.78 in C:\wc\chrome (0.43 GB), pinned, downloaded by
-  @puppeteer/browsers; draw.mjs refuses to run if C:\wc\chrome holds any other build.
-  Not installed into Windows: no updater, no services, no shortcuts. Never signed in.
+  @puppeteer/browsers (desktop/install-chrome.ps1); draw.mjs refuses to run if C:\wc\chrome holds any other build.
+  Not installed into Windows: no updater, no services, no shortcuts. Never signed in. Since
+  2026-11-17 its chrome.exe is the wrapper gt-chrome (0.2 MB) and the browser runs from
+  chrome-win64-real, a tree of hard links (no extra space); chrome.exe.real is the browser.
+- Since R2: the scheduled task wc-failed-logons (event trigger on Security events 4625 and 4740,
+  runs desktop/logon-record.ps1 as tom with full rights, logon type S4U, at most 1 minute a run),
+  and C:\wc\logs (jobs.log, display-resets.log, failed-logons.log, quarantine.txt, held.txt while
+  held; a few KB). C:\wc\sshdiag (made by the orchestrator, not by this track) holds the wrapper's
+  first build and notes.
 
 - Since R1's second run: C:\wc\bin\gt-desktop.exe (0.2 MB, built from this checkout by
   `setup-desktop`) and the scheduled task wc-desktop (runs it as tom with an interactive logon,
@@ -967,6 +1054,56 @@ run's check:
   vkd3d-d3d12:test_copy_block_compressed_texture`: 24 counted, 0 FAIL; `programs run --dll
   d3d11.dll=<forwarding library> atg-simplemsaa_pc bgfx-26-occlusion`: both pass.
 
+R2 first run (2026-11-17, from 21:30; desktop reachable throughout, owner at the console, other
+tracks' jobs beside ours; Mac load average about 20):
+- Carried findings. raster-scissor: the rectangle's bottom is now row 40, which cuts the fan (the
+  fan reached only row 43 inside the old rectangle, so row 51 was never tested); recorded again on
+  both APIs (every other output byte-identical); with the bottom at 39 instead, `scenes raster`
+  fails raster-scissor on both APIs (5 pixels, up to 228, at 42,39). pueue's licence corrected to
+  MIT OR Apache-2.0. dxgi test_swapchain_backbuffer_index: its cause is now established by the
+  DRED report (The owner's PC); it runs on WARP (`wine-tests run --warp dxgi`: 24 counted, 0 FAIL)
+  and is quarantined on the GPU.
+- Resets traced from the System log (Display 4101, nvlddmkm 153), the Application log (WER
+  D3DDRED2 reports, which name the process, and LiveKernelEvent 141), WER's archived reports (the
+  path of the program for 20:37) and the checkouts' git reflogs; nothing was run on the GPU to find
+  them.
+- Quarantine: with `resets suspect "echo harmless r2 check" ...`, `gpu-job --reference -- "echo
+  harmless r2 check"` was refused (exit 125, the reason printed); after `resets lift` it ran. With
+  "wine dxgi:test_adapter_desc" quarantined, `wine-tests run dxgi:test_adapter_desc` printed "not run
+  on the GPU, quarantined" and ran nothing; lifted after.
+- Hold: with Set-Hold called by hand, the three groups were paused, `gpu-job` was refused (exit 125,
+  "the queue is held ..."); `resets record` resumed them and the next job ran. Found doing this: pueue's
+  `pause` without `--wait` suspends running jobs; the first hold test and two queue-check runs did that
+  to other tracks' running jobs for a few seconds each, before it was changed to `--wait` everywhere.
+- `queue-check`: all six rules pass (the new one: two hazard jobs ran one after the other).
+- Failed logon: one network logon with a wrong password (LogonUser, made once on purpose at
+  22:11:44) appeared in C:\wc\logs\failed-logons.log within seconds: "4625 account ...\tom, logon type
+  3, status 0xc000006d 0xc000006a, logon process Advapi Negotiate, process ...\powershell.exe".
+- Chrome: `setup-desktop` replaced the first wrapper build in C:\wc\chrome with gt-chrome ("put the
+  wrapper in front of ...chrome.exe.real").
+
+Direct3D 12 through the forwarding library (R2 first run; the library is one DLL mirroring the
+exports of both d3d11.dll and d3d12.dll, copied under either name; see Loading a replacement):
+- `scenes --api d3d12 --build "cargo build -q -p wcontainers-graphics-test-forward" --dll
+  d3d12.dll=%CARGO_TARGET_DIR%\debug\wcontainers_graphics_test_forward.dll`: 116 passed, 0 failed (job
+  8 s), each scene loading d3d12.dll from its own directory. `loop` (the Direct3D 11 forwarding run)
+  and `programs run sdk-tutorial07 bgfx-01-cubes godot-platformer-2d-d3d12` pass as before.
+- bgfx-01-cubes with `--d3d12` and the library as d3d12.dll (WC_OUT and WC_CAPTURE set; trial,
+  not in the program list): 120 frames; census counted the factory (IDXGIFactory7), the device
+  (ID3D12Device8, the newest this Windows 10 runtime answers), the queue, the command list
+  (ID3D12GraphicsCommandList6) and the swap chain; no frame saved at first: "No such interface
+  supported (0x80004002)": IDXGISwapChain::GetDevice does not answer with the queue. Now the library
+  keeps the queue each swap chain was made on (from the factory's CreateSwapChain* calls) and copies
+  the current back buffer on it: frames 10 and 60 of bgfx-01-cubes --d3d12 were saved (the overlay
+  reads "Renderer: Direct3D 12 / NVIDIA"; not yet compared with references).
+- Godot's 2D platformer on Direct3D 12 through it: runs with the library alone and with the
+  census of device, queue, factory and swap chain; crashes (access violation in the system
+  d3d12.dll at +0x122d7, inside d3d12core.dll) as soon as CreateCommandList and CreateCommandList1
+  are hooked to patch the command lists' table. Ruled out by trials: the IUnknown entries, either
+  half of the list's 80 entries, all of them (the crash stays with no entry patched), and the
+  QueryInterface calls made to find the list's interfaces. So command lists are not counted yet,
+  and census.txt says so.
+
 ## Loading a replacement Direct3D library
 
 How the forwarding works (crates/wcontainers-graphics-test-forward): build.rs reads the export table
@@ -1009,6 +1146,14 @@ Traps:
 - 64-bit only: the thunks are x86-64 code and build.rs reads the 64-bit System32 library; a 32-bit
   program would need an x86 build reading SysWOW64.
 
+Direct3D 12: build.rs mirrors d3d12.dll's exports too (ordinals 99
+to 117, which d3d11.dll's 1 to 51 do not overlap; ordinal 99 has no name and is forwarded by
+ordinal). D3D12DeviceRemovedExtendedData is data, which a thunk cannot forward, so the library
+lacks it (census.txt says so); a program importing it would not load. A replacement d3d12.dll goes
+behind it with WC_D3D12, as WC_D3D11 does for d3d11.dll. D3D12CreateDevice is typed: it patches the
+device's table and the DXGI factory class's table (from a factory it makes, as Direct3D 12 devices
+have no adapter to ask for the program's), and CreateCommandQueue(1) patch the queue's.
+
 ## Departures from the plan
 
 There is no plan document in this checkout; these depart from the task or brief as written.
@@ -1023,7 +1168,7 @@ There is no plan document in this checkout; these depart from the task or brief 
   fetches a newer one, and draw.mjs uses the newest present.
 - The job queue client and the remote command are shell scripts in tools/graphics-rig (with PowerShell
   halves for the desktop), not Rust in the crate: they only drive ssh, scp and pueue.
-- The queue tool is pueue (MIT): it runs on Windows, has groups with a parallel limit and per-job
+- The queue tool is pueue (MIT OR Apache-2.0): it runs on Windows, has groups with a parallel limit and per-job
   priorities. It has no exclusive mode, so an alone job runs in its own one-slot group and its
   wrapper (desktop/job.ps1) pauses the default group (letting running jobs finish), waits for them,
   runs, and resumes the group. Considered: HTCondor and Slurm (too heavy, Slurm is not on Windows),
@@ -1077,10 +1222,16 @@ There is no plan document in this checkout; these depart from the task or brief 
   differing in the tests that skip for it; the line says by how much.
 - Wine's tests run one test per process rather than one file per process, so a crash loses one
   test; Wine's framework has no way to pick a test, so the build rewrites START_TEST in its copy.
-- Twenty Wine tests are excluded: nineteen that would change the owner's display, found by
-  searching each test's calls for ChangeDisplaySettings, SetFullscreenState, fullscreen swap
-  chains, SetGammaControl and ClipCursor, and dxgi test_swapchain_backbuffer_index, whose
-  Direct3D 12 part hangs the RTX 3080 and resets the display driver (tenth run).
+- Nineteen Wine tests are excluded: they would change the owner's display, found by searching
+  each test's calls for ChangeDisplaySettings, SetFullscreenState, fullscreen swap chains,
+  SetGammaControl and ClipCursor. dxgi test_swapchain_backbuffer_index, whose Direct3D 12 part hangs
+  the RTX 3080, is not excluded but quarantined on the desktop, so it runs on WARP and never on the
+  GPU.
+- Jobs not marked `--reference` (other tracks' own commands included) run one at a time in the
+  queue group hazard: the task asks that kinds seen to reset the driver run one at a time, and the
+  cause of one reset (16:44) is unknown, with other tracks' own code among the suspects, so a job
+  is held to be of a hazardous kind unless it says it runs only the references. Tracks that build
+  inside their jobs hold that one slot while they build; `gpu-job --build` builds outside it.
 - vkd3d's tests are built like Wine's, with llvm-mingw rather than vkd3d's own configure and
   make (no MSYS or autotools on the desktop): the headers vkd3d's build generates come from
   llvm-mingw's widl (run in the output directory, as widl names each header's guard after the path
@@ -1146,15 +1297,12 @@ There is no plan document in this checkout; these depart from the task or brief 
   Direct3D 11's WARP picture (How a picture passes); WARP itself now fails that D3D12 picture.
 
 - A scene or replacement that hangs the GPU makes the driver reset itself (TDR), which blanks the
-  owner's screen for a moment; the job then fails with the events (gpu-job). A trap for the
-  Direct3D 11 front, seen by the ninth run's check: on real Direct3D on the RTX 3080, drawing on
-  the immediate context after ExecuteCommandList(list, FALSE) without setting its state again (it
-  is then cleared) hung the GPU, the device was removed (0x887A0005) and the driver reset. The
-  first Wine recording with the check caught a reset at 20:37:38 inside dxgi
-  test_swapchain_backbuffer_index (run 20:37:36.7 to 20:37:39.8; its Direct3D 12 part got
-  0x887A0005), now excluded. The System log has seven earlier resets on 2026-11-17 (14:40 to
-  19:35), before jobs checked; the last was the check's deliberate break, the others most likely
-  this test in the ninth run's Wine runs (the queue keeps no history to prove it).
+  owner's screen for a moment; the job then fails, the queue is held and what ran is quarantined
+  (The owner's PC). A trap for the Direct3D 11 front, seen by the ninth run's check: on real
+  Direct3D on the RTX 3080, drawing on the immediate context after ExecuteCommandList(list, FALSE)
+  without setting its state again (it is then cleared) hung the GPU, the device was removed
+  (0x887A0005) and the driver reset. The resets of 2026-11-17 are traced in The owner's PC; one
+  (16:44) has no known cause.
 - Jobs that present need someone logged in at the desktop's console (the owner normally is): the
   hidden desktop lives in that session. Without it, `gpu-job --desktop` fails after 30 s with a
   message; `scenes`, `loop`, `wine-tests run` and `programs run` all use it.
@@ -1162,9 +1310,9 @@ There is no plan document in this checkout; these depart from the task or brief 
   of Wine's tests fail on real Direct3D for that alone (see Measurements), and programs that stop
   drawing while occluded cannot be run there: Dear ImGui's Direct3D 11 example was tried and only
   test-presents after its first frame, so it was taken out of the list.
-- Twenty of Wine's tests (wine-excluded.txt) are never run here because they would change the
-  owner's display (modes, fullscreen, gamma, cursor clipping) or reset its driver; they need a
-  machine whose display nobody uses.
+- Nineteen of Wine's tests (wine-excluded.txt) are never run here because they would change the
+  owner's display (modes, fullscreen, gamma, cursor clipping); they need a machine whose display
+  nobody uses. dxgi test_swapchain_backbuffer_index runs on WARP only (quarantined on the GPU).
 - The census counts calls made through the program's objects, including those made by Windows' own
   libraries on them (most of the device's AddRef, Release, QueryInterface and GetPrivateData), and
   only on the device, contexts, swap chains and factories: methods of resources, views, states and
@@ -1280,6 +1428,8 @@ its scripts ISC, LLVM Apache-2.0 with LLVM exceptions, mingw-w64 headers and run
 permissive and public-domain terms) and Wine 11.22's test sources (C:\wc\wine, 0.16 GB with the
 builds, LGPL-2.1, testing only, never in the repository or any crate); its download is in
 C:\wc\downloads (now 0.30 GB);
+In R2 the forwarding crate's windows dependency gained the feature Win32_Graphics_Direct3D12 and
+the rig crate's Win32_System_Environment (for gt-chrome); no crate was added.
 Real programs (built in C:\wc\programs, run for testing, never in a crate; licences read at the
 source on 2026-11-17): microsoft/Xbox-ATG-Samples at ff629a6e (MIT: one LICENSE at its root,
 GitHub's detection MIT, covering the samples, Kits (DirectXTK, ATGTK) and Media), added in R1's
@@ -1313,14 +1463,22 @@ testing only; it carries SDL2, SDL2_mixer and SDL2_net, zlib); Freedoom 0.13.0 (
 COPYING.adoc; its SHA-256 matches the project's signed checksum file); vkd3d 2.1 test sources
 (LGPL-2.1, testing only, in C:\wc\wine\vkd3d, never in the repository or a crate). No crate was
 added.
-pueue MIT, Git GPL-2.0, Node MIT, Rust MIT OR Apache-2.0, Visual Studio Build Tools and Windows SDK
+pueue MIT OR Apache-2.0 (its Cargo.toml at v4.0.4), Git GPL-2.0, Node MIT, Rust MIT OR Apache-2.0, Visual Studio Build Tools and Windows SDK
 under Microsoft's licence terms, Chrome for Testing under Google's terms.
 
 ## Next
 
-R1 is complete as far as this track can tell; its next step is the orchestrator's independent
-check. After that, R2 as the plan says. Open points left for later:
-- A forwarding dxgi.dll (or d3d12.dll) with the census, frame capture and frame clock, so that
-  Direct3D 12 programs get a census and Microsoft's Direct3D 12 samples (DirectX-Graphics-Samples,
-  MIT) can join the real programs (Known issues).
-- The 20 Wine tests that need a display nobody uses (Known issues).
+R2 is not complete. In order:
+- Count Direct3D 12 command lists without the crash in Godot (see Measurements, Direct3D 12 through
+  the forwarding library); one route to try: patch the list's table from the queue's
+  ExecuteCommandLists instead of from CreateCommandList.
+- Then apply the saved change to programs.ps1 (scratch: graphics-rig/r2/programs-d3d12-forwarding.patch:
+  every program through the library as the library of its API, bgfx-01-cubes-d3d12 and
+  bgfx-38-bloom-d3d12, Godot without its movie writer), record their references over 10 runs and
+  their census (`programs run --record --census <programs>`).
+- Microsoft's Direct3D 12 samples: DirectX-Graphics-Samples (MIT) at 68a2b1e9, D3D12HelloWorld
+  (HelloTriangle, HelloTexture, ...). Their projects need the NuGet packages Microsoft.Direct3D.D3D12
+  1.618.3 (the Agility SDK, Microsoft's licence file, no acceptance required) and
+  Microsoft.Direct3D.DXC 1.8.2505.32 (LLVM licence), restored with nuget.exe (not installed yet;
+  record its size when added).
+- Open points left for later: the 19 Wine tests that need a display nobody uses (Known issues).

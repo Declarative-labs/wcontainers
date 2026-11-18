@@ -1,6 +1,6 @@
 # Installs what the rig needs on the desktop, each step skipped when already done: Git, Node, the
 # Visual Studio 2022 C++ build tools with their Windows SDK, Rust (rustup in C:\wc), Windows' Graphics
-# Tools feature (the Direct3D debug layers), pueue, and Chrome for Testing in C:\wc\chrome.
+# Tools feature (the Direct3D debug layers) and pueue. (Chrome for Testing: install-chrome.ps1.)
 # Versions are pinned here, except the Visual Studio bootstrapper, which always installs Microsoft's
 # current 17.x build tools; the versions present are printed at the end and written to
 # C:\wc\setup\versions.txt. The status file lists what each install changed.
@@ -10,7 +10,6 @@ trap { [Console]::Error.WriteLine("install-tools: $_"); exit 1 }
 . $PSScriptRoot\env.ps1
 # The workspace's rust-toolchain.toml channel, so one toolchain serves the checkouts and the default.
 $rustToolchain = '1.99.0'
-$chromeBuild = '157.0.8103.78'
 $d = 'C:\wc\downloads'
 New-Item -ItemType Directory -Force $d, C:\wc\bin, C:\wc\setup | Out-Null
 function Step($m) { "$(Get-Date -Format s) $m" }
@@ -66,11 +65,6 @@ if ((Get-WindowsCapability -Online -Name 'Tools.Graphics.DirectX~~~~0.0.1.0').St
     Unregister-ScheduledTask -TaskName $task -Confirm:$false
     if ((Get-WindowsCapability -Online -Name 'Tools.Graphics.DirectX~~~~0.0.1.0').State -ne 'Installed') { throw 'Graphics Tools did not install; see C:\wc\setup\graphics-tools.log' }
 }
-if (-not (Test-Path "C:\wc\chrome\chrome\win64-$chromeBuild")) {
-    Step 'chrome for testing'
-    & 'C:\Program Files\nodejs\npx.cmd' --yes '@puppeteer/browsers@3.2.7' install "chrome@$chromeBuild" --path C:\wc\chrome
-    if ($LASTEXITCODE) { throw 'chrome download failed' }
-}
 $vs = & 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe' -products * -property catalog_productDisplayVersion
 $msvc = (Get-ChildItem 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC').Name -join ' '
 $sdk = (Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Include').Name -join ' '
@@ -80,7 +74,7 @@ $versions = @(
     "visual studio build tools $vs, msvc $msvc, windows sdk $sdk"
     "rustup $((cmd /c "$rustup --version 2>nul") -replace 'rustup ', ''), default toolchain $(& $rustup default)"
     "$(& C:\wc\bin\pueue.exe --version)"
-    "chrome for testing $((Get-ChildItem C:\wc\chrome\chrome -Directory).Name -join ' ')"
+    "chrome for testing $((Get-ChildItem C:\wc\chrome\chrome -Directory -ErrorAction SilentlyContinue).Name -join ' ')"
 )
 $versions | Set-Content C:\wc\setup\versions.txt
 $versions

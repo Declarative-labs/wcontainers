@@ -1,0 +1,24 @@
+#!/bin/bash
+# The display driver resets our GPU jobs caused and what keeps them from happening again
+# (desktop/hazard.ps1). A reset during a job fails it, quarantines what ran (the job's command, or
+# the Wine test running then) and holds the queue: no GPU job starts until the cause is recorded.
+#   tools/graphics-rig/resets                         the hold, the quarantine and the last resets
+#   tools/graphics-rig/resets record "<cause>"        records what caused the held reset; jobs run again
+#   tools/graphics-rig/resets suspect "<name>" "<why>" quarantines a name (a job's command, or
+#                                                     "wine <file>:<test>") so it never runs on the GPU
+#   tools/graphics-rig/resets lift "<name>"           lets a quarantined name run on the GPU again
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=tools/graphics-rig/common.sh
+. "$here/common.sh"
+b64() { printf %s "$1" | base64 | tr -d '\n'; }
+usage='usage: resets [record "<cause>" | suspect "<name>" "<why>" | lift "<name>"]'
+case ${1-show} in
+    show) [ $# -le 1 ] || { echo "$usage" >&2; exit 2; }; args=(-Action show) ;;
+    record) [ $# -eq 2 ] || { echo "$usage" >&2; exit 2; }; args=(-Action record -Text "$(b64 "$2")") ;;
+    suspect) [ $# -eq 3 ] || { echo "$usage" >&2; exit 2; }; args=(-Action suspect -Name "$(b64 "$2")" -Text "$(b64 "$3")") ;;
+    lift) [ $# -eq 2 ] || { echo "$usage" >&2; exit 2; }; args=(-Action lift -Name "$(b64 "$2")") ;;
+    *) echo "$usage" >&2; exit 2 ;;
+esac
+connect
+rig_powershell 'C:\wc\rig\resets.ps1' -Branch "$name" "${args[@]}"
