@@ -17,8 +17,9 @@ with drawn tests against real Direct3D 11 on the RTX 3080 and against WARP; run 
 helper of section 7: geometry shaders (DXBC) as compute, drawn against real Direct3D 11; run 17
 built stream output through the stage helper, atomic operations, view counters (append, consume,
 `IncrementCounter`) and storage textures, each tested against real Direct3D 11 on the RTX 3080;
-what remains is under Next. Run 17 merged origin/phase-2-graphics-direct3d-11, -direct3d-12 and
--rig (no conflicts; the others had nothing new).
+run 18 built typed buffers (`texel_buffers`, both routes, DXBC) with tests against real Direct3D
+11; what remains is under Next. Run 18 merged origin/phase-2-graphics and -direct3d-11 (no
+conflicts; the others had nothing new).
 
 Done:
 - naga carried in the tree with the GLSL writer changes G3 needs (below). Other tracks get it by
@@ -601,7 +602,47 @@ Run 17 (stream output, atomics, counters, storage textures):
 - DXIL compute shaders with these views are refused by naga's SPIR-V reader ("unsupported image
   dimension", the typed buffer gap below).
 
+Run 18 (typed buffers):
+- Two interface changes (below): `VariantKey::texel_formats` (the bound views' formats by texture
+  slot; storage slots keep `storage_formats`), `HelperValue::TexelBufferView { set, binding }` (the
+  view's first byte and element count), and `TEXEL_BUFFER_TEXTURE_WIDTH` (2048).
+- `TexelBufferRoute::Storage` (WebGPU), DXBC (`src/variant/texel.rs`, declared in `lower.rs`): each
+  typed buffer is an `array<u32>` storage buffer at its slot's binding (read-only at a texture slot),
+  read and written through functions made once per view: loads decode the view's format (the
+  vertex pulling decoders, `pull.rs`, shared), stores encode it as the functional specification
+  3.2.2 and 3.2.3 say (integers clamped; normalised values NaN to zero, clamped, scaled, plus or
+  minus a half and truncated; floats to half, 11 and 10 bits toward zero, NaN kept quiet, past the
+  largest finite giving it, no sign giving zero for negatives), atomics (32-bit integer formats
+  only, as in Direct3D) by index. Elements at or past the length read zero in the format's
+  components and the defaults in the others (measured: Direct3D gives alpha 1 for a format without
+  it), take no writes, and atomics there do nothing and return zero. Elements narrower than a word
+  are written by a compare-exchange loop on their word, so those words are atomic.
+- `TexelBufferRoute::Texture` (WebGL 2): at texture slots only (`TypedBufferStorageAsTexture`
+  otherwise), a 2D texture of the view's format, element e (from the buffer's start) at texel
+  (e % 2048, e / 2048), read with a load, the same bounds.
+- Refused by name: no route (`TypedBuffer`, the default key), no format (`TypedBufferFormat`), a
+  format with no typed buffer form (`TypedBufferFormatAbsent`: sRGB, shared exponent, packed 16-bit,
+  depth, compressed), a format of another kind than the declaration (`TypedBufferFormatKind`),
+  atomics on a format without them (`TypedBufferAtomicFormat`), typed buffers in geometry shaders
+  (`TypedBufferInGeometry`: the stage helper does not fill their helper values yet). DXIL typed
+  buffers stay refused by naga's SPIR-V reader.
+- The builder (`build.rs`) no longer emits atomic results, and runs variant-style code (`raw`).
+- New own shaders (`texels.hlsl`, fxc and dxc; every other own shader recompiled byte for byte):
+  `cs_texels` (four views loaded, their lengths, a float view stored, a 32-bit unsigned view with
+  atomics, loads and stores; the stored values written to the results too), `ps_texels` (a float and
+  an unsigned view read by a pixel shader, and their lengths).
+- `tests/compute.rs`: `cs_texels` converts for every loadable format at t0 and u0 and its WGSL reads
+  back; every refusal. `tests/compute_draw.rs` `typed_buffers_match_direct3d` (seeded formats from
+  those the device has, first elements, lengths and bytes): every result word, every byte of both
+  written views against real Direct3D 11 on the RTX 3080, normalised stores within Direct3D's
+  permitted 0.6 of a code (below). `tests/variant_draw.rs` `typed_buffers_draw_as_direct3d_does`:
+  `ps_texels` by the storage route on WebGPU and the texture route on WebGPU and WebGL 2, every
+  texel against real Direct3D 11's picture. The shared harness binds typed buffers by the pixel
+  key's route and fills their helper values (`Setup::texel_buffers`, `Reference::texel_buffers`).
+
 Next (in order):
+- Typed buffers from DXIL (naga's SPIR-V reader: `Dim::Buffer` images into the same functions), and
+  in geometry shaders (the stage helper fills `TexelBufferView`); the corpora with formats (below).
 - Corpus records: run 17 updated them for geometry, atomics, counters and storage textures (below).
   Storage textures in the corpora convert only with a format, so under the default key they are
   refused `StorageFormat` and not compiled in Chrome; give the corpus test the formats the rig's
@@ -609,9 +650,9 @@ Next (in order):
 - The WebAssembly build's module differs from the native one for one game shader (Known gaps):
   find which side orders the divide-modulo helper's operations by platform (dxbc-spirv's IR as
   serialised, compared between the two builds, first) and make it deterministic.
-- Typed buffers (`TexelBufferRoute`), storage textures through a buffer (`texels_through_buffer`:
-  read-write formats other than r32, texture atomics), storage packing; DXIL storage views (naga's
-  SPIR-V reader: image buffers).
+- Storage textures through a buffer (`texels_through_buffer`: read-write formats other than r32,
+  texture atomics; the typed buffer encoders and decoders of `texel.rs` serve it), storage packing;
+  DXIL storage views (naga's SPIR-V reader: image buffers).
 - Comparisons in the program (shadow maps with a border colour, very common: WebGPU has no border
   colour): `SamplerState` needs the comparison function (an interface change: a word for it), then
   the library compares each tap. Cube filtering in the program (seamless edges). Then the rest of
@@ -621,11 +662,8 @@ Next (in order):
   vertex's. The exact routes are the front's: lists drawn with each primitive's indices rotated
   ((a, b, c) as (c, a, b), winding kept), strips and fans made lists first. If that holds, the flag
   has no use and the interface could drop it; until decided it stays refused by name.
-- Decoded textures
-  and targets written in the program, pulled vertices, constants through a texture, typed buffers
-  and storage formats (after the storage image and typed buffer support they need), early tests,
-  line coverage, the provoking rewrite, the primitive index from the stage helper, root signature
-  layouts.
+- Decoded textures and targets written in the program, early tests, line coverage, the primitive
+  index from the stage helper, root signature layouts.
 - The stage helper of section 7, the rest: stream output from streams other than 0 and rasterized
   together with streaming (a draw of the pass-through as well), hull and domain with a tessellator ported from Mesa's MIT code, geometry by
   replay on WebGL 2, indexed strips into a geometry shader (a pass numbering primitives across
@@ -815,6 +853,20 @@ let reflection = &converted.reflection;
   conversion.
 
 ## Measurements
+
+Run 18, 2026-11-17, counts only (the desktop shared with the other tracks, no timings taken):
+- `typed_buffers_match_direct3d`: seeds 1 to 64 (`texels-draw-2.txt`, `-3.txt`, `-4.txt` in scratch
+  `graphics-shaders`), every result word and every written byte equal to real Direct3D 11 on the
+  RTX 3080, every u1 atomic word equal; every loadable format at t0 to t3 and 20 stored formats at
+  u0 drawn (half, 11- and 10-bit float stores exact, NaN and infinities included). Normalised stores:
+  the RTX 3080 gives the code below where ours (the specification's formula) gives the one above, at
+  fractions from 0.514 to 0.548 of a code (6 components in seed 4, 13 in seed 7, 0 to 9 elsewhere);
+  the specification permits 0.6, so the test holds both to it (Departures). The first run found that
+  past the length Direct3D gives the defaults where the format lacks components (fixed).
+- `typed_buffers_draw_as_direct3d_does`: seeds 1 to 40 (`texels-pixel-1.txt`, `run18-gpu-1.txt`),
+  120 comparisons (storage on WebGPU, texture on WebGPU and WebGL 2), every texel equal.
+- After the harness change (`run18-gpu-1.txt`): `draw` 3 tests, `compute_draw` 3, `geometry_draw` 2
+  (4 seeds), `variant_draw` 2 pass.
 
 Run 17, 2026-11-17, counts only (the desktop shared with the other tracks, no timings taken):
 - `tests/geometry_draw.rs` (scratch `run17/gd3.log`), seeds 1 to 8: the geometry pictures 104
@@ -1325,6 +1377,9 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   `WCONTAINERS_SHADERS_OUT` the pictures are kept.
 - Stream output: the same job runs `stream_output_matches_direct3d` (about 3 s for 8 seeds of both
   tests together).
+- Typed buffers: the `compute_draw` job below runs `typed_buffers_match_direct3d` too (about 1 s for 8
+  seeds); `variant_draw` runs `typed_buffers_draw_as_direct3d_does` (`WCONTAINERS_TEXEL_SEED`,
+  `WCONTAINERS_TEXEL_CASES`, default 8 seeds, about 1.5 s).
 - Atomics, counters and storage textures (Windows, one GPU job, about 2 s for 4 seeds):
   `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test compute_draw --no-run" -- "set WCONTAINERS_COMPUTE_SEED=1&& set WCONTAINERS_COMPUTE_CASES=4&& cargo test -j 3 -p wcontainers-shaders --test compute_draw -- --nocapture --test-threads 1"`.
 - Compiling own shaders: `tests/own/compile.cmd` on the desktop (through `tools/graphics-rig/remote`);
@@ -1410,6 +1465,14 @@ were already there.
 
 ## Departures from the plan
 
+- Stores of normalised formats through typed buffers are held to Direct3D's permitted tolerance
+  (0.6 of a code from the exact value, functional specification 3.2.3.4 and 3.2.3.6), not to the
+  RTX 3080's codes: the GPU rounds some values 0.51 to 0.55 above a code down, which no exact
+  formula of the specification reproduces. Every other stored and loaded value is compared exactly.
+- The formats of typed buffer views at texture slots are a variant field (`texel_formats`), so a
+  program is made per bound format; decoding by a format code read at run time would cost a branch
+  per load.
+
 - The stage helper (6.4's sketch `Stages::draw(backend, call, outputs)`) is `Stages::run`, which
   records the compute work outside the pass and returns what the front draws in its own pass: the
   interface allows dispatches only outside a pass, and the front owns its passes. The helper's own
@@ -1478,6 +1541,11 @@ were already there.
   its CMake does for that file.
 
 ## Known gaps found so far
+
+- Typed buffers: DXIL's are refused by naga's SPIR-V reader; geometry shaders' are refused
+  (`TypedBufferInGeometry`); through a texture, a view reaches at most 2048 times the back end's
+  largest texture height elements (32M on ANGLE's 16384), short of Direct3D 10's 2^27, which the
+  front must report.
 
 - Conversion is not byte-identical between the WebAssembly and native builds for one game shader
   (`d599fbc7efa911be.dxbc`, run 17): the helper function returning (x / y, x % y) loads its operands
@@ -1569,6 +1637,13 @@ were already there.
   `glGetBufferSubData`, which ANGLE's GLES lacks (`read_back_now` works).
 
 ## Interface changes
+
+- Run 18, `VariantKey::texel_formats: Vec<(u32, Format)>` and `HelperValue::TexelBufferView { set,
+  binding }` (commit "interface: gave the variant key the formats of typed buffers at texture slots
+  ..."), then `TEXEL_BUFFER_TEXTURE_WIDTH` (2048) and the texture route's documentation (commit
+  "interface: laid out the texture a typed buffer is read through on webgl 2 ..."); plan text in
+  4.5's variant paragraph and 6.4's helper values: a program decoding a typed buffer must know the
+  bound view's format, place and length, which only the front knows.
 
 - Run 15, `HelperValue::TextureComponents { texture }` (commit "interface: gave the helper constants
   the components of a texture's format ..."; plan text in 6.4's list of helper values): a border

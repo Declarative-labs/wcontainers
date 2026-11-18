@@ -47,3 +47,18 @@ void cs_texels(uint i : SV_DispatchThreadID) {
         counts[i] = counts[i] * 3 + 1;
     }
 }
+
+// Typed buffers in a pixel shader, as WebGL 2 reads them through textures: pixel (x, y) of a 64 by
+// 64 target reads element (x / 2 + 32 y) % 160, of the float view in even columns and the unsigned
+// one in odd ones; pixel (0, 0) gives the two lengths.
+uint4 ps_texels(float4 position : SV_Position) : SV_Target0 {
+    uint2 p = uint2(position.xy);
+    uint i = (p.x / 2 + 32 * p.y) % 160;
+    if (i == 0) {
+        uint n, m;
+        floats.GetDimensions(n);
+        uints.GetDimensions(m);
+        return uint4(n, m, 0, 0);
+    }
+    return p.x % 2 == 0 ? asuint(floats[i]) : uints[i];
+}

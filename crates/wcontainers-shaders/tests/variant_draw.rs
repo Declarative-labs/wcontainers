@@ -12,7 +12,7 @@ mod common;
 use common::*;
 use wcontainers_gpu::{
     AddressMode, BlendComponent, BlendFactor, BlendOp, DrawBaseSource, Filter, Format, HelperValue,
-    LinkedValues, ProvokingVertex, VariantFlags, VariantKey, VertexFormat,
+    LinkedValues, ProvokingVertex, TexelBufferRoute, VariantFlags, VariantKey, VertexFormat,
 };
 use wcontainers_shaders::{Source, convert};
 use windows::Win32::Graphics::Direct3D11::*;
@@ -1010,4 +1010,148 @@ fn variants_draw_as_the_native_feature_does() {
         }
     }
     assert!(failures.is_empty(), "differ: {failures:?}");
+}
+
+/// Formats the typed buffer views of `ps_texels` take: textures of every back end, so both routes
+/// read them.
+const PIXEL_FLOATS: [Format; 14] = [
+    Format::R8Unorm,
+    Format::R8Snorm,
+    Format::Rg8Unorm,
+    Format::Rg8Snorm,
+    Format::Rgba8Unorm,
+    Format::Rgba8Snorm,
+    Format::R16Float,
+    Format::Rg16Float,
+    Format::Rgba16Float,
+    Format::R32Float,
+    Format::Rg32Float,
+    Format::Rgba32Float,
+    Format::Rgb10a2Unorm,
+    Format::Rg11b10Float,
+];
+const PIXEL_UINTS: [Format; 10] = [
+    Format::R8Uint,
+    Format::Rg8Uint,
+    Format::Rgba8Uint,
+    Format::R16Uint,
+    Format::Rg16Uint,
+    Format::Rgba16Uint,
+    Format::R32Uint,
+    Format::Rg32Uint,
+    Format::Rgba32Uint,
+    Format::Rgb10a2Uint,
+];
+
+/// Typed buffers read by a pixel program through storage buffers (WebGPU) and through textures
+/// (WebGL 2 and WebGPU), against real Direct3D 11's typed buffer views, over seeded formats, bytes,
+/// first elements and lengths (`WCONTAINERS_TEXEL_SEED`, default 1, and `WCONTAINERS_TEXEL_CASES`
+/// seeds, default 8).
+#[test]
+fn typed_buffers_draw_as_direct3d_does() {
+    let mut gpu = webgpu();
+    let mut gl = webgl();
+    let d3d = wcontainers_graphics_test::d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let seed: u64 = std::env::var("WCONTAINERS_TEXEL_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_TEXEL_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(8);
+    let supported = |f: Format| {
+        let need = D3D11_FORMAT_SUPPORT_BUFFER.0 as u32;
+        unsafe { d3d.device.CheckFormatSupport(dxgi(f)) }.is_ok_and(|s| s & need == need)
+    };
+    let floats: Vec<Format> = PIXEL_FLOATS.into_iter().filter(|&f| supported(f)).collect();
+    let uints: Vec<Format> = PIXEL_UINTS.into_iter().filter(|&f| supported(f)).collect();
+    let grid = grid();
+    let code = [bytecode("vs_transform.dxbc"), bytecode("ps_texels.dxbc")];
+    let mut results = Vec::new();
+    for seed in seed..seed + seeds {
+        let mut s = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+        let mut next = move || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            (s >> 16) as u32
+        };
+        let formats = [
+            floats[next() as usize % floats.len()],
+            uints[next() as usize % uints.len()],
+        ];
+        let texel_buffers: Vec<TexelData> = formats
+            .iter()
+            .map(|&format| {
+                let first = next() % 8;
+                let count = 100 + next() % 29;
+                let elements = (first + count + 3).next_multiple_of(4);
+                let bytes = (0..elements * format.block().2)
+                    .map(|_| next() as u8)
+                    .collect();
+                TexelData {
+                    format,
+                    bytes,
+                    first,
+                    count,
+                }
+            })
+            .collect();
+        let (reference, _) = direct3d_11(
+            &d3d,
+            "vs_transform",
+            "ps_texels",
+            Format::Rgba32Uint,
+            [1.0, 0.75, 0.5, 1.5],
+            true,
+            &Reference {
+                texel_buffers: texel_buffers.clone(),
+                ..Default::default()
+            },
+        );
+        let mut draw = grid_draw(&code, false, &grid);
+        draw.format = Format::Rgba32Uint;
+        draw.clear = [0; 4];
+        draw.setup.texel_buffers = texel_buffers;
+        for (route, back_end) in [
+            (TexelBufferRoute::Storage, "webgpu"),
+            (TexelBufferRoute::Texture, "webgpu"),
+            (TexelBufferRoute::Texture, "webgl"),
+        ] {
+            draw.setup.ps_key = VariantKey {
+                texel_buffers: route,
+                texel_formats: vec![(0, formats[0]), (1, formats[1])],
+                ..Default::default()
+            };
+            let texels = match back_end {
+                "webgpu" => ours(&mut gpu, &draw, ProvokingVertex::First),
+                _ => ours(&mut gl, &draw, ProvokingVertex::Last),
+            };
+            results.push(compare(
+                format!("typed buffers seed {seed} {formats:?} {route:?} {back_end}"),
+                &reference,
+                &texels,
+                Format::Rgba32Uint,
+                (0, 0),
+            ));
+        }
+    }
+    let mut failed = 0;
+    for r in &results {
+        let ok = r.count <= r.allowed.0 && r.largest <= r.allowed.1;
+        failed += !ok as usize;
+        eprintln!(
+            "{}: {} texels differ, largest {}{}",
+            r.name,
+            r.count,
+            r.largest,
+            if ok { "" } else { " FAILED" }
+        );
+    }
+    eprintln!("{} comparisons, {failed} failed", results.len());
+    assert_eq!(failed, 0);
 }

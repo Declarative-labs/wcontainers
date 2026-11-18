@@ -1,13 +1,14 @@
-//! Typed buffers read and written through storage buffers of words (`TexelBufferRoute::Storage`):
+//! Typed buffers read and written through storage buffers of words (`TexelBufferRoute::Storage`),
 //! each element decoded from and encoded into the bound view's format as Direct3D converts (plan
-//! 4.12), within the view's place and length from [`HelperValue::TexelBufferView`]: elements at or
-//! past the length read zero (the defaults in components the format lacks) and take no writes, and atomic operations on them do nothing and
-//! return zero. Elements narrower than a word are written by compare-exchange on their word, so
-//! neighbours written at the same time are kept.
+//! 4.12), or read through a 2D texture of the view's format (`TexelBufferRoute::Texture`). Both keep
+//! to the view's place and length from [`HelperValue::TexelBufferView`]: elements at or past the
+//! length read zero (the defaults in components the format lacks) and take no writes, and atomic
+//! operations on them do nothing and return zero. Elements narrower than a word are written by
+//! compare-exchange on their word, so neighbours written at the same time are kept.
 
 use alloc::vec;
 use naga::{AtomicFunction, BinaryOperator as B, ScalarKind};
-use wcontainers_gpu::{Format, VertexFormat};
+use wcontainers_gpu::{Format, TEXEL_BUFFER_TEXTURE_WIDTH, VertexFormat};
 
 use super::pull::{Component, Kind, decode, layout, select};
 use super::*;
@@ -77,6 +78,8 @@ pub(crate) struct TexelBuffer {
     size: u32,
     /// The scalar of atomic words, where the words are atomic.
     atomic: Option<Scalar>,
+    /// Read through a 2D texture of the format, laid out as `TEXEL_BUFFER_TEXTURE_WIDTH` says.
+    texture: bool,
     stage: ShaderStage,
     set: u32,
     binding: u32,
@@ -119,6 +122,7 @@ impl TexelBuffer {
         var: Handle<GlobalVariable>,
         (kind, components, size): Layout,
         atomic: Option<Scalar>,
+        texture: bool,
         stage: ShaderStage,
         set: u32,
         binding: u32,
@@ -130,6 +134,7 @@ impl TexelBuffer {
             components,
             size,
             atomic,
+            texture,
             stage,
             set,
             binding,
@@ -208,6 +213,31 @@ impl TexelBuffer {
         let (offset, length) = self.view(module, reflection, &mut b);
         let inside = b.binary(B::Less, index, length);
         let size = b.u32(self.size);
+        if self.texture {
+            let first = b.binary(B::Divide, offset, size);
+            let element = b.add(first, index);
+            let mask = b.u32(TEXEL_BUFFER_TEXTURE_WIDTH - 1);
+            let x = b.binary(B::And, element, mask);
+            let by = b.u32(TEXEL_BUFFER_TEXTURE_WIDTH.trailing_zeros());
+            let y = b.binary(B::ShiftRight, element, by);
+            let vec2u = vector(module, 2, Scalar::U32);
+            let coordinate = b.compose(vec2u, vec![x, y]);
+            let image = b.global(self.var);
+            let level = b.u32(0);
+            let read = b.expr(Expression::ImageLoad {
+                image,
+                coordinate,
+                array_index: None,
+                sample: None,
+                level: Some(level),
+            });
+            let zero = self.past_length(&mut b, out, natural);
+            let value = b.select(inside, read, zero);
+            b.ret(Some(value));
+            let f = module.functions.append(b.finish(), Span::UNDEFINED);
+            self.load = Some(f);
+            return f;
+        }
         let moved = b.mul(index, size);
         let address = b.add(offset, moved);
         let words = b.global(self.var);
@@ -232,27 +262,31 @@ impl TexelBuffer {
             let kind = self.kind;
             values.push(b.raw(|f, body| decode(f, body, kind, raw, bits)));
         }
-        let lit = |v: u32| match natural.kind {
-            ScalarKind::Float => Literal::F32(v as f32),
-            ScalarKind::Sint => Literal::I32(v as i32),
-            _ => Literal::U32(v),
-        };
-        let mut zeros = Vec::new();
-        for i in 0..4 {
-            if i >= values.len() {
-                values.push(b.expr(Expression::Literal(lit((i == 3) as u32))));
-            }
-            // Past the length: zero in the format's components, the defaults in the others.
-            let missing = i >= self.components.len();
-            zeros.push(b.expr(Expression::Literal(lit((missing && i == 3) as u32))));
+        for i in values.len()..4 {
+            values.push(b.expr(Expression::Literal(literal(natural, (i == 3) as u32))));
         }
         let read = b.compose(out, values);
-        let zero = b.compose(out, zeros);
+        let zero = self.past_length(&mut b, out, natural);
         let value = b.select(inside, read, zero);
         b.ret(Some(value));
         let f = module.functions.append(b.finish(), Span::UNDEFINED);
         self.load = Some(f);
         f
+    }
+
+    /// What an element past the length reads: zero in the format's components, the defaults in the
+    /// others.
+    fn past_length(&self, b: &mut Builder, ty: Handle<Type>, natural: Scalar) -> Expr {
+        let zeros = (0..4)
+            .map(|i| {
+                let missing = i >= self.components.len();
+                b.expr(Expression::Literal(literal(
+                    natural,
+                    (missing && i == 3) as u32,
+                )))
+            })
+            .collect();
+        b.compose(ty, zeros)
     }
 
     /// `texels_<set>_<binding>_length() -> u32`, the view's element count.
@@ -494,6 +528,15 @@ fn atomic_code(fun: AtomicFunction) -> u64 {
         A::Max => 6,
         A::Exchange { compare: None } => 7,
         A::Exchange { compare: Some(_) } => 8,
+    }
+}
+
+/// `v` as a literal of scalar `s`.
+fn literal(s: Scalar, v: u32) -> Literal {
+    match s.kind {
+        ScalarKind::Float => Literal::F32(v as f32),
+        ScalarKind::Sint => Literal::I32(v as i32),
+        _ => Literal::U32(v),
     }
 }
 

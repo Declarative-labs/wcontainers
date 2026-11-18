@@ -672,55 +672,6 @@ const LOADED_SINTS: [Format; 10] = [
     Format::Rgba32Sint,
 ];
 
-fn texel_dxgi(format: Format) -> DXGI_FORMAT {
-    match format {
-        Format::R8Unorm => DXGI_FORMAT_R8_UNORM,
-        Format::R8Snorm => DXGI_FORMAT_R8_SNORM,
-        Format::R8Uint => DXGI_FORMAT_R8_UINT,
-        Format::R8Sint => DXGI_FORMAT_R8_SINT,
-        Format::R16Unorm => DXGI_FORMAT_R16_UNORM,
-        Format::R16Snorm => DXGI_FORMAT_R16_SNORM,
-        Format::R16Uint => DXGI_FORMAT_R16_UINT,
-        Format::R16Sint => DXGI_FORMAT_R16_SINT,
-        Format::R16Float => DXGI_FORMAT_R16_FLOAT,
-        Format::Rg8Unorm => DXGI_FORMAT_R8G8_UNORM,
-        Format::Rg8Snorm => DXGI_FORMAT_R8G8_SNORM,
-        Format::Rg8Uint => DXGI_FORMAT_R8G8_UINT,
-        Format::Rg8Sint => DXGI_FORMAT_R8G8_SINT,
-        Format::R32Uint => DXGI_FORMAT_R32_UINT,
-        Format::R32Sint => DXGI_FORMAT_R32_SINT,
-        Format::R32Float => DXGI_FORMAT_R32_FLOAT,
-        Format::Rg16Unorm => DXGI_FORMAT_R16G16_UNORM,
-        Format::Rg16Snorm => DXGI_FORMAT_R16G16_SNORM,
-        Format::Rg16Uint => DXGI_FORMAT_R16G16_UINT,
-        Format::Rg16Sint => DXGI_FORMAT_R16G16_SINT,
-        Format::Rg16Float => DXGI_FORMAT_R16G16_FLOAT,
-        Format::Rgba8Unorm => DXGI_FORMAT_R8G8B8A8_UNORM,
-        Format::Rgba8Snorm => DXGI_FORMAT_R8G8B8A8_SNORM,
-        Format::Rgba8Uint => DXGI_FORMAT_R8G8B8A8_UINT,
-        Format::Rgba8Sint => DXGI_FORMAT_R8G8B8A8_SINT,
-        Format::Bgra8Unorm => DXGI_FORMAT_B8G8R8A8_UNORM,
-        Format::Rgb10a2Unorm => DXGI_FORMAT_R10G10B10A2_UNORM,
-        Format::Rgb10a2Uint => DXGI_FORMAT_R10G10B10A2_UINT,
-        Format::Rg11b10Float => DXGI_FORMAT_R11G11B10_FLOAT,
-        Format::Rg32Uint => DXGI_FORMAT_R32G32_UINT,
-        Format::Rg32Sint => DXGI_FORMAT_R32G32_SINT,
-        Format::Rg32Float => DXGI_FORMAT_R32G32_FLOAT,
-        Format::Rgba16Unorm => DXGI_FORMAT_R16G16B16A16_UNORM,
-        Format::Rgba16Snorm => DXGI_FORMAT_R16G16B16A16_SNORM,
-        Format::Rgba16Uint => DXGI_FORMAT_R16G16B16A16_UINT,
-        Format::Rgba16Sint => DXGI_FORMAT_R16G16B16A16_SINT,
-        Format::Rgba16Float => DXGI_FORMAT_R16G16B16A16_FLOAT,
-        Format::Rgb32Uint => DXGI_FORMAT_R32G32B32_UINT,
-        Format::Rgb32Sint => DXGI_FORMAT_R32G32B32_SINT,
-        Format::Rgb32Float => DXGI_FORMAT_R32G32B32_FLOAT,
-        Format::Rgba32Uint => DXGI_FORMAT_R32G32B32A32_UINT,
-        Format::Rgba32Sint => DXGI_FORMAT_R32G32B32A32_SINT,
-        Format::Rgba32Float => DXGI_FORMAT_R32G32B32A32_FLOAT,
-        f => panic!("no typed buffer case uses {f:?}"),
-    }
-}
-
 /// Whether the device has `format` for a typed buffer view (`uav`: one written by the program).
 fn texel_supported(gpu: &Gpu, format: Format, uav: bool) -> bool {
     let need = if uav {
@@ -728,7 +679,7 @@ fn texel_supported(gpu: &Gpu, format: Format, uav: bool) -> bool {
     } else {
         D3D11_FORMAT_SUPPORT_BUFFER.0 as u32
     };
-    unsafe { gpu.device.CheckFormatSupport(texel_dxgi(format)) }.is_ok_and(|s| s & need == need)
+    unsafe { gpu.device.CheckFormatSupport(dxgi(format)) }.is_ok_and(|s| s & need == need)
 }
 
 /// One seeded case: each view's format picked from the formats the device has for it, its first
@@ -797,7 +748,7 @@ fn direct3d_texels(gpu: &Gpu, views: &[TexelView]) -> Vec<Vec<u8>> {
         let resource: ID3D11Resource = buffer.clone().into();
         if storage {
             let desc = D3D11_UNORDERED_ACCESS_VIEW_DESC {
-                Format: texel_dxgi(v.format),
+                Format: dxgi(v.format),
                 ViewDimension: D3D11_UAV_DIMENSION_BUFFER,
                 Anonymous: D3D11_UNORDERED_ACCESS_VIEW_DESC_0 {
                     Buffer: D3D11_BUFFER_UAV {
@@ -810,7 +761,7 @@ fn direct3d_texels(gpu: &Gpu, views: &[TexelView]) -> Vec<Vec<u8>> {
             uavs.push(Some(gpu.uav(&resource, Some(&desc)).unwrap()));
         } else {
             let desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
-                Format: texel_dxgi(v.format),
+                Format: dxgi(v.format),
                 ViewDimension: D3D_SRV_DIMENSION_BUFFER,
                 Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
                     Buffer: D3D11_BUFFER_SRV {
