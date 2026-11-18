@@ -67,14 +67,41 @@ fn is_number(text: &str) -> bool {
     )
 }
 
+/// The lines inside literals that span several lines (after their first), where text that looks like
+/// a mark is part of a string.
+fn inside_literals(
+    tokens: proc_macro2::TokenStream,
+    out: &mut Vec<std::ops::RangeInclusive<usize>>,
+) {
+    for token in tokens {
+        match token {
+            proc_macro2::TokenTree::Group(g) => inside_literals(g.stream(), out),
+            proc_macro2::TokenTree::Literal(l) => {
+                let (start, end) = (l.span().start().line, l.span().end().line);
+                if end > start {
+                    out.push(start + 1..=end);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Every mark in a file's text.
 pub fn parse(text: &str) -> Vec<Mark> {
     let lines: Vec<&str> = text.lines().collect();
+    let mut strings = Vec::new();
+    if let Ok(tokens) = text.parse() {
+        inside_literals(tokens, &mut strings);
+    }
     let mut out = Vec::new();
     for (i, line) in lines.iter().enumerate() {
         let Some(text) = mark_text(line) else {
             continue;
         };
+        if strings.iter().any(|r| r.contains(&(i + 1))) {
+            continue;
+        }
         let below = lines
             .iter()
             .enumerate()

@@ -60,6 +60,11 @@ pub fn k08_marked(x: f64) -> f64 {
 }
 pub fn k09_named(x: u64) -> u64 { x & PAGE_MASK }
 pub fn k11_message_names_by_constant() { panic!("set {HOST_VARIABLE} first"); }
+pub fn k12_mark_inside_a_string() -> &'static str {
+    "first line
+// standalone 7: inside a string, so not a mark
+"
+}
 "#;
 
 const FILES: &[(&str, &str)] = &[
@@ -128,6 +133,12 @@ fn k08_marked_number_is_listed() {
         .filter(|r| r.list == "marked")
         .collect();
     assert_eq!(marked.len(), 1, "{:#?}", in_item(rows(), "k08_marked"));
+}
+
+/// Text inside a string that looks like a mark is not a mark.
+#[test]
+fn k12_mark_inside_a_string_is_text() {
+    assert!(!rows().iter().any(|r| r.list == "mark" && r.literal == "7"));
 }
 
 passes! {
