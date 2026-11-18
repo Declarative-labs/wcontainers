@@ -87,7 +87,14 @@ Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0
 - Tests run (Mac load 20 to 35, scratch `x2/run3/corpora.log`): layer 2 at the defaults (64 programs, 8 on
   the CPU, 1 in Chrome, 0 failing), smoke (6), checks (2, 49 programs), changes (3; the random part made
   the same 1031 changes as before, so the same programs). An earlier layer 2 run failed its 8 native cases
-  only because Docker was down (`x2/run3/layer2.log`).
+  only because Docker was down (`x2/run3/layer2.log`). After the auxiliary change: `programs` (15), `browser`
+  (1), `reference_x86_64` (2, the new runner uploaded to the i7-8750H and the 38 cases and 2 blobs
+  passing), `binaries` (2) and `smoke` (6) pass (`x2/run3/aux.log`, `binaries.log`).
+- Suite at 3e4420d (scratch `x2/run3/suite.log`, Mac load 14.4 at start, 21.1 at end): 76 passed, 0 failed,
+  11 ignored, 20 minutes 50 seconds (X1 run 6: 25 minutes at load 13.4 to 22.0; run 2: 22 minutes). 16
+  fewer than run 2's 92 because checks' 12 tests are now 2 and changes' 9 are now 3, over the same
+  programs. Clippy with `-D warnings` on the test crate (all targets) and the runner for both CPUs, `cargo
+  fmt`: clean. origin/phase-1-translator fetched at the end: nothing new since 8b5e420.
 
 ## X2, run 2 (2026-11-17)
 
@@ -882,6 +889,9 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   wcontainers-translator-test --test reference_x86_64 -- --nocapture`; the float hook in Chrome old against
   new, `<scratch>/x2/chrome-hook.sh <old tree> <rounds>`.
 - The suite now needs `WC_REFERENCE_X86_64=tom@192.168.2.240` (the x86 reference test fails without it).
+- Long runs of one guest: `WC_LONG_DIR=<dir> WC_LONG_GUEST=arm64 nohup nix develop -c
+  crates/wcontainers-translator-test/long-runs.sh > <log> 2>&1 &` (ledger `<dir>/arm64/ledger.txt`).
+- M5's real binaries are now under `target/binaries/arm64`.
 - Lint the runner for both CPUs: from `crates/wcontainers-translator-test/reference`, `nix develop ../../.. -c
   cargo clippy --release --target <aarch64|x86_64>-unknown-linux-musl --target-dir ../../../target/reference
   -- -D warnings`.
@@ -997,6 +1007,9 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   twice: the first run did not pass its environment settings to `stepper6` and was discarded; in run 9,
   41 hand-written cases (`cases16.sh` 39, the two `xacquire` runs 2); in run 10, one run each of `tf`
   (8 trap-flag scenarios in 9 runs, 20 stops) and `rf` (8 signal frames), and 6 `stepper6` cases.
+- X2 run 3: `tests/cases.rs` for seeds 1, 2, 3 and 4127 at 64 cases a form and 64 programs, both sides;
+  layer 2 twice at the defaults (seed 1, 64 programs; the first run's 8 native cases met Docker down);
+  changes at the defaults; the x86 reference's 38 cases and 2 blobs once outside the suite; the suite once.
 - X2 run 2: `tests/cases.rs` for seeds 1, 2, 3 and 5309 at 64 cases a form and 64 programs, both sides;
   layer 1 once at the defaults (seed 1: 64 cases a form over 1215 forms, 1 a form in Chrome, 64 no-form
   cases, 105 hand-made); the suite at the defaults below (one run stopped part way, once more to the end).
