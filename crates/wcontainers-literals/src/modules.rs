@@ -1,5 +1,5 @@
-//! Files that are modules declared under a test-only attribute (`#[cfg(test)] mod tests;`), so that
-//! the code in them is test code although it sits under src/.
+//! The files a source file declares as modules: those under a test-only attribute (`#[cfg(test)] mod
+//! tests;`) are test code although they sit under src/, and the others are code wherever they sit.
 
 use std::path::{Path, PathBuf};
 
@@ -21,20 +21,22 @@ pub struct Module {
 }
 
 /// The modules a file declares: those under a test-only attribute (everything at or under them is
-/// test), and those of production code placed with `#[path]` (code wherever they are, even in tests/).
+/// test), and the others (code wherever they are, even in tests/, when the file declaring them is).
 #[derive(Default)]
 pub struct Declared {
     pub test: Vec<Module>,
-    pub placed: Vec<PathBuf>,
+    pub code: Vec<PathBuf>,
 }
 
-fn module_folder(file: &Path) -> PathBuf {
+/// Where a file's child modules live; `crate_root` says Cargo builds the file as a target's root.
+fn module_folder(file: &Path, crate_root: bool) -> PathBuf {
     let parent = file.parent().map(Path::to_path_buf).unwrap_or_default();
     let name = file
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let crate_root = MOD_RS_FILES.contains(&name.as_str())
+    let crate_root = crate_root
+        || MOD_RS_FILES.contains(&name.as_str())
         || parent.file_name().is_some_and(|p| p == BIN_FOLDER);
     if crate_root {
         parent
@@ -78,9 +80,6 @@ fn collect(
                     .parent()
                     .map(|d| d.join(&p))
                     .unwrap_or_else(|| PathBuf::from(&p));
-                if !test {
-                    out.placed.push(file.clone());
-                }
                 Module {
                     folder: file.with_extension(""),
                     file,
@@ -93,17 +92,24 @@ fn collect(
         };
         if test {
             out.test.push(module);
+        } else {
+            out.code.push(module.file);
         }
     }
 }
 
 /// The modules a file declares, as absolute paths.
-pub fn declared(file: &Path, ast: &syn::File, is_test: &dyn Fn(&[Attribute]) -> bool) -> Declared {
+pub fn declared(
+    file: &Path,
+    crate_root: bool,
+    ast: &syn::File,
+    is_test: &dyn Fn(&[Attribute]) -> bool,
+) -> Declared {
     let mut out = Declared::default();
     collect(
         &ast.items,
         file,
-        &module_folder(file),
+        &module_folder(file, crate_root),
         is_test(&ast.attrs),
         is_test,
         &mut out,

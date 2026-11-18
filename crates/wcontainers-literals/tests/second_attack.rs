@@ -7,6 +7,7 @@ mod common;
 use std::sync::OnceLock;
 
 use common::{Row, in_item, list, workspace};
+use wcontainers_literals::List;
 
 const ABI: &str = r#"pub const PAGE_SIZE: u64 = 4096;
 pub const PAGE_SHIFT: u32 = PAGE_SIZE.trailing_zeros();
@@ -84,19 +85,11 @@ fn rows() -> &'static [Row] {
 }
 
 fn caught(item: &str) {
-    let found = in_item(rows(), item);
-    assert!(
-        found.iter().any(|r| r.gated()),
-        "{item} was not caught: {found:#?}"
-    );
+    common::caught_in(FILES, rows(), item, None);
 }
 
 fn passes(item: &str) {
-    let gated: Vec<&Row> = in_item(rows(), item)
-        .into_iter()
-        .filter(|r| r.gated())
-        .collect();
-    assert!(gated.is_empty(), "{item} was wrongly caught: {gated:#?}");
+    common::passes_in(FILES, rows(), item);
 }
 
 macro_rules! caught {
@@ -115,7 +108,7 @@ caught! {
 /// A mark on a number that has a name is refused, and the number stays gated.
 #[test]
 fn h27_mark_on_a_named_number() {
-    let marks: Vec<&Row> = rows().iter().filter(|r| r.list == "mark").collect();
+    let marks: Vec<&Row> = rows().iter().filter(|r| r.is_in(List::Mark)).collect();
     assert!(
         marks
             .iter()
@@ -130,7 +123,7 @@ fn h27_mark_on_a_named_number() {
 fn k08_marked_number_is_listed() {
     let marked: Vec<&Row> = in_item(rows(), "k08_marked")
         .into_iter()
-        .filter(|r| r.list == "marked")
+        .filter(|r| r.is_in(List::Marked))
         .collect();
     assert_eq!(marked.len(), 1, "{:#?}", in_item(rows(), "k08_marked"));
 }
@@ -138,7 +131,11 @@ fn k08_marked_number_is_listed() {
 /// Text inside a string that looks like a mark is not a mark.
 #[test]
 fn k12_mark_inside_a_string_is_text() {
-    assert!(!rows().iter().any(|r| r.list == "mark" && r.literal == "7"));
+    assert!(
+        !rows()
+            .iter()
+            .any(|r| r.is_in(List::Mark) && r.literal == "7")
+    );
 }
 
 passes! {

@@ -11,6 +11,8 @@ pub const FIELD_SEPARATOR: char = '\t';
 pub const NOTE_MARK: &str = "# ";
 /// Joins the names of nested items, as Rust paths do.
 pub const PATH_SEPARATOR: &str = "::";
+/// Joins a file's path, line and column where a finding or a mark is.
+pub const LOCATION_SEPARATOR: char = ':';
 /// Joins the components of a file path in findings and baseline keys, whatever the host's own
 /// separator is, so that a baseline written on one system matches a run on another.
 pub const PATH_COMPONENT_SEPARATOR: &str = "/";
@@ -62,6 +64,27 @@ pub enum List {
 }
 
 impl List {
+    pub const ALL: &[List] = &[
+        List::Code,
+        List::Redefinition,
+        List::Restated,
+        List::Role,
+        List::Script,
+        List::Unparsed,
+        List::Mark,
+        List::Const,
+        List::Test,
+        List::Generated,
+        List::Free,
+        List::Message,
+        List::Marked,
+    ];
+
+    /// The list printed under this name.
+    pub fn named(name: &str) -> Option<List> {
+        List::ALL.iter().copied().find(|l| l.name() == name)
+    }
+
     /// Lists that fail the check when they hold a finding the baseline does not accept.
     pub fn gated(self) -> bool {
         matches!(
@@ -209,7 +232,7 @@ impl fmt::Display for Finding {
         let sep = FIELD_SEPARATOR;
         write!(
             f,
-            "{}{sep}{}:{}:{}{sep}{}{sep}{}{sep}{}",
+            "{}{sep}{}{LOCATION_SEPARATOR}{}{LOCATION_SEPARATOR}{}{sep}{}{sep}{}{sep}{}",
             self.list.name(),
             self.path,
             self.line,

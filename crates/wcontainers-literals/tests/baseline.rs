@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 
 use common::{append, check, commit_all, git, replace, repository};
 use wcontainers_literals::{
-    BASELINE_FILE, GROWN_MARK, HIDDEN_MARK, NEW_MARK, ORDER_MARK, STALE_MARK, WORKING_TREE,
+    BASELINE_FILE, DELETE_LINE, DO, FIELD_SEPARATOR, GROWN_MARK, HIDDEN_MARK, Kind,
+    LOCATION_SEPARATOR, List, MARK_WORD, MARKS_HEADING, NEW_MARK, ORDER_MARK, PolicyKind,
+    STALE_MARK, WORKING_TREE, policy_line,
 };
 
 const LIB: &str = "crates/a/src/lib.rs";
@@ -27,7 +29,14 @@ const FILES: &[(&str, &str)] = &[
 ];
 
 fn key(item: &str, literal: &str) -> String {
-    format!("code\t{LIB}\tint\t{item}\t{literal}")
+    [
+        List::Code.name(),
+        LIB.into(),
+        Kind::Int.name(),
+        item.into(),
+        literal.into(),
+    ]
+    .join(&FIELD_SEPARATOR.to_string())
 }
 
 /// A repository with its baseline written by init and committed.
@@ -82,7 +91,7 @@ fn init_writes_one_sorted_line_per_literal() {
     assert_eq!(baseline(&root), expected);
     let out = check(&root);
     assert!(out.clean, "{}", out.report());
-    assert_eq!(out.marks, ["marks: 0"]);
+    assert_eq!(out.marks, [format!("{MARKS_HEADING}0")]);
 }
 
 #[test]
@@ -94,9 +103,11 @@ fn a_new_literal_fails_naming_its_line() {
     let new = lines_starting(&out, NEW_MARK);
     assert_eq!(new.len(), 1, "{}", out.report());
     assert!(
-        new[0].starts_with(&format!("{NEW_MARK}code\t{LIB}:9:"))
-            && new[0].contains("\t31337")
-            && new[0].contains("\tdo: "),
+        new[0].starts_with(&format!(
+            "{NEW_MARK}{}{FIELD_SEPARATOR}{LIB}{LOCATION_SEPARATOR}9{LOCATION_SEPARATOR}",
+            List::Code.name()
+        )) && new[0].contains(&format!("{FIELD_SEPARATOR}31337"))
+            && new[0].contains(&format!("{FIELD_SEPARATOR}{DO}")),
         "{}",
         new[0]
     );
@@ -111,7 +122,7 @@ fn deleting_the_line_of_a_literal_still_there_fails() {
     assert!(
         lines_starting(&out, &format!("{NEW_MARK}code"))
             .iter()
-            .any(|l| l.contains("\tone\t4096")),
+            .any(|l| l.contains(&format!("{FIELD_SEPARATOR}one{FIELD_SEPARATOR}4096"))),
         "{}",
         out.report()
     );
@@ -128,7 +139,7 @@ fn a_fixed_literal_asks_for_its_line_to_go() {
     assert_eq!(
         lines_starting(&out, STALE_MARK),
         [format!(
-            "{STALE_MARK}{}\tdo: delete this line from {BASELINE_FILE}",
+            "{STALE_MARK}{}{FIELD_SEPARATOR}{DO}{DELETE_LINE}",
             key("one", "4096")
         )],
         "{}",
@@ -167,11 +178,12 @@ fn growing_the_baseline_fails_before_and_after_commit() {
 #[test]
 fn a_new_policy_line_is_growth() {
     let root = started("policy-growth");
-    set_baseline(&root, &with(&baseline(&root), "policy\tskip\tcrates/a"));
+    let skip = policy_line(PolicyKind::Skip, "crates/a");
+    set_baseline(&root, &with(&baseline(&root), &skip));
     commit_all(&root, "skipped a crate");
     let out = check(&root);
     assert!(
-        lines_starting(&out, &format!("{GROWN_MARK}policy\tskip\tcrates/a")).len() == 1,
+        lines_starting(&out, &format!("{GROWN_MARK}{skip}")).len() == 1,
         "{}",
         out.report()
     );
@@ -253,8 +265,10 @@ fn a_mark_with_a_reason_passes_and_is_listed() {
     assert_eq!(
         out.marks,
         [
-            "marks: 1",
-            &format!("{LIB}:3: standalone 77: the port the fixture's protocol fixes")
+            format!("{MARKS_HEADING}1"),
+            format!(
+                "{LIB}{LOCATION_SEPARATOR}3: {MARK_WORD} 77: the port the fixture's protocol fixes"
+            )
         ]
     );
 }
@@ -566,4 +580,102 @@ fn a_second_adoption_is_seen_only_against_the_upstream() {
     git(&root, &["branch", "--unset-upstream"]);
     let out = check(&root);
     assert!(out.clean, "{}", out.report());
+}
+
+/// A side branch made before the check arrived adopts it with new literals and is merged into a track
+/// that already adopted it: the merge brings lines from an init on its side, which the rules allow, so
+/// the check passes; what shows is the list of changes that could add lines, which names the side's
+/// init next to the track's own.
+#[test]
+fn a_side_adoption_merged_into_a_track_is_listed() {
+    let root = repository("side-adoption", FILES);
+    git(&root, &["branch", "before"]);
+    git(&root, &["checkout", "-q", "-b", "literals"]);
+    wcontainers_literals::init(&root).expect("init");
+    commit_all(&root, "baseline of main");
+    git(&root, &["checkout", "-q", "-b", "track", "before"]);
+    git(&root, &["merge", "-q", "--no-ff", "--no-edit", "literals"]);
+    wcontainers_literals::init(&root).expect("the track's init");
+    commit_all(&root, "the track's baseline");
+    let before = check(&root);
+    git(&root, &["checkout", "-q", "-b", "side", "before"]);
+    append(&root, LIB, "\npub fn five(x: u64) -> u64 { x * 5553 }\n");
+    commit_all(&root, "a literal before adopting");
+    git(&root, &["merge", "-q", "--no-ff", "--no-edit", "literals"]);
+    wcontainers_literals::init(&root).expect("the side's init");
+    commit_all(&root, "the side's baseline");
+    let side_init = git(&root, &["describe", "--always", "--abbrev=12"]);
+    git(&root, &["checkout", "-q", "track"]);
+    git(&root, &["merge", "-q", "--no-edit", "side"]);
+    let out = check(&root);
+    assert!(out.clean, "{}", out.report());
+    assert!(
+        !before.summary.iter().any(|l| l.contains(side_init.trim())),
+        "{}",
+        before.report()
+    );
+    assert!(
+        out.summary
+            .iter()
+            .any(|l| l.contains(side_init.trim()) && l.contains("arrived by a merge")),
+        "{}",
+        out.report()
+    );
+}
+
+/// The checker's own crate, so that a change to its source is a change of the rules.
+const CHECKER_LIB: &str = "crates/wcontainers-literals/src/lib.rs";
+const WITH_CHECKER: &[(&str, &str)] = &[
+    ("Cargo.toml", "[workspace]\nmembers = [\"crates/*\"]\n"),
+    ("crates/a/Cargo.toml", "[package]\nname = \"a\"\n"),
+    (LIB, CODE),
+    (
+        "crates/wcontainers-literals/Cargo.toml",
+        "[package]\nname = \"wcontainers-literals\"\n",
+    ),
+    (CHECKER_LIB, "pub fn rules() {}\n"),
+];
+
+/// A change of the checker's rules may add lines in the same commit, and a merge that brings new rules
+/// lets the branch's next change add them; each such change is listed. Growth without new rules fails.
+#[test]
+fn new_rules_may_add_lines_and_are_listed() {
+    let root = repository("new-rules", WITH_CHECKER);
+    git(&root, &["branch", "before"]);
+    git(&root, &["checkout", "-q", "-b", "literals"]);
+    wcontainers_literals::init(&root).expect("init");
+    commit_all(&root, "baseline of main");
+    git(&root, &["checkout", "-q", "-b", "track"]);
+    let five = "\npub fn five(x: u64) -> u64 { x * 6161 }\n";
+    append(&root, LIB, five);
+    set_baseline(&root, &with(&baseline(&root), &key("five", "6161")));
+    commit_all(&root, "growth with old rules");
+    let out = check(&root);
+    assert_eq!(
+        lines_starting(&out, GROWN_MARK).len(),
+        1,
+        "{}",
+        out.report()
+    );
+    git(&root, &["reset", "-q", "--hard", "HEAD~1"]);
+
+    git(&root, &["checkout", "-q", "literals"]);
+    append(&root, CHECKER_LIB, "pub fn stricter() {}\n");
+    commit_all(&root, "new rules");
+    git(&root, &["checkout", "-q", "track"]);
+    git(&root, &["merge", "-q", "--no-edit", "literals"]);
+    append(&root, LIB, five);
+    wcontainers_literals::init(&root).expect("init after new rules");
+    commit_all(&root, "the baseline for the new rules");
+    let init = git(&root, &["describe", "--always", "--abbrev=12"]);
+    let out = check(&root);
+    assert!(out.clean, "{}", out.report());
+    assert!(
+        out.summary
+            .iter()
+            .any(|l| l.contains(init.trim()) && l.contains("rules changed")),
+        "{}",
+        out.report()
+    );
+    assert!(wcontainers_literals::init(&root).is_err());
 }

@@ -8,7 +8,8 @@ mod common;
 
 use std::sync::OnceLock;
 
-use common::{Row, commit_all, in_item, list, repository, workspace};
+use common::{Row, commit_all, list, repository, workspace};
+use wcontainers_literals::List;
 
 const ABI: &str = r#"pub const PAGE_SIZE: u64 = 4096;
 pub const CONFIG_KEY: &str = "st_uid";
@@ -81,19 +82,11 @@ fn rows() -> &'static [Row] {
 }
 
 fn caught(item: &str) {
-    let found = in_item(rows(), item);
-    assert!(
-        found.iter().any(|r| r.gated()),
-        "{item} was not caught: {found:#?}"
-    );
+    common::caught_in(FILES, rows(), item, None);
 }
 
 fn passes(item: &str) {
-    let gated: Vec<&Row> = in_item(rows(), item)
-        .into_iter()
-        .filter(|r| r.gated())
-        .collect();
-    assert!(gated.is_empty(), "{item} was wrongly caught: {gated:#?}");
+    common::passes_in(FILES, rows(), item);
 }
 
 macro_rules! caught {
@@ -110,7 +103,7 @@ passes! { k01_cargo_version, k02_out_dir, k03_plain_attribute, K04SerdeRenamePla
 fn mark_rows(literal: &str) -> Vec<&'static Row> {
     rows()
         .iter()
-        .filter(|r| r.list == "mark" && r.literal == literal)
+        .filter(|r| r.is_in(List::Mark) && r.literal == literal)
         .collect()
 }
 
@@ -136,7 +129,7 @@ fn r08_the_same_number_marked_twice() {
 fn script_rows(path: &str, literal: &str) -> Vec<&'static Row> {
     rows()
         .iter()
-        .filter(|r| r.list == "script" && r.path == path && r.literal == literal)
+        .filter(|r| r.is_in(List::Script) && r.path == path && r.literal == literal)
         .collect()
 }
 
@@ -148,28 +141,28 @@ fn scripts_that_compare_and_shift() {
     assert!(script_rows("crates/victim/tools/shift.sh", "2").is_empty());
 }
 
-/// Still gets through (docs/literals.md): a decimal in a message, read as a version; a build script's
-/// instructions to Cargo, read as messages; paths in scripts.
+/// A build script's instructions to Cargo (`cargo:rerun-if-changed=...`) are data, not messages.
+#[test]
+fn a_build_script_s_instructions_are_code() {
+    let found: Vec<_> = rows()
+        .iter()
+        .filter(|r| r.path == "crates/victim/build.rs")
+        .collect();
+    assert!(found.iter().any(|r| r.is_in(List::Code)), "{found:#?}");
+}
+
+/// Still gets through (docs/literals.md): a decimal in a message, read as a version; paths in scripts.
 mod gets_through {
-    use super::{passes, rows};
+    use super::{List, passes, rows};
 
     passes! { r10_decimal_in_a_message }
-
-    #[test]
-    fn a_build_script_s_instructions() {
-        let found: Vec<_> = rows()
-            .iter()
-            .filter(|r| r.path == "crates/victim/build.rs")
-            .collect();
-        assert!(found.iter().all(|r| !r.gated()), "{found:#?}");
-    }
 
     #[test]
     fn paths_in_scripts() {
         assert!(
             !rows()
                 .iter()
-                .any(|r| r.list == "script" && r.literal.contains("/etc"))
+                .any(|r| r.is_in(List::Script) && r.literal.contains("/etc"))
         );
     }
 }
@@ -207,7 +200,7 @@ fn code_in_tagged_hidden_and_ignored_folders_is_scanned() {
         assert!(
             found
                 .iter()
-                .any(|r| r.list == "code" && r.literal == literal),
+                .any(|r| r.is_in(List::Code) && r.literal == literal),
             "{literal} was not scanned: {found:#?}"
         );
     }

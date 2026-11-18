@@ -100,3 +100,21 @@ pub fn value_like(text: &str) -> bool {
     let text = without_placeholders(text);
     has_number(&text) || has_path(&text)
 }
+
+/// Text that is data rather than words for a person: outside its placeholders it has no space and is
+/// not one plain lower-case word (`"{name}.tar"`, `"HOME={}"`, `"GET"`, `"{}:{}"`), so a program reads
+/// it as a key, a file name or a protocol word.
+pub fn data_like(text: &str) -> bool {
+    if text.contains(char::is_whitespace) {
+        return false;
+    }
+    let written: String = without_placeholders(text)
+        .split(PLACEHOLDER_STANDIN)
+        .collect();
+    !written.is_empty() && !written.chars().all(|c| c.is_lowercase())
+}
+
+/// Text that may stand as a message: it holds no value and is not data.
+pub fn message_text(text: &str) -> bool {
+    !value_like(text) && !data_like(text)
+}

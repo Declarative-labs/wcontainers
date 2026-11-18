@@ -4,6 +4,8 @@
 
 use std::path::{Path, PathBuf};
 
+use wcontainers_literals::{FIELD_SEPARATOR, LOCATION_SEPARATOR, List};
+
 /// One printed finding.
 #[derive(Clone, Debug)]
 pub struct Row {
@@ -15,20 +17,14 @@ pub struct Row {
     pub text: String,
 }
 
-/// The lists that fail the check.
-pub const GATED: &[&str] = &[
-    "code",
-    "redefinition",
-    "restated",
-    "role",
-    "script",
-    "unparsed",
-    "mark",
-];
-
 impl Row {
+    /// The finding is in a list that fails the check.
     pub fn gated(&self) -> bool {
-        GATED.contains(&self.list.as_str())
+        List::named(&self.list).is_some_and(List::gated)
+    }
+
+    pub fn is_in(&self, list: List) -> bool {
+        self.list == list.name()
     }
 }
 
@@ -53,9 +49,16 @@ pub fn rows(lines: &[String]) -> Vec<Row> {
     lines
         .iter()
         .map(|l| {
-            let f: Vec<&str> = l.split('\t').collect();
-            let (path, rest) = f[1].split_once(':').expect("path:line:column");
-            let line = rest.split(':').next().unwrap().parse().unwrap();
+            let f: Vec<&str> = l.split(FIELD_SEPARATOR).collect();
+            let (path, rest) = f[1]
+                .split_once(LOCATION_SEPARATOR)
+                .expect("path:line:column");
+            let line = rest
+                .split(LOCATION_SEPARATOR)
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap();
             Row {
                 list: f[0].into(),
                 path: path.into(),
@@ -75,6 +78,43 @@ pub fn list(root: &Path) -> Vec<Row> {
             .expect("list the workspace")
             .lines,
     )
+}
+
+/// The item is written in the workspace's files as a whole word, so that a test of it tests something:
+/// a renamed or deleted snippet fails its test instead of passing it empty.
+pub fn written(files: &[(&str, &str)], item: &str) -> bool {
+    files.iter().any(|(_, text)| {
+        text.match_indices(item).any(|(at, _)| {
+            let word = |c: char| c.is_alphanumeric() || c == '_';
+            !text[..at].ends_with(word) && !text[at + item.len()..].starts_with(word)
+        })
+    })
+}
+
+/// The item is in the files and holds a gated finding, of `wanted` when given.
+pub fn caught_in(files: &[(&str, &str)], rows: &[Row], item: &str, wanted: Option<List>) {
+    assert!(written(files, item), "{item} is not in the snippets");
+    let found = in_item(rows, item);
+    let hit = found
+        .iter()
+        .any(|r| r.gated() && wanted.is_none_or(|w| r.is_in(w)));
+    assert!(
+        hit,
+        "{item} was not caught{}; its findings: {found:#?}",
+        wanted
+            .map(|w| format!(" in the {} list", w.name()))
+            .unwrap_or_default()
+    );
+}
+
+/// The item is in the files and holds no gated finding.
+pub fn passes_in(files: &[(&str, &str)], rows: &[Row], item: &str) {
+    assert!(written(files, item), "{item} is not in the snippets");
+    let gated: Vec<&Row> = in_item(rows, item)
+        .into_iter()
+        .filter(|r| r.gated())
+        .collect();
+    assert!(gated.is_empty(), "{item} was wrongly caught: {gated:#?}");
 }
 
 /// The findings whose item is `item` or sits inside it.

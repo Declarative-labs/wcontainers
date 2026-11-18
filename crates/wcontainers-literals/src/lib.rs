@@ -33,11 +33,10 @@ use std::time::Instant;
 pub use baseline::BASELINE_FILE;
 use deps::Crates;
 use eval::{ConstDef, ConstScope, Value};
-pub use findings::PATH_SEPARATOR;
-use findings::{
-    FIELD_SEPARATOR, FILE_SCOPE, Finding, Kind, List, PATH_COMPONENT_SEPARATOR, clean_literal,
-};
+pub use findings::{FIELD_SEPARATOR, Kind, LOCATION_SEPARATOR, List, PATH_SEPARATOR};
+use findings::{FILE_SCOPE, Finding, PATH_COMPONENT_SEPARATOR, clean_literal};
 pub use history::WORKING_TREE;
+pub use marks::MARK_WORD;
 use scan::{FileRole, FileScan};
 
 pub const USAGE: &str = "usage: wcontainers-literals (check | init | list) [WORKSPACE_ROOT]\n\
@@ -81,10 +80,16 @@ const LIST_FILES: &[&str] = &[
 ];
 /// How `git ls-files -z` ends each path.
 const LIST_END: char = '\0';
-/// The workspace manifest's list of folders that are not part of the workspace (vendored code); Cargo's
-/// own declaration, owned by whoever owns the root manifest, so it always applies.
 pub(crate) const WORKSPACE_TABLE: &str = "workspace";
-const EXCLUDE_KEY: &str = "exclude";
+/// A crate manifest's targets that Cargo ships, and the key that places each one's root file.
+const LIB_TABLE: &str = "lib";
+const BIN_TABLES: &str = "bin";
+const TARGET_PATH: &str = "path";
+const PACKAGE_TABLE: &str = "package";
+const BUILD_KEY: &str = "build";
+const PACKAGE_NAME: &str = "name";
+/// A crate's source folder, whose changes in the checker's crate are changes of the rules.
+const SOURCE_FOLDER: &str = "src";
 /// A crate's folders of test code, by their position in the crate (not anywhere in a path).
 const TEST_DIRECTORIES: &[&str] = &["tests", "benches", "examples"];
 /// A file whose first lines carry one of these markers is proposed as a `generated` policy line by init.
@@ -108,8 +113,8 @@ pub const HIDDEN_MARK: &str = "~ ";
 pub const GROWN_MARK: &str = "> ";
 pub const ORDER_MARK: &str = "! ";
 /// Introduces what to do about an output line.
-const DO: &str = "do: ";
-const DELETE_LINE: &str = "delete this line from literals.baseline";
+pub const DO: &str = "do: ";
+pub const DELETE_LINE: &str = "delete this line from literals.baseline";
 const UNHIDE: &str = "undo the move and name the value: it was hidden, not fixed";
 const DO_NOT_GROW: &str =
     "delete this line from literals.baseline and name the value instead: the baseline only shrinks";
@@ -123,8 +128,9 @@ const WORD_PUNCTUATION: &[char] = &[
 /// Characters that make a word of a message look like a name rather than plain English.
 const NAME_CHARACTERS: &[char] = &['_', '-', '.', ':', '/'];
 
+/// What a `policy` line of the baseline does to the path it names.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-enum PolicyKind {
+pub enum PolicyKind {
     /// Not scanned at all (vendored code).
     Skip,
     /// Scanned into the generated list.
@@ -148,6 +154,11 @@ impl PolicyKind {
 #[derive(Default, Clone)]
 struct Policy {
     lines: Vec<(PolicyKind, String)>,
+}
+
+/// The baseline line of a policy for a path.
+pub fn policy_line(kind: PolicyKind, path: &str) -> String {
+    Policy::key(kind, path)
 }
 
 impl Policy {
@@ -189,6 +200,8 @@ struct SourceFile {
     rel: String,
     crate_dir: String,
     role: FileRole,
+    /// Cargo builds the file as the root of a shipped target named in its crate's manifest.
+    crate_root: bool,
 }
 
 fn rel_string(path: &Path, root: &Path) -> String {
@@ -208,15 +221,24 @@ struct Walk {
 
 impl Walk {
     /// Files a source file of `crate_dir` at `path` (relative `rel`), by its kind and place.
-    fn add(&mut self, path: PathBuf, rel: String, crate_dir: &str, policy: &Policy) {
+    fn add(
+        &mut self,
+        path: PathBuf,
+        rel: String,
+        crate_dir: &str,
+        policy: &Policy,
+        roots: &[String],
+    ) {
         if path.extension().is_some_and(|e| e == RUST_EXTENSION) {
             let in_crate = rel
                 .strip_prefix(crate_dir)
                 .map(|r| r.trim_start_matches(PATH_COMPONENT_SEPARATOR))
                 .unwrap_or(&rel);
-            let test = TEST_DIRECTORIES
-                .iter()
-                .any(|t| in_crate.split(PATH_COMPONENT_SEPARATOR).next() == Some(*t));
+            let crate_root = roots.contains(&rel);
+            let test = !crate_root
+                && TEST_DIRECTORIES
+                    .iter()
+                    .any(|t| in_crate.split(PATH_COMPONENT_SEPARATOR).next() == Some(*t));
             let role = if test || policy.covers(PolicyKind::Test, &rel) {
                 FileRole::Test
             } else if policy.covers(PolicyKind::Generated, &rel) {
@@ -229,6 +251,7 @@ impl Walk {
                 rel,
                 crate_dir: crate_dir.to_string(),
                 role,
+                crate_root,
             });
         } else if scripts::is_script(&path) {
             self.scripts.push((path, crate_dir.to_string()));
@@ -261,6 +284,11 @@ fn walk(root: &Path, policy: &Policy) -> Result<Walk, String> {
                 .insert(dir.trim_end_matches(PATH_COMPONENT_SEPARATOR).to_string());
         }
     }
+    let roots: Vec<String> = tree
+        .crate_dirs
+        .iter()
+        .flat_map(|d| target_roots(root, d))
+        .collect();
     for rel in files {
         let crate_dir = tree
             .crate_dirs
@@ -269,7 +297,7 @@ fn walk(root: &Path, policy: &Policy) -> Result<Walk, String> {
             .max_by_key(|d| d.len())
             .cloned()
             .unwrap_or_default();
-        tree.add(root.join(rel), rel.to_string(), &crate_dir, policy);
+        tree.add(root.join(rel), rel.to_string(), &crate_dir, policy, &roots);
     }
     Ok(tree)
 }
@@ -288,22 +316,56 @@ fn walk_folder(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Folders the workspace manifest excludes from the workspace, as paths relative to the root.
-fn workspace_excludes(root: &Path) -> Result<Vec<String>, String> {
-    let Ok(text) = std::fs::read_to_string(root.join(MANIFEST)) else {
-        return Ok(Vec::new());
+/// The files of a crate that Cargo builds as shipped code wherever they sit (`[lib] path`, `[[bin]] path`,
+/// `package.build`), relative to the root: a crate root under tests/ is still code.
+fn target_roots(root: &Path, crate_dir: &str) -> Vec<String> {
+    let Ok(manifest) = std::fs::read_to_string(root.join(crate_dir).join(MANIFEST))
+        .map_err(|_| ())
+        .and_then(|t| t.parse::<toml::Table>().map_err(|_| ()))
+    else {
+        return Vec::new();
     };
-    let manifest: toml::Table = text.parse().map_err(|e| format!("{MANIFEST}: {e}"))?;
-    let excludes = manifest
-        .get(WORKSPACE_TABLE)
-        .and_then(|w| w.get(EXCLUDE_KEY))
-        .and_then(|e| e.as_array());
-    Ok(excludes
+    let path_of = |t: &toml::Value| {
+        t.get(TARGET_PATH)
+            .and_then(|p| p.as_str())
+            .map(String::from)
+    };
+    let lib = manifest.get(LIB_TABLE).and_then(path_of);
+    let bins = manifest
+        .get(BIN_TABLES)
+        .and_then(|b| b.as_array())
         .into_iter()
         .flatten()
-        .filter_map(|v| v.as_str())
-        .map(|p| rel_string(&root.join(p), root))
-        .collect())
+        .filter_map(path_of);
+    let build = manifest
+        .get(PACKAGE_TABLE)
+        .and_then(|p| p.get(BUILD_KEY))
+        .and_then(|b| b.as_str())
+        .map(String::from);
+    lib.into_iter()
+        .chain(bins)
+        .chain(build)
+        .map(|p| rel_string(&root.join(crate_dir).join(p), root))
+        .collect()
+}
+
+/// The checker's own source folder, relative to the root, when the checker's crate is in the tree:
+/// a change there is a change of the rules, after which the baseline may be written again.
+fn own_source(root: &Path, crate_dirs: &BTreeSet<String>) -> Option<String> {
+    crate_dirs
+        .iter()
+        .find(|d| {
+            std::fs::read_to_string(root.join(d).join(MANIFEST))
+                .ok()
+                .and_then(|t| t.parse::<toml::Table>().ok())
+                .is_some_and(|m| {
+                    m.get(PACKAGE_TABLE)
+                        .and_then(|p| p.get(PACKAGE_NAME))
+                        .and_then(|n| n.as_str())
+                        == Some(env!("CARGO_PKG_NAME"))
+                })
+        })
+        .map(|d| [d.as_str(), SOURCE_FOLDER].join(PATH_COMPONENT_SEPARATOR))
 }
 
 fn has_generated_marker(path: &Path) -> bool {
@@ -341,8 +403,8 @@ fn parallel<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R>
 }
 
 /// Files declared as modules under a test-only attribute become test files, with their own modules;
-/// a file production code places with `#[path]` is code even under tests/, and is scanned wherever it
-/// is (an ignored, excluded or skipped folder), as is a declared test module git does not list.
+/// a module production code declares is code even under tests/, and every declared module is scanned
+/// wherever it is (an ignored or skipped folder), whether git lists it or not.
 fn mark_test_modules(root: &Path, files: &mut Vec<SourceFile>) {
     let is_test = |attrs: &[syn::Attribute]| attrs.iter().any(scan::is_test_attribute);
     let declare = |file: &SourceFile| {
@@ -357,7 +419,7 @@ fn mark_test_modules(root: &Path, files: &mut Vec<SourceFile>) {
         };
         (
             file.crate_dir.clone(),
-            modules::declared(&file.path, &ast, &is_test),
+            modules::declared(&file.path, file.crate_root, &ast, &is_test),
         )
     };
     let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
@@ -368,7 +430,7 @@ fn mark_test_modules(root: &Path, files: &mut Vec<SourceFile>) {
         let mut new = Vec::new();
         for (crate_dir, d) in &declared[from..] {
             let wanted = d
-                .placed
+                .code
                 .iter()
                 .map(|p| (p, FileRole::Code))
                 .chain(d.test.iter().map(|m| (&m.file, FileRole::Test)));
@@ -382,6 +444,7 @@ fn mark_test_modules(root: &Path, files: &mut Vec<SourceFile>) {
                         path,
                         crate_dir: crate_dir.clone(),
                         role,
+                        crate_root: false,
                     });
                 }
             }
@@ -395,7 +458,7 @@ fn mark_test_modules(root: &Path, files: &mut Vec<SourceFile>) {
     }
     let placed: Vec<PathBuf> = declared
         .iter()
-        .flat_map(|(_, d)| d.placed.iter().map(|p| canonical(p)))
+        .flat_map(|(_, d)| d.code.iter().map(|p| canonical(p)))
         .collect();
     for file in files.iter_mut() {
         if file.role != FileRole::Test
@@ -854,7 +917,7 @@ fn apply_marks(all: &mut Vec<Finding>, found: &[FileMark], index: &ValueIndex) -
         if let [(FileMark { path, mark, .. }, covered, reason)] = marks.as_slice() {
             covered.iter().for_each(|&i| all[i].list = List::Marked);
             report.push(format!(
-                "{path}:{}: {} {}: {reason}",
+                "{path}{LOCATION_SEPARATOR}{}: {} {}: {reason}",
                 mark.line,
                 marks::MARK_WORD,
                 mark.literal
@@ -863,7 +926,7 @@ fn apply_marks(all: &mut Vec<Finding>, found: &[FileMark], index: &ValueIndex) -
         }
         let places: Vec<String> = marks
             .iter()
-            .map(|(fm, ..)| format!("{}:{}", fm.path, fm.mark.line))
+            .map(|(fm, ..)| format!("{}{LOCATION_SEPARATOR}{}", fm.path, fm.mark.line))
             .collect();
         for (fm, ..) in marks {
             problems.push((
@@ -901,16 +964,13 @@ struct Scanned {
     /// `generated` policy lines for files that say they are generated (proposed by init).
     proposed: Vec<String>,
     summary: String,
+    /// The checker's own source folder, when it is in the tree.
+    rules: Option<String>,
 }
 
 /// Scans the workspace under `root` with the baseline's policy.
-fn scan_tree(root: &Path, mut policy: Policy) -> Result<Scanned, String> {
+fn scan_tree(root: &Path, policy: Policy) -> Result<Scanned, String> {
     let started = Instant::now();
-    policy.lines.extend(
-        workspace_excludes(root)?
-            .into_iter()
-            .map(|p| (PolicyKind::Skip, p)),
-    );
     let mut tree = walk(root, &policy)?;
     let proposed = tree
         .rust
@@ -936,6 +996,7 @@ fn scan_tree(root: &Path, mut policy: Policy) -> Result<Scanned, String> {
                 path,
                 crate_dir: String::new(),
                 role: FileRole::Code,
+                crate_root: false,
             })
             .collect();
         defs.extend(scan_all(&files, Some(&label)).consts);
@@ -999,6 +1060,7 @@ fn scan_tree(root: &Path, mut policy: Policy) -> Result<Scanned, String> {
         marks,
         proposed,
         summary,
+        rules: own_source(root, &tree.crate_dirs),
     })
 }
 
@@ -1028,10 +1090,28 @@ impl Outcome {
 }
 
 const NEW_LINE: char = '\n';
+/// Heads the list of changes allowed to add lines to the baseline.
+pub const ADDITIONS_HEADING: &str = "changes that could add lines to the baseline: ";
+const ADDITION_INDENT: &str = "  ";
+
+/// Heads the list of marks, with their count.
+pub const MARKS_HEADING: &str = "marks: ";
 
 fn marks_report(marks: Vec<String>) -> Vec<String> {
-    std::iter::once(format!("marks: {}", marks.len()))
+    std::iter::once(format!("{MARKS_HEADING}{}", marks.len()))
         .chain(marks)
+        .collect()
+}
+
+/// Every change that was allowed to add lines to the baseline, after a line that counts them: a
+/// reviewer compares them with the starts and inits the branch should have.
+fn additions_report(additions: Vec<String>) -> Vec<String> {
+    std::iter::once(format!("{ADDITIONS_HEADING}{}", additions.len()))
+        .chain(
+            additions
+                .into_iter()
+                .map(|a| format!("{ADDITION_INDENT}{a}")),
+        )
         .collect()
 }
 
@@ -1062,15 +1142,15 @@ pub fn init(root: &Path) -> Result<Outcome, String> {
     let root = canonical(root)?;
     let path = root.join(BASELINE_FILE);
     let accepted = baseline::parse(&baseline::read(&path)?);
-    let history = history::read(&root, BASELINE_FILE, &accepted)?;
+    let mut policy = Policy::of_keys(&accepted);
+    let first = scan_tree(&root, policy.clone())?;
+    let history = history::read(&root, BASELINE_FILE, first.rules.as_deref(), &accepted)?;
     if !history.may_init {
         return Err(format!(
-            "{}: init writes the baseline once; from now on it only shrinks",
+            "{}: init writes the baseline once, and again only after the checker's rules change; from now on it only shrinks",
             history.start
         ));
     }
-    let mut policy = Policy::of_keys(&accepted);
-    let first = scan_tree(&root, policy.clone())?;
     policy
         .lines
         .extend(first.proposed.iter().filter_map(|k| Policy::parse_line(k)));
@@ -1121,11 +1201,11 @@ pub fn check(root: &Path) -> Result<Outcome, String> {
     let mut accepted = baseline::parse(&text);
     let current = accepted.clone();
     let scanned = scan_tree(&root, Policy::of_keys(&accepted))?;
-    let history = history::read(&root, BASELINE_FILE, &current)?;
+    let history = history::read(&root, BASELINE_FILE, scanned.rules.as_deref(), &current)?;
     let mut lines = Vec::new();
     if let Some(line) = baseline::first_unsorted(&text) {
         lines.push(format!(
-            "{ORDER_MARK}{BASELINE_FILE}:{line}{FIELD_SEPARATOR}{DO}{SORT_IT}"
+            "{ORDER_MARK}{BASELINE_FILE}{LOCATION_SEPARATOR}{line}{FIELD_SEPARATOR}{DO}{SORT_IT}"
         ));
     }
 
@@ -1146,7 +1226,7 @@ pub fn check(root: &Path) -> Result<Outcome, String> {
         }
         let f = ungated.get(rest)?;
         Some(format!(
-            "{key}{FIELD_SEPARATOR}# was {list}, now in the {} list at {}:{}{FIELD_SEPARATOR}{DO}{UNHIDE}",
+            "{key}{FIELD_SEPARATOR}# was {list}, now in the {} list at {}{LOCATION_SEPARATOR}{}{FIELD_SEPARATOR}{DO}{UNHIDE}",
             f.list.name(),
             f.path,
             f.line
@@ -1200,11 +1280,15 @@ pub fn check(root: &Path) -> Result<Outcome, String> {
     for (what, action) in &history.problems {
         lines.push(format!("{GROWN_MARK}{what}{FIELD_SEPARATOR}{DO}{action}"));
     }
+    let summary = [scanned.summary, history.start]
+        .into_iter()
+        .chain(additions_report(history.additions))
+        .collect();
     Ok(Outcome {
         clean: lines.is_empty(),
         lines,
         marks: marks_report(scanned.marks),
-        summary: vec![scanned.summary, history.start],
+        summary,
     })
 }
 
