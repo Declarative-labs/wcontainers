@@ -740,8 +740,8 @@ except where alone, CPU load not sampled; Mac load average near its 18 cores, no
   - Direct3D 12, 4 streams: 0.373 / 0.008, 0.604 / 0.007, 0.358 / 0.007. 8 streams: 0.552 / 0.011,
     0.793 / 0.007, 0.433 / 0.007. 16 streams: 1.089 / 0.016, 1.106 / 0.008, 0.582 / 0.008.
   - So fetching in the program with kept sets costs less CPU than vertex buffers at every count
-    (each vertex buffer is a call per draw), and at 16 streams about half the GPU time on this
-    light scene; a set made per draw adds its lookup (about 0.2 to 0.25 ms a frame of 256 draws).
+    (each vertex buffer is a call per draw); GPU time is a little more at 4 streams on Vulkan
+    (0.017 against 0.012 ms) and about half at 16 streams on this light scene; a set made per draw adds its lookup (about 0.2 to 0.25 ms a frame of 256 draws).
     Storage usage itself costs nothing here: every buffer already has it.
 - In Chrome 157 (web/check, g2b4/webcheck1.log, not alone; `performance.now()` in 0.1 ms steps;
   the device's most is 8 streams there): 4 streams vertex buffers 0.3 / 0.016, a set per draw
@@ -1292,7 +1292,7 @@ each Zlib OR Apache-2.0 OR MIT (their Cargo.toml files; most already in the lock
   (C:\wc\src\phase-2-graphics-webgpu\tools\graphics-rig\browser\node_modules), by the rig's
   install.ps1.
 - Build output C:\wc\target\phase-2-graphics-webgpu: removed whole at the end of run 13 (9.96 GB,
-  debug and release), so the next build is cold (about 3 minutes for the tests, 7 for web/check);
+  debug and release) and again at the end of run 14 (6.68 GB), so the next build is cold (about 3 minutes for the tests, 7 for web/check);
   pictures in C:\wc\out\phase-2-graphics-webgpu-webgpu. On the Mac the checkout's `target`
-  (1.2 GB of `cargo check` output) was removed at the end of run 13; scratch holds no build
-  output (logs and pictures only, 324 MB).
+  (1.2 GB of `cargo check` output) was removed at the end of run 13 and none was made in run 14;
+  scratch holds no build output (logs and pictures only, 328 MB).
