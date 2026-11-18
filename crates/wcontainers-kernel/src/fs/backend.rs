@@ -684,6 +684,7 @@ impl Client {
                 fsflags: 0,
                 write_hint: 0,
                 watches: Vec::new(),
+                linkable: false,
             }));
             self.state
                 .borrow_mut()

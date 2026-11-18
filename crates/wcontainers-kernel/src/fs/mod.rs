@@ -294,6 +294,9 @@ pub(crate) struct Inode {
     pub write_hint: u64,
     /// The inotify watches on it.
     pub watches: Vec<crate::syscall::inotify::Mark>,
+    /// Made by `O_TMPFILE` without `O_EXCL` and not linked yet, so a link may name it though it has
+    /// no links (`I_LINKABLE`).
+    pub linkable: bool,
 }
 
 impl Drop for Inode {
@@ -1172,6 +1175,7 @@ pub(crate) fn new_inode(fs: FileSystem, ino: u64, new: New) -> Result<Node, Errn
         fsflags: 0,
         write_hint: 0,
         watches: Vec::new(),
+        linkable: false,
     })))
 }
 

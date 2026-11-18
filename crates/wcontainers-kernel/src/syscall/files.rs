@@ -417,25 +417,7 @@ pub(super) fn open(
         return named_opened(kernel, cx, tid, file, flags);
     }
     if flags & (O_TMPFILE & !O_DIRECTORY) != 0 {
-        // `do_tmpfile`: the directory is found, its mount writable and the directory too, before
-        // a file is made in it, which is not built.
-        let at = start(kernel, tid, dirfd, path)?;
-        let directory = kernel.with_walk(tid, |walk, _| walk.resolve(&at, path, true))?;
-        let inode = directory.borrow();
-        if !inode.is_directory() {
-            return Err(Errno::ENOTDIR);
-        }
-        if inode.fs.read_only() {
-            return Err(Errno::EROFS);
-        }
-        let caller = kernel.threads[&tid].process;
-        crate::fs::permission(&inode, credentials(kernel, tid), W_OK | X_OK, caller)?;
-        return Err(kernel.counters.refuse_flag(
-            cx.host,
-            __NR_openat,
-            O_TMPFILE.into(),
-            Errno::EOPNOTSUPP,
-        ));
+        return open_tmpfile(kernel, cx, tid, dirfd, path, flags, mode);
     }
     // Access mode 3 asks for both permissions and gives neither, as on Linux.
     let accmode = flags & O_ACCMODE;
@@ -754,6 +736,86 @@ pub(super) fn open(
         super::pipe::open_named(kernel, tid, &file)?;
         return named_opened(kernel, cx, tid, file, flags);
     }
+    install(kernel, tid, file, flags)
+}
+
+/// `do_tmpfile`: the directory is found, its mount writable and the directory too, then a file
+/// with no name is made in it and opened (`shmem_tmpfile`). Its descriptor's link and its events
+/// name it `#` and its number in the directory (`d_tmpfile`). Without `O_EXCL` a link may name it
+/// later. The backend's client does not send FUSE_TMPFILE (counted).
+fn open_tmpfile(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    dirfd: u64,
+    path: &[u8],
+    flags: u32,
+    mode: u32,
+) -> Result<u64, Errno> {
+    let at = start(kernel, tid, dirfd, path)?;
+    let directory = kernel.with_walk(tid, |walk, _| walk.resolve(&at, path, true))?;
+    {
+        let inode = directory.borrow();
+        if !inode.is_directory() {
+            return Err(Errno::ENOTDIR);
+        }
+        if inode.fs.read_only() {
+            return Err(Errno::EROFS);
+        }
+        let caller = kernel.threads[&tid].process;
+        crate::fs::permission(&inode, credentials(kernel, tid), W_OK | X_OK, caller)?;
+    }
+    if crate::fs::backend::remote(&directory).is_some() {
+        return Err(kernel.counters.refuse_flag(
+            cx.host,
+            __NR_openat,
+            O_TMPFILE.into(),
+            Errno::EOPNOTSUPP,
+        ));
+    }
+    // Only tmpfs has `tmpfile`.
+    if fixed_names(&directory) || only_queues(&directory) {
+        return Err(Errno::EOPNOTSUPP);
+    }
+    let now = kernel.now(cx);
+    let (uid, gid, _) = new_owner(&directory, credentials(kernel, tid));
+    let mut mode = S_IFREG | (mode & 0o7777 & !kernel.fs(tid).umask);
+    if mode & S_ISGID != 0
+        && !credentials(kernel, tid).in_group(gid, true)
+        && !credentials(kernel, tid).has(CAP_FSETID)
+    {
+        mode &= !S_ISGID;
+    }
+    let ino = kernel.files.numbers.ino();
+    let name = alloc::format!("#{ino}").into_bytes();
+    let node = crate::fs::new_inode(
+        directory.borrow().fs.clone(),
+        ino,
+        crate::fs::New {
+            mode,
+            uid,
+            gid,
+            rdev: 0,
+            now,
+            content: Content::Regular(Regular::default()),
+            parent: Some(directory.clone()),
+            name: name.clone(),
+        },
+    )?;
+    {
+        let mut inode = node.borrow_mut();
+        inode.nlink = 0;
+        inode.linkable = flags & O_EXCL == 0;
+    }
+    let file = OpenFile::new(
+        node,
+        (flags | O_LARGEFILE) & !(O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC | O_CLOEXEC),
+        path_in(kernel, tid, &directory, &name),
+        credentials(kernel, tid).serial,
+    );
+    file.borrow_mut().created = true;
+    file.borrow_mut().dentry = Some((Rc::downgrade(&directory), name));
+    super::inotify::file_changed(kernel, &file, IN_OPEN);
     install(kernel, tid, file, flags)
 }
 
@@ -1081,17 +1143,24 @@ pub(super) fn linkat(
     if node.borrow().is_directory() {
         return Err(Errno::EPERM);
     }
-    if node.borrow().nlink == 0 {
-        return Err(Errno::ENOENT);
-    }
+    // A file made with O_TMPFILE may be named once (`I_LINKABLE`).
+    let first_name = {
+        let inode = node.borrow();
+        if inode.nlink == 0 && !inode.linkable {
+            return Err(Errno::ENOENT);
+        }
+        inode.nlink == 0
+    };
     if crate::fs::backend::remote(&node).is_some() {
         crate::fs::backend::link(&node, &parent.directory, &parent.name)?;
         super::inotify::inode_changed(kernel, &node, IN_ATTRIB);
         super::inotify::created(kernel, &parent.directory, &parent.name, &node);
         return Ok(0);
     }
-    // tmpfs counts each link as an inode (`shmem_link`).
-    if let Some(space) = &node.borrow().fs.space {
+    // tmpfs counts each link but a file's first as an inode (`shmem_link`).
+    if let Some(space) = &node.borrow().fs.space
+        && !first_name
+    {
         space.take_ispace(crate::fs::INODE_SPACE)?;
     }
     let now = kernel.now(cx);
@@ -1099,6 +1168,7 @@ pub(super) fn linkat(
         let mut inode = node.borrow_mut();
         inode.nlink += 1;
         inode.ctime = now;
+        inode.linkable = false;
     }
     parent
         .directory
@@ -2519,10 +2589,32 @@ pub(super) fn ftruncate(
     if !file.borrow().writable() || node.borrow().file_type() != S_IFREG {
         return Err(Errno::EINVAL);
     }
-    truncate_node(kernel, cx, tid, &node, length)
+    // Told through the file, under the name it was opened by (`fsnotify_change` on its dentry).
+    let result = truncate_node_unwatched(kernel, cx, tid, &node, length);
+    if result.is_ok() {
+        super::inotify::file_changed(kernel, &file, IN_MODIFY);
+    }
+    result
 }
 
+/// As [`fallocate_unwatched`], telling the file's watches of a change (`vfs_fallocate`'s
+/// `fsnotify_modify`).
 pub(super) fn fallocate(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    args: Args,
+) -> Result<u64, Errno> {
+    let result = fallocate_unwatched(kernel, cx, tid, args);
+    if result.is_ok()
+        && let Ok(file) = kernel.call_file(tid, args[0] as i32)
+    {
+        super::inotify::file_changed(kernel, &file, IN_MODIFY);
+    }
+    result
+}
+
+fn fallocate_unwatched(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,

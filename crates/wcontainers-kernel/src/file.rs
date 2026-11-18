@@ -117,6 +117,12 @@ impl OpenFile {
         }))
     }
 
+    /// Whether it was made by `O_TMPFILE`, whose dentry never takes a name (`d_tmpfile`): a link
+    /// given to its inode later names another.
+    pub fn unnamed(&self) -> bool {
+        self.flags & (O_TMPFILE & !O_DIRECTORY) != 0
+    }
+
     pub fn readable(&self) -> bool {
         self.flags & O_PATH == 0 && matches!(self.flags & O_ACCMODE, O_RDONLY | O_RDWR)
     }

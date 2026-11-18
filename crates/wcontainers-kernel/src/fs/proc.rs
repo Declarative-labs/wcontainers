@@ -1247,7 +1247,7 @@ pub(crate) fn link_target(
                     walk.path_of(&file.node)
                         .unwrap_or_else(|| file.path.clone())
                 }
-                _ if inode.shown_deleted() => {
+                _ if inode.shown_deleted() || file.unnamed() => {
                     let mut path = file.path.clone();
                     path.extend_from_slice(b" (deleted)");
                     path
