@@ -306,6 +306,8 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/dev/tty/legacy_tiocsti", Global::File(0o644)),
     ("sys/fs", Global::Directory),
     ("sys/fs/dir-notify-enable", Global::File(0o644)),
+    ("sys/fs/lease-break-time", Global::File(0o644)),
+    ("sys/fs/leases-enable", Global::File(0o644)),
     ("sys/fs/mqueue", Global::Directory),
     ("sys/fs/mqueue/msg_default", Global::File(0o644)),
     ("sys/fs/mqueue/msg_max", Global::File(0o644)),
@@ -1449,7 +1451,10 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                 }
                 // Line disciplines load as modules on demand; TIOCSTI is still built (measured).
                 "sys/dev/tty/ldisc_autoload" | "sys/dev/tty/legacy_tiocsti" => out.push_str("1\n"),
-                "sys/fs/dir-notify-enable" => out.push_str("1\n"),
+                "sys/fs/dir-notify-enable" | "sys/fs/leases-enable" => out.push_str("1\n"),
+                "sys/fs/lease-break-time" => {
+                    let _ = writeln!(out, "{}", crate::syscall::lease::BREAK_SECONDS);
+                }
                 "sys/fs/mqueue/msg_default" => {
                     let _ = writeln!(out, "{MQ_MSG_DEFAULT}");
                 }

@@ -1069,6 +1069,7 @@ impl Kernel {
             if alloc::rc::Rc::strong_count(file) != 1 {
                 continue;
             }
+            crate::syscall::lease::released(self, file);
             let instance = crate::syscall::inotify::of_file(file);
             match instance {
                 Some(instance) => crate::syscall::inotify::released(&instance),

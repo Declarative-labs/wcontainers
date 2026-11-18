@@ -626,6 +626,10 @@ pub(super) fn open(
                 return Err(Errno::EACCES);
             }
         }
+        // `do_dentry_open` breaks leases before the file system's open.
+        if !created && file_type == S_IFREG {
+            super::lease::break_leases(kernel, cx, tid, &node, flags)?;
+        }
         // Linux's `do_dentry_open` refuses direct I/O after the open itself, before truncating.
         // A named pipe's and a terminal's are refused once they are open (below).
         if flags & O_DIRECT != 0

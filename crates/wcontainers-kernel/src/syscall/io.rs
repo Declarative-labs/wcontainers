@@ -2715,7 +2715,7 @@ fn fcntl_other(
             Ok(u64::from(alloc::rc::Rc::ptr_eq(&other, &descriptor.file)))
         }
         // No lease can be taken, so a file never holds one.
-        F_GETLEASE if !path_only => Ok(u64::from(F_UNLCK)),
+        F_GETLEASE if !path_only => Ok(super::lease::get(kernel, cx, &descriptor.file)),
         F_GETOWN if !path_only => Ok(get_owner(kernel, &descriptor.file) as i64 as u64),
         F_SETOWN if !path_only => set_owner_number(kernel, tid, &descriptor.file, argument as i32),
         F_GETOWN_EX if !path_only => {
@@ -2820,8 +2820,9 @@ fn fcntl_other(
             first.and(second)?;
             Ok(0)
         }
-        // Leases and delegations are not built.
-        F_SETLEASE | crate::linux_extra::F_GETDELEG | crate::linux_extra::F_SETDELEG => {
+        F_SETLEASE => super::lease::set(kernel, cx, tid, fd, &descriptor.file, argument),
+        // Delegations are not built.
+        crate::linux_extra::F_GETDELEG | crate::linux_extra::F_SETDELEG => {
             Err(kernel.counters.refuse(
                 cx.host,
                 reason::FCNTL_NOT_BUILT,

@@ -844,6 +844,7 @@ impl Client {
                 write_hint: 0,
                 watches: Vec::new(),
                 dnotify: Vec::new(),
+                leases: Vec::new(),
                 linkable: false,
             }));
             self.state

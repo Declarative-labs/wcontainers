@@ -15,6 +15,7 @@ pub(crate) mod inotify;
 mod io;
 mod ioctl;
 pub(crate) mod ipc;
+pub(crate) mod lease;
 mod list;
 mod memfd;
 mod memory;

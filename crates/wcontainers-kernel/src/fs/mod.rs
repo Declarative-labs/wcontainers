@@ -320,6 +320,8 @@ pub(crate) struct Inode {
     pub watches: Vec<crate::syscall::inotify::Mark>,
     /// The F_NOTIFY requests on it, newest first.
     pub dnotify: Vec<crate::syscall::dnotify::Mark>,
+    /// The leases open files hold on it.
+    pub leases: Vec<crate::syscall::lease::Lease>,
     /// Made by `O_TMPFILE` without `O_EXCL` and not linked yet, so a link may name it though it has
     /// no links (`I_LINKABLE`).
     pub linkable: bool,
@@ -1202,6 +1204,7 @@ pub(crate) fn new_inode(fs: FileSystem, ino: u64, new: New) -> Result<Node, Errn
         write_hint: 0,
         watches: Vec::new(),
         dnotify: Vec::new(),
+        leases: Vec::new(),
         linkable: false,
     })))
 }
