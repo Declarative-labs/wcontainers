@@ -233,7 +233,8 @@ pub(super) fn send(
     };
     let mut at = 0;
     let mut replies: Vec<Vec<u8>> = Vec::new();
-    while data.len() - at >= HEADER {
+    // The last message's alignment may reach past the end (`netlink_rcv_skb` pulls what is left).
+    while data.len().saturating_sub(at) >= HEADER {
         let request = &data[at..];
         let length = u32::from_le_bytes(request[..4].try_into().expect("4 bytes")) as usize;
         if length < HEADER || length > request.len() {
