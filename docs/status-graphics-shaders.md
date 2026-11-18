@@ -459,7 +459,11 @@ Next (in order):
   vertex's. The exact routes are the front's: lists drawn with each primitive's indices rotated
   ((a, b, c) as (c, a, b), winding kept), strips and fans made lists first. If that holds, the flag
   has no use and the interface could drop it; until decided it stays refused by name.
-- Filtering and border in the program (both read
+- Filtering in the program next (G4 needs it for an R32_FLOAT depth sampled through a linear
+  sampler): in the `samples` callee, the level of detail from the coordinate's derivatives and the
+  view's size, then bilinear taps by `textureLoad` on one or two levels with the address modes of
+  `SamplerState` applied per tap; border colour then falls out of it (a tap outside the level reads
+  `BorderColor`), so border with point filtering alone is not worth building apart. Both read
   `HelperValue::SamplerState` as mirror-once does; border with linear filtering needs the filter in
   the program too), decoded textures
   and targets written in the program, pulled vertices, constants through a texture, typed buffers
@@ -646,6 +650,12 @@ Run 14, 2026-11-17, counts only:
   against the plain programs' uniform blocks, on WebGL 2 and WebGPU, by both routes: 0 of 4096 texels
   differ in all 8 (allowance 0). Every earlier comparison as in run 13. Windows clippy with warnings
   denied passes.
+- `tests/draw.rs` on the changed shared harness: all 3 tests pass (`run14/draw-plain.log`).
+- Laptop (i7-8750H, load average 0 to 0.4), end of run: the whole suite with every corpus
+  (`--include-ignored --skip mutated`, the plan's corpus and the real programs' shaders) passes, every
+  verdict and cache record as recorded (corpus test 175 s; `run14/full-suite.log`); clippy with
+  warnings denied passes. Not re-run: Chrome's compile and the WebAssembly comparison (the plain
+  conversions did not change; only the new variants' paths did).
 
 Run 13, 2026-11-17, counts only:
 - `tests/variant_draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, about 2.3 s,
