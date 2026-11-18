@@ -6,6 +6,7 @@
 
 pub(crate) mod backend;
 pub(crate) mod dev;
+pub(crate) mod mounts;
 pub(crate) mod proc;
 
 use alloc::collections::BTreeMap;

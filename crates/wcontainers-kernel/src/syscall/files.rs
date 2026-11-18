@@ -821,7 +821,7 @@ pub(super) fn proc_contents(
         proc::Entry::ProcessFile(_, ProcessFile::Stat) => Some(0),
         proc::Entry::ProcessFile(_, ProcessFile::Statm) => Some(1),
         proc::Entry::ProcessFile(_, ProcessFile::Status) => Some(2),
-        proc::Entry::ProcessFile(_, ProcessFile::Mounts) => Some(3),
+        proc::Entry::ProcessFile(_, ProcessFile::Mounts | ProcessFile::Mountinfo) => Some(3),
         proc::Entry::Global(index) if proc::GLOBAL[*index].0 == "meminfo" => Some(4),
         _ => None,
     };
@@ -833,7 +833,6 @@ pub(super) fn proc_contents(
     let uptime = cx.monotonic().saturating_sub(kernel.boot_monotonic);
     let mut fresh = [0u8; 16];
     cx.host.random(&mut fresh);
-    let mounts = mount_table();
     let memory_in_use = kernel.memory_in_use();
     let cpu = &mut *cx.cpu;
     let mut read_memory = |process: &crate::process::Process, start: u64, length: u64| {
@@ -860,22 +859,11 @@ pub(super) fn proc_contents(
             boot_id: kernel_ref.boot_id,
             fresh_random: fresh,
             read_memory: &mut read_memory,
-            mounts: &mounts,
+            mounts: &kernel_ref.files.mounts,
             memory_in_use,
         };
         proc::contents(&mut source, entry)
     })
-}
-
-/// The mounts of a default Docker container, as `/proc/<pid>/mounts` lists them here.
-fn mount_table() -> alloc::string::String {
-    alloc::string::String::from(
-        "tmpfs / tmpfs rw,relatime 0 0\n\
-         proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n\
-         tmpfs /dev tmpfs rw,nosuid,size=65536k,mode=755 0 0\n\
-         mqueue /dev/mqueue mqueue rw,nosuid,nodev,noexec,relatime 0 0\n\
-         shm /dev/shm tmpfs rw,nosuid,nodev,noexec,relatime,size=65536k 0 0\n",
-    )
 }
 
 pub(super) fn mkdirat(

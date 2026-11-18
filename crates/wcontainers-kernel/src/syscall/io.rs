@@ -2987,7 +2987,9 @@ pub(super) fn poll_mask(kernel: &Kernel, tid: Tid, file: &FileRef) -> u16 {
             (POLLIN | POLLRDNORM) as u16
         }
         // `mounts_poll`: the mount table cannot change within the container.
-        Content::Proc(Entry::ProcessFile(_, ProcessFile::Mounts)) => (POLLIN | POLLRDNORM) as u16,
+        Content::Proc(Entry::ProcessFile(_, ProcessFile::Mounts | ProcessFile::Mountinfo)) => {
+            (POLLIN | POLLRDNORM) as u16
+        }
         Content::Pidfd(..) => {
             drop(node);
             super::pidfd::poll(kernel, &file)

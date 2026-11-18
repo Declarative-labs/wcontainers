@@ -121,6 +121,7 @@ pub(crate) enum ProcessFile {
     Statm,
     Status,
     Mounts,
+    Mountinfo,
     Limits,
     Cgroup,
 }
@@ -255,6 +256,7 @@ const PROCESS_FILES: &[(&[u8], ProcessFile)] = &[
     (b"environ", ProcessFile::Environ),
     (b"limits", ProcessFile::Limits),
     (b"maps", ProcessFile::Maps),
+    (b"mountinfo", ProcessFile::Mountinfo),
     (b"mounts", ProcessFile::Mounts),
     (b"stat", ProcessFile::Stat),
     (b"statm", ProcessFile::Statm),
@@ -506,7 +508,7 @@ pub(crate) fn root_links(processes: usize) -> u32 {
 /// sysctls (`proc_sys_poll`).
 pub(crate) fn polls(entry: &Entry) -> bool {
     match entry {
-        Entry::ProcessFile(_, ProcessFile::Mounts) => true,
+        Entry::ProcessFile(_, ProcessFile::Mounts | ProcessFile::Mountinfo) => true,
         Entry::Global(index) => GLOBAL[*index].0.starts_with("sys/"),
         _ => false,
     }
@@ -1323,7 +1325,7 @@ pub(crate) fn open_check(processes: &BTreeMap<Pid, Process>, entry: &Entry) -> R
     {
         match file {
             ProcessFile::Environ | ProcessFile::Auxv => return Err(Errno::ESRCH),
-            ProcessFile::Mounts => return Err(Errno::EINVAL),
+            ProcessFile::Mounts | ProcessFile::Mountinfo => return Err(Errno::EINVAL),
             _ => {}
         }
     }
@@ -1452,7 +1454,7 @@ pub(crate) struct Source<'a> {
     /// Reads a range of a process's memory; bytes it cannot read end the result.
     pub read_memory: &'a mut dyn FnMut(&Process, u64, u64) -> Vec<u8>,
     /// The mount table as `/proc/<pid>/mounts` shows it.
-    pub mounts: &'a str,
+    pub mounts: &'a [super::mounts::Mount],
     /// The memory in use and what of it tmpfs holds, in bytes.
     pub memory_in_use: (u64, u64),
 }
@@ -1691,7 +1693,8 @@ fn process_file(
                 1 + shown.filters,
             );
         }
-        ProcessFile::Mounts => out.push_str(source.mounts),
+        ProcessFile::Mounts => out.push_str(&super::mounts::mounts(source.mounts)),
+        ProcessFile::Mountinfo => out.push_str(&super::mounts::mountinfo(source.mounts)),
         ProcessFile::Limits => {
             const NAMES: [(&str, &str); 16] = [
                 ("Max cpu time", "seconds"),

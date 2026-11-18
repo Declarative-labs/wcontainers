@@ -122,6 +122,8 @@ pub(crate) struct Files {
     pub backend: Option<Rc<fs::backend::Client>>,
     /// The directories file systems are mounted on.
     pub mount_points: Vec<Node>,
+    /// The mount table, in the order the mounts were made.
+    pub mounts: Vec<fs::mounts::Mount>,
 }
 
 /// All kernel state. It is plain data, so a container is saved by copying it with the guest memories.
@@ -279,6 +281,7 @@ impl Kernel {
                 terminals: BTreeMap::new(),
                 backend: None,
                 mount_points: Vec::new(),
+                mounts: Vec::new(),
             },
             machine: Machine {
                 release: "7.0.0-wcontainers",
