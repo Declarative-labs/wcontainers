@@ -4,54 +4,63 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 
 ## Where things stand
 
-- N0 (the plan) is written (run 1) and revised three times (runs 2 to 4, 2026-11-18) to settle the findings
-  of three independent checks. No code in the repository.
+- N0 (the plan) is written (run 1) and revised four times (runs 2 to 5, 2026-11-18) to settle the findings
+  of four independent checks. No code in the repository.
 - Next: the owner's decisions of plan section 10, and N1 (the floor on Hypervisor.framework). N1 and N2 need
   nothing from other tracks (only decision 2's names; the suggested ones are used until the owner rules).
   N3, the first real programs, needs decision 1 and its changes R1 and R3 (runtime track; the test crate's
-  half by the kernel track) and A1. N5 needs decisions 1, 10 and 12 (R2, R3, R4 only under option A).
+  half by the kernel track) and A1. N5 needs decisions 1, 10 and 12 (R2, R3, R4 only under option A). N7
+  needs R5.
 - The magic-number sweep the brief asks for: this track owns no crate yet (only docs/native.md and this
   file), so there was nothing to sweep. The plan names `wcontainers_abi::PAGE_SIZE` as the one page size and
   says every number it names is one named constant in code.
 
-## What run 4 changed in the plan, finding by finding (third check)
+## What run 5 changed in the plan, finding by finding (fourth check)
 
-- Float flags (blocking): new Float status route (plan 3.4). FPSR reads and writes and FPCR writes on ARM64;
-  `ldmxcsr`, `vldmxcsr`, `stmxcsr`, `vstmxcsr`, `fxsave`, `fxrstor`, `xsave`, `xsavec`, `xsaveopt`, `xrstor`
-  on x86-64. Each is wrapped in a call into the inside before and after. The floor keeps the block's float
-  status by one rule at every entry: the block takes the hardware's flags only while they are kept
-  (tracking on, or the mode not the default); otherwise it keeps its own, plus QC on ARM64. Every return
-  loads the hardware from the block. The second call is a roll-forward fix-up in section 4. The static
-  test's classes now split reads and writes and record the float hook's `ReadStatus`. The differential test
-  runs every form after a float operation that raised flags.
-- Hint space (blocking): new Nothing route for every `I::Nothing` form: the hint space, `prfm`, the
-  barriers and `clrex` (arm64/decode.rs:403-405, :704-706). Nothing is emitted for them. The Trap text is
-  corrected. A static rule says a meaning that touches nothing must be Nothing. Registers are seeded over
-  all 64 bits. nTWI, nTWE, the PAuth enables and BT0 are clear in SCTLR_EL1.
-- Speed claim (blocking): corrected. Round 3's untranslated runs over the eight workloads cost +8.5% cycles
-  with 4 KiB pages, +2.8% with 2 MiB blocks and +2.9% with a 16 KiB granule (recomputed here, vmcost.out).
-  The plan now maps 2 MiB entries wherever a whole aligned range is alike, splits them when only part
-  changes (counted), and measures the contiguous bit at N4. The speed method also records an untranslated
-  run on the floor. Decision 6 now says the bar's margin pays for the virtual machine.
-- Option C: plan 5.1 and decision 10 now say that on Hypervisor.framework it needs EL2 enabled. With EL2
-  disabled, PMU accesses exit to the host. With EL2 enabled, the virtual CPU still says PMUVer 0, but the
-  host can set it (measured). N1's case is named.
-- Instruction cache: a new rule in 3.2. Every write of code or slots is followed by dc cvau / ic ivau / dsb
-  / isb, by the inside, before anything runs it; this covers monitor-written frames, load-time addresses,
-  slots and replay's translations. N1 has a late-write case.
-- Stack-frame exemption: named in 7.2 (the WebAssembly output's difference from the reference), with new
-  decision 13.
-- `access`: 3.1 now says every route's guest access goes through it.
-- Replay: retranslation only; patching is rejected with its reason (5.7).
-- One driver: `Container::run` runs `Stepper::drive` itself inside. The policy's `idle` is a link request
-  that waits in the services (6.1, R2).
-- TPIDRRO_EL0 holds the ARM64 stop word, so the check is `mrs; sub; cbz`. ARM64 has no thread page except
-  under option B. 3.3, 5.3, 7.2, decision 4 and N1 are updated.
-- Slow-path list: added "turn limited by a count alone", "address-space identifiers ran out", "guest-physical
-  space full", "address above the ceiling", "large entry split", "back end refused by the probe", and the
-  float status reads under the WebAssembly output's names.
-- N6 now names T2 and T3. N4 and section 8 say which count definition the bar uses while none is chosen:
-  every candidate that passes the property test, each against its own cost plus 10 points.
+- Commit point (blocking): section 4 restated. Before the commit point a sequence may write withheld
+  registers and relocate guest values (stand-in moves), never change one; the position map records where
+  each relocated value is, and the floor puts them back on both sides. The closed set of roll-forward
+  fix-ups now has: a constant into a destination built in place (`adr`, `adrp`, x30 of `blr x30`), slot to
+  guest address, the exclusive monitor (a load exclusive's record written whole, the value read again; a
+  store exclusive's status and forgotten monitor), and the float status second call. Stand-ins (3.3): t
+  where one withheld register is named, else a guest register saved first. Load exclusive (3.4): address in
+  t, one load the commit point, record after. Store exclusive: `casp` through four stand-ins, status
+  written last as the meaning does.
+- Saving (blocking): new R5 (runtime track, kernel track's test crate). The test crate's `fork` save cannot
+  carry a virtual machine (the check's forkvm.out and kvmfork.out), so `stopped` only decides and the back
+  end saves: the WebAssembly back end by the same fork moved into it, the native one by its image brought
+  back in the same machine. Plan 5.8, 6.2, 7.1, N7 and decision 1 updated.
+- Partial loads and stores (blocking): new Split route (3.4). Every ARM64 load or store of more than 16
+  bytes takes a page test (3 or 4 instructions, no flags) and, when it crosses, a probe of both pages before
+  the copied instruction. Measured below: on the M5 loads over 16 bytes also change registers before
+  faulting, which the check had not seen.
+- Host-model results (blocking): the x87 transcendentals are routed inside (`astro-float`, as the meanings).
+  The x87 pointer fields of every x87 save are written as the meaning writes them (`fnstenv`, `fstenv`,
+  `fnsave`, `fsave` added to the Float status route). `rcpps` and kin, undefined flags and loads and stores
+  outside Split are copied only on a host model whose new behaviour probe (5.8) matches the meanings. A host
+  that differs runs the WebAssembly back end. New decision 14 asks refuse (recommended), route always, or
+  route per host.
+- Speed bar (blocking): the system call half is now the back end's own share of `getppid` (per-call time
+  less the kernel's own share), with program, statistic and the same bootstrap rule (8, decision 6).
+- Unpredictable encodings (minor): routed by register fields with t in place of the colliding register
+  (3.4); the differential test draws register fields with every collision.
+- Virtual CPUs (minor): an idle container parks its stack and frees its virtual CPU. The pool grows to the
+  containers ready at once, up to the platform's limit, and past it "waited for a virtual CPU" is counted
+  (5.1, 6.1).
+- N11 bar (3) now waits for K3. The RIP-relative cost is stated and measured statically (3.4). The
+  slow-path list gained the stand-in, the Split test, the x87 transcendentals and the virtual CPU wait. The
+  count forms' range is now +5.1% to +17.2% (lines 115-118). The `flags_word_function` citation is fixed.
+- Found in this run, not by the check: `clrex` is not decoded as nothing. The forms decoder takes it first
+  as `ClearExclusive`, which forgets the monitor (arm64/decode.rs:13, decode_forms.rs:63,
+  memory.rs:357-360). The plan had it in the Nothing route; it is now the Exclusive route's.
+
+## What run 4 changed (short)
+
+Float status route (FPSR, FPCR, MXCSR and the x86 saves wrapped by two calls into the inside); Nothing route
+for the hint space, `prfm` and barriers; the virtual machine's own cost recomputed (+8.5% cycles with 4 KiB
+pages, +2.8% with 2 MiB blocks) and 2 MiB entries with counted splits; option C needs EL2 on
+Hypervisor.framework; instruction-cache maintenance after every code write; the stack-frame exemption
+named (decision 13); TPIDRRO_EL0 holds the ARM64 stop word; retranslation only for replay.
 
 ## What run 3 changed (short)
 
@@ -124,9 +133,26 @@ Experiments (under pyro-parked/wcontainers-scratch/native/experiments):
   mac-summary-main.json and mac-summary-16k.json; vmcost.out). Geometric mean of median ratios: 4 KiB pages
   cycles 1.0846 and instructions 1.0092; 2 MiB blocks 1.0279 and 1.0068; 16 KiB granule 1.0294 and 1.0055.
   This agrees with the third check.
+- Page-crossing stores and loads on this M5 (run 5; n0r5/partial2.c and partload.c, partial2.out and
+  partload.out; EL0 under macOS with its 16 KiB pages; three runs of every byte offset; load 56 to 64).
+  Stores where the second page refuses: `stp q`, `stnp q`, `st1` and `st4` of four registers write the
+  registers wholly in the first page (48 of 93 and 144 of 189 cases). `str` of w, x and q, `stp` of w, x
+  and d, `st1` of one register and of two 8-byte ones write nothing. When the first page refuses, no store
+  writes in the second. Loads onto an unreadable page: `ldp q` (48 of 93), `ld1` (144 of 189) and `ld4`
+  (96 of 189) of four registers change destination registers before faulting. `ldr x`, `ldp x` and `ldr q`
+  change none.
+- The same on the Linux laptop (run 5; n0r5/partial86.c, partial86.out; i7-8750H, user mode, core 4, load
+  4.9 to 6.1): `mov` of 8 bytes, `movdqu`, `vmovdqu` of 32 bytes, `fxsave64` and `xsave64` crossing onto a
+  read-only page wrote nothing, and `movdqu` and `vmovdqu` loads onto an unreadable page left xmm0 as it
+  was, at every offset tried (16-byte steps for `fxsave64`, 64 for `xsave64`).
+- RIP-relative operands (run 5; n0r5/rip86.py, rip86.out; on the laptop over the same 8 files as regs86,
+  5,332,103 instructions): `lea` 23.6 per 1000, other uses 19.3 per 1000 (0.7 in libpcre2 to 61.9 in xz).
+- `astro-float` 0.9.6 (run 5, crates.io): MIT; features `std` (in the default set), `random`, `serde`, so it
+  is expected to build `no_std` (not built).
 - The independent checks' experiments the plan cites (check-n0/, check-n0b/, check-n0c/: pmu_fpsr.out cases
-  P, F and H; icache_late.out): execute-only EL0 pages work and
-  refuse loads and stores (xo.out cases 1 to 5); misaligned LSE2 accesses complete at EL0 in the machine
+  P, F and H; icache_late.out; check-n0d/: forkvm.out, kvmfork.out, partial.out, unpred.out):
+  execute-only EL0 pages work and refuse loads and stores (xo.out cases 1 to 5); misaligned LSE2 accesses
+  complete at EL0 in the machine
   (case 6); a second `hv_vm_create` in one process returns HV_BUSY (twovm.out); `cas` and kin fault on a
   read-only page whatever the compare (casro.out).
 - Licences, crates.io on 2026-11-18: kvm-ioctls 0.25.1 Apache-2.0 OR MIT; kvm-bindings 0.14.2 Apache-2.0;
@@ -138,10 +164,12 @@ Experiments (under pyro-parked/wcontainers-scratch/native/experiments):
 
 Not checked, and named in the plan as such: `hv_gic_set_spi` (N1), a guest performance counter's overflow
 interrupt (decision 10 option C; N1 with EL2 enabled and PMUVer set, N8), 2 MiB entries and the contiguous
-bit in the floor (N1, N4), the instruction-cache maintenance sequence curing the late-write case (N1), `KVM_IRQFD`, the DR0 breakpoint after a `rep`, TF single step
-under KVM and its #DB cost, UMIP and PCID under the laptop's KVM, MADV_DONTNEED give-back (N8), the KVM
+bit in the floor (N1, N4), the instruction-cache maintenance sequence curing the late-write case (N1),
+`KVM_IRQFD`, the DR0 breakpoint after a `rep`, TF single step under KVM and its #DB cost, UMIP and PCID under
+the laptop's KVM, MADV_DONTNEED give-back (N8), the KVM
 ARM64 doorbell (no KVM ARM64 machine at hand; N10), the store exclusive under interrupts (N6), the handoff
-cost of a step to a pool thread (N5).
+cost of a step to a pool thread (N5), `KVM_CAP_MAX_VCPUS` on the laptop (N8), the behaviour probe's time
+(N2, N9), the Split route's page test cost (N4).
 
 ## How to run
 
@@ -154,15 +182,19 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 ## Departures from the plan
 
-None yet.
+- The brief's addendum asks that our pages the guest can reach either fault as on Linux or be named and
+  counted. The plan names them (plan 7.2) but does not count accesses to them: counting would need a check
+  on every guest access. Decision 4 puts this to the owner.
 
 ## For the orchestrator
 
-- The plan asks changes of other tracks (plan section 6.2): R1, R2, R3 of the runtime track (R3 also the
-  kernel track's test crate); R4 only under option A of decision 10; T1, T2, T3 of the translator track; X1
-  with the x86 track's meanings; K2 is now the low-first placement runtime.md section 8 already asks of the
+- The plan asks changes of other tracks (plan section 6.2): R1, R2, R3, R5 of the runtime track (R3 and R5
+  also the kernel track's test crate); R4 only under option A of decision 10; T1, T2, T3 of the translator
+  track; X1 with the x86 track's meanings; K2 is now the low-first placement runtime.md section 8 already asks
+  of the
   kernel track; K3 of the kernel track for the other project.
-- Thirteen owner's decisions are in plan section 10; 1, 10 and 12 change interfaces or the ruling's letter;
+- Fourteen owner's decisions are in plan section 10; 1, 10 and 12 change interfaces or the ruling's letter;
+  14 decides whether a host whose behaviour probe differs (another x86-64 vendor, say) is refused natively;
   13 asks whether the translator track closes its stack-frame exemption (tr/contract.rs:20-22), a place
   where the WebAssembly output differs from the reference and from the native output.
 - The laptop keeps ~/native-plan (a Rust toolchain, the copied sources, and regs/ with the x86 count script)
