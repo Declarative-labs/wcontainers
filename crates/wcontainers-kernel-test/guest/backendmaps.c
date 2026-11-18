@@ -118,6 +118,23 @@ int main(void) {
     pread(data, got, PAGE, 46 * PAGE);
     printf("private %lx %lx %lx file %lx\n", sum(own + 45 * PAGE, PAGE), sum(own + 46 * PAGE, PAGE),
            sum(own + 47 * PAGE, PAGE), sum(got, PAGE));
+    // A pipe write from anonymous memory running on into a mapping's pages not read yet.
+    int spanned = open("span", O_RDWR | O_CREAT | O_TRUNC, 0644);
+    for (int i = 0; i < 4; i++) {
+        memset(page, 'a' + i, PAGE);
+        write(spanned, page, PAGE);
+    }
+    unsigned char *region =
+        mmap(NULL, 5 * PAGE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    memset(region, 'A', PAGE);
+    mmap(region + PAGE, 4 * PAGE, PROT_READ, MAP_PRIVATE | MAP_FIXED, spanned, 0);
+    printf("write from anonymous then file %zd\n", write(pipes[1], region, 5 * PAGE));
+    static unsigned char back[5 * PAGE];
+    long piped = read(pipes[0], back, sizeof back);
+    printf("read back %ld %lx\n", piped, sum(back, piped > 0 ? piped : 0));
+    munmap(region, 5 * PAGE);
+    close(spanned);
+    unlink("span");
     // Shrunk while mapped: past the end is SIGBUS, before it the file's bytes.
     ftruncate(data, 32 * PAGE + 10);
     signal(SIGBUS, caught);

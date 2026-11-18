@@ -388,6 +388,20 @@ pub(super) fn write(
         }
         (out, false)
     };
+    // A fault on pages of a mapped backend file not read yet waits for them, as Linux's copy
+    // waits for its fault; else it is EFAULT.
+    let fault = |kernel: &Kernel| {
+        if kernel
+            .files
+            .backend
+            .as_ref()
+            .is_some_and(|client| client.waits_for_pages(tid))
+        {
+            Errno::PARKED
+        } else {
+            Errno::EFAULT
+        }
+    };
     let result = loop {
         if with_pipe(file, |pipe| pipe.readers()) == 0 {
             let process = kernel.process_of(tid);
@@ -408,7 +422,7 @@ pub(super) fn write(
             // write and is dropped.
             let (bytes, faulted) = next(kernel, cx, done, PAGE_SIZE);
             if faulted {
-                break Err(Errno::EFAULT);
+                break Err(fault(kernel));
             }
             cx.host.output(stream, &bytes);
             done += bytes.len() as u64;
@@ -421,7 +435,7 @@ pub(super) fn write(
             if merge > 0 {
                 let (bytes, faulted) = next(kernel, cx, 0, merge);
                 if faulted {
-                    break Err(Errno::EFAULT);
+                    break Err(fault(kernel));
                 }
                 with_pipe(file, |pipe| pipe.merge(&bytes));
                 done = merge;
@@ -433,7 +447,7 @@ pub(super) fn write(
         if !with_pipe(file, |pipe| pipe.is_full()) {
             let (bytes, faulted) = next(kernel, cx, done, PAGE_SIZE);
             if faulted {
-                break Err(Errno::EFAULT);
+                break Err(fault(kernel));
             }
             done += bytes.len() as u64;
             with_pipe(file, |pipe| pipe.push(bytes, packet));
@@ -462,6 +476,17 @@ pub(super) fn write(
         kernel.park(tid, channel(&node));
         return Err(Errno::PARKED);
     };
+    // Waiting for backend pages keeps what is written; readers hear of what is new.
+    if result == Err(Errno::PARKED) {
+        if kernel.threads[&tid].call.progress != done {
+            let thread = kernel.thread_mut(tid);
+            thread.call.started = true;
+            thread.call.progress = done;
+            kernel.wake_poll(channel(&node), EPOLLIN | EPOLLRDNORM);
+            signal_ends(kernel, cx, &node, true);
+        }
+        return Err(Errno::PARKED);
+    }
     if done > 0 {
         kernel.wake_poll(channel(&node), EPOLLIN | EPOLLRDNORM);
     }
