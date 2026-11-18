@@ -426,10 +426,10 @@ impl IDXGISwapChain4_Impl for SwapChain_Impl {
     fn SetHDRMetaData(
         &self,
         r#type: DXGI_HDR_METADATA_TYPE,
-        _size: u32,
-        _pmetadata: *const core::ffi::c_void,
+        size: u32,
+        pmetadata: *const core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetHDRMetaData"))
+        SwapChain::SetHDRMetaData(self, r#type, size, pmetadata)
     }
 }
 
