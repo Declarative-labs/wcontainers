@@ -326,7 +326,7 @@ pub struct WebGl {
     last_log: String,
     surface: Option<SurfaceState>,
     /// The depth and stencil read programs, by [`Fetch`], made at their first use.
-    depth_read: [Option<depth::DepthRead>; 4],
+    depth_read: [Option<depth::DepthRead>; 5],
     /// The stencil bit draws' program, made at its first use.
     bits_program: Option<glow::Program>,
     /// The stencil write programs for 2D and 2D array sources.
@@ -346,13 +346,29 @@ type CopyProgram = (
     Option<glow::UniformLocation>,
 );
 
-/// What the back end's own fetch draws read: depth or stencil, of a 2D or a 2D array texture.
+/// What the back end's own fetch draws read: depth or stencil of a 2D or 2D array texture, or depth
+/// of a cube.
 #[derive(Clone, Copy, Debug)]
 enum Fetch {
     Depth2D,
     DepthArray,
+    DepthCube,
     Stencil2D,
     StencilArray,
+}
+
+impl Fetch {
+    fn shape(self) -> depth::Shape {
+        match self {
+            Fetch::Depth2D | Fetch::Stencil2D => depth::Shape::D2,
+            Fetch::DepthArray | Fetch::StencilArray => depth::Shape::Array,
+            Fetch::DepthCube => depth::Shape::Cube,
+        }
+    }
+
+    fn stencil(self) -> bool {
+        matches!(self, Fetch::Stencil2D | Fetch::StencilArray)
+    }
 }
 
 impl WebGl {
@@ -413,7 +429,7 @@ impl WebGl {
             twins: 0,
             last_log: String::new(),
             surface: None,
-            depth_read: [None, None, None, None],
+            depth_read: Default::default(),
             bits_program: None,
             stencil_write: [None, None],
             copy_programs: HashMap::new(),
@@ -1387,34 +1403,13 @@ impl WebGl {
         let kind = match src.target {
             glow::TEXTURE_2D => Fetch::Depth2D,
             glow::TEXTURE_2D_ARRAY => Fetch::DepthArray,
-            // GLSL ES 3.00 fetches no texel of a cube: the faces are blitted into a 2D array first.
-            _ => {
-                let flat = self.create_texture(&TextureDesc {
-                    dimension: TextureDimension::D2,
-                    format: src.desc.format,
-                    width: extent.width,
-                    height: extent.height,
-                    depth_or_layers: extent.depth_or_layers,
-                    mip_levels: 1,
-                    samples: 1,
-                    usage: TextureUsage::RENDER | TextureUsage::SAMPLE,
-                    cube: false,
-                    reinterpret: false,
-                })?;
-                let at = TextureRegion {
-                    texture: &flat,
-                    mip: 0,
-                    layer: 0,
-                    origin: Origin::default(),
-                    stencil: region.stencil,
-                };
-                self.blit_depth(region, &at, extent);
-                let read = self.depth_by_draw(&at, extent);
-                self.destroy(Object::Texture(flat.clone()));
-                return read;
-            }
+            _ => Fetch::DepthCube,
         };
-        let bits = region.stencil && !self.extensions.contains("WEBGL_stencil_texturing");
+        // The stencil of a cube sampled through WEBGL_stencil_texturing reads 0 in Chrome 157 on the
+        // RTX 3080, so cubes count their stencil bits as contexts without the extension do.
+        let bits = region.stencil
+            && (!self.extensions.contains("WEBGL_stencil_texturing")
+                || matches!(kind, Fetch::DepthCube));
         let kind = match kind {
             _ if bits => Fetch::Depth2D,
             Fetch::Depth2D if region.stencil => Fetch::Stencil2D,
@@ -1485,17 +1480,13 @@ impl WebGl {
     ) -> Result<(), GpuError> {
         let k = kind as usize;
         if self.depth_read[k].is_none() {
-            match depth::build(
-                &self.gl,
-                matches!(kind, Fetch::DepthArray | Fetch::StencilArray),
-                matches!(kind, Fetch::Stencil2D | Fetch::StencilArray),
-            ) {
+            match depth::build(&self.gl, kind.shape(), kind.stencil()) {
                 Ok(p) => self.depth_read[k] = Some(p),
                 Err(log) => return Err(self.own_program_failed(log)),
             }
         }
         self.bind_source(src, mip)?;
-        let stencil = matches!(kind, Fetch::Stencil2D | Fetch::StencilArray);
+        let stencil = kind.stencil();
         self.aspect(src, stencil);
         let program = self.depth_read[k].as_ref().expect("built above");
         // SAFETY: plain GL calls; the program is alive.
