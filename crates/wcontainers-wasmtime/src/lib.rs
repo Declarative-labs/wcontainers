@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::Infallible;
 use std::mem::MaybeUninit;
 use std::ops::Range;
+use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -57,14 +58,33 @@ pub mod reason {
 }
 
 /// What every back end of one engine shares: the engine, the thread module, the pool translation and
-/// compiling run in, the probe's answer, and the compiled translations kept in memory.
+/// compiling run in, the probe's answer, the compiled translations kept in memory, and the directory
+/// they are kept in between runs.
 pub struct Compiler<G: Guest> {
     engine: Engine,
     thread_module: Module,
     pool: rayon::ThreadPool,
     host: G::Host,
     modules: Mutex<HashMap<Key, Arc<Compiled>>>,
+    directory: Option<PathBuf>,
 }
+
+/// Where a translation a back end used came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+    /// Compiled modules kept in memory.
+    Memory,
+    /// The cache's directory, in the nanoseconds reading and loading took.
+    Disk(u64),
+    /// Made now, in the nanoseconds translating and compiling took.
+    Made { translating: u64, compiling: u64 },
+}
+
+/// Names the build of the translator and its guests, made from their sources by the build script.
+const TRANSLATOR_BUILD: &str = env!("WCONTAINERS_TRANSLATOR_BUILD");
+
+/// The first bytes of a cache file.
+const CACHE_MAGIC: &[u8; 8] = b"wcxlate1";
 
 /// What a compiled translation is kept under.
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -85,7 +105,9 @@ struct Compiled {
 }
 
 impl<G: Guest> Compiler<G> {
-    pub fn new() -> Arc<Self> {
+    /// A compiler keeping translations in memory, and in `directory` between runs when given one.
+    /// Files there are loaded as compiled code, so the directory must be written only by compilers.
+    pub fn new(directory: Option<PathBuf>) -> Arc<Self> {
         let mut config = Config::new();
         config
             .wasm_tail_call(true)
@@ -121,11 +143,84 @@ impl<G: Guest> Compiler<G> {
             pool,
             host,
             modules: Mutex::new(HashMap::new()),
+            directory,
         })
     }
 
-    /// The compiled translation of a blob from its starts, from the cache or made now; whether it was
-    /// in the cache, and the nanoseconds translating and compiling took.
+    /// The file a key's translation is kept in: every part of the key and everything else the
+    /// compiled code depends on, hashed.
+    fn file(&self, directory: &Path, key: &Key) -> PathBuf {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(TRANSLATOR_BUILD.as_bytes());
+        // The back end, the guest, the host's answer, and the output's memory widths.
+        hasher.update(b"wasmtime guest-memory-64 state-memory-32");
+        hasher.update(&(G::ID as u32).to_le_bytes());
+        hasher.update(&G::host_key(self.host).to_le_bytes());
+        hasher.update(&key.offer.to_le_bytes());
+        hasher.update(format!("{:?} {:?}", key.look_ahead, key.optimise).as_bytes());
+        hasher.update(&key.hash);
+        for start in &key.starts {
+            hasher.update(&start.to_le_bytes());
+        }
+        directory.join(hasher.finalize().to_hex().as_str())
+    }
+
+    /// A translation from the cache's directory; none when it is not there or wasmtime refuses it.
+    fn load(&self, file: &Path) -> Option<Compiled> {
+        let bytes = std::fs::read(file).ok()?;
+        let mut rest = bytes.strip_prefix(CACHE_MAGIC)?;
+        let mut take = |length: usize| -> Option<&[u8]> {
+            let (taken, after) = rest.split_at_checked(length)?;
+            rest = after;
+            Some(taken)
+        };
+        let word = |bytes: &[u8]| u64::from_le_bytes(bytes.try_into().expect("eight bytes"));
+        let count = word(take(8)?);
+        let (mut modules, mut pieces) = (Vec::new(), Vec::new());
+        for _ in 0..count {
+            let length = usize::try_from(word(take(8)?)).ok()?;
+            let list: Vec<u64> = take(length.checked_mul(8)?)?
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|bytes| u64::from_le_bytes(*bytes))
+                .collect();
+            let length = usize::try_from(word(take(8)?)).ok()?;
+            // SAFETY: the file was written by `store` from wasmtime's own serialisation, and
+            // wasmtime checks it was made by a compatible engine and build.
+            let module = unsafe { Module::deserialize(&self.engine, take(length)?) }.ok()?;
+            modules.push(module);
+            pieces.push(list);
+        }
+        Some(Compiled {
+            modules,
+            count: pieces.iter().map(|p| p.len() as u32).sum(),
+            pieces,
+        })
+    }
+
+    /// Keeps a translation in the cache's directory, written whole or not at all.
+    fn store(&self, file: &Path, compiled: &Compiled) {
+        let mut bytes = CACHE_MAGIC.to_vec();
+        bytes.extend((compiled.modules.len() as u64).to_le_bytes());
+        for (module, pieces) in compiled.modules.iter().zip(&compiled.pieces) {
+            bytes.extend((pieces.len() as u64).to_le_bytes());
+            bytes.extend(pieces.iter().flat_map(|p| p.to_le_bytes()));
+            let serialised = module.serialize().expect("a compiled module serialises");
+            bytes.extend((serialised.len() as u64).to_le_bytes());
+            bytes.extend(serialised);
+        }
+        let partial = file.with_extension(format!("partial-{}", std::process::id()));
+        let written = std::fs::create_dir_all(file.parent().expect("a directory"))
+            .and_then(|()| std::fs::write(&partial, &bytes))
+            .and_then(|()| std::fs::rename(&partial, file));
+        if let Err(error) = written {
+            panic!("keeping a translation in {}: {error}", file.display());
+        }
+    }
+
+    /// The compiled translation of a blob from its starts, from the cache or made now, and where it
+    /// came from.
     fn compiled(
         &self,
         bytes: &[u8],
@@ -134,7 +229,7 @@ impl<G: Guest> Compiler<G> {
         look_ahead: LookAhead,
         optimise: Optimise,
         offer: G::Offer,
-    ) -> (Arc<Compiled>, Option<(u64, u64)>) {
+    ) -> (Arc<Compiled>, Origin) {
         starts.sort_unstable();
         starts.dedup();
         let key = Key {
@@ -145,7 +240,18 @@ impl<G: Guest> Compiler<G> {
             offer: G::offer_key(offer),
         };
         if let Some(compiled) = self.modules.lock().expect("the cache").get(&key) {
-            return (compiled.clone(), None);
+            return (compiled.clone(), Origin::Memory);
+        }
+        let file = self.directory.as_deref().map(|d| self.file(d, &key));
+        let started = Instant::now();
+        if let Some(compiled) = file.as_deref().and_then(|file| self.load(file)) {
+            let compiled = Arc::new(compiled);
+            let nanoseconds = started.elapsed().as_nanos() as u64;
+            self.modules
+                .lock()
+                .expect("the cache")
+                .insert(key, compiled.clone());
+            return (compiled, Origin::Disk(nanoseconds));
         }
         let started = Instant::now();
         let length = bytes.len() as u64;
@@ -186,11 +292,18 @@ impl<G: Guest> Compiler<G> {
             count: pieces.iter().map(|p| p.len() as u32).sum(),
             pieces,
         });
+        if let Some(file) = &file {
+            self.store(file, &compiled);
+        }
         self.modules
             .lock()
             .expect("the cache")
             .insert(key, compiled.clone());
-        (compiled, Some((translated, compiled_in)))
+        let origin = Origin::Made {
+            translating: translated,
+            compiling: compiled_in,
+        };
+        (compiled, origin)
     }
 }
 
@@ -206,8 +319,7 @@ pub struct Translated {
     /// The starts the range's ELF image gave, by source; none for a run-time piece or no image.
     pub sources: Option<Sources>,
     pub pieces: u32,
-    /// Nanoseconds translating and compiling took; none when it came from the cache.
-    pub made: Option<(u64, u64)>,
+    pub origin: Origin,
 }
 
 /// The WebAssembly back end for guest `G`.
@@ -630,7 +742,7 @@ where
         sources: Option<Sources>,
     ) -> Arc<Compiled> {
         let count = starts.len();
-        let (compiled, made) = self.compiler.compiled(
+        let (compiled, origin) = self.compiler.compiled(
             &code.bytes,
             code.hash,
             starts,
@@ -646,7 +758,7 @@ where
             starts: count,
             sources,
             pieces: compiled.count,
-            made,
+            origin,
         });
         compiled
     }

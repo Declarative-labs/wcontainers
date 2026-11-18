@@ -22,6 +22,9 @@ gimli = { version = "0.34.0", default-features = false, features = ["read"] }
 rayon = "1.12.0"
 zerocopy.workspace = true
 
+[build-dependencies]
+blake3 = "1"
+
 [dev-dependencies]
 wcontainers-arm64 = { path = "../wcontainers-arm64" }
 

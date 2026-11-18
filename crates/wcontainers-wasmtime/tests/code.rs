@@ -63,7 +63,7 @@ fn changed(cpu: &CpuSide<Arm64>) -> u64 {
 }
 
 fn notices(look_ahead: LookAhead) {
-    let mut cpu = CpuSide::<Arm64>::new(Compiler::new(), look_ahead, Optimise::Speed, ());
+    let mut cpu = CpuSide::<Arm64>::new(Compiler::new(None), look_ahead, Optimise::Speed, ());
     let memory = cpu.memory_new().unwrap();
     let rx = Permissions::READ | Permissions::EXECUTE;
     cpu.write(memory, CODE, &bytes(&ONE)).unwrap();

@@ -41,7 +41,7 @@ impl Answer for Recorder {
 }
 
 fn spin(look_ahead: LookAhead) {
-    let mut cpu = CpuSide::<Arm64>::new(Compiler::new(), look_ahead, Optimise::Speed, ());
+    let mut cpu = CpuSide::<Arm64>::new(Compiler::new(None), look_ahead, Optimise::Speed, ());
     let memory = cpu.memory_new().unwrap();
     let code: Vec<u8> = SPIN.iter().flat_map(|w| w.to_le_bytes()).collect();
     cpu.write(memory, CODE, &code).unwrap();
