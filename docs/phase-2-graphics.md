@@ -1340,7 +1340,10 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
     which WebGPU lets a draw also bind as a texture. The front binds the variant
     `VariantFlags::EARLY_TESTS`: it reads depth at `EARLY_DEPTH_BINDING` and stencil at
     `EARLY_STENCIL_BINDING` in `HELPER_SET` at the fragment's pixel (each covered sample, from the
-    input sample mask, on multisampled targets), applies the draw's compare functions, reference and
+    input sample mask, on multisampled targets; for a format without stencil, any single-sampled
+    unsigned integer texture is bound there, read only where the stencil test is on), applies the
+    draw's compare functions (as `CompareFn`'s numbers, 1 to 8, zero for a test that is off; the
+    cache keeps them, and a `wcontainers-gpu` unit test holds them), reference and
     read mask from `HelperValue::EarlyTests` to the fragment's depth with the raster block's bias added
     (the fixed bias applies after the shader, so the program adds it as `DepthBiasInShader` does), and
     discards before any side effect if no covered sample passes. The fixed tests still run after it on

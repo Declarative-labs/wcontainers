@@ -243,6 +243,16 @@ G1c run 3:
   (checked across the workspace); bit 28 is left free. Plan 15.7 proposes the mapping and the flag
   together. Suite: the vertex format test's infinity and NaN elements (1 test widened).
 
+G1c run 5 (from the shaders branch, merged at the end of the run):
+- cbe7814c (shaders) `CompareFn`'s numbers fixed at 1 to 8, as `HelperValue::EarlyTests`'s codes
+  (zero a test that is off), which converted programs and the cache keep; `EARLY_STENCIL_BINDING`'s
+  doc: for a format without stencil any single-sampled unsigned integer texture is bound there.
+  Fits: numbers of an enum and a doc of a front's rule. Rule test: the commit's own `wcontainers-gpu`
+  unit test holds the numbers (as `reasons_keep_their_numbers` holds `SlowPath`'s). No suite test:
+  back ends do nothing new (they match `CompareFn` by name; no use of its number was found outside
+  that test and the shaders crate). Plan 4.12's early tests now say both. Its slot test change
+  (`stride: 0`) was already on this line (003c5ac2); the merge met no conflict.
+
 ## The WebGPU track's request, decided
 
 - No index format in `PrepareDesc`. Direct3D 11, OpenGL and Vulkan bind index buffers at the draw,
@@ -357,7 +367,9 @@ pointers to a function's locals passed to another function.
   test): 1,206,788 calls, 24,004 copies within one subresource, 21,071 of them of depth or stencil,
   2,831 multisampled passes, 3,992 depth-stencil passes, 8,031 dispatches, recorded with no rule
   broken and replayed identically. Fault (scratch `g1c5/faults.log`, load 1.1): 1 of 1 caught.
-  End check: below, "End of run".
+  End check after the end merges (scratch `g1c5/end-check.log`, load 0.4): the whole workspace
+  checks; the owned crates' clippy and docs are clean with warnings denied; the same 234 tests
+  pass.
 
 - G1c run 4: no code changed and no branch merged, so no test was run; the owned crates' code is
   that of run 3's end check (`g1c3/end-check.log`).
@@ -420,6 +432,10 @@ pointers to a function's locals passed to another function.
   `g1c3/work` (873 MB); 49 GB free after (another track's builds grew meanwhile). Logs in scratch
   `g1c3`; `g1c3/faults.py` stays on the laptop.
 
+- G1c run 5: 46 GB free at the start; at the end deleted `target/phase-2-graphics` and
+  `g1c5/work` and `g1c5/target` (the fault's tree and build); `g1c5/faults.py` stays there, logs in
+  scratch `g1c5`.
+
 ## Dependencies added and their licences
 
 - None this run. In `wcontainers-gpu`: `naga` 30.0.2, `bitflags`, `blake3` 1, `half` 2, `serde`
@@ -478,6 +494,9 @@ pointers to a function's locals passed to another function.
   (`the_occlusion_counter_splits_instances_only_where_each_reads_the_same`).
 
 ## End of run
+
+- Run 5: direct3d-11 (its status only) and shaders (nine commits, one "interface:", covered under
+  "Interface changes") merged without conflict; the rest had nothing new. End check below.
 
 - Run 4: no branch had anything new at the end (fetched after the work); nothing to merge. No build
   folder was made on the laptop or the desktop this run; scratch `g1c4/dl` holds two downloaded
