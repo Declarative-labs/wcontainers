@@ -28,6 +28,13 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   results. The brief exempts only the stand-in's count. Whether the loop's count may wait for the owner's
   ruling on the progress unit too is yours or the owner's to confirm (J2 run 5's check, its fourth finding).
 
+- Disk: the kernel test crate's file backend helper (crates/wcontainers-kernel-test/src/backend.rs, the
+  kernel track's code) writes one image tar of about 8.4 MB per backend into
+  target/wc-kernel-test/wc-backend-images and removes it only when the `Backend` is dropped. Backends that
+  are never dropped (held to the end of a test process, or in a process that was killed) leave theirs. In
+  this track's build directory 2,693 had piled up (26 GB, 2026-11-17 to 07:09 on 2026-11-18). J3 run 2
+  deleted them. Worth telling the kernel track (other checkouts run the same tests).
+
 ## Asked of the kernel track
 
 Standard input (the brief: settle before J3 fixes the input and output surface). Today the first process has
