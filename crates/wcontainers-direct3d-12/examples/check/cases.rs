@@ -49,6 +49,7 @@ pub const CASES: &[&str] = &[
     "predicated-resolve",
     "occlusion-count",
     "statistics",
+    "vertex-past-end",
 ];
 
 /// Runs case `name` and returns its line of results.
@@ -73,6 +74,7 @@ pub fn run(name: &str) -> Result<String> {
             "predicated-resolve" => predicated_resolve(&c),
             "occlusion-count" => occlusion_count(&c),
             "statistics" => statistics(&c),
+            "vertex-past-end" => vertex_past_end(&c),
             _ => panic!("no case {name}"),
         }
     }
@@ -1177,6 +1179,53 @@ unsafe fn statistics(c: &Ctx) -> Result<String> {
         }
         write!(out, " | streams {:?}", &u64s[34..36]).unwrap();
         Ok(out)
+    }
+}
+
+/// Direct draws reading past the end of a vertex buffer view, which reads zeros: a strip whose
+/// last vertex lies past it, and instances past a per-instance view's end.
+unsafe fn vertex_past_end(c: &Ctx) -> Result<String> {
+    unsafe {
+        let (root, pso) = c.triangle_pso(false)?;
+        let (instanced_root, instanced) = c.triangle_pso(true)?;
+        let vertices = c.upload(&triangles())?;
+        let offsets = c.upload(&[0.25f32, 0.25, 0.5, 0.5].map(f32::to_le_bytes).concat())?;
+        let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        let (target, _heap, _rtv) = c.target(&list)?;
+        list.SetPipelineState(&pso);
+        list.SetGraphicsRootSignature(&root);
+        let view = |size| D3D12_VERTEX_BUFFER_VIEW {
+            BufferLocation: vertices.GetGPUVirtualAddress(),
+            SizeInBytes: size,
+            StrideInBytes: 20,
+        };
+        // Four vertices of five: the strip's third triangle ends at a zero vertex.
+        list.IASetVertexBuffers(0, Some(&[view(80)]));
+        list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+        let half = SIZE / 2;
+        viewport(&list, 0, 0, half);
+        list.DrawInstanced(5, 1, 0, 0);
+        list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        // Two instances of one offset each, of which the view holds one.
+        list.SetPipelineState(&instanced);
+        list.SetGraphicsRootSignature(&instanced_root);
+        list.IASetVertexBuffers(
+            0,
+            Some(&[
+                view(240),
+                D3D12_VERTEX_BUFFER_VIEW {
+                    BufferLocation: offsets.GetGPUVirtualAddress(),
+                    SizeInBytes: 8,
+                    StrideInBytes: 8,
+                },
+            ]),
+        );
+        viewport(&list, half, half, half);
+        list.DrawInstanced(3, 2, 3, 0);
+        c.run(&list)?;
+        Ok(colours(
+            &c.pixels(&target, D3D12_RESOURCE_STATE_RENDER_TARGET)?,
+        ))
     }
 }
 

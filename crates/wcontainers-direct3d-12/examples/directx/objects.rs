@@ -285,9 +285,10 @@ fn luid(value: u64) -> LUID {
 // ---- The device ----
 
 #[implement(ID3D12Device8)]
-#[derive(Default)]
 pub struct Device {
     base: Base,
+    /// The LUID of the adapter it was made on.
+    luid: LUID,
 }
 
 macro_rules! based {
@@ -408,12 +409,20 @@ unsafe fn code(b: &D3D12_SHADER_BYTECODE) -> Vec<u8> {
 }
 
 impl Device {
+    /// A device of the adapter whose LUID is `luid`.
+    pub fn on(luid: LUID) -> Self {
+        Device {
+            base: Base::default(),
+            luid,
+        }
+    }
+
     pub fn GetNodeCount(&self) -> u32 {
         1
     }
 
     pub fn GetAdapterLuid(&self) -> LUID {
-        adapter_luid()
+        self.luid
     }
 
     /// Sizes and alignments of the resources together, as the front would place them; on an

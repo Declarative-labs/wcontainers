@@ -2262,6 +2262,9 @@ struct Replay<B: Backend> {
     /// The occlusion counter has the depth-stencil target as the kept draws began from it.
     counted_copy: bool,
     predicate: Option<query::Predicate<B>>,
+    /// Buffers of the front's that draws of this list read, released at its end, after the
+    /// counters that may draw them again.
+    scratch: Vec<B::Buffer>,
 }
 
 /// A predicated draw's or dispatch's argument record: buffer and offset.
@@ -2305,6 +2308,7 @@ impl<B: Backend> Replay<B> {
             counted_targets: false,
             counted_copy: false,
             predicate: None,
+            scratch: Vec::new(),
         }
     }
 
@@ -2380,6 +2384,9 @@ impl<B: Backend> Replay<B> {
         }
         if self.statistics.take().is_some() {
             d.pixels.end(&mut d.backend, &mut d.passes)?;
+        }
+        for b in self.scratch.drain(..) {
+            d.backend.destroy(Object::Buffer(b));
         }
         Ok(())
     }
@@ -3043,19 +3050,52 @@ impl<B: Backend> Replay<B> {
         // Streams that never step, bound at the first instance's element (see `vertex_layout`).
         let mut fixed = [false; MAX_VERTEX_STREAMS];
         let rates = d.backend.caps().has(Features::INSTANCE_STEP_RATE);
+        // Each stream's elements this draw reads, and where in an element its inputs end.
+        let mut reads = [None; MAX_VERTEX_STREAMS];
+        let mut ends = [0u64; MAX_VERTEX_STREAMS];
         for (e, _) in &inputs {
-            used[e.slot as usize] = true;
-            fixed[e.slot as usize] |= e.per_instance && e.step_rate == 0 && !rates;
+            let slot = e.slot as usize;
+            used[slot] = true;
+            fixed[slot] |= e.per_instance && e.step_rate == 0 && !rates;
+            let size = vertex_format(e.format).map_or(0, |f| f.1);
+            ends[slot] = ends[slot].max(u64::from(e.offset) + u64::from(size));
+            reads[slot] = match (&range, e.per_instance) {
+                (DrawRange::Vertices { first, count, .. }, false) if *count > 0 => {
+                    Some(u64::from(*first) + u64::from(*count))
+                }
+                (
+                    DrawRange::Vertices {
+                        first_instance,
+                        instances,
+                        ..
+                    }
+                    | DrawRange::Indexed {
+                        first_instance,
+                        instances,
+                        ..
+                    },
+                    true,
+                ) if *instances > 0 && e.step_rate > 0 => Some(
+                    u64::from(*first_instance)
+                        + u64::from(*instances - 1) / u64::from(e.step_rate)
+                        + 1,
+                ),
+                _ => reads[slot],
+            };
         }
         d.render_mut(pid).inputs = inputs;
         let layout = layout?;
         let mut buffers: [Option<(B::Buffer, u64)>; MAX_VERTEX_STREAMS] =
             [const { None }; MAX_VERTEX_STREAMS];
-        for (((b, v), used), fixed) in buffers
+        // Streams a direct draw reads past their view's end: (slot, resource, buffer, offset,
+        // bytes the view holds, bytes the draw reads).
+        let mut short = Vec::new();
+        for (slot, (((b, v), used), fixed)) in buffers
             .iter_mut()
             .zip(&self.vertex_buffers)
             .zip(used)
             .zip(fixed)
+            .enumerate()
         {
             if let Some((id, mut offset)) = d.addresses.find(v.address)
                 && used
@@ -3067,7 +3107,46 @@ impl<B: Backend> Replay<B> {
                     ))?;
                     offset += u64::from(first) * u64::from(v.stride);
                 }
-                *b = Some((d.buffer(id)?.0.clone(), offset));
+                let buffer = d.buffer(id)?.0.clone();
+                if let Some(n) = reads[slot].filter(|_| !fixed) {
+                    let needed = (n - 1) * u64::from(v.stride) + ends[slot];
+                    if needed > u64::from(v.size) {
+                        let held = u64::from(v.size)
+                            .min(d.resources[id.0 as usize].desc.width.saturating_sub(offset));
+                        short.push((slot, id, buffer.clone(), offset, held, needed));
+                    }
+                }
+                *b = Some((buffer, offset));
+            }
+        }
+        // Direct3D reads zeros past a vertex buffer view's end, where WebGPU refuses the draw:
+        // such a stream is drawn from a copy with a zero tail (`VertexFetchZeroed`).
+        let mut zeroed = Vec::new();
+        if !short.is_empty() {
+            self.end_pass(d)?;
+            for (slot, id, buffer, offset, held, needed) in short {
+                d.backend.slow_paths().hit(SlowPath::VertexFetchZeroed);
+                if !offset.is_multiple_of(4) {
+                    return Err(Error::NotImplemented(
+                        "a vertex buffer view read past its end at an address not a multiple of 4",
+                    ));
+                }
+                let copy = d.scratch(needed, BufferUsage::VERTEX | BufferUsage::COPY_DST)?;
+                let bytes = held - held % 4;
+                d.upload(id);
+                if bytes > 0 {
+                    d.backend.copy_buffer(&buffer, offset, &copy, 0, bytes);
+                }
+                // The bytes of an element cut by the view's end that a whole word did not take.
+                if bytes < held {
+                    let tail = d.read_now(id, offset + bytes, held - bytes)?;
+                    let mut word = [0u8; 4];
+                    word[..tail.len()].copy_from_slice(&tail);
+                    d.backend
+                        .write_buffer(&copy, bytes, &word, WriteMode::Ordered);
+                }
+                buffers[slot] = Some((copy.clone(), 0));
+                zeroed.push(copy);
             }
         }
         let vertex_buffers = buffers.each_ref().map(|b| {
@@ -3191,6 +3270,7 @@ impl<B: Backend> Replay<B> {
             self.open_pass(d, pid)?;
         }
         d.backend.draw(&call!());
+        self.scratch.extend(zeroed);
         Ok(())
     }
 
