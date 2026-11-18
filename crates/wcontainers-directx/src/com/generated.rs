@@ -225,7 +225,12 @@ impl ID3D11Device_Impl for Device_Impl {
     ) -> windows::core::Result<()> {
         let _call = self.call();
         creating(ppgeometryshader, |ppgeometryshader| {
-            Err(missing("ID3D11Device::CreateGeometryShader"))
+            self.create_geometry_shader(
+                pshaderbytecode,
+                bytecodelength,
+                pclasslinkage,
+                ppgeometryshader,
+            )
         })
     }
     fn CreateGeometryShaderWithStreamOutput(
@@ -242,9 +247,17 @@ impl ID3D11Device_Impl for Device_Impl {
     ) -> windows::core::Result<()> {
         let _call = self.call();
         creating(ppgeometryshader, |ppgeometryshader| {
-            Err(missing(
-                "ID3D11Device::CreateGeometryShaderWithStreamOutput",
-            ))
+            self.create_geometry_shader_with_stream_output(
+                pshaderbytecode,
+                bytecodelength,
+                psodeclaration,
+                numentries,
+                pbufferstrides,
+                numstrides,
+                rasterizedstream,
+                pclasslinkage,
+                ppgeometryshader,
+            )
         })
     }
     fn CreatePixelShader(
@@ -273,7 +286,7 @@ impl ID3D11Device_Impl for Device_Impl {
     ) -> windows::core::Result<()> {
         let _call = self.call();
         creating(pphullshader, |pphullshader| {
-            Err(missing("ID3D11Device::CreateHullShader"))
+            self.create_hull_shader(pshaderbytecode, bytecodelength, pclasslinkage, pphullshader)
         })
     }
     fn CreateDomainShader(
@@ -285,7 +298,12 @@ impl ID3D11Device_Impl for Device_Impl {
     ) -> windows::core::Result<()> {
         let _call = self.call();
         creating(ppdomainshader, |ppdomainshader| {
-            Err(missing("ID3D11Device::CreateDomainShader"))
+            self.create_domain_shader(
+                pshaderbytecode,
+                bytecodelength,
+                pclasslinkage,
+                ppdomainshader,
+            )
         })
     }
     fn CreateComputeShader(

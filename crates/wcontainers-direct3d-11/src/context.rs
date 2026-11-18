@@ -1481,6 +1481,42 @@ impl<B: Backend> Device<B> {
         v
     }
 
+    /// The smallest step of the bound depth target's format where the pixel program adds the depth
+    /// bias (`DepthBiasInShader`): where the back end lacks the bias clamp, or moves 24-bit depth it
+    /// stores as float by float steps. Refused for float depth, whose step varies with the depth.
+    fn bias_step(&self) -> Result<Option<f32>> {
+        let r = &self
+            .ctx
+            .raster
+            .as_ref()
+            .unwrap_or(&self.defaults.raster)
+            .desc;
+        let Some(depth) = &self.ctx.depth else {
+            return Ok(None);
+        };
+        if r.depth_bias == 0 && r.slope_scaled_depth_bias == 0.0 {
+            return Ok(None);
+        }
+        let caps = self.backend.caps();
+        let d24 = matches!(
+            depth.format,
+            Format::Depth24Plus | Format::Depth24PlusStencil8
+        );
+        let unclamped = r.depth_bias_clamp != 0.0 && !caps.has(Features::DEPTH_BIAS_CLAMP);
+        let float_steps = r.depth_bias != 0 && d24 && !caps.has(Features::DEPTH24_UNORM);
+        if !unclamped && !float_steps {
+            return Ok(None);
+        }
+        let bits = match depth.format {
+            Format::Depth16Unorm => 16,
+            _ if d24 => 24,
+            _ => {
+                return not_implemented("a depth bias clamp on float depth without the back end's");
+            }
+        };
+        Ok(Some(1.0 / ((1u32 << bits) - 1) as f32))
+    }
+
     /// The sampler bound to `stage`'s `slot`.
     fn bound_sampler(&self, stage: usize, slot: u32) -> Option<&Sampler<B>> {
         self.ctx.samplers[stage]
@@ -2243,23 +2279,32 @@ impl<B: Backend> Device<B> {
 
     /// The bound raster block made with sample mask `mask`, kept on its rasterizer state from its
     /// first use.
-    fn masked_raster(&mut self, mask: u32) -> Result<B::Raster> {
+    /// The bound raster block made with `mask` and, where the pixel program adds the depth bias,
+    /// without it; kept on the state from its first draw.
+    fn raster_twin(&mut self, mask: u32, unbiased: bool) -> Result<B::Raster> {
         let r = self
             .ctx
             .raster
             .clone()
             .unwrap_or_else(|| self.defaults.raster.clone());
-        if let Some((_, k)) = r.masked.borrow().iter().find(|(m, _)| *m == mask) {
+        let key = (mask, unbiased);
+        if let Some((_, k)) = r.masked.borrow().iter().find(|(m, _)| *m == key) {
             return Ok(k.handle.clone());
         }
-        let gpu = self.backend.create_raster(&wcontainers_gpu::RasterDesc {
+        let mut block = wcontainers_gpu::RasterDesc {
             sample_mask: mask,
-            ..crate::device::raster_block(&r.desc)
-        });
+            ..crate::device::raster_block(&r.desc, self.backend.caps())
+        };
+        if unbiased {
+            block.depth_bias = 0;
+            block.depth_bias_slope = 0;
+            block.depth_bias_clamp = 0;
+        }
+        let gpu = self.backend.create_raster(&block);
         let gpu = self.gpu(gpu)?;
         let id = self.id();
         r.masked.borrow_mut().push((
-            mask,
+            key,
             Kept::new(gpu.clone(), id, Object::Raster, &self.graveyard),
         ));
         Ok(gpu)
@@ -2396,6 +2441,23 @@ impl<B: Backend> Device<B> {
                             _ => 0b1111,
                         };
                         1
+                    }
+                    HelperValue::DepthBias => {
+                        let r = &self
+                            .ctx
+                            .raster
+                            .as_ref()
+                            .unwrap_or(&self.defaults.raster)
+                            .desc;
+                        let step = self.bias_step()?.unwrap_or(0.0);
+                        let values = [
+                            r.depth_bias as f32,
+                            r.slope_scaled_depth_bias,
+                            r.depth_bias_clamp,
+                            step,
+                        ];
+                        words[..4].copy_from_slice(&values.map(f32::to_bits));
+                        4
                     }
                     HelperValue::MinLod { texture } => {
                         let (clamp, levels) = self.min_lod_of(stage, texture).unwrap_or((0.0, 1));
@@ -2545,13 +2607,13 @@ impl<B: Backend> Device<B> {
             .unwrap_or(1);
         let all = u32::MAX >> (32 - samples.min(32));
         let mask = self.ctx.sample_mask & all;
-        let masked = if samples > 1 && mask != all {
-            if !self.backend.caps().has(Features::SAMPLE_MASK) {
-                return not_implemented(
-                    "a sample mask without the back end's (SampleMaskInShader)",
-                );
-            }
-            Some(self.masked_raster(mask)?)
+        let masks = samples > 1 && mask != all;
+        if masks && !self.backend.caps().has(Features::SAMPLE_MASK) {
+            return not_implemented("a sample mask without the back end's (SampleMaskInShader)");
+        }
+        let depth_bias = self.bias_step()?.is_some();
+        let masked = if masks || depth_bias {
+            Some(self.raster_twin(if masks { mask } else { u32::MAX }, depth_bias)?)
         } else {
             None
         };
@@ -2578,12 +2640,21 @@ impl<B: Backend> Device<B> {
             pulled,
             ..self.stage_variant(VERTEX, &vs, target_samples)
         };
+        if depth_bias && ps.is_none() {
+            return not_implemented(
+                "a depth bias the back end cannot apply, without a pixel shader to apply it",
+            );
+        }
         let pk = ps
             .as_ref()
             .map_or(StageVariant::default(), |p| StageVariant {
                 dual_source,
+                depth_bias,
                 ..self.stage_variant(PIXEL, p, target_samples)
             });
+        if depth_bias {
+            self.backend.slow_paths().hit(SlowPath::DepthBiasInShader);
+        }
         if vk.lod_bias | pk.lod_bias != 0 {
             self.backend.slow_paths().hit(SlowPath::LodBiasInShader);
         }
@@ -2736,20 +2807,11 @@ impl<B: Backend> Device<B> {
         {
             return not_implemented("lines drawn by the quadrilateral or alpha-antialiased rule");
         }
-        // The back ends bias triangles only, and move 24-bit depth by Direct3D's steps only where
-        // they store it as such.
-        if raster.depth_bias != 0 || raster.slope_scaled_depth_bias != 0.0 {
-            if !matches!(topology, Topology::TriangleList | Topology::TriangleStrip) {
-                return not_implemented("depth bias on lines and points");
-            }
-            if raster.depth_bias != 0
-                && self.ctx.depth.as_ref().is_some_and(|d| {
-                    matches!(d.format, Format::Depth24Plus | Format::Depth24PlusStencil8)
-                })
-                && !self.backend.caps().has(Features::DEPTH24_UNORM)
-            {
-                return not_implemented("a constant depth bias on 24-bit depth stored as float");
-            }
+        // The back ends bias triangles only.
+        if (raster.depth_bias != 0 || raster.slope_scaled_depth_bias != 0.0)
+            && !matches!(topology, Topology::TriangleList | Topology::TriangleStrip)
+        {
+            return not_implemented("depth bias on lines and points");
         }
         let nothing = matches!(
             gpu_range,

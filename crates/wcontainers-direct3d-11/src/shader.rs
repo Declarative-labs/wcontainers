@@ -179,6 +179,8 @@ pub struct StageVariant {
     /// Texture slots of formats the back end cannot filter, sampled through a filtering sampler
     /// (`FilterInShader`).
     pub filter_in_shader: u128,
+    /// The pixel program adds the depth bias (`DepthBiasInShader`).
+    pub depth_bias: bool,
 }
 
 impl StageVariant {
@@ -193,6 +195,9 @@ impl StageVariant {
         key.samples = self.samples;
         if self.dual_source {
             key.flags |= VariantFlags::DUAL_SOURCE;
+        }
+        if self.depth_bias {
+            key.flags |= VariantFlags::DEPTH_BIAS;
         }
         if self.from_arguments {
             key.draw_base = DrawBaseSource::Arguments;
@@ -386,6 +391,7 @@ fn answer(r: core::result::Result<Converted, ConvertError>) -> Result<Converted>
                         | HelperValue::BorderColor { .. }
                         | HelperValue::TextureComponents { .. }
                         | HelperValue::MinLod { .. }
+                        | HelperValue::DepthBias
                         | HelperValue::PulledStream { .. }
                 )
             }) =>
