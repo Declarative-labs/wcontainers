@@ -130,6 +130,9 @@ pub struct ReflectedBinding {
     /// For a binding the variant adds rather than one of the API's slots, what it holds; `space`,
     /// `register` and `count` then say nothing.
     pub added: Option<AddedBinding>,
+    /// For a storage buffer, the size in bytes of the program's element of it, the step a
+    /// [`HelperValue::StorageOffset`] comes in; zero otherwise.
+    pub stride: u32,
 }
 
 impl ReflectedBinding {
@@ -289,8 +292,9 @@ pub enum StageExtras {
 /// offset the reflection gives. Each exists only in programs whose variant needs it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum HelperValue {
-    /// The part of a storage binding's offset below [`crate::Limits::min_storage_offset_alignment`],
-    /// in bytes (u32), which the program adds to its addresses.
+    /// How far into a storage binding the view starts, in bytes (u32), which the program adds to its
+    /// addresses ([`VariantFlags::STORAGE_OFFSET`]): a whole number of the program's elements of that
+    /// buffer ([`ReflectedBinding::stride`]).
     StorageOffset { set: u32, binding: u32 },
     /// A sampler's level-of-detail bias (f32), added to every sampling through it.
     LodBias { sampler: u32 },
@@ -450,6 +454,11 @@ bitflags! {
         /// The pixel shader reads its primitive index from a flat value the stage helper's draw passes,
         /// not from the built-in ([`crate::SlowPath::PrimitiveIdAsGeometry`]).
         const PRIMITIVE_ID_FROM_STAGE = 1 << 13;
+        /// Every storage buffer of the program's own slots (raw and structured views; not counters,
+        /// typed views or bindings a variant adds) is read from [`HelperValue::StorageOffset`] bytes
+        /// into its binding, which the front binds from below the view's start
+        /// ([`crate::BindingResource::StorageBuffer`]).
+        const STORAGE_OFFSET = 1 << 14;
     }
 }
 
@@ -591,8 +600,8 @@ pub struct VariantKey {
     pub texture_layers: Vec<(u32, u32)>,
     /// Texture slots whose bound view maps its components, by slot: component i of every value read
     /// through the slot (loads, samples, and gathers of component i) is the texel's component, or the
-    /// constant, the entry names ([`crate::SlowPath::SwizzleInShader`]), for back ends without
-    /// [`crate::Features::VIEW_SWIZZLE`] (Direct3D 12's component mappings, Direct3D's stencil views).
+    /// constant, the entry names ([`crate::SlowPath::SwizzleInShader`]); views carry no mapping, so
+    /// every front maps in the program (Direct3D 12's component mappings, Direct3D's stencil views).
     pub swizzled: Vec<(u32, [ViewComponent; 4])>,
     /// Where the program reads the draw's bases.
     pub draw_base: DrawBaseSource,
@@ -651,18 +660,38 @@ mod tests {
 
     #[test]
     fn a_bindings_slot_is_its_place_in_its_kinds_range() {
-        for kind in [SlotKind::Uniform, SlotKind::Texture, SlotKind::Counter] {
-            let b = ReflectedBinding {
-                kind,
-                space: 0,
-                register: 0,
-                count: 1,
-                set: 1,
-                binding: kind.binding(5).unwrap(),
-                added: None,
-            };
-            assert_eq!(b.slot(), 5);
+        let kinds = [
+            SlotKind::Uniform,
+            SlotKind::Sampler,
+            SlotKind::Texture,
+            SlotKind::Storage,
+            SlotKind::Counter,
+        ];
+        for kind in kinds {
+            for slot in 0..kind.slots() {
+                let b = ReflectedBinding {
+                    kind,
+                    space: 0,
+                    register: 0,
+                    count: 1,
+                    set: 1,
+                    binding: kind.binding(slot).unwrap(),
+                    added: None,
+                    stride: 0,
+                };
+                assert_eq!(b.slot(), slot, "{kind:?}");
+            }
+            assert_eq!(kind.binding(kind.slots()), None, "{kind:?}");
         }
+        // The ranges follow one another, and a counter has the number of its storage slot.
+        for pair in kinds.windows(2) {
+            assert_eq!(
+                pair[0].first_binding() + pair[0].slots(),
+                pair[1].first_binding(),
+                "{pair:?}"
+            );
+        }
+        assert_eq!(SlotKind::Counter.slots(), SlotKind::Storage.slots());
     }
 
     /// Every binding of the helper set, each a single one or a range from its base (the clamped

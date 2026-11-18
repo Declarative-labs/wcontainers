@@ -97,6 +97,7 @@ pub(super) fn split(
                 set,
                 binding: next,
                 added: Some(AddedBinding::TextureLayer(slot, layer)),
+                stride: 0,
             });
             next += 1;
         }

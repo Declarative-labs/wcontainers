@@ -284,6 +284,17 @@ impl ReadAs {
 /// normalised ones, whose -128 `readPixels` returns as -127 even with EXT_render_snorm.
 pub fn read_as(format: Format, ext: FormatExtensions) -> Option<ReadAs> {
     let gl = gl_format(format)?;
+    // GLES 3.0 reads 10-10-10-2 surfaces in their own packing as well.
+    if gl.ty == UNSIGNED_INT_2_10_10_10_REV {
+        return Some(ReadAs {
+            format: gl.format,
+            ty: gl.ty,
+            comp_read: 1,
+            comp_kept: 1,
+            n: 4,
+            swap: false,
+        });
+    }
     let comp_kept = match gl.ty {
         UNSIGNED_BYTE | BYTE => 1,
         UNSIGNED_SHORT | SHORT => 2,

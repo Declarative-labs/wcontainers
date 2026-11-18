@@ -36,8 +36,11 @@ raw buffers to one view per binding and split arrays of textures (Godot's Direct
 26 read multisampled array textures as a texture per layer, applied views' component mappings in the
 program and made atomic minimums and maximums of the other signedness compare-exchange loops; run 27
 made the tessellator compile under fxc, converted geometry shaders without a position, gathers with
-run-time offsets and DXIL helper lane queries; what remains is under Next. Runs 21 to 27 merged origin/phase-2-graphics-webgpu, -webgl, -direct3d-11,
--direct3d-12 and -rig (no conflicts).
+run-time offsets and DXIL helper lane queries; run 28 converted wave operations (WGSL's subgroups),
+DXIL gathers with run-time offsets and coherent storage accesses at workgroup scope, and gave the
+interface `STORAGE_OFFSET` (not built yet); what remains is under Next. Runs 21 to 28 merged origin/phase-2-graphics-webgpu,
+-webgl, -direct3d-11, -direct3d-12 and -rig (run 28: one conflict in the interface's `slow.rs`,
+the same three slow paths in two orders, ours kept).
 
 Done:
 - naga carried in the tree with the GLSL writer changes G3 needs (below). Other tracks get it by
@@ -1057,26 +1060,65 @@ Run 27 (what the fronts' real programs wait on: the tessellator under fxc, Godot
   apply. Wine's 123 and 124 atomics shaders convert (records updated); own `ps_fill` is
   `glsl-compile` (GLSL ES 3.00 has no `gl_SampleID`; WebGL has no OES_sample_variables).
 
+Run 28 (what the fronts' real programs wait on: Godot's wave operations and coherent compute
+shaders, Direct3D 12's gathers and views at any first element):
+- Merged origin/phase-2-graphics-direct3d-11 and -direct3d-12 (the others had nothing new).
+- Wave operations convert (`Unsupported("Subgroups")` is gone): `capabilities()` gives naga's
+  `SUBGROUP` for a module with subgroup operations or built-ins (a front creates such a program only
+  where the back end has `Features::SUBGROUPS`), the carried naga's WGSL writer writes `enable
+  subgroups;` and its WGSL reader takes it, and such modules turn WGSL's `subgroup_uniformity`
+  check off as they do the derivative one (WGSL's default for it is an error; spec read in scratch
+  `run28/spec`). Refused by name: subgroups in vertex programs (`SubgroupsInVertex`, WebGPU has
+  none) and subgroup barriers (`SubgroupBarrier`). The carried reader now reads
+  `OpGroupNonUniformBallotBitCount` (`WaveActiveCountBits`, `WavePrefixCountBits`), which it refused:
+  a count of a ballot made in the module is a subgroup add of the ballot's predicate (reduce,
+  inclusive or exclusive scan); a ballot of unknown origin is counted from its bits, reduce only.
+  And `OpGroupNonUniformAllEqual` (`WaveActiveAllEqual`; WGSL has none) as `subgroupAll(x ==
+  subgroupBroadcastFirst(x))`, every component of a vector. And `OpGroupNonUniformBallotFindLSB` and
+  `FindMSB` as the lowest or highest set bit of the ballot's four words.
+  Godot's fragment shader with wave operations now converts (its WGSL validates; GLSL ES has no
+  subgroups). Own `ps_wave` (waves.hlsl, dxc only, shader model 6.0: lane counts and indices,
+  sums, prefixes, ballots, reads of other lanes, after discards): `draw.rs`'s
+  `wave_operations_draw_as_direct3d_12_does` against real Direct3D 12 through the WebGPU back end
+  on wgpu's Vulkan (wgpu's Direct3D 12 path gives subgroups only through dxc), its device made with
+  `SUBGROUP` (`webgpu_with`), as the back end does not ask for it yet (Next).
+- DXIL gathers with run-time offsets: the carried reader reads a gather's `Offset` operand by moving
+  the coordinate in texels of level 0, the low six bits signed, as the DXBC route does
+  (`gather_offset_coordinate`); other run-time sample offsets stay refused. `ps_gatheroff`'s dxc
+  build drawn against real Direct3D 12: 0 of 4096 texels apart (run28/draw1.log).
+- Coherent storage (`globallycoherent`; Godot's compute shaders, memory access 0x28 and image operand
+  0x200): WGSL's memory model makes every storage and texel access non-private and available and
+  visible at workgroup scope (its "Private vs Non-private"), so the carried reader takes
+  `MakePointerAvailable`/`Visible` and `MakeTexelAvailable`/`Visible` at workgroup, subgroup or
+  invocation scope, and refuses wider scopes by name (`unsupported memory operand .. at scope ..`).
+  Two of Godot's compute shaders now convert, two move on to `ResourceArray`.
+- `VariantFlags::STORAGE_OFFSET` and `ReflectedBinding::stride` (interface change below): the
+  stride is given for every storage binding (`variant/offset.rs`, test
+  `storage_bindings_give_their_stride_and_offsets_are_refused`); the flag is refused by name
+  (`Unsupported("StorageOffset")`) until built. The rewrite was written (scratch
+  `run28/offset-attempt.rs`, and its drawn test against real Direct3D 11, every view of
+  `cs_atomics`, `cs_shared` and `cs_decrement` at a seeded first element, as
+  `run28/compute_draw-storage-offset.patch`) but gave invalid modules: it pointed each existing
+  `Access` at index expressions appended after it, and naga requires an expression's operands to come
+  before it in the arena. Next under Next.
+
 Next (in order):
-- DXIL gathers with run-time offsets: read SPIR-V's `Offset` sample operand in the carried reader as
-  `lower.rs`'s `offset_coordinate` does, then draw `ps_gatheroff`'s dxc build (`dxil: true`)
-  against real Direct3D 12.
-- Subgroups (Godot's 3D platformer: 17 fragment shaders, and its compute shaders): `enable
-  subgroups;` in the carried naga's WGSL writer, `capabilities()` giving `SUBGROUP` and the validator
-  the operations and stages, the webgpu back end's `SUBGROUPS`; a drawn test needs a reference that
-  runs wave operations (real Direct3D 12 at shader model 6.0).
-- `StorageOffset` (Direct3D 12's buffer_srv; `HelperValue::StorageOffset` exists but no variant
-  field asks for it): an interface field naming the storage slots whose offsets come from the helper
-  block, then each access adds the offset's words.
+- The WebGPU back end (theirs): ask wgpu for `SUBGROUP` where the adapter has it and declare
+  `Features::SUBGROUPS`; then Godot's 3D platformer through the Direct3D 12 front (its 38 fragment
+  pipelines stopped at the helper query before run 27 and at wave operations before run 28).
+- `STORAGE_OFFSET`: insert each access's offset expressions before it in the function's expression
+  arena (renumbering every later handle in expressions, statements, emit ranges and named
+  expressions; the carried naga's `compact` module has that renumbering, private: expose a function
+  there that inserts), then the rewrite of `run28/offset-attempt.rs` and its test
+  (`run28/compute_draw-storage-offset.patch`) apply as written. Then a block with sized members
+  before its array is `StorageOffsetOfBlock`.
+- The fronts (theirs), once built: `VariantFlags::STORAGE_OFFSET` where a raw or structured view's offset is not
+  a multiple of `min_storage_offset_alignment` (Direct3D 12: on every program with storage buffers,
+  as its pipelines are made before the views are known), binding from the largest multiple of the
+  alignment and of `ReflectedBinding::stride` below the view.
 - Fronts (theirs): `texture_layers` for bgfx's multisampled arrays (G4, and G5's
   multisample_array_texture), `swizzled` for Direct3D 12's component mappings and both fronts'
   stencil views (Godot's 3D platformer), and counting `Reflection::slow_paths`.
-- The corpus records of Wine's `123_ps_atomics_code` and `124_cs_atomics_code` (now converting) and
-  of the games' multisampled array shaders: rerun the corpus test with the corpus (laptop) and copy
-  `classes.txt` over the records.
-- `IsHelperInvocationEXT` (Godot: 1 fragment shader in the corpus, 17 in its 3D platformer): find
-  what dxil-spirv guards with it there (`IsHelperLane()`, wave operations, or sampling feedback);
-  WGSL has no helper query, so a lowering must be exact or refused.
 - Direct3D 12 front (asked of G5): for DXIL its `typed_texture_slots` and `typed_key` key the
   per-slot fields by register, but DXIL slots are the view's place among the program's views of
   its kind (run 22's numbering); a program with views at u1 and u3 has slots 0 and 1. Take the
@@ -1345,6 +1387,23 @@ let reflection = &converted.reflection;
   conversion.
 
 ## Measurements
+
+Run 28, 2026-11-18, counts only (laptop load about 1 to 5; desktop shared through the queue), logs in
+scratch `graphics-shaders/run28`:
+- Desktop (one GPU job each): `draw` 4 of 4 (gpu6.log): `ps_wave` through WebGPU on wgpu's Vulkan 0 of
+  4096 texels apart from real Direct3D 12 (2074 texels drawn), `ps_gatheroff`'s dxc build 0 of 4096
+  apart from real Direct3D 12 (draw1.log, gpu4.log), the other cases as before; `compute_draw` 4 of 4,
+  24 comparisons 0 failed (gpu4.log); the Windows clippy of the crate clean (gpu4.log, gpu6.log).
+- Laptop: clippy of both crates clean and the full suite of both crates with the corpora
+  (`--include-ignored --skip mutated`; suite7.log): the records of own-dxil and games-dxil were
+  copied from `classes.txt` after the deliberate changes (ps_gatheroff.dxil and ps_wave.dxil
+  convert; Godot: the fragment shader with wave operations and two compute shaders convert, two
+  compute shaders move from the reader to `ResourceArray`).
+- Recompiling every own shader on the desktop (`compile.cmd`) gave the committed bytes; only
+  `ps_wave.dxil` is new.
+- Not rerun this run: the WebAssembly comparison and Chrome's compile of the written files.
+- At the end of run 28 the laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders` (5.7 GB)
+  and the desktop's `C:\wc\target\phase-2-graphics-shaders` were deleted.
 
 Run 27, 2026-11-18, counts only (laptop load about 1; desktop shared through the queue), logs in
 scratch `graphics-shaders/run27`:
@@ -1985,6 +2044,14 @@ the tree as published"), plus these changes, each a later commit touching only `
   `dxil.rs` from the coverage and at each demotion). Before, the reader refused the instruction.
 - SPIR-V reader (run 27), an image sample operand it does not know is refused
   (`unsupported image sample operand`) instead of skipped with a warning.
+- SPIR-V reader (run 28), a gather's run-time `Offset` moves the coordinate by the offset in texels of
+  level 0 (low six bits, signed); availability and visibility operands at workgroup scope or less
+  taken on storage and texels (WGSL's memory model gives every access that), wider ones refused
+  (`Error::UnsupportedMemoryScope`); `OpGroupNonUniformBallotBitCount` read as a subgroup add of the
+  ballot's predicate (or the ballot's bits counted, reduce only); `OpGroupNonUniformAllEqual` read as
+  an all of each lane's value equal to the first lane's; ballot find LSB and MSB from the words' trailing and leading zeros.
+- WGSL writer and reader (run 28), `enable subgroups;` written for modules with subgroup operations or
+  built-ins (`Module::uses_subgroups`) and taken by the reader (`ImplementedEnableExtension::Subgroups`).
 Not yet sent upstream: that needs a GitHub account and fork the owner chooses, which this track does
 not have. Each change is its own commit touching only `third_party/naga`, so each can be sent as it
 stands (`git diff d380816 HEAD -- third_party/naga`).
@@ -2136,6 +2203,11 @@ were already there.
   WITH LLVM-exception, wasi-libc MIT-style and others), wasmtime (Apache-2.0 WITH LLVM-exception).
 
 ## Departures from the plan
+
+- Storage offsets (run 28; not built yet, see Next): 4.5 said every converted program adds
+  `StorageOffset`; it is a flag (`VariantFlags::STORAGE_OFFSET`) instead, so programs whose views are aligned (most, on Direct3D
+  11) pay no load and add per access, and a front that cannot know ahead (Direct3D 12) sets it on
+  every program, which is the plan's behaviour. The plan's text now says so.
 
 - Run 26: the laptop stopped answering, so the non-GPU tests ran on the desktop (3 cargo jobs,
   inside the GPU job) instead; the corpus and WebAssembly runs, which need the laptop's corpus and
@@ -2343,6 +2415,11 @@ were already there.
   `glGetBufferSubData`, which ANGLE's GLES lacks (`read_back_now` works).
 
 ## Interface changes
+
+- Run 28, `VariantFlags::STORAGE_OFFSET` and `ReflectedBinding::stride` (commit "interface: ...";
+  plan text in 4.5): `HelperValue::StorageOffset` existed with nothing asking for it; storage views
+  at any first element (Direct3D 12's buffer_srv, the fronts' refused offsets) need the program to add
+  it, and the front needs the program's element size to choose where to bind from.
 
 - Run 26, `VariantKey::texture_layers: Vec<(u32, u32)>` and `AddedBinding::TextureLayer(slot,
   layer)` (commit "interface: gave the variant key the layer counts of multisampled array

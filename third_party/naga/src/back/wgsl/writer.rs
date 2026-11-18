@@ -476,6 +476,10 @@ impl<W: Write> Writer<W> {
             writeln!(self.out, "enable wgpu_mesh_shader;")?;
             any_written = true;
         }
+        if module.uses_subgroups() {
+            writeln!(self.out, "enable subgroups;")?;
+            any_written = true;
+        }
         if needed.binding_array {
             writeln!(self.out, "enable wgpu_binding_array;")?;
             any_written = true;
