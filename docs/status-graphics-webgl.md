@@ -5,6 +5,24 @@ Plan: docs/phase-2-graphics.md, sections 4, 5.8, 6.5, 10 and 12 (G3).
 
 ## Where things stand
 
+G3b run 4, 2026-11-18 (about 14:15 to 15:45 Pacific). Merged origin/phase-2-graphics (52 new
+commits; it held every track branch's newest work: storage words, binding kinds, indirect draws
+past a stream, none needing a change here). Done:
+- The device the shaders track's 16-seed `filter_draw` run lost (check9's open finding): cause
+  found. The test never destroys its programs; with about 400 alive mozangle's ANGLE removes its
+  Direct3D 11 device. With them destroyed, all 1,152 WebGL 2 draws of the 16 seeds pass; the other
+  devices of the process play no part (details under "G3b: what the fronts ask"). The fix is in
+  the shaders track's test.
+- A depth texture a program both compares against and reads plainly (the shaders track's run
+  32: "on WebGL 2 such programs stay refused"): built, plain reads go through a float copy of the
+  texture's variable (check `depth_textures_compared_and_read_plainly`, ANGLE and Chrome).
+- Every Direct3D 11 scene through the front's WebGL 2 build: 88 pass, 27 fail, 30 absent; each
+  failing scene's log read, and every one stops in the front (list under "G3b: what the fronts
+  ask").
+- The 21 GL constants glow defines and this crate retyped are now glow's (section "Magic
+  literals", which also says what is left of the audit's list).
+- The full run of the suite at the end: Measurements, run G3b-4.
+
 G3b run 3, 2026-11-18 (about 12:00 to 14:00 Pacific). Merged origin/phase-2-graphics (76 new
 commits; -webgpu, -direct3d-11, -direct3d-12 and -shaders were already in it, -rig had nothing
 new). Fixed what the independent check of G3b (check9) found:
@@ -240,13 +258,29 @@ Read after merging (status-graphics-direct3d-11.md at 66e54fa6, status-graphics-
   end reported it ("wcontainers webgl: device lost (Error): GL error 0x502"; the test then
   panicked on `DeviceLost`). No display reset and no Application or System event in that window,
   and the queue was not held. So it is not seed 14's sampler state: a process that draws many
-  cases loses ANGLE's Direct3D 11 device at some point, without a driver reset. OPEN, cause not
-  found. Suspects, untested: the other devices of that process on the same GPU (wgpu's Direct3D
-  12 device, real Direct3D 11 and WARP for the references), or ANGLE's own resource handling
-  over many programs and textures. Next: the same seeds with only the WebGL 2 back end drawing
-  (needs a change to the shaders track's test, or a copy of it in this crate), and with ANGLE's
-  Direct3D debug layer. The 32 anisotropic differences are the shaders track's known failure
-  (its tap footprint), not this back end's.
+  cases loses ANGLE's Direct3D 11 device at some point, without a driver reset. The 32
+  anisotropic differences are the shaders track's known failure (its tap footprint), not this
+  back end's.
+  (Run 4) Cause found: the test never calls `destroy`, so every case leaves its WebGL 2 programs
+  alive (WebGPU's objects end when their handles drop, this back end's only at `destroy`, as the
+  interface says), and with about 400 programs alive mozangle's ANGLE removes its Direct3D 11
+  device. A copy of the test's WebGL 2 draws (three per comparison, as at worst; seeds 1 to 16,
+  1,152 draws; scratch g3b4/webgl_filter_diag.rs, put into the shaders crate's tests for the
+  runs only and removed after; `gpu-job --alone`, desktop 14:56 to 15:07, nothing else on the
+  GPU), logs g3b4/diag1.log and diag2.log:
+  - WebGL 2 alone, nothing destroyed: device lost between draw 360 and 432 (case 6), "Failed to
+    map D3D11 resource", GL error 0x502, as in run 3.
+  - WebGL 2 alone, everything destroyed after each draw: 1,152 draws, no loss.
+  - Every device of the original test (wgpu's Direct3D 12, real Direct3D 11 and WARP), nothing
+    destroyed: lost at the same place, so the other devices play no part.
+  - Everything destroyed but the textures and views: no loss; but the buffers and binding sets: no
+    loss; but the programs and their shaders: lost at the same place.
+  So the shaders track's test needs to destroy what it makes, as a front does (the shaders
+  track's to change: `ours` in its tests/filter_draw.rs, and any test drawing the same way); with
+  that, the 16 seeds' WebGL 2 draws pass here. ANGLE's Direct3D debug layer could not be used:
+  ANGLE reports "Failed creating Debug D3D11 device" on the desktop (the Graphics Tools are not
+  installed, and installing a Windows feature is not ours to do). How many live programs Chrome's
+  own ANGLE holds was not measured (Next).
 - (Run 3, from check9) A program past the uniform block limit (the constants scene): refused at
   `create_shader` with `Invalid` naming `Limits::uniform_buffers_per_stage`, so the front sees the
   broken rule when it makes the shader, not a lost device at the draw. The scene still needs the
@@ -254,6 +288,29 @@ Read after merging (status-graphics-direct3d-11.md at 66e54fa6, status-graphics-
 - (Run 3) The shared line's two new suite tests (copies within one 3D or compressed subresource,
   an indexed draw past a stream's end): pass on ANGLE and in Chrome; the first needed the 3D copy
   fix above.
+- (Run 4, shaders status run 32) A depth texture both compared against and read plainly in one
+  program (a shadow map; the shaders track's `ps_shadow`; "on WebGL 2 such programs stay
+  refused", naga's GLSL writer refusing a load from a depth texture): built. Each plain read
+  (sample without a reference, load, gather) of a depth texture the program also compares against
+  becomes a call to a function of its own reading a float copy of the texture's variable at a
+  binding of its own (`plain_depth_reads` in src/shader.rs; GL gives a depth texture's depth in
+  red with comparison off). Check `depth_textures_compared_and_read_plainly` (comparison, sample,
+  load and gathers with and without an offset, in a function and in a branch, against the texels)
+  passes on ANGLE and in Chrome; unit test `plain_depth_reads_write_through_a_float_copy`. Still
+  refused, by name at `create_shader`: a depth texture read plainly through a function argument,
+  and an offset that is not a vector of constants (neither is met by the converters' output).
+- (Run 4) The Direct3D 11 front's scenes through its WebGL 2 build, all of them (scratch
+  g3b4/d3d11-scenes1.log): 88 outputs pass, 27 fail, 30 absent (the front's run 21: 67, 52, 27).
+  Every failing scene stops in the front, none in this back end (each scene's log read):
+  raster ("wireframe without the back end's polygon mode": `POLYGON_MODE` absent on mozangle,
+  present in Chrome), views (`TEXTURE_VIEWS` absent), constants (this back end's early refusal past
+  `Limits::uniform_buffers_per_stage`; the front's constants through a texture are not built),
+  queries ("counting the samples of a pixel shader variant": `OCCLUSION_COUNT` absent, WebGL 2's
+  occlusion queries answer only any or none), geometry and streamout ("geometry shaders and stream
+  output without the back end's compute programs": plan section 7 routes them through this back
+  end's transform feedback, `TRANSFORM_FEEDBACK` declared and tested here, which the shaders
+  track's stage helper does not use yet). Absent: the snorm targets (no EXT_render_snorm in
+  mozangle), feature levels 10_1 and 11_0, and min/max filtering.
 
 ## The pass bar, item by item (plan section 12, G3)
 
@@ -1388,6 +1445,35 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   reduced performance" (and the same for WebGPU). Per-draw timings taken there (G3's later work)
   must say so; whether a headed Chrome differs is not measured.
 
+## Measurements, run G3b-4
+
+- 2026-11-18, desktop (i9-9900K, RTX 3080, driver 32.0.16.2101, Chrome 157.0.8103.78), queued
+  jobs beside other tracks' work, not timed; the Mac at load 60 to 110 (only formatting ran on
+  it). 100 suite tests and checks natively (the new `depth_textures_compared_and_read_plainly`
+  among them).
+  - Full run at the head before this status commit (all.cmd with clippy as its build, out
+    C:\wc\out\webgl\g3b4-all1, scratch g3b4/all1.log, desktop 15:13 to 15:18): clippy with
+    warnings denied clean on native all targets, wasm32 (browser, draw-cost, replay with `trace`)
+    and `record`. Unit tests 12 of 12; trace round trip 1 of 1. Chrome 97 passed, 3 not run (clip
+    and cull distances, timestamps, fractional bias), 0 failed with every extension; 89 passed
+    and 11 not run on the reduced route; 68 passed, 3 not run and 29 failed without
+    EXT_clip_control, the same without it and WEBGL_provoking_vertex. ANGLE 100 of 100 with every
+    extension, 72 of 100 on both reduced routes. Every reduced-route failure is
+    `Absent(CLIP_DEPTH_ZERO_ONE)` or `Absent(PROVOKING_VERTEX_FIRST)` from the suite's own raster
+    blocks, as in run 3. Against WebGPU natively 8 of 9, in Chrome 10 of 12 routes (the known two),
+    BC reference 1 of 2 (the known decoded route).
+  - The depth, gather and stencil checks and suite tests (some.cmd "depth gather stencil", scratch
+    g3b4/depth1.log): 17 of 17 on ANGLE, 16 passed and 1 not run (fractional bias) in Chrome.
+- The Direct3D 11 front's scenes through its WebGL 2 build, all scenes, natively on ANGLE (the
+  rig's `scenes --api d3d11 --dll d3d11.dll=...\webgl\debug\wcontainers_directx.dll`, at the
+  merge, desktop 14:29 to 14:30, scratch g3b4/d3d11-scenes1.log): 88 outputs pass, 27 fail, 30
+  absent; the failing scenes are listed under "G3b: what the fronts ask".
+- The 16-seed filter run's diagnosis (`gpu-job --alone`, scratch g3b4/diag1.log and diag2.log):
+  under "G3b: what the fronts ask". The first case of each run took 41 to 54 s (its programs'
+  first compiles), every later case about 1.8 s.
+- The frame-time measurement was not repeated in this run (run G3b-3's stands; no change in this
+  run touches the replayed calls' routes).
+
 ## Measurements, run G3b-3
 
 - 2026-11-18, desktop (i9-9900K, RTX 3080, driver 32.0.16.2101, Chrome 157.0.8103.78), queued
@@ -1742,9 +1828,11 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 
 ## Known failures
 
-- (G3b run 3) The shaders track's `tests/filter_draw.rs` over 16 seeds in one process loses
-  ANGLE's Direct3D 11 device without a driver reset (seed 14 in its run 15, about case 4 in this
-  run's; seed 14 alone passes). Cause not found; see "G3b: what the fronts ask".
+- (G3b run 4) Natively, about 400 WebGL 2 programs alive at once lose mozangle's ANGLE device
+  (Direct3D 11 "Failed to map D3D11 resource", reported as a lost device with GL error 0x502).
+  Found through the shaders track's `tests/filter_draw.rs`, which never destroys its programs
+  (see "G3b: what the fronts ask"); with them destroyed its 16 seeds pass. Whether Chrome's ANGLE
+  has such a bound is not measured.
 
 - (run 17) `decoded_on_the_host_equals_direct3d_11` (tests/bc_reference.rs): BC1 to BC5 decoded by
   bcdec_rs, the route of browsers without the BC extensions, are up to 13 8-bit steps from what the
@@ -1832,8 +1920,32 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   - Before them (run 9), `generate_mipmap_equals_the_draws` found both, and 3D textures differed
     between `generateMipmap` and the draws on ANGLE; with both fixes every shape is equal on both.
 
+## Magic literals
+
+The owner's rule (brief, 2026-11-18) and the audit's list for this crate
+(orchestrator/magic-literals/final/lists/graphics-webgl/wcontainers-gpu-webgl.txt: 657 code, 98
+const, 499 unit-test and 4,736 test findings, 2 redefinitions, 15 "restated").
+- Done (G3b run 4): the 21 GL constants this crate retyped although glow 0.18 defines them
+  (platform.rs: clip control, provoking vertex, polygon mode, depth clamp, mirror clamp, clip
+  distance, the second-source blend factors, timestamp and its counter bits; depth.rs: stencil
+  texturing) are now glow's own. Left as one named constant each, because glow lacks them:
+  `platform::GPU_DISJOINT` (GL_GPU_DISJOINT_EXT) and EGL's `DIRECT_COMPOSITION` (platform.rs).
+- Left, in the audit's order: the 657 code findings (lib.rs 153, shader.rs 116, platform.rs 82,
+  host.rs 64, trace.rs 61, convert.rs 61, state.rs 40, depth.rs 27, caps.rs 23, format.rs 18, the
+  rest fewer), then the tests'. The two redefinitions (`SIZE` in examples/draw-cost.rs, `WINDOW` in
+  tests/suite.rs) and the 15 "restated" lines were read: the values only coincide with the named
+  facts (256 bytes of a row against `Features::PROVOKING_VERTEX_LAST`, and so on), so nothing is
+  imported for them.
+- The automatic check (branch phase-1-literals) has no check crate on it yet (its head is phase 1
+  work), so it is not merged and this branch has no baseline.
+
 ## Departures from the plan
 
+- (G3b run 4) Plan 6.5 lists GLSL ES 3.00's fixes; one more is made here, by the same rule (it
+  needs nothing beyond the module): plain reads of a depth texture the program also compares
+  against go through a float copy of its variable (`plain_depth_reads`). Like the sampler split
+  beside it, it is a rewrite when the shader is made, with no run-time slow path to count: the
+  copy is one more texture unit bound to the same texture.
 - (G3b run 3) BGRX is held in BGRA's storage with alpha kept at one by every writer (host writes,
   clears, a colour mask on draws), not in GL's RGB8, which reads alpha as one by itself: RGB8's
   sRGB twin SRGB8 does not render in GLES 3.0, and BGRX's two formats are one typeless group, so
@@ -2164,11 +2276,11 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 
 ## Next
 
-G3b: every finding of check9 is fixed but one, which stays open: the device ANGLE loses in the
-shaders track's 16-seed filter run (Known failures). In this order:
-0. That loss: run the seeds with only the WebGL 2 back end in the process, then with ANGLE's
-   Direct3D debug layer, to tell whether this back end, ANGLE or another device of the process
-   causes it. Run it `gpu-job --alone`; it has not reset the display driver so far.
+G3b: every finding of check9 is settled (the last, the 16-seed filter run, in run 4: the test's
+leaked programs). In this order:
+0. How many live programs Chrome's ANGLE holds (natively about 400 lose the device): a check
+   making some hundreds of distinct programs, each drawn once and kept, in Chrome and natively,
+   run `gpu-job --alone`.
 1. Which texture's twin SimpleLightingPC refreshes every second frame (`CopyThroughBuffer` 291 of
    580 frames; likely an sRGB target view of its swap chain's buffer), and whether a draw or a blit
    can refresh it without the pixel buffer. It no longer waits (run 3), but it is a copy a frame.
