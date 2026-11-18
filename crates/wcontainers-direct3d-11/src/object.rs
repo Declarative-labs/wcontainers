@@ -344,6 +344,8 @@ pub struct InputLayout {
 
 pub struct Shader<B: Backend> {
     pub gpu: Kept<B, B::Shader>,
+    /// The content key of the module `gpu` was made from (the cache's).
+    pub key: [u8; 32],
     pub reflection: Reflection,
     /// The bytes each constant buffer the program reads is declared with, by binding number.
     pub constant_sizes: Vec<(u32, u64)>,

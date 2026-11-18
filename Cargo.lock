@@ -3122,6 +3122,7 @@ dependencies = [
  "blake3",
  "half",
  "naga",
+ "serde",
  "wcontainers-directx-graphics-infrastructure",
  "wcontainers-gpu",
  "wcontainers-shaders",
@@ -3151,6 +3152,7 @@ dependencies = [
 name = "wcontainers-directx"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "cc",
  "parking_lot",
  "pollster",
@@ -3161,6 +3163,7 @@ dependencies = [
  "wcontainers-gpu",
  "wcontainers-gpu-webgl",
  "wcontainers-gpu-webgpu",
+ "wcontainers-shaders",
  "wgpu",
  "windows",
  "windows-core",
