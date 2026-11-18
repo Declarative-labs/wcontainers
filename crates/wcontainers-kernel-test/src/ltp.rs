@@ -344,6 +344,7 @@ fn container<'a>(files: &'a [image::File], arguments: &'a [&'a str]) -> driver::
         backend: None,
         cached: false,
         published: &[],
+        address_space: crate::standin::SPACE_32_BIT,
     }
 }
 

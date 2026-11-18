@@ -171,8 +171,19 @@ pub(super) fn do_mmap(
     }
     let map = kernel.process_of(tid).map.borrow();
     let fixed = flags & (MAP_FIXED | MAP_FIXED_NOREPLACE) != 0;
+    // Past the host's address space and inside Linux's: the plan's small address space.
+    let above = address
+        .checked_add(length)
+        .is_some_and(|end| end > map.end && end <= TASK_SIZE);
+    let mut hint_above = false;
     let start = if fixed {
         if length > map.end || address > map.end - length {
+            if above {
+                drop(map);
+                kernel
+                    .counters
+                    .count(cx.host, crate::reason::ADDRESS_ABOVE_SPACE, address);
+            }
             return Err(Errno::ENOMEM);
         }
         if !address.is_multiple_of(PAGE_SIZE) {
@@ -191,6 +202,7 @@ pub(super) fn do_mmap(
         if hint != 0 && hint_fits {
             hint
         } else {
+            hint_above = hint != 0 && above;
             map.find_free(length).ok_or(Errno::ENOMEM)?
         }
     };
@@ -207,6 +219,11 @@ pub(super) fn do_mmap(
         map.future_lock
     };
     drop(map);
+    if hint_above {
+        kernel
+            .counters
+            .count(cx.host, crate::reason::ADDRESS_ABOVE_SPACE, address);
+    }
     if flags & MAP_LOCKED != 0 && !can_lock(kernel, tid) {
         return Err(Errno::EPERM);
     }

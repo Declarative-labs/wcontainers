@@ -303,6 +303,9 @@ pub struct Container<'a> {
     /// Ports of this machine's loopback that reach the container's ports, as (container port,
     /// outside port), as `docker run -p` publishes them.
     pub published: &'a [(u16, u16)],
+    /// Where each process's address space ends: the host's memories are 32 or 64 bit
+    /// ([`crate::standin::SPACE_32_BIT`], [`crate::standin::SPACE_64_BIT`]).
+    pub address_space: u64,
 }
 
 /// Runs a container on our kernel and the stand-in CPU until its first process ends.
@@ -401,7 +404,7 @@ pub fn run_prepared(
     let mut saved = 0;
     // In a copy, where its run is reported to the process it was copied from.
     let mut report: Option<i32> = None;
-    let mut cpu = StandIn::new();
+    let mut cpu = StandIn::with_space(container.address_space);
     let mut host = TestHost::repeatable(seed);
     host.echo = echo;
     host.network.published = container.published.iter().copied().collect();

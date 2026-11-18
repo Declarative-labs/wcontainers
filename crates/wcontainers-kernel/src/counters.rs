@@ -156,6 +156,10 @@ pub mod reason {
     /// The CPU side answered that this host cannot make a memory, a thread or a block of shared
     /// pages at all; the guest's call fails with ENOSYS. Detail: none.
     pub const HOST_CANNOT: &str = "host cannot do this";
+    /// A mapping asked for at an address Linux's address space has and the host's does not (plan
+    /// section 15, the address space is small): a fixed one is refused (ENOMEM), a hint is placed
+    /// elsewhere. Detail: the address.
+    pub const ADDRESS_ABOVE_SPACE: &str = "address above the address space";
 
     /// Every reason that means something Linux has is not built here, each answered through
     /// `Counters::refuse`: the status file's list of what is missing comes
