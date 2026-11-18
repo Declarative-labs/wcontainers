@@ -86,4 +86,5 @@ comparisons!(
     generate_mips_of_r32float_without_float_filtering_equals_webgpu,
     generate_mips_of_r32float_filtered_in_the_program_on_both_equals_webgpu,
     generate_mips_of_an_integer_twin_equals_webgpu,
+    generate_mips_of_an_integer_twin_at_exact_ties_equals_webgpu,
 );

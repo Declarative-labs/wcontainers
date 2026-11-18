@@ -213,11 +213,12 @@ fn angle(dir: &Path, out: &Path, off: &[&str]) -> Result<bool> {
     println!("renderer: {}", gl.renderer());
     let used: Vec<_> = gl.extensions().collect();
     let report = format!(
-        "renderer: {}\nextensions used: {}\nswitched off: {}\ncontext extensions: {}\n{}",
+        "renderer: {}\nextensions used: {}\nswitched off: {}\ncontext extensions: {}\nexact float blits: {}\n{}",
         gl.renderer(),
         used.join(" "),
         off.join(" "),
         gl.context_extensions().join(" "),
+        gl.exact_float_blits(),
         scenes::caps_report(gl.caps()),
     );
     std::fs::write(out.join("caps-angle.txt"), report)?;

@@ -157,10 +157,11 @@ pub fn compressed(format: Format) -> Option<(u32, &'static str, Format)> {
         F::Bc1RgbaUnormSrgb => (0x8C4D, S3TC_SRGB, F::Rgba8UnormSrgb),
         F::Bc2RgbaUnormSrgb => (0x8C4E, S3TC_SRGB, F::Rgba8UnormSrgb),
         F::Bc3RgbaUnormSrgb => (0x8C4F, S3TC_SRGB, F::Rgba8UnormSrgb),
-        F::Bc4RUnorm => (0x8DBB, RGTC, F::R8Unorm),
-        F::Bc4RSnorm => (0x8DBC, RGTC, F::R8Snorm),
-        F::Bc5RgUnorm => (0x8DBD, RGTC, F::Rg8Unorm),
-        F::Bc5RgSnorm => (0x8DBE, RGTC, F::Rg8Snorm),
+        // BC4 and BC5 interpolate their endpoints in steps finer than 8 bits.
+        F::Bc4RUnorm => (0x8DBB, RGTC, F::R16Float),
+        F::Bc4RSnorm => (0x8DBC, RGTC, F::R16Float),
+        F::Bc5RgUnorm => (0x8DBD, RGTC, F::Rg16Float),
+        F::Bc5RgSnorm => (0x8DBE, RGTC, F::Rg16Float),
         F::Bc7RgbaUnorm => (0x8E8C, BPTC, F::Rgba8Unorm),
         F::Bc7RgbaUnormSrgb => (0x8E8D, BPTC, F::Rgba8UnormSrgb),
         F::Bc6hRgbFloat => (0x8E8E, BPTC, F::Rgba16Float),
@@ -183,6 +184,7 @@ pub fn decode(format: Format, blocks: &[u8], blocks_wide: usize) -> Vec<u8> {
     let rows = blocks.len() / block_bytes / blocks_wide.max(1);
     let mut out = vec![0u8; rows * 4 * pitch];
     let mut halves = [0u16; 4 * 4 * 3];
+    let mut floats = [0f32; 4 * 4 * 2];
     for (i, block) in blocks.chunks_exact(block_bytes).enumerate() {
         let (bx, by) = (i % blocks_wide, i / blocks_wide);
         let at = by * 4 * pitch + bx * 4 * texel;
@@ -191,9 +193,21 @@ pub fn decode(format: Format, blocks: &[u8], blocks_wide: usize) -> Vec<u8> {
             F::Bc1RgbaUnorm | F::Bc1RgbaUnormSrgb => bcdec_rs::bc1(block, dst, pitch),
             F::Bc2RgbaUnorm | F::Bc2RgbaUnormSrgb => bcdec_rs::bc2(block, dst, pitch),
             F::Bc3RgbaUnorm | F::Bc3RgbaUnormSrgb => bcdec_rs::bc3(block, dst, pitch),
-            F::Bc4RUnorm | F::Bc4RSnorm => bcdec_rs::bc4(block, dst, pitch, format == F::Bc4RSnorm),
-            F::Bc5RgUnorm | F::Bc5RgSnorm => {
-                bcdec_rs::bc5(block, dst, pitch, format == F::Bc5RgSnorm)
+            F::Bc4RUnorm | F::Bc4RSnorm | F::Bc5RgUnorm | F::Bc5RgSnorm => {
+                // Decoded as floats, stored as the nearest half floats.
+                let n = texel / 2;
+                match format {
+                    F::Bc4RUnorm | F::Bc4RSnorm => {
+                        bcdec_rs::bc4_float(block, &mut floats, 4, format == F::Bc4RSnorm)
+                    }
+                    _ => bcdec_rs::bc5_float(block, &mut floats, 8, format == F::Bc5RgSnorm),
+                }
+                for y in 0..4 {
+                    for (x, f) in floats[y * 4 * n..(y + 1) * 4 * n].iter().enumerate() {
+                        let h = half::f16::from_f32(*f).to_bits().to_le_bytes();
+                        dst[y * pitch + x * 2..y * pitch + x * 2 + 2].copy_from_slice(&h);
+                    }
+                }
             }
             F::Bc7RgbaUnorm | F::Bc7RgbaUnormSrgb => bcdec_rs::bc7(block, dst, pitch),
             _ => {

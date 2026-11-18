@@ -60,6 +60,20 @@ fn rg16_bytes() -> Vec<u8> {
         .collect()
 }
 
+/// 256 values from xorshift32 seeded 0x9e3779b9, the low 16 bits of each: 12 of the 64 averages
+/// of mip 1 of an 8 by 8 rgba16 texture fall exactly halfway between two steps.
+fn rgba16_bytes() -> Vec<u8> {
+    let mut x = 0x9e37_79b9u32;
+    (0..256)
+        .flat_map(|_| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            (x as u16).to_le_bytes()
+        })
+        .collect()
+}
+
 /// A side whose `r32float` is not filterable filters it in the program.
 fn r32float_filtered_in_the_program_without_filtering(
     _: bool,
@@ -77,7 +91,7 @@ fn r32float_filtered_in_the_program_without_filtering(
 }
 
 /// Every comparison, each a test natively and a page in Chrome.
-pub const COMPARISONS: [Comparison; 6] = [
+pub const COMPARISONS: [Comparison; 7] = [
     Comparison {
         name: "both_window_origins_equal_webgpu",
         reference: Reference::Full,
@@ -155,6 +169,18 @@ pub const COMPARISONS: [Comparison; 6] = [
             format: Format::Rg16Uint,
             values: Format::Rg16Unorm,
             bytes: rg16_bytes,
+        },
+        expect: nothing,
+    },
+    // The same where box averages are exact ties, which each side's float arithmetic rounds.
+    Comparison {
+        name: "generate_mips_of_an_integer_twin_at_exact_ties_equals_webgpu",
+        reference: Reference::Full,
+        routes: &[&[]],
+        scene: Scene::Mips {
+            format: Format::Rgba16Uint,
+            values: Format::Rgba16Unorm,
+            bytes: rgba16_bytes,
         },
         expect: nothing,
     },
