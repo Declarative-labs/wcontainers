@@ -4,6 +4,11 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
+K6c, third run: the test backend is reached over TCP and announces writes of many pages (dio13
+179 s to 28 s, dio16 past 300 s to 110 s); built core dumps, adjtimex and clock_adjtime, the
+AF_ALG refusal of the reference's host, timers set before the clock began, group joins on TCP
+sockets and TCP disconnects. K6c is not complete. See "K6c, third run".
+
 K6c, second run: LTP on ours now runs with the root on the file backend, presented as the
 reference's overlayfs root; built for the differences: overlay's direct I/O rules on the root,
 /sys/kernel/mm/hugepages with none reserved, the vm and other sysctls tests read, /proc/cmdline,
@@ -40,6 +45,61 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## K6c, third run
+
+Speed of the root on the backend (measured, load 25 to 45):
+- Docker's standard input (`docker run -i`) held every message over 8 KiB for about 14 ms (100
+  bytes: 0.6 ms a round trip; 4 KiB: 0.7 ms; 16 KiB to 128 KiB: 13.6 to 14.8 ms; the other way
+  64 KiB took 1.1 ms). A TCP connection through a published port took 0.36 ms for 100 bytes and
+  0.7 ms for 64 KiB. The test host now reaches the server over TCP (`wc-backend listen`; scratch
+  k6c3/rtt*.mjs).
+- fuse-backend-rs's passthrough does not offer BIG_WRITES or MAX_PAGES, so every buffered write
+  went in 4 KiB messages (dio10: 65540 writes of 4 KiB). The server now announces both
+  (`backend/src/announcing.rs`, every other operation passed through), as Linux's FUSE and ours
+  then agree on 1 MiB writes. Both sides of the volume tests see the same server.
+- dio13 179 s to 27.6 s, dio16 timeout (300 s) to 109.7 s and pass, dio10 72 s to 39 s.
+- What is left is the stand-in running the tests' own loops and one round trip per message:
+  growfiles (fs gf01) makes about 14 messages per iteration (open, read, write, flush, release,
+  lookups and getattrs) at about 1400 messages a second, and the reference does 524289
+  iterations in 11 s, so gf01 needs about 5000 s here (section 15: file access is slower until
+  the cache).
+
+Built, each tested against the reference:
+- Core dumps (syscall/coredump.rs, rootbackend `core_dumps_match_reference`, guest/coredump.c):
+  a signal whose default action dumps core is left to the thread that takes it, as
+  `complete_signal` does; when RLIMIT_CORE is at least a page and the process is dumpable, the
+  other threads stop (parked, woken by nothing) and the thread writes `core` in its working
+  directory in stages that park for the backend (unlink, open O_EXCL 0600 with Linux's checks of
+  owner and mode, writes from the file layer), then the process ends with the core bit. The ELF
+  core is Linux's: header, PT_NOTE, a PT_LOAD per mapping by `vma_dump_size` and
+  coredump_filter, notes in `elf_core_dump`'s order (prstatus, prpsinfo, siginfo, auxv, file;
+  fpsimd, TLS, hardware break and watch (no slots: tracing is not built), system call, tagged
+  address control; then each other thread), writes past the limit left out as `dump_emit` does.
+  Which pages were touched is not known: anonymous memory counts as touched and pages of zeros
+  as holes (counted "page residency not tracked"); system time shows as user time (counted
+  "proc fields not tracked" 6). SIGKILL during a dump ends it with no core bit; other signals
+  are dropped. A stopped process takes SIGQUIT only once continued, as in Linux. The pointer
+  authentication notes the reference's CPU has are not written: the described CPU has none.
+- The auxiliary vector now starts with AT_SYSINFO_EHDR and AT_MINSIGSTKSZ (`ARCH_DLINFO`), as
+  `create_elf_tables` orders it; found by the core's NT_AUXV note.
+- AF_ALG: the reference's host refuses every `socket(AF_ALG, ...)` with EPERM before any other
+  check, and `socketpair` after the type check (measured, even in a privileged container: Docker
+  Desktop's machine blocks it). Ours answers the same (counted "socket family not built" 38).
+  Layer 1 now makes AF_ALG sockets; seed 9191001, 200 sequences, matched.
+- A timer set to a wall clock time from before the kernel's clock began (monotonic time starts
+  with the container) lost the intervals before; its first expiry now counts them, so
+  cve-2018-12896's overrun caps at INT_MAX (timers `timers_from_long_ago_count_every_interval`).
+- adjtimex and clock_adjtime: a clock never synchronised (the reference's state, measured:
+  TIME_ERROR, STA_UNSYNC, error bounds 16000000, tick 10000), EPERM for any change (no container
+  process can hold CAP_SYS_TIME), EINVAL for ADJ_ADJTIME without single-shot, and which clock
+  ids adjust (clocks `clock_adjustments_match_reference`).
+- MCAST_JOIN_GROUP and MCAST_LEAVE_GROUP take a TCP socket (only the ip_mreq forms refuse one
+  with EPROTO), and an accepted socket does not inherit groups (inet multicast test).
+- A TCP disconnect (connect AF_UNSPEC) lets go of the address and port the program did not
+  choose, the port still shown by getsockname; an accepted socket keeps its listener's chosen
+  address but never its port (`inet_csk_clone_lock`). inet `tcp_disconnects_match_reference`.
+- The not-built counting test asked F_GETOWNER_UIDS, built in the first run; it asks F_GETDELEG.
 
 ## K6c, second run
 
