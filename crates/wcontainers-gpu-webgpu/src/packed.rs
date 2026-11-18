@@ -3,11 +3,13 @@
 //! one. Sampled and filtered only: the 16-bit packed formats (`B5G6R5`, `B5G5R5A1`, `B4G4R4A4`),
 //! each channel widened to 8 bits (a draw would keep 8 bits a channel, not 4, 5 or 6), and the
 //! two-pixel formats (`R8G8_B8G8`, `G8R8_G8B8`), each pixel its own texel (`BlockDecoded`'s formats,
-//! converted the same way). Writes are widened on the host; read backs and copies out are packed
-//! again on the host, exactly, since 8 bits keep every narrower value apart.
+//! converted the same way). Writes are widened on the host and read backs packed again on the
+//! host, exactly, since 8 bits keep every narrower value apart; copies between a buffer and such a
+//! texture widen and pack the same way on the GPU, by a draw.
 
 use wcontainers_gpu::{
-    CopyBufferTexture, Extent, Format, ReadSource, SlowPath, TextureRegion, WriteMode,
+    Backend, CopyBufferTexture, Extent, Format, Origin, ReadSource, SlowPath, TextureDesc,
+    TextureDimension, TextureRegion, TextureUsage, WriteMode,
 };
 
 use crate::WebGpu;
@@ -44,6 +46,131 @@ pub(crate) fn clear(format: Format, c: wgpu::Color) -> wgpu::Color {
         },
         Format::Bgrx8Unorm | Format::Bgrx8UnormSrgb => wgpu::Color { a: 1.0, ..c },
         _ => c,
+    }
+}
+
+/// The integer format holding a converted format's raw bytes on the GPU, one texel a block.
+pub(crate) fn raw(format: Format) -> Format {
+    match format.block().2 {
+        1 => Format::R8Uint,
+        2 => Format::R16Uint,
+        _ => Format::R32Uint,
+    }
+}
+
+/// WGSL making `c`, the held texel's bytes in RGBA order, from `w`, the raw block, and `i`, the
+/// texel's column from the region's start; as [`widen`] does.
+fn widen_wgsl(format: Format) -> String {
+    let bytes = "let b = vec4u(w & 255u, (w >> 8u) & 255u, (w >> 16u) & 255u, w >> 24u);";
+    let odd = "(i & 1u) == 1u";
+    match format {
+        Format::A8Unorm => "let c = vec4u(0u, 0u, 0u, w);".into(),
+        Format::Bgrx8Unorm | Format::Bgrx8UnormSrgb => {
+            format!("{bytes} let c = vec4u(b.z, b.y, b.x, 255u);")
+        }
+        Format::Rgbg8Unorm => {
+            format!("{bytes} let c = vec4u(b.x, select(b.y, b.w, {odd}), b.z, 255u);")
+        }
+        Format::Grgb8Unorm => {
+            format!("{bytes} let c = vec4u(b.y, select(b.x, b.z, {odd}), b.w, 255u);")
+        }
+        _ => {
+            let (mut at, mut c) = (
+                0,
+                [
+                    String::from("255u"),
+                    "255u".into(),
+                    "255u".into(),
+                    "255u".into(),
+                ],
+            );
+            for (slot, bits) in [2, 1, 0, 3]
+                .into_iter()
+                .zip(fields(format))
+                .filter(|(_, b)| *b > 0)
+            {
+                c[slot] = format!("repeat((w >> {at}u) & {}u, {bits}u)", (1u32 << bits) - 1);
+                at += bits;
+            }
+            format!("let c = vec4u({});", c.join(", "))
+        }
+    }
+}
+
+/// WGSL making `w`, the raw block, from `texel(x, y)`, the held texels' bytes in RGBA order, at
+/// column `i` and row `j` of the raw texture; the region is `at.w` texels wide. As [`pack`] does.
+fn pack_wgsl(format: Format) -> String {
+    let pair = "let p0 = texel(2u * i, j); let p1 = texel(min(2u * i + 1u, at.w - 1u), j);";
+    match format {
+        Format::A8Unorm => "let w = texel(i, j).w;".into(),
+        Format::Bgrx8Unorm | Format::Bgrx8UnormSrgb => {
+            "let t = texel(i, j); let w = t.z | (t.y << 8u) | (t.x << 16u) | (255u << 24u);".into()
+        }
+        Format::Rgbg8Unorm => {
+            format!("{pair} let w = p0.x | (p0.y << 8u) | (p0.z << 16u) | (p1.y << 24u);")
+        }
+        Format::Grgb8Unorm => {
+            format!("{pair} let w = p0.y | (p0.x << 8u) | (p1.y << 16u) | (p0.z << 24u);")
+        }
+        _ => {
+            let (mut at, mut parts) = (0, Vec::new());
+            for (c, bits) in ["t.z", "t.y", "t.x", "t.w"].into_iter().zip(fields(format)) {
+                let max = (1u32 << bits) - 1;
+                parts.push(format!("((({c} * {max}u + 127u) / 255u) << {at}u)"));
+                at += bits;
+            }
+            format!("let t = texel(i, j); let w = {};", parts.join(" | "))
+        }
+    }
+}
+
+/// The fragment program of a copy by a draw between a converted format's raw blocks and its held
+/// texels (`into` the held texture, or out of a 3D or 2D one), its entry point `convert`.
+pub(crate) fn program(format: Format, into: bool, three_d: bool) -> String {
+    if into {
+        format!(
+            "@group(0) @binding(0) var<uniform> at: vec4<u32>;\n\
+             @group(0) @binding(1) var src: texture_2d<u32>;\n\
+             fn repeat(x: u32, n: u32) -> u32 {{\n\
+                 var wide = 0u;\n\
+                 var filled = 0u;\n\
+                 loop {{\n\
+                     wide = (wide << n) | x;\n\
+                     filled += n;\n\
+                     if filled >= 8u {{ break; }}\n\
+                 }}\n\
+                 return wide >> (filled - 8u);\n\
+             }}\n\
+             @fragment fn convert(@builtin(position) p: vec4f) -> @location(0) vec4f {{\n\
+                 let i = u32(p.x) - at.x;\n\
+                 let j = u32(p.y) - at.y;\n\
+                 let w = textureLoad(src, vec2u(i / {per}u, j), 0).x;\n\
+                 {body}\n\
+                 return vec4f(c) / 255.0;\n\
+             }}\n",
+            per = format.block().0,
+            body = widen_wgsl(format),
+        )
+    } else {
+        let (texture, at) = if three_d {
+            ("texture_3d<f32>", "vec3u(at.x + x, at.y + y, at.z)")
+        } else {
+            ("texture_2d<f32>", "vec2u(at.x + x, at.y + y)")
+        };
+        format!(
+            "@group(0) @binding(0) var<uniform> at: vec4<u32>;\n\
+             @group(0) @binding(1) var src: {texture};\n\
+             fn texel(x: u32, y: u32) -> vec4u {{\n\
+                 return vec4u(round(textureLoad(src, {at}, 0) * 255.0));\n\
+             }}\n\
+             @fragment fn convert(@builtin(position) p: vec4f) -> @location(0) vec4u {{\n\
+                 let i = u32(p.x);\n\
+                 let j = u32(p.y);\n\
+                 {body}\n\
+                 return vec4u(w, 0u, 0u, 0u);\n\
+             }}\n",
+            body = pack_wgsl(format),
+        )
     }
 }
 
@@ -193,9 +320,9 @@ impl WebGpu {
         );
     }
 
-    /// A copy between a buffer and a converted texture: into it from the buffer's bytes read back
-    /// first; out of it from its texels read back and packed, written into the buffer in command
-    /// order.
+    /// A copy between a buffer and a converted texture, on the GPU: the buffer's bytes copied into
+    /// a texture of their own ([`raw`]) and widened into the texture by a draw, or the texture's
+    /// texels packed into one by a draw and copied out.
     pub(crate) fn copy_buffer_packed(
         &mut self,
         buffer: &CopyBufferTexture<'_, Self>,
@@ -203,44 +330,73 @@ impl WebGpu {
         extent: Extent,
         to_texture: bool,
     ) {
-        let format = region.texture.0.desc.format;
-        let row = packed_bytes(format, u64::from(extent.width));
-        let (pitch, per_layer) = (
-            u64::from(buffer.row_pitch),
-            u64::from(buffer.rows_per_layer),
+        let t = &region.texture.0;
+        let format = t.desc.format;
+        let (bw, _, _) = format.block();
+        if !region.origin.x.is_multiple_of(bw) {
+            return self.fail("a region of a two-pixel format starting inside a pair");
+        }
+        if extent.width == 0 || extent.height == 0 || extent.depth_or_layers == 0 {
+            return;
+        }
+        let three_d = t.desc.dimension == TextureDimension::D3;
+        let size = |n: u32| (n >> region.mip).max(1);
+        let (first, slices) = if three_d {
+            (region.origin.z, size(t.desc.depth_or_layers))
+        } else {
+            (region.layer, t.desc.depth_or_layers)
+        };
+        if region.origin.x + extent.width > size(t.desc.width)
+            || region.origin.y + extent.height > size(t.desc.height)
+            || first + extent.depth_or_layers > slices
+        {
+            return self.fail("a copy reaching past a converted texture's level");
+        }
+        let blocks = Extent {
+            width: extent.width.div_ceil(bw),
+            ..extent
+        };
+        let usage = if to_texture {
+            TextureUsage::COPY_DST | TextureUsage::SAMPLE
+        } else {
+            TextureUsage::COPY_SRC | TextureUsage::RENDER
+        };
+        let Ok(staged) = self.create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format: raw(format),
+            width: blocks.width,
+            height: blocks.height,
+            depth_or_layers: blocks.depth_or_layers,
+            mip_levels: 1,
+            samples: 1,
+            usage,
+            cube: false,
+            reinterpret: false,
+        }) else {
+            return self.fail("the texture a converted copy goes through could not be made");
+        };
+        let at_origin = TextureRegion {
+            texture: &staged,
+            mip: 0,
+            layer: 0,
+            origin: Origin::default(),
+            stencil: false,
+        };
+        self.slow.hit(SlowPath::FormatConverted);
+        let held = (
+            &t.raw(),
+            region.mip,
+            first,
+            [region.origin.x, region.origin.y],
         );
-        let (rows, layers) = (u64::from(extent.height), u64::from(extent.depth_or_layers));
-        if row == 0 || rows == 0 || layers == 0 {
-            return;
-        }
         if to_texture {
-            let len = pitch * (per_layer * (layers - 1) + rows - 1) + row;
-            let source = ReadSource::Buffer {
-                buffer: buffer.buffer,
-                offset: buffer.offset,
-                size: len,
-            };
-            let Some(data) = self.read_now(&source, len as usize) else {
-                return;
-            };
-            let (pitch, per_layer) = (buffer.row_pitch, buffer.rows_per_layer);
-            self.write_packed(region, extent, &data, pitch, per_layer, WriteMode::Ordered);
-            return;
-        }
-        let source = ReadSource::Texture {
-            region: again(region),
-            extent,
-        };
-        let Some(packed) = self.read_now(&source, (row * rows * layers) as usize) else {
-            return;
-        };
-        // Rows written one by one only where the buffer's rows lie apart.
-        let tight = pitch == row && (layers == 1 || per_layer == rows);
-        let chunk = if tight { packed.len() } else { row as usize };
-        for (i, bytes) in packed.chunks_exact(chunk).enumerate() {
-            let (l, r) = (i as u64 / rows, i as u64 % rows);
-            let at = buffer.offset + (l * per_layer + r) * pitch;
-            self.write_buffer_impl(buffer.buffer, at, bytes, WriteMode::Ordered);
+            self.copy_buffer_texture(buffer, &at_origin, blocks, true);
+            t.used_in.set(self.serial);
+            self.convert_by_draw(format, true, held, &staged.0.raw(), extent);
+        } else {
+            t.used_in.set(self.serial);
+            self.convert_by_draw(format, false, held, &staged.0.raw(), extent);
+            self.copy_buffer_texture(buffer, &at_origin, blocks, false);
         }
     }
 
@@ -304,6 +460,34 @@ mod tests {
             let mut back = Vec::new();
             pack(format, &wide, &mut back);
             assert_eq!(&back, texels, "{format:?}");
+        }
+    }
+
+    /// Every copy program of every converted format is valid WGSL for WebGPU.
+    #[test]
+    fn copy_programs_are_valid() {
+        use Format::*;
+        for format in [
+            A8Unorm,
+            Bgrx8Unorm,
+            Bgrx8UnormSrgb,
+            B5g6r5Unorm,
+            Bgr5a1Unorm,
+            Bgra4Unorm,
+            Rgbg8Unorm,
+            Grgb8Unorm,
+        ] {
+            for (into, three_d) in [(true, false), (false, false), (false, true)] {
+                let source = program(format, into, three_d);
+                let module = naga::front::wgsl::parse_str(&source)
+                    .unwrap_or_else(|e| panic!("{format:?} {into}: {}\n{source}", e.message()));
+                naga::valid::Validator::new(
+                    naga::valid::ValidationFlags::all(),
+                    naga::valid::Capabilities::empty(),
+                )
+                .validate(&module)
+                .unwrap_or_else(|e| panic!("{format:?} {into}: {e:?}\n{source}"));
+            }
         }
     }
 
