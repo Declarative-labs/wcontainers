@@ -1,4 +1,4 @@
-test_update_descriptor_tables_after_root_signature_change 1 d3d12.c:18573
-test_copy_block_compressed_texture 1 d3d12.c:27135
-test_copy_block_compressed_texture 1 d3d12_test_utils.h:666
-test_copy_block_compressed_texture 1 d3d12_test_utils.h:669
+test_update_descriptor_tables_after_root_signature_change d3d12.c:18573 1
+test_copy_block_compressed_texture d3d12.c:27135 1
+test_copy_block_compressed_texture d3d12_test_utils.h:666 1
+test_copy_block_compressed_texture d3d12_test_utils.h:669 1
