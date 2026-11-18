@@ -68,6 +68,9 @@ pub mod code {
     pub const SET_PS_EARLY_FRAGMENT_TEST: u16 = 21;
     pub const SET_PS_DEPTH_GREATER_EQUAL: u16 = 22;
     pub const SET_PS_DEPTH_LESS_EQUAL: u16 = 23;
+    pub const SET_TESS_PRIMITIVE: u16 = 24;
+    pub const SET_TESS_DOMAIN: u16 = 25;
+    pub const SET_TESS_CONTROL_POINTS: u16 = 26;
     pub const SET_FP_MODE: u16 = 27;
     pub const DCL_INPUT: u16 = 32;
     pub const DCL_INPUT_BUILT_IN: u16 = 33;
@@ -229,6 +232,11 @@ pub mod builtin {
     pub const VIEWPORT_INDEX: u64 = 7;
     pub const GS_VERTEX_COUNT_IN: u64 = 8;
     pub const GS_INSTANCE_ID: u64 = 9;
+    pub const TESS_CONTROL_POINT_COUNT_IN: u64 = 10;
+    pub const TESS_CONTROL_POINT_ID: u64 = 11;
+    pub const TESS_COORD: u64 = 12;
+    pub const TESS_FACTOR_INNER: u64 = 13;
+    pub const TESS_FACTOR_OUTER: u64 = 14;
     pub const SAMPLE_COUNT: u64 = 15;
     pub const SAMPLE_ID: u64 = 16;
     pub const SAMPLE_POSITION: u64 = 17;
@@ -279,6 +287,7 @@ pub mod primitive {
     pub const LINES_ADJ: u64 = 2;
     pub const TRIANGLES: u64 = 3;
     pub const TRIANGLES_ADJ: u64 = 4;
+    pub const QUADS: u64 = 5;
 }
 
 pub mod interp {

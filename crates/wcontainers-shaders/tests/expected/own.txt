@@ -3,6 +3,9 @@ cs_decrement.dxbc	ok-wgsl glsl-write
 cs_images.dxbc	unsupported StorageFormatKind
 cs_texels.dxbc	unsupported TypedBufferFormatKind
 cs_through.dxbc	unsupported StorageFormatKind
+ds_line.dxbc	ok-wgsl glsl-write
+ds_quad.dxbc	ok-wgsl glsl-write
+ds_tri.dxbc	ok-wgsl glsl-write
 gs_adjacent.dxbc	ok-wgsl glsl-write
 gs_cut.dxbc	ok-wgsl glsl-write
 gs_instances.dxbc	ok-wgsl glsl-write
@@ -10,6 +13,38 @@ gs_line_adjacent.dxbc	ok-wgsl glsl-write
 gs_lines.dxbc	ok-wgsl glsl-write
 gs_points.dxbc	ok-wgsl glsl-write
 gs_quads.dxbc	ok-wgsl glsl-write
+hs_line_even_line.dxbc	ok-wgsl glsl-write
+hs_line_even_point.dxbc	ok-wgsl glsl-write
+hs_line_integer_line.dxbc	ok-wgsl glsl-write
+hs_line_integer_point.dxbc	ok-wgsl glsl-write
+hs_line_odd_line.dxbc	ok-wgsl glsl-write
+hs_line_odd_point.dxbc	ok-wgsl glsl-write
+hs_line_pow2_line.dxbc	ok-wgsl glsl-write
+hs_line_pow2_point.dxbc	ok-wgsl glsl-write
+hs_quad_even_ccw.dxbc	ok-wgsl glsl-write
+hs_quad_even_cw.dxbc	ok-wgsl glsl-write
+hs_quad_even_point.dxbc	ok-wgsl glsl-write
+hs_quad_integer_ccw.dxbc	ok-wgsl glsl-write
+hs_quad_integer_cw.dxbc	ok-wgsl glsl-write
+hs_quad_integer_point.dxbc	ok-wgsl glsl-write
+hs_quad_odd_ccw.dxbc	ok-wgsl glsl-write
+hs_quad_odd_cw.dxbc	ok-wgsl glsl-write
+hs_quad_odd_point.dxbc	ok-wgsl glsl-write
+hs_quad_pow2_ccw.dxbc	ok-wgsl glsl-write
+hs_quad_pow2_cw.dxbc	ok-wgsl glsl-write
+hs_quad_pow2_point.dxbc	ok-wgsl glsl-write
+hs_tri_even_ccw.dxbc	ok-wgsl glsl-write
+hs_tri_even_cw.dxbc	ok-wgsl glsl-write
+hs_tri_even_point.dxbc	ok-wgsl glsl-write
+hs_tri_integer_ccw.dxbc	ok-wgsl glsl-write
+hs_tri_integer_cw.dxbc	ok-wgsl glsl-write
+hs_tri_integer_point.dxbc	ok-wgsl glsl-write
+hs_tri_odd_ccw.dxbc	ok-wgsl glsl-write
+hs_tri_odd_cw.dxbc	ok-wgsl glsl-write
+hs_tri_odd_point.dxbc	ok-wgsl glsl-write
+hs_tri_pow2_ccw.dxbc	ok-wgsl glsl-write
+hs_tri_pow2_cw.dxbc	ok-wgsl glsl-write
+hs_tri_pow2_point.dxbc	ok-wgsl glsl-write
 ps_cases.dxbc	ok-wgsl glsl-compile
 ps_clip.dxbc	ok
 ps_coarse.dxbc	ok
@@ -51,6 +86,7 @@ vs_fullscreen.dxbc	ok-wgsl glsl-compile
 vs_geometry.dxbc	ok
 vs_ids.dxbc	ok
 vs_pack.dxbc	ok
+vs_patch.dxbc	unsupported VertexWithoutPosition
 vs_pull.dxbc	ok
 vs_shade.dxbc	ok
 vs_transform.dxbc	ok
