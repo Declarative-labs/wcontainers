@@ -963,6 +963,9 @@ run's check:
   and tests on the Mac; shellcheck of the Mac scripts; `scenes` 255 passed, 0 failed, 0 absent
   (15 s job); `loop` passes (18 s job); `cargo tree --workspace -e all --target all` (2929 lines)
   names no Wine, vkd3d, Godot, Doom, bgfx or Xbox-ATG-Samples crate.
+- Check from a fresh clone at d7f8c38 (scratch, fresh-run10): `wine-tests run dxgi
+  vkd3d-d3d12:test_copy_block_compressed_texture`: 24 counted, 0 FAIL; `programs run --dll
+  d3d11.dll=<forwarding library> atg-simplemsaa_pc bgfx-26-occlusion`: both pass.
 
 ## Loading a replacement Direct3D library
 
