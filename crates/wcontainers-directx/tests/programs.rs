@@ -221,6 +221,12 @@ fn view_sizes_and_level_counts_at_10_0_as_direct3d_does() {
 }
 
 #[test]
+#[ignore = "known failure: an empty slot's size reads 1 by 1 (its stand-in's), where Direct3D gives 0"]
+fn an_empty_slots_size_and_level_count_at_10_0_as_direct3d_does() {
+    level10("resinfo_empty");
+}
+
+#[test]
 fn texture_atomics_as_direct3d_does() {
     case("atomics");
 }

@@ -1649,6 +1649,20 @@ impl<B: Backend> Device<B> {
                 return Err(Error::InvalidArg("unknown blend operation"));
             }
         }
+        // Below 10_1 the targets that blend share their factors and operations (Direct3D 10's
+        // blend), each with its own enable and write mask.
+        let shared = |t: &TargetBlend| (t.src, t.dst, t.op, t.src_alpha, t.dst_alpha, t.op_alpha);
+        let mut blending = d.targets.iter().filter(|t| t.enable).map(shared);
+        if d.independent
+            && self.feature_level() < level::L10_1
+            && blending
+                .next()
+                .is_some_and(|first| blending.any(|t| t != first))
+        {
+            return Err(Error::InvalidArg(
+                "blend factors or operations per target below feature level 10_1",
+            ));
+        }
         let block = blend_block(d);
         self.live()?;
         self.bury();

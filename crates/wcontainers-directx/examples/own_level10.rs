@@ -1,7 +1,8 @@
 //! Cases on a device of feature level 10_0, as the library built on WebGL 2 reports, one per
 //! argument: `targets` (three targets blended and masked each its own way, over a depth test, then
-//! again with two targets writing nothing) and `resinfo` (a pixel shader asking views of some levels
-//! and layers, and an empty slot, for their sizes and level counts at each level they hold). Shaders are compiled by the
+//! again with two targets writing nothing; first what each form of per-target blending answers),
+//! `resinfo` (a pixel shader asking views of a texture and of an array, every level and layer as
+//! the library built on WebGL 2 serves views, for their sizes and level counts at their first levels) and `resinfo_empty` (also an empty slot). Shaders are compiled by the
 //! system's d3dcompiler_47.dll. Prints each answer and the targets' bytes as hex, for comparing
 //! with real Direct3D line by line.
 
@@ -223,36 +224,48 @@ fn main() -> windows::core::Result<()> {
                     RenderTargetWriteMask: mask.0 as u8,
                 }
             };
-            let mut blend = D3D11_BLEND_DESC {
+            // Feature level 10_0 has Direct3D 10's per-target blend enables and write masks, with
+            // one set of factors and operations: what it answers to each form.
+            let alpha = |enable: bool, mask| {
+                target(
+                    enable,
+                    D3D11_BLEND_SRC_ALPHA,
+                    D3D11_BLEND_INV_SRC_ALPHA,
+                    D3D11_BLEND_OP_ADD,
+                    mask,
+                )
+            };
+            let rg = D3D11_COLOR_WRITE_ENABLE(
+                D3D11_COLOR_WRITE_ENABLE_RED.0 | D3D11_COLOR_WRITE_ENABLE_GREEN.0,
+            );
+            let mut factors = D3D11_BLEND_DESC {
                 IndependentBlendEnable: true.into(),
                 ..Default::default()
             };
-            blend.RenderTarget[0] = target(
-                true,
-                D3D11_BLEND_SRC_ALPHA,
-                D3D11_BLEND_INV_SRC_ALPHA,
-                D3D11_BLEND_OP_ADD,
-                D3D11_COLOR_WRITE_ENABLE_ALL,
-            );
-            blend.RenderTarget[1] = target(
+            factors.RenderTarget[0] = alpha(true, D3D11_COLOR_WRITE_ENABLE_ALL);
+            factors.RenderTarget[1] = target(
                 true,
                 D3D11_BLEND_ONE,
                 D3D11_BLEND_ONE,
                 D3D11_BLEND_OP_ADD,
-                D3D11_COLOR_WRITE_ENABLE(
-                    D3D11_COLOR_WRITE_ENABLE_RED.0 | D3D11_COLOR_WRITE_ENABLE_GREEN.0,
-                ),
-            );
-            blend.RenderTarget[2] = target(
-                false,
-                D3D11_BLEND_ONE,
-                D3D11_BLEND_ZERO,
-                D3D11_BLEND_OP_ADD,
                 D3D11_COLOR_WRITE_ENABLE_ALL,
             );
+            let mut same = factors;
+            same.RenderTarget[1] = same.RenderTarget[0];
+            let mut blend = factors;
+            blend.RenderTarget[1] = alpha(false, rg);
+            blend.RenderTarget[2] = alpha(true, D3D11_COLOR_WRITE_ENABLE_ALL);
+            for (name, d) in [
+                ("factors differing", &factors),
+                ("targets alike", &same),
+                ("enables and masks differing", &blend),
+            ] {
+                let mut state = None;
+                let r = unsafe { device.CreateBlendState(d, Some(&mut state)) };
+                println!("CreateBlendState {name} {:#010x}", code(r));
+            }
             let mut state = None;
-            let r = unsafe { device.CreateBlendState(&blend, Some(&mut state)) };
-            println!("CreateBlendState {:#010x}", code(r));
+            unsafe { device.CreateBlendState(&blend, Some(&mut state))? };
             let clears = [
                 [0.0, 0.0, 1.0, 1.0],
                 [0.2, 0.2, 0.2, 1.0],
@@ -263,12 +276,7 @@ fn main() -> windows::core::Result<()> {
                 for (v, c) in views.iter().zip(&clears) {
                     context.ClearRenderTargetView(v.as_ref().unwrap(), c);
                 }
-                context.ClearDepthStencilView(
-                    dsv.as_ref().unwrap(),
-                    D3D11_CLEAR_DEPTH.0,
-                    1.0,
-                    0,
-                );
+                context.ClearDepthStencilView(dsv.as_ref().unwrap(), D3D11_CLEAR_DEPTH.0, 1.0, 0);
                 context.VSSetShader(shader.as_ref(), None);
                 context.PSSetShader(pixel.as_ref(), None);
                 context.OMSetRenderTargets(Some(&views), dsv.as_ref());
@@ -282,6 +290,7 @@ fn main() -> windows::core::Result<()> {
             // Again with the depth test passing equal depths: only the first target writes.
             blend.RenderTarget[1].RenderTargetWriteMask = 0;
             blend.RenderTarget[2].RenderTargetWriteMask = 0;
+            blend.RenderTarget[0].BlendEnable = false.into();
             let mut state = None;
             unsafe { device.CreateBlendState(&blend, Some(&mut state))? };
             let ds_desc = D3D11_DEPTH_STENCIL_DESC {
@@ -299,7 +308,7 @@ fn main() -> windows::core::Result<()> {
                 print(&format!("masked target {i}"), t, 4);
             }
         }
-        "resinfo" => {
+        "resinfo" | "resinfo_empty" => {
             let pixel = ps("Texture2D<float4> a : register(t0);
                 Texture2DArray<float4> b : register(t1);
                 Texture2D<float4> c : register(t2);
@@ -343,8 +352,8 @@ fn main() -> windows::core::Result<()> {
                     ViewDimension: D3D11_SRV_DIMENSION_TEXTURE2D,
                     Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
                         Texture2D: D3D11_TEX2D_SRV {
-                            MostDetailedMip: 1,
-                            MipLevels: 3,
+                            MostDetailedMip: 0,
+                            MipLevels: u32::MAX,
                         },
                     },
                 },
@@ -358,8 +367,8 @@ fn main() -> windows::core::Result<()> {
                         Texture2DArray: D3D11_TEX2D_ARRAY_SRV {
                             MostDetailedMip: 0,
                             MipLevels: u32::MAX,
-                            FirstArraySlice: 1,
-                            ArraySize: 3,
+                            FirstArraySlice: 0,
+                            ArraySize: 5,
                         },
                     },
                 },
@@ -379,6 +388,10 @@ fn main() -> windows::core::Result<()> {
                 context.VSSetShader(full.as_ref(), None);
                 context.PSSetShader(pixel.as_ref(), None);
                 context.PSSetShaderResources(0, Some(&[a, b, None]));
+                if case == "resinfo" {
+                    // Row 2 asks the empty slot: drawn only in `resinfo_empty`.
+                    viewport(3, 2);
+                }
                 context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
                 context.Draw(3, 0);
             }

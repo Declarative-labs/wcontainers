@@ -61,7 +61,7 @@ pub fn add_public<O: Counted>(o: &O) -> u32 {
 
 /// The program drops a reference: the last gives back the device's and one of the library's. A
 /// release when the program holds none (an object the library still holds, released once too
-/// often) changes nothing and answers 0.
+/// often) changes nothing and answers what Direct3D answers, the count wrapped below zero.
 ///
 /// # Safety
 /// `o` is a live object whose reference the caller held, or one the library holds.
@@ -69,7 +69,7 @@ pub unsafe fn release_public<O: Counted>(o: *mut O) -> u32 {
     let public = &unsafe { &*o }.counts().public;
     let Ok(held) = public.try_update(Ordering::Release, Ordering::Relaxed, |n| n.checked_sub(1))
     else {
-        return 0;
+        return u32::MAX;
     };
     let n = held - 1;
     if n == 0 {
