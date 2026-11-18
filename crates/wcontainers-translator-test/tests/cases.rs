@@ -3,7 +3,8 @@
 //! Layer 1: one line a form, its name, how many cases and the BLAKE3 hash of their text (the instruction's
 //! bytes, the data seed, the tracking bit and the state as the reference's wire fields in order). Layer 2:
 //! one line a program, its number, its bytes' length and hash, its code bytes and the other values drawn
-//! with it. One command:
+//! with it. Layer 1's cases in no form: one line a case, as its text. Layer 1's hand-made cases: one line
+//! each, its name, whether it is compared, the stop and fields it must give, and its text. One command:
 //! `WC_CASES_DIR=<directory> WC_CASES_SEED=<seed> nix develop -c cargo test --release -p wcontainers-translator-test --test cases -- --ignored --nocapture`
 //! Knobs: `WC_CASES_LAYER1` (cases a form, default 64), `WC_CASES_LAYER2` (programs, default 64).
 
@@ -79,6 +80,41 @@ fn layer1<G: GuestTest>(seed: u64, count: u32) -> String {
     out
 }
 
+/// Layer 1's cases in no form, drawn as `tests/layer1.rs` draws them.
+fn no_form<G: GuestTest>(seed: u64, count: u32) -> String {
+    let mut key = [0u8; 32];
+    key[..8].copy_from_slice(&seed.to_le_bytes());
+    key[8..16].copy_from_slice(b"no form ");
+    let mut config = Config::with_cases(count);
+    config.failure_persistence = None;
+    let out = RefCell::new(String::new());
+    TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &key))
+        .run(&G::no_form(seed), |case| {
+            out.borrow_mut().push_str(&case_text(&case));
+            Ok(())
+        })
+        .unwrap();
+    out.into_inner()
+}
+
+/// Layer 1's hand-made cases, which no seed changes.
+fn hand_cases<G: GuestTest>() -> String {
+    let mut out = String::new();
+    for designed in G::hand_cases() {
+        write!(
+            out,
+            "{} {} {:?} {:x?} {}",
+            designed.name,
+            designed.compared,
+            designed.stop,
+            designed.fields,
+            case_text(&designed.case)
+        )
+        .unwrap();
+    }
+    out
+}
+
 fn layer2<G: GuestTest>(seed: u64, count: u64) -> String {
     let out = RefCell::new(String::new());
     for case in 0..count {
@@ -119,7 +155,15 @@ fn write_cases<G: GuestTest>(directory: &str) {
         layer2::<G>(seed, two),
     )
     .unwrap();
-    eprintln!("wrote {directory}/layer1-{seed}.txt and layer2-{seed}.txt");
+    std::fs::write(
+        format!("{directory}/no-form-{seed}.txt"),
+        no_form::<G>(seed, one),
+    )
+    .unwrap();
+    std::fs::write(format!("{directory}/hand.txt"), hand_cases::<G>()).unwrap();
+    eprintln!(
+        "wrote {directory}/layer1-{seed}.txt, layer2-{seed}.txt, no-form-{seed}.txt and hand.txt"
+    );
 }
 
 #[test]

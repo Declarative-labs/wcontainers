@@ -651,3 +651,21 @@ fn the_x86_64_reference_runs_blobs() {
     assert_eq!(registers[0], 0, "rax");
     assert_eq!(registers[17] & 0xfff, 0x202, "rflags");
 }
+
+/// A connection lost between requests or during one is started again and the request answered, as when
+/// the machine drops off its network.
+#[test]
+fn the_x86_64_reference_comes_back_after_its_connection_is_lost() {
+    let mut reference = Reference::start(&X86_64);
+    let nop = |reference: &mut Reference| {
+        let landed = reference.case(&[0x90], SEED, &start()).expect("the runner");
+        assert_eq!((landed.signal, landed.code), STEP);
+        assert_eq!(rip(&landed), CODE128 + 1);
+        landed
+    };
+    let before = nop(&mut reference);
+    reference.cut();
+    assert_eq!(nop(&mut reference), before);
+    reference.cut();
+    assert_eq!(nop(&mut reference), before);
+}

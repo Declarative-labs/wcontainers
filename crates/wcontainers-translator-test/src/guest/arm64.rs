@@ -9,7 +9,7 @@ use crate::layout::{CODE, DATA, DATA_BYTES, DATA_WRITABLE};
 use crate::reference::Target;
 use proptest::prelude::*;
 use std::sync::OnceLock;
-use wcontainers_abi::RegisterBlock;
+use wcontainers_abi::{HWCAP, HWCAP2, RegisterBlock, hwcap};
 use wcontainers_arm64::forms::{self, Form};
 use wcontainers_arm64::{Arm64, decode};
 use zerocopy::{FromBytes, IntoBytes};
@@ -126,6 +126,28 @@ impl GuestTest for Arm64 {
     // Fused multiply-add fuses or not, times NaNs follow Arm's rules or not.
     const PROBE_ANSWERS: &'static [i32] = &[0, 1, 2, 3];
 
+    fn offered() -> Vec<&'static str> {
+        forms::OFFERED_FEATURES.to_vec()
+    }
+
+    /// The features of the HWCAP bits the kernel gives programs.
+    fn told() -> Vec<&'static str> {
+        const NAMED: [(u64, &str); 4] = [
+            (hwcap::FP, "FEAT_FP"),
+            (hwcap::ASIMD, "FEAT_AdvSIMD"),
+            (hwcap::CRC32, "FEAT_CRC32"),
+            (hwcap::ATOMICS, "FEAT_LSE"),
+        ];
+        let known = NAMED.iter().fold(0, |all, (bit, _)| all | bit);
+        assert_eq!(HWCAP & !known, 0, "HWCAP bits with no feature named here");
+        assert_eq!(HWCAP2, 0, "HWCAP2 bits with no feature named here");
+        NAMED
+            .iter()
+            .filter(|(bit, _)| HWCAP & bit != 0)
+            .map(|&(_, name)| name)
+            .collect()
+    }
+
     type Form = Form;
 
     fn forms() -> &'static [Form] {
@@ -141,6 +163,10 @@ impl GuestTest for Arm64 {
 
     fn form_name(form: &Form) -> &str {
         &form.name
+    }
+
+    fn form_group(form: &Form) -> &str {
+        &form.group
     }
 
     fn cases(form: &Form) -> BoxedStrategy<Case> {

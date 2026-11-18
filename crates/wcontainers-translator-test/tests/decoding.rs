@@ -5,27 +5,10 @@
 
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestRng, TestRunner};
-use wcontainers_abi::{HWCAP, HWCAP2, hwcap};
 use wcontainers_arm64::{Instruction, decode, forms};
 
 fn setting(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect("a number"))
-}
-
-#[test]
-fn offered_features_are_the_ones_the_kernel_reports_arm64() {
-    let bit = |feature: &str| match feature {
-        "FEAT_FP" => hwcap::FP,
-        "FEAT_AdvSIMD" => hwcap::ASIMD,
-        "FEAT_CRC32" => hwcap::CRC32,
-        "FEAT_LSE" => hwcap::ATOMICS,
-        other => panic!("no hwcap bit known for {other}"),
-    };
-    let offered = forms::OFFERED_FEATURES
-        .iter()
-        .fold(0, |all, f| all | bit(f));
-    assert_eq!(offered, HWCAP);
-    assert_eq!(HWCAP2, 0);
 }
 
 #[test]

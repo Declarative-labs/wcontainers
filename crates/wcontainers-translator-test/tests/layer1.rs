@@ -9,6 +9,7 @@
 use proptest::strategy::{Strategy, ValueTree};
 use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestRng, TestRunner};
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 use wcontainers_arm64::Arm64;
 use wcontainers_translator_test::guest::{Case, GuestTest, Stop};
@@ -95,16 +96,27 @@ fn every_form_matches_the_cpu<G: GuestTest>() {
         free.lock().unwrap().push(reference.into_inner());
         if let Err(error) = result {
             eprintln!("{name}: {error}");
-            failures.lock().unwrap().push(name.to_string());
+            failures
+                .lock()
+                .unwrap()
+                .push((G::form_group(form).to_string(), name.to_string()));
         }
     });
-    let mut failures = failures.into_inner().unwrap();
+    let failing = failures.into_inner().unwrap();
+    let mut groups = BTreeMap::<&str, usize>::new();
+    for (group, _) in &failing {
+        *groups.entry(group).or_default() += 1;
+    }
+    let mut failures: Vec<&String> = failing.iter().map(|(_, name)| name).collect();
     failures.sort();
     eprintln!(
         "layer 1: {} forms, {count} cases each, seed {seed}, {jobs} at once, {} failing: {failures:?}",
         chosen.len(),
         failures.len()
     );
+    if !groups.is_empty() {
+        eprintln!("layer 1 failing by group: {groups:?}");
+    }
     assert!(
         failures.is_empty(),
         "{} forms differ from the CPU",
@@ -165,6 +177,19 @@ fn bytes_in_no_form_are_illegal_as_on_the_cpu<G: GuestTest>() {
     });
     eprintln!("layer 1: {count} cases in no form, seed {seed}");
     result.unwrap();
+}
+
+/// What the CPU offers is what a program is told it has.
+fn offered_features_are_the_ones_programs_are_told<G: GuestTest>() {
+    let (mut offered, mut told) = (G::offered(), G::told());
+    offered.sort();
+    told.sort();
+    assert_eq!(offered, told);
+}
+
+#[test]
+fn offered_features_are_the_ones_programs_are_told_arm64() {
+    offered_features_are_the_ones_programs_are_told::<Arm64>();
 }
 
 #[test]

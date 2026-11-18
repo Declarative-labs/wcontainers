@@ -1372,7 +1372,8 @@ Tests (section 7 gives the detail):
     reference runner uploaded by content hash, cases and blobs streamed through stdin, results and statuses
     reported in-band, layer 1 batched. Reference results are recorded, keyed by the reference CPU's model
     string, the runner's hash and the case, so a replay needs no machine; a recorded result is a real CPU's
-    result, never an emulator's.
+    result, never an emulator's. (Batching and recorded results are not built at X2, which serves cases one
+    at a time; they are proposed for X3, section 7.3.)
 13. **Instruction unit and boundaries.** From `G::ALIGN`; real boundaries for random starts come from a
     linear decode (with `G::decode` and `G::flow`) from each piece start the translator found.
 14. **Stopping the reference after one instruction.** The trap flag (section 2), proven.
@@ -2502,8 +2503,18 @@ As built at X2 (`src/guest/mod.rs`), where building it showed a signature must c
   `_start` written in C. The benchmark set's translations are the same bytes after the move.
 - `PROBE_ANSWERS`: every answer the guest's probe can give (ARM64 0 to 3), so the byte for byte comparison
   translates for every host, and `differences` is run for each.
-- Tests of one CPU's own types stay that CPU's (`decoding.rs`, `valid.rs`, the HWCAP check, the counters a
-  host without fused multiply-add must show), each named with its suffix.
+- Tests of one CPU's own types stay that CPU's (`decoding.rs`, `valid.rs`, the check that a blob is told the
+  abi's HWCAP, the counters a host without fused multiply-add must show), each named with its suffix.
+- `form_group(form)` takes the form by reference (ARM64: its group in Arm's list); layer 1's summary counts
+  the failing forms under their groups. `offered()` and `told()` take no offer, as `cases` does (ARM64:
+  `OFFERED_FEATURES`, and the abi's HWCAP bits by name), and one test written once checks they are the same
+  set (it replaced ARM64's own check of `OFFERED_FEATURES` against HWCAP).
+- Not built at X2, each with the first CPU that gives it something to do: `presented(code, offer)`,
+  `REFERENCE_HAS` and layer 1's rule for an `Err` case come with x86's layer 1 (X3). ARM64 would answer `Ok`
+  to every instance and give an empty list, so the rule would be code no case reaches; its words of features
+  not offered stay among its `excluded` reasons, as above. `Stop::SingleStep` comes with X6, where the
+  translated side first stops by the guest's own trap flag; until then no stop of either side maps to it
+  (the reference's own trap-flag stop is `Landed`).
 
 `Expect` is today's expectation of each corpus (the smoke output, the checks' counts, the changes' stops),
 unchanged. A translator trap maps to a `Stop` and to an exit status generically, from `TrapKind` and the
@@ -2605,12 +2616,19 @@ over its stdin and stdout. When the host's CPU is the guest's (`std::env::consts
 `RUST_TARGET`), the child is `docker run -i --platform G::DOCKER_PLATFORM`, as today; otherwise it is
 `ssh` with `ControlMaster` to the host in `G::REFERENCE_HOST`, after uploading the runner to
 `~/wcontainers-x86/reference/<content hash>` when it is not there, tried five times ten seconds apart before
-the run fails. The x86 runner is linked at 1.5 GiB (its static start code calls undefined weak functions at
-0, which must be within 2 GiB), ARM64's at 2 GiB as before; both above every guest address of the tests. Both are the same records over the same
-pipes, so nothing else differs. `start` fails with a message naming the variable when it is unset; the
+the run fails. A connection lost later (a request written or its result read when the child has ended) is
+the transport's failure, not the guest's: the runner is started again the same way and the request sent
+again, at most five times for one request (each request stands alone). Both runners are static executables
+that are not position independent (Rust's musl target for x86-64 builds a static PIE by default, which
+Linux loads at a random high address, so x86's is built with `-C relocation-model=static`): x86's is linked
+at 1.5 GiB (its static start code calls undefined weak functions at 0, which must be within 2 GiB) and
+ARM64's at 2 GiB as before, with the heap Linux places up to 1 GiB after each; all above every guest
+address of the tests (below 0x5800_0000). Seen on the i7-8750H: image at 0x6000_0000, heap at 0x8417_2000.
+Both are the same records over the same pipes, so nothing else differs. `start` fails with a message naming the variable when it is unset; the
 test then fails, never skips. `cases(&[Case]) -> Vec<(Signal, State, Vec<(u32, u8)>)>`, `blob(..)` and
-`cpu_model()` (read once from `/proc/cpuinfo` on the reference, recorded with every result) are its
-methods.
+the model (read once from `/proc/cpuinfo` on the reference, from the runner's first record) are what it
+gives. As built at X2 it serves one case a request (`case`) and records no results; the model is to be
+recorded with every result when recorded results are built (proposed for X3, section 7.3).
 
 The browser's cdylib is built per guest (a cargo feature naming the guest, `arm64` or `x86_64`, chooses
 `type G`). Its `contract()` JSON gives what `runner.js` needs, all from `Guest`: `blockSize`,
@@ -2638,12 +2656,14 @@ so; it is never skipped silently.
   over 1 s with the machines loaded, and a new process on the machine about 1 ms (section 2), so
   connections are never made per case and a runner
   process runs many cases.
-- **Layer 1, batched**: cases are a deterministic function of seed and form, so the harness sends a form's
+- **Layer 1, batched** (not built at X2, proposed for X3 with x86's layer 1, the first run whose reference
+  is remote and has many cases a form; X2 sends one case a request): cases are a deterministic function of seed and form, so the harness sends a form's
   cases in one batch, collects the results and compares; only a failure goes back to proptest's shrinking,
   which then asks one case at a time. Up to 10 runner processes at once on the x86 machine.
-- **Isolation**: the runner forks per batch of cases and the child runs the cases; a case that damages the
-  child (a write through a random pointer into the runner's own memory) shows as a child that dies, and that
-  batch is rerun one case per child.
+- **Isolation**: as built at X2, cases run in one long-lived child of the runner; a case that damages the
+  child (a write through a random pointer into the runner's own memory) shows as a child that dies, that
+  case is reported as the runner's failure, and the next case gets a new child. With batching (X3), a batch
+  whose child dies is rerun one case per child.
 - **One instruction** (section 2): the code area is filled with `int3`; the instruction is placed at CODE; the
   handler (on an alternate stack, using no thread-local storage and only raw system calls) writes every
   register into the frame including all vector registers, the whole x87 component (control, status and
@@ -2664,7 +2684,8 @@ so; it is never skipped silently.
     address 0 is `GeneralProtection`; `SIGBUS` with `SI_KERNEL` and address 0 is `StackFault`; `SIGBUS`
     with `BUS_ADRALN` is `Alignment(address)`.
   - `SIGSYS`, from the seccomp filter, which stops every call made from the instruction window `[CODE,
-    CODE + 16)` and every call whose `seccomp_data.arch` is `AUDIT_ARCH_I386` wherever it was made: a
+    CODE + 18)` (the end as seccomp reports a call's instruction pointer, after the `syscall`: the longest
+    instruction and a `syscall`, `Machine::WINDOW`) and every call whose `seccomp_data.arch` is `AUDIT_ARCH_I386` wherever it was made: a
     system call, for `syscall`, `int 0x80` and `sysenter` (whose `SIGSYS` arrives with rip in the vDSO,
     section 2, run 7), which never runs.
   Anything else (a stop elsewhere, a signal not listed) is reported as such and fails the case; nothing is
@@ -2681,7 +2702,7 @@ so; it is never skipped silently.
   child with that signal's status. Flat blobs make no system calls but the stand-in's, so they never
   install handlers of their own. The translated side reports the same from its stop (X6's trap-flag
   blobs compare these, section 9). Docker is not used on the x86 machine.
-- **Recorded results**: every reference result is stored under `target/reference/x86_64/` keyed by the
+- **Recorded results** (not built at X2, proposed for X3 with batching): every reference result is stored under `target/reference/x86_64/` keyed by the
   reference CPU's model string, the runner's content hash and the case's hash, so a replay or a run while
   the machine is off uses the real CPU's recorded answer. A case with no recorded answer and no machine
   fails.

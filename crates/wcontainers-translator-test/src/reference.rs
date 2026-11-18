@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 /// What the harness needs to reach a guest's reference.
+#[derive(Clone, Copy, Debug)]
 pub struct Target {
     /// Rust's target for the runner, such as `aarch64-unknown-linux-musl`.
     pub rust_target: &'static str,
@@ -42,6 +43,8 @@ const IMAGE: &str = "alpine:latest";
 const REMOTE_DIRECTORY: &str = "wcontainers-x86/reference";
 /// How many times an SSH reference is tried before the run fails: the machine drops off its network at times.
 const SSH_TRIES: u32 = 5;
+/// How many times a request whose connection was lost is sent again over a new one before the run fails.
+const RECONNECTS: u32 = 5;
 
 fn workspace() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -132,11 +135,14 @@ fn ssh(host: &str) -> Command {
     command
 }
 
-/// Put the runner on the SSH host under its hash unless it is there already; returns its path there.
+/// Put the runner on the SSH host under its hash unless it is there already; returns its path there. Each
+/// upload writes a file of its own (named by the remote shell's process id) and renames it into place, so
+/// runs that upload at once never write into a runner another has started.
 fn upload(host: &str, local: &std::path::Path, hash: &str) -> Result<String, String> {
     let remote = format!("{REMOTE_DIRECTORY}/{hash}");
+    let part = format!("{remote}.part.$$");
     let script = format!(
-        "mkdir -p {REMOTE_DIRECTORY} && {{ test -x {remote} || {{ cat > {remote}.part && chmod +x {remote}.part && mv {remote}.part {remote}; }}; }}"
+        "mkdir -p {REMOTE_DIRECTORY} && {{ test -x {remote} || {{ cat > {part} && chmod +x {part} && mv {part} {remote}; }}; }}"
     );
     let file = std::fs::File::open(local.join("wcontainers-reference")).unwrap();
     let output = ssh(host)
@@ -197,6 +203,7 @@ pub struct BlobRan {
 
 /// A running reference runner for one guest.
 pub struct Reference {
+    target: Target,
     child: Child,
     input: ChildStdin,
     output: ChildStdout,
@@ -262,6 +269,7 @@ impl Reference {
             "the reference runner's fields are the guest's"
         );
         Ok(Reference {
+            target: *target,
             child,
             input,
             output,
@@ -270,13 +278,37 @@ impl Reference {
         })
     }
 
+    /// Send a request and read its result. A connection lost on the way (the network dropped, the
+    /// container ended) is a transport failure, not the guest's: the runner is started again and the
+    /// request sent again, as each request stands alone.
     fn request(&mut self, record: &[u8]) -> Result<Vec<u8>, String> {
-        write_record(&mut self.input, record);
-        let result = read_record(&mut self.output).expect("the reference answers");
+        let mut lost = 0;
+        let result = loop {
+            let sent = write_record(&mut self.input, record);
+            if let Some(result) = sent.ok().and_then(|()| read_record(&mut self.output)) {
+                break result;
+            }
+            lost += 1;
+            assert!(
+                lost <= RECONNECTS,
+                "the connection to the reference was lost {lost} times during one request"
+            );
+            eprintln!(
+                "wcontainers warning: the connection to the reference was lost; starting it again"
+            );
+            let target = self.target;
+            *self = Self::start(&target);
+        };
         match result[0] {
             RESULT_RAN => Ok(result[1..].to_vec()),
             _ => Err(String::from_utf8_lossy(&result[1..]).into_owned()),
         }
+    }
+
+    /// End the connection as a dropped network does, so the transport's own test can show it comes back.
+    pub fn cut(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 
     /// Run one instruction from `state` (its pc field is ignored: the instruction is at CODE) and the data
@@ -408,9 +440,8 @@ fn read_record(from: &mut impl Read) -> Option<Vec<u8>> {
     Some(record)
 }
 
-fn write_record(to: &mut impl Write, record: &[u8]) {
-    to.write_all(&(record.len() as u32).to_le_bytes())
-        .expect("send to the reference");
-    to.write_all(record).expect("send to the reference");
-    to.flush().unwrap();
+fn write_record(to: &mut impl Write, record: &[u8]) -> std::io::Result<()> {
+    to.write_all(&(record.len() as u32).to_le_bytes())?;
+    to.write_all(record)?;
+    to.flush()
 }

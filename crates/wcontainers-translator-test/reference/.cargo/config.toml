@@ -10,6 +10,7 @@ rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=--image-base=0x
 
 [target.x86_64-unknown-linux-musl]
 linker = "rust-lld"
-# Linked at 1.5 GiB, above every address a test gives the guest: x86-64's start code calls undefined weak
-# functions at address 0, so the image must sit within 2 GiB of it.
-rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=--image-base=0x60000000"]
+# Not position independent (the target's default is a static PIE, which Linux loads at a random high
+# address), linked at 1.5 GiB, above every address a test gives the guest: the start code calls undefined
+# weak functions at address 0, so the image must sit within 2 GiB of it.
+rustflags = ["-C", "target-feature=+crt-static", "-C", "relocation-model=static", "-C", "link-arg=--image-base=0x60000000"]

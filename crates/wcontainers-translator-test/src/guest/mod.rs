@@ -36,6 +36,10 @@ pub trait GuestTest: Guest + Personality<Block: PartialEq + core::fmt::Debug> {
     const DEFAULT_OFFER: Self::Offer;
     /// Every answer the probe module can give, so a test can translate for hosts other than this one.
     const PROBE_ANSWERS: &'static [i32];
+    /// The features the CPU offers, by name, and those a program is told of (decoded from what it reads,
+    /// such as ARM64's HWCAP): a test checks they are the same set.
+    fn offered() -> Vec<&'static str>;
+    fn told() -> Vec<&'static str>;
 
     // --- layer 1: the forms ---
     type Form: Clone + core::fmt::Debug + Send + Sync + 'static;
@@ -43,6 +47,8 @@ pub trait GuestTest: Guest + Personality<Block: PartialEq + core::fmt::Debug> {
     fn forms() -> &'static [Self::Form];
     /// The seed key, stable across runs, and what failures are listed under.
     fn form_name(form: &Self::Form) -> &str;
+    /// The group a form's failures are counted under in the summary.
+    fn form_group(form: &Self::Form) -> &str;
     /// The random cases of a form, whole: the instruction with its operands shaped and the starting state
     /// from this CPU's own value strategies. The state's pc is `CODE`.
     fn cases(form: &Self::Form) -> BoxedStrategy<Case>;

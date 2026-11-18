@@ -103,8 +103,13 @@ run_chunk() {
   local result=pass
   if [ "$status" -eq 124 ]; then
     result=stopped
-    # The stopped run's reference containers; nothing else of this half runs beside the driver.
-    docker ps -aq --filter name=wc-x86- | xargs docker rm -f > /dev/null 2>&1
+    # The stopped run's containers: each name ends with its test process's id and a number, so only
+    # those whose process has ended go, never another run's.
+    docker ps -a --filter name=wc-x86- --format '{{.Names}}' | while read -r name; do
+      local pid=${name%-*}
+      pid=${pid##*-}
+      ps -p "$pid" > /dev/null 2>&1 || docker rm -f "$name" > /dev/null 2>&1
+    done
   elif [ "$status" -ne 0 ] || [ "$mismatches" != 0 ]; then
     result=fail
   fi

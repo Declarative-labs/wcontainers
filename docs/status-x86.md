@@ -28,8 +28,8 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   flat blobs the guest's own auxiliary entries on both sides, and made `long-runs.sh` run one guest. Run 4
   (the same day) moved ARM64's own program sources into `programs/arm64` and wrote the last ARM64-pinned
   test files (`programs.rs`, `benchmarks.rs`, `output.rs`, `binaries.rs`, `machine-code`) once over `G`
-  (see "X2, run 4"). Not built, proposed for X3: the recorded reference results and layer 1 batching of
-  plan 7.3.
+  (see "X2, run 4"). Run 5 (the same day) fixed what the independent check of X2 found (see "X2, run 5").
+  Not built, proposed for X3: the recorded reference results and layer 1 batching of plan 7.3.
 
 Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0.5):
 - Suite: `WC_REFERENCE_X86_64=tom@192.168.2.240 nix develop -c cargo test -p wcontainers-guest-cpu -p
@@ -44,9 +44,46 @@ Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0
 
 ## X2: what comes next
 
-1. The independent check of X2.
+1. The second independent check of X2.
 2. Plan 7.3's recorded reference results and layer 1 batching, proposed for X3 (see "Departures"); build them
-   at X2 only if the orchestrator rules so.
+   at X2 only if the orchestrator rules so. The plan's text now says they are not built.
+3. For X3: `presented`, `REFERENCE_HAS` and layer 1's rule for an `Err` case (plan 7.2 "As built"). For X4:
+   the shared layer 2 model's operations are ARM64's (ccmp's nzcv immediate, ranges ARM64 encodes in one
+   instruction), so x86's `assemble` expands them; the X2 check noted it.
+
+## X2, run 5 (2026-11-17)
+
+The independent check of X2 found two blocking problems and six smaller ones. What was done about each:
+- Blocking, five items of plan 7.2's `GuestTest` missing and unrecorded. Built: `form_group` (ARM64 its
+  group in Arm's list; layer 1's summary adds a line counting failing forms by group, after the line
+  `long-runs.sh` parses) and `offered()` and `told()` (ARM64: `OFFERED_FEATURES`, and the abi's HWCAP bits
+  by name; `offered_features_are_the_ones_programs_are_told_arm64` in `tests/layer1.rs` replaced
+  `offered_features_are_the_ones_the_kernel_reports_arm64` of `decoding.rs`). Deferred and now recorded in
+  plan 7.2 "As built" and "Departures": `presented`, `REFERENCE_HAS` and the `Err` rule (X3), and
+  `Stop::SingleStep` (X6), each because nothing would reach it before then.
+- Blocking, the x86 runner was a static PIE. Now built with `-C relocation-model=static`: `file` says "ELF
+  64-bit LSB executable, x86-64, statically linked"; on the i7-8750H its maps show the image at
+  0x60000000-0x6009b000 and the heap at 0x84172000 (plan 7.2 corrected; all guest addresses of the tests
+  are below 0x5800_0000).
+- The plan's text on batching, isolation and recorded results (section 4 item 12, 7.2, 7.3) now says what is
+  built and that the rest is proposed for X3; the model is not recorded with results, and 7.2 says so.
+- The SIGSYS window in 7.3 is `[CODE, CODE + 18)`, as 7.2 and the runner have it.
+- A lost connection in the middle of a run: `Reference::request` starts the runner again and resends, at
+  most five times a request, with a warning. New test `the_x86_64_reference_comes_back_after_its_connection_is_lost`
+  cuts the connection twice (`Reference::cut` kills the transport's child) and gets the same answer each
+  time. Its first run found a race: three tests uploading a new runner at once wrote the same part file,
+  and one start failed with "Text file busy" (then retried and passed). Each upload now writes a part file
+  named by the remote shell's pid; with the runner removed from the machine first, the three tests uploaded
+  at once again and no start failed (scratch `x2/run5/reference.log`, `after-fixes.log`).
+- `long-runs.sh` removes, after a stopped chunk, only the `wc-x86-` containers whose test process (the id in
+  the name) has ended, never another live run's.
+- Layer 2's model being ARM64's is noted under "what comes next" for X4 (already a recorded departure).
+- `tests/cases.rs` now also writes layer 1's no-form cases (`no-form-<seed>.txt`, case texts) and the
+  hand-made cases (`hand.txt`: name, compared, stop, fields, case text); `same-cases.sh` compares them when the
+  earlier commit writes them. d27cd70 does not, so its no-form words were drawn by a scratch test added to
+  its kept copy and removed after (`x2/run5/old-no-form-*.txt`), and compared with the words of this tree's
+  lists by `x2/run5/compare-no-form.sh`. The hand-made cases are fixed values, not drawn; d27cd70 built them
+  inline in four tests, so they have no list to compare with; from now on `hand.txt` covers them.
 
 ## X2, run 4 (2026-11-17)
 
@@ -1167,8 +1204,14 @@ X2 (each also written into the plan's text in the same commit):
   `blob_stop`, and `limit` (with iced) decides before the case which instructions may be stepped, so nothing
   decodes inside a handler (plan 7.2).
 - Isolation: one long-lived case child, replaced when a case ends it, instead of a fork per batch; batching
-  and the recorded results of plan 7.3 are not built yet.
-- The x86 runner is linked at 1.5 GiB (plan 7.2).
+  and the recorded results of plan 7.3 are not built yet, and plan 4 (item 12) and 7.3 now say so.
+- Both runners are static executables that are not position independent: x86's is built with `-C
+  relocation-model=static`, since Rust's musl target for x86-64 builds a static PIE that Linux loads at a
+  random high address (found by the X2 check; until run 5 its `--image-base` did nothing). It is linked at
+  1.5 GiB, ARM64's at 2 GiB (plan 7.2).
+- A request whose connection is lost (written or answered after the transport's child ended) starts the
+  runner again and is sent again, at most five times a request; before, only `start` retried (plan 7.2).
+  An upload writes a part file of its own, so runs uploading at once never write into a started runner.
 - Containers this track starts are named `wc-x86-...` (were `wc-translator-...`).
 - ARM64's blobs go through the wire to one long-lived container per runner, not a container per blob.
 - `GuestTest` as built differs from plan 7.2's listing where building showed it must (plan 7.2, "As built
@@ -1200,6 +1243,13 @@ X2 (each also written into the plan's text in the same commit):
 - Programs (run 4, plan 7.2 "As built"): no `PROGRAMS` constant, the folder is `programs/<NAME>`, looked in
   first and on the include path; `switch.h` (file-level assembly, `start_context`, `CALL_ON_STACK`) in place
   of `switch.S`, so each program stays one source file; no `start.S` (the programs start from a C `_start`).
+- Of plan 7.2's `GuestTest`, built in run 5: `form_group(&form)` (layer 1's summary counts failing forms
+  by group) and `offered()` and `told()` without an offer (one test written once replaced ARM64's own HWCAP
+  check). Not built at X2, recorded in plan 7.2 "As built" (found missing and unrecorded by the X2 check):
+  `presented(code, offer)`, `REFERENCE_HAS` and layer 1's rule for an `Err` case of a feature not offered,
+  which come with x86's layer 1 at X3, since ARM64 would answer `Ok` to every instance and give an empty
+  list, leaving the rule as code no case reaches; and `Stop::SingleStep`, which comes with X6, where the
+  translated side first stops by the guest's own trap flag.
 - `GuestTest::PROBE_ANSWERS` (not in the plan's listing): every answer the probe can give. `output.rs` and the
   `differences` program run for each; `differences_match_linux_on_other_hosts` (one host) became
   `differences_match_linux_on_every_host_arm64` (all four, with ARM64's counter checks on the host it had).
