@@ -209,8 +209,16 @@ Run 20 = G2c run 2, 2026-11-18:
   frame's path but the device asking for subgroups. The two large costs are now placed: the
   bgfx copy is the Direct3D 12 front's `MappedUploadWhole` (asked of it under Next), the acquire
   spin is the display wait itself (Next).
-- Removed: the desktop's C:\wc\target\phase-2-graphics-webgpu twice (5.96 GB before the second
-  merge, 8.53 GB at the end) and the checkout's own target on the Mac twice (505 and 508 MB of
+- A third merge of the shared line (G1c run 8: an interface doc change, a storage binding's size
+  a multiple of four and an access past a binding may reach buffers sharing its API buffer, as
+  this back end's arena does; no new suite test) took the shared line's plan text where it
+  conflicted (its wording of the same indirect draws sentence). Runs after it
+  (logs/run20-full3.log, run20-clippy3.log, run20-webcheck4.log): lint clean; Vulkan 123 passed
+  and 3 ignored, Direct3D 12 124 passed and 2 ignored, 0 failed, the suite 44 of 44 on each;
+  web/check passed whole (pictures at tolerance 0, the suite 44 of 44 in Chrome, timestamps in
+  65,536 ns steps).
+- Removed: the desktop's C:\wc\target\phase-2-graphics-webgpu three times (5.96, 8.53 and
+  8.53 GB) and the checkout's own target on the Mac three times (505, 508 and 508 MB of
   `cargo check`); no scratch copy was made.
 
 Run 19 = G2c run 1, 2026-11-18:
