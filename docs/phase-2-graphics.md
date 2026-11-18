@@ -2410,7 +2410,9 @@ the infrastructure crate and both back ends, and is where `B` is chosen):
   Direct3D 10 and 11 on WebGL 2; Direct3D 12 is not offered there). The host loads only the one for the
   API the browser offers, when a program first calls `CreateDXGIFactory*`, `D3D10CreateDevice*`,
   `D3D11CreateDevice*` or `D3D12CreateDevice`. The shaders crate, with its C++, is a module of its own
-  (`wasm32-wasip1`), loaded at the first shader. OpenGL, Vulkan and Direct3D 9 will be modules of their
+  (`wasm32-wasip1`), loaded at the first shader; how bytes cross between it, the Direct3D module and
+  guest memory, each in its own linear memory, is settled with the second batch's modules (15.2,
+  G9b's first step). OpenGL, Vulkan and Direct3D 9 will be modules of their
   own. In the container, the guest's stand-in libraries (built in the second batch, run by Wine as guest
   code) encode the same calls into the same buffer format.
 
@@ -2695,7 +2697,7 @@ rest come from the research files, which name their sources.
 - **Vertex formats are converted by the back end, not on upload** (WebGPU's shadow streams, 4.12):
   the OpenGL and Vulkan fronts hand every `VertexFormat` as it is.
 - **Program-side rewrites are the norm, not the exception.** Most of what WebGPU lacks became helper
-  values and variant fields (6.4: 22 helper values, 23 variant fields and 14 variant flags at G1c,
+  values and variant fields (6.4: 22 helper values, 23 variant fields and 15 variant flags at G1c,
   counted in `reflect.rs`). Mesa's st/mesa does its
   own OpenGL-specific lowering (alpha test, clip planes, two-sided colour, flat shading, point size,
   research `graphics-design-inputs` 2c) when a driver leaves the cap off. Rule: each rewrite happens
@@ -2739,16 +2741,19 @@ soft-float lowering, `F64Emulated`), 3.1 on WebGL 2 (no multisampled textures th
 what the back end has; st/mesa then computes the version from them (research 2b, `version.c`).
 
 The frontend, the code that makes contexts and surfaces: on Windows, Mesa's own WGL frontend and its
-`libgl-gdi` target (`opengl32.dll`; checked: both are in Mesa's tree, and Mesa's build documentation
-lists Windows with MSVC or clang-cl as tested), with a `stw_winsys` of ours whose present calls the
+`libgl-gdi` target (`opengl32.dll`; checked: both are in Mesa's tree, and Mesa's `docs/install.rst`
+lists the Microsoft Visual C++ compiler, with Visual Studio 2022 17.9 or later and a Windows SDK of
+at least 20348, and Clang 5.0 or later among the compilers known to work; it names no clang-cl),
+with a `stw_winsys` of ours whose present calls the
 interface's `present` on a surface over the window. In the container: a small frontend of ours on
 st/mesa's frontend interface, as Haiku's `hgl` frontend is, making contexts on the interface's
 surfaces (4.9). The guest never runs Mesa: it runs the stand-in (15.5), and Mesa runs on the device
 thread.
 
 How Mesa is built:
-- **For Windows testing**: Meson and Ninja with clang-cl, on the desktop under `C:\wc`, from the pinned
-  tree, with `-Dgallium-drivers=wcontainers,llvmpipe` (llvmpipe as the deterministic reference),
+- **For Windows testing**: Meson and Ninja with the Microsoft Visual C++ compiler (the one
+  `install.rst` names for Windows; the desktop's Visual Studio version is checked against its 17.9
+  at G9's first step), on the desktop under `C:\wc`, from the pinned tree, with `-Dgallium-drivers=wcontainers,llvmpipe` (llvmpipe as the deterministic reference),
   `-Dvulkan-drivers=wcontainers,swrast` (lavapipe likewise), LLVM for llvmpipe and lavapipe only,
   and the Rust static library built natively first. Programs load our `opengl32.dll` from their own
   folder (the rig's existing replacement mechanism); the system's OpenGL is untouched.
@@ -2781,7 +2786,13 @@ How Mesa is built:
   and reads in place; the back-end module imports the front's memory as a second memory
   (multi-memory, which Chrome runs; whether Rust and clang emit accesses to a second memory is not
   known); or the adapter copies each byte argument across, one copy of every byte, the cost the brief's
-  "read in place" avoids. Settled at G9b's first step with the questions above: which of the three
+  "read in place" avoids. The question is not new to the second batch: section 10 already makes the
+  shaders crate a module of its own that the Direct3D module hands shader bytes to, and in the
+  container the Direct3D module reads guest memory, which lives in another module's memory. So the
+  answer below settles it for the first batch's modules as well, and section 10's modules follow it.
+  The boundary also changes rule 4 of section 2 (the brief's "one ordinary call per operation"): an
+  import call into another module cannot be inlined, so each interface call costs one call across
+  modules. Settled at G9b's first step with the questions above: which of the three
   the toolchains allow, whether the Rust driver links into the wasi-sdk module as a static library,
   and the boundary's cost per call and per byte, measured on a Direct3D 11 rig program in Chrome
   against the one-module build (expected small for the first two, not measured). If no way is cheap,
@@ -2801,9 +2812,10 @@ the directory): its C sources, `gex_wgpu_screen.c` (2,647,356 bytes, one file) a
 and log carry no licence. The repository declares no licence (GitHub's licence field is empty; it
 carries Mesa's own `docs/license.rst` and `licenses/`, which say each file's SPDX tag governs, and
 these files have none), so those files are of unknown licence, and building the driver needs its
-`meson.build`. It is not a GitHub fork. Its directory last changed on 2026-10-28 (commit
-41e1c1dfab); the `wink` branch's head is of 2026-11-11 and the newest commit on any branch of
-2026-11-13 (GitHub's repository-level "pushed" date, 2026-11-17, is not a change to the driver). Its
+`meson.build`. It is not a GitHub fork. It is still being worked on: on the `wink` branch its directory last
+changed on 2026-10-28 (commit 41e1c1dfab) and the branch's head is of 2026-11-11, but the newest
+commit on any branch (2026-11-13, branch `fr/tbo-align`, 4a3419242a) changes `gex_wgpu` itself
+(buffer texture ranges at a 16-byte alignment). Its
 meson file requires Tint and emdawnwebgpu (Dawn's `webgpu.h` for Emscripten), and it also builds
 natively against Dawn (`gex_wgpu_native.c`). Its shader compiler (NIR to SPIR-V by Zink's
 `nir_to_spirv`, then Tint to WGSL) is `src/wink/compiler`, shared with the same repository's Vulkan
@@ -2843,9 +2855,18 @@ measurement on a corpus at G8, as 6.3 chose the DXBC route:
   research Q2a). More work; it keeps NIR's structure and needs no SPIR-V round trip.
 The corpus: piglit's and dEQP's GLSL, the GLSL of real programs (Godot's Compatibility renderer,
 bgfx's shaders, Dolphin's), and SPIR-V from Vulkan programs (Godot Forward+, Sascha Willems' samples).
-Pass bar of the choice: every corpus shader converts or fails with a named reason on both routes;
-the route that converts more corpus shaders is chosen, and on equal counts the one of less time per
-shader (both measured on the laptop and recorded with its load, with each route's count and time).
+A converted shader counts only if it computes what the NIR does. Each corpus shader is run on
+seeded inputs (its uniforms, vertex attributes and textures filled from the seed; the seed and the
+number of input sets recorded, a knob) twice: by Mesa's own software driver from the same NIR
+(llvmpipe for GLSL, lavapipe for SPIR-V, built from the pinned tree on the laptop), the reference;
+and by the route's common form, run by the recording back end's interpreter (`wcontainers-gpu-test`, section 11), or, for a
+shader past the interpreter's stated limits, by the WebGPU back end on the RTX 3080 through the
+rig's queue. Outputs are compared exactly for integers and within the format's rounding for
+floats; a shader whose outputs differ counts as failed on that route, listed by name.
+Pass bar of the choice: every corpus shader converts and matches the reference, or fails with a
+named reason, on both routes; the route with more matching shaders is chosen, and on equal counts
+the one of less time per shader (both measured on the laptop and recorded with its load, with each
+route's count and time).
 
 The cache (section 8) keys these by the NIR's serialised bytes (Mesa's `nir_serialize`) plus the
 converter's version, so OpenGL and Vulkan programs keep their combinations across runs as Direct3D's
@@ -2875,9 +2896,13 @@ design is close to this one: commands recorded into `vk_cmd_queue` and replayed 
 pipelines made at the draw, shaders compiled for some of the state they are drawn with, the
 driver's own bindings at the top of group 3. It differs where `gex_wgpu` does (15.2): it draws
 through `webgpu.h` beside wgpu, and its shaders go NIR to SPIR-V to Tint, not into our common form,
-so it bypasses the interface and serves no WebGL 2 fallback, counters or cache of ours. Its README
-reports Vulkan 1.2 with `VK_KHR_portability_subset` (and, among its gaps, "Vulkan 1.3 is reported,
-but for `bufferDeviceAddress`"), serves through emulations most of the optional features listed
+so it bypasses the interface and serves no WebGL 2 fallback, counters or cache of ours. By default
+it reports Vulkan 1.3 without `bufferDeviceAddress`, so not a conformant 1.3, and 1.2 only when
+`WINK_VK_API_VERSION=1.2` is set (checked: `wvk_private.h`'s `WVK_API_VERSION` is 1.3, and
+`api_version()` in `wvk_physical_device.c` returns it unless that variable says 1.2; its README's
+gaps list agrees, "Vulkan 1.3 is reported, but for `bufferDeviceAddress`", while the README's first
+line still says 1.2); it exposes `VK_KHR_portability_subset` unless `WINK_VK_NO_PORTABILITY` is set,
+reports `timelineSemaphore`, serves through emulations most of the optional features listed
 below, and gives its full dEQP-VK run of 2026-09-28 on an Apple M4: 2,443,884 cases, 313,069 run,
 98.5% of those passed. The brief asks for a new driver, so wvk is ideas only, as `gex_wgpu` is,
 unless the owner decides otherwise (15.9); its figure is the floor of G10's measure (15.8), with
@@ -2891,8 +2916,9 @@ What is reported (5.5 points here), by research Q1 and Q3:
 - Version 1.1. 1.2 needs timeline semaphores, `hostQueryReset`, imageless framebuffers and
   `uniformBufferStandardLayout` among others (research Q1a), emulable on the CPU; 1.3 needs buffer
   device addresses, which WGSL lacks, and `maxBufferSize` of 2^30 against WebGPU's 256 MiB default.
-  wvk reports 1.2 on WebGPU with the same runtime's emulated timelines, so the step is expected to
-  be small; it stays the owner's decision (15.9), not planned here.
+  wvk, on the same runtime over WebGPU, reports 1.3 by default without buffer device addresses (not
+  a conformant 1.3) and 1.2 under `WINK_VK_API_VERSION=1.2`, with timeline semaphores, so the step
+  to 1.2 is expected to be small; it stays the owner's decision (15.9), not planned here.
 - Required by 1.1 and served: `multiview` (`MultiviewSerial`), `robustBufferAccess` (WebGPU's own
   robust access), host-visible coherent memory (5.5: guest memory written at submit, ranges the GPU
   wrote read back before a fence reports done; counted), and subgroups (1.1 requires the basic
@@ -2904,11 +2930,15 @@ What is reported (5.5 points here), by research Q1 and Q3:
   Larger subgroups through `Features::SUBGROUPS` are a later step: WebGPU's subgroup size varies
   between the adapter's minimum and maximum, and 1.1 reports one size.
 - Present natively: `imageCubeArray`, `independentBlend` and `sampleRateShading` (WebGPU's core
-  has them), the texture-compression family the adapter has (one is mandatory; without one, device
-  creation fails, research consequences), and `dualSrcBlend`, `shaderClipDistance` and `depthClamp`
+  has them), `textureCompressionETC2` and `textureCompressionASTC_LDR` where the adapter has
+  WebGPU's feature for each, and `dualSrcBlend`, `shaderClipDistance` and `depthClamp`
   where the adapter has WebGPU's optional feature for each. Without it, those three are present
   through the routes the Direct3D fronts take (`BlendInShader`, `ClipDistanceInShader`,
   `DepthClampInShader`), counted.
+- `textureCompressionBC` on every adapter: natively where it has `texture-compression-bc`,
+  otherwise held decoded (`BlockDecoded`, 5.7), counted, as the Direct3D fronts' BC textures are.
+  Vulkan requires one compression family; with BC always present, no adapter loses Vulkan for want
+  of one.
 - Present through counted slow paths, by the routes the interface already has and the Direct3D
   and OpenGL fronts take on the same back end (wvk serves most of these on WebGPU too, some only
   where the adapter has a feature: its `occlusionQueryPrecise` only with `float32-blendable` or
@@ -2936,8 +2966,8 @@ What is reported (5.5 points here), by research Q1 and Q3:
   says so through the counter; Blender's Vulkan path, which the research found needs several of
   them, is one to watch at G10.
 - Limits at WebGPU's values where below Vulkan's minimum would be required, emulated where the minimum
-  is required: 16 vertex bindings (WebGPU's 8; streams past the eighth pulled in the program,
-  `InstanceRateInShader`'s route), 128 bytes of push constants (`ImmediatesSpilled`).
+  is required: 16 vertex bindings (WebGPU's 8; streams past the eighth fetched in the program,
+  `VertexPulledInShader`), 128 bytes of push constants (`ImmediatesSpilled`).
 
 What the interface lacks for it (proposed in 15.7): four descriptor sets with the helper set beside
 them, view component mappings, and the slow path names `WideLinesAsQuads` and `Int64Emulated`.
@@ -2959,7 +2989,12 @@ Built per guest: x86-64 and arm64 Linux libraries (an EGL vendor library for glv
 and a Vulkan ICD with its manifest, loaded by the image's own libglvnd and Vulkan loader), and x86-64
 Windows libraries run by Wine (`d3d11.dll`, `d3d12.dll`, `dxgi.dll`, chosen with Wine's DLL overrides;
 their Unix-side halves make the crossing, as Wine's own drivers do). The runtime places them and their
-manifests in the container's file system.
+manifests in the container's file system. The EGL library and the ICD make Wayland surfaces (15.6).
+Programs that draw through GLX (X11 only: SDL2 programs on X11, many older Linux games) need more,
+and only if the owner takes Xwayland (15.6, 15.9): a GLX vendor library for glvnd of ours, written
+from `glx.xml` (Apache-2.0) as the EGL one is, and the ICD's `VK_KHR_xlib_surface` and
+`VK_KHR_xcb_surface`. Mesa's own GLX (`src/glx`, SGI-B-2.0) is never built. Without Xwayland, GLX
+and those surfaces are absent: glvnd finds no GLX vendor and the ICD lists neither extension.
 
 The channel, one primitive for all five fronts:
 - **Streams in guest memory.** Each object that orders work has a stream, a ring of records (call
@@ -3053,13 +3088,42 @@ frame, so the kernel-level cut costs nothing measurable (expected; measured at G
   crate, MIT, to confirm), one canvas surface per top-level window: Wine (`winewayland.drv`), SDL,
   GLFW, GTK and Qt speak Wayland; the stand-ins' EGL and WSI make Wayland surfaces on the interface's
   surfaces; input reaches windows as Wayland events and gamepads as evdev. X11-only programs would
-  need Xwayland. An owner decision (15.9).
+  need Xwayland (a guest program, run rootless, each X top-level window a Wayland surface of the
+  compositor), and, to draw, the GLX stand-in and the ICD's X11 surfaces of 15.5, which present on
+  the interface surface behind the X window's Wayland surface. Xwayland ties the two by its
+  `xwayland_shell_v1` protocol (checked 2026-11-18: in wayland-protocols' staging set, and smithay
+  serves it in `smithay::wayland::xwayland_shell`). An owner decision (15.9).
+  The guest reaches the compositor through a Unix socket (`$XDG_RUNTIME_DIR/wayland-0`) that the
+  kernel connects to the host's compositor, passing file descriptors (`SCM_RIGHTS`) whose shared
+  memory (`wl_shm`'s `memfd`s) is guest memory the compositor reads in place.
 
-How they are proven (G11, G12): sound: `aplay`, an SDL program and a Wine program play a known file
-and the samples the hook receives equal the file's (a recording hook), with the position advancing
-at the real rate within one period; input: seeded random event sequences at the hook (count
-recorded) are read back in order by an evdev reader in the guest, SDL's game controller test and a
-Wine program reading the gamepad through XInput.
+How they are proven. Guest programs run in the container on the native host (wasmtime) on the
+laptop, x86-64 Linux programs run by the translator over the kernel; the same programs in Chrome
+are G13's. Every sequence is seeded with its count recorded.
+- **Sound (G11).** The guest side: `aplay` (alsa-utils, a guest program for testing only), an SDL
+  program of ours playing a WAV through SDL's ALSA driver, and a Windows program of ours playing it
+  through winmm's `PlaySound` under Wine (`winealsa.drv`) each play a known file in a format the
+  hook offers; the samples a recording hook receives equal the file's exactly, and one file at a
+  rate not offered plays through alsa-lib's plug layer with its frame count right. The native host:
+  `cpal` plays a seeded signal written into a ring into the laptop's `snd-aloop` loopback device,
+  and the samples captured from its other side equal the ring's. The browser host: the AudioWorklet
+  node run in an `OfflineAudioContext` in Chrome renders exactly the ring's samples (float as is,
+  16-bit integers over 32768), and in a running `AudioContext` the reported position advances at
+  the context's rate within one period over ten seconds.
+- **Input (G12).** Seeded random event sequences injected at the hook are read back in order and
+  equal by an evdev reader of ours in the guest, by an SDL program of ours printing the game
+  controller events it reads (SDL's evdev joystick driver), and by a Windows program of ours under
+  Wine printing what `XInputGetState` returns (Wine's `winebus` reading the evdev device; which of
+  its settings that needs is found at G12). The browser host's translation (DOM keyboard and pointer
+  events, Pointer Lock, the Gamepad API's standard mapping into evdev codes) is a pure function,
+  tested on recorded browser events, and keys and pointer moves sent to a rig page in Chrome through
+  the DevTools protocol's `Input.dispatch*` arrive at the hook in order.
+- **Windows (G12).** With Weston's demo clients (MIT, a pinned release, testing only):
+  `weston-simple-shm`'s window appears as one interface surface whose pixels, read back, equal its
+  buffer's; a seeded sequence of keyboard and pointer events at the hook reaches `weston-eventdemo`,
+  which prints each event, in order with surface-local coordinates; two windows are two surfaces,
+  and closing one destroys its surface. EGL and Vulkan surfaces on Wayland need the stand-ins, so
+  they are proven at G13.
 
 ### 15.7 What the interface needs (proposed, not made)
 
@@ -3074,8 +3138,9 @@ Each in the interface's style; made at G1d with a rule test in the recorder and 
   of the two Chrome allows is measured first.
 - **View component mappings.** `TextureViewDesc` gains a component mapping (`ViewComponent`, which
   c6e80691 added), with a capability `VIEW_SWIZZLE` made in the same change and declared by back ends
-  that take it, so WebGPU's `texture-component-swizzle` feature (Chrome 143 by 4.11; listed among
-  WebGPU's optional features in the research, part 2, question 2c) serves Vulkan's
+  that take it, so WebGPU's `texture-component-swizzle` feature (Chrome 143, research
+  `webgl2-vs-webgpu`; listed among WebGPU's optional features in the research, part 2, question
+  2c) serves Vulkan's
   `VkComponentMapping`, OpenGL's texture swizzle (core in 3.3) and Direct3D 12's mappings natively;
   `VariantKey::swizzled` is then filled only where the back end lacks it. Today views carry no mapping
   and no capability names one (G1c removed a `VIEW_SWIZZLE` flag that no call used), so every front
@@ -3107,7 +3172,9 @@ its load, as everywhere.
   the kernel track's character device and parking (the `ioctl` of 15.5), or a stand-in for it in the
   Windows-library build, which needs nothing.
 - **G8, the NIR route.** `wcontainers-nir`, both candidates of 15.3 measured, one chosen, the cache
-  keyed as 15.3 says. Pass bar: 15.3's. Needs: Mesa pinned and building on the laptop.
+  keyed as 15.3 says. Pass bar: 15.3's, the outputs of every converted shader held to llvmpipe's or
+  lavapipe's. Needs: Mesa pinned and building on the laptop (with llvmpipe and lavapipe), and the
+  rig's queue for shaders past the recorder's limits.
 - **G9, OpenGL natively.** `wcontainers-opengl` and Mesa built for Windows with it, llvmpipe beside.
   Pass bar, on the RTX 3080 through deqp-runner, over 15.2's lists from the pinned mustpass: the
   measure is passed cases over cases run, where a case run is any result but NotSupported, a pass
@@ -3143,16 +3210,31 @@ its load, as everywhere.
   The browser half: `vulkan.wasm` in Chrome on WebGPU, `vk-default` built for WebAssembly as G9b
   builds dEQP (the CTS calling the driver's entry points without a loader), with the same measure.
   Needs: G1d, G8 (G9b's way of running the suites in Chrome for the browser half).
-- **G11, sound.** The sound hook, its browser and native hosts, and (with the kernel track) the ALSA
-  device. Pass bar: 15.6's.
-- **G12, input.** The input hook, evdev devices (with the kernel track), and the window system the
-  owner chooses. Pass bar: 15.6's.
+- **G11, sound.** The sound hook, its native host (`cpal`) and browser host (the AudioWorklet), and
+  the ALSA device. Pass bar: 15.6's sound proofs, all three parts (guest programs through a
+  recording hook, the native host through the loopback, the browser host in Chrome). Needs, from
+  the kernel track: the ALSA character devices with their `ioctl`s dispatched to the hook and their
+  status, control and data pages mapped as guest memory the hook reads in place; from the
+  translator track: `aplay`, an SDL program and Wine running as x86-64 Linux guests in the
+  container on the native host. Without them, only the two hosts' parts can be checked.
+- **G12, input and windows.** The input hook, its browser and native hosts, the evdev devices, and
+  the window system the owner chooses (15.6's Wayland compositor on smithay unless the owner says
+  otherwise). Pass bar: 15.6's input and windows proofs. Needs, from the kernel track: evdev
+  character devices (read, `poll`, the `EVIOCG*` queries), a Unix socket at
+  `$XDG_RUNTIME_DIR/wayland-0` connected to the host's compositor with `SCM_RIGHTS` and `memfd`s
+  whose pages are guest memory the host can address; from the translator track: the evdev reader,
+  SDL, Wine and Weston's clients running as x86-64 Linux guests on the native host.
 - **G13, the second batch in the container.** The stand-ins of 15.5 as guest libraries (the EGL
   vendor library, the Vulkan ICD, and the Wine stand-ins) in a container in Chrome, crossing by the
   kernel's character device. Pass bar: the rig's Direct3D programs under Wine, bgfx's and Godot's
   OpenGL and Vulkan renderers built for Linux, and shards of G9's and G10's lists run as guest
   programs, draw in Chrome as they do natively (the same pictures within the rig's allowance, the
-  same measure); a frame crosses once when nothing needs an answer (counted). Needs: G7, G9b, G10,
+  same measure); they draw into windows of G12's compositor through the EGL library's and the ICD's
+  Wayland surfaces (each window one interface surface, resized and closed with it); a frame crosses
+  once when nothing needs an answer (counted); G11's and G12's guest programs pass their proofs in
+  Chrome. If the owner takes Xwayland: the GLX stand-in and the ICD's X11 surfaces, with a GLX
+  program of ours and an SDL2 program forced onto X11 (`SDL_VIDEODRIVER=x11`) drawing as they do
+  natively. Needs: G7, G9b, G10, G11,
   G12's window system (the programs' windows), and the translator and kernel tracks running guest
   Linux programs in Chrome.
 
@@ -3163,20 +3245,28 @@ its load, as everywhere.
   driver, or write ours on the interface as 15.2 recommends; and the same for wvk, the same
   repository's Vulkan driver (15.4), against the brief's new driver. Neither is planned; a
   like-for-like comparison would run them natively over Dawn on the rig's lists and GPU.
-- Vulkan's version: 1.1 as the brief says, with 1.2 left for later (wvk reports 1.2).
+- Vulkan's version: 1.1 as the brief says, with 1.2 left for later (wvk, on the same runtime over
+  WebGPU, reports 1.3 without buffer device addresses by default, which is not a conformant 1.3,
+  and 1.2 under an environment variable; 15.4).
 - Vulkan's optional features reported present through counted slow paths (15.4) rather than absent,
   and sparse binding absent.
 - Consumed arguments copied into the call streams rather than read in place (15.1, 15.5), a
   narrowing of the brief.
 - The back end as its own WebAssembly module per page that every front module calls (15.2), a
-  change to section 10's one module per front and back end; OpenGL and Vulkan as two modules, each
-  holding Mesa's shared code.
+  change to section 10's one module per front and back end, and to the brief's "one ordinary call
+  per operation": each interface call becomes an import call across modules that cannot be
+  inlined (its cost measured at G9b; if no way is cheap, the Direct3D module keeps its back end
+  inside and a second API is refused its own device by name). How bytes cross between modules
+  (15.2) applies to the first batch's shaders module and guest memory too. OpenGL and Vulkan as two
+  modules, each holding Mesa's shared code.
 - The window system: a Wayland compositor in the host (15.6), and whether X11-only programs
-  (Xwayland) are in scope.
+  (Xwayland) are in scope; taking them also takes a GLX stand-in of ours and the Vulkan ICD's X11
+  surfaces (15.5), proven at G13.
 - Sound capture (the microphone): in or out.
 - The interface changes of 15.7, which change the fronts' code.
 - Names: `wcontainers-opengl`, `wcontainers-vulkan`, `wcontainers-nir`, `wcontainers-gpu-channel`,
   and the modules `gpu-webgpu.wasm`, `gpu-webgl.wasm`, `opengl.wasm`, `vulkan.wasm`.
 - Licences of what is new to the project: Mesa (MIT with the permissive files of 15.2), bindgen,
   cpal and smithay (to confirm at their milestones), and VK-GL-CTS, dEQP and piglit for testing only
-  (with Emscripten for their browser build only, if wasi-sdk cannot build them, G9b).
+  (with Emscripten for their browser build only, if wasi-sdk cannot build them, G9b); Weston's demo
+  clients (MIT) and alsa-utils' `aplay` (GPL-2.0) as guest programs for testing only (15.6).
