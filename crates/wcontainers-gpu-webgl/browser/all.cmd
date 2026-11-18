@@ -5,7 +5,7 @@ rem off, and the shared suite in Chrome and on ANGLE with every extension, witho
 rem without both (and without exact float blits, the block compression extensions, EXT_texture_norm16, EXT_render_snorm and the
 rem extensions of blending, raster state, addressing and clip distances; in Chrome also without
 rem WEBGL_stencil_texturing, which ANGLE natively lacks), and the drawings compared with the
-rem WebGPU back end natively and in Chrome.
+rem WebGPU back end natively and in Chrome, and block-compressed textures natively against real Direct3D 11.
 rem all.cmd <out-dir>; run from the checkout root.
 setlocal
 set OUT=%~1
@@ -29,6 +29,8 @@ set WEBGL_OFF=EXT_clip_control WEBGL_provoking_vertex float_blits %FORMATS%
 call :angle "%OUT%\suite-angle-neither.txt"
 set WEBGL_OFF=
 cargo test -j 3 -p wcontainers-gpu-webgl --test against_webgpu -- --test-threads=1 || set FAIL=1
+cargo test -j 3 -p wcontainers-gpu-webgl --test bc_reference -- --test-threads=1 --nocapture > "%OUT%\bc-reference.txt" 2>&1 || set FAIL=1
+findstr /c:"test result:" /c:"largest difference" /c:"exactly equal" /c:"FAILED" "%OUT%\bc-reference.txt"
 if defined FAIL exit /b 1
 exit /b 0
 

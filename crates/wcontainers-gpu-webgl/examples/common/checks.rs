@@ -755,8 +755,8 @@ fn pattern(len: usize, seed: u32) -> Vec<u8> {
 
 /// Copies between formats of one typeless group keep every byte: a region of two layers of a 2D
 /// array texture written with every bit pattern is copied into a texture of the other format at
-/// another place, and read back. Pairs whose destination does not read back here are skipped; so is a
-/// pair whose formats the back end lacks.
+/// another place, and read back (10-10-10-2 formats, which GL does not read back, by a program
+/// loading them). A pair whose formats the back end lacks is skipped, and says so.
 pub fn copies_within_a_typeless_group<H: Host>() {
     use crate::kit;
     let mut b = H::make();
@@ -787,6 +787,18 @@ pub fn copies_within_a_typeless_group<H: Host>() {
         (Format::Rg16Unorm, Format::Rg16Sint),
         (Format::Rgb32Float, Format::Rgb32Uint),
         (Format::Rgb32Sint, Format::Rgb32Float),
+        (Format::Rgb10a2Unorm, Format::Rgb10a2Uint),
+        (Format::Rgb10a2Uint, Format::Rgb10a2Unorm),
+        (Format::R8Unorm, Format::R8Uint),
+        (Format::R8Uint, Format::R8Sint),
+        (Format::R8Sint, Format::R8Unorm),
+        (Format::Rg8Unorm, Format::Rg8Sint),
+        (Format::Rg8Sint, Format::Rg8Uint),
+        (Format::Rg8Uint, Format::Rg8Unorm),
+        (Format::Rg32Float, Format::Rg32Uint),
+        (Format::Rg32Uint, Format::Rg32Sint),
+        (Format::Rg32Sint, Format::Rg32Float),
+        (Format::Rgba8Sint, Format::Rgba8Uint),
         // Copies within one format, the commonest, keep every bit too.
         (Format::R16Float, Format::R16Float),
         (Format::Rg16Float, Format::Rg16Float),
@@ -807,8 +819,8 @@ pub fn copies_within_a_typeless_group<H: Host>() {
         // Formats absent here (16-bit normalised without EXT_texture_norm16) are not copied.
         if !b.caps().formats.get(from).contains(FormatUse::SAMPLE)
             || !b.caps().formats.get(to).contains(FormatUse::SAMPLE)
-            || !(b.caps().formats.get(to).contains(FormatUse::COPY_OUT) || twin(to).is_some())
         {
+            println!("not copied, a format absent: {from:?} to {to:?}");
             continue;
         }
         let texel = from.block().2 as usize;
@@ -996,6 +1008,9 @@ fn read_typeless<B: Backend>(
     if b.caps().formats.get(format).contains(FormatUse::COPY_OUT) {
         return kit::read(b, texture, 0, 0, size, texel, false);
     }
+    if matches!(format, Format::Rgb10a2Unorm | Format::Rgb10a2Uint) {
+        return read_packed(b, texture, format, size);
+    }
     let twin = twin(format).unwrap_or_else(|| panic!("{format:?} has no twin to read through"));
     let usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
     let t = kit::texture(b, TextureDimension::D2, twin, size, 1, usage, false);
@@ -1012,6 +1027,106 @@ fn read_typeless<B: Backend>(
     let got = kit::read(b, &t, 0, 0, size, texel, false);
     b.destroy(Object::Texture(t));
     got
+}
+
+/// Loads one layer of a 10-10-10-2 2D array texture as its fields: integers as they are,
+/// normalised ones scaled back to integers.
+const PACKED_LOAD: &str = "
+@group(0) @binding(32) var u: texture_2d_array<u32>;
+@group(0) @binding(33) var f: texture_2d_array<f32>;
+@group(0) @binding(0) var<uniform> l: vec4<u32>;
+@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(f32((v & 1u) << 2u) - 1.0, f32((v & 2u) << 1u) - 1.0, 0.0, 1.0);
+}
+@fragment fn fs_uint(@builtin(position) p: vec4<f32>) -> @location(0) vec4<u32> {
+    return textureLoad(u, vec2<i32>(p.xy), i32(l.x), 0);
+}
+@fragment fn fs_unorm(@builtin(position) p: vec4<f32>) -> @location(0) vec4<u32> {
+    let v = textureLoad(f, vec2<i32>(p.xy), i32(l.x), 0);
+    return vec4<u32>(round(v * vec4<f32>(1023.0, 1023.0, 1023.0, 3.0)));
+}
+";
+
+/// Reads a 10-10-10-2 2D array texture, which GL does not read back, by loading each layer in a
+/// program and packing the fields into the format's words again.
+fn read_packed<B: Backend>(
+    b: &mut B,
+    texture: &B::Texture,
+    format: Format,
+    size: [u32; 3],
+) -> Vec<u8> {
+    use crate::kit::{self, Kit};
+    let k = Kit::new(b);
+    let (fs, binding) = match format {
+        Format::Rgb10a2Uint => ("fs_uint", 32),
+        _ => ("fs_unorm", 33),
+    };
+    let program = kit::program(b, PACKED_LOAD, "vs", fs);
+    let view = kit::view(b, texture, format, ViewDimension::D2Array, 0, 1, 0, size[2]);
+    let params = b
+        .create_buffer(&BufferDesc {
+            size: 16,
+            usage: BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+            intent: MapIntent::Often,
+        })
+        .expect("create_buffer");
+    let set = b
+        .create_binding_set(&[
+            BindingEntry {
+                binding,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Texture(&view),
+            },
+            BindingEntry {
+                binding: 0,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::UniformBuffer(BufferRange {
+                    buffer: &params,
+                    offset: 0,
+                    size: 16,
+                }),
+            },
+        ])
+        .expect("create_binding_set");
+    let f = Format::Rgba32Uint;
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let out = kit::texture(
+        b,
+        TextureDimension::D2,
+        f,
+        [size[0], size[1], 1],
+        1,
+        usage,
+        false,
+    );
+    let out_view = kit::target(b, &out, f, 0, 0);
+    let vp = [kit::viewport(0.0, 0.0, size[0] as f32, size[1] as f32)];
+    let mut packed = Vec::new();
+    for layer in 0..size[2] {
+        b.write_buffer(&params, 0, &words(&[layer, 0, 0, 0]), WriteMode::Discard);
+        b.begin_pass(&kit::pass(&out_view, [0; 4], None));
+        b.draw(&kit::call(
+            &k,
+            &program,
+            Some(&set),
+            &vp,
+            Topology::TriangleList,
+            3,
+        ));
+        b.end_pass();
+        let got = kit::read(b, &out, 0, 0, [size[0], size[1], 1], 16, false);
+        for t in got.as_chunks::<16>().0 {
+            let c = |i: usize| u32::from_le_bytes(t[i * 4..i * 4 + 4].try_into().unwrap());
+            let word = c(0) | c(1) << 10 | c(2) << 20 | c(3) << 30;
+            packed.extend(word.to_le_bytes());
+        }
+    }
+    b.destroy(Object::BindingSet(set));
+    b.destroy(Object::TextureView(out_view));
+    b.destroy(Object::Texture(out));
+    b.destroy(Object::TextureView(view));
+    b.destroy(Object::Buffer(params));
+    packed
 }
 
 /// A face of a cube copied whole, and a region of another face, into 2D textures of another format
@@ -1622,6 +1737,152 @@ const WRITE_ONE: &str = "
     return vec4<u32>(1u);
 }
 ";
+
+/// Vertices 1, 2 and 3 (counted mod 4) make a triangle over the whole target; vertex 0 is a point
+/// at its corner.
+const LARGEST: &str = "
+@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    var p = array<vec2<f32>, 4>(vec2<f32>(-1.0, -1.0), vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0),
+                                vec2<f32>(-1.0, 3.0));
+    return vec4<f32>(p[v % 4u], 0.0, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4<u32> {
+    return vec4<u32>(1u);
+}
+";
+
+/// In a draw that does not restart, the largest index value is an ordinary vertex, which GL ES
+/// (always restarting there) would drop: lists and fans holding it draw their triangle, for 8, 16
+/// and 32-bit indices, written by the host or copied on the GPU (`RestartRewrite`, counted only
+/// where a write may have put the value in the draw's range). 32-bit indices holding both 0 and
+/// the largest value lose the device as not built.
+pub fn lists_draw_the_largest_index_as_a_vertex<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut formats = vec![IndexFormat::U16, IndexFormat::U32];
+    let mut b = H::make();
+    if b.caps().has(Features::INDEX_U8) {
+        formats.insert(0, IndexFormat::U8);
+    }
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, LARGEST, "vs", "fs");
+    let f = Format::R32Uint;
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let t = kit::texture(&mut b, TextureDimension::D2, f, [4, 4, 1], 1, usage, false);
+    let v = kit::target(&mut b, &t, f, 0, 0);
+    let whole = [kit::viewport(0.0, 0.0, 4.0, 4.0)];
+    let covered = |b: &mut H::Backend| {
+        let got = kit::read(b, &t, 0, 0, [4, 4, 1], 4, false);
+        got.as_chunks::<4>().0.iter().filter(|p| p[0] == 1).count()
+    };
+    let rewrites = |b: &mut H::Backend| b.slow_paths().count(SlowPath::RestartRewrite);
+    for format in formats {
+        let width = format.size() as usize;
+        let largest = format.restart_value();
+        let bytes = |values: &[u32]| {
+            let mut out: Vec<u8> = values
+                .iter()
+                .flat_map(|v| v.to_le_bytes()[..width].to_vec())
+                .collect();
+            out.resize(out.len().next_multiple_of(4), 0);
+            out
+        };
+        // A triangle through the largest value, then one without it.
+        let indices = bytes(&[1, 2, largest, 1, 2, 3]);
+        let host = buffer(&mut b, BufferUsage::INDEX, &indices);
+        let data = buffer(&mut b, BufferUsage::VERTEX, &indices);
+        let both = BufferUsage::INDEX | BufferUsage::VERTEX;
+        let copied = buffer(&mut b, both, &vec![0; indices.len()]);
+        b.copy_buffer(&data, 0, &copied, 0, indices.len() as u64);
+        let draw = |b: &mut H::Backend, ib: &<H::Backend as Backend>::Buffer, first: u32| {
+            b.begin_pass(&kit::pass(&v, [0; 4], None));
+            b.draw(&DrawCall {
+                index: Some(IndexBinding {
+                    buffer: ib,
+                    offset: 0,
+                    format,
+                }),
+                range: DrawRange::Indexed {
+                    first,
+                    count: 3,
+                    base_vertex: 0,
+                    first_instance: 0,
+                    instances: 1,
+                },
+                ..kit::call(&k, &program, None, &whole, Topology::TriangleList, 3)
+            });
+            b.end_pass();
+        };
+        for (ib, name) in [
+            (&host, "written by the host"),
+            (&copied, "copied on the GPU"),
+        ] {
+            let before = rewrites(&mut b);
+            draw(&mut b, ib, 0);
+            assert_eq!(
+                covered(&mut b),
+                16,
+                "{format:?} list through the largest value, {name}"
+            );
+            assert_eq!(rewrites(&mut b), before + 1, "{format:?} {name}");
+            draw(&mut b, ib, 3);
+            assert_eq!(covered(&mut b), 16, "{format:?} list without it, {name}");
+        }
+        let before = rewrites(&mut b);
+        draw(&mut b, &host, 3);
+        assert_eq!(
+            rewrites(&mut b),
+            before,
+            "{format:?}: a range known to lack the value draws as it is"
+        );
+        b.begin_pass(&kit::pass(&v, [0; 4], None));
+        let source = IndexSource::Guest {
+            indices: &indices[..3 * width],
+            format,
+            base_vertex: 0,
+        };
+        let fan = kit::call(&k, &program, None, &whole, Topology::TriangleFan, 3);
+        b.draw_fan_or_loop(
+            &fan,
+            FanOrLoop::TriangleFan,
+            source,
+            ProvokingVertex::Last,
+            0,
+            1,
+        )
+        .expect("draw_fan_or_loop");
+        b.end_pass();
+        assert_eq!(
+            covered(&mut b),
+            16,
+            "{format:?} fan through the largest value"
+        );
+        assert_eq!(b.status(), DeviceStatus::Ok, "{format:?}");
+    }
+    let indices = words(&[0, 2, u32::MAX, 0]);
+    let ib = buffer(&mut b, BufferUsage::INDEX, &indices);
+    b.begin_pass(&kit::pass(&v, [0; 4], None));
+    b.draw(&DrawCall {
+        index: Some(IndexBinding {
+            buffer: &ib,
+            offset: 0,
+            format: IndexFormat::U32,
+        }),
+        range: DrawRange::Indexed {
+            first: 0,
+            count: 3,
+            base_vertex: 0,
+            first_instance: 0,
+            instances: 1,
+        },
+        ..kit::call(&k, &program, None, &whole, Topology::TriangleList, 3)
+    });
+    b.end_pass();
+    assert_ne!(
+        b.status(),
+        DeviceStatus::Ok,
+        "32-bit indices holding 0 and 2^32 - 1"
+    );
+}
 
 /// Without `FRACTIONAL_VIEWPORT` a draw with a viewport at a fraction of a pixel breaks the
 /// interface's rule: the device is lost rather than the viewport rounded.
@@ -2317,6 +2578,7 @@ pub fn timestamps_and_their_disjoint_flag<H: Host>() {
             absent.err()
         );
         assert_eq!(b.timestamps_disjoint(), absent);
+        not_run(Features::TIMESTAMPS);
         return;
     }
     let k = Kit::new(&mut b);
@@ -2506,6 +2768,7 @@ pub fn fractional_depth_bias<H: Host>() {
             b.create_raster(&desc).err(),
             Some(GpuError::Absent(Features::FRACTIONAL_DEPTH_BIAS))
         );
+        not_run(Features::FRACTIONAL_DEPTH_BIAS);
         return;
     }
     let k = Kit::new(&mut b);
@@ -2555,6 +2818,7 @@ pub fn constant_alpha_blends<H: Host>() {
     use crate::kit::{self, Kit};
     let mut b = H::make();
     if !b.caps().has(Features::BLEND_CONSTANT_ALPHA) {
+        not_run(Features::BLEND_CONSTANT_ALPHA);
         return;
     }
     let k = Kit::new(&mut b);
@@ -2714,6 +2978,7 @@ pub fn vertices_captured_with_and_without_rasterising<H: Host>() {
     use crate::kit::{self, Kit};
     let mut b = H::make();
     if !b.caps().has(Features::TRANSFORM_FEEDBACK) {
+        not_run(Features::TRANSFORM_FEEDBACK);
         return;
     }
     assert!(b.caps().limits.capture_buffers >= 2);
@@ -2814,6 +3079,7 @@ pub fn captured_indices_drawn_both_ways<H: Host>() {
     use crate::kit::{self, Kit};
     let mut b = H::make();
     if !b.caps().has(Features::TRANSFORM_FEEDBACK) {
+        not_run(Features::TRANSFORM_FEEDBACK);
         return;
     }
     let k = Kit::new(&mut b);
@@ -3451,6 +3717,7 @@ pub fn strips_fans_loops_and_indexed_draws_captured_in_list_order<H: Host>() {
     use crate::kit::{self, Kit};
     let mut b = H::make();
     if !b.caps().has(Features::TRANSFORM_FEEDBACK) {
+        not_run(Features::TRANSFORM_FEEDBACK);
         return;
     }
     let first = b.caps().has(Features::PROVOKING_VERTEX_FIRST);
@@ -3575,7 +3842,9 @@ pub fn strips_fans_loops_and_indexed_draws_captured_in_list_order<H: Host>() {
             offset: 0,
             format: *format,
         });
-        call.restart = ib.is_some();
+        // Only strips restart; a list never does.
+        call.restart =
+            ib.is_some() && matches!(case.topology, Topology::TriangleStrip | Topology::LineStrip);
         let n = case.want.len();
         // Interleaved, with room for one vertex more that must stay zero.
         let one = zeros(&mut b, BufferUsage::VERTEX, (n + 1) * 8);

@@ -6,30 +6,35 @@ Plan: docs/phase-2-graphics.md, sections 4, 5.8, 6.5, 10 and 12 (G3).
 ## Where things stand
 
 G3 is at its pass bar (item by item below) apart from named known failures that wait on other
-tracks or on hardware. Run 16 (the fourth run of the G3 milestone task) merged
-origin/phase-2-graphics-webgpu and origin/phase-2-graphics-shaders (which held the rig's newest;
-the shared line had nothing new; Direct3D 11 and 12 not merged, nothing here needs them), and fixed
-what the independent check of run 15 found:
-- Copies within one float format kept no NaN payloads and flushed 32-bit denormals: they went to
-  copyTexSubImage, which ANGLE (natively and in Chrome 157) does through float arithmetic. A probe
-  at creation now blits special 16-bit and 32-bit floats and reads their bits back; where they come
-  back the same (Chrome and ANGLE on the RTX 3080: they do) copies within R16F, RG16F, RGBA16F,
-  R32F, RG32F and RGBA32F are one `blitFramebuffer` per layer. Where they do not, 32-bit floats go by
-  the pixel pack buffer or a draw moving bits (`CopyThroughBuffer`) and 16-bit floats through their
-  integer twin and the host (`CopyThroughBuffer` and `HostCopyReadBack`). The copy checks now put
-  NaNs, infinities, denormals and signed zeros into every third component of 16-bit and 32-bit
-  floats, so every copied region holds them, and copy within every float format (and seven others);
-  `copies_within_one_float_format_take_the_probed_route` checks the route against the probe.
-  `float_blits` in `off` takes the probe as failed, and all.cmd runs the whole suite that way too.
-- BC4 and BC5 stored decoded are half floats from bcdec_rs's float decoders (0.06 of an 8-bit step
-  from the formula at most, measured), no longer bytes (0.43). Check
-  `interpolated_bc4_and_bc5_values` asserts that, and prints how far the GPU's own decode is from
-  the formula (6.5 steps, measured; see "Measurements, run 16").
-- New comparison `generate_mips_of_an_integer_twin_at_exact_ties_equals_webgpu` (rgba16 data with
-  12 exact ties): equal natively, one value one step off in Chrome (known failure, G1's helper).
-- `absent_features_are_refused` asserts the whole absent list of plan 4.11. Natively a check that
-  ran only its refusal prints "not run, feature absent: <name>", and all.cmd lists those lines, so
-  native counts are given with them below.
+tracks or on hardware. Run 17 (the fifth run of the G3 milestone task) merged
+origin/phase-2-graphics-webgpu, origin/phase-2-graphics-shaders and origin/phase-2-graphics-rig
+(the shared line had nothing new; Direct3D 11 and 12 not merged, nothing here needs them), and
+fixed what the independent check of run 16 found:
+- Primitive restart in draws that must not restart. WebGL 2 restarts at the largest index value in
+  every indexed draw, lists included, and cannot turn it off, while the interface restarts strips
+  only where `restart` is set. A list (or a fan, loop or strip drawn with `restart` false) holding
+  that value lost its primitive silently. Now each buffer holding indices tracks, per index width,
+  the byte ranges that may hold the largest value (src/restart.rs): host writes are scanned exactly,
+  GPU writes (copies, captures, texture copies) mark their range unknown. A draw with `restart`
+  false whose range may hold the value reads its indices back and, where one is there, draws them
+  widened to 32 bits from the index ring (`RestartRewrite`, counted); 32-bit ones are lowered by
+  their smallest value and the base vertex raised by it. Fans and loops from guest indices are
+  rewritten on the host before the ring. Captures restart only where `restart` is set. A draw whose
+  32-bit indices hold both 0 and 2^32 - 1 loses the device as not built. Check
+  `lists_draw_the_largest_index_as_a_vertex`, unit tests in src/restart.rs.
+- `timestamps_and_their_disjoint_flag` and `fractional_depth_bias` now report "not run" where their
+  feature is absent (they passed silently before), and so do the transform feedback and constant
+  alpha checks, whose features are always present here.
+- `copies_within_a_typeless_group` copies within the 10-10-10-2 group (read back by a program
+  loading the texels, since GL reads neither format back) and between the formats of the R8, RG8
+  and RG32 groups, and says which pairs it skips for an absent format.
+- BC1 to BC7 against real Direct3D 11: tests/bc_reference.rs draws the rig's `textures-bc` and
+  `textures-bc67` pictures (the same seeded blocks, loaded texel by texel into a float target)
+  on both routes and checks them by the rig's rule (see "Measurements, run 17").
+
+Run 16 copied floats within one format by blits where a probe finds they keep every bit, stored
+decoded BC4 and BC5 as half floats, and put NaN payloads, infinities and denormals into every
+copied float region.
 
 Earlier runs, briefly: run 15 found the fractional viewport comparison read backwards and ran the
 comparisons in Chrome; run 14 refused shaders needing absent features when they are made, built
@@ -55,6 +60,8 @@ tests/against_webgpu.rs and in Chrome by browser/against.mjs.
   breaks: check `broken_rules_lose_the_device`.
 - Cube, array and 3D textures with the GL target of `own_view`: against `cube_array_and_3d_textures_equal_webgpu`.
 - BC and RGB9E5 read back as written: check `block_compressed_and_shared_exponent_textures...`.
+  Since run 17 also sampled against real Direct3D 11 (tests/bc_reference.rs): exactly equal
+  through GL's compressed formats; the decoded route is a known failure (the GPU's own decode).
 - Stencil sampled with and without WEBGL_stencil_texturing, equal answers: check
   `stencil_sampled_and_read_back`, run on both routes in Chrome (ANGLE natively lacks the extension).
 - Copies within a typeless group exact: checks `copies_within_a_typeless_group` (16-bit and 32-bit
@@ -62,8 +69,9 @@ tests/against_webgpu.rs and in Chrome by browser/against.mjs.
   since run 14, and copies within one format since run 16), `copies_within_one_float_format_take_the_probed_route`, `cube_faces_copied_between_typeless_formats`
   (run 14, depth included), `copies_between_depth_and_colour_formats` (run 13),
   `bgra_textures_keep_their_byte_order`, and within one subresource `copies_within_one_subresource`
-  (run 14) and the suite's `a_copy_within_one_subresource_moves_the_region`. Signed normalised
-  sources are refused (device loss naming them; see "Departures").
+  (run 14) and the suite's `a_copy_within_one_subresource_moves_the_region`. Since run 17 the
+  typeless check also copies within the 10-10-10-2 group and the R8, RG8 and RG32 groups. Signed
+  normalised sources are refused (device loss naming them; see "Departures").
 - `generate_mips` exact against G2 for `r32float` without OES_texture_float_linear and an integer
   twin of a 16-bit normalised format: against, route against route byte-equal; against WebGPU's
   hardware filter a known failure (G1's helper). The integer twin where box averages are exact ties
@@ -81,7 +89,8 @@ tests/against_webgpu.rs and in Chrome by browser/against.mjs.
 - `capture_vertices` with and without rasterising: checks `vertices_captured_with_and_without...`
   and `strips_fans_loops_and_indexed_draws_captured_in_list_order`.
 - `timestamps_disjoint`: check `timestamps_and_their_disjoint_flag` refuses it as absent here (0
-  timestamp bits); the present route has not run on any GPU (known failure, hardware). The Linux
+  timestamp bits) and reports "not run" (since run 17; it passed silently before); the present
+  route has not run on any GPU (known failure, hardware). The Linux
   laptop is the rig's CPU-only machine, so its Chrome has no GPU to try it on.
 - The 24-bit depth probe: at creation; `DEPTH24_UNORM` set in Chrome and on ANGLE (Measurements).
 - `vertex_index` and `instance_index` with bases under `BaseVertexRebind`, indexed and not:
@@ -96,12 +105,16 @@ tests/against_webgpu.rs and in Chrome by browser/against.mjs.
   chain, read back): against `both_window_origins_equal_webgpu`, on ANGLE with and without
   EXT_clip_control, natively and (since run 15) in Chrome against its WebGPU.
 - A fractional `depth_bias` and `ConstantAlpha`: checks `fractional_depth_bias` (the probe finds
-  ANGLE rounds the units, so `FRACTIONAL_DEPTH_BIAS` is absent and fronts bias in the program) and
-  `constant_alpha_blends`.
+  ANGLE rounds the units, so `FRACTIONAL_DEPTH_BIAS` is absent and fronts bias in the program; the
+  check tests the refusal and reports "not run", natively and in Chrome, so the biasing route has
+  not run here) and `constant_alpha_blends`.
 - The suite natively on ANGLE: every test and check with every extension (see "Measurements, run
-  16"). Natively, checks whose extension mozangle lacks pass having run only their refusal: 5 of the
-  85 with every extension (clip and cull distances, depth bias clamp, depth clamp, mirror once,
-  polygon mode), listed by all.cmd; in Chrome such checks are counted as "not run".
+  17"). A check whose feature is absent runs only its refusal and reports "not run": natively it
+  passes and prints "not run, feature absent:" (all.cmd lists those lines), in Chrome it is counted
+  as "not run". Since run 17 that includes `timestamps_and_their_disjoint_flag` and
+  `fractional_depth_bias`, on both hosts.
+- Primitive restart only where asked (found by run 16's check, not a pass bar item): check
+  `lists_draw_the_largest_index_as_a_vertex`.
 - Per-draw cost against G2 on one scene: Measurements (runs 3, 5, 11 and 14).
 
 ## Done
@@ -663,11 +676,16 @@ All from the checkout root on the Mac.
   `tools/graphics-rig/gpu-job --desktop --build "crates\wcontainers-gpu-webgl\browser\build.cmd" -- "crates\wcontainers-gpu-webgl\browser\all.cmd C:\wc\out\webgl\<name>"`.
   About 60 s as a job once built. Lint as part of the build:
   `tools/graphics-rig/gpu-job --desktop --build "crates\wcontainers-gpu-webgl\browser\build.cmd && cargo clippy -j 3 -p wcontainers-gpu-webgl --all-targets -- -D warnings && cargo clippy -j 3 -p wcontainers-gpu-webgl --lib --example browser --example draw-cost --target wasm32-unknown-unknown -- -D warnings" -- "cargo test -j 3 -p wcontainers-gpu-webgl --lib && crates\wcontainers-gpu-webgl\browser\all.cmd C:\wc\out\webgl\<name>"`
-  (`--lib` runs the unit tests of src/capture.rs).
+  (`--lib` runs the unit tests of src/capture.rs and src/restart.rs).
 - The per-draw cost of both back ends in Chrome, as an exclusive job (build.cmd builds the
   example, in release, into `%CARGO_TARGET_DIR%\webgl-cost-pkg`):
   `tools/graphics-rig/gpu-job --alone --build "crates\wcontainers-gpu-webgl\browser\build.cmd" -- "node crates\wcontainers-gpu-webgl\browser\cost.mjs %CARGO_TARGET_DIR%\webgl-cost-pkg C:\wc\out\webgl\cost.txt 30 \"10000 50000\""`
   (frames timed per case, then the draw counts). About 15 s.
+- BC1 to BC7 against real Direct3D 11 (run 17; all.cmd runs it into `<out>\bc-reference.txt`):
+  `tools/graphics-rig/gpu-job -- "cargo test -j 3 -p wcontainers-gpu-webgl --test bc_reference -- --test-threads=1 --nocapture"`.
+  It draws the rig's `textures-bc` and `textures-bc67` from the same seeded blocks, saves them
+  under `%CARGO_TARGET_DIR%\tmp\bc-reference`, checks them with the rig's `check_dir` against
+  references/d3d11 and prints each format's largest difference.
 - The comparisons with the WebGPU back end alone (build.cmd builds them), natively:
   `tools/graphics-rig/gpu-job -- "cargo test -j 3 -p wcontainers-gpu-webgl --test against_webgpu -- --test-threads=1"`;
   in Chrome (the output's directory must exist; all.cmd writes `<out>\against-chrome.txt`):
@@ -703,8 +721,8 @@ All from the checkout root on the Mac.
   page). For example `set WEBGL_CASES=20 && crates\wcontainers-gpu-webgl\browser\some.cmd <out> copies_`.
   Natively each seed is printed before its run (shown with `--nocapture`).
 - Checks whose feature the back end declares absent run nothing beyond the refusal that
-  `absent_features_are_refused` checks; Chrome's suite output counts them as "not run" (with the
-  feature), natively they pass and print "not run".
+  `absent_features_are_refused` checks and call `not_run`; Chrome's suite output counts them as
+  "not run" (with the feature), natively they pass and print "not run, feature absent:".
 - Lint and format: `nix develop -c cargo fmt -p wcontainers-gpu-webgl` and
   `nix develop -c cargo check -j 2 -p wcontainers-gpu-webgl [--target wasm32-unknown-unknown]` on the
   Mac; clippy on the desktop:
@@ -1167,6 +1185,39 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   - Within 0.3 ms of run 14's on every case except WebGPU's 50,000 draws with a set per draw
     (17.7 ms there).
 
+## Measurements, run 17
+
+- 2026-11-18, G3 run 17, same desktop (RTX 3080; queued jobs, not timed; its CPU load read 13%
+  after the run). 39 suite tests and 47 checks (86), 7 comparisons with the WebGPU back end (11
+  routes), 2 BC reference tests. No timings: the draw path gained one lookup per indexed draw
+  without restart (an empty list for buffers no write put the largest value into), not measured.
+  - Full run (all.cmd, out C:\wc\out\webgl\r17a, log in scratch run17/all3.log): Chrome 83 passed,
+    3 not run (clip and cull distances, timestamps, fractional bias), 0 failed with every
+    extension; 77 passed and 9 not run without WEBGL_stencil_texturing, float_blits, the format and
+    the raster extensions; 57 passed, 3 not run and the 26 known failures without EXT_clip_control,
+    and the same without it and WEBGL_provoking_vertex. ANGLE 86 of 86 with every extension (7 only
+    refused, listed by all.cmd: clip and cull distances, depth bias clamp, depth clamp, fractional
+    bias, mirror once, polygon mode, timestamps), 61 of 86 on both reduced routes (the 25 known).
+    Against WebGPU natively 7 of 8 tests, in Chrome 9 of 11 routes (the r32float one on both, the
+    exact ties in Chrome only). Unit tests 9 of 9. Scene and rig verdicts as expected. Clippy with
+    warnings denied, native and wasm32: clean.
+  - `lists_draw_the_largest_index_as_a_vertex` passes in Chrome and on ANGLE (8, 16 and 32-bit;
+    host-written and GPU-copied indices; fans).
+  - `copies_within_a_typeless_group` passes in Chrome and on ANGLE, the 10-10-10-2, R8, RG8 and RG32
+    pairs included.
+  - Seeded on ANGLE: `WEBGL_SEED=777`, `WEBGL_CASES=20` (seeds 777 to 796), the 9 `copies_`
+    tests and `lists_draw_...`: 10 of 10 pass (scratch run17/seeded.log).
+  - BC against real Direct3D 11 (tests/bc_reference.rs, the rig's `textures-bc` and
+    `textures-bc67` from the same seed): through GL's compressed formats (every extension) both
+    pictures are exactly equal to Direct3D 11's, every format 0 difference. Decoded on the host
+    (BC extensions off): BC6H and BC7 exactly equal; BC1 to BC5 differ by up to 5 to 7 8-bit steps
+    (unorm) and 12 to 13 (snorm, 0.048 and 0.052), 7457 of 16384 pixels differ, and the picture
+    fails the rig's rule by 44 pixels (2354 beyond the tolerance, 2310 allowed, 12 tiles over).
+    WARP (Direct3D's software rasteriser) draws the same picture 2310 pixels beyond, largest
+    0.0517; our decoded picture is within 0.0095 (2.4 steps) of WARP's (gt-compare, 8499 pixels
+    differ at all). So the RTX 3080 decodes BC1 to BC5 its own way; bcdec_rs and WARP follow the
+    formula closely. Known failure, below.
+
 ## Measurements, run 16
 
 - 2026-11-17, G3 run 16, same desktop (RTX 3080; queued jobs, not timed; its CPU load read 14% at
@@ -1201,6 +1252,17 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
     Direct3D 11's sampling of the same blocks is not compared yet (see "Next").
 
 ## Known failures
+
+- (run 17) `decoded_on_the_host_equals_direct3d_11` (tests/bc_reference.rs): BC1 to BC5 decoded by
+  bcdec_rs, the route of browsers without the BC extensions, are up to 13 8-bit steps from what the
+  RTX 3080 samples under Direct3D 11, and fail the rig's rule by 44 pixels; WARP is as far from the
+  GPU and within 2.4 steps of us (see "Measurements, run 17"). The GPU's decode is its own; matching
+  it would shape the decoder around one GPU. Through GL's compressed formats the pictures are
+  exactly equal.
+- (run 17) Natively 7 checks and in Chrome 3 run only their refusal and report "not run", among
+  them `timestamps_and_their_disjoint_flag` (no timestamp bits on this GPU) and
+  `fractional_depth_bias` (the probe finds ANGLE rounds the bias units, natively and in Chrome).
+  Their drawing routes have run on no GPU here.
 
 - (run 16) `generate_mips_of_an_integer_twin_at_exact_ties_equals_webgpu`, in Chrome only: texel
   (3, 3) channel 1 of level 1, whose four source values (8374, 25225, 55843, 24780) average to
@@ -1299,6 +1361,15 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 - (run 16) Copies within R11F_G11F_B10F stay on copyTexSubImage: GL cannot read the format back, so
   no route here can prove its NaN payloads kept, and its denormals are normal 32-bit floats, which
   that arithmetic keeps.
+- (run 17) WebGL 2 cannot turn primitive restart off, and restarts lists too. The interface's
+  `RESTART_SWITCH` (absent here, as plan 4.11 says) covers strips, which a front rewrites; lists
+  and fans, loops and strips drawn with `restart` false are rewritten by this back end instead
+  (`RestartRewrite`, the slow path the plan names for the front's rewrite). Only ranges where a
+  write may have put the largest value are read back, so ordinary list draws cost one lookup in
+  an empty list. A draw from GPU-written indices that do hold the value waits for the GPU at every
+  draw (the indices are read back each time); nothing keeps a widened copy yet. A draw whose 32-bit
+  indices hold both 0 and 2^32 - 1 loses the device as not built: no shift brings both into GL's
+  range.
 - (run 14) A fragment program that only reads storage is refused as `Absent(FRAGMENT_STORAGE_WRITE)`,
   as binding sets refuse storage: the interface has no bit for fragment storage reads.
 - (run 15) The fractional viewport comparison cuts the scissor as Direct3D's implicit one (each edge
@@ -1492,7 +1563,7 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   were deleted in run 13; angle\build.cmd makes the second again (about 4 m 30 s). The track's
   build directory C:\wc\target\phase-2-graphics-webgl (19.6 GB) was deleted at the end of run 15,
   as the runs are now asked to; the next build.cmd makes it again from nothing. C: had 407 GB free
-  after. Run 16 built it again from nothing and deleted it at its end.
+  after. Run 16 built it again from nothing and deleted it at its end. Run 17 did the same (C: had 441 GB free after).
 - C:\wc\tools\mozangle-0.7.1-patched (run 5): the mozangle crate's sources, unpacked and patched by
   angle\build.cmd. Its size was not measured.
 - Left by the independent check of the first run (not ours to remove without asking): the pictures
@@ -1504,6 +1575,9 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 - half 2.7.1 (run 16, half floats of decoded BC4 and BC5): MIT OR Apache-2.0 (its Cargo.toml;
   already in the lock file through naga). Its dependencies: cfg-if 1.0: MIT OR Apache-2.0;
   zerocopy 0.8 and zerocopy-derive: BSD-2-Clause OR Apache-2.0 OR MIT.
+- Tests only, Windows (run 17, tests/bc_reference.rs): image 0.25.10 (`exr`, `png`), rand 0.9.5
+  and rand_chacha 0.9.0: MIT OR Apache-2.0 (their Cargo.toml; already in the lock file through
+  the rig's crate, whose seeded blocks they reproduce).
 - bcdec_rs 0.2.1 (run 4, for `BlockDecoded`): MIT (its Cargo.toml; the plan's section 3 records its
   repository's LICENSE). No dependencies.
 - khronos-egl 6.0.0 (native only, feature `dynamic`): MIT/Apache-2.0 (its Cargo.toml); its
@@ -1539,8 +1613,8 @@ What is left of G3's pass bar cannot be done in this crate:
   back end (see "Known failures").
 
 After that, in about this order:
-1. Compare BC4 and BC5 sampled through ANGLE (the GPU's decode, 6.5 steps from the formula) with
-   real Direct3D 11 on the same GPU through the rig, to learn which route the reference follows.
+1. A draw without restart from GPU-written indices holding the largest value reads them back at
+   every draw; keep the widened indices until the buffer is written again.
 2. Draws and captures whose base vertex reaches below vertex 0.
 3. Copies from one- and two-channel signed normalised formats, through a buffer as plan 4.12 has
    them.
