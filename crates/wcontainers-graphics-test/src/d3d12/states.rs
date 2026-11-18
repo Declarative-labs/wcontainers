@@ -21,8 +21,8 @@ use crate::d3d11::scenes::blend::{self, CONSTANT, no_blend};
 use crate::d3d11::scenes::depth::{self, FUNCS};
 use crate::d3d11::scenes::formats::{FORMATS, Kind};
 use crate::d3d11::scenes::samplers;
-use crate::d3d11::scenes::stencil::{op, stencil, triangle};
-use crate::d3d11::scenes::{Colored, depth_test, hue, quad};
+use crate::d3d11::scenes::stencil;
+use crate::d3d11::scenes::{Colored, depth_test, quad};
 use crate::d3d11::{cell, checker, solid};
 use crate::dxil;
 use crate::output::Output;
@@ -616,7 +616,7 @@ pub fn depth(gpu: &Gpu) -> Result<Vec<Output>> {
 /// wrapping steps, invert, a write mask, the depth-fail operation and a read mask, shown as colours
 /// by equality tests, and the stencil plane read back.
 pub fn stencil_scene(gpu: &Gpu) -> Result<Vec<Output>> {
-    const SIZE: u32 = 192;
+    const SIZE: u32 = stencil::SIZE;
     let mut im = Immediate::new(gpu)?;
     let (target, rtv) = gpu.target(SIZE, SIZE, DXGI_FORMAT_R8G8B8A8_UNORM)?;
     let (depth, dsv) = im.depth_target(SIZE, SIZE, DXGI_FORMAT_D24_UNORM_S8_UINT)?;
@@ -627,96 +627,12 @@ pub fn stencil_scene(gpu: &Gpu) -> Result<Vec<Output>> {
         SIZE,
         SIZE,
     );
-    let mut masked = no_blend();
-    masked.RenderTarget[0].RenderTargetWriteMask = 0;
-    im.blend = masked;
-    let set = |im: &mut Immediate, desc: D3D11_DEPTH_STENCIL_DESC, reference: u32| {
-        im.depth = desc;
-        im.stencil_ref(reference);
-    };
-
-    set(
-        &mut im,
-        stencil(
-            op(D3D11_STENCIL_OP_INCR, D3D11_COMPARISON_ALWAYS),
-            op(D3D11_STENCIL_OP_DECR, D3D11_COMPARISON_ALWAYS),
-            0xff,
-            0xff,
-        ),
-        0,
-    );
-    let mut fan = Vec::new();
-    for k in 0..6 {
-        let angle = k as f32 * std::f32::consts::TAU / 6.0;
-        fan.extend(triangle(
-            0.25 * angle.cos(),
-            0.25 * angle.sin(),
-            0.45,
-            k % 2 == 0,
-        ));
+    for step in stencil::steps() {
+        im.blend = stencil::colour_blend(step.colour);
+        im.depth = step.desc;
+        im.stencil_ref(step.reference);
+        im.draw_colored(&step.vertices)?;
     }
-    im.draw_colored(&fan)?;
-
-    let always = |pass| op(pass, D3D11_COMPARISON_ALWAYS);
-    let keep = always(D3D11_STENCIL_OP_KEEP);
-    let rect = |x: f32, y: f32| quad(x, y, x + 0.5, y + 0.5, 0.5, 0.5, [1.0; 4]);
-    set(
-        &mut im,
-        stencil(always(D3D11_STENCIL_OP_REPLACE), keep, 0xff, 0xff),
-        0x80,
-    );
-    im.draw_colored(&rect(-0.95, 0.45))?;
-    set(
-        &mut im,
-        stencil(always(D3D11_STENCIL_OP_INCR_SAT), keep, 0xff, 0xff),
-        0,
-    );
-    for _ in 0..3 {
-        im.draw_colored(&rect(0.45, 0.45))?;
-    }
-    set(
-        &mut im,
-        stencil(always(D3D11_STENCIL_OP_INVERT), keep, 0xff, 0xff),
-        0,
-    );
-    im.draw_colored(&rect(-0.95, -0.95))?;
-    set(
-        &mut im,
-        stencil(always(D3D11_STENCIL_OP_DECR_SAT), keep, 0xff, 0xff),
-        0,
-    );
-    im.draw_colored(&rect(0.45, -0.95))?;
-    set(
-        &mut im,
-        stencil(always(D3D11_STENCIL_OP_REPLACE), keep, 0xff, 0x0f),
-        0xf7,
-    );
-    im.draw_colored(&quad(-0.2, -0.95, 0.2, 0.95, 0.5, 0.5, [1.0; 4]))?;
-    set(&mut im, depth_test(D3D11_COMPARISON_LESS, true), 0);
-    im.draw_colored(&quad(-0.9, -0.15, -0.3, 0.15, 0.2, 0.2, [1.0; 4]))?;
-    let mut depth_fail = stencil(
-        always(D3D11_STENCIL_OP_INCR),
-        always(D3D11_STENCIL_OP_INCR),
-        0xff,
-        0xff,
-    );
-    depth_fail.DepthFunc = D3D11_COMPARISON_LESS;
-    depth_fail.FrontFace.StencilDepthFailOp = D3D11_STENCIL_OP_REPLACE;
-    set(&mut im, depth_fail, 0x40);
-    im.draw_colored(&quad(-0.95, -0.25, -0.05, 0.25, 0.8, 0.8, [1.0; 4]))?;
-
-    im.blend = no_blend();
-    let values: [u32; 12] = [
-        1, 2, 3, 0xff, 0xfe, 0xfd, 0x80, 0x7f, 0x40, 0x41, 0x07, 0xf8,
-    ];
-    let equal = op(D3D11_STENCIL_OP_KEEP, D3D11_COMPARISON_EQUAL);
-    for (i, &value) in values.iter().enumerate() {
-        let [r, g, b] = hue(i as u32, values.len() as u32);
-        set(&mut im, stencil(equal, equal, 0xff, 0), value);
-        im.draw_colored(&quad(-1.0, -1.0, 1.0, 1.0, 0.5, 0.5, [r, g, b, 1.0]))?;
-    }
-    set(&mut im, stencil(equal, equal, 0x0f, 0), 0x07);
-    im.draw_colored(&quad(-1.0, -1.0, 1.0, -0.6, 0.5, 0.5, [0.5, 0.5, 0.5, 1.0]))?;
     Ok(vec![
         Output::picture("", gpu.read(&target, 0, RT)?),
         // Subresource 1 is the stencil plane.
