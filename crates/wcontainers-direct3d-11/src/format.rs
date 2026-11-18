@@ -147,6 +147,12 @@ pub fn never_target_or_storage(dxgi: u32) -> bool {
     matches!(dxgi, 19..=22 | 44..=47 | 67..=84 | 94..=99)
 }
 
+/// Whether `dxgi` is an sRGB format: never viewed for unordered access, so a texture of one bound
+/// for it holds no storage.
+pub fn is_srgb(dxgi: u32) -> bool {
+    matches!(dxgi, 29 | 72 | 75 | 78 | 91 | 93 | 99)
+}
+
 /// Whether `dxgi` is a typed depth format (`D32_FLOAT_S8X24_UINT`, `D32_FLOAT`,
 /// `D24_UNORM_S8_UINT`, `D16_UNORM`): such a texture is bound only for depth, and read through a
 /// typeless one.

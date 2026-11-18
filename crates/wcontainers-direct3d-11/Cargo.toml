@@ -13,7 +13,6 @@ wcontainers-gpu = { path = "../wcontainers-gpu" }
 wcontainers-shaders = { path = "../wcontainers-shaders" }
 wcontainers-directx-graphics-infrastructure = { path = "../wcontainers-directx-graphics-infrastructure" }
 blake3 = { version = "1", default-features = false }
-half = "2.7"
 naga = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 

@@ -10,9 +10,9 @@ use wcontainers_gpu::{
     FormatUse, HELPER_SET, HelperValue, IndexBinding, IndexFormat, Interpolation, LoadOp,
     MAX_BINDING_SETS, Object, Origin, PassDesc, PassTargets, Program, ReadSource, ReadState,
     RingKind, SamplerDesc as GpuSampler, ScissorRect, ShaderModule, ShaderStage, SlotKind,
-    SlowPath, SourceStage, StageSet, StepMode, StoreOp, Target, TextureUsage, Topology, VariantKey,
-    VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream, Viewport as GpuViewport,
-    WriteMode, helper_binding,
+    SlowPath, SourceStage, StageSet, StepMode, StoreOp, Target, TextureRegion, TextureUsage,
+    Topology, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream,
+    Viewport as GpuViewport, WriteMode, helper_binding,
 };
 
 use crate::desc::{
@@ -2150,23 +2150,22 @@ impl<B: Backend> Device<B> {
                 Ok(())
             }
             ShaderView::Texture(v) => {
-                if !v.texture.gpu_desc.usage.contains(TextureUsage::RENDER) {
-                    return not_implemented(
-                        "a clear of an unordered access view of a format no pass draws into",
-                    );
-                }
                 let integer = matches!(v.format.kind(), FormatKind::Uint | FormatKind::Sint);
                 if integer && float {
                     return not_implemented(
                         "a float clear of an unordered access view of an integer format",
                     );
                 }
-                // A uint clear of a view of floats writes each value's low bits as the channel's.
-                let values = if integer || float {
-                    values
-                } else {
-                    channel_values(v.format, values)?
-                };
+                // A uint clear of a view of floats writes each value's low bits as the channel's:
+                // the texels' bytes, written as they are.
+                if !integer && !float {
+                    return self.fill_texels(v, &uint_element(v.format, values)?);
+                }
+                if !v.texture.gpu_desc.usage.contains(TextureUsage::RENDER) {
+                    return not_implemented(
+                        "a clear of an unordered access view of a format no pass draws into",
+                    );
+                }
                 let r = self.backend.clear_texture(
                     &v.texture.gpu.handle,
                     &v.texture.gpu_desc,
@@ -2178,6 +2177,38 @@ impl<B: Backend> Device<B> {
                 self.gpu(r)
             }
         }
+    }
+
+    /// Writes `texel` into every texel view `v` sees (of its one level), outside a pass.
+    fn fill_texels(&mut self, v: &View<B>, texel: &[u8]) -> Result<()> {
+        let t = &v.texture;
+        let mip = v.desc.first_mip;
+        let three_d = t.desc.dimension == TexDim::D3;
+        let mut extent = t.mip_extent(mip);
+        extent.depth_or_layers = v.desc.layer_count;
+        let (layer, z) = if three_d {
+            (0, v.desc.first_layer)
+        } else {
+            (v.desc.first_layer, 0)
+        };
+        let row = extent.width * texel.len() as u32;
+        let texels = (extent.width * extent.height * extent.depth_or_layers) as usize;
+        let region = TextureRegion {
+            texture: &t.gpu.handle,
+            mip,
+            layer,
+            origin: Origin { x: 0, y: 0, z },
+            stencil: false,
+        };
+        self.backend.write_texture(
+            &region,
+            extent,
+            &texel.repeat(texels),
+            row,
+            extent.height,
+            WriteMode::Ordered,
+        );
+        Ok(())
     }
 
     /// Makes the binding set of `stage` from its slots and its shader's reflection, when it changed.
@@ -4167,54 +4198,6 @@ fn uint_element(format: Format, values: [u32; 4]) -> Result<Vec<u8>> {
         at += b;
     }
     Ok(element.to_le_bytes()[..bytes as usize].to_vec())
-}
-
-/// The f32 bits that hold, in each channel of a view of floats in `format`, the low bits of each of
-/// `values`, as `ClearUnorderedAccessViewUint` writes them.
-fn channel_values(format: Format, values: [u32; 4]) -> Result<[u32; 4]> {
-    use Format::*;
-    let unorm =
-        |v: u32, bits: u32| (f64::from(v & ((1 << bits) - 1)) / f64::from((1 << bits) - 1)) as f32;
-    let snorm = |v: u32, bits: u32| {
-        let shift = 32 - bits;
-        let v = ((v << shift) as i32) >> shift;
-        (f64::from(v) / f64::from((1 << (bits - 1)) - 1)).max(-1.0) as f32
-    };
-    let mut out = [0f32; 4];
-    for (c, (o, &v)) in out.iter_mut().zip(&values).enumerate() {
-        *o = match format {
-            R32Float | Rg32Float | Rgba32Float => f32::from_bits(v),
-            R16Float | Rg16Float | Rgba16Float => half::f16::from_bits(v as u16).to_f32(),
-            R8Unorm | Rg8Unorm | Rgba8Unorm => unorm(v, 8),
-            R16Unorm | Rg16Unorm | Rgba16Unorm => unorm(v, 16),
-            R8Snorm | Rg8Snorm | Rgba8Snorm => snorm(v, 8),
-            R16Snorm | Rg16Snorm | Rgba16Snorm => snorm(v, 16),
-            Rgb10a2Unorm => unorm(v, if c == 3 { 2 } else { 10 }),
-            // Unsigned floats of a 5-bit exponent and a 6-bit (red, green) or 5-bit (blue)
-            // mantissa; the format has no alpha.
-            Rg11b10Float => match c {
-                0 | 1 => small_float(v, 6),
-                2 => small_float(v, 5),
-                _ => 1.0,
-            },
-            _ => return not_implemented("a uint clear of a view of floats of this format"),
-        };
-    }
-    Ok(out.map(f32::to_bits))
-}
-
-/// The unsigned float of a 5-bit exponent and a `mantissa`-bit mantissa in the low bits of `v`
-/// (biased by 15, as `R11G11B10_FLOAT`'s channels).
-fn small_float(v: u32, mantissa: u32) -> f32 {
-    let m = v & ((1 << mantissa) - 1);
-    let e = (v >> mantissa) & 0x1f;
-    let fraction = f64::from(m) / f64::from(1u32 << mantissa);
-    (match e {
-        0 => fraction * 2f64.powi(-14),
-        31 if m == 0 => f64::INFINITY,
-        31 => f64::NAN,
-        _ => (1.0 + fraction) * 2f64.powi(e as i32 - 15),
-    }) as f32
 }
 
 /// Whether a view of format kind `view` reads as a declaration of kind `declared`: integers as

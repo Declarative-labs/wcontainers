@@ -818,7 +818,9 @@ impl<B: Backend> Device<B> {
             (bind::DEPTH_STENCIL, FormatUse::DEPTH_STENCIL),
             (bind::UNORDERED_ACCESS, FormatUse::STORAGE_WRITE),
         ] {
-            if d.bind_flags & flag != 0 {
+            if d.bind_flags & flag != 0
+                && !(n == FormatUse::STORAGE_WRITE && format::is_srgb(d.format))
+            {
                 needs |= n;
             }
         }
@@ -857,7 +859,9 @@ impl<B: Backend> Device<B> {
             (bind::DEPTH_STENCIL, TextureUsage::RENDER),
             (bind::UNORDERED_ACCESS, TextureUsage::STORAGE),
         ] {
-            if d.bind_flags & flag != 0 {
+            if d.bind_flags & flag != 0
+                && !(u == TextureUsage::STORAGE && format::is_srgb(d.format))
+            {
                 usage |= u;
             }
         }
@@ -1269,6 +1273,9 @@ impl<B: Backend> Device<B> {
         desc: Option<&ViewDesc>,
     ) -> Result<Rc<ShaderView<B>>> {
         let v = self.create_view(texture, desc, bind::UNORDERED_ACCESS)?;
+        if format::is_srgb(v.desc.format) {
+            return Err(Error::InvalidArg("an sRGB unordered access view"));
+        }
         self.check_format(v.format, FormatUse::STORAGE_WRITE)?;
         Ok(Rc::new(ShaderView::Texture(v)))
     }
