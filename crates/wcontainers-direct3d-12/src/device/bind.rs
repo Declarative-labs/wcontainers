@@ -288,6 +288,58 @@ impl<B: Backend> Device<B> {
         }])?)
     }
 
+    /// The helper set of an indirect draw whose program reads the bases from its arguments: the
+    /// vertex helper block saying where they are, and the argument buffer up to them.
+    pub(super) fn draw_arguments_set(
+        &mut self,
+        args: &B::Buffer,
+        offset: u64,
+        indexed: bool,
+        size: u32,
+        at: u32,
+    ) -> Result<B::BindingSet, Error> {
+        self.backend
+            .slow_paths()
+            .hit(SlowPath::DrawBaseFromArguments);
+        let (size, at) = (size as usize, at as usize);
+        if at + 12 > size {
+            return Err(Error::NotImplemented(
+                "a helper block laid out past the draw's arguments",
+            ));
+        }
+        let mut block = vec![0u8; size];
+        block[at..at + 4].copy_from_slice(&((offset / 4) as u32).to_le_bytes());
+        block[at + 4..at + 8].copy_from_slice(&u32::from(indexed).to_le_bytes());
+        let align = self.backend.caps().limits.min_uniform_offset_alignment;
+        let mut ring_offset = [0];
+        let ring =
+            self.backend
+                .write_buffer_ring(RingKind::Data, &[&block], align, &mut ring_offset)?;
+        Ok(self.backend.create_binding_set(&[
+            BindingEntry {
+                binding: helper_binding(ShaderStage::Vertex),
+                stages: StageSet::VERTEX,
+                resource: BindingResource::UniformBuffer(BufferRange {
+                    buffer: &ring,
+                    offset: ring_offset[0],
+                    size: size as u64,
+                }),
+            },
+            BindingEntry {
+                binding: wcontainers_gpu::DRAW_ARGUMENTS_BINDING,
+                stages: StageSet::VERTEX,
+                resource: BindingResource::StorageBuffer {
+                    range: BufferRange {
+                        buffer: args,
+                        offset: 0,
+                        size: offset + if indexed { 20 } else { 16 },
+                    },
+                    writable: false,
+                },
+            },
+        ])?)
+    }
+
     pub(super) fn binding_sets(
         &mut self,
         state: &RootState,

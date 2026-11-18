@@ -196,6 +196,10 @@ struct Render<B: Backend> {
     reads_bases: bool,
     /// The vertex program's helper block: its size and where `HelperValue::DrawBase` sits in it.
     base_block: (u32, u32),
+    /// For a pipeline reading the bases: the program whose vertex stage reads them from an
+    /// indirect draw's arguments, its helper block's size and where `HelperValue::DrawArguments`
+    /// sits in it. None where it did not convert; such draws read their arguments back.
+    arguments: Option<(B::Program, (u32, u32))>,
     /// For counted occlusion queries: the vertex program, the pixel shader's bytecode, and the
     /// counting program made from them at the first counted draw.
     vertex: ShaderModule,
@@ -849,7 +853,7 @@ impl<B: Backend> Device<B> {
             desc.vs,
             ShaderStage::Vertex,
             VariantKey {
-                output_interpolation: interpolation,
+                output_interpolation: interpolation.clone(),
                 // `SV_VertexID` and `SV_InstanceID` leave out the draw's bases, which the program
                 // then reads from its helper block.
                 draw_base: DrawBaseSource::Helpers,
@@ -963,6 +967,17 @@ impl<B: Backend> Device<B> {
             self.backend.destroy(Object::Shader(s));
         }
         let program = program?;
+        // Indirect draws of such a program read the bases from their arguments on the GPU.
+        let arguments = if reads_bases && self.backend.caps().has(Features::INDIRECT) {
+            let key = VariantKey {
+                output_interpolation: interpolation,
+                draw_base: DrawBaseSource::Arguments,
+                ..VariantKey::default()
+            };
+            self.arguments_program(desc.vs, key, ps.as_ref())
+        } else {
+            None
+        };
         let render = Render {
             blend: self.backend.create_blend(&blend)?,
             depth_stencil: self.backend.create_depth_stencil(&depth_stencil)?,
@@ -975,6 +990,7 @@ impl<B: Backend> Device<B> {
             strip_cut: desc.strip_cut,
             reads_bases,
             base_block,
+            arguments,
             vertex: vs.modules[0].clone(),
             pixel: desc.ps.to_vec(),
             counting: None,
@@ -1097,7 +1113,7 @@ impl<B: Backend> Device<B> {
             .reflection
             .helpers
             .iter()
-            .any(|h| h.value != HelperValue::DrawBase)
+            .any(|h| !matches!(h.value, HelperValue::DrawBase | HelperValue::DrawArguments))
         {
             return Err(Error::NotImplemented(
                 "shaders reading helper constants other than the draw's bases",
@@ -1153,11 +1169,44 @@ impl<B: Backend> Device<B> {
         Ok(program)
     }
 
+    /// The program of a vertex shader converted with `key` (reading the draw's bases from
+    /// indirect arguments) and the pipeline's pixel program, with its helper block's size and where
+    /// `HelperValue::DrawArguments` sits; None where it does not convert.
+    fn arguments_program(
+        &mut self,
+        vs: &[u8],
+        key: VariantKey,
+        ps: Option<&Converted>,
+    ) -> Option<(B::Program, (u32, u32))> {
+        let vs = self.convert(vs, ShaderStage::Vertex, key).ok()?;
+        let at = vs
+            .reflection
+            .helpers
+            .iter()
+            .find(|h| h.value == HelperValue::DrawArguments)?
+            .offset;
+        let vertex = self.backend.create_shader(&vs.modules[0]).ok()?;
+        let fragment = ps.and_then(|p| self.backend.create_shader(&p.modules[0]).ok());
+        let program = self.backend.create_program(&Program::Render {
+            vertex: &vertex,
+            fragment: fragment.as_ref(),
+        });
+        self.backend.destroy(Object::Shader(vertex));
+        if let Some(f) = fragment {
+            self.backend.destroy(Object::Shader(f));
+        }
+        Some((program.ok()?, (vs.reflection.helper_size, at)))
+    }
+
     pub fn destroy_pipeline(&mut self, id: PipelineId) {
         if let Some(p) = self.pipelines.try_remove(id.0 as usize) {
             self.backend.destroy(Object::Program(p.program));
             if let Some(r) = p.render {
-                for c in [r.counting, r.pixel_counting].into_iter().flatten() {
+                let arguments = r.arguments.map(|a| a.0);
+                for c in [r.counting, r.pixel_counting, arguments]
+                    .into_iter()
+                    .flatten()
+                {
                     self.backend.destroy(Object::Program(c));
                 }
                 self.backend.destroy(Object::Blend(r.blend));
@@ -2831,10 +2880,28 @@ impl<B: Backend> Replay<B> {
             self.settle_unbound(d)?;
         }
         let mut sets = d.binding_sets(&self.graphics, pid)?;
-        if let Some((size, at)) = base_block {
-            // Indirect draws reading the bases are read back and drawn directly (`indirect.rs`).
-            let bases = bases.ok_or(Error::Invalid("an indirect draw reading its bases"))?;
-            sets[HELPER_SET as usize] = Some(d.draw_base_set(bases, size, at)?);
+        // An `ExecuteIndirect` draw of a program reading the bases reads them from its arguments.
+        let by_arguments = base_block.is_some() && bases.is_none();
+        match (base_block, bases) {
+            (Some((size, at)), Some(bases)) => {
+                sets[HELPER_SET as usize] = Some(d.draw_base_set(bases, size, at)?);
+            }
+            (Some(_), None) => {
+                let (size, at) = d.pipelines[pid.0 as usize]
+                    .render
+                    .as_ref()
+                    .and_then(|r| r.arguments.as_ref())
+                    .ok_or(Error::Invalid("an indirect draw reading its bases"))?
+                    .1;
+                let (args, offset, indexed) = match &range {
+                    DrawRange::Indirect { args, offset } => (*args, *offset, false),
+                    DrawRange::IndexedIndirect { args, offset } => (*args, *offset, true),
+                    _ => unreachable!("a draw without bases is indirect"),
+                };
+                sets[HELPER_SET as usize] =
+                    Some(d.draw_arguments_set(args, offset, indexed, size, at)?);
+            }
+            _ => {}
         }
         if d.aliased != 0 {
             self.note_draw(
@@ -2945,7 +3012,10 @@ impl<B: Backend> Replay<B> {
                 let p = &d.pipelines[pid.0 as usize];
                 let r = p.render.as_ref().expect("a graphics pipeline");
                 DrawCall {
-                    program: &p.program,
+                    program: match (&r.arguments, by_arguments) {
+                        (Some((program, _)), true) => program,
+                        _ => &p.program,
+                    },
                     blend: &r.blend,
                     depth_stencil: match (&r.depth_stencil_bound, bound_depth) {
                         (Some(d), Some(_)) => d,

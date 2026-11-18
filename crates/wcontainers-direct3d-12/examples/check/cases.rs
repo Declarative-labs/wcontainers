@@ -1394,18 +1394,26 @@ unsafe fn indirect_vertex_buffer(c: &Ctx) -> Result<String> {
 }
 
 /// Indexed indirect draws of a vertex shader shading by `SV_VertexID`, from base vertex 0 and from
-/// base vertex 3: Direct3D's vertex IDs are the indices, without the base vertex.
+/// base vertex 3 (also through a count buffer): Direct3D's vertex IDs are the indices, without the
+/// base vertex; and a draw from first vertex 3 and first instance 1, whose IDs leave both out.
 unsafe fn indirect_vertex_id(c: &Ctx) -> Result<String> {
     unsafe {
         let (root, pso) = c.triangle_pso(true)?;
         let vertices = c.upload(&triangles())?;
-        let offsets = c.upload(&[0; 8])?;
+        let offsets = c.upload(&[0; 16])?;
         let indices = c.upload(&u32s(&[0, 1, 2]))?;
+        let (plain, plain_args) = arguments(
+            c,
+            D3D12_INDIRECT_ARGUMENT_TYPE_DRAW,
+            16,
+            &u32s(&[3, 1, 3, 1]),
+        )?;
+        let counts = filled(c, &u32s(&[2]))?;
         let (draws, args) = arguments(
             c,
             D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED,
             20,
-            &u32s(&[3, 1, 0, 0, 0, 3, 1, 0, 3, 0]),
+            &u32s(&[3, 1, 0, 0, 0, 3, 1, 0, 3, 0, 3, 1, 0, 6, 0]),
         )?;
         let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
         let (target, _heap, _rtv) = c.target(&list)?;
@@ -1416,7 +1424,7 @@ unsafe fn indirect_vertex_id(c: &Ctx) -> Result<String> {
             1,
             Some(&[D3D12_VERTEX_BUFFER_VIEW {
                 BufferLocation: offsets.GetGPUVirtualAddress(),
-                SizeInBytes: 8,
+                SizeInBytes: 16,
                 StrideInBytes: 8,
             }]),
         );
@@ -1430,6 +1438,10 @@ unsafe fn indirect_vertex_id(c: &Ctx) -> Result<String> {
         list.ExecuteIndirect(&draws, 1, &args, 0, None, 0);
         viewport(&list, half, half, half);
         list.ExecuteIndirect(&draws, 1, &args, 20, None, 0);
+        viewport(&list, half, 0, half);
+        list.ExecuteIndirect(&plain, 1, &plain_args, 0, None, 0);
+        viewport(&list, 0, half, half);
+        list.ExecuteIndirect(&draws, 3, &args, 0, &counts, 0);
         c.run(&list)?;
         Ok(colours(
             &c.pixels(&target, D3D12_RESOURCE_STATE_RENDER_TARGET)?,

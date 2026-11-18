@@ -107,10 +107,21 @@ impl<B: Backend> Replay<B> {
         };
         let call = *s.arguments.last().expect("a checked command signature");
         let caps = d.backend.caps();
-        let reads_bases = d.pipelines[pid.0 as usize]
+        // Programs reading the bases read them from the arguments where they converted so; the
+        // occlusion counter replays draws with the pipeline's own program.
+        // Per-instance streams that never step are bound at the first instance's element, which
+        // only the arguments say.
+        let rates = caps.has(Features::INSTANCE_STEP_RATE);
+        let bases_unread = d.pipelines[pid.0 as usize]
             .render
             .as_ref()
-            .is_some_and(|r| r.reads_bases);
+            .is_some_and(|r| {
+                r.reads_bases && (r.arguments.is_none() || self.counted.is_some())
+                    || !rates
+                        && r.inputs
+                            .iter()
+                            .any(|(e, _)| e.per_instance && e.step_rate == 0)
+            });
         // A statistics query counts each command's arguments, which are read back for it.
         let on_gpu = s.call_only()
             && self.statistics.is_none()
@@ -118,7 +129,7 @@ impl<B: Backend> Replay<B> {
             && (count.is_none() || caps.has(Features::COMPUTE))
             && match call {
                 IndirectArgument::Dispatch => caps.has(Features::COMPUTE),
-                _ => caps.has(Features::INDIRECT_FIRST_INSTANCE) && !reads_bases,
+                _ => caps.has(Features::INDIRECT_FIRST_INSTANCE) && !bases_unread,
             };
         if !on_gpu {
             return self.read_back_indirect(d, s, max, args, args_offset, count, span);
@@ -152,29 +163,24 @@ impl<B: Backend> Replay<B> {
             }
         };
         let result = (0..u64::from(max)).try_for_each(|i| {
-            let record = (buffer.clone(), offset + i * u64::from(s.stride));
+            let at = offset + i * u64::from(s.stride);
             match call {
-                IndirectArgument::Dispatch => self.dispatch(d, [1; 3], Some(&record)),
+                IndirectArgument::Dispatch => self.dispatch(d, [1; 3], Some(&(buffer.clone(), at))),
                 IndirectArgument::DrawIndexed => self.draw(
                     d,
-                    DrawRange::Indexed {
-                        first: 0,
-                        count: 0,
-                        base_vertex: 0,
-                        first_instance: 0,
-                        instances: 0,
+                    DrawRange::IndexedIndirect {
+                        args: &buffer,
+                        offset: at,
                     },
-                    Some(&record),
+                    None,
                 ),
                 _ => self.draw(
                     d,
-                    DrawRange::Vertices {
-                        first: 0,
-                        count: 0,
-                        first_instance: 0,
-                        instances: 0,
+                    DrawRange::Indirect {
+                        args: &buffer,
+                        offset: at,
                     },
-                    Some(&record),
+                    None,
                 ),
             }
         });
