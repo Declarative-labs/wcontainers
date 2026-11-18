@@ -1442,9 +1442,15 @@ fn send(
         && socket.borrow().kind != SOCK_STREAM
         && socket.borrow().inet.is_none()
     {
-        // `unix_seqpacket_sendmsg` wants a connection first.
-        if socket.borrow().kind == SOCK_SEQPACKET && socket.borrow().state != State::Connected {
-            return Err(Errno::ENOTCONN);
+        // `unix_seqpacket_sendmsg` takes a pending error and wants a connection first.
+        if socket.borrow().kind == SOCK_SEQPACKET {
+            let error = core::mem::take(&mut socket.borrow_mut().error);
+            if error != 0 {
+                return Err(Errno(error as u32));
+            }
+            if socket.borrow().state != State::Connected {
+                return Err(Errno::ENOTCONN);
+            }
         }
         return Err(Errno::EOPNOTSUPP);
     }
@@ -1753,9 +1759,16 @@ fn send_packet(
     nonblocking: bool,
 ) -> Result<u64, Errno> {
     let kind = socket.borrow().kind;
-    // `unix_seqpacket_sendmsg`: connected, and any destination given is passed over.
-    if kind == SOCK_SEQPACKET && socket.borrow().state != State::Connected {
-        return Err(Errno::ENOTCONN);
+    // `unix_seqpacket_sendmsg`: a pending error first (taken, as `sock_error` does), then
+    // connected, and any destination given is passed over.
+    if kind == SOCK_SEQPACKET {
+        let error = core::mem::take(&mut socket.borrow_mut().error);
+        if error != 0 {
+            return Err(Errno(error as u32));
+        }
+        if socket.borrow().state != State::Connected {
+            return Err(Errno::ENOTCONN);
+        }
     }
     let name = match &message.address {
         Some(bytes) if kind == SOCK_DGRAM && !bytes.is_empty() => Some(parse_name(bytes)?),

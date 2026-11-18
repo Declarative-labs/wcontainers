@@ -207,6 +207,25 @@ static void udp_options(void) {
     close(u);
 }
 
+// A peer closed with unread messages leaves its error first in line for each kind.
+static void closed_with_unread(void) {
+    static const int kinds[] = {SOCK_STREAM, SOCK_SEQPACKET, SOCK_DGRAM};
+    static const char *names[] = {"stream", "seqpacket", "datagram"};
+    for (int i = 0; i < 3; i++) {
+        for (int oob = 0; oob < 2; oob++) {
+            int sv[2];
+            socketpair(AF_UNIX, kinds[i], 0, sv);
+            send(sv[0], "unread", 6, 0);
+            close(sv[1]);
+            char what[64];
+            snprintf(what, sizeof what, "%s%s send after the peer closed", names[i], oob ? " urgent" : "");
+            result(what, send(sv[0], "x", 1, MSG_NOSIGNAL | MSG_DONTWAIT | (oob ? MSG_OOB : 0)));
+            result("and again", send(sv[0], "x", 1, MSG_NOSIGNAL | MSG_DONTWAIT));
+            close(sv[0]);
+        }
+    }
+}
+
 static void all_hosts(void) {
     int r = socket(AF_INET, SOCK_DGRAM, 0);
     struct sockaddr_in a = {.sin_family = AF_INET, .sin_port = htons(7510)};
@@ -358,6 +377,7 @@ int main(int argc, char **argv) {
     binds();
     socket_mmap();
     udp_options();
+    closed_with_unread();
     all_hosts();
     return 0;
 }
