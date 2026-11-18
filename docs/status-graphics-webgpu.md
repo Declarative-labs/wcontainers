@@ -164,6 +164,19 @@ Run 19 = G2c run 1, 2026-11-18:
   with its reason (Departures); "storage usage costs nothing" is now said to be expected, not
   measured; the native loop bounding cost stays under Next for the owner.
 
+- Full runs at the end (desktop, RTX 3080, shared through the GPU queue; scratch
+  logs/run19-full.log and logs/run19-webcheck-final.log): lint of both builds clean; natively,
+  Vulkan 116 passed and 3 ignored (the same three as run 18), Direct3D 12 117 passed and 2
+  ignored, 0 failed; the shared suite 39 of 39 on each API. web/check from clean: the twelve
+  pictures and the viewports equal Direct3D 11's at tolerance 0, the twists differ, the shared
+  suite 39 of 39 in Chrome 157 on the RTX 3080, the three-channel formats every bit kept in
+  Chrome, timestamps in Chrome without developer features in steps of 65,536 ns, the other
+  Chrome checks as in run 18.
+- Frame time of real programs through the fronts: Measurements, run 19.
+- Removed at the end: the desktop's C:\wc\target\phase-2-graphics-webgpu (11.2 GB, debug and
+  release), the program copies under C:\wc\out\phase-2-graphics-webgpu\frames (the profiles,
+  3.15 GB, stay as evidence), and the checkout's own target on the Mac (833 MB of `cargo check`).
+
 Run 18 = G2b run 8, 2026-11-18 (fixes from G2b's third independent check):
 - Merged origin/phase-2-graphics-rig, -shaders, -direct3d-12, -direct3d-11 and -webgl (no
   conflicts; the shared line had nothing new). Interface changes they brought: `COUNTER_BINDING`
