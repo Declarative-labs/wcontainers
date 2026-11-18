@@ -623,11 +623,13 @@ impl<B: Backend> Device<B> {
             }) => (*desc, desc.mip_levels),
             _ => return Err(Error::NotImplemented("buffers read through views")),
         };
-        if compared && !texture_desc.format.is_depth_stencil() {
-            return Err(Error::NotImplemented(
-                "comparison sampling of a texture not stored in a depth format",
-            ));
-        }
+        // Comparison sampling reads a texture not stored in a depth format through its depth twin.
+        let (resource, depth) = if compared && !texture_desc.format.is_depth_stencil() {
+            let (twin, format) = self.depth_twin(v.resource)?;
+            (twin, Some(format))
+        } else {
+            (v.resource, None)
+        };
         let (dimension, arrayed) = match v.dimension {
             4 | 6 => (ViewDimension::D2, false),
             5 | 7 => (ViewDimension::D2Array, true),
@@ -650,7 +652,7 @@ impl<B: Backend> Device<B> {
             _ if arrayed => v.layers.min(left),
             _ => 1,
         };
-        self.note(v.resource, false);
+        self.note(resource, false);
         // The stencil of a depth-stencil texture, which Direct3D gives in the second component
         // and the interface's stencil views in the first: refused until views can swizzle.
         if matches!(v.format, 22 | 47) {
@@ -658,9 +660,12 @@ impl<B: Backend> Device<B> {
                 "stencil read through a view (its component needs a view swizzle)",
             ));
         }
-        let format = dxgi(v.format)?;
+        let format = match depth {
+            Some(f) => f,
+            None => dxgi(v.format)?,
+        };
         self.texture_view(
-            v.resource,
+            resource,
             TextureViewDesc {
                 format,
                 dimension,
