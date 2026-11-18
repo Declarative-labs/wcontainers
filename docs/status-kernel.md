@@ -92,7 +92,9 @@ The larger runtimes (layer 2, src/runtimes.rs, tests python.rs, node.rs, go.rs, 
     collections, string, generators, with, contextlib, re; each test's outcome printed): matches
     with two saves; 196 s, 39724 turns.
   - Python test suite, system modules (test_posix, fileio, file, tempfile, shutil, glob, pty,
-    mmap, epoll): see below; 507 s and 194701 turns on the first run.
+    test_mmap.MmapTests, epoll): all match but one (Next, item 1); 525 s, 196692 turns.
+  - Under three seeds with two saves each: Python `system.py` (22.1, 22.5, 21.7 s; about 11450
+    turns) and the language modules (158.8, 159.4, 204.0 s; about 39950 turns) match.
   - Node start-up (`node -e`): matches; 17 to 19 s, 1942 turns. Node `system.js` (timers, child
     processes with exec, spawn, fork with IPC and a killed child, four worker threads with a
     SharedArrayBuffer and Atomics, file streams and pipeline, fs.watch, an HTTP server and
@@ -2493,9 +2495,10 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
   through an open file whose name was unlinked while another link names it still reach watches
   with IN_EXCL_UNLINK (guest/inotify.c's "writes after unlink"). Backend directories hold no
   entries here, so whether a name still names the inode is judged by its link count.
-- K6b, first run: the Python system test modules on the page cache backend ran past 30 minutes
-  in a save's copy (the first run, with direct I/O, took 507 s) and were stopped; not yet
-  explained (Next, item 1).
+- K6b, first run: test_mmap's LargeMmapTests map sparse files past 4 GiB; the backend reads a
+  mapped file whole (counted "backend file read whole when mapped"), which took the run past 30
+  minutes on the stand-in, so only test_mmap.MmapTests runs. Reading only the pages a mapping
+  touches would let them run.
 
 - K6a, first run (fixed): sigpick's reference race (below, from K3) came from musl's fork, which
   blocks every signal until it returns in the parent; a child that signalled at once could find
@@ -2619,13 +2622,12 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 ## Next
 
 K6b's next run, in this order:
-1. Python's system test modules (tests/python.rs `system_test_modules_match_reference`): the
-   first run differed only in test_posix's test_unshare_setns (it needs /proc/self/ns/uts:
-   /proc/<pid>/ns is not built; the test opens and reads the link, then unshare is EPERM in
-   Docker) and test_mmap (fixed by the page cache backend); the second run (page cache backend)
-   took over 30 minutes and was stopped. Build /proc/<pid>/ns (links named `type:[inode]`,
-   opening one gives an nsfs file that setns refuses with EPERM without CAP_SYS_ADMIN) and find
-   where the second run spends its time (an echo probe was started; see Known issues).
+1. Python's system test modules (tests/python.rs `system_test_modules_match_reference`,
+   ignored with its reason): every test matches but test_posix's test_unshare_setns, which needs
+   /proc/self/ns/uts (/proc/<pid>/ns is not built; the test opens and reads the link, then
+   unshare is EPERM in Docker). Build /proc/<pid>/ns (links named `type:[inode]`, opening one
+   gives an nsfs file that setns refuses with EPERM without CAP_SYS_ADMIN), then take the
+   ignore off. Seed 1 took 525 s (196692 turns, two saves, load about 25).
 2. Run every runtime test under the default three seeds (Go, Java and Node were started) and the
    Python ones, and record their times.
 3. The rest of inotify on a backend root (tests/inotify.rs, ignored with its reason).
