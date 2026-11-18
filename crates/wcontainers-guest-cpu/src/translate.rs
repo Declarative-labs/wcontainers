@@ -439,8 +439,13 @@ pub enum Index<R> {
     Register { reg: R, shift: u8, extend: Extend },
     /// x86 `bt`, `bts`, `btr`, `btc` with a register bit offset: whole operands of `width` bits from the
     /// operand's address, the register read signed at `width` and shifted right arithmetically by
-    /// log2(width), then left by log2(width / 8).
-    BitOffset { reg: R, width: u8 },
+    /// log2(width), then left by log2(width / 8). The operand's own index, when it has one, is `operand`:
+    /// a register shifted left.
+    BitOffset {
+        reg: R,
+        width: u8,
+        operand: Option<(R, u8)>,
+    },
     /// x86 VSIB (the gathers): each element's address takes one lane of this vector register, `lane_bits`
     /// (32 or 64) read signed, shifted left by `shift`.
     Lanes { reg: R, lane_bits: u8, shift: u8 },

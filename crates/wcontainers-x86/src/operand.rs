@@ -49,6 +49,14 @@ pub fn general(r: Register) -> Option<General> {
     })
 }
 
+/// An xmm register's number (xmm0 to xmm15, the ones legacy SSE names).
+pub fn xmm(r: Register) -> Option<u8> {
+    let v = r as u32;
+    (Register::XMM0 as u32..=Register::XMM15 as u32)
+        .contains(&v)
+        .then(|| (v - Register::XMM0 as u32) as u8)
+}
+
 pub fn mask(width: u8) -> i64 {
     if width == 64 { -1 } else { (1i64 << width) - 1 }
 }
@@ -203,6 +211,9 @@ pub fn size_of_memory(size: MemorySize) -> u32 {
         UInt16 | Int16 | WordOffset => 2,
         UInt32 | Int32 | DwordOffset | SegPtr16 => 4,
         UInt64 | Int64 | QwordOffset => 8,
+        UInt128 | Int128 | Packed128_UInt8 | Packed128_Int8 | Packed128_UInt16
+        | Packed128_Int16 | Packed128_UInt32 | Packed128_Int32 | Packed128_UInt64
+        | Packed128_Int64 | Packed128_Float32 | Packed128_Float64 => 16,
         SegPtr32 => 6,
         SegPtr64 => 10,
         _ => 0,
@@ -221,7 +232,7 @@ pub fn memory_use(i: &Instruction) -> Option<AccessKind> {
     use Mnemonic::*;
     Some(match (at, ins.mnemonic()) {
         (0, Cmp | Test | Push | Call | Jmp | Mul | Imul | Div | Idiv | Bt) => AccessKind::Read,
-        (0, Mov | Pop) => AccessKind::Write,
+        (0, Mov | Pop | Movaps | Movups | Movdqa | Movdqu | Movq | Movd) => AccessKind::Write,
         (0, m) if setcc(m).is_some() => AccessKind::Write,
         (0, _) => AccessKind::ReadWrite,
         (_, Xchg) => AccessKind::ReadWrite,

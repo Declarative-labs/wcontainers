@@ -91,6 +91,10 @@ pub trait GuestTest: Guest + Personality<Block: PartialEq + core::fmt::Debug> {
     const AUXILIARY: &'static [(u64, u64)];
     /// The stand-in's system call numbers.
     const STAND_IN: StandIn;
+    /// A system call of this CPU's own that the stand-in answers on the thread's state (`BLOCK_SIZE +
+    /// PRIVATE_BYTES` bytes from the block), with its result, or `None` (x86-64's `arch_prctl` setting the FS
+    /// or GS base, through which its C library sets its thread pointer).
+    fn stand_in_call(number: u64, arguments: [u64; 6], thread: &mut [u8]) -> Option<i64>;
 
     // --- the hand-made programs of the smoke, checks and changes tests ---
     fn smoke() -> Smoke;

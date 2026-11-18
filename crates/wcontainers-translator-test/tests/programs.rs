@@ -12,6 +12,7 @@ use wcontainers_translator_test::programs::{
     ready_with, translated, translated_for, translated_stopping_everywhere,
 };
 use wcontainers_translator_test::runner::Machine;
+use wcontainers_x86::X86_64;
 
 const LEVELS: [&str; 5] = ["-O0", "-O1", "-O2", "-O3", "-Os"];
 
@@ -316,6 +317,18 @@ fn differences_match_linux_on_every_host<G: GuestTest>(check: impl Fn(G::Host, &
 /// as on Linux, and at full the same registers and memory at the end as at none. Levels that build to the
 /// same bytes as an earlier one are run once.
 fn match_linux<G: GuestTest>(programs: &[(&str, Library)]) {
+    match_linux_at::<G>(
+        programs,
+        &[
+            (LookAhead::None, Optimise::Speed),
+            (LookAhead::Full, Optimise::Speed),
+            (LookAhead::Full, Optimise::Size),
+        ],
+    );
+}
+
+/// The same at these look-aheads only, the first of which the others' registers and memory are compared with.
+fn match_linux_at<G: GuestTest>(programs: &[(&str, Library)], hows: &[(LookAhead, Optimise)]) {
     for &(name, library) in programs {
         let mut built: Vec<(&str, Vec<u8>)> = Vec::new();
         for optimisation in LEVELS {
@@ -327,11 +340,7 @@ fn match_linux<G: GuestTest>(programs: &[(&str, Library)]) {
             built.push((optimisation, blob.bytes.clone()));
             let theirs = native::<G>(&blob);
             let mut finals = Vec::new();
-            for how in [
-                (LookAhead::None, Optimise::Speed),
-                (LookAhead::Full, Optimise::Speed),
-                (LookAhead::Full, Optimise::Size),
-            ] {
+            for &how in hows {
                 let (ours, mut machine, registers) = translated_for::<G>(&blob, how);
                 let what = format!("{name} at {optimisation}, {how:?}");
                 assert_eq!(
@@ -656,4 +665,13 @@ fn floats_speed_arm64() {
 #[ignore]
 fn switching_speed_arm64() {
     switching_speed::<Arm64>();
+}
+
+/// x86-64 runs at look-ahead none only until full look-ahead is built for it.
+#[test]
+fn hello_matches_linux_at_none_x86_64() {
+    match_linux_at::<X86_64>(
+        &[("hello", Library::C)],
+        &[(LookAhead::None, Optimise::Speed)],
+    );
 }

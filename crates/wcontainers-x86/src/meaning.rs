@@ -73,6 +73,9 @@ pub fn written(i: &Instruction) -> bool {
                     | Scasq
             );
     }
+    if crate::simd::written(i) {
+        return true;
+    }
     // Every operand of these is a general register, memory or an immediate.
     let general_only = (0..ins.op_count()).all(|n| match ins.op_kind(n) {
         OpKind::Register => general(ins.op_register(n)).is_some(),
@@ -86,7 +89,8 @@ pub fn written(i: &Instruction) -> bool {
                     | Movzx | Movsx | Movsxd | Lea | Xchg | Cbw | Cwde | Cdqe | Cwd | Cdq | Cqo
                     | Push | Pop | Call | Ret | Jmp | Shl | Sal | Shr | Sar | Rol | Ror | Rcl
                     | Rcr | Mul | Imul | Div | Idiv | Syscall | Nop | Pause | Reservednop | Int3
-                    | Int1 | Int | Ud0 | Ud1 | Ud2 | Clc | Stc | Cmc | Cld | Std
+                    | Int1 | Int | Ud0 | Ud1 | Ud2 | Clc | Stc | Cmc | Cld | Std | Bt | Bts
+                    | Btr | Btc
             ))
         // Far transfers through memory: a selector with the offset.
         && !(matches!(m, Call | Jmp) && is_memory(i, 0) && memory_bytes(i) != 8)
@@ -117,6 +121,11 @@ fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
     let m = ins.mnemonic();
     if is_string(i) {
         string(e, i, m);
+        e.next();
+        return true;
+    }
+    if crate::simd::written(i) {
+        crate::simd::emit(e, i, m);
         e.next();
         return true;
     }
@@ -187,6 +196,7 @@ fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
         }
         Shl | Sal | Shr | Sar | Rol | Ror | Rcl | Rcr => shift(e, i, m),
         Mul | Imul => multiply(e, i, m),
+        Bt | Bts | Btr | Btc => bit_test(e, i, m),
         Div | Idiv => divide(e, i, m == Idiv),
         Syscall => syscall(e, i),
         Nop | Pause | Reservednop => {}
@@ -1656,4 +1666,72 @@ fn divide_128<E: Emitter<X86_64> + ?Sized>(
         .local_get(shift)
         .i64_shr_u()
         .local_set(remainder);
+}
+
+/// `bt`, `bts`, `btr` and `btc`: CF is the bit; the others as the reference CPU leaves them. A register bit
+/// offset with a memory operand reaches whole operands away, the offset read signed.
+fn bit_test<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
+    let ins = &i.iced;
+    let w = width(i, 0);
+    let offset = read(e, i, 1, None);
+    let mem = memory_use(i).map(|kind| {
+        // The offset is added before the address is wrapped to its size and the segment base added.
+        let at = linear_free_address(e, i);
+        if ins.op_kind(1) == OpKind::Register {
+            let extended = e.local(ValType::I64);
+            e.sink().local_get(offset).local_set(extended);
+            sign_extend(e, extended, w);
+            e.sink()
+                .local_get(at)
+                .local_get(extended)
+                .i64_const(i64::from(w.trailing_zeros()))
+                .i64_shr_s()
+                .i64_const(i64::from((w / 8).trailing_zeros()))
+                .i64_shl()
+                .i64_add()
+                .local_set(at);
+            if i.address32 {
+                e.sink()
+                    .local_get(at)
+                    .i64_const(0xffff_ffff)
+                    .i64_and()
+                    .local_set(at);
+            }
+        }
+        if let Some(base) = segment(i) {
+            e.get(base);
+            e.sink().local_get(at).i64_add().local_set(at);
+        }
+        e.check(at, u32::from(w / 8), check_kind(kind), 0);
+        at
+    });
+    let value = read(e, i, 0, mem);
+    let (bit, carry) = (e.local(ValType::I64), e.local(ValType::I32));
+    e.sink()
+        .local_get(offset)
+        .i64_const(i64::from(w - 1))
+        .i64_and()
+        .local_set(bit);
+    e.sink()
+        .local_get(value)
+        .local_get(bit)
+        .i64_shr_u()
+        .i32_wrap_i64()
+        .i32_const(1)
+        .i32_and()
+        .local_set(carry);
+    if m != Mnemonic::Bt {
+        let result = e.local(ValType::I64);
+        let mut s = e.sink();
+        s.i64_const(1).local_get(bit).i64_shl();
+        match m {
+            Mnemonic::Bts => s.local_get(value).i64_or(),
+            Mnemonic::Btr => s.i64_const(-1).i64_xor().local_get(value).i64_and(),
+            _ => s.local_get(value).i64_xor(),
+        };
+        s.local_set(result);
+        write(e, i, 0, mem, result);
+    }
+    let word = word_with(e, &[(Flag::C, carry)]);
+    e.set_flags(Flags::Packed(word));
 }

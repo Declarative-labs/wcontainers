@@ -1524,6 +1524,13 @@ fn stand_in<G: GuestTest>(caller: &mut Caller<'_, Host<G>>, call: Syscall) -> i6
         // cannot.
         n if n == numbers.brk => caller.data().program_break as i64,
         number => {
+            let state = caller.data().state.clone().unwrap();
+            let mut thread = vec![0u8; thread_state_size::<G>()];
+            read_shared(&state, BLOCK_AT as usize, &mut thread);
+            if let Some(result) = G::stand_in_call(number, call.arguments, &mut thread) {
+                write_shared(&state, BLOCK_AT as usize, &thread);
+                return result;
+            }
             let reason = Reason::SystemCallNotImplemented.number();
             slow_path(caller.data_mut(), reason, number, Duration::ZERO);
             -ENOSYS

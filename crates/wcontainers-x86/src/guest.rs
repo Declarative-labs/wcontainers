@@ -376,8 +376,24 @@ impl Guest for X86_64 {
                 Some(Base::Pc) => start = start.wrapping_add(block.rip),
                 None => {}
             }
-            if let Some(Index::Register { reg, shift, .. }) = access.index {
-                start = start.wrapping_add(value(reg) << shift);
+            match access.index {
+                Some(Index::Register { reg, shift, .. }) => {
+                    start = start.wrapping_add(value(reg) << shift);
+                }
+                Some(Index::BitOffset {
+                    reg,
+                    width,
+                    operand,
+                }) => {
+                    if let Some((index, shift)) = operand {
+                        start = start.wrapping_add(value(index) << shift);
+                    }
+                    let unused = 64 - u32::from(width);
+                    let offset =
+                        ((value(reg) << unused) as i64 >> unused) >> width.trailing_zeros();
+                    start = start.wrapping_add((offset << (width / 8).trailing_zeros()) as u64);
+                }
+                _ => {}
             }
             if access.address_bits == 32 {
                 start &= 0xffff_ffff;
@@ -541,6 +557,20 @@ impl Guest for X86_64 {
                 }
             }
             Ret => [Some(through(RSP, 0, 8, AccessKind::Read)), None],
+            Bt | Bts | Btr | Btc if ins.op_kind(1) == OpKind::Register => [
+                explicit.map(|m| MemoryAccess {
+                    index: Some(Index::BitOffset {
+                        reg: general(ins.op_register(1)).unwrap().number,
+                        width: memory_bytes(i) as u8 * 8,
+                        operand: match m.index {
+                            Some(Index::Register { reg, shift, .. }) => Some((reg, shift)),
+                            _ => None,
+                        },
+                    }),
+                    ..m
+                }),
+                None,
+            ],
             _ => [explicit, None],
         }
     }

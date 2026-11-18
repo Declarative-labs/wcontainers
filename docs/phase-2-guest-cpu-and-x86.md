@@ -834,7 +834,9 @@ pub enum Index<R> {
     /// operand's address, the register read signed at `width` (16, 32 or 64) and shifted right
     /// arithmetically by log2(width), then left by log2(width / 8). Far from the operand: `bt [rax], rcx`
     /// with rcx 0x80000 faults 64 KiB past rax on the reference (section 2, run 8).
-    BitOffset { reg: R, width: u8 },
+    /// The operand's own index, when it has one (`bt [rbx + rsi * 4], rcx`), is `operand`: a register
+    /// shifted left (found at X3).
+    BitOffset { reg: R, width: u8, operand: Option<(R, u8)> },
     /// x86 VSIB (the gathers): each element's address takes one lane of this vector register, `lane_bits`
     /// (32 or 64) read signed, shifted left by `shift`.
     Lanes { reg: R, lane_bits: u8, shift: u8 },

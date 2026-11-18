@@ -237,8 +237,17 @@ impl GuestTest for X86_64 {
         if detail == 1 { TRAP_BRKPT } else { SI_KERNEL }
     }
 
-    fn excluded(_code: &[u8]) -> Option<&'static str> {
-        None
+    /// `int 0x80` and `sysenter` run Linux's 32-bit system calls on the reference, which this phase does
+    /// not provide (plan 5.2); the designed-answers cases check what we give.
+    fn excluded(code: &[u8]) -> Option<&'static str> {
+        let instruction = Decoder::with_ip(64, code, CODE, DecoderOptions::NONE).decode();
+        match instruction.code() {
+            Code::Int_imm8 if instruction.immediate8() == 0x80 => {
+                Some("int 0x80: a 32-bit system call on the reference")
+            }
+            Code::Sysenter => Some("sysenter: a 32-bit system call on the reference"),
+            _ => None,
+        }
     }
 
     /// AT_HWCAP is CPUID leaf 1's edx on x86-64: FPU, TSC, CX8, SEP, CMOV, CLFSH, MMX, FXSR, SSE and SSE2.
@@ -266,6 +275,22 @@ impl GuestTest for X86_64 {
         exit_group: 231,
         brk: 12,
     };
+
+    /// `arch_prctl` (158) with `ARCH_SET_GS` (0x1001) or `ARCH_SET_FS` (0x1002): Linux refuses a base at or
+    /// above the top of user space (2^47 - 4096) with EPERM.
+    fn stand_in_call(number: u64, arguments: [u64; 6], thread: &mut [u8]) -> Option<i64> {
+        const EPERM: i64 = 1;
+        let at = match (number, arguments[0]) {
+            (158, 0x1001) => core::mem::offset_of!(X86Block, gs_base),
+            (158, 0x1002) => core::mem::offset_of!(X86Block, fs_base),
+            _ => return None,
+        };
+        if arguments[1] >= (1 << 47) - 4096 {
+            return Some(-EPERM);
+        }
+        thread[at..at + 8].copy_from_slice(&arguments[1].to_le_bytes());
+        Some(0)
+    }
 
     /// Every general register but rsp and rbp; system calls set rax, rcx and r11; rbx is kept.
     const MODEL: crate::layer2::Model = crate::layer2::Model {
@@ -384,6 +409,11 @@ fn general(draw: &mut Draw, width: u8) -> Register {
         _ => Register::RAX,
     };
     register(first as u32 + draw.below(16) as u32)
+}
+
+/// An xmm register of the sixteen legacy SSE names.
+fn xmm(draw: &mut Draw) -> Register {
+    register(Register::XMM0 as u32 + draw.below(16) as u32)
 }
 
 /// An operand of an instruction being built.
@@ -505,6 +535,9 @@ fn case(code: Code, seed: u64) -> Option<Case> {
     state[GS] = (draw.next() % ((1 << 47) - 4096)).into();
     state[MXCSR] = 0x1f80;
     state[FCW] = 0x37f;
+    for x in &mut state[XMM..XMM + 16] {
+        *x = u128::from(draw.value()) << 64 | u128::from(draw.value());
+    }
     let address32 = draw.chance(10);
     let mut memory = None;
     let instruction = if let Some(i) = {
@@ -547,6 +580,13 @@ fn case(code: Code, seed: u64) -> Option<Case> {
                         Operand::M(m)
                     }
                 }
+                K::xmm_or_mem if draw.chance(40) => Operand::R(xmm(&mut draw)),
+                K::xmm_or_mem => {
+                    let m = memory_operand(&mut draw, false, address32);
+                    memory = Some(m);
+                    Operand::M(m)
+                }
+                K::xmm_reg | K::xmm_rm => Operand::R(xmm(&mut draw)),
                 K::r8_reg | K::r8_opcode => Operand::R(general(&mut draw, 8)),
                 K::r16_reg | K::r16_rm | K::r16_opcode => Operand::R(general(&mut draw, 16)),
                 K::r32_reg | K::r32_rm | K::r32_opcode => Operand::R(general(&mut draw, 32)),
@@ -583,7 +623,7 @@ fn case(code: Code, seed: u64) -> Option<Case> {
     let mut encoder = Encoder::new(64);
     encoder.encode(&instruction, CODE).ok()?;
     let bytes = encoder.take_buffer();
-    if bytes.len() > 15 {
+    if bytes.len() > 15 || X86_64::excluded(&bytes).is_some() {
         return None;
     }
     // Divisions: half the dividends have rdx (or ah, dx, edx) the extension of the low half, as compilers
@@ -615,7 +655,11 @@ fn case(code: Code, seed: u64) -> Option<Case> {
     // Point the memory operand where the draw says, through its registers or the segment base.
     if let Some(m) = memory {
         let size = u64::from(memory_size(&instruction)).max(1);
-        let to = target(&mut draw, size);
+        let mut to = target(&mut draw, size);
+        // Most 16-byte operands aligned, as SSE's aligned forms need.
+        if size == 16 && draw.chance(80) {
+            to &= !15;
+        }
         aim(&mut draw, &mut state, &m, to, address32);
     }
     Some(Case {

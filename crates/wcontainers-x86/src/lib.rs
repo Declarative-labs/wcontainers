@@ -17,6 +17,8 @@ mod guest;
 mod meaning;
 #[cfg(feature = "translate")]
 mod operand;
+#[cfg(feature = "translate")]
+mod simd;
 
 pub mod claims;
 

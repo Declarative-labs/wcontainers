@@ -295,6 +295,11 @@ impl GuestTest for Arm64 {
         brk: 214,
     };
 
+    /// ARM64 sets its thread pointer without the kernel.
+    fn stand_in_call(_number: u64, _arguments: [u64; 6], _thread: &mut [u8]) -> Option<i64> {
+        None
+    }
+
     fn excluded(code: &[u8]) -> Option<&'static str> {
         let word = word(code);
         forms::form(word).and_then(|form| excluded(form, word))
