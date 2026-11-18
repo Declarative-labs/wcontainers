@@ -13,8 +13,8 @@
 012_ps_code.dxbc	ok
 013_vs_code_1.dxbc	unsupported VertexWithoutPosition
 014_simple_vs.dxbc	unsupported VertexWithoutPosition
-015_simple_hs.dxbc	unsupported HullShader
-016_simple_ds.dxbc	unsupported DomainShader
+015_simple_hs.dxbc	ok-wgsl glsl-write
+016_simple_ds.dxbc	ok-wgsl glsl-write
 017_simple_gs.dxbc	ok-wgsl glsl-write
 018_simple_ps.dxbc	ok
 019_simple_cs.dxbc	ok-wgsl glsl-write
@@ -40,8 +40,8 @@
 039_vs_code_3.dxbc	unsupported RenderTargetArrayIndex
 040_ps_code_1.dxbc	unsupported RenderTargetArrayIndex
 041_simple_vs_1.dxbc	unsupported VertexWithoutPosition
-042_simple_hs_1.dxbc	unsupported HullShader
-043_simple_ds_1.dxbc	unsupported DomainShader
+042_simple_hs_1.dxbc	ok-wgsl glsl-write
+043_simple_ds_1.dxbc	ok-wgsl glsl-write
 044_simple_gs_1.dxbc	ok-wgsl glsl-write
 045_simple_ps_1.dxbc	ok
 046_simple_cs_1.dxbc	ok-wgsl glsl-write
@@ -149,9 +149,9 @@
 148_gs_code.dxbc	ok-wgsl glsl-write
 149_gs_5_0_code.dxbc	ok-wgsl glsl-write
 150_ps_code_19.dxbc	ok
-151_hs_quad_ccw_code.dxbc	unsupported HullShader
-152_ds_quad_code.dxbc	unsupported DomainShader
-153_hs_quad_cw_code.dxbc	unsupported HullShader
+151_hs_quad_ccw_code.dxbc	ok-wgsl glsl-write
+152_ds_quad_code.dxbc	ok-wgsl glsl-write
+153_hs_quad_cw_code.dxbc	ok-wgsl glsl-write
 154_gs_code_1.dxbc	ok-wgsl glsl-write
 155_ps_code_20.dxbc	ok
 156_gather4_code.dxbc	ok-wgsl glsl-compile
@@ -165,8 +165,8 @@
 164_ps_code_22.dxbc	unsupported StorageImageAtomics
 165_ps_depth_le_code.dxbc	ok
 166_ps_depth_ge_code.dxbc	ok
-167_hs_code.dxbc	unsupported HullShader
-168_ds_code.dxbc	unsupported DomainShader
+167_hs_code.dxbc	ok-wgsl glsl-write
+168_ds_code.dxbc	ok-wgsl glsl-write
 169_ps_code_23.dxbc	ok
 170_ps_code_24.dxbc	unsupported ViewportArrayIndex
 171_ps_unused_sample_index_code.dxbc	ok-wgsl glsl-write

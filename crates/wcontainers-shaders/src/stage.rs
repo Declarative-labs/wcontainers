@@ -44,6 +44,8 @@ pub(crate) const INDICES_BINDING: u32 = 1;
 pub(crate) const VERTICES_BINDING: u32 = 2;
 /// The geometry output.
 pub(crate) const GEOMETRY_BINDING: u32 = 3;
+/// The hull stage's output (`tess`).
+pub(crate) const PATCHES_BINDING: u32 = 3;
 /// Invocations per workgroup of the helper's compute programs.
 pub(crate) const WORKGROUP: u32 = 64;
 
@@ -207,6 +209,8 @@ pub mod tess {
     /// location (32); [`NO_SLOT`] where the hull shader writes none.
     pub const SLOTS: u32 = 4;
     pub const NO_SLOT: u32 = u32::MAX;
+    /// The slot of the control points' positions (`SV_Position` as control point data).
+    pub const POSITION_SLOT: u32 = SLOTS + 2 * LOCATIONS;
     pub const HEADER_WORDS: u32 = 72;
     /// Locations a stage passes per control point and per patch, as Direct3D 11 has them.
     pub const LOCATIONS: u32 = 32;

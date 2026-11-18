@@ -128,6 +128,55 @@ fn the_stream_output_program_validates() {
 }
 
 #[test]
+fn hull_and_domain_shaders_declare_what_they_are() {
+    for (domain, name) in [(0u8, "tri"), (1, "quad"), (2, "line")] {
+        let outputs: &[(u8, &str)] = match domain {
+            2 => &[(0, "point"), (1, "line")],
+            _ => &[(0, "point"), (2, "cw"), (3, "ccw")],
+        };
+        for (partitioning, mode) in ["integer", "pow2", "odd", "even"].iter().enumerate() {
+            for &(output, out) in outputs {
+                let file = format!("hs_{name}_{mode}_{out}.dxbc");
+                let c = convert(Source::Dxbc(&own(&file)), &VariantKey::default(), None)
+                    .unwrap_or_else(|e| panic!("{file}: {e:?}"));
+                assert_eq!(c.modules.len(), 1);
+                assert_eq!(c.modules[0].stage, wcontainers_gpu::ShaderStage::Compute);
+                // Powers of two partition as integers, as Direct3D's tessellator has them.
+                let partitioning = if partitioning == 1 {
+                    0
+                } else {
+                    partitioning as u8
+                };
+                assert_eq!(
+                    c.reflection.extras,
+                    StageExtras::Hull {
+                        input_control_points: 1,
+                        output_control_points: 1,
+                        domain,
+                        partitioning,
+                        output_primitive: output,
+                        max_tess_factor: 64,
+                        point_locations: 1,
+                        constant_locations: 0,
+                    },
+                    "{file}"
+                );
+                wgsl(&c.modules[0]);
+            }
+        }
+        let file = format!("ds_{name}.dxbc");
+        let c = convert(Source::Dxbc(&own(&file)), &VariantKey::default(), None)
+            .unwrap_or_else(|e| panic!("{file}: {e:?}"));
+        assert_eq!(c.modules[0].stage, wcontainers_gpu::ShaderStage::Vertex);
+        assert!(
+            matches!(c.reflection.extras, StageExtras::Domain { domain: d, .. } if d == domain),
+            "{file}"
+        );
+        wgsl(&c.modules[0]);
+    }
+}
+
+#[test]
 fn the_tessellator_program_validates() {
     let m = stage::tessellator_program().unwrap();
     assert_eq!(m.stage, wcontainers_gpu::ShaderStage::Compute);

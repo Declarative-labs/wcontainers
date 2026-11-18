@@ -51,15 +51,15 @@ samplers.ps_sample.dxbc	ok
 streamout.gs.dxbc	ok-wgsl glsl-write
 streamout.vs_back.dxbc	ok
 targets.ps.dxbc	ok
-tessellation.ds_line.dxbc	unsupported DomainShader
-tessellation.ds_quad.dxbc	unsupported DomainShader
-tessellation.ds_tri.dxbc	unsupported DomainShader
-tessellation.hs_line.dxbc	unsupported HullShader
-tessellation.hs_quad_even.dxbc	unsupported HullShader
-tessellation.hs_quad_integer.dxbc	unsupported HullShader
-tessellation.hs_quad_odd.dxbc	unsupported HullShader
-tessellation.hs_quad_pow2.dxbc	unsupported HullShader
-tessellation.hs_tri.dxbc	unsupported HullShader
+tessellation.ds_line.dxbc	ok-wgsl glsl-write
+tessellation.ds_quad.dxbc	ok-wgsl glsl-write
+tessellation.ds_tri.dxbc	ok-wgsl glsl-write
+tessellation.hs_line.dxbc	ok-wgsl glsl-write
+tessellation.hs_quad_even.dxbc	ok-wgsl glsl-write
+tessellation.hs_quad_integer.dxbc	ok-wgsl glsl-write
+tessellation.hs_quad_odd.dxbc	ok-wgsl glsl-write
+tessellation.hs_quad_pow2.dxbc	ok-wgsl glsl-write
+tessellation.hs_tri.dxbc	ok-wgsl glsl-write
 tessellation.ps.dxbc	ok
 tessellation.vs.dxbc	unsupported VertexWithoutPosition
 textures.ps_1d.dxbc	ok
