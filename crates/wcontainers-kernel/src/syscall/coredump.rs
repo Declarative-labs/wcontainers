@@ -26,6 +26,9 @@ use crate::memory::{Backing, Mapping};
 use crate::process::{Channel, Pid, Tid};
 use crate::{Context, Errno, Kernel};
 
+/// The largest NT_FILE note written (`core_file_note_size_limit`); a larger one is left out.
+pub(crate) const FILE_NOTE_LIMIT: usize = 4 << 20;
+
 /// The core file's name.
 const CORE: &[u8] = b"core";
 
@@ -382,7 +385,10 @@ fn notes(
                 NT_AUXV,
                 kernel.processes[&pid].starting_stack.auxiliary.clone(),
             ));
-            notes.push(Note::core(NT_FILE, mapped_files(kernel, pid)));
+            let files = mapped_files(kernel, pid);
+            if files.len() <= FILE_NOTE_LIMIT {
+                notes.push(Note::core(NT_FILE, files));
+            }
         }
         let fpsimd = user_fpsimd_state {
             vregs: core::array::from_fn(|index| {

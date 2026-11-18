@@ -143,7 +143,9 @@ fn system() {
              kernel/msgmax kernel/msgmnb kernel/msgmni kernel/sem kernel/shmall kernel/shmmax \
              kernel/shmmni kernel/random/entropy_avail kernel/random/poolsize \
              fs/inotify/max_queued_events fs/inotify/max_user_instances \
-             fs/inotify/max_user_watches fs/protected_* kernel/domainname \
+             fs/inotify/max_user_watches fs/protected_* kernel/domainname kernel/core_pattern \
+             kernel/core_uses_pid kernel/core_pipe_limit kernel/core_sort_vma \
+             kernel/core_file_note_size_limit \
              kernel/io_uring_disabled kernel/perf_event_paranoid vm/nr_hugepages \
              vm/nr_overcommit_hugepages vm/hugetlb_shm_group; \
              do echo $f $(stat -c %a $f) $(cat $f); done; cat vm/drop_caches; \

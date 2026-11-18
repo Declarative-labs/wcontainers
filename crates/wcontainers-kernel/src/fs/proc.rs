@@ -338,6 +338,11 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/fs/protected_symlinks", Global::File(0o644)),
     ("sys/kernel", Global::Directory),
     ("sys/kernel/cap_last_cap", Global::File(0o444)),
+    ("sys/kernel/core_file_note_size_limit", Global::File(0o644)),
+    ("sys/kernel/core_pattern", Global::File(0o644)),
+    ("sys/kernel/core_pipe_limit", Global::File(0o644)),
+    ("sys/kernel/core_sort_vma", Global::File(0o644)),
+    ("sys/kernel/core_uses_pid", Global::File(0o644)),
     ("sys/kernel/domainname", Global::File(0o644)),
     ("sys/kernel/hostname", Global::File(0o644)),
     ("sys/kernel/io_uring_disabled", Global::File(0o644)),
@@ -1659,6 +1664,15 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                 }
                 "sys/kernel/ostype" => out.push_str("Linux\n"),
                 "sys/kernel/pid_max" => out.push_str("4194304\n"),
+                // How a core file is named and written (`syscall::coredump`): `core` in the working
+                // directory, no pid added, no pipe, mappings in address order.
+                "sys/kernel/core_pattern" => out.push_str("core\n"),
+                "sys/kernel/core_file_note_size_limit" => {
+                    let _ = writeln!(out, "{}", crate::syscall::coredump::FILE_NOTE_LIMIT);
+                }
+                "sys/kernel/core_uses_pid"
+                | "sys/kernel/core_pipe_limit"
+                | "sys/kernel/core_sort_vma" => out.push_str("0\n"),
                 "sys/kernel/threads-max" => {
                     let _ = writeln!(out, "{}", machine.threads_max());
                 }
