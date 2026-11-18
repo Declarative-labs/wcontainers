@@ -59,6 +59,36 @@ Built, each tested against the reference:
   for the user namespace itself) and NS_GET_PARENT (EPERM for pid and user, EINVAL for the
   rest), guest/procns.c.
 
+Measured (scratch k6b3; each binary's own time for its tests and the default three seeds with
+saves, other runs beside it):
+- At f45c8e0 (pages read when touched, programs still read whole), load 50 to 80: go 7.1 s,
+  java 139.2 s, node 193.7 s; python 2394.4 s (system.py, the language modules and the system
+  modules with the whole test_mmap), all matching the reference.
+- At d8eafe8 (programs read in parts too), load 40 to 60: go 11.1 s, java 205.1 s, node 943.9 s,
+  all matching: each fault set the permissions of its whole mapping again (Node's 126 MB binary,
+  Java's lib/modules), many remaps on the stand-in per fault. At 4b05204 the permissions are set
+  again only around the pages that came: node for one seed 35.4 s (load 56), against about 49 s
+  a seed before this run (147.2 s for three).
+- What each runtime hit that is counted (from the runs' warnings): Go "address above the
+  address space"; Java "address above the address space", "backend pages written whole", "page
+  residency not tracked", "proc entry not built" (22: /proc/cgroups), "proc fields not tracked"
+  (4), "sys entry not built" (4, 6, 7: devices, fs, kernel); Node "address above the address
+  space" and the rest as before; Python "proc fields not tracked" (0), "backend pages written
+  whole", "page residency not tracked" (test_mmap). Nothing is read whole any more.
+
+Reference races found by this run's whole-suite and layer 1 runs (load 55 to 70), each shown to
+be the reference's: Linux may hand a loopback datagram to its socket after sendto returns, when
+its receive work is deferred under load (ksoftirqd).
+- inet `option_reads_and_socket_corners_match_reference`: the reference had received none of 41
+  datagrams when guest/optreads.c drained them; the drain now waits until each is received or
+  told dropped (fixed in the test).
+- Layer 1 seed 6262614 failed once: a UDP socket bound at the loopback port, a datagram to
+  itself, then a nonblocking recvmsg: ours 3 bytes (MSG_TRUNC), the reference EAGAIN. A probe
+  of the same calls (scratch k6b3/udpself2.c) got the datagram in every form of the vectors,
+  and 20000 of 20000 times alone (load 58); the seed passed whole on its second run (423.0 s,
+  load 69). Not fixed in the method: the reference runner would have to wait for loopback
+  delivery after each send (Next).
+
 ## K6b, second run
 
 Built, each tested against the reference:
@@ -2528,14 +2558,16 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
   and PR_SET_VMA. Unknown options and those Linux has only for other architectures are a plain
   EINVAL, uncounted.
 - "line discipline not built": TIOCSETD with a discipline other than `n_tty` (detail: its number).
-- "ioctl request not built": nsfs's NS_GET_USERNS, NS_GET_PARENT and its other requests but
-  NS_GET_NSTYPE and NS_GET_OWNER_UID (ENOTTY); the watch queue requests on pipes; TIOCCONS and TIOCSLCKTRMIOS for a
+- "ioctl request not built": nsfs's requests but NS_GET_NSTYPE, NS_GET_OWNER_UID,
+  NS_GET_USERNS and NS_GET_PARENT (ENOTTY); the watch queue requests on pipes; TIOCCONS and TIOCSLCKTRMIOS for a
   caller with the powers they need (Docker gives neither, so they answer EPERM as in the reference);
   pidfs's ten namespace requests once their checks pass (nsfs is not built; EOPNOTSUPP).
 - "madvise advice not built": MADV_COLLAPSE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE.
 - "device not built": the console (5:1) and `/dev/net/tun` (10:200), which Docker's rules allow
   (ENODEV; detail the device number).
 - "proc entry not built": the `/proc` entries not built (detail: directory and name index).
+- "sys entry not built": a name the reference's /sys holds, looked up in /sys, which holds none
+  (ENOENT; detail: its index in block, bus, class, dev, devices, firmware, fs, kernel, module).
 - "seccomp listener not implemented": SECCOMP_FILTER_FLAG_NEW_LISTENER.
 - "call on another process not built": process_vm_readv and process_vm_writev on another process.
 - "socket family not built": socket and socketpair of a family other than AF_UNIX, AF_INET,
@@ -2591,12 +2623,15 @@ or whose port is taken), "outside datagram header made up",
 "page residency not tracked", "proc
 fields not tracked", "fault syndrome approximated", "core dump not
 written", "vmsplice pages copied", "backend pages written whole", "backend change not seen by
-mapped pages". "wake to run" is a measurement (count and total nanoseconds), not a slow path. "host cannot do
+mapped pages", "copy short of backend pages" (a call that did part of its work before reaching
+backend pages not read yet ends short), "backend pages needed outside a call" (the kernel
+touched such pages where nothing can wait, a signal frame: a fault). "wake to run" is a measurement (count and total nanoseconds), not a slow path. "host cannot do
 this" counts a CPU side that answered it cannot make a memory, thread or shared block (ENOSYS to the
 guest).
 
 ## Changes to the shared crate (wcontainers-abi)
 
+- K6b, third run: none.
 - K6a, first run: none.
 
 - K5, eighth run: none.
@@ -2805,18 +2840,18 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-K6b's next run, in this order:
-1. Nothing of the K6b bar is left open but the items below; the whole suite and the three fresh
-   seeds ran at the final kernel (above).
-2. /sys: mount an empty read-only sysfs at /sys as Docker does, whose lookups are counted ("sys
-   entry not built"), so section 15's /sys subset is counted where it can be seen; then the
-   cgroup2 mount (cpu.max, memory.max "max") can be weighed against the gap list.
-3. Reading only the pages a backend mapping touches: the backend reads a mapped file whole
-   (counted "backend file read whole when mapped"; Node's 126 MB binary, Java's lib/modules),
-   which keeps test_mmap's LargeMmapTests out of the Python run.
-4. inotify on a backend root (tests/inotify.rs, ignored with its reason).
-5. nsfs's NS_GET_USERNS and NS_GET_PARENT (counted).
-6. The LTP comparison on ours for the 1532 added tests, and the K6a list below.
+After K6b (third run), in this order:
+1. inotify on a backend root (tests/inotify.rs, ignored with its reason): IN_EXCL_UNLINK needs
+   to know that the name an open file was opened by was unlinked while another link names the
+   inode (Linux's `d_unlinked` of that dentry); the kernel keeps no dentries for backend names.
+2. A call that copies part of its bytes and then reaches backend pages not read yet keeps its
+   short result (counted "copy short of backend pages"), where Linux's copy waits; a call
+   with progress of its own (pipe writes) could wait there instead. Not seen in any run.
+3. A mapped backend file's block starts at the file's first page (Departures); start it at the
+   lowest page mapped.
+4. Layer 1's reference runner and loopback datagrams to oneself under load (above): make the
+   runner wait for delivery after a send, so seeds do not fail on the reference's timing.
+5. The LTP comparison on ours for the 1532 added tests, and the K6a list below.
 
 K6a's next run (or K6b): the wrong answers of the first comparison (under "K6a, first run"),
 largest first by the tests they turn:
@@ -2887,6 +2922,6 @@ not seen as a setting; futex queues allocate when a futex first gets waiters; th
 sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
 737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, 5050001, 5050003 and
 5050002, 5050401 to 5050462 (K5; sockets reached from 5050405), 5050463 to 5050466 (K6a),
-6262601 to 6262611 (K6b), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+6262601 to 6262615 (K6b), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
 0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
 to 4040315, and the check's 7171002.
