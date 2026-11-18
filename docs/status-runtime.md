@@ -75,6 +75,36 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   hung and failed at its 20 s limit (j2run2/drop-before-fix.log); after it, four runs pass in about 2.4 s
   each (drop-after-fix.log). The full and none bars that had passed at 7679fe4b are kept in
   j2run2/superseded/; the bars were run again at the fix (below).
+- Found next, by the bars at a7c310e9: the copy could still hang, now inside `Compiler::new` in the copy,
+  compiling the thread module: wasmtime registering its unwind tables waited on libunwind's lock
+  (j2run2/sample2-62043.txt; j2run2/superseded/run2b-none-hung.log). Another test thread of the same test
+  binary (procsignals runs its four tests three at a time) held that lock at the fork. Any lock another
+  thread holds at a fork is lost to the copy, so this is the tests' save, not the back end: the driver
+  now makes a run that saves hold a process-wide lock alone, and every other run share it, while it has
+  a back end (44ff7829, the driver, with the feature only). A saving run then never overlaps another run
+  of its binary; the other tests of the binary wait for it.
+
+## J2 run 2: the bars at c2539861 (this Mac, Apple M5 Max; other tracks running)
+
+- J2's bar (scratch j2/bar.sh): full 42 passed, 2 ignored, 86.2 s (load 98.5 to 96.8; j2/run2c-full.log);
+  none 42 passed, 2 ignored, 83.1 s (load 96.8 to 82.1; run2c-none.log); bounded 42 passed, 2 ignored,
+  168.3 s (load 82.1 to 103.0; run2c-bounded.log). The 42 are run 1's 41 and align's stack pointer test;
+  ignored are align's exclusive load (the translator's known failure) and memfd's huge pages.
+- procsignals, the bar's test that saves, five more times at none (j2run2/procsignals-repeat.sh 5 none):
+  4 passed each time, 5.3 to 6.8 s each (load 62.4 to 87.1; j2run2/procsignals-none-1..5.log).
+- Layer 1 over the back end with a new seed: 10,000 sequences, seed 2026111802, 32 on each file backend,
+  3 passed, 179.0 s (load 103.0 to 62.4; j2/layer1-10000-2026111802.log).
+- The back end's tests on Linux (Docker, linux/arm64, 7.0.14-linuxkit): 16 passed at fbcf5e37, whose
+  back end is c2539861's (load 58.2 to 91.8; j2/linux/linux-check-4.log); the paged out page read
+  "present 0, swapped 1" and was copied exactly.
+- The back end's own tests on this Mac: all pass at c2539861.
+- System call and fork cost again, end to end (release, j2/cost/runtime_cost.rs copied in for the run and
+  removed, the same method as run 1; c2539861; load 101.8 to 96.5; j2run2/cost/cost-3.log): `getppid` ours
+  162.9 ns an iteration (min 147.3), the loop with no call 9.6 ns, reference 143.3 to 212.2 ns; fork, `_exit`
+  and `waitpid` with 448 heap pages ours 319.0 µs (min 249.1), reference 312.1 to 694.8 µs; fork then
+  rewriting the 448 pages ours 656.8 µs (min 398.8), reference 790.7 to 1395.3 µs; the rewrite alone ours
+  13.9 µs, reference 4.4 to 5.8 µs. Run 1 measured fork 338.8 and 739.7 µs; at this load one run does not
+  separate the records change (about 40 µs a fork, measured apart above) from the variation.
 
 
 ## J2 (run 1, 2026-11-18)
@@ -365,6 +395,8 @@ Scratch is pyro-parked/wcontainers-scratch/runtime; J1's logs are in its `j1/` a
   RUSTUP_TOOLCHAIN=1.99.0-aarch64-unknown-linux-gnu -w /src rust:1.99-slim sh -c 'uname -a; swapon --show;
   cargo test --locked -j 4 -p wcontainers-wasmtime -- --test-threads 3 --nocapture'`. Delete
   j2/linux/target and j2/linux/registry after the run, and the image (`docker rmi rust:1.99-slim`).
+- procsignals, the bar's test that saves, N times at a look-ahead, each with a 15 minute limit: scratch
+  `j2run2/procsignals-repeat.sh N none`.
 - Do not edit the crates while a bar runs: a later cargo invocation of the same run rebuilds from what is
   on disk (that is how j2/bounded-1-stale-build.log hung).
 - The bar, first step: `nix develop -c cargo test -j 4 -p wcontainers-kernel-test --features runtime --test
@@ -562,6 +594,10 @@ array of slots in microseconds.
   needs the stack pointer test to run with it.
 - The kernel's `getcpu` difference that layer 1 finds with seed 918273645 is left to the kernel track: this
   track does not change the kernel.
+- With the feature, a kernel test run that saves holds the test process alone while it has a back end
+  (44ff7829): the save forks a test process whose other threads run other tests, and a lock one of them
+  holds at the fork (libunwind's, wasmtime's) never comes free in the copy. Plan section 11 said the copy
+  holds only the forking thread; it did not say the other threads' locks are lost with them.
 
 ## Dependencies
 

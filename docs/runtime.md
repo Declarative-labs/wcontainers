@@ -648,6 +648,11 @@ from the saved memories and threads. That save happens in the test outside's `st
   back end's engine compiles on the calling thread (`Config::parallel_compilation(false)`) everywhere, not
   only in copies, since the translator's own planning stays parallel.
 - **Timers.** Tests use counted turns (section 9), so no timer thread exists to be lost.
+- **Other threads' locks.** A lock another thread holds at the fork (the system's unwinder, wasmtime's
+  registry of code) never comes free in the copy. The kernel tests run several tests in one process, so a
+  run that saves holds a process-wide lock alone while it has a back end, and every other run shares it
+  (the driver's `SAVING`). The back end itself drops a compiler copied by fork without ending its pool,
+  whose threads are not in the copy.
 This is the same bringing back as a restore in a new process, which the final form does from a file, except
 that the copy compiles on one thread.
 
