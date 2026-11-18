@@ -235,8 +235,11 @@ and mesh shader subobjects, which the stream reader refused. The 105 failing:
   reports absent (float64, int64, 16-bit types, wave operations, depth bounds, barycentrics,
   `SV_RenderTargetArrayIndex`/`SV_ViewportArrayIndex` from the vertex stage, and smaller gaps
   of 1 to 100 checks not sorted yet).
-- Wrong values, 4: arithmetic-float-uniform (4 checks), arithmetic-float (2), frexp (2),
-  sample-cmp (20); not looked into yet.
+- Wrong values, 4: arithmetic-float-uniform (4 checks), arithmetic-float (2), frexp (2) not
+  looked into yet; sample-cmp (20) compared an `R32_TYPELESS` texture stored as `r32float`, which
+  WebGPU's bind group refused, so the draws were dropped silently. Such comparison sampling is
+  now refused by name ("comparison sampling of a texture not stored in a depth format"), so the
+  file stops there (crash after the device is removed).
 
 ## Real program
 
@@ -282,7 +285,9 @@ list only when it is the back end's or browser's to lack (reported absent as Dir
   the default. Direct3D's stencil views give the stencil in the second component, WebGPU's
   stencil-aspect views in the first; the front refuses stencil views by name until then, and
   component mappings need the same.
-- Front, this milestone: buffers in CPU-visible custom heaps, UAV clears with rectangles on 3D
+- Front, this milestone: comparison sampling of textures not stored in a depth format (a depth
+  twin written by draws, `DepthWrittenByDraw`; refused by name until then), buffers in
+  CPU-visible custom heaps, UAV clears with rectangles on 3D
   textures and buffers, `ID3D12GraphicsCommandList3` and later (render passes).
 
 ## Next, in this order
