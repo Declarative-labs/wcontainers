@@ -5,7 +5,8 @@
 #                       cause is recorded (tools/graphics-rig/resets record)
 #   quarantine.txt      names never run on the GPU until lifted, one per line: name, time, reason,
 #                       tab-separated; a job's name is its command, a Wine test's "wine <file>:<test>"
-#   jobs.log            each GPU job's start and end, its branch, group, exit code and command
+#   jobs.log            each GPU job's and remote command's start and end, its branch, group,
+#                       exit code and command
 #   cleared.txt         the rig's own code seen to run without a reset, one key a line (Get-RigKey)
 $hazardLogs = 'C:\wc\logs'
 $hazardHeld = "$hazardLogs\held.txt"
@@ -57,12 +58,17 @@ function Get-CommandWords([string]$Text) {
 }
 
 # The quarantine line of a command, if a quarantined command's words all come in it in that order:
-# another output directory or checkout, or anything added, does not get around a quarantine. Wine
-# tests are quarantined by name in their runner.
+# another output directory or checkout, or anything added, does not get around a quarantine. A
+# quarantined Wine test ("wine <file>:<test>") is skipped by its runner, which runs the others; a
+# command that runs the test file's program itself (<file>_test.exe) is refused.
 function Find-Quarantine([string]$Text) {
     $words = Get-CommandWords $Text
     foreach ($entry in (Get-Quarantine).GetEnumerator()) {
-        if ($entry.Key -like 'wine *') { continue }
+        if ($entry.Key -match '^wine ([^:]+):') {
+            $program = "$($Matches[1].ToLower())_test"
+            if ($words | Where-Object { $_ -ceq $program -or $_ -ceq "$program.exe" }) { return $entry.Value }
+            continue
+        }
         $want = Get-CommandWords $entry.Key
         if (-not $want) { continue }
         $found = 0
@@ -91,11 +97,14 @@ function Set-Hold([string[]]$Lines) {
 function Test-Held { Test-Path $hazardHeld }
 
 # Lets the GPU groups start jobs again, but not 'default' and 'hazard' while an alone job is queued
-# or running: it holds them back from its submission until it ends.
-function Resume-Groups {
+# or running: it holds them back from its submission until it ends. -Ending: called by the running
+# alone job as it ends, which leaves them held only for the next one queued.
+function Resume-Groups([switch]$Ending) {
     $state = & $hazardPueue -c $hazardConfig status --json | ConvertFrom-Json
+    $waiting = 'Queued', 'Stashed', 'Locked'
+    if (-not $Ending) { $waiting += 'Running' }
     $alone = @($state.tasks.PSObject.Properties.Value | Where-Object { $_.group -eq 'alone' -and
-            ($_.status.PSObject.Properties.Name | Where-Object { $_ -in 'Queued', 'Running', 'Stashed', 'Locked' }) })
+            ($_.status.PSObject.Properties.Name | Where-Object { $_ -in $waiting }) })
     foreach ($group in $hazardGroups) {
         if ($state.groups.$group.status -ne 'Running' -and ($group -eq 'alone' -or $alone.Count -eq 0)) {
             & $hazardPueue -c $hazardConfig start --group $group | Out-Null
@@ -105,18 +114,54 @@ function Resume-Groups {
 }
 
 # After a job or a remote command: display driver resets or errors logged while it ran are added to
-# display-resets.log, hold the queue and quarantine the command, unless it quarantined something
-# narrower itself (a Wine test). Returns the events' lines.
-function Watch-Resets([datetime]$Started, [datetime]$Ended, [string]$Seen, [string]$Text, [int]$Suspects) {
+# display-resets.log, hold the queue and quarantine the command, unless the command quarantined
+# something narrower itself (a Wine test, named in the file $Narrowed, which the command finds in
+# WC_NARROWED). Every job and command that saw the reset is quarantined so. Returns the events' lines.
+function Watch-Resets([datetime]$Started, [datetime]$Ended, [string]$Seen, [string]$Text, [string]$Narrowed) {
     $resets = @(Get-DisplayResets $Started $Ended.AddSeconds(2))
     if ($resets) {
         Add-HazardLines "$hazardLogs\display-resets.log" ([string[]](@($Seen) + $resets))
         Set-Hold @($Seen)
-        if ((Get-Quarantine).Count -eq $Suspects) {
+        if (-not ($Narrowed -and [IO.Path]::IsPathRooted($Narrowed) -and (Test-Path $Narrowed))) {
             Add-Quarantine $Text ("display driver reset at {0} during {1}" -f $resets[0].Substring(0, 19), $Seen)
         }
     }
+    if ($Narrowed -and [IO.Path]::IsPathRooted($Narrowed)) { Remove-Item -ErrorAction SilentlyContinue $Narrowed }
     $resets
+}
+
+# The GPU slot: a job of a kind that may reset the display driver (any job outside the group
+# default) holds it alone, so no remote command runs beside it; remote commands share it. A job
+# first says it wants the slot by holding the file want open, and remote commands do not start
+# while one does, so a stream of them cannot keep it out. Handles close when their process ends.
+$hazardSlot = 'C:\wc\locks\gpu-slot'
+New-Item -ItemType Directory -Force C:\wc\locks | Out-Null
+function Open-Lock([string]$Path, [IO.FileAccess]$Access, [IO.FileShare]$Share) {
+    try { [IO.File]::Open($Path, 'OpenOrCreate', $Access, $Share) } catch [System.IO.IOException] { $null }
+}
+# For a job: returns the slot held alone, waiting for the remote commands that hold it to end.
+function Enter-GpuSlot {
+    $want = $null
+    while (-not $want) { $want = Open-Lock "$hazardSlot.want" 'ReadWrite' 'ReadWrite'; if (-not $want) { Start-Sleep -Milliseconds 100 } }
+    $slot = $null
+    while (-not $slot) { $slot = Open-Lock $hazardSlot 'ReadWrite' 'None'; if (-not $slot) { Start-Sleep -Milliseconds 250 } }
+    $want.Close()
+    $slot
+}
+# For a remote command: returns the slot held shared, once no job wants or holds it; $Waiting is
+# called once if it has to wait.
+function Enter-GpuSlotShared([scriptblock]$Waiting) {
+    $said = $false
+    while ($true) {
+        $free = Open-Lock "$hazardSlot.want" 'ReadWrite' 'None'
+        if ($free) {
+            $free.Close()
+            $slot = Open-Lock $hazardSlot 'Read' 'Read'
+            if ($slot) { return $slot }
+        }
+        if (-not $said) { & $Waiting; $said = $true }
+        Start-Sleep -Milliseconds 500
+    }
 }
 
 # The rig's own runs on Microsoft's Direct3D, wgpu, Chrome or WARP with no replacement library: the
@@ -156,4 +201,10 @@ function Add-Cleared([string]$Key) {
     if (-not ((Test-Path $hazardCleared) -and ([IO.File]::ReadAllLines($hazardCleared) -contains $Key))) {
         Add-HazardLines $hazardCleared @($Key)
     }
+}
+
+# A remote command (remote.ps1, run from C:\wc\incoming) holds the GPU slot shared from here, before
+# its branch's lock, until it ends.
+if ($MyInvocation.PSCommandPath -like 'C:\wc\incoming\*') {
+    $hazardRemoteSlot = Enter-GpuSlotShared { [Console]::Error.WriteLine('remote: waiting for a GPU job of a kind that may reset the display driver to end (no remote command runs beside one)') }
 }

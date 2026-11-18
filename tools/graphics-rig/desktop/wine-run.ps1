@@ -67,6 +67,8 @@ function Check-Resets {
     $lines = $events | ForEach-Object { Format-DisplayEvent $_ }
     if ($suspect) {
         Add-Quarantine "wine $($suspect.Name)" "display driver reset at $($lines[0].Substring(0, 19)) while it ran, in $Out"
+        # The job or remote command running this quarantines the test in place of its own command.
+        if ($env:WC_NARROWED) { Add-HazardLines $env:WC_NARROWED @("wine $($suspect.Name)") }
         "$($suspect.Name): FAIL, the display driver was reset while it ran; it is now quarantined on the GPU and the run stops:"
     } else {
         "FAIL, the display driver was reset during the run, not while a test ran; the run stops:"
