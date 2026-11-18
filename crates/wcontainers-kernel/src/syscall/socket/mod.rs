@@ -5,7 +5,7 @@
 //! [`inet`].
 
 mod inet;
-mod netlink;
+pub(crate) mod netlink;
 mod outside;
 mod procnet;
 mod resolver;
@@ -221,6 +221,11 @@ impl Socket {
     /// A local socket, not an internet or netlink one.
     pub(crate) fn local(&self) -> bool {
         self.inet.is_none() && self.netlink.is_none()
+    }
+
+    /// A netlink socket, which a message queue's SIGEV_THREAD request names.
+    pub(crate) fn is_netlink(&self) -> bool {
+        self.netlink.is_some()
     }
 
     /// A TCP socket, which `mmap` takes (`tcp_mmap`).
@@ -3480,16 +3485,23 @@ pub(super) fn setsockopt(
             own.options
                 .insert((level, name), value.to_le_bytes().to_vec());
         }
-        SO_REUSEADDR | SO_REUSEPORT | SO_KEEPALIVE | SO_BROADCAST | SO_OOBINLINE | SO_DONTROUTE
-        | SO_PASSSEC | SO_RCVLOWAT | SO_ZEROCOPY | SO_RCVMARK | SO_RCVPRIORITY => {
+        // A negative low water mark is the most there is; TCP's is capped (`tcp_set_rcvlowat`).
+        SO_RCVLOWAT => {
             let value = int()?;
-            let kept = if name == SO_RCVLOWAT {
-                value.max(1)
-            } else {
-                i32::from(value != 0)
-            };
+            let value = if value < 0 { i32::MAX } else { value };
+            if own.inet.is_some() && own.kind == SOCK_STREAM {
+                drop(own);
+                inet::set_receive_low_water(kernel, cx, &socket, value);
+                return Ok(0);
+            }
             own.options
-                .insert((level, name), kept.to_le_bytes().to_vec());
+                .insert((level, name), value.max(1).to_le_bytes().to_vec());
+        }
+        SO_REUSEADDR | SO_REUSEPORT | SO_KEEPALIVE | SO_BROADCAST | SO_OOBINLINE | SO_DONTROUTE
+        | SO_PASSSEC | SO_ZEROCOPY | SO_RCVMARK | SO_RCVPRIORITY => {
+            let value = int()?;
+            own.options
+                .insert((level, name), i32::from(value != 0).to_le_bytes().to_vec());
         }
         SO_LINGER => {
             if bytes.len() < 8 {
