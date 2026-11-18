@@ -30,6 +30,7 @@ use wcontainers_gpu::{
 use crate::variant::texel::{TexelBuffer, TexelPlace};
 
 mod geometry;
+mod hull;
 
 type Result<T> = core::result::Result<T, ConvertError>;
 
@@ -158,12 +159,13 @@ pub(crate) fn lower(ir: &Ir, variant: &VariantKey) -> Result<(Module, Reflection
     let stage = match l.stage {
         SourceStage::Vertex => ShaderStage::Vertex,
         SourceStage::Pixel => ShaderStage::Fragment,
-        SourceStage::Compute | SourceStage::Geometry => ShaderStage::Compute,
-        _ => unreachable!(),
+        SourceStage::Compute | SourceStage::Geometry | SourceStage::Hull => ShaderStage::Compute,
+        SourceStage::Domain => ShaderStage::Vertex,
     };
-    match l.geometry {
-        Some(_) => l.geometry_entry_point()?,
-        None => l.entry_point()?,
+    match l.stage {
+        SourceStage::Geometry => l.geometry_entry_point()?,
+        SourceStage::Hull => l.hull_entry_point()?,
+        _ => l.entry_point()?,
     }
     Ok((l.module, l.reflection, stage))
 }
@@ -196,6 +198,8 @@ struct Lowering<'a> {
     side_effects: bool,
     /// What a geometry shader declares and the parts of its compute form made so far.
     geometry: Option<geometry::Geometry>,
+    /// What a hull or domain shader declares.
+    tessellation: Option<hull::Tessellation>,
     /// Typed buffers read through storage buffers, by declaring id.
     texels: HashMap<u32, TexelBuffer>,
 }
@@ -213,8 +217,8 @@ impl<'a> Lowering<'a> {
             ir::stage::PIXEL => SourceStage::Pixel,
             ir::stage::COMPUTE => SourceStage::Compute,
             ir::stage::GEOMETRY => SourceStage::Geometry,
-            ir::stage::HULL => return Err(unsupported("HullShader")),
-            ir::stage::DOMAIN => return Err(unsupported("DomainShader")),
+            ir::stage::HULL => SourceStage::Hull,
+            ir::stage::DOMAIN => SourceStage::Domain,
             _ => return Err(malformed("unknown stage".into())),
         };
         let main = *entry
@@ -259,6 +263,12 @@ impl<'a> Lowering<'a> {
             discards: false,
             side_effects: false,
             geometry: (stage == SourceStage::Geometry).then(geometry::Geometry::default),
+            tessellation: matches!(stage, SourceStage::Hull | SourceStage::Domain).then(|| {
+                hull::Tessellation {
+                    constants: entry.refs.get(1).copied().unwrap_or(0),
+                    ..Default::default()
+                }
+            }),
             texels: HashMap::default(),
         })
     }
@@ -462,6 +472,9 @@ impl<'a> Lowering<'a> {
             code::SET_GS_INSTANCES..=code::SET_GS_OUTPUT_PRIMITIVE => {
                 self.geometry_declaration(op)?
             }
+            code::SET_TESS_PRIMITIVE..=code::SET_TESS_CONTROL_POINTS => {
+                self.tessellation_declaration(op)?
+            }
             code::DCL_SAMPLER => {
                 let compare = self.compared.contains(&id);
                 let ty = self.ty(TypeInner::Sampler {
@@ -575,7 +588,6 @@ impl<'a> Lowering<'a> {
             | code::CONSTANT
             | code::UNDEF
             | code::SET_FP_MODE => {}
-            24..=26 => {}
             _ => return Err(malformed(format!("declaration {}", op.code))),
         }
         Ok(())
@@ -910,9 +922,32 @@ impl<'a> Lowering<'a> {
 
     fn check_builtin(&self, b: u64, input: bool) -> Result<()> {
         let ok = match (self.stage, input, b) {
-            (_, false, builtin::POSITION) => {
-                matches!(self.stage, SourceStage::Vertex | SourceStage::Geometry)
-            }
+            (_, false, builtin::POSITION) => matches!(
+                self.stage,
+                SourceStage::Vertex
+                    | SourceStage::Geometry
+                    | SourceStage::Domain
+                    | SourceStage::Hull
+            ),
+            (
+                SourceStage::Hull,
+                true,
+                builtin::POSITION
+                | builtin::PRIMITIVE_ID
+                | builtin::TESS_CONTROL_POINT_ID
+                | builtin::TESS_CONTROL_POINT_COUNT_IN,
+            )
+            | (SourceStage::Hull, false, builtin::TESS_FACTOR_INNER | builtin::TESS_FACTOR_OUTER)
+            | (
+                SourceStage::Domain,
+                true,
+                builtin::POSITION
+                | builtin::PRIMITIVE_ID
+                | builtin::TESS_COORD
+                | builtin::TESS_CONTROL_POINT_COUNT_IN
+                | builtin::TESS_FACTOR_INNER
+                | builtin::TESS_FACTOR_OUTER,
+            ) => true,
             (
                 SourceStage::Geometry,
                 true,
@@ -921,7 +956,7 @@ impl<'a> Lowering<'a> {
                 | builtin::GS_INSTANCE_ID
                 | builtin::GS_VERTEX_COUNT_IN,
             ) => true,
-            (SourceStage::Vertex, false, builtin::CLIP_DISTANCE) => true,
+            (SourceStage::Vertex | SourceStage::Domain, false, builtin::CLIP_DISTANCE) => true,
             (SourceStage::Vertex, true, builtin::VERTEX_ID | builtin::INSTANCE_ID) => true,
             (_, true, builtin::SAMPLE_COUNT) => self.variant.samples != 0,
             (SourceStage::Pixel, true, builtin::POSITION | builtin::IS_FRONT_FACE)
@@ -1003,6 +1038,11 @@ impl<'a> Lowering<'a> {
         let mut order = Vec::new();
         let mut seen = HashSet::default();
         self.call_order(self.main, &mut order, &mut seen)?;
+        if let Some(t) = &self.tessellation
+            && t.constants != 0
+        {
+            self.call_order(t.constants, &mut order, &mut seen)?;
+        }
         for f in order {
             let handle = FunctionLowering::lower(self, f)?;
             self.functions.insert(f, handle);
@@ -1031,6 +1071,10 @@ impl<'a> Lowering<'a> {
     // The entry point wrapper.
 
     fn entry_point(&mut self) -> Result<()> {
+        let domain_inputs = match self.stage {
+            SourceStage::Domain => Some(self.domain_inputs()?),
+            _ => None,
+        };
         let mut f = Function {
             name: Some("main".into()),
             ..Default::default()
@@ -1038,13 +1082,32 @@ impl<'a> Lowering<'a> {
         let mut body = Block::new();
         let mut e = Emit::new(&f);
         let input = |c: u16| matches!(c, code::DCL_INPUT | code::DCL_INPUT_BUILT_IN);
+        // A domain program's inputs all come from its vertex number.
+        if let Some(function) = domain_inputs {
+            let u32_ty = self.scalar_ty(Scalar::U32);
+            f.arguments.push(FunctionArgument {
+                name: Some("vertex".into()),
+                ty: u32_ty,
+                binding: Some(naga::Binding::BuiltIn(naga::BuiltIn::VertexIndex)),
+            });
+            let a = e.add(&mut f, &mut body, Expression::FunctionArgument(0));
+            e.stmt(
+                &f,
+                &mut body,
+                Statement::Call {
+                    function,
+                    arguments: vec![a],
+                    result: None,
+                },
+            );
+        }
 
         // Inputs.
         let mut locations: Vec<(u32, Scalar, u64, usize)> = Vec::new();
         let io_count = self.io.len();
         for i in 0..io_count {
             let (id, ref io) = self.io[i];
-            if !input(self.ir.op(id)?.code) {
+            if !input(self.ir.op(id)?.code) || domain_inputs.is_some() {
                 continue;
             }
             let (var, location, builtin, modes) =
@@ -1242,7 +1305,9 @@ impl<'a> Lowering<'a> {
                 },
             );
             let modes = match self.stage {
-                SourceStage::Vertex => output_modes(&self.variant.output_interpolation, loc),
+                SourceStage::Vertex | SourceStage::Domain => {
+                    output_modes(&self.variant.output_interpolation, loc)
+                }
                 _ => 0,
             };
             let flat = s.kind != ScalarKind::Float || modes & interp::FLAT != 0;
@@ -1256,7 +1321,7 @@ impl<'a> Lowering<'a> {
                 self.reflect_value(id, false, Some(loc), comp, b, modes, None);
             }
         }
-        if self.stage == SourceStage::Vertex
+        if matches!(self.stage, SourceStage::Vertex | SourceStage::Domain)
             && !self.io.iter().any(|(id, io)| {
                 io.builtin == Some(builtin::POSITION)
                     && self
@@ -1304,7 +1369,7 @@ impl<'a> Lowering<'a> {
         f.body = body;
 
         let stage = match self.stage {
-            SourceStage::Vertex => naga::ShaderStage::Vertex,
+            SourceStage::Vertex | SourceStage::Domain => naga::ShaderStage::Vertex,
             SourceStage::Pixel => naga::ShaderStage::Fragment,
             _ => naga::ShaderStage::Compute,
         };
@@ -1324,6 +1389,7 @@ impl<'a> Lowering<'a> {
             SourceStage::Compute => StageExtras::Compute {
                 workgroup_size: self.workgroup,
             },
+            SourceStage::Domain => self.reflection.extras.clone(),
             _ => StageExtras::None,
         };
         self.module.entry_points.push(naga::EntryPoint {
@@ -1346,7 +1412,7 @@ impl<'a> Lowering<'a> {
 
     fn location_binding(&self, loc: u32, modes: u64, flat: bool, input: bool) -> naga::Binding {
         let between_stages = match self.stage {
-            SourceStage::Vertex => !input,
+            SourceStage::Vertex | SourceStage::Domain => !input,
             SourceStage::Pixel => input,
             _ => false,
         };

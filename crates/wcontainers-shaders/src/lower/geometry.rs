@@ -546,7 +546,7 @@ impl Lowering<'_> {
 }
 
 /// Components `first..first + n` of a four-component value.
-fn swizzle(b: &mut Builder, v: Expr, first: u32, n: u8) -> Result<Expr> {
+pub(super) fn swizzle(b: &mut Builder, v: Expr, first: u32, n: u8) -> Result<Expr> {
     if n == 1 {
         return Ok(b.field(v, first));
     }
