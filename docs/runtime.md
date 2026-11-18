@@ -1,6 +1,6 @@
 # wcontainers: the runtime (joining the kernel to the translator)
 
-Status: plan, 2026-11-17; J1 is being built.
+Status: plan, 2026-11-17; J1 built (2026-11-18); J2 next.
 
 Words used here:
 - **kernel**: crates/wcontainers-kernel, driven from outside through `wcontainers-abi`.
@@ -152,9 +152,12 @@ here.
 ## 5. The centre: one loop
 
 There is one loop in the runtime crate: `step`, and `drive` which repeats it. The shipped runtime and every
-kernel test run through it.
+kernel test that runs guest instructions run through it.
 The kernel test driver's loop (driver.rs:437-561) is replaced by it, and the driver's per-turn work moves into
-the test outside (section 15). There is no second loop.
+the test outside (section 15). There is no second loop. Two kinds of test call below it, by what they test:
+layer 1 (layer1.rs) is itself the CPU, whose sequences are the exits, so it calls `kernel.next()` and
+`kernel.exit` directly over its buffer CPU (and over `CpuSide`'s memories from J2); tests/standin.rs tests the
+stand-in's own exits with no kernel.
 
 **The two interfaces it is generic over**, both resolved at compile time:
 - `Execution`, the back end: the kernel's `Cpu` plus `run(thread, resume, turn, answer) -> Result<(),
@@ -203,8 +206,8 @@ kernel never waits on its own stack and never sees WebAssembly; the translator n
 **Carrying on in place in the WebAssembly back end.** In the system call hook, "carry on with `Return(v)`"
 returns `v` from the hook: no stack switch. In the stop hook, "carry on with `Continue`" returns 0. "Leave"
 raises the thread's flag and returns, so the thread leaves `run` at the next stop check with its registers
-saved (contract.rs:94-100). A memory fault or a trap always leaves (contract.rs:101-114); its answer is
-kept for the loop. The load code hook is the back end's own (section 7).
+saved (contract.rs:94-100), counted by why (section 10). A memory fault or a trap always leaves
+(contract.rs:101-114); its answer is kept for the loop. The load code hook is the back end's own (section 7).
 
 **A thread that has left and runs again** gets its resume applied before `run`: `Return(v)` writes `v` to x0 in
 the block, as the stand-in does (standin.rs:446-448); `Continue` changes nothing; `FromRegisters` writes the
@@ -280,7 +283,9 @@ entry first runs, after musl has relocated them). The image is read one way for 
 when more of its `RELR` words, less the load offset, fall inside the image's own span than do as they are,
 otherwise as they are (an image at load offset 0 reads the same both ways). So every word gives one start
 or none, and a library placed at different addresses gets the same starts unless its words are split
-nearly evenly, which no image of the list is (to be counted at J1). A word the program has changed by then
+nearly evenly. J1's check counted busybox and musl: each, laid out at three load addresses, relocated and
+not, gave the same starts every time (busybox 558, musl 1537); git and rg are counted when they first run in
+a container. A word the program has changed by then
 gives a different start or none. That is never wrong: a start only says where translation begins, an
 extra start costs translation time, and a missing one a piece made at run time. The starts are part of the cache key, so the same bytes with the same starts give
 the same entry. Two things differ from the translator's runner: the static symbol table (`.symtab`) is not in
@@ -539,9 +544,10 @@ stopped whenever the kernel changes a table, as contract.rs:17-27 requires.
     in the emitted code. `progress` handed with each exit is the count since the last one. The test outside
     always uses counted turns, with one unit as one nanosecond on its repeatable clock, as the stand-in's
     instruction does today, so a seed repeats exactly, and the clock moves with the work done whether or not
-    the kernel set a slice. A counter read (the clock hook) reports the progress since the last exit before
-    it reads the clock (section 4), so a guest that reads the counter in a loop sees time move within one
-    turn. Counting at every check costs a hook call per check; it is for tests, never for speed.
+    the kernel set a slice. A counter read (the clock hook) reports the progress since the last exit or
+    read before it reads the clock (section 4), so a guest that reads the counter in a loop sees time move
+    within one turn; the turn's own count is not reset by it, so the turn still ends at its limit (tested by
+    crates/wcontainers-wasmtime/tests/turns.rs). Counting at every check costs a hook call per check; it is for tests, never for speed.
   - *Free*: nothing is counted; the turn ends when the outside raises the running thread's flag. The back
     end gives the outside a `Send` handle that raises whichever thread is running (an atomic store to the
     state memory, as runner.rs:542-551). The shipped outside arms one timer thread with it at the slice's
@@ -585,9 +591,12 @@ The kernel's own share of a call, measured with the layer 1 CPU side (no instruc
 not measured together); J2 measures it. unkernel's `getppid` was measured at 56 ns. The kernel's share is the
 kernel track's to bring down; the runtime adds about 10 ns.
 
-Leaving is the slow twin of answering in the hook, so it is counted by why, with the call number: "left
-run: the call waits", "left run: another thread runs", "left run: new registers"; each warns as every
-counter does.
+Leaving is the slow twin of answering in the hook, so it is counted by why, with the call number as the
+detail (`u64::MAX` after a stop): "left run: the call waits" (nothing can run), "left run: another thread
+runs", "left run: new registers" (a signal delivered, `rt_sigreturn`), "left run: the container finished"
+and "left run: the outside asked" (`Outside::arrived`); each warns as every counter does. The loop says why
+(`Carry::Leave(Leaving)`). A fault or a trap has already left when it is answered, so leaving after it costs
+nothing more and is not counted again.
 
 Leaving `run` loses the WebAssembly stack: every function in progress carries on from the bottom loop
 (translator plan 7, counted "continued after stack loss"), and its resume address may need a piece made at
@@ -862,15 +871,16 @@ Each bar is checkable by running the named command on this Mac with Docker.
     - host-supplied guest memories, and per-process stores and state memories laid out from `G::ALIGN`, with
       the ceiling of section 8, which `address_space` answers;
     - `memory_new`, `memory_drop`, `read`, `write` and `zero`;
-    - `set_permissions` writing each table byte through the lock layer's one function (no lock reason exists
-      yet, so the byte is the kernel's permissions as they are);
+    - `set_permissions` writing each table byte through the lock layer's one function, with the one lock
+      reason J1 needs, "shared pages" (section 8);
     - `code_changed`, `thread_new`, `thread_drop`, `registers` and `set_registers`, with the rules of
       section 6;
     - translation at first use with the starts of section 7 and the in-memory cache, in the back end's own
       rayon pool (section 11);
-    - `run` with carrying on in place, leaving, and counted turns (stop checks standing in for progress,
-      with its warning, section 9);
-    - the clock hook through `ran`. It answers `Host::monotonic_nanoseconds` until the kernel's clock method
+    - `run` with carrying on in place, leaving (counted by why, section 10), and counted turns (stop checks
+      standing in for progress, with its warning, section 9);
+    - the clock hook through `ran`, telling the progress since the last exit or clock read while the turn's
+      count goes on to its limit. It answers `Host::monotonic_nanoseconds` until the kernel's clock method
       lands (section 4); no J1 test restores;
     - traps and faults as exits, the private words zeroed at every `FromRegisters` (section 9), and the
       engine with Unix signal traps;
@@ -909,8 +919,8 @@ Each bar is checkable by running the named command on this Mac with Docker.
     reference, with the root in memory and on the backend. The checks of step 1 also hold.
   - Recorded: the CPU side's warnings per command; the time to translate and compile busybox and musl in the
     runtime; the time of a second container in the same process (cache hit); how many pieces each command
-    needed translated at run time; how many starts each range got from each source; what counting at every
-    stop check costs hello and busybox against full speed.
+    needed translated at run time; how many starts each range got from each source. What counting at every
+    stop check costs against full speed moves to J3, which brings the free turn it is measured against.
 - **J2, processes, and the rest of the boundary.** First, each as its own commit:
   - the stand-in counts the guest's own transfers, and the loop counts the kernel's changes of pc
     (section 9), together, since both change the stand-in's unit. Checked: the crate's verdicts without
@@ -934,6 +944,7 @@ Each bar is checkable by running the named command on this Mac with Docker.
   its timer thread, output streams, and standard input as settled with the kernel track before J3, section
   14). Last, once the library bar passes, the command line program: thin, calling only the library, with
   nothing the library lacks (its name is the owner's; suggested `wcontainers`).
+  Measured: what counting at every stop check costs hello and busybox against free turns (moved from J1).
   Bar: a test runs `sh -c` with a pipeline in `alpine:3.22` (exported with Docker) through the public surface
   and matches the reference; a configuration with a refused field fails naming that field; a second run of
   the same container in a new process starts from the disk cache (measured).
@@ -1085,7 +1096,7 @@ under pyro-parked/wcontainers-scratch/runtime (outside the repository); the log 
 - What a stack loss costs real programs after a call that waits (J6).
 - A JIT's store growth (J6).
 - What counting every stop check costs the tests: needs a turn that counts nothing, which comes with J3's
-  free turns.
+  free turns (J3).
 - Creating a per-process 4 GiB state memory on its own (J1 measured only whole runs that include it: 4.6 ms
   the fastest).
 - The final form's extra cost per system call (J9).
