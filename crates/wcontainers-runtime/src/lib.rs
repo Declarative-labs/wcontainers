@@ -19,7 +19,22 @@ pub enum Carry {
     /// Carry on in place with this resume, for this next turn.
     On { resume: Resume, turn: Turn },
     /// Leave `run`: the loop has something else to do first.
-    Leave,
+    Leave(Leaving),
+}
+
+/// Why a thread leaves `run`, for a back end that counts leaving as a slow path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Leaving {
+    /// No thread can run until an event arrives or time passes.
+    Waits,
+    /// Another thread runs next.
+    AnotherThread,
+    /// The thread goes on from new registers.
+    NewRegisters,
+    /// The container's first process ended.
+    Finished,
+    /// The outside needs no thread in `run` before the kernel is asked what is next.
+    OutsideAsked,
 }
 
 /// What a back end calls while its thread runs. The loop implements it.
@@ -162,22 +177,27 @@ impl<O: Outside> Answer for Answering<'_, O> {
         self.outside.ran(progress);
         self.kernel.exit(cpu, &mut *self.outside, exit);
         if self.outside.arrived(self.kernel, cpu) {
-            return Carry::Leave;
+            return Carry::Leave(Leaving::OutsideAsked);
         }
-        match self.kernel.next() {
+        let next = self.kernel.next();
+        let why = match next {
             Next::Run {
                 thread,
                 resume: resume @ (Resume::Return(_) | Resume::Continue),
                 slice_nanoseconds,
-            } if thread == self.thread => Carry::On {
-                resume,
-                turn: self.outside.turn(slice_nanoseconds),
-            },
-            next => {
-                *self.kept = Some(next);
-                Carry::Leave
+            } if thread == self.thread => {
+                return Carry::On {
+                    resume,
+                    turn: self.outside.turn(slice_nanoseconds),
+                };
             }
-        }
+            Next::Run { thread, .. } if thread == self.thread => Leaving::NewRegisters,
+            Next::Run { .. } => Leaving::AnotherThread,
+            Next::Idle { .. } => Leaving::Waits,
+            Next::Finished { .. } => Leaving::Finished,
+        };
+        *self.kept = Some(next);
+        Carry::Leave(why)
     }
 
     fn clock(&mut self, progress: u64) -> u64 {

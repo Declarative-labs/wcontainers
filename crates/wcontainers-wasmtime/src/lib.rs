@@ -7,6 +7,7 @@ pub mod starts;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::Infallible;
+use std::mem::MaybeUninit;
 use std::ops::Range;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -16,14 +17,14 @@ use std::time::Instant;
 use wasmtime::{
     AsContextMut, Caller, Config, Engine, Extern, Func, FuncType, Global, GlobalType, Instance,
     Memory, MemoryType, Module, Mutability, Ref, SharedMemory, Store, StoreLimits,
-    StoreLimitsBuilder, Table, Trap, TypedFunc, Val,
+    StoreLimitsBuilder, Table, Trap, TypedFunc, Val, ValRaw,
 };
 use wcontainers_abi::{
     Access, AddressSpace, CounterReading, Cpu, CpuError, Exit, MemoryId, PAGE_SIZE, Permissions,
     RegisterBlock, Resume, SharedId, Syscall, ThreadId, Warning,
 };
 use wcontainers_guest_cpu::{Guest, HookBody, MemoryFault};
-use wcontainers_runtime::{Answer, Carry, Execution, Turn};
+use wcontainers_runtime::{Answer, Carry, Execution, Leaving, Turn};
 use wcontainers_translator::contract::{self, Reason, TrapKind};
 use wcontainers_translator::translate;
 use zerocopy::{FromBytes, IntoBytes};
@@ -44,6 +45,15 @@ pub mod reason {
     pub const CODE_OUTSIDE_ANNOUNCED_RANGE: &str = "code outside an announced range";
     /// The thread left `run` because code it may be running was dropped.
     pub const LEFT_CODE_CHANGED_UNDER_IT: &str = "left run: code changed under it";
+    /// Leaving `run` from a hook, the slow twin of answering in it, by why. The detail is the call
+    /// number, or [`NOT_A_CALL`] after a stop.
+    pub const LEFT_CALL_WAITS: &str = "left run: the call waits";
+    pub const LEFT_ANOTHER_THREAD: &str = "left run: another thread runs";
+    pub const LEFT_NEW_REGISTERS: &str = "left run: new registers";
+    pub const LEFT_FINISHED: &str = "left run: the container finished";
+    pub const LEFT_OUTSIDE_ASKED: &str = "left run: the outside asked";
+    /// The detail of a leave after an exit that is not a system call.
+    pub const NOT_A_CALL: u64 = u64::MAX;
 }
 
 /// What every back end of one engine shares: the engine, the thread module, the pool translation and
@@ -306,7 +316,10 @@ struct Data<G: Guest> {
     thread: ThreadId,
     block_at: u32,
     state_base: *mut u8,
+    /// Progress in this turn, which its limit is compared with.
     progress: u64,
+    /// The part of `progress` the outside was already told by a clock read.
+    reported: u64,
     limit: Option<u64>,
     leaving: bool,
     /// Leave and run again at once for this turn, as if carrying on.
@@ -316,6 +329,22 @@ struct Data<G: Guest> {
     /// A write to a page under a write lock, to settle before the thread carries on.
     lock_fault: Option<u64>,
     limits: StoreLimits,
+}
+
+impl<G: Guest> Data<G> {
+    /// Progress the outside has not been told of, for a clock read; the turn's count goes on.
+    fn report(&mut self) -> u64 {
+        let progress = self.progress - self.reported;
+        self.reported = self.progress;
+        progress
+    }
+
+    /// Progress the outside has not been told of, at an exit, which ends the turn's count.
+    fn end_turn(&mut self) -> u64 {
+        let progress = self.progress - self.reported;
+        (self.progress, self.reported) = (0, 0);
+        progress
+    }
 }
 
 impl<G: Guest> CpuSide<G>
@@ -937,7 +966,7 @@ where
     let side = side(caller);
     let memory = caller.data().memory;
     side.flush(memory);
-    let progress = std::mem::take(&mut caller.data_mut().progress);
+    let progress = caller.data_mut().end_turn();
     let answer = answer(caller);
     side.send_warnings(caller.data().answer.expect("a run"));
     let carry = answer.exit(side, exit, progress);
@@ -966,6 +995,22 @@ fn leave<G: Guest>(data: &mut Data<G>) {
     flag::<G>(data.state_base, data.block_at).store(1, Ordering::SeqCst);
 }
 
+/// Leaves `run` from a hook because the answer said so: counted by why, with the call number.
+fn leave_for<G>(caller: &mut Caller<'_, Data<G>>, why: Leaving, call: u64)
+where
+    G: Guest<Block = RegisterBlock>,
+{
+    leave(caller.data_mut());
+    let name = match why {
+        Leaving::Waits => reason::LEFT_CALL_WAITS,
+        Leaving::AnotherThread => reason::LEFT_ANOTHER_THREAD,
+        Leaving::NewRegisters => reason::LEFT_NEW_REGISTERS,
+        Leaving::Finished => reason::LEFT_FINISHED,
+        Leaving::OutsideAsked => reason::LEFT_OUTSIDE_ASKED,
+    };
+    side(caller).slow_path(name, call, 0);
+}
+
 fn syscall<G>(caller: &mut Caller<'_, Data<G>>, number: i64, arguments: [i64; 6]) -> i64
 where
     G: Guest<Block = RegisterBlock>,
@@ -983,8 +1028,8 @@ where
             value as i64
         }
         Carry::On { resume, .. } => panic!("{resume:?} after a system call"),
-        Carry::Leave => {
-            leave(caller.data_mut());
+        Carry::Leave(why) => {
+            leave_for(caller, why, call.number);
             // x0 stays as it was at the call, as it is for a thread that leaves.
             arguments[0]
         }
@@ -1014,8 +1059,8 @@ where
                 }
             }
             Carry::On { resume, .. } => panic!("{resume:?} after a stop"),
-            Carry::Leave => {
-                caller.data_mut().leaving = true;
+            Carry::Leave(why) => {
+                leave_for(caller, why, reason::NOT_A_CALL);
                 return 1;
             }
         }
@@ -1302,7 +1347,7 @@ where
     for (index, hook) in G::HOOKS.iter().enumerate() {
         let func = match hook.body {
             HookBody::Clock => Func::wrap(&mut *store, |mut caller: Caller<'_, Data<G>>| -> i64 {
-                let progress = std::mem::take(&mut caller.data_mut().progress);
+                let progress = caller.data_mut().report();
                 answer(&caller).clock(progress) as i64
             }),
             HookBody::CodeChanged => Func::wrap(
@@ -1312,15 +1357,30 @@ where
                 },
             ),
             HookBody::Cpu => {
+                const {
+                    assert!(G::HOOKS.len() <= CPU_HOOKS);
+                    let mut i = 0;
+                    while i < G::HOOKS.len() {
+                        let hook = &G::HOOKS[i];
+                        assert!(hook.params.len() <= CPU_HOOK_ARGUMENTS && hook.results.len() <= 2);
+                        i += 1;
+                    }
+                };
                 let ty = FuncType::new(
                     store.engine(),
                     hook.params.iter().map(|&t| val_type(t)),
                     hook.results.iter().map(|&t| val_type(t)),
                 );
-                Func::new(&mut *store, ty, move |caller, params, results| {
-                    cpu_hook::<G>(&caller, index, params, results);
-                    Ok(())
-                })
+                [
+                    cpu_hook_func::<G, 0>,
+                    cpu_hook_func::<G, 1>,
+                    cpu_hook_func::<G, 2>,
+                    cpu_hook_func::<G, 3>,
+                    cpu_hook_func::<G, 4>,
+                    cpu_hook_func::<G, 5>,
+                    cpu_hook_func::<G, 6>,
+                    cpu_hook_func::<G, 7>,
+                ][index](store, ty)
             }
         };
         hooks.push((hook.name, func));
@@ -1328,39 +1388,55 @@ where
     hooks
 }
 
-/// A guest's own hook: its work by `Guest::run_hook`, in place on the bytes of the thread's state it
-/// names, counted as the slow path it says it was.
-fn cpu_hook<G>(caller: &Caller<'_, Data<G>>, index: usize, params: &[Val], results: &mut [Val])
+/// The most hooks of its own a guest has, and the most arguments one takes.
+const CPU_HOOKS: usize = 8;
+const CPU_HOOK_ARGUMENTS: usize = 8;
+
+/// The guest's own hook `I` as a function of the store, made for that index at compile time so its
+/// types and state range are constants in its body.
+fn cpu_hook_func<G, const I: usize>(store: &mut Store<Data<G>>, ty: FuncType) -> Func
 where
     G: Guest<Block = RegisterBlock>,
 {
-    let hook = &G::HOOKS[index];
-    let arguments: Vec<i64> = params
-        .iter()
-        .map(|value| match value {
-            Val::I32(v) => i64::from(*v),
-            Val::I64(v) => *v,
-            other => unreachable!("a hook argument {other:?}"),
+    // SAFETY: `cpu_hook` reads the arguments and writes the results of exactly this type.
+    unsafe {
+        Func::new_unchecked(store, ty, |caller, values| {
+            cpu_hook::<G, I>(&caller, values);
+            Ok(())
         })
-        .collect();
+    }
+}
+
+/// A guest's own hook: its work by `Guest::run_hook`, in place on the bytes of the thread's state it
+/// names, counted as the slow path it says it was. `values` holds the arguments and takes the results.
+fn cpu_hook<G, const I: usize>(caller: &Caller<'_, Data<G>>, values: &mut [MaybeUninit<ValRaw>])
+where
+    G: Guest<Block = RegisterBlock>,
+{
+    let hook = &G::HOOKS[I];
+    let mut arguments = [0i64; CPU_HOOK_ARGUMENTS];
+    for (i, ty) in hook.params.iter().enumerate() {
+        // SAFETY: wasmtime has checked the arguments against the hook's type.
+        let value = unsafe { values[i].assume_init() };
+        arguments[i] = match ty {
+            wasm_encoder::ValType::I32 => i64::from(value.get_i32()),
+            _ => value.get_i64(),
+        };
+    }
     let side = side(caller);
     let data = caller.data();
     let range = hook.state.range();
     let bytes = side.block_bytes(data.memory, data.block_at + range.start as u32, range.len());
-    let done = G::run_hook(index, &arguments, bytes);
+    let done = G::run_hook(I, &arguments[..hook.params.len()], bytes);
     for (i, ty) in hook.results.iter().enumerate() {
-        results[i] = match ty {
-            wasm_encoder::ValType::I32 => Val::I32(done.results[i] as i32),
-            _ => Val::I64(done.results[i]),
-        };
+        values[i] = MaybeUninit::new(match ty {
+            wasm_encoder::ValType::I32 => ValRaw::i32(done.results[i] as i32),
+            _ => ValRaw::i64(done.results[i]),
+        });
     }
     if let Some(reason) = done.reason {
         let name = Reason::name_of::<G>(reason).expect("a known reason");
-        side.slow_path(
-            name,
-            arguments.first().copied().unwrap_or(0) as u32 as u64,
-            0,
-        );
+        side.slow_path(name, arguments[0] as u32 as u64, 0);
     }
 }
 
@@ -1375,7 +1451,7 @@ where
         &mut self,
         thread: ThreadId,
         mut resume: Resume,
-        mut turn: Turn,
+        turn: Turn,
         answer: &mut dyn Answer,
     ) -> Result<(), Infallible> {
         // SAFETY: only the lifetime is erased; the pointer is used only until this call returns and is
@@ -1399,6 +1475,8 @@ where
             code_dropped: false,
         });
         self.slow_path(reason::PROGRESS_BY_STOP_CHECKS, 0, 0);
+        // A new turn to count from, or none when the thread goes on with the turn it had.
+        let mut fresh = Some(turn);
         loop {
             self.send_warnings(answer);
             self.start_from(thread, resume);
@@ -1412,8 +1490,9 @@ where
             data.thread = thread;
             data.block_at = block_at;
             data.state_base = state_base;
-            data.progress = 0;
-            data.limit = turn.limit;
+            if let Some(turn) = fresh.take() {
+                (data.progress, data.reported, data.limit) = (0, 0, turn.limit);
+            }
             data.leaving = false;
             let flag = flag::<G>(state_base, block_at);
             flag.store(1, Ordering::SeqCst);
@@ -1423,7 +1502,6 @@ where
             data.answer = None;
             let mut pending = data.pending.take();
             let (lock_fault, rerun) = (data.lock_fault.take(), data.rerun.take());
-            let progress = std::mem::take(&mut data.progress);
             if let Err(error) = result {
                 match error.downcast_ref::<Trap>() {
                     Some(Trap::MemoryOutOfBounds) => {
@@ -1450,12 +1528,13 @@ where
                 continue;
             }
             if let Some(again) = rerun {
-                (resume, turn) = (Resume::Continue, again);
+                (resume, fresh) = (Resume::Continue, Some(again));
                 continue;
             }
             let Some(exit) = pending else {
                 break;
             };
+            let progress = store.data_mut().end_turn();
             self.flush(memory);
             self.send_warnings(answer);
             // SAFETY: the answer this call was given.
@@ -1463,8 +1542,9 @@ where
                 Carry::On {
                     resume: then,
                     turn: next,
-                } => (resume, turn) = (then, next),
-                Carry::Leave => break,
+                } => (resume, fresh) = (then, Some(next)),
+                // The thread is out of the guest already, so leaving costs nothing more here.
+                Carry::Leave(_) => break,
             }
         }
         self.send_warnings(answer);
@@ -1515,6 +1595,7 @@ where
                 block_at: 0,
                 state_base: std::ptr::null_mut(),
                 progress: 0,
+                reported: 0,
                 limit: None,
                 leaving: false,
                 rerun: None,

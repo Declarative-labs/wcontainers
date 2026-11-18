@@ -540,7 +540,7 @@ impl wcontainers_runtime::Execution for StandIn {
                     resume: next,
                     turn: then,
                 } => (resume, turn) = (next, then),
-                wcontainers_runtime::Carry::Leave => return Ok(()),
+                wcontainers_runtime::Carry::Leave(_) => return Ok(()),
             }
         }
     }
