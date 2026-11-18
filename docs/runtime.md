@@ -134,7 +134,7 @@ it; the runtime builds it.
 | Shared pages (kernel plan 4, line 115) | `shared_new`, `shared_map`, `shared_unmap`, `shared_read`, `shared_write`, `shared_drop` abi/cpu.rs:66-89; every file mapping is shown through a block, the ELF segments loaded at exec included (loader.rs:614, :814-834; shared.rs:1-40) | none | Missing: the kernel plan's copying method with the "shared pages" write lock, since this Mac's pages are 16 KiB and the guest's 4 KiB (section 8) |
 | Stop flag (kernel plan 4, line 118) | abi/registers.rs:54-57 | the stop check and `HOOK_STOP` contract.rs:98-100; `raise_stop_flag` runner.rs:533 and :825 | Fits as is |
 | Machine description (kernel plan 10) | `HWCAP`, `HWCAP2` abi/machine.rs:20-24, reported at loader.rs:619 and :941 | `OFFERED_FEATURES` arm64/forms.rs:6-8, which match them; `CTR_EL0` arm64/decode_forms.rs:200-203 | Fits as is for ARM64 (the guest's offer is `()`); X10 brings x86's |
-| Clocks | `Host::monotonic_nanoseconds`, `realtime_nanoseconds` abi/host.rs:95-97 | ARM64's `clock` hook (counter reads) arm64/guest.rs:434-441, answered from the runner's own start, runner.rs:1025-1030 | Fits with a named change: the clock hook first tells the outside the progress since the last exit (`ran`), then answers from the kernel's monotonic clock (`Context::monotonic`, lib.rs:74, crate-private: `Host::monotonic_nanoseconds` plus an offset that is 0 until a `restore`, lib.rs:230 and :410), which the kernel is asked to make public as one method; until then the hook answers `Host::monotonic_nanoseconds` itself, equal to the kernel's clock in every run with no restore, and counted and warned as "counter read without the kernel's offset" after a restore (section 16, J1); so a counter read is a host answer like any other, moves with the work done in a counted turn, and agrees with `clock_gettime`, also across a restore |
+| Clocks | `Host::monotonic_nanoseconds`, `realtime_nanoseconds` abi/host.rs:95-97 | ARM64's `clock` hook (counter reads) arm64/guest.rs:434-441, answered from the runner's own start, runner.rs:1025-1030 | Fits with a named change: the clock hook first tells the outside the progress since the last exit (`ran`), then answers from the kernel's monotonic clock (`Context::monotonic`, lib.rs:74, crate-private: `Host::monotonic_nanoseconds` plus an offset that is 0 until a `restore`, lib.rs:230 and :410), which the kernel is asked to make public as one method; until then the hook answers `Host::monotonic_nanoseconds` itself, equal to the kernel's clock in every run with no restore; on a back end brought back from a save each counter read is counted and warned as "counter read without the kernel's offset", and when the new host's clock reads earlier than the saved kernel's the guest sees the counter go back (a known failure, tests/counterclock.rs, ignored with the feature, until the kernel's method lands); with the method a counter read is a host answer like any other, moves with the work done in a counted turn, and agrees with `clock_gettime`, also across a restore |
 | Randomness | `Host::random` abi/host.rs:99 | none (ARM64's `RNDR` is not offered and is an illegal instruction, arm64/decode_forms.rs:253) | Missing: the outside's, from the operating system |
 | Warnings and counters | `Host::warn` abi/host.rs:101; `Kernel::counters` kernel lib.rs:473 | `HOOK_WARN` contract.rs:110-111; `slow_path` runner.rs:796-815; `Reason` gcpu | Fits with a named change: the back end counts its own slow paths (the translator's reasons and the runtime's) and warns through the outside, kept apart from the kernel's (section 5) |
 | Output | `Host::output` abi/host.rs:109 | none: the runner's stand-in answers `write` and `writev` itself, runner.rs:1396-1445 | Missing: the outside passes the kernel's output to the user |
@@ -331,10 +331,16 @@ already does, decided by that measurement.
   code depends on: the translator, the guest interface (`wcontainers-guest-cpu`: `Personality`, `Guest`),
   every guest crate of the workspace (each crate that depends on the guest interface and not on the
   translator, found from the manifests by the build script, so x86-64's joins when it lands), and
-  `wcontainers-abi` (the register block, `STOP_FLAG_OFFSET`, `THREAD_BLOCK_SIZE`), and
-  their locked versions of wasm-encoder, so any change to them changes the key without manual version
-  numbers (built with the disk level, J2: the in-memory level lives inside one build),
-- wasmtime's own compatibility check, which `Module::deserialize` makes.
+  `wcontainers-abi` (the register block, `STOP_FLAG_OFFSET`, `THREAD_BLOCK_SIZE`), and the locked entry
+  (name, version, source, checksum) of every other crate they are built from, followed through the lock
+  file from the workspace crates' normal and build dependencies (wasm-encoder, the guest's decoder and float
+  crates, the translator's petgraph and what those depend on), so any change to them changes the key without
+  manual version numbers (built with the disk level, J2: the in-memory level lives inside one build). The
+  build script reruns when the lock file, a crate's manifest or a hashed crate's sources change, and for
+  nothing else under the crates directory,
+- wasmtime's own compatibility check, which `Module::deserialize` makes. A file that exists but cannot be
+  read whole or is refused is a counted, warned slow path ("translation in the cache's directory refused"):
+  the translation is made again and written in its place.
 Output never holds an absolute address (translator plan 4), so one entry serves every process that maps
 the same bytes at any address. Two levels: compiled modules kept in memory for the runtime's life, shared
 by every process and container; and a directory on disk, if the user gives one, one file per key, which
@@ -624,7 +630,9 @@ block (kernel plan 12); the private words are not saved (section 9). Translated 
 Bringing back makes a fresh engine, stores and instances; every thread starts from its registers
 (`Resume::FromRegisters`, which the kernel's `restore` gives every thread, kernel lib.rs:408-450); code comes
 back from the cache's files or is translated again at first use. The kernel's clock carries on through its
-own offset, and the clock hook answers from that same clock (section 4).
+own offset. The clock hook is to answer from that same clock once the kernel makes it public; until then it
+answers the host's clock, which after a restore lacks the offset, so each counter read on a back end brought
+back is counted and warned ("counter read without the kernel's offset") and the counter can go back (section 4).
 
 In the first form the kernel is Rust data spread over the runtime's own heap, not one memory that can be
 copied to a file. So the first form supports exactly what the kernel's tests do today: a save made by
@@ -950,7 +958,9 @@ Each bar is checkable by running the named command on this Mac with Docker.
     test compares progress between the back ends until it is);
   - the cache's disk level for the tests' directory. The bars' none and bounded runs span many test
     binaries, and busybox at none compiles in 8.45 s (section 18), so it should compile once per build;
-  - the kernel's clock method in the clock hook, if the kernel track has landed it.
+  - the kernel's clock method in the clock hook, if the kernel track has landed it (it has not: a counter read
+    on a back end brought back is counted and warned, and tests/counterclock.rs's test across saves is the
+    back end's known failure until it lands).
   Then fork with the exact copy of section 8 (macOS `mach_vm_copy`, Linux `pagemap`), signals and frames,
   job control and terminals. Linux is checked for host-supplied memory, shared blocks and the fork copy,
   including a page the system has swapped out (`MADV_PAGEOUT`) being seen by the child. A test translates
