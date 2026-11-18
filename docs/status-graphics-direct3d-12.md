@@ -502,8 +502,9 @@ in its Direct3D 11 part before reaching Direct3D 12 (our dxgi.dll serves only Di
 tools/graphics-rig/wine-tests run --dll "wcontainers_d3d12.dll=$E\wcontainers_d3d12.dll" --dll
 "d3d12.dll=$E\d3d12.dll" vkd3d-shader_runner`.
 
-Run 23 (run23/runner1.log, built at e148d28, the slots commit, 234 s): 204 of 302, the same
-98 failing files. sm6-uav-rwtexture now binds its one view (u1) at slot 0, the converter's new
+Run 23 (run23/runner1.log, built at e148d28, the slots commit, 234 s; runner2.log at
+e2d1b4e, after the occlusion commits, 244 s): 204 of 302 both times, the same 98 failing
+files. sm6-uav-rwtexture now binds its one view (u1) at slot 0, the converter's new
 numbering, and still fails as in run 22: the draw's bind group is made for a program whose
 storage texture is `R32Float` while the bound view is `R32G32B32A32_FLOAT` (WebGPU validation
 error; nothing written). With a temporary trace (not committed, run23/d1-sm6.log): the front
