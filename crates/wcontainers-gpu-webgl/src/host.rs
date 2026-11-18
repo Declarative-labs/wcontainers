@@ -18,13 +18,40 @@ pub fn kept(format: Format) -> bool {
         || crate::format::signed_normalised(format)
 }
 
-/// Whether `bytes`, texels of the signed normalised `format`, may hold a component's smallest value
-/// (-128, or -32768 for 16-bit components), which a draw reads as the value above it.
-pub fn holds_minimum(format: Format, bytes: &[u8]) -> bool {
+/// Whether `texels`, whole texels of the signed normalised `format`, hold a component's smallest
+/// value (-128, or -32768 for 16-bit components), which a draw reads as the value above it.
+fn holds_minimum(format: Format, texels: &[u8]) -> bool {
     match crate::format::gl_format(format).map(|g| g.ty) {
-        Some(glow::SHORT) => bytes.windows(2).any(|w| w == [0, 0x80]),
-        _ => bytes.contains(&0x80),
+        Some(glow::SHORT) => texels.as_chunks::<2>().0.contains(&[0, 0x80]),
+        _ => texels.contains(&0x80),
     }
+}
+
+/// Whether the texels a host write takes from `data` (the region of [`HostCopy::write`], padding
+/// between rows and slices left out) hold a signed normalised minimum.
+pub fn write_holds_minimum(
+    desc: &TextureDesc,
+    mip: u32,
+    origin: [u32; 3],
+    extent: [u32; 3],
+    data: &[u8],
+    row_pitch: usize,
+    rows_per_layer: usize,
+) -> bool {
+    let b = HostCopy::blocks(desc, mip, origin, extent);
+    (0..b.slices).any(|s| {
+        (0..b.rows).any(|r| {
+            let from = s * row_pitch * rows_per_layer + r * row_pitch;
+            holds_minimum(desc.format, &data[from..from + b.row])
+        })
+    })
+}
+
+/// Whether a host write of `extent` at `origin` of level `mip` covers every texel of the texture.
+pub fn covers_texture(desc: &TextureDesc, mip: u32, origin: [u32; 3], extent: [u32; 3]) -> bool {
+    let (row, rows, slices) = shape(desc, mip);
+    let b = HostCopy::blocks(desc, mip, origin, extent);
+    desc.mip_levels == 1 && origin == [0; 3] && (b.row, b.rows, b.slices) == (row, rows, slices)
 }
 
 /// Every level of a texture, each its slices (layers, or depth slices in 3D) of tightly packed rows
@@ -117,6 +144,11 @@ impl HostCopy {
                 host[to..to + b.row].copy_from_slice(&data[from..from + b.row]);
             }
         }
+    }
+
+    /// Whether any texel of the signed normalised `format` holds its smallest value.
+    pub fn holds_minimum(&self, format: Format) -> bool {
+        holds_minimum(format, &self.bytes.borrow())
     }
 
     /// Takes every byte of `other`, a host copy of the same shape.
