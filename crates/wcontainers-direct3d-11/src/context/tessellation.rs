@@ -63,7 +63,7 @@ impl<B: Backend> Device<B> {
         let hull = crate::shader::convert_variant(
             &hs.bytecode,
             SourceStage::Hull,
-            &crate::shader::base_key(SourceStage::Hull, &hs.typed),
+            &crate::shader::base_key(SourceStage::Hull, &hs.typed, hs.layered),
         )?;
         // The domain stage writes its outputs as the pixel shader interpolates them.
         let mut interpolation: Vec<(u32, Interpolation)> = self
@@ -78,7 +78,7 @@ impl<B: Backend> Device<B> {
         interpolation.dedup_by_key(|i| i.0);
         let key = VariantKey {
             output_interpolation: interpolation,
-            ..crate::shader::base_key(SourceStage::Domain, &ds.typed)
+            ..crate::shader::base_key(SourceStage::Domain, &ds.typed, ds.layered)
         };
         let domain = crate::shader::convert_variant(&ds.bytecode, SourceStage::Domain, &key)?;
         let stages = Stages::tessellated(&mut self.backend, &vertex, &hull, &domain)
@@ -155,6 +155,8 @@ impl<B: Backend> Device<B> {
         if hs.helpers.size > 0 || ds.helpers.size > 0 {
             return not_implemented("a hull or domain shader reading helper constants");
         }
+        self.program_paths(&hs);
+        self.program_paths(&ds);
         let (start, count, base, indexed) = match range {
             Range::Vertices { count, start } => (start, count, 0, false),
             Range::Indexed { count, start, base } => (start, count, base, true),

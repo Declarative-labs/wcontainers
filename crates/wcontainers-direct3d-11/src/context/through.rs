@@ -57,11 +57,10 @@ impl<B: Backend> Device<B> {
                 "a storage view of a block-compressed or multisampled texture",
             ));
         }
-        let d = &v.texture.desc;
         let mip = v.desc.first_mip;
-        let level = |n: u32| (n >> mip).max(1);
         let three_d = v.desc.dimension == ViewDim::Texture3D;
-        let (width, height) = (level(d.width), level(d.height));
+        let e = v.texture.mip_extent(mip);
+        let (width, height) = (e.width, e.height);
         let layers = v.desc.layer_count.max(1);
         let row_pitch = (width * bytes).next_multiple_of(256);
         let size = u64::from(row_pitch) * u64::from(height) * u64::from(layers);

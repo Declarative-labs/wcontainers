@@ -333,6 +333,87 @@ fn nv12_is_two_planes_viewed_apart_and_written_copied_and_mapped_as_joined_rows(
 }
 
 #[test]
+fn yuy2_is_a_half_width_texture_of_pixel_pairs_viewed_as_rgba8() {
+    const YUY2: u32 = 107;
+    let mut dev = device();
+    let bind = bind::SHADER_RESOURCE | bind::RENDER_TARGET;
+    assert!(matches!(
+        dev.create_texture(&tex2d(7, 4, YUY2, bind), &[]),
+        Err(Error::InvalidArg(_))
+    ));
+    let (w, h) = (8u32, 4u32);
+    let bytes: Vec<u8> = (0..w * h * 2).map(|i| (i * 7 + 1) as u8).collect();
+    let init = [SubresourceData {
+        bytes: &bytes,
+        row_pitch: w * 2,
+        slice_pitch: 0,
+    }];
+    let texture = dev.create_texture(&tex2d(w, h, YUY2, bind), &init).unwrap();
+    assert_eq!(texture.desc.width, w);
+    assert_eq!(texture.gpu_desc.width, w / 2);
+    let view = |format| ViewDesc {
+        format,
+        dimension: ViewDim::Texture2D,
+        first_mip: 0,
+        mip_count: 1,
+        first_layer: 0,
+        layer_count: 1,
+        read_only: 0,
+    };
+    // R8G8B8A8_UNORM and _UINT only.
+    for desc in [None, Some(view(YUY2)), Some(view(29)), Some(view(31))] {
+        assert!(matches!(
+            dev.create_view(&texture, desc.as_ref(), bind::SHADER_RESOURCE),
+            Err(Error::InvalidArg(_))
+        ));
+    }
+    for format in [28, 30] {
+        dev.create_view(&texture, Some(&view(format)), bind::SHADER_RESOURCE)
+            .unwrap();
+    }
+    let mut staging_desc = tex2d(w, h, YUY2, 0);
+    staging_desc.usage = usage::STAGING;
+    staging_desc.cpu_access_flags = cpu::READ;
+    let staging = Resource::Texture(dev.create_texture(&staging_desc, &[]).unwrap());
+    let yuy2 = Resource::Texture(texture.clone());
+    let read = |dev: &mut Dev| {
+        dev.copy_resource(&staging, &yuy2).unwrap();
+        let mapped = dev.map(&staging, 0, map::READ, 0).unwrap();
+        assert_eq!(mapped.row_pitch, w * 2);
+        let got = unsafe { std::slice::from_raw_parts(mapped.data, bytes.len()) }.to_vec();
+        dev.unmap(&staging, 0);
+        got
+    };
+    assert_eq!(read(&mut dev), bytes);
+    // Boxes are in pixels: one at an odd pixel writes nothing, an even one its pairs.
+    let source = [0xa0u8; 4 * 2 * 2];
+    let odd = Box3 {
+        left: 1,
+        top: 2,
+        front: 0,
+        right: 5,
+        bottom: 4,
+        back: 1,
+    };
+    dev.update_subresource(&yuy2, 0, Some(&odd), &source, 8, 0)
+        .unwrap();
+    assert_eq!(read(&mut dev), bytes);
+    let even = Box3 {
+        left: 2,
+        right: 6,
+        ..odd
+    };
+    dev.update_subresource(&yuy2, 0, Some(&even), &source, 8, 0)
+        .unwrap();
+    let mut want = bytes.clone();
+    for y in 2..4 {
+        want[(y * w * 2 + 4) as usize..(y * w * 2 + 12) as usize].fill(0xa0);
+    }
+    assert_eq!(read(&mut dev), want);
+    assert!(dev.removed.is_none());
+}
+
+#[test]
 fn a_target_view_of_a_buffer_draws_into_a_row_of_its_elements_copied_into_the_buffer() {
     let mut dev = device();
     let buffer = dev
@@ -1593,8 +1674,8 @@ fn typeless_textures_are_viewed_through_members_of_their_group() {
         read_only: 0,
     };
     // R24G8_TYPELESS: D24_UNORM_S8_UINT for depth, R24_UNORM_X8_TYPELESS and X24_TYPELESS_G8_UINT
-    // to read depth and stencil; a D format is for depth-stencil views only. Stencil, which
-    // Direct3D reads in the second component, needs a view swizzle this back end lacks.
+    // to read depth and stencil; a D format is for depth-stencil views only. Stencil is read
+    // through a stencil view, moved to the second component by the programs reading it.
     let depth = dev
         .create_texture(
             &tex2d(4, 4, 44, bind::DEPTH_STENCIL | bind::SHADER_RESOURCE),
@@ -1609,10 +1690,13 @@ fn typeless_textures_are_viewed_through_members_of_their_group() {
         .unwrap();
     let made = log_from(&dev, from).join("\n");
     assert!(!made.ends_with(" stencil"), "{made}");
-    assert!(matches!(
-        dev.create_view(&depth, Some(&view(47)), bind::SHADER_RESOURCE),
-        Err(Error::NotImplemented(_))
-    ));
+    let from = dev.backend.log.len();
+    let stencil = dev
+        .create_view(&depth, Some(&view(47)), bind::SHADER_RESOURCE)
+        .unwrap();
+    assert!(stencil.reads_stencil());
+    let made = log_from(&dev, from).join("\n");
+    assert!(made.ends_with(" stencil"), "{made}");
     for (format, kind) in [
         (45, bind::SHADER_RESOURCE),
         (46, bind::DEPTH_STENCIL),

@@ -351,6 +351,21 @@ fn even(b: &Box3, at: [u32; 3]) -> bool {
         .all(|v| v.is_multiple_of(2))
 }
 
+/// A box of the program's in pixels as one in texels of a texture whose texels are pixel pairs
+/// (YUY2) or not; none for a box at an odd pixel of pairs, which Direct3D drops.
+fn pixel_box(pairs: bool, b: Option<&Box3>) -> Option<Option<Box3>> {
+    match b {
+        Some(b) if pairs => {
+            (b.left.is_multiple_of(2) && b.right.is_multiple_of(2)).then_some(Some(Box3 {
+                left: b.left / 2,
+                right: b.right / 2,
+                ..*b
+            }))
+        }
+        b => Some(b.copied()),
+    }
+}
+
 /// The extent of NV12's chroma plane under an extent of its luma.
 fn half(e: Extent) -> Extent {
     Extent {
@@ -1125,8 +1140,8 @@ impl<B: Backend> Device<B> {
                 mip,
                 layer: if d3 { 0 } else { v.desc.first_layer },
                 depth_slice: if d3 { v.desc.first_layer } else { 0 },
-                width: (t.desc.width >> mip).max(1),
-                height: (t.desc.height >> mip).max(1),
+                width: t.mip_extent(mip).width,
+                height: t.mip_extent(mip).height,
                 samples: t.desc.sample_count,
             }
         };
@@ -1728,6 +1743,13 @@ impl<B: Backend> Device<B> {
         let mut v = StageVariant {
             samples: if s.reads_samples { samples } else { 0 },
             formats,
+            // Made so at creation where the back end cannot query them.
+            texture_info: s.helpers.values.iter().any(|h| {
+                matches!(
+                    h.value,
+                    HelperValue::TextureLevels { .. } | HelperValue::TextureSamples { .. }
+                )
+            }),
             ..StageVariant::default()
         };
         if s.samplers != 0 {
@@ -1752,8 +1774,16 @@ impl<B: Backend> Device<B> {
         }
         if s.textures != 0 {
             for i in 0..self.ctx.resources[stage].len().min(128) {
-                if s.textures & (1 << i) != 0 && self.min_lod_of(stage, i as u32).is_some() {
+                if s.textures & (1 << i) == 0 {
+                    continue;
+                }
+                if self.min_lod_of(stage, i as u32).is_some() {
                     v.min_lod_clamped |= 1 << i;
+                }
+                if let Some(ShaderView::Texture(view)) = self.ctx.resources[stage][i].as_deref()
+                    && view.reads_stencil()
+                {
+                    v.stencil |= 1 << i;
                 }
             }
         }
@@ -1783,7 +1813,18 @@ impl<B: Backend> Device<B> {
                 v.filter_in_shader |= 1 << t;
             }
         }
+        if v.stencil != 0 {
+            self.backend.slow_paths().hit(SlowPath::SwizzleInShader);
+        }
+        self.program_paths(s);
         v
+    }
+
+    /// Counts the slow paths `s`'s program takes by itself, whatever its variant.
+    pub(super) fn program_paths(&mut self, s: &Shader<B>) {
+        for &path in &s.reflection.slow_paths {
+            self.backend.slow_paths().hit(path);
+        }
     }
 
     /// The device's number for the formats of the typed views `s` declares as bound to `stage`
@@ -1834,7 +1875,7 @@ impl<B: Backend> Device<B> {
             0 => &[][..],
             n => &self.format_lists[n as usize - 1],
         };
-        v.key(stage, &s.typed, formats)
+        v.key(stage, &s.typed, s.layered, formats)
     }
 
     /// The smallest step of the bound depth target's format where the pixel program adds the depth
@@ -3021,6 +3062,25 @@ impl<B: Backend> Device<B> {
                     words[..5].copy_from_slice(&self.through_layout(stage, slot));
                     5
                 }
+                // An empty slot, or one holding a buffer, answers zero as Direct3D's does.
+                HelperValue::TextureLevels { texture }
+                | HelperValue::TextureSamples { texture } => {
+                    self.backend
+                        .slow_paths()
+                        .hit(SlowPath::TextureInfoInHelpers);
+                    let view = match self.ctx.resources[stage]
+                        .get(texture as usize)
+                        .and_then(Option::as_deref)
+                    {
+                        Some(ShaderView::Texture(v)) => Some(v),
+                        _ => None,
+                    };
+                    words[0] = view.map_or(0, |v| match slot.value {
+                        HelperValue::TextureLevels { .. } => v.desc.mip_count,
+                        _ => v.texture.desc.sample_count.max(1),
+                    });
+                    1
+                }
                 _ => unreachable!("refused at conversion"),
             };
             for (k, w) in words[..n].iter().enumerate() {
@@ -3784,6 +3844,16 @@ impl<B: Backend> Device<B> {
             }
             (Resource::Texture(d), Resource::Texture(s)) => {
                 copy_formats(d.desc.format, s.desc.format, self.feature_level())?;
+                // YUY2's pixel pairs are its texels; Direct3D drops an odd box or place.
+                let pairs = d.desc.format == format::YUY2;
+                let Some(src_box) = pixel_box(s.desc.format == format::YUY2, src_box) else {
+                    return Ok(());
+                };
+                if pairs && !at[0].is_multiple_of(2) {
+                    return Ok(());
+                }
+                let at = [if pairs { at[0] / 2 } else { at[0] }, at[1], at[2]];
+                let src_box = src_box.as_ref();
                 let (Some((src_mip, src_layer)), Some((dst_mip, dst_layer))) =
                     (s.subresource(src_sub), d.subresource(dst_sub))
                 else {
@@ -3988,8 +4058,11 @@ impl<B: Backend> Device<B> {
                 let Some((mip, layer)) = t.subresource(sub) else {
                     return Err(Error::InvalidArg("subresource past the resource"));
                 };
+                let Some(dst_box) = pixel_box(t.desc.format == format::YUY2, dst_box) else {
+                    return Ok(());
+                };
                 let e = t.mip_extent(mip);
-                let b = dst_box.copied().unwrap_or(Box3 {
+                let b = dst_box.unwrap_or(Box3 {
                     right: e.width,
                     bottom: e.height,
                     back: e.depth_or_layers,

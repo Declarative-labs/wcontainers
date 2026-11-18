@@ -162,7 +162,7 @@ impl<B: Backend> Device<B> {
             Some((shader, _)) => {
                 let key = VariantKey {
                     output_interpolation: interpolation,
-                    ..crate::shader::base_key(SourceStage::Geometry, &shader.typed)
+                    ..crate::shader::base_key(SourceStage::Geometry, &shader.typed, shader.layered)
                 };
                 let c = crate::shader::convert_geometry(&shader.bytecode, &key)?;
                 let gpu = self.backend.create_shader(&c.modules[1]);
@@ -239,6 +239,9 @@ impl<B: Backend> Device<B> {
             .ok_or(Error::NotImplemented("hull and domain shaders"))?;
         if gs.stage.as_ref().is_some_and(|(s, _)| s.helpers.size > 0) {
             return not_implemented("a geometry shader reading helper constants");
+        }
+        if let Some((s, _)) = &gs.stage {
+            self.program_paths(s);
         }
         let key = (
             vs.gpu.id,
