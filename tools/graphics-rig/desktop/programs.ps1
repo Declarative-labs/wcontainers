@@ -1,11 +1,10 @@
 # The real Direct3D programs the rig runs: freely licensed samples, demos and games, fetched at
 # pinned commits or downloaded at pinned hashes and built in C:\wc\programs (-Mode build, not a GPU
-# job), then each run as a GPU job on the hidden desktop (-Mode run). A Direct3D 11 program runs
-# through the forwarding d3d11.dll, which counts its Direct3D calls, saves the frames listed in
-# -Capture and ends it after the last one. A Direct3D 12 program saves its own frames (the
-# forwarding library is Direct3D 11 only) and ends itself after the last. With replacement
-# libraries (-Dlls), a replacement d3d11.dll sits behind the forwarding one (WC_D3D11) and the
-# others beside the program. Writes <Out>\<program>\census.txt (Direct3D 11) and frame-<n>.png,
+# job), then each run as a GPU job on the hidden desktop (-Mode run). Each program runs through the
+# forwarding library as the library of its API (d3d11.dll or d3d12.dll), which counts its Direct3D
+# calls, saves the frames listed in -Capture and ends it after the last one. With replacement
+# libraries (-Dlls), a replacement of the program's API library sits behind the forwarding one
+# (WC_D3D11, WC_D3D12) and the others beside the program. Writes <Out>\<program>\census.txt and frame-<n>.png,
 # and compares the frames with the program's references (see -Record): its frames are kept on this
 # machine (they show the programs' own art, under the programs' licences), and the repository
 # holds their allowances and SHA-256 (tools\graphics-rig\program-references), so references that
@@ -56,15 +55,24 @@ $sources = [ordered]@{
     'bgfx' = @{ url = 'https://github.com/bkaradzic/bgfx.git'; commit = '3aab3201a949be0d25e20e5fc2afbb2bee80b906'; exclude = @('/examples/assets/', '/examples/runtime/meshes/', '/examples/runtime/textures/', '/examples/runtime/font/', '/examples/runtime/images/', '/examples/runtime/text/') }
     # MIT (one licence for the samples, their kits and media): Microsoft's DirectX Tool Kit samples.
     'xbox-atg-samples' = @{ url = 'https://github.com/microsoft/Xbox-ATG-Samples.git'; commit = 'ff629a6e4876e38fe8761ead116a0e53f634ca67'; sparse = @('PCSamples/IntroGraphics/SimpleBezierPC', 'PCSamples/IntroGraphics/SimpleComputePC', 'PCSamples/IntroGraphics/SimpleInstancingPC', 'PCSamples/IntroGraphics/SimpleLightingPC', 'PCSamples/IntroGraphics/SimpleMSAA_PC', 'Kits/DirectXTK', 'Kits/ATGTK', 'Media/Fonts', 'Media/Textures', 'Media/Meshes/AliasSampleCityBlock') }
+    # MIT: Microsoft's Direct3D 12 samples. Their projects take the Agility SDK and DXC from NuGet
+    # packages (in $downloads).
+    'directx-graphics-samples' = @{ url = 'https://github.com/microsoft/DirectX-Graphics-Samples.git'; commit = '68a2b1e97f71642924e74c7757ca21756ad221b5'; sparse = @('Samples/Desktop/D3D12HelloWorld') }
     # MIT.
     'godot-demo-projects' = @{ url = 'https://github.com/godotengine/godot-demo-projects.git'; commit = 'b761b4cd5718a7118f2c95eb55f181d0a5f004f1'; sparse = @('3d/platformer', '2d/platformer') }
 }
-# Released builds and data, by SHA-256: Godot (MIT), Chocolate Doom (GPL-2.0, run for testing
-# only) and Freedoom (BSD-3-Clause).
+$hello = 'directx-graphics-samples\Samples\Desktop\D3D12HelloWorld\src'
+# Released builds and data, by SHA-256, each unpacked into $root\src\<name> or its dir: Godot
+# (MIT), Chocolate Doom (GPL-2.0, run for testing only), Freedoom (BSD-3-Clause), and the NuGet
+# packages the Direct3D 12 samples' projects import from their packages directory, as NuGet's
+# packages.config restore would unpack them (the hashes are those nuget.org lists, as SHA-512):
+# the Agility SDK (Microsoft's DirectX licence, no acceptance required) and DXC (LLVM's licence).
 $downloads = [ordered]@{
     'godot' = @{ url = 'https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_win64.exe.zip'; sha256 = '731980f9608d61333e5baf54a2ef17210acc7a538446c0cb9969f002aca1e953' }
     'chocolate-doom' = @{ url = 'https://github.com/chocolate-doom/chocolate-doom/releases/download/chocolate-doom-3.1.1/chocolate-doom-3.1.1-win64.zip'; sha256 = '58c34c61ae954493fce5ff01fd553898240a0de25658aa97b43ac9510c49581f' }
     'freedoom' = @{ url = 'https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip'; sha256 = '3f9b264f3e3ce503b4fb7f6bdcb1f419d93c7b546f4df3e874dd878db9688f59' }
+    'agility-sdk' = @{ url = 'https://api.nuget.org/v3-flatcontainer/microsoft.direct3d.d3d12/1.618.3/microsoft.direct3d.d3d12.1.618.3.nupkg'; sha256 = '799981b3569eae3a08468891fd4a0b027907b262a75a5cc3f48d621ee68a21db'; dir = "$hello\packages\Microsoft.Direct3D.D3D12.1.618.3" }
+    'dxc' = @{ url = 'https://api.nuget.org/v3-flatcontainer/microsoft.direct3d.dxc/1.8.2505.32/microsoft.direct3d.dxc.1.8.2505.32.nupkg'; sha256 = 'c6e82b70c14552f1dd58e4a79c93eeab1567eeb0a9ee63a51564c410429bce3e'; dir = "$hello\packages\Microsoft.Direct3D.DXC.1.8.2505.32" }
 }
 $tutorials = 'directx-sdk-samples\C++\Direct3D11\Tutorials'
 $bgfxBin = 'bgfx\.build\win64_vs2022\bin'
@@ -72,12 +80,13 @@ $bgfxBin = 'bgfx\.build\win64_vs2022\bin'
 $bgfxExamples = @('01-cubes', '24-nbody', '26-occlusion', '35-dynamic', '37-gpudrivenrendering', '38-bloom')
 $atgSamples = @('SimpleBezierPC', 'SimpleComputePC', 'SimpleInstancingPC', 'SimpleLightingPC', 'SimpleMSAA_PC')
 $atg = 'xbox-atg-samples\PCSamples\IntroGraphics'
+# Microsoft's Direct3D 12 samples: a still triangle, and one moved by a constant buffer each frame.
+$helloSamples = @('Triangle', 'ConstBuffers')
 $godot = 'godot\Godot_v4.7.2-stable_win64_console.exe'
 $godotProjects = @('3d/platformer', '2d/platformer')
 # Each program: its executable and working directory under $root, its arguments ({out} is its
 # output directory), its environment, its API (Direct3D 11 unless said), a part of its frames
-# not compared, if any, and a settings file written before it runs ($godotSettings), if any. A Direct3D 12
-# program writes its own frames as {out}\movie\frame<number>.png.
+# not compared, if any, and a settings file written before it runs ($godotSettings), if any.
 $all = [ordered]@{}
 foreach ($n in 2, 4, 5, 6, 7) {
     $all["sdk-tutorial0$n"] = @{ exe = "$tutorials\x64\Release\Tutorial0$n.exe"; cwd = "$tutorials\Tutorial0$n"; args = '' }
@@ -88,10 +97,17 @@ foreach ($n in 2, 4, 5, 6, 7) {
 foreach ($e in $bgfxExamples) {
     $all["bgfx-$e"] = @{ exe = "$bgfxBin\example-${e}Release.exe"; cwd = 'bgfx\examples\runtime'; args = '--d3d11'; ignore = '0,236,320,36' }
 }
+# Two of them on bgfx's Direct3D 12 renderer: the plain cubes and the render-target chain.
+foreach ($e in '01-cubes', '38-bloom') {
+    $all["bgfx-$e-d3d12"] = @{ exe = "$bgfxBin\example-${e}Release.exe"; cwd = 'bgfx\examples\runtime'; args = '--d3d12'; api = 'd3d12'; ignore = '0,236,320,36' }
+}
 # Microsoft's DirectX Tool Kit samples, run in the root of their repository, where they find their
 # media (under Media).
 foreach ($sample in $atgSamples) {
     $all["atg-$($sample.ToLower())"] = @{ exe = "$atg\$sample\x64\Release\$sample.exe"; cwd = 'xbox-atg-samples'; args = '' }
+}
+foreach ($sample in $helloSamples) {
+    $all["d3d12-hello-$($sample.ToLower())"] = @{ exe = "$hello\Hello$sample\bin\x64\Release\D3D12Hello$sample.exe"; cwd = "$hello\Hello$sample"; args = ''; api = 'd3d12' }
 }
 # Freedoom's first demo played as fast as it can be drawn, one game tic a frame, through SDL's
 # Direct3D 11 renderer.
@@ -118,7 +134,7 @@ foreach ($project in $godotProjects) {
     $path = "$root\src\godot-demo-projects\$($project -replace '/', '\')"
     $common = "--path $path --windowed --resolution 960x540 --fixed-fps 60 --disable-vsync"
     $all["$tag-d3d11"] = @{ exe = $godot; cwd = 'godot'; settings = "$path\override.cfg"; args = "$common --rendering-method gl_compatibility --rendering-driver opengl3_angle" }
-    $all["$tag-d3d12"] = @{ exe = $godot; cwd = 'godot'; settings = "$path\override.cfg"; api = 'd3d12'; args = "$common --rendering-method forward_plus --rendering-driver d3d12 --write-movie {out}\movie\frame.png --quit-after {last}" }
+    $all["$tag-d3d12"] = @{ exe = $godot; cwd = 'godot'; settings = "$path\override.cfg"; api = 'd3d12'; args = "$common --rendering-method forward_plus --rendering-driver d3d12" }
 }
 $chosen = if ($Programs) { $Programs.Split(',') } else { @($all.Keys) }
 foreach ($name in $chosen) { if (-not $all.Contains($name)) { throw "no program $name; the programs are $($all.Keys -join ', ')" } }
@@ -144,22 +160,23 @@ function Fetch([string]$name) {
     }
 }
 
-# Downloads a release into C:\wc\downloads, checks its hash and unpacks it into $root\src\<name>.
+# Downloads a release into C:\wc\downloads, checks its hash and unpacks it into $root\src\<name>
+# (or its dir).
 function Download([string]$name) {
     $download = $downloads[$name]
     $file = "C:\wc\downloads\$(Split-Path -Leaf $download.url)"
-    $dir = "$root\src\$name"
-    if (Test-Path "$dir\.sha256") {
-        if ((Get-Content "$dir\.sha256") -eq $download.sha256) { return }
-        Remove-Item -Recurse -Force $dir
-    }
+    $dir = "$root\src\$(if ($download.dir) { $download.dir } else { $name })"
+    if ((Test-Path "$dir\.sha256") -and (Get-Content "$dir\.sha256") -eq $download.sha256) { return }
+    if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
     if (-not (Test-Path $file) -or (Get-FileHash -Algorithm SHA256 $file).Hash -ne $download.sha256) {
         "downloading $name"
         Invoke-WebRequest -UseBasicParsing $download.url -OutFile $file
     }
     $hash = (Get-FileHash -Algorithm SHA256 $file).Hash
     if ($hash -ne $download.sha256) { throw "$file has SHA-256 $hash, not $($download.sha256)" }
-    Expand-Archive -Force $file $dir
+    # Not Expand-Archive, which takes only files named .zip.
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [IO.Compression.ZipFile]::ExtractToDirectory($file, $dir)
     Set-Content "$dir\.sha256" $download.sha256
 }
 
@@ -185,6 +202,9 @@ if ($Mode -eq 'build') {
     # Made for Visual Studio 2017: built with this one's toolset and SDK.
     foreach ($sample in $atgSamples) {
         Build "DirectX Tool Kit sample $sample" "`"$msbuild`" `"$src\$atg\$sample\$sample.vcxproj`" /nologo /v:minimal /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=10.0.26100.0"
+    }
+    foreach ($sample in $helloSamples) {
+        Build "Direct3D 12 sample Hello$sample" "`"$msbuild`" `"$src\$hello\Hello$sample\D3D12Hello$sample.vcxproj`" /nologo /v:minimal /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=10.0.26100.0"
     }
     Build 'the bgfx project files' "cd /d `"$src\bgfx`" && ..\bx\tools\bin\windows\genie.exe --with-examples vs2022"
     # bgfx built to draw on the thread that calls bgfx::frame, not on a render thread of its own, so
@@ -218,12 +238,12 @@ if ($Mode -eq 'build') {
     exit 0
 }
 
-# Run: each chosen program in its own directory of copies, with the forwarding library as
-# d3d11.dll (Direct3D 11 programs) and any replacements, until its last frame or the time limit.
+# Run: each chosen program in its own directory of copies, with the forwarding library as the
+# library of its API and any replacements, until its last frame or the time limit.
 # Returns whether it presented its last frame and saved every frame, after printing why not.
 function Run-Program([string]$name, [string]$dir) {
     $program = $all[$name]
-    $d3d12 = $program.api -eq 'd3d12'
+    $forwarded = if ($program.api -eq 'd3d12') { 'd3d12.dll' } else { 'd3d11.dll' }
     # Through rd with the long path prefix, as programs' caches can go past 260 characters.
     if (Test-Path $dir) { cmd.exe /d /c "rd /s /q `"\\?\$dir`"" }
     $bin = "$dir\bin"
@@ -231,20 +251,22 @@ function Run-Program([string]$name, [string]$dir) {
     $exe = "$root\src\$($program.exe)"
     # The program's own directory is copied whole: some programs load libraries from beside them.
     Copy-Item "$(Split-Path $exe)\*" $bin -Recurse -Exclude '*.pdb'
-    if ($d3d12) { New-Item -ItemType Directory -Force "$dir\movie" | Out-Null } else { Copy-Item $Forward "$bin\d3d11.dll" }
+    Copy-Item $Forward "$bin\$forwarded"
     foreach ($pair in $extra) { Copy-Item $pair[1] "$bin\$($pair[0])" }
-    if ($replacement -and $d3d12) {
-        Copy-Item $replacement "$bin\d3d11.dll"
-    } elseif ($replacement) {
+    # A replacement of the program's API library goes behind the forwarding one; the other API's
+    # replacement goes beside the program.
+    $beside = @($behind.Keys | Where-Object { $_ -ne $forwarded })
+    foreach ($library in $beside) { Copy-Item $behind[$library] "$bin\$library" }
+    if ($behind[$forwarded]) {
         New-Item -ItemType Directory -Force "$bin\replacement" | Out-Null
-        Copy-Item $replacement "$bin\replacement\d3d11.dll"
+        Copy-Item $behind[$forwarded] "$bin\replacement\$forwarded"
     }
     if ($program.settings) { Set-Content -Encoding ascii $program.settings $godotSettings }
     $arguments = $program.args.Replace('{out}', $dir).Replace('{last}', "$last")
     # Through gt-launch, which reports where the program and the processes it starts loaded each
     # library from: those placed beside it, the library of its API and dxgi.dll.
-    $placed = @($extra | ForEach-Object { $_[0].ToLower() }) + @(if ($d3d12) { if ($replacement) { 'd3d11.dll' } } else { 'd3d11.dll' })
-    $required = @($(if ($d3d12) { 'd3d12.dll' } else { 'd3d11.dll' }), 'dxgi.dll')
+    $placed = @($extra | ForEach-Object { $_[0].ToLower() }) + $beside + @($forwarded)
+    $required = @($forwarded, 'dxgi.dll')
     $names = @($placed + $required | Select-Object -Unique)
     $wanted = $names -join ','
     $report = "$dir\loaded.txt"
@@ -255,10 +277,10 @@ function Run-Program([string]$name, [string]$dir) {
     $info.RedirectStandardError = $true
     Private-Data $info.EnvironmentVariables $dir
     if ($program.env) { foreach ($key in $program.env.Keys) { $info.EnvironmentVariables[$key] = $program.env[$key] } }
-    if (-not $d3d12) {
-        $info.EnvironmentVariables['WC_OUT'] = $dir
-        $info.EnvironmentVariables['WC_CAPTURE'] = $Capture
-        if ($replacement) { $info.EnvironmentVariables['WC_D3D11'] = "$bin\replacement\d3d11.dll" }
+    $info.EnvironmentVariables['WC_OUT'] = $dir
+    $info.EnvironmentVariables['WC_CAPTURE'] = $Capture
+    if ($behind[$forwarded]) {
+        $info.EnvironmentVariables["WC_$($forwarded.Replace('.dll', '').ToUpper())"] = "$bin\replacement\$forwarded"
     }
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $process = [Diagnostics.Process]::Start($info)
@@ -269,20 +291,10 @@ function Run-Program([string]$name, [string]$dir) {
     $seconds = [math]::Round($clock.Elapsed.TotalSeconds, 1)
     [IO.File]::WriteAllText("$dir\output.log", $stdout.Result + $stderr.Result)
     cmd.exe /d /c "rd /s /q `"\\?\$bin`""
-    if ($d3d12) {
-        # The program's own frames, numbered from 0, renamed as the forwarding library names them.
-        $movie = @(Get-ChildItem "$dir\movie\frame*.png" -ErrorAction SilentlyContinue | Sort-Object Name)
-        $frames = $movie.Count
-        foreach ($n in $frameList) { if ($n -le $frames) { Copy-Item $movie[$n - 1].FullName "$dir\frame-$n.png" } }
-        Remove-Item -Recurse -Force "$dir\movie"
-        $census = 'no census (Direct3D 12)'
-        $whole = $ended -and $process.ExitCode -eq 0
-    } else {
-        $file = "$dir\census.txt"
-        $frames = if (Test-Path $file) { [int](((Get-Content $file) -match '^# frames ') -replace '# frames ', '' | Select-Object -First 1) } else { 0 }
-        $census = "$(if (Test-Path $file) { @((Get-Content $file) -notmatch '^#').Count } else { 0 }) methods called"
-        $whole = $ended
-    }
+    $file = "$dir\census.txt"
+    $frames = if (Test-Path $file) { [int](((Get-Content $file) -match '^# frames ') -replace '# frames ', '' | Select-Object -First 1) } else { 0 }
+    $census = "$(if (Test-Path $file) { @((Get-Content $file) -notmatch '^#').Count } else { 0 }) methods called"
+    $whole = $ended
     $saved = @(Get-ChildItem "$dir\frame-*.png" -ErrorAction SilentlyContinue).Count
     # The library of its API and dxgi.dll must have been loaded, and each library placed beside
     # it from there and nowhere else. A program stopped at the time limit has no report (gt-launch
@@ -319,11 +331,13 @@ function Reference-Hashes([string]$dir) {
     @(Get-ChildItem $dir -File | Where-Object { $_.Name -ne 'frames.sha256' } | Sort-Object Name | ForEach-Object { "$((Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower()) $($_.Name)" })
 }
 
-$replacement = $null
+# Replacements of d3d11.dll and d3d12.dll, which go behind the forwarding library for programs of
+# that API, and the other libraries, which go beside every program.
+$behind = @{}
 $extra = @()
 foreach ($pair in ($Dlls.Split(';') | Where-Object { $_ })) {
     $dll, $path = $pair.Split('=', 2)
-    if ($dll -eq 'd3d11.dll') { $replacement = (Resolve-Path $path).Path } else { $extra += , @($dll, (Resolve-Path $path).Path) }
+    if ($dll -in 'd3d11.dll', 'd3d12.dll') { $behind[$dll.ToLower()] = (Resolve-Path $path).Path } else { $extra += , @($dll, (Resolve-Path $path).Path) }
 }
 if ($Record -and $Dlls) { throw 'references are recorded on real Direct3D only' }
 $frameList = @($Capture.Split(',') | ForEach-Object { [int]$_ })

@@ -62,6 +62,17 @@ const INTERFACES: &[(&str, &str)] = &[
     ("ID3D12Device13", "d3d12.h"),
     ("ID3D12Device14", "d3d12.h"),
     ("ID3D12CommandQueue", "d3d12.h"),
+    ("ID3D12GraphicsCommandList", "d3d12.h"),
+    ("ID3D12GraphicsCommandList1", "d3d12.h"),
+    ("ID3D12GraphicsCommandList2", "d3d12.h"),
+    ("ID3D12GraphicsCommandList3", "d3d12.h"),
+    ("ID3D12GraphicsCommandList4", "d3d12.h"),
+    ("ID3D12GraphicsCommandList5", "d3d12.h"),
+    ("ID3D12GraphicsCommandList6", "d3d12.h"),
+    ("ID3D12GraphicsCommandList7", "d3d12.h"),
+    ("ID3D12GraphicsCommandList8", "d3d12.h"),
+    ("ID3D12GraphicsCommandList9", "d3d12.h"),
+    ("ID3D12GraphicsCommandList10", "d3d12.h"),
 ];
 /// How many distinct method tables the census can patch.
 const INSTANCES: usize = 24;
