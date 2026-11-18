@@ -4,6 +4,12 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
+K6c, fourth run: the stand-in's exclusive monitor is cleared at every turn, a bss-only segment
+is mapped, PI futex deadlocks answer EDEADLK, process_vm_readv and writev reach other
+processes, CPU time is split into user and system time, and several /proc and /sys entries are
+built (ksm, keys, user limits, cgroups, swaps). The gap list is written as it stands. K6c is not
+complete. See "K6c, fourth run".
+
 K6c, third run: the whole LTP comparison at fb0bc97 matches 3989 of 4226 (committed). The test
 backend is reached over TCP and announces writes of many pages (dio13 179 s to 28 s, dio16 past
 300 s to 110 s); built core dumps, adjtimex and clock_adjtime, the
@@ -3493,55 +3499,32 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 ## Next
 
 K6c, in this order:
-1. Read the rerun of the 237 differences (scratch k6c3/redo-b.tsv; continue it with the same
-   command if it stopped: `ltp ours` skips tests a results file has) and compare it. Before that
-   was started the plan was:
-   Run the 237 tests that differ in the whole comparison at fb0bc97 again at the newest commit
-   (`grep` their ids from scratch k6c3/compare-5.txt, or `ltp compare` the committed
-   ltp/ours-20260930-fb0bc97.tsv with the reference) into a second file, LTP_LIMIT 300, and
-   compare; then the timeouts with a long limit (item 6).
-2. A wrong answer of the most serious kind, found late in this run (ours-5 at fb0bc97):
-   math float_power, float_iperb and float_trigo (120 threads each) end with glibc's "double
-   free or corruption (out)" and SIGABRT on ours; the reference passes. Find the cause before
-   anything else. A suspect, not checked: the stand-in's exclusive monitor (QEMU's
-   `exclusive_addr` and `exclusive_val`) survives a switch between threads, where Linux's
-   exception return clears it, so an STXR after a switch can succeed on a value changed and
-   changed back (glibc's atomic free lists). Checked in unicorn's source: only CLREX and STXR
-   clear `exclusive_addr`, nothing at an exit or entry, and the stand-in runs every thread of a
-   memory on one unicorn instance, so an LDXR of one thread can be paired with a later STXR of
-   another. Against it: glibc built with outline atomics uses LSE CAS when AT_HWCAP has ATOMICS,
-   which ours has. If it is the cause, the stand-in must clear the monitor when it runs another
-   thread (a unicorn context saved when the memory is made and restored before loading the next
-   thread's registers would do it), and the translator must do the same (a boundary question
-   for the orchestrator).
-3. Rerun the fixed-not-rerun tests listed under "K6c, third run" and confirm.
-4. Wrong answers found by the rerun: FUTEX_CMP_REQUEUE_PI must answer EDEADLK when requeueing
-   onto a PI futex would close a chain back to the caller (cve-2026-43499's ghostlock; see
-   `futex_requeue`'s `futex_proxy_trylock_atomic` and `rt_mutex_start_proxy_lock`'s deadlock
-   detection); the new syscalls wrong answers named under the whole comparison above.
-5. Parts not built that tests reach, largest first: the cgroup2 mount at /sys/fs/cgroup (read
-   only, the container's root cgroup, with /proc/cgroups; the reference's files, modes and
-   contents are in scratch k6c3/cgroup-reference.txt), which
-   the 8 controllers tests reach; /proc/<pid>/mem (FOLL_FORCE: reads of PROT_NONE, writes into
-   private file mappings copy the page; dirtyc0w, cve-2016-5195, cve-2017-1000405, thp04);
-   smaps, pagemap, attr; per-user pipe pages (fs.pipe-user-pages-soft and hard, pipe15:
-   `account_pipe_buffers`; root in Docker has no CAP_SYS_RESOURCE, so the soft limit applies);
-   page residency for mincore (mincore03, mlock201); system time (times03: time the kernel spends
-   in a call could count as the thread's system time); keyctl and /proc/keys; IPV6_RTHDR;
-   PROCMAP_QUERY; MSG_MORE on UDP; remap_file_pages; the madvise advices counted.
-6. The slow tests (95 timeouts in the whole comparison): run them with a long limit (LTP_LIMIT 3600, 2 jobs) to show
-   their verdicts; growfiles needs about 5000 s each at the measured 1400 messages a second, so
-   show a sample and excuse the rest under section 15 (file access is slower until the cache)
-   only with that evidence. Large reads on the backend run their chunks again on each wait
-   (quadratic in chunks, like sendfile was): give read, write and copy_file_range rounds with
-   `Client::checkpoint` as sendfile has.
-7. Settle the written gap list from section 15 only (the draft under "K6c, second run", and
-   the causes named in this run's table), commit the results file of the last whole comparison
-   under ltp/, and write the counters list (Not built, by counter). The system calls list is
-   current (Done 256, Missing 6, Refused 65).
-8. Three fresh layer 1 seeds at the end (9191003 to 9191005 passed at adc5628c; fresh seeds
-   start at 9191006).
-9. The whole suite passed at adc5628c; run it again after the next code changes.
+1. Read scratch k6c4/re.tsv (the 142 non-timeout differences of the whole comparison at
+   fb0bc97, rerun at 0da1cfb7 with ltp-d, 2 jobs, LTP_LIMIT 900; continue it with the same
+   command if it stopped: `ltp ours` skips tests a results file has) and k6c4/rf.tsv (the
+   controllers tests with /proc/cgroups), compare with ltp/reference-20260930.tsv, and update the
+   table and the gap list. fork09 is in k6c4/rd.tsv.
+2. Not section 15, to build, largest first: /proc/<pid>/mem (FOLL_FORCE: reads of PROT_NONE
+   private pages, writes into read-only private mappings copy the page; 4 tests), the cgroup2
+   mount at /sys/fs/cgroup (read only; files in scratch k6c3/cgroup-reference.txt) if the
+   controllers tests still differ, remap_file_pages (4), smaps and pagemap, PROCMAP_QUERY
+   (ioctl10; build ids need the file's notes), IPV6_RTHDR, per-user pipe pages, MSG_MORE on UDP,
+   IOCB_CMD_POLL, /proc/<pid>/attr, /proc/keys, autogroup; then page residency (mincore03,
+   mlock201, vma01) and transparent huge pages, which need the CPU side to say which pages were
+   touched or a decision recorded under Departures.
+3. The slow tests: run the timeouts (k6c4/timeouts-5.txt) with LTP_LIMIT 7200 and 2 jobs, a
+   sample first (gf01, fsx01, rwtest01, creat05, open04, float_bessel, hackbench01,
+   cve-2014-0196), to show each gives the reference's verdict or is slow for a named cause.
+   Speed-ups that keep Linux's behaviour: a backend that answers FOPEN_NOFLUSH would spare the
+   FLUSH per close (the kernel must honour it); check whether ours does.
+4. openat03 (O_TMPFILE on the root): the test backend (fuse-backend-rs passthrough) has no
+   TMPFILE; decide whether the test server should answer it, or record it as the backend's.
+5. copy_file_range03: the guest's repeatable clock skips idle waits while the backend stamps
+   real times. Decide (with the orchestrator) whether LTP runs should wait in real time.
+6. A whole LTP comparison at the newest code (about 3.5 hours, 4 jobs), then the independent
+   check (200 random tests plus every test on the gap list).
+7. Whole suite and three fresh layer 1 seeds at the end (seeds used this run: 9191006 to
+   9191012; fresh seeds start at 9191013).
 
 After K6b (fifth run), in this order (none of these holds K6b):
 1. inotify on a backend root (tests/inotify.rs, ignored with its reason): IN_EXCL_UNLINK needs
