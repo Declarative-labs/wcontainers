@@ -6,6 +6,9 @@ use std::ops::Range;
 use object::LittleEndian as LE;
 use object::elf;
 use object::pod::{Pod, from_bytes, slice_from_bytes};
+use object::read::elf::{GnuHashTable, HashTable, RelrIterator};
+
+type Elf = elf::FileHeader64<LE>;
 
 /// How many starts each source gave, for the record.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -82,7 +85,7 @@ pub fn image_starts(memory: &impl Guest, range: Range<u64>) -> Option<(Vec<u64>,
             .max()
             .unwrap_or(0);
     if let Some(dynamic) = phdrs.iter().find(|p| p.p_type.get(LE) == elf::PT_DYNAMIC) {
-        dynamic_starts(memory, &image, dynamic, span.clone(), &mut found);
+        dynamic_starts(memory, &image, dynamic, &loads, span.clone(), &mut found);
     }
     if let Some(hdr) = phdrs
         .iter()
@@ -186,6 +189,7 @@ fn dynamic_starts(
     memory: &impl Guest,
     image: &Image,
     dynamic: &elf::ProgramHeader64<LE>,
+    loads: &[&elf::ProgramHeader64<LE>],
     span: Range<u64>,
     found: &mut Found,
 ) {
@@ -229,8 +233,10 @@ fn dynamic_starts(
             }
         }
     }
-    if let (Some(symbols), Some(count)) = (value(elf::DT_SYMTAB), symbol_count(memory, &value, &at))
-    {
+    if let (Some(symbols), Some(count)) = (
+        value(elf::DT_SYMTAB),
+        symbol_count(memory, image, loads, &value, &at),
+    ) {
         let symbols: Vec<elf::Sym64<LE>> =
             read_slice(memory, at(symbols), count).unwrap_or_default();
         for symbol in symbols {
@@ -255,9 +261,9 @@ fn dynamic_starts(
         }
     }
     if let (Some(relr), Some(size)) = (value(elf::DT_RELR), value(elf::DT_RELRSZ)) {
-        let entries: Vec<u64> =
+        let entries: Vec<elf::Relr64<LE>> =
             read_slice(memory, at(relr), (size / 8) as usize).unwrap_or_default();
-        let words: Vec<u64> = relr_places(&entries)
+        let words: Vec<u64> = RelrIterator::<Elf>::new(LE, &entries)
             .filter_map(|place| read::<u64>(memory, image.base.wrapping_add(place)))
             .collect();
         // One reading for the whole image: relocated when more words, less the load offset, fall in
@@ -278,51 +284,42 @@ fn dynamic_starts(
     }
 }
 
-/// How many dynamic symbols there are: `DT_HASH`'s chain count, or the end of `DT_GNU_HASH`'s chains.
+/// How many dynamic symbols there are, from `DT_HASH` or `DT_GNU_HASH`.
 fn symbol_count(
     memory: &impl Guest,
+    image: &Image,
+    loads: &[&elf::ProgramHeader64<LE>],
     value: &impl Fn(elf::DynamicTag) -> Option<u64>,
     at: &impl Fn(u64) -> u64,
 ) -> Option<usize> {
     if let Some(hash) = value(elf::DT_HASH) {
-        let header: [u32; 2] = read(memory, at(hash))?;
-        return Some(header[1] as usize);
+        let bytes = segment_rest(memory, image, loads, at(hash))?;
+        return Some(
+            HashTable::<Elf>::parse(LE, &bytes)
+                .ok()?
+                .symbol_table_length() as usize,
+        );
     }
-    let gnu = at(value(elf::DT_GNU_HASH)?);
-    let [buckets, offset, blooms, _]: [u32; 4] = read(memory, gnu)?;
-    let buckets_at = gnu + 16 + 8 * u64::from(blooms);
-    let bucket: Vec<u32> = read_slice(memory, buckets_at, buckets as usize)?;
-    let mut last = *bucket.iter().max()?;
-    if last < offset {
-        return Some(offset as usize);
-    }
-    let chains = buckets_at + 4 * u64::from(buckets);
-    loop {
-        let entry: u32 = read(memory, chains + 4 * u64::from(last - offset))?;
-        if entry & 1 == 1 {
-            return Some(last as usize + 1);
-        }
-        last += 1;
-    }
+    let bytes = segment_rest(memory, image, loads, at(value(elf::DT_GNU_HASH)?))?;
+    let table = GnuHashTable::<Elf>::parse(LE, &bytes).ok()?;
+    table.symbol_table_length(LE).map(|count| count as usize)
 }
 
-/// The places a `RELR` table names, as image offsets.
-fn relr_places(entries: &[u64]) -> impl Iterator<Item = u64> + '_ {
-    let mut next = 0u64;
-    entries.iter().flat_map(move |&entry| {
-        let places: Vec<u64> = if entry & 1 == 0 {
-            next = entry + 8;
-            vec![entry]
-        } else {
-            let start = next;
-            next += 63 * 8;
-            (1..64)
-                .filter(|bit| entry >> bit & 1 == 1)
-                .map(|bit| start + (bit - 1) * 8)
-                .collect()
-        };
-        places
-    })
+/// The bytes from `address` to the end of the file part of the loaded segment that holds it: a table
+/// whose length is not in the dynamic table lies within them.
+fn segment_rest(
+    memory: &impl Guest,
+    image: &Image,
+    loads: &[&elf::ProgramHeader64<LE>],
+    address: u64,
+) -> Option<Vec<u8>> {
+    let end = loads.iter().find_map(|p| {
+        let start = image.base.wrapping_add(p.p_vaddr.get(LE));
+        let end = start.wrapping_add(p.p_filesz.get(LE));
+        (start..end).contains(&address).then_some(end)
+    })?;
+    let mut bytes = vec![0u8; usize::try_from(end - address).ok()?];
+    memory.read(address, &mut bytes).then_some(bytes)
 }
 
 /// Starts from the unwind table index: the first address of every function it covers.
@@ -349,17 +346,5 @@ fn unwind_starts(
         if let gimli::Pointer::Direct(start) = start {
             found.add(image, start, Source::Unwind);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::relr_places;
-
-    /// An address entry names its place; a bitmap entry names the words after it whose bits are set.
-    #[test]
-    fn relr_places_follow_the_encoding() {
-        let places: Vec<u64> = relr_places(&[0x1000, 0b1011, 0x2000, 1 | 1 << 63]).collect();
-        assert_eq!(places, [0x1000, 0x1008, 0x1018, 0x2000, 0x2008 + 62 * 8]);
     }
 }
