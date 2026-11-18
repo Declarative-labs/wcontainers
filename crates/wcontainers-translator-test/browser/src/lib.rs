@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use wcontainers_abi::{Permissions, RegisterBlock};
 use wcontainers_arm64::Arm64;
-use wcontainers_guest_cpu::{GUEST_REASONS, Guest, HookBody, HookDone, Personality};
+use wcontainers_guest_cpu::{GUEST_REASONS, Guest, HookBody, HookDone, HookType, Personality};
 use wcontainers_translator::contract;
 use wcontainers_translator::{LookAhead, Omit, Optimise, translate_in_modules, translate_omitting};
 
@@ -152,8 +152,19 @@ pub extern "C" fn cpu_state() -> *mut u8 {
 /// the thread's state, copied to [`cpu_state`], with the hook's arguments first (the rest 0). Its results are then read with
 /// [`cpu_hook_result`] and the slow path it was with [`cpu_hook_reason`].
 #[unsafe(no_mangle)]
-pub extern "C" fn cpu_hook(hook: u32, a: i64, b: i64, c: i64, d: i64) {
-    let args = [a, b, c, d];
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn cpu_hook(
+    hook: u32,
+    a: i64,
+    b: i64,
+    c: i64,
+    d: i64,
+    e: i64,
+    f: i64,
+    g: i64,
+    h: i64,
+) {
+    let args: [i64; HookType::MAX_PARAMS] = [a, b, c, d, e, f, g, h];
     let types = &Arm64::HOOKS[hook as usize];
     let (count, length) = (types.params.len(), usize::from(types.state.len));
     let done = STATE.with_borrow_mut(|state| {
@@ -177,6 +188,18 @@ pub extern "C" fn cpu_memory_fault(address: i64, length: u32) -> i32 {
         Arm64::memory_fault(address as u64, code, &block) as i32
     })
 }
+
+// Every hook's arguments fit `cpu_hook`'s and its results `HookDone`'s.
+const _: () = {
+    let mut i = 0;
+    while i < Arm64::HOOKS.len() {
+        assert!(
+            Arm64::HOOKS[i].params.len() <= HookType::MAX_PARAMS
+                && Arm64::HOOKS[i].results.len() <= HookType::MAX_RESULTS
+        );
+        i += 1;
+    }
+};
 
 /// Result `i` of the last [`cpu_hook`].
 #[unsafe(no_mangle)]
@@ -265,6 +288,8 @@ pub extern "C" fn contract() -> i32 {
         "hookWarn": HOOK_WARN,
         "hookTrap": HOOK_TRAP,
         "guestHooks": guest_hooks,
+        // How many arguments `cpu_hook` takes after the hook's index.
+        "hookParams": HookType::MAX_PARAMS,
         "align": Arm64::ALIGN,
         "maxLength": Arm64::MAX_LENGTH,
         "memoryFaults": ["page", "general protection", "stack fault"],

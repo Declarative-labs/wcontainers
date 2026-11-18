@@ -878,6 +878,8 @@ pub enum TrapDetail { Instruction, Local(u32), Const(i64) }
 pub enum TrapPc { At, After }
 pub struct HookType { pub name: &'static str, pub params: &'static [ValType],
     pub results: &'static [ValType], pub registers: Registers, pub state: StateBytes, pub body: HookBody }
+/// At most `HookType::MAX_PARAMS` (8) parameters and `MAX_RESULTS` (2) results, which both runners check
+/// at compile time (the browser's `cpu_hook` takes eight i64 arguments after the hook's index).
 /// `len` bytes of a thread's state from `at`, an offset from the start of the block (`NONE` for a hook
 /// whose work is not the CPU's).
 pub struct StateBytes { pub at: u16, pub len: u16 }

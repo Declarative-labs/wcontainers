@@ -624,6 +624,13 @@ pub struct HookType {
     pub body: HookBody,
 }
 
+impl HookType {
+    /// The most parameters a hook may have; the runners check every hook against it at compile time.
+    pub const MAX_PARAMS: usize = 8;
+    /// The most results, as many as `HookDone` holds.
+    pub const MAX_RESULTS: usize = 2;
+}
+
 /// `len` bytes of a thread's state from `at`, an offset from the start of the block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StateBytes {

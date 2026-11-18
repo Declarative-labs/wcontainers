@@ -15,7 +15,7 @@ use wcontainers_abi::{
     Warning,
 };
 use wcontainers_arm64::Arm64;
-use wcontainers_guest_cpu::{Guest, HookBody, MemoryFault};
+use wcontainers_guest_cpu::{Guest, HookBody, HookType, MemoryFault};
 use wcontainers_translator::contract::{self, Reason};
 use wcontainers_translator::{
     LookAhead, Omit, Optimise, Translation, translate_in_modules, translate_omitting,
@@ -708,7 +708,7 @@ fn val_type(ty: wasm_encoder::ValType) -> wasmtime::ValType {
 /// are constants here.
 fn cpu_hook<const I: usize>(caller: &mut Caller<'_, Host>, values: &mut [MaybeUninit<ValRaw>]) {
     let hook = &Arm64::HOOKS[I];
-    let mut args = [0i64; MAX_HOOK_ARGS];
+    let mut args = [0i64; HookType::MAX_PARAMS];
     for (i, ty) in hook.params.iter().enumerate() {
         // SAFETY: wasmtime has checked the arguments against the hook's type.
         let value = unsafe { values[i].assume_init() };
@@ -739,9 +739,6 @@ fn cpu_hook<const I: usize>(caller: &mut Caller<'_, Host>, values: &mut [MaybeUn
         );
     }
 }
-
-/// The most arguments a guest's own hook has.
-const MAX_HOOK_ARGS: usize = 8;
 
 /// Registers the guest's own hook `I` with a closure made for that index.
 fn register_cpu_hook<const I: usize>(linker: &mut Linker<Host>) {
@@ -777,7 +774,8 @@ const _: () = {
     let mut i = 0;
     while i < Arm64::HOOKS.len() {
         assert!(
-            Arm64::HOOKS[i].params.len() <= MAX_HOOK_ARGS && Arm64::HOOKS[i].results.len() <= 2
+            Arm64::HOOKS[i].params.len() <= HookType::MAX_PARAMS
+                && Arm64::HOOKS[i].results.len() <= HookType::MAX_RESULTS
         );
         i += 1;
     }
