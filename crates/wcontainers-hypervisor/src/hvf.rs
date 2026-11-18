@@ -60,6 +60,10 @@ impl Hypervisor for HypervisorFramework {
             .map_err(|e| Error::Hypervisor(format!("{e:?}")))?;
         Ok(HvfMachine { vm })
     }
+
+    fn el2_supported() -> bool {
+        VirtualMachineConfig::get_el2_supported().unwrap_or(false)
+    }
 }
 
 impl crate::Machine for HvfMachine {

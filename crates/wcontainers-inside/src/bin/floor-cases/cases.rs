@@ -294,6 +294,22 @@ impl Cases {
         );
     }
 
+    fn system_call_out(&mut self) {
+        let target = self.code_page(code_of::mark_a());
+        let space = self.process();
+        let ran = run(&space, target, 0, 0);
+        let mut passed = called(&ran, MARK_A);
+        if passed {
+            let echoed = floor::ask(Request::Echo, &[ran.registers.x[0]], &[])[0];
+            passed = echoed == MARK_A;
+        }
+        report(
+            "a guest-level system call reaches the host through the floor's doorbell",
+            passed,
+            format_args!("system call x0 {:#x}", ran.registers.x[0]),
+        );
+    }
+
     fn guest_no_execute(&mut self) {
         let space = self.process();
         let page = self.guest_page();
@@ -969,6 +985,7 @@ extern "C" fn floor_main(start: &Start) -> ! {
             next_asid: 0,
         };
         cases.execute_only();
+        cases.system_call_out();
         cases.guest_no_execute();
         cases.misaligned_branch();
         cases.tagged();

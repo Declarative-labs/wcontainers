@@ -22,10 +22,9 @@ mod macos {
     use std::time::{Duration, Instant};
 
     use aarch64_cpu::registers::{HCR_EL2, ID_AA64DFR0_EL1};
-    use wcontainers_hypervisor::hvf::{HvfMachine, HypervisorFramework};
     use wcontainers_hypervisor::{
-        Exit, Hypervisor, Loaded, Machine, Memory, Register, Stopper, VirtualCpu, boot, link, load,
-        programs,
+        Exit, Host, Hypervisor, Loaded, Machine, Memory, Register, Stopper, VirtualCpu, boot, link,
+        load, programs,
     };
     use wcontainers_inside::link::{Request, Start};
 
@@ -46,7 +45,7 @@ mod macos {
 
     /// One machine and what the cases told it.
     struct Shared {
-        machine: HvfMachine,
+        machine: <Host as Hypervisor>::Machine,
         memory: Memory,
         loaded: Loaded,
         start: Start,
@@ -59,8 +58,7 @@ mod macos {
     }
 
     pub fn main() {
-        let el2_supported =
-            applevisor::prelude::VirtualMachineConfig::get_el2_supported().unwrap_or(false);
+        let el2_supported = Host::el2_supported();
         let started = Instant::now();
         let shared = machine(false);
         serve(&shared, 0);
@@ -106,7 +104,7 @@ mod macos {
     const STOPS: u64 = 300;
 
     fn machine(el2: bool) -> Arc<Shared> {
-        let machine = HypervisorFramework::machine(el2).expect("making the machine");
+        let machine = Host::machine(el2).expect("making the machine");
         let memory = Memory::reserve(MEMORY).expect("reserving memory");
         machine
             .map(
@@ -218,7 +216,7 @@ mod macos {
         let text = String::from_utf8_lossy(&page.bytes[..page.length as usize]).into_owned();
         let words = page.words;
         match Request::from_word(page.request) {
-            Some(Request::Nothing) => {}
+            Some(Request::Nothing | Request::Echo) => {}
             Some(Request::Print) => println!("cpu {index}: {text}"),
             Some(Request::Done) => {
                 // Every virtual CPU counts its reports in the same image; the first finishes last.

@@ -73,6 +73,8 @@ macro_rules! requests {
 requests! {
     /// Nothing; answered at once (the round trip's cost).
     Nothing,
+    /// Word 0 comes back as it went.
+    Echo,
     /// Text for the host's log, in `bytes`.
     Print,
     /// The inside has finished.

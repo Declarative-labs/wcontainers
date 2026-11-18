@@ -16,6 +16,10 @@ use wcontainers_inside::link::{Link, Start};
 #[cfg(target_os = "macos")]
 pub mod hvf;
 
+/// The host's hypervisor.
+#[cfg(target_os = "macos")]
+pub type Host = hvf::HypervisorFramework;
+
 /// The inside's programs, built for the host's architecture.
 pub mod programs {
     include!(concat!(env!("OUT_DIR"), "/programs.rs"));
@@ -85,6 +89,8 @@ pub trait Hypervisor {
     type Machine: Machine;
     /// Makes the process's one machine; `el2` gives its virtual CPUs EL2.
     fn machine(el2: bool) -> Result<Self::Machine>;
+    /// Whether a machine can give its virtual CPUs EL2.
+    fn el2_supported() -> bool;
 }
 
 /// One virtual machine.
