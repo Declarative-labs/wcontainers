@@ -280,12 +280,17 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
 
         let image_ops = if words_left != 0 { self.next()? } else { 0 };
 
-        if image_ops != 0 {
-            let other = spirv::ImageOperands::from_bits_truncate(image_ops);
-            log::warn!("Unknown image write ops {other:?}");
-            for _ in 1..words_left {
-                self.next()?;
-            }
+        // Hints, and non-private access, which every storage access of the IR is; operands that
+        // change the texel's meaning or its visibility to other invocations are refused.
+        let kept = spirv::ImageOperands::NONTEMPORAL | spirv::ImageOperands::NON_PRIVATE_TEXEL;
+        let ops = spirv::ImageOperands::from_bits_retain(image_ops);
+        if !kept.contains(ops) {
+            return Err(Error::UnsupportedImageWriteOperand(
+                ops.difference(kept).bits(),
+            ));
+        }
+        for _ in 1..words_left {
+            self.next()?;
         }
 
         let image_lexp = self.lookup_expression.lookup(image_id)?;
@@ -412,7 +417,9 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
                     );
                     offset = Some((offset_handle, offset_lexp.type_id));
                 }
-                spirv::ImageOperands::NONTEMPORAL => {}
+                // Every storage access of the IR is non-private in the Vulkan memory model's
+                // sense.
+                spirv::ImageOperands::NONTEMPORAL | spirv::ImageOperands::NON_PRIVATE_TEXEL => {}
                 other => {
                     return Err(Error::UnsupportedImageLoadOperand(other.bits()));
                 }
@@ -881,6 +888,50 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
         let expr = crate::Expression::ImageQuery {
             image: image_lexp.handle,
             query: crate::ImageQuery::Size { level },
+        };
+        // SPIR-V gives an array's layer count as the size's last component.
+        let image_ty = ctx.get_image_expr_ty(image_lexp.handle)?;
+        let expr = match ctx.module.types[image_ty].inner {
+            crate::TypeInner::Image {
+                dim, arrayed: true, ..
+            } => {
+                let span = self.span_from_with_op(start);
+                let size = ctx.expressions.append(expr, span);
+                let layers = ctx.expressions.append(
+                    crate::Expression::ImageQuery {
+                        image: image_lexp.handle,
+                        query: crate::ImageQuery::NumLayers,
+                    },
+                    span,
+                );
+                let mut components = match dim {
+                    crate::ImageDimension::D1 => alloc::vec![size],
+                    _ => (0..2)
+                        .map(|index| {
+                            ctx.expressions
+                                .append(crate::Expression::AccessIndex { base: size, index }, span)
+                        })
+                        .collect(),
+                };
+                components.push(layers);
+                let size = match components.len() {
+                    2 => crate::VectorSize::Bi,
+                    3 => crate::VectorSize::Tri,
+                    _ => crate::VectorSize::Quad,
+                };
+                let ty = ctx.module.types.insert(
+                    crate::Type {
+                        name: None,
+                        inner: crate::TypeInner::Vector {
+                            size,
+                            scalar: Scalar::U32,
+                        },
+                    },
+                    span,
+                );
+                crate::Expression::Compose { ty, components }
+            }
+            _ => expr,
         };
 
         let result_type_handle = self.lookup_type.lookup(result_type_id)?.handle;

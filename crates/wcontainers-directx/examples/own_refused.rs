@@ -1,4 +1,4 @@
-//! A small Direct3D 11 program asking for what the front does not serve yet: a geometry shader, a 3D
+//! A small Direct3D 11 program asking for what the front does not serve yet: a hull shader, a 3D
 //! texture, a structured buffer, a texture of 4 samples, and a draw blending with the pixel shader's second output. Prints what each call answered, as `<call> <hresult>`, and the device's
 //! removal reason after the draw; real Direct3D answers 0 to all of them.
 
@@ -10,8 +10,8 @@ fn main() -> windows::core::Result<()> {
     use windows::Win32::Graphics::Dxgi::Common::*;
     use windows::Win32::Graphics::Dxgi::IDXGIAdapter;
 
-    const GS: &[u8] =
-        include_bytes!("../../wcontainers-graphics-test/shaders/dxbc/geometry.gs_points.dxbc");
+    const HS: &[u8] =
+        include_bytes!("../../wcontainers-graphics-test/shaders/dxbc/tessellation.hs_tri.dxbc");
     const VS: &[u8] =
         include_bytes!("../../wcontainers-graphics-test/shaders/dxbc/msaa.vs_full.dxbc");
     const PS: &[u8] =
@@ -35,9 +35,9 @@ fn main() -> windows::core::Result<()> {
     let (device, context): (ID3D11Device, ID3D11DeviceContext) =
         (device.unwrap(), context.unwrap());
 
-    let mut gs = None;
-    let r = unsafe { device.CreateGeometryShader(GS, None, Some(&mut gs)) };
-    println!("CreateGeometryShader {:#010x}", code(r));
+    let mut hs = None;
+    let r = unsafe { device.CreateHullShader(HS, None, Some(&mut hs)) };
+    println!("CreateHullShader {:#010x}", code(r));
 
     for (name, kind) in [
         ("occlusion", D3D11_QUERY_OCCLUSION),

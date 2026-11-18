@@ -455,13 +455,19 @@ fn direct3d_images(gpu: &Gpu, seed: u64) -> Vec<Vec<u8>> {
         .collect()
 }
 
-/// The same through the WebGPU back end, each view's format given in the variant.
-fn ours_images<B: Backend>(b: &mut B, seed: u64) -> Vec<Vec<u8>> {
+/// The same through the WebGPU back end, each view's format given in the variant, from fxc's
+/// bytecode (DXBC) or dxc's (DXIL).
+fn ours_images<B: Backend>(b: &mut B, seed: u64, dxil: bool) -> Vec<Vec<u8>> {
     let key = VariantKey {
         storage_formats: IMAGES.iter().map(|&(slot, f, ..)| (slot, f)).collect(),
         ..Default::default()
     };
-    let c = convert(Source::Dxbc(&bytecode("cs_images.dxbc")), &key, None).unwrap();
+    let c = if dxil {
+        convert(Source::Dxil(&bytecode("cs_images.dxil")), &key, None)
+    } else {
+        convert(Source::Dxbc(&bytecode("cs_images.dxbc")), &key, None)
+    }
+    .unwrap();
     assert!(c.reflection.helpers.is_empty());
     let mut textures = Vec::new();
     for &(_, format, _, layers, seeded) in &IMAGES {
@@ -595,12 +601,14 @@ fn storage_textures_match_direct3d() {
     let mut failures = Vec::new();
     for seed in seed..seed + seeds {
         let reference = direct3d_images(&gpu, seed);
-        let made = ours_images(&mut backend, seed);
-        for ((a, o), &(slot, format, ..)) in reference.iter().zip(&made).zip(&IMAGES) {
-            let apart = a.chunks(4).zip(o.chunks(4)).filter(|(x, y)| x != y).count();
-            eprintln!("seed {seed} u{slot} {format:?}: {apart} words apart");
-            if apart > 0 {
-                failures.push(format!("seed {seed} u{slot}"));
+        for (dxil, source) in [(false, "dxbc"), (true, "dxil")] {
+            let made = ours_images(&mut backend, seed, dxil);
+            for ((a, o), &(slot, format, ..)) in reference.iter().zip(&made).zip(&IMAGES) {
+                let apart = a.chunks(4).zip(o.chunks(4)).filter(|(x, y)| x != y).count();
+                eprintln!("seed {seed} {source} u{slot} {format:?}: {apart} words apart");
+                if apart > 0 {
+                    failures.push(format!("seed {seed} {source} u{slot}"));
+                }
             }
         }
     }
