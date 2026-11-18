@@ -939,6 +939,7 @@ pub(super) fn proc_contents(
             read_memory: &mut read_memory,
             mounts: &kernel_ref.files.mounts,
             memory_in_use,
+            ipc: &kernel_ref.ipc,
         };
         proc::contents(&mut source, entry)
     })

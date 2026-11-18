@@ -342,6 +342,10 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/user", Global::Directory),
     ("sys/vm", Global::Directory),
     ("sys/vm/overcommit_memory", Global::File(0o644)),
+    ("sysvipc", Global::Directory),
+    ("sysvipc/msg", Global::File(0o444)),
+    ("sysvipc/sem", Global::File(0o444)),
+    ("sysvipc/shm", Global::File(0o444)),
     ("uptime", Global::File(0o444)),
     ("version", Global::File(0o444)),
 ];
@@ -416,6 +420,7 @@ const LINUX_ENTRIES: &[(&str, &str)] = &[
             "suid_dumpable xfs",
         ),
     ),
+    ("sysvipc", "msg sem shm"),
     (
         "sys/fs/mqueue",
         "msg_default msg_max msgsize_default msgsize_max queues_max",
@@ -1512,6 +1517,11 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                 "sys/kernel/random/boot_id" => out.push_str(&uuid(source.boot_id)),
                 "sys/kernel/random/uuid" => out.push_str(&uuid(source.fresh_random)),
                 "sys/vm/overcommit_memory" => out.push_str("1\n"),
+                "sysvipc/msg" => out = crate::syscall::ipc::proc_msg(source.ipc),
+                "sysvipc/sem" => out = crate::syscall::ipc::proc_sem(source.ipc),
+                "sysvipc/shm" => {
+                    out = crate::syscall::ipc::proc_shm(source.ipc, source.view.counters)
+                }
                 _ => return Err(Errno::EISDIR),
             }
         }
@@ -1550,6 +1560,8 @@ pub(crate) struct Source<'a> {
     pub mounts: &'a [super::mounts::Mount],
     /// The memory in use and what of it tmpfs holds, in bytes.
     pub memory_in_use: (u64, u64),
+    /// System V IPC's objects.
+    pub ipc: &'a crate::syscall::ipc::Ipc,
 }
 
 /// A file of a process's or thread's directory, which shows thread `tid` of `process`.

@@ -1185,3 +1185,76 @@ pub(super) fn msgctl(
         _ => Err(Errno::EINVAL),
     }
 }
+
+/// `/proc/sysvipc/shm` (`sysvipc_shm_proc_show`): every segment of the namespace. Resident pages
+/// are not tracked, so `rss` shows none (counted).
+pub(crate) fn proc_shm(ipc: &Ipc, counters: &crate::counters::Counters) -> alloc::string::String {
+    use core::fmt::Write;
+    let mut out = alloc::string::String::from(
+        "       key      shmid perms                  size  cpid  lpid nattch   uid   gid  cuid  \
+         cgid      atime      dtime      ctime                   rss                  swap\n",
+    );
+    for segment in ipc.shm.slots.values() {
+        let perm = &segment.perm;
+        let _ = writeln!(
+            out,
+            "{:10} {:10}  {:4o} {:21} {:5} {:5}  {:5} {:5} {:5} {:5} {:5} {:10} {:10} {:10} {:21} {:21}",
+            perm.key,
+            perm.id,
+            perm.mode,
+            segment.size,
+            segment.creator,
+            segment.last,
+            segment.attached,
+            perm.uid,
+            perm.gid,
+            perm.cuid,
+            perm.cgid,
+            segment.atime,
+            segment.dtime,
+            segment.ctime,
+            0,
+            0
+        );
+    }
+    if !ipc.shm.slots.is_empty() {
+        counters.note(reason::RESIDENCY_NOT_TRACKED, 0);
+    }
+    out
+}
+
+/// `/proc/sysvipc/msg` (`sysvipc_msg_proc_show`): every queue of the namespace.
+pub(crate) fn proc_msg(ipc: &Ipc) -> alloc::string::String {
+    use core::fmt::Write;
+    let mut out = alloc::string::String::from(
+        "       key      msqid perms      cbytes       qnum lspid lrpid   uid   gid  cuid  cgid      \
+         stime      rtime      ctime\n",
+    );
+    for queue in ipc.msg.slots.values() {
+        let perm = &queue.perm;
+        let _ = writeln!(
+            out,
+            "{:10} {:10}  {:4o}  {:10} {:10} {:5} {:5} {:5} {:5} {:5} {:5} {:10} {:10} {:10}",
+            perm.key,
+            perm.id,
+            perm.mode,
+            queue.bytes,
+            queue.messages.len(),
+            queue.last_sender,
+            queue.last_receiver,
+            perm.uid,
+            perm.gid,
+            perm.cuid,
+            perm.cgid,
+            queue.stime,
+            queue.rtime,
+            queue.ctime
+        );
+    }
+    out
+}
+
+/// `/proc/sysvipc/sem`.
+pub(crate) fn proc_sem(ipc: &Ipc) -> alloc::string::String {
+    super::sem::listing(&ipc.sem)
+}

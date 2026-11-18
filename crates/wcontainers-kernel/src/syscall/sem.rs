@@ -970,3 +970,29 @@ fn clear_adjustments(lists: &mut BTreeMap<u64, UndoList>, id: i32, num: Option<u
         }
     }
 }
+
+/// `/proc/sysvipc/sem` (`sysvipc_sem_proc_show`): every set of the namespace.
+pub(super) fn listing(semaphores: &Semaphores) -> alloc::string::String {
+    use core::fmt::Write;
+    let mut out = alloc::string::String::from(
+        "       key      semid perms      nsems   uid   gid  cuid  cgid      otime      ctime\n",
+    );
+    for array in semaphores.ids.slots.values() {
+        let perm = &array.perm;
+        let _ = writeln!(
+            out,
+            "{:10} {:10}  {:4o} {:10} {:5} {:5} {:5} {:5} {:10} {:10}",
+            perm.key,
+            perm.id,
+            perm.mode,
+            array.sems.len(),
+            perm.uid,
+            perm.gid,
+            perm.cuid,
+            perm.cgid,
+            array.sems.iter().map(|sem| sem.otime).max().unwrap_or(0),
+            array.ctime
+        );
+    }
+    out
+}
