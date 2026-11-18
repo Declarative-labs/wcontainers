@@ -1,5 +1,6 @@
 //! The meaning of AdvSIMD data processing instructions, as WebAssembly SIMD.
 
+use crate::Arm64;
 use crate::instruction::*;
 use crate::meaning::Emitter;
 use wasm_encoder::InstructionSink;
@@ -26,7 +27,7 @@ fn broadcast(element: u8, index: u8) -> [u8; 16] {
 }
 
 /// Write the meaning of an AdvSIMD data processing instruction.
-pub(crate) fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
+pub(crate) fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruction) {
     use Instruction as I;
     match *instruction {
         I::VectorImmediate { op, rd, imm, whole } => {

@@ -2,14 +2,17 @@
 //!
 //! `WC_LAYER1_CASES` cases per form (default 64), seeded from `WC_LAYER1_SEED` (default 1) and the form's
 //! name, so any failure replays with the same two values. `WC_LAYER1_FORMS` limits the run to a
-//! comma-separated list of form names. `WC_LAYER1_CHROME` cases per form (default 1), from the same seed,
+//! comma-separated list of form names. `WC_LAYER1_JOBS` forms run at once (default one), each with a
+//! reference container of its own while it runs. `WC_LAYER1_CHROME` cases per form (default 1), from the same seed,
 //! also run in Chrome, a thousand to a page, and are compared with the CPU.
 
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestRng, TestRunner};
 use std::cell::RefCell;
+use std::sync::Mutex;
 use wcontainers_arm64::forms;
+use wcontainers_translator_test::jobs::at_once;
 use wcontainers_translator_test::layer1::{
     Case, Stop, cases, compare, compare_outcome, covered, translated, translated_in_chrome,
 };
@@ -65,20 +68,22 @@ fn sample_matches_the_cpu_in_chrome() {
 fn every_covered_form_matches_the_cpu() {
     let count = setting("WC_LAYER1_CASES", 64) as u32;
     let seed = setting("WC_LAYER1_SEED", 1);
+    let jobs = setting("WC_LAYER1_JOBS", 1).max(1);
     let only: Option<Vec<String>> = std::env::var("WC_LAYER1_FORMS")
         .ok()
         .map(|list| list.split(',').map(String::from).collect());
-    let reference = RefCell::new(Cases::start());
-    let mut failures = Vec::new();
-    let mut forms_run = 0;
-    for form in forms::all().iter().filter(|f| covered(f)) {
-        if only
-            .as_ref()
-            .is_some_and(|names| !names.contains(&form.name))
-        {
-            continue;
-        }
-        forms_run += 1;
+    let chosen: Vec<_> = forms::all()
+        .iter()
+        .filter(|f| covered(f))
+        .filter(|f| only.as_ref().is_none_or(|names| names.contains(&f.name)))
+        .collect();
+    let failures = Mutex::new(Vec::new());
+    // Reference containers not in use; a form takes one, or starts one when none is free.
+    let free = Mutex::new(Vec::new());
+    at_once(jobs, chosen.len() as u64, |i| {
+        let form = chosen[i as usize];
+        let taken = free.lock().unwrap().pop();
+        let reference = RefCell::new(taken.unwrap_or_else(Cases::start));
         let mut config = Config::with_cases(count);
         config.failure_persistence = None;
         config.max_global_rejects = 100 * count;
@@ -86,13 +91,17 @@ fn every_covered_form_matches_the_cpu() {
         let result = runner.run(&cases(form.clone()), |case| {
             compare(&mut reference.borrow_mut(), &case).map_err(TestCaseError::fail)
         });
+        free.lock().unwrap().push(reference.into_inner());
         if let Err(error) = result {
             eprintln!("{}: {error}", form.name);
-            failures.push(form.name.clone());
+            failures.lock().unwrap().push(form.name.clone());
         }
-    }
+    });
+    let mut failures = failures.into_inner().unwrap();
+    failures.sort();
     eprintln!(
-        "layer 1: {forms_run} forms, {count} cases each, seed {seed}, {} failing: {failures:?}",
+        "layer 1: {} forms, {count} cases each, seed {seed}, {jobs} at once, {} failing: {failures:?}",
+        chosen.len(),
         failures.len()
     );
     assert!(
