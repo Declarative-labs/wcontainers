@@ -130,9 +130,6 @@ pub struct ReflectedBinding {
     /// For a binding the variant adds rather than one of the API's slots, what it holds; `space`,
     /// `register` and `count` then say nothing.
     pub added: Option<AddedBinding>,
-    /// For a storage buffer, the size in bytes of the program's element of it, the step a
-    /// [`HelperValue::StorageOffset`] comes in; zero otherwise.
-    pub stride: u32,
 }
 
 impl ReflectedBinding {
@@ -292,9 +289,8 @@ pub enum StageExtras {
 /// offset the reflection gives. Each exists only in programs whose variant needs it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum HelperValue {
-    /// How far into a storage binding the view starts, in bytes (u32), which the program adds to its
-    /// addresses ([`VariantFlags::STORAGE_OFFSET`]): a whole number of the program's elements of that
-    /// buffer ([`ReflectedBinding::stride`]).
+    /// The part of a storage binding's offset below [`crate::Limits::min_storage_offset_alignment`],
+    /// in bytes (u32), which the program adds to its addresses.
     StorageOffset { set: u32, binding: u32 },
     /// A sampler's level-of-detail bias (f32), added to every sampling through it.
     LodBias { sampler: u32 },
@@ -454,11 +450,6 @@ bitflags! {
         /// The pixel shader reads its primitive index from a flat value the stage helper's draw passes,
         /// not from the built-in ([`crate::SlowPath::PrimitiveIdAsGeometry`]).
         const PRIMITIVE_ID_FROM_STAGE = 1 << 13;
-        /// Every storage buffer of the program's own slots (raw and structured views; not counters,
-        /// typed views or bindings a variant adds) is read from [`HelperValue::StorageOffset`] bytes
-        /// into its binding, which the front binds from below the view's start
-        /// ([`crate::BindingResource::StorageBuffer`]).
-        const STORAGE_OFFSET = 1 << 14;
     }
 }
 
