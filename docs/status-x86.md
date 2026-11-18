@@ -76,6 +76,18 @@ Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0
   `G::ALIGN` in `src/binaries.rs`.
 - Tests written once over `G` with an `_arm64` wrapper each: `layer1.rs`, `cases.rs` (layer 1 part),
   `browser.rs`, `float_hook.rs`, `lookaheads.rs`, `layer3.rs`.
+- The page starts a blob from `initial_block(pc, sp)`, a new export of the browser translator that gives
+  `G::initial_block`'s bytes (it wrote ARM64's pc and sp by their offsets). Found by the suite's first run
+  this run: with the offsets gone from the contract, the page started blobs with sp 0, and
+  `failing_at_an_entry_in_chrome` caught it (no "left to an address"). Also fixed: the page's stand-in
+  numbers were shadowed by its `standIn` function.
+- Tests run before the commits (Mac, load 14.8 to 17.4): `tests/layer1.rs` (1215 forms at 64 cases, 0
+  failing; 105 hand-made cases; 64 no-form cases; 1215 Chrome cases), `smoke`, `changes`, `lookaheads`: all
+  pass (scratch `x2/run2/layer1.log`); after the page fix, `checks` (12) and `browser` (1) pass.
+- Suite at ade0f6a (scratch `x2/run2/suite2.log`, Mac load 16.9 at start, 20.5 at end): 92 passed, 0
+  failed, 11 ignored, 22 minutes. Run 1 had 95: ARM64's four hand-made layer 1 tests are now one, over the
+  same 105 cases. Clippy with `-D warnings` on the test crate (all targets) and the browser crate for wasm32,
+  `cargo fmt`: clean. origin/phase-1-translator fetched at the end: nothing new.
 - Same cases: `same-cases.sh d27cd70 1 2 3 5309` (scratch `x2/run2/same-cases-1.log`, Mac load 15.7 to 19.5):
   layer 1 1215 forms and layer 2 64 programs the same for each of the four seeds.
 
@@ -953,6 +965,9 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   twice: the first run did not pass its environment settings to `stepper6` and was discarded; in run 9,
   41 hand-written cases (`cases16.sh` 39, the two `xacquire` runs 2); in run 10, one run each of `tf`
   (8 trap-flag scenarios in 9 runs, 20 stops) and `rf` (8 signal frames), and 6 `stepper6` cases.
+- X2 run 2: `tests/cases.rs` for seeds 1, 2, 3 and 5309 at 64 cases a form and 64 programs, both sides;
+  layer 1 once at the defaults (seed 1: 64 cases a form over 1215 forms, 1 a form in Chrome, 64 no-form
+  cases, 105 hand-made); the suite at the defaults below (one run stopped part way, once more to the end).
 - X2 run 1: the suite twice at the defaults below (seed 1); `tests/cases.rs` for seeds 1, 2, 3 and 9071 at
   64 cases a form and 64 programs, on both sides of each comparison; 38 hand-made x86 cases and 2 blobs, four
   times (twice while fixing the `sysenter` case, which the first stopped at, and in each suite run).
@@ -1085,6 +1100,8 @@ X2 (each also written into the plan's text in the same commit):
   word, as before).
 - The gcc image of layer 3 is per guest (`wc-x86-gcc-arm64`, built for the guest's Docker platform), so it no
   longer shares `wc-translator-gcc` with the translator track.
+- The browser translator exports `initial_block(pc, sp)` (plan 7.2 had the contract carry offsets), so the
+  page never writes a register by its offset.
 - The browser page reads the pc by `pcOffset` and nothing else of the register block (it read x0 to x30 and
   sp, unused); `syscall` offsets, `codeChanges` and `traps` of plan 7.2's contract are not added, since the
   page gets the call's number and arguments from the hook and traps by `trapKinds` already.
