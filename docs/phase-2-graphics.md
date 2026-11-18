@@ -2103,7 +2103,11 @@ the hull stage's patches and the tessellator's points a domain program reads, at
   the program (`CLIP_DISTANCE`, `DEPTH_CLAMP`) and the primitive index from the stage helper
   (`PRIMITIVE_ID_FROM_STAGE`) are its flags; the clamped texture
   slots are `min_lod_clamped`; storage slots run through a buffer are `texels_through_buffer`; where
-  the draw's bases come from is `draw_base`.
+  the draw's bases come from is `draw_base`; a view's component mapping, applied by the program where
+  the back end lacks `VIEW_SWIZZLE` (`SwizzleInShader`), is `swizzled`.
+- Slow paths a program takes by itself, whatever its variant (an atomic minimum or maximum of the
+  other signedness than its memory's, made by a compare-exchange loop: `AtomicExchangeLoop`), are
+  listed in `Reflection::slow_paths`; the front counts and warns of them when it uses the program.
 
 The conversion API G6 provides in `wcontainers-shaders`, which G4 and G5 call:
 
