@@ -179,6 +179,8 @@ logs in run12/logs-full1):
   conditional_rendering, unused_interpolated_input, zero_vertex_stride.
 - vkd3d-d3d12_invalid_usage: 3 of 3 (newly: invalid_resource_barriers, invalid_copy_texture_region).
 - vkd3d-hlsl_d3d12: 8 of 9 (test_thread_id: `StorageImage`, G6).
+- Second full run after the mesh subobject and comparison refusal commits (run12/full2.log, at
+  18e6979): the same 116 of 193, the same failing set.
 - vkd3d-shader_runner (302 files): 194 of 299 with our d3d12.dll alone ("Shader runner" below).
 
 What the 76 failing vkd3d-d3d12 tests stop at first (run12/fail-reasons-full1.txt):
@@ -235,6 +237,9 @@ and mesh shader subobjects, which the stream reader refused. The 105 failing:
   reports absent (float64, int64, 16-bit types, wave operations, depth bounds, barycentrics,
   `SV_RenderTargetArrayIndex`/`SV_ViewportArrayIndex` from the vertex stage, and smaller gaps
   of 1 to 100 checks not sorted yet).
+- With the system's dxgi.dll the runner finds no vendor for our device (its LUID is ours, not
+  the system adapter's), so it drops its "nvidia" tag; some of the small check-count gaps may
+  come from that and not from us.
 - Wrong values, 4: arithmetic-float-uniform (4 checks), arithmetic-float (2), frexp (2) not
   looked into yet; sample-cmp (20) compared an `R32_TYPELESS` texture stored as `r32float`, which
   WebGPU's bind group refused, so the draws were dropped silently. Such comparison sampling is
@@ -351,8 +356,8 @@ A working example of all of it is this track's Windows library: `examples/direct
 - Tests (one draws on the GPU): `tools/graphics-rig/gpu-job --build "cargo test -j 3 -p
   wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12 --no-run" -- "cargo test
   -j 3 --no-fail-fast -p wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12"`
-  (32 tests: 9 infrastructure, 8 front, 10 device on the recorder, 1 on the GPU, 4 unit; run 12:
-  all pass). Put `set CARGO_INCREMENTAL=0&& ` before both commands (see the note further down).
+  (33 tests: 9 infrastructure, 9 front, 10 device on the recorder, 1 on the GPU, 4 unit; run 12:
+  all pass at 18e6979). Put `set CARGO_INCREMENTAL=0&& ` before both commands (see the note further down).
   `WEBGPU_API=dx12|vulkan` picks wgpu's path for the GPU test.
 - Lint: `tools/graphics-rig/remote "cargo clippy -j 3 --all-targets -p
   wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12 -- -D warnings"`.
