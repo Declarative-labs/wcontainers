@@ -120,7 +120,10 @@ What is left of P2, in order:
    chunks that later passed; restart it if the total is short.
 2. After the last fix, the confirmation run on the final commit at 5 percent of each layer with base seed
    200 (one command above), in a new directory. Its zig cache (`<dir>/zig-cache`) starts empty: warm it first
-   with one layer 3 run of 24 cases and one job, as in failure 4, so six cold builds do not race.
+   with one layer 3 run of 24 cases and one job, as in failure 4, so six cold builds do not race:
+   `ZIG_GLOBAL_CACHE_DIR=<dir>/zig-cache WC_LAYER3_CASES=24 WC_LAYER3_SEED=9 WC_LAYER3_JOBS=1
+   WC_LAYER3_CHROME=0 nix develop -c cargo test --release -p wcontainers-translator-test --test layer3
+   csmith_programs_match_linux` (not counted).
 3. The whole suite of the three crates on the final code once the driver has ended (not run at the end of
    this run: the driver holds the 6 jobs this machine allows; the crates' own unit tests, `exact` and
    `binaries` were run on the final code, and layers 1 and 2 of the long run cover the rest of the changes).
