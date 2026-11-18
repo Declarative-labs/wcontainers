@@ -65,6 +65,12 @@ Test fixes (the whole suite as a gate):
 - The previous run's local probe (tests/zprobe.rs, excluded from git) failed in whole-suite runs
   for want of its variables; its tests are now ignored unless asked for.
 
+Layer 1, fresh seeds at the final kernel (5671d96; 7f26687 changed only this file), 20000
+sequences each: 6262609 (338.7 s) and 6262610 (338.9 s), side by side beside the whole suite,
+load 56 at the start and 48 at the end; 6262611 (362.4 s, load 54 at the start, 28 at the
+end). Earlier in the run 6262607 and 6262608 passed 20000 each at 6aea26e (338.4 s and 337.5 s,
+load 26), before O_TMPFILE and the ftruncate and fallocate events.
+
 Whole-suite run at 2d90fbe (started by the previous run, scratch k6b/suite3.log, load about 20,
 26 minutes): every test binary passed but three: terminal `making_pairs` and userlimits
 `queued_signals_match_reference` (both fixed above, the reference's races), and the local
@@ -2819,6 +2825,6 @@ not seen as a setting; futex queues allocate when a futex first gets waiters; th
 sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
 737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, 5050001, 5050003 and
 5050002, 5050401 to 5050462 (K5; sockets reached from 5050405), 5050463 to 5050466 (K6a),
-6262601 to 6262605 (K6b), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+6262601 to 6262611 (K6b), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
 0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
 to 4040315, and the check's 7171002.
