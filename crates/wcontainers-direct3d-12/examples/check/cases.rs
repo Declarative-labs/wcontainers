@@ -46,6 +46,7 @@ pub const CASES: &[&str] = &[
     "indirect-vertex-buffer",
     "indirect-vertex-id",
     "predicated-resolve",
+    "occlusion-count",
 ];
 
 /// Runs case `name` and returns its line of results.
@@ -68,6 +69,7 @@ pub fn run(name: &str) -> Result<String> {
             "indirect-vertex-buffer" => indirect_vertex_buffer(&c),
             "indirect-vertex-id" => indirect_vertex_id(&c),
             "predicated-resolve" => predicated_resolve(&c),
+            "occlusion-count" => occlusion_count(&c),
             _ => panic!("no case {name}"),
         }
     }
@@ -943,6 +945,93 @@ unsafe fn predication(c: &Ctx) -> Result<String> {
         }
         write!(out, " {}", colours(&pixels)).unwrap();
         Ok(out)
+    }
+}
+
+/// Counted occlusion queries: one draw, two draws with a clear between them, none, a degenerate
+/// triangle and two instances; resolved in a second list, and one count used as a predicate.
+unsafe fn occlusion_count(c: &Ctx) -> Result<String> {
+    unsafe {
+        let (root, pso) = c.triangle_pso(false)?;
+        let vertices = c.upload(&triangles())?;
+        let mut queries = None;
+        c.device.CreateQueryHeap(
+            &D3D12_QUERY_HEAP_DESC {
+                Type: D3D12_QUERY_HEAP_TYPE_OCCLUSION,
+                Count: 5,
+                NodeMask: 0,
+            },
+            &mut queries,
+        )?;
+        let queries: ID3D12QueryHeap = queries.unwrap();
+        let answers = c.committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &buffer_desc(40, D3D12_RESOURCE_FLAG_NONE),
+            D3D12_RESOURCE_STATE_COPY_DEST,
+        )?;
+        let readback = c.committed(
+            D3D12_HEAP_TYPE_READBACK,
+            &buffer_desc(40, D3D12_RESOURCE_FLAG_NONE),
+            D3D12_RESOURCE_STATE_COPY_DEST,
+        )?;
+        let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        let (target, _heap, rtv) = c.target(&list)?;
+        list.SetPipelineState(&pso);
+        list.SetGraphicsRootSignature(&root);
+        vertex_buffer(&list, &vertices);
+        let counted = D3D12_QUERY_TYPE_OCCLUSION;
+        list.BeginQuery(&queries, counted, 0);
+        list.DrawInstanced(3, 1, 0, 0);
+        list.EndQuery(&queries, counted, 0);
+        list.BeginQuery(&queries, counted, 1);
+        list.DrawInstanced(3, 1, 3, 0);
+        let rect = RECT {
+            left: 0,
+            top: 0,
+            right: 4,
+            bottom: 4,
+        };
+        list.ClearRenderTargetView(rtv, &[1.0, 1.0, 0.0, 1.0], Some(&[rect]));
+        list.DrawInstanced(3, 1, 6, 0);
+        list.EndQuery(&queries, counted, 1);
+        list.BeginQuery(&queries, counted, 2);
+        list.EndQuery(&queries, counted, 2);
+        list.BeginQuery(&queries, counted, 3);
+        list.DrawInstanced(3, 1, 9, 0);
+        list.EndQuery(&queries, counted, 3);
+        list.BeginQuery(&queries, counted, 4);
+        list.DrawInstanced(3, 2, 3, 0);
+        list.EndQuery(&queries, counted, 4);
+        c.run(&list)?;
+        let (_b, second) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        second.ResolveQueryData(&queries, counted, 0, 5, &answers, 0);
+        second.ResourceBarrier(&[transition(
+            &answers,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_COPY_SOURCE | D3D12_RESOURCE_STATE_PREDICATION,
+        )]);
+        second.CopyBufferRegion(&readback, 0, &answers, 0, 40);
+        // The empty query's zero skips the first clear; the first query's count lets the second
+        // through.
+        let rect = |x: i32| RECT {
+            left: x,
+            top: 28,
+            right: x + 8,
+            bottom: 36,
+        };
+        second.SetPredication(&answers, 16, D3D12_PREDICATION_OP_EQUAL_ZERO);
+        second.ClearRenderTargetView(rtv, &[0.0, 1.0, 1.0, 1.0], Some(&[rect(4)]));
+        second.SetPredication(&answers, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
+        second.ClearRenderTargetView(rtv, &[1.0, 0.0, 1.0, 1.0], Some(&[rect(52)]));
+        second.SetPredication(None, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
+        c.run(&second)?;
+        let resolved = mapped(&readback, 40)?;
+        let pixels = c.pixels(&target, D3D12_RESOURCE_STATE_RENDER_TARGET)?;
+        Ok(format!(
+            "counted {} pixels {}",
+            words(&resolved),
+            colours(&pixels)
+        ))
     }
 }
 
