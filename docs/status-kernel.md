@@ -96,6 +96,16 @@ The Linux Test Project (layer 3):
   - pty02: a canonical terminal in EXTPROC mode reads past its line end, and the count of what
     it holds overflowed; it wraps as Linux's unsigned difference does (tests/terminal.rs
     `extproc_reads_match_reference`, guest/ttyextproc.c).
+- The first comparison with every fix in (second whole run, all at 8a3d41f, 3 jobs, LTP_LIMIT
+  300, load 20 to 35; scratch ltp/ours-2.tsv and compare-2.txt): 2308 of 2694 verdicts match,
+  386 differ. By cause: no kernel crash, no hang, 18 slower than the time limit on the stand-in
+  (fs growfiles, rwtest and iogen, cve-2011-0999, cve-2017-17052, mtest06_3, shm_test01 and
+  others that take 30 s to 5 min natively), 79 a part not built, 289 wrong answers. By group:
+  syscalls 188, hugetlb 56, cve 41, sysfs 18, mm 18, fs 13, kernel_misc 11, syscalls-ipc 9,
+  crypto 8, controllers 8, sched 5, pty 4, can 3, containers 2, uevent 1, capability 1. The most
+  common: reference pass and ours broken (94), reference broken and ours skipped (87), reference
+  skipped and ours broken (83). The largest single cause is the missing `/proc/config.gz` (see
+  Next). Ours: 1054 pass, 178 fail, 639 broken, 798 skipped, 7 warning, 18 timeout.
 
 
 - Local sockets of every kind (stream, datagram, sequenced packets), names (paths and abstract),
