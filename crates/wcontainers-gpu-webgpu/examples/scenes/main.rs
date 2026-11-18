@@ -69,6 +69,9 @@ mod converted;
 mod vertices;
 
 #[cfg(target_arch = "wasm32")]
+mod renames;
+
+#[cfg(target_arch = "wasm32")]
 #[macro_use]
 mod names;
 
@@ -156,9 +159,9 @@ mod web {
     /// The formats held converted, checked on the browser's WebGPU: one line of the largest
     /// differences, or the failed check.
     #[wasm_bindgen(jspi)]
-    pub fn converted() -> Result<String, JsError> {
+    pub fn converted(seed: u64, cases: u32) -> Result<String, JsError> {
         let (mut b, _) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
-        super::converted::check(&mut b).map_err(js)
+        super::converted::check(&mut b, seed, cases).map_err(js)
     }
 
     /// The vertex formats WebGPU lacks, `n` seeded vertices each, read through shadow streams on
@@ -170,6 +173,19 @@ mod web {
         Ok(format!(
             "vertex formats: seed {seed}, {n} vertices per format, all as they mean"
         ))
+    }
+
+    /// Textures written with `Discard` behind recorded draws, renamed from the pool on the
+    /// browser's WebGPU; fails at the first wrong pixel or count.
+    #[wasm_bindgen(jspi)]
+    pub fn texture_renames() -> Result<String, JsError> {
+        let (mut b, _) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
+        super::renames::discarded_textures_are_renamed_from_the_pool(&mut b);
+        Ok(
+            "texture renames: four frames of four discarded writes, three renames a frame, \
+            from the pool after the first"
+                .into(),
+        )
     }
 
     /// Draws the eight-viewport scene (`rounded`: its viewports moved to whole pixels) on the

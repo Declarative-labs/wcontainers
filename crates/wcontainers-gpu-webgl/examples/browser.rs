@@ -117,7 +117,10 @@ macro_rules! suite {
     ($($test:ident),* $(,)?; $($check:ident),* $(,)?) => {
         const SUITE: &[(&str, fn())] = &[
             $((stringify!($test), wcontainers_gpu_test::suite::$test::<Chrome>),)*
-            $((stringify!($check), checks::$check::<Chrome>),)*
+            $((stringify!($check), || {
+                let (seed, cases) = SAMPLING.get();
+                checks::seeded(checks::$check::<Chrome>, seed, cases)
+            }),)*
         ];
     };
 }
@@ -152,12 +155,21 @@ suite!(
     resolves_average_in_the_format_named,
     programs_run_per_sample_and_read_samples,
     occlusion_queries_answer_whether_samples_passed,
+    fill_modes_draw_edges_or_corners,
+    values_pass_between_programs_by_location,
+    vertices_pulled_from_storage_match_the_fetched_ones,
+    constants_read_through_a_texture_lie_256_rows_to_a_texture_row,
+    missing_components_read_their_defaults,
+    captures_write_location_outputs_packed_in_draw_order,
+    a_copy_within_one_subresource_moves_the_region,
     present_shows_the_frame;
     vertex_and_instance_numbers_include_the_bases,
     discard_then_no_overwrite_writes,
     depth_and_stencil_read_back,
     stencil_sampled_and_read_back,
     copies_within_a_typeless_group,
+    cube_faces_copied_between_typeless_formats,
+    copies_within_one_subresource,
     depth_and_stencil_written_read_back_as_written,
     copies_between_depth_and_colour_formats,
     copies_between_index_and_data_buffers,
@@ -194,16 +206,21 @@ suite!(
     mirror_once_addressing,
     clip_and_cull_distances,
     points_sized_by_the_program,
+    broken_rules_lose_the_device,
 );
 
 thread_local! {
+    /// The seed of the checks' patterns and how many seeds from it each check runs.
+    static SAMPLING: core::cell::Cell<(u32, u32)> = const { core::cell::Cell::new((0, 1)) };
     /// The test `suite_test` chose, which `suite_run` runs.
     static CHOSEN: core::cell::Cell<Option<fn()>> = const { core::cell::Cell::new(None) };
 }
 
-/// Chooses the suite test `name`, with `off` (extensions to treat as missing, separated by spaces).
+/// Chooses the suite test `name`, with `off` (extensions to treat as missing, separated by spaces);
+/// a check of checks.rs runs `cases` times, with its patterns' seeds from `seed` up.
 #[wasm_bindgen]
-pub fn suite_test(name: &str, off: &str) -> Result<(), JsError> {
+pub fn suite_test(name: &str, off: &str, seed: u32, cases: u32) -> Result<(), JsError> {
+    SAMPLING.set((seed, cases));
     std::panic::set_hook(Box::new(|info| panicked(&info.to_string())));
     let (_, test) = SUITE
         .iter()
@@ -217,6 +234,18 @@ pub fn suite_test(name: &str, off: &str) -> Result<(), JsError> {
 /// Runs the chosen test. A plain export, which the page calls through `WebAssembly.promising` so the
 /// back end's waits can suspend it. A failing test panics: the page gets the message through
 /// `window.panicked` and the module traps.
+/// The features whose check did not run because the back end declares them absent, empty when
+/// every route of the chosen test ran.
+#[wasm_bindgen]
+pub fn suite_not_run() -> String {
+    let absent = checks::take_not_run();
+    if absent.is_empty() {
+        String::new()
+    } else {
+        format!("{absent:?} absent")
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn suite_run() {
     if let Some(test) = CHOSEN.take() {

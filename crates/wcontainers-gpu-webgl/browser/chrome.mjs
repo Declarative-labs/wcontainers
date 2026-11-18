@@ -38,7 +38,9 @@ export async function launch() {
   if (builds.length !== 1) throw new Error(`${root} holds ${builds.length} Chrome builds, not one`);
   const executablePath = join(root, builds[0], 'chrome-win64', 'chrome.exe');
   for (let launches = 1; launches <= 3; launches++) {
-    const browser = await chromium.launch({ executablePath, headless: true });
+    // The developer features flag only adds the backend, adapter type and full name to
+    // GPUAdapterInfo, so the cost page can confirm WebGPU drew on a GPU.
+    const browser = await chromium.launch({ executablePath, headless: true, args: ['--enable-webgpu-developer-features'] });
     const lost = await gpuReady(browser);
     if (lost < 10) {
       console.log(`chrome ${browser.version()}${lost ? `: ${lost} WebGL contexts were lost while the GPU process started` : ''}`);

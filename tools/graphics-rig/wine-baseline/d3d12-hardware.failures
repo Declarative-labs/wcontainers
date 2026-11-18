@@ -1,4 +1,4 @@
-test_swapchain_draw 6 d3d12.c:1113
-test_swapchain_size_mismatch 1 d3d12.c:1250
-test_swapchain_size_mismatch 20 d3d12.c:1297
-test_swapchain_backbuffer_index 20 d3d12.c:1397
+test_swapchain_draw d3d12.c:1113 1-6
+test_swapchain_size_mismatch d3d12.c:1250 1
+test_swapchain_size_mismatch d3d12.c:1297 1-20
+test_swapchain_backbuffer_index d3d12.c:1397 1-20

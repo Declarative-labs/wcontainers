@@ -4,16 +4,18 @@
 # for /), on the GPU or
 # on WARP, with replacement libraries beside the test programs if given. Writes <Out>\<file>-<driver>.txt,
 # one line per test: "<test> <pass|fail|crash|timeout> <checks run> <checks failed> <skipped> <seconds>
-# [unstable]", and <Out>\<file>-<driver>.failures, the checks each test failed: "<test> <times>
-# <check>", the check being what Wine or vkd3d prints before "Test failed" (file, line and
-# context). It keeps each test's output in <Out>\logs. Recording runs a test that does not pass
-# twice: one that fails other checks the second time is marked unstable. Without -Record, compares
-# every result with the baseline recorded on real Direct3D (<Baseline>\<file>-<driver>.txt and
-# .failures): a test must run at least as many checks and skip no more (a library that refuses to
-# make a device skips nearly everything with no failure), and fail no check more often than real
-# Direct3D does, so a test failing some checks on real Direct3D still holds every other; only an
-# unstable one is reported but not counted. Exits 1 if any counted test fails. Each test runs through gt-launch (-Launch), which reports where
-# it loaded each replacement from: a test that loaded one from anywhere else fails.
+# [unstable]", and <Out>\<file>-<driver>.failures, the checks each test failed: "<test>
+# <file>:<line> <evaluations>", which evaluations of that place in the source failed (3,5,7-40). It
+# keeps each test's output in <Out>\logs. Recording runs a test that does not pass twice more with
+# every check reported: one that fails other evaluations, or runs another number of checks, the
+# second time is marked unstable. Without -Record, compares every result with the baseline recorded
+# on real Direct3D (<Baseline>\<file>-<driver>.txt and .failures): a test must run at least as many
+# checks and skip no more (a library that refuses to make a device skips nearly everything with no
+# failure), and a test real Direct3D does not pass runs with every check reported and may fail only
+# the evaluations real Direct3D fails, and when real Direct3D crashed in it, must run as many checks
+# before crashing; only an unstable one is reported but not counted. Exits 1 if any counted test
+# fails. Each test runs through gt-launch (-Launch), which reports where it loaded each replacement
+# from: a test that loaded one from anywhere else fails.
 param(
     [Parameter(Mandatory)][string]$Out,
     [Parameter(Mandatory)][string]$Baseline,
@@ -51,9 +53,12 @@ foreach ($line in Get-Content tools\graphics-rig\wine-excluded.txt) {
 }
 
 # Runs one test in its own process through gt-launch. Returns its verdict, counts, the checks it
-# failed (what is printed before "Test failed", with how many times) and where it loaded the
-# replacements from.
-function Run-Test([string]$file, [string]$name, [bool]$vkd3d) {
+# failed and where it loaded the replacements from. A check is its place in the source, file:line,
+# and which evaluation of that place it was ("d3d11.c:120#3", counting from 1): with $Every the
+# test reports every check it passes as well (WINETEST_REPORT_SUCCESS, VKD3D_TEST_DEBUG=2), so the
+# number is the evaluation's own and a crash still shows how many checks ran; without, only failed
+# checks are numbered.
+function Run-Test([string]$file, [string]$name, [bool]$vkd3d, [bool]$Every) {
     $log = "$Out\logs\$file-$name-$driver.log"
     # Wine's tests take the file's name and pick tests by WC_WINE_ONLY; vkd3d's by
     # VKD3D_TEST_FILTER, and its shader runner takes the .shader_test file.
@@ -67,6 +72,9 @@ function Run-Test([string]$file, [string]$name, [bool]$vkd3d) {
     $info.RedirectStandardError = $true
     if (-not $vkd3d) { $info.EnvironmentVariables['WC_WINE_ONLY'] = $name }
     elseif ($file -ne 'vkd3d-shader_runner') { $info.EnvironmentVariables['VKD3D_TEST_FILTER'] = $name }
+    if ($Every) {
+        if ($vkd3d) { $info.EnvironmentVariables['VKD3D_TEST_DEBUG'] = '2' } else { $info.EnvironmentVariables['WINETEST_REPORT_SUCCESS'] = '1' }
+    }
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $process = [Diagnostics.Process]::Start($info)
     $stdout = $process.StandardOutput.ReadToEndAsync()
@@ -90,15 +98,21 @@ function Run-Test([string]$file, [string]$name, [bool]$vkd3d) {
         $summary = [regex]::Match($text, '(\d+) tests executed \((\d+) marked as todo, (\d+) as flaky, (\d+) failures?\), (\d+) skipped')
         if ($summary.Success) { $failures = [int]$summary.Groups[4].Value; $skipped = [int]$summary.Groups[5].Value }
     }
-    if ($summary.Success) { $checks = [int]$summary.Groups[1].Value }
+    # Each check printed: Wine's "<file>:<line>: [<context>: ]Test <outcome>", vkd3d's the same.
+    $seen = @{}; $evaluated = 0
+    $checksFailed = [ordered]@{}
+    foreach ($match in [regex]::Matches($text, '(?m)^([\w.+-]+:\d+):.*?Test (failed|succeeded inside todo block|succeeded|marked todo|marked flaky)[^\r\n]*')) {
+        $at = $match.Groups[1].Value
+        $seen[$at] = 1 + $(if ($seen.ContainsKey($at)) { $seen[$at] } else { 0 })
+        $evaluated++
+        if ($match.Groups[2].Value -in 'failed', 'succeeded inside todo block') {
+            $checksFailed["$at#$($seen[$at])"] = $match.Value
+        }
+    }
+    if ($summary.Success) { $checks = [int]$summary.Groups[1].Value } elseif ($Every) { $checks = $evaluated }
     if (-not $verdict) {
         $verdict = if (-not $summary.Success -or $process.ExitCode -gt 255 -or $process.ExitCode -lt 0) { 'crash' }
                    elseif ($failures -eq 0 -and $process.ExitCode -eq 0) { 'pass' } else { 'fail' }
-    }
-    $checksFailed = @{}
-    foreach ($match in [regex]::Matches($text, '(?m)^(.*?):? Test (?:failed|succeeded inside todo block)')) {
-        $check = $match.Groups[1].Value.Trim()
-        $checksFailed[$check] = 1 + $(if ($checksFailed.ContainsKey($check)) { $checksFailed[$check] } else { 0 })
     }
     # Where the test loaded each replacement from, if it loaded it at all.
     $here = @(); $elsewhere = @()
@@ -112,9 +126,37 @@ function Run-Test([string]$file, [string]$name, [bool]$vkd3d) {
     @{ Verdict = $verdict; Checks = $checks; Failures = $failures; Skipped = $skipped; Seconds = $seconds; Exit = $process.ExitCode; Failed = $checksFailed; Here = @($here | Select-Object -Unique); Elsewhere = $elsewhere }
 }
 
-# A test's failed checks as "<times> <check>" lines, sorted.
+# A test's failed checks as "<file>:<line> <evaluations>" lines, the evaluations as ranges (3,5,7-40).
 function Failure-Lines($failed) {
-    @($failed.Keys | Sort-Object | ForEach-Object { "$($failed[$_]) $_" })
+    $byPlace = @{}
+    foreach ($key in $failed.Keys) {
+        $at, $n = $key.Split('#')
+        if (-not $byPlace.ContainsKey($at)) { $byPlace[$at] = New-Object System.Collections.Generic.List[int] }
+        $byPlace[$at].Add([int]$n)
+    }
+    @($byPlace.Keys | Sort-Object | ForEach-Object {
+        $runs = @(); $numbers = @($byPlace[$_] | Sort-Object)
+        for ($i = 0; $i -lt $numbers.Count; $i++) {
+            $from = $numbers[$i]
+            while ($i + 1 -lt $numbers.Count -and $numbers[$i + 1] -eq $numbers[$i] + 1) { $i++ }
+            $runs += $(if ($numbers[$i] -eq $from) { "$from" } else { "$from-$($numbers[$i])" })
+        }
+        "$_ $($runs -join ',')"
+    })
+}
+
+# The checks a failures line allows to fail, as Run-Test names them.
+function Failure-Keys([string]$at, [string]$ranges) {
+    foreach ($range in $ranges.Split(',')) {
+        $from, $to = $range.Split('-')
+        foreach ($n in [int]$from..[int]$(if ($to) { $to } else { $from })) { "$at#$n" }
+    }
+}
+
+function Describe($run) {
+    $what = "$($run.Verdict), $($run.Checks) checks, $($run.Failures) failed, $($run.Skipped) skipped, $($run.Seconds) s"
+    if ($run.Verdict -eq 'crash') { $what += (', exit 0x{0:x8}' -f $run.Exit) }
+    $what
 }
 
 $counted = 0; $failed = 0
@@ -136,9 +178,10 @@ foreach ($choice in $Tests.Split(',')) {
         $failuresFile = "$Baseline\$file-$driver.failures"
         if (-not (Test-Path $failuresFile)) { throw "no $failuresFile; record the baseline again with wine-tests run --record" }
         foreach ($line in Get-Content $failuresFile) {
-            $test, $times, $check = $line.Split(' ', 3)
-            if (-not $known.ContainsKey($test)) { $known[$test] = @{} }
-            $known[$test][$check] = [int]$times
+            $test, $at, $ranges = $line.Split(' ')
+            if (-not $ranges) { throw "$failuresFile has an old line ($line); record the baseline again with wine-tests run --record" }
+            if (-not $known.ContainsKey($test)) { $known[$test] = New-Object 'System.Collections.Generic.HashSet[string]' }
+            foreach ($key in Failure-Keys $at $ranges) { $null = $known[$test].Add($key) }
         }
     }
     $results = New-Object System.Collections.Generic.List[string]
@@ -147,21 +190,25 @@ foreach ($choice in $Tests.Split(',')) {
     $fileClock = [Diagnostics.Stopwatch]::StartNew()
     foreach ($name in $names) {
         if ($excluded.ContainsKey("$file $name")) { "$file ${name}: excluded, $($excluded["$file $name"])"; continue }
-        $run = Run-Test $file $name $vkd3d
+        $before = $expected[$name]
+        # A test real Direct3D does not pass reports every check, so each failure is pinned to its evaluation.
+        $run = Run-Test $file $name $vkd3d ($before -and $before[1] -ne 'pass')
         $launched++
         foreach ($library in $run.Here) { $loadedBy[$library]++ }
-        $what = "$($run.Verdict), $($run.Checks) checks, $($run.Failures) failed, $($run.Skipped) skipped, $($run.Seconds) s"
-        if ($run.Verdict -eq 'crash') { $what += (', exit 0x{0:x8}' -f $run.Exit) }
         if ($Record) {
             $unstable = ''
+            $what = Describe $run
             if ($run.Verdict -ne 'pass') {
-                # Run again: what it fails must be the same each time to be held against others.
-                $again = Run-Test $file $name $vkd3d
+                # Twice more with every check reported: it must fail the same evaluations each time
+                # to be held to the rest.
+                $run = Run-Test $file $name $vkd3d $true
+                $again = Run-Test $file $name $vkd3d $true
+                $what = Describe $run
                 $first = (Failure-Lines $run.Failed) -join "`n"
                 $second = (Failure-Lines $again.Failed) -join "`n"
-                if ($first -ne $second -or $again.Verdict -ne $run.Verdict) {
+                if ($first -ne $second -or $again.Verdict -ne $run.Verdict -or $again.Checks -ne $run.Checks) {
                     $unstable = ' unstable'
-                    $what += "; again $($again.Verdict), $($again.Failures) failed: unstable"
+                    $what += "; again $(Describe $again): unstable"
                 }
             }
             $results.Add("$name $($run.Verdict) $($run.Checks) $($run.Failures) $($run.Skipped) $($run.Seconds)$unstable")
@@ -169,17 +216,17 @@ foreach ($choice in $Tests.Split(',')) {
             "$file ${name}: $what"
             continue
         }
+        $what = Describe $run
         $results.Add("$name $($run.Verdict) $($run.Checks) $($run.Failures) $($run.Skipped) $($run.Seconds)")
         foreach ($line in Failure-Lines $run.Failed) { $failing.Add("$name $line") }
-        $before = $expected[$name]
-        $allowed = if ($known.ContainsKey($name)) { $known[$name] } else { @{} }
-        # Checks failed here more often than on real Direct3D.
-        $worse = @($run.Failed.Keys | Where-Object { $run.Failed[$_] -gt $(if ($allowed.ContainsKey($_)) { $allowed[$_] } else { 0 }) })
+        $allowed = if ($known.ContainsKey($name)) { $known[$name] } else { @() }
+        # Checks failed here at an evaluation real Direct3D passed.
+        $worse = @($run.Failed.Keys | Where-Object { -not $allowed.Contains($_) })
         $real = if ($before) { "real Direct3D: $($before[1]), $($before[2]) checks, $($before[3]) failed, $($before[4]) skipped" }
         $line = if ($run.Elsewhere) { "FAIL, did not load the replacement: $($run.Elsewhere -join ', ')" }
                 elseif (-not $before) { "FAIL, not in the baseline; $what" }
                 elseif ($before.Count -gt 6 -and $before[6] -eq 'unstable') { "known, fails differently from run to run on real Direct3D ($real); here $what" }
-                elseif ($worse) { "FAIL, $($worse.Count) checks fail that real Direct3D passes, or fail more often, the first: $($worse[0]); here $what ($real)" }
+                elseif ($worse) { "FAIL, $($worse.Count) checks fail that real Direct3D passes, the first ($($worse[0])): $($run.Failed[$worse[0]]); here $what ($real)" }
                 elseif ($before[1] -eq 'pass' -and $run.Verdict -ne 'pass') { "FAIL, passes on real Direct3D; here $what" }
                 elseif ($run.Verdict -in 'crash', 'timeout' -and $run.Verdict -ne $before[1]) { "FAIL, $what ($real)" }
                 elseif ($run.Checks -lt [int]$before[2] -or $run.Skipped -gt [int]$before[4]) {

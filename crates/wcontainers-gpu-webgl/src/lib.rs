@@ -1019,8 +1019,8 @@ impl WebGl {
 
     /// Copies a region between colour formats of one typeless group by a draw per layer that fetches
     /// each source texel and writes its bits as the destination's value ([`SlowPath::CopyThroughBuffer`],
-    /// convert.rs). False when no such draw carries the two formats, the source is a cube or the
-    /// destination cannot be drawn into.
+    /// convert.rs). False when no such draw carries the two formats or the destination cannot be
+    /// drawn into.
     fn copy_by_draw(
         &mut self,
         src: &TextureRegion<'_, Self>,
@@ -1032,7 +1032,7 @@ impl WebGl {
             glow::TEXTURE_2D => "2D",
             glow::TEXTURE_2D_ARRAY => "2DArray",
             glow::TEXTURE_3D => "3D",
-            _ => return false,
+            _ => "Cube",
         };
         let drawn = if to.is_depth_stencil() {
             FormatUse::DEPTH_STENCIL
@@ -1104,6 +1104,91 @@ impl WebGl {
             }
         }
         true
+    }
+
+    /// Whether a copy reads and writes one subresource (a level's layers, or a 3D level's slices,
+    /// that both regions cover), which every GL route refuses as a feedback loop.
+    fn within_one_subresource(
+        &self,
+        src: &TextureRegion<'_, Self>,
+        dst: &TextureRegion<'_, Self>,
+        extent: Extent,
+    ) -> bool {
+        let first = |r: &TextureRegion<'_, Self>| match r.texture.desc.dimension {
+            TextureDimension::D3 => r.origin.z,
+            _ => r.layer,
+        };
+        let (s, d, n) = (first(src), first(dst), extent.depth_or_layers);
+        Rc::ptr_eq(&src.texture.0, &dst.texture.0) && src.mip == dst.mip && s < d + n && d < s + n
+    }
+
+    /// A copy within one subresource, through a buffer holding the source region
+    /// ([`SlowPath::CopyWithinTexture`]): a copy into the buffer, then one out of it, aspect by
+    /// aspect for a format with depth and stencil. Formats GL does not read back (16-bit floats)
+    /// are held in a 2D texture instead.
+    fn copy_within(
+        &mut self,
+        src: &TextureRegion<'_, Self>,
+        dst: &TextureRegion<'_, Self>,
+        extent: Extent,
+    ) {
+        self.slow.hit(SlowPath::CopyWithinTexture);
+        let format = src.texture.desc.format;
+        if !self.caps.formats.get(format).contains(FormatUse::COPY_OUT) {
+            let d = &src.texture.desc;
+            let Ok(held) = self.create_texture(&TextureDesc {
+                dimension: TextureDimension::D2,
+                format,
+                width: extent.width,
+                height: extent.height,
+                depth_or_layers: extent.depth_or_layers,
+                mip_levels: 1,
+                samples: 1,
+                usage: (d.usage & (TextureUsage::SAMPLE | TextureUsage::RENDER))
+                    | TextureUsage::COPY_SRC
+                    | TextureUsage::COPY_DST,
+                cube: false,
+                reinterpret: false,
+            }) else {
+                return self.fail(LossReason::OutOfMemory);
+            };
+            let at = TextureRegion {
+                texture: &held,
+                mip: 0,
+                layer: 0,
+                origin: Origin::default(),
+                stencil: false,
+            };
+            self.copy_texture(src, &at, extent);
+            self.copy_texture(&at, dst, extent);
+            return self.destroy(Object::Texture(held));
+        }
+        let (bw, bh, bytes) = format.block();
+        // A buffer's depth of a combined format is a 32-bit word, its stencil a byte.
+        let aspects: &[(bool, u32)] = match format.kind() {
+            FormatKind::DepthStencil => &[(false, 4), (true, 1)],
+            _ => &[(false, bytes)],
+        };
+        let (cols, rows) = (extent.width.div_ceil(bw), extent.height.div_ceil(bh));
+        for &(stencil, bytes) in aspects {
+            let size = u64::from(cols * bytes * rows * extent.depth_or_layers);
+            let Ok(held) = self.create_buffer(&BufferDesc {
+                size,
+                usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+                intent: MapIntent::Rarely,
+            }) else {
+                return self.fail(LossReason::OutOfMemory);
+            };
+            let at = CopyBufferTexture {
+                buffer: &held,
+                offset: 0,
+                row_pitch: cols * bytes,
+                rows_per_layer: rows,
+            };
+            self.copy_texture_to_buffer(&TextureRegion { stencil, ..*src }, &at, extent);
+            self.copy_buffer_to_texture(&at, &TextureRegion { stencil, ..*dst }, extent);
+            self.destroy(Object::Buffer(held));
+        }
     }
 
     /// Copies a region of a depth or depth-stencil texture into one of the same format by
@@ -2567,6 +2652,15 @@ impl WebGl {
                 return;
             }
         };
+        if call.viewports.len() != 1 {
+            self.invalid(format!("{} viewports in one draw", call.viewports.len()));
+            return;
+        }
+        if call.stencil_reference[0] != call.stencil_reference[1] {
+            // STENCIL_PER_FACE is absent: the front draws each face apart.
+            self.invalid("front and back stencil references differ".into());
+            return;
+        }
         if call.immediates.len() > self.caps.limits.immediate_bytes as usize {
             self.invalid(format!(
                 "{} bytes of immediates past the limit of {}",
@@ -3074,9 +3168,9 @@ impl Backend for WebGl {
         if module.stage == ShaderStage::Compute {
             return Err(GpuError::Absent(Features::COMPUTE));
         }
-        let needs = shader::needs(module);
-        if let Some(f) = needs.difference(self.caps.features).iter().next() {
-            return Err(GpuError::Absent(f));
+        let missing = shader::needs(module).difference(self.caps.features);
+        if !missing.is_empty() {
+            return Err(GpuError::Absent(missing));
         }
         let id = self.id();
         let shader = shader::compile(&self.gl, id, module, self.flip_y)?;
@@ -3773,6 +3867,9 @@ impl Backend for WebGl {
         if src.texture.desc.samples > 1 || dst.texture.desc.samples > 1 {
             return self.copy_samples(src, dst);
         }
+        if self.within_one_subresource(src, dst, extent) {
+            return self.copy_within(src, dst, extent);
+        }
         let (from, to) = (src.texture.desc.format, dst.texture.desc.format);
         self.fresh(src.texture);
         self.fresh(dst.texture);
@@ -3789,7 +3886,7 @@ impl Backend for WebGl {
                     SlowPath::CopyThroughBuffer
                 });
             } else {
-                self.unbuilt("copies between depth and colour formats from cube textures");
+                self.unbuilt("copies between these depth and colour formats");
             }
             return;
         }
@@ -3799,8 +3896,16 @@ impl Backend for WebGl {
                 .texture
                 .read
                 .is_some_and(|r| r.texel_read() == r.texel_kept());
+            let half = matches!(
+                to,
+                Format::R16Float | Format::Rg16Float | Format::Rgba16Float
+            );
             if as_stored && from.block() == to.block() {
                 self.copy_through_pbo(src, dst, extent);
+            } else if half && from != to {
+                // A draw writes half floats from 32-bit ones, which lose NaN payloads; the host
+                // writes the bits.
+                self.copy_host_kept(src, dst, extent);
             } else if self.copy_by_draw(src, dst, extent) {
                 self.slow.hit(SlowPath::CopyThroughBuffer);
             } else {
@@ -4002,8 +4107,14 @@ impl Backend for WebGl {
         if size == 0 {
             return;
         }
-        if pattern.is_empty() || offset + size > buffer.size {
-            self.fail(LossReason::Error);
+        if !matches!(pattern.len(), 1 | 2 | 4 | 8 | 16)
+            || !size.is_multiple_of(pattern.len() as u64)
+            || offset + size > buffer.size
+        {
+            self.invalid(format!(
+                "a buffer clear of {size} bytes from {offset} with a {}-byte pattern",
+                pattern.len()
+            ));
             return;
         }
         self.slow.hit(SlowPath::PatternClearCopied);

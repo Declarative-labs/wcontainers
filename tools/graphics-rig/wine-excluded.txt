@@ -1,7 +1,8 @@
 # Wine tests the rig never runs on the GPU desktop, one per line as "<file> <test>: <reason>". Each
 # reaches, itself or through the file's helpers, a call that would change the screen of the owner's
 # machine: ChangeDisplaySettings, SetFullscreenState, a swap chain created fullscreen,
-# SetGammaControl or ClipCursor (found by searching each test's calls, transitively). They need a
+# SetGammaControl or ClipCursor (found by searching each test's calls, transitively), or that hangs
+# the GPU on real Direct3D so the display driver resets (seen in the System log). They need a
 # machine whose display nobody uses.
 d3d11 test_create_device: its child process creates a swap chain with Windowed = FALSE (fullscreen)
 dxgi test_create_swapchain: SetFullscreenState, swap chains with Windowed = FALSE
@@ -22,3 +23,4 @@ dxgi test_swapchain_present: SetFullscreenState
 dxgi test_swapchain_window_messages: SetFullscreenState, swap chains with Windowed = FALSE
 dxgi test_swapchain_window_styles: SetFullscreenState
 dxgi test_window_association: SetFullscreenState
+dxgi test_swapchain_backbuffer_index: its Direct3D 12 part hangs the RTX 3080 (device removed, 0x887A0005) and the display driver resets
