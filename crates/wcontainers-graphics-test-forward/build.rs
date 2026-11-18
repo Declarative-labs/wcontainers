@@ -1,7 +1,9 @@
-//! Mirrors the export table of the system's d3d11.dll: every export becomes a thunk of ours with the
-//! same name and ordinal, except the device-creating ones, which go to typed functions of the crate.
-//! Also reads the method tables of the counted COM interfaces from the Windows SDK's headers and
-//! makes the counting thunks the census patches into them (src/census.rs).
+//! Mirrors the export tables of the system's d3d11.dll and d3d12.dll in one library, copied under
+//! either name: every export becomes a thunk of ours with the same name (or none) and ordinal, except
+//! the device-creating ones, which go to typed functions of the crate; the two libraries' ordinals
+//! do not overlap. A data export cannot be forwarded and is left out (UNFORWARDED). Also reads the
+//! method tables of the counted COM interfaces from the Windows SDK's headers and makes the counting
+//! thunks the census patches into them (src/census.rs).
 
 use std::fmt::Write;
 use std::path::PathBuf;
@@ -10,9 +12,14 @@ use object::LittleEndian;
 use object::pe::{IMAGE_SCN_MEM_EXECUTE, ImageNtHeaders64};
 use object::read::pe::{ExportTarget, PeFile};
 
-const LIBRARY: &str = "d3d11";
-/// Exports served by typed functions `wc_typed_<name>` of the crate.
-const TYPED: &[&str] = &["D3D11CreateDevice", "D3D11CreateDeviceAndSwapChain"];
+/// The libraries mirrored, each with the exports served by typed functions `wc_typed_<name>` of the crate.
+const LIBRARIES: &[(&str, &[&str])] = &[
+    (
+        "d3d11",
+        &["D3D11CreateDevice", "D3D11CreateDeviceAndSwapChain"],
+    ),
+    ("d3d12", &["D3D12CreateDevice"]),
+];
 /// Interfaces whose methods the census counts, with the SDK header defining each.
 const INTERFACES: &[(&str, &str)] = &[
     ("ID3D11Device", "d3d11.h"),
@@ -39,6 +46,22 @@ const INTERFACES: &[(&str, &str)] = &[
     ("IDXGIFactory5", "dxgi1_5.h"),
     ("IDXGIFactory6", "dxgi1_6.h"),
     ("IDXGIFactory7", "dxgi1_6.h"),
+    ("ID3D12Device", "d3d12.h"),
+    ("ID3D12Device1", "d3d12.h"),
+    ("ID3D12Device2", "d3d12.h"),
+    ("ID3D12Device3", "d3d12.h"),
+    ("ID3D12Device4", "d3d12.h"),
+    ("ID3D12Device5", "d3d12.h"),
+    ("ID3D12Device6", "d3d12.h"),
+    ("ID3D12Device7", "d3d12.h"),
+    ("ID3D12Device8", "d3d12.h"),
+    ("ID3D12Device9", "d3d12.h"),
+    ("ID3D12Device10", "d3d12.h"),
+    ("ID3D12Device11", "d3d12.h"),
+    ("ID3D12Device12", "d3d12.h"),
+    ("ID3D12Device13", "d3d12.h"),
+    ("ID3D12Device14", "d3d12.h"),
+    ("ID3D12CommandQueue", "d3d12.h"),
 ];
 /// How many distinct method tables the census can patch.
 const INSTANCES: usize = 24;
@@ -58,75 +81,111 @@ fn main() {
     );
 
     let system = std::env::var("SystemRoot").expect("SystemRoot");
-    let path = PathBuf::from(system)
-        .join("System32")
-        .join(format!("{LIBRARY}.dll"));
-    println!("cargo::rerun-if-changed={}", path.display());
-    let data = std::fs::read(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
-    let file = PeFile::<ImageNtHeaders64>::parse(&*data).expect("a 64-bit PE file");
-    let exports = file
-        .export_table()
-        .unwrap()
-        .expect("an export table")
-        .exports()
-        .unwrap();
-    let sections = file.section_table();
-
-    let mut table = String::from("static EXPORTS: &[&CStr] = &[\n");
+    let mut table = String::from("static EXPORTS: &[(usize, Option<&CStr>, u16)] = &[\n");
+    let mut unforwarded = String::from("pub static UNFORWARDED: &[&str] = &[\n");
     let mut asm = String::new();
-    for (index, export) in exports.iter().enumerate() {
-        if let ExportTarget::Address(rva) = export.target {
-            let executable = sections.iter().any(|s| {
-                let (start, size) = (
-                    s.virtual_address.get(LittleEndian),
-                    s.virtual_size.get(LittleEndian),
-                );
-                (start..start + size).contains(&rva)
-                    && s.characteristics
-                        .get(LittleEndian)
-                        .contains(IMAGE_SCN_MEM_EXECUTE)
-            });
+    let mut names = std::collections::HashSet::new();
+    let mut ordinals = std::collections::HashSet::new();
+    let mut index = 0;
+    for (library, (name, typed)) in LIBRARIES.iter().enumerate() {
+        let path = PathBuf::from(&system)
+            .join("System32")
+            .join(format!("{name}.dll"));
+        println!("cargo::rerun-if-changed={}", path.display());
+        let data =
+            std::fs::read(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+        let file = PeFile::<ImageNtHeaders64>::parse(&*data).expect("a 64-bit PE file");
+        let exports = file
+            .export_table()
+            .unwrap()
+            .expect("an export table")
+            .exports()
+            .unwrap();
+        let sections = file.section_table();
+        for export in exports {
+            let label = export
+                .name
+                .map(|n| std::str::from_utf8(n).unwrap().to_owned());
+            if let ExportTarget::Address(rva) = export.target {
+                let executable = sections.iter().any(|s| {
+                    let (start, size) = (
+                        s.virtual_address.get(LittleEndian),
+                        s.virtual_size.get(LittleEndian),
+                    );
+                    (start..start + size).contains(&rva)
+                        && s.characteristics
+                            .get(LittleEndian)
+                            .contains(IMAGE_SCN_MEM_EXECUTE)
+                });
+                if !executable {
+                    // Data has no call to forward; a program importing it would not load.
+                    writeln!(
+                        unforwarded,
+                        "    \"{name}.dll {} (data)\",",
+                        label.as_deref().unwrap_or("[no name]")
+                    )
+                    .unwrap();
+                    continue;
+                }
+            }
             assert!(
-                executable,
-                "export {:?} of {LIBRARY}.dll is data, which a thunk cannot forward",
-                export.name.map(String::from_utf8_lossy)
-            );
-        }
-        let thunk = format!("wc_forward_{index}");
-        let name = export
-            .name
-            .expect("every export has a name, so programs that import by name find it");
-        let name = std::str::from_utf8(name).unwrap();
-        writeln!(table, "    c\"{name}\",").unwrap();
-        if TYPED.contains(&name) {
-            println!(
-                "cargo::rustc-cdylib-link-arg=/EXPORT:{name}=wc_typed_{name},@{}",
+                ordinals.insert(export.ordinal),
+                "ordinal {} twice",
                 export.ordinal
             );
-            continue;
+            let thunk = format!("wc_forward_{index}");
+            match &label {
+                Some(label) => {
+                    assert!(names.insert(label.clone()), "export {label} twice");
+                    writeln!(
+                        table,
+                        "    ({library}, Some(c\"{label}\"), {}),",
+                        export.ordinal
+                    )
+                    .unwrap();
+                    if typed.contains(&label.as_str()) {
+                        println!(
+                            "cargo::rustc-cdylib-link-arg=/EXPORT:{label}=wc_typed_{label},@{}",
+                            export.ordinal
+                        );
+                        index += 1;
+                        continue;
+                    }
+                    println!(
+                        "cargo::rustc-cdylib-link-arg=/EXPORT:{label}={thunk},@{}",
+                        export.ordinal
+                    );
+                }
+                None => {
+                    writeln!(table, "    ({library}, None, {}),", export.ordinal).unwrap();
+                    println!(
+                        "cargo::rustc-cdylib-link-arg=/EXPORT:{thunk},@{},NONAME",
+                        export.ordinal
+                    );
+                }
+            }
+            // Keeps the four argument registers of both kinds, asks `resolve` for the real
+            // function, and jumps to it with the stack as the caller left it.
+            write!(
+                asm,
+                ".globl {thunk}\n{thunk}:\n\
+                 push rcx\npush rdx\npush r8\npush r9\nsub rsp, 0x68\n\
+                 movdqu xmmword ptr [rsp + 0x20], xmm0\nmovdqu xmmword ptr [rsp + 0x30], xmm1\n\
+                 movdqu xmmword ptr [rsp + 0x40], xmm2\nmovdqu xmmword ptr [rsp + 0x50], xmm3\n\
+                 mov ecx, {index}\ncall {{resolve}}\n\
+                 movdqu xmm0, xmmword ptr [rsp + 0x20]\nmovdqu xmm1, xmmword ptr [rsp + 0x30]\n\
+                 movdqu xmm2, xmmword ptr [rsp + 0x40]\nmovdqu xmm3, xmmword ptr [rsp + 0x50]\n\
+                 add rsp, 0x68\npop r9\npop r8\npop rdx\npop rcx\njmp rax\n"
+            )
+            .unwrap();
+            index += 1;
         }
-        println!(
-            "cargo::rustc-cdylib-link-arg=/EXPORT:{name}={thunk},@{}",
-            export.ordinal
-        );
-        // Keeps the four argument registers of both kinds, asks `resolve` for the real function,
-        // and jumps to it with the stack as the caller left it.
-        write!(
-            asm,
-            ".globl {thunk}\n{thunk}:\n\
-             push rcx\npush rdx\npush r8\npush r9\nsub rsp, 0x68\n\
-             movdqu xmmword ptr [rsp + 0x20], xmm0\nmovdqu xmmword ptr [rsp + 0x30], xmm1\n\
-             movdqu xmmword ptr [rsp + 0x40], xmm2\nmovdqu xmmword ptr [rsp + 0x50], xmm3\n\
-             mov ecx, {index}\ncall {{resolve}}\n\
-             movdqu xmm0, xmmword ptr [rsp + 0x20]\nmovdqu xmm1, xmmword ptr [rsp + 0x30]\n\
-             movdqu xmm2, xmmword ptr [rsp + 0x40]\nmovdqu xmm3, xmmword ptr [rsp + 0x50]\n\
-             add rsp, 0x68\npop r9\npop r8\npop rdx\npop rcx\njmp rax\n"
-        )
-        .unwrap();
     }
+    unforwarded.push_str("];\n");
     table.push_str("];\n");
+    let libraries: Vec<&str> = LIBRARIES.iter().map(|(name, _)| *name).collect();
     let source = format!(
-        "pub const LIBRARY: &str = \"{LIBRARY}\";\n{table}\ncore::arch::global_asm!({asm:?}, resolve = sym resolve);\n"
+        "pub const LIBRARIES: &[&str] = &{libraries:?};\n{table}{unforwarded}\ncore::arch::global_asm!({asm:?}, resolve = sym resolve);\n"
     );
     std::fs::write(&out, source).unwrap();
     std::fs::write(out.with_file_name("census.rs"), census()).unwrap();

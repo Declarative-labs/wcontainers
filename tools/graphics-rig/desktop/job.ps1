@@ -7,13 +7,17 @@
 # the GPU to itself, and lets the group go on after. With -Desktop the command runs, with this
 # environment, on the hidden desktop wc-rig of the logged-in user's session (through the scheduled
 # task wc-desktop and gt-desktop), where windows and swap chains work; the queue's own session
-# refuses swap chains.
+# refuses swap chains. A quarantined command does not run (hazard.ps1). A display driver reset during
+# the job fails it, holds the queue and quarantines the command, unless the command quarantined
+# something narrower itself (a Wine test).
 param(
     [Parameter(Mandatory)][string]$Name,
     [Parameter(Mandatory)][string]$Tree,
     [switch]$Built,
     [switch]$Alone,
     [switch]$Desktop,
+    # The queue group it runs in, for the job history.
+    [Parameter(Mandatory)][string]$Group,
     [Parameter(Mandatory)][string]$ErrorFile,
     [Parameter(Mandatory)][string]$Command
 )
@@ -21,6 +25,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $pueue = 'C:\wc\bin\pueue.exe'
 $config = 'C:\wc\pueue\pueue.yml'
+. $PSScriptRoot\hazard.ps1
 # Messages written before the command runs, added to ErrorFile after it, which the command's
 # standard error replaces.
 $notes = New-Object System.Collections.Generic.List[string]
@@ -76,26 +81,23 @@ if ($Built) {
     if ($builtFrom -ne $Tree) { throw "C:\wc\target\$Name holds a build of $builtFrom, not of $Tree; another remote ran after this job's build" }
 }
 
-# The display driver's resets (a GPU hang the driver recovered from, which also blanks the owner's
-# screen) and errors logged between two times, one line each.
-function DisplayResets([datetime]$From, [datetime]$To) {
-    @(Get-WinEvent -ErrorAction SilentlyContinue -FilterHashtable @{
-            LogName = 'System'; ProviderName = 'Display', 'nvlddmkm'; StartTime = $From; EndTime = $To; Level = 1, 2, 3 } |
-        Sort-Object TimeCreated |
-        ForEach-Object { '{0:HH:mm:ss} {1} {2}: {3}' -f $_.TimeCreated, $_.ProviderName, $_.Id, "$($_.Message)".Split("`n")[0].Trim() })
-}
-
+$text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Command))
+$quarantined = (Get-Quarantine)[$text]
+if ($quarantined) { $lock.Close(); throw "quarantined, as suspected of a display driver reset ($quarantined); lift it with tools/graphics-rig/resets lift" }
+if (Test-Held) { $lock.Close(); throw "the queue is held after a display driver reset: $((Get-Content $hazardHeld) -join ' / ')" }
+$group = $Group
+$suspects = (Get-Quarantine).Count
 $started = Get-Date
+Add-HazardLines "$hazardLogs\jobs.log" @(('{0:yyyy-MM-dd HH:mm:ss.fff} start {1} {2} {3}: {4}' -f $started, $Name, $Tree, $group, $text))
 try {
     if ($Alone) {
-        & $pueue -c $config pause --group default --wait | Out-Null
-        while ((& $pueue -c $config status --json --group default | ConvertFrom-Json).tasks.PSObject.Properties.Value |
-                Where-Object { $_.status.PSObject.Properties.Name -contains 'Running' }) {
+        foreach ($other in 'default', 'hazard') { & $pueue -c $config pause --group $other --wait | Out-Null }
+        while ((& $pueue -c $config status --json | ConvertFrom-Json).tasks.PSObject.Properties.Value |
+                Where-Object { $_.group -ne 'alone' -and $_.status.PSObject.Properties.Name -contains 'Running' }) {
             Start-Sleep -Milliseconds 250
         }
         $notes.Add(("job: alone from {0:HH:mm:ss.fff}" -f (Get-Date)))
     }
-    $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Command))
     if ($Desktop) {
         $code = RunOnDesktop $text
     } else {
@@ -107,17 +109,26 @@ try {
         $code = $process.ExitCode
     }
 } finally {
-    if ($Alone) { & $pueue -c $config start --group default | Out-Null }
+    if ($Alone -and -not (Test-Held)) { foreach ($other in 'default', 'hazard') { & $pueue -c $config start --group $other | Out-Null } }
     $lock.Close()
 }
-# A reset during the job fails it, whichever job beside it caused it, and is kept in a log.
-$resets = DisplayResets $started (Get-Date).AddSeconds(2)
+# A reset during the job fails it, whichever job beside it caused it: every job that saw it is a
+# suspect and quarantined, and the queue starts nothing until the cause is recorded.
+$ended = Get-Date
+$resets = Get-DisplayResets $started $ended.AddSeconds(2)
 if ($resets) {
     $notes.Add("job: FAIL, the display driver was reset or logged errors while this job ran (by it or a job beside it):")
     $resets | ForEach-Object { $notes.Add("job:   $_") }
-    New-Item -ItemType Directory -Force C:\wc\logs | Out-Null
-    [IO.File]::AppendAllLines('C:\wc\logs\display-resets.log',
-        [string[]](@("{0:yyyy-MM-dd HH:mm:ss} job of $Name ($Tree): {1}" -f $started, $text) + $resets))
+    $seen = "{0:yyyy-MM-dd HH:mm:ss} to {1:HH:mm:ss} job of $Name ($Tree) in group ${group}: {2}" -f $started, $ended, $text
+    Add-HazardLines "$hazardLogs\display-resets.log" ([string[]](@($seen) + $resets))
+    Set-Hold @($seen)
+    if ((Get-Quarantine).Count -eq $suspects) {
+        Add-Quarantine $text ("display driver reset at {0} during this job of $Name" -f $resets[0].Substring(0, 19))
+        $notes.Add('job: this command is now quarantined; the queue is held until the cause is recorded (tools/graphics-rig/resets)')
+    } else {
+        $notes.Add('job: the command quarantined what ran at the reset; the queue is held until the cause is recorded (tools/graphics-rig/resets)')
+    }
     if ($code -eq 0) { $code = 1 }
 }
+Add-HazardLines "$hazardLogs\jobs.log" @(('{0:yyyy-MM-dd HH:mm:ss.fff} end {1} {2} {3} exit {4}{5}' -f $ended, $Name, $Tree, $group, $code, $(if ($resets) { ', display driver reset' } else { '' })))
 Finish $code

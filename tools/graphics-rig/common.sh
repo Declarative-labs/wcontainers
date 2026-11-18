@@ -1,31 +1,50 @@
 # shellcheck shell=bash disable=SC2034
 # Shared by the rig's Mac commands: the desktop's address, this checkout's branch name there, and
-# ssh and scp through one shared connection per checkout, which is opened first and waited for when
-# the desktop refuses new connections for a while.
+# ssh and scp through one long-lived connection per branch, which is opened first and waited for
+# when the desktop refuses new connections for a while.
 host=tom@192.168.2.183
 branch=$(git symbolic-ref --short HEAD)
 name=$(printf %s "$branch" | tr -c 'A-Za-z0-9._-' '-')
-socket=$HOME/.ssh/wc-rig-$(git rev-parse --absolute-git-dir | shasum | cut -c1-16)
-ssh_options=(-o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30
-    -o ControlMaster=auto -o "ControlPath=$socket" -o ControlPersist=600)
+socket=$HOME/.ssh/wc-rig-$name
+ssh_options=(-o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 -o "ControlPath=$socket")
 
-# Opens the shared connection, retrying every 15 s for up to 20 minutes.
+# Opens the branch's shared connection unless it is open, and keeps it for an hour after its last
+# use. One script of the branch at a time tries; after a refused attempt it waits 30 s, then twice
+# as long after each next one, at most 5 minutes, for up to 30 minutes: a refused logon may count
+# towards the account's lockout (ten in ten minutes), so this makes at most five in ten minutes.
 connect() {
-    local start=$SECONDS said=
-    until ssh "${ssh_options[@]}" "$host" exit 2>/dev/null; do
-        if ((SECONDS - start > 1200)); then
-            echo "rig: the desktop has not taken an ssh connection for 20 minutes" >&2
+    ssh "${ssh_options[@]}" -O check "$host" 2>/dev/null && return 0
+    local start=$SECONDS wait=30 lock=$socket.lock said=
+    until mkdir "$lock" 2>/dev/null; do
+        if [ -f "$lock/pid" ] && ! kill -0 "$(cat "$lock/pid" 2>/dev/null)" 2>/dev/null; then
+            rm -rf "$lock"
+            continue
+        fi
+        sleep 2
+        ssh "${ssh_options[@]}" -O check "$host" 2>/dev/null && return 0
+        if ((SECONDS - start > 1800)); then
+            echo "rig: another script of this branch has waited 30 minutes for ssh to the desktop" >&2
+            return 1
+        fi
+    done
+    echo $$ >"$lock/pid"
+    until ssh "${ssh_options[@]}" -o ControlMaster=yes -o ControlPersist=3600 -f -N "$host" </dev/null >/dev/null 2>&1; do
+        if ((SECONDS - start + wait > 1800)); then
+            rm -rf "$lock"
+            echo "rig: the desktop has not taken an ssh connection for 30 minutes" >&2
             return 1
         fi
         [ -n "$said" ] || { echo "rig: waiting for ssh to the desktop" >&2; said=1; }
-        sleep 15
+        sleep "$wait"
+        wait=$((wait * 2 > 300 ? 300 : wait * 2))
     done
+    rm -rf "$lock"
     [ -z "$said" ] || echo "rig: ssh to the desktop is back after $((SECONDS - start)) s" >&2
 }
 
 # shellcheck disable=SC2029
-rig_ssh() { ssh "${ssh_options[@]}" "$host" "$@"; }
-rig_scp() { scp -q "${ssh_options[@]}" "$@"; }
+rig_ssh() { connect && ssh "${ssh_options[@]}" "$host" "$@"; }
+rig_scp() { connect && scp -q "${ssh_options[@]}" "$@"; }
 
 # Runs a desktop PowerShell script with arguments, its output and error with carriage returns removed
 # and passed on line by line as they come; returns its exit code.

@@ -33,11 +33,12 @@ case $1 in
 esac
 options=
 record=
+warp=
 dlls=()
 tests=()
 while [ $# -gt 0 ]; do
     case $1 in
-        --warp) options+=" -Warp"; shift ;;
+        --warp) options+=" -Warp"; warp=1; shift ;;
         --record) options+=" -Record"; record=1; shift ;;
         --dll) dlls+=("$2"); shift 2 ;;
         *) tests+=("$1"); shift ;;
@@ -47,8 +48,11 @@ done
 [ ${#tests[@]} -eq 0 ] || options+=" -Tests \"$(IFS=,; echo "${tests[*]}")\""
 [ ${#dlls[@]} -eq 0 ] || options+=" -Dlls \"$(IFS=';'; echo "${dlls[*]}")\""
 out="C:\\wc\\out\\$name\\wine"
+# On WARP with Microsoft's Direct3D nothing reaches the GPU; on the GPU, Wine's tests have reset its driver.
+kind=()
+[ -z "$warp" ] || [ ${#dlls[@]} -ne 0 ] || kind=(--reference)
 set +e
-"$here/gpu-job" --desktop --build "cargo build -q -p wcontainers-graphics-test" -- \
+"$here/gpu-job" ${kind[@]+"${kind[@]}"} --desktop --build "cargo build -q -p wcontainers-graphics-test" -- \
     "$script\\wine-run.ps1 -Out $out -Baseline tools\\graphics-rig\\wine-baseline -Launch %CARGO_TARGET_DIR%\\debug\\gt-launch.exe$options"
 code=$?
 set -e
