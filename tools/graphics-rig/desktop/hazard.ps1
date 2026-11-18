@@ -6,9 +6,11 @@
 #   quarantine.txt      names never run on the GPU until lifted, one per line: name, time, reason,
 #                       tab-separated; a job's name is its command, a Wine test's "wine <file>:<test>"
 #   jobs.log            each GPU job's start and end, its branch, group, exit code and command
+#   cleared.txt         the rig's own code seen to run without a reset, one key a line (Get-RigKey)
 $hazardLogs = 'C:\wc\logs'
 $hazardHeld = "$hazardLogs\held.txt"
 $hazardQuarantine = "$hazardLogs\quarantine.txt"
+$hazardCleared = "$hazardLogs\cleared.txt"
 $hazardPueue = 'C:\wc\bin\pueue.exe'
 $hazardConfig = 'C:\wc\pueue\pueue.yml'
 # The groups whose jobs use the GPU: short jobs, jobs of the kinds seen to reset the driver (one at
@@ -49,6 +51,27 @@ function Get-Quarantine {
     $entries
 }
 
+# A command's words, paths reduced to their last part, for matching against the quarantine.
+function Get-CommandWords([string]$Text) {
+    @($Text.ToLower() -split '[\s"&|<>()^]+' | ForEach-Object { ($_ -split '[\\/]')[-1] } | Where-Object { $_ })
+}
+
+# The quarantine line of a command, if a quarantined command's words all come in it in that order:
+# another output directory or checkout, or anything added, does not get around a quarantine. Wine
+# tests are quarantined by name in their runner.
+function Find-Quarantine([string]$Text) {
+    $words = Get-CommandWords $Text
+    foreach ($entry in (Get-Quarantine).GetEnumerator()) {
+        if ($entry.Key -like 'wine *') { continue }
+        $want = Get-CommandWords $entry.Key
+        if (-not $want) { continue }
+        $found = 0
+        foreach ($word in $words) { if ($found -lt $want.Count -and $word -ceq $want[$found]) { $found++ } }
+        if ($found -eq $want.Count) { return $entry.Value }
+    }
+    $null
+}
+
 function Add-Quarantine([string]$Name, [string]$Reason) {
     if ((Get-Quarantine).ContainsKey($Name)) { return }
     $flat = ($Name -replace '[\t\r\n]', ' ')
@@ -66,3 +89,71 @@ function Set-Hold([string[]]$Lines) {
 }
 
 function Test-Held { Test-Path $hazardHeld }
+
+# Lets the GPU groups start jobs again, but not 'default' and 'hazard' while an alone job is queued
+# or running: it holds them back from its submission until it ends.
+function Resume-Groups {
+    $state = & $hazardPueue -c $hazardConfig status --json | ConvertFrom-Json
+    $alone = @($state.tasks.PSObject.Properties.Value | Where-Object { $_.group -eq 'alone' -and
+            ($_.status.PSObject.Properties.Name | Where-Object { $_ -in 'Queued', 'Running', 'Stashed', 'Locked' }) })
+    foreach ($group in $hazardGroups) {
+        if ($state.groups.$group.status -ne 'Running' -and ($group -eq 'alone' -or $alone.Count -eq 0)) {
+            & $hazardPueue -c $hazardConfig start --group $group | Out-Null
+            "resumed the group $group"
+        }
+    }
+}
+
+# After a job or a remote command: display driver resets or errors logged while it ran are added to
+# display-resets.log, hold the queue and quarantine the command, unless it quarantined something
+# narrower itself (a Wine test). Returns the events' lines.
+function Watch-Resets([datetime]$Started, [datetime]$Ended, [string]$Seen, [string]$Text, [int]$Suspects) {
+    $resets = @(Get-DisplayResets $Started $Ended.AddSeconds(2))
+    if ($resets) {
+        Add-HazardLines "$hazardLogs\display-resets.log" ([string[]](@($Seen) + $resets))
+        Set-Hold @($Seen)
+        if ((Get-Quarantine).Count -eq $Suspects) {
+            Add-Quarantine $Text ("display driver reset at {0} during {1}" -f $resets[0].Substring(0, 19), $Seen)
+        }
+    }
+    $resets
+}
+
+# The rig's own runs on Microsoft's Direct3D, wgpu, Chrome or WARP with no replacement library: the
+# programs and scenes, the loop, Wine's tests on WARP and the queue check's sleeps. A command that
+# chains or redirects (& | < > ^) is none of them.
+$hazardRigRuns = @(
+    '^powershell -NoProfile -ExecutionPolicy Bypass -File tools\\graphics-rig\\desktop\\programs\.ps1 -Mode run (?!.*-Dlls)',
+    '^%CARGO_TARGET_DIR%\\debug\\gt-run (check|record) (?!.*--dll)',
+    '^tools\\graphics-rig\\loop\.cmd ',
+    '^powershell -NoProfile -ExecutionPolicy Bypass -File tools\\graphics-rig\\desktop\\wine-run\.ps1 (?=.* -Warp\b)(?!.*-Dlls)',
+    '^powershell -NoProfile -ExecutionPolicy Bypass -File tools\\graphics-rig\\desktop\\sleep\.ps1 '
+)
+function Test-RigRun([string]$Text) {
+    $Text -cnotmatch '[&|<>^]' -and @($hazardRigRuns | Where-Object { $Text -cmatch $_ }).Count -gt 0
+}
+
+# The rig's code in a tree: the trees of its crates and scripts, comma-separated (a job's arguments
+# cannot hold spaces), empty where one is missing.
+function Get-RigKey([string]$Checkout, [string]$Tree) {
+    $ids = foreach ($path in 'crates/wcontainers-graphics-test', 'crates/wcontainers-graphics-test-forward', 'tools/graphics-rig') {
+        (& git -C $Checkout rev-parse -q --verify "${Tree}:$path" | Out-String).Trim()
+    }
+    $ids -join ','
+}
+
+# Whether a job may run beside others: it is one of the rig's own runs (Test-RigRun) and the rig's
+# code in its tree has already run a job without a display driver reset. Any other job runs one at
+# a time: Wine's and vkd3d's tests on the GPU (they reset the driver six times), replacement
+# libraries, other tracks' code, and the rig's runs after any change to the rig (an edited scene
+# reset it once), until they have run once.
+function Test-Cleared([string]$Text, [string]$Key) {
+    (Test-RigRun $Text) -and $Key -notmatch '^,|,$|,,' -and (Test-Path $hazardCleared) -and
+    ([IO.File]::ReadAllLines($hazardCleared) -contains $Key)
+}
+
+function Add-Cleared([string]$Key) {
+    if (-not ((Test-Path $hazardCleared) -and ([IO.File]::ReadAllLines($hazardCleared) -contains $Key))) {
+        Add-HazardLines $hazardCleared @($Key)
+    }
+}

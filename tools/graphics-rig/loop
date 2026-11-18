@@ -10,7 +10,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=tools/graphics-rig/common.sh
 . "$here/common.sh"
 set +e
-"$here/gpu-job" --reference --desktop --build "cargo build -q -p wcontainers-graphics-test -p wcontainers-graphics-test-forward && powershell -NoProfile -ExecutionPolicy Bypass -File tools\\graphics-rig\\browser\\install.ps1" \
+"$here/gpu-job" --desktop --build "cargo build -q -p wcontainers-graphics-test -p wcontainers-graphics-test-forward && powershell -NoProfile -ExecutionPolicy Bypass -File tools\\graphics-rig\\browser\\install.ps1" \
     -- "tools\\graphics-rig\\loop.cmd $name"
 code=$?
 set -e
