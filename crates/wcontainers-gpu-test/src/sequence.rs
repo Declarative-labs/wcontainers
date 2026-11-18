@@ -1061,7 +1061,8 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
 }
 
 /// [`Step::DepthCopy`]: depth in eighths (which a draw writes exactly), stencil any; the region
-/// beside the source to its right, or below it where the level is one texel wide.
+/// beside the source to its right, or below it where the level is one texel wide. Each aspect is read
+/// before and after the copy, and the after must be the before with the region moved.
 #[allow(clippy::too_many_arguments)]
 fn depth_copy<B: Backend>(
     b: &mut B,
@@ -1178,15 +1179,11 @@ fn depth_copy<B: Backend>(
             WriteMode::Ordered,
         );
     }
-    b.copy_texture(
-        &region::<B>(&t, mip, layer, src),
-        &region::<B>(&t, mip, layer, dst),
-        e,
-    );
-    for (stencil, texel) in [(false, depth_bytes), (true, 1)] {
-        if (stencil && !has_stencil) || (!stencil && !has_depth) {
-            continue;
-        }
+    let aspects: Vec<(bool, usize)> = [(false, depth_bytes), (true, 1)]
+        .into_iter()
+        .filter(|&(stencil, _)| if stencil { has_stencil } else { has_depth })
+        .collect();
+    let read_aspect = |b: &mut B, stencil: bool, texel: usize| -> Result<Vec<u8>, GpuError> {
         let rb = b.read_back(&ReadSource::Texture {
             region: at_aspect(stencil),
             extent: whole,
@@ -1195,6 +1192,34 @@ fn depth_copy<B: Backend>(
         b.wait_read(&rb);
         let mut out = vec![0; texels * texel];
         b.finish_read(rb, &mut out);
+        Ok(out)
+    };
+    let before = aspects
+        .iter()
+        .map(|&(stencil, texel)| read_aspect(b, stencil, texel))
+        .collect::<Result<Vec<_>, _>>()?;
+    read.extend(before.iter().cloned());
+    b.copy_texture(
+        &region::<B>(&t, mip, layer, src),
+        &region::<B>(&t, mip, layer, dst),
+        e,
+    );
+    for (&(stencil, texel), mut expected) in aspects.iter().zip(before) {
+        let out = read_aspect(b, stencil, texel)?;
+        // The source region moved onto the destination's texels; every other texel as it was.
+        for y in 0..e.height {
+            for x in 0..e.width {
+                let at = |o: Origin| ((o.y + y) * w + o.x + x) as usize * texel;
+                let from = at(src);
+                expected.copy_within(from..from + texel, at(dst));
+            }
+        }
+        assert!(
+            out == expected,
+            "a copy within one {format:?} subresource ({}) moved {e:?} from {src:?} to {dst:?} \
+             wrongly at level {mip} of {w} by {h}",
+            if stencil { "stencil" } else { "depth" },
+        );
         read.push(out);
     }
     b.destroy(Object::Texture(t));
