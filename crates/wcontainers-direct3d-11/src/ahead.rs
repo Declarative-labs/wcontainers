@@ -206,7 +206,7 @@ impl<B: Backend> Device<B> {
         vs: &Shader<B>,
         ps: Option<&Rc<Shader<B>>>,
         keys: crate::cache::ModuleKeys,
-        masked: Option<(u32, bool)>,
+        masked: Option<crate::context::RasterKey>,
         topology: Topology,
         samples: u32,
     ) {

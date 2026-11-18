@@ -117,6 +117,7 @@ impl<B: Backend> Device<B> {
                 staged: RefCell::new(Vec::new()),
                 chain: true,
                 min_lod: Cell::new(0.0),
+                chroma: None,
             }));
             index += 1;
         }

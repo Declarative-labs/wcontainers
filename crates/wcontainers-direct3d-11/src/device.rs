@@ -304,6 +304,26 @@ impl<B: Backend> Device<B> {
             }
             return bits;
         }
+        if dxgi == format::NV12 {
+            // 2D textures of one level, through views of each plane's format.
+            let formats = &self.backend.caps().formats;
+            let uses = formats.get(Format::R8Unorm) & formats.get(Format::Rg8Unorm);
+            if uses.is_empty() {
+                return bits;
+            }
+            bits |= TEXTURE2D;
+            for (has, bit) in [
+                (FormatUse::SAMPLE, SHADER_LOAD),
+                (FormatUse::FILTER, SHADER_SAMPLE),
+                (FormatUse::RENDER, RENDER_TARGET),
+                (FormatUse::COPY_OUT, CPU_LOCKABLE),
+            ] {
+                if uses.contains(has) {
+                    bits |= bit;
+                }
+            }
+            return bits;
+        }
         let Some(f) = format::texture_format(dxgi) else {
             return bits;
         };
@@ -720,6 +740,21 @@ impl<B: Backend> Device<B> {
         if mips > full {
             return Err(Error::InvalidArg("more mip levels than the size has"));
         }
+        if d.format == format::NV12 {
+            if d.dimension != TexDim::D2
+                || !d.width.is_multiple_of(2)
+                || !d.height.is_multiple_of(2)
+                || d.sample_count > 1
+                || d.bind_flags & bind::DEPTH_STENCIL != 0
+            {
+                return Err(Error::InvalidArg(
+                    "an NV12 texture is 2D, of one sample and of even width and height",
+                ));
+            }
+            if mips != 1 || d.misc_flags & !MISC_SHARED != 0 {
+                return not_implemented("NV12 textures of more than one level or with misc flags");
+            }
+        }
         let drawn = bind::RENDER_TARGET | bind::UNORDERED_ACCESS;
         if d.bind_flags & drawn != 0
             && (d.bind_flags & bind::DEPTH_STENCIL != 0
@@ -850,6 +885,10 @@ impl<B: Backend> Device<B> {
                 needs |= n;
             }
         }
+        // A staging texture the CPU reads is read back from the GPU.
+        if d.usage == usage::STAGING && d.cpu_access_flags & cpu::READ != 0 {
+            needs |= FormatUse::COPY_OUT;
+        }
         if d.bind_flags & bind::UNORDERED_ACCESS != 0 && self.feature_level() < 0xb000 {
             return Err(Error::InvalidArg(
                 "unordered access needs feature level 11_0",
@@ -917,6 +956,23 @@ impl<B: Backend> Device<B> {
         }
         self.live()?;
         self.bury();
+        // NV12's chroma plane: a texture of its own the program sees only through views and
+        // through the joined rows of maps, copies and writes.
+        let chroma = if d.format == crate::format::NV12 {
+            let plane = TextureDesc {
+                format: crate::format::R8G8_TYPELESS,
+                width: d.width / 2,
+                height: d.height / 2,
+                mip_levels: 1,
+                usage: usage::DEFAULT,
+                cpu_access_flags: 0,
+                misc_flags: 0,
+                ..*d
+            };
+            Some(self.create_texture(&plane, &[])?)
+        } else {
+            None
+        };
         let (dimension, depth_or_layers) = match d.dimension {
             TexDim::D3 => (TextureDimension::D3, d.depth),
             TexDim::D1 | TexDim::D2 => (TextureDimension::D2, d.array_size),
@@ -949,12 +1005,23 @@ impl<B: Backend> Device<B> {
             shadow: RefCell::new(Vec::new()),
             chain: false,
             min_lod: Cell::new(0.0),
+            chroma,
         };
         for (i, data) in init.iter().take(subresources).enumerate() {
             let (region, extent) = texture
                 .whole(i as u32)
                 .expect("a subresource of the texture");
             self.write_texels(format, &region, extent, data);
+            if let Some(chroma) = &texture.chroma {
+                let (region, extent) = chroma.whole(i as u32).expect("the luma's subresource");
+                // The chroma rows follow the luma's at the same pitch.
+                let at = (data.row_pitch * texture.desc.height) as usize;
+                let data = SubresourceData {
+                    bytes: &data.bytes[at..],
+                    ..*data
+                };
+                self.write_texels(chroma.format, &region, extent, &data);
+            }
         }
         if matches!(d.usage, usage::STAGING | usage::DYNAMIC) {
             let shadow = (0..subresources)
@@ -1070,6 +1137,19 @@ impl<B: Backend> Device<B> {
         desc: Option<&ViewDesc>,
         kind: u32,
     ) -> Result<Rc<View<B>>> {
+        if let Some(chroma) = &texture.chroma {
+            // A view of NV12 names one plane by its format; the luma plane is viewed as the
+            // members of R8's group, the chroma plane (a texture of R8G8's) as its own.
+            match format::nv12_plane(desc.map_or(format::UNKNOWN, |d| d.format)) {
+                Some(1) => return self.create_view(chroma, desc, kind),
+                Some(_) => {}
+                None => {
+                    return Err(Error::InvalidArg(
+                        "a view of an NV12 texture names one plane's format",
+                    ));
+                }
+            }
+        }
         let t = &texture.desc;
         if t.bind_flags & kind == 0 {
             return Err(Error::InvalidArg(
@@ -1177,6 +1257,9 @@ impl<B: Backend> Device<B> {
         let (format, stencil) = match format::srgb_twin(t.format) {
             Some(twin) if texture.chain && kind == bind::RENDER_TARGET && v.format == twin => {
                 (format::texture_format_of(twin)?, false)
+            }
+            _ if texture.chroma.is_some() => {
+                format::view_format(v.format, format::R8_TYPELESS, texture.format)?
             }
             _ => format::view_format(v.format, t.format, texture.format)?,
         };
