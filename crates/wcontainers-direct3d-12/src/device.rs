@@ -3203,12 +3203,83 @@ impl<B: Backend> Replay<B> {
                     42 => IndexFormat::U32,
                     _ => return Err(Error::Invalid("index format")),
                 };
-                Some((d.buffer(id)?.0.clone(), offset, format))
+                Some((d.buffer(id)?.0.clone(), offset, format, id))
             }
             (DrawRange::Indexed { .. } | DrawRange::IndexedIndirect { .. }, None) => {
                 return Err(Error::Invalid("an indexed draw with no index buffer"));
             }
             _ => None,
+        };
+        // WebGPU restarts strips at the index format's largest value, Direct3D 12 at the
+        // pipeline's cut value: 16-bit indices that must not restart are widened, and 32-bit ones
+        // restarting at 0xffff rewritten, into 32-bit indices of the draw's range
+        // (`RestartRewrite`). 32-bit indices of 0xffffffff with restart off still restart.
+        let strip_cut = d.render_mut(pid).strip_cut;
+        let strips = matches!(self.topology, Topology::LineStrip | Topology::TriangleStrip);
+        let rewrite = match &index {
+            Some((.., IndexFormat::U16, _)) => strips && strip_cut != 1,
+            Some((.., IndexFormat::U32, _)) => strips && strip_cut == 1,
+            Some((.., IndexFormat::U8, _)) | None => false,
+        };
+        let (index, range) = match (index, range) {
+            (
+                Some((buffer, offset, format, id)),
+                DrawRange::Indexed {
+                    first,
+                    count,
+                    base_vertex,
+                    first_instance,
+                    instances,
+                },
+            ) if rewrite && count > 0 => {
+                self.end_pass(d)?;
+                d.backend.slow_paths().hit(SlowPath::RestartRewrite);
+                let (size, wide, cut) = match format {
+                    IndexFormat::U16 => (2, 0, 0),
+                    IndexFormat::U32 => (4, 1, 0xffff),
+                    IndexFormat::U8 => unreachable!("Direct3D 12 has no 8-bit indices"),
+                };
+                if !offset.is_multiple_of(size) {
+                    return Err(Error::Invalid(
+                        "an index buffer view not aligned to its format",
+                    ));
+                }
+                let held = d.resources[id.0 as usize].desc.width.next_multiple_of(4);
+                let out = d.scratch(
+                    u64::from(count) * 4,
+                    BufferUsage::STORAGE | BufferUsage::INDEX,
+                )?;
+                let start = u32::try_from(offset / size)
+                    .ok()
+                    .and_then(|s| s.checked_add(first))
+                    .ok_or(Error::Invalid("an index past 4 GiB"))?;
+                d.run_own(
+                    query::Own::Restart,
+                    &[start, count, wide, cut],
+                    &[
+                        (32, &buffer, held, false),
+                        (160, &out, u64::from(count) * 4, true),
+                    ],
+                    count,
+                )?;
+                zeroed.push(out.clone());
+                (
+                    Some((out, 0, IndexFormat::U32)),
+                    DrawRange::Indexed {
+                        first: 0,
+                        count,
+                        base_vertex,
+                        first_instance,
+                        instances,
+                    },
+                )
+            }
+            (Some(_), DrawRange::IndexedIndirect { .. }) if rewrite => {
+                return Err(Error::NotImplemented(
+                    "a predicated strip draw whose indices restart at another value",
+                ));
+            }
+            (index, range) => (index.map(|(b, o, f, _)| (b, o, f)), range),
         };
         let p = d.render_mut(pid);
         for (i, slot) in p.targets.colors.iter().enumerate() {
@@ -3231,7 +3302,7 @@ impl<B: Backend> Replay<B> {
                 "the pipeline's depth-stencil format differs from the bound one",
             ));
         }
-        let restart = p.strip_cut != 0;
+        let restart = p.strip_cut != 0 || rewrite;
         // The draw's call: built once for the occlusion counter, which keeps a counted draw before
         // its pass opens, and once for the back end.
         macro_rules! call {

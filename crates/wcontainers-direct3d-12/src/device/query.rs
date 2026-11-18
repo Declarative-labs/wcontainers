@@ -131,14 +131,37 @@ pub(super) enum Own {
     Predicate,
     /// Zeroes the commands of `ExecuteIndirect` past its count (`indirect.rs`).
     Expand,
+    /// Rewrites a strip's indices to restart at another value (`device.rs`, `draw`).
+    Restart,
 }
 
 /// The front's own compute programs, made at first use.
-pub(super) struct Programs<B: Backend>([Option<B::Program>; 3]);
+pub(super) struct Programs<B: Backend>([Option<B::Program>; 4]);
+
+/// 32-bit indices of a strip from 16-bit (`wide` 0) or 32-bit ones, `cut` becoming 0xffffffff.
+const RESTART: &str = "
+@group(0) @binding(32) var<storage, read> src: array<u32>;
+@group(0) @binding(160) var<storage, read_write> dst: array<u32>;
+struct Restart { first: u32, count: u32, wide: u32, cut: u32 }
+@group(0) @binding(0) var<uniform> p: Restart;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3u) {
+    if id.x >= p.count { return; }
+    let i = p.first + id.x;
+    var v: u32;
+    if p.wide == 0u {
+        v = (src[i >> 1u] >> ((i & 1u) * 16u)) & 0xffffu;
+    } else {
+        v = src[i];
+    }
+    if p.cut != 0u && v == p.cut { v = 0xffffffffu; }
+    dst[id.x] = v;
+}
+";
 
 impl<B: Backend> Default for Programs<B> {
     fn default() -> Self {
-        Programs([None, None, None])
+        Programs([None, None, None, None])
     }
 }
 
@@ -214,6 +237,7 @@ impl<B: Backend> Device<B> {
             Own::Binary => BINARY,
             Own::Predicate => PREDICATE,
             Own::Expand => super::indirect::EXPAND,
+            Own::Restart => RESTART,
         };
         let module = ShaderModule::from_wgsl(source, "main", ShaderStage::Compute)?;
         let shader = self.backend.create_shader(&module)?;

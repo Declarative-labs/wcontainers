@@ -109,19 +109,39 @@ impl<B: Backend> Replay<B> {
         let caps = d.backend.caps();
         // Programs reading the bases read them from the arguments where they converted so; the
         // occlusion counter replays draws with the pipeline's own program.
-        // Per-instance streams that never step are bound at the first instance's element, which
-        // only the arguments say.
+        // Per-instance streams that never step are bound at the first instance's element, and
+        // those stepping every n instances fetched in the program start from it: only the
+        // arguments say where.
         let rates = caps.has(Features::INSTANCE_STEP_RATE);
+        let mut strides = [0; MAX_VERTEX_STREAMS];
+        for (s, v) in strides.iter_mut().zip(&self.vertex_buffers) {
+            *s = v.stride;
+        }
         let bases_unread = d.pipelines[pid.0 as usize]
             .render
             .as_ref()
             .is_some_and(|r| {
+                let pulled = super::pull::pulled_streams(&r.inputs, &strides, rates);
                 r.reads_bases && (r.arguments.is_none() || self.counted.is_some())
-                    || !rates
-                        && r.inputs
-                            .iter()
-                            .any(|(e, _)| e.per_instance && e.step_rate == 0)
+                    || r.inputs.iter().any(|(e, _)| {
+                        e.per_instance
+                            && e.step_rate != 1
+                            && (!rates || pulled[e.slot as usize].is_some())
+                    })
             });
+        // Strips whose indices restart at another value than WebGPU's are rewritten over the
+        // draw's range, which only the arguments say.
+        let strip_cut = d.pipelines[pid.0 as usize]
+            .render
+            .as_ref()
+            .map_or(0, |r| r.strip_cut);
+        let rewritten = call == IndirectArgument::DrawIndexed
+            && matches!(self.topology, Topology::LineStrip | Topology::TriangleStrip)
+            && match self.index.map(|v| v.format) {
+                Some(57) => strip_cut != 1,
+                Some(42) => strip_cut == 1,
+                _ => false,
+            };
         // A statistics query counts each command's arguments, which are read back for it.
         let on_gpu = s.call_only()
             && self.statistics.is_none()
@@ -129,7 +149,7 @@ impl<B: Backend> Replay<B> {
             && (count.is_none() || caps.has(Features::COMPUTE))
             && match call {
                 IndirectArgument::Dispatch => caps.has(Features::COMPUTE),
-                _ => caps.has(Features::INDIRECT_FIRST_INSTANCE) && !bases_unread,
+                _ => caps.has(Features::INDIRECT_FIRST_INSTANCE) && !bases_unread && !rewritten,
             };
         if !on_gpu {
             return self.read_back_indirect(d, s, max, args, args_offset, count, span);
