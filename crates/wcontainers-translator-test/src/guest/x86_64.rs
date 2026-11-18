@@ -134,7 +134,7 @@ impl GuestTest for X86_64 {
     }
 
     fn hand_cases() -> Vec<Designed> {
-        Vec::new()
+        hand_cases()
     }
 
     const FILLER: u8 = crate::layout::x86_64::FILLER;
@@ -865,4 +865,50 @@ fn no_form(draw: u64, seed: u64) -> Option<Case> {
         tracking: false,
         seed,
     })
+}
+
+/// The hand-made cases: the 32-bit system call gates, which this phase answers by design with general
+/// protection at the instruction (plan 5.2), and a few stops compared with the reference.
+fn hand_cases() -> Vec<Designed> {
+    let plain = |code: &[u8]| {
+        let mut state = vec![0u128; FIELDS];
+        state[RSP] = (DATA + 0x1000).into();
+        state[RIP] = CODE.into();
+        state[RFLAGS] = 0x202;
+        state[MXCSR] = 0x1f80;
+        state[FCW] = 0x37f;
+        Case {
+            code: Encoded::new(code),
+            state: State(state),
+            tracking: false,
+            seed: 0x5eed,
+        }
+    };
+    let designed = |name, code: &[u8], stop, compared| Designed {
+        name,
+        case: plain(code),
+        stop: Some(stop),
+        fields: vec![(RIP, CODE.into())],
+        compared,
+    };
+    vec![
+        designed("int 0x80", &[0xcd, 0x80], Stop::GeneralProtection, false),
+        designed("sysenter", &[0x0f, 0x34], Stop::GeneralProtection, false),
+        designed("ud2", &[0x0f, 0x0b], Stop::Illegal, true),
+        designed("int 0x81", &[0xcd, 0x81], Stop::GeneralProtection, true),
+        Designed {
+            name: "int 4",
+            case: plain(&[0xcd, 0x04]),
+            stop: Some(Stop::GeneralProtection),
+            fields: vec![(RIP, (CODE + 2).into())],
+            compared: true,
+        },
+        Designed {
+            name: "int3",
+            case: plain(&[0xcc]),
+            stop: Some(Stop::Breakpoint(SI_KERNEL)),
+            fields: vec![(RIP, (CODE + 1).into())],
+            compared: true,
+        },
+    ]
 }

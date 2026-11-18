@@ -89,7 +89,7 @@ pub fn written(i: &Instruction) -> bool {
                     | Movzx | Movsx | Movsxd | Lea | Xchg | Cbw | Cwde | Cdqe | Cwd | Cdq | Cqo
                     | Push | Pop | Call | Ret | Jmp | Shl | Sal | Shr | Sar | Rol | Ror | Rcl
                     | Rcr | Mul | Imul | Div | Idiv | Syscall | Nop | Pause | Reservednop | Int3
-                    | Int1 | Int | Ud0 | Ud1 | Ud2 | Clc | Stc | Cmc | Cld | Std | Bt | Bts
+                    | Int1 | Int | Sysenter | Ud0 | Ud1 | Ud2 | Clc | Stc | Cmc | Cld | Std | Bt | Bts
                     | Btr | Btc
             ))
         // Far transfers through memory: a selector with the offset.
@@ -210,6 +210,13 @@ fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
         }
         Int => {
             int(e, ins.immediate8());
+            return true;
+        }
+        Sysenter => {
+            // The other way into Linux's 32-bit system calls: a kernel without them leaves its selector
+            // null, and the instruction gives general protection.
+            e.warn(Reason::ThirtyTwoBitSystemCall);
+            e.trap(Trap::GeneralProtection);
             return true;
         }
         Ud0 | Ud1 | Ud2 => {

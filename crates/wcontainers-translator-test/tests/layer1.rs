@@ -220,3 +220,8 @@ fn every_form_matches_the_cpu_x86_64() {
 fn bytes_in_no_form_stop_as_on_the_cpu_x86_64() {
     bytes_in_no_form_stop_as_on_the_cpu::<X86_64>();
 }
+
+#[test]
+fn hand_cases_do_what_they_must_x86_64() {
+    hand_cases_do_what_they_must::<X86_64>();
+}

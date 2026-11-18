@@ -465,7 +465,7 @@ impl Guest for X86_64 {
                 target: None,
                 kind: FlowKind::Return,
             },
-            Int3 | Int1 | Int | Ud0 | Ud1 | Ud2 => plain(false),
+            Int3 | Int1 | Int | Sysenter | Ud0 | Ud1 | Ud2 => plain(false),
             m if jcc(m).is_some() => Flow {
                 falls_through: true,
                 target: Some(ins.near_branch64() as i64),
