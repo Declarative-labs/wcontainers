@@ -8,8 +8,9 @@ Crate: crates/wcontainers-gpu-webgpu, on wgpu 30.0.2.
 G2 passed its independent check. G2b (what the fronts need from this back end): runs 1 to 4 are
 "Run 11" to "Run 15" below. G2b's independent check found nine problems; run 13 fixed them (list
 in "Run 13"). Run 14 measured instance data at more streams and made binding sets made again each
-frame find their bind groups. Run 15 moved copies of converted formats onto the GPU. Every
-request found is built and tested or refused by name (list below). Earlier runs follow ("Run 5" to "Run 10" are G2 runs 1 to 6; G2a runs 1 to 4 after them).
+frame find their bind groups. Run 15 moved copies of converted formats onto the GPU. Run 16
+merged, found nothing new asked, ran both full runs and measured the timestamp workload's cause
+(naga's loop bounding). Every request found is built and tested or refused by name (list below). Earlier runs follow ("Run 5" to "Run 10" are G2 runs 1 to 6; G2a runs 1 to 4 after them).
 
 What the fronts' status files ask of this back end (read at G2b runs 1 and 2, after merging every
 graphics branch), and where each stands:
@@ -63,6 +64,24 @@ graphics branch), and where each stands:
 - Freeing the back end's tables when a program or block is destroyed (Direct3D 12: "its own tables
   keep their entries"): built (run 13). tests/scenes.rs
   `destroyed_programs_and_blocks_free_their_pipelines`.
+
+Run 16 = G2b run 6, 2026-11-17 to 18:
+- Merged origin/phase-2-graphics-webgl, -direct3d-11, -direct3d-12 and -shaders (no conflicts;
+  the shared line and -rig had nothing new). The one interface change (from the shaders branch:
+  `DOMAIN_PATCHES_BINDING`, `DOMAIN_POINTS_BINDING`, a hull stage's `point_locations` and
+  `constant_locations`) needs nothing here. Read the four front status files' new text: nothing
+  new is asked of this back end. The Direct3D 11 front's new routes (typed views, typed buffers
+  through storage) and the Direct3D 12 front's (filtering in the program where the back end cannot
+  filter, multisampled arrays refused at creation) use what is declared; the WebGL track's new
+  comparisons with this back end pass natively, with one tie in Chrome that it lays on G1's mip
+  helper; the shaders track's tessellator program fails fxc (wgpu's Direct3D 12 compiler), its
+  own known gap, and compiles in Chrome.
+- The cause of the native timestamp workload's 1.3 and 1.5 times Direct3D 11's time, measured
+  (Measurements, run 16): naga's loop bounding (`ShaderRuntimeChecks::force_loop_bounding`), which
+  wgpu adds to every loop natively. Without it both APIs take Direct3D 11's time; without bounds
+  checks nothing changes. Not changed: wgpu says not to turn it off for untrusted programs, and a
+  guest's are untrusted (left to the owner). In Chrome wgpu passes WGSL on and Dawn's own handling
+  costs nothing measurable (9.82 ms, Direct3D 11's time).
 
 Run 15 = G2b run 5, 2026-11-17:
 - Merged origin/phase-2-graphics-direct3d-12, -shaders and -rig (no conflicts; the shared line,
@@ -755,6 +774,28 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
 
 ## Measurements
 
+Run 16 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01; Mac load average near its 18
+cores, not sampled exactly):
+- All tests at cd3aa677 (the merges) after `cargo clean` of this crate and the suite crate
+  (scratch run16/full-native.log, shared with other tracks' jobs; job 1 min 8 s): both APIs
+  together 212 passed, 0 failed, 4 ignored (as run 15); the shared suite 39 of 39 on both. Clippy
+  with warnings denied passes natively and for WebAssembly (run16/clippy.log).
+- web/check at cd3aa677 (run16/web-check.log, pictures in run16/web): twelve pictures equal to
+  Direct3D 11's at tolerance 0, twists differ, viewports equal (rounded 2540 differ); Chrome's
+  adapter the RTX 3080 (D3D12, discrete, not a fallback); timestamps 9.821 and 19.551 ms (ratio
+  1.99), GPU clock 302.504 ms apart with the page clock between 300.0 and 305.0 ms; prepared first
+  draws built nothing; converted formats, vertex formats and renames pass; the suite in Chrome 39
+  passed, 0 failed.
+- The timestamp workload with wgpu's runtime checks switched off one by one (a temporary,
+  uncommitted change; `gpu-job --alone`, run16/checks-exp.log), first stretch / second, Direct3D
+  11's 9.43 / 18.90 ms each time: Vulkan, all checks 12.25 / 24.44 ms; no loop bounding 9.49 /
+  18.94; no bounds checks 12.26 / 24.44; neither 9.49 / 18.93. Direct3D 12: all checks 14.47 /
+  28.72; no loop bounding 9.51 / 18.94; no bounds checks 14.47 / 28.73; neither 9.51 / 18.95.
+  So loop bounding is the whole difference on this loop of 2048 cheap rounds; this workload reads
+  no buffers, so it says nothing about the bounds checks' cost elsewhere.
+- At the end of the run the desktop's build folder C:\wc\target\phase-2-graphics-webgpu (6.12 GB)
+  was deleted; no `cargo check` output and no scratch target folder was made on the Mac.
+
 Run 15 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs,
 CPU load not sampled; Mac load average near its 18 cores, not sampled exactly):
 - All tests at b517ab0e after `cargo clean` of this crate and the suite crate (scratch
@@ -1179,11 +1220,13 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 
 ## Next (G2b)
 
-1. The independent check of G2b (again, after runs 13 to 15).
-2. Why the timestamp workload takes 1.3 and 1.5 times Direct3D 11's time through wgpu natively
-   (expected, not measured: naga's loop bounding and bounds checks; Chrome's Dawn takes
-   Direct3D's time).
+1. The independent check of G2b (again, after runs 13 to 16).
+2. The owner's decision on loop bounding natively (run 16 measured it as the whole of the
+   timestamp workload's 1.3 and 1.5 times): wgpu's `create_shader_module_trusted` without
+   `force_loop_bounding` takes Direct3D's time, but lets a guest's endless loop be undefined in
+   the driver's compiler, as on real Direct3D.
 3. Read the fronts' status files again after merging.
+4. `PrepareDesc` has no index format (interface track's; see run 13).
 
 ## Departures from the plan
 
