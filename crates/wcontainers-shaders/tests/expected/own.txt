@@ -77,6 +77,7 @@ ps_special.dxbc	ok
 ps_table.dxbc	ok
 ps_texels.dxbc	unsupported TypedBufferFormatKind
 ps_textured.dxbc	ok
+ps_twospaces.dxbc	ok
 ps_window.dxbc	ok
 vs_carry.dxbc	ok
 vs_clip.dxbc	ok-wgsl glsl-compile
