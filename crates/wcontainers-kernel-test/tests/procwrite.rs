@@ -28,3 +28,10 @@ fn timer_slack_matches_reference() {
     let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     wcontainers_kernel_test::assert_same_output(&out, "timerslack", &[]);
 }
+
+/// prctl(PR_SET_MM): its checks, and a whole map put back as cmdline, environ, auxv and brk show.
+#[test]
+fn memory_map_setting_matches_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "setmm", &[]);
+}

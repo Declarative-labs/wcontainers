@@ -1382,9 +1382,13 @@ pub(super) fn prctl(
                 guest(kernel, cx, tid).put(third, &size.to_le_bytes())?;
                 return Ok(0);
             }
-            if form != PR_SET_MM_MAP && !kernel.credentials(tid).has(CAP_SYS_RESOURCE) {
+            if form == PR_SET_MM_MAP {
+                return set_mm_map(kernel, cx, tid, third, fourth);
+            }
+            if !kernel.credentials(tid).has(CAP_SYS_RESOURCE) {
                 return Err(Errno::EPERM);
             }
+            // No container process can hold CAP_SYS_RESOURCE: the single fields are not built.
             Err(kernel
                 .counters
                 .refuse(cx.host, reason::PRCTL_NOT_BUILT, option, Errno::EINVAL))
@@ -1402,6 +1406,105 @@ pub(super) fn prctl(
             .counters
             .refuse(cx.host, reason::PRCTL_NOT_BUILT, option, Errno::EINVAL)),
     }
+}
+
+/// The most auxiliary vector a process keeps (`saved_auxv`, AT_VECTOR_SIZE words on ARM64: 54 in
+/// the reference, measured).
+const SAVED_AUXV: usize = 54 * 8;
+
+/// `prctl_set_mm_map`: a checkpointed program's layout put back at once. The fields are checked
+/// as Linux checks them and kept where something here reads them: the heap's start and end and the
+/// data size `brk` checks against, the arguments and environment `/proc/<pid>/cmdline` and
+/// `environ` show, and the auxiliary vector `auxv` shows. The code and stack fields are kept by
+/// nothing here (`/proc/<pid>/stat` shows them as 0).
+fn set_mm_map(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    address: u64,
+    size: u64,
+) -> Result<u64, Errno> {
+    if size != size_of::<prctl_mm_map>() as u64 {
+        return Err(Errno::EINVAL);
+    }
+    let map: prctl_mm_map = guest(kernel, cx, tid).read_value(address)?;
+    // `validate_prctl_map_addr`: inside the address space, pairs in order, under RLIMIT_DATA.
+    let end = cx.cpu.address_space().end;
+    let fields = [
+        map.start_code,
+        map.end_code,
+        map.start_data,
+        map.end_data,
+        map.start_brk,
+        map.brk,
+        map.start_stack,
+        map.arg_start,
+        map.arg_end,
+        map.env_start,
+        map.env_end,
+    ];
+    if fields
+        .iter()
+        .any(|field| *field >= end || *field < wcontainers_abi::LOWEST_ADDRESS)
+    {
+        return Err(Errno::EINVAL);
+    }
+    if map.start_code >= map.end_code
+        || map.start_data > map.end_data
+        || map.start_brk > map.brk
+        || map.arg_start > map.arg_end
+        || map.env_start > map.env_end
+    {
+        return Err(Errno::EINVAL);
+    }
+    let data_limit = kernel.process_of(tid).limits[RLIMIT_DATA as usize].current;
+    if data_limit != RLIM_INFINITY as u64
+        && (map.brk - map.start_brk).wrapping_add(map.end_data - map.start_data) > data_limit
+    {
+        return Err(Errno::EINVAL);
+    }
+    let mut auxiliary = None;
+    if map.auxv_size != 0 {
+        if map.auxv == 0 || map.auxv_size as usize > SAVED_AUXV {
+            return Err(Errno::EINVAL);
+        }
+        let mut words = guest(kernel, cx, tid).read(map.auxv, map.auxv_size.into())?;
+        words.resize(SAVED_AUXV, 0);
+        // The last pair is AT_NULL whatever was given; what is shown ends at the first AT_NULL.
+        words[SAVED_AUXV - 16..].fill(0);
+        let shown = words
+            .chunks(16)
+            .position(|pair| pair[..8] == [0; 8])
+            .map_or(SAVED_AUXV, |pair| (pair + 1) * 16);
+        words.truncate(shown);
+        auxiliary = Some(words);
+    }
+    if map.exe_fd != u32::MAX {
+        let credentials = kernel.credentials(tid);
+        if !credentials.has(CAP_SYS_ADMIN) && !credentials.has(CAP_CHECKPOINT_RESTORE) {
+            return Err(Errno::EPERM);
+        }
+        // No container process can hold either power: changing the program file is not built.
+        return Err(kernel.counters.refuse(
+            cx.host,
+            reason::PRCTL_NOT_BUILT,
+            u64::from(PR_SET_MM),
+            Errno::EPERM,
+        ));
+    }
+    let process = kernel.process_of_mut(tid);
+    {
+        let mut memory = process.map.borrow_mut();
+        memory.brk_start = map.start_brk;
+        memory.brk = map.brk;
+        memory.data_size = map.end_data - map.start_data;
+    }
+    process.starting_stack.arguments = (map.arg_start, map.arg_end);
+    process.starting_stack.environment = (map.env_start, map.env_end);
+    if let Some(auxiliary) = auxiliary {
+        process.starting_stack.auxiliary = auxiliary;
+    }
+    Ok(0)
 }
 
 /// `prctl` options Linux has only for other architectures, which ARM64 answers EINVAL whatever is

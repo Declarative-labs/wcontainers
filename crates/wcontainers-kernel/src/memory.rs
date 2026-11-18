@@ -104,6 +104,16 @@ pub(crate) enum Lock {
 }
 
 impl Mapping {
+    /// Whether Linux keeps it as anonymous memory (`vma_is_anonymous`: no operations of its own),
+    /// as a private mapping of `/dev/zero` is too.
+    pub fn is_anonymous(&self) -> bool {
+        match self.backing {
+            Backing::Anonymous | Backing::Droppable | Backing::Heap | Backing::Stack => true,
+            Backing::Zero { .. } => !self.shared,
+            Backing::File { .. } | Backing::Special(_) => false,
+        }
+    }
+
     /// Whether the mapping counts against `RLIMIT_DATA`: private and writable, and not a stack
     /// (Linux's `is_data_mapping`).
     pub fn is_data(&self) -> bool {

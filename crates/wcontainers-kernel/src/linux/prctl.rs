@@ -54,7 +54,15 @@ pub type __sum16 = __u16;
 pub type __wsum = __u32;
 pub type __poll_t = super::ctypes::c_uint;
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct prctl_mm_map {
     pub start_code: __u64,
     pub end_code: __u64,

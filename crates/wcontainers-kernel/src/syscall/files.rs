@@ -918,14 +918,21 @@ pub(super) fn proc_contents(
     cx.host.random(&mut fresh);
     let memory_in_use = kernel.memory_in_use();
     let cpu = &mut *cx.cpu;
+    // A command line or environment is read only from anonymous memory, as `access_remote_vm`
+    // with FOLL_ANON reads it.
     let mut read_memory = |process: &crate::process::Process, start: u64, length: u64| {
         let mut bytes = alloc::vec![0; length as usize];
-        let readable =
-            process
-                .map
-                .borrow()
-                .accessible(start, length, wcontainers_abi::Permissions::READ);
-        bytes.truncate(readable as usize);
+        let map = process.map.borrow();
+        let readable = map.accessible(start, length, wcontainers_abi::Permissions::READ);
+        let mut anonymous = start;
+        while anonymous < start + readable {
+            match map.find(anonymous) {
+                Some(mapping) if mapping.is_anonymous() => anonymous = mapping.end,
+                _ => break,
+            }
+        }
+        drop(map);
+        bytes.truncate(readable.min(anonymous.saturating_sub(start)) as usize);
         if cpu.read(process.memory, start, &mut bytes).is_err() {
             bytes.clear();
         }

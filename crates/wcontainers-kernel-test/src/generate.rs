@@ -20,6 +20,7 @@ const MODULES: &[&str] = &[
 /// Structures the kernel copies to or from guest memory. They get zerocopy's byte conversions, whose
 /// derive also proves they have no padding.
 const BYTES: &[&str] = &[
+    "prctl_mm_map",
     "elf64_hdr",
     "elf64_phdr",
     "elf64_note",
