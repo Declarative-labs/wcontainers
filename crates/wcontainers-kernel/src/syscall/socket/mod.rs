@@ -22,7 +22,7 @@ use crate::file::{FileRef, OpenFile};
 use crate::fs::{Content, Node};
 use crate::linux::general::*;
 use crate::linux::net::{
-    AF_INET, AF_INET6, AF_NETLINK, AF_UNIX, MSG_CMSG_CLOEXEC, MSG_CTRUNC, MSG_DONTWAIT,
+    AF_ALG, AF_INET, AF_INET6, AF_NETLINK, AF_UNIX, MSG_CMSG_CLOEXEC, MSG_CTRUNC, MSG_DONTWAIT,
     MSG_NOSIGNAL, MSG_OOB, MSG_PEEK, MSG_TRUNC, MSG_WAITALL, SCM_CREDENTIALS, SCM_RIGHTS,
     SHUT_RDWR, SOCK_DGRAM, SOCK_RAW, SOCK_SEQPACKET, SOCK_STREAM, SOL_SOCKET,
 };
@@ -531,6 +531,18 @@ fn unix_kind(kind: u32, protocol: u32) -> Result<u32, Errno> {
     }
 }
 
+/// AF_ALG, which is not built: the reference's host (Docker Desktop's virtual machine, measured
+/// even in a privileged container) refuses to make such sockets with EPERM, at `socket`'s entry and
+/// where any socket is made, so the same is answered (counted).
+fn refuse_alg(kernel: &mut Kernel, cx: &mut Context<'_>) -> Errno {
+    kernel.counters.refuse(
+        cx.host,
+        crate::reason::FAMILY_NOT_BUILT,
+        AF_ALG.into(),
+        Errno::EPERM,
+    )
+}
+
 /// `__sock_create`: a socket of a family and kind, or what Linux answers.
 fn create(
     kernel: &mut Kernel,
@@ -545,6 +557,9 @@ fn create(
     }
     if kind >= crate::linux_extra::SOCK_MAX {
         return Err(Errno::EINVAL);
+    }
+    if family == AF_ALG {
+        return Err(refuse_alg(kernel, cx));
     }
     match family {
         AF_UNIX => Ok(Socket::new(family, unix_kind(kind, protocol as u32)?, 0)),
@@ -565,6 +580,10 @@ pub(super) fn socket(
     tid: Tid,
     [family, kind, protocol, ..]: Args,
 ) -> Result<u64, Errno> {
+    // The reference's host refuses `socket` of AF_ALG before Linux checks anything else.
+    if family as i32 == AF_ALG as i32 {
+        return Err(refuse_alg(kernel, cx));
+    }
     let (kind, flags) = kind_and_flags(kind)?;
     let socket = Rc::new(RefCell::new(create(kernel, cx, family, kind, protocol)?));
     let file = make_file(kernel, cx, tid, socket, flags)?;
