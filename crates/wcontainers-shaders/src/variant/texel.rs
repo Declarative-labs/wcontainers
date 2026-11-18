@@ -509,8 +509,13 @@ impl TexelBuffer {
             let exchanged = module.generate_predeclared_type(
                 naga::PredeclaredType::AtomicCompareExchangeWeakResult(Scalar::U32),
             );
+            // Each try compares with the word the last exchange gave, never with a plain load,
+            // which a cache may keep stale.
+            let first_seen = b.load(p);
+            let u32_ty = scalar(module, Scalar::U32);
+            let seen = b.local(u32_ty, Some(first_seen));
             b.open();
-            let old = b.load(p);
+            let old = b.load(seen);
             let kept = b.binary(B::And, old, keep);
             let new = b.binary(B::InclusiveOr, kept, bits);
             let result = b.expr(Expression::AtomicResult {
@@ -523,7 +528,14 @@ impl TexelBuffer {
                 value: new,
                 result: Some(result),
             });
+            let now = b.field(result, 0);
+            b.store(seen, now);
             let done = b.field(result, 1);
+            // A helper lane's exchange does nothing and gives no defined value: it leaves.
+            let flag = naga::front::spv::helper_invocation_flag(module, Span::UNDEFINED);
+            let flag = b.global(flag);
+            let helper = b.load(flag);
+            let done = b.binary(B::LogicalOr, done, helper);
             b.when(done, |b| b.stmt(Statement::Break));
             let body = b.close();
             b.stmt(Statement::Loop {

@@ -90,6 +90,26 @@ fn geometry_shaders_declare_what_they_are() {
     }
 }
 
+/// A DXIL vertex program's outputs keep their own widths (`vs_transform`: a float2 and a uint): its
+/// compute form fills each record slot's first components and zeroes the rest.
+#[test]
+fn narrower_vertex_outputs_fill_their_record_slots() {
+    let key = VariantKey {
+        pulled: vec![(0, VertexFormat::Float32x3), (1, VertexFormat::Float32x2)],
+        ..Default::default()
+    };
+    let vs = convert(Source::Dxil(&own("vs_transform.dxil")), &key, None).unwrap();
+    let gs = convert(
+        Source::Dxbc(&own("gs_quads.dxbc")),
+        &VariantKey::default(),
+        None,
+    )
+    .unwrap();
+    let records = stage::vertex_program(&vs, &gs).unwrap();
+    let text = wgsl(&records);
+    assert!(text.contains("vec4<u32>("), "{text}");
+}
+
 #[test]
 fn geometry_refusals_are_named() {
     // A vertex program whose inputs are not pulled cannot run as compute.
@@ -118,6 +138,52 @@ fn geometry_refusals_are_named() {
         convert(Source::Dxbc(&own("gs_quads.dxbc")), &key, None).err(),
         Some(ConvertError::Unsupported("GeometryVariant"))
     );
+}
+
+/// A geometry shader writing its layer and viewport (`gs_layers`): both are in its reflection, its
+/// records end with their slot, and the pass-through reads that slot and the run's helper constants.
+#[test]
+fn layered_geometry_shaders_name_each_vertex_run() {
+    let gs = convert(
+        Source::Dxbc(&own("gs_layers.dxbc")),
+        &VariantKey::default(),
+        None,
+    )
+    .unwrap();
+    let systems: Vec<_> = gs
+        .reflection
+        .outputs
+        .iter()
+        .filter_map(|v| v.system)
+        .collect();
+    assert!(
+        systems.contains(&SystemValue::RenderTargetArrayIndex),
+        "{systems:?}"
+    );
+    assert!(
+        systems.contains(&SystemValue::ViewportArrayIndex),
+        "{systems:?}"
+    );
+    assert!(stage::selects(&gs.reflection));
+    let passthrough = wgsl(&gs.modules[1]);
+    assert!(
+        passthrough.contains("@location(1) selection: vec4<u32>"),
+        "{passthrough}"
+    );
+    assert!(
+        passthrough.contains("@group(3) @binding(0)"),
+        "{passthrough}"
+    );
+    // Its compute form writes the slot after the position: two slots of four words per vertex.
+    let compute = wgsl(&gs.modules[0]);
+    assert!(compute.contains("stage_list"), "{compute}");
+    let plain = convert(
+        Source::Dxbc(&own("gs_quads.dxbc")),
+        &VariantKey::default(),
+        None,
+    )
+    .unwrap();
+    assert!(!stage::selects(&plain.reflection));
 }
 
 #[test]

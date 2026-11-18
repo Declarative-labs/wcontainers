@@ -847,6 +847,78 @@ fn copies_within_one_subresource_go_through_a_buffer() {
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
 
+/// A copy between regions of one depth subresource, over two layers at once, goes through a
+/// temporary texture, counted, and moves every value exactly.
+#[test]
+fn depth_copies_within_one_subresource_go_through_a_texture() {
+    let mut b = device();
+    let b = &mut b;
+    let t = b
+        .create_texture(&wcontainers_gpu::TextureDesc {
+            dimension: wcontainers_gpu::TextureDimension::D2,
+            format: Format::Depth32Float,
+            width: W,
+            height: H,
+            depth_or_layers: 2,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+            cube: false,
+            reinterpret: false,
+        })
+        .unwrap();
+    let words: Vec<u32> = (0..W * H * 2)
+        .map(|i| (i as f32 / 64.0).to_bits())
+        .collect();
+    let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+    b.write_texture(
+        &region(&t, 0, 0),
+        Extent {
+            depth_or_layers: 2,
+            ..extent(W, H)
+        },
+        &bytes,
+        W * 4,
+        H,
+        WriteMode::Ordered,
+    );
+    // Both layers' 3 by 2 at (1, 0) into (4, 2): one subresource each.
+    b.copy_texture(
+        &region(&t, 1, 0),
+        &region(&t, 4, 2),
+        Extent {
+            depth_or_layers: 2,
+            ..extent(3, 2)
+        },
+    );
+    assert_eq!(b.slow_paths().count(SlowPath::CopyWithinTexture), 1);
+    for layer in 0..2 {
+        let mut want = bytes[(layer * W * H * 4) as usize..][..(W * H * 4) as usize].to_vec();
+        let from = want.clone();
+        for y in 0..2 {
+            for x in 0..3 {
+                let (s, d) = ((y * W + x + 1) * 4, ((y + 2) * W + x + 4) * 4);
+                want[d as usize..][..4].copy_from_slice(&from[s as usize..][..4]);
+            }
+        }
+        let rb = b
+            .read_back(&ReadSource::Texture {
+                region: TextureRegion {
+                    layer,
+                    ..region(&t, 0, 0)
+                },
+                extent: extent(W, H),
+            })
+            .unwrap();
+        b.submit();
+        b.wait_read(&rb);
+        let mut got = vec![0; (W * H * 4) as usize];
+        b.finish_read(rb, &mut got);
+        assert_eq!(got, want, "layer {layer}");
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
 /// `r16unorm` and `r16uint` texels copied into `depth16unorm` (Direct3D's `R16_TYPELESS` group)
 /// keep their bits.
 #[test]

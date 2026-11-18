@@ -38,6 +38,7 @@ pub use error::Error;
 
 /// The name of the private bool `OpIsHelperInvocationEXT` reads; the module's user must set it.
 pub const HELPER_INVOCATION: &str = "helper_invocation";
+pub use next_block::helper_invocation_flag;
 
 use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
 use core::{convert::TryInto, mem, num::NonZeroU32};
@@ -1618,12 +1619,27 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                 let old = ctx
                     .expressions
                     .append(crate::Expression::LocalVariable(local), span);
+                // Each try compares with the value the last exchange gave, never with a plain
+                // load, which a cache may keep stale.
+                emitter.start(ctx.expressions);
+                let first = ctx.expressions.append(
+                    crate::Expression::Load {
+                        pointer: p_lexp_handle,
+                    },
+                    span,
+                );
+                block.extend(emitter.finish(ctx.expressions));
+                block.push(
+                    crate::Statement::Store {
+                        pointer: old,
+                        value: first,
+                    },
+                    span,
+                );
                 let mut body = crate::Block::new();
                 emitter.start(ctx.expressions);
                 let mut add = |e| ctx.expressions.append(e, span);
-                let current = add(crate::Expression::Load {
-                    pointer: p_lexp_handle,
-                });
+                let current = add(crate::Expression::Load { pointer: old });
                 let a = add(crate::Expression::As {
                     expr: current,
                     kind,
@@ -1668,14 +1684,14 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                     },
                     span,
                 );
-                body.push(
-                    crate::Statement::Store {
-                        pointer: old,
-                        value: current,
+                emitter.start(ctx.expressions);
+                let seen = ctx.expressions.append(
+                    crate::Expression::AccessIndex {
+                        base: result,
+                        index: 0,
                     },
                     span,
                 );
-                emitter.start(ctx.expressions);
                 let exchanged = ctx.expressions.append(
                     crate::Expression::AccessIndex {
                         base: result,
@@ -1685,8 +1701,33 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                 );
                 body.extend(emitter.finish(ctx.expressions));
                 body.push(
+                    crate::Statement::Store {
+                        pointer: old,
+                        value: seen,
+                    },
+                    span,
+                );
+                // A helper lane's exchange does nothing and gives no defined value: it leaves.
+                let flag = helper_invocation_flag(ctx.module, span);
+                let flag = ctx
+                    .expressions
+                    .append(crate::Expression::GlobalVariable(flag), span);
+                emitter.start(ctx.expressions);
+                let helper = ctx
+                    .expressions
+                    .append(crate::Expression::Load { pointer: flag }, span);
+                let leave = ctx.expressions.append(
+                    crate::Expression::Binary {
+                        op: crate::BinaryOperator::LogicalOr,
+                        left: exchanged,
+                        right: helper,
+                    },
+                    span,
+                );
+                body.extend(emitter.finish(ctx.expressions));
+                body.push(
                     crate::Statement::If {
-                        condition: exchanged,
+                        condition: leave,
                         accept: crate::Block::from_vec(alloc::vec![crate::Statement::Break]),
                         reject: crate::Block::new(),
                     },

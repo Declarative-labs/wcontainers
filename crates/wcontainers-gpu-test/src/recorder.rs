@@ -147,6 +147,9 @@ pub struct Recorder {
     /// Every rule of the interface a caller broke, and every call this back end could not carry out.
     /// Either loses the device.
     pub violations: Vec<String>,
+    /// Indexed draws dropped whole because a vertex they fetch lies past its stream's end, the
+    /// harshest outcome the interface allows them (`DrawRange`'s doc).
+    pub dropped_draws: u64,
     /// Every frame presented.
     pub shown: Vec<Frame>,
 }
@@ -270,6 +273,7 @@ impl Recorder {
             nested: 0,
             touched: Vec::new(),
             violations: Vec::new(),
+            dropped_draws: 0,
             shown: Vec::new(),
         }
     }
@@ -1819,6 +1823,13 @@ impl Backend for Recorder {
                     && !has.contains(Features::FRAGMENT_STORAGE_WRITE)
                 {
                     return Err(GpuError::Absent(Features::FRAGMENT_STORAGE_WRITE));
+                }
+                if let BindingResource::StorageBuffer { range: r, .. } = e.resource
+                    && !r.size.is_multiple_of(4)
+                {
+                    return Err(GpuError::Invalid(
+                        "a storage binding whose size is not a multiple of four",
+                    ));
                 }
                 if let BindingResource::StorageBuffer {
                     writable: false, ..

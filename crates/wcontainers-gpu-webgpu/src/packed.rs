@@ -3,9 +3,11 @@
 //! one. Sampled and filtered only: the 16-bit packed formats (`B5G6R5`, `B5G5R5A1`, `B4G4R4A4`),
 //! each channel widened to 8 bits (a draw would keep 8 bits a channel, not 4, 5 or 6), and the
 //! two-pixel formats (`R8G8_B8G8`, `G8R8_G8B8`), each pixel its own texel (`BlockDecoded`'s formats,
-//! converted the same way). Writes are widened on the host and read backs packed again on the
-//! host, exactly, since 8 bits keep every narrower value apart; copies between a buffer and such a
-//! texture widen and pack the same way on the GPU, by a draw.
+//! converted the same way). The three-channel 32-bit formats (`R32G32B32_*`) are held in their
+//! four-channel twins with alpha one, sampled (filtered where the twin is) and copied. Writes are
+//! widened on the host and read backs packed again on the host, exactly, since 8 bits keep every
+//! narrower value apart; copies between a buffer and such a texture widen and pack the same way on
+//! the GPU, by a draw.
 
 use wcontainers_gpu::{
     Backend, CopyBufferTexture, Extent, Format, Origin, SlowPath, TextureDesc, TextureDimension,
@@ -21,6 +23,9 @@ pub(crate) fn held(format: Format) -> Option<Format> {
         A8Unorm | B5g6r5Unorm | Bgr5a1Unorm | Bgra4Unorm | Rgbg8Unorm | Grgb8Unorm => Rgba8Unorm,
         Bgrx8Unorm => Bgra8Unorm,
         Bgrx8UnormSrgb => Bgra8UnormSrgb,
+        Rgb32Float => Rgba32Float,
+        Rgb32Uint => Rgba32Uint,
+        Rgb32Sint => Rgba32Sint,
         _ => return None,
     })
 }
@@ -49,12 +54,94 @@ pub(crate) fn clear(format: Format, c: wgpu::Color) -> wgpu::Color {
     }
 }
 
-/// The integer format holding a converted format's raw bytes on the GPU, one texel a block.
+/// The integer format holding a converted format's raw bytes on the GPU: one texel a block, or a
+/// 32-bit texel a channel of a three-channel 32-bit format.
 pub(crate) fn raw(format: Format) -> Format {
     match format.block().2 {
         1 => Format::R8Uint,
         2 => Format::R16Uint,
         _ => Format::R32Uint,
+    }
+}
+
+/// Texels of [`raw`] a row of `width` texels of `format` takes.
+pub(crate) fn raw_width(format: Format, width: u32) -> u32 {
+    let (bw, _, bytes) = format.block();
+    width.div_ceil(bw) * bytes.div_ceil(4)
+}
+
+/// Bytes of one texel of the format a converted `format` is held in.
+pub(crate) fn held_bytes(format: Format) -> u32 {
+    held(format).map_or(4, |f| f.block().2)
+}
+
+/// Whether `format` is a three-channel 32-bit format, held with a fourth channel.
+fn three_channel(format: Format) -> bool {
+    matches!(
+        format,
+        Format::Rgb32Float | Format::Rgb32Uint | Format::Rgb32Sint
+    )
+}
+
+/// The WGSL scalar type of a three-channel 32-bit format's channels.
+fn scalar(format: Format) -> &'static str {
+    match format {
+        Format::Rgb32Uint => "u32",
+        Format::Rgb32Sint => "i32",
+        _ => "f32",
+    }
+}
+
+/// The copy programs of a three-channel 32-bit format: each channel's bits moved as they are, the
+/// fourth channel one.
+fn three_channel_program(format: Format, into: bool, three_d: bool) -> String {
+    let t = scalar(format);
+    // WGSL has no bitcast of a type to itself.
+    let (to_t, to_u) = match t {
+        "u32" => ("", ""),
+        _ => ("bitcast<{t}>", "bitcast<vec4u>"),
+    };
+    let to_t = to_t.replace("{t}", t);
+    if into {
+        format!(
+            "@group(0) @binding(0) var<uniform> at: vec4<u32>;\n\
+             @group(0) @binding(1) var src: texture_2d<u32>;\n\
+             fn bits(i: u32, j: u32) -> {t} {{ return {to_t}(textureLoad(src, vec2u(i, j), 0).x); }}\n\
+             @fragment fn convert(@builtin(position) p: vec4f) -> @location(0) vec4<{t}> {{\n\
+                 let i = 3u * (u32(p.x) - at.x);\n\
+                 let j = u32(p.y) - at.y;\n\
+                 return vec4<{t}>(bits(i, j), bits(i + 1u, j), bits(i + 2u, j), {t}(1));\n\
+             }}\n"
+        )
+    } else {
+        let (texture, at) = if three_d {
+            (
+                format!("texture_3d<{t}>"),
+                "vec3u(at.x + i / 3u, at.y + j, at.z)",
+            )
+        } else {
+            (format!("texture_2d<{t}>"), "vec2u(at.x + i / 3u, at.y + j)")
+        };
+        format!(
+            "@group(0) @binding(0) var<uniform> at: vec4<u32>;\n\
+             @group(0) @binding(1) var src: {texture};\n\
+             @fragment fn convert(@builtin(position) p: vec4f) -> @location(0) vec4u {{\n\
+                 let i = u32(p.x);\n\
+                 let j = u32(p.y);\n\
+                 let t = {to_u}(textureLoad(src, {at}, 0));\n\
+                 let k = i % 3u;\n\
+                 return vec4u(select(select(t.x, t.y, k == 1u), t.z, k == 2u), 0u, 0u, 0u);\n\
+             }}\n"
+        )
+    }
+}
+
+/// The sample type of the held texels a copy program of `format` reads.
+pub(crate) fn held_sample_type(format: Format) -> wgpu::TextureSampleType {
+    match format {
+        Format::Rgb32Uint => wgpu::TextureSampleType::Uint,
+        Format::Rgb32Sint => wgpu::TextureSampleType::Sint,
+        _ => wgpu::TextureSampleType::Float { filterable: false },
     }
 }
 
@@ -127,6 +214,9 @@ fn pack_wgsl(format: Format) -> String {
 /// The fragment program of a copy by a draw between a converted format's raw blocks and its held
 /// texels (`into` the held texture, or out of a 3D or 2D one), its entry point `convert`.
 pub(crate) fn program(format: Format, into: bool, three_d: bool) -> String {
+    if three_channel(format) {
+        return three_channel_program(format, into, three_d);
+    }
     if into {
         format!(
             "@group(0) @binding(0) var<uniform> at: vec4<u32>;\n\
@@ -187,6 +277,17 @@ fn fields(format: Format) -> [u32; 4] {
 /// bits repeated down to 8 bits, as the RTX 3080's Direct3D 11 loads them (up to 0.72 of an 8-bit
 /// step from `v / (2^n - 1)`), a missing alpha one; two texels for each two-pixel block.
 pub(crate) fn widen(format: Format, packed: &[u8], out: &mut Vec<u8>) {
+    if three_channel(format) {
+        let one = match format {
+            Format::Rgb32Float => 1f32.to_bits(),
+            _ => 1,
+        };
+        for t in packed.as_chunks::<12>().0 {
+            out.extend_from_slice(t);
+            out.extend(one.to_le_bytes());
+        }
+        return;
+    }
     match format {
         Format::A8Unorm => out.extend(packed.iter().flat_map(|&a| [0, 0, 0, a])),
         Format::Bgrx8Unorm | Format::Bgrx8UnormSrgb => {
@@ -230,6 +331,12 @@ pub(crate) fn widen(format: Format, packed: &[u8], out: &mut Vec<u8>) {
 /// Appends texels of the held format packed into `format`: each channel the nearest value of its
 /// bits, BGRX's alpha one, a two-pixel block from two texels (a lone last texel taken for both).
 pub(crate) fn pack(format: Format, texels: &[u8], out: &mut Vec<u8>) {
+    if three_channel(format) {
+        for t in texels.as_chunks::<16>().0 {
+            out.extend_from_slice(&t[..12]);
+        }
+        return;
+    }
     let texels = texels.as_chunks::<4>().0;
     match format {
         Format::A8Unorm => out.extend(texels.iter().map(|t| t[3])),
@@ -282,7 +389,8 @@ impl WebGpu {
             return self.fail("a region of a two-pixel format starting inside a pair");
         }
         let row = packed_bytes(format, u64::from(extent.width)) as usize;
-        let wide = extent.width as usize * 4;
+        let texel = held_bytes(format);
+        let wide = (extent.width * texel) as usize;
         let mut texels =
             Vec::with_capacity(wide * extent.height as usize * extent.depth_or_layers as usize);
         for l in 0..extent.depth_or_layers as usize {
@@ -303,7 +411,7 @@ impl WebGpu {
             region,
             extent,
             &texels,
-            extent.width * 4,
+            extent.width * texel,
             extent.height,
             mode,
         );
@@ -338,7 +446,7 @@ impl WebGpu {
         let Ok(staged) = self.create_texture(&TextureDesc {
             dimension: TextureDimension::D2,
             format: raw(format),
-            width: extent.width.div_ceil(format.block().0),
+            width: raw_width(format, extent.width),
             height: extent.height,
             depth_or_layers: extent.depth_or_layers,
             mip_levels: 1,
@@ -399,7 +507,7 @@ impl WebGpu {
             return;
         };
         let blocks = Extent {
-            width: extent.width.div_ceil(format.block().0),
+            width: raw_width(format, extent.width),
             ..extent
         };
         let at = at_origin(&staged);
@@ -485,6 +593,7 @@ mod tests {
             .flat_map(|v| [v as u8, 7, (v >> 8) as u8, 200])
             .collect();
         let bgrx: Vec<u8> = bytes.iter().flat_map(|&v| [v, !v, v / 3, 255]).collect();
+        let triples: Vec<u8> = (0..12 * 256).map(|i| (i * 7 % 251) as u8).collect();
         for (format, texels) in [
             (Format::A8Unorm, &bytes),
             (Format::B5g6r5Unorm, &all),
@@ -494,6 +603,9 @@ mod tests {
             (Format::Grgb8Unorm, &pairs),
             (Format::Bgrx8Unorm, &bgrx),
             (Format::Bgrx8UnormSrgb, &bgrx),
+            (Format::Rgb32Float, &triples),
+            (Format::Rgb32Uint, &triples),
+            (Format::Rgb32Sint, &triples),
         ] {
             let mut wide = Vec::new();
             widen(format, texels, &mut wide);
@@ -516,6 +628,9 @@ mod tests {
             Bgra4Unorm,
             Rgbg8Unorm,
             Grgb8Unorm,
+            Rgb32Float,
+            Rgb32Uint,
+            Rgb32Sint,
         ] {
             for (into, three_d) in [(true, false), (false, false), (false, true)] {
                 let source = program(format, into, three_d);
@@ -528,6 +643,22 @@ mod tests {
                 .validate(&module)
                 .unwrap_or_else(|e| panic!("{format:?} {into}: {e:?}\n{source}"));
             }
+        }
+    }
+
+    /// Three-channel 32-bit texels keep their bytes and read one in the fourth channel.
+    #[test]
+    fn three_channels_widen_with_alpha_one() {
+        let texel: Vec<u8> = (1..=12).collect();
+        for (format, one) in [
+            (Format::Rgb32Float, 1f32.to_bits()),
+            (Format::Rgb32Uint, 1),
+            (Format::Rgb32Sint, 1),
+        ] {
+            let mut out = Vec::new();
+            widen(format, &texel, &mut out);
+            assert_eq!(&out[..12], &texel[..], "{format:?}");
+            assert_eq!(out[12..], one.to_le_bytes(), "{format:?}");
         }
     }
 

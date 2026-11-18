@@ -87,3 +87,8 @@ void cs_through(uint3 id : SV_DispatchThreadID) {
     layered[uint3(id.xy, id.x % 4)] = v;
     volume[uint3(id.x, id.y, id.x % 3)] = uint4(id.x, id.y, vd, 300 - id.x * 37);
 }
+
+// A vertex shader reading a typed buffer per vertex and instance, with the draw's bases.
+float4 vs_texels(uint v : SV_VertexID, uint n : SV_InstanceID) : SV_Position {
+    return floats[v] + floats[n].yxwz;
+}

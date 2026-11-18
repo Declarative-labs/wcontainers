@@ -18,7 +18,7 @@ bitflags! {
     /// be read (a copy's source, [`crate::Backend::read_back`]); `VERTEX`, `INDEX` and `INDIRECT` for a
     /// draw's streams, indices and arguments; `UNIFORM` and `STORAGE` for those bindings; `CAPTURE` for
     /// [`crate::Backend::capture_vertices`].
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
     pub struct BufferUsage: u16 {
         const VERTEX = 1 << 0;
         const INDEX = 1 << 1;
@@ -35,7 +35,7 @@ bitflags! {
 }
 
 /// How the guest will change a buffer's contents. Back ends choose where the buffer lives from it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum MapIntent {
     /// Written once or rarely (static vertex data, textures' uploads).
     Rarely,
@@ -44,7 +44,7 @@ pub enum MapIntent {
 }
 
 /// A buffer to create.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct BufferDesc {
     pub size: u64,
     pub usage: BufferUsage,
@@ -56,7 +56,7 @@ pub struct BufferDesc {
 /// A texture write ([`crate::Backend::write_texture`]) takes the same modes: the whole texture for the
 /// whole buffer (every level and layer), its texels for bytes (both aspects of a depth and stencil
 /// format).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum WriteMode {
     /// The write takes effect between the commands recorded before it and those after it, exactly as
     /// if the GPU had stopped to take it. The general case, and the slowest where a back end must order
@@ -82,7 +82,7 @@ bitflags! {
     /// [`crate::Backend::clear_texture`],
     /// [`crate::Backend::clear_rects`] and [`crate::Backend::generate_mips`] (which also samples);
     /// `PRESENT` for a surface's texture.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
     pub struct TextureUsage: u16 {
         const SAMPLE = 1 << 0;
         const RENDER = 1 << 1;
@@ -97,14 +97,14 @@ bitflags! {
 /// The shape of a texture. There is no 1D shape: fronts make an API's 1D textures as 2D textures one
 /// texel high, and the shaders crate reads them as such, so every back end serves them with mipmaps,
 /// arrays and rendering (WebGPU's 1D textures have none of these).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum TextureDimension {
     D2,
     D3,
 }
 
 /// A texture to create.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TextureDesc {
     pub dimension: TextureDimension,
     pub format: Format,
@@ -148,7 +148,7 @@ impl TextureDesc {
 
 /// How a view sees a texture. Each fits its texture and layer count, as WebGPU, WebGL 2 and Direct3D
 /// all require.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ViewDimension {
     /// One layer of a 2D texture.
     D2,
@@ -174,7 +174,7 @@ pub enum ViewDimension {
 /// path [`crate::SlowPath::ReinterpretCopy`]). Without [`crate::Features::TEXTURE_VIEWS`] a draw also
 /// binds each texture through one mip range only (WebGL 2 sets the range on the texture itself); a second
 /// range in the same draw comes from the second texture too.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TextureViewDesc {
     pub format: Format,
     pub dimension: ViewDimension,
@@ -192,7 +192,7 @@ pub struct TextureViewDesc {
 
 /// Texture filtering. The numbers are the codes [`crate::HelperValue::SamplerState`] holds, which
 /// converted programs (and so the cache) keep.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Filter {
     Nearest = 0,
     Linear = 1,
@@ -200,7 +200,7 @@ pub enum Filter {
 
 /// What a sampler does outside the texture. The numbers are the codes
 /// [`crate::HelperValue::SamplerState`] holds, which converted programs (and so the cache) keep.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum AddressMode {
     Repeat = 0,
     Mirror = 1,
@@ -216,7 +216,7 @@ pub enum AddressMode {
 }
 
 /// The color outside the texture for [`AddressMode::Border`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum BorderColor {
     TransparentBlack,
     OpaqueBlack,
@@ -225,17 +225,19 @@ pub enum BorderColor {
     Custom([u32; 4]),
 }
 
-/// A comparison, for depth and stencil tests and comparison samplers.
+/// A comparison, for depth and stencil tests and comparison samplers. The numbers are the codes
+/// [`crate::HelperValue::EarlyTests`] holds (zero there is a test that is off), which converted
+/// programs (and so the cache) keep.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum CompareFn {
-    Never,
-    Less,
-    Equal,
-    LessEqual,
-    Greater,
-    NotEqual,
-    GreaterEqual,
-    Always,
+    Never = 1,
+    Less = 2,
+    Equal = 3,
+    LessEqual = 4,
+    Greater = 5,
+    NotEqual = 6,
+    GreaterEqual = 7,
+    Always = 8,
 }
 
 /// A sampler to create.
@@ -244,7 +246,7 @@ pub enum CompareFn {
 /// sets one (Direct3D's `MipLODBias`, OpenGL's `TEXTURE_LOD_BIAS`, Vulkan's `mipLodBias`) passes it in the
 /// program's helper constants and binds the variant that adds it to every sampling of that sampler (slow
 /// path [`crate::SlowPath::LodBiasInShader`], [`crate::VariantKey::lod_bias`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SamplerDesc {
     pub min: Filter,
     pub mag: Filter,
@@ -266,6 +268,13 @@ pub struct BufferRange<H> {
 }
 
 /// One resource in a binding set.
+///
+/// A program may access a buffer binding outside its bound range: a back end gives what its API
+/// gives, on WebGPU a load from anywhere in the API's buffer behind the binding, zero or
+/// (0, 0, 0, x), a store landing anywhere in that buffer or dropped, or the draw or dispatch partly
+/// dropped (WGSL may end the invocation with its outputs zero). A back end may hold several of the
+/// device's buffers in one API buffer, so such an access may reach theirs. A front whose API defines the result binds a program that checks its own
+/// accesses against the range it is given.
 #[derive(Debug)]
 pub enum BindingResource<'a, B: Backend> {
     /// The offset is a multiple of [`crate::Limits::min_uniform_offset_alignment`] and the size at most
@@ -275,8 +284,8 @@ pub enum BindingResource<'a, B: Backend> {
     /// buffer ([`crate::SlowPath::ConstantBufferGrown`]).
     UniformBuffer(BufferRange<&'a B::Buffer>),
     /// The offset is a multiple of [`crate::Limits::min_storage_offset_alignment`] and the size at most
-    /// [`crate::Limits::max_storage_buffer_size`], and at least the size of the program's block, a
-    /// runtime-sized array counted as one element. A front whose API binds at any offset binds from
+    /// [`crate::Limits::max_storage_buffer_size`], a multiple of four (WebGPU's rule), and at least
+    /// the size of the program's block, a runtime-sized array counted as one element. A front whose API binds at any offset binds from
     /// the largest offset below it that is a multiple of both the alignment and the program's element
     /// stride ([`crate::ReflectedBinding::stride`]), and writes the rest into the program's helper
     /// constants ([`crate::HelperValue::StorageOffset`]), which a program made with
@@ -316,7 +325,9 @@ pub enum BindingResource<'a, B: Backend> {
 /// compares with it,
 /// `"non-filtering"` where the program pairs it with such a texture, and `"filtering"` otherwise (which
 /// takes every sampler that does not compare). Back ends without layouts give zero.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct BindingLayoutKey {
     pub unfilterable_textures: u128,
 }
@@ -336,7 +347,9 @@ pub struct BindingEntry<'a, B: Backend> {
 }
 
 /// Where in a texture a copy starts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 pub struct Origin {
     pub x: u32,
     pub y: u32,
@@ -344,7 +357,7 @@ pub struct Origin {
 }
 
 /// How much of a texture a copy covers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Extent {
     pub width: u32,
     pub height: u32,
@@ -405,7 +418,7 @@ pub enum ReadState {
 }
 
 /// Kinds of query.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum QueryKind {
     /// Zero when no sample passed every per-fragment test, otherwise non-zero. Every back end has it.
     OcclusionAny,

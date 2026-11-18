@@ -86,7 +86,8 @@ try {
   // Formats held converted: copies exact, texels within their bounds of Direct3D's values (seed 1,
   // 4 textures of 128 texels each).
   try {
-    console.log(`chrome ${await page.evaluate(() => window.converted(1, 4))}`);
+    const lines = (await page.evaluate(() => window.converted(1, 4))).split('\n');
+    for (const line of lines) console.log(`chrome ${line}`);
   } catch (e) {
     console.log(`chrome converted formats failed: ${e.message}`);
     failed = true;

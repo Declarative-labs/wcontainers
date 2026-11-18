@@ -26,11 +26,11 @@ formats.ps_float.dxbc	ok
 formats.ps_sint.dxbc	ok
 formats.ps_uint.dxbc	ok
 geometry.gs_adjacency.dxbc	ok-wgsl glsl-write
-geometry.gs_layers.dxbc	unsupported RenderTargetArrayIndex
+geometry.gs_layers.dxbc	ok-wgsl glsl-write
 geometry.gs_points.dxbc	ok-wgsl glsl-write
 geometry.gs_strips.dxbc	ok-wgsl glsl-write
 geometry.ps.dxbc	ok
-geometry.ps_id.dxbc	unsupported PrimitiveId
+geometry.ps_id.dxbc	ok-wgsl glsl-compile
 geometry.ps_primitive.dxbc	ok
 geometry.vs.dxbc	ok
 instanced.ps.dxbc	ok
@@ -41,7 +41,7 @@ msaa.ps_sample.dxbc	ok-wgsl glsl-compile
 msaa.vs_full.dxbc	ok
 quads.ps.dxbc	ok
 quads.vs.dxbc	ok
-raster.gs.dxbc	unsupported ViewportArrayIndex
+raster.gs.dxbc	ok-wgsl glsl-write
 raster.ps.dxbc	ok
 raster.vs.dxbc	ok
 samplers.ps_compare.dxbc	ok

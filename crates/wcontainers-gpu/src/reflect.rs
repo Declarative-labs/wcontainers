@@ -77,7 +77,9 @@ pub const TARGET_COPY_BINDING: u32 = 1;
 /// The binding in [`HELPER_SET`] of the depth aspect of the pass's read-only depth-stencil attachment,
 /// read by a program that runs its early depth test itself ([`VariantFlags::EARLY_TESTS`]).
 pub const EARLY_DEPTH_BINDING: u32 = 9;
-/// The binding in [`HELPER_SET`] of the stencil aspect of that attachment.
+/// The binding in [`HELPER_SET`] of the stencil aspect of that attachment; for a format without
+/// stencil, any single-sampled unsigned integer texture, which the program reads only where the
+/// stencil test is on.
 pub const EARLY_STENCIL_BINDING: u32 = 10;
 /// The bindings in [`HELPER_SET`] of the merged samplers of a clamped program: pair n of
 /// [`Reflection::sampled_pairs`], when its texture slot is in [`VariantKey::min_lod_clamped`], samples
@@ -343,7 +345,8 @@ pub enum HelperValue {
     /// draw's blend constant (four f32).
     TargetCombine { target: u8 },
     /// The early tests the program runs itself: depth compare, front and back stencil compare (u32
-    /// codes, zero for a test that is off), stencil reference and read mask (u32), eight u32.
+    /// codes of [`crate::CompareFn`], zero for a test that is off), stencil reference and read mask
+    /// (u32), eight u32.
     EarlyTests,
     /// A texture's per-resource minimum level-of-detail clamp, in the view's level numbering (f32), and
     /// the view's level count (u32): loads and gathers of a level below the clamp's whole part, and every
@@ -656,6 +659,18 @@ mod tests {
             AddressMode::MirrorOnce,
         ];
         assert_eq!(modes.map(|m| m as u32), [0, 1, 2, 3, 4]);
+        use crate::CompareFn as C;
+        let compares = [
+            C::Never,
+            C::Less,
+            C::Equal,
+            C::LessEqual,
+            C::Greater,
+            C::NotEqual,
+            C::GreaterEqual,
+            C::Always,
+        ];
+        assert_eq!(compares.map(|c| c as u32), [1, 2, 3, 4, 5, 6, 7, 8]);
     }
 
     #[test]

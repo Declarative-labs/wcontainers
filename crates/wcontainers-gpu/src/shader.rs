@@ -18,7 +18,7 @@ pub enum ShaderStage {
 
 bitflags! {
     /// A set of stages, for which stages read a binding.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
     pub struct StageSet: u8 {
         const VERTEX = 1;
         const FRAGMENT = 2;

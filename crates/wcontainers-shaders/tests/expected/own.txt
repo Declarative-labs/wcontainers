@@ -10,11 +10,14 @@ ds_tri.dxbc	ok-wgsl glsl-write
 gs_adjacent.dxbc	ok-wgsl glsl-write
 gs_cut.dxbc	ok-wgsl glsl-write
 gs_instances.dxbc	ok-wgsl glsl-write
-gs_layers.dxbc	unsupported RenderTargetArrayIndex
+gs_layers.dxbc	ok-wgsl glsl-write
 gs_line_adjacent.dxbc	ok-wgsl glsl-write
 gs_lines.dxbc	ok-wgsl glsl-write
 gs_points.dxbc	ok-wgsl glsl-write
 gs_quads.dxbc	ok-wgsl glsl-write
+gs_tess_line.dxbc	ok-wgsl glsl-write
+gs_tess_point.dxbc	ok-wgsl glsl-write
+gs_tess_tri.dxbc	ok-wgsl glsl-write
 gs_unplaced.dxbc	ok-wgsl glsl-write
 hs_line_even_line.dxbc	ok-wgsl glsl-write
 hs_line_even_point.dxbc	ok-wgsl glsl-write
@@ -51,9 +54,11 @@ hs_tri_pow2_point.dxbc	ok-wgsl glsl-write
 ps_cases.dxbc	ok-wgsl glsl-compile
 ps_clip.dxbc	ok
 ps_coarse.dxbc	ok
+ps_contend.dxbc	ok-wgsl glsl-write
 ps_depth.dxbc	ok
 ps_deriv.dxbc	ok-wgsl glsl-write
 ps_dual.dxbc	ok
+ps_early.dxbc	ok-wgsl glsl-write
 ps_fill.dxbc	ok-wgsl glsl-compile
 ps_filter.dxbc	ok-wgsl glsl-compile
 ps_flat.dxbc	ok
@@ -67,6 +72,7 @@ ps_layer.dxbc	ok
 ps_levels.dxbc	ok-wgsl glsl-write
 ps_local.dxbc	ok
 ps_loop.dxbc	ok
+ps_mark.dxbc	ok
 ps_mingather.dxbc	ok-wgsl glsl-compile
 ps_minlod.dxbc	ok
 ps_mirror.dxbc	ok
@@ -74,13 +80,14 @@ ps_msarray.dxbc	unsupported MultisampledArrayTexture
 ps_negate.dxbc	ok
 ps_offset.dxbc	ok
 ps_pack.dxbc	ok
+ps_primid.dxbc	ok-wgsl glsl-compile
 ps_pull.dxbc	ok
 ps_rows.dxbc	ok
 ps_samples.dxbc	unsupported SampleCount
 ps_shade.dxbc	ok-wgsl glsl-write
 ps_signed.dxbc	ok
 ps_size.dxbc	ok
-ps_spaces.dxbc	unsupported RegisterSpace
+ps_spaces.dxbc	ok
 ps_special.dxbc	ok
 ps_table.dxbc	ok
 ps_texels.dxbc	unsupported TypedBufferFormatKind
@@ -90,6 +97,7 @@ ps_window.dxbc	ok
 vs_carry.dxbc	ok
 vs_clip.dxbc	ok-wgsl glsl-compile
 vs_deep.dxbc	ok
+vs_early.dxbc	ok
 vs_filter.dxbc	ok
 vs_fullscreen.dxbc	ok-wgsl glsl-compile
 vs_geometry.dxbc	ok
@@ -98,4 +106,5 @@ vs_pack.dxbc	ok
 vs_patch.dxbc	ok
 vs_pull.dxbc	ok
 vs_shade.dxbc	ok
+vs_texels.dxbc	ok-wgsl glsl-write
 vs_transform.dxbc	ok

@@ -2442,6 +2442,19 @@ fn buffer_bindings_are_aligned_inside_the_buffer_and_the_limits() {
     );
     assert!(bind(&mut r, storage_at(256, 16)).is_ok());
     assert_eq!(
+        bind(&mut r, storage_at(256, 6)),
+        Err(GpuError::Invalid(
+            "a storage binding whose size is not a multiple of four"
+        ))
+    );
+    assert!(
+        bind(
+            &mut r,
+            BindingResource::UniformBuffer(range(&uniform, 0, 6))
+        )
+        .is_ok()
+    );
+    assert_eq!(
         bind(&mut r, storage_at(768, 512)),
         Err(GpuError::Invalid("a buffer binding past the buffer's end"))
     );
@@ -4227,6 +4240,80 @@ fn draws_read_vertices_and_indices_inside_their_buffers() {
         c.range = indexed(6);
     });
     d.refused("an index past the buffer's end");
+}
+
+#[test]
+fn an_indexed_draw_fetching_past_a_stream_is_dropped_whole() {
+    // The 24 bytes of vertices hold vertices 0 to 2; vertex 3 starts at their end.
+    for (last, dropped) in [(2u16, 0), (3, 1)] {
+        let mut d = Drawing::new();
+        let indices: Vec<u8> = [0u16, 1, last, 0]
+            .iter()
+            .flat_map(|i| i.to_le_bytes())
+            .collect();
+        d.r.write_buffer(&d.spare, 0, &indices, WriteMode::Ordered);
+        let before = d.r.texture_bytes(d.target);
+        let p = d.program("plain");
+        d.begin();
+        d.draw_with(&p, None, Topology::TriangleList, false, |c, spare| {
+            c.index = Some(IndexBinding {
+                buffer: spare,
+                offset: 0,
+                format: IndexFormat::U16,
+            });
+            c.range = DrawRange::Indexed {
+                first: 0,
+                count: 3,
+                base_vertex: 0,
+                first_instance: 0,
+                instances: 1,
+            };
+        });
+        d.r.end_pass();
+        assert!(d.r.violations.is_empty(), "{:?}", d.r.violations);
+        assert_eq!(d.r.dropped_draws, dropped, "index {last}");
+        assert_eq!(
+            d.r.texture_bytes(d.target) == before,
+            dropped == 1,
+            "index {last}"
+        );
+    }
+}
+
+#[test]
+fn an_indexed_draw_fetching_past_a_stream_still_reads_no_subresource_it_writes() {
+    let mut d = Drawing::new();
+    let p = d.program("loads");
+    let target_view = d.target_view;
+    let set =
+        d.r.create_binding_set(&[BindingEntry {
+            binding: 32,
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::Texture(&target_view),
+        }])
+        .unwrap();
+    let indices: Vec<u8> = [0u16, 1, 3, 0]
+        .iter()
+        .flat_map(|i| i.to_le_bytes())
+        .collect();
+    d.r.write_buffer(&d.spare, 0, &indices, WriteMode::Ordered);
+    d.begin();
+    d.draw_with(&p, Some(&set), Topology::TriangleList, false, |c, spare| {
+        c.index = Some(IndexBinding {
+            buffer: spare,
+            offset: 0,
+            format: IndexFormat::U16,
+        });
+        c.range = DrawRange::Indexed {
+            first: 0,
+            count: 3,
+            base_vertex: 0,
+            first_instance: 0,
+            instances: 1,
+        };
+    });
+    assert_eq!(d.r.dropped_draws, 0);
+    d.refused("a subresource bound for reading while it is a written attachment");
 }
 
 #[test]

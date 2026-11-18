@@ -58,7 +58,7 @@
 1eaa48173c681e34.dxbc	ok
 1f95d3230fb0a9b9.dxbc	ok
 1ff60fd8b72e61fd.dxbc	ok
-2030e77a96c6a025.dxbc	unsupported RenderTargetArrayIndex
+2030e77a96c6a025.dxbc	ok-wgsl glsl-write
 2156b61ce0ee81c3.dxbc	ok
 2181ceabe60a6693.dxbc	ok-wgsl glsl-write
 21aebcddcf029a7d.dxbc	ok
@@ -100,7 +100,7 @@
 3669defe3877d907.dxbc	ok
 3713d5c8ae21b3e5.dxbc	ok
 377fc137004567ec.dxbc	ok
-37d591be2e59fd10.dxbc	unsupported RenderTargetArrayIndex
+37d591be2e59fd10.dxbc	ok-wgsl glsl-write
 38907416088349fb.dxbc	ok
 3967691f78eb3239.dxbc	ok
 39734a1374390f82.dxbc	ok
@@ -442,7 +442,7 @@ dc842d382de372f9.dxbc	ok
 ddad8e506eb33b38.dxbc	unsupported MultisampledArrayTexture
 ddad9508c0e6cdf2.dxbc	ok-wgsl glsl-write
 ddceeefdb679dab0.dxbc	ok
-dddda1b9cb6b9c8d.dxbc	unsupported RenderTargetArrayIndex
+dddda1b9cb6b9c8d.dxbc	ok-wgsl glsl-write
 de72e785abb239b5.dxbc	ok
 df2ec9f1a8b14394.dxbc	ok
 dff055a294f9dc3b.dxbc	ok

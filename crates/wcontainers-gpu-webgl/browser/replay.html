@@ -1,0 +1,76 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Replayed frames on WebGL 2 and WebGPU</title>
+<script type="importmap">{ "imports": { "wcontainers-device": "./device.js" } }</script>
+<script type="module">
+// Replays pkg/stream.bin (a recorded call stream) on each back end twice, each time on a new device,
+// frame by frame with a 20 ms pause between frames so the GPU keeps up: once with each call timed
+// inside the back end, once timing only whole frames (so the clock's own cost stays out of them).
+// Frames before `skip` (loading) are left out of the sums. Sets window.done to { ok, lines }.
+import init, { replay_on_webgl, replay_on_webgpu, replay_frame, replay_report } from './pkg/replay.js';
+const skip = Number(new URLSearchParams(location.search).get('skip') ?? 10);
+const pause = () => new Promise((r) => setTimeout(r, 20));
+const median = (t) => { const s = [...t].sort((a, b) => a - b); return s.length ? s[s.length >> 1] : NaN; };
+const lines = [];
+window.makeCanvas = () => document.createElement('canvas');
+// One replay; answers the frames' whole times, their times inside the back end, the kinds' sums
+// and the failures.
+async function replay(start, timed) {
+  await start();
+  const r = { whole: [], inside: [], kinds: new Map(), frames: 0, failed: 0, first: '' };
+  for (let i = 0; ; i++) {
+    const text = await replay_frame(timed);
+    if (text === undefined || text === null) break;
+    r.frames++;
+    let sum = 0;
+    for (const line of text.split('\n')) {
+      const [kind, a, ...rest] = line.split(' ');
+      if (kind === 'failed') {
+        r.failed += Number(a);
+        if (!r.first && Number(a)) r.first = `frame ${i}: ${rest.join(' ')}`;
+      } else if (kind === 'frame') {
+        if (i >= skip) r.whole.push(Number(a));
+      } else if (i >= skip) {
+        const k = r.kinds.get(kind) ?? { calls: 0, ms: 0 };
+        k.calls += Number(a);
+        k.ms += Number(rest[0]);
+        r.kinds.set(kind, k);
+        sum += Number(rest[0]);
+      }
+    }
+    if (i >= skip) r.inside.push(sum);
+    await pause();
+  }
+  r.report = replay_report();
+  return r;
+}
+async function run(name, start) {
+  const t = await replay(start, true);
+  const u = await replay(start, false);
+  const n = t.inside.length;
+  for (const [label, r] of [['timed', t], ['untimed', u]]) {
+    lines.push(`${name} (${label}): ${r.frames} frames, ${r.failed} calls failed${r.first ? ` (first: ${r.first})` : ''}; ${r.report}`);
+  }
+  lines.push(`${name}: whole frame, calls untimed: median ${median(u.whole).toFixed(3)} ms, fastest ${Math.min(...u.whole).toFixed(3)} ms, slowest ${Math.max(...u.whole).toFixed(3)} ms, over ${u.whole.length} frames from frame ${skip}`);
+  lines.push(`${name}: whole frame, calls timed: median ${median(t.whole).toFixed(3)} ms; inside the back end median ${median(t.inside).toFixed(3)} ms, mean ${(t.inside.reduce((a, b) => a + b, 0) / n).toFixed(3)} ms, over ${n} frames`);
+  const sorted = [...t.kinds.entries()].sort((a, b) => b[1].ms - a[1].ms);
+  for (const [kind, k] of sorted) {
+    lines.push(`${name}:   ${kind}: ${(k.calls / n).toFixed(2)} calls, ${(k.ms / n).toFixed(4)} ms a frame, ${(k.ms * 1000 / k.calls).toFixed(2)} us a call`);
+  }
+  return t.failed === 0 && u.failed === 0;
+}
+try {
+  await init();
+  const stream = new Uint8Array(await (await fetch('./pkg/stream.bin')).arrayBuffer());
+  lines.push(`stream: ${stream.length} bytes, cross-origin isolated ${self.crossOriginIsolated}`);
+  const context = () => document.createElement('canvas').getContext('webgl2', { antialias: false, depth: false, stencil: false });
+  const okGl = await run('webgl2', async () => replay_on_webgl(context(), stream));
+  const info = (await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })).info;
+  lines.push(`webgpu adapter: ${info.description} (${info.type}, ${info.backend})`);
+  if (!['discrete GPU', 'integrated GPU'].includes(info.type)) throw new Error(`WebGPU's adapter is of type ${info.type}, not a GPU`);
+  const okGpu = await run('webgpu', async () => replay_on_webgpu(stream));
+  window.done = { ok: okGl && okGpu, lines };
+} catch (e) {
+  window.done = { ok: false, lines: [...lines, String(e)] };
+}
+</script>

@@ -1,4 +1,4 @@
-# Graphics: the WebGPU back end (G2, G2b)
+# Graphics: the WebGPU back end (G2, G2b, G2c)
 
 Branch phase-2-graphics-webgpu. The plan is docs/phase-2-graphics.md (sections 4, 5.7 and 12, G2).
 Crate: crates/wcontainers-gpu-webgpu, on wgpu 30.0.2.
@@ -15,20 +15,38 @@ results from a ring, two stale hand-over sentences, the point fill test's report
 the third check's findings (BGRX vertices answered and tested against Direct3D 11, integer formats
 no longer declared resolvable, part of a depth level copied into colour, the rest of the 16-bit
 group copied into depth, prepared strips built for both index formats) and answered what the
-newest merges ask. Every request found is built and tested or refused by name (list below). Earlier runs follow ("Run 5" to "Run 10" are G2 runs 1 to 6; G2a runs 1 to 4 after them).
+newest merges ask. G2b passed its fourth independent check. Run 19 is G2c run 1 (below): the
+check's open findings, the new requests (three-channel 32-bit textures), and where real programs'
+frame time goes. Run 20 is G2c run 2 (below): the interface's ruling on depth and stencil
+copies within one subresource built, subgroups, and the stencil view question answered. Every
+request found is built and tested or refused by name (list below). Earlier runs follow ("Run 5" to "Run 10" are G2 runs 1 to 6; G2a runs 1 to 4 after them).
 
 What the fronts' status files ask of this back end (read at G2b runs 1 and 2, after merging every
 graphics branch), and where each stands:
 - Timestamps (Direct3D 12: every real program tried stops there; Direct3D 11: so timestamps need not
   be reported disjoint): built. `TIMESTAMPS` where wgpu has `TIMESTAMP_QUERY` and resolves in
   nanoseconds; tests/timestamps.rs, tests/direct3d.rs (against Direct3D 11), and in Chrome by
-  web/check. Calibration: through base primitives (see "How another track builds").
+  web/check. Calibration: through base primitives (see "How another track builds"). Their
+  resolution differs (see "How another track builds"): natively on the RTX 3080 every timestamp
+  was a multiple of 1024 ns; Chrome as users have it rounds them much more coarsely.
+- `R32G32B32_*` textures (Direct3D 11, G4 run 16: test_create_texture2d test 21): built (run 19).
+  `Rgb32Float`, `Rgb32Uint` and `Rgb32Sint` are held in their four-channel twins with a fourth
+  channel of one (`FormatConverted`, src/packed.rs), declared sampled and copied (filtered where
+  the twin is), not drawn into or stored. Writes widen on the host, read backs pack on the host,
+  and copies with buffers or between the three run on the GPU through an `r32uint` texture of
+  three texels a texel, every bit moved as it is. Before, the formats were declared with no use.
+  examples/scenes/converted.rs `three_channels` (tests/converted.rs natively, web/check in
+  Chrome): seeded bits, NaNs and denormals among them, written, read back, copied and loaded,
+  every bit kept; tests/direct3d.rs `three_channel_formats_load_and_read_back_as_direct3d_does`:
+  loads and read backs equal to Direct3D 11's `R32G32B32_*`, 0 of 1536 channels differing in each
+  format (seed 1, 4 textures).
 - Point filling under its own name: built. `POLYGON_MODE_POINT` where wgpu has it (Vulkan, not
   Direct3D 12 or browsers); wireframe `POLYGON_MODE` where wgpu has `POLYGON_MODE_LINE` (every
   native API; browsers have neither). tests/raster.rs.
 - Instance step rates in the program: measured at 4, 8 and 16 streams a draw, natively and in
   Chrome (examples/scenes/pulled.rs, tests/pulled.rs, web/check; Measurements, run 14). Storage
-  usage on every vertex buffer costs nothing (every buffer already has it). CPU a frame of 256
+  usage on every vertex buffer is expected to cost nothing, not measured: every buffer already
+  has it (`buffer_usage`), so no run compares buffers without it. CPU a frame of 256
   draws: with binding sets kept, fetching costs no more than vertex buffers (0.28 against 0.30 ms
   at 4 streams on Vulkan, less at 8 and 16). With a set made per draw, the route the Direct3D 11
   front takes, it costs clearly more: at 4 streams 0.53 against 0.30 ms on Vulkan, 0.60 against
@@ -118,6 +136,110 @@ graphics branch), and where each stands:
   invocations through this back end and its test_query_pipeline_statistics passes (its status,
   runs 22 and 23). The shared `OcclusionCounter`'s new GPU sum is a compute program this back end
   runs as any other.
+- Copies within one subresource of depth or stencil (the interface's ruling, G1c: through a
+  temporary texture of the same format): built (run 20). The region is drawn into a texture of
+  its format and size, then drawn from it into its place, each aspect by the depth and stencil
+  draws partial copies already use (`CopyWithinTexture`). Before, the device was marked lost by
+  name. The shared suite's `a_copy_within_one_depth_or_stencil_subresource_moves_the_region`
+  (`depth32float`, `depth16unorm`, `stencil8`, `depth24plus`, both combined formats) natively and
+  in Chrome; tests/copies.rs `depth_copies_within_one_subresource_go_through_a_texture` (two
+  layers at once, every value exact, counted once).
+- Subgroups (shaders track, run 28: "ask wgpu for `SUBGROUP` where the adapter has it and
+  declare `Features::SUBGROUPS`"; Godot's 3D platformer through the Direct3D 12 front stops at
+  wave operations): built (run 20). The device asks for wgpu's `SUBGROUP` where the adapter has
+  it and declares `SUBGROUPS` then. Where it is: wgpu's Vulkan on the RTX 3080; wgpu's Direct3D
+  12 only with DXC (shader model 6), so not with the FXC the fronts' instance uses; not in
+  Chrome, because wgpu 30's browser back end does not map WebGPU's `subgroups` feature (its
+  feature table has 16 entries, none of them subgroups), so the back end declares it absent
+  there. tests/subgroups.rs: declared exactly where the adapter has it; a fragment program using
+  `subgroupAll`, `subgroupAdd` and `subgroupBallot` draws every pixel as they define; a device
+  made without the feature declares none and refuses the program by name.
+- Stencil views reading 0 on wgpu's Direct3D 12 path (Direct3D 11 front, G4 run 19, Wine's
+  test_depth_stencil_sampling): not reproduced in this back end. wgpu 30's Direct3D 12 stencil
+  views use `X24_TYPELESS_G8_UINT` with a component mapping that moves the stencil (green) into
+  the first component and forces the second to 0 (wgpu-hal dx12/view.rs
+  `STENCIL_COMPONENT_MAPPING`), as WebGPU defines. tests/bindings.rs
+  `combined_depth_stencil_views_draw_and_read_each_aspect` now also clears the stencil alone (depth
+  kept, as `D3D11_CLEAR_STENCIL` does) and reads it again through the stencil view: the value is
+  in the first component on Vulkan and on Direct3D 12 for `depth24plus-stencil8` and
+  `depth32float-stencil8` (run 20; this test is native only). So a 0 seen through the front
+  comes from the second component being read where the program's mapping was not applied, or
+  from the front's path; asked back of the Direct3D 11 track under Next.
+
+Run 20 = G2c run 2, 2026-11-18:
+- Merged origin/phase-2-graphics (G1c: the ruling on depth and stencil copies within one
+  subresource, prepare naming no index format, no vertex format capability, three new shared
+  suite tests); it carried the newest -rig, -shaders, -direct3d-11, -direct3d-12 and -webgl
+  commits, so nothing else was left to merge. No conflicts. The three new suite tests were added
+  to examples/scenes/names.rs, so Chrome runs them too.
+- The G2b check's open findings were all closed in run 19 (above); the strip index field is now
+  the interface's own ruling (no index format in `PrepareDesc`; strips prepared for both).
+- Built: the ruling on depth and stencil copies within one subresource; subgroups. Answered with
+  a test: stencil views on wgpu's Direct3D 12 path. Each is in the list above. Read again for
+  new asks: the Direct3D 11 front's empty-slot `resinfo` sizes (its own stand-in texture, its
+  item), its multisampled arrays as a texture per layer (refused by that front for now; plan 4.2's
+  texture per layer is built in the fronts, as the Direct3D 12 front has done), the shaders track's 24-bit early
+  tests (its own program), the WebGL track's replays (they replay on this back end unchanged).
+  Nothing else is asked of this back end.
+- Full runs (desktop, RTX 3080, NVIDIA 621.01, shared with the other tracks through the GPU
+  queue, CPU load not sampled; scratch logs/run20-full.log, run20-subgroups.log,
+  run20-clippy.log, run20-webcheck.log, pictures in run20/web): lint of both builds clean;
+  natively after `cargo clean` of this crate and the suite crate, Vulkan 121 passed and 3
+  ignored, Direct3D 12 122 passed and 2 ignored (the same ignored tests as run 19), 0 failed;
+  the shared suite 42 of 42 on each API. Subgroups: the adapter has them on Vulkan (declared,
+  drawn), not on Direct3D 12 (declared absent). web/check after cleaning the WebAssembly build:
+  the twelve pictures and the viewports equal Direct3D 11's at tolerance 0, the twists differ,
+  the shared suite 42 of 42 in Chrome 157 on the RTX 3080 (D3D12, discrete, not a fallback),
+  timestamps without developer features in steps of 65,536 ns (9.830 and 19.530 ms), the other
+  Chrome checks as in run 19.
+- Frame time: the breakdowns of run 19 stand (Measurements); nothing in this run changes a
+  frame's path but the device asking for subgroups. The two large costs are now placed: the
+  bgfx copy is the Direct3D 12 front's `MappedUploadWhole` (asked of it under Next), the acquire
+  spin is the display wait itself (Next).
+- Removed at the end: the desktop's C:\wc\target\phase-2-graphics-webgpu (5.96 GB) and the
+  checkout's own target on the Mac (505 MB of `cargo check`); no scratch copy was made.
+
+Run 19 = G2c run 1, 2026-11-18:
+- Merged origin/phase-2-graphics-rig, -shaders, -direct3d-12 and -direct3d-11 (no conflicts; the
+  shared line and -webgl had nothing new). The merged lock file lacked the Direct3D 12 manifest's
+  `blake3`, so `--locked` builds failed; brought up to date in its own commit. Interface changes
+  they brought (`VariantKey::texture_layers` and `swizzled`, `AddedBinding::TextureLayer`,
+  `HelperValue::Layer` and `Viewport`, `Reflection::slow_paths`, three slow paths) need nothing
+  here: the back end lays out added bindings from the reflection as before, and declares no
+  `VIEW_SWIZZLE` (wgpu 30 has none), so programs apply mappings themselves.
+- The interface track's ruling on copies within one subresource of depth or stencil has not
+  landed on origin/phase-2-graphics (no new commits there); such a copy still marks the device
+  lost by name ("a copy within one subresource of depth or stencil").
+- Read the front, shaders and shared status files for what they ask of this back end. New: the
+  Direct3D 11 front's `R32G32B32_*` textures (built, list above), and "the division's precision"
+  in atg-simplecomputepc, asked of the shaders or this track: refused here, not this back end's
+  code. The back end hands wgpu the converter's program; the division is the converter's
+  instruction compiled by the compiler the host's wgpu instance picks (the Direct3D 11 library
+  makes a Direct3D 12 instance, so FXC, whose output Direct3D 12 converts again), so which step
+  rounds can be found by running the sample with an instance on Vulkan or with wgpu's DXC
+  (`Dx12Compiler`), the host's choice (asked of the Direct3D 11 track under Next). Everything
+  else in the lists is answered above or is others' work. The Direct3D 12 front's gap list asks
+  nothing new of this back end; the shaders track's and the WebGL track's files neither.
+- The G2b check's findings: Chrome's developer features flag is now described as also turning
+  off timestamp rounding, and web/plain.mjs (run by web/check) times them in Chrome as users have
+  it: 65,536 ns steps (recorded in the hand-over); `timestamps_are_absent_on_a_device_without_timestamp_queries`
+  runs the absent branch (a device made without `TIMESTAMP_QUERY`: `TIMESTAMPS` undeclared,
+  timestamp sets and `timestamps_disjoint` refused by name); the strip index field is refused
+  with its reason (Departures); "storage usage costs nothing" is now said to be expected, not
+  measured; the native loop bounding cost stays under Next for the owner.
+
+- Full runs at the end (desktop, RTX 3080, shared through the GPU queue; scratch
+  logs/run19-full.log and logs/run19-webcheck-final.log): lint of both builds clean; natively,
+  Vulkan 116 passed and 3 ignored (the same three as run 18), Direct3D 12 117 passed and 2
+  ignored, 0 failed; the shared suite 39 of 39 on each API. web/check from clean: the twelve
+  pictures and the viewports equal Direct3D 11's at tolerance 0, the twists differ, the shared
+  suite 39 of 39 in Chrome 157 on the RTX 3080, the three-channel formats every bit kept in
+  Chrome, timestamps in Chrome without developer features in steps of 65,536 ns, the other
+  Chrome checks as in run 18.
+- Frame time of real programs through the fronts: Measurements, run 19.
+- Removed at the end: the desktop's C:\wc\target\phase-2-graphics-webgpu (11.2 GB, debug and
+  release), the program copies under C:\wc\out\phase-2-graphics-webgpu\frames (the profiles,
+  3.15 GB, stay as evidence), and the checkout's own target on the Mac (833 MB of `cargo check`).
 
 Run 18 = G2b run 8, 2026-11-18 (fixes from G2b's third independent check):
 - Merged origin/phase-2-graphics-rig, -shaders, -direct3d-12, -direct3d-11 and -webgl (no
@@ -773,6 +895,10 @@ Run 4, 2026-11-17 (fixes from the independent check of run 3; merged origin/phas
   `AUTOMATIC_TIMESTAMP_NORMALIZATION`): without it, natively on a GPU whose timestamp period is not
   1 ns, `TIMESTAMPS` is declared absent. On the RTX 3080 the period is 1 ns on both of wgpu's APIs
   with or without the flag (tests/timestamps.rs prints it), so there it changes nothing.
+- `SUBGROUPS` is declared where wgpu offers `SUBGROUP`: on the RTX 3080 through wgpu's Vulkan,
+  not through its Direct3D 12 with FXC (the fronts' instance; DXC would offer it), and not in
+  the browser with wgpu 30. A program using subgroups on a device without them is refused at
+  `create_shader` with `GpuError::Invalid`, so fronts check the capability first.
 - Make it from a wgpu adapter: ask for the device with `WebGpu::device_descriptor(&adapter)` (the
   features the back end uses where present, and the adapter's highest limits), then
   `WebGpu::new(&adapter, device, queue)`. `WebGpu` is the `B` of `Device<B: Backend>`. The whole
@@ -804,7 +930,13 @@ Run 4, 2026-11-17 (fixes from the independent check of run 3; merged origin/phas
   another format of equal blocks run on the GPU, through a texture of its raw blocks widened or
   packed by a draw; neither copies nor read backs wait on the device.
 - Timestamps (`TIMESTAMPS`): `write_timestamp` outside a pass, `resolve_queries` gives nanoseconds,
-  `timestamps_disjoint` is always false. Calibration against the CPU clock (Direct3D 12's
+  `timestamps_disjoint` is always false. Their resolution is the GPU's or the browser's, not 1 ns
+  (measured run 19, examples/scenes/timestamps.rs prints the step): natively on the RTX 3080 every
+  timestamp was a multiple of 1024 ns on both of wgpu's APIs; Chrome 157 as users have it rounds
+  every timestamp to a multiple of 65,536 ns (about 65.5 µs; web/plain.mjs), so a program timing
+  GPU work shorter than that in a browser reads 0 or steps of 65.5 µs, although the fronts report
+  a 1 GHz frequency. With `--enable-webgpu-developer-features` (the rig's other Chrome checks)
+  Chrome does not round them. Calibration against the CPU clock (Direct3D 12's
   `GetClockCalibration`) is made from base primitives, as examples/scenes/timestamps.rs `reading`
   does: write a timestamp, resolve it, read it back, take the CPU clock just before `submit` and just
   after `wait_read`; the GPU time lies between the two. Measured: the GPU clock runs at the CPU
@@ -821,7 +953,7 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
 `cargo check -j 2`.
 - Tests on the RTX 3080 (tests/bindings.rs, blocks.rs, converted.rs, copies.rs, depth.rs,
   direct3d.rs (Windows only), fitted.rs, prepare.rs, pulled.rs, queries.rs, raster.rs, scenes.rs, surface.rs
-  (Windows only), timestamps.rs, vertices.rs, writes.rs and suite.rs, the shared suite; they need a
+  (Windows only), subgroups.rs, timestamps.rs, vertices.rs, writes.rs and suite.rs, the shared suite; they need a
   GPU, and the suite's present test and surface.rs a desktop, so
   `--desktop`; `WEBGPU_API=dx12|vulkan|metal` picks wgpu's API, default the platform's, Vulkan on
   the desktop), both APIs in one job:
@@ -887,12 +1019,69 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   in Chrome, one page per test (suite-chrome.txt). Prints
   Chrome's WebGPU adapter and fails unless it is a GPU, not a fallback. With a directory, the
   pictures and the suite's results are copied there. About 7 minutes cold, the job itself 15 s.
+- Where real programs' frame time goes: `crates/wcontainers-gpu-webgpu/frames/run [--real]
+  [--short n] [--long n] <program>...` (programs as the rig names them; `--real` draws through
+  real Direct3D for comparison). It needs samply 0.13.1 in C:\wc\tools and an SSH session that
+  may profile the system (the queue's desktop session may not: wpr "Failed to enable the policy").
+  Each program is three GPU jobs and two traces of the whole machine, about 1 to 10 minutes;
+  results print at the end.
+- Timestamps in Chrome as users have it, alone: after web/check has built the page, a GPU job
+  `node crates\wcontainers-gpu-webgpu\web\plain.mjs C:\wc\out\phase-2-graphics-webgpu-webgpu\pkg`
+  (web/check runs it too).
 - The old one-step BC comparison (ignored): add `--ignored` to the test command (`--test blocks --
   --ignored --nocapture`); it prints each format's largest difference and the texel.
 - One renderer by hand, on the desktop: `scenes <dx12|vulkan|metal> <dir> [none|blend-factor|
   depth-function]` (the example's binary).
 
 ## Measurements
+
+Run 19 (G2c), where a real program's frame time goes on our side. Desktop (i9-9900K, RTX 3080,
+driver 621.01), shared with the other tracks: each program ran alone in the GPU queue (hazard
+group), but builds and other tracks' remote commands ran beside; load not measured further.
+Method (crates/wcontainers-gpu-webgpu/frames/run and examples/frames.rs): the fronts' libraries
+built in release with line tables; each program run once unrecorded, then to frame 60 and to
+frame 360 under Windows' recorder (wpr's CPU profile, a sample with stacks every millisecond on
+every thread of the process), converted by samply; a frame's share is the difference of the two
+runs over the 300 frames between, so start-up and shut-down cancel. Each sample goes to the
+innermost frame of a known part; our libraries are named from their PDBs (code inlined into a
+function counts as that function's), system and driver code by library, with the function of
+ours that called it, or the library that started its thread. Logs: scratch
+logs/run19-frames-ours.log, -ours2.log and -real.log.
+- chocolate-doom (Direct3D 11 front, wgpu on Direct3D 12): 0.96 ms of wall time a frame (real
+  Direct3D 11: 0.30), CPU 4.0 ms a frame (real: 0.74). Ours: front 0.010 ms, back end 0.013,
+  wgpu 0.013, and under the back end's functions 0.097 ms in all (driver 0.050, system 0.030;
+  the largest single place a `memcpy` in `write_texels`, 0.023 ms, the frame's texture upload).
+  The rest is not ours: 2.74 ms in threads the NVIDIA Direct3D 12 driver (nvwgf2umx.dll) started,
+  spinning in ntdll (real Direct3D 11's driver threads: 0.42 ms), 0.28 ms the program and SDL.
+- atg-simpleinstancingpc (Direct3D 11 front): 16.8 ms of wall time a frame (paced by the
+  display). Ours: front 0.027 ms, back end 0.010, wgpu 0.010, under the back end 0.130 ms (the
+  driver's present and submit most of it). Not ours: 66.8 ms of CPU a frame in the Direct3D 12
+  driver's threads spinning (about four threads busy all the time) and 13.8 ms in the program's.
+- bgfx-01-cubes-d3d12 (Direct3D 12 front, wgpu on Vulkan): 16.6 ms of wall time a frame. Ours:
+  front 0.41 ms (`Replay::draw` 0.19 the largest), back end 0.057, wgpu 0.070, and under the
+  back end 3.59 ms, nearly all of it 3.40 ms of `memcpy` in `write_buffer_impl` (the bytes the
+  front writes each frame, copied into the staging ring; natively wgpu copies them once more,
+  see "Not carried out yet"). The GPU thread (wcontainers-gpu) was busy the whole run: 9.98 ms a
+  frame spinning in ntdll under wgpu's Vulkan `acquire_texture` (the NVIDIA Vulkan driver waits
+  for the display's next image by spinning) and 1.37 ms in ntdll on its own events. Not ours:
+  99.5 ms of CPU a frame in the NVIDIA Vulkan driver's (nvoglv64.dll) threads and 66.5 ms in its
+  Direct3D 12 driver's threads, spinning; the program's two threads busy all the time (win32u
+  and the kernel).
+- Not measured: godot-platformer-2d-d3d12 (its two runs' lengths differed so much that the
+  per-frame CPU came out above what 16 threads can give: 141 ms a frame in 4.7 ms of wall time,
+  so the difference is not one of frames; its parts of ours, front 0.87 ms, back end 0.20, wgpu
+  0.18, are printed but not taken as measured), bgfx-38-bloom (stops at start through the
+  Direct3D 11 front, exit 3, the front's known refusal), and bgfx-01-cubes-d3d12's first pair
+  (the short run lasted longer than the long one).
+- What is ours and cheap: nothing found in the back end's own functions (0.01 to 0.06 ms a
+  frame). The two costs of ours that are large are not cheap: the buffer bytes copied per frame
+  (3.4 ms in bgfx; the front writes the bytes the program wrote and the back end copies them
+  into its staging ring: fewer bytes need the front to write only what changed, a smaller copy
+  needs a mapped ring wgpu 30 does not give natively), and the GPU thread spinning in the Vulkan
+  driver's acquire (a present mode or acquiring later in the frame; not tried). Both are under
+  Next. The CPU the drivers' own threads burn is several times what real Direct3D 11's driver
+  burns for the same program (doom: 2.74 against 0.42 ms a frame), the cost of drawing through
+  Direct3D 12 and Vulkan drivers natively; in a browser the GPU process draws instead.
 
 Run 17 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs,
 CPU load not sampled; Mac load average near its 18 cores, not sampled exactly; scratch run17):
@@ -1364,23 +1553,52 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
   it is destroyed (bounded by what it made, not trimmed by age).
 - Arena slices of buffers dropped without `destroy` are not reused until the arena is replaced.
 
-## Next (G2b)
+## Next (G2c)
 
-1. The independent check of G2b (again, after run 18).
+1. The independent check of G2c.
 2. The owner's decision on loop bounding natively (run 16 measured it as the whole of the
    timestamp workload's 1.3 and 1.5 times): wgpu's `create_shader_module_trusted` without
    `force_loop_bounding` takes Direct3D's time, but lets a guest's endless loop be undefined in
    the driver's compiler, as on real Direct3D.
-3. Read the fronts' status files again after merging.
+3. Read the fronts' status files again after merging. If Wine's test_depth_stencil_sampling
+   still reads 0 through the Direct3D 11 front after its check (item 6), run the front's
+   converted program on this back end in a test here to find which side drops the stencil.
 4. For the Direct3D 11 track (not this back end's code): map DXGI 88 (`B8G8R8X8_UNORM`) to
    `VertexFormat::Bgra8Unorm` in `format::vertex_format`, and rerun test_format_compatibility
-   with this branch.
+   with this branch. Its library's wgpu instance (wcontainers-directx com/chosen.rs) lacks
+   `WebGpu::INSTANCE_FLAGS`, so on a GPU whose timestamp period is not 1 ns it would get no
+   `TIMESTAMPS` (none on the RTX 3080). For atg-simplecomputepc's division: run the sample with
+   the instance on Vulkan, or on wgpu's DXC, to see which compiler step rounds.
+5. For the Direct3D 12 track (not this back end's code): the 3.4 ms a frame of copying in
+   bgfx-01-cubes-d3d12 (Measurements, run 19) is the front's `MappedUploadWhole`
+   (device/bind.rs): at each `ExecuteCommandLists` every upload buffer a binding reads is written
+   to the back end whole, and the back end copies what it is given. Writing only the ranges the
+   recorded bindings and copies read (the binding's offset and size are at hand there) would cut
+   it to what the frame uses. The bytes a frame are not measured (the back end counts writes, not
+   bytes; the front would have to print them).
+6. For the Direct3D 11 track: stencil views (list above). The back end gives the stencil in the
+   first component on wgpu's Direct3D 12 path, tested; check that the converted program for
+   test_depth_stencil_sampling reads the first component and moves it to the second
+   (`STENCIL_READ`), and that its stencil clear reaches the texture.
+7. Frame time, what is left: the GPU thread's 10 ms a frame in the Vulkan driver's acquire is the
+   wait for the display's next image under FIFO (Direct3D's `Present(1)`), which the NVIDIA Vulkan
+   driver spins in rather than sleeps; acquiring later in the frame moves the wait, and another
+   present mode changes what the program asked for, so neither is taken. Find why some programs'
+   runs on the hidden desktop last far longer than their frames (godot-platformer-2d-d3d12's
+   pair), so the breakdown can be taken for Godot.
 
 ## Departures from the plan
 
 - `prepare` of a strip builds two pipelines (16-bit and 32-bit indices), as `PrepareDesc` does not
-  say which index format the draws use: one extra compile per prepared strip combination, instead
-  of an interface field that would break the fronts' code (run 18).
+  say which index format the draws use: one extra compile per prepared strip combination (natively
+  a foreground one, since `prepare` compiles at the call there), instead of an interface field
+  (run 18). The G2b check asked for the field under section 12's rule; not made (run 19): a field
+  in `PrepareDesc` breaks the four places in other tracks' crates that build it
+  (wcontainers-direct3d-11 cache.rs and ahead.rs, wcontainers-direct3d-12 device.rs,
+  wcontainers-gpu-test fast_paths.rs), which a commit touching only crates/wcontainers-gpu cannot
+  carry, and every branch merging this one would stop building. The interface track has since
+  ruled (G1c, `Backend::prepare`'s doc and plan 4.3): no index format in `PrepareDesc`, and a
+  back end like this one prepares strips for both, so this is now the plan, not a departure.
 
 - BGRX (`Bgrx8Unorm`, `Bgrx8UnormSrgb`) is held as BGRA with alpha one, so its unused X byte reads
   back as 255. The RTX 3080's Direct3D 11 keeps the X byte as written, from the host (128 of 128
@@ -1523,12 +1741,22 @@ in the lock file); wcontainers-gpu-test (ours); png 0.18.1, anyhow 1.0.104, wasm
 js-sys 0.3.107 MIT OR Apache-2.0 (wasm-bindgen-futures is no longer used); pollster 1.0.1 Apache-2.0/MIT;
 bytemuck 1.25.2 Zlib OR Apache-2.0 OR MIT; fastrand 2.5.0 Apache-2.0 OR MIT (the random test). Tool: wasm-bindgen-cli 0.2.130 MIT OR Apache-2.0.
 
+New in run 19, test-only: serde_json 1.0.154 MIT OR Apache-2.0 (its Cargo.toml; already in the
+lock file), for examples/frames.rs. Tool on the desktop: samply 0.13.1 MIT OR Apache-2.0 (its
+Cargo.toml at the tag), testing only.
+
 New in run 8, test-only: libtest-mimic 0.8.2 MIT/Apache-2.0 (its Cargo.toml); on macOS only,
 block2 0.6.2 MIT, objc2 0.6.5 MIT, objc2-foundation 0.3.2 MIT, and objc2-app-kit,
 objc2-core-foundation, objc2-core-graphics, objc2-quartz-core and objc2-screen-capture-kit 0.3.2,
 each Zlib OR Apache-2.0 OR MIT (their Cargo.toml files; most already in the lock file through wgpu).
 
 ## Installed on the desktop
+
+- samply 0.13.1 (run 19, MIT OR Apache-2.0, a profiling tool for the frame breakdown only, never
+  a dependency): its release zip (14.9 MB) in C:\wc\downloads\samply-0.13.1, unpacked into
+  C:\wc\tools\samply-0.13.1 (samply.exe 14.9 MB and its licences). An empty
+  C:\wc\out\phase-2-graphics-webgpu\nonvapi\nvapi64.dll for bgfx (as the Direct3D 11 track
+  does), and the profiles in C:\wc\out\phase-2-graphics-webgpu\frames.
 
 - wasm-bindgen-cli 0.2.130 (`cargo install --locked`): wasm-bindgen.exe, wasm2es6js.exe and
   wasm-bindgen-test-runner.exe in C:\wc\cargo\bin, 18.9 MB; its 0.53 GB build directory was

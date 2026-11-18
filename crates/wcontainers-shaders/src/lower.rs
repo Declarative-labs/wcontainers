@@ -184,6 +184,7 @@ pub(crate) fn lower(ir: &Ir, variant: &VariantKey) -> Result<(Module, Reflection
         SourceStage::Hull => l.hull_entry_point()?,
         _ => l.entry_point()?,
     }
+    crate::dxil::helper_invocations(&mut l.module);
     Ok((l.module, l.reflection, stage))
 }
 
@@ -219,6 +220,9 @@ struct Lowering<'a> {
     tessellation: Option<hull::Tessellation>,
     /// Typed buffers read through storage buffers, by declaring id.
     texels: HashMap<u32, TexelBuffer>,
+    /// Under Direct3D 12's numbering (shader model 5.1), every resource's (kind rank, space,
+    /// register), sorted: a resource's slot is its place among its kind's.
+    spaces: Option<Vec<(u32, u32, u32)>>,
 }
 
 impl<'a> Lowering<'a> {
@@ -248,6 +252,20 @@ impl<'a> Lowering<'a> {
         };
         let mut module = Module::default();
         derivatives_anywhere(&mut module);
+        let spaces = ir.spaces.then(|| {
+            let mut order: Vec<_> = ir
+                .ops
+                .iter()
+                .filter_map(|op| {
+                    let kind = declared_kind(op)?;
+                    let [space, register] = [0, 1].map(|i| op.lits.get(i).map_or(0, |&l| l as u32));
+                    Some((rank(kind), space, register))
+                })
+                .collect();
+            order.sort_unstable();
+            order.dedup();
+            order
+        });
         Ok(Lowering {
             ir,
             variant,
@@ -288,7 +306,29 @@ impl<'a> Lowering<'a> {
                 }
             }),
             texels: HashMap::default(),
+            spaces,
         })
+    }
+
+    /// The slot of a resource of `kind` at `space` and `register`: the register under Direct3D 11's
+    /// numbering, which knows one space, and its place among its kind's in (space, register) order
+    /// under Direct3D 12's (6.4), as the DXIL route numbers them.
+    fn slot(&self, kind: SlotKind, space: u32, register: u32) -> Result<u32> {
+        let Some(order) = &self.spaces else {
+            return match space {
+                0 => Ok(register),
+                _ => Err(unsupported("RegisterSpace")),
+            };
+        };
+        let key = (rank(kind), space, register);
+        let first = order.partition_point(|o| o.0 < key.0);
+        Ok((order.partition_point(|o| *o < key) - first) as u32)
+    }
+
+    /// The slot of the resource declaration `op` of `kind`.
+    fn declared_slot(&self, kind: SlotKind, op: &Op) -> Result<u32> {
+        let [space, register] = [0, 1].map(|i| op.lits.get(i).map_or(0, |&l| l as u32));
+        self.slot(kind, space, register)
     }
 
     // Types.
@@ -567,7 +607,7 @@ impl<'a> Lowering<'a> {
                         self.resource_in(id, op, slot, ty, space, None, false)?;
                     }
                     _ if storage
-                        && op.lits.get(1).is_some_and(|&r| {
+                        && self.declared_slot(SlotKind::Storage, op).is_ok_and(|r| {
                             r < 64 && self.variant.texels_through_buffer >> r & 1 != 0
                         }) =>
                     {
@@ -664,7 +704,12 @@ impl<'a> Lowering<'a> {
         if self.stage == SourceStage::Geometry {
             return Err(unsupported("TypedBufferInGeometry"));
         }
-        let register = op.lits.get(1).copied().unwrap_or(0) as u32;
+        let kind = if storage {
+            SlotKind::Storage
+        } else {
+            SlotKind::Texture
+        };
+        let register = self.declared_slot(kind, op)?;
         let formats = if storage {
             &self.variant.storage_formats
         } else {
@@ -755,7 +800,7 @@ impl<'a> Lowering<'a> {
         if self.stage == SourceStage::Geometry {
             return Err(unsupported("TexelsThroughBufferInGeometry"));
         }
-        let register = op.lits.get(1).copied().unwrap_or(0) as u32;
+        let register = self.declared_slot(SlotKind::Storage, op)?;
         let format = self
             .variant
             .storage_formats
@@ -817,7 +862,7 @@ impl<'a> Lowering<'a> {
         dim: ImageDimension,
         arrayed: bool,
     ) -> Result<Handle<Type>> {
-        let register = op.lits.get(1).copied().unwrap_or(0) as u32;
+        let register = self.declared_slot(SlotKind::Storage, op)?;
         let format = self
             .variant
             .storage_formats
@@ -889,12 +934,8 @@ impl<'a> Lowering<'a> {
         if count != 1 {
             return Err(unsupported("ResourceArray"));
         }
-        // Direct3D 11's numbering knows one space; other spaces are numbered by a root signature.
-        if space_index != 0 {
-            return Err(unsupported("RegisterSpace"));
-        }
         let binding = slot
-            .binding(register)
+            .binding(self.slot(slot, space_index, register)?)
             .ok_or(unsupported("BindingsBeyondLimit"))?;
         let prefix = match slot {
             SlotKind::Uniform => "cb",
@@ -903,8 +944,12 @@ impl<'a> Lowering<'a> {
             SlotKind::Storage => "u",
             SlotKind::Counter => "c",
         };
+        let name = match space_index {
+            0 => format!("{prefix}{register}"),
+            _ => format!("{prefix}{register}_space{space_index}"),
+        };
         let var = self.global(
-            format!("{prefix}{register}"),
+            name,
             space,
             Some(ResourceBinding {
                 group: self.set,
@@ -1016,9 +1061,11 @@ impl<'a> Lowering<'a> {
                 | builtin::GS_VERTEX_COUNT_IN,
             ) => true,
             (SourceStage::Vertex | SourceStage::Domain, false, builtin::CLIP_DISTANCE) => true,
+            (SourceStage::Geometry, false, builtin::LAYER_INDEX | builtin::VIEWPORT_INDEX) => true,
             (SourceStage::Vertex, true, builtin::VERTEX_ID | builtin::INSTANCE_ID) => true,
             (_, true, builtin::SAMPLE_COUNT) => self.variant.samples != 0,
             (SourceStage::Pixel, true, builtin::POSITION | builtin::IS_FRONT_FACE)
+            | (SourceStage::Pixel, true, builtin::PRIMITIVE_ID)
             | (SourceStage::Pixel, true, builtin::SAMPLE_ID | builtin::SAMPLE_MASK)
             | (SourceStage::Pixel, true, builtin::LAYER_INDEX | builtin::VIEWPORT_INDEX)
             | (SourceStage::Pixel, false, builtin::DEPTH | builtin::SAMPLE_MASK) => true,
@@ -1524,6 +1571,7 @@ impl<'a> Lowering<'a> {
             builtin::VERTEX_ID => (naga::BuiltIn::VertexIndex, 1, Scalar::U32),
             builtin::INSTANCE_ID => (naga::BuiltIn::InstanceIndex, 1, Scalar::U32),
             builtin::IS_FRONT_FACE => (naga::BuiltIn::FrontFacing, 1, Scalar::BOOL),
+            builtin::PRIMITIVE_ID => (naga::BuiltIn::PrimitiveIndex, 1, Scalar::U32),
             builtin::SAMPLE_ID => (naga::BuiltIn::SampleIndex, 1, Scalar::U32),
             builtin::SAMPLE_MASK => (naga::BuiltIn::SampleMask, 1, Scalar::U32),
             builtin::WORKGROUP_ID => (naga::BuiltIn::WorkGroupId, 3, Scalar::U32),
@@ -1648,6 +1696,7 @@ fn system_value(b: u64) -> Option<SystemValue> {
         builtin::VERTEX_ID => SystemValue::VertexId,
         builtin::INSTANCE_ID => SystemValue::InstanceId,
         builtin::IS_FRONT_FACE => SystemValue::FrontFacing,
+        builtin::PRIMITIVE_ID => SystemValue::PrimitiveId,
         builtin::SAMPLE_ID => SystemValue::SampleIndex,
         builtin::SAMPLE_MASK => SystemValue::Coverage,
         builtin::DEPTH => SystemValue::Depth,
@@ -2182,11 +2231,15 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         Lowering::scalar(self.basic_of(id)?.scalar)
     }
 
-    /// The expression for value `id` here.
+    /// The expression for value `id` here: a struct value (kept as its members) composed whole, as
+    /// a phi or a call takes it.
     fn get(&mut self, b: &mut Block, id: u32) -> Result<Handle<Expression>> {
         match self.val(b, id)? {
             Val::Expr(h) => Ok(h),
-            Val::Tuple(_) => Err(malformed(format!("struct value {id} used as a value"))),
+            Val::Tuple(components) => {
+                let ty = self.l.ir_ty(&self.l.ir.op(id)?.ty)?;
+                Ok(self.add(b, Expression::Compose { ty, components }))
+            }
         }
     }
 
@@ -3250,7 +3303,8 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
     }
 
     /// An atomic minimum (or maximum) of `value` into `pointer` in the other signedness than the
-    /// memory's scalar `s`, by a compare-exchange loop; gives the old value.
+    /// memory's scalar `s`, by a compare-exchange loop; gives the old value. Each try compares with
+    /// the value the last exchange gave, never with a plain load, which a cache may keep stale.
     fn exchange_loop(
         &mut self,
         b: &mut Block,
@@ -3284,9 +3338,18 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             Span::UNDEFINED,
         );
         let operand = self.e.bitcast(&mut self.f, b, value, s, other);
-        self.e.flush(&self.f, b);
+        let first = self.add(b, Expression::Load { pointer });
+        let var = self.add(b, Expression::LocalVariable(old));
+        self.stmt(
+            b,
+            Statement::Store {
+                pointer: var,
+                value: first,
+            },
+        );
         let mut body = Block::new();
-        let current = self.add(&mut body, Expression::Load { pointer });
+        let var = self.add(&mut body, Expression::LocalVariable(old));
+        let current = self.add(&mut body, Expression::Load { pointer: var });
         let a = self.e.bitcast(&mut self.f, &mut body, current, s, other);
         let fun = if min {
             MathFunction::Min
@@ -3326,12 +3389,18 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 result: Some(result),
             },
         );
-        let var = self.add(&mut body, Expression::LocalVariable(old));
+        let seen = self.add(
+            &mut body,
+            Expression::AccessIndex {
+                base: result,
+                index: 0,
+            },
+        );
         self.stmt(
             &mut body,
             Statement::Store {
                 pointer: var,
-                value: current,
+                value: seen,
             },
         );
         let exchanged = self.add(
@@ -3341,12 +3410,17 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 index: 1,
             },
         );
+        // A helper lane's exchange does nothing and gives no defined value: it leaves.
+        let flag = naga::front::spv::helper_invocation_flag(&mut self.l.module, Span::UNDEFINED);
+        let flag = self.add(&mut body, Expression::GlobalVariable(flag));
+        let helper = self.add(&mut body, Expression::Load { pointer: flag });
+        let leave = self.bin(&mut body, BinaryOperator::LogicalOr, exchanged, helper);
         self.e.flush(&self.f, &mut body);
         let mut accept = Block::new();
         accept.push(Statement::Break, Span::UNDEFINED);
         body.push(
             Statement::If {
-                condition: exchanged,
+                condition: leave,
                 accept,
                 reject: Block::new(),
             },
@@ -4057,8 +4131,10 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
     }
 
     fn slot_of(&self, desc: u32) -> Result<u32> {
-        let dcl = self.l.ir.op(desc)?.refs[0];
-        Ok(self.l.ir.op(dcl)?.lits.get(1).copied().unwrap_or(0) as u32)
+        let dcl = self.l.ir.op(self.l.ir.op(desc)?.refs[0])?;
+        let kind =
+            declared_kind(dcl).ok_or_else(|| malformed("a descriptor of no resource".into()))?;
+        self.l.declared_slot(kind, dcl)
     }
 
     fn image_load(&mut self, b: &mut Block, op: &Op) -> Result<Handle<Expression>> {
@@ -4603,4 +4679,23 @@ impl Lowering<'_> {
 fn non_finite(ty: &Ty, lits: &[u64]) -> bool {
     ty.members.iter().all(|m| m.scalar == scalar::F32)
         && lits.iter().any(|&l| !f32::from_bits(l as u32).is_finite())
+}
+
+/// The kind of slot a resource declaration takes, if `op` is one.
+fn declared_kind(op: &Op) -> Option<SlotKind> {
+    Some(match op.code {
+        code::DCL_SAMPLER => SlotKind::Sampler,
+        code::DCL_CBV => SlotKind::Uniform,
+        code::DCL_SRV => SlotKind::Texture,
+        code::DCL_UAV => SlotKind::Storage,
+        _ => return None,
+    })
+}
+
+/// A kind's place in the numbering's order; a counter is numbered by its view.
+fn rank(kind: SlotKind) -> u32 {
+    match kind {
+        SlotKind::Counter => SlotKind::Storage as u32,
+        k => k as u32,
+    }
 }

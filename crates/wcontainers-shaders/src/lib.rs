@@ -191,8 +191,6 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
     } = variant;
     let unbuilt_flags = [
         (VariantFlags::PROVOKING_LAST, "ProvokingRewrite"),
-        (VariantFlags::EARLY_TESTS, "EarlyTestsInShader"),
-        (VariantFlags::STORAGE_OFFSET, "StorageOffset"),
         (VariantFlags::LINE_COVERAGE, "AntialiasedLinesAsQuads"),
         (
             VariantFlags::PRIMITIVE_ID_FROM_STAGE,
@@ -248,6 +246,20 @@ pub fn capabilities(module: &naga::Module) -> Capabilities {
         }
     }
     for ep in &module.entry_points {
+        let primitive = |ty: naga::Handle<naga::Type>, b: &Option<naga::Binding>| {
+            let index = Some(naga::Binding::BuiltIn(naga::BuiltIn::PrimitiveIndex));
+            *b == index
+                || matches!(&module.types[ty].inner, naga::TypeInner::Struct { members, .. }
+                    if members.iter().any(|m| m.binding == index))
+        };
+        if ep
+            .function
+            .arguments
+            .iter()
+            .any(|a| primitive(a.ty, &a.binding))
+        {
+            capabilities |= Capabilities::PRIMITIVE_INDEX;
+        }
         let Some(result) = &ep.function.result else {
             continue;
         };

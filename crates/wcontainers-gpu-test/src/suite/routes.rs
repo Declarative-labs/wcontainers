@@ -754,10 +754,105 @@ pub fn a_copy_within_one_subresource_moves_the_region<H: Host>() {
     copy_within_one_subresource(&mut b, Format::Rgba8Unorm, 4, pattern(32, 9));
 }
 
+/// The same within one level of a 3D texture, whose one subresource holds every slice: the left
+/// half of slice 0 of a 4 by 2 by 2 `rgba8unorm` texture onto the right half of slice 1; and
+/// within one level of each compressed format the back end samples and copies out, whole blocks
+/// moved: the left column of blocks of a texture two blocks wide and high onto its right column.
+pub fn a_copy_within_one_3d_or_compressed_subresource_moves_the_region<H: Host>() {
+    let mut b = H::make();
+    needs(&b, Format::Rgba8Unorm, FormatUse::COPY_OUT);
+    let t = b
+        .create_texture(&TextureDesc {
+            dimension: TextureDimension::D3,
+            format: Format::Rgba8Unorm,
+            width: 4,
+            height: 2,
+            depth_or_layers: 2,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+            cube: false,
+            reinterpret: false,
+        })
+        .expect("create_texture");
+    let bytes = pattern(64, 5);
+    b.write_texture(
+        &region(&t, 0, 0, 0, 0),
+        extent(4, 2, 2),
+        &bytes,
+        16,
+        2,
+        WriteMode::Ordered,
+    );
+    let mut to = region(&t, 0, 0, 2, 0);
+    to.origin.z = 1;
+    b.copy_texture(&region(&t, 0, 0, 0, 0), &to, extent(2, 2, 1));
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(4, 2, 2), 4);
+    let mut expected = bytes;
+    for y in 0..2 {
+        expected.copy_within(y * 16..y * 16 + 8, 32 + y * 16 + 8);
+    }
+    assert_eq!(got, expected, "3D");
+    ok(&mut b);
+    for format in [
+        Format::Bc1RgbaUnorm,
+        Format::Bc7RgbaUnorm,
+        Format::Etc2Rgba8Unorm,
+        Format::Astc4x4Unorm,
+    ] {
+        if !b
+            .caps()
+            .formats
+            .get(format)
+            .contains(FormatUse::SAMPLE | FormatUse::COPY_OUT)
+        {
+            continue;
+        }
+        let (w, h, size) = format.block();
+        let t = texture(
+            &mut b,
+            format,
+            (2 * w, 2 * h),
+            1,
+            1,
+            TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+        );
+        let bytes = pattern(4 * size as usize, 11);
+        b.write_texture(
+            &region(&t, 0, 0, 0, 0),
+            extent(2 * w, 2 * h, 1),
+            &bytes,
+            2 * size,
+            2,
+            WriteMode::Ordered,
+        );
+        b.copy_texture(
+            &region(&t, 0, 0, 0, 0),
+            &region(&t, 0, 0, w, 0),
+            extent(w, 2 * h, 1),
+        );
+        let got = read(
+            &mut b,
+            &ReadSource::Texture {
+                region: region(&t, 0, 0, 0, 0),
+                extent: extent(2 * w, 2 * h, 1),
+            },
+            bytes.len(),
+        );
+        let (row, block) = (2 * size as usize, size as usize);
+        let mut expected = bytes;
+        for y in 0..2 {
+            expected.copy_within(y * row..y * row + block, y * row + block);
+        }
+        assert_eq!(got, expected, "{format:?}");
+        ok(&mut b);
+    }
+}
+
 /// The same for the depth and stencil formats a back end copies out, each written with values a
-/// draw writes exactly (float depth in eighths, 16-bit depth and stencil any), and the formats with
-/// both, each aspect read back: a back end whose API copies these only between subresources goes
-/// through a temporary texture of the same format, counted `CopyWithinTexture`.
+/// draw writes exactly (float depth in eighths, 16-bit depth and stencil any), 24-bit depth and the
+/// formats with both, each aspect read back: a back end whose API copies these only between
+/// subresources goes through a temporary texture of the same format, counted `CopyWithinTexture`.
 pub fn a_copy_within_one_depth_or_stencil_subresource_moves_the_region<H: Host>() {
     let mut b = H::make();
     let depth32 = (0..8u32)
@@ -775,17 +870,22 @@ pub fn a_copy_within_one_depth_or_stencil_subresource_moves_the_region<H: Host>(
             copy_within_one_subresource(&mut b, format, texel, bytes);
         }
     }
-    for format in [Format::Depth24PlusStencil8, Format::Depth32FloatStencil8] {
+    for format in [
+        Format::Depth24Plus,
+        Format::Depth24PlusStencil8,
+        Format::Depth32FloatStencil8,
+    ] {
         if b.caps().formats.get(format).contains(FormatUse::COPY_OUT) {
-            copy_within_one_combined_subresource(&mut b, format);
+            copy_within_one_depth_subresource(&mut b, format);
         }
     }
 }
 
-/// As [`copy_within_one_subresource`] for a format with depth and stencil, whose one copy moves
-/// both aspects: depth written and read in eighths (24-bit depth within one step of 2^-24), stencil
-/// any.
-fn copy_within_one_combined_subresource<B: Backend>(b: &mut B, format: Format) {
+/// As [`copy_within_one_subresource`] for a format whose depth reads back as a value, not its
+/// bytes, and whose one copy moves its stencil too where it has one: depth written and read in
+/// eighths (24-bit depth within one step of 2^-24), stencil any.
+fn copy_within_one_depth_subresource<B: Backend>(b: &mut B, format: Format) {
+    let has_stencil = format != Format::Depth24Plus;
     let t = texture(
         b,
         format,
@@ -815,14 +915,16 @@ fn copy_within_one_combined_subresource<B: Backend>(b: &mut B, format: Format) {
         2,
         WriteMode::Ordered,
     );
-    b.write_texture(
-        &aspect(true),
-        extent(4, 2, 1),
-        &stencil,
-        4,
-        2,
-        WriteMode::Ordered,
-    );
+    if has_stencil {
+        b.write_texture(
+            &aspect(true),
+            extent(4, 2, 1),
+            &stencil,
+            4,
+            2,
+            WriteMode::Ordered,
+        );
+    }
     b.copy_texture(
         &region(&t, 0, 0, 0, 0),
         &region(&t, 0, 0, 2, 0),
@@ -832,7 +934,7 @@ fn copy_within_one_combined_subresource<B: Backend>(b: &mut B, format: Format) {
     let from = |i: usize| if i % 4 >= 2 { i - 2 } else { i };
     let got = read_texture(b, aspect(false), extent(4, 2, 1), 4);
     let step = match format {
-        Format::Depth24PlusStencil8 => 1.0 / 16_777_215.0,
+        Format::Depth24Plus | Format::Depth24PlusStencil8 => 1.0 / 16_777_215.0,
         _ => 0.0,
     };
     for i in 0..8 {
@@ -843,9 +945,11 @@ fn copy_within_one_combined_subresource<B: Backend>(b: &mut B, format: Format) {
             "{format:?} depth of texel {i}: {g}, not {e}"
         );
     }
-    let got = read_texture(b, aspect(true), extent(4, 2, 1), 1);
-    let expected: Vec<u8> = (0..8).map(|i| stencil[from(i)]).collect();
-    assert_eq!(got, expected, "{format:?} stencil");
+    if has_stencil {
+        let got = read_texture(b, aspect(true), extent(4, 2, 1), 1);
+        let expected: Vec<u8> = (0..8).map(|i| stencil[from(i)]).collect();
+        assert_eq!(got, expected, "{format:?} stencil");
+    }
     ok(b);
 }
 

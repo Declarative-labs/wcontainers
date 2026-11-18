@@ -1084,6 +1084,44 @@ impl Recorder {
     }
 
     /// The (fetch index, vertex index) of each vertex the range names, None where a strip restarts.
+    /// Whether an indexed draw fetches a vertex past the end of a stream stepped by vertex.
+    fn fetches_past_a_stream(
+        &self,
+        call: &DrawCall<'_, Self>,
+        state: &DrawState,
+    ) -> Result<bool, Error> {
+        if !matches!(call.range, DrawRange::Indexed { .. }) {
+            return Ok(false);
+        }
+        let (list, _, _) = self.vertex_list(call)?;
+        let Some(&last) = list.iter().flatten().max() else {
+            return Ok(false);
+        };
+        for (n, stream) in state.layout.streams.iter().enumerate() {
+            let (Some(stream), Some(Some(binding))) = (stream, call.vertex_buffers.get(n)) else {
+                continue;
+            };
+            if !matches!(stream.step, StepMode::Vertex) {
+                continue;
+            }
+            let mut end = 0u64;
+            for a in state.layout.attributes.iter().flatten() {
+                if usize::from(a.stream) == n {
+                    let (count, size, _) = vertex_format(a.format)?;
+                    end = end.max(u64::from(a.offset) + (count * size) as u64);
+                }
+            }
+            let reach = binding
+                .offset
+                .saturating_add(u64::from(last) * u64::from(stream.stride))
+                .saturating_add(end);
+            if end > 0 && reach > self.buffer(*binding.buffer)?.bytes.len() as u64 {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub(crate) fn vertex_list(
         &self,
         call: &DrawCall<'_, Self>,
@@ -1296,6 +1334,8 @@ impl Recorder {
         if state.blend.alpha_to_coverage {
             return Err("alpha to coverage is not drawn by the recording back end yet".into());
         }
+        // A draw fetching past a stream is dropped whole, after the attachment rules are held.
+        let dropped = self.fetches_past_a_stream(call, &state)?;
         // Take the attachments out while the draw writes them.
         let mut colors: Vec<Option<Target>> = Vec::new();
         let color_views: Vec<_> = pass
@@ -1361,7 +1401,9 @@ impl Recorder {
         };
         let mut passed = 0u64;
         let writes = RefCell::default();
-        if result.is_ok() {
+        if result.is_ok() && dropped {
+            self.dropped_draws += 1;
+        } else if result.is_ok() {
             result = self.rasterise(
                 call,
                 &state,

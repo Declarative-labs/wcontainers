@@ -1,6 +1,8 @@
 //! Formats WebGPU lacks that the back end holds as `rgba8unorm` (`FormatConverted`): 8-bit alpha
 //! and the 16-bit packed formats written with seeded texels, read back, copied through buffers and
 //! between textures, loaded and filtered in a program; and 8-bit alpha drawn into with blending.
+//! The three-channel 32-bit formats, held in their four-channel twins, written with seeded bits,
+//! read back, copied and loaded in a program.
 //! Shared by tests/converted.rs, tests/direct3d.rs (against real Direct3D 11) and the browser page.
 
 use anyhow::{Result, anyhow, ensure};
@@ -31,6 +33,21 @@ pub const FORMATS: [Format; 8] = [
     Format::Rgbg8Unorm,
     Format::Grgb8Unorm,
 ];
+
+/// The three-channel 32-bit formats.
+pub const THREE_CHANNEL: [Format; 3] = [Format::Rgb32Float, Format::Rgb32Uint, Format::Rgb32Sint];
+
+/// The program loading a three-channel texture's texels as their bits; `{t}` is its channel type.
+const BITS_WGSL: &str = "
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+    let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
+}
+@group(1) @binding(32) var t: texture_2d<{t}>;
+@fragment fn ps(@builtin(position) p: vec4f) -> @location(0) vec4u {
+    return {bits}(textureLoad(t, vec2i(p.xy), 0));
+}
+";
 
 /// The converted formats drawn into.
 pub const DRAWN: [Format; 3] = [Format::A8Unorm, Format::Bgrx8Unorm, Format::Bgrx8UnormSrgb];
@@ -193,7 +210,7 @@ fn gpu<T>(r: Result<T, wcontainers_gpu::GpuError>) -> Result<T> {
     r.map_err(|e| anyhow!("{e:?}"))
 }
 
-fn whole() -> Extent {
+pub fn whole() -> Extent {
     Extent {
         width: SIZE.0,
         height: SIZE.1,
@@ -201,7 +218,7 @@ fn whole() -> Extent {
     }
 }
 
-fn at(texture: &<B as Backend>::Texture, x: u32, y: u32) -> TextureRegion<'_, B> {
+pub fn at(texture: &<B as Backend>::Texture, x: u32, y: u32) -> TextureRegion<'_, B> {
     TextureRegion {
         texture,
         mip: 0,
@@ -479,6 +496,8 @@ pub fn copies(b: &mut B, format: Format, written: &[u8]) -> Result<()> {
         (1, 1, 1) => Format::R8Uint,
         (1, 1, 2) => Format::R16Uint,
         (1, 1, 4) => Format::R32Uint,
+        (1, 1, 12) if format == Format::Rgb32Uint => Format::Rgb32Float,
+        (1, 1, 12) => Format::Rgb32Uint,
         _ if format == Format::Rgbg8Unorm => Format::Grgb8Unorm,
         _ => Format::Rgbg8Unorm,
     };
@@ -589,6 +608,100 @@ fn volume_copies(b: &mut B, format: Format, texels: &[u8]) -> Result<()> {
         now - waits
     );
     Ok(())
+}
+
+/// Every texel of `view`, of a three-channel format, loaded in a program: the bits of its four
+/// channels, rows packed.
+pub fn loaded_bits(
+    b: &mut B,
+    format: Format,
+    view: &<B as Backend>::TextureView,
+) -> Result<Vec<u8>> {
+    let (t, bits) = match format {
+        Format::Rgb32Uint => ("u32", ""),
+        Format::Rgb32Sint => ("i32", "bitcast<vec4u>"),
+        _ => ("f32", "bitcast<vec4u>"),
+    };
+    let set = gpu(b.create_binding_set(&[BindingEntry {
+        binding: 32,
+        stages: StageSet::FRAGMENT,
+        resource: BindingResource::Texture(view),
+    }]))?;
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let (target, target_view) = draw::texture_2d(b, Format::Rgba32Uint, SIZE.0, SIZE.1, usage)?;
+    let program = draw::program(b, &BITS_WGSL.replace("{t}", t).replace("{bits}", bits))?;
+    full_draw(
+        b,
+        &program,
+        &target_view,
+        &draw::opaque(),
+        [Some(&set), None],
+        [0; 4],
+    )?;
+    Ok(read(
+        b,
+        &at(&target, 0, 0),
+        whole(),
+        (SIZE.0 * SIZE.1 * 16) as usize,
+    ))
+}
+
+/// `texels` of a three-channel format with the fourth channel one, as loads give them.
+pub fn with_alpha_one(format: Format, texels: &[u8]) -> Vec<u8> {
+    let one = match format {
+        Format::Rgb32Float => 1f32.to_bits(),
+        _ => 1,
+    };
+    texels
+        .as_chunks::<12>()
+        .0
+        .iter()
+        .flat_map(|t| t.iter().copied().chain(one.to_le_bytes()))
+        .collect()
+}
+
+/// The three-channel 32-bit formats: declared sampled and copied (filtered where their
+/// four-channel twin is), not drawn into or stored; seeded bits (NaNs and denormals among them)
+/// written, read back, copied ([`copies`]) and loaded in a program, every bit kept and the fourth
+/// channel one. One line.
+pub fn three_channels(b: &mut B, seed: u64, cases: u32) -> Result<String> {
+    for (format, twin) in
+        THREE_CHANNEL
+            .into_iter()
+            .zip([Format::Rgba32Float, Format::Rgba32Uint, Format::Rgba32Sint])
+    {
+        let uses = b.caps().formats.get(format);
+        let filter = b.caps().formats.get(twin) & FormatUse::FILTER;
+        ensure!(
+            uses == FormatUse::SAMPLE | FormatUse::COPY_OUT | filter,
+            "{format:?} declares {uses:?}"
+        );
+    }
+    let hits = b.slow_paths().count(SlowPath::FormatConverted);
+    for (i, format) in THREE_CHANNEL.into_iter().enumerate() {
+        for c in 0..u64::from(cases) {
+            let texels = texels(format, seed + c * THREE_CHANNEL.len() as u64 + i as u64);
+            copies(b, format, &texels)?;
+            let (_, view) = upload(b, format, Some(&texels), TextureUsage::empty())?;
+            ensure!(
+                loaded_bits(b, format, &view)? == with_alpha_one(format, &texels),
+                "{format:?}: loaded bits differ from those written (seed {})",
+                seed + c * THREE_CHANNEL.len() as u64 + i as u64
+            );
+        }
+    }
+    ensure!(
+        b.slow_paths().count(SlowPath::FormatConverted) > hits,
+        "FormatConverted was not counted"
+    );
+    ensure!(
+        b.status() == DeviceStatus::Ok,
+        "device lost: {:?}",
+        b.status()
+    );
+    Ok(format!(
+        "three-channel formats (seed {seed}, {cases} textures each): every bit kept by writes, read backs, copies and loads"
+    ))
 }
 
 /// The largest difference between two lists of floats.

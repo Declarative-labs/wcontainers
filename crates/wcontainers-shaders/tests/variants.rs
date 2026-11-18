@@ -2,8 +2,8 @@
 
 use std::path::Path;
 use wcontainers_gpu::{
-    AddedBinding, DrawBaseSource, HelperSlot, HelperValue, Interpolation, LinkedValues, SlotKind,
-    VariantFlags, VariantKey, VertexFormat,
+    AddedBinding, DrawBaseSource, Format, HelperSlot, HelperValue, Interpolation, LinkedValues,
+    SlotKind, TexelBufferRoute, VariantFlags, VariantKey, VertexFormat,
 };
 use wcontainers_shaders::{ConvertError, Source, convert};
 
@@ -67,10 +67,10 @@ fn unbuilt_variants_are_refused_by_name() {
         ),
         (
             VariantKey {
-                flags: VariantFlags::EARLY_TESTS | VariantFlags::CLIP_DEPTH_REWRITE,
+                flags: VariantFlags::LINE_COVERAGE | VariantFlags::CLIP_DEPTH_REWRITE,
                 ..Default::default()
             },
-            "EarlyTestsInShader",
+            "AntialiasedLinesAsQuads",
         ),
         (
             VariantKey {
@@ -120,42 +120,44 @@ fn a_container_with_a_wrong_checksum_is_refused() {
     }
 }
 
-/// Direct3D 12's numbering (DXIL): each kind's slots are the program's resources in (space, register)
-/// order, so two textures at one register in two spaces get the first two texture bindings and the
-/// sampled pairs name slots. DXBC keeps Direct3D 11's numbering, which knows one space.
+/// Direct3D 12's numbering (DXIL, and DXBC of shader model 5.1, which only Direct3D 12 runs): each
+/// kind's slots are the program's resources in (space, register) order, so two textures at one
+/// register in two spaces get the first two texture bindings and the sampled pairs name slots.
+/// Shader model 5.0 keeps Direct3D 11's numbering, the register.
 #[test]
-fn dxil_numbers_register_spaces_by_the_programs_own_slots() {
-    let got = convert(
+fn register_spaces_are_numbered_by_the_programs_own_slots() {
+    for source in [
         Source::Dxbc(&read("tests/own/ps_spaces.dxbc")),
-        &VariantKey::default(),
-        None,
-    )
-    .map(|_| ());
-    assert_eq!(got, Err(ConvertError::Unsupported("RegisterSpace")));
-    let c = convert(
         Source::Dxil(&read("tests/own/ps_spaces.dxil")),
+    ] {
+        let c = convert(source, &VariantKey::default(), None).unwrap();
+        let mut bindings: Vec<_> = c
+            .reflection
+            .bindings
+            .iter()
+            .map(|b| (b.kind, b.space, b.register, b.set, b.binding, b.slot()))
+            .collect();
+        bindings.sort_by_key(|b| b.4);
+        assert_eq!(
+            bindings,
+            [
+                (SlotKind::Sampler, 0, 0, 1, 16, 0),
+                (SlotKind::Texture, 0, 0, 1, 32, 0),
+                (SlotKind::Texture, 1, 0, 1, 33, 1),
+            ]
+        );
+        let mut pairs = c.reflection.sampled_pairs.clone();
+        pairs.sort();
+        assert_eq!(pairs, [(0, 0), (1, 0)]);
+    }
+    // Shader model 5.0: the register is the slot, gaps kept.
+    let c = convert(
+        Source::Dxbc(&read("tests/own/ps_textured.dxbc")),
         &VariantKey::default(),
         None,
     )
     .unwrap();
-    let mut bindings: Vec<_> = c
-        .reflection
-        .bindings
-        .iter()
-        .map(|b| (b.kind, b.space, b.register, b.set, b.binding, b.slot()))
-        .collect();
-    bindings.sort_by_key(|b| b.4);
-    assert_eq!(
-        bindings,
-        [
-            (SlotKind::Sampler, 0, 0, 1, 16, 0),
-            (SlotKind::Texture, 0, 0, 1, 32, 0),
-            (SlotKind::Texture, 1, 0, 1, 33, 1),
-        ]
-    );
-    let mut pairs = c.reflection.sampled_pairs.clone();
-    pairs.sort();
-    assert_eq!(pairs, [(0, 0), (1, 0)]);
+    assert!(c.reflection.bindings.iter().all(|b| b.slot() == b.register));
 }
 
 /// A vertex program writes each output as the pixel program reads it, taken from the pixel program's
@@ -261,6 +263,52 @@ fn vertex_variants_extend_the_helper_block_on_both_routes() {
 
 /// The pixel stage's rewrites on both routes: the sample mask, counting, dual-source outputs, the
 /// level-of-detail bias and level counts from the helper block.
+/// Early tests in the program read the attachment's depth and stencil at their helper bindings,
+/// each covered sample's on four samples, and discard in the prologue; other counts are refused.
+#[test]
+fn early_tests_read_the_attachment_before_the_program() {
+    let textured = own_pair("ps_textured");
+    let key = |samples, flags| VariantKey {
+        flags: VariantFlags::EARLY_TESTS | flags,
+        samples,
+        ..Default::default()
+    };
+    for c in both(&textured, &key(1, VariantFlags::empty())) {
+        assert_eq!(c.reflection.helpers, [slot(HelperValue::EarlyTests, 0)]);
+        assert_eq!(c.reflection.helper_size, 32);
+        let text = wgsl(&c);
+        assert!(
+            text.contains("@group(3) @binding(9) \nvar early_depth: texture_depth_2d;"),
+            "{text}"
+        );
+        assert!(
+            text.contains("@group(3) @binding(10) \nvar early_stencil: texture_2d<u32>;"),
+            "{text}"
+        );
+        assert!(text.contains("discard;"), "{text}");
+    }
+    for c in both(&textured, &key(4, VariantFlags::empty())) {
+        let text = wgsl(&c);
+        assert!(text.contains("texture_depth_multisampled_2d"), "{text}");
+        assert!(text.contains("@builtin(sample_mask)"), "{text}");
+    }
+    for c in both(&textured, &key(1, VariantFlags::DEPTH_BIAS)) {
+        assert_eq!(
+            c.reflection.helpers,
+            [
+                slot(HelperValue::DepthBias, 0),
+                slot(HelperValue::EarlyTests, 16)
+            ]
+        );
+    }
+    for (samples, name) in [(0, "SampleCount"), (2, "EarlyTestsSamples")] {
+        for source in [Source::Dxbc(&textured[0]), Source::Dxil(&textured[1])] {
+            let got = convert(source, &key(samples, VariantFlags::empty()), None).map(|_| ());
+            assert_eq!(got, Err(ConvertError::Unsupported(name)));
+        }
+    }
+}
+
 #[test]
 fn pixel_variants_convert_on_both_routes() {
     let textured = own_pair("ps_textured");
@@ -492,6 +540,35 @@ fn draw_bases_from_arguments_read_the_argument_buffer() {
             "{text}"
         );
         assert!(text.contains("arguments_offset"), "{text}");
+    }
+}
+
+/// The draw's arguments keep the helper block's other members: a typed view's place
+/// (`TexelBufferView`) stays where it was, read by the program as before.
+#[test]
+fn draw_arguments_keep_the_typed_views_place() {
+    for draw_base in [DrawBaseSource::Helpers, DrawBaseSource::Arguments] {
+        let key = VariantKey {
+            draw_base,
+            texel_buffers: TexelBufferRoute::Storage,
+            texel_formats: vec![(0, Format::R32Float)],
+            ..Default::default()
+        };
+        for c in both(&own_pair("vs_texels"), &key) {
+            let bases = match draw_base {
+                DrawBaseSource::Arguments => HelperValue::DrawArguments,
+                _ => HelperValue::DrawBase,
+            };
+            assert_eq!(c.reflection.helpers[0], slot(bases, 0), "{draw_base:?}");
+            assert!(
+                c.reflection
+                    .helpers
+                    .iter()
+                    .any(|h| matches!(h.value, HelperValue::TexelBufferView { .. })),
+                "{:?}",
+                c.reflection.helpers
+            );
+        }
     }
 }
 
@@ -911,9 +988,9 @@ fn atomics_of_the_other_signedness_are_exchange_loops() {
 }
 
 /// Every storage view (not the counters) gives its element's size, by both routes; reading views from
-/// an offset (`STORAGE_OFFSET`) is refused by name until it is built.
+/// an offset (`STORAGE_OFFSET`) gives each of them a helper value and a valid module.
 #[test]
-fn storage_bindings_give_their_stride_and_offsets_are_refused() {
+fn storage_bindings_give_their_stride_and_offsets() {
     let code = own_pair("cs_atomics");
     for c in both(&code, &VariantKey::default()) {
         let storage: Vec<_> = c
@@ -929,10 +1006,26 @@ fn storage_bindings_give_their_stride_and_offsets_are_refused() {
         flags: VariantFlags::STORAGE_OFFSET,
         ..Default::default()
     };
-    for source in [Source::Dxbc(&code[0]), Source::Dxil(&code[1])] {
-        assert!(matches!(
-            convert(source, &key, None),
-            Err(ConvertError::Unsupported("StorageOffset"))
-        ));
+    for c in both(&code, &key) {
+        let offsets: Vec<_> = c
+            .reflection
+            .helpers
+            .iter()
+            .filter_map(|h| match h.value {
+                HelperValue::StorageOffset { set, binding } => Some((set, binding)),
+                _ => None,
+            })
+            .collect();
+        let mut storage: Vec<_> = c
+            .reflection
+            .bindings
+            .iter()
+            .filter(|b| b.kind == SlotKind::Storage && b.stride != 0)
+            .map(|b| (b.set, b.binding))
+            .collect();
+        storage.sort();
+        let mut sorted = offsets.clone();
+        sorted.sort();
+        assert_eq!(sorted, storage, "{:?}", c.reflection.helpers);
     }
 }

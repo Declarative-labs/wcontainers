@@ -16,6 +16,8 @@ pub mod platform;
 mod restart;
 mod shader;
 mod state;
+#[cfg(feature = "trace")]
+pub mod trace;
 
 use glow::HasContext;
 use shader::{ProgramObj, ShaderObj, Slot};
@@ -303,15 +305,22 @@ impl Applied {
     }
 }
 
+/// The back end fronts build on: [`Gl`], or with the `record` feature [`Gl`] recording every call
+/// into a stream file ([`trace::Traced`]).
+#[cfg(not(feature = "record"))]
+pub type WebGl = Gl;
+#[cfg(feature = "record")]
+pub type WebGl = trace::Traced<Gl>;
+
 /// The WebGL 2 back end. Made on the device thread, which owns the GL context.
-pub struct WebGl {
+pub struct Gl {
     gl: glow::Context,
     platform: platform::Platform,
     extensions: BTreeSet<&'static str>,
     renderer: String,
     caps: Caps,
     slow: SlowPaths,
-    helpers: Helpers<WebGl>,
+    helpers: Helpers<Gl>,
     lost: Option<LossReason>,
     next_id: Id,
     /// No EXT_clip_control: programs negate y and the front face is swapped.
@@ -384,10 +393,10 @@ impl Fetch {
 /// finds they do not.
 pub const FLOAT_BLITS: &str = "float_blits";
 
-impl WebGl {
+impl Gl {
     /// Makes the back end on a current GL ES 3.0 or WebGL 2 context. `off` lists WebGL extension names
     /// (and [`FLOAT_BLITS`]) to treat as missing, so tests can take the routes of browsers without them.
-    pub fn new(gl: glow::Context, platform: platform::Platform, off: &[&str]) -> WebGl {
+    pub fn new(gl: glow::Context, platform: platform::Platform, off: &[&str]) -> Gl {
         let extensions = platform::extensions(&gl, off);
         let renderer = platform::renderer(&gl);
         let mut caps = caps::caps(&gl, &platform, &extensions, &renderer);
@@ -420,7 +429,7 @@ impl WebGl {
             gl.compile_shader(s);
             s
         };
-        let mut b = WebGl {
+        let mut b = Gl {
             gl,
             platform,
             extensions,
@@ -672,9 +681,9 @@ impl WebGl {
     /// Makes the back end on ANGLE's OpenGL ES 3.0, loaded from `libEGL` in `dir` (on the desktop, the
     /// mozangle build angle\build.cmd makes). A test tool: ANGLE is never shipped.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn on_angle(dir: &std::path::Path, off: &[&str]) -> Result<WebGl, String> {
+    pub fn on_angle(dir: &std::path::Path, off: &[&str]) -> Result<Gl, String> {
         let (gl, platform) = platform::angle(dir)?;
-        Ok(WebGl::new(gl, platform, off))
+        Ok(Gl::new(gl, platform, off))
     }
 
     /// Names a host window (an `HWND` on Windows) that `create_surface` may attach to, as the host's
@@ -690,9 +699,9 @@ impl WebGl {
 
     /// Makes the back end on a canvas's WebGL 2 context.
     #[cfg(target_arch = "wasm32")]
-    pub fn on_canvas(context: web_sys::WebGl2RenderingContext, off: &[&str]) -> WebGl {
+    pub fn on_canvas(context: web_sys::WebGl2RenderingContext, off: &[&str]) -> Gl {
         let (gl, platform) = platform::canvas(context);
-        WebGl::new(gl, platform, off)
+        Gl::new(gl, platform, off)
     }
 
     /// Whether the probe at creation found that blits keep every bit of 16-bit and 32-bit floats, so
@@ -748,7 +757,7 @@ impl WebGl {
     }
 
     /// A call whose route this back end does not have yet: the device is lost with the missing piece in
-    /// [`WebGl::last_log`], so the front reports device loss instead of drawing wrong.
+    /// [`Gl::last_log`], so the front reports device loss instead of drawing wrong.
     fn unbuilt(&mut self, what: &'static str) -> GpuError {
         if self.lost.is_none() {
             self.last_log = format!("webgl: not built yet: {what}");
@@ -758,7 +767,7 @@ impl WebGl {
     }
 
     /// A recording call that broke the interface's rules (a bug in a front): the device is lost with
-    /// the rule in [`WebGl::last_log`], and nothing of the call runs.
+    /// the rule in [`Gl::last_log`], and nothing of the call runs.
     fn invalid(&mut self, rule: String) {
         if self.lost.is_none() {
             self.last_log = format!("webgl: invalid: {rule}");
@@ -767,7 +776,7 @@ impl WebGl {
     }
 
     /// The sRGB twin of `texture` in `format`, made at its first use: a second GL texture of the same
-    /// shape, which [`WebGl::fresh`] keeps holding the same bytes.
+    /// shape, which [`Gl::fresh`] keeps holding the same bytes.
     /// The GL query object for query `index` of `set`, a new one when a read back still holds the
     /// last. None (the device lost) past the set's end or when GL makes none.
     fn query_slot(&mut self, set: &QuerySet, index: u32) -> Option<glow::Query> {
@@ -962,7 +971,7 @@ impl WebGl {
     }
 
     /// The stencil copy of `texture`, made at its first stencil view without WEBGL_stencil_texturing:
-    /// an `r8uint` texture of the same shape, which [`WebGl::fresh`] fills from the stencil by draws
+    /// an `r8uint` texture of the same shape, which [`Gl::fresh`] fills from the stencil by draws
     /// whenever the stencil changed since.
     fn stencil_copy_of(&mut self, texture: &Texture) -> Result<Texture, GpuError> {
         if let Some(t) = texture.twin.get() {
@@ -1741,7 +1750,7 @@ impl WebGl {
         self.own_draw();
     }
 
-    /// As [`WebGl::own_draw_into`], for a program writing depth into the depth attachment of
+    /// As [`Gl::own_draw_into`], for a program writing depth into the depth attachment of
     /// `target`: the depth test passes always and writes, in the full depth range; stencil stays.
     fn own_depth_draw_into(&mut self, target: glow::Framebuffer, rect: [i32; 4]) {
         // SAFETY: a plain GL call; the framebuffer is alive.
@@ -2854,7 +2863,7 @@ fn f(bits: u32) -> f32 {
 const NO_PASS: (u32, u32) = (i32::MAX as u32, i32::MAX as u32);
 
 /// The byte range of a buffer that a draw's indices `first..first + count` take.
-fn index_bytes(index: &IndexBinding<'_, WebGl>, first: u32, count: u32) -> Range<u64> {
+fn index_bytes(index: &IndexBinding<'_, Gl>, first: u32, count: u32) -> Range<u64> {
     let size = u64::from(index.format.size());
     let start = index.offset + u64::from(first) * size;
     start..start + u64::from(count) * size
@@ -2868,7 +2877,7 @@ fn gl_rect(s: &ScissorRect, size: (u32, u32)) -> [i32; 4] {
     [x, y, width, height].map(|v| v as i32)
 }
 
-impl WebGl {
+impl Gl {
     /// [`Backend::draw`], with the draw's instances starting `later` instances past its first
     /// instance: `instance_index` and the per-instance streams as the full draw has them there.
     /// The bytes of a draw's indices, read back from the index GL buffer (waiting for the GPU).
@@ -3226,7 +3235,7 @@ impl WebGl {
     }
 }
 
-impl Backend for WebGl {
+impl Backend for Gl {
     type Buffer = Buffer;
     type Texture = Texture;
     type TextureView = TextureView;

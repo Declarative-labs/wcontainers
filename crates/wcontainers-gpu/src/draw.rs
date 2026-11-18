@@ -12,7 +12,7 @@ use crate::resource::BufferRange;
 use crate::state::{IndexFormat, Topology};
 
 /// What happens to an attachment when a pass begins.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum LoadOp<V> {
     /// Keep what is there.
     Load,
@@ -23,7 +23,7 @@ pub enum LoadOp<V> {
 }
 
 /// What happens to an attachment when a pass ends.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum StoreOp {
     Store,
     /// The contents are not needed after the pass.
@@ -45,7 +45,7 @@ pub struct ColorAttachment<'a, B: Backend> {
 }
 
 /// What a pass does with one aspect (depth or stencil) of its depth-stencil target.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct AspectOps<V> {
     pub load: LoadOp<V>,
     pub store: StoreOp,
@@ -70,7 +70,7 @@ pub struct DepthAttachment<'a, B: Backend> {
 /// count; its pipelines are built for it. Width and height are 1 to [`crate::Limits::max_texture_2d`],
 /// and `samples` a count [`crate::FormatCaps::takes_samples`] gives for [`crate::Format::R8Unorm`], the
 /// format of that attachment.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct EmptyPass {
     pub width: u32,
     pub height: u32,
@@ -114,7 +114,7 @@ pub struct PassDesc<'a, B: Backend> {
 /// A front whose API allows a larger viewport sets one within the bounds that covers the
 /// attachments and moves positions where the larger one puts them in the program, as for a
 /// fractional one ([`crate::SlowPath::ViewportInShader`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Viewport {
     pub x: u32,
     pub y: u32,
@@ -125,7 +125,7 @@ pub struct Viewport {
 }
 
 /// A scissor rectangle, in pixels.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ScissorRect {
     pub x: u32,
     pub y: u32,
@@ -155,6 +155,16 @@ pub struct IndexBinding<'a, B: Backend> {
 /// ([`crate::DrawBaseSource`]); the bases it writes are those of the API's draw, also when a route
 /// splits the draw into several. `first + count` and `first_instance + instances` fit in a `u32`, so
 /// every index the program sees does.
+///
+/// What a draw fetches. A direct draw reads its indices inside its index buffer and its instances
+/// inside their streams, and a draw without indices its vertices inside theirs (a stream runs from
+/// its binding's offset to its buffer's end); a call that breaks this is refused, as are fetches of a
+/// capture past a stream. A vertex an indexed draw fetches, and anything an indirect draw fetches, may
+/// lie past its stream's end: that fetch reads a value from anywhere in the buffer, zero, or
+/// (0, 0, 0, x) with x 0, 1 or the largest value, or the back end drops the whole draw (WebGPU allows
+/// each); an indirect draw whose indices reach past its index buffer draws nothing. A front whose API
+/// defines that fetch's value binds the variant that fetches its streams in the program
+/// ([`crate::VariantKey::pulled`]).
 #[derive(Debug)]
 pub enum DrawRange<'a, B: Backend> {
     Vertices {

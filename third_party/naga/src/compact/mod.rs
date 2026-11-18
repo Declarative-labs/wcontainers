@@ -684,6 +684,49 @@ struct FunctionMap {
     expressions: HandleMap<crate::Expression>,
 }
 
+/// Rebuilds `function`'s expression arena with its expressions in `order`, which names every
+/// expression of the arena once, each after its operands. Every handle in the function follows its
+/// expression. Each `Emit` range must stay contiguous in the new order.
+///
+/// `module` is the module `function` belongs to (it may be taken out of it for the call).
+pub fn reorder_expressions(
+    module: &crate::Module,
+    function: &mut crate::Function,
+    order: &[crate::Handle<crate::Expression>],
+) {
+    assert_eq!(order.len(), function.expressions.len());
+    let module_map = ModuleMap {
+        functions: HandleMap::identity(module.functions.len()),
+        types: HandleMap::identity(module.types.len()),
+        globals: HandleMap::identity(module.global_variables.len()),
+        constants: HandleMap::identity(module.constants.len()),
+        overrides: HandleMap::identity(module.overrides.len()),
+        global_expressions: HandleMap::identity(module.global_expressions.len()),
+    };
+    let map = FunctionMap {
+        expressions: HandleMap::from_order(order),
+    };
+    let mut expressions = arena::Arena::new();
+    for &old in order {
+        let mut expression = function.expressions[old].clone();
+        module_map.adjust_expression(&mut expression, &map.expressions);
+        expressions.append(expression, function.expressions.get_span(old));
+    }
+    function.expressions = expressions;
+    for (_, local) in function.local_variables.iter_mut() {
+        map.expressions.adjust_option(&mut local.init);
+    }
+    function.named_expressions = function
+        .named_expressions
+        .drain(..)
+        .map(|(mut handle, name)| {
+            map.expressions.adjust(&mut handle);
+            (handle, name)
+        })
+        .collect();
+    map.adjust_body(function, &module_map.functions);
+}
+
 impl From<FunctionTracer<'_>> for FunctionMap {
     fn from(used: FunctionTracer) -> Self {
         FunctionMap {
