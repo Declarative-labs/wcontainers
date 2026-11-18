@@ -1976,13 +1976,13 @@ name = "wcontainers-wasmtime"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "cargo_metadata",
  "gimli 0.34.0",
  "libc",
  "mach2",
  "object 0.41.0",
  "rayon",
  "rustix",
- "toml_edit",
  "wasm-encoder 0.263.0",
  "wasmtime",
  "wcontainers-abi",

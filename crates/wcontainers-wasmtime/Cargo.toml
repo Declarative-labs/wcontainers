@@ -28,8 +28,8 @@ mach2 = "0.6.0"
 
 [build-dependencies]
 blake3 = "1"
-# Reads the workspace's manifests to find its guests.
-toml_edit = { version = "0.25.19", default-features = false, features = ["parse"] }
+# The workspace's resolved dependency graph, to find its guests and what they are built from.
+cargo_metadata = "0.23.1"
 
 [dev-dependencies]
 wcontainers-arm64 = { path = "../wcontainers-arm64" }
