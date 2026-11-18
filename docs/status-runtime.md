@@ -27,8 +27,11 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   for the progress unit); standard input, output and the terminal (the kernel track builds them on the
   general stream the owner is settling; nothing of input is built here, and `process.terminal` and
   `process.consoleSize` stay refused by name).
-- The kernel test crate changed in J4a only by one new test file, tests/repeats.rs (5492ba0a, its own
-  commit). The driver did not change.
+- The kernel test crate changed in J4a only in tests/repeats.rs: added in run 1 (5492ba0a), and in run 2 made
+  to compare the files a container left too (b001897c); each its own commit. The driver did not change.
+- J4a run 2 (2026-11-18): the five findings of J4a run 1's check are settled (their section below): a dropped
+  thread's instances are now given to the next thread given its block (the blocking one). origin/phase-1 had
+  nothing new to merge (still 2edbc451). The bar is run again (section "J4a run 2").
 - J4a is complete: its bar passes at full, none and bounded (below). Next: J5 (plan section 16).
 
 ## For the orchestrator
@@ -63,6 +66,15 @@ detail of "jump through a register not recognised" is the jump's target (transla
 
 ## Asked of the kernel track
 
+CPU time in free turns (J4a run 2): the kernel charges a thread for a free turn the outside's monotonic time
+from handing it out to its return (task.rs `account`), so the CPU side's own work in the turn (instantiating a
+new block's thread instances, translating code first reached) and the host's preemption of the host thread are
+in the guest's CPU clocks, CPU timers and `RLIMIT_CPU` (measurements under "Findings of J4a run 1's check").
+Charging the guest's own run only needs the charge to come from outside the kernel: for example `Outside::ran`
+in a free turn carrying the host thread's CPU time spent in the guest's code, which the kernel charges in
+place of the monotonic difference. This is the kernel's interface (and touches the progress unit the owner is
+ruling on), so nothing is built here.
+
 Standard input: by the orchestrator's ruling of 2026-11-18 the owner is settling one general way for a stream
 to leave a kernel (an end outside carrying data, a window for flow control, and closed), and the kernel track
 builds standard input, output and the terminal on it. The request below is kept as the record of what was
@@ -89,6 +101,49 @@ the capability sets, the resource limits, no_new_privs, a seccomp filter, sysctl
 leave a default mount out), the domain name, and the per-process values (`oomScoreAdj`, `ioPriority`,
 `scheduler`, `execCPUAffinity`, `personality`, `timeOffsets`); and the address-space size and the memory
 size the guest is told (plan section 8), which `Machine` holds once the kernel takes them.
+
+## Findings of J4a run 1's check, and how each was settled (J4a run 2)
+
+- A dropped thread's instances were never reused (blocking): fixed (1ebe8e4d). A thread's instances import its
+  block's address, so they are kept by block (`Process::kept`) with the thread's exact pieces and how many of
+  the process's translations they hold. A new thread given that block takes them at its first run, and the
+  translations another thread added while the block was free are instantiated in them then. A process
+  brought back from a save makes its instances again (its store is new). Test: the back end's unit test
+  `a_dropped_threads_instances_serve_the_next_thread`, at full and none: a thread runs and is dropped, another
+  thread translates new code, a new thread gets the same block and the same instance and runs the new code
+  with nothing translated again. Without the catch-up the test hangs (tried once, the catch-up removed by
+  hand). The check's program (its progs/many.c: N threads started and joined one after another, then 64 at
+  once) through the command line program at 1ebe8e4d, maximum resident size (`/usr/bin/time -l`; load 45 to
+  63; scratch j4run2/many.sh, many-23.log, many-none.log, many-full.log):
+  - bounded 23: N=200 99 MB, N=3000 96 MB, N=10000 97 MB (1.98 s); the check measured 183 MB, 1,356 MB and
+    4,367 MB (8.65 s).
+  - none: N=200 234 MB, N=3000 232 MB (the check: 306 MB and 1,292 MB).
+  - full: N=200 480 MB, N=3000 486 MB (the check: 488 MB and 558 MB).
+  The output is the check's at every size (`sequential N joined N, total N+128`, status 0).
+- The plan said the loop's and the stand-in's counts were built from J2 (minor): plan section 9 now says
+  who counts once the owner rules, that none of the three is built, and that the first two wait for the
+  ruling too (e027a153).
+- The guest's CPU clocks include the back end's own work in free turns (minor): partly settled, the rest
+  asked of the kernel track (below). The kernel charges a thread for a free turn the time on the outside's
+  monotonic clock from handing it out to its return (kernel task.rs `account`); the back end's own work in
+  that time is a cost of the thread as Linux's page faults are, but larger. With instances reused, a thread
+  given a dropped thread's block no longer pays for instantiating: the check's sleepcpu at 1ebe8e4d (load 45.8;
+  scratch j4run2/sleepcpu-1.log), sleepers 1 and 2 start at 30 and 27 us at full, 377 and 5 us at none,
+  247 and 39 us at bounded 23 (Docker 22 us), and are charged 14 to 20 us for the 100 ms sleep. What is left:
+  - the first thread of a block pays for its instances (sleeper 0 at start: 17,728 us at full, 64,749 us at
+    none, 7,381 us at bounded 23);
+  - code first reached in a turn is translated in it (sleeper 0 after the sleep at bounded 23: 78,858 us);
+  - the first process's main thread carries the translation of its program (main at start: 362,880 us at
+    full, 354,646 us at none, 267,297 us at bounded 23; Docker 11,762 us);
+  - the host's preemption of the host thread at this load.
+  The check's cputhreads still prints `sleeping thread under 10 ms: 0` at each look-ahead (its sleeping thread
+  is the first of its block). Plan section 9 says so.
+- The plan's J4a item read as if outside events in general raised the flag (minor): the plan's J4a now says
+  what is built: the stop flag raised from another host thread, whose one source in the shipped outside today
+  is its slice timer; a file backend and the network (J5) and input (the kernel track's streams) raise it the
+  same way once they exist (e027a153).
+- repeats.rs left out the files a container left (minor): it now compares each file's path, mode, owner,
+  device and a hash of its contents too (b001897c).
 
 ## Open findings of J3's last check, and how each was settled (J4a run 1)
 
@@ -1184,9 +1239,8 @@ array of slots in microseconds.
 - The private words of a thread are zeroed at every `FromRegisters`, the contract's state of a new thread, so
   the back end never names ARM64's words; the plan first said the monitor is cleared at every exit and float
   tracking set to "tracked" (plan sections 4 and 9 corrected).
-- A dropped thread's block is reused by the process's next thread, but its instances are not; they stay in
-  the process's store until it is dropped. J1's programs start no threads; reusing instances comes with J4's
-  threads.
+- A dropped thread's block was reused by the process's next thread from J1, but its instances only from J4a
+  run 2 (1ebe8e4d), after J4a's first check found a process's store growing with every thread it had started.
 - `Outside` has six methods, not five: `cpu_warning` carries the back end's slow paths apart from the
   kernel's `Host::warn` (plan section 5 corrected). `Execution` has `restored()` (finding of J0's check 4).
 - J1's step 1 was checked by the seeded runs before the commit was made, and by the whole-suite diff after it
