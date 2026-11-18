@@ -4,6 +4,11 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
+K6c (the Linux Test Project's bar), first run: the K6b check's three findings are fixed, the
+whole-suite flake in threads `process_signal_takers_match_reference` has a new method, and the
+largest causes of LTP differences found so far are built (/proc/config.gz, the sysctls tests
+read, /proc/sysvipc, leases, dnotify, native AIO). K6c is not complete. See "K6c, first run".
+
 K6b (larger runtimes), fifth run: every finding of the K6b check is fixed (the Java test now
 reaches the safepoint poll's fault and checks it, the per-runtime lists of counted paths are
 complete, SO_PEEK_OFF on netlink, a sequenced packet send's pending error, /proc/filesystems,
@@ -29,6 +34,78 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## K6c, first run
+
+The K6b check's findings, each tested against the reference:
+- A pipe write that reaches pages of a mapped backend file not read yet now waits for them,
+  keeping what it wrote (`pipe_write` with progress in the call slot), as Linux's copy waits for
+  its fault; it returned a short count before. guest/backendmaps.c (a write from an anonymous
+  page into a fresh file's mapping) and guest/rootfiles.c (the check's case, /bin/busybox).
+  Other calls that copy part and then reach such pages still end short (counted "copy short of
+  backend pages"); none seen.
+- epoll_ctl on a regular file of the backend is EPERM, as on the reference's overlayfs root
+  (it was FUSE's `fuse_file_poll` answer). tests/rootbackend.rs `root_files_match_reference`
+  runs C programs on a backend root against a default container (runtimes::assert_same).
+- dnotify (F_NOTIFY) is built (syscall/dnotify.rs): marks per open file and descriptor table on
+  a directory, masks added together, one-shot or DN_MULTISHOT, the file's owner set if it has
+  none, an I/O signal (POLL_MSG, the F_SETSIG signal with the descriptor) for each change of a
+  child or of the directory itself, DN_RENAME only within one directory, ENOTDIR, unknown bits
+  kept, a close through the table (`dnotify_flush`) or F_NOTIFY 0 takes them away.
+  guest/rootfiles.c. CPython's test_fcntl and test_selectors are now among the Python system
+  modules: with them the system modules matched under seed 1 (3153.7 s, load 21 at the start,
+  up to 100 beside the LTP run).
+- sigpick (threads `process_signal_takers_match_reference`): the willing first thread now sends
+  the signal itself (it runs, so `wants_signal` takes it), as the loaded reference sometimes
+  passed over it while it slept; the round-robin part is unchanged. 56 reference runs of the old
+  program at load 37 to 61 all chose the first thread (the race was not reproduced); 6 of 6 runs
+  of the new test passed.
+
+Built for the LTP's differences (each tested against the reference):
+- /proc/config.gz (src/fs/config, compressed by build.rs with flate2): the reference's own
+  configuration (Linux 7.0 arm64, linuxkit) with what this kernel does not build set "not set"
+  and their dependent options left out (src/fs/config.py): IP_SCTP, VSOCKETS, CRYPTO_USER_API.
+  The release line says 7.0.0, LOCALVERSION "-wcontainers". Its size is shown as Linux's
+  `proc_set_size` does. busybox test `system` checks options read through zcat.
+- Sysctls with the kernel's own limits: kernel/tainted (0), version, shmmax, shmall, shmmni,
+  msgmax, msgmnb, msgmni, sem, random/entropy_avail and poolsize (256), fs/pipe-max-size,
+  dir-notify-enable, lease-break-time (45), leases-enable, mqueue/*. /proc/sys stays read-only
+  (EROFS) as in Docker.
+- /proc/sysvipc/{msg,sem,shm} in Linux's formats (tests sysvshm `proc_listings_match_reference`;
+  a segment's resident bytes show 0, counted "page residency not tracked", and are left out of
+  the comparison).
+- F_GETOWNER_UIDS (options.c).
+- Leases (syscall/lease.rs, tests recordlocks `leases_match_reference`): F_SETLEASE and
+  F_GETLEASE with Linux's checks (EINVAL, EACCES without ownership or CAP_LEASE, EAGAIN for
+  other openers, writers or a pending unlock), an open that conflicts marks the leases, sends
+  the holder's I/O signal and waits (EWOULDBLOCK with O_NONBLOCK) until the holder comes down,
+  lets go, closes the last reference, or 45 s pass. A run of the program that opened its own
+  leased file waited out the 45 s and was downgraded on both sides (matched); the test avoids
+  it to stay short. truncate(2) does not break leases yet.
+- Native AIO (syscall/aio.rs, tests aio): io_setup maps a ring (shared, not copied by fork) with
+  Linux's header, io_submit runs PREAD, PWRITE, PREADV, PWRITEV, FSYNC and FDSYNC within the call
+  and posts their events (eventfd counted), io_getevents and io_pgetevents take them with
+  Linux's checks and waits, io_cancel finds nothing in flight, io_destroy unmaps. IOCB_CMD_POLL
+  and rw_flags on the non-vectored requests are counted "call flag not built" (EINVAL). The
+  ring holds the events for one CPU (127 for a small context; the reference's 18 CPUs give
+  255). /proc/self/maps names the ring as a shared anonymous mapping, not "/[aio] (deleted)".
+  fs.aio-nr and aio-max-nr are not in /proc/sys yet.
+
+LTP comparison (layer 3), measured so far. The whole run at ffc8b22 (every fix above) was started
+in the background (scratch k6c/ours-3.tsv, 5 jobs, LTP_LIMIT 300, load 39 at the start); the
+table below is from the partial run at 904fbcc (config.gz and sysctls in, leases, sysvipc and
+AIO not yet), its first 1258 of 4226 tests, against the bar (reference-20260930.tsv):
+- Tests matching: 993 of 1258.
+- Differing by cause: AIO not built at that commit 137 (ltp-aiodio.part2 83, ltp-aio-stress 54;
+  built since), hugetlb 57 (the reference reaches /sys/kernel/mm/hugepages and breaks on
+  /proc/sys/vm/drop_caches being read-only; here /sys has no entries, so the tests skip), AF_ALG
+  15 (crypto af_alg01 to 08, cve-2017-17805, -17806, -2026-31431, -2019-8912 and others: the
+  socket family is not built), cgroup controllers 8 (no cgroup2 mount at /sys/fs/cgroup),
+  slower than the 300 s limit on the stand-in 16, kernel_misc 4 (tpci, ltp_acpi, block_dev,
+  uaccess: they look in /sys for devices), ima 11, cve and fs single tests (cve-2016-5195,
+  cve-2017-1000364, cve-2018-5803, -9568, -11508, -12896, cve-2026-43499, -53362, fs proc01 and
+  others) not yet looked at.
+- Excused with the gap: none yet; the gap list is not final.
 
 ## K6b, fifth run
 
@@ -1457,11 +1534,9 @@ accept, accept4, connect, getsockname, getpeername, sendto, recvfrom, sendmsg, r
 recvmmsg, shutdown, setsockopt, getsockopt. Socket families: local (AF_UNIX), IPv4 and IPv6 (TCP
 and UDP), netlink (NETLINK_ROUTE); others counted "socket family not built".
 
-Missing (14, each counted "system call not implemented" and ENOSYS), with what each needs:
+Missing (8, each counted "system call not implemented" and ENOSYS), with what each needs:
 - Processes: ptrace (tracing is out of phase one).
 - fanotify_mark (fanotify_init is refused by Docker's profile, so no group can exist; see Next).
-- Asynchronous I/O (needs the waiting design for many requests): io_setup, io_destroy,
-  io_submit, io_cancel, io_getevents, io_pgetevents.
 - Single-process calls not built, each before K6's bar: adjtimex and clock_adjtime (reading the
   clock's adjustment state: the made-up machine's values; setting needs CAP_SYS_TIME, which Docker's
   root lacks), remap_file_pages (deprecated in Linux, emulated there with mmap over a shared mapping),
@@ -2358,6 +2433,15 @@ All on this shared Mac; noisy, not benchmarks.
 
 ## Departures from the plan
 
+- K6c, first run: /proc/config.gz is the reference's configuration with what is not built
+  turned off (src/fs/config.py), not a configuration written from nothing: options for drivers
+  and features a default container cannot reach (loop devices, module loading, namespaces it
+  may not make) keep the reference's values, as what a program can see of them is the same.
+- K6c, first run: the container's root on the file backend answers as the reference's
+  overlayfs root, not as Linux's FUSE: epoll_ctl on its regular files is EPERM.
+- K6c, first run: tests/dispatch.rs names remap_file_pages as its call not built: Docker's
+  profile answers ptrace and Landlock's calls itself.
+
 - K6b, second run: the Python suite runner (runtimes/python/suite.py) replaces numbers in the
   test suite's own warnings with N before printing them. The warnings name process numbers,
   and in the reference every process number is 5 higher than ours from the first fork on,
@@ -2704,8 +2788,7 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
   futexes (EINVAL), pipe2's O_NOTIFICATION_PIPE (EINVAL),
   shmget's SHM_HUGETLB
   (ENOMEM).
-- "fcntl command not built": F_SETLEASE, F_NOTIFY, F_GETOWNER_UIDS, F_GETDELEG and F_SETDELEG (EINVAL,
-  as Linux without them). Commands Linux does not know are a plain EINVAL, uncounted.
+- "fcntl command not built": F_GETDELEG and F_SETDELEG (EINVAL, as Linux without them). Commands Linux does not know are a plain EINVAL, uncounted.
 - "prctl option not built": options Linux has on ARM64 that are not built (EINVAL; see Partial):
   PR_SET_MM's forms, PR_GET_TIMING, PR_SET_TIMING, the TSC, perf event, MCE, SVE, SME, pointer
   authentication, tagged address, speculation, syscall user dispatch, memory merge, MDWE setting,
@@ -2997,6 +3080,19 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 - The object crate is built with its `unaligned` feature, so headers are read from any byte offset.
 
 ## Next
+
+K6c, in this order (the whole LTP run at ffc8b22 is in scratch k6c/ours-3.tsv; compare it with
+`ltp compare crates/wcontainers-kernel-test/ltp/reference-20260930.tsv <it>`):
+1. Read the full comparison at ffc8b22 and fill in the table under "K6c, first run".
+2. A sysfs with the entries LTP's library looks for: /sys/kernel/mm/hugepages/hugepages-*/ with
+   no pages (57 hugetlb tests), /sys/devices and /sys/bus for kernel_misc; /proc/sys/vm/
+   drop_caches (write only, EROFS here as in Docker).
+3. AF_ALG (crypto and cve tests); the cgroup2 mount at /sys/fs/cgroup (controllers).
+4. Core dumps (abort01, kill11: the status's core-dump bit needs a written core), the single cve
+   and fs tests, truncate(2) breaking leases, fs.aio-nr and aio-max-nr.
+5. Decide the gap list from section 15 only (ptrace tests: tracing; AF_PACKET and ping: raw
+   packets; SCTP and vsock: the network is not Linux's; tests needing several CPUs).
+6. Three fresh layer 1 seeds at the end (fresh seeds start at 8484004).
 
 After K6b (fifth run), in this order (none of these holds K6b):
 1. inotify on a backend root (tests/inotify.rs, ignored with its reason): IN_EXCL_UNLINK needs
