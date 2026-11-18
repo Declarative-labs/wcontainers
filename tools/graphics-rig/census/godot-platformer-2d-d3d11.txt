@@ -9,7 +9,7 @@ device CheckMultisampleQualityLevels 393
 device CheckFormatSupport 327
 device CheckMultisampleQualityLevels1 214
 device CreateTexture2D 213
-device CreateBuffer 135
+device CreateBuffer 123
 device AddRef 68
 device CreateShaderResourceView 66
 device Release 66
@@ -30,8 +30,8 @@ device GetDeviceRemovedReason 2
 device CreateTexture2D1 1
 device GetPrivateData 1
 immediate-context PSSetShaderResources 58807
-immediate-context Map 21224
-immediate-context Unmap 21224
+immediate-context Map 21214
+immediate-context Unmap 21214
 immediate-context IASetVertexBuffers 19656
 immediate-context UpdateSubresource 19656
 immediate-context DrawIndexedInstanced 19516

@@ -4,7 +4,7 @@
 # their sources, pinned commits or hashes and how each runs.
 #   tools/graphics-rig/programs build
 #       fetches and builds them all into C:\wc\programs; not a GPU job
-#   tools/graphics-rig/programs run [--census] [--record] [--capture <frames>] [--dll <name>=<path>]... [<program>...]
+#   tools/graphics-rig/programs run [--census] [--record [--runs <n>]] [--capture <frames>] [--dll <name>=<path>]... [<program>...]
 #       one GPU job on the hidden desktop running each program (all by default) until its last
 #       captured frame (default frames 10,60,120), Direct3D 11 ones through the forwarding
 #       d3d11.dll (on a clock that moves by frames), Direct3D 12 ones saving their own frames,
@@ -14,14 +14,14 @@
 #       pyro-parked/wcontainers-scratch/graphics-rig/programs/<branch>/<program>. --census runs real
 #       Direct3D only and also copies each census.txt (Direct3D 11 programs) into
 #       tools/graphics-rig/census/<program>.txt, to be committed. --record runs real Direct3D only,
-#       three times, keeps the first run's frames as the references on the desktop
+#       --runs times (default 10), keeps the first run's frames as the references on the desktop
 #       (C:\wc\programs\reference\<program>) and copies their allowances and SHA-256 into
 #       tools/graphics-rig/program-references/<program>, to be committed.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=tools/graphics-rig/common.sh
 . "$here/common.sh"
-usage="usage: programs build | run [--census] [--record] [--capture <frames>] [--dll <name>=<path>]... [<program>...]"
+usage="usage: programs build | run [--census] [--record [--runs <n>]] [--capture <frames>] [--dll <name>=<path>]... [<program>...]"
 [ $# -gt 0 ] || { echo "$usage" >&2; exit 2; }
 script='powershell -NoProfile -ExecutionPolicy Bypass -File tools\graphics-rig\desktop\programs.ps1'
 case $1 in
@@ -38,6 +38,7 @@ while [ $# -gt 0 ]; do
     case $1 in
         --census) census=1; shift ;;
         --record) record=1; options+=" -Record"; shift ;;
+        --runs) options+=" -Runs $2"; shift 2 ;;
         --capture) options+=" -Capture $2"; shift 2 ;;
         --dll) dlls+=("$2"); shift 2 ;;
         *) programs+=("$1"); shift ;;
@@ -65,13 +66,13 @@ if [ -n "$record" ] && [ -d "$scratch/references" ]; then
     rig_scp -r "$host:C:/wc/programs/reference/*" "$kept/" 2>/dev/null || true
     echo "programs: allowances and SHA-256 of the references copied into $here/program-references"
 fi
-rm -rf "$scratch"/*/bin "$scratch/references"
+rm -rf "$scratch/references"
 if [ -n "$census" ]; then
     mkdir -p "$here/census"
     for dir in "$scratch"/*/; do
         program=$(basename "$dir")
-        # A recording's second and third runs (<program>-again, -third) are not census files.
-        case $program in *-again | *-third) continue ;; esac
+        # A recording's later runs (<program>-run<n>) are not census files.
+        case $program in *-run[0-9]*) continue ;; esac
         if [ ${#programs[@]} -eq 0 ] || [[ " ${programs[*]} " == *" $program "* ]]; then
             [ ! -f "$dir/census.txt" ] || cp "$dir/census.txt" "$here/census/$program.txt"
         fi
