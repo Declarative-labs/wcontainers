@@ -208,6 +208,15 @@ Left, with why:
   threadsched program's turn counts vary by seed (1669, 1621, 1619; with saves 1614, 1633, 1670) and each
   seed's 3 runs were identical; every seed of it had a leave after a turn ended; threads and futexes had
   none, as the check found (463 and 353 turns every seed).
+- J4a's bar at 582a1ab0, every change of this run's code (scratch j4/bars.sh bar --nocapture, logs
+  j4run3/bar-full.log, bar-none.log, bar-bounded.log; the bar's 13 test files, now 36 tests with the two new
+  repeats): full 36 passed (383.7 s with its build, load 93.9 to 64.0); none 36 passed (594.4 s, load 64.0 to
+  60.9); bounded 36 passed (435.0 s, load 60.9 to 44.6; N drawn 237, 44, 38, 15, 51, 27 and 202). The repeats
+  ran 2 runs per seed, seeds 1 to 3, at each look-ahead alone, all identical; threadsched had a leave after a
+  turn ended at every seed and look-ahead.
+- The threaded program through the surface at 582a1ab0 (j4run3/threaded-none.log, threaded-bounded.log, load
+  43 to 47): none passed, bounded (N 114 for `LOOK_AHEAD_SEED` 0) passed; full passed in the owned suite
+  (owned-2.log).
 
 ## J4a run 2 (2026-11-18; this Mac, Apple M5 Max, 18 cores; other tracks running)
 
