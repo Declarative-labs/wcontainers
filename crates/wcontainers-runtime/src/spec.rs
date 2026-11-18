@@ -502,7 +502,7 @@ fn linux(value: &Value) -> Result<(), Error> {
             "devices" => absent(
                 &path,
                 field,
-                "device nodes in the kernel for each, with the outside behind them",
+                "device nodes in the kernel for each, with the system behind them",
             )?,
             "seccomp" => absent(
                 &path,

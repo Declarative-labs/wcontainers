@@ -1,5 +1,5 @@
 //! The runtime: one loop that drives the kernel, a back end that runs the guest's instructions
-//! ([`Execution`]) and what surrounds them ([`Outside`]). Both are type parameters, resolved at compile
+//! ([`Execution`]) and what surrounds them ([`System`]). Both are type parameters, resolved at compile
 //! time; the loop knows no back end and no host.
 
 use core::ops::ControlFlow;
@@ -25,7 +25,7 @@ pub use system::{LocalSystem, Warned};
 pub enum Turn {
     /// The back end counts progress and ends the turn after `limit` units, or never with no limit.
     Counted { limit: Option<u64> },
-    /// Nothing is counted: the turn ends at the guest's next stop check after the outside raises the
+    /// Nothing is counted: the turn ends at the guest's next stop check after the system raises the
     /// [`StopFlag`].
     Free,
 }
@@ -108,8 +108,8 @@ pub enum Leaving {
     NewRegisters,
     /// The container's first process ended.
     Finished,
-    /// The outside needs no thread in `run` before the kernel is asked what is next.
-    OutsideAsked,
+    /// The system needs no thread in `run` before the kernel is asked what is next.
+    SystemAsked,
 }
 
 /// What a back end calls while its thread runs. The loop implements it.
@@ -118,7 +118,7 @@ pub trait Answer {
     /// end itself, handed on to the kernel.
     fn exit(&mut self, cpu: &mut dyn Cpu, exit: Exit, progress: u64) -> Carry;
     /// The guest reads the clock without a system call, having made `progress` since its last exit:
-    /// the outside's monotonic clock, after the outside is told the progress.
+    /// the system's monotonic clock, after the system is told the progress.
     fn clock(&mut self, progress: u64) -> u64;
     /// A slow path the back end took.
     fn warn(&mut self, warning: Warning<'_>);
@@ -143,8 +143,8 @@ pub trait Execution: Cpu + Sized {
 }
 
 /// What surrounds the kernel: its [`Host`], and what the loop asks between turns.
-pub trait Outside: Host {
-    /// What a run ended by the outside gives back.
+pub trait System: Host {
+    /// What a run ended by the system gives back.
     type End;
     /// How the next turn ends, for the kernel's slice.
     fn turn(&mut self, slice_nanoseconds: Option<u64>) -> Turn;
@@ -153,7 +153,7 @@ pub trait Outside: Host {
     /// Hands the kernel what arrived since the last exit; whether something needs the thread out of
     /// `run` before the kernel is asked what is next.
     fn arrived(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool;
-    /// No thread is in `run`: does what [`Outside::arrived`] asked for, and may end the run.
+    /// No thread is in `run`: does what [`System::arrived`] asked for, and may end the run.
     fn stopped<E: Execution>(&mut self, kernel: &mut Kernel, cpu: &mut E)
     -> ControlFlow<Self::End>;
     /// Nothing can run: waits for an event, or until the time on the monotonic clock, and hands it to
@@ -161,7 +161,7 @@ pub trait Outside: Host {
     fn idle(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu, until_nanoseconds: Option<u64>);
     /// A slow path of the back end, apart from the kernel's warnings.
     fn cpu_warning(&mut self, warning: Warning<'_>);
-    /// The back end's stop flag, before the first turn, for an outside that gives free turns; one that
+    /// The back end's stop flag, before the first turn, for a system that gives free turns; one that
     /// counts every turn needs none.
     fn stop_flag(&mut self, _flag: StopFlag) {}
 }
@@ -175,7 +175,7 @@ pub enum Step<End> {
     Idle { until_nanoseconds: Option<u64> },
     /// The container's first process ended with this wait status.
     Finished { status: i32 },
-    /// The outside ended the run.
+    /// The system ended the run.
     Ended(End),
 }
 
@@ -194,27 +194,27 @@ pub struct Stepper {
 }
 
 impl Stepper {
-    pub fn step<E: Execution, O: Outside>(
+    pub fn step<E: Execution, S: System>(
         &mut self,
         kernel: &mut Kernel,
         cpu: &mut E,
-        outside: &mut O,
-    ) -> Result<Step<O::End>, E::Failure> {
+        system: &mut S,
+    ) -> Result<Step<S::End>, E::Failure> {
         match self.kept.take().unwrap_or_else(|| kernel.next()) {
             Next::Run {
                 thread,
                 resume,
                 slice_nanoseconds,
             } => {
-                let turn = outside.turn(slice_nanoseconds);
+                let turn = system.turn(slice_nanoseconds);
                 let mut answer = Answering {
                     kernel,
-                    outside,
+                    system,
                     thread,
                     kept: &mut self.kept,
                 };
                 cpu.run(thread, resume, turn, &mut answer)?;
-                Ok(match outside.stopped(kernel, cpu) {
+                Ok(match system.stopped(kernel, cpu) {
                     ControlFlow::Break(end) => Step::Ended(end),
                     ControlFlow::Continue(()) => Step::Ran,
                 })
@@ -225,17 +225,17 @@ impl Stepper {
     }
 
     /// Runs the container to its end: [`Stepper::step`] again and again, waiting in
-    /// [`Outside::idle`].
-    pub fn drive<E: Execution, O: Outside>(
+    /// [`System::idle`].
+    pub fn drive<E: Execution, S: System>(
         &mut self,
         kernel: &mut Kernel,
         cpu: &mut E,
-        outside: &mut O,
-    ) -> Result<Ending<O::End>, E::Failure> {
+        system: &mut S,
+    ) -> Result<Ending<S::End>, E::Failure> {
         loop {
-            match self.step(kernel, cpu, outside)? {
+            match self.step(kernel, cpu, system)? {
                 Step::Ran => {}
-                Step::Idle { until_nanoseconds } => outside.idle(kernel, cpu, until_nanoseconds),
+                Step::Idle { until_nanoseconds } => system.idle(kernel, cpu, until_nanoseconds),
                 Step::Finished { status } => return Ok(Ending::Finished { status }),
                 Step::Ended(end) => return Ok(Ending::Ended(end)),
             }
@@ -244,28 +244,28 @@ impl Stepper {
 }
 
 /// Runs the container to its end from its first step.
-pub fn drive<E: Execution, O: Outside>(
+pub fn drive<E: Execution, S: System>(
     kernel: &mut Kernel,
     cpu: &mut E,
-    outside: &mut O,
-) -> Result<Ending<O::End>, E::Failure> {
-    Stepper::default().drive(kernel, cpu, outside)
+    system: &mut S,
+) -> Result<Ending<S::End>, E::Failure> {
+    Stepper::default().drive(kernel, cpu, system)
 }
 
 /// The loop's answer to the running thread's exits.
-struct Answering<'a, O> {
+struct Answering<'a, S> {
     kernel: &'a mut Kernel,
-    outside: &'a mut O,
+    system: &'a mut S,
     thread: ThreadId,
     kept: &'a mut Option<Next>,
 }
 
-impl<O: Outside> Answer for Answering<'_, O> {
+impl<S: System> Answer for Answering<'_, S> {
     fn exit(&mut self, cpu: &mut dyn Cpu, exit: Exit, progress: u64) -> Carry {
-        self.outside.ran(progress);
-        self.kernel.exit(cpu, &mut *self.outside, exit);
-        if self.outside.arrived(self.kernel, cpu) {
-            return Carry::Leave(Leaving::OutsideAsked);
+        self.system.ran(progress);
+        self.kernel.exit(cpu, &mut *self.system, exit);
+        if self.system.arrived(self.kernel, cpu) {
+            return Carry::Leave(Leaving::SystemAsked);
         }
         let next = self.kernel.next();
         let why = match next {
@@ -276,7 +276,7 @@ impl<O: Outside> Answer for Answering<'_, O> {
             } if thread == self.thread => {
                 return Carry::On {
                     resume,
-                    turn: self.outside.turn(slice_nanoseconds),
+                    turn: self.system.turn(slice_nanoseconds),
                 };
             }
             Next::Run { thread, .. } if thread == self.thread => Leaving::NewRegisters,
@@ -289,11 +289,11 @@ impl<O: Outside> Answer for Answering<'_, O> {
     }
 
     fn clock(&mut self, progress: u64) -> u64 {
-        self.outside.ran(progress);
-        self.outside.monotonic_nanoseconds()
+        self.system.ran(progress);
+        self.system.monotonic_nanoseconds()
     }
 
     fn warn(&mut self, warning: Warning<'_>) {
-        self.outside.cpu_warning(warning);
+        self.system.cpu_warning(warning);
     }
 }

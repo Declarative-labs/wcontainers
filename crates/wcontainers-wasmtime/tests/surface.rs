@@ -741,7 +741,7 @@ fn tar_with(files: &Path, program: &Path) -> PathBuf {
 
 /// Threads in free turns through the public surface, as on the reference: turns taken in order
 /// through a mutex and a condition variable, a contended counter, a thread that spins without system
-/// calls until another sets a flag (only the outside's timer ends its turn), a timer signal sent to
+/// calls until another sets a flag (only the system's timer ends its turn), a timer signal sent to
 /// one chosen thread, and the process ended by one thread while another waits in `read` and the first
 /// in `pthread_join`.
 #[test]

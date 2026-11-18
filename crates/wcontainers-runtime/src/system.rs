@@ -15,9 +15,9 @@ use wcontainers_abi::{
 };
 use wcontainers_kernel::Kernel;
 
-use crate::{Execution, Outside, StopFlag, Turn};
+use crate::{Execution, StopFlag, System, Turn};
 
-/// A warning as the outside keeps it: the kernel's or the back end's, by reason.
+/// A warning as the system keeps it: the kernel's or the back end's, by reason.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Warned {
     pub reason: String,
@@ -49,13 +49,13 @@ struct Deadline {
     at: AtomicU64,
     /// The deadline the thread sleeps towards: a turn with an earlier one wakes it.
     sleeping: AtomicU64,
-    /// Whether the outside is gone.
+    /// Whether the system is gone.
     gone: Mutex<bool>,
     wake: Condvar,
 }
 
 impl LocalSystem {
-    /// An outside writing the container's standard output and error to these streams.
+    /// A system writing the container's standard output and error to these streams.
     pub fn new(output: Box<dyn Write + Send>, error: Box<dyn Write + Send>) -> Self {
         Self {
             started: Instant::now(),
@@ -227,7 +227,7 @@ impl Host for LocalSystem {
     }
 }
 
-impl Outside for LocalSystem {
+impl System for LocalSystem {
     /// The local system never ends a run itself.
     type End = core::convert::Infallible;
 
@@ -270,7 +270,7 @@ impl Outside for LocalSystem {
     /// Time is the host's clock, not progress.
     fn ran(&mut self, _: u64) {}
 
-    /// Nothing arrives from outside: this outside has no file backend, network or terminal input.
+    /// Nothing arrives from outside: this system has no file backend, network or terminal input.
     fn arrived(&mut self, _: &mut Kernel, _: &mut dyn Cpu) -> bool {
         false
     }

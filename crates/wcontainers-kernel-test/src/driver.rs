@@ -9,7 +9,7 @@ use wcontainers_abi::{
     BackendRequestId, ConnectionId, CounterReading, Cpu, Event, Host, HostError, Stream, Warning,
 };
 use wcontainers_kernel::{Errno, FileRecord, Kernel, Start};
-use wcontainers_runtime::{Ending, Execution, Outside, Turn};
+use wcontainers_runtime::{Ending, Execution, System, Turn};
 
 use crate::standin::Unsupported;
 use crate::{image, reference};
@@ -672,7 +672,7 @@ impl TestHost {
     }
 }
 
-impl Outside for TestHost {
+impl System for TestHost {
     /// The run of a copy made at a save, as the process it was copied from gets it.
     type End = Run;
 

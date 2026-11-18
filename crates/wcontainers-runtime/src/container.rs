@@ -1,12 +1,12 @@
 //! The library surface: a runtime makes a container from what to run (the OCI runtime configuration),
-//! its root's files, how it runs (the back end's tuning) and what machine it sees, with an outside.
+//! its root's files, how it runs (the back end's tuning) and what machine it sees, with a system.
 
 use std::path::PathBuf;
 
 use oci_spec::runtime::Spec;
 use wcontainers_kernel::{Errno, Kernel, Start};
 
-use crate::{Ending, Execution, Image, Outside, Step, Stepper, StopFlag, spec};
+use crate::{Ending, Execution, Image, Step, Stepper, StopFlag, System, spec};
 
 /// Settings of a runtime, shared by its containers.
 #[derive(Clone, Debug, Default)]
@@ -89,14 +89,14 @@ impl<B: BackEnd> Runtime<B> {
 
     /// A container ready to run `spec`'s process on `image`'s files, or the first field of `spec` it
     /// cannot honour.
-    pub fn container<O: Outside>(
+    pub fn container<S: System>(
         &self,
         spec: &Spec,
         image: &Image,
         tuning: &B::Tuning,
         machine: &Machine<B::Offer>,
-        mut outside: O,
-    ) -> Result<Container<B, O>, Error> {
+        mut system: S,
+    ) -> Result<Container<B, S>, Error> {
         let accepted = spec::accept(spec)?;
         if let Some(architecture) = image.architecture()
             && architecture != B::ARCHITECTURE
@@ -117,12 +117,12 @@ impl<B: BackEnd> Runtime<B> {
         let mut kernel = Kernel::new();
         image.add_to(&mut kernel, &accepted.hostname)?;
         let mut cpu = B::new(&self.shared, tuning, &machine.offer);
-        outside.stop_flag(cpu.stop_flag());
+        system.stop_flag(cpu.stop_flag());
         let arguments: Vec<&[u8]> = accepted.args.iter().map(|a| a.as_bytes()).collect();
         let environment: Vec<&[u8]> = env.iter().map(|v| v.as_bytes()).collect();
         kernel.start(
             &mut cpu,
-            &mut outside,
+            &mut system,
             &Start {
                 path: path.as_bytes(),
                 arguments: &arguments,
@@ -136,38 +136,38 @@ impl<B: BackEnd> Runtime<B> {
         Ok(Container {
             kernel,
             cpu,
-            outside,
+            system,
             stepper: Stepper::default(),
         })
     }
 }
 
 /// A running container.
-pub struct Container<B: BackEnd, O: Outside> {
+pub struct Container<B: BackEnd, S: System> {
     kernel: Kernel,
     cpu: B,
-    outside: O,
+    system: S,
     stepper: Stepper,
 }
 
-impl<B: BackEnd, O: Outside> Container<B, O> {
+impl<B: BackEnd, S: System> Container<B, S> {
     /// One step, for a caller with its own event loop: after [`Step::Idle`] the caller waits as it
     /// likes, or calls [`Container::idle`].
-    pub fn step(&mut self) -> Result<Step<O::End>, B::Failure> {
+    pub fn step(&mut self) -> Result<Step<S::End>, B::Failure> {
         self.stepper
-            .step(&mut self.kernel, &mut self.cpu, &mut self.outside)
+            .step(&mut self.kernel, &mut self.cpu, &mut self.system)
     }
 
-    /// Waits in the outside until the time an idle step gave, or for an event.
+    /// Waits in the system until the time an idle step gave, or for an event.
     pub fn idle(&mut self, until_nanoseconds: Option<u64>) {
-        self.outside
+        self.system
             .idle(&mut self.kernel, &mut self.cpu, until_nanoseconds);
     }
 
-    /// Runs to the end: the first process's wait status, or what the outside ended it with.
-    pub fn run(&mut self) -> Result<Ending<O::End>, B::Failure> {
+    /// Runs to the end: the first process's wait status, or what the system ended it with.
+    pub fn run(&mut self) -> Result<Ending<S::End>, B::Failure> {
         self.stepper
-            .drive(&mut self.kernel, &mut self.cpu, &mut self.outside)
+            .drive(&mut self.kernel, &mut self.cpu, &mut self.system)
     }
 
     /// Why the first program could not be started, once the container has finished.
@@ -175,12 +175,12 @@ impl<B: BackEnd, O: Outside> Container<B, O> {
         self.kernel.start_failure()
     }
 
-    pub fn outside(&self) -> &O {
-        &self.outside
+    pub fn system(&self) -> &S {
+        &self.system
     }
 
-    pub fn outside_mut(&mut self) -> &mut O {
-        &mut self.outside
+    pub fn system_mut(&mut self) -> &mut S {
+        &mut self.system
     }
 
     pub fn back_end(&self) -> &B {

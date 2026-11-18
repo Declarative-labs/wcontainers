@@ -61,7 +61,7 @@ pub mod reason {
     pub const LEFT_ANOTHER_THREAD: &str = "left run: another thread runs";
     pub const LEFT_NEW_REGISTERS: &str = "left run: new registers";
     pub const LEFT_FINISHED: &str = "left run: the container finished";
-    pub const LEFT_OUTSIDE_ASKED: &str = "left run: the outside asked";
+    pub const LEFT_SYSTEM_ASKED: &str = "left run: the system asked";
     /// A translation could not be written to the cache's directory; the detail is the host's error
     /// number (`u64::MAX` when it gave none).
     pub const TRANSLATION_NOT_KEPT: &str = "translation not kept in the cache's directory";
@@ -69,7 +69,7 @@ pub mod reason {
     /// translation is made again; the detail is the host's error number (`u64::MAX` when it gave none).
     pub const TRANSLATION_REFUSED: &str = "translation in the cache's directory refused";
     /// The guest read the counter on a back end brought back from a save, whose clock hook answers the
-    /// outside's monotonic clock without the kernel's offset until the kernel makes its clock public.
+    /// system's monotonic clock without the kernel's offset until the kernel makes its clock public.
     pub const COUNTER_WITHOUT_KERNEL_OFFSET: &str = "counter read without the kernel's offset";
     /// The detail of a leave after an exit that is not a system call.
     pub const NOT_A_CALL: u64 = u64::MAX;
@@ -425,7 +425,7 @@ pub struct CpuSide<G: Guest> {
     counters: BTreeMap<&'static str, (u64, u64)>,
     /// The (reason, detail) pairs already warned of.
     warned: HashSet<(&'static str, u64)>,
-    /// Warnings made while no thread ran, given to the outside at the next run.
+    /// Warnings made while no thread ran, given to the system at the next run.
     unsent: Vec<Warning<'static>>,
     translated: Vec<Translated>,
     /// Brought back from a save: the clock hook's answers lack the kernel's offset.
@@ -649,7 +649,7 @@ struct Data<G: Guest> {
     state_base: *mut u8,
     /// Progress in this turn, which a counted turn's limit is compared with.
     progress: u64,
-    /// The part of `progress` the outside was already told by a clock read.
+    /// The part of `progress` the system was already told by a clock read.
     reported: u64,
     turn: Turn,
     leaving: bool,
@@ -664,14 +664,14 @@ struct Data<G: Guest> {
 }
 
 impl<G: Guest> Data<G> {
-    /// Progress the outside has not been told of, for a clock read; the turn's count goes on.
+    /// Progress the system has not been told of, for a clock read; the turn's count goes on.
     fn report(&mut self) -> u64 {
         let progress = self.progress - self.reported;
         self.reported = self.progress;
         progress
     }
 
-    /// Progress the outside has not been told of, at an exit, which ends the turn's count.
+    /// Progress the system has not been told of, at an exit, which ends the turn's count.
     fn end_turn(&mut self) -> u64 {
         let progress = self.progress - self.reported;
         (self.progress, self.reported) = (0, 0);
@@ -1750,7 +1750,7 @@ where
         Leaving::AnotherThread => reason::LEFT_ANOTHER_THREAD,
         Leaving::NewRegisters => reason::LEFT_NEW_REGISTERS,
         Leaving::Finished => reason::LEFT_FINISHED,
-        Leaving::OutsideAsked => reason::LEFT_OUTSIDE_ASKED,
+        Leaving::SystemAsked => reason::LEFT_SYSTEM_ASKED,
     };
     side(caller).slow_path(name, call, 0);
 }
