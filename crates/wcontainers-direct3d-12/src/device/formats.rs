@@ -19,14 +19,16 @@ use pull::Helpers;
 pub(super) type Slot = (bool, u32);
 
 /// What a stage's program is made for: the typed views' formats by slot, the sampler
-/// registers whose bias (`lod_bias`) and addressing (`border_in_shader`) it applies, and the
-/// storage registers it reads through buffers (`texels_through_buffer`).
+/// registers whose bias (`lod_bias`) and addressing (`border_in_shader`) it applies, the
+/// storage registers it reads through buffers (`texels_through_buffer`), and the texture
+/// registers under a minimum level-of-detail clamp (`min_lod_clamped`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Bound {
     formats: Vec<(Slot, Format)>,
     lod_bias: u16,
     border: u16,
     through: u64,
+    clamped: u128,
 }
 
 /// A program made for what is bound, with its helper layout; `None` where the conversion
@@ -147,9 +149,15 @@ impl<B: Backend> Device<B> {
             .iter()
             .filter(|t| t.0 == f.visibility)
             .fold(0u64, |m, t| m | (1 << t.1));
+        let clamped = self
+            .bound_clamps
+            .iter()
+            .filter(|c| c.0 == f.visibility)
+            .fold(0u128, |m, c| m | (1 << c.1));
         if formats == f.made
             && lod_bias == 0
             && border == 0
+            && clamped == 0
             && through == f.key.texels_through_buffer
         {
             return Ok(None);
@@ -166,11 +174,15 @@ impl<B: Backend> Device<B> {
         if border != 0 {
             self.backend.slow_paths().hit(SlowPath::BorderInShader);
         }
+        if clamped != 0 {
+            self.backend.slow_paths().hit(SlowPath::MinLodClamp);
+        }
         let bound = Bound {
             formats,
             lod_bias,
             border,
             through,
+            clamped,
         };
         let refused = Error::NotImplemented("a program for the bound views and samplers");
         if let Some((_, p)) = f.variants.iter().find(|v| v.0 == bound) {
@@ -181,6 +193,7 @@ impl<B: Backend> Device<B> {
             lod_bias,
             border_in_shader: border,
             texels_through_buffer: through,
+            min_lod_clamped: clamped,
             ..f.key.clone()
         };
         for &((storage, register), format) in &bound.formats {

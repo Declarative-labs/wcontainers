@@ -4,8 +4,8 @@
 //! back end without them (`InstanceRateInShader`).
 
 use wcontainers_gpu::{
-    AddedBinding, BindingEntry, BindingResource, BufferRange, DRAW_ARGUMENTS_BINDING, HelperSlot,
-    RingKind, VertexFormat, helper_binding,
+    AddedBinding, BindingEntry, BindingResource, BufferRange, CLAMPED_SAMPLER_BINDING,
+    DRAW_ARGUMENTS_BINDING, HelperSlot, RingKind, VertexFormat, helper_binding,
 };
 
 use super::*;
@@ -15,13 +15,25 @@ use super::*;
 pub(super) struct Helpers {
     pub size: u32,
     pub slots: Vec<HelperSlot>,
+    /// The (texture, sampler) registers the program samples with, in the order of its merged
+    /// samplers (`CLAMPED_SAMPLER_BINDING`), where it applies a minimum level-of-detail clamp.
+    pub pairs: Vec<(u32, u32)>,
 }
 
 impl Helpers {
     pub fn of(c: &Converted) -> Self {
+        let clamped = c
+            .reflection
+            .helpers
+            .iter()
+            .any(|h| matches!(h.value, HelperValue::MinLod { .. }));
         Helpers {
             size: c.reflection.helper_size,
             slots: c.reflection.helpers.clone(),
+            pairs: match clamped {
+                true => c.reflection.sampled_pairs.clone(),
+                false => Vec::new(),
+            },
         }
     }
 }
@@ -298,6 +310,7 @@ impl<B: Backend> Device<B> {
             }
             blocks.push((helper_binding(ShaderStage::Vertex), stages, block));
         }
+        let mut merged = Vec::new();
         if let Some(p) = pixel.filter(|p| p.size != 0) {
             let block = self.stage_block(p, bind::PIXEL)?;
             blocks.push((
@@ -305,8 +318,41 @@ impl<B: Backend> Device<B> {
                 StageSet::FRAGMENT,
                 block,
             ));
+            merged = self.merged_samplers(p, bind::PIXEL, StageSet::FRAGMENT)?;
         }
-        self.helper_blocks(&blocks, arguments.as_ref().map(|(b, s)| (b, *s)))
+        self.helper_blocks(&blocks, arguments.as_ref().map(|(b, s)| (b, *s)), &merged)
+    }
+
+    /// A clamped program's merged samplers (binding, the back end's stages, sampler): each pair
+    /// whose texture is under a clamp samples through its sampler with the minimum level raised
+    /// to the clamp.
+    pub(super) fn merged_samplers(
+        &mut self,
+        helpers: &Helpers,
+        visibility: u32,
+        stages: StageSet,
+    ) -> Result<Vec<(u32, StageSet, B::Sampler)>, Error> {
+        let mut merged = Vec::new();
+        for (n, &(texture, sampler)) in helpers.pairs.iter().enumerate() {
+            let Some(&(.., clamp)) = self
+                .bound_clamps
+                .iter()
+                .find(|c| c.0 == visibility && c.1 == texture)
+            else {
+                continue;
+            };
+            let v = self
+                .bound_samplers
+                .iter()
+                .find(|s| s.0 == visibility && s.1 == sampler)
+                .ok_or(Error::Invalid(
+                    "a clamped texture sampled through no sampler",
+                ))?
+                .2;
+            let s = self.clamped_sampler(&v, clamp)?;
+            merged.push((CLAMPED_SAMPLER_BINDING + n as u32, stages, s));
+        }
+        Ok(merged)
     }
 
     /// The helper block of a pixel or compute stage (API stage `visibility`), from what its
@@ -337,6 +383,7 @@ impl<B: Backend> Device<B> {
         &mut self,
         blocks: &[(u32, StageSet, Vec<u8>)],
         arguments: Option<(&B::Buffer, u64)>,
+        samplers: &[(u32, StageSet, B::Sampler)],
     ) -> Result<B::BindingSet, Error> {
         let align = self.backend.caps().limits.min_uniform_offset_alignment;
         let mut offsets = vec![0; blocks.len()];
@@ -357,6 +404,11 @@ impl<B: Backend> Device<B> {
                 }),
             })
             .collect();
+        entries.extend(samplers.iter().map(|(binding, stages, s)| BindingEntry {
+            binding: *binding,
+            stages: *stages,
+            resource: BindingResource::Sampler(s),
+        }));
         if let Some((args, size)) = arguments {
             entries.push(BindingEntry {
                 binding: DRAW_ARGUMENTS_BINDING,

@@ -284,8 +284,11 @@ impl<B: Backend> Replay<B> {
                 if helpers.size != 0 {
                     let block = d.stage_block(&helpers, bind::PIXEL)?;
                     let fragment = wcontainers_gpu::helper_binding(ShaderStage::Fragment);
-                    sets[HELPER_SET as usize] =
-                        Some(d.helper_blocks(&[(fragment, StageSet::FRAGMENT, block)], None)?);
+                    sets[HELPER_SET as usize] = Some(d.helper_blocks(
+                        &[(fragment, StageSet::FRAGMENT, block)],
+                        None,
+                        &[],
+                    )?);
                 }
                 Some(sets)
             }

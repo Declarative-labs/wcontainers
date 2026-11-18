@@ -431,6 +431,8 @@ impl<B: Backend> Device<B> {
         self.bound_helpers.clear();
         self.bound_sampling.clear();
         self.bound_through.clear();
+        self.bound_clamps.clear();
+        self.bound_samplers.clear();
         // Views read through buffers before a binding failed.
         self.through.clear();
         for (index, b) in bindings.iter().enumerate() {
@@ -494,6 +496,7 @@ impl<B: Backend> Device<B> {
                         }
                         (SlotKind::Texture, Descriptor::ShaderResource(v)) => {
                             let view = self.shader_resource(&v, b.compared)?;
+                            self.note_clamp(&v, b)?;
                             let components = dxgi(v.format)?.components();
                             self.bound_helpers.push((
                                 b.visibility,
@@ -769,6 +772,54 @@ impl<B: Backend> Device<B> {
         })
     }
 
+    /// Notes a shader resource view's minimum level-of-detail clamp (`ResourceMinLODClamp`, in
+    /// the resource's levels) for the program's variant, with its `HelperValue::MinLod`: the
+    /// clamp in the view's levels and the view's level count.
+    fn note_clamp(&mut self, v: &ResourceView, b: &StageBinding) -> Result<(), Error> {
+        let clamp = f32::from_bits(v.min_lod) - v.mip as f32;
+        if clamp <= 0.0 {
+            return Ok(());
+        }
+        let texture = b.binding.register;
+        if !matches!(b.visibility, 0 | PIXEL) || texture >= 128 {
+            return Err(Error::NotImplemented(
+                "a minimum level-of-detail clamp in a vertex or geometry shader or past \
+                 texture register 127",
+            ));
+        }
+        let levels = match self.resources.get(v.resource.0 as usize) {
+            Some(Resource {
+                storage: Storage::Texture { desc, .. },
+                ..
+            }) if v.count == u32::MAX => desc.mip_levels.saturating_sub(v.mip),
+            _ => v.count,
+        };
+        self.bound_clamps.push((b.visibility, texture, clamp));
+        self.bound_helpers.push((
+            b.visibility,
+            HelperValue::MinLod { texture },
+            pull::words(&[clamp.to_bits(), levels]),
+        ));
+        Ok(())
+    }
+
+    /// The back end's sampler for `v` with its minimum level raised to `clamp`, for a merged
+    /// sampler of a clamped program.
+    pub(super) fn clamped_sampler(
+        &mut self,
+        v: &crate::list::SamplerView,
+        clamp: f32,
+    ) -> Result<B::Sampler, Error> {
+        let mut desc = crate::state::sampler(v, self.backend.caps())?;
+        desc.lod_range[0] = f32::from_bits(desc.lod_range[0]).max(clamp).to_bits();
+        if let Some(s) = self.samplers.get(&desc) {
+            return Ok(s.clone());
+        }
+        let s = self.backend.create_sampler(&desc)?;
+        self.samplers.insert(desc, s.clone());
+        Ok(s)
+    }
+
     /// The back end stores into textures of DXGI format `value`.
     fn stores(&self, value: u32) -> bool {
         dxgi(value).is_ok_and(|f| {
@@ -836,9 +887,6 @@ impl<B: Backend> Device<B> {
             return Err(Error::NotImplemented(
                 "component mappings other than identity",
             ));
-        }
-        if v.min_lod != 0 {
-            return Err(Error::NotImplemented("a minimum level-of-detail clamp"));
         }
         let (texture_desc, mips) = match self.resources.get(v.resource.0 as usize) {
             Some(Resource {
@@ -911,6 +959,8 @@ impl<B: Backend> Device<B> {
     ) -> Result<B::Sampler, Error> {
         let caps = self.backend.caps();
         let desc = crate::state::sampler(v, caps)?;
+        self.bound_samplers
+            .push((b.visibility, b.binding.register, *v));
         let (bias, border) = crate::state::in_program(v, caps);
         if bias || border {
             if !matches!(b.visibility, 0 | PIXEL) {

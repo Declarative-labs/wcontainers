@@ -348,6 +348,11 @@ pub struct Device<B: Backend> {
     /// The storage textures the last binding sets made read through buffers: API stage and
     /// register; and the copies around their draw or dispatch.
     bound_through: Vec<(u32, u32)>,
+    /// The textures the last binding sets made bind under a minimum level-of-detail clamp (API
+    /// stage, register, clamp in the view's levels), and every sampler they bind (API stage,
+    /// register, descriptor), from which a clamped program's merged samplers are made.
+    bound_clamps: Vec<(u32, u32, f32)>,
+    bound_samplers: Vec<(u32, u32, crate::list::SamplerView)>,
     through: Vec<through::Through<B>>,
     /// The error that removed the device, if one did.
     removed: Option<Error>,
@@ -396,6 +401,8 @@ impl<B: Backend> Device<B> {
             bound_helpers: Vec::new(),
             bound_sampling: Vec::new(),
             bound_through: Vec::new(),
+            bound_clamps: Vec::new(),
+            bound_samplers: Vec::new(),
             through: Vec::new(),
             removed: None,
         }
@@ -1294,6 +1301,7 @@ impl<B: Backend> Device<B> {
                     | HelperValue::SamplerState { .. }
                     | HelperValue::TextureComponents { .. }
                     | HelperValue::TexelLayout { .. }
+                    | HelperValue::MinLod { .. }
             )
         }) {
             return Err(Error::NotImplemented(
@@ -3110,12 +3118,13 @@ impl<B: Backend> Replay<B> {
         let mut sets = d.binding_sets(&self.compute, pid, None, &[], StageSet::COMPUTE)?;
         let bound = d.bound_program(pid, false)?;
         let pipeline = &d.pipelines[pid.0 as usize];
-        let helpers = bound.as_ref().map_or(&pipeline.helpers, |b| &b.1);
+        let helpers = bound.as_ref().map_or(&pipeline.helpers, |b| &b.1).clone();
         if helpers.size != 0 {
-            let block = d.stage_block(helpers, 0)?;
+            let block = d.stage_block(&helpers, 0)?;
+            let merged = d.merged_samplers(&helpers, 0, StageSet::COMPUTE)?;
             let compute = wcontainers_gpu::helper_binding(ShaderStage::Compute);
             sets[HELPER_SET as usize] =
-                Some(d.helper_blocks(&[(compute, StageSet::COMPUTE, block)], None)?);
+                Some(d.helper_blocks(&[(compute, StageSet::COMPUTE, block)], None, &merged)?);
         }
         d.alias_settle()?;
         if !d.through.is_empty() {
