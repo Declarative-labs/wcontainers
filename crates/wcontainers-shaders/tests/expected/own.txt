@@ -80,6 +80,7 @@ ps_msarray.dxbc	unsupported MultisampledArrayTexture
 ps_negate.dxbc	ok
 ps_offset.dxbc	ok
 ps_pack.dxbc	ok
+ps_primid.dxbc	ok-wgsl glsl-compile
 ps_pull.dxbc	ok
 ps_rows.dxbc	ok
 ps_samples.dxbc	unsupported SampleCount

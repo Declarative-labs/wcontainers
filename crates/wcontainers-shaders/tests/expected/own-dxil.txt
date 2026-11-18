@@ -37,6 +37,7 @@ ps_msarray.dxil	unsupported MultisampledArrayTexture
 ps_negate.dxil	ok
 ps_offset.dxil	ok
 ps_pack.dxil	unsupported PackedStageValues
+ps_primid.dxil	ok-wgsl glsl-compile
 ps_pull.dxil	ok
 ps_rows.dxil	ok
 ps_samples.dxil	unsupported SampleCount

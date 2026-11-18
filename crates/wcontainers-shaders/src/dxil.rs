@@ -481,7 +481,9 @@ fn unconverted(module: &Module) -> Result<(), ConvertError> {
     if locations.windows(2).any(|w| w[0] == w[1]) {
         return Err(ConvertError::Unsupported("PackedStageValues"));
     }
-    if builtins.iter().any(|(b, _)| *b == BuiltIn::PrimitiveIndex) {
+    if ep.stage != naga::ShaderStage::Fragment
+        && builtins.iter().any(|(b, _)| *b == BuiltIn::PrimitiveIndex)
+    {
         return Err(ConvertError::Unsupported("PrimitiveId"));
     }
     // WebGPU's subgroups serve pixel and compute programs only, and have no subgroup barrier.
@@ -1347,6 +1349,7 @@ fn stage_values(
                 BuiltIn::Position { .. } => (SystemValue::Position, 1),
                 BuiltIn::VertexIndex => (SystemValue::VertexId, 6),
                 BuiltIn::InstanceIndex => (SystemValue::InstanceId, 8),
+                BuiltIn::PrimitiveIndex => (SystemValue::PrimitiveId, 7),
                 BuiltIn::FrontFacing => (SystemValue::FrontFacing, 9),
                 BuiltIn::SampleIndex => (SystemValue::SampleIndex, 10),
                 BuiltIn::SampleMask => (SystemValue::Coverage, 66),

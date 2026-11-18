@@ -14,6 +14,8 @@ cd /d %~dp0
 "%FXC%" /nologo /T ps_5_0 /E ps_window /Fo ps_window.dxbc own.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_gatheroff /Fo ps_gatheroff.dxbc own.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_gatheroff -Gis -Fo ps_gatheroff.dxil own.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_0 /E ps_primid /Fo ps_primid.dxbc own.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_primid -Gis -Fo ps_primid.dxil own.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_shade /Fo vs_shade.dxbc more.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_flat /Fo ps_flat.dxbc more.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_shade /Fo ps_shade.dxbc more.hlsl || exit /b 1

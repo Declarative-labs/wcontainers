@@ -1065,6 +1065,7 @@ impl<'a> Lowering<'a> {
             (SourceStage::Vertex, true, builtin::VERTEX_ID | builtin::INSTANCE_ID) => true,
             (_, true, builtin::SAMPLE_COUNT) => self.variant.samples != 0,
             (SourceStage::Pixel, true, builtin::POSITION | builtin::IS_FRONT_FACE)
+            | (SourceStage::Pixel, true, builtin::PRIMITIVE_ID)
             | (SourceStage::Pixel, true, builtin::SAMPLE_ID | builtin::SAMPLE_MASK)
             | (SourceStage::Pixel, true, builtin::LAYER_INDEX | builtin::VIEWPORT_INDEX)
             | (SourceStage::Pixel, false, builtin::DEPTH | builtin::SAMPLE_MASK) => true,
@@ -1570,6 +1571,7 @@ impl<'a> Lowering<'a> {
             builtin::VERTEX_ID => (naga::BuiltIn::VertexIndex, 1, Scalar::U32),
             builtin::INSTANCE_ID => (naga::BuiltIn::InstanceIndex, 1, Scalar::U32),
             builtin::IS_FRONT_FACE => (naga::BuiltIn::FrontFacing, 1, Scalar::BOOL),
+            builtin::PRIMITIVE_ID => (naga::BuiltIn::PrimitiveIndex, 1, Scalar::U32),
             builtin::SAMPLE_ID => (naga::BuiltIn::SampleIndex, 1, Scalar::U32),
             builtin::SAMPLE_MASK => (naga::BuiltIn::SampleMask, 1, Scalar::U32),
             builtin::WORKGROUP_ID => (naga::BuiltIn::WorkGroupId, 3, Scalar::U32),
@@ -1694,6 +1696,7 @@ fn system_value(b: u64) -> Option<SystemValue> {
         builtin::VERTEX_ID => SystemValue::VertexId,
         builtin::INSTANCE_ID => SystemValue::InstanceId,
         builtin::IS_FRONT_FACE => SystemValue::FrontFacing,
+        builtin::PRIMITIVE_ID => SystemValue::PrimitiveId,
         builtin::SAMPLE_ID => SystemValue::SampleIndex,
         builtin::SAMPLE_MASK => SystemValue::Coverage,
         builtin::DEPTH => SystemValue::Depth,
@@ -2228,11 +2231,15 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         Lowering::scalar(self.basic_of(id)?.scalar)
     }
 
-    /// The expression for value `id` here.
+    /// The expression for value `id` here: a struct value (kept as its members) composed whole, as
+    /// a phi or a call takes it.
     fn get(&mut self, b: &mut Block, id: u32) -> Result<Handle<Expression>> {
         match self.val(b, id)? {
             Val::Expr(h) => Ok(h),
-            Val::Tuple(_) => Err(malformed(format!("struct value {id} used as a value"))),
+            Val::Tuple(components) => {
+                let ty = self.l.ir_ty(&self.l.ir.op(id)?.ty)?;
+                Ok(self.add(b, Expression::Compose { ty, components }))
+            }
         }
     }
 
