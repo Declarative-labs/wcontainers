@@ -586,6 +586,32 @@ fn case(code: Code, seed: u64) -> Option<Case> {
     if bytes.len() > 15 {
         return None;
     }
+    // Divisions: half the dividends have rdx (or ah, dx, edx) the extension of the low half, as compilers
+    // leave them, a quarter a high half below most divisors, the rest anything.
+    if matches!(code.mnemonic(), Mnemonic::Div | Mnemonic::Idiv) {
+        let width = instruction.op_register(0).size() * 8;
+        let width = if instruction.op0_kind() == iced_x86::OpKind::Memory {
+            memory_size(&instruction) as usize * 8
+        } else {
+            width
+        };
+        let signed = code.mnemonic() == Mnemonic::Idiv;
+        let low = state[0] as u64;
+        let high = match draw.below(4) {
+            0 | 1 if signed => {
+                let sign = (low >> (width - 1)) & 1;
+                if sign == 1 { u64::MAX } else { 0 }
+            }
+            0 | 1 => 0,
+            2 => draw.below(16),
+            _ => draw.value(),
+        };
+        if width == 8 {
+            state[0] = u128::from(low & !0xff00 | (high & 0xff) << 8);
+        } else {
+            state[2] = high.into();
+        }
+    }
     // Point the memory operand where the draw says, through its registers or the segment base.
     if let Some(m) = memory {
         let size = u64::from(memory_size(&instruction)).max(1);
