@@ -151,7 +151,7 @@ fn run_in_chrome<G: GuestTest>(
     module_bytes: u32,
 ) -> Report {
     let place = placement::<G>(blob);
-    let directory = target().join("cases").join(&blob.name);
+    let directory = target().join("cases").join(G::NAME).join(&blob.name);
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::copy(translator::<G>(), directory.join("translator.wasm")).unwrap();
     std::fs::write(directory.join("blob.bin"), &blob.bytes).unwrap();
@@ -299,7 +299,7 @@ pub fn load_modules<G: GuestTest>(
     modules: &[&[u8]],
     flags: &str,
 ) -> Result<Loaded, String> {
-    let directory = target().join("cases").join(format!("load-{name}"));
+    let directory = target().join("cases").join(G::NAME).join(format!("load-{name}"));
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::copy(translator::<G>(), directory.join("translator.wasm")).unwrap();
     std::fs::write(directory.join("blob.bin"), image).unwrap();
@@ -360,7 +360,7 @@ pub fn cases<G: crate::guest::GuestTest>(
     places: &[std::ops::Range<u64>],
     cases: &[StateCase],
 ) -> Vec<StateRun> {
-    let directory = target().join("cases").join("instructions");
+    let directory = target().join("cases").join(G::NAME).join("instructions");
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::copy(translator::<G>(), directory.join("translator.wasm")).unwrap();
     let code_bytes = G::MAX_LENGTH as usize;
