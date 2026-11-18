@@ -159,7 +159,7 @@ fn region<'a, B: Backend>(t: &Through<B>, texture: &'a B::Texture) -> TextureReg
 impl<B: Backend> Device<B> {
     /// Copies the levels and layers view `v` sees between its texture and its twin: into the twin
     /// before a use, out of it after a write.
-    fn copy_twin(&mut self, v: &View<B>, into: bool) {
+    pub(super) fn copy_twin(&mut self, v: &View<B>, into: bool) {
         let Some(twin) = &v.twin else {
             return;
         };

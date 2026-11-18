@@ -145,6 +145,25 @@ fn covers<B: Backend>(vs: &Shader<B>, ps: &Shader<B>) -> bool {
         })
 }
 
+/// Whether the pixel shader's colour outputs are of the kinds (float or integer) of `targets`'
+/// formats: a combination built ahead with targets of another kind would be refused.
+fn writes<B: Backend>(ps: &Shader<B>, targets: &wcontainers_gpu::TargetLayout) -> bool {
+    ps.reflection
+        .outputs
+        .iter()
+        .filter(|o| o.system.is_none())
+        .all(|o| {
+            let Some(Some(f)) = targets.colors.get(o.location as usize) else {
+                return true;
+            };
+            let integer = matches!(
+                f.kind(),
+                wcontainers_gpu::FormatKind::Uint | wcontainers_gpu::FormatKind::Sint
+            );
+            integer == (o.scalar != ScalarKind::Float)
+        })
+}
+
 /// The scalar type a vertex format is read as.
 fn scalar(f: VertexFormat) -> ScalarKind {
     use VertexFormat::*;
@@ -281,7 +300,7 @@ impl<B: Backend> Device<B> {
         let Ok((program, _)) = self.program(&vs, plain, Some(&ps), plain) else {
             return;
         };
-        for t in picked {
+        for t in picked.into_iter().filter(|t| writes(&ps, &t.targets)) {
             let Ok(vertex_layout) = self.vertex_layout_for(t.layout.clone(), t.strides) else {
                 return;
             };
