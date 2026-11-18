@@ -144,6 +144,7 @@ pub(super) fn pulled(
             set: 0,
             binding: next,
             added: Some(AddedBinding::PulledStream(location)),
+            stride: 0,
         });
         next += 1;
         let stream = helper(

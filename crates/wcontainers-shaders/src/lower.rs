@@ -59,10 +59,12 @@ pub(crate) fn output_modes(asked: &[(u32, Interpolation)], location: u32) -> u64
 }
 
 /// Turns off WGSL's derivative uniformity check for the module: Direct3D takes derivatives and
-/// implicit-level samples in any control flow, giving helper lanes their values.
+/// implicit-level samples in any control flow, giving helper lanes their values. Likewise WGSL's
+/// subgroup uniformity check where the module has subgroup operations: Direct3D's wave operations
+/// run over the lanes active where they are reached.
 pub(crate) fn derivatives_anywhere(module: &mut Module) {
     use naga::diagnostic_filter as d;
-    let filter = module.diagnostic_filters.append(
+    let mut filter = module.diagnostic_filters.append(
         d::DiagnosticFilterNode {
             inner: d::DiagnosticFilter {
                 new_severity: d::Severity::Off,
@@ -74,6 +76,21 @@ pub(crate) fn derivatives_anywhere(module: &mut Module) {
         },
         Span::UNDEFINED,
     );
+    if module.uses_subgroups() {
+        filter = module.diagnostic_filters.append(
+            d::DiagnosticFilterNode {
+                inner: d::DiagnosticFilter {
+                    new_severity: d::Severity::Off,
+                    // A rule of WGSL's that naga does not check, so it has no name of naga's own.
+                    triggering_rule: d::FilterableTriggeringRule::Unknown(
+                        "subgroup_uniformity".into(),
+                    ),
+                },
+                parent: Some(filter),
+            },
+            Span::UNDEFINED,
+        );
+    }
     module.diagnostic_filter_leaf = Some(filter);
 }
 
@@ -914,6 +931,7 @@ impl<'a> Lowering<'a> {
             set: self.set,
             binding,
             added: None,
+            stride: 0,
         });
         Ok(())
     }

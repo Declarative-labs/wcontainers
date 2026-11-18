@@ -484,33 +484,23 @@ fn unconverted(module: &Module) -> Result<(), ConvertError> {
     if builtins.iter().any(|(b, _)| *b == BuiltIn::PrimitiveIndex) {
         return Err(ConvertError::Unsupported("PrimitiveId"));
     }
-    // Wave operations need WGSL's subgroups, which the validation here and the WGSL writing do not
-    // take yet.
-    let mut subgroups = builtins.iter().any(|(b, _)| {
-        matches!(
-            b,
-            BuiltIn::SubgroupSize
-                | BuiltIn::SubgroupInvocationId
-                | BuiltIn::NumSubgroups
-                | BuiltIn::SubgroupId
-        )
-    });
+    // WebGPU's subgroups serve pixel and compute programs only, and have no subgroup barrier.
+    if module.uses_subgroups() && ep.stage == naga::ShaderStage::Vertex {
+        return Err(ConvertError::Unsupported("SubgroupsInVertex"));
+    }
     let functions = core::iter::once(&ep.function).chain(module.functions.iter().map(|(_, f)| f));
     for f in functions {
         let mut body = f.body.clone();
+        let mut barrier = false;
         each_block(&mut body, &mut |b| {
-            subgroups |= b.iter().any(|s| {
-                matches!(
-                    s,
-                    Statement::SubgroupBallot { .. }
-                        | Statement::SubgroupCollectiveOperation { .. }
-                        | Statement::SubgroupGather { .. }
-                )
+            barrier |= b.iter().any(|s| {
+                matches!(s, Statement::ControlBarrier(b) | Statement::MemoryBarrier(b)
+                    if b.contains(naga::Barrier::SUB_GROUP))
             });
         });
-    }
-    if subgroups {
-        return Err(ConvertError::Unsupported("Subgroups"));
+        if barrier {
+            return Err(ConvertError::Unsupported("SubgroupBarrier"));
+        }
     }
     // dxil-spirv reads a component of a constant buffer picked at run time through a second view of
     // the buffer as scalars, 4 bytes apart; WebGPU's uniform arrays step by 16 bytes, and WGSL takes
@@ -1465,6 +1455,7 @@ fn bindings(
             set,
             binding: number,
             added: None,
+            stride: 0,
         });
         slots.push((handle, slot));
     }
