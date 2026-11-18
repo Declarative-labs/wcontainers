@@ -5,6 +5,51 @@ Plan: docs/phase-2-graphics.md, sections 4, 5.8, 6.5, 10 and 12 (G3).
 
 ## Where things stand
 
+G3b run 3, 2026-11-18 (about 12:00 to 14:00 Pacific). Merged origin/phase-2-graphics (76 new
+commits; -webgpu, -direct3d-11, -direct3d-12 and -shaders were already in it, -rig had nothing
+new). Fixed what the independent check of G3b (check9) found:
+- BGRX (`Bgrx8Unorm`, `Bgrx8UnormSrgb`) had no use, so the Direct3D 11 front's `CheckFormatSupport`
+  answered `E_FAIL` and its formats scene stopped: run 1 wrongly put that on the front. Now built:
+  stored as BGRA (RGBA8 or SRGB8_ALPHA8, red and blue swapped on the host, `FormatConverted`) with
+  alpha held at one: host writes set the X byte to 255, clears write alpha one, draws leave alpha
+  (the colour mask of every BGRX target of the pass; a pass with BGRX and other targets uses
+  OES_draw_buffers_indexed and loses the device as not built without it), and passes never
+  discard a BGRX target. Sample, filter, render, blend and copy out; read back X is 255, as on
+  the WebGPU back end. Check `bgrx_textures_hold_alpha_one`.
+- With BGRX served, the formats scene stopped at the next two formats, which render here but did
+  not copy out (`E_NOTIMPL` from the front's check of the staging copy): `B5G6R5` now reads back
+  as RGBA bytes packed again into 16 bits on the host (exact: 8 bits keep every 5 and 6-bit value
+  apart), and `R11G11B10` through its bits drawn into an `R32Uint` twin, as the 16-bit floats are
+  (`CopyThroughBuffer`; infinities, NaN payloads and denormals kept). Check
+  `half_floats_read_back_as_stored` now covers both. The front's formats scene through its WebGL 2
+  build: every output passes but the two snorm targets, absent natively as declared (Measurements).
+- The shaders track's seed 14 of `tests/filter_draw.rs` (a WebGL 2 draw that lost ANGLE's device
+  in its run 15): rerun alone at today's code, it passes (details under "G3b: what the fronts
+  ask").
+- `submit` no longer calls `getError`, which in Chrome waits for the GPU process: GL errors are
+  read after the back end has waited anyway (`wait_fence`, `read_texture_now`), and a lost context
+  is seen at `submit` and `status` through `isContextLost` (no wait). A lost context's missing
+  sync object no longer panics (the fence is done, the device lost), and natively a context that
+  cannot be made current leaves no context current and loses the device (`Removed`). On
+  SimpleLightingPC's frames the WebGL 2 frame went from 5.3 ms to 0.27 ms (Measurements, run G3b-3).
+- A stage reading more uniform buffers than `Limits::uniform_buffers_per_stage` is refused at
+  `create_shader` (`Invalid`), not lost at its first draw. Natively the limit is now 10, not 12
+  (Departures). Check `stages_past_the_uniform_buffer_limit_are_refused`.
+- The signed normalised minimum is judged per level: a level drawn into reads back through its
+  twin while another level holds the minimum. Layers of one level are still judged together.
+- The `record` feature records nothing without `WEBGL_TRACE` and draws as `Gl` does, so a build
+  that gets the feature through another crate keeps working; the crate's examples and tests use
+  `Gl` by name.
+- The frame-time replay no longer hangs: each replay's device is dropped before the next is
+  made, the page logs its progress, and the command stops itself after 300 s. The cause of the
+  hang was not isolated (Departures).
+- Cube gathers whose footprints cross face edges are compared with WebGPU's own gathers (new
+  comparison `cube_gathers_across_face_edges_equal_webgpu`, natively and in Chrome), and the gather
+  rewrite takes its first argument up to the comma outside brackets (unit test).
+- New from the shared line: copies within one level of a 3D texture (one subresource) went
+  through `copyTexSubImage3D` on the same texture, which ANGLE garbled; they now go through a
+  buffer (`CopyWithinTexture`). Its two new suite tests run in Chrome too.
+
 G3b run 2, 2026-11-18 (about 08:30 to 10:15 Pacific). Merged origin/phase-2-graphics (it held
 -shaders and -direct3d-11 already; -webgpu and -rig had nothing new). The open findings of G3's
 check were fixed in run 1 (list below). Done in this run:
@@ -123,6 +168,10 @@ Read after merging (status-graphics-direct3d-11.md at 66e54fa6, status-graphics-
   (`bit_functions` in src/shader.rs). Check `bit_operations_equal_their_definition`: every
   operation, scalar and vector, signed and unsigned, against WGSL's definition computed on the
   host, offsets and counts past the width included.
+- (Run 3) Cube gathers across face edges: the footprint's texels past an edge are sampled by
+  direction on the next face; comparison `cube_gathers_across_face_edges_equal_webgpu` (every edge
+  of every face, three places each, corners left out) equals WebGPU's own gathers natively (wgpu,
+  Direct3D 12) and in Chrome.
 - `textureGather` and `textureGatherOffset` (shaders track; plan 6.5): built. Each is rewritten to
   four samples at the texel centres of the footprint at level 0 (`gathers_by_samples`), given the
   bound view's size; cube footprints are sampled by direction, comparisons through the comparison
@@ -168,6 +217,29 @@ Read after merging (status-graphics-direct3d-11.md at 66e54fa6, status-graphics-
   lack): pass on ANGLE and in Chrome with every extension; on the routes without
   EXT_clip_control they stop at the suite's own raster block like the 25 known.
 - (Run 2) The frame-time measurement through the Direct3D 11 front: built (Measurements, run G3b-2).
+- (Run 3, from check9) The formats scene's `bgrx8_unorm` (`DXGI_FORMAT_B8G8R8X8_UNORM`): built
+  (above, "Where things stand"). Run 1 listed the scene's stop as the front's; it was this back
+  end's caps, which gave BGRX no use, so the front's `CheckFormatSupport` answered `E_FAIL`.
+- (Run 3) Then `b5g6r5_unorm` and `rg11b10_float` of the same scene, which this back end could
+  render but not copy out: built (above).
+- (Run 3, from check9) The shaders track's `tests/filter_draw.rs` seed 14 (anisotropy 4), which
+  in its run 15 (2026-11-17 18:34, `run15/filter12.log`, seeds 1 to 16 in one process) lost
+  ANGLE's device in a WebGL 2 draw: "Internal D3D11 error: HRESULT: 0x887A0005 (removal reason:
+  HRESULT: 0x887A0005): Failed to map D3D11 resource". The display resets log has no reset then
+  (the day's resets were 14:40 to 17:22, 19:35 and 20:37), so it removed ANGLE's device without a
+  driver reset. Rerun alone at this run's code (seed 14, one case, `gpu-job --alone`, scratch
+  g3b3/seed14-1.log): 48 comparisons, 0 failed, 32 known anisotropic failures, no device lost;
+  WebGL 2 included (dxbc and dxil routes, R32_FLOAT and RGBA8). The seeds 1 to 16 run in one
+  process: see Measurements, run G3b-3. Not reproduced, so its cause is not known; the 32
+  anisotropic differences are the shaders track's known failure (its tap footprint), not this
+  back end's.
+- (Run 3, from check9) A program past the uniform block limit (the constants scene): refused at
+  `create_shader` with `Invalid` naming `Limits::uniform_buffers_per_stage`, so the front sees the
+  broken rule when it makes the shader, not a lost device at the draw. The scene still needs the
+  front to bind `constants_as_texture` past the limit (the Direct3D 11 track's).
+- (Run 3) The shared line's two new suite tests (copies within one 3D or compressed subresource,
+  an indexed draw past a stream's end): pass on ANGLE and in Chrome; the first needed the 3D copy
+  fix above.
 
 ## The pass bar, item by item (plan section 12, G3)
 
@@ -841,7 +913,10 @@ All from the checkout root on the Mac.
   gives the call stream (`trace::Call`, postcard, shaders as naga modules; `trace::Replay` runs a
   stream on any back end frame by frame). The `record` feature makes `WebGl` the recording
   `trace::Traced<Gl>`, which writes every call into the file `WEBGL_TRACE` names (a second device
-  of the process into `<name>.1`) while drawing on ANGLE; without `WEBGL_TRACE` it makes no device.
+  of the process into `<name>.1`) while drawing on ANGLE; without `WEBGL_TRACE` it records nothing
+  and draws as `Gl` does (since G3b run 3; before, it made no device), so a build that gets the
+  feature through another crate still works. The crate's own examples and tests use `Gl` by name,
+  so `--all-features` builds them too.
   The Direct3D 11 library is built on it with
   `cargo build --release -p wcontainers-directx --features webgl,wcontainers-gpu-webgl/record --target-dir %CARGO_TARGET_DIR%\record`.
   Through the rig's forwarding library (`programs run --dll`) the programs recurse until the
@@ -854,8 +929,11 @@ All from the checkout root on the Mac.
   that draws nothing, so the program's frames are in `<name>.bin.1`. Replay in Chrome on both
   back ends (build.cmd builds the example `replay` into `%CARGO_TARGET_DIR%\webgl-replay-pkg`):
   `tools/graphics-rig/gpu-job --alone --desktop --build "crates\wcontainers-gpu-webgl\browser\build.cmd" -- "node crates\wcontainers-gpu-webgl\browser\replay.mjs %CARGO_TARGET_DIR%\webgl-replay-pkg C:\wc\out\webgl\trace\<program>.bin C:\wc\out\webgl\trace\<program>-replay.txt"`.
-  Each back end replays the stream twice, on a new device each time: once with each call timed
-  inside the back end, once timing whole frames only; frames before the tenth are left out. The round trip is tested natively:
+  Each back end replays the stream twice, on a new device each time (the last one dropped first):
+  once with each call timed inside the back end, once timing whole frames only; frames before the
+  tenth are left out. The page logs each replay's start, every hundredth frame and its end; the
+  command stops itself (and Chrome) after 300 s, so a page that stops answering does not hold the
+  GPU job. The round trip is tested natively:
   `cargo test -p wcontainers-gpu-webgl --features record --test trace` (a scene recorded on
   ANGLE, replayed on a new WebGL 2 back end and on the WebGPU back end, equal texels). With
   `record`, only the library and that test build (other examples use `Gl`'s own methods).
@@ -903,6 +981,9 @@ All from the checkout root on the Mac.
   `absent_features_are_refused` checks and call `not_run`; checks whose format lacks a use call
   `not_run_because` (G3b run 1). Chrome's suite output counts them as "not run: <reason>";
   natively they pass and print "not run: <test>: <reason>" (all.cmd lists those lines).
+- If every rig command exits 2 at once with no output, the rig's ssh helper (common.sh `connect`)
+  has met a missing ~/.ssh/wc-rig-refused on the Mac (`awk` on it fails under `pipefail`); an empty
+  file there fixes it (made so in G3b run 3; the rig track's to fix).
 - Lint and format: `nix develop -c cargo fmt -p wcontainers-gpu-webgl` and
   `nix develop -c cargo check -j 2 -p wcontainers-gpu-webgl [--target wasm32-unknown-unknown]` on the
   Mac; clippy on the desktop:
@@ -967,12 +1048,15 @@ R11G11B10 filter, render and blend; 32-bit float filter, render and blend (RGB32
 integers render (not RGB32), never filter or blend; depth formats are depth targets, and those
 without stencil also sample. Copy out (read back): R8, RG8 and RGBA8 normalised and RGBA8 sRGB,
 every colour-renderable 8, 16 and 32-bit integer format, and R32F, RG32F and RGBA32F (with
-EXT_color_buffer_float); not R11G11B10 or RGB9E5 from the GPU, depth or stencil (since G3b run 1
+EXT_color_buffer_float); not RGB9E5 from the GPU, depth or stencil (since G3b run 3 R11G11B10
+through its 32-bit twin and B5G6R5 as bytes packed on the host; since G3b run 1
 16-bit floats copy out too, through their integer twin, and the 10-10-10-2 formats in their own
 packing, `UNSIGNED_INT_2_10_10_10_REV`, which GLES 3.0 reads back for them). Since run 3, samples:
 1, 2, 4 and 8 for the colour formats that render and are not integers, and for depth formats (as
 GL reports them on the RTX 3080); integer formats take one.
-No bits yet: the swizzled formats other than BGRA8 (BGRX8, B5G5R5A1, BGRA4), A8, Stencil8. Since
+No bits yet: the swizzled formats other than BGRA8 and BGRX8 (B5G5R5A1, BGRA4), A8, Stencil8. Since
+G3b run 3 `bgrx8unorm` and `bgrx8unorm-srgb` have BGRA8's uses but `PRESENT`, alpha held at one.
+Since G3b run 3 natively `uniform_buffers_per_stage` is 10, GL's 12 less mozangle's two (Departures). Since
 run 9, with EXT_texture_norm16 (Chrome 157 and mozangle on the RTX 3080): `r16unorm`, `rg16unorm`,
 `rgba16unorm` sample, filter, render, blend, resolve and copy out; the snorm ones sample and filter;
 without it none of the six has a use. With EXT_render_snorm (Chrome only) the signed normalised
@@ -1290,6 +1374,70 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   reduced performance" (and the same for WebGPU). Per-draw timings taken there (G3's later work)
   must say so; whether a headed Chrome differs is not measured.
 
+## Measurements, run G3b-3
+
+- 2026-11-18, desktop (i9-9900K, RTX 3080, driver 32.0.16.2101, Chrome 157.0.8103.78), queued
+  jobs beside other tracks' work, not timed. 99 suite tests (the shared line's two new ones
+  included) and 55 checks.
+  - The new and touched checks (scratch g3b3/new2.log): 14 of 14 on ANGLE and 14 of 14 in Chrome
+    (`bgrx_...`, `bgra_...`, `stages_past_the_uniform_buffer_limit_are_refused`,
+    `broken_rules_...`, the snorm, typeless, within-one-subresource, gather, half float and two
+    device checks); unit tests 11 of 11; `cube_gathers_across_face_edges_equal_webgpu` equal
+    natively and in Chrome. The first native run of the limit check, with the limit at 12,
+    aborted ANGLE (scratch g3b3/bgrx2.log; Departures).
+  - Full run (all.cmd, out C:\wc\out\webgl\g3b3-all2, scratch g3b3/all2.log): Chrome 96 passed,
+    3 not run (clip and cull distances, timestamps, fractional bias), 0 failed with every
+    extension; 88 passed and 11 not run on the reduced route; 67 passed, 3 not run and 29 failed
+    without EXT_clip_control, and the same without it and WEBGL_provoking_vertex. ANGLE 99 of 99
+    with every extension, 71 of 99 on both reduced routes. Every reduced-route failure (28
+    natively, 29 in Chrome; one more each than run 2: the new `an_indexed_draw_past_...`) is
+    `Absent(CLIP_DEPTH_ZERO_ONE)` or `Absent(PROVOKING_VERTEX_FIRST)` from the suite's own raster
+    blocks (counted in suite-angle-noclip.txt and -neither.txt: 28 panics, 0 other). Against
+    WebGPU natively 8 of 9, in Chrome 10 of 12 routes (the known two). BC reference 1 of 2 (the
+    known decoded route). Unit tests 11 of 11. Clippy with warnings denied: native all targets,
+    `record`, wasm32 (browser, draw-cost, replay with `trace`): clean.
+  - The first full run (scratch g3b3/all1.log) found the 3D copy (native, the new suite test) and
+    the two tests the browser host lacked.
+  - After the B5G6R5 and R11G11B10 read backs, at the pushed head (all.cmd, out
+    C:\wc\out\webgl\g3b3-all3, scratch g3b3/all3.log): the same counts on every route as all2
+    (Chrome 96 + 3 not run; 88 + 11; 67 + 3 + 29 known twice; ANGLE 99 of 99, 71 of 99 twice, 28
+    panics on each reduced route, all from the suite's raster blocks), against WebGPU and BC as
+    above, unit tests 11 of 11, the trace round trip (`--features record --test trace`) 1 of 1,
+    clippy clean on every build above. The read back checks with the two formats (scratch
+    g3b3/small2.log): 5 of 5 on ANGLE and in Chrome.
+- The Direct3D 11 front's scenes through its WebGL 2 build (`cargo build -p wcontainers-directx
+  --features webgl --target-dir %CARGO_TARGET_DIR%\webgl`, the rig's `scenes --api d3d11 --dll
+  d3d11.dll=...`, natively on ANGLE, against the rig's real Direct3D 11 pictures):
+  - formats, targets and mips (scratch g3b3/d3d11-scenes3.log): 43 passed, 0 failed, 7 absent.
+    Every format's picture equals real Direct3D 11's within the rig's tolerance (largest
+    difference 0), `bgrx8_unorm`, `b5g6r5_unorm` and `rg11b10_float` included; absent: the two
+    snorm targets (no EXT_render_snorm in mozangle, so `CheckFormatSupport` reports no target and
+    the caps line says less than the GPU), and the four targets outputs of feature level 10_1.
+    Before this run's format work (d3d11-scenes1.log) formats stopped with `E_NOTIMPL`.
+  - constants (d3d11-scenes2.log): the front's device is removed with "the back end refused a
+    call: a stage reads more uniform buffers than Limits::uniform_buffers_per_stage", which is
+    this run's early refusal reaching the front; the scene needs the front to bind its constants
+    through a texture past the limit (the Direct3D 11 track's).
+- The frame-time measurement again, 2026-11-18 13:00 desktop time, `gpu-job --alone --desktop`,
+  CPU load 4% just before and 4% just after, Chrome 157.0.8103.78 headless on the RTX 3080, the
+  same stream as run 2 (C:\wc\out\webgl\trace\atg-simplelightingpc.bin.1, SimpleLightingPC
+  through the Direct3D 11 library on this back end, 580 frames). Result scratch
+  g3b3/atg-simplelightingpc-replay3.txt, log g3b3/replay1.log. All four replays finished (0 calls
+  failed). Frames 10 to 579:
+  - WebGL 2: whole frame median 0.270 ms (fastest 0.050, slowest 1.985) with calls untimed (run 2:
+    5.34 ms). Inside the back end, per frame: draws 0.093 ms (23.3 us a draw), begin_pass 0.035
+    ms (17.6 us each), buffer writes 0.035 ms (11.6 us each), submit 0.029 ms (run 2: 5.574 ms),
+    present 0.016 ms, fence_done 0.011 ms, the rest under 0.005 ms. Slow paths: `CopyThroughBuffer`
+    291 (every second frame, now queued without a wait), `PipelineMiss` 1.
+  - WebGPU: whole frame median 0.725 ms (fastest 0.125, slowest 3.070); run 2 0.78, check9 could
+    not reproduce it because the page hung. Per frame: draws 0.216 ms (53.9 us a draw), begin_pass
+    0.127 ms (63.5 us each), current_texture 0.089 ms, submit 0.084 ms, buffer writes 0.054 ms
+    (18.1 us each), present 0.030 ms, the rest under 0.011 ms. Slow paths: `PipelineMiss` 3.
+  - So on these frames our WebGL 2 side costs about a third of our WebGPU side per frame (0.27
+    against 0.73 ms), and a draw 23 against 54 us. Measured: our back ends' share only (the
+    Direct3D 11 front ran natively while recording; Departures). Not measured: the GPU's own time
+    and the browser's GPU process.
+
 ## Measurements, run G3b-2
 
 - 2026-11-18, desktop (i9-9900K, RTX 3080, driver 32.0.16.2101, Chrome 157.0.8103.78), queued
@@ -1378,8 +1526,9 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   targets (rgba16f, rgb10a2, r32ui, rgba8). Still stopping, none in this back end: constants (the
   front past the uniform block limit, above), samplers (`TEXTURE_LEVEL_QUERY` refused by the
   front), views (`TEXTURE_VIEWS`), raster (polygon mode, absent on mozangle), formats (`E_FAIL`
-  from the front's `CheckFormatSupport`, no back end message), geometry and streamout (no
-  geometry stage at 10_0).
+  from the front's `CheckFormatSupport`, no back end message; wrongly put on the front here: the
+  `E_FAIL` was this back end's caps giving BGRX no use, built in run 3), geometry and streamout
+  (no geometry stage at 10_0).
 - Spread of the per-draw cost (G3's check, recorded here): one of the checker's two runs had
   WebGL 2 medians of 10,000 draws three to four times run 18's (6.2 ms against 1.7 to 1.8) while
   its fastest frames matched (1.6 ms); the CPU load just after was 24% against 5% in the run that
@@ -1667,9 +1816,36 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 
 ## Departures from the plan
 
+- (G3b run 3) BGRX is held in BGRA's storage with alpha kept at one by every writer (host writes,
+  clears, a colour mask on draws), not in GL's RGB8, which reads alpha as one by itself: RGB8's
+  sRGB twin SRGB8 does not render in GLES 3.0, and BGRX's two formats are one typeless group, so
+  RGBA8 and SRGB8_ALPHA8 keep their copies on the routes BGRA already has. The mask costs nothing
+  per draw: it is applied with the blend block, which is applied again only when the pass's set of
+  BGRX targets changes.
+- (G3b run 3) GL errors are read where the back end already waits for the GPU (after fences and
+  `readPixels`), not at every `submit`: in Chrome `getError` is a wait for the GPU process, and it
+  was most of a WebGL 2 frame. An error of ours is so reported at the next wait instead of the next
+  submit; a lost context is still seen at `submit` and `status` (`isContextLost`, no wait).
+- (G3b run 3) Natively `uniform_buffers_per_stage` is GL's count less 2 (10 on the RTX 3080):
+  mozangle 0.7.1 (the test tool) places a stage's blocks from register b2 (b0 and b1 hold its own
+  constants) and asserts each register below the block count, so a stage using the last two
+  aborts the process (seen: `ProgramD3D.cpp:2414 ... registerIndex < caps.maxShaderUniformBlocks`).
+  Chrome's ANGLE draws with all 12, so the browser keeps GL's count; the native caps differ from
+  Chrome's here.
+- (G3b run 3) The signed normalised minimum is judged per level, not per layer: a pass into one
+  layer of a layered snorm texture whose other layer of that level holds -128 still loses the
+  device as not built when copied out ("the bits of signed normalised texels drawn into after a
+  write of their smallest value").
+- (G3b run 3) The replay hang of check9 (the second WebGPU replay; the page stopped answering)
+  was not reproduced and its cause not isolated: since each replay's device is dropped before the
+  next is made, all four replays finished in the one run made (the earlier page held two WebGPU
+  devices and their canvases at once while the second was made).
 - (G3b run 2) The frame-time measurement of a real program in Chrome runs the program natively
   (no WebAssembly build of the Direct3D 11 front exists) and replays the interface calls it made
-  in Chrome. So it measures the back ends' share of a frame in Chrome, not the front's. The
+  in Chrome. So it measures the back ends' share of a frame in Chrome, not the front's. (Run 3:
+  still so. A native timing of the front's calls belongs in the front's crate, which this track
+  does not own; the recording wrapper sees only the time between interface calls, which mixes the
+  front's work with the program's own.) The
   recording sits in this crate (the `record` feature makes `WebGl` a type alias of the recording
   wrapper) because the front's library names `wcontainers_gpu_webgl::WebGl` and this track owns
   only this crate; the stream form and the replay are generic over `Backend`, so the WebGPU track
@@ -1970,21 +2146,19 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 
 ## Next
 
-G3b is done apart from the independent check. In this order after it:
-1. The WebGL 2 frame's time in Chrome (Measurements, run G3b-2): `submit`'s `getError` waits for
-   Chrome's GPU process every frame. Measure it apart from the twin refresh (a replay with the
-   check moved), then: find GL errors where the back end already waits (read backs, fence waits),
-   with `isContextLost` at every submit for losses; and find which texture's twin SimpleLightingPC
-   refreshes every second frame (likely an sRGB target view of its swap chain's buffer) and whether
-   a draw or a blit can refresh it without the pixel buffer.
+G3b is done apart from the independent check (run 3 fixed check9's findings). In this order after it:
+1. Which texture's twin SimpleLightingPC refreshes every second frame (`CopyThroughBuffer` 291 of
+   580 frames; likely an sRGB target view of its swap chain's buffer), and whether a draw or a blit
+   can refresh it without the pixel buffer. It no longer waits (run 3), but it is a copy a frame.
 2. Record more real programs: one with many draws a frame (bgfx's examples drew nothing through
    the WebGL 2 build; Godot's compatibility renderer overflowed its stack: ask the Direct3D 11
    track), and agree with the WebGPU track that it replays the same files (src/trace.rs is generic
    over `Backend`; scratch g3b2/atg-simplelightingpc.bin is one).
 3. `noperspective` inputs: the vertex stage writes the value times w and w beside it, the
    fragment stage divides; needs the pair of stages at link time (refused by name today).
-4. Rerun the Direct3D 11 front's WebGL 2 scenes after its next runs (constants: the uniform block
-   limit; formats; views at 10_0 through `ReinterpretCopy`).
+4. Rerun the Direct3D 11 front's WebGL 2 scenes after its next runs (constants: the front's
+   constants through a texture past the uniform block limit; views at 10_0 through
+   `ReinterpretCopy`). Formats, targets and mips pass since run 3.
 
 After G3b, from G3:
 What is left of G3's pass bar cannot be done in this crate:
@@ -2012,3 +2186,6 @@ After that, in about this order:
    `timestamps_disjoint`, a fractional `polygonOffset`) have run on no GPU: the RTX 3080 gives
    zero timestamp bits and ANGLE rounds bias units. A GPU and browser that have them would test
    them.
+7. The snorm minimum per layer (Departures, run 3), if a program meets it.
+8. Cube gathers at a cube's corners (three faces) are compared with nothing: APIs leave them to the
+   implementation, and the run 3 comparison leaves them out.

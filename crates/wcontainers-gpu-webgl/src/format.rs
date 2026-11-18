@@ -83,6 +83,9 @@ pub fn gl_format(format: Format) -> Option<GlFormat> {
         // Stored as RGBA: red and blue are swapped on the host on the way in and out.
         F::Bgra8Unorm => f(RGBA8, RGBA, UNSIGNED_BYTE, norm),
         F::Bgra8UnormSrgb => f(SRGB8_ALPHA8, RGBA, UNSIGNED_BYTE, norm),
+        // BGRX as BGRA with alpha one: written one by the host and by clears, never by draws.
+        F::Bgrx8Unorm => f(RGBA8, RGBA, UNSIGNED_BYTE, norm),
+        F::Bgrx8UnormSrgb => f(SRGB8_ALPHA8, RGBA, UNSIGNED_BYTE, norm),
         F::Rgba8Snorm => f(RGBA8_SNORM, RGBA, BYTE, snorm),
         F::Rgba8Uint => f(RGBA8UI, RGBA_INTEGER, UNSIGNED_BYTE, int),
         F::Rgba8Sint => f(RGBA8I, RGBA_INTEGER, BYTE, int),
@@ -137,7 +140,24 @@ pub fn float_bits(format: Format) -> bool {
 /// Whether the interface's bytes of `format` hold blue first, where GL stores red first
 /// ([`wcontainers_gpu::SlowPath::FormatConverted`] on the way in and out).
 pub fn swapped(format: Format) -> bool {
-    matches!(format, Format::Bgra8Unorm | Format::Bgra8UnormSrgb)
+    matches!(
+        format,
+        Format::Bgra8Unorm | Format::Bgra8UnormSrgb | Format::Bgrx8Unorm | Format::Bgrx8UnormSrgb
+    )
+}
+
+/// Whether `format` has no alpha, which its RGBA storage holds as one: host writes and clears write
+/// one, draws leave it, and passes never discard it.
+pub fn alpha_one(format: Format) -> bool {
+    matches!(format, Format::Bgrx8Unorm | Format::Bgrx8UnormSrgb)
+}
+
+/// A clear colour as a target of `format` keeps it.
+pub fn clear_value(format: Format, mut value: [u32; 4]) -> [u32; 4] {
+    if alpha_one(format) {
+        value[3] = 1f32.to_bits();
+    }
+    value
 }
 
 /// Swaps red and blue in each 4-byte texel of `texels`.
@@ -169,13 +189,14 @@ impl FormatExtensions {
     }
 }
 
-/// The unsigned integer twin of a 16-bit float format, whose bits a draw copies into it so they can
-/// be read back.
-pub fn half_twin(format: Format) -> Option<Format> {
+/// The unsigned integer twin of a float format GL does not read back (16-bit floats, and the packed
+/// R11G11B10 in one 32-bit word), whose bits a draw copies into it so they can be read back.
+pub fn bits_twin(format: Format) -> Option<Format> {
     Some(match format {
         Format::R16Float => Format::R16Uint,
         Format::Rg16Float => Format::Rg16Uint,
         Format::Rgba16Float => Format::Rgba16Uint,
+        Format::Rg11b10Float => Format::R32Uint,
         _ => return None,
     })
 }
@@ -220,8 +241,8 @@ pub fn uses(format: Format, ext: FormatExtensions) -> FormatUse {
     // Formats GL cannot read back are read from the host copy, which draws into signed normalised
     // formats leave behind.
     let held = crate::host::kept(format) && !(signed_normalised(format) && ext.render_snorm);
-    // 16-bit floats read back through the bits of their integer twin, drawn into it.
-    let twin = half_twin(format).is_some();
+    // 16-bit and packed floats read back through the bits of their integer twin, drawn into it.
+    let twin = bits_twin(format).is_some();
     if read_as(format, ext).is_some() || gl.class == Class::Depth || held || twin {
         uses |= FormatUse::COPY_OUT;
     }
@@ -234,7 +255,8 @@ pub fn uses(format: Format, ext: FormatExtensions) -> FormatUse {
 
 /// How `readPixels` reads a format's texels: always four components of `ty` (`comp_read` bytes each),
 /// of which the texel keeps the first `n`, each the low `comp_kept` bytes, red and blue swapped
-/// where `swap` is set.
+/// where `swap` is set; or, where `rgb565` is set, RGBA bytes packed again into B5G6R5's 16 bits
+/// (8 bits keep every 5 and 6-bit value apart, so the packing is exact).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReadAs {
     pub format: u32,
@@ -243,6 +265,7 @@ pub struct ReadAs {
     pub comp_kept: usize,
     pub n: usize,
     pub swap: bool,
+    pub rgb565: bool,
 }
 
 impl ReadAs {
@@ -261,6 +284,19 @@ impl ReadAs {
 
     /// Keeps each texel's stored bytes of `read`, texels as `readPixels` wrote them, in `kept`.
     pub fn repack(self, read: &[u8], kept: &mut [u8]) {
+        if self.rgb565 {
+            let to = |v: u8, max: u32| (u32::from(v) * max + 127) / 255;
+            for (from, to16) in read
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(kept.as_chunks_mut::<2>().0)
+            {
+                let packed = to(from[0], 31) << 11 | to(from[1], 63) << 5 | to(from[2], 31);
+                to16.copy_from_slice(&(packed as u16).to_le_bytes());
+            }
+            return;
+        }
         if self.swap {
             let n = read.len().min(kept.len());
             kept[..n].copy_from_slice(&read[..n]);
@@ -280,7 +316,7 @@ impl ReadAs {
 /// How GLES 3.0's `readPixels` reads `format` back exactly (its always-supported pairs: normalised
 /// bytes as RGBA bytes, integers as RGBA 32-bit integers, and floats as RGBA floats with
 /// EXT_color_buffer_float; 16-bit normalised ones as RGBA shorts with EXT_texture_norm16), or None
-/// where it cannot: formats that are not colour-renderable, packed ones, 16-bit floats, and signed
+/// where it cannot: formats that are not colour-renderable, packed floats, 16-bit floats, and signed
 /// normalised ones, whose -128 `readPixels` returns as -127 even with EXT_render_snorm.
 pub fn read_as(format: Format, ext: FormatExtensions) -> Option<ReadAs> {
     let gl = gl_format(format)?;
@@ -293,6 +329,19 @@ pub fn read_as(format: Format, ext: FormatExtensions) -> Option<ReadAs> {
             comp_kept: 1,
             n: 4,
             swap: false,
+            rgb565: false,
+        });
+    }
+    // B5G6R5 renders, and reads back as normalised bytes, packed again on the host.
+    if gl.ty == UNSIGNED_SHORT_5_6_5 {
+        return Some(ReadAs {
+            format: RGBA,
+            ty: UNSIGNED_BYTE,
+            comp_read: 1,
+            comp_kept: 2,
+            n: 1,
+            swap: false,
+            rgb565: true,
         });
     }
     let comp_kept = match gl.ty {
@@ -321,5 +370,6 @@ pub fn read_as(format: Format, ext: FormatExtensions) -> Option<ReadAs> {
         comp_kept,
         n: texel as usize / comp_kept,
         swap: swapped(format),
+        rgb565: false,
     })
 }

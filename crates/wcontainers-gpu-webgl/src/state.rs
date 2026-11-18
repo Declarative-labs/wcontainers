@@ -213,12 +213,32 @@ pub fn uniform(gl: &glow::Context, v: &mut GlValues, t: &GlTarget) {
     );
 }
 
-pub fn blend(gl: &glow::Context, v: &mut GlValues, b: &GlBlend, platform: &Platform) {
-    if b.same {
-        uniform(gl, v, &b.targets[0]);
+/// Applies `b`, leaving alpha unwritten in the targets of the bits of `alpha_one`.
+pub fn blend(
+    gl: &glow::Context,
+    v: &mut GlValues,
+    b: &GlBlend,
+    platform: &Platform,
+    alpha_one: u8,
+) {
+    let masked;
+    let (targets, same) = if alpha_one == 0 {
+        (&b.targets, b.same)
     } else {
-        // OES_draw_buffers_indexed, which `create_blend` asked for.
-        for (i, (t, x)) in b.targets.iter().zip(&mut v.targets).enumerate() {
+        masked = core::array::from_fn::<_, MAX_COLOR_TARGETS, _>(|i| {
+            let mut t = b.targets[i];
+            if alpha_one & (1 << i) != 0 {
+                t.mask[3] = false;
+            }
+            t
+        });
+        (&masked, masked.iter().all(|t| *t == masked[0]))
+    };
+    if same {
+        uniform(gl, v, &targets[0]);
+    } else {
+        // OES_draw_buffers_indexed, which `create_blend` or `begin_pass` asked for.
+        for (i, (t, x)) in targets.iter().zip(&mut v.targets).enumerate() {
             let i = i as u32;
             set_if!(x.on, t.on, |on| platform.enable_i(glow::BLEND, i, on));
             if t.on {

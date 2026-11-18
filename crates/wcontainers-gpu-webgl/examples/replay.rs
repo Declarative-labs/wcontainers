@@ -113,6 +113,12 @@ mod jspi {
     }
 }
 
+/// Drops the replay and its device, so the next starts on a device of its own alone.
+#[wasm_bindgen]
+pub fn replay_end() {
+    DEVICE.set(None);
+}
+
 /// The device's state, its GPU and the slow paths it took, after the frames.
 #[wasm_bindgen]
 pub fn replay_report() -> String {
