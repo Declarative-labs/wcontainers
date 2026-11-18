@@ -7,7 +7,9 @@ use std::rc::Rc;
 use wcontainers_direct3d_11::desc::*;
 use wcontainers_direct3d_11::object::{Buffer, Resource, ShaderView, Texture, View};
 use wcontainers_direct3d_11::record::Recorder;
-use wcontainers_direct3d_11::{Device, Error, GEOMETRY, PIXEL, Removal, VERTEX, shader};
+use wcontainers_direct3d_11::{
+    DOMAIN, Device, Error, GEOMETRY, HULL, PIXEL, Removal, VERTEX, shader,
+};
 use wcontainers_gpu::{Backend, LossReason, SlowPath, SourceStage};
 
 type Dev = Device<Recorder>;
@@ -236,6 +238,71 @@ fn triangle_scene() {
             && find(&log, "end_pass") < find(&log, "copy_texture")
     );
     assert!(find(&log, "copy_texture") < find(&log, "read_back"));
+}
+
+#[test]
+fn a_target_view_of_a_buffer_draws_into_a_row_of_its_elements_copied_into_the_buffer() {
+    let mut dev = device();
+    let buffer = dev
+        .create_buffer(
+            &BufferDesc {
+                byte_width: 1024,
+                usage: usage::DEFAULT,
+                bind_flags: bind::RENDER_TARGET,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+    // Past the buffer's end, of a typeless format, and of a buffer not bound as a target.
+    for (format, first, count) in [(RGBA32F, 1, 64), (1, 0, 64), (RGBA32F, 0, 0)] {
+        assert!(matches!(
+            dev.create_buffer_target_view(&buffer, format, first, count),
+            Err(Error::InvalidArg(_))
+        ));
+    }
+    let vertices = immutable(&mut dev, &[0; 60], bind::VERTEX_BUFFER);
+    assert!(matches!(
+        dev.create_buffer_target_view(&vertices, RGBA32F, 0, 4),
+        Err(Error::InvalidArg(_))
+    ));
+    let rtv = dev
+        .create_buffer_target_view(&buffer, RGBA32F, 16, 48)
+        .unwrap();
+    let start = dev.backend.log.len();
+    begin(&mut dev, &rtv, None, 48.0);
+    program(
+        &mut dev,
+        "triangle.vs",
+        "triangle.ps",
+        &[element("POSITION", RG32F, 0), element("COLOR", RGB32F, 8)],
+    );
+    dev.ia_set_vertex_buffers(0, &[Some((vertices, 20, 0))])
+        .unwrap();
+    dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+    dev.draw(3, 0);
+    dev.flush();
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, start);
+    // Cleared, so nothing is copied in; what the pass drew is copied out from element 16's byte.
+    assert!(
+        !log.iter().any(|l| l.starts_with("copy_buffer_to_texture")),
+        "{log:#?}"
+    );
+    let out = find(&log, "copy_texture_to_buffer");
+    assert!(find(&log, "draw ") < out, "{log:#?}");
+    assert!(log[out].ends_with("48x1"), "{}", log[out]);
+    // Drawn again without a clear, the elements are copied in first.
+    let start = dev.backend.log.len();
+    dev.om_set_render_targets(&[None], None).unwrap();
+    dev.om_set_render_targets(&[Some(rtv)], None).unwrap();
+    dev.draw(3, 0);
+    dev.flush();
+    let log = log_from(&dev, start);
+    assert!(
+        find(&log, "copy_buffer_to_texture") < find(&log, "draw "),
+        "{log:#?}"
+    );
 }
 
 #[test]
@@ -914,6 +981,97 @@ fn lines_by_the_quadrilateral_or_alpha_rule_are_not_served() {
     }
 }
 
+#[test]
+fn a_read_only_depth_view_keeps_views_of_its_aspect_bound_and_its_draws_write_nothing_there() {
+    let mut dev = device();
+    let elements = [
+        element("POSITION", RGB32F, 0),
+        element("COLOR", RGBA32F, 12),
+    ];
+    ready(
+        &mut dev,
+        "common.vs_color",
+        "common.ps_color",
+        &elements,
+        28,
+    );
+    let target = dev
+        .create_texture(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
+        .unwrap();
+    let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
+    // R24G8_TYPELESS viewed as D24_UNORM_S8_UINT (45) for depth and R24_UNORM_X8_TYPELESS (46)
+    // to read it.
+    let depth = dev
+        .create_texture(
+            &tex2d(16, 16, 44, bind::DEPTH_STENCIL | bind::SHADER_RESOURCE),
+            &[],
+        )
+        .unwrap();
+    let view = |format, read_only| ViewDesc {
+        format,
+        dimension: ViewDim::Texture2D,
+        first_mip: 0,
+        mip_count: 1,
+        first_layer: 0,
+        layer_count: 1,
+        read_only,
+    };
+    let srv = dev
+        .create_view(&depth, Some(&view(46, 0)), bind::SHADER_RESOURCE)
+        .unwrap();
+    let srv = Rc::new(ShaderView::Texture(srv));
+    for (read_only, kept) in [
+        (0, false),
+        (DSV_READ_ONLY_DEPTH, true),
+        (DSV_READ_ONLY_STENCIL, false),
+    ] {
+        let dsv = dev
+            .create_view(&depth, Some(&view(45, read_only)), bind::DEPTH_STENCIL)
+            .unwrap();
+        dev.om_set_render_targets(&[Some(rtv.clone())], None)
+            .unwrap();
+        dev.set_shader_resources(PIXEL, 0, &[Some(srv.clone())])
+            .unwrap();
+        dev.om_set_render_targets(&[Some(rtv.clone())], Some(dsv))
+            .unwrap();
+        assert_eq!(
+            dev.shader_resource_bound(PIXEL, 0),
+            kept,
+            "flags {read_only}"
+        );
+    }
+    // The default state writes depth; through the depth-only read-only view it draws with a twin
+    // writing none, in a pass whose depth is only read.
+    let dsv = dev
+        .create_view(
+            &depth,
+            Some(&view(45, DSV_READ_ONLY_DEPTH)),
+            bind::DEPTH_STENCIL,
+        )
+        .unwrap();
+    dev.om_set_render_targets(&[Some(rtv)], Some(dsv)).unwrap();
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    assert!(
+        log.iter()
+            .any(|l| l.starts_with("create_depth_stencil") && l.contains("write false")),
+        "{log:#?}"
+    );
+    assert!(
+        log.iter().any(|l| l.starts_with("begin_pass")
+            && l.contains(" depth read-only")
+            && !l.contains("stencil read-only")),
+        "{log:#?}"
+    );
+    // Feature level 11_0 is needed, and only the two flags exist.
+    assert!(matches!(
+        dev.create_view(&depth, Some(&view(45, 4)), bind::DEPTH_STENCIL),
+        Err(Error::InvalidArg(_))
+    ));
+}
+
 /// A target, cleared and bound, with a program of the corpus and a vertex buffer of `stride` bytes.
 fn ready(dev: &mut Dev, vs: &str, ps: &str, elements: &[InputElement], stride: u32) {
     let target = dev
@@ -1143,12 +1301,20 @@ fn a_constant_buffer_smaller_than_its_shader_declares_grows() {
 #[test]
 fn formats_direct3d_defines_but_the_front_does_not_serve_are_not_implemented() {
     let mut dev = device();
-    // R32G32B32_TYPELESS and _FLOAT are valid; 0 and 500 are no format.
-    for typeless in [5, 6] {
+    // R1_UNORM and SAMPLER_FEEDBACK_MIN_MIP_OPAQUE are valid; 0 and 500 are no format.
+    for unserved in [66, 189] {
         assert!(matches!(
-            dev.create_texture(&tex2d(4, 4, typeless, bind::SHADER_RESOURCE), &[]),
+            dev.create_texture(&tex2d(4, 4, unserved, bind::SHADER_RESOURCE), &[]),
             Err(Error::NotImplemented(_))
         ));
+    }
+    // R32G32B32_TYPELESS and _FLOAT are stored as the back end's three-channel format, which the
+    // recording back end holds.
+    for served in [5, 6] {
+        assert!(
+            dev.create_texture(&tex2d(4, 4, served, bind::SHADER_RESOURCE), &[])
+                .is_ok()
+        );
     }
     for bad in [0, 500] {
         assert!(matches!(
@@ -1332,6 +1498,7 @@ fn typeless_textures_are_viewed_through_members_of_their_group() {
         mip_count: 1,
         first_layer: 0,
         layer_count: 1,
+        read_only: 0,
     };
     // R24G8_TYPELESS: D24_UNORM_S8_UINT for depth, R24_UNORM_X8_TYPELESS and X24_TYPELESS_G8_UINT
     // to read depth and stencil; a D format is for depth-stencil views only. Stencil, which
@@ -2209,6 +2376,93 @@ fn a_geometry_shader_runs_as_compute_before_the_draw_of_its_output() {
 }
 
 #[test]
+fn hull_and_domain_shaders_run_as_compute_before_the_domain_programs_draw() {
+    let mut dev = device();
+    let target = dev
+        .create_texture(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
+        .unwrap();
+    let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
+    begin(&mut dev, &rtv, None, 16.0);
+    let vsb = corpus("tessellation.vs");
+    let vs = dev.create_shader(&vsb, SourceStage::Vertex).unwrap();
+    let ps = dev
+        .create_shader(&corpus("tessellation.ps"), SourceStage::Pixel)
+        .unwrap();
+    // A hull shader's bytecode made as a domain shader is refused.
+    assert!(matches!(
+        dev.create_shader(&corpus("tessellation.hs_tri"), SourceStage::Domain),
+        Err(Error::InvalidArg(_))
+    ));
+    let hs = dev
+        .create_shader(&corpus("tessellation.hs_tri"), SourceStage::Hull)
+        .unwrap();
+    let ds = dev
+        .create_shader(&corpus("tessellation.ds_tri"), SourceStage::Domain)
+        .unwrap();
+    let mut colour = element("COLOR", RGBA32F, 12);
+    colour.semantic_index = 0;
+    let layout = dev
+        .create_input_layout(&[element("POSITION", RGB32F, 0), colour], &vsb)
+        .unwrap();
+    let vertices = immutable(&mut dev, &[0u8; 28 * 3], bind::VERTEX_BUFFER);
+    let constants = immutable(&mut dev, &[0u8; 32], bind::CONSTANT_BUFFER);
+    dev.vs_set_shader(Some(vs));
+    dev.ps_set_shader(Some(ps));
+    dev.ia_set_input_layout(Some(layout));
+    dev.ia_set_vertex_buffers(0, &[Some((vertices, 28, 0))])
+        .unwrap();
+    for stage in [HULL, DOMAIN] {
+        dev.set_constant_buffers(stage, 0, &[Some(constants.clone())])
+            .unwrap();
+    }
+    dev.hs_set_shader(Some(hs));
+    // Without a domain shader, or from a topology other than patches, Direct3D draws nothing.
+    dev.ia_set_primitive_topology(topology::PATCHLIST_1 + 2);
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    dev.ds_set_shader(Some(ds));
+    dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+    dev.draw(3, 0);
+    let log = log_from(&dev, from);
+    assert!(
+        !log.iter()
+            .any(|l| l.starts_with("dispatch ") || l.starts_with("draw ")),
+        "{log:#?}"
+    );
+    dev.ia_set_primitive_topology(topology::PATCHLIST_1 + 2);
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none(), "{:?}", dev.removed);
+    let log = log_from(&dev, from);
+    // The vertex stage's dispatch, then the hull stage's and the tessellator's, then the domain
+    // program's indirect draw.
+    let vertex = find(&log, "dispatch ");
+    let draw = find(&log, "draw ");
+    assert!(
+        log[vertex + 1..draw]
+            .iter()
+            .any(|l| l.starts_with("dispatch ")),
+        "{log:#?}"
+    );
+    assert!(log[draw].contains("IndexedIndirect"), "{}", log[draw]);
+    assert_eq!(
+        dev.backend
+            .slow_paths()
+            .count(SlowPath::TessellationAsCompute),
+        1
+    );
+    // Without the hull and domain shaders a triangle list is drawn as usual.
+    dev.hs_set_shader(None);
+    dev.ds_set_shader(None);
+    dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    let log = log_from(&dev, from);
+    assert!(!log.iter().any(|l| l.starts_with("dispatch ")));
+    assert!(log[find(&log, "draw ")].contains("TriangleList"));
+}
+
+#[test]
 fn stream_output_writes_its_targets_and_draw_auto_draws_what_they_hold() {
     use wcontainers_direct3d_11::stream::DeclEntry;
     let mut dev = device();
@@ -2311,6 +2565,7 @@ fn a_view_reinterpreting_typeless_bits_reads_a_twin_copied_before_each_draw() {
         mip_count: 1,
         first_layer: 0,
         layer_count: 1,
+        read_only: 0,
     };
     let unorm = dev
         .create_view(&typeless, Some(&desc), bind::SHADER_RESOURCE)

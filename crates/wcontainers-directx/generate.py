@@ -23,11 +23,11 @@ DXGI_SURFACE = ["IDXGISurface1", "IDXGISurface"]
 D3D10_CHILD = ["ID3D10DeviceChild"]
 D3D10_RESOURCE = ["ID3D10Resource"] + D3D10_CHILD
 D3D10_VIEW = ["ID3D10View"] + D3D10_CHILD
-for empty in ("ID3DDeviceContextState", "ID3D11InputLayout", "ID3D11VertexShader", "ID3D11PixelShader", "ID3D11ComputeShader", "ID3D11GeometryShader", "ID3D11Predicate"):
+for empty in ("ID3DDeviceContextState", "ID3D11InputLayout", "ID3D11VertexShader", "ID3D11PixelShader", "ID3D11ComputeShader", "ID3D11GeometryShader", "ID3D11HullShader", "ID3D11DomainShader", "ID3D11Predicate"):
     traits[empty] = []
 structs = {
-    "Device": ["ID3D11Device1", "ID3D11Device", "IDXGIDevice3", "IDXGIDevice2", "IDXGIDevice1", "IDXGIDevice", "IDXGIObject"],
-    "Context": ["ID3D11DeviceContext1", "ID3D11DeviceContext"] + CHILD
+    "Device": ["ID3D11Device3", "ID3D11Device2", "ID3D11Device1", "ID3D11Device", "IDXGIDevice3", "IDXGIDevice2", "IDXGIDevice1", "IDXGIDevice", "IDXGIObject"],
+    "Context": ["ID3D11DeviceContext3", "ID3D11DeviceContext2", "ID3D11DeviceContext1", "ID3D11DeviceContext"] + CHILD
     + ["ID3D11Multithread", "ID3DUserDefinedAnnotation"],
     "Adapter": ["IDXGIAdapter1", "IDXGIAdapter", "IDXGIObject"],
     "Output": ["IDXGIOutput", "IDXGIObject"],
@@ -39,30 +39,32 @@ structs = {
     + ["ID3D10Buffer"] + D3D10_RESOURCE,
     "Texture1D": ["ID3D11Texture1D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE
     + ["ID3D10Texture1D"] + D3D10_RESOURCE,
-    "Texture2D": ["ID3D11Texture2D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE
+    "Texture2D": ["ID3D11Texture2D1", "ID3D11Texture2D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE
     + ["ID3D10Texture2D"] + D3D10_RESOURCE,
-    "Texture3D": ["ID3D11Texture3D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE
+    "Texture3D": ["ID3D11Texture3D1", "ID3D11Texture3D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE
     + ["ID3D10Texture3D"] + D3D10_RESOURCE,
-    "RenderTargetView": ["ID3D11RenderTargetView", "ID3D11View"] + CHILD
+    "RenderTargetView": ["ID3D11RenderTargetView1", "ID3D11RenderTargetView", "ID3D11View"] + CHILD
     + ["ID3D10RenderTargetView"] + D3D10_VIEW,
     "DepthStencilView": ["ID3D11DepthStencilView", "ID3D11View"] + CHILD
     + ["ID3D10DepthStencilView"] + D3D10_VIEW,
-    "ShaderResourceView": ["ID3D11ShaderResourceView", "ID3D11View"] + CHILD
+    "ShaderResourceView": ["ID3D11ShaderResourceView1", "ID3D11ShaderResourceView", "ID3D11View"] + CHILD
     + ["ID3D10ShaderResourceView1", "ID3D10ShaderResourceView"] + D3D10_VIEW,
-    "UnorderedAccessView": ["ID3D11UnorderedAccessView", "ID3D11View"] + CHILD,
+    "UnorderedAccessView": ["ID3D11UnorderedAccessView1", "ID3D11UnorderedAccessView", "ID3D11View"] + CHILD,
     "SamplerState": ["ID3D11SamplerState"] + CHILD + ["ID3D10SamplerState"] + D3D10_CHILD,
     "BlendState": ["ID3D11BlendState1", "ID3D11BlendState"] + CHILD
     + ["ID3D10BlendState1", "ID3D10BlendState"] + D3D10_CHILD,
     "DepthStencilState": ["ID3D11DepthStencilState"] + CHILD + ["ID3D10DepthStencilState"] + D3D10_CHILD,
-    "RasterizerState": ["ID3D11RasterizerState1", "ID3D11RasterizerState"] + CHILD
+    "RasterizerState": ["ID3D11RasterizerState2", "ID3D11RasterizerState1", "ID3D11RasterizerState"] + CHILD
     + ["ID3D10RasterizerState"] + D3D10_CHILD,
     "InputLayout": ["ID3D11InputLayout"] + CHILD,
-    "Query": ["ID3D11Query", "ID3D11Asynchronous"] + CHILD,
+    "Query": ["ID3D11Query1", "ID3D11Query", "ID3D11Asynchronous"] + CHILD,
     "Predicate": ["ID3D11Predicate", "ID3D11Query", "ID3D11Asynchronous"] + CHILD,
     "VertexShader": ["ID3D11VertexShader"] + CHILD,
     "PixelShader": ["ID3D11PixelShader"] + CHILD,
     "GeometryShader": ["ID3D11GeometryShader"] + CHILD,
     "ComputeShader": ["ID3D11ComputeShader"] + CHILD,
+    "HullShader": ["ID3D11HullShader"] + CHILD,
+    "DomainShader": ["ID3D11DomainShader"] + CHILD,
     "CommandList": ["ID3D11CommandList"] + CHILD,
     "DeviceContextState": ["ID3DDeviceContextState"] + CHILD,
 }
@@ -70,6 +72,10 @@ structs = {
 hand = {
     "ID3D11Device": "CreateBuffer CreateTexture1D CreateTexture2D CreateTexture3D CreateShaderResourceView CreateRenderTargetView CreateDepthStencilView CreateInputLayout CreateVertexShader CreatePixelShader CreateBlendState CreateDepthStencilState CreateRasterizerState CreateSamplerState CreateQuery CreatePredicate CreateUnorderedAccessView CreateComputeShader CreateGeometryShader CreateGeometryShaderWithStreamOutput CreateHullShader CreateDomainShader CreateDeferredContext CheckFormatSupport CheckMultisampleQualityLevels CheckFeatureSupport GetFeatureLevel GetCreationFlags GetDeviceRemovedReason GetImmediateContext SetExceptionMode GetExceptionMode",
     "ID3D11Device1": "GetImmediateContext1 CreateDeferredContext1 CreateDeviceContextState CreateBlendState1 CreateRasterizerState1",
+    "ID3D11Device2": "GetImmediateContext2 CreateDeferredContext2 CheckMultisampleQualityLevels1",
+    "ID3D11Device3": "CreateTexture2D1 CreateTexture3D1 CreateRasterizerState2 CreateShaderResourceView1 CreateUnorderedAccessView1 CreateRenderTargetView1 CreateQuery1 GetImmediateContext3 CreateDeferredContext3",
+    "ID3D11DeviceContext2": "IsAnnotationEnabled SetMarkerInt BeginEventInt",
+    "ID3D11DeviceContext3": "Flush1 GetHardwareProtectionState",
     "IDXGIDevice1": "SetMaximumFrameLatency GetMaximumFrameLatency",
     "IDXGIDevice2": "OfferResources ReclaimResources",
     "IDXGIDevice3": "Trim",
@@ -77,8 +83,10 @@ hand = {
     "ID3D11Multithread": "Enter Leave SetMultithreadProtected GetMultithreadProtected",
     "ID3DUserDefinedAnnotation": "BeginEvent EndEvent SetMarker GetStatus",
     "IDXGIResource": "GetUsage",
+    "IDXGISurface1": "GetDC ReleaseDC",
     "ID3D11BlendState1": "GetDesc1",
     "ID3D11RasterizerState1": "GetDesc1",
+    "ID3D11RasterizerState2": "GetDesc2",
     "IDXGIObject": "GetParent",
     "IDXGIDevice": "GetAdapter",
     "IDXGIAdapter": "GetDesc EnumOutputs CheckInterfaceSupport",
@@ -97,13 +105,16 @@ hand = {
     "IDXGISwapChain2": "SetMaximumFrameLatency GetMaximumFrameLatency",
     "IDXGISwapChain3": "GetCurrentBackBufferIndex CheckColorSpaceSupport SetColorSpace1 ResizeBuffers1",
     "IDXGISwapChain4": "SetHDRMetaData",
-    "ID3D11DeviceContext": "VSSetConstantBuffers PSSetShaderResources PSSetShader PSSetSamplers VSSetShader DrawIndexed Draw Map Unmap PSSetConstantBuffers IASetInputLayout IASetVertexBuffers IASetIndexBuffer DrawIndexedInstanced DrawInstanced IASetPrimitiveTopology VSSetShaderResources VSSetSamplers OMSetRenderTargets OMSetBlendState OMSetDepthStencilState RSSetState RSSetViewports RSSetScissorRects CopySubresourceRegion CopyResource UpdateSubresource ClearRenderTargetView ClearDepthStencilView GenerateMips Begin End GetData ClearState Flush GetType GetContextFlags VSGetShader PSGetShader VSGetConstantBuffers PSGetConstantBuffers VSGetShaderResources PSGetShaderResources VSGetSamplers PSGetSamplers IAGetInputLayout IAGetVertexBuffers IAGetIndexBuffer IAGetPrimitiveTopology OMGetRenderTargets OMGetBlendState OMGetDepthStencilState RSGetState RSGetViewports RSGetScissorRects CSSetShader CSGetShader CSSetConstantBuffers CSGetConstantBuffers CSSetShaderResources CSGetShaderResources CSSetSamplers CSGetSamplers CSSetUnorderedAccessViews CSGetUnorderedAccessViews DrawInstancedIndirect DrawIndexedInstancedIndirect Dispatch DispatchIndirect ClearUnorderedAccessViewUint ClearUnorderedAccessViewFloat CopyStructureCount OMSetRenderTargetsAndUnorderedAccessViews OMGetRenderTargetsAndUnorderedAccessViews ExecuteCommandList FinishCommandList ResolveSubresource SetResourceMinLOD GetResourceMinLOD GSSetShader GSGetShader GSSetShaderResources GSGetShaderResources SOSetTargets SOGetTargets DrawAuto",
+    "ID3D11DeviceContext": "VSSetConstantBuffers PSSetShaderResources PSSetShader PSSetSamplers VSSetShader DrawIndexed Draw Map Unmap PSSetConstantBuffers IASetInputLayout IASetVertexBuffers IASetIndexBuffer DrawIndexedInstanced DrawInstanced IASetPrimitiveTopology VSSetShaderResources VSSetSamplers OMSetRenderTargets OMSetBlendState OMSetDepthStencilState RSSetState RSSetViewports RSSetScissorRects CopySubresourceRegion CopyResource UpdateSubresource ClearRenderTargetView ClearDepthStencilView GenerateMips Begin End GetData ClearState Flush GetType GetContextFlags VSGetShader PSGetShader VSGetConstantBuffers PSGetConstantBuffers VSGetShaderResources PSGetShaderResources VSGetSamplers PSGetSamplers IAGetInputLayout IAGetVertexBuffers IAGetIndexBuffer IAGetPrimitiveTopology OMGetRenderTargets OMGetBlendState OMGetDepthStencilState RSGetState RSGetViewports RSGetScissorRects CSSetShader CSGetShader CSSetConstantBuffers CSGetConstantBuffers CSSetShaderResources CSGetShaderResources CSSetSamplers CSGetSamplers CSSetUnorderedAccessViews CSGetUnorderedAccessViews DrawInstancedIndirect DrawIndexedInstancedIndirect Dispatch DispatchIndirect ClearUnorderedAccessViewUint ClearUnorderedAccessViewFloat CopyStructureCount OMSetRenderTargetsAndUnorderedAccessViews OMGetRenderTargetsAndUnorderedAccessViews ExecuteCommandList FinishCommandList ResolveSubresource SetResourceMinLOD GetResourceMinLOD GSSetShader GSGetShader GSSetShaderResources GSGetShaderResources SOSetTargets SOGetTargets DrawAuto HSSetShader HSGetShader HSSetShaderResources HSGetShaderResources DSSetShader DSGetShader DSSetShaderResources DSGetShaderResources",
     "ID3D11Resource": "GetType SetEvictionPriority GetEvictionPriority",
     "ID3D11View": "GetResource",
     "ID3D11Asynchronous": "GetDataSize",
     "ID3D11Query": "GetDesc",
+    "ID3D11Query1": "GetDesc1",
     "ID3D11CommandList": "GetContextFlags",
 }
+for t in ["ID3D11Texture2D1", "ID3D11Texture3D1", "ID3D11RenderTargetView1", "ID3D11ShaderResourceView1", "ID3D11UnorderedAccessView1"]:
+    hand[t] = "GetDesc1"
 for t in ["ID3D11Buffer", "ID3D11Texture1D", "ID3D11Texture2D", "ID3D11Texture3D", "ID3D11RenderTargetView", "ID3D11DepthStencilView", "ID3D11ShaderResourceView", "ID3D11UnorderedAccessView", "ID3D11SamplerState", "ID3D11BlendState", "ID3D11DepthStencilState", "ID3D11RasterizerState"]:
     hand[t] = "GetDesc"
 private = {"GetPrivateData", "SetPrivateData", "SetPrivateDataInterface"}
@@ -127,20 +138,10 @@ def unused_stage(name, p, what):
     """The body of a context method on a stage or feature not served: served while it binds nothing."""
     if name in ("SetPredication", "GetPredication"):
         return f"self.{snake(name)}({', '.join(p)})"
-    if re.fullmatch(r"(HS|DS)SetShader", name):
-        return f'self.only_unbinding("{what}", !{p[0]}.is_null())'
     if re.fullmatch(r"(GS|HS|DS)Set(ConstantBuffers1?|Samplers)", name):
         return f"self.{snake(name)}({', '.join(p)})"
     if re.fullmatch(r"(GS|HS|DS)Get(ConstantBuffers1?|Samplers)", name):
         return f"self.{snake(name)}({', '.join(p)})"
-    if re.fullmatch(r"(HS|DS)SetShaderResources", name):
-        return f'self.only_unbinding("{what}", super::context::binds({p[2]}, {p[1]}))'
-    if re.fullmatch(r"(GS|HS|DS)GetConstantBuffers1", name):
-        return f"super::context::nothing_bound(super::context::out_array({p[2]}), {p[1]})"
-    if re.fullmatch(r"(GS|HS|DS)Get(ConstantBuffers|Samplers)", name) or re.fullmatch(r"(HS|DS)GetShaderResources", name):
-        return f"super::context::nothing_bound({p[2]}, {p[1]})"
-    if re.fullmatch(r"(HS|DS)GetShader", name):
-        return f"super::context::no_instances({p[2]}); let _ = {p[0]}.write(None);"
     return None
 
 
@@ -182,6 +183,8 @@ for struct, tlist in structs.items():
             unused = t.startswith("ID3D11DeviceContext") and unused_stage(name, params, f"{t}::{name}")
             if unused:
                 body = unused
+            elif (t, name) == ("ID3D11DeviceContext2", "EndEvent"):
+                body = "let _ = self.end_event();"
             elif t == "ID3D11DeviceChild" or (t == "ID3D10DeviceChild" and name in private):
                 body = f"self.child.{snake(name)}({args})"
             elif t == "ID3D10DeviceChild" and name in hand10:

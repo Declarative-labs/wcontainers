@@ -1,6 +1,6 @@
 //! Our own Direct3D 11 programs (the examples `own_handled`, `own_refused`, `own_edges`,
 //! `own_depth_copy`, `own_swap_chain`, `own_volumes`, `own_queries`, `own_interfaces`,
-//! `own_indirect`, `own_min_lod` and `lifetimes`) run as ordinary
+//! `own_indirect`, `own_min_lod`, `own_packed` and `lifetimes`) run as ordinary
 //! programs, once beside the system's d3d11.dll and once with our forwarding d3d11.dll and library
 //! beside them, and what each printed compared.
 #![cfg(windows)]
@@ -72,17 +72,17 @@ fn own_refused_is_refused_through_ours_and_served_by_direct3d() {
     assert_eq!(code, 0, "{text}");
     assert_eq!(
         text,
-        "CreateHullShader 0x00000000\nCreateQuery(occlusion) 0x00000000\nCreateQuery(timestamp) 0x00000000\n\
+        "CreateTexture2D(keyed mutex) 0x00000000\nCreateQuery(occlusion) 0x00000000\nCreateQuery(timestamp) 0x00000000\n\
          CreateBuffer(structured) 0x00000000\nCreateShaderResourceView(structured) 0x00000000\nCheckMultisampleQualityLevels(4) 0x00000000 1\n\
          CreateTexture2D(4 samples) 0x00000000\nGetDeviceRemovedReason 0x00000000\n"
     );
     let (code, ours) = run("own_refused", &place("refused-ours", true));
     assert_eq!(code, 0, "{ours}");
-    // E_NOTIMPL for hull shaders; the two queries, structured views, 4 samples and the
+    // E_NOTIMPL for keyed-mutex sharing; the two queries, structured views, 4 samples and the
     // dual-source draw served as Direct3D serves them.
     assert_eq!(
         ours,
-        "CreateHullShader 0x80004001\nCreateQuery(occlusion) 0x00000000\nCreateQuery(timestamp) 0x00000000\n\
+        "CreateTexture2D(keyed mutex) 0x80004001\nCreateQuery(occlusion) 0x00000000\nCreateQuery(timestamp) 0x00000000\n\
          CreateBuffer(structured) 0x00000000\nCreateShaderResourceView(structured) 0x00000000\nCheckMultisampleQualityLevels(4) 0x00000000 1\n\
          CreateTexture2D(4 samples) 0x00000000\nGetDeviceRemovedReason 0x00000000\n"
     );
@@ -117,6 +117,18 @@ fn indirect_draws_read_their_bases_as_direct3d_does() {
     let (code, want) = run("own_indirect", &place("indirect-system", false));
     assert_eq!(code, 0, "{want}");
     let (code, got) = run("own_indirect", &place("indirect-ours", true));
+    assert_eq!(code, 0, "{got}");
+    for (w, g) in want.lines().zip(got.lines()) {
+        assert_eq!(w, g, "the first line that differs");
+    }
+    assert_eq!(want.lines().count(), got.lines().count());
+}
+
+#[test]
+fn two_pixel_formats_sample_load_and_copy_as_direct3d_does() {
+    let (code, want) = run("own_packed", &place("packed-system", false));
+    assert_eq!(code, 0, "{want}");
+    let (code, got) = run("own_packed", &place("packed-ours", true));
     assert_eq!(code, 0, "{got}");
     for (w, g) in want.lines().zip(got.lines()) {
         assert_eq!(w, g, "the first line that differs");

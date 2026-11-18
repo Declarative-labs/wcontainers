@@ -6,7 +6,7 @@ use std::rc::{Rc, Weak};
 
 use wcontainers_gpu::{
     Backend, BindingLayoutKey, Combination, CombinationTracker, Format, MAX_BINDING_SETS,
-    PrepareDesc, ScalarKind, SlowPath, TargetLayout, Topology, VertexFormat,
+    PrepareDesc, ScalarKind, SlowPath, SystemValue, TargetLayout, Topology,
 };
 
 use crate::cache::Record;
@@ -149,35 +149,23 @@ fn covers<B: Backend>(vs: &Shader<B>, ps: &Shader<B>) -> bool {
         })
 }
 
-/// Whether the pixel shader's colour outputs are of the kinds (float or integer) of `targets`'
-/// formats: a combination built ahead with targets of another kind would be refused.
+/// Whether the pixel shader's colour outputs are of the kinds (float, unsigned or signed) of
+/// `targets`' formats: a combination built ahead with targets of another kind would be refused.
 fn writes<B: Backend>(ps: &Shader<B>, targets: &wcontainers_gpu::TargetLayout) -> bool {
-    ps.reflection
-        .outputs
-        .iter()
-        .filter(|o| o.system.is_none())
-        .all(|o| {
-            let Some(Some(f)) = targets.colors.get(o.location as usize) else {
-                return true;
-            };
-            let integer = matches!(
-                f.kind(),
-                wcontainers_gpu::FormatKind::Uint | wcontainers_gpu::FormatKind::Sint
-            );
-            integer == (o.scalar != ScalarKind::Float)
-        })
-}
-
-/// The scalar type a vertex format is read as.
-fn scalar(f: VertexFormat) -> ScalarKind {
-    use VertexFormat::*;
-    match f {
-        Uint8x1 | Uint8x2 | Uint8x3 | Uint8x4 | Uint16x1 | Uint16x2 | Uint16x3 | Uint16x4
-        | Uint32x1 | Uint32x2 | Uint32x3 | Uint32x4 => ScalarKind::Uint,
-        Sint8x1 | Sint8x2 | Sint8x3 | Sint8x4 | Sint16x1 | Sint16x2 | Sint16x3 | Sint16x4
-        | Sint32x1 | Sint32x2 | Sint32x3 | Sint32x4 => ScalarKind::Sint,
-        _ => ScalarKind::Float,
-    }
+    ps.reflection.outputs.iter().all(|o| {
+        let Some(SystemValue::Target(n)) = o.system else {
+            return true;
+        };
+        let Some(Some(f)) = targets.colors.get(usize::from(n)) else {
+            return true;
+        };
+        let kind = match f.kind() {
+            wcontainers_gpu::FormatKind::Uint => ScalarKind::Uint,
+            wcontainers_gpu::FormatKind::Sint => ScalarKind::Sint,
+            _ => ScalarKind::Float,
+        };
+        kind == o.scalar
+    })
 }
 
 /// The input layout gives the vertex shader every input it reads, at its location and of its type.
@@ -188,9 +176,12 @@ fn fits<B: Backend>(vs: &Shader<B>, layout: Option<&InputLayout>) -> bool {
         .filter(|i| i.system.is_none())
         .all(|i| {
             layout.is_some_and(|l| {
-                l.elements
-                    .iter()
-                    .any(|e| e.location == i.location && scalar(e.format) == i.scalar)
+                l.elements.iter().any(|e| {
+                    e.location == i.location
+                        && crate::format::vertex_scalar(crate::format::vertex_format_read_as(
+                            e.format, i.scalar,
+                        )) == i.scalar
+                })
             })
         })
 }
@@ -222,10 +213,7 @@ impl<B: Backend> Device<B> {
         let program = (vs.gpu.id, ps.map_or(0, |p| p.gpu.id));
         let ctx = &self.ctx;
         let blend = ctx.blend.as_ref().unwrap_or(&self.defaults.blend);
-        let depth_stencil = ctx
-            .depth_stencil
-            .as_ref()
-            .unwrap_or(&self.defaults.depth_stencil);
+        let depth_stencil = &self.drawn_depth_stencil();
         let raster = ctx.raster.as_ref().unwrap_or(&self.defaults.raster);
         let set_id = |stage: usize| ctx.sets[stage].as_ref().map_or(0, |k| k.id);
         let sets = [set_id(VERTEX), set_id(PIXEL)];
@@ -281,7 +269,11 @@ impl<B: Backend> Device<B> {
                 crate::device::blend_block(&tuple.blend.desc),
                 crate::device::depth_stencil_block(&tuple.depth_stencil.desc),
                 self.raster_desc(masked),
-                crate::context::layout_desc(tuple.layout.as_deref(), tuple.strides),
+                crate::context::layout_desc(
+                    tuple.layout.as_deref(),
+                    tuple.strides,
+                    &vs.reflection.inputs,
+                ),
                 tuple.targets,
                 topology,
                 tuple.layouts,
@@ -330,7 +322,7 @@ impl<B: Backend> Device<B> {
             return;
         };
         for t in picked.into_iter().filter(|t| writes(&ps, &t.targets)) {
-            let Ok(vertex_layout) = self.vertex_layout_for(t.layout.clone(), t.strides) else {
+            let Ok(vertex_layout) = self.vertex_layout_for(t.layout.clone(), t.strides, &vs) else {
                 return;
             };
             self.backend.prepare(&PrepareDesc {

@@ -3126,7 +3126,6 @@ name = "wcontainers-direct3d-11"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "half",
  "naga",
  "serde",
  "wcontainers-directx-graphics-infrastructure",

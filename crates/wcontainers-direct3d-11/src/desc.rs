@@ -123,6 +123,10 @@ pub const MISC_GENERATE_MIPS: u32 = 0x1;
 pub const MISC_TEXTURECUBE: u32 = 0x4;
 /// Shareable with other devices; the sharing itself (`GetSharedHandle`) is not served.
 pub const MISC_SHARED: u32 = 0x2;
+/// `D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX`: shared with a keyed mutex (not served).
+pub const MISC_SHARED_KEYEDMUTEX: u32 = 0x100;
+/// `D3D11_RESOURCE_MISC_GDI_COMPATIBLE`: GDI draws into it through `IDXGISurface1::GetDC`.
+pub const MISC_GDI_COMPATIBLE: u32 = 0x200;
 /// `D3D11_RESOURCE_MISC_RESOURCE_CLAMP`: the texture takes `SetResourceMinLOD`.
 pub const MISC_RESOURCE_CLAMP: u32 = 0x80;
 /// `D3D11_STANDARD_MULTISAMPLE_PATTERN` and `D3D11_CENTER_MULTISAMPLE_PATTERN`, sample qualities.
@@ -148,7 +152,14 @@ pub struct ViewDesc {
     pub mip_count: u32,
     pub first_layer: u32,
     pub layer_count: u32,
+    /// A depth-stencil view's `D3D11_DSV_FLAG`s: the aspects it only reads, so shader views may
+    /// read them while it is bound. Zero for other views.
+    pub read_only: u32,
 }
+
+/// `D3D11_DSV_READ_ONLY_DEPTH` and `D3D11_DSV_READ_ONLY_STENCIL`.
+pub const DSV_READ_ONLY_DEPTH: u32 = 0x1;
+pub const DSV_READ_ONLY_STENCIL: u32 = 0x2;
 
 /// The view dimensions this front serves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -371,4 +382,6 @@ pub mod topology {
     pub const LINESTRIP_ADJ: u32 = 11;
     pub const TRIANGLELIST_ADJ: u32 = 12;
     pub const TRIANGLESTRIP_ADJ: u32 = 13;
+    /// The first of the 32 patch list topologies, of one control point.
+    pub const PATCHLIST_1: u32 = 33;
 }

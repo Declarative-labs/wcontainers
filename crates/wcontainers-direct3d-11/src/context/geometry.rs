@@ -288,7 +288,18 @@ impl<B: Backend> Device<B> {
         let bases = [if indexed { base } else { start }, first_instance];
         // The program of the pass-through and pixel stages, and the pixel stage's helpers.
         let program = if drawn {
-            Some(self.staged_program(gs, staged, ps, pk)?)
+            let vertex = match &staged.passthrough {
+                Some(k) => k.handle.clone(),
+                None => gs
+                    .stage
+                    .as_ref()
+                    .expect("a geometry stage")
+                    .0
+                    .gpu
+                    .handle
+                    .clone(),
+            };
+            Some(self.stage_program(&vertex, staged.passthrough_id, ps, pk)?)
         } else {
             None
         };
@@ -317,31 +328,7 @@ impl<B: Backend> Device<B> {
                 self.write_helpers(&[Rc::default(), ph.clone()], bases, None)?;
             }
         }
-        // The stage helper and these blocks write the data ring, so the draws' and dispatches'
-        // blocks as last written are forgotten.
-        let limits = self.backend.caps().limits;
-        let vertex_set = if vertex_block.is_empty() {
-            None
-        } else {
-            let mut offsets = [0u64];
-            let ring = self.backend.write_buffer_ring(
-                RingKind::Data,
-                &[&vertex_block],
-                limits.min_uniform_offset_alignment,
-                &mut offsets,
-            );
-            let ring = self.gpu(ring)?;
-            let set = self.backend.create_binding_set(&[BindingEntry {
-                binding: helper_binding(ShaderStage::Vertex),
-                stages: StageSet::COMPUTE,
-                resource: BindingResource::UniformBuffer(BufferRange {
-                    buffer: &ring,
-                    offset: offsets[0],
-                    size: vertex_block.len() as u64,
-                }),
-            }]);
-            Some(self.gpu(set)?)
-        };
+        let vertex_set = self.compute_helper_set(&vertex_block)?;
         let pixel_helpers = if program
             .as_ref()
             .is_some_and(|p| p.1.size > 0 || !p.1.merged.is_empty())
@@ -463,24 +450,58 @@ impl<B: Backend> Device<B> {
         let (Some(out), Some((program, _))) = (out, program) else {
             return Ok(false);
         };
-        self.draw_output(staged, &program, pixel_helpers.as_ref(), raster, &out)?;
+        let layout = staged
+            .layout
+            .as_ref()
+            .expect("a geometry stage's layout")
+            .handle
+            .clone();
+        self.draw_output(&layout, &program, pixel_helpers.as_ref(), raster, &out)?;
         if twin_writes {
             self.twins_out(PIXEL);
         }
         Ok(false)
     }
 
-    /// The program drawing a geometry stage's output: its pass-through and the pixel shader's
-    /// variant `pk`, and the pixel stage's helpers.
-    fn staged_program(
+    /// The vertex stage's helper block bound for the stage helper's compute programs, where it has
+    /// one. The stage helper and these blocks write the data ring, so the draws' and dispatches'
+    /// blocks as last written are forgotten by the caller.
+    pub(super) fn compute_helper_set(&mut self, block: &[u8]) -> Result<Option<B::BindingSet>> {
+        if block.is_empty() {
+            return Ok(None);
+        }
+        let limits = self.backend.caps().limits;
+        let mut offsets = [0u64];
+        let ring = self.backend.write_buffer_ring(
+            RingKind::Data,
+            &[block],
+            limits.min_uniform_offset_alignment,
+            &mut offsets,
+        );
+        let ring = self.gpu(ring)?;
+        let set = self.backend.create_binding_set(&[BindingEntry {
+            binding: helper_binding(ShaderStage::Vertex),
+            stages: StageSet::COMPUTE,
+            resource: BindingResource::UniformBuffer(BufferRange {
+                buffer: &ring,
+                offset: offsets[0],
+                size: block.len() as u64,
+            }),
+        }]);
+        Ok(Some(self.gpu(set)?))
+    }
+
+    /// The program drawing what the stage helper made: the vertex program `vertex` (numbered
+    /// `vertex_id`) and the pixel shader's variant `pk`, and the pixel stage's helpers.
+    pub(super) fn stage_program(
         &mut self,
-        gs: &Geometry<B>,
-        staged: &StageRun<B>,
+        vertex: &B::Shader,
+        vertex_id: u64,
         ps: Option<&Rc<Shader<B>>>,
         pk: StageVariant,
     ) -> Result<(B::Program, Rc<Helpers>)> {
         let key = (
-            staged.passthrough_id,
+            vertex_id,
             StageVariant::default(),
             ps.map_or(0, |p| p.gpu.id),
             pk,
@@ -496,10 +517,6 @@ impl<B: Backend> Device<B> {
             let v = self.convert_kept(&p.bytecode, SourceStage::Pixel, &key)?;
             self.variants.insert((p.gpu.id, pk), v);
         }
-        let vertex = match &staged.passthrough {
-            Some(k) => &k.handle,
-            None => &gs.stage.as_ref().expect("a geometry stage").0.gpu.handle,
-        };
         let (fragment, ph) = match ps {
             None => (None, Rc::default()),
             Some(p) => self
@@ -567,12 +584,13 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
-    /// The draw of a geometry stage's output, in a pass opened for it.
-    fn draw_output(
+    /// The draw of a geometry or domain stage's output through `layout`, in a pass opened for it,
+    /// with `helpers` in the helper set.
+    pub(super) fn draw_output(
         &mut self,
-        staged: &StageRun<B>,
+        layout: &B::VertexLayout,
         program: &B::Program,
-        pixel_helpers: Option<&B::BindingSet>,
+        helpers: Option<&B::BindingSet>,
         raster: Option<&B::Raster>,
         out: &FinalDraw<B>,
     ) -> Result<()> {
@@ -614,10 +632,7 @@ impl<B: Backend> Device<B> {
             max_depth: v.max_depth.to_bits(),
         };
         let blend = ctx.blend.as_ref().unwrap_or(&self.defaults.blend);
-        let depth_stencil = ctx
-            .depth_stencil
-            .as_ref()
-            .unwrap_or(&self.defaults.depth_stencil);
+        let depth_stencil = &self.drawn_depth_stencil();
         let bound_raster = ctx.raster.as_ref().unwrap_or(&self.defaults.raster);
         let no_rect = [ScissorRect {
             x: 0,
@@ -632,20 +647,41 @@ impl<B: Backend> Device<B> {
         };
         let mut bindings: [Option<&B::BindingSet>; MAX_BINDING_SETS] = [None; MAX_BINDING_SETS];
         bindings[1] = ctx.sets[PIXEL].as_ref().map(|k| &k.handle);
-        bindings[HELPER_SET as usize] = pixel_helpers;
-        let vertex_buffers = [Some(VertexBinding {
+        bindings[HELPER_SET as usize] = helpers;
+        let stream = [Some(VertexBinding {
             buffer: &out.buffer,
             offset: 0,
         })];
-        let range = match out.index_offset {
-            Some(_) => DrawRange::Indexed {
+        let mut vertex_buffers: &[Option<VertexBinding<'_, B>>] = &stream;
+        // The tessellated points are drawn by the domain program from its own sets, as an indexed
+        // indirect draw the tessellator wrote.
+        let mut index = out.index_offset.map(|offset| IndexBinding {
+            buffer: &out.buffer,
+            offset,
+            format: IndexFormat::U32,
+        });
+        let range = match (&out.tessellated, out.index_offset) {
+            (Some(t), _) => {
+                bindings[0] = ctx.sets[DOMAIN].as_ref().map(|k| &k.handle);
+                vertex_buffers = &[];
+                index = Some(IndexBinding {
+                    buffer: &out.buffer,
+                    offset: 0,
+                    format: IndexFormat::U32,
+                });
+                DrawRange::IndexedIndirect {
+                    args: &t.arguments,
+                    offset: 0,
+                }
+            }
+            (None, Some(_)) => DrawRange::Indexed {
                 first: 0,
                 count: out.count,
                 base_vertex: 0,
                 first_instance: 0,
                 instances: 1,
             },
-            None => DrawRange::Vertices {
+            (None, None) => DrawRange::Vertices {
                 first: 0,
                 count: out.count,
                 first_instance: 0,
@@ -657,18 +693,10 @@ impl<B: Backend> Device<B> {
             blend: &blend.gpu.handle,
             depth_stencil: &depth_stencil.gpu.handle,
             raster: raster.unwrap_or(&bound_raster.gpu.handle),
-            vertex_layout: &staged
-                .layout
-                .as_ref()
-                .expect("a geometry stage's layout")
-                .handle,
+            vertex_layout: layout,
             bindings,
-            vertex_buffers: &vertex_buffers,
-            index: out.index_offset.map(|offset| IndexBinding {
-                buffer: &out.buffer,
-                offset,
-                format: IndexFormat::U32,
-            }),
+            vertex_buffers,
+            index,
             topology: out.topology,
             restart: out.index_offset.is_some(),
             viewports: std::slice::from_ref(&viewport),

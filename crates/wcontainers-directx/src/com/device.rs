@@ -1,4 +1,4 @@
-//! The device: `ID3D11Device1` and `IDXGIDevice3` on one object.
+//! The device: `ID3D11Device3` and `IDXGIDevice3` on one object.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -24,7 +24,7 @@ use wcontainers_gpu::SourceStage;
 use super::counted::{Counted, Held};
 use super::*;
 
-#[implement(ID3D11Device1, IDXGIDevice3)]
+#[implement(ID3D11Device3, IDXGIDevice3)]
 pub struct Device {
     pub front: Locked<Shared>,
     pub(super) private: Private,
@@ -127,7 +127,7 @@ pub fn create_device(
     let front = Front::new(backend, levels).map_err(hresult)?;
     let adapter = Adapter::new(wcontainers_gpu::Backend::caps(&front.backend));
     let level = front.feature_level();
-    let device: ID3D11Device1 = Device {
+    let device: ID3D11Device3 = Device {
         front: Locked::new(Rc::new(RefCell::new(front))),
         private: Private::default(),
         context: Locked::new(Rc::new(Cell::new(std::ptr::null_mut()))),
@@ -138,9 +138,9 @@ pub fn create_device(
         states: States::default(),
     }
     .into();
-    // The object's table of ID3D11Device1 is ours to point elsewhere.
+    // The object's table of ID3D11Device3 is ours to point elsewhere.
     unsafe {
-        let table = device.as_raw() as *mut *const ID3D11Device1_Vtbl;
+        let table = device.as_raw() as *mut *const ID3D11Device3_Vtbl;
         *table = patched_table(*table);
     }
     let context = unsafe { device.GetImmediateContext() }?;
@@ -158,8 +158,8 @@ static CHECK_FORMAT_SUPPORT: std::sync::OnceLock<FormatSupport> = std::sync::Onc
 
 /// The device's table with `CheckMultisampleQualityLevels` and `CheckFormatSupport` answering as
 /// Direct3D does, made once from the first device's.
-fn patched_table(original: *const ID3D11Device1_Vtbl) -> *const ID3D11Device1_Vtbl {
-    struct Table(ID3D11Device1_Vtbl);
+fn patched_table(original: *const ID3D11Device3_Vtbl) -> *const ID3D11Device3_Vtbl {
+    struct Table(ID3D11Device3_Vtbl);
     // SAFETY: a table of function pointers, never written after it is made.
     unsafe impl Sync for Table {}
     unsafe impl Send for Table {}
@@ -168,10 +168,11 @@ fn patched_table(original: *const ID3D11Device1_Vtbl) -> *const ID3D11Device1_Vt
         .get_or_init(|| {
             // SAFETY: the windows crate's table, copied bit for bit.
             let mut table = unsafe { std::ptr::read(original) };
-            let _ = CHECK_QUALITY_LEVELS.set(table.base__.CheckMultisampleQualityLevels);
-            table.base__.CheckMultisampleQualityLevels = check_quality_levels;
-            let _ = CHECK_FORMAT_SUPPORT.set(table.base__.CheckFormatSupport);
-            table.base__.CheckFormatSupport = check_format_support;
+            let device = &mut table.base__.base__.base__;
+            let _ = CHECK_QUALITY_LEVELS.set(device.CheckMultisampleQualityLevels);
+            device.CheckMultisampleQualityLevels = check_quality_levels;
+            let _ = CHECK_FORMAT_SUPPORT.set(device.CheckFormatSupport);
+            device.CheckFormatSupport = check_format_support;
             Table(table)
         })
         .0
@@ -198,6 +199,25 @@ unsafe extern "system" fn check_quality_levels(
 }
 
 /// Writes `object` to an out parameter, or reports that the call only checks (a null out pointer).
+/// Makes an object through the call `make` serving its Direct3D 11 interface `I` and hands it out
+/// as its 11.3 interface `J`, which every such object of ours offers. A null `out` asks only
+/// whether the call would succeed.
+fn as_one<I, J>(out: OutRef<J>, make: impl FnOnce(OutRef<I>) -> Result<()>) -> Result<()>
+where
+    I: Interface + windows::core::Type<I, Default = Option<I>>,
+    J: Interface + windows::core::Type<J, Default = Option<J>>,
+{
+    if out.is_null() {
+        // SAFETY: `OutRef` is a transparent pointer; a null one asks for nothing back.
+        return make(unsafe {
+            std::mem::transmute::<*mut c_void, OutRef<I>>(std::ptr::null_mut())
+        });
+    }
+    let mut made: Option<I> = None;
+    make(OutRef::from(&mut made))?;
+    out.write(made.map(|m| m.cast()).transpose()?)
+}
+
 fn give<I: windows::core::Type<I, Default = Option<I>>>(out: OutRef<I>, object: I) -> Result<()> {
     if out.is_null() {
         return Err(windows::Win32::Foundation::S_FALSE.into());
@@ -222,7 +242,7 @@ const ID3D10_DEVICE1: windows::core::GUID =
 
 impl Device_Impl {
     fn me(&self) -> ID3D11Device {
-        self.to_interface::<ID3D11Device1>().into()
+        self.to_interface::<ID3D11Device3>().into()
     }
 
     pub(super) fn call(&self) -> Call<'_> {
@@ -331,8 +351,93 @@ impl Device_Impl {
         give(out, Texture3D::new(front, self.me()).into())
     }
 
-    /// The front texture behind a resource a target view names, refusing buffers (render target
-    /// views of buffers are not served) and foreign objects.
+    /// `CreateTexture2D1`: only the undefined layout is served (no other is reported).
+    pub(super) fn create_texture2_d1(
+        &self,
+        desc: *const D3D11_TEXTURE2D_DESC1,
+        init: *const D3D11_SUBRESOURCE_DATA,
+        out: OutRef<ID3D11Texture2D1>,
+    ) -> Result<()> {
+        let d1 = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
+        if d1.TextureLayout != D3D11_TEXTURE_LAYOUT_UNDEFINED {
+            return Err(E_INVALIDARG.into());
+        }
+        let d = convert::texture2d(&unsafe { convert::same_fields(d1) });
+        let front = self.texture(d, init)?;
+        give(out, Texture2D::new(front, self.me()).into())
+    }
+
+    pub(super) fn create_texture3_d1(
+        &self,
+        desc: *const D3D11_TEXTURE3D_DESC1,
+        init: *const D3D11_SUBRESOURCE_DATA,
+        out: OutRef<ID3D11Texture3D1>,
+    ) -> Result<()> {
+        let d1 = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
+        if d1.TextureLayout != D3D11_TEXTURE_LAYOUT_UNDEFINED {
+            return Err(E_INVALIDARG.into());
+        }
+        let d = convert::texture3d(&unsafe { convert::same_fields(d1) });
+        let front = self.texture(d, init)?;
+        give(out, Texture3D::new(front, self.me()).into())
+    }
+
+    pub(super) fn create_shader_resource_view1(
+        &self,
+        resource: Ref<ID3D11Resource>,
+        desc: *const D3D11_SHADER_RESOURCE_VIEW_DESC1,
+        out: OutRef<ID3D11ShaderResourceView1>,
+    ) -> Result<()> {
+        let d = unsafe { desc.as_ref() }.map(convert::srv_of1).transpose()?;
+        let d = d.as_ref().map_or(std::ptr::null(), |d| d as *const _);
+        as_one(out, |o| self.create_shader_resource_view(resource, d, o))
+    }
+
+    pub(super) fn create_render_target_view1(
+        &self,
+        resource: Ref<ID3D11Resource>,
+        desc: *const D3D11_RENDER_TARGET_VIEW_DESC1,
+        out: OutRef<ID3D11RenderTargetView1>,
+    ) -> Result<()> {
+        let d = unsafe { desc.as_ref() }.map(convert::rtv_of1).transpose()?;
+        let d = d.as_ref().map_or(std::ptr::null(), |d| d as *const _);
+        as_one(out, |o| self.create_render_target_view(resource, d, o))
+    }
+
+    pub(super) fn create_unordered_access_view1(
+        &self,
+        resource: Ref<ID3D11Resource>,
+        desc: *const D3D11_UNORDERED_ACCESS_VIEW_DESC1,
+        out: OutRef<ID3D11UnorderedAccessView1>,
+    ) -> Result<()> {
+        let d = unsafe { desc.as_ref() }.map(convert::uav_of1).transpose()?;
+        let d = d.as_ref().map_or(std::ptr::null(), |d| d as *const _);
+        as_one(out, |o| self.create_unordered_access_view(resource, d, o))
+    }
+
+    /// `CreateQuery1`: one queue runs every kind of work, so only queries of all of it are served;
+    /// predicates are made by `CreateQuery` and `CreatePredicate`.
+    pub(super) fn create_query1(
+        &self,
+        desc: *const D3D11_QUERY_DESC1,
+        out: OutRef<ID3D11Query1>,
+    ) -> Result<()> {
+        let d1 = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
+        if d1.ContextType != D3D11_CONTEXT_TYPE_ALL {
+            return Err(missing("queries of one context type"));
+        }
+        if is_predicate(d1.Query) {
+            return Err(missing("predicates made by CreateQuery1"));
+        }
+        let d = D3D11_QUERY_DESC {
+            Query: d1.Query,
+            MiscFlags: d1.MiscFlags,
+        };
+        as_one(out, |o| self.create_query(&d, o))
+    }
+
+    /// The front texture behind a resource a target view names, refusing buffers (their views
+    /// are made from a description naming them) and foreign objects.
     fn texture_of(
         resource: &Ref<ID3D11Resource>,
     ) -> Result<Rc<wcontainers_direct3d_11::object::Texture<Chosen>>> {
@@ -419,6 +524,30 @@ impl Device_Impl {
         desc: *const D3D11_RENDER_TARGET_VIEW_DESC,
         out: OutRef<ID3D11RenderTargetView>,
     ) -> Result<()> {
+        let given = unsafe { desc.as_ref() };
+        if let (Some(d), Some(wcontainers_direct3d_11::object::Resource::Buffer(b))) =
+            (given, resource.as_ref().and_then(resource_of))
+            && d.ViewDimension == D3D11_RTV_DIMENSION_BUFFER
+        {
+            let (first, count) = unsafe {
+                (
+                    d.Anonymous.Buffer.Anonymous1.FirstElement,
+                    d.Anonymous.Buffer.Anonymous2.NumElements,
+                )
+            };
+            let view = self
+                .front
+                .borrow_mut()
+                .create_buffer_target_view(&b, d.Format.0 as u32, first, count)
+                .map_err(hresult)?;
+            let r = resource
+                .as_ref()
+                .and_then(HeldResource::of)
+                .ok_or(E_INVALIDARG)?;
+            let mut v = RenderTargetView::new(view, r, self.me());
+            v.buffer = Some(*d);
+            return give(out, v.into());
+        }
         let texture = Self::texture_of(&resource)?;
         let d = unsafe { desc.as_ref() }.map(convert::rtv).transpose()?;
         let view = self
@@ -716,20 +845,50 @@ impl Device_Impl {
         &self,
         bytecode: *const c_void,
         length: usize,
-        _linkage: Ref<ID3D11ClassLinkage>,
-        _out: OutRef<ID3D11HullShader>,
+        linkage: Ref<ID3D11ClassLinkage>,
+        out: OutRef<ID3D11HullShader>,
     ) -> Result<()> {
-        self.unserved_shader(bytecode, length, SourceStage::Hull, "hull shaders")
+        let shader = self.tessellation_shader(bytecode, length, linkage, SourceStage::Hull)?;
+        give(out, HullShader::new(shader, self.me()).into())
     }
 
     pub(super) fn create_domain_shader(
         &self,
         bytecode: *const c_void,
         length: usize,
-        _linkage: Ref<ID3D11ClassLinkage>,
-        _out: OutRef<ID3D11DomainShader>,
+        linkage: Ref<ID3D11ClassLinkage>,
+        out: OutRef<ID3D11DomainShader>,
     ) -> Result<()> {
-        self.unserved_shader(bytecode, length, SourceStage::Domain, "domain shaders")
+        let shader = self.tessellation_shader(bytecode, length, linkage, SourceStage::Domain)?;
+        give(out, DomainShader::new(shader, self.me()).into())
+    }
+
+    /// A hull or domain shader: drawn through the stage helper's compute programs, so absent
+    /// without the back end's.
+    fn tessellation_shader(
+        &self,
+        bytecode: *const c_void,
+        length: usize,
+        linkage: Ref<ID3D11ClassLinkage>,
+        stage: SourceStage,
+    ) -> Result<Rc<wcontainers_direct3d_11::object::Shader<Chosen>>> {
+        if !linkage.is_null() {
+            return Err(missing("class linkage"));
+        }
+        if !self.compute() {
+            let what = "hull and domain shaders without the back end's compute programs";
+            return Err(self
+                .unserved_shader(bytecode, length, stage, what)
+                .expect_err("refused"));
+        }
+        if bytecode.is_null() || self.front.borrow().feature_level() < 0xb000 {
+            return Err(E_INVALIDARG.into());
+        }
+        let code = unsafe { std::slice::from_raw_parts(bytecode.cast::<u8>(), length) };
+        self.front
+            .borrow_mut()
+            .create_shader(code, stage)
+            .map_err(hresult)
     }
 
     pub(super) fn create_pixel_shader(
@@ -835,6 +994,23 @@ impl Device_Impl {
         out: OutRef<ID3D11RasterizerState1>,
     ) -> Result<()> {
         let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
+        self.rasterizer_state1(d, out)
+    }
+
+    pub(super) fn create_rasterizer_state2(
+        &self,
+        desc: *const D3D11_RASTERIZER_DESC2,
+        out: OutRef<ID3D11RasterizerState2>,
+    ) -> Result<()> {
+        let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
+        self.rasterizer_state1(&convert::rasterizer_of2(d)?, out)
+    }
+
+    fn rasterizer_state1<I>(&self, d: &D3D11_RASTERIZER_DESC1, out: OutRef<I>) -> Result<()>
+    where
+        RasterizerState_Impl: ComObjectInterface<I>,
+        I: Interface + windows::core::Type<I, Default = Option<I>> + From<RasterizerState>,
+    {
         if d.ForcedSampleCount != 0 {
             return Err(missing("forced sample counts"));
         }
@@ -917,6 +1093,21 @@ impl Device_Impl {
             // Direct3D's answer for a format the device does not support at all.
             0 => Err(windows::Win32::Foundation::E_FAIL.into()),
             bits => Ok(bits),
+        }
+    }
+
+    /// `CheckMultisampleQualityLevels1`: tiled resources are not reported, so none of their
+    /// levels exist.
+    pub(super) fn check_multisample_quality_levels1(
+        &self,
+        format: DXGI_FORMAT,
+        samples: u32,
+        flags: u32,
+    ) -> Result<u32> {
+        match flags {
+            0 => self.check_multisample_quality_levels(format, samples),
+            f if f == D3D11_CHECK_MULTISAMPLE_QUALITY_LEVELS_TILED_RESOURCE.0 as u32 => Ok(0),
+            _ => Err(E_INVALIDARG.into()),
         }
     }
 
@@ -1045,21 +1236,35 @@ impl Device_Impl {
     }
 
     pub(super) fn get_immediate_context1(&self, out: OutRef<ID3D11DeviceContext1>) {
+        let _ = out.write(Some(self.immediate().into()));
+    }
+
+    pub(super) fn get_immediate_context2(&self, out: OutRef<ID3D11DeviceContext2>) {
+        let _ = out.write(Some(self.immediate().into()));
+    }
+
+    pub(super) fn get_immediate_context3(&self, out: OutRef<ID3D11DeviceContext3>) {
         let _ = out.write(Some(self.immediate()));
     }
 
     /// `CreateDeferredContext`: a context recording command lists; it takes no flags.
+    fn deferred(&self, flags: u32) -> Result<ID3D11DeviceContext3> {
+        if flags != 0 {
+            return Err(E_INVALIDARG.into());
+        }
+        self.deferred_allowed()?;
+        Ok(super::context::deferred_context(
+            self.front.clone(),
+            self.me(),
+        ))
+    }
+
     pub(super) fn create_deferred_context(
         &self,
         flags: u32,
         out: OutRef<ID3D11DeviceContext>,
     ) -> Result<()> {
-        if flags != 0 {
-            return Err(E_INVALIDARG.into());
-        }
-        self.deferred_allowed()?;
-        let c = super::context::deferred_context(self.front.clone(), self.me());
-        out.write(Some(c.into()))
+        out.write(Some(self.deferred(flags)?.into()))
     }
 
     pub(super) fn create_deferred_context1(
@@ -1067,14 +1272,23 @@ impl Device_Impl {
         flags: u32,
         out: OutRef<ID3D11DeviceContext1>,
     ) -> Result<()> {
-        if flags != 0 {
-            return Err(E_INVALIDARG.into());
-        }
-        self.deferred_allowed()?;
-        out.write(Some(super::context::deferred_context(
-            self.front.clone(),
-            self.me(),
-        )))
+        out.write(Some(self.deferred(flags)?.into()))
+    }
+
+    pub(super) fn create_deferred_context2(
+        &self,
+        flags: u32,
+        out: OutRef<ID3D11DeviceContext2>,
+    ) -> Result<()> {
+        out.write(Some(self.deferred(flags)?.into()))
+    }
+
+    pub(super) fn create_deferred_context3(
+        &self,
+        flags: u32,
+        out: OutRef<ID3D11DeviceContext3>,
+    ) -> Result<()> {
+        out.write(Some(self.deferred(flags)?))
     }
 
     /// A device made single-threaded has no deferred contexts (`DXGI_ERROR_INVALID_CALL`).
@@ -1131,15 +1345,15 @@ impl Device_Impl {
     }
 
     /// The immediate context, made at the first call.
-    fn immediate(&self) -> ID3D11DeviceContext1 {
+    fn immediate(&self) -> ID3D11DeviceContext3 {
         let raw = self.context.get();
         if raw.is_null() {
-            let c: ID3D11DeviceContext1 =
+            let c: ID3D11DeviceContext3 =
                 Context::new(self.front.clone(), self.me(), self.context.clone()).into();
             self.context.set(c.as_raw());
             c
         } else {
-            unsafe { ID3D11DeviceContext1::from_raw_borrowed(&raw) }
+            unsafe { ID3D11DeviceContext3::from_raw_borrowed(&raw) }
                 .cloned()
                 .expect("the context lives")
         }

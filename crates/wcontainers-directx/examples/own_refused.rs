@@ -1,5 +1,5 @@
-//! A small Direct3D 11 program asking for what the front does not serve yet: a hull shader, a 3D
-//! texture, a structured buffer, a texture of 4 samples, and a draw blending with the pixel shader's second output. Prints what each call answered, as `<call> <hresult>`, and the device's
+//! A small Direct3D 11 program asking for what the front does not serve yet: a texture shared
+//! through a keyed mutex, a 3D texture, a structured buffer, a texture of 4 samples, and a draw blending with the pixel shader's second output. Prints what each call answered, as `<call> <hresult>`, and the device's
 //! removal reason after the draw; real Direct3D answers 0 to all of them.
 
 #[cfg(windows)]
@@ -10,8 +10,6 @@ fn main() -> windows::core::Result<()> {
     use windows::Win32::Graphics::Dxgi::Common::*;
     use windows::Win32::Graphics::Dxgi::IDXGIAdapter;
 
-    const HS: &[u8] =
-        include_bytes!("../../wcontainers-graphics-test/shaders/dxbc/tessellation.hs_tri.dxbc");
     const VS: &[u8] =
         include_bytes!("../../wcontainers-graphics-test/shaders/dxbc/msaa.vs_full.dxbc");
     const PS: &[u8] =
@@ -35,9 +33,24 @@ fn main() -> windows::core::Result<()> {
     let (device, context): (ID3D11Device, ID3D11DeviceContext) =
         (device.unwrap(), context.unwrap());
 
-    let mut hs = None;
-    let r = unsafe { device.CreateHullShader(HS, None, Some(&mut hs)) };
-    println!("CreateHullShader {:#010x}", code(r));
+    let desc = D3D11_TEXTURE2D_DESC {
+        Width: 16,
+        Height: 16,
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        Usage: D3D11_USAGE_DEFAULT,
+        BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+        MiscFlags: D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX.0 as u32,
+        ..Default::default()
+    };
+    let mut shared = None;
+    let r = unsafe { device.CreateTexture2D(&desc, None, Some(&mut shared)) };
+    println!("CreateTexture2D(keyed mutex) {:#010x}", code(r));
 
     for (name, kind) in [
         ("occlusion", D3D11_QUERY_OCCLUSION),
