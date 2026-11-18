@@ -16,7 +16,7 @@ use wcontainers_runtime::oci_spec::runtime::Spec;
 use wcontainers_runtime::{
     Container, Ending, Image, Machine, Runtime, RuntimeSettings, Step, System, base_spec,
 };
-use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, Origin, Tuning};
+use wcontainers_wasmtime::{BOUND, CpuSide, LookAhead, Optimise, Origin, Tuning};
 
 const IMAGE: &str = "alpine:3.22";
 const PIPELINE: &str = "cat /etc/os-release | grep ^ID= | tr a-z A-Z; ls /bin | sort -r | head -3; \
@@ -131,7 +131,8 @@ fn reference(command: &str) -> Outcome {
 }
 
 /// The look-ahead `LOOK_AHEAD` names, as in the kernel tests: `full` (also when unset), `none`, or
-/// `bounded`, whose N (1 to 64) is drawn from `LOOK_AHEAD_SEED` (0 if unset) and printed.
+/// `bounded`, whose N (1 to the translator's default bound) is drawn from `LOOK_AHEAD_SEED` (0 if
+/// unset) and printed.
 fn look_ahead() -> LookAhead {
     match std::env::var("LOOK_AHEAD").as_deref() {
         Err(_) | Ok("full") => LookAhead::Full,
@@ -140,7 +141,11 @@ fn look_ahead() -> LookAhead {
             let seed: u64 = std::env::var("LOOK_AHEAD_SEED").map_or(0, |seed| {
                 seed.parse().expect("LOOK_AHEAD_SEED is an unsigned number")
             });
-            let n = u32::from(blake3::hash(&seed.to_le_bytes()).as_bytes()[0]) % 64 + 1;
+            let drawn = blake3::hash(&seed.to_le_bytes()).as_bytes()[..size_of::<u32>()]
+                .try_into()
+                .map(u32::from_le_bytes)
+                .expect("a hash is longer than a word");
+            let n = drawn % BOUND + 1;
             eprintln!("look-ahead bounded {n} (LOOK_AHEAD_SEED {seed})");
             LookAhead::Bounded(n)
         }

@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use crate::Error;
 
 /// The powers the kernel gives the first process: a default Docker container's.
-const CAPABILITIES: [&str; 14] = [
+const CAPABILITIES: &[&str] = &[
     "CAP_CHOWN",
     "CAP_DAC_OVERRIDE",
     "CAP_FSETID",
@@ -27,7 +27,7 @@ const CAPABILITIES: [&str; 14] = [
 
 /// The limits the kernel starts the first process with, as (name, soft, hard); every other limit is
 /// unlimited.
-const LIMITS: [(&str, u64, u64); 7] = [
+const LIMITS: &[(&str, u64, u64)] = &[
     ("RLIMIT_STACK", 8 << 20, u64::MAX),
     ("RLIMIT_CORE", 0, u64::MAX),
     ("RLIMIT_NOFILE", 1 << 20, 1 << 20),
@@ -38,13 +38,13 @@ const LIMITS: [(&str, u64, u64); 7] = [
 ];
 
 /// The namespaces every container has its own of, by construction.
-const NAMESPACES: [&str; 6] = ["pid", "network", "ipc", "uts", "mount", "cgroup"];
+const NAMESPACES: &[&str] = &["pid", "network", "ipc", "uts", "mount", "cgroup"];
 
 /// The umask the kernel starts the first process with.
 const UMASK: u64 = 0o022;
 
 /// The paths the kernel mounts again read-only, as a default Docker container has the first of its.
-const READONLY_PATHS: [&str; 1] = ["/proc/sys"];
+const READONLY_PATHS: &[&str] = &["/proc/sys"];
 
 /// The mounts the kernel always makes, as a default Docker container has them.
 fn mounts() -> Value {
@@ -573,7 +573,7 @@ fn namespaces(value: &Value) -> Result<(), Error> {
             ));
         }
     }
-    for kind in NAMESPACES {
+    for &kind in NAMESPACES {
         if !given.iter().any(|namespace| namespace["type"] == kind) {
             return Err(refused(
                 "linux.namespaces",

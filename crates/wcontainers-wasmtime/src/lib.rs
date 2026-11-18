@@ -33,8 +33,9 @@ use wcontainers_translator::translate;
 use zerocopy::{FromBytes, IntoBytes};
 
 pub use memory::Layout;
+use memory::SLOT_BYTES;
 pub use starts::Sources;
-pub use wcontainers_translator::{LookAhead, Optimise};
+pub use wcontainers_translator::{BOUND, LookAhead, Optimise};
 
 /// The back end's own slow paths, besides the translator's [`Reason`]s.
 pub mod reason {
@@ -103,13 +104,16 @@ pub enum Origin {
 /// Names the build of the translator and its guests, made from their sources by the build script.
 const TRANSLATOR_BUILD: &str = env!("WCONTAINERS_TRANSLATOR_BUILD");
 
+/// The back end and its output's memory widths, as the cache key names them.
+const OUTPUT_FORM: &str = "wasmtime guest-memory-64 state-memory-32";
+
 /// The first bytes of a cache file.
 const CACHE_MAGIC: &[u8; 8] = b"wcxlate1";
 
 /// What a compiled translation is kept under.
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct Key {
-    hash: [u8; 32],
+    hash: [u8; blake3::OUT_LEN],
     starts: Vec<u64>,
     look_ahead: LookAhead,
     optimise: Optimise,
@@ -176,7 +180,7 @@ impl<G: Guest> Compiler<G> {
         let mut hasher = blake3::Hasher::new();
         hasher.update(TRANSLATOR_BUILD.as_bytes());
         // The back end, the guest, the host's answer, and the output's memory widths.
-        hasher.update(b"wasmtime guest-memory-64 state-memory-32");
+        hasher.update(OUTPUT_FORM.as_bytes());
         hasher.update(&(G::ID as u32).to_le_bytes());
         hasher.update(&G::host_key(self.host).to_le_bytes());
         hasher.update(&key.offer.to_le_bytes());
@@ -211,18 +215,19 @@ impl<G: Guest> Compiler<G> {
             rest = after;
             Some(taken)
         };
-        let word = |bytes: &[u8]| u64::from_le_bytes(bytes.try_into().expect("eight bytes"));
-        let count = word(take(8)?);
+        const WORD: usize = size_of::<u64>();
+        let word = |bytes: &[u8]| u64::from_le_bytes(bytes.try_into().expect("a word"));
+        let count = word(take(WORD)?);
         let (mut modules, mut pieces) = (Vec::new(), Vec::new());
         for _ in 0..count {
-            let length = usize::try_from(word(take(8)?)).ok()?;
-            let list: Vec<u64> = take(length.checked_mul(8)?)?
-                .as_chunks::<8>()
+            let length = usize::try_from(word(take(WORD)?)).ok()?;
+            let list: Vec<u64> = take(length.checked_mul(WORD)?)?
+                .as_chunks::<WORD>()
                 .0
                 .iter()
                 .map(|bytes| u64::from_le_bytes(*bytes))
                 .collect();
-            let length = usize::try_from(word(take(8)?)).ok()?;
+            let length = usize::try_from(word(take(WORD)?)).ok()?;
             // SAFETY: the file was written by `store` from wasmtime's own serialisation, and
             // wasmtime checks it was made by a compatible engine and build.
             let module = unsafe { Module::deserialize(engine, take(length)?) }.ok()?;
@@ -265,7 +270,7 @@ impl<G: Guest> Compiler<G> {
     fn compiled(
         &self,
         bytes: &[u8],
-        hash: [u8; 32],
+        hash: [u8; blake3::OUT_LEN],
         mut starts: Vec<u64>,
         look_ahead: LookAhead,
         optimise: Optimise,
@@ -588,7 +593,7 @@ struct Shown {
 struct Code {
     start: u64,
     bytes: Vec<u8>,
-    hash: [u8; 32],
+    hash: [u8; blake3::OUT_LEN],
 }
 
 /// A range the kernel announced as code.
@@ -603,7 +608,7 @@ struct CodeRange {
     changed: bool,
     /// The first run translated whole and the hash of its bytes then, kept across notices of the same
     /// range.
-    hash: Option<(Range<u64>, [u8; 32])>,
+    hash: Option<(Range<u64>, [u8; blake3::OUT_LEN])>,
 }
 
 /// A compiled translation placed in a process's lookup tables.
@@ -814,7 +819,7 @@ where
 
     fn slot_entry(&self, address: u64) -> Option<usize> {
         (address < self.layout.ceiling && address.is_multiple_of(G::ALIGN))
-            .then(|| self.layout.slots_at as usize + 4 * (address / G::ALIGN) as usize)
+            .then(|| self.layout.slots_at as usize + (SLOT_BYTES * (address / G::ALIGN)) as usize)
     }
 
     fn slot(&self, memory: MemoryId, address: u64) -> u32 {
@@ -1230,7 +1235,7 @@ where
         );
         store.limiter(|data| &mut data.limits);
         let layout = self.layout;
-        let pages = layout.ceiling / 65536;
+        let pages = layout.ceiling / memory::wasm_page();
         let memory = Memory::new(&mut store, MemoryType::new64(pages, Some(pages)))
             .map_err(|_| CpuError::OutOfMemory)?;
         let base = memory.data_ptr(&store);
@@ -1308,7 +1313,8 @@ where
                 .chunks()
                 .map(|pages| at + pages.start.saturating_sub(1)..at + pages.end);
             let slots = source.ranges.iter().map(|code| {
-                let entry = |address: u64| u64::from(layout.slots_at) + 4 * (address / G::ALIGN);
+                let entry =
+                    |address: u64| u64::from(layout.slots_at) + SLOT_BYTES * (address / G::ALIGN);
                 entry(code.range.start)..entry(code.range.end.min(layout.ceiling))
             });
             let mut runs: Vec<Range<u64>> = table.chain(slots).collect();
@@ -1749,14 +1755,11 @@ where
     side(caller).slow_path(name, call, 0);
 }
 
-fn syscall<G>(caller: &mut Caller<'_, Data<G>>, number: i64, arguments: [i64; 6]) -> i64
+/// The system call hook, with the call as the hook's parameters give it.
+fn syscall<G>(caller: &mut Caller<'_, Data<G>>, call: Syscall) -> i64
 where
     G: Guest<Block = RegisterBlock>,
 {
-    let call = Syscall {
-        number: number as u64,
-        arguments: arguments.map(|a| a as u64),
-    };
     match hand(caller, Exit::Syscall(call)) {
         Carry::On {
             resume: Resume::Return(value),
@@ -1769,7 +1772,7 @@ where
         Carry::Leave(why) => {
             leave_for(caller, why, call.number);
             // x0 stays as it was at the call, as it is for a thread that leaves.
-            arguments[0]
+            call.arguments[0] as i64
         }
     }
 }
@@ -1838,19 +1841,19 @@ where
     side.slow_path(Reason::MemoryFault.name(), address, 0);
     let thread = &side.threads[&caller.data().thread];
     let registers = side.read_block(thread);
-    let mut code = [0u8; 16];
-    let length = side.layout.ceiling.saturating_sub(registers.pc).min(16) as usize;
-    side.copy_out(
-        memory,
-        registers.pc.min(side.layout.ceiling),
-        &mut code[..length],
-    );
+    let length = side
+        .layout
+        .ceiling
+        .saturating_sub(registers.pc)
+        .min(G::MAX_LENGTH) as usize;
+    let mut code = vec![0u8; length];
+    side.copy_out(memory, registers.pc.min(side.layout.ceiling), &mut code);
     let access = if access == 1 {
         Access::Write
     } else {
         Access::Read
     };
-    let exit = match G::memory_fault(address, &code[..length], &registers) {
+    let exit = match G::memory_fault(address, &code, &registers) {
         MemoryFault::Page => Exit::MemoryFault { address, access },
         other => panic!("a {other:?} fault, which the abi has no exit for yet"),
     };
@@ -2063,7 +2066,13 @@ where
                  a3: i64,
                  a4: i64,
                  a5: i64|
-                 -> i64 { syscall(&mut caller, number, [a0, a1, a2, a3, a4, a5]) },
+                 -> i64 {
+                    let call = Syscall {
+                        number: number as u64,
+                        arguments: [a0, a1, a2, a3, a4, a5].map(|a| a as u64),
+                    };
+                    syscall(&mut caller, call)
+                },
             ),
         ),
         (

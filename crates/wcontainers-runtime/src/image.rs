@@ -13,6 +13,10 @@ use oci_spec::image::{
 };
 use oci_spec::runtime::{Spec, User};
 use sha2::{Digest as _, Sha256};
+use wcontainers_kernel::linux::general::{
+    S_IRGRP, S_IROTH, S_IRUSR, S_IRWXG, S_IRWXO, S_IRWXU, S_ISGID, S_ISUID, S_ISVTX, S_IWUSR,
+    S_IXGRP, S_IXOTH, S_IXUSR,
+};
 use wcontainers_kernel::{Attributes, Kernel, NewFile};
 
 use crate::Error;
@@ -45,6 +49,25 @@ pub struct Image {
 
 /// Symbolic links followed in one lookup before it fails, as Linux's `MAXSYMLINKS`.
 const MOST_LINKS: usize = 40;
+
+/// The permission bits of a mode, the rest being its kind.
+const PERMISSION_BITS: u32 = S_ISUID | S_ISGID | S_ISVTX | S_IRWXU | S_IRWXG | S_IRWXO;
+/// Execute permission for anyone.
+const EXECUTABLE: u32 = S_IXUSR | S_IXGRP | S_IXOTH;
+/// `rwxr-xr-x` and `rw-r--r--`, the modes Docker gives the directory and files it writes.
+const DIRECTORY_MODE: u32 = S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH;
+const FILE_MODE: u32 = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
+
+/// Fields of a line of `/etc/passwd` (name, password, uid, gid, comment, home, shell) and of
+/// `/etc/group` (name, password, gid, members), by their places (passwd(5), group(5)).
+mod field {
+    pub const NAME: usize = 0;
+    pub const UID: usize = 2;
+    pub const GID: usize = 3;
+    pub const HOME: usize = 5;
+    pub const GROUP_GID: usize = 2;
+    pub const GROUP_MEMBERS: usize = 3;
+}
 
 impl Image {
     /// A plain tar of the root's files, such as `docker export` writes.
@@ -217,15 +240,15 @@ impl Image {
             reason,
         };
         let account = passwd.iter().find(|fields| {
-            fields.first() == Some(&name)
-                || name
-                    .parse::<u32>()
-                    .is_ok_and(|uid| fields.get(2).and_then(|f| f.parse().ok()) == Some(uid))
+            fields.get(field::NAME) == Some(&name)
+                || name.parse::<u32>().is_ok_and(|uid| {
+                    fields.get(field::UID).and_then(|f| f.parse().ok()) == Some(uid)
+                })
         });
         let uid = match name.parse::<u32>() {
             Ok(uid) => uid,
             Err(_) => account
-                .and_then(|fields| fields.get(2)?.parse().ok())
+                .and_then(|fields| fields.get(field::UID)?.parse().ok())
                 .ok_or_else(|| refused(format!("no user {name} in /etc/passwd")))?,
         };
         let gid = match group_name {
@@ -233,12 +256,12 @@ impl Image {
                 Ok(gid) => gid,
                 Err(_) => group
                     .iter()
-                    .find(|fields| fields.first() == Some(&group_name))
-                    .and_then(|fields| fields.get(2)?.parse().ok())
+                    .find(|fields| fields.get(field::NAME) == Some(&group_name))
+                    .and_then(|fields| fields.get(field::GROUP_GID)?.parse().ok())
                     .ok_or_else(|| refused(format!("no group {group_name} in /etc/group")))?,
             },
             None => account
-                .and_then(|fields| fields.get(3)?.parse().ok())
+                .and_then(|fields| fields.get(field::GID)?.parse().ok())
                 .unwrap_or(0),
         };
         let mut user = User::default();
@@ -254,13 +277,15 @@ impl Image {
     /// The user where the image names none: root, in its groups, as Docker gives it.
     fn root(&self) -> User {
         let passwd = self.table(b"etc/passwd");
-        let account = passwd.iter().find(|fields| fields.get(2) == Some(&"0"));
+        let account = passwd
+            .iter()
+            .find(|fields| fields.get(field::UID).and_then(|f| f.parse().ok()) == Some(0));
         let gid = account
-            .and_then(|fields| fields.get(3)?.parse().ok())
+            .and_then(|fields| fields.get(field::GID)?.parse().ok())
             .unwrap_or(0);
         let mut user = User::default();
         user.set_gid(gid);
-        let name = account.and_then(|fields| fields.first().copied());
+        let name = account.and_then(|fields| fields.get(field::NAME).copied());
         user.set_additional_gids(Some(
             name.map_or_else(|| vec![gid], |name| self.groups(name, gid)),
         ));
@@ -275,10 +300,10 @@ impl Image {
             .into_iter()
             .filter(|fields| {
                 fields
-                    .get(3)
+                    .get(field::GROUP_MEMBERS)
                     .is_some_and(|members| members.split(',').any(|m| m == name))
             })
-            .filter_map(|fields| fields.get(2)?.parse().ok());
+            .filter_map(|fields| fields.get(field::GROUP_GID)?.parse().ok());
         std::iter::once(gid).chain(members).collect()
     }
 
@@ -286,8 +311,8 @@ impl Image {
     pub(crate) fn home(&self, uid: u32) -> String {
         self.table(b"etc/passwd")
             .iter()
-            .find(|fields| fields.get(2).and_then(|f| f.parse().ok()) == Some(uid))
-            .and_then(|fields| fields.get(5))
+            .find(|fields| fields.get(field::UID).and_then(|f| f.parse().ok()) == Some(uid))
+            .and_then(|fields| fields.get(field::HOME))
             .filter(|home| !home.is_empty())
             .map_or_else(|| "/".to_string(), |home| home.to_string())
     }
@@ -364,7 +389,7 @@ impl Image {
             .find(|candidate| {
                 matches!(
                     self.lookup(candidate.as_bytes()),
-                    Some(Entry { attributes, kind: Kind::Regular(_) }) if attributes.mode & 0o111 != 0
+                    Some(Entry { attributes, kind: Kind::Regular(_) }) if attributes.mode & EXECUTABLE != 0
                 )
             })
     }
@@ -374,7 +399,10 @@ impl Image {
     pub(crate) fn add_to(&self, kernel: &mut Kernel, hostname: &str) -> Result<(), Error> {
         let written = docker_files(hostname);
         let etc = match self.files.get(&b"etc"[..]) {
-            None => Some((b"etc".to_vec(), docker_file(0o755, Kind::Directory))),
+            None => Some((
+                b"etc".to_vec(),
+                docker_file(DIRECTORY_MODE, Kind::Directory),
+            )),
             Some(Entry {
                 kind: Kind::Directory,
                 ..
@@ -425,20 +453,21 @@ impl Image {
 /// What Docker writes over its mounts in every container: the host name, the hosts file with the
 /// kernel's made-up address for it, and the kernel's name server.
 fn docker_files(hostname: &str) -> [(Vec<u8>, Entry); 3] {
-    let [a, b, c, d] = wcontainers_kernel::network::ADDRESS;
-    let [e, f, g, h] = wcontainers_kernel::network::NAME_SERVER;
+    let address = std::net::Ipv4Addr::from(wcontainers_kernel::network::ADDRESS);
+    let name_server = std::net::Ipv4Addr::from(wcontainers_kernel::network::NAME_SERVER);
+    let (v4, v6) = (std::net::Ipv4Addr::LOCALHOST, std::net::Ipv6Addr::LOCALHOST);
     let hosts = format!(
-        "127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\nfe00::\tip6-localnet\n\
+        "{v4}\tlocalhost\n{v6}\tlocalhost ip6-localhost ip6-loopback\nfe00::\tip6-localnet\n\
          ff00::\tip6-mcastprefix\nff02::1\tip6-allnodes\nff02::2\tip6-allrouters\n\
-         {a}.{b}.{c}.{d}\t{hostname}\n"
+         {address}\t{hostname}\n"
     );
-    let file = |bytes: String| docker_file(0o644, Kind::Regular(bytes.into_bytes()));
+    let file = |bytes: String| docker_file(FILE_MODE, Kind::Regular(bytes.into_bytes()));
     [
         (b"etc/hostname".to_vec(), file(format!("{hostname}\n"))),
         (b"etc/hosts".to_vec(), file(hosts)),
         (
             b"etc/resolv.conf".to_vec(),
-            file(format!("nameserver {e}.{f}.{g}.{h}\n")),
+            file(format!("nameserver {name_server}\n")),
         ),
     ]
 }
@@ -629,7 +658,7 @@ fn read_layer(
         };
         let number = |value: std::io::Result<u64>| value.map_err(|error| fail(error.to_string()));
         let attributes = Attributes {
-            mode: header.mode().map_err(|error| fail(error.to_string()))? & 0o7777,
+            mode: header.mode().map_err(|error| fail(error.to_string()))? & PERMISSION_BITS,
             uid: number(header.uid())? as u32,
             gid: number(header.gid())? as u32,
             mtime_seconds: number(header.mtime())? as i64,

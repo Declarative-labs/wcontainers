@@ -17,15 +17,24 @@ use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, Tuning};
 
 type Back = CpuSide<Arm64>;
 
+/// Docker's exit statuses for a program not found and for its own failures.
+const NOT_FOUND: u8 = 127;
+const RUNTIME_FAILED: u8 = 125;
+
+/// A Linux wait status: the signal that ended the process in its low bits, else the exit status
+/// above them; a shell reports a signal as this base plus its number.
+const SIGNAL_BITS: i32 = 0x7f;
+const EXIT_SHIFT: u32 = 8;
+const SIGNAL_BASE: u8 = 128;
+
 fn main() -> ExitCode {
     match run() {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
             eprintln!("wcontainers: {error}");
-            // As Docker: 127 for a program not found, 125 for the runtime's own failures.
             match error.downcast_ref::<wcontainers_runtime::Error>() {
-                Some(wcontainers_runtime::Error::NotFound(_)) => ExitCode::from(127),
-                _ => ExitCode::from(125),
+                Some(wcontainers_runtime::Error::NotFound(_)) => ExitCode::from(NOT_FOUND),
+                _ => ExitCode::from(RUNTIME_FAILED),
             }
         }
     }
@@ -98,10 +107,10 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
         let side = if *cpu { "back end" } else { "kernel" };
         eprintln!("wcontainers: {side}: {reason}: {count}");
     }
-    // As a shell reports it: the exit status, or 128 and the signal.
-    Ok(if status & 0x7f == 0 {
-        (status >> 8) as u8
+    // As a shell reports it.
+    Ok(if status & SIGNAL_BITS == 0 {
+        (status >> EXIT_SHIFT) as u8
     } else {
-        128 + (status & 0x7f) as u8
+        SIGNAL_BASE + (status & SIGNAL_BITS) as u8
     })
 }
