@@ -462,8 +462,19 @@ struct Process<G: Guest> {
     loads: Vec<Load>,
     next_slot: u32,
     free_blocks: Vec<u32>,
+    /// By block, the instances of the dropped thread that ran there, for the next thread given it.
+    kept: HashMap<u32, Kept>,
     next_block: u32,
     dropped: bool,
+}
+
+/// A dropped thread's instances: they import its block's address, so they serve the next thread given
+/// that block, and a process that starts and ends many threads does not grow its store.
+struct Kept {
+    instance: ThreadInstance,
+    exact: HashMap<u64, Func>,
+    /// How many of the process's loads it holds; the ones added since are instantiated at its next run.
+    loads: usize,
 }
 
 /// Write lock: the page shows a block of shared pages.
@@ -842,6 +853,11 @@ where
         for thread in self.threads.values_mut().filter(|t| t.memory == memory) {
             thread.exact.retain(|address, _| !range.contains(address));
         }
+        if let Some(process) = self.processes.get_mut(&memory) {
+            for kept in process.kept.values_mut() {
+                kept.exact.retain(|address, _| !range.contains(address));
+            }
+        }
         dropped
     }
 
@@ -1079,13 +1095,36 @@ where
         values
     }
 
-    /// The thread's instances, made at its first run with every live translation of its process.
+    /// The thread's instances, at its first run those its block kept, given the translations added
+    /// since, or else made with every live translation of its process.
     fn thread_instance(&mut self, thread: ThreadId, store: &mut Store<Data<G>>) -> ThreadInstance {
         let record = self.threads.get(&thread).expect("a thread that exists");
         if let Some(instance) = &record.instance {
             return instance.clone();
         }
-        let process = self.process(record.memory);
+        let (memory, block_at) = (record.memory, record.block_at);
+        let process = self.processes.get_mut(&memory).expect("a memory");
+        if let Some(kept) = process.kept.remove(&block_at) {
+            let process = self.process(memory);
+            grow(&mut *store, &kept.instance, process.next_slot);
+            for load in process.loads[kept.loads..].iter().filter(|load| load.live) {
+                let record = &self.threads[&thread];
+                self.instantiate_load(
+                    &mut *store,
+                    process,
+                    record,
+                    &kept.instance,
+                    load,
+                    load.slot_base,
+                );
+            }
+            let record = self.threads.get_mut(&thread).expect("a thread");
+            record.instance = Some(kept.instance.clone());
+            record.exact = kept.exact;
+            return kept.instance;
+        }
+        let record = &self.threads[&thread];
+        let process = self.process(memory);
         let values = self.values(record.block_at, None);
         let instance = instantiate(
             &mut *store,
@@ -1111,6 +1150,23 @@ where
         }
         self.threads.get_mut(&thread).expect("a thread").instance = Some(made.clone());
         made
+    }
+
+    /// Removes a thread, giving its block and instances back to its process.
+    fn free(&mut self, thread: ThreadId) {
+        let record = self.threads.remove(&thread).expect("a thread that exists");
+        let Some(process) = self.processes.get_mut(&record.memory) else {
+            return;
+        };
+        process.free_blocks.push(record.block_at);
+        if let Some(instance) = record.instance {
+            let kept = Kept {
+                instance,
+                exact: record.exact,
+                loads: process.loads.len(),
+            };
+            process.kept.insert(record.block_at, kept);
+        }
     }
 
     /// Writes the registers the kernel set while the thread was running into its block.
@@ -1201,6 +1257,7 @@ where
             loads: Vec::new(),
             next_slot: contract::EXACT_SLOT as u32 + 1,
             free_blocks: Vec::new(),
+            kept: HashMap::new(),
             next_block: 0,
             dropped: false,
         })
@@ -2277,10 +2334,7 @@ where
             process.store = Some(store);
         }
         if self.threads[&thread].dropped {
-            let record = self.threads.remove(&thread).expect("a thread");
-            if let Some(process) = self.processes.get_mut(&memory) {
-                process.free_blocks.push(record.block_at);
-            }
+            self.free(thread);
         }
         Ok(())
     }
@@ -2622,10 +2676,7 @@ where
             self.threads.get_mut(&thread).expect("a thread").dropped = true;
             return;
         }
-        let record = self.threads.remove(&thread).expect("a thread that exists");
-        if let Some(process) = self.processes.get_mut(&record.memory) {
-            process.free_blocks.push(record.block_at);
-        }
+        self.free(thread);
     }
 
     fn registers(&mut self, thread: ThreadId, into: &mut RegisterBlock) {
@@ -2644,7 +2695,105 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{CHUNK, Compiler, Page, Pages, Permissions};
+    use super::{
+        CHUNK, Carry, Compiler, Cpu, CpuSide, Execution, Exit, Leaving, LookAhead, MemoryId,
+        Optimise, Page, Pages, Permissions, RegisterBlock, Resume, ThreadId, Turn,
+    };
+    use wcontainers_arm64::Arm64;
+    use zerocopy::FromZeros;
+
+    /// Leaves at the thread's first exit, keeping it and the pc then.
+    struct First {
+        thread: ThreadId,
+        exits: Vec<(Exit, u64)>,
+    }
+
+    impl super::Answer for First {
+        fn exit(&mut self, cpu: &mut dyn Cpu, exit: Exit, _: u64) -> Carry {
+            let mut registers = RegisterBlock::new_zeroed();
+            cpu.registers(self.thread, &mut registers);
+            self.exits.push((exit, registers.pc));
+            Carry::Leave(Leaving::AnotherThread)
+        }
+
+        fn clock(&mut self, _: u64) -> u64 {
+            0
+        }
+
+        fn warn(&mut self, _: wcontainers_abi::Warning<'_>) {}
+    }
+
+    /// Announces `svc #0; b .-4` at `at`.
+    fn code(cpu: &mut CpuSide<Arm64>, memory: MemoryId, at: u64) {
+        let code: Vec<u8> = [0xd400_0001u32, 0x17ff_ffff]
+            .iter()
+            .flat_map(|w| w.to_le_bytes())
+            .collect();
+        cpu.write(memory, at, &code).unwrap();
+        let page = wcontainers_abi::PAGE_SIZE;
+        cpu.set_permissions(memory, at, page, Permissions::READ | Permissions::EXECUTE)
+            .unwrap();
+        cpu.code_changed(memory, at, page, &[at]);
+    }
+
+    /// Runs a thread from `at` to its first exit, which must be the system call there.
+    fn run_from(cpu: &mut CpuSide<Arm64>, thread: ThreadId, at: u64) {
+        let mut registers = RegisterBlock::new_zeroed();
+        cpu.registers(thread, &mut registers);
+        registers.pc = at;
+        cpu.set_registers(thread, &registers);
+        let mut first = First {
+            thread,
+            exits: Vec::new(),
+        };
+        let Ok(()) = cpu.run(thread, Resume::FromRegisters, Turn::Free, &mut first);
+        assert!(
+            matches!(first.exits.as_slice(), [(Exit::Syscall(_), pc)] if *pc == at + 4),
+            "{:?}",
+            first.exits
+        );
+    }
+
+    fn start(cpu: &mut CpuSide<Arm64>, memory: MemoryId, at: u64) -> ThreadId {
+        let thread = cpu.thread_new(memory).unwrap();
+        run_from(cpu, thread, at);
+        thread
+    }
+
+    /// A new thread given a dropped thread's block runs on that thread's instances, with the code
+    /// another thread translated while the block was free.
+    #[test]
+    fn a_dropped_threads_instances_serve_the_next_thread() {
+        for look_ahead in [LookAhead::Full, LookAhead::None] {
+            let mut cpu =
+                CpuSide::<Arm64>::new(Compiler::new(None), look_ahead, Optimise::Speed, ());
+            let memory = cpu.memory_new().unwrap();
+            code(&mut cpu, memory, 0x10000);
+            let first = start(&mut cpu, memory, 0x10000);
+            let other = start(&mut cpu, memory, 0x10000);
+            let (block_at, made) = {
+                let record = &cpu.threads[&first];
+                let instance = record.instance.as_ref().expect("instances made at its run");
+                (record.block_at, format!("{:?}", instance.instance))
+            };
+            cpu.thread_drop(first);
+            code(&mut cpu, memory, 0x20000);
+            run_from(&mut cpu, other, 0x20000);
+            let loads = cpu.process(memory).loads.len();
+            assert!(cpu.process(memory).kept[&block_at].loads < loads);
+            let next = start(&mut cpu, memory, 0x20000);
+            let record = &cpu.threads[&next];
+            assert_eq!(record.block_at, block_at);
+            let instance = record.instance.as_ref().expect("instances");
+            assert_eq!(format!("{:?}", instance.instance), made);
+            assert!(cpu.process(memory).kept.is_empty());
+            assert_eq!(
+                cpu.process(memory).loads.len(),
+                loads,
+                "nothing translated again"
+            );
+        }
+    }
 
     /// A compiler copied into a fork of this process, where its pool's threads are not, is dropped
     /// there whatever those threads were doing at the fork, as a save's copy drops the back end it
