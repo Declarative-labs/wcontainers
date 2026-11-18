@@ -1058,8 +1058,12 @@ float4 alpha(float4 p : SV_Position) : SV_Target {
 ";
 
 /// The converted formats with Direct3D's.
-const CONVERTED: [(Format, DXGI_FORMAT); 4] = [
+const CONVERTED: [(Format, DXGI_FORMAT); 8] = [
     (Format::A8Unorm, DXGI_FORMAT_A8_UNORM),
+    (Format::Bgrx8Unorm, DXGI_FORMAT_B8G8R8X8_UNORM),
+    (Format::Bgrx8UnormSrgb, DXGI_FORMAT_B8G8R8X8_UNORM_SRGB),
+    (Format::Rgbg8Unorm, DXGI_FORMAT_R8G8_B8G8_UNORM),
+    (Format::Grgb8Unorm, DXGI_FORMAT_G8R8_G8B8_UNORM),
     (Format::B5g6r5Unorm, DXGI_FORMAT_B5G6R5_UNORM),
     (Format::Bgr5a1Unorm, DXGI_FORMAT_B5G5R5A1_UNORM),
     (Format::Bgra4Unorm, DXGI_FORMAT_B4G4R4A4_UNORM),
@@ -1115,10 +1119,10 @@ fn d3d_sampled(gpu: &Gpu, vs: &[u8], format: DXGI_FORMAT, texels: &[u8]) -> (Vec
     (loaded, filtered)
 }
 
-/// Direct3D 11's `A8_UNORM` target drawn as converted.rs's `alpha_drawn` draws it: its bytes.
-fn d3d_alpha_drawn(gpu: &Gpu, vs: &[u8]) -> Vec<u8> {
+/// Direct3D 11's target of `format` drawn as converted.rs's `drawn` draws it: its bytes.
+fn d3d_drawn(gpu: &Gpu, vs: &[u8], format: DXGI_FORMAT, texel: usize) -> Vec<u8> {
     let (w, h) = converted::SIZE;
-    let (target, rtv) = gpu.target(w, h, DXGI_FORMAT_A8_UNORM).unwrap();
+    let (target, rtv) = gpu.target(w, h, format).unwrap();
     let ps = hlsl_of(
         CONVERTED_HLSL,
         windows::core::s!("alpha"),
@@ -1148,13 +1152,27 @@ fn d3d_alpha_drawn(gpu: &Gpu, vs: &[u8]) -> Vec<u8> {
         c.OMSetBlendState(&gpu.blend(&blend).unwrap(), None, u32::MAX);
         c.Draw(3, 0);
     }
-    d3d_read(gpu, &target, 0, 1)
+    d3d_read(gpu, &target, 0, texel)
 }
 
-/// Each converted format's seeded texels loaded and filtered by the back end, which holds them as
-/// `rgba8unorm`, against Direct3D 11 on the same GPU: loads equal, filtered texels within one
-/// 8-bit step; and 8-bit alpha drawn with blending into a cleared target, byte for byte. Prints each largest difference and how far
-/// Direct3D's own loads are from `v / (2^n - 1)`.
+/// Direct3D 11's bytes of an immutable texture of `format` made from `texels`, read back.
+fn d3d_kept(gpu: &Gpu, format: DXGI_FORMAT, texel: usize, texels: &[u8]) -> Vec<u8> {
+    let (w, h) = converted::SIZE;
+    let texture = gpu
+        .texture2d(
+            &tex2d(w, h, format, D3D11_BIND_SHADER_RESOURCE),
+            &[d3d11::data(texels, w * texel as u32, 0)],
+        )
+        .unwrap();
+    d3d_read(gpu, &texture, 0, texel)
+}
+
+/// Each converted format's seeded texels loaded and filtered by the back end, which holds them in
+/// an 8-bit RGBA format, against Direct3D 11 on the same GPU: loads equal, filtered texels within
+/// one 8-bit step; and 8-bit alpha and BGRX drawn with blending into a cleared target, byte for
+/// byte but for BGRX's X (unused bits, which the back end reads back as one and the RTX 3080's
+/// Direct3D keeps as written; printed). Prints each largest difference and how far Direct3D's own
+/// loads are from `v / (2^n - 1)`.
 #[test]
 fn converted_formats_load_filter_and_draw_as_direct3d_does() {
     let mut b = device_without(wgpu::Features::empty());
@@ -1184,16 +1202,48 @@ fn converted_formats_load_filter_and_draw_as_direct3d_does() {
             beyond.push(format!("{format:?}: loaded {l:e}, filtered {f:e}"));
         }
     }
-    let ours = converted::alpha_drawn(&mut b).unwrap().0;
-    let theirs = d3d_alpha_drawn(&gpu, &vs);
-    let differing = ours.iter().zip(&theirs).filter(|(a, b)| a != b).count();
-    eprintln!(
-        "A8Unorm drawn: {differing} of {} bytes differ from Direct3D's",
-        ours.len()
-    );
-    if differing > 0 {
-        beyond.push(format!("A8Unorm drawn: {differing} bytes"));
+    for (format, dxgi, texel) in [
+        (Format::A8Unorm, DXGI_FORMAT_A8_UNORM, 1),
+        (Format::Bgrx8Unorm, DXGI_FORMAT_B8G8R8X8_UNORM, 4),
+        (Format::Bgrx8UnormSrgb, DXGI_FORMAT_B8G8R8X8_UNORM_SRGB, 4),
+    ] {
+        let ours = converted::drawn(&mut b, format).unwrap().0;
+        let theirs = d3d_drawn(&gpu, &vs, dxgi, texel);
+        let unused = |i: usize| texel == 4 && i % 4 == 3;
+        let differing = (0..ours.len())
+            .filter(|&i| !unused(i) && ours[i] != theirs[i])
+            .count();
+        let x_kept = (0..ours.len())
+            .filter(|&i| unused(i) && ours[i] == theirs[i])
+            .count();
+        eprintln!(
+            "{format:?} drawn: {differing} of {} bytes differ from Direct3D's, X equal in {x_kept}",
+            ours.len()
+        );
+        if differing > 0 {
+            beyond.push(format!("{format:?} drawn: {differing} bytes"));
+        }
     }
+    // What Direct3D reads back of BGRX's X byte written from the host (the back end reads one).
+    let texels = converted::texels(Format::Bgrx8Unorm, 9);
+    let kept = d3d_kept(&gpu, DXGI_FORMAT_B8G8R8X8_UNORM, 4, &texels);
+    let as_written = kept
+        .iter()
+        .zip(&texels)
+        .skip(3)
+        .step_by(4)
+        .filter(|(a, b)| a == b)
+        .count();
+    let one = kept
+        .iter()
+        .skip(3)
+        .step_by(4)
+        .filter(|&&x| x == 255)
+        .count();
+    eprintln!(
+        "Direct3D's BGRX read back: X as written in {as_written}, 255 in {one}, of {}",
+        texels.len() / 4
+    );
     assert_eq!(b.status(), DeviceStatus::Ok);
     assert!(b.slow_paths().count(SlowPath::FormatConverted) > 0);
     assert!(beyond.is_empty(), "{beyond:#?}");

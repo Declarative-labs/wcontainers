@@ -21,12 +21,25 @@ type B = WebGpu;
 pub const SIZE: (u32, u32) = (16, 8);
 
 /// The formats the back end converts.
-pub const FORMATS: [Format; 4] = [
+pub const FORMATS: [Format; 8] = [
     Format::A8Unorm,
+    Format::Bgrx8Unorm,
+    Format::Bgrx8UnormSrgb,
     Format::B5g6r5Unorm,
     Format::Bgr5a1Unorm,
     Format::Bgra4Unorm,
+    Format::Rgbg8Unorm,
+    Format::Grgb8Unorm,
 ];
+
+/// The converted formats drawn into.
+pub const DRAWN: [Format; 3] = [Format::A8Unorm, Format::Bgrx8Unorm, Format::Bgrx8UnormSrgb];
+
+/// Bytes of a row of `width` texels of `format`: whole blocks.
+pub fn row_bytes(format: Format, width: u32) -> usize {
+    let (bw, _, bytes) = format.block();
+    (width.div_ceil(bw) * bytes) as usize
+}
 
 /// The left half of the target loads each texel; the right half filters the texture a quarter
 /// texel up and left of each texel's centre. The same as tests/direct3d.rs's HLSL.
@@ -57,13 +70,13 @@ pub const ALPHA_WGSL: &str = "
 }
 ";
 
-/// The alpha the 8-bit alpha target is cleared to.
+/// The alpha targets drawn into are cleared to.
 pub const CLEAR_ALPHA: f32 = 0.25;
 
 /// Seeded texels of `format` (splitmix64 bytes), rows packed.
 pub fn texels(format: Format, seed: u64) -> Vec<u8> {
     let mut s = seed;
-    let n = (SIZE.0 * SIZE.1 * format.block().2) as usize;
+    let n = row_bytes(format, SIZE.0) * SIZE.1 as usize;
     (0..n)
         .map(|_| {
             s = s.wrapping_add(0x9e37_79b9_7f4a_7c15);
@@ -75,14 +88,51 @@ pub fn texels(format: Format, seed: u64) -> Vec<u8> {
         .collect()
 }
 
-/// The float RGBA of each texel by Direct3D's rule: each channel `v / (2^n - 1)`, a missing alpha
-/// one, 8-bit alpha's colour zero.
+/// sRGB-encoded `c` in linear light.
+pub fn linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// The float RGBA of each texel by Direct3D's rule: each channel `v / (2^n - 1)` (sRGB in linear
+/// light), a missing alpha one, 8-bit alpha's colour zero, each pixel of a pair its own.
 pub fn expected(format: Format, texels: &[u8]) -> Vec<f32> {
-    if format == Format::A8Unorm {
-        return texels
-            .iter()
-            .flat_map(|&a| [0.0, 0.0, 0.0, f32::from(a) / 255.0])
-            .collect();
+    let n = |v: u8| f32::from(v) / 255.0;
+    let quads = texels.as_chunks::<4>().0.iter();
+    match format {
+        Format::A8Unorm => {
+            return texels.iter().flat_map(|&a| [0.0, 0.0, 0.0, n(a)]).collect();
+        }
+        Format::Bgrx8Unorm => {
+            return quads
+                .flat_map(|t| [n(t[2]), n(t[1]), n(t[0]), 1.0])
+                .collect();
+        }
+        Format::Bgrx8UnormSrgb => {
+            return quads
+                .flat_map(|t| {
+                    [n(t[2]), n(t[1]), n(t[0])]
+                        .map(linear)
+                        .into_iter()
+                        .chain([1.0])
+                })
+                .collect();
+        }
+        Format::Rgbg8Unorm | Format::Grgb8Unorm => {
+            return quads
+                .flat_map(|p| {
+                    let [r, g0, b, g1] = match format {
+                        Format::Rgbg8Unorm => *p,
+                        _ => [p[1], p[0], p[3], p[2]],
+                    };
+                    [n(r), n(g0), n(b), 1.0, n(r), n(g1), n(b), 1.0]
+                })
+                .collect();
+        }
+        _ => {}
     }
     let fields: [u32; 4] = match format {
         Format::B5g6r5Unorm => [5, 6, 5, 0],
@@ -171,7 +221,7 @@ pub fn upload(
     let usage = usage | TextureUsage::SAMPLE | TextureUsage::COPY_DST | TextureUsage::COPY_SRC;
     let (t, v) = draw::texture_2d(b, format, SIZE.0, SIZE.1, usage)?;
     if let Some(texels) = texels {
-        let pitch = SIZE.0 * format.block().2;
+        let pitch = row_bytes(format, SIZE.0) as u32;
         b.write_texture(
             &at(&t, 0, 0),
             whole(),
@@ -316,10 +366,10 @@ fn full_draw(
     Ok(())
 }
 
-/// [`ALPHA_WGSL`] blended (source alpha over one minus it, colour and alpha alike) into an 8-bit
-/// alpha target cleared to a colour and [`CLEAR_ALPHA`]: its bytes, and its texels loaded.
-pub fn alpha_drawn(b: &mut B) -> Result<(Vec<u8>, Vec<f32>)> {
-    let (target, view) = upload(b, Format::A8Unorm, None, TextureUsage::RENDER)?;
+/// [`ALPHA_WGSL`] blended (source alpha over one minus it, colour and alpha alike) into a target
+/// of `format` cleared to a colour and [`CLEAR_ALPHA`]: its bytes, and its texels loaded.
+pub fn drawn(b: &mut B, format: Format) -> Result<(Vec<u8>, Vec<f32>)> {
+    let (target, view) = upload(b, format, None, TextureUsage::RENDER)?;
     let program = draw::program(b, ALPHA_WGSL)?;
     let mut blend = draw::opaque();
     let over = BlendComponent {
@@ -330,20 +380,32 @@ pub fn alpha_drawn(b: &mut B) -> Result<(Vec<u8>, Vec<f32>)> {
     blend.targets[0].blend = Some((over, over));
     let clear = [0.5, 0.75, 1.0, CLEAR_ALPHA].map(f32::to_bits);
     full_draw(b, &program, &view, &blend, [None, None], clear)?;
-    let bytes = read(b, &at(&target, 0, 0), whole(), (SIZE.0 * SIZE.1) as usize);
+    let len = row_bytes(format, SIZE.0) * SIZE.1 as usize;
+    let bytes = read(b, &at(&target, 0, 0), whole(), len);
     let (loaded, _) = sampled(b, &view)?;
     Ok((bytes, loaded))
 }
 
+/// `texels` of `format` as the back end keeps them: BGRX's X read back as one.
+pub fn kept(format: Format, texels: &[u8]) -> Vec<u8> {
+    let mut out = texels.to_vec();
+    if matches!(format, Format::Bgrx8Unorm | Format::Bgrx8UnormSrgb) {
+        out.iter_mut().skip(3).step_by(4).for_each(|x| *x = 255);
+    }
+    out
+}
+
 /// Writes, read backs and copies of `texels` in `format`: read back whole; copied out into a
 /// buffer at a padded pitch whose padding stays; copied from that buffer into part of another
-/// texture; copied between textures. Every byte must come back.
-pub fn copies(b: &mut B, format: Format, texels: &[u8]) -> Result<()> {
-    let texel = format.block().2 as usize;
-    let (w, h) = (SIZE.0 as usize, SIZE.1 as usize);
-    let row = w * texel;
+/// texture; copied between textures. Every byte must come back (BGRX's X as one).
+pub fn copies(b: &mut B, format: Format, written: &[u8]) -> Result<()> {
+    let texels = &kept(format, written)[..];
+    let h = SIZE.1 as usize;
+    let row = row_bytes(format, SIZE.0);
     let len = row * h;
-    let (t, _) = upload(b, format, Some(texels), TextureUsage::empty())?;
+    // Bytes from the start of a row to texel `x`, on a block edge.
+    let col = |x: u32| row_bytes(format, x);
+    let (t, _) = upload(b, format, Some(written), TextureUsage::empty())?;
     ensure!(
         read(b, &at(&t, 0, 0), whole(), len) == texels,
         "{format:?}: read back"
@@ -383,24 +445,22 @@ pub fn copies(b: &mut B, format: Format, texels: &[u8]) -> Result<()> {
             "{format:?}: padding of row {y} overwritten"
         );
     }
-    // From the buffer, starting at texel (2, 1), into another texture at (3, 2).
+    // From the buffer, starting at texel (2, 1), into another texture at (4, 2).
     let part = Extent {
-        width: SIZE.0 - 5,
+        width: SIZE.0 - 6,
         height: SIZE.1 - 3,
         depth_or_layers: 1,
     };
     let (u, _) = upload(b, format, Some(&vec![0; len]), TextureUsage::empty())?;
-    b.copy_buffer_to_texture(&copy((pitch + 2 * texel) as u64), &at(&u, 3, 2), part);
+    b.copy_buffer_to_texture(&copy((pitch + col(2)) as u64), &at(&u, 4, 2), part);
     let got = read(
         b,
-        &at(&u, 3, 2),
+        &at(&u, 4, 2),
         part,
-        part.width as usize * texel * part.height as usize,
+        col(part.width) * part.height as usize,
     );
     let want: Vec<u8> = (1..1 + part.height as usize)
-        .flat_map(|y| {
-            texels[y * row + 2 * texel..y * row + (2 + part.width as usize) * texel].to_vec()
-        })
+        .flat_map(|y| texels[y * row + col(2)..y * row + col(2 + part.width)].to_vec())
         .collect();
     ensure!(
         got == want,
@@ -422,15 +482,24 @@ pub fn largest(a: &[f32], b: &[f32]) -> f32 {
         .fold(0.0, f32::max)
 }
 
-/// Every check without a reference: what is declared, copies exact, texels loaded within 0.72 of an
-/// 8-bit step of `v / (2^n - 1)` (as far as the RTX 3080's Direct3D 11 loads them) and filtered
-/// within one and a half, 8-bit alpha drawn with its
-/// colour kept zero and its alpha within one step of the blend. One line of the largest differences.
+/// How far loads may lie from [`expected`], in 8-bit steps: as far as the RTX 3080's Direct3D 11
+/// loads lie (0.72 for 5 and 6 bits; 0.96 for sRGB decoded).
+pub fn load_bound(format: Format) -> f32 {
+    if format == Format::Bgrx8UnormSrgb {
+        1.0 / 255.0
+    } else {
+        0.72 / 255.0
+    }
+}
+
+/// Every check without a reference: what is declared, copies exact, texels loaded within
+/// [`load_bound`] of Direct3D's rule and filtered within one and a half 8-bit steps; 8-bit alpha drawn with its colour kept zero and its alpha within one step
+/// of the blend, BGRX drawn with X kept one. One line of the largest differences.
 pub fn check(b: &mut B) -> Result<String> {
     let mut line = String::from("converted formats:");
     for format in FORMATS {
         let uses = b.caps().formats.get(format);
-        let drawn = format == Format::A8Unorm;
+        let drawn = DRAWN.contains(&format);
         let want = FormatUse::SAMPLE | FormatUse::FILTER | FormatUse::COPY_OUT;
         ensure!(uses.contains(want), "{format:?} declares {uses:?}");
         ensure!(
@@ -447,7 +516,7 @@ pub fn check(b: &mut B) -> Result<String> {
         let want = expected(format, &texels);
         let (l, f) = (largest(&loaded, &want), largest(&filter, &filtered(&want)));
         ensure!(
-            l <= 0.72 / 255.0,
+            l <= load_bound(format),
             "{format:?}: loaded {l} from v / (2^n - 1)"
         );
         ensure!(
@@ -460,24 +529,31 @@ pub fn check(b: &mut B) -> Result<String> {
             f * 255.0
         );
     }
-    let (bytes, loaded) = alpha_drawn(b)?;
-    let blend = largest(
-        &bytes.iter().map(|&a| f32::from(a)).collect::<Vec<_>>(),
-        &blended(),
-    );
+    let (bytes, loaded) = drawn(b, Format::A8Unorm)?;
+    let as_bytes: Vec<f32> = bytes.iter().map(|&a| f32::from(a)).collect();
+    let blend = largest(&as_bytes, &blended());
     ensure!(
         blend <= 1.0,
         "8-bit alpha drawn {blend} steps from the blend"
     );
-    let as_loaded: Vec<f32> = bytes
-        .iter()
-        .flat_map(|&a| [0.0, 0.0, 0.0, f32::from(a) / 255.0])
-        .collect();
     ensure!(
-        largest(&loaded, &as_loaded) < 1e-6,
+        largest(&loaded, &expected(Format::A8Unorm, &bytes)) < 1e-6,
         "8-bit alpha drawn keeps a colour or loads other alphas"
     );
     line += &format!(" A8Unorm drawn {blend:.2} steps from the blend;");
+    // BGRX drawn: alpha masked, so X stays one; loads as its bytes say.
+    for format in [Format::Bgrx8Unorm, Format::Bgrx8UnormSrgb] {
+        let (bytes, loaded) = drawn(b, format)?;
+        ensure!(
+            bytes.as_chunks::<4>().0.iter().all(|t| t[3] == 255),
+            "{format:?} drawn with an X other than one"
+        );
+        let l = largest(&loaded, &expected(format, &bytes));
+        ensure!(
+            l <= load_bound(format),
+            "{format:?} drawn loads {l} from its bytes"
+        );
+    }
     let hits = b.slow_paths().count(SlowPath::FormatConverted);
     ensure!(hits > 0, "FormatConverted was not counted");
     ensure!(

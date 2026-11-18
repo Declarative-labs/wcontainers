@@ -1318,7 +1318,12 @@ impl WebGpu {
                 let t = &region.texture.0;
                 t.used_in.set(self.serial);
                 let packed = packed::held(t.desc.format).map(|_| t.desc.format);
-                if packed.is_some() {
+                if let Some(f) = packed {
+                    if !region.origin.x.is_multiple_of(f.block().0) {
+                        return Err(GpuError::Invalid(
+                            "a read back of a two-pixel format starting inside a pair",
+                        ));
+                    }
                     self.slow.hit(SlowPath::FormatConverted);
                 }
                 let (row, rows) = row_bytes(region_format(t, region), extent.width, extent.height);
@@ -1512,10 +1517,10 @@ impl WebGpu {
             self.fail("finish_read of a read back that is not ready or failed");
             return;
         }
-        // A converted texture's rows arrive as `rgba8unorm` and are packed into its texels.
+        // A converted texture's rows arrive in its held format and are packed into its blocks.
         let out_row = o
             .packed
-            .map_or(o.row, |f| o.row / 4 * u64::from(f.block().2));
+            .map_or(o.row, |f| packed::packed_bytes(f, o.row / 4));
         if (dst.len() as u64) < out_row * o.rows {
             self.fail(&format!(
                 "finish_read into {} bytes, fewer than the read back's {}",

@@ -727,10 +727,10 @@ fn caps(
             formats.samples[i] = 1;
             continue;
         }
-        // Converted formats (`FormatConverted`): 8-bit alpha is drawn into with only alpha written;
-        // the 16-bit packed ones are sampled only, since a draw would keep 8 bits a channel.
+        // Converted formats (`FormatConverted`): some are drawn into with only their own channels
+        // written, the rest only sampled (packed.rs).
         if converted.is_some() {
-            let drawn = format == Format::A8Unorm;
+            let drawn = packed::drawn(format).is_some();
             let mut kept = FormatUse::SAMPLE | FormatUse::FILTER | FormatUse::COPY_OUT;
             *allowed &= wgpu::TextureUsages::TEXTURE_BINDING | copies;
             if drawn {
