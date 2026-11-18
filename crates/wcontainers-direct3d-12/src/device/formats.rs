@@ -8,12 +8,15 @@
 //! (`VariantKey::storage_formats`, `VariantKey::texel_formats`). Samplers with a level-of-detail
 //! bias (`LodBiasInShader`), or with border or mirror-once addressing the back end lacks
 //! (`BorderInShader`), are applied by the program (`VariantKey::lod_bias`,
-//! `VariantKey::border_in_shader`). For other bound formats or such samplers the program is
+//! `VariantKey::border_in_shader`), as is filtering of textures bound in formats the back end
+//! cannot filter where a filtering sampler samples them (`FilterInShader`,
+//! `VariantKey::filter_in_shader`). For other bound formats or such samplers the program is
 //! converted again, at the first draw or dispatch binding them, and kept per pipeline.
 
 use super::*;
 use crate::dxbc::{Kind, typed_views};
 use pull::Helpers;
+use wcontainers_gpu::Filter;
 
 /// A typed view's slot: a storage slot (else a texture slot) and its register.
 pub(super) type Slot = (bool, u32);
@@ -21,7 +24,8 @@ pub(super) type Slot = (bool, u32);
 /// What a stage's program is made for: the typed views' formats by slot, the sampler
 /// registers whose bias (`lod_bias`) and addressing (`border_in_shader`) it applies, the
 /// storage registers it reads through buffers (`texels_through_buffer`), and the texture
-/// registers under a minimum level-of-detail clamp (`min_lod_clamped`).
+/// registers under a minimum level-of-detail clamp (`min_lod_clamped`) and filtered in the
+/// program (`filter_in_shader`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Bound {
     formats: Vec<(Slot, Format)>,
@@ -29,6 +33,7 @@ struct Bound {
     border: u16,
     through: u64,
     clamped: u128,
+    filtered: u128,
 }
 
 /// A program made for what is bound, with its helper layout; `None` where the conversion
@@ -44,6 +49,8 @@ pub(super) struct Formats<B: Backend> {
     key: VariantKey,
     /// The formats the pipeline's own program was made with, by slot.
     made: Vec<(Slot, Format)>,
+    /// The texture and sampler registers the program samples together.
+    pairs: Vec<(u32, u32)>,
     /// Programs made for other bindings.
     variants: Vec<Variant<B>>,
 }
@@ -91,7 +98,12 @@ fn slots(key: &VariantKey) -> Vec<(Slot, Format)> {
 
 impl<B: Backend> Formats<B> {
     /// The record of a stage converted with `key`, whose formats it made the program with.
-    pub(super) fn of(visibility: u32, code: &[u8], key: &VariantKey) -> Option<Box<Self>> {
+    pub(super) fn of(
+        visibility: u32,
+        code: &[u8],
+        key: &VariantKey,
+        pairs: &[(u32, u32)],
+    ) -> Option<Box<Self>> {
         let made = slots(key);
         Some(Box::new(Formats {
             visibility,
@@ -102,6 +114,7 @@ impl<B: Backend> Formats<B> {
                 ..key.clone()
             },
             made,
+            pairs: pairs.to_vec(),
             variants: Vec::new(),
         }))
     }
@@ -154,14 +167,56 @@ impl<B: Backend> Device<B> {
             .iter()
             .filter(|c| c.0 == f.visibility)
             .fold(0u128, |m, c| m | (1 << c.1));
+        // Textures the back end cannot filter, sampled through a filtering sampler, with the
+        // helper values of the samplers the program then reads.
+        let mut filtered = 0u128;
+        let mut states = Vec::new();
+        for &(texture, sampler) in &f.pairs {
+            if texture >= 128 || !self.bound_unfiltered.contains(&(f.visibility, texture)) {
+                continue;
+            }
+            let Some(&(_, _, view)) = self
+                .bound_samplers
+                .iter()
+                .find(|s| (s.0, s.1) == (f.visibility, sampler))
+            else {
+                continue;
+            };
+            let desc = crate::state::sampler(&view, self.backend.caps())?;
+            if desc.compare.is_none() && [desc.min, desc.mag, desc.mip].contains(&Filter::Linear) {
+                filtered |= 1 << texture;
+                states.push((
+                    HelperValue::SamplerState { sampler },
+                    crate::state::sampler_state(&view, &desc),
+                ));
+                states.push((
+                    HelperValue::BorderColor { sampler },
+                    pull::words(&view.border),
+                ));
+            }
+        }
         if formats == f.made
             && lod_bias == 0
             && border == 0
             && clamped == 0
+            && filtered == 0
             && through == f.key.texels_through_buffer
         {
             return Ok(None);
         }
+        let visibility = f.visibility;
+        for (value, words) in states {
+            if !self
+                .bound_helpers
+                .iter()
+                .any(|h| h.0 == visibility && h.1 == value)
+            {
+                self.bound_helpers.push((visibility, value, words));
+            }
+        }
+        let Some(f) = &self.pipelines[pid.0 as usize].formats else {
+            return Ok(None);
+        };
         if vertex_variant {
             return Err(Error::NotImplemented(
                 "a vertex program fetching its inputs with typed views of other formats or \
@@ -177,12 +232,16 @@ impl<B: Backend> Device<B> {
         if clamped != 0 {
             self.backend.slow_paths().hit(SlowPath::MinLodClamp);
         }
+        if filtered != 0 {
+            self.backend.slow_paths().hit(SlowPath::FilterInShader);
+        }
         let bound = Bound {
             formats,
             lod_bias,
             border,
             through,
             clamped,
+            filtered,
         };
         let refused = Error::NotImplemented("a program for the bound views and samplers");
         if let Some((_, p)) = f.variants.iter().find(|v| v.0 == bound) {
@@ -194,6 +253,7 @@ impl<B: Backend> Device<B> {
             border_in_shader: border,
             texels_through_buffer: through,
             min_lod_clamped: clamped,
+            filter_in_shader: filtered,
             ..f.key.clone()
         };
         for &((storage, register), format) in &bound.formats {
