@@ -30,6 +30,9 @@ Plan and rule: docs/literals.md. Branch: phase-1-literals.
 
 ## Independent check, as run (bar.py on a clone of the branch, debug binary)
 
+Run twice, the second time with the final binary, with the same results. Each check in it took 1.9 to 7.1 s wall while the load average went from 42 to 74; a plain check right after took 1.8 to 2.1 s at load 70.
+
+
 - Clean tree: passes.
 - One bare literal added to crates/wcontainers-kernel/src/lib.rs: fails with `+ code crates/wcontainers-kernel/src/lib.rs:686:39 ... 31337`.
 - A baseline line deleted while its literal stays: fails with `+` for that literal.
