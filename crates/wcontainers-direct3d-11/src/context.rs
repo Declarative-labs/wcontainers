@@ -28,6 +28,7 @@ use crate::object::*;
 use crate::shader::{Helpers, StageVariant};
 
 mod geometry;
+mod split;
 mod tessellation;
 mod through;
 pub(crate) use geometry::StageRun;
@@ -3197,8 +3198,8 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
-    /// A draw; `args` holds an indirect draw's arguments.
-    fn try_draw(
+    /// A draw in one run; `args` holds an indirect draw's arguments.
+    fn draw_once(
         &mut self,
         range: Range,
         first_instance: u32,

@@ -108,6 +108,8 @@ pub struct Device<B: Backend> {
     pub(crate) tessellated: HashMap<(u64, u64, u64, u64, u64), crate::context::TessRun<B>>,
     /// The stage helper's filled sizes and primitive counts of a streaming draw.
     pub(crate) stream_filled: Option<Kept<B, B::Buffer>>,
+    /// Depth and stencil saved before a draw run once per group of targets, and its description.
+    pub(crate) split_depth: Option<(wcontainers_gpu::TextureDesc, Kept<B, B::Texture>)>,
     /// What the program's start built from the cache's record.
     pub(crate) warm: crate::cache::Warm<B>,
     /// Set once the device is removed; later work is dropped and the API reports the removal.
@@ -233,6 +235,7 @@ impl<B: Backend> Device<B> {
             blend: Rc::new(Blend {
                 desc: blend_desc,
                 gpu: Kept::new(blend, id(), Object::Blend, &graveyard),
+                groups: Vec::new(),
             }),
             depth_stencil: Rc::new(DepthStencil {
                 desc: ds_desc,
@@ -276,6 +279,7 @@ impl<B: Backend> Device<B> {
             staged: HashMap::new(),
             tessellated: HashMap::new(),
             stream_filled: None,
+            split_depth: None,
             warm,
             removed: None,
         })
@@ -1645,18 +1649,63 @@ impl<B: Backend> Device<B> {
                 return Err(Error::InvalidArg("unknown blend operation"));
             }
         }
-        let block = blend_block(d);
-        if !block.same_for_all && !self.backend.caps().has(Features::INDEPENDENT_BLEND) {
-            return not_implemented("targets blended differently (TargetsSplit)");
+        // Below 10_1 the targets that blend share their factors and operations (Direct3D 10's
+        // blend), each with its own enable and write mask.
+        let shared = |t: &TargetBlend| (t.src, t.dst, t.op, t.src_alpha, t.dst_alpha, t.op_alpha);
+        let mut blending = d.targets.iter().filter(|t| t.enable).map(shared);
+        if d.independent
+            && self.feature_level() < level::L10_1
+            && blending
+                .next()
+                .is_some_and(|first| blending.any(|t| t != first))
+        {
+            return Err(Error::InvalidArg(
+                "blend factors or operations per target below feature level 10_1",
+            ));
         }
+        let block = blend_block(d);
         self.live()?;
         self.bury();
-        let gpu = self.backend.create_blend(&block);
+        // Without the back end's per-target blends, a block per group of targets that agree,
+        // each drawn by a run of its own (`TargetsSplit`).
+        let mut groups = Vec::new();
+        if !block.same_for_all && !self.backend.caps().has(Features::INDEPENDENT_BLEND) {
+            let mut left = u8::MAX;
+            while left != 0 {
+                let first = left.trailing_zeros() as usize;
+                let members = (first..8)
+                    .filter(|&i| block.targets[i] == block.targets[first])
+                    .fold(0u8, |m, i| m | 1 << i);
+                left &= !members;
+                let desc = BlendDesc {
+                    independent: false,
+                    targets: [d.targets[first]; 8],
+                    ..*d
+                };
+                let gpu = self.backend.create_blend(&blend_block(&desc));
+                let gpu = self.gpu(gpu)?;
+                let id = self.id();
+                let group = Rc::new(Blend {
+                    desc,
+                    gpu: Kept::new(gpu, id, Object::Blend, &self.graveyard),
+                    groups: Vec::new(),
+                });
+                groups.push((members, group));
+            }
+        }
+        // Where the targets bound fall in one group, the draw takes that group's block; the
+        // state's own is then never drawn with, and is the first group's.
+        let own = match groups.first() {
+            Some((_, g)) => blend_block(&g.desc),
+            None => block,
+        };
+        let gpu = self.backend.create_blend(&own);
         let gpu = self.gpu(gpu)?;
         let id = self.id();
         Ok(Rc::new(Blend {
             desc: *d,
             gpu: Kept::new(gpu, id, Object::Blend, &self.graveyard),
+            groups,
         }))
     }
 

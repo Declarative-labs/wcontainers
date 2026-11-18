@@ -603,8 +603,8 @@ pub struct VariantKey {
     pub texture_layers: Vec<(u32, u32)>,
     /// Texture slots whose bound view maps its components, by slot: component i of every value read
     /// through the slot (loads, samples, and gathers of component i) is the texel's component, or the
-    /// constant, the entry names ([`crate::SlowPath::SwizzleInShader`]), for back ends without
-    /// [`crate::Features::VIEW_SWIZZLE`] (Direct3D 12's component mappings, Direct3D's stencil views).
+    /// constant, the entry names ([`crate::SlowPath::SwizzleInShader`]); views carry no mapping, so
+    /// every front maps in the program (Direct3D 12's component mappings, Direct3D's stencil views).
     pub swizzled: Vec<(u32, [ViewComponent; 4])>,
     /// Where the program reads the draw's bases.
     pub draw_base: DrawBaseSource,

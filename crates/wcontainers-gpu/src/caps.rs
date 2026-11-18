@@ -81,8 +81,6 @@ bitflags! {
         /// Views of a texture made with `reinterpret` may take any colour format of the same block size,
         /// not only the sRGB twin. Depth and stencil formats are never reinterpreted.
         const FORMAT_REINTERPRET = 1 << 27;
-        /// Views may swizzle channels.
-        const VIEW_SWIZZLE = 1 << 28;
         /// Views of a part of a texture (mip and layer ranges, other dimensions).
         const TEXTURE_VIEWS = 1 << 29;
         /// Separate textures and samplers in programs, any pairing.
