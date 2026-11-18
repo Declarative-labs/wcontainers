@@ -649,7 +649,11 @@ WebAssembly output does.
   memory is one mapping we make.
 - Inside: `aarch64-paging` 0.12.3 (MIT OR Apache-2.0) and `x86_64` 0.15.5 (MIT/Apache-2.0; the newest stable;
   0.16.0-rc.0 is a pre-release and is not used) for page table entry types; `aarch64-cpu` 12.0.0
-  (MIT/Apache-2.0) for system registers; `talc` 5.1.1 (MIT) as the allocator. The page-table walk that
+  (MIT/Apache-2.0) for system registers, with `arm-sysregs` 0.5.2 (MIT OR Apache-2.0) for the fields it lacks
+  (SCTLR_EL1's, CTR_EL0's, PMCR_EL0's); `arm-gic` 0.11.0 (MIT OR Apache-2.0, with `safe-mmio` 0.4.0) for the
+  interrupt controller; `spin` 0.10.1 (MIT) for the lock over frames; `talc` 5.1.1 (MIT) as the allocator.
+  The monitor reads the inside's ELF image with `object` 0.37.3 (Apache-2.0 OR MIT) and maps memory with
+  `libc`. The page-table walk that
   copies, shares and write-protects is ours (section 5.2), since it is the speed of fork and of the write
   locks.
 - Emitting: x86-64 re-encodes copied instructions at their new address with `iced-x86` 1.22.0 (MIT; already
@@ -1093,7 +1097,9 @@ next exit, as `LocalSystem`'s would.
 
 One call shape: the inside writes a request in a page shared with the monitor and rings a doorbell; the
 monitor answers in the same page and resumes the virtual CPU. The doorbell is the floor's one
-platform-specific instruction: `hvc` on Hypervisor.framework (an exception exit, used by the round 3
+platform-specific instruction: `hvc` on Hypervisor.framework (in a machine given EL2, which only decision
+10's option C trial makes, `hvc` goes to the guest's own EL2, so there it is a store to the unmapped page
+`layout::DOORBELL`, as on KVM ARM64; built and run at N1) (an exception exit, used by the round 3
 prototype, hvfrun.c and guest.s), an `out` to a port on KVM x86-64 (`KVM_EXIT_IO`, used by vmrun.c), and a
 store to an unmapped guest-physical page on KVM ARM64 (`KVM_EXIT_MMIO`, from KVM's documentation,
 Documentation/virt/kvm/api.rst; not yet tried: no KVM ARM64 machine is at hand). Requests are typed messages
@@ -1721,6 +1727,15 @@ choice. The count's definition is E (section 4).
    Recommended: let N1 and N8 try C (N1: EL2 enabled, PMUVer set by the host, an overflow interrupt after a
    given number of EL0 instructions, and its lateness; N8: the same for ring 3 under KVM); take C if it works
    on both, else B with its costs as above.
+   N1's result (measured on this M5, macOS 27.2, three runs): C does not work on Hypervisor.framework. In a
+   machine with EL2 enabled and PMUVer set to 1 by the host (it reads back), the virtual CPU enters at EL1
+   and PMU accesses do not exit, but PMCR_EL0 reads 0x41: N, the number of event counters, is 0, and a write
+   to PMEVCNTR0_EL0 reads back 0, so nothing counts instructions. The cycle counter does count (64 bits),
+   and runs past its overflow with no overflow flag (PMOVSCLR_EL0 0) and no interrupt, while the virtual
+   timer's interrupt arrives through the same GIC; so not even a cycle bound (instructions at most the core's
+   retire width times cycles) can be armed. Also, in such a machine `hvc` goes to the guest's own EL2, so the
+   doorbell must be a store to an unmapped page there. By this decision's recommendation, C is out on this
+   platform and the choice is between A and B; the owner rules.
 11. The other project's borrowed views of kernel state: built into the inside, or copied out through the
    link, when the native back end is used? Recommended: built into the inside, as a policy is.
 12. One virtual machine per host process holding all its native containers (section 5.1), on KVM too, so one
