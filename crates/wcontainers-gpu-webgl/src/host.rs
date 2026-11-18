@@ -1,18 +1,30 @@
 //! Textures kept on the host as well (`HostCopyKept`): formats GLES 3.0 cannot read back (RGB9E5,
-//! the three-channel 32-bit ones and the block-compressed ones), whose read backs come from the bytes written. Block-compressed
-//! textures without their WebGL extension are stored decoded (`BlockDecoded`).
+//! the three-channel 32-bit ones, the block-compressed and the signed normalised ones), whose read
+//! backs and copies come from the bytes written. Block-compressed textures without their WebGL
+//! extension are stored decoded (`BlockDecoded`).
 
 use std::cell::RefCell;
 use wcontainers_gpu::{Format, TextureDesc, TextureDimension};
 
-/// Whether textures of `format` keep a host copy: GPU writes never reach them (they are not
-/// renderable), and GL cannot read them back.
+/// Whether textures of `format` keep a host copy: GL cannot read them back, and GPU writes never
+/// reach them (they are not renderable) or, for signed normalised formats with EXT_render_snorm,
+/// are read back into the host copy by draws before it is read.
 pub fn kept(format: Format) -> bool {
     use Format as F;
     matches!(
         format,
         F::Rgb9e5Float | F::Rgb32Float | F::Rgb32Uint | F::Rgb32Sint
     ) || format.block().0 > 1
+        || crate::format::signed_normalised(format)
+}
+
+/// Whether `bytes`, texels of the signed normalised `format`, may hold a component's smallest value
+/// (-128, or -32768 for 16-bit components), which a draw reads as the value above it.
+pub fn holds_minimum(format: Format, bytes: &[u8]) -> bool {
+    match crate::format::gl_format(format).map(|g| g.ty) {
+        Some(glow::SHORT) => bytes.windows(2).any(|w| w == [0, 0x80]),
+        _ => bytes.contains(&0x80),
+    }
 }
 
 /// Every level of a texture, each its slices (layers, or depth slices in 3D) of tightly packed rows

@@ -1,7 +1,7 @@
 //! The per-draw cost of the WebGL 2 back end against the WebGPU back end, both built for WebAssembly
 //! and run in one Chrome by browser/cost.mjs (cost.html): one scene, many small quads in one pass, each
-//! draw naming its own uniform binding set or all naming one. The page times each frame's recording
-//! and submission.
+//! draw naming its own uniform binding set or all naming one, drawn as strips or as indexed lists
+//! that do not restart. The page times each frame's recording and submission.
 #![cfg(target_arch = "wasm32")]
 
 #[path = "common/kit.rs"]
@@ -37,6 +37,8 @@ struct Scene<B: Backend> {
     program: B::Program,
     target: B::TextureView,
     sets: Vec<B::BindingSet>,
+    /// A quad's two triangles as 16-bit indices.
+    indices: B::Buffer,
     viewport: [Viewport; 1],
 }
 
@@ -80,29 +82,62 @@ impl<B: Backend> Scene<B> {
             );
         }
         b.write_buffer(&buffer, 0, &bytes, WriteMode::Discard);
+        let indices = b
+            .create_buffer(&BufferDesc {
+                size: 12,
+                usage: BufferUsage::INDEX | BufferUsage::COPY_DST,
+                intent: MapIntent::Rarely,
+            })
+            .expect("create_buffer");
+        let quad: Vec<u8> = [0u16, 1, 2, 2, 1, 3]
+            .iter()
+            .flat_map(|i| i.to_le_bytes())
+            .collect();
+        b.write_buffer(&indices, 0, &quad, WriteMode::Ordered);
         Scene {
             kit,
             program,
             target,
             sets,
+            indices,
             viewport: [kit::viewport(0.0, 0.0, SIZE as f32, SIZE as f32)],
         }
     }
 
-    /// One pass of `draws` quads, each with the next binding set when `vary`, else all with the first;
-    /// then a submit.
-    fn frame(&self, b: &mut B, draws: u32, vary: bool) {
+    /// One pass of `draws` quads, each with the next binding set when `vary`, else all with the first,
+    /// as strips or, when `indexed`, as indexed lists without restart; then a submit.
+    fn frame(&self, b: &mut B, draws: u32, vary: bool, indexed: bool) {
         b.begin_pass(&kit::pass(&self.target, [0; 4], None));
         for i in 0..draws {
             let set = &self.sets[if vary { (i % SETS) as usize } else { 0 }];
-            b.draw(&kit::call(
+            let strip = kit::call(
                 &self.kit,
                 &self.program,
                 Some(set),
                 &self.viewport,
                 Topology::TriangleStrip,
                 4,
-            ));
+            );
+            if !indexed {
+                b.draw(&strip);
+                continue;
+            }
+            b.draw(&DrawCall {
+                index: Some(IndexBinding {
+                    buffer: &self.indices,
+                    offset: 0,
+                    format: IndexFormat::U16,
+                }),
+                topology: Topology::TriangleList,
+                range: DrawRange::Indexed {
+                    first: 0,
+                    count: 6,
+                    base_vertex: 0,
+                    first_instance: 0,
+                    instances: 1,
+                },
+                ..strip
+            });
         }
         b.end_pass();
         b.submit();
@@ -122,8 +157,8 @@ impl GlCost {
         GlCost(b, s)
     }
 
-    pub fn frame(&mut self, draws: u32, vary: bool) {
-        self.1.frame(&mut self.0, draws, vary);
+    pub fn frame(&mut self, draws: u32, vary: bool, indexed: bool) {
+        self.1.frame(&mut self.0, draws, vary, indexed);
     }
 
     /// The device's state and the renderer, after the frames.
@@ -168,8 +203,8 @@ mod gpu {
 
 #[wasm_bindgen]
 impl GpuCost {
-    pub fn frame(&mut self, draws: u32, vary: bool) {
-        self.1.frame(&mut self.0, draws, vary);
+    pub fn frame(&mut self, draws: u32, vary: bool, indexed: bool) {
+        self.1.frame(&mut self.0, draws, vary, indexed);
     }
 
     pub fn report(&mut self) -> String {
