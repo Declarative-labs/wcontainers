@@ -159,6 +159,9 @@ pub enum AddedBinding {
     ConstantsAsTexture(u32),
     /// Root constants past the back end's immediate bytes, as a uniform buffer (Direct3D 12).
     SpilledImmediates,
+    /// Layer n (from 1) of the multisampled array texture in the stage's texture slot s, as (s, n)
+    /// ([`VariantKey::texture_layers`]).
+    TextureLayer(u32, u32),
 }
 
 /// A value the API's pipeline gives a stage, or takes from it, by meaning rather than by location.
@@ -566,6 +569,11 @@ pub struct VariantKey {
     /// [`CLAMPED_SAMPLER_BINDING`], loaded and gathered by [`HelperValue::MinLod`]
     /// ([`crate::SlowPath::MinLodClamp`]).
     pub min_lod_clamped: u128,
+    /// Multisampled array texture slots, by slot, with the bound view's layer count: the front holds
+    /// such a texture as a texture per layer (4.2), binds layer 0 at the slot's binding and layer n at
+    /// the added binding [`AddedBinding::TextureLayer`]; a load from a layer past the count reads zero,
+    /// as Direct3D's out-of-range loads do.
+    pub texture_layers: Vec<(u32, u32)>,
     /// Where the program reads the draw's bases.
     pub draw_base: DrawBaseSource,
     /// How the next stage interpolates the vertex program's float outputs, by location, where not
