@@ -36,6 +36,45 @@ branches into it at the start and end of every run, keeps the whole workspace bu
   check"): plan 15.4 now names each of Vulkan 1.1's 67 features present or absent with its route or
   reason; the suite and the random sequences now copy within depth and stencil subresources of
   every format (`Depth24Plus` added). No branch had anything new at the start (fetched first).
+- G1c, run 6 (2026-11-18): the four findings of G1c's fifth check settled (below, "G1c's fifth
+  check"): Vulkan's `robustBufferAccess` now names a route for vertex input; the alpha lowering's
+  two NIR steps are named; the random sequences now check every depth or stencil copy's moved
+  texels. No branch had anything new at the start (fetched first).
+
+## G1c's fifth check, and how each finding was settled (run 6)
+
+Claims checked at their source (the check's downloads, scratch `graphics/check-g1c-5/dl`: the
+WebGPU specification, Vulkan's `shaders.adoc`, Mesa's `nir_lower_alpha.c`; this run's, scratch
+`graphics/g1c6/dl`: VK-GL-CTS's robustness and multisample test sources from its main branch).
+- Blocking, `robustBufferAccess`'s vertex input: WebGPU may cancel a whole draw whose vertex
+  fetches go out of range (its vertex processing, checked), which Vulkan does not allow. 15.4 now
+  lists the feature among the slow-path features (native 11, slow paths 20; 41 present, 26 absent
+  as before; scratch `g1c6/features.py` over `vk.xml` finds each of the 67 in exactly one list and
+  each list's stated count). Route: shader access natively; draws whose ranges the driver sees
+  (without indices; instance streams of direct draws) by `VertexFetchZeroed`; indexed and indirect
+  draws on a device made with the feature by the pulled variant (`VertexPulledInShader`,
+  `VariantKey::pulled`), reads past the bound range giving zero, so WebGPU never meets one; a
+  device made without it binds natively (Vulkan leaves such reads undefined); a direct indexed
+  draw past its index buffer (invalid without `robustBufferAccess2`, not reported) is dropped with
+  a warning. G10's pass bar adds `dEQP-VK.robustness.vertex_access.*` (checked: the group exists,
+  with draw and indexed draw cases, `vktRobustnessVertexAccessTests.cpp`) and a driver test over the
+  recorder. The cases of `index_access` with robustness 1 need `VK_EXT_pipeline_robustness`, which
+  is not reported (checked), so they are NotSupported. The same fact corrects 4.12's text for
+  Direct3D's indexed draws (WebGPU may cancel the draw, not only give a value); kept a listed loss
+  there, with the pulled route as the alternative named in 15.9 for the owner.
+- `alphaToOne`'s NIR steps: 15.4 now says the route turns `demote_samples` into the sample mask
+  output ANDed with the program's own, and carries the pass's 16-bit operations in 32-bit words
+  (zero-extended; and, or, multiply and shift left masked after; shift counts masked to 4 bits as
+  NIR's 16-bit shifts take them; shift right on the zero-extended value). G8 takes both steps, the
+  fragment shaders of `dEQP-VK.pipeline.monolithic.multisample.alpha_to_one.*` (group checked in
+  `vktPipelineMultisampleTests.cpp`) in its corpus and a test of the widened operations over every
+  16-bit value and count; whether lavapipe runs `demote_samples` is G8's first check.
+- The sequences' depth or stencil copies: `DepthCopy` now reads each aspect before and after the
+  copy and asserts the after is the before with the region moved (`sequence.rs`). Two faults in
+  the recorder, run against `--test sequences` only, are caught: a copy within one `Depth24Plus`
+  subresource dropped, and a `Stencil8` region's texels placed in reverse order.
+- The WebGPU back end's depth or stencil copy: still unbuilt (that branch's newest commit is
+  c10ec679, 02:54); kept under "Known failures" and "For the other tracks".
 
 ## G1c's fourth check, and how each finding was settled (run 5)
 
@@ -281,6 +320,9 @@ G1c run 5 (from the shaders branch, merged at the end of the run):
   The new suite tests `a_copy_within_one_depth_or_stencil_subresource_moves_the_region`,
   `every_vertex_format_reads_its_element` and `the_occlusion_counter_counts_every_sample_that_passes`
   (your summing program's first shared test) come in when you merge.
+- Direct3D 11 and 12: plan 4.12 now says an indexed draw whose indices reach past a vertex
+  buffer's end may be cancelled whole by WebGPU (its index resolution allows it), not only given a
+  value; still a listed loss, and 15.9 asks the owner whether to take the pulled variant instead.
 - WebGL: the same three suite tests; `every_vertex_format_reads_its_element` asks for `Bgra8Unorm`
   and the packed formats, which GL ES lacks or reads differently, and `rgba32float` targets (needs
   `EXT_color_buffer_float`; the test asks `RENDER | COPY_OUT` of it, so a missing extension fails it
@@ -327,7 +369,7 @@ pointers to a function's locals passed to another function.
 
 ## Next
 
-- G1c's independent check, fifth round.
+- G1c's independent check, sixth round.
 - G1d (plan 15.8) once the owner has answered plan 15.9 (now also: wvk, Vulkan's slow features
   reported present, the copy into streams, the back end as its own module and the import call per
   interface call it costs, OpenGL and Vulkan as two modules, Xwayland with a GLX stand-in).
@@ -355,7 +397,9 @@ pointers to a function's locals passed to another function.
     copies the tree, changes one place, runs the tests named and prints CAUGHT, SURVIVED or BUILD
     FAILED). Run 2's and 3's faults: scratch `g1c2/faults.py` and `g1c3/faults.py`, the same way, each fault
     a list of changes.
-    Run 5's fault: scratch `g1c5/faults.py`, the same way. Earlier runs' scripts are in scratch
+    Run 5's fault: scratch `g1c5/faults.py`, the same way; run 6's two: scratch `g1c6/faults.py`.
+  - Plan 15.4's feature lists: `python3 -I features.py <vk.xml> docs/phase-2-graphics.md` (scratch
+    `g1c6/features.py`; `vk.xml` is in scratch `check-g1c-4/dl/vk`). Earlier runs' scripts are in scratch
     `g1r2` to `g1b2`.
 - A back end runs the suite with a test file holding a `Host` implementation and
   `wcontainers_gpu_test::suite!(MyHost);` (see `crates/wcontainers-gpu-test/tests/recorder.rs`).
@@ -363,6 +407,15 @@ pointers to a function's locals passed to another function.
 
 ## Measurements
 
+- G1c run 6, on the Linux laptop (i7-8750H, 12 threads): random sequences at seed 0x5eed (scratch
+  `g1c6/test1.log`, load 3.3), 1,000 asked and run (debug), then 20,000 asked and run
+  (`--release`, 13.3 s of test): 1,318,516 calls, 24,004 copies within one subresource, 21,071 of
+  them of depth or stencil, each now checked against the expected texels; recorded with no rule
+  broken and replayed identically. Faults (scratch `g1c6/faults.log`, load 3.5 to 3.8): 2 of 2
+  caught by the sequences test alone. End check (scratch `g1c6/end-check.log`, load 3.0): the
+  whole workspace checks; owned crates' clippy and docs clean with warnings denied; 234 tests pass
+  (interface 36, compute 8, fast paths 14, helpers 19, suite on the recorder 48, rules 108,
+  sequences 1 at the default 1,000).
 - G1c run 5, on the Linux laptop (i7-8750H, 12 threads, load 0.2 at the start; scratch
   `g1c5/test1.log`): owned crates' clippy with warnings denied clean; 234 tests pass (interface 36,
   compute 8, fast paths 14, helpers 19, suite on the recorder 48, rules 108, sequences 1 at the
@@ -423,6 +476,9 @@ pointers to a function's locals passed to another function.
 
 ## The laptop's disk
 
+- G1c run 6: 41 GB free before the end clean-up (another track building); deleted
+  `target/phase-2-graphics` (7.0 GB), `g1c6/work` and `g1c6/target` (1 GB); 49 GB free after.
+  `g1c6/faults.py` stays there; logs in scratch `g1c6`.
 - G1c found 47 GB free of 122 GB at the start; `target/phase-2-graphics` was absent (deleted at
   G1b's end) and was rebuilt. At the end this run deletes its fault build and tree copy
   (`g1c/work`, `g1c/target`) and the loop's build (`target/phase-2-graphics`); logs stay in `g1c`
@@ -486,7 +542,7 @@ pointers to a function's locals passed to another function.
 ## Known failures
 
 - On the WebGPU back end (the shared line's `crates/wcontainers-gpu-webgpu/src/memory.rs`, which
-  fails "a copy within one subresource of depth or stencil" by name),
+  fails "a copy within one subresource of depth or stencil" by name; still so at run 6),
   `a_copy_within_one_depth_or_stencil_subresource_moves_the_region` fails once that track runs the
   suite from this line, until it builds the route under "For the other tracks". Expected; the
   WebGPU track's work.
@@ -499,6 +555,8 @@ pointers to a function's locals passed to another function.
 
 ## End of run
 
+- Run 6: no branch had anything new at the end (fetched after the work); nothing to merge. No
+  folder was made on the desktop.
 - Run 5: direct3d-11 (its status only) and shaders (nine commits, one "interface:", covered under
   "Interface changes") merged without conflict; then, fetched again, webgl (six commits, one
   "interface:", covered) and shaders (its status) merged without conflict; webgpu, direct3d-12 and
