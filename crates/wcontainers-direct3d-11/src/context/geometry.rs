@@ -308,6 +308,11 @@ impl<B: Backend> Device<B> {
         }
         if let Some((_, ph)) = &program {
             self.update_set(PIXEL, &[])?;
+            if !self.ctx.through[PIXEL].is_empty() {
+                return not_implemented(
+                    "storage textures read through buffers behind a geometry shader",
+                );
+            }
             if ph.size > 0 || !ph.merged.is_empty() {
                 self.write_helpers(&[Rc::default(), ph.clone()], bases, None)?;
             }
@@ -356,6 +361,7 @@ impl<B: Backend> Device<B> {
             None
         };
         self.end_pass();
+        let twin_writes = self.twins_in(&[VERTEX, GEOMETRY, PIXEL], PIXEL);
         let mut counters: [Option<B::Buffer>; 4] = Default::default();
         if let Some(f) = &filled {
             self.backend
@@ -458,6 +464,9 @@ impl<B: Backend> Device<B> {
             return Ok(false);
         };
         self.draw_output(staged, &program, pixel_helpers.as_ref(), raster, &out)?;
+        if twin_writes {
+            self.twins_out(PIXEL);
+        }
         Ok(false)
     }
 

@@ -1159,8 +1159,24 @@ impl<B: Backend> Device<B> {
         };
         self.live()?;
         self.bury();
+        let twin = if !stencil && format::reinterprets(format, texture.format) {
+            if drawn {
+                return not_implemented(
+                    "a target view reinterpreting a typeless texture's bits as another format",
+                );
+            }
+            let gpu = self.backend.create_texture(&GpuTexture {
+                format,
+                ..texture.gpu_desc
+            });
+            let gpu = self.gpu(gpu)?;
+            let id = self.id();
+            Some(Kept::new(gpu, id, Object::Texture, &self.graveyard))
+        } else {
+            None
+        };
         let gpu = self.backend.create_view(
-            &texture.gpu.handle,
+            twin.as_ref().map_or(&texture.gpu.handle, |t| &t.handle),
             &TextureViewDesc {
                 format,
                 dimension,
@@ -1178,6 +1194,7 @@ impl<B: Backend> Device<B> {
             desc: v,
             format,
             gpu: Kept::new(gpu, id, Object::TextureView, &self.graveyard),
+            twin,
         }))
     }
 
@@ -1427,9 +1444,6 @@ impl<B: Backend> Device<B> {
         if d.fill == 2 && !caps.has(Features::POLYGON_MODE) {
             return not_implemented("wireframe without the back end's polygon mode");
         }
-        if !d.depth_clip && !caps.has(Features::DEPTH_CLAMP) {
-            return not_implemented("depth clamping without the back end's depth clamp");
-        }
         self.live()?;
         self.bury();
         let gpu = self
@@ -1451,13 +1465,13 @@ impl<B: Backend> Device<B> {
         stage: wcontainers_gpu::SourceStage,
     ) -> Result<Rc<Shader<B>>> {
         shader::check_model(bytecode, self.level)?;
-        let typed = shader::typed_views(bytecode)?;
+        let mut typed = shader::typed_views(bytecode)?;
         if typed.iter().any(|t| t.buffer)
             && self.backend.caps().limits.storage_buffers_per_stage == 0
         {
             return not_implemented("typed buffers read through a texture (TexelBufferAsTexture)");
         }
-        let (mut converted, reads_samples) = shader::convert(bytecode, stage, &typed)?;
+        let (mut converted, reads_samples) = shader::convert(bytecode, stage, &mut typed)?;
         let samplers = shader::sampler_slots(&converted);
         let textures = shader::texture_slots(&converted);
         let mirror_filtered = shader::mirror_filtered_slots(&converted);

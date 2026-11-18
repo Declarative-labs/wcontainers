@@ -214,6 +214,10 @@ pub struct View<B: Backend> {
     pub desc: ViewDesc,
     pub format: Format,
     pub gpu: Kept<B, B::TextureView>,
+    /// The texture of the view's format the view is made on, where it reinterprets the texture's
+    /// bits; its levels and layers are copied in before each use and out after each write
+    /// (`ReinterpretCopy`).
+    pub twin: Option<Kept<B, B::Texture>>,
 }
 
 impl<B: Backend> View<B> {

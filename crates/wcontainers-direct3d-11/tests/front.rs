@@ -1377,19 +1377,27 @@ fn typeless_textures_are_viewed_through_members_of_their_group() {
         .unwrap();
     dev.create_view(&r32, Some(&view(41)), bind::SHADER_RESOURCE)
         .unwrap();
-    // R8G8B8A8_TYPELESS: UNORM and UNORM_SRGB views; UINT would reinterpret the bits.
+    // R8G8B8A8_TYPELESS: UNORM and UNORM_SRGB views of the texture itself; a UINT view reads
+    // the bits through a twin texture of its format, which a target view cannot yet.
     let colour = dev
         .create_texture(
             &tex2d(4, 4, 27, bind::RENDER_TARGET | bind::SHADER_RESOURCE),
             &[],
         )
         .unwrap();
-    dev.create_view(&colour, Some(&view(29)), bind::RENDER_TARGET)
+    let srgb = dev
+        .create_view(&colour, Some(&view(29)), bind::RENDER_TARGET)
         .unwrap();
+    assert!(srgb.twin.is_none());
     dev.create_view(&colour, Some(&view(28)), bind::SHADER_RESOURCE)
         .unwrap();
+    let uint = dev
+        .create_view(&colour, Some(&view(30)), bind::SHADER_RESOURCE)
+        .unwrap();
+    assert!(uint.twin.is_some());
+    assert_eq!(uint.format, wcontainers_gpu::Format::Rgba8Uint);
     assert!(matches!(
-        dev.create_view(&colour, Some(&view(30)), bind::SHADER_RESOURCE),
+        dev.create_view(&colour, Some(&view(30)), bind::RENDER_TARGET),
         Err(Error::NotImplemented(_))
     ));
     assert!(matches!(
@@ -2267,4 +2275,55 @@ fn stream_output_writes_its_targets_and_draw_auto_draws_what_they_hold() {
     assert!(dev.removed.is_none());
     assert!(!log_from(&dev, from).iter().any(|l| l.starts_with("draw ")));
     assert_eq!(dev.backend.slow_paths().count(SlowPath::ReadBackWait), 1);
+}
+
+#[test]
+fn a_view_reinterpreting_typeless_bits_reads_a_twin_copied_before_each_draw() {
+    let mut dev = device();
+    let target = dev
+        .create_texture(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
+        .unwrap();
+    let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
+    begin(&mut dev, &rtv, None, 16.0);
+    let mut color = element("COLOR", RGBA32F, 0);
+    color.slot = 1;
+    let elements = [
+        element("POSITION", RGB32F, 0),
+        element("TEXCOORD", RG32F, 12),
+        color,
+    ];
+    program(&mut dev, "quads.vs", "quads.ps", &elements);
+    let vertices = immutable(&mut dev, &[0; 20 * 3], bind::VERTEX_BUFFER);
+    dev.ia_set_vertex_buffers(0, &[Some((vertices, 20, 0))])
+        .unwrap();
+    dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+    // R16G16_TYPELESS stored as FLOAT, read as UNORM.
+    let typeless = dev
+        .create_texture(&tex2d(4, 4, 33, bind::SHADER_RESOURCE), &[])
+        .unwrap();
+    let desc = ViewDesc {
+        format: 35,
+        dimension: ViewDim::Texture2D,
+        first_mip: 0,
+        mip_count: 1,
+        first_layer: 0,
+        layer_count: 1,
+    };
+    let unorm = dev
+        .create_view(&typeless, Some(&desc), bind::SHADER_RESOURCE)
+        .unwrap();
+    assert_eq!(unorm.format, wcontainers_gpu::Format::Rg16Unorm);
+    dev.set_shader_resources(PIXEL, 0, &[Some(Rc::new(ShaderView::Texture(unorm)))])
+        .unwrap();
+    for _ in 0..2 {
+        let from = dev.backend.log.len();
+        dev.draw(3, 0);
+        let log = log_from(&dev, from);
+        assert!(
+            find(&log, "copy_texture ") < find(&log, "draw "),
+            "{log:#?}"
+        );
+    }
+    assert_eq!(dev.backend.slow_paths().count(SlowPath::ReinterpretCopy), 2);
+    assert!(dev.removed.is_none());
 }

@@ -3,7 +3,8 @@
 
 use wcontainers_gpu::{
     AddedBinding, CLAMPED_SAMPLER_BINDING, DrawBaseSource, Format, FormatKind, HELPER_SET,
-    HelperSlot, HelperValue, SlotKind, SourceStage, TexelBufferRoute, VariantFlags, VariantKey,
+    HelperSlot, HelperValue, LinkedValues, SlotKind, SourceStage, TexelBufferRoute, VariantFlags,
+    VariantKey,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source};
 
@@ -97,6 +98,9 @@ pub struct TypedView {
     pub buffer: bool,
     /// The kind of value the declaration reads and writes.
     pub kind: FormatKind,
+    /// A storage texture read and written through a buffer of its texels, where the back end
+    /// has no atomics on storage textures (`AtomicsThroughBuffer`).
+    pub through: bool,
 }
 
 impl TypedView {
@@ -180,6 +184,7 @@ pub fn typed_views(bytecode: &[u8]) -> Result<Vec<TypedView>> {
                 register,
                 buffer: dimension == DIMENSION_BUFFER,
                 kind,
+                through: false,
             });
         }
         i += length;
@@ -309,6 +314,9 @@ pub struct StageVariant {
     /// The formats of the bound typed views, one for each the shader declares, by the device's
     /// number for the list; zero for the plain program's placeholders.
     pub formats: u32,
+    /// Depth is clamped in the programs (`DepthClampInShader`), their added value at this
+    /// location; zero where the back end clamps.
+    pub linked: u32,
 }
 
 impl StageVariant {
@@ -340,6 +348,13 @@ impl StageVariant {
         }
         if self.from_arguments {
             key.draw_base = DrawBaseSource::Arguments;
+        }
+        if self.linked != 0 {
+            key.flags |= VariantFlags::DEPTH_CLAMP;
+            key.linked = LinkedValues {
+                location: self.linked,
+                clip_distances: 0,
+            };
         }
         key
     }
@@ -392,22 +407,30 @@ impl Helpers {
 /// Converts a shader of `expected` stage. Bytecode the converter refuses is invalid to Direct3D too;
 /// what it cannot convert yet is not implemented. The flag says the program reads the targets'
 /// sample count, which it is converted with at each draw; here it is converted for one sample, so its
-/// reflection is known.
+/// reflection is known. Where the converter has no atomics on storage textures, the typed texture
+/// views are marked to be read through buffers of their texels.
 pub fn convert(
     bytecode: &[u8],
     expected: SourceStage,
-    typed: &[TypedView],
+    typed: &mut [TypedView],
 ) -> Result<(Converted, bool)> {
-    match raw(bytecode, expected, &base_key(expected, typed))? {
-        Err(ConvertError::Unsupported("SampleCount")) => {
-            let key = StageVariant {
-                samples: 1,
-                ..StageVariant::default()
+    let mut samples = false;
+    loop {
+        let variant = StageVariant {
+            samples: u8::from(samples),
+            ..StageVariant::default()
+        };
+        match raw(bytecode, expected, &variant.key(expected, typed, &[]))? {
+            Err(ConvertError::Unsupported("SampleCount")) if !samples => samples = true,
+            Err(ConvertError::Unsupported("StorageImageAtomics"))
+                if typed.iter().any(|t| t.storage && !t.buffer && !t.through) =>
+            {
+                for t in typed.iter_mut().filter(|t| t.storage && !t.buffer) {
+                    t.through = true;
+                }
             }
-            .key(expected, typed, &[]);
-            Ok((answer(raw(bytecode, expected, &key)?, 1)?, true))
+            r => return Ok((answer(r, 1)?, samples)),
         }
-        r => Ok((answer(r, 1)?, false)),
     }
 }
 
@@ -435,6 +458,10 @@ pub fn base_key(stage: SourceStage, typed: &[TypedView]) -> VariantKey {
         } else {
             TexelBufferRoute::Native
         },
+        texels_through_buffer: typed
+            .iter()
+            .filter(|t| t.through && t.register < 64)
+            .fold(0, |m, t| m | 1 << t.register),
         ..VariantKey::default()
     }
 }
@@ -558,6 +585,8 @@ fn answer(r: core::result::Result<Converted, ConvertError>, modules: usize) -> R
                         | HelperValue::DepthBias
                         | HelperValue::PulledStream { .. }
                         | HelperValue::TexelBufferView { .. }
+                        | HelperValue::TexelLayout { .. }
+                        | HelperValue::DepthRange
                 )
             }) =>
         {
@@ -629,12 +658,14 @@ mod tests {
                     register: 2,
                     buffer: false,
                     kind: FormatKind::Uint,
+                    through: false,
                 },
                 TypedView {
                     storage: false,
                     register: 1,
                     buffer: true,
                     kind: FormatKind::Float,
+                    through: false,
                 },
             ]
         );
