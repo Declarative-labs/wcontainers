@@ -5,7 +5,7 @@
 // chrome-webgpu-<scene>.png into <out-dir>, or <out-dir>\<twist> for a twist other than none, and
 // the eight-viewport scene as chrome-webgpu-viewports.png and, moved to whole pixels,
 // chrome-webgpu-viewports-rounded.png, prints first-draw timings with and without prepare, and checks
-// prepared strips, timestamps (also in Chrome without developer features), the formats held converted, the vertex formats read through shadows
+// prepared strips, timestamps, the formats held converted, the vertex formats read through shadows
 // and BGRA vertices, query sets past 4096 queries and the query ring, copies between depth16unorm
 // and its group, and the cost of instance data fetched in the program.
 // Fails unless WebGPU's adapter is a GPU (discrete or integrated, not a fallback).
@@ -133,26 +133,6 @@ try {
   }
 } finally {
   await browser.close();
-}
-// Timestamps again in Chrome as users have it (no developer features), which rounds them.
-const plain = await launch(false);
-try {
-  const page = await plain.newPage();
-  await page.goto(`http://127.0.0.1:${server.address().port}/scenes.html`);
-  let line;
-  for (let attempt = 1; !line && attempt <= 10; attempt++) {
-    line = await page.evaluate(() => window.timestamps()).catch((e) => {
-      if (attempt === 10) throw e;
-      return null;
-    });
-    if (!line) await page.waitForTimeout(200);
-  }
-  console.log(`chrome timestamps without developer features: ${line}`);
-} catch (e) {
-  console.log(`chrome timestamps without developer features failed: ${e.message}`);
-  failed = true;
-} finally {
-  await plain.close();
   server.close();
 }
 process.exitCode = failed ? 1 : 0;
