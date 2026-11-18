@@ -47,6 +47,26 @@ fn timestamps_are_ordered_scaled_and_run_at_the_cpu_clocks_rate() {
     assert_eq!(b.timestamps_disjoint(), Ok(false));
 }
 
+/// A device without timestamp queries declares no timestamps and refuses them by name.
+#[test]
+fn timestamps_are_absent_on_a_device_without_timestamp_queries() {
+    let (mut b, _) = pollster::block_on(draw::device_without(
+        &draw::instance(backends()),
+        wgpu::Features::TIMESTAMP_QUERY,
+    ))
+    .unwrap();
+    assert!(!b.caps().has(Features::TIMESTAMPS));
+    assert_eq!(
+        b.create_query_set(QueryKind::Timestamp, 1).unwrap_err(),
+        GpuError::Absent(Features::TIMESTAMPS)
+    );
+    assert_eq!(
+        b.timestamps_disjoint(),
+        Err(GpuError::Absent(Features::TIMESTAMPS))
+    );
+    assert!(b.create_query_set(QueryKind::OcclusionAny, 1).is_ok());
+}
+
 /// An instance without wgpu's conversion to nanoseconds, on a GPU whose clock ticks in other
 /// units, declares no timestamps and refuses them; where the clock ticks in nanoseconds it is
 /// unchanged.
