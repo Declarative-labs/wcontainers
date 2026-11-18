@@ -193,6 +193,11 @@ LTP comparison (layer 3), table at the end of this run:
 - Excused with a gap: none final yet; the draft list below stands, with the section 15 causes
   named above.
 
+Whole suite at adc5628c (the last code commit of this run): 234 passed, 0 failed, 11 ignored
+(their known reasons), 10:09 to 12:46 beside the whole LTP run, load 25 to 90 (scratch
+k6c3/suite.log). Layer 1 at adc5628c: seeds 9191003, 9191004 and 9191005, each 300 sequences
+in memory, 32 on the backend and 32 on the caching backend, matched (load about 45).
+
 LTP reruns at the newest code, one by one: ftest02, ftest06 (pass), proc01 (fail, as the
 reference), statx01, rt_sigqueueinfo01, mlock203, munlockall01, mmap14, execve04, creat07,
 get_robust_list01, eventfd06 (pass); mlock201 still fails (mincore: page residency not
@@ -3409,9 +3414,9 @@ K6c, in this order:
    the causes named in this run's table), commit the results file of the last whole comparison
    under ltp/, and write the counters list (Not built, by counter). The system calls list is
    current (Done 256, Missing 6, Refused 65).
-7. Three fresh layer 1 seeds at the end (fresh seeds start at 9191003).
-8. The whole suite (started detached at adc5628c, scratch k6c3/suite.log, load in suite.load):
-   read its result.
+7. Three fresh layer 1 seeds at the end (9191003 to 9191005 passed at adc5628c; fresh seeds
+   start at 9191006).
+8. The whole suite passed at adc5628c; run it again after the next code changes.
 
 After K6b (fifth run), in this order (none of these holds K6b):
 1. inotify on a backend root (tests/inotify.rs, ignored with its reason): IN_EXCL_UNLINK needs
@@ -3494,6 +3499,6 @@ sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seed
 737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, 5050001, 5050003 and
 5050002, 5050401 to 5050462 (K5; sockets reached from 5050405), 5050463 to 5050466 (K6a),
 6262601 to 6262624 and 8484001 to 8484003 (K6b), 8484004 (K6c, 300 sequences), 9191001 and
-9191002 (K6c third run, 200 each), and the checks' 7373001 and 7373003, 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+9191002 (K6c third run, 200 each), 9191003 to 9191005 (300, 32, 32 each), and the checks' 7373001 and 7373003, 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
 0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
 to 4040315, and the check's 7171002.
