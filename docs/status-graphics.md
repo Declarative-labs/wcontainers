@@ -555,8 +555,13 @@ pointers to a function's locals passed to another function.
 
 ## End of run
 
-- Run 6: no branch had anything new at the end (fetched after the work); nothing to merge. No
-  folder was made on the desktop.
+- Run 6: after the push, webgpu brought eleven commits (its G2c run 1: three-channel 32-bit
+  formats in four-channel twins, timestamps in Chrome, frame profiles, its status, and its own
+  merges of the other branches); merged without conflict, no owned file and no "interface:"
+  commit among them. The whole workspace checks after it (scratch `g1c6/end-check2.log`, laptop,
+  load 3.9); that build folder deleted after. The depth or stencil copy route is still not on that
+  branch (`memory.rs` still fails it by name). The rest had nothing new. No folder was made on the
+  desktop.
 - Run 5: direct3d-11 (its status only) and shaders (nine commits, one "interface:", covered under
   "Interface changes") merged without conflict; then, fetched again, webgl (six commits, one
   "interface:", covered) and shaders (its status) merged without conflict; webgpu, direct3d-12 and
