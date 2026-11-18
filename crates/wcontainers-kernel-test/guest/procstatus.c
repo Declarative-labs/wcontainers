@@ -3,7 +3,8 @@
 // changing each. With an argument "private", it shows instead whether a private file mapping sees a
 // later write to the file; with "unbuilt", it opens entries of /proc Linux has and one it has not;
 // with "limits", it lists /proc/sys/kernel/keys and /proc/sys/user with the values that do not
-// depend on the machine's memory, tries to write one, and lists /proc/cgroups.
+// depend on the machine's memory, tries to write one, and lists /proc/cgroups and the heading of
+// /proc/swaps.
 
 #define _GNU_SOURCE
 #include <fcntl.h>
@@ -100,6 +101,11 @@ int main(int argc, char **argv) {
         while (fscanf(cgroups, "%63s %d %d %d", name, &hierarchy, &count, &enabled) == 4)
             printf("%s %d %d\n", name, hierarchy, enabled);
         fclose(cgroups);
+        // The swap areas' heading (the reference's machine has one area, the made-up one none).
+        FILE *swaps = fopen("/proc/swaps", "r");
+        fgets(line, sizeof line, swaps);
+        fputs(line, stdout);
+        fclose(swaps);
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "private") == 0) {

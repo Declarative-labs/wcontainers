@@ -308,6 +308,7 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("mounts", Global::Link("self/mounts")),
     ("net", Global::Link("self/net")),
     ("stat", Global::File(0o444)),
+    ("swaps", Global::File(0o444)),
     ("sys", Global::Directory),
     ("sys/abi", Global::Directory),
     ("sys/debug", Global::Directory),
@@ -1531,6 +1532,8 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
             match path {
                 // The made-up machine's kernel was started with no parameters.
                 "cmdline" => out.push('\n'),
+                // The made-up machine has no swap, as meminfo says.
+                "swaps" => out.push_str("Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"),
                 // The control groups built into the reference's kernel, none on a version 1
                 // hierarchy; the made-up machine's one group is the container's.
                 "cgroups" => {
