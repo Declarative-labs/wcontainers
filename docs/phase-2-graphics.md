@@ -1417,9 +1417,12 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
   other than one instance: natively where the back end has `INSTANCE_STEP_RATE` (WebGL 2's divisor),
   otherwise `InstanceRateInShader`. Direct3D reads zero past the end of a vertex buffer:
   for draws without indices the front draws the part past the end with a zero buffer bound
-  (`VertexFetchZeroed`), exact; for indexed draws, indices past the end get what WebGPU's robust access
-  gives (zero or a value from inside the buffer), a listed loss, as DXVK has on Vulkan without
-  `robustBufferAccess2`.
+  (`VertexFetchZeroed`), exact; for indexed draws, indices past the end get what WebGPU gives: zero,
+  a value from inside the buffer, or the whole draw cancelled, which WebGPU's index resolution
+  allows (checked: the specification's vertex processing); a listed loss. The exact route is the
+  pulled variant for the draw's streams (`VariantKey::pulled`), which the Vulkan driver takes when
+  its program enables robust access (15.4); here every indexed draw would pay for it, since
+  Direct3D has no such switch.
 - Stream output that transform feedback cannot write as declared (gaps that must leave the buffer's
   bytes alone, several elements per buffer in separate mode) is captured whole into a scratch buffer and
   repacked by a second capture that also reads the destination's old bytes (`StreamOutRepacked`).
@@ -2950,10 +2953,7 @@ What is reported (5.5 points here), by research Q1 and Q3:
   where the adapter has what they need) and 26 absent. Nothing else decides a feature; G10 checks
   the driver's answer against these lists.
 
-Present natively (12):
-- `robustBufferAccess` (required): WebGPU's robust access; its out-of-range reads give a value
-  within the buffer or zero and its out-of-range writes stay within the buffer or are dropped, which
-  Vulkan allows.
+Present natively (11):
 - `fullDrawIndexUint32`: WebGPU splits only strips at the restart value; a list takes every 32-bit
   value as an index (checked: the WebGPU specification's primitive assembly, 23.2.3), and a strip
   drawn with restart off is `RestartRewrite` (5.7).
@@ -3001,9 +3001,30 @@ route's output (15.3) and, as for Direct3D, not slow paths (4):
   every route.
 
 Present through counted slow paths, by the routes the Direct3D and OpenGL fronts take on the same
-back end (19). wvk serves most of these on WebGPU too, some only where the adapter has a feature: its
+back end (20). wvk serves most of these on WebGPU too, some only where the adapter has a feature: its
 `occlusionQueryPrecise` only with `float32-blendable` or native Vulkan, its `shaderCullDistance`
 only with `clip-distances` (checked in `wvk_physical_device.c`).
+- `robustBufferAccess` (required). Shader access natively: WebGPU's robust access gives an
+  out-of-range read a value within the binding or zero and keeps an out-of-range write within it or
+  drops it, which Vulkan allows. Vertex input takes routes, because WebGPU's index resolution may
+  cancel a whole draw when any of its vertex fetches is out of range (checked: the WebGPU
+  specification's vertex processing, "Optionally (implementation-defined), empty vertexIndexList
+  and return, cancelling the draw call"), and a cancelled draw is not among the results Vulkan
+  allows (values from within the buffer, zero, or (0,0,0,x); checked: the specification's robust
+  buffer access, which bounds vertex input by the bound vertex buffer range). The interface already
+  refuses a fetch past a stream's end (the recording back end does), so the driver keeps every
+  fetch it hands over in range. Draws whose ranges it sees on the CPU (draws without indices, and
+  the instance streams of every direct draw; WebGPU's validation refuses those past the end): the
+  part past a stream's end drawn with a zero buffer bound (`VertexFetchZeroed`), exact, as the
+  Direct3D fronts'. Indexed and indirect draws, whose vertices it cannot see, on a device made with
+  the feature enabled: the program's variant that fetches every vertex stream from storage with
+  bounds checks against the bound range, reads past it giving zero (`VertexPulledInShader`,
+  `VariantKey::pulled`, 4.12), so WebGPU never meets a fetch out of range. On a device made without
+  it, Vulkan leaves such reads undefined and the streams are bound natively. A direct indexed draw
+  whose indices reach past the bound index buffer breaks Vulkan's valid usage without
+  `robustBufferAccess2`, which is not reported; the driver drops it with a warning rather than hand
+  WebGPU a draw its validation refuses. The pulled route's cost against native fetch is measured at
+  G10 on the programs that enable the feature.
 - `geometryShader`, `tessellationShader` (the stage helper, which matched Direct3D 11 on the RTX
   3080 in the shaders track) and `shaderTessellationAndGeometryPointSize` (the stage helper's points
   carry their size and are drawn as quads, `PointsAsQuads`, as OpenGL 4.6's).
@@ -3028,8 +3049,17 @@ only with `clip-distances` (checked in `wvk_physical_device.c`).
   `nir_lower_alpha_to_one` writes alpha one (both in `src/compiler/nir/nir_lower_alpha.c`, MIT,
   checked); Vulkan specifies no algorithm from alpha to coverage beyond a count of ones
   proportional to alpha (checked: the specification's multisample coverage), so the program's
-  pattern is one an implementation may use. The OpenGL driver takes the same route for
-  `GL_SAMPLE_ALPHA_TO_ONE`.
+  pattern is one an implementation may use. Two steps of the NIR route (15.3) serve that pass's
+  output, which WGSL cannot say as it stands (checked in the source): its `demote_samples` of the
+  uncovered samples becomes the program's sample mask output, ANDed with any mask the program
+  writes itself (all ones where it writes none), which removes the same samples; and its 16-bit
+  integer arithmetic (`nir_u2u16`, 16-bit multiplies and a 16-bit rotate) is carried in 32-bit
+  words holding the zero-extended value, for the operations that pass uses only: conversions,
+  and, or, multiply and shift left masked to the low 16 bits after; shift counts masked to their
+  low 4 bits, as NIR's 16-bit shifts take them; shift right on the zero-extended value. These give
+  the same bits as 16-bit operations (held at G8 by a test over every 16-bit value and count).
+  Programs' 16-bit integers stay absent (below): they would bring every other 16-bit operation. The
+  OpenGL driver takes the same route for `GL_SAMPLE_ALPHA_TO_ONE`.
 
 Absent, each with its reason (26):
 - `depthBounds`: WebGPU has no depth bounds test, and a program cannot read the stored depth of an
@@ -3294,8 +3324,15 @@ its load, as everywhere.
 - **G8, the NIR route.** `wcontainers-nir`, both candidates of 15.3 measured, one chosen, the cache
   keyed as 15.3 says, and the program rewrites 15.4 takes from the shaders crate made on the
   route's output (formatless storage, gathers with offsets at run time, arrays of textures,
-  samplers and combined image samplers indexed at run time), each with a corpus shader using it.
-  Pass bar: 15.3's, the outputs of every converted shader held to llvmpipe's or lavapipe's. Needs:
+  samplers and combined image samplers indexed at run time), each with a corpus shader using it;
+  and the two steps 15.4's `alphaToOne` needs (`demote_samples` as the sample mask output, the
+  pass's 16-bit integer operations in 32-bit words), with the fragment shaders of
+  `dEQP-VK.pipeline.monolithic.multisample.alpha_to_one.*` after `nir_lower_alpha_to_coverage` and
+  `nir_lower_alpha_to_one` in the corpus, and the widened operations held to 16-bit ones by a test
+  over every 16-bit value and shift count. Whether lavapipe runs the lowered NIR
+  (`demote_samples`) is checked first; where it does not, those shaders are held by G10's CTS
+  cases, listed so. Pass bar: 15.3's, the outputs of every converted shader held to llvmpipe's or
+  lavapipe's. Needs:
   Mesa pinned and building on the laptop (with llvmpipe and lavapipe), and the rig's queue for
   shaders past the recorder's limits.
 - **G9, OpenGL natively.** `wcontainers-opengl` and Mesa built for Windows with it, llvmpipe beside.
@@ -3332,7 +3369,12 @@ its load, as everywhere.
   3080's Vulkan or lavapipe within the rig's allowance; the reported features are exactly 15.4's
   (the 67 features as `vulkaninfo` lists them on the RTX 3080, against 15.4's five lists; and a
   test of the driver over the recording back end, `Recorder::with_caps` taking away in turn each
-  capability a feature depends on, giving each adapter-dependent feature's answer both ways).
+  capability a feature depends on, giving each adapter-dependent feature's answer both ways);
+  `robustBufferAccess`'s vertex half (15.4) held by `dEQP-VK.robustness.vertex_access.*` (draws
+  with and without indices) among `vk-default`, and by a test of the driver over the recording
+  back end, which refuses any fetch past a stream's end: indexed and indirect draws whose indices
+  reach past a stream on a device with the feature enabled are drawn through the pulled variant and
+  read zero there, and draws without indices past the end through `VertexFetchZeroed`.
   The browser half: `vulkan.wasm` in Chrome on WebGPU, `vk-default` built for WebAssembly as G9b
   builds dEQP (the CTS calling the driver's entry points without a loader), with the same measure.
   Needs: G1d, G8 (G9b's way of running the suites in Chrome for the browser half).
@@ -3390,6 +3432,9 @@ its load, as everywhere.
   (Xwayland) are in scope; taking them also takes a GLX stand-in of ours and the Vulkan ICD's X11
   surfaces (15.5), proven at G13.
 - Sound capture (the microphone): in or out.
+- Direct3D's indexed draws whose indices reach past a vertex buffer's end: kept a listed loss
+  (WebGPU may cancel the whole draw, 4.12), or drawn through the pulled variant as Vulkan's robust
+  devices are (15.4), which every indexed draw would pay for.
 - The interface changes of 15.7, which change the fronts' code.
 - Names: `wcontainers-opengl`, `wcontainers-vulkan`, `wcontainers-nir`, `wcontainers-gpu-channel`,
   and the modules `gpu-webgpu.wasm`, `gpu-webgl.wasm`, `opengl.wasm`, `vulkan.wasm`; and where our
