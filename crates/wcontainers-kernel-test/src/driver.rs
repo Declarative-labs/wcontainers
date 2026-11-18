@@ -53,7 +53,7 @@ fn back_end(seed: u64) -> Back {
 }
 
 /// The look-ahead `LOOK_AHEAD` names: `full` (also when unset), `none`, or `bounded`, whose N is drawn
-/// from 1 to 64 from the run's seed and printed.
+/// from 1 to 64 from the run's seed and `LOOK_AHEAD_SEED` (0 if unset), and printed.
 #[cfg(feature = "runtime")]
 fn look_ahead(seed: u64) -> wcontainers_wasmtime::LookAhead {
     use wcontainers_wasmtime::LookAhead;
@@ -61,8 +61,11 @@ fn look_ahead(seed: u64) -> wcontainers_wasmtime::LookAhead {
         Err(_) | Ok("full") => LookAhead::Full,
         Ok("none") => LookAhead::None,
         Ok("bounded") => {
-            let n = StdRng::seed_from_u64(seed ^ 0x1007_a4ead).random_range(1..=64);
-            eprintln!("look-ahead bounded {n} (run seed {seed})");
+            let knob = std::env::var("LOOK_AHEAD_SEED").map_or(0, |seed| {
+                seed.parse().expect("LOOK_AHEAD_SEED is an unsigned number")
+            });
+            let n = StdRng::seed_from_u64(seed ^ knob ^ 0x1007_a4ead).random_range(1..=64);
+            eprintln!("look-ahead bounded {n} (run seed {seed}, LOOK_AHEAD_SEED {knob})");
             LookAhead::Bounded(n)
         }
         Ok(other) => panic!("LOOK_AHEAD is full, none or bounded, not {other}"),
@@ -78,7 +81,7 @@ impl From<std::convert::Infallible> for Failure {
 
 /// What the WebAssembly back end translated for a run, on the standard error.
 #[cfg(feature = "runtime")]
-fn report(cpu: &Back) {
+fn report(cpu: &Back, took: Duration) {
     let translated = cpu.translated();
     let at_run_time = translated.iter().filter(|t| t.at_run_time).count();
     let made: Vec<_> = translated.iter().filter_map(|t| t.made).collect();
@@ -86,13 +89,14 @@ fn report(cpu: &Back) {
         .iter()
         .fold((0, 0), |(t, c), (more_t, more_c)| (t + more_t, c + more_c));
     eprintln!(
-        "cpu side: {} translations ({} at run time), {} made ({:.1} ms translating, {:.1} ms compiling), {} from the cache",
+        "cpu side: {} translations ({} at run time), {} made ({:.1} ms translating, {:.1} ms compiling), {} from the cache; run {:.1} ms",
         translated.len(),
         at_run_time,
         made.len(),
         translating as f64 / 1e6,
         compiling as f64 / 1e6,
-        translated.len() - made.len()
+        translated.len() - made.len(),
+        took.as_secs_f64() * 1e3
     );
     for t in translated.iter().filter(|t| !t.at_run_time) {
         eprintln!(
@@ -537,6 +541,8 @@ pub fn run_prepared(
         groups: &groups,
         backend: container.backend.map(str::as_bytes),
     };
+    #[cfg(feature = "runtime")]
+    let started = Instant::now();
     kernel.start(&mut cpu, &mut host, &start);
     let status = match wcontainers_runtime::drive(&mut kernel, &mut cpu, &mut host) {
         Ok(Ending::Finished { status }) => status,
@@ -548,7 +554,7 @@ pub fn run_prepared(
         Err(failure) => return Err(failure.into()),
     };
     #[cfg(feature = "runtime")]
-    report(&cpu);
+    report(&cpu, started.elapsed());
     if let Some(error) = kernel.start_failure() {
         // Never in a copy: no save is made before the first program runs.
         return Err(Failure::Start(error));
