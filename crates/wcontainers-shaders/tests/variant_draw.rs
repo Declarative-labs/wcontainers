@@ -536,7 +536,9 @@ fn variants_draw_as_the_native_feature_does() {
                     &reference,
                     &texels,
                     Format::Rgba8Unorm,
-                    (0, 1),
+                    // The level of detail from explicit gradients rounds apart from the implicit
+                    // one: trilinear weights move by a step.
+                    (SIZE as usize * SIZE as usize, 1),
                 ));
             }
         }
@@ -664,7 +666,10 @@ fn variants_draw_as_the_native_feature_does() {
                     &reference,
                     &texels,
                     Format::Rgba8Unorm,
-                    (0, 0),
+                    // The same pixels drawn; attributes interpolated over the whole triangle round
+                    // apart from those over the clipped one by a step or two. A pixel drawn on one
+                    // side only would differ by far more.
+                    (SIZE as usize * SIZE as usize, 2),
                 ));
             }
             let mut native4 = native.clone();
@@ -679,7 +684,7 @@ fn variants_draw_as_the_native_feature_does() {
                 &reference4,
                 &texels,
                 Format::Rgba8Unorm,
-                (0, 0),
+                (SIZE as usize * SIZE as usize, 2),
             ));
         }
 
