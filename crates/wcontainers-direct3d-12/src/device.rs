@@ -65,6 +65,7 @@ mod bind;
 mod indirect;
 mod null;
 mod query;
+mod statistics;
 
 /// Where GPU virtual addresses start, far from zero so a null address is never a buffer.
 const ADDRESS_BASE: u64 = 1 << 32;
@@ -174,6 +175,8 @@ struct Pipeline<B: Backend> {
     render: Option<Render<B>>,
     /// What the program's stages bind, and the size each stage's uniform blocks declare.
     bindings: Vec<bind::StageBinding>,
+    /// A compute pipeline's threads in one group; zero for graphics pipelines.
+    group_threads: u64,
 }
 
 /// A graphics pipeline's fixed state.
@@ -198,6 +201,10 @@ struct Render<B: Backend> {
     vertex: ShaderModule,
     pixel: Vec<u8>,
     counting: Option<B::Program>,
+    /// For pipeline statistics: whether the pixel shader runs once a sample, and the program the
+    /// pixel counter draws with, made at the first draw a statistics query counts.
+    per_sample: bool,
+    pixel_counting: Option<B::Program>,
     writes_depth_stencil: bool,
     alpha_to_coverage: bool,
     /// Every per-instance element steps by one instance.
@@ -265,6 +272,10 @@ pub struct Device<B: Backend> {
     /// The bound targets as the occlusion counter reads them, and the counter.
     passes: PassTracker<B>,
     counter: OcclusionCounter<B>,
+    /// The pixel counter of pipeline statistics queries, and the depth-stencil block with both
+    /// tests off that it draws with.
+    pixels: OcclusionCounter<B>,
+    tests_off: Option<B::DepthStencil>,
     resources: Slab<Resource<B>>,
     pipelines: Slab<Pipeline<B>>,
     roots: Slab<Arc<RootSignatureDesc>>,
@@ -334,6 +345,8 @@ impl<B: Backend> Device<B> {
             programs: query::Programs::default(),
             passes: PassTracker::default(),
             counter: OcclusionCounter::default(),
+            pixels: OcclusionCounter::default(),
+            tests_off: None,
             nulls: null::Nulls::default(),
             messages: Vec::new(),
             removed: None,
@@ -965,6 +978,10 @@ impl<B: Backend> Device<B> {
             vertex: vs.modules[0].clone(),
             pixel: desc.ps.to_vec(),
             counting: None,
+            per_sample: ps
+                .as_ref()
+                .is_some_and(|p| statistics::per_sample(&p.reflection)),
+            pixel_counting: None,
             writes_depth_stencil: desc.dsv_format != 0
                 && (desc.depth_stencil.depth_enable && desc.depth_stencil.depth_write_all
                     || desc.depth_stencil.stencil_enable
@@ -990,6 +1007,7 @@ impl<B: Backend> Device<B> {
             program,
             render: Some(render),
             bindings,
+            group_threads: 0,
         }) as u32))
     }
 
@@ -1008,6 +1026,12 @@ impl<B: Backend> Device<B> {
         let bindings = bind::stage_bindings(&cs, StageSet::COMPUTE);
         bind::check(&root, &bindings)?;
         self.prepare_nulls(&bind::null_shapes(&bindings))?;
+        let group_threads = match cs.reflection.extras {
+            wcontainers_gpu::StageExtras::Compute { workgroup_size } => {
+                workgroup_size.iter().map(|&n| u64::from(n)).product()
+            }
+            _ => 1,
+        };
         let shader = self.backend.create_shader(&cs.modules[0])?;
         let program = self.backend.create_program(&Program::Compute(&shader));
         self.backend.destroy(Object::Shader(shader));
@@ -1015,6 +1039,7 @@ impl<B: Backend> Device<B> {
             program: program?,
             render: None,
             bindings,
+            group_threads,
         }) as u32))
     }
 
@@ -1132,7 +1157,7 @@ impl<B: Backend> Device<B> {
         if let Some(p) = self.pipelines.try_remove(id.0 as usize) {
             self.backend.destroy(Object::Program(p.program));
             if let Some(r) = p.render {
-                if let Some(c) = r.counting {
+                for c in [r.counting, r.pixel_counting].into_iter().flatten() {
                     self.backend.destroy(Object::Program(c));
                 }
                 self.backend.destroy(Object::Blend(r.blend));
@@ -2068,7 +2093,11 @@ struct Replay<B: Backend> {
     pass_heap: Option<QueryHeapId>,
     /// The counted occlusion query begun and not ended: heap and index.
     counted: Option<(QueryHeapId, u32)>,
-    /// The pass tracker holds the bound targets, for the occlusion counter.
+    /// The pipeline statistics query begun and not ended, and the stream output statistics
+    /// queries begun and not ended.
+    statistics: Option<statistics::Running>,
+    streams: Vec<(QueryHeapId, u32)>,
+    /// The pass tracker holds the bound targets, for the occlusion and pixel counters.
     counted_targets: bool,
     /// The occlusion counter has the depth-stencil target as the kept draws began from it.
     counted_copy: bool,
@@ -2111,6 +2140,8 @@ impl<B: Backend> Replay<B> {
             query: None,
             pass_heap: None,
             counted: None,
+            statistics: None,
+            streams: Vec::new(),
             counted_targets: false,
             counted_copy: false,
             predicate: None,
@@ -2132,9 +2163,12 @@ impl<B: Backend> Replay<B> {
         }
         if self.counted.is_some() {
             d.counter.flush(&mut d.backend, &mut d.passes)?;
-            self.counted_targets = false;
             self.counted_copy = false;
         }
+        if self.statistics.is_some() {
+            d.pixels.flush(&mut d.backend, &mut d.passes)?;
+        }
+        self.counted_targets = false;
         Ok(())
     }
 
@@ -2184,6 +2218,9 @@ impl<B: Backend> Replay<B> {
         if self.counted.take().is_some() {
             d.counter.end(&mut d.backend, &mut d.passes)?;
         }
+        if self.statistics.take().is_some() {
+            d.pixels.end(&mut d.backend, &mut d.passes)?;
+        }
         Ok(())
     }
 
@@ -2226,9 +2263,17 @@ impl<B: Backend> Replay<B> {
         let Some(p) = &mut self.predicate else {
             return Ok(Some(None));
         };
-        if let Some(record) = Device::<B>::next_record(p) {
+        let record = Device::<B>::next_record(p);
+        // A statistics query counts only the work that runs, so its predicate is read back.
+        if self.statistics.is_none()
+            && let Some(record) = record
+        {
             return Ok(Some(Some(record)));
         }
+        if p.value_unknown() {
+            self.end_pass(d)?;
+        }
+        let p = self.predicate.as_mut().expect("a predicate");
         if d.skips(p)? {
             return Ok(None);
         }
@@ -2592,8 +2637,13 @@ impl<B: Backend> Replay<B> {
         kind: u32,
         index: u32,
     ) -> Result<(), Error> {
-        if !matches!(kind, query::QUERY_BINARY_OCCLUSION | query::QUERY_OCCLUSION) {
-            return Err(Error::Invalid("BeginQuery of this query type"));
+        match kind {
+            query::QUERY_PIPELINE_STATISTICS => return self.begin_statistics(d, heap, index),
+            k if query::QUERY_SO_STATISTICS.contains(&k) => {
+                return self.begin_stream(d, heap, index);
+            }
+            query::QUERY_BINARY_OCCLUSION | query::QUERY_OCCLUSION => {}
+            _ => return Err(Error::Invalid("BeginQuery of this query type")),
         }
         d.occlusion_set(heap)?;
         if self.query.is_some() || self.counted.is_some() {
@@ -2624,9 +2674,16 @@ impl<B: Backend> Replay<B> {
         kind: u32,
         index: u32,
     ) -> Result<(), Error> {
-        if kind == query::QUERY_TIMESTAMP {
-            self.end_pass(d)?;
-            return d.timestamp(heap, index);
+        match kind {
+            query::QUERY_TIMESTAMP => {
+                self.end_pass(d)?;
+                return d.timestamp(heap, index);
+            }
+            query::QUERY_PIPELINE_STATISTICS => return self.end_statistics(d, heap, index),
+            k if query::QUERY_SO_STATISTICS.contains(&k) => {
+                return self.end_stream(d, heap, index);
+            }
+            _ => {}
         }
         if kind == query::QUERY_OCCLUSION {
             if self.counted != Some((heap, index)) {
@@ -2635,7 +2692,7 @@ impl<B: Backend> Replay<B> {
             self.end_pass(d)?;
             self.counted = None;
             let count = d.counter.end(&mut d.backend, &mut d.passes)?;
-            return d.write_count(heap, index, count);
+            return d.write_value(heap, index, &[count]);
         }
         match self.query.take() {
             Some((h, i, state)) if (h, i) == (heap, index) => match state {
@@ -2679,6 +2736,14 @@ impl<B: Backend> Replay<B> {
         }
         if groups.contains(&0) {
             return Ok(());
+        }
+        if let Some(s) = &mut self.statistics {
+            // Indirect dispatches are read back while a statistics query runs.
+            if record.is_none() {
+                let threads = groups.iter().map(|&g| u64::from(g)).product::<u64>()
+                    * d.pipelines[pid.0 as usize].group_threads;
+                s.add(statistics::CS_INVOCATIONS, threads);
+            }
         }
         self.settle(d)?;
         let sets = d.binding_sets(&self.compute, pid)?;
@@ -2756,6 +2821,10 @@ impl<B: Backend> Replay<B> {
         };
         let counted = match self.counted {
             Some(_) => Some(self.prepare_counted(d, pid)?),
+            None => None,
+        };
+        let pixel_counting = match self.statistics {
+            Some(_) => self.count_draw(d, pid, &range)?,
             None => None,
         };
         if !self.pass_open {
@@ -2919,6 +2988,24 @@ impl<B: Backend> Replay<B> {
             d.counter
                 .draw(&mut d.backend, &mut d.passes, &call!(), &counted)?;
         }
+        if let Some((counting, off)) = &pixel_counting {
+            let r = d.pipelines[pid.0 as usize]
+                .render
+                .as_ref()
+                .expect("a graphics pipeline");
+            let counted = CountedDraw {
+                counting,
+                alpha_to_coverage: false,
+                writes_depth_stencil: false,
+                instances_step_by_one: r.instances_step_by_one,
+            };
+            let call = DrawCall {
+                depth_stencil: off,
+                ..call!()
+            };
+            d.pixels
+                .draw(&mut d.backend, &mut d.passes, &call, &counted)?;
+        }
         if !self.pass_open {
             self.open_pass(d, pid)?;
         }
@@ -2966,12 +3053,19 @@ impl<B: Backend> Replay<B> {
             self.settle(d)?;
             self.counted_copy = true;
         }
+        self.track_targets(d, pid)?;
+        Ok((writes, counting))
+    }
+
+    /// Gives the bound targets to the pass tracker, where the occlusion and pixel counters read
+    /// them, once after each pass end.
+    fn track_targets(&mut self, d: &mut Device<B>, pid: PipelineId) -> Result<(), Error> {
         if !self.counted_targets {
             let targets = self.pass_targets(d, pid)?;
             d.passes.set_targets(&mut d.backend, targets)?;
             self.counted_targets = true;
         }
-        Ok((writes, counting))
+        Ok(())
     }
 
     /// The bound targets as the pass tracker takes them.

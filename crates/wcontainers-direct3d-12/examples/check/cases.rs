@@ -2,7 +2,8 @@
 //! with real Direct3D 12 and through ours and compared line by line: placed resources that alias
 //! (buffers written by a copy, a storage view and the CPU; identical textures at one offset), copy
 //! and compute queues waiting on each other and on a late CPU signal, binary occlusion resolved,
-//! read back and used by `SetPredication`, and `ExecuteIndirect`.
+//! read back and used by `SetPredication`, `ExecuteIndirect`, and pipeline and stream output
+//! statistics.
 
 use std::cell::Cell;
 use std::fmt::Write;
@@ -47,6 +48,7 @@ pub const CASES: &[&str] = &[
     "indirect-vertex-id",
     "predicated-resolve",
     "occlusion-count",
+    "statistics",
 ];
 
 /// Runs case `name` and returns its line of results.
@@ -70,6 +72,7 @@ pub fn run(name: &str) -> Result<String> {
             "indirect-vertex-id" => indirect_vertex_id(&c),
             "predicated-resolve" => predicated_resolve(&c),
             "occlusion-count" => occlusion_count(&c),
+            "statistics" => statistics(&c),
             _ => panic!("no case {name}"),
         }
     }
@@ -1032,6 +1035,148 @@ unsafe fn occlusion_count(c: &Ctx) -> Result<String> {
             words(&resolved),
             colours(&pixels)
         ))
+    }
+}
+
+/// Pipeline statistics queries around nothing, around direct draws, an indexed draw and a dispatch
+/// (with a counted occlusion query inside), and around an indirect draw and a skipped predicated
+/// one; a stream output statistics query. Counts Direct3D leaves to the implementation are printed
+/// as bounds: vertex shader invocations at most the vertices read, primitives out of the clipper
+/// above zero, pixel shader invocations at least the samples the occlusion query counted.
+unsafe fn statistics(c: &Ctx) -> Result<String> {
+    unsafe {
+        let (root, pso) = c.triangle_pso(false)?;
+        let (compute_root, compute) = c.compute_pso()?;
+        let vertices = c.upload(&triangles())?;
+        let indices = c.upload(&u32s(&[0, 1, 2, 3, 4, 5]))?;
+        let input = c.upload(&items())?;
+        let output = c.committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &buffer_desc(1024, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
+            D3D12_RESOURCE_STATE_COMMON,
+        )?;
+        let (draws, draw_args) = arguments(
+            c,
+            D3D12_INDIRECT_ARGUMENT_TYPE_DRAW,
+            16,
+            &u32s(&[3, 2, 3, 0]),
+        )?;
+        let heap = |kind, count| -> Result<ID3D12QueryHeap> {
+            let mut q = None;
+            c.device.CreateQueryHeap(
+                &D3D12_QUERY_HEAP_DESC {
+                    Type: kind,
+                    Count: count,
+                    NodeMask: 0,
+                },
+                &mut q,
+            )?;
+            Ok(q.unwrap())
+        };
+        let stats = heap(D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS, 3)?;
+        let occlusion = heap(D3D12_QUERY_HEAP_TYPE_OCCLUSION, 1)?;
+        let streams = heap(D3D12_QUERY_HEAP_TYPE_SO_STATISTICS, 2)?;
+        let size = 3 * 88 + 8 + 16;
+        let readback = c.committed(
+            D3D12_HEAP_TYPE_READBACK,
+            &buffer_desc(size, D3D12_RESOURCE_FLAG_NONE),
+            D3D12_RESOURCE_STATE_COPY_DEST,
+        )?;
+        let zero = filled(c, &[0; 8])?;
+        let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        let (_target, _heap, _rtv) = c.target(&list)?;
+        let kind = D3D12_QUERY_TYPE_PIPELINE_STATISTICS;
+        list.BeginQuery(&stats, kind, 0);
+        list.EndQuery(&stats, kind, 0);
+        list.BeginQuery(&streams, D3D12_QUERY_TYPE_SO_STATISTICS_STREAM1, 1);
+        list.BeginQuery(&stats, kind, 1);
+        list.SetPipelineState(&pso);
+        list.SetGraphicsRootSignature(&root);
+        vertex_buffer(&list, &vertices);
+        list.BeginQuery(&occlusion, D3D12_QUERY_TYPE_OCCLUSION, 0);
+        list.DrawInstanced(3, 1, 0, 0);
+        list.DrawInstanced(3, 2, 3, 0);
+        list.IASetIndexBuffer(Some(&D3D12_INDEX_BUFFER_VIEW {
+            BufferLocation: indices.GetGPUVirtualAddress(),
+            SizeInBytes: 24,
+            Format: DXGI_FORMAT_R32_UINT,
+        }));
+        list.DrawIndexedInstanced(5, 1, 1, 3, 0);
+        list.EndQuery(&occlusion, D3D12_QUERY_TYPE_OCCLUSION, 0);
+        list.SetComputeRootSignature(&compute_root);
+        list.SetPipelineState(&compute);
+        list.SetComputeRootShaderResourceView(0, input.GetGPUVirtualAddress());
+        list.SetComputeRootUnorderedAccessView(1, output.GetGPUVirtualAddress());
+        list.Dispatch(1, 1, 1);
+        list.EndQuery(&stats, kind, 1);
+        list.BeginQuery(&stats, kind, 2);
+        list.SetPipelineState(&pso);
+        list.SetGraphicsRootSignature(&root);
+        list.ExecuteIndirect(&draws, 1, &draw_args, 0, None, 0);
+        list.SetPredication(&zero, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
+        list.DrawInstanced(3, 1, 0, 0);
+        list.SetPredication(None, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
+        list.EndQuery(&stats, kind, 2);
+        list.EndQuery(&streams, D3D12_QUERY_TYPE_SO_STATISTICS_STREAM1, 1);
+        list.ResolveQueryData(&stats, kind, 0, 3, &readback, 0);
+        list.ResolveQueryData(
+            &occlusion,
+            D3D12_QUERY_TYPE_OCCLUSION,
+            0,
+            1,
+            &readback,
+            3 * 88,
+        );
+        list.ResolveQueryData(
+            &streams,
+            D3D12_QUERY_TYPE_SO_STATISTICS_STREAM1,
+            1,
+            1,
+            &readback,
+            3 * 88 + 8,
+        );
+        c.run(&list)?;
+        let bytes = mapped(&readback, size as usize)?;
+        let u64s: Vec<u64> = bytes
+            .chunks(8)
+            .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+        let samples = u64s[33];
+        let mut out = format!("occlusion {samples}");
+        for (i, q) in u64s[..33].chunks(11).enumerate() {
+            let s = D3D12_QUERY_DATA_PIPELINE_STATISTICS {
+                IAVertices: q[0],
+                IAPrimitives: q[1],
+                VSInvocations: q[2],
+                GSInvocations: q[3],
+                GSPrimitives: q[4],
+                CInvocations: q[5],
+                CPrimitives: q[6],
+                PSInvocations: q[7],
+                HSInvocations: q[8],
+                DSInvocations: q[9],
+                CSInvocations: q[10],
+            };
+            write!(
+                out,
+                " | ia {} {} vs<=ia {} gs {} c {} c>0 {} ps {} hs {} ds {} cs {}",
+                s.IAVertices,
+                s.IAPrimitives,
+                s.VSInvocations <= s.IAVertices,
+                s.GSPrimitives,
+                s.CInvocations,
+                s.CPrimitives > 0,
+                // At least the occlusion query's samples where it ran; some where anything drew.
+                (i != 1 || s.PSInvocations >= samples)
+                    && (s.PSInvocations == 0) == (s.IAPrimitives == 0),
+                s.HSInvocations,
+                s.DSInvocations,
+                s.CSInvocations,
+            )
+            .unwrap();
+        }
+        write!(out, " | streams {:?}", &u64s[34..36]).unwrap();
+        Ok(out)
     }
 }
 

@@ -2,9 +2,9 @@
 //! indirect call per command at the signature's stride; with a count buffer, the commands are
 //! copied and a compute program zeroes those past the count, then all are called
 //! (`IndirectCountExpanded`, nothing waits). Signatures that also change vertex or index buffers or
-//! root parameters, draws on back ends whose indirect draws ignore a first instance, and draws of
-//! programs that read `SV_VertexID` or `SV_InstanceID` read the arguments back and record ordinary
-//! calls (`IndirectReadBack`).
+//! root parameters, draws on back ends whose indirect draws ignore a first instance, draws of
+//! programs that read `SV_VertexID` or `SV_InstanceID`, and commands a pipeline statistics query
+//! counts read the arguments back and record ordinary calls (`IndirectReadBack`).
 
 use super::query::Own;
 use super::*;
@@ -34,7 +34,12 @@ impl<B: Backend> Device<B> {
 
     /// `size` bytes at `offset` of buffer `id`, as they are once the work recorded so far is done:
     /// an upload buffer's from its memory, others read back now.
-    fn read_now(&mut self, id: ResourceId, offset: u64, size: u64) -> Result<Vec<u8>, Error> {
+    pub(super) fn read_now(
+        &mut self,
+        id: ResourceId,
+        offset: u64,
+        size: u64,
+    ) -> Result<Vec<u8>, Error> {
         if let Some(Resource {
             heap: HeapType::Upload,
             storage: Storage::Buffer {
@@ -106,7 +111,9 @@ impl<B: Backend> Replay<B> {
             .render
             .as_ref()
             .is_some_and(|r| r.reads_bases);
+        // A statistics query counts each command's arguments, which are read back for it.
         let on_gpu = s.call_only()
+            && self.statistics.is_none()
             && caps.has(Features::INDIRECT)
             && (count.is_none() || caps.has(Features::COMPUTE))
             && match call {
