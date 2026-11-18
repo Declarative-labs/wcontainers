@@ -760,6 +760,14 @@ beside ours; Mac load average 20 to 40). It fixed the sixth check's findings:
   of the 10 Mac scripts; `wine-tests run`, all eight files: 784 counted, 1 FAIL (the crash above,
   fixed and run again since), 8 min 9 s for the job; `programs run`: 21 of 21 pass (2 min 21 s
   for the job); `scenes`: 244 passed, 0 failed (17 s job); `loop` passes (44 s end to end).
+- Check from a fresh clone of phase-2-graphics-rig at e025ae2 (scratch, fresh-run7): `scenes --api
+  d3d11 device triangle blend levels` 8 passed; `wine-tests run dxgi` 20 counted, 0 FAIL; `scenes
+  --build ... --dll d3d11.dll=<forwarding library> --api d3d11 device draws textures` 10 passed;
+  `programs run --dll d3d11.dll=<forwarding library> atg-simplebezierpc godot-platformer-3d-d3d11`
+  both pass. With the device scene's "9_3 then 11_0" list reversed in that clone, `scenes --api
+  d3d11 device` failed device-results.txt ("line 10: wanted ... level 9_3, got ... level 11_0"),
+  exit 1. `cargo tree --workspace -e all --target all` (2926 lines) names no Wine, vkd3d, Godot,
+  Doom, Freedoom or Xbox-ATG-Samples crate.
 - Disk: C:\wc\programs\src\xbox-atg-samples 0.78 GB with its builds, C:\wc\programs 2.21 GB
   in all, 389.0 GB free on C: (474.8 GB at the third run; other tracks' builds share C:\wc\target).
 
