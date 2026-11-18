@@ -822,3 +822,50 @@ fn texture_arrays_are_a_texture_per_element() {
     assert!(text.contains("switch"), "{text}");
     assert_eq!(text.matches("texture_2d<f32>;").count(), 4, "{text}");
 }
+
+/// A multisampled array texture is refused by name until the key gives its layer count; then each
+/// layer after the first is an added texture binding, and loads switch on the layer, by both routes.
+#[test]
+fn multisampled_array_layers_are_a_texture_each() {
+    let code = own_pair("ps_msarray");
+    for (route, source) in [
+        ("dxbc", Source::Dxbc(&code[0])),
+        ("dxil", Source::Dxil(&code[1])),
+    ] {
+        assert_eq!(
+            convert(source, &VariantKey::default(), None).unwrap_err(),
+            ConvertError::Unsupported("MultisampledArrayTexture"),
+            "{route}"
+        );
+        let key = VariantKey {
+            texture_layers: vec![(0, 3)],
+            ..VariantKey::default()
+        };
+        let c = convert(source, &key, None).unwrap();
+        let mut textures: Vec<_> = c
+            .reflection
+            .bindings
+            .iter()
+            .filter(|b| b.kind == SlotKind::Texture)
+            .map(|b| (b.binding, b.added))
+            .collect();
+        textures.sort_unstable_by_key(|t| t.0);
+        let first = SlotKind::Texture.first_binding();
+        assert_eq!(
+            textures,
+            [
+                (first, None),
+                (first + 1, Some(AddedBinding::TextureLayer(0, 1))),
+                (first + 2, Some(AddedBinding::TextureLayer(0, 2))),
+            ],
+            "{route}"
+        );
+        let text = wgsl(&c);
+        assert_eq!(
+            text.matches("texture_multisampled_2d<f32>;").count(),
+            3,
+            "{route}: {text}"
+        );
+        assert!(text.contains("switch"), "{route}: {text}");
+    }
+}

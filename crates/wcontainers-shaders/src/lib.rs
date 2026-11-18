@@ -180,6 +180,7 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         decoded,
         targets_in_shader,
         min_lod_clamped: _,
+        texture_layers: _,
         draw_base: _,
         output_interpolation: _,
         linked: _,

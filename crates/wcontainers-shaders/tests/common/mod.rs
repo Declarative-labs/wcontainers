@@ -631,6 +631,9 @@ pub struct Setup {
     /// Typed buffers the pixel program reads at texture slots, by the route its key names; their
     /// views' places and lengths are put in its helper block.
     pub texel_buffers: Vec<TexelData>,
+    /// Layers of a multisampled array texture bound at texture slot 0 ([`multisampled_layers`]), a
+    /// texture per layer as `VariantKey::texture_layers` binds them; none where 0.
+    pub layers: u32,
 }
 
 impl Setup {
@@ -651,8 +654,171 @@ impl Setup {
             min_lod: None,
             address: [wcontainers_gpu::AddressMode::Clamp; 3],
             texel_buffers: Vec::new(),
+            layers: 0,
         }
     }
+}
+
+/// The sample count of [`multisampled_layers`].
+pub const LAYER_SAMPLES: u32 = 4;
+
+/// Real Direct3D 11's constants for `ps_fill` drawing layer `layer`.
+pub fn fill_constants(layer: u32) -> Vec<u8> {
+    constants([(layer + 1) as f32 / 4.0, 0.0, 0.0, 0.0])
+}
+
+/// `layers` Rgba8Unorm textures of [`TEXTURE_SIZE`] and [`LAYER_SAMPLES`] samples, each drawn by
+/// `ps_fill` (a value per sample) with [`fill_constants`] of its layer, as a front holds a
+/// multisampled array texture.
+pub fn multisampled_layers<B: Backend>(
+    b: &mut B,
+    layers: u32,
+) -> Vec<(B::Texture, B::TextureView)> {
+    if layers == 0 {
+        return Vec::new();
+    }
+    let vs = convert(
+        Source::Dxbc(&bytecode("vs_fullscreen.dxbc")),
+        &VariantKey::default(),
+        None,
+    )
+    .unwrap();
+    let ps = convert(
+        Source::Dxbc(&bytecode("ps_fill.dxbc")),
+        &VariantKey::default(),
+        None,
+    )
+    .unwrap();
+    let vertex = b.create_shader(&vs.modules[0]).unwrap();
+    let fragment = b.create_shader(&ps.modules[0]).unwrap();
+    let program = b
+        .create_program(&Program::Render {
+            vertex: &vertex,
+            fragment: Some(&fragment),
+        })
+        .unwrap();
+    let vertex_layout = b
+        .create_vertex_layout(&VertexLayoutDesc {
+            streams: [None; 32],
+            attributes: [None; 32],
+        })
+        .unwrap();
+    let blend = b
+        .create_blend(&BlendDesc {
+            targets: [RenderTargetBlend {
+                blend: None,
+                writes: ColorWrites::all(),
+            }; 8],
+            same_for_all: true,
+            alpha_to_coverage: false,
+            logic_op: None,
+        })
+        .unwrap();
+    let depth_stencil = b
+        .create_depth_stencil(&DepthStencilDesc {
+            depth_compare: None,
+            depth_write: false,
+            stencil: None,
+            stencil_read_mask: [0xff; 2],
+            stencil_write_mask: [0xff; 2],
+            depth_bounds: None,
+        })
+        .unwrap();
+    let raster = b
+        .create_raster(&RasterDesc {
+            fill: FillMode::Solid,
+            cull: CullMode::None,
+            front: FrontFace::Clockwise,
+            depth_bias: 0,
+            depth_bias_slope: 0,
+            depth_bias_clamp: 0,
+            depth_clip: true,
+            scissor: false,
+            line_width: 1.0f32.to_bits(),
+            provoking: ProvokingVertex::First,
+            depth_minus_one: false,
+            sample_mask: !0,
+        })
+        .unwrap();
+    let size = TEXTURE_SIZE as f32;
+    let mut out = Vec::new();
+    for layer in 0..layers {
+        let made = texture_levels(
+            b,
+            Format::Rgba8Unorm,
+            TEXTURE_SIZE,
+            1,
+            LAYER_SAMPLES,
+            TextureUsage::RENDER | TextureUsage::SAMPLE,
+        );
+        let bytes = fill_constants(layer);
+        let constants = buffer(b, &bytes, BufferUsage::UNIFORM);
+        let entries: Vec<BindingEntry<'_, B>> = ps
+            .reflection
+            .bindings
+            .iter()
+            .map(|r| {
+                assert_eq!(r.kind, SlotKind::Uniform, "{r:?}");
+                BindingEntry {
+                    binding: r.binding,
+                    stages: StageSet::FRAGMENT,
+                    resource: BindingResource::UniformBuffer(BufferRange {
+                        buffer: &constants,
+                        offset: 0,
+                        size: bytes.len() as u64,
+                    }),
+                }
+            })
+            .collect();
+        let set = b.create_binding_set(&entries).unwrap();
+        let mut pass = PassDesc {
+            colors: Default::default(),
+            depth: None,
+            empty: None,
+            occlusion: None,
+        };
+        pass.colors[0] = Some(ColorAttachment {
+            view: &made.1,
+            depth_slice: 0,
+            resolve: None,
+            load: wcontainers_gpu::LoadOp::Clear([0; 4]),
+            store: StoreOp::Store,
+        });
+        b.begin_pass(&pass);
+        b.draw(&DrawCall {
+            program: &program,
+            blend: &blend,
+            depth_stencil: &depth_stencil,
+            raster: &raster,
+            vertex_layout: &vertex_layout,
+            bindings: [None, Some(&set), None, None],
+            vertex_buffers: &[],
+            index: None,
+            topology: Topology::TriangleList,
+            restart: false,
+            viewports: &[Viewport {
+                x: 0,
+                y: 0,
+                width: size.to_bits(),
+                height: size.to_bits(),
+                min_depth: 0,
+                max_depth: 1.0f32.to_bits(),
+            }],
+            scissors: &[],
+            blend_constant: [0; 4],
+            stencil_reference: [0; 2],
+            immediates: &[],
+            range: DrawRange::Vertices {
+                first: 0,
+                count: 3,
+                first_instance: 0,
+                instances: 1,
+            },
+        });
+        b.end_pass();
+        out.push(made);
+    }
+    out
 }
 
 /// The colour of texture level n past 0.
@@ -811,6 +977,7 @@ pub fn ours<B: Backend + 'static>(
     };
     let sampler = sampler_from(b, 0.0);
     let merged = setup.min_lod.map(|clamp| sampler_from(b, clamp));
+    let layers = multisampled_layers(b, setup.layers);
     // The constants as a front copies them for programs that read them through a texture.
     let through_texture = vs
         .reflection
@@ -936,6 +1103,13 @@ pub fn ours<B: Backend + 'static>(
                     if matches!(r.added, Some(AddedBinding::ConstantsAsTexture(_))) =>
                 {
                     BindingResource::Texture(&constants_texture.as_ref().unwrap().1)
+                }
+                SlotKind::Texture if !layers.is_empty() => {
+                    let layer = match r.added {
+                        Some(AddedBinding::TextureLayer(_, n)) => n as usize,
+                        _ => 0,
+                    };
+                    BindingResource::Texture(&layers[layer].1)
                 }
                 SlotKind::Uniform => BindingResource::UniformBuffer(BufferRange {
                     buffer: &constants,

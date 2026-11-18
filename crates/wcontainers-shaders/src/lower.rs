@@ -1777,7 +1777,7 @@ fn image_dim(k: u64) -> Result<(ImageDimension, bool, bool)> {
         kind::IMAGE_1D | kind::IMAGE_2D => (ImageDimension::D2, false, false),
         kind::IMAGE_1D_ARRAY | kind::IMAGE_2D_ARRAY => (ImageDimension::D2, true, false),
         kind::IMAGE_2D_MS => (ImageDimension::D2, false, true),
-        kind::IMAGE_2D_MS_ARRAY => return Err(unsupported("MultisampledArrayTexture")),
+        kind::IMAGE_2D_MS_ARRAY => (ImageDimension::D2, true, true),
         kind::IMAGE_CUBE => (ImageDimension::Cube, false, false),
         kind::IMAGE_CUBE_ARRAY => (ImageDimension::Cube, true, false),
         kind::IMAGE_3D => (ImageDimension::D3, false, false),
@@ -2947,7 +2947,10 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 let res = self.image(r[0])?;
                 let (k, arrayed) = res.image.unwrap();
                 let image = self.add(b, Expression::GlobalVariable(res.var));
-                let level = if k == kind::IMAGE_2D_MS || r[1] == 0 || res.storage {
+                let level = if matches!(k, kind::IMAGE_2D_MS | kind::IMAGE_2D_MS_ARRAY)
+                    || r[1] == 0
+                    || res.storage
+                {
                     None
                 } else {
                     Some(self.get_as(b, r[1], Scalar::U32)?)
@@ -3925,7 +3928,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         }
         let (sample, level) = if res.storage {
             (None, None)
-        } else if k == kind::IMAGE_2D_MS {
+        } else if matches!(k, kind::IMAGE_2D_MS | kind::IMAGE_2D_MS_ARRAY) {
             (Some(self.get(b, sample)?), None)
         } else if mip != 0 {
             (None, Some(self.get(b, mip)?))

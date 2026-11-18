@@ -19,6 +19,7 @@ use crate::ConvertError;
 
 mod constants;
 mod filter;
+mod layers;
 pub(crate) mod pull;
 pub(crate) mod texel;
 
@@ -76,6 +77,9 @@ pub(crate) fn apply(
         // Drops the pointers into the buffers' old variables, and the variables.
         naga::compact::compact(module, naga::compact::KeepUnused::No);
     }
+    let mut outlined = Outlined::default();
+    layers::split(module, &variant.texture_layers, reflection, &mut outlined)?;
+    outlined.finish(module);
     let flags = variant.flags;
     match stage {
         ShaderStage::Vertex => {
