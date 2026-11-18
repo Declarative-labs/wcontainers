@@ -811,7 +811,10 @@ A surface comes from the host's graphics hook (a canvas, transferred to the devi
 browser; a window natively). The DXGI layer gives the program its own back buffer textures and, at
 `Present`, copies the current back buffer into `current_texture(surface)` (converting format or sRGB on
 the way, as one draw) and calls `present`. One copy per frame keeps the program's back buffers ordinary
-textures it can read, copy and keep across frames, which swap chains allow. Frame pacing: `Present` blocks
+textures it can read, copy and keep across frames, which swap chains allow. A blit swap chain with the
+sequential effect gives out every buffer, as DXGI does (those past the first for reading); at each
+present DXGI moves their contents one place down, the first's to the last, which the layer does by
+copies (`SequentialBuffersCopied`). Frame pacing: `Present` blocks
 the guest when more than the swap chain's maximum frame latency (three by default) are queued; the device
 thread learns a frame was shown from the host hook (requestAnimationFrame in the browser, which a worker
 also has). The device worker returns to its event loop after every present, because a transferred canvas
