@@ -571,6 +571,8 @@ fn create(
         AF_UNIX => Ok(Socket::new(family, unix_kind(kind, protocol as u32)?, 0)),
         AF_INET | AF_INET6 => inet::create(kernel, cx, family, kind, protocol as u32),
         AF_NETLINK => netlink::create(kernel, cx, kind, protocol as u32),
+        // A family Linux has no protocol family for.
+        AF_UNSPEC => Err(Errno::EAFNOSUPPORT),
         _ => Err(kernel.counters.refuse(
             cx.host,
             crate::reason::FAMILY_NOT_BUILT,

@@ -750,6 +750,8 @@ pub(super) fn create(
             UDPLITE => return refuse(kernel, cx, Errno::EPROTONOSUPPORT),
             _ => return Err(Errno::EPROTONOSUPPORT),
         },
+        // The raw kind matches any protocol but IPPROTO_IP itself.
+        SOCK_RAW if protocol == 0 => return Err(Errno::EPROTONOSUPPORT),
         // Raw packets, which Docker's CAP_NET_RAW allows (plan section 15).
         SOCK_RAW => return refuse(kernel, cx, Errno::EPERM),
         // SCTP, which the reference has.

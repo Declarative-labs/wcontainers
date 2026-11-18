@@ -3779,19 +3779,23 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
                     net::AF_INET6,
                     net::AF_NETLINK,
                     net::AF_ALG,
+                    net::AF_UNSPEC,
                     99,
                 ],
                 a,
             );
             let kinds: &[u32] = match family {
                 net::AF_UNIX => &[1, 2, 5, 3, 12],
-                net::AF_INET | net::AF_INET6 => &[1, 2, 2, 7],
+                // Raw sockets only with protocol 0, which no raw protocol matches: the
+                // others make raw packets, which are not built (plan section 15).
+                net::AF_INET | net::AF_INET6 => &[1, 2, 2, 3, 7],
                 // The reference's host refuses AF_ALG before or after the kind is checked.
                 net::AF_ALG => &[5, 12, 1],
                 _ => &[3, 2, 1],
             };
             let kind = pick(kinds, b) | linux::O_NONBLOCK | pick(&[0, linux::O_CLOEXEC], c);
             let protocol = match family {
+                net::AF_INET | net::AF_INET6 if kind & 0xf == 3 => 0,
                 net::AF_INET | net::AF_INET6 => pick(&[0u64, 0, 6, 17], d),
                 _ => pick(&[0u64, 0, 0, 1], d),
             };
