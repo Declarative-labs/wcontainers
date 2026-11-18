@@ -1,4 +1,4 @@
-# <output> <channel tolerance> <pixels allowed beyond it> warp <pixels differing at all> <largest difference>
+# <output> <channel tolerance> <pixels allowed beyond it> warp <pixels differing at all> <largest difference> [d3d11: from Direct3D 11's WARP picture, the GPU drawing both alike] [tiles <tile>:<pixels>,...]
 blend-alpha.png 2 0 warp 15714 2
 blend-factors.png 2 0 warp 53491 2
 blend-masks.png 1 0 warp 34040 1
@@ -95,7 +95,7 @@ targets-r32ui.exr 0 0 warp 0 0
 targets-rgb10a2.png 1 0 warp 6605 1
 targets-rgba16f.exr 0 0 warp 0 0
 targets-rgba8.png 1 0 warp 9779 1
-tessellation.png 8 464 warp 1232 228 tiles 69:2,84:42,85:51,86:47,87:44,100:48,101:58,102:49,103:49,116:11,117:25,118:28,119:10
+tessellation.png 4 0 warp 768 4 d3d11
 textures-1d.png 1 0 warp 603 1
 textures-1d_array.png 0 0 warp 0 0
 textures-2d_array.png 1 0 warp 192 1

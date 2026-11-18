@@ -18,7 +18,8 @@
 //! from the other runs and the rectangles left out (see `Allowance::from_repeats`).
 //!
 //! `gt-run record <out-dir>` runs every scene with the debug layer on the GPU twice (the two runs
-//! must agree exactly) and on WARP, and writes the GPU's outputs and their allowances to
+//! must agree exactly) and on WARP, and writes the GPU's outputs and their allowances (a Direct3D
+//! 12 picture equal to its Direct3D 11 twin on the GPU taking the closer of the two WARPs') to
 //! `<out-dir>\references\<api>` and this build's compiled shaders to `<out-dir>\shaders`, to be
 //! copied into the checkout. It prints how far WARP is from the GPU for each output.
 
@@ -483,7 +484,7 @@ fn record_mode(options: &Options) -> Result<bool> {
         }
         std::fs::create_dir_all(&references)?;
         let mut tolerances = String::from(
-            "# <output> <channel tolerance> <pixels allowed beyond it> warp <pixels differing at all> <largest difference>\n",
+            "# <output> <channel tolerance> <pixels allowed beyond it> warp <pixels differing at all> <largest difference> [d3d11: from Direct3D 11's WARP picture, the GPU drawing both alike] [tiles <tile>:<pixels>,...]\n",
         );
         let mut files: Vec<String> = std::fs::read_dir(&runs[0])?
             .map(|e| Ok(e?.file_name().to_string_lossy().into_owned()))
@@ -523,7 +524,26 @@ fn record_mode(options: &Options) -> Result<bool> {
                     );
                     ok = false;
                 }
-                let (allowance, exact): (Allowance, _) = Allowance::from_warp(&g, &w)?;
+                let (mut allowance, mut exact): (Allowance, _) = Allowance::from_warp(&g, &w)?;
+                // A Direct3D 12 picture the GPU draws exactly as its Direct3D 11 twin may take
+                // the allowance of Direct3D 11's WARP picture instead, when that WARP is closer.
+                let twin = options.out.join("hardware").join("d3d11").join(file);
+                let mut from = "";
+                if api == "d3d12" && twin.exists() {
+                    let twin_gpu = load(&twin)?;
+                    let twin_warp = load(&options.out.join("warp").join("d3d11").join(file))?;
+                    if compare::compare(&g, &twin_gpu, 0.0)?.differing == 0 {
+                        let (other, other_exact) = Allowance::from_warp(&g, &twin_warp)?;
+                        if (other.pixels, other.tolerance) < (allowance.pixels, allowance.tolerance)
+                        {
+                            println!(
+                                "{api} {file}: direct3d 12's warp differs in {} pixels, {} beyond {}; direct3d 11's is closer",
+                                exact.differing, allowance.pixels, allowance.tolerance
+                            );
+                            (allowance, exact, from) = (other, other_exact, " d3d11");
+                        }
+                    }
+                }
                 println!(
                     "{api} {file}: warp differs in {} of {} pixels, largest {}; allowance {} beyond {}",
                     exact.differing,
@@ -532,7 +552,11 @@ fn record_mode(options: &Options) -> Result<bool> {
                     allowance.pixels,
                     allowance.tolerance
                 );
-                tolerances.push_str(&check::tolerance_line(file, &allowance, &exact));
+                let line = check::tolerance_line(file, &allowance, &exact);
+                tolerances.push_str(&match line.split_once(" tiles ") {
+                    Some((head, tiles)) => format!("{head}{from} tiles {tiles}"),
+                    None => format!("{}{from}\n", line.trim_end()),
+                });
             }
             std::fs::copy(&gpu, references.join(file))?;
         }

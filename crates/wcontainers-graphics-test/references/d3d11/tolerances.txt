@@ -1,4 +1,4 @@
-# <output> <channel tolerance> <pixels allowed beyond it> warp <pixels differing at all> <largest difference>
+# <output> <channel tolerance> <pixels allowed beyond it> warp <pixels differing at all> <largest difference> [d3d11: from Direct3D 11's WARP picture, the GPU drawing both alike] [tiles <tile>:<pixels>,...]
 blend-alpha.png 2 0 warp 15714 2
 blend-factors.png 2 0 warp 53491 2
 blend-masks.png 1 0 warp 34040 1
