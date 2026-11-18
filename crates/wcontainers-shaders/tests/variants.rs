@@ -51,13 +51,6 @@ fn unbuilt_variants_are_refused_by_name() {
         ),
         (
             VariantKey {
-                constants_as_texture: 1,
-                ..Default::default()
-            },
-            "ConstantsAsTexture",
-        ),
-        (
-            VariantKey {
                 border_in_shader: 1,
                 ..Default::default()
             },
@@ -633,5 +626,36 @@ fn pulled_inputs_are_added_bindings_read_by_the_helpers() {
         assert!(!inputs.contains("@location"), "{text}");
         assert!(inputs.contains("@builtin(instance_index)"), "{text}");
         assert!(text.contains("arrayLength((&pulled_1_))"), "{text}");
+    }
+}
+
+/// Constant buffers read through a texture: the buffer's binding becomes an added texture binding,
+/// read by texel fetches, on both routes, for a fixed row (`vs_transform`) and a row picked at run
+/// time (`ps_rows`).
+#[test]
+fn constants_read_through_a_texture_are_texel_fetches() {
+    let key = VariantKey {
+        constants_as_texture: 1,
+        ..Default::default()
+    };
+    for name in ["vs_transform", "ps_rows"] {
+        let code = [
+            read(&format!("tests/own/{name}.dxbc")),
+            read(&format!("tests/own/{name}.dxil")),
+        ];
+        for c in both(&code, &key) {
+            let b = c
+                .reflection
+                .bindings
+                .iter()
+                .find(|b| b.added.is_some())
+                .unwrap();
+            assert_eq!(b.kind, SlotKind::Texture);
+            assert_eq!(b.added, Some(AddedBinding::ConstantsAsTexture(0)));
+            let text = wgsl(&c);
+            assert!(text.contains("texture_2d<u32>"), "{text}");
+            assert!(text.contains("textureLoad"), "{text}");
+            assert!(!text.contains("var<uniform>"), "{text}");
+        }
     }
 }

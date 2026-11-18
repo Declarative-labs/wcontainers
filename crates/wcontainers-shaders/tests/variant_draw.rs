@@ -434,6 +434,40 @@ fn variants_draw_as_the_native_feature_does() {
             ));
         }
 
+        // Constant buffer 0 read through a texture, in both stages, with a fixed row (`vs_transform`,
+        // `ps_textured`) and a row picked by the pixel's column (`ps_rows`), against the plain
+        // programs' uniform blocks on WebGL 2 and on WebGPU.
+        for ps in ["ps_textured", "ps_rows"] {
+            let code = [
+                bytecode(&format!("vs_transform.{route}")),
+                bytecode(&format!("{ps}.{route}")),
+            ];
+            let plain = grid_draw(&code, dxil, &grid);
+            let mut variant = plain.clone();
+            variant.setup.vs_key.constants_as_texture = 1;
+            variant.setup.ps_key.constants_as_texture = 1;
+            for (back_end, reference, texels) in [
+                (
+                    "webgl",
+                    ours(&mut gl, &plain, ProvokingVertex::Last),
+                    ours(&mut gl, &variant, ProvokingVertex::Last),
+                ),
+                (
+                    "webgpu",
+                    ours(&mut gpu, &plain, ProvokingVertex::First),
+                    ours(&mut gpu, &variant, ProvokingVertex::First),
+                ),
+            ] {
+                results.push(compare(
+                    format!("constants_as_texture {ps} {route} {back_end}"),
+                    &reference,
+                    &texels,
+                    Format::Rgba8Unorm,
+                    (0, 0),
+                ));
+            }
+        }
+
         // The sampler's level-of-detail bias (2.5, over a texture of four levels), which neither
         // back end's samplers have: against real Direct3D 11's MipLODBias (fxc's build).
         {
