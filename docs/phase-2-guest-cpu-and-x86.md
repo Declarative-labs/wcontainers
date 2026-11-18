@@ -2479,6 +2479,21 @@ As built at X2 (`src/guest/mod.rs`), where building it showed a signature must c
 - `track(thread)` sets the tracking beside the fields; `PC_FIELD`, `SP_FIELD` and `GENERAL_FIELDS` name
   the fields the harness reads (the changes test's pointers and frames).
 - `breakpoint_code` takes the abi's 16-bit breakpoint detail.
+- Layer 2's model is shared (`src/layer2.rs`) and its operations and ranges are those ARM64 encodes in one
+  instruction; another CPU's `assemble` gives each its nearest form. In place of `MODEL_REGISTERS` the guest
+  gives `MODEL: Model` (the registers the model draws from, in today's order; those a system call sets; the
+  one every function keeps, the base of a group across a call), since the model draws all three. `assemble`
+  takes the plain `Program`: `Extra` and `extra()` come with x86's layer 2, where what they hold is known
+  (an associated type and a strategy ARM64 would only answer `None` to have no use before then). The output
+  size is worked out from `MODEL` (`output::<G>()`).
+- `excluded(code)` is used by layer 2 to show every instruction of a program is one the architecture defines.
+- The corpora are not `Snippet` and `Expect` but one type each, holding what the test checks: `smoke() ->
+  Smoke` (named programs with the field each test reads), `checks() -> Vec<Check>` (a blob, a counter and
+  what it must read, whether it fails at a function's entry and so runs in Chrome), `changes() ->
+  Vec<Change>` (a blob, the point the page is changed at as pc and a field's value, the page). The hand-made
+  checks and changes each run in one test over the guest's list, every program on a thread of its own.
+- `auxiliary(offer)` is the constant `AUXILIARY` (no second offer until X8), and the blob record carries
+  the entries to the runner, so a flat blob is told the same on both sides.
 
 `Expect` is today's expectation of each corpus (the smoke output, the checks' counts, the changes' stops),
 unchanged. A translator trap maps to a `Stop` and to an exit status generically, from `TrapKind` and the
@@ -2566,7 +2581,7 @@ and the reference CPU's model (`/proc/cpuinfo`'s `model name`, or ARM64's implem
 bytes, the seed of its data area, and the state as `FIELDS.len()` 16-byte little-endian values; its result
 is a status of its own (ran, or runner failed with a message), the signal, `si_code`, `si_addr`, the
 state after, and the changed data bytes as (offset, value) pairs. A blob is its bytes, its load address,
-stack and program headers, its standard input and how many runs to time; its result is its output, its exit
+stack and program headers, the guest's auxiliary vector entries, its standard input and how many runs to time; its result is its output, its exit
 status, the best time and, when a signal ended it, its stop record. Cases run in one child process of the
 runner that serves them until a case ends it; that case is reported as the runner's failure and the next
 case gets a new child (section 7.3's isolation, without a fork per batch). Each blob run is a child of its

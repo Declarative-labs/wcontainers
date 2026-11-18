@@ -8,7 +8,7 @@
 #   WC_OUTPUT_ROOT=<directory> nix develop -c crates/wcontainers-translator-test/same-output.sh <commit> [sets]
 # Sets, comma separated (default all): bench busybox musl rg git python java go node bun (bench and musl for each
 # of the four probe answers, the rest for this machine's). Node and Bun take
-# many GB and minutes each; run them alone. The real binaries come from this checkout's target/binaries.
+# many GB and minutes each; run them alone. The real binaries come from this checkout's target/binaries/<guest>.
 # Both sides run this tree's tests/output.rs, so they write the same list; for an earlier commit from before
 # the guest CPU interface its few calls are spelled the old way.
 set -u
@@ -23,7 +23,12 @@ test_command=(cargo test --release -p wcontainers-translator-test --test output 
 tree=$dir/trees/${base:0:12}
 if [ ! -f "$tree/Cargo.toml" ]; then
   rm -rf "$tree" && mkdir -p "$tree/target" && git archive "$base" | tar -x -C "$tree" || exit 1
-  ln -s "$root/target/binaries" "$tree/target/binaries"
+  # A commit from before the binaries were kept per guest reads ARM64's files at the top.
+  if grep -q 'join(G::NAME)' "$tree/crates/wcontainers-translator-test/src/binaries.rs"; then
+    ln -s "$root/target/binaries" "$tree/target/binaries"
+  else
+    ln -s "$root/target/binaries/arm64" "$tree/target/binaries"
+  fi
 fi
 output=$tree/crates/wcontainers-translator-test/tests/output.rs
 if [ -d "$tree/crates/wcontainers-guest-cpu" ]; then

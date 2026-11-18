@@ -174,6 +174,8 @@ pub struct BlobRequest<'a> {
     pub stack_bytes: u64,
     /// Where its program headers are in memory and how many.
     pub headers: Option<(u64, u64)>,
+    /// The guest's own auxiliary vector entries.
+    pub auxiliary: &'a [(u64, u64)],
     pub stdin: &'a [u8],
     /// How many timed runs; 0 runs it once untimed.
     pub runs: u32,
@@ -315,6 +317,11 @@ impl Reference {
             headers_count,
         ] {
             record.extend_from_slice(&word.to_le_bytes());
+        }
+        record.extend_from_slice(&(blob.auxiliary.len() as u32).to_le_bytes());
+        for &(key, value) in blob.auxiliary {
+            record.extend_from_slice(&key.to_le_bytes());
+            record.extend_from_slice(&value.to_le_bytes());
         }
         record.extend_from_slice(&blob.runs.to_le_bytes());
         record.extend_from_slice(&(blob.stdin.len() as u32).to_le_bytes());

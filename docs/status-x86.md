@@ -23,8 +23,11 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   generic reference runner and transport and proved the x86 one on the i7-8750H, and moved ARM64's layer 1
   and blobs onto it. Run 2 (the same day) built `GuestTest` with ARM64's part and made the library of the
   test crate generic over it (runner, layer 1, programs, changes, mixed, layer 3, browser), the browser crate
-  per guest by a feature, and layer 1's and four other test files written once over `G`. Not done yet: the
-  other test files, layer 2's model and emitter, the corpora (see "X2, run 2", "What comes next").
+  per guest by a feature, and layer 1's and four other test files written once over `G`. Run 3 (the same
+  day) moved layer 2's emitter, the three hand-made corpora and the real binaries into ARM64's part, gave
+  flat blobs the guest's own auxiliary entries on both sides, and made `long-runs.sh` run one guest. Not
+  done yet: `programs/` per CPU and the test files built on it, the recorded reference results (see "X2,
+  run 3", "What comes next").
 
 Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0.5):
 - Suite: `WC_REFERENCE_X86_64=tom@192.168.2.240 nix develop -c cargo test -p wcontainers-guest-cpu -p
@@ -39,23 +42,52 @@ Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0
 
 ## X2: what comes next, in order
 
-1. Layer 2 over `G`: `MODEL_REGISTERS`, `Extra`/`extra()` and `assemble` of plan 7.2 into `src/guest/arm64.rs`,
-   moving the dynasm emitter out of `src/layer2.rs`; `tests/layer2.rs` and `tests/cases.rs`' layer 2 part over
-   `G` (then `same-cases.sh d27cd70` again, seeds 1, 2, 3 and a new one).
-2. The corpora: `smoke()`, `checks()`, `changes()` (`Snippet`, `Expect`) from `tests/smoke.rs`,
-   `tests/checks.rs` and the hand-made half of `tests/changes.rs` (their dynasm words) into ARM64's part, the
-   test bodies over `G`.
-3. The test files still pinned to `Arm64` (`::<Arm64>` calls, no wrapper): `programs.rs` (its other-host test
-   needs the probe answers a guest has), `benchmarks.rs`, `output.rs` (ARM64's four probe answers),
-   `binaries.rs` (`relocation` is in the guest's part now, but the image list `SOURCES` with musl's loader
-   path and the files under `target/binaries` are ARM64's: per guest, without losing M5's files), and
-   `src/bin/machine-code.rs`. `decoding.rs`
-   and `valid.rs` test ARM64's decoder itself: name them as ARM64's (or move them to the ARM64 crate's tests).
-4. `programs/` per CPU (`PROGRAMS`: start code, assembly tests, `written_code.c`, `differences.c`),
-   `ELF_MACHINE`, `MUSL_LOADER`, `auxiliary`.
-5. Plan 7.3's recorded reference results and layer 1 batching; `long-runs.sh` generic.
-6. The whole suite, its time against X1 run 6's 25 minutes, and a read of the harness for ARM64 facts left
+1. `programs/` per CPU (`PROGRAMS`, plan 7.2): the C programs' `syscall3` (inline `svc` with x8) and system
+   call numbers into `programs/arm64/syscall.h`, the `.S` tests, `written_code.c` (`ic ivau`) and
+   `differences.c` into `programs/arm64/`, `coroutines.c`' switch into `switch.S`; `build_with` adds `-I
+   programs/<NAME>`. Show the bench set's translated bytes unchanged afterwards (`same-output.sh 2274314
+   bench`), since the bench set is compiled from `bench.c`.
+2. Then the test files still pinned to `Arm64` over `G` with `_arm64` wrappers: `programs.rs` (its program
+   lists, and its other-host test needs the probe answers a guest has), `benchmarks.rs`, `output.rs`
+   (ARM64's four probe answers), `binaries.rs` (the files are per guest now), `src/bin/machine-code.rs`.
+   `decoding.rs` and `valid.rs` test ARM64's decoder itself: name them as ARM64's.
+3. Plan 7.3's recorded reference results and layer 1 batching (see "Departures": proposed for X3).
+4. The whole suite, its time against X1 run 6's 25 minutes, a read of the harness for ARM64 facts left
    outside the per-CPU part; merge origin/phase-1-translator.
+
+## X2, run 3 (2026-11-17)
+
+- origin/phase-1-translator: fetched at the start, nothing new since 8b5e420.
+- The Mac's disk filled (116 MB free) part way through, which stopped every command and Docker Desktop. To
+  go on I removed the cargo target folders of the finished X1 checks in this track's scratch
+  (`check-x1*/target*`, `suite-target`, `head-target`, about 19 GB; their logs and lists are kept) and
+  started Docker Desktop again (`open -a Docker`); the disk then had 17 to 62 GB free.
+- Layer 2: the model stays in `src/layer2.rs`, drawing registers from `G::MODEL` (`Model`: the 26 registers
+  in today's order, those a system call sets, the one every function keeps); the dynasm emitter moved
+  unchanged to `src/guest/arm64/assemble.rs` behind `GuestTest::assemble`; `tests/layer2.rs` and the layer 2
+  part of `tests/cases.rs` are over `G`. Layer 2's "every word is defined" check walks the program by
+  `G::decode` and asks `G::excluded`.
+- The corpora: `GuestTest::smoke() -> Smoke`, `checks() -> Vec<Check>`, `changes() -> Vec<Change>`;
+  ARM64's programs moved unchanged to `src/guest/arm64/corpora.rs`. `tests/smoke.rs` keeps its six tests
+  (each `_arm64`); `tests/checks.rs` is now `checks_match_linux_arm64` (all 49 programs of the 11 tests
+  before, each on its own thread) and `failing_at_an_entry_in_chrome_arm64`; `tests/changes.rs`'
+  hand-made tests are `hand_made_changes_match_none_arm64` (all 8 programs of the 7 tests before).
+- `GuestTest::AUXILIARY`: a flat blob's own auxiliary entries (ARM64 AT_HWCAP 0x183, AT_HWCAP2 0, as
+  before, so the same stack bytes); the blob record now carries them to the runner. `layout.rs` lost
+  `BLOB_HWCAP`.
+- Real binaries per guest: `binaries::sources::<G>()` (musl's path from `G::MUSL_LOADER`), files under
+  `target/binaries/<NAME>` fetched for the guest's Docker platform, and `Binary::read` checks
+  `G::ELF_MACHINE`. M5's nine files moved to `target/binaries/arm64`; `same-output.sh` links an older
+  commit's copy to that folder.
+- `long-runs.sh`: `WC_LONG_GUEST` (default arm64) picks the tests by their suffix; each guest has its own
+  ledger and logs under `<WC_LONG_DIR>/<guest>/`; its replay lines name today's tests (one named
+  `every_covered_form_matches_the_cpu`, gone since run 2); stopped containers are `wc-x86-`.
+- Same cases after the layer 2 move: `same-cases.sh d27cd70 1 2 3 4127` (scratch `x2/run3/same-cases-1.log`,
+  Mac load 14.1 to 17.7): layer 1 1215 forms and layer 2 64 programs the same for each of the four seeds.
+- Tests run (Mac load 20 to 35, scratch `x2/run3/corpora.log`): layer 2 at the defaults (64 programs, 8 on
+  the CPU, 1 in Chrome, 0 failing), smoke (6), checks (2, 49 programs), changes (3; the random part made
+  the same 1031 changes as before, so the same programs). An earlier layer 2 run failed its 8 native cases
+  only because Docker was down (`x2/run3/layer2.log`).
 
 ## X2, run 2 (2026-11-17)
 
@@ -1102,6 +1134,18 @@ X2 (each also written into the plan's text in the same commit):
   longer shares `wc-translator-gcc` with the translator track.
 - The browser translator exports `initial_block(pc, sp)` (plan 7.2 had the contract carry offsets), so the
   page never writes a register by its offset.
+- Layer 2 (run 3, plan 7.2 "As built"): `MODEL: Model` in place of `MODEL_REGISTERS` (the model draws the
+  registers a system call sets and the one kept across calls too); `Extra` and `extra()` wait for x86's
+  layer 2, where their content is known; the shared model's operations are ARM64's, which another CPU's
+  `assemble` maps to its nearest forms.
+- The corpora are typed (`Smoke`, `Check`, `Change`), not `Snippet` and `Expect`. ARM64's 11 checks tests
+  and 7 hand-made changes tests are one test each over the same programs, each program on its own thread.
+- `auxiliary(offer)` is `AUXILIARY`, and the blob record carries the entries to the runner (plan 7.2's
+  wire).
+- The real binaries are kept per guest under `target/binaries/<guest>` (were `target/binaries`).
+- Proposed: plan 7.3's recorded reference results and layer 1 batching are built at X3, with x86's layer 1,
+  the first run whose reference is remote and many cases a form; X2's pass bar does not name them. Not yet
+  ruled on.
 - The browser page reads the pc by `pcOffset` and nothing else of the register block (it read x0 to x30 and
   sp, unused); `syscall` offsets, `codeChanges` and `traps` of plan 7.2's contract are not added, since the
   page gets the call's number and arguments from the hook and traps by `trapKinds` already.

@@ -145,7 +145,7 @@ fn run_in_chrome<G: GuestTest>(
     flags: Option<&str>,
     module_bytes: u32,
 ) -> Report {
-    let place = placement(blob);
+    let place = placement::<G>(blob);
     let directory = target().join("cases").join(&blob.name);
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::copy(translator::<G>(), directory.join("translator.wasm")).unwrap();

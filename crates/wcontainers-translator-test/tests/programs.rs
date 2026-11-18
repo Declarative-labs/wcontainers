@@ -280,10 +280,9 @@ fn every_look_ahead_matches(blob: &Blob, theirs: &Ran, check: impl Fn(&str, &Mac
 
 #[test]
 fn blobs_are_told_the_hwcap_of_the_abi() {
-    assert_eq!(
-        wcontainers_translator_test::layout::BLOB_HWCAP,
-        wcontainers_abi::HWCAP
-    );
+    use wcontainers_translator_test::guest::GuestTest;
+    use wcontainers_translator_test::layout::AT_HWCAP;
+    assert!(Arm64::AUXILIARY.contains(&(AT_HWCAP, wcontainers_abi::HWCAP)));
 }
 
 #[test]

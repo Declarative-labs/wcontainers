@@ -630,6 +630,7 @@ fn the_x86_64_reference_runs_blobs() {
             stack_top: 0x4810_0000,
             stack_bytes: 1 << 16,
             headers: None,
+            auxiliary: &[],
             stdin: &[],
             runs: 0,
         }

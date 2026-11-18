@@ -13,7 +13,7 @@ use std::fmt::Write;
 use wcontainers_arm64::Arm64;
 use wcontainers_arm64::Host;
 use wcontainers_translator::{BOUND, LookAhead, Optimise, Translation, translate};
-use wcontainers_translator_test::binaries::{Binary, SOURCES};
+use wcontainers_translator_test::binaries::{Binary, sources};
 use wcontainers_translator_test::programs::{Library, build_with};
 use wcontainers_translator_test::runner::probe;
 
@@ -121,11 +121,12 @@ fn bench(out: &mut String) {
 
 /// A real binary from every start its file offers.
 fn binary(out: &mut String, name: &str) {
-    let source = SOURCES
-        .iter()
+    let source = sources::<Arm64>()
+        .into_iter()
         .find(|s| s.name == name)
         .unwrap_or_else(|| panic!("no set named {name}"));
-    let binary = Binary::read::<Arm64>(source.name, &std::fs::read(source.file()).unwrap());
+    let binary =
+        Binary::read::<Arm64>(source.name, &std::fs::read(source.file::<Arm64>()).unwrap());
     let all = binary.starts.all();
     let mut start_sets = vec![(String::new(), all, false)];
     for (means, starts) in binary.starts.by_means() {

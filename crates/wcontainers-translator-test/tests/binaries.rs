@@ -7,17 +7,17 @@ use std::time::Instant;
 use wcontainers_arm64::Arm64;
 use wcontainers_translator::contract::Reason;
 use wcontainers_translator::{LookAhead, Means, Optimise, Translation};
-use wcontainers_translator_test::binaries::{Binary, SOURCES};
+use wcontainers_translator_test::binaries::{Binary, sources};
 use wcontainers_translator_test::runner::{Machine, Syscalls, probe};
 
 /// Where the binaries' images are placed in guest memory.
 const LOAD: u64 = 0x10_0000;
 
 /// The binaries named in `WC_BINARIES` (comma separated), or all of them.
-fn chosen() -> Vec<&'static wcontainers_translator_test::binaries::Source> {
+fn chosen() -> Vec<wcontainers_translator_test::binaries::Source> {
     let names = std::env::var("WC_BINARIES").unwrap_or_default();
-    SOURCES
-        .iter()
+    sources::<Arm64>()
+        .into_iter()
         .filter(|s| names.is_empty() || names.split(',').any(|n| n == s.name))
         .collect()
 }
@@ -102,11 +102,12 @@ fn load_in_chrome(
 /// Chrome, and every piece is counted once by the means that found it.
 #[test]
 fn small_binaries_translate_and_load() {
-    for source in SOURCES
+    for source in sources::<Arm64>()
         .iter()
         .filter(|s| matches!(s.name, "busybox" | "musl"))
     {
-        let binary = Binary::read::<Arm64>(source.name, &std::fs::read(source.file()).unwrap());
+        let binary =
+            Binary::read::<Arm64>(source.name, &std::fs::read(source.file::<Arm64>()).unwrap());
         assert_eq!(binary.unwind_errors, 0, "{}", binary.name);
         let starts = binary.starts.all();
         for optimise in [Optimise::Speed, Optimise::Size] {
@@ -139,8 +140,11 @@ fn small_binaries_translate_and_load() {
 fn a_bad_unwind_entry_loses_only_itself() {
     use gimli::UnwindSection;
     use object::{Object, ObjectSection};
-    let source = SOURCES.iter().find(|s| s.name == "musl").unwrap();
-    let bytes = std::fs::read(source.file()).unwrap();
+    let source = sources::<Arm64>()
+        .into_iter()
+        .find(|s| s.name == "musl")
+        .unwrap();
+    let bytes = std::fs::read(source.file::<Arm64>()).unwrap();
     let whole = Binary::read::<Arm64>(source.name, &bytes);
     let file = object::File::parse(&*bytes).unwrap();
     let section = file.section_by_name(".eh_frame").unwrap();
@@ -184,7 +188,7 @@ fn a_bad_unwind_entry_loses_only_itself() {
 #[ignore]
 fn measure_binaries() {
     for source in chosen() {
-        let file = std::fs::read(source.file()).unwrap();
+        let file = std::fs::read(source.file::<Arm64>()).unwrap();
         let started = Instant::now();
         let binary = Binary::read::<Arm64>(source.name, &file);
         let reading = started.elapsed().as_secs_f64();

@@ -1,4 +1,4 @@
-//! Real ARM64 Linux binaries, for measuring the translator at scale: each file's code and every start address
+//! Real Linux binaries of a guest, for measuring the translator at scale: each file's code and every start address
 //! the file offers.
 
 use crate::guest::{GuestTest, Relocation};
@@ -19,45 +19,47 @@ pub struct Source {
     path: &'static str,
 }
 
-/// The binaries M5 measures: busybox, the C library, ripgrep and git from Alpine, Node from its own image on
-/// Alpine (with its libraries built in, the largest), and runtimes of other kinds: Python (its library holds
-/// the interpreter), Bun, a Java runtime and a Go program (Go's own tool).
-pub const SOURCES: [Source; 9] = [
-    Source::alpine("busybox", "", "/bin/busybox"),
-    Source::alpine("musl", "", "/lib/ld-musl-aarch64.so.1"),
-    Source::alpine("rg", "ripgrep", "/usr/bin/rg"),
-    Source::alpine("git", "git", "/usr/bin/git"),
-    Source {
-        name: "node",
-        image: "node:24-alpine3.22",
-        packages: "",
-        path: "/usr/local/bin/node",
-    },
-    Source {
-        name: "python",
-        image: "python:3.13-alpine3.22",
-        packages: "",
-        path: "/usr/local/lib/libpython3.13.so.1.0",
-    },
-    Source {
-        name: "bun",
-        image: "oven/bun:1.3-alpine",
-        packages: "",
-        path: "/usr/local/bin/bun",
-    },
-    Source {
-        name: "java",
-        image: "eclipse-temurin:21-jre-alpine",
-        packages: "",
-        path: "/opt/java/openjdk/lib/server/libjvm.so",
-    },
-    Source {
-        name: "go",
-        image: "golang:1.25-alpine3.22",
-        packages: "",
-        path: "/usr/local/go/bin/go",
-    },
-];
+/// The binaries M5 measures, built for the guest: busybox, the C library, ripgrep and git from Alpine, Node
+/// from its own image on Alpine (with its libraries built in, the largest), and runtimes of other kinds:
+/// Python (its library holds the interpreter), Bun, a Java runtime and a Go program (Go's own tool).
+pub fn sources<G: GuestTest>() -> [Source; 9] {
+    [
+        Source::alpine("busybox", "", "/bin/busybox"),
+        Source::alpine("musl", "", G::MUSL_LOADER),
+        Source::alpine("rg", "ripgrep", "/usr/bin/rg"),
+        Source::alpine("git", "git", "/usr/bin/git"),
+        Source {
+            name: "node",
+            image: "node:24-alpine3.22",
+            packages: "",
+            path: "/usr/local/bin/node",
+        },
+        Source {
+            name: "python",
+            image: "python:3.13-alpine3.22",
+            packages: "",
+            path: "/usr/local/lib/libpython3.13.so.1.0",
+        },
+        Source {
+            name: "bun",
+            image: "oven/bun:1.3-alpine",
+            packages: "",
+            path: "/usr/local/bin/bun",
+        },
+        Source {
+            name: "java",
+            image: "eclipse-temurin:21-jre-alpine",
+            packages: "",
+            path: "/opt/java/openjdk/lib/server/libjvm.so",
+        },
+        Source {
+            name: "go",
+            image: "golang:1.25-alpine3.22",
+            packages: "",
+            path: "/usr/local/go/bin/go",
+        },
+    ]
+}
 
 impl Source {
     const fn alpine(name: &'static str, packages: &'static str, path: &'static str) -> Self {
@@ -69,9 +71,12 @@ impl Source {
         }
     }
 
-    /// The file, taken from its image once (with Docker) and kept under `target/binaries`.
-    pub fn file(&self) -> PathBuf {
-        let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/binaries");
+    /// The guest's file, taken from its image for the guest's platform once (with Docker) and kept under
+    /// `target/binaries/<guest>`.
+    pub fn file<G: GuestTest>(&self) -> PathBuf {
+        let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/binaries")
+            .join(G::NAME);
         let file = directory.join(self.name);
         if file.exists() {
             return file;
@@ -79,11 +84,14 @@ impl Source {
         std::fs::create_dir_all(&directory).unwrap();
         let container = crate::reference::container_name(&format!("binary-{}", self.name));
         let mut create = Command::new("docker");
+        let platform = ["--platform", G::REFERENCE.docker_platform];
         if self.packages.is_empty() {
-            create.args(["create", "--name", &container, self.image, "true"]);
+            create.args(["create"]).args(platform);
+            create.args(["--name", &container, self.image, "true"]);
         } else {
             let add = format!("apk add --no-cache {}", self.packages);
-            create.args(["run", "--name", &container, self.image, "sh", "-c", &add]);
+            create.args(["run"]).args(platform);
+            create.args(["--name", &container, self.image, "sh", "-c", &add]);
         }
         let made = create.output().expect("run docker");
         assert!(
@@ -165,6 +173,8 @@ impl Binary {
     pub fn read<G: GuestTest>(name: &str, bytes: &[u8]) -> Binary {
         let file = File::parse(bytes).expect("an ELF file");
         let endian = file.endian();
+        let machine = file.elf_header().e_machine(endian);
+        assert_eq!(machine, G::ELF_MACHINE, "{name} is not for this guest");
         let loads: Vec<_> = file
             .elf_program_headers()
             .iter()

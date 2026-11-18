@@ -13,7 +13,7 @@ use std::cell::{Cell, RefCell};
 use std::fmt::Write;
 use wcontainers_arm64::Arm64;
 use wcontainers_translator_test::guest::{Case, GuestTest};
-use wcontainers_translator_test::layer2::{assemble, program};
+use wcontainers_translator_test::layer2::program;
 
 fn knob(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect("a number"))
@@ -79,14 +79,14 @@ fn layer1<G: GuestTest>(seed: u64, count: u32) -> String {
     out
 }
 
-fn layer2(seed: u64, count: u64) -> String {
+fn layer2<G: GuestTest>(seed: u64, count: u64) -> String {
     let out = RefCell::new(String::new());
     for case in 0..count {
         program_generator(seed, case)
             .run(
-                &(program(), 1..=64u32, any::<u64>()),
+                &(program::<G>(), 1..=64u32, any::<u64>()),
                 |(program, bound, mix)| {
-                    let blob = assemble(&program);
+                    let blob = G::assemble(&program);
                     writeln!(
                         out.borrow_mut(),
                         "{case} {} {} {} {bound} {mix:x}",
@@ -103,19 +103,28 @@ fn layer2(seed: u64, count: u64) -> String {
     out.into_inner()
 }
 
-#[test]
-#[ignore]
-fn write_cases() {
-    let directory = std::env::var("WC_CASES_DIR").expect("WC_CASES_DIR names where to write");
+/// Writes the cases of `G` for the seed into `directory`.
+fn write_cases<G: GuestTest>(directory: &str) {
     let seed = knob("WC_CASES_SEED", 1);
-    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::create_dir_all(directory).unwrap();
     let one = knob("WC_CASES_LAYER1", 64) as u32;
     std::fs::write(
         format!("{directory}/layer1-{seed}.txt"),
-        layer1::<Arm64>(seed, one),
+        layer1::<G>(seed, one),
     )
     .unwrap();
     let two = knob("WC_CASES_LAYER2", 64);
-    std::fs::write(format!("{directory}/layer2-{seed}.txt"), layer2(seed, two)).unwrap();
+    std::fs::write(
+        format!("{directory}/layer2-{seed}.txt"),
+        layer2::<G>(seed, two),
+    )
+    .unwrap();
     eprintln!("wrote {directory}/layer1-{seed}.txt and layer2-{seed}.txt");
+}
+
+#[test]
+#[ignore]
+fn write_cases_arm64() {
+    let directory = std::env::var("WC_CASES_DIR").expect("WC_CASES_DIR names where to write");
+    write_cases::<Arm64>(&directory);
 }

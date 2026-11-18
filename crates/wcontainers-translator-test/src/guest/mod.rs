@@ -4,9 +4,12 @@
 
 pub mod arm64;
 
+use crate::layer2::{Model, Program};
+use crate::programs::Blob;
 use crate::reference::Target;
 use proptest::strategy::BoxedStrategy;
 use wcontainers_guest_cpu::{Guest, Personality};
+use wcontainers_translator::contract::Reason;
 
 /// What the harness needs of one guest beyond `Guest`. Its thread block can be compared and shown.
 pub trait GuestTest: Guest + Personality<Block: PartialEq + core::fmt::Debug> {
@@ -20,6 +23,10 @@ pub trait GuestTest: Guest + Personality<Block: PartialEq + core::fmt::Debug> {
     const GENERAL_ONLY: &'static [&'static str];
     /// The suffix of this CPU's names, as in `layer1_arm64`.
     const NAME: &'static str;
+    /// ELF's `e_machine` for this CPU.
+    const ELF_MACHINE: object::elf::Machine;
+    /// musl's loader inside images, such as `/lib/ld-musl-aarch64.so.1`.
+    const MUSL_LOADER: &'static str;
     /// What a dynamic relocation type of a real binary does.
     fn relocation(kind: object::elf::RelocationType) -> Relocation;
     /// One instruction as text for failure messages.
@@ -68,9 +75,26 @@ pub trait GuestTest: Guest + Personality<Block: PartialEq + core::fmt::Debug> {
     /// The `si_code` Linux gives the breakpoint trap whose detail is `detail`.
     fn breakpoint_code(detail: u16) -> u32;
 
+    /// A reason to leave an instruction out of what is compared, as one whose behaviour the architecture
+    /// leaves open, else `None`.
+    fn excluded(code: &[u8]) -> Option<&'static str>;
+
     // --- blobs ---
+    /// A flat blob's own auxiliary vector entries (what the CPU offers), in Linux's order.
+    const AUXILIARY: &'static [(u64, u64)];
     /// The stand-in's system call numbers.
     const STAND_IN: StandIn;
+
+    // --- the hand-made programs of the smoke, checks and changes tests ---
+    fn smoke() -> Smoke;
+    fn checks() -> Vec<Check>;
+    fn changes() -> Vec<Change>;
+
+    // --- layer 2 ---
+    /// The registers layer 2's programs use.
+    const MODEL: Model;
+    /// A program in this CPU's code, as a flat blob that starts at its first byte.
+    fn assemble(program: &Program) -> Blob;
 }
 
 /// What a dynamic relocation does: add the load address, or put a symbol's address, or something the
@@ -165,6 +189,52 @@ pub struct Designed {
     pub fields: Vec<(usize, u128)>,
     /// Compared with the reference too; false for what is answered by design.
     pub compared: bool,
+}
+
+/// The smoke test's programs, each started at its first byte with every register 0 but the pc.
+pub struct Smoke {
+    /// Exits with 42.
+    pub exit: Vec<u8>,
+    /// Adds 10 down to 1 in a loop around a call and exits with the sum, 55.
+    pub loop_and_call: Vec<u8>,
+    /// Makes system call 999, which the stand-in does not have, from two places in a row, then exits with 3.
+    pub unknown_call: Vec<u8>,
+    /// Counts the field `long_loop_counter` down from 2^30 to 0 in a loop of the instructions at the offsets
+    /// `long_loop_body`, then exits with 0.
+    pub long_loop: Vec<u8>,
+    pub long_loop_counter: usize,
+    pub long_loop_body: Vec<u64>,
+    /// Sets the field `marked` to 1; each of `illegal` runs after it, with the times it counts as unsupported:
+    /// instructions of features not offered, and bytes in no form.
+    pub mark: Vec<u8>,
+    pub marked: usize,
+    pub illegal: Vec<(Vec<u8>, u64)>,
+}
+
+/// How many times a counter must read.
+#[derive(Clone, Copy, Debug)]
+pub enum Counted {
+    Exactly(u64),
+    /// At least once.
+    Some,
+}
+
+/// A program of the checks test: Linux, none and full agree on it, and full ends as none does.
+pub struct Check {
+    pub blob: Blob,
+    /// A counter of the runs at full and what it must read.
+    pub counted: Option<(Reason, Counted)>,
+    /// A check fails on a function's first instruction, so it runs in Chrome too.
+    pub at_entry: bool,
+}
+
+/// A program of the changes test: at its first system call, or at the first stop where the pc and a field
+/// (`at`: pc, field, value) have these values, the page at `page` is made to allow nothing; full must fault
+/// exactly as none does.
+pub struct Change {
+    pub blob: Blob,
+    pub at: Option<(u64, usize, u128)>,
+    pub page: u64,
 }
 
 /// The stand-in kernel's system call numbers.

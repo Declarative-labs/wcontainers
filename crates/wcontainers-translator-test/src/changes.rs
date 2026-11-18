@@ -78,8 +78,8 @@ pub struct Compared {
 }
 
 /// Pages a change may touch: the blob's pages and the page after it, the stack and the page below it.
-fn universe(blob: &Blob) -> Vec<Range<u64>> {
-    placement(blob)
+fn universe<G: GuestTest>(blob: &Blob) -> Vec<Range<u64>> {
+    placement::<G>(blob)
         .regions
         .into_iter()
         .enumerate()
@@ -160,8 +160,8 @@ fn choose<G: GuestTest>(
 
 /// The pages that may run code, the blob's. Changes leave that as placed: the stand-in drops no pieces when a
 /// page stops allowing it, and translates only from pages that allow it.
-fn runnable(blob: &Blob) -> Range<u64> {
-    let (range, _) = &placement(blob).regions[0];
+fn runnable<G: GuestTest>(blob: &Blob) -> Range<u64> {
+    let (range, _) = &placement::<G>(blob).regions[0];
     range.start / PAGE_SIZE..range.end / PAGE_SIZE
 }
 
@@ -208,7 +208,7 @@ fn end<G: GuestTest>(
             {
                 let page = address / PAGE_SIZE;
                 let permissions = with_running(
-                    &runnable(blob),
+                    &runnable::<G>(blob),
                     page,
                     Permissions::READ | Permissions::WRITE,
                 );
@@ -237,8 +237,8 @@ fn bytes<G: GuestTest>(machine: &mut Machine<G>, universe: &[Range<u64>]) -> Vec
 /// points, and compare how they went. Panics on any difference. The run at full is translated for speed or
 /// for size as the plan's seed is even or odd.
 pub fn compare<G: GuestTest>(blob: &Blob, plan: Plan) -> Compared {
-    let universe = universe(blob);
-    let runnable = runnable(blob);
+    let universe = universe::<G>(blob);
+    let runnable = runnable::<G>(blob);
     let made = Rc::new(RefCell::new(Vec::new()));
 
     let full_came_back = Rc::new(Cell::new(0));

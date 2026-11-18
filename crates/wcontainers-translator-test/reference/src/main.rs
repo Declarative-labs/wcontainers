@@ -485,6 +485,7 @@ struct BlobRequest<'a> {
     stack_top: u64,
     stack_bytes: u64,
     headers: Option<(u64, u64)>,
+    auxiliary: Vec<(u64, u64)>,
     bytes: &'a [u8],
 }
 
@@ -512,7 +513,7 @@ fn run_blob_child(blob: &BlobRequest, input: libc::c_int, out: [libc::c_int; 2])
         blob.stack_bytes,
         libc::PROT_READ | libc::PROT_WRITE,
     );
-    let (sp, stack) = initial_stack(blob.stack_top, blob.headers);
+    let (sp, stack) = initial_stack(blob.stack_top, blob.headers, &blob.auxiliary);
     unsafe { core::ptr::copy_nonoverlapping(stack.as_ptr(), sp as *mut u8, stack.len()) };
     alternate_stack();
     for signal in [
@@ -541,6 +542,9 @@ fn blob(request: &[u8]) -> Vec<u8> {
     let mut request = Reader(request);
     let (load, stack_top, stack_bytes) = (request.u64(), request.u64(), request.u64());
     let (headers_at, headers_count) = (request.u64(), request.u64());
+    let auxiliary = (0..request.u32())
+        .map(|_| (request.u64(), request.u64()))
+        .collect();
     let runs = request.u32().max(1);
     let stdin_length = request.u32() as usize;
     let stdin = request.take(stdin_length).to_vec();
@@ -549,6 +553,7 @@ fn blob(request: &[u8]) -> Vec<u8> {
         stack_top,
         stack_bytes,
         headers: (headers_count > 0).then_some((headers_at, headers_count)),
+        auxiliary,
         bytes: request.0,
     };
     let mut best = f64::INFINITY;

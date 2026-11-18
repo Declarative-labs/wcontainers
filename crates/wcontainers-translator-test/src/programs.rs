@@ -234,9 +234,9 @@ pub struct Placement {
     pub stack: Vec<u8>,
 }
 
-pub fn placement(blob: &Blob) -> Placement {
+pub fn placement<G: GuestTest>(blob: &Blob) -> Placement {
     let end = blob.load + (blob.bytes.len() as u64).next_multiple_of(4096);
-    let (sp, stack) = initial_stack(STACK_TOP, blob.headers_in_memory());
+    let (sp, stack) = initial_stack(STACK_TOP, blob.headers_in_memory(), G::AUXILIARY);
     Placement {
         memory_bytes: STACK_TOP,
         regions: vec![
@@ -354,7 +354,7 @@ pub fn ready_with<G: GuestTest>(
 ) -> Machine<G> {
     // The table covers the whole blob, every page of it that may run code, so code the program writes runs.
     let slots = (blob.bytes.len() as u64).div_ceil(G::ALIGN) as u32;
-    let place = placement(blob);
+    let place = placement::<G>(blob);
     let mut machine = Machine::new(place.memory_bytes, blob.load, slots, Syscalls::StandIn);
     machine.set_host(host);
     for (range, permissions) in place.regions {
@@ -408,7 +408,7 @@ pub fn ran<G: GuestTest>(
 /// Every byte the guest may reach: the blob's pages, then the stack.
 pub fn reachable_memory<G: GuestTest>(machine: &mut Machine<G>, blob: &Blob) -> Vec<u8> {
     let mut bytes = Vec::new();
-    for (range, _) in placement(blob).regions {
+    for (range, _) in placement::<G>(blob).regions {
         let mut part = vec![0; (range.end - range.start) as usize];
         machine.read(range.start, &mut part);
         bytes.extend(part);
@@ -439,6 +439,7 @@ fn on_reference<G: GuestTest>(blob: &Blob, runs: u32) -> BlobRan {
         stack_top: STACK_TOP,
         stack_bytes: blob.stack_bytes,
         headers: blob.headers_in_memory(),
+        auxiliary: G::AUXILIARY,
         stdin: &[],
         runs,
     };

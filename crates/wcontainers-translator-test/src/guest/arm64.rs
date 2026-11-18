@@ -1,13 +1,16 @@
 //! ARM64's part of the harness: its forms from Arm's list, its value strategies, its state as the
 //! reference's fields, and what its architecture leaves open.
 
+mod assemble;
+mod corpora;
+
 use super::*;
 use crate::layout::{CODE, DATA, DATA_BYTES, DATA_WRITABLE};
 use crate::reference::Target;
 use proptest::prelude::*;
 use std::sync::OnceLock;
 use wcontainers_abi::RegisterBlock;
-use wcontainers_arm64::forms::Form;
+use wcontainers_arm64::forms::{self, Form};
 use wcontainers_arm64::{Arm64, decode};
 use zerocopy::{FromBytes, IntoBytes};
 
@@ -101,6 +104,8 @@ impl GuestTest for Arm64 {
     // zig sets the CPU's features itself; this is how it leaves out floating point and vectors.
     const GENERAL_ONLY: &'static [&'static str] = &["-mcpu=generic-neon-fp_armv8"];
     const NAME: &'static str = "arm64";
+    const ELF_MACHINE: object::elf::Machine = object::elf::EM_AARCH64;
+    const MUSL_LOADER: &'static str = "/lib/ld-musl-aarch64.so.1";
 
     fn relocation(kind: object::elf::RelocationType) -> Relocation {
         use object::elf;
@@ -248,6 +253,12 @@ impl GuestTest for Arm64 {
         1
     }
 
+    /// HWCAP: fp, asimd, cpuid and atomics.
+    const AUXILIARY: &'static [(u64, u64)] = &[
+        (crate::layout::AT_HWCAP, 0x183),
+        (crate::layout::AT_HWCAP2, 0),
+    ];
+
     const STAND_IN: StandIn = StandIn {
         write: 64,
         writev: 66,
@@ -255,6 +266,37 @@ impl GuestTest for Arm64 {
         exit_group: 94,
         brk: 214,
     };
+
+    fn excluded(code: &[u8]) -> Option<&'static str> {
+        let word = word(code);
+        forms::form(word).and_then(|form| excluded(form, word))
+    }
+
+    /// Everything but x16 to x18 (scratch for loops, recursion and jumps), x29 (the area) and x30.
+    const MODEL: Model = Model {
+        registers: &[
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 19, 20, 21, 22, 23, 24, 25, 26,
+            27, 28,
+        ],
+        syscall_sets: &[0, 1, 2, 8],
+        kept: 28,
+    };
+
+    fn assemble(program: &Program) -> Blob {
+        assemble::assemble(program)
+    }
+
+    fn smoke() -> Smoke {
+        corpora::smoke()
+    }
+
+    fn checks() -> Vec<Check> {
+        corpora::checks()
+    }
+
+    fn changes() -> Vec<Change> {
+        corpora::changes()
+    }
 }
 
 fn word(code: &[u8]) -> u32 {
