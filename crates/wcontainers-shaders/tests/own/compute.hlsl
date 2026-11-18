@@ -88,3 +88,24 @@ void cs_decrement(uint3 id : SV_DispatchThreadID) {
     uint n = returned.DecrementCounter();
     returned[n] = returned[n] + 2;
 }
+
+// Storage textures of several formats and shapes: written, and one read and written again.
+RWTexture2D<float4> colour : register(u0);
+RWTexture2D<float> level : register(u1);
+RWTexture2DArray<uint4> layers : register(u2);
+RWTexture2D<int2> pairs : register(u3);
+
+[numthreads(8, 8, 1)]
+void cs_images(uint3 id : SV_DispatchThreadID) {
+    uint width, height;
+    colour.GetDimensions(width, height);
+    float2 uv = (id.xy + 0.5) / float2(width, height);
+    colour[id.xy] = float4(uv, 1.0 - uv.x, 0.25 + uv.y * 0.5);
+    level[id.xy] = level[id.xy] * 2.0 + uv.x;
+    uint w, h, n;
+    layers.GetDimensions(w, h, n);
+    for (uint l = 0; l < n; l++) {
+        layers[uint3(id.xy, l)] = uint4(id.xy, l, w * h + n);
+    }
+    pairs[id.xy] = int2(int(id.x) - int(id.y), -int(id.x * 3));
+}

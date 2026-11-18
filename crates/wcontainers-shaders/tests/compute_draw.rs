@@ -1,6 +1,6 @@
-//! Compute shaders with atomic operations and append, consume and counter views (`compute.hlsl`) on the
-//! WebGPU back end, against real Direct3D 11 running the same shaders on the same GPU. The values
-//! consumed are seeded: `WCONTAINERS_COMPUTE_SEED` (default 1) and `WCONTAINERS_COMPUTE_CASES` seeds
+//! Compute shaders with atomic operations, append, consume and counter views, and storage textures
+//! (`compute.hlsl`) on the WebGPU back end, against real Direct3D 11 running the same shaders on the
+//! same GPU. The values consumed and the texels read are seeded: `WCONTAINERS_COMPUTE_SEED` (default 1) and `WCONTAINERS_COMPUTE_CASES` seeds
 //! from it (default 4).
 
 #![cfg(windows)]
@@ -10,7 +10,8 @@ mod common;
 use common::*;
 use wcontainers_gpu::{
     Backend, BindingEntry, BindingResource, BufferRange, BufferUsage, DispatchCall, DispatchGroups,
-    Program, ReadSource, SlotKind, StageSet, VariantKey,
+    Extent, Format, Origin, Program, ReadSource, SlotKind, StageSet, TextureDesc, TextureDimension,
+    TextureRegion, TextureUsage, TextureViewDesc, VariantKey, ViewDimension, WriteMode,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::{Source, convert};
@@ -366,5 +367,241 @@ fn atomics_and_counters_match_direct3d() {
         }
     }
     eprintln!("{compared} comparisons, {} failed", failures.len());
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// `cs_images`' storage textures: slot, format, its Direct3D format, layers, and whether it starts
+/// with seeded texels (the one read and written again).
+const IMAGES: [(u32, Format, DXGI_FORMAT, u32, bool); 4] = [
+    (0, Format::Rgba8Unorm, DXGI_FORMAT_R8G8B8A8_UNORM, 1, false),
+    (1, Format::R32Float, DXGI_FORMAT_R32_FLOAT, 1, true),
+    (
+        2,
+        Format::Rgba16Uint,
+        DXGI_FORMAT_R16G16B16A16_UINT,
+        3,
+        false,
+    ),
+    (3, Format::Rg32Sint, DXGI_FORMAT_R32G32_SINT, 1, false),
+];
+const IMAGE_SIZE: u32 = 16;
+
+fn image_texels(seed: u64, format: Format, layers: u32, seeded: bool) -> Vec<u8> {
+    let n = (IMAGE_SIZE * IMAGE_SIZE * layers * format.block().2) as usize;
+    if !seeded {
+        return vec![0; n];
+    }
+    let mut next = rng(seed);
+    (0..n / 4)
+        .flat_map(|_| ((next() % 2000) as f32 / 16.0 - 60.0).to_le_bytes())
+        .collect()
+}
+
+/// Each texture's texels after real Direct3D 11 runs `cs_images`, layer after layer.
+fn direct3d_images(gpu: &Gpu, seed: u64) -> Vec<Vec<u8>> {
+    let shader = gpu.cs(&bytecode("cs_images.dxbc")).unwrap();
+    let mut textures = Vec::new();
+    let mut views = Vec::new();
+    for &(_, format, dxgi, layers, seeded) in &IMAGES {
+        let mut desc = d3d11::tex2d(IMAGE_SIZE, IMAGE_SIZE, dxgi, D3D11_BIND_UNORDERED_ACCESS);
+        desc.ArraySize = layers;
+        let texels = image_texels(seed, format, layers, seeded);
+        let row = IMAGE_SIZE * format.block().2;
+        let data: Vec<_> = texels
+            .chunks((row * IMAGE_SIZE) as usize)
+            .map(|layer| d3d11::data(layer, row, row * IMAGE_SIZE))
+            .collect();
+        let texture = gpu.texture2d(&desc, &data).unwrap();
+        views.push(Some(gpu.uav(&texture.clone().into(), None).unwrap()));
+        textures.push((texture, format, layers));
+    }
+    unsafe {
+        let c = &gpu.context;
+        c.CSSetShader(&shader, None);
+        c.CSSetUnorderedAccessViews(0, views.len() as u32, Some(views.as_ptr()), None);
+        c.Dispatch(IMAGE_SIZE / 8, IMAGE_SIZE / 8, 1);
+        let none: Vec<Option<ID3D11UnorderedAccessView>> = vec![None; views.len()];
+        c.CSSetUnorderedAccessViews(0, none.len() as u32, Some(none.as_ptr()), None);
+    }
+    textures
+        .iter()
+        .map(|(texture, format, layers)| {
+            let row = (IMAGE_SIZE * format.block().2) as usize;
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            unsafe { texture.GetDesc(&mut desc) };
+            desc.Usage = D3D11_USAGE_STAGING;
+            desc.BindFlags = 0;
+            desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+            let staging = gpu.texture2d(&desc, &[]).unwrap();
+            let mut out = Vec::new();
+            unsafe {
+                gpu.context.CopyResource(&staging, texture);
+                for layer in 0..*layers {
+                    let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                    gpu.context
+                        .Map(&staging, layer, D3D11_MAP_READ, 0, Some(&mut mapped))
+                        .unwrap();
+                    for y in 0..IMAGE_SIZE as usize {
+                        let start = mapped.pData.cast::<u8>().add(y * mapped.RowPitch as usize);
+                        out.extend_from_slice(std::slice::from_raw_parts(start, row));
+                    }
+                    gpu.context.Unmap(&staging, layer);
+                }
+            }
+            out
+        })
+        .collect()
+}
+
+/// The same through the WebGPU back end, each view's format given in the variant.
+fn ours_images<B: Backend>(b: &mut B, seed: u64) -> Vec<Vec<u8>> {
+    let key = VariantKey {
+        storage_formats: IMAGES.iter().map(|&(slot, f, ..)| (slot, f)).collect(),
+        ..Default::default()
+    };
+    let c = convert(Source::Dxbc(&bytecode("cs_images.dxbc")), &key, None).unwrap();
+    assert!(c.reflection.helpers.is_empty());
+    let mut textures = Vec::new();
+    for &(_, format, _, layers, seeded) in &IMAGES {
+        let texture = b
+            .create_texture(&TextureDesc {
+                dimension: TextureDimension::D2,
+                format,
+                width: IMAGE_SIZE,
+                height: IMAGE_SIZE,
+                depth_or_layers: layers,
+                mip_levels: 1,
+                samples: 1,
+                usage: TextureUsage::STORAGE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+                cube: false,
+                reinterpret: false,
+            })
+            .unwrap();
+        let view = b
+            .create_view(
+                &texture,
+                &TextureViewDesc {
+                    format,
+                    dimension: if layers > 1 {
+                        ViewDimension::D2Array
+                    } else {
+                        ViewDimension::D2
+                    },
+                    base_mip: 0,
+                    mip_count: 1,
+                    base_layer: 0,
+                    layer_count: layers,
+                    stencil: false,
+                },
+            )
+            .unwrap();
+        let row = IMAGE_SIZE * format.block().2;
+        b.write_texture(
+            &TextureRegion {
+                texture: &texture,
+                mip: 0,
+                layer: 0,
+                origin: Origin::default(),
+                stencil: false,
+            },
+            Extent {
+                width: IMAGE_SIZE,
+                height: IMAGE_SIZE,
+                depth_or_layers: layers,
+            },
+            &image_texels(seed, format, layers, seeded),
+            row,
+            IMAGE_SIZE,
+            WriteMode::Ordered,
+        );
+        textures.push((texture, view, format, layers));
+    }
+    let entries: Vec<_> = c
+        .reflection
+        .bindings
+        .iter()
+        .map(|r| {
+            assert_eq!(r.kind, SlotKind::Storage, "{r:?}");
+            BindingEntry {
+                binding: r.binding,
+                stages: StageSet::COMPUTE,
+                resource: BindingResource::StorageTexture {
+                    view: &textures[r.register as usize].1,
+                    writable: true,
+                },
+            }
+        })
+        .collect();
+    let set = b.create_binding_set(&entries).unwrap();
+    let shader = b.create_shader(&c.modules[0]).unwrap();
+    let program = b.create_program(&Program::Compute(&shader)).unwrap();
+    b.dispatch(&DispatchCall {
+        program: &program,
+        bindings: [Some(&set), None, None, None],
+        immediates: &[],
+        groups: DispatchGroups::Direct([IMAGE_SIZE / 8, IMAGE_SIZE / 8, 1]),
+    })
+    .unwrap();
+    let out = textures
+        .iter()
+        .map(|(texture, _, format, layers)| {
+            let mut all = Vec::new();
+            for layer in 0..*layers {
+                let mut out = vec![0; (IMAGE_SIZE * IMAGE_SIZE * format.block().2) as usize];
+                b.read_back_now(
+                    &ReadSource::Texture {
+                        region: TextureRegion {
+                            texture,
+                            mip: 0,
+                            layer,
+                            origin: Origin::default(),
+                            stencil: false,
+                        },
+                        extent: Extent {
+                            width: IMAGE_SIZE,
+                            height: IMAGE_SIZE,
+                            depth_or_layers: 1,
+                        },
+                    },
+                    &mut out,
+                )
+                .unwrap();
+                all.extend(out);
+            }
+            all
+        })
+        .collect();
+    assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
+    out
+}
+
+#[test]
+fn storage_textures_match_direct3d() {
+    let mut backend = webgpu();
+    let gpu = d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let seed: u64 = std::env::var("WCONTAINERS_COMPUTE_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_COMPUTE_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(4);
+    let mut failures = Vec::new();
+    for seed in seed..seed + seeds {
+        let reference = direct3d_images(&gpu, seed);
+        let made = ours_images(&mut backend, seed);
+        for ((a, o), &(slot, format, ..)) in reference.iter().zip(&made).zip(&IMAGES) {
+            let apart = a.chunks(4).zip(o.chunks(4)).filter(|(x, y)| x != y).count();
+            eprintln!("seed {seed} u{slot} {format:?}: {apart} words apart");
+            if apart > 0 {
+                failures.push(format!("seed {seed} u{slot}"));
+            }
+        }
+    }
+    eprintln!("{} seeds, {} failed", seeds, failures.len());
     assert!(failures.is_empty(), "{failures:#?}");
 }

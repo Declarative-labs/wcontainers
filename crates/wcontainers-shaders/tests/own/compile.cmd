@@ -64,7 +64,7 @@ for %%e in (gs_quads gs_cut gs_instances gs_lines gs_points gs_adjacent gs_line_
   "%FXC%" /nologo /T gs_5_0 /E %%e /Fo %%e.dxbc geometry.hlsl || exit /b 1
   "%DXC%" -nologo -T gs_6_0 -E %%e -Gis -Fo %%e.dxil geometry.hlsl || exit /b 1
 )
-for %%e in (cs_atomics cs_decrement) do (
+for %%e in (cs_atomics cs_decrement cs_images) do (
   "%FXC%" /nologo /T cs_5_0 /E %%e /Fo %%e.dxbc compute.hlsl || exit /b 1
   "%DXC%" -nologo -T cs_6_0 -E %%e -Gis -Fo %%e.dxil compute.hlsl || exit /b 1
 )

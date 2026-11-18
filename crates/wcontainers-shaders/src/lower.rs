@@ -127,6 +127,8 @@ struct Resource {
     image: Option<(u64, bool)>,
     /// The texture holds depth (it is compared against).
     depth: bool,
+    /// A storage view: loads take no level.
+    storage: bool,
 }
 
 /// One input or output declaration of the IR.
@@ -488,10 +490,15 @@ impl<'a> Lowering<'a> {
                         let space = AddressSpace::Storage { access };
                         self.resource_in(id, op, slot, ty, space, None, false)?;
                     }
-                    _ => {
-                        if storage {
-                            return Err(unsupported("StorageImage"));
+                    _ if storage => {
+                        let (dim, arrayed, multi) = image_dim(k)?;
+                        if multi {
+                            return Err(unsupported("MultisampledStorage"));
                         }
+                        let ty = self.storage_image(op, dim, arrayed)?;
+                        self.resource(id, op, slot, ty, Some((k, arrayed)), false)?;
+                    }
+                    _ => {
                         let (dim, arrayed, multi) = image_dim(k)?;
                         let depth = self.compared.contains(&id);
                         let member = op
@@ -562,6 +569,49 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
+    /// The type of a storage texture view: its format from the variant (the bound view's), its access
+    /// from the declaration. Read-write access exists in WebGPU for 32-bit single-channel formats only.
+    fn storage_image(
+        &mut self,
+        op: &Op,
+        dim: ImageDimension,
+        arrayed: bool,
+    ) -> Result<Handle<Type>> {
+        let register = op.lits.get(1).copied().unwrap_or(0) as u32;
+        let format = self
+            .variant
+            .storage_formats
+            .iter()
+            .find(|(slot, _)| *slot == register)
+            .ok_or(unsupported("StorageFormat"))?
+            .1;
+        let format = storage_format(format).ok_or(unsupported("StorageFormatAbsent"))?;
+        let member = op
+            .ty
+            .basic()
+            .ok_or_else(|| malformed("storage image type".into()))?;
+        if Self::scalar(member.scalar)?.kind != storage_kind(format) {
+            return Err(unsupported("StorageFormatKind"));
+        }
+        let flags = op.lits.get(4).copied().unwrap_or(0);
+        let access = if flags & 2 != 0 {
+            naga::StorageAccess::LOAD
+        } else if flags & 4 != 0 {
+            naga::StorageAccess::STORE
+        } else {
+            use naga::StorageFormat as S;
+            if !matches!(format, S::R32Float | S::R32Uint | S::R32Sint) {
+                return Err(unsupported("ReadWriteStorageFormat"));
+            }
+            naga::StorageAccess::LOAD | naga::StorageAccess::STORE
+        };
+        Ok(self.ty(TypeInner::Image {
+            dim,
+            arrayed,
+            class: ImageClass::Storage { format, access },
+        }))
+    }
+
     fn resource(
         &mut self,
         id: u32,
@@ -623,7 +673,16 @@ impl<'a> Lowering<'a> {
             ty,
             None,
         );
-        self.resources.insert(id, Resource { var, image, depth });
+        let storage = slot == SlotKind::Storage;
+        self.resources.insert(
+            id,
+            Resource {
+                var,
+                image,
+                depth,
+                storage,
+            },
+        );
         self.reflection.bindings.push(ReflectedBinding {
             kind: slot,
             space: space_index,
@@ -1344,6 +1403,83 @@ fn ones(s: Scalar) -> Literal {
         ScalarKind::Sint => Literal::I32(-1),
         ScalarKind::Bool => Literal::Bool(true),
         _ => Literal::U32(u32::MAX),
+    }
+}
+
+/// The storage texture format of an interface format, where WGSL has one.
+fn storage_format(f: wcontainers_gpu::Format) -> Option<naga::StorageFormat> {
+    use naga::StorageFormat as S;
+    use wcontainers_gpu::Format as F;
+    Some(match f {
+        F::R8Unorm => S::R8Unorm,
+        F::R8Snorm => S::R8Snorm,
+        F::R8Uint => S::R8Uint,
+        F::R8Sint => S::R8Sint,
+        F::R16Unorm => S::R16Unorm,
+        F::R16Snorm => S::R16Snorm,
+        F::R16Uint => S::R16Uint,
+        F::R16Sint => S::R16Sint,
+        F::R16Float => S::R16Float,
+        F::Rg8Unorm => S::Rg8Unorm,
+        F::Rg8Snorm => S::Rg8Snorm,
+        F::Rg8Uint => S::Rg8Uint,
+        F::Rg8Sint => S::Rg8Sint,
+        F::R32Uint => S::R32Uint,
+        F::R32Sint => S::R32Sint,
+        F::R32Float => S::R32Float,
+        F::Rg16Unorm => S::Rg16Unorm,
+        F::Rg16Snorm => S::Rg16Snorm,
+        F::Rg16Uint => S::Rg16Uint,
+        F::Rg16Sint => S::Rg16Sint,
+        F::Rg16Float => S::Rg16Float,
+        F::Rgba8Unorm => S::Rgba8Unorm,
+        F::Rgba8Snorm => S::Rgba8Snorm,
+        F::Rgba8Uint => S::Rgba8Uint,
+        F::Rgba8Sint => S::Rgba8Sint,
+        F::Bgra8Unorm => S::Bgra8Unorm,
+        F::Rgb10a2Unorm => S::Rgb10a2Unorm,
+        F::Rgb10a2Uint => S::Rgb10a2Uint,
+        F::Rg11b10Float => S::Rg11b10Ufloat,
+        F::Rg32Uint => S::Rg32Uint,
+        F::Rg32Sint => S::Rg32Sint,
+        F::Rg32Float => S::Rg32Float,
+        F::Rgba16Unorm => S::Rgba16Unorm,
+        F::Rgba16Snorm => S::Rgba16Snorm,
+        F::Rgba16Uint => S::Rgba16Uint,
+        F::Rgba16Sint => S::Rgba16Sint,
+        F::Rgba16Float => S::Rgba16Float,
+        F::Rgba32Uint => S::Rgba32Uint,
+        F::Rgba32Sint => S::Rgba32Sint,
+        F::Rgba32Float => S::Rgba32Float,
+        _ => return None,
+    })
+}
+
+/// The scalar kind a storage format's texels are read and written as.
+fn storage_kind(f: naga::StorageFormat) -> ScalarKind {
+    use naga::StorageFormat as S;
+    match f {
+        S::R8Uint
+        | S::R16Uint
+        | S::Rg8Uint
+        | S::R32Uint
+        | S::Rg16Uint
+        | S::Rgba8Uint
+        | S::Rgb10a2Uint
+        | S::Rg32Uint
+        | S::Rgba16Uint
+        | S::Rgba32Uint
+        | S::R64Uint => ScalarKind::Uint,
+        S::R8Sint
+        | S::R16Sint
+        | S::Rg8Sint
+        | S::R32Sint
+        | S::Rg16Sint
+        | S::Rgba8Sint
+        | S::Rg32Sint
+        | S::Rgba16Sint
+        | S::Rgba32Sint => ScalarKind::Sint,
+        _ => ScalarKind::Float,
     }
 }
 
@@ -2439,7 +2575,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 let res = self.image(r[0])?;
                 let (k, arrayed) = res.image.unwrap();
                 let image = self.add(b, Expression::GlobalVariable(res.var));
-                let level = if k == kind::IMAGE_2D_MS || r[1] == 0 {
+                let level = if k == kind::IMAGE_2D_MS || r[1] == 0 || res.storage {
                     None
                 } else {
                     Some(self.get_as(b, r[1], Scalar::U32)?)
@@ -2497,7 +2633,11 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 self.add(b, Expression::ImageQuery { image, query })
             }
             c::IMAGE_COMPUTE_LOD => return Err(unsupported("CalculateLevelOfDetail")),
-            c::IMAGE_STORE | c::IMAGE_ATOMIC => return Err(unsupported("StorageImage")),
+            c::IMAGE_STORE => {
+                self.image_store(b, op)?;
+                return Ok(());
+            }
+            c::IMAGE_ATOMIC => return Err(unsupported("StorageImageAtomics")),
             c::LDS_ATOMIC | c::BUFFER_ATOMIC | c::COUNTER_ATOMIC => match self.atomic(b, op)? {
                 Some(v) => v,
                 None => return Ok(()),
@@ -3190,7 +3330,9 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             };
             coordinate = self.bin(b, BinaryOperator::Add, coordinate, off);
         }
-        let (sample, level) = if k == kind::IMAGE_2D_MS {
+        let (sample, level) = if res.storage {
+            (None, None)
+        } else if k == kind::IMAGE_2D_MS {
             (Some(self.get(b, sample)?), None)
         } else if mip != 0 {
             (None, Some(self.get(b, mip)?))
@@ -3211,6 +3353,57 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             return self.depth_vec4(b, v, op);
         }
         Ok(v)
+    }
+
+    /// A store to a storage texture: the value made the four components of the format's kind.
+    fn image_store(&mut self, b: &mut Block, op: &Op) -> Result<()> {
+        let r = &op.refs;
+        let res = self.image(r[0])?;
+        let (k, _) = res.image.unwrap();
+        self.l.side_effects = true;
+        let image = self.add(b, Expression::GlobalVariable(res.var));
+        let array_index = self.layer(b, r[1])?;
+        let coordinate = self.coords(b, k, r[2], false)?;
+        let kind = match self.l.module.types[self.l.module.global_variables[res.var].ty].inner {
+            TypeInner::Image {
+                class: ImageClass::Storage { format, .. },
+                ..
+            } => storage_kind(format),
+            _ => {
+                return Err(malformed(
+                    "store to a texture that is not a storage view".into(),
+                ));
+            }
+        };
+        let s = Scalar { kind, width: 4 };
+        let v = self.get_as(b, r[3], s)?;
+        let n = self.basic_of(r[3])?.size;
+        let value = if n == 4 {
+            v
+        } else {
+            let mut components = Vec::new();
+            for i in 0..4u32 {
+                components.push(if i >= u32::from(n) {
+                    self.lit(b, zero(s))
+                } else if n == 1 {
+                    v
+                } else {
+                    self.add(b, Expression::AccessIndex { base: v, index: i })
+                });
+            }
+            let ty = self.l.vec_ty(4, s)?;
+            self.add(b, Expression::Compose { ty, components })
+        };
+        self.stmt(
+            b,
+            Statement::ImageStore {
+                image,
+                coordinate,
+                array_index,
+                value,
+            },
+        );
+        Ok(())
     }
 
     fn arithmetic(&mut self, b: &mut Block, op: &Op) -> Result<Handle<Expression>> {
