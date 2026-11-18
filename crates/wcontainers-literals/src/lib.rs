@@ -33,19 +33,35 @@ use std::time::Instant;
 pub use baseline::BASELINE_FILE;
 use deps::Crates;
 use eval::{ConstDef, ConstScope, Value};
+pub use findings::PATH_SEPARATOR;
 use findings::{
-    FIELD_SEPARATOR, FILE_SCOPE, Finding, Kind, List, PATH_COMPONENT_SEPARATOR, PATH_SEPARATOR,
-    clean_literal,
+    FIELD_SEPARATOR, FILE_SCOPE, Finding, Kind, List, PATH_COMPONENT_SEPARATOR, clean_literal,
 };
+pub use history::WORKING_TREE;
 use scan::{FileRole, FileScan};
 
 pub const USAGE: &str = "usage: wcontainers-literals (check | init | list) [WORKSPACE_ROOT]\n\
                          \x20 check: fail on anything outside the baseline, a baseline line no longer needed, or a baseline that grew\n\
                          \x20 init:  write the baseline from the tree, once, when it starts or has just arrived by a merge\n\
                          \x20 list:  print every finding of every list, gated or not";
-const CHECK_COMMAND: &str = "check";
-const INIT_COMMAND: &str = "init";
-const LIST_COMMAND: &str = "list";
+
+/// The commands, each named by its variant in lower case.
+#[derive(Clone, Copy, Debug)]
+enum Command {
+    Check,
+    Init,
+    List,
+}
+
+impl Command {
+    const ALL: [Command; 3] = [Command::Check, Command::Init, Command::List];
+
+    fn named(name: &str) -> Option<Command> {
+        Command::ALL
+            .into_iter()
+            .find(|c| format!("{c:?}").to_lowercase() == name)
+    }
+}
 /// Cargo writes a crate name with underscores where its package name has hyphens.
 const CRATE_NAME_JOINER: char = '_';
 const PACKAGE_NAME_JOINER: char = '-';
@@ -79,11 +95,11 @@ const GENERIC_WORDS: &[&str] = &[
 const MAX_NOTE_MATCHES: usize = 3;
 const NOTE_LIST_SEPARATOR: &str = ", ";
 /// Prefixes of the check's output lines.
-const NEW_MARK: &str = "+ ";
-const STALE_MARK: &str = "- ";
-const HIDDEN_MARK: &str = "~ ";
-const GROWN_MARK: &str = "> ";
-const ORDER_MARK: &str = "! ";
+pub const NEW_MARK: &str = "+ ";
+pub const STALE_MARK: &str = "- ";
+pub const HIDDEN_MARK: &str = "~ ";
+pub const GROWN_MARK: &str = "> ";
+pub const ORDER_MARK: &str = "! ";
 /// Introduces what to do about an output line.
 const DO: &str = "do: ";
 const DELETE_LINE: &str = "delete this line from literals.baseline";
@@ -1014,8 +1030,12 @@ pub fn check(root: &Path) -> Result<Outcome, String> {
     {
         ungated.entry(f.rest_key()).or_insert(f);
     }
+    // A restated literal leaves its list when the constant it restated goes, not by being moved.
     let hidden = |key: &str| -> Option<String> {
         let (list, rest) = key.split_once(FIELD_SEPARATOR)?;
+        if list == List::Restated.name() {
+            return None;
+        }
         let f = ungated.get(rest)?;
         Some(format!(
             "{key}{FIELD_SEPARATOR}# was {list}, now in the {} list at {}:{}{FIELD_SEPARATOR}{DO}{UNHIDE}",
@@ -1170,10 +1190,15 @@ pub fn main_with(args: &[String]) -> Result<Outcome, String> {
         _ => return Err(USAGE.to_string()),
     };
     let root = workspace_root(&dir)?;
-    match command.as_str() {
-        CHECK_COMMAND => check(&root),
-        INIT_COMMAND => init(&root),
-        LIST_COMMAND => list(&root),
-        _ => Err(USAGE.to_string()),
+    match Command::named(command) {
+        Some(Command::Check) => check(&root),
+        Some(Command::Init) => init(&root),
+        Some(Command::List) => list(&root),
+        None => Err(USAGE.to_string()),
     }
+}
+
+/// Runs git in a folder, as the check does.
+pub fn git(dir: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+    history::run(dir, args)
 }

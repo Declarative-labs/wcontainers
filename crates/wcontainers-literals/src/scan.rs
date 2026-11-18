@@ -258,7 +258,7 @@ impl FileScan {
             return;
         }
         let list = match self.list() {
-            List::Code if message => List::Message,
+            List::Code | List::Test if message => List::Message,
             List::Code if is_free(lit, negative) => {
                 if hint.is_some_and(names_role) {
                     List::Role

@@ -7674,23 +7674,6 @@ restated	crates/wcontainers-kernel-test/tests/standin.rs	int	unaligned_exclusive
 restated	crates/wcontainers-kernel-test/tests/threads.rs	str	clone_sharing_matches_reference	"proc fields not tracked"
 restated	crates/wcontainers-kernel-test/tests/threads.rs	str	proc_task_matches_reference	"proc fields not tracked"
 restated	crates/wcontainers-kernel-test/tests/threads.rs	str	thread_credentials_match_reference	"proc fields not tracked"
-restated	crates/wcontainers-literals/tests/baseline.rs	str	a_fixed_literal_asks_for_its_line_to_go	"- "
-restated	crates/wcontainers-literals/tests/baseline.rs	str	a_merge_brings_the_other_side_s_accepted_lines	"init"
-restated	crates/wcontainers-literals/tests/baseline.rs	str	a_new_literal_fails_naming_its_line	"+ "
-restated	crates/wcontainers-literals/tests/baseline.rs	str	a_track_adopts_the_check_by_merge_then_init_once	"> "
-restated	crates/wcontainers-literals/tests/baseline.rs	str	an_unsorted_baseline_fails	"! "
-restated	crates/wcontainers-literals/tests/baseline.rs	str	deleting_and_re_adding_the_baseline_is_growth	"> "
-restated	crates/wcontainers-literals/tests/baseline.rs	str	growing_the_baseline_fails_before_and_after_commit	"> "
-restated	crates/wcontainers-literals/tests/baseline.rs	str	growing_the_baseline_fails_before_and_after_commit	"> "
-restated	crates/wcontainers-literals/tests/baseline.rs	str	growing_the_baseline_fails_before_and_after_commit	"the working tree"
-restated	crates/wcontainers-literals/tests/baseline.rs	str	growth_on_a_merged_side_branch_is_seen	"> "
-restated	crates/wcontainers-literals/tests/baseline.rs	str	hiding_a_literal_under_cfg_test_fails	"~ "
-restated	crates/wcontainers-literals/tests/baseline.rs	str	hiding_a_literal_under_cfg_test_fails	"~ "
-restated	crates/wcontainers-literals/tests/baseline.rs	str	started	"init"
-restated	crates/wcontainers-literals/tests/common/mod.rs	str	git	"-C"
-restated	crates/wcontainers-literals/tests/common/mod.rs	str	git	"git"
-restated	crates/wcontainers-literals/tests/common/mod.rs	str	in_item	"::"
-restated	crates/wcontainers-literals/tests/common/mod.rs	str	repository	"init"
 restated	crates/wcontainers-runtime/src/spec.rs	int	tests::a_whole_configuration_is_read_with_nothing_unread	1024
 restated	crates/wcontainers-runtime/src/spec.rs	int	tests::a_whole_configuration_is_read_with_nothing_unread	1024
 restated	crates/wcontainers-runtime/src/spec.rs	int	tests::a_whole_configuration_is_read_with_nothing_unread	1048576

@@ -7,7 +7,9 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use common::{append, check, commit_all, git, replace, repository};
-use wcontainers_literals::BASELINE_FILE;
+use wcontainers_literals::{
+    BASELINE_FILE, GROWN_MARK, HIDDEN_MARK, NEW_MARK, ORDER_MARK, STALE_MARK, WORKING_TREE,
+};
 
 const LIB: &str = "crates/a/src/lib.rs";
 const CODE: &str = "pub fn one(x: u64) -> u64 { x * 4096 }
@@ -89,10 +91,10 @@ fn a_new_literal_fails_naming_its_line() {
     append(&root, LIB, "\npub fn five(x: u64) -> u64 { x * 31337 }\n");
     let out = check(&root);
     assert!(!out.clean);
-    let new = lines_starting(&out, "+ ");
+    let new = lines_starting(&out, NEW_MARK);
     assert_eq!(new.len(), 1, "{}", out.report());
     assert!(
-        new[0].starts_with(&format!("+ code\t{LIB}:9:"))
+        new[0].starts_with(&format!("{NEW_MARK}code\t{LIB}:9:"))
             && new[0].contains("\t31337")
             && new[0].contains("\tdo: "),
         "{}",
@@ -107,7 +109,7 @@ fn deleting_the_line_of_a_literal_still_there_fails() {
     let out = check(&root);
     assert!(!out.clean);
     assert!(
-        lines_starting(&out, "+ code")
+        lines_starting(&out, &format!("{NEW_MARK}code"))
             .iter()
             .any(|l| l.contains("\tone\t4096")),
         "{}",
@@ -124,9 +126,9 @@ fn a_fixed_literal_asks_for_its_line_to_go() {
     append(&root, LIB, "\nconst PAGE: u64 = 4096;\n");
     let out = check(&root);
     assert_eq!(
-        lines_starting(&out, "- "),
+        lines_starting(&out, STALE_MARK),
         [format!(
-            "- {}\tdo: delete this line from literals.baseline",
+            "{STALE_MARK}{}\tdo: delete this line from {BASELINE_FILE}",
             key("one", "4096")
         )],
         "{}",
@@ -144,9 +146,9 @@ fn growing_the_baseline_fails_before_and_after_commit() {
     set_baseline(&root, &with(&baseline(&root), &key("five", "31337")));
     let out = check(&root);
     assert!(
-        lines_starting(&out, "> ")
+        lines_starting(&out, GROWN_MARK)
             .iter()
-            .any(|l| l.contains("31337") && l.contains("the working tree")),
+            .any(|l| l.contains("31337") && l.contains(WORKING_TREE)),
         "{}",
         out.report()
     );
@@ -154,7 +156,7 @@ fn growing_the_baseline_fails_before_and_after_commit() {
     let out = check(&root);
     assert!(!out.clean);
     assert!(
-        lines_starting(&out, "> ")
+        lines_starting(&out, GROWN_MARK)
             .iter()
             .any(|l| l.contains("31337") && l.contains("added by")),
         "{}",
@@ -169,7 +171,7 @@ fn a_new_policy_line_is_growth() {
     commit_all(&root, "skipped a crate");
     let out = check(&root);
     assert!(
-        lines_starting(&out, "> policy\tskip\tcrates/a").len() == 1,
+        lines_starting(&out, &format!("{GROWN_MARK}policy\tskip\tcrates/a")).len() == 1,
         "{}",
         out.report()
     );
@@ -185,7 +187,7 @@ fn deleting_and_re_adding_the_baseline_is_growth() {
     commit_all(&root, "re-added it");
     let out = check(&root);
     assert_eq!(
-        lines_starting(&out, "> ").len(),
+        lines_starting(&out, GROWN_MARK).len(),
         text.lines().count(),
         "{}",
         out.report()
@@ -204,7 +206,7 @@ fn growth_on_a_merged_side_branch_is_seen() {
     git(&root, &["merge", "-q", "--no-ff", "--no-edit", "side"]);
     let out = check(&root);
     assert!(
-        lines_starting(&out, "> ")
+        lines_starting(&out, GROWN_MARK)
             .iter()
             .any(|l| l.contains("31337")),
         "{}",
@@ -218,7 +220,7 @@ fn hiding_a_literal_under_cfg_test_fails() {
     replace(&root, LIB, "pub fn one", "#[cfg(test)]\npub fn one");
     let out = check(&root);
     assert!(
-        lines_starting(&out, "~ ")
+        lines_starting(&out, HIDDEN_MARK)
             .iter()
             .any(|l| l.contains("4096") && l.contains("now in the test list")),
         "{}",
@@ -228,7 +230,7 @@ fn hiding_a_literal_under_cfg_test_fails() {
     commit_all(&root, "hid it and dropped its line");
     let out = check(&root);
     assert!(
-        lines_starting(&out, "~ ")
+        lines_starting(&out, HIDDEN_MARK)
             .iter()
             .any(|l| l.contains("4096") && l.contains("removed from the baseline")),
         "{}",
@@ -281,7 +283,7 @@ fn a_bad_mark_fails() {
         replace(&root, LIB, "pub fn two", &format!("{mark}pub fn two"));
         let out = check(&root);
         assert!(
-            lines_starting(&out, "+ mark")
+            lines_starting(&out, &format!("{NEW_MARK}mark"))
                 .iter()
                 .any(|l| l.contains(why)),
             "{name}: {}",
@@ -302,7 +304,7 @@ fn a_mark_on_a_number_that_has_a_name_fails() {
     );
     let out = check(&root);
     assert!(
-        lines_starting(&out, "+ mark")
+        lines_starting(&out, &format!("{NEW_MARK}mark"))
             .iter()
             .any(|l| l.contains("has a name, PAGE_SIZE")),
         "{}",
@@ -321,7 +323,12 @@ fn an_unsorted_baseline_fails() {
         &lines.iter().map(|l| format!("{l}\n")).collect::<String>(),
     );
     let out = check(&root);
-    assert_eq!(lines_starting(&out, "! ").len(), 1, "{}", out.report());
+    assert_eq!(
+        lines_starting(&out, ORDER_MARK).len(),
+        1,
+        "{}",
+        out.report()
+    );
 }
 
 #[test]
@@ -380,7 +387,7 @@ fn a_track_adopts_the_check_by_merge_then_init_once() {
     git(&root, &["merge", "-q", "--no-edit", "literals"]);
     let out = check(&root);
     assert!(
-        lines_starting(&out, "+ code")
+        lines_starting(&out, &format!("{NEW_MARK}code"))
             .iter()
             .any(|l| l.contains("31337")),
         "{}",
@@ -395,7 +402,7 @@ fn a_track_adopts_the_check_by_merge_then_init_once() {
     set_baseline(&root, &with(&baseline(&root), &key("six", "4242")));
     commit_all(&root, "grew it");
     assert!(
-        lines_starting(&check(&root), "> ")
+        lines_starting(&check(&root), GROWN_MARK)
             .iter()
             .any(|l| l.contains("4242"))
     );
@@ -424,6 +431,29 @@ fn a_merge_brings_the_other_side_s_accepted_lines() {
     git(&root, &["merge", "-q", "--no-edit", "literals"]);
     assert!(check(&root).clean);
     git(&root, &["merge", "-q", "--no-edit", "kernel"]);
+    let out = check(&root);
+    assert!(out.clean, "{}", out.report());
+}
+
+/// Still gets through (docs/literals.md): a side branch forked from before the baseline existed starts
+/// its own baseline, so its lines arrive by the merge as another branch's start.
+#[test]
+fn a_side_branch_that_starts_its_own_baseline_gets_through() {
+    let root = repository("fresh-side", FILES);
+    git(&root, &["checkout", "-q", "-b", "side"]);
+    git(&root, &["checkout", "-q", "main"]);
+    wcontainers_literals::init(&root).expect("init");
+    commit_all(&root, "baseline");
+    git(&root, &["checkout", "-q", "side"]);
+    append(&root, LIB, "\npub fn five(x: u64) -> u64 { x * 31337 }\n");
+    wcontainers_literals::init(&root).expect("init on the side branch");
+    commit_all(&root, "a baseline of its own");
+    git(&root, &["checkout", "-q", "main"]);
+    // Both sides added the file, so git asks; the side's copy is taken whole.
+    let merge = common::git_output(&root, &["merge", "-q", "--no-edit", "side"]);
+    assert!(!merge.status.success());
+    git(&root, &["checkout", "--theirs", BASELINE_FILE]);
+    commit_all(&root, "merged the side branch");
     let out = check(&root);
     assert!(out.clean, "{}", out.report());
 }

@@ -64,7 +64,7 @@ pub struct History {
     pub may_init: bool,
 }
 
-fn run(root: &Path, args: &[&str]) -> Result<Output, String> {
+pub fn run(root: &Path, args: &[&str]) -> Result<Output, String> {
     Command::new(GIT)
         .arg(GIT_IN)
         .arg(root)

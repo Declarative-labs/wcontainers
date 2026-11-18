@@ -3,7 +3,6 @@
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// One printed finding.
 #[derive(Clone, Debug)]
@@ -81,27 +80,31 @@ pub fn in_item<'a>(rows: &'a [Row], item: &str) -> Vec<&'a Row> {
     rows.iter()
         .filter(|r| {
             r.item == item
-                || r.item.split("::").any(|p| p == item)
+                || r.item
+                    .split(wcontainers_literals::PATH_SEPARATOR)
+                    .any(|p| p == item)
                 || r.item.ends_with(&format!(" {item}"))
         })
         .collect()
 }
 
+/// The options every git command of the tests takes: who commits.
+const IDENTITY: &[&str] = &[
+    "-c",
+    "user.email=test@example.invalid",
+    "-c",
+    "user.name=test",
+    "-c",
+    "commit.gpgsign=false",
+];
+
+/// Runs git with the tests' identity.
+pub fn git_output(root: &Path, args: &[&str]) -> std::process::Output {
+    wcontainers_literals::git(root, &[IDENTITY, args].concat()).expect("run git")
+}
+
 pub fn git(root: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args([
-            "-c",
-            "user.email=test@example.invalid",
-            "-c",
-            "user.name=test",
-            "-c",
-            "commit.gpgsign=false",
-        ])
-        .args(args)
-        .output()
-        .expect("run git");
+    let out = git_output(root, args);
     assert!(
         out.status.success(),
         "git {args:?}: {}",
