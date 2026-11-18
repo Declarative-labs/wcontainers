@@ -51,6 +51,20 @@ WebGPU back end (G2); see "Gap list" and "Next". Runs, all on 2026-11-17:
   the process's DXGI lists. New cases `statistics` and `vertex-past-end`; all 17 cases equal to
   real Direct3D 12. Test files 122 of 193 (query_pipeline_statistics newly passing); shader
   runner 204 of 299 (from 194: the runner now finds our device's vendor).
+- Run 15 (eleventh run of G5): merged the shaders, webgl, rig and Direct3D 11 branches (no
+  conflicts; the shared line and webgpu had nothing new). The shaders branch now builds pulled
+  vertex inputs (`VariantKey::pulled`), which the front now uses. Added: vertex streams whose
+  stride WebGPU refuses (not a multiple of 4, or an element reaching past it) and per-instance
+  streams stepping every n instances (no `INSTANCE_STEP_RATE`) are fetched in the vertex
+  program (`src/device/pull.rs`; `VertexPulledInShader`, `InstanceRateInShader`); element
+  offsets not a multiple of the element's size (or 4) are refused with E_INVALIDARG, as real
+  Direct3D 12 refuses them (measured); strips whose indices restart at another value than
+  WebGPU's (16-bit indices with the cut off or 0xFFFFFFFF, 32-bit ones cut at 0xFFFF) are drawn
+  from 32-bit indices a compute program rewrites (`RestartRewrite`); command lists are
+  `ID3D12GraphicsCommandList4`, with render passes recorded as the targets, clears and
+  resolves they stand for. New cases `vertex-pulled`, `restart` and `render-pass`; all 20 cases
+  equal to real Direct3D 12. Test files 124 of 193 (instance_id and primitive_restart newly
+  passing).
 
 - `wcontainers-directx-graphics-infrastructure`, the portable core: the adapter description from the
   back end's `Caps`; output descriptions, their modes, and the colour spaces swap chains present in
@@ -147,6 +161,13 @@ WebGPU back end (G2); see "Gap list" and "Next". Runs, all on 2026-11-17:
   copies move the plane's aspect.
 - Draws with no render target (run 7) open an empty pass as large as the viewports, at the
   pipeline's sample count; a viewport change ends it.
+- Restarts (run 15): WebGPU restarts strips at 0xffff for 16-bit and 0xffffffff for 32-bit
+  indices, always; Direct3D 12 at the pipeline's cut value. Indexed strip draws whose cut value
+  differs from WebGPU's draw from a scratch buffer of 32-bit indices of the draw's range that a
+  compute program makes (`RestartRewrite`): 16-bit ones widened, 32-bit ones with 0xffff made
+  0xffffffff. `ExecuteIndirect` reads such draws' arguments back; predicated ones are refused by
+  name. 32-bit indices of 0xffffffff with the cut off still restart (that vertex lies past any
+  buffer Direct3D 12 can bind, so it reads zeros there).
 - Refused with E_NOTIMPL and the reason printed (`wcontainers: <reason>: not implemented`): arrays
   of resources, component mappings other than identity, minimum level-of-detail
   clamps, level-of-detail bias, min/max filters, border colours and mirror-once without the back
@@ -158,8 +179,25 @@ WebGPU back end (G2); see "Gap list" and "Next". Runs, all on 2026-11-17:
   sees, pipeline libraries (`DXGI_ERROR_UNSUPPORTED`), protected sessions, state objects (ray
   tracing), depth bounds, programmable sample positions, view instancing, sampler feedback.
 - Newer interfaces (run 10): the device is `ID3D12Device8`, command lists
-  `ID3D12GraphicsCommandList2`, resources `ID3D12Resource2`; `ID3D12Device9` and later and
-  `ID3D12GraphicsCommandList3` and later are not offered (E_NOINTERFACE). Pipeline state streams
+  `ID3D12GraphicsCommandList2` (since run 15 `ID3D12GraphicsCommandList4`), resources
+  `ID3D12Resource2`; `ID3D12Device9` and later and `ID3D12GraphicsCommandList5` and later are not
+  offered (E_NOINTERFACE). Render passes (run 15, `objects.rs`): `BeginRenderPass` records
+  the targets and the clears of `CLEAR` beginning accesses; `EndRenderPass` records the resolves
+  of `RESOLVE` ending accesses (whole subresources, averaged; part of one, other modes and
+  depth-stencil resolves fail `Close` with E_NOTIMPL); discard and preserve accesses keep the
+  contents, which Direct3D 12 allows. Suspending and resuming flags change nothing.
+  `SetProtectedResourceSession` takes only null. The ray tracing and meta command methods
+  fail `Close` (absent in `CheckFeatureSupport`).
+- Pulled vertex inputs (run 15, `src/device/pull.rs`): at each draw, a stream whose bound
+  stride WebGPU refuses, or that steps every n instances without `INSTANCE_STEP_RATE`, is left
+  out of the vertex layout and its inputs are fetched by a variant of the vertex program
+  (`VariantKey::pulled`, made at the stream's first such draw and kept per pipeline, with the
+  arguments route's base source where the draw is indirect). Each input's stream is bound as
+  read-only storage from its view's offset rounded down to the storage alignment, as long as
+  the view rounded up to a word, and the helper block gives the rest of the offset, the stride
+  and the step. Indirect draws of streams stepping other than once an instance fetched so
+  read their arguments back (the first instance places them). Counted draws of such streams are
+  refused by name. Pipeline state streams
   are read in `examples/directx/stream.rs` (absent subobjects take Direct3D 12's documented
   defaults). abi.rs patches the newest interfaces' vtables, base entries included; `objects::ours`
   reaches our resource behind any `ID3D12Resource`.
@@ -191,7 +229,17 @@ Nothing answers success without the work.
 ## The pass bar's cases against real Direct3D 12 (own program)
 
 `check_d3d12 cases` runs each case in its own process with real Direct3D 12 and through ours and
-compares the lines (`examples/check/cases.rs`). Run 14 (RTX 3080, scratch run14/check4.log, built
+compares the lines (`examples/check/cases.rs`). Run 15 (RTX 3080, scratch run15/check5.log, built
+at d7c1de0): 20 of 20 equal. New: vertex-pulled (five pipelines, of which real Direct3D 12 and
+ours both refuse the one with a 4-byte element at offset 2; a stride of 6 with an element at
+offset 2, offsets stepping every 2 instances from instance 1, a per-instance stream of stride 1,
+and a stride of 2 in an `ExecuteIndirect` draw of a program reading `SV_VertexID` from start
+vertex 1 and instance 1); restart (strips of 16-bit and 32-bit indices holding 0xffff, with each
+cut value, drawn directly and through `ExecuteIndirect`); render-pass (a pass clearing and
+drawing, one keeping and drawing, and one clearing a 4-sample target and resolving it at its
+end). Draw 0 of 4096 pixels beyond 1; features 269 of 872, outputs 22 of 110 and answers 7 of 25
+differ, none beyond real Direct3D 12.
+Run 14 (RTX 3080, scratch run14/check4.log, built
 at 9937b23): 17 of 17 equal. New: vertex-past-end (a triangle strip whose fifth vertex lies past
 a view of four, and two instances of which the per-instance view holds one; pixels equal).
 Before it (check3.log, after f2894aa's arguments route): 16 of 16 equal. New: statistics (pipeline statistics around
@@ -233,6 +281,13 @@ Run 12 (built after b2ce9e4, scratch run12/check2.log): 13 of 14 equal.
 How a file counts: the rig compares each test's verdict with real Direct3D 12's on this GPU
 (`wine-tests run`, below); a test that skips what real Direct3D 12 runs, or runs fewer checks,
 fails. The counts are tests passing on real Direct3D 12 that pass through ours.
+
+Run 15 (2026-11-17, desktop shared with other tracks; scratch run15/full1.log to full3.log):
+- After the merge (full1 did not reach the test files: an ssh failure; full2, at 20220f7 with
+  the pulled inputs): the same 122 of 193 as run 14; instance_id then stopped at an indirect
+  draw of a stream stepping every 2 instances, primitive_restart at 3 restart checks.
+- full3 (at d7c1de0): 124 of 193, no test lost: d3d12 (Wine) 7 of 7, vkd3d-d3d12 106 of 174,
+  invalid_usage 3 of 3, hlsl_d3d12 8 of 9. Newly passing: instance_id, primitive_restart.
 
 Run 14 (2026-11-17, desktop shared with other tracks; scratch run14/full1.log, built at f2894aa):
 122 of 193, no test lost: d3d12 (Wine) 7 of 7, vkd3d-d3d12 104 of 174, invalid_usage 3 of 3,
@@ -282,8 +337,7 @@ draws (depth twin). The run 12 breakdown, with those changes, follows.
   resolve_non_issued_query_data, clock_calibration. (query_pipeline_statistics passes since run
   14; quad_tessellation and line_tessellation now stop at hull shaders.)
 - A8_UNORM (G2's `FormatConverted`): render_a8, sample_instructions.
-- Vertex strides not a multiple of 4 and step rates above 1 (G6's pulled streams,
-  `VertexPulledInShader`): instance_id (stride 1), primitive_restart.
+- (Run 15: instance_id and primitive_restart pass, through pulled streams and restart rewrites.)
 - View swizzles (interface and G6): depth_stencil_sampling (stencil views), srv_component_mapping.
 - Formats WebGPU lacks (`B5G6R5`, `B5G5R5A1`, `B4G4R4A4`; `CheckFeatureSupport(FORMAT_SUPPORT)`
   answers E_FAIL where real answers S_OK): clear_unordered_access_view_image (since run 14 its
@@ -300,7 +354,7 @@ draws (depth twin). The run 12 breakdown, with those changes, follows.
 
 History (tests passing on real Direct3D 12 that pass through ours, vkd3d-d3d12 of 172 or 174):
 run 5 54, run 6 66, run 7 80, run 8 87, run 9 74 (the rig's stricter rule began), run 10 87,
-run 11 94, run 12 98, run 13 103. Wine's d3d12: 6 of 7 until run 9, then 7 of 7. invalid_usage 1 of 3 until
+run 11 94, run 12 98, run 13 103, run 14 104, run 15 106. Wine's d3d12: 6 of 7 until run 9, then 7 of 7. invalid_usage 1 of 3 until
 run 12. hlsl_d3d12 8 of 9 throughout.
 
 ## Shader runner (vkd3d-shader_runner, 302 files)
@@ -387,25 +441,30 @@ list only when it is the back end's or browser's to lack (reported absent as Dir
   `CheckFeatureSupport`); multisampled array textures; the 16-bit packed formats `B5G6R5`,
   `B5G5R5A1`, `B4G4R4A4` (format support E_FAIL until a `FormatConverted` route exists).
 - Absent in WebGPU, served by slow paths still to write: one-dimensional textures in shaders
-  (stored as 2D; UAV clears done, bindings refused), vertices past the bound buffer in indirect
-  draws (WebGPU skips the draw; exact with G6's pulled streams).
+  (stored as 2D; UAV clears done, bindings refused).
+- Absent in WebGPU, a listed loss: `ExecuteIndirect` draws reading vertices past the end of a
+  vertex buffer (WebGPU skips the whole draw where Direct3D 12 reads zeros; execute_indirect, 2
+  checks). Pulled streams (run 15) would make it exact, but only by fetching every stream of
+  every indirect draw in the program, since nothing says ahead which draws reach past the end;
+  that slows every indirect draw for a case only faulty programs reach, so it is not done.
 - G6 (converter): `StorageImage`, `TypedBuffer`, `Atomics`, `StorageCounter`, `RegisterSpace`,
   `DynamicOffset`, `CullDistance`, `RenderTargetArrayIndex`, `InterpolateAt`,
-  `MultisampledArrayTexture`, pulled vertex streams (strides not a multiple of 4, step rates
-  above 1), the stage helper (geometry, hull, domain, stream output), and for the real program
+  `MultisampledArrayTexture`, the stage helper (geometry, hull, domain, stream output), and for
+  the real program
   `BindingsBeyondLimit`, buffer images and storage images of no format. (Run 13: the counting
-  variant, dual source, the sample count and the draw bases landed and are used.)
+  variant, dual source, the sample count and the draw bases landed and are used; run 15: pulled
+  vertex streams.)
 - G2 (WebGPU back end): `TIMESTAMPS`; `A8_UNORM` (`FormatConverted`).
 - Interface and G6 (asked by the Direct3D 11 track too): a view swizzle, with a program rewrite as
   the default. Direct3D's stencil views give the stencil in the second component, WebGPU's
   stencil-aspect views in the first; the front refuses stencil views by name until then, and
   component mappings need the same.
-- Front, this milestone: buffers in CPU-visible custom heaps, `ID3D12GraphicsCommandList3` and
-  later (render passes); comparison sampling of a texture whose bits match no depth format
+- Front, this milestone: buffers in CPU-visible custom heaps, `ID3D12GraphicsCommandList5` and
+  later (variable rate shading, absent; enhanced barriers); comparison sampling of a texture whose bits match no depth format
   (other than `R32_FLOAT`/`R16_UNORM`) and of a multisampled one (refused by name). Not tested:
   pipeline statistics of draws with no target bound (the pixel counter reads the targets).
   (Run 14: statistics queries, the arguments route of `ExecuteIndirect` and rectangle UAV clears
-  of buffers and 3D textures landed.)
+  of buffers and 3D textures landed. Run 15: pulled streams, restart rewrites, render passes.)
 
 ## Next, in this order
 
@@ -414,8 +473,7 @@ list only when it is the back end's or browser's to lack (reported absent as Dir
    grep crates/wcontainers-shaders/src for `unsupported("StorageImage")` and
    `BindingsBeyondLimit`; once gone, run Godot (command under "Real program") and compare its
    frames with the rig's references; also try godot-platformer-3d-d3d12.
-2. Vertices past the end in `ExecuteIndirect` (execute_indirect): only G6's pulled streams
-   make it exact without reading every command back (direct draws are done, run 14).
+2. Vertices past the end in `ExecuteIndirect` (execute_indirect): a listed loss (gap list).
 3. Timestamps against real Direct3D 12 (a new case) when G2's `TIMESTAMPS` lands; A8 when
    `FormatConverted` lands. A counted query whose draws write depth is not in the own cases
    (vkd3d's query_occlusion covers it).
@@ -424,7 +482,8 @@ list only when it is the back end's or browser's to lack (reported absent as Dir
    section 9); its wrong values are in converted shaders (G6). Nothing left on the front's side
    that is known.
 6. Turn the gap list into the pass bar's final written list once the G6 and G2 items land.
-7. Later: `ID3D12GraphicsCommandList3` and later, `ID3D12Fence1`; recording without allocating
+7. Later: `ID3D12GraphicsCommandList5` and later, `ID3D12Fence1`; render pass resolves of part
+   of a subresource and of depth-stencil targets; recording without allocating
    per command, the call buffer of plan 4.8; moving `examples/directx` into
    `crates/wcontainers-directx`.
 
@@ -468,8 +527,8 @@ A working example of all of it is this track's Windows library: `examples/direct
 - Tests (one draws on the GPU): `tools/graphics-rig/gpu-job --build "cargo test -j 3 -p
   wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12 --no-run" -- "cargo test
   -j 3 --no-fail-fast -p wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12"`
-  (33 tests: 9 infrastructure, 9 front, 10 device on the recorder, 1 on the GPU, 4 unit; run 14:
-  all pass at 9937b23, run14/full2.log). Put `set CARGO_INCREMENTAL=0&& ` before both commands (see the note further down).
+  (33 tests: 9 infrastructure, 9 front, 10 device on the recorder, 1 on the GPU, 4 unit; run 15:
+  all pass at d7c1de0, run15/full3.log). Put `set CARGO_INCREMENTAL=0&& ` before both commands (see the note further down).
   `WEBGPU_API=dx12|vulkan` picks wgpu's path for the GPU test.
 - Lint: `tools/graphics-rig/remote "cargo clippy -j 3 --all-targets -p
   wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12 -- -D warnings"`.
@@ -513,6 +572,18 @@ A working example of all of it is this track's Windows library: `examples/direct
   `tools/graphics-rig/remote "cargo clean -p wcontainers-shaders -p wcontainers-direct3d-12"`.
   `bin/test-and-named.sh <log> <files...>` in this track's scratch directory runs the crates'
   tests and then the named test files that way.
+
+Run 15's entries:
+- A pulled stream is bound up to its view's end rounded up to a word (WebGPU binds storage in
+  words), so an element ending in the last two bytes past a view whose size is no multiple of 4
+  reads the buffer's bytes there, not zeros. Views ending inside an element are the only case.
+- Real Direct3D 12 refuses an input element whose offset is not a multiple of its size, or of 4
+  where the size is larger (an `R8G8B8A8` element at offset 2 refused, an `R8G8` one taken,
+  measured by `check_d3d12 case vertex-pulled`); ours now does too. The rule for formats of 8 and
+  more bytes is assumed to be 4 from that.
+- Render passes are the calls they stand for (targets, clears, resolves), not passes of their
+  own: the replay already joins draws into passes, and `CheckFeatureSupport` answers render
+  passes tier 0 (no hardware passes). Bound targets stay bound after `EndRenderPass`.
 
 Run 14's entries:
 - Pipeline statistics: the counts Direct3D leaves to the implementation take the values of a
@@ -591,6 +662,10 @@ Run 11's entries:
   it could call this (G1 owns helpers.rs, so this track did not change it).
 
 ## Measurements
+
+- Run 15 (2026-11-17, RTX 3080, desktop shared with other tracks, not `--alone`, load not taken;
+  run15/check5.log): fence events, 2000 rounds: real first 8 µs, mean 1 µs, 99th percentile
+  1 µs, largest 8 µs; ours first 76 µs, mean 18 µs, 99th percentile 57 µs, largest 103 µs.
 
 - Run 14 (2026-11-17, RTX 3080, desktop shared with other tracks, not `--alone`, load not taken;
   run14/check1.log): fence events, 2000 rounds: real first 8 µs, mean 1 µs, 99th percentile
