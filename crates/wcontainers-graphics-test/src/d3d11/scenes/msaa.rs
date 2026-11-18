@@ -92,12 +92,26 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     };
 
     for samples in [2, 4, 8] {
+        let part = format!("edges{samples}");
+        if let Some(why) = gpu.lacks_samples(FORMAT, samples)? {
+            outputs.push(Output::absent(&part, why));
+            continue;
+        }
         let (texture, _rtv) = fresh(samples)?;
         draw_colored(gpu, &wedges())?;
-        outputs.push(Output::picture(
-            &format!("edges{samples}"),
-            resolve(gpu, &texture)?,
-        ));
+        outputs.push(Output::picture(&part, resolve(gpu, &texture)?));
+    }
+    if let Some(why) = gpu.lacks_samples(FORMAT, 4)? {
+        for part in [
+            "sample_mask",
+            "alpha_to_coverage",
+            "per_sample",
+            "shader_coverage",
+            "load",
+        ] {
+            outputs.push(Output::absent(part, why.clone()));
+        }
+        return Ok(outputs);
     }
 
     let (texture, _rtv) = fresh(4)?;
@@ -126,6 +140,14 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     outputs.push(Output::picture("shader_coverage", resolve(gpu, &texture)?));
 
     // The wedges at 4 samples, then each quarter of a single-sampled picture shows one sample.
+    let support = unsafe { gpu.device.CheckFormatSupport(FORMAT)? } as i32;
+    if support & D3D11_FORMAT_SUPPORT_MULTISAMPLE_LOAD.0 == 0 {
+        outputs.push(Output::absent(
+            "load",
+            "multisample load of the format (CheckFormatSupport)".to_owned(),
+        ));
+        return Ok(outputs);
+    }
     let (texture, _rtv) = fresh(4)?;
     draw_colored(gpu, &wedges())?;
     let samples = gpu.srv(&texture.cast()?, None)?;

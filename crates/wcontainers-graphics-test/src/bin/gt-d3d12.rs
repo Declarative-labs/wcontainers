@@ -1,5 +1,6 @@
 //! Draws Direct3D 12 scenes: `gt-d3d12 <scene>... | all <hardware|warp> <out-dir> [--debug]` writes
-//! each scene's outputs into the directory as `<scene>[-<part>].<png|exr|txt>`; `gt-d3d12 list`
+//! each scene's outputs into the directory as `<scene>[-<part>].<png|exr|txt|caps>`, and
+//! `<scene>[-<part>].absent` saying why for what the device reports it cannot do; `gt-d3d12 list`
 //! prints the scenes' names. With --debug the debug layer checks every call and any error it
 //! reports fails the scene.
 

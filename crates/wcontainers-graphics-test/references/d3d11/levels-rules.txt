@@ -1,0 +1,11 @@
+only 9_1: made at that level or refused: true
+only 9_2: made at that level or refused: true
+only 9_3: made at that level or refused: true
+only 10_0: made at that level or refused: true
+only 10_1: made at that level or refused: true
+only 11_0: made at that level or refused: true
+only 11_1: made at that level or refused: true
+11_1 down to 9_1: the first level of the list taken alone: true
+11_0 down to 9_1: the first level of the list taken alone: true
+9_1 up to 11_1: the first level of the list taken alone: true
+10_1 and 10_0: the first level of the list taken alone: true

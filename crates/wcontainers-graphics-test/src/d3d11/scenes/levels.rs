@@ -1,5 +1,6 @@
 //! Feature levels: a device asked for each level from 9_1 to 11_1 alone and for lists of them, and
-//! what comes back; then a triangle drawn on a 9_1 device with level 9_1 shaders.
+//! what comes back (answers a less capable device may give lower, and rules every device keeps);
+//! then a triangle drawn on a 9_1 device with level 9_1 shaders.
 
 use std::fmt::Write;
 
@@ -8,47 +9,58 @@ use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 
 use super::{colored_layout, draw_colored};
-use crate::d3d11::{Gpu, create, solid};
+use crate::d3d11::{Gpu, LEVELS, create, level_name, solid};
 use crate::dxbc;
 use crate::output::Output;
 
-const LEVELS: [(&str, D3D_FEATURE_LEVEL); 7] = [
-    ("9_1", D3D_FEATURE_LEVEL_9_1),
-    ("9_2", D3D_FEATURE_LEVEL_9_2),
-    ("9_3", D3D_FEATURE_LEVEL_9_3),
-    ("10_0", D3D_FEATURE_LEVEL_10_0),
-    ("10_1", D3D_FEATURE_LEVEL_10_1),
-    ("11_0", D3D_FEATURE_LEVEL_11_0),
-    ("11_1", D3D_FEATURE_LEVEL_11_1),
-];
-
-fn name(level: D3D_FEATURE_LEVEL) -> String {
-    LEVELS
-        .iter()
-        .find(|(_, l)| *l == level)
-        .map_or_else(|| format!("{:#x}", level.0), |(n, _)| n.to_string())
-}
-
 pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
-    let mut text = String::new();
-    let mut ask = |label: &str, levels: &[D3D_FEATURE_LEVEL]| -> Result<()> {
-        match create(gpu.driver, gpu.debug, levels) {
-            Ok(device) => writeln!(text, "{label}: {}", name(device.level))?,
-            Err(e) => writeln!(text, "{label}: refused ({})", e.root_cause())?,
-        }
-        Ok(())
+    // What each request gives: a level, or None when refused.
+    let ask = |levels: &[D3D_FEATURE_LEVEL]| -> Option<D3D_FEATURE_LEVEL> {
+        create(gpu.driver, gpu.debug, levels).ok().map(|d| d.level)
     };
+    let answer = |got: Option<D3D_FEATURE_LEVEL>| got.map_or("refused".to_owned(), level_name);
+    let (mut caps, mut rules) = (String::new(), String::new());
+    let mut taken = Vec::new();
     for (label, level) in LEVELS {
-        ask(&format!("only {label}"), &[level])?;
+        let got = ask(&[level]);
+        writeln!(caps, "only {label}: {}", answer(got))?;
+        writeln!(
+            rules,
+            "only {label}: made at that level or refused: {}",
+            got.is_none_or(|g| g == level)
+        )?;
+        if got == Some(level) {
+            taken.push(level);
+        }
     }
     let all: Vec<D3D_FEATURE_LEVEL> = LEVELS.iter().rev().map(|(_, l)| *l).collect();
-    ask("11_1 down to 9_1", &all)?;
-    ask("11_0 down to 9_1", &all[1..])?;
-    ask("9_1 up to 11_1", &LEVELS.map(|(_, l)| l))?;
-    ask(
-        "10_1 and 10_0",
-        &[D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0],
-    )?;
+    let lists: [(&str, &[D3D_FEATURE_LEVEL]); 4] = [
+        ("11_1 down to 9_1", &all),
+        ("11_0 down to 9_1", &all[1..]),
+        ("9_1 up to 11_1", &LEVELS.map(|(_, l)| l)),
+        (
+            "10_1 and 10_0",
+            &[D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0],
+        ),
+    ];
+    for (label, levels) in lists {
+        let got = ask(levels);
+        writeln!(caps, "{label}: {}", answer(got))?;
+        let first = levels.iter().copied().find(|l| taken.contains(l));
+        writeln!(
+            rules,
+            "{label}: the first level of the list taken alone: {}",
+            got == first
+        )?;
+    }
+    let mut outputs = vec![Output::caps("results", caps), Output::text("rules", rules)];
+    if !taken.contains(&D3D_FEATURE_LEVEL_9_1) {
+        outputs.push(Output::absent(
+            "9_1",
+            "feature level 9_1, which the device refuses".to_owned(),
+        ));
+        return Ok(outputs);
+    }
 
     let small = create(gpu.driver, gpu.debug, &[D3D_FEATURE_LEVEL_9_1])?;
     let (target, rtv) = small.target(64, 64, DXGI_FORMAT_R8G8B8A8_UNORM)?;
@@ -67,8 +79,6 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     draw_colored(&small, &corners)?;
     let picture = small.read(&target, 0, 0)?;
     small.check_debug()?;
-    Ok(vec![
-        Output::text("results", text),
-        Output::picture("9_1", picture),
-    ])
+    outputs.push(Output::picture("9_1", picture));
+    Ok(outputs)
 }

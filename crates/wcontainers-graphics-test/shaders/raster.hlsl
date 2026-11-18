@@ -1,5 +1,5 @@
 // A geometry shader sending each triangle to eight viewports, with a colour per viewport.
-// fxc: vs_5_0 vs, gs_5_0 gs, ps_5_0 ps
+// fxc: vs_4_0 vs, gs_4_0 gs, ps_4_0 ps
 // dxc: vs_6_0 vs, gs_6_0 gs, ps_6_0 ps
 struct ColorIn { float3 pos : POSITION; float4 color : COLOR; };
 struct ColorOut { float4 pos : SV_Position; float4 color : COLOR; };
