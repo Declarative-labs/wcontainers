@@ -31,7 +31,7 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   (see "X2, run 4"). Run 5 (the same day) fixed what the independent check of X2 found (see "X2, run 5").
   Run 6 (2026-11-18) fixed what the second check of X2 found (see "X2, run 6"). Run 7 (the same day) fixed
   what the third check found (see "X2, run 7"). Run 8 (the same day) fixed what the fourth found (see "X2,
-  run 8").
+  run 8"). Run 9 (the same day) fixed what the fifth found (see "X2, run 9").
   Not built, proposed for X3: the recorded reference results and layer 1 batching of plan 7.3.
 
 Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0.5):
@@ -47,7 +47,7 @@ Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0
 
 ## X2: what comes next
 
-1. The fifth independent check of X2.
+1. The sixth independent check of X2.
 2. Plan 7.3's recorded reference results and layer 1 batching, proposed for X3 (see "Departures"); build them
    at X2 only if the orchestrator rules so. The plan's text now says they are not built.
 3. For X3: `presented`, `REFERENCE_HAS` and layer 1's rule for an `Err` case (plan 7.2 "As built"). For X4:
@@ -56,6 +56,43 @@ Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0
 4. For X3: the x86 runner reports the signal frame's RF (bit 16) in rflags at every fault stop (seen on the
    i7-8750H: `rep stosb` into a read-only page, rflags 0x10202; trap stops give 0x202). Plan section 2 says RF
    and IF are masked out of the comparison; x86's `reconcile` must do it, or every faulting case differs.
+
+## X2, run 9 (2026-11-18)
+
+The fifth independent check of X2 found one blocking problem and five smaller ones. What was done:
+- Blocking, the wasmtime runner put an address's slot entry at `slots_at + (address - table_base)` bytes,
+  right only when `ALIGN` is 4; for x86 (`ALIGN` 1) the entries of a blob with more than one slot would
+  overlap and be read from elsewhere. The layout is now one function of the translator's contract,
+  `contract::slot_entry::<G>(offset)` = `4 * (offset / ALIGN)`, which the wasmtime runner and the test
+  guest's own runner (`ALIGN` 1) both use; `runner.js` already did the same sum. Proof that the test guest
+  checks it against the translated lookup: with the function changed back to the old sum, 10 of its 16
+  tests fail (`x2/run9`, by hand); with the new one all 16 pass (`x2/run9/test_guest.log`). ARM64's
+  entries are where they were (`4 * (offset / 4)` is `offset` for every 4-aligned offset).
+- Plan 7.2's browser contract now lists what `contract()` gives (`trapKinds` as names, `guestHooks`,
+  `hookParams`, ...) and says why the call's block offsets, `codeChanges` and trap numbers are not in it.
+- `long-runs.sh` builds each commit into `<WC_LONG_DIR>/target/<commit>`, as `same-cases.sh` and
+  `same-output.sh` do since run 8. A long run restarted on this commit builds once into its new directory;
+  old `<WC_LONG_DIR>/target` contents can be deleted when no run uses them.
+- A failure of the reference runner itself (a panic of the serving process, such as on a request it cannot
+  read) is now sent as the request's result with a new status, `RESULT_RUNNER_FAILED`, carrying the panic
+  message, before the runner ends with 101; the harness fails the run with "the reference runner failed:
+  <message>" and does not reconnect. A case child's death stays `RESULT_FAILED` (the runner goes on); a
+  stream that ends with no result is still a lost connection. New tests
+  `the_reference_reports_its_own_failure_arm64` (layer 1's file) and
+  `the_x86_64_reference_reports_its_own_failure` send a blob request cut short; both pass, the x86 one on the
+  i7-8750H (`x2/run9/reference.log`: 6 passed).
+- The local reference's image and layer 3's gcc image are Alpine 3.24.2 by digest
+  (`sha256:294b683c...`, a multi-platform index; 3.24.2 is what `alpine:latest` was here); the gcc image is
+  named `wc-x86-gcc-<guest>-<first 12 hex of the SHA-256 of its recipe>`, so the first layer 3 run builds it
+  once. `apk add gcc musl-dev` still takes the 3.24 branch's current packages when the image is built; the
+  image is then kept.
+- The x86 runner's RF in rflags at fault stops: already item 4 of "what comes next", for X3's `reconcile`.
+- From this run's read of `src/runner.rs` whole (named not read in run 8): the block area before the
+  permission table is a fixed 4096 bytes in both runners; each now checks the guest's thread state fits
+  (a `const` assertion in wasmtime's, a thrown error in `runner.js`). `runner::thread_state_size` duplicated
+  the contract's and is now the contract's. Left as they are: the stand-in's error numbers (9, 14, 22, 38:
+  the same on 64-bit ARM64 and x86-64 Linux), fds 1 and 2, the permission table's bytes. Still not read line
+  by line: `src/layer2.rs`, `src/binaries.rs`, the rest of `src/programs.rs` and `src/changes.rs`.
 
 ## X2, run 8 (2026-11-18)
 
@@ -1503,6 +1540,15 @@ X2 (each also written into the plan's text in the same commit):
 - The browser page reads the pc by `pcOffset` and nothing else of the register block (it read x0 to x30 and
   sp, unused); `syscall` offsets, `codeChanges` and `traps` of plan 7.2's contract are not added, since the
   page gets the call's number and arguments from the hook and traps by `trapKinds` already.
+
+- The array of slots' layout is one function of the contract, `contract::slot_entry::<G>(offset)` (4 bytes
+  per `ALIGN` bytes), used by the wasmtime runner and the test guest's own runner; the plan had the layout
+  only in words (X2 run 9).
+- The wire has a fourth result status, the runner itself failed (`RESULT_RUNNER_FAILED`, sent by the serving
+  process's panic hook before it ends with 101), so a runner's failure is never taken for a lost connection
+  (plan 7.3, X2 run 9).
+- A local reference and layer 3's gcc image use Alpine 3.24.2 by digest, not `alpine:latest`; the gcc image
+  is named by the SHA-256 of its recipe, so a changed recipe makes a new image (plan 7.3, X2 run 9).
 
 ## Decisions taken in the plan that the owner may want to hear about
 
