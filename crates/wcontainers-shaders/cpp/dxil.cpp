@@ -73,9 +73,16 @@ struct Resources {
     vk->descriptor_type = DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_IDENTITY;
   }
 
+  // Raw and structured buffers as storage buffers (dxil-spirv may otherwise pick a texel buffer).
+  static void untyped(const dxil_spv_d3d_binding& d, dxil_spv_vulkan_binding* vk) {
+    if (d.kind == DXIL_SPV_RESOURCE_KIND_RAW_BUFFER || d.kind == DXIL_SPV_RESOURCE_KIND_STRUCTURED_BUFFER)
+      vk->descriptor_type = DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_SSBO;
+  }
+
   static dxil_spv_bool srv(void* self, const dxil_spv_d3d_binding* d, dxil_spv_srv_vulkan_binding* vk) {
     *vk = { };
     bind(&vk->buffer_binding, 1, static_cast<Resources*>(self)->index(1, *d));
+    untyped(*d, &vk->buffer_binding);
     return DXIL_SPV_TRUE;
   }
 
@@ -88,6 +95,7 @@ struct Resources {
     *vk = { };
     uint32_t i = static_cast<Resources*>(self)->index(2, d->d3d_binding);
     bind(&vk->buffer_binding, 2, i);
+    untyped(d->d3d_binding, &vk->buffer_binding);
     bind(&vk->counter_binding, 4, i);
     return DXIL_SPV_TRUE;
   }
@@ -133,7 +141,11 @@ int convert(const uint8_t* data, size_t size, uint32_t samples, uint32_t** out, 
   // specialisation constant, which the caller refuses.
   dxil_spv_option_rasterizer_sample_count count = { { DXIL_SPV_OPTION_RASTERIZER_SAMPLE_COUNT }, samples,
                                                     DXIL_SPV_FALSE };
-  if ((samples != 0 && dxil_spv_converter_add_option(b.converter, &count.base) != DXIL_SPV_SUCCESS) ||
+  // A storage buffer is bound at its view's first byte (the fronts place it), so a view's elements
+  // need no offset into it whatever their stride.
+  dxil_spv_option_ssbo_alignment alignment = { { DXIL_SPV_OPTION_SSBO_ALIGNMENT }, 4 };
+  if (dxil_spv_converter_add_option(b.converter, &alignment.base) != DXIL_SPV_SUCCESS ||
+      (samples != 0 && dxil_spv_converter_add_option(b.converter, &count.base) != DXIL_SPV_SUCCESS) ||
       dxil_spv_converter_run(b.converter) != DXIL_SPV_SUCCESS) {
     *error = wcs::copy(first.empty() ? "dxil-spirv could not convert the shader" : first);
     return 2;

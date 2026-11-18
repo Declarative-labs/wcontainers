@@ -112,15 +112,21 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
         e => format!("convert {e}"),
     };
     // A shader with storage views or typed buffers converts with the bound views' formats, which
-    // the corpus does not have: it passes with the first of `view_keys` that converts.
+    // the corpus does not have: it passes with the first of `view_keys` that converts. Where it runs
+    // atomics on storage textures, they are read through buffers, as the fronts then ask.
     let mut key = VariantKey::default();
     let mut views = None;
     let converted = match convert(source(&bytes), &key, None) {
         Ok(c) => c,
-        Err(ConvertError::Unsupported("StorageFormat" | "TypedBuffer")) => {
+        Err(ConvertError::Unsupported("StorageFormat" | "TypedBuffer" | "StorageImageAtomics")) => {
             let mut last = None;
-            for (format, k) in view_keys() {
-                match convert(source(&bytes), &k, None) {
+            for (format, mut k) in view_keys() {
+                let mut made = convert(source(&bytes), &k, None);
+                if let Err(ConvertError::Unsupported("StorageImageAtomics")) = made {
+                    k.texels_through_buffer = u64::MAX;
+                    made = convert(source(&bytes), &k, None);
+                }
+                match made {
                     Ok(c) => {
                         last = Some(Ok(c));
                         key = k;
@@ -137,9 +143,10 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
         }
         Err(e) => return named(e),
     };
-    let ok = match views {
-        Some(f) => format!("ok views:{f:?}"),
-        None => "ok".into(),
+    let ok = match (views, key.texels_through_buffer != 0) {
+        (Some(f), false) => format!("ok views:{f:?}"),
+        (Some(f), true) => format!("ok views:{f:?} through"),
+        (None, _) => "ok".into(),
     };
     let m = &converted.modules[0];
     let name = path.file_stem().unwrap().to_string_lossy().into_owned();

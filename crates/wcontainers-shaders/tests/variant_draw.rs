@@ -1160,3 +1160,108 @@ fn typed_buffers_draw_as_direct3d_does() {
     eprintln!("{} comparisons, {failed} failed", results.len());
     assert_eq!(failed, 0);
 }
+
+/// A pixel program's layer and viewport index: real Direct3D 11 draws the full-screen triangle into
+/// each of four layers through `gs_layers` (layer n through viewport n % 2); ours draws each layer
+/// alone, with the run's layer and viewport as helper values, as a front splitting the draw does.
+#[test]
+fn layer_and_viewport_inputs_read_the_draws_run() {
+    use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM;
+    use windows::core::Interface;
+    const LAYERS: u32 = 4;
+    let viewports = [
+        [0.0f32, 0.0, SIZE as f32, SIZE as f32],
+        [8.0, 4.0, 40.0, 48.0],
+    ];
+    let mut gpu = webgpu();
+    let d3d = wcontainers_graphics_test::d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let (vs, ps, gs) = (
+        bytecode("vs_fullscreen.dxbc"),
+        bytecode("ps_layer.dxbc"),
+        bytecode("gs_layers.dxbc"),
+    );
+    d3d.program(&vs, &ps, &[]).unwrap();
+    let geometry = d3d.gs(&gs).unwrap();
+    let mut desc = wcontainers_graphics_test::d3d11::tex2d(
+        SIZE,
+        SIZE,
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+        D3D11_BIND_RENDER_TARGET,
+    );
+    desc.ArraySize = LAYERS;
+    let target = d3d.texture2d(&desc, &[]).unwrap();
+    let rtv = d3d.rtv(&target.cast().unwrap(), None).unwrap();
+    let rects: Vec<D3D11_VIEWPORT> = viewports
+        .iter()
+        .map(|v| D3D11_VIEWPORT {
+            TopLeftX: v[0],
+            TopLeftY: v[1],
+            Width: v[2],
+            Height: v[3],
+            MinDepth: 0.0,
+            MaxDepth: 1.0,
+        })
+        .collect();
+    unsafe {
+        let c = &d3d.context;
+        c.GSSetShader(&geometry, None);
+        c.ClearRenderTargetView(&rtv, &CLEAR);
+        c.OMSetRenderTargets(Some(&[Some(rtv.clone())]), None);
+        c.RSSetViewports(Some(&rects));
+        c.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        c.Draw(3, 0);
+        c.GSSetShader(None, None);
+    }
+    let mut failed = Vec::new();
+    for layer in 0..LAYERS {
+        let reference = d3d.read(&target, 0, layer).unwrap().to_rgba8().into_raw();
+        let viewport = layer % 2;
+        let v = viewports[viewport as usize];
+        let block = helper_block(
+            Source::Dxbc(&ps),
+            &VariantKey::default(),
+            &[
+                (HelperValue::Layer, &layer.to_le_bytes()),
+                (HelperValue::Viewport, &viewport.to_le_bytes()),
+            ],
+        );
+        let mut setup = Setup::plain(SIZE);
+        setup.helpers = [Vec::new(), block];
+        setup.viewport = [v[0], v[1], v[2], v[3], 0.0, 1.0];
+        let draw = Draw {
+            vs: Source::Dxbc(&vs),
+            ps: Source::Dxbc(&ps),
+            format: Format::Rgba8Unorm,
+            size: SIZE,
+            vertices: &[],
+            stride: 0,
+            attributes: &[],
+            count: 3,
+            constants: constants([1.0; 4]),
+            clear: CLEAR.map(f32::to_bits),
+            setup,
+        };
+        let made = ours(&mut gpu, &draw, ProvokingVertex::First);
+        let c = compare(
+            format!("layer {layer}"),
+            &reference,
+            &made,
+            Format::Rgba8Unorm,
+            (0, 0),
+        );
+        eprintln!(
+            "{}: {} texels apart, largest {}",
+            c.name, c.count, c.largest
+        );
+        if c.count > 0 {
+            failed.push(c.name);
+        }
+    }
+    assert!(failed.is_empty(), "{failed:?}");
+}

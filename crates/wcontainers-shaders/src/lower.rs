@@ -347,9 +347,15 @@ impl<'a> Lowering<'a> {
         let member = match t.members[..] {
             [member] => member,
             [] => return Err(malformed("a declaration without a type".into())),
-            _ => return Err(unsupported("StructType")),
+            _ if atomic => return Err(unsupported("StructAtomic")),
+            // A struct (dxbc-spirv's structured group-shared memory of members of several types),
+            // each member at the next offset its alignment allows.
+            _ => {
+                let (handle, size, align) = self.struct_ty(&t.members)?;
+                return self.arrays(t, handle, size, align);
+            }
         };
-        let mut handle = if atomic {
+        let handle = if atomic {
             let s = Self::scalar(member.scalar)?;
             if member.size != 1 || !matches!(s, Scalar::U32 | Scalar::I32) {
                 return Err(unsupported("AtomicType"));
@@ -358,8 +364,42 @@ impl<'a> Lowering<'a> {
         } else {
             self.basic(member)?
         };
-        let mut size = basic_size(member);
-        let mut align = basic_align(member);
+        self.arrays(t, handle, basic_size(member), basic_align(member))
+    }
+
+    /// A struct of `members`, with its size and alignment.
+    fn struct_ty(&mut self, members: &[Basic]) -> Result<(Handle<Type>, u32, u32)> {
+        let mut offset = 0u32;
+        let mut align = 4u32;
+        let mut fields = Vec::new();
+        for (i, &m) in members.iter().enumerate() {
+            let at = offset.next_multiple_of(basic_align(m));
+            let ty = self.basic(m)?;
+            fields.push(StructMember {
+                name: Some(format!("m{i}")),
+                ty,
+                binding: None,
+                offset: at,
+            });
+            offset = at + basic_size(m);
+            align = align.max(basic_align(m));
+        }
+        let span = offset.next_multiple_of(align);
+        let ty = self.ty(TypeInner::Struct {
+            members: fields,
+            span,
+        });
+        Ok((ty, span, align))
+    }
+
+    /// `t`'s array dimensions around an element of type `handle`, `size` bytes aligned to `align`.
+    fn arrays(
+        &mut self,
+        t: &Ty,
+        mut handle: Handle<Type>,
+        mut size: u32,
+        mut align: u32,
+    ) -> Result<Handle<Type>> {
         for &count in &t.dims {
             let stride = size.next_multiple_of(align);
             handle = self.ty(TypeInner::Array {
@@ -961,6 +1001,7 @@ impl<'a> Lowering<'a> {
             (_, true, builtin::SAMPLE_COUNT) => self.variant.samples != 0,
             (SourceStage::Pixel, true, builtin::POSITION | builtin::IS_FRONT_FACE)
             | (SourceStage::Pixel, true, builtin::SAMPLE_ID | builtin::SAMPLE_MASK)
+            | (SourceStage::Pixel, true, builtin::LAYER_INDEX | builtin::VIEWPORT_INDEX)
             | (SourceStage::Pixel, false, builtin::DEPTH | builtin::SAMPLE_MASK) => true,
             (
                 SourceStage::Compute,
@@ -1438,6 +1479,27 @@ impl<'a> Lowering<'a> {
             );
             return Ok(e.bitcast(f, body, count, Scalar::U32, Self::scalar(member.scalar)?));
         }
+        if let builtin::LAYER_INDEX | builtin::VIEWPORT_INDEX = b {
+            // The draw's run's layer or viewport (a pixel shader's inputs; no stage before writes
+            // them where the front draws, or it splits the draw per layer or viewport).
+            let value = match b {
+                builtin::LAYER_INDEX => HelperValue::Layer,
+                _ => HelperValue::Viewport,
+            };
+            let u32_ty = self.scalar_ty(Scalar::U32);
+            let (var, index) = crate::variant::helper_once(
+                &mut self.module,
+                &mut self.reflection,
+                ShaderStage::Fragment,
+                value,
+                u32_ty,
+                4,
+            );
+            let p = e.add(f, body, Expression::GlobalVariable(var));
+            let p = e.add(f, body, Expression::AccessIndex { base: p, index });
+            let v = e.add(f, body, Expression::Load { pointer: p });
+            return Ok(e.bitcast(f, body, v, Scalar::U32, Self::scalar(member.scalar)?));
+        }
         let (bi, size, s) = match b {
             builtin::POSITION => (naga::BuiltIn::Position { invariant: false }, 4, Scalar::F32),
             builtin::VERTEX_ID => (naga::BuiltIn::VertexIndex, 1, Scalar::U32),
@@ -1571,6 +1633,8 @@ fn system_value(b: u64) -> Option<SystemValue> {
         builtin::SAMPLE_MASK => SystemValue::Coverage,
         builtin::DEPTH => SystemValue::Depth,
         builtin::CLIP_DISTANCE => SystemValue::ClipDistance,
+        builtin::LAYER_INDEX => SystemValue::RenderTargetArrayIndex,
+        builtin::VIEWPORT_INDEX => SystemValue::ViewportArrayIndex,
         _ => return None,
     })
 }
@@ -3381,6 +3445,9 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             .first()
             .ok_or_else(|| malformed("void memory".into()))?;
         let dims = ty.dims.len();
+        if ty.members.len() > 1 {
+            return self.walk_struct(b, var, ty, &indices, n);
+        }
         if indices.len() > dims + 1 {
             return Err(malformed("address too long".into()));
         }
@@ -3400,6 +3467,42 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             return Ok(Place::Run(p, start, element));
         }
         Ok(Place::Element(p, element, indices.get(dims).copied()))
+    }
+
+    /// [`Self::walk`] in an array of structs: the index after the array's is the member's, then the
+    /// component's. Several consecutive scalars are consecutive members of one type.
+    fn walk_struct(
+        &mut self,
+        b: &mut Block,
+        var: Handle<GlobalVariable>,
+        ty: &Ty,
+        indices: &[Index],
+        n: u8,
+    ) -> Result<Place> {
+        let dims = ty.dims.len();
+        if indices.len() <= dims || indices.len() > dims + 2 {
+            return Err(malformed("a struct member's address".into()));
+        }
+        let Index::Const(m) = indices[dims] else {
+            return Err(malformed("a struct member chosen at run time".into()));
+        };
+        let element = *ty
+            .members
+            .get(m as usize)
+            .ok_or_else(|| malformed("a struct member past the last".into()))?;
+        let mut p = self.add(b, Expression::GlobalVariable(var));
+        for &i in &indices[..dims] {
+            p = self.index(b, p, i);
+        }
+        if element.size == 1 && n > 1 {
+            let run = ty.members.get(m as usize..m as usize + n as usize);
+            if !run.is_some_and(|r| r.iter().all(|&e| e == element)) {
+                return Err(unsupported("StructMembersAsVector"));
+            }
+            return Ok(Place::Run(p, Index::Const(m), element));
+        }
+        let p = self.add(b, Expression::AccessIndex { base: p, index: m });
+        Ok(Place::Element(p, element, indices.get(dims + 1).copied()))
     }
 
     fn index(&mut self, b: &mut Block, base: Handle<Expression>, i: Index) -> Handle<Expression> {

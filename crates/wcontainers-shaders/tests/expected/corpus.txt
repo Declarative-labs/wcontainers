@@ -38,7 +38,7 @@
 037_ps_cube_code_1.dxbc	ok
 038_vs_code_2.dxbc	ok
 039_vs_code_3.dxbc	unsupported RenderTargetArrayIndex
-040_ps_code_1.dxbc	unsupported RenderTargetArrayIndex
+040_ps_code_1.dxbc	ok
 041_simple_vs_1.dxbc	ok
 042_simple_hs_1.dxbc	ok-wgsl glsl-write
 043_simple_ds_1.dxbc	ok-wgsl glsl-write
@@ -57,7 +57,7 @@
 056_ps_code_6.dxbc	ok
 057_ps_color_code_1.dxbc	ok
 058_ps_depth_code.dxbc	ok
-059_ps_code_7.dxbc	unsupported StorageImageAtomics
+059_ps_code_7.dxbc	ok-wgsl glsl-write
 060_ps_code_8.dxbc	ok
 061_ps_code_9.dxbc	ok
 062_ps_partial_input_code.dxbc	ok
@@ -162,13 +162,13 @@
 161_gather4_po_c_code.dxbc	unsupported DynamicOffset
 162_vs_code_11.dxbc	ok
 163_ps_code_21.dxbc	ok
-164_ps_code_22.dxbc	unsupported StorageImageAtomics
+164_ps_code_22.dxbc	ok-wgsl glsl-write
 165_ps_depth_le_code.dxbc	ok
 166_ps_depth_ge_code.dxbc	ok
 167_hs_code.dxbc	ok-wgsl glsl-write
 168_ds_code.dxbc	ok-wgsl glsl-write
 169_ps_code_23.dxbc	ok
-170_ps_code_24.dxbc	unsupported ViewportArrayIndex
+170_ps_code_24.dxbc	ok
 171_ps_unused_sample_index_code.dxbc	ok-wgsl glsl-write
 172_ps_sample_index_code.dxbc	ok-wgsl glsl-write
 173_ps_samplepos_code.dxbc	ok-wgsl glsl-write

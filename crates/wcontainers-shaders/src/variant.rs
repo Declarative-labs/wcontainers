@@ -339,7 +339,7 @@ fn helper(
 }
 
 /// The member of the stage's helper block for `value`, made by [`helper`] when it is not there yet.
-fn helper_once(
+pub(crate) fn helper_once(
     module: &mut Module,
     reflection: &mut Reflection,
     stage: ShaderStage,

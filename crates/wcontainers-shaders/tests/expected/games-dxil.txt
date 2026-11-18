@@ -28,7 +28,7 @@
 134937cfa72159ac.dxil	ok
 147fdd03ba57dbf2.dxil	ok
 1495dd46c01d5739.dxil	unsupported TypedBufferFormatKind
-14dd4b0c20eb7f6e.dxil	spirv-reader unsupported
+14dd4b0c20eb7f6e.dxil	ok-wgsl glsl-write
 15f6a483af9cf0bc.dxil	ok
 164e085c567ecd86.dxil	ok
 1692a7991b2487af.dxil	ok
@@ -57,7 +57,7 @@
 26218b2c83db3773.dxil	ok
 26480ad9d7d2ad54.dxil	ok
 269d549e10248fad.dxil	ok
-26ed1860124e3c43.dxil	spirv-reader unsupported
+26ed1860124e3c43.dxil	unsupported StorageFormatKind
 277e12b2f0fb2fa7.dxil	spirv-reader invalid
 28df654177b8f65a.dxil	ok
 2af882d6fd50d4ff.dxil	ok
@@ -100,7 +100,7 @@
 4633f955425fa0e6.dxil	ok
 464a81329e22ad59.dxil	ok
 46705dae4c3ecb65.dxil	ok
-46be5c555774d134.dxil	spirv-reader unsupported
+46be5c555774d134.dxil	unsupported TypedBufferFormatKind
 46cbd7ce995909d1.dxil	ok
 46f1e6ee9d81688e.dxil	ok-wgsl glsl-write
 471d776c732b966d.dxil	ok
@@ -154,7 +154,7 @@
 668cc56e38f7976a.dxil	unsupported MultisampledArrayTexture
 6701c373a2026488.dxil	ok
 685b1bd13a9db30c.dxil	ok
-693a4c4bfbecdba1.dxil	spirv-reader unsupported
+693a4c4bfbecdba1.dxil	ok-wgsl glsl-write
 6a3674588b532a90.dxil	ok
 6af942d4b95ee588.dxil	ok
 6e36319055c7f9e4.dxil	ok
@@ -186,7 +186,7 @@
 7db6ce348412e5b7.dxil	ok
 7e13c2d32fa803da.dxil	ok
 7f2a3e7fd1ae56c3.dxil	ok
-7f90d7ebb19b5d14.dxil	spirv-reader unsupported
+7f90d7ebb19b5d14.dxil	unsupported ConstantComponentIndexing
 7fbd955e876d9f01.dxil	ok-wgsl glsl-write
 802ec03830b6f5dc.dxil	ok
 80aa9bff211c2f81.dxil	ok

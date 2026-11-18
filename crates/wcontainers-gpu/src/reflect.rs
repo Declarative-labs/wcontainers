@@ -357,6 +357,14 @@ pub enum HelperValue {
     /// The viewport's depth range (two f32, near then far), which [`VariantFlags::DEPTH_CLAMP`] clamps
     /// the fragment's depth to.
     DepthRange,
+    /// The target array layer the draw's run renders into (u32), which a fragment program reads as its
+    /// layer: the run's layer under [`crate::SlowPath::LayerSplit`], zero where no earlier stage
+    /// writes one.
+    Layer,
+    /// The viewport the draw's run uses (u32), which a fragment program reads as its viewport index:
+    /// the run's viewport under [`crate::SlowPath::MultiViewportSplit`], zero where no earlier stage
+    /// writes one.
+    Viewport,
 }
 
 /// Where one helper value sits in the helper constants.
