@@ -46,3 +46,15 @@ fn lacking_vertex_formats_are_read_through_shadows() {
     println!("seed {seed}, {n} vertices per format");
     vertices::lacking_vertex_formats(&mut device(), seed, n);
 }
+
+/// `Bgra8Unorm` vertices, which serve Direct3D's `B8G8R8A8_UNORM` and `B8G8R8X8_UNORM` (X read as
+/// written), read as their bytes mean (Direct3D 11's own reading: tests/direct3d.rs).
+#[test]
+fn bgra_vertices_read_as_they_mean() {
+    let seed = env("WEBGPU_SEED", 188);
+    let n = env("WEBGPU_CASES", 64) as u32;
+    println!(
+        "{}",
+        vertices::bgra_vertices(&mut device(), seed, n).unwrap()
+    );
+}

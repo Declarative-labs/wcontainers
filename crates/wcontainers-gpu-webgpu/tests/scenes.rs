@@ -323,3 +323,47 @@ struct VsOut { @builtin(position) pos: vec4f }
         assert_eq!(wrong, 0, "pixels not the immediates' colour or the clear");
     }
 }
+
+/// A resolve averages, so no integer format is declared resolvable, whatever wgpu's adapter flags
+/// allow (wgpu's Vulkan flags every integer colour format resolvable on the RTX 3080).
+#[test]
+fn integer_formats_are_not_resolvable() {
+    use Format::*;
+    use wcontainers_gpu::{Format, FormatKind, FormatUse};
+    let b = device();
+    let integer = [
+        R8Uint,
+        R8Sint,
+        R16Uint,
+        R16Sint,
+        Rg8Uint,
+        Rg8Sint,
+        R32Uint,
+        R32Sint,
+        Rg16Uint,
+        Rg16Sint,
+        Rgba8Uint,
+        Rgba8Sint,
+        Rgb10a2Uint,
+        Rg32Uint,
+        Rg32Sint,
+        Rgba16Uint,
+        Rgba16Sint,
+        Rgb32Uint,
+        Rgb32Sint,
+        Rgba32Uint,
+        Rgba32Sint,
+    ];
+    let resolvable: Vec<Format> = integer
+        .into_iter()
+        .inspect(|f| assert!(matches!(f.kind(), FormatKind::Uint | FormatKind::Sint)))
+        .filter(|&f| b.caps().formats.get(f).contains(FormatUse::RESOLVE))
+        .collect();
+    assert!(resolvable.is_empty(), "declared resolvable: {resolvable:?}");
+    assert!(
+        b.caps()
+            .formats
+            .get(Rgba8Unorm)
+            .contains(FormatUse::RESOLVE)
+    );
+}

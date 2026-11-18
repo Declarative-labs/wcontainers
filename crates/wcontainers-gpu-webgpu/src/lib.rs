@@ -76,6 +76,8 @@ pub struct WebGpu {
     texture_pool: memory::Pool<wgpu::Texture>,
     arena: Option<memory::Arena>,
     ring: Option<memory::Ring>,
+    /// The ring resolved query results are taken from.
+    query_ring: Option<memory::Ring>,
     edge: Option<edge::EdgeProgram>,
     /// The program adding the counts of queries carried across pass splits.
     query_sum: Option<(wgpu::ComputePipeline, wgpu::BindGroupLayout)>,
@@ -340,12 +342,13 @@ impl ProgramObj {
 struct QuerySetObj {
     kind: QueryKind,
     count: u32,
-    /// `count` queries, then the spare slots occlusion queries carried across a split go on in:
-    /// page 0. Pass parts drawing on page 0 begin each query in its own slot.
-    raw: wgpu::QuerySet,
-    /// Further pages of spare slots, made when page 0 has none left; a pass part drawing on one
-    /// begins every query in a spare slot.
+    /// WebGPU query sets of at most its 4096 queries. First the own pages: query i in slot
+    /// i % 4096 of page i / 4096, the last going on with the spare slots occlusion queries
+    /// carried across a split go on in. Then further pages of spare slots, made when those run
+    /// out. A pass part begins a query in its own slot when it counts on that query's page, and
+    /// otherwise in a spare slot of its page.
     pages: RefCell<Vec<wgpu::QuerySet>>,
+    own_pages: usize,
     /// The parts of each query since it was last begun outside its own slot.
     segments: RefCell<HashMap<u32, Segments>>,
     /// Each page's free spare slots.
@@ -404,10 +407,13 @@ impl QuerySetObj {
 
     /// The WebGPU query set of `page`.
     fn page(&self, page: usize) -> wgpu::QuerySet {
-        match page {
-            0 => self.raw.clone(),
-            p => self.pages.borrow()[p - 1].clone(),
-        }
+        self.pages.borrow()[page].clone()
+    }
+
+    /// The own page and slot of query `index`.
+    fn own_slot(index: u32) -> (usize, u32) {
+        let max = wgpu::QUERY_SET_MAX_QUERIES;
+        ((index / max) as usize, index % max)
     }
 
     /// Records that query `index` goes on in `slot` of `page`; `first` when this begins it.
@@ -574,6 +580,7 @@ impl WebGpu {
             texture_pool: Default::default(),
             arena: None,
             ring: None,
+            query_ring: None,
             edge: None,
             query_sum: None,
             vertices: Default::default(),
@@ -785,8 +792,14 @@ fn caps(
                     && flags.contains(wgpu::TextureFormatFeatureFlags::BLENDABLE),
                 FormatUse::BLEND,
             ),
+            // A resolve averages: integer formats never resolve, as in WebGPU and Direct3D, whatever
+            // the adapter's own flags allow.
             (
-                flags.contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE),
+                flags.contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE)
+                    && matches!(
+                        raw.sample_type(None, None),
+                        Some(wgpu::TextureSampleType::Float { .. })
+                    ),
                 FormatUse::RESOLVE,
             ),
             (
@@ -1432,28 +1445,37 @@ impl Backend for WebGpu {
             }
             QueryKind::Timestamp => return Err(GpuError::Absent(Features::TIMESTAMPS)),
         };
-        // Occlusion sets get as many spare slots again, within WebGPU's 4096 queries a set; more
-        // pages are made when they run out.
-        let total = match kind {
-            QueryKind::OcclusionAny => count
-                .saturating_mul(2)
-                .min(wgpu::QUERY_SET_MAX_QUERIES)
-                .max(count),
-            _ => count,
+        // Pages of WebGPU's 4096 queries a set; on the last, occlusion sets get as many spare
+        // slots again as it has queries, within 4096. More pages are made when they run out.
+        let max = wgpu::QUERY_SET_MAX_QUERIES;
+        let own_pages = count.div_ceil(max).max(1);
+        let last = count - (own_pages - 1) * max;
+        let last_total = match kind {
+            QueryKind::OcclusionAny => last.saturating_mul(2).min(max).max(last),
+            _ => last,
         };
-        let raw = self.device.create_query_set(&wgpu::QuerySetDescriptor {
-            label: None,
-            ty,
-            count: total,
-        });
+        let (mut pages, mut free) = (Vec::new(), Vec::new());
+        for p in 0..own_pages {
+            let total = if p + 1 == own_pages { last_total } else { max };
+            pages.push(self.device.create_query_set(&wgpu::QuerySetDescriptor {
+                label: None,
+                ty,
+                count: total,
+            }));
+            free.push(if p + 1 == own_pages {
+                (last..total).rev().collect()
+            } else {
+                Vec::new()
+            });
+        }
         Ok(QuerySet(Rc::new(QuerySetObj {
             kind,
             count,
-            raw,
-            pages: Default::default(),
+            pages: RefCell::new(pages),
+            own_pages: own_pages as usize,
             released: Default::default(),
             segments: Default::default(),
-            free: RefCell::new(vec![(count..total).rev().collect()]),
+            free: RefCell::new(free),
         })))
     }
 
@@ -1554,13 +1576,14 @@ impl Backend for WebGpu {
                     .clone()
                     .expect("an occlusion pass has its set");
                 set.0.forget_segments(index);
-                // A part on a further page begins every query in a spare slot of it.
-                if p.page != 0 && set.0.free.borrow()[p.page].is_empty() {
+                // A part on another page than the query's own begins it in a spare slot there.
+                let (own_page, own_slot) = QuerySetObj::own_slot(index);
+                if p.page != own_page && set.0.free.borrow()[p.page].is_empty() {
                     self.split_onto_page(wcontainers_gpu::SlowPath::QueriesSegmented, |_| {}, true);
                 }
                 let Some(p) = self.pass.as_mut() else { return };
                 let slot = match p.page {
-                    0 => index,
+                    page if page == own_page => own_slot,
                     page => {
                         let slot = set.0.take(page).expect("the page has room");
                         set.0.carry(index, page, slot, true);
@@ -1648,7 +1671,7 @@ impl Backend for WebGpu {
         if let Some(a) = &mut self.arena {
             a.submitted();
         }
-        if let Some(r) = &mut self.ring {
+        for r in [&mut self.ring, &mut self.query_ring].into_iter().flatten() {
             r.submitted();
         }
         self.caches.prune();
@@ -1948,13 +1971,14 @@ impl Backend for WebGpu {
         }
         // WebGPU writes timestamps where passes begin and end: an empty compute pass carries it,
         // written once the work recorded before it is done.
-        let raw = set.0.raw.clone();
+        let (page, slot) = QuerySetObj::own_slot(index);
+        let raw = set.0.page(page);
         self.encoder()
             .begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
                 timestamp_writes: Some(wgpu::ComputePassTimestampWrites {
                     query_set: &raw,
-                    beginning_of_pass_write_index: Some(index),
+                    beginning_of_pass_write_index: Some(slot),
                     end_of_pass_write_index: None,
                 }),
             });

@@ -282,7 +282,57 @@ impl Ring {
     pub fn submitted(&mut self) {
         self.used = 0;
     }
+
+    /// A region of `size` bytes of the ring in `slot` and where it starts, making a ring twice
+    /// as large (or as large as the region) with `usage` when it has no room, counted in `made`.
+    fn region(
+        slot: &mut Option<Ring>,
+        device: &wgpu::Device,
+        size: u64,
+        usage: wgpu::BufferUsages,
+        made: &mut u64,
+    ) -> (wgpu::Buffer, u64) {
+        let ring = match slot.take() {
+            Some(r) if r.used + size <= r.buffer.size() => r,
+            old => {
+                let least = old.map_or(RING_SIZE, |r| r.buffer.size() * 2);
+                *made += 1;
+                Ring {
+                    buffer: device.create_buffer(&wgpu::BufferDescriptor {
+                        label: None,
+                        size: least.max(size.next_multiple_of(RING_ALIGN)),
+                        usage,
+                        mapped_at_creation: false,
+                    }),
+                    used: 0,
+                }
+            }
+        };
+        let base = ring.used;
+        let buffer = ring.buffer.clone();
+        *slot = Some(Ring {
+            used: (base + size).next_multiple_of(RING_ALIGN),
+            ..ring
+        });
+        (buffer, base)
+    }
 }
+
+/// A page's part of resolved query results: (first result, byte offset in the query ring's
+/// buffer, results).
+type ResolvedPart = (u32, u64, u32);
+
+/// The staging ring's usages: copied from, bound as read-only storage, and resolved spare query
+/// slots go into it.
+const STAGING_USAGE: wgpu::BufferUsages = wgpu::BufferUsages::COPY_SRC
+    .union(wgpu::BufferUsages::COPY_DST)
+    .union(wgpu::BufferUsages::STORAGE)
+    .union(wgpu::BufferUsages::QUERY_RESOLVE);
+
+/// The query ring's usages: resolved into, summed in place, copied from.
+const QUERY_USAGE: wgpu::BufferUsages = wgpu::BufferUsages::QUERY_RESOLVE
+    .union(wgpu::BufferUsages::COPY_SRC)
+    .union(wgpu::BufferUsages::STORAGE);
 
 /// Spare slots resolved per page start at multiples of this, as WebGPU aligns resolves to 256
 /// bytes.
@@ -306,34 +356,22 @@ impl WebGpu {
     /// browser stages queued bytes in a ring of its own, natively wgpu copies them once more.
     fn staging_at(&mut self, at: u64, data: &[u8]) -> (wgpu::Buffer, u64) {
         let size = (at + data.len() as u64).next_multiple_of(4).max(4);
-        let ring = match self.ring.take() {
-            Some(r) if r.used + size <= r.buffer.size() => r,
-            old => {
-                let least = old.map_or(RING_SIZE, |r| r.buffer.size() * 2);
-                self.counters.staging_rings += 1;
-                Ring {
-                    buffer: self.device.create_buffer(&wgpu::BufferDescriptor {
-                        label: None,
-                        size: least.max(size.next_multiple_of(RING_ALIGN)),
-                        usage: wgpu::BufferUsages::COPY_SRC
-                            | wgpu::BufferUsages::COPY_DST
-                            | wgpu::BufferUsages::STORAGE,
-                        mapped_at_creation: false,
-                    }),
-                    used: 0,
-                }
-            }
-        };
-        let base = ring.used;
+        let (buffer, base) = self.staging_region(size);
         let mut padded = vec![0; size as usize];
         padded[at as usize..at as usize + data.len()].copy_from_slice(data);
-        self.queue.write_buffer(&ring.buffer, base, &padded);
-        let buffer = ring.buffer.clone();
-        self.ring = Some(Ring {
-            used: (base + size).next_multiple_of(RING_ALIGN),
-            ..ring
-        });
+        self.queue.write_buffer(&buffer, base, &padded);
         (buffer, base)
+    }
+
+    /// A region of the staging ring no bytes are queued into, for commands to write.
+    fn staging_region(&mut self, size: u64) -> (wgpu::Buffer, u64) {
+        Ring::region(
+            &mut self.ring,
+            &self.device,
+            size,
+            STAGING_USAGE,
+            &mut self.counters.staging_rings,
+        )
     }
 
     fn staging(&mut self, data: &[u8]) -> (wgpu::Buffer, u64) {
@@ -823,11 +861,49 @@ impl WebGpu {
         if df.is_depth_stencil() && (sf != df || !whole) {
             let at = (src.mip, src.layer, [src.origin.x, src.origin.y]);
             if df.kind() != FormatKind::Stencil {
-                let Some(how) = DepthSource::of(sf, df) else {
+                if let Some(how) = DepthSource::of(sf, df) {
+                    self.depth_copy((&s.raw(), sf, how), at, dst, extent, Stream::Main);
+                } else if df == Format::Depth16Unorm
+                    && matches!(sf, Format::R16Float | Format::R16Snorm | Format::R16Sint)
+                {
+                    // The rest of the 16-bit group is drawn from its bits, copied first into
+                    // `r16uint` through a buffer.
+                    let Ok(bits) = self.create_texture(&TextureDesc {
+                        dimension: TextureDimension::D2,
+                        format: Format::R16Uint,
+                        width: extent.width,
+                        height: extent.height,
+                        depth_or_layers: extent.depth_or_layers,
+                        mip_levels: 1,
+                        samples: 1,
+                        usage: TextureUsage::COPY_DST | TextureUsage::SAMPLE,
+                        cube: false,
+                        reinterpret: false,
+                    }) else {
+                        self.fail("the texture a depth copy is drawn from could not be made");
+                        return;
+                    };
+                    let staged = TextureRegion {
+                        texture: &bits,
+                        mip: 0,
+                        layer: 0,
+                        origin: Default::default(),
+                        stencil: false,
+                    };
+                    self.copy_texture_impl(src, &staged, extent);
+                    let how = DepthSource::Unorm16;
+                    let raw = bits.0.raw();
+                    self.depth_copy(
+                        (&raw, Format::R16Uint, how),
+                        (0, 0, [0, 0]),
+                        dst,
+                        extent,
+                        Stream::Main,
+                    );
+                } else {
                     self.fail("a copy into depth from a format outside its typeless group");
                     return;
-                };
-                self.depth_copy((&s.raw(), sf, how), at, dst, extent, Stream::Main);
+                }
             }
             if df.kind() != FormatKind::Depth {
                 if sf != df {
@@ -866,6 +942,19 @@ impl WebGpu {
             } else {
                 SlowPath::CopyThroughBuffer
             });
+            // Depth WebGPU cannot copy out (part of a level, 24-bit) is drawn into a colour
+            // texture of its bytes first (`DepthReadByDraw`).
+            let drawn = match sf.is_depth_stencil() {
+                true => match self.aspect_as_colour(src, extent) {
+                    Ok(drawn) => drawn,
+                    Err(()) => return,
+                },
+                false => None,
+            };
+            let drawn_raw = drawn.as_ref().map(|t| t.0.raw());
+            if let (Some(t), Some(raw)) = (&drawn, &drawn_raw) {
+                from = texel_copy(raw, &t.0, 0, 0, Default::default(), false);
+            }
             let ((sbw, sbh, _), (dbw, dbh, _)) = (sf.block(), df.block());
             let into = Extent {
                 width: extent.width.div_ceil(sbw) * dbw,
@@ -1411,13 +1500,15 @@ impl WebGpu {
         }
     }
 
-    /// Resolves queries into a buffer of its own, at offset zero as WebGPU's alignment needs.
+    /// Resolves queries `first..first + count` into a region of the query ring, each own page's
+    /// part at a multiple of WebGPU's 256-byte resolve alignment; answers the ring's buffer and
+    /// the parts.
     fn resolved(
         &mut self,
         set: &QuerySet,
         first: u32,
         count: u32,
-    ) -> Result<wgpu::Buffer, GpuError> {
+    ) -> Result<(wgpu::Buffer, Vec<ResolvedPart>), GpuError> {
         if self.pass.is_some() {
             return Err(GpuError::Invalid("query results are taken outside a pass"));
         }
@@ -1426,14 +1517,34 @@ impl WebGpu {
         {
             return Err(GpuError::Invalid("queries outside the set"));
         }
-        // Queries carried across pass splits: (result, spare slot) pairs to add.
         let obj = &set.0;
-        let spares0 = obj.raw.count() - obj.count;
-        let base = |page: usize, slot: u32| match page {
-            0 => slot - obj.count,
-            p => {
-                spares0.next_multiple_of(PAGE_ALIGN)
-                    + (p as u32 - 1) * wgpu::QUERY_SET_MAX_QUERIES
+        let max = wgpu::QUERY_SET_MAX_QUERIES;
+        // Each own page's part of the range, as (first result, first place in the region,
+        // results).
+        let mut parts = Vec::new();
+        let (mut i, mut place) = (first, 0);
+        while i < first + count {
+            let end = (i / max + 1).saturating_mul(max).min(first + count);
+            parts.push((i - first, place, end - i));
+            place = (place + end - i).next_multiple_of(PAGE_ALIGN);
+            i = end;
+        }
+        let places = parts.last().map_or(1, |&(_, at, n)| at + n);
+        let at_of = |i: u32| {
+            let &(r, at, _) = &parts[(i / max - first / max) as usize];
+            at + (i - first - r)
+        };
+        // Queries carried across pass splits: (place, spare slot) pairs to add. The spare slots
+        // resolve after the last own page's queries, then page by page.
+        let last = obj.own_pages - 1;
+        let own_in_last = obj.count - last as u32 * max;
+        let spares_last = obj.page(last).count() - own_in_last;
+        let base = |page: usize, slot: u32| {
+            if page == last {
+                slot - own_in_last
+            } else {
+                spares_last.next_multiple_of(PAGE_ALIGN)
+                    + (page - obj.own_pages) as u32 * max
                     + slot
             }
         };
@@ -1442,58 +1553,72 @@ impl WebGpu {
             .borrow()
             .iter()
             .filter(|(i, _)| (first..first + count).contains(*i))
-            .flat_map(|(i, s)| {
+            .flat_map(|(&i, s)| {
                 s.slots
                     .iter()
                     .enumerate()
                     .flat_map(move |(k, &(page, slot))| {
                         let replace = if k == 0 && !s.own { 1 << 31 } else { 0 };
-                        [i - first, base(page, slot) | replace]
+                        [at_of(i), base(page, slot) | replace]
                     })
             })
             .collect();
-        let usage = wgpu::BufferUsages::QUERY_RESOLVE
-            | wgpu::BufferUsages::COPY_SRC
-            | if pairs.is_empty() {
-                wgpu::BufferUsages::empty()
-            } else {
-                wgpu::BufferUsages::STORAGE
-            };
-        let resolve = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: u64::from(count.max(1)) * 8,
-            usage,
-            mapped_at_creation: false,
-        });
-        let raw = obj.raw.clone();
-        self.encoder()
-            .resolve_query_set(&raw, first..first + count, &resolve, 0);
-        if !pairs.is_empty() {
-            let pages = obj.pages.borrow().clone();
-            self.add_segments(&raw, obj.count, &pages, &resolve, &pairs);
+        let size = u64::from(places) * 8;
+        let (sums, at) = Ring::region(
+            &mut self.query_ring,
+            &self.device,
+            size,
+            QUERY_USAGE,
+            &mut self.counters.query_rings,
+        );
+        for &(r, place, n) in &parts {
+            let (page, slot) = (((first + r) / max) as usize, (first + r) % max);
+            let raw = obj.page(page);
+            self.encoder().resolve_query_set(
+                &raw,
+                slot..slot + n,
+                &sums,
+                at + u64::from(place) * 8,
+            );
         }
-        Ok(resolve)
+        if !pairs.is_empty() {
+            let spare_count = spares_last.next_multiple_of(PAGE_ALIGN)
+                + (obj.pages.borrow().len() - obj.own_pages) as u32 * max;
+            let (spare, spare_at) = self.staging_region(u64::from(spare_count) * 8);
+            let e = self.encoder();
+            if spares_last > 0 {
+                e.resolve_query_set(
+                    &obj.page(last),
+                    own_in_last..own_in_last + spares_last,
+                    &spare,
+                    spare_at,
+                );
+            }
+            for page in obj.own_pages..obj.pages.borrow().len() {
+                let k = base(page, 0);
+                e.resolve_query_set(&obj.page(page), 0..max, &spare, spare_at + u64::from(k) * 8);
+            }
+            self.add_segments(
+                (&sums, at, size),
+                (&spare, spare_at, u64::from(spare_count) * 8),
+                &pairs,
+            );
+        }
+        let parts = parts
+            .into_iter()
+            .map(|(r, place, n)| (r, at + u64::from(place) * 8, n))
+            .collect();
+        Ok((sums, parts))
     }
 
-    /// Adds the counts of the spare slots `pairs` names (result, slot index across page 0's
-    /// spares past `count` and then `pages`) into the resolved results.
+    /// Adds the counts of the resolved spare slots `pairs` names (place in `sums`, slot in
+    /// `spare`) into the resolved results; regions as (buffer, offset, size).
     fn add_segments(
         &mut self,
-        raw: &wgpu::QuerySet,
-        count: u32,
-        pages: &[wgpu::QuerySet],
-        sums: &wgpu::Buffer,
+        sums: (&wgpu::Buffer, u64, u64),
+        spare: (&wgpu::Buffer, u64, u64),
         pairs: &[u32],
     ) {
-        let spares0 = raw.count() - count;
-        let first_page = spares0.next_multiple_of(PAGE_ALIGN);
-        let spare_count = first_page + pages.len() as u32 * wgpu::QUERY_SET_MAX_QUERIES;
-        let spare = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: u64::from(spare_count.max(1)) * 8,
-            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        });
         let bytes: Vec<u8> = pairs.iter().flat_map(|w| w.to_le_bytes()).collect();
         let (list, list_at) = self.staging(&bytes);
         let (pipeline, layout) = self.query_sum.get_or_insert_with(|| {
@@ -1517,37 +1642,34 @@ impl WebGpu {
             (pipeline, layout)
         });
         let (pipeline, layout) = (pipeline.clone(), layout.clone());
+        fn region((buffer, offset, size): (&wgpu::Buffer, u64, u64)) -> wgpu::BindingResource<'_> {
+            wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer,
+                offset,
+                size: NonZeroU64::new(size),
+            })
+        }
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: sums.as_entire_binding(),
+                    resource: region(sums),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: spare.as_entire_binding(),
+                    resource: region(spare),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &list,
-                        offset: list_at,
-                        size: NonZeroU64::new(bytes.len() as u64),
-                    }),
+                    resource: region((&list, list_at, bytes.len() as u64)),
                 },
             ],
         });
-        let e = self.encoder();
-        if spares0 > 0 {
-            e.resolve_query_set(raw, count..raw.count(), &spare, 0);
-        }
-        for (k, page) in pages.iter().enumerate() {
-            let at = first_page + k as u32 * wgpu::QUERY_SET_MAX_QUERIES;
-            e.resolve_query_set(page, 0..page.count(), &spare, u64::from(at) * 8);
-        }
-        let mut cp = e.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+        let mut cp = self
+            .encoder()
+            .begin_compute_pass(&wgpu::ComputePassDescriptor::default());
         cp.set_pipeline(&pipeline);
         cp.set_bind_group(0, &group, &[]);
         cp.dispatch_workgroups(1, 1, 1);
@@ -1559,11 +1681,13 @@ impl WebGpu {
         first: u32,
         count: u32,
     ) -> Result<Readback, GpuError> {
-        let resolve = self.resolved(set, first, count)?;
+        let (sums, parts) = self.resolved(set, first, count)?;
         let size = u64::from(count) * 8;
         let target = self.map_target(size);
-        self.encoder()
-            .copy_buffer_to_buffer(&resolve, 0, &target, 0, size);
+        let e = self.encoder();
+        for (r, at, n) in parts {
+            e.copy_buffer_to_buffer(&sums, at, &target, u64::from(r) * 8, u64::from(n) * 8);
+        }
         Ok(self.readback(target, None, 0, size, size, 1))
     }
 
@@ -1586,13 +1710,15 @@ impl WebGpu {
         {
             return Err(GpuError::Invalid("query results past the buffer's end"));
         }
-        let resolve = self.resolved(set, first, count)?;
+        let (sums, parts) = self.resolved(set, first, count)?;
         dst.0.wrote();
         dst.0.used_in.set(self.serial);
         let raw = dst.0.raw.borrow().clone();
-        let at = dst.0.base.get() + dst_offset;
-        self.encoder()
-            .copy_buffer_to_buffer(&resolve, 0, &raw, at, u64::from(count) * 8);
+        let to = dst.0.base.get() + dst_offset;
+        let e = self.encoder();
+        for (r, at, n) in parts {
+            e.copy_buffer_to_buffer(&sums, at, &raw, to + u64::from(r) * 8, u64::from(n) * 8);
+        }
         Ok(())
     }
 

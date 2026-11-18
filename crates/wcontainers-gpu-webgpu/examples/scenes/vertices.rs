@@ -303,3 +303,107 @@ pub fn lacking_vertex_formats(b: &mut WebGpu, seed: u64, n: u32) {
         }
     }
 }
+
+/// Points carrying one four-component float attribute into an `rgba32float` target.
+const ATTRIBUTE_WGSL: &str = r#"
+struct O { @builtin(position) p: vec4f, @location(0) @interpolate(flat) v: vec4f }
+@vertex fn vs(@builtin(vertex_index) i: u32, @location(0) v: vec4f) -> O {
+    var o: O;
+    o.p = vec4f((f32(i) + 0.5) / f32(N) * 2.0 - 1.0, 0.0, 0.0, 1.0);
+    o.v = v;
+    return o;
+}
+@fragment fn ps(i: O) -> @location(0) vec4f { return i.v; }
+"#;
+
+/// The attribute each 4-byte element of `bytes` gives a program as `VertexFormat::Bgra8Unorm`
+/// (Direct3D's `B8G8R8A8_UNORM`, and `B8G8R8X8_UNORM` with X read as written).
+pub fn bgra_attributes(b: &mut WebGpu, bytes: &[u8]) -> Vec<[f32; 4]> {
+    let n = (bytes.len() / 4) as u32;
+    let source = ATTRIBUTE_WGSL.replace("f32(N)", &format!("{n}.0"));
+    let program = draw::program(b, &source).unwrap();
+    let blend = b.create_blend(&draw::opaque()).unwrap();
+    let depth_stencil = b.create_depth_stencil(&draw::no_depth()).unwrap();
+    let raster = b.create_raster(&draw::solid()).unwrap();
+    let layout = b
+        .create_vertex_layout(&draw::layout(
+            &[(4, StepMode::Vertex)],
+            &[(0, 0, VertexFormat::Bgra8Unorm)],
+        ))
+        .unwrap();
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let (values, view) = draw::texture_2d(b, Format::Rgba32Float, n, 1, usage).unwrap();
+    let vb = draw::buffer(b, bytes, BufferUsage::VERTEX).unwrap();
+    let mut pass = PassDesc {
+        colors: Default::default(),
+        depth: None,
+        empty: None,
+        occlusion: None,
+    };
+    pass.colors[0] = Some(ColorAttachment {
+        view: &view,
+        depth_slice: 0,
+        resolve: None,
+        load: LoadOp::Clear([0; 4]),
+        store: StoreOp::Store,
+    });
+    b.begin_pass(&pass);
+    b.draw(&DrawCall {
+        program: &program,
+        blend: &blend,
+        depth_stencil: &depth_stencil,
+        raster: &raster,
+        vertex_layout: &layout,
+        bindings: [None; 4],
+        vertex_buffers: &[Some(VertexBinding {
+            buffer: &vb,
+            offset: 0,
+        })],
+        index: None,
+        topology: Topology::PointList,
+        restart: false,
+        viewports: &[wcontainers_gpu::Viewport {
+            x: 0,
+            y: 0,
+            width: (n as f32).to_bits(),
+            height: 1.0f32.to_bits(),
+            min_depth: 0,
+            max_depth: 1.0f32.to_bits(),
+        }],
+        scissors: &[],
+        blend_constant: [0; 4],
+        stencil_reference: [0; 2],
+        immediates: &[],
+        range: DrawRange::Vertices {
+            first: 0,
+            count: n,
+            first_instance: 0,
+            instances: 1,
+        },
+    });
+    b.end_pass();
+    let got = read(b, &values, n, 16);
+    assert_eq!(b.status(), DeviceStatus::Ok, "bgra vertices");
+    got.as_chunks::<16>()
+        .0
+        .iter()
+        .map(|t| std::array::from_fn(|c| f32::from_le_bytes(t[c * 4..][..4].try_into().unwrap())))
+        .collect()
+}
+
+/// `n` seeded elements (`seed`) read as `Bgra8Unorm`: each component the byte it names over 255,
+/// the fourth the X byte as written. One line, or the first value read wrong.
+pub fn bgra_vertices(b: &mut WebGpu, seed: u64, n: u32) -> Result<String, String> {
+    let mut rng = fastrand::Rng::with_seed(seed);
+    let bytes: Vec<u8> = (0..n * 4).map(|_| rng.u8(..)).collect();
+    let got = bgra_attributes(b, &bytes);
+    for (i, (g, e)) in got.iter().zip(bytes.as_chunks::<4>().0).enumerate() {
+        let want = [e[2], e[1], e[0], e[3]].map(|v| f32::from(v) / 255.0);
+        if g.iter().zip(want).any(|(g, w)| (g - w).abs() > 1e-6) {
+            return Err(format!("bgra vertex {i}: read {g:?}, means {want:?}"));
+        }
+    }
+    Ok(format!(
+        "bgra vertices: seed {seed}, {n} vertices, all as they mean"
+    ))
+}

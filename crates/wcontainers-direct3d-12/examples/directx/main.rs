@@ -22,7 +22,7 @@ mod stream;
 
 // Direct3D 12's exports under their own names and the system library's ordinals.
 linker_directives!(
-    " /EXPORT:D3D12CreateDevice=wc_D3D12CreateDevice,@101 /EXPORT:D3D12GetDebugInterface=wc_D3D12GetDebugInterface,@102 /EXPORT:D3D12SerializeRootSignature=wc_D3D12SerializeRootSignature,@116 /EXPORT:D3D12SerializeVersionedRootSignature=wc_D3D12SerializeVersionedRootSignature,@117 /EXPORT:D3D12CreateRootSignatureDeserializer=wc_D3D12CreateRootSignatureDeserializer,@107 /EXPORT:D3D12CreateVersionedRootSignatureDeserializer=wc_D3D12CreateVersionedRootSignatureDeserializer,@108 "
+    " /EXPORT:D3D12CreateDevice=wc_D3D12CreateDevice,@101 /EXPORT:D3D12GetDebugInterface=wc_D3D12GetDebugInterface,@102 /EXPORT:D3D12SerializeRootSignature=wc_D3D12SerializeRootSignature,@116 /EXPORT:D3D12SerializeVersionedRootSignature=wc_D3D12SerializeVersionedRootSignature,@117 /EXPORT:D3D12CreateRootSignatureDeserializer=wc_D3D12CreateRootSignatureDeserializer,@107 /EXPORT:D3D12CreateVersionedRootSignatureDeserializer=wc_D3D12CreateVersionedRootSignatureDeserializer,@108 /EXPORT:D3D12EnableExperimentalFeatures=wc_D3D12EnableExperimentalFeatures,@110 /EXPORT:D3D12GetInterface=wc_D3D12GetInterface,@111 "
 );
 
 use std::ffi::c_void;
@@ -208,6 +208,32 @@ pub unsafe extern "system" fn wc_D3D12GetDebugInterface(
         unsafe { *out = std::ptr::null_mut() };
     }
     E_NOINTERFACE
+}
+
+/// None of the classes Direct3D 12 hands out here (debug layer, tools, device removed extended
+/// data, SDK configuration, device factory) exists.
+///
+/// # Safety
+/// The pointers are the caller's, as the API defines them.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn wc_D3D12GetInterface(
+    _clsid: *const GUID,
+    riid: *const GUID,
+    out: *mut *mut c_void,
+) -> HRESULT {
+    // SAFETY: as the caller passed them.
+    unsafe { wc_D3D12GetDebugInterface(riid, out) }
+}
+
+/// No experimental feature exists; enabling none succeeds.
+#[unsafe(no_mangle)]
+pub extern "system" fn wc_D3D12EnableExperimentalFeatures(
+    count: u32,
+    _features: *const GUID,
+    _configurations: *const c_void,
+    _sizes: *const u32,
+) -> HRESULT {
+    if count == 0 { S_OK } else { E_NOINTERFACE }
 }
 
 /// `n` values at `p`.
