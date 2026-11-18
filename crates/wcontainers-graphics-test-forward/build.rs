@@ -226,9 +226,11 @@ fn methods(header: &str, interface: &str) -> Vec<String> {
         .collect()
 }
 
-/// The census's interface table and its counting thunks: thunk n, 16 bytes from the previous one,
-/// adds one to COUNTS[n] and jumps to ORIGINALS[n], touching no register or stack slot. Instance i
-/// of a patched table uses thunks i * SLOTS to i * SLOTS + its length - 1.
+/// The census's interface table and its counting thunks: thunk n, THUNK bytes from the previous
+/// one, adds one to COUNTS[n] unless the calling thread is the one in SAVING (the census's own
+/// calls) and jumps to ORIGINALS[n], touching no argument register or stack slot (only r11, which
+/// a call may change). Instance i of a patched table uses thunks i * SLOTS to i * SLOTS + its
+/// length - 1.
 fn census() -> String {
     let dir = sdk_headers();
     let mut text = String::from("pub static INTERFACES: &[(&str, &[&str])] = &[\n");
@@ -248,22 +250,25 @@ fn census() -> String {
     text.push_str("];\n");
     writeln!(
         text,
-        "pub const INSTANCES: usize = {INSTANCES};\npub const SLOTS: usize = {slots};"
+        "pub const INSTANCES: usize = {INSTANCES};\npub const SLOTS: usize = {slots};\npub const THUNK: usize = 32;"
     )
     .unwrap();
-    let mut asm = String::from(".balign 16\n.globl wc_census_thunks\nwc_census_thunks:\n");
+    // gs:[0x48] is the calling thread's id (the TEB's ClientId.UniqueThread).
+    let own = "mov r11, qword ptr gs:[0x48]\ncmp r11, qword ptr [rip + {saving}]\nje 2f\n";
+    let mut asm = String::from(".balign 32\n.globl wc_census_thunks\nwc_census_thunks:\n");
     for n in 0..INSTANCES * slots {
         write!(
             asm,
-            ".balign 16\nlock inc qword ptr [rip + {{counts}} + {}]\njmp qword ptr [rip + {{originals}} + {}]\n",
+            ".balign 32\n{own}lock inc qword ptr [rip + {{counts}} + {}]\n2:\njmp qword ptr [rip + {{originals}} + {}]\n",
             8 * n,
             8 * n
         )
         .unwrap();
     }
     // Wrapper thunks for the contexts, which the program is handed wrapped (census.rs): thunk
-    // t * CONTEXT_SLOTS + k counts method k of table t, puts the wrapped object in place of the
-    // wrapper as `this` and jumps through the object's own table as it is at that moment.
+    // t * CONTEXT_SLOTS + k, 64 bytes from the previous one, counts method k of table t (as above),
+    // puts the wrapped object in place of the wrapper as `this` and jumps through the object's own
+    // table as it is at that moment.
     let context = INTERFACES
         .iter()
         .find(|(name, _)| *name == "ID3D11DeviceContext4")
@@ -274,12 +279,12 @@ fn census() -> String {
     )
     .len();
     writeln!(text, "pub const CONTEXT_SLOTS: usize = {context_slots};").unwrap();
-    asm.push_str(".balign 32\n.globl wc_wrapper_thunks\nwc_wrapper_thunks:\n");
+    asm.push_str(".balign 64\n.globl wc_wrapper_thunks\nwc_wrapper_thunks:\n");
     for t in 0..2 {
         for k in 0..context_slots {
             write!(
                 asm,
-                ".balign 32\nlock inc qword ptr [rip + {{wrapped}} + {}]\nmov rcx, qword ptr [rcx + 8]\n\
+                ".balign 64\n{own}lock inc qword ptr [rip + {{wrapped}} + {}]\n2:\nmov rcx, qword ptr [rcx + 8]\n\
                  mov rax, qword ptr [rcx]\njmp qword ptr [rax + {}]\n",
                 8 * (t * context_slots + k),
                 8 * k
@@ -289,7 +294,7 @@ fn census() -> String {
     }
     writeln!(
         text,
-        "core::arch::global_asm!({asm:?}, counts = sym COUNTS, originals = sym ORIGINALS, wrapped = sym WRAPPED_COUNTS);"
+        "core::arch::global_asm!({asm:?}, counts = sym COUNTS, originals = sym ORIGINALS, wrapped = sym WRAPPED_COUNTS, saving = sym SAVING);"
     )
     .unwrap();
     text
