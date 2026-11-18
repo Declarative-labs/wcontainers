@@ -1093,6 +1093,43 @@ pub(crate) fn create(
     Ok((node, handle))
 }
 
+/// `fuse_tmpfile`: a file with no name, asked as a create is, with the name Linux's dentry for it
+/// has (`/`). A backend without TMPFILE cannot make one (EOPNOTSUPP).
+pub(crate) fn tmpfile(
+    directory: &Node,
+    mode: u32,
+    umask: u32,
+    flags: u32,
+) -> Result<(Node, Rc<Handle>), Errno> {
+    let (client, nodeid) = on_backend(directory);
+    let (mode, umask) = masked(&client, mode, umask);
+    let input = fuse_create_in {
+        flags: open_flags(&client, flags),
+        mode,
+        umask,
+        open_flags: 0,
+    };
+    let body = match client.ask(
+        fuse_opcode::FUSE_TMPFILE,
+        nodeid,
+        &[input.as_bytes(), &name_part(b"/")],
+    ) {
+        Err(Errno::ENOSYS) => return Err(Errno::EOPNOTSUPP),
+        other => other?,
+    };
+    let out: fuse_open_out = first(body.get(size_of::<fuse_entry_out>()..).unwrap_or(&[]))?;
+    let handle = client.handle(|| Handle {
+        client: client.clone(),
+        nodeid: first::<fuse_entry_out>(&body).map_or(0, |entry| entry.nodeid),
+        fh: out.fh,
+        flags: input.flags,
+        open_flags: out.open_flags,
+        directory: false,
+    });
+    let node = entry_node(&client, &body, directory, b"/")?;
+    Ok((node, handle))
+}
+
 /// `fuse_mknod`.
 pub(crate) fn mknod(
     directory: &Node,

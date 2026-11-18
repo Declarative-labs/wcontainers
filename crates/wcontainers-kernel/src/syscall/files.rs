@@ -742,7 +742,7 @@ pub(super) fn open(
 /// `do_tmpfile`: the directory is found, its mount writable and the directory too, then a file
 /// with no name is made in it and opened (`shmem_tmpfile`). Its descriptor's link and its events
 /// name it `#` and its number in the directory (`d_tmpfile`). Without `O_EXCL` a link may name it
-/// later. The backend's client does not send FUSE_TMPFILE (counted).
+/// later. On the backend it is the backend's to make.
 fn open_tmpfile(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -765,13 +765,15 @@ fn open_tmpfile(
         let caller = kernel.threads[&tid].process;
         crate::fs::permission(&inode, credentials(kernel, tid), W_OK | X_OK, caller)?;
     }
+    let umask = kernel.fs(tid).umask;
     if crate::fs::backend::remote(&directory).is_some() {
-        return Err(kernel.counters.refuse_flag(
-            cx.host,
-            __NR_openat,
-            O_TMPFILE.into(),
-            Errno::EOPNOTSUPP,
-        ));
+        let (node, handle) =
+            crate::fs::backend::tmpfile(&directory, S_IFREG | (mode & 0o7777), umask, flags)?;
+        let ino = node.borrow().ino;
+        node.borrow_mut().linkable = flags & O_EXCL == 0;
+        let file = tmpfile_opened(kernel, tid, &directory, node, ino, flags);
+        file.borrow_mut().backend = Some(handle);
+        return install(kernel, tid, file, flags);
     }
     // Only tmpfs has `tmpfile`.
     if fixed_names(&directory) || only_queues(&directory) {
@@ -779,7 +781,7 @@ fn open_tmpfile(
     }
     let now = kernel.now(cx);
     let (uid, gid, _) = new_owner(&directory, credentials(kernel, tid));
-    let mut mode = S_IFREG | (mode & 0o7777 & !kernel.fs(tid).umask);
+    let mut mode = S_IFREG | (mode & 0o7777 & !umask);
     if mode & S_ISGID != 0
         && !credentials(kernel, tid).in_group(gid, true)
         && !credentials(kernel, tid).has(CAP_FSETID)
@@ -807,16 +809,30 @@ fn open_tmpfile(
         inode.nlink = 0;
         inode.linkable = flags & O_EXCL == 0;
     }
+    let file = tmpfile_opened(kernel, tid, &directory, node, ino, flags);
+    install(kernel, tid, file, flags)
+}
+
+/// The open file of a file made with no name in `directory`, named `#` and its number there.
+fn tmpfile_opened(
+    kernel: &mut Kernel,
+    tid: Tid,
+    directory: &Node,
+    node: Node,
+    ino: u64,
+    flags: u32,
+) -> crate::file::FileRef {
+    let name = alloc::format!("#{ino}").into_bytes();
     let file = OpenFile::new(
         node,
         (flags | O_LARGEFILE) & !(O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC | O_CLOEXEC),
-        path_in(kernel, tid, &directory, &name),
+        path_in(kernel, tid, directory, &name),
         credentials(kernel, tid).serial,
     );
     file.borrow_mut().created = true;
-    file.borrow_mut().dentry = Some((Rc::downgrade(&directory), name));
+    file.borrow_mut().dentry = Some((Rc::downgrade(directory), name));
     super::inotify::file_changed(kernel, &file, IN_OPEN);
-    install(kernel, tid, file, flags)
+    file
 }
 
 /// A named pipe or a terminal once open: direct I/O is refused only now (`do_dentry_open` checks it
