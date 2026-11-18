@@ -81,9 +81,10 @@ try {
     console.log(`chrome timestamps failed: ${e.message}`);
     failed = true;
   }
-  // Formats held converted: copies exact, texels within their bounds of Direct3D's values.
+  // Formats held converted: copies exact, texels within their bounds of Direct3D's values (seed 1,
+  // 4 textures of 128 texels each).
   try {
-    console.log(`chrome ${await page.evaluate(() => window.converted())}`);
+    console.log(`chrome ${await page.evaluate(() => window.converted(1, 4))}`);
   } catch (e) {
     console.log(`chrome converted formats failed: ${e.message}`);
     failed = true;
@@ -93,6 +94,13 @@ try {
     console.log(`chrome ${await page.evaluate(() => window.vertexFormats(188, 64))}`);
   } catch (e) {
     console.log(`chrome vertex formats failed: ${e.message}`);
+    failed = true;
+  }
+  // Textures written with Discard behind recorded draws, renamed from the pool.
+  try {
+    console.log(`chrome ${await page.evaluate(() => window.textureRenames())}`);
+  } catch (e) {
+    console.log(`chrome texture renames failed: ${e.message}`);
     failed = true;
   }
 } finally {

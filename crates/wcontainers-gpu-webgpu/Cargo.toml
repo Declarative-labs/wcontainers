@@ -67,3 +67,8 @@ harness = false
 [[test]]
 name = "depth"
 harness = false
+
+# Reports a known failure on one of wgpu's APIs as ignored, with its reason.
+[[test]]
+name = "raster"
+harness = false
