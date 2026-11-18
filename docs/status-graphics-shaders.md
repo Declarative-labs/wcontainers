@@ -11,9 +11,9 @@ the run 8 check's findings and built the cache of section 8; run 10 built ten of
 rewrites with drawn tests and the corpus of real programs' shaders; run 11 built depth bias and the
 draw bases from an indirect draw's arguments, with drawn tests; run 12 built the minimum
 level-of-detail clamp with drawn tests; run 13 built clip distances, depth clamping and mirror-once
-addressing in the program with drawn tests; what remains is under Next. Run 13 merged
-origin/phase-2-graphics-webgl, -direct3d-11 and -direct3d-12 (no conflicts; the others had nothing
-new).
+addressing in the program with drawn tests; run 14 built pulled vertex inputs with a drawn test;
+what remains is under Next. Run 14 merged origin/phase-2-graphics-direct3d-11, -direct3d-12 and
+-rig (no conflicts; the others had nothing new).
 
 Done:
 - naga carried in the tree with the GLSL writer changes G3 needs (below). Other tracks get it by
@@ -415,6 +415,31 @@ Run 13 (variants):
   uv * 6 - 3), fxc and dxc; every other own shader recompiled byte for byte as committed.
 - The harness: `Reference::depth_clip_off` and `address`, `Setup::address`.
 
+Run 14 (variants):
+- Interface change: `HelperValue::PulledStream { input }` is four u32 (offset, stride, divisor,
+  bias) per pulled input, and `AddedBinding::PulledStream(n)` is the storage binding of the input at
+  location n (below).
+- `pulled` (vertex programs), both routes (`src/variant/pull.rs`): each pulled input leaves the entry
+  point and is fetched in the wrapper's prologue by `pull_<location>(vertex index, instance index)`:
+  element = vertex index when the divisor is 0, else (instance index + bias) / divisor; address =
+  offset + element * stride; the element reads zero (and the defaults (0, 0, 0, 1) where the format
+  has fewer components) unless all its bytes are inside the binding (`arrayLength`); each component
+  read from the one word it lies in (Direct3D aligns components to their size). Normalised values are
+  made exactly rounded from bits (the expansion of c / (2^n - 1) is c's bits repeated; the GPU's own
+  division is c times a reciprocal, one step off, measured), half floats from bits with their NaN
+  payloads (`unpack2x16float` on the RTX 3080 gives 0x7fffffff for every NaN; Direct3D keeps the
+  payload, measured), 11- and 10-bit floats from bits. The values are given the declared input's
+  kind by bit cast and its component count. Inputs in a struct, of 16-bit types or other shapes are
+  refused by name (`PulledInputInStruct`, `PulledInputWidth`, `PulledInputType`).
+- New own shaders `vs_pull`/`ps_pull` (`pull.hlsl`, fxc and dxc): thirteen inputs of thirteen formats;
+  one point per vertex and instance carries one input's bits to an RGBA32_UINT target. Every other own
+  shader recompiled byte for byte as committed.
+- `tests/pull_draw.rs` (Windows, GPU job): four streams (per vertex, stride 48, 56 elements; per
+  instance with step rates 3, 1 (bound at offset 8) and 0) drawn as 64 vertices by 64 instances from
+  first instance 4, every input pulled, against real Direct3D 11's input assembler on the same
+  seeded bytes (`WCONTAINERS_PULL_SEED`, `WCONTAINERS_PULL_CASES`). It also checks that Direct3D
+  reads zeros and the defaults past the per-vertex stream's end.
+
 Next (in order):
 - The rest of the variants (the list above), each with a drawn test as run 10's:
 - `PROVOKING_LAST` (open question, not built): a pixel program sees only one value per primitive
@@ -422,13 +447,15 @@ Next (in order):
   vertex's. The exact routes are the front's: lists drawn with each primitive's indices rotated
   ((a, b, c) as (c, a, b), winding kept), strips and fans made lists first. If that holds, the flag
   has no use and the interface could drop it; until decided it stays refused by name.
-- Filtering and border in the program (both read `HelperValue::SamplerState` as mirror-once does;
-  border with linear filtering needs the filter in the program too), decoded textures
+- Constants through a texture (WebGL 2), filtering and border in the program (both read
+  `HelperValue::SamplerState` as mirror-once does; border with linear filtering needs the filter in
+  the program too), decoded textures
   and targets written in the program, pulled vertices, constants through a texture, typed buffers
   and storage formats (after the storage image and typed buffer support they need), early tests,
   line coverage, the provoking rewrite, the primitive index from the stage helper, root signature
   layouts.
-- The stage helper of section 7 (geometry as compute and by replay, hull and domain with a
+- The stage helper of section 7 (the vertex stage as compute reads its inputs by `pull`'s fetch,
+  so it starts from there; geometry as compute and by replay, hull and domain with a
   tessellator ported from Mesa's MIT code, stream output) with tests against real Direct3D; the
   built-in compute programs (texture clears of 5.1) and the counter operations.
 - The real programs' shaders (every converted one compiles in Chrome since run 10): their named
@@ -469,7 +496,7 @@ let module: &wcontainers_gpu::ShaderModule = &converted.modules[0];  // hand to 
 let reflection = &converted.reflection;
 ```
 - `variant_key` is `wcontainers_gpu::VariantKey`; `VariantKey::default()` for the plain program. Built:
-  `draw_base` (`None`, `Helpers`, `Arguments`), `output_interpolation`, `lod_bias`,
+  `draw_base` (`None`, `Helpers`, `Arguments`), `output_interpolation`, `lod_bias`, `pulled`,
   `constants_as_storage`, `samples`, `linked`, `mirror_once_in_shader`, and the flags
   `CLIP_DEPTH_REWRITE`, `VIEWPORT_DEPTH_FLIP`, `VIEWPORT_ADJUST` (vertex programs; ignored on
   others), `COUNTING`, `SAMPLE_MASK`, `DUAL_SOURCE`, `DEPTH_BIAS` (pixel programs), `CLIP_DISTANCE`
@@ -504,6 +531,17 @@ let reflection = &converted.reflection;
   axis made `Clamp`, and write `SamplerState { sampler }` (nine words: min, mag, mip filter, the three
   address modes of the API's sampler as `AddressMode as u32`, anisotropy, then the level range as
   f32) at its offset; the member is 48 bytes (three four-word vectors).
+- `pulled` (inputs past the back end's vertex buffer or attribute limits, step rates it lacks): list
+  `(location, format)` per pulled input (location = the input's register). Each gets a read-only
+  storage binding in set 0 (`reflection.bindings`, `added: Some(PulledStream(location))`): bind its
+  stream's buffer from the stream's offset rounded down to `min_storage_offset_alignment`, to the
+  buffer's end (a multiple of 4 bytes). Write `PulledStream { input }` as four u32: the offset's
+  remainder plus the attribute's offset, the stride, then per vertex (0, 0), per instance with step
+  rate n (n, (n - 1) * first instance), step rate 0: stride 0, divisor 1, bias 0 and the first
+  instance's element added to the offset. The program reads `instance_index`, which counts from the
+  first instance, so it needs no other base. Each pulled input takes a storage binding of the vertex
+  stage: the front checks the total against the back end's per-stage storage limit (WebGPU's
+  default is 8) and refuses past it.
 - `DEPTH_BIAS` writes the depth itself, so the front draws with the raster block's bias at zero and
   without early depth tests for those draws.
 - `draw_base: Arguments` reads the bases from the indirect argument buffer, bound read-only (storage)
@@ -574,6 +612,17 @@ let reflection = &converted.reflection;
   conversion.
 
 ## Measurements
+
+Run 14, 2026-11-17, counts only:
+- `tests/pull_draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, about 2.5 s,
+  scratch `run14/pull5.log`): seeds 1 to 50, by the DXBC and the DXIL route on WebGPU (wgpu's
+  Direct3D 12 path): 0 of 4096 texels differ from real Direct3D 11 in all 100 comparisons
+  (allowance 0, the texels are the inputs' bits). Before the exact conversions (seed 1,
+  `run14/pull3.log`): 635 of 4096 differed, normalised values by one step (Direct3D's are correctly
+  rounded) and half-float NaNs (payload lost). Windows clippy with warnings denied passes.
+- Laptop (i7-8750H, load average 0 to 0.4): the suite without the ignored corpora passes after
+  recording the new own verdicts (`vs_pull`, `ps_pull`: convert, by both routes); clippy with warnings
+  denied passes.
 
 Run 13, 2026-11-17, counts only:
 - `tests/variant_draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, about 2.3 s,
@@ -1170,6 +1219,12 @@ were already there.
   `glGetBufferSubData`, which ANGLE's GLES lacks (`read_back_now` works).
 
 ## Interface changes
+
+- Run 14, `HelperValue::PulledStream { input }` (was `{ stream }`, three u32) as four u32 (offset,
+  stride, divisor, bias), and `AddedBinding::PulledStream(n)` documented as the binding of the input
+  at location n (commit "interface: gave each pulled vertex input its own binding ..."; plan text in
+  4.12): the program then does not depend on how inputs share streams, and a step rate's first
+  instance folds into the bias, so no base is needed.
 
 - Run 13, `VariantKey::linked: LinkedValues { location: u32, clip_distances: u8 }` (commit
   "interface: gave the variant key where the values clip distances and depth clamping add pass
