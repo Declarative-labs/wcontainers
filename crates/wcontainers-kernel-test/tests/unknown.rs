@@ -23,6 +23,6 @@ fn ones_not_built_are_counted() {
             .iter()
             .any(|counter| counter.reason == name && counter.detail == detail)
     };
-    assert!(counted(reason::FCNTL_NOT_BUILT, 17));
+    assert!(counted(reason::FCNTL_NOT_BUILT, 1039));
     assert!(counted(reason::PRCTL_NOT_BUILT, 13));
 }

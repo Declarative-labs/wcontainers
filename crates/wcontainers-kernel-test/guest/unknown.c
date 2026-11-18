@@ -14,7 +14,7 @@ int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     int fd = open("/dev/shm/f", O_CREAT | O_RDWR, 0600);
     if (argc > 1) {
-        p("F_GETOWNER_UIDS", fcntl(fd, F_GETOWNER_UIDS, 0L));
+        p("F_GETDELEG", fcntl(fd, 1039, 0L));
         p("PR_GET_TIMING", prctl(PR_GET_TIMING, 0, 0, 0, 0));
         return 0;
     }
