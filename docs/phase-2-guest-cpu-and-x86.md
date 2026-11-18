@@ -1425,6 +1425,16 @@ Tests (section 7 gives the detail):
 - **Conditions**: the 16 x86 conditions (O, NO, B, AE, E, NE, BE, A, S, NS, P, NP, L, GE, LE, G) as
   `Cond`. `condition_direct` turns cmp + jcc and test + jcc into one comparison of the operands, at every
   width.
+- **As built at X3** (look-ahead none): the shapes are `Add`, `Sub`, `Logic`, `Multiply` and `Packed`
+  (crate `wcontainers-x86`, `flags.rs`); `SHAPES` is empty and `condition_direct` answers false until X4's
+  flags liveness. Shifts and rotates work their flags out at once into a `Packed` word (kept as they were
+  when the masked count is zero, or for `rcl` and `rcr` when the count modulo the width plus one is), so the
+  nine-local `Shift` shape waits for X4 too. What the reference CPU leaves where Intel says undefined, found
+  by layer 1 and a scratch sweep of every shift and rotate at every width and count 0 to 31 (scratch
+  `x3/run1/shifts.txt`): OF after a shift or rotate is what a count of one gives, from the value before it,
+  for every count, except `rol` and `ror` of a register by an immediate above one, which keep OF; AF is clear
+  after the shifts and the logic instructions; after `mul` and `imul` ZF and AF are clear and SF and PF come
+  from the low half of the result; `bt` and its kin change only CF; `div` and `idiv` change no flag.
 - **DF is a control, not one of the lazily tracked flags.** Only `std`, `cld`, `popf` and `iretq` write
   it and only the string instructions read it, so it gains nothing from lazy tracking, and keeping it out
   of `FLAGS` keeps the liveness test per flag exact (section 3.4): no arithmetic instruction sets DF, so
@@ -1552,8 +1562,15 @@ Tests (section 7 gives the detail):
   a SIB and a 32-bit displacement (which tells a ModRM from an immediate); it keeps the sweep's script and
   output beside the crate's tests, and a test checks the table against the recorded output. Over 15, the
   instruction stays iced's `INVALID` with that length set in it (`set_len`, a byte) and its meaning traps
-  `GeneralProtection`; otherwise its meaning traps `Undefined`. This runs only for `INVALID` at length 15, so
-  it costs nothing on any other instruction; layer 1's no-form cases check it against the reference. A
+  `GeneralProtection`; otherwise its meaning traps `Undefined`. As built at X3 this runs for every `INVALID`, of any length
+  (iced also stops early at the field that makes an encoding invalid, so a 14-byte `INVALID` can be 18 bytes
+  to the CPU), and the instruction gets the CPU's length whether or not it passes 15. Two rules besides the
+  prefix rule, each checked by layer 1's cases in no form: an opcode made invalid by its mandatory prefix is
+  counted with its ModRM and immediate (iced decodes it again without the repeat prefix, then without 66);
+  a VEX or EVEX encoding iced calls invalid is counted by its fields (prefix, opcode, ModRM with SIB and
+  displacement, an immediate in map 3 and for the map 0F opcodes that take one), reading the map field's low
+  two bits. That last rule is not yet the CPU's for every VEX and EVEX encoding: the sweep below decides it.
+  It costs nothing on any valid instruction; layer 1's no-form cases check it against the reference. A
   too-long encoding whose rest runs past the end of the code range is `None` like any instruction that runs
   past it (what the CPU does there is not seen, section 12).
 - **A feature not offered: its bytes do what a CPU without that feature does with them.** The reference is
@@ -1715,7 +1732,8 @@ Tests (section 7 gives the detail):
 - **Two memory operands** (`movs`, `cmps`, `push [m]`, `pop [m]`, `call [m]`): both checked before
   anything changes, so a page fault on either leaves exact state (a `call`'s general protection for a
   non-canonical target comes after its push, section 5.3). `pop [m]` computes m with rsp already moved, as
-  the manual says.
+  the manual says. `cmps` reads [rdi] before [rsi]: with both unmapped the reference faults at rdi's (seen at
+  X3); `movs` reads [rsi] before it writes [rdi].
 - **Accesses that are not one operand** (section 2, run 8, all on the reference). Each is described
   exactly by `accesses`, checked by its own meaning only (section 3.4), and its meaning makes the checks
   and changes in the CPU's order, so a fault leaves the CPU's state and the CPU's address:
@@ -1791,8 +1809,9 @@ Tests (section 7 gives the detail):
   elements before it are done and their bits clear at the fault, next item). The two accesses of one
   instruction may differ in size (`call far [m]` reads 10 bytes and pushes 16), so it takes the access that
   faulted: the first, in the instruction's order (the order the CPU and the meaning check them), whose range
-  holds the reported address. When that range is not wholly canonical (its start is not canonical, or its
-  last byte is above 0x7fffffffffff), `Stack` if the access goes through the stack segment by the rule
+  holds the reported address. When that range is not wholly canonical (its first or last byte is not canonical, bits
+  63 to 47 not all equal; an access in the kernel's half, 0xffff800000000000 and up, is canonical and gives
+  a page fault at its address on the reference, as does one that wraps past 2^64, seen at X3), `Stack` if the access goes through the stack segment by the rule
   above, else `GeneralProtection`; otherwise a page fault at the address. No access is longer than a page
   (the largest offered, `xsave` with x87, SSE and AVX state, is 832 bytes in the manual's layout), so no
   access reaching 2^47 starts below the last page. Layer 1 places a share of its memory operands' bases (rsp

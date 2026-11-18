@@ -543,7 +543,12 @@ fn push<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
     let bytes = stack_bytes(i);
     let mem = checked(e, i);
     let value = read(e, i, 0, mem);
-    let at = register_address(e, i, RSP, -i64::from(bytes));
+    // The stack's addresses are 64 bits whatever the operand's size is.
+    let stack = Instruction {
+        address32: false,
+        ..*i
+    };
+    let at = register_address(e, &stack, RSP, -i64::from(bytes));
     e.check(at, bytes, Access::Write, u8::from(mem.is_some()));
     store(e, at, bytes, value);
     // The stack pointer is not wrapped by an address-size prefix.

@@ -628,6 +628,13 @@ fn case(code: Code, seed: u64) -> Option<Case> {
     if bytes.len() > 15 || X86_64::excluded(&bytes).is_some() {
         return None;
     }
+    // A branch into its own bytes would run them on our side, where the reference stops there.
+    if instruction.op_count() == 1
+        && instruction.op0_kind() == iced_x86::OpKind::NearBranch64
+        && (CODE..CODE + bytes.len() as u64).contains(&instruction.near_branch64())
+    {
+        return None;
+    }
     // Divisions: half the dividends have rdx (or ah, dx, edx) the extension of the low half, as compilers
     // leave them, a quarter a high half below most divisors, the rest anything.
     if matches!(code.mnemonic(), Mnemonic::Div | Mnemonic::Idiv) {
@@ -686,8 +693,21 @@ fn memory_operand(draw: &mut Draw, offset_only: bool, address32: bool) -> Memory
         _ => Register::None,
     };
     if offset_only {
-        let size = if address32 { 4 } else { 8 };
-        return MemoryOperand::new(Register::None, Register::None, 1, 0, size, false, segment);
+        // `mov` with a full address in the instruction: the address where the draw says.
+        let (size, to) = if address32 {
+            (4, target(draw, 8) & 0xffff_ffff)
+        } else {
+            (8, target(draw, 8))
+        };
+        return MemoryOperand::new(
+            Register::None,
+            Register::None,
+            1,
+            to as i64,
+            size,
+            false,
+            segment,
+        );
     }
     if !address32 && draw.chance(10) {
         // iced's displacement of a rip-relative operand is the address it reaches.
@@ -712,6 +732,11 @@ fn memory_operand(draw: &mut Draw, offset_only: bool, address32: bool) -> Memory
     };
     let scale = [1, 2, 4, 8][draw.below(4) as usize];
     let displacement = match draw.below(4) {
+        // With no register the displacement is the address: one the draw aims, as registers are aimed, so
+        // nothing reaches the reference runner's own memory.
+        _ if base == Register::None && index == Register::None => {
+            target(draw, 16).min(0x7fff_ffff) as i64
+        }
         0 => 0,
         1 => draw.below(256) as i64 - 128,
         _ => draw.next() as i32 as i64,
