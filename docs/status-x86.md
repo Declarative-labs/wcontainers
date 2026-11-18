@@ -55,7 +55,13 @@ The fifth check of X1 found one blocking problem and four smaller ones. What was
 Proof after run 6 (machine: the Mac, Apple M5): the translator's source, the ARM64 crate and the runners are
 unchanged since run 5 (this run changed a test, a doc comment and the documents), so run 5's byte-for-byte
 comparison stands and was not repeated. origin/phase-1-translator: fetched at the start and end of the run,
-nothing new. The suite: see below.
+nothing new (its last commit, 8b5e420 at 11:05 the same day, is merged).
+- Suite: `cargo test -p wcontainers-guest-cpu -p wcontainers-arm64 -p wcontainers-translator -p
+  wcontainers-translator-test` at dd1b4e9 (the sources of this run's end; `x1/run6/suite.log`): 93 passed (the
+  new guard test among them), 0 failed, 10 ignored (the measuring ones), Chrome and Docker included, 25
+  minutes (load 13.4 at start, 22.0 at end).
+- Clippy with `-D warnings` on the translator and the interface crate (all targets), `cargo fmt --check` on
+  the four crates: clean.
 
 ## X1, run 5 (2026-11-17)
 
