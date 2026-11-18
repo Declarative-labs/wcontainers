@@ -40,7 +40,8 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   passes every form at 1,000 cases a form against the i7-8750H; hello world prints in wasmtime. Run 2 (the
   same day) built the length table from a sweep of every map on the reference, ran the kernel-only forms in
   layer 1, ran x86 in Chrome, and measured the decoder's share of the browser build and the long division
-  (see "X3, run 2"). Not complete: see "X3: what comes next".
+  (see "X3, run 2"). Every part of X3's pass bar holds; X3 is complete. What is left for later milestones is
+  under "X3: what comes next".
 
 Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0.5):
 - Suite: `WC_REFERENCE_X86_64=tom@192.168.2.240 nix develop -c cargo test -p wcontainers-guest-cpu -p
@@ -55,8 +56,7 @@ Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0
 
 ## X3: what comes next
 
-1. Read the result of the last proof runs of run 2 below (layer 1 at seed 2, 1,000 a form; the suite) if
-   they are marked as not finished there.
+1. The independent check of X3.
 2. Plan 7.3's recorded reference results and layer 1 batching (still proposed, not ruled).
 3. For X4: the shared layer 2 model's operations are ARM64's; x86's `assemble`, `smoke`, `checks` panic
    with the milestone that builds them. A cached FS base at full look-ahead must be reloaded after a system
@@ -114,10 +114,27 @@ Proof of run 2 (the Mac, Apple M5; the i7-8750H's load given with each):
 - Kernel-only forms, 49 forms, 1,000 cases a form, seed 1, 4 at once (`x3/run2/kernel-l1-1000.log`): passed.
 - Cases in no form, seeds 1 to 6 at 64 cases each (`x3/run2/noform-*.log`): all passed. All six had failed
   in run 1, and failed again on the panic above before it was fixed.
-- PENDING_NOFORM
-- PENDING_LAYER1
+- Cases in no form, 10,000 at seed 1 (`x3/run2/noform-10000b.log`, 541 s, Mac load about 40): passed, zero
+  mismatches. Half are prefix runs of 13 to 16 bytes. The first try (`noform-10000.log`) never ended: a
+  prefix run had moved a jump's target onto its own start, and our side, which runs a branch into its own
+  bytes, looped there. Such cases are now left out, as layer 1's forms already left out branches into their
+  own bytes (1a0a6b1).
+- Layer 1, every x86 form (703: run 1's 654 and the 49 kernel-only), 1,000 cases a form, seed 2, 5 at once,
+  at db9d971 (`x3/run2/l1-seed2-1000.log`, 09:59 to 10:40, 2,457 s; Mac load 38 to 77; the i7-8750H's load
+  1.3 just before): passed, zero mismatches.
+- Chrome, both guests at once (`x3/run2/chrome-both.log`, `chrome-l1-both.log`): the suite's first run of
+  the Chrome tests failed for both guests, because two guests' Chrome runs wrote the same case directory
+  (fixed in e51676b: each guest has its own). After the fix, ARM64's programs and x86's hello world in Chrome
+  passed together (466 s), and so did both guests' layer 1 samples in Chrome (1 a form, seed 1).
 - The x86 crate's tests: tables 4, lengths 2 (76,100 lengths), all passed.
-- PENDING_SUITE
+- Suite of what this track owns at db9d971 (`WC_REFERENCE_X86_64=tom@192.168.2.240 nix develop -c cargo test
+  -p wcontainers-guest-cpu -p wcontainers-arm64 -p wcontainers-translator -p wcontainers-translator-test -p
+  wcontainers-x86 --no-fail-fast`, scratch `x3/run2/suite.log`, 10:20 to 11:07, Mac load 38 to 77): 91
+  passed, 3 failed, 12 ignored. The three failures were the Chrome tests of both guests running at once
+  (fixed in e51676b, above). The two targets they are in were then run again at the end: browser (both
+  tests passed, above) and layer 1 (all 10 passed at 1a0a6b1, its defaults: seed 1, 64 cases a
+  form, 1 a form in Chrome, 64 in no form; `x3/run2/layer1-final.log`, 11:33 to 12:07, 1,988 s).
+- Clippy with `-D warnings` on the test and x86 crates (all targets); `cargo fmt --check`: clean.
 
 ## X3, run 1 (2026-11-18)
 
