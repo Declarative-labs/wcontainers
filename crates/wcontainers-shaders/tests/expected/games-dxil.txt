@@ -39,7 +39,7 @@
 1c0f31c03e2fe52a.dxil	ok
 1cf62599cc0e8fc0.dxil	ok
 1d9b58d6f6fa8934.dxil	ok
-1dffab8a38dbd858.dxil	unsupported RegisterSpace
+1dffab8a38dbd858.dxil	ok
 1e619431cb5363ad.dxil	ok
 1e7f4e8c36e33d84.dxil	ok
 1f507d4622959aed.dxil	ok
@@ -68,7 +68,7 @@
 2ff5b26960a7debb.dxil	ok
 3186c922775e8e90.dxil	ok
 31bd508858afd31a.dxil	ok-wgsl glsl-compile
-324d52c636e9b15e.dxil	unsupported RegisterSpace
+324d52c636e9b15e.dxil	ok
 32980b1526e359e7.dxil	ok
 32e381615df42080.dxil	ok
 337f529338d77304.dxil	ok
@@ -120,7 +120,7 @@
 501f55ef11ea3fc7.dxil	ok
 50fc2281964dee14.dxil	ok-wgsl glsl-write
 5280b4e9e7a26574.dxil	ok
-52a59985aa0fc3b2.dxil	unsupported RegisterSpace
+52a59985aa0fc3b2.dxil	ok
 5340dae5558e0fa0.dxil	ok
 53faa9c1b35bd57e.dxil	ok
 5447fb50aad65d65.dxil	ok
@@ -171,7 +171,7 @@
 7402d9d06822b2f8.dxil	ok
 74f0dd8b01fbc31b.dxil	ok
 752971380945dcbe.dxil	ok
-7641e940074add6d.dxil	unsupported RegisterSpace
+7641e940074add6d.dxil	ok-wgsl glsl-write
 766a5967f43b70f7.dxil	ok
 7704e707797ce3fb.dxil	ok
 782540557737427a.dxil	ok
@@ -206,7 +206,7 @@
 8c74ea28e7b31d4c.dxil	ok-wgsl glsl-write
 8ceecb0101d12293.dxil	ok
 8efc4664ce492884.dxil	ok
-8fa3c5c6ed0643ab.dxil	unsupported RegisterSpace
+8fa3c5c6ed0643ab.dxil	ok
 8fe3057949a2ffcb.dxil	ok-wgsl glsl-write
 905f344d11578932.dxil	ok
 912c3d71fffdf597.dxil	ok
@@ -235,8 +235,8 @@ a48d8117d8e85146.dxil	ok
 a4d49b99cc6e646c.dxil	ok-wgsl glsl-write
 a51181f3fb7dc157.dxil	ok
 a532a57865304d69.dxil	ok-wgsl glsl-write
-a5e56fe271bbd14c.dxil	unsupported RegisterSpace
-a659ed43188247be.dxil	unsupported RegisterSpace
+a5e56fe271bbd14c.dxil	ok
+a659ed43188247be.dxil	ok
 a67644984fe17110.dxil	ok
 a6da81543f7c3274.dxil	ok
 a8675a8a1c80454d.dxil	ok
@@ -244,7 +244,7 @@ a8fcb550a2b49a31.dxil	ok
 a93400665fe0b8f8.dxil	ok
 a9db9c83ccbe3eac.dxil	ok
 ab5ed9f559906700.dxil	ok
-aba0d0944f848cc0.dxil	unsupported RegisterSpace
+aba0d0944f848cc0.dxil	ok
 abc31d38a0ca970c.dxil	ok
 ac30cd0dfc317c9b.dxil	ok
 ac88dd015a949838.dxil	ok
@@ -279,7 +279,7 @@ bde378de957e64c3.dxil	ok-wgsl glsl-write
 becab6804e756e4a.dxil	ok
 bf8fa8b12367866c.dxil	ok
 c1a217c6813653cf.dxil	ok
-c213907681789ad7.dxil	unsupported RegisterSpace
+c213907681789ad7.dxil	ok
 c33c04ef685e7e1b.dxil	ok
 c3863c3aeb33e6a9.dxil	ok
 c479fedfb3248b2d.dxil	spirv-reader unsupported
@@ -356,6 +356,6 @@ fc4ae0cfd197f786.dxil	ok
 fc7a4deb0e5bc814.dxil	ok
 fe47733ce6ab6c52.dxil	ok
 ff10302181e28fa2.dxil	ok-wgsl glsl-write
-ff82239c939e3cd9.dxil	unsupported RegisterSpace
+ff82239c939e3cd9.dxil	ok
 ffa65a1fcae35ac8.dxil	ok-wgsl glsl-write
 ffe757fc29d2bab9.dxil	ok

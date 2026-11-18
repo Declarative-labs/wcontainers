@@ -10,8 +10,7 @@ use alloc::vec::Vec;
 use core::ffi::{c_char, c_int, c_void};
 use naga::{
     AddressSpace, Binding, BuiltIn, Expression, Function, FunctionArgument, GlobalVariable, Handle,
-    ImageClass, Literal, Module, Range, Scalar, ScalarKind, Span, Statement, StructMember, Type,
-    TypeInner,
+    Literal, Module, Range, Scalar, ScalarKind, Span, Statement, StructMember, Type, TypeInner,
 };
 use wcontainers_gpu::{
     DrawBaseSource, HELPER_SET, HelperSlot, HelperValue, Interpolation, ReflectedBinding,
@@ -26,6 +25,8 @@ unsafe extern "C" {
         samples: u32,
         out: *mut *mut u32,
         out_words: *mut usize,
+        table: *mut *mut u32,
+        table_words: *mut usize,
         error: *mut *mut c_char,
     ) -> c_int;
     fn wcs_dxil_constant_sizes(
@@ -59,10 +60,23 @@ fn words(out: *mut u32, words: usize) -> Vec<u32> {
     v
 }
 
-/// DXIL to SPIR-V words, the targets' sample count fixed where `samples` is not zero.
-fn to_spirv(dxil: &[u8], samples: u8) -> Result<Vec<u32>, ConvertError> {
+/// A resource class of Direct3D 12, as the SPIR-V's descriptor set names it (`cpp/dxil.cpp`).
+const CONSTANTS: u32 = 0;
+const VIEW: u32 = 1;
+const STORAGE: u32 = 2;
+const SAMPLER: u32 = 3;
+const COUNTER: u32 = 4;
+
+/// Each resource's (class, space, register), at the index the SPIR-V's binding names.
+type Resources = Vec<[u32; 3]>;
+
+/// DXIL to SPIR-V words, the targets' sample count fixed where `samples` is not zero, with the
+/// resources the SPIR-V's bindings index.
+fn to_spirv(dxil: &[u8], samples: u8) -> Result<(Vec<u32>, Resources), ConvertError> {
     let mut out = core::ptr::null_mut();
     let mut words = 0;
+    let mut table = core::ptr::null_mut();
+    let mut table_words = 0;
     let mut error = core::ptr::null_mut();
     // SAFETY: the pointers are valid for the call; the C side allocates `out` and `error` with malloc.
     let status = unsafe {
@@ -72,13 +86,17 @@ fn to_spirv(dxil: &[u8], samples: u8) -> Result<Vec<u32>, ConvertError> {
             samples.into(),
             &mut out,
             &mut words,
+            &mut table,
+            &mut table_words,
             &mut error,
         )
     };
     if status != 0 {
         return Err(ConvertError::Rejected(reason(error)));
     }
-    Ok(self::words(out, words))
+    let spirv = self::words(out, words);
+    let resources = self::words(table, table_words).as_chunks::<3>().0.to_vec();
+    Ok((spirv, resources))
 }
 
 /// (space, register, size in bytes) of every constant buffer the DXIL declares.
@@ -100,8 +118,12 @@ const MAX_CONSTANT_BYTES: u32 = 64 * 1024;
 
 /// dxil-spirv declares every dynamically indexed constant buffer 64 KiB long, so WebGPU would require
 /// 64 KiB bound. Such a buffer is declared with the size the bytecode gives it, which a program binds
-/// at least. Runs before `bindings`, while a binding is still (space, register).
-fn declared_sizes(dxil: &[u8], module: &mut Module) -> Result<(), ConvertError> {
+/// at least. Runs before `bindings`, while a binding still indexes `resources`.
+fn declared_sizes(
+    dxil: &[u8],
+    resources: &Resources,
+    module: &mut Module,
+) -> Result<(), ConvertError> {
     let mut sizes = None;
     let mut resized = false;
     for (_, var) in module.global_variables.iter_mut() {
@@ -129,11 +151,14 @@ fn declared_sizes(dxil: &[u8], module: &mut Module) -> Result<(), ConvertError> 
             Some(s) => s,
             None => sizes.insert(constant_sizes(dxil)?),
         };
+        let Some(&[CONSTANTS, space, register]) = resources.get(binding.binding as usize) else {
+            continue;
+        };
         let declared = sizes
             .as_chunks::<3>()
             .0
             .iter()
-            .find(|d| (d[0], d[1]) == (binding.group, binding.binding))
+            .find(|d| (d[0], d[1]) == (space, register))
             .map(|d| d[2].div_ceil(stride));
         let Some(declared) = declared.and_then(core::num::NonZeroU32::new) else {
             continue;
@@ -181,7 +206,7 @@ pub(crate) fn lower(
     dxil: &[u8],
     variant: &VariantKey,
 ) -> Result<(Module, Reflection, ShaderStage), ConvertError> {
-    let mut spirv = to_spirv(dxil, variant.samples)?;
+    let (mut spirv, resources) = to_spirv(dxil, variant.samples)?;
     let declared = images::prepare(&mut spirv);
     let options = naga::front::spv::Options {
         adjust_coordinate_space: false,
@@ -197,7 +222,7 @@ pub(crate) fn lower(
         return Err(ConvertError::Unsupported("SampleCount"));
     }
     direct3d_float_to_int(&mut module)?;
-    declared_sizes(dxil, &mut module)?;
+    declared_sizes(dxil, &resources, &mut module)?;
     let images = images::globals(&module, &declared);
     crate::lower::derivatives_anywhere(&mut module);
     let ep = module
@@ -244,8 +269,8 @@ pub(crate) fn lower(
         let into = &mut reflection.outputs;
         stage_values(&module, r.ty, r.binding.as_ref(), pixel, &outputs, into);
     }
-    let registers = bindings(&mut module, set, &mut reflection)?;
-    reflection.sampled_pairs = sampled_pairs(&module, &registers)?;
+    let slots = bindings(&mut module, &resources, set, &mut reflection)?;
+    reflection.sampled_pairs = sampled_pairs(&module, &slots)?;
     draw_bases(&mut module, variant, &mut reflection)?;
     images::finish(&mut module, variant, &images, stage, &mut reflection)?;
     Ok((module, reflection, stage))
@@ -1143,8 +1168,8 @@ fn stage_values(
     });
 }
 
-/// The (texture register, sampler register) pairs the program samples with, in the order its code
-/// first uses them.
+/// The (texture slot, sampler slot) pairs the program samples with, in the order its code first uses
+/// them.
 fn sampled_pairs(
     module: &Module,
     registers: &[(Handle<GlobalVariable>, u32)],
@@ -1171,48 +1196,68 @@ fn sampled_pairs(
     Ok(pairs)
 }
 
-/// Numbers every resource by the rule of 6.4 for the stage's set (Direct3D 10 and 11's layout until
-/// root signatures number Direct3D 12's), reading dxil-spirv's register (binding) and space (group).
-/// Returns each resource's register.
+/// Numbers every resource by Direct3D 12's rule (6.4): within the stage's set, each kind's slots are
+/// the program's own resources of that kind in (space, register) order, from the kind's first
+/// binding, so register spaces and registers of any size fit while the program has no more resources
+/// of a kind than its range holds. Kinds follow Direct3D's register classes as on the DXBC route
+/// (shader resource views, buffers among them, are textures; unordered access views are storage); a
+/// counter takes its view's slot. A slot (`binding - kind.first_binding()`) is what the variant's
+/// per-slot fields and the sampled pairs name. Returns each resource's slot.
 fn bindings(
     module: &mut Module,
+    resources: &Resources,
     set: u32,
     reflection: &mut Reflection,
 ) -> Result<Vec<(Handle<GlobalVariable>, u32)>, ConvertError> {
-    let mut registers = Vec::new();
-    for (handle, var) in module.global_variables.iter_mut() {
-        let Some(binding) = var.binding.as_mut() else {
+    let mut declared = Vec::new();
+    for (handle, var) in module.global_variables.iter() {
+        let Some(binding) = var.binding else {
             continue;
         };
-        let kind = match (var.space, &module.types[var.ty].inner) {
-            (AddressSpace::Uniform, _) => SlotKind::Uniform,
-            (AddressSpace::Storage { .. }, _) => SlotKind::Storage,
-            (AddressSpace::Handle, TypeInner::Sampler { .. }) => SlotKind::Sampler,
-            (
-                AddressSpace::Handle,
-                TypeInner::Image {
-                    class: ImageClass::Storage { .. },
-                    ..
-                },
-            ) => SlotKind::Storage,
-            (AddressSpace::Handle, TypeInner::Image { .. }) => SlotKind::Texture,
-            (AddressSpace::Handle, TypeInner::BindingArray { .. }) => {
-                return Err(ConvertError::Unsupported("ResourceArray"));
-            }
-            _ => return Err(ConvertError::Unsupported("ResourceKind")),
-        };
-        let (space, register) = (binding.group, binding.binding);
-        // Direct3D 11's numbering knows one space; other spaces are numbered by a root signature.
-        if space != 0 {
-            return Err(ConvertError::Unsupported("RegisterSpace"));
+        if let TypeInner::BindingArray { .. } = module.types[var.ty].inner {
+            return Err(ConvertError::Unsupported("ResourceArray"));
         }
+        let &[class, space, register] = resources
+            .get(binding.binding as usize)
+            .ok_or_else(|| ConvertError::Malformed("a binding past the resource list".into()))?;
+        let kind = match binding.group {
+            CONSTANTS => SlotKind::Uniform,
+            VIEW => SlotKind::Texture,
+            STORAGE => SlotKind::Storage,
+            SAMPLER => SlotKind::Sampler,
+            COUNTER => SlotKind::Counter,
+            _ => return Err(ConvertError::Malformed("a resource of no class".into())),
+        };
+        if binding.group != class && !(binding.group == COUNTER && class == STORAGE) {
+            return Err(ConvertError::Malformed(
+                "a resource of another class".into(),
+            ));
+        }
+        declared.push((handle, kind, space, register));
+    }
+    // Counters are numbered by their views, so they are ranked among the storage slots.
+    let rank = |kind: SlotKind| match kind {
+        SlotKind::Counter => SlotKind::Storage as u32,
+        k => k as u32,
+    };
+    let mut order: Vec<(u32, u32, u32)> = declared
+        .iter()
+        .map(|&(_, kind, space, register)| (rank(kind), space, register))
+        .collect();
+    order.sort_unstable();
+    order.dedup();
+    let mut slots = Vec::new();
+    for (handle, kind, space, register) in declared {
+        let key = (rank(kind), space, register);
+        let first = order.partition_point(|o| o.0 < key.0);
+        let slot = (order.partition_point(|o| *o < key) - first) as u32;
         let number = kind
-            .binding(register)
+            .binding(slot)
             .ok_or(ConvertError::Unsupported("BindingsBeyondLimit"))?;
-        *binding = naga::ResourceBinding {
+        module.global_variables[handle].binding = Some(naga::ResourceBinding {
             group: set,
             binding: number,
-        };
+        });
         reflection.bindings.push(ReflectedBinding {
             kind,
             space,
@@ -1222,7 +1267,7 @@ fn bindings(
             binding: number,
             added: None,
         });
-        registers.push((handle, register));
+        slots.push((handle, slot));
     }
-    Ok(registers)
+    Ok(slots)
 }

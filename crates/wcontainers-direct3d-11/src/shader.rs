@@ -3,7 +3,8 @@
 
 use wcontainers_gpu::{
     AddedBinding, CLAMPED_SAMPLER_BINDING, DrawBaseSource, Format, FormatKind, HELPER_SET,
-    HelperSlot, HelperValue, SlotKind, SourceStage, TexelBufferRoute, VariantFlags, VariantKey,
+    HelperSlot, HelperValue, LinkedValues, SlotKind, SourceStage, TexelBufferRoute, VariantFlags,
+    VariantKey,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source};
 
@@ -97,6 +98,9 @@ pub struct TypedView {
     pub buffer: bool,
     /// The kind of value the declaration reads and writes.
     pub kind: FormatKind,
+    /// A storage texture read and written through a buffer of its texels, where the back end
+    /// has no atomics on storage textures (`AtomicsThroughBuffer`).
+    pub through: bool,
 }
 
 impl TypedView {
@@ -180,6 +184,7 @@ pub fn typed_views(bytecode: &[u8]) -> Result<Vec<TypedView>> {
                 register,
                 buffer: dimension == DIMENSION_BUFFER,
                 kind,
+                through: false,
             });
         }
         i += length;
@@ -187,7 +192,7 @@ pub fn typed_views(bytecode: &[u8]) -> Result<Vec<TypedView>> {
     Ok(views)
 }
 
-/// One element of a DXBC container's input signature.
+/// One element of a DXBC container's input or output signature.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SignatureElement {
     pub semantic: String,
@@ -195,11 +200,32 @@ pub struct SignatureElement {
     pub register: u32,
     /// Direct3D's system value name (`D3D_NAME`): 6 is the vertex id, 8 the instance id.
     pub system: u32,
+    /// The components it takes, a bit each (x = 1).
+    pub mask: u8,
+    /// The geometry stream it is written to (outputs of `OSG5` and `OSG1`; 0 otherwise).
+    pub stream: u32,
 }
 
 /// The input signature (`ISGN`, or `ISG1` of shader model 5.1) of a DXBC container; empty where it
 /// has none. An error if the bytes are not such a container or the chunk is malformed.
 pub fn input_signature(bytecode: &[u8]) -> Result<Vec<SignatureElement>> {
+    signature(bytecode, &[(*b"ISGN", 24, false), (*b"ISG1", 32, true)])
+}
+
+/// The output signature (`OSGN`, `OSG5` of geometry shaders with streams, or `OSG1`).
+pub fn output_signature(bytecode: &[u8]) -> Result<Vec<SignatureElement>> {
+    signature(
+        bytecode,
+        &[
+            (*b"OSGN", 24, false),
+            (*b"OSG5", 28, true),
+            (*b"OSG1", 32, true),
+        ],
+    )
+}
+
+/// The first chunk of `tags` (tag, bytes per element, whether each starts with its stream).
+fn signature(bytecode: &[u8], tags: &[([u8; 4], usize, bool)]) -> Result<Vec<SignatureElement>> {
     let bad = Error::InvalidArg("not DXBC bytecode");
     let word = |at: usize| -> Result<u32> {
         bytecode
@@ -214,15 +240,15 @@ pub fn input_signature(bytecode: &[u8]) -> Result<Vec<SignatureElement>> {
     for i in 0..word(28)? as usize {
         let at = word(32 + 4 * i)? as usize;
         let tag = bytecode.get(at..).and_then(|b| b.get(..4)).ok_or(bad)?;
-        let (stride, first) = match tag {
-            b"ISGN" => (24, 0),
-            b"ISG1" => (32, 4),
-            _ => continue,
+        let Some(&(_, stride, streams)) = tags.iter().find(|t| t.0 == tag) else {
+            continue;
         };
+        let first = if streams { 4 } else { 0 };
         let data = at + 8;
         let mut elements = Vec::new();
         for e in 0..word(data)? as usize {
-            let base = data + 8 + e * stride + first;
+            let start = data + 8 + e * stride;
+            let base = start + first;
             let name_at = data + word(base)? as usize;
             let name = bytecode
                 .get(name_at..)
@@ -233,6 +259,8 @@ pub fn input_signature(bytecode: &[u8]) -> Result<Vec<SignatureElement>> {
                 index: word(base + 4)?,
                 system: word(base + 8)?,
                 register: word(base + 16)?,
+                mask: word(base + 20)? as u8,
+                stream: if streams { word(start)? } else { 0 },
             });
         }
         return Ok(elements);
@@ -286,6 +314,9 @@ pub struct StageVariant {
     /// The formats of the bound typed views, one for each the shader declares, by the device's
     /// number for the list; zero for the plain program's placeholders.
     pub formats: u32,
+    /// Depth is clamped in the programs (`DepthClampInShader`), their added value at this
+    /// location; zero where the back end clamps.
+    pub linked: u32,
 }
 
 impl StageVariant {
@@ -317,6 +348,13 @@ impl StageVariant {
         }
         if self.from_arguments {
             key.draw_base = DrawBaseSource::Arguments;
+        }
+        if self.linked != 0 {
+            key.flags |= VariantFlags::DEPTH_CLAMP;
+            key.linked = LinkedValues {
+                location: self.linked,
+                clip_distances: 0,
+            };
         }
         key
     }
@@ -369,22 +407,30 @@ impl Helpers {
 /// Converts a shader of `expected` stage. Bytecode the converter refuses is invalid to Direct3D too;
 /// what it cannot convert yet is not implemented. The flag says the program reads the targets'
 /// sample count, which it is converted with at each draw; here it is converted for one sample, so its
-/// reflection is known.
+/// reflection is known. Where the converter has no atomics on storage textures, the typed texture
+/// views are marked to be read through buffers of their texels.
 pub fn convert(
     bytecode: &[u8],
     expected: SourceStage,
-    typed: &[TypedView],
+    typed: &mut [TypedView],
 ) -> Result<(Converted, bool)> {
-    match raw(bytecode, expected, &base_key(expected, typed))? {
-        Err(ConvertError::Unsupported("SampleCount")) => {
-            let key = StageVariant {
-                samples: 1,
-                ..StageVariant::default()
+    let mut samples = false;
+    loop {
+        let variant = StageVariant {
+            samples: u8::from(samples),
+            ..StageVariant::default()
+        };
+        match raw(bytecode, expected, &variant.key(expected, typed, &[]))? {
+            Err(ConvertError::Unsupported("SampleCount")) if !samples => samples = true,
+            Err(ConvertError::Unsupported("StorageImageAtomics"))
+                if typed.iter().any(|t| t.storage && !t.buffer && !t.through) =>
+            {
+                for t in typed.iter_mut().filter(|t| t.storage && !t.buffer) {
+                    t.through = true;
+                }
             }
-            .key(expected, typed, &[]);
-            Ok((answer(raw(bytecode, expected, &key)?)?, true))
+            r => return Ok((answer(r, 1)?, samples)),
         }
-        r => Ok((answer(r)?, false)),
     }
 }
 
@@ -412,6 +458,10 @@ pub fn base_key(stage: SourceStage, typed: &[TypedView]) -> VariantKey {
         } else {
             TexelBufferRoute::Native
         },
+        texels_through_buffer: typed
+            .iter()
+            .filter(|t| t.through && t.register < 64)
+            .fold(0, |m, t| m | 1 << t.register),
         ..VariantKey::default()
     }
 }
@@ -488,7 +538,13 @@ pub fn convert_variant(
     expected: SourceStage,
     key: &VariantKey,
 ) -> Result<Converted> {
-    answer(raw(bytecode, expected, key)?)
+    answer(raw(bytecode, expected, key)?, 1)
+}
+
+/// Converts a geometry shader as `key` asks: its compute form, which the stage helper runs, and the
+/// vertex program drawing what it made.
+pub fn convert_geometry(bytecode: &[u8], key: &VariantKey) -> Result<Converted> {
+    answer(raw(bytecode, SourceStage::Geometry, key)?, 2)
 }
 
 /// The converter's own answer for bytecode of `expected` stage.
@@ -509,10 +565,10 @@ fn raw(
     ))
 }
 
-/// The converter's answer in Direct3D's terms.
-fn answer(r: core::result::Result<Converted, ConvertError>) -> Result<Converted> {
+/// The converter's answer in Direct3D's terms, which should be a program of `modules` stages.
+fn answer(r: core::result::Result<Converted, ConvertError>, modules: usize) -> Result<Converted> {
     match r {
-        Ok(c) if c.modules.len() != 1 => {
+        Ok(c) if c.modules.len() != modules => {
             not_implemented("shaders converted into several program stages")
         }
         Ok(c)
@@ -529,6 +585,8 @@ fn answer(r: core::result::Result<Converted, ConvertError>) -> Result<Converted>
                         | HelperValue::DepthBias
                         | HelperValue::PulledStream { .. }
                         | HelperValue::TexelBufferView { .. }
+                        | HelperValue::TexelLayout { .. }
+                        | HelperValue::DepthRange
                 )
             }) =>
         {
@@ -600,12 +658,14 @@ mod tests {
                     register: 2,
                     buffer: false,
                     kind: FormatKind::Uint,
+                    through: false,
                 },
                 TypedView {
                     storage: false,
                     register: 1,
                     buffer: true,
                     kind: FormatKind::Float,
+                    through: false,
                 },
             ]
         );

@@ -629,6 +629,22 @@ impl PixelShader {
     }
 }
 
+pub struct GeometryShader {
+    pub front: Locked<Rc<front::Geometry<Chosen>>>,
+    pub(super) child: Child,
+}
+
+counted!(GeometryShader => GeometryShader_Impl { main: ID3D11GeometryShader, ID3D11GeometryShader_Vtbl });
+
+impl GeometryShader {
+    pub fn new(front: Rc<front::Geometry<Chosen>>, device: ID3D11Device) -> Self {
+        GeometryShader {
+            front: Locked::new(front),
+            child: Child::new(device),
+        }
+    }
+}
+
 pub struct ComputeShader {
     pub front: Locked<Rc<front::Shader<Chosen>>>,
     pub(super) child: Child,
