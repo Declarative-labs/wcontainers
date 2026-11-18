@@ -54,6 +54,7 @@ hs_tri_pow2_point.dxbc	ok-wgsl glsl-write
 ps_cases.dxbc	ok-wgsl glsl-compile
 ps_clip.dxbc	ok
 ps_coarse.dxbc	ok
+ps_contend.dxbc	ok-wgsl glsl-write
 ps_depth.dxbc	ok
 ps_deriv.dxbc	ok-wgsl glsl-write
 ps_dual.dxbc	ok
@@ -79,6 +80,7 @@ ps_msarray.dxbc	unsupported MultisampledArrayTexture
 ps_negate.dxbc	ok
 ps_offset.dxbc	ok
 ps_pack.dxbc	ok
+ps_primid.dxbc	ok-wgsl glsl-compile
 ps_pull.dxbc	ok
 ps_rows.dxbc	ok
 ps_samples.dxbc	unsupported SampleCount
