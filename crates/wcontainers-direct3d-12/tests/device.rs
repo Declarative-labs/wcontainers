@@ -390,3 +390,77 @@ fn placed_resources_lie_in_their_heap_and_overlapping_buffers_inherit_bytes() {
     device.destroy_resource(a);
     assert_eq!(run(&mut device, vec![copy(readback, c)]).len(), 1);
 }
+
+#[test]
+fn shared_buffers_take_the_program_bytes_and_give_back_the_gpu_ones() {
+    let mut device = Device::new(Recorder::new());
+    let queue = device.create_queue().unwrap();
+    let buffer = ResourceDesc {
+        dimension: DIMENSION_BUFFER,
+        width: 64,
+        height: 1,
+        depth_or_array_size: 1,
+        mip_levels: 1,
+        sample_count: 1,
+        layout: 1,
+        ..Default::default()
+    };
+    assert!(check_creation(HeapType::Shared, &buffer, 0, false).is_ok());
+    let storage = ResourceDesc {
+        flags: FLAG_UNORDERED_ACCESS,
+        ..buffer
+    };
+    assert!(matches!(
+        check_creation(HeapType::Shared, &storage, 0, false),
+        Err(Error::NotImplemented(_))
+    ));
+    let shared = device.create_committed(HeapType::Shared, &buffer).unwrap();
+    let other = device.create_committed(HeapType::Default, &buffer).unwrap();
+    let memory = device.map(shared).unwrap();
+    // SAFETY: the 64 bytes `Map` gave.
+    unsafe { std::slice::from_raw_parts_mut(memory, 64).fill(7) };
+    let copy = |dst, dst_offset, src, size| Command::CopyBuffer {
+        dst,
+        dst_offset,
+        src,
+        src_offset: 0,
+        size,
+    };
+    let run = |d: &mut Device<Recorder>, c: Command| {
+        let mut list = CommandList::new();
+        list.record(c);
+        list.close().unwrap();
+        let start = d.backend().calls.len();
+        d.execute(queue, &[list.commands().unwrap().clone()])
+            .unwrap();
+        d.backend().calls[start..]
+            .iter()
+            .filter(|c| c.starts_with("write_buffer") || c.starts_with("finish_read"))
+            .map(|c| c.split(" [").next().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    // Read by the GPU: the program's bytes go first, all of them.
+    let calls = run(&mut device, copy(other, 0, shared, 64));
+    assert_eq!(calls.len(), 1, "{calls:#?}");
+    let id = calls[0].split(' ').nth(1).unwrap().to_string();
+    assert_eq!(calls[0], format!("write_buffer {id} 0 64 NoOverwrite"));
+    // Written by the GPU at 16..32, then read again before the program has seen that work end: the
+    // GPU's bytes there are newer than the program's and are left out.
+    assert!(run(&mut device, copy(shared, 16, other, 16)).is_empty());
+    let calls = run(&mut device, copy(other, 0, shared, 64));
+    assert_eq!(
+        calls,
+        [
+            format!("write_buffer {id} 0 16 NoOverwrite"),
+            format!("write_buffer {id} 32 32 NoOverwrite"),
+        ]
+    );
+    // Once the work is done and the program maps the buffer, its memory holds the GPU's bytes.
+    device.backend().finish();
+    let start = device.backend().calls.len();
+    assert_eq!(device.map(shared).unwrap(), memory);
+    assert_eq!(device.backend().named("finish_read").len(), 1);
+    assert!(device.backend().calls[start..][0].ends_with(" 16"));
+    let calls = run(&mut device, copy(other, 0, shared, 64));
+    assert_eq!(calls, [format!("write_buffer {id} 0 64 NoOverwrite")]);
+}

@@ -2,6 +2,7 @@
 //! queue over the infrastructure crate's, run on the device thread.
 
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use wcontainers_direct3d_12::device::ChainId;
@@ -362,11 +363,9 @@ pub fn create(
     if desc.AlphaMode != DXGI_ALPHA_MODE_UNSPECIFIED && desc.AlphaMode != DXGI_ALPHA_MODE_IGNORE {
         return Err(DXGI_ERROR_INVALID_CALL.into());
     }
-    if desc.Scaling != DXGI_SCALING_STRETCH {
-        return Err(windows::core::Error::new(
-            E_NOTIMPL,
-            "scaling other than stretching",
-        ));
+    // A window's swap chain takes no aspect-ratio stretching (DXGI refuses it, measured).
+    if desc.Scaling != DXGI_SCALING_STRETCH && desc.Scaling != DXGI_SCALING_NONE {
+        return Err(DXGI_ERROR_INVALID_CALL.into());
     }
     let model = Model::from_dxgi(desc.SwapEffect.0 as u32).ok_or(DXGI_ERROR_INVALID_CALL)?;
     if !model.is_flip() {
@@ -428,6 +427,7 @@ pub fn create(
         hwnd,
         queue,
         waitable,
+        stretched: AtomicBool::new(false),
         state: Mutex::new(ChainState {
             desc: d,
             buffers: Vec::new(),
@@ -464,6 +464,8 @@ pub struct SwapChain {
     queue: ID3D12CommandQueue,
     /// The frame latency waitable object's semaphore, for swap chains made with it.
     waitable: Option<usize>,
+    /// Whether a frame was shown stretched to a window of another size against the scaling asked.
+    stretched: AtomicBool,
     state: Mutex<ChainState>,
 }
 
@@ -475,6 +477,21 @@ const PRESENT_DO_NOT_WAIT: u32 = 0x8;
 const PRESENT_ALLOW_TEARING: u32 = 0x200;
 
 impl SwapChain {
+    /// The host shows a frame stretched to its window: a window of another size than the buffers
+    /// shows it so whatever scaling the program asked (warned once per swap chain).
+    fn check_scaling(&self) {
+        let desc = self.state.lock().unwrap().desc;
+        if desc.Scaling == DXGI_SCALING_STRETCH || self.stretched.load(Ordering::Relaxed) {
+            return;
+        }
+        if client_size(self.hwnd) != (desc.Width, desc.Height) {
+            self.stretched.store(true, Ordering::Relaxed);
+            eprintln!(
+                "wcontainers: warning: a frame stretched to its window against the swap chain's scaling"
+            );
+        }
+    }
+
     pub fn Present(&self, sync_interval: u32, flags: DXGI_PRESENT) -> HRESULT {
         let flags = flags.0;
         if flags & !(PRESENT_TEST | PRESENT_RESTART | PRESENT_DO_NOT_WAIT | PRESENT_ALLOW_TEARING)
@@ -486,6 +503,7 @@ impl SwapChain {
         if flags & PRESENT_TEST != 0 {
             return S_OK;
         }
+        self.check_scaling();
         let id = self.id;
         let result = gpu::call_windowed(move |s| {
             let d = &mut s.front;
@@ -784,6 +802,26 @@ impl SwapChain {
         } else {
             0
         })
+    }
+
+    /// The content's mastering description, which swap chains presenting in SDR sRGB only, as
+    /// these do, have no use for; checked as DXGI checks it.
+    pub fn SetHDRMetaData(
+        &self,
+        kind: DXGI_HDR_METADATA_TYPE,
+        size: u32,
+        data: *const c_void,
+    ) -> Result<()> {
+        let expected = match kind {
+            DXGI_HDR_METADATA_TYPE_NONE => return Ok(()),
+            DXGI_HDR_METADATA_TYPE_HDR10 => size_of::<DXGI_HDR_METADATA_HDR10>(),
+            DXGI_HDR_METADATA_TYPE_HDR10PLUS => size_of::<DXGI_HDR_METADATA_HDR10PLUS>(),
+            _ => return Err(E_INVALIDARG.into()),
+        };
+        if data.is_null() || size as usize != expected {
+            return Err(E_INVALIDARG.into());
+        }
+        Ok(())
     }
 
     /// Each format presents in one colour space, so there is nothing to change.

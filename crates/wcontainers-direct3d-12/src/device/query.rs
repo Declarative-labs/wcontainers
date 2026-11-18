@@ -347,7 +347,7 @@ impl<B: Backend> Device<B> {
             let target = target.clone();
             self.backend
                 .copy_buffer(&values, u64::from(first) * each, &target, dst_offset, size);
-            if heap_type == HeapType::Readback {
+            if heap_type.reads_back() {
                 self.read_into(dst, dst_offset, size)?;
             }
             return Ok(());
@@ -373,7 +373,7 @@ impl<B: Backend> Device<B> {
         self.backend
             .copy_buffer(&scratch, 0, &target, dst_offset, size);
         self.backend.destroy(Object::Buffer(scratch));
-        if heap_type == HeapType::Readback {
+        if heap_type.reads_back() {
             self.read_into(dst, dst_offset, size)?;
         }
         Ok(())
@@ -462,7 +462,7 @@ impl<B: Backend> Device<B> {
             return Ok(predicate);
         }
         self.backend.slow_paths().hit(SlowPath::PredicationIndirect);
-        self.upload(resource);
+        self.upload(resource)?;
         let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let records = self.scratch(
             bytes.len() as u64,
@@ -491,7 +491,7 @@ impl<B: Backend> Device<B> {
             Some(v) => v,
             None => {
                 self.backend.slow_paths().hit(SlowPath::PredicationWait);
-                self.upload(p.resource);
+                self.upload(p.resource)?;
                 let (buffer, _) = self.buffer(p.resource)?;
                 let buffer = buffer.clone();
                 let scratch = self.scratch(8, BufferUsage::COPY_DST | BufferUsage::READ_BACK)?;
