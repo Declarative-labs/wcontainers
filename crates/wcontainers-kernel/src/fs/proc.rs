@@ -320,6 +320,8 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/fs/dir-notify-enable", Global::File(0o644)),
     ("sys/fs/inotify", Global::Directory),
     ("sys/fs/inotify/max_queued_events", Global::File(0o644)),
+    ("sys/fs/inotify/max_user_instances", Global::File(0o644)),
+    ("sys/fs/inotify/max_user_watches", Global::File(0o644)),
     ("sys/fs/lease-break-time", Global::File(0o644)),
     ("sys/fs/leases-enable", Global::File(0o644)),
     ("sys/fs/mqueue", Global::Directory),
@@ -348,6 +350,7 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/kernel/ostype", Global::File(0o444)),
     ("sys/kernel/perf_event_paranoid", Global::File(0o644)),
     ("sys/kernel/pid_max", Global::File(0o644)),
+    ("sys/kernel/threads-max", Global::File(0o644)),
     ("sys/kernel/random", Global::Directory),
     ("sys/kernel/random/boot_id", Global::File(0o444)),
     ("sys/kernel/random/entropy_avail", Global::File(0o444)),
@@ -1622,6 +1625,12 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                 "sys/fs/inotify/max_queued_events" => {
                     let _ = writeln!(out, "{}", crate::syscall::inotify::MAX_QUEUED);
                 }
+                "sys/fs/inotify/max_user_instances" => {
+                    let _ = writeln!(out, "{}", crate::syscall::inotify::MAX_USER_INSTANCES);
+                }
+                "sys/fs/inotify/max_user_watches" => {
+                    let _ = writeln!(out, "{}", crate::syscall::inotify::MAX_USER_WATCHES);
+                }
                 // Links are followed and made under Linux's protections (`may_follow_link`,
                 // `may_linkat`); opens of others' FIFOs and regular files in sticky directories
                 // are not restricted (`may_create_in_sticky`).
@@ -1633,6 +1642,9 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                 }
                 "sys/kernel/ostype" => out.push_str("Linux\n"),
                 "sys/kernel/pid_max" => out.push_str("4194304\n"),
+                "sys/kernel/threads-max" => {
+                    let _ = writeln!(out, "{}", machine.threads_max());
+                }
                 "sys/kernel/random/boot_id" => out.push_str(&uuid(source.boot_id)),
                 "sys/kernel/random/uuid" => out.push_str(&uuid(source.fresh_random)),
                 // No huge page is ever reserved, as none can be in a default container.

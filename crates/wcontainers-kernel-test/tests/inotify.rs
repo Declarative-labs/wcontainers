@@ -18,3 +18,10 @@ fn inotify_matches_reference_on_backend_root() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     wcontainers_kernel_test::assert_same_output_on_backend_root_seeded(&out, "inotify", &[], 0);
 }
+
+/// A user's inotify instances are limited by fs.inotify.max_user_instances.
+#[test]
+fn instances_are_limited_per_user() {
+    let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    wcontainers_kernel_test::assert_same_output(&out, "inotifylimit", &[]);
+}

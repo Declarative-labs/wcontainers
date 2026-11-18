@@ -21,6 +21,24 @@ const EVENT: usize = 16;
 /// `fs.inotify.max_queued_events` (Linux's default).
 pub(crate) const MAX_QUEUED: usize = 16384;
 
+/// `fs.inotify.max_user_instances` and `max_user_watches`: the reference's values, which bound
+/// each user's instances and their watches (`inc_ucount`).
+pub(crate) const MAX_USER_INSTANCES: usize = 8192;
+pub(crate) const MAX_USER_WATCHES: usize = 1_048_576;
+
+/// The live instances of user `uid`, forgetting those gone.
+fn instances_of(kernel: &mut Kernel, uid: u32) -> Vec<Rc<RefCell<Instance>>> {
+    kernel
+        .inotify_instances
+        .retain(|(_, instance)| instance.strong_count() > 0);
+    kernel
+        .inotify_instances
+        .iter()
+        .filter(|(owner, _)| *owner == uid)
+        .filter_map(|(_, instance)| instance.upgrade())
+        .collect()
+}
+
 /// The events a watch may ask for.
 const ALL_EVENTS: u32 = IN_ALL_EVENTS;
 
@@ -118,10 +136,19 @@ pub(super) fn inotify_init1(
     if flags & !(IN_CLOEXEC | IN_NONBLOCK) != 0 {
         return Err(Errno::EINVAL);
     }
+    // An instance is charged to its maker's effective user (`inotify_new_group`).
+    let uid = kernel.credentials(tid).euid;
+    if instances_of(kernel, uid).len() >= MAX_USER_INSTANCES {
+        return Err(Errno::EMFILE);
+    }
     let node = super::anon_node(kernel, cx);
     let opener = kernel.credentials(tid).serial;
     let file = OpenFile::new(node, O_RDONLY | (flags & O_NONBLOCK), LINK.to_vec(), opener);
-    file.borrow_mut().anon = Some(Anon::Inotify(Rc::default()));
+    let instance: Rc<RefCell<Instance>> = Rc::default();
+    kernel
+        .inotify_instances
+        .push((uid, Rc::downgrade(&instance)));
+    file.borrow_mut().anon = Some(Anon::Inotify(instance));
     let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
     let fd = kernel
         .files_mut(tid)
@@ -193,6 +220,21 @@ pub(super) fn inotify_add_watch(
             wanted
         };
         return Ok(mark.wd as u64);
+    }
+    // A new watch is charged to the instance's user (`inotify_new_watch`).
+    let owner = kernel
+        .inotify_instances
+        .iter()
+        .find(|(_, other)| core::ptr::eq(other.as_ptr(), Rc::as_ptr(&instance)))
+        .map(|(uid, _)| *uid);
+    if let Some(uid) = owner {
+        let watches: usize = instances_of(kernel, uid)
+            .iter()
+            .map(|other| other.borrow().watches.len())
+            .sum();
+        if watches >= MAX_USER_WATCHES {
+            return Err(Errno::ENOSPC);
+        }
     }
     let wd = {
         let mut own = instance.borrow_mut();

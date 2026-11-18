@@ -129,6 +129,10 @@ fn make_child(
         .get_mut(&pid)
         .expect("process exists")
         .nproc_exceeded = false;
+    // No more threads than `kernel.threads-max`, whoever asks.
+    if kernel.threads.len() as u64 >= kernel.machine.threads_max() {
+        return Err(Errno::EAGAIN);
+    }
     // The parent's descriptor for the child: its number is written before the child exists, and
     // nothing is made if that faults.
     if flags & CLONE_PIDFD != 0 {

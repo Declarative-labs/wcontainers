@@ -87,6 +87,14 @@ pub(crate) struct Machine {
     pub memory_bytes: u64,
 }
 
+impl Machine {
+    /// `kernel.threads-max`: as many threads as a eighth of memory holds stacks of 16 KiB
+    /// (`set_max_threads`), at least 20.
+    pub fn threads_max(&self) -> u64 {
+        (self.memory_bytes / (16 * 1024 * 8)).clamp(20, 0x3fff_ffff)
+    }
+}
+
 /// The kernel's file systems that exist from the start.
 pub(crate) struct Files {
     pub numbers: Numbers,
@@ -177,6 +185,11 @@ pub struct Kernel {
     starting: Option<alloc::boxed::Box<container::Starting>>,
     /// Why the container's start failed.
     start_failure: Option<Errno>,
+    /// Every inotify instance made, with the user it is charged to.
+    inotify_instances: Vec<(
+        u32,
+        alloc::rc::Weak<core::cell::RefCell<syscall::inotify::Instance>>,
+    )>,
     /// The core dumps being written, by the thread that writes each.
     dumps: BTreeMap<process::Tid, syscall::coredump::Dump>,
     /// The last serial given to committed credentials; 0 is the credentials of whoever opened the
@@ -253,6 +266,7 @@ impl Kernel {
             starting: None,
             start_failure: None,
             dumps: BTreeMap::new(),
+            inotify_instances: Vec::new(),
             last_credentials: 0,
             counters: Counters::default(),
             ipc: Default::default(),
