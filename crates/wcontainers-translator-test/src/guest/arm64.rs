@@ -28,6 +28,7 @@ impl GuestTest for Arm64 {
         rust_target: "aarch64-unknown-linux-musl",
         docker_platform: "linux/arm64",
         reference_host: "WC_REFERENCE_AARCH64",
+        remote_directory: "wcontainers-arm64/reference",
         fields: &[
             "x0",
             "x1",

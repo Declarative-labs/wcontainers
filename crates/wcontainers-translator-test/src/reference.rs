@@ -19,6 +19,8 @@ pub struct Target {
     pub docker_platform: &'static str,
     /// The variable naming the reference's SSH host when it is not, such as `WC_REFERENCE_X86_64`.
     pub reference_host: &'static str,
+    /// Where the runner is kept on an SSH reference, under the login's home.
+    pub remote_directory: &'static str,
     /// The state's fields, in wire order; the runner names its own first and they must be these.
     pub fields: &'static [&'static str],
 }
@@ -28,6 +30,7 @@ pub const X86_64: Target = Target {
     rust_target: "x86_64-unknown-linux-musl",
     docker_platform: "linux/amd64",
     reference_host: "WC_REFERENCE_X86_64",
+    remote_directory: "wcontainers-x86/reference",
     fields: &[
         "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12",
         "r13", "r14", "r15", "rip", "rflags", "fs_base", "gs_base", "mxcsr", "fcw", "fsw", "ftw",
@@ -42,8 +45,6 @@ pub const X86_64: Target = Target {
 /// digest (a multi-platform index), so every run has the same environment.
 pub const IMAGE: &str =
     "alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6";
-/// Where the runner is kept on an SSH reference, under the login's home.
-const REMOTE_DIRECTORY: &str = "wcontainers-x86/reference";
 /// How many times an SSH reference is tried before the run fails: the machine drops off its network at times.
 const SSH_TRIES: u32 = 5;
 /// How many times a request whose connection was lost is sent again over a new one before the run fails.
@@ -142,12 +143,17 @@ fn ssh(host: &str) -> Command {
 /// returns its path there. Each upload writes a file of its own (named by the remote shell's process id),
 /// checks its content and renames it into place, so runs that upload at once never write into a runner
 /// another has started, and a damaged file is replaced rather than run.
-fn upload(host: &str, local: &std::path::Path, hash: &str) -> Result<String, String> {
-    let remote = format!("{REMOTE_DIRECTORY}/{hash}");
+fn upload(
+    host: &str,
+    directory: &str,
+    local: &std::path::Path,
+    hash: &str,
+) -> Result<String, String> {
+    let remote = format!("{directory}/{hash}");
     let part = format!("{remote}.part.$$");
     let has = |file: &str| format!("echo \"{hash}  {file}\" | sha256sum --check --status");
     let script = format!(
-        "mkdir -p {REMOTE_DIRECTORY} && {{ {{ test -x {remote} && {}; }} || {{ cat > {part} && {} && chmod +x {part} && mv {part} {remote}; }} || {{ rm -f {part}; exit 1; }}; }}",
+        "mkdir -p {directory} && {{ {{ test -x {remote} && {}; }} || {{ cat > {part} && {} && chmod +x {part} && mv {part} {remote}; }} || {{ rm -f {part}; exit 1; }}; }}",
         has(&remote),
         has(&part)
     );
@@ -265,7 +271,7 @@ impl Reference {
             if attempt > 0 {
                 std::thread::sleep(std::time::Duration::from_secs(10));
             }
-            let started = upload(&host, &directory, &hash)
+            let started = upload(&host, target.remote_directory, &directory, &hash)
                 .and_then(|remote| Self::connect(ssh(&host).arg(remote).arg("serve"), target));
             match started {
                 Ok(reference) => return reference,

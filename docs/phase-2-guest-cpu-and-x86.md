@@ -2635,12 +2635,12 @@ signal from a broken blob (the program built as an ordinary executable must end 
 judgement too comes from the guest's real CPU through the transport, never from Docker's emulation.
 
 The transport is generic: `Reference::start(&G::REFERENCE)`, where `REFERENCE` is a `Target` value (the
-runner's Rust target, Docker's platform, the SSH host's variable and the field names; it stands for the
+runner's Rust target, Docker's platform, the SSH host's variable, the runner's directory there and the field names; it stands for the
 names group above, and lets X2 prove the x86 transport before X3 makes an x86 `Guest`), runs the runner as a child process and talks to it
 over its stdin and stdout. When the host's CPU is the guest's (`std::env::consts::ARCH` against
 `RUST_TARGET`), the child is `docker run -i --platform G::DOCKER_PLATFORM`, as today; otherwise it is
-`ssh` with `ControlMaster` to the host in `G::REFERENCE_HOST`, after uploading the runner to
-`~/wcontainers-x86/reference/<SHA-256>` when no file with that content is there (`sha256sum` checks the kept
+`ssh` with `ControlMaster` to the host in `G::REFERENCE_HOST`, after uploading the runner to the target's
+own directory (`~/wcontainers-x86/reference/<SHA-256>` for x86-64) when no file with that content is there (`sha256sum` checks the kept
 file, and each upload before it is renamed into place), tried five times ten seconds apart before
 the run fails. A connection lost later (a request written or its result read when the child has ended) is
 the transport's failure, not the guest's: the runner is started again the same way and the request sent

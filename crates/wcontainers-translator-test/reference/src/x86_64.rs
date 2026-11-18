@@ -286,13 +286,16 @@ impl Machine for Cpu {
     /// A rep string instruction's count register (rcx, or ecx with an address-size prefix) and a gather's
     /// most elements, 8; nothing for any other instruction.
     fn limit(code: &[u8], state: &[u128]) -> u64 {
-        use iced_x86::{Decoder, DecoderOptions};
+        use iced_x86::{Decoder, DecoderOptions, OpKind};
         let instruction = Decoder::with_ip(64, code, CODE, DecoderOptions::NONE).decode();
         if instruction.is_string_instruction()
             && (instruction.has_rep_prefix() || instruction.has_repne_prefix())
         {
             let count = state[RCX] as u64;
-            if code.contains(&0x67) {
+            let counts_ecx = instruction
+                .op_kinds()
+                .any(|k| matches!(k, OpKind::MemorySegESI | OpKind::MemoryESEDI));
+            if counts_ecx {
                 count & 0xffff_ffff
             } else {
                 count

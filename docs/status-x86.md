@@ -236,6 +236,8 @@ Proof of run 7 (the Mac, Apple M5):
   overrides the export, so the line would be a second mechanism with no effect. Only its status file changed
   otherwise.
 
+## X2, run 6 (2026-11-18)
+
 The second independent check of X2 found two blocking problems and four smaller ones (and a measurement).
 What was done about each:
 - Blocking, an ARM64 fact in the generic harness: `Binary::in_code` kept a real binary's function start only
@@ -1336,6 +1338,14 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   twice: the first run did not pass its environment settings to `stepper6` and was discarded; in run 9,
   41 hand-written cases (`cases16.sh` 39, the two `xacquire` runs 2); in run 10, one run each of `tf`
   (8 trap-flag scenarios in 9 runs, 20 stops) and `rf` (8 signal frames), and 6 `stepper6` cases.
+- X2 run 9: the x86 reference's tests (6, the runner failure test among them) once alone and in the suite;
+  `same-cases.sh c1153e5 31337` (layer 1 1215 forms at 64 a form, layer 2 64 programs, 64 no-form cases, 105
+  hand-made, both sides); the test guest's 16 tests twice (with the old slot sum, 10 failing, and with the
+  new); the suite once at the defaults (seed 1), and a first suite run cut after 45 tests; layer 3 after the
+  merge at its default 4 cases.
+- X2 run 7: layer 1 at the defaults (seed 1) twice (once alone, once in the suite); changes and smoke at the
+  defaults; `same-cases.sh d27cd70` for seeds 1, 2, 3 and 9321 at 64 a form and 64 programs, both sides; the
+  x86 reference's 4 tests twice (the first failing all four at the content check) and in the suite.
 - X2 run 8: layer 1 at the defaults (seed 1) twice (once alone, once in the suite); `same-cases.sh` for seeds
   271828 and 4242 against d27cd70 and 271828 against 995e949 at 64 a form and 64 programs; the x86
   reference's 43 cases, 2 blobs, 3 programs, the refusal and reconnection tests, once alone and in the suite;
