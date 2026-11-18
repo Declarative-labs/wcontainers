@@ -192,6 +192,11 @@ fn copies_between_depth_and_colour_formats() {
 }
 
 #[test]
+fn copies_between_index_and_data_buffers() {
+    checks::copies_between_index_and_data_buffers::<Angle>();
+}
+
+#[test]
 fn loads_count_levels_from_the_view() {
     checks::loads_count_levels_from_the_view::<Angle>();
 }

@@ -1387,7 +1387,32 @@ impl WebGl {
         let kind = match src.target {
             glow::TEXTURE_2D => Fetch::Depth2D,
             glow::TEXTURE_2D_ARRAY => Fetch::DepthArray,
-            _ => return Err(self.unbuilt("depth read backs of cube textures")),
+            // GLSL ES 3.00 fetches no texel of a cube: the faces are blitted into a 2D array first.
+            _ => {
+                let flat = self.create_texture(&TextureDesc {
+                    dimension: TextureDimension::D2,
+                    format: src.desc.format,
+                    width: extent.width,
+                    height: extent.height,
+                    depth_or_layers: extent.depth_or_layers,
+                    mip_levels: 1,
+                    samples: 1,
+                    usage: TextureUsage::RENDER | TextureUsage::SAMPLE,
+                    cube: false,
+                    reinterpret: false,
+                })?;
+                let at = TextureRegion {
+                    texture: &flat,
+                    mip: 0,
+                    layer: 0,
+                    origin: Origin::default(),
+                    stencil: region.stencil,
+                };
+                self.blit_depth(region, &at, extent);
+                let read = self.depth_by_draw(&at, extent);
+                self.destroy(Object::Texture(flat.clone()));
+                return read;
+            }
         };
         let bits = region.stencil && !self.extensions.contains("WEBGL_stencil_texturing");
         let kind = match kind {
@@ -3726,7 +3751,18 @@ impl Backend for WebGl {
             }
         }
         if !copied {
-            self.unbuilt("copies between index-only and data-only buffers");
+            // WebGL copies between GL buffers of one type only: an index-only and a data-only
+            // buffer meet on the host.
+            self.slow.hit(SlowPath::HostCopyReadBack);
+            let mut bytes = vec![0; size as usize];
+            let read = ReadSource::Buffer {
+                buffer: src,
+                offset: src_offset,
+                size,
+            };
+            if self.read_back_now(&read, &mut bytes).is_ok() {
+                self.write_buffer(dst, dst_offset, &bytes, WriteMode::Ordered);
+            }
             return;
         }
         if let Some(index) = missed {

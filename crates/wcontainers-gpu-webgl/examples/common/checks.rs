@@ -867,8 +867,9 @@ fn layer_at<B: Backend>(
 }
 
 /// Depth and stencil written by the host and copied from buffers read back as written: each aspect
-/// of a two-layer texture of every depth format written whole, then a part of each layer copied in
-/// from a buffer at an offset and a pitch of its own; the other aspect of a combined format stays.
+/// of two layers of a texture of every depth format (a 2D array, and faces 3 and 4 of a cube)
+/// written whole, then a part of each layer copied in from a buffer at an offset and a pitch of its
+/// own; the other aspect of a combined format stays.
 pub fn depth_and_stencil_written_read_back_as_written<H: Host>() {
     use crate::kit;
     let mut b = H::make();
@@ -885,18 +886,24 @@ pub fn depth_and_stencil_written_read_back_as_written<H: Host>() {
         height: 4,
         depth_or_layers: 2,
     };
-    for (n, format) in formats.into_iter().enumerate() {
+    let shapes = formats
+        .into_iter()
+        .enumerate()
+        .flat_map(|(n, f)| [(n, f, false), (n + formats.len(), f, true)]);
+    let mut wrong = Vec::new();
+    for (n, format, cube) in shapes {
         if !b.caps().formats.get(format).contains(FormatUse::COPY_OUT) {
             continue;
         }
+        let (layers, first) = if cube { (6, 3) } else { (2, 0) };
         let t = kit::texture(
             &mut b,
             TextureDimension::D2,
             format,
-            [4, 4, 2],
+            [4, 4, layers],
             1,
             usage,
-            false,
+            cube,
         );
         let combined = format.kind() == FormatKind::DepthStencil;
         let aspects: &[bool] = if combined { &[false, true] } else { &[false] };
@@ -914,7 +921,7 @@ pub fn depth_and_stencil_written_read_back_as_written<H: Host>() {
                 depth_values(format, 32, seed)
             };
             b.write_texture(
-                &layer_at(&t, 0, 0, 0, stencil),
+                &layer_at(&t, first, 0, 0, stencil),
                 whole,
                 &all,
                 4 * bytes as u32,
@@ -938,7 +945,7 @@ pub fn depth_and_stencil_written_read_back_as_written<H: Host>() {
                     row_pitch: 3 * bytes as u32,
                     rows_per_layer: 2,
                 },
-                &layer_at(&t, 0, 1, 2, stencil),
+                &layer_at(&t, first, 1, 2, stencil),
                 Extent {
                     width: 2,
                     height: 2,
@@ -960,18 +967,44 @@ pub fn depth_and_stencil_written_read_back_as_written<H: Host>() {
             b.destroy(Object::Buffer(src));
         }
         for (stencil, bytes, expected) in want {
-            let got = kit::read(&mut b, &t, 0, 0, [4, 4, 2], bytes, stencil);
-            let status = b.status();
-            assert_eq!(
-                got,
-                expected,
-                "{format:?}, {} (device {status:?}: {:?})",
-                if stencil { "stencil" } else { "depth" },
-                b.slow_paths()
-            );
+            // Both layers in one read, then each alone.
+            let reads = [(0, 2), (0, 1), (1, 1)];
+            for (layer, count) in reads {
+                let got = kit::read(&mut b, &t, 0, first + layer, [4, 4, count], bytes, stencil);
+                let at = layer as usize * 16 * bytes;
+                if got != expected[at..at + got.len()] {
+                    wrong.push(format!(
+                        "{format:?}{} {}, {count} layers from {layer}: {got:?}, expected {:?}",
+                        if cube { " cube" } else { "" },
+                        if stencil { "stencil" } else { "depth" },
+                        &expected[at..at + got.len()]
+                    ));
+                }
+            }
         }
         b.destroy(Object::Texture(t));
     }
+    let status = b.status();
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    assert_eq!(status, DeviceStatus::Ok);
+}
+
+/// Copies between a buffer used only as indices and one used only for other data, both ways: WebGL
+/// copies between GL buffers of one type only.
+pub fn copies_between_index_and_data_buffers<H: Host>() {
+    let mut b = H::make();
+    let indices = pattern(64, 0x6c07_8965);
+    let data = pattern(64, 0x2f6b_6f05);
+    let index = buffer(&mut b, BufferUsage::INDEX, &indices);
+    let other = buffer(&mut b, BufferUsage::VERTEX, &data);
+    b.copy_buffer(&index, 4, &other, 20, 24);
+    let mut want = data.clone();
+    want[20..44].copy_from_slice(&indices[4..28]);
+    assert_eq!(read_buffer(&mut b, &other, 64), want, "indices into data");
+    b.copy_buffer(&other, 0, &index, 32, 32);
+    let mut back = indices.clone();
+    back[32..64].copy_from_slice(&want[0..32]);
+    assert_eq!(read_buffer(&mut b, &index, 64), back, "data into indices");
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
 
