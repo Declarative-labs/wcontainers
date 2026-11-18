@@ -1,5 +1,5 @@
 //! The library surface: a runtime makes a container from what to run (the OCI runtime configuration),
-//! its root's files, how it runs (the back end's tuning) and what machine it sees, with a system.
+//! its root's files, how its translator works (the executor's translator settings) and what machine it sees, with a system.
 
 use std::path::PathBuf;
 
@@ -19,15 +19,19 @@ pub struct RuntimeSettings {
 pub trait Executor: Execution {
     /// What the containers of one runtime share, such as compiled translations.
     type Shared;
-    /// How the back end runs a container: it changes speed, never behaviour.
-    type Tuning;
+    /// How the translator works for a container: it changes speed, never behaviour.
+    type TranslatorSettings;
     /// The CPU features the guest is told it has.
     type Offer;
     /// The architecture of the guests it runs, as an OCI image configuration names it.
     const ARCHITECTURE: &'static str;
 
     fn shared(settings: &RuntimeSettings) -> Self::Shared;
-    fn new(shared: &Self::Shared, tuning: &Self::Tuning, offer: &Self::Offer) -> Self;
+    fn new(
+        shared: &Self::Shared,
+        translator_settings: &Self::TranslatorSettings,
+        offer: &Self::Offer,
+    ) -> Self;
     /// What ends a free turn of this back end.
     fn stop_flag(&self) -> StopFlag;
 }
@@ -93,7 +97,7 @@ impl<E: Executor> Runtime<E> {
         &self,
         spec: &Spec,
         image: &Image,
-        tuning: &E::Tuning,
+        translator_settings: &E::TranslatorSettings,
         machine: &Machine<E::Offer>,
         mut system: S,
     ) -> Result<Container<E, S>, Error> {
@@ -116,7 +120,7 @@ impl<E: Executor> Runtime<E> {
             .ok_or_else(|| Error::NotFound(accepted.args[0].clone()))?;
         let mut kernel = Kernel::new();
         image.add_to(&mut kernel, &accepted.hostname)?;
-        let mut cpu = E::new(&self.shared, tuning, &machine.offer);
+        let mut cpu = E::new(&self.shared, translator_settings, &machine.offer);
         system.stop_flag(cpu.stop_flag());
         let arguments: Vec<&[u8]> = accepted.args.iter().map(|a| a.as_bytes()).collect();
         let environment: Vec<&[u8]> = env.iter().map(|v| v.as_bytes()).collect();

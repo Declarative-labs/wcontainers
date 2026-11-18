@@ -2880,10 +2880,10 @@ mod tests {
     }
 }
 
-/// How the WebAssembly back end runs a container: it changes speed, never behaviour, and is part of
+/// How the translator works for a container: it changes speed, never behaviour, and is part of
 /// every cache key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Tuning {
+pub struct TranslatorSettings {
     pub look_ahead: LookAhead,
     pub optimise: Optimise,
 }
@@ -2893,7 +2893,7 @@ where
     G: Guest<Block = RegisterBlock>,
 {
     type Shared = Arc<Compiler<G>>;
-    type Tuning = Tuning;
+    type TranslatorSettings = TranslatorSettings;
     type Offer = G::Offer;
     const ARCHITECTURE: &'static str = match G::ID {
         GuestId::Arm64 => "arm64",
@@ -2905,8 +2905,17 @@ where
         Compiler::new(settings.cache.clone())
     }
 
-    fn new(shared: &Arc<Compiler<G>>, tuning: &Tuning, offer: &G::Offer) -> Self {
-        CpuSide::new(shared.clone(), tuning.look_ahead, tuning.optimise, *offer)
+    fn new(
+        shared: &Arc<Compiler<G>>,
+        translator_settings: &TranslatorSettings,
+        offer: &G::Offer,
+    ) -> Self {
+        CpuSide::new(
+            shared.clone(),
+            translator_settings.look_ahead,
+            translator_settings.optimise,
+            *offer,
+        )
     }
 
     fn stop_flag(&self) -> StopFlag {

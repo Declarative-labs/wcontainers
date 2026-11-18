@@ -10,7 +10,7 @@ use wcontainers_arm64::Arm64;
 use wcontainers_runtime::{
     Error, Image, LocalSystem, Machine, Runtime, RuntimeSettings, base_spec, spec_from_json,
 };
-use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, Tuning};
+use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, TranslatorSettings};
 
 /// A root holding only its own directory.
 fn image() -> &'static PathBuf {
@@ -44,13 +44,19 @@ fn make(value: Value) -> Result<(), Error> {
     let spec = spec_from_json(&serde_json::to_vec(&value).unwrap())?;
     let runtime = Runtime::<CpuSide<Arm64>>::new(&RuntimeSettings::default());
     let system = LocalSystem::new(Box::new(std::io::sink()), Box::new(std::io::sink()));
-    let tuning = Tuning {
+    let translator_settings = TranslatorSettings {
         look_ahead: LookAhead::Full,
         optimise: Optimise::Speed,
     };
     let image = Image::tar(image()).unwrap();
     runtime
-        .container(&spec, &image, &tuning, &Machine { offer: () }, system)
+        .container(
+            &spec,
+            &image,
+            &translator_settings,
+            &Machine { offer: () },
+            system,
+        )
         .map(drop)
 }
 

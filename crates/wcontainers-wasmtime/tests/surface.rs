@@ -16,7 +16,7 @@ use wcontainers_runtime::oci_spec::runtime::Spec;
 use wcontainers_runtime::{
     Container, Ending, Image, LocalSystem, Machine, Runtime, RuntimeSettings, Step, base_spec,
 };
-use wcontainers_wasmtime::{BOUND, CpuSide, LookAhead, Optimise, Origin, Tuning};
+use wcontainers_wasmtime::{BOUND, CpuSide, LookAhead, Optimise, Origin, TranslatorSettings};
 
 const IMAGE: &str = "alpine:3.22";
 const PIPELINE: &str = "cat /etc/os-release | grep ^ID= | tr a-z A-Z; ls /bin | sort -r | head -3; \
@@ -173,12 +173,18 @@ fn container(
 ) -> Container<CpuSide<Arm64>, LocalSystem> {
     let runtime = Runtime::<CpuSide<Arm64>>::new(&RuntimeSettings { cache });
     let system = LocalSystem::new(Box::new(stdout.clone()), Box::new(stderr.clone()));
-    let tuning = Tuning {
+    let translator_settings = TranslatorSettings {
         look_ahead: look_ahead(),
         optimise: Optimise::Speed,
     };
     runtime
-        .container(spec, image, &tuning, &Machine { offer: () }, system)
+        .container(
+            spec,
+            image,
+            &translator_settings,
+            &Machine { offer: () },
+            system,
+        )
         .unwrap()
 }
 
@@ -817,11 +823,17 @@ fn a_program_not_in_the_path_is_not_found() {
     spec.set_process(Some(process));
     let runtime = Runtime::<CpuSide<Arm64>>::new(&RuntimeSettings { cache: None });
     let system = LocalSystem::new(Box::new(std::io::sink()), Box::new(std::io::sink()));
-    let tuning = Tuning {
+    let translator_settings = TranslatorSettings {
         look_ahead: look_ahead(),
         optimise: Optimise::Speed,
     };
-    match runtime.container(&spec, &image, &tuning, &Machine { offer: () }, system) {
+    match runtime.container(
+        &spec,
+        &image,
+        &translator_settings,
+        &Machine { offer: () },
+        system,
+    ) {
         Err(wcontainers_runtime::Error::NotFound(name)) => assert_eq!(name, "ls"),
         Err(other) => panic!("{other}"),
         Ok(_) => panic!("ls was run from the working directory"),
