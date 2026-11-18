@@ -117,6 +117,10 @@ pub struct Reference {
     pub bases: Option<Bases>,
     /// The sampled texture's per-resource minimum level-of-detail clamp (`SetResourceMinLOD`).
     pub min_lod: Option<f32>,
+    /// Depth clamped instead of clipped (the rasteriser's `DepthClipEnable` false).
+    pub depth_clip_off: bool,
+    /// The sampler's address modes, where not clamping.
+    pub address: Option<[D3D11_TEXTURE_ADDRESS_MODE; 3]>,
 }
 
 /// A draw's range with bases, direct or from an argument buffer; an indexed draw's indices are 0, 1,
@@ -214,12 +218,15 @@ pub fn direct3d_11(
         unsafe { gpu.context.SetResourceMinLOD(&resource, clamp) };
     }
     let view = gpu.srv(&texture.cast().unwrap(), None).unwrap();
+    let address = reference
+        .address
+        .unwrap_or([D3D11_TEXTURE_ADDRESS_CLAMP; 3]);
     let sampler = gpu
         .sampler(&D3D11_SAMPLER_DESC {
             Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
-            AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
-            AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
-            AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+            AddressU: address[0],
+            AddressV: address[1],
+            AddressW: address[2],
             MipLODBias: reference.lod_bias,
             MaxAnisotropy: 1,
             ComparisonFunc: D3D11_COMPARISON_NEVER,
@@ -233,6 +240,7 @@ pub fn direct3d_11(
         raster.SlopeScaledDepthBias = slope;
         raster.DepthBiasClamp = clamp;
     }
+    raster.DepthClipEnable = (!reference.depth_clip_off).into();
     let raster = gpu.rasterizer(&raster).unwrap();
     let (target, rtv) = gpu.target(SIZE, SIZE, dxgi(format)).unwrap();
     let blend = reference.blend.map(|target| {
@@ -538,6 +546,8 @@ pub struct Setup {
     /// merged sampler whose range starts at it, bound at
     /// [`wcontainers_gpu::CLAMPED_SAMPLER_BINDING`] plus each pair's index.
     pub min_lod: Option<f32>,
+    /// The sampler's address modes.
+    pub address: [wcontainers_gpu::AddressMode; 3],
 }
 
 impl Setup {
@@ -556,6 +566,7 @@ impl Setup {
             levels: 1,
             bases: None,
             min_lod: None,
+            address: [wcontainers_gpu::AddressMode::Clamp; 3],
         }
     }
 }
@@ -649,7 +660,7 @@ pub fn ours<B: Backend + 'static>(
             min: Filter::Linear,
             mag: Filter::Linear,
             mip: Filter::Linear,
-            address: [wcontainers_gpu::AddressMode::Clamp; 3],
+            address: setup.address,
             lod_range: [min_lod.to_bits(), f32::MAX.to_bits()],
             anisotropy: 1,
             compare: None,

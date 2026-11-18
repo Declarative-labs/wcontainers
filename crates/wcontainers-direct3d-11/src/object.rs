@@ -113,6 +113,8 @@ pub struct Texture<B: Backend> {
     pub shadow: RefCell<Vec<Vec<u8>>>,
     /// Per subresource of a staging texture, its shadow against the GPU's copy.
     pub staged: RefCell<Vec<Staged<B>>>,
+    /// A swap chain's buffer, whose target views may also take the sRGB twin of its format.
+    pub chain: bool,
 }
 
 impl<B: Backend> Texture<B> {
@@ -307,10 +309,14 @@ pub struct Shader<B: Backend> {
     /// What stands in for an empty slot of each texture and sampler it reads, by binding number
     /// (`None` where nothing does yet).
     pub stand_ins: Vec<(u32, Option<StandIn>)>,
-    /// A vertex shader's bytecode, converted again for pixel shaders that interpolate its outputs
-    /// other than by perspective, and a pixel shader's, converted again for counting; empty for
-    /// compute shaders.
+    /// The bytecode, converted again for each variant a draw asks for.
     pub bytecode: Vec<u8>,
+    /// The sampler slots the program reads, one bit each.
+    pub samplers: u16,
+    /// The program reads the targets' sample count, so each draw converts it for theirs.
+    pub reads_samples: bool,
+    /// Where the plain program reads its helper constants.
+    pub helpers: Rc<crate::shader::Helpers>,
 }
 
 /// What a draw binds for an empty texture or sampler slot its shader reads.

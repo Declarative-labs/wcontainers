@@ -1131,6 +1131,10 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
     not biased by the fixed function) and clamped to the viewport's depth range
     (`HelperValue::DepthRange`). `DepthClampInShader`. Exact; writing depth turns off early depth tests
     for those draws only.
+  - The vertex and pixel programs of these two variants are converted apart, so both keys carry
+    `VariantKey::linked`: the first location past every location either program's reflection lists,
+    and the vertex program's clip distance count. The added values are four-component values from that
+    location, the distances first, then the unclamped z.
   - The primitive index in pixel shaders: the stage helper's route again, as for a geometry shader
     that passes the primitive's number on, with the pixel shader made as `PRIMITIVE_ID_FROM_STAGE`
     (it reads the number from a flat value the helper's draw passes) (`PrimitiveIdAsGeometry`). Exact,
