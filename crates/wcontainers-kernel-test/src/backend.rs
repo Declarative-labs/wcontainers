@@ -1,12 +1,14 @@
 //! The first file backend in tests: fuse-backend-rs's passthrough server (`backend/`), built for
 //! ARM64 Linux in a container and run in one, serving a directory in memory there. Our kernel
-//! reaches it over the container's standard streams; the reference mounts the same server through
+//! reaches it over TCP through a port the container publishes (Docker's standard input took about
+//! 14 ms for each message over 8 KiB on this Mac); the reference mounts the same server through
 //! Linux's own FUSE.
 
 use std::collections::VecDeque;
 use std::io::{Read, Write};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::reference::{HOSTNAME, IMAGE};
@@ -94,18 +96,21 @@ pub fn serve_command(cached: bool) -> &'static str {
     }
 }
 
+/// The port the server listens at in its container.
+const PORT: u16 = 9000;
+
 /// FUSE requests that have no answer: FORGET, NOTIFY_REPLY and BATCH_FORGET.
 fn answered(opcode: u32) -> bool {
     !matches!(opcode, 2 | 41 | 42)
 }
 
-/// One running server, reached over its container's standard streams.
+/// One running server, reached over one connection to its container.
 pub struct Backend {
     child: Child,
     /// Its container's name.
     name: String,
-    input: ChildStdin,
-    output: ChildStdout,
+    input: TcpStream,
+    output: TcpStream,
     /// Requests sent whose answers have not been read, in order: the server answers in order.
     outstanding: VecDeque<u64>,
     /// Messages read from the server and not yet handed to the kernel: a host may hand them over
@@ -152,11 +157,12 @@ impl Backend {
             .args([
                 "run",
                 "--rm",
-                "-i",
                 "--platform",
                 "linux/arm64",
                 "--name",
                 &name,
+                "--publish",
+                &format!("127.0.0.1::{PORT}"),
             ])
             .arg("--volume")
             .arg(format!("{}:/wcb:ro", server.display()));
@@ -176,25 +182,25 @@ impl Backend {
                 command
                     .arg("--volume")
                     .arg(format!("{}:/wci/image.tar:ro", archive.display()));
-                format!("tar -xpf /wci/image.tar -C {SERVED} && exec {serve} pipe {SERVED}")
+                format!("tar -xpf /wci/image.tar -C {SERVED} && exec {serve} listen {SERVED}")
             }
             Served::Empty => {
                 command.args(["--tmpfs", SERVED]);
-                format!("exec {serve} pipe {SERVED}")
+                format!("exec {serve} listen {SERVED}")
             }
             Served::Image(name) => {
                 image = name;
-                format!("exec {serve} pipe {SERVED}")
+                format!("exec {serve} listen {SERVED}")
             }
         };
         let mut child = command
             .args([image, "sh", "-c", &script])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
             .spawn()
             .expect("running docker");
-        let input = child.stdin.take().expect("the server's input");
-        let output = child.stdout.take().expect("the server's output");
+        let input = connect(&mut child, &name);
+        let output = input.try_clone().expect("the connection");
         Self {
             child,
             name,
@@ -311,6 +317,37 @@ impl Backend {
         let expected = self.outstanding.pop_front();
         assert_eq!(expected, Some(unique), "the server answers in order");
         Some(Message::Answer(unique, message))
+    }
+}
+
+/// Connects to the server of container `name`, once it says it is served: Docker's proxy takes
+/// connections before the server listens and ends them.
+fn connect(child: &mut Child, name: &str) -> TcpStream {
+    let started = std::time::Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().expect("the server's container") {
+            panic!("the backend's container {name} ended: {status}");
+        }
+        let port = Command::new("docker")
+            .args(["port", name, &PORT.to_string()])
+            .stderr(Stdio::null())
+            .output()
+            .expect("running docker port");
+        let address = String::from_utf8_lossy(&port.stdout);
+        if let Some(address) = address.lines().next()
+            && let Ok(mut stream) = TcpStream::connect(address.trim())
+        {
+            let mut served = [0u8];
+            if stream.read_exact(&mut served).is_ok() {
+                stream.set_nodelay(true).expect("no delay");
+                return stream;
+            }
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(600),
+            "the backend's container {name} did not serve"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
 

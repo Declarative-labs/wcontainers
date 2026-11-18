@@ -1,13 +1,15 @@
 //! The first file backend for tests: fuse-backend-rs's passthrough file system over a directory.
 //!
-//! `wc-backend pipe <directory>` serves FUSE messages read from standard input and writes each reply
-//! to standard output, for our kernel's backend hook. `wc-backend mount <directory> <mount point>
+//! `wc-backend listen <directory>` serves FUSE messages over one TCP connection taken at [`PORT`],
+//! each reply written back on it, for our kernel's backend hook: a byte is sent first to say it is
+//! being served. `wc-backend mount <directory> <mount point>
 //! <command>...` serves the same file system through Linux's own FUSE at the mount point, runs the
 //! command there without the power to mount (as in a default container) and ends with its status:
 //! the reference. Files are opened for direct reads and writes, unless `--cached` comes first: then
 //! they are opened for the client's page cache, which shared mappings need.
 
-use std::io::Read;
+use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::sync::Arc;
@@ -17,8 +19,14 @@ use fuse_backend_rs::api::server::Server;
 use fuse_backend_rs::passthrough::{CachePolicy, Config, PassthroughFs};
 use fuse_backend_rs::transport::{FuseBuf, FuseDevWriter, FuseSession, Reader};
 
+mod announcing;
+use announcing::Announcing;
+
 /// The largest message either side sends: fuse-backend-rs's largest buffer and a header.
 const LARGEST: usize = (1 << 20) + 4096;
+
+/// The port `listen` takes its connection at.
+const PORT: u16 = 9000;
 
 fn main() {
     let mut arguments: Vec<String> = std::env::args().collect();
@@ -43,19 +51,24 @@ fn main() {
     };
     let fs = PassthroughFs::<()>::new(config).expect("the passthrough file system");
     fs.import().expect("the directory served");
-    let server = Arc::new(Server::new(Arc::new(fs)));
+    let server = Arc::new(Server::new(Arc::new(Announcing(fs))));
     match arguments.get(1).map(String::as_str) {
-        Some("pipe") => pipe(&server),
+        Some("listen") => listen(&server),
         Some("mount") => mount(server, Path::new(&arguments[3]), &arguments[4..]),
         _ => panic!(
-            "wc-backend [--cached] pipe <directory> | mount <directory> <mount point> <command>..."
+            "wc-backend [--cached] listen <directory> | mount <directory> <mount point> <command>..."
         ),
     }
 }
 
-/// Serves messages from standard input, each reply to standard output, until the input ends.
-fn pipe(server: &Server<Arc<PassthroughFs>>) {
-    let mut input = std::io::stdin().lock();
+/// Takes one connection at [`PORT`], says it is served, then serves its messages, each reply
+/// written back, until it ends.
+fn listen(server: &Server<Arc<Announcing>>) {
+    let listener = std::net::TcpListener::bind(("0.0.0.0", PORT)).expect("listening");
+    let (mut input, _) = listener.accept().expect("a connection");
+    input.set_nodelay(true).expect("no delay");
+    input.write_all(&[0]).expect("saying it is served");
+    let fd = input.as_raw_fd();
     let mut request = vec![0u8; LARGEST];
     let mut reply = vec![0u8; LARGEST];
     loop {
@@ -63,13 +76,16 @@ fn pipe(server: &Server<Arc<PassthroughFs>>) {
             return;
         }
         let length = u32::from_le_bytes(request[..4].try_into().expect("four bytes")) as usize;
-        assert!((4..=LARGEST).contains(&length), "a request of {length} bytes");
+        assert!(
+            (4..=LARGEST).contains(&length),
+            "a request of {length} bytes"
+        );
         input
             .read_exact(&mut request[4..length])
             .expect("a whole request");
         let reader = Reader::from_fuse_buffer(FuseBuf::new(&mut request[..length]))
             .expect("a reader over the request");
-        let writer = FuseDevWriter::<()>::new(1, &mut reply).expect("a writer to standard output");
+        let writer = FuseDevWriter::<()>::new(fd, &mut reply).expect("a writer to the connection");
         if let Err(error) = server.handle_message(reader, writer.into(), None, None) {
             eprintln!("wc-backend: {error:?}");
         }
@@ -77,7 +93,7 @@ fn pipe(server: &Server<Arc<PassthroughFs>>) {
 }
 
 /// Serves through Linux's FUSE at `at` while `command` runs there, then ends with its status.
-fn mount(server: Arc<Server<Arc<PassthroughFs>>>, at: &Path, command: &[String]) {
+fn mount(server: Arc<Server<Arc<Announcing>>>, at: &Path, command: &[String]) {
     let mut session = FuseSession::new(at, "wc-backend", "", false).expect("a FUSE session");
     session.mount().expect("mounted");
     let mut channel = session.new_channel().expect("a FUSE channel");
@@ -112,7 +128,10 @@ fn mount(server: Arc<Server<Arc<PassthroughFs>>>, at: &Path, command: &[String])
         });
     }
     let status = run.status().expect("the command started");
-    let code = match (status.code(), std::os::unix::process::ExitStatusExt::signal(&status)) {
+    let code = match (
+        status.code(),
+        std::os::unix::process::ExitStatusExt::signal(&status),
+    ) {
         (Some(code), _) => code,
         (None, Some(signal)) => 128 + signal,
         _ => 1,
