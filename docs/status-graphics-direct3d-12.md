@@ -395,8 +395,8 @@ A working example of all of it is this track's Windows library: `examples/direct
 - Tests (one draws on the GPU): `tools/graphics-rig/gpu-job --build "cargo test -j 3 -p
   wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12 --no-run" -- "cargo test
   -j 3 --no-fail-fast -p wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12"`
-  (33 tests: 9 infrastructure, 9 front, 10 device on the recorder, 1 on the GPU, 4 unit; run 12:
-  all pass at 18e6979). Put `set CARGO_INCREMENTAL=0&& ` before both commands (see the note further down).
+  (33 tests: 9 infrastructure, 9 front, 10 device on the recorder, 1 on the GPU, 4 unit; run 13:
+  all pass at 15290f3, built clean). Put `set CARGO_INCREMENTAL=0&& ` before both commands (see the note further down).
   `WEBGPU_API=dx12|vulkan` picks wgpu's path for the GPU test.
 - Lint: `tools/graphics-rig/remote "cargo clippy -j 3 --all-targets -p
   wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12 -- -D warnings"`.
