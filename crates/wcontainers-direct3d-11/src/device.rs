@@ -767,12 +767,29 @@ impl<B: Backend> Device<B> {
             ));
         }
         if d.misc_flags
-            & !(MISC_TEXTURECUBE | MISC_GENERATE_MIPS | MISC_RESOURCE_CLAMP | MISC_SHARED)
+            & !(MISC_TEXTURECUBE
+                | MISC_GENERATE_MIPS
+                | MISC_RESOURCE_CLAMP
+                | MISC_SHARED
+                | MISC_GDI_COMPATIBLE)
             != 0
         {
             return not_implemented(
-                "textures with misc flags other than a cube, mip generation, a level clamp and shared",
+                "textures with misc flags other than a cube, mip generation, a level clamp, shared \
+                 and GDI-compatible",
             );
+        }
+        // GDI draws into B8G8R8A8 render targets of one sample and default usage.
+        if d.misc_flags & MISC_GDI_COMPATIBLE != 0
+            && (!matches!(d.format, 87 | 90 | 91)
+                || d.bind_flags & bind::RENDER_TARGET == 0
+                || d.usage != usage::DEFAULT
+                || d.sample_count != 1
+                || d.dimension != TexDim::D2)
+        {
+            return Err(Error::InvalidArg(
+                "a GDI-compatible texture is a B8G8R8A8 2D render target of one sample",
+            ));
         }
         let both = bind::SHADER_RESOURCE | bind::RENDER_TARGET;
         if d.misc_flags & MISC_GENERATE_MIPS != 0 && d.bind_flags & both != both {

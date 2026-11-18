@@ -2988,14 +2988,14 @@ impl IDXGISurface1_Impl for Buffer_Impl {
         discard: windows::core::BOOL,
     ) -> windows::core::Result<windows::Win32::Graphics::Gdi::HDC> {
         let _lock = lock();
-        Err(missing("IDXGISurface1::GetDC"))
+        self.get_dc(discard)
     }
     fn ReleaseDC(
         &self,
         pdirtyrect: *const windows::Win32::Foundation::RECT,
     ) -> windows::core::Result<()> {
         let _lock = lock();
-        Err(missing("IDXGISurface1::ReleaseDC"))
+        self.release_dc(pdirtyrect)
     }
 }
 
@@ -3238,14 +3238,14 @@ impl IDXGISurface1_Impl for Texture1D_Impl {
         discard: windows::core::BOOL,
     ) -> windows::core::Result<windows::Win32::Graphics::Gdi::HDC> {
         let _lock = lock();
-        Err(missing("IDXGISurface1::GetDC"))
+        self.get_dc(discard)
     }
     fn ReleaseDC(
         &self,
         pdirtyrect: *const windows::Win32::Foundation::RECT,
     ) -> windows::core::Result<()> {
         let _lock = lock();
-        Err(missing("IDXGISurface1::ReleaseDC"))
+        self.release_dc(pdirtyrect)
     }
 }
 
@@ -3496,14 +3496,14 @@ impl IDXGISurface1_Impl for Texture2D_Impl {
         discard: windows::core::BOOL,
     ) -> windows::core::Result<windows::Win32::Graphics::Gdi::HDC> {
         let _lock = lock();
-        Err(missing("IDXGISurface1::GetDC"))
+        self.get_dc(discard)
     }
     fn ReleaseDC(
         &self,
         pdirtyrect: *const windows::Win32::Foundation::RECT,
     ) -> windows::core::Result<()> {
         let _lock = lock();
-        Err(missing("IDXGISurface1::ReleaseDC"))
+        self.release_dc(pdirtyrect)
     }
 }
 

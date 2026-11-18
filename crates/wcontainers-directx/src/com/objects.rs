@@ -3,11 +3,17 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use wcontainers_direct3d_11::desc;
+use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D10::*;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::*;
-use windows::core::{OutRef, Result};
+use windows::Win32::Graphics::Gdi::{
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS,
+    DeleteDC, DeleteObject, GdiFlush, HBITMAP, HDC, HGDIOBJ, SelectObject,
+};
+use windows::core::{BOOL, OutRef, Result};
 
 use super::counted::{Held, counted};
 
@@ -80,6 +86,15 @@ counted!(Buffer => Buffer_Impl {
 });
 
 impl Buffer {
+    /// `IDXGISurface1::GetDC`: buffers are never GDI-compatible.
+    pub(super) fn get_dc(&self, _discard: BOOL) -> Result<HDC> {
+        Err(DXGI_ERROR_INVALID_CALL.into())
+    }
+
+    pub(super) fn release_dc(&self, _dirty: *const RECT) -> Result<()> {
+        Err(DXGI_ERROR_INVALID_CALL.into())
+    }
+
     pub fn new(front: Rc<front::Buffer<Chosen>>, device: ID3D11Device) -> Self {
         Buffer {
             front: Locked::new(front),
@@ -151,6 +166,8 @@ macro_rules! texture {
             pub front: Locked<Rc<front::Texture<Chosen>>>,
             pub(super) child: Child,
             priority: Cell<u32>,
+            /// The device context `GetDC` handed out, until `ReleaseDC`.
+            dc: Cell<Option<Dc>>,
         }
 
         counted!($name => $imp {
@@ -166,7 +183,47 @@ macro_rules! texture {
                     front: Locked::new(front),
                     child: Child::new(device),
                     priority: Cell::new(NORMAL_PRIORITY),
+                    dc: Cell::new(None),
                 }
+            }
+
+            /// `IDXGISurface1::GetDC`: a memory device context on a DIB section holding the
+            /// texels of the texture's one subresource (left undefined with `discard`), written
+            /// back at `ReleaseDC`.
+            #[allow(dead_code)]
+            pub(super) fn get_dc(&self, discard: BOOL) -> Result<HDC> {
+                let t: &Rc<front::Texture<Chosen>> = &self.front;
+                if t.desc.misc_flags & desc::MISC_GDI_COMPATIBLE == 0 {
+                    return Err(DXGI_ERROR_INVALID_CALL.into());
+                }
+                let Some(dc) = Dc::new(t.desc.width, t.desc.height) else {
+                    return Err(windows::Win32::Foundation::E_OUTOFMEMORY.into());
+                };
+                if let Some(held) = self.dc.replace(Some(dc)) {
+                    self.dc.set(Some(held));
+                    dc.delete();
+                    return Err(DXGI_ERROR_INVALID_CALL.into());
+                }
+                if !discard.as_bool() {
+                    let read = dc.read(&self.child.front(), t);
+                    if let Err(e) = read {
+                        self.dc.take();
+                        dc.delete();
+                        return Err(hresult(e));
+                    }
+                }
+                Ok(dc.dc)
+            }
+
+            /// `IDXGISurface1::ReleaseDC`: what GDI drew is written into the texture.
+            #[allow(dead_code)]
+            pub(super) fn release_dc(&self, _dirty: *const RECT) -> Result<()> {
+                let Some(dc) = self.dc.take() else {
+                    return Err(DXGI_ERROR_INVALID_CALL.into());
+                };
+                let written = dc.write(&self.child.front(), &self.front);
+                dc.delete();
+                written.map_err(hresult)
             }
 
             pub(super) fn get_desc(&self, out: *mut $desc) {
@@ -215,6 +272,123 @@ macro_rules! texture {
             }
         }
     };
+}
+
+/// A memory device context with a top-down 32-bit DIB section selected into it.
+#[derive(Clone, Copy)]
+struct Dc {
+    dc: HDC,
+    bitmap: HBITMAP,
+    old: HGDIOBJ,
+    bits: *mut u8,
+    width: u32,
+    height: u32,
+}
+
+impl Dc {
+    fn new(width: u32, height: u32) -> Option<Dc> {
+        let info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: width as i32,
+                biHeight: -(height as i32),
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut bits = std::ptr::null_mut();
+        let bitmap =
+            unsafe { CreateDIBSection(None, &info, DIB_RGB_COLORS, &mut bits, None, 0) }.ok()?;
+        let dc = unsafe { CreateCompatibleDC(None) };
+        if dc.is_invalid() {
+            unsafe { DeleteObject(bitmap.into()).ok().ok()? };
+            return None;
+        }
+        let old = unsafe { SelectObject(dc, bitmap.into()) };
+        Some(Dc {
+            dc,
+            bitmap,
+            old,
+            bits: bits.cast(),
+            width,
+            height,
+        })
+    }
+
+    fn pitch(&self) -> usize {
+        self.width as usize * 4
+    }
+
+    /// Copies the texture's texels into the DIB section, through a staging texture.
+    fn read(
+        &self,
+        front: &Shared,
+        t: &Rc<front::Texture<Chosen>>,
+    ) -> wcontainers_direct3d_11::Result<()> {
+        let mut f = front.borrow_mut();
+        let staging = f.create_texture(
+            &desc::TextureDesc {
+                mip_levels: 1,
+                usage: desc::usage::STAGING,
+                bind_flags: 0,
+                cpu_access_flags: desc::cpu::READ,
+                misc_flags: 0,
+                ..t.desc
+            },
+            &[],
+        )?;
+        let staging = front::Resource::Texture(staging);
+        f.copy_subresource_region(
+            &staging,
+            0,
+            [0; 3],
+            &front::Resource::Texture(t.clone()),
+            0,
+            None,
+        )?;
+        let mapped = f.map(&staging, 0, desc::map::READ, 0)?;
+        for y in 0..self.height as usize {
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    mapped.data.add(y * mapped.row_pitch as usize),
+                    self.bits.add(y * self.pitch()),
+                    self.pitch(),
+                )
+            };
+        }
+        f.unmap(&staging, 0);
+        Ok(())
+    }
+
+    /// Writes the DIB section's texels into the texture.
+    fn write(
+        &self,
+        front: &Shared,
+        t: &Rc<front::Texture<Chosen>>,
+    ) -> wcontainers_direct3d_11::Result<()> {
+        unsafe { GdiFlush().ok().ok() };
+        let bytes =
+            unsafe { std::slice::from_raw_parts(self.bits, self.pitch() * self.height as usize) };
+        front.borrow_mut().update_subresource(
+            &front::Resource::Texture(t.clone()),
+            0,
+            None,
+            bytes,
+            self.pitch() as u32,
+            0,
+        )
+    }
+
+    fn delete(self) {
+        unsafe {
+            SelectObject(self.dc, self.old);
+            let _ = DeleteDC(self.dc);
+            let _ = DeleteObject(self.bitmap.into());
+        }
+    }
 }
 
 texture!(

@@ -83,6 +83,7 @@ hand = {
     "ID3D11Multithread": "Enter Leave SetMultithreadProtected GetMultithreadProtected",
     "ID3DUserDefinedAnnotation": "BeginEvent EndEvent SetMarker GetStatus",
     "IDXGIResource": "GetUsage",
+    "IDXGISurface1": "GetDC ReleaseDC",
     "ID3D11BlendState1": "GetDesc1",
     "ID3D11RasterizerState1": "GetDesc1",
     "ID3D11RasterizerState2": "GetDesc2",
