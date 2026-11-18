@@ -1329,6 +1329,9 @@ Nothing of this track is installed on the desktop beyond the rig's setup. What s
   deleted at the end of each run (run 27: see below), so each run builds from clean (about 8
   minutes).
 
+Run 29: nothing installed. Deleted at the end of the run: C:\wc\target\phase-2-graphics-direct3d-12,
+and the checkout's own `target` (219 MB) that a `cargo check` on the Mac left (the shaders
+crate's build script fails there; check on the desktop). Logs stay in scratch run29.
 Run 28: nothing installed. Deleted at the end of the run: C:\wc\target\phase-2-graphics-direct3d-12.
 No build folder was made on the Mac or in scratch; the logs stay in scratch run28, and Godot
 4.7.2's `rendering_device_driver_d3d12.cpp` (MIT, read only, to find its heap flags) in
