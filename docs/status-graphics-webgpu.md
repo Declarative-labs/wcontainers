@@ -696,6 +696,39 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
 
 ## Measurements
 
+Run 13 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs,
+CPU load not sampled; Mac load average near its 18 cores, not sampled exactly):
+- Whole suite of this crate at 15512108 after `cargo clean` of it and the suite crate (scratch
+  g2b3/full1.log): Vulkan 104 passed, 0 failed, 3 ignored (the BC one-step comparison, 24-bit
+  depth bias absent, the wireframe known failure); Direct3D 12 106 passed, 0 failed, 1 ignored
+  (the BC comparison). The shared suite 39 of 39 on both.
+- web/check at the status commit after 15512108 (g2b3/webcheck3.log, pictures in g2b3/web): all
+  twelve pictures equal Direct3D 11's at tolerance 0, twists differ as before, viewports equal;
+  Chrome timestamps 9.816 and 19.547 ms (ratio 1.99), GPU clock 302.596 ms apart with the CPU
+  between 300.0 and 303.0 ms; converted formats seed 1, 4 textures each, within bounds
+  (`Bgrx8UnormSrgb` filtered 1.507 steps, as Direct3D's own); vertex formats seed 188, 64 each;
+  texture renames pass; the suite in Chrome 39 passed, 0 failed. The run before it
+  (webcheck2.log) failed only because Chrome gave the suite page no adapter at start (its GPU
+  process); run again unchanged, it passed.
+- Converted formats against Direct3D 11 (tests/direct3d.rs, seed 1, 4 textures per format, both
+  APIs, g2b3/job3.log): every load and filtered texel equal to Direct3D's; Direct3D's own filtered
+  texels from filtering `v / (2^n - 1)`: sRGB BGRX 1.507 steps, B5G6R5 0.714, B5G5R5A1 0.654, the
+  others 0.002.
+- Instance data fetched in the program, release build (`cargo test --release`), `gpu-job --alone`
+  (g2b3/pulled-release.log), 256 draws of 16 instances, 4 streams a draw (one vertex, three
+  instance), 20 frames: Vulkan vertex buffers 0.275 ms CPU and 0.017 ms GPU a frame (median of 19
+  after the first), pulled 1.156 ms CPU and 0.020 ms GPU, first frame 7.8 against 30.2 ms CPU;
+  Direct3D 12 0.341 against 1.354 ms CPU, 0.008 against 0.007 ms GPU, first frame 9.7 against
+  19.6 ms. So in a release build the pulled route costs about four times the CPU time on both
+  APIs, mostly its bind group per draw (5120 made in 20 frames); run 11's Direct3D 12 numbers
+  (3.48 against 3.20 ms) came from a dev build of this crate (opt-level 1) and are superseded.
+  More streams a draw: not measured yet (Next).
+- Timestamps natively against Direct3D 11 (run 11, G2b check): our stretches 1.3 (Vulkan) and 1.5
+  (Direct3D 12) times Direct3D 11's and Chrome's. The clock is not the cause: tests/timestamps.rs
+  holds the GPU clock to the CPU's rate across about 300 ms on both APIs. The same loop takes
+  longer through wgpu natively; expected cause, not measured: naga's loop bounding and bounds
+  checks in the code it writes.
+
 Run 12 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs,
 CPU load not sampled; Mac load average not sampled):
 - web/check at 2087451 (scratch g2b2/webcheck.log, pictures and suite-chrome.txt in g2b2/web):
@@ -1035,7 +1068,7 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 
 1. The independent check of G2b (again, after run 13's fixes).
 2. Copies between a buffer and a converted texture on the GPU; the instance-data measurement with
-   more streams a draw (Measurements, run 13); why the timestamp workload takes 1.3 and 1.5 times
+   more streams a draw (Measurements, run 13: only 4 a draw so far); why the timestamp workload takes 1.3 and 1.5 times
    Direct3D 11's time through wgpu natively (expected, not measured: naga's loop bounding and
    bounds checks; Chrome's Dawn takes Direct3D's time).
 3. Read the fronts' status files again after merging.
@@ -1194,7 +1227,8 @@ each Zlib OR Apache-2.0 OR MIT (their Cargo.toml files; most already in the lock
 - The rig's page-driver packages in this branch's checkout
   (C:\wc\src\phase-2-graphics-webgpu\tools\graphics-rig\browser\node_modules), by the rig's
   install.ps1.
-- Build output C:\wc\target\phase-2-graphics-webgpu: 15.98 GB at the end of run 12, 8.35 GB after
-  its two incremental caches were removed (dependencies kept, so the next build is not cold);
+- Build output C:\wc\target\phase-2-graphics-webgpu: removed whole at the end of run 13 (9.96 GB,
+  debug and release), so the next build is cold (about 3 minutes for the tests, 7 for web/check);
   pictures in C:\wc\out\phase-2-graphics-webgpu-webgpu. On the Mac the checkout's `target`
-  (3.9 GB of `cargo check` output) was removed at the end of run 12.
+  (1.2 GB of `cargo check` output) was removed at the end of run 13; scratch holds no build
+  output (logs and pictures only, 324 MB).
