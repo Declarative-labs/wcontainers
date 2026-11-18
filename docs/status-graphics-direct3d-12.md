@@ -10,12 +10,12 @@ G5 is not complete. What is left waits on the shaders track (G6): 18 test files 
 features, 10 on parts of the stage helper); see "Gap list" and "Next". Real Direct3D 12
 programs draw frames matching real Direct3D 12's: Microsoft's D3D12HelloTriangle and
 D3D12HelloConstBuffers, bgfx's 01-cubes, 26-occlusion, 35-dynamic, 37-gpudrivenrendering and
-38-bloom ("Real program"). Godot's two platformers run every frame and draw black, waiting on
-G6.
+38-bloom, and Godot's 2D platformer, exactly (since run 28; "Real program"). Godot's 3D
+platformer runs every frame and draws white, waiting on G6 (`IsHelperInvocationEXT`).
 
-Latest results (run 28, 2026-11-18, at b21f7f7): test files 169 of 198 (164 in runs 25 to 27);
+Latest results (run 28, 2026-11-18, at b21f7f7 and 0e3cd52; own cases run28/check3.log): test files 169 of 198 (164 in runs 25 to 27);
 own cases 25 of 25 equal real Direct3D 12; shader runner 205 of 302; the crates' 46 tests pass;
-bgfx 37 draws every frame as real Direct3D 12 does.
+bgfx 37 and Godot's 2D platformer draw every compared frame as real Direct3D 12 does.
 
 What each run did (runs 1 to 16 on 2026-11-17, 17 to 27 on 2026-11-18; runs 17 on are the
 milestone "G5 to the pass bar"):
@@ -58,7 +58,11 @@ milestone "G5 to the pass bar"):
   direct3d-11 had nothing new. The merge's one conflict was `SlowPath::ALL` (this track's
   `SequentialBuffersCopied` beside the shaders track's two, 105 in all). The front now routes
   all three (below): five test files pass newly, and Godot's 3D platformer no longer stops at
-  its first swizzled view.
+  its first swizzled view. `ALLOW_SHADER_ATOMICS` is now taken on committed resources allowing
+  unordered access, as measured on this desktop's runtime (new `answers` lines
+  `heap_flag_atomics_*`; it was refused for every resource since run 26, from a buffer
+  without unordered access): Godot's textures were refused there, and with them taken its 2D
+  platformer draws every compared frame exactly as real Direct3D 12 does.
 
 What the front does, by subject:
 - View component mappings and multisampled arrays (run 28, `bind.rs`, `formats.rs`, `dxbc.rs`,
@@ -472,8 +476,8 @@ fails. Since the rig's run of 2026-11-17 19:11 (its commit 4ffedc6), tests that 
 checks on real Direct3D 12 are counted too, held to every other check, so the counted set is
 198 (it was 193).
 
-Run 28 (2026-11-18, desktop shared with other tracks; scratch run28/full1.log at b21f7f7):
-169 of 198. d3d12 (Wine) 10 of 10, vkd3d-d3d12 147 of 176, vkd3d-d3d12_invalid_usage 3 of 3,
+Run 28 (2026-11-18, desktop shared with other tracks; scratch run28/full1.log at b21f7f7,
+full2.log at 0e3cd52 with the same failing files): 169 of 198. d3d12 (Wine) 10 of 10, vkd3d-d3d12 147 of 176, vkd3d-d3d12_invalid_usage 3 of 3,
 vkd3d-hlsl_d3d12 9 of 9. Newly passing: stencil_load, srv_component_mapping,
 depth_stencil_sampling (the view mappings in the program), multisample_array_texture (a
 texture per layer) and atomic_instructions (the shaders merge's compare-exchange loops). Each
@@ -526,7 +530,8 @@ in its Direct3D 11 part before reaching Direct3D 12 (our dxgi.dll serves only Di
 tools/graphics-rig/wine-tests run --dll "wcontainers_d3d12.dll=$E\wcontainers_d3d12.dll" --dll
 "d3d12.dll=$E\d3d12.dll" vkd3d-shader_runner`.
 
-Run 28 (run28/runner1.log at b21f7f7): 205 of 302, the same 97 failing files as run 27.
+Run 28 (run28/runner1.log at b21f7f7, runner2.log at 0e3cd52): 205 of 302, the same 97
+failing files as run 27.
 Run 27 (run27/runner1.log after the merges, runner2.log at 058f3e3): 205 of 302. hlsl
 arithmetic-float newly passes (the converter's merge); the other 97 failing files are run 26's.
 A focused run after the read-write commit (run27/rw1-runner.log): sm6-uav-rwtexture runs 539
@@ -590,27 +595,25 @@ debug builds, whole runs of 120 frames.
   wcontainers-graphics-test" -- "powershell -NoProfile -ExecutionPolicy Bypass -File
   $D\bgfx-compare.ps1 01-cubes %CARGO_TARGET_DIR%\debug\wcontainers_graphics_test_forward.dll
   %CARGO_TARGET_DIR%\debug\gt-run.exe 0,208,320,64"`.
-- Godot's 2D platformer (run 27, run27/p1-*.log; scratch `bin/programs27.sh`): 120 frames in
-  9.3 s, every frame black where the reference draws the level (409,222 of 518,400 pixels
-  beyond 8 at frame 10, the same count since run 23; scratch run27/frames). Its refusals, all
-  G6's: 2 fragment shaders `IsHelperInvocationEXT` (naga's SPIR-V reader; perhaps the canvas's
-  own, which would explain the black frames, not confirmed), 3 compute shaders with
-  `globallycoherent` views ("memory access 0x28 outside workgroup memory") and 1 "image load
-  operand 0x200", 2 `StorageFormatKind` (the shaders track's corpus refuses the same shaders),
-  1 `ResourceArray` (an array of storage views), and one pipeline drawing alpha-antialiased
-  lines (`LINE_COVERAGE` and the stage helper's rectangles, G6). The merge of run 27 took away
-  44 `ResourceArray`, 20 `NonFiniteConstant` and the "Bindings conflict" refusals.
+- Godot's 2D platformer (run 28, run28/p3-godot.log, at 0e3cd52; scratch `bin/programs28.sh`):
+  frames 10, 60 and 120 equal the references, 0 of 518,400 pixels beyond 8, 120 frames in
+  4.2 s (one run, desktop shared). Before, every frame was black (runs 23 to 28, 8.7 to 9.3 s):
+  its textures allowing unordered access were made with `ALLOW_SHADER_ATOMICS`, which the
+  front refused (E_INVALIDARG, 795 times in the 3D platformer's run), and Godot drew without
+  them. It still has refusals, all G6's, that do not reach these frames: 2 fragment shaders
+  `IsHelperInvocationEXT` (naga's SPIR-V reader), 3 compute shaders with `globallycoherent`
+  views ("memory access 0x28 outside workgroup memory") and 1 "image load operand 0x200", 2
+  `StorageFormatKind`, 1 `ResourceArray` (an array of storage views), and one pipeline
+  drawing alpha-antialiased lines (`LINE_COVERAGE` and the stage helper's rectangles).
   `QueryVideoMemoryInfo` answers E_NOTIMPL 426 times. With the cache file (run 26,
   `bin/warm26.sh`) its file was 334,080 bytes after the first run and the same after the
-  second: nothing converted again (8.2 then 7.9 s, single runs).
-- Godot's 3D platformer (run 28, run28/p1-*.log): with mappings applied in the program it no
-  longer stops at its `R8G8B8A8_UNORM_SRGB` view of mapping 0x1a88 (runs 25 to 27: the device
-  was removed there and Godot crashed at 6.7 s); it runs 120 frames in 67.8 s, every frame
-  black (518,400 of 518,400 pixels beyond 8). Refused: 28 fragment shaders
-  `IsHelperInvocationEXT`, and the 2D platformer's refusals (G6). Its 795 `CreateResource`
-  E_INVALIDARG answers (82 in run 26's 6.7 s, so the same rate) are not yet traced to a
-  texture; Godot then logs missing textures (`octmap_downsample`) by the hundred thousand. Its
-  2D platformer (run 28): as in run 27, black, 409,222 pixels beyond 8 at frame 10, 8.7 s.
+  second: nothing converted again (8.2 then 7.9 s, single runs, before the fix).
+- Godot's 3D platformer (run 28, run28/p3-*.log at 0e3cd52): with mappings applied in the
+  program it no longer stops at its `R8G8B8A8_UNORM_SRGB` view of mapping 0x1a88 (runs 25 to
+  27: the device was removed there and Godot crashed at 6.7 s); it runs 120 frames in 6.1 s,
+  every frame white (518,400 pixels beyond 8). 39 graphics pipelines are refused, 38 of them
+  for fragment shaders using `IsHelperInvocationEXT` (G6); Godot then draws with no pipeline
+  (339 "No render pipeline was set"). Its other refusals are the 2D platformer's.
 - Learnt on the way, which explains the setup: the rig's forwarding library takes the name
   d3d12.dll and loads ours behind it (`WC_D3D12`), hence `wcontainers_d3d12.dll` and two
   forwarders (run 21); it aborts a program calling an export the library behind it lacks
@@ -618,8 +621,7 @@ debug builds, whole runs of 120 frames.
   the adapter `EnumAdapters` gives without asking for that interface (adapters are
   `IDXGIAdapter4` since run 18); NVIDIA's NVAPI calls into our device as if it were the
   driver's (harmless, absent in a container; `bgfx-run.ps1 <name> <seconds> ours nonvapi`
-  keeps it out); Godot's textures with `ALLOW_SHADER_ATOMICS` fail E_INVALIDARG through ours
-  as on this Windows 10 runtime; a Rust panic in the library shows as 0xc0000409.
+  keeps it out); a Rust panic in the library shows as 0xc0000409.
 
 ## Gap list (the pass bar's written list, as of run 28)
 
@@ -682,10 +684,9 @@ Not absent features, so not yet allowed on the list (others' work, then this fro
 - The real program: done for bgfx 01-cubes, 38-bloom, 26-occlusion and 35-dynamic (runs 21 to
   23), 37-gpudrivenrendering (run 25) and Microsoft's D3D12HelloTriangle and
   D3D12HelloConstBuffers (run 22). bgfx 24-nbody runs (run 22) but draws differently on every
-  real run, so it has no frames to compare. Godot's 2D platformer runs and draws black, waiting
-  on G6 (helper invocations, `globallycoherent` views, `StorageFormatKind`, arrays of storage
-  views, antialiased lines; run 27); its 3D platformer too since run 28 (black frames, 28
-  fragment shaders `IsHelperInvocationEXT`).
+  real run, so it has no frames to compare. Godot's 2D platformer matches (run 28). Its 3D
+  platformer runs and draws white, waiting on G6 (38 fragment shaders `IsHelperInvocationEXT`,
+  run 28).
 - Front, refused by name with no failing test here: sampling in the program, typed views of other
   formats, component mappings, stencil views, multisampled arrays of several layers and the
   minimum level-of-detail clamp in vertex and geometry shaders, storage texture
@@ -707,11 +708,11 @@ Not absent features, so not yet allowed on the list (others' work, then this fro
    whose control point count differs from the hull shader's declared input count, which real
    Direct3D 12 draws (hull_shader_control_point_phase: input count 1, drawn with
    3-control-point patches, `Stages::run` answers `TopologyMismatch`).
-4. Godot's two platformers draw black (run 28). Once G6 takes `IsHelperInvocationEXT`, rerun
-   them; if still black, find the first pipeline or draw that fails (the refusals print at
-   pipeline creation; a frame capture of the rig's forwarding library shows the passes). Also
-   find which texture the 3D platformer's 795 `CreateResource` E_INVALIDARG answers are for
-   (the front prints no reason for them), and whether real Direct3D 12 refuses the same.
+4. Godot's 3D platformer draws white (run 28). Once G6 takes `IsHelperInvocationEXT`, rerun
+   it; if still wrong, find the first pipeline or draw that fails (the refusals print at
+   pipeline creation; a frame capture of the rig's forwarding library shows the passes).
+   E_INVALIDARG answers print no reason; a temporary `eprintln!` in `objects.rs`'s `hr` finds
+   them (how run 28 found the heap flag).
 5. Turn this gap list into the final one as the G6 items land.
 6. Later: render pass resolves of part of a subresource and of depth-stencil targets; the built-in storage clear for UAV clears of
    formats that do not render (`builtin::storage_clear`); recording without allocating per
@@ -1219,8 +1220,10 @@ Run 16's entries:
   such `Present` ("a frame stretched to its window against the swap chain's scaling").
 - `SetHDRMetaData` is checked (type, size, pointer) and changes nothing: swap chains present in
   SDR sRGB only, where the content's mastering description has no use.
-- `ALLOW_SHADER_ATOMICS` (heap flag 0x400) is refused as undefined (E_INVALIDARG), as this
-  desktop's Windows 10 runtime refuses it; newer runtimes take it.
+- `ALLOW_SHADER_ATOMICS` (heap flag 0x400) is taken on committed resources allowing unordered
+  access and refused (E_INVALIDARG) on other committed resources and on heaps, as this
+  desktop's Windows 10 runtime does for committed resources (measured in run 28; heaps not
+  measured, kept refused).
 
 ## Licences
 
