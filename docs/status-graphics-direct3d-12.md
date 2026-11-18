@@ -64,7 +64,9 @@ WebGPU back end (G2); see "Gap list" and "Next". Runs, all on 2026-11-17:
   `ID3D12GraphicsCommandList4`, with render passes recorded as the targets, clears and
   resolves they stand for. New cases `vertex-pulled`, `restart` and `render-pass`; all 20 cases
   equal to real Direct3D 12. Test files 124 of 193 (instance_id and primitive_restart newly
-  passing).
+  passing); shader runner 204 of 299 (unchanged). Every test file still failing stops first
+  at the converter (G6), timestamps or `A8` (G2), the view swizzle (interface), or a gap on the
+  list; none at a front refusal of its own.
 
 - `wcontainers-directx-graphics-infrastructure`, the portable core: the adapter description from the
   back end's `Caps`; output descriptions, their modes, and the colour spaces swap chains present in
@@ -363,6 +365,8 @@ Run with our d3d12.dll alone (the system's dxgi.dll): with our dxgi.dll too ever
 in its Direct3D 11 part before reaching Direct3D 12 (our dxgi.dll serves only Direct3D 12), 0 of
 299 (run12/runner1.log). Command: `E='%CARGO_TARGET_DIR%\debug\examples';
 tools/graphics-rig/wine-tests run --dll "d3d12.dll=$E\d3d12.dll" vkd3d-shader_runner`.
+
+Run 15 (run15/runner1.log, built at d7c1de0): 204 of 299, the same 95 failing files as run 14.
 
 Run 14 (run14/runner2.log, built at 9937b23): 204 of 299. The ten newly passing files
 (d3dbc modifiers and sub; hlsl bool-semantics, depth-out, f32tof16, get-sample-pos,
