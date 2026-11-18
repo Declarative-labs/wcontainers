@@ -3,7 +3,8 @@
 Status: plan written 2026-11-17 from the owner's brief (decisions of 2026-11-16) and the map of today's
 ARM64 assumptions, and revised after each of the nine independent checks of X0 (2026-11-17). The research and the two experiments
 of milestone X0 are done; what they found is in section 2. Milestone X1 (the interface of section 3, with
-ARM64 on it) is built; docs/status-x86.md says where the rest stands.
+ARM64 on it) is built, and so is X2 (the shared harness of section 7.2, with ARM64's part, apart from what
+its "As built" list leaves to later milestones); docs/status-x86.md says where the rest stands.
 
 Words used here (phase one's words still hold: guest, host, engine, look-ahead, piece):
 - **guest CPU**: the kind of processor whose machine code is translated: ARM64 today, x86-64 next, RV64GC

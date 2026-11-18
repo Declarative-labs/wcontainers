@@ -85,6 +85,25 @@ The independent check of X2 found two blocking problems and six smaller ones. Wh
   lists by `x2/run5/compare-no-form.sh`. The hand-made cases are fixed values, not drawn; d27cd70 built them
   inline in four tests, so they have no list to compare with; from now on `hand.txt` covers them.
 
+Proof of run 5 (the Mac, Apple M5):
+- Same cases after the changes: `same-cases.sh d27cd70 1 2 3 7717` (scratch `x2/run5/same-cases.log`, Mac
+  load 40.5 to 50.0): layer 1 1215 forms and layer 2 64 programs the same for each seed. No-form words
+  against d27cd70 (`compare-no-form.sh`): the same for seeds 1, 2, 3 and 7717 at 64 and at 1000 cases, every
+  line's state the same one (sp DATA + 0x1000, pc CODE, the rest 0, the data seed the seed).
+- The x86 reference tests (3: the manual's 38 cases, 2 blobs, the reconnection) passed twice outside the
+  suite on the i7-8750H (its load 3.7 to 5.1; another track builds there).
+- Suite at 995e949 (`WC_REFERENCE_X86_64=tom@192.168.2.240`, scratch `x2/run5/suite.log`): 77 passed (run 4's
+  76 and the reconnection test), 0 failed, 11 ignored, 24 minutes 7 seconds, Mac load 42.0 at start and 43.8
+  at end (run 4: 24 minutes 12 seconds at 18.3 to 48).
+- origin/phase-1-translator: nothing new at the start; at the end three commits (to 11cc5ad: the runner's
+  stop hook reads only the pc, its counters in `FxHashMap`, `rustc-hash` added). Merged in 4bebb56: the
+  conflicts were in `runner.rs`, now generic, so the stop hook reads the pc at `G::PC_OFFSET` and the maps
+  stay keyed by reason numbers. After it `smoke`, `checks`, `changes` and `programs` passed (6, 2, 3, 15;
+  `x2/run5/merge.log`, load 38.7 to 60.0), then the suite again: at 4bebb56 (`x2/run5/suite2.log`) 77
+  passed, 0 failed, 11 ignored, 27 minutes 10 seconds, Mac load 37.9 at start and 64.5 at end.
+- Clippy with `-D warnings` on the test crate (all targets) and on the runner for both CPUs, `cargo fmt
+  --check`: clean.
+
 ## X2, run 4 (2026-11-17)
 
 - origin/phase-1-translator: fetched at the start and the end, nothing new since 8b5e420.
@@ -950,7 +969,10 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 ## How to run
 
 - X2's proofs: same cases, `WC_OUTPUT_ROOT=<scratch>/x2/same nix develop -c
-  crates/wcontainers-translator-test/same-cases.sh d27cd70 1 2 3` (knobs `WC_CASES_LAYER1`, `WC_CASES_LAYER2`);
+  crates/wcontainers-translator-test/same-cases.sh d27cd70 1 2 3` (knobs `WC_CASES_LAYER1`, `WC_CASES_LAYER2`;
+  layer 1's no-form and hand-made lists are compared only against commits from 995e949 on, which write them;
+  against d27cd70 the no-form words by `<scratch>/x2/run5/compare-no-form.sh` after drawing them as its
+  header says);
   the x86 reference, `WC_REFERENCE_X86_64=tom@192.168.2.240 nix develop -c cargo test -p
   wcontainers-translator-test --test reference_x86_64 -- --nocapture`; the float hook in Chrome old against
   new, `<scratch>/x2/chrome-hook.sh <old tree> <rounds>`.
@@ -1077,6 +1099,11 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   twice: the first run did not pass its environment settings to `stepper6` and was discarded; in run 9,
   41 hand-written cases (`cases16.sh` 39, the two `xacquire` runs 2); in run 10, one run each of `tf`
   (8 trap-flag scenarios in 9 runs, 20 stops) and `rf` (8 signal frames), and 6 `stepper6` cases.
+- X2 run 5: `same-cases.sh d27cd70` for seeds 1, 2, 3 and 7717 at 64 cases a form and 64 programs, both
+  sides; `tests/cases.rs` at 1000 cases a form and 1 program for the same four seeds (this side only, for the
+  no-form lists); d27cd70's no-form words at 64 and 1000 for the same seeds (scratch test); the x86
+  reference's 38 cases, 2 blobs and the reconnection case (3 `nop` runs, 2 cuts) twice outside the suite and
+  in each suite run; the suite twice at the defaults (seed 1), before and after the merge.
 - X2 run 4: `tests/cases.rs` for seeds 1, 2, 3 and 6151 at 64 cases a form and 64 programs, both sides;
   `tests/programs.rs` once and the suite once at the defaults (seed 1); the x86 reference's 38 cases and 2
   blobs in the suite.
@@ -1118,6 +1145,8 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
 - `wasmparser` 0.263 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT) is since X2 run 4 a normal
   dependency of the test crate (was a dev-dependency): `machine-code` reads a module's lookup table with it.
 - The toolchain gains the `x86_64-unknown-linux-musl` target (for the reference runner).
+- `rustc-hash` 2.1.3 (Apache-2.0 OR MIT): a normal dependency of the test crate, added by the translator track
+  (its runner's counters), merged in X2 run 5.
 - astro-float 0.9.6: MIT, with astro-float-num 0.3.7 and astro-float-macro 0.4.6 (both MIT), lazy_static,
   itertools, either (all MIT or Apache-2.0, already common). Planned for X7 (x87 transcendentals); not yet a
   dependency.
