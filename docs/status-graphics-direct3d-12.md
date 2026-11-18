@@ -1485,6 +1485,9 @@ Run 16's entries:
 
 ## Installed on the desktop
 
+Run 24: nothing installed. The rig's build folder of this branch, C:\wc\target\phase-2-graphics-direct3d-12
+(20.0 GB), was deleted at the end of the run, so the next run builds from clean (about 8 minutes
+more). No build folder was made on the Mac.
 Run 23: nothing installed; no build folder made besides the rig's (kept, the rig reuses it). A
 temporary folder C:\wc\out\phase-2-graphics-direct3d-12\dump (Godot's refused shaders, 684 KB)
 was made and deleted in the run; its copy is in scratch run23/dump. On the Mac two `cargo
