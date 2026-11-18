@@ -89,9 +89,11 @@ register names, HWCAP and ARM64 names; then reading each hit, `src/layer1.rs` wh
 parts of `src/changes.rs` and `src/runner.rs`. Left as they are: 4096 as Linux's page size, the exit status
 of each signal (same numbers on both), the 16-byte stack alignment at entry and the 16-byte `CodeBytes`
 buffer (the longest instruction of every guest fits), `smoke`'s test that features not offered stop with
-illegal instruction (the brief says so for x86 too). Not read line by line: `src/layer2.rs` (its model is
-ARM64's by a recorded departure), `src/binaries.rs`, `src/programs.rs`, `src/browser.rs` and
-`browser/runner.js` beyond the grep. So this is not a proof that none is left; X3's x86 `GuestTest` is what
+illegal instruction (the brief says so for x86 too). Also read: `binaries.rs`'s sources and start finder,
+`programs.rs`'s placement and compiler arguments (nothing of ARM64's: the target comes from the guest, the
+alpine paths are the same on both). Not read line by line: `src/layer2.rs` (its model is ARM64's by a recorded
+departure), the rest of `src/binaries.rs` and `src/programs.rs`, `src/browser.rs` and `browser/runner.js`
+beyond the grep. So this is not a proof that none is left; X3's x86 `GuestTest` is what
 will show the rest.
 
 Proof of run 7 (the Mac, Apple M5):
@@ -104,6 +106,20 @@ Proof of run 7 (the Mac, Apple M5):
   part file's name in single quotes, so `$$` did not expand; fixed before the second. Then the kept runner was
   damaged on purpose (one byte appended, still executable, 864113 bytes); the next run replaced it (864112
   bytes, its SHA-256 again the name), passed, and left no part file.
+- Same cases: `same-cases.sh d27cd70 1 2 3 9321` (`WC_OUTPUT_ROOT` scratch `x2/same`, log
+  `x2/run7/same-cases.log`, 01:31 to 01:33, Mac load 73.3 to 87.1): layer 1 1215 forms and layer 2 64 programs
+  the same for each seed. The no-form lists are not compared (d27cd70 does not write them); nothing this run
+  changed draws them.
+- Suite at 78bcabc (`WC_REFERENCE_X86_64=tom@192.168.2.240`, scratch `x2/run7/suite.log`): 78 passed, 0 failed,
+  11 ignored (as run 6), 29 minutes 35 seconds, Mac load 73.3 at start and 64.2 at end, with `same-cases.sh`
+  beside it for its first two minutes (run 6: 23 minutes 34 seconds at 54.1 to 34.3). The longest parts are
+  machine-bound and the load was higher; nothing this run changed runs more cases or slower code.
+- Clippy with `-D warnings` on the test crate (all targets), `cargo fmt --check`: clean.
+- origin/phase-1-translator at the end (02:01): two commits (to d98f6bf: its long run gives zig a cache of its
+  own). Merged, leaving out its one line in `long-runs.sh` (`export ZIG_GLOBAL_CACHE_DIR=$dir/zig-cache`): in
+  this tree `programs.rs` sets zig's cache for every zig command to the tree's own `target/zig-cache`, which
+  overrides the export, so the line would be a second mechanism with no effect. Only its status file changed
+  otherwise.
 
 The second independent check of X2 found two blocking problems and four smaller ones (and a measurement).
 What was done about each:

@@ -62,7 +62,9 @@ The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three laye
   (no ledger line). Restarted again 2026-11-16 22:59 on 445e3cf (the layer 2 generator fix), same command;
   it was stopped 2026-11-17 20:34 after layer 3 chunk 55 was stopped at the limit (failure 3 below).
   Restarted 21:21 on de8f4a2 with `WC_LONG_LIMIT=180` added (a chunk may take 3 hours); chunk 55 runs again
-  first. That run (driver pid 84798 at the time of writing) is the one going now. Use `WC_LONG_ACCEPT=c38b4ad
+  first. Stopped 2026-11-18 01:27 with chunk 57 hung (failure 4 below) and restarted 01:29 on 7ec7920 (the
+  run's own zig cache), same command; that run (driver pid 7047 at the time of writing) is the one going
+  now. Use `WC_LONG_ACCEPT=c38b4ad
   WC_LONG_LIMIT=180` on any later restart too. Each restart appends to `driver.log`; the code it runs is the copy in
   `trees/<commit>`, so commits in the checkout do not reach it until it is restarted.
 - Layer 3's progress in programs compared: `awk -F'\t' '$1=="layer=3" && $10=="result=pass" {split($4,c,"=");
@@ -149,7 +151,20 @@ Failures found by the run, each with its cause and fix:
    everywhere: 353 s after against 851 s before (one run each, load 40 to 95, so the ratio is rough). The
    chunk limit was raised to 180 minutes (`WC_LONG_LIMIT=180`) so such a case can finish; nothing in the
    test was changed. Smoke, changes, programs, layer 2 (default) and layer 3 (12 cases, seed 7) pass on
-   de8f4a2. Chunk 55 runs again on de8f4a2.
+   de8f4a2. Chunk 55 runs again on de8f4a2: passed, 429 compared, 4,963 s, load 41 to 63.
+4. Layer 3 chunk 57 (cases 28000 to 28499, de8f4a2): hung, not a mismatch. At 01:22, 2 h 26 m in, the test
+   used no CPU; its five unfinished workers were each in a `zig cc` started 22:59 to 23:02 that had used no
+   CPU since, every thread waiting in `flock` (sampled). All five, and one `zig cc` of the other half
+   (started 23:17), held the same manifests of zig's shared cache (`~/.cache/zig/h`, libc's crt, ubsan_rt and
+   compiler_rt entries) open; three of those manifests were rewritten at 23:30, so those entries were being
+   rebuilt. Cause: zig processes rebuilding the same entries of one cache at once deadlocked on its manifest
+   locks (a lock cycle between processes; the other half's `zig cc` ended by itself as soon as ours were
+   killed, so it was in the same cycle). Why the entries were rebuilt at 23:00 is not known (nothing of this
+   half touches the cache). Not the translator, the reference or the test. Change (in the driver,
+   `long-runs.sh`): each run's zig uses its own cache, `WC_LONG_DIR/zig-cache`, so other jobs on the machine
+   cannot rebuild entries under it. The driver and the hung chunk were stopped 01:27 (no ledger line for
+   chunk 57), the run's cache was warmed by one layer 3 run of 24 cases with one job (seed 9, every compiler,
+   level and position, not counted), and the driver restarted; chunk 57 runs again.
 
 ## P1: close-out of M5 and the long-run driver
 
