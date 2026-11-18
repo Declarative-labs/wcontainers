@@ -730,6 +730,13 @@ impl WebGl {
 
     /// Records an error on GL's side as device loss, which fronts report in their API's words.
     fn fail(&mut self, reason: LossReason) {
+        if self.lost.is_none() {
+            // The interface carries only the reason's kind; the host's error output gets the why.
+            eprintln!(
+                "wcontainers webgl: device lost ({reason:?}): {}",
+                self.last_log
+            );
+        }
         self.lost.get_or_insert(reason);
     }
 
@@ -3190,8 +3197,7 @@ impl WebGl {
             }
             DrawRange::Indexed { first, count, .. } => {
                 let Some(index) = &call.index else {
-                    self.fail(LossReason::Error);
-                    return;
+                    return self.invalid("an indexed draw without an index buffer".into());
                 };
                 if self.applied.index != index.buffer.id {
                     // SAFETY: the buffer's index GL buffer is alive.
@@ -3865,8 +3871,11 @@ impl Backend for WebGl {
     fn write_buffer(&mut self, buffer: &Buffer, offset: u64, data: &[u8], mode: WriteMode) {
         self.platform.current();
         if offset + data.len() as u64 > buffer.size {
-            self.fail(LossReason::Error);
-            return;
+            return self.invalid(format!(
+                "a write of {} bytes at {offset} past a buffer of {}",
+                data.len(),
+                buffer.size
+            ));
         }
         if buffer.index.is_some() {
             buffer.maxima.borrow_mut().wrote(offset, data);
