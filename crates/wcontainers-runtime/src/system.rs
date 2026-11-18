@@ -75,6 +75,13 @@ impl LocalSystem {
         self.started.elapsed().as_nanos() as u64
     }
 
+    /// Drops the deadline of the turn that ended.
+    fn turn_over(&self) {
+        if let Some(timer) = &self.timer {
+            timer.shared.at.store(u64::MAX, Ordering::SeqCst);
+        }
+    }
+
     fn keep(&mut self, warning: Warning<'_>, cpu: bool) {
         match self
             .warnings
@@ -131,10 +138,14 @@ fn time(shared: &Deadline, started: Instant, flag: &StopFlag) {
         }
         let now = started.elapsed().as_nanos() as u64;
         if at <= now {
-            flag.raise();
-            let _ = shared
+            // A deadline a turn ended before, or moved, is not raised.
+            if shared
                 .at
-                .compare_exchange(at, u64::MAX, Ordering::SeqCst, Ordering::SeqCst);
+                .compare_exchange(at, u64::MAX, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                flag.raise();
+            }
             continue;
         }
         gone = if at == u64::MAX {
@@ -275,7 +286,9 @@ impl System for LocalSystem {
         false
     }
 
+    /// The turn is over, so its deadline is dropped: an idle past it raises nothing.
     fn stopped<E: Execution>(&mut self, _: &mut Kernel, _: &mut E) -> ControlFlow<Self::End> {
+        self.turn_over();
         ControlFlow::Continue(())
     }
 
@@ -298,5 +311,43 @@ impl System for LocalSystem {
 
     fn cpu_warning(&mut self, warning: Warning<'_>) {
         self.keep(warning, true);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LocalSystem, Ordering};
+    use crate::{StopFlag, System};
+    use std::time::Duration;
+
+    const SLICE: Duration = Duration::from_millis(1);
+    /// Long enough that the turn surely ends before it.
+    const LONG_SLICE: Duration = Duration::from_millis(200);
+    const PAST_IT: Duration = Duration::from_millis(400);
+
+    fn system() -> (LocalSystem, StopFlag) {
+        let flag = StopFlag::default();
+        let mut system = LocalSystem::new(Box::new(std::io::sink()), Box::new(std::io::sink()));
+        system.stop_flag(flag.clone());
+        (system, flag)
+    }
+
+    #[test]
+    fn a_turn_past_its_deadline_is_stopped() {
+        let (mut system, flag) = system();
+        system.turn(Some(SLICE.as_nanos() as u64));
+        std::thread::sleep(PAST_IT);
+        assert!(flag.take());
+    }
+
+    #[test]
+    fn an_idle_past_an_ended_turns_deadline_raises_nothing() {
+        let (mut system, flag) = system();
+        system.turn(Some(LONG_SLICE.as_nanos() as u64));
+        system.turn_over();
+        std::thread::sleep(PAST_IT);
+        assert!(!flag.take());
+        let timer = system.timer.as_ref().expect("a timer");
+        assert_eq!(timer.shared.at.load(Ordering::SeqCst), u64::MAX);
     }
 }
