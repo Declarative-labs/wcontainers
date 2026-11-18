@@ -792,6 +792,49 @@ fn lock_pi_atomic(
     Ok(false)
 }
 
+/// Linux's `max_lock_depth`: how many locks a chain of owners may run through before it is taken
+/// as a deadlock.
+const MAX_LOCK_DEPTH: usize = 1024;
+
+/// The priority inheriting lock a thread waits on, if it does.
+fn pi_blocked_on(kernel: &Kernel, tid: Tid) -> Option<Key> {
+    let wait = &kernel.threads.get(&tid)?.futex;
+    let [key] = wait.keys.as_slice() else {
+        return None;
+    };
+    (wait.woken == 0
+        && kernel
+            .futexes
+            .queues
+            .get(key)?
+            .iter()
+            .any(|waiter| waiter.tid == tid && waiter.pi))
+    .then_some(*key)
+}
+
+/// `rt_mutex_adjust_prio_chain`'s deadlock detection: whether `tid` waiting on the lock `key` would
+/// close a chain of owners, each waiting on the next one's lock, back to itself or to `key`, or make
+/// one longer than `max_lock_depth`.
+fn closes_chain(kernel: &Kernel, key: Key, tid: Tid) -> bool {
+    let mut lock = key;
+    for _ in 0..MAX_LOCK_DEPTH {
+        let Some(&owner) = kernel.futexes.pi_owners.get(&lock) else {
+            return false;
+        };
+        if owner == tid {
+            return true;
+        }
+        let Some(next) = pi_blocked_on(kernel, owner) else {
+            return false;
+        };
+        if next == key {
+            return true;
+        }
+        lock = next;
+    }
+    true
+}
+
 /// `futex_lock_pi`: takes the lock, or waits for its owner to hand it over. Here every thread has
 /// the same priority, so the owner's priority is never raised.
 fn lock_pi(
@@ -812,11 +855,17 @@ fn lock_pi(
         Ok(false) => {}
         Err(error) => return Err(error).into(),
     }
-    if trylock {
+    let deadlock = !trylock && closes_chain(kernel, key, tid);
+    if trylock || deadlock {
         if top(kernel, key).is_none() {
             kernel.futexes.pi_owners.remove(&key);
         }
-        return Err(Errno::EAGAIN).into();
+        return Err(if deadlock {
+            Errno::EDEADLK
+        } else {
+            Errno::EAGAIN
+        })
+        .into();
     }
     let until = deadline(cx, timeout, 0);
     queue(
@@ -1013,8 +1062,12 @@ fn requeue_pi(
         }
         if first {
             first = false;
-            // `futex_proxy_trylock_atomic`: the top waiter takes the lock if it is free.
+            // `futex_proxy_trylock_atomic`: the top waiter takes the lock if it is free, and may
+            // not hold it already.
             let value = read_word(kernel, cx, tid, address2)?;
+            if value & FUTEX_TID_MASK == waiter.tid as u32 {
+                return Err(Errno::EDEADLK);
+            }
             if value & FUTEX_TID_MASK == 0 && top(kernel, key2).is_none() {
                 let more = kernel.futexes.queues[&key].len() > 1;
                 let new = (value & FUTEX_OWNER_DIED)
@@ -1038,6 +1091,14 @@ fn requeue_pi(
             kernel.futexes.pi_owners.insert(key2, owner);
         }
         write_word(kernel, cx, tid, address2, value | FUTEX_WAITERS)?;
+        // `rt_mutex_start_proxy_lock`: a waiter that would close a chain stays on the condition,
+        // and the requeue stops there with EDEADLK.
+        if closes_chain(kernel, key2, waiter.tid) {
+            if top(kernel, key2).is_none() {
+                kernel.futexes.pi_owners.remove(&key2);
+            }
+            return Err(Errno::EDEADLK);
+        }
         move_waiter(
             kernel,
             key,

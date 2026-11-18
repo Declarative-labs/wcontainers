@@ -42,11 +42,18 @@ fn futexes_match_reference() {
     }
 }
 
-/// The priority inheriting futex calls, with waits on them taken through saves.
+/// The priority inheriting futex calls, with waits on them taken through saves. The program reads
+/// threads' states in /proc, whose untracked fields are its only warnings.
 #[test]
 fn priority_inheriting_futexes_match_reference() {
     for run in assert_same_output_seeded(&out(), "futexpi", &[], 3) {
-        assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+        assert!(
+            run.warnings
+                .iter()
+                .all(|warned| warned.reason == "proc fields not tracked"),
+            "{:?}",
+            run.warnings
+        );
     }
 }
 
