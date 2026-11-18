@@ -653,6 +653,8 @@ CPU load not sampled; Mac load average not sampled):
   passed, 1 ignored. New: converted 1, direct3d 6 (with the converted comparison), the library's
   2 unit tests of src/packed.rs. Clippy with warnings denied passes natively for this crate and
   the interface, and for WebAssembly; the interface's 32 unit tests pass.
+- All tests again at 94a9068f, the run's last code (g2b2/native-final.log): the same counts, Vulkan 91
+  passed and 2 ignored, Direct3D 12 92 passed and 1 ignored, none failed.
 - Converted formats against Direct3D 11 on the RTX 3080 (tests/direct3d.rs, both APIs, scratch
   g2b2/converted8.log and converted7.log): A8, BGRX, BGRX sRGB, both two-pixel formats, B5G6R5,
   B5G5R5A1, B4G4R4A4 loaded and filtered 0 steps from Direct3D's; Direct3D's own loads lie from
@@ -1126,5 +1128,7 @@ each Zlib OR Apache-2.0 OR MIT (their Cargo.toml files; most already in the lock
 - The rig's page-driver packages in this branch's checkout
   (C:\wc\src\phase-2-graphics-webgpu\tools\graphics-rig\browser\node_modules), by the rig's
   install.ps1.
-- Build output C:\wc\target\phase-2-graphics-webgpu, 3.28 GB; pictures in
-  C:\wc\out\phase-2-graphics-webgpu-webgpu.
+- Build output C:\wc\target\phase-2-graphics-webgpu: 15.98 GB at the end of run 12, 8.35 GB after
+  its two incremental caches were removed (dependencies kept, so the next build is not cold);
+  pictures in C:\wc\out\phase-2-graphics-webgpu-webgpu. On the Mac the checkout's `target`
+  (3.9 GB of `cargo check` output) was removed at the end of run 12.
