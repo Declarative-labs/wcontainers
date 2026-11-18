@@ -252,6 +252,7 @@ impl Recorder {
                     | Features::INSTANCE_STEP_RATE
                     | Features::CLIP_DEPTH_ZERO_ONE
                     | Features::FRAGMENT_STORAGE_WRITE
+                    | Features::VERTEX_STORAGE_READ
                     | Features::COMPUTE
                     | Features::TRANSFORM_FEEDBACK
                     | Features::TIMESTAMPS,

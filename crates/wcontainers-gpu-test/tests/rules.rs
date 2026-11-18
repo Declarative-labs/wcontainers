@@ -2419,8 +2419,7 @@ fn bindings_need_the_features_their_stages_and_textures_use() {
         storage(&mut r, StageSet::FRAGMENT, true),
         Err(GpuError::Absent(Features::FRAGMENT_STORAGE_WRITE))
     );
-    let mut r = Recorder::new();
-    assert!(!r.caps().features.contains(Features::VERTEX_STORAGE_READ));
+    let mut r = Recorder::with_caps(|c| c.features.remove(Features::VERTEX_STORAGE_READ));
     assert_eq!(
         storage(&mut r, StageSet::VERTEX, false),
         Err(GpuError::Absent(Features::VERTEX_STORAGE_READ))
