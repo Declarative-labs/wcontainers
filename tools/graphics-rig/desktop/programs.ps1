@@ -47,6 +47,8 @@ $sources = [ordered]@{
     'bx' = @{ url = 'https://github.com/bkaradzic/bx.git'; commit = '365db1e26b5fdfec2a7497c2f0694c22be08bfbf' }
     'bimg' = @{ url = 'https://github.com/bkaradzic/bimg.git'; commit = 'f091e14e7540c85fd46951342034cfa59ff2693b' }
     'bgfx' = @{ url = 'https://github.com/bkaradzic/bgfx.git'; commit = '3aab3201a949be0d25e20e5fc2afbb2bee80b906' }
+    # MIT (one licence for the samples, their kits and media): Microsoft's DirectX Tool Kit samples.
+    'xbox-atg-samples' = @{ url = 'https://github.com/microsoft/Xbox-ATG-Samples.git'; commit = 'ff629a6e4876e38fe8761ead116a0e53f634ca67'; sparse = @('PCSamples/IntroGraphics/SimpleBezierPC', 'PCSamples/IntroGraphics/SimpleComputePC', 'PCSamples/IntroGraphics/SimpleInstancingPC', 'PCSamples/IntroGraphics/SimpleLightingPC', 'PCSamples/IntroGraphics/SimpleMSAA_PC', 'Kits/DirectXTK', 'Kits/ATGTK', 'Media/Fonts', 'Media/Textures', 'Media/Meshes/AliasSampleCityBlock') }
     # MIT.
     'godot-demo-projects' = @{ url = 'https://github.com/godotengine/godot-demo-projects.git'; commit = 'b761b4cd5718a7118f2c95eb55f181d0a5f004f1'; sparse = @('3d/platformer', '2d/platformer') }
 }
@@ -60,6 +62,8 @@ $downloads = [ordered]@{
 $tutorials = 'directx-sdk-samples\C++\Direct3D11\Tutorials'
 $bgfxBin = 'bgfx\.build\win64_vs2022\bin'
 $bgfxExamples = @('01-cubes', '06-bump', '09-hdr', '16-shadowmaps', '21-deferred', '24-nbody')
+$atgSamples = @('SimpleBezierPC', 'SimpleComputePC', 'SimpleInstancingPC', 'SimpleLightingPC', 'SimpleMSAA_PC')
+$atg = 'xbox-atg-samples\PCSamples\IntroGraphics'
 $godot = 'godot\Godot_v4.7.2-stable_win64_console.exe'
 $godotProjects = @('3d/platformer', '2d/platformer')
 # Each program: its executable and working directory under $root, its arguments ({out} is its
@@ -75,6 +79,11 @@ foreach ($n in 2, 4, 5, 6, 7) {
 # left out of the comparison: ignore is x,y,width,height in the frame.
 foreach ($e in $bgfxExamples) {
     $all["bgfx-$e"] = @{ exe = "$bgfxBin\example-${e}Release.exe"; cwd = 'bgfx\examples\runtime'; args = '--d3d11'; ignore = '0,236,320,36' }
+}
+# Microsoft's DirectX Tool Kit samples, run in the root of their repository, where they find their
+# media (under Media).
+foreach ($sample in $atgSamples) {
+    $all["atg-$($sample.ToLower())"] = @{ exe = "$atg\$sample\x64\Release\$sample.exe"; cwd = 'xbox-atg-samples'; args = '' }
 }
 # Freedoom's first demo played as fast as it can be drawn, one game tic a frame, through SDL's
 # Direct3D 11 renderer.
@@ -161,6 +170,10 @@ if ($Mode -eq 'build') {
     foreach ($name in $downloads.Keys) { Download $name }
     $src = "$root\src"
     Build 'the DirectX SDK tutorials' "`"$msbuild`" `"$src\$tutorials\Tutorials_1-7_2022.sln`" /nologo /v:minimal /m /p:Configuration=Release /p:Platform=x64"
+    # Made for Visual Studio 2017: built with this one's toolset and SDK.
+    foreach ($sample in $atgSamples) {
+        Build "DirectX Tool Kit sample $sample" "`"$msbuild`" `"$src\$atg\$sample\$sample.vcxproj`" /nologo /v:minimal /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=10.0.26100.0"
+    }
     Build 'the bgfx project files' "cd /d `"$src\bgfx`" && ..\bx\tools\bin\windows\genie.exe --with-examples vs2022"
     # bgfx built to draw on the thread that calls bgfx::frame, not on a render thread of its own, so
     # what an example draws in a frame follows the clock it read for that frame (see clock.rs of
