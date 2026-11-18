@@ -2637,7 +2637,12 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 ## Next
 
 K6b's next run, in this order:
-0. Read the whole-suite run started at 2d90fbe once Docker was back (scratch k6b/suite3.log;
+0. The whole-suite run at 2d90fbe (scratch k6b/suite3.log, load about 20): when this run ended
+   81 test binaries had finished, 171 passed, 7 ignored (known, with reasons), 1 failed:
+   terminal `making_pairs`, whose reference found no /wc/tty (the known race of test binaries
+   building guest programs into one shared directory, Known issues K2); the runtime tests were
+   still running. Read the rest of that log, or run it again
+   (scratch k6b/suite3.log;
    `nix develop -c cargo test --no-fail-fast -p wcontainers-kernel -p wcontainers-kernel-test --
    --test-threads 4`). Layer 1 seed 6262606 passed 20000 at 2d90fbe (346.4 s, load 19.9), the
    one fresh seed with the last kernel change (54c7ff8) in; 6262603 to 6262605 ran at e90a141.
