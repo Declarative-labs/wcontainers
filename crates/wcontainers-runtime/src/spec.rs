@@ -1,6 +1,5 @@
-//! Every field of the OCI runtime configuration honoured or refused by name. A configuration read
-//! from its JSON is checked against that JSON, so a field oci-spec does not read is refused too,
-//! never passed over.
+//! Every field of the OCI runtime configuration honoured or refused by name. A property of a
+//! configuration's JSON that the specification does not define is ignored and named, for a warning.
 
 use oci_spec::runtime::Spec;
 use serde_json::{Value, json};
@@ -90,42 +89,39 @@ pub fn base_spec() -> Spec {
     .expect("the base configuration is one oci-spec reads")
 }
 
-/// A configuration from its JSON, refusing by name the first field oci-spec does not read.
-pub fn spec_from_json(json: &[u8]) -> Result<Spec, Error> {
-    let given: Value =
-        serde_json::from_slice(json).map_err(|error| Error::Configuration(error.to_string()))?;
-    let spec: Spec = serde_json::from_value(given.clone())
-        .map_err(|error| Error::Configuration(error.to_string()))?;
-    let read = serde_json::to_value(&spec).expect("a configuration is JSON");
-    match unread(&given, &read, "") {
-        Some(field) => Err(refused(field, "a field this runtime does not know")),
-        None => Ok(spec),
+/// A configuration from its JSON, and the path of each property in it that the specification, as
+/// oci-spec's types read it, does not define, and of each annotation (this runtime acts on none).
+/// Those are ignored, as the specification's extensibility rule says ("Runtimes MAY log unknown
+/// properties but MUST otherwise ignore them"), for the caller to warn of; a defined field this
+/// runtime cannot honour is refused when the container is made.
+pub fn spec_from_json(json: &[u8]) -> Result<(Spec, Vec<String>), Error> {
+    let failed = |error: serde_json::Error| Error::Configuration(error.to_string());
+    let mut ignored = Vec::new();
+    let mut deserializer = serde_json::Deserializer::from_slice(json);
+    let spec: Spec = serde_ignored::deserialize(&mut deserializer, |path| {
+        ignored.push(path_name(&path));
+    })
+    .map_err(failed)?;
+    deserializer.end().map_err(failed)?;
+    if let Some(annotations) = spec.annotations() {
+        ignored.extend(annotations.keys().map(|key| format!("annotations.{key}")));
     }
+    Ok((spec, ignored))
 }
 
-/// The first field of `given` that is not in `read`, by its path.
-fn unread(given: &Value, read: &Value, path: &str) -> Option<String> {
-    let at = |name: &str| {
-        if path.is_empty() {
-            name.to_string()
-        } else {
-            format!("{path}.{name}")
-        }
-    };
-    match (given, read) {
-        (Value::Object(given), Value::Object(read)) => given
-            .iter()
-            .filter(|(_, value)| !value.is_null())
-            .find_map(|(name, value)| match read.get(name) {
-                None => Some(at(name)),
-                Some(kept) => unread(value, kept, &at(name)),
-            }),
-        (Value::Array(given), Value::Array(read)) => given
-            .iter()
-            .zip(read)
-            .enumerate()
-            .find_map(|(index, (value, kept))| unread(value, kept, &format!("{path}[{index}]"))),
-        _ => None,
+/// A path as the refusals name fields: `process.args`, `mounts[2].options`.
+fn path_name(path: &serde_ignored::Path) -> String {
+    use serde_ignored::Path;
+    match path {
+        Path::Root => String::new(),
+        Path::Seq { parent, index } => format!("{}[{index}]", path_name(parent)),
+        Path::Map { parent, key } => match path_name(parent) {
+            parent if parent.is_empty() => key.clone(),
+            parent => format!("{parent}.{key}"),
+        },
+        Path::Some { parent }
+        | Path::NewtypeStruct { parent }
+        | Path::NewtypeVariant { parent } => path_name(parent),
     }
 }
 
@@ -589,7 +585,8 @@ mod tests {
     use super::*;
 
     /// A configuration as `runc spec` writes it, with resources, seccomp and devices added: every
-    /// field is one oci-spec reads, so none is refused as unknown.
+    /// field is one oci-spec reads, so none is ignored; a property deep in it that the
+    /// specification does not define is ignored and named by its path.
     #[test]
     fn a_whole_configuration_is_read_with_nothing_unread() {
         let given = json!({
@@ -633,12 +630,11 @@ mod tests {
                 "readonlyPaths": ["/proc/bus", "/proc/sys"]
             }
         });
-        spec_from_json(&serde_json::to_vec(&given).unwrap()).unwrap();
+        let (_, ignored) = spec_from_json(&serde_json::to_vec(&given).unwrap()).unwrap();
+        assert_eq!(ignored, Vec::<String>::new());
         let mut unknown = given;
         unknown["linux"]["resources"]["memory"]["limitt"] = json!(1);
-        match spec_from_json(&serde_json::to_vec(&unknown).unwrap()) {
-            Err(Error::Refused { field, .. }) => assert_eq!(field, "linux.resources.memory.limitt"),
-            other => panic!("{:?}", other.map(drop)),
-        }
+        let (_, ignored) = spec_from_json(&serde_json::to_vec(&unknown).unwrap()).unwrap();
+        assert_eq!(ignored, ["linux.resources.memory.limitt"]);
     }
 }

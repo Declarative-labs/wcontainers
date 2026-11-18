@@ -598,7 +598,7 @@ fn a_second_process_starts_from_the_cache() {
 }
 
 /// The command line program runs the pipeline from the OCI image and from the plain tar as the
-/// reference does, and fails naming a refused field.
+/// reference does, and fails naming a refused field, having warned of a property it ignored.
 #[test]
 fn the_command_line_program_runs_a_container() {
     let (layout, files) = images();
@@ -624,7 +624,9 @@ fn the_command_line_program_runs_a_container() {
     let mut process = spec.process().clone().unwrap();
     process.set_terminal(Some(true));
     spec.set_process(Some(process));
-    spec.save(&config).unwrap();
+    let mut json = serde_json::to_value(&spec).unwrap();
+    json["futureField"] = json!(true);
+    std::fs::write(&config, serde_json::to_vec(&json).unwrap()).unwrap();
     let output = Command::new(program)
         .args([
             "--tar",
@@ -640,6 +642,7 @@ fn the_command_line_program_runs_a_container() {
         stderr.contains("process.terminal is not supported"),
         "{stderr}"
     );
+    assert!(stderr.contains("ignored: futureField: 1"), "{stderr}");
 }
 
 /// The local system's timer ends a free turn at the kernel's slice: a process that never makes a

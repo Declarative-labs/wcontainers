@@ -18,6 +18,9 @@ use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, TranslatorSettings};
 
 type Back = CpuSide<Arm64>;
 
+/// The warning for a property of the configuration that is ignored, with its path and count.
+const IGNORED: &str = "a property the specification does not define, or an annotation, ignored";
+
 /// Docker's exit statuses for a program not found and for its own failures.
 const NOT_FOUND: u8 = 127;
 const RUNTIME_FAILED: u8 = 125;
@@ -77,10 +80,16 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
         _ => return Err("give one of --oci and --tar".into()),
     };
     let mut spec = match config {
-        Some(path) => spec_from_json(
-            &std::fs::read(&path)
-                .map_err(|error| wcontainers_runtime::Error::Io { path, error })?,
-        )?,
+        Some(path) => {
+            let (spec, ignored) = spec_from_json(
+                &std::fs::read(&path)
+                    .map_err(|error| wcontainers_runtime::Error::Io { path, error })?,
+            )?;
+            for (count, path) in (1..).zip(&ignored) {
+                eprintln!("wcon: configuration: {IGNORED}: {path}: {count}");
+            }
+            spec
+        }
         None => image.spec()?,
     };
     if !command.is_empty() {
