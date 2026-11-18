@@ -4,7 +4,8 @@
 //! `rgba8unorm` texture made with `reinterpret` resolved as `rgba8unorm-srgb` against
 //! ResolveSubresource with `R8G8B8A8_UNORM_SRGB`; BC textures loaded natively and decoded against
 //! Direct3D 11 and WARP loading the same blocks; timestamps around the same work as Direct3D 11's;
-//! formats held converted loaded, filtered and (8-bit alpha) drawn into as Direct3D 11 does.
+//! formats held converted loaded, filtered and (8-bit alpha) drawn into as Direct3D 11 does; BGRA
+//! vertices read as Direct3D 11 reads `B8G8R8A8_UNORM` and `B8G8R8X8_UNORM`.
 //!
 //! Windows only: needs a GPU and Direct3D 11 (the rig's device and shaders, test-only); `WEBGPU_API`
 //! as in tests/scenes.rs.
@@ -26,6 +27,10 @@ mod timestamps;
 #[allow(dead_code)]
 #[path = "../examples/scenes/converted.rs"]
 mod converted;
+
+#[allow(dead_code)]
+#[path = "../examples/scenes/vertices.rs"]
+mod vertices;
 
 use wcontainers_gpu::{
     Backend, BindingEntry, BindingResource, ColorAttachment, DeviceStatus, DrawCall, DrawRange,
@@ -1259,4 +1264,84 @@ fn converted_formats_load_filter_and_draw_as_direct3d_does() {
     assert_eq!(b.status(), DeviceStatus::Ok);
     assert!(b.slow_paths().count(SlowPath::FormatConverted) > 0);
     assert!(beyond.is_empty(), "{beyond:#?}");
+}
+
+/// Points carrying one vertex attribute into an `R32G32B32A32_FLOAT` target, as vertices.rs draws.
+const ATTRIBUTE_HLSL: &str = r#"
+struct O { float4 p : SV_Position; nointerpolation float4 v : V; };
+O vs(uint i : SV_VertexID, float4 v : V) {
+    O o;
+    o.p = float4((i + 0.5) / N * 2.0 - 1.0, 0.0, 0.0, 1.0);
+    o.v = v;
+    return o;
+}
+float4 ps(O o) : SV_Target { return o.v; }
+"#;
+
+/// The attribute Direct3D 11 gives each 4-byte element of `bytes` read as `format`.
+fn d3d_attributes(gpu: &Gpu, format: DXGI_FORMAT, bytes: &[u8]) -> Vec<[f32; 4]> {
+    let n = (bytes.len() / 4) as u32;
+    let source = ATTRIBUTE_HLSL.replace("/ N", &format!("/ {n}.0"));
+    let vs = hlsl_of(
+        &source,
+        windows::core::s!("vs"),
+        windows::core::s!("vs_5_0"),
+    );
+    let ps = hlsl_of(
+        &source,
+        windows::core::s!("ps"),
+        windows::core::s!("ps_5_0"),
+    );
+    let (target, rtv) = gpu.target(n, 1, DXGI_FORMAT_R32G32B32A32_FLOAT).unwrap();
+    gpu.begin(&rtv, None, n, 1);
+    let element = d3d11::element(windows::core::s!("V"), 0, format, 0, 0, 0);
+    gpu.program(&vs, &ps, &[element]).unwrap();
+    let _vb = gpu.vertices(0, bytes, 4).unwrap();
+    unsafe {
+        gpu.context.RSSetState(&gpu.rasterizer(&solid()).unwrap());
+        gpu.context.IASetPrimitiveTopology(
+            windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_POINTLIST,
+        );
+        gpu.context.Draw(n, 0);
+    }
+    floats(&d3d_read(gpu, &target, 0, 16))
+        .as_chunks::<4>()
+        .0
+        .to_vec()
+}
+
+/// Seeded elements read by the back end as `VertexFormat::Bgra8Unorm` and by Direct3D 11 as
+/// `B8G8R8A8_UNORM` and `B8G8R8X8_UNORM`: every component equal, but BGRX's fourth, which Direct3D
+/// leaves undefined and the back end reads as written (Direct3D's printed). `WEBGPU_SEED` (default
+/// 188) and `WEBGPU_CASES` (vertices, default 64).
+#[test]
+fn bgra_vertices_read_as_direct3d_reads_bgra_and_bgrx() {
+    let env = |name: &str, default: u64| {
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
+    };
+    let (seed, n) = (env("WEBGPU_SEED", 188), env("WEBGPU_CASES", 64));
+    let mut rng = fastrand::Rng::with_seed(seed);
+    let bytes: Vec<u8> = (0..n * 4).map(|_| rng.u8(..)).collect();
+    let mut b = device_without(wgpu::Features::empty());
+    let ours = vertices::bgra_attributes(&mut b, &bytes);
+    let gpu = direct3d();
+    let bgra = d3d_attributes(&gpu, DXGI_FORMAT_B8G8R8A8_UNORM, &bytes);
+    let bgrx = d3d_attributes(&gpu, DXGI_FORMAT_B8G8R8X8_UNORM, &bytes);
+    let mut fourths = std::collections::BTreeSet::new();
+    for i in 0..n as usize {
+        assert_eq!(ours[i], bgra[i], "vertex {i} against B8G8R8A8_UNORM");
+        assert_eq!(
+            ours[i][..3],
+            bgrx[i][..3],
+            "vertex {i} against B8G8R8X8_UNORM"
+        );
+        fourths.insert(bgrx[i][3].to_bits());
+    }
+    let fourths: Vec<f32> = fourths.into_iter().map(f32::from_bits).collect();
+    println!(
+        "seed {seed}, {n} vertices: equal to Direct3D 11's B8G8R8A8_UNORM, and B8G8R8X8_UNORM but for its fourth component, which Direct3D 11 reads as {fourths:?}"
+    );
 }
