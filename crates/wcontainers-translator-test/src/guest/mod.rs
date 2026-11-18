@@ -91,10 +91,6 @@ pub trait GuestTest: Guest + Personality<Block: PartialEq + core::fmt::Debug> {
     const AUXILIARY: &'static [(u64, u64)];
     /// The stand-in's system call numbers.
     const STAND_IN: StandIn;
-    /// A system call of this CPU's own that the stand-in answers on the thread's state (`BLOCK_SIZE +
-    /// PRIVATE_BYTES` bytes from the block), with its result, or `None` (x86-64's `arch_prctl` setting the FS
-    /// or GS base, through which its C library sets its thread pointer).
-    fn stand_in_call(number: u64, arguments: [u64; 6], thread: &mut [u8]) -> Option<i64>;
 
     // --- the hand-made programs of the smoke, checks and changes tests ---
     fn smoke() -> Smoke;
@@ -255,4 +251,15 @@ pub struct StandIn {
     pub exit: u64,
     pub exit_group: u64,
     pub brk: u64,
+    /// The call through which the C library sets its thread pointer, where the kernel sets it.
+    pub set_base: Option<SetBase>,
+}
+
+/// A system call that sets a base in the thread's block (x86-64's `arch_prctl`): for each code in its first
+/// argument, the block offset of the base its second argument goes to. Linux refuses a base at or above
+/// `limit` with EPERM; any other code is a call the stand-in does not have.
+pub struct SetBase {
+    pub number: u64,
+    pub bases: &'static [(u64, usize)],
+    pub limit: u64,
 }

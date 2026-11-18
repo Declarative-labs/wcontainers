@@ -166,6 +166,7 @@ function run({
 
   // The stand-in kernel.
   function standIn(number, a) {
+    const EPERM = 1n;
     const EBADF = 9n;
     const EFAULT = 14n;
     const EINVAL = 22n;
@@ -227,9 +228,17 @@ function run({
       // cannot.
       case BigInt(calls.brk):
         return BigInt(programBreak);
-      default:
+      default: {
+        const set = calls.setBase;
+        const base = set && number === BigInt(set.number) && set.bases.find(([code]) => BigInt(code) === a[0]);
+        if (base) {
+          if (a[1] >= BigInt(set.limit)) return -EPERM;
+          new DataView(state.buffer, BLOCK_AT).setBigUint64(base[1], a[1], true);
+          return 0n;
+        }
         slowPath(reason("system call not implemented"), number, 0);
         return -ENOSYS;
+      }
     }
   }
 

@@ -276,23 +276,16 @@ impl GuestTest for X86_64 {
         exit: 60,
         exit_group: 231,
         brk: 12,
+        // arch_prctl with ARCH_SET_GS or ARCH_SET_FS, below the top of user space.
+        set_base: Some(SetBase {
+            number: 158,
+            bases: &[
+                (0x1001, core::mem::offset_of!(X86Block, gs_base)),
+                (0x1002, core::mem::offset_of!(X86Block, fs_base)),
+            ],
+            limit: (1 << 47) - 4096,
+        }),
     };
-
-    /// `arch_prctl` (158) with `ARCH_SET_GS` (0x1001) or `ARCH_SET_FS` (0x1002): Linux refuses a base at or
-    /// above the top of user space (2^47 - 4096) with EPERM.
-    fn stand_in_call(number: u64, arguments: [u64; 6], thread: &mut [u8]) -> Option<i64> {
-        const EPERM: i64 = 1;
-        let at = match (number, arguments[0]) {
-            (158, 0x1001) => core::mem::offset_of!(X86Block, gs_base),
-            (158, 0x1002) => core::mem::offset_of!(X86Block, fs_base),
-            _ => return None,
-        };
-        if arguments[1] >= (1 << 47) - 4096 {
-            return Some(-EPERM);
-        }
-        thread[at..at + 8].copy_from_slice(&arguments[1].to_le_bytes());
-        Some(0)
-    }
 
     /// Every general register but rsp and rbp; system calls set rax, rcx and r11; rbx is kept.
     const MODEL: crate::layer2::Model = crate::layer2::Model {
@@ -339,10 +332,14 @@ fn forms() -> Vec<Form> {
         .collect()
 }
 
-/// Whether `bytes` decode to `code` for the translator, and its meaning is written.
+/// Whether `bytes` decode to `code` for the translator, and its meaning is written or it is kernel only (its
+/// meaning the fault Linux gives a program).
 fn written(bytes: &[u8], code: Code) -> bool {
     wcontainers_x86::decode(bytes).is_some_and(|(i, length)| {
-        usize::from(length) == bytes.len() && i.iced.code() == code && wcontainers_x86::written(&i)
+        usize::from(length) == bytes.len()
+            && i.iced.code() == code
+            && (wcontainers_x86::written(&i)
+                || wcontainers_x86::claim_group(code) == wcontainers_x86::claims::GROUP_KERNEL)
     })
 }
 
@@ -446,6 +443,7 @@ fn build(code: Code, ops: &[Operand]) -> Option<Instruction> {
         [R(a), Wide(b)] => Instruction::with2(code, a, b),
         [M(a), Signed(b)] => Instruction::with2(code, a, b),
         [M(a), Unsigned(b)] => Instruction::with2(code, a, b),
+        [Unsigned(a), R(b)] => Instruction::with2(code, a, b),
         [R(a), R(b), Signed(c)] => Instruction::with3(code, a, b, c),
         [R(a), R(b), Unsigned(c)] => Instruction::with3(code, a, b, c),
         [R(a), M(b), Signed(c)] => Instruction::with3(code, a, b, c),
@@ -480,6 +478,12 @@ fn string(code: Code, address_size: u32, segment: Register) -> Option<Instructio
         Scasw_AX_m16 => Instruction::with_scasw(address_size, N),
         Scasd_EAX_m32 => Instruction::with_scasd(address_size, N),
         Scasq_RAX_m64 => Instruction::with_scasq(address_size, N),
+        Insb_m8_DX => Instruction::with_insb(address_size, N),
+        Insw_m16_DX => Instruction::with_insw(address_size, N),
+        Insd_m32_DX => Instruction::with_insd(address_size, N),
+        Outsb_DX_m8 => Instruction::with_outsb(address_size, segment, N),
+        Outsw_DX_m16 => Instruction::with_outsw(address_size, segment, N),
+        Outsd_DX_m32 => Instruction::with_outsd(address_size, segment, N),
         _ => return None,
     };
     made.ok()
@@ -598,6 +602,17 @@ fn case(code: Code, seed: u64) -> Option<Case> {
                 K::ax => Operand::R(Register::AX),
                 K::eax => Operand::R(Register::EAX),
                 K::rax => Operand::R(Register::RAX),
+                K::dx => Operand::R(Register::DX),
+                K::cr_reg => Operand::R(
+                    [
+                        Register::CR0,
+                        Register::CR2,
+                        Register::CR3,
+                        Register::CR4,
+                        Register::CR8,
+                    ][draw.below(5) as usize],
+                ),
+                K::dr_reg => Operand::R(Register::DR0 + draw.below(8) as u32),
                 K::imm8 => Operand::Unsigned(draw.value() as u32 & 0xff),
                 K::imm8_const_1 => Operand::Unsigned(1),
                 K::imm16 => Operand::Unsigned(draw.value() as u32 & 0xffff),
@@ -867,23 +882,25 @@ fn no_form(draw: u64, seed: u64) -> Option<Case> {
     })
 }
 
+/// A case of `code` from the state a thread starts in: registers zero, the stack in the data area.
+pub fn plain(code: &[u8]) -> Case {
+    let mut state = vec![0u128; FIELDS];
+    state[RSP] = (DATA + 0x1000).into();
+    state[RIP] = CODE.into();
+    state[RFLAGS] = 0x202;
+    state[MXCSR] = 0x1f80;
+    state[FCW] = 0x37f;
+    Case {
+        code: Encoded::new(code),
+        state: State(state),
+        tracking: false,
+        seed: 0x5eed,
+    }
+}
+
 /// The hand-made cases: the 32-bit system call gates, which this phase answers by design with general
 /// protection at the instruction (plan 5.2), and a few stops compared with the reference.
 fn hand_cases() -> Vec<Designed> {
-    let plain = |code: &[u8]| {
-        let mut state = vec![0u128; FIELDS];
-        state[RSP] = (DATA + 0x1000).into();
-        state[RIP] = CODE.into();
-        state[RFLAGS] = 0x202;
-        state[MXCSR] = 0x1f80;
-        state[FCW] = 0x37f;
-        Case {
-            code: Encoded::new(code),
-            state: State(state),
-            tracking: false,
-            seed: 0x5eed,
-        }
-    };
     let designed = |name, code: &[u8], stop, compared| Designed {
         name,
         case: plain(code),

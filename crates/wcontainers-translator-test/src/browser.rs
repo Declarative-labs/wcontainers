@@ -57,6 +57,11 @@ fn stand_in<G: GuestTest>() -> Value {
         "exit": numbers.exit,
         "exitGroup": numbers.exit_group,
         "brk": numbers.brk,
+        "setBase": numbers.set_base.as_ref().map(|set| serde_json::json!({
+            "number": set.number,
+            "bases": set.bases.iter().map(|&(code, at)| [code, at as u64]).collect::<Vec<_>>(),
+            "limit": set.limit.to_string(),
+        })),
     })
 }
 
