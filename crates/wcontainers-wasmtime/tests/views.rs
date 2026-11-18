@@ -61,7 +61,7 @@ fn run(
     let Ok(()) = cpu.run(
         thread,
         Resume::FromRegisters,
-        Turn { limit: None },
+        Turn::Counted { limit: None },
         &mut kernel,
     );
     kernel.calls[0]

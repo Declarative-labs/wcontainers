@@ -50,7 +50,7 @@ fn run(cpu: &mut CpuSide<Arm64>, thread: ThreadId, address: u64) -> u64 {
     registers.x[1] = address;
     cpu.set_registers(thread, &registers);
     let mut recorder = Recorder::default();
-    let turn = Turn { limit: None };
+    let turn = Turn::Counted { limit: None };
     let Ok(()) = cpu.run(thread, Resume::FromRegisters, turn, &mut recorder);
     let [Exit::Syscall(call)] = recorder.exits.as_slice() else {
         panic!("{:?}", recorder.exits);

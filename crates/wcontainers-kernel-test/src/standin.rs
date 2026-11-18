@@ -555,7 +555,10 @@ impl wcontainers_runtime::Execution for StandIn {
         answer: &mut dyn wcontainers_runtime::Answer,
     ) -> Result<(), Unsupported> {
         loop {
-            let exit = StandIn::run(self, thread, resume, turn.limit)?;
+            let wcontainers_runtime::Turn::Counted { limit } = turn else {
+                panic!("the stand-in counts every turn");
+            };
+            let exit = StandIn::run(self, thread, resume, limit)?;
             let progress = self.last_instructions;
             match answer.exit(self, exit, progress) {
                 wcontainers_runtime::Carry::On {

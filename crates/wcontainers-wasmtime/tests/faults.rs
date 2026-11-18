@@ -57,7 +57,7 @@ fn handled(look_ahead: LookAhead) {
         thread,
         exits: Vec::new(),
     };
-    let turn = Turn { limit: None };
+    let turn = Turn::Counted { limit: None };
     let Ok(()) = cpu.run(thread, Resume::FromRegisters, turn, &mut kernel);
     let Ok(()) = cpu.run(thread, Resume::FromRegisters, turn, &mut kernel);
     match kernel.exits.as_slice() {

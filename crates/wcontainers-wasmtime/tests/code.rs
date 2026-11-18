@@ -46,7 +46,7 @@ fn run(cpu: &mut CpuSide<Arm64>, memory: wcontainers_abi::MemoryId) -> u64 {
     let Ok(()) = cpu.run(
         thread,
         Resume::FromRegisters,
-        Turn { limit: None },
+        Turn::Counted { limit: None },
         &mut recorder,
     );
     cpu.thread_drop(thread);
@@ -124,7 +124,7 @@ fn page_comes_later(look_ahead: LookAhead) {
     registers.pc = second - 8;
     cpu.set_registers(thread, &registers);
     let mut recorder = Recorder::default();
-    let turn = Turn { limit: None };
+    let turn = Turn::Counted { limit: None };
     let Ok(()) = cpu.run(thread, Resume::FromRegisters, turn, &mut recorder);
     assert_eq!(
         recorder.exits,

@@ -25,7 +25,7 @@ use wcontainers_abi::{
     RegisterBlock, Resume, SharedId, Syscall, ThreadId, Warning,
 };
 use wcontainers_guest_cpu::{Guest, HookBody, MemoryFault};
-use wcontainers_runtime::{Answer, Carry, Execution, Leaving, Turn};
+use wcontainers_runtime::{Answer, Carry, Execution, Leaving, StopFlag, Turn};
 use wcontainers_translator::contract::{self, Reason, TrapKind};
 use wcontainers_translator::translate;
 use zerocopy::{FromBytes, IntoBytes};
@@ -413,6 +413,8 @@ pub struct CpuSide<G: Guest> {
     running: Option<Running>,
     /// A write being made one instruction at a time.
     stepping: Option<Stepping>,
+    /// Ends a free turn.
+    stop_flag: StopFlag,
     counters: BTreeMap<&'static str, (u64, u64)>,
     /// The (reason, detail) pairs already warned of.
     warned: HashSet<(&'static str, u64)>,
@@ -627,11 +629,11 @@ struct Data<G: Guest> {
     thread: ThreadId,
     block_at: u32,
     state_base: *mut u8,
-    /// Progress in this turn, which its limit is compared with.
+    /// Progress in this turn, which a counted turn's limit is compared with.
     progress: u64,
     /// The part of `progress` the outside was already told by a clock read.
     reported: u64,
-    limit: Option<u64>,
+    turn: Turn,
     leaving: bool,
     /// Leave and run again at once for this turn, as if carrying on.
     rerun: Option<Turn>,
@@ -687,7 +689,13 @@ where
             translated: Vec::new(),
             restored: false,
             stepping: None,
+            stop_flag: StopFlag::default(),
         }
+    }
+
+    /// What the outside raises to end a free turn.
+    pub fn stop_flag(&self) -> StopFlag {
+        self.stop_flag.clone()
     }
 
     /// Every slow path taken so far: how often and the time spent.
@@ -1154,7 +1162,7 @@ where
                 state_base: std::ptr::null_mut(),
                 progress: 0,
                 reported: 0,
-                limit: None,
+                turn: Turn::Free,
                 leaving: false,
                 rerun: None,
                 pending: None,
@@ -1654,7 +1662,10 @@ where
 {
     let side = side(caller);
     let data = caller.data_mut();
-    data.limit = turn.limit;
+    data.turn = turn;
+    if matches!(turn, Turn::Counted { .. }) {
+        flag::<G>(data.state_base, data.block_at).store(1, Ordering::SeqCst);
+    }
     let running = side.running.as_mut().expect("a run");
     if std::mem::take(&mut running.code_dropped) {
         data.rerun = Some(turn);
@@ -1719,8 +1730,14 @@ where
     if data.leaving {
         return 1;
     }
-    data.progress += 1;
-    if data.limit.is_some_and(|limit| data.progress >= limit) {
+    let ends = match data.turn {
+        Turn::Counted { limit } => {
+            data.progress += 1;
+            limit.is_some_and(|limit| data.progress >= limit)
+        }
+        Turn::Free => side(caller).stop_flag.take(),
+    };
+    if ends {
         match hand(caller, Exit::Stop) {
             Carry::On {
                 resume: Resume::Continue,
@@ -1738,8 +1755,10 @@ where
             }
         }
     }
-    // Every check is counted while progress is counted by them.
-    flag.store(1, Ordering::SeqCst);
+    // Every check of a counted turn is counted while progress is counted by them.
+    if matches!(caller.data().turn, Turn::Counted { .. }) {
+        flag.store(1, Ordering::SeqCst);
+    }
     0
 }
 
@@ -2172,7 +2191,9 @@ where
             thread,
             code_dropped: false,
         });
-        self.slow_path(reason::PROGRESS_BY_STOP_CHECKS, 0, 0);
+        if matches!(turn, Turn::Counted { .. }) {
+            self.slow_path(reason::PROGRESS_BY_STOP_CHECKS, 0, 0);
+        }
         // A new turn to count from, or none when the thread goes on with the turn it had.
         let mut fresh = Some(turn);
         loop {
@@ -2191,11 +2212,14 @@ where
             data.block_at = block_at;
             data.state_base = state_base;
             if let Some(turn) = fresh.take() {
-                (data.progress, data.reported, data.limit) = (0, 0, turn.limit);
+                (data.progress, data.reported, data.turn) = (0, 0, turn);
             }
             data.leaving = false;
             let flag = flag::<G>(state_base, block_at);
-            flag.store(1, Ordering::SeqCst);
+            let counted = matches!(data.turn, Turn::Counted { .. });
+            flag.store(u32::from(counted), Ordering::SeqCst);
+            // SAFETY: the flag is in the state memory, which outlives the run; `left` follows it.
+            unsafe { self.stop_flag.entered(flag) };
             let result = instance.run.call(&mut store, ());
             flag.store(0, Ordering::SeqCst);
             let data = store.data_mut();
@@ -2246,6 +2270,7 @@ where
         }
         self.send_warnings(answer);
         self.write_held(thread);
+        self.stop_flag.left();
         self.running = None;
         let process = self.processes.get_mut(&memory).expect("a memory");
         if process.dropped {

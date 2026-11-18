@@ -57,7 +57,7 @@ fn run_warned(
     registers.pc = CODE;
     cpu.set_registers(thread, &registers);
     let mut recorder = Recorder::default();
-    let turn = Turn { limit: None };
+    let turn = Turn::Counted { limit: None };
     let Ok(()) = cpu.run(thread, Resume::FromRegisters, turn, &mut recorder);
     let [Exit::Syscall(call)] = recorder.exits.as_slice() else {
         panic!("{:?}", recorder.exits);

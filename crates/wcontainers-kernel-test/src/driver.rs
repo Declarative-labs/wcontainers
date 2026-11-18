@@ -679,7 +679,7 @@ impl Outside for TestHost {
             let arrival = self.schedule.random_range(1..=ANSWER_ARRIVES_WITHIN);
             limit = Some(limit.map_or(arrival, |l| l.min(arrival)));
         }
-        Turn { limit }
+        Turn::Counted { limit }
     }
 
     /// Advances a repeatable clock by the time one turn on the CPU side took: between 0.5 and 1.5

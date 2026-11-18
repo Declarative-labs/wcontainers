@@ -3,14 +3,78 @@
 //! time; the loop knows no back end and no host.
 
 use core::ops::ControlFlow;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use wcontainers_abi::{Cpu, Exit, Host, Next, Resume, ThreadId, Warning};
 pub use wcontainers_kernel::Kernel;
 
-/// How a turn ends: after `limit` units of progress, or never by counting when there is no limit.
+/// How a turn ends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Turn {
-    pub limit: Option<u64>,
+pub enum Turn {
+    /// The back end counts progress and ends the turn after `limit` units, or never with no limit.
+    Counted { limit: Option<u64> },
+    /// Nothing is counted: the turn ends at the guest's next stop check after the outside raises the
+    /// [`StopFlag`].
+    Free,
+}
+
+/// Ends a free turn from any host thread: raises the stop flag of the thread running, or of the next
+/// one to run when none runs.
+#[derive(Clone, Default)]
+pub struct StopFlag(Arc<Raising>);
+
+#[derive(Default)]
+struct Raising {
+    raised: AtomicBool,
+    /// The address of the running thread's flag word, 0 while none runs.
+    running: Mutex<usize>,
+}
+
+impl StopFlag {
+    pub fn raise(&self) {
+        self.0.raised.store(true, Ordering::SeqCst);
+        let running = self
+            .0
+            .running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if *running != 0 {
+            // SAFETY: the back end keeps the word valid while it is entered (`entered`).
+            unsafe { &*(*running as *const AtomicU32) }.store(1, Ordering::SeqCst);
+        }
+    }
+
+    /// For the back end: a thread whose stop flag is `flag` runs until [`StopFlag::left`]; raised at once
+    /// if a raise is waiting.
+    ///
+    /// # Safety
+    /// `flag` stays valid until [`StopFlag::left`].
+    pub unsafe fn entered(&self, flag: &AtomicU32) {
+        let mut running = self
+            .0
+            .running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *running = flag as *const AtomicU32 as usize;
+        if self.0.raised.load(Ordering::SeqCst) {
+            flag.store(1, Ordering::SeqCst);
+        }
+    }
+
+    /// For the back end: no thread runs.
+    pub fn left(&self) {
+        *self
+            .0
+            .running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = 0;
+    }
+
+    /// For the back end: whether it was raised since this was last asked.
+    pub fn take(&self) -> bool {
+        self.0.raised.swap(false, Ordering::SeqCst)
+    }
 }
 
 /// What a back end does with its thread once an exit has been answered.

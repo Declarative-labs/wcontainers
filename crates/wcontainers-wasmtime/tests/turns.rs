@@ -1,6 +1,7 @@
 //! A counted turn ends after its progress however often the guest reads the clock, leaving `run`
 //! from a hook is counted by why, and a counter read on a back end brought back from a save is a
-//! counted slow path.
+//! counted slow path. A free turn counts nothing and ends when another host thread raises the stop
+//! flag, or at once when it was raised before.
 
 use wcontainers_abi::{Cpu, Exit, Permissions, RegisterBlock, Resume, Warning};
 use wcontainers_arm64::Arm64;
@@ -62,7 +63,7 @@ fn spin(look_ahead: LookAhead, restored: bool) -> Vec<(String, u64)> {
     }
 
     let mut recorder = Recorder::default();
-    let turn = Turn { limit: Some(LIMIT) };
+    let turn = Turn::Counted { limit: Some(LIMIT) };
     let Ok(()) = cpu.run(thread, Resume::FromRegisters, turn, &mut recorder);
 
     assert!(
@@ -106,4 +107,54 @@ fn clock_reads_do_not_hold_a_counted_turn_none() {
 fn counter_reads_after_a_restore_are_warned() {
     let warnings = spin(LookAhead::Full, true);
     assert!(without_offset(&warnings), "{warnings:?}");
+}
+
+/// Runs `b .` in free turns: one ended by a raise from another host thread, then one raised before it
+/// started.
+fn free(look_ahead: LookAhead) {
+    let mut cpu = CpuSide::<Arm64>::new(Compiler::new(None), look_ahead, Optimise::Speed, ());
+    let memory = cpu.memory_new().unwrap();
+    cpu.write(memory, CODE, &0x1400_0000u32.to_le_bytes())
+        .unwrap();
+    let page = wcontainers_abi::PAGE_SIZE;
+    cpu.set_permissions(memory, CODE, page, Permissions::READ | Permissions::EXECUTE)
+        .unwrap();
+    cpu.code_changed(memory, CODE, page, &[CODE]);
+    let thread = cpu.thread_new(memory).unwrap();
+    let mut registers = RegisterBlock::new_zeroed();
+    registers.pc = CODE;
+    cpu.set_registers(thread, &registers);
+
+    let flag = cpu.stop_flag();
+    let raiser = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        flag.raise();
+    });
+    let mut recorder = Recorder::default();
+    let Ok(()) = cpu.run(thread, Resume::FromRegisters, Turn::Free, &mut recorder);
+    raiser.join().unwrap();
+    assert_eq!(recorder.exits, [(Exit::Stop, 0)]);
+    assert!(
+        !recorder
+            .warnings
+            .iter()
+            .any(|(reason, _)| reason == reason::PROGRESS_BY_STOP_CHECKS),
+        "{:?}",
+        recorder.warnings
+    );
+
+    cpu.stop_flag().raise();
+    let mut recorder = Recorder::default();
+    let Ok(()) = cpu.run(thread, Resume::Continue, Turn::Free, &mut recorder);
+    assert_eq!(recorder.exits, [(Exit::Stop, 0)]);
+}
+
+#[test]
+fn a_free_turn_ends_when_the_flag_is_raised_full() {
+    free(LookAhead::Full);
+}
+
+#[test]
+fn a_free_turn_ends_when_the_flag_is_raised_none() {
+    free(LookAhead::None);
 }
