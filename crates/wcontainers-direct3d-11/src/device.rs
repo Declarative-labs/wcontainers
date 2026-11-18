@@ -1157,12 +1157,22 @@ impl<B: Backend> Device<B> {
                 _ => (dimension, v.first_layer, v.layer_count),
             }
         };
+        // Direct3D reads stencil in the second component; the interface's stencil views give it
+        // in the first.
+        if stencil
+            && kind == bind::SHADER_RESOURCE
+            && !self.backend.caps().has(Features::VIEW_SWIZZLE)
+        {
+            return not_implemented(
+                "stencil read through a view (Direct3D's second component needs a view swizzle)",
+            );
+        }
         self.live()?;
         self.bury();
         let twin = if !stencil && format::reinterprets(format, texture.format) {
-            if drawn {
+            if kind == bind::DEPTH_STENCIL {
                 return not_implemented(
-                    "a target view reinterpreting a typeless texture's bits as another format",
+                    "a depth view reinterpreting a typeless texture's bits as another format",
                 );
             }
             let gpu = self.backend.create_texture(&GpuTexture {
@@ -2002,7 +2012,8 @@ pub(crate) fn raster_block(d: &RasterizerDesc, caps: &Caps) -> RasterDesc {
         depth_bias: (d.depth_bias as f32).to_bits(),
         depth_bias_slope: d.slope_scaled_depth_bias.to_bits(),
         depth_bias_clamp: clamp.to_bits(),
-        depth_clip: d.depth_clip,
+        // Where the back end clips only, the programs clamp (`DepthClampInShader`).
+        depth_clip: d.depth_clip || !caps.has(Features::DEPTH_CLAMP),
         scissor: d.scissor,
         line_width: 1.0f32.to_bits(),
         provoking: ProvokingVertex::First,
