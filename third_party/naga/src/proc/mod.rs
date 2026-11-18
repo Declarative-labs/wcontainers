@@ -874,6 +874,40 @@ impl crate::Module {
         )
     }
 
+    /// Whether any function uses a subgroup operation or a subgroup built-in (WGSL's `subgroups`).
+    pub fn uses_subgroups(&self) -> bool {
+        let builtin = |b: Option<&crate::Binding>| {
+            matches!(
+                b,
+                Some(crate::Binding::BuiltIn(
+                    crate::BuiltIn::SubgroupSize
+                        | crate::BuiltIn::SubgroupInvocationId
+                        | crate::BuiltIn::NumSubgroups
+                        | crate::BuiltIn::SubgroupId
+                ))
+            )
+        };
+        let in_types = self.types.iter().any(|(_, ty)| match ty.inner {
+            crate::TypeInner::Struct { ref members, .. } => {
+                members.iter().any(|m| builtin(m.binding.as_ref()))
+            }
+            _ => false,
+        });
+        let in_function = |f: &crate::Function| {
+            f.arguments.iter().any(|a| builtin(a.binding.as_ref()))
+                || f.expressions.iter().any(|(_, e)| {
+                    matches!(
+                        e,
+                        crate::Expression::SubgroupBallotResult
+                            | crate::Expression::SubgroupOperationResult { .. }
+                    )
+                })
+        };
+        in_types
+            || self.functions.iter().any(|(_, f)| in_function(f))
+            || self.entry_points.iter().any(|ep| in_function(&ep.function))
+    }
+
     pub fn uses_mesh_shaders(&self) -> bool {
         let binding_uses_mesh = |b: &crate::Binding| {
             matches!(
