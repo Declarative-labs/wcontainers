@@ -44,6 +44,8 @@ G4 run 18 (2026-11-18, about 04:55 to 07:00 Pacific). Merged origin/phase-2-grap
   targets and mips scenes).
 - At the end: lint of both builds clean, front 44 + cache 1 + unit 3, library com 15 and
   programs 23 passing with 1 ignored (the early tests case), at 53a45b6 (logs/g4s6i-*).
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (17.9 GB, the debug
+  builds on both back ends) was deleted; no build folder was made on the Mac.
 
 G4 run 17 (2026-11-18, about 03:45 to 05:30 Pacific). Merged origin/phase-2-graphics-webgpu,
 -webgl, -direct3d-12, -shaders and -rig cleanly; the merged tree linted with warnings denied and
