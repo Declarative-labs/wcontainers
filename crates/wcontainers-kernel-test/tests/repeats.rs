@@ -1,5 +1,5 @@
 //! A seeded run repeats exactly: threaded programs run again under the same seed give the same output,
-//! warnings, counters, CPU side warnings and turn count. Each seed of `schedule_seeds` is run
+//! warnings, counters, CPU side warnings, turn count and files left. Each seed of `schedule_seeds` is run
 //! `REPEAT_RUNS` times (2 if unset), with saves at moments drawn from it for one program.
 
 use std::hash::{Hash, Hasher};
@@ -7,11 +7,36 @@ use std::path::Path;
 
 use wcontainers_kernel_test::{driver, guest, image, reference, schedule_seeds, standin};
 
-/// Every part of a run that a seed decides, as one comparable value.
+/// Every part of a run that a seed decides, as one comparable value: each file the container left
+/// by its path, mode, owner, device and a hash of its contents.
 fn measured(run: &driver::Run) -> String {
+    let files: Vec<String> = run
+        .files
+        .iter()
+        .map(|file| {
+            let mut hasher = std::hash::DefaultHasher::new();
+            file.contents.hash(&mut hasher);
+            format!(
+                "{} {:o} {}:{} {} {} {:016x}",
+                String::from_utf8_lossy(&file.path),
+                file.mode,
+                file.uid,
+                file.gid,
+                file.rdev,
+                file.contents.len(),
+                hasher.finish()
+            )
+        })
+        .collect();
     format!(
-        "{:?}\n{:?}\n{:?}\n{:?}\nsaved {} turns {}",
-        run.outcome, run.warnings, run.cpu_warnings, run.counters, run.saved, run.turns
+        "{:?}\n{:?}\n{:?}\n{:?}\nsaved {} turns {}\nfiles:\n{}",
+        run.outcome,
+        run.warnings,
+        run.cpu_warnings,
+        run.counters,
+        run.saved,
+        run.turns,
+        files.join("\n")
     )
 }
 
