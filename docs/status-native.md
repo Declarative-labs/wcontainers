@@ -6,9 +6,13 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 
 - N0 (the plan) is done. At the start of N1 (2026-11-18) the plan was corrected for the last check's open
   findings and the brief's newest rulings (commit 64e30e56; how, below).
-- N1 (the floor on Hypervisor.framework) is done: every case of its bar passes (20 of 20), measurements
-  below. Commits a1f1e82b (A1), 91fb63ff (the inside), 0c8ef62d (the monitor and the test), and the two
-  after them.
+- N1 (the floor on Hypervisor.framework) is done: every case of its bar passes (20 cases, 0 failed, and
+  the doorbell's round trip reported as a measurement), measurements below. Commits a1f1e82b (A1), 91fb63ff
+  (the inside), 0c8ef62d (the monitor and the test), the two after them, and run 2's ce3028f5 (the
+  independent check's findings settled, below), with the plan corrected in the commit after it.
+- The literal check (phase-1-literals at 7b7aaf22) is merged (0e0f1102) and this branch's baseline started
+  (e4b998bd, the commit the check prints as "the last that could add lines"; it must never change). The
+  check passes.
 - Next: N2 (the native ARM64 output, instruction by instruction), which needs no other track's work; its
   changes in other tracks' crates are this track's by the orchestrator's leave (plan 6.2, G1). It also
   measures E's cost with the add's placement free. N3 needs decision 1 (R1, R3). N6 needs K2 (below).
@@ -41,35 +45,54 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 
 - crates/wcontainers-inside (`no_std`; names are suggestions): `layout` (the guest-physical and virtual
   layout, every number one constant derived from `PAGE_SIZE` where it can be), `link` (the start record,
-  the link page, the requests), `boot` (the boot map and boot registers the monitor applies), and, built
+  the link page, and the requests as typed messages: one `#[repr(C)]` struct per request with its answer
+  type, written over the page's message words through `zerocopy`, so both sides read one definition),
+  `build_environment` (the cargo variable names both build scripts read), `boot` (the boot map and boot registers the monitor applies), and, built
   only for `aarch64-unknown-none`, `floor`: entry and vectors (`floor/entry.rs`), frames and translation
-  tables with page and block entries, split break before make, TLB invalidation (`floor/tables.rs`),
+  tables with page and block entries, split break before make (counted "large entry split" and warned the
+  first time), TLB invalidation (`floor/tables.rs`),
   address spaces with per-process TTBR1 tops sharing the global entries, a table root and identifier per
   view (per thread), the GIC through `arm-gic`, the virtual timer, code made visible (CTR_EL0's lines),
   the stop word in TPIDRRO_EL0, the doorbell. `src/bin/floor-cases` is N1's test program (never shipped):
   hand-written EL0 snippets, one report per case.
 - crates/wcontainers-hypervisor: the `Hypervisor`, `Machine`, `VirtualCpu` and `Stopper` traits (plan 5.9),
   their Hypervisor.framework implementation over `applevisor` (`src/hvf.rs`, the only file that names the
-  platform), guest memory as one reservation with give-back by unmap, fresh mmap and map, the ELF loader
-  and boot. Its build script builds the inside for the bare-metal target with a nested cargo into its own
+  platform), guest memory as one reservation, give-back as `Machine::give_back` with one body per platform
+  (Hypervisor.framework's: unmap, fresh mmap, map), the ELF loader and boot. Its build script builds the inside for the bare-metal target with a nested cargo into its own
   output directory and embeds the programs (`programs::FLOOR_CASES`).
-- tests/floor.rs (harness off): boots the cases, serves the link, makes 300 stops from another thread, and
-  checks every report; then the counter trial in a machine with EL2, recorded only.
+- tests/floor.rs (harness off): boots the cases, serves the link, makes the stops from another thread (300
+  by default, seeded), and checks every report.
+- The counter trial (decision 10, option C) ran in run 1 and its result is below; its code (a machine with
+  EL2, the store doorbell, the PMU registers) had no use once C was out and was removed in run 2. The trial
+  as run is at commit fe3a4bff: check that commit out into a scratch worktree and run the bar there.
 
 ## How to run
 
 From the checkout, in the Nix shell:
 - the bar: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test floor` (about half a second; the
   test signs a copy of itself ad hoc with crates/wcontainers-hypervisor/hypervisor.entitlements and runs
-  that, since Hypervisor.framework refuses an unsigned binary); the whole suite of both crates is
+  that, since Hypervisor.framework refuses an unsigned binary); the stop test's knobs are environment
+  variables: `WCONTAINERS_FLOOR_STOPS=1000 WCONTAINERS_FLOOR_SEED=0x0123456789abcdef` before the command
+  (seed in decimal or after `0x`; the run prints both); the whole suite of both crates is
   `nix develop -c cargo test -j 4 -p wcontainers-inside -p wcontainers-hypervisor`;
 - lint: `nix develop -c cargo clippy -j 4 -p wcontainers-inside -p wcontainers-hypervisor --all-targets --
   -D warnings` and `nix develop -c cargo clippy -j 4 -p wcontainers-inside --target aarch64-unknown-none
-  --bins --lib -- -D warnings`.
+  --bins --lib -- -D warnings`;
+- the literal check: `nix develop -c cargo run -q -p wcontainers-literals -- check` (exit 0 is clean), and
+  `nix develop -c cargo test -j 4 -p wcontainers-literals -- --test-threads 3` before a push.
 
 ## N1 measurements (M5 Max, macOS 27.2, the floor test; load 55 to 92 over the runs)
 
-- Bar cases, each run: 20 of 20 pass (six runs after the last fix, the last from a clean build of both
+- Run 2 (after the check's findings were settled, 2026-11-18 15:33 to 15:42, load 110 to 142): four runs,
+  each 20 cases with 0 failed (the cases now include an inside-half page made read-only after use, and the
+  block case checks the split counter); the last from a clean build of both crates (`cargo clean -p` of
+  both, then the whole suite, 22 s). Doorbell 926, 886, 884 and 919 ns. Stops (300, seed 0x9e3779b97f4a7c15,
+  unless said): medians 2.38, 2.38 and 2.13 µs, 99th 0.33, 2.6 and 0.34 ms, maxima 1.9, 7.5 and 0.89 ms;
+  1000 stops with seed 0x0123456789abcdef: median 2.21 µs, 99th 0.26 ms, max 3.5 ms. Every stop in the loop,
+  the count never back. Raised interrupt median 2.75 µs, timer median 41 ns, give-back 67,141,680 bytes
+  of 67,108,864 (the clean run in full: scratch native/n1-run2-clean.log).
+- Run 1, bar cases, each run: 20 of 20 pass (one of them the doorbell, a measurement that always passed;
+  run 2 reports it as a measurement) (six runs after the last fix, the last from a clean build of both
   crates: `cargo clean -p` of both, then the whole suite, 27 s, load 41 to 63; doorbell 892 ns, stop median
   2.25 µs there).
 - Doorbell round trip (EL1 `hvc` to the monitor and back, 1000 timed by the guest's counter): 897, 912 and
@@ -93,6 +116,28 @@ From the checkout, in the Nix shell:
   and no interrupt (PMINTENSET_EL1 0x80000000 as written); only the 1 s timeout timer came. In at least
   three runs. So C does not work here.
 
+## The independent check of N1, and how each finding was settled (run 2)
+
+- Blocking, the stop test had no knob and STOPS was defined twice: the inside no longer knows the count; the
+  host's test owns it (one constant, the default) with `WCONTAINERS_FLOOR_STOPS` and
+  `WCONTAINERS_FLOOR_SEED` as knobs; run with 1000 stops and the check's seed (above).
+- The status's stale fact about phase-1-literals: the branch is merged now and the baseline started.
+- Give-back decided above the interface: it is `Machine::give_back`, one body per platform; `unmap` left
+  the trait.
+- The option C trial's setting and second doorbell path: removed (the `el2` flag, `el2_supported`, the
+  registers only the trial set, `Start.el2`, `Start.counter_interrupt`, the store doorbell and
+  `layout::DOORBELL`); the plan says KVM ARM64's store doorbell and its page come with N10.
+- The TLBI operand's address mask: 44 bits now (`TLBI_ADDRESS_BITS`), leaving the level hint 0. A case for
+  it was added (a page of the inside's half made read-only after use refuses at once); it passed before
+  the fix too on this M5, as the check found.
+- The split's counter and 512 invalidations: counted "large entry split" and warned at the first, and one
+  invalidation at the block's address replaces the 512 (one cached entry covers the whole block); the
+  block case checks the count is 1.
+- Link arguments by position: typed messages (above).
+- Transitive licences: listed below.
+- The doorbell case always passed: it is reported as a measurement, not counted among the cases.
+- Decision 10's evidence: the plan cites the check's hpmn.c result (MDCR_EL2.HPMN).
+
 ## Asked of the kernel track (K2, needed before N6)
 
 1. The memory size the guest is told (MemTotal and the rest of /proc/meminfo, `sysinfo`, tmpfs limits)
@@ -110,15 +155,24 @@ end (ceiling just under 4 GiB) and the native one (2^45), which replay across th
 applevisor 1.0.0 and applevisor-sys 1.0.0 MIT OR Apache-2.0; aarch64-paging 0.12.3 MIT OR Apache-2.0;
 aarch64-cpu 12.0.0 and tock-registers 0.12.0 MIT/Apache-2.0; arm-gic 0.11.0, arm-sysregs 0.5.2 and
 safe-mmio 0.4.0 MIT OR Apache-2.0; spin 0.10.1 MIT; object 0.37.3 Apache-2.0 OR MIT; libc MIT OR
-Apache-2.0; fastrand 2.5.0 Apache-2.0 OR MIT (test only).
+Apache-2.0; fastrand 2.5.0 Apache-2.0 OR MIT (test only). Brought in by those (new in Cargo.lock): num_enum
+and num_enum_derive 0.7.6 BSD-3-Clause OR MIT OR Apache-2.0; pastey 0.2.3, rustversion 1.0.23 and
+arm-targets 0.4.3 MIT OR Apache-2.0; arm-sysregs-aarch32, -common, -el0 and -el1 0.5.2 MIT OR Apache-2.0.
+Run 2 added zerocopy to the inside, already the workspace's (0.8.63, BSD-2-Clause OR Apache-2.0 OR MIT).
 
 ## Literals
 
-- The two new crates were written under the rule: every number is derived (from `PAGE_SIZE`, field offsets,
-  the crates' register fields) or one named constant. Marked: the register save and restore in
-  floor/entry.rs writes register n at x + n words, the numbers being the registers' own (a comment there).
-- The automatic check (phase-1-literals) has not landed (origin/phase-1-literals is still at 68013b31), so
-  no baseline was made.
+- The check is merged and passes; the baseline's start for this branch is e4b998bd. Its 27 lines for the
+  native crates are all text, none a number: assembly the crates offer no call for (`hvc #0` in the
+  doorbell, `dc cvau` and `ic ivau`, `tlbi vae1is`, the entry and vectors in floor/entry.rs, and the
+  floor cases' EL0 snippets with their labels and `extern "C"`), and the include path of the generated
+  programs file (`include!` takes only a literal).
+- Replaced in run 2: every barrier now calls `aarch64_cpu::asm::barrier`; the build scripts' cargo
+  variables, options and file names are named constants, the variables shared in `build_environment`; the
+  cases' names went into their format strings; `[1, 2, 3]` is `1..INSTRUCTION_BYTES`; the `1` given to
+  `hv_vcpus_exit` is the length of the identifier list; the stop count is defined once, in the test.
+- Marked: none. The register save and restore offsets in floor/entry.rs are inside its assembly text.
+- The magic-literals fix lists (orchestrator/magic-literals) name nothing in the native crates.
 
 ## What N0 checked, and how
 
@@ -223,7 +277,7 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 ## Departures from the plan
 
 - N1, the build: the Nix shell links against the macOS 14.4 SDK, which does not declare Hypervisor.framework's
-  GIC calls and its EL2 settings (macOS 15). The monitor's build script tells the linker to leave those nine
+  GIC calls (macOS 15). The monitor's build script tells the linker to leave those seven
   calls to be found when the program loads (`-Wl,-U,_name`, list `LATER_CALLS` in
   crates/wcontainers-hypervisor/build.rs); this reaches only that package's own binaries and tests. A
   binary in another package that links the monitor needs the same, until the flake's SDK is 15 or later
