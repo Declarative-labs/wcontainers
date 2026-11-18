@@ -1793,7 +1793,7 @@ impl Device {
             D3D12_FEATURE_D3D12_OPTIONS2 => {
                 let d = unsafe { fill::<D3D12_FEATURE_DATA_D3D12_OPTIONS2>(data, size)? };
                 *d = D3D12_FEATURE_DATA_D3D12_OPTIONS2 {
-                    DepthBoundsTestSupported: b(features::depth_bounds(&caps)),
+                    DepthBoundsTestSupported: b(features::DEPTH_BOUNDS),
                     ProgrammableSamplePositionsTier: D3D12_PROGRAMMABLE_SAMPLE_POSITIONS_TIER(
                         features::ABSENT_TIER as i32,
                     ),
@@ -2057,7 +2057,7 @@ pub struct Queue(D3D12_COMMAND_QUEUE_DESC, Base, QueueId);
 impl Drop for Queue {
     fn drop(&mut self) {
         let id = self.2;
-        gpu::call(move |d| d.destroy_queue(id));
+        gpu::post(move |d| d.destroy_queue(id));
     }
 }
 
@@ -2266,7 +2266,7 @@ fn set_reached(d: &mut gpu::Front) {
 impl Drop for Fence {
     fn drop(&mut self) {
         let id = self.id;
-        gpu::call(move |d| d.destroy_fence(id));
+        gpu::post(move |d| d.destroy_fence(id));
     }
 }
 
@@ -2576,7 +2576,7 @@ impl Drop for Resource {
     fn drop(&mut self) {
         if !self.back_buffer {
             let id = self.id;
-            gpu::call(move |d| d.destroy_resource(id));
+            gpu::post(move |d| d.destroy_resource(id));
         }
     }
 }
@@ -2636,7 +2636,7 @@ pub unsafe fn heap_program_count(this: &*mut c_void) -> &AtomicU32 {
 impl Drop for Heap {
     fn drop(&mut self) {
         let id = self.1;
-        gpu::call(move |d| d.destroy_heap(id));
+        gpu::post(move |d| d.destroy_heap(id));
     }
 }
 
@@ -2652,7 +2652,7 @@ pub struct QueryHeap(pub QueryHeapId, Base);
 impl Drop for QueryHeap {
     fn drop(&mut self) {
         let id = self.0;
-        gpu::call(move |d| d.destroy_query_heap(id));
+        gpu::post(move |d| d.destroy_query_heap(id));
     }
 }
 
@@ -2662,7 +2662,7 @@ pub struct PipelineState(pub PipelineId, Base);
 impl Drop for PipelineState {
     fn drop(&mut self) {
         let id = self.0;
-        gpu::call(move |d| d.destroy_pipeline(id));
+        gpu::post(move |d| d.destroy_pipeline(id));
     }
 }
 
@@ -2681,7 +2681,7 @@ pub struct DescriptorHeap {
 impl Drop for DescriptorHeap {
     fn drop(&mut self) {
         let id = self.id;
-        gpu::call(move |d| d.destroy_descriptor_heap(id));
+        gpu::post(move |d| d.destroy_descriptor_heap(id));
     }
 }
 

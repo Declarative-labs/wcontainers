@@ -1067,6 +1067,25 @@ impl<B: Backend> Device<B> {
             Some(f) => f,
             None => dxgi(v.format)?,
         };
+        // Direct3D returns what the view's format gives and the shader takes those bits as the
+        // type it declares; the back ends read a view only as its own type.
+        let read_as = |f: Format| match f.kind() {
+            FormatKind::Uint | FormatKind::Stencil => FormatKind::Uint,
+            FormatKind::Sint => FormatKind::Sint,
+            _ => FormatKind::Float,
+        };
+        if let Some(shape) = b.shape.filter(|s| !s.storage)
+            && read_as(shape.format)
+                != if stencil {
+                    FormatKind::Uint
+                } else {
+                    read_as(format)
+                }
+        {
+            return Err(Error::NotImplemented(
+                "a texture read as another type than its view's format",
+            ));
+        }
         let desc = TextureViewDesc {
             format,
             dimension,

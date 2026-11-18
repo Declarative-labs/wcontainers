@@ -211,6 +211,13 @@ pub fn call_windowed<R: Send + 'static>(f: impl FnOnce(&mut State) -> R + Send +
     }
 }
 
+/// Has the device thread run `f` after the calls sent before it, without waiting: for releases,
+/// which need no answer and may come while the process exits, after Windows has ended the device
+/// thread.
+pub fn post(f: impl FnOnce(&mut Front) + Send + 'static) {
+    send(Box::new(move |s| f(&mut s.front)));
+}
+
 /// Runs `f` on the device thread with the front's device and returns its answer.
 pub fn call<R: Send + 'static>(f: impl FnOnce(&mut Front) -> R + Send + 'static) -> R {
     call_state(move |s| f(&mut s.front))
