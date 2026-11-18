@@ -17,6 +17,7 @@ use wcontainers_translator_test::programs::{
     Blob, Library, build_with, native, native_seconds, translated_omitting,
 };
 use wcontainers_translator_test::runner::compile_time;
+use wcontainers_x86::X86_64;
 
 const WORKLOADS: [&str; 8] = [
     "fib",
@@ -272,4 +273,45 @@ fn measure_benchmarks_arm64() {
 #[ignore]
 fn measure_calls_between_modules_arm64() {
     measure_calls_between_modules::<Arm64>();
+}
+
+/// x86-64's 128-by-64 long division (`programs/x86_64/divide.c`) against the CPU's own `div`: each with a
+/// high half (the long path) and with none (the fast path), natively on the reference and at look-ahead none
+/// in wasmtime here; their difference is the long path's own cost a division.
+#[test]
+#[ignore]
+fn measure_long_division_x86_64() {
+    let runs: u32 = std::env::var("WC_BENCH_RUNS").map_or(3, |v| v.parse().unwrap());
+    const ROUNDS: f64 = 50e6;
+    let mut times = Vec::new();
+    for high in ["HIGH=1", "HIGH=0"] {
+        let blob = build_with::<X86_64>("divide", "-O2", Library::None, &[high]);
+        let expected = native::<X86_64>(&blob);
+        let native_time = native_seconds::<X86_64>(&blob, runs);
+        let mut best = f64::INFINITY;
+        for _ in 0..runs {
+            let (ran, _, _, time) = translated_omitting::<X86_64>(
+                &blob,
+                (LookAhead::None, Optimise::Speed),
+                Omit::default(),
+            );
+            assert_eq!(ran, expected, "{high}");
+            best = best.min(time.as_secs_f64());
+        }
+        eprintln!(
+            "{high}: native {:.2} ns a division, wasmtime at none {:.2} ns (load here {})",
+            native_time / ROUNDS * 1e9,
+            best / ROUNDS * 1e9,
+            load()
+        );
+        times.push((native_time, best));
+    }
+    let [(native_long, ours_long), (native_fast, ours_fast)] = times[..] else {
+        unreachable!()
+    };
+    eprintln!(
+        "the long path's own cost: native {:.2} ns a division, wasmtime {:.2} ns",
+        (native_long - native_fast) / ROUNDS * 1e9,
+        (ours_long - ours_fast) / ROUNDS * 1e9
+    );
 }
