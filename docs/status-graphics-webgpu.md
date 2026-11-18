@@ -1,15 +1,75 @@
-# Graphics: the WebGPU back end (G2)
+# Graphics: the WebGPU back end (G2, G2b)
 
 Branch phase-2-graphics-webgpu. The plan is docs/phase-2-graphics.md (sections 4, 5.7 and 12, G2).
 Crate: crates/wcontainers-gpu-webgpu, on wgpu 30.0.2.
 
 ## Where things stand
 
-G2 (the whole milestone, section 12): see Run 10 for what the independent check of run 9 found
-and what was done about it. G2 runs 1 to 6 are below as "Run 5" to "Run 10". What 5.7 gives the
-back end beyond the pass bar (texture formats WebGPU lacks, packed-pair formats, immediates,
-asynchronous `prepare`, the staging ring) is not part of the G2 pass bar and is not built; it is
-under "Not carried out yet". Earlier runs (G2a, the first slice, runs 1 to 4) follow them.
+G2 passed its independent check. G2b (what the fronts need from this back end) is in progress:
+run 1 is "Run 11" below. Earlier runs follow it ("Run 5" to "Run 10" are G2 runs 1 to 6; G2a runs
+1 to 4 after them).
+
+What the fronts' status files ask of this back end (read at G2b run 1, after merging every graphics
+branch), and where each stands:
+- Timestamps (Direct3D 12: every real program tried stops there; Direct3D 11: so timestamps need not
+  be reported disjoint): built. `TIMESTAMPS` where wgpu has `TIMESTAMP_QUERY` and resolves in
+  nanoseconds; tests/timestamps.rs, tests/direct3d.rs (against Direct3D 11), and in Chrome by
+  web/check. Calibration: through base primitives (see "How another track builds").
+- Point filling under its own name: built. `POLYGON_MODE_POINT` where wgpu has it (Vulkan, not
+  Direct3D 12 or browsers); wireframe `POLYGON_MODE` where wgpu has `POLYGON_MODE_LINE` (every
+  native API; browsers have neither). tests/raster.rs.
+- Instance step rates in the program: measured, tests/pulled.rs (Measurements).
+- `write_texture` of a block-compressed level smaller than a block (atg-simplemsaa_pc): built.
+  Copy extents are rounded up to whole blocks. tests/blocks.rs
+  `levels_smaller_than_a_block_take_their_texel_size`.
+- `copy_texture` from `R16Unorm` into `Depth16Unorm` (Wine's test_format_compatibility): built,
+  and from `R16Uint`. tests/copies.rs `sixteen_bit_group_copies_into_depth_keep_the_bits`.
+- A 3D write whose layers are further apart than their rows lost every slice after the first on
+  wgpu's Direct3D 12 (Direct3D 11 track's own_volumes): fixed by packing such layers on the host
+  (`RowsRepacked`). tests/copies.rs `volume_writes_with_padded_slices_keep_every_slice` (failed on
+  Direct3D 12 before).
+- `OCCLUSION_COUNT` "where the adapter counts samples exactly": refused, absent. WebGPU defines an
+  occlusion result only as zero or not, wgpu's Direct3D 12 asks for binary occlusion and its Vulkan
+  for imprecise counts; fronts count by `OcclusionCountReplay`.
+- Formats WebGPU lacks (`A8_UNORM`, `B5G6R5`, `B5G5R5A1`, `B4G4R4A4`; `FormatConverted`, asked by
+  both Direct3D fronts): NOT built yet; declared without any bits, so fronts report them absent.
+  The most useful thing left (Next).
+- Asked of others, not this back end: the view swizzle (interface), vertices past the end in
+  `ExecuteIndirect` (a listed loss), multisampled array targets (absent in WebGPU).
+- Already done before this run: vertex formats WebGPU lacks (run 9), combined depth-stencil copies
+  (run 7).
+
+Run 11 = G2b run 1, 2026-11-17:
+- Merged origin/phase-2-graphics, -webgl, -direct3d-11, -direct3d-12, -shaders and -rig (no
+  conflicts). Four new shared suite tests were added to examples/scenes/names.rs.
+- The open findings of G2's check:
+  - A copy between regions of one subresource lost the device; it now goes through a buffer
+    (`CopyWithinTexture`, interface change below); depth or stencil within one subresource fails by
+    name. tests/copies.rs `copies_within_one_subresource_go_through_a_buffer`.
+  - Splitting a pass while an occlusion query runs (an ordered write, a discard of the pass's
+    target, a vertex shadow): the query ends, goes on in a spare slot of its set in the next part
+    (occlusion sets are made with as many spare slots again, up to WebGPU's 4096), and resolving
+    adds the parts' counts with a small compute program (`QueriesSegmented`). A query begun again
+    gives its spare slots back. tests/writes.rs `queries_carry_across_pass_splits`.
+  - `resolve_queries` past the buffer's end is `Invalid` with a reason, checked before anything is
+    marked. tests/copies.rs `query_results_past_the_buffer_are_refused`.
+  - `PrepareDesc` has no index format, so indexed strips still miss after `prepare`: an interface
+    gap, now listed under "Gaps found for the interface track" (adding a field breaks both fronts'
+    code, which this track does not touch).
+  - The 5.7 items not built: see "Not carried out yet".
+- Timestamps: `write_timestamp` records an empty compute pass whose beginning writes the timestamp
+  (WebGPU writes timestamps only where passes begin and end; written after the work before it).
+  Declared where the device has `TIMESTAMP_QUERY` and the queue's period is 1 ns, which wgpu gives
+  natively only with the instance flag `AUTOMATIC_TIMESTAMP_NORMALIZATION` (`WebGpu::INSTANCE_FLAGS`;
+  wgpu then converts on resolve) and in browsers always. Without the flag, on the RTX 3080 the
+  period is already 1 ns on both APIs (tests/timestamps.rs prints it), so the flag changes nothing
+  there.
+- Wireframe and point filling: wgpu's polygon modes, declared from its features.
+- In Chrome the new shared suite test `resolves_average_in_the_format_named` failed: resolving a
+  four-sample `rgba8unorm` texture through `rgba8unorm-srgb` views gave the stored average (64 where
+  linear light gives 137). In the browser a resolve in the other sRGB twin is now the listed loss
+  `ResolveInStoredFormat` (counted, warned), which the test accepts; natively wgpu averages in the
+  views' format as before. A draw resolving in linear light would make it exact (Next).
 
 Run 10 = G2 run 6, 2026-11-17 (fixes from the independent check of run 9):
 - Merged origin/phase-2-graphics (at 3e9db91, a fast-forward). It brought interface doc rules (one
@@ -432,6 +492,9 @@ Run 4, 2026-11-17 (fixes from the independent check of run 3; merged origin/phas
 - Depend on it: `wcontainers-gpu-webgpu = { path = "../wcontainers-gpu-webgpu" }` (and `wgpu =
   "30.0.2"` to make the device). It builds natively (Windows: Direct3D 12 and Vulkan; Mac: Metal)
   and for `wasm32-unknown-unknown` (the browser's WebGPU).
+- Make the wgpu instance with `desc.flags |= WebGpu::INSTANCE_FLAGS` (wgpu's
+  `AUTOMATIC_TIMESTAMP_NORMALIZATION`): without it, natively on a GPU whose clock does not tick in
+  nanoseconds (the RTX 3080 under Direct3D 12), `TIMESTAMPS` is declared absent.
 - Make it from a wgpu adapter: ask for the device with `WebGpu::device_descriptor(&adapter)` (the
   features the back end uses where present, and the adapter's highest limits), then
   `WebGpu::new(&adapter, device, queue)`. `WebGpu` is the `B` of `Device<B: Backend>`. The whole
@@ -449,6 +512,12 @@ Run 4, 2026-11-17 (fixes from the independent check of run 3; merged origin/phas
   `wcontainers_gpu_webgpu::block_on` runs a future (the adapter and device requests) the same way.
 - Uniform-only buffers made with `MapIntent::Often` live in the uniform arena: give constant
   buffers rewritten per draw that intent and write them with `Discard`.
+- Timestamps (`TIMESTAMPS`): `write_timestamp` outside a pass, `resolve_queries` gives nanoseconds,
+  `timestamps_disjoint` is always false. Calibration against the CPU clock (Direct3D 12's
+  `GetClockCalibration`) is made from base primitives, as examples/scenes/timestamps.rs `reading`
+  does: write a timestamp, resolve it, read it back, take the CPU clock just before `submit` and just
+  after `wait_read`; the GPU time lies between the two. Measured: the GPU clock runs at the CPU
+  clock's rate (tests/timestamps.rs).
 - `WebGpu::counters()` says how many pipelines, bind groups, layouts, buffer and texture renames
   (and how many took pooled storage, how much pooled storage was destroyed) and staged writes were
   made; `slow_paths()` the slow paths taken.
@@ -518,6 +587,47 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   depth-function]` (the example's binary).
 
 ## Measurements
+
+Run 11 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs,
+CPU load not sampled; Mac load average not sampled):
+- All tests at 9cb45c3's code after a clean build of this crate (job 6): Vulkan 85 passed, 2
+  ignored (the old BC comparison; the depth bias picture); Direct3D 12 86 passed, 1 ignored.
+  bindings 12, blocks 3, copies 9, depth 2, direct3d 5, fitted 1, prepare 1, pulled 1, raster 3,
+  scenes 4, suite 30, timestamps 2, vertices 1, writes 14 (Direct3D 12: point fill reported
+  absent there, so its test returns early). Clippy with warnings denied passes natively for this
+  crate and the interface, and for WebAssembly. The earlier job 1 found three failures, fixed
+  before job 6: the Direct3D 11 reference drew nothing (its covering triangle was culled), the
+  padded volume write on Direct3D 12, wireframe on Vulkan (now a known difference, Departures).
+- Timestamps (tests/timestamps.rs, job 6 and the alone job): 16 then 32 draws of a 2048-round
+  fragment loop over 512 by 512: Vulkan 12.25 ms and 24.62 ms, Direct3D 12 14.46 ms and 28.72 ms
+  (ratio 1.99 to 2.01); the GPU clock moved 300.30 to 300.71 ms while the CPU's moved between
+  300.03 and 304.61 ms (300 ms wait). Period without wgpu's conversion: 1 ns on both APIs.
+- Against Direct3D 11 (tests/direct3d.rs, job 6): Direct3D 11's own timestamps (frequency 10^9)
+  put the same work at 9.44 ms and 18.91 ms, in order; ours 12.26 / 24.69 ms (Vulkan) and 14.49 /
+  28.77 ms (Direct3D 12): within the test's factor of two, slower by 1.3 and 1.5 times. Not looked
+  into; Chrome's Dawn draws the same WGSL in 9.81 ms.
+- In Chrome 157 (web/check, twice): 9.81 ms and 19.54 ms (ratio 1.99); the GPU clock moved 303.09
+  ms while `performance.now()` moved between 300.0 and 306.0 ms. Adapter the RTX 3080 (D3D12,
+  discrete, not a fallback).
+- Query results across splits (tests/writes.rs): Vulkan [19738, 19738, 0] (counts: wgpu's Vulkan
+  counts samples), Direct3D 12 [1, 1, 0] (binary occlusion).
+- Wireframe: Direct3D 12 equals Direct3D 11's fill picture in every pixel; Vulkan 214 pixels differ,
+  by up to 229. Point fill on Vulkan draws exactly the three corner pixels.
+- Instance data fetched in the program (tests/pulled.rs, `gpu-job --alone`, 20 frames each): 256
+  draws a frame, each of 16 instances with its own quad and three instance buffers, a binding set
+  made per draw as a front makes it and dropped after. Vulkan: vertex buffers 0.313 ms CPU and
+  0.012 ms GPU a frame (median of 19 after the first), pulled 1.366 ms CPU and 0.017 ms GPU; first
+  frame 1.88 against 2.93 ms CPU. Direct3D 12: 3.48 against 3.20 ms CPU, 0.008 against 0.007 ms GPU
+  (wgpu's Direct3D 12 recording dominates). The pulled route made 256 bind groups every frame
+  (5120 in 20): binding sets no one holds are pruned at submit, so a front that drops its sets
+  rebuilds their bind groups each frame; keeping them would avoid it (not measured). Storage usage
+  itself costs nothing here: every buffer of this back end already has it. GPU time on this light
+  scene is too small to show the fetch's own cost.
+- `web/check` after cleaning this crate, naga, the interface and the suite crate for WebAssembly:
+  all twelve pictures equal Direct3D 11's at tolerance 0, the twists differ as before (16384 pixels
+  by up to 92; 25016 by up to 204), the viewports equal (whole pixels: 2540 by up to 229), `prepare`
+  in Chrome 16 first draws 252.0 ms with 16 built, after prepare 3.9 ms with none built; the suite
+  in Chrome 29 of 30 at 9cb45c3 (the resolve above), 30 of 30 after the fix.
 
 Run 10 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs,
 CPU load not sampled; SSH to it refused connections from about 12:09 to 12:24 Mac time; Mac load
@@ -774,13 +884,14 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 - A surface wgpu reports lost (the window's surface must be made again from the instance, which
   the back end does not hold).
 - Immediates: `immediate_bytes` is 0, so fronts spill them.
-- Splitting a pass with a running occlusion query: an ordered write, or a vertex stream whose
-  shadow must be made, there.
+- A pass split more often within one query set's use than the set has spare slots (as many as
+  its queries, at most 4096 in all).
 - A converted vertex stream reaching past the largest storage binding (128 MiB by default) or
   more than 2^22 workgroups.
 - Formats WebGPU lacks other than BC are declared without bits (no `FormatConverted` or
-  packed-pair `BlockDecoded` yet), though 5.7 has the back end convert them.
-- Declared absent until built or measured: `TIMESTAMPS`.
+  packed-pair `BlockDecoded` yet), though 5.7 has the back end convert them. Both Direct3D fronts
+  ask for `A8_UNORM`, `B5G6R5`, `B5G5R5A1` and `B4G4R4A4`.
+- `OCCLUSION_COUNT`: absent for good (WebGPU's occlusion result is zero or not).
 - Not yet as 4.6 says for speed: a staging ring (each staged write makes a buffer), and freeing
   cached layouts and pipelines of destroyed programs (and the shadow plans of vertex layouts no
   longer held).
@@ -788,16 +899,28 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
   it is destroyed (bounded by what it made, not trimmed by age).
 - Arena slices of buffers dropped without `destroy` are not reused until the arena is replaced.
 
-## Next (G2)
+## Next (G2b)
 
-Run 10 fixed what the independent check of run 9 found (see Run 10 for what ran where). What is
-left is what 5.7 gives the back end beyond the pass bar, in "Not carried out yet", most useful
-first: texture formats WebGPU lacks (`FormatConverted`: B5G6R5 and the other 16-bit packed
-formats, A8) and the packed-pair formats (`BlockDecoded`); immediates; splitting a pass with a
-running occlusion query; making a lost surface again; the staging ring of 4.6; `TIMESTAMPS`. The
-vertex conversion and texture renaming have not run in Chrome (no page draws them yet).
+1. `FormatConverted` (plan 5.7, asked by both Direct3D fronts): `A8_UNORM` stored as `rgba8unorm`
+   (uploads as (0, 0, 0, a), draws into it with only alpha written, read backs and copies out take
+   the alpha), then `B5G6R5`, `B5G5R5A1`, `B4G4R4A4` stored as `rgba8unorm` (expanded on upload,
+   packed on read back; copies between a buffer and such a texture through the host,
+   `HostCopyReadBack`). Test each against real Direct3D 11 (sampling and drawing into it), then
+   declare its bits.
+2. The packed-pair formats (`BlockDecoded`), immediates, making a lost surface again, the staging
+   ring of 4.6, freeing layouts and pipelines of destroyed programs (as before).
+3. Read the fronts' status files again after merging; Direct3D 12's timestamps case against real
+   Direct3D 12 and bgfx's examples are that track's next step.
 
 ## Departures from the plan
+
+- Timestamps need the host's wgpu instance made with `AUTOMATIC_TIMESTAMP_NORMALIZATION`
+  (`WebGpu::INSTANCE_FLAGS`) where the GPU's clock does not tick in nanoseconds; without it the
+  back end declares `TIMESTAMPS` absent rather than convert itself (wgpu has the conversion).
+- Wireframe on wgpu's Vulkan follows Vulkan's line rules: on the RTX 3080, 214 pixels of the rig's
+  fill picture differ from Direct3D 11's (Direct3D 12: none). Declared anyway: Vulkan's line rules
+  govern line lists there too (expected, not measured), and only native testing runs on Vulkan; tests/raster.rs holds only the solid cell to Direct3D's picture
+  on Vulkan, as a known difference. Browsers have no polygon modes.
 
 - Plan 5.7 says formats WebGPU lacks are "converted on upload". For vertex formats that cannot
   be done: a buffer's bytes are written before any layout says how they are read, the same bytes
@@ -859,6 +982,11 @@ vertex conversion and texture renaming have not run in Chrome (no page draws the
 
 ## Interface changes
 
+- 04bd53b `interface: named the slow path of a copy between regions of one subresource made through
+  a buffer`: `SlowPath::CopyWithinTexture`, a sentence in `copy_texture`'s doc (regions of one
+  subresource may be copied if they do not overlap, as Vulkan and OpenGL allow) and in the plan's
+  4.2.
+
 - 578a3fc `interface: listed as a loss float depth copied from values a draw cannot write`: a
   4.12 entry and a sentence in `copy_buffer_to_texture`'s doc. WebGPU writes depth from other
   formats only by a draw, which clamps depth to 0 to 1 and flushes denormals.
@@ -875,7 +1003,10 @@ vertex conversion and texture renaming have not run in Chrome (no page draws the
   colour targets through f32, which cannot hold integers past 2^24.
 
 Gaps found for the interface track (not changed here): no capability tells a front which vertex
-formats a back end converts itself. (Instance step rates now have `INSTANCE_STEP_RATE`, from the
+formats a back end converts itself. `PrepareDesc` has no index format, so `prepare` cannot build an
+indexed strip's pipeline (WebGPU's pipeline names the strip's index format) and that draw still
+misses once; a field `strip_index: Option<IndexFormat>` would serve it (Direct3D 12 knows it from the
+pipeline's cut value), but adding it breaks both fronts' code, so it is left to the interface track. (Instance step rates now have `INSTANCE_STEP_RATE`, from the
 shared line.)
 
 - db9e0d8 `interface: made no-overwrite writes promise that no unfinished command or ordered write
