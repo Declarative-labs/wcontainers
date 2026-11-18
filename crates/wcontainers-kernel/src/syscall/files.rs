@@ -930,6 +930,7 @@ pub(super) fn proc_contents(
         }
         bytes
     };
+    let aio_in_use = super::aio::in_use(kernel);
     let kernel_ref: &Kernel = kernel;
     kernel_ref.with_walk(tid, |walk, _| {
         let mut source = proc::Source {
@@ -944,6 +945,7 @@ pub(super) fn proc_contents(
             mounts: &kernel_ref.files.mounts,
             memory_in_use,
             ipc: &kernel_ref.ipc,
+            aio_in_use,
         };
         proc::contents(&mut source, entry)
     })

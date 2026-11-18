@@ -7,6 +7,7 @@
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/eventfd.h>
 #include <sys/syscall.h>
@@ -77,6 +78,12 @@ int main(void) {
     R(setup(4, &other));
     R(setup(4, (aio_context_t *)8));
     R(setup(4, &ctx));
+    char line[32] = {0};
+    FILE *nr = fopen("/proc/sys/fs/aio-nr", "r");
+    fgets(line, sizeof line, nr);
+    fclose(nr);
+    // The count is the whole machine's, other containers' contexts too.
+    printf("aio-nr counts this context %d\n", atol(line) >= 4);
     struct aio_ring *ring = (struct aio_ring *)ctx;
     printf("ring id %u head %u tail %u magic %x compat %u incompat %u header %u\n", ring->id,
            ring->head, ring->tail, ring->magic, ring->compat_features, ring->incompat_features,

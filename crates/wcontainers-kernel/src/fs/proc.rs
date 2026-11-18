@@ -305,6 +305,8 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/dev/tty/ldisc_autoload", Global::File(0o644)),
     ("sys/dev/tty/legacy_tiocsti", Global::File(0o644)),
     ("sys/fs", Global::Directory),
+    ("sys/fs/aio-max-nr", Global::File(0o644)),
+    ("sys/fs/aio-nr", Global::File(0o444)),
     ("sys/fs/dir-notify-enable", Global::File(0o644)),
     ("sys/fs/lease-break-time", Global::File(0o644)),
     ("sys/fs/leases-enable", Global::File(0o644)),
@@ -1451,6 +1453,12 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                 }
                 // Line disciplines load as modules on demand; TIOCSTI is still built (measured).
                 "sys/dev/tty/ldisc_autoload" | "sys/dev/tty/legacy_tiocsti" => out.push_str("1\n"),
+                "sys/fs/aio-max-nr" => {
+                    let _ = writeln!(out, "{}", crate::syscall::aio::MAX_NR);
+                }
+                "sys/fs/aio-nr" => {
+                    let _ = writeln!(out, "{}", source.aio_in_use);
+                }
                 "sys/fs/dir-notify-enable" | "sys/fs/leases-enable" => out.push_str("1\n"),
                 "sys/fs/lease-break-time" => {
                     let _ = writeln!(out, "{}", crate::syscall::lease::BREAK_SECONDS);
@@ -1567,6 +1575,8 @@ pub(crate) struct Source<'a> {
     pub memory_in_use: (u64, u64),
     /// System V IPC's objects.
     pub ipc: &'a crate::syscall::ipc::Ipc,
+    /// The events asynchronous I/O contexts asked for (`aio_nr`).
+    pub aio_in_use: u64,
 }
 
 /// A file of a process's or thread's directory, which shows thread `tid` of `process`.
