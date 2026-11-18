@@ -755,6 +755,25 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
 
 ## Measurements
 
+Run 15 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs,
+CPU load not sampled; Mac load average near its 18 cores, not sampled exactly):
+- All tests at b517ab0e after `cargo clean` of this crate and the suite crate (scratch
+  run15/full-native.log; job 1 min 51 s): both APIs together 212 passed, 0 failed, 4 ignored (the
+  BC one-step comparison on each, 24-bit depth bias absent and the wireframe known failure on
+  Vulkan); the shared suite 39 of 39 on both. That is run 14's 210 plus the new unit test on each
+  API. The converted formats with 16 textures each (seed 1) pass on both APIs
+  (run15/converted2.log), and against Direct3D 11 with 4. Clippy with warnings denied passes
+  natively and for WebAssembly.
+- web/check (run15/web-check2.log, pictures in run15/web): the first run failed in Chrome at the
+  new 3D copy ("depthSlice is required for a 3D attachment": wgpu's browser back end dropped the
+  depth slice; fixed in the vendored wgpu, Departures). After the fix: all twelve pictures equal
+  Direct3D 11's at tolerance 0, twists differ as before, viewports equal (whole pixels 2540
+  differ); Chrome's adapter the RTX 3080; timestamps 9.820 and 19.549 ms (ratio 1.99), GPU clock
+  300.644 ms apart with the page clock between 300.1 and 304.3 ms; prepared first draws built
+  nothing; converted formats seed 1, 4 textures each, within bounds, with every copy on the GPU;
+  vertex formats and texture renames pass; the instance data routes draw alike; the suite in
+  Chrome 39 passed, 0 failed.
+
 Run 14 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs
 except where alone, CPU load not sampled; Mac load average near its 18 cores, not sampled exactly):
 - Instance data, release build, `gpu-job --alone`, 256 draws of 16 instances, 20 frames a route,
@@ -1205,9 +1224,12 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 - Scene pictures in this crate's tests are held to the rig's per-picture allowance (what WARP
   earns) so they hold on any GPU; the RTX 3080's exact equality is printed by them and asserted by
   web/check at tolerance 0.
-- wgpu is vendored (third_party/wgpu, 30.0.2 plus one fix in src/backend/webgpu.rs) so its browser
-  back end passes a render pass's occlusion query set to WebGPU; without it every occlusion query
-  in the browser failed. This touches the workspace manifest, outside this crate.
+- wgpu is vendored (third_party/wgpu, 30.0.2 plus two fixes in src/backend/webgpu.rs) so its
+  browser back end passes a render pass's occlusion query set and a colour attachment's depth
+  slice to WebGPU; without them every occlusion query in the browser failed, and so did every draw
+  into a slice of a 3D texture (Chrome: "depthSlice is required for a 3D attachment"). Neither is
+  reported upstream; whether wgpu's trunk has the second bug is not checked. This touches the
+  workspace manifest, outside this crate.
 - The `generate_mips` comparisons with Direct3D make each level from Direct3D's level above it, so
   one level's difference is not carried into the next and each tolerance is per step.
 
