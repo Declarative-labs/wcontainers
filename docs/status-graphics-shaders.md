@@ -1004,7 +1004,11 @@ Run 26 (what the fronts' real programs wait on: bgfx's multisampled arrays, Godo
   DXIL build converts; test `atomics_of_the_other_signedness_are_exchange_loops`; the drawn result
   against real Direct3D 11 is in `compute_draw` (Measurements).
 - The laptop stopped answering (no ping, no SSH) partway through run 26, so this run's tests ran on
-  the desktop (Departures).
+  the desktop (Departures). Its build folder (`~/wcontainers-graphics/target/phase-2-graphics-shaders`,
+  rebuilt early in this run) could not be deleted: delete it first next run if no build needs it.
+- Commit 6898e7cb went out without the own corpus records of `ps_fill` and `ps_msarray`, so
+  `own_shaders_give_their_recorded_verdicts` failed on it; b99ca30f records them. At the end of run
+  26 the desktop's `C:\wc\target\phase-2-graphics-shaders` was deleted.
 
 Next (in order):
 - Fronts (theirs): `texture_layers` for bgfx's multisampled arrays (G4, and G5's
