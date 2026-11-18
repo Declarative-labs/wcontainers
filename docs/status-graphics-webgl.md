@@ -5,20 +5,31 @@ Plan: docs/phase-2-graphics.md, sections 4, 5.8, 6.5, 10 and 12 (G3).
 
 ## Where things stand
 
-G3a is done. Since run 12 the shared suite (30 tests) and the back end's 38 checks pass in Chrome's
-WebGL 2 and natively on ANGLE with every extension (68 of 68 on both), and the extensions plan 4.11
-lists are built: per-target and second-source blending, polygon edges, depth clamp, bias clamp,
-mirror-once, and point sizes, with the rig's real Direct3D 11 pictures of wireframe, depth bias and
-depth clipping matched exactly in Chrome. What is still open:
-- `CLIP_DISTANCE` and `CULL_DISTANCE` are built but absent: in Chrome the distances clipped
-  nothing (see "Known failures").
+G3 is at its pass bar (item by item in "The pass bar" below); what is left of it waits on other
+tracks or on hardware, and is kept as named known failures. Since run 13 the shared suite (30 tests)
+and the back end's 41 checks pass in Chrome's WebGL 2 and natively on ANGLE with every extension (71
+of 71 on both). What is still open:
+- Routes without EXT_clip_control or WEBGL_provoking_vertex fail the 20 suite tests whose own raster
+  blocks ask for what is absent, in Chrome and on ANGLE. G1 has to change the suite (its crate).
 - Against the WebGPU back end, 5 of 6 comparisons pass. The one that fails is `r32float` filtered
   in the program here against WebGPU's hardware filter (one float step off in 5 of 16 values, from
   G1's in-shader filter); the same comparison route against route is byte-equal.
-- Routes without EXT_clip_control or WEBGL_provoking_vertex fail the 20 suite tests whose own raster
-  blocks ask for what is absent, in Chrome and on ANGLE. G1 has to change that.
 - `TIMESTAMPS` is built but cannot run here: Chrome (every ANGLE back end) and mozangle give 0
   timestamp bits on the RTX 3080.
+- `CLIP_DISTANCE` and `CULL_DISTANCE` are built but absent: in Chrome the distances clipped
+  nothing (see "Known failures").
+
+Run 13 merged origin/phase-2-graphics-shaders and origin/phase-2-graphics-rig (origin/phase-2-graphics
+and origin/phase-2-graphics-webgpu had nothing new; the Direct3D branches were not merged, nothing
+here needs them). It found and fixed, each with a check: writes and buffer copies into 24-bit depth
+stored 2^-8 of the value (GL took Direct3D's 24-bit words as 32-bit unorm), into either aspect of a
+combined format and (natively) into `depth16unorm` from a buffer; copies between `r32float` and
+`depth32float` and between `r16unorm` and `depth16unorm` lost the device as not built; unorm depth
+read back one step high for half the values from 2^23 up (the fetch added 0.5 after a product that a
+fused multiply-add had not rounded). With the last fixed, the rig's `depth-bias_depth` picture is now
+exactly equal to real Direct3D 11 (it was 5332 pixels one 24-bit step off). Also built: copies
+between index-only and data-only buffers (through the host), and depth and stencil read backs of cube
+textures. browser/some.cmd runs chosen tests on ANGLE and in Chrome.
 
 Run 12 merged origin/phase-2-graphics-shaders and origin/phase-2-graphics-rig, built the
 extension routes above with a check each, compared the rig's three pictures, fixed 24-bit depth read
@@ -77,6 +88,52 @@ texel buffers as `Absent(TEXEL_BUFFERS)` and anisotropy past the limit as `Inval
 into and out of RGB9E5 and BC textures and sRGB views of BC textures, and added a check that every
 feature WebGL 2 lacks is left out of the caps and refused as absent. Suite and checks: 43 of 43 in
 Chrome and on ANGLE with every extension.
+
+## The pass bar, item by item (plan section 12, G3)
+
+Where each item is shown; "check" is a function of examples/common/checks.rs (or extensions.rs), run
+by both hosts; "against" is tests/against_webgpu.rs.
+- The shared suite in Chrome's WebGL 2: 30 of 30 with every extension, and with stencil texturing,
+  the format and the raster extensions off. Without EXT_clip_control: the 20 known failures.
+- The absent list of 4.11 declared: check `absent_features_are_refused` (every absent feature
+  refused through `Absent`, and left out of the caps). Every slow path counted: each route calls
+  `slow.hit`; checks assert the counters where a route must or must not be taken (fans and loops,
+  BC decoding, stencil copies).
+- Cube, array and 3D textures with the GL target of `own_view`: against `cube_array_and_3d_textures_equal_webgpu`.
+- BC and RGB9E5 read back as written: check `block_compressed_and_shared_exponent_textures...`.
+- Stencil sampled with and without WEBGL_stencil_texturing, equal answers: check
+  `stencil_sampled_and_read_back`, run on both routes in Chrome (ANGLE natively lacks the extension).
+- Copies within a typeless group exact: checks `copies_within_a_typeless_group`,
+  `copies_between_depth_and_colour_formats` (run 13), `bgra_textures_keep_their_byte_order`.
+  Signed normalised sources are refused (device loss naming them; see "Departures").
+- `generate_mips` exact against G2 for `r32float` without OES_texture_float_linear and an integer
+  twin of a 16-bit normalised format: against, route against route byte-equal; against WebGPU's
+  hardware filter a known failure (G1's helper).
+- A fractional viewport against G2's native one: against `a_fractional_viewport_in_the_program_equals_webgpu_native` (the front's `ViewportInShader`;
+  `FRACTIONAL_VIEWPORT` absent here, check `fractional_viewports_are_refused`).
+- A buffer used as indices and vertices, written by host, copy and transform feedback, drawn both
+  ways: scene `quads-twin_copy`, check `captured_indices_drawn_both_ways`.
+- 8-bit indices: check `vertex_and_instance_numbers_include_the_bases`.
+- `capture_vertices` with and without rasterising: checks `vertices_captured_with_and_without...`
+  and `strips_fans_loops_and_indexed_draws_captured_in_list_order`.
+- `timestamps_disjoint`: check `timestamps_and_their_disjoint_flag` refuses it as absent here (0
+  timestamp bits); the present route has not run on any GPU (known failure, hardware).
+- The 24-bit depth probe: at creation; `DEPTH24_UNORM` set in Chrome and on ANGLE (Measurements).
+- `vertex_index` and `instance_index` with bases under `BaseVertexRebind`, indexed and not:
+  check `vertex_and_instance_numbers_include_the_bases`.
+- A `Discard` write then `NoOverwrite` writes above it: check `discard_then_no_overwrite_writes`.
+- Depth and stencil read back by `DepthReadByDraw`, with and without WEBGL_stencil_texturing: checks
+  `depth_and_stencil_read_back` (exact since run 13) and
+  `depth_and_stencil_written_read_back_as_written` (run 13, 2D arrays and cubes).
+- A copy between two multisampled textures whose resolve equals the source's: check
+  `multisampled_copies_resolve_as_their_source`.
+- Both window-origin routes, each equal to G2's (culled triangle, `gl_FragCoord` gradient, mip
+  chain, read back): against `both_window_origins_equal_webgpu`, on ANGLE with and without EXT_clip_control.
+- A fractional `depth_bias` and `ConstantAlpha`: checks `fractional_depth_bias` (the probe finds
+  ANGLE rounds the units, so `FRACTIONAL_DEPTH_BIAS` is absent and fronts bias in the program) and
+  `constant_alpha_blends`.
+- The suite natively on ANGLE: 71 of 71 with every extension.
+- Per-draw cost against G2 on one scene: Measurements (runs 3, 5 and 11).
 
 ## Done
 
@@ -1052,6 +1109,29 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   reduced performance" (and the same for WebGPU). Per-draw timings taken there (G3's later work)
   must say so; whether a headed Chrome differs is not measured.
 
+## Measurements, run 13
+
+- 2026-11-17, G3 run 13, same desktop (RTX 3080, driver 32.0.16.2101; desktop clock times; queued
+  jobs, not timed). 30 suite tests and 41 checks (71).
+  - Start of the run, after the merges (job 19:54 to 19:56): as run 12, 68 of 68 in Chrome and on
+    ANGLE with every extension, 48 of 68 on the reduced routes, 5 of 6 against WebGPU.
+  - The new checks before the fixes: `Depth24Plus` written by the host read back 0x00ffff for
+    0xffffff (Chrome and ANGLE); natively a `depth16unorm` region copied from a buffer kept its old
+    values; `r32float` into `depth32float` lost the device. After the write fix, unorm 24-bit depth
+    read back one step high for most values from 2^23 up, on both.
+  - A cube face's 16 and 24-bit depth blitted into a 2D texture on mozangle read 0x3333 (0.2) for
+    the first face blitted, whatever was written; Chrome was right. Read backs of cubes now sample
+    the cube instead. With WEBGL_stencil_texturing, Chrome read a cube's stencil through
+    `usamplerCube` as 0, so cube stencil is counted by bit draws on every route.
+  - Final tree (job 20:19 to 20:22), lint clean on both targets in its build, the 6 unit tests of
+    src pass: Chrome 157.0.8103.78 71 of 71 with every extension and 71 of 71 without
+    WEBGL_stencil_texturing, the format and the raster extensions; 51 of 71 without EXT_clip_control
+    and 51 of 71 without it and WEBGL_provoking_vertex (the 20 known); ANGLE (mozangle 0.7.1 with
+    both patches) 71 of 71 with every extension and 51 of 71 on both reduced routes; against WebGPU
+    5 of 6 (r32float against the hardware filter). All 74 scene and rig verdicts as expected, 10
+    rig pictures skipped where their extensions are off; `depth-bias_depth` in Chrome now exactly
+    equal to real Direct3D 11 (0 of 16384 pixels differ).
+
 ## Known failures
 
 - `generate_mips_of_r32float_without_float_filtering_equals_webgpu` without
@@ -1187,6 +1267,17 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 - (run 12) A draw blending a second source into a pass of more than one colour target loses the
   device naming it: the interface has no rule for it, GL refuses it, and Direct3D 11 leaves it
   undefined.
+- (run 13) Every write and buffer copy into a depth format is drawn (`DepthWrittenByDraw`, and
+  `StencilWrittenByDraw` for stencil), `depth16unorm` and `depth32float` included, which GL could
+  take from bytes: one route for every depth format, and the native ANGLE dropped `depth16unorm`
+  bytes from a pixel unpack buffer. Direct3D 11 does not write depth from the host at all, so the
+  route serves Direct3D 12 and copies.
+- (run 13) Unorm depth is written as `v * 2^-b + v * 2^-2b` (b the bits) from a uniform, not
+  `v / (2^b - 1)`: the two products are exact and their sum rounds once to the nearest float of
+  v / (2^b - 1), where a GPU's divide may round twice.
+- (run 13) The stencil of cube textures is read back by bit draws (`StencilCopiedByDraw`) even with
+  WEBGL_stencil_texturing, which read 0 through `usamplerCube` in Chrome 157.
+- (run 13) Copies between depth and colour formats from cube textures lose the device as not built.
 - (run 12) mozangle lacks every new extension but OES_draw_buffers_indexed and
   EXT_blend_func_extended, so the others (and the rig pictures needing them) run only in Chrome.
 
@@ -1311,10 +1402,11 @@ What is left of G3's pass bar cannot be done in this crate:
 - `TIMESTAMPS` cannot run on the RTX 3080, which gives zero timestamp bits; a GPU or browser that
   gives some is needed to run that route.
 
-After that, in about this order (each refused honestly today):
-1. Draws and captures whose base vertex reaches below vertex 0 (device loss naming it).
+After that, in about this order (each refused honestly today, by device loss naming it):
+1. Draws and captures whose base vertex reaches below vertex 0.
 2. Copies from one- and two-channel signed normalised formats (and into them from formats read
-   wider than stored), through a buffer as plan 4.12 has them (device loss naming it).
+   wider than stored), through a buffer as plan 4.12 has them.
 3. `CLIP_DISTANCE` and `CULL_DISTANCE` in Chrome (see "Known failures").
 4. `SAMPLE_SHADING` with OES_sample_variables and OES_shader_multisample_interpolation, where
    Chrome has them (absent today).
+5. Copies between depth and colour formats from cube textures.

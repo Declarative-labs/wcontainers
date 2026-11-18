@@ -26,22 +26,37 @@ void main() {
 }
 ";
 
+/// The shape of a source texture: 2D, 2D array (`at.z` the layer) or cube (`at.z` the face).
+#[derive(Clone, Copy, Debug)]
+pub enum Shape {
+    D2,
+    Array,
+    Cube,
+}
+
 /// Fetches the texel under the fragment, moved by the region's origin, and writes its stored value.
-/// Drawn with GL's own lower-left window origin, so the fragment's row is the texel's row.
-fn fragment(array: bool, stencil: bool) -> String {
-    let (sampler, coord) = match (array, stencil) {
-        (false, false) => ("sampler2D", "p"),
-        (true, false) => ("sampler2DArray", "ivec3(p, at.z)"),
-        (false, true) => ("usampler2D", "p"),
-        (true, true) => ("usampler2DArray", "ivec3(p, at.z)"),
+/// Drawn with GL's own lower-left window origin, so the fragment's row is the texel's row. GLSL ES
+/// 3.00 fetches no texel of a cube, so a cube is sampled, nearest, towards the texel's centre.
+fn fragment(shape: Shape, stencil: bool) -> String {
+    let u = if stencil { "u" } else { "" };
+    let (sampler, coord) = match shape {
+        Shape::D2 => (format!("{u}sampler2D"), "p"),
+        Shape::Array => (format!("{u}sampler2DArray"), "ivec3(p, at.z)"),
+        Shape::Cube => (format!("{u}samplerCube"), "p"),
     };
-    let value = if stencil {
-        "texelFetch(src, COORD, 0).r"
-    } else {
-        // A float cannot hold 2^24 - 0.5, so a depth of 1 would round past 24 bits; kept at scale.
-        "scale == 0u ? floatBitsToUint(d) : min(uint(d * float(scale) + 0.5), scale)"
+    let fetch = match shape {
+        Shape::Cube => "textureLod(src, towards(p), 0.0)",
+        _ => "texelFetch(src, COORD, 0)",
     }
     .replace("COORD", coord);
+    let value = if stencil {
+        "FETCH.r"
+    } else {
+        // The product rounds once to the nearest float, which from 2^23 up is the nearest integer:
+        // adding 0.5 before truncating would round again (or not at all, fused).
+        "scale == 0u ? floatBitsToUint(d) : min(uint(round(d * float(scale))), scale)"
+    }
+    .replace("FETCH", &fetch);
     format!(
         "#version 300 es
 precision highp float;
@@ -50,6 +65,19 @@ uniform highp {sampler} src;
 uniform ivec3 at;
 uniform uint scale;
 out highp uvec4 o;
+// The direction from a cube's centre to the centre of texel `t` of face `at.z` (GL's face order
+// and texel axes).
+vec3 towards(ivec2 t) {{
+    vec2 c = (vec2(t) + 0.5) / float(textureSize(src, 0).x) * 2.0 - 1.0;
+    switch (at.z) {{
+        case 0: return vec3(1.0, -c.y, -c.x);
+        case 1: return vec3(-1.0, -c.y, c.x);
+        case 2: return vec3(c.x, 1.0, c.y);
+        case 3: return vec3(c.x, -1.0, -c.y);
+        case 4: return vec3(c.x, -c.y, 1.0);
+        default: return vec3(-c.x, -c.y, -1.0);
+    }}
+}}
 void main() {{
     ivec2 p = ivec2(gl_FragCoord.xy) + at.xy;
     {fetch}
@@ -59,7 +87,7 @@ void main() {{
         fetch = if stencil {
             String::new()
         } else {
-            format!("float d = texelFetch(src, {coord}, 0).r;")
+            format!("float d = {fetch}.r;")
         },
     )
 }
@@ -73,10 +101,9 @@ void main() {
 }
 ";
 
-/// Builds the program for 2D (`array` false) or 2D array sources, of depth or of stencil. Err holds
-/// GL's log.
-pub fn build(gl: &glow::Context, array: bool, stencil: bool) -> Result<DepthRead, String> {
-    let program = link(gl, &fragment(array, stencil))?;
+/// Builds the program for sources of `shape`, of depth or of stencil. Err holds GL's log.
+pub fn build(gl: &glow::Context, shape: Shape, stencil: bool) -> Result<DepthRead, String> {
+    let program = link(gl, &fragment(shape, stencil))?;
     // SAFETY: plain queries of a linked program.
     unsafe {
         let at = gl
@@ -84,6 +111,52 @@ pub fn build(gl: &glow::Context, array: bool, stencil: bool) -> Result<DepthRead
             .ok_or("the depth read program has no uniform at")?;
         let scale = gl.get_uniform_location(program, "scale");
         Ok(DepthRead { program, at, scale })
+    }
+}
+
+/// The program writing stencil from an `r8uint` texture, and its uniforms.
+#[derive(Debug)]
+pub struct StencilWrite {
+    pub program: glow::Program,
+    /// As [`DepthRead::at`]: the source's offset from the fragment, and its layer.
+    pub at: glow::UniformLocation,
+    /// The bit drawn: fragments whose source value lacks it are discarded; 0 discards none.
+    pub bit: glow::UniformLocation,
+}
+
+/// Keeps the fragments whose source texel holds `bit`, for draws that set that stencil bit.
+fn stencil_write(array: bool) -> String {
+    let (sampler, coord) = if array {
+        ("usampler2DArray", "ivec3(p, at.z)")
+    } else {
+        ("usampler2D", "p")
+    };
+    format!(
+        "#version 300 es
+precision highp float;
+precision highp int;
+uniform highp {sampler} src;
+uniform ivec3 at;
+uniform uint bit;
+void main() {{
+    ivec2 p = ivec2(gl_FragCoord.xy) + at.xy;
+    if ((texelFetch(src, {coord}, 0).r & bit) != bit) discard;
+}}
+"
+    )
+}
+
+/// Builds the stencil write program for 2D (`array` false) or 2D array sources. Err holds GL's log.
+pub fn build_stencil_write(gl: &glow::Context, array: bool) -> Result<StencilWrite, String> {
+    let program = link(gl, &stencil_write(array))?;
+    // SAFETY: plain queries of a linked program.
+    unsafe {
+        let at = gl.get_uniform_location(program, "at");
+        let bit = gl.get_uniform_location(program, "bit");
+        match (at, bit) {
+            (Some(at), Some(bit)) => Ok(StencilWrite { program, at, bit }),
+            _ => Err("the stencil write program lacks a uniform".into()),
+        }
     }
 }
 
