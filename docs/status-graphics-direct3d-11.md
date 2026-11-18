@@ -1580,9 +1580,6 @@ All on the desktop (Windows 10, i9-9900K, RTX 3080) through the queue, not alone
   hold two devices at once, so through the library the second device's context would take the
   first's calls. Making the context current again when another back end on the thread made its own
   current (and not terminating a display others use) would serve them.
-- Shaders track: `FilterInShader` (a texture the back end cannot filter, sampled linearly: depth
-  formats on WebGPU, float32 without `float32-filterable`) is refused by name; the front refuses
-  such draws until it is built.
 
 - Interface and shaders track (from Wine's test_depth_stencil_sampling): Direct3D's stencil views
   (`X24_TYPELESS_G8_UINT`, `X32_TYPELESS_G8X24_UINT`) give the stencil in the green channel;
