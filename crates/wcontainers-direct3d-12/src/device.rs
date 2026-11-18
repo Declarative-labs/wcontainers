@@ -246,6 +246,11 @@ struct Render<B: Backend> {
     /// The formats the vertex shader's typed views are converted with, and its typed buffers'
     /// route (`formats::typed_key`).
     typed_key: VariantKey,
+    /// A vertex stage drawn directly (no geometry or domain stage after it), whose program is
+    /// converted again for what is bound to it; and the programs made so, by what they are made
+    /// for (`formats::bound_program`), None where the conversion failed.
+    vertex_formats: Option<Box<formats::Formats<B>>>,
+    bound: Vec<(formats::Combination, Option<formats::BoundProgram<B>>)>,
     /// For counted occlusion queries: the vertex program, the pixel shader's bytecode, and the
     /// counting program made from them at the first counted draw.
     vertex: ShaderModule,
@@ -980,20 +985,23 @@ impl<B: Backend> Device<B> {
         interpolation.sort_by_key(|i| i.0);
         interpolation.dedup_by_key(|i| i.0);
         // With a geometry stage, the vertex stage's outputs go to it, not to the pixel stage.
-        let vs = self.convert(
-            desc.vs,
-            ShaderStage::Vertex,
-            VariantKey {
-                output_interpolation: match has_geometry {
-                    true => Vec::new(),
-                    false => interpolation.clone(),
-                },
-                // `SV_VertexID` and `SV_InstanceID` leave out the draw's bases, which the program
-                // then reads from its helper block.
-                draw_base: DrawBaseSource::Helpers,
-                ..vs_typed.clone()
+        let vs_key = VariantKey {
+            output_interpolation: match has_geometry {
+                true => Vec::new(),
+                false => interpolation.clone(),
             },
-        )?;
+            // `SV_VertexID` and `SV_InstanceID` leave out the draw's bases, which the program
+            // then reads from its helper block.
+            draw_base: DrawBaseSource::Helpers,
+            ..vs_typed.clone()
+        };
+        let vs = self.convert(desc.vs, ShaderStage::Vertex, vs_key.clone())?;
+        let vertex_formats = match staged {
+            true => None,
+            false => {
+                formats::Formats::of(bind::VERTEX, desc.vs, &vs_key, &vs.reflection.sampled_pairs)
+            }
+        };
         let mut inputs = desc.inputs.clone();
         resolve_offsets(&mut inputs)?;
         let reads = &vs.reflection.inputs;
@@ -1199,6 +1207,8 @@ impl<B: Backend> Device<B> {
             interpolation,
             fragment,
             typed_key: vs_typed,
+            vertex_formats,
+            bound: Vec::new(),
             vertex: vs.modules[0].clone(),
             pixel: desc.ps.to_vec(),
             counting: None,
@@ -1478,12 +1488,17 @@ impl<B: Backend> Device<B> {
             if let Some(r) = p.render {
                 let arguments = r.arguments.map(|a| a.program);
                 let pulled = r.pulled.into_iter().filter_map(|p| p.1.map(|p| p.program));
+                let bound = r.bound.into_iter().filter_map(|b| b.1.map(|b| b.0));
                 for c in [r.counting, r.pixel_counting, arguments]
                     .into_iter()
                     .flatten()
                     .chain(pulled)
+                    .chain(bound)
                 {
                     self.backend.destroy(Object::Program(c));
+                }
+                if let Some(f) = r.vertex_formats {
+                    f.destroy(&mut self.backend);
                 }
                 if let Some(stages) = r.geometry.and_then(|g| g.stages) {
                     stages.destroy(&mut self.backend);
@@ -3255,8 +3270,14 @@ impl<B: Backend> Replay<B> {
         }
         self.settle(d)?;
         d.pipeline_slow_paths(pid);
-        let (mut sets, bound) =
-            d.binding_sets(&self.compute, pid, &[], &[], StageSet::COMPUTE, Some(false))?;
+        let (mut sets, bound) = d.binding_sets(
+            &self.compute,
+            pid,
+            &[],
+            &[],
+            StageSet::COMPUTE,
+            Some(formats::VertexKind::Own),
+        )?;
         let pipeline = &d.pipelines[pid.0 as usize];
         let helpers = bound.as_ref().map_or(&pipeline.helpers, |b| &b.1).clone();
         if helpers.size != 0 {
@@ -3456,10 +3477,15 @@ impl<B: Backend> Replay<B> {
             ),
             (None, false) => None,
         };
-        let helpers = program.map_or(&r.helpers, |p| &p.helpers).clone();
+        let mut helpers = program.map_or(&r.helpers, |p| &p.helpers).clone();
         let streams = program.map_or(Vec::new(), |p| p.streams.clone());
+        let kind = match (variant, by_arguments) {
+            (Some(i), _) => formats::VertexKind::Pulled(r.pulled[i].0.clone()),
+            (None, true) => formats::VertexKind::Arguments,
+            (None, false) => formats::VertexKind::Own,
+        };
         let mut extra = Vec::with_capacity(streams.len());
-        for (binding, location) in streams {
+        for &(binding, location) in &streams {
             let slot = r
                 .inputs
                 .iter()
@@ -3478,9 +3504,23 @@ impl<B: Backend> Replay<B> {
             &[],
             &extra,
             StageSet::VERTEX,
-            Some(variant.is_some() || by_arguments),
+            Some(kind),
         )?;
         d.vertex_formats(pid)?;
+        // A vertex program converted for what is bound reads its own helper block.
+        if let Some((_, _, Some((vertex, pulled)))) = &bound {
+            if self.counted.is_some() || self.statistics.is_some() {
+                return Err(Error::NotImplemented(
+                    "a counted draw of a vertex program converted for the bound views",
+                ));
+            }
+            if *pulled != streams {
+                return Err(Error::Invalid(
+                    "a vertex program's pulled streams moved with the bound views",
+                ));
+            }
+            helpers = vertex.clone();
+        }
         let pipeline = &d.pipelines[pid.0 as usize];
         let pixel = bound.as_ref().map_or(&pipeline.helpers, |b| &b.1).clone();
         let counter = match &pixel_counting {
@@ -3708,10 +3748,13 @@ impl<B: Backend> Replay<B> {
                 let p = &d.pipelines[pid.0 as usize];
                 let r = p.render.as_ref().expect("a graphics pipeline");
                 DrawCall {
-                    program: match (variant, &r.arguments, by_arguments) {
-                        (Some(i), ..) => &r.pulled[i].1.as_ref().expect("a made program").program,
-                        (None, Some(a), true) => &a.program,
-                        _ => bound.as_ref().map_or(&p.program, |b| &b.0),
+                    program: match (&bound, variant, &r.arguments, by_arguments) {
+                        (Some(b), ..) => &b.0,
+                        (None, Some(i), ..) => {
+                            &r.pulled[i].1.as_ref().expect("a made program").program
+                        }
+                        (None, None, Some(a), true) => &a.program,
+                        _ => &p.program,
                     },
                     blend: &r.blend,
                     depth_stencil: match (&r.depth_stencil_bound, bound_depth) {

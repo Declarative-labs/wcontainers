@@ -328,6 +328,7 @@ impl<B: Backend> Replay<B> {
                 None,
             )?
             .0;
+        d.vertex_formats(pid)?;
         if helpers.size != 0 {
             vertex_sets[HELPER_SET as usize] = Some(d.helper_set(
                 &helpers,
@@ -364,7 +365,7 @@ impl<B: Backend> Replay<B> {
                     only,
                     &[],
                     StageSet::FRAGMENT,
-                    Some(true),
+                    Some(super::formats::VertexKind::Staged),
                 )?;
                 if !d.through.is_empty() {
                     return Err(Error::NotImplemented(
