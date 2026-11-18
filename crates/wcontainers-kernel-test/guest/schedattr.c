@@ -200,6 +200,15 @@ int main(void) {
             printf("another user's setscheduler %d %s\n", sched_setscheduler(parent, SCHED_OTHER, &keep), strerror(errno));
             errno = 0;
             printf("its own setparam %d %s\n", sched_setparam(0, &keep), strerror(errno));
+            unsigned long cpus = 1, none = 0;
+            errno = 0;
+            printf("another user's setaffinity %ld %s\n", syscall(SYS_sched_setaffinity, parent, 8, &cpus), strerror(errno));
+            errno = 0;
+            printf("another user's empty setaffinity %ld %s\n", syscall(SYS_sched_setaffinity, parent, 8, &none), strerror(errno));
+            errno = 0;
+            printf("bad mask of no one %ld %s\n", syscall(SYS_sched_setaffinity, 999999, 8, (void *)8), strerror(errno));
+            errno = 0;
+            printf("its own setaffinity %ld %s\n", syscall(SYS_sched_setaffinity, 0, 8, &cpus), strerror(errno));
             _exit(0);
         }
         waitpid(child, NULL, 0);

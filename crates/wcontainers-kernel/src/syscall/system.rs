@@ -180,9 +180,13 @@ pub(super) fn sched_setaffinity(
     tid: Tid,
     [pid, size, mask, ..]: Args,
 ) -> Result<u64, Errno> {
-    // `find_process_by_pid`: a negative number names no one.
-    scheduled(kernel, tid, pid).map_err(|_| Errno::ESRCH)?;
+    // `get_user_cpu_mask` copies the mask in first, at most a word for one CPU.
     let bytes = guest(kernel, cx, tid).read(mask, size.min(8))?;
+    // `find_process_by_pid`: a negative number names no one.
+    let target = scheduled(kernel, tid, pid).map_err(|_| Errno::ESRCH)?;
+    if !same_owner(kernel, tid, &target) && !kernel.credentials(tid).has(CAP_SYS_NICE) {
+        return Err(Errno::EPERM);
+    }
     if bytes.first().is_none_or(|first| first & 1 == 0) {
         return Err(Errno::EINVAL);
     }
