@@ -1,8 +1,8 @@
 //! The interface's plain values in wgpu's words.
 
 use wcontainers_gpu::{
-    AddressMode, BlendFactor, BlendOp, ColorWrites, CompareFn, CullMode, Filter, Format, FrontFace,
-    IndexFormat, StencilFace, StencilOp, Topology, VertexFormat, ViewDimension,
+    AddressMode, BlendFactor, BlendOp, ColorWrites, CompareFn, CullMode, FillMode, Filter, Format,
+    FrontFace, IndexFormat, StencilFace, StencilOp, Topology, VertexFormat, ViewDimension,
 };
 use wgpu::TextureFormat as T;
 
@@ -249,6 +249,14 @@ pub fn cull(c: CullMode) -> Option<wgpu::Face> {
         CullMode::None => None,
         CullMode::Front => Some(wgpu::Face::Front),
         CullMode::Back => Some(wgpu::Face::Back),
+    }
+}
+
+pub fn fill(f: FillMode) -> wgpu::PolygonMode {
+    match f {
+        FillMode::Solid => wgpu::PolygonMode::Fill,
+        FillMode::Line => wgpu::PolygonMode::Line,
+        FillMode::Point => wgpu::PolygonMode::Point,
     }
 }
 

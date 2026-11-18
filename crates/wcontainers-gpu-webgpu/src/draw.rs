@@ -289,14 +289,15 @@ struct DepthRaw {
 pub struct Pass {
     pub rp: wgpu::RenderPass<'static>,
     pub occlusion: bool,
-    pub query_running: bool,
+    /// The interface index of the running occlusion query.
+    pub query_running: Option<u32>,
     targets: TargetLayout,
     own_target: bool,
     width: u32,
     height: u32,
     colors: Vec<Option<ColorRaw>>,
     depth: Option<DepthRaw>,
-    occlusion_set: Option<wgpu::QuerySet>,
+    pub occlusion_set: Option<crate::QuerySet>,
     last: Last,
     /// The textures it draws or resolves into, which a write may not rename while it is open.
     pub attached: Vec<crate::Texture>,
@@ -803,7 +804,7 @@ impl WebGpu {
                     front_face: convert::front_face(raster.front),
                     cull_mode: convert::cull(raster.cull),
                     unclipped_depth: !raster.depth_clip,
-                    polygon_mode: wgpu::PolygonMode::Fill,
+                    polygon_mode: convert::fill(raster.fill),
                     conservative: false,
                 },
                 depth_stencil,
@@ -953,12 +954,12 @@ impl WebGpu {
                 clear: Some(wgpu::Color::TRANSPARENT),
             }));
         }
-        let occlusion_set = pass.occlusion.map(|q| q.0.raw.clone());
+        let occlusion_set = pass.occlusion.cloned();
         let mut rp = open(
             self.encoder(),
             &colors,
             &depth,
-            occlusion_set.as_ref(),
+            occlusion_set.as_ref().map(|q| &q.0.raw),
             false,
         );
         for (i, bits) in by_draw {
@@ -967,7 +968,7 @@ impl WebGpu {
         self.pass = Some(Pass {
             rp,
             occlusion: occlusion_set.is_some(),
-            query_running: false,
+            query_running: None,
             targets,
             own_target,
             width,
@@ -987,11 +988,27 @@ impl WebGpu {
             between(self);
             return;
         };
-        if pass.query_running {
-            self.fail("splitting a pass with a running query is not built yet");
-            self.pass = Some(pass);
-            return;
-        }
+        // A running query carries over: it ends here and goes on in a slot of its own in the
+        // next part, whose count resolving adds (`QueriesSegmented`).
+        let carried = match (pass.query_running, &pass.occlusion_set) {
+            (Some(index), Some(set)) => {
+                let Some(slot) = set.0.free.borrow_mut().pop() else {
+                    self.fail("a pass split more often than its query set has spare slots");
+                    self.pass = Some(pass);
+                    return;
+                };
+                pass.rp.end_occlusion_query();
+                set.0
+                    .segments
+                    .borrow_mut()
+                    .entry(index)
+                    .or_default()
+                    .push(slot);
+                self.slow.hit(SlowPath::QueriesSegmented);
+                Some(slot)
+            }
+            _ => None,
+        };
         self.slow.hit(why);
         drop(pass.rp);
         between(self);
@@ -1000,9 +1017,12 @@ impl WebGpu {
             encoder,
             &pass.colors,
             &pass.depth,
-            pass.occlusion_set.as_ref(),
+            pass.occlusion_set.as_ref().map(|q| &q.0.raw),
             true,
         );
+        if let Some(slot) = carried {
+            pass.rp.begin_occlusion_query(slot);
+        }
         pass.last = Last::default();
         self.pass = Some(pass);
     }
