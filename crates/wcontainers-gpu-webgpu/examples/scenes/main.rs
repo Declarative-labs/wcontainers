@@ -6,7 +6,8 @@
 //! `adapter` and saves what they return, times first draws with and without `prepare`
 //! (`prepare_timings`, prepare.rs), checks timestamps (`timestamps`, timestamps.rs) and the formats
 //! held converted (`converted`, converted.rs) and the vertex formats WebGPU lacks
-//! (`vertex_formats`, vertices.rs), measures instance data fetched in the program (`pulled_costs`,
+//! (`vertex_formats`, vertices.rs), checks query sets past 4096 and the query ring (`query_sets`,
+//! queries.rs), measures instance data fetched in the program (`pulled_costs`,
 //! pulled.rs), and web/suite.html runs the shared suite (suite.rs).
 
 #[path = "../../../wcontainers-graphics-test/src/scene.rs"]
@@ -74,6 +75,9 @@ mod renames;
 
 #[cfg(target_arch = "wasm32")]
 mod pulled;
+
+#[cfg(target_arch = "wasm32")]
+mod queries;
 
 #[cfg(target_arch = "wasm32")]
 #[macro_use]
@@ -190,6 +194,16 @@ mod web {
             from the pool after the first"
                 .into(),
         )
+    }
+
+    /// Query sets past WebGPU's 4096 queries a set, and query results from one ring, on the
+    /// browser's WebGPU: one line each, or the failed check.
+    #[wasm_bindgen(jspi)]
+    pub fn query_sets() -> Result<String, JsError> {
+        let (mut b, _) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
+        let paged = super::queries::paged_sets(&mut b).map_err(js)?;
+        let ring = super::queries::results_ring(&mut b, 20).map_err(js)?;
+        Ok(format!("{paged}\n{ring}"))
     }
 
     /// Instance data fetched in the program against vertex buffers on the browser's WebGPU, at 4,

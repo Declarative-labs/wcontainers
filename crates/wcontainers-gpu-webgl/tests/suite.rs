@@ -261,6 +261,11 @@ fn fractional_depth_bias() {
 }
 
 #[test]
+fn lists_draw_the_largest_index_as_a_vertex() {
+    sampled(checks::lists_draw_the_largest_index_as_a_vertex::<Angle>);
+}
+
+#[test]
 fn constant_alpha_blends() {
     sampled(checks::constant_alpha_blends::<Angle>);
 }

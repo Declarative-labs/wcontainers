@@ -3,7 +3,7 @@
 <title>WebGPU back end scenes</title>
 <script type="module">
 // The scenes example built for WebAssembly, as wasm-bindgen writes it into ./pkg.
-import init, { draw_scene, draw_viewports, prepare_timings, timestamps, converted, vertex_formats, texture_renames, pulled_costs, adapter } from './pkg/scenes.js';
+import init, { draw_scene, draw_viewports, prepare_timings, timestamps, converted, vertex_formats, texture_renames, query_sets, pulled_costs, adapter } from './pkg/scenes.js';
 const ready = init();
 
 const dataUrl = (png) => new Promise((resolve, reject) => {
@@ -41,6 +41,12 @@ window.converted = async (seed, cases) => {
 window.textureRenames = async () => {
   await ready;
   return await texture_renames();
+};
+
+// Query sets past 4096 queries and query results from one ring: one line each, or an error.
+window.querySets = async () => {
+  await ready;
+  return await query_sets();
 };
 
 // Instance data fetched in the program against vertex buffers: one line per route, or an error.
