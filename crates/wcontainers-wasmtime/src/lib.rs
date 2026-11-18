@@ -129,6 +129,7 @@ impl<G: Guest> Compiler<G> {
     fn compiled(
         &self,
         bytes: &[u8],
+        hash: [u8; 32],
         mut starts: Vec<u64>,
         look_ahead: LookAhead,
         optimise: Optimise,
@@ -137,7 +138,7 @@ impl<G: Guest> Compiler<G> {
         starts.sort_unstable();
         starts.dedup();
         let key = Key {
-            hash: *blake3::hash(bytes).as_bytes(),
+            hash,
             starts,
             look_ahead,
             optimise,
@@ -272,6 +273,13 @@ struct Shown {
     offset: u64,
 }
 
+/// The bytes of a range of code and their hash.
+struct Code {
+    start: u64,
+    bytes: Vec<u8>,
+    hash: [u8; 32],
+}
+
 /// A range the kernel announced as code.
 struct CodeRange {
     range: Range<u64>,
@@ -279,6 +287,8 @@ struct CodeRange {
     translated: bool,
     /// Its bytes changed after it was translated, so it is translated at run time only.
     changed: bool,
+    /// The hash of its bytes when it was last translated whole, kept across notices of the same range.
+    hash: Option<[u8; 32]>,
 }
 
 /// A compiled translation placed in a process's lookup tables.
@@ -559,6 +569,7 @@ where
             starts: Vec::new(),
             translated: true,
             changed: false,
+            hash: None,
         });
         process.ranges.len() - 1
     }
@@ -599,23 +610,37 @@ where
         }
     }
 
-    /// The compiled translation of `bytes` (code at `start`) from `starts`, recorded.
+    /// A range's bytes as they are now, with their hash.
+    fn code(&self, memory: MemoryId, range: &Range<u64>) -> Code {
+        let bytes = self.code_bytes(memory, range);
+        Code {
+            start: range.start,
+            hash: *blake3::hash(&bytes).as_bytes(),
+            bytes,
+        }
+    }
+
+    /// The compiled translation of `code` from `starts`, recorded.
     fn compile(
         &mut self,
-        bytes: &[u8],
-        start: u64,
+        code: &Code,
         starts: Vec<u64>,
         look_ahead: LookAhead,
         at_run_time: bool,
         sources: Option<Sources>,
     ) -> Arc<Compiled> {
         let count = starts.len();
-        let (compiled, made) =
-            self.compiler
-                .compiled(bytes, starts, look_ahead, self.optimise, self.offer);
+        let (compiled, made) = self.compiler.compiled(
+            &code.bytes,
+            code.hash,
+            starts,
+            look_ahead,
+            self.optimise,
+            self.offer,
+        );
         self.translated.push(Translated {
-            start,
-            length: bytes.len() as u64,
+            start: code.start,
+            length: code.bytes.len() as u64,
             look_ahead,
             at_run_time,
             starts: count,
@@ -1165,16 +1190,9 @@ where
                 .expect("the exact slot");
             return 1;
         }
-        let bytes = side.code_bytes(memory, &range);
+        let code = side.code(memory, &range);
         let one = LookAhead::Bounded(1);
-        let compiled = side.compile(
-            &bytes,
-            range.start,
-            vec![address - range.start],
-            one,
-            true,
-            None,
-        );
+        let compiled = side.compile(&code, vec![address - range.start], one, true, None);
         let load = Load {
             compiled,
             load_address: range.start,
@@ -1198,30 +1216,39 @@ where
             .expect("a thread")
             .exact
             .insert(address, piece);
+        let nanoseconds = started.elapsed().as_nanos() as u64;
+        side.slow_path(Reason::TranslatedAtRunTime.name(), address, nanoseconds);
         return 1;
     }
     let code = &side.process(memory).ranges[index];
     if !code.translated && !code.changed {
-        let bytes = side.code_bytes(memory, &range);
+        let before = code.hash;
         let mut starts = code.starts.clone();
+        let code = side.code(memory, &range);
         let reader = Reader { side, memory };
         let found = starts::image_starts(&reader, range.clone());
         let sources = found.as_ref().map(|(_, sources)| *sources);
         if let Some((more, _)) = found {
             starts.extend(more);
         }
-        side.processes.get_mut(&memory).expect("a memory").ranges[index].translated = true;
-        if !starts.is_empty() {
+        let record = &mut side.processes.get_mut(&memory).expect("a memory").ranges[index];
+        record.translated = true;
+        if before.is_some_and(|before| before != code.hash) {
+            record.changed = true;
+            side.slow_path(reason::CODE_CHANGED_AFTER_IT_RAN, range.start, 0);
+        } else if !starts.is_empty() {
+            record.hash = Some(code.hash);
             let look_ahead = side.look_ahead;
-            let compiled = side.compile(&bytes, range.start, starts, look_ahead, false, sources);
+            let compiled = side.compile(&code, starts, look_ahead, false, sources);
             side.add_load(&mut *caller, memory, compiled, range.start);
         }
     }
     if side.slot(memory, address) == 0 {
-        let bytes = side.code_bytes(memory, &range);
+        let started = Instant::now();
+        let code = side.code(memory, &range);
         let look_ahead = side.at_run_time();
         let start = vec![address - range.start];
-        let compiled = side.compile(&bytes, range.start, start, look_ahead, true, None);
+        let compiled = side.compile(&code, start, look_ahead, true, None);
         side.add_load(&mut *caller, memory, compiled, range.start);
         let nanoseconds = started.elapsed().as_nanos() as u64;
         side.slow_path(Reason::TranslatedAtRunTime.name(), address, nanoseconds);
@@ -1741,11 +1768,18 @@ where
             }
         }
         let mut kept: Vec<u64> = starts.to_vec();
-        let mut changed = false;
+        let (mut changed, mut hash) = (false, None);
+        // Ranges of other extents translated before, to compare with their bytes now.
+        let mut compare = Vec::new();
         process.ranges.retain(|code| {
             let overlaps = code.range.start < range.end && range.start < code.range.end;
             if overlaps {
-                changed |= code.translated;
+                changed |= code.changed;
+                match code.hash {
+                    Some(old) if code.range == range => hash = Some(old),
+                    Some(old) => compare.push((code.range.clone(), old)),
+                    None => {}
+                }
                 kept.extend(
                     code.starts
                         .iter()
@@ -1758,13 +1792,22 @@ where
         let mut offsets: Vec<u64> = kept.into_iter().map(|at| at - address).collect();
         offsets.sort_unstable();
         offsets.dedup();
-        process.ranges.push(CodeRange {
-            range,
-            starts: offsets,
-            translated: false,
-            changed,
-        });
-        if changed {
+        let now_changed = !changed
+            && compare
+                .iter()
+                .any(|(old, before)| self.code(memory, old).hash != *before);
+        self.processes
+            .get_mut(&memory)
+            .expect("a memory")
+            .ranges
+            .push(CodeRange {
+                range,
+                starts: offsets,
+                translated: false,
+                changed: changed || now_changed,
+                hash,
+            });
+        if now_changed {
             self.slow_path(reason::CODE_CHANGED_AFTER_IT_RAN, address, 0);
         }
         if dropped && let Some(running) = self.running.as_mut().filter(|r| r.memory == memory) {
