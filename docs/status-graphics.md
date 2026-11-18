@@ -395,7 +395,17 @@ G1c run 8's own (227c7b99, one "interface:" commit): a storage binding's size is
 four, and an access past a binding may reach other buffers sharing its API buffer (above, "G1c's
 seventh check"). Fits: a rule of the base and a doc. Rule test: the widened
 `buffer_bindings_are_aligned_inside_the_buffer_and_the_limits`. No suite test (no back-end
-behaviour changes). No "interface:" commit came from the other branches.
+behaviour changes). The Direct3D fronts' tests over the recorder pass with the new rule
+(`wcontainers-direct3d-11`: 52; `wcontainers-direct3d-12` without its GPU test: 35; laptop, scratch
+`g1c8/logs/fronts2.log`).
+
+G1c run 8, from direct3d-12 (merged at the end of the run):
+- f6c1fb42 `SlowPath::IndirectFetchPastEnd`: an indirect draw without indices whose fetches may
+  pass a stream's end, skipped whole by WebGPU where Direct3D reads zeros; a listed loss counted at
+  each such draw. Fits: a named reason added at the end of `SlowPath`, its number held by the
+  commit's own addition to `reasons_keep_their_numbers`. No rule (nothing a caller can break) and
+  no suite test (back ends do nothing new; the recorder refuses indirect draws as a stated limit).
+  Plan 4.12's text merged with this line's (End of run).
 
 ## The WebGPU track's request, decided
 
@@ -410,15 +420,7 @@ behaviour changes). No "interface:" commit came from the other branches.
 
 ## For the other tracks
 
-- WebGPU: a copy within one subresource of a depth or stencil format must no longer lose the device.
-  `depth16unorm`, `stencil8` and a combined format's stencil aspect alone: through a buffer as
-  colour (WebGPU copies them into textures from buffers). The depth of `depth32float`, `depth24plus`
-  and the combined formats: copy the source region into a temporary texture of the same format (your
-  routes between textures: whole subresource natively, part by draws), then from it into the
-  destination, counted `CopyWithinTexture`. For `Depth24PlusStencil8` and `Depth32FloatStencil8` both aspects move by
-  one copy: copy the whole subresource into the temporary natively, then the region back by
-  `DepthWrittenByDraw` and `StencilWrittenByDraw` (G1c run 2 added these two formats to the test).
-  Run 5 added `Depth24Plus` alone to that test (its depth read as values within 2^-24).
+- WebGPU: copies within one depth or stencil subresource are built (your 058834fb); done.
   The new suite tests `a_copy_within_one_depth_or_stencil_subresource_moves_the_region`,
   `every_vertex_format_reads_its_element` and `the_occlusion_counter_counts_every_sample_that_passes`
   (your summing program's first shared test) come in when you merge.
@@ -679,12 +681,9 @@ outside its bound range (which the interface allows; stopped so tests find each 
 
 ## Known failures
 
-- On the WebGPU back end (the shared line's `crates/wcontainers-gpu-webgpu/src/memory.rs`, which
-  fails "a copy within one subresource of depth or stencil" by name; still so at run 7,
-  that branch's newest commit e43557da),
-  `a_copy_within_one_depth_or_stencil_subresource_moves_the_region` fails once that track runs the
-  suite from this line, until it builds the route under "For the other tracks". Expected; the
-  WebGPU track's work.
+- None from the WebGPU back end's depth or stencil copies any more: that track built the route
+  (058834fb, merged at run 8's end) and reports the suite's test passing natively and in Chrome
+  (its status, "Copies within one subresource of depth or stencil"); not rerun by this track.
 
 - The occlusion counter refuses (`GpuError::Invalid`) a single fan, strip with restart or indirect
   draw that brings a pixel's sum over its samples to its counting format's bound (2048 in
@@ -694,6 +693,15 @@ outside its bound range (which the interface allows; stopped so tests find each 
 
 ## End of run
 
+- Run 8: webgpu (its G2c run 2: depth or stencil copies within one subresource, subgroups,
+  stencil views), direct3d-12 (its G5 run 30, with one "interface:" commit, f6c1fb42, covered under
+  "Interface changes") and shaders (its run 31) merged; one conflict, in plan 4.12's vertex fetch
+  item, where direct3d-12's text was on older wording: this line's text kept, with direct3d-12's
+  indirect draw without indices (`IndirectFetchPastEnd`) folded in. Webgl, direct3d-11 and rig had
+  nothing new. End check after them (scratch `g1c8/logs/end-check.log`, laptop, load 2.3): the
+  whole workspace checks, the owned crates' clippy and docs are clean with warnings denied, and
+  their 238 tests pass. The laptop's build folder of this line was deleted after; no folder was
+  made on the desktop.
 - Run 7: shaders brought five commits (its run 30: geometry shaders after a domain stage, layered
   geometry shaders, its status, and its merges of this line and direct3d-11); merged without
   conflict, no owned file and no "interface:" commit among them. The rest had nothing new. No
