@@ -2052,6 +2052,30 @@ impl WebGl {
         }
     }
 
+    /// The variant of `program` for a vertex layout whose attributes in `key` GL ES cannot read as
+    /// stored, made at the first draw with it ([`SlowPath::VertexFormatConverted`], counted per draw).
+    /// None when it could not be made, which has lost the device.
+    fn variant(&mut self, program: &ProgramObj, key: u32) -> Option<Rc<ProgramObj>> {
+        self.slow.hit(SlowPath::VertexFormatConverted);
+        if let Some((_, v)) = program.variants.borrow().iter().find(|(k, _)| *k == key) {
+            return Some(v.clone());
+        }
+        let id = self.id();
+        match shader::relink(&self.gl, id, program, None, key, self.empty_fragment) {
+            Ok(v) => {
+                let v = Rc::new(v);
+                program.variants.borrow_mut().push((key, v.clone()));
+                Some(v)
+            }
+            Err(e) => {
+                self.last_log =
+                    format!("webgl: a program variant for converted vertex formats: {e:?}");
+                self.fail(LossReason::Error);
+                None
+            }
+        }
+    }
+
     /// Binds what the program reads from the draw's sets. Err says why the draw cannot run; nothing of
     /// it may run then.
     fn apply_bindings(
@@ -2350,7 +2374,15 @@ impl WebGl {
             ));
             return;
         }
-        let program = call.program;
+        let converted = call.vertex_layout.0.1.converted;
+        let variant = match converted {
+            0 => None,
+            key => match self.variant(call.program, key) {
+                Some(v) => Some(v),
+                None => return,
+            },
+        };
+        let program: &ProgramObj = variant.as_deref().unwrap_or(call.program);
         let Some(linked) = self.linked(program) else {
             return;
         };
@@ -2404,6 +2436,24 @@ impl WebGl {
         unsafe {
             if let Some(vp) = call.viewports.first() {
                 let floats = [f(vp.x), f(vp.y), f(vp.width), f(vp.height)];
+                let range = [f(vp.min_depth), f(vp.max_depth)];
+                // The interface's bounds (WebGPU's); a front draws a larger viewport in the program.
+                let most = self.caps.limits.max_texture_2d as f32;
+                let edge = |at: f32, size: f32| {
+                    (0.0..=most).contains(&size)
+                        && at >= -2.0 * most
+                        && at + size <= 2.0 * most - 1.0
+                };
+                if !edge(floats[0], floats[2])
+                    || !edge(floats[1], floats[3])
+                    || !range.iter().all(|d| (0.0..=1.0).contains(d))
+                    || range[0] > range[1]
+                {
+                    self.invalid(format!(
+                        "the viewport {floats:?} with depths {range:?} past the interface's bounds"
+                    ));
+                    return;
+                }
                 let rect = floats.map(|v| v as i32);
                 // FRACTIONAL_VIEWPORT is absent: the front draws such a viewport in the program.
                 if floats.iter().zip(&rect).any(|(v, r)| *v != *r as f32) {
@@ -2416,7 +2466,6 @@ impl WebGl {
                     gl.viewport(rect[0], rect[1], rect[2], rect[3]);
                     v.viewport = rect;
                 }
-                let range = [f(vp.min_depth), f(vp.max_depth)];
                 if v.depth_range != range {
                     gl.depth_range_f32(range[0], range[1]);
                     v.depth_range = range;
@@ -2492,6 +2541,7 @@ impl WebGl {
                 held.set(value);
             }
         }
+        shader::set_immediates(&self.gl, linked, call.immediates);
         let mode = state::mode(call.topology);
         let gl = &self.gl;
         match call.range {
@@ -2945,9 +2995,21 @@ impl Backend for WebGl {
                 "an attribute names a stream the layout lacks",
             ));
         }
+        if desc
+            .attributes
+            .iter()
+            .flatten()
+            .any(|a| a.location >= self.caps.limits.vertex_attributes.min(16))
+        {
+            return Err(GpuError::Invalid(
+                "an attribute at a location past the limit",
+            ));
+        }
         match state::GlLayout::new(desc) {
             Some(layout) => Ok(Handle(Rc::new((self.id(), layout)))),
-            None => Err(self.unbuilt("vertex formats GL ES cannot read as stored")),
+            None => Err(GpuError::Invalid(
+                "an attribute names a stream the layout lacks",
+            )),
         }
     }
 
@@ -3083,6 +3145,15 @@ impl Backend for WebGl {
                     if p.handles.get() == 0 {
                         self.programs.remove(&p.pair);
                         gl.delete_program(p.raw);
+                        let captures = p.captures.iter().filter_map(|c| c.get());
+                        for c in captures.chain(core::iter::once(&p.0)) {
+                            for (_, v) in c.variants.borrow().iter() {
+                                gl.delete_program(v.raw);
+                                if self.applied.program == v.id {
+                                    self.applied.program = 0;
+                                }
+                            }
+                        }
                         for c in p.captures.iter().filter_map(|c| c.get()) {
                             gl.delete_program(c.raw);
                             if self.applied.program == c.id {
@@ -3244,9 +3315,13 @@ impl Backend for WebGl {
                 self.open_writes();
             }
             let gl = &self.gl;
+            // A layer of a 2D array is never invalidated: in Chrome (ANGLE on Direct3D 11) that
+            // loses the other layers of the level.
+            let whole = |v: &TextureView| v.texture.target != glow::TEXTURE_2D_ARRAY;
             for (i, c) in pass.colors.iter().enumerate() {
                 let Some(c) = c else { continue };
                 let point = glow::COLOR_ATTACHMENT0 + i as u32;
+                let whole = whole(c.view);
                 match c.load {
                     LoadOp::Clear(value) => match c.view.texture.desc.format.kind() {
                         FormatKind::Uint => {
@@ -3259,10 +3334,10 @@ impl Backend for WebGl {
                         ),
                         _ => gl.clear_buffer_f32_slice(glow::COLOR, i as u32, &value.map(f)),
                     },
-                    LoadOp::DontCare => start_discard.push(point),
-                    LoadOp::Load => {}
+                    LoadOp::DontCare if whole => start_discard.push(point),
+                    LoadOp::DontCare | LoadOp::Load => {}
                 }
-                if c.store == StoreOp::Discard {
+                if c.store == StoreOp::Discard && whole {
                     end_discard.push(point);
                 }
             }
@@ -3295,7 +3370,9 @@ impl Backend for WebGl {
                         glow::STENCIL_ATTACHMENT,
                     ),
                 ] {
-                    if let Some((load, store)) = ops {
+                    if let Some((load, store)) = ops
+                        && whole(d.view)
+                    {
                         if load {
                             start_discard.push(point);
                         }
@@ -4576,8 +4653,14 @@ impl Backend for WebGl {
             Some(c) => c.clone(),
             None => {
                 let id = self.id();
-                let c =
-                    shader::link_capture(&self.gl, id, call.program, kind, self.empty_fragment)?;
+                let c = shader::relink(
+                    &self.gl,
+                    id,
+                    call.program,
+                    Some(kind),
+                    0,
+                    self.empty_fragment,
+                )?;
                 slot.get_or_init(|| Rc::new(c)).clone()
             }
         };

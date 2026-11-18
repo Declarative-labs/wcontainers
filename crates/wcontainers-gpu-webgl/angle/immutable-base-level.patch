@@ -1,0 +1,36 @@
+# Upstream ANGLE's fix (BSD-3-Clause, its LICENSE) for immutable textures whose base level changes, in mozangle 0.7.1's older code: the size of level 0 is the stored one, not the base level's size shifted back up, so a texture with an odd side keeps its storage (and level 0's last row and column) when its base level is raised. Upstream takes the size from the texture storage; mozangle's storage has no size query, so it is taken from the level 0 image, which every immutable texture with images holds (those without, such as multisampled ones, keep the old size). Applied by build.cmd.
+--- a/gfx/angle/checkout/src/libANGLE/renderer/d3d/TextureD3D.cpp
++++ b/gfx/angle/checkout/src/libANGLE/renderer/d3d/TextureD3D.cpp
+@@ -123,11 +123,21 @@
+ GLint TextureD3D::getLevelZeroWidth() const
+ {
++    const ImageD3D *levelZero = isImmutable() ? getImage(getImageIndex(0, 0)) : nullptr;
++    if (levelZero)
++    {
++        return levelZero->getWidth();
++    }
+     ASSERT(gl::CountLeadingZeros(static_cast<uint32_t>(getBaseLevelWidth())) > getBaseLevel());
+     return getBaseLevelWidth() << mBaseLevel;
+ }
+ 
+ GLint TextureD3D::getLevelZeroHeight() const
+ {
++    const ImageD3D *levelZero = isImmutable() ? getImage(getImageIndex(0, 0)) : nullptr;
++    if (levelZero)
++    {
++        return levelZero->getHeight();
++    }
+     ASSERT(gl::CountLeadingZeros(static_cast<uint32_t>(getBaseLevelHeight())) > getBaseLevel());
+     return getBaseLevelHeight() << mBaseLevel;
+ }
+@@ -3183,5 +3193,10 @@
+ GLint TextureD3D_3D::getLevelZeroDepth() const
+ {
++    const ImageD3D *levelZero = isImmutable() ? getImage(getImageIndex(0, 0)) : nullptr;
++    if (levelZero)
++    {
++        return levelZero->getDepth();
++    }
+     ASSERT(gl::CountLeadingZeros(static_cast<uint32_t>(getBaseLevelDepth())) > getBaseLevel());
+     return getBaseLevelDepth() << getBaseLevel();
+ }
