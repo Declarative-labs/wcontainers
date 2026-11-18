@@ -1334,10 +1334,8 @@ impl Recorder {
         if state.blend.alpha_to_coverage {
             return Err("alpha to coverage is not drawn by the recording back end yet".into());
         }
-        if self.fetches_past_a_stream(call, &state)? {
-            self.dropped_draws += 1;
-            return Ok(());
-        }
+        // A draw fetching past a stream is dropped whole, after the attachment rules are held.
+        let dropped = self.fetches_past_a_stream(call, &state)?;
         // Take the attachments out while the draw writes them.
         let mut colors: Vec<Option<Target>> = Vec::new();
         let color_views: Vec<_> = pass
@@ -1403,7 +1401,9 @@ impl Recorder {
         };
         let mut passed = 0u64;
         let writes = RefCell::default();
-        if result.is_ok() {
+        if result.is_ok() && dropped {
+            self.dropped_draws += 1;
+        } else if result.is_ok() {
             result = self.rasterise(
                 call,
                 &state,

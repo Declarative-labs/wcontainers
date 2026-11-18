@@ -1824,6 +1824,13 @@ impl Backend for Recorder {
                 {
                     return Err(GpuError::Absent(Features::FRAGMENT_STORAGE_WRITE));
                 }
+                if let BindingResource::StorageBuffer { range: r, .. } = e.resource
+                    && !r.size.is_multiple_of(4)
+                {
+                    return Err(GpuError::Invalid(
+                        "a storage binding whose size is not a multiple of four",
+                    ));
+                }
                 if let BindingResource::StorageBuffer {
                     writable: false, ..
                 } = e.resource
