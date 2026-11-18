@@ -108,6 +108,7 @@ impl Task {
 pub(crate) enum ProcessFile {
     Cmdline,
     Comm,
+    CoredumpFilter,
     Environ,
     Auxv,
     Maps,
@@ -155,6 +156,7 @@ const PROCESS_FILES: &[(&[u8], ProcessFile)] = &[
     (b"cgroup", ProcessFile::Cgroup),
     (b"cmdline", ProcessFile::Cmdline),
     (b"comm", ProcessFile::Comm),
+    (b"coredump_filter", ProcessFile::CoredumpFilter),
     (b"environ", ProcessFile::Environ),
     (b"limits", ProcessFile::Limits),
     (b"maps", ProcessFile::Maps),
@@ -209,6 +211,8 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/kernel/random/boot_id", Global::File(0o444)),
     ("sys/kernel/random/uuid", Global::File(0o444)),
     ("sys/net", Global::Directory),
+    ("sys/net/core", Global::Directory),
+    ("sys/net/core/somaxconn", Global::File(0o644)),
     ("sys/sunrpc", Global::Directory),
     ("sys/user", Global::Directory),
     ("sys/vm", Global::Directory),
@@ -220,7 +224,8 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
 /// The entries Linux 7.0 has in the directories built here, in the order the reference's `getdents`
 /// lists them, each directory's names separated by spaces; `<pid>` stands for a process directory.
 /// An entry's position in its directory is 2 plus its index here, except in `/proc` itself, where
-/// `self` and `thread-self` come at `FIRST_PROCESS_ENTRY`. Looking up one that is not built is
+/// `self` and `thread-self` come at `FIRST_PROCESS_ENTRY`. A `-` is an entry the reference's
+/// namespace does not see, which still takes a position. Looking up one that is not built is
 /// counted and warned before it answers ENOENT.
 const LINUX_ENTRIES: &[(&str, &str)] = &[
     (
@@ -319,7 +324,15 @@ const LINUX_ENTRIES: &[(&str, &str)] = &[
     ),
     (
         "sys/net",
-        "bridge core ipv4 ipv6 mpls netfilter sctp unix vsock",
+        "bridge - core ipv4 ipv6 mpls - netfilter sctp unix vsock",
+    ),
+    (
+        "sys/net/core",
+        concat!(
+            "bypass_prot_mem optmem_max rmem_default rmem_max rps_default_mask somaxconn ",
+            "tstamp_allow_data txq_reselection_ms txrehash wmem_default wmem_max ",
+            "xfrm_acq_expires xfrm_aevent_etime xfrm_aevent_rseqth xfrm_larval_drop",
+        ),
     ),
     (
         "sys/sunrpc",
@@ -374,6 +387,8 @@ pub(crate) enum Style {
 pub(crate) enum Writing {
     /// `comm_write`: names the process.
     Comm,
+    /// `proc_coredump_filter_write`: chooses what a core dump would hold.
+    CoredumpFilter,
     /// A sysctl's own write; `/proc/sys` is mounted read-only, so no file is open for it.
     Sysctl,
     /// `EIO`, as `pde_write` for an entry with no write of its own.
@@ -473,6 +488,7 @@ impl Entry {
     pub fn writing(&self) -> Writing {
         match self {
             Entry::ProcessFile(_, ProcessFile::Comm) => Writing::Comm,
+            Entry::ProcessFile(_, ProcessFile::CoredumpFilter) => Writing::CoredumpFilter,
             Entry::Global(_) if self.style() == Style::Sysctl => Writing::Sysctl,
             // `proc_reg_write` with no `proc_write` of the entry's own.
             Entry::Global(_) | Entry::NetFile(..) => Writing::Io,
@@ -506,7 +522,9 @@ impl Entry {
                 Global::File(permissions) => S_IFREG | permissions,
                 Global::Link(_) => S_IFLNK | 0o777,
             },
-            Entry::ProcessFile(_, ProcessFile::Comm) => S_IFREG | 0o644,
+            Entry::ProcessFile(_, ProcessFile::Comm | ProcessFile::CoredumpFilter) => {
+                S_IFREG | 0o644
+            }
             Entry::ProcessFile(_, ProcessFile::Environ | ProcessFile::Auxv) => S_IFREG | 0o400,
             Entry::ProcessFile(..) => S_IFREG | 0o444,
             Entry::SelfLink | Entry::ThreadSelfLink | Entry::ProcessLink(..) => S_IFLNK | 0o777,
@@ -797,6 +815,44 @@ pub(crate) fn lookup(
         return Err(Errno::ENOENT);
     };
     Ok(node(view, Some(directory), name, child))
+}
+
+/// `kstrtouint` in base 0: an optional `+`, then `0x` and hex digits, `0` and octal ones, or
+/// decimal ones, then at most a newline before the end or a zero byte.
+pub(crate) fn parse_unsigned(bytes: &[u8]) -> Result<u32, Errno> {
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    let mut text = &bytes[..end];
+    if let [b'+', rest @ ..] = text {
+        text = rest;
+    }
+    let radix = match text {
+        [b'0', b'x' | b'X', digit, ..] if digit.is_ascii_hexdigit() => {
+            text = &text[2..];
+            16
+        }
+        [b'0', ..] => 8,
+        _ => 10,
+    };
+    let digits = text
+        .iter()
+        .take_while(|b| char::from(**b).is_digit(radix))
+        .count();
+    if digits == 0 {
+        return Err(Errno::EINVAL);
+    }
+    let rest = &text[digits..];
+    if !(rest.is_empty() || rest == b"\n") {
+        return Err(Errno::EINVAL);
+    }
+    let mut value: u64 = 0;
+    for &b in &text[..digits] {
+        let digit = char::from(b).to_digit(radix).expect("a digit");
+        value = value
+            .checked_mul(u64::from(radix))
+            .and_then(|value| value.checked_add(u64::from(digit)))
+            .ok_or(Errno::ERANGE)?;
+    }
+    u32::try_from(value).map_err(|_| Errno::ERANGE)
 }
 
 /// Counts a lookup that found nothing when Linux has the name there.
@@ -1172,6 +1228,8 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                 // Line disciplines load as modules on demand; TIOCSTI is still built (measured).
                 "sys/dev/tty/ldisc_autoload" | "sys/dev/tty/legacy_tiocsti" => out.push_str("1\n"),
                 "sys/fs/nr_open" => out.push_str("1048576\n"),
+                // The cap `listen` puts on a backlog.
+                "sys/net/core/somaxconn" => out.push_str("4096\n"),
                 "sys/kernel/cap_last_cap" => {
                     let _ = writeln!(out, "{CAP_LAST_CAP}");
                 }
@@ -1260,6 +1318,9 @@ fn process_file(
             let mut bytes = shown.name.clone();
             bytes.push(b'\n');
             return Ok(bytes);
+        }
+        ProcessFile::CoredumpFilter => {
+            return Ok(alloc::format!("{:08x}\n", process.coredump_filter).into_bytes());
         }
         ProcessFile::Maps => {
             for mapping in process.map.borrow().iter() {

@@ -1372,6 +1372,20 @@ fn write_proc(
             kernel.thread_mut(task.tid).set_name_exact(&bytes);
             Ok(count)
         }
+        // `proc_coredump_filter_write`: a number as `kstrtouint` reads it in base 0, whose
+        // filter bits are kept.
+        Writing::CoredumpFilter => {
+            // The whole write is the number (measured with 29 bytes).
+            let bytes = guest(kernel, cx, tid).read(buffer, count.min(PAGE_SIZE))?;
+            let value = crate::fs::proc::parse_unsigned(&bytes)?;
+            let crate::fs::proc::Entry::ProcessFile(task, _) = entry else {
+                return Err(Errno::EINVAL);
+            };
+            if let Some(process) = kernel.processes.get_mut(&task.pid) {
+                process.coredump_filter = value & 0x1ff;
+            }
+            Ok(count)
+        }
         Writing::Io => Err(Errno::EIO),
         Writing::Sysctl => Err(Errno::EROFS),
         Writing::None => Err(Errno::EINVAL),

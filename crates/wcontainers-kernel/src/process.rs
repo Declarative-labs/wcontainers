@@ -118,6 +118,9 @@ pub(crate) struct Process {
     pub execed: bool,
     /// How many programs it has run (Linux's `self_exec_id`, which a fork copies).
     pub self_exec_id: u64,
+    /// Which mappings a core dump would hold (`/proc/<pid>/coredump_filter`, the memory's
+    /// `MMF_DUMP_FILTER_MASK` bits), which a fork and an exec keep.
+    pub coredump_filter: u32,
     /// The session's controlling terminal, if the process has one: a pair whose slave it is.
     pub terminal: Option<Rc<core::cell::RefCell<crate::tty::Pty>>>,
     /// For a session leader whose terminal was hung up, the foreground group it had
