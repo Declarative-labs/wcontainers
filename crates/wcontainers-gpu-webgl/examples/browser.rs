@@ -123,13 +123,17 @@ suite!(
     generate_mips_averages_in_the_values_format,
     values_are_interpolated_with_perspective,
     the_scissor_bounds_the_draw,
+    a_scissor_past_the_target_is_clipped_to_it,
     stencil_operations_and_tests,
     near_clipping_and_the_viewport_depth_range,
     linear_filtering_and_address_modes,
     instances_start_at_the_first_instance,
     indexed_strips_restart_and_add_the_base_vertex,
+    a_stream_of_stride_zero_reads_its_first_element,
+    comparison_samplers_compare_with_the_stored_depth,
     fragments_write_storage_buffers,
     multisampled_targets_cover_their_samples_and_resolve,
+    resolves_average_in_the_format_named,
     programs_run_per_sample_and_read_samples,
     occlusion_queries_answer_whether_samples_passed,
     present_shows_the_frame;
@@ -158,6 +162,8 @@ suite!(
     sixteen_bit_normalised_formats_follow_their_extension,
     bgra_surfaces_present,
     signed_normalised_formats_follow_their_extension,
+    levels_stay_as_written_while_others_are_read_and_drawn,
+    passes_without_attachments_rasterise,
 );
 
 thread_local! {
