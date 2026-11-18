@@ -97,6 +97,7 @@ fn compare(
 fn variants_draw_as_the_native_feature_does() {
     let mut gpu = webgpu();
     let mut gl = webgl();
+    let mut vulkan = webgpu_on(wgpu::Backends::VULKAN);
     let d3d = wcontainers_graphics_test::d3d11::create(
         wcontainers_graphics_test::Driver::Hardware,
         false,
@@ -455,6 +456,108 @@ fn variants_draw_as_the_native_feature_does() {
                     (0, 1),
                 ));
             }
+        }
+
+        // The per-resource minimum level-of-detail clamp, which neither back end has: against real
+        // Direct3D 11's SetResourceMinLOD on a 4-level texture, unclamped, fractional (samples blend
+        // levels 1 and 2, loads of level 0 read zero), at the last level, and past it (every access
+        // reads zero). Gathers, which read level 0 only, on WebGPU (GLSL ES 3.00 has no gather).
+        for (ps, clamps, back_ends) in [
+            ("ps_minlod", &[0.0f32, 1.5, 3.0, 3.5][..], 2),
+            ("ps_mingather", &[0.5, 1.0, 3.5][..], 1),
+        ] {
+            let code = [
+                bytecode(&format!("vs_transform.{route}")),
+                bytecode(&format!("{ps}.{route}")),
+            ];
+            let plain = grid_draw(&code, dxil, &grid);
+            let mut unclamped = None;
+            for &clamp in clamps {
+                let (reference, _) = direct3d_11(
+                    &d3d,
+                    "vs_transform",
+                    ps,
+                    Format::Rgba8Unorm,
+                    [1.0, 0.75, 0.5, 1.5],
+                    true,
+                    &Reference {
+                        levels: 4,
+                        min_lod: Some(clamp),
+                        ..Default::default()
+                    },
+                );
+                // The clamp must change Direct3D's picture, or the case shows nothing.
+                let first = unclamped.get_or_insert_with(|| reference.clone());
+                if clamp > clamps[0] {
+                    let (changed, _) = differ(first, &reference, Format::Rgba8Unorm);
+                    eprintln!("{ps} clamp {clamp}: {changed} of Direct3D's texels changed by it");
+                    assert!(changed > 0, "{ps} clamp {clamp} changes nothing");
+                }
+                let mut variant = plain.clone();
+                variant.setup.levels = 4;
+                variant.setup.min_lod = Some(clamp);
+                variant.setup.ps_key.min_lod_clamped = 1;
+                let mut value = clamp.to_bits().to_le_bytes().to_vec();
+                value.extend(4u32.to_le_bytes());
+                variant.setup.helpers[1] = helper_block(
+                    variant.ps,
+                    &variant.setup.ps_key,
+                    &[(HelperValue::MinLod { texture: 0 }, &value)],
+                );
+                let mut drawn = vec![("webgpu", ours(&mut gpu, &variant, ProvokingVertex::First))];
+                if back_ends > 1 {
+                    drawn.push(("webgl", ours(&mut gl, &variant, ProvokingVertex::Last)));
+                }
+                for (back_end, texels) in drawn {
+                    results.push(compare(
+                        format!("min_lod {ps} {clamp} {route} {back_end} against direct3d 11"),
+                        &reference,
+                        &texels,
+                        Format::Rgba8Unorm,
+                        (0, 1),
+                    ));
+                }
+            }
+        }
+
+        // Clip distances natively (WebGPU's clip_distances, on wgpu's Vulkan path: its Direct3D 12
+        // path has none), against real Direct3D 11; the planes must change Direct3D's picture.
+        {
+            let code = [
+                bytecode(&format!("vs_clip.{route}")),
+                bytecode(&format!("ps_textured.{route}")),
+            ];
+            let native = grid_draw(&code, dxil, &grid);
+            let tint = [1.0, 0.75, 0.5, 1.5];
+            let (reference, _) = direct3d_11(
+                &d3d,
+                "vs_clip",
+                "ps_textured",
+                Format::Rgba8Unorm,
+                tint,
+                true,
+                &Reference::default(),
+            );
+            let (unclipped, _) = direct3d_11(
+                &d3d,
+                "vs_transform",
+                "ps_textured",
+                Format::Rgba8Unorm,
+                tint,
+                true,
+                &Reference::default(),
+            );
+            let (changed, _) = differ(&unclipped, &reference, Format::Rgba8Unorm);
+            eprintln!("clip distances {route}: they change {changed} of Direct3D's texels");
+            assert!(changed > 0);
+            let texels = ours(&mut vulkan, &native, ProvokingVertex::First);
+            results.push(compare(
+                format!("clip distances {route} webgpu-native (vulkan) against direct3d 11"),
+                &reference,
+                &texels,
+                Format::Rgba8Unorm,
+                (0, 0),
+            ));
         }
 
         // The counting variant: blended One plus One into an rgba8unorm target (the grid's triangles do

@@ -1076,6 +1076,7 @@ fn stage_values(
                 BuiltIn::SampleIndex => (SystemValue::SampleIndex, 10),
                 BuiltIn::SampleMask => (SystemValue::Coverage, 66),
                 BuiltIn::FragDepth => (SystemValue::Depth, 65),
+                BuiltIn::ClipDistances => (SystemValue::ClipDistance, 2),
                 _ => return,
             };
             let element = signature.iter().find(|e| e.system == code);

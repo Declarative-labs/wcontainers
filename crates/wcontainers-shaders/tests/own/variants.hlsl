@@ -46,3 +46,38 @@ float4 ps_ids(IdOut i) : SV_Target0 {
     uint triangle_number = i.ids.x / 3;
     return float4((triangle_number % 16) / 15.0, (triangle_number / 16) / 15.0, i.ids.y / 3.0, 1.0);
 }
+
+// The accesses a per-resource minimum level-of-detail clamp changes, by the pixel's column: an implicit
+// sample, a sample at level 0.25, and loads of the level the row's quarter picks (no bit fields, which
+// GLSL ES 3.00 lacks).
+float4 ps_minlod(VsOut i) : SV_Target0 {
+    uint2 p = uint2(i.position.xy);
+    float4 implicit_level = albedo.Sample(linear_clamp, i.uv);
+    float4 given_level = albedo.SampleLevel(linear_clamp, i.uv, 0.25);
+    uint level = min(uint(i.position.y / 16.0), 3);
+    float4 loaded = albedo.Load(int3(int2(p % 8) >> level, level));
+    return p.x < 21 ? implicit_level : (p.x < 42 ? given_level : loaded);
+}
+
+// A gather, which reads level 0 only.
+float4 ps_mingather(VsOut i) : SV_Target0 {
+    return albedo.GatherGreen(linear_clamp, i.uv);
+}
+
+struct ClipOut {
+    float4 position : SV_Position;
+    float2 uv : TEXCOORD0;
+    nointerpolation uint id : TEXCOORD1;
+    float2 clip : SV_ClipDistance0;
+};
+
+// vs_transform with two clip distances, a diagonal across the grid and a line below its middle, both
+// cutting through triangles.
+ClipOut vs_clip(float3 position : POSITION, float2 uv : TEXCOORD0, uint id : SV_VertexID) {
+    ClipOut o;
+    o.position = mul(float4(position, 1.0), world_view_projection);
+    o.uv = uv;
+    o.id = id;
+    o.clip = float2(position.x + position.y * 0.5 + 0.1, position.y + 0.3);
+    return o;
+}

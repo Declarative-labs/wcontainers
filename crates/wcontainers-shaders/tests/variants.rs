@@ -58,10 +58,10 @@ fn unbuilt_variants_are_refused_by_name() {
         ),
         (
             VariantKey {
-                min_lod_clamped: 1,
+                mirror_once_in_shader: 1,
                 ..Default::default()
             },
-            "MinLodClamp",
+            "MirrorOnceInShader",
         ),
         (
             VariantKey {
@@ -295,6 +295,88 @@ fn pixel_variants_convert_on_both_routes() {
         );
         let text = wgsl(&c);
         assert!(!text.contains("textureNumLevels"), "{text}");
+    }
+}
+
+/// The minimum level-of-detail clamp: samples go through the merged sampler of their pair in the helper
+/// set, composed with the sampler's bias in one callee; loads and gathers are checked against the
+/// clamp; comparisons are refused, since their out-of-bounds answer depends on the sampler's function.
+#[test]
+fn min_lod_clamp_samples_through_the_merged_sampler() {
+    let key = VariantKey {
+        lod_bias: 1,
+        min_lod_clamped: 1,
+        ..Default::default()
+    };
+    for c in both(&own_pair("ps_textured"), &key) {
+        assert_eq!(
+            c.reflection.helpers,
+            [
+                slot(HelperValue::LodBias { sampler: 0 }, 0),
+                slot(HelperValue::MinLod { texture: 0 }, 16)
+            ]
+        );
+        let text = wgsl(&c);
+        assert!(text.contains("@group(3) @binding(16)"), "{text}");
+        assert!(text.contains("textureSampleBias("), "{text}");
+        assert!(text.contains("select("), "{text}");
+    }
+    let key = VariantKey {
+        min_lod_clamped: 1,
+        ..Default::default()
+    };
+    for name in [
+        "dxbc/samplers.ps_gather.dxbc",
+        "dxil/samplers.ps_gather.dxil",
+    ] {
+        let source = rig(name);
+        let source = if name.ends_with("dxil") {
+            Source::Dxil(&source)
+        } else {
+            Source::Dxbc(&source)
+        };
+        let c = convert(source, &key, None).unwrap();
+        let text = wgsl(&c);
+        assert!(text.contains("textureGather("), "{text}");
+        assert!(!text.contains("@group(3) @binding(16)"), "{text}");
+        assert!(text.contains("select("), "{text}");
+    }
+    for name in [
+        "dxbc/samplers.ps_compare.dxbc",
+        "dxil/samplers.ps_compare.dxil",
+    ] {
+        let source = rig(name);
+        let source = if name.ends_with("dxil") {
+            Source::Dxil(&source)
+        } else {
+            Source::Dxbc(&source)
+        };
+        assert_eq!(
+            convert(source, &key, None).map(|_| ()),
+            Err(ConvertError::Unsupported("MinLodOnComparison"))
+        );
+    }
+}
+
+/// A vertex program's clip distances become the common form's built-in array, on both routes.
+#[test]
+fn clip_distances_are_the_built_in_array() {
+    for c in both(&own_pair("vs_clip"), &VariantKey::default()) {
+        let text = wgsl(&c);
+        assert!(text.contains("enable clip_distances;"), "{text}");
+        assert!(
+            text.contains("@builtin(clip_distances) b1_: array<f32, 2>")
+                || text.contains("array<f32, 2>"),
+            "{text}"
+        );
+        assert!(
+            c.reflection
+                .outputs
+                .iter()
+                .any(|o| o.system == Some(wcontainers_gpu::SystemValue::ClipDistance)),
+            "{:?}",
+            c.reflection.outputs
+        );
     }
 }
 
