@@ -677,7 +677,7 @@ fn copies_between_groups_are_invalid_and_within_one_copy_bits() {
         Resource::Texture(dev.create_texture(&d, &[]).unwrap())
     };
     // R8G8B8A8_UNORM_SRGB and _UINT share the group; R32_FLOAT does not; R32G32_UINT and BC1 are
-    // Direct3D 10.1's conversion, not served.
+    // Direct3D 10.1's conversion, the texel copying into the block.
     for format in [29, 30] {
         let dst = staging(&mut dev, format);
         dev.copy_resource(&dst, &source).unwrap();
@@ -698,10 +698,11 @@ fn copies_between_groups_are_invalid_and_within_one_copy_bits() {
             .unwrap(),
     );
     let bc1 = staging(&mut dev, 71);
-    assert!(matches!(
-        dev.copy_subresource_region(&bc1, 0, [0; 3], &wide, 0, None),
-        Err(Error::NotImplemented(_))
-    ));
+    let from = dev.backend.log.len();
+    dev.copy_subresource_region(&bc1, 0, [0; 3], &wide, 0, None)
+        .unwrap();
+    let log = log_from(&dev, from);
+    find(&log, "copy_texture");
     assert!(dev.removed.is_none());
 }
 
