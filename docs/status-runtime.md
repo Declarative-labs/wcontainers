@@ -9,43 +9,125 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   passes against the reference with the kernel deciding and the translator's WebAssembly, run by wasmtime,
   running its instructions, at full, none and bounded look-ahead:
   `nix develop -c cargo test -j 4 -p wcontainers-kernel-test --features runtime --test hello -- --test-threads 3`
-  (and with `LOOK_AHEAD=none`, `LOOK_AHEAD=bounded` in front). Logs: scratch j1/hello-full-2.log,
-  hello-none.log, hello-bounded.log (load 17.1, 13.2, 13.4).
-- Done in J1 so far: the plan's carried findings fixed (see "Findings of J0's last check" below); the merge
-  of 84e9a937; crates/wcontainers-runtime (`Stepper::step`, `drive`, `Execution`, `Outside`, `Answer`,
-  `Turn`, `Carry`, `Step`, `Ending`); crates/wcontainers-wasmtime (`Compiler`, `CpuSide`); the kernel test
-  crate's driver on `drive` (commit bdf240e1) and its `runtime` feature with `LOOK_AHEAD` (commit 2c219b7f).
-- Next: busybox at full; the whole-suite verdict diff of the driver move; the recorded figures of J1.
+  (and with `LOOK_AHEAD=none`, `LOOK_AHEAD=bounded` in front). Pushed at that point.
+- Busybox's single programs pass at full look-ahead (`--test busybox`: text, files, system, one_cpu; the
+  known failure root_file_system stays ignored as with the stand-in), each command against the reference with
+  the root in memory and on the backend: 4 passed, 1 ignored, 66.9 s (load 10.5 at the start, 26.2 at the end;
+  scratch j1/busybox-full-1.log).
+- Built in J1:
+  - crates/wcontainers-runtime: `Stepper::step` and `drive` (the one loop), `Execution` (with `Failure` and
+    `restored`), `Outside` (with `End`; `turn`, `ran`, `arrived`, `stopped`, `idle`, `cpu_warning`),
+    `Answer`, `Carry`, `Turn` (counted turns only; free turns come with J3's timer), `Step`, `Ending`.
+  - crates/wcontainers-wasmtime: `Compiler` (engine with host-supplied memories and Unix signal traps, the
+    thread module, the back end's own rayon pool, the probe, the in-memory cache) and `CpuSide<G>` (every
+    `Cpu` method but `memory_duplicate`, `run` with carrying on in place and leaving, the hooks, translation
+    at first use from the kernel's starts and the image's own, shared blocks by copying with the "shared
+    pages" write lock).
+  - The kernel test crate (the plan's one change outside the runtime's crates, its own commits): bdf240e1
+    moves the driver onto `drive` (the stand-in implements `Execution`, `TestHost` implements `Outside`
+    holding the driver's per-turn work); 2c219b7f adds the `runtime` feature and `LOOK_AHEAD`; later commits
+    add `LOOK_AHEAD_SEED` and the back end's report on the standard error.
+- Not yet in J1 (next, in order): the whole-suite verdict diff of the driver move (step 1's check); hello and
+  busybox at bounded and none (running); the recorded figures of J1 (CPU warnings per command, run-time
+  pieces per command, second-container time); the whole suite of what this track owns before the milestone
+  is reported complete.
+
+## Findings of J0's last check, and how each was settled
+
+- Shared block calls in J1 (blocking): moved into J1 and built (plan sections 8 and 16). Building them showed
+  this Mac's pages are 16 KiB against the guest's 4 KiB, so blocks are kept by the copying method with a write
+  lock, not by host mappings (plan section 8, and Departures below). Section 8's sentence about guest memory
+  holding everything the kernel loaded is corrected: file mappings, the ELF images among them, show blocks and
+  the fork copy skips them.
+- The user surface (blocking): plan section 14 now takes `oci_spec::runtime::Spec`, the image-spec
+  conversion, every field honoured or refused by name with the list of refused fields and what each would
+  take, how we run (`Tuning`, suggested) and what machine it sees (`Machine`, suggested, with one `Offer`
+  field per architecture) apart; names as approved; the command line program as J3's last, thin part;
+  section 20 asks only what is still open (the two names, the program's name, the OCI image format).
+- Progress with two meanings in J1 (minor, ruled interim): recorded under Departures; `Turn` and progress
+  kept; no test compares progress between back ends or look-aheads; the loop's count of the kernel's
+  changes of pc moves to J2 with the stand-in's own count, since both change the stand-in's unit.
+- RELR measured on 5 of 9 binaries: plan sections 7 and 18 now give java's and node's `RELA` (from the
+  check's log), bun's neither, go not read; the design reads both.
+- Load of the system call figures: section 18 now names measure-translator.log, load 39.78.
+- Exec and the count: section 9 says exec is not counted and the count does not survive it (a new thread's
+  block starts at zero); a new thread's first `FromRegisters` is not counted.
+- How a generic outside rebuilds the back end after a save: `Execution::restored()` (plan section 5); the
+  test outside's `stopped` calls it. Built for the stand-in; for `CpuSide` it panics naming J2, where it is
+  built with the fork copy (no J1 test saves).
+- The cache key leaving out the abi and guest interface crates: section 7's build identity now covers the
+  translator, `wcontainers-guest-cpu`, the guest crate, `wcontainers-abi` and wasm-encoder's locked version;
+  built with the disk level (J2), since the in-memory level lives inside one build.
+- Data words read two ways: an image's `RELR` words are now read one way for the whole image (relocated
+  when more of them, less the load offset, fall in the image's span); `RELA` starts come from addends. Built
+  in crates/wcontainers-wasmtime/src/starts.rs.
+- Line offsets: RNDR at decode_forms.rs:253 and the clock hook at guest.rs:434-441, in both places.
 
 ## How to run
 
-Nothing to run in the repository yet. The J0 measurements (scratch, not in the repository) are in
-pyro-parked/wcontainers-scratch/runtime:
-- `base/` is the trial merge's tree (main 36d20013 with 84e9a937) plus three scratch files:
-  `base/crates/wcontainers-translator-test/programs/syscall_loop.S`,
-  `base/crates/wcontainers-translator-test/tests/runtime_measure.rs` (tests a to g) and
-  `base/crates/wcontainers-kernel-test/tests/runtime_measure.rs` (the kernel's own share). The scratch
-  runner.rs there also has an optional pooling allocator (environment `WC_POOLING`), and its Cargo.toml the
-  `pooling-allocator` feature. `base/target/binaries` holds copies of busybox, musl and python from the
-  translator's list.
-- `measure.sh`, `measure2.sh` and `measure3.sh` run them (`nix develop -c cargo test --release -j 4 ... --test
-  runtime_measure -- --nocapture --test-threads 1`, with `CARGO_TARGET_DIR` in scratch). Logs:
-  `measure-*.log`, `forksize/sizes.txt` for the reference's memory sizes, `retired-gzip.log`. The build
-  output is deleted at the end of each run; a rerun rebuilds it (about 2 minutes at load 35).
-- `forkcopy/forkcopy.c` (`cc -O2 -o forkcopy forkcopy.c && ./forkcopy`): the macOS fork copy; log
-  `forkcopy/forkcopy.log`.
-- `python3 -I check-j0-run2/relr.py <binaries>`: relocation kinds; log `relr.log`.
-- What the logs hold: `measure2.out` shows its first host memory run exited 101 and its two rounds ended
-  within seconds; those logs were overwritten by later runs started by hand: plain-3, plain-4, pooling-1,
-  plain-5, pooling-2, plain-6 in that order, then `measure-hostmemory.log` (tests d and e together).
-  plain-1 and plain-2 are measure2.sh's. `measure-none.log` is measure3.sh's (test g, and test b, whose name
-  also matched).
-- `runner-84e9a937.rs` is the translator runner at X1, copied for reading line numbers.
-- `ceiling/reserve.c` (`cc -O2 -o reserve reserve.c && ./reserve`): address room; log `ceiling/reserve.log`.
-  `ceiling/reference-maps.log`: the reference's layout (`docker run --rm --platform linux/arm64 alpine:3.22
-  cat /proc/self/maps`).
+The one build directory of this track is the checkout's own `target/` (CARGO_TARGET_DIR unset). Scratch is
+pyro-parked/wcontainers-scratch/runtime; J1's logs are in its `j1/`.
+- The bar, first step: `nix develop -c cargo test -j 4 -p wcontainers-kernel-test --features runtime --test
+  hello -- --test-threads 3`, again with `LOOK_AHEAD=none` and with `LOOK_AHEAD=bounded` in front.
+- The bar: `nix develop -c cargo test -j 4 -p wcontainers-kernel-test --features runtime --test hello --test
+  busybox -- --test-threads 3` (full; the same with `LOOK_AHEAD=bounded` and `LOOK_AHEAD=none` also pass).
+- `LOOK_AHEAD` is `full` (also when unset), `none` or `bounded`; at `bounded` the container's N is drawn from
+  1 to 64 from the run's seed and `LOOK_AHEAD_SEED` (0 if unset) and printed ("look-ahead bounded N"). hello
+  and busybox run with seed 0, so `LOOK_AHEAD_SEED` is the knob that changes N for them.
+- With the feature, each run prints the back end's report on the standard error ("cpu side: ..."): its
+  translations, how many were made at run time, translating and compiling time, cache hits, the run's time,
+  and per range its starts by source. `--nocapture` shows it.
+- The stand-in unchanged: `nix develop -c cargo test -j 4 -p wcontainers-kernel-test --no-fail-fast --
+  --test-threads 3`, its `test ... ok/FAILED/ignored` lines sorted and compared with the merge commit's
+  (scratch j1/baseline/verdicts-before.txt). The seeded runs' check is the scratch test
+  j1/standin-check/zz_standin_check.rs, copied into the crate's tests/ for the run and removed after; it prints
+  hello (seeds 1 and 5), turns (seed 1) and the shell's four jobs (seeds 7, 8, 9): output, warnings,
+  counters, turn counts.
+- J0's measurements (scratch, not in the repository) are in pyro-parked/wcontainers-scratch/runtime:
+  - `base/` is the trial merge's tree (main 36d20013 with 84e9a937) plus three scratch files:
+    `base/crates/wcontainers-translator-test/programs/syscall_loop.S`,
+    `base/crates/wcontainers-translator-test/tests/runtime_measure.rs` (tests a to g) and
+    `base/crates/wcontainers-kernel-test/tests/runtime_measure.rs` (the kernel's own share). Its target
+    directory is deleted; a rerun rebuilds it.
+  - `measure.sh`, `measure2.sh` and `measure3.sh` run them; logs `measure-*.log`, `forksize/sizes.txt`,
+    `retired-gzip.log`; `forkcopy/forkcopy.c` and its log; `check-j0-run2/relr.py` and `relr.log`;
+    `ceiling/reserve.c` and `ceiling/reference-maps.log`. measure2.out's first host memory run exited 101;
+    its logs were overwritten by later runs started by hand (plain-3, plain-4, pooling-1, plain-5, pooling-2,
+    plain-6, then measure-hostmemory.log); `measure-none.log` is measure3.sh's.
 
-## Measurements (2026-11-17, this Mac: Apple M5, 18 cores; wasmtime 50.0.1; release)
+## J1 measurements (2026-11-17, this Mac: Apple M5, 18 cores; wasmtime 50.0.1; the tests' build, opt-level 3 for dependencies and 1 for the workspace)
+
+Load is `sysctl vm.loadavg` at the start and end of each run; other tracks were running. Logs in scratch j1/.
+- hello at full, none and bounded (N 60 from seed 0): passes; one translation of its one page of code from 2
+  starts (entry 1, unwind 1, ELF data words 3 before merging), 1 piece at full and bounded, 18 at none; made in
+  17 to 22 ms translating and 1.2 to 2.3 ms compiling (hello-*.log; load 13.2 to 17.1).
+- busybox, full, one command at a time (busybox-full-record.log and its summary; load 31.9 at the start, 33.2
+  at the end; 178 runs, two per command, the root in memory then on the backend):
+  - first use of each range, translated and compiled while the first command ran: musl's code (0xa2000 bytes)
+    0.169 s translating and 0.787 s compiling to 2219 pieces from 1538 starts; busybox's (0xd2000 bytes) 0.324 s
+    and 1.764 s to 4368 pieces from 559 starts. M5's runner made 1824 and 3520 pieces from the files.
+  - starts by source before merging (`Sources`): musl entry 1, init and fini 2, dynamic symbols 1611, unwind
+    table 22, relocations 45; busybox entry 1, init and fini 2, symbols 7, unwind 4, relocations 607 (RELR read
+    one way, as relocated), init arrays 2.
+  - a second container in the same process (cache hit for every range): run time median 5.6 ms (min 4.6, max
+    247.9, 112 runs that made nothing), from the kernel's start to its finish.
+  - pieces translated at run time per run: median 5, max 51 (0 for the runs where every address already had
+    one).
+  - the CPU side's warnings, by reason, in how many of the 178 runs and their counts per run (min, median,
+    max): progress counted by stop checks 178 (1, 6, 893: runs of `run`, warned once each); loop not proven
+    177 (506, 559, 1647); jump through a register not recognised 177 (13, 39, 1,838,650, the most in `cmp
+    /bin/busybox /bin/sh` on the backend, 1075 ms); continued after stack loss 175 (1, 1, 1777); translated at
+    run time 177 (2, 5, 51); memory fault 177 (2, 5, 10); left to an address 2 (1). First write to a shared
+    page, code changed after it ran and code outside an announced range: none. Per command: the summary file
+    (j1/busybox-full-record-summary.txt), made by j1/scripts/summarise.py from the log.
+- busybox at bounded (N 60) and at none, three tests at a time (busybox-bounded-none-1.log): pass, 37.0 s
+  (bounded; load 19.7) and 55.8 s (none; load 24.9 to 32.6). At none the first two runs, side by side, each
+  made the whole of musl and busybox: 1.05 and 1.07 s translating, 18.7 and 19.5 s compiling.
+- Not measured, and why: what counting every stop check costs against full speed needs a turn that counts
+  nothing, which comes with J3's free turns; making a per-process 4 GiB state memory alone (it is inside the
+  4.6 ms of the fastest cache-hit run).
+
+## J0 measurements (2026-11-17, this Mac: Apple M5, 18 cores; wasmtime 50.0.1; release)
 
 Load is `sysctl vm.loadavg` (1, 5, 15 minutes) at the time; other tracks were running. Plan section 18 has the
 same figures with the log of each.
@@ -116,15 +198,44 @@ array of slots in microseconds.
   listed for the owner).
 - wasmtime's engine uses Unix signals for traps on macOS, not its default Mach ports, so a process copy (the
   tests' saves) can still run WebAssembly (plan section 11).
+- Blocks of shared pages are kept by the copying method on every host, not by host mappings as plan section 8
+  first said: this Mac's pages are 16 KiB (`sysctl hw.pagesize`) and the guest's 4 KiB, and the kernel maps
+  and unmaps blocks a 4 KiB page at a time. Each memory holds a copy; pages that show a block carry the
+  "shared pages" write lock; the guest's first write faults to the back end (counted "first write to a
+  shared page"), and written pages are copied into the block and every other memory before the kernel sees
+  anything. Exact while one guest thread runs at a time (plan section 8).
+- Progress has two meanings in J1, accepted by the orchestrator until the owner rules on the count: the
+  stand-in counts its instructions and the WebAssembly back end counts stop checks passed (named, counted and
+  warned once per run: "progress counted by stop checks"). The translator is not changed for it. No test
+  compares progress between the two back ends or between look-aheads; that waits for the translator's
+  guest-defined count. The loop's count of the kernel's changes of pc moves to J2 with the stand-in's own
+  count, since either alone changes the stand-in's results.
+- At bounded look-ahead N is drawn once per container from the run's seed (and `LOOK_AHEAD_SEED`), not per
+  range from the range's start as plan section 15 first said: the look-ahead is a setting of the container,
+  and drawing it per range would put a test's behaviour in the shipped back end (plan section 15 corrected).
+- The private words of a thread are zeroed at every `FromRegisters`, the contract's state of a new thread, so
+  the back end never names ARM64's words; the plan first said the monitor is cleared at every exit and float
+  tracking set to "tracked" (plan sections 4 and 9 corrected).
+- A dropped thread's block is reused by the process's next thread, but its instances are not; they stay in
+  the process's store until it is dropped. J1's programs start no threads; reusing instances comes with J4's
+  threads.
+- `Outside` has six methods, not five: `cpu_warning` carries the back end's slow paths apart from the
+  kernel's `Host::warn` (plan section 5 corrected). `Execution` has `restored()` (finding of J0's check 4).
+- `restored()` of the WebAssembly back end panics naming J2: it is the fork copy's body, built there.
+- J1's step 1 was checked by the seeded runs before the commit was made and by the whole-suite diff after it,
+  before the push of the milestone (the whole suite takes about 20 minutes at this load).
+
 
 ## Dependencies
 
-None added yet. Proposed, licences read from their manifests on 2026-11-17: wasmtime 50.0.1 (Apache-2.0 WITH
-LLVM-exception, already used by the translator tests); rustix 1.1 (Apache-2.0 WITH LLVM-exception OR
-Apache-2.0 OR MIT) for mappings and shared memory objects; mach2 0.6.0 (BSD-2-Clause OR MIT OR Apache-2.0,
-already in the lock file through wasmtime) for `mach_vm_copy` on macOS; blake3 1.8 (CC0-1.0 OR Apache-2.0 OR
-Apache-2.0 WITH LLVM-exception, already a dependency of the shipped translator crate); gimli 0.34 (MIT OR
-Apache-2.0, already used by the translator test crate) for unwind tables; rayon 1.12 (MIT OR Apache-2.0,
-already a dependency of the shipped translator crate) for the back end's own pool; object 0.41 (Apache-2.0
-OR MIT, the kernel's version, so one build holds one); tar 0.4.46 (MIT OR Apache-2.0, already used by the
-kernel test crate) for J3. Linux's `pagemap` is read with the standard library.
+Added in J1, licences read from each crate's manifest in the registry on 2026-11-17:
+- wcontainers-runtime: none beyond the workspace's own crates.
+- wcontainers-wasmtime: wasmtime 50.0.1 (Apache-2.0 WITH LLVM-exception); wasm-encoder 0.263.0 (Apache-2.0
+  WITH LLVM-exception OR Apache-2.0 OR MIT) for the hook types the guest interface names; rustix 1.1.6
+  (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT) for mappings and the host page size; blake3 1.8.7
+  (CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception) for the cache key; object 0.41.0 (Apache-2.0 OR
+  MIT) for ELF layouts; gimli 0.34.0 (MIT OR Apache-2.0) for the unwind table index; rayon 1.12.0 (MIT OR
+  Apache-2.0) for the back end's pool; zerocopy (the workspace's).
+- wcontainers-kernel-test: wcontainers-runtime, and, behind the `runtime` feature, wcontainers-wasmtime and
+  wcontainers-arm64. The crate stays GPL-2.0-only and unshipped; nothing shipped depends on it.
+- Not added yet: mach2 (the macOS fork copy, J2), tar (J3), oci-spec (J3).

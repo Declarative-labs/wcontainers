@@ -1080,11 +1080,14 @@ under pyro-parked/wcontainers-scratch/runtime (outside the repository); the log 
   process to a higher ceiling (with the move).
 - What emitting the guest-defined progress count costs (the translator track; the map measured +1.2 to
   15.5% instructions retired for a cruder counter at today's check sites).
-- How many pieces real programs need translated at run time with this plan's starts (J1, J6).
+- How many pieces real programs need translated at run time with this plan's starts: busybox's single
+  programs measured at J1 (median 5 a run, at most 51; status file); the runtimes at J6.
 - What a stack loss costs real programs after a call that waits (J6).
 - A JIT's store growth (J6).
-- What counting every stop check costs the tests (J1).
-- Creating a per-process 4 GiB state memory (J1).
+- What counting every stop check costs the tests: needs a turn that counts nothing, which comes with J3's
+  free turns.
+- Creating a per-process 4 GiB state memory on its own (J1 measured only whole runs that include it: 4.6 ms
+  the fastest).
 - The final form's extra cost per system call (J9).
 
 ## 20. Decisions for the owner
