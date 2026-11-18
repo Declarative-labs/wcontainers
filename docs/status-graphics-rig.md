@@ -1250,6 +1250,9 @@ ours; Mac load average 45 to 70):
   (bgfx-24-nbody run but not compared; 1 min 42 s); `wine-tests run --warp` 801 counted, 0 FAIL,
   dxgi test_swapchain_backbuffer_index run on WARP (2 min 41 s); `wine-tests run` 800 counted, 0
   FAIL, that test "excluded" on the GPU (8 min 38 s); `queue-check` all six rules pass.
+- Check from a fresh clone of the pushed branch at ac2cde1 (scratch r2c, clone deleted after,
+  logs kept): `scenes blend draws` 12 passed; `programs run d3d12-hello-triangle
+  bgfx-38-bloom-d3d12` both pass (the sample's census matching its .expected file).
 
 ## Loading a replacement Direct3D library
 
