@@ -1,8 +1,10 @@
 //! The stage helper's tessellator on the WebGPU back end against real Direct3D 11's on the same GPU:
 //! patches of seeded factors for every domain, partitioning and output topology, Direct3D's domain
 //! shader output streamed (where each point lies and which patch made it), against our tessellator's
-//! points and indices read back, word for word and in order. `WCONTAINERS_TESSELLATION_SEED` (default
-//! 1) and `WCONTAINERS_TESSELLATION_CASES` seeds from it (default 4); every topology runs per seed.
+//! points and indices read back, word for word and in order; and the same streamed through the whole
+//! stage helper (the domain stage as compute, with and without a geometry shader after it).
+//! `WCONTAINERS_TESSELLATION_SEED` (default 1) and `WCONTAINERS_TESSELLATION_CASES` seeds from it
+//! (default 4); every topology runs per seed.
 
 #![cfg(windows)]
 
@@ -55,12 +57,14 @@ fn factors(rng: &mut fastrand::Rng) -> Vec<[f32; 8]> {
         .collect()
 }
 
-/// Real Direct3D 11's streamed domain shader output for one draw of the patches, and how many
-/// primitives it wrote.
+/// Real Direct3D 11's streamed domain shader output (or the output of geometry shader `gs` after it)
+/// for one draw of the patches, of `points` control points each, and how many primitives it wrote.
 fn direct3d(
     gpu: &Gpu,
     hs: &str,
     ds: &str,
+    gs: Option<&str>,
+    points: u32,
     bound: usize,
     factors: &[[f32; 8]],
 ) -> (Vec<Vertex>, u64) {
@@ -68,6 +72,10 @@ fn direct3d(
     let hull = gpu.hs(&bytecode(&format!("{hs}.dxbc"))).unwrap();
     let domain_code = bytecode(&format!("{ds}.dxbc"));
     let domain = gpu.ds(&domain_code).unwrap();
+    let streamed_code = match gs {
+        Some(gs) => bytecode(&format!("{gs}.dxbc")),
+        None => domain_code.clone(),
+    };
     let entries = [
         D3D11_SO_DECLARATION_ENTRY {
             Stream: 0,
@@ -88,7 +96,7 @@ fn direct3d(
     ];
     let streamed: ID3D11GeometryShader = d3d11::made(|o| unsafe {
         gpu.device.CreateGeometryShaderWithStreamOutput(
-            &domain_code,
+            &streamed_code,
             Some(&entries),
             Some(&[16]),
             D3D11_SO_NO_RASTERIZED_STREAM,
@@ -132,7 +140,9 @@ fn direct3d(
     unsafe {
         let c = &gpu.context;
         c.IASetInputLayout(None);
-        c.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_1_CONTROL_POINT_PATCHLIST);
+        c.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY(
+            D3D_PRIMITIVE_TOPOLOGY_1_CONTROL_POINT_PATCHLIST.0 + points as i32 - 1,
+        ));
         c.VSSetShader(&vs, None);
         c.HSSetShader(&hull, None);
         c.HSSetConstantBuffers(0, Some(&[Some(constants)]));
@@ -142,7 +152,7 @@ fn direct3d(
         let targets = [Some(target.clone())];
         c.SOSetTargets(1, Some(targets.as_ptr()), Some([0u32].as_ptr()));
         c.Begin(&query);
-        c.Draw(factors.len() as u32, 0);
+        c.Draw(factors.len() as u32 * points, 0);
         c.End(&query);
         loop {
             let hr = (windows::core::Interface::vtable(c).GetData)(
@@ -224,7 +234,18 @@ fn ours<B: Backend>(
             .collect()
     };
     let counts = read(b, tessellator.counts().unwrap(), 8);
-    let indices = read(b, tessellator.indices().unwrap(), counts[0] as usize);
+    let header = tess::INDEX_HEADER as usize;
+    let indices = read(
+        b,
+        tessellator.indices().unwrap(),
+        header + counts[0] as usize,
+    );
+    assert_eq!(indices[0], counts[0], "the index header holds the total");
+    assert_eq!(
+        counts[2] as usize, header,
+        "the draw starts past the header"
+    );
+    let indices = &indices[header..];
     let points = read(b, tessellator.points().unwrap(), counts[5] as usize * 4);
     assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
     indices
@@ -370,7 +391,7 @@ fn tessellator_matches_direct3d() {
                 _ => 3,
             };
             let bound = PATCHES * tess::patch_bounds(t.max_factor).1 as usize;
-            let (reference, written) = direct3d(&gpu, hs, ds, bound, &factors);
+            let (reference, written) = direct3d(&gpu, hs, ds, None, 1, bound, &factors);
             let reference = &reference[..written as usize * per];
             let streamed = ours(&mut backend, &mut tessellator, t, &factors);
             compared += 1;
@@ -910,4 +931,247 @@ fn rig_tessellation_scene_draws_as_direct3d_11_does() {
     }
     // The last patch is drawn solid.
     assert_eq!(cells[6][0], 0);
+}
+
+/// The same patches streamed through the whole stage helper: the vertex and hull stages, the
+/// tessellator, the domain stage as compute and geometry shader `gs` if given, then stream output of
+/// the location and the patch's number; the vertices written and the primitives the helper counted.
+fn ours_staged<B: Backend>(
+    b: &mut B,
+    hs: &str,
+    ds: &str,
+    gs: Option<&str>,
+    points: u32,
+    bound: usize,
+    factors: &[[f32; 8]],
+) -> (Vec<Vertex>, [u32; 2]) {
+    use wcontainers_gpu::*;
+    use wcontainers_shaders::stage::{
+        DomainSets, InputTopology, StageDraw, Stages, StreamOutput, StreamOutputEntry,
+        StreamTargets,
+    };
+    use wcontainers_shaders::{Source, convert};
+    let plain = VariantKey::default();
+    let read = |name: &str| bytecode(&format!("{name}.dxbc"));
+    let vs = convert(Source::Dxbc(&read("vs_patch")), &plain, None).unwrap();
+    let hull = convert(Source::Dxbc(&read(hs)), &plain, None).unwrap();
+    let domain = convert(Source::Dxbc(&read(ds)), &plain, None).unwrap();
+    let geometry = gs.map(|gs| convert(Source::Dxbc(&read(gs)), &plain, None).unwrap());
+    let entry = |semantic: &str, count| StreamOutputEntry {
+        stream: 0,
+        semantic: Some(semantic.into()),
+        semantic_index: 0,
+        start_component: 0,
+        component_count: count,
+        slot: 0,
+    };
+    let so = StreamOutput {
+        entries: vec![entry("DOMAIN", 3), entry("PRIMITIVE", 1)],
+        strides: [16, 0, 0, 0],
+    };
+    let mut stages =
+        Stages::tessellated_with(b, &vs, &hull, &domain, geometry.as_ref(), Some(&so)).unwrap();
+    for (name, c) in [("vertex", &vs), ("domain", &domain)] {
+        assert!(
+            c.reflection.bindings.is_empty(),
+            "{name}: {:?}",
+            c.reflection.bindings
+        );
+        assert!(
+            c.reflection.helpers.is_empty(),
+            "{name}: {:?}",
+            c.reflection.helpers
+        );
+    }
+    let mut constants = vec![0u8; 1024];
+    for (p, f) in factors.iter().enumerate() {
+        for (i, v) in f.iter().enumerate() {
+            constants[p * 32 + i * 4..][..4].copy_from_slice(&v.to_le_bytes());
+        }
+    }
+    let constant_buffer = buffer(b, &constants, BufferUsage::UNIFORM);
+    let hull_entries: Vec<_> = hull
+        .reflection
+        .bindings
+        .iter()
+        .map(|r| {
+            assert_eq!((r.kind, r.register), (SlotKind::Uniform, 0), "{r:?}");
+            (
+                r.set,
+                BindingEntry {
+                    binding: r.binding,
+                    stages: StageSet::COMPUTE,
+                    resource: BindingResource::UniformBuffer(BufferRange {
+                        buffer: &constant_buffer,
+                        offset: 0,
+                        size: constants.len() as u64,
+                    }),
+                },
+            )
+        })
+        .collect();
+    let hull_sets = sets(b, hull_entries);
+    let target_bytes = (bound * 16) as u64;
+    let target = b
+        .create_buffer(&BufferDesc {
+            size: target_bytes,
+            usage: BufferUsage::STORAGE | BufferUsage::COPY_SRC,
+            intent: MapIntent::Rarely,
+        })
+        .unwrap();
+    let filled = buffer(b, &[0u8; 32], BufferUsage::STORAGE | BufferUsage::COPY_SRC);
+    let n = factors.len() as u32;
+    let none = [None; 4];
+    stages
+        .run_after_domain(
+            b,
+            &StageDraw {
+                vertex_sets: none,
+                geometry_sets: hull_sets.each_ref().map(Option::as_ref),
+                index: None,
+                topology: InputTopology::PatchList(points as u8),
+                range: DrawRange::Vertices {
+                    first: 0,
+                    count: n * points,
+                    first_instance: 0,
+                    instances: 1,
+                },
+                stream_output: Some(StreamTargets {
+                    buffers: [
+                        Some(BufferRange {
+                            buffer: &target,
+                            offset: 0,
+                            size: target_bytes,
+                        }),
+                        None,
+                        None,
+                        None,
+                    ],
+                    filled: BufferRange {
+                        buffer: &filled,
+                        offset: 0,
+                        size: 32,
+                    },
+                }),
+            },
+            &DomainSets {
+                domain_sets: none,
+                geometry_sets: none,
+            },
+        )
+        .unwrap();
+    let read_words = |b: &mut B, buffer: &B::Buffer, bytes: u64| -> Vec<u32> {
+        let mut out = vec![0u8; bytes as usize];
+        b.read_back_now(
+            &ReadSource::Buffer {
+                buffer,
+                offset: 0,
+                size: bytes,
+            },
+            &mut out,
+        )
+        .unwrap();
+        out.chunks(4)
+            .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+            .collect()
+    };
+    let counts = read_words(b, &filled, 32);
+    let bytes = u64::from(counts[0]);
+    let words = if bytes == 0 {
+        Vec::new()
+    } else {
+        read_words(b, &target, bytes)
+    };
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    for path in [
+        SlowPath::TessellationAsCompute,
+        SlowPath::StreamOutAsCompute,
+    ] {
+        assert!(b.slow_paths().count(path) > 0, "{path:?} is counted");
+    }
+    stages.destroy(b);
+    let vertices = words.chunks(4).map(|v| [v[0], v[1], v[2], v[3]]).collect();
+    (vertices, [counts[4], counts[5]])
+}
+
+/// Stream output after the domain stage, directly and through a geometry shader, through the whole
+/// stage helper on the WebGPU back end, against real Direct3D 11 streaming the same draw: each
+/// patch's primitives equal (as [`compare`] has it), and the primitives written and made as Direct3D
+/// counts them. One case draws patches of three control points to a hull shader that reads one.
+#[test]
+fn stream_output_after_the_domain_stage_matches_direct3d() {
+    let mut backend = webgpu();
+    let gpu = d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let seed: u64 = std::env::var("WCONTAINERS_TESSELLATION_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_TESSELLATION_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(4);
+    let mut cases = Vec::new();
+    for (name, partitionings, outputs) in [
+        ("tri", &["integer", "odd"][..], &["point", "cw", "ccw"][..]),
+        ("quad", &["pow2", "even"], &["point", "cw"]),
+        ("line", &["integer", "odd", "even"], &["point", "line"]),
+    ] {
+        for mode in partitionings {
+            for out in outputs {
+                let (per, gs) = match *out {
+                    "point" => (1, "gs_tess_point"),
+                    "line" => (2, "gs_tess_line"),
+                    _ => (3, "gs_tess_tri"),
+                };
+                for gs in [None, Some(gs)] {
+                    cases.push((
+                        format!("hs_{name}_{mode}_{out}"),
+                        format!("ds_{name}"),
+                        gs,
+                        per,
+                        1,
+                    ));
+                }
+            }
+        }
+    }
+    cases.push(("hs_tri_odd_cw".into(), "ds_tri".into(), None, 3, 3));
+    let mut failures = Vec::new();
+    let mut compared = 0;
+    for seed in seed..seed + seeds {
+        for (i, (hs, ds, gs, per, points)) in cases.iter().enumerate() {
+            let mut rng = fastrand::Rng::with_seed(seed * 1000 + i as u64);
+            let factors = factors(&mut rng);
+            // A geometry shader makes at most twice the primitives.
+            let bound = 2 * PATCHES * tess::patch_bounds(64.0).1 as usize;
+            let (reference, written) = direct3d(&gpu, hs, ds, *gs, *points, bound, &factors);
+            let reference = &reference[..written as usize * per];
+            let (streamed, counted) =
+                ours_staged(&mut backend, hs, ds, *gs, *points, bound, &factors);
+            compared += 1;
+            let name = format!(
+                "seed {seed} {hs} {} {points} points",
+                gs.unwrap_or("streamed")
+            );
+            let counts = if counted == [written as u32; 2] {
+                Ok(())
+            } else {
+                Err(format!(
+                    "primitives written and made {counted:?}, direct3d {written}"
+                ))
+            };
+            match counts.and_then(|_| compare(reference, &streamed, *per)) {
+                Ok(note) => eprintln!("{name}: {} vertices; {note}", reference.len()),
+                Err(why) => {
+                    eprintln!("{name}: {why}; factors {factors:?}");
+                    failures.push(name);
+                }
+            }
+        }
+    }
+    eprintln!("{compared} comparisons, {} failed", failures.len());
+    assert!(failures.is_empty(), "{failures:#?}");
 }

@@ -1060,6 +1060,7 @@ impl<'a> Lowering<'a> {
                 | builtin::GS_VERTEX_COUNT_IN,
             ) => true,
             (SourceStage::Vertex | SourceStage::Domain, false, builtin::CLIP_DISTANCE) => true,
+            (SourceStage::Geometry, false, builtin::LAYER_INDEX | builtin::VIEWPORT_INDEX) => true,
             (SourceStage::Vertex, true, builtin::VERTEX_ID | builtin::INSTANCE_ID) => true,
             (_, true, builtin::SAMPLE_COUNT) => self.variant.samples != 0,
             (SourceStage::Pixel, true, builtin::POSITION | builtin::IS_FRONT_FACE)

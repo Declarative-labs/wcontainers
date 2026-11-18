@@ -1006,3 +1006,318 @@ fn geometry_shaders_draw_as_direct3d_does() {
     eprintln!("{compared} comparisons, {} failed", failures.len());
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+/// A geometry shader writing its layer and viewport (`gs_layers`: the full-screen triangle into each
+/// of four layers, layer n through viewport n % 2, with `ps_layer` reading both): real Direct3D 11
+/// draws it once; ours runs the stages once and draws the final draw once per layer and viewport, as
+/// a front splitting it does (`Stages::selects`), each run with its layer and viewport in the
+/// pass-through's and the pixel program's helper constants. Every texel of every layer equal.
+#[test]
+fn layered_geometry_draws_as_direct3d_11_does() {
+    use wcontainers_gpu::{
+        DeviceStatus, LoadOp, TextureDesc, TextureDimension, TextureViewDesc, ViewDimension,
+    };
+    const LAYERS: u32 = 4;
+    let viewports = [
+        [0.0f32, 0.0, SIZE as f32, SIZE as f32],
+        [8.0, 4.0, 40.0, 48.0],
+    ];
+    let (vs_code, ps_code, gs_code) = (
+        bytecode("vs_fullscreen.dxbc"),
+        bytecode("ps_layer.dxbc"),
+        bytecode("gs_layers.dxbc"),
+    );
+    let gpu = d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    gpu.program(&vs_code, &ps_code, &[]).unwrap();
+    let geometry = gpu.gs(&gs_code).unwrap();
+    let mut desc = d3d11::tex2d(
+        SIZE,
+        SIZE,
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+        D3D11_BIND_RENDER_TARGET,
+    );
+    desc.ArraySize = LAYERS;
+    let target = gpu.texture2d(&desc, &[]).unwrap();
+    let rtv = gpu
+        .rtv(&windows::core::Interface::cast(&target).unwrap(), None)
+        .unwrap();
+    let rects: Vec<D3D11_VIEWPORT> = viewports
+        .iter()
+        .map(|v| D3D11_VIEWPORT {
+            TopLeftX: v[0],
+            TopLeftY: v[1],
+            Width: v[2],
+            Height: v[3],
+            MinDepth: 0.0,
+            MaxDepth: 1.0,
+        })
+        .collect();
+    unsafe {
+        let c = &gpu.context;
+        c.GSSetShader(&geometry, None);
+        c.ClearRenderTargetView(&rtv, &CLEAR);
+        c.OMSetRenderTargets(Some(&[Some(rtv.clone())]), None);
+        c.RSSetViewports(Some(&rects));
+        c.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        c.Draw(3, 0);
+        c.GSSetShader(None, None);
+    }
+
+    let mut b = webgpu();
+    let plain = VariantKey::default();
+    let ps = convert(Source::Dxbc(&ps_code), &plain, None).unwrap();
+    let gs = convert(Source::Dxbc(&gs_code), &plain, None).unwrap();
+    let vs = convert(Source::Dxbc(&vs_code), &plain, None).unwrap();
+    for c in [&vs, &gs] {
+        assert!(
+            c.reflection.bindings.is_empty(),
+            "{:?}",
+            c.reflection.bindings
+        );
+        assert!(
+            c.reflection.helpers.is_empty(),
+            "{:?}",
+            c.reflection.helpers
+        );
+    }
+    let mut stages = Stages::new(&mut b, &vs, Some(&gs), None).unwrap();
+    assert!(stages.selects());
+    let last = stages
+        .run(
+            &mut b,
+            &StageDraw {
+                vertex_sets: [None; 4],
+                geometry_sets: [None; 4],
+                index: None,
+                topology: InputTopology::TriangleList,
+                range: DrawRange::Vertices {
+                    first: 0,
+                    count: 3,
+                    first_instance: 0,
+                    instances: 1,
+                },
+                stream_output: None,
+            },
+        )
+        .unwrap()
+        .expect("primitives");
+    let vertex = b.create_shader(stages.passthrough().unwrap()).unwrap();
+    let fragment = b.create_shader(&ps.modules[0]).unwrap();
+    let program = b
+        .create_program(&Program::Render {
+            vertex: &vertex,
+            fragment: Some(&fragment),
+        })
+        .unwrap();
+    let vertex_layout = b
+        .create_vertex_layout(&stages.vertex_layout().unwrap())
+        .unwrap();
+    let blend = b
+        .create_blend(&BlendDesc {
+            targets: [RenderTargetBlend {
+                blend: None,
+                writes: ColorWrites::all(),
+            }; 8],
+            same_for_all: true,
+            alpha_to_coverage: false,
+            logic_op: None,
+        })
+        .unwrap();
+    let depth_stencil = b
+        .create_depth_stencil(&DepthStencilDesc {
+            depth_compare: None,
+            depth_write: false,
+            stencil: None,
+            stencil_read_mask: [0xff; 2],
+            stencil_write_mask: [0xff; 2],
+            depth_bounds: None,
+        })
+        .unwrap();
+    let raster = b
+        .create_raster(&RasterDesc {
+            fill: FillMode::Solid,
+            cull: CullMode::None,
+            front: FrontFace::Clockwise,
+            depth_bias: 0,
+            depth_bias_slope: 0,
+            depth_bias_clamp: 0,
+            depth_clip: true,
+            scissor: false,
+            line_width: 1.0f32.to_bits(),
+            provoking: ProvokingVertex::First,
+            depth_minus_one: false,
+            sample_mask: !0,
+        })
+        .unwrap();
+    let texture = b
+        .create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format: Format::Rgba8Unorm,
+            width: SIZE,
+            height: SIZE,
+            depth_or_layers: LAYERS,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER | TextureUsage::COPY_SRC,
+            cube: false,
+            reinterpret: false,
+        })
+        .unwrap();
+    for layer in 0..LAYERS {
+        let view = b
+            .create_view(
+                &texture,
+                &TextureViewDesc {
+                    format: Format::Rgba8Unorm,
+                    dimension: ViewDimension::D2,
+                    base_mip: 0,
+                    mip_count: 1,
+                    base_layer: layer,
+                    layer_count: 1,
+                    stencil: false,
+                },
+            )
+            .unwrap();
+        for (viewport, v) in viewports.iter().enumerate() {
+            // The run's layer and viewport: the pass-through's helper constants, then the pixel
+            // program's.
+            let mut run = [0u8; 16];
+            run[..4].copy_from_slice(&layer.to_le_bytes());
+            run[4..8].copy_from_slice(&(viewport as u32).to_le_bytes());
+            let mut pixel = vec![0u8; ps.reflection.helper_size.max(16) as usize];
+            for h in &ps.reflection.helpers {
+                let value = match h.value {
+                    HelperValue::Layer => layer,
+                    HelperValue::Viewport => viewport as u32,
+                    _ => panic!("{h:?}"),
+                };
+                pixel[h.offset as usize..][..4].copy_from_slice(&value.to_le_bytes());
+            }
+            let run_buffer = buffer(&mut b, &run, BufferUsage::UNIFORM);
+            let pixel_buffer = buffer(&mut b, &pixel, BufferUsage::UNIFORM);
+            let set = b
+                .create_binding_set(&[
+                    BindingEntry {
+                        binding: helper_binding(ShaderStage::Vertex),
+                        stages: StageSet::VERTEX,
+                        resource: BindingResource::UniformBuffer(BufferRange {
+                            buffer: &run_buffer,
+                            offset: 0,
+                            size: 16,
+                        }),
+                    },
+                    BindingEntry {
+                        binding: helper_binding(ShaderStage::Fragment),
+                        stages: StageSet::FRAGMENT,
+                        resource: BindingResource::UniformBuffer(BufferRange {
+                            buffer: &pixel_buffer,
+                            offset: 0,
+                            size: pixel.len() as u64,
+                        }),
+                    },
+                ])
+                .unwrap();
+            let mut pass = PassDesc {
+                colors: Default::default(),
+                depth: None,
+                empty: None,
+                occlusion: None,
+            };
+            pass.colors[0] = Some(ColorAttachment {
+                view: &view,
+                depth_slice: 0,
+                resolve: None,
+                load: match viewport {
+                    0 => LoadOp::Clear(CLEAR.map(f32::to_bits)),
+                    _ => LoadOp::Load,
+                },
+                store: StoreOp::Store,
+            });
+            b.begin_pass(&pass);
+            b.draw(&DrawCall {
+                program: &program,
+                blend: &blend,
+                depth_stencil: &depth_stencil,
+                raster: &raster,
+                vertex_layout: &vertex_layout,
+                bindings: [None, None, None, Some(&set)],
+                vertex_buffers: &[Some(VertexBinding {
+                    buffer: &last.buffer,
+                    offset: 0,
+                })],
+                index: last.index_offset.map(|offset| IndexBinding {
+                    buffer: &last.buffer,
+                    offset,
+                    format: IndexFormat::U32,
+                }),
+                topology: last.topology,
+                restart: true,
+                viewports: &[Viewport {
+                    x: v[0].to_bits(),
+                    y: v[1].to_bits(),
+                    width: v[2].to_bits(),
+                    height: v[3].to_bits(),
+                    min_depth: 0.0f32.to_bits(),
+                    max_depth: 1.0f32.to_bits(),
+                }],
+                scissors: &[],
+                blend_constant: [0; 4],
+                stencil_reference: [0; 2],
+                immediates: &[],
+                range: DrawRange::Indexed {
+                    first: 0,
+                    count: last.count,
+                    base_vertex: 0,
+                    first_instance: 0,
+                    instances: 1,
+                },
+            });
+            b.end_pass();
+        }
+    }
+    let mut failed = Vec::new();
+    for layer in 0..LAYERS {
+        let reference = gpu.read(&target, 0, layer).unwrap().to_rgba8().into_raw();
+        let mut made = vec![0; (SIZE * SIZE * 4) as usize];
+        b.read_back_now(
+            &ReadSource::Texture {
+                region: TextureRegion {
+                    texture: &texture,
+                    mip: 0,
+                    layer,
+                    origin: Origin::default(),
+                    stencil: false,
+                },
+                extent: Extent {
+                    width: SIZE,
+                    height: SIZE,
+                    depth_or_layers: 1,
+                },
+            },
+            &mut made,
+        )
+        .unwrap();
+        keep(
+            &format!("layered-{layer}-direct3d"),
+            &reference,
+            Format::Rgba8Unorm,
+        );
+        keep(&format!("layered-{layer}-ours"), &made, Format::Rgba8Unorm);
+        let apart = reference.iter().zip(&made).filter(|(a, b)| a != b).count();
+        let drawn = reference
+            .chunks(4)
+            .filter(|t| *t != &reference[..4])
+            .count();
+        eprintln!("layer {layer}: {drawn} texels drawn by direct3d, {apart} bytes apart");
+        if apart > 0 {
+            failed.push(layer);
+        }
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    assert!(failed.is_empty(), "layers {failed:?} differ");
+}

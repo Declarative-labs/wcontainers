@@ -29,13 +29,15 @@ struct Values {
 @group(1) @binding(2) var<storage, read_write> counts: array<u32>;
 // Each point: u and v (f32 bits), the patch's number in the draw and its primitive number.
 @group(1) @binding(3) var<storage, read_write> points: array<vec4<u32>>;
-// The draw's indices: point numbers in the draw.
+// The draw's index total in its first word, then from word INDEX_HEADER the indices: point numbers in
+// the draw.
 @group(1) @binding(4) var<storage, read_write> indices: array<u32>;
 
 const HEADER_PATCH_WORDS: u32 = 0u;
 const HEADER_FACTOR_BASE: u32 = 3u;
 const HEADER_WORDS: u32 = 72u;
 const COUNTS_BASE: u32 = 8u;
+const INDEX_HEADER: u32 = 4u;
 
 const FXP_FRACTION_BITS: u32 = 16u;
 const FXP_FRACTION_MASK: u32 = 0x0000ffffu;
@@ -997,7 +999,7 @@ fn scan(l: u32) {
     workgroupBarrier();
     if l == 0u {
         var p_at = 0u;
-        var i_at = 0u;
+        var i_at = INDEX_HEADER;
         for (var r = 0u; r < 64u; r++) {
             let np = sum_points[r];
             let ni = sum_indices[r];
@@ -1006,12 +1008,13 @@ fn scan(l: u32) {
             p_at += np;
             i_at += ni;
         }
-        counts[0] = i_at;
+        counts[0] = i_at - INDEX_HEADER;
         counts[1] = 1u;
-        counts[2] = 0u;
+        counts[2] = INDEX_HEADER;
         counts[3] = 0u;
         counts[4] = 0u;
         counts[5] = p_at;
+        indices[0] = i_at - INDEX_HEADER;
     }
     workgroupBarrier();
     var p_at = sum_points[l];

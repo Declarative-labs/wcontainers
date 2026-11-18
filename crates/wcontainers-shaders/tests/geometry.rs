@@ -120,6 +120,52 @@ fn geometry_refusals_are_named() {
     );
 }
 
+/// A geometry shader writing its layer and viewport (`gs_layers`): both are in its reflection, its
+/// records end with their slot, and the pass-through reads that slot and the run's helper constants.
+#[test]
+fn layered_geometry_shaders_name_each_vertex_run() {
+    let gs = convert(
+        Source::Dxbc(&own("gs_layers.dxbc")),
+        &VariantKey::default(),
+        None,
+    )
+    .unwrap();
+    let systems: Vec<_> = gs
+        .reflection
+        .outputs
+        .iter()
+        .filter_map(|v| v.system)
+        .collect();
+    assert!(
+        systems.contains(&SystemValue::RenderTargetArrayIndex),
+        "{systems:?}"
+    );
+    assert!(
+        systems.contains(&SystemValue::ViewportArrayIndex),
+        "{systems:?}"
+    );
+    assert!(stage::selects(&gs.reflection));
+    let passthrough = wgsl(&gs.modules[1]);
+    assert!(
+        passthrough.contains("@location(1) selection: vec4<u32>"),
+        "{passthrough}"
+    );
+    assert!(
+        passthrough.contains("@group(3) @binding(0)"),
+        "{passthrough}"
+    );
+    // Its compute form writes the slot after the position: two slots of four words per vertex.
+    let compute = wgsl(&gs.modules[0]);
+    assert!(compute.contains("stage_list"), "{compute}");
+    let plain = convert(
+        Source::Dxbc(&own("gs_quads.dxbc")),
+        &VariantKey::default(),
+        None,
+    )
+    .unwrap();
+    assert!(!stage::selects(&plain.reflection));
+}
+
 #[test]
 fn the_stream_output_program_validates() {
     let m = stage::stream_program().unwrap();

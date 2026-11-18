@@ -98,6 +98,9 @@ for %%m in (integer pow2 odd even) do for %%o in (point line) do (
 for %%e in (ds_tri ds_quad ds_line) do (
   "%FXC%" /nologo /T ds_5_0 /E %%e /Fo %%e.dxbc tessellation.hlsl || exit /b 1
 )
+for %%e in (gs_tess_point gs_tess_line gs_tess_tri) do (
+  "%FXC%" /nologo /T gs_5_0 /E %%e /Fo %%e.dxbc tessellation.hlsl || exit /b 1
+)
 "%FXC%" /nologo /T gs_5_0 /E gs_layers /Fo gs_layers.dxbc layers.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_layer /Fo ps_layer.dxbc layers.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_layer -Gis -Fo ps_layer.dxil layers.hlsl || exit /b 1

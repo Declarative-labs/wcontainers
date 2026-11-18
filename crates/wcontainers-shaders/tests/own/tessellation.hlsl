@@ -124,3 +124,43 @@ Streamed ds_line(LineFactors f, float2 uv : SV_DomainLocation, uint p : SV_Primi
     s.primitive = p;
     return s;
 }
+
+// Geometry shaders after the domain stage, one per tessellator output: each passes its primitive on
+// in reverse order with the location's components turned, then (lines and triangles) a second
+// primitive of its edges' midpoints; the patch's number is kept.
+Streamed turned(Streamed s) {
+    s.location = s.location.yzx;
+    return s;
+}
+
+Streamed midpoint(Streamed a, Streamed b) {
+    Streamed s = a;
+    s.position = (a.position + b.position) * 0.5;
+    s.location = (a.location + b.location) * 0.5;
+    return s;
+}
+
+[maxvertexcount(1)]
+void gs_tess_point(point Streamed p[1], inout PointStream<Streamed> stream) {
+    stream.Append(turned(p[0]));
+}
+
+[maxvertexcount(4)]
+void gs_tess_line(line Streamed p[2], inout LineStream<Streamed> stream) {
+    stream.Append(turned(p[1]));
+    stream.Append(turned(p[0]));
+    stream.RestartStrip();
+    stream.Append(midpoint(p[0], p[1]));
+    stream.Append(p[1]);
+}
+
+[maxvertexcount(6)]
+void gs_tess_tri(triangle Streamed p[3], inout TriangleStream<Streamed> stream) {
+    stream.Append(turned(p[2]));
+    stream.Append(turned(p[1]));
+    stream.Append(turned(p[0]));
+    stream.RestartStrip();
+    stream.Append(midpoint(p[0], p[1]));
+    stream.Append(midpoint(p[1], p[2]));
+    stream.Append(midpoint(p[2], p[0]));
+}
