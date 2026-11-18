@@ -11,6 +11,9 @@ pub const R32_UINT: u32 = 42;
 /// `DXGI_FORMAT_NV12`: a plane of 8-bit luma, then a plane of interleaved chroma pairs at half
 /// the width and height, held as two textures (`Texture::chroma`).
 pub const NV12: u32 = 103;
+/// `DXGI_FORMAT_YUY2`: a pair of pixels in four bytes (Y0 U Y1 V), held as an `rgba8unorm`
+/// texture of half the width, viewed through `R8G8B8A8_UNORM` and `_UINT`.
+pub const YUY2: u32 = 107;
 /// `DXGI_FORMAT_R8G8_TYPELESS`, the group NV12's chroma plane is viewed through.
 pub const R8G8_TYPELESS: u32 = 48;
 /// `DXGI_FORMAT_R8_TYPELESS`, the group NV12's luma plane is viewed through.
@@ -87,6 +90,7 @@ pub fn storage_format(dxgi: u32, depth_bound: bool) -> Result<Format> {
         (97, _) => Bc7RgbaUnorm,
         // The luma plane; the chroma plane is a texture of its own.
         (NV12, _) => R8Unorm,
+        (YUY2, _) => Rgba8Unorm,
         _ => return texture_format_of(dxgi),
     };
     Ok(typeless)
@@ -102,6 +106,15 @@ pub fn view_format(view: u32, texture: u32, storage: Format) -> Result<(Format, 
     use Format::*;
     if is_typeless(view) {
         return Err(Error::InvalidArg("a typeless view format"));
+    }
+    if texture == YUY2 {
+        return match view {
+            28 => Ok((Rgba8Unorm, false)),
+            30 => Ok((Rgba8Uint, false)),
+            _ => Err(Error::InvalidArg(
+                "a view of a YUY2 texture is R8G8B8A8_UNORM or _UINT",
+            )),
+        };
     }
     if view != texture && typeless_group(view) != texture {
         return Err(Error::InvalidArg(
