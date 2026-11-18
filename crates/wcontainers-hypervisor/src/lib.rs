@@ -70,27 +70,20 @@ pub enum Register {
     Affinity,
     /// ID_AA64MMFR0_EL1.
     MemoryModelFeatures,
-    /// ID_AA64DFR0_EL1.
-    DebugFeatures,
-    /// HCR_EL2, in a machine with EL2.
-    HypervisorControl,
 }
 
 /// The interrupt numbers of a machine.
 #[derive(Clone, Copy, Debug)]
 pub struct Interrupts {
     pub timer: u32,
-    pub counter: u32,
     pub first_raised: u32,
 }
 
 /// A way of making hardware virtual machines.
 pub trait Hypervisor {
     type Machine: Machine;
-    /// Makes the process's one machine; `el2` gives its virtual CPUs EL2.
-    fn machine(el2: bool) -> Result<Self::Machine>;
-    /// Whether a machine can give its virtual CPUs EL2.
-    fn el2_supported() -> bool;
+    /// Makes the process's one machine.
+    fn machine() -> Result<Self::Machine>;
 }
 
 /// One virtual machine.
@@ -98,8 +91,9 @@ pub trait Machine: Send + Sync {
     type Cpu: VirtualCpu;
     /// Maps `length` bytes of host memory at `host` at guest-physical `at`.
     fn map(&self, host: NonNull<u8>, at: u64, length: u64) -> Result<()>;
-    /// Unmaps a guest-physical range.
-    fn unmap(&self, at: u64, length: u64) -> Result<()>;
+    /// Gives back the host pages behind a guest-physical range of `memory`, which the machine maps; the range
+    /// reads as zeros after.
+    fn give_back(&self, memory: &Memory, at: u64, length: u64) -> Result<()>;
     /// Raises or lowers a host interrupt.
     fn raise(&self, interrupt: u32, level: bool) -> Result<()>;
     /// Makes a virtual CPU on the calling thread, which alone may run it.
@@ -161,14 +155,6 @@ impl Memory {
         );
         // SAFETY: inside the reservation.
         unsafe { self.host.as_ptr().add((at - MEMORY_BASE) as usize) }
-    }
-
-    /// Gives back the host pages of a range: unmapped from the machine, replaced by fresh memory, mapped again.
-    pub fn give_back<M: Machine>(&self, machine: &M, at: u64, length: u64) -> Result<()> {
-        machine.unmap(at, length)?;
-        let host = NonNull::new(self.host(at)).expect("host address");
-        fresh(Some(host), length)?;
-        machine.map(host, at, length)
     }
 }
 

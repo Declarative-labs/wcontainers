@@ -1,12 +1,13 @@
 //! The cases. Each prints one report: its name, whether it passed, and what it saw.
 
-use core::arch::{asm, global_asm};
+use core::arch::global_asm;
 use core::fmt::Write as _;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use aarch64_cpu::registers::{ESR_EL1, FAR_EL1, MDSCR_EL1, Read, SPSR_EL1, TPIDRRO_EL0, Write};
-use arm_sysregs::el0::registers::PmcrEl0;
 use wcontainers_abi::PAGE_SIZE;
+use wcontainers_inside::INSTRUCTION_BYTES;
+use wcontainers_inside::floor::tables::large_entry_splits;
 use wcontainers_inside::floor::{
     self, AddressSpace, Floor, Taken, UserRegisters, code, counter, counter_frequency, enter_user,
     guest_read_only, guest_read_write, heap, make_code_visible, process_code, register_page,
@@ -15,7 +16,10 @@ use wcontainers_inside::floor::{
 use wcontainers_inside::layout::{
     BLOCK_LEVEL, BLOCK_SIZE, LEAF_LEVEL, MIRROR, Region, level_span, linear,
 };
-use wcontainers_inside::link::{Request, Start};
+use wcontainers_inside::link::{
+    Done, Echo, Footprint, GiveBack, Lower, Measurement, Nothing, RaiseLater, Report, Start,
+    StartCpu, StopTest, Write as WriteCode,
+};
 
 /// Marks the cases put in registers and memory to tell their pages apart.
 const MARK_A: u64 = 0xa1;
@@ -45,9 +49,6 @@ const RAISE_DELAY_US: u64 = 200;
 /// Counter ticks before a timer case's interrupt.
 const TIMER_TICKS: u64 = 2400;
 
-/// Stops the host makes from another thread.
-const STOPS: u64 = 300;
-
 /// Blocks of memory the give-back case touches and gives back.
 const GIVE_BACK_BLOCKS: u64 = 32;
 
@@ -66,35 +67,11 @@ const PERMISSION_FAULT: u64 = 0b00_1100;
 /// ESR_EL1's ISS bit that says a data abort came from a write.
 const WRITE_NOT_READ: u64 = 1 << 6;
 
-/// The architecture's common event for instructions retired.
-const INSTRUCTIONS_RETIRED: u64 = 0x08;
-
-/// PMEVTYPER<n>_EL0.P: the counter does not count at EL1.
-const EXCLUDE_EL1: u64 = 1 << 31;
-
-/// Counter 0's bit in the counter enable and interrupt enable registers.
-const COUNTER_0: u64 = 1;
-
-/// PMCNTENSET_EL0.C and PMINTENSET_EL1.C: the cycle counter's bit.
-const CYCLE_COUNTER: u64 = 1 << 31;
-
-/// EL0 cycles the cycle counter trial lets pass before the overflow.
-const TRIAL_CYCLES: u64 = 1_000_000;
-
-/// EL0 instructions the counter trial lets pass before the overflow.
-const TRIAL_INSTRUCTIONS: u64 = 1_000_000;
-
-/// Counter ticks the counter trial waits for the overflow before giving up.
-const TRIAL_TIMEOUT_TICKS: u64 = 24_000_000;
-
 /// The second virtual CPU's address-space identifiers start here, apart from the first's.
 const SECOND_CPU_ASIDS: u16 = 0x100;
 
 /// The register the spin snippet counts its rounds in.
 const SPIN_COUNTER: usize = 19;
-
-/// Instructions in one round of the spin snippet.
-const SPIN_INSTRUCTIONS: u64 = 2;
 
 macro_rules! snippets {
     ($($name:ident: $body:literal;)*) => {
@@ -118,7 +95,7 @@ macro_rules! snippets {
             )*
             mark_a = const MARK_A,
             mark_b = const MARK_B,
-            instruction = const size_of::<u32>(),
+            instruction = const INSTRUCTION_BYTES,
             counter = const SPIN_COUNTER,
         );
         mod ends {
@@ -214,14 +191,21 @@ fn refused(run: &Run, far: u64, write: bool) -> bool {
 /// Reports this virtual CPU has sent.
 static REPORTS: AtomicU64 = AtomicU64::new(0);
 
-/// Sends one case's report.
-fn report(name: &str, passed: bool, details: core::fmt::Arguments) {
+/// Sends one case's report: its name, then what it saw.
+fn report(passed: bool, text: core::fmt::Arguments) {
     REPORTS.fetch_add(1, Ordering::Relaxed);
     floor::send(
-        Request::Report,
-        &[u64::from(passed)],
-        format_args!("{name}: {details}"),
+        &Report {
+            passed: u64::from(passed),
+        },
+        text,
     );
+}
+
+/// Sends one measurement: what was measured, then the figures.
+fn measured(text: core::fmt::Arguments) {
+    REPORTS.fetch_add(1, Ordering::Relaxed);
+    floor::send(&Measurement {}, text);
 }
 
 /// The cases' shared state.
@@ -277,10 +261,9 @@ impl Cases {
             && refused(&stored, target, true)
             && refused(&own_load, own, false);
         report(
-            "execute-only code runs and refuses loads and stores",
             passed,
             format_args!(
-                "run x0 {:#x}; load EC {:#x} FSC {:#x} FAR {:#x}; store EC {:#x} FSC {:#x} write {} FAR {:#x}; own page FAR {:#x}",
+                "execute-only code runs and refuses loads and stores: run x0 {:#x}; load EC {:#x} FSC {:#x} FAR {:#x}; store EC {:#x} FSC {:#x} write {} FAR {:#x}; own page FAR {:#x}",
                 ran.registers.x[0],
                 loaded.class,
                 loaded.status,
@@ -300,13 +283,21 @@ impl Cases {
         let ran = run(&space, target, 0, 0);
         let mut passed = called(&ran, MARK_A);
         if passed {
-            let echoed = floor::ask(Request::Echo, &[ran.registers.x[0]], &[])[0];
+            let echoed = floor::ask(
+                &Echo {
+                    value: ran.registers.x[0],
+                },
+                &[],
+            )
+            .value;
             passed = echoed == MARK_A;
         }
         report(
-            "a guest-level system call reaches the host through the floor's doorbell",
             passed,
-            format_args!("system call x0 {:#x}", ran.registers.x[0]),
+            format_args!(
+                "a guest-level system call reaches the host through the floor's doorbell: system call x0 {:#x}",
+                ran.registers.x[0]
+            ),
         );
     }
 
@@ -324,10 +315,9 @@ impl Cases {
             && ran.far == page
             && ran.registers.pc == page;
         report(
-            "guest pages refuse execution",
             passed,
             format_args!(
-                "EC {:#x} FSC {:#x} FAR {:#x} ELR {:#x}",
+                "guest pages refuse execution: EC {:#x} FSC {:#x} FAR {:#x} ELR {:#x}",
                 ran.class, ran.status, ran.far, ran.registers.pc
             ),
         );
@@ -339,21 +329,19 @@ impl Cases {
         let space = self.process();
         let mut passed = true;
         let mut out = Line::new();
-        for offset in [1, 2, 3] {
+        for offset in 1..INSTRUCTION_BYTES {
             let ran = run(&space, branch, target + offset, 0);
             passed &= ran.class == class(ESR_EL1::EC::Value::PCAlignmentFault)
                 && ran.far == target + offset
                 && ran.registers.pc == target + offset;
-            let _ = write!(
-                out,
+            let _ = out.write_fmt(format_args!(
                 "offset {offset}: EC {:#x} FAR {:#x} ELR {:#x}; ",
                 ran.class, ran.far, ran.registers.pc
-            );
+            ));
         }
         report(
-            "a misaligned br faults at its target",
             passed,
-            format_args!("{}", out.as_str()),
+            format_args!("a misaligned br faults at its target: {}", out.as_str()),
         );
     }
 
@@ -375,10 +363,9 @@ impl Cases {
             && branched.status == PERMISSION_FAULT + u64::from(LEAF_LEVEL)
             && branched.far == page;
         report(
-            "tagged loads and branches ignore the top byte (TBI0)",
             passed,
             format_args!(
-                "load x0 {:#x}; branch to {tagged:#x}: EC {:#x} FSC {:#x} FAR {:#x}",
+                "tagged loads and branches ignore the top byte (TBI0): load x0 {:#x}; branch to {tagged:#x}: EC {:#x} FSC {:#x} FAR {:#x}",
                 loaded.registers.x[0], branched.class, branched.status, branched.far
             ),
         );
@@ -397,10 +384,9 @@ impl Cases {
             && wrote.registers.pc == write
             && after == MARK_B;
         report(
-            "TPIDRRO_EL0 is written at EL1, read at EL0, and an EL0 write is undefined",
             passed,
             format_args!(
-                "read {:#x}; write EC {:#x} at {:#x}; after {after:#x}",
+                "TPIDRRO_EL0 is written at EL1, read at EL0, and an EL0 write is undefined: read {:#x}; write EC {:#x} at {:#x}; after {after:#x}",
                 ran.registers.x[0], wrote.class, wrote.registers.pc
             ),
         );
@@ -436,11 +422,32 @@ impl Cases {
             && stored.class == class(ESR_EL1::EC::Value::SVC64)
             && after == MARK_B;
         report(
-            "the register page is readable and writable at EL0",
             passed,
             format_args!(
-                "load {:#x}; store EC {:#x}; after {after:#x}",
+                "the register page is readable and writable at EL0: load {:#x}; store EC {:#x}; after {after:#x}",
                 loaded.registers.x[0], stored.class
+            ),
+        );
+    }
+
+    fn protect_inside_page(&mut self) {
+        let store = self.code_page(code_of::store());
+        let space = self.process();
+        let va = Region::Threads.base();
+        self.inside_page(&space, va, MARK_A, register_page());
+        let before = run(&space, store, va, MARK_B);
+        with_frames(|frames| {
+            space
+                .inside
+                .protect(frames, va, guest_read_only(), space.asid)
+        });
+        let after = run(&space, store, va, MARK_A);
+        let passed = called(&before, 0) && refused(&after, va, true);
+        report(
+            passed,
+            format_args!(
+                "a page of the inside's half made read-only after use refuses at once: store before EC {:#x}; after EC {:#x} FSC {:#x} FAR {:#x}",
+                before.class, after.class, after.status, after.far
             ),
         );
     }
@@ -472,20 +479,18 @@ impl Cases {
                 let heap = unsafe { core::ptr::read_volatile(Region::Heap.base() as *const u64) };
                 let ok = called(&mirror, *mark) && called(&registers, *mark) && heap == *mark;
                 if !ok && passed {
-                    let _ = write!(
-                        out,
+                    let _ = out.write_fmt(format_args!(
                         "round {round} asid {}: mirror {:#x} registers {:#x} heap {heap:#x}",
                         space.asid, mirror.registers.x[0], registers.registers.x[0]
-                    );
+                    ));
                 }
                 passed &= ok;
             }
         }
         report(
-            "two containers' processes see only their own mirror, register page and heap",
             passed,
             format_args!(
-                "{ROUNDS} rounds of switching with no invalidation {}",
+                "two containers' processes see only their own mirror, register page and heap: {ROUNDS} rounds of switching with no invalidation {}",
                 out.as_str()
             ),
         );
@@ -517,10 +522,9 @@ impl Cases {
                 called(&wrote, 0) && refused(&refused_write, page, true) && called(&read, round);
         }
         report(
-            "two threads of one process with their own table roots see one page writable and read-only",
             passed,
             format_args!(
-                "{ROUNDS} rounds, identifiers {writer_asid} and {reader_asid}, no invalidation"
+                "two threads of one process with their own table roots see one page writable and read-only: {ROUNDS} rounds, identifiers {writer_asid} and {reader_asid}, no invalidation"
             ),
         );
     }
@@ -549,10 +553,9 @@ impl Cases {
             && refused(&wrote_second, second, true)
             && called(&read_second, 0);
         report(
-            "two adjacent guest pages in one host page keep their own permissions",
             passed,
             format_args!(
-                "frames {frame:#x} and {:#x}, host page {host_page}, one host page {same_host_page}; second store EC {:#x} FSC {:#x} FAR {:#x}",
+                "two adjacent guest pages in one host page keep their own permissions: frames {frame:#x} and {:#x}, host page {host_page}, one host page {same_host_page}; second store EC {:#x} FSC {:#x} FAR {:#x}",
                 frame + PAGE_SIZE,
                 wrote_second.class,
                 wrote_second.status,
@@ -580,13 +583,15 @@ impl Cases {
             passed &= called(&run(&space, store, base + page * PAGE_SIZE, page), 0);
         }
         let changed = base + (pages / 2) * PAGE_SIZE;
+        let splits = large_entry_splits();
         with_frames(|frames| {
             space
                 .user
                 .protect(frames, changed, guest_read_only(), space.asid)
         });
         let level_after = space.user.find(base).map(|(_, level)| level);
-        passed &= level_after == Some(LEAF_LEVEL);
+        let counted = large_entry_splits() - splits;
+        passed &= level_after == Some(LEAF_LEVEL) && counted == 1;
         let refused_write = run(&space, store, changed, MARK_A);
         passed &= refused(&refused_write, changed, true);
         for page in 0..pages {
@@ -597,10 +602,9 @@ impl Cases {
             }
         }
         report(
-            "a block entry reads and writes at EL0, and after one page's change only that page refuses",
             passed,
             format_args!(
-                "level before {level_before:?} after {level_after:?}; changed page {changed:#x}: EC {:#x} FAR {:#x}",
+                "a block entry reads and writes at EL0, and after one page's change only that page refuses: level before {level_before:?} after {level_after:?}, splits counted {counted}; changed page {changed:#x}: EC {:#x} FAR {:#x}",
                 refused_write.class, refused_write.far
             ),
         );
@@ -621,7 +625,7 @@ impl Cases {
             } else {
                 (code_of::mark_a(), MARK_A)
             };
-            floor::ask(Request::Write, &[frame + half], bytes);
+            floor::ask(&WriteCode { at: frame + half }, bytes);
             make_code_visible(page + half, bytes.len() as u64);
             let late = run(&space, page + half, 0, 0);
             if !called(&late, mark) {
@@ -630,9 +634,10 @@ impl Cases {
         }
         passed &= wrong == 0;
         report(
-            "code the monitor writes next to code that ran runs as written after maintenance",
             passed,
-            format_args!("{ROUNDS} rounds, {wrong} ran stale"),
+            format_args!(
+                "code the monitor writes next to code that ran runs as written after maintenance: {ROUNDS} rounds, {wrong} ran stale"
+            ),
         );
     }
 
@@ -652,14 +657,13 @@ impl Cases {
             registers.pstate |= SPSR_EL1::SS::SET.value;
             let ran = resume(&space, registers);
             let ok = ran.class == class(ESR_EL1::EC::Value::SoftwareStepLowerEL)
-                && ran.registers.pc == before + size_of::<u32>() as u64
+                && ran.registers.pc == before + INSTRUCTION_BYTES
                 && ran.registers.x[0] == step + 1;
             if !ok && passed {
-                let _ = write!(
-                    out,
+                let _ = out.write_fmt(format_args!(
                     "step {step}: EC {:#x} ELR {:#x}",
                     ran.class, ran.registers.pc
-                );
+                ));
             }
             passed &= ok;
             registers = ran.registers;
@@ -669,10 +673,9 @@ impl Cases {
         MDSCR_EL1.modify(MDSCR_EL1::SS::SoftwareStepDisabled);
         passed &= called(&last, STEPS);
         report(
-            "EL1 software step of EL0 stops after each instruction",
             passed,
             format_args!(
-                "{STEPS} steps, then the system call gives EC {:#x}; {}",
+                "EL1 software step of EL0 stops after each instruction: {STEPS} steps, then the system call gives EC {:#x}; {}",
                 last.class,
                 out.as_str()
             ),
@@ -697,10 +700,9 @@ impl Cases {
         }
         late.sort_unstable();
         report(
-            "the virtual timer's interrupt lands in the inside",
             passed,
             format_args!(
-                "{ROUNDS} interrupts, nanoseconds after the deadline: median {} max {}",
+                "the virtual timer's interrupt lands in the inside: {ROUNDS} interrupts, nanoseconds after the deadline: median {} max {}",
                 late[late.len() / 2],
                 late[late.len() - 1]
             ),
@@ -714,21 +716,26 @@ impl Cases {
         let mut delay = [0u64; ROUNDS as usize];
         let mut passed = true;
         for slot in delay.iter_mut() {
-            floor::ask(Request::RaiseLater, &[interrupt, RAISE_DELAY_US], &[]);
+            floor::ask(
+                &RaiseLater {
+                    interrupt,
+                    delay_us: RAISE_DELAY_US,
+                },
+                &[],
+            );
             let ran = run(&space, spin, 0, 0);
             let now = counter();
             let id = self.floor.take_interrupt();
-            let raised_at = floor::ask(Request::Lower, &[interrupt], &[])[0];
+            let raised_at = floor::ask(&Lower { interrupt }, &[]).counter;
             passed &=
                 ran.taken == Taken::Interrupt && id == Some(interrupt as u32) && now >= raised_at;
             *slot = ticks_to_nanos(now.saturating_sub(raised_at));
         }
         delay.sort_unstable();
         report(
-            "an interrupt the host raises from another thread lands in the inside",
             passed,
             format_args!(
-                "{ROUNDS} interrupts, nanoseconds from raise to the inside: median {} max {}",
+                "an interrupt the host raises from another thread lands in the inside: {ROUNDS} interrupts, nanoseconds from raise to the inside: median {} max {}",
                 delay[delay.len() / 2],
                 delay[delay.len() - 1]
             ),
@@ -738,14 +745,12 @@ impl Cases {
     fn doorbell(&mut self) {
         let start = counter();
         for _ in 0..DOORBELLS {
-            floor::ask(Request::Nothing, &[], &[]);
+            floor::ask(&Nothing {}, &[]);
         }
         let each = ticks_to_nanos(counter() - start) / DOORBELLS;
-        report(
-            "the doorbell's round trip",
-            true,
-            format_args!("{DOORBELLS} round trips, {each} ns each"),
-        );
+        measured(format_args!(
+            "the doorbell's round trip: {DOORBELLS} round trips, {each} ns each"
+        ));
     }
 
     fn give_back(&mut self) {
@@ -762,24 +767,23 @@ impl Cases {
             write_frame(at, 0, &MARK_A.to_le_bytes());
             at += PAGE_SIZE;
         }
-        let before = floor::ask(Request::Footprint, &[], &[])[0];
-        floor::ask(Request::GiveBack, &[first, length], &[]);
-        let after = floor::ask(Request::Footprint, &[], &[])[0];
+        let before = floor::ask(&Footprint {}, &[]).bytes;
+        floor::ask(&GiveBack { at: first, length }, &[]);
+        let after = floor::ask(&Footprint {}, &[]).bytes;
         // SAFETY: the given-back memory is still mapped, and reads as zeros.
         let reads = unsafe { core::ptr::read_volatile(linear(first + length / 2) as *const u64) };
         let fell = before.saturating_sub(after);
         let passed = fell >= length / 2 && reads == 0;
         report(
-            "memory given back through the link lowers the process's footprint",
             passed,
             format_args!(
-                "gave back {length} bytes; footprint {before} to {after}, fell {fell}; reads {reads:#x} after"
+                "memory given back through the link lowers the process's footprint: gave back {length} bytes; footprint {before} to {after}, fell {fell}; reads {reads:#x} after"
             ),
         );
     }
 
     fn second_cpu(&mut self) {
-        floor::ask(Request::StartCpu, &[1], &[]);
+        floor::ask(&StartCpu { cpu: 1 }, &[]);
     }
 
     fn stops(&mut self) {
@@ -788,18 +792,24 @@ impl Cases {
         let interrupt = self.floor.start.first_raised_interrupt;
         let end = spin + code_of::spin().len() as u64;
         floor::ask(
-            Request::StopTest,
-            &[STOPS, interrupt, spin, end, SPIN_COUNTER as u64],
+            &StopTest {
+                interrupt,
+                loop_start: spin,
+                loop_end: end,
+                counter: SPIN_COUNTER as u64,
+            },
             &[],
         );
         let ran = run(&space, spin, 0, 0);
         let id = self.floor.take_interrupt();
-        floor::ask(Request::Lower, &[interrupt], &[]);
+        floor::ask(&Lower { interrupt }, &[]);
         let passed = ran.taken == Taken::Interrupt && id == Some(interrupt as u32);
         report(
-            "the spin stopped from another host thread ends by a raised interrupt",
             passed,
-            format_args!("{} rounds of the spin", ran.registers.x[SPIN_COUNTER]),
+            format_args!(
+                "the spin stopped from another host thread ends by a raised interrupt: {} rounds of the spin",
+                ran.registers.x[SPIN_COUNTER]
+            ),
         );
     }
 }
@@ -856,115 +866,11 @@ fn second(floor: Floor) {
     let space = cases.process();
     let ran = run(&space, target, 0, 0);
     report(
-        "a second virtual CPU on another host thread runs the guest's level",
         called(&ran, MARK_B),
-        format_args!("cpu {} x0 {:#x}", floor::cpu(), ran.registers.x[0]),
-    );
-}
-
-/// Decision 10's option C: does the counter the framework emulates count EL0 instructions and raise its
-/// overflow interrupt in the inside, and how late. Recorded, not a pass condition.
-fn counter_trial(mut floor: Floor) {
-    floor.interrupts(0);
-    let mut cases = Cases {
-        floor,
-        next_code: Region::Code.base(),
-        next_guest: GUEST,
-        next_asid: 0,
-    };
-    let spin = cases.code_page(code_of::spin());
-    let space = cases.process();
-    let start = (1u64 << u32::BITS) - TRIAL_INSTRUCTIONS;
-    // SAFETY: the performance counters only.
-    unsafe {
-        asm!(
-            "msr pmcr_el0, {pmcr}",
-            "msr pmevtyper0_el0, {kind}",
-            "msr pmevcntr0_el0, {start}",
-            "msr pmintenset_el1, {counter}",
-            "msr pmcntenset_el0, {counter}",
-            "isb",
-            pmcr = in(reg) (PmcrEl0::E | PmcrEl0::P).bits(),
-            kind = in(reg) EXCLUDE_EL1 | INSTRUCTIONS_RETIRED,
-            start = in(reg) start,
-            counter = in(reg) COUNTER_0,
-            options(nostack),
-        );
-    }
-    let (written, control): (u64, u64);
-    // SAFETY: reads the counters' registers only.
-    unsafe {
-        asm!("mrs {0}, pmevcntr0_el0", "mrs {1}, pmcr_el0", out(reg) written, out(reg) control, options(nostack))
-    };
-    floor::arm_timer(counter() + TRIAL_TIMEOUT_TICKS);
-    let ran = run(&space, spin, 0, 0);
-    let id = cases.floor.take_interrupt();
-    floor::disarm_timer();
-    let count: u64;
-    // SAFETY: reads the counter only.
-    unsafe { asm!("mrs {0}, pmevcntr0_el0", out(reg) count, options(nostack)) };
-    let retired = ran.registers.x[SPIN_COUNTER] * SPIN_INSTRUCTIONS;
-    let by_counter = id == Some(cases.floor.start.counter_interrupt as u32);
-    report(
-        "counter trial, instructions (option C, recorded only)",
-        true,
         format_args!(
-            "event counter 0 written {start:#x} reads back {written:#x}, PMCR_EL0 {control:#x} (N, the event counters, {}); interrupt {id:?} ({}), counter after {count:#x}, EL0 instructions retired {retired}",
-            PmcrEl0::from_bits_retain(control).n(),
-            if by_counter {
-                "the counter's overflow"
-            } else {
-                "not the counter's overflow"
-            },
-        ),
-    );
-    cycle_trial(&mut cases, spin, &space);
-}
-
-/// The same with the cycle counter, which bounds instructions from above by the core's widest retire.
-fn cycle_trial(cases: &mut Cases, spin: u64, space: &AddressSpace) {
-    let start = 0u64.wrapping_sub(TRIAL_CYCLES);
-    let written: u64;
-    // SAFETY: the performance counters only.
-    unsafe {
-        asm!(
-            "msr pmccfiltr_el0, {filter}",
-            "msr pmccntr_el0, {start}",
-            "msr pmintenset_el1, {counter}",
-            "msr pmcntenset_el0, {counter}",
-            "isb",
-            "mrs {written}, pmccntr_el0",
-            filter = in(reg) EXCLUDE_EL1,
-            start = in(reg) start,
-            counter = in(reg) CYCLE_COUNTER,
-            written = out(reg) written,
-            options(nostack),
-        );
-    }
-    floor::arm_timer(counter() + TRIAL_TIMEOUT_TICKS);
-    let ran = run(space, spin, 0, 0);
-    let id = cases.floor.take_interrupt();
-    floor::disarm_timer();
-    let (after, overflowed, enabled): (u64, u64, u64);
-    // SAFETY: reads the counters' registers only.
-    unsafe {
-        asm!(
-            "mrs {0}, pmccntr_el0", "mrs {1}, pmovsclr_el0", "mrs {2}, pmintenset_el1",
-            out(reg) after, out(reg) overflowed, out(reg) enabled, options(nostack),
-        )
-    };
-    let retired = ran.registers.x[SPIN_COUNTER] * SPIN_INSTRUCTIONS;
-    let by_counter = id == Some(cases.floor.start.counter_interrupt as u32);
-    report(
-        "counter trial, cycles (option C, recorded only)",
-        true,
-        format_args!(
-            "cycle counter written {start:#x} reads back {written:#x}; interrupt {id:?} ({}), counter after {after:#x}, overflow flags {overflowed:#x}, overflow interrupt enables {enabled:#x}, EL0 instructions retired {retired} in {TRIAL_CYCLES} armed cycles",
-            if by_counter {
-                "the counter's overflow"
-            } else {
-                "not the counter's overflow"
-            },
+            "a second virtual CPU on another host thread runs the guest's level: cpu {} x0 {:#x}",
+            floor::cpu(),
+            ran.registers.x[0]
         ),
     );
 }
@@ -974,8 +880,6 @@ extern "C" fn floor_main(start: &Start) -> ! {
     let mut floor = Floor::boot(start);
     if start.cpu != 0 {
         second(floor);
-    } else if start.el2 != 0 {
-        counter_trial(floor);
     } else {
         floor.interrupts(RAISED);
         let mut cases = Cases {
@@ -991,6 +895,7 @@ extern "C" fn floor_main(start: &Start) -> ! {
         cases.tagged();
         cases.stop_word();
         cases.register_page();
+        cases.protect_inside_page();
         cases.two_containers();
         cases.thread_views();
         cases.adjacent_pages();
@@ -1005,6 +910,11 @@ extern "C" fn floor_main(start: &Start) -> ! {
         cases.stops();
     }
     loop {
-        floor::ask(Request::Done, &[REPORTS.load(Ordering::Relaxed)], &[]);
+        floor::ask(
+            &Done {
+                sent: REPORTS.load(Ordering::Relaxed),
+            },
+            &[],
+        );
     }
 }

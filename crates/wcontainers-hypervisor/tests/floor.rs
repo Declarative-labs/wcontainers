@@ -1,6 +1,8 @@
 //! N1's bar: boots the floor's cases program under the monitor, serves its link, makes the stops from another
-//! thread, and checks every case passed. Then boots it once more in a machine with EL2 for the counter trial,
-//! which is recorded only. It runs itself as a copy signed with the hypervisor entitlement.
+//! thread, and checks every case passed. It runs itself as a copy signed with the hypervisor entitlement.
+//!
+//! The stop test is seeded: `WCONTAINERS_FLOOR_STOPS` sets how many stops it makes and
+//! `WCONTAINERS_FLOOR_SEED` (decimal, or hexadecimal after `0x`) the seed of the waits between them.
 
 #[cfg(target_os = "macos")]
 fn main() {
@@ -21,12 +23,14 @@ mod macos {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use aarch64_cpu::registers::{HCR_EL2, ID_AA64DFR0_EL1};
     use wcontainers_hypervisor::{
         Exit, Host, Hypervisor, Loaded, Machine, Memory, Register, Stopper, VirtualCpu, boot, link,
         load, programs,
     };
-    use wcontainers_inside::link::{Request, Start};
+    use wcontainers_inside::link::{
+        Bytes, CounterValue, Done, Fatal, GiveBack, Lower, RaiseLater, Report, Request, Start,
+        StartCpu, StopTest as StopRequest, Write,
+    };
 
     /// Bytes of guest-physical memory the test reserves.
     const MEMORY: u64 = 1 << 30;
@@ -34,14 +38,52 @@ mod macos {
     /// Virtual CPUs the cases use.
     const CPUS: u64 = 2;
 
-    /// PMUVer of the first version of the performance monitors (PMUv3).
-    const PMU_VERSION_3: u64 = 1;
-
     /// The stop test waits between stops for a seeded time in this range of microseconds.
     const STOP_WAIT_US: std::ops::Range<u64> = 200..2000;
 
-    /// The stop test's seed.
-    const STOP_SEED: u64 = 0x9e37_79b9_7f4a_7c15;
+    /// The environment variable that sets how many stops the stop test makes.
+    const STOPS_VARIABLE: &str = "WCONTAINERS_FLOOR_STOPS";
+
+    /// The environment variable that sets the stop test's seed.
+    const SEED_VARIABLE: &str = "WCONTAINERS_FLOOR_SEED";
+
+    /// Stops the stop test makes unless told otherwise.
+    const DEFAULT_STOPS: u64 = 300;
+
+    /// The stop test's seed unless told otherwise.
+    const DEFAULT_SEED: u64 = 0x9e37_79b9_7f4a_7c15;
+
+    /// What starts a hexadecimal setting.
+    const HEX_PREFIX: &str = "0x";
+
+    /// The radix of a hexadecimal setting.
+    const HEX_RADIX: u32 = 16;
+
+    /// The stop test's settings.
+    #[derive(Clone, Copy, Debug)]
+    struct StopSettings {
+        stops: u64,
+        seed: u64,
+    }
+
+    /// A number from the environment variable `name`, or `default`.
+    fn setting(name: &str, default: u64) -> u64 {
+        let Ok(text) = std::env::var(name) else {
+            return default;
+        };
+        let parsed = match text.strip_prefix(HEX_PREFIX) {
+            Some(hex) => u64::from_str_radix(hex, HEX_RADIX),
+            None => text.parse(),
+        };
+        parsed.unwrap_or_else(|e| panic!("{name}={text}: {e}"))
+    }
+
+    fn stop_settings() -> StopSettings {
+        StopSettings {
+            stops: setting(STOPS_VARIABLE, DEFAULT_STOPS),
+            seed: setting(SEED_VARIABLE, DEFAULT_SEED),
+        }
+    }
 
     /// One machine and what the cases told it.
     struct Shared {
@@ -49,7 +91,9 @@ mod macos {
         memory: Memory,
         loaded: Loaded,
         start: Start,
+        stop_settings: StopSettings,
         reports: Mutex<Vec<(bool, String)>>,
+        measurements: Mutex<Vec<String>>,
         raised_at: Mutex<HashMap<u64, u64>>,
         stop_delays: Mutex<Vec<f64>>,
         fatal: AtomicBool,
@@ -89,11 +133,12 @@ mod macos {
         if std::env::var_os(SIGNED).is_none() {
             run_signed();
         }
-        let el2_supported = Host::el2_supported();
         let started = Instant::now();
-        let shared = machine(false);
+        let settings = stop_settings();
+        let shared = machine(settings);
         serve(&shared, 0);
         let reports = shared.reports.lock().unwrap().clone();
+        let measurements = shared.measurements.lock().unwrap().clone();
         let delays = shared.stop_delays.lock().unwrap().clone();
         let fatal = shared.fatal.load(Ordering::Relaxed);
         let sent = shared.sent.load(Ordering::Relaxed);
@@ -103,39 +148,33 @@ mod macos {
             println!("{} {text}", if *passed { "pass" } else { "FAIL" });
             failed += usize::from(!*passed);
         }
-        print_delays(&delays);
+        for text in &measurements {
+            println!("measured {text}");
+        }
+        print_delays(&delays, settings);
         println!("load {}", load_average());
         println!(
             "{} cases, {failed} failed, in {:?}",
             reports.len(),
             started.elapsed()
         );
-        if el2_supported {
-            let trial = machine(true);
-            serve(&trial, 0);
-            for (_, text) in trial.reports.lock().unwrap().iter() {
-                println!("recorded {text}");
-            }
-            if trial.fatal.load(Ordering::Relaxed) {
-                println!("recorded: the counter trial's inside faulted (see above)");
-            }
-        } else {
-            println!(
-                "recorded: this host gives no EL2 to virtual machines, so the counter trial did not run"
-            );
-        }
-        let expected_stops = usize::try_from(STOPS).unwrap();
         assert!(!fatal, "the inside faulted");
         assert_eq!(failed, 0, "cases failed");
-        assert_eq!(reports.len() as u64, sent + 1, "a report went missing");
-        assert_eq!(delays.len(), expected_stops, "not every stop was seen");
+        // The inside counts what it sent; the stop test's report is the host's.
+        assert_eq!(
+            (reports.len() + measurements.len()) as u64,
+            sent + 1,
+            "a report went missing"
+        );
+        assert_eq!(
+            delays.len() as u64,
+            settings.stops,
+            "not every stop was seen"
+        );
     }
 
-    /// Stops the cases program asks for.
-    const STOPS: u64 = 300;
-
-    fn machine(el2: bool) -> Arc<Shared> {
-        let machine = Host::machine(el2).expect("making the machine");
+    fn machine(stop_settings: StopSettings) -> Arc<Shared> {
+        let machine = Host::machine().expect("making the machine");
         let memory = Memory::reserve(MEMORY).expect("reserving memory");
         machine
             .map(
@@ -152,9 +191,7 @@ mod macos {
             cpus: CPUS,
             host_page: page_size(),
             timer_interrupt: interrupts.timer.into(),
-            counter_interrupt: interrupts.counter.into(),
             first_raised_interrupt: interrupts.first_raised.into(),
-            el2: el2.into(),
             ..Start::default()
         };
         Arc::new(Shared {
@@ -162,7 +199,9 @@ mod macos {
             memory,
             loaded,
             start,
+            stop_settings,
             reports: Mutex::default(),
+            measurements: Mutex::default(),
             raised_at: Mutex::default(),
             stop_delays: Mutex::default(),
             fatal: AtomicBool::new(false),
@@ -178,16 +217,6 @@ mod macos {
     /// Runs virtual CPU `index` on this thread until its inside is done.
     fn serve(shared: &Arc<Shared>, index: u64) {
         let mut cpu = shared.machine.cpu().expect("making a virtual CPU");
-        if shared.start.el2 != 0 {
-            let debug = cpu.get(Register::DebugFeatures).unwrap();
-            let field = ID_AA64DFR0_EL1::PMUVer;
-            let debug = (debug & !(field.mask << field.shift)) | field.val(PMU_VERSION_3).value;
-            let set = cpu.set(Register::DebugFeatures, debug).and_then(|()| {
-                cpu.set(Register::HypervisorControl, HCR_EL2::RW::EL1IsAarch64.value)
-            });
-            let read_back = cpu.get(Register::DebugFeatures);
-            shared.reports.lock().unwrap().push((true, format!("counter trial: ID_AA64DFR0_EL1 set to {debug:#x}: {set:?}, reads {read_back:x?}")));
-        }
         boot(
             &mut cpu,
             &shared.memory,
@@ -244,48 +273,58 @@ mod macos {
         stops: &mut Option<StopTest>,
     ) -> bool {
         let page = link(&shared.memory, &shared.loaded, index);
-        let text = String::from_utf8_lossy(&page.bytes[..page.length as usize]).into_owned();
-        let words = page.words;
+        let text = String::from_utf8_lossy(page.data()).into_owned();
         match Request::from_word(page.request) {
             Some(Request::Nothing | Request::Echo) => {}
             Some(Request::Print) => println!("cpu {index}: {text}"),
             Some(Request::Done) => {
                 // Every virtual CPU counts its reports in the same image; the first finishes last.
                 if index == 0 {
-                    shared.sent.store(words[0], Ordering::Relaxed);
+                    shared
+                        .sent
+                        .store(page.get::<Done>().sent, Ordering::Relaxed);
                 }
                 return false;
             }
             Some(Request::Fatal) => {
-                println!(
-                    "cpu {index}: the inside faulted: ESR {:#x} ELR {:#x} FAR {:#x}",
-                    words[0], words[1], words[2]
-                );
+                let Fatal { esr, elr, far } = page.get();
+                println!("cpu {index}: the inside faulted: ESR {esr:#x} ELR {elr:#x} FAR {far:#x}");
                 shared.fatal.store(true, Ordering::Relaxed);
                 return false;
             }
             Some(Request::Write) => {
-                let bytes = &page.bytes[..page.length as usize];
+                let Write { at } = page.get();
+                let bytes = page.data();
                 // SAFETY: the inside gave this frame for the write and runs nothing from it until answered.
                 unsafe {
                     std::ptr::copy_nonoverlapping(
                         bytes.as_ptr(),
-                        shared.memory.host(words[0]),
+                        shared.memory.host(at),
                         bytes.len(),
                     )
                 };
             }
-            Some(Request::GiveBack) => shared
-                .memory
-                .give_back(&shared.machine, words[0], words[1])
-                .expect("giving back"),
-            Some(Request::Report) => shared.reports.lock().unwrap().push((words[0] == 1, text)),
-            Some(Request::Footprint) => page.words[0] = footprint(),
+            Some(Request::GiveBack) => {
+                let GiveBack { at, length } = page.get();
+                shared
+                    .machine
+                    .give_back(&shared.memory, at, length)
+                    .expect("giving back");
+            }
+            Some(Request::Report) => {
+                let passed = page.get::<Report>().passed == u64::from(true);
+                shared.reports.lock().unwrap().push((passed, text));
+            }
+            Some(Request::Measurement) => shared.measurements.lock().unwrap().push(text),
+            Some(Request::Footprint) => page.put(&Bytes { bytes: footprint() }),
             Some(Request::RaiseLater) => {
-                let (interrupt, delay) = (words[0], words[1]);
+                let RaiseLater {
+                    interrupt,
+                    delay_us,
+                } = page.get();
                 let shared = Arc::clone(shared);
                 thread::spawn(move || {
-                    thread::sleep(Duration::from_micros(delay));
+                    thread::sleep(Duration::from_micros(delay_us));
                     shared.raised_at.lock().unwrap().insert(interrupt, now());
                     shared
                         .machine
@@ -294,35 +333,30 @@ mod macos {
                 });
             }
             Some(Request::Lower) => {
+                let Lower { interrupt } = page.get();
                 shared
                     .machine
-                    .raise(words[0] as u32, false)
+                    .raise(interrupt as u32, false)
                     .expect("lowering");
                 let raised = shared
                     .raised_at
                     .lock()
                     .unwrap()
-                    .remove(&words[0])
+                    .remove(&interrupt)
                     .unwrap_or_default();
-                page.words[0] = raised.wrapping_sub(offset);
+                page.put(&CounterValue {
+                    counter: raised.wrapping_sub(offset),
+                });
             }
             Some(Request::StartCpu) => {
                 let shared = Arc::clone(shared);
-                let other = words[0];
+                let StartCpu { cpu: other } = page.get();
                 thread::spawn(move || serve(&shared, other))
                     .join()
                     .expect("second virtual CPU");
             }
             Some(Request::StopTest) => {
-                let test = StopTest::start(
-                    shared,
-                    cpu.stopper(),
-                    words[0],
-                    words[1],
-                    words[2]..words[3],
-                    words[4] as u8,
-                );
-                *stops = Some(test);
+                *stops = Some(StopTest::start(shared, cpu.stopper(), page.get()));
             }
             None => {
                 println!("cpu {index}: unknown request {:#x}", page.request);
@@ -340,20 +374,21 @@ mod macos {
         stopped_at: Arc<AtomicU64>,
         loop_range: std::ops::Range<u64>,
         counter: u8,
+        settings: StopSettings,
         outside_loop: u64,
         went_back: u64,
         last_count: u64,
     }
 
     impl StopTest {
-        fn start(
-            shared: &Arc<Shared>,
-            stopper: impl Stopper,
-            count: u64,
-            interrupt: u64,
-            loop_range: std::ops::Range<u64>,
-            counter: u8,
-        ) -> StopTest {
+        fn start(shared: &Arc<Shared>, stopper: impl Stopper, request: StopRequest) -> StopTest {
+            let StopRequest {
+                interrupt,
+                loop_start,
+                loop_end,
+                counter,
+            } = request;
+            let settings = shared.stop_settings;
             let asked = Arc::new(AtomicU64::new(0));
             let seen = Arc::new(AtomicU64::new(0));
             let stopped_at = Arc::new(AtomicU64::new(0));
@@ -364,8 +399,8 @@ mod macos {
                 Arc::clone(shared),
             );
             thread::spawn(move || {
-                let mut random = fastrand::Rng::with_seed(STOP_SEED);
-                for stop in 1..=count {
+                let mut random = fastrand::Rng::with_seed(settings.seed);
+                for stop in 1..=settings.stops {
                     let wait = random.u64(STOP_WAIT_US);
                     thread::sleep(Duration::from_micros(wait));
                     let decided = now();
@@ -387,8 +422,9 @@ mod macos {
                 asked,
                 seen,
                 stopped_at,
-                loop_range,
-                counter,
+                loop_range: loop_start..loop_end,
+                counter: u8::try_from(counter).expect("a general register"),
+                settings,
                 outside_loop: 0,
                 went_back: 0,
                 last_count: 0,
@@ -407,17 +443,20 @@ mod macos {
             self.last_count = count;
             self.stopped_at.store(at, Ordering::SeqCst);
             self.seen.store(asked, Ordering::SeqCst);
-            if asked == STOPS {
+            if asked == self.settings.stops {
                 let passed = self.outside_loop == 0 && self.went_back == 0;
                 shared.reports.lock().unwrap().push((
                     passed,
-                    format!("{STOPS} stops from another host thread: pc outside the loop {} times, count went back {} times", self.outside_loop, self.went_back),
+                    format!(
+                        "{} stops from another host thread (seed {:#x}): pc outside the loop {} times, count went back {} times",
+                        self.settings.stops, self.settings.seed, self.outside_loop, self.went_back
+                    ),
                 ));
             }
         }
     }
 
-    fn print_delays(delays: &[f64]) {
+    fn print_delays(delays: &[f64], settings: StopSettings) {
         if delays.is_empty() {
             return;
         }
@@ -425,8 +464,9 @@ mod macos {
         sorted.sort_by(f64::total_cmp);
         let at = |q: f64| sorted[((sorted.len() - 1) as f64 * q) as usize];
         println!(
-            "stop delay from the decision to the virtual CPU's exit, {} stops, nanoseconds: min {:.0} median {:.0} 90th {:.0} 99th {:.0} max {:.0}",
+            "stop delay from the decision to the virtual CPU's exit, {} stops, seed {:#x}, nanoseconds: min {:.0} median {:.0} 90th {:.0} 99th {:.0} max {:.0}",
             sorted.len(),
+            settings.seed,
             sorted[0],
             at(0.5),
             at(0.9),

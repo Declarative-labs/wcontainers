@@ -7,8 +7,9 @@ pub mod tables;
 use core::arch::asm;
 use core::fmt::{self, Write};
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
+use aarch64_cpu::asm::barrier::{self, ISH, SY};
 use aarch64_cpu::registers::{
     CNTFRQ_EL0, CNTV_CTL_EL0, CNTV_CVAL_EL0, CNTVCT_EL0, MPIDR_EL1, Read, TPIDRRO_EL0, TTBR0_EL1,
     TTBR1_EL1, VBAR_EL1, Write as _,
@@ -26,9 +27,9 @@ pub use entry::{Taken, UserRegisters, enter_user};
 pub use tables::{Frames, Table};
 
 use crate::layout::{
-    ATTRIBUTE_NORMAL, DOORBELL, GIC_DISTRIBUTOR, GIC_REDISTRIBUTORS, MEMORY_BASE, Region, linear,
+    ATTRIBUTE_NORMAL, GIC_DISTRIBUTOR, GIC_REDISTRIBUTORS, MEMORY_BASE, Region, linear,
 };
-use crate::link::{LINK_BYTES, LINK_WORDS, Link, Request, Start};
+use crate::link::{Fatal, LINK_BYTES, Link, Message, Print, Start};
 
 /// Guest-physical frames, shared by every virtual CPU.
 pub static FRAMES: Mutex<Option<Frames>> = Mutex::new(None);
@@ -53,31 +54,19 @@ fn link_page() -> &'static mut Link {
     unsafe { &mut *(linear(page) as *mut Link) }
 }
 
-/// Asks the host, with `words` as arguments and `bytes` as data, and gives back the answer's words.
-pub fn ask(request: Request, words: &[u64], bytes: &[u8]) -> [u64; LINK_WORDS] {
+/// Asks the host with `message` and `bytes` as data, and gives back the answer.
+pub fn ask<M: Message>(message: &M, bytes: &[u8]) -> M::Answer {
     let link = link_page();
-    link.request = request as u64;
-    link.words = [0; LINK_WORDS];
-    link.words[..words.len()].copy_from_slice(words);
-    link.length = bytes.len() as u64;
-    link.bytes[..bytes.len()].copy_from_slice(bytes);
+    link.ask(message, bytes);
     doorbell();
-    link.words
+    link.get()
 }
 
-/// Set when the machine gives its virtual CPUs EL2, where `hvc` goes to the guest's own EL2.
-static STORE_DOORBELL: AtomicBool = AtomicBool::new(false);
-
-/// Rings the doorbell: the virtual CPU leaves to the monitor and comes back answered. `hvc` leaves to the
-/// host; in a machine with EL2 it would not, so there a store to the unmapped doorbell page leaves instead.
+/// Rings the doorbell: the virtual CPU leaves to the monitor and comes back answered.
 fn doorbell() {
-    if STORE_DOORBELL.load(Ordering::Relaxed) {
-        // SAFETY: the doorbell page is mapped in no stage; the monitor answers and resumes after the store.
-        unsafe { asm!("dsb sy", "str xzr, [{0}]", in(reg) linear(DOORBELL), options(nostack)) };
-    } else {
-        // SAFETY: the monitor answers in the link page and resumes at the next instruction.
-        unsafe { asm!("dsb sy", "hvc #0", options(nostack)) };
-    }
+    barrier::dsb(SY);
+    // SAFETY: the monitor answers in the link page and resumes at the next instruction.
+    unsafe { asm!("hvc #0", options(nostack)) };
 }
 
 /// Text built in the link page and sent with one request.
@@ -95,14 +84,12 @@ impl Write for Text {
     }
 }
 
-/// Sends formatted text with `request`, and `words` as arguments.
-pub fn send(request: Request, words: &[u64], text: fmt::Arguments) {
+/// Sends `message` with formatted text as its data.
+pub fn send<M: Message>(message: &M, text: fmt::Arguments) {
     let mut out = Text { length: 0 };
     let _ = out.write_fmt(text);
     let link = link_page();
-    link.request = request as u64;
-    link.words = [0; LINK_WORDS];
-    link.words[..words.len()].copy_from_slice(words);
+    link.ask(message, &[]);
     link.length = out.length as u64;
     doorbell();
 }
@@ -110,20 +97,20 @@ pub fn send(request: Request, words: &[u64], text: fmt::Arguments) {
 /// Prints a line in the host's log.
 #[macro_export]
 macro_rules! print {
-    ($($arg:tt)*) => { $crate::floor::send($crate::link::Request::Print, &[], format_args!($($arg)*)) };
+    ($($arg:tt)*) => { $crate::floor::send(&$crate::link::Print {}, format_args!($($arg)*)) };
 }
 
 /// Reports a fault in the inside itself and stops.
 #[unsafe(no_mangle)]
 extern "C" fn floor_fatal(esr: u64, elr: u64, far: u64) -> ! {
     loop {
-        ask(Request::Fatal, &[esr, elr, far], &[]);
+        ask(&Fatal { esr, elr, far }, &[]);
     }
 }
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    send(Request::Print, &[], format_args!("inside panicked: {info}"));
+    send(&Print {}, format_args!("inside panicked: {info}"));
     floor_fatal(0, 0, 0)
 }
 
@@ -147,10 +134,8 @@ impl Floor {
     /// Sets up the floor on this virtual CPU. The first one makes the frames and the global tables.
     pub fn boot(start: &Start) -> Floor {
         VBAR_EL1.set(entry::vectors());
-        // SAFETY: context synchronisation only.
-        unsafe { asm!("isb", options(nostack, preserves_flags)) };
+        barrier::isb(SY);
         FIRST_LINK.store(start.link - start.cpu * PAGE_SIZE, Ordering::Relaxed);
-        STORE_DOORBELL.store(start.el2 != 0, Ordering::Relaxed);
         let global = Table {
             root: start.boot_root,
         };
@@ -165,7 +150,7 @@ impl Floor {
         }
     }
 
-    /// Sets up the interrupt controller: the timer, the counters' overflow and `raised` host interrupts,
+    /// Sets up the interrupt controller: the timer and `raised` host interrupts,
     /// each sent to this virtual CPU.
     pub fn interrupts(&mut self, raised: u32) {
         let distributor = NonNull::new(linear(GIC_DISTRIBUTOR) as *mut Gicd).expect("distributor");
@@ -181,12 +166,7 @@ impl Floor {
         let cpu = self.start.cpu as usize;
         gic.setup(cpu);
         let first = self.start.first_raised_interrupt as u32;
-        let private = [
-            self.start.timer_interrupt as u32,
-            self.start.counter_interrupt as u32,
-        ];
-        let ids = private
-            .into_iter()
+        let ids = core::iter::once(self.start.timer_interrupt as u32)
             .chain(first..first + raised)
             .map(|id| IntId::try_from(id).expect("interrupt number"));
         for id in ids {
@@ -213,8 +193,7 @@ pub fn counter_frequency() -> u64 {
 
 /// The virtual counter.
 pub fn counter() -> u64 {
-    // SAFETY: orders the read after what came before.
-    unsafe { asm!("isb", options(nostack, preserves_flags)) };
+    barrier::isb(SY);
     CNTVCT_EL0.get()
 }
 
@@ -276,8 +255,7 @@ impl AddressSpace {
             TTBR1_EL1::ASID.val(asid)
                 + TTBR1_EL1::BADDR.val(self.inside.root >> TTBR1_EL1::BADDR.shift),
         );
-        // SAFETY: context synchronisation only.
-        unsafe { asm!("isb", options(nostack, preserves_flags)) };
+        barrier::isb(SY);
     }
 }
 
@@ -335,16 +313,15 @@ pub fn make_code_visible(va: u64, length: u64) {
         unsafe { asm!("dc cvau, {0}", in(reg) at, options(nostack, preserves_flags)) };
         at += data_line;
     }
-    // SAFETY: a barrier only.
-    unsafe { asm!("dsb ish", options(nostack, preserves_flags)) };
+    barrier::dsb(ISH);
     let mut at = va & !(instruction_line - 1);
     while at < va + length {
         // SAFETY: cache maintenance only.
         unsafe { asm!("ic ivau, {0}", in(reg) at, options(nostack, preserves_flags)) };
         at += instruction_line;
     }
-    // SAFETY: barriers only.
-    unsafe { asm!("dsb ish", "isb", options(nostack, preserves_flags)) };
+    barrier::dsb(ISH);
+    barrier::isb(SY);
 }
 
 /// Copies `bytes` to guest-physical `frame` through the linear map.

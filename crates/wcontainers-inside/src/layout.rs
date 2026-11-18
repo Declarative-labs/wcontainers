@@ -85,10 +85,6 @@ pub const GIC_DISTRIBUTOR: u64 = 0x0800_0000;
 /// The guest-physical address of the interrupt controller's first redistributor, after the distributor.
 pub const GIC_REDISTRIBUTORS: u64 = 0x080A_0000;
 
-/// A guest-physical page mapped by nothing, among the devices: a store there leaves the machine, which is the
-/// doorbell where `hvc` cannot be.
-pub const DOORBELL: u64 = 0x0900_0000;
-
 /// The guest-physical range below [`MEMORY_BASE`] that holds devices, mapped as device memory.
 pub const DEVICES: core::ops::Range<u64> = 0..MEMORY_BASE;
 

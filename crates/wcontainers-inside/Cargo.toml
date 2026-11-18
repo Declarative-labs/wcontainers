@@ -9,6 +9,8 @@ repository.workspace = true
 
 [dependencies]
 wcontainers-abi.workspace = true
+# The link's messages as words.
+zerocopy.workspace = true
 # Page table entry bits.
 aarch64-paging = { version = "0.12.3", default-features = false }
 # System register fields.

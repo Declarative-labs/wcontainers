@@ -2,6 +2,9 @@
 
 use core::arch::asm;
 use core::ptr;
+use core::sync::atomic::{AtomicU64, Ordering};
+
+use aarch64_cpu::asm::barrier::{self, ISH, ISHST, SY};
 
 use aarch64_paging::descriptor::El1Attributes;
 use wcontainers_abi::PAGE_SIZE;
@@ -21,6 +24,18 @@ const TLBI_ASID_SHIFT: u32 = 48;
 
 /// TLB invalidation by address takes the address shifted by this, whatever the granule.
 const TLBI_ADDRESS_SHIFT: u32 = 12;
+
+/// Width of the address field of a TLB invalidation by address (VA[55:12]); the bits above it up to the
+/// identifier are the level hint, left as 0 (no hint).
+const TLBI_ADDRESS_BITS: u32 = 44;
+
+/// Blocks broken into pages because one page of them changed: the slow path "large entry split".
+static LARGE_ENTRY_SPLITS: AtomicU64 = AtomicU64::new(0);
+
+/// How many times a block was broken into pages.
+pub fn large_entry_splits() -> u64 {
+    LARGE_ENTRY_SPLITS.load(Ordering::Relaxed)
+}
 
 /// Frames of guest-physical memory, given out one page (or one aligned block) at a time.
 pub struct Frames {
@@ -211,12 +226,21 @@ impl Table {
             unsafe { ptr::write_volatile((linear(pages) + page * ENTRY_BYTES) as *mut u64, entry) };
         }
         let slot = self.slot(frames, base, BLOCK_LEVEL);
-        // SAFETY: the block entry is ours: made invalid, its range invalidated, then the table written.
+        // SAFETY: the block entry is ours: made invalid, invalidated (one entry covers the whole block), then
+        // the table written.
         unsafe { ptr::write_volatile(slot, 0) };
-        invalidate_range(base, BLOCK_SIZE, asid);
+        invalidate(base, asid);
         // SAFETY: as above.
         unsafe { ptr::write_volatile(slot, pages | table_or_page()) };
         barrier();
+        if LARGE_ENTRY_SPLITS.fetch_add(1, Ordering::Relaxed) == 0 {
+            super::send(
+                &crate::link::Print {},
+                format_args!(
+                    "warning: large entry split: a block was broken into pages because one page of it changed (counted)"
+                ),
+            );
+        }
     }
 
     /// Makes `other`'s top-level entry for `va` this table's too.
@@ -239,28 +263,23 @@ impl Table {
 
 /// Makes table writes visible to the table walker.
 pub fn barrier() {
-    // SAFETY: barriers only.
-    unsafe { asm!("dsb ishst", "isb", options(nostack, preserves_flags)) };
+    barrier::dsb(ISHST);
+    barrier::isb(SY);
 }
 
 /// Invalidates the TLB entries of the page at `va` for `asid` (and global ones) on every virtual CPU.
 pub fn invalidate(va: u64, asid: u16) {
     let operand = (u64::from(asid) << TLBI_ASID_SHIFT)
-        | ((va >> TLBI_ADDRESS_SHIFT) & ((1 << TLBI_ASID_SHIFT) - 1));
+        | ((va >> TLBI_ADDRESS_SHIFT) & ((1 << TLBI_ADDRESS_BITS) - 1));
+    barrier::dsb(ISHST);
     // SAFETY: TLB maintenance only.
-    unsafe {
-        asm!("dsb ishst", "tlbi vae1is, {0}", "dsb ish", "isb", in(reg) operand, options(nostack, preserves_flags))
-    };
-}
-
-/// Invalidates every page of a range for `asid`.
-pub fn invalidate_range(va: u64, length: u64, asid: u16) {
-    let mut at = va;
-    while at < va + length {
-        invalidate(at, asid);
-        at += PAGE_SIZE;
-    }
+    unsafe { asm!("tlbi vae1is, {0}", in(reg) operand, options(nostack, preserves_flags)) };
+    barrier::dsb(ISH);
+    barrier::isb(SY);
 }
 
 /// The `PAGE_SHIFT` the tables use is the one TLB maintenance assumes for its addresses.
 const _: () = assert!(PAGE_SHIFT >= TLBI_ADDRESS_SHIFT);
+
+/// The address field ends below the identifier.
+const _: () = assert!(TLBI_ADDRESS_BITS < TLBI_ASID_SHIFT);

@@ -20,6 +20,10 @@ aarch64-cpu = "12.0.0"
 applevisor = "1.0.0"
 applevisor-sys = "1.0.0"
 
+[build-dependencies]
+# The names of the build environment.
+wcontainers-inside = { path = "../wcontainers-inside" }
+
 [dev-dependencies]
 # The stop test's seeded waits.
 fastrand = "2.5.0"

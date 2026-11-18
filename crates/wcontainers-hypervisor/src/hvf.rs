@@ -9,12 +9,9 @@ use applevisor_sys::{
     hv_vm_unmap,
 };
 use wcontainers_inside::GENERAL_REGISTERS;
-use wcontainers_inside::layout::{DOORBELL, GIC_DISTRIBUTOR, GIC_REDISTRIBUTORS};
+use wcontainers_inside::layout::{GIC_DISTRIBUTOR, GIC_REDISTRIBUTORS};
 
-/// Bytes of an ARM64 instruction: the store that rang the doorbell is passed over.
-const INSTRUCTION_BYTES: u64 = size_of::<u32>() as u64;
-
-use crate::{Error, Exit, Hypervisor, Interrupts, Register, Result};
+use crate::{Error, Exit, Hypervisor, Interrupts, Memory, Register, Result, fresh};
 
 /// Hypervisor.framework.
 pub struct HypervisorFramework;
@@ -50,19 +47,14 @@ fn code(code: i32) -> Result<()> {
 impl Hypervisor for HypervisorFramework {
     type Machine = HvfMachine;
 
-    fn machine(el2: bool) -> Result<HvfMachine> {
-        let mut config = VirtualMachineConfig::new();
-        check(config.set_el2_enabled(el2))?;
+    fn machine() -> Result<HvfMachine> {
+        let config = VirtualMachineConfig::new();
         let mut gic = GicConfig::new();
         check(gic.set_distributor_base(GIC_DISTRIBUTOR))?;
         check(gic.set_redistributor_base(GIC_REDISTRIBUTORS))?;
         let vm = VirtualMachine::with_gic(config, gic)
             .map_err(|e| Error::Hypervisor(format!("{e:?}")))?;
         Ok(HvfMachine { vm })
-    }
-
-    fn el2_supported() -> bool {
-        VirtualMachineConfig::get_el2_supported().unwrap_or(false)
     }
 }
 
@@ -75,9 +67,14 @@ impl crate::Machine for HvfMachine {
         code(unsafe { hv_vm_map(host.as_ptr().cast(), at, length as usize, flags) })
     }
 
-    fn unmap(&self, at: u64, length: u64) -> Result<()> {
+    /// The framework keeps its own hold on mapped pages, so they are unmapped, replaced by fresh memory and
+    /// mapped again.
+    fn give_back(&self, memory: &Memory, at: u64, length: u64) -> Result<()> {
         // SAFETY: unmapping guest-physical memory the caller mapped.
-        code(unsafe { hv_vm_unmap(at, length as usize) })
+        code(unsafe { hv_vm_unmap(at, length as usize) })?;
+        let host = NonNull::new(memory.host(at)).expect("host address");
+        fresh(Some(host), length)?;
+        crate::Machine::map(self, host, at, length)
     }
 
     fn raise(&self, interrupt: u32, level: bool) -> Result<()> {
@@ -99,7 +96,6 @@ impl crate::Machine for HvfMachine {
             .map_err(|e| Error::Hypervisor(format!("{e:?}")))?;
         Ok(Interrupts {
             timer: id(GicIntId::EL1_VIRTUAL_TIMER)?,
-            counter: id(GicIntId::PERFORMANCE_MONITOR)?,
             first_raised,
         })
     }
@@ -164,8 +160,6 @@ fn which(register: Register) -> Which {
         Register::Ttbr1 => Which::System(SysReg::TTBR1_EL1),
         Register::Affinity => Which::System(SysReg::MPIDR_EL1),
         Register::MemoryModelFeatures => Which::System(SysReg::ID_AA64MMFR0_EL1),
-        Register::DebugFeatures => Which::System(SysReg::ID_AA64DFR0_EL1),
-        Register::HypervisorControl => Which::System(SysReg::HCR_EL2),
     }
 }
 
@@ -181,15 +175,6 @@ impl crate::VirtualCpu for HvfCpu {
                 if ESR_EL2::EC.read(exit.exception.syndrome)
                     == ESR_EL2::EC::Value::HVC64 as u64 =>
             {
-                Ok(Exit::Doorbell)
-            }
-            ExitReason::EXCEPTION
-                if ESR_EL2::EC.read(exit.exception.syndrome)
-                    == ESR_EL2::EC::Value::DataAbortLowerEL as u64
-                    && exit.exception.physical_address == DOORBELL =>
-            {
-                let pc = self.get(Register::Pc)?;
-                self.set(Register::Pc, pc + INSTRUCTION_BYTES)?;
                 Ok(Exit::Doorbell)
             }
             ExitReason::EXCEPTION => Ok(Exit::Exception {
@@ -230,7 +215,8 @@ impl crate::VirtualCpu for HvfCpu {
 
 impl crate::Stopper for HvfStopper {
     fn stop(&self) -> Result<()> {
-        // SAFETY: one valid identifier; stopping a CPU that has gone is refused by the framework, not unsound.
-        code(unsafe { hv_vcpus_exit(&self.id, 1) })
+        let ids = [self.id];
+        // SAFETY: valid identifiers; stopping a CPU that has gone is refused by the framework, not unsound.
+        code(unsafe { hv_vcpus_exit(ids.as_ptr(), ids.len() as u32) })
     }
 }
