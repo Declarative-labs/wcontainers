@@ -1,7 +1,7 @@
 //! C programs built as flat blobs, run through the translator and on real ARM64 Linux.
 
 use crate::layout::initial_stack;
-use crate::reference::{build as build_reference, container_name};
+use crate::reference::{AARCH64, BlobRan, BlobRequest, with_reference};
 use crate::runner::{Fault, Machine, Stopped, Syscalls};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -391,87 +391,46 @@ pub fn reachable_memory(machine: &mut Machine, blob: &Blob) -> Vec<u8> {
     bytes
 }
 
-/// The shortest of `runs` native runs of a blob on ARM64 Linux in Docker, in seconds, each timed by the
-/// reference from making a child process to its end (so neither the container's nor the reference's start-up
-/// is counted).
+/// The shortest of `runs` native runs of a blob on the reference, in seconds, each timed by the reference
+/// from making a child process to its end (so the reference's start-up is not counted).
 pub fn native_seconds(blob: &Blob, runs: u32) -> f64 {
-    let reference = build_reference();
-    let directory = out_directory().join("native");
-    std::fs::create_dir_all(&directory).unwrap();
-    let file = format!("{}.bin", unique(&blob.name));
-    std::fs::write(directory.join(&file), &blob.bytes).unwrap();
-    let script = format!(
-        "/r/wcontainers-reference time {runs} /p/{file} {:#x} {STACK_TOP:#x} {:#x} {} > /dev/null",
-        blob.load,
-        blob.stack_bytes,
-        headers_arguments(blob).join(" ")
-    );
-    let output = Command::new("docker")
-        .args(["run", "--rm", "--network", "none", "--name"])
-        .arg(container_name("timing"))
-        .arg("-v")
-        .arg(format!("{}:/r:ro", reference.display()))
-        .arg("-v")
-        .arg(format!("{}:/p:ro", directory.display()))
-        .args(["alpine:latest", "sh", "-c", &script])
-        .output()
-        .expect("run docker");
-    std::fs::remove_file(directory.join(&file)).unwrap();
-    let times: Vec<f64> = String::from_utf8_lossy(&output.stderr)
-        .lines()
-        .map(|l| l.parse().expect("a time from the reference"))
-        .collect();
-    assert_eq!(times.len(), runs as usize, "native timing runs");
-    times.into_iter().fold(f64::INFINITY, f64::min)
+    on_reference(blob, runs.max(1)).seconds
 }
 
-/// The reference's arguments for where a blob's program headers are and how many.
-fn headers_arguments(blob: &Blob) -> Vec<String> {
-    blob.headers_in_memory()
-        .map(|(at, count)| vec![format!("{at:#x}"), count.to_string()])
-        .unwrap_or_default()
-}
-
-/// Run a blob natively on ARM64 Linux in Docker.
+/// Run a blob natively on the reference.
 pub fn native(blob: &Blob) -> Ran {
-    let reference = build_reference();
-    // Every run reads a file of its own that nothing replaces while Docker reads it.
-    let directory = out_directory().join("native");
-    std::fs::create_dir_all(&directory).unwrap();
-    let file = format!("{}.bin", unique(&blob.name));
-    std::fs::write(directory.join(&file), &blob.bytes).unwrap();
-    let output = Command::new("docker")
-        .args(["run", "--rm", "--network", "none", "--name"])
-        .arg(container_name("program"))
-        .arg("-v")
-        .arg(format!("{}:/r:ro", reference.display()))
-        .arg("-v")
-        .arg(format!("{}:/p:ro", directory.display()))
-        .args(["alpine:latest", "/r/wcontainers-reference", "blob"])
-        .arg(format!("/p/{file}"))
-        .arg(format!("{:#x}", blob.load))
-        .arg(format!("{STACK_TOP:#x}"))
-        .arg(format!("{:#x}", blob.stack_bytes))
-        .args(headers_arguments(blob))
-        .output()
-        .expect("run docker");
-    std::fs::remove_file(directory.join(&file)).unwrap();
-    let status = output.status.code().expect("an exit status");
-    // The runner's own failure is no result of the guest's: it fails the case, never compares.
+    let ran = on_reference(blob, 0);
+    Ran {
+        stdout: ran.stdout,
+        stderr: ran.stderr,
+        status: ran.status,
+    }
+}
+
+fn on_reference(blob: &Blob, runs: u32) -> BlobRan {
+    let request = BlobRequest {
+        bytes: &blob.bytes,
+        load: blob.load,
+        stack_top: STACK_TOP,
+        stack_bytes: blob.stack_bytes,
+        headers: blob.headers_in_memory(),
+        stdin: &[],
+        runs,
+    };
+    let ran = with_reference(&AARCH64, |reference| reference.blob(&request))
+        .unwrap_or_else(|e| panic!("the reference runner failed: {e}"));
+    // The runner's own failure in the blob's child is no result of the guest's: it fails the case, never
+    // compares.
     assert!(
-        !(status == RUNNER_FAILED
-            && output
+        !(ran.status == RUNNER_FAILED
+            && ran
                 .stderr
                 .windows(RUNNER_FAILED_SAYS.len())
                 .any(|w| w == RUNNER_FAILED_SAYS)),
         "the reference runner failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&ran.stderr)
     );
-    Ran {
-        stdout: output.stdout,
-        stderr: output.stderr,
-        status,
-    }
+    ran
 }
 
 /// How the reference runner ends when it fails itself, and what it writes on stderr before.

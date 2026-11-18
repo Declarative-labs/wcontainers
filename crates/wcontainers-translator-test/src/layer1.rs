@@ -1,8 +1,9 @@
 //! Layer 1: one instruction at a time, on the real CPU and through the translator at look-ahead none, with
 //! every register, flag and touched byte compared.
 
+use crate::layout::aarch64::CODE_SPAN;
 use crate::layout::*;
-use crate::reference::{Cases, Landed};
+use crate::reference::{ArmLanded as Landed, Cases};
 use crate::runner::{Machine, Stopped, Syscalls};
 use proptest::prelude::*;
 use wcontainers_abi::{Access, Exit, Permissions, RegisterBlock};

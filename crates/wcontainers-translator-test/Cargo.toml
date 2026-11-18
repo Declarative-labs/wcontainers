@@ -21,9 +21,10 @@ object = { version = "0.40.0", default-features = false, features = ["read_core"
 gimli = { version = "0.34.0", default-features = false, features = ["read", "std"] }
 zerocopy.workspace = true
 rayon = "1.12.0"
+# The reference runner's content hash, under which it is kept on an SSH reference.
+blake3 = "1"
 
 [dev-dependencies]
-blake3 = "1"
 flate2 = "1.1"
 wasmparser = "0.263.0"
 

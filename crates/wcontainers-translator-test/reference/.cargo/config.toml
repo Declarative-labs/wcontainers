@@ -7,3 +7,9 @@ linker = "rust-lld"
 # the runner (up to 1 GiB) never lands where a blob or its stack is mapped. (Static start code must stay within 4 GiB
 # of address 0.)
 rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=--image-base=0x80000000"]
+
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"
+# Linked at 1.5 GiB, above every address a test gives the guest: x86-64's start code calls undefined weak
+# functions at address 0, so the image must sit within 2 GiB of it.
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=--image-base=0x60000000"]

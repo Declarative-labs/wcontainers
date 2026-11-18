@@ -56,19 +56,32 @@ pub const DATA_WRITABLE: u64 = 3 * 4096;
 pub const DATA_READ_ONLY: u64 = 4096;
 pub const DATA_BYTES: u64 = DATA_WRITABLE + DATA_READ_ONLY;
 
-/// Where the instruction under test sits. Everything from `CODE - CODE_SPAN` to `CODE + CODE_SPAN` may be read
-/// and run, and is zero apart from the instruction; zero is `udf #0`, so control stops wherever it lands.
+/// Where the instruction under test sits. The code area around it, `CODE - CODE_SPAN` to `CODE + CODE_SPAN`
+/// of the guest's, may be read and run and holds the guest's `FILLER` apart from the instruction, so that
+/// control stops wherever it lands.
 pub const CODE: u64 = 0x5000_0000;
-pub const CODE_SPAN: u64 = 128 << 20;
 
-/// A case: the instruction word, the data seed, then x0 to x30, sp, the flags (at their `pstate` bits) and
-/// the thread pointer, then v0 to v31, then FPSR and FPCR (4 bytes each), all little endian.
-pub const REQUEST_BYTES: usize = 4 + 8 + 34 * 8 + 32 * 16 + 8;
+/// ARM64's code area: zero is `udf #0`; a branch reaches 128 MiB.
+pub mod aarch64 {
+    pub const FILLER: u8 = 0;
+    pub const CODE_SPAN: u64 = 128 << 20;
+}
 
-/// A result: signal, `si_code`, `si_addr`, then x0 to x30, sp, pc, the flags and the thread pointer, then v0
-/// to v31, then FPSR and FPCR, then the number of changed data bytes and each one as a 4 byte offset from
-/// `DATA` and its new value.
-pub const RESULT_HEADER_BYTES: usize = 4 + 4 + 8 + 35 * 8 + 32 * 16 + 8 + 4;
+/// x86-64's code area: `int3`, 32 KiB either side (a branch further out stops by the trap flag at its
+/// target before anything there is fetched).
+pub mod x86_64 {
+    pub const FILLER: u8 = 0xcc;
+    pub const CODE_SPAN: u64 = 32 << 10;
+}
+
+/// The reference's wire: records both ways, each a little-endian u32 length and that many bytes. The runner
+/// first sends its hello: the number of state fields, each field's name (a byte of length, then the name),
+/// then the CPU's model name (a byte of length, then the name). A request starts with its kind.
+pub const RECORD_CASE: u8 = 0;
+pub const RECORD_BLOB: u8 = 1;
+/// A result starts with its status: the request ran, or the runner failed (a message follows).
+pub const RESULT_RAN: u8 = 0;
+pub const RESULT_FAILED: u8 = 1;
 
 /// The data area's starting contents for a seed.
 pub fn fill(seed: u64, into: &mut [u8]) {
