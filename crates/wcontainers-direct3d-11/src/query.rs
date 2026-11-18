@@ -2,7 +2,11 @@
 //! occlusion predicate counts in stretches: the back end runs one occlusion query at a time inside a
 //! pass, so every begin and end of the program's closes the open stretch, whose result belongs to
 //! every predicate running during it (`QueriesSegmented` where others run on), and a predicate's
-//! answer is whether any of its stretches saw a sample pass.
+//! answer is whether any of its stretches saw a sample pass. Counted occlusion queries count
+//! exactly through the interface's occlusion counter, likewise in stretches between the program's
+//! begins and ends. Timestamps, which the back ends do not write, are answered as Direct3D answers
+//! a timestamp counter that was not continuous: the disjoint query says so, and programs drop the
+//! stamps it covers.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -57,14 +61,16 @@ enum State<B: Backend> {
     Fresh,
     /// Begun and not yet ended: the stretches it ran in so far.
     Running(Vec<Part<B>>),
+    /// A counted occlusion query begun and not yet ended: the samples its stretches counted.
+    Counting(u64),
     /// Ended after `submits` submits; its stretches and, once asked for, their read backs.
     Ended {
         submits: u64,
         parts: Vec<Part<B>>,
         reads: Option<Vec<B::Readback>>,
     },
-    /// The answer.
-    Done(u64),
+    /// The answer: the bytes `GetData` gives, as words.
+    Done([u64; 2]),
 }
 
 pub struct Query<B: Backend> {
@@ -72,12 +78,24 @@ pub struct Query<B: Backend> {
     pub kind: u32,
     pub misc: u32,
     state: RefCell<State<B>>,
+    /// A timestamp's time, in nanoseconds from the device's making.
+    stamp: std::cell::Cell<u64>,
 }
+
+/// `D3D11_QUERY_MISC_PREDICATEHINT`.
+pub const PREDICATE_HINT: u32 = 1;
+
+/// The timestamps' frequency: nanoseconds.
+const NANOSECONDS: u64 = 1_000_000_000;
 
 /// The device's occlusion sets and the predicates running.
 pub(crate) struct Queries<B: Backend> {
     /// Occlusion predicates begun and not ended.
     running: Vec<Rc<Query<B>>>,
+    /// Counted occlusion queries begun and not ended.
+    pub(crate) counted: Vec<Rc<Query<B>>>,
+    /// When the device was made: timestamps count nanoseconds from it.
+    made: std::time::Instant,
     /// Whether the program made an occlusion predicate: from then on every pass counts into a set,
     /// so a begin never has to split a pass.
     used: bool,
@@ -95,6 +113,8 @@ impl<B: Backend> Queries<B> {
     pub fn new() -> Self {
         Queries {
             running: Vec::new(),
+            counted: Vec::new(),
+            made: std::time::Instant::now(),
             used: false,
             set: None,
             pass_set: None,
@@ -111,16 +131,8 @@ impl<B: Backend> Device<B> {
             return Err(Error::InvalidArg("not a query Direct3D 11 has"));
         }
         match kind {
-            kind::EVENT => {}
+            kind::EVENT | kind::OCCLUSION | kind::TIMESTAMP | kind::TIMESTAMP_DISJOINT => {}
             kind::OCCLUSION_PREDICATE => self.queries.used = true,
-            kind::OCCLUSION => {
-                return not_implemented(
-                    "occlusion queries counting samples (the occlusion counter)",
-                );
-            }
-            kind::TIMESTAMP | kind::TIMESTAMP_DISJOINT => {
-                return not_implemented("timestamp queries (the back end writes no timestamps)");
-            }
             kind::PIPELINE_STATISTICS => return not_implemented("pipeline statistics queries"),
             _ => return not_implemented("stream output queries"),
         }
@@ -128,13 +140,33 @@ impl<B: Backend> Device<B> {
             kind,
             misc,
             state: RefCell::new(State::Fresh),
+            stamp: std::cell::Cell::new(0),
         }))
     }
 
-    /// `Begin`: starts an occlusion predicate again from nothing; events have no begin.
+    /// `Begin`: starts an occlusion query again from nothing; events and timestamps have no begin,
+    /// and a disjoint query's begin only marks it running.
     pub fn begin_query(&mut self, q: &Rc<Query<B>>) {
-        if q.kind == kind::EVENT {
-            return;
+        match q.kind {
+            kind::EVENT | kind::TIMESTAMP => return,
+            kind::TIMESTAMP_DISJOINT => {
+                *q.state.borrow_mut() = State::Running(Vec::new());
+                return;
+            }
+            kind::OCCLUSION => {
+                if let Err(e) = self.count_stretch() {
+                    self.lose(e);
+                    return;
+                }
+                if !self.queries.counted.iter().any(|r| Rc::ptr_eq(r, q)) {
+                    self.queries.counted.push(q.clone());
+                }
+                *q.state.borrow_mut() = State::Counting(0);
+                let r = self.counter.begin(&mut self.backend, &mut self.passes);
+                let _ = self.gpu(r);
+                return;
+            }
+            _ => {}
         }
         self.close_stretch(true);
         if !self.queries.running.iter().any(|r| Rc::ptr_eq(r, q)) {
@@ -143,10 +175,34 @@ impl<B: Backend> Device<B> {
         *q.state.borrow_mut() = State::Running(Vec::new());
     }
 
-    /// `End`: an event marks the work recorded so far; a predicate stops counting (one never begun
-    /// ends with nothing counted).
+    /// `End`: an event or timestamp marks the work recorded so far; an occlusion query stops
+    /// counting (one never begun ends with nothing counted).
     pub fn end_query(&mut self, q: &Rc<Query<B>>) {
-        let parts = if q.kind == kind::EVENT {
+        if q.kind == kind::OCCLUSION {
+            let was = self.queries.counted.iter().any(|r| Rc::ptr_eq(r, q));
+            if was && let Err(e) = self.count_stretch() {
+                self.lose(e);
+            }
+            self.queries.counted.retain(|r| !Rc::ptr_eq(r, q));
+            let count = match *q.state.borrow() {
+                State::Counting(n) => n,
+                _ => 0,
+            };
+            *q.state.borrow_mut() = State::Done([count, 0]);
+            if was && !self.queries.counted.is_empty() {
+                let r = self.counter.begin(&mut self.backend, &mut self.passes);
+                let _ = self.gpu(r);
+            }
+            return;
+        }
+        if q.kind == kind::TIMESTAMP {
+            // The time of the end, answered once the work before it is done.
+            q.stamp.set(self.queries.made.elapsed().as_nanos() as u64);
+        }
+        let parts = if matches!(
+            q.kind,
+            kind::EVENT | kind::TIMESTAMP | kind::TIMESTAMP_DISJOINT
+        ) {
             Vec::new()
         } else {
             self.close_stretch(true);
@@ -163,18 +219,22 @@ impl<B: Backend> Device<B> {
         };
     }
 
-    /// `GetData`: the answer once the GPU has it, `None` before. `flush` submits what the answer
-    /// waits on (Direct3D does unless `D3D11_ASYNC_GETDATA_DONOTFLUSH`).
-    pub fn query_data(&mut self, q: &Rc<Query<B>>, flush: bool) -> Result<Option<u64>> {
+    /// `GetData`: the answer once the GPU has it, as the words of its bytes, `None` before.
+    /// `flush` submits what the answer waits on (Direct3D does unless
+    /// `D3D11_ASYNC_GETDATA_DONOTFLUSH`).
+    pub fn query_data(&mut self, q: &Rc<Query<B>>, flush: bool) -> Result<Option<[u64; 2]>> {
         self.live()?;
         let submits = match &*q.state.borrow() {
-            State::Fresh | State::Running(_) => {
+            State::Fresh | State::Running(_) | State::Counting(_) => {
                 return Err(Error::InvalidCall("a query not ended"));
             }
             State::Done(v) => return Ok(Some(*v)),
             State::Ended { submits, .. } => *submits,
         };
-        if q.kind == kind::EVENT {
+        if matches!(
+            q.kind,
+            kind::EVENT | kind::TIMESTAMP | kind::TIMESTAMP_DISJOINT
+        ) {
             if self.queries.submits == submits {
                 if !flush {
                     return Ok(None);
@@ -185,8 +245,21 @@ impl<B: Backend> Device<B> {
             if !self.backend.fence_done(&fence) {
                 return Ok(None);
             }
-            *q.state.borrow_mut() = State::Done(1);
-            return Ok(Some(1));
+            let answer = match q.kind {
+                kind::TIMESTAMP => [q.stamp.get(), 0],
+                kind::TIMESTAMP_DISJOINT => {
+                    static WARNED: std::sync::Once = std::sync::Once::new();
+                    WARNED.call_once(|| {
+                        eprintln!(
+                            "wcontainers direct3d 11: timestamps reported disjoint: the back end writes none"
+                        )
+                    });
+                    [NANOSECONDS, 1]
+                }
+                _ => [1, 0],
+            };
+            *q.state.borrow_mut() = State::Done(answer);
+            return Ok(Some(answer));
         }
         let started = matches!(&*q.state.borrow(), State::Ended { reads: Some(_), .. });
         if !started {
@@ -228,8 +301,56 @@ impl<B: Backend> Device<B> {
             self.backend.finish_read(r, &mut bytes);
             any |= u64::from(u64::from_le_bytes(bytes) != 0);
         }
-        *q.state.borrow_mut() = State::Done(any);
-        Ok(Some(any))
+        *q.state.borrow_mut() = State::Done([any, 0]);
+        Ok(Some([any, 0]))
+    }
+
+    /// The answer of an ended query, waiting for the GPU where it is not there yet
+    /// (`PredicationWait`); none for a query not ended.
+    pub(crate) fn wait_answer(&mut self, q: &Rc<Query<B>>) -> Result<Option<[u64; 2]>> {
+        let mut waited = false;
+        loop {
+            match self.query_data(q, true) {
+                Ok(Some(v)) => return Ok(Some(v)),
+                Ok(None) => {}
+                Err(Error::InvalidCall(_)) => return Ok(None),
+                Err(e) => return Err(e),
+            }
+            if !waited {
+                waited = true;
+                self.backend.slow_paths().hit(SlowPath::PredicationWait);
+            }
+            match &*q.state.borrow() {
+                State::Ended {
+                    reads: Some(reads), ..
+                } => {
+                    for r in reads {
+                        self.backend.wait_read(r);
+                    }
+                }
+                _ => {
+                    if let Some(f) = self.queries.fence.clone() {
+                        self.backend.wait_fence(&f);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Ends the occlusion counter's stretch, if counted queries run, adding its count to each.
+    fn count_stretch(&mut self) -> Result<()> {
+        if self.queries.counted.is_empty() {
+            return Ok(());
+        }
+        self.end_pass();
+        let n = self.counter.end(&mut self.backend, &mut self.passes);
+        let n = self.gpu(n)?;
+        for q in &self.queries.counted {
+            if let State::Counting(sum) = &mut *q.state.borrow_mut() {
+                *sum += n;
+            }
+        }
+        Ok(())
     }
 
     /// The occlusion set a pass opening now counts into, if any predicate may run in it.

@@ -218,6 +218,11 @@ pub struct Limits {
     /// Targets of one [`crate::Backend::capture_vertices`] (and outputs it may write to separate
     /// targets), when [`Features::TRANSFORM_FEEDBACK`] is set.
     pub capture_buffers: u32,
+    /// 32-bit components a capture writes per vertex into one target holding every output (WebGL 2's
+    /// `MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS`, at least 64; Direct3D's stream output takes
+    /// 128), when [`Features::TRANSFORM_FEEDBACK`] is set. An output to a target of its own is at
+    /// most four, which every API takes.
+    pub capture_components: u32,
 }
 
 bitflags! {

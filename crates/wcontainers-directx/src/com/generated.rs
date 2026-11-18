@@ -490,6 +490,41 @@ impl ID3D11Device_Impl for Device_Impl {
     }
 }
 
+impl IDXGIDevice3_Impl for Device_Impl {
+    fn Trim(&self) {
+        let _call = self.call();
+        self.trim()
+    }
+}
+
+impl IDXGIDevice2_Impl for Device_Impl {
+    fn OfferResources(
+        &self,
+        numresources: u32,
+        ppresources: *const Option<IDXGIResource>,
+        priority: DXGI_OFFER_RESOURCE_PRIORITY,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        self.offer_resources(numresources, ppresources, priority)
+    }
+    fn ReclaimResources(
+        &self,
+        numresources: u32,
+        ppresources: *const Option<IDXGIResource>,
+        pdiscarded: *mut windows::core::BOOL,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        self.reclaim_resources(numresources, ppresources, pdiscarded)
+    }
+    fn EnqueueSetEvent(
+        &self,
+        hevent: windows::Win32::Foundation::HANDLE,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        Err(missing("IDXGIDevice2::EnqueueSetEvent"))
+    }
+}
+
 impl IDXGIDevice1_Impl for Device_Impl {
     fn SetMaximumFrameLatency(&self, maxlatency: u32) -> windows::core::Result<()> {
         let _call = self.call();
@@ -654,9 +689,12 @@ impl ID3D11DeviceContext1_Impl for Context_Impl {
         pnumconstants: *const u32,
     ) {
         let _call = self.call();
-        self.only_unbinding(
-            "ID3D11DeviceContext1::HSSetConstantBuffers1",
-            super::context::binds(ppconstantbuffers, numbuffers),
+        self.hs_set_constant_buffers1(
+            startslot,
+            numbuffers,
+            ppconstantbuffers,
+            pfirstconstant,
+            pnumconstants,
         )
     }
     fn DSSetConstantBuffers1(
@@ -668,9 +706,12 @@ impl ID3D11DeviceContext1_Impl for Context_Impl {
         pnumconstants: *const u32,
     ) {
         let _call = self.call();
-        self.only_unbinding(
-            "ID3D11DeviceContext1::DSSetConstantBuffers1",
-            super::context::binds(ppconstantbuffers, numbuffers),
+        self.ds_set_constant_buffers1(
+            startslot,
+            numbuffers,
+            ppconstantbuffers,
+            pfirstconstant,
+            pnumconstants,
         )
     }
     fn GSSetConstantBuffers1(
@@ -682,9 +723,12 @@ impl ID3D11DeviceContext1_Impl for Context_Impl {
         pnumconstants: *const u32,
     ) {
         let _call = self.call();
-        self.only_unbinding(
-            "ID3D11DeviceContext1::GSSetConstantBuffers1",
-            super::context::binds(ppconstantbuffers, numbuffers),
+        self.gs_set_constant_buffers1(
+            startslot,
+            numbuffers,
+            ppconstantbuffers,
+            pfirstconstant,
+            pnumconstants,
         )
     }
     fn PSSetConstantBuffers1(
@@ -747,7 +791,13 @@ impl ID3D11DeviceContext1_Impl for Context_Impl {
         pnumconstants: *mut u32,
     ) {
         let _call = self.call();
-        super::context::nothing_bound(super::context::out_array(ppconstantbuffers), numbuffers)
+        self.hs_get_constant_buffers1(
+            startslot,
+            numbuffers,
+            ppconstantbuffers,
+            pfirstconstant,
+            pnumconstants,
+        )
     }
     fn DSGetConstantBuffers1(
         &self,
@@ -758,7 +808,13 @@ impl ID3D11DeviceContext1_Impl for Context_Impl {
         pnumconstants: *mut u32,
     ) {
         let _call = self.call();
-        super::context::nothing_bound(super::context::out_array(ppconstantbuffers), numbuffers)
+        self.ds_get_constant_buffers1(
+            startslot,
+            numbuffers,
+            ppconstantbuffers,
+            pfirstconstant,
+            pnumconstants,
+        )
     }
     fn GSGetConstantBuffers1(
         &self,
@@ -769,7 +825,13 @@ impl ID3D11DeviceContext1_Impl for Context_Impl {
         pnumconstants: *mut u32,
     ) {
         let _call = self.call();
-        super::context::nothing_bound(super::context::out_array(ppconstantbuffers), numbuffers)
+        self.gs_get_constant_buffers1(
+            startslot,
+            numbuffers,
+            ppconstantbuffers,
+            pfirstconstant,
+            pnumconstants,
+        )
     }
     fn PSGetConstantBuffers1(
         &self,
@@ -975,10 +1037,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppconstantbuffers: *const Option<ID3D11Buffer>,
     ) {
         let _call = self.call();
-        self.only_unbinding(
-            "ID3D11DeviceContext::GSSetConstantBuffers",
-            super::context::binds(ppconstantbuffers, numbuffers),
-        )
+        self.gs_set_constant_buffers(startslot, numbuffers, ppconstantbuffers)
     }
     fn GSSetShader(
         &self,
@@ -1038,7 +1097,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         predicatevalue: windows::core::BOOL,
     ) {
         let _call = self.call();
-        self.only_unbinding("ID3D11DeviceContext::SetPredication", !ppredicate.is_null())
+        self.set_predication(ppredicate, predicatevalue)
     }
     fn GSSetShaderResources(
         &self,
@@ -1059,10 +1118,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppsamplers: *const Option<ID3D11SamplerState>,
     ) {
         let _call = self.call();
-        self.only_unbinding(
-            "ID3D11DeviceContext::GSSetSamplers",
-            super::context::binds(ppsamplers, numsamplers),
-        )
+        self.gs_set_samplers(startslot, numsamplers, ppsamplers)
     }
     fn OMSetRenderTargets(
         &self,
@@ -1326,10 +1382,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppsamplers: *const Option<ID3D11SamplerState>,
     ) {
         let _call = self.call();
-        self.only_unbinding(
-            "ID3D11DeviceContext::HSSetSamplers",
-            super::context::binds(ppsamplers, numsamplers),
-        )
+        self.hs_set_samplers(startslot, numsamplers, ppsamplers)
     }
     fn HSSetConstantBuffers(
         &self,
@@ -1338,10 +1391,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppconstantbuffers: *const Option<ID3D11Buffer>,
     ) {
         let _call = self.call();
-        self.only_unbinding(
-            "ID3D11DeviceContext::HSSetConstantBuffers",
-            super::context::binds(ppconstantbuffers, numbuffers),
-        )
+        self.hs_set_constant_buffers(startslot, numbuffers, ppconstantbuffers)
     }
     fn DSSetShaderResources(
         &self,
@@ -1371,10 +1421,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppsamplers: *const Option<ID3D11SamplerState>,
     ) {
         let _call = self.call();
-        self.only_unbinding(
-            "ID3D11DeviceContext::DSSetSamplers",
-            super::context::binds(ppsamplers, numsamplers),
-        )
+        self.ds_set_samplers(startslot, numsamplers, ppsamplers)
     }
     fn DSSetConstantBuffers(
         &self,
@@ -1383,10 +1430,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppconstantbuffers: *const Option<ID3D11Buffer>,
     ) {
         let _call = self.call();
-        self.only_unbinding(
-            "ID3D11DeviceContext::DSSetConstantBuffers",
-            super::context::binds(ppconstantbuffers, numbuffers),
-        )
+        self.ds_set_constant_buffers(startslot, numbuffers, ppconstantbuffers)
     }
     fn CSSetShaderResources(
         &self,
@@ -1524,7 +1568,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppconstantbuffers: *mut Option<ID3D11Buffer>,
     ) {
         let _call = self.call();
-        super::context::nothing_bound(ppconstantbuffers, numbuffers)
+        self.gs_get_constant_buffers(startslot, numbuffers, ppconstantbuffers)
     }
     fn GSGetShader(
         &self,
@@ -1567,10 +1611,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppredicatevalue: *mut windows::core::BOOL,
     ) {
         let _call = self.call();
-        let _ = pppredicate.write(None);
-        if let Some(v) = unsafe { ppredicatevalue.as_mut() } {
-            *v = false.into();
-        }
+        self.get_predication(pppredicate, ppredicatevalue)
     }
     fn GSGetShaderResources(
         &self,
@@ -1588,7 +1629,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppsamplers: *mut Option<ID3D11SamplerState>,
     ) {
         let _call = self.call();
-        super::context::nothing_bound(ppsamplers, numsamplers)
+        self.gs_get_samplers(startslot, numsamplers, ppsamplers)
     }
     fn OMGetRenderTargets(
         &self,
@@ -1681,7 +1722,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppsamplers: *mut Option<ID3D11SamplerState>,
     ) {
         let _call = self.call();
-        super::context::nothing_bound(ppsamplers, numsamplers)
+        self.hs_get_samplers(startslot, numsamplers, ppsamplers)
     }
     fn HSGetConstantBuffers(
         &self,
@@ -1690,7 +1731,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppconstantbuffers: *mut Option<ID3D11Buffer>,
     ) {
         let _call = self.call();
-        super::context::nothing_bound(ppconstantbuffers, numbuffers)
+        self.hs_get_constant_buffers(startslot, numbuffers, ppconstantbuffers)
     }
     fn DSGetShaderResources(
         &self,
@@ -1718,7 +1759,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppsamplers: *mut Option<ID3D11SamplerState>,
     ) {
         let _call = self.call();
-        super::context::nothing_bound(ppsamplers, numsamplers)
+        self.ds_get_samplers(startslot, numsamplers, ppsamplers)
     }
     fn DSGetConstantBuffers(
         &self,
@@ -1727,7 +1768,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppconstantbuffers: *mut Option<ID3D11Buffer>,
     ) {
         let _call = self.call();
-        super::context::nothing_bound(ppconstantbuffers, numbuffers)
+        self.ds_get_constant_buffers(startslot, numbuffers, ppconstantbuffers)
     }
     fn CSGetShaderResources(
         &self,
@@ -1892,7 +1933,7 @@ impl IDXGIAdapter_Impl for Adapter_Impl {
         interfacename: *const windows::core::GUID,
     ) -> windows::core::Result<i64> {
         let _lock = lock();
-        Err(missing("IDXGIAdapter::CheckInterfaceSupport"))
+        self.check_interface_support(interfacename)
     }
 }
 

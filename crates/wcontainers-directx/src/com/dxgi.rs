@@ -67,6 +67,12 @@ impl Adapter {
 }
 
 impl Adapter_Impl {
+    /// `CheckInterfaceSupport`, which DXGI answers for Direct3D 10 device interfaces with the user
+    /// mode driver's version: this adapter makes none, and has no such driver.
+    pub(super) fn check_interface_support(&self, _name: *const GUID) -> Result<i64> {
+        Err(DXGI_ERROR_UNSUPPORTED.into())
+    }
+
     /// The host's monitors, the primary first.
     pub(super) fn enum_outputs(&self, index: u32) -> Result<IDXGIOutput> {
         let (desc, monitor) = super::output::monitors()

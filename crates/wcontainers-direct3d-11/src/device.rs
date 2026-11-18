@@ -38,6 +38,12 @@ pub struct Device<B: Backend> {
     pub(crate) programs: HashMap<(u64, u64), Kept<B, B::Program>>,
     /// The vertex shaders converted for one pixel shader's interpolation, by the program's ids.
     pub(crate) interpolated: HashMap<(u64, u64), Kept<B, B::Shader>>,
+    /// Counting programs of counted occlusion queries, by the program's ids.
+    pub(crate) counting: HashMap<(u64, u64), Kept<B, B::Program>>,
+    /// Exact counts of counted occlusion queries, and the targets their draws drew on (the pass
+    /// tracker holds them for the counter; the front opens and ends its own passes).
+    pub(crate) counter: wcontainers_gpu::OcclusionCounter<B>,
+    pub(crate) passes: wcontainers_gpu::PassTracker<B>,
     /// The vertex stage's helper constants as last written. The front is the only writer of the
     /// back end's data ring, so the block stays as written until the front's next write.
     pub(crate) draw_base: Option<HelperBlock<B>>,
@@ -171,6 +177,9 @@ impl<B: Backend> Device<B> {
             queries: crate::query::Queries::new(),
             programs: HashMap::new(),
             interpolated: HashMap::new(),
+            counting: HashMap::new(),
+            counter: Default::default(),
+            passes: Default::default(),
             draw_base: None,
             ahead: crate::ahead::Ahead::new(),
             layouts: HashMap::new(),
@@ -465,6 +474,8 @@ impl<B: Backend> Device<B> {
             .retain(|(v, p), _| !ids.contains(v) && !ids.contains(p));
         self.interpolated
             .retain(|(v, p), _| !ids.contains(v) && !ids.contains(p));
+        self.counting
+            .retain(|(v, p), _| !ids.contains(v) && !ids.contains(p));
         self.layouts.retain(|(l, _), _| !ids.contains(l));
         self.bury_built();
     }
@@ -573,8 +584,13 @@ impl<B: Backend> Device<B> {
         }
         let format = format::storage_format(d.format, d.bind_flags & bind::DEPTH_STENCIL != 0)?;
         // A count and quality the device reports no level for is invalid, as in Direct3D. The
-        // standard pattern is the back end's own; the centred one it cannot place.
-        let levels = self.multisample_quality_levels(d.format, d.sample_count);
+        // standard pattern is the back end's own; the centred one it cannot place. A single
+        // sample has quality 0; whether its format serves the bindings is checked below.
+        let levels = if d.sample_count == 1 {
+            1
+        } else {
+            self.multisample_quality_levels(d.format, d.sample_count)
+        };
         match d.sample_quality {
             STANDARD_MULTISAMPLE_PATTERN if levels > 0 => {}
             CENTER_MULTISAMPLE_PATTERN if levels > 0 => {
@@ -1356,7 +1372,10 @@ impl<B: Backend> Device<B> {
             reflection: converted.reflection,
             constant_sizes,
             stand_ins,
-            bytecode: if vertex {
+            bytecode: if matches!(
+                stage,
+                wcontainers_gpu::SourceStage::Vertex | wcontainers_gpu::SourceStage::Pixel
+            ) {
                 bytecode.to_vec()
             } else {
                 Vec::new()

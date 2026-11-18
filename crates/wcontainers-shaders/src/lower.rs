@@ -608,6 +608,7 @@ impl<'a> Lowering<'a> {
             (SourceStage::Vertex, true, builtin::VERTEX_ID | builtin::INSTANCE_ID) => {
                 self.variant.draw_base != DrawBaseSource::Arguments
             }
+            (_, true, builtin::SAMPLE_COUNT) => self.variant.samples != 0,
             (SourceStage::Pixel, true, builtin::POSITION | builtin::IS_FRONT_FACE)
             | (SourceStage::Pixel, true, builtin::SAMPLE_ID | builtin::SAMPLE_MASK)
             | (SourceStage::Pixel, false, builtin::DEPTH | builtin::SAMPLE_MASK) => true,
@@ -1021,6 +1022,15 @@ impl<'a> Lowering<'a> {
         b: u64,
         member: Basic,
     ) -> Result<Handle<Expression>> {
+        if b == builtin::SAMPLE_COUNT {
+            // The targets' sample count, which the variant fixes.
+            let count = e.add(
+                f,
+                body,
+                Expression::Literal(Literal::U32(self.variant.samples.into())),
+            );
+            return Ok(e.bitcast(f, body, count, Scalar::U32, Self::scalar(member.scalar)?));
+        }
         let (bi, size, s) = match b {
             builtin::POSITION => (naga::BuiltIn::Position { invariant: false }, 4, Scalar::F32),
             builtin::VERTEX_ID => (naga::BuiltIn::VertexIndex, 1, Scalar::U32),

@@ -664,9 +664,24 @@ impl Recorder {
                     .into(),
             );
         }
+        let most = f64::from(self.caps().limits.max_texture_2d);
         for v in call.viewports {
             if f32::from_bits(v.min_depth) > f32::from_bits(v.max_depth) {
                 return Err("a viewport whose min_depth is above its max_depth".into());
+            }
+            let f = |b: u32| f64::from(f32::from_bits(b));
+            let (x, y, w, h) = (f(v.x), f(v.y), f(v.width), f(v.height));
+            let edges = |at: f64, size: f64| {
+                (0.0..=most).contains(&size) && at >= -2.0 * most && at + size <= 2.0 * most - 1.0
+            };
+            if !edges(x, w) || !edges(y, h) {
+                return Err("a viewport past its bounds, by max_texture_2d".into());
+            }
+            if ![v.min_depth, v.max_depth]
+                .iter()
+                .all(|&d| (0.0..=1.0).contains(&f(d)))
+            {
+                return Err("a viewport depth outside 0 to 1".into());
             }
             if !has.contains(Features::FRACTIONAL_VIEWPORT)
                 && [v.x, v.y, v.width, v.height]

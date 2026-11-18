@@ -5,7 +5,8 @@
 
 use proptest::test_runner::{Config, RngAlgorithm, RngSeed, TestRunner};
 use std::cell::Cell;
-use wcontainers_gpu::{Format, WriteMode};
+use std::collections::HashMap;
+use wcontainers_gpu::WriteMode;
 use wcontainers_gpu_test::{Call, Recorder, replay, sequence};
 
 fn knob(name: &str, default: u64) -> u64 {
@@ -44,12 +45,33 @@ fn random_sequences_record_and_replay_identically() {
         assert!(r.violations.is_empty(), "violations: {:?}", r.violations);
         calls.set(calls.get() + r.calls.len());
         let mut n = seen.get();
+        // The sample count of each view's texture, for the passes (surface textures, not made by
+        // create_texture, have one).
+        let mut samples = HashMap::new();
+        let mut view_samples = HashMap::new();
         for (i, c) in r.calls.iter().enumerate() {
             let k = match c {
-                Call::CreateTexture(d, Ok(_)) if d.samples == 4 && !d.format.is_depth_stencil() => {
-                    0
+                Call::CreateTexture(d, Ok(t)) => {
+                    samples.insert(*t, d.samples);
+                    continue;
                 }
-                Call::CreateTexture(d, Ok(_)) if d.format == Format::Depth24PlusStencil8 => 1,
+                Call::CreateView(t, _, Ok(v)) => {
+                    view_samples.insert(*v, samples.get(t).copied().unwrap_or(1));
+                    continue;
+                }
+                Call::BeginPass(p) => {
+                    if p.colors
+                        .iter()
+                        .flatten()
+                        .any(|c| view_samples.get(&c.0).is_some_and(|&s| s > 1))
+                    {
+                        n[0] += 1;
+                    }
+                    if p.depth.is_some() {
+                        n[1] += 1;
+                    }
+                    continue;
+                }
                 Call::Draw(d) if d.index.is_some() => 2,
                 Call::BeginQuery(_) => 3,
                 Call::Draw(d) if !d.scissors.is_empty() => 4,

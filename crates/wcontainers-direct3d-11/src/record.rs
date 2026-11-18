@@ -86,6 +86,7 @@ impl Recorder {
             max_line_width: 1.0,
             max_anisotropy: 16,
             capture_buffers: 0,
+            capture_components: 0,
         };
         Recorder {
             caps: Caps {
