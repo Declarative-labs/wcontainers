@@ -809,7 +809,18 @@ impl<B: Backend> Device<B> {
         let ps = if desc.ps.is_empty() {
             None
         } else {
-            Some(self.convert(desc.ps, ShaderStage::Fragment, VariantKey::default())?)
+            // `GetRenderTargetSampleCount` reads the targets' sample count, and dual-source
+            // blending the second output as the blend's second source.
+            let key = VariantKey {
+                flags: if desc.blend.dual_source() {
+                    VariantFlags::DUAL_SOURCE
+                } else {
+                    VariantFlags::empty()
+                },
+                samples: desc.samples.clamp(1, 32) as u8,
+                ..VariantKey::default()
+            };
+            Some(self.convert(desc.ps, ShaderStage::Fragment, key)?)
         };
         // WebGPU and GLSL ES require the stages to agree on interpolation, which in Direct3D the
         // pixel shader alone chooses: the vertex shader writes its outputs so.
@@ -1081,6 +1092,7 @@ impl<B: Backend> Device<B> {
             return Ok(p.clone());
         }
         let (vertex, pixel) = (render.vertex.clone(), render.pixel.clone());
+        let samples = render.targets.samples.clamp(1, 32) as u8;
         let fragment = if pixel.is_empty() {
             ShaderModule::from_wgsl(
                 "@fragment fn main() -> @location(0) vec4f { return vec4f(1.0); }",
@@ -1090,6 +1102,7 @@ impl<B: Backend> Device<B> {
         } else {
             let key = VariantKey {
                 flags: VariantFlags::COUNTING,
+                samples,
                 ..VariantKey::default()
             };
             self.convert(&pixel, ShaderStage::Fragment, key)?

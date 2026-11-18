@@ -9,8 +9,12 @@
 //! texture in that format, and the two inherit from each other the same way (`ReinterpretCopy`).
 
 use wcontainers_gpu::{
-    Backend, Extent, Features, FormatUse, Origin, SlowPath, TextureRegion, TextureUsage,
+    Backend, Extent, Features, Format, FormatUse, Origin, SlowPath, TextureRegion, TextureUsage,
 };
+
+/// `DXGI_FORMAT_D32_FLOAT` and `DXGI_FORMAT_D16_UNORM`.
+const DXGI_D32_FLOAT: u32 = 40;
+const DXGI_D16_UNORM: u32 = 55;
 
 use super::{Device, Resource, ResourceId, Storage, dxgi};
 use crate::Error;
@@ -58,7 +62,6 @@ impl<B: Backend> Device<B> {
         let view = dxgi(format)?;
         let Some(Resource {
             storage: Storage::Texture { desc, .. },
-            desc: rdesc,
             twins,
             ..
         }) = self.resources.get(id.0 as usize)
@@ -85,6 +88,67 @@ impl<B: Backend> Device<B> {
                 "a multisampled texture viewed in a format reinterpreting its bits",
             ));
         }
+        self.make_twin(id, view, format)
+    }
+
+    /// The twin of colour texture `id` stored in the depth format of the same bits, which
+    /// comparison sampling needs (WebGPU compares only depth textures), made at the first such
+    /// read; the two inherit each other's writes as other twins do. Gives it and its format.
+    pub(super) fn depth_twin(&mut self, id: ResourceId) -> Result<(ResourceId, Format), Error> {
+        let (stored, twins) = match self.resources.get(id.0 as usize) {
+            Some(Resource {
+                storage: Storage::Texture { desc, .. },
+                twins,
+                ..
+            }) if desc.samples == 1 => (desc.format, twins),
+            _ => {
+                return Err(Error::NotImplemented(
+                    "comparison sampling of a multisampled texture not stored in a depth format",
+                ));
+            }
+        };
+        let (depth, dxgi_depth) = match stored {
+            Format::R32Float => (Format::Depth32Float, DXGI_D32_FLOAT),
+            Format::R16Unorm => (Format::Depth16Unorm, DXGI_D16_UNORM),
+            _ => {
+                return Err(Error::NotImplemented(
+                    "comparison sampling of a texture of no depth format's bits",
+                ));
+            }
+        };
+        let found = twins.iter().copied().find(|t| {
+            matches!(&self.resources[t.0 as usize].storage,
+                Storage::Texture { desc, .. } if desc.format == depth)
+        });
+        if let Some(t) = found {
+            return Ok((t, depth));
+        }
+        // Bytes written before any twin existed were not stamped: the twin takes them as they are.
+        let r = &mut self.resources[id.0 as usize];
+        if r.written == 0 {
+            self.stamp += 1;
+            r.written = self.stamp;
+        }
+        self.backend.slow_paths().hit(SlowPath::DepthWrittenByDraw);
+        Ok((self.make_twin(id, depth, dxgi_depth)?, depth))
+    }
+
+    /// Makes the twin of texture `id` stored as `view` (DXGI format `format`), and lists the two
+    /// and the other twins as inheriting from each other.
+    fn make_twin(
+        &mut self,
+        id: ResourceId,
+        view: Format,
+        format: u32,
+    ) -> Result<ResourceId, Error> {
+        let Some(Resource {
+            storage: Storage::Texture { desc, .. },
+            desc: rdesc,
+            ..
+        }) = self.resources.get(id.0 as usize)
+        else {
+            return Err(Error::Invalid("not a texture"));
+        };
         let uses = self.backend.caps().formats.get(view);
         let mut tdesc = *desc;
         tdesc.format = view;
