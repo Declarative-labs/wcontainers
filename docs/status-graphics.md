@@ -19,6 +19,8 @@ branches into it at the start and end of every run, keeps the whole workspace bu
     break, and a suite test where it states something a back end does (list below).
   - Start merges: webgl and direct3d-11 (fast-forwards: direct3d-11 already held webgl and this
     line), then direct3d-12, shaders and rig; no conflict. The whole workspace checks after them.
+  - End merges: webgpu (with one interface commit, 04bd53bf, covered below) and shaders, no
+    conflict; the others had nothing new. The whole workspace checks after them.
 
 ## G1's tenth check, and how each finding was settled
 
@@ -45,7 +47,12 @@ Each entry: the change, whether it fits the interface's style, its rule check an
 back end, `crates/wcontainers-gpu-test/tests/` unless named) and its suite test (`src/suite*`, run
 by every back end through `suite!`).
 
-Since G1 passed (from the other tracks, merged at this run's start):
+Since G1 passed (from the other tracks, merged at this run's start, and 04bd53bf at its end):
+- 04bd53bf (webgpu) `copy_texture` between non-overlapping regions of one subresource, and
+  `SlowPath::CopyWithinTexture` where the API refuses it. Fits: a base rule stated, with a named
+  slow path. The recorder took any copy within a texture, overlapping ones too; it now refuses an
+  overlap. Rule test: `texture_copies_within_one_texture_do_not_overlap`. Suite:
+  `a_copy_within_one_subresource_moves_the_region`.
 - 72dbc184 (webgl) `Features::POLYGON_MODE_POINT`, `POLYGON_MODE` narrowed to lines. Fits: a
   capability. The recorder refused point filling as `POLYGON_MODE`; it now answers
   `Absent(POLYGON_MODE_POINT)`. Rule test: `raster_blocks_need_the_features_they_use` (a case per
@@ -123,10 +130,11 @@ Earlier since G1 began (merged in G1's runs, all kept; checked again here):
 
 Every rule a caller can break is refused by the recording back end (a violation that loses the
 device, or `GpuError` at creation) and broken once in a test; `tests/rules.rs` holds most, one or
-more tests per rule (107 now), `tests/compute.rs` the dispatch, capture and timestamp rules,
+more tests per rule (108 now), `tests/compute.rs` the dispatch, capture and timestamp rules,
 `tests/recorder.rs` six more, `tests/helpers.rs` the usage-scope rule and the pass tracker. The
 list of rules and their tests is the test names themselves; this run added the linking rule, the
-u32 bounds, the point-fill capability and the discarding split.
+u32 bounds, the point-fill capability, the discarding split and overlapping copies within a
+texture.
 
 Known unreachable guards (kept, no test): `sample_view`'s comparison without `compare`, storage
 writes from vertex programs, an attachment taken twice by a draw, a colour attachment without
@@ -141,8 +149,9 @@ pointers to a function's locals passed to another function.
 - `Recorder` keeps every object's bytes on the CPU, runs each call as it is recorded through an
   interpreter of naga's IR, checks the rules, logs every base call (`calls`) and replays them
   (`replay`). It draws one or four samples. `Recorder::with_caps` takes capabilities away.
-- Suite: 36 tests (`src/suite.rs`, `src/suite/draws.rs`, `src/suite/routes.rs`), listed in the
-  `suite!` macro; `tests/recorder.rs` runs them with 6 rule tests (42). This run added
+- Suite: 37 tests (`src/suite.rs`, `src/suite/draws.rs`, `src/suite/routes.rs`), listed in the
+  `suite!` macro; `tests/recorder.rs` runs them with 6 rule tests (43). This run added
+  `a_copy_within_one_subresource_moves_the_region`,
   `fill_modes_draw_edges_or_corners`, `values_pass_between_programs_by_location`,
   `vertices_pulled_from_storage_match_the_fetched_ones`,
   `constants_read_through_a_texture_lie_256_rows_to_a_texture_row`,
@@ -152,7 +161,7 @@ pointers to a function's locals passed to another function.
 ## Next
 
 - G1b's independent check.
-- The webgpu and webgl hosts take the six new suite tests when they merge; expected there: webgpu
+- The webgpu and webgl hosts take the seven new suite tests when they merge; expected there: webgpu
   must answer `Absent(POLYGON_MODE_POINT)` for point filling; webgl draws lines natively where
   WEBGL_polygon_mode is present and captures through transform feedback.
 - Not G1b's: the occlusion counter's sum by a dispatch on WebGPU (G2; until then `ReadBackWait`).
@@ -203,7 +212,17 @@ pointers to a function's locals passed to another function.
     suite test), the linking check off or taking another location, the interpreter linking by
     rank, `instance_index` without the first instance (caught by the pulled-vertices suite test and
     `instances_start_at_the_first_instance`), `Format::components` wrong for `r8unorm`, and the
-    filter codes swapped.
+    filter codes swapped. After the end merge, two more (`g1b/faults2.log`, load 1.0): an
+    overlapping copy within a texture allowed, and a copy within one texture dropping its texels;
+    2 of 2 caught, by `texture_copies_within_one_texture_do_not_overlap` and
+    `a_copy_within_one_subresource_moves_the_region`.
+  - End check after the end merges and the overlap rule (scratch `g1b/end-check.log`): the whole
+    workspace checks (`cargo check --workspace --all-targets`), the owned crates' docs build with
+    warnings denied, and 100,000 sequences again replay identically with no rule broken: seed
+    0x61b0b1, 5,216,633 calls, 114.5 s with the build, load 3.3 at the start (another track
+    building beside it); seed 0x5eed, 5,223,851 calls, 71.7 s, load 8.4. The owned crates' whole
+    test set on the final tree: 225 pass (interface 33, compute 8, fast paths 14, helpers 18,
+    suite on the recorder 43, rules 108, sequences 1 at the default 1,000 cases).
 - Earlier runs' measurements (G1 runs 1 to 11) are in this file's history up to f7e5dfe: the
   last, run 11, ran 100,000 sequences at 0x5eed, 0xc0ffee and 0x7e11c5 (about 64 s each at 4 jobs)
   and caught 7 of 7 faults.
