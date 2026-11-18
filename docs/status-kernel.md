@@ -83,9 +83,56 @@ built by ltp/build.sh) so nothing is unpacked per test, opened for the page cach
 runtimes' are (shared mappings need it). The watchdog counts backend answers as progress, so a
 call exchanging many messages is not called a hang.
 
-LTP comparison: the whole suite at ceb929e (root on the backend; before the sysfs, oom, cmdline,
-sysctl and securebits work), started 06:38 with 4 jobs, LTP_LIMIT 300, load 47 to 65; scratch
-k6c2/ours-4.tsv. RESULTS PENDING (see the table below when filled).
+- /proc/<pid>/timerslack_ns (only in the process directory; the first thread itself, or a
+  tracer with CAP_SYS_NICE, else EPERM; base-10 writes, 0 gives back the slack the thread was
+  born with), and a new thread's born-with slack is its parent's current one, as prctl08
+  checks. tests/procwrite.rs `timer_slack_matches_reference` (guest/timerslack.c).
+
+LTP comparison (layer 3), the whole suite at ceb929e (root on the backend; before the sysfs,
+oom, cmdline, sysctl, securebits and timer slack work), started 06:38 detached with 4 jobs,
+LTP_LIMIT 300, load 44 to 65; results in scratch k6c2/ours-4.tsv, output k6c2/ours-4.out. It is
+slow: with the root on the backend the dio, dma_thread_diotest and fs tests run past 300 s (dio16,
+1000 direct 64 KiB writes and reads, took 75 s on the in-memory root and 5 s in the reference),
+so at the end of this run it had reached fs (642 of 4226 tests). It goes on running detached;
+the next run continues from its file (`ltp ours` skips tests a results file has). Table for
+those 642 (k6c2/compare-4-partial.txt):
+- Tests matching: 579 of 642.
+- Differing, 63, by cause:
+  - Slower than the 300 s limit on the stand-in with the backend root: 26 (dio 10,
+    dma_thread_diotest 7, cve 5, fs 4). Not yet shown to give the reference's verdict with a
+    longer limit.
+  - AF_ALG not built: 8 crypto, 4 cve (cve-2017-17805, 17806, 2026-31431, 2019-8912 likely).
+  - The cgroup2 mount at /sys/fs/cgroup not built: 8 controllers.
+  - /proc/<pid>/mem not built: cve-2016-5195 (and dirtyc0w later). /proc/<pid>/attr:
+    cve-2017-2618. /proc/keys and keyctl: cve-2016-7042. AF_PACKET (raw packets, section 15):
+    cve-2017-7308. A listen to the outside the test host refused: cve-2018-9568. Call 266
+    (clock_adjtime) not built: cve-2018-11508. prctl PR_SET_MM forms: cve-2026-43499. A socket
+    option: cve-2026-53362. A /sys entry under class: cve-2018-5803. A vm sysctl:
+    cve-2020-29373. Not yet looked at: cve-2017-2671, 2017-8890, 2017-1000405, 2018-12896,
+    2021-26708.
+  - Fixed since ceb929e and checked one by one with the latest code: check_keepcaps03 (pass),
+    cve-2017-1000364 (pass), prctl02 (pass), prctl08 (fixed after), kernel_misc uaccess
+    (skipped, as the reference). hugetlb tests checked: hugemmap01, hugeshmget01,
+    hugefallocate01 and memfd_create03 now broken as the reference's.
+- Excused with a gap: none yet; the draft list is below.
+
+Draft gap list (section 15 causes only; to be settled when the comparison is whole):
+- Tracing one process from another (missing in phase one): the ptrace tests (ptrace01, 02,
+  03, 05, 06, 11 in the K6c first run) and any other test that stops on ptrace.
+- No raw packets (the network is not Linux's): AF_PACKET (cve-2017-7308, setsockopt02,
+  sendto02 likely) and ping sockets.
+- The network is not Linux's network stack: SCTP (net.sctp) and vsock, refused as not built.
+- /proc and /sys hold a chosen subset: the sysfs group's tests that look for entries not built
+  (sys_clocksource01, sys_kernel01, sys_cpu_topology01 and 02, sys_cpu_vulnerabilities01,
+  sys_cpu_cache01, sys_clockevents01, sys_bdi01, sys_rtc01, sys_net01, sys_block_queue01,
+  sys_block_size01, sys_ksm01, sys_mm_swap01, sys_thp01 in the first run).
+- One CPU: tests that need several (to be listed from the whole comparison).
+- Slower (file access until the cache, the stand-in): only tests shown to give the reference's
+  verdict under a longer limit.
+Not excusable, to be built: AF_ALG, core dumps, /proc/<pid>/mem, smaps, pagemap and attr,
+keyctl and /proc/keys, clock_adjtime and adjtimex, remap_file_pages, the madvise advices and
+prctl options counted, hugetlbfs memory files (memfd MFD_HUGETLB is ENOSYS here and works with
+no pages in the reference), the cgroup2 mount.
 
 ## K6c, first run
 
@@ -3153,19 +3200,31 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-K6c, in this order (the whole LTP run at ffc8b22 is in scratch k6c/ours-3.tsv; compare it with
-`ltp compare crates/wcontainers-kernel-test/ltp/reference-20260930.tsv <it>`):
-1. Run LTP on ours with the root on the file backend, as the runtimes do, so tests see the
-   reference's file system kinds (the aiodio tests skip on tmpfs); then rerun the whole suite.
-2. A sysfs with the entries LTP's library looks for: /sys/kernel/mm/hugepages/hugepages-*/ with
-   no pages (57 hugetlb tests), /sys/devices and /sys/bus for kernel_misc; /proc/sys/vm/
-   drop_caches (write only, EROFS here as in Docker).
-3. AF_ALG (crypto and cve tests); the cgroup2 mount at /sys/fs/cgroup (controllers).
-4. Core dumps (abort01, kill11: the status's core-dump bit needs a written core), the single cve
-   and fs tests, truncate(2) breaking leases, fs.aio-nr and aio-max-nr.
-5. Decide the gap list from section 15 only (ptrace tests: tracing; AF_PACKET and ping: raw
-   packets; SCTP and vsock: the network is not Linux's; tests needing several CPUs).
-6. Three fresh layer 1 seeds at the end (fresh seeds start at 8484004).
+K6c, in this order:
+1. Let the whole LTP run at ceb929e finish (scratch k6c2/ours-4.tsv; if it is no longer
+   running, continue it: `LTP_TAR=<scratch>/ltp/ltp-20260930.tar LTP_LIMIT=300 LTP_JOBS=4
+   nix develop -c cargo run -p wcontainers-kernel-test --bin ltp -- ours <that file>`; the
+   image wc-kernel-ltp-served:20260930 must exist: ltp/build.sh makes it). Then run again
+   every test that differs, at the newest commit, into a second file and compare with
+   `ltp compare crates/wcontainers-kernel-test/ltp/reference-20260930.tsv <file>`.
+2. Find why tests are so slow on the backend root (dio16: 5 s reference, 75 s in-memory root,
+   past 300 s on the backend): measure the backend round trips per second through the test
+   host's docker pipe and how many messages a direct 64 KiB write makes. Then run the timeouts
+   with a longer LTP_LIMIT to show their verdicts.
+3. Core dumps (abort01, kill11, waitpid01): measured in the reference: core_pattern "core",
+   core_uses_pid 0, RLIMIT_CORE 0 by default; with a limit a file "core" (0600, ELF core) is
+   written in the cwd and the status has the core bit. The core must be written as a kernel
+   operation that can park (the cwd is on the backend), as an exiting thread's call slot.
+   linux-raw-sys has elf64_hdr, elf64_phdr, elf64_note and NT_*, not elf_prstatus.
+4. AF_ALG; /proc/<pid>/mem (FOLL_FORCE rules: reads of PROT_NONE and writes to private
+   mappings); smaps, pagemap, attr; hugetlbfs memory files with no pages (measured: memfd
+   MFD_HUGETLB works, blksize the page size, ftruncate needs its multiple, write EINVAL, read
+   zeros, mmap ENOMEM, fallocate ENOSPC, statfs HUGETLBFS_MAGIC, sizes 64K/2M/32M/1G, others
+   ENODEV); the cgroup2 mount; keyctl; clock_adjtime.
+5. Settle the gap list (draft under "K6c, second run") and write the Reported items: the
+   system calls list (done, partial, missing), the results file of the last whole comparison
+   committed under ltp/, and every counter (Not built, by counter).
+6. Three fresh layer 1 seeds at the end (fresh seeds start at 8484005).
 
 After K6b (fifth run), in this order (none of these holds K6b):
 1. inotify on a backend root (tests/inotify.rs, ignored with its reason): IN_EXCL_UNLINK needs
@@ -3247,6 +3306,6 @@ not seen as a setting; futex queues allocate when a futex first gets waiters; th
 sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
 737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, 5050001, 5050003 and
 5050002, 5050401 to 5050462 (K5; sockets reached from 5050405), 5050463 to 5050466 (K6a),
-6262601 to 6262624 and 8484001 to 8484003 (K6b), and the checks' 7373001 and 7373003, 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+6262601 to 6262624 and 8484001 to 8484003 (K6b), 8484004 (K6c, 300 sequences), and the checks' 7373001 and 7373003, 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
 0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
 to 4040315, and the check's 7171002.
