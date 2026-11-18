@@ -7,7 +7,7 @@ pub mod starts;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::Infallible;
-use std::mem::MaybeUninit;
+use std::mem::{ManuallyDrop, MaybeUninit};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
@@ -63,7 +63,10 @@ pub mod reason {
 pub struct Compiler<G: Guest> {
     engine: Engine,
     thread_module: Module,
-    pool: rayon::ThreadPool,
+    /// Dropped only in the process that made it: in a copy made by fork its threads are not there.
+    pool: ManuallyDrop<rayon::ThreadPool>,
+    /// The process the pool's threads are in.
+    process: u32,
     host: G::Host,
     modules: Mutex<HashMap<Key, Arc<Compiled>>>,
     directory: Option<PathBuf>,
@@ -142,7 +145,8 @@ impl<G: Guest> Compiler<G> {
         Arc::new(Self {
             engine,
             thread_module,
-            pool,
+            pool: ManuallyDrop::new(pool),
+            process: std::process::id(),
             host,
             modules: Mutex::new(HashMap::new()),
             directory,
@@ -325,6 +329,17 @@ impl<G: Guest> Compiler<G> {
 struct NotKept {
     error: u64,
     nanoseconds: u64,
+}
+
+impl<G: Guest> Drop for Compiler<G> {
+    fn drop(&mut self) {
+        // Ending the pool wakes its threads, which in a copy made by fork can wait for ever on a lock
+        // a thread of the parent held at the fork; a copy leaves the pool as it is.
+        if self.process == std::process::id() {
+            // SAFETY: dropped once, here, and not used after.
+            unsafe { ManuallyDrop::drop(&mut self.pool) };
+        }
+    }
 }
 
 /// One translation a back end used: where, how, and what it cost.
@@ -2325,7 +2340,49 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{CHUNK, Page, Pages, Permissions};
+    use super::{CHUNK, Compiler, Page, Pages, Permissions};
+
+    /// A compiler copied into a fork of this process, where its pool's threads are not, is dropped
+    /// there whatever those threads were doing at the fork, as a save's copy drops the back end it
+    /// was brought back from.
+    #[test]
+    fn a_compiler_copied_by_fork_is_dropped_there() {
+        let compiler = Compiler::<wcontainers_arm64::Arm64>::new(None);
+        for round in 0..400u32 {
+            // The pool's threads asleep, then woken, and the fork at a different moment of their
+            // waking each round.
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            for _ in 0..8 {
+                compiler.pool.spawn(|| {
+                    let _ = (0..2_000u64).fold(0u64, |a, b| a.wrapping_mul(31) ^ b);
+                });
+            }
+            for _ in 0..round % 20 * 50 {
+                std::hint::spin_loop();
+            }
+            // SAFETY: the copy only drops the compiler and leaves with `_exit`.
+            let child = unsafe { libc::fork() };
+            assert!(child >= 0, "fork");
+            if child == 0 {
+                drop(compiler);
+                // SAFETY: ends the copy without running anything of the parent's.
+                unsafe { libc::_exit(0) };
+            }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            let mut status = 0;
+            // SAFETY: waits for the copy made above, and kills it if it never ends.
+            unsafe {
+                while libc::waitpid(child, &mut status, libc::WNOHANG) != child {
+                    if std::time::Instant::now() > deadline {
+                        libc::kill(child, libc::SIGKILL);
+                        panic!("dropping the compiler in the copy did not finish in 20 s");
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+            assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0);
+        }
+    }
 
     /// Records change only where asked, copies share chunks until one side changes, a chunk left
     /// holding nothing is dropped, and the data runs cross chunk boundaries.
