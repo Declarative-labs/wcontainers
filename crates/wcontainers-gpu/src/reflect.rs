@@ -300,6 +300,11 @@ pub enum HelperValue {
     /// The texel layout of a storage view read through a buffer: row pitch in texels and rows per
     /// layer, two u32.
     TexelLayout { slot: u32 },
+    /// A typed buffer view read through a storage buffer ([`TexelBufferRoute::Storage`]) at this
+    /// binding: the byte offset of the view's first element in the bound range and the view's
+    /// element count, two u32. Elements at or past the count read zero in the format's components
+    /// and the defaults in the others, as an element of a vertex stream does, and take no writes.
+    TexelBufferView { set: u32, binding: u32 },
     /// How the program combines target n with its old value: color and alpha source and destination
     /// factors and operations, the write mask and the logic operation as u32 codes (eight u32), then the
     /// draw's blend constant (four f32).
@@ -436,7 +441,10 @@ pub enum TexelBufferRoute {
     #[default]
     Native,
     /// From storage buffers, the format decoded in the program
-    /// ([`crate::SlowPath::TexelBufferAsStorage`]).
+    /// ([`crate::SlowPath::TexelBufferAsStorage`]): each typed buffer is a storage buffer of u32
+    /// words at its slot's binding (read-only for a texture slot), the view's place in it and its
+    /// length in [`HelperValue::TexelBufferView`], its format from [`VariantKey::texel_formats`]
+    /// (texture slots) or [`VariantKey::storage_formats`] (storage slots).
     Storage,
     /// From a 2D texture the front copies the buffer into ([`crate::SlowPath::TexelBufferAsTexture`]).
     Texture,
@@ -498,6 +506,9 @@ pub struct VariantKey {
     pub storage_formats: Vec<(u32, Format)>,
     /// How typed buffers are read.
     pub texel_buffers: TexelBufferRoute,
+    /// Formats of the typed buffer views bound at texture slots, by slot, from the bound view, where
+    /// the program decodes them ([`TexelBufferRoute::Storage`]).
+    pub texel_formats: Vec<(u32, Format)>,
     /// Storage slots packed into one buffer, at offsets from the helper constants
     /// ([`crate::SlowPath::StoragePacked`]).
     pub storage_packed: u64,
