@@ -4,6 +4,7 @@
 
 pub mod address;
 pub mod device;
+pub mod dxbc;
 pub mod features;
 pub mod list;
 pub mod resource;

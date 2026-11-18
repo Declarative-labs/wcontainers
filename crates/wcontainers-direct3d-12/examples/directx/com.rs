@@ -1938,11 +1938,11 @@ impl ID3D12GraphicsCommandList_Impl for List_Impl {
     }
     fn SOSetTargets(
         &self,
-        _startslot: u32,
-        _numviews: u32,
-        _pviews: *const D3D12_STREAM_OUTPUT_BUFFER_VIEW,
+        startslot: u32,
+        numviews: u32,
+        pviews: *const D3D12_STREAM_OUTPUT_BUFFER_VIEW,
     ) {
-        self.unsupported("SOSetTargets");
+        List::SOSetTargets(self, startslot, numviews, pviews)
     }
     fn OMSetRenderTargets(
         &self,

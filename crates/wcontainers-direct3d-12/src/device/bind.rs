@@ -150,7 +150,8 @@ fn locate(root: &RootSignatureDesc, b: &StageBinding) -> Option<Source> {
         SlotKind::Storage => 1,
         SlotKind::Uniform => 2,
         SlotKind::Sampler => 3,
-        SlotKind::Counter => return None,
+        // A counter is found where its view is.
+        SlotKind::Counter => 1,
     };
     for (i, p) in root.parameters.iter().enumerate() {
         if !visible(p.visibility, b) {
@@ -209,9 +210,6 @@ pub(super) fn check(root: &RootSignatureDesc, bindings: &[StageBinding]) -> Resu
     for b in bindings {
         if b.binding.added.is_some() || b.binding.count != 1 {
             return Err(Error::NotImplemented("arrays of resources in a shader"));
-        }
-        if b.binding.kind == SlotKind::Counter {
-            return Err(Error::NotImplemented("unordered access view counters"));
         }
         if locate(root, b).is_none() {
             return Err(Error::Invalid(
@@ -402,6 +400,7 @@ impl<B: Backend> Device<B> {
             .ok_or(Error::Invalid("drawing with no root signature"))?;
         let root = self.roots[root_id.0 as usize].clone();
         let mut held = Vec::with_capacity(bindings.len());
+        self.bound_storage.clear();
         for (index, b) in bindings.iter().enumerate() {
             let source = locate(&root, b).ok_or(Error::Invalid(
                 "the bound root signature lacks a binding a shader reads",
@@ -432,6 +431,11 @@ impl<B: Backend> Device<B> {
                         return Err(Error::Invalid("a table set for a root descriptor"));
                     };
                     match (kind, b.form) {
+                        (SlotKind::Counter, _) => {
+                            return Err(Error::Invalid(
+                                "a counter of a root unordered access view",
+                            ));
+                        }
                         (SlotKind::Uniform, _) => self.constant_buffer(address, b.declared)?,
                         (_, Form::Buffer { writable }) => self.root_buffer(address, writable)?,
                         _ => {
@@ -456,11 +460,20 @@ impl<B: Backend> Device<B> {
                         (SlotKind::Texture, Descriptor::ShaderResource(v)) => {
                             Held::Texture(self.shader_resource(&v, b.compared)?)
                         }
+                        (SlotKind::Counter, Descriptor::UnorderedAccess(v)) => {
+                            self.view_counter(&v)?
+                        }
                         (SlotKind::Storage, Descriptor::UnorderedAccess(v)) => match b.form {
                             Form::Buffer { writable } => self.buffer_view(&v, writable)?,
                             Form::Image { writable } => {
                                 self.note(v.resource, writable);
-                                Held::StorageTexture(self.storage_texture(&v)?, writable)
+                                let view = self.storage_texture(&v)?;
+                                self.bound_storage.push((
+                                    b.visibility,
+                                    b.binding.register,
+                                    dxgi(v.format)?,
+                                ));
+                                Held::StorageTexture(view, writable)
                             }
                             Form::Plain => return Err(Error::Invalid("a storage binding")),
                         },
@@ -503,6 +516,10 @@ impl<B: Backend> Device<B> {
                 let shape = b
                     .shape
                     .ok_or(Error::NotImplemented("null views of this storage texture"))?;
+                // A null view's format is the program's own: its reads are zeros and its
+                // writes are dropped in any format.
+                self.bound_storage
+                    .push((b.visibility, b.binding.register, shape.format));
                 Held::StorageTexture(self.null_view(shape, writable)?, writable)
             }
             (_, Form::Plain) => {
@@ -530,6 +547,24 @@ impl<B: Backend> Device<B> {
         self.upload(id)?;
         self.note(id, false);
         Ok(Held::Uniform(self.buffer(id)?.0.clone(), offset, size))
+    }
+
+    /// The counter of an unordered access view, as a writable storage word; zeros whose writes
+    /// are dropped for a view made without one (Direct3D 12 leaves that undefined).
+    fn view_counter(&mut self, v: &ResourceView) -> Result<Held<B>, Error> {
+        if v.counter() == 0 {
+            return Ok(Held::Storage {
+                buffer: self.null_buffer(true)?,
+                offset: 0,
+                size: 4,
+                writable: true,
+            });
+        }
+        let (id, offset) = self
+            .addresses
+            .find(v.counter())
+            .ok_or(Error::Invalid("a view counter in no buffer"))?;
+        self.storage_range(id, offset, 4, true)
     }
 
     /// A root shader resource or unordered access view: the buffer from `address` to its end.
@@ -615,8 +650,17 @@ impl<B: Backend> Device<B> {
             }
             _ => return Err(Error::NotImplemented("one-dimensional storage textures")),
         };
+        // Array sizes past the texture's layers (such as -1) take the layers left, as for
+        // shader resource views.
+        let layers = match self.resources.get(v.resource.0 as usize) {
+            Some(Resource {
+                storage: Storage::Texture { desc, .. },
+                ..
+            }) => desc.depth_or_layers,
+            _ => return Err(Error::Invalid("a texture view of no texture")),
+        };
         let layer_count = match dimension {
-            ViewDimension::D2Array => v.layers,
+            ViewDimension::D2Array => v.layers.min(layers.saturating_sub(v.first_layer)),
             _ => 1,
         };
         if dimension == ViewDimension::D3 && v.first_layer != 0 {

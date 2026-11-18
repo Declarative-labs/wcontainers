@@ -29,7 +29,8 @@ pub struct ResourceView {
     pub format: u32,
     /// `D3D12_SRV_DIMENSION` or `D3D12_UAV_DIMENSION`.
     pub dimension: u32,
-    /// `Shader4ComponentMapping` (shader resource views).
+    /// `Shader4ComponentMapping` (shader resource views); unordered access views: the low word of
+    /// their counter's GPU virtual address ([`ResourceView::counter`]).
     pub mapping: u32,
     /// Buffers: the first element.
     pub first_element: u64,
@@ -43,8 +44,25 @@ pub struct ResourceView {
     pub layers: u32,
     /// Buffers: `D3D12_BUFFER_SRV_FLAGS` or `D3D12_BUFFER_UAV_FLAGS` (raw).
     pub flags: u32,
-    /// Textures: `ResourceMinLODClamp`, as f32 bits.
+    /// Textures: `ResourceMinLODClamp`, as f32 bits; unordered access views: the high word of
+    /// their counter's address.
     pub min_lod: u32,
+}
+
+impl ResourceView {
+    /// An unordered access view's counter: the GPU virtual address of its 32 bits, 0 for none.
+    pub fn counter(&self) -> u64 {
+        u64::from(self.mapping) | u64::from(self.min_lod) << 32
+    }
+
+    /// The view with its counter at GPU virtual address `address`.
+    pub fn with_counter(self, address: u64) -> Self {
+        ResourceView {
+            mapping: address as u32,
+            min_lod: (address >> 32) as u32,
+            ..self
+        }
+    }
 }
 
 /// `D3D12_SAMPLER_DESC`, floats as bits.
@@ -84,6 +102,15 @@ pub enum Descriptor {
 }
 
 const _: () = assert!(size_of::<Descriptor>() <= crate::address::DESCRIPTOR_SIZE as usize);
+
+/// One `D3D12_STREAM_OUTPUT_BUFFER_VIEW`: where a stream output buffer starts, its size, and
+/// where its 64-bit filled size lies.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StreamView {
+    pub address: u64,
+    pub size: u64,
+    pub filled: u64,
+}
 
 /// `D3D12_VERTEX_BUFFER_VIEW`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -269,6 +296,11 @@ pub enum Command {
         views: Vec<VertexBufferView>,
     },
     IndexBuffer(Option<IndexBufferView>),
+    /// `SOSetTargets`.
+    StreamTargets {
+        start: u32,
+        views: Vec<StreamView>,
+    },
     Viewports(Vec<ViewportF>),
     Scissors(Vec<Rect>),
     BlendFactor([f32; 4]),

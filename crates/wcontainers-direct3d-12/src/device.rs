@@ -63,6 +63,7 @@ id!(
 
 mod alias;
 mod bind;
+mod formats;
 mod geometry;
 mod indirect;
 mod null;
@@ -182,6 +183,8 @@ struct Pipeline<B: Backend> {
     bindings: Vec<bind::StageBinding>,
     /// A compute pipeline's threads in one group; zero for graphics pipelines.
     group_threads: u64,
+    /// The stage whose storage texture formats come from the bound views, if one does.
+    formats: Option<Box<formats::Formats<B>>>,
 }
 
 /// A graphics pipeline's fixed state.
@@ -248,6 +251,8 @@ pub struct GraphicsPipelineDesc<'a> {
     pub rtv_formats: Vec<u32>,
     pub dsv_format: u32,
     pub samples: u32,
+    /// The stream output declaration and `RasterizedStream`.
+    pub stream_output: Option<(wcontainers_shaders::stage::StreamOutput, u32)>,
 }
 
 struct Fence<B: Backend> {
@@ -326,6 +331,8 @@ pub struct Device<B: Backend> {
     nulls: null::Nulls<B>,
     /// Messages not yet shown, such as why a shader did not convert.
     messages: Vec<String>,
+    /// The storage textures the last binding sets made bind: API stage, register and format.
+    bound_storage: Vec<(u32, u32, Format)>,
     /// The error that removed the device, if one did.
     removed: Option<Error>,
 }
@@ -369,6 +376,7 @@ impl<B: Backend> Device<B> {
             tests_off: None,
             nulls: null::Nulls::default(),
             messages: Vec::new(),
+            bound_storage: Vec::new(),
             removed: None,
         }
     }
@@ -842,6 +850,7 @@ impl<B: Backend> Device<B> {
         self.live()?;
         let root = self.pipeline_root(desc.root, &[desc.vs, desc.gs, desc.ps])?;
         let has_geometry = !desc.gs.is_empty();
+        let staged = has_geometry || desc.stream_output.is_some();
         let ps = if desc.ps.is_empty() {
             None
         } else {
@@ -854,9 +863,15 @@ impl<B: Backend> Device<B> {
                     VariantFlags::empty()
                 },
                 samples: desc.samples.clamp(1, 32) as u8,
+                storage_formats: formats::first_formats(desc.ps),
                 ..VariantKey::default()
             };
-            Some(self.convert(desc.ps, ShaderStage::Fragment, key)?)
+            let converted = self.convert(desc.ps, ShaderStage::Fragment, key.clone())?;
+            Some((converted, key))
+        };
+        let (ps, ps_key) = match ps {
+            Some((c, k)) => (Some(c), Some(k)),
+            None => (None, None),
         };
         // WebGPU and GLSL ES require the stages to agree on interpolation, which in Direct3D the
         // pixel shader alone chooses: the vertex shader writes its outputs so.
@@ -909,11 +924,17 @@ impl<B: Backend> Device<B> {
                     .map(|i| (e, i.location))
             })
             .collect();
-        let made = match has_geometry {
-            true => Some(self.geometry_stage(desc.vs, desc.gs, &inputs, &interpolation)?),
+        let made = match staged {
+            true => Some(self.geometry_stage(
+                desc.vs,
+                desc.gs,
+                &inputs,
+                &interpolation,
+                desc.stream_output.as_ref(),
+            )?),
             false => None,
         };
-        let reads_bases = vs.reflection.helper_size != 0 && made.is_none();
+        let reads_bases = vs.reflection.helper_size != 0 && !has_geometry;
         let instances_step_by_one = inputs
             .iter()
             .all(|(e, _)| !e.per_instance || e.step_rate == 1);
@@ -931,12 +952,20 @@ impl<B: Backend> Device<B> {
         };
         let mut bindings = match &made {
             Some(m) => {
-                let mut b = bind::stage_bindings(&m.vertex, bind::VERTEX, StageSet::COMPUTE);
-                b.extend(bind::stage_bindings(
-                    &m.shader,
-                    bind::GEOMETRY,
-                    StageSet::COMPUTE,
-                ));
+                // Without a geometry stage the draw after the stream output binds the vertex
+                // stage's sets too.
+                let stages = match m.shader {
+                    Some(_) => StageSet::COMPUTE,
+                    None => StageSet::COMPUTE | StageSet::VERTEX,
+                };
+                let mut b = bind::stage_bindings(&m.vertex, bind::VERTEX, stages);
+                if let Some(shader) = &m.shader {
+                    b.extend(bind::stage_bindings(
+                        shader,
+                        bind::GEOMETRY,
+                        StageSet::COMPUTE,
+                    ));
+                }
                 b
             }
             None => bind::stage_bindings(&vs, bind::VERTEX, StageSet::VERTEX),
@@ -958,7 +987,7 @@ impl<B: Backend> Device<B> {
             4 => return Err(Error::NotImplemented("patch topologies")),
             _ => return Err(Error::Invalid("unknown primitive topology type")),
         };
-        let topology = made.as_ref().map(|m| m.output).or(topology);
+        let topology = made.as_ref().and_then(|m| m.output).or(topology);
         let raster = desc.raster.block(
             caps,
             desc.sample_mask,
@@ -982,13 +1011,13 @@ impl<B: Backend> Device<B> {
         if draws_lines && desc.raster.antialiased_line && !desc.raster.multisample {
             return Err(Error::NotImplemented("alpha-antialiased lines"));
         }
-        let vs_shader = match &made {
+        let vs_shader = match made.as_ref().filter(|m| m.shader.is_some()) {
             Some(m) => m
                 .geometry
                 .stages
                 .as_ref()
-                .and_then(|s| s.passthrough())
-                .expect("made"),
+                .and_then(wcontainers_shaders::stage::Stages::passthrough)
+                .expect("a geometry stage's pass-through"),
             None => &vs.modules[0],
         };
         let vs_shader = self.backend.create_shader(vs_shader)?;
@@ -1071,8 +1100,8 @@ impl<B: Backend> Device<B> {
         if let Some(topology) = topology
             && (fetched || render.geometry.is_some())
         {
-            let layout = match &render.geometry {
-                Some(g) => g.layout.clone(),
+            let layout = match render.geometry.as_ref().and_then(|g| g.layout.as_ref()) {
+                Some(l) => l.clone(),
                 None => self.vertex_layout(&render.inputs, &packed)?,
             };
             self.backend.prepare(&PrepareDesc {
@@ -1091,6 +1120,7 @@ impl<B: Backend> Device<B> {
             render: Some(render),
             bindings,
             group_threads: 0,
+            formats: ps_key.and_then(|k| formats::Formats::of(bind::PIXEL, desc.ps, &k)),
         }) as u32))
     }
 
@@ -1105,7 +1135,12 @@ impl<B: Backend> Device<B> {
         if !self.backend.caps().has(Features::COMPUTE) {
             return Err(Error::NotImplemented("compute shaders on this back end"));
         }
-        let cs = self.convert(cs, ShaderStage::Compute, VariantKey::default())?;
+        let key = VariantKey {
+            storage_formats: formats::first_formats(cs),
+            ..VariantKey::default()
+        };
+        let code = cs;
+        let cs = self.convert(code, ShaderStage::Compute, key.clone())?;
         let bindings = bind::stage_bindings(&cs, 0, StageSet::COMPUTE);
         bind::check(&root, &bindings)?;
         self.prepare_nulls(&bind::null_shapes(&bindings))?;
@@ -1123,6 +1158,7 @@ impl<B: Backend> Device<B> {
             render: None,
             bindings,
             group_threads,
+            formats: formats::Formats::of(0, code, &key),
         }) as u32))
     }
 
@@ -1234,6 +1270,7 @@ impl<B: Backend> Device<B> {
             let key = VariantKey {
                 flags: VariantFlags::COUNTING,
                 samples,
+                storage_formats: formats::first_formats(&pixel),
                 ..VariantKey::default()
             };
             self.convert(&pixel, ShaderStage::Fragment, key)?
@@ -1262,6 +1299,9 @@ impl<B: Backend> Device<B> {
     pub fn destroy_pipeline(&mut self, id: PipelineId) {
         if let Some(p) = self.pipelines.try_remove(id.0 as usize) {
             self.backend.destroy(Object::Program(p.program));
+            if let Some(f) = p.formats {
+                f.destroy(&mut self.backend);
+            }
             if let Some(r) = p.render {
                 let arguments = r.arguments.map(|a| a.program);
                 let pulled = r.pulled.into_iter().filter_map(|p| p.1.map(|p| p.program));
@@ -2331,7 +2371,10 @@ struct Replay<B: Backend> {
     /// The pipeline statistics query begun and not ended, and the stream output statistics
     /// queries begun and not ended.
     statistics: Option<statistics::Running>,
-    streams: Vec<(QueryHeapId, u32)>,
+    /// Each: heap, index, stream, and the primitives written and needed so far.
+    streams: Vec<(QueryHeapId, u32, u32, [u64; 2])>,
+    /// The bound stream output buffers.
+    stream_views: [crate::list::StreamView; 4],
     /// The pass tracker holds the bound targets, for the occlusion and pixel counters.
     counted_targets: bool,
     /// The occlusion counter has the depth-stencil target as the kept draws began from it.
@@ -2381,6 +2424,7 @@ impl<B: Backend> Replay<B> {
             counted: None,
             statistics: None,
             streams: Vec::new(),
+            stream_views: Default::default(),
             counted_targets: false,
             counted_copy: false,
             predicate: None,
@@ -2590,6 +2634,13 @@ impl<B: Backend> Replay<B> {
                     .copy_from_slice(views);
             }
             Command::IndexBuffer(v) => self.index = *v,
+            Command::StreamTargets { start, views } => {
+                let at = *start as usize;
+                self.stream_views
+                    .get_mut(at..at + views.len())
+                    .ok_or(Error::Invalid("stream output slot out of range"))?
+                    .copy_from_slice(views);
+            }
             Command::Viewports(v) => {
                 // A pass with no targets is as large as the viewports it began with.
                 if self.empty_pass {
@@ -2888,7 +2939,7 @@ impl<B: Backend> Replay<B> {
         match kind {
             query::QUERY_PIPELINE_STATISTICS => return self.begin_statistics(d, heap, index),
             k if query::QUERY_SO_STATISTICS.contains(&k) => {
-                return self.begin_stream(d, heap, index);
+                return self.begin_stream(d, heap, index, k - query::QUERY_SO_STATISTICS.start());
             }
             query::QUERY_BINARY_OCCLUSION | query::QUERY_OCCLUSION => {}
             _ => return Err(Error::Invalid("BeginQuery of this query type")),
@@ -2995,9 +3046,12 @@ impl<B: Backend> Replay<B> {
         }
         self.settle(d)?;
         let sets = d.binding_sets(&self.compute, pid, None, &[], StageSet::COMPUTE)?;
+        let bound = d.bound_program(pid, false)?;
         d.alias_settle()?;
         let call = DispatchCall {
-            program: &d.pipelines[pid.0 as usize].program,
+            program: bound
+                .as_ref()
+                .unwrap_or(&d.pipelines[pid.0 as usize].program),
             bindings: sets.each_ref().map(Option::as_ref),
             immediates: &[],
             groups: match record {
@@ -3032,8 +3086,8 @@ impl<B: Backend> Replay<B> {
         if !d.arguments_set(&self.graphics, pid) {
             return Ok(());
         }
-        if geometry {
-            return self.draw_geometry(d, pid, range, record);
+        if geometry && !self.draw_geometry(d, pid, same_range(&range), record)? {
+            return Ok(());
         }
         if crate::state::adjacency(self.api_topology) {
             return Err(Error::NotImplemented(
@@ -3190,6 +3244,7 @@ impl<B: Backend> Replay<B> {
             extra.push((binding, buffer, *offset, *size));
         }
         let mut sets = d.binding_sets(&self.graphics, pid, None, &extra, StageSet::VERTEX)?;
+        let bound = d.bound_program(pid, variant.is_some() || by_arguments)?;
         if helpers.size != 0 {
             let source = match (bases, &range) {
                 (Some(b), _) => pull::Bases::Direct(b),
@@ -3399,7 +3454,7 @@ impl<B: Backend> Replay<B> {
                     program: match (variant, &r.arguments, by_arguments) {
                         (Some(i), ..) => &r.pulled[i].1.as_ref().expect("a made program").program,
                         (None, Some(a), true) => &a.program,
-                        _ => &p.program,
+                        _ => bound.as_ref().unwrap_or(&p.program),
                     },
                     blend: &r.blend,
                     depth_stencil: match (&r.depth_stencil_bound, bound_depth) {

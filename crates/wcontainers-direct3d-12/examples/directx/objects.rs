@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use wcontainers_direct3d_12::address::DESCRIPTOR_SIZE;
 use wcontainers_direct3d_12::list::{
     Command, CommandList, CopyLocation, Descriptor, IndexBufferView, IndirectArgument,
-    ResourceView, RootArgument, SamplerView, TargetView, VertexBufferView, ViewportF,
+    ResourceView, RootArgument, SamplerView, StreamView, TargetView, VertexBufferView, ViewportF,
 };
 use wcontainers_direct3d_12::resource::{
     DIMENSION_BUFFER, Footprint, HeapType, ResourceDesc, check_creation, check_state,
@@ -634,9 +634,6 @@ impl Device {
     ) -> Result<()> {
         // SAFETY: the API requires a description.
         let d = unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
-        if d.StreamOutput.NumEntries != 0 {
-            return Err(hr(Error::NotImplemented("stream output")));
-        }
         if !d.HS.pShaderBytecode.is_null() || !d.DS.pShaderBytecode.is_null() {
             return Err(hr(Error::NotImplemented("hull and domain stages")));
         }
@@ -730,6 +727,8 @@ impl Device {
             d.DSVFormat.0 as u32,
             d.SampleDesc.Count,
         );
+        // SAFETY: the declaration's arrays as the API requires.
+        let stream_output = unsafe { stream_output(&d.StreamOutput) };
         let id = gpu::call(move |dev| {
             dev.create_graphics_pipeline(&GraphicsPipelineDesc {
                 root,
@@ -746,6 +745,7 @@ impl Device {
                 rtv_formats,
                 dsv_format,
                 samples,
+                stream_output,
             })
         })
         .map_err(hr)?;
@@ -1318,18 +1318,29 @@ impl Device {
     pub fn CreateUnorderedAccessView(
         &self,
         resource: Ref<ID3D12Resource>,
-        _counter: Ref<ID3D12Resource>,
+        counter: Ref<ID3D12Resource>,
         pdesc: *const D3D12_UNORDERED_ACCESS_VIEW_DESC,
         dest: &D3D12_CPU_DESCRIPTOR_HANDLE,
     ) {
         let descriptor = resource.as_ref().and_then(|r| {
             // SAFETY: resources come from this library; an optional description.
             let (r, d) = unsafe { (ours(r), pdesc.as_ref()) };
+            // A buffer view's counter lies at its offset in the counter resource.
+            let counter = match (counter.as_ref(), d) {
+                (Some(c), Some(d)) if d.ViewDimension == D3D12_UAV_DIMENSION_BUFFER => {
+                    // SAFETY: resources come from this library; the member the dimension names.
+                    unsafe { ours(c).address + d.Anonymous.Buffer.CounterOffsetInBytes }
+                }
+                _ => 0,
+            };
             unordered_access_view(r, d).map(|v| {
-                Descriptor::UnorderedAccess(ResourceView {
-                    resource: holder(r, v.format),
-                    ..v
-                })
+                Descriptor::UnorderedAccess(
+                    ResourceView {
+                        resource: holder(r, v.format),
+                        ..v
+                    }
+                    .with_counter(counter),
+                )
             })
         });
         // SAFETY: CPU descriptor handles point into a heap of this library.
@@ -1674,13 +1685,24 @@ impl Device {
                     ),
                 };
             }
-            // Every field of these blocks is an ability the front does not have (plan section
-            // 9: view instancing, barycentrics, 16-bit shader operations, ray tracing, variable
-            // rate shading, mesh shaders, sampler feedback), and zero says absent.
+            // Copy queues write timestamps as direct ones do; the other fields are abilities
+            // the front does not have (view instancing, barycentrics, full casting, immediate
+            // writes reported by list type).
             D3D12_FEATURE_D3D12_OPTIONS3 => {
+                let timestamps = gpu::call(|d| {
+                    d.backend()
+                        .caps()
+                        .has(wcontainers_gpu::Features::TIMESTAMPS)
+                });
                 *unsafe { fill::<D3D12_FEATURE_DATA_D3D12_OPTIONS3>(data, size)? } =
-                    Default::default();
+                    D3D12_FEATURE_DATA_D3D12_OPTIONS3 {
+                        CopyQueueTimestampQueriesSupported: timestamps.into(),
+                        ..Default::default()
+                    };
             }
+            // Every field of these blocks is an ability the front does not have (plan section
+            // 9: 16-bit shader operations, ray tracing, variable rate shading, mesh shaders,
+            // sampler feedback), and zero says absent.
             D3D12_FEATURE_D3D12_OPTIONS4 => {
                 *unsafe { fill::<D3D12_FEATURE_DATA_D3D12_OPTIONS4>(data, size)? } =
                     Default::default();
@@ -1987,19 +2009,38 @@ impl Queue {
         }
     }
 
-    /// Answers E_FAIL as for a queue without timestamps, which is what the back ends here have.
-    pub fn GetClockCalibration(&self, _gpu: *mut u64, _cpu: *mut u64) -> Result<()> {
-        if gpu::call(|d| {
-            d.backend()
+    /// The GPU's timestamp and `QueryPerformanceCounter` at about one moment; E_FAIL as for a
+    /// queue without timestamps where the back end has none.
+    pub fn GetClockCalibration(&self, gpu: *mut u64, cpu: *mut u64) -> Result<()> {
+        if gpu.is_null() || cpu.is_null() {
+            return Err(E_INVALIDARG.into());
+        }
+        let (g, c) = gpu::call(|d| {
+            if !d
+                .backend()
                 .caps()
                 .has(wcontainers_gpu::Features::TIMESTAMPS)
-        }) {
-            return Err(windows::core::Error::new(
-                E_NOTIMPL,
-                "GetClockCalibration with timestamps",
-            ));
+            {
+                return Ok(None);
+            }
+            d.clock_calibration(|| {
+                let mut now = 0i64;
+                // SAFETY: writes the counter into a local.
+                let _ = unsafe {
+                    windows::Win32::System::Performance::QueryPerformanceCounter(&mut now)
+                };
+                now as u64
+            })
+            .map(Some)
+        })
+        .map_err(hr)?
+        .ok_or(windows::core::Error::from(E_FAIL))?;
+        // SAFETY: the caller's two out pointers, checked above.
+        unsafe {
+            *gpu = g;
+            *cpu = c;
         }
-        Err(E_FAIL.into())
+        Ok(())
     }
 
     pub fn Wait(&self, fence: Ref<ID3D12Fence>, value: u64) -> Result<()> {
@@ -3018,6 +3059,29 @@ impl List {
         self.record(Command::VertexBuffers { start, views });
     }
 
+    pub fn SOSetTargets(
+        &self,
+        start: u32,
+        count: u32,
+        views: *const D3D12_STREAM_OUTPUT_BUFFER_VIEW,
+    ) {
+        // SAFETY: `count` views, as the API requires; none unbinds.
+        let given = unsafe { many(views, count) };
+        let views = if given.is_empty() {
+            vec![StreamView::default(); count as usize]
+        } else {
+            given
+                .iter()
+                .map(|v| StreamView {
+                    address: v.BufferLocation,
+                    size: v.SizeInBytes,
+                    filled: v.BufferFilledSizeLocation,
+                })
+                .collect()
+        };
+        self.record(Command::StreamTargets { start, views });
+    }
+
     pub fn IASetIndexBuffer(&self, view: *const D3D12_INDEX_BUFFER_VIEW) {
         // SAFETY: an optional view, as the API allows.
         let view = unsafe { view.as_ref() }.map(|v| IndexBufferView {
@@ -3687,7 +3751,7 @@ fn unordered_access_view(
         resource: r.id,
         format: r.desc.Format.0 as u32,
         dimension: 0,
-        mapping: 0x1688,
+        mapping: 0,
         first_element: 0,
         count: 1,
         stride: 0,
@@ -3741,4 +3805,43 @@ fn unordered_access_view(
         }
     }
     Some(v)
+}
+
+/// A pipeline's stream output declaration and `RasterizedStream`; `None` without entries.
+///
+/// # Safety
+/// `d`'s arrays hold as many elements as it says, and its semantic names are C strings.
+unsafe fn stream_output(
+    d: &D3D12_STREAM_OUTPUT_DESC,
+) -> Option<(wcontainers_shaders::stage::StreamOutput, u32)> {
+    if d.NumEntries == 0 {
+        return None;
+    }
+    // SAFETY: as the caller promises.
+    let (entries, strides) = unsafe {
+        (
+            many(d.pSODeclaration, d.NumEntries),
+            many(d.pBufferStrides, d.NumStrides),
+        )
+    };
+    let mut so = wcontainers_shaders::stage::StreamOutput {
+        entries: entries
+            .iter()
+            .map(|e| wcontainers_shaders::stage::StreamOutputEntry {
+                stream: e.Stream as u8,
+                // SAFETY: as the caller promises; a null name is a gap.
+                semantic: (!e.SemanticName.is_null())
+                    .then(|| unsafe { e.SemanticName.to_string() }.unwrap_or_default()),
+                semantic_index: e.SemanticIndex,
+                start_component: e.StartComponent,
+                component_count: e.ComponentCount,
+                slot: e.OutputSlot,
+            })
+            .collect(),
+        strides: [0; 4],
+    };
+    for (s, &stride) in so.strides.iter_mut().zip(strides) {
+        *s = stride;
+    }
+    Some((so, d.RasterizedStream))
 }
