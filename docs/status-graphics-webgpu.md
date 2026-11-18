@@ -590,8 +590,8 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
 
 Run 11 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs,
 CPU load not sampled; Mac load average not sampled):
-- All tests at 9cb45c3's code after a clean build of this crate (job 6): Vulkan 85 passed, 2
-  ignored (the old BC comparison; the depth bias picture); Direct3D 12 86 passed, 1 ignored.
+- All tests at 9cb45c3's code after a clean build of this crate (job 6): Vulkan 87 passed, 2
+  ignored (the old BC comparison; the depth bias picture); Direct3D 12 88 passed, 1 ignored.
   bindings 12, blocks 3, copies 9, depth 2, direct3d 5, fitted 1, prepare 1, pulled 1, raster 3,
   scenes 4, suite 30, timestamps 2, vertices 1, writes 14 (Direct3D 12: point fill reported
   absent there, so its test returns early). Clippy with warnings denied passes natively for this
