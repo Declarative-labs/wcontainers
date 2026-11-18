@@ -2485,32 +2485,44 @@ trait Machine {
     /// trap flag's `TRAP_TRACE` at the target before anything is fetched there (section 2, run 10),
     /// which is `Landed` on both sides.
     const CODE_SPAN: u64;
-    /// Bytes after CODE that the seccomp filter treats as the case's own: ARM64 4, x86 16. The filter
-    /// also stops every call whose arch is not the guest's (x86: `AUDIT_ARCH_I386`), made anywhere.
+    /// The end of the instruction window from CODE, as seccomp reports a call's instruction pointer (the
+    /// address after the call instruction): ARM64 8 (the instruction and the `svc` after it), x86 18 (the
+    /// longest instruction and a `syscall` after it). The filter also stops every call whose arch is not
+    /// `AUDIT_ARCH`, the guest's, made anywhere (x86: `AUDIT_ARCH_I386`).
     const WINDOW: u64;
+    const AUDIT_ARCH: u32;
     /// The field names, sent first on every connection; the harness checks they are `G::FIELDS`' names.
     const FIELDS: &'static [&'static str];
     /// Write a case's state into the signal frame (x86: the general registers, rflags with TF set, the
     /// x87, SSE and AVX components and `xstate_bv` bits 0 to 2), and set the thread pointers (ARM64
     /// tpidr_el0, x86 `arch_prctl` FS and GS). x86 also sets the case's NT and ID in the handler's own
     /// rflags, since `rt_sigreturn` takes those from the caller, not the frame (section 2, run 7).
-    fn enter(context: &mut libc::ucontext_t, state: &[u128]);
+    /// It first keeps the runner's own frame (and x86 its XSAVE area and thread pointers).
+    unsafe fn enter(context: *mut libc::ucontext_t, state: &[u128]);
     /// Read the frame back into a state (a component whose `xstate_bv` bit is clear as its first state),
-    /// after giving the runner its own thread pointer back.
-    fn leave(context: &libc::ucontext_t, state: &mut [u128]);
+    /// after giving the runner its own thread pointer back, and put the runner's frame back.
+    unsafe fn leave(context: *mut libc::ucontext_t, state: &mut [u128]);
     /// Whether the stop leaves the case's instruction `code` unfinished, so the runner steps on (at most
-    /// `limit(code, state)` times). x86: `TRAP_TRACE` with rip still at CODE, and `code` (decoded with
-    /// iced) is a rep string instruction or a gather, the only instructions the trap flag stops part way
-    /// (section 2, run 8). A `ret`, `call` or `jmp` whose target is CODE stops there finished and is
-    /// never stepped on. ARM64 never.
-    fn unfinished(code: &[u8], context: &libc::ucontext_t, signal: &libc::siginfo_t) -> bool;
-    /// How many steps an unfinished instruction can take: x86 the case's rcx for a rep string
-    /// instruction, the element count for a gather.
+    /// `limit(code, state)` times). x86: `TRAP_TRACE` with rip still at CODE. Only the instructions the
+    /// trap flag stops part way get steps from `limit` (section 2, run 8), so a `ret`, `call` or `jmp`
+    /// whose target is CODE stops there finished and is never stepped on. ARM64 never.
+    unsafe fn unfinished(code: &[u8], context: *const libc::ucontext_t,
+        signal: *const libc::siginfo_t) -> bool;
+    /// How many steps an unfinished instruction can take, worked out before the case runs (outside the
+    /// handlers, where the runner's thread pointer is its own): x86, with `code` decoded by iced, the
+    /// case's rcx (ecx with an address-size prefix) for a rep string instruction, 8 for a gather (a VSIB
+    /// form), else 0; ARM64 0.
     fn limit(code: &[u8], state: &[u128]) -> u64;
     /// Make written code visible to the CPU: ARM64 `dc cvau` and `ic ivau`, x86 nothing.
-    fn synchronise(code: &[u8]);
-    /// A blob's starting registers (x86: rflags 0x202, MXCSR 0x1F80, FCW 0x037F, rsp at argc, rdx 0).
-    fn blob_start(context: &mut libc::ucontext_t, entry: u64, stack: u64);
+    fn synchronise(address: u64, length: u64);
+    /// A blob's starting registers (x86: rflags 0x202, MXCSR 0x1F80, FCW 0x037F, rsp at argc, every
+    /// other register 0, no FS or GS base; ARM64 every register 0 but sp and pc, as before).
+    unsafe fn blob_start(context: *mut libc::ucontext_t, entry: u64, stack: u64);
+    /// A blob's stop record: pc and the general registers (ARM64 x0 to x30, sp, pc; x86 the 16 in field
+    /// order, rip, rflags), which its stop handler stores into a page shared with the runner: the blob's
+    /// child holds no descriptor but its standard input, output and error (output through pipes, since a
+    /// write from a buffer that faults part way fails on a pipe and is cut short on a file).
+    unsafe fn blob_stop(context: *const libc::ucontext_t, out: &mut [u64; 40]) -> usize;
 }
 ```
 
@@ -2526,17 +2538,33 @@ today, and x86 writes 64 KiB per case. So an operand that reads the code area (a
 that reaches past the instruction, a base that points there) reads `int3` bytes on both sides, and layer
 1 draws such operands on purpose (section 7.4).
 
-The wire format is length-prefixed records in both directions. A case is the instruction's length and
+The x86 fields are the general registers in encoding order (rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi, r8 to
+r15), rip, rflags, the FS and GS bases, MXCSR, FCW, FSW, FTW as the abridged tag byte of `fxsave` (one bit a
+physical register), R0 to R7 as physical registers of 80 bits (the runner rotates them by TOP into the
+frame's stack order), xmm0 to xmm15 and the ymm upper halves: 64 fields. ARM64's are x0 to x30, sp, pc,
+NZCV at its `pstate` bits, tpidr_el0, v0 to v31, FPSR and FPCR: 69 fields.
+
+The wire format is length-prefixed records in both directions. The runner's first record names its fields
+and the reference CPU's model (`/proc/cpuinfo`'s `model name`, or ARM64's implementer and part). A case is the instruction's length and
 bytes, the seed of its data area, and the state as `FIELDS.len()` 16-byte little-endian values; its result
 is a status of its own (ran, or runner failed with a message), the signal, `si_code`, `si_addr`, the
 state after, and the changed data bytes as (offset, value) pairs. A blob is its bytes, its load address,
-its standard input and how many runs to time; its result is its output, its exit status and the best time.
+stack and program headers, its standard input and how many runs to time; its result is its output, its exit
+status, the best time and, when a signal ended it, its stop record. Cases run in one child process of the
+runner that serves them until a case ends it; that case is reported as the runner's failure and the next
+case gets a new child (section 7.3's isolation, without a fork per batch). Each blob run is a child of its
+own. ARM64's blobs go through the same records (one long-lived container per runner, shared by the run),
+not a container per blob.
 
-The transport is generic: `Reference::<G>::start()` runs the runner as a child process and talks to it
+The transport is generic: `Reference::start(&G::REFERENCE)`, where `REFERENCE` is a `Target` value (the
+runner's Rust target, Docker's platform, the SSH host's variable and the field names; it stands for the
+names group above, and lets X2 prove the x86 transport before X3 makes an x86 `Guest`), runs the runner as a child process and talks to it
 over its stdin and stdout. When the host's CPU is the guest's (`std::env::consts::ARCH` against
 `RUST_TARGET`), the child is `docker run -i --platform G::DOCKER_PLATFORM`, as today; otherwise it is
 `ssh` with `ControlMaster` to the host in `G::REFERENCE_HOST`, after uploading the runner to
-`~/wcontainers-x86/reference/<content hash>` when it is not there. Both are the same records over the same
+`~/wcontainers-x86/reference/<content hash>` when it is not there, tried five times ten seconds apart before
+the run fails. The x86 runner is linked at 1.5 GiB (its static start code calls undefined weak functions at
+0, which must be within 2 GiB), ARM64's at 2 GiB as before; both above every guest address of the tests. Both are the same records over the same
 pipes, so nothing else differs. `start` fails with a message naming the variable when it is unset; the
 test then fails, never skips. `cases(&[Case]) -> Vec<(Signal, State, Vec<(u32, u8)>)>`, `blob(..)` and
 `cpu_model()` (read once from `/proc/cpuinfo` on the reference, recorded with every result) are its

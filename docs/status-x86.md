@@ -18,8 +18,88 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   held, but the float hook program was still slower in wasmtime (never timed again after run 2); run 5 (the
   same day) found both causes of that and removed them, and cut the translate time the move added, but said
   wrongly that none was left; run 6 (the same day) measured it again and corrected that, made the guard read
-  the resolved dependencies, and fixed the plan's RISC-V far call (see "X1, run 6"). Next: X2, the shared test
-  harness (plan section 9).
+  the resolved dependencies, and fixed the plan's RISC-V far call (see "X1, run 6").
+- X2 (the shared test harness): run 1 (2026-11-17) fixed the four findings of the last X1 check, built the
+  generic reference runner and transport and proved the x86 one on the i7-8750H, and moved ARM64's layer 1
+  and blobs onto it. Not done yet: `GuestTest` and the harness written once over it (see "X2, run 1",
+  "What comes next").
+
+Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0.5):
+- Suite: `WC_REFERENCE_X86_64=tom@192.168.2.240 nix develop -c cargo test -p wcontainers-guest-cpu -p
+  wcontainers-arm64 -p wcontainers-translator -p wcontainers-translator-test --no-fail-fast` (scratch
+  `x2/suite2.log`): 95 passed (X1's 93 and the two x86 reference tests), 0 failed, 11 ignored (X1's 10 and
+  `tests/cases.rs`), 26 minutes 40 seconds, Mac load 18.0 at start and 16.1 at end (X1 run 6: 25 minutes at
+  load 13.4 to 22.0). The first run of it (`x2/suite.log`) failed `programs_match_linux_in_chrome` on
+  `buffers`, which found the two blob differences above; fixed before the second.
+- Clippy with `-D warnings` on the test crate (all targets), the interface, the translator, the browser
+  crate and the runner for both CPUs; `cargo fmt --check`: clean.
+- origin/phase-1-translator: fetched at the start and end, nothing new since 8b5e420 (merged).
+
+## X2: what comes next, in order
+
+1. `GuestTest` (plan 7.2) in the test crate (`src/guest/mod.rs`, ARM64's in `src/guest/arm64.rs`), naming its
+   `Target`; move every ARM64 fact out of the shared files into it: layer 1's forms, strategy, exclusions and
+   `reference_outcome` (`src/layer1.rs`), layer 2's registers and dynasm emitter (`src/layer2.rs`), the
+   runners' `Arm64` (`src/runner.rs`, `src/programs.rs`, `src/browser.rs`), the corpora of smoke, checks and
+   changes, the relocation kinds of `src/binaries.rs`, the stand-in's numbers, `programs/` per CPU.
+2. Replace the `Cases`/`ArmLanded` adapter in `src/reference.rs` by `G::to_state`, `G::reference_stop` and the
+   generic `Landed`.
+3. Every test file generic over `G` with one test per guest (`layer1_arm64`, ...); `tests/cases.rs` then
+   prints `G::cases`' states (its text must stay the same: `same-cases.sh d27cd70 1 2 3` and a new seed).
+4. The browser crate's guest chosen by a cargo feature, its contract with the per-CPU numbers of plan 7.2.
+5. Plan 7.3's recorded reference results and layer 1 batching; `long-runs.sh` and the benchmarks generic.
+6. The whole suite, its time against X1 run 6's 25 minutes, and a read of the harness for ARM64 facts left
+   outside the per-CPU part.
+
+## X2, run 1 (2026-11-17)
+
+The X1 check's four findings, all fixed first:
+- The dependency guard now runs `cargo tree --target all -e normal,build,dev`. Shown to fail with the check's
+  example (a wasm32-only `cpu = { package = "wcontainers-arm64" }` in the translator) and with the same alias
+  as a dev-dependency, then put back. Plan 3.1 and the X1 pass bar say so.
+- `tests/output.rs` translates the benchmark set and `musl` for each of ARM64's four probe answers (h0 to h3
+  in each line's name), the other binaries for this machine's answer. Compared with 2274314 (before the move)
+  by `same-output.sh 2274314 bench,musl`: bench the same, 505 modules; musl the same, 120 modules (Mac, load
+  10.7 to 11.3). The benchmark set gives the same bytes for all four answers (it has no float operations the
+  answer changes); musl gives different bytes for each, so the four meanings are covered.
+- `HookBody::CodeChanged { line }`: the hook drops the pieces of the `line` bytes holding its address; ARM64
+  64. Both runners step over the line by `ALIGN`. The plan's RISC-V `fence.i` gets a `HookBody` variant of its
+  own when the RV64GC crate is built (plan 3.2, 3.5).
+- `HookType::MAX_PARAMS` (4) and `MAX_RESULTS` (2) in the interface, checked at compile time by both runners
+  (the browser crate now has the check too). Eight parameters were tried first: the float hook in Chrome got
+  about 15 percent slower (old 0.98 and 1.64 s, new 1.15 and 1.88 s at none and full, best of 3, two rounds,
+  Mac load 15.9 to 16.8; scratch `x2/chrome-hook-8args.log`), so the limit is 4, as the browser passed before.
+  With 4, old 0.938 and 1.611 s, new 0.965 and 1.666 s (best over 3 alternating rounds, load 14 to 34,
+  `x2/chrome-hook.log`): the same code as before, within noise.
+
+The shared harness so far:
+- `tests/cases.rs` writes what layer 1 and layer 2 draw for a seed (a hash a form, a line a program), and
+  `same-cases.sh <commit> <seed>...` runs each commit's own copy and compares. Committed (d27cd70) before any
+  harness change, so it is the "before". Seeds 1, 2 and 3 at 64 cases a form and 64 programs: 1215 forms and
+  64 programs each, the same (at d27cd70 against itself, which shows the command). At the end of the run, with
+  the reference moved: seeds 1, 2, 3 and 9071 the same, 1215 forms and 64 programs each.
+- The reference runner is one program with a per-CPU `Machine` (`reference/src/aarch64.rs`,
+  `reference/src/x86_64.rs`): the wire of plan 7.2 (hello with field names and CPU model, case and blob
+  records with statuses), the seccomp filter with the arch check, cases in a long-lived child replaced when a
+  case ends it, each blob in a child with its stop record (stored into a shared page), its output through
+  pipes and no descriptor but 0, 1 and 2 (the first suite run found both: `buffers` writes a faulting buffer,
+  which a file cuts short and a pipe refuses, and writes to fd 7), timed runs. x86: the trap flag in the frame, `int3`
+  filler over 32 KiB either side, NT and ID through the handler's own rflags, x87 rotated by TOP, XSAVE
+  components with `xstate_bv`, FS and GS by raw `arch_prctl`, rep strings and gathers stepped (iced decides
+  which, before the case runs).
+- `src/reference.rs`: `Reference::start(&Target)` runs the runner in Docker here or over SSH (ControlMaster,
+  upload to `~/wcontainers-x86/reference/<hash>` when missing, five tries), `case` and `blob`. ARM64's layer 1
+  (`Cases`) and every native blob run (`programs::native`, `native_seconds`) now use it: one container per
+  runner, shared through a pool, not one container per blob.
+- `tests/reference_x86_64.rs`: 38 hand-made cases, each checked by hand against Intel's manual, and two blobs,
+  all passing on the i7-8750H (x86 load 0.0 to 0.2). Among them every stop of plan 7.3 (TRAP_TRACE, `mov ss`
+  held back to the filler at CODE+3, `int3`, `int 3`, `int1` as TRAP_BRKPT, `syscall`, `int 0x80` and
+  `sysenter` as SIGSYS, `pushf` with NT and ID, `ret` to a non-canonical address as general protection with
+  rip and rsp unchanged, `mov rax, [rbx]` general protection, `mov rax, [rbp]` and `push rax` stack faults as
+  SIGBUS SI_KERNEL, page faults, divide error, `ud2`), x87 written and read back through TOP, ymm upper halves,
+  FS and GS bases, `rep stosb` stepped to its end, a `call far` through selector 0x33 (pushes 4-byte CS and
+  eip), and a `jmp` beyond the code area. Found: `sysenter` with rbp 0 gives SIGSEGV, not SIGSYS (its 32-bit
+  entry reads the caller's stack at rbp first); the case sets rbp, as X0's experiment did.
 
 ## X1, run 6 (2026-11-17)
 
@@ -724,6 +804,16 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## How to run
 
+- X2's proofs: same cases, `WC_OUTPUT_ROOT=<scratch>/x2/same nix develop -c
+  crates/wcontainers-translator-test/same-cases.sh d27cd70 1 2 3` (knobs `WC_CASES_LAYER1`, `WC_CASES_LAYER2`);
+  the x86 reference, `WC_REFERENCE_X86_64=tom@192.168.2.240 nix develop -c cargo test -p
+  wcontainers-translator-test --test reference_x86_64 -- --nocapture`; the float hook in Chrome old against
+  new, `<scratch>/x2/chrome-hook.sh <old tree> <rounds>`.
+- The suite now needs `WC_REFERENCE_X86_64=tom@192.168.2.240` (the x86 reference test fails without it).
+- Lint the runner for both CPUs: from `crates/wcontainers-translator-test/reference`, `nix develop ../../.. -c
+  cargo clippy --release --target <aarch64|x86_64>-unknown-linux-musl --target-dir ../../../target/reference
+  -- -D warnings`.
+
 - X1's byte-for-byte proof: `WC_OUTPUT_ROOT=<scratch>/x1/same nix develop -c
   crates/wcontainers-translator-test/same-output.sh 2274314 bench,busybox,musl,python,rg,git,java,go`, then
   the same with `node` and with `bun`, each alone (many GB). The earlier commit's lists are kept under
@@ -816,6 +906,8 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   cases scripts' outputs before run 8 are kept only in the Mac's scratch `reference-proof/`. The
   independent checks' files are in `~/wcontainers-x86/check` and `check2` to `check9`. Installed in runs
   2 to 10: nothing.
+- Added in X2: `~/wcontainers-x86/reference/<hash>`, the reference runner the harness uploads (one file per
+  build of it).
 - Not always idle: another track's atomic-cost measurement (`~/ordering-cost`, wasmtime) runs there at
   times. The independent check saw load about 1.04. Run 2 saw 0.07. Record `/proc/loadavg` with every
   timing there.
@@ -833,6 +925,9 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   twice: the first run did not pass its environment settings to `stepper6` and was discarded; in run 9,
   41 hand-written cases (`cases16.sh` 39, the two `xacquire` runs 2); in run 10, one run each of `tf`
   (8 trap-flag scenarios in 9 runs, 20 stops) and `rf` (8 signal frames), and 6 `stepper6` cases.
+- X2 run 1: the suite twice at the defaults below (seed 1); `tests/cases.rs` for seeds 1, 2, 3 and 9071 at
+  64 cases a form and 64 programs, on both sides of each comparison; 38 hand-made x86 cases and 2 blobs, four
+  times (twice while fixing the `sysenter` case, which the first stopped at, and in each suite run).
 - X1: each run of the suite (one in each of runs 1 to 6, the last listed under that run) ran the seeded
   random tests at their defaults, all with seed 1: layer 1 at `WC_LAYER1_CASES` 64 a form (and
   `WC_LAYER1_CHROME` 1), decoding at `WC_DECODE_CASES` 64 a form and `WC_DECODE_WORDS` 200,000, layer 2 at
@@ -856,8 +951,10 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
   `wasmparser` 0.263 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT) as a dev-dependency of the test
   crate (the test guest's validity test; it was the translator's until the test guest moved in run 3).
 
-- iced-x86 1.22.0: MIT. Not yet a dependency of anything in the repository (X3 adds it, and as a
-  build-dependency with `instr_info`).
+- iced-x86 1.22.0: MIT. Since X2 a dependency of the reference runner when built for x86-64 (decoder and
+  `instr_info`, to tell rep string instructions and gathers); X3 adds it to the x86 crate.
+- `blake3` is since X2 a normal dependency of the test crate (the reference runner's content hash).
+- The toolchain gains the `x86_64-unknown-linux-musl` target (for the reference runner).
 - astro-float 0.9.6: MIT, with astro-float-num 0.3.7 and astro-float-macro 0.4.6 (both MIT), lazy_static,
   itertools, either (all MIT or Apache-2.0, already common). Planned for X7 (x87 transcendentals); not yet a
   dependency.
@@ -932,6 +1029,22 @@ X1 (each also written into the plan's text in the same commit):
   the translator treats it as a direct call with nothing more in the interface (plan 3.4, 3.5).
 - No intentional change of ARM64's output at X1: the stop check's raised branch changes at X6 (plan 5.1),
   so the whole move is compared byte for byte against one "before".
+
+X2 (each also written into the plan's text in the same commit):
+- `HookBody::CodeChanged` carries its line size; RISC-V's `fence.i` gets its own variant later (plan 3.2, 3.5).
+- A hook takes at most 4 parameters (`HookType::MAX_PARAMS`): eight cost ARM64's float hook about 15 percent
+  in Chrome (plan 3.2).
+- The transport is `Reference::start(&Target)`, a value of names and fields, not `Reference::<G>`, so the x86
+  reference is proven before an x86 `Guest` exists; `GuestTest` will name its `Target` (plan 7.2).
+- The seccomp window is given as its end as seccomp reports it (ARM64 8, x86 18), not 4 and 16 (plan 7.2).
+- `Machine` works on raw frame pointers, keeps and restores the runner's frame itself, gains `AUDIT_ARCH` and
+  `blob_stop`, and `limit` (with iced) decides before the case which instructions may be stepped, so nothing
+  decodes inside a handler (plan 7.2).
+- Isolation: one long-lived case child, replaced when a case ends it, instead of a fork per batch; batching
+  and the recorded results of plan 7.3 are not built yet.
+- The x86 runner is linked at 1.5 GiB (plan 7.2).
+- Containers this track starts are named `wc-x86-...` (were `wc-translator-...`).
+- ARM64's blobs go through the wire to one long-lived container per runner, not a container per blob.
 
 ## Decisions taken in the plan that the owner may want to hear about
 
