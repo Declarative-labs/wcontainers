@@ -6,6 +6,7 @@ if not exist %C%\real mkdir %C%\real
 if not exist %C%\ours mkdir %C%\ours
 copy /y %E%\check_d3d12.exe %C%\real\ >nul
 copy /y %E%\check_d3d12.exe %C%\ours\ >nul
+copy /y %E%\wcontainers_d3d12.dll %C%\ours\ >nul
 copy /y %E%\d3d12.dll %C%\ours\ >nul
 copy /y %E%\dxgi.dll %C%\ours\ >nul
 for %%w in (real ours) do (

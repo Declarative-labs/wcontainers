@@ -2,7 +2,8 @@
 //! an indexed quad from two vertex streams copied from an upload buffer into a default buffer, one
 //! triangle of it culled, a whole clear and a rectangle clear (beside the scissor, which clears
 //! ignore), a scissor, and a read back of a box; and every answer of `CheckFeatureSupport` the front
-//! gives. Run it once beside our d3d12.dll and dxgi.dll and once without, then compare:
+//! gives. Run it once beside our d3d12.dll, dxgi.dll and wcontainers_d3d12.dll and once without,
+//! then compare:
 //!   check_d3d12 draw <out.rgba>
 //!   check_d3d12 compare <a.rgba> <b.rgba> <tolerance>
 //!   check_d3d12 features <out.txt>

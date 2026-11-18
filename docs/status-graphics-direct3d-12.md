@@ -6,10 +6,10 @@ crates/wcontainers-direct3d-12.
 
 ## Where things stand
 
-G5 is not complete: the real program and 28 test files wait on the shaders track (G6), 3 on a
-view swizzle (G1 and G6), and comparing bgfx's frames on frame capture in the rig; see "Gap
-list" and "Next". Run history (all
-on 2026-11-17): runs 1 to 4 the
+G5 is not complete: 28 test files wait on the shaders track (G6) and 3 on a view swizzle (G1
+and G6); see "Gap list" and "Next". A real Direct3D 12 program now draws matching frames (run
+21: four of bgfx's examples, "Real program"). Run history (runs 1 to 20 on 2026-11-17, run 21
+on 2026-11-18): runs 1 to 4 the
 first slice; 5 Wine's and vkd3d's tests through ours, root signatures; 6 compute, UAVs, queue
 waits, occlusion, predication, heaps; 7 alias copies, `ExecuteIndirect`, the pass bar's cases;
 8 to 10 allocators, resolves, twin textures, null descriptors, custom heaps, bundles, newer
@@ -53,6 +53,16 @@ rewrites, render passes; 16 custom heap buffers, scaling-none swap chains, bgfx 
   filtering sampler samples them (`formats.rs`, below), and refuses multisampled texture arrays
   at creation. 157 of 198 test files pass (depth_load and typed_uav_store now pass with the
   capability fix), none lost; 24 of 24 own cases equal real Direct3D 12.
+- Run 21 (fifth run of the milestone): merged webgpu, shaders (hull shaders to compute and
+  domain shaders to vertex programs, not yet run through `Stages`) and rig (its forwarding
+  library now stands in for d3d12.dll with a frame clock and Direct3D 12 frame capture). The
+  Windows library is now `wcontainers_d3d12.dll` with two forwarders, `d3d12.dll` and
+  `dxgi.dll` (examples/d3d12.rs, examples/dxgi.rs): the rig's forwarding library takes the name
+  d3d12.dll and loads ours behind it (WC_D3D12), and ours had been named d3d12.dll too, so its
+  dxgi.dll forwarded back into the rig's library and bgfx crashed. With it, bgfx's 01-cubes,
+  38-bloom, 26-occlusion and 35-dynamic on Direct3D 12 draw frames 10, 60 and 120 as real
+  Direct3D 12 does ("Real program"). Test files, cases and the shader runner unchanged: 157 of
+  198, 24 of 24, 204 of 302.
 
 - `wcontainers-directx-graphics-infrastructure`, the portable core: the adapter description from the
   back end's `Caps`; output descriptions, their modes, and the colour spaces swap chains present in
@@ -435,7 +445,8 @@ run 18 145, run 19 155, run 20 157.
 Run with our d3d12.dll alone (the system's dxgi.dll): with our dxgi.dll too every file crashes
 in its Direct3D 11 part before reaching Direct3D 12 (our dxgi.dll serves only Direct3D 12), 0 of
 299 (run12/runner1.log). Command: `E='%CARGO_TARGET_DIR%\debug\examples';
-tools/graphics-rig/wine-tests run --dll "d3d12.dll=$E\d3d12.dll" vkd3d-shader_runner`.
+tools/graphics-rig/wine-tests run --dll "wcontainers_d3d12.dll=$E\wcontainers_d3d12.dll" --dll
+"d3d12.dll=$E\d3d12.dll" vkd3d-shader_runner`.
 
 Run 20 (run20/runner3.log, built as the run's last full run, 231 s): 204 of 302, the same 98
 failing files. Nine compute files (barriers, compute, numthreads, tgsm, uav-atomics, uav-counter,
@@ -519,6 +530,38 @@ and mesh shader subobjects, which the stream reader refused. The 105 failing:
 
 ## Real program
 
+Run 21 (2026-11-18; scratch run21/bgfx5.log; bgfx built by the rig at 18:11 on 2026-11-17):
+bgfx's Direct3D 12 examples behind the rig's forwarding library (frame clock, frames 10, 60 and
+120 saved from the swap chain's queue), recorded twice on real Direct3D 12 with the rig's
+`gt-run frames --record` (tolerances from the two runs) and run twice through ours, each frame
+compared by `gt-run frames`. Pass, every frame of both runs: 01-cubes, 38-bloom, 26-occlusion
+(one of its two runs through ours hit the 120 s limit before frame 120; its frames 10 and 60
+passed), 35-dynamic. Between 720 and 1226 of 921,600 pixels differ by more than 8 in each, all
+in the left overlay's text (largest difference 217), inside the allowance. The ignored rectangle
+is 0,208,320,64: the overlay's lines of GPU time and GPU memory. The rig ignores 0,236,320,36
+(the memory line) for Direct3D 11; on Direct3D 12 its library does not fix timestamps by the
+frame clock, so the measured GPU time differs too (real "GPU 0.073", ours "GPU 4.904", frame
+60), and ours reports no memory (`QueryVideoMemoryInfo` E_NOTIMPL: "8 B / 0 B" against real "57
+MiB / 9 GiB"). With the rig's rectangle every 01-cubes and 38-bloom frame failed only on those
+two lines (run21/bgfx3.log). Not compared: 24-nbody and 37-gpudrivenrendering stop at their
+first compute pipeline (DXIL compute shaders with buffer images, naga's SPIR-V reader:
+"unsupported image dimension %5", G6); bgfx then ends itself.
+Speed (desktop shared, not `--alone`, debug build, whole runs of 120 frames with the frame
+clock): real 2.4 to 2.7 s each; ours 01-cubes 2.6 s, 38-bloom 2.7 s, 35-dynamic 72 and 75 s,
+26-occlusion 114 s and more than 120 s. bgfx wraps every command list in a pipeline statistics
+query; ours counts its pixel shader invocations with the interface's occlusion counter, which
+reads its count texture back and waits at every pass end with counted draws (expected to be
+the cost, not measured; see "Next").
+Commands: `scratch bin/bgfx-compare.ps1 <example> <forwarding dll> <gt-run.exe> [ignored
+rectangle]` (copied to C:\wc\out\phase-2-graphics-direct3d-12, with `bgfx-capture.ps1`, which
+it calls). Run as `D='C:\wc\out\phase-2-graphics-direct3d-12'; tools/graphics-rig/gpu-job
+--desktop --build "set CARGO_INCREMENTAL=0&& cargo build -j 3 -p wcontainers-direct3d-12
+--examples && cargo build -j 3 -p wcontainers-graphics-test-forward -p wcontainers-graphics-test"
+-- "powershell -NoProfile -ExecutionPolicy Bypass -File $D\bgfx-compare.ps1 01-cubes
+%CARGO_TARGET_DIR%\debug\wcontainers_graphics_test_forward.dll
+%CARGO_TARGET_DIR%\debug\gt-run.exe 0,208,320,64"`. The rig's `programs` list does not yet run
+bgfx on Direct3D 12 (rig track's).
+
 Run 16: bgfx's examples on Direct3D 12 (`example-<name>Release.exe --d3d12`, built by the rig
 in C:\wc\programs\src\bgfx; run by hand with scratch bin/bgfx-run.ps1, copied to
 C:\wc\out\phase-2-graphics-direct3d-12, since the rig's `programs` list runs bgfx on Direct3D 11
@@ -562,7 +605,7 @@ storage images of no format and 55 with buffer images (naga's SPIR-V reader), 8 
 memory).
 
 Godot:
-Command: `tools/graphics-rig/programs run --dll "d3d12.dll=%CARGO_TARGET_DIR%\debug\examples\d3d12.dll"
+Command: `tools/graphics-rig/programs run --dll "wcontainers_d3d12.dll=%CARGO_TARGET_DIR%\debug\examples\wcontainers_d3d12.dll" --dll "d3d12.dll=%CARGO_TARGET_DIR%\debug\examples\d3d12.dll"
 --dll "dxgi.dll=%CARGO_TARGET_DIR%\debug\examples\dxgi.dll" godot-platformer-2d-d3d12`.
 - Run 10 (build after a0760963): FAIL, exit 0xc0000005 after 7.1 s, 1 frame, 0 of 3 frames
   saved. Godot makes the device ("D3D12 11_0 - Forward+ - Using Device #0: NVIDIA - NVIDIA
@@ -577,7 +620,7 @@ Command: `tools/graphics-rig/programs run --dll "d3d12.dll=%CARGO_TARGET_DIR%\de
   crates/wcontainers-shaders/src/lower.rs and dxil.rs at origin/phase-2-graphics-shaders as of
   run 13), so the run would end as in run 10.
 
-## Gap list (the pass bar's written list, as of run 20)
+## Gap list (the pass bar's written list, as of run 21; the test files as in run 20)
 
 The final list may hold only gaps that are absent features: what the back end or browser lacks,
 reported absent as Direct3D 12 expects. Run 20's failing test files, by that rule:
@@ -638,9 +681,9 @@ Not absent features, so not yet allowed on the list (others' work, then this fro
   `ConstantComponentIndexing`, `SampleClamp`, wrong values in converted shaders), plus the two
   files binding views of another kind than declared (uav-atomics, length-property), undefined
   in Direct3D 12.
-- The real program: Godot waits on G6 (DXIL storage images of no format, buffer images,
-  `BindingsBeyondLimit`); bgfx runs through ours, but its frames cannot be compared until the
-  rig captures Direct3D 12 frames.
+- The real program: done for bgfx 01-cubes, 38-bloom, 26-occlusion and 35-dynamic (run 21).
+  bgfx 24-nbody and 37-gpudrivenrendering and Godot wait on G6 (DXIL buffer images and storage
+  images of no format, `BindingsBeyondLimit`).
 - Front, refused by name with no failing test here: sampling in the program, typed views of other
   formats and the minimum level-of-detail clamp in vertex and geometry shaders, storage texture
   format variants with pulled vertex programs or geometry stages, stream output buffers not
@@ -653,12 +696,16 @@ Not absent features, so not yet allowed on the list (others' work, then this fro
 1. At the start of each run merge the shared line, webgpu, shaders and rig. Check whether the
    rig fixed its comparison (`tools/graphics-rig/desktop/wine-run.ps1`, "How to run"); until it
    does, apply the one-line patch uncommitted for the run and never commit that file.
-2. The real program: once the shaders branch converts DXIL storage images of no format and
-   buffer images and drops `BindingsBeyondLimit` (grep crates/wcontainers-shaders/src), run
-   Godot (command under "Real program") and compare; or once the rig captures Direct3D 12
-   frames, compare bgfx 01-cubes, 24-nbody and 38-bloom (scratch bin/bgfx-run.ps1 runs them).
-3. When the stage helper gains hull and domain stages and layer outputs, route them as
-   `geometry.rs` routes geometry shaders (14 files).
+2. The real program: once the shaders branch converts DXIL buffer images and storage images
+   of no format and drops `BindingsBeyondLimit` (grep crates/wcontainers-shaders/src), compare
+   bgfx 24-nbody and 37-gpudrivenrendering (bgfx-compare.ps1, "Real program") and run Godot.
+   The speed of pipeline statistics: the occlusion counter's count reads back and waits at
+   every pass end; summing on the GPU into a buffer the statistics value is added from (an
+   interface change to `OcclusionCounter`, shared with Direct3D 11) would remove the waits.
+3. When the stage helper's `Stages` takes hull and domain shaders (the shaders status, "Next":
+   a constructor, a patch list topology, a `FinalDraw` of the tessellator's indices binding
+   `DOMAIN_PATCHES_BINDING` and `DOMAIN_POINTS_BINDING`), route them as `geometry.rs` routes
+   geometry shaders (13 files), and layer outputs (1).
 4. The converter items above as they land (`StorageOffset` would let `storage_range` bind any
    offset).
 5. Turn this gap list into the final one as the G6 items land.
@@ -718,8 +765,12 @@ A working example of all of it is this track's Windows library: `examples/direct
   `tools/graphics-rig/remote "git submodule update --init crates/wcontainers-shaders/dxbc-spirv
   crates/wcontainers-shaders/dxil-spirv && git -C crates/wcontainers-shaders/dxil-spirv submodule
   update --init third_party/spirv-headers"` (done in run 4; they stay checked out).
+- The libraries (run 21): `wcontainers_d3d12.dll` holds everything; `d3d12.dll` and `dxgi.dll`
+  forward to it by that name. All three go beside a program (every `--dll` list below names
+  all three, the shader runner's two).
 - Scenes: `E='%CARGO_TARGET_DIR%\debug\examples'; tools/graphics-rig/scenes --build "cargo build -j 3
-  -p wcontainers-direct3d-12 --examples" --dll "d3d12.dll=$E\d3d12.dll" --dll "dxgi.dll=$E\dxgi.dll"
+  -p wcontainers-direct3d-12 --examples" --dll "wcontainers_d3d12.dll=$E\wcontainers_d3d12.dll" --dll
+  "d3d12.dll=$E\d3d12.dll" --dll "dxgi.dll=$E\dxgi.dll"
   --api d3d12 triangle swapchain` (drop the names for every scene).
 - Own program: `tools/graphics-rig/gpu-job --desktop --build "cargo build -j 3 -p
   wcontainers-direct3d-12 --examples" -- "crates\wcontainers-direct3d-12\examples\check_d3d12.cmd"`.
@@ -729,7 +780,8 @@ A working example of all of it is this track's Windows library: `examples/direct
   (`DXGI_ERROR_NOT_CURRENTLY_AVAILABLE`).
 - Wine's and vkd3d's tests through our libraries (build first; about 8 minutes):
   `tools/graphics-rig/remote "set CARGO_INCREMENTAL=0&& cargo build -j 3 -p wcontainers-direct3d-12 --examples"`, then
-  `E='%CARGO_TARGET_DIR%\debug\examples'; tools/graphics-rig/wine-tests run --dll "d3d12.dll=$E\d3d12.dll"
+  `E='%CARGO_TARGET_DIR%\debug\examples'; tools/graphics-rig/wine-tests run --dll
+  "wcontainers_d3d12.dll=$E\wcontainers_d3d12.dll" --dll "d3d12.dll=$E\d3d12.dll"
   --dll "dxgi.dll=$E\dxgi.dll" d3d12 vkd3d-d3d12 vkd3d-d3d12_invalid_usage vkd3d-hlsl_d3d12`
   (name tests as `vkd3d-d3d12:test_a/test_b`). Logs land in
   pyro-parked/wcontainers-scratch/graphics-rig/wine-logs; `grep -o 'wcontainers: [^,(]*'` over them
@@ -856,6 +908,14 @@ Run 11's entries:
   it could call this (G1 owns helpers.rs, so this track did not change it).
 
 ## Measurements
+
+- Run 21 (2026-11-18, RTX 3080, desktop shared with other tracks, not `--alone`, load not
+  taken; run21/check2.log, built at the library split): fence events, 2000 rounds: real first
+  9 µs, mean 1 µs, 99th percentile 2 µs, largest 9 µs; ours first 56 µs, mean 22 µs, 99th
+  percentile 55 µs, largest 83 µs. Own program: 24 of 24 cases equal; draw 0 of 4096 pixels
+  beyond 1; features 253 of 872 differ, none beyond real. Test files 157 of 198 with the same
+  41 failing as run 20 (run21/full1.log after the merges, full2.log after the split); shader
+  runner 204 of 302 (runner1.log, runner2.log, 227 s). bgfx's run times under "Real program".
 
 - Run 20 (2026-11-17, RTX 3080, desktop shared with other tracks, not `--alone`, load not taken;
   run20/check3.log, built at c682b6b with 04f7d23's change): fence events, 2000 rounds: real
@@ -1085,6 +1145,16 @@ The next entries came with run 8's patch, committed in run 9 (d89ad8d).
   empty and overflowing ranges, samplers beside views, ranges appended after an unbounded one);
   `D3D12SerializeRootSignature` serializes whatever it is given.
 
+Run 21's entries:
+- The Windows library is `wcontainers_d3d12.dll` with `d3d12.dll` and `dxgi.dll` forwarding to
+  it by that name (before: one `d3d12.dll` and a `dxgi.dll` forwarding to `d3d12`). A capture
+  or counting layer named d3d12.dll (the rig's) loads ours behind it by path, and the program's
+  dxgi.dll then still reaches ours, not the layer. One more library file to place.
+- bgfx's frames are compared with the overlay's GPU time and GPU memory lines ignored (a
+  rectangle of 0,208,320,64 against the rig's 0,236,320,36 for Direct3D 11): both lines print
+  values that differ by nature (a measured GPU time the forwarding library does not fix on
+  Direct3D 12; memory no browser reports).
+
 Run 20's entries:
 - Root signatures are shared objects (`root::RootSignature`, an `Arc`), held by the program's
   object, the pipelines made with them and the lists that set them; the device keeps no table
@@ -1177,7 +1247,9 @@ Run 16's entries:
 
 ## Installed on the desktop
 
-Run 20: nothing installed; no build folder made besides the rig's. Run 19: nothing installed; no build folder made besides the rig's. Run 18: nothing installed. Scratch copies of bgfx examples under
+Run 21: nothing installed; no build folder made besides the rig's. In
+C:\wc\out\phase-2-graphics-direct3d-12: bgfx-capture.ps1 (2 KB) and bgfx-compare.ps1 (1 KB), and
+bgfx's captured frames and logs under bgfx (11.6 MB, kept as evidence; bgfx's own art). Run 20: nothing installed; no build folder made besides the rig's. Run 19: nothing installed; no build folder made besides the rig's. Run 18: nothing installed. Scratch copies of bgfx examples under
 C:\wc\out\phase-2-graphics-direct3d-12\bgfx as in run 16 (with an empty nvapi64.dll in the
 nonvapi runs), and Godot's output under C:\wc\out\phase-2-graphics-direct3d-12\programs (the
 rig's). Run 17: nothing installed. The rig's build folder of this branch,
