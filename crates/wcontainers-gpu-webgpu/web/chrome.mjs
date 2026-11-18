@@ -31,15 +31,16 @@ export async function serve(pkg) {
   return server;
 }
 
-// The rig's Chrome, headless. The developer features flag only adds the backend, adapter type and
-// full name to GPUAdapterInfo.
-export async function launch() {
+// The rig's Chrome, headless. The developer features flag adds the backend, adapter type and full
+// name to GPUAdapterInfo, and turns off the rounding of timestamps that Chrome applies by default;
+// `developer` false launches Chrome as users have it.
+export async function launch(developer = true) {
   const installed = (await getInstalledBrowsers({ cacheDir: 'C:\\wc\\chrome' })).filter((b) => b.browser === 'chrome');
   if (installed.length !== 1) throw new Error(`C:\\wc\\chrome holds ${installed.length} Chrome builds, not the one the rig pins`);
   const browser = await chromium.launch({
     executablePath: installed[0].executablePath,
     headless: true,
-    args: ['--enable-webgpu-developer-features'],
+    args: developer ? ['--enable-webgpu-developer-features'] : [],
   });
   console.log(`chrome ${browser.version()}`);
   return browser;

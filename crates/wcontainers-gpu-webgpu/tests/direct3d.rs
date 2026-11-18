@@ -1266,6 +1266,103 @@ fn converted_formats_load_filter_and_draw_as_direct3d_does() {
     assert!(beyond.is_empty(), "{beyond:#?}");
 }
 
+/// A three-channel texture's texels loaded as their bits, as converted.rs's `loaded_bits` does;
+/// `ty` is the texture's channel type.
+fn bits_hlsl(ty: &str) -> String {
+    format!(
+        "Texture2D<{ty}4> t : register(t0);
+uint4 ps(float4 p : SV_Position) : SV_Target {{ return asuint(t.Load(int3(p.xy, 0))); }}"
+    )
+}
+
+/// Direct3D 11's texels of `texels` in the three-channel `format` loaded as their bits.
+fn d3d_bits(gpu: &Gpu, vs: &[u8], format: DXGI_FORMAT, ty: &str, texels: &[u8]) -> Vec<u8> {
+    let (w, h) = converted::SIZE;
+    let mut desc = tex2d(w, h, format, D3D11_BIND_SHADER_RESOURCE);
+    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    let texture = gpu
+        .texture2d(&desc, &[d3d11::data(texels, w * 12, 0)])
+        .unwrap();
+    let view = gpu.srv(&texture.cast().unwrap(), None).unwrap();
+    let (target, rtv) = gpu.target(w, h, DXGI_FORMAT_R32G32B32A32_UINT).unwrap();
+    gpu.begin(&rtv, None, w, h);
+    let ps = hlsl_of(
+        &bits_hlsl(ty),
+        windows::core::s!("ps"),
+        windows::core::s!("ps_5_0"),
+    );
+    gpu.program(vs, &ps, &[]).unwrap();
+    unsafe {
+        gpu.context.RSSetState(&gpu.rasterizer(&solid()).unwrap());
+        gpu.context.IASetPrimitiveTopology(
+            windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
+        );
+        gpu.context.PSSetShaderResources(0, Some(&[Some(view)]));
+        gpu.context.Draw(3, 0);
+    }
+    d3d_read(gpu, &target, 0, 16)
+}
+
+/// The three-channel 32-bit formats (held in their four-channel twins) written with seeded bits,
+/// NaNs and denormals among them, then loaded in a program and read back, against Direct3D 11's
+/// `R32G32B32_*` on the same GPU: every 32-bit channel equal. Prints how many differ.
+#[test]
+fn three_channel_formats_load_and_read_back_as_direct3d_does() {
+    let mut b = device_without(wgpu::Features::empty());
+    let gpu = direct3d();
+    let vs = hlsl_of(
+        CONVERTED_HLSL,
+        windows::core::s!("vs"),
+        windows::core::s!("vs_5_0"),
+    );
+    let seed: u64 = std::env::var("WEBGPU_SEED").map_or(1, |s| s.parse().expect("a seed"));
+    let cases: u64 = std::env::var("WEBGPU_CASES").map_or(4, |s| s.parse().expect("a count"));
+    eprintln!("seed {seed}, {cases} textures per format");
+    let mut beyond = Vec::new();
+    for (i, (format, dxgi, ty)) in [
+        (Format::Rgb32Float, DXGI_FORMAT_R32G32B32_FLOAT, "float"),
+        (Format::Rgb32Uint, DXGI_FORMAT_R32G32B32_UINT, "uint"),
+        (Format::Rgb32Sint, DXGI_FORMAT_R32G32B32_SINT, "int"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let differ = |a: &[u8], b: &[u8]| {
+            a.as_chunks::<4>()
+                .0
+                .iter()
+                .zip(b.as_chunks::<4>().0)
+                .filter(|(x, y)| x != y)
+                .count()
+        };
+        let (mut loads, mut kept, mut channels) = (0, 0, 0);
+        for c in 0..cases {
+            let texels = converted::texels(format, seed + c * 3 + i as u64);
+            let theirs = d3d_bits(&gpu, &vs, dxgi, ty, &texels);
+            let (t, view) =
+                converted::upload(&mut b, format, Some(&texels), TextureUsage::empty()).unwrap();
+            let ours = converted::loaded_bits(&mut b, format, &view).unwrap();
+            loads += differ(&ours, &theirs);
+            let ours = converted::read(
+                &mut b,
+                &converted::at(&t, 0, 0),
+                converted::whole(),
+                texels.len(),
+            );
+            kept += differ(&ours, &d3d_kept(&gpu, dxgi, 12, &texels));
+            channels += texels.len() / 4;
+        }
+        eprintln!(
+            "{format:?}: of {channels} channels, {loads} loaded and {kept} read back differ from Direct3D's"
+        );
+        if loads + kept > 0 {
+            beyond.push(format!("{format:?}: {loads} loaded, {kept} read back"));
+        }
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    assert!(beyond.is_empty(), "{beyond:#?}");
+}
+
 /// Points carrying one vertex attribute into an `R32G32B32A32_FLOAT` target, as vertices.rs draws.
 const ATTRIBUTE_HLSL: &str = r#"
 struct O { float4 p : SV_Position; nointerpolation float4 v : V; };

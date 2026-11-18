@@ -59,12 +59,20 @@ impl Stamps {
         )
     }
 
+    /// The largest power of two, in nanoseconds, every timestamp is a multiple of: the clock's
+    /// resolution where a browser rounds timestamps.
+    pub fn step(&self) -> u64 {
+        let bits = self.ns.iter().fold(0, |a, n| a | n);
+        1 << bits.trailing_zeros().min(63)
+    }
+
     /// One line of what was measured.
     pub fn line(&self) -> String {
         let (a, b) = self.stretches();
         format!(
-            "timestamps {:?}; stretches {:.3} ms and {:.3} ms (ratio {:.2}); GPU clock {:.3} ms apart, CPU between {:.3} and {:.3} ms",
+            "timestamps {:?} (each a multiple of {} ns); stretches {:.3} ms and {:.3} ms (ratio {:.2}); GPU clock {:.3} ms apart, CPU between {:.3} and {:.3} ms",
             self.ns,
+            self.step(),
             a as f64 / 1e6,
             b as f64 / 1e6,
             b as f64 / a.max(1) as f64,
