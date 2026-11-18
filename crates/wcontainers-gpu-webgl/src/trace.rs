@@ -912,7 +912,8 @@ pub fn decode(bytes: &[u8]) -> Result<(Call, &[u8]), String> {
 /// back end.
 #[derive(Clone, Debug, Default)]
 pub struct Frame {
-    pub kinds: Vec<(&'static str, u32, f64)>,
+    /// Per call kind (copies between textures also by their formats): calls and milliseconds.
+    pub kinds: Vec<(String, u32, f64)>,
     /// Calls the back end refused or failed, with the first one's reason.
     pub failed: u32,
     pub first_failure: Option<String>,
@@ -920,13 +921,13 @@ pub struct Frame {
 }
 
 impl Frame {
-    fn add(&mut self, name: &'static str, ms: f64) {
+    fn add(&mut self, name: &str, ms: f64) {
         match self.kinds.iter_mut().find(|k| k.0 == name) {
             Some(k) => {
                 k.1 += 1;
                 k.2 += ms;
             }
-            None => self.kinds.push((name, 1, ms)),
+            None => self.kinds.push((name.to_string(), 1, ms)),
         }
     }
 }
@@ -937,6 +938,8 @@ pub struct Replay<B: Backend> {
     at: usize,
     table: Table<B>,
     scratch: Vec<u8>,
+    /// Each texture's format, to name copies by theirs.
+    formats: HashMap<H, Format>,
 }
 
 impl<B: Backend> Replay<B> {
@@ -946,6 +949,20 @@ impl<B: Backend> Replay<B> {
             at: 0,
             table: Table::default(),
             scratch: Vec::new(),
+            formats: HashMap::new(),
+        }
+    }
+
+    /// The call's kind as frames count it: its method, and for a copy between textures their
+    /// formats.
+    fn kind(&self, call: &Call) -> String {
+        match call {
+            Call::CopyTexture(s, d, _) => format!(
+                "copy_texture({:?},{:?})",
+                self.formats.get(&s.texture),
+                self.formats.get(&d.texture)
+            ),
+            _ => call.name().to_string(),
         }
     }
 
@@ -978,12 +995,16 @@ impl<B: Backend> Replay<B> {
                     return Some(Err(e));
                 }
             };
-            if let Call::CreateSurface(_, w) = call {
-                window(b, w);
+            match call {
+                Call::CreateSurface(_, w) => window(b, w),
+                Call::CreateTexture(h, d) => {
+                    self.formats.insert(h, d.format);
+                }
+                _ => {}
             }
             let mut timer = Timer { clock, spent: 0.0 };
             let r = apply(b, &mut self.table, &call, &mut self.scratch, &mut timer);
-            frame.add(call.name(), timer.spent);
+            frame.add(&self.kind(&call), timer.spent);
             if let Err(e) = r {
                 frame.failed += 1;
                 frame
@@ -1013,7 +1034,10 @@ mod record {
     pub struct Traced<B: Backend> {
         inner: B,
         table: Table<B>,
-        out: std::io::BufWriter<std::fs::File>,
+        file: std::fs::File,
+        /// The calls since the last present, written whole at the next, so a program stopped
+        /// mid-frame leaves whole frames.
+        frame: Vec<u8>,
         next: u32,
         scratch: Vec<u8>,
         helpers: Helpers<Traced<B>>,
@@ -1040,7 +1064,8 @@ mod record {
             Ok(Traced {
                 inner,
                 table: Table::default(),
-                out: std::io::BufWriter::new(file),
+                file,
+                frame: Vec::new(),
                 next: 0,
                 scratch: Vec::new(),
                 helpers: Helpers::default(),
@@ -1053,9 +1078,17 @@ mod record {
         }
 
         fn write(&mut self, call: &Call) {
-            if let Err(e) = postcard::to_io(call, &mut self.out) {
+            if let Err(e) = postcard::to_io(call, &mut self.frame) {
                 eprintln!("webgl trace: {} not written: {e}", call.name());
             }
+        }
+
+        /// Writes the calls held so far into the file.
+        fn flush(&mut self) {
+            if let Err(e) = self.file.write_all(&self.frame) {
+                eprintln!("webgl trace: a frame not written: {e}");
+            }
+            self.frame.clear();
         }
 
         /// Records the call and runs it.
@@ -1106,7 +1139,7 @@ mod record {
 
     impl<B: Backend> Drop for Traced<B> {
         fn drop(&mut self) {
-            let _ = self.out.flush();
+            self.flush();
         }
     }
 
@@ -1509,7 +1542,7 @@ mod record {
 
         fn present(&mut self, surface: &H) -> Result<(), GpuError> {
             let r = self.run(Call::Present(*surface)).map(|_| ());
-            let _ = self.out.flush();
+            self.flush();
             r
         }
 
