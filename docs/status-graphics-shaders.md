@@ -11,7 +11,8 @@ the run 8 check's findings and built the cache of section 8; run 10 built ten of
 rewrites with drawn tests and the corpus of real programs' shaders; run 11 built depth bias and the
 draw bases from an indirect draw's arguments, with drawn tests; run 12 built the minimum
 level-of-detail clamp with drawn tests; run 13 built clip distances, depth clamping and mirror-once
-addressing in the program with drawn tests; run 14 built pulled vertex inputs with a drawn test;
+addressing in the program with drawn tests; run 14 built pulled vertex inputs and constant buffers
+read through a texture with drawn tests;
 what remains is under Next. Run 14 merged origin/phase-2-graphics-direct3d-11, -direct3d-12 and
 -rig (no conflicts; the others had nothing new).
 
@@ -439,6 +440,17 @@ Run 14 (variants):
   first instance 4, every input pulled, against real Direct3D 11's input assembler on the same
   seeded bytes (`WCONTAINERS_PULL_SEED`, `WCONTAINERS_PULL_CASES`). It also checks that Direct3D
   reads zeros and the defaults past the per-vertex stream's end.
+- Interface change: `CONSTANTS_TEXTURE_WIDTH` (256): a constant buffer read through a texture has its
+  16-byte row r at texel (r % 256, r / 256) of an RGBA32 unsigned 2D texture (below).
+- `constants_as_texture` (any stage), both routes (`src/variant/constants.rs`): each named buffer's
+  binding becomes an added texture binding (`AddedBinding::ConstantsAsTexture(register)`, the stage's
+  set, the first texture binding past the program's); every load through it becomes a call that
+  computes the byte offset from the types along its access path (struct members, arrays by stride,
+  vector components, indices picked at run time as arguments) and fetches the row's texel, giving a
+  scalar by its component or a vector by a swizzle where its first component is fixed; the old
+  variable becomes private and compaction removes it. Other shapes are refused
+  (`ConstantsAsTextureLayout`). The shared harness copies the constants into such a texture where a
+  program asks (`constants_texture`).
 
 Next (in order):
 - The rest of the variants (the list above), each with a drawn test as run 10's:
@@ -447,7 +459,7 @@ Next (in order):
   vertex's. The exact routes are the front's: lists drawn with each primitive's indices rotated
   ((a, b, c) as (c, a, b), winding kept), strips and fans made lists first. If that holds, the flag
   has no use and the interface could drop it; until decided it stays refused by name.
-- Constants through a texture (WebGL 2), filtering and border in the program (both read
+- Filtering and border in the program (both read
   `HelperValue::SamplerState` as mirror-once does; border with linear filtering needs the filter in
   the program too), decoded textures
   and targets written in the program, pulled vertices, constants through a texture, typed buffers
@@ -497,6 +509,7 @@ let reflection = &converted.reflection;
 ```
 - `variant_key` is `wcontainers_gpu::VariantKey`; `VariantKey::default()` for the plain program. Built:
   `draw_base` (`None`, `Helpers`, `Arguments`), `output_interpolation`, `lod_bias`, `pulled`,
+  `constants_as_texture`,
   `constants_as_storage`, `samples`, `linked`, `mirror_once_in_shader`, and the flags
   `CLIP_DEPTH_REWRITE`, `VIEWPORT_DEPTH_FLIP`, `VIEWPORT_ADJUST` (vertex programs; ignored on
   others), `COUNTING`, `SAMPLE_MASK`, `DUAL_SOURCE`, `DEPTH_BIAS` (pixel programs), `CLIP_DISTANCE`
@@ -542,6 +555,10 @@ let reflection = &converted.reflection;
   first instance, so it needs no other base. Each pulled input takes a storage binding of the vertex
   stage: the front checks the total against the back end's per-stage storage limit (WebGPU's
   default is 8) and refuses past it.
+- `constants_as_texture` (WebGL 2, past its uniform block count or size): the slot's
+  `reflection.bindings` entry becomes kind `Texture` with `added: Some(ConstantsAsTexture(register))`;
+  bind an RGBA32 unsigned 2D texture holding the buffer's bytes, row r at (r % 256, r / 256)
+  (`CONSTANTS_TEXTURE_WIDTH`), copied when the buffer changed.
 - `DEPTH_BIAS` writes the depth itself, so the front draws with the raster block's bias at zero and
   without early depth tests for those draws.
 - `draw_base: Arguments` reads the bases from the indirect argument buffer, bound read-only (storage)
@@ -622,6 +639,12 @@ Run 14, 2026-11-17, counts only:
   rounded) and half-float NaNs (payload lost). Windows clippy with warnings denied passes.
 - Laptop (i7-8750H, load average 0 to 0.4): the suite without the ignored corpora passes after
   recording the new own verdicts (`vs_pull`, `ps_pull`: convert, by both routes); clippy with warnings
+  denied passes.
+- `tests/variant_draw.rs` on the desktop (one GPU job, about 3.7 s, `run14/draw1.log`): 104
+  comparisons, all within their allowances; new: constants through a texture in both stages
+  (`vs_transform` with `ps_textured`, and with `ps_rows`, whose row is picked by the pixel's column)
+  against the plain programs' uniform blocks, on WebGL 2 and WebGPU, by both routes: 0 of 4096 texels
+  differ in all 8 (allowance 0). Every earlier comparison as in run 13. Windows clippy with warnings
   denied passes.
 
 Run 13, 2026-11-17, counts only:
@@ -1219,6 +1242,10 @@ were already there.
   `glGetBufferSubData`, which ANGLE's GLES lacks (`read_back_now` works).
 
 ## Interface changes
+
+- Run 14, `CONSTANTS_TEXTURE_WIDTH` (256) and `AddedBinding::ConstantsAsTexture`'s texture described
+  (commit "interface: laid out the texture a constant buffer is read through ..."; plan text in 4.12):
+  the front's copy and the program's fetch must agree on where each row lies.
 
 - Run 14, `HelperValue::PulledStream { input }` (was `{ stream }`, three u32) as four u32 (offset,
   stride, divisor, bias), and `AddedBinding::PulledStream(n)` documented as the binding of the input
