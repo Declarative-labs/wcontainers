@@ -10,6 +10,7 @@
 #include <sys/sendfile.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #ifndef RWF_APPEND
@@ -96,7 +97,8 @@ int main(int argc, char **argv) {
                             "/proc/cpuinfo",      "/proc/meminfo",      "/proc/version",
                             "/proc/uptime",       "/proc/loadavg",      "/proc/stat",
                             "/proc/filesystems",  "/proc/mounts",       "/proc/self/auxv",
-                            "/proc/self/mounts",  "/proc/self/cgroup",  "/proc/self/statm"};
+                            "/proc/self/mounts",  "/proc/self/cgroup",  "/proc/self/statm",
+                            "/proc/cmdline"};
     for (unsigned i = 0; i < sizeof(others) / sizeof(*others); i++) {
         errno = 0;
         int fd = open(others[i], O_WRONLY);
@@ -104,6 +106,15 @@ int main(int argc, char **argv) {
         printf("write %-22s open %d = %ld (%s)\n", others[i], fd >= 0, w, w < 0 ? strerror(errno) : "-");
         close(fd);
     }
+    // The kernel's command line is the machine's own: one line.
+    struct stat cmdline_stat;
+    stat("/proc/cmdline", &cmdline_stat);
+    int cmdline_fd = open("/proc/cmdline", O_RDONLY);
+    char line[4096];
+    long line_length = read(cmdline_fd, line, sizeof line);
+    printf("cmdline mode %o one line %d\n", cmdline_stat.st_mode,
+           line_length > 0 && memchr(line, '\n', line_length) == line + line_length - 1);
+    close(cmdline_fd);
     R(open("/proc/sys/kernel/ostype", O_WRONLY));
     // Both access bits open for ioctl only, and ask for reading and writing.
     R(open("/proc/sys/kernel/ostype", 3));

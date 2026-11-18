@@ -295,6 +295,7 @@ pub(crate) enum Global {
 }
 
 pub(crate) const GLOBAL: &[(&str, Global)] = &[
+    ("cmdline", Global::File(0o444)),
     ("config.gz", Global::File(0o444)),
     ("cpuinfo", Global::File(0o444)),
     ("filesystems", Global::File(0o444)),
@@ -1422,6 +1423,8 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
             let (path, _) = GLOBAL[*index];
             let machine = source.machine;
             match path {
+                // The made-up machine's kernel was started with no parameters.
+                "cmdline" => out.push('\n'),
                 "cpuinfo" => {
                     let _ = write!(
                         out,
