@@ -1685,21 +1685,13 @@ fn process_vm(
     let Some(target) = kernel.threads.get(&(pid as i32)) else {
         return Err(Errno::ESRCH);
     };
-    if target.process != kernel.threads[&tid].process {
-        // Another process's memory needs Linux's `ptrace_may_access`, which comes with processes.
-        let number = if write {
-            __NR_process_vm_writev
-        } else {
-            __NR_process_vm_readv
-        };
-        return Err(kernel.counters.refuse(
-            cx.host,
-            reason::CROSS_PROCESS_NOT_BUILT,
-            number.into(),
-            Errno::ENOSYS,
-        ));
+    // `mm_access` with PTRACE_MODE_ATTACH_REALCREDS: another process's memory only for a caller
+    // that may trace it, judged by its real ids (EACCES, answered as EPERM).
+    let remote = target.process;
+    if !crate::fs::proc::ptrace_may_read_as(&kernel.processes, &kernel.threads, tid, remote, true) {
+        return Err(Errno::EPERM);
     }
-    let mut guest = super::guest(kernel, cx, tid);
+    let local_process = kernel.threads[&tid].process;
     let mut local = local.into_iter().filter(|(_, length)| *length > 0);
     let mut current = local.next();
     let mut copied = 0;
@@ -1711,7 +1703,10 @@ fn process_vm(
             continue;
         }
         let wanted = length.min(remaining);
-        let reach = guest.map.borrow().pinnable(base, wanted, write);
+        let reach = kernel.processes[&remote]
+            .map
+            .borrow()
+            .pinnable(base, wanted, write);
         // Linux copies a page of the other side at a time, into as many local segments as it takes.
         let mut at = base;
         while at < base + reach {
@@ -1725,13 +1720,18 @@ fn process_vm(
             } else {
                 Permissions::WRITE
             };
-            let moved = guest.accessible(local_base, size, local_right);
+            let moved = super::guest(kernel, cx, tid).accessible(local_base, size, local_right);
             let (from, to) = if write {
-                (local_base, at)
+                ((local_process, local_base), (remote, at))
             } else {
-                (at, local_base)
+                ((remote, at), (local_process, local_base))
             };
-            guest.copy_within(from, to, moved)?;
+            if remote == local_process {
+                super::guest(kernel, cx, tid).copy_within(from.1, to.1, moved)?;
+            } else {
+                let bytes = process_guest(kernel, cx, from.0).read(from.1, moved)?;
+                process_guest(kernel, cx, to.0).write(to.1, &bytes)?;
+            }
             copied += moved;
             remaining -= moved;
             at += moved;
@@ -1749,6 +1749,22 @@ fn process_vm(
         }
     }
     Ok(copied)
+}
+
+/// A process's memory, as another process's call reaches it.
+fn process_guest<'a>(
+    kernel: &'a mut Kernel,
+    cx: &'a mut Context<'_>,
+    pid: crate::process::Pid,
+) -> crate::user::Guest<'a> {
+    let process = &kernel.processes[&pid];
+    crate::user::Guest {
+        cpu: cx.cpu,
+        memory: process.memory,
+        map: &process.map,
+        limits: &process.limits,
+        may_lock_any: false,
+    }
 }
 
 /// The end of a copy that faulted: what was copied, or `EFAULT` if nothing was.

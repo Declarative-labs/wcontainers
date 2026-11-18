@@ -886,7 +886,10 @@ pub(crate) fn ptrace_may_read_as(
     if target_process.ended.is_none() && !target_process.map.borrow().dumpable && !traces {
         return false;
     }
-    t.permitted & !c.effective == 0 || traces
+    // `cap_ptrace_access_check`: the caller's permitted powers with its real ids, else its
+    // effective ones.
+    let caller = if real { c.permitted } else { c.effective };
+    t.permitted & !caller == 0 || traces
 }
 
 /// `timerslack_ns_show` and `timerslack_ns_write`: a process's first thread itself, or a caller

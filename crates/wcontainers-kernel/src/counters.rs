@@ -37,9 +37,6 @@ pub mod reason {
     /// A terminal line discipline Linux has other than `n_tty`; it answers EINVAL, as a Linux that
     /// has not registered it does. Detail: the discipline's number.
     pub const LDISC_NOT_BUILT: &str = "line discipline not built";
-    /// A process's memory, files or other state reached from another process in a way not built.
-    /// Detail: the call number.
-    pub const CROSS_PROCESS_NOT_BUILT: &str = "call on another process not built";
     /// `mincore`, `getrusage`, `sysinfo` or `/proc/meminfo` reported every mapped page as in
     /// memory, `cachestat` or `statfs` counted a mapped file's pages without those its faults
     /// brought in, or a core dump took anonymous memory as touched and pages of zeros as never
@@ -189,7 +186,6 @@ pub mod reason {
         PROC_ENTRY_NOT_BUILT,
         SYS_ENTRY_NOT_BUILT,
         SECCOMP_LISTENER_NOT_IMPLEMENTED,
-        CROSS_PROCESS_NOT_BUILT,
         FAMILY_NOT_BUILT,
         OPTION_NOT_BUILT,
         PROTOCOL_NOT_BUILT,

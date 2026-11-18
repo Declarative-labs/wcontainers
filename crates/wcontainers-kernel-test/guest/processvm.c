@@ -1,5 +1,6 @@
 // process_vm_readv and process_vm_writev on the caller's own memory: the checks, partial copies at
-// pages the other side may not reach, and faults on the caller's side.
+// pages the other side may not reach, and faults on the caller's side; then on a child's memory,
+// as the same user and as another.
 
 #define _GNU_SOURCE
 #include <errno.h>
@@ -10,6 +11,7 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define PAGE 4096
@@ -31,6 +33,45 @@ static unsigned sum(const unsigned char *bytes, size_t length) {
 
 static void show(const char *what, long result, const unsigned char *bytes, size_t length) {
     printf("%s: %ld sum %08x\n", what, result, sum(bytes, length));
+}
+
+// A child that keeps its copy of `area` (and a read-only page after it) until told to look, then
+// prints what its memory holds; as `user` if not 0.
+static void other_process(unsigned char *area, unsigned char *into) {
+    for (int user = 0; user < 2; user++) {
+        int go[2], ready[2];
+        pipe(go);
+        pipe(ready);
+        fflush(stdout);
+        pid_t child = fork();
+        if (child == 0) {
+            if (user)
+                setresuid(65534, 65534, 65534);
+            for (int at = 0; at < 4 * PAGE; at++)
+                area[at] = (unsigned char)(at * 5 + user);
+            mprotect(area + 4 * PAGE, PAGE, PROT_READ);
+            write(ready[1], "r", 1);
+            char byte;
+            read(go[0], &byte, 1);
+            printf("child %d holds sum %08x\n", user, sum(area, 5 * PAGE));
+            _exit(0);
+        }
+        char byte;
+        read(ready[0], &byte, 1);
+        memset(into, 0, 8 * PAGE);
+        struct iovec local[2] = {{into, 1000}, {into + 2000, 3 * PAGE}};
+        struct iovec remote[2] = {{area + 100, 2 * PAGE}, {area + 3 * PAGE, 3 * PAGE}};
+        show(user ? "read another user's child" : "read a child", vm(0, child, local, 2, remote, 2, 0), into, 8 * PAGE);
+        for (int at = 0; at < 8 * PAGE; at++)
+            into[at] = (unsigned char)(at * 3 + 1);
+        show(user ? "write another user's child" : "write a child", vm(1, child, local, 2, remote, 2, 0), into, 8 * PAGE);
+        write(go[1], "g", 1);
+        waitpid(child, NULL, 0);
+        close(go[0]);
+        close(go[1]);
+        close(ready[0]);
+        close(ready[1]);
+    }
 }
 
 int main(void) {
@@ -150,5 +191,6 @@ int main(void) {
             }
         }
     }
+    other_process(area, into);
     return 0;
 }
