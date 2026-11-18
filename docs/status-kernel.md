@@ -3371,8 +3371,14 @@ K6c, in this order:
    anything else. A suspect, not checked: the stand-in's exclusive monitor (QEMU's
    `exclusive_addr` and `exclusive_val`) survives a switch between threads, where Linux's
    exception return clears it, so an STXR after a switch can succeed on a value changed and
-   changed back (glibc's atomic free lists). If so, the CPU side must clear it whenever a thread
-   is run again (a boundary question for the orchestrator: the translator must do the same).
+   changed back (glibc's atomic free lists). Checked in unicorn's source: only CLREX and STXR
+   clear `exclusive_addr`, nothing at an exit or entry, and the stand-in runs every thread of a
+   memory on one unicorn instance, so an LDXR of one thread can be paired with a later STXR of
+   another. Against it: glibc built with outline atomics uses LSE CAS when AT_HWCAP has ATOMICS,
+   which ours has. If it is the cause, the stand-in must clear the monitor when it runs another
+   thread (a unicorn context saved when the memory is made and restored before loading the next
+   thread's registers would do it), and the translator must do the same (a boundary question
+   for the orchestrator).
 3. Rerun the fixed-not-rerun tests listed under "K6c, third run" and confirm.
 4. Parts not built that tests reach, largest first: the cgroup2 mount at /sys/fs/cgroup (read
    only, the container's root cgroup, with /proc/cgroups; the reference's files, modes and
