@@ -537,6 +537,8 @@ pub(super) fn open(
                     umask,
                     flags,
                 )?;
+                // `lookup_open`'s `fsnotify_create` for a file the open made.
+                super::inotify::created(kernel, &parent.directory, &parent.name, &node);
                 handle = Some(made);
                 (node, true)
             } else {
@@ -728,14 +730,16 @@ pub(super) fn open(
     );
     file.borrow_mut().created = created;
     file.borrow_mut().backend = handle;
-    // The name it was opened by, if it was not reached through a link.
+    // The name it was opened by, if it was not reached through a link. A backend directory's
+    // last name walked is the one the backend answered for this inode.
     let named = !parent.name.is_empty()
-        && parent
-            .directory
-            .borrow()
-            .directory()
-            .and_then(|entries| entries.get(&parent.name))
-            .is_some_and(|found| Rc::ptr_eq(&found, &node));
+        && (crate::fs::backend::remote(&parent.directory).is_some()
+            || parent
+                .directory
+                .borrow()
+                .directory()
+                .and_then(|entries| entries.get(&parent.name))
+                .is_some_and(|found| Rc::ptr_eq(&found, &node)));
     if named {
         file.borrow_mut().dentry = Some((Rc::downgrade(&parent.directory), parent.name.clone()));
     }
@@ -1094,6 +1098,8 @@ pub(super) fn linkat(
     }
     if crate::fs::backend::remote(&node).is_some() {
         crate::fs::backend::link(&node, &parent.directory, &parent.name)?;
+        super::inotify::inode_changed(kernel, &node, IN_ATTRIB);
+        super::inotify::created(kernel, &parent.directory, &parent.name, &node);
         return Ok(0);
     }
     // tmpfs counts each link as an inode (`shmem_link`).
