@@ -28,8 +28,9 @@ mach2 = "0.6.0"
 
 [build-dependencies]
 blake3 = "1"
-# The workspace's resolved dependency graph, to find its guests and what they are built from.
+# The workspace's crates and the lock file, to find the guests and what they are built from.
 cargo_metadata = "0.23.1"
+cargo-lock = "11.1.0"
 
 [dev-dependencies]
 wcontainers-arm64 = { path = "../wcontainers-arm64" }

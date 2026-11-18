@@ -1,11 +1,13 @@
-//! The translator's build identity: a hash of the sources of every local crate the emitted code depends
-//! on (the translator, every guest and what they stand on) and of the id of every other crate they
-//! depend on, so a change to any of them changes the cache's keys.
+//! The translator's build identity: a hash of the sources of every workspace crate the emitted code
+//! depends on (the translator, every guest and what they stand on) and of the locked entry of every
+//! other crate they depend on, so a change to any of them changes the cache's keys. The workspace comes
+//! from `cargo metadata --no-deps` and the rest from the lock file, so nothing is fetched.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-use cargo_metadata::{CargoOpt, DependencyKind, MetadataCommand, Package, PackageId};
+use cargo_lock::Lockfile;
+use cargo_metadata::{DependencyKind, MetadataCommand, Package};
 
 fn files(directory: &Path, into: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(directory) else {
@@ -21,7 +23,7 @@ fn files(directory: &Path, into: &mut Vec<PathBuf>) {
     }
 }
 
-/// Whether a package depends on the named one to build its code (not only its tests).
+/// Whether a workspace crate depends on the named package to build its code (not only its tests).
 fn builds_on(package: &Package, name: &str) -> bool {
     package
         .dependencies
@@ -33,62 +35,82 @@ fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets it"));
     let metadata = MetadataCommand::new()
         .manifest_path(manifest.join("Cargo.toml"))
-        .features(CargoOpt::AllFeatures)
-        .other_options(["--locked".to_owned(), "--offline".to_owned()])
+        .no_deps()
         .exec()
         .expect("cargo metadata");
     let root = metadata.workspace_root.as_std_path();
+    let lock_path = root.join("Cargo.lock");
     // A crate added to the workspace or removed from it changes the lock.
-    println!(
-        "cargo:rerun-if-changed={}",
-        root.join("Cargo.lock").display()
-    );
-    for member in metadata.workspace_packages() {
-        println!("cargo:rerun-if-changed={}", member.manifest_path);
-    }
-    // The translator, and every guest: a crate built on the guest interface that does not stand on
-    // the translator.
-    let from: Vec<&PackageId> = metadata
+    println!("cargo:rerun-if-changed={}", lock_path.display());
+    let lock = Lockfile::load(&lock_path).expect("the lock file");
+    let members: HashMap<&str, &Package> = metadata
         .workspace_packages()
         .into_iter()
+        .map(|p| (p.name.as_str(), p))
+        .collect();
+    for member in members.values() {
+        println!("cargo:rerun-if-changed={}", member.manifest_path);
+    }
+    let local = |name: &str| {
+        lock.packages
+            .iter()
+            .position(|p| p.source.is_none() && p.name.as_str() == name)
+            .unwrap_or_else(|| panic!("{name} is in the lock"))
+    };
+    // The translator, and every guest: a crate built on the guest interface that does not stand on
+    // the translator.
+    let mut work: Vec<usize> = members
+        .values()
         .filter(|p| {
             p.name.as_str() == "wcontainers-translator"
                 || (builds_on(p, "wcontainers-guest-cpu")
                     && !builds_on(p, "wcontainers-translator"))
         })
-        .map(|p| &p.id)
+        .map(|p| local(p.name.as_str()))
         .collect();
-    let resolve = metadata.resolve.as_ref().expect("a resolved graph");
-    let nodes: HashMap<&PackageId, _> = resolve.nodes.iter().map(|n| (&n.id, n)).collect();
     let mut seen = BTreeSet::new();
-    let mut work = from;
-    while let Some(id) = work.pop() {
-        if !seen.insert(id) {
+    while let Some(index) = work.pop() {
+        if !seen.insert(index) {
             continue;
         }
-        for dependency in &nodes[id].deps {
-            let built_from = dependency
-                .dep_kinds
-                .iter()
-                .any(|k| k.kind != DependencyKind::Development);
-            if built_from {
-                work.push(&dependency.pkg);
+        let package = &lock.packages[index];
+        let member = package
+            .source
+            .is_none()
+            .then(|| members[package.name.as_str()]);
+        for dependency in &package.dependencies {
+            if member.is_some_and(|m| !builds_on(m, dependency.name.as_str())) {
+                continue;
             }
+            let found = lock
+                .packages
+                .iter()
+                .position(|p| dependency.matches(p))
+                .unwrap_or_else(|| panic!("{} is in the lock", dependency.name));
+            work.push(found);
         }
     }
     let mut hasher = blake3::Hasher::new();
-    for id in seen {
-        let package = &metadata[id];
-        if package.source.is_some() {
-            hasher.update(id.repr.as_bytes());
+    for index in seen {
+        let package = &lock.packages[index];
+        if let Some(source) = &package.source {
+            let checksum = package.checksum.as_ref().map(ToString::to_string);
+            let entry = format!(
+                "{} {} {source} {}",
+                package.name,
+                package.version,
+                checksum.unwrap_or_default()
+            );
+            hasher.update(entry.as_bytes());
             continue;
         }
-        let directory = package
+        let member = members[package.name.as_str()];
+        let directory = member
             .manifest_path
             .parent()
             .expect("a manifest's directory")
             .as_std_path();
-        let mut paths = vec![package.manifest_path.clone().into_std_path_buf()];
+        let mut paths = vec![member.manifest_path.clone().into_std_path_buf()];
         files(&directory.join("src"), &mut paths);
         paths.sort();
         for path in paths {
