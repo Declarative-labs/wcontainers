@@ -57,6 +57,64 @@ Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0
    i7-8750H: `rep stosb` into a read-only page, rflags 0x10202; trap stops give 0x202). Plan section 2 says RF
    and IF are masked out of the comparison; x86's `reconcile` must do it, or every faulting case differs.
 
+## X2, run 8 (2026-11-18)
+
+The fourth independent check of X2 found two blocking problems and three smaller ones. What was done:
+- Blocking, Chrome's layer 1 held two ARM64 facts and the plan said what the page did not do: the page never
+  wrote the filler (right only because ARM64's is 0), and its lookup covered `MAX_LENGTH / ALIGN` slots (1 for
+  ARM64, 15 for x86), so an x86 case falling through to CODE + L would have run the padding's `int3` where
+  wasmtime and the CPU land at CODE + L. Now each Chrome case carries its length; the page translates the
+  instruction's own bytes (as `Machine::load(code, 0..len)` does), covers one slot (as `Machine::new(.., CODE,
+  1, ..)`), and fills the code area once from the new `fill` setting when the filler is not 0 (as wasmtime
+  does per case). `code_area::<G>()` in `layer1.rs` gives both sides the range. Shown for ARM64 only (its
+  cases are unchanged: one slot, 4 bytes, filler 0); x86's Chrome layer 1 at X3 is what runs it for x86.
+- Blocking, layer 3 judged a blob's signal ending by `docker run --platform` of the ordinary executable on
+  the Mac, bypassing the transport (for x86, Docker's emulation). The runner has a new request,
+  `RECORD_PROGRAM`: the executable's bytes, run from a memory file by `fexecve` in a child of its own, with
+  the blob's name as `argv[0]`, no environment, empty input, no signal blocked, SIGPIPE at its default (Rust
+  ignores it in the runner and exec keeps that) and the blob's 20-second `alarm`, which carries over exec;
+  its result is a blob's with no stop. `layer3::ordinary` sends it through `with_reference`
+  (`programs::native_program`). The blob's run and the program's share `run_child` (input, pipes, fork,
+  wait, time) and `standard_files` in the runner. New tests: `ordinary_executables_run_on_the_reference_arm64`
+  and `the_x86_64_reference_runs_programs` (hello world's output and status 3, a write through a null pointer
+  139, a loop ended by the limit 142), through `programs::check_ordinary_programs`.
+- Minor, the browser glue passed ARM64's `()` as the offer: the interface's `Offer` is now `Default` (its
+  default is what the CPU claims by default), the glue translates through a generic `translate_for::<C>` with
+  `C::Offer::default()`, and `GuestTest::DEFAULT_OFFER` is gone (every use is `G::Offer::default()`).
+- Minor, `same-cases.sh` and `same-output.sh` built every earlier commit into one target directory, where
+  cargo could take one commit's build for another's (copies from `git archive` carry the commit's times). Each
+  commit now builds into `<root>/target/<commit>`. Shown: in one new root, `same-cases.sh d27cd70 271828 4242`
+  then `same-cases.sh 995e949 271828` both pass (the check's same pair failed to compile before).
+- Three comments in generic code said Docker where they meant the shell's 128 plus the signal; reworded.
+
+This run's read for CPU facts outside the per-CPU part: `browser/runner.js`, `src/browser.rs`, `src/layer1.rs`,
+`src/layer3.rs`, `tests/layer3.rs` and `src/reference.rs` whole, and a grep of `src/` and `tests/` for Docker.
+Left as they are: Chrome's stop kinds as 128 plus Linux's signal (the same on every guest), the stand-in's
+16-byte `iovec` and `IOV_MAX` (64-bit Linux's on every guest), the state memory's 4-byte words, `binaries.rs`
+taking files from images with Docker (not a reference judgement), and layer 3's gcc in Docker for the guest's
+platform (compiling only, as plan 7.4 says). Not read line by line: `src/layer2.rs`, `src/binaries.rs`,
+`src/programs.rs` beyond what this run changed, `src/changes.rs` beyond run 7's part, `src/runner.rs`. So this
+is not a proof that none are left.
+
+Proof of run 8 (the Mac, Apple M5):
+- origin/phase-1-translator: nothing new at the start (2026-11-18 02:43).
+- The x86 reference on the i7-8750H (`x2/run8/reference.log`, 02:52 to 02:53, Mac load 20.5 to 37.2, x86 load
+  2.9 just before, another track's builds): 5 passed, 43 hand-made cases, the new program test among them.
+- After the changes (`x2/run8/affected.log`, 02:52 to 03:04, Mac load 19.9 to 44.6): browser 1 passed; layer 1
+  5 passed (1215 forms, 64 cases each, seed 1, 0 failing; 64 no-form cases; 105 hand-made; Chrome 1215 cases, 0
+  failing); smoke 6 passed; `ordinary_executables_run_on_the_reference_arm64` passed (20.6 s, the loop's limit).
+  The page's fill was changed to "when the filler is not 0" while this ran; the suite below runs the final
+  page.
+- Same cases (`x2/run8/same-cases.log`, root scratch `x2/run8/same`, 02:52 to 02:55, Mac load 21.1 to 39.1):
+  against d27cd70 seeds 271828 and 4242, layer 1 1215 forms and layer 2 64 programs the same; against 995e949
+  seed 271828, layer 1, layer 2, no-form (64) and hand-made (105) the same.
+- Clippy with `-D warnings` on the four crates (all targets), the browser crate (wasm32, `arm64`) and the runner
+  for both CPUs; `cargo fmt --check`: clean.
+- Suite at 8e74a45 (`WC_REFERENCE_X86_64=tom@192.168.2.240`, scratch `x2/run8/suite.log`): 80 passed (run 7's 78
+  and the two program tests), 0 failed, 11 ignored, 26 minutes 42 seconds, Mac load 30.0 at start and 86.0 at
+  end, x86 load 3.7 at start (run 7: 29 minutes 35 seconds at 73.3 to 64.2).
+- origin/phase-1-translator: fetched again at the end (03:32), nothing new.
+
 ## X2, run 7 (2026-11-18)
 
 The third independent check of X2 found two blocking problems and five smaller ones. What was done:
@@ -1222,6 +1280,10 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   twice: the first run did not pass its environment settings to `stepper6` and was discarded; in run 9,
   41 hand-written cases (`cases16.sh` 39, the two `xacquire` runs 2); in run 10, one run each of `tf`
   (8 trap-flag scenarios in 9 runs, 20 stops) and `rf` (8 signal frames), and 6 `stepper6` cases.
+- X2 run 8: layer 1 at the defaults (seed 1) twice (once alone, once in the suite); `same-cases.sh` for seeds
+  271828 and 4242 against d27cd70 and 271828 against 995e949 at 64 a form and 64 programs; the x86
+  reference's 43 cases, 2 blobs, 3 programs, the refusal and reconnection tests, once alone and in the suite;
+  ARM64's 3 programs, once alone and in the suite.
 - X2 run 6: the x86 reference's 43 hand-made cases, 2 blobs, the reconnection case and the refusal test
   (4 refused cases and 2 that run), twice outside the suite (the first stopped at the `popf` that set AC,
   above) and in the suite run.
