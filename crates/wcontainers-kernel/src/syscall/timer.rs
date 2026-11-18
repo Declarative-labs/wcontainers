@@ -1305,7 +1305,7 @@ pub(super) fn read(
         return Err(Errno::EINVAL);
     }
     if kernel.timers.all[&id].ticks == 0 {
-        if file.borrow().flags & O_NONBLOCK != 0 {
+        if super::io::nonblocking(kernel, tid, file) {
             return Err(Errno::EAGAIN);
         }
         if kernel.signal_pending(tid) {

@@ -43,6 +43,12 @@ pub(super) fn open_file(kernel: &Kernel, tid: Tid, fd: u64) -> Result<FileRef, E
     Ok(found)
 }
 
+/// Whether a read or write of the file in this call answers EAGAIN instead of waiting: the file is
+/// nonblocking or the call may not wait (RWF_NOWAIT).
+pub(super) fn nonblocking(kernel: &Kernel, tid: Tid, file: &FileRef) -> bool {
+    file.borrow().flags & O_NONBLOCK != 0 || kernel.threads[&tid].call.nowait
+}
+
 pub(super) fn read(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -245,15 +251,20 @@ fn vectored2(
     if looped && flags & !RWF_HIPRI != 0 {
         return Err(Errno::EOPNOTSUPP);
     }
-    // `/proc`'s files, tmpfs's regular files, named pipes and terminals do not take reads or
-    // writes that may not wait (`FMODE_NOWAIT` unset; measured: devices and the pipes `pipe2`
-    // makes take them, a named pipe opened by its path does not).
+    // `/proc`'s files, tmpfs's and the backend's regular files, named pipes, terminals and
+    // `/dev/full` do not take reads or writes that may not wait (`FMODE_NOWAIT` unset; measured:
+    // the other devices and the pipes `pipe2` makes take them, a named pipe opened by its path
+    // does not).
     let waits = super::tty::end(&file).is_some() || {
         let file = file.borrow();
         let inode = file.node.borrow();
         matches!(inode.content, Content::Proc(_))
-            || inode.fs.kind == crate::fs::Kind::Tmpfs && inode.file_type() == S_IFREG
+            || (inode.fs.kind == crate::fs::Kind::Tmpfs
+                || matches!(inode.content, Content::Backend(_)))
+                && inode.file_type() == S_IFREG
             || inode.file_type() == S_IFIFO && inode.fs.kind != crate::fs::Kind::Pipe
+            || matches!(inode.content, Content::Special)
+                && matches!(Device::from_number(inode.rdev), Some(Device::Full))
     };
     if waits && flags & RWF_NOWAIT != 0 {
         return Err(Errno::EOPNOTSUPP);
@@ -274,6 +285,7 @@ fn vectored2(
         append = true;
     }
     let at = (!current).then_some(offset);
+    kernel.thread_mut(tid).call.nowait = flags & RWF_NOWAIT != 0;
     vectored(
         kernel,
         cx,

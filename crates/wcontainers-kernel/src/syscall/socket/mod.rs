@@ -2616,14 +2616,25 @@ pub(super) fn read(
     parts: &[(u64, u64)],
 ) -> Result<u64, Errno> {
     let socket = of(file).expect("a socket");
-    // `sock_read_iter`: a read of nothing is nothing, as System V's.
+    // `sock_read_iter`: a read of nothing is nothing, as System V's; one that may not wait is
+    // MSG_DONTWAIT.
     if parts.iter().all(|(_, length)| *length == 0) {
         return Ok(0);
     }
-    let (copied, received) = receive(kernel, cx, tid, file, &socket, Data::Guest(parts), 0)?;
+    let flags = dont_wait(kernel, tid);
+    let (copied, received) = receive(kernel, cx, tid, file, &socket, Data::Guest(parts), flags)?;
     // Descriptors that came with the bytes are let go (`scm_destroy`).
     kernel.released.extend(received.files);
     Ok(copied)
+}
+
+/// MSG_DONTWAIT for a call that may not wait (RWF_NOWAIT), else no flags.
+fn dont_wait(kernel: &Kernel, tid: Tid) -> u32 {
+    if kernel.threads[&tid].call.nowait {
+        MSG_DONTWAIT
+    } else {
+        0
+    }
 }
 
 /// Sends bytes the kernel holds on a socket with `flags` and no address, as a splice or
@@ -2667,7 +2678,8 @@ pub(crate) fn receive_bytes(
     Ok(bytes)
 }
 
-/// write and writev on a socket: a send with no flags.
+/// write and writev on a socket: a send with no flags, or MSG_DONTWAIT for one that may not wait
+/// (`sock_write_iter`).
 pub(super) fn write(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -2682,7 +2694,7 @@ pub(super) fn write(
         control: None,
         files: Vec::new(),
         cred: None,
-        flags: 0,
+        flags: dont_wait(kernel, tid),
     };
     send(kernel, cx, tid, file, &socket, message)
 }

@@ -104,7 +104,7 @@ pub(super) fn read(
     }
     let count = counter.borrow().count;
     if count == 0 {
-        if file.borrow().flags & O_NONBLOCK != 0 {
+        if super::io::nonblocking(kernel, tid, file) {
             return Err(Errno::EAGAIN);
         }
         if kernel.signal_pending(tid) {

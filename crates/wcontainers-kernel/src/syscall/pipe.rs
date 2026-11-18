@@ -294,7 +294,7 @@ pub(super) fn read(
     if with_pipe(file, |pipe| pipe.is_empty()) {
         let (writers, nonblocking) = (
             with_pipe(file, |pipe| pipe.writers()),
-            file.borrow().flags & O_NONBLOCK != 0,
+            super::io::nonblocking(kernel, tid, file),
         );
         if writers == 0 {
             return Ok(0);
@@ -363,10 +363,8 @@ pub(super) fn write(
     let host = with_pipe(file, |pipe| pipe.host);
     let first_run = !kernel.threads[&tid].call.started;
     let mut done = kernel.threads[&tid].call.progress;
-    let (nonblocking, packet) = {
-        let file = file.borrow();
-        (file.flags & O_NONBLOCK != 0, file.flags & O_DIRECT != 0)
-    };
+    let nonblocking = super::io::nonblocking(kernel, tid, file);
+    let packet = file.borrow().flags & O_DIRECT != 0;
     // Up to `most` bytes from `done` on, across segments, as far as the buffer can be read; and
     // whether a fault stopped it short.
     let next = |kernel: &mut Kernel, cx: &mut Context<'_>, done: u64, most: u64| {

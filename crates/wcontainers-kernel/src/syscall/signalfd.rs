@@ -94,7 +94,7 @@ pub(super) fn read(
             if done > 0 {
                 break;
             }
-            if file.borrow().flags & O_NONBLOCK != 0 {
+            if super::io::nonblocking(kernel, tid, file) {
                 return Err(Errno::EAGAIN);
             }
             if kernel.signal_pending(tid) {

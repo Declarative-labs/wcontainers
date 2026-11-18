@@ -12,6 +12,7 @@
 #include <sys/statfs.h>
 #include <sys/syscall.h>
 #include <sys/time.h>
+#include <sys/uio.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -111,6 +112,9 @@ int main(int argc, char **argv) {
     show("a");
     result("pread a hole", pread(fd, buffer, 10, 50));
     printf("hole is zero: %d\n", buffer[0] == 0 && buffer[9] == 0);
+    struct iovec one = {buffer, 10};
+    result("preadv2 that may not wait", syscall(SYS_preadv2, fd, &one, 1, 0L, 0L, (long)RWF_NOWAIT));
+    result("pwritev2 that may not wait", syscall(SYS_pwritev2, fd, &one, 1, 0L, 0L, (long)RWF_NOWAIT));
     result("ftruncate", ftruncate(fd, 5));
     result("fsync", fsync(fd));
     result("fdatasync", fdatasync(fd));

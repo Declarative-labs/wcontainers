@@ -399,6 +399,9 @@ pub(crate) struct Call {
     /// pipe's, as `splice_file_to_pipe` holds it around a terminal's read, an open file's
     /// position, a backend file's writes.
     pub holds: [Option<Channel>; 2],
+    /// Whether the call may not wait (RWF_NOWAIT, Linux's `IOCB_NOWAIT`): a read or write that
+    /// would wait answers EAGAIN as on a nonblocking file.
+    pub nowait: bool,
 }
 
 /// What a call took from its arguments, in order: the open files its descriptors named (`fdget`)
