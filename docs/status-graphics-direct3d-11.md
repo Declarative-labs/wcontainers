@@ -49,6 +49,9 @@ linted with warnings denied and passed the front tests on the desktop before any
   build's scenes 63 match, 61 fail, 23 absent (45, 80, 23); real programs as above.
 - At the end: lint of both builds clean with warnings denied, front 46 + cache 1 + unit 5,
   library com 15 and programs 26 passing with 2 ignored (logs/g4s8d-lib.log, g4s8h-*).
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (16.3 GB, debug builds of
+  both back ends), scratch wincheck/target (990 MB, the Mac's check-only Windows build) and the
+  checkout's own target (555 MB, from `cargo check`) were deleted.
 
 G4 run 19 (2026-11-18, about 06:30 to 08:00 Pacific). Merged origin/phase-2-graphics-shaders and
 -direct3d-12 (one conflict, the slow path list in crates/wcontainers-gpu/src/slow.rs: both sides
