@@ -91,21 +91,34 @@ Built for the LTP's differences (each tested against the reference):
   255). /proc/self/maps names the ring as a shared anonymous mapping, not "/[aio] (deleted)".
   fs.aio-nr and aio-max-nr are not in /proc/sys yet.
 
-LTP comparison (layer 3), measured so far. The whole run at ffc8b22 (every fix above) was started
-in the background (scratch k6c/ours-3.tsv, 5 jobs, LTP_LIMIT 300, load 39 at the start); the
-table below is from the partial run at 904fbcc (config.gz and sysctls in, leases, sysvipc and
-AIO not yet), its first 1258 of 4226 tests, against the bar (reference-20260930.tsv):
-- Tests matching: 993 of 1258.
-- Differing by cause: AIO not built at that commit 137 (ltp-aiodio.part2 83, ltp-aio-stress 54;
-  built since), hugetlb 57 (the reference reaches /sys/kernel/mm/hugepages and breaks on
-  /proc/sys/vm/drop_caches being read-only; here /sys has no entries, so the tests skip), AF_ALG
-  15 (crypto af_alg01 to 08, cve-2017-17805, -17806, -2026-31431, -2019-8912 and others: the
-  socket family is not built), cgroup controllers 8 (no cgroup2 mount at /sys/fs/cgroup),
-  slower than the 300 s limit on the stand-in 16, kernel_misc 4 (tpci, ltp_acpi, block_dev,
-  uaccess: they look in /sys for devices), ima 11, cve and fs single tests (cve-2016-5195,
-  cve-2017-1000364, cve-2018-5803, -9568, -11508, -12896, cve-2026-43499, -53362, fs proc01 and
-  others) not yet looked at.
-- Excused with the gap: none yet; the gap list is not final.
+LTP comparison (layer 3): the whole suite at ffc8b22 (every fix above but the AIO sysctls and
+the netlink fix; scratch k6c/ours-3.tsv and compare-3.txt; 5 jobs, LTP_LIMIT 300, load 39 at the
+start, 19 to 64 during, about 4 h) against the bar (reference-20260930.tsv, 4226 tests):
+- Tests matching: 3756 of 4226 (K6a's last full run matched 2308 of 2694 in the older bar).
+- Differing, 470, by cause:
+  - The root is tmpfs on ours, overlayfs in the reference: ltp-aiodio parts 2 to 4 skip with
+    "tmpfs is not supported by the test" (110 of their 128 differences; 18 are slower than the
+    limit). LTP on ours runs with the root in memory (Departures, K6a); it should run on the
+    backend with the root reporting as the reference's overlay. Next item 1.
+  - ltp-aio-stress 54: /proc/sys/fs/aio-max-nr was missing (built at 1af9be3, not yet rerun).
+  - hugetlb 57: the reference reaches /sys/kernel/mm/hugepages and breaks on read-only
+    /proc/sys/vm/drop_caches; /sys here has no entries, so the tests skip. sysfs 19,
+    scsi_debug 16, kernel_misc 6 and controllers 8 also look for /sys entries or the cgroup2
+    mount.
+  - Kernel crashes 2 (sysfs sys_net02 and sys_net03): a netlink send whose last message's
+    alignment ran past the end overflowed; fixed (both now broken as in the reference). Layer
+    1's generator does not make such a send yet.
+  - Parts not built 76 (the comparison's own class): ptrace (6, section 15), module loading,
+    io_uring, perf_event_open, AF_ALG (crypto 8 and cve), keyctl's paths, adjtimex,
+    remap_file_pages, core dumps (abort01, kill11), prctl options, AF_PACKET (raw packets).
+  - Slower than the 300 s limit on the stand-in: 54.
+  - Other wrong answers in syscalls (102 in all with the above), mm 13, fs 12, ima 11, cve 23:
+    not yet looked at test by test; the leases tests fcntl24 to 33 still differ and need a look.
+- Excused with a gap: none yet; the gap list is not final (Next item 5).
+- Whole suite at ffc8b22: started single-threaded beside the LTP run (scratch k6c/suite.log);
+  the first 62 test binaries ran, one failure, fixed: procstatus `entries_not_built_are_counted`
+  named /proc/sys/kernel/random/entropy_avail, which is built now. The rest (the Python, Java
+  and later binaries) had not finished at the end of the run.
 
 ## K6b, fifth run
 
@@ -3083,7 +3096,8 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 K6c, in this order (the whole LTP run at ffc8b22 is in scratch k6c/ours-3.tsv; compare it with
 `ltp compare crates/wcontainers-kernel-test/ltp/reference-20260930.tsv <it>`):
-1. Read the full comparison at ffc8b22 and fill in the table under "K6c, first run".
+1. Run LTP on ours with the root on the file backend, as the runtimes do, so tests see the
+   reference's file system kinds (the aiodio tests skip on tmpfs); then rerun the whole suite.
 2. A sysfs with the entries LTP's library looks for: /sys/kernel/mm/hugepages/hugepages-*/ with
    no pages (57 hugetlb tests), /sys/devices and /sys/bus for kernel_misc; /proc/sys/vm/
    drop_caches (write only, EROFS here as in Docker).
