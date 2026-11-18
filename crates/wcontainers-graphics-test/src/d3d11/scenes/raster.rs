@@ -172,7 +172,12 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     }
     outputs.push(Output::picture("scissor", gpu.read(&target, 0, 0)?));
 
-    // Eight viewports of different sizes and depth ranges, each with its own scissor rectangle.
+    // Eight viewports of different sizes and depth ranges, each with its own scissor rectangle;
+    // their corners are fractional, which 11_0 keeps (real Direct3D draws them elsewhere below it).
+    if let Some(why) = gpu.lacks_level(D3D_FEATURE_LEVEL_11_0) {
+        outputs.push(Output::absent("viewports", why));
+        return Ok(outputs);
+    }
     let (target, rtv) = gpu.target(256, 128, DXGI_FORMAT_R8G8B8A8_UNORM)?;
     gpu.begin(&rtv, None, 256, 128);
     gpu.program(dxbc!("raster.vs"), dxbc!("raster.ps"), &colored_layout())?;

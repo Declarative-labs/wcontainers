@@ -891,6 +891,27 @@ impl Context {
         }
     }
 
+    /// `SetResourceMinLOD`: the clamp lives on the texture, read by each later draw that samples
+    /// it. Direct3D takes it only on the immediate context and only for textures made with
+    /// `D3D11_RESOURCE_MISC_RESOURCE_CLAMP`; it drops the rest.
+    pub(super) fn set_resource_min_lod(&self, r: Ref<ID3D11Resource>, lod: f32) {
+        if self.is_deferred() {
+            return;
+        }
+        if let Some(Resource::Texture(t)) = r.as_ref().and_then(resource_of)
+            && t.desc.misc_flags & wcontainers_direct3d_11::desc::MISC_RESOURCE_CLAMP != 0
+        {
+            t.min_lod.set(lod);
+        }
+    }
+
+    pub(super) fn get_resource_min_lod(&self, r: Ref<ID3D11Resource>) -> f32 {
+        match r.as_ref().and_then(resource_of) {
+            Some(Resource::Texture(t)) => t.min_lod.get(),
+            _ => 0.0,
+        }
+    }
+
     pub(super) fn set_predication(&self, p: Ref<ID3D11Predicate>, value: windows::core::BOOL) {
         let h = held_one::<_, Predicate>(&p);
         let q = h.as_ref().map(|p| p.front.clone());
@@ -957,9 +978,10 @@ impl Context {
             )),
             Some(v) => {
                 if size != 0 {
-                    let mut bytes = [0u8; 16];
-                    bytes[..8].copy_from_slice(&v[0].to_le_bytes());
-                    bytes[8..].copy_from_slice(&v[1].to_le_bytes());
+                    let mut bytes = [0u8; 88];
+                    for (b, w) in bytes.chunks_mut(8).zip(v) {
+                        b.copy_from_slice(&w.to_le_bytes());
+                    }
                     unsafe {
                         std::ptr::copy_nonoverlapping(bytes.as_ptr(), data.cast(), want as usize)
                     };

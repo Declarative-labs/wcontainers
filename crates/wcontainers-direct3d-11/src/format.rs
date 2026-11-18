@@ -243,13 +243,16 @@ pub fn typeless_group(dxgi: u32) -> u32 {
 }
 
 /// Whether Direct3D copies between `a` and `b`, of different groups, as the same bits (Direct3D 10.1's
-/// format conversions): a 32-bit integer format and a shared-exponent or packed 4:2:2 one, and an
-/// integer format of 64 or 128 bits and a block-compressed format of that block size.
+/// format conversions): a 32-bit single-channel format and a shared-exponent or packed 4:2:2 one, and an
+/// uncompressed colour format of 64 or 128 bits and a block-compressed format of that block size.
 pub fn copy_cast(a: u32, b: u32) -> bool {
     let one = |x: u32, y: u32| match x {
-        42 | 43 => matches!(y, 67..=69),
-        12 | 14 | 17 | 18 => matches!(y, 70..=72 | 79..=81),
-        3 | 4 => matches!(y, 73..=78 | 82..=84 | 94..=99),
+        // R32: R9G9B9E5, R8G8_B8G8 and G8R8_G8B8.
+        39 | 41..=43 => matches!(y, 67..=69),
+        // R16G16B16A16 and R32G32: BC1 and BC4.
+        9..=18 => matches!(y, 70..=72 | 79..=81),
+        // R32G32B32A32: BC2, BC3, BC5, BC6H and BC7.
+        1..=4 => matches!(y, 73..=78 | 82..=84 | 94..=99),
         _ => false,
     };
     one(a, b) || one(b, a)

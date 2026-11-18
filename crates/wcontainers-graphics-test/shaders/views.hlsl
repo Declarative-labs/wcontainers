@@ -1,5 +1,5 @@
 // Views of part of a resource or of another format of its typeless group.
-// fxc: ps_5_0 ps_level0, ps_5_0 ps_array, ps_5_0 ps_uint, ps_5_0 ps_depth, ps_5_0 ps_stencil
+// fxc: ps_4_0 ps_level0, ps_4_0 ps_array, ps_4_0 ps_uint, ps_4_0 ps_depth, ps_4_0 ps_stencil
 // dxc: ps_6_0 ps_level0, ps_6_0 ps_array, ps_6_0 ps_uint, ps_6_0 ps_depth, ps_6_0 ps_stencil
 struct FullOut { float4 pos : SV_Position; float2 uv : TEXCOORD; };
 SamplerState smp : register(s0);

@@ -8,6 +8,10 @@ use wcontainers_gpu::{GpuError, ShaderModule, ShaderStage};
 /// A (set, binding) pair: where a program reads a resource.
 pub type Slot = (u32, u32);
 
+/// A part of the immediates a program reads as a plain uniform (WebGL 2 has no immediates): its
+/// GLSL name, its offset in the immediates and its type.
+pub type Immediate = (String, u32, glsl::GlslUniformType);
+
 /// A compiled shader and what its program must bind.
 #[derive(Debug)]
 pub struct ShaderObj {
@@ -22,6 +26,7 @@ pub struct ShaderObj {
     pub source: String,
     /// A vertex shader's location outputs in location order: GLSL name and bytes.
     pub outputs: Vec<(String, u32)>,
+    pub immediates: Vec<Immediate>,
 }
 
 /// A vertex shader and an optional fragment shader.
@@ -43,6 +48,13 @@ pub struct ProgramObj {
     /// The (vertex, fragment) pair it was linked from, and how many handles name it.
     pub pair: (u64, u64),
     pub handles: std::cell::Cell<u32>,
+    /// How it captures, for a capture program.
+    pub capture: Option<Capture>,
+    /// Its variants for vertex layouts GL ES cannot read as stored, by [`GlLayout::converted`],
+    /// made at the first draw with each.
+    ///
+    /// [`GlLayout::converted`]: crate::state::GlLayout::converted
+    pub variants: std::cell::RefCell<Vec<(u32, Rc<ProgramObj>)>>,
 }
 
 /// What a finished link decided.
@@ -58,6 +70,10 @@ pub struct Linked {
     /// `gl_VertexID`), each with the value it holds.
     pub first_instance: Option<(glow::UniformLocation, std::cell::Cell<u32>)>,
     pub base_vertex: Option<(glow::UniformLocation, std::cell::Cell<u32>)>,
+    /// Each part of the immediates the program reads: its uniform, offset and type.
+    pub immediates: Vec<(glow::UniformLocation, u32, glsl::GlslUniformType)>,
+    /// The immediates its uniforms hold.
+    pub held: std::cell::RefCell<Vec<u8>>,
 }
 
 /// Writes `module` as GLSL ES 3.00. Without EXT_clip_control the last vertex stage negates y as its
@@ -279,6 +295,11 @@ pub fn compile(
         ShaderStage::Vertex => outputs(module),
         _ => Vec::new(),
     };
+    let immediates = reflection
+        .immediates_items
+        .iter()
+        .map(|i| (i.access_path.clone(), i.offset, i.ty))
+        .collect();
     let raw = start_compile(gl, module.stage, &source)?;
     Ok(ShaderObj {
         id,
@@ -288,6 +309,7 @@ pub fn compile(
         blocks,
         source,
         outputs,
+        immediates,
     })
 }
 
@@ -405,44 +427,57 @@ impl Capture {
     }
 }
 
-/// Starts linking `program`'s shaders again from their sources with its location outputs as
-/// transform feedback varyings. One that does not draw links the empty fragment shader, so no
-/// fragment output meets the framebuffer.
-pub fn link_capture(
+/// Starts linking `program`'s shaders again from their sources, as a capture program whose
+/// location outputs are transform feedback varyings (one that does not draw links the empty fragment
+/// shader, so no fragment output meets the framebuffer), or for a vertex layout whose attributes in
+/// `convert` GL ES cannot read as stored (see [`convert_inputs`]). The new program captures as
+/// `program` does unless `capture` names how.
+pub fn relink(
     gl: &glow::Context,
     id: u64,
     program: &ProgramObj,
-    capture: Capture,
+    capture: Option<Capture>,
+    convert: u32,
     empty_fragment: glow::Shader,
 ) -> Result<ProgramObj, GpuError> {
+    let capture = capture.or(program.capture);
     let (vertex, fragment) = &program.stages;
-    let fresh = |s: &ShaderObj| -> Result<Rc<ShaderObj>, GpuError> {
+    let fresh = |s: &ShaderObj, source: String| -> Result<Rc<ShaderObj>, GpuError> {
         Ok(Rc::new(ShaderObj {
-            raw: start_compile(gl, s.stage, &s.source)?,
+            raw: start_compile(gl, s.stage, &source)?,
             textures: s.textures.clone(),
             blocks: s.blocks.clone(),
-            source: s.source.clone(),
+            source,
             outputs: s.outputs.clone(),
+            immediates: s.immediates.clone(),
             ..*s
         }))
     };
-    let v = fresh(vertex)?;
+    let source = match convert {
+        0 => vertex.source.clone(),
+        _ => convert_inputs(&vertex.source, convert).ok_or(GpuError::Invalid(
+            "webgl: a converted vertex attribute the program does not read as naga writes it",
+        ))?,
+    };
+    let v = fresh(vertex, source)?;
     let f = match fragment {
-        Some(f) if capture.rasterize => Some(fresh(f)?),
+        Some(f) if capture.is_none_or(|c| c.rasterize) => Some(fresh(f, f.source.clone())?),
         _ => None,
     };
     let names: Vec<&str> = v.outputs.iter().map(|(n, _)| n.as_str()).collect();
-    let mode = if capture.separate {
-        glow::SEPARATE_ATTRIBS
-    } else {
-        glow::INTERLEAVED_ATTRIBS
-    };
     // SAFETY: plain GL calls on the current context; the shaders are alive.
     let raw = unsafe {
         let raw = gl.create_program().map_err(|_| GpuError::OutOfMemory)?;
         gl.attach_shader(raw, v.raw);
         gl.attach_shader(raw, f.as_ref().map_or(empty_fragment, |f| f.raw));
-        gl.transform_feedback_varyings(raw, &names, mode);
+        if let Some(c) = capture {
+            let mode = if c.separate {
+                glow::SEPARATE_ATTRIBS
+            } else {
+                glow::INTERLEAVED_ATTRIBS
+            };
+            gl.transform_feedback_varyings(raw, &names, mode);
+        }
         gl.link_program(raw);
         // Flagged only: GL deletes them with the program.
         gl.delete_shader(v.raw);
@@ -451,7 +486,9 @@ pub fn link_capture(
         }
         raw
     };
-    Ok(started(id, raw, (v, f), program.pair))
+    let mut p = started(id, raw, (v, f), program.pair);
+    p.capture = capture;
+    Ok(p)
 }
 
 /// A program whose link has started.
@@ -465,6 +502,8 @@ fn started(id: u64, raw: glow::Program, stages: Pair, pair: (u64, u64)) -> Progr
         linked: std::cell::OnceCell::new(),
         pair,
         handles: std::cell::Cell::new(1),
+        capture: None,
+        variants: Default::default(),
     }
 }
 
@@ -516,7 +555,13 @@ pub fn finish(gl: &glow::Context, program: &ProgramObj) -> Result<Linked, String
         let mut units = Vec::new();
         let mut sizes = Vec::new();
         let mut blocks: Vec<Slot> = Vec::new();
+        let mut immediates = Vec::new();
         for s in core::iter::once(&vertex).chain(&fragment) {
+            for (name, offset, ty) in &s.immediates {
+                if let Some(location) = gl.get_uniform_location(raw, name) {
+                    immediates.push((location, *offset, *ty));
+                }
+            }
             for (name, texture, sampler) in &s.textures {
                 let location = gl.get_uniform_location(raw, name);
                 let size = gl
@@ -556,6 +601,193 @@ pub fn finish(gl: &glow::Context, program: &ProgramObj) -> Result<Linked, String
             blocks,
             first_instance: uniform(glsl::FIRST_INSTANCE_BINDING),
             base_vertex: uniform(glsl::BASE_VERTEX_BINDING),
+            immediates,
+            held: Default::default(),
         })
+    }
+}
+
+/// Sets the uniforms standing for the program's immediates from `bytes`, unless they hold them
+/// already. Bytes past the end of `bytes` read as zero, as GL's uniforms start. The program is in use.
+pub fn set_immediates(gl: &glow::Context, linked: &Linked, bytes: &[u8]) {
+    use glsl::{GlslScalarKind as Kind, GlslUniformType as Ty};
+    let mut held = linked.held.borrow_mut();
+    if linked.immediates.is_empty() || *held == bytes {
+        return;
+    }
+    held.clear();
+    held.extend_from_slice(bytes);
+    let word = |at: usize| {
+        bytes
+            .get(at..at + 4)
+            .map_or([0; 4], |w| [w[0], w[1], w[2], w[3]])
+    };
+    for (location, offset, ty) in &linked.immediates {
+        let at = *offset as usize;
+        let l = Some(location);
+        // SAFETY: plain GL calls; the program is in use.
+        unsafe {
+            match *ty {
+                Ty::Scalar(s) | Ty::Vector { scalar: s, .. } => {
+                    let n = match *ty {
+                        Ty::Vector { size, .. } => size as usize,
+                        _ => 1,
+                    };
+                    let words: [[u8; 4]; 4] = core::array::from_fn(|i| word(at + 4 * i));
+                    match s.kind {
+                        Kind::Float => {
+                            let v = words.map(f32::from_le_bytes);
+                            let v = &v[..n];
+                            match n {
+                                1 => gl.uniform_1_f32_slice(l, v),
+                                2 => gl.uniform_2_f32_slice(l, v),
+                                3 => gl.uniform_3_f32_slice(l, v),
+                                _ => gl.uniform_4_f32_slice(l, v),
+                            }
+                        }
+                        Kind::Sint => {
+                            let v = words.map(i32::from_le_bytes);
+                            let v = &v[..n];
+                            match n {
+                                1 => gl.uniform_1_i32_slice(l, v),
+                                2 => gl.uniform_2_i32_slice(l, v),
+                                3 => gl.uniform_3_i32_slice(l, v),
+                                _ => gl.uniform_4_i32_slice(l, v),
+                            }
+                        }
+                        Kind::Uint => {
+                            let v = words.map(u32::from_le_bytes);
+                            let v = &v[..n];
+                            match n {
+                                1 => gl.uniform_1_u32_slice(l, v),
+                                2 => gl.uniform_2_u32_slice(l, v),
+                                3 => gl.uniform_3_u32_slice(l, v),
+                                _ => gl.uniform_4_u32_slice(l, v),
+                            }
+                        }
+                    }
+                }
+                Ty::Matrix { columns, rows, .. } => {
+                    // Columns are vectors of `rows`, each aligned as such a vector; GL takes them packed.
+                    let (c, r) = (columns as usize, rows as usize);
+                    let stride = if r == 2 { 8 } else { 16 };
+                    let mut v = [0f32; 16];
+                    for col in 0..c {
+                        for row in 0..r {
+                            v[col * r + row] =
+                                f32::from_le_bytes(word(at + col * stride + 4 * row));
+                        }
+                    }
+                    let v = &v[..c * r];
+                    match (c, r) {
+                        (2, 2) => gl.uniform_matrix_2_f32_slice(l, false, v),
+                        (3, 3) => gl.uniform_matrix_3_f32_slice(l, false, v),
+                        (4, 4) => gl.uniform_matrix_4_f32_slice(l, false, v),
+                        (2, 3) => gl.uniform_matrix_2x3_f32_slice(l, false, v),
+                        (3, 2) => gl.uniform_matrix_3x2_f32_slice(l, false, v),
+                        (2, 4) => gl.uniform_matrix_2x4_f32_slice(l, false, v),
+                        (4, 2) => gl.uniform_matrix_4x2_f32_slice(l, false, v),
+                        (3, 4) => gl.uniform_matrix_3x4_f32_slice(l, false, v),
+                        _ => gl.uniform_matrix_4x3_f32_slice(l, false, v),
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Attributes GL ES cannot read as stored are read as something it can, and turned into what the
+/// program reads at the start of `main`: per location, two bits of `convert` (see
+/// [`crate::state::conversion`]). Attributes the program does not read stay as they are. None when
+/// the source has no `main` as naga writes it.
+pub fn convert_inputs(source: &str, convert: u32) -> Option<String> {
+    const SMALL_FLOAT: &str = "float _wc_small_float(uint b, uint m) {
+    uint e = b >> m;
+    uint f = b & ((1u << m) - 1u);
+    float scale = float(1u << m);
+    if (e == 0u) { return float(f) / scale * exp2(-14.0); }
+    if (e == 31u) { return uintBitsToFloat(f == 0u ? 0x7f800000u : 0x7fc00000u); }
+    return exp2(float(e) - 15.0) * (1.0 + float(f) / scale);
+}
+";
+    let mut out = String::with_capacity(source.len() + 1024);
+    let mut starts = String::new();
+    for line in source.lines() {
+        let declared = (0..16u32).find(|l| {
+            convert >> (2 * l) & 3 != 0
+                && line.starts_with(&format!("layout(location = {l}) in "))
+                && line.ends_with(&format!(" _p2vs_location{l};"))
+        });
+        let Some(l) = declared else {
+            out.push_str(line);
+            out.push('\n');
+            if line == "void main() {" {
+                out.push_str(&starts);
+            }
+            continue;
+        };
+        let ty = line
+            .strip_prefix(&format!("layout(location = {l}) in "))?
+            .strip_suffix(&format!(" _p2vs_location{l};"))?;
+        let (raw, value) = match convert >> (2 * l) & 3 {
+            1 => ("vec4", format!("_wc_raw{l}.zyxw")),
+            2 => (
+                "uint",
+                format!(
+                    "uvec4(_wc_raw{l} & 1023u, (_wc_raw{l} >> 10) & 1023u, \
+                     (_wc_raw{l} >> 20) & 1023u, _wc_raw{l} >> 30)"
+                ),
+            ),
+            _ => (
+                "uint",
+                format!(
+                    "vec4(_wc_small_float(_wc_raw{l} & 2047u, 6u), \
+                     _wc_small_float((_wc_raw{l} >> 11) & 2047u, 6u), \
+                     _wc_small_float(_wc_raw{l} >> 22, 5u), 1.0)"
+                ),
+            ),
+        };
+        out.push_str(&format!(
+            "layout(location = {l}) in {raw} _wc_raw{l};\n{ty} _p2vs_location{l};\n"
+        ));
+        if convert >> (2 * l) & 3 == 3 && !out.contains("_wc_small_float(uint") {
+            out.push_str(SMALL_FLOAT);
+        }
+        starts.push_str(&format!("    _p2vs_location{l} = {ty}({value});\n"));
+    }
+    out.contains("void main() {").then_some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The attributes a layout converts are declared as GL reads them and turned into what the
+    /// program reads at the start of `main`; others stay.
+    #[test]
+    fn converted_inputs_are_turned_into_their_values() {
+        let wgsl = "
+            @vertex fn vs(@location(0) p: vec4<f32>, @location(1) c: vec4<f32>,
+                          @location(2) u: vec4<u32>, @location(3) f: vec3<f32>)
+                -> @builtin(position) vec4<f32> {
+                return p + c + vec4<f32>(u) + vec4<f32>(f, 0.0);
+            }";
+        let module = ShaderModule::from_wgsl(wgsl, "vs", ShaderStage::Vertex).expect("validates");
+        let (glsl, _) = write_glsl(&module, false).expect("writes");
+        let convert = 1 << 2 | 2 << 4 | 3 << 6;
+        let out = convert_inputs(&glsl, convert).expect("converts");
+        for line in [
+            "layout(location = 0) in vec4 _p2vs_location0;",
+            "layout(location = 1) in vec4 _wc_raw1;",
+            "layout(location = 2) in uint _wc_raw2;",
+            "layout(location = 3) in uint _wc_raw3;",
+            "uvec4 _p2vs_location2;",
+            "    _p2vs_location1 = vec4(_wc_raw1.zyxw);",
+        ] {
+            assert!(out.lines().any(|l| l == line), "{line} in\n{out}");
+        }
+        assert_eq!(out.matches("float _wc_small_float(").count(), 1);
+        let main = out.find("void main() {").expect("main");
+        assert!(out[main..].contains("_p2vs_location3 = vec3(vec4(_wc_small_float("));
     }
 }

@@ -23,6 +23,34 @@ pub struct Gpu {
     pub level: D3D_FEATURE_LEVEL,
 }
 
+/// Every feature level Direct3D 11 has, lowest first, with its name.
+pub const LEVELS: [(&str, D3D_FEATURE_LEVEL); 7] = [
+    ("9_1", D3D_FEATURE_LEVEL_9_1),
+    ("9_2", D3D_FEATURE_LEVEL_9_2),
+    ("9_3", D3D_FEATURE_LEVEL_9_3),
+    ("10_0", D3D_FEATURE_LEVEL_10_0),
+    ("10_1", D3D_FEATURE_LEVEL_10_1),
+    ("11_0", D3D_FEATURE_LEVEL_11_0),
+    ("11_1", D3D_FEATURE_LEVEL_11_1),
+];
+
+/// A feature level's name, such as 11_0.
+pub fn level_name(level: D3D_FEATURE_LEVEL) -> String {
+    LEVELS
+        .iter()
+        .find(|(_, l)| *l == level)
+        .map_or_else(|| format!("{:#x}", level.0), |(n, _)| n.to_string())
+}
+
+/// The feature level named `name`.
+pub fn level_named(name: &str) -> Result<D3D_FEATURE_LEVEL> {
+    LEVELS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, l)| *l)
+        .with_context(|| format!("no feature level {name}; they are 9_1 to 11_1"))
+}
+
 /// Creates a device on `driver` asking for `levels`, with the debug layer when `debug`.
 pub fn create(driver: Driver, debug: bool, levels: &[D3D_FEATURE_LEVEL]) -> Result<Gpu> {
     let driver_type = match driver {
@@ -171,6 +199,53 @@ impl Gpu {
     }
 
     /// Fails on any error or corruption the debug layer reported, printing all its messages.
+    /// Why a part needing feature level `level` is absent: None when the device has it.
+    pub fn lacks_level(&self, level: D3D_FEATURE_LEVEL) -> Option<String> {
+        (self.level.0 < level.0).then(|| {
+            format!(
+                "feature level {}; the device has {}",
+                level_name(level),
+                level_name(self.level)
+            )
+        })
+    }
+
+    /// Why a part needing `samples` samples of `format` with the standard pattern is absent: None
+    /// when the device has them.
+    pub fn lacks_samples(&self, format: DXGI_FORMAT, samples: u32) -> Result<Option<String>> {
+        let levels = unsafe { self.device.CheckMultisampleQualityLevels(format, samples)? };
+        Ok((levels == 0).then(|| {
+            format!(
+                "{samples} samples of format {} (CheckMultisampleQualityLevels)",
+                format.0
+            )
+        }))
+    }
+
+    /// The device's answers to `D3D11_FEATURE_D3D11_OPTIONS` and `..._OPTIONS1`.
+    pub fn options(
+        &self,
+    ) -> Result<(
+        D3D11_FEATURE_DATA_D3D11_OPTIONS,
+        D3D11_FEATURE_DATA_D3D11_OPTIONS1,
+    )> {
+        let mut options = D3D11_FEATURE_DATA_D3D11_OPTIONS::default();
+        let mut options1 = D3D11_FEATURE_DATA_D3D11_OPTIONS1::default();
+        unsafe {
+            self.device.CheckFeatureSupport(
+                D3D11_FEATURE_D3D11_OPTIONS,
+                (&mut options as *mut D3D11_FEATURE_DATA_D3D11_OPTIONS).cast(),
+                size_of::<D3D11_FEATURE_DATA_D3D11_OPTIONS>() as u32,
+            )?;
+            self.device.CheckFeatureSupport(
+                D3D11_FEATURE_D3D11_OPTIONS1,
+                (&mut options1 as *mut D3D11_FEATURE_DATA_D3D11_OPTIONS1).cast(),
+                size_of::<D3D11_FEATURE_DATA_D3D11_OPTIONS1>() as u32,
+            )?;
+        }
+        Ok((options, options1))
+    }
+
     pub fn check_debug(&self) -> Result<()> {
         if !self.debug {
             return Ok(());

@@ -255,8 +255,14 @@ impl Backend for Recorder {
     fn create_sampler(&mut self, desc: &SamplerDesc) -> Result<Id, GpuError> {
         let id = self.id();
         self.record(format!(
-            "create_sampler {id} {:?} {:?} {:?} {:?} compare {:?}",
-            desc.min, desc.mag, desc.mip, desc.address, desc.compare
+            "create_sampler {id} {:?} {:?} {:?} {:?} lod {}..{} compare {:?}",
+            desc.min,
+            desc.mag,
+            desc.mip,
+            desc.address,
+            f32::from_bits(desc.lod_range[0]),
+            f32::from_bits(desc.lod_range[1]),
+            desc.compare
         ));
         Ok(id)
     }

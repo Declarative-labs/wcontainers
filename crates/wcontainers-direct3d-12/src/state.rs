@@ -35,6 +35,18 @@ pub struct Blend {
     pub targets: [TargetBlend; MAX_COLOR_TARGETS],
 }
 
+impl Blend {
+    /// Target 0 blends with the pixel shader's second output (`D3D12_BLEND_SRC1_*`), which the
+    /// program then writes as the blend's second source (`VariantFlags::DUAL_SOURCE`).
+    pub fn dual_source(&self) -> bool {
+        let t = &self.targets[0];
+        t.blend_enable
+            && [t.src, t.dst, t.src_alpha, t.dst_alpha]
+                .iter()
+                .any(|f| (16..=19).contains(f))
+    }
+}
+
 /// `D3D12_RASTERIZER_DESC`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Raster {
@@ -105,8 +117,10 @@ fn blend_factor(value: u32) -> Result<BlendFactor, Error> {
         11 => SrcAlphaSaturated,
         14 => Constant,
         15 => OneMinusConstant,
-        // The converter does not mark a pixel shader's second output as the blend's second source.
-        16..=19 => return Err(Error::NotImplemented("dual-source blending")),
+        16 => Src1,
+        17 => OneMinusSrc1,
+        18 => Src1Alpha,
+        19 => OneMinusSrc1Alpha,
         20 => ConstantAlpha,
         21 => OneMinusConstantAlpha,
         _ => return Err(Error::Invalid("unknown blend factor")),
@@ -191,6 +205,14 @@ impl Blend {
             alpha_to_coverage: self.alpha_to_coverage,
             logic_op: None,
         };
+        // Dual-source blending takes one target, and no other target's blending.
+        if self.dual_source()
+            && (targets > 1 || self.independent && self.targets[1..].iter().any(|t| t.blend_enable))
+        {
+            return Err(Error::Invalid(
+                "dual-source blending with more than one target",
+            ));
+        }
         let used = if self.independent { targets.max(1) } else { 1 };
         for (i, t) in self.targets.iter().take(used).enumerate() {
             if t.logic_op_enable {

@@ -1,5 +1,5 @@
 // Textured, coloured quads.
-// fxc: vs_5_0 vs, ps_5_0 ps
+// fxc: vs_4_0 vs, ps_4_0 ps
 Texture2D tex : register(t0);
 SamplerState smp : register(s0);
 struct VsIn { float3 pos : POSITION; float2 uv : TEXCOORD; float4 color : COLOR; };

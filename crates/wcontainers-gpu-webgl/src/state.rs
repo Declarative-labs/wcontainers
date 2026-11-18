@@ -316,6 +316,10 @@ pub fn raster(
 #[derive(Debug)]
 pub struct GlLayout {
     pub attributes: Vec<GlAttribute>,
+    /// Two bits per location of [`conversion`]: draws with it use a program variant
+    /// ([`wcontainers_gpu::SlowPath::VertexFormatConverted`]); 0 when GL reads every attribute as
+    /// stored.
+    pub converted: u32,
 }
 
 /// One attribute's pointer, less its buffer and the draw's offsets.
@@ -335,12 +339,14 @@ pub struct GlAttribute {
 }
 
 impl GlLayout {
-    /// None when an attribute names a missing stream or has a format GL ES cannot read as stored.
+    /// None when an attribute names a missing stream.
     pub fn new(d: &VertexLayoutDesc) -> Option<GlLayout> {
         let mut attributes = Vec::new();
+        let mut converted = 0;
         for a in d.attributes.iter().flatten() {
+            converted |= conversion(a.format) << (2 * a.location);
             let stream = d.streams.get(usize::from(a.stream)).copied().flatten()?;
-            let (components, ty, normalized, integer) = attribute(a.format)?;
+            let (components, ty, normalized, integer) = attribute(a.format);
             // Stride 0 (one element for every vertex and instance) and step rate 0 never advance:
             // GL's stride 0 means tightly packed and its divisor 0 per vertex, so both take a divisor
             // no instance count reaches.
@@ -363,7 +369,10 @@ impl GlLayout {
                 divisor,
             });
         }
-        Some(GlLayout { attributes })
+        Some(GlLayout {
+            attributes,
+            converted,
+        })
     }
 }
 
@@ -476,9 +485,20 @@ pub fn factor(f: BlendFactor) -> u32 {
     }
 }
 
+/// How a vertex program turns an attribute GL ES cannot read as stored into its value
+/// ([`crate::shader::convert_inputs`]): 0 for none, 1 for BGRA bytes swapped, 2 for a word of
+/// 10-10-10-2 integers, 3 for a word of 11-11-10 floats.
+pub fn conversion(f: VertexFormat) -> u32 {
+    match f {
+        VertexFormat::Bgra8Unorm => 1,
+        VertexFormat::Uint10_10_10_2 => 2,
+        VertexFormat::Float11_11_10 => 3,
+        _ => 0,
+    }
+}
+
 /// How GL reads an attribute: components, type, normalised, and whether it is read as integers.
-/// None for the formats GL ES 3.0 cannot read as stored.
-fn attribute(f: VertexFormat) -> Option<(i32, u32, bool, bool)> {
+fn attribute(f: VertexFormat) -> (i32, u32, bool, bool) {
     use VertexFormat as V;
     let (n, ty, norm, int) = match f {
         V::Uint8x1 | V::Uint8x2 | V::Uint8x3 | V::Uint8x4 => (0, glow::UNSIGNED_BYTE, false, true),
@@ -504,7 +524,9 @@ fn attribute(f: VertexFormat) -> Option<(i32, u32, bool, bool)> {
         }
         V::Sint32x1 | V::Sint32x2 | V::Sint32x3 | V::Sint32x4 => (0, glow::INT, false, true),
         V::Unorm10_10_10_2 => (4, glow::UNSIGNED_INT_2_10_10_10_REV, true, false),
-        V::Bgra8Unorm | V::Uint10_10_10_2 | V::Float11_11_10 => return None,
+        // Read as bytes or one word and turned into their values in the program (`conversion`).
+        V::Bgra8Unorm => (4, glow::UNSIGNED_BYTE, true, false),
+        V::Uint10_10_10_2 | V::Float11_11_10 => (1, glow::UNSIGNED_INT, false, true),
     };
     let components = if n != 0 {
         n
@@ -526,5 +548,5 @@ fn attribute(f: VertexFormat) -> Option<(i32, u32, bool, bool)> {
         };
         f as i32 - base as i32 + 1
     };
-    Some((components, ty, norm, int))
+    (components, ty, norm, int)
 }

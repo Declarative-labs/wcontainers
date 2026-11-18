@@ -192,6 +192,21 @@ fn fractional_viewports_are_refused() {
 }
 
 #[test]
+fn viewports_past_their_bounds_are_refused() {
+    checks::viewports_past_their_bounds_are_refused::<Angle>();
+}
+
+#[test]
+fn immediates_reach_both_stages() {
+    checks::immediates_reach_both_stages::<Angle>();
+}
+
+#[test]
+fn packed_vertex_formats_are_converted() {
+    checks::packed_vertex_formats_are_converted::<Angle>();
+}
+
+#[test]
 fn timestamps_and_their_disjoint_flag() {
     checks::timestamps_and_their_disjoint_flag::<Angle>();
 }

@@ -178,12 +178,14 @@ pub fn msaa_scene(gpu: &Gpu) -> Result<Vec<Output>> {
     };
 
     for samples in [2, 4, 8] {
+        let part = format!("edges{samples}");
+        if let Some(why) = gpu.lacks_samples(msaa::FORMAT, samples)? {
+            outputs.push(Output::absent(&part, why));
+            continue;
+        }
         let texture = fresh(&mut im, samples)?;
         im.draw_colored(&msaa::wedges())?;
-        outputs.push(Output::picture(
-            &format!("edges{samples}"),
-            resolve(gpu, &texture)?,
-        ));
+        outputs.push(Output::picture(&part, resolve(gpu, &texture)?));
     }
 
     let texture = fresh(&mut im, 4)?;

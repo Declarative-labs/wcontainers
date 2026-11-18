@@ -1,6 +1,6 @@
 // Two colours out of one pixel shader for dual-source blending, varying over each cell; and a
 // gradient for the destination.
-// fxc: vs_5_0 vs, ps_5_0 ps_dual, ps_5_0 ps_dest
+// fxc: vs_4_0 vs, ps_4_0 ps_dual, ps_4_0 ps_dest
 // dxc: vs_6_0 vs, ps_6_0 ps_dual, ps_6_0 ps_dest
 cbuffer Cell : register(b0) { float4 rect; }; // left, top, width, height in pixels
 struct VsOut { float4 pos : SV_Position; };

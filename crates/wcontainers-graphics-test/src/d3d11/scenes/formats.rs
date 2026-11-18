@@ -68,6 +68,13 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
             has(D3D11_FORMAT_SUPPORT_MULTISAMPLE_RENDERTARGET),
             has(D3D11_FORMAT_SUPPORT_SHADER_SAMPLE),
         )?;
+        if flags & D3D11_FORMAT_SUPPORT_RENDER_TARGET.0 == 0 {
+            outputs.push(Output::absent(
+                name,
+                format!("{name} as a render target (CheckFormatSupport)"),
+            ));
+            continue;
+        }
         let (texture, rtv) = gpu.target(SIZE, SIZE, format)?;
         gpu.begin(&rtv, None, SIZE, SIZE);
         let ps = &shaders.iter().find(|(k, _)| *k == kind).unwrap().1;
@@ -83,7 +90,7 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
         }
         outputs.push(Output::picture(name, gpu.read(&texture, 0, 0)?));
     }
-    outputs.push(Output::text("support", support));
+    outputs.push(Output::caps("support", support));
 
     // Blending in an sRGB target happens on linear values.
     let (texture, rtv) = gpu.target(SIZE, SIZE, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB)?;
