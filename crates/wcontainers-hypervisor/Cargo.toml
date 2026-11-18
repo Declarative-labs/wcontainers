@@ -1,0 +1,32 @@
+[package]
+name = "wcontainers-hypervisor"
+description = "The wcontainers native back end's monitor: makes the virtual machine, loads the inside, runs its virtual CPUs and answers the link."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wcontainers-abi.workspace = true
+wcontainers-inside = { path = "../wcontainers-inside" }
+# Reading the inside's ELF image.
+object = { version = "0.37.3", default-features = false, features = ["read_core", "elf"] }
+libc = "0.2.178"
+# Exception syndrome fields.
+aarch64-cpu = "12.0.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+applevisor = "1.0.0"
+applevisor-sys = "1.0.0"
+
+[dev-dependencies]
+# The stop test's seeded waits.
+fastrand = "2.5.0"
+
+[[test]]
+name = "floor"
+harness = false
+
+[lints]
+workspace = true
