@@ -63,6 +63,7 @@ id!(
 
 mod alias;
 mod bind;
+mod formats;
 mod geometry;
 mod indirect;
 mod null;
@@ -182,6 +183,8 @@ struct Pipeline<B: Backend> {
     bindings: Vec<bind::StageBinding>,
     /// A compute pipeline's threads in one group; zero for graphics pipelines.
     group_threads: u64,
+    /// The stage whose storage texture formats come from the bound views, if one does.
+    formats: Option<Box<formats::Formats<B>>>,
 }
 
 /// A graphics pipeline's fixed state.
@@ -326,6 +329,8 @@ pub struct Device<B: Backend> {
     nulls: null::Nulls<B>,
     /// Messages not yet shown, such as why a shader did not convert.
     messages: Vec<String>,
+    /// The storage textures the last binding sets made bind: API stage, register and format.
+    bound_storage: Vec<(u32, u32, Format)>,
     /// The error that removed the device, if one did.
     removed: Option<Error>,
 }
@@ -369,6 +374,7 @@ impl<B: Backend> Device<B> {
             tests_off: None,
             nulls: null::Nulls::default(),
             messages: Vec::new(),
+            bound_storage: Vec::new(),
             removed: None,
         }
     }
@@ -854,9 +860,15 @@ impl<B: Backend> Device<B> {
                     VariantFlags::empty()
                 },
                 samples: desc.samples.clamp(1, 32) as u8,
+                storage_formats: formats::first_formats(desc.ps),
                 ..VariantKey::default()
             };
-            Some(self.convert(desc.ps, ShaderStage::Fragment, key)?)
+            let converted = self.convert(desc.ps, ShaderStage::Fragment, key.clone())?;
+            Some((converted, key))
+        };
+        let (ps, ps_key) = match ps {
+            Some((c, k)) => (Some(c), Some(k)),
+            None => (None, None),
         };
         // WebGPU and GLSL ES require the stages to agree on interpolation, which in Direct3D the
         // pixel shader alone chooses: the vertex shader writes its outputs so.
@@ -1091,6 +1103,7 @@ impl<B: Backend> Device<B> {
             render: Some(render),
             bindings,
             group_threads: 0,
+            formats: ps_key.and_then(|k| formats::Formats::of(bind::PIXEL, desc.ps, &k)),
         }) as u32))
     }
 
@@ -1105,7 +1118,12 @@ impl<B: Backend> Device<B> {
         if !self.backend.caps().has(Features::COMPUTE) {
             return Err(Error::NotImplemented("compute shaders on this back end"));
         }
-        let cs = self.convert(cs, ShaderStage::Compute, VariantKey::default())?;
+        let key = VariantKey {
+            storage_formats: formats::first_formats(cs),
+            ..VariantKey::default()
+        };
+        let code = cs;
+        let cs = self.convert(code, ShaderStage::Compute, key.clone())?;
         let bindings = bind::stage_bindings(&cs, 0, StageSet::COMPUTE);
         bind::check(&root, &bindings)?;
         self.prepare_nulls(&bind::null_shapes(&bindings))?;
@@ -1123,6 +1141,7 @@ impl<B: Backend> Device<B> {
             render: None,
             bindings,
             group_threads,
+            formats: formats::Formats::of(0, code, &key),
         }) as u32))
     }
 
@@ -1234,6 +1253,7 @@ impl<B: Backend> Device<B> {
             let key = VariantKey {
                 flags: VariantFlags::COUNTING,
                 samples,
+                storage_formats: formats::first_formats(&pixel),
                 ..VariantKey::default()
             };
             self.convert(&pixel, ShaderStage::Fragment, key)?
@@ -1262,6 +1282,9 @@ impl<B: Backend> Device<B> {
     pub fn destroy_pipeline(&mut self, id: PipelineId) {
         if let Some(p) = self.pipelines.try_remove(id.0 as usize) {
             self.backend.destroy(Object::Program(p.program));
+            if let Some(f) = p.formats {
+                f.destroy(&mut self.backend);
+            }
             if let Some(r) = p.render {
                 let arguments = r.arguments.map(|a| a.program);
                 let pulled = r.pulled.into_iter().filter_map(|p| p.1.map(|p| p.program));
@@ -2995,9 +3018,12 @@ impl<B: Backend> Replay<B> {
         }
         self.settle(d)?;
         let sets = d.binding_sets(&self.compute, pid, None, &[], StageSet::COMPUTE)?;
+        let bound = d.bound_program(pid, false)?;
         d.alias_settle()?;
         let call = DispatchCall {
-            program: &d.pipelines[pid.0 as usize].program,
+            program: bound
+                .as_ref()
+                .unwrap_or(&d.pipelines[pid.0 as usize].program),
             bindings: sets.each_ref().map(Option::as_ref),
             immediates: &[],
             groups: match record {
@@ -3190,6 +3216,7 @@ impl<B: Backend> Replay<B> {
             extra.push((binding, buffer, *offset, *size));
         }
         let mut sets = d.binding_sets(&self.graphics, pid, None, &extra, StageSet::VERTEX)?;
+        let bound = d.bound_program(pid, variant.is_some() || by_arguments)?;
         if helpers.size != 0 {
             let source = match (bases, &range) {
                 (Some(b), _) => pull::Bases::Direct(b),
@@ -3399,7 +3426,7 @@ impl<B: Backend> Replay<B> {
                     program: match (variant, &r.arguments, by_arguments) {
                         (Some(i), ..) => &r.pulled[i].1.as_ref().expect("a made program").program,
                         (None, Some(a), true) => &a.program,
-                        _ => &p.program,
+                        _ => bound.as_ref().unwrap_or(&p.program),
                     },
                     blend: &r.blend,
                     depth_stencil: match (&r.depth_stencil_bound, bound_depth) {

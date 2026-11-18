@@ -217,6 +217,8 @@ impl<B: Backend> Replay<B> {
             &[],
             StageSet::FRAGMENT,
         )?;
+        // The pass-through program is made with the pixel program's first storage formats only.
+        d.bound_program(pid, true)?;
         if d.aliased != 0 {
             self.note_draw(d, matches!(range, DrawRange::Indexed { .. }));
             d.alias_settle()?;

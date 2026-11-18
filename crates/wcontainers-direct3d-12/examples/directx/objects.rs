@@ -1318,18 +1318,29 @@ impl Device {
     pub fn CreateUnorderedAccessView(
         &self,
         resource: Ref<ID3D12Resource>,
-        _counter: Ref<ID3D12Resource>,
+        counter: Ref<ID3D12Resource>,
         pdesc: *const D3D12_UNORDERED_ACCESS_VIEW_DESC,
         dest: &D3D12_CPU_DESCRIPTOR_HANDLE,
     ) {
         let descriptor = resource.as_ref().and_then(|r| {
             // SAFETY: resources come from this library; an optional description.
             let (r, d) = unsafe { (ours(r), pdesc.as_ref()) };
+            // A buffer view's counter lies at its offset in the counter resource.
+            let counter = match (counter.as_ref(), d) {
+                (Some(c), Some(d)) if d.ViewDimension == D3D12_UAV_DIMENSION_BUFFER => {
+                    // SAFETY: resources come from this library; the member the dimension names.
+                    unsafe { ours(c).address + d.Anonymous.Buffer.CounterOffsetInBytes }
+                }
+                _ => 0,
+            };
             unordered_access_view(r, d).map(|v| {
-                Descriptor::UnorderedAccess(ResourceView {
-                    resource: holder(r, v.format),
-                    ..v
-                })
+                Descriptor::UnorderedAccess(
+                    ResourceView {
+                        resource: holder(r, v.format),
+                        ..v
+                    }
+                    .with_counter(counter),
+                )
             })
         });
         // SAFETY: CPU descriptor handles point into a heap of this library.
@@ -3717,7 +3728,7 @@ fn unordered_access_view(
         resource: r.id,
         format: r.desc.Format.0 as u32,
         dimension: 0,
-        mapping: 0x1688,
+        mapping: 0,
         first_element: 0,
         count: 1,
         stride: 0,
