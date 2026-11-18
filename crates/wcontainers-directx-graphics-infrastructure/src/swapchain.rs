@@ -4,18 +4,18 @@
 //! The back buffers are ordinary textures the program can read, copy and keep across frames. At
 //! `Present` the current one is copied into the surface's texture by one draw (converting format and
 //! sRGB on the way) and the surface is shown. Flip models then move on to the next buffer; blit models
-//! keep drawing into buffer 0. Present blocks once more frames are queued on the GPU than the swap
-//! chain's maximum frame latency.
+//! keep drawing into buffer 0, and a sequential one's contents move one buffer down. Present blocks
+//! once more frames are queued on the GPU than the swap chain's maximum frame latency.
 
 use std::collections::VecDeque;
 
 use wcontainers_gpu::{
     Backend, BindingEntry, BindingResource, BlendDesc, ColorAttachment, ColorWrites, CullMode,
-    DepthStencilDesc, DeviceStatus, DrawCall, DrawRange, FillMode, Format, FrontFace, GpuError,
-    LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, PassDesc, Program, ProvokingVertex,
-    RasterDesc, RenderTargetBlend, ScissorRect, ShaderModule, ShaderStage, StageSet, StencilFace,
-    StoreOp, TextureDesc, TextureDimension, TextureUsage, TextureViewDesc, Topology,
-    VertexLayoutDesc, Viewport,
+    DepthStencilDesc, DeviceStatus, DrawCall, DrawRange, Extent, FillMode, Format, FrontFace,
+    GpuError, LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, Origin, PassDesc, Program,
+    ProvokingVertex, RasterDesc, RenderTargetBlend, ScissorRect, ShaderModule, ShaderStage,
+    SlowPath, StageSet, StencilFace, StoreOp, TextureDesc, TextureDimension, TextureRegion,
+    TextureUsage, TextureViewDesc, Topology, VertexLayoutDesc, Viewport,
 };
 
 use crate::format::{BACK_BUFFER_FORMATS, dxgi_format, present_format};
@@ -186,6 +186,9 @@ pub struct SwapChain<B: Backend> {
     surface_format: Format,
     vsync: bool,
     buffers: Vec<Buffer<B>>,
+    /// Where a sequential blit swap chain of several buffers keeps the first's contents while the
+    /// others move down.
+    spare: Option<B::Texture>,
     current: u32,
     presents: u64,
     latency: u32,
@@ -250,6 +253,7 @@ impl<B: Backend> SwapChain<B> {
             surface_format,
             vsync: true,
             buffers: Vec::new(),
+            spare: None,
             current: 0,
             presents: 0,
             latency: DEFAULT_LATENCY,
@@ -263,13 +267,15 @@ impl<B: Backend> SwapChain<B> {
     }
 
     fn make_buffers(&mut self, backend: &mut B) -> Result<(), GpuError> {
-        // Blit models give the program buffer 0 only; the others DXGI keeps for itself, and one
-        // copy per frame needs none of them.
-        let count = if self.desc.model.is_flip() {
-            self.desc.buffers
-        } else {
-            1
+        // The discard blit model gives the program buffer 0 only; the others DXGI keeps for itself,
+        // and one copy per frame needs none of them.
+        let count = match self.desc.model {
+            Model::Discard => 1,
+            _ => self.desc.buffers,
         };
+        if self.desc.model == Model::Sequential && count > 1 {
+            self.spare = Some(backend.create_texture(&self.buffer_desc())?);
+        }
         for _ in 0..count {
             let texture = backend.create_texture(&self.buffer_desc())?;
             let view = backend.create_view(
@@ -295,6 +301,9 @@ impl<B: Backend> SwapChain<B> {
     }
 
     fn drop_buffers(&mut self, backend: &mut B) {
+        if let Some(t) = self.spare.take() {
+            backend.destroy(Object::Texture(t));
+        }
         for b in self.buffers.drain(..) {
             backend.destroy(Object::BindingSet(b.set));
             backend.destroy(Object::TextureView(b.view));
@@ -327,7 +336,9 @@ impl<B: Backend> SwapChain<B> {
         }
     }
 
-    /// The back buffer `index` (`GetBuffer`): any of a flip model's, buffer 0 of a blit model's.
+    /// The back buffer `index` (`GetBuffer`): any but of the discard blit model, which gives buffer 0
+    /// only. Of the sequential blit model, buffers past the first are for reading (DXGI refuses to
+    /// draw into them).
     pub fn buffer(&self, index: u32) -> Option<&B::Texture> {
         self.buffers.get(index as usize).map(|b| &b.texture)
     }
@@ -464,6 +475,9 @@ impl<B: Backend> SwapChain<B> {
             },
         });
         backend.end_pass();
+        if let Some(spare) = &self.spare {
+            self.move_down(backend, spare);
+        }
         let fence = backend.submit();
         let shown = backend.present(&self.surface);
         backend.destroy(Object::TextureView(target));
@@ -479,6 +493,34 @@ impl<B: Backend> SwapChain<B> {
             self.retired += 1;
         }
         Ok(())
+    }
+
+    /// The sequential blit model's move at present: each buffer takes the next one's contents, and
+    /// the last takes the first's, by way of `spare`.
+    fn move_down(&self, backend: &mut B, spare: &B::Texture) {
+        backend.slow_paths().hit(SlowPath::SequentialBuffersCopied);
+        let extent = Extent {
+            width: self.desc.width,
+            height: self.desc.height,
+            depth_or_layers: 1,
+        };
+        let region = |texture| TextureRegion {
+            texture,
+            mip: 0,
+            layer: 0,
+            origin: Origin::default(),
+            stencil: false,
+        };
+        let last = self.buffers.len() - 1;
+        backend.copy_texture(&region(&self.buffers[0].texture), &region(spare), extent);
+        for i in 0..last {
+            backend.copy_texture(
+                &region(&self.buffers[i + 1].texture),
+                &region(&self.buffers[i].texture),
+                extent,
+            );
+        }
+        backend.copy_texture(&region(spare), &region(&self.buffers[last].texture), extent);
     }
 
     /// `ResizeBuffers`: new buffers of the given count, size and format (zero keeps each), made

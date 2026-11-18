@@ -34,8 +34,9 @@ their layer and viewport index (46 game shaders), and lowered structured group-s
 gave DXIL storage textures the bound view's format, read DXIL's infinite and NaN constants, kept
 raw buffers to one view per binding and split arrays of textures (Godot's Direct3D 12 shaders); run
 26 read multisampled array textures as a texture per layer, applied views' component mappings in the
-program and made atomic minimums and maximums of the other signedness compare-exchange loops; what
-remains is under Next. Runs 21 to 26 merged origin/phase-2-graphics-webgpu, -webgl, -direct3d-11,
+program and made atomic minimums and maximums of the other signedness compare-exchange loops; run 27
+made the tessellator compile under fxc, converted geometry shaders without a position, gathers with
+run-time offsets and DXIL helper lane queries; what remains is under Next. Runs 21 to 27 merged origin/phase-2-graphics-webgpu, -webgl, -direct3d-11,
 -direct3d-12 and -rig (no conflicts).
 
 Done:
@@ -1010,7 +1011,63 @@ Run 26 (what the fronts' real programs wait on: bgfx's multisampled arrays, Godo
   `own_shaders_give_their_recorded_verdicts` failed on it; b99ca30f records them. At the end of run
   26 the desktop's `C:\wc\target\phase-2-graphics-shaders` was deleted.
 
+Run 27 (what the fronts' real programs wait on: the tessellator under fxc, Godot's helper lanes):
+- Merged origin/phase-2-graphics-direct3d-11 and -direct3d-12 (one conflict in the interface's
+  `slow.rs`: both sides' new slow paths kept, `ALL` now 105; the others had nothing new).
+- The tessellator program compiles under fxc (wgpu's Direct3D 12 path, which the fronts and the
+  rig's tessellation scene use): fxc failed with "no storage type for block output" (optimised) and
+  "argument pulled into unrelated predicate" (`/Od`), found by writing the program as HLSL with
+  wgpu's options and bisecting with fxc on the desktop. `stitch_regular` is now one loop choosing
+  each quad's shape (three loops in a switch before), and the switches over the output topology and
+  the triangle's edge are `if` chains and selects. `tests/tessellation_draw.rs` now runs on wgpu's
+  Direct3D 12 (it ran on Vulkan for this reason): 16 seeds, 512 draws, every patch's primitives
+  equal the RTX 3080's; the solid scene equal; the rig's scene: no texel Direct3D drew is missed
+  (lines differ by each API's rule, as before) (run27/tess1.log).
+- Geometry shaders writing no position (feeding stream output only) convert: the record's position
+  slot carries (0, 0, 0, -1), as a vertex program without one does (`GeometryWithoutPosition` is
+  gone). Own `gs_unplaced` (geometry.hlsl); `stream_output_matches_direct3d` has a case for it with a
+  declaration skipping the position's place: seeds 1 to 4, 0 words apart from real Direct3D 11 and
+  27 of 60 primitives written by both (run27/geom1.log).
+- Gathers with offsets given at run time (`gather4_po`, `gather4_po_c`; `DynamicOffset` before, the
+  fronts' test_gather, test_gather_c and gather files): the coordinate moves by the offset in texels
+  of level 0, the offset's low six bits signed as Direct3D takes them (`offset_coordinate` in
+  `lower.rs`). Own `ps_gatheroff` (offsets per pixel, some past six bits) drawn equal to real
+  Direct3D 11 through WebGPU, 0 of 4096 texels apart (run27/draw3.log); Wine's 159 and 161 now
+  convert. Exact where the texture's size is a power of two (the shifted coordinate is then exact);
+  other sizes are not drawn in a test.
+- `IsHelperLane()` and the helper guards dxil-spirv puts around wave operations: the carried naga
+  reader reads `OpIsHelperInvocationEXT` as a private flag (naga as carried), which `dxil.rs`
+  (`helper_invocations`) sets in pixel programs from the coverage (zero in helper invocations) and
+  at each demotion. dxil-spirv's coverage input, a one-element array the reader kept (refused as
+  "the sample mask stays an array"), is now a u32 argument (`sample_mask_input`). Own `ps_helper`
+  (values.hlsl; dxc build shader model 6.6 with discard then `IsHelperLane()`, fxc build from the
+  coverage): both builds drawn equal to real Direct3D 11's picture of the fxc build, 0 of 4096 texels
+  apart. Not against real Direct3D 12: this desktop's Direct3D 12 refuses the 6.6 build's pipeline
+  (`E_INVALIDARG`), so the draw test's new `dxil_against_11` holds that build to Direct3D 11. That
+  helper invocations have zero coverage is measured on the RTX 3080 only (wgpu's Direct3D 12 and real
+  Direct3D 11); WebGPU does not state it.
+- Found by drawing `ps_gatheroff`'s dxc build against real Direct3D 12 (2218 of 4096 texels apart,
+  run27/draw4.log): naga's SPIR-V reader skipped image sample operands it did not know, a run-time
+  `Offset` among them, with only a log warning, so the DXIL build sampled without its offsets. The
+  carried reader now refuses them (`unsupported image sample operand`, naga as carried), and the
+  DXIL build of run-time gather offsets is refused until it is built as the DXBC route's is (Next).
+- Godot's fragment shader with wave operations now stops at `Unsupported("Subgroups")`: WGSL's
+  subgroups need naga's WGSL writer to write `enable subgroups;` and the validation here to take
+  `Capabilities::SUBGROUP` with the subgroup operations and stages; then the helper guards above
+  apply. Wine's 123 and 124 atomics shaders convert (records updated); own `ps_fill` is
+  `glsl-compile` (GLSL ES 3.00 has no `gl_SampleID`; WebGL has no OES_sample_variables).
+
 Next (in order):
+- DXIL gathers with run-time offsets: read SPIR-V's `Offset` sample operand in the carried reader as
+  `lower.rs`'s `offset_coordinate` does, then draw `ps_gatheroff`'s dxc build (`dxil: true`)
+  against real Direct3D 12.
+- Subgroups (Godot's 3D platformer: 17 fragment shaders, and its compute shaders): `enable
+  subgroups;` in the carried naga's WGSL writer, `capabilities()` giving `SUBGROUP` and the validator
+  the operations and stages, the webgpu back end's `SUBGROUPS`; a drawn test needs a reference that
+  runs wave operations (real Direct3D 12 at shader model 6.0).
+- `StorageOffset` (Direct3D 12's buffer_srv; `HelperValue::StorageOffset` exists but no variant
+  field asks for it): an interface field naming the storage slots whose offsets come from the helper
+  block, then each access adds the offset's words.
 - Fronts (theirs): `texture_layers` for bgfx's multisampled arrays (G4, and G5's
   multisample_array_texture), `swizzled` for Direct3D 12's component mappings and both fronts'
   stencil views (Godot's 3D platformer), and counting `Reflection::slow_paths`.
@@ -1044,7 +1101,7 @@ Next (in order):
 - Tessellation, the rest: geometry shaders and stream output after a domain shader (the domain
   program through `vertex_as_compute`), DXIL hull and domain shaders (naga's SPIR-V reader: the
   tessellation execution models), the hull shader's declared largest factor (the reflection says
-  64), fxc's failure on `tessellator.wgsl` (wgpu's Direct3D 12 path), indexed and instanced patch
+  64), indexed and instanced patch
   draws (built, not drawn in a test).
 - Godot on Direct3D 12 (G5's real program): run 22's numbering is expected to remove
   `BindingsBeyondLimit` from its graphics shaders (not checked: Godot compiles its shaders at run
@@ -1288,6 +1345,21 @@ let reflection = &converted.reflection;
   conversion.
 
 ## Measurements
+
+Run 27, 2026-11-18, counts only (laptop load about 1; desktop shared through the queue), logs in
+scratch `graphics-shaders/run27`:
+- Laptop: `cargo clippy -p wcontainers-shaders -p wcontainers-gpu --all-targets -- -D warnings`
+  clean; the full suite of both crates with the corpora (`--include-ignored --skip mutated`): every
+  test passes but the own-shaders record of `ps_gatheroff.dxil`, which the reader change made
+  `spirv-reader unsupported` and which was then recorded (suite3.log; the record copied from
+  `classes.txt`).
+- Desktop (one GPU job each): `tessellation_draw` 3 of 3 on wgpu's Direct3D 12, 512 comparisons
+  (tess1.log); `geometry_draw` 2 of 2, 52 and 36 comparisons (geom1.log); `draw` 3 of 3 with the
+  new cases (draw3.log), and the Windows clippy of the crate clean (draw4.log, which also holds the
+  DXIL gather failure that led to the reader change).
+- Not rerun this run: the WebAssembly comparison and Chrome's compile of the written files.
+- At the end of run 27 the laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders` and the
+  desktop's `C:\wc\target\phase-2-graphics-shaders` and `C:\wc\probe` were deleted.
 
 Run 26, 2026-11-18, counts only (desktop shared through the queue; the laptop unreachable), logs in
 scratch `graphics-shaders/run26`:
@@ -1908,6 +1980,11 @@ the tree as published"), plus these changes, each a later commit touching only `
 - SPIR-V reader (run 25), an image taken from an array of images (`Access`/`AccessIndex` on a
   binding array) has the array's element type. This one is in commit 182398b1 together with the
   crate's `arrays.rs`, not a commit of its own.
+- SPIR-V reader (run 27), `OpIsHelperInvocationEXT` reads a private bool named
+  `front::spv::HELPER_INVOCATION`, made at its first use; the module's user sets it (this crate's
+  `dxil.rs` from the coverage and at each demotion). Before, the reader refused the instruction.
+- SPIR-V reader (run 27), an image sample operand it does not know is refused
+  (`unsupported image sample operand`) instead of skipped with a warning.
 Not yet sent upstream: that needs a GitHub account and fork the owner chooses, which this track does
 not have. Each change is its own commit touching only `third_party/naga`, so each can be sent as it
 stands (`git diff d380816 HEAD -- third_party/naga`).
@@ -2155,9 +2232,9 @@ were already there.
 
 ## Known gaps found so far
 
-- The tessellator program fails fxc (wgpu's Direct3D 12 shader compiler on the desktop) with an
-  internal error, "argument pulled into unrelated predicate"; it runs on wgpu's Vulkan path, and
-  Chrome 157's WebGPU compiles it.
+- fxc fails with internal errors on programs with several loops in one switch and on switches
+  whose cases call functions inlined many times (run 27, the tessellator): the built-in programs
+  avoid them; the tessellation test on wgpu's Direct3D 12 is what catches a new one.
 - Tessellator output buffers are sized for every patch reaching factor 64 (about 180 KB a patch),
   since the counts are known only on the GPU; a draw of thousands of patches needs hundreds of MB.
   To size by the counts instead (read back later, grown before the next draw) once draws run.

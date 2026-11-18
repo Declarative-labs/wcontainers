@@ -11,16 +11,19 @@ gs_line_adjacent.dxil	spirv-reader unsupported
 gs_lines.dxil	spirv-reader unsupported
 gs_points.dxil	spirv-reader unsupported
 gs_quads.dxil	spirv-reader unsupported
+gs_unplaced.dxil	spirv-reader unsupported
 ps_array.dxil	ok
 ps_cases.dxil	ok
 ps_clip.dxil	ok
 ps_coarse.dxil	ok
 ps_deriv.dxil	ok-wgsl glsl-write
 ps_dual.dxil	ok
-ps_fill.dxil	ok
+ps_fill.dxil	ok-wgsl glsl-compile
 ps_filter.dxil	ok-wgsl glsl-compile
 ps_ftoi.dxil	ok
+ps_gatheroff.dxil	spirv-reader unsupported
 ps_halves.dxil	ok-wgsl glsl-write
+ps_helper.dxil	ok-wgsl glsl-write
 ps_ids.dxil	ok
 ps_layer.dxil	spirv-reader unsupported
 ps_levels.dxil	ok-wgsl glsl-write

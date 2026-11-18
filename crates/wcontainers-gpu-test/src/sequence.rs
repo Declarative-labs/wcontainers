@@ -722,16 +722,35 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                     height: se.height.min(dh),
                     depth_or_layers: 1,
                 };
-                let dst_origin = Origin {
+                let mut dst_origin = Origin {
                     x: (dw - e.width).min(so.x),
                     y: (dh - e.height).min(so.y),
                     z: 0,
                 };
+                // Within one subresource, the region beside the source: right, left, below or
+                // above it, where one fits.
                 if i == j && smip == dmip && slayer == dlayer {
+                    let (x, y) = (so.x, so.y);
+                    let (w, h) = (e.width, e.height);
+                    if x + 2 * w <= dw {
+                        dst_origin.x = x + w;
+                    } else if x >= w {
+                        dst_origin.x = x - w;
+                    } else if y + 2 * h <= dh {
+                        dst_origin.y = y + h;
+                    } else if y >= h {
+                        dst_origin.y = y - h;
+                    }
+                }
+                let (from, to) = (
+                    Area::of(i, smip, slayer, so, e),
+                    Area::of(j, dmip, dlayer, dst_origin, e),
+                );
+                if from.meets(&to) {
                     continue;
                 }
-                texels.push(Area::of(i, smip, slayer, so, e));
-                texels.push(Area::of(j, dmip, dlayer, dst_origin, e));
+                texels.push(from);
+                texels.push(to);
                 b.copy_texture(
                     &region::<B>(s, smip, slayer, so),
                     &region::<B>(d, dmip, dlayer, dst_origin),

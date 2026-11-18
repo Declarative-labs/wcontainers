@@ -36,6 +36,9 @@ mod null;
 
 pub use error::Error;
 
+/// The name of the private bool `OpIsHelperInvocationEXT` reads; the module's user must set it.
+pub const HELPER_INVOCATION: &str = "helper_invocation";
+
 use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
 use core::{convert::TryInto, mem, num::NonZeroU32};
 

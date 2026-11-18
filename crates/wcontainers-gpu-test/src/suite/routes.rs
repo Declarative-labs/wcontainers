@@ -751,20 +751,75 @@ pub fn captures_write_location_outputs_packed_in_draw_order<H: Host>() {
 pub fn a_copy_within_one_subresource_moves_the_region<H: Host>() {
     let mut b = H::make();
     needs(&b, Format::Rgba8Unorm, FormatUse::COPY_OUT);
+    copy_within_one_subresource(&mut b, Format::Rgba8Unorm, 4, pattern(32, 9));
+}
+
+/// The same for the depth and stencil formats a back end copies out, each written with values a
+/// draw writes exactly (float depth in eighths, 16-bit depth and stencil any), and the formats with
+/// both, each aspect read back: a back end whose API copies these only between subresources goes
+/// through a temporary texture of the same format, counted `CopyWithinTexture`.
+pub fn a_copy_within_one_depth_or_stencil_subresource_moves_the_region<H: Host>() {
+    let mut b = H::make();
+    let depth32 = (0..8u32)
+        .flat_map(|i| (i as f32 / 8.0).to_le_bytes())
+        .collect();
+    let depth16 = (0..8u16)
+        .flat_map(|i| (i * 9000 + 7).to_le_bytes())
+        .collect();
+    for (format, texel, bytes) in [
+        (Format::Depth32Float, 4, depth32),
+        (Format::Depth16Unorm, 2, depth16),
+        (Format::Stencil8, 1, pattern(8, 3)),
+    ] {
+        if b.caps().formats.get(format).contains(FormatUse::COPY_OUT) {
+            copy_within_one_subresource(&mut b, format, texel, bytes);
+        }
+    }
+    for format in [Format::Depth24PlusStencil8, Format::Depth32FloatStencil8] {
+        if b.caps().formats.get(format).contains(FormatUse::COPY_OUT) {
+            copy_within_one_combined_subresource(&mut b, format);
+        }
+    }
+}
+
+/// As [`copy_within_one_subresource`] for a format with depth and stencil, whose one copy moves
+/// both aspects: depth written and read in eighths (24-bit depth within one step of 2^-24), stencil
+/// any.
+fn copy_within_one_combined_subresource<B: Backend>(b: &mut B, format: Format) {
     let t = texture(
-        &mut b,
-        Format::Rgba8Unorm,
+        b,
+        format,
         (4, 2),
         1,
         1,
         TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
     );
-    let bytes = pattern(32, 9);
+    let aspect = |stencil| TextureRegion {
+        stencil,
+        ..region(&t, 0, 0, 0, 0)
+    };
+    let eighth = |i: usize| i as f64 / 8.0;
+    let depth: Vec<u8> = (0..8)
+        .flat_map(|i| {
+            let mut texel = [0; 4];
+            crate::texel::encode_depth(format, eighth(i), &mut texel);
+            texel
+        })
+        .collect();
+    let stencil = pattern(8, 5);
     b.write_texture(
-        &region(&t, 0, 0, 0, 0),
+        &aspect(false),
         extent(4, 2, 1),
-        &bytes,
+        &depth,
         16,
+        2,
+        WriteMode::Ordered,
+    );
+    b.write_texture(
+        &aspect(true),
+        extent(4, 2, 1),
+        &stencil,
+        4,
         2,
         WriteMode::Ordered,
     );
@@ -773,13 +828,59 @@ pub fn a_copy_within_one_subresource_moves_the_region<H: Host>() {
         &region(&t, 0, 0, 2, 0),
         extent(2, 2, 1),
     );
-    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(4, 2, 1), 4);
-    let mut expected = bytes.clone();
-    for y in 0..2 {
-        expected.copy_within(y * 16..y * 16 + 8, y * 16 + 8);
+    // Texel i holds what texel `from(i)` held: the right half of each row takes its left half.
+    let from = |i: usize| if i % 4 >= 2 { i - 2 } else { i };
+    let got = read_texture(b, aspect(false), extent(4, 2, 1), 4);
+    let step = match format {
+        Format::Depth24PlusStencil8 => 1.0 / 16_777_215.0,
+        _ => 0.0,
+    };
+    for i in 0..8 {
+        let g = crate::texel::decode_depth(format, &got[i * 4..i * 4 + 4]);
+        let e = eighth(from(i));
+        assert!(
+            (g - e).abs() <= step,
+            "{format:?} depth of texel {i}: {g}, not {e}"
+        );
     }
-    assert_eq!(got, expected);
-    ok(&mut b);
+    let got = read_texture(b, aspect(true), extent(4, 2, 1), 1);
+    let expected: Vec<u8> = (0..8).map(|i| stencil[from(i)]).collect();
+    assert_eq!(got, expected, "{format:?} stencil");
+    ok(b);
+}
+
+/// Writes a 4 by 2 texture of `format`, copies its left half onto its right half, and reads back
+/// the left half twice.
+fn copy_within_one_subresource<B: Backend>(b: &mut B, format: Format, texel: u32, bytes: Vec<u8>) {
+    let t = texture(
+        b,
+        format,
+        (4, 2),
+        1,
+        1,
+        TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+    );
+    b.write_texture(
+        &region(&t, 0, 0, 0, 0),
+        extent(4, 2, 1),
+        &bytes,
+        4 * texel,
+        2,
+        WriteMode::Ordered,
+    );
+    b.copy_texture(
+        &region(&t, 0, 0, 0, 0),
+        &region(&t, 0, 0, 2, 0),
+        extent(2, 2, 1),
+    );
+    let got = read_texture(b, region(&t, 0, 0, 0, 0), extent(4, 2, 1), texel as usize);
+    let (row, half) = (4 * texel as usize, 2 * texel as usize);
+    let mut expected = bytes;
+    for y in 0..2 {
+        expected.copy_within(y * row..y * row + half, y * row + half);
+    }
+    assert_eq!(got, expected, "{format:?}");
+    ok(b);
 }
 
 /// A typed buffer read through a storage buffer (`TexelBufferRoute::Storage`): a read-only storage
@@ -1012,4 +1113,276 @@ pub fn typed_buffers_through_a_texture_lie_2048_elements_to_a_row<H: Host>() {
         .collect();
     assert_eq!(got, expected);
     ok(&mut b);
+}
+
+/// Every vertex format is taken by every back end and reads its element (a back end whose API lacks
+/// one converts it itself, `VertexFormatConverted`): one element, at attribute offset 12 of a stride
+/// of 28 whose first bytes are filler, read as a `vec4` of the format's number type by a one-pixel
+/// quad and written to an `rgba32` target of that type. Missing components read 0, 0 and 1 (the
+/// integer 1 for integer formats). Normalised values are held within 2^-20, the others exactly.
+pub fn every_vertex_format_reads_its_element<H: Host>() {
+    use VertexFormat::*;
+    const FORMATS: [VertexFormat; 52] = [
+        Uint8x1,
+        Uint8x2,
+        Uint8x3,
+        Uint8x4,
+        Sint8x1,
+        Sint8x2,
+        Sint8x3,
+        Sint8x4,
+        Unorm8x1,
+        Unorm8x2,
+        Unorm8x3,
+        Unorm8x4,
+        Snorm8x1,
+        Snorm8x2,
+        Snorm8x3,
+        Snorm8x4,
+        Uint16x1,
+        Uint16x2,
+        Uint16x3,
+        Uint16x4,
+        Sint16x1,
+        Sint16x2,
+        Sint16x3,
+        Sint16x4,
+        Unorm16x1,
+        Unorm16x2,
+        Unorm16x3,
+        Unorm16x4,
+        Snorm16x1,
+        Snorm16x2,
+        Snorm16x3,
+        Snorm16x4,
+        Float16x1,
+        Float16x2,
+        Float16x3,
+        Float16x4,
+        Float32x1,
+        Float32x2,
+        Float32x3,
+        Float32x4,
+        Uint32x1,
+        Uint32x2,
+        Uint32x3,
+        Uint32x4,
+        Sint32x1,
+        Sint32x2,
+        Sint32x3,
+        Sint32x4,
+        Bgra8Unorm,
+        Unorm10_10_10_2,
+        Uint10_10_10_2,
+        Float11_11_10,
+    ];
+    let mut b = H::make();
+    let mut routes = Vec::new();
+    for (kind, format) in [
+        ("f32", Format::Rgba32Float),
+        ("u32", Format::Rgba32Uint),
+        ("i32", Format::Rgba32Sint),
+    ] {
+        needs(&b, format, FormatUse::RENDER | FormatUse::COPY_OUT);
+        let source = format!(
+            "struct Out {{ @builtin(position) pos: vec4<f32>, @location(0) @interpolate(flat) v: vec4<{kind}> }}
+            @vertex fn vs(@location(0) p: vec2<f32>, @location(1) v: vec4<{kind}>) -> Out {{
+                return Out(vec4<f32>(p, 0.5, 1.0), v);
+            }}
+            @fragment fn fs(i: Out) -> @location(0) vec4<{kind}> {{
+                return i.v;
+            }}"
+        );
+        let p = program(&mut b, &source, "vs", "fs");
+        let t = texture(
+            &mut b,
+            format,
+            (1, 1),
+            1,
+            1,
+            TextureUsage::RENDER | TextureUsage::COPY_SRC,
+        );
+        let v = view(&mut b, &t, format);
+        routes.push((p, t, v));
+    }
+    let rs = raster(&mut b, CullMode::None);
+    let vb = quad(&mut b);
+    const OFFSET: u32 = 12;
+    let values = buffer(&mut b, 128, BufferUsage::VERTEX | BufferUsage::COPY_DST);
+    for format in FORMATS {
+        let (element, expected) = vertex_element(format);
+        let bytes: Vec<u8> = (0..4)
+            .flat_map(|_| [0xa5; OFFSET as usize].into_iter().chain(element))
+            .collect();
+        b.write_buffer(&values, 0, &bytes, WriteMode::Ordered);
+        let mut desc = VertexLayoutDesc {
+            streams: [None; MAX_VERTEX_STREAMS],
+            attributes: [None; MAX_VERTEX_STREAMS],
+        };
+        for (s, stride) in [(0, 8), (1, 16 + OFFSET)] {
+            desc.streams[s] = Some(VertexStream {
+                stride,
+                step: StepMode::Vertex,
+            });
+        }
+        desc.attributes[0] = Some(VertexAttribute {
+            location: 0,
+            stream: 0,
+            offset: 0,
+            format: Float32x2,
+        });
+        desc.attributes[1] = Some(VertexAttribute {
+            location: 1,
+            stream: 1,
+            offset: OFFSET,
+            format,
+        });
+        let vl = b.create_vertex_layout(&desc).expect("create_vertex_layout");
+        let (p, t, v) = &routes[usize::from(matches!(expected, Read::Uint(_)))
+            + 2 * usize::from(matches!(expected, Read::Sint(_)))];
+        let streams = [
+            Some(VertexBinding {
+                buffer: &vb,
+                offset: 0,
+            }),
+            Some(VertexBinding {
+                buffer: &values,
+                offset: 0,
+            }),
+        ];
+        b.begin_pass(&color_pass::<H::Backend>(v, LoadOp::Clear([0; 4])));
+        draw_into(
+            &mut b,
+            p,
+            &rs,
+            &vl,
+            [None; MAX_BINDING_SETS],
+            &streams,
+            Topology::TriangleStrip,
+            once(4),
+            (1, 1),
+        );
+        b.end_pass();
+        b.destroy(Object::VertexLayout(vl));
+        let got = read_texture(&mut b, region(t, 0, 0, 0, 0), extent(1, 1, 1), 16);
+        let word = |c: usize| u32::from_le_bytes(got[c * 4..c * 4 + 4].try_into().unwrap());
+        match expected {
+            Read::Float(e, tolerance) => {
+                for (c, e) in e.iter().enumerate() {
+                    let g = f32::from_bits(word(c));
+                    assert!(
+                        (g - e).abs() <= tolerance,
+                        "{format:?} component {c}: {g}, not {e}"
+                    );
+                }
+            }
+            Read::Uint(e) => assert_eq!([0, 1, 2, 3].map(word), e, "{format:?}"),
+            Read::Sint(e) => assert_eq!([0, 1, 2, 3].map(|c| word(c) as i32), e, "{format:?}"),
+        }
+    }
+    ok(&mut b);
+}
+
+/// What a vertex program reads from an element.
+enum Read {
+    Float([f32; 4], f32),
+    Uint([u32; 4]),
+    Sint([i32; 4]),
+}
+
+/// One element of `format` (16 bytes, the format's own first) and what it reads.
+fn vertex_element(format: VertexFormat) -> ([u8; 16], Read) {
+    use VertexFormat::*;
+    let mut element = [0u8; 16];
+    let values = [0.5f32, -2.0, 3.25, 100.0];
+    let read = match format {
+        Float32x1 | Float32x2 | Float32x3 | Float32x4 | Float16x1 | Float16x2 | Float16x3
+        | Float16x4 => {
+            let n = (format as usize - Float16x1 as usize) % 4 + 1;
+            let half = (format as usize) < Float32x1 as usize;
+            for (c, v) in values.iter().take(n).enumerate() {
+                match half {
+                    true => element[c * 2..c * 2 + 2]
+                        .copy_from_slice(&half::f16::from_f32(*v).to_le_bytes()),
+                    false => element[c * 4..c * 4 + 4].copy_from_slice(&v.to_le_bytes()),
+                }
+            }
+            let mut e = [0.0, 0.0, 0.0, 1.0];
+            e[..n].copy_from_slice(&values[..n]);
+            Read::Float(e, 0.0)
+        }
+        Bgra8Unorm => {
+            element[..4].copy_from_slice(&[10, 20, 30, 255]);
+            Read::Float(
+                [30.0 / 255.0, 20.0 / 255.0, 10.0 / 255.0, 1.0],
+                1.0 / 1048576.0,
+            )
+        }
+        Unorm10_10_10_2 | Uint10_10_10_2 => {
+            let (r, g, bl, a) = (1023u32, 512, 3, 2);
+            element[..4].copy_from_slice(&(r | g << 10 | bl << 20 | a << 30).to_le_bytes());
+            match format {
+                Uint10_10_10_2 => Read::Uint([r, g, bl, a]),
+                _ => Read::Float(
+                    [1.0, 512.0 / 1023.0, 3.0 / 1023.0, 2.0 / 3.0],
+                    1.0 / 1048576.0,
+                ),
+            }
+        }
+        Float11_11_10 => {
+            // 5-bit exponents biased by 15: the least 11-bit denormal (2^-20), the greatest 11-bit
+            // float, and 0.75 as a 10-bit float.
+            let word = 1u32 | (30u32 << 6 | 63) << 11 | (14u32 << 5 | 16) << 22;
+            element[..4].copy_from_slice(&word.to_le_bytes());
+            Read::Float([2f32.powi(-20), 65024.0, 0.75, 1.0], 0.0)
+        }
+        _ => {
+            // The 8, 16 and 32-bit integer and normalised formats: bytes of a fixed pattern, with
+            // the most negative value in the first component of the signed ones.
+            let i = format as usize;
+            let n = i % 4 + 1;
+            // The enum's order: uint, sint, unorm and snorm of 8 bits, then of 16, then two
+            // float groups, then uint and sint of 32.
+            let (size, kind) = match i {
+                0..16 => (1, i / 4),
+                16..32 => (2, (i - 16) / 4),
+                _ => (4, (i - 40) / 4),
+            };
+            element.copy_from_slice(&pattern(16, 0x5b)[..]);
+            element[size - 1] = 0x80;
+            element[..size - 1].fill(0);
+            let max = (1u64 << (size * 8)) - 1;
+            let raw = |c: usize| {
+                element[c * size..c * size + size]
+                    .iter()
+                    .rev()
+                    .fold(0u64, |a, &x| (a << 8) | u64::from(x))
+            };
+            let signed = |c: usize| ((raw(c) << (64 - size * 8)) as i64) >> (64 - size * 8);
+            match kind {
+                0 => {
+                    let mut e = [0, 0, 0, 1];
+                    (0..n).for_each(|c| e[c] = raw(c) as u32);
+                    Read::Uint(e)
+                }
+                1 => {
+                    let mut e = [0, 0, 0, 1];
+                    (0..n).for_each(|c| e[c] = signed(c) as i32);
+                    Read::Sint(e)
+                }
+                2 => {
+                    let mut e = [0.0, 0.0, 0.0, 1.0];
+                    (0..n).for_each(|c| e[c] = (raw(c) as f64 / max as f64) as f32);
+                    Read::Float(e, 1.0 / 1048576.0)
+                }
+                _ => {
+                    let mut e = [0.0, 0.0, 0.0, 1.0];
+                    let top = (max / 2) as f64;
+                    (0..n).for_each(|c| e[c] = (signed(c) as f64 / top).max(-1.0) as f32);
+                    Read::Float(e, 1.0 / 1048576.0)
+                }
+            }
+        }
+    };
+    (element, read)
 }

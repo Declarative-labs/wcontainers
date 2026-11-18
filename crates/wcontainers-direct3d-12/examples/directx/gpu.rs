@@ -101,6 +101,7 @@ fn start() -> Thread {
             let (device, queue) =
                 pollster::block_on(adapter.request_device(&WebGpu::device_descriptor(&adapter)))
                     .expect("wcontainers: the WebGPU device");
+            crate::cache::open();
             let mut state = State {
                 front: Device::new(WebGpu::new(&adapter, device, queue)),
                 instance,

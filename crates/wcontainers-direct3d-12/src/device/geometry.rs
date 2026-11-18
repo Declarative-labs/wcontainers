@@ -318,8 +318,16 @@ impl<B: Backend> Replay<B> {
             // The draw after the stream output binds the same sets.
             false => StageSet::COMPUTE | StageSet::VERTEX,
         };
-        let mut vertex_sets =
-            d.binding_sets(&self.graphics, pid, &[bind::VERTEX], &extra, vertex_stages)?;
+        let mut vertex_sets = d
+            .binding_sets(
+                &self.graphics,
+                pid,
+                &[bind::VERTEX],
+                &extra,
+                vertex_stages,
+                None,
+            )?
+            .0;
         if helpers.size != 0 {
             vertex_sets[HELPER_SET as usize] = Some(d.helper_set(
                 &helpers,
@@ -330,8 +338,9 @@ impl<B: Backend> Replay<B> {
                 None,
             )?);
         }
-        let mut geometry_sets =
-            d.binding_sets(&self.graphics, pid, &[middle], &[], StageSet::COMPUTE)?;
+        let mut geometry_sets = d
+            .binding_sets(&self.graphics, pid, &[middle], &[], StageSet::COMPUTE, None)?
+            .0;
         if middle_helpers.size != 0 {
             let block = d.stage_block(&middle_helpers, middle)?;
             let compute = wcontainers_gpu::helper_binding(ShaderStage::Compute);
@@ -347,10 +356,16 @@ impl<B: Backend> Replay<B> {
                     Some(_) => &[DOMAIN, bind::PIXEL],
                     None => &[bind::PIXEL],
                 };
-                let sets = d.binding_sets(&self.graphics, pid, only, &[], StageSet::FRAGMENT)?;
                 // The program after the stage helper is made with the pixel program's first
                 // typed view formats only.
-                d.bound_program(pid, true)?;
+                let (sets, _) = d.binding_sets(
+                    &self.graphics,
+                    pid,
+                    only,
+                    &[],
+                    StageSet::FRAGMENT,
+                    Some(true),
+                )?;
                 if !d.through.is_empty() {
                     return Err(Error::NotImplemented(
                         "storage textures read through buffers behind a geometry or domain shader",

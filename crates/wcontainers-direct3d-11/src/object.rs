@@ -150,10 +150,15 @@ pub enum Second {
 }
 
 impl<B: Backend> Texture<B> {
-    /// Width, height and depth of mip `mip`.
+    /// Width, height and depth of mip `mip`, in the back end's texels (a YUY2 texel is a pixel
+    /// pair).
     pub fn mip_extent(&self, mip: u32) -> Extent {
+        let width = match self.desc.format {
+            crate::format::YUY2 => self.desc.width / 2,
+            _ => self.desc.width,
+        };
         Extent {
-            width: (self.desc.width >> mip).max(1),
+            width: (width >> mip).max(1),
             height: (self.desc.height >> mip).max(1),
             depth_or_layers: (self.desc.depth >> mip).max(1),
         }
@@ -250,6 +255,11 @@ pub struct View<B: Backend> {
 }
 
 impl<B: Backend> View<B> {
+    /// Whether the view reads stencil (`X24_TYPELESS_G8_UINT`, `X32_TYPELESS_G8X24_UINT`).
+    pub fn reads_stencil(&self) -> bool {
+        matches!(self.desc.format, 22 | 47)
+    }
+
     /// Whether what is drawn into the view is copied out of the texture the pass draws into.
     pub fn copied(&self) -> bool {
         self.twin.is_some() || self.buffer.is_some()
@@ -407,6 +417,8 @@ pub struct Shader<B: Backend> {
     pub helpers: Rc<crate::shader::Helpers>,
     /// The typed views it declares, whose formats each draw converts it for.
     pub typed: Vec<crate::shader::TypedView>,
+    /// The texture slots it declares as multisampled arrays, a bit each.
+    pub layered: u128,
 }
 
 /// A geometry shader object: the geometry stage and the stream output of its declaration. Made

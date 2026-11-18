@@ -267,8 +267,9 @@ const STREAM_SIZES: [u64; 2] = [32 * 3 * 9, 4096];
 const STREAM_START: [u32; 2] = [0, 24];
 
 /// The stream output declaration of the tests: the position and the colour's last three components
-/// in buffer 0 (stride 32), then a gap and the first two numbers in buffer 1 (stride 12).
-fn declaration() -> StreamOutput {
+/// in buffer 0 (stride 32), then a gap and the first two numbers in buffer 1 (stride 12). A geometry
+/// shader writing no position (`gs_unplaced`) skips the position's place instead.
+fn declaration(gs: &str) -> StreamOutput {
     let entry = |semantic: Option<&str>, start, count, slot| StreamOutputEntry {
         stream: 0,
         semantic: semantic.map(String::from),
@@ -279,7 +280,11 @@ fn declaration() -> StreamOutput {
     };
     StreamOutput {
         entries: vec![
-            entry(Some("SV_Position"), 0, 4, 0),
+            if gs == "gs_unplaced" {
+                entry(None, 0, 4, 0)
+            } else {
+                entry(Some("SV_Position"), 0, 4, 0)
+            },
             entry(Some("COLOR"), 1, 3, 0),
             entry(None, 0, 1, 1),
             entry(Some("TEXCOORD"), 0, 2, 1),
@@ -652,7 +657,7 @@ fn direct3d_streamed(
         "" => vs.clone(),
         gs => bytecode(&format!("{gs}.dxbc")),
     };
-    let so = declaration();
+    let so = declaration(case.gs);
     let names: Vec<std::ffi::CString> = so
         .entries
         .iter()
@@ -771,7 +776,16 @@ fn direct3d_streamed(
 
 /// Stream output cases: from geometry shaders (strips cut, points, lines, instances) and from the
 /// vertex shader alone (`gs` empty), some filling the first buffer.
-const STREAMED: [Case; 8] = [
+const STREAMED: [Case; 9] = [
+    Case {
+        gs: "gs_unplaced",
+        topology: InputTopology::PointList,
+        count: 30,
+        first: 0,
+        instances: 1,
+        first_instance: 0,
+        indexed: None,
+    },
     Case {
         gs: "gs_cut",
         topology: InputTopology::TriangleList,
@@ -861,7 +875,6 @@ fn stream_output_matches_direct3d() {
     let seeds: u64 = std::env::var("WCONTAINERS_GEOMETRY_CASES")
         .map(|s| s.parse().unwrap())
         .unwrap_or(4);
-    let so = declaration();
     let mut failures = Vec::new();
     let mut compared = 0;
     for seed in seed..seed + seeds {
@@ -884,9 +897,13 @@ fn stream_output_matches_direct3d() {
                     .unwrap_or_default()
             );
             let (reference, statistics) = direct3d_streamed(&gpu, case, &vertices, &indices);
-            let Made::Streamed(streamed, words) =
-                ours(&mut backend, case, &vertices, &indices, Some(&so))
-            else {
+            let Made::Streamed(streamed, words) = ours(
+                &mut backend,
+                case,
+                &vertices,
+                &indices,
+                Some(&declaration(case.gs)),
+            ) else {
                 unreachable!()
             };
             compared += 1;

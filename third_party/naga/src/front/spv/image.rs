@@ -651,13 +651,8 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
                     offset = Some(offset_handle);
                     words_left -= 1;
                 }
-                other => {
-                    log::warn!("Unknown image sample operand {other:?}");
-                    for _ in 0..words_left {
-                        self.next()?;
-                    }
-                    break;
-                }
+                // Skipping an operand (a run-time `Offset` among them) would change what is sampled.
+                other => return Err(Error::UnsupportedImageSampleOperand(other.bits())),
             }
             image_ops ^= bit;
         }

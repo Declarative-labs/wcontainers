@@ -18,7 +18,7 @@ use wcontainers_gpu::{
     ShaderModule, ShaderStage, SlowPath, StageSet, StepMode, StoreOp, Target, TargetLayout,
     TexelBufferRoute, TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc,
     Topology, VariantFlags, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc,
-    VertexStream, ViewDimension, Viewport, WriteMode,
+    VertexStream, ViewComponent, ViewDimension, Viewport, WriteMode,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source};
 
@@ -209,6 +209,9 @@ struct Pipeline<B: Backend> {
     formats: Option<Box<formats::Formats<B>>>,
     /// The helper block of the pixel (or compute) stage of `program`.
     helpers: Helpers,
+    /// The slow paths its stages' programs take by themselves (`Reflection::slow_paths`),
+    /// counted at each draw or dispatch.
+    slow_paths: Vec<SlowPath>,
 }
 
 /// A graphics pipeline's fixed state.
@@ -376,6 +379,12 @@ pub struct Device<B: Backend> {
     /// The textures the last binding sets made bind in a format the back end cannot filter: API
     /// stage and register.
     bound_unfiltered: Vec<(u32, u32)>,
+    /// The component mappings the last binding sets made bind that the program applies: API
+    /// stage, register and mapping.
+    bound_swizzles: Vec<(u32, u32, [ViewComponent; 4])>,
+    /// The multisampled array views the last binding sets made bind: API stage, register, the
+    /// back end's stages reading it, and the views of its layers after the first.
+    bound_layers: Vec<(u32, u32, StageSet, Vec<B::TextureView>)>,
     through: Vec<through::Through<B>>,
     /// The error that removed the device, if one did.
     removed: Option<Error>,
@@ -425,6 +434,8 @@ impl<B: Backend> Device<B> {
             bound_clamps: Vec::new(),
             bound_unfiltered: Vec::new(),
             bound_samplers: Vec::new(),
+            bound_swizzles: Vec::new(),
+            bound_layers: Vec::new(),
             through: Vec::new(),
             removed: None,
         }
@@ -1074,6 +1085,13 @@ impl<B: Backend> Device<B> {
         }
         bind::check(&root, &bindings)?;
         self.prepare_nulls(&bind::null_shapes(&bindings))?;
+        let mut stages = vec![&vs];
+        if let Some(m) = &made {
+            stages.extend([&m.vertex]);
+            stages.extend(m.shader.iter().chain(&m.domain));
+        }
+        stages.extend(&ps);
+        let slow_paths = programs_slow_paths(&stages);
         let caps = self.backend.caps();
         let blend = desc.blend.block(caps, desc.rtv_formats.len())?;
         // With no topology type (`UNDEFINED`) the draws' topologies decide, and nothing is built
@@ -1229,6 +1247,7 @@ impl<B: Backend> Device<B> {
                 formats::Formats::of(bind::PIXEL, desc.ps, &k, &c.reflection.sampled_pairs)
             }),
             helpers: ps.as_ref().map(Helpers::of).unwrap_or_default(),
+            slow_paths,
         }) as u32))
     }
 
@@ -1265,7 +1284,15 @@ impl<B: Backend> Device<B> {
             group_threads,
             formats: formats::Formats::of(0, code, &key, &cs.reflection.sampled_pairs),
             helpers: Helpers::of(&cs),
+            slow_paths: programs_slow_paths(&[&cs]),
         }) as u32))
+    }
+
+    /// Counts the slow paths pipeline `pid`'s programs take by themselves.
+    fn pipeline_slow_paths(&mut self, pid: PipelineId) {
+        for &p in &self.pipelines[pid.0 as usize].slow_paths {
+            self.backend.slow_paths().hit(p);
+        }
     }
 
     /// The root signature a pipeline is made with: the one given, else one a shader carries.
@@ -1316,7 +1343,7 @@ impl<B: Backend> Device<B> {
         if key.texels_through_buffer == 0
             && through != 0
             && let Err(ConvertError::Unsupported("StorageImageAtomics")) =
-                wcontainers_shaders::convert(source, key, None)
+                crate::cache::convert(source, key)
         {
             key.texels_through_buffer = through;
         }
@@ -1349,7 +1376,7 @@ impl<B: Backend> Device<B> {
         } else {
             Source::Dxbc(code)
         };
-        let converted = wcontainers_shaders::convert(source, &variant, None).map_err(|e| {
+        let converted = crate::cache::convert(source, &variant).map_err(|e| {
             let error = match e {
                 ConvertError::Rejected(_) => Error::Invalid("the shader bytecode was refused"),
                 ConvertError::Unsupported(_) | ConvertError::Reader(_) => {
@@ -3227,8 +3254,9 @@ impl<B: Backend> Replay<B> {
             }
         }
         self.settle(d)?;
-        let mut sets = d.binding_sets(&self.compute, pid, &[], &[], StageSet::COMPUTE)?;
-        let bound = d.bound_program(pid, false)?;
+        d.pipeline_slow_paths(pid);
+        let (mut sets, bound) =
+            d.binding_sets(&self.compute, pid, &[], &[], StageSet::COMPUTE, Some(false))?;
         let pipeline = &d.pipelines[pid.0 as usize];
         let helpers = bound.as_ref().map_or(&pipeline.helpers, |b| &b.1).clone();
         if helpers.size != 0 {
@@ -3286,6 +3314,7 @@ impl<B: Backend> Replay<B> {
         if !d.arguments_set(&self.graphics, pid) {
             return Ok(());
         }
+        d.pipeline_slow_paths(pid);
         if geometry && !self.draw_geometry(d, pid, same_range(&range), record)? {
             return Ok(());
         }
@@ -3443,8 +3472,14 @@ impl<B: Backend> Replay<B> {
                 .ok_or(Error::Invalid("a pulled stream the draw does not bind"))?;
             extra.push((binding, buffer, *offset, *size));
         }
-        let mut sets = d.binding_sets(&self.graphics, pid, &[], &extra, StageSet::VERTEX)?;
-        let bound = d.bound_program(pid, variant.is_some() || by_arguments)?;
+        let (mut sets, bound) = d.binding_sets(
+            &self.graphics,
+            pid,
+            &[],
+            &extra,
+            StageSet::VERTEX,
+            Some(variant.is_some() || by_arguments),
+        )?;
         d.vertex_formats(pid)?;
         let pipeline = &d.pipelines[pid.0 as usize];
         let pixel = bound.as_ref().map_or(&pipeline.helpers, |b| &b.1).clone();
@@ -4360,6 +4395,17 @@ pub(crate) fn stored_size(width: u64, max: u64) -> u64 {
     width
         .next_multiple_of(256)
         .min(max.max(width.next_multiple_of(4)))
+}
+
+/// The slow paths converted `programs` take by themselves, each once.
+fn programs_slow_paths(programs: &[&Converted]) -> Vec<SlowPath> {
+    let mut all: Vec<SlowPath> = programs
+        .iter()
+        .flat_map(|c| c.reflection.slow_paths.iter().copied())
+        .collect();
+    all.sort_unstable();
+    all.dedup();
+    all
 }
 
 #[cfg(test)]

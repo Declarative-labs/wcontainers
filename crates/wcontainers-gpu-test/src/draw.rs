@@ -459,16 +459,56 @@ fn vertex_format(f: VertexFormat) -> Result<(usize, usize, char), Error> {
         }
         Uint32x1 | Uint32x2 | Uint32x3 | Uint32x4 => (f as usize - Uint32x1 as usize + 1, 4, 'u'),
         Sint32x1 | Sint32x2 | Sint32x3 | Sint32x4 => (f as usize - Sint32x1 as usize + 1, 4, 'i'),
-        other => {
-            return Err(format!(
-                "vertex format {other:?} is not read by the recording back end yet"
-            ));
-        }
+        // The packed formats: four bytes in reverse order, or one word.
+        Bgra8Unorm => (4, 1, 'b'),
+        Unorm10_10_10_2 => (1, 4, 'p'),
+        Uint10_10_10_2 => (1, 4, 'q'),
+        Float11_11_10 => (1, 4, 'e'),
     })
+}
+
+/// An unsigned float of a 5-bit exponent biased by 15 and `m` mantissa bits.
+fn small_float(bits: u32, m: u32) -> f64 {
+    let (e, f) = (
+        bits >> m,
+        f64::from(bits & ((1 << m) - 1)) / f64::from(1u32 << m),
+    );
+    match e {
+        0 => f * 2f64.powi(-14),
+        31 if f == 0.0 => f64::INFINITY,
+        31 => f64::NAN,
+        _ => (1.0 + f) * 2f64.powi(e as i32 - 15),
+    }
 }
 
 fn decode_vertex(f: VertexFormat, bytes: &[u8]) -> Result<Vec<f64>, Error> {
     let (n, size, num) = vertex_format(f)?;
+    if matches!(num, 'b' | 'p' | 'q' | 'e') {
+        let b = bytes
+            .get(..4)
+            .ok_or("a vertex read past the buffer's end")?;
+        let w = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+        let field = |at: u32, width: u32| f64::from((w >> at) & ((1 << width) - 1));
+        return Ok(match num {
+            'b' => vec![b[2], b[1], b[0], b[3]]
+                .into_iter()
+                .map(|x| f64::from(x) / 255.0)
+                .collect(),
+            'p' => vec![
+                field(0, 10) / 1023.0,
+                field(10, 10) / 1023.0,
+                field(20, 10) / 1023.0,
+                field(30, 2) / 3.0,
+            ],
+            'q' => vec![field(0, 10), field(10, 10), field(20, 10), field(30, 2)],
+            _ => vec![
+                small_float(w & 0x7ff, 6),
+                small_float((w >> 11) & 0x7ff, 6),
+                small_float(w >> 22, 5),
+                1.0,
+            ],
+        });
+    }
     let mut out = vec![0.0, 0.0, 0.0, 1.0];
     for (c, o) in out.iter_mut().enumerate().take(n) {
         let b = bytes

@@ -4,7 +4,7 @@
 use wcontainers_gpu::{
     AddedBinding, CLAMPED_SAMPLER_BINDING, DrawBaseSource, Format, FormatKind, HELPER_SET,
     HelperSlot, HelperValue, LinkedValues, SlotKind, SourceStage, TexelBufferRoute, VariantFlags,
-    VariantKey,
+    VariantKey, ViewComponent,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source};
 
@@ -119,13 +119,24 @@ impl TypedView {
     }
 }
 
-/// The typed views a DXBC container's program declares, in the token format of Microsoft's
-/// `d3d11TokenizedProgramFormat.hpp`.
-pub fn typed_views(bytecode: &[u8]) -> Result<Vec<TypedView>> {
-    const DCL_RESOURCE: u32 = 88;
-    const DCL_UAV_TYPED: u32 = 156;
+const DCL_RESOURCE: u32 = 88;
+const DCL_UAV_TYPED: u32 = 156;
+const DIMENSION_BUFFER: u32 = 1;
+const DIMENSION_TEXTURE2DMSARRAY: u32 = 9;
+
+/// A texture or typed storage declaration of a DXBC program: its opcode, resource dimension,
+/// register and return type token.
+struct Declared {
+    opcode: u32,
+    dimension: u32,
+    register: u32,
+    returns: u32,
+}
+
+/// The `dcl_resource` and `dcl_uav_typed` declarations of a DXBC container's program, in the token
+/// format of Microsoft's `d3d11TokenizedProgramFormat.hpp`.
+fn declarations(bytecode: &[u8]) -> Result<Vec<Declared>> {
     const CUSTOMDATA: u32 = 53;
-    const DIMENSION_BUFFER: u32 = 1;
     let bad = Error::InvalidArg("malformed DXBC program");
     let (_, at) = chunks(bytecode)?
         .into_iter()
@@ -133,7 +144,7 @@ pub fn typed_views(bytecode: &[u8]) -> Result<Vec<TypedView>> {
         .ok_or(bad)?;
     let words = word(bytecode, at + 4)? as usize / 4;
     let token = |i: usize| word(bytecode, at + 8 + 4 * i);
-    let mut views = Vec::new();
+    let mut found = Vec::new();
     // Past the version and length tokens.
     let mut i = 2;
     while i < words {
@@ -145,13 +156,7 @@ pub fn typed_views(bytecode: &[u8]) -> Result<Vec<TypedView>> {
         if length == 0 || i + length > words {
             return Err(bad);
         }
-        let dimension = opcode >> 11 & 0x1f;
-        let storage = match opcode & 0x7ff {
-            DCL_RESOURCE if dimension == DIMENSION_BUFFER => Some(false),
-            DCL_UAV_TYPED => Some(true),
-            _ => None,
-        };
-        if let Some(storage) = storage {
+        if matches!(opcode & 0x7ff, DCL_RESOURCE | DCL_UAV_TYPED) {
             // The opcode's extended tokens, the operand and its own, its indices (one immediate in
             // shader model 5.0; the identifier and the range's bounds in 5.1), the return type.
             let mut j = i + 1;
@@ -173,23 +178,54 @@ pub fn typed_views(bytecode: &[u8]) -> Result<Vec<TypedView>> {
                 3 => token(j + 1)?,
                 _ => return Err(bad),
             };
-            let kind = match token(j + indices)? & 0xf {
-                1 | 2 | 5 => FormatKind::Float,
-                3 => FormatKind::Sint,
-                4 => FormatKind::Uint,
-                _ => return Err(bad),
-            };
-            views.push(TypedView {
-                storage,
+            found.push(Declared {
+                opcode: opcode & 0x7ff,
+                dimension: opcode >> 11 & 0x1f,
                 register,
-                buffer: dimension == DIMENSION_BUFFER,
-                kind,
-                through: false,
+                returns: token(j + indices)?,
             });
         }
         i += length;
     }
+    Ok(found)
+}
+
+/// The typed views a DXBC container's program declares.
+pub fn typed_views(bytecode: &[u8]) -> Result<Vec<TypedView>> {
+    let mut views = Vec::new();
+    for d in declarations(bytecode)? {
+        let storage = match d.opcode {
+            DCL_RESOURCE if d.dimension == DIMENSION_BUFFER => false,
+            DCL_UAV_TYPED => true,
+            _ => continue,
+        };
+        let kind = match d.returns & 0xf {
+            1 | 2 | 5 => FormatKind::Float,
+            3 => FormatKind::Sint,
+            4 => FormatKind::Uint,
+            _ => return Err(Error::InvalidArg("malformed DXBC program")),
+        };
+        views.push(TypedView {
+            storage,
+            register: d.register,
+            buffer: d.dimension == DIMENSION_BUFFER,
+            kind,
+            through: false,
+        });
+    }
     Ok(views)
+}
+
+/// The texture slots a DXBC container's program declares as multisampled arrays, a bit each.
+pub fn multisampled_arrays(bytecode: &[u8]) -> Result<u128> {
+    Ok(declarations(bytecode)?
+        .iter()
+        .filter(|d| {
+            d.opcode == DCL_RESOURCE
+                && d.dimension == DIMENSION_TEXTURE2DMSARRAY
+                && d.register < 128
+        })
+        .fold(0, |m, d| m | 1 << d.register))
 }
 
 /// One element of a DXBC container's input or output signature.
@@ -320,13 +356,33 @@ pub struct StageVariant {
     /// Depth is clamped in the programs (`DepthClampInShader`), their added value at this
     /// location; zero where the back end clamps.
     pub linked: u32,
+    /// Texture slots whose bound view reads stencil, which Direct3D gives in the second component
+    /// and the interface's stencil views in the first (`SwizzleInShader`).
+    pub stencil: u128,
+    /// Level and sample counts are read from the helper constants, where the back end cannot
+    /// query them (`TextureInfoInHelpers`).
+    pub texture_info: bool,
 }
+
+/// What a stencil view's components read in Direct3D: the stencil in the second.
+const STENCIL_READ: [ViewComponent; 4] = [
+    ViewComponent::Zero,
+    ViewComponent::R,
+    ViewComponent::Zero,
+    ViewComponent::One,
+];
 
 impl StageVariant {
     /// The shaders crate's key for this variant of a shader of `stage` declaring `typed`, whose
     /// bound views have `formats`.
-    pub fn key(self, stage: SourceStage, typed: &[TypedView], formats: &[Format]) -> VariantKey {
-        let mut key = base_key(stage, typed);
+    pub fn key(
+        self,
+        stage: SourceStage,
+        typed: &[TypedView],
+        layered: u128,
+        formats: &[Format],
+    ) -> VariantKey {
+        let mut key = base_key(stage, typed, layered);
         for (t, &f) in typed.iter().zip(formats) {
             let list = if t.storage {
                 &mut key.storage_formats
@@ -342,12 +398,19 @@ impl StageVariant {
         key.mirror_once_in_shader = self.mirror_once_in_shader;
         key.filter_in_shader = self.filter_in_shader;
         key.min_lod_clamped = self.min_lod_clamped;
+        key.swizzled = (0..128)
+            .filter(|i| self.stencil & (1 << i) != 0)
+            .map(|i| (i, STENCIL_READ))
+            .collect();
         key.samples = self.samples;
         if self.dual_source {
             key.flags |= VariantFlags::DUAL_SOURCE;
         }
         if self.depth_bias {
             key.flags |= VariantFlags::DEPTH_BIAS;
+        }
+        if self.texture_info {
+            key.flags |= VariantFlags::TEXTURE_INFO;
         }
         if self.from_arguments {
             key.draw_base = DrawBaseSource::Arguments;
@@ -416,14 +479,21 @@ pub fn convert(
     bytecode: &[u8],
     expected: SourceStage,
     typed: &mut [TypedView],
+    layered: u128,
+    texture_info: bool,
 ) -> Result<(Converted, bool)> {
     let mut samples = false;
     loop {
         let variant = StageVariant {
             samples: u8::from(samples),
+            texture_info,
             ..StageVariant::default()
         };
-        match raw(bytecode, expected, &variant.key(expected, typed, &[]))? {
+        match raw(
+            bytecode,
+            expected,
+            &variant.key(expected, typed, layered, &[]),
+        )? {
             Err(ConvertError::Unsupported("SampleCount")) if !samples => samples = true,
             Err(ConvertError::Unsupported("StorageImageAtomics"))
                 if typed.iter().any(|t| t.storage && !t.buffer && !t.through) =>
@@ -437,11 +507,13 @@ pub fn convert(
     }
 }
 
-/// The variant every shader of `stage` declaring `typed` is converted as: vertex shaders read the
-/// draw's bases from the helper constants, since `SV_VertexID` and `SV_InstanceID` leave them out
-/// (programs that read neither get no helper block); typed views take their placeholders, typed
-/// buffers read through storage buffers (`TexelBufferAsStorage`).
-pub fn base_key(stage: SourceStage, typed: &[TypedView]) -> VariantKey {
+/// The variant every shader of `stage` declaring `typed` and the multisampled arrays `layered` is
+/// converted as: vertex shaders read the draw's bases from the helper constants, since
+/// `SV_VertexID` and `SV_InstanceID` leave them out (programs that read neither get no helper
+/// block); typed views take their placeholders, typed buffers read through storage buffers
+/// (`TexelBufferAsStorage`); a multisampled array is one layer, the only kind made
+/// (`multisampled_arrays`).
+pub fn base_key(stage: SourceStage, typed: &[TypedView], layered: u128) -> VariantKey {
     let formats = |storage: bool| {
         typed
             .iter()
@@ -465,6 +537,10 @@ pub fn base_key(stage: SourceStage, typed: &[TypedView]) -> VariantKey {
             .iter()
             .filter(|t| t.through && t.register < 64)
             .fold(0, |m, t| m | 1 << t.register),
+        texture_layers: (0..128)
+            .filter(|i| layered & (1 << i) != 0)
+            .map(|i| (i, 1))
+            .collect(),
         ..VariantKey::default()
     }
 }
@@ -586,10 +662,23 @@ fn answer(r: core::result::Result<Converted, ConvertError>, modules: usize) -> R
                         | HelperValue::TexelBufferView { .. }
                         | HelperValue::TexelLayout { .. }
                         | HelperValue::DepthRange
+                        | HelperValue::TextureLevels { .. }
+                        | HelperValue::TextureSamples { .. }
                 )
             }) =>
         {
             not_implemented("shaders that read helper constants the front does not write")
+        }
+        // A program of this kind reset the display driver on the RTX 3080 (Wine's
+        // test_atomic_instructions); refused until its loop is shown to end.
+        Ok(c)
+            if c.reflection
+                .slow_paths
+                .contains(&wcontainers_gpu::SlowPath::AtomicExchangeLoop) =>
+        {
+            not_implemented(
+                "an atomic minimum or maximum of the other signedness (AtomicExchangeLoop)",
+            )
         }
         Ok(c) => Ok(c),
         Err(ConvertError::Rejected(why)) => {
@@ -668,13 +757,14 @@ mod tests {
                 },
             ]
         );
-        let key = base_key(SourceStage::Compute, &views);
+        let key = base_key(SourceStage::Compute, &views, 0);
         assert_eq!(key.storage_formats, [(2, Format::R32Uint)]);
         assert_eq!(key.texel_formats, [(1, Format::Rgba32Float)]);
         assert_eq!(key.texel_buffers, TexelBufferRoute::Storage);
         let bound = StageVariant::default().key(
             SourceStage::Compute,
             &views,
+            0,
             &[Format::Rgba8Uint, Format::Rg16Float],
         );
         assert_eq!(bound.storage_formats, [(2, Format::Rgba8Uint)]);
@@ -685,5 +775,39 @@ mod tests {
     fn truncated_declarations_are_refused() {
         let tokens = [0x0005_0050, 4, 156 | 3 << 11 | 4 << 24, 30 << 12 | 1 << 20];
         assert!(typed_views(&container(&tokens)).is_err());
+    }
+
+    #[test]
+    fn multisampled_arrays_are_one_layer_in_every_key() {
+        let one_index = 1 << 20;
+        let mut tokens = vec![
+            0x0005_0050,
+            0,
+            // dcl_resource_texture2dmsarray(4) (float,float,float,float) t3
+            88 | 9 << 11 | 4 << 16 | 4 << 24,
+            7 << 12 | one_index,
+            3,
+            0x5555,
+            // dcl_resource_texture2dms(4) (float,float,float,float) t1
+            88 | 4 << 11 | 4 << 16 | 4 << 24,
+            7 << 12 | one_index,
+            1,
+            0x5555,
+        ];
+        tokens[1] = tokens.len() as u32;
+        let layered = multisampled_arrays(&container(&tokens)).unwrap();
+        assert_eq!(layered, 1 << 3);
+        let key = StageVariant::default().key(SourceStage::Pixel, &[], layered, &[]);
+        assert_eq!(key.texture_layers, [(3, 1)]);
+    }
+
+    #[test]
+    fn stencil_views_read_in_the_second_component() {
+        let key = StageVariant {
+            stencil: 1 << 2,
+            ..StageVariant::default()
+        }
+        .key(SourceStage::Pixel, &[], 0, &[]);
+        assert_eq!(key.swizzled, [(2, STENCIL_READ)]);
     }
 }

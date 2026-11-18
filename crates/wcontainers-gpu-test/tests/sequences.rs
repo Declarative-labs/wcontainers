@@ -36,8 +36,8 @@ fn random_sequences_record_and_replay_identically() {
     // Multisampled passes, depth-stencil passes, indexed draws, queries, scissored draws, tinted
     // draws, no-overwrite buffer writes made without waiting first, and texture writes that
     // discard, and that do not overwrite without waiting first; dispatches, vertex captures and
-    // timestamps.
-    let seen = Cell::new([0usize; 12]);
+    // timestamps; copies within one subresource.
+    let seen = Cell::new([0usize; 13]);
     let result = runner.run(&sequence::steps(40), |steps| {
         ran.set(ran.get() + 1);
         let mut r = Recorder::new();
@@ -85,6 +85,7 @@ fn random_sequences_record_and_replay_identically() {
                 Call::Dispatch(..) => 9,
                 Call::CaptureVertices(..) => 10,
                 Call::WriteTimestamp(..) => 11,
+                Call::CopyTexture(s, d, _) if (s.0, s.1, s.2) == (d.0, d.1, d.2) => 12,
                 Call::WriteTexture(.., WriteMode::NoOverwrite)
                     if !matches!(r.calls.get(i.wrapping_sub(1)), Some(Call::WaitFence(_))) =>
                 {
@@ -121,7 +122,7 @@ fn random_sequences_record_and_replay_identically() {
          {} depth-stencil passes, {} indexed draws, {} queries, {} scissored draws, {} tinted \
          draws, {} no-overwrite writes without a wait, {} discarding texture writes, {} \
          no-overwrite texture writes without a wait, {} dispatches, {} vertex captures, {} \
-         timestamps",
+         timestamps, {} copies within one subresource",
         cases,
         ran.get(),
         calls.get(),
@@ -136,7 +137,8 @@ fn random_sequences_record_and_replay_identically() {
         n[8],
         n[9],
         n[10],
-        n[11]
+        n[11],
+        n[12]
     );
     result.unwrap();
 }

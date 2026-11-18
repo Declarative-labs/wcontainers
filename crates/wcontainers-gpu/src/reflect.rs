@@ -650,20 +650,62 @@ mod tests {
     }
 
     #[test]
-    fn helper_blocks_of_the_two_draw_stages_never_share_a_binding() {
-        let vertex = helper_binding(ShaderStage::Vertex);
-        let fragment = helper_binding(ShaderStage::Fragment);
-        assert_ne!(vertex, fragment);
-        let targets = TARGET_COPY_BINDING..TARGET_COPY_BINDING + crate::MAX_COLOR_TARGETS as u32;
-        let others = [
-            EARLY_DEPTH_BINDING,
-            EARLY_STENCIL_BINDING,
-            DRAW_ARGUMENTS_BINDING,
+    fn a_bindings_slot_is_its_place_in_its_kinds_range() {
+        let kinds = [
+            SlotKind::Uniform,
+            SlotKind::Sampler,
+            SlotKind::Texture,
+            SlotKind::Storage,
+            SlotKind::Counter,
         ];
-        for b in [vertex, fragment] {
-            assert!(!targets.contains(&b));
-            assert!(!others.contains(&b));
-            assert!(b < CLAMPED_SAMPLER_BINDING);
+        for kind in kinds {
+            for slot in 0..kind.slots() {
+                let b = ReflectedBinding {
+                    kind,
+                    space: 0,
+                    register: 0,
+                    count: 1,
+                    set: 1,
+                    binding: kind.binding(slot).unwrap(),
+                    added: None,
+                };
+                assert_eq!(b.slot(), slot, "{kind:?}");
+            }
+            assert_eq!(kind.binding(kind.slots()), None, "{kind:?}");
+        }
+        // The ranges follow one another, and a counter has the number of its storage slot.
+        for pair in kinds.windows(2) {
+            assert_eq!(
+                pair[0].first_binding() + pair[0].slots(),
+                pair[1].first_binding(),
+                "{pair:?}"
+            );
+        }
+        assert_eq!(SlotKind::Counter.slots(), SlotKind::Storage.slots());
+    }
+
+    /// Every binding of the helper set, each a single one or a range from its base (the clamped
+    /// samplers' open-ended), meets no other.
+    #[test]
+    fn helper_set_bindings_never_meet() {
+        let pairs = u32::MAX - CLAMPED_SAMPLER_BINDING;
+        let ranges = [
+            (helper_binding(ShaderStage::Vertex), 1),
+            (helper_binding(ShaderStage::Fragment), 1),
+            (TARGET_COPY_BINDING, crate::MAX_COLOR_TARGETS as u32),
+            (EARLY_DEPTH_BINDING, 1),
+            (EARLY_STENCIL_BINDING, 1),
+            (DRAW_ARGUMENTS_BINDING, 1),
+            (DOMAIN_PATCHES_BINDING, 1),
+            (DOMAIN_POINTS_BINDING, 1),
+            (COUNTER_BINDING, 1),
+            (CLAMPED_SAMPLER_BINDING, pairs),
+        ];
+        assert_eq!(helper_binding(ShaderStage::Compute), ranges[0].0);
+        for (i, &(a, n)) in ranges.iter().enumerate() {
+            for &(b, m) in &ranges[i + 1..] {
+                assert!(a + n <= b || b + m <= a, "{a}+{n} meets {b}+{m}");
+            }
         }
     }
 }

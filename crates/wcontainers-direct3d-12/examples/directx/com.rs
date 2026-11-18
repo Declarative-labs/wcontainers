@@ -12,6 +12,41 @@ use crate::base::HasBase;
 use crate::objects::*;
 use crate::present::*;
 
+impl IDXGIFactory7_Impl for Factory_Impl {
+    fn RegisterAdaptersChangedEvent(
+        &self,
+        hevent: windows::Win32::Foundation::HANDLE,
+    ) -> windows_core::Result<u32> {
+        Factory::RegisterAdaptersChangedEvent(self, hevent)
+    }
+    fn UnregisterAdaptersChangedEvent(&self, dwcookie: u32) -> windows_core::Result<()> {
+        Factory::UnregisterAdaptersChangedEvent(self, dwcookie)
+    }
+}
+
+impl IDXGIFactory6_Impl for Factory_Impl {
+    fn EnumAdapterByGpuPreference(
+        &self,
+        adapter: u32,
+        gpupreference: DXGI_GPU_PREFERENCE,
+        riid: *const windows_core::GUID,
+        ppvadapter: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Factory::EnumAdapterByGpuPreference(self, adapter, gpupreference, riid, ppvadapter)
+    }
+}
+
+impl IDXGIFactory5_Impl for Factory_Impl {
+    fn CheckFeatureSupport(
+        &self,
+        feature: DXGI_FEATURE,
+        pfeaturesupportdata: *mut core::ffi::c_void,
+        featuresupportdatasize: u32,
+    ) -> windows_core::Result<()> {
+        Factory::CheckFeatureSupport(self, feature, pfeaturesupportdata, featuresupportdatasize)
+    }
+}
+
 impl IDXGIFactory4_Impl for Factory_Impl {
     fn EnumAdapterByLuid(
         &self,
@@ -1600,6 +1635,30 @@ impl ID3D12Object_Impl for Allocator_Impl {
     }
 }
 
+impl ID3D12GraphicsCommandList6_Impl for List_Impl {
+    fn DispatchMesh(
+        &self,
+        _threadgroupcountx: u32,
+        _threadgroupcounty: u32,
+        _threadgroupcountz: u32,
+    ) {
+        self.unsupported("DispatchMesh");
+    }
+}
+
+impl ID3D12GraphicsCommandList5_Impl for List_Impl {
+    fn RSSetShadingRate(
+        &self,
+        _baseshadingrate: D3D12_SHADING_RATE,
+        _combiners: *const D3D12_SHADING_RATE_COMBINER,
+    ) {
+        self.unsupported("RSSetShadingRate");
+    }
+    fn RSSetShadingRateImage(&self, _shadingrateimage: windows_core::Ref<ID3D12Resource>) {
+        self.unsupported("RSSetShadingRateImage");
+    }
+}
+
 impl ID3D12GraphicsCommandList4_Impl for List_Impl {
     fn BeginRenderPass(
         &self,
@@ -2196,6 +2255,12 @@ impl ID3D12Object_Impl for List_Impl {
     }
     fn SetName(&self, name: &windows_core::PCWSTR) -> windows_core::Result<()> {
         self.base().SetName(name)
+    }
+}
+
+impl ID3D12Fence1_Impl for Fence_Impl {
+    fn GetCreationFlags(&self) -> D3D12_FENCE_FLAGS {
+        Fence::GetCreationFlags(self)
     }
 }
 
