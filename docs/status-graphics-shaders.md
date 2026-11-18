@@ -366,15 +366,34 @@ Run 12 (variants):
   byte for byte as committed.
 - Drawn (`tests/variant_draw.rs`): against real Direct3D 11 with `SetResourceMinLOD` on a 4-level
   texture made with `RESOURCE_CLAMP` (numbers under Measurements).
+- Clip distances natively (the reference the `CLIP_DISTANCE` variant needs, and what real programs
+  with `SV_ClipDistance` need where the back end has them): a vertex program's clip distances are the
+  common form's `@builtin(clip_distances)` array on both routes (DXBC in `lower.rs`, refused before
+  as `ClipDistance`; DXIL already read by naga, now reflected as `SystemValue::ClipDistance`), and
+  the module is validated with naga's `CLIP_DISTANCES`. `capabilities(module)` (public) gives the
+  capabilities a module needs, WebGPU's core ones plus dual-source blending and clip distances where
+  it uses them; `convert` and the corpus test validate with it. Cull distances and clip distances
+  read by a pixel shader stay refused by name (`CullDistance`, `ClipDistance`).
+- Carried naga: the GLSL writer enables `GL_ANGLE_clip_cull_distance` (WebGL's
+  WEBGL_clip_cull_distance) for WebGL programs instead of `GL_EXT_clip_cull_distance`, which
+  Chrome's WebGL 2 refuses.
+- New own shader `vs_clip` (`vs_transform` with two clip distances), fxc and dxc; drawn natively
+  on wgpu's Vulkan path (its Direct3D 12 path has no clip distances, wgpu issue 6236) against real
+  Direct3D 11. The shared harness gained `webgpu_on(backends)`.
 
 Next (in order):
 - The rest of the variants (the list above), each with a drawn test as run 10's:
-- Depth clamp and clip distances pass new values from the vertex to the pixel program, which are
-  converted apart: they need one rule for where those values live that both stages know (the pixel
-  program does not know the vertex program's registers). Decide it first (a fixed place, or a
-  variant field the front fills from the other stage's reflection, as `output_interpolation` does);
-  an interface change if a field. Test against WebGPU's native clip distances (wgpu's
-  `CLIP_DISTANCES`) and Direct3D 11's depth clip off.
+- `CLIP_DISTANCE` and `DEPTH_CLAMP` pass new values from the vertex to the pixel program, which are
+  converted apart, so the pixel program must be told where they arrive: a variant field the front
+  fills from the vertex program's reflection, as `output_interpolation` does (an interface change).
+  Proposed, one field for both: `linked: (u32, u8)`, the first location neither stage uses and the
+  vertex program's clip distance count; the vertex program writes its distances there as
+  `(count + 3) / 4` four-component perspective values (unused components zero), then the unclamped
+  z, and the pixel program reads them there. The vertex side is `Wrapped` replacing the
+  `clip_distances` output; the pixel side a `Wrapped` prologue reading added inputs (as depth bias
+  does) and discarding where any distance is negative (multisampled targets: refuse by name until
+  the per-sample mask is built). Test: `vs_clip` with the variant on WebGPU (Direct3D 12 path) and
+  WebGL 2 against run 12's native picture; depth clamp against Direct3D 11 with depth clip off.
 - Then filtering, border and mirror-once in the program, decoded textures
   and targets written in the program, pulled vertices, constants through a texture, typed buffers
   and storage formats (after the storage image and typed buffer support they need), early tests,
@@ -437,6 +456,11 @@ let reflection = &converted.reflection;
   view's numbering) at `CLAMPED_SAMPLER_BINDING` + n in set 3; write `MinLod { texture }` as (the
   clamp's f32 bits, the view's level count). A clamped texture that is compared is refused
   (`MinLodOnComparison`).
+- Clip distances: a vertex program writing `SV_ClipDistance` converts to a module with
+  `@builtin(clip_distances)`, which needs the back end's `Features::CLIP_DISTANCE` (wgpu's
+  `CLIP_DISTANCES`; WebGL's WEBGL_clip_cull_distance); without it the front asks for the
+  `CLIP_DISTANCE` variant (not built yet, refused by name). `wcontainers_shaders::capabilities(module)`
+  gives what a module needs beyond WebGPU's core.
 - `DEPTH_BIAS` writes the depth itself, so the front draws with the raster block's bias at zero and
   without early depth tests for those draws.
 - `draw_base: Arguments` reads the bases from the indirect argument buffer, bound read-only (storage)
@@ -515,7 +539,19 @@ Run 12, 2026-11-17, counts only:
   0.5, 1 and 3.5 on WebGPU: 0 of 4096 texels differ in every case (allowance 1). Each clamp past the
   first changes Direct3D's picture (1.5: 2162 texels, 3: 2530, 3.5: 2442; gather 1 and 3.5: 2071).
   Every earlier comparison of the file as in run 11. Windows clippy with warnings denied passes.
-- Laptop (i7-8750H): the suite with every corpus (`--skip mutated`) passes after recording the four
+- Clip distances natively (`run12/draw4.log`): `vs_clip` with `ps_textured` on wgpu's Vulkan path,
+  0 of 4096 texels differ from Direct3D 11 by both routes (allowance 0); the planes change 1071 of
+  Direct3D's texels. Every other comparison of the file as before (68 exact comparisons in the log).
+- Chrome 157 (`web/check`, one GPU job, about 3 s, own corpora only, `run12/chrome2.log`): WGSL own
+  33 of 33, own DXIL 20 of 20 (`vs_clip` with `enable clip_distances` included); GLSL ES own 26 of
+  30, own DXIL 17 of 18: `vs_clip` compiles after the naga change (before it, both builds failed on
+  the extension's name), `ps_minlod` compiles, the failures are bitfield operations and
+  `textureGather` (`ps_mingather`). The other corpora were not re-run: their verdicts did not
+  change.
+- Laptop (i7-8750H, load average 0.4 to 3): the suite with every corpus (`--skip mutated`) passes
+  after recording the new own verdicts (`vs_clip` converts; glslang 8.13 knows neither clip
+  distance extension, so its GLSL ES verdict is a glslang failure), every other verdict unchanged,
+  so no corpus or real program shader used clip distances. Earlier in the run, after recording the four
   new own verdicts (`ps_minlod` converts and compiles as GLSL ES; `ps_mingather`'s GLSL ES has
   `textureGather`, which ES 3.00 lacks); every other verdict unchanged. Clippy with warnings denied
   passes.
@@ -824,6 +860,9 @@ the tree as published"), plus these changes, each a later commit touching only `
 - SPIR-V reader (run 10), an `OpUndef` in a function ends the running Emit range before its zero value
   (a zero value is never emitted); a texel coordinate's vector type of another scalar kind is made
   where the reader needs it, instead of panicking that it should exist.
+- GLSL writer (run 12), WebGL programs with clip or cull distances enable
+  `GL_ANGLE_clip_cull_distance` (WEBGL_clip_cull_distance's name) instead of
+  `GL_EXT_clip_cull_distance`.
 - GLSL writer (run 8), fine derivatives need `Features::DERIVATIVE_CONTROL` (GLSL 4.50, not ES)
   instead of being written as the plain functions.
 Not yet sent upstream: that needs a GitHub account and fork the owner chooses, which this track does
@@ -1003,6 +1042,8 @@ were already there.
   not know. Drawn only on RGBA8.
 - `DEPTH_BIAS` leaves a depth the program writes as it is; that Direct3D does not bias a written
   depth is expected (as Vulkan defines it), not measured.
+- wgpu's Direct3D 12 path has no clip distances (wgpu issue 6236), so natively on Windows the
+  WebGPU back end refuses programs with them unless made on Vulkan; Chrome's WebGPU compiles them.
 - `draw_base: Arguments` serves WebGPU only: WebGL 2 has no storage buffers to read the arguments
   from (nor indirect draws; its front reads them back and draws directly with `Helpers`).
 
