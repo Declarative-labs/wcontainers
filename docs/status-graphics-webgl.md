@@ -1361,7 +1361,10 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   with LLVM exception), which mozangle's bindgen needs to build ANGLE.
 - C:\wc\tools\angle-mozangle-0.7.1: libEGL.dll and libGLESv2.dll (7.1 MB), built by angle\build.cmd.
 - The mozangle build's objects in C:\wc\target\phase-2-graphics-webgl\release (the unpatched build of
-  runs 1 to 4, now unused) and C:\wc\target\phase-2-graphics-webgl\angle-patched (run 5).
+  runs 1 to 4, about 200 MB) and C:\wc\target\phase-2-graphics-webgl\angle-patched (run 5, 403 MB)
+  were deleted in run 13; angle\build.cmd makes the second again (about 4 m 30 s). The track's
+  build directory C:\wc\target\phase-2-graphics-webgl (debug 14 GB, wasm32 5.4 GB, release 0.4 GB
+  on 2026-11-17) stays: every run builds into it. C: had 412 GB free.
 - C:\wc\tools\mozangle-0.7.1-patched (run 5): the mozangle crate's sources, unpacked and patched by
   angle\build.cmd. Its size was not measured.
 - Left by the independent check of the first run (not ours to remove without asking): the pictures
