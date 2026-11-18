@@ -23,6 +23,8 @@ pub(super) struct StageBinding {
     form: Form,
     /// Textures: the shape a null view of it takes.
     shape: Option<null::Shape>,
+    /// Textures read by comparison, which the back end samples only in depth formats.
+    compared: bool,
 }
 
 /// The null texture shapes `bindings` may read, and whether each is written.
@@ -60,8 +62,16 @@ pub(super) fn stage_bindings(c: &Converted, stages: StageSet) -> Vec<StageBindin
                     .is_some_and(|r| (r.group, r.binding) == (b.set, b.binding))
             });
             let (mut declared, mut form, mut shape) = (0, Form::Plain, None);
+            let mut compared = false;
             if let Some((_, v)) = global {
                 shape = null::shape(&module.types[v.ty].inner);
+                compared = matches!(
+                    module.types[v.ty].inner,
+                    naga::TypeInner::Image {
+                        class: naga::ImageClass::Depth { .. },
+                        ..
+                    }
+                );
                 match (v.space, &module.types[v.ty].inner) {
                     (naga::AddressSpace::Uniform, ty) => {
                         declared = u64::from(ty.size(module.to_ctx()));
@@ -91,6 +101,7 @@ pub(super) fn stage_bindings(c: &Converted, stages: StageSet) -> Vec<StageBindin
                 declared,
                 form,
                 shape,
+                compared,
             }
         })
         .collect()
@@ -377,7 +388,7 @@ impl<B: Backend> Device<B> {
                             self.buffer_view(&v, false)?
                         }
                         (SlotKind::Texture, Descriptor::ShaderResource(v)) => {
-                            Held::Texture(self.shader_resource(&v)?)
+                            Held::Texture(self.shader_resource(&v, b.compared)?)
                         }
                         (SlotKind::Storage, Descriptor::UnorderedAccess(v)) => match b.form {
                             Form::Buffer { writable } => self.buffer_view(&v, writable)?,
@@ -556,8 +567,13 @@ impl<B: Backend> Device<B> {
         )
     }
 
-    /// The texture view a shader resource view names.
-    fn shader_resource(&mut self, v: &ResourceView) -> Result<B::TextureView, Error> {
+    /// The texture view a shader resource view names; `compared` for a program reading it by
+    /// comparison.
+    fn shader_resource(
+        &mut self,
+        v: &ResourceView,
+        compared: bool,
+    ) -> Result<B::TextureView, Error> {
         if v.mapping != 0x1688 {
             return Err(Error::NotImplemented(
                 "component mappings other than identity",
@@ -573,6 +589,11 @@ impl<B: Backend> Device<B> {
             }) => (*desc, desc.mip_levels),
             _ => return Err(Error::NotImplemented("buffers read through views")),
         };
+        if compared && !texture_desc.format.is_depth_stencil() {
+            return Err(Error::NotImplemented(
+                "comparison sampling of a texture not stored in a depth format",
+            ));
+        }
         let (dimension, arrayed) = match v.dimension {
             4 | 6 => (ViewDimension::D2, false),
             5 | 7 => (ViewDimension::D2Array, true),
