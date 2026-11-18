@@ -1982,6 +1982,7 @@ dependencies = [
  "object 0.41.0",
  "rayon",
  "rustix",
+ "toml_edit",
  "wasm-encoder 0.263.0",
  "wasmtime",
  "wcontainers-abi",

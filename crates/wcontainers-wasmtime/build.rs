@@ -3,11 +3,10 @@
 
 use std::path::{Path, PathBuf};
 
-/// The crates whose sources decide the emitted code.
-const CRATES: [&str; 4] = [
+/// The translator and what every guest stands on.
+const BASE: [&str; 3] = [
     "wcontainers-translator",
     "wcontainers-guest-cpu",
-    "wcontainers-arm64",
     "wcontainers-abi",
 ];
 
@@ -25,12 +24,55 @@ fn files(directory: &Path, into: &mut Vec<PathBuf>) {
     }
 }
 
+/// The names of a workspace crate's normal dependencies.
+fn dependencies(manifest: &Path) -> Vec<String> {
+    let text = std::fs::read_to_string(manifest).expect("a crate manifest");
+    let document: toml_edit::DocumentMut = text.parse().expect("a crate manifest parses");
+    document
+        .get("dependencies")
+        .and_then(|item| item.as_table_like())
+        .map(|table| table.iter().map(|(name, _)| name.to_owned()).collect())
+        .unwrap_or_default()
+}
+
+/// Every guest of the workspace: a crate built on the guest interface that the translator does not
+/// stand on and that does not stand on the translator.
+fn guests(crates: &Path) -> Vec<String> {
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(crates)
+        .expect("the crates directory")
+        .flatten()
+    {
+        let manifest = entry.path().join("Cargo.toml");
+        if !manifest.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let needs = dependencies(&manifest);
+        let has = |name: &str| needs.iter().any(|n| n == name);
+        if !BASE.contains(&name.as_str())
+            && has("wcontainers-guest-cpu")
+            && !has("wcontainers-translator")
+        {
+            names.push(name);
+        }
+    }
+    names.sort();
+    names
+}
+
 fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets it"));
     let crates = manifest.parent().expect("the crates directory");
+    // A crate added or removed changes the guests.
+    println!("cargo:rerun-if-changed={}", crates.display());
     let mut hasher = blake3::Hasher::new();
-    for name in CRATES {
-        let root = crates.join(name);
+    let names = BASE
+        .iter()
+        .map(|name| (*name).to_owned())
+        .chain(guests(crates));
+    for name in names {
+        let root = crates.join(&name);
         let mut paths = vec![root.join("Cargo.toml")];
         files(&root.join("src"), &mut paths);
         paths.sort();
