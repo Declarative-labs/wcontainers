@@ -19,14 +19,19 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
 - The kernel test crate changed in J3 only in the merge's settled conflicts (driver.rs, standin.rs, and
   layer1.rs's call of the driver's `back_end`; db247ebf) and in one line each of driver.rs and standin.rs for
   the free kind of `Turn` (5d86b31d, with the runtime crate, since neither builds alone).
-- Next: J4 (plan section 16), which starts once the translator emits the guest-defined progress count.
+- J4a run 1 (2026-11-18): the six open findings of J3's last check are settled first (their section below);
+  origin/phase-1 had nothing new to merge (still 2edbc451). Then J4a, as the orchestrator split J4: its bar is
+  run (section "J4a run 1" below). Plan section 16's J4 is corrected to J4a and J4b.
+- Waiting on the owner, as ruled: J4b (equal counts across look-ahead settings and on the stand-in), the
+  stand-in's count and the loop's count of the kernel's changes of pc (the orchestrator confirmed these wait
+  for the progress unit); standard input, output and the terminal (the kernel track builds them on the
+  general stream the owner is settling; nothing of input is built here, and `process.terminal` and
+  `process.consoleSize` stay refused by name).
+- The kernel test crate changed in J4a only by one new test file, tests/repeats.rs (5492ba0a, its own
+  commit). The driver did not change.
+- J4a is complete: its bar passes at full, none and bounded (below). Next: J5 (plan section 16).
 
 ## For the orchestrator
-
-- The loop's count of the kernel's changes of pc (plan section 16 J2, first bullet) is not built, with the
-  stand-in's count of the guest's own transfers, because either changes the stand-in's unit and so its
-  results. The brief exempts only the stand-in's count. Whether the loop's count may wait for the owner's
-  ruling on the progress unit too is yours or the owner's to confirm (J2 run 5's check, its fourth finding).
 
 - Disk: the kernel test crate's file backend helper (crates/wcontainers-kernel-test/src/backend.rs, the
   kernel track's code) writes one image tar of about 8.4 MB per backend into
@@ -35,9 +40,34 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   this track's build directory 2,693 had piled up (26 GB, 2026-11-17 to 07:09 on 2026-11-18). J3 run 2
   deleted them. Worth telling the kernel track (other checkouts run the same tests).
 
+## For the translator track
+
+Measured in J4a run 1 (this Mac, load 89.8 to 88.1; scratch j4/slowpaths: awk.log, the scratch patch
+per-detail.patch that counts every slow path by its detail, applied to a scratch worktree of 42554935 and
+removed; the command line program, release, look-ahead full, alpine:3.22's busybox from a plain tar). The
+detail of "jump through a register not recognised" is the jump's target (translator full.rs
+`unrecognised_jump`). Nothing in the translator was changed.
+- `seq 1 100000 | awk '{s+=$1} END {print s}'`: 5,306,710 times, 70 targets, 7.60 s.
+- `awk 'BEGIN {for (i = 0; i < 100000; i++) s += length(sprintf("%d", i)); print s}'`: 8,601,492 times, 56
+  targets, 7.05 s.
+- `seq 1 20000 | awk '{a[$1 % 97] = a[$1 % 97] $1} END {...}'`: 2,621,218 times, 77 targets.
+- The targets that account for most of it are the entries of musl's functions in ld-musl-aarch64.so.1
+  (mapped at 0xf6f3d000, from /proc/self/maps; symbols by `nm -D`), reached from busybox's calls through
+  its procedure linkage table: in the first command `free` (0xf6f6573c) 2,300,049, `malloc` (0xf6f65834)
+  800,091, `memset` (0xf6f555a0) 600,090, `strlen` (0xf6f9bc00) 200,110, `strndup` (0xf6f9bdd0) 200,000,
+  `strchr` 101,301, `strcpy` 100,054, `strtod` 100,003, `fileno` 100,001; in the second `free` 4,000,060,
+  `malloc` 1,300,109, `memset` 1,100,100, `strlen` 300,090. Busybox's own targets come next (0xaa091548,
+  offset 0x91548 of /bin/busybox, 200,001 and 600,005 times). The targets being function entries of another
+  module suggests (not checked instruction by instruction) that the slow path is mostly busybox's
+  procedure linkage stubs, which load the entry and jump through a register.
+
 ## Asked of the kernel track
 
-Standard input (the brief: settle before J3 fixes the input and output surface). Today the first process has
+Standard input: by the orchestrator's ruling of 2026-11-18 the owner is settling one general way for a stream
+to leave a kernel (an end outside carrying data, a window for flow control, and closed), and the kernel track
+builds standard input, output and the terminal on it. The request below is kept as the record of what was
+asked; it is not an interim design. What was asked (the brief: settle before J3 fixes the input and output
+surface): Today the first process has
 /dev/null as descriptor 0, `wcontainers_abi::Event::TerminalInput` exists but the kernel counts it as
 unexpected (kernel lib.rs `event`), and `Host` has only `output`. To give a container standard input the
 runtime needs, in the kernel and the abi:
@@ -59,6 +89,94 @@ the capability sets, the resource limits, no_new_privs, a seccomp filter, sysctl
 leave a default mount out), the domain name, and the per-process values (`oomScoreAdj`, `ioPriority`,
 `scheduler`, `execCPUAffinity`, `personality`, `timeOffsets`); and the address-space size and the memory
 size the guest is told (plan section 8), which `Machine` holds once the kernel takes them.
+
+## Open findings of J3's last check, and how each was settled (J4a run 1)
+
+- Mounts checked as a set (minor): fixed (d33aa0a5). The list must be the kernel's six once each in the
+  kernel's order; the first `mounts[n]` that differs is refused, naming the order and what another order or a
+  repeat would take (the kernel taking its mounts at start). A list lacking one is still refused at `mounts`.
+  Tests: refused.rs `kernel_mounts_in_another_order` (`mounts[1]`) and `a_kernel_mount_repeated`
+  (`mounts[6]`); surface.rs `the_guest_sees_the_honoured_values` now also checks that `/proc/mounts` lists them
+  in the configuration's order.
+- A program not in PATH ran from the working directory (minor): fixed. A name with no slash found in no
+  directory of `PATH` makes no container: `Error::NotFound(name)`, shown as runc words it ("executable file
+  not found in $PATH"); the command line program exits 127 for it, as Docker does. A path with a slash still
+  goes to the kernel. Tests: surface.rs `a_program_not_in_the_path_is_not_found` (the check's case: `PATH=/nonexistent`,
+  cwd `/bin`, `ls`; and Docker exits 127), the unit test `programs_are_found_through_path_and_links`.
+- No /etc/resolv.conf from an OCI image (minor): fixed. At start the root gets the files Docker writes over
+  its mounts in every container, from either form of image: `/etc/hostname` (the host name), `/etc/hosts` (as
+  Docker writes it, the kernel's made-up address for the host name), `/etc/resolv.conf` (the kernel's name
+  server, 127.0.0.11), mode 0644, root's, dated 0; `/etc` is made when the image has none. Not `/.dockerenv`
+  (Departures). Test: surface.rs `dockers_files_are_written_from_either_image` (mode, the host name file
+  equal to `uname -n`, the hosts file's last line naming it, a name server line; the same as `docker run`
+  from the OCI image and the plain tar).
+- An empty host name (minor): taken as none, as runc does, so the guest sees `localhost`. Test: surface.rs
+  `an_empty_host_name_is_localhost`.
+- The surface tests ran at full only (minor): fixed (42554935). They read `LOOK_AHEAD` as the kernel tests do;
+  bounded draws N from `LOOK_AHEAD_SEED` alone (blake3 of it, 1 to 64; 50 for the default 0), and the command
+  line program is given the same `--look-ahead`. All 13 pass at none (229.9 s, load 107.0 to 117.6;
+  scratch j4/surface-none.log) and bounded 50 (164.3 s, load 117.6 to 101.3; surface-bounded.log); full in
+  the whole suite below.
+- `Container::step` and `Container::idle` untested (minor): surface.rs `a_container_is_stepped_from_the_callers_loop`
+  drives the check's command with a step and idle loop, at least one idle step, the reference's output and
+  status 4 (full: 31 steps, 1 idle; none 33 and 1; bounded 50: 67 and 1).
+
+## J4a run 1 (2026-11-18; this Mac, Apple M5 Max, 18 cores; other tracks running, load 47 to 140)
+
+Built: nothing new was needed in the back end or the loop for J4a's tests: threads, futexes, timers and
+free turns were in place from J1 to J3, and J4a's bar passed at 68013b31 before any change of this run (scratch
+j4/first-full.log, first-none.log, first-bounded.log: 31 passed at each, 213.0 s, 319.3 s and 546.4 s, load
+47.7 to 103.1). Added:
+- The kernel test crate's tests/repeats.rs (5492ba0a, its own commit): `threads` and `futexes` under each seed
+  of `schedule_seeds`, and `threads` with 3 saves, each run `REPEAT_RUNS` times (2 if unset) and compared whole:
+  output, the kernel's warnings, the CPU side's warnings, counters, saves and the turn count. It prints each
+  seed's turn count and a fingerprint.
+- surface.rs `a_threaded_program_matches_the_reference` (42554935), with tests/programs/threaded.c built by zig:
+  four threads taking turns in order through a mutex and a condition variable (200 turns) and adding 20,000
+  each under the mutex; a thread that spins with no system call until the main thread, back from a 5 ms
+  sleep, sets a flag (only the outside's timer ends its free turn); a POSIX timer signal sent to one chosen
+  thread (`SIGEV_THREAD_ID`) waiting in `sigsuspend`, while the main thread spins with the signal unblocked;
+  then one thread calls `exit(3)` while another waits in `read` on a pipe and the main thread in
+  `pthread_join`. Run in free turns through the public surface from the plain tar with the program added, and
+  compared with `docker run` of the same binary (output and status 3). Passes at full, none and bounded 50.
+
+Repeats (scratch j4/repeats.sh NAME LOOK RUNS):
+- full, 10 runs per seed, seeds 1 to 3: all identical (52.6 s, load 93.6 to 112.5; repeats-full-10.log;
+  threads 463 turns for each seed, 463 to 465 with saves; futexes 353).
+- none, 3 runs: identical (20.7 s, load 112.5 to 103.1; repeats-none-3.log). bounded, 3 runs (N 11, 4 and 10
+  for seeds 1 to 3): identical (28.8 s, load 103.1 to 113.6; repeats-bounded-3.log).
+- The stand-in, 3 runs: identical (42.6 s, load 113.6 to 101.2; repeats-standin-3.log).
+- Turn counts are compared only within one setting. They happen to be equal or close across settings here
+  (futexes seed 1: 353 at full, 356 at none), which J4b would make a rule.
+
+J4a's bar at fc43c6fc (the code of every change of this run; scratch j4/bars.sh final --nocapture, logs
+final-full.log, final-none.log, final-bounded.log): the 11 tests named, the whole of shell
+(`runs_repeat_for_a_seed` among its 3) and repeats.rs, 34 tests in all, pass at each look-ahead:
+- full: 34 passed, 0 failed, 411.3 s with its build (load 91.4 to 78.6);
+- none: 34 passed, 237.4 s (load 78.6 to 56.3);
+- bounded: 34 passed, 315.8 s (load 56.3 to 61.9); N drawn from each run's seed (60 for seed 0, 11, 4 and
+  10 for seeds 1 to 3, 13, 7 and 51 for the shell's seeds 7 to 9).
+The surface's threaded program at full is in the whole suite of what this track owns at fc43c6fc (scratch
+j4/owned-final.log; 52.6 s with its build, load 61.1 to 88.4): runtime 7 unit; back end 3 unit, cache 3,
+code 4, faults 2, fork 5, refused 72, surface 13 (and the cache run's child, ignored when run alone), turns
+5, views 6: 120 passed, 0 failed. Its cache pair: first 8.07 s (both ranges and 98 pieces made), second
+0.77 s (both ranges and 94 pieces from disk, 21 made).
+
+The CPU side's warnings per test file at full (final-full.log by j2/scripts/warnings.py --targets; scratch
+j4/final-warnings-full.txt; repeats.rs's lines run its programs 18 times):
+- clocks: 1 runs; continued after stack loss 13, jump through a register not recognised 1064, left run: the call waits 12, left run: the container finished 1, progress counted by stop checks 13, translated at run time 6
+- cpulimit: 1 runs; continued after stack loss 10, jump through a register not recognised 21, left run: another thread runs 4, left run: new registers 2, left run: the container finished 1, progress counted by stop checks 7, translated at run time 21
+- cputime: 1 runs; continued after stack loss 8, jump through a register not recognised 57222, left run: the call waits 3, left run: the container finished 1, loop not proven 9, progress counted by stop checks 4, translated at run time 23
+- deadlines: 1 runs; continued after stack loss 79, jump through a register not recognised 85, left run: another thread runs 47, left run: the container finished 1, loop not proven 9, progress counted by stop checks 48, translated at run time 102
+- lockwaits: 1 runs; continued after stack loss 223, jump through a register not recognised 175, left run: another thread runs 70, left run: new registers 3, left run: the call waits 22, left run: the container finished 1, progress counted by stop checks 96, translated at run time 184
+- priorities: 1 runs; continued after stack loss 27, jump through a register not recognised 237, left run: another thread runs 12, left run: the container finished 1, progress counted by stop checks 13, translated at run time 55
+- repeats: 18 runs; continued after stack loss 5614, first write to a shared page 72, jump through a register not recognised 4140, left run: another thread runs 2702, left run: new registers 30, left run: the call waits 250, left run: the container finished 18, left run: the outside asked 18, left to an address 12, loop not proven 144, memory fault 6, progress counted by stop checks 3024, translated at run time 1702
+- rseqabort: 4 runs; continued after stack loss 27, jump through a register not recognised 72, left run: another thread runs 12, left run: new registers 8, left run: the container finished 4, memory fault 1, progress counted by stop checks 25, translated at run time 53
+- schedattr: 1 runs; continued after stack loss 5, jump through a register not recognised 950, left run: another thread runs 2, left run: the container finished 1, loop not proven 552, progress counted by stop checks 3, translated at run time 27
+- shell: 38 runs; continued after stack loss 6733, exact floating point requested 2, jump through a register not recognised 2445894, left run: another thread runs 1700, left run: new registers 118, left run: the call waits 191, left run: the container finished 38, left to an address 38, loop not proven 1109231, memory fault 1106, progress counted by stop checks 3153, translated at run time 4890
+- threads: 39 runs; continued after stack loss 5225, first write to a shared page 54, jump through a register not recognised 8391, left run: another thread runs 2477, left run: new registers 39, left run: the call waits 256, left run: the container finished 39, left run: the outside asked 50, left to an address 9, loop not proven 9375, memory fault 27, progress counted by stop checks 2888, translated at run time 2916
+- timers: 12 runs; continued after stack loss 922, jump through a register not recognised 1737, left run: another thread runs 118, left run: new registers 123, left run: the call waits 171, left run: the container finished 12, left run: the outside asked 66, loop not proven 81, memory fault 3, progress counted by stop checks 493, translated at run time 730
+- turns: 4 runs; continued after stack loss 195, first write to a shared page 2, jump through a register not recognised 537, left run: another thread runs 882, left run: the container finished 4, loop not proven 27, progress counted by stop checks 886, translated at run time 207
 
 ## Findings of J3 run 1's check, and how each was settled (J3 run 2)
 
@@ -855,6 +973,18 @@ J3 run 1 deleted its 15 GB of old identities' files, and target/debug/incrementa
 edits made while it runs uses a scratch `git worktree` (J3: j3/tree, its own target, deleted at the end of the
 run). Scratch is pyro-parked/wcontainers-scratch/runtime; J1's logs are in its `j1/` and `j1run2/`, J2's in
 `j2/` to `j2run5/`, J3's in `j3/`.
+- J4a's bar at one look-ahead: `LOOK_AHEAD=<full|none|bounded> nix develop -c cargo test -j 4 -p
+  wcontainers-kernel-test --features runtime --no-fail-fast --test threads --test turns --test timers --test
+  deadlines --test cputime --test cpulimit --test clocks --test lockwaits --test rseqabort --test priorities
+  --test schedattr --test shell --test repeats -- --test-threads 3` (the whole of shell, which holds
+  `runs_repeat_for_a_seed`); logged, scratch `j4/bar.sh NAME LOOK [test arguments]`, all three
+  `j4/bars.sh PREFIX [--nocapture]`. The threaded program through the surface:
+  `LOOK_AHEAD=<l> nix develop -c cargo test -j 4 -p wcontainers-wasmtime --test surface -- --test-threads 3
+  a_threaded_program` (zig from the Nix shell builds it). A seed repeated N times: `REPEAT_RUNS=<n>
+  LOOK_AHEAD=<l> nix develop -c cargo test -j 4 -p wcontainers-kernel-test --features runtime --test repeats
+  -- --test-threads 3 --nocapture` (`SCHEDULE_SEED`, `SCHEDULE_SEEDS` choose the seeds; leave out the feature
+  for the stand-in); logged, scratch `j4/repeats.sh NAME LOOK|standin RUNS`.
+- The surface tests at a look-ahead: scratch `j4/surface.sh NAME full|none|bounded`.
 - J3's surface, refusals, back end and runtime tests (Docker with `alpine:3.22` for linux/arm64):
   `nix develop -c cargo test -j 4 -p wcontainers-runtime -p wcontainers-wasmtime -- --test-threads 3`
   (`--nocapture` prints the two cache runs' times and each refusal's reason). Logged: scratch
@@ -1021,7 +1151,14 @@ array of slots in microseconds.
 - The brief's layer 1 bar ("with the translator behind the boundary") is read as the WebAssembly back end's
   memories, tables and copies in place of the buffer CPU, since layer 1 runs no instructions (plan section 1).
 - Until the translator emits the guest-defined progress count, the WebAssembly back end counts stop checks in
-  its place (named, counted and warned); J4 waits for the count (plan section 9).
+  its place (named, counted and warned). J4 is split by the orchestrator's ruling of 2026-11-18: J4a (threads,
+  turns, timers, repeating a seed at one look-ahead) is built on stop checks; left out of J4's bar, as J4b, is
+  only what needs a guest-defined count: the same count at every exit for a seed across look-ahead settings
+  and on the stand-in (plan sections 9 and 16).
+- The root gets Docker's three files (`/etc/hostname`, `/etc/hosts`, `/etc/resolv.conf`) at start, though no
+  OCI field asks for them: the reference is Docker, which writes them over its mounts, and the kernel says a
+  host writes them from its made-up network. `/.dockerenv` is not written (it marks the Docker engine). The
+  files are dated 0 so that a run repeats.
 - Look-ahead none is not used for the K6b runtimes (J6): libpython at none took 113.9 s to compile and 16.9 GB.
 - The benchmark margin is checked on instructions retired, with times reported beside it (plan section 15;
   listed for the owner).
