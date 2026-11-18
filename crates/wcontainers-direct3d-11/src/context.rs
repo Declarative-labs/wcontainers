@@ -16,8 +16,8 @@ use wcontainers_gpu::{
 };
 
 use crate::desc::{
-    self, Box3, DepthStencilDesc, SubresourceData, TexDim, TextureDesc, Viewport, map, topology,
-    usage,
+    self, Box3, DSV_READ_ONLY_DEPTH, DSV_READ_ONLY_STENCIL, DepthStencilDesc, SubresourceData,
+    TexDim, TextureDesc, Viewport, map, topology, usage,
 };
 use crate::device::{
     Device, HelperBlocks, Linked, Variant, ZERO_BYTES, gpu_buffer, integer_format, resolvable,
@@ -355,6 +355,19 @@ enum Range {
     },
 }
 
+/// `d` writing nothing in the aspects a depth-stencil view's read-only `flags` mark, where `d`
+/// writes there.
+pub(crate) fn read_only_twin(d: &DepthStencilDesc, flags: u32) -> Option<DepthStencilDesc> {
+    let depth = flags & DSV_READ_ONLY_DEPTH != 0 && d.depth_enable && d.depth_write;
+    let stencil =
+        flags & DSV_READ_ONLY_STENCIL != 0 && d.stencil_enable && d.stencil_write_mask != 0;
+    (depth || stencil).then_some(DepthStencilDesc {
+        depth_write: d.depth_write && !depth,
+        stencil_write_mask: if stencil { 0 } else { d.stencil_write_mask },
+        ..*d
+    })
+}
+
 /// Texels of Direct3D's layout of a format with depth and stencil, `texel` bytes each
 /// (D24_UNORM_S8_UINT: depth in the low 24 bits of a word, stencil in its high byte;
 /// D32_FLOAT_S8X24_UINT: the float, the stencil byte, three unused), as the back end takes them:
@@ -606,13 +619,20 @@ impl<B: Backend> Device<B> {
         }
     }
 
+    /// Whether a bound target or depth-stencil view writes what `view` reads: a read-only
+    /// depth-stencil view writes neither aspect it marks, so shader views of those may be bound.
     fn bound_as_target(&self, view: &View<B>) -> bool {
-        self.ctx
-            .targets
-            .iter()
-            .chain([&self.ctx.depth])
-            .flatten()
-            .any(|t| t.overlaps(view))
+        let aspect = if matches!(view.desc.format, 22 | 47) {
+            DSV_READ_ONLY_STENCIL
+        } else {
+            DSV_READ_ONLY_DEPTH
+        };
+        self.ctx.targets.iter().flatten().any(|t| t.overlaps(view))
+            || self
+                .ctx
+                .depth
+                .as_ref()
+                .is_some_and(|d| d.overlaps(view) && d.desc.read_only & aspect == 0)
     }
 
     pub fn set_samplers(
@@ -1205,18 +1225,22 @@ impl<B: Backend> Device<B> {
                 _ => (None, None),
             };
             let kind = v.format.kind();
-            fn ops<V>(clear: Option<V>) -> AspectOps<V> {
+            // An aspect a read-only view marks is only read by the pass's draws (their
+            // depth-stencil blocks write nothing there), unless the pass clears it.
+            fn ops<V>(clear: Option<V>, read_only: bool) -> AspectOps<V> {
                 AspectOps {
+                    read_only: read_only && clear.is_none(),
                     load: clear.map_or(LoadOp::Load, LoadOp::Clear),
                     store: StoreOp::Store,
-                    read_only: false,
                 }
             }
+            let flags = v.desc.read_only;
             DepthAttachment {
                 view: &v.gpu.handle,
-                depth: (kind != FormatKind::Stencil).then(|| ops(d)),
+                depth: (kind != FormatKind::Stencil)
+                    .then(|| ops(d, flags & DSV_READ_ONLY_DEPTH != 0)),
                 stencil: matches!(kind, FormatKind::DepthStencil | FormatKind::Stencil)
-                    .then(|| ops(s)),
+                    .then(|| ops(s, flags & DSV_READ_ONLY_STENCIL != 0)),
             }
         });
         let occlusion = match self.pass_occlusion() {
@@ -2582,6 +2606,42 @@ impl<B: Backend> Device<B> {
         Ok(gpu)
     }
 
+    /// Makes, at the first draw needing it, the bound depth-stencil state's twin writing nothing
+    /// the bound read-only depth-stencil view marks (Direct3D writes neither aspect through it).
+    fn fit_depth_stencil(&mut self) -> Result<()> {
+        let flags = self.ctx.depth.as_ref().map_or(0, |v| v.desc.read_only);
+        let bound = self.bound_depth_stencil();
+        let Some(desc) = read_only_twin(&bound.desc, flags) else {
+            return Ok(());
+        };
+        if bound.read_only.borrow().iter().any(|(f, _)| *f == flags) {
+            return Ok(());
+        }
+        let twin = self.create_depth_stencil_state(&desc)?;
+        bound.read_only.borrow_mut().push((flags, twin));
+        Ok(())
+    }
+
+    fn bound_depth_stencil(&self) -> Rc<DepthStencil<B>> {
+        self.ctx
+            .depth_stencil
+            .clone()
+            .unwrap_or_else(|| self.defaults.depth_stencil.clone())
+    }
+
+    /// The depth-stencil state a draw uses: the bound one, or its twin `fit_depth_stencil` made.
+    pub(crate) fn drawn_depth_stencil(&self) -> Rc<DepthStencil<B>> {
+        let bound = self.bound_depth_stencil();
+        let flags = self.ctx.depth.as_ref().map_or(0, |v| v.desc.read_only);
+        let twin = bound
+            .read_only
+            .borrow()
+            .iter()
+            .find(|(f, _)| *f == flags)
+            .map(|(_, t)| t.clone());
+        twin.unwrap_or(bound)
+    }
+
     /// The raster block a draw uses: the bound state's, or its twin of `masked`'s sample mask and bias.
     pub(crate) fn raster_desc(&self, masked: Option<(u32, bool)>) -> wcontainers_gpu::RasterDesc {
         let r = self.ctx.raster.as_ref().unwrap_or(&self.defaults.raster);
@@ -2914,6 +2974,7 @@ impl<B: Backend> Device<B> {
         if self.ctx.sample_mask & 1 == 0 || instances == 0 {
             return Ok(());
         }
+        self.fit_depth_stencil()?;
         // A mask leaving out samples of multisampled targets draws through a twin of the raster
         // block made with it.
         let samples = self
@@ -3294,10 +3355,7 @@ impl<B: Backend> Device<B> {
                     max_depth: v.max_depth.to_bits(),
                 };
                 let blend = ctx.blend.as_ref().unwrap_or(&self.defaults.blend);
-                let depth_stencil = ctx
-                    .depth_stencil
-                    .as_ref()
-                    .unwrap_or(&self.defaults.depth_stencil);
+                let depth_stencil = &self.drawn_depth_stencil();
                 let raster = ctx.raster.as_ref().unwrap_or(&self.defaults.raster);
                 let no_rect = [ScissorRect {
                     x: 0,
@@ -4033,6 +4091,16 @@ impl<B: Backend> Device<B> {
         self.bury();
         let fence = self.backend.submit();
         self.submitted(fence);
+        self.poll_removed();
+    }
+
+    /// `Flush` and a wait until the GPU has done it (`Flush1` signalling an event at the end).
+    pub fn finish(&mut self) {
+        self.flush();
+        if let Some(fence) = self.queries.fence.take() {
+            self.backend.wait_fence(&fence);
+            self.queries.fence = Some(fence);
+        }
         self.poll_removed();
     }
 }

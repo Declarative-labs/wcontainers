@@ -222,10 +222,7 @@ impl<B: Backend> Device<B> {
         let program = (vs.gpu.id, ps.map_or(0, |p| p.gpu.id));
         let ctx = &self.ctx;
         let blend = ctx.blend.as_ref().unwrap_or(&self.defaults.blend);
-        let depth_stencil = ctx
-            .depth_stencil
-            .as_ref()
-            .unwrap_or(&self.defaults.depth_stencil);
+        let depth_stencil = &self.drawn_depth_stencil();
         let raster = ctx.raster.as_ref().unwrap_or(&self.defaults.raster);
         let set_id = |stage: usize| ctx.sets[stage].as_ref().map_or(0, |k| k.id);
         let sets = [set_id(VERTEX), set_id(PIXEL)];

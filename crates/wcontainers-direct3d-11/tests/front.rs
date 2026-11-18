@@ -1143,12 +1143,20 @@ fn a_constant_buffer_smaller_than_its_shader_declares_grows() {
 #[test]
 fn formats_direct3d_defines_but_the_front_does_not_serve_are_not_implemented() {
     let mut dev = device();
-    // R32G32B32_TYPELESS and _FLOAT are valid; 0 and 500 are no format.
-    for typeless in [5, 6] {
+    // R1_UNORM and SAMPLER_FEEDBACK_MIN_MIP_OPAQUE are valid; 0 and 500 are no format.
+    for unserved in [66, 189] {
         assert!(matches!(
-            dev.create_texture(&tex2d(4, 4, typeless, bind::SHADER_RESOURCE), &[]),
+            dev.create_texture(&tex2d(4, 4, unserved, bind::SHADER_RESOURCE), &[]),
             Err(Error::NotImplemented(_))
         ));
+    }
+    // R32G32B32_TYPELESS and _FLOAT are stored as the back end's three-channel format, which the
+    // recording back end holds.
+    for served in [5, 6] {
+        assert!(
+            dev.create_texture(&tex2d(4, 4, served, bind::SHADER_RESOURCE), &[])
+                .is_ok()
+        );
     }
     for bad in [0, 500] {
         assert!(matches!(
@@ -1332,6 +1340,7 @@ fn typeless_textures_are_viewed_through_members_of_their_group() {
         mip_count: 1,
         first_layer: 0,
         layer_count: 1,
+        read_only: 0,
     };
     // R24G8_TYPELESS: D24_UNORM_S8_UINT for depth, R24_UNORM_X8_TYPELESS and X24_TYPELESS_G8_UINT
     // to read depth and stencil; a D format is for depth-stencil views only. Stencil, which
@@ -2311,6 +2320,7 @@ fn a_view_reinterpreting_typeless_bits_reads_a_twin_copied_before_each_draw() {
         mip_count: 1,
         first_layer: 0,
         layer_count: 1,
+        read_only: 0,
     };
     let unorm = dev
         .create_view(&typeless, Some(&desc), bind::SHADER_RESOURCE)

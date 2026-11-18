@@ -34,6 +34,7 @@ pub fn storage_format(dxgi: u32, depth_bound: bool) -> Result<Format> {
     use Format::*;
     let typeless = match (dxgi, depth_bound) {
         (1, _) => Rgba32Float,
+        (5, _) => Rgb32Float,
         (9, _) => Rgba16Float,
         (15, _) => Rg32Float,
         (19, _) => Depth32FloatStencil8,
@@ -139,6 +140,20 @@ pub fn is_typeless(dxgi: u32) -> bool {
     )
 }
 
+/// Whether Direct3D never binds a texture of `dxgi` as a render target or unordered access view,
+/// whatever the device: the depth-stencil groups with stencil hold no colour target or storage,
+/// and shared-exponent, two-pixel and block-compressed formats are only read.
+pub fn never_target_or_storage(dxgi: u32) -> bool {
+    matches!(dxgi, 19..=22 | 44..=47 | 67..=84 | 94..=99)
+}
+
+/// Whether `dxgi` is a typed depth format (`D32_FLOAT_S8X24_UINT`, `D32_FLOAT`,
+/// `D24_UNORM_S8_UINT`, `D16_UNORM`): such a texture is bound only for depth, and read through a
+/// typeless one.
+pub fn depth_only(dxgi: u32) -> bool {
+    matches!(dxgi, 20 | 40 | 45 | 55)
+}
+
 /// The interface format a DXGI format is stored as, for the typed formats this front serves.
 pub fn texture_format(dxgi: u32) -> Option<Format> {
     use Format::*;
@@ -146,6 +161,9 @@ pub fn texture_format(dxgi: u32) -> Option<Format> {
         2 => Rgba32Float,
         3 => Rgba32Uint,
         4 => Rgba32Sint,
+        6 => Rgb32Float,
+        7 => Rgb32Uint,
+        8 => Rgb32Sint,
         10 => Rgba16Float,
         11 => Rgba16Unorm,
         12 => Rgba16Uint,
@@ -189,6 +207,8 @@ pub fn texture_format(dxgi: u32) -> Option<Format> {
         64 => R8Sint,
         65 => A8Unorm,
         67 => Rgb9e5Float,
+        68 => Rgbg8Unorm,
+        69 => Grgb8Unorm,
         71 => Bc1RgbaUnorm,
         72 => Bc1RgbaUnormSrgb,
         74 => Bc2RgbaUnorm,

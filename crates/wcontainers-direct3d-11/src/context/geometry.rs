@@ -614,10 +614,7 @@ impl<B: Backend> Device<B> {
             max_depth: v.max_depth.to_bits(),
         };
         let blend = ctx.blend.as_ref().unwrap_or(&self.defaults.blend);
-        let depth_stencil = ctx
-            .depth_stencil
-            .as_ref()
-            .unwrap_or(&self.defaults.depth_stencil);
+        let depth_stencil = &self.drawn_depth_stencil();
         let bound_raster = ctx.raster.as_ref().unwrap_or(&self.defaults.raster);
         let no_rect = [ScissorRect {
             x: 0,

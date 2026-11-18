@@ -230,6 +230,7 @@ impl<B: Backend> Device<B> {
             depth_stencil: Rc::new(DepthStencil {
                 desc: ds_desc,
                 gpu: Kept::new(ds, id(), Object::DepthStencil, &graveyard),
+                read_only: RefCell::new(Vec::new()),
             }),
             raster: Rc::new(Rasterizer {
                 desc: raster_desc,
@@ -706,6 +707,21 @@ impl<B: Backend> Device<B> {
         if mips > full {
             return Err(Error::InvalidArg("more mip levels than the size has"));
         }
+        let drawn = bind::RENDER_TARGET | bind::UNORDERED_ACCESS;
+        if d.bind_flags & drawn != 0
+            && (d.bind_flags & bind::DEPTH_STENCIL != 0
+                || format::never_target_or_storage(d.format))
+            || format::depth_only(d.format) && d.bind_flags & (drawn | bind::SHADER_RESOURCE) != 0
+        {
+            return Err(Error::InvalidArg(
+                "the format does not support the bind flags",
+            ));
+        }
+        if d.misc_flags & MISC_SHARED != 0 && d.misc_flags & MISC_SHARED_KEYEDMUTEX != 0 {
+            return Err(Error::InvalidArg(
+                "shared and shared with a keyed mutex exclude each other",
+            ));
+        }
         let format = format::storage_format(d.format, d.bind_flags & bind::DEPTH_STENCIL != 0)?;
         // A count and quality the device reports no level for is invalid, as in Direct3D. The
         // standard pattern is the back end's own; the centred one it cannot place. A single
@@ -1026,6 +1042,14 @@ impl<B: Backend> Device<B> {
                 "the resource lacks the bind flag the view needs",
             ));
         }
+        let read_only = desc.map_or(0, |d| d.read_only);
+        if read_only & !(DSV_READ_ONLY_DEPTH | DSV_READ_ONLY_STENCIL) != 0
+            || read_only != 0 && (kind != bind::DEPTH_STENCIL || self.feature_level() < 0xb000)
+        {
+            return Err(Error::InvalidArg(
+                "read-only depth-stencil views need feature level 11_0",
+            ));
+        }
         let arrayed = t.array_size > 1;
         let cube = t.misc_flags & MISC_TEXTURECUBE != 0 && kind == bind::SHADER_RESOURCE;
         // Views drawn into are one layer at a pass; shader and unordered access views see theirs.
@@ -1052,6 +1076,7 @@ impl<B: Backend> Device<B> {
             },
             first_layer: 0,
             layer_count: u32::MAX,
+            read_only: 0,
         };
         let mut v = desc.copied().unwrap_or(whole);
         if v.format == format::UNKNOWN {
@@ -1449,6 +1474,7 @@ impl<B: Backend> Device<B> {
         Ok(Rc::new(DepthStencil {
             desc: *d,
             gpu: Kept::new(gpu, id, Object::DepthStencil, &self.graveyard),
+            read_only: RefCell::new(Vec::new()),
         }))
     }
 
