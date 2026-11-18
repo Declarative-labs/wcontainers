@@ -269,6 +269,10 @@ pub enum HelperValue {
     LodBias { sampler: u32 },
     /// A sampler's border color (four f32, or four u32 for integer textures).
     BorderColor { sampler: u32 },
+    /// The components the bound view's format has, a bit each from red (u32), for programs that apply
+    /// the border in the program: a border colour is read as a texel of the view's format, so a
+    /// component the format lacks reads its default (zero, one for alpha).
+    TextureComponents { texture: u32 },
     /// A sampler's state, for programs that filter or address in the program: min, mag and mip filter
     /// and the three address modes as u32 codes (the order of [`crate::Filter`]'s and
     /// [`crate::AddressMode`]'s variants, from zero), anisotropy (u32), then the level range (two f32).

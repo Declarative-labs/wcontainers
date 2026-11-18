@@ -3,11 +3,13 @@
 
 extern crate alloc;
 
+mod build;
 pub mod cache;
 mod dxbc;
 mod dxil;
 mod ir;
 mod lower;
+pub mod stage;
 mod variant;
 
 use alloc::format;
@@ -15,7 +17,10 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use naga::valid::{Capabilities, ValidationFlags, Validator};
-use wcontainers_gpu::{Reflection, ShaderModule, TexelBufferRoute, VariantFlags, VariantKey};
+use wcontainers_gpu::{
+    DrawBaseSource, Reflection, ShaderModule, ShaderStage, StageExtras, TexelBufferRoute,
+    VariantFlags, VariantKey,
+};
 
 /// Shader bytecode in one of the forms the fronts hand over.
 #[derive(Clone, Copy, Debug)]
@@ -30,7 +35,9 @@ pub enum Source<'a> {
 /// A converted shader.
 #[derive(Clone, Debug)]
 pub struct Converted {
-    /// One module per program stage the shader becomes: one for vertex, pixel and compute shaders.
+    /// One module per program stage the shader becomes: one for vertex, pixel and compute shaders;
+    /// for a geometry shader its compute form and the vertex program that draws its output
+    /// ([`stage::Stages`]).
     pub modules: Vec<ShaderModule>,
     pub reflection: Reflection,
 }
@@ -95,16 +102,45 @@ pub fn convert(
     })?;
     let info = validate(&module)?;
     let key = cache::shader_key(source, variant);
-    Ok(Converted {
-        modules: vec![ShaderModule {
+    let mut modules = vec![ShaderModule {
+        module,
+        info,
+        entry_point: "main".into(),
+        stage,
+        key,
+    }];
+    if let StageExtras::Geometry { .. } = reflection.extras {
+        geometry_variant(variant)?;
+        let module = stage::passthrough(&reflection)?;
+        modules.push(ShaderModule {
+            info: validate(&module)?,
             module,
-            info,
             entry_point: "main".into(),
-            stage,
-            key,
-        }],
+            stage: ShaderStage::Vertex,
+            key: cache::module_key(key, 1),
+        });
+    }
+    Ok(Converted {
+        modules,
         reflection,
     })
+}
+
+/// Refuses, by name, the rewrites of the last vertex stage for a geometry shader: its draw's vertex
+/// program is the stage helper's, which makes none of them yet.
+fn geometry_variant(variant: &VariantKey) -> Result<(), ConvertError> {
+    let vertex_flags = VariantFlags::VIEWPORT_ADJUST
+        | VariantFlags::VIEWPORT_DEPTH_FLIP
+        | VariantFlags::CLIP_DEPTH_REWRITE
+        | VariantFlags::CLIP_DISTANCE
+        | VariantFlags::DEPTH_CLAMP;
+    if variant.flags.intersects(vertex_flags)
+        || !variant.pulled.is_empty()
+        || variant.draw_base != DrawBaseSource::None
+    {
+        return Err(ConvertError::Unsupported("GeometryVariant"));
+    }
+    Ok(())
 }
 
 /// Runs a conversion step on bytecode from the guest, so that a panic in it (our bug) fails this call
@@ -128,8 +164,8 @@ fn contained<T>(f: impl FnOnce() -> Result<T, ConvertError>) -> Result<T, Conver
 fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), ConvertError> {
     let VariantKey {
         flags,
-        filter_in_shader,
-        border_in_shader,
+        filter_in_shader: _,
+        border_in_shader: _,
         mirror_once_in_shader: _,
         lod_bias: _,
         constants_as_storage: _,
@@ -161,8 +197,6 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         return Err(ConvertError::Unsupported(name));
     }
     let asked = [
-        (*filter_in_shader != 0, "FilterInShader"),
-        (*border_in_shader != 0, "BorderInShader"),
         (!storage_formats.is_empty(), "StorageFormats"),
         (
             *texel_buffers != TexelBufferRoute::Native,

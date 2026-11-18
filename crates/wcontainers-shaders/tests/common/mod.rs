@@ -90,6 +90,8 @@ pub fn dxgi(format: Format) -> DXGI_FORMAT {
     match format {
         Format::Rgba8Unorm => DXGI_FORMAT_R8G8B8A8_UNORM,
         Format::Rgba32Uint => DXGI_FORMAT_R32G32B32A32_UINT,
+        Format::Rgba32Float => DXGI_FORMAT_R32G32B32A32_FLOAT,
+        Format::R32Float => DXGI_FORMAT_R32_FLOAT,
         Format::Depth32Float => DXGI_FORMAT_D32_FLOAT,
         Format::Depth24PlusStencil8 => DXGI_FORMAT_D24_UNORM_S8_UINT,
         f => panic!("no case draws into {f:?}"),

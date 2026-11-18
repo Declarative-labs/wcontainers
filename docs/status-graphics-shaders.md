@@ -12,9 +12,11 @@ rewrites with drawn tests and the corpus of real programs' shaders; run 11 built
 draw bases from an indirect draw's arguments, with drawn tests; run 12 built the minimum
 level-of-detail clamp with drawn tests; run 13 built clip distances, depth clamping and mirror-once
 addressing in the program with drawn tests; run 14 built pulled vertex inputs and constant buffers
-read through a texture with drawn tests;
-what remains is under Next. Run 14 merged origin/phase-2-graphics-direct3d-11, -direct3d-12 and
--rig (no conflicts; the others had nothing new).
+read through a texture with drawn tests; run 15 built filtering and border colours in the program
+with drawn tests against real Direct3D 11 on the RTX 3080 and against WARP; run 16 began the stage
+helper of section 7: geometry shaders (DXBC) as compute, drawn against real Direct3D 11;
+what remains is under Next. Run 16 merged origin/phase-2-graphics-direct3d-12 and
+origin/phase-2-graphics-webgl (no conflicts; the others had nothing new).
 
 Done:
 - naga carried in the tree with the GLSL writer changes G3 needs (below). Other tracks get it by
@@ -306,7 +308,7 @@ Run 10 (variants and the real programs' shaders):
 - Still refused by name (run 11 built `DepthBiasInShader` and `DrawBaseFromArguments`, run 13
   `ClipDistanceInShader`, `DepthClampInShader` and `MirrorOnceInShader`): the flags
   `ProvokingRewrite`, `EarlyTestsInShader`, `AntialiasedLinesAsQuads`, `PrimitiveIdAsGeometry`,
-  and the fields `FilterInShader`, `BorderInShader`, `ConstantsAsTexture`,
+  and the fields (run 15 built `FilterInShader` and `BorderInShader`) `ConstantsAsTexture`,
   `VertexPulledInShader`, `StorageFormats`, `TexelBufferRoute`, `StoragePacked`,
   `TexelsThroughBuffer`, `NormAsInteger`, `TargetsInShader`, `RootSignatureLayout` (run 12 built `MinLodClamp`).
 - The real programs' shaders: `examples/containers.rs` finds every DXBC and DXIL container in the
@@ -452,28 +454,125 @@ Run 14 (variants):
   (`ConstantsAsTextureLayout`). The shared harness copies the constants into such a texture where a
   program asks (`constants_texture`).
 
+Run 15 (variants):
+- `filter_in_shader` (by texture) and `border_in_shader` (by sampler), any stage, both routes
+  (`src/variant/filter.rs`, `src/variant/filter.wgsl`): every sample of such a texture, or through
+  such a sampler, becomes a call into a filter library written in WGSL, parsed with naga's `wgsl-in`
+  (already in every build through wcontainers-gpu) once per texture shape and imported into the
+  module (types copied, the functions it calls first, equal copies made once; `Outlined` puts them
+  ahead of the callees). The library reads texels with loads and filters by Direct3D's rules
+  (functional specification 7.18): level of detail log2 of the longer of the coordinate's scaled
+  gradients (coarse derivatives for implicit levels), plus the instruction's and the sampler's bias
+  (`lod_bias`), clamped to the sampler's range and the resource clamp (`min_lod_clamped`);
+  magnification at zero or below; point mip levels floor(lod + 0.5), linear ones blended by the
+  fraction at 8 bits; linear taps at 8 bits of subtexel precision; every address mode per tap
+  (mirror-once included) and the border colour; texel offsets; gathers of the linear footprint at
+  level 0; anisotropic filtering along the major axis with up to the sampler's anisotropy in taps.
+  The sampler's state, border colour and the texture's format components come from the helper
+  block; level 0's size and the layer count are asked of the texture's variable in the callee (so
+  the WebGL 2 back end's per-view size uniforms answer them); the level count from `TEXTURE_INFO`'s
+  helper where set. The pair leaves `reflection.sampled_pairs` when no native sample uses it.
+  Refused by name: comparisons (`FilterInShaderOnComparison`, `BorderInShaderOnComparison`), cubes
+  (`FilterInShaderOnCube`), depth and integer textures (`FilterInShaderOnDepth`,
+  `FilterInShaderOnInteger`), 1D arrays (`FilterInShaderDimension`).
+- Interface change: `HelperValue::TextureComponents { texture }` (below): Direct3D reads a border
+  colour as a texel of the view's format, so R32_FLOAT gives (border.r, 0, 0, 1); measured.
+- Found and fixed: the helper block placed each member after the block's padded size, not after the
+  last member's end, so a member following a small one (the level count after the bias, a resource
+  clamp after a bias) sat at another offset than GLSL ES's std140 block reads it: WebGL 2 read the
+  wrong value (every DXIL filtered draw read level count 0). Members are now packed as std140 packs
+  them; the reflection gives the new offsets (a resource clamp after a bias now at 8, not 16).
+- New own shaders `vs_filter`/`ps_filter` (`filter.hlsl`, fxc and dxc): a plane in perspective, the
+  pixel shader sampling six ways by a constant (implicit, bias, level, gradients, offset, gather).
+  Every other own shader recompiled byte for byte as committed.
+- `tests/filter_draw.rs` (Windows, GPU job): seeded sampler states (`WCONTAINERS_FILTER_SEED`,
+  `WCONTAINERS_FILTER_CASES`, default 8) on a 16 by 16 texture of five levels, R32_FLOAT (by
+  `filter_in_shader`) and RGBA8 (by `border_in_shader`), every mode, both routes, WebGPU and WebGL 2,
+  against real Direct3D 11 on the RTX 3080 and against WARP. The two Direct3D implementations differ
+  (the GPU blends mip levels otherwise, the trilinear optimisation; at a level of detail of exactly
+  .5 the GPU takes the higher level, WARP the lower), so a texel passes when it equals either; one
+  that equals neither passes when it does with the level of detail moved by 1/256 either way (a
+  texel that close to a decision), or where the two themselves differ (counted as a third answer).
+  Where WebGPU has the sampler natively (RGBA8, no border, mirror-once or bias) the variant is also
+  held to WebGPU's own sampler (or WARP), and the own sampler to the GPU's Direct3D. Anisotropic
+  cases are a known failure (Known gaps).
+
+Run 16 (the stage helper, first part: geometry shaders on WebGPU):
+- `src/stage.rs`, `src/stage/helper.rs`, `src/lower/geometry.rs`, `src/build.rs` (a small builder of
+  naga functions for the programs the crate makes itself). A DXBC geometry shader converts to two
+  modules: its compute form (`modules[0]`) and the vertex program that draws its output
+  (`modules[1]`, the pass-through); `reflection.extras` is `StageExtras::Geometry`, its outputs are
+  reflected as a vertex stage's (the pixel stage links to them, with `output_interpolation` as for a
+  vertex program), its slots are in set 0 as a compute program's. DXIL geometry shaders are refused
+  by naga's SPIR-V reader (`spirv-reader unsupported`, recorded).
+- The data, in buffers the helper owns (`stage.rs` says it in its module comment): vertex records
+  (the vertex stage's outputs, record `instance * count + vertex` in draw order, four-word slots:
+  the position, then each location the geometry shader reads), and the geometry output (each
+  invocation owns `max_vertices` records, then from `INDEX_BASE` `2 * max_vertices` index slots per
+  invocation, strips cut with the restart index, unused slots restarting; point output is drawn
+  without indices, unused vertices placed outside the clip volume). Every invocation writes at fixed
+  slots, so the output keeps Direct3D's order with no counting across invocations.
+- The geometry shader's compute form: one invocation per input primitive and geometry instance (x)
+  and API instance (y); it fills the input arrays from the records (lists n per primitive; strips
+  step by one, odd triangles (i, i + 2, i + 1)), gives `SV_PrimitiveID` (per API instance),
+  `SV_GSInstanceID` and the input vertex count, runs the shader, whose `EmitVertex`/`CutVertex` call
+  emit and cut functions writing the current outputs into its slots. Refused by name: streams other
+  than 0 (`GeometryStreams`), no position output, inputs of other shapes, clip and cull distances,
+  `SV_RenderTargetArrayIndex` and `SV_ViewportArrayIndex` (the rig's `gs_layers` and `raster.gs`),
+  and a geometry shader's key asking for the last vertex stage's rewrites (`GeometryVariant`).
+- The vertex stage's compute form (`stage::vertex_program`, made by `Stages::new`): the vertex
+  program converted with every input pulled (`VariantKey::pulled`), its entry point called by a
+  compute entry point that makes the vertex and instance numbers as a draw does (first plus the
+  place, or the index there, read from the index buffer as words, plus the base vertex), and writes
+  the record. Not pulled inputs are refused (`VertexInputNotPulled`).
+- `Stages<B>` (`stage::Stages`): `new(backend, vertex, geometry)` makes both compute programs;
+  `run(backend, &StageDraw)` records the two dispatches for one API draw (outside a pass) and returns
+  `FinalDraw` (the buffer, the index offset, topology, count), which the front draws in its pass with
+  `passthrough()` and its pixel program, `vertex_layout()`, restart on. The helper's own bindings are
+  in set 1 of its compute programs (values, index words, records, geometry output), which no compute
+  program of the API uses. It counts `SlowPath::GeometryAsCompute`. Refused by name in `run`:
+  indirect draws, indexed strips (`GeometryIndexedStrip`: Direct3D restarts them at the largest index,
+  which needs a pass numbering the primitives), triangle strips with adjacency, 8-bit indices; a
+  topology that does not give the shader's input primitive is `StageError::TopologyMismatch`.
+- New own shaders (`geometry.hlsl`, fxc, and dxc for the geometry shaders): `vs_geometry`,
+  `ps_geometry`, `gs_quads` (points to quads), `gs_cut` (none, one or two triangles by primitive
+  number, a cut and a four-vertex strip), `gs_instances` (`[instance(3)]`), `gs_lines` (line strips),
+  `gs_points` (a varying number of points), `gs_adjacent` (triangles with adjacency),
+  `gs_line_adjacent` (lines with adjacency). Every other own shader recompiled byte for byte as
+  committed.
+- `tests/geometry.rs` (any machine): what each declares, both modules and the vertex compute form
+  validate, the cache record round-trips with both modules' keys, the refusals.
+  `tests/geometry_draw.rs` (Windows, GPU job): thirteen cases (point, line, triangle lists and
+  strips, line lists and strips and triangle lists with adjacency, indexed with base vertices, API
+  instances with first instances, geometry instances) per seed of 64 vertices, through the WebGPU
+  back end against real Direct3D 11 on the RTX 3080.
+- Corpus records: the rig's `geometry.gs_adjacency`, `gs_points`, `gs_strips` and `streamout.gs`
+  now convert (stream output is declared to the API, not in the bytecode); `gs_layers` is refused
+  `RenderTargetArrayIndex`, `raster.gs` `ViewportArrayIndex`.
+
 Next (in order):
-- The rest of the variants (the list above), each with a drawn test as run 10's:
+- Comparisons in the program (shadow maps with a border colour, very common: WebGPU has no border
+  colour): `SamplerState` needs the comparison function (an interface change: a word for it), then
+  the library compares each tap. Cube filtering in the program (seamless edges). Then the rest of
+  the variants (the list above), each with a drawn test as run 10's:
 - `PROVOKING_LAST` (open question, not built): a pixel program sees only one value per primitive
   for a flat input, the provoking vertex's, so no rewrite of the programs alone picks the last
   vertex's. The exact routes are the front's: lists drawn with each primitive's indices rotated
   ((a, b, c) as (c, a, b), winding kept), strips and fans made lists first. If that holds, the flag
   has no use and the interface could drop it; until decided it stays refused by name.
-- Filtering in the program next (G4 needs it for an R32_FLOAT depth sampled through a linear
-  sampler): in the `samples` callee, the level of detail from the coordinate's derivatives and the
-  view's size, then bilinear taps by `textureLoad` on one or two levels with the address modes of
-  `SamplerState` applied per tap; border colour then falls out of it (a tap outside the level reads
-  `BorderColor`), so border with point filtering alone is not worth building apart. Both read
-  `HelperValue::SamplerState` as mirror-once does; border with linear filtering needs the filter in
-  the program too), decoded textures
+- Decoded textures
   and targets written in the program, pulled vertices, constants through a texture, typed buffers
   and storage formats (after the storage image and typed buffer support they need), early tests,
   line coverage, the provoking rewrite, the primitive index from the stage helper, root signature
   layouts.
-- The stage helper of section 7 (the vertex stage as compute reads its inputs by `pull`'s fetch,
-  so it starts from there; geometry as compute and by replay, hull and domain with a
-  tessellator ported from Mesa's MIT code, stream output) with tests against real Direct3D; the
-  built-in compute programs (texture clears of 5.1) and the counter operations.
+- The stage helper of section 7, the rest: stream output (from the vertex or the geometry stage, in
+  Direct3D's layout, with overflow and the filled size; a count, a scan and a write, as WGSL
+  built-in programs), hull and domain with a tessellator ported from Mesa's MIT code, geometry by
+  replay on WebGL 2, indexed strips into a geometry shader (a pass numbering primitives across
+  restarts), triangle strips with adjacency, layer and viewport index outputs, clip distances
+  through the stage, DXIL geometry shaders (naga's SPIR-V reader: the geometry execution model),
+  the last vertex stage's variants on the pass-through. Tests against real Direct3D; the built-in
+  compute programs (texture clears of 5.1) and the counter operations.
 - The real programs' shaders (every converted one compiles in Chrome since run 10): their named
   failures worked down: render target array index 47, storage images 39 DXBC and 38 DXIL (no format), typed
   buffers 21 and 19, register spaces 10.
@@ -504,6 +603,19 @@ Next (in order):
   back end's writing; multisampled reads are absent there.
 
 ## How the Direct3D fronts call `convert`
+
+- Geometry shaders (WebGPU, `Features::COMPUTE`): convert the pixel shader first, then the geometry
+  shader with `output_interpolation` from the pixel shader's inputs (as for a vertex shader), and the
+  vertex shader with every input pulled (`pulled`, as for pulled inputs) and `draw_base: Helpers`.
+  `Stages::new(backend, &vertex, &geometry)` once per pair. Per draw, outside the pass:
+  `stages.run(backend, &StageDraw { vertex_sets, geometry_sets, index, topology, range })`, where
+  the vertex sets are its set 0 (pulled streams) and 3 (helper block: `PulledStream`s, `DrawBase`)
+  and the geometry sets its set 0 (its slots) and 3 (its helper block, if any), all with
+  `StageSet::COMPUTE`; an index buffer must have `BufferUsage::STORAGE` and a size that is a multiple
+  of 4. Then, in the pass, draw the returned `FinalDraw`: the program of `stages.passthrough()` and
+  the pixel shader, `stages.vertex_layout()`, `buffer` as stream 0, indices (u32) from `buffer` at
+  `index_offset` when given, its topology, restart on, `count` vertices or indices, one instance.
+  `tests/geometry_draw.rs` does exactly this.
 
 ```rust
 use wcontainers_shaders::{convert, Source, ConvertError};
@@ -559,6 +671,16 @@ let reflection = &converted.reflection;
   first instance, so it needs no other base. Each pulled input takes a storage binding of the vertex
   stage: the front checks the total against the back end's per-stage storage limit (WebGPU's
   default is 8) and refuses past it.
+- `filter_in_shader` (a texture whose view's format the back end cannot filter, sampled through a
+  sampler with a linear filter: R32_FLOAT and depth read as colour on WebGPU) and
+  `border_in_shader` (a sampler with a border address mode where the back end has no border colour,
+  every sampler on WebGPU): bind the texture as before (it is only loaded now, so WebGPU's layout
+  makes it unfilterable) and the program's real sampler at its slot; write `SamplerState { sampler }`
+  as for mirror-once, `BorderColor { sampler }` (four f32), `TextureComponents { texture }` (a bit
+  per component the view's format has, red first: R32_FLOAT 1, RGBA 15), `LodBias` with `lod_bias`,
+  `MinLod` with `min_lod_clamped`, and with `TEXTURE_INFO` (WebGL 2) `TextureLevels`. The texture's
+  pair leaves `reflection.sampled_pairs`. Comparisons, cubes, depth and integer textures are
+  refused by name (Run 15).
 - `constants_as_texture` (WebGL 2, past its uniform block count or size): the slot's
   `reflection.bindings` entry becomes kind `Texture` with `added: Some(ConstantsAsTexture(register))`;
   bind an RGBA32 unsigned 2D texture holding the buffer's bytes, row r at (r % 256, r / 256)
@@ -633,6 +755,50 @@ let reflection = &converted.reflection;
   conversion.
 
 ## Measurements
+
+Run 16, 2026-11-17, counts only:
+- `tests/geometry_draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, about 2 s,
+  scratch `run16/geometry7.log`): seeds 1 to 4, thirteen cases each, WebGPU (wgpu's Direct3D 12
+  path) against real Direct3D 11: 52 comparisons, 0 of 4096 texels differ in every one (allowance
+  0); Direct3D draws 59 to 1468 texels per picture. Before the test gave the vertex stage the draw's
+  bases (`run16/geometry5.log`), the cases with a first vertex, base vertex or first instance
+  differed, as Direct3D's vertex and instance numbers leave the bases out.
+- Laptop (i7-8750H, load average 0 to 0.6): the suite without the ignored corpora passes after
+  recording the new own and rig verdicts; clippy with warnings denied passes. Windows clippy with
+  warnings denied passes.
+
+Run 15, 2026-11-17, counts only:
+- `tests/filter_draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, about 92 s,
+  scratch `run15/desktop-final.log`), seeds 1 to 8, each by the DXBC and the DXIL route on WebGPU
+  (wgpu's Direct3D 12 path) and WebGL 2 (ANGLE), R32_FLOAT and RGBA8, six sampling modes: 396
+  comparisons, 0 failed, 32 known failures (all of seed 8, the one anisotropic seed: gather and
+  explicit levels pass there). Of the 336 isotropic pictures: no texel equals neither Direct3D; in
+  24 pictures 48 texels equalled neither until the level of detail moved by 1/256; in 8 pictures one
+  texel each (one place, seed 3's gradients) is a third answer where the GPU and WARP differ. The
+  GPU and WARP themselves differ in 68 of the 84 isotropic pictures, by up to 3758 texels (largest
+  0.67). Against WebGPU's own sampler (12 RGBA8 comparisons): 0 texels apart from both it and WARP;
+  the own sampler against the GPU's Direct3D 11: 0 texels apart in all 12 (allowance 1/128 per
+  channel throughout). Seeds 1 to 16 (`run15/filter12.log`): seeds 1 to 13 pass; seed 14
+  (anisotropy 4) lost ANGLE's device (DXGI_ERROR_DEVICE_REMOVED, Known gaps).
+- Before the fixes (scratch `run15/filter3.log` to `filter11.log`): mip-point selection at an exact
+  .5 rounded down (the GPU rounds up); DXIL on WebGL 2 read level count 0 (the helper packing bug);
+  R32_FLOAT borders gave all four border components (Direct3D gives (r, 0, 0, 1)); a quad whose two
+  triangles were not one plane put a seam of differing derivatives across the picture (the test's
+  own geometry, fixed). Rounding the level of detail to 8 bits, or point coordinates to 8 subtexel
+  bits, made more texels differ, so neither is done.
+- `tests/variant_draw.rs` and `tests/draw.rs` on the desktop after the helper packing change: both
+  pass (`run15/desktop-final.log`). Windows clippy with warnings denied passes.
+- Chrome 157 (`web/check`, one GPU job, about 3 s, `run15/chrome.log`): the filter variants of
+  `ps_filter` by both routes (by texture with a bias; by sampler with a resource clamp and
+  `TEXTURE_INFO`) and of the rig's 2D array, 3D and gather shaders, written by a test kept out of
+  the repository: WGSL 7 of 7 compile in Chrome's WebGPU, GLSL ES 2 of 2 in its WebGL 2.
+- Laptop (i7-8750H, load average 0.1 to 0.7): the whole suite with every corpus (`--include-ignored
+  --skip mutated`, the plan's corpus and the real programs' shaders) passes after recording the new
+  own verdicts (`vs_filter` converts; `ps_filter`'s plain GLSL ES has `textureGather`) and four rig
+  shaders that now compile as GLSL ES (the rig track recompiled its shaders at lower shader models,
+  so fxc no longer writes bitfield operations in them); every other verdict and cache record as
+  recorded (corpus test 179 s; `run15/full-suite2.log`). Clippy with warnings denied passes. Not
+  re-run: the WebAssembly comparison (plain conversions did not change).
 
 Run 14, 2026-11-17, counts only:
 - `tests/pull_draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, about 2.5 s,
@@ -1064,6 +1230,14 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   `~/wcontainers-graphics/out/<corpus>`. The 191-shader corpus test is ignored without
   `--include-ignored` and fails without `WCONTAINERS_SHADER_CORPUS`; glslang runs only with both
   `GLSLANG` and `WCONTAINERS_SHADERS_OUT`.
+- Geometry shaders through the stage helper (Windows, one GPU job, about 2 s for 4 seeds):
+  `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test geometry_draw --no-run" -- "set WCONTAINERS_GEOMETRY_SEED=1&& set WCONTAINERS_GEOMETRY_CASES=4&& cargo test -j 3 -p wcontainers-shaders --test geometry_draw -- --nocapture --test-threads 1"`.
+  Each comparison prints the texels Direct3D drew and how many differ; with
+  `WCONTAINERS_SHADERS_OUT` the pictures are kept.
+- Filtering in the program (Windows, one GPU job, about 90 s for 8 seeds):
+  `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test filter_draw --no-run" -- "set WCONTAINERS_FILTER_SEED=1&& set WCONTAINERS_FILTER_CASES=8&& cargo test -j 3 -p wcontainers-shaders --test filter_draw -- --nocapture --test-threads 1"`.
+  Each comparison prints texels apart from both references, from each, and before moving the level
+  of detail; with `WCONTAINERS_SHADERS_OUT` the pictures are kept.
 - The variant tests (Windows, one GPU job, about 1.5 s):
   `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test variant_draw --no-run" -- "cargo test -j 3 -p wcontainers-shaders --test variant_draw -- --nocapture --test-threads 1"`.
   Each comparison prints its counts and allowance. The WebGL 2 back end leaves its GL context current
@@ -1121,6 +1295,8 @@ were already there.
 - `cc` 1.11 (build dependency, compiles the C++): MIT OR Apache-2.0 (its Cargo.toml); with `jobserver`
   0.1 (MIT OR Apache-2.0) for its parallel feature.
 - `blake3` 1.8: as in the plan's section 3; also a build dependency now (hashing the C++ sources).
+- Run 15: naga's `wgsl-in` feature (naga as above; already built into every program using this
+  crate through wcontainers-gpu).
 - Run 9, for the cache: `postcard` 1.1 (MIT OR Apache-2.0), `serde` 1.0 with `derive` (MIT OR
   Apache-2.0, also now a dependency of wcontainers-gpu, with `bitflags`' `serde` feature), `crc32fast`
   1.5 (MIT OR Apache-2.0), naga's own `serialize`/`deserialize` features; all already in the
@@ -1137,6 +1313,22 @@ were already there.
   WITH LLVM-exception, wasi-libc MIT-style and others), wasmtime (Apache-2.0 WITH LLVM-exception).
 
 ## Departures from the plan
+
+- The stage helper (6.4's sketch `Stages::draw(backend, call, outputs)`) is `Stages::run`, which
+  records the compute work outside the pass and returns what the front draws in its own pass: the
+  interface allows dispatches only outside a pass, and the front owns its passes. The helper's own
+  bindings are in set 1 of its compute programs (no compute program of the API uses set 1), so the
+  interface needed no new binding numbers. Adjacency topologies are the helper's own
+  `InputTopology` (they reach only the geometry stage), not the interface's `Topology`.
+
+- Filtering in the program is held to two references, real Direct3D 11 on the RTX 3080 and WARP,
+  texel by texel equal to either (or within 1/256 of a level of detail of either, or a third answer
+  where the two differ), not to one picture: the two differ from each other in most pictures with
+  linear mip filtering (the GPU's trilinear optimisation), which no program reproduces. Anisotropic
+  cases are a known failure (Known gaps).
+- The filter library is WGSL text in the crate, parsed by naga's `wgsl-in` and imported into the
+  converted module, rather than naga IR built by hand: the same input for the same output as a
+  hand-built tree, far shorter, and reusable for the stage helper's programs.
 
 - `VIEWPORT_DEPTH_FLIP`'s reference is computed (1 - z of real Direct3D 11's depth buffer, the
   swapped range's definition), within 4 f32 steps (3 measured): no API on the desktop draws a swapped
@@ -1190,6 +1382,22 @@ were already there.
   its CMake does for that file.
 
 ## Known gaps found so far
+
+- The stage helper (run 16) refuses by name: indexed strips into a geometry shader, triangle strips
+  with adjacency, indirect draws, streams other than 0, layer and viewport index outputs, clip and
+  cull distances through a geometry shader, the last vertex stage's variants on its pass-through
+  program (so a geometry shader draws only where WebGPU has what those variants stand in for), DXIL
+  geometry shaders. Stream output and tessellation are not built. Its buffers grow and are never
+  shrunk.
+
+- Anisotropic filtering in the program (`filter_in_shader`, `border_in_shader`) is a known failure
+  of `tests/filter_draw.rs`: the footprint is the implementation's own (the RTX 3080's and WARP's
+  differ from each other, by up to 0.14 in seed 8), and the program's taps along the major axis are
+  a third (up to 0.59 from the GPU with gradients scaled 3 and 0.5). Seed 14 (anisotropy 4) lost
+  ANGLE's device in a WebGL 2 draw (cause not found; first suspect: the program's tap loop as
+  ANGLE's HLSL compiles it).
+- Filtering in the program refuses comparisons, so a shadow map sampled with a border colour on
+  WebGPU (no border colours there) is refused until `SamplerState` carries the comparison (Next).
 
 - The minimum level-of-detail clamp's zero is (0, 0, 0, 0): Direct3D gives the format's default
   for components the format lacks (alpha 1 for an R8 texture, for example), which the program does
@@ -1252,6 +1460,11 @@ were already there.
   `glGetBufferSubData`, which ANGLE's GLES lacks (`read_back_now` works).
 
 ## Interface changes
+
+- Run 15, `HelperValue::TextureComponents { texture }` (commit "interface: gave the helper constants
+  the components of a texture's format ..."; plan text in 6.4's list of helper values): a border
+  colour applied in the program is read as a texel of the view's format, which only the front
+  knows; a per-texture value, since one sampler serves textures of several formats.
 
 - Run 14, `CONSTANTS_TEXTURE_WIDTH` (256) and `AddedBinding::ConstantsAsTexture`'s texture described
   (commit "interface: laid out the texture a constant buffer is read through ..."; plan text in 4.12):

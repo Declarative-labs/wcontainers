@@ -27,6 +27,8 @@ use wcontainers_gpu::{
     SystemValue, VariantKey, helper_binding,
 };
 
+mod geometry;
+
 type Result<T> = core::result::Result<T, ConvertError>;
 
 fn unsupported(what: &'static str) -> ConvertError {
@@ -149,13 +151,16 @@ pub(crate) fn lower(ir: &Ir, variant: &VariantKey) -> Result<(Module, Reflection
     let mut l = Lowering::new(ir, variant)?;
     l.declare()?;
     l.functions()?;
-    l.entry_point()?;
     let stage = match l.stage {
         SourceStage::Vertex => ShaderStage::Vertex,
         SourceStage::Pixel => ShaderStage::Fragment,
-        SourceStage::Compute => ShaderStage::Compute,
+        SourceStage::Compute | SourceStage::Geometry => ShaderStage::Compute,
         _ => unreachable!(),
     };
+    match l.geometry {
+        Some(_) => l.geometry_entry_point()?,
+        None => l.entry_point()?,
+    }
     Ok((l.module, l.reflection, stage))
 }
 
@@ -182,6 +187,8 @@ struct Lowering<'a> {
     semantics: HashMap<u32, (String, u32)>,
     discards: bool,
     side_effects: bool,
+    /// What a geometry shader declares and the parts of its compute form made so far.
+    geometry: Option<geometry::Geometry>,
 }
 
 impl<'a> Lowering<'a> {
@@ -196,7 +203,7 @@ impl<'a> Lowering<'a> {
             ir::stage::VERTEX => SourceStage::Vertex,
             ir::stage::PIXEL => SourceStage::Pixel,
             ir::stage::COMPUTE => SourceStage::Compute,
-            ir::stage::GEOMETRY => return Err(unsupported("GeometryShader")),
+            ir::stage::GEOMETRY => SourceStage::Geometry,
             ir::stage::HULL => return Err(unsupported("HullShader")),
             ir::stage::DOMAIN => return Err(unsupported("DomainShader")),
             _ => return Err(malformed("unknown stage".into())),
@@ -241,6 +248,7 @@ impl<'a> Lowering<'a> {
             semantics: HashMap::default(),
             discards: false,
             side_effects: false,
+            geometry: (stage == SourceStage::Geometry).then(geometry::Geometry::default),
         })
     }
 
@@ -371,6 +379,9 @@ impl<'a> Lowering<'a> {
         {
             self.helper_block()?;
         }
+        if self.geometry.is_some() {
+            self.geometry_functions()?;
+        }
         Ok(())
     }
 
@@ -397,6 +408,9 @@ impl<'a> Lowering<'a> {
             | code::DCL_INPUT_BUILT_IN
             | code::DCL_OUTPUT
             | code::DCL_OUTPUT_BUILT_IN => self.declare_io(id, op)?,
+            code::SET_GS_INSTANCES..=code::SET_GS_OUTPUT_PRIMITIVE => {
+                self.geometry_declaration(op)?
+            }
             code::DCL_SAMPLER => {
                 let compare = self.compared.contains(&id);
                 let ty = self.ty(TypeInner::Sampler {
@@ -488,7 +502,7 @@ impl<'a> Lowering<'a> {
             | code::CONSTANT
             | code::UNDEF
             | code::SET_FP_MODE => {}
-            17..=20 | 24..=26 => {}
+            24..=26 => {}
             _ => return Err(malformed(format!("declaration {}", op.code))),
         }
         Ok(())
@@ -585,6 +599,15 @@ impl<'a> Lowering<'a> {
         if let Some(b) = builtin {
             self.check_builtin(b, input)?;
         }
+        // Only stream 0 is drawn; the others feed stream output alone.
+        let stream = match op.code {
+            code::DCL_OUTPUT => op.lits.get(2),
+            code::DCL_OUTPUT_BUILT_IN => op.lits.get(1),
+            _ => None,
+        };
+        if self.geometry.is_some() && stream.is_some_and(|&s| s != 0) {
+            return Err(unsupported("GeometryStreams"));
+        }
         let ty = self.ir_ty(&op.ty)?;
         let name = format!("{}{id}", if input { "in" } else { "out" });
         let var = self.global(name, AddressSpace::Private, None, ty, None);
@@ -604,7 +627,17 @@ impl<'a> Lowering<'a> {
 
     fn check_builtin(&self, b: u64, input: bool) -> Result<()> {
         let ok = match (self.stage, input, b) {
-            (_, false, builtin::POSITION) => self.stage == SourceStage::Vertex,
+            (_, false, builtin::POSITION) => {
+                matches!(self.stage, SourceStage::Vertex | SourceStage::Geometry)
+            }
+            (
+                SourceStage::Geometry,
+                true,
+                builtin::POSITION
+                | builtin::PRIMITIVE_ID
+                | builtin::GS_INSTANCE_ID
+                | builtin::GS_VERTEX_COUNT_IN,
+            ) => true,
             (SourceStage::Vertex, false, builtin::CLIP_DISTANCE) => true,
             (SourceStage::Vertex, true, builtin::VERTEX_ID | builtin::INSTANCE_ID) => true,
             (_, true, builtin::SAMPLE_COUNT) => self.variant.samples != 0,
@@ -2251,6 +2284,27 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                     Statement::MemoryBarrier(flags)
                 };
                 self.stmt(b, s);
+                return Ok(());
+            }
+            c::EMIT_VERTEX | c::EMIT_PRIMITIVE => {
+                if op.lits.first().is_some_and(|&stream| stream != 0) {
+                    return Err(unsupported("GeometryStreams"));
+                }
+                let g = self.l.geometry.as_ref();
+                let function = g
+                    .and_then(|g| match op.code {
+                        c::EMIT_VERTEX => g.emit,
+                        _ => g.cut,
+                    })
+                    .ok_or_else(|| malformed("an emit outside a geometry shader".into()))?;
+                self.stmt(
+                    b,
+                    Statement::Call {
+                        function,
+                        arguments: Vec::new(),
+                        result: None,
+                    },
+                );
                 return Ok(());
             }
             c::DEMOTE => {

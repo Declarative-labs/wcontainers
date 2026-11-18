@@ -255,13 +255,14 @@ pub fn decode(key: [u8; 32], payload: &[u8]) -> Result<Converted, ConvertError> 
     let modules = record
         .modules
         .into_iter()
-        .map(|(module, entry_point, stage)| {
+        .enumerate()
+        .map(|(i, (module, entry_point, stage))| {
             Ok(ShaderModule {
                 info: crate::validate(&module)?,
                 module,
                 entry_point,
                 stage,
-                key,
+                key: module_key(key, i),
             })
         })
         .collect::<Result<_, ConvertError>>()?;
@@ -269,6 +270,19 @@ pub fn decode(key: [u8; 32], payload: &[u8]) -> Result<Converted, ConvertError> 
         modules,
         reflection: record.reflection,
     })
+}
+
+/// The content key of module `index` of a conversion whose key is `key`: the key itself for the first,
+/// so each module a back end builds from has its own.
+pub(crate) fn module_key(key: [u8; 32], index: usize) -> [u8; 32] {
+    if index == 0 {
+        return key;
+    }
+    *blake3::Hasher::new()
+        .update(&key)
+        .update(&(index as u32).to_le_bytes())
+        .finalize()
+        .as_bytes()
 }
 
 /// `convert` through the cache: a recorded conversion is decoded, anything else converted and

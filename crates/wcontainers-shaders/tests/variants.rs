@@ -21,6 +21,36 @@ fn wgsl(c: &wcontainers_shaders::Converted) -> String {
         .unwrap()
 }
 
+/// The GLSL ES 3.00 the WebGL 2 back end writes (its options, as `tests/corpus.rs` copies them).
+fn glsl(c: &wcontainers_shaders::Converted) -> Result<String, String> {
+    let m = &c.modules[0];
+    let options = naga::back::glsl::Options {
+        version: naga::back::glsl::Version::Embedded {
+            version: 300,
+            is_webgl: true,
+        },
+        writer_flags: naga::back::glsl::WriterFlags::FORCE_POINT_SIZE,
+        ..Default::default()
+    };
+    let pipeline = naga::back::glsl::PipelineOptions {
+        shader_stage: m.module.entry_points[0].stage,
+        entry_point: "main".into(),
+        multiview: None,
+    };
+    let mut text = String::new();
+    naga::back::glsl::Writer::new(
+        &mut text,
+        &m.module,
+        &m.info,
+        &options,
+        &pipeline,
+        naga::proc::BoundsCheckPolicies::default(),
+    )
+    .and_then(|mut w| w.write().map(|_| ()))
+    .map_err(|e| format!("{e}"))?;
+    Ok(text)
+}
+
 /// Every rewrite not built yet is refused by name on both routes, never answered with the plain
 /// program.
 #[test]
@@ -41,20 +71,6 @@ fn unbuilt_variants_are_refused_by_name() {
                 ..Default::default()
             },
             "EarlyTestsInShader",
-        ),
-        (
-            VariantKey {
-                filter_in_shader: 1,
-                ..Default::default()
-            },
-            "FilterInShader",
-        ),
-        (
-            VariantKey {
-                border_in_shader: 1,
-                ..Default::default()
-            },
-            "BorderInShader",
         ),
         (
             VariantKey {
@@ -306,7 +322,8 @@ fn min_lod_clamp_samples_through_the_merged_sampler() {
             c.reflection.helpers,
             [
                 slot(HelperValue::LodBias { sampler: 0 }, 0),
-                slot(HelperValue::MinLod { texture: 0 }, 16)
+                // Right after the bias, as std140 packs it (GLSL ES reads the block so).
+                slot(HelperValue::MinLod { texture: 0 }, 8)
             ]
         );
         let text = wgsl(&c);
@@ -657,5 +674,79 @@ fn constants_read_through_a_texture_are_texel_fetches() {
             assert!(text.contains("textureLoad"), "{text}");
             assert!(!text.contains("var<uniform>"), "{text}");
         }
+    }
+}
+
+/// Filtering in the program: every sample of a filtered texture, or through a sampler whose border the
+/// program applies, becomes a call into the filter library reading texels with loads, by the sampler's
+/// state and border colour from the helper block; the pair leaves the reflection. Every shape of texture
+/// the library serves converts on both routes; comparisons and cubes are refused by name.
+#[test]
+fn filtering_in_the_program_reads_texels_with_loads() {
+    for key in [
+        VariantKey {
+            filter_in_shader: 1,
+            ..Default::default()
+        },
+        VariantKey {
+            border_in_shader: 1,
+            lod_bias: 1,
+            flags: VariantFlags::TEXTURE_INFO,
+            ..Default::default()
+        },
+    ] {
+        for c in both(&own_pair("ps_textured"), &key) {
+            assert!(c.reflection.sampled_pairs.is_empty());
+            let values: Vec<_> = c.reflection.helpers.iter().map(|s| s.value).collect();
+            assert!(values.contains(&HelperValue::SamplerState { sampler: 0 }));
+            assert!(values.contains(&HelperValue::BorderColor { sampler: 0 }));
+            let text = wgsl(&c);
+            assert!(!text.contains("textureSample"), "{text}");
+            assert!(text.contains("textureLoad("), "{text}");
+            // GLSL ES has no level count, which the WebGL 2 back end's fronts read from the helpers.
+            if key.flags.contains(VariantFlags::TEXTURE_INFO) {
+                assert!(!text.contains("textureNumLevels"), "{text}");
+                glsl(&c).unwrap_or_else(|e| panic!("{key:?}: {e}\n{text}"));
+            }
+        }
+    }
+    let every = VariantKey {
+        filter_in_shader: !0,
+        flags: VariantFlags::TEXTURE_INFO,
+        ..Default::default()
+    };
+    for name in [
+        "samplers.ps_gather",
+        "samplers.ps_sample",
+        "textures.ps_1d",
+        "textures.ps_2d_array",
+        "textures.ps_3d",
+        "textures.ps_mips",
+    ] {
+        let c = convert(
+            Source::Dxbc(&rig(&format!("dxbc/{name}.dxbc"))),
+            &every,
+            None,
+        )
+        .unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(!wgsl(&c).contains("textureSample"), "{name}");
+        if name != "textures.ps_1d" {
+            glsl(&c).unwrap_or_else(|e| panic!("{name}: {e}"));
+        }
+        assert!(!wgsl(&c).contains("textureGather"), "{name}");
+    }
+    for (name, reason) in [
+        ("samplers.ps_compare", "FilterInShaderOnComparison"),
+        ("textures.ps_cube", "FilterInShaderOnCube"),
+    ] {
+        assert_eq!(
+            convert(
+                Source::Dxbc(&rig(&format!("dxbc/{name}.dxbc"))),
+                &every,
+                None
+            )
+            .map(|_| ()),
+            Err(ConvertError::Unsupported(reason))
+        );
     }
 }
