@@ -28,7 +28,7 @@ geometry.gs_layers.dxil	spirv-reader unsupported
 geometry.gs_points.dxil	spirv-reader unsupported
 geometry.gs_strips.dxil	spirv-reader unsupported
 geometry.ps.dxil	ok
-geometry.ps_id.dxil	unsupported PrimitiveId
+geometry.ps_id.dxil	ok-wgsl glsl-compile
 geometry.ps_primitive.dxil	ok
 geometry.vs.dxil	ok
 msaa.ps_coverage.dxil	spirv-reader the

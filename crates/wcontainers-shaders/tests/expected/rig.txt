@@ -30,7 +30,7 @@ geometry.gs_layers.dxbc	ok-wgsl glsl-write
 geometry.gs_points.dxbc	ok-wgsl glsl-write
 geometry.gs_strips.dxbc	ok-wgsl glsl-write
 geometry.ps.dxbc	ok
-geometry.ps_id.dxbc	unsupported PrimitiveId
+geometry.ps_id.dxbc	ok-wgsl glsl-compile
 geometry.ps_primitive.dxbc	ok
 geometry.vs.dxbc	ok
 instanced.ps.dxbc	ok

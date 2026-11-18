@@ -90,6 +90,26 @@ fn geometry_shaders_declare_what_they_are() {
     }
 }
 
+/// A DXIL vertex program's outputs keep their own widths (`vs_transform`: a float2 and a uint): its
+/// compute form fills each record slot's first components and zeroes the rest.
+#[test]
+fn narrower_vertex_outputs_fill_their_record_slots() {
+    let key = VariantKey {
+        pulled: vec![(0, VertexFormat::Float32x3), (1, VertexFormat::Float32x2)],
+        ..Default::default()
+    };
+    let vs = convert(Source::Dxil(&own("vs_transform.dxil")), &key, None).unwrap();
+    let gs = convert(
+        Source::Dxbc(&own("gs_quads.dxbc")),
+        &VariantKey::default(),
+        None,
+    )
+    .unwrap();
+    let records = stage::vertex_program(&vs, &gs).unwrap();
+    let text = wgsl(&records);
+    assert!(text.contains("vec4<u32>("), "{text}");
+}
+
 #[test]
 fn geometry_refusals_are_named() {
     // A vertex program whose inputs are not pulled cannot run as compute.

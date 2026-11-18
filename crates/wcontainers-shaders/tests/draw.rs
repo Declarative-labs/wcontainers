@@ -752,6 +752,68 @@ fn wave_operations_draw_as_direct3d_12_does() {
     assert_eq!(count, 0);
 }
 
+/// The primitive index in a pixel shader without a geometry shader (`ps_primid`), natively through
+/// the WebGPU back end on a device with wgpu's `PRIMITIVE_INDEX`, from the fxc build against real
+/// Direct3D 11 and from the dxc build against real Direct3D 12. Exact.
+#[test]
+fn primitive_index_draws_as_direct3d_does() {
+    let case = Case {
+        vs: "vs_transform",
+        ps: "ps_primid",
+        format: Format::Rgba32Uint,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: [Some("GLSL ES 3.00 has no primitive index"); 2],
+        known_on_webgl: None,
+        dxil: true,
+        dxil_against_11: false,
+    };
+    let gpu = d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let gpu12 = wcontainers_graphics_test::d3d12::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+    )
+    .unwrap();
+    let mut backend = webgpu_with(wgpu::Backends::DX12, wgpu::Features::PRIMITIVE_INDEX);
+    let grid = grid();
+    for (dxil, ext) in [(false, "dxbc"), (true, "dxil")] {
+        let reference = match dxil {
+            false => direct3d(&gpu, &case),
+            true => direct3d_12(&gpu12, &case),
+        };
+        let code = [
+            bytecode(&format!("vs_transform.{ext}")),
+            bytecode(&format!("ps_primid.{ext}")),
+        ];
+        let draw = Draw::own(&case, &code, dxil, &grid);
+        let texels = ours(&mut backend, &draw, ProvokingVertex::First);
+        keep(
+            &format!("vs_transform+ps_primid.webgpu-{ext}"),
+            &texels,
+            case.format,
+        );
+        let primitives: std::collections::BTreeSet<_> = reference
+            .chunks(16)
+            .filter(|t| t[12] == 7)
+            .map(|t| t[..4].to_vec())
+            .collect();
+        let (count, largest) = differ(&reference, &texels, case.format);
+        eprintln!(
+            "ps_primid webgpu-{ext}: {count} of {} texels differ ({} primitives drawn), largest \
+             difference {largest}",
+            SIZE * SIZE,
+            primitives.len()
+        );
+        assert!(primitives.len() > 1);
+        assert_eq!(count, 0);
+    }
+}
+
 /// The rig's triangle scene drawn from its DXIL (dxc) and its DXBC (fxc) through both back ends, each
 /// against the picture real Direct3D 12 drew, with the rig's allowance (one step, as WARP).
 #[test]
