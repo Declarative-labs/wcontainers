@@ -41,6 +41,9 @@ pub struct Counters {
     pub staged_writes: u64,
     /// Staging rings made (the first, and each larger one a submit's staged bytes needed).
     pub staging_rings: u64,
+    /// Query rings made, which resolved query results are taken from as staged bytes are from
+    /// the staging ring.
+    pub query_rings: u64,
 }
 
 /// An immutable block, made once per distinct value.
@@ -1043,13 +1046,8 @@ impl WebGpu {
         if let Some(set) = &occlusion_set {
             set.0.settle();
         }
-        let mut rp = open(
-            self.encoder(),
-            &colors,
-            &depth,
-            occlusion_set.as_ref().map(|q| &q.0.raw),
-            false,
-        );
+        let first_page = occlusion_set.as_ref().map(|q| q.0.page(0));
+        let mut rp = open(self.encoder(), &colors, &depth, first_page.as_ref(), false);
         for (i, bits) in by_draw {
             self.clear_by_draw(&mut rp, &targets, i, bits);
         }
