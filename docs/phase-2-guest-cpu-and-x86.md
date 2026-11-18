@@ -97,10 +97,14 @@ for x86-64, with ARM64's own long runs still passing.
   `CpuidFeature` values, not CPUID bits (section 5.10 gives both lists in iced's names, run 10 above why):
   a `Code` is in the default group when every one of its features is in the default list, else in the AVX
   setting's group when every one is in the default or the AVX list, else never. A `Code` that
-  `is_privileged()` marks kernel-only gets a fourth value, "kernel only", whatever its features (its
-  meaning gives the fault Linux gives a program, section 5.2). Cargo's resolver 3 (the workspace's)
+  `is_privileged()` marks kernel-only (and `rdpmc`) gets a fourth value, "kernel only", when every one of its
+  features is in the default list or in a third list, the kernel-only features every x86-64 CPU has (`MSR`,
+  `RDPMC`, `SMM`), so that the CPU presented has the instruction (its meaning gives the fault Linux gives a
+  program, section 5.2); a kernel-only `Code` of any other feature (VMX, SVM, SMAP, SGX, XSAVES, INVPCID,
+  CET and the rest) goes by the lists like any other, so it is never claimed and gives illegal instruction
+  as on a CPU without that feature (`xsetbv` falls in the AVX setting's group). Cargo's resolver 3 (the workspace's)
   keeps a build-dependency's features apart from the normal dependency, so the shipped decoder stays
-  `decoder` only. The table is about 5 KB before compression (expected; measured at X3). A test checks the
+  `decoder` only. The table is 4,936 bytes before compression, one a `Code` (measured at X3). A test checks the
   table against iced's `instr_info` answers for every `Code`.
 
 ### Fused multiply-add in WebAssembly
@@ -1528,51 +1532,45 @@ Tests (section 7 gives the detail):
   encoding iced calls `INVALID` traps `Undefined` (SIGILL), except one longer than 15 bytes, which traps
   `GeneralProtection` (SIGSEGV, `SI_KERNEL`, address 0, rip at the instruction): the CPU's length limit wins
   over every other rule, invalid opcodes and invalid lock prefixes included (section 2, run 5). iced reports
-  both as `INVALID` with length 15 (it stops reading at 15 bytes), so `decode` tells them apart: when iced
-  gives `INVALID` with length 15, it works out the encoding's full length from the prefix run at its start. It
-  keeps the last `66`, the last `67`, the last of `F2` and `F3`, and a REX byte (`40` to `4F`) when it is
-  directly before the opcode, and drops every other prefix byte: all segment prefixes (`26 2E 36 3E 64 65`)
-  and lock bytes (`F0`), which change no instruction's length, repeats of the kept kinds, and REX bytes
-  followed by another prefix, which the CPU ignores. When the byte after the prefix run is `C4`, `C5` or `62`
-  (always a VEX or EVEX instruction in 64-bit mode), the kept `66`, `F2`, `F3` and REX are dropped as well:
-  before a VEX or EVEX instruction they only make it invalid, and the CPU still counts the whole VEX or EVEX
-  instruction after them, ModRM, SIB and displacement included (section 2, run 7: 16 bytes in all give general
-  protection, 15 give `SIGILL`, for each of them and for EVEX on a CPU without AVX-512); `67` stays, since it
-  changes the addressing and so the length. It decodes the rest with iced and adds the count dropped to the
-  rest's length. Only the length is used, so the drop may change what the rest means (a lock that made it
-  invalid, say) but not how long it is: `66` and `67` are the only prefixes that change a length (Intel's
-  "length-changing prefixes"), and the last of `F2` and `F3` stays because it picks among mandatory-prefix
-  forms, whose lengths iced may count differently when invalid. The longest valid rest is 15 bytes: the four
-  kept prefixes and a one-byte opcode with ModRM, SIB, a 32-bit displacement and a 32-bit immediate (`F3 66 67
-  48 C7 84 24`, then 4 and 4 bytes; REX.W wins over `66`, so the immediate stays 4 bytes). iced decodes it as
-  a 15-byte `mov`, the reference runs it, and with a segment prefix before it, 16 bytes, gives general
-  protection (seen by the fifth independent check). So iced's limit never cuts a valid rest short. When the
-  rest is an instruction, its length is iced's and the sum is the CPU's length. When the rest is itself
-  `INVALID`, iced's count of the bytes after its opcode is iced's own choice, not the CPU's: the CPU's length
-  decoder counts bytes by its own tables even for opcodes that do not exist in 64-bit mode (section 2, run 5:
-  `0F 38 FF` and `9A` count bytes after the opcode; `06` and `0F 24` count nothing after it, where iced counts
-  one). So the x86 crate holds a table, purpose-built because iced has none, of what the CPU counts after each
-  opcode iced decodes as `INVALID`: nothing, a ModRM (with the SIB and displacement it calls for), a ModRM and
-  an immediate of a given size, or an immediate. Run 5's sweep of the four legacy maps (`sweep15.sh`: each
-  opcode placed so it ends at byte 15) gives the first answers: nothing after `06 07 0E 16 17 1E 1F 27 2F 37
-  3F 60 61 CE D6` and, in the `0F` map, `04 0A 0C 0F 24 25 26 27 36`; at least one byte after every other
-  opcode iced calls `INVALID` there. X3 completes the table with the same sweep, adding the maps behind `C4`,
-  `C5` and `62`, run with each opcode ending at bytes 14 down to 8 (the count is how far back it still gives
-  general protection), once with filler whose ModRM asks for nothing more and once with a ModRM that asks for
-  a SIB and a 32-bit displacement (which tells a ModRM from an immediate); it keeps the sweep's script and
-  output beside the crate's tests, and a test checks the table against the recorded output. Over 15, the
-  instruction stays iced's `INVALID` with that length set in it (`set_len`, a byte) and its meaning traps
-  `GeneralProtection`; otherwise its meaning traps `Undefined`. As built at X3 this runs for every `INVALID`, of any length
-  (iced also stops early at the field that makes an encoding invalid, so a 14-byte `INVALID` can be 18 bytes
-  to the CPU), and the instruction gets the CPU's length whether or not it passes 15. Two rules besides the
-  prefix rule, each checked by layer 1's cases in no form: an opcode made invalid by its mandatory prefix is
-  counted with its ModRM and immediate (iced decodes it again without the repeat prefix, then without 66);
-  a VEX or EVEX encoding iced calls invalid is counted by its fields (prefix, opcode, ModRM with SIB and
-  displacement, an immediate in map 3 and for the map 0F opcodes that take one), reading the map field's low
-  two bits. That last rule is not yet the CPU's for every VEX and EVEX encoding: the sweep below decides it.
-  It costs nothing on any valid instruction; layer 1's no-form cases check it against the reference. A
-  too-long encoding whose rest runs past the end of the code range is `None` like any instruction that runs
-  past it (what the CPU does there is not seen, section 12).
+  both as `INVALID` (it stops reading at 15 bytes, and at the field that makes an encoding invalid, so a
+  14-byte `INVALID` can be 18 bytes to the CPU), so `decode` counts every encoding iced calls `INVALID`, or
+  cannot finish, or decodes as a `Code` of the never-claimed group, as the CPU's length decoder counts it,
+  by a table: the CPU counts bytes by its own tables even for opcodes that do not exist in 64-bit mode
+  (section 2, run 5: `0F 38 FF` and `9A` count bytes after the opcode; `06` and `0F 24` count nothing after
+  it, where iced counts one), and counts other makers' instructions by Intel's map (3DNow's `0F 0F` counts
+  nothing after it, XOP's `8F` a ModRM, SSE4a's `66 0F 78` a ModRM and no immediates; seen at X3). The table
+  was made at X3 from a sweep on the reference (`x86-lengths` in the test crate, its output
+  `crates/wcontainers-x86/tests/lengths.txt`): every opcode of the one-byte, 0F, 0F38 and 0F3A maps, alone
+  and after 66, REX.W, 67, F2 and F3; every opcode after a two-byte VEX prefix, a three-byte one with each
+  of the 32 values of its map field (W and pp varied for the first four), an EVEX one with each of the 8
+  values of its map bits (W, pp, the bits that must be 1 and 0, and R and X varied for the first four), XOP's
+  `8F` with every next byte, and every 3DNow suffix; each with three fillers after the opcode (a register
+  ModRM with reg 0 and with reg 7, and a ModRM asking for a SIB and a 32-bit displacement); each length found
+  by how many segment prefixes before it first give general protection (76,100 lengths in 300 lines; run twice,
+  the same both times). What it
+  shows, and the table holds: the one-byte and 0F maps count by opcode (nothing, a ModRM with what it asks
+  for, immediates of 8, 16, 16 or 32 by 66, 32 whatever the operand size for `E8`, `E9` and `0F 8x`, 16,
+  32 or 64 by 66 and REX.W for `B8` to `BF`, a far pointer for `9A` and `EA`, an 8- or 4-byte address by
+  67 for `A0` to `A3`, the `F6` and `F7` immediates only for reg 0 and 1, and one byte after `0F 20` to `0F
+  23`, whose mode the CPU ignores); the 0F38 map counts a ModRM after every opcode and the 0F3A map a ModRM
+  and an 8-bit immediate; F2 and F3 change nothing; in the legacy 0F map, `38` to `3F` lead a third opcode
+  byte, counted as the 0F38 map when bit 1 is clear and as 0F3A when set. A VEX or EVEX prefix takes its map
+  from the low two bits of its map field and counts its opcode by the same tables, except that `38` to `3F`
+  of its 0F map count nothing after them; W, pp, L and the EVEX bits that must be fixed change nothing; with
+  the low two map bits 0 the CPU counts only the byte after `C4` or `62` as a ModRM. 66 and REX.W before a VEX
+  or EVEX prefix only make it invalid and change no length; 67 does. Each table entry the sweep cannot
+  measure (an instruction that faults however short it is: `in`, `out`, `ret` to the filler's
+  non-canonical address, and the like) is Intel's opcode map, and a second test checks every entry against
+  iced's length of the valid instruction (a lock prefix makes nearly every instruction invalid, so its
+  length comes from the table). The longest legal instruction is 15 bytes: the four kept prefixes and a
+  one-byte opcode with ModRM, SIB, a 32-bit displacement and a 32-bit immediate (`F3 66 67 48 C7 84 24`,
+  then 4 and 4 bytes; REX.W wins over `66`, so the immediate stays 4 bytes); with a segment prefix before
+  it, 16 bytes, it gives general protection (seen by the fifth independent check). Over 15, the instruction
+  stays iced's `INVALID` with that length set in it (`set_len`, a byte) and its meaning traps
+  `GeneralProtection`; otherwise its meaning traps `Undefined`, or `Unsupported` for a never-claimed
+  `Code`. It costs nothing on any valid instruction of a claimed feature; layer 1's no-form cases check it
+  against the reference. A too-long encoding whose rest runs past the end of the code range is `None` like
+  any instruction that runs past it (what the CPU does there is not seen, section 12).
 - **A feature not offered: its bytes do what a CPU without that feature does with them.** The reference is
   such a CPU for most of them, and decides. For nearly every such instruction that is illegal
   instruction, so it traps `Unsupported` (SIGILL, counted, warned), with x86's own reason when its claim
@@ -1602,7 +1600,10 @@ Tests (section 7 gives the detail):
   rdmsr, wrmsr, rdpmc while Linux does not allow it, `int n` other than 3, 4, 0x80 and the `int1` and
   `int3` forms; every `Code` in the claim table's "kernel only" group, section 2, whatever its feature): the
   fault Linux gives a user program, which for most is general protection (SIGSEGV, SI_KERNEL, address 0)
-  and for some #UD (SIGILL); layer 1 decides each against the reference. `rdpmc` is put in "kernel only"
+  and for some #UD (SIGILL); layer 1 decides each against the reference. As found at X3 (layer 1, the 49
+  kernel-only forms at 1,000 cases each): every one is general protection but `rsm`, which is #UD outside
+  system management mode; `in` and `out` and the string forms included. A kernel-only `Code` of a feature
+  not presented is in the never-claimed group (section 2) and gives illegal instruction. `rdpmc` is put in "kernel only"
   by the build script although iced's `is_privileged()` is false for it and its feature is `RDPMC`: with
   CR4.PCE clear, as Linux leaves it, the reference gives general protection (check 10, `0f33`).
   `int 4` (`CD 04`) is a trap, not a fault: vector 4 is a user-callable gate, so the reference gives SIGSEGV
@@ -2153,8 +2154,9 @@ slots by TOP when it fills an FXSAVE or XSAVE image (a signal frame, `ptrace`, a
   `CMPXCHG16B`, `LZCNT`, `BMI1`, `ADX`, `MOVBE`, `RDTSCP`, `FSGSBASE`, `CLFSH`, `SEP` and `SYSCALL`. NX,
   LM and LAHF-SAHF in 64-bit mode are CPUID bits with no iced feature of their own (`lahf` and `sahf` are
   `INTEL8086`). The AVX setting's list: `AVX`, `AVX2`, `FMA`, `F16C`, `BMI2` and `XSAVE` (`xgetbv`,
-  `xsave`, `xrstor`; `xsetbv` is kernel only). Every other name is never claimed, and a `Code` the claim
-  table puts in "kernel only" (section 2) is not judged by these lists at all. The 15 baseline Codes of
+  `xsave`, `xrstor`, and `xsetbv`, which is general protection in user mode when XSAVE is presented; its
+  meaning is X5's with the setting's). Every other name is never claimed; section 2 says which kernel-only
+  `Code`s are "kernel only". The 15 baseline Codes of
   `INTEL286` include `sldt`, `str`, `smsw`, `lar`, `lsl`, `verr` and `verw`, which run in user mode on the
   reference (it has no UMIP); their meanings give what layer 1 finds there, except where the answer depends
   on which processor ran it. `sgdt` and `sidt` (baseline, not privileged) store kernel addresses there, and
@@ -3016,8 +3018,11 @@ apply unchanged.
 
 ## 12. Not yet measured
 
-- What the x86 translator downloads in the browser once ARM64-only code is left out (the decoder alone
-  adds about 47 KB brotli, section 2).
+- What the x86 translator downloads in the browser once its meanings are complete (X5). At X3, measured
+  from the link map of the release browser build for x86 (`--Map`, every custom section stripped): 872,638
+  bytes, 203,533 brotli (`-q 11`); iced-x86's own functions and statics in it are 156,416 bytes (115,635 of
+  code, 40,781 of data), 27,565 brotli compressed alone (a scratch cdylib of the decoder alone gave 46,880,
+  section 2).
 - The lookup array's memory on real x86 programs (four bytes per byte of code, expected).
 - What a CPU without MPX hardware does with `0F 1A` and `0F 1B`: a NOP, expected from the manual's
   reserved-NOP space; the reference has MPX, which Linux leaves off, and runs them as NOPs (section 2,
@@ -3029,8 +3034,7 @@ apply unchanged.
   memory (four operations each, section 3.4).
 - The cost of the 128-by-64 long division against the CPU's own `div r64` (section 5.2), and of the
   approximate reciprocals' formula (about 30 vector operations for four lanes, section 5.8).
-- The size of the build-time claim table (about 5 KB expected) and of `astro-float` in the real x86
-  browser build (40,947 bytes brotli in a scratch cdylib, section 5.8).
+- The size of `astro-float` in the real x86 browser build (40,947 bytes brotli in a scratch cdylib, section 5.8).
 - How often programs translate code from a live stack frame, and how often parallel threads must be
   stopped to protect code (section 5.7).
 - The cost of looking up the code marks on every kernel write into guest memory (one lookup per page
