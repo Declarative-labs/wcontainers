@@ -237,8 +237,8 @@ struct Targets<B: Backend> {
 }
 
 impl<B: Backend> Replay<B> {
-    /// A draw of a pipeline with a geometry shader or stream output: the stage helper's
-    /// dispatches outside the pass, then the draw of a geometry stage's output in it. Answers
+    /// A draw of a pipeline with a geometry, hull or domain shader or stream output: the stage
+    /// helper's dispatches outside the pass, then the draw of its output in it. Answers
     /// whether the draw is still to be drawn as usual (stream output without a geometry stage,
     /// stream 0 drawn).
     pub(super) fn draw_geometry(
@@ -250,13 +250,13 @@ impl<B: Backend> Replay<B> {
     ) -> Result<bool, Error> {
         if record.is_some() {
             return Err(Error::NotImplemented(
-                "a predicated draw through a geometry shader or stream output",
+                "a predicated draw through a geometry, hull or domain shader or stream output",
             ));
         }
         if self.counted.is_some() || self.statistics.is_some() {
             return Err(Error::NotImplemented(
-                "a draw through a geometry shader or stream output while a counted occlusion or \
-                 statistics query runs",
+                "a draw through a geometry, hull or domain shader or stream output while a counted \
+                 occlusion or statistics query runs",
             ));
         }
         let (first_instance, bases) = match range {
@@ -272,7 +272,7 @@ impl<B: Backend> Replay<B> {
             } => (first_instance, [base_vertex as u32, first_instance]),
             _ => {
                 return Err(Error::NotImplemented(
-                    "an indirect draw through a geometry shader or stream output",
+                    "an indirect draw through a geometry, hull or domain shader or stream output",
                 ));
             }
         };
