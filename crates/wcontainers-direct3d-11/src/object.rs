@@ -218,6 +218,9 @@ pub struct View<B: Backend> {
     /// bits; its levels and layers are copied in before each use and out after each write
     /// (`ReinterpretCopy`).
     pub twin: Option<Kept<B, B::Texture>>,
+    /// The twin holds only the view's slices of its 3D level, as the twin's one level from its
+    /// first slice (a storage view of some slices, which no back end's view sees).
+    pub window: bool,
 }
 
 impl<B: Backend> View<B> {

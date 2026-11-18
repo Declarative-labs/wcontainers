@@ -4190,10 +4190,31 @@ fn channel_values(format: Format, values: [u32; 4]) -> Result<[u32; 4]> {
             R8Snorm | Rg8Snorm | Rgba8Snorm => snorm(v, 8),
             R16Snorm | Rg16Snorm | Rgba16Snorm => snorm(v, 16),
             Rgb10a2Unorm => unorm(v, if c == 3 { 2 } else { 10 }),
+            // Unsigned floats of a 5-bit exponent and a 6-bit (red, green) or 5-bit (blue)
+            // mantissa; the format has no alpha.
+            Rg11b10Float => match c {
+                0 | 1 => small_float(v, 6),
+                2 => small_float(v, 5),
+                _ => 1.0,
+            },
             _ => return not_implemented("a uint clear of a view of floats of this format"),
         };
     }
     Ok(out.map(f32::to_bits))
+}
+
+/// The unsigned float of a 5-bit exponent and a `mantissa`-bit mantissa in the low bits of `v`
+/// (biased by 15, as `R11G11B10_FLOAT`'s channels).
+fn small_float(v: u32, mantissa: u32) -> f32 {
+    let m = v & ((1 << mantissa) - 1);
+    let e = (v >> mantissa) & 0x1f;
+    let fraction = f64::from(m) / f64::from(1u32 << mantissa);
+    (match e {
+        0 => fraction * 2f64.powi(-14),
+        31 if m == 0 => f64::INFINITY,
+        31 => f64::NAN,
+        _ => (1.0 + fraction) * 2f64.powi(e as i32 - 15),
+    }) as f32
 }
 
 /// Whether a view of format kind `view` reads as a declaration of kind `declared`: integers as

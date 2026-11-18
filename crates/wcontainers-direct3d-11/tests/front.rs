@@ -914,6 +914,97 @@ fn lines_by_the_quadrilateral_or_alpha_rule_are_not_served() {
     }
 }
 
+#[test]
+fn a_read_only_depth_view_keeps_views_of_its_aspect_bound_and_its_draws_write_nothing_there() {
+    let mut dev = device();
+    let elements = [
+        element("POSITION", RGB32F, 0),
+        element("COLOR", RGBA32F, 12),
+    ];
+    ready(
+        &mut dev,
+        "common.vs_color",
+        "common.ps_color",
+        &elements,
+        28,
+    );
+    let target = dev
+        .create_texture(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
+        .unwrap();
+    let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
+    // R24G8_TYPELESS viewed as D24_UNORM_S8_UINT (45) for depth and R24_UNORM_X8_TYPELESS (46)
+    // to read it.
+    let depth = dev
+        .create_texture(
+            &tex2d(16, 16, 44, bind::DEPTH_STENCIL | bind::SHADER_RESOURCE),
+            &[],
+        )
+        .unwrap();
+    let view = |format, read_only| ViewDesc {
+        format,
+        dimension: ViewDim::Texture2D,
+        first_mip: 0,
+        mip_count: 1,
+        first_layer: 0,
+        layer_count: 1,
+        read_only,
+    };
+    let srv = dev
+        .create_view(&depth, Some(&view(46, 0)), bind::SHADER_RESOURCE)
+        .unwrap();
+    let srv = Rc::new(ShaderView::Texture(srv));
+    for (read_only, kept) in [
+        (0, false),
+        (DSV_READ_ONLY_DEPTH, true),
+        (DSV_READ_ONLY_STENCIL, false),
+    ] {
+        let dsv = dev
+            .create_view(&depth, Some(&view(45, read_only)), bind::DEPTH_STENCIL)
+            .unwrap();
+        dev.om_set_render_targets(&[Some(rtv.clone())], None)
+            .unwrap();
+        dev.set_shader_resources(PIXEL, 0, &[Some(srv.clone())])
+            .unwrap();
+        dev.om_set_render_targets(&[Some(rtv.clone())], Some(dsv))
+            .unwrap();
+        assert_eq!(
+            dev.shader_resource_bound(PIXEL, 0),
+            kept,
+            "flags {read_only}"
+        );
+    }
+    // The default state writes depth; through the depth-only read-only view it draws with a twin
+    // writing none, in a pass whose depth is only read.
+    let dsv = dev
+        .create_view(
+            &depth,
+            Some(&view(45, DSV_READ_ONLY_DEPTH)),
+            bind::DEPTH_STENCIL,
+        )
+        .unwrap();
+    dev.om_set_render_targets(&[Some(rtv)], Some(dsv)).unwrap();
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    assert!(
+        log.iter()
+            .any(|l| l.starts_with("create_depth_stencil") && l.contains("write false")),
+        "{log:#?}"
+    );
+    assert!(
+        log.iter().any(|l| l.starts_with("begin_pass")
+            && l.contains(" depth read-only")
+            && !l.contains("stencil read-only")),
+        "{log:#?}"
+    );
+    // Feature level 11_0 is needed, and only the two flags exist.
+    assert!(matches!(
+        dev.create_view(&depth, Some(&view(45, 4)), bind::DEPTH_STENCIL),
+        Err(Error::InvalidArg(_))
+    ));
+}
+
 /// A target, cleared and bound, with a program of the corpus and a vertex buffer of `stride` bytes.
 fn ready(dev: &mut Dev, vs: &str, ps: &str, elements: &[InputElement], stride: u32) {
     let target = dev

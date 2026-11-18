@@ -325,6 +325,10 @@ impl<B: Backend> Device<B> {
                 bits |= MULTISAMPLE_RESOLVE;
             }
         }
+        // A typed depth format is read through its typeless group's other members.
+        if format::depth_only(dxgi) {
+            bits &= !(SHADER_LOAD | SHADER_SAMPLE | MULTISAMPLE_LOAD);
+        }
         bits
     }
 
@@ -1200,7 +1204,25 @@ impl<B: Backend> Device<B> {
         }
         self.live()?;
         self.bury();
-        let twin = if !stencil && format::reinterprets(format, texture.format) {
+        // A storage view of some slices of a 3D level, which no back end's view sees, is made on
+        // a texture of those slices alone (`View::window`).
+        let window = kind == bind::UNORDERED_ACCESS
+            && t.dimension == TexDim::D3
+            && (v.first_layer != 0 || v.layer_count != (t.depth >> v.first_mip).max(1));
+        let twin = if window {
+            let e = texture.mip_extent(v.first_mip);
+            let gpu = self.backend.create_texture(&GpuTexture {
+                format,
+                width: e.width,
+                height: e.height,
+                depth_or_layers: v.layer_count,
+                mip_levels: 1,
+                ..texture.gpu_desc
+            });
+            let gpu = self.gpu(gpu)?;
+            let id = self.id();
+            Some(Kept::new(gpu, id, Object::Texture, &self.graveyard))
+        } else if !stencil && format::reinterprets(format, texture.format) {
             if kind == bind::DEPTH_STENCIL {
                 return not_implemented(
                     "a depth view reinterpreting a typeless texture's bits as another format",
@@ -1221,7 +1243,7 @@ impl<B: Backend> Device<B> {
             &TextureViewDesc {
                 format,
                 dimension,
-                base_mip: v.first_mip,
+                base_mip: if window { 0 } else { v.first_mip },
                 mip_count: v.mip_count,
                 base_layer,
                 layer_count,
@@ -1236,6 +1258,7 @@ impl<B: Backend> Device<B> {
             format,
             gpu: Kept::new(gpu, id, Object::TextureView, &self.graveyard),
             twin,
+            window,
         }))
     }
 
@@ -1246,13 +1269,6 @@ impl<B: Backend> Device<B> {
         desc: Option<&ViewDesc>,
     ) -> Result<Rc<ShaderView<B>>> {
         let v = self.create_view(texture, desc, bind::UNORDERED_ACCESS)?;
-        let t = &texture.desc;
-        if t.dimension == TexDim::D3
-            && (v.desc.first_layer != 0
-                || v.desc.layer_count != (t.depth >> v.desc.first_mip).max(1))
-        {
-            return not_implemented("an unordered access view of some slices of a 3D level");
-        }
         self.check_format(v.format, FormatUse::STORAGE_WRITE)?;
         Ok(Rc::new(ShaderView::Texture(v)))
     }
