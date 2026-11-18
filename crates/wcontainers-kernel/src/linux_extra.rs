@@ -708,3 +708,10 @@ pub(crate) const AIO_RING_COMPAT_FEATURES: u32 = 1;
 pub(crate) const AIO_RING_HEADER: u64 = 32;
 pub(crate) const IOCB_SIZE: u64 = 64;
 pub(crate) const IO_EVENT_SIZE: u64 = 32;
+
+/// `<linux/oom.h>`'s scales of how the out-of-memory killer weighs a process, which linux-raw-sys
+/// does not carry.
+pub(crate) const OOM_SCORE_ADJ_MIN: i32 = -1000;
+pub(crate) const OOM_SCORE_ADJ_MAX: i32 = 1000;
+pub(crate) const OOM_DISABLE: i32 = -17;
+pub(crate) const OOM_ADJUST_MAX: i32 = 15;

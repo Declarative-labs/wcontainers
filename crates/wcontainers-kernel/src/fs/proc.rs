@@ -120,6 +120,9 @@ pub(crate) enum ProcessFile {
     CoredumpFilter,
     Environ,
     Auxv,
+    OomAdj,
+    OomScore,
+    OomScoreAdj,
     Maps,
     Stat,
     Statm,
@@ -266,6 +269,9 @@ const PROCESS_FILES: &[(&[u8], ProcessFile)] = &[
     (b"maps", ProcessFile::Maps),
     (b"mountinfo", ProcessFile::Mountinfo),
     (b"mounts", ProcessFile::Mounts),
+    (b"oom_adj", ProcessFile::OomAdj),
+    (b"oom_score", ProcessFile::OomScore),
+    (b"oom_score_adj", ProcessFile::OomScoreAdj),
     (b"stat", ProcessFile::Stat),
     (b"statm", ProcessFile::Statm),
     (b"status", ProcessFile::Status),
@@ -531,6 +537,8 @@ pub(crate) enum Writing {
     Comm,
     /// `proc_coredump_filter_write`: chooses what a core dump would hold.
     CoredumpFilter,
+    /// `oom_score_adj_write` (false) or the older `oom_adj_write` (true).
+    OomScoreAdj(bool),
     /// A sysctl's own write; `/proc/sys` is mounted read-only, so no file is open for it.
     Sysctl,
     /// `EIO`, as `pde_write` for an entry with no write of its own.
@@ -636,6 +644,8 @@ impl Entry {
         match self {
             Entry::ProcessFile(_, ProcessFile::Comm) => Writing::Comm,
             Entry::ProcessFile(_, ProcessFile::CoredumpFilter) => Writing::CoredumpFilter,
+            Entry::ProcessFile(_, ProcessFile::OomScoreAdj) => Writing::OomScoreAdj(false),
+            Entry::ProcessFile(_, ProcessFile::OomAdj) => Writing::OomScoreAdj(true),
             Entry::Global(_) if self.style() == Style::Sysctl => Writing::Sysctl,
             // `proc_reg_write` with no `proc_write` of the entry's own.
             Entry::Global(_) | Entry::NetFile(..) => Writing::Io,
@@ -670,9 +680,13 @@ impl Entry {
                 Global::File(permissions) => S_IFREG | permissions,
                 Global::Link(_) => S_IFLNK | 0o777,
             },
-            Entry::ProcessFile(_, ProcessFile::Comm | ProcessFile::CoredumpFilter) => {
-                S_IFREG | 0o644
-            }
+            Entry::ProcessFile(
+                _,
+                ProcessFile::Comm
+                | ProcessFile::CoredumpFilter
+                | ProcessFile::OomAdj
+                | ProcessFile::OomScoreAdj,
+            ) => S_IFREG | 0o644,
             Entry::ProcessFile(_, ProcessFile::Environ | ProcessFile::Auxv) => S_IFREG | 0o400,
             Entry::ProcessFile(..) => S_IFREG | 0o444,
             Entry::SelfLink
@@ -974,6 +988,17 @@ pub(crate) fn lookup(
 
 /// `kstrtouint` in base 0: an optional `+`, then `0x` and hex digits, `0` and octal ones, or
 /// decimal ones, then at most a newline before the end or a zero byte.
+/// `kstrtoint` in base 0: `parse_unsigned` after an optional minus sign.
+pub(crate) fn parse_signed(bytes: &[u8]) -> Result<i32, Errno> {
+    match bytes {
+        [b'-', rest @ ..] => {
+            let magnitude = i64::from(parse_unsigned(rest)?);
+            i32::try_from(-magnitude).map_err(|_| Errno::ERANGE)
+        }
+        _ => i32::try_from(parse_unsigned(bytes)?).map_err(|_| Errno::ERANGE),
+    }
+}
+
 pub(crate) fn parse_unsigned(bytes: &[u8]) -> Result<u32, Errno> {
     let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
     let mut text = &bytes[..end];
@@ -1625,6 +1650,33 @@ fn process_file(
         }
         ProcessFile::CoredumpFilter => {
             return Ok(alloc::format!("{:08x}\n", process.coredump_filter).into_bytes());
+        }
+        ProcessFile::OomScoreAdj => {
+            let _ = writeln!(out, "{}", process.oom_score_adj);
+        }
+        // `oom_adj_read`: the older scale's -17 to 15.
+        ProcessFile::OomAdj => {
+            use crate::linux_extra::{OOM_ADJUST_MAX, OOM_DISABLE, OOM_SCORE_ADJ_MAX};
+            let adj = i32::from(process.oom_score_adj);
+            let shown = if adj == OOM_SCORE_ADJ_MAX {
+                OOM_ADJUST_MAX
+            } else {
+                adj * -OOM_DISABLE / OOM_SCORE_ADJ_MAX
+            };
+            let _ = writeln!(out, "{shown}");
+        }
+        // `proc_oom_score`: two thirds of 1000 plus the badness `oom_badness` gives per thousand
+        // pages of the machine, whose resident part is not tracked here (counted).
+        ProcessFile::OomScore => {
+            let adj = i64::from(process.oom_score_adj);
+            let points = if adj == i64::from(crate::linux_extra::OOM_SCORE_ADJ_MIN) {
+                0
+            } else {
+                let pages = (source.machine.memory_bytes / 4096) as i64;
+                let badness = adj * (pages / 1000);
+                (1000 + badness * 1000 / pages) * 2 / 3
+            };
+            let _ = writeln!(out, "{points}");
         }
         ProcessFile::Maps => {
             for mapping in process.map.borrow().iter() {

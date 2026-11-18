@@ -121,6 +121,11 @@ pub(crate) struct Process {
     /// Which mappings a core dump would hold (`/proc/<pid>/coredump_filter`, the memory's
     /// `MMF_DUMP_FILTER_MASK` bits), which a fork and an exec keep.
     pub coredump_filter: u32,
+    /// How the out-of-memory killer would weigh it (`/proc/<pid>/oom_score_adj`), which a fork
+    /// and an exec keep; nothing here kills for want of memory.
+    pub oom_score_adj: i16,
+    /// The least `oom_score_adj` it may be given without CAP_SYS_RESOURCE (`oom_score_adj_min`).
+    pub oom_score_adj_min: i16,
     /// The session's controlling terminal, if the process has one: a pair whose slave it is.
     pub terminal: Option<Rc<core::cell::RefCell<crate::tty::Pty>>>,
     /// For a session leader whose terminal was hung up, the foreground group it had

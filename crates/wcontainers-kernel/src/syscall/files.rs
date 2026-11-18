@@ -905,6 +905,7 @@ pub(super) fn proc_contents(
         proc::Entry::ProcessFile(_, ProcessFile::Status) => Some(2),
         proc::Entry::ProcessFile(_, ProcessFile::Mounts | ProcessFile::Mountinfo) => Some(3),
         proc::Entry::Global(index) if proc::GLOBAL[*index].0 == "meminfo" => Some(4),
+        proc::Entry::ProcessFile(_, ProcessFile::OomScore) => Some(5),
         _ => None,
     };
     if let Some(detail) = untracked {

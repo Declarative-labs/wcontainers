@@ -539,6 +539,8 @@ impl Kernel {
             self_exec_id: 0,
             // What Docker's first process inherits (measured).
             coredump_filter: 0x23,
+            oom_score_adj: 0,
+            oom_score_adj_min: 0,
             terminal: None,
             terminal_old_group: None,
             actions: Rc::new(core::cell::RefCell::new(

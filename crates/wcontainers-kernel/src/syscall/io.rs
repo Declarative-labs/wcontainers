@@ -1441,6 +1441,49 @@ fn write_proc(
             }
             Ok(count)
         }
+        // `oom_score_adj_write` and `oom_adj_write`: a number as `kstrtoint` reads it in base 0
+        // from the first 12 bytes, stripped of spaces, within its scale; without CAP_SYS_RESOURCE
+        // the older file may not lower it at all, and the newer not below the least one with
+        // that power gave, which a write by one with it sets (`__set_oom_adj`).
+        Writing::OomScoreAdj(legacy) => {
+            let bytes = guest(kernel, cx, tid).read(buffer, count.min(12))?;
+            let value = crate::fs::proc::parse_signed(bytes.trim_ascii())?;
+            let adj = if legacy {
+                use crate::linux_extra::{OOM_ADJUST_MAX, OOM_DISABLE, OOM_SCORE_ADJ_MAX};
+                if !(OOM_DISABLE..=OOM_ADJUST_MAX).contains(&value) {
+                    return Err(Errno::EINVAL);
+                }
+                if value == OOM_ADJUST_MAX {
+                    OOM_SCORE_ADJ_MAX
+                } else {
+                    value * OOM_SCORE_ADJ_MAX / -OOM_DISABLE
+                }
+            } else {
+                use crate::linux_extra::{OOM_SCORE_ADJ_MAX, OOM_SCORE_ADJ_MIN};
+                if !(OOM_SCORE_ADJ_MIN..=OOM_SCORE_ADJ_MAX).contains(&value) {
+                    return Err(Errno::EINVAL);
+                }
+                value
+            };
+            let crate::fs::proc::Entry::ProcessFile(task, _) = entry else {
+                return Err(Errno::EINVAL);
+            };
+            let powerful = kernel.credentials(tid).has(CAP_SYS_RESOURCE);
+            let process = kernel.processes.get_mut(&task.pid).ok_or(Errno::ESRCH)?;
+            let least = if legacy {
+                process.oom_score_adj
+            } else {
+                process.oom_score_adj_min
+            };
+            if adj < i32::from(least) && !powerful {
+                return Err(Errno::EACCES);
+            }
+            process.oom_score_adj = adj as i16;
+            if !legacy && powerful {
+                process.oom_score_adj_min = adj as i16;
+            }
+            Ok(count)
+        }
         Writing::Io => Err(Errno::EIO),
         Writing::Sysctl => Err(Errno::EROFS),
         Writing::None => Err(Errno::EINVAL),
