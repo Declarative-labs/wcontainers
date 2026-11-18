@@ -1,12 +1,14 @@
 //! Runs the Direct3D scene programs and checks or records their outputs.
 //!
-//! `gt-run check <out-dir> [--api d3d11|d3d12] [--driver hardware|warp] [--dll <name>=<path>]...
-//! [<scene>...]` copies the scene programs (gt-d3d11, gt-d3d12, from this program's directory) into
+//! `gt-run check <out-dir> [--api d3d11|d3d12] [--driver hardware|warp] [--level <level>]
+//! [--dll <name>=<path>]... [<scene>...]` copies the scene programs (gt-d3d11, gt-d3d12, from this program's directory) into
 //! `<out-dir>\bin` with each `--dll` beside them under its name (`--dll d3d11.dll=<path>` puts a
 //! replacement d3d11.dll there), runs every scene (or the named ones) in its own process, and checks
 //! each output against the stored references (crates/wcontainers-graphics-test/references/<api>)
-//! within its allowance (see check.rs). It prints one line per output, `pass` or `FAIL`, then a
-//! count, and exits 1 if any fails. It also fails a scene whose program loaded a library of a
+//! within its allowance (see check.rs). It prints one line per output, `pass`, `FAIL` or `absent`
+//! (the implementation reports what the output needs as unsupported, which is not a failure), then
+//! a count, and exits 1 if any fails. `--level` caps the Direct3D 11 feature level the scene
+//! programs ask for, so real Direct3D shows which outputs a less capable device leaves absent. It also fails a scene whose program loaded a library of a
 //! replacement's name from anywhere but `<out-dir>\bin`, and a scene name no program has, notes a
 //! replacement no scene loaded (other libraries given are only copied), and reports whether the stored shader corpus matches this build.
 //!
@@ -16,7 +18,8 @@
 //! from the other runs and the rectangles left out (see `Allowance::from_repeats`).
 //!
 //! `gt-run record <out-dir>` runs every scene with the debug layer on the GPU twice (the two runs
-//! must agree exactly) and on WARP, and writes the GPU's outputs and their allowances to
+//! must agree exactly) and on WARP, and writes the GPU's outputs and their allowances (a Direct3D
+//! 12 picture equal to its Direct3D 11 twin on the GPU taking the closer of the two WARPs') to
 //! `<out-dir>\references\<api>` and this build's compiled shaders to `<out-dir>\shaders`, to be
 //! copied into the checkout. It prints how far WARP is from the GPU for each output.
 
@@ -25,7 +28,8 @@ use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use wcontainers_graphics_test::check::{self, Allowance, TOLERANCES};
+use wcontainers_graphics_test::check::{self, Allowance, State, TOLERANCES};
+use wcontainers_graphics_test::output::ABSENT;
 use wcontainers_graphics_test::{LIBRARIES, compare, load};
 
 const APIS: [&str; 2] = ["d3d11", "d3d12"];
@@ -51,13 +55,14 @@ struct Options {
     out: PathBuf,
     apis: Vec<String>,
     driver: String,
+    level: Option<String>,
     dlls: Vec<(String, PathBuf)>,
     scenes: Vec<String>,
 }
 
 fn run() -> Result<bool> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "usage: gt-run check <out-dir> [--api d3d11|d3d12] [--driver hardware|warp] [--dll <name>=<path>]... [<scene>...] | gt-run record <out-dir> | gt-run frames [--record] <reference-dir> <run-dir>...";
+    let usage = "usage: gt-run check <out-dir> [--api d3d11|d3d12] [--driver hardware|warp] [--level <level>] [--dll <name>=<path>]... [<scene>...] | gt-run record <out-dir> | gt-run frames [--record] <reference-dir> <run-dir>...";
     let (mode, rest) = args.split_first().context(usage)?;
     if mode == "frames" {
         return frames(rest);
@@ -67,6 +72,7 @@ fn run() -> Result<bool> {
         out: PathBuf::from(out),
         apis: APIS.iter().map(|a| a.to_string()).collect(),
         driver: "hardware".to_owned(),
+        level: None,
         dlls: Vec::new(),
         scenes: Vec::new(),
     };
@@ -75,6 +81,7 @@ fn run() -> Result<bool> {
         match arg.as_str() {
             "--api" => options.apis = vec![rest.next().context(usage)?.clone()],
             "--driver" => options.driver = rest.next().context(usage)?.clone(),
+            "--level" => options.level = Some(rest.next().context(usage)?.clone()),
             "--dll" => {
                 let (name, path) = rest
                     .next()
@@ -89,6 +96,10 @@ fn run() -> Result<bool> {
     anyhow::ensure!(
         options.apis.iter().all(|a| APIS.contains(&a.as_str())),
         "apis are d3d11 and d3d12"
+    );
+    anyhow::ensure!(
+        options.level.is_none() || options.apis == ["d3d11"],
+        "--level is for --api d3d11: Direct3D 12 devices are 11_0 and up, their features the adapter's"
     );
     match mode.as_str() {
         "check" => check_mode(&options),
@@ -139,6 +150,7 @@ fn run_scene(
     api: &str,
     scene: &str,
     driver: &str,
+    level: Option<&str>,
     dir: &Path,
     debug: bool,
 ) -> Result<(Option<String>, String)> {
@@ -148,6 +160,9 @@ fn run_scene(
     command.args([scene, driver]).arg(dir);
     if debug {
         command.arg("--debug");
+    }
+    if let Some(level) = level {
+        command.args(["--level", level]);
     }
     let stdout = dir.join(format!("{scene}.stdout"));
     command
@@ -196,15 +211,15 @@ fn of_scene(file: &str, scene: &str) -> bool {
 
 fn check_mode(options: &Options) -> Result<bool> {
     let bin = stage(options)?;
-    let (mut passed, mut failed) = (0, 0);
-    let mut report = |pass: bool, line: String| {
-        if pass {
-            passed += 1;
-            println!("pass {line}");
-        } else {
-            failed += 1;
-            println!("FAIL {line}");
-        }
+    let (mut passed, mut failed, mut absent) = (0, 0, 0);
+    let mut report = |state: State, line: String| {
+        let (word, count) = match state {
+            State::Pass => ("pass", &mut passed),
+            State::Fail => ("FAIL", &mut failed),
+            State::Absent => ("absent", &mut absent),
+        };
+        *count += 1;
+        println!("{word} {line}");
     };
     let lists: Vec<Vec<String>> = options
         .apis
@@ -214,7 +229,7 @@ fn check_mode(options: &Options) -> Result<bool> {
     for scene in &options.scenes {
         if !lists.iter().any(|l| l.contains(scene)) {
             report(
-                false,
+                State::Fail,
                 format!(
                     "{scene}: no such scene in {}; see gt-d3d11 list and gt-d3d12 list",
                     options.apis.join(" or ")
@@ -240,7 +255,15 @@ fn check_mode(options: &Options) -> Result<bool> {
         };
         let references = crate_dir().join("references").join(api);
         for scene in &scenes {
-            let (failure, printed) = run_scene(&bin, api, scene, &options.driver, &dir, false)?;
+            let (failure, printed) = run_scene(
+                &bin,
+                api,
+                scene,
+                &options.driver,
+                options.level.as_deref(),
+                &dir,
+                false,
+            )?;
             // Where the program loaded each replacement from, as it printed before drawing (a
             // scene that failed may have printed it too).
             let printed = printed.to_lowercase();
@@ -259,7 +282,7 @@ fn check_mode(options: &Options) -> Result<bool> {
                 *loaded = true;
                 if from != bin.join(&name).display().to_string().to_lowercase() {
                     report(
-                        false,
+                        State::Fail,
                         format!(
                             "{api} {scene}: did not load the replacement {name} from {}: {from}",
                             bin.display()
@@ -268,24 +291,26 @@ fn check_mode(options: &Options) -> Result<bool> {
                 }
             }
             if let Some(failure) = failure {
-                report(false, format!("{api} {scene}: {failure}"));
+                report(State::Fail, format!("{api} {scene}: {failure}"));
             }
         }
         if !references.join(TOLERANCES).exists() {
             report(
-                false,
+                State::Fail,
                 format!("{api}: no references in {}", references.display()),
             );
             continue;
         }
         let verdicts = check::check_dir(&references, &dir, |f| {
-            f.ends_with(".png") || f.ends_with(".exr") || f.ends_with(".txt")
+            [".png", ".exr", ".txt", ".caps"]
+                .iter()
+                .any(|e| f.ends_with(e))
         })?;
         for v in verdicts
             .iter()
             .filter(|v| scenes.iter().any(|s| of_scene(&v.file, s)))
         {
-            report(v.pass, format!("{api} {}: {}", v.file, v.detail));
+            report(v.state, format!("{api} {}: {}", v.file, v.detail));
         }
     }
     for ((name, _), loaded) in options.dlls.iter().zip(&loaded) {
@@ -306,7 +331,7 @@ fn check_mode(options: &Options) -> Result<bool> {
         ),
         Err(e) => println!("shader corpus: not compared: {e:#}"),
     }
-    println!("{passed} passed, {failed} failed");
+    println!("{passed} passed, {failed} failed, {absent} absent");
     Ok(failed == 0)
 }
 
@@ -387,11 +412,15 @@ fn frames(args: &[String]) -> Result<bool> {
             })? {
                 println!(
                     "{} {}: {}",
-                    if v.pass { "pass" } else { "FAIL" },
+                    if v.state == State::Pass {
+                        "pass"
+                    } else {
+                        "FAIL"
+                    },
                     v.file,
                     v.detail
                 );
-                ok &= v.pass;
+                ok &= v.state == State::Pass;
             }
             Ok(ok)
         }
@@ -444,7 +473,7 @@ fn record_mode(options: &Options) -> Result<bool> {
         let scenes = list(&bin, api)?;
         for scene in &scenes {
             for (dir, driver) in runs.iter().zip(["hardware", "hardware", "warp"]) {
-                if let (Some(failure), _) = run_scene(&bin, api, scene, driver, dir, true)? {
+                if let (Some(failure), _) = run_scene(&bin, api, scene, driver, None, dir, true)? {
                     bail!("{api} {scene} on {driver}: {failure}");
                 }
             }
@@ -455,16 +484,25 @@ fn record_mode(options: &Options) -> Result<bool> {
         }
         std::fs::create_dir_all(&references)?;
         let mut tolerances = String::from(
-            "# <output> <channel tolerance> <pixels allowed beyond it> warp <pixels differing at all> <largest difference>\n",
+            "# <output> <channel tolerance> <pixels allowed beyond it> warp <pixels differing at all> <largest difference> [d3d11: from Direct3D 11's WARP picture, the GPU drawing both alike] [tiles <tile>:<pixels>,...]\n",
         );
         let mut files: Vec<String> = std::fs::read_dir(&runs[0])?
             .map(|e| Ok(e?.file_name().to_string_lossy().into_owned()))
             .collect::<Result<_>>()?;
         files.retain(|f| !f.ends_with(".log") && !f.ends_with(".stdout"));
         files.sort();
+        for dir in &runs {
+            for entry in std::fs::read_dir(dir)? {
+                let file = entry?.file_name().to_string_lossy().into_owned();
+                if file.ends_with(&format!(".{ABSENT}")) {
+                    let why = std::fs::read_to_string(dir.join(&file))?;
+                    bail!("{api} {file} in {}: {}", dir.display(), why.trim());
+                }
+            }
+        }
         for file in &files {
             let [gpu, again, warp] = runs.each_ref().map(|d| d.join(file));
-            if file.ends_with(".txt") {
+            if file.ends_with(".txt") || file.ends_with(".caps") {
                 let text = std::fs::read_to_string(&gpu)?;
                 if std::fs::read_to_string(&again)? != text {
                     println!("{api} {file}: the two GPU runs differ");
@@ -486,7 +524,26 @@ fn record_mode(options: &Options) -> Result<bool> {
                     );
                     ok = false;
                 }
-                let (allowance, exact): (Allowance, _) = Allowance::from_warp(&g, &w)?;
+                let (mut allowance, mut exact): (Allowance, _) = Allowance::from_warp(&g, &w)?;
+                // A Direct3D 12 picture the GPU draws exactly as its Direct3D 11 twin may take
+                // the allowance of Direct3D 11's WARP picture instead, when that WARP is closer.
+                let twin = options.out.join("hardware").join("d3d11").join(file);
+                let mut from = "";
+                if api == "d3d12" && twin.exists() {
+                    let twin_gpu = load(&twin)?;
+                    let twin_warp = load(&options.out.join("warp").join("d3d11").join(file))?;
+                    if compare::compare(&g, &twin_gpu, 0.0)?.differing == 0 {
+                        let (other, other_exact) = Allowance::from_warp(&g, &twin_warp)?;
+                        if (other.pixels, other.tolerance) < (allowance.pixels, allowance.tolerance)
+                        {
+                            println!(
+                                "{api} {file}: direct3d 12's warp differs in {} pixels, {} beyond {}; direct3d 11's is closer",
+                                exact.differing, allowance.pixels, allowance.tolerance
+                            );
+                            (allowance, exact, from) = (other, other_exact, " d3d11");
+                        }
+                    }
+                }
                 println!(
                     "{api} {file}: warp differs in {} of {} pixels, largest {}; allowance {} beyond {}",
                     exact.differing,
@@ -495,7 +552,11 @@ fn record_mode(options: &Options) -> Result<bool> {
                     allowance.pixels,
                     allowance.tolerance
                 );
-                tolerances.push_str(&check::tolerance_line(file, &allowance, &exact));
+                let line = check::tolerance_line(file, &allowance, &exact);
+                tolerances.push_str(&match line.split_once(" tiles ") {
+                    Some((head, tiles)) => format!("{head}{from} tiles {tiles}"),
+                    None => format!("{}{from}\n", line.trim_end()),
+                });
             }
             std::fs::copy(&gpu, references.join(file))?;
         }

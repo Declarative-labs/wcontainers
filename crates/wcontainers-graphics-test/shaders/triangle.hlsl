@@ -1,5 +1,5 @@
 // One triangle with a colour at each corner.
-// fxc: vs_5_0 vs, ps_5_0 ps
+// fxc: vs_4_0 vs, ps_4_0 ps
 // dxc: vs_6_0 vs, ps_6_0 ps
 struct VsIn { float2 pos : POSITION; float3 color : COLOR; };
 struct VsOut { float4 pos : SV_Position; float3 color : COLOR; };

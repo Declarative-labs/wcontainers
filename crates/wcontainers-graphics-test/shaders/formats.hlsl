@@ -1,6 +1,6 @@
 // Gradients for render targets of every kind: floats running past 0 and 1, and unsigned and signed
 // integers within 8 bits.
-// fxc: ps_5_0 ps_float, ps_5_0 ps_uint, ps_5_0 ps_sint
+// fxc: ps_4_0 ps_float, ps_4_0 ps_uint, ps_4_0 ps_sint
 // dxc: ps_6_0 ps_float, ps_6_0 ps_uint, ps_6_0 ps_sint
 struct FullOut { float4 pos : SV_Position; float2 uv : TEXCOORD; };
 float4 ps_float(FullOut i) : SV_Target {

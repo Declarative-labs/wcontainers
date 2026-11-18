@@ -1,5 +1,5 @@
 // Four render targets written at once, of float, normalised and integer formats.
-// fxc: ps_5_0 ps
+// fxc: ps_4_0 ps
 // dxc: ps_6_0 ps
 struct ColorOut { float4 pos : SV_Position; float4 color : COLOR; };
 struct Out {

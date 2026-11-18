@@ -4,6 +4,7 @@
 
 use anyhow::Result;
 use rand::RngCore;
+use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_10_1;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 
@@ -91,50 +92,12 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     unsafe { c.CopySubresourceRegion(&integers, 0, 0, 0, 0, &source, 0, None) };
     outputs.push(Output::picture("uint", gpu.read(&integers, 0, 0)?));
 
-    // BC1 blocks copied into a 64-bit integer texture, one texel per block.
-    let mut blocks = vec![0u8; 8 * 8 * 8];
-    seeded(17).fill_bytes(&mut blocks);
-    let bc = gpu.texture2d(
-        &tex2d(32, 32, DXGI_FORMAT_BC1_UNORM, D3D11_BIND_SHADER_RESOURCE),
-        &[data(&blocks, 64, 0)],
-    )?;
-    let wide = gpu.texture2d(
-        &tex2d(8, 8, DXGI_FORMAT_R32G32_UINT, D3D11_BIND_SHADER_RESOURCE),
-        &[],
-    )?;
-    unsafe { c.CopySubresourceRegion(&wide, 0, 0, 0, 0, &bc, 0, None) };
-    let staging = gpu.texture2d(
-        &D3D11_TEXTURE2D_DESC {
-            Usage: D3D11_USAGE_STAGING,
-            BindFlags: 0,
-            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
-            ..tex2d(8, 8, DXGI_FORMAT_R32G32_UINT, D3D11_BIND_FLAG(0))
-        },
-        &[],
-    )?;
-    let mut copied = Vec::new();
-    unsafe {
-        c.CopyResource(&staging, &wide);
-        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-        c.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
-        for row in 0..8 {
-            let start = mapped
-                .pData
-                .cast::<u8>()
-                .add(row * mapped.RowPitch as usize);
-            copied.extend_from_slice(std::slice::from_raw_parts(start, 64));
-        }
-        c.Unmap(&staging, 0);
-    }
-    let same = if copied == blocks {
-        "the blocks arrived unchanged\n"
-    } else {
-        "the blocks changed\n"
-    };
-    outputs.push(Output::text(
-        "bc_as_uint",
-        format!("{same}{}", hex(&copied)),
-    ));
+    // BC1 blocks copied into a 64-bit integer texture, one texel per block: a copy between those
+    // formats is 10_1's.
+    outputs.push(match gpu.lacks_level(D3D_FEATURE_LEVEL_10_1) {
+        Some(why) => Output::absent("bc_as_uint", why),
+        None => bc_as_uint(gpu)?,
+    });
 
     // Buffers: a range copied to an offset, then a few bytes replaced.
     let pattern: Vec<u8> = (0..=255u8).collect();
@@ -192,4 +155,52 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     unsafe { c.CopyResource(&fixed, &writable) };
     outputs.push(Output::picture("staging", gpu.read(&fixed, 0, 0)?));
     Ok(outputs)
+}
+
+/// BC1 blocks copied into a 64-bit integer texture and read back.
+fn bc_as_uint(gpu: &Gpu) -> Result<Output> {
+    let c = &gpu.context;
+    let mut blocks = vec![0u8; 8 * 8 * 8];
+    seeded(17).fill_bytes(&mut blocks);
+    let bc = gpu.texture2d(
+        &tex2d(32, 32, DXGI_FORMAT_BC1_UNORM, D3D11_BIND_SHADER_RESOURCE),
+        &[data(&blocks, 64, 0)],
+    )?;
+    let wide = gpu.texture2d(
+        &tex2d(8, 8, DXGI_FORMAT_R32G32_UINT, D3D11_BIND_SHADER_RESOURCE),
+        &[],
+    )?;
+    unsafe { c.CopySubresourceRegion(&wide, 0, 0, 0, 0, &bc, 0, None) };
+    let staging = gpu.texture2d(
+        &D3D11_TEXTURE2D_DESC {
+            Usage: D3D11_USAGE_STAGING,
+            BindFlags: 0,
+            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+            ..tex2d(8, 8, DXGI_FORMAT_R32G32_UINT, D3D11_BIND_FLAG(0))
+        },
+        &[],
+    )?;
+    let mut copied = Vec::new();
+    unsafe {
+        c.CopyResource(&staging, &wide);
+        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+        c.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
+        for row in 0..8 {
+            let start = mapped
+                .pData
+                .cast::<u8>()
+                .add(row * mapped.RowPitch as usize);
+            copied.extend_from_slice(std::slice::from_raw_parts(start, 64));
+        }
+        c.Unmap(&staging, 0);
+    }
+    let same = if copied == blocks {
+        "the blocks arrived unchanged\n"
+    } else {
+        "the blocks changed\n"
+    };
+    Ok(Output::text(
+        "bc_as_uint",
+        format!("{same}{}", hex(&copied)),
+    ))
 }

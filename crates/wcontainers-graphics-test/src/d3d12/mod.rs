@@ -553,6 +553,28 @@ impl Gpu {
     }
 
     /// Fails on any error the debug layer reported, printing all its messages.
+    /// Why a part needing `samples` samples of `format` is absent: None when the device has them.
+    pub fn lacks_samples(&self, format: DXGI_FORMAT, samples: u32) -> Result<Option<String>> {
+        let mut query = D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS {
+            Format: format,
+            SampleCount: samples,
+            ..Default::default()
+        };
+        unsafe {
+            self.device.CheckFeatureSupport(
+                D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS,
+                (&mut query as *mut D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS).cast(),
+                size_of_val(&query) as u32,
+            )?
+        };
+        Ok((query.NumQualityLevels == 0).then(|| {
+            format!(
+                "{samples} samples of format {} (D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS)",
+                format.0
+            )
+        }))
+    }
+
     pub fn check_debug(&self) -> Result<()> {
         if !self.debug {
             return Ok(());

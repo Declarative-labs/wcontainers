@@ -1,5 +1,5 @@
 // One small triangle drawn many times, placed and coloured from a constant buffer by instance.
-// fxc: vs_5_0 vs, ps_5_0 ps
+// fxc: vs_4_0 vs, ps_4_0 ps
 cbuffer Scene : register(b0) {
     float4 placement[16]; // offset x, y; cosine and sine of the turn
     float4 colors[16];
