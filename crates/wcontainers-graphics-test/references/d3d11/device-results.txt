@@ -1,0 +1,25 @@
+every out parameter: S_OK, device made, level 11_0, context made
+no out parameter: S_FALSE, device none, level untouched, context none
+only the level: S_FALSE, device none, level 11_0, context none
+only the device: S_OK, device made, level untouched, context none
+only the context: S_OK, device none, level untouched, context made
+levels: an empty list: DXGI_ERROR_UNSUPPORTED, device none, level 0, context none
+levels: 11_0 then an unknown level: E_INVALIDARG, device none, level 0, context none
+levels: an unknown level alone: E_INVALIDARG, device none, level 0, context none
+levels: 10_0 twice: S_OK, device made, level 10_0, context made
+levels: 9_3 then 11_0: S_OK, device made, level 9_3, context made
+driver unknown without an adapter: E_INVALIDARG, device none, level 0, context none
+the driver type and an adapter: E_INVALIDARG, device none, level 0, context none
+driver unknown with an adapter: S_OK, device made, level 11_0, context made
+driver software without a module: E_INVALIDARG, device none, level 0, context none
+an undefined flag: S_OK, device made, level 11_0, context made
+SDK version 0: E_INVALIDARG, device none, level 0, context none
+single-threaded and BGRA: S_OK, device made, level 11_0, context made
+and swap chain: no description, no swap chain: S_OK, device made, level 11_0, context made
+and swap chain: no description, a swap chain asked for: S_OK, device made, level 11_0, context made
+level from the device equals the one returned: true
+immediate context is the one returned: true
+context's device is the device: true
+creation flags without flags: 0x0
+creation flags single-threaded and BGRA: 0x21
+device on an adapter is on that adapter: true
