@@ -111,7 +111,8 @@ Built in J3:
   `oci_spec::runtime::Spec`, images are read with `ImageIndex`, `ImageManifest`, `ImageConfiguration` and
   `Descriptor`).
 - The refused fields and what each would take: plan section 14 lists them; tests/refused.rs has one test for
-  each (54 refusals and the base configuration accepted: 55 passed, 0.15 s). Fields the kernel would need to
+  each (56 refusals, among them a configuration without `mounts` or without `linux`, and the base
+  configuration accepted: 57 passed). Fields the kernel would need to
   take at start are listed above under "Asked of the kernel track".
 - The command line program (dcca457c): crates/wcontainers-wasmtime/src/bin/wcontainers.rs, calling only the
   library.
@@ -122,7 +123,9 @@ J3's bar (crates/wcontainers-wasmtime/tests/surface.rs, refused.rs; Docker's `al
   the public surface matches `docker run` (output, error, status 7) from the OCI image (`docker save`
   unpacked) and from a plain tar (`docker export`); the fields honoured beyond the program (host name,
   environment, working directory, additional groups, annotations) behave so; the command line program
-  gives the same from both and exits 125 naming `process.terminal`; each refused field is refused by name.
+  gives the same from both and exits 125 naming `process.terminal`; each refused field is refused by name;
+  a process that never makes a system call (`while :; do :; done &`) is preempted by the outside's timer, so
+  the shell goes on as on the reference.
 - A second run in a new process from the disk cache (`a_second_process_starts_from_the_cache`, the pipeline
   from the OCI image, each run a new test process, the test build; dcca457c, load 34.2 to 63.4 over the
   suite; scratch j3/owned-1.log): the first, with an empty cache directory, made both ranges' translations
@@ -130,9 +133,14 @@ J3's bar (crates/wcontainers-wasmtime/tests/surface.rs, refused.rs; Docker's `al
   pieces on disk and made 2 pieces (where a free turn stopped elsewhere), 0.268 s. One pair, so the times
   only show the order of the difference.
 - The whole suite of what this track owns (`cargo test -p wcontainers-runtime -p wcontainers-wasmtime`, the
-  test build, dcca457c with only the plan's text uncommitted): runtime 4 passed; back end 3 unit, cache 3,
-  code 4, faults 2, fork 5, refused 55, surface 5 (and the cache run's child, ignored when run alone), turns 5,
-  views 6: 92 passed, 0 failed; 73.5 s with its build (load 34.2 to 63.4; scratch j3/owned-1.log).
+  test build): at ef6c7173 (the plan's text uncommitted) runtime 4 passed; back end 3 unit, cache 3, code 4,
+  faults 2, fork 5, refused 57, surface 6 (and the cache run's child, ignored when run alone), turns 5, views
+  6: 95 passed, 0 failed, 42.6 s with its build (load 31.8 to 47.5; scratch j3/owned-2.log). Its cache pair:
+  first 7.38 s (both ranges and 88 pieces made), second 0.500 s (both ranges and 73 pieces from disk, 20
+  pieces made). The earlier run at dcca457c: 92 passed (owned-1.log; the pair above).
+- hello and busybox at ef6c7173: with the feature 5 passed, 1 ignored (root_file_system, the known
+  failure), 100.1 s with its build (load 42.8 to 49.5; j3/hello-busybox-runtime.log); on the stand-in the
+  same, 60.3 s (load 49.5 to 39.9; j3/hello-busybox-standin.log).
 
 Measured: what counting at every stop check costs against free turns (release; scratch j3/cost/cost.sh and
 counting_cost.rs, copied into the back end's tests for the run and removed; an outside that wraps `System` and

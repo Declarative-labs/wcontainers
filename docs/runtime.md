@@ -841,7 +841,8 @@ let ending = container.run()?;   // to the end; or container.step() and containe
   `process.rlimits` at the kernel's values, `process.terminal` and `process.noNewPrivileges` false,
   `mounts` exactly the kernel's six (`/proc`, `/dev`, `/dev/pts`, `/sys`, `/dev/mqueue`, `/dev/shm`, each
   with Docker's type, source and options), `linux.namespaces` exactly pid, network, ipc, uts, mount and
-  cgroup with no `path`. Refused, each with what supporting it would take:
+  cgroup with no `path`; a configuration without `mounts` or without `linux` is refused as one leaving those
+  out is, since the kernel makes them whatever it says. Refused, each with what supporting it would take:
   - the user, umask, capabilities, limits and no_new_privs at other values, and `linux.sysctl`: the kernel
     taking them at start (today `Start` takes the program, arguments, environment, working directory, host
     name, groups and the backend, kernel container.rs);
