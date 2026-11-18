@@ -30,6 +30,31 @@ fn setting(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect("a number"))
 }
 
+const SIGBUS: i32 = 7;
+const SIGSEGV: i32 = 11;
+
+/// Whether two exit statuses end the same way, a memory fault's two signals being one: a stray access
+/// raises SIGSEGV or SIGBUS by what lies at its address (no page, or a file's page past the file's end,
+/// which an ordinary executable has and a blob does not).
+fn same_ending(one: i32, other: i32) -> bool {
+    let fault = |status: i32| match status - 128 {
+        SIGBUS => SIGSEGV,
+        signal => signal,
+    };
+    one == other || (one > 128 && other > 128 && fault(one) == fault(other))
+}
+
+#[test]
+fn a_memory_fault_ends_the_same_by_either_signal() {
+    assert!(same_ending(128 + SIGSEGV, 128 + SIGBUS));
+    assert!(same_ending(128 + SIGBUS, 128 + SIGSEGV));
+    assert!(same_ending(128 + SIGSEGV, 128 + SIGSEGV));
+    assert!(!same_ending(128 + SIGSEGV, 0));
+    assert!(!same_ending(128 + SIGSEGV, 128 + 4));
+    assert!(!same_ending(128 + SIGBUS, 128 + 9));
+    assert!(!same_ending(SIGBUS, SIGSEGV));
+}
+
 /// Run a blob at none and full in both settings; compare with Linux, and full with none in registers and
 /// memory. Gives Linux's run, or nothing when the program did not end in time there. `ordinary` runs the
 /// program built as an ordinary Linux executable.
@@ -38,12 +63,12 @@ fn compare(blob: &Blob, ordinary: impl Fn() -> Ran) -> Result<Option<Ran>, Strin
         return Ok(None);
     };
     // A blob that Linux ends by a signal is compared only when the program, built as an ordinary
-    // executable, ends by the same signal: otherwise both sides could agree on a blob that is broken (a
+    // executable, ends by the same signal (`same_ending`): otherwise both sides could agree on a blob that is broken (a
     // moved blob that did not relocate itself, say). What it wrote before may differ, as a program that
     // faults may have read through a wild pointer, whose target depends on where things are.
     if theirs.status >= 128 {
         let program = ordinary();
-        if program.status != theirs.status {
+        if !same_ending(program.status, theirs.status) {
             // Whether Linux does it again tells a fault of the blob from one of the reference.
             let again: Vec<i32> = (0..3).map(|_| native(blob).status).collect();
             return Err(format!(

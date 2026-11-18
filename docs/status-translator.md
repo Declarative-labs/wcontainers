@@ -209,6 +209,19 @@ Failures found by the run, each with its cause and fix:
    half killed nothing then); by whom is not known. Not a mismatch. The driver now writes each chunk's exit
    status to `driver.log` (9d54ef3), so a kill shows as such next time. Stopped after chunk 85 and restarted
    08:12 on 9d54ef3, same command; chunk 84 runs again first.
+7. Layer 3 chunk 113 (cases 56000 to 56499, 9d54ef3): case 56418 (Csmith 100056718, clang -Oz, position
+   independent) failed the guard, before any translation ran: Linux ended the blob with SIGSEGV (139, four
+   times of four), the ordinary executable with SIGBUS (135). Replayed alone the case passed (the
+   executable ended with SIGSEGV), so the executable's ending varies: built the same way in scratch and run
+   200 times in Docker it ended 188 times with SIGSEGV and 12 with SIGBUS (load 44 to 57). Under gdb (with
+   address randomisation left on) a SIGBUS run stopped at `ldr xzr, [x11, x8, lsl #3]`, a read through a
+   wild index, at 0x15000 past the executable's base, a page of its file mapping past the end of the
+   70,640 byte file (SIGBUS); where the read lands depends on the randomised layout, and elsewhere it hits
+   no page (SIGSEGV, as in the blob, which is anonymous memory with no file behind it). Not the
+   translator: it matched Linux on the blob in every setting on the replay. Change (a departure, see
+   "Departures from the plan"): the guard takes SIGSEGV and SIGBUS as one ending (`same_ending`, test
+   `a_memory_fault_ends_the_same_by_either_signal`, which did not build before); any other pair of endings
+   still fails. Layer 3 at 8 cases (seed 7) and the case itself pass on the change.
 
 ## P1: close-out of M5 and the long-run driver
 
@@ -2523,7 +2536,11 @@ contract's bits, in both runners).
   ordinary executable must end by the same signal, but may have written something else before, since a
   program that faults may print through a wild pointer whose target depends on the layout (failure 5 of
   P2). This lets one more kind of case be compared; it skips nothing, and a case whose two builds end
-  differently still fails. It is the only change to a test's checks in P2.
+  differently still fails.
+- P2: the same guard takes SIGSEGV and SIGBUS as one ending, a memory fault (`same_ending`, failure 7 of
+  P2): which of the two a stray access raises depends on what lies at its address, and an ordinary
+  executable has file pages past its file's end (SIGBUS) where a blob has none. Any other pair of endings
+  still fails. These two are the only changes to a test's checks in P2.
 - P2: the long-run driver gives each run its own zig cache (`WC_LONG_DIR/zig-cache`): zig processes
   sharing `~/.cache/zig` with other jobs deadlocked on its locks (failure 4 of P2).
 
