@@ -341,6 +341,21 @@ static void socket_mmap(void) {
         _exit(0);
     }
     waitpid(child, NULL, 0);
+    // A refused mapping over a fixed range leaves the range unmapped.
+    int u = socket(AF_INET, SOCK_DGRAM, 0);
+    int t = socket(AF_INET, SOCK_STREAM, 0);
+    for (int i = 0; i < 2; i++) {
+        char *area = mmap(NULL, 65536, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        area[0] = 1;
+        errno = 0;
+        p = mmap(area, 65536, i ? PROT_READ | PROT_WRITE : PROT_READ, MAP_SHARED | MAP_FIXED, i ? t : u, 0);
+        unsigned char resident;
+        long r = mincore(area, 4096, &resident);
+        printf("fixed mapping of %s socket: %s; range mapped after: %s\n", i ? "a tcp" : "a udp",
+               p == MAP_FAILED ? strerror(errno) : "mapped", r == 0 ? "yes" : strerror(errno));
+    }
+    close(u);
+    close(t);
 }
 
 // Options a TCP connection takes and keeps but whose effect on the wire is not built.

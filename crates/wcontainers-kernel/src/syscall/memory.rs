@@ -421,16 +421,28 @@ pub(super) fn do_mmap(
     }
     // `tcp_mmap`: a TCP socket maps for reading only, and never later for more; its pages come
     // only from TCP_ZEROCOPY_RECEIVE (not built), so touching one is SIGBUS. Every other protocol
-    // has `sock_no_mmap`.
-    match socket_tcp {
-        Some(false) => return Err(Errno::ENODEV),
+    // has `sock_no_mmap`. The file's `mmap` runs after what a fixed mapping replaces was taken
+    // away, so a refusal leaves the range unmapped (`vms_abort_munmap_vmas`).
+    let refused = match socket_tcp {
+        Some(false) => Some(Errno::ENODEV),
         Some(true) if permissions.intersects(Permissions::WRITE | Permissions::EXECUTE) => {
-            return Err(Errno::EPERM);
+            Some(Errno::EPERM)
         }
-        Some(true) => mapping
+        _ => None,
+    };
+    if let Some(error) = refused {
+        if fixed {
+            let memory = process.memory;
+            unmap(&mut map, cx, memory, start, length)?;
+            drop(map);
+            crate::shared::release(kernel, cx);
+        }
+        return Err(error);
+    }
+    if socket_tcp == Some(true) {
+        mapping
             .allowed
-            .remove(Permissions::WRITE | Permissions::EXECUTE),
-        None => {}
+            .remove(Permissions::WRITE | Permissions::EXECUTE);
     }
     // A secret memory file is mapped only shared, and locked, within the limit on locked memory
     // (`secretmem_mmap`).
