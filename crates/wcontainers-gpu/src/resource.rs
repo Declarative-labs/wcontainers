@@ -268,6 +268,12 @@ pub struct BufferRange<H> {
 }
 
 /// One resource in a binding set.
+///
+/// A program may access a buffer binding outside its bound range: a back end gives what its API
+/// gives, on WebGPU a load from anywhere in the buffer, zero or (0, 0, 0, x), a store kept within
+/// the buffer or dropped, or the draw or dispatch partly dropped (WGSL may end the invocation with
+/// its outputs zero). A front whose API defines the result binds a program that checks its own
+/// accesses against the range it is given.
 #[derive(Debug)]
 pub enum BindingResource<'a, B: Backend> {
     /// The offset is a multiple of [`crate::Limits::min_uniform_offset_alignment`] and the size at most

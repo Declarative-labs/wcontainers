@@ -1415,14 +1415,28 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
   fetches in the program only for its own reasons (step rates, below; integers read with the other
   signedness). Step rates
   other than one instance: natively where the back end has `INSTANCE_STEP_RATE` (WebGL 2's divisor),
-  otherwise `InstanceRateInShader`. Direct3D reads zero past the end of a vertex buffer:
-  for draws without indices the front draws the part past the end with a zero buffer bound
-  (`VertexFetchZeroed`), exact; for indexed draws, indices past the end get what WebGPU gives: zero,
-  a value from inside the buffer, or the whole draw cancelled, which WebGPU's index resolution
-  allows (checked: the specification's vertex processing); a listed loss. The exact route is the
-  pulled variant for the draw's streams (`VariantKey::pulled`), which the Vulkan driver takes when
-  its program enables robust access (15.4); here every indexed draw would pay for it, since
-  Direct3D has no such switch.
+  otherwise `InstanceRateInShader`. The interface (`DrawRange`'s doc) refuses a direct draw whose
+  indices, instances, or vertices without indices reach past their buffers, and allows an indexed
+  or indirect draw to fetch a vertex past a stream's end, giving a value from anywhere in the
+  buffer, zero, (0, 0, 0, x), or the whole draw dropped, which WebGPU's vertex processing allows
+  (checked: "Optionally (implementation-defined), empty vertexIndexList and return, cancelling the
+  draw call"); the recording back end drops such a draw, the harshest of these, and counts it.
+  Direct3D reads zero past the end of a vertex buffer: for draws without indices the front draws
+  the part past the end with a zero buffer bound (`VertexFetchZeroed`), exact; for indexed draws,
+  indices past the end get what the back end gives; a listed loss. The exact route is the pulled
+  variant for the draw's streams (`VariantKey::pulled`), which the Vulkan driver takes when its
+  program enables robust access (15.4); here every indexed draw would pay for it, since Direct3D
+  has no such switch.
+- A shader's access to a buffer outside its bound range (Direct3D reads zero and drops the write
+  for constant, raw and structured buffers) gets what the back end gives (`BindingResource`'s doc):
+  on WebGPU a value from anywhere in the buffer, zero or (0, 0, 0, x), or the draw or dispatch
+  partly dropped (checked: the WebGPU specification's out-of-bounds access in shaders), and WGSL may
+  end the invocation with its outputs zero (checked: WGSL's out-of-bounds access); a listed loss.
+  Typed buffers are exact: their route checks each element against the view's length
+  (`HelperValue::TexelBufferView`). The exact route for the rest is the check in the program that
+  the Vulkan driver makes (`RobustAccessInShader`, 15.4), which every program would pay for. The
+  recording back end stops at such an access with an error naming it (a call it cannot carry out),
+  so a front's tests over it find every one.
 - Stream output that transform feedback cannot write as declared (gaps that must leave the buffer's
   bytes alone, several elements per buffer in separate mode) is captured whole into a scratch buffer and
   repacked by a second capture that also reads the destination's old bytes (`StreamOutRepacked`).
