@@ -236,7 +236,9 @@ pub trait Backend: Sized {
     /// draw writing depth ([`crate::SlowPath::DepthWrittenByDraw`]); and into a texture whose bytes it
     /// keeps on the host, through that copy ([`crate::SlowPath::HostCopyReadBack`]). A combined
     /// depth-stencil format is copied whole, both aspects in one call (Direct3D's copies; WebGPU
-    /// copies such textures only so).
+    /// copies such textures only so). The two regions may lie in one subresource if they do not
+    /// overlap (Vulkan and OpenGL allow it); a back end whose API refuses that copies through a
+    /// buffer ([`crate::SlowPath::CopyWithinTexture`]).
     fn copy_texture(
         &mut self,
         src: &TextureRegion<'_, Self>,

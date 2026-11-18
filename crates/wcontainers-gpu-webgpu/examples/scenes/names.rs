@@ -21,6 +21,9 @@ macro_rules! suite_but_present {
             generate_mips_averages_in_the_values_format,
             values_are_interpolated_with_perspective,
             the_scissor_bounds_the_draw,
+            a_scissor_past_the_target_is_clipped_to_it,
+            clear_rects_clear_each_rectangle_clipped_to_the_view,
+            copies_between_depth_stencil_textures_move_both_aspects,
             stencil_operations_and_tests,
             near_clipping_and_the_viewport_depth_range,
             linear_filtering_and_address_modes,
@@ -30,6 +33,7 @@ macro_rules! suite_but_present {
             indexed_strips_restart_and_add_the_base_vertex,
             fragments_write_storage_buffers,
             multisampled_targets_cover_their_samples_and_resolve,
+            resolves_average_in_the_format_named,
             programs_run_per_sample_and_read_samples,
             occlusion_queries_answer_whether_samples_passed,
         );

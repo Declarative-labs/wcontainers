@@ -49,16 +49,20 @@ pub enum HeapType {
     Upload,
     /// Memory the GPU writes and the program reads.
     Readback,
+    /// Memory of a custom heap the CPU sees, which both write and read. Its buffers are written to
+    /// the GPU from the program's memory as upload buffers are, and what the GPU writes into them
+    /// is read back as into readback buffers; its textures are stored as default ones.
+    Shared,
 }
 
-/// `D3D12_HEAP_FLAGS`: every defined bit, and the deny flags.
+/// `D3D12_HEAP_FLAGS`: every bit this desktop's Windows 10 runtime takes, and the deny flags. It
+/// refuses `ALLOW_SHADER_ATOMICS` (0x400) as undefined (measured by `check_d3d12 answers`).
 const HEAP_FLAGS_DEFINED: u32 =
-    0x1 | 0x4 | 0x8 | 0x20 | 0x40 | 0x80 | 0x100 | 0x200 | 0x400 | 0x800 | 0x1000 | 0x2000;
+    0x1 | 0x4 | 0x8 | 0x20 | 0x40 | 0x80 | 0x100 | 0x200 | 0x800 | 0x1000 | 0x2000;
 const HEAP_FLAGS_DENY: u32 = 0x4 | 0x40 | 0x80;
 
 /// The heap flags asking for an ability the front lacks, each with its reason. The others are
-/// honoured as they are: resources are always resident, memory is zeroed anyway, and atomics on
-/// one adapter need nothing of the heap.
+/// honoured as they are: resources are always resident and memory is zeroed anyway.
 const HEAP_FLAGS_REFUSED: [(u32, &str); 6] = [
     (0x1, "shared heaps"),
     (0x8, "heaps allowing display"),
@@ -101,12 +105,12 @@ const POOL_L0: u32 = 1;
 const POOL_L1: u32 = 2;
 
 /// The heap a custom heap's properties name on a discrete adapter (the one `ARCHITECTURE`
-/// reports), and whether the CPU sees it. Memory the CPU does not see is a default heap; the
-/// adapter's own memory is never CPU-visible (no GPU upload heaps).
-pub fn custom_heap(page: u32, pool: u32) -> Result<(HeapType, bool), Error> {
+/// reports). Memory the CPU does not see is a default heap; the adapter's own memory is never
+/// CPU-visible (no GPU upload heaps).
+pub fn custom_heap(page: u32, pool: u32) -> Result<HeapType, Error> {
     match (page, pool) {
-        (PAGE_NOT_AVAILABLE, POOL_L0 | POOL_L1) => Ok((HeapType::Default, false)),
-        (PAGE_WRITE_COMBINE | PAGE_WRITE_BACK, POOL_L0) => Ok((HeapType::Default, true)),
+        (PAGE_NOT_AVAILABLE, POOL_L0 | POOL_L1) => Ok(HeapType::Default),
+        (PAGE_WRITE_COMBINE | PAGE_WRITE_BACK, POOL_L0) => Ok(HeapType::Shared),
         _ => Err(Error::Invalid("custom heap properties")),
     }
 }
@@ -130,11 +134,9 @@ pub fn check_state(state: u32) -> Result<(), Error> {
 }
 
 /// The checks of `CreateCommittedResource` and `CreatePlacedResource` that Direct3D 12 makes of a
-/// description, its heap (`cpu_custom`: a custom heap the CPU sees), its initial state and whether a
-/// clear value is given.
+/// description, its heap, its initial state and whether a clear value is given.
 pub fn check_creation(
     heap: HeapType,
-    cpu_custom: bool,
     desc: &ResourceDesc,
     state: u32,
     clear: bool,
@@ -148,29 +150,29 @@ pub fn check_creation(
             return Err(Error::Invalid("a buffer's description"));
         }
         if desc.flags & (FLAG_RENDER_TARGET | FLAG_DEPTH_STENCIL | FLAG_SIMULTANEOUS_ACCESS) != 0
-            || (heap != HeapType::Default && desc.flags & FLAG_UNORDERED_ACCESS != 0)
+            || (heap.cpu_only() && desc.flags & FLAG_UNORDERED_ACCESS != 0)
         {
             return Err(Error::Invalid("a buffer's flags"));
         }
         let state_ok = match heap {
             HeapType::Upload => state == 0 || state == STATE_GENERIC_READ,
             HeapType::Readback => state == 0 || state == STATE_COPY_DEST,
-            HeapType::Default => true,
+            HeapType::Default | HeapType::Shared => true,
         };
         if !state_ok {
             return Err(Error::Invalid(
                 "the initial state of an upload or readback buffer",
             ));
         }
-        if cpu_custom {
-            // Its bytes would move both ways between the CPU's memory and the GPU's.
+        if heap == HeapType::Shared && desc.flags & FLAG_UNORDERED_ACCESS != 0 {
+            // Its storage writes would have to be read back after every draw and dispatch.
             return Err(Error::NotImplemented(
-                "buffers in a custom heap the CPU sees",
+                "unordered access buffers in a custom heap the CPU sees",
             ));
         }
         return Ok(());
     }
-    if heap != HeapType::Default {
+    if heap.cpu_only() {
         return Err(Error::Invalid("textures live in default or custom heaps"));
     }
     if desc.sample_count == 0 || desc.format == 0 {
@@ -199,6 +201,21 @@ pub fn check_creation(
 }
 
 impl HeapType {
+    /// Upload and readback heaps, which hold buffers only.
+    pub fn cpu_only(self) -> bool {
+        matches!(self, HeapType::Upload | HeapType::Readback)
+    }
+
+    /// Buffers whose bytes the program writes, written to the GPU before work reading them.
+    pub fn uploads(self) -> bool {
+        matches!(self, HeapType::Upload | HeapType::Shared)
+    }
+
+    /// Buffers whose bytes the GPU writes, read back into the program's memory.
+    pub fn reads_back(self) -> bool {
+        matches!(self, HeapType::Readback | HeapType::Shared)
+    }
+
     pub fn from_d3d12(value: u32) -> Result<HeapType, Error> {
         match value {
             1 => Ok(HeapType::Default),

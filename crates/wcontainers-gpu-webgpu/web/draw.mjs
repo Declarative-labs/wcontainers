@@ -4,7 +4,8 @@
 // <pkg-dir> is wasm-bindgen's output for the scenes example. For each twist (default none) writes
 // chrome-webgpu-<scene>.png into <out-dir>, or <out-dir>\<twist> for a twist other than none, and
 // the eight-viewport scene as chrome-webgpu-viewports.png and, moved to whole pixels,
-// chrome-webgpu-viewports-rounded.png, and prints first-draw timings with and without prepare.
+// chrome-webgpu-viewports-rounded.png, prints first-draw timings with and without prepare, and checks
+// timestamps.
 // Fails unless WebGPU's adapter is a GPU (discrete or integrated, not a fallback).
 import { writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -71,6 +72,13 @@ try {
     }
   } catch (e) {
     console.log(`prepare timings failed: ${e.message}`);
+    failed = true;
+  }
+  // Timestamps: ordered, scaled with the work, at the page clock's rate.
+  try {
+    console.log(`chrome timestamps: ${await page.evaluate(() => window.timestamps())}`);
+  } catch (e) {
+    console.log(`chrome timestamps failed: ${e.message}`);
     failed = true;
   }
 } finally {

@@ -84,7 +84,7 @@ impl Adapter_Impl {
 
     /// A factory enumerating this adapter, which makes swap chains of its devices.
     pub(super) fn get_parent(&self, riid: *const GUID, parent: *mut *mut c_void) -> Result<()> {
-        let factory: IDXGIFactory2 = Factory::new(self.to_interface()).into();
+        let factory: IDXGIFactory6 = Factory::new(self.to_interface()).into();
         unsafe { factory.query(riid, parent).ok() }
     }
 }

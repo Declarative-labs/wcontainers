@@ -11,7 +11,7 @@ use wcontainers_direct3d_12::list::{
     ResourceView, RootArgument, SamplerView, TargetView, VertexBufferView, ViewportF,
 };
 use wcontainers_direct3d_12::resource::{
-    Footprint, HeapType, ResourceDesc, check_creation, check_state,
+    DIMENSION_BUFFER, Footprint, HeapType, ResourceDesc, check_creation, check_state,
 };
 use wcontainers_direct3d_12::state::{
     Blend, DepthStencil, InputElement, Raster, StencilOps, TargetBlend,
@@ -1429,7 +1429,7 @@ impl Device {
         clear_out(out);
         // SAFETY: the API requires a description.
         let mut desc = *unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
-        let (kind, _) = heap_kind(&desc.Properties)?;
+        let kind = heap_kind(&desc.Properties)?;
         // Zeros read as the defaults: the one node, and 64 KiB alignment.
         let p = &mut desc.Properties;
         p.CreationNodeMask = p.CreationNodeMask.max(1);
@@ -1467,15 +1467,15 @@ impl Device {
             )
         };
         let (memory, heap_desc) = (heap.1, heap.0);
-        let (kind, cpu_custom) = heap_kind(&heap_desc.Properties)?;
+        let kind = heap_kind(&heap_desc.Properties)?;
         let front = resource_desc(&desc);
-        check_creation(kind, cpu_custom, &front, state.0 as u32, !clear.is_null()).map_err(hr)?;
+        check_creation(kind, &front, state.0 as u32, !clear.is_null()).map_err(hr)?;
         let (id, address, host) = gpu::call(move |d| {
             let id = d.create_placed(memory, offset, &front)?;
-            let host = if kind == HeapType::Default {
-                0
-            } else {
+            let host = if kind != HeapType::Default && front.dimension == DIMENSION_BUFFER {
                 d.map(id)? as usize
+            } else {
+                0
             };
             Ok::<_, Error>((id, d.address(id), host))
         })
@@ -1494,7 +1494,7 @@ impl Device {
                     back_buffer: false,
                     heap: heap_desc.Properties,
                     heap_flags: heap_desc.Flags,
-                    cpu_maps: cpu_custom.then(AtomicU32::default),
+                    cpu_maps: cpu_texture(kind, &front).then(AtomicU32::default),
                     _chain: None,
                     _heap: Some(HeapHold::new(heap_interface)),
                     base: Base::child(),
@@ -1527,15 +1527,15 @@ impl Device {
                 *pdesc.as_ref().ok_or(E_INVALIDARG)?,
             )
         };
-        let (kind, cpu_custom) = heap_kind(&heap)?;
+        let kind = heap_kind(&heap)?;
         let front = resource_desc(&desc);
-        check_creation(kind, cpu_custom, &front, state.0 as u32, !clear.is_null()).map_err(hr)?;
+        check_creation(kind, &front, state.0 as u32, !clear.is_null()).map_err(hr)?;
         let (id, address, host) = gpu::call(move |d| {
             let id = d.create_committed(kind, &front)?;
-            let host = if kind == HeapType::Default {
-                0
-            } else {
+            let host = if kind != HeapType::Default && front.dimension == DIMENSION_BUFFER {
                 d.map(id)? as usize
+            } else {
+                0
             };
             Ok::<_, Error>((id, d.address(id), host))
         })
@@ -1554,7 +1554,7 @@ impl Device {
                     back_buffer: false,
                     heap,
                     heap_flags: flags,
-                    cpu_maps: cpu_custom.then(AtomicU32::default),
+                    cpu_maps: cpu_texture(kind, &front).then(AtomicU32::default),
                     _chain: None,
                     _heap: None,
                     base: Base::child(),
@@ -2139,8 +2139,8 @@ fn clear_out(out: *mut *mut c_void) {
     }
 }
 
-/// The front's heap type for heap properties, and whether it is a custom heap the CPU sees.
-fn heap_kind(p: &D3D12_HEAP_PROPERTIES) -> Result<(HeapType, bool)> {
+/// The front's heap type for heap properties.
+fn heap_kind(p: &D3D12_HEAP_PROPERTIES) -> Result<HeapType> {
     if p.Type == D3D12_HEAP_TYPE_CUSTOM {
         return wcontainers_direct3d_12::resource::custom_heap(
             p.CPUPageProperty.0 as u32,
@@ -2148,7 +2148,12 @@ fn heap_kind(p: &D3D12_HEAP_PROPERTIES) -> Result<(HeapType, bool)> {
         )
         .map_err(hr);
     }
-    Ok((HeapType::from_d3d12(p.Type.0 as u32).map_err(hr)?, false))
+    HeapType::from_d3d12(p.Type.0 as u32).map_err(hr)
+}
+
+/// A texture in a custom heap the CPU sees, which maps with no pointer.
+fn cpu_texture(kind: HeapType, desc: &ResourceDesc) -> bool {
+    kind == HeapType::Shared && desc.dimension != DIMENSION_BUFFER
 }
 
 impl Resource {

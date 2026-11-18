@@ -7,7 +7,7 @@
 use std::ffi::c_void;
 
 use windows::Win32::Foundation::{E_NOINTERFACE, E_POINTER, HMODULE};
-use windows::Win32::Graphics::Dxgi::{DXGI_ERROR_UNSUPPORTED, IDXGIFactory2};
+use windows::Win32::Graphics::Dxgi::{DXGI_ERROR_UNSUPPORTED, IDXGIFactory6};
 use windows::Win32::System::Diagnostics::Debug::RtlCaptureStackBackTrace;
 use windows::Win32::System::LibraryLoader::{
     GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -118,7 +118,7 @@ unsafe fn ours(riid: *const GUID, out: *mut *mut c_void) -> HRESULT {
     let Some(caps) = super::caps() else {
         return DXGI_ERROR_UNSUPPORTED;
     };
-    let factory: IDXGIFactory2 = Factory::new(Adapter::new(caps).into()).into();
+    let factory: IDXGIFactory6 = Factory::new(Adapter::new(caps).into()).into();
     // SAFETY: both pointers were checked and come from the caller.
     unsafe { factory.query(riid, out) }
 }

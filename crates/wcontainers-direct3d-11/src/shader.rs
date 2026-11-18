@@ -2,8 +2,8 @@
 //! crate into the common form.
 
 use wcontainers_gpu::{
-    CLAMPED_SAMPLER_BINDING, DrawBaseSource, HELPER_SET, HelperSlot, HelperValue, SlotKind,
-    SourceStage, VariantFlags, VariantKey,
+    AddedBinding, CLAMPED_SAMPLER_BINDING, DrawBaseSource, HELPER_SET, HelperSlot, HelperValue,
+    SlotKind, SourceStage, VariantFlags, VariantKey,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source};
 
@@ -13,6 +13,92 @@ use crate::error::{Error, Result, not_implemented};
 /// `SHEX` chunk; an error if the bytes are not such a container.
 pub fn stage(bytecode: &[u8]) -> Result<SourceStage> {
     let bad = Error::InvalidArg("not DXBC bytecode");
+    let (_, at) = chunks(bytecode)?
+        .into_iter()
+        .find(|(tag, _)| tag == b"SHDR" || tag == b"SHEX")
+        .ok_or(bad)?;
+    match word(bytecode, at + 8)? >> 16 {
+        0 => Ok(SourceStage::Pixel),
+        1 => Ok(SourceStage::Vertex),
+        2 => Ok(SourceStage::Geometry),
+        3 => Ok(SourceStage::Hull),
+        4 => Ok(SourceStage::Domain),
+        5 => Ok(SourceStage::Compute),
+        _ => Err(bad),
+    }
+}
+
+/// Whether the device's feature level takes a shader of this DXBC container's model: 9_x takes
+/// 4_0 programs carrying their Direct3D 9 form (`Aon9`), 10_0 takes 4_0, 10_1 4_1, 11_x 5_0.
+pub fn check_model(bytecode: &[u8], level: u32) -> Result<()> {
+    let mut version = None;
+    let mut aon9 = false;
+    for (tag, at) in chunks(bytecode)? {
+        match &tag {
+            b"SHDR" | b"SHEX" => version = Some(word(bytecode, at + 8)? & 0xff),
+            b"Aon9" => aon9 = true,
+            _ => {}
+        }
+    }
+    let version = version.ok_or(Error::InvalidArg("not DXBC bytecode"))?;
+    let (major, minor) = (version >> 4 & 0xf, version & 0xf);
+    let taken = match level {
+        crate::desc::level::L9_1..=crate::desc::level::L9_3 => (major, minor) == (4, 0) && aon9,
+        crate::desc::level::L10_0 => (major, minor) == (4, 0),
+        crate::desc::level::L10_1 => major == 4,
+        _ => major <= 5,
+    };
+    if taken {
+        Ok(())
+    } else {
+        Err(Error::InvalidArg(
+            "a shader model the device's feature level does not take",
+        ))
+    }
+}
+
+/// The word at byte `at` of `bytecode`.
+fn word(bytecode: &[u8], at: usize) -> Result<u32> {
+    bytecode
+        .get(at..)
+        .and_then(|b| b.get(..4))
+        .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+        .ok_or(Error::InvalidArg("not DXBC bytecode"))
+}
+
+/// The tags of a DXBC container's chunks and where each starts.
+fn chunks(bytecode: &[u8]) -> Result<Vec<([u8; 4], usize)>> {
+    if bytecode.len() < 32
+        || &bytecode[..4] != b"DXBC"
+        || word(bytecode, 24)? as usize > bytecode.len()
+    {
+        return Err(Error::InvalidArg("not DXBC bytecode"));
+    }
+    (0..word(bytecode, 28)? as usize)
+        .map(|i| {
+            let at = word(bytecode, 32 + 4 * i)? as usize;
+            let tag = bytecode
+                .get(at..at.saturating_add(4))
+                .ok_or(Error::InvalidArg("not DXBC bytecode"))?;
+            Ok((tag.try_into().unwrap(), at))
+        })
+        .collect()
+}
+
+/// One element of a DXBC container's input signature.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignatureElement {
+    pub semantic: String,
+    pub index: u32,
+    pub register: u32,
+    /// Direct3D's system value name (`D3D_NAME`): 6 is the vertex id, 8 the instance id.
+    pub system: u32,
+}
+
+/// The input signature (`ISGN`, or `ISG1` of shader model 5.1) of a DXBC container; empty where it
+/// has none. An error if the bytes are not such a container or the chunk is malformed.
+pub fn input_signature(bytecode: &[u8]) -> Result<Vec<SignatureElement>> {
+    let bad = Error::InvalidArg("not DXBC bytecode");
     let word = |at: usize| -> Result<u32> {
         bytecode
             .get(at..)
@@ -20,25 +106,51 @@ pub fn stage(bytecode: &[u8]) -> Result<SourceStage> {
             .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
             .ok_or(bad)
     };
-    if bytecode.len() < 32 || &bytecode[..4] != b"DXBC" || word(24)? as usize > bytecode.len() {
+    if bytecode.len() < 32 || &bytecode[..4] != b"DXBC" {
         return Err(bad);
     }
     for i in 0..word(28)? as usize {
         let at = word(32 + 4 * i)? as usize;
         let tag = bytecode.get(at..).and_then(|b| b.get(..4)).ok_or(bad)?;
-        if tag == b"SHDR" || tag == b"SHEX" {
-            return match word(at + 8)? >> 16 {
-                0 => Ok(SourceStage::Pixel),
-                1 => Ok(SourceStage::Vertex),
-                2 => Ok(SourceStage::Geometry),
-                3 => Ok(SourceStage::Hull),
-                4 => Ok(SourceStage::Domain),
-                5 => Ok(SourceStage::Compute),
-                _ => Err(bad),
-            };
+        let (stride, first) = match tag {
+            b"ISGN" => (24, 0),
+            b"ISG1" => (32, 4),
+            _ => continue,
+        };
+        let data = at + 8;
+        let mut elements = Vec::new();
+        for e in 0..word(data)? as usize {
+            let base = data + 8 + e * stride + first;
+            let name_at = data + word(base)? as usize;
+            let name = bytecode
+                .get(name_at..)
+                .and_then(|b| b.split(|&c| c == 0).next())
+                .ok_or(bad)?;
+            elements.push(SignatureElement {
+                semantic: String::from_utf8_lossy(name).into_owned(),
+                index: word(base + 4)?,
+                system: word(base + 8)?,
+                register: word(base + 16)?,
+            });
         }
+        return Ok(elements);
     }
-    Err(bad)
+    Ok(Vec::new())
+}
+
+/// Direct3D's system value names of the vertex and instance ids, which no input element feeds.
+const VERTEX_ID: u32 = 6;
+const INSTANCE_ID: u32 = 8;
+
+impl SignatureElement {
+    /// The input assembler generates it; no input element feeds it. Direct3D goes by the name too:
+    /// a pixel shader's input named so carries no system value.
+    pub fn generated(&self) -> bool {
+        matches!(self.system, VERTEX_ID | INSTANCE_ID)
+            || ["SV_VertexID", "SV_InstanceID"]
+                .iter()
+                .any(|n| self.semantic.eq_ignore_ascii_case(n))
+    }
 }
 
 /// What a draw asks of one stage's program beyond the plain conversion, from the state bound at the
@@ -57,6 +169,18 @@ pub struct StageVariant {
     /// Texture slots whose bound view's resource has a minimum level-of-detail clamp past the
     /// view's first level (`MinLodClamp`).
     pub min_lod_clamped: u128,
+    /// The input layout whose pulled elements the vertex program fetches (its id; zero for none).
+    pub pulled: u64,
+    /// Sampler slots addressing by a border the back end lacks: the program filters through them
+    /// (`BorderInShader`).
+    pub border_in_shader: u16,
+    /// Sampler slots mirroring once where the back end does not (`MirrorOnceInShader`).
+    pub mirror_once_in_shader: u16,
+    /// Texture slots of formats the back end cannot filter, sampled through a filtering sampler
+    /// (`FilterInShader`).
+    pub filter_in_shader: u128,
+    /// The pixel program adds the depth bias (`DepthBiasInShader`).
+    pub depth_bias: bool,
 }
 
 impl StageVariant {
@@ -64,10 +188,16 @@ impl StageVariant {
     pub fn key(self, stage: SourceStage) -> VariantKey {
         let mut key = base_key(stage);
         key.lod_bias = self.lod_bias;
+        key.border_in_shader = self.border_in_shader;
+        key.mirror_once_in_shader = self.mirror_once_in_shader;
+        key.filter_in_shader = self.filter_in_shader;
         key.min_lod_clamped = self.min_lod_clamped;
         key.samples = self.samples;
         if self.dual_source {
             key.flags |= VariantFlags::DUAL_SOURCE;
+        }
+        if self.depth_bias {
+            key.flags |= VariantFlags::DEPTH_BIAS;
         }
         if self.from_arguments {
             key.draw_base = DrawBaseSource::Arguments;
@@ -77,13 +207,15 @@ impl StageVariant {
 }
 
 /// Where a converted program reads its helper constants: the block's size and each value's offset;
-/// and the (texture slot, sampler slot) pairs it samples through merged samplers of a minimum
-/// level-of-detail clamp, each bound at `CLAMPED_SAMPLER_BINDING` plus its index.
+/// the (texture slot, sampler slot) pairs it samples through merged samplers of a minimum
+/// level-of-detail clamp, each bound at `CLAMPED_SAMPLER_BINDING` plus its index; and the binding
+/// of each input it fetches itself, by location.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Helpers {
     pub size: u32,
     pub values: Vec<HelperSlot>,
     pub merged: Vec<(u32, (u32, u32))>,
+    pub pulled: Vec<(u32, u32)>,
 }
 
 impl Helpers {
@@ -100,10 +232,20 @@ impl Helpers {
                 pairs.get(n as usize).map(|&p| (b.binding, p))
             })
             .collect();
+        let pulled = c
+            .reflection
+            .bindings
+            .iter()
+            .filter_map(|b| match b.added {
+                Some(AddedBinding::PulledStream(location)) => Some((b.binding, location)),
+                _ => None,
+            })
+            .collect();
         Helpers {
             size: c.reflection.helper_size,
             values: c.reflection.helpers.clone(),
             merged,
+            pulled,
         }
     }
 }
@@ -146,6 +288,50 @@ pub fn sampler_slots(c: &Converted) -> u16 {
         .iter()
         .filter(|b| b.kind == SlotKind::Sampler && b.added.is_none() && b.register < 16)
         .fold(0, |m, b| m | (1 << b.register))
+}
+
+/// The sampler slots a converted program gathers, compares or offsets through, one bit each: the
+/// program can mirror once only around plain samples, so through these it filters itself.
+pub fn mirror_filtered_slots(c: &Converted) -> u16 {
+    let mut slots = 0;
+    for m in &c.modules {
+        let module = &m.module;
+        let functions = module
+            .functions
+            .iter()
+            .map(|(_, f)| f)
+            .chain(module.entry_points.iter().map(|e| &e.function));
+        for f in functions {
+            for (_, e) in f.expressions.iter() {
+                let naga::Expression::ImageSample {
+                    sampler,
+                    gather,
+                    offset,
+                    depth_ref,
+                    ..
+                } = *e
+                else {
+                    continue;
+                };
+                if gather.is_none() && offset.is_none() && depth_ref.is_none() {
+                    continue;
+                }
+                let naga::Expression::GlobalVariable(g) = f.expressions[sampler] else {
+                    continue;
+                };
+                let Some(b) = &module.global_variables[g].binding else {
+                    continue;
+                };
+                if let Some(r) = c.reflection.bindings.iter().find(|r| {
+                    r.kind == SlotKind::Sampler && r.set == b.group && r.binding == b.binding
+                }) && r.register < 16
+                {
+                    slots |= 1 << r.register;
+                }
+            }
+        }
+    }
+    slots
 }
 
 /// The texture slots a converted program reads, one bit each.
@@ -201,7 +387,12 @@ fn answer(r: core::result::Result<Converted, ConvertError>) -> Result<Converted>
                     HelperValue::DrawBase
                         | HelperValue::DrawArguments
                         | HelperValue::LodBias { .. }
+                        | HelperValue::SamplerState { .. }
+                        | HelperValue::BorderColor { .. }
+                        | HelperValue::TextureComponents { .. }
                         | HelperValue::MinLod { .. }
+                        | HelperValue::DepthBias
+                        | HelperValue::PulledStream { .. }
                 )
             }) =>
         {

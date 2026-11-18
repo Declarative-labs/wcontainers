@@ -53,6 +53,7 @@ pub const CASES: &[&str] = &[
     "vertex-pulled",
     "restart",
     "render-pass",
+    "custom-heap",
 ];
 
 /// Runs case `name` and returns its line of results.
@@ -81,6 +82,7 @@ pub fn run(name: &str) -> Result<String> {
             "vertex-pulled" => vertex_pulled(&c),
             "restart" => restart(&c),
             "render-pass" => render_pass(&c),
+            "custom-heap" => custom_heap(&c),
             _ => panic!("no case {name}"),
         }
     }
@@ -2162,6 +2164,89 @@ unsafe fn predicated_resolve(c: &Ctx) -> Result<String> {
             let pixels = c.pixels(&copy, D3D12_RESOURCE_STATE_RESOLVE_DEST)?;
             write!(out, "{name} {}; ", colours(&pixels)).unwrap();
         }
+        Ok(out)
+    }
+}
+
+/// Buffers in custom heaps the CPU sees (write-back, in system memory). A committed one: the CPU
+/// writes it, copies read it and write part of it, the CPU reads it back, writes again, and a copy
+/// executed right after one writing it reads it. Two placed ones overlapping in a custom heap: a
+/// copy writes through one and the CPU reads through the other.
+unsafe fn custom_heap(c: &Ctx) -> Result<String> {
+    unsafe {
+        let properties = D3D12_HEAP_PROPERTIES {
+            Type: D3D12_HEAP_TYPE_CUSTOM,
+            CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_WRITE_BACK,
+            MemoryPoolPreference: D3D12_MEMORY_POOL_L0,
+            ..Default::default()
+        };
+        let common = D3D12_RESOURCE_STATE_COMMON;
+        let none = D3D12_RESOURCE_FLAG_NONE;
+        let mut shared = None;
+        c.device.CreateCommittedResource(
+            &properties,
+            D3D12_HEAP_FLAG_NONE,
+            &buffer_desc(256, none),
+            common,
+            None,
+            &mut shared,
+        )?;
+        let shared: ID3D12Resource = shared.unwrap();
+        let other = c.committed(D3D12_HEAP_TYPE_DEFAULT, &buffer_desc(256, none), common)?;
+        let pattern: Vec<u8> = (0..64u32).flat_map(|i| (i * 5 + 1).to_le_bytes()).collect();
+        write(&shared, 0, &pattern)?;
+        let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        list.CopyBufferRegion(&other, 0, &shared, 0, 64);
+        list.ResourceBarrier(&[
+            transition(
+                &other,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_COPY_SOURCE,
+            ),
+            transition(
+                &shared,
+                D3D12_RESOURCE_STATE_COPY_SOURCE,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+            ),
+        ]);
+        list.CopyBufferRegion(&shared, 128, &other, 0, 32);
+        c.run(&list)?;
+        let mut out = String::new();
+        write!(out, "mapped {} | ", words(&mapped(&shared, 256)?)).unwrap();
+        write(&shared, 0, &[0xab; 16])?;
+        let (_b, first) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        first.CopyBufferRegion(&shared, 200, &other, 0, 8);
+        first.Close()?;
+        let (_c, second) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        second.CopyBufferRegion(&other, 0, &shared, 0, 256);
+        second.Close()?;
+        c.queue.ExecuteCommandLists(&[Some(first.cast()?)]);
+        c.queue.ExecuteCommandLists(&[Some(second.cast()?)]);
+        c.finish()?;
+        write!(out, "copied {} | ", words(&c.read(&other, 0, 256)?)).unwrap();
+        write!(out, "mapped {} | ", words(&mapped(&shared, 256)?)).unwrap();
+        let mut heap = None;
+        c.device.CreateHeap(
+            &D3D12_HEAP_DESC {
+                SizeInBytes: 2 * PAGE,
+                Properties: properties,
+                Alignment: 0,
+                Flags: D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS,
+            },
+            &mut heap,
+        )?;
+        let heap: ID3D12Heap = heap.unwrap();
+        let x = c.placed(&heap, 0, &buffer_desc(2 * PAGE, none), common)?;
+        let y = c.placed(&heap, PAGE, &buffer_desc(PAGE, none), common)?;
+        let source = c.upload(&pattern)?;
+        let (_d, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        list.CopyBufferRegion(&y, 64, &source, 0, 256);
+        c.run(&list)?;
+        let mut p = std::ptr::null_mut();
+        x.Map(0, None, Some(&mut p))?;
+        let through = std::slice::from_raw_parts(p.cast::<u8>().add(PAGE as usize), 512).to_vec();
+        x.Unmap(0, None);
+        write!(out, "overlapping {}", words(&through)).unwrap();
         Ok(out)
     }
 }

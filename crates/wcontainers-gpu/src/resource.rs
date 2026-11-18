@@ -190,27 +190,29 @@ pub struct TextureViewDesc {
     pub stencil: bool,
 }
 
-/// Texture filtering.
+/// Texture filtering. The numbers are the codes [`crate::HelperValue::SamplerState`] holds, which
+/// converted programs (and so the cache) keep.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Filter {
-    Nearest,
-    Linear,
+    Nearest = 0,
+    Linear = 1,
 }
 
-/// What a sampler does outside the texture.
+/// What a sampler does outside the texture. The numbers are the codes
+/// [`crate::HelperValue::SamplerState`] holds, which converted programs (and so the cache) keep.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AddressMode {
-    Repeat,
-    Mirror,
-    Clamp,
+    Repeat = 0,
+    Mirror = 1,
+    Clamp = 2,
     /// Needs [`crate::Features::BORDER_COLOR`] for colors other than transparent black. Otherwise the
     /// front binds a clamping sampler and a program variant applies the border (slow path
     /// [`crate::SlowPath::BorderInShader`], [`crate::VariantKey::border_in_shader`]).
-    Border,
+    Border = 3,
     /// Mirrored once about zero, then clamped. Needs [`crate::Features::MIRROR_ONCE`]; otherwise the
     /// front binds a clamping sampler and a program variant samples the absolute coordinate with the
     /// original gradients, which is exact (slow path [`crate::SlowPath::MirrorOnceInShader`]).
-    MirrorOnce,
+    MirrorOnce = 4,
 }
 
 /// The color outside the texture for [`AddressMode::Border`].

@@ -162,7 +162,9 @@ Objects, each made from plain data and named by an associated type of the back e
   Direct3D's, whose cube kind is fixed when the texture is made). Samplers have no level-of-detail bias,
   because neither browser API has one (4.12).
 - `create_shader(&ShaderModule)`: a validated `naga::Module` with its entry point, stage and content key.
-- `create_program(&Program)`: vertex plus optional fragment shader, or one compute shader.
+- `create_program(&Program)`: vertex plus optional fragment shader, or one compute shader. Every
+  location the fragment shader reads, the vertex shader writes, with the same type, interpolation and
+  sampling (WebGPU's and GLSL ES's linking rule); it may write more.
 - The state blocks: `create_blend`, `create_depth_stencil`, `create_raster`, `create_vertex_layout`.
 - `create_binding_set(&[BindingEntry])`: the resources a draw binds, as one block (4.5).
 - `create_query_set(kind, count)`: occlusion queries that say "any" (every back end), exact occlusion
@@ -230,7 +232,9 @@ Recording:
   documentation sets no rule against one buffer; Direct3D 11's `CopySubresourceRegion` and Direct3D 12's
   `CopyTextureRegion` need different subresources); WebGPU forbids a buffer as both source and
   destination, so its back end copies through a temporary buffer (`CopyWithinBuffer`). WebGL 2 copies
-  within one buffer natively.
+  within one buffer natively. Likewise `copy_texture` may copy between non-overlapping regions of one
+  subresource (`vkCmdCopyImage`, `glCopyImageSubData`); WebGPU refuses one subresource as both, so its
+  back end copies through a buffer (`CopyWithinTexture`).
 - `submit() -> Fence`, `fence_done(&fence)`, `wait_fence(&fence)`.
 
 Bytes out:
@@ -442,7 +446,8 @@ Building ahead, for the implicit fronts (the brief's three steps against stutter
 3. Record every combination drawn into the cache (section 8) and `prepare` them all at the next start.
 These `prepare` calls queue behind Direct3D 12's and the cache's, and never block. A shared helper in
 `wcontainers-gpu` (the combination tracker, written at G1 with the pass tracker) keeps the tuples per
-vertex shader and the counts, and picks the tuples; it counts how many prepared combinations were
+vertex shader and the counts (with the cache's record taken in, and given back as the record to
+write, `totals`), and picks the tuples; it counts how many prepared combinations were
 later drawn and how many never were, which G4 reports on real programs. A combination still missing at
 its first draw is built then and the frame pauses (`PipelineMiss`), never skipping the draw.
 
@@ -722,9 +727,12 @@ Rules a pass description follows:
   (kept sorted; while neither the pass nor the draw writes storage, the common case, the check is a
   test of one flag, and recording a draw's uses one search per use); before a draw that would
   put a resource in both, it ends the pass with `Store` and begins the next on the same targets with
-  `Load` (`UsageScopeSplit`, counted); each part names the resolve target, whose last resolve is the
-  one that stays (a part cannot be known to be the last when it begins; a split pass costs one more
-  resolve). Running
+  `Load` (`UsageScopeSplit`, counted), keeping the pass's read-only aspects; each part names the
+  resolve target, whose last resolve is the one that stays (a part cannot be known to be the last when
+  it begins; a split pass costs one more resolve). For the same reason an explicit front, which knows
+  its whole pass before it replays it, begins a pass whose draws write storage with `Store` where its
+  API discards (a split pass keeps those attachments), and the tracker refuses to split a pass that
+  discards. Running
 queries carry over as at any split (below). Exact: the
   later draw sees the storage writes, as the APIs promise after their barrier or hazard rule. Within one
   draw, Direct3D forbids the same resource as a storage view and any other binding (Direct3D 11's
@@ -2051,8 +2059,9 @@ against the same Rust from the start; back ends never read them.
   bias, both at offset 0 of their blocks, never meet. The front writes each block with
   `write_buffer_ring` when one of its values changed and binds both in set 3; a value both stages need
   (a storage offset of a Direct3D 12 range visible to all stages) is written into each. The values: storage offset remainders, samplers' level-of-detail bias,
-  border colour and state and the components of a texture's format (for filtering and addressing in
-  the program), texture level and sample
+  border colour and state (filters and address modes by the fixed numbers of `Filter` and
+  `AddressMode`, which converted programs and so the cache keep) and the components of a texture's
+  format (`Format::components`) (for filtering and addressing in the program), texture level and sample
   counts where the back end's language cannot ask (`TEXTURE_INFO`), depth bias, pulled streams' offset, stride and step,
   the sample mask, packed storage offsets, the texel layout of storage views read through a buffer,
   how each target combined in the program blends, the early tests a program runs itself, a texture's

@@ -267,7 +267,10 @@ impl<B: Backend> PassTracker<B> {
         Ok(())
     }
 
-    /// Begins an explicit front's pass on `targets` with `ops`, closing any open one.
+    /// Begins an explicit front's pass on `targets` with `ops`, closing any open one. A pass whose
+    /// draws write storage may be split (see [`PassTracker::before_draw`]); every part but the last
+    /// must keep what it drew, so the front begins such a pass with `Store` where its API discards,
+    /// and a split of a pass that discards is refused.
     pub fn begin(
         &mut self,
         b: &mut B,
@@ -288,7 +291,9 @@ impl<B: Backend> PassTracker<B> {
 
     /// Makes ready for a draw using `uses`: opens a pass on the targets if none is open, and splits
     /// the open one where the draw would use a resource another way than an earlier draw wrote it as
-    /// storage, or write as storage one an earlier draw used another way. Returns the area every
+    /// storage, or write as storage one an earlier draw used another way: the part ends as the pass
+    /// would ([`PassTracker::close`]) and the next begins with every attachment loaded and the pass's
+    /// store and read-only aspects. Returns the area every
     /// attachment covers where the pass was fitted; the front cuts the draw's scissors to it, with the
     /// scissor test on.
     pub fn before_draw(
@@ -310,8 +315,21 @@ impl<B: Backend> PassTracker<B> {
                     list.binary_search(&u.resource).is_ok()
                 });
             if conflict {
+                // Each part keeps what the last drew; the next loads it with the pass's other ops.
+                if self.discards() {
+                    return Err(GpuError::Invalid(
+                        "a pass split at a storage write discards an attachment",
+                    ));
+                }
                 b.slow_paths().hit(SlowPath::UsageScopeSplit);
+                let mut ops = self.ops;
+                for (load, _) in &mut ops.colors {
+                    *load = LoadOp::Load;
+                }
+                ops.depth.load = LoadOp::Load;
+                ops.stencil.load = LoadOp::Load;
                 self.close(b)?;
+                self.ops = ops;
                 self.open_pass(b)?;
             }
         }
@@ -432,6 +450,24 @@ impl<B: Backend> PassTracker<B> {
             b.end_query();
         }
         Ok(first..q.next)
+    }
+
+    /// Whether the pass ends by discarding an attachment the targets have.
+    fn discards(&self) -> bool {
+        let Some(t) = &self.targets else {
+            return false;
+        };
+        let colors = t
+            .colors
+            .iter()
+            .zip(&self.ops.colors)
+            .any(|(c, (_, store))| c.is_some() && *store == StoreOp::Discard);
+        let depth = t.depth.as_ref().is_some_and(|d| {
+            let (has_depth, has_stencil) = aspects(d.format);
+            (has_depth && self.ops.depth.store == StoreOp::Discard)
+                || (has_stencil && self.ops.stencil.store == StoreOp::Discard)
+        });
+        colors || depth
     }
 
     /// Whether the next pass would clear an attachment the targets have.

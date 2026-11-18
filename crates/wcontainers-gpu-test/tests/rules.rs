@@ -712,6 +712,57 @@ fn a_program_finds_every_binding_it_reads() {
     d.refused("nothing bound at group 0 binding 0");
 }
 
+/// Programs converted apart meet here: the vertex shader writes every location the fragment shader
+/// reads, of its type, interpolation and sampling, and may write more (`VariantKey::linked` and
+/// `output_interpolation`).
+#[test]
+fn fragment_inputs_are_vertex_outputs_of_their_type_and_interpolation() {
+    const LINKED: &str = "
+struct V { @builtin(position) p: vec4<f32>, @location(0) a: vec4<f32>, @location(3) b: vec4<f32>,
+    @location(5) @interpolate(flat) n: u32 }
+@vertex fn vs() -> V { return V(vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0), 0u); }
+struct Gap { @location(0) a: vec4<f32>, @location(5) @interpolate(flat) n: u32 }
+@fragment fn gap(i: Gap) -> @location(0) vec4<f32> { return i.a; }
+@fragment fn past(@location(6) c: vec4<f32>) -> @location(0) vec4<f32> { return c; }
+@fragment fn narrower(@location(3) b: vec2<f32>) -> @location(0) vec4<f32> { return vec4<f32>(b, 0.0, 1.0); }
+@fragment fn linear(@location(3) @interpolate(linear) b: vec4<f32>) -> @location(0) vec4<f32> { return b; }
+@fragment fn centroid(@location(3) @interpolate(perspective, centroid) b: vec4<f32>) -> @location(0) vec4<f32> { return b; }
+@fragment fn stated(@location(3) @interpolate(perspective, center) b: vec4<f32>) -> @location(0) vec4<f32> { return b; }
+";
+    let mut r = Recorder::new();
+    let shader = |r: &mut Recorder, entry, stage| {
+        r.create_shader(&ShaderModule::from_wgsl(LINKED, entry, stage).unwrap())
+            .unwrap()
+    };
+    let v = shader(&mut r, "vs", ShaderStage::Vertex);
+    let mut program = |entry| {
+        let f = shader(&mut r, entry, ShaderStage::Fragment);
+        r.create_program(&Program::Render {
+            vertex: &v,
+            fragment: Some(&f),
+        })
+        .map(|_| ())
+    };
+    // Reading fewer locations than are written, and stating the defaults, are allowed.
+    assert_eq!(program("gap"), Ok(()));
+    assert_eq!(program("stated"), Ok(()));
+    assert_eq!(
+        program("past"),
+        Err(GpuError::Invalid(
+            "a fragment input the vertex shader does not write"
+        ))
+    );
+    for entry in ["narrower", "linear", "centroid"] {
+        assert_eq!(
+            program(entry),
+            Err(GpuError::Invalid(
+                "a fragment input of another type, interpolation or sampling than the vertex output"
+            )),
+            "{entry}"
+        );
+    }
+}
+
 #[test]
 fn shaders_and_programs_hold_entry_points_of_their_stages() {
     let module = naga::front::wgsl::parse_str(PROGRAM).unwrap();
@@ -1150,6 +1201,34 @@ fn each_use_needs_its_usage_flag() {
     ));
 }
 
+/// A copy may go between regions of one subresource that do not overlap, and between layers.
+#[test]
+fn texture_copies_within_one_texture_do_not_overlap() {
+    let mut r = Recorder::new();
+    let t = shaped(&mut r, TextureDimension::D2, 4, 2, 1);
+    let at = |x, y, layer| TextureRegion {
+        texture: &t,
+        mip: 0,
+        layer,
+        origin: Origin { x, y, z: 0 },
+        stencil: false,
+    };
+    let two = Extent {
+        width: 2,
+        height: 2,
+        depth_or_layers: 1,
+    };
+    r.copy_texture(&at(0, 0, 0), &at(2, 2, 0), two);
+    r.copy_texture(&at(0, 0, 0), &at(0, 0, 1), two);
+    r.copy_texture(&at(0, 0, 0), &at(2, 0, 0), two);
+    assert!(r.violations.is_empty());
+    r.copy_texture(&at(0, 0, 0), &at(1, 1, 0), two);
+    assert_eq!(
+        r.violations,
+        ["a copy between overlapping regions of one texture"]
+    );
+}
+
 #[test]
 fn texture_copies_stay_in_one_typeless_group() {
     let mut r = Recorder::new();
@@ -1199,6 +1278,21 @@ fn views_take_the_textures_format_or_its_twin() {
         ),
         Err(GpuError::Invalid("view range outside the texture"))
     );
+    // Ranges whose ends pass the largest u32 are refused, not wrapped.
+    for (base_mip, base_layer) in [(u32::MAX, 0), (0, u32::MAX)] {
+        assert_eq!(
+            r.create_view(
+                &t,
+                &TextureViewDesc {
+                    format: Format::Rgba8Unorm,
+                    base_mip,
+                    base_layer,
+                    ..desc
+                }
+            ),
+            Err(GpuError::Invalid("view range outside the texture"))
+        );
+    }
 }
 
 /// A 2 by 2 `rgba8unorm` texture made to be viewed in other formats.
@@ -2245,7 +2339,7 @@ fn raster_blocks_need_the_features_they_use() {
         depth_minus_one: false,
         sample_mask: !0,
     };
-    let cases: [(Features, Change); 10] = [
+    let cases: [(Features, Change); 11] = [
         (Features::PROVOKING_VERTEX_FIRST, |_| {}),
         (Features::PROVOKING_VERTEX_LAST, |d| {
             d.provoking = ProvokingVertex::Last
@@ -2260,6 +2354,7 @@ fn raster_blocks_need_the_features_they_use() {
         (Features::CLIP_DEPTH_ZERO_ONE, |_| {}),
         (Features::WIDE_LINES, |d| d.line_width = 2.0f32.to_bits()),
         (Features::POLYGON_MODE, |d| d.fill = FillMode::Line),
+        (Features::POLYGON_MODE_POINT, |d| d.fill = FillMode::Point),
         (Features::DEPTH_CLAMP, |d| d.depth_clip = false),
         (Features::CLIP_DEPTH_MINUS_ONE, |d| d.depth_minus_one = true),
     ];
@@ -2352,8 +2447,7 @@ fn bindings_need_the_features_their_stages_and_textures_use() {
         storage(&mut r, StageSet::FRAGMENT, true),
         Err(GpuError::Absent(Features::FRAGMENT_STORAGE_WRITE))
     );
-    let mut r = Recorder::new();
-    assert!(!r.caps().features.contains(Features::VERTEX_STORAGE_READ));
+    let mut r = Recorder::with_caps(|c| c.features.remove(Features::VERTEX_STORAGE_READ));
     assert_eq!(
         storage(&mut r, StageSet::VERTEX, false),
         Err(GpuError::Absent(Features::VERTEX_STORAGE_READ))
@@ -3234,6 +3328,41 @@ fn regions_lie_inside_their_texture() {
             "a region outside its level or off the block grid",
         ]
     );
+    // Ends past the largest u32 are refused, not wrapped.
+    let one = |r: &mut Recorder, t: &Id, layer, origin, width, layers: u32| {
+        r.write_texture(
+            &TextureRegion {
+                texture: t,
+                mip: 0,
+                layer,
+                origin,
+                stencil: false,
+            },
+            Extent {
+                width,
+                height: 1,
+                depth_or_layers: layers,
+            },
+            &vec![0; (width * 4 * layers) as usize],
+            width * 4,
+            1,
+            WriteMode::Ordered,
+        );
+    };
+    let mut r = Recorder::new();
+    let flat = shaped(&mut r, TextureDimension::D2, 4, 2, 2);
+    let deep = shaped(&mut r, TextureDimension::D3, 4, 4, 2);
+    one(&mut r, &flat, 0, at(u32::MAX - 1, 0, 0), 2, 1);
+    one(&mut r, &flat, u32::MAX, at(0, 0, 0), 1, 2);
+    one(&mut r, &deep, 0, at(0, 0, u32::MAX), 1, 2);
+    assert_eq!(
+        r.violations,
+        [
+            "a region outside its level or off the block grid",
+            "a region past the last layer",
+            "a region past the last slice",
+        ]
+    );
 }
 
 #[test]
@@ -3970,6 +4099,47 @@ fn bindings_hold_the_kind_of_resource_the_program_reads() {
         let p = d.program(fragment);
         d.begin();
         d.draw(&p, Some(&set), Topology::TriangleList, false);
+        d.refused(violation);
+    }
+}
+
+#[test]
+fn draw_ranges_end_within_a_u32() {
+    let range = "a draw's range past the largest vertex or index";
+    let instances = "a draw's instances past the largest instance index";
+    let vertices = |first, first_instance| DrawRange::Vertices {
+        first,
+        count: 3,
+        first_instance,
+        instances: 2,
+    };
+    let indexed = |first, first_instance| DrawRange::Indexed {
+        first,
+        count: 3,
+        base_vertex: 0,
+        first_instance,
+        instances: 2,
+    };
+    let cases = [
+        (vertices(u32::MAX - 1, 0), range),
+        (vertices(0, u32::MAX), instances),
+        (indexed(u32::MAX - 1, 0), range),
+        (indexed(0, u32::MAX), instances),
+    ];
+    for (r, violation) in cases {
+        let mut d = Drawing::new();
+        let p = d.program("plain");
+        d.begin();
+        d.draw_with(&p, None, Topology::TriangleList, false, |c, spare| {
+            if matches!(r, DrawRange::Indexed { .. }) {
+                c.index = Some(IndexBinding {
+                    buffer: spare,
+                    offset: 0,
+                    format: IndexFormat::U16,
+                });
+            }
+            c.range = r;
+        });
         d.refused(violation);
     }
 }

@@ -1,6 +1,7 @@
 //! Viewports at fractional positions (`FRACTIONAL_VIEWPORT`, plan 4.11) against real Direct3D 11's
 //! picture of the rig's eight-viewport scene (crates/wcontainers-graphics-test/src/d3d11/scenes/
-//! raster.rs): four of the eight viewports start half a pixel down.
+//! raster.rs): four of the eight viewports start half a pixel down. Wireframe filling
+//! (`POLYGON_MODE`) against the same scenes' fill picture.
 //!
 //! Needs a GPU; `WEBGPU_API` as in tests/scenes.rs.
 
@@ -17,8 +18,19 @@ mod allowance;
 #[path = "../examples/scenes/viewports.rs"]
 mod viewports;
 
-use wcontainers_gpu::{Backend, DeviceStatus, Features};
+use wcontainers_gpu::{
+    Backend, BufferUsage, ColorAttachment, CullMode, DeviceStatus, DrawCall, DrawRange, Extent,
+    Features, FillMode, Format, GpuError, LoadOp, Origin, PassDesc, RasterDesc, ReadSource,
+    StepMode, StoreOp, TextureRegion, TextureUsage, Topology, VertexBinding, VertexFormat,
+    Viewport,
+};
 use wcontainers_gpu_webgpu::WebGpu;
+
+/// Whether the device is wgpu's Vulkan, whose lines follow Vulkan's rasterisation rules, not
+/// Direct3D's.
+fn vulkan() -> bool {
+    std::env::var("WEBGPU_API").as_deref() == Ok("vulkan")
+}
 
 fn device() -> WebGpu {
     let backends = match std::env::var("WEBGPU_API").as_deref() {
@@ -68,4 +80,260 @@ fn fractional_viewports_match_direct3d() {
             );
         }
     }
+}
+
+/// The rig's `fan` and `windings`: three triangles of a fan coloured by corner, then a clockwise
+/// red triangle and an anticlockwise green one, each vertex position then colour.
+fn fan_and_windings() -> Vec<[f32; 7]> {
+    let hue = |i: u32, n: u32| {
+        let h = i as f32 / n as f32 * 6.0;
+        let x = 1.0 - (h % 2.0 - 1.0).abs();
+        match h as u32 {
+            0 => [1.0, x, 0.0],
+            1 => [x, 1.0, 0.0],
+            2 => [0.0, 1.0, x],
+            3 => [0.0, x, 1.0],
+            4 => [x, 0.0, 1.0],
+            _ => [1.0, 0.0, x],
+        }
+    };
+    let points = [
+        [0.0f32, 0.0],
+        [0.8, -0.6],
+        [0.7, 0.6],
+        [-0.3, 0.85],
+        [-0.85, -0.2],
+    ];
+    let mut v = Vec::new();
+    for k in 1..4 {
+        for p in [points[0], points[k], points[k + 1]] {
+            let [r, g, b] = hue(v.len() as u32, 9);
+            v.push([p[0], p[1], 0.5, r, g, b, 1.0]);
+        }
+    }
+    let red = |x: f32, y: f32| [x, y, 0.5, 0.9, 0.2, 0.2, 1.0];
+    let green = |x: f32, y: f32| [x, y, 0.5, 0.2, 0.9, 0.3, 1.0];
+    v.extend([
+        red(-0.5, 0.8),
+        red(-0.1, -0.8),
+        red(-0.9, -0.8),
+        green(0.5, 0.8),
+        green(0.1, -0.8),
+        green(0.9, -0.8),
+    ]);
+    v
+}
+
+const COLORED_WGSL: &str = r#"
+struct VOut { @builtin(position) pos: vec4f, @location(0) color: vec4f }
+@vertex fn vs(@location(0) pos: vec3f, @location(1) color: vec4f) -> VOut {
+    return VOut(vec4f(pos, 1.0), color);
+}
+@fragment fn ps(v: VOut) -> @location(0) vec4f { return v.color; }
+"#;
+
+/// The rig's fill picture: four 64-pixel cells, wireframe without culling, culling back faces and
+/// front faces, then solid.
+#[test]
+fn wireframe_fill_matches_direct3d() {
+    let mut b = device();
+    // wgpu fills polygons with lines on every native API; points only on some (not Direct3D 12).
+    assert!(b.caps().has(Features::POLYGON_MODE));
+    eprintln!(
+        "POLYGON_MODE_POINT: {}",
+        b.caps().has(Features::POLYGON_MODE_POINT)
+    );
+    if !b.caps().has(Features::POLYGON_MODE_POINT) {
+        let point = RasterDesc {
+            fill: FillMode::Point,
+            ..draw::solid()
+        };
+        assert_eq!(
+            b.create_raster(&point).unwrap_err(),
+            GpuError::Absent(Features::POLYGON_MODE_POINT)
+        );
+    }
+    let fills = [
+        (FillMode::Line, CullMode::None),
+        (FillMode::Line, CullMode::Back),
+        (FillMode::Line, CullMode::Front),
+        (FillMode::Solid, CullMode::None),
+    ]
+    .map(|(fill, cull)| RasterDesc {
+        fill,
+        cull,
+        ..draw::solid()
+    });
+    let got = cells(&mut b, &fills, &fan_and_windings(), 64);
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    let path = format!(
+        "{}/../wcontainers-graphics-test/references/d3d11/raster-fill.png",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let decoder = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(&path).unwrap()));
+    let mut reader = decoder.read_info().unwrap();
+    let mut want = vec![0; reader.output_buffer_size().unwrap()];
+    let info = reader.next_frame(&mut want).unwrap();
+    want.truncate(info.buffer_size());
+    let (differ, largest) = allowance::beyond(&got, &want, 0);
+    eprintln!("wireframe fill: {differ} pixels differ from Direct3D's, by up to {largest}");
+    if vulkan() {
+        // Known: Vulkan draws polygon edges by its own line rules (214 pixels differ on the RTX
+        // 3080); only the solid cell is held to Direct3D's picture there.
+        let solid = |p: &[u8]| -> Vec<u8> {
+            p.chunks(256 * 4)
+                .flat_map(|row| row[192 * 4..].to_vec())
+                .collect()
+        };
+        assert!(
+            allowance::within(&solid(&got), &solid(&want), "raster-fill.png"),
+            "the solid cell differs from Direct3D's"
+        );
+    } else {
+        assert!(
+            allowance::within(&got, &want, "raster-fill.png"),
+            "the wireframe fill differs from Direct3D's"
+        );
+    }
+}
+
+/// `vertices` (position, colour) drawn as a triangle list once per raster block, each into its
+/// own square cell of a row as high as the picture: the picture, rows packed RGBA.
+fn cells(b: &mut WebGpu, fills: &[RasterDesc], vertices: &[[f32; 7]], h: u32) -> Vec<u8> {
+    let w = h * fills.len() as u32;
+    let (target, view) = draw::texture_2d(
+        b,
+        Format::Rgba8Unorm,
+        w,
+        h,
+        TextureUsage::RENDER | TextureUsage::COPY_SRC,
+    )
+    .unwrap();
+    let program = draw::program(b, COLORED_WGSL).unwrap();
+    let blend = b.create_blend(&draw::opaque()).unwrap();
+    let depth_stencil = b.create_depth_stencil(&draw::no_depth()).unwrap();
+    let vertex_layout = b
+        .create_vertex_layout(&draw::layout(
+            &[(28, StepMode::Vertex)],
+            &[
+                (0, 0, VertexFormat::Float32x3),
+                (0, 12, VertexFormat::Float32x4),
+            ],
+        ))
+        .unwrap();
+    let vertices: Vec<u8> = vertices
+        .concat()
+        .iter()
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
+    let count = (vertices.len() / 28) as u32;
+    let vertices = draw::buffer(b, &vertices, BufferUsage::VERTEX).unwrap();
+    let rasters: Vec<_> = fills.iter().map(|f| b.create_raster(f).unwrap()).collect();
+    let mut pass = PassDesc {
+        colors: Default::default(),
+        depth: None,
+        empty: None,
+        occlusion: None,
+    };
+    pass.colors[0] = Some(ColorAttachment {
+        view: &view,
+        depth_slice: 0,
+        resolve: None,
+        load: LoadOp::Clear(scene::CLEAR.map(f32::to_bits)),
+        store: StoreOp::Store,
+    });
+    b.begin_pass(&pass);
+    for (i, raster) in rasters.iter().enumerate() {
+        b.draw(&DrawCall {
+            program: &program,
+            blend: &blend,
+            depth_stencil: &depth_stencil,
+            raster,
+            vertex_layout: &vertex_layout,
+            bindings: [None; 4],
+            vertex_buffers: &[Some(VertexBinding {
+                buffer: &vertices,
+                offset: 0,
+            })],
+            index: None,
+            topology: Topology::TriangleList,
+            restart: false,
+            viewports: &[Viewport {
+                x: (h as f32 * i as f32).to_bits(),
+                y: 0,
+                width: (h as f32).to_bits(),
+                height: (h as f32).to_bits(),
+                min_depth: 0,
+                max_depth: 1.0f32.to_bits(),
+            }],
+            scissors: &[],
+            blend_constant: [0; 4],
+            stencil_reference: [0; 2],
+            immediates: &[],
+            range: DrawRange::Vertices {
+                first: 0,
+                count,
+                first_instance: 0,
+                instances: 1,
+            },
+        });
+    }
+    b.end_pass();
+    let rb = b
+        .read_back(&ReadSource::Texture {
+            region: TextureRegion {
+                texture: &target,
+                mip: 0,
+                layer: 0,
+                origin: Origin::default(),
+                stencil: false,
+            },
+            extent: Extent {
+                width: w,
+                height: h,
+                depth_or_layers: 1,
+            },
+        })
+        .unwrap();
+    b.submit();
+    b.wait_read(&rb);
+    let mut got = vec![0; (w * h * 4) as usize];
+    b.finish_read(rb, &mut got);
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    got
+}
+
+/// Point filling draws a point at each corner of a triangle: on a device declaring it, exactly
+/// the three pixels holding the corners are drawn.
+#[test]
+fn point_fill_draws_the_corners() {
+    let mut b = device();
+    if !b.caps().has(Features::POLYGON_MODE_POINT) {
+        eprintln!(
+            "POLYGON_MODE_POINT is absent on this device: refused (tested beside the wireframe)"
+        );
+        return;
+    }
+    let size = 16;
+    let at = |x: u32, y: u32| {
+        // The centre of pixel (x, y), in clip space.
+        let c = |p: u32| (p as f32 + 0.5) / size as f32 * 2.0 - 1.0;
+        [c(x), -c(y), 0.5, 1.0, 0.0, 0.0, 1.0]
+    };
+    let corners = [(2, 3), (12, 5), (6, 13)];
+    let point = RasterDesc {
+        fill: FillMode::Point,
+        ..draw::solid()
+    };
+    let got = cells(&mut b, &[point], &corners.map(|(x, y)| at(x, y)), size);
+    let drawn: Vec<(u32, u32)> = (0..size * size)
+        .filter(|i| got[*i as usize * 4..][..4] == [255, 0, 0, 255])
+        .map(|i| (i % size, i / size))
+        .collect();
+    let mut want = corners.to_vec();
+    want.sort_by_key(|&(x, y)| (y, x));
+    assert_eq!(
+        drawn, want,
+        "point filling drew other pixels than the corners"
+    );
 }

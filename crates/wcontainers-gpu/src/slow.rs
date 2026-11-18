@@ -249,11 +249,14 @@ pub enum SlowPath {
     /// A captured draw the API's transform feedback cannot take (strips, fans, loops, indices) captured
     /// as points in list order, one draw per run of consecutive vertices, with indices read back first.
     CaptureExpanded,
+    /// A copy between regions of one subresource (as Vulkan and OpenGL allow) made through a
+    /// temporary buffer, where the API copies only between different subresources.
+    CopyWithinTexture,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 99] = [
+    pub const ALL: [SlowPath; 100] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -353,6 +356,7 @@ impl SlowPath {
         SlowPath::StencilWrittenByDraw,
         SlowPath::PresentConverted,
         SlowPath::CaptureExpanded,
+        SlowPath::CopyWithinTexture,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -469,6 +473,7 @@ impl SlowPath {
             SlowPath::StencilWrittenByDraw => "stencil written by a draw per bit",
             SlowPath::PresentConverted => "surface format converted by a draw at present",
             SlowPath::CaptureExpanded => "captured draw expanded into points in list order",
+            SlowPath::CopyWithinTexture => "copy within one subresource made through a buffer",
         }
     }
 }

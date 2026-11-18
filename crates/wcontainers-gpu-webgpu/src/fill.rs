@@ -27,6 +27,8 @@ pub enum DepthSource {
     FloatBits,
     /// 24-bit unorm depth in the low bits of an `r32uint` texture.
     Unorm24,
+    /// 16-bit unorm depth as the integers of an `r16uint` texture.
+    Unorm16,
 }
 
 impl DepthSource {
@@ -42,15 +44,22 @@ impl DepthSource {
                 Some(DepthSource::FloatBits)
             }
             (Depth24Plus | Depth24PlusStencil8, Depth24Plus | Depth24PlusStencil8)
-            | (Depth16Unorm, Depth16Unorm) => Some(DepthSource::Float),
+            | (Depth16Unorm, Depth16Unorm | R16Unorm) => Some(DepthSource::Float),
+            (Depth16Unorm, R16Uint) => Some(DepthSource::Unorm16),
             _ => None,
         }
     }
 
     /// Whether a texture of `format` may be the source of a depth draw, so it is made bindable.
     pub fn readable(format: Format) -> bool {
-        matches!(format, Format::R32Float | Format::R32Uint | Format::R32Sint)
-            || matches!(format.kind(), FormatKind::Depth | FormatKind::DepthStencil)
+        matches!(
+            format,
+            Format::R32Float
+                | Format::R32Uint
+                | Format::R32Sint
+                | Format::R16Unorm
+                | Format::R16Uint
+        ) || matches!(format.kind(), FormatKind::Depth | FormatKind::DepthStencil)
     }
 }
 
@@ -569,6 +578,7 @@ impl WebGpu {
             DepthSource::Float => ("texture_2d<f32>", "v.x"),
             DepthSource::FloatBits => ("texture_2d<u32>", "bitcast<f32>(v.x)"),
             DepthSource::Unorm24 => ("texture_2d<u32>", "f32(v.x & 0xffffffu) / 16777215.0"),
+            DepthSource::Unorm16 => ("texture_2d<u32>", "f32(v.x) / 65535.0"),
         };
         let source = format!(
             "@group(0) @binding(0) var<uniform> shift: vec4<i32>;\n\

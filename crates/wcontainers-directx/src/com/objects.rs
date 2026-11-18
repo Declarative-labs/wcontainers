@@ -3,6 +3,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use windows::Win32::Graphics::Direct3D10::*;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::*;
@@ -75,6 +76,7 @@ counted!(Buffer => Buffer_Impl {
     main: ID3D11Buffer, ID3D11Buffer_Vtbl;
     dxgi: IDXGIResource1, IDXGIResource1_Vtbl, -2;
     surface: IDXGISurface1, IDXGISurface1_Vtbl, -3;
+    d3d10: ID3D10Buffer, ID3D10Buffer_Vtbl, -4, if offers_d3d10;
 });
 
 impl Buffer {
@@ -144,7 +146,7 @@ fn dxgi_usage(bind: u32) -> DXGI_USAGE {
 
 /// A texture of one dimension: its interface, description structure, conversion and resource type.
 macro_rules! texture {
-    ($name:ident, $imp:ident, $iface:ident, $vtbl:ident, $desc:ident, $back:path, $dim:ident $(, $surface:ident)?) => {
+    ($name:ident, $imp:ident, $iface:ident, $vtbl:ident, $desc:ident, $back:path, $dim:ident, $iface10:ident, $vtbl10:ident, $at10:expr $(, $surface:ident)?) => {
         pub struct $name {
             pub front: Locked<Rc<front::Texture<Chosen>>>,
             pub(super) child: Child,
@@ -155,6 +157,7 @@ macro_rules! texture {
             main: $iface, $vtbl;
             dxgi: IDXGIResource1, IDXGIResource1_Vtbl, -2;
             $($surface: IDXGISurface1, IDXGISurface1_Vtbl, -3, if one_subresource;)?
+            d3d10: $iface10, $vtbl10, $at10, if offers_d3d10;
         });
 
         impl $name {
@@ -222,6 +225,9 @@ texture!(
     D3D11_TEXTURE1D_DESC,
     convert::texture1d_back,
     D3D11_RESOURCE_DIMENSION_TEXTURE1D,
+    ID3D10Texture1D,
+    ID3D10Texture1D_Vtbl,
+    -4,
     surface
 );
 texture!(
@@ -232,6 +238,9 @@ texture!(
     D3D11_TEXTURE2D_DESC,
     convert::texture2d_back,
     D3D11_RESOURCE_DIMENSION_TEXTURE2D,
+    ID3D10Texture2D,
+    ID3D10Texture2D_Vtbl,
+    -4,
     surface
 );
 texture!(
@@ -241,17 +250,23 @@ texture!(
     ID3D11Texture3D_Vtbl,
     D3D11_TEXTURE3D_DESC,
     convert::texture3d_back,
-    D3D11_RESOURCE_DIMENSION_TEXTURE3D
+    D3D11_RESOURCE_DIMENSION_TEXTURE3D,
+    ID3D10Texture3D,
+    ID3D10Texture3D_Vtbl,
+    -3
 );
 
 /// A view: the front view and the resource it views (held with a library reference).
 pub struct RenderTargetView {
     pub front: Locked<Rc<front::View<Chosen>>>,
-    resource: HeldResource,
+    pub(super) resource: HeldResource,
     pub(super) child: Child,
 }
 
-counted!(RenderTargetView => RenderTargetView_Impl { main: ID3D11RenderTargetView, ID3D11RenderTargetView_Vtbl });
+counted!(RenderTargetView => RenderTargetView_Impl {
+    main: ID3D11RenderTargetView, ID3D11RenderTargetView_Vtbl;
+    d3d10: ID3D10RenderTargetView, ID3D10RenderTargetView_Vtbl, -2;
+});
 
 impl RenderTargetView {
     pub fn new(
@@ -280,11 +295,14 @@ impl RenderTargetView {
 /// A view: the front view and the resource it views (held with a library reference).
 pub struct DepthStencilView {
     pub front: Locked<Rc<front::View<Chosen>>>,
-    resource: HeldResource,
+    pub(super) resource: HeldResource,
     pub(super) child: Child,
 }
 
-counted!(DepthStencilView => DepthStencilView_Impl { main: ID3D11DepthStencilView, ID3D11DepthStencilView_Vtbl });
+counted!(DepthStencilView => DepthStencilView_Impl {
+    main: ID3D11DepthStencilView, ID3D11DepthStencilView_Vtbl;
+    d3d10: ID3D10DepthStencilView, ID3D10DepthStencilView_Vtbl, -2;
+});
 
 impl DepthStencilView {
     pub fn new(
@@ -314,12 +332,15 @@ impl DepthStencilView {
 /// reference).
 pub struct ShaderResourceView {
     pub front: Locked<Rc<front::ShaderView<Chosen>>>,
-    desc: D3D11_SHADER_RESOURCE_VIEW_DESC,
-    resource: HeldResource,
+    pub(super) desc: D3D11_SHADER_RESOURCE_VIEW_DESC,
+    pub(super) resource: HeldResource,
     pub(super) child: Child,
 }
 
-counted!(ShaderResourceView => ShaderResourceView_Impl { main: ID3D11ShaderResourceView, ID3D11ShaderResourceView_Vtbl });
+counted!(ShaderResourceView => ShaderResourceView_Impl {
+    main: ID3D11ShaderResourceView, ID3D11ShaderResourceView_Vtbl;
+    d3d10: ID3D10ShaderResourceView1, ID3D10ShaderResourceView1_Vtbl, -2, if offers_d3d10;
+});
 
 impl ShaderResourceView {
     pub fn new(
@@ -351,7 +372,7 @@ impl ShaderResourceView {
 pub struct UnorderedAccessView {
     pub front: Locked<Rc<front::ShaderView<Chosen>>>,
     desc: D3D11_UNORDERED_ACCESS_VIEW_DESC,
-    resource: HeldResource,
+    pub(super) resource: HeldResource,
     pub(super) child: Child,
 }
 
@@ -390,7 +411,10 @@ pub struct SamplerState {
     pub(super) child: Child,
 }
 
-counted!(SamplerState => SamplerState_Impl { main: ID3D11SamplerState, ID3D11SamplerState_Vtbl });
+counted!(SamplerState => SamplerState_Impl {
+    main: ID3D11SamplerState, ID3D11SamplerState_Vtbl;
+    d3d10: ID3D10SamplerState, ID3D10SamplerState_Vtbl, -2;
+});
 
 impl SamplerState {
     pub fn new(
@@ -420,7 +444,10 @@ pub struct BlendState {
     pub(super) child: Child,
 }
 
-counted!(BlendState => BlendState_Impl { main: ID3D11BlendState1 | ID3D11BlendState, ID3D11BlendState1_Vtbl });
+counted!(BlendState => BlendState_Impl {
+    main: ID3D11BlendState1 | ID3D11BlendState, ID3D11BlendState1_Vtbl;
+    d3d10: ID3D10BlendState1, ID3D10BlendState1_Vtbl, -2;
+});
 
 impl BlendState {
     pub fn new(
@@ -457,7 +484,10 @@ pub struct DepthStencilState {
     pub(super) child: Child,
 }
 
-counted!(DepthStencilState => DepthStencilState_Impl { main: ID3D11DepthStencilState, ID3D11DepthStencilState_Vtbl });
+counted!(DepthStencilState => DepthStencilState_Impl {
+    main: ID3D11DepthStencilState, ID3D11DepthStencilState_Vtbl;
+    d3d10: ID3D10DepthStencilState, ID3D10DepthStencilState_Vtbl, -2;
+});
 
 impl DepthStencilState {
     pub fn new(
@@ -486,7 +516,10 @@ pub struct RasterizerState {
     pub(super) child: Child,
 }
 
-counted!(RasterizerState => RasterizerState_Impl { main: ID3D11RasterizerState1 | ID3D11RasterizerState, ID3D11RasterizerState1_Vtbl });
+counted!(RasterizerState => RasterizerState_Impl {
+    main: ID3D11RasterizerState1 | ID3D11RasterizerState, ID3D11RasterizerState1_Vtbl;
+    d3d10: ID3D10RasterizerState, ID3D10RasterizerState_Vtbl, -2;
+});
 
 impl RasterizerState {
     pub fn new(
