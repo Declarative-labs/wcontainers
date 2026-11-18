@@ -15,6 +15,7 @@ wcontainers-directx-graphics-infrastructure = { path = "../wcontainers-directx-g
 blake3 = { version = "1", default-features = false }
 half = "2.7"
 naga = { workspace = true }
+serde = { version = "1", features = ["derive"] }
 
 [lints]
 workspace = true

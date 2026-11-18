@@ -3,6 +3,7 @@
 //! container module (crate `wcontainers-directx`) wrap it in COM objects.
 
 mod ahead;
+pub mod cache;
 mod context;
 mod counting;
 pub mod desc;

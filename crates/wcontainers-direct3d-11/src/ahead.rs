@@ -9,6 +9,7 @@ use wcontainers_gpu::{
     PrepareDesc, ScalarKind, SlowPath, TargetLayout, Topology, VertexFormat,
 };
 
+use crate::cache::Record;
 use crate::device::Device;
 use crate::object::{Blend, DepthStencil, InputLayout, Rasterizer, Shader};
 use crate::{PIXEL, VERTEX};
@@ -107,8 +108,10 @@ pub(crate) struct Ahead<B: Backend> {
     /// The shaders made most recently of each stage, which a new shader of the other is paired with.
     last_vertex: Weak<Shader<B>>,
     last_pixel: Weak<Shader<B>>,
+    /// Combinations whose record was written.
+    recorded: std::collections::HashSet<Combination>,
     /// The counts last reported.
-    reported: [u64; 3],
+    reported: [u64; 5],
 }
 
 impl<B: Backend> Ahead<B> {
@@ -118,7 +121,8 @@ impl<B: Backend> Ahead<B> {
             last: None,
             last_vertex: Weak::new(),
             last_pixel: Weak::new(),
-            reported: [0; 3],
+            recorded: Default::default(),
+            reported: [0; 5],
         }
     }
 
@@ -197,12 +201,21 @@ impl<B: Backend> Device<B> {
         self.ahead.prepared_use()
     }
 
-    /// Counts a draw of program `vs` and `ps` with the bound state. The tuple is looked up only
-    /// when something in it changed since the last draw.
+    /// How many recorded combinations this device built at the program's start, and how many of
+    /// them were drawn since.
+    pub fn started_use(&self) -> (u64, u64) {
+        self.warm.used()
+    }
+
+    /// Counts a draw of program `vs` and `ps` (made of the modules `keys`) with the bound state and
+    /// the raster twin `masked`; a combination drawn the first time is added to the cache's record.
+    /// The tuple is looked up only when something in it changed since the last draw.
     pub(crate) fn count_combination(
         &mut self,
         vs: &Shader<B>,
         ps: Option<&Rc<Shader<B>>>,
+        keys: crate::cache::ModuleKeys,
+        masked: Option<(u32, bool)>,
         topology: Topology,
         samples: u32,
     ) {
@@ -262,6 +275,22 @@ impl<B: Backend> Device<B> {
         };
         let c = self.ahead.tracker.combination(&vs.gpu.id, &program, &tuple);
         self.ahead.tracker.drawn(c);
+        if self.ahead.recorded.insert(c) {
+            let record = Record::new(
+                keys,
+                crate::device::blend_block(&tuple.blend.desc),
+                crate::device::depth_stencil_block(&tuple.depth_stencil.desc),
+                self.raster_desc(masked),
+                crate::context::layout_desc(tuple.layout.as_deref(), tuple.strides),
+                tuple.targets,
+                topology,
+                tuple.layouts,
+            );
+            crate::cache::record(&record);
+            if let Some(drawn) = self.warm.records.get_mut(&record) {
+                *drawn = true;
+            }
+        }
         self.ahead.last = Some(Last {
             program,
             sets,
@@ -325,13 +354,18 @@ impl<B: Backend> Device<B> {
     pub(crate) fn report_ahead(&mut self) {
         let (drawn, not) = self.ahead.prepared_use();
         let missed = self.backend.slow_paths().count(SlowPath::PipelineMiss);
-        if [drawn, not, missed] == self.ahead.reported {
+        let (started, started_drawn) = self.warm.used();
+        let counts = [drawn, not, missed, started, started_drawn];
+        if counts == self.ahead.reported {
             return;
         }
-        self.ahead.reported = [drawn, not, missed];
+        self.ahead.reported = counts;
         eprintln!(
-            "wcontainers direct3d 11: built ahead {} combinations: {drawn} drawn since, {not} not; \
-             {missed} built at their first draw",
+            "wcontainers direct3d 11: built at start {started} recorded combinations: \
+             {started_drawn} drawn since, {} not ({} records not built); built ahead {} \
+             combinations: {drawn} drawn since, {not} not; {missed} built at their first draw",
+            started - started_drawn,
+            self.warm.unbuilt,
             drawn + not
         );
     }

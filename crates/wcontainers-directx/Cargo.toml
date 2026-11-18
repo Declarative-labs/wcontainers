@@ -21,6 +21,8 @@ wcontainers-directx-graphics-infrastructure = { path = "../wcontainers-directx-g
 wcontainers-gpu = { path = "../wcontainers-gpu" }
 wcontainers-gpu-webgpu = { path = "../wcontainers-gpu-webgpu" }
 wcontainers-gpu-webgl = { path = "../wcontainers-gpu-webgl", optional = true }
+wcontainers-shaders = { path = "../wcontainers-shaders" }
+blake3 = { version = "1", default-features = false }
 wgpu = { version = "30.0.2", default-features = false }
 pollster = "1.0.1"
 
