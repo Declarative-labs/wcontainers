@@ -84,7 +84,10 @@ milestone "G5 to the pass bar"):
   format answers give sampling and gathering of depth views and other formats the back end
   cannot filter (`FilterInShader`), casts within typeless groups (twins), and stream output into
   the formats of 32-bit components; bgfx 26-occlusion rechecked (equal); the first part of the
-  literal sweep (below).
+  literal sweep (below). At the end the desktop's build folder of this branch,
+  C:\wc\target\phase-2-graphics-direct3d-12 (7.5 GB), was deleted; no build output was made in
+  scratch or on the Mac (a `cargo check` on the Mac stopped at the shaders crate's missing
+  submodules; its 223 MB `target` was deleted).
 - Run 30 (the second run of the milestone's current form): merged the shared line (which held
   the shaders branch: gathers with run-time offsets, the helper lane query, wave operations);
   no other branch had anything this track needed. Settled the independent check of run 29: early
