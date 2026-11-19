@@ -1057,3 +1057,18 @@ fn texture_reads_into_a_buffer_keep_the_bytes_between_rows() {
     eprintln!("seed {seed}: {line}; slow paths {:?}", b.slow_paths());
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
+
+/// Copies from a buffer into several layers or slices whose rows lie further apart in the buffer
+/// than the region's height take each layer from its own rows (wgpu's Direct3D 12 read them at the
+/// region's height). `WEBGPU_SEED` picks the bytes (default 1).
+#[test]
+fn buffer_copies_take_each_layer_from_its_rows() {
+    let mut b = device();
+    let seed = std::env::var("WEBGPU_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    let line = gaps::writes_take_each_layer_from_its_rows(&mut b, seed).unwrap();
+    eprintln!("seed {seed}: {line}; slow paths {:?}", b.slow_paths());
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}

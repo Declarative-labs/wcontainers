@@ -13,6 +13,9 @@ mod draw;
 
 mod allowance;
 
+#[path = "../examples/scenes/clears.rs"]
+mod clears;
+
 use wcontainers_gpu::{
     Backend, BufferDesc, BufferUsage, ColorAttachment, DeviceStatus, Extent, Format, LoadOp,
     MapIntent, Object, Origin, PassDesc, QueryKind, ReadSource, SlowPath, StoreOp, TextureRegion,
@@ -907,4 +910,12 @@ fn written_bytes_are_counted_and_reported() {
     assert!(report.contains(&format!(" buffer_bytes={}", after.buffer_bytes)));
     assert!(report.contains(&format!(" texture_bytes={}", after.texture_bytes)));
     assert!(report.contains(&format!(" pipelines={}", after.pipelines)));
+}
+
+/// Clears of 32-bit float formats to denormals, negative zero and NaN payloads keep every bit
+/// (examples/scenes/clears.rs; in Chrome too, through web/check).
+#[test]
+fn float_clears_keep_their_bits() {
+    let mut b = device();
+    eprintln!("{}", clears::float_clears_keep_their_bits(&mut b).unwrap());
 }

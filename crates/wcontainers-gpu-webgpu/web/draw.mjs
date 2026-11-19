@@ -111,6 +111,20 @@ try {
     console.log(`chrome texture renames failed: ${e.message}`);
     failed = true;
   }
+  // sRGB views of a texture that also allows storage, read as an sRGB texture is, across a rename.
+  try {
+    console.log(`chrome ${await page.evaluate(() => window.srgbViews())}`);
+  } catch (e) {
+    console.log(`chrome srgb views failed: ${e.message}`);
+    failed = true;
+  }
+  // Clears of 32-bit float formats to denormals and NaN payloads keep every bit.
+  try {
+    console.log(`chrome ${await page.evaluate(() => window.floatClears())}`);
+  } catch (e) {
+    console.log(`chrome float clears failed: ${e.message}`);
+    failed = true;
+  }
   // Query sets past WebGPU's 4096 queries a set, and query results from one ring (20 frames).
   try {
     const lines = (await page.evaluate(() => window.querySets())).split('\n');
@@ -126,9 +140,11 @@ try {
     console.log(`chrome depth group copies failed: ${e.message}`);
     failed = true;
   }
-  // Texture reads into buffers: rows exact, the bytes between them kept (seed 1).
+  // Texture reads into buffers: rows exact, the bytes between them kept; buffer copies into layers
+  // lying apart (seed 1).
   try {
-    console.log(`chrome ${await page.evaluate(() => window.copyGaps(1))}`);
+    const lines = (await page.evaluate(() => window.copyGaps(1))).split('\n');
+    for (const line of lines) console.log(`chrome ${line}`);
   } catch (e) {
     console.log(`chrome texture reads into buffers failed: ${e.message}`);
     failed = true;

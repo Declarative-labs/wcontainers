@@ -33,8 +33,10 @@ nothing new asked, a fourth part of the sweep. Run 25 is G2c run 7 (below): -dir
 the frame report written through serde, both full runs and web/check. Run 26 is G2c run 8
 (below): every graphics branch merged (-direct3d-12 and -shaders too, now that the shaders
 track adopted the check), nothing new asked, the literal check moved to an LF worktree on the
-desktop, both full runs, web/check and two frame breakdowns. Every request found is built and
-tested or refused by name
+desktop, both full runs, web/check and two frame breakdowns. Run 27 is G2d run 1 (below): the
+Direct3D 12 front's last blocker (sRGB views of textures that allow storage) and its two other
+requests (float clears keeping their bits, buffer copies into slices lying apart), and the five
+findings the G2c check left open. Every request found is built and tested or refused by name
 (list below). Earlier runs follow ("Run 5" to "Run 10" are G2 runs 1 to 6; G2a runs 1 to 4 after them).
 
 What the fronts' status files ask of this back end (read at G2b runs 1 and 2, after merging every
@@ -164,13 +166,20 @@ graphics branch), and where each stands:
   declare `Features::SUBGROUPS`"; Godot's 3D platformer through the Direct3D 12 front stops at
   wave operations): built (run 20). The device asks for wgpu's `SUBGROUP` where the adapter has
   it and declares `SUBGROUPS` then. Where it is: wgpu's Vulkan on the RTX 3080; wgpu's Direct3D
-  12 only with DXC (shader model 6), so not with the FXC the fronts' instance uses; not in
+  12 only with DXC (shader model 6), so not with FXC; not in
   Chrome until run 21, because wgpu 30's browser back end did not map WebGPU's `subgroups` feature;
   the vendored wgpu now maps it (run 21), so in Chrome it is declared where the adapter offers it.
   tests/features.rs (was tests/subgroups.rs): declared exactly where the adapter has it; a
   fragment program using `subgroupAll`, `subgroupAdd` and `subgroupBallot` draws every pixel as
   they define; a device made without the feature declares none and refuses the program by name;
   web/check runs the same draw in Chrome.
+  Where the request reaches (run 27, the G2c check's finding): the Direct3D 12 library
+  (wcontainers-direct3d-12 examples/directx/gpu.rs, the d3d12.dll Godot's 3D platformer loads)
+  makes its wgpu instance on Vulkan, so there `SUBGROUPS` is declared and `WaveOps` answered 1
+  (the Direct3D 12 status says so since its run 33's correction). The Direct3D 10 and 11 library
+  (wcontainers-directx com/chosen.rs) makes its instance on Direct3D 12 with wgpu's default FXC,
+  where wgpu offers no `SUBGROUP`; asked of the Direct3D 11 track under Next (give that instance
+  DXC). Nothing in this back end chooses the compiler: the instance is the front's.
 - The primitive index (shaders track, run 31: "ask wgpu for `PRIMITIVE_INDEX` where the adapter
   has it and declare `Features::PRIMITIVE_INDEX`", for the rig's geometry scene's ps_id; missed by
   run 20, found by the second G2c check): built (run 21). The device asks for wgpu's
@@ -209,6 +218,67 @@ graphics branch), and where each stands:
   tests/features.rs `fine_derivatives_are_declared_and_difference_each_pixel_on_its_own` (Vulkan
   and Direct3D 12) and in Chrome by web/check (`program_features`). Before, the bit was not
   declared.
+- sRGB views of a texture that also allows storage (Direct3D 12 front, its runs 36 to 43: the
+  last item stopping Godot's 3D platformer; wgpu refused the view, "Texture view format
+  `Rgba8UnormSrgb` cannot be used as a storage binding", and the device was lost): built (run
+  27). A view in the texture's other sRGB form is made with the texture's usages less the
+  attachment and storage usages that form lacks on the device (`convert::view_usage`, as
+  WebGPU's `createView` takes them); a view in the texture's own format keeps the texture's.
+  The usages go with the view, so a view made again after a rename keeps them.
+  examples/scenes/views.rs `srgb_views_of_storage_textures`: an `Rgba8UnormSrgb` view of an
+  `Rgba8Unorm` texture allowing storage reads every channel bit for bit as an `Rgba8UnormSrgb`
+  texture of the same bytes does, before and after a `Discard` write renames it, colour channels
+  decoded (below their linear value); natively tests/bindings.rs
+  `srgb_views_of_storage_textures_read_as_srgb_textures`, in Chrome web/check (`srgb_views`).
+  Failed before on Vulkan and Direct3D 12 with wgpu's refusal above (scratch g2d/before1.log).
+- Float clears keeping their bits (Direct3D 12 front, run 37: an `R32_FLOAT` storage clear to
+  the denormal 0x1 read 0 on wgpu's Direct3D 12): built (run 27). A clear of a format of 32-bit
+  float channels to a value with a denormal or a NaN is made by a draw writing the bits, on every
+  API (new slow path `FloatBitsClearByDraw`, an interface change; the integer clears' draw,
+  `IntegerClearByDraw`, now also writes float bits). Every API needs it: measured before, wgpu's
+  Direct3D 12 flushed 0x00000001 to 0, and wgpu's Vulkan kept denormals and quiet NaNs but
+  quieted the signalling NaN 0x7f800001 into 0x7fc00001 (the clear value passes through an
+  f64). examples/scenes/clears.rs `float_clears_keep_their_bits` (`R32Float`, `Rg32Float`,
+  `Rgba32Float`, two layers, three values of four channels: both denormal signs, quiet and
+  signalling NaNs with payloads, -0, normals), natively tests/writes.rs, in Chrome web/check
+  (`float_clears`). Failed before on both APIs (scratch g2d/before3.log).
+- Buffer copies into several slices whose rows lie further apart in the buffer than the
+  region's height (Direct3D 12 front, run 37: wgpu-hal 30's Direct3D 12 sets the placed
+  footprint's height to the copy's height): built (run 27). Such a copy is made one layer or
+  slice at a time, each from its own rows, on every API (a few more copy commands, no slow path:
+  the same bytes move). examples/scenes/gaps.rs `writes_take_each_layer_from_its_rows`: part of
+  two layers of a 2D array and of two slices of a 3D texture, in `Rgba8Unorm`, `Rgba32Float`,
+  `B5g6r5Unorm` and `Rgb32Float`, from two offsets and pitches, every texel exact and the rest
+  kept; natively tests/copies.rs `buffer_copies_take_each_layer_from_its_rows`, in Chrome
+  web/check (`copy_gaps`). Before, it failed on Direct3D 12 for 3D textures (80 bytes of
+  `Rgba8Unorm` wrong; 2D arrays were right) and passed on Vulkan (scratch g2d/before2.log).
+
+Run 27 = G2d run 1, 2026-11-19:
+- Merged origin/phase-2-graphics-webgl, -direct3d-11, -direct3d-12 and -shaders (the
+  Direct3D 12 branch held the others' newest work; a fast-forward); the shared line, -rig and
+  phase-1-literals had nothing new. Read the four status files' new text: the Direct3D 12
+  front asks three things of this back end (the three items above); nothing else new.
+- Interface change: `SlowPath::FloatBitsClearByDraw` (edc6fd7f; Interface changes).
+- The G2c check's open findings: the browser's per-draw cost (Measurements, run 27); the
+  placement alignment defined twice (Departures; a Windows-only unit test,
+  `memory::tests::placement_alignment_is_direct3d_12s`, now ties this crate's value to the
+  windows crate's `D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT`, and Next asks the Direct3D 12 track
+  for the one shared home); subgroups (the item above: the Direct3D 12 library is on Vulkan and
+  gets them; the Direct3D 11 library's instance is asked to use DXC, Next); atg-simplecomputepc's
+  division (measured, Measurements, run 27); atg-simpleinstancingpc's breakdown (repeated,
+  Measurements, run 27).
+- Results at 472a8daf and 34ba8f87 (2026-11-19, desktop shared with other tracks' queued jobs, not
+  alone; scratch g2d/): the crate's whole suite on Vulkan and on Direct3D 12 with the interface
+  crate's own tests, 311 passed, 5 ignored (the known ignores), 0 failed (full1.log, at
+  472a8daf, the run's code before the literal renames); after the renames the four affected test
+  files and the interface's tests again on both APIs at 34ba8f87, all passing (after2.log). web/check
+  (webcheck1.log): every picture equal to Direct3D 11's at tolerance 0 natively on both APIs and
+  in Chrome, every twist differing, every check passing in Chrome including the three new ones,
+  and the shared suite in Chrome 44 passed, 0 failed (natively 44 on each API in full1.log).
+  Lint with warnings denied, native all targets and WebAssembly examples: clean. The literal
+  check at HEAD in the LF worktree: exit 0, 0 marks; this crate's baseline lines 192
+  (unchanged); the check's first run found 8 new literals, named or derived before committing
+  (lit1.log, lit2.log).
 
 Run 26 = G2c run 8, 2026-11-19:
 - Merged origin/phase-2-graphics-direct3d-11 (20 commits; it held -webgl's, -direct3d-12's
@@ -1442,7 +1512,8 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   copies between `depth16unorm` and its group (depth16.rs), texture reads into buffers keeping
   the bytes between rows (gaps.rs), three-channel copies at the widest texture (converted.rs),
   subgroups and the primitive index where Chrome's adapter offers them and fine derivatives
-  always (features.rs) in
+  always (features.rs), sRGB views of storage textures (views.rs), float clears' bits
+  (clears.rs) and buffer copies into layers lying apart (gaps.rs) in
   Chrome, prints the instance data routes' timings in Chrome
   (examples/scenes/pulled.rs, failing if their pictures differ), then runs the shared suite
   in Chrome, one page per test (suite-chrome.txt). Where Chrome's first launch gets no WebGPU
@@ -1460,6 +1531,14 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   scratch frames-load); at the end, per frame, the CPU by part and place and the back end's
   counts a frame from the long run's log (`FRAME_REPORT` lines, frames 128 to 256 of a 360-frame
   run).
+- Where this back end's time goes in Chrome on a real program's frames: build the WebGL track's
+  replay page (`crates\wcontainers-gpu-webgl\browser\build.cmd`, its How to run), then a GPU
+  job `node crates\wcontainers-gpu-webgpu\web\replay-profile.mjs
+  %CARGO_TARGET_DIR%\webgl-replay-pkg C:\wc\out\webgl\trace\<program>.bin.1 <out-file>`: the
+  replay page's lines, then V8's samples taken inside this back end by interface call and by
+  function.
+- Divisions in a program against Direct3D 11's: `--test direct3d divisions -- --nocapture`
+  (`WEBGPU_SEED`, `WEBGPU_CASES` draws of 64 pairs, default 1 and 4).
 - Timestamps in Chrome as users have it, alone: after web/check has built the page, a GPU job
   `node crates\wcontainers-gpu-webgpu\web\plain.mjs C:\wc\out\phase-2-graphics-webgpu-webgpu\pkg`
   (web/check runs it too).
@@ -1469,6 +1548,25 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   depth-function]` (the example's binary).
 
 ## Measurements
+
+Run 27 (G2d):
+- In the browser, the WebGL track's figure (its status, Measurements, runs G3b-2 and G3b-6; not
+  measured here): SimpleLightingPC's recorded frames (4 draws, 2 passes a frame) replayed in
+  Chrome 157 on the RTX 3080 cost this back end 53.0 to 53.9 us a draw and 62.9 us a
+  `begin_pass` (whole frame 0.73 to 0.78 ms), against 23 us a draw on the WebGL 2 back end. The
+  native breakdowns above and below (0.01 to 0.04 ms a frame of the back end's own code) do not
+  cover the browser.
+- atg-simplecomputepc's division (the G2c check's finding; tests/direct3d.rs
+  `divisions_match_direct3d`, 2026-11-19 15:18, desktop shared with other tracks' queued jobs,
+  not alone, load not taken; scratch g2d/after2.log): 64 draws of 64 seeded pairs (seed 1, the
+  first pair the sample's 1200 and 300), each divided by its run-time divisor and by 300 written
+  in the program, with fractions, through this back end on Vulkan and on Direct3D 12 against
+  real Direct3D 11 (FXC) on the RTX 3080: 0 of 4096 pairs differ in any bit on either API. Real
+  Direct3D 11 itself gives 1200 / 300 = 3.9999998 (fraction 0.99999976) when the divisor is a
+  run-time value and 4.0 (fraction 0) when it is written in the program. So this back end, wgpu
+  and the drivers divide exactly as Direct3D does; the sample's last texel comes from its
+  converted program dividing at run time where its bytecode's arithmetic gives 4.0 (the
+  converter's or the front's), not from this back end. Refused here by name: not this back end's.
 
 Run 26 (G2c), frame breakdowns at bf7ddf71 (every graphics branch merged; no code of this
 crate changed). Desktop (i9-9900K, 16 threads, RTX 3080, driver 621.01), each job alone in the
@@ -2132,9 +2230,9 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
   it is destroyed (bounded by what it made, not trimmed by age).
 - Arena slices of buffers dropped without `destroy` are not reused until the arena is replaced.
 
-## Next (G2c)
+## Next (G2d)
 
-1. The independent check of G2c.
+1. The independent check of G2d.
 2. The owner's decision on loop bounding natively (run 16 measured it as the whole of the
    timestamp workload's 1.3 and 1.5 times): wgpu's `create_shader_module_trusted` without
    `force_loop_bounding` takes Direct3D's time, but lets a guest's endless loop be undefined in
@@ -2150,9 +2248,11 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 5. For the Direct3D 11 track: `B8G8R8X8_UNORM` vertices it now asks of the interface (a format
    reading X as 1.0); this back end reads BGRX as wgpu's `unorm8x4-bgra`. Its library's
    wgpu instance (wcontainers-directx com/chosen.rs) lacks `WebGpu::INSTANCE_FLAGS`, so on a GPU
-   whose timestamp period is not 1 ns it would get no `TIMESTAMPS` (none on the RTX 3080). For
-   atg-simplecomputepc's division: run the sample with the instance on Vulkan, or on wgpu's DXC,
-   to see which compiler step rounds.
+   whose timestamp period is not 1 ns it would get no `TIMESTAMPS` (none on the RTX 3080). That
+   instance is on Direct3D 12 with wgpu's default FXC, where wgpu offers no `SUBGROUP`: giving it
+   DXC (`Dx12Compiler::DynamicDxc` with dxcompiler.dll beside the library, shader model 6) would
+   let the Direct3D 11 front see `SUBGROUPS` there too. atg-simplecomputepc's division:
+   Measurements, run 27.
 6. For the Direct3D 12 track (not this back end's code): the 3 ms a frame of copying in
    bgfx-01-cubes-d3d12 (Measurements, runs 19 and 21) is the front's `MappedUploadWhole`
    (device/bind.rs): at each `ExecuteCommandLists` every upload buffer a binding reads is written
@@ -2171,6 +2271,10 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
     interface change), and wgpu's browser back end passing it on; natively wgpu 30 has no
     swizzle, so `SwizzleInShader` stays there. Worth it only if a front finds the in-program
     mapping costly.
+11. For the Direct3D 12 track: add `TEXTURE_DATA_PLACEMENT_ALIGNMENT` (512) to the
+    infrastructure crate's `d3d` module with its Windows test; then this crate depends on that
+    crate, imports it and deletes `DX12_PLACEMENT_ALIGNMENT` and its unit test, and the front
+    imports it too (Departures).
 
 ## Departures from the plan
 
@@ -2301,6 +2405,15 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
   not main as docs/literals.md step 1 asks (main does not hold it yet); -webgl, merged here, had
   already done the same. So, as that document says for such a track, main is not merged here
   until main holds the check.
+- Direct3D 12's texture data placement alignment (512) is defined here (`memory.rs`
+  `DX12_PLACEMENT_ALIGNMENT`, needed because Direct3D 12 implements WebGPU on Windows, natively
+  and in Chrome) and again in the Direct3D 12 front (`resource.rs` `PLACEMENT_ALIGNMENT`), which
+  the rule of one definition forbids (the G2c check's finding). The one home the literal audit
+  names for Direct3D constants of crates built for WebAssembly is the infrastructure crate's
+  `d3d` module (orchestrator magic-literals README, item 13), which the Direct3D 12 track owns
+  and which lacks it; this crate may not add it there, and the windows crate does not build for
+  WebAssembly. Until it is there (asked under Next), this crate's value is tied to the windows
+  crate's `D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT` by a Windows-only unit test.
 
 ## Interface changes
 
@@ -2341,6 +2454,11 @@ builds a prepared strip for both index formats instead (Departures), so nothing 
 - 61a266e `interface: named the slow path of buffer clears to a non-zero pattern made by copies`:
   `SlowPath::PatternClearCopied`, and the plan's sentence on `clear_buffer` (4.2) saying WebGPU
   fills non-zero patterns by copies.
+- edc6fd7f `interface: a slow path for float colour clears drawn to keep their bits`:
+  `SlowPath::FloatBitsClearByDraw` (appended last, so every existing reason keeps its number),
+  and the plan's 5.7 sentence beside `IntegerClearByDraw`. A 32-bit float clear to a denormal or
+  a NaN changes its bits through every API's clear value (run 27, measured), so this back end
+  draws it; a counted reason of its own, as the integer clears have.
 
 ## Licences
 
