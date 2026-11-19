@@ -84,4 +84,23 @@ mod tests {
             "no instruction in three bytes"
         );
     }
+
+    /// An answer whose position map does not decode fails loudly, never as the guest's illegal instruction.
+    #[test]
+    #[should_panic(expected = "the monitor's translate answer is broken: position map")]
+    fn a_broken_answer_panics() {
+        let mut link = link();
+        link.ask(
+            &Translate {
+                address: 0x40_1000,
+                exact: 0,
+            },
+            &0xd400_0001u32.to_le_bytes(),
+        );
+        super::translate(&mut link).expect("a piece fits the link");
+        let answer: translation::Translated = link.get();
+        let code = usize::try_from(answer.code).expect("fits");
+        link.bytes[code..].fill(u8::MAX);
+        translation::piece(&link);
+    }
 }

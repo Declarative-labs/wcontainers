@@ -62,13 +62,23 @@ pub fn answer(link: &mut Link, piece: Option<&Piece>) -> Result<(), TooLarge> {
     Ok(())
 }
 
-/// Reads the answer to a translate request.
+/// Reads the answer to a translate request: none when no instruction starts at the address. An answer that
+/// does not read as one is the monitor's fault, never the guest's, and panics.
 pub fn piece(link: &Link) -> Option<Piece> {
     let answer: Translated = link.get();
-    let code = usize::try_from(answer.code).ok().filter(|&c| c > 0)?;
-    let map = usize::try_from(answer.map).ok()?;
-    let bytes = link.bytes.get(..code.checked_add(map)?)?;
-    let spans = postcard::from_bytes(&bytes[code..]).ok()?;
+    let code = core::num::NonZeroU64::new(answer.code)?;
+    let code = usize::try_from(code.get())
+        .unwrap_or_else(|_| panic!("the monitor's translate answer is broken: code length"));
+    let map = usize::try_from(answer.map)
+        .unwrap_or_else(|_| panic!("the monitor's translate answer is broken: map length"));
+    let bytes = code
+        .checked_add(map)
+        .and_then(|end| link.bytes.get(..end))
+        .unwrap_or_else(|| {
+            panic!("the monitor's translate answer is broken: longer than the link")
+        });
+    let spans = postcard::from_bytes(&bytes[code..])
+        .unwrap_or_else(|_| panic!("the monitor's translate answer is broken: position map"));
     Some(Piece {
         code: bytes[..code].to_vec(),
         spans,
