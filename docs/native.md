@@ -646,7 +646,12 @@ translation's frames stay while another process holds them and are freed when no
 announce: as the x86 plan says (section 5.7 there), a page that has been translated carries the "translated
 code" write lock, so the first write faults to the inside, which leaves that page's translations the same way
 and lifts the lock. A range whose bytes changed after it ran is translated at bounded look-ahead from then
-on, counted "code changed after it ran", as runtime.md says. Native code never reads the guest's bytes after
+on, counted "code changed after it ran", as runtime.md says. On ARM64 the inside answers `ic ivau` itself:
+it first checks that the guest may read the address (a fault as a read otherwise, as the WebAssembly output's
+check gives), then drops every piece whose guest code overlaps the line (the presented CTR_EL0's IminLine) in
+the announcing process and in every process that shows the line's frame through a shared block, counting
+"code changed after it ran" for each line that held one; the pieces are dropped when the running piece ends,
+so the announcing piece finishes as translated, as the WebAssembly output's block does. Native code never reads the guest's bytes after
 translating them, so a change the guest does not announce (ARM64) runs the old translation, as the
 WebAssembly output does.
 
@@ -681,10 +686,15 @@ Licences checked on crates.io on 2026-11-18 (docs/status-native.md).
 Each is counted and warned through the kernel's warnings (sent to the host in batches, section 5.4), with
 these names (suggested; the owner chooses names):
 - "code not yet translated here": a missing mirror slot or x86-64 lookup miss that finds no loaded piece and
-  asks the host for a translation (one link exit and the translation's own time);
+  asks the host for a translation (one link exit and the translation's own time), detail the guest address;
 - "jump target found in the process table": a missing slot or a cache miss answered inside from the
   process's loaded translations (an exception at EL1 or ring 0, no exit);
-- "asked the host": every link exit, by request kind (section 5.6);
+- "asked the host": every link exit, counted at the doorbell, the one place a link exit is made, and
+  reported to the policy at each exit of a run with the count so far and the last exit's request word as its
+  detail (section 5.6; a breakdown by request kind is the monitor's, which sees each request);
+- "code area emptied": guest-physical memory has no frame for a new piece, so every loaded piece is dropped
+  and the code area is used again from its start (between pieces only: nothing is linked before N4, and
+  none runs); a piece that does not fit even then ends its process as `MemoryFaultWithoutRegisters`;
 - "code changed after it ran", as runtime.md;
 - "stop deferred to the end of a string instruction" (x86-64, section 4);
 - "single step through host instructions" (x86-64, a thread with TF set: every host instruction a ring 0
@@ -695,7 +705,8 @@ these names (suggested; the owner chooses names):
 - "turn limited by a count alone" (from N4, with linked pieces, until the owner rules on decision 10: such a
   turn is answered as `Failure`, never run past its limit; at look-ahead none the inside ends it between
   pieces, section 5.5);
-- "address-space identifiers ran out" (a new generation and one whole invalidation, section 5.2);
+- "address-space identifiers ran out" (a new generation and one whole invalidation, section 5.2; with more
+  live memories than identifiers the request for a memory fails);
 - "guest-physical space full" (a request for memory fails at the bound of section 5.1);
 - "address above the ceiling" (a request for an address at or above the native ceiling fails until moving
   exists, section 6.2, K2);
@@ -1022,7 +1033,12 @@ containers of the machine: 16 bits on ARM64 (TCR_EL1.AS; the M5's virtual CPU of
 ID_AA64MMFR0_EL1 ASIDBits 2, idregs.out) and the 12-bit PCID on x86-64 (the laptop's CPU has `pcid` and
 `invpcid`, /proc/cpuinfo; whether its KVM passes them on is checked at N8). When they run out, the floor
 starts a new generation and invalidates the whole TLB once, as Linux does on both architectures, counted
-"address-space identifiers ran out". A change the kernel makes to one process's tables is followed by the
+"address-space identifiers ran out": every live memory is given its new identifier at once (from 1; 0 is the
+idle address space's), not at its next switch as Linux does, since the inside sees every memory. A dropped
+memory gives back its pages' frames and its tables' frames (all of the guest's half, and of the inside's half
+those under top-level entries it does not share with the global tables) after the virtual CPU switches to the
+idle address space (the global tables and an empty guest half); its identifier is not used again before the
+next generation's invalidation, so no invalidation is needed when it is dropped. A change the kernel makes to one process's tables is followed by the
 invalidation of those pages for every identifier (ARM64 `tlbi vaae1is`, every identifier and every level,
 through `aarch64-paging`'s `El1And0::invalidate_va`, one primitive both for a page whose permissions change
 in a table several table roots share, a process's inside half among its threads, and for a block split into a

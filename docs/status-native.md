@@ -31,7 +31,8 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   kernel inside, against the reference), the root's files sent back, turns that end at their limit (between pieces, at
   look-ahead none) and a fork, exec and signal program alike on both outputs; Docker came back at 04:59 and the bar passed
   against the reference, 55 of 55 commands, and hello and the fork program give the reference's output and status (below,
-  "N3 run 6"). N3 is done, for its independent check.
+  "N3 run 6"); run 7 settled the independent check's two blocking and five minor findings (below, "N3 run 7"). N3 is done, for
+  its independent check.
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -58,6 +59,80 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N3 run 7 (2026-11-19): the independent check of run 6, and how each finding was settled
+
+Start: origin/main and origin/phase-1-literals had nothing new.
+
+The check's findings:
+- Blocking, `ic ivau` did nothing natively: settled. `Stopping::CodeChanged` now carries the register that holds the address
+  (guest-cpu position.rs, arm64 native.rs). The inside answers it (stop.rs `Resolved::CodeChanged`, native.rs
+  `code_line_changed`): it checks that the guest may read the address (a read fault otherwise, as the WebAssembly output's
+  check gives), then drops every piece whose guest code overlaps the line (CTR_EL0's IminLine as we present it,
+  `wcontainers_arm64::CACHE_TYPE`, moved into the arm64 crate's no_std core for this) in the process and in every process
+  that shows the line's frame through a shared block. Each line that held a piece counts "code changed after it ran", the
+  WebAssembly output's name, now defined once in wcontainers-guest-cpu (`reason`) and re-exported by wcontainers-wasmtime.
+  Pieces are dropped when the running piece ends, also when an interrupt ends it. New test program tests/guest/code.c:
+  writes a function, runs it, rewrites it, runs it (private memory: 1 then 2), then in memory shared with a child the child
+  rewrites it (3 then 4, the parent announced nothing). Native, WebAssembly side and the reference agree.
+- Blocking, two named slow paths uncounted: settled. "code not yet translated here" is counted at every piece asked of the
+  host (detail: the guest address). "asked the host" is counted at the doorbell, the one place a link exit is made, and
+  reported at each exit of a run with the count and the last exit's request word (the monitor sees the breakdown by kind).
+  The warnings go to the policy's `cpu_warning`, which keeps them inside; `native-kernel` now sends each reason's last
+  warning at the end, not every one (so the machine's exits at a run's end fell: getppid 1867 with no calls).
+- Minor, the order of the image's files in `find /etc`: the kernel's (the WebAssembly side gives the same order), outside
+  the bar. Passed to the kernel track below; not this track's to change.
+- Minor, other tracks' crates changed by N3 (R1, a first R3, the test crate's API): still waits for the orchestrator's
+  ruling (below). This run changed one more line outside this track's crates: wcontainers-wasmtime's
+  `reason::CODE_CHANGED_AFTER_IT_RAN` is now a re-export of guest-cpu's, so the name is defined once.
+- Minor, the test policy in the shipped package's dependencies: settled. It is optional, behind the inside's feature
+  `kernel-test`, which only the test program `native-kernel` needs (`required-features`); the monitor's tests build the
+  inside's programs with it.
+- Minor, limits without a named slow path: settled.
+  - The code area: when guest-physical memory has no frame for a new piece, every loaded piece is dropped and the area is
+    used again from its start, counted "code area emptied" (detail: pieces dropped). Only between pieces, which is every
+    time at N3 (nothing linked, every piece returns to the inside). A piece that does not fit even then ends its process
+    as `MemoryFaultWithoutRegisters`, after the floor's "guest-physical space full". Not exercised by a test (it needs the
+    frames to run out); reasoned only.
+  - Address-space identifiers: when they run out, the whole TLB is invalidated once and every live memory gets a new one
+    from 1, counted "address-space identifiers ran out"; with more live memories than identifiers the memory is refused.
+    The invalidation (`tlbi vmalle1is`) is a routine the monitor writes with the encoder, like the float routines (the
+    literal check refuses a new inline assembly string, see Departures).
+  - `memory_drop` gives back its tables' frames (the guest's half, and of the inside's half what it does not share with
+    the global tables), after switching to an idle address space (the global tables, an empty guest half, identifier 0).
+  - Test: the exits test makes 65,536 memories one after another and then runs hello alike on both sides; the warning
+    "address-space identifiers ran out" is there, and 65,536 memories' tables would not fit the machine's 1 GiB unless
+    given back.
+- Minor, hello and the fork program compared with Docker only by hand: settled. tests/kernel.rs now runs hello, forks and
+  code in the reference too and checks the native side's output, standard error and exit code against it.
+
+Results (M5 Max; scratch native/n3r7):
+- kernel test (kernel.log, load 24 to 50, 693 s, most of it the WebAssembly side's compiles): hello, getppid, forks and
+  code alike on both sides and against the reference. Exits of the machine: 1867 with no getppid calls, 1870 with 100,000,
+  1870 with 200,000. code: "private: 1 2", "shared, changed by a child: 3 4", status 0 on all three; natively "code changed
+  after it ran" 2, as on the WebAssembly side.
+- exits test (exits.log, load 31 to 36): 4 programs (hello, exits, libc, hello after 65,536 memories) alike in both modes,
+  "address-space identifiers ran out" 1, 4742 pieces asked of the host.
+- The whole suite of the monitor and the inside, guest-cpu and arm64 unit tests, after the last change (suite2.log, 06:07 to
+  06:15, load 35 to 50, M5 Max): passed. The bar: "busybox: 55 commands gave the reference's output, exit code and files"
+  (207 s with Docker's runs), each command 8,700 to 12,500 exits, all of them now warned as "asked the host". kernel test as
+  above (28 s, its WebAssembly translations cached); exits 4 programs, 0 failed, both modes; floor 21 cases and 1
+  measurement, 0 failed; native 32,562 cases, 0 failing; interrupts 2500, 0 failed; probe 0 forms of 16 bytes or fewer
+  differ (44 larger, as before); carry passed. wcontainers-wasmtime's tests/code.rs 4 passed (Mac). No container left.
+- On the ARM build machine (arm-tests.log): the translator with `native`, all passed. wcontainers-wasmtime does not build
+  there (main's Linux code, see For the orchestrator) and the literal check's test needs git; both run on the Mac instead
+  (the literal check exit 0 on the Mac).
+
+Dependencies: no new crate.
+
+Literals: the check exits 0; the baseline did not change (26 lines name this track's two crates, as before).
+
+What comes next:
+1. N3's independent check (how to run it: the bar `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test busybox`
+   with Docker; `--test kernel` for hello, getppid's exit count, forks and code against the reference; `--test exits`).
+2. N4 (linking and speed). It must bring back plan 5.5's refusal of a turn with a limit once pieces are linked, and empty
+   the code area only where no linked piece reaches the dropped ones.
+3. R3's rest, when the orchestrator rules on R1 and R3.
 
 ## N3 run 6 (2026-11-19)
 
@@ -1202,6 +1277,14 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 ## Departures from the plan
 
+- N3 run 7, the whole TLB invalidation of a new generation of identifiers is a routine the monitor writes with the encoder
+  (`encode::invalidate_whole_tlb`, the form SYS with TLBI VMALLE1IS's fields as one named constant), not inline assembly:
+  the literal check counts an assembly template as a string literal and its baseline may only shrink. A new generation
+  renumbers every live memory at once, not at its next switch as Linux does (plan 5.2 corrected).
+- N3 run 7, "asked the host" carries the total count and the last exit's request word, not a count per request kind (a
+  warning's count is per reason); the monitor sees every request's kind.
+- N3 run 7, "code area emptied" is a new slow path name (plan 3.7): the plan named no reclamation of the code area before N4.
+
 - N3 run 6, the bar runs from the monitor's own test (tests/busybox.rs), not from a `native` feature of the kernel test
   crate's driver as run 5 expected: the driver would have had to build, sign and boot the inside. The kernel test crate only
   made its commands, `each` and the reference's check public (8f902f1c), so neither the list nor the check exists twice.
@@ -1317,6 +1400,15 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N3 run 7: two changes outside this track's crates, each in this run's commits: wcontainers-wasmtime's
+  `reason::CODE_CHANGED_AFTER_IT_RAN` is now `pub use wcontainers_guest_cpu::reason::CODE_CHANGED_AFTER_IT_RAN` (the start
+  of guest-cpu's one table of reason names, which the literal audit's README gives to guest-cpu), and wcontainers-arm64's
+  `CACHE_TYPE` moved from decode_forms.rs into the crate's no_std core (lib.rs), plus the SYS form and its fields in
+  encode.rs. For the kernel track (the check's finding, outside N3's bar): `find /etc -type f -name '*.conf'` lists the
+  image's files in another order than the reference (overlay order); both our outputs give the kernel's order. On the ARM
+  build machine, wcontainers-wasmtime does not build for Linux (memory.rs: `PAGEMAP_ENTRY` and the other pagemap constants
+  not found, main's code) and the literal check's test needs a git checkout, which the copy is not.
 
 - N3 run 6: the bar passed against the reference on the Mac once Docker Desktop came back (04:59). Also: wcontainers-kernel-test
   changed again (8f902f1c: the busybox commands and the reference check made public for the native test; no behaviour change),
