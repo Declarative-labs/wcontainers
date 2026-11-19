@@ -12,14 +12,14 @@ use wcontainers_gpu::{
     AspectOps, Backend, BufferDesc, BufferUsage, ClearValue, ColorAttachment, ColorTarget,
     CopyBufferTexture, CountedDraw, DepthAttachment, DispatchCall, DispatchGroups, DrawBaseSource,
     DrawCall, DrawRange, EmptyPass, Extent, Features, Format, FormatKind, FormatUse, GpuError,
-    HELPER_SET, HelperValue, IndexBinding, IndexFormat, Interpolation, LoadOp, MAX_COLOR_TARGETS,
-    MAX_VERTEX_STREAMS, MapIntent, Object, OcclusionCounter, Origin, PassDesc, PassTargets,
-    PassTracker, PrepareDesc, Program, ReadSource, ReadState, STORAGE_WORD, SamplerDesc,
-    ScissorRect, ShaderModule, ShaderStage, SlowPath, StageSet, StepMode, StoreOp, Target,
-    TargetInShader, TargetLayout, TexelBufferRoute, TextureDesc, TextureDimension, TextureRegion,
-    TextureUsage, TextureViewDesc, Topology, VariantFlags, VariantKey, VertexAttribute,
-    VertexBinding, VertexLayoutDesc, VertexStream, ViewComponent, ViewDimension, Viewport,
-    WriteMode,
+    HELPER_SET, HelperValue, IndexBinding, IndexFormat, Interpolation, LinkedValues, LoadOp,
+    MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, MapIntent, Object, OcclusionCounter, Origin, PassDesc,
+    PassTargets, PassTracker, PrepareDesc, Program, ReadSource, ReadState, STORAGE_WORD,
+    SamplerDesc, ScissorRect, ShaderModule, ShaderStage, SlowPath, StageSet, StageValue, StepMode,
+    StoreOp, SystemValue, Target, TargetInShader, TargetLayout, TexelBufferRoute, TextureDesc,
+    TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, Topology, VariantFlags,
+    VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream, ViewComponent,
+    ViewDimension, Viewport, WriteMode,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source};
 
@@ -275,6 +275,9 @@ struct Render<B: Backend> {
     /// primitive index, which a primitive drawn alone would read as zero.
     per_primitive: Option<early::PerPrimitive<B>>,
     alpha_to_coverage: bool,
+    /// Where the pixel program applies the vertex program's clip distances
+    /// (`ClipDistanceInShader`), the values they pass; default where it does not.
+    linked: LinkedValues,
     /// Every per-instance element steps by one instance.
     instances_step_by_one: bool,
     /// The geometry stage, for pipelines with a geometry shader.
@@ -977,7 +980,7 @@ impl<B: Backend> Device<B> {
         }
         // A vertex stage feeding another stage, not the pixel stage.
         let has_geometry = !desc.gs.is_empty() || tessellated;
-        let vs_typed = formats::typed_key(desc.vs, self.texel_route());
+        let mut vs_typed = formats::typed_key(desc.vs, self.texel_route());
         let ps = if desc.ps.is_empty() {
             None
         } else {
@@ -1010,7 +1013,7 @@ impl<B: Backend> Device<B> {
         interpolation.sort_by_key(|i| i.0);
         interpolation.dedup_by_key(|i| i.0);
         // With a geometry stage, the vertex stage's outputs go to it, not to the pixel stage.
-        let vs_key = VariantKey {
+        let mut vs_key = VariantKey {
             output_interpolation: match has_geometry {
                 true => Vec::new(),
                 false => interpolation.clone(),
@@ -1020,10 +1023,35 @@ impl<B: Backend> Device<B> {
             draw_base: DrawBaseSource::Helpers,
             ..vs_typed.clone()
         };
-        let vs = self.convert(desc.vs, ShaderStage::Vertex, vs_key.clone())?;
+        let mut vs = self.convert(desc.vs, ShaderStage::Vertex, vs_key.clone())?;
         // Cull distances, which the back ends lack, are drawn through the stage helper.
         let culled = !has_geometry && geometry::writes_cull_distances(&vs);
         let staged = has_geometry || desc.stream_output.is_some() || culled;
+        // Clip distances the back end lacks: the vertex program passes them past both programs'
+        // values and the pixel program applies them (`ClipDistanceInShader`). A program the
+        // stage helper makes is checked where it is drawn, below.
+        let clip_distances = clip_distances(&vs.reflection.outputs);
+        let mut slow_paths = Vec::new();
+        let drawn_directly = !has_geometry && !culled;
+        if clip_distances != 0
+            && drawn_directly
+            && !self.backend.caps().has(Features::CLIP_DISTANCE)
+        {
+            let (Some(p), Some(key)) = (&mut ps, &mut ps_key) else {
+                return Err(Error::NotImplemented(CLIP_WITHOUT_PIXEL_SHADER));
+            };
+            let linked = LinkedValues {
+                location: linked_location(vs.reflection.outputs.iter().chain(&p.reflection.inputs)),
+                clip_distances,
+            };
+            for k in [&mut vs_typed, &mut vs_key, key] {
+                k.flags |= VariantFlags::CLIP_DISTANCE;
+                k.linked = linked;
+            }
+            vs = self.convert(desc.vs, ShaderStage::Vertex, vs_key.clone())?;
+            *p = self.convert(desc.ps, ShaderStage::Fragment, key.clone())?;
+            slow_paths.push(SlowPath::ClipDistanceInShader);
+        }
         let vertex_formats = match staged {
             true => None,
             false => {
@@ -1065,9 +1093,19 @@ impl<B: Backend> Device<B> {
                 &inputs,
                 &interpolation,
                 desc.stream_output.as_ref(),
+                ps.as_ref().map(|p| p.reflection.inputs.as_slice()),
             )?),
             false => None,
         };
+        // A geometry stage's clip distances the back end lacks, applied by the pixel program.
+        if let (Some(m), Some(p), Some(key)) = (&made, &mut ps, &mut ps_key)
+            && m.linked != LinkedValues::default()
+        {
+            key.flags |= VariantFlags::CLIP_DISTANCE;
+            key.linked = m.linked;
+            *p = self.convert(desc.ps, ShaderStage::Fragment, key.clone())?;
+            slow_paths.push(SlowPath::ClipDistanceInShader);
+        }
         let reads_bases = !has_geometry
             && vs
                 .reflection
@@ -1142,7 +1180,7 @@ impl<B: Backend> Device<B> {
             stages.extend(m.shader.iter().chain(&m.domain).chain(&m.late));
         }
         stages.extend(&ps);
-        let slow_paths = programs_slow_paths(&stages);
+        slow_paths.extend(programs_slow_paths(&stages));
         let caps = self.backend.caps();
         let blend = desc.blend.block(caps, desc.rtv_formats.len())?;
         // With no topology type (`UNDEFINED`) the draws' topologies decide, and nothing is built
@@ -1204,6 +1242,15 @@ impl<B: Backend> Device<B> {
                 .expect("a geometry stage's pass-through"),
             None => &vs.modules[0],
         };
+        if wcontainers_shaders::capabilities(&vs_shader.module)
+            .contains(naga::valid::Capabilities::CLIP_DISTANCES)
+            && !self.backend.caps().has(Features::CLIP_DISTANCE)
+        {
+            return Err(Error::NotImplemented(
+                "clip distances from a geometry, domain or culling stage without the back end's \
+                 (ClipDistanceInShader)",
+            ));
+        }
         let vs_shader = self.backend.create_shader(vs_shader)?;
         let ps_shader = match &ps {
             Some(ps) => match self.backend.create_shader(&ps.modules[0]) {
@@ -1256,6 +1303,10 @@ impl<B: Backend> Device<B> {
                 true => Some(self.per_primitive(&depth_stencil, &raster, &vs.modules[0])?),
                 false => None,
             };
+        let linked = match &made {
+            Some(m) if m.shader.is_some() => m.linked,
+            _ => vs_typed.linked,
+        };
         let render = Render {
             blend: self.backend.create_blend(&blend)?,
             depth_stencil: self.backend.create_depth_stencil(&depth_stencil)?,
@@ -1290,6 +1341,7 @@ impl<B: Backend> Device<B> {
             early_tests,
             per_primitive,
             alpha_to_coverage: desc.blend.alpha_to_coverage,
+            linked,
             instances_step_by_one,
             geometry: made.map(|m| m.geometry),
         };
@@ -1519,6 +1571,7 @@ impl<B: Backend> Device<B> {
         }
         let (vertex, pixel) = (render.vertex.clone(), render.pixel.clone());
         let samples = render.targets.samples.clamp(1, 32) as u8;
+        let linked = render.linked;
         let fragment = if pixel.is_empty() {
             ShaderModule::from_wgsl(
                 "@fragment fn main() -> @location(0) vec4f { return vec4f(1.0); }",
@@ -1527,7 +1580,11 @@ impl<B: Backend> Device<B> {
             )?
         } else {
             let key = VariantKey {
-                flags: VariantFlags::COUNTING,
+                flags: match linked == LinkedValues::default() {
+                    true => VariantFlags::COUNTING,
+                    false => VariantFlags::COUNTING | VariantFlags::CLIP_DISTANCE,
+                },
+                linked,
                 samples,
                 ..formats::typed_key(&pixel, self.texel_route())
             };
@@ -4687,6 +4744,30 @@ pub(crate) fn stored_size(width: u64, max: u64) -> u64 {
 }
 
 /// The slow paths converted `programs` take by themselves, each once.
+/// The refusal of clip distances the back end lacks where no pixel shader can apply them.
+const CLIP_WITHOUT_PIXEL_SHADER: &str =
+    "clip distances the back end lacks, without a pixel shader to apply them";
+
+/// The clip distances `outputs` write.
+fn clip_distances(outputs: &[StageValue]) -> u8 {
+    outputs
+        .iter()
+        .filter(|v| v.system == Some(SystemValue::ClipDistance))
+        .map(|v| v.mask.count_ones() as u8)
+        .sum()
+}
+
+/// The location past every value `values` lists (a stage's outputs and the next stage's inputs),
+/// where the values the programs add for each other pass (`VariantKey::linked`).
+fn linked_location<'a>(values: impl IntoIterator<Item = &'a StageValue>) -> u32 {
+    values
+        .into_iter()
+        .map(|v| v.location + 1)
+        .max()
+        .unwrap_or(0)
+        .max(1)
+}
+
 fn programs_slow_paths(programs: &[&Converted]) -> Vec<SlowPath> {
     let mut all: Vec<SlowPath> = programs
         .iter()
