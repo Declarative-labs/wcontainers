@@ -458,6 +458,9 @@ pub struct Shader<B: Backend> {
     /// The clip distances it writes where the back end has none, which its programs apply
     /// themselves (`ClipDistanceInShader`): the location of the values it adds and their count.
     pub clip: Option<(u32, u8)>,
+    /// A vertex program writing cull distances the back end lacks, drawn through the stage helper
+    /// (`CullDistanceAsGeometry`); `gpu` is then its pass-through.
+    pub culled: bool,
 }
 
 /// A geometry shader object: the geometry stage and the stream output of its declaration. Made

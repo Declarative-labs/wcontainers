@@ -822,6 +822,34 @@ fn raw(
 }
 
 /// The converter's answer in Direct3D's terms, which should be a program of `modules` stages.
+/// The pass-through vertex program of a vertex shader writing cull distances, converted as `key`
+/// asks (`CullDistanceAsGeometry`). It depends only on the outputs, so each input is fetched as
+/// four 32-bit components of its declared kind.
+pub fn cull_passthrough(
+    bytecode: &[u8],
+    key: VariantKey,
+    inputs: &[StageValue],
+) -> Result<ShaderModule> {
+    use wcontainers_gpu::{ScalarKind, VertexFormat};
+    let pulled = inputs
+        .iter()
+        .filter(|v| v.system.is_none())
+        .map(|v| {
+            let format = match v.scalar {
+                ScalarKind::Float => VertexFormat::Float32x4,
+                ScalarKind::Sint => VertexFormat::Sint32x4,
+                ScalarKind::Uint => VertexFormat::Uint32x4,
+            };
+            (v.location, format)
+        })
+        .collect();
+    let vertex = convert_variant(bytecode, SourceStage::Vertex, &VariantKey { pulled, ..key })?;
+    match wcontainers_shaders::stage::cull_programs(&vertex) {
+        Ok(p) => Ok(p.passthrough),
+        Err(e) => refusal(e),
+    }
+}
+
 fn answer(r: core::result::Result<Converted, ConvertError>, modules: usize) -> Result<Converted> {
     match r {
         Ok(c) if c.modules.len() != modules => {
@@ -866,14 +894,25 @@ fn answer(r: core::result::Result<Converted, ConvertError>, modules: usize) -> R
             )
         }
         Ok(c) => Ok(c),
-        Err(ConvertError::Rejected(why)) => {
-            eprintln!("wcontainers direct3d 11: shader refused by the converter: {why}");
+        Err(e) => refusal(e),
+    }
+}
+
+/// Refused: a shader the converter fails on.
+const UNCONVERTED: &str = "shaders the converter does not yet turn into a valid module";
+
+/// A conversion's failure as Direct3D's answer.
+fn refusal<T>(e: ConvertError) -> Result<T> {
+    use crate::error::WARNING_PREFIX;
+    match e {
+        ConvertError::Rejected(why) => {
+            eprintln!("{WARNING_PREFIX}: shader refused by the converter: {why}");
             Err(Error::InvalidArg("bytecode the converter refuses"))
         }
-        Err(ConvertError::Unsupported(what)) => not_implemented(what),
-        Err(e) => {
-            eprintln!("wcontainers direct3d 11: shader conversion failed: {e}");
-            not_implemented("shaders the converter does not yet turn into a valid module")
+        ConvertError::Unsupported(what) => not_implemented(what),
+        e => {
+            eprintln!("{WARNING_PREFIX}: shader conversion failed: {e}");
+            not_implemented(UNCONVERTED)
         }
     }
 }

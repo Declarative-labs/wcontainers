@@ -1608,22 +1608,12 @@ code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::update_set	"an
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::write_helpers	"minimum level-of-detail clamps on textures both draw stages sample"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	uint_element	"a clear of a typed buffer view of a packed or BGR format"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	uint_element	"a clear of a typed buffer view of this format"
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::auto_count	4
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::auto_count	4
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::filled_counter	4
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::filled_counter	4
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::run_staged	3
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::run_staged	3
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::run_staged	3
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::run_staged	4
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::run_staged	4
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::run_staged	4
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::run_staged	4
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::run_staged	4
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::run_staged	4
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::stream_counted	16
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::stream_counted	4
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::stream_counted	4
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::stream_counted	8
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::stream_counted	8
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::draw_output	"depth bias on lines and points"
@@ -1843,7 +1833,6 @@ code	crates/wcontainers-direct3d-11/src/device.rs	str	check_buffer	"constant buf
 code	crates/wcontainers-direct3d-11/src/device.rs	str	gpu_error	"wcontainers direct3d 11: not implemented: the back end lacks {f:?}"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	gpu_sampler	"anisotropy above 16"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	gpu_sampler	"minimum and maximum filtering"
-code	crates/wcontainers-direct3d-11/src/error.rs	str	not_implemented	"wcontainers direct3d 11: not implemented: {what}"
 code	crates/wcontainers-direct3d-11/src/format.rs	int	unserved	189
 code	crates/wcontainers-direct3d-11/src/format.rs	int	unserved	191
 code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_alignment	4
@@ -2013,9 +2002,6 @@ code	crates/wcontainers-direct3d-11/src/shader.rs	str	SignatureElement::generate
 code	crates/wcontainers-direct3d-11/src/shader.rs	str	answer	"an atomic minimum or maximum of the other signedness (AtomicExchangeLoop)"
 code	crates/wcontainers-direct3d-11/src/shader.rs	str	answer	"shaders converted into several program stages"
 code	crates/wcontainers-direct3d-11/src/shader.rs	str	answer	"shaders that read helper constants the front does not write"
-code	crates/wcontainers-direct3d-11/src/shader.rs	str	answer	"shaders the converter does not yet turn into a valid module"
-code	crates/wcontainers-direct3d-11/src/shader.rs	str	answer	"wcontainers direct3d 11: shader conversion failed: {e}"
-code	crates/wcontainers-direct3d-11/src/shader.rs	str	answer	"wcontainers direct3d 11: shader refused by the converter: {why}"
 code	crates/wcontainers-direct3d-11/src/shader.rs	str	convert	"SampleCount"
 code	crates/wcontainers-direct3d-11/src/shader.rs	str	convert	"StorageImageAtomics"
 code	crates/wcontainers-direct3d-11/src/stream.rs	int	declaration	3
@@ -23483,7 +23469,6 @@ restated	crates/wcontainers-directx/examples/own_queries.rs	int	main	0xffff_ffff
 restated	crates/wcontainers-directx/examples/own_queries.rs	int	main	256
 restated	crates/wcontainers-directx/examples/own_queries.rs	int	main	256
 restated	crates/wcontainers-directx/examples/own_refused.rs	int	main	0xffff_ffff
-restated	crates/wcontainers-directx/tests/com.rs	str	unserved_shaders_are_refused_not_faked	"main"
 restated	crates/wcontainers-directx/tests/programs.rs	int	lifetime_cases	300
 restated	crates/wcontainers-gpu-test/src/suite/routes.rs	int	constants_read_through_a_texture_lie_256_rows_to_a_texture_row::READ	256
 restated	crates/wcontainers-gpu-test/tests/compute.rs	int	captures_keep_to_their_rules	1024

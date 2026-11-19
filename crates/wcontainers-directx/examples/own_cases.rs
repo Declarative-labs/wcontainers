@@ -5,7 +5,9 @@
 //! sampler), `deep` (a depth buffer larger than its target), `msaa_copy` (a copy between
 //! multisampled textures), `stream` (stream output whose stream is also drawn), `early`
 //! (`[earlydepthstencil]` with storage writes, depth writes off), `early_writes` (the same with
-//! depth writes on) and `stencil` (a stencil view read after clears and a stencil draw). Shaders are compiled by
+//! depth writes on), `stencil` (a stencil view read after clears and a stencil draw),
+//! `msaa_lines` (lines under `MultisampleEnable`, each pixel's covered samples counted) and
+//! `biased_lines` (a constant depth bias on a line and points). Shaders are compiled by
 //! the system's d3dcompiler_47.dll. Prints each answer and the resources' bytes as hex, for
 //! comparing with real Direct3D line by line.
 
@@ -862,6 +864,167 @@ fn main() -> windows::core::Result<()> {
                 print(&format!("{name} target"), &target, 4);
                 print(&format!("{name} counts"), &counts, 4);
                 print(&format!("{name} depth"), &depth, 4);
+            }
+        }
+        "msaa_lines" => {
+            // Lines under MultisampleEnable into four samples, each pixel's covered samples
+            // counted.
+            let drawn = make(
+                &Tex {
+                    w: 16,
+                    h: 16,
+                    format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                    samples: 4,
+                    bind: D3D11_BIND_FLAG(
+                        D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0,
+                    ),
+                },
+                None,
+            )?;
+            let counts = make(
+                &Tex {
+                    w: 16,
+                    h: 16,
+                    format: DXGI_FORMAT_R8_UINT,
+                    samples: 1,
+                    bind: D3D11_BIND_RENDER_TARGET,
+                },
+                None,
+            )?;
+            let lines = vs("float4 main(uint id : SV_VertexID) : SV_Position {
+                    float2 p[6] = { float2(-0.9, 0.3), float2(0.85, 0.3),
+                        float2(-0.8, -0.9), float2(0.7, 0.6),
+                        float2(0.2, 0.95), float2(0.4, -0.85) };
+                    return float4(p[id], 0, 1);
+                }");
+            let white = ps("float4 main(float4 p : SV_Position) : SV_Target { return 1; }");
+            let count = ps("Texture2DMS<float4, 4> t : register(t0);
+                uint main(float4 pos : SV_Position) : SV_Target {
+                    uint n = 0;
+                    for (uint s = 0; s < 4; ++s) n += t.Load(int2(pos.xy), s).r > 0.5;
+                    return n;
+                }");
+            let mut raster = None;
+            let desc = D3D11_RASTERIZER_DESC {
+                FillMode: D3D11_FILL_SOLID,
+                CullMode: D3D11_CULL_NONE,
+                DepthClipEnable: true.into(),
+                MultisampleEnable: true.into(),
+                ..Default::default()
+            };
+            unsafe { device.CreateRasterizerState(&desc, Some(&mut raster))? };
+            let (rt, rt_counts) = (rtv(&drawn), rtv(&counts));
+            unsafe {
+                viewport(16, 16);
+                context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0; 4]);
+                context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
+                context.RSSetState(raster.as_ref());
+                context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+                context.VSSetShader(lines.as_ref(), None);
+                context.PSSetShader(white.as_ref(), None);
+                context.Draw(6, 0);
+                context.RSSetState(None);
+                context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                context.OMSetRenderTargets(Some(std::slice::from_ref(&rt_counts)), None);
+                context.VSSetShader(vs(FULL).as_ref(), None);
+                context.PSSetShader(count.as_ref(), None);
+                context.PSSetShaderResources(0, Some(&[srv(&drawn, DXGI_FORMAT_UNKNOWN)]));
+                context.Draw(3, 0);
+                context.PSSetShaderResources(0, Some(&[None]));
+                context.OMSetRenderTargets(None, None);
+            }
+            print("msaa lines", &counts, 1);
+        }
+        "biased_lines" => {
+            // A constant depth bias on a line along a row of pixel centres and on points at pixel
+            // centres, into 16 and 24-bit depth cleared to 0.5.
+            let shapes = vs("cbuffer c : register(b0) { float z; }
+                float4 main(uint id : SV_VertexID) : SV_Position {
+                    float2 p[5] = { float2(-1.5, 0.25), float2(1.5, 0.25),
+                        float2(-0.8125, -0.25), float2(0.0625, -0.25), float2(0.6875, -0.25) };
+                    return float4(p[id], z, 1);
+                }");
+            let flat = ps("float4 main(float4 p : SV_Position) : SV_Target { return 1; }");
+            let target = make(
+                &Tex {
+                    w: 16,
+                    h: 4,
+                    format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                    samples: 1,
+                    bind: D3D11_BIND_RENDER_TARGET,
+                },
+                None,
+            )?;
+            let rt = rtv(&target);
+            let mut raster = None;
+            let desc = D3D11_RASTERIZER_DESC {
+                FillMode: D3D11_FILL_SOLID,
+                CullMode: D3D11_CULL_NONE,
+                DepthBias: 1000,
+                DepthClipEnable: true.into(),
+                ..Default::default()
+            };
+            unsafe { device.CreateRasterizerState(&desc, Some(&mut raster))? };
+            let mut always = None;
+            let dss = D3D11_DEPTH_STENCIL_DESC {
+                DepthEnable: true.into(),
+                DepthWriteMask: D3D11_DEPTH_WRITE_MASK_ALL,
+                DepthFunc: D3D11_COMPARISON_ALWAYS,
+                ..Default::default()
+            };
+            unsafe { device.CreateDepthStencilState(&dss, Some(&mut always))? };
+            let c = constants([0.25, 0.0, 0.0, 0.0]);
+            for (name, typeless, format, texel) in [
+                ("d16", DXGI_FORMAT_R16_TYPELESS, DXGI_FORMAT_D16_UNORM, 2),
+                (
+                    "d24",
+                    DXGI_FORMAT_R24G8_TYPELESS,
+                    DXGI_FORMAT_D24_UNORM_S8_UINT,
+                    4,
+                ),
+            ] {
+                let depth = make(
+                    &Tex {
+                        w: 16,
+                        h: 4,
+                        format: typeless,
+                        samples: 1,
+                        bind: D3D11_BIND_DEPTH_STENCIL,
+                    },
+                    None,
+                )?;
+                let mut dsv = None;
+                let desc = D3D11_DEPTH_STENCIL_VIEW_DESC {
+                    Format: format,
+                    ViewDimension: D3D11_DSV_DIMENSION_TEXTURE2D,
+                    ..Default::default()
+                };
+                unsafe { device.CreateDepthStencilView(&depth, Some(&desc), Some(&mut dsv))? };
+                unsafe {
+                    viewport(16, 4);
+                    context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0; 4]);
+                    context.ClearDepthStencilView(
+                        dsv.as_ref().unwrap(),
+                        D3D11_CLEAR_DEPTH.0 | D3D11_CLEAR_STENCIL.0,
+                        0.5,
+                        0,
+                    );
+                    context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), dsv.as_ref());
+                    context.OMSetDepthStencilState(always.as_ref(), 0);
+                    context.RSSetState(raster.as_ref());
+                    context.VSSetShader(shapes.as_ref(), None);
+                    context.VSSetConstantBuffers(0, Some(std::slice::from_ref(&c)));
+                    context.PSSetShader(flat.as_ref(), None);
+                    context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+                    context.Draw(2, 0);
+                    context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
+                    context.Draw(3, 2);
+                    context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                    context.RSSetState(None);
+                    context.OMSetDepthStencilState(None, 0);
+                    context.OMSetRenderTargets(None, None);
+                }
+                print(&format!("{name} depth"), &depth, texel);
             }
         }
         _ => println!("no case {case:?}"),

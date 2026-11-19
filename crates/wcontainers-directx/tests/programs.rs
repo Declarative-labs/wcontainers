@@ -277,6 +277,76 @@ fn stencil_views_read_the_stencil_as_direct3d_does() {
 }
 
 #[test]
+fn a_depth_bias_on_lines_and_points_as_direct3d_does() {
+    case("biased_lines");
+}
+
+/// The rows of `text`'s lines starting `prefix`, each a row of bytes written in hex.
+fn hex_rows(text: &str, prefix: &str) -> Vec<Vec<u8>> {
+    text.lines()
+        .filter_map(|l| l.strip_prefix(prefix))
+        .map(|l| {
+            let hex = l.rsplit_once(' ').map_or(l, |(_, h)| h);
+            (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+                .collect()
+        })
+        .collect()
+}
+
+/// Lines under `MultisampleEnable` are drawn by the back end's rule, a loss plan 4.12 lists as
+/// at most the pixels at a line's ends and along its edges: every pixel real Direct3D covers in
+/// all its samples is covered so, and a pixel may differ only where it touches one real
+/// Direct3D covers.
+#[test]
+fn multisampled_lines_differ_from_direct3d_only_at_their_ends_and_edges() {
+    let name = "msaa_lines";
+    let (code, want) = run_with(
+        "own_cases",
+        &place(&format!("{name}-system"), false),
+        &[name],
+    );
+    assert_eq!(code, 0, "{want}");
+    let (code, got) = run_with("own_cases", &place(&format!("{name}-ours"), true), &[name]);
+    assert_eq!(code, 0, "{got}");
+    let prefix = "msaa lines: row ";
+    let (w, g) = (hex_rows(&want, prefix), hex_rows(&got, prefix));
+    assert!(!w.is_empty());
+    assert_eq!((w.len(), w[0].len()), (g.len(), g[0].len()));
+    // The most samples real Direct3D covers in a pixel: all of them, along a line's middle.
+    let full = *w.iter().flatten().max().unwrap();
+    let covered = |y: usize, x: usize| w[y][x] != 0;
+    let touches = |y: usize, x: usize| {
+        (y.saturating_sub(1)..=(y + 1).min(w.len() - 1))
+            .any(|ny| (x.saturating_sub(1)..=(x + 1).min(w[0].len() - 1)).any(|nx| covered(ny, nx)))
+    };
+    for y in 0..w.len() {
+        for x in 0..w[0].len() {
+            let (a, b) = (w[y][x], g[y][x]);
+            if a == full {
+                assert_eq!(
+                    b, full,
+                    "a fully covered pixel at ({x}, {y})\n{want}\n{got}"
+                );
+            } else if a != b {
+                assert!(
+                    touches(y, x),
+                    "a pixel off the line at ({x}, {y})\n{want}\n{got}"
+                );
+            }
+        }
+    }
+    let rest = |t: &str| -> Vec<String> {
+        t.lines()
+            .filter(|l| !l.starts_with(prefix))
+            .map(str::to_owned)
+            .collect()
+    };
+    assert_eq!(rest(&want), rest(&got));
+}
+
+#[test]
 fn minimum_level_clamps_and_both_helper_blocks_as_direct3d_does() {
     let (code, want) = run("own_min_lod", &place("min-lod-system", false));
     assert_eq!(code, 0, "{want}");
