@@ -1,6 +1,7 @@
 cs_atomics.dxbc	ok-wgsl glsl-write
 cs_decrement.dxbc	ok-wgsl glsl-write
 cs_images.dxbc	unsupported StorageFormatKind
+cs_readonly.dxbc	ok-wgsl glsl-write
 cs_shared.dxbc	ok-wgsl glsl-write
 cs_texels.dxbc	unsupported TypedBufferFormatKind
 cs_through.dxbc	unsupported StorageFormatKind
@@ -99,6 +100,7 @@ ps_special.dxbc	ok
 ps_table.dxbc	ok
 ps_texels.dxbc	unsupported TypedBufferFormatKind
 ps_textured.dxbc	ok
+ps_two.dxbc	ok
 ps_twospaces.dxbc	ok
 ps_window.dxbc	ok
 vs_carry.dxbc	ok

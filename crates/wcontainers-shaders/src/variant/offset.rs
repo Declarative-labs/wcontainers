@@ -1,6 +1,7 @@
 //! Storage buffers read from an offset into their binding (`VariantFlags::STORAGE_OFFSET`): WebGPU binds
-//! storage at multiples of 256 bytes, Direct3D's raw and structured views start at any element, so the
-//! front binds from below the view and the program adds the rest, in whole elements, to every index.
+//! storage at multiples of 256 bytes, Direct3D's raw and structured views (shader resource and unordered
+//! access ones alike) start at any element, so the front binds from below the view and the program adds
+//! the rest, in whole elements, to every index.
 
 use super::{HelperMember, Result, each_block, helper, scalar};
 use crate::ConvertError;
@@ -47,17 +48,47 @@ fn runtime_array(module: &Module, ty: Handle<naga::Type>) -> Result<Option<(Opti
     }
 }
 
-/// Gives each storage binding of `reflection` its element's stride, which a storage offset comes in.
+/// Whether the storage variable at `rb` stands for one of the API's own raw or structured view slots
+/// (shader resource or unordered access), the bindings a storage offset moves. Typed views carry their
+/// own place ([`HelperValue::TexelBufferView`], `TexelLayout`) and added bindings none.
+fn moved(reflection: &Reflection, rb: naga::ResourceBinding) -> bool {
+    let Some(kind) = reflection
+        .bindings
+        .iter()
+        .find(|b| {
+            b.set == rb.group
+                && b.binding == rb.binding
+                && matches!(b.kind, SlotKind::Storage | SlotKind::Texture)
+                && b.added.is_none()
+        })
+        .map(|b| b.kind)
+    else {
+        return false;
+    };
+    !reflection.helpers.iter().any(|h| match h.value {
+        HelperValue::TexelBufferView { set, binding } => set == rb.group && binding == rb.binding,
+        HelperValue::TexelLayout { slot } => {
+            kind == SlotKind::Storage && kind.binding(slot) == Some(rb.binding)
+        }
+        _ => false,
+    })
+}
+
+/// Gives each raw or structured view's binding in `reflection` its element's stride, which a storage
+/// offset comes in.
 pub(crate) fn strides(module: &Module, reflection: &mut Reflection) {
     for (_, v) in module.global_variables.iter() {
         let (Some(rb), AddressSpace::Storage { .. }) = (v.binding, v.space) else {
             continue;
         };
+        if !moved(reflection, rb) {
+            continue;
+        }
         let Ok(Some((_, stride))) = runtime_array(module, v.ty) else {
             continue;
         };
         for b in reflection.bindings.iter_mut() {
-            if b.set == rb.group && b.binding == rb.binding && b.kind == SlotKind::Storage {
+            if b.set == rb.group && b.binding == rb.binding {
                 b.stride = stride;
             }
         }
@@ -81,23 +112,7 @@ pub(crate) fn storage_offsets(
         let (Some(rb), AddressSpace::Storage { .. }) = (binding, space) else {
             continue;
         };
-        let own = reflection.bindings.iter().any(|b| {
-            b.set == rb.group
-                && b.binding == rb.binding
-                && b.kind == SlotKind::Storage
-                && b.added.is_none()
-        });
-        // Typed views carry their own place ([`HelperValue::TexelBufferView`], `TexelLayout`).
-        let typed = reflection.helpers.iter().any(|h| match h.value {
-            HelperValue::TexelBufferView { set, binding } => {
-                set == rb.group && binding == rb.binding
-            }
-            HelperValue::TexelLayout { slot } => {
-                slot == rb.binding - SlotKind::Storage.first_binding()
-            }
-            _ => false,
-        });
-        if !own || typed {
+        if !moved(reflection, rb) {
             continue;
         }
         let Some((member, stride)) = runtime_array(module, ty)? else {

@@ -849,6 +849,69 @@ fn native_16_bit_integers_draw_as_direct3d_12_does() {
     assert!(failures.is_empty(), "differ from Direct3D 12: {failures:?}");
 }
 
+/// A DXIL target of two components into a four-component format (`ps_two`, a `uint2` into
+/// `R32G32B32A32_UINT`), through both back ends against real Direct3D 12: the two components it
+/// writes are exact; Direct3D leaves the other two undefined, so they are not compared.
+#[test]
+fn narrower_targets_draw_as_direct3d_12_does() {
+    let case = Case {
+        vs: "vs_transform",
+        ps: "ps_two",
+        format: Format::Rgba32Uint,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: [None, None],
+        known_on_webgl: None,
+        dxil: true,
+        dxil_against_11: false,
+    };
+    let mut wgpu_backend = webgpu();
+    let mut gl = webgl();
+    let gpu12 = wcontainers_graphics_test::d3d12::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+    )
+    .unwrap();
+    let texel = case.format.block().2 as usize;
+    // `ps_two` writes a `uint2`.
+    let written = texel / case.format.components() as usize * 2;
+    // Only the components the program writes.
+    let written_only = |mut texels: Vec<u8>| {
+        for t in texels.chunks_mut(texel) {
+            t[written..].fill(0);
+        }
+        texels
+    };
+    let reference = written_only(direct3d_12(&gpu12, &case));
+    let code = [bytecode("vs_transform.dxil"), bytecode("ps_two.dxil")];
+    let grid = grid();
+    let draw = Draw::own(&case, &code, true, &grid);
+    let provoking = if gl.caps().has(Features::PROVOKING_VERTEX_FIRST) {
+        ProvokingVertex::First
+    } else {
+        ProvokingVertex::Last
+    };
+    let runs = [
+        (
+            "webgpu",
+            ours(&mut wgpu_backend, &draw, ProvokingVertex::First),
+        ),
+        ("webgl", ours(&mut gl, &draw, provoking)),
+    ];
+    let mut failures = Vec::new();
+    for (back_end, texels) in runs {
+        let (count, largest) = differ(&reference, &written_only(texels), case.format);
+        eprintln!(
+            "ps_two {back_end}-dxil: {count} of {} texels differ from direct3d 12, largest difference {largest}",
+            SIZE * SIZE
+        );
+        if count > 0 {
+            failures.push(back_end);
+        }
+    }
+    assert!(failures.is_empty(), "differ from Direct3D 12: {failures:?}");
+}
+
 /// The primitive index in a pixel shader without a geometry shader (`ps_primid`), natively through
 /// the WebGPU back end on a device with wgpu's `PRIMITIVE_INDEX`, from the fxc build against real
 /// Direct3D 11 and from the dxc build against real Direct3D 12. Exact.

@@ -67,15 +67,19 @@ fn words(out: *mut u32, words: usize) -> Vec<u32> {
     v
 }
 
-/// A resource class of Direct3D 12, as the SPIR-V's descriptor set names it (`cpp/dxil.cpp`).
-const CONSTANTS: u32 = 0;
-const VIEW: u32 = 1;
-const STORAGE: u32 = 2;
-const SAMPLER: u32 = 3;
-pub(super) const COUNTER: u32 = 4;
+/// The resource classes of Direct3D 12 the SPIR-V's descriptor sets name (`cpp/boundary.h`).
+pub(super) use crate::ir::class::COUNTER;
+use crate::ir::class::{CONSTANTS, SAMPLER, STORAGE, VIEW};
 
-/// Each resource's (class, space, register), at the index the SPIR-V's binding names.
-type Resources = Vec<[u32; 3]>;
+/// One resource's (class, space, register).
+type Resource = [u32; 3];
+
+/// The words of one [`Resource`], and of one constant buffer's (space, register, size in bytes) on
+/// both routes.
+pub(crate) const TRIPLE: usize = core::mem::size_of::<Resource>() / core::mem::size_of::<u32>();
+
+/// Each resource, at the index the SPIR-V's binding names.
+type Resources = Vec<Resource>;
 
 /// DXIL to SPIR-V words, the targets' sample count fixed where `samples` is not zero, with the
 /// resources the SPIR-V's bindings index.
@@ -102,7 +106,10 @@ fn to_spirv(dxil: &[u8], samples: u8) -> Result<(Vec<u32>, Resources), ConvertEr
         return Err(ConvertError::Rejected(reason(error)));
     }
     let spirv = self::words(out, words);
-    let resources = self::words(table, table_words).as_chunks::<3>().0.to_vec();
+    let resources = self::words(table, table_words)
+        .as_chunks::<TRIPLE>()
+        .0
+        .to_vec();
     Ok((spirv, resources))
 }
 
@@ -162,7 +169,7 @@ fn declared_sizes(
             continue;
         };
         let declared = sizes
-            .as_chunks::<3>()
+            .as_chunks::<TRIPLE>()
             .0
             .iter()
             .find(|d| (d[0], d[1]) == (space, register))

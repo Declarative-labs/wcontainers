@@ -1,10 +1,41 @@
 # Direct3D 11 front status
 
 Branch: phase-2-graphics-direct3d-11. Plan: docs/phase-2-graphics.md, milestone G4 (section 12).
-Runs so far: six on G4a, the first slice; then runs 1 to 24 of G4 as a whole (2026-11-17 and
-18; runs 13 to 24 are the orchestrator's second series on G4).
+Runs so far: six on G4a, the first slice; then runs 1 to 25 of G4 as a whole (2026-11-17 and
+18; runs 13 to 25 are the orchestrator's second series on G4).
 
 ## Where things stand
+
+G4 run 25 (2026-11-18, about 20:20 to 23:30 Pacific). Merged origin/phase-2-graphics-webgpu,
+-shaders, -direct3d-12 and -webgl cleanly (-graphics and -rig had nothing new). The WebGL 2
+track's branch had merged origin/phase-1-literals and adopted the literal check; the brief says
+to merge origin/phase-1-literals and adopt it, so its four newer commits were merged too and the
+check adopted (Literals). The merged tree passed the check, lint of both builds and the front
+tests before any change (logs/g4s13a-*), and was pushed.
+- Literal sweep, second part (Literals): 74 baseline lines of these crates removed.
+- Constant buffers past the back end's uniform buffers per stage (the WebGL 2 build's constants
+  scene lost the device: 14 slots where ANGLE gives 10 natively): such slots, the highest first,
+  keeping one block for the helper constants where the program has them, are read through
+  textures (the shaders crate's `constants_as_texture`, `SlowPath::ConstantsAsTexture` counted at
+  each draw). The front copies each bound window into an RGBA32 unsigned texture of its 16-byte
+  rows (`WindowCopy::Texture`, the same window copies as the storage route's, copied again only
+  after a write; an empty slot reads a zeroed one). The shader's own module is made so at
+  creation, and building ahead now builds the variant a draw with nothing special bound takes
+  (`unbound_variant`; it had built the plain one, which the back end refused, removing the
+  device, and which no WebGL 2 draw uses). The constants scene on the WebGL 2 build now matches
+  real Direct3D (logs/g4s13*). New front test
+  `constant_buffers_past_the_back_ends_uniform_buffers_are_read_through_texture_copies`.
+- Counted occlusion queries through a pixel shader variant were refused (`E_NOTIMPL`, the device
+  removed); every WebGL 2 draw has one (level counts in the helpers). The counting program is now
+  made from the draw's own variant, so it reads the bindings the draw binds. The queries scene on
+  the WebGL 2 build now matches real Direct3D.
+- Results at fb182c2b (Measurements): the check exit 0, lint clean, every test of both crates
+  passing but the one known failure; Wine's d3d11 file 140 of 165 and d3d10core 103 of 111, the
+  same failing tests as at run 24; scenes through the library 135 pass, 0 fail, 4 absent; the
+  WebGL 2 build's scenes 92 match, 21 fail (all from four scenes refused by name), 30 absent;
+  real programs as at run 24.
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (16.6 GB) was deleted; no
+  build folder was made on the Mac or in scratch this run. Nothing was installed on the desktop.
 
 G4 run 24 (2026-11-18, from about 18:15 Pacific). Run 23 had committed its code (728773d0) but
 not its status or a push; both are done first. Merged origin/phase-2-graphics-webgpu, -webgl and
@@ -524,6 +555,10 @@ and depth buffers larger than their targets.
 ## Wine's Direct3D 11 tests through ours
 
 Files passing (the bar: real Direct3D's verdict for every test, except the gap list):
+- d3d11: not passing. G4 run 25 (2026-11-18, RTX 3080 through the queue's hazard group, not
+  alone, rigfix/wine.sh, at fb182c2b's tree): 140 pass of the 165 run (25 fail;
+  logs/g4s13i-wine.log, 22:28:46 to 22:31:51 desktop time). The same 25 tests fail as at run 24;
+  the gap list below stands.
 - d3d11: not passing. G4 run 24 (2026-11-18, RTX 3080 through the queue's hazard group, not
   alone, rigfix/wine.sh, at dd123eec's tree): 140 pass of the 165 run (25 fail;
   logs/g4s12e-wine.log, 168 s of tests). New: test_quad_tessellation (stages after a domain
@@ -557,6 +592,9 @@ Files passing (the bar: real Direct3D's verdict for every test, except the gap l
   since run 17: test_nv12.
 - Earlier runs of the file (G4 runs 1 to 17: 11, 56, 73, 68, 72, 74, 78, 79, 82, 88, 90, 104,
   113, 114, 118 and 127 passing) and their gap lists are in this file's git history.
+- d3d10core: not passing. G4 run 25 (RTX 3080 through the queue's hazard group, not alone, at
+  fb182c2b's tree): 103 pass of 111 (8 fail; logs/g4s13i-wine10.log, 22:32:13 to 22:36:46), the
+  same 8 as at run 24.
 - d3d10core: not passing. G4 run 24 (RTX 3080 through the queue's hazard group, not alone, at
   dd123eec's tree): 103 pass of 111 (8 fail; logs/g4s12e-wine10.log, 97 s of tests). New:
   test_depth_stencil_sampling; none lost. The 8: three absent (logic ops and WARP:
@@ -609,7 +647,7 @@ Files passing (the bar: real Direct3D's verdict for every test, except the gap l
 - dxgi: the rig has no
   baseline of real Direct3D's verdicts for it.
 
-The gap list, G4 run 24 (the 25 failing tests of the full file at dd123eec: run 23's 27 but
+The gap list, G4 run 24, unchanged at run 25 (the same 25 failing tests at fb182c2b; at run 24 the 25 failing tests of the full file at dd123eec: run 23's 27 but
 test_quad_tessellation and test_depth_stencil_sampling, which pass; test_atomic_instructions is
 quarantined and not run, and is kept in part B; the first named refusal, skip or failed check of
 each, logs/g4s12e-wine.log and the per-test logs, read against Wine's d3d11.c in scratch
@@ -659,17 +697,21 @@ B. Work, named (not gaps), 7 tests and the quarantined one:
 
 ## What comes next
 
-After G4 run 24. Done in run 24: stream output and geometry shaders after a domain shader,
-a domain shader's clip distances in the program, stencil views bound. No failing Wine test of
-the d3d11 file is this front's own work any more (gap list part B names whose each is). At the
-head of the list now:
+After G4 run 25. Done in run 25: the literal check adopted and a part of the fix list; constant
+buffers past the back end's uniform buffers read through textures and counted occlusion through
+pixel shader variants (the WebGL 2 build's constants and queries scenes now match). Still no
+failing Wine test of the d3d11 file is this front's own work (gap list part B names whose each
+is). At the head of the list now:
 - Merge the other tracks as they land and rerun both Wine files: out-of-range layers in
   layered draws, `LinkedClipDistanceCount`, `ClipDistance` from a geometry shader,
   `CullDistance`, `GeometryStreams`, `AtomicExchangeLoop` (shaders track); the BGRX vertex
   format (interface track); sequential swap chains and the desktop window (infrastructure).
+- Building-ahead hit counts and the module size were last measured at runs 16 and 18; measure
+  them again on the current tree (scratch run-warm.sh; a release build of the library).
+- The WebGL 2 build's other failing scenes, one by one (Measurements).
 - The primitive index in pixel shaders where the back end lacks `PRIMITIVE_INDEX` (WebGL 2):
   refused by name; `PrimitiveIdAsGeometry` (the stage helper's route) is not built.
-- Adopt the literal check once main has it (docs/literals.md), then work the fix list down.
+- The literal fix list, a part per run (Literals); keep the check at exit 0.
 - Direct3D 10 programs: d3d10.dll and d3d10_1.dll forwarders need the effects framework and
   shader reflection they also export (not ours), so only d3d10core.dll is forwarded.
 - bgfx-26-occlusion: the counted occlusion query one sample short (49 for 50); then whether the
@@ -712,6 +754,13 @@ Then, from run 18 (items 1 and 4's YUY2 are done; item 2's bgfx and bezier are d
   the first named gap of each failing test of logs/<label>-wine.log. `run-all.sh <label>` runs the
   library tests, every scene through the whole library, Wine's d3d11 file and the WebGL 2 scenes.
   Real programs' logs are under graphics-rig/programs/phase-2-graphics-direct3d-11/<program>.
+
+Everything of run 25 in one command: scratch `run-g4s13.sh <label> [steps]` (steps `literals
+lint front lib wine wine10 scenes webgl programs`, default all; `literals` runs the literal
+check on the desktop, the rest are run-g4s10.sh's below). The check alone:
+`tools/graphics-rig/remote "git submodule update --init --recursive -q && set
+RAYON_NUM_THREADS=3&& cargo run -q -j 3 -p wcontainers-literals -- check"`; a `-` line it prints
+is a baseline line to delete in the same commit.
 
 Everything of run 22 in one command: scratch `run-g4s10.sh <label> [steps]` (steps `lint front
 lib wine wine10 scenes webgl programs`, default all; `wine10` is Wine's d3d10core file through
@@ -982,6 +1031,15 @@ clean with warnings denied. The library tests run without `WC_GPU_CACHE`, so wit
 
 ## Departures from the plan
 
+- Run 25: origin/phase-1-literals was merged into this branch directly. docs/literals.md says a
+  track adopts the check through main; the brief (2026-11-18, late) says to merge
+  origin/phase-1-literals and adopt it now, and the WebGL 2 track's branch, which this branch
+  merges, had already done so, bringing the check and its baseline here anyway. So this branch
+  must not merge a main that lacks the check (docs/literals.md step 1).
+- Run 25: a stage reading more constant buffers than the back end's uniform buffers keeps one
+  uniform buffer for the helper constants whenever its variant may have them, so a program using
+  exactly the back end's count with no helpers reads one slot through a texture it did not need
+  to (slower, exact). The back end's combined limit for a program's two stages is not checked.
 - Run 23: origin/phase-1-literals (the literal check's branch) was not merged. The brief asks
   for it once it has a passing milestone; the branch still changes its rules from run to run
   (its last commits are "the second version of the rules" and an attack's findings), it is a
@@ -1268,6 +1326,25 @@ None in G4 runs 3 to 12.
   the plan's text in section 7 (Direct3D 11's constant buffers).
 
 ## Measurements
+
+- 2026-11-18, G4 run 25, the desktop (i9-9900K, RTX 3080) through the queue, not alone (other
+  tracks' hazard jobs one at a time before ours; the Mac's load average 113 to 118 at 23:27,
+  from the other tracks), at fb182c2b (logs/g4s13i-*): the literal check exit 0; lint of both
+  builds clean; front 48, cache 1, unit 5; library com 15 and programs 30 with 1 ignored (the
+  known failure), all passing; Wine's d3d11 file 140 of 165 (3 min 5 s for the job, 22:28:46
+  to 22:31:51), d3d10core 103 of 111 (4 min 33 s), the same failing tests as at run 24; every
+  Direct3D 11 scene through the whole library 135 pass, 0 fail, 4 absent (as at run 24); the
+  WebGL 2 build's scenes 92 match, 21 fail, 30 absent (88, 27, 30 at run 24: constants and
+  queries now match). The 21 are every output of four scenes refused by name (`E_NOTIMPL`):
+  raster (wireframe: the back end's polygon mode), views (texture views), geometry and streamout
+  (the geometry stage needs compute programs, which WebGL 2 lacks); none differs from real
+  Direct3D. Real programs through the whole library, 120 frames each (logs/g4s13i-programs.log,
+  -bgfx.log), as at run 24: every compared frame as on real Direct3D for sdk-tutorial02, 04 to 07
+  (0.9 to 1.0 s), chocolate-doom 3.1 s, atg-simplelightingpc 3.2 s, atg-simpleinstancingpc 3.3 s,
+  atg-simplebezierpc 9.4 s, godot-platformer-2d-d3d11 13.8 s, godot-platformer-3d-d3d11 42.5 s,
+  bgfx-01-cubes, -35-dynamic, -37-gpudrivenrendering and -38-bloom; bgfx-24-nbody runs to its
+  last frame; atg-simplecomputepc, atg-simplemsaa_pc and bgfx-26-occlusion differ as before
+  (Known failures of the earlier runs). Building-ahead hits and module size not measured again.
 
 - 2026-11-18, G4 run 24, the desktop (i9-9900K, RTX 3080) through the queue, not alone (other
   tracks' hazard jobs ran one at a time before ours; the Mac's load average was 62 to 85 at
@@ -1695,9 +1772,35 @@ All on the desktop (Windows 10, i9-9900K, RTX 3080) through the queue, not alone
 The brief's rule of 2026-11-18 (no magic numbers or literals) and the audit's fix list
 (orchestrator/magic-literals/fix-graphics.md; findings for this checkout in
 final/lists/graphics-direct3d-11/: wcontainers-directx 311 code findings, 13 redefinitions, 45
-named constants; wcontainers-direct3d-11 in final/lists/graphics/). The automatic check is not
-on a branch yet (origin/phase-1-literals holds no wcontainers-magic-literals crate at run 22),
-so no baseline is made.
+named constants; wcontainers-direct3d-11 in final/lists/graphics/).
+- Run 25, the check adopted (docs/literals.md, version 7 of the rules): the baseline arrived
+  with the merge of origin/phase-2-graphics-webgl (81489a2f, its start on this branch) and
+  origin/phase-1-literals (68214b2e); `init` was run on the desktop as the next change of it and
+  committed (5657abb6). Lines of these crates at adoption: 1,000 (wcontainers-direct3d-11 680:
+  638 code, 20 redefinition, 22 restated; wcontainers-directx 320: 295 code, 9 redefinition, 13
+  restated, 3 script). After this run: 925 (648 and 277). No mark. The check exits 0 at every
+  commit pushed. Its list of changes that could add lines, as printed at 66f37730: 81489a2f the
+  start; 5657abb6 the init after the baseline arrived by a merge; c33381de the start; 1e337706
+  the init after the baseline arrived by a merge; 68214b2e the start; 89f88281, 7119e3f3,
+  c3bf56d4, 31ec396f, 0f187563 new rules, for literals already in the tree (10 in all; the
+  second and fourth starts and inits are the WebGL 2 track's and the literals track's own).
+  Run as `cargo run -q -p wcontainers-literals -- check` (scratch run-g4s13.sh step `literals`,
+  on the desktop: the check needs the history, which the rig's bundles carry).
+- Run 25, replaced (75 lines): desc.rs's format support bits are the infrastructure crate's
+  `support1` (`CPU_LOCKABLE` alone stays named here: the infrastructure table lacks it); the
+  buffer view flags are one `desc::buffer_uav` module (`COUNTER_FLAG`, as the shaders crate owns
+  a `COUNTER`); `R32_TYPELESS` from the infrastructure crate's `dxgi`; query data sizes from
+  `size_of` of their types, the answer's words from the last statistic; the library's stage
+  count is the front's `STAGES`, its stream output slots, constant count, target count, sample
+  limit, stencil masks, sampler filter bits, offer priorities and the DXGI format range from the
+  windows crate; feature levels from `desc::level`; path and name buffers from `MAX_PATH` and
+  the structures' own arrays; the frame latency and sync interval limits one named constant each.
+- Left, waiting on owners: Direct3D enums and limits (blend factors, comparison and stencil
+  operations, sampler state, texture and buffer limits) for the infrastructure crate's planned
+  `d3d` module (the Direct3D 12 track's), `SAMPLE_COUNTS` (private there now), `CUBE_FACES` and
+  `[f32; 4]` aliases in the interface, DXBC numbers in the shaders crate's `dxbc` module; the
+  messages passed to the front's own error helpers, which the check reads as code ("Wrongly
+  caught" in docs/literals.md); the COM method labels for generate.py.
 - Run 24, format.rs: the front's own copies of seven DXGI numbers (`UNKNOWN`, `R16_UINT`,
   `R32_UINT`, `NV12`, `YUY2`, `R8G8_TYPELESS`, `R8_TYPELESS`) are now re-exports of the
   infrastructure crate's `dxgi` constants, every DXGI number in its tables is the `dxgi` name

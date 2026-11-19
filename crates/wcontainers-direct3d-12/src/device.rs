@@ -269,6 +269,10 @@ struct Render<B: Backend> {
     /// depth or stencil: the tests, which its draws while a depth-stencil view is bound run in the
     /// program (`EarlyTestsInShader`).
     early_tests: Option<DepthStencil>,
+    /// Where those tests matter while the pipeline writes depth or stencil, what its draws then
+    /// draw each primitive with; `None` behind a geometry stage and for a pixel shader reading its
+    /// primitive index, which a primitive drawn alone would read as zero.
+    per_primitive: Option<early::PerPrimitive<B>>,
     alpha_to_coverage: bool,
     /// Every per-instance element steps by one instance.
     instances_step_by_one: bool,
@@ -1231,6 +1235,19 @@ impl<B: Backend> Device<B> {
         } else {
             None
         };
+        let writes = depth_stencil.depth_write
+            || depth_stencil.stencil.is_some() && depth_stencil.stencil_write_mask != [0; 2];
+        let reads_primitive = ps.as_ref().is_some_and(|p| {
+            p.reflection
+                .inputs
+                .iter()
+                .any(|i| i.system == Some(wcontainers_gpu::SystemValue::PrimitiveId))
+        });
+        let per_primitive =
+            match early_tests.is_some() && writes && made.is_none() && !reads_primitive {
+                true => Some(self.per_primitive(&depth_stencil, &raster, &vs.modules[0])?),
+                false => None,
+            };
         let render = Render {
             blend: self.backend.create_blend(&blend)?,
             depth_stencil: self.backend.create_depth_stencil(&depth_stencil)?,
@@ -1263,6 +1280,7 @@ impl<B: Backend> Device<B> {
                     || desc.depth_stencil.stencil_enable
                         && desc.depth_stencil.stencil_write_mask != 0),
             early_tests,
+            per_primitive,
             alpha_to_coverage: desc.blend.alpha_to_coverage,
             instances_step_by_one,
             geometry: made.map(|m| m.geometry),
@@ -1443,7 +1461,7 @@ impl<B: Backend> Device<B> {
                 .push(format!("a {stage} shader did not convert: {e}"));
             error
         })?;
-        if converted.reflection.helpers.iter().any(|h| {
+        if let Some(h) = converted.reflection.helpers.iter().find(|h| {
             !matches!(
                 h.value,
                 HelperValue::DrawBase
@@ -1459,8 +1477,13 @@ impl<B: Backend> Device<B> {
                     | HelperValue::Layer
                     | HelperValue::Viewport
                     | HelperValue::EarlyTests
+                    | HelperValue::StorageOffset { .. }
             )
         }) {
+            self.messages.push(format!(
+                "a {stage} shader reads helper constants the front does not write: {:?}",
+                h.value
+            ));
             return Err(Error::NotImplemented(
                 "shaders reading helper constants the front does not write",
             ));
@@ -1553,6 +1576,11 @@ impl<B: Backend> Device<B> {
                     self.backend.destroy(Object::DepthStencil(d));
                 }
                 self.backend.destroy(Object::Raster(r.raster));
+                if let Some(p) = r.per_primitive {
+                    self.backend.destroy(Object::DepthStencil(p.tested));
+                    self.backend.destroy(Object::Raster(p.flipped));
+                    self.backend.destroy(Object::Program(p.written));
+                }
             }
         }
     }
@@ -2618,6 +2646,11 @@ struct Replay<B: Backend> {
     /// The open pass, or the next one, holds its depth-stencil attachment read only, for draws
     /// running their early tests in the program.
     pass_early: bool,
+    /// The open pass, or the next one, has no colour targets: the depth and stencil writes of a
+    /// primitive drawn alone (`early::EarlyRun::Written`).
+    pass_written: bool,
+    /// The run of a primitive drawn alone the draw being made is (`early::Early::PerPrimitive`).
+    early_run: Option<early::EarlyRun>,
     /// The layer of the bound target views the next pass draws into, past each view's first: a
     /// run of a draw split per layer (`LayerSplit`).
     pass_layer: u32,
@@ -2685,6 +2718,8 @@ impl<B: Backend> Replay<B> {
             pass_open: false,
             empty_pass: false,
             pass_early: false,
+            pass_written: false,
+            early_run: None,
             pass_layer: 0,
             graphics: bind::RootState::default(),
             compute: bind::RootState::default(),
@@ -3396,11 +3431,21 @@ impl<B: Backend> Replay<B> {
         }
         // The back ends test depth and stencil after the pixel shader: forced early tests that
         // matter run in the program, in a pass reading the depth-stencil view only.
-        let early = self.early_tests(d, pid)?;
-        if self.pass_open && self.pass_early != early {
+        let early = match (self.early_tests(d, pid)?, self.early_run) {
+            (early::Early::PerPrimitive, None) => {
+                return self.draw_per_primitive(d, pid, range, record);
+            }
+            (early::Early::PerPrimitive, Some(run)) => {
+                matches!(run, early::EarlyRun::Tested { .. })
+            }
+            (e, _) => e == early::Early::InProgram,
+        };
+        let written = matches!(self.early_run, Some(early::EarlyRun::Written { .. }));
+        if self.pass_open && (self.pass_early != early || self.pass_written != written) {
             self.end_pass(d)?;
         }
         self.pass_early = early;
+        self.pass_written = written;
         if early {
             d.backend.slow_paths().hit(SlowPath::EarlyTestsInShader);
         }
@@ -3895,7 +3940,45 @@ impl<B: Backend> Replay<B> {
         if !self.pass_open {
             self.open_pass(d, pid)?;
         }
-        d.backend.draw(&call!());
+        // The run making a primitive's depth and stencil writes draws the pipeline's own vertex
+        // program.
+        if matches!(self.early_run, Some(early::EarlyRun::Written { .. }))
+            && (variant.is_some() || by_arguments || matches!(&bound, Some((_, _, Some(_)))))
+        {
+            return Err(Error::NotImplemented(
+                "early depth-stencil tests per primitive of a vertex program converted for the \
+                 draw",
+            ));
+        }
+        match self.early_run {
+            Some(run) => {
+                let r = d.pipelines[pid.0 as usize]
+                    .render
+                    .as_ref()
+                    .expect("a graphics pipeline");
+                let each = r
+                    .per_primitive
+                    .as_ref()
+                    .expect("checked by draw_per_primitive");
+                let base = call!();
+                d.backend.draw(&DrawCall {
+                    program: match run {
+                        early::EarlyRun::Written { .. } => &each.written,
+                        early::EarlyRun::Tested { .. } => base.program,
+                    },
+                    depth_stencil: match run {
+                        early::EarlyRun::Tested { .. } => &each.tested,
+                        early::EarlyRun::Written { .. } => base.depth_stencil,
+                    },
+                    raster: match run.odd() {
+                        true => &each.flipped,
+                        false => base.raster,
+                    },
+                    ..base
+                });
+            }
+            None => d.backend.draw(&call!()),
+        }
         if let Some((counting, off, none)) = &pixel_counting {
             d.backend.draw(&DrawCall {
                 program: counting,
@@ -4045,7 +4128,11 @@ impl<B: Backend> Replay<B> {
         };
         let mut views = Vec::with_capacity(self.colors.len());
         let mut loads = Vec::with_capacity(self.colors.len());
-        for c in &self.colors {
+        let colors = match self.pass_written {
+            true => &[][..],
+            false => &self.colors[..],
+        };
+        for c in colors {
             let v = match c {
                 Descriptor::RenderTarget(v) => v,
                 // A null view: the slot has no target and its writes are dropped.
