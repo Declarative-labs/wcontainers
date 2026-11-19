@@ -111,7 +111,7 @@ fn to_spirv(dxil: &[u8], samples: u8) -> Result<(Vec<u32>, Resources), ConvertEr
             &mut error,
         )
     };
-    if status != SUCCESS {
+    if status != 0 {
         return Err(ConvertError::Rejected(reason(error)));
     }
     let spirv = self::words(out, words);

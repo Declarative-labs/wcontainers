@@ -50,13 +50,10 @@ pub struct Writer<'a, W> {
     clip_distance_count: u32,
 }
 
-/// The first versions whose `mix` takes a boolean condition with integer and boolean values.
-const ES_INTEGER_MIX: u16 = 310;
-const DESKTOP_INTEGER_MIX: u16 = 450;
 /// The punctuation of a select written one component at a time.
 const OPEN: &str = "(";
 const CLOSE: &str = ")";
-const SEPARATOR: &str = ", ";
+const COMPONENT_GAP: &str = ", ";
 const MEMBER: char = '.';
 const THEN: &str = " ? ";
 const ELSE: &str = " : ";
@@ -3076,17 +3073,12 @@ impl<'a, W: Write> Writer<'a, W> {
                     false
                 };
 
-                // `mix` with a boolean condition takes integer and boolean values from GLSL ES 3.10
-                // and GLSL 4.50 only; before, such a select is written one component at a time.
+                // `mix` with a boolean condition takes integer and boolean values only from GLSL ES
+                // 3.10 and GLSL 4.50, so such a select is written one component at a time.
                 let value_ty = ctx.resolve_type(accept, &self.module.types);
                 let componentwise = match *value_ty {
                     TypeInner::Vector { size, scalar }
-                        if vec_select
-                            && scalar.kind != crate::ScalarKind::Float
-                            && match self.options.version {
-                                Version::Embedded { version, .. } => version < ES_INTEGER_MIX,
-                                Version::Desktop(version) => version < DESKTOP_INTEGER_MIX,
-                            } =>
+                        if vec_select && scalar.kind != crate::ScalarKind::Float =>
                     {
                         Some(size)
                     }
@@ -3097,7 +3089,7 @@ impl<'a, W: Write> Writer<'a, W> {
                     self.out.write_str(OPEN)?;
                     for (i, &component) in back::COMPONENTS[..size as usize].iter().enumerate() {
                         if i != 0 {
-                            self.out.write_str(SEPARATOR)?;
+                            self.out.write_str(COMPONENT_GAP)?;
                         }
                         for (e, after) in [(condition, THEN), (accept, ELSE), (reject, "")] {
                             self.out.write_str(OPEN)?;
