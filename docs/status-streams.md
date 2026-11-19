@@ -277,6 +277,19 @@ Found on the way, fixed:
 - Zig: `zig cc` from Homebrew outside `nix develop` hung (three guest builds of one test binary
   sleeping 10 minutes at the link); the timing now runs inside `nix develop`, where it did not.
 
+- Fifth run, after the second check's fixes (4d7e959e): the embedder tests (13, seeds 1 to 3) and
+  streams, memory and faults passed on this Mac (scratch streams/s2c/affected-1.log, 08:03 to
+  08:07, load 40 to 28; embedder 82 s). Whole suite on the ARM machine (`cargo test --no-fail-fast
+  -j $ARM_JOBS` over the four crates; scratch streams/s2c/suite-s2c.log, 2257 s, ending 08:45,
+  machine load 61): 561 passed, 28 failed, 6 ignored. 26 of the failures are the manual's list of
+  tests whose reference differs there, plus `terminal::splice_holds_the_pipe` (the reference's tty
+  there echoes once more: theirs "abc\r\nabc\r\n", ours "abc\r\n") and the literal check's
+  `the_workspace_keeps_to_its_baseline` (the copy there has no git). On this Mac the 20 binaries
+  holding them passed, 94 tests (scratch streams/s2c/mac-only.log, 08:09 to 08:13, load 24 to 17),
+  and the literal check's tests passed. So 595 tests: 589 passed, 6 ignored, none failed. Speed was
+  not measured again: with no hook the path is the same one flag test per call, and the host with
+  no hooks now forwards nothing.
+
 ## Literals
 
 - Adopted at da21d326 (`init` once on this tree, version 7 of the rules): 7612 baseline lines, of

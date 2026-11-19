@@ -229,8 +229,9 @@ threads before anything runs.
 What watching costs: while no process has a watch or a record of written pages, a call, a
 signal or a fault pays one flag test (`Kernel::watching`), recomputed when watches are set, a
 program starts, or a process ends. Once some process has one, every other process's call and
-signal also looks up whether its own process has watched pages (a map lookup and a test); only a
-process with watched pages walks its calls' descriptions and has its copies checked.
+signal also looks up whether its own process has watched pages (its thread's and its process's
+entries, and a test); only a process with watched pages walks its calls' descriptions and has
+its copies checked.
 
 ## Running a process
 
