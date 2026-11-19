@@ -2203,14 +2203,20 @@ fn process_file(
             let (ignored, caught) = ignored_and_caught(process);
             out.push('\n');
             if !ended {
-                let _ = writeln!(out, "VmSize:\t{:8} kB", vsize / 1024);
-                // Memory held by mlock (`locked_vm`): every page of a locked range.
+                // Memory held by mlock (`locked_vm`): every page of a locked range. Nothing is
+                // pinned; the resident and peak lines need page residency (left out).
                 let (locked, _) = process.map.borrow().locked_pages(0, u64::MAX);
-                let _ = writeln!(
-                    out,
-                    "VmLck:\t{:8} kB",
-                    locked * (wcontainers_abi::PAGE_SIZE / 1024)
-                );
+                let (data, stack) = data_and_stack(process);
+                for (name, bytes) in [
+                    (VM_SIZE, vsize),
+                    (VM_LOCKED, locked * wcontainers_abi::PAGE_SIZE),
+                    (VM_PINNED, u64::MIN),
+                    (VM_DATA, data),
+                    (VM_STACK, stack),
+                    (VM_SWAPPED, u64::MIN),
+                ] {
+                    memory_line(&mut out, name, bytes);
+                }
             }
             let _ = write!(
                 out,
@@ -2329,6 +2335,46 @@ fn sizes(process: &Process) -> (u64, u64) {
         }
     }
     (total, writable)
+}
+
+/// `task_mem`'s lines of `/proc/<pid>/status`: a name, its value in KiB right-aligned in eight
+/// places, and the unit.
+const VM_SIZE: &str = "VmSize";
+const VM_LOCKED: &str = "VmLck";
+const VM_PINNED: &str = "VmPin";
+const VM_DATA: &str = "VmData";
+const VM_STACK: &str = "VmStk";
+const VM_SWAPPED: &str = "VmSwap";
+const MEMORY_FIELD_END: &str = ":\t";
+const MEMORY_FIELD_WIDTH: usize = 8;
+const MEMORY_FIELD_PAD: char = ' ';
+const MEMORY_FIELD_UNIT: &str = " kB\n";
+
+fn memory_line(out: &mut String, name: &str, bytes: u64) {
+    let value = alloc::string::ToString::to_string(&(bytes / crate::hugetlb::KIB));
+    out.push_str(name);
+    out.push_str(MEMORY_FIELD_END);
+    out.extend(core::iter::repeat_n(
+        MEMORY_FIELD_PAD,
+        MEMORY_FIELD_WIDTH.saturating_sub(value.len()),
+    ));
+    out.push_str(&value);
+    out.push_str(MEMORY_FIELD_UNIT);
+}
+
+/// The bytes of private writable mappings that are not stacks (`data_vm`), and of stacks
+/// (`stack_vm`), as `vm_stat_account` sorts them.
+fn data_and_stack(process: &Process) -> (u64, u64) {
+    let (mut data, mut stack) = (0, 0);
+    for mapping in process.map.borrow().iter() {
+        let length = mapping.end - mapping.start;
+        if mapping.grows_down {
+            stack += length;
+        } else if mapping.permissions.contains(Permissions::WRITE) && !mapping.shared {
+            data += length;
+        }
+    }
+    (data, stack)
 }
 
 /// The inode of `/proc`'s root.

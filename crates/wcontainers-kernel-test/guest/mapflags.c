@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -309,6 +310,33 @@ int main(int argc, char **argv) {
             FILE *status = fopen("/proc/self/status", "r");
             while (fgets(line, sizeof line, status))
                 if (!strncmp(line, "VmLck:", 6)) printf("%s: %s", steps[step], line);
+            fclose(status);
+        }
+    }
+    // VmData counts private writable memory that is not a stack, as mappings and mprotect change
+    // it; VmPin and VmSwap show nothing pinned or swapped.
+    {
+        const char *steps[] = {"before", "private writable 1 MiB", "shared writable 1 MiB",
+                               "private made read-only", "private made writable again"};
+        long first = 0;
+        char *private = 0;
+        for (int step = 0; step < 5; step++) {
+            if (step == 1)
+                private = mmap(0, 1 << 20, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            if (step == 2) mmap(0, 1 << 20, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+            if (step == 3) mprotect(private, 1 << 20, PROT_READ);
+            if (step == 4) mprotect(private, 1 << 20, PROT_READ | PROT_WRITE);
+            char line[256];
+            FILE *status = fopen("/proc/self/status", "r");
+            while (fgets(line, sizeof line, status)) {
+                if (!strncmp(line, "VmData:", 7)) {
+                    long kib = strtol(line + 7, 0, 10);
+                    if (step == 0) first = kib;
+                    printf("%s: VmData %+ld kB\n", steps[step], kib - first);
+                }
+                if (step == 0 && (!strncmp(line, "VmPin:", 6) || !strncmp(line, "VmSwap:", 7)))
+                    printf("%s", line);
+            }
             fclose(status);
         }
     }

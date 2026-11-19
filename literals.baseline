@@ -4154,8 +4154,6 @@ code	crates/wcontainers-kernel/src/fs/proc.rs	int	process_file	0xff
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	process_file	1000
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	process_file	1000
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	process_file	1000
-code	crates/wcontainers-kernel/src/fs/proc.rs	int	process_file	1024
-code	crates/wcontainers-kernel/src/fs/proc.rs	int	process_file	1024
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	process_file	10_000_000
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	process_file	12
 code	crates/wcontainers-kernel/src/fs/proc.rs	int	process_file	20
@@ -4381,8 +4379,6 @@ code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"State:\t{} ({})\
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"Threads:\t{}\nSigBlk:\t{:016x}\nSigIgn:\t{:016x}\nSigCgt:\t{:016x}\n\\n                 CapInh:\t{:016x}\nCapPrm:\t{:016x}\nCapEff:\t{:016x}\nCapBnd:\t{:016x}\… #a15edc79758058d6
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"Umask:\t{:04o}"
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"Units"
-code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"VmLck:\t{:8} kB"
-code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"VmSize:\t{:8} kB"
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"unlimited"
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"{:<25} {:<20} {:<20} "
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"{:<25} {:<20} {:<20} {:<10}"
