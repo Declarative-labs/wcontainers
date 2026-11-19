@@ -50,6 +50,9 @@ complete for the independent check, as the round's task asks.
 - The first try of the bar (r5e) had its library step refused, because the tree changed while it
   ran (this run's own commit). Its last steps were cut off at the sizes step. They were all run
   again as r5i on the final tree.
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (23.8 GB) and the Mac's
+  scratch mac-target (626 MB, from `cargo check -j 2` of the front) were deleted. Nothing was
+  installed on the desktop.
 
 G4 round 2, run 4 (2026-11-19, about 09:30 to 12:00 Pacific). Worked the independent check's
 findings on run 3. The milestone is not complete: the WebGL 2 build reports 9_3 where plan
