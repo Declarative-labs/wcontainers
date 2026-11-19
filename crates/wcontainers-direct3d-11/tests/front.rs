@@ -2630,6 +2630,51 @@ fn hull_and_domain_shaders_run_as_compute_before_the_domain_programs_draw() {
             .count(SlowPath::TessellationAsCompute),
         1
     );
+    // Stream output of the domain stage (a geometry shader object made from its bytecode): the
+    // domain stage runs as compute too, its output is streamed, and the tessellated points are
+    // still drawn.
+    let dsb = corpus("tessellation.ds_tri");
+    let entry = wcontainers_direct3d_11::stream::DeclEntry {
+        stream: 0,
+        semantic: Some("SV_Position".into()),
+        semantic_index: 0,
+        start_component: 0,
+        component_count: 4,
+        slot: 0,
+    };
+    let so = dev
+        .create_geometry_shader(&dsb, Some((Some(&[entry]), None, 0)))
+        .unwrap();
+    let target = dev
+        .create_buffer(
+            &BufferDesc {
+                byte_width: 256,
+                usage: usage::DEFAULT,
+                bind_flags: bind::STREAM_OUTPUT,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+    dev.gs_set_shader(Some(so));
+    dev.so_set_targets(&[Some(target)], &[0]).unwrap();
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none(), "{:?}", dev.removed);
+    let log = log_from(&dev, from);
+    let draw = find(&log, "draw ");
+    let dispatches = log[..draw]
+        .iter()
+        .filter(|l| l.starts_with("dispatch "))
+        .count();
+    assert!(dispatches >= 4, "{log:#?}");
+    assert!(log[draw].contains("IndexedIndirect"), "{}", log[draw]);
+    assert_eq!(
+        dev.backend.slow_paths().count(SlowPath::StreamOutAsCompute),
+        1
+    );
+    dev.gs_set_shader(None);
+    dev.so_set_targets(&[], &[]).unwrap();
     // Without the hull and domain shaders a triangle list is drawn as usual.
     dev.hs_set_shader(None);
     dev.ds_set_shader(None);

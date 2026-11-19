@@ -4,15 +4,18 @@
 //! targets (`StreamOutAsCompute`). A pass-through vertex program draws what a geometry stage made
 //! with the pixel program; without one the draw is drawn as usual after its stream output.
 
+use super::tessellation::DomainDraw;
 use super::*;
 use crate::desc::{ViewDesc, bind};
 use wcontainers_gpu::BufferUsage;
 use wcontainers_shaders::ConvertError;
+use wcontainers_shaders::Converted;
 use wcontainers_shaders::stage::{
-    FinalDraw, InputTopology, StageDraw, StageError, StageIndex, Stages, StreamTargets,
+    DomainSets, FinalDraw, InputTopology, StageDraw, StageError, StageIndex, Stages, StreamTargets,
 };
 
-/// The stage helper of one vertex shader, input layout, geometry shader object and pixel shader.
+/// The stage helper of one vertex shader, input layout, hull and domain shader where bound,
+/// geometry shader object and pixel shader.
 pub(crate) struct StageRun<B: Backend> {
     /// Out while a draw runs it.
     stages: Option<Stages<B>>,
@@ -26,13 +29,16 @@ pub(crate) struct StageRun<B: Backend> {
     passthrough_id: u64,
     /// The pass-through's helper constants, where the geometry stage chooses a layer or viewport.
     run_helpers: Rc<Helpers>,
+    /// After a hull and domain stage, the draw of the tessellated points where no geometry stage
+    /// follows.
+    domain: Option<DomainDraw<B>>,
 }
 
 /// The bytes of the stage helper's filled sizes and primitive counts.
 const FILLED_BYTES: u64 = 32;
 
 /// Direct3D's primitive topology as the stage helper takes it; `None` for patch lists.
-fn input_topology(t: u32) -> Option<InputTopology> {
+pub(super) fn input_topology(t: u32) -> Option<InputTopology> {
     use InputTopology as T;
     Some(match t {
         topology::POINTLIST => T::PointList,
@@ -136,8 +142,8 @@ impl<B: Backend> Device<B> {
         ))
     }
 
-    /// The stage helper of the bound shaders, made at their first draw together.
-    fn make_staged(&mut self, gs: &Geometry<B>, vs: &Shader<B>) -> Result<StageRun<B>> {
+    /// The vertex shader converted with every input fetched in the program, for the stage helper.
+    pub(super) fn pulled_vertex(&self, vs: &Shader<B>) -> Result<Converted> {
         let pulled = self.ctx.layout.as_ref().map_or(Vec::new(), |l| {
             l.all.iter().map(|e| (e.location, e.format)).collect()
         });
@@ -145,18 +151,20 @@ impl<B: Backend> Device<B> {
             pulled,
             ..self.variant_key(vs, StageVariant::default(), SourceStage::Vertex)
         };
-        let vertex = crate::shader::convert_variant(&vs.bytecode, SourceStage::Vertex, &key)?;
+        crate::shader::convert_variant(&vs.bytecode, SourceStage::Vertex, &key)
+    }
+
+    /// The stage helper of the bound shaders, made at their first draw together; `tess` are the
+    /// hull and domain shaders before the geometry shader object, when bound.
+    fn make_staged(
+        &mut self,
+        gs: &Geometry<B>,
+        vs: &Shader<B>,
+        tess: Option<(&Shader<B>, &Shader<B>)>,
+    ) -> Result<StageRun<B>> {
+        let vertex = self.pulled_vertex(vs)?;
         // The geometry stage writes its outputs as the pixel shader interpolates them.
-        let mut interpolation: Vec<(u32, Interpolation)> = self
-            .ctx
-            .ps
-            .iter()
-            .flat_map(|p| &p.reflection.inputs)
-            .filter(|i| i.system.is_none() && i.interpolation != Interpolation::Perspective)
-            .map(|i| (i.location, i.interpolation))
-            .collect();
-        interpolation.sort_by_key(|i| i.0);
-        interpolation.dedup_by_key(|i| i.0);
+        let interpolation = interpolation(self.ctx.ps.as_deref());
         let (geometry, passthrough, passthrough_id) = match &gs.stage {
             None => (None, None, 0),
             Some((shader, plain)) if interpolation.is_empty() => {
@@ -175,13 +183,40 @@ impl<B: Backend> Device<B> {
                 (Some(c), Some(kept), id)
             }
         };
-        let stages = Stages::new(
-            &mut self.backend,
-            &vertex,
-            geometry.as_ref(),
-            gs.stream.as_ref(),
-        )
-        .map_err(|e| self.staged_error(e))?;
+        let (stages, domain) = match tess {
+            None => (
+                Stages::new(
+                    &mut self.backend,
+                    &vertex,
+                    geometry.as_ref(),
+                    gs.stream.as_ref(),
+                ),
+                None,
+            ),
+            Some((hs, ds)) => {
+                if ds.clip.is_some() && geometry.is_some() {
+                    return not_implemented(
+                        "clip distances from a domain shader before a geometry shader, without the \
+                         back end's",
+                    );
+                }
+                let (hull, domain) = self.tessellation_programs(hs, ds)?;
+                let drawn = match geometry {
+                    None if gs.drawn => Some(self.domain_draw(&domain)?),
+                    _ => None,
+                };
+                let stages = Stages::tessellated_with(
+                    &mut self.backend,
+                    &vertex,
+                    &hull,
+                    &domain,
+                    geometry.as_ref(),
+                    gs.stream.as_ref(),
+                );
+                (stages, drawn)
+            }
+        };
+        let stages = stages.map_err(|e| self.staged_error(e))?;
         let run_helpers = match &geometry {
             Some(c) if stages.selects() => Rc::new(Helpers::of_passthrough(&c.modules[1])),
             _ => Rc::default(),
@@ -202,6 +237,7 @@ impl<B: Backend> Device<B> {
             passthrough,
             passthrough_id,
             run_helpers,
+            domain,
         })
     }
 
@@ -221,6 +257,7 @@ impl<B: Backend> Device<B> {
         range: Range,
         first_instance: u32,
         instances: u32,
+        topology: InputTopology,
     ) -> Result<bool> {
         if !self.queries.counted.is_empty() || !self.queries.statistics.is_empty() {
             return not_implemented(
@@ -243,23 +280,26 @@ impl<B: Backend> Device<B> {
         if self.ctx.topology == topology::UNDEFINED || (indexed && self.ctx.index.is_none()) {
             return Ok(false);
         }
-        let topology = input_topology(self.ctx.topology)
-            .ok_or(Error::NotImplemented("hull and domain shaders"))?;
         if gs.stage.as_ref().is_some_and(|(s, _)| s.helpers.size > 0) {
             return not_implemented("a geometry shader reading helper constants");
         }
         if let Some((s, _)) = &gs.stage {
             self.program_paths(s);
         }
+        let tess = match topology {
+            InputTopology::PatchList(_) => self.ctx.hs.clone().zip(self.ctx.ds.clone()),
+            _ => None,
+        };
         let key = (
             vs.gpu.id,
             self.ctx.layout.as_ref().map_or(0, |l| l.id),
+            tess.as_ref().map_or([0; 2], |(h, d)| [h.gpu.id, d.gpu.id]),
             gs.id,
             ps.map_or(0, |p| p.gpu.id),
         );
         let mut staged = match self.staged.remove(&key) {
             Some(s) => s,
-            None => self.make_staged(gs, vs)?,
+            None => self.make_staged(gs, vs, tess.as_ref().map(|(h, d)| (&**h, &**d)))?,
         };
         let r = self.run_staged(
             gs,
@@ -274,9 +314,13 @@ impl<B: Backend> Device<B> {
             instances,
         );
         self.staged.insert(key, staged);
-        // The next plain draw makes the vertex set for its own program again.
+        // The next plain draw makes the vertex and domain sets for its own program again.
         self.ctx.vertex_compute = false;
         self.ctx.sets_dirty[VERTEX] = true;
+        if self.ctx.domain_compute {
+            self.ctx.domain_compute = false;
+            self.ctx.sets_dirty[DOMAIN] = true;
+        }
         r
     }
 
@@ -295,25 +339,30 @@ impl<B: Backend> Device<B> {
         instances: u32,
     ) -> Result<bool> {
         let geometry = gs.stage.is_some();
-        let drawn = gs.drawn && geometry;
+        let tessellated = matches!(topology, InputTopology::PatchList(_));
         let selects = staged.stages.as_ref().is_some_and(Stages::selects);
         let bases = [if indexed { base } else { start }, first_instance];
-        // The program of the pass-through and pixel stages, and the pixel stage's helpers.
-        let program = if drawn {
-            let vertex = match &staged.passthrough {
-                Some(k) => k.handle.clone(),
-                None => gs
-                    .stage
-                    .as_ref()
-                    .expect("a geometry stage")
-                    .0
-                    .gpu
-                    .handle
-                    .clone(),
-            };
-            Some(self.stage_program(&vertex, staged.passthrough_id, ps, pk)?)
-        } else {
-            None
+        // The program of the pass-through (or the domain stage's) and pixel stages, and the pixel
+        // stage's helpers.
+        let program = match (&gs.stage, &staged.domain) {
+            _ if !gs.drawn => None,
+            (Some((s, _)), _) => {
+                let vertex = match &staged.passthrough {
+                    Some(k) => k.handle.clone(),
+                    None => s.gpu.handle.clone(),
+                };
+                Some(self.stage_program(&vertex, staged.passthrough_id, ps, pk)?)
+            }
+            (None, Some(d)) => {
+                let p = self.stage_program(&d.shader.handle.clone(), d.id, ps, pk)?;
+                if p.1.size > 0 || !p.1.merged.is_empty() {
+                    return not_implemented(
+                        "a pixel shader reading helper constants behind a domain shader",
+                    );
+                }
+                Some(p)
+            }
+            (None, None) => None,
         };
 
         // The vertex stage's slots and fetched streams, and its helper block, for compute.
@@ -328,6 +377,20 @@ impl<B: Backend> Device<B> {
         let vertex_block = self.helper_block(&vertex_helpers, VERTEX, bases, None)?;
         if geometry {
             self.update_set(GEOMETRY, &[], &[])?;
+        }
+        if tessellated {
+            self.update_set(HULL, &[], &[])?;
+            self.ctx.domain_compute = true;
+            self.ctx.sets_dirty[DOMAIN] = true;
+            self.update_set(DOMAIN, &[], &[])?;
+            if [HULL, DOMAIN, GEOMETRY]
+                .iter()
+                .any(|&s| !self.ctx.through[s].is_empty())
+            {
+                return not_implemented(
+                    "storage textures read through buffers behind a hull shader",
+                );
+            }
         }
         if let Some((_, ph)) = &program {
             self.update_set(PIXEL, &[], &ph.stored)?;
@@ -362,7 +425,11 @@ impl<B: Backend> Device<B> {
             None
         };
         self.end_pass();
-        let twin_writes = self.twins_in(&[VERTEX, GEOMETRY, PIXEL], PIXEL);
+        let twin_writes = if tessellated {
+            self.twins_in(&[VERTEX, HULL, DOMAIN, GEOMETRY, PIXEL], PIXEL)
+        } else {
+            self.twins_in(&[VERTEX, GEOMETRY, PIXEL], PIXEL)
+        };
         let mut counters: [Option<B::Buffer>; 4] = Default::default();
         if let Some(f) = &filled {
             self.backend
@@ -393,6 +460,12 @@ impl<B: Backend> Device<B> {
         let mut geometry_sets: [Option<&B::BindingSet>; MAX_BINDING_SETS] =
             [None; MAX_BINDING_SETS];
         geometry_sets[0] = ctx.sets[GEOMETRY].as_ref().map(|k| &k.handle);
+        // After a hull stage the stage helper's second sets are the hull stage's, and the domain
+        // and geometry stages' follow.
+        let mut hull_sets: [Option<&B::BindingSet>; MAX_BINDING_SETS] = [None; MAX_BINDING_SETS];
+        hull_sets[0] = ctx.sets[HULL].as_ref().map(|k| &k.handle);
+        let mut domain_sets: [Option<&B::BindingSet>; MAX_BINDING_SETS] = [None; MAX_BINDING_SETS];
+        domain_sets[0] = ctx.sets[DOMAIN].as_ref().map(|k| &k.handle);
         let gpu_range = if indexed {
             DrawRange::Indexed {
                 first: start,
@@ -410,37 +483,47 @@ impl<B: Backend> Device<B> {
             }
         };
         let mut stages = staged.stages.take().expect("the stage helper");
-        let ran = stages.run(
-            &mut self.backend,
-            &StageDraw {
-                vertex_sets,
-                geometry_sets,
-                index: index_handle
-                    .as_ref()
-                    .map(|(b, size, offset, format)| StageIndex {
-                        buffer: &b.handle,
-                        size: *size,
-                        offset: u64::from(*offset),
-                        format: *format,
-                    }),
-                topology,
-                range: gpu_range,
-                stream_output: filled.as_ref().map(|f| StreamTargets {
-                    buffers: std::array::from_fn(|i| {
-                        target_handles[i].as_ref().map(|(b, size)| BufferRange {
-                            buffer: &b.handle,
-                            offset: 0,
-                            size: u64::from(*size) & !3,
-                        })
-                    }),
-                    filled: BufferRange {
-                        buffer: f,
-                        offset: 0,
-                        size: FILLED_BYTES,
-                    },
-                }),
+        let draw = StageDraw {
+            vertex_sets,
+            geometry_sets: if tessellated {
+                hull_sets
+            } else {
+                geometry_sets
             },
-        );
+            index: index_handle
+                .as_ref()
+                .map(|(b, size, offset, format)| StageIndex {
+                    buffer: &b.handle,
+                    size: *size,
+                    offset: u64::from(*offset),
+                    format: *format,
+                }),
+            topology,
+            range: gpu_range,
+            stream_output: filled.as_ref().map(|f| StreamTargets {
+                buffers: std::array::from_fn(|i| {
+                    target_handles[i].as_ref().map(|(b, size)| BufferRange {
+                        buffer: &b.handle,
+                        offset: 0,
+                        size: u64::from(*size) & !3,
+                    })
+                }),
+                filled: BufferRange {
+                    buffer: f,
+                    offset: 0,
+                    size: FILLED_BYTES,
+                },
+            }),
+        };
+        let ran = if tessellated {
+            let later = DomainSets {
+                domain_sets,
+                geometry_sets,
+            };
+            stages.run_after_domain(&mut self.backend, &draw, &later)
+        } else {
+            stages.run(&mut self.backend, &draw)
+        };
         staged.stages = Some(stages);
         drop(target_handles);
         drop(index_handle);
@@ -458,12 +541,23 @@ impl<B: Backend> Device<B> {
             }
             self.stream_counted(f)?;
         }
-        if !geometry {
+        if !geometry && !tessellated {
             return Ok(gs.drawn);
         }
         let (Some(out), Some((program, ph))) = (out, program) else {
             return Ok(false);
         };
+        if let (false, Some(d)) = (geometry, &staged.domain) {
+            // The domain stage's set again for its draw.
+            self.ctx.domain_compute = false;
+            self.ctx.sets_dirty[DOMAIN] = true;
+            self.update_set(DOMAIN, &[], &[])?;
+            self.draw_tessellated_output(d, &program, raster, &out)?;
+            if twin_writes {
+                self.twins_out(PIXEL);
+            }
+            return Ok(false);
+        }
         let layout = staged
             .layout
             .as_ref()

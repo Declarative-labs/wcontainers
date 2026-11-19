@@ -206,14 +206,33 @@ fn unserved_shaders_are_refused_not_faked() {
         Some(windows::Win32::Foundation::E_INVALIDARG)
     );
     assert!(out.is_none());
-    // A valid pixel shader reading a value the converter does not provide yet: E_NOTIMPL.
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../wcontainers-graphics-test/shaders/dxbc/geometry.ps_id.dxbc"
-    );
-    let code = std::fs::read(path).unwrap();
+    // A valid vertex shader writing a cull distance, which the converter does not provide yet:
+    // E_NOTIMPL.
+    let source = "float4 main(float4 p : POSITION, out float c : SV_CullDistance) : SV_Position {
+        c = p.x; return p; }";
+    let mut blob = None;
+    unsafe {
+        windows::Win32::Graphics::Direct3D::Fxc::D3DCompile(
+            source.as_ptr().cast(),
+            source.len(),
+            windows::core::PCSTR::null(),
+            None,
+            None::<&windows::Win32::Graphics::Direct3D::ID3DInclude>,
+            windows::core::s!("main"),
+            windows::core::s!("vs_5_0"),
+            0,
+            0,
+            &mut blob,
+            None,
+        )
+    }
+    .unwrap();
+    let blob = blob.unwrap();
+    let code = unsafe {
+        std::slice::from_raw_parts(blob.GetBufferPointer().cast::<u8>(), blob.GetBufferSize())
+    };
     let mut out = None;
-    let r = unsafe { device.CreatePixelShader(&code, None, Some(&mut out)) };
+    let r = unsafe { device.CreateVertexShader(code, None, Some(&mut out)) };
     assert_eq!(
         r.err().map(|e| e.code()),
         Some(windows::Win32::Foundation::E_NOTIMPL)

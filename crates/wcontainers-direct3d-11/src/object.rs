@@ -263,7 +263,20 @@ pub struct View<B: Backend> {
 impl<B: Backend> View<B> {
     /// Whether the view reads stencil (`X24_TYPELESS_G8_UINT`, `X32_TYPELESS_G8X24_UINT`).
     pub fn reads_stencil(&self) -> bool {
-        matches!(self.desc.format, 22 | 47)
+        use wcontainers_directx_graphics_infrastructure::dxgi;
+        matches!(
+            self.desc.format,
+            dxgi::X32_TYPELESS_G8X24_UINT | dxgi::X24_TYPELESS_G8_UINT
+        )
+    }
+
+    /// The kind of values programs read through the view: unsigned integers for a stencil view.
+    pub fn read_kind(&self) -> FormatKind {
+        if self.reads_stencil() {
+            FormatKind::Uint
+        } else {
+            self.format.kind()
+        }
     }
 
     /// Whether what is drawn into the view is copied out of the texture the pass draws into.

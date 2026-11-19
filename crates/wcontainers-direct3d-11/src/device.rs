@@ -59,6 +59,10 @@ pub(crate) struct Variant<B: Backend> {
 /// vertex program whose input types it gives.
 pub(crate) type LayoutKey = (u64, [u32; 32], u64);
 
+/// A stage helper's shaders: the vertex shader's, input layout's, hull and domain shaders' (0
+/// for none), geometry shader object's and pixel shader's ids.
+pub(crate) type StageKey = (u64, u64, [u64; 2], u64, u64);
+
 /// A Direct3D 11 device and its immediate context on back end `B`.
 pub struct Device<B: Backend> {
     pub backend: B,
@@ -104,8 +108,9 @@ pub struct Device<B: Backend> {
     /// What empty slots read.
     pub(crate) zeros: Zeros<B>,
     /// The stage helpers of geometry shaders and stream output, by the vertex shader's, input
-    /// layout's, geometry shader object's and pixel shader's ids.
-    pub(crate) staged: HashMap<(u64, u64, u64, u64), crate::context::StageRun<B>>,
+    /// layout's, hull and domain shaders' (0 for none), geometry shader object's and pixel
+    /// shader's ids.
+    pub(crate) staged: HashMap<StageKey, crate::context::StageRun<B>>,
     /// The stage helper of each vertex shader, input layout, hull, domain and pixel shader drawn
     /// together.
     pub(crate) tessellated: HashMap<(u64, u64, u64, u64, u64), crate::context::TessRun<B>>,
@@ -1814,18 +1819,13 @@ impl<B: Backend> Device<B> {
         let mirror_filtered = shader::mirror_filtered_slots(&converted);
         let helpers = Rc::new(shader::Helpers::of(&converted));
         let mut module = converted.modules.pop().expect("one module");
-        // A vertex program writing clip distances the back end lacks passes them on for the
-        // pixel program to apply, at the location past its outputs.
+        // A vertex or domain program writing clip distances the back end lacks passes them on for
+        // the pixel program to apply, at the location past its outputs.
         let mut clip = None;
         if wcontainers_shaders::capabilities(&module.module)
             .contains(naga::valid::Capabilities::CLIP_DISTANCES)
             && !self.backend.caps().has(Features::CLIP_DISTANCE)
         {
-            if stage != wcontainers_gpu::SourceStage::Vertex {
-                return not_implemented(
-                    "clip distances from a domain shader without the back end's",
-                );
-            }
             let outputs = &converted.reflection.outputs;
             let at = (
                 shader::linked_location(outputs),
@@ -1894,7 +1894,7 @@ impl<B: Backend> Device<B> {
         shader::check_model(bytecode, self.level)?;
         let vertex = match shader::stage(bytecode)? {
             SourceStage::Geometry => false,
-            SourceStage::Vertex if so.is_some() => true,
+            SourceStage::Vertex | SourceStage::Domain if so.is_some() => true,
             _ => {
                 return Err(Error::InvalidArg(
                     "the bytecode is a shader of another stage",

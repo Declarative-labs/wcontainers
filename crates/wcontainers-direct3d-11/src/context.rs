@@ -67,6 +67,20 @@ fn set_of(stage: usize) -> u32 {
     if stage == PIXEL { 1 } else { 0 }
 }
 
+/// The interpolation the pixel shader `ps` reads its inputs with where it is not the default, by
+/// location: the stage before it writes its outputs so.
+fn interpolation<B: Backend>(ps: Option<&Shader<B>>) -> Vec<(u32, Interpolation)> {
+    let mut interpolation: Vec<(u32, Interpolation)> = ps
+        .iter()
+        .flat_map(|p| &p.reflection.inputs)
+        .filter(|i| i.system.is_none() && i.interpolation != Interpolation::Perspective)
+        .map(|i| (i.location, i.interpolation))
+        .collect();
+    interpolation.sort_by_key(|i| i.0);
+    interpolation.dedup_by_key(|i| i.0);
+    interpolation
+}
+
 /// A vertex buffer slot: buffer, stride, offset.
 type VertexSlot<B> = (Rc<Buffer<B>>, u32, u32);
 
@@ -100,6 +114,8 @@ pub struct ContextState<B: Backend> {
     so_targets: [Option<Rc<Buffer<B>>>; 4],
     /// The vertex stage's set is made for the stage helper's compute programs.
     vertex_compute: bool,
+    /// The domain stage's set is made for the stage helper's compute programs.
+    domain_compute: bool,
     /// Per stage, the storage views its set reads through buffers.
     through: [Vec<Through<B>>; STAGES],
     /// Per stage, whether a view bound to it is made on a twin of its texture.
@@ -181,6 +197,7 @@ impl<B: Backend> ContextState<B> {
             ds: None,
             so_targets: Default::default(),
             vertex_compute: false,
+            domain_compute: false,
             through: Default::default(),
             twins: [false; STAGES],
             layout: None,
@@ -1732,14 +1749,7 @@ impl<B: Backend> Device<B> {
         }
         // WebGPU and GLSL ES require the stages to agree on interpolation, which in Direct3D the
         // pixel shader alone chooses: the vertex shader is converted again to write its outputs so.
-        let mut interpolation: Vec<(u32, Interpolation)> = ps
-            .iter()
-            .flat_map(|p| &p.reflection.inputs)
-            .filter(|i| i.system.is_none() && i.interpolation != Interpolation::Perspective)
-            .map(|i| (i.location, i.interpolation))
-            .collect();
-        interpolation.sort_by_key(|i| i.0);
-        interpolation.dedup_by_key(|i| i.0);
+        let interpolation = interpolation(ps.map(|p| &**p));
         if interpolation.is_empty() && vk == StageVariant::default() {
             return Ok(());
         }
@@ -2565,7 +2575,7 @@ impl<B: Backend> Device<B> {
         };
         let stages = match stage {
             VERTEX if !self.ctx.vertex_compute => StageSet::VERTEX,
-            DOMAIN => StageSet::VERTEX,
+            DOMAIN if !self.ctx.domain_compute => StageSet::VERTEX,
             PIXEL => StageSet::FRAGMENT,
             _ => StageSet::COMPUTE,
         };
@@ -2597,7 +2607,7 @@ impl<B: Backend> Device<B> {
                             !reads_buffer(b.binding)
                                 && match stand_in(b.binding) {
                                     Some(StandIn::Zeros(_, kind, _)) => {
-                                        same_kind(v.format.kind(), kind)
+                                        same_kind(v.read_kind(), kind)
                                     }
                                     _ => true,
                                 }
@@ -3663,8 +3673,14 @@ impl<B: Backend> Device<B> {
             .depth_clip
             && !self.backend.caps().has(Features::DEPTH_CLAMP);
         // Clip distances the back end lacks, applied by the pixel program
-        // (`ClipDistanceInShader`), passed at the location the vertex program was made with.
-        let clip = vs.clip;
+        // (`ClipDistanceInShader`), passed at the location the vertex program (or behind a hull
+        // shader the domain program) was made with.
+        let tessellated = self.ctx.hs.is_some() || self.ctx.ds.is_some();
+        let feeding = match &self.ctx.ds {
+            Some(ds) if tessellated => ds.clone(),
+            _ => vs.clone(),
+        };
+        let clip = feeding.clip;
         let linked = if clamps || clip.is_some() {
             let Some(p) = &ps else {
                 return not_implemented(
@@ -3672,7 +3688,11 @@ impl<B: Backend> Device<B> {
                 );
             };
             let at = crate::shader::linked_location(
-                vs.reflection.outputs.iter().chain(&p.reflection.inputs),
+                feeding
+                    .reflection
+                    .outputs
+                    .iter()
+                    .chain(&p.reflection.inputs),
             );
             if clip.is_some_and(|(made, _)| made != at) {
                 return not_implemented(
@@ -3684,12 +3704,18 @@ impl<B: Backend> Device<B> {
             0
         };
         let clip_distances = clip.map_or(0, |c| c.1);
+        // Behind a hull shader the domain program passes the clip distances.
+        let vertex_clip = if tessellated { 0 } else { clip_distances };
         let vk = StageVariant {
             from_arguments: indirect && vs.helpers.size > 0,
             pulled,
-            linked,
+            linked: if vertex_clip == 0 && !clamps {
+                0
+            } else {
+                linked
+            },
             depth_clamp: clamps,
-            clip_distances,
+            clip_distances: vertex_clip,
             ..self.stage_variant(VERTEX, &vs, target_samples)
         };
         if depth_bias && ps.is_none() {
@@ -3780,6 +3806,11 @@ impl<B: Backend> Device<B> {
             );
         }
         if let Some(gs) = self.ctx.gs.clone() {
+            let topology = match geometry::input_topology(self.ctx.topology) {
+                Some(t) => t,
+                None if self.ctx.topology == topology::UNDEFINED => return Ok(()),
+                None => return not_implemented("patches without hull and domain shaders"),
+            };
             let drawn = self.draw_staged(
                 &gs,
                 &vs,
@@ -3790,6 +3821,7 @@ impl<B: Backend> Device<B> {
                 range,
                 first_instance,
                 instances,
+                topology,
             )?;
             if !drawn {
                 return Ok(());

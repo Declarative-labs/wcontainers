@@ -5,7 +5,10 @@
 
 use super::*;
 use wcontainers_gpu::{DOMAIN_PATCHES_BINDING, DOMAIN_POINTS_BINDING};
-use wcontainers_shaders::stage::{InputTopology, StageDraw, StageError, StageIndex, Stages};
+use wcontainers_shaders::Converted;
+use wcontainers_shaders::stage::{
+    FinalDraw, InputTopology, StageDraw, StageError, StageIndex, Stages,
+};
 
 /// The stage helper of one vertex shader, input layout, hull, domain and pixel shader.
 pub(crate) struct TessRun<B: Backend> {
@@ -13,16 +16,20 @@ pub(crate) struct TessRun<B: Backend> {
     stages: Option<Stages<B>>,
     /// Where the vertex stage's compute form reads its helper constants and fetched streams.
     vertex_helpers: Rc<Helpers>,
-    /// The domain program converted for the pixel shader's interpolation, and the id programs of
-    /// it are cached by.
-    domain: Kept<B, B::Shader>,
-    domain_id: u64,
-    /// The layout of a draw without vertex streams.
+    domain: DomainDraw<B>,
+}
+
+/// The draw of tessellated points: the domain program converted for the pixel shader's
+/// interpolation, the id programs of it are cached by, and the layout of a draw without vertex
+/// streams.
+pub(crate) struct DomainDraw<B: Backend> {
+    pub(super) shader: Kept<B, B::Shader>,
+    pub(super) id: u64,
     no_streams: Kept<B, B::VertexLayout>,
 }
 
 /// The control points of Direct3D's patch list topologies (33 to 64), none for the others.
-fn patch_points(t: u32) -> Option<u8> {
+pub(super) fn patch_points(t: u32) -> Option<u8> {
     (topology::PATCHLIST_1..topology::PATCHLIST_1 + 32)
         .contains(&t)
         .then(|| (t - topology::PATCHLIST_1 + 1) as u8)
@@ -52,53 +59,83 @@ impl<B: Backend> Device<B> {
         hs: &Shader<B>,
         ds: &Shader<B>,
     ) -> Result<TessRun<B>> {
-        let pulled = self.ctx.layout.as_ref().map_or(Vec::new(), |l| {
-            l.all.iter().map(|e| (e.location, e.format)).collect()
-        });
-        let key = VariantKey {
-            pulled,
-            ..self.variant_key(vs, StageVariant::default(), SourceStage::Vertex)
-        };
-        let vertex = crate::shader::convert_variant(&vs.bytecode, SourceStage::Vertex, &key)?;
+        let vertex = self.pulled_vertex(vs)?;
+        let (hull, domain) = self.tessellation_programs(hs, ds)?;
+        let stages = Stages::tessellated(&mut self.backend, &vertex, &hull, &domain)
+            .map_err(|e| self.tessellation_error(e))?;
+        Ok(TessRun {
+            stages: Some(stages),
+            vertex_helpers: Rc::new(Helpers::of(&vertex)),
+            domain: self.domain_draw(&domain)?,
+        })
+    }
+
+    /// The hull shader's and domain shader's conversions for the stage helper, the domain stage
+    /// writing its outputs as the pixel shader interpolates them and passing on its clip
+    /// distances where the back end lacks them.
+    pub(super) fn tessellation_programs(
+        &mut self,
+        hs: &Shader<B>,
+        ds: &Shader<B>,
+    ) -> Result<(Converted, Converted)> {
         let hull = crate::shader::convert_variant(
             &hs.bytecode,
             SourceStage::Hull,
             &crate::shader::base_key(SourceStage::Hull, &hs.typed, hs.layered),
         )?;
-        // The domain stage writes its outputs as the pixel shader interpolates them.
-        let mut interpolation: Vec<(u32, Interpolation)> = self
-            .ctx
-            .ps
-            .iter()
-            .flat_map(|p| &p.reflection.inputs)
-            .filter(|i| i.system.is_none() && i.interpolation != Interpolation::Perspective)
-            .map(|i| (i.location, i.interpolation))
-            .collect();
-        interpolation.sort_by_key(|i| i.0);
-        interpolation.dedup_by_key(|i| i.0);
+        // A domain program writing clip distances the back end lacks passes them on for the pixel
+        // program, as the vertex program does without tessellation.
+        let (linked, clip_distances) = ds.clip.unwrap_or_default();
         let key = VariantKey {
-            output_interpolation: interpolation,
-            ..crate::shader::base_key(SourceStage::Domain, &ds.typed, ds.layered)
+            output_interpolation: interpolation(self.ctx.ps.as_deref()),
+            ..StageVariant {
+                linked,
+                clip_distances,
+                ..StageVariant::default()
+            }
+            .key(SourceStage::Domain, &ds.typed, ds.layered, &[])
         };
         let domain = crate::shader::convert_variant(&ds.bytecode, SourceStage::Domain, &key)?;
-        let stages = Stages::tessellated(&mut self.backend, &vertex, &hull, &domain)
-            .map_err(|e| self.tessellation_error(e))?;
+        Ok((hull, domain))
+    }
+
+    /// The draw of the points `domain` places.
+    pub(super) fn domain_draw(&mut self, domain: &Converted) -> Result<DomainDraw<B>> {
         let gpu = self.backend.create_shader(&domain.modules[0]);
         let gpu = self.gpu(gpu)?;
-        let domain_id = self.id();
+        let id = self.id();
         let no_streams = self.backend.create_vertex_layout(&VertexLayoutDesc {
-            streams: [None; 32],
-            attributes: [None; 32],
+            streams: [None; wcontainers_gpu::MAX_VERTEX_STREAMS],
+            attributes: [None; wcontainers_gpu::MAX_VERTEX_STREAMS],
         });
         let no_streams = self.gpu(no_streams)?;
-        let id = self.id();
-        Ok(TessRun {
-            stages: Some(stages),
-            vertex_helpers: Rc::new(Helpers::of(&vertex)),
-            domain: Kept::new(gpu, domain_id, Object::Shader, &self.graveyard),
-            domain_id,
-            no_streams: Kept::new(no_streams, id, Object::VertexLayout, &self.graveyard),
+        let layout_id = self.id();
+        Ok(DomainDraw {
+            shader: Kept::new(gpu, id, Object::Shader, &self.graveyard),
+            id,
+            no_streams: Kept::new(no_streams, layout_id, Object::VertexLayout, &self.graveyard),
         })
+    }
+
+    /// The draw of the tessellated points `out` through `domain` with `program`, the patches and
+    /// points bound in its helper set.
+    pub(super) fn draw_tessellated_output(
+        &mut self,
+        domain: &DomainDraw<B>,
+        program: &B::Program,
+        raster: Option<&B::Raster>,
+        out: &FinalDraw<B>,
+    ) -> Result<()> {
+        let Some(t) = &out.tessellated else {
+            return not_implemented("a tessellation stage that made no tessellated draw");
+        };
+        let set = self.backend.create_binding_set(&[
+            read_only::<B>(DOMAIN_PATCHES_BINDING, &t.patches),
+            read_only::<B>(DOMAIN_POINTS_BINDING, &t.points),
+        ]);
+        let set = self.gpu(set)?;
+        let layout = domain.no_streams.handle.clone();
+        self.draw_output(&layout, program, Some(&set), raster, out, 0)
     }
 
     fn tessellation_error(&mut self, e: StageError) -> Error {
@@ -140,9 +177,6 @@ impl<B: Backend> Device<B> {
         let Some(points) = patch_points(self.ctx.topology) else {
             return Ok(());
         };
-        if self.ctx.gs.is_some() {
-            return not_implemented("a geometry shader or stream output after tessellation");
-        }
         if !self.queries.counted.is_empty() || !self.queries.statistics.is_empty() {
             return not_implemented(
                 "a draw through hull and domain shaders while a counted occlusion or statistics \
@@ -157,6 +191,23 @@ impl<B: Backend> Device<B> {
         }
         self.program_paths(&hs);
         self.program_paths(&ds);
+        if let Some(gs) = self.ctx.gs.clone() {
+            let topology = InputTopology::PatchList(points);
+            return self
+                .draw_staged(
+                    &gs,
+                    vs,
+                    vk,
+                    ps,
+                    pk,
+                    raster,
+                    range,
+                    first_instance,
+                    instances,
+                    topology,
+                )
+                .map(|_| ());
+        }
         let (start, count, base, indexed) = match range {
             Range::Vertices { count, start } => (start, count, 0, false),
             Range::Indexed { count, start, base } => (start, count, base, true),
@@ -211,7 +262,7 @@ impl<B: Backend> Device<B> {
     ) -> Result<()> {
         let bases = [if indexed { base } else { start }, first_instance];
         let (program, ph) =
-            self.stage_program(&run.domain.handle.clone(), run.domain_id, ps, pk)?;
+            self.stage_program(&run.domain.shader.handle.clone(), run.domain.id, ps, pk)?;
         if ph.size > 0 || !ph.merged.is_empty() {
             return not_implemented(
                 "a pixel shader reading helper constants behind a domain shader",
@@ -299,16 +350,7 @@ impl<B: Backend> Device<B> {
             Ok(None) | Err(StageError::TopologyMismatch) => return Ok(()),
             Err(e) => return Err(self.tessellation_error(e)),
         };
-        let Some(t) = &out.tessellated else {
-            return not_implemented("a tessellation stage that made no tessellated draw");
-        };
-        let set = self.backend.create_binding_set(&[
-            read_only::<B>(DOMAIN_PATCHES_BINDING, &t.patches),
-            read_only::<B>(DOMAIN_POINTS_BINDING, &t.points),
-        ]);
-        let set = self.gpu(set)?;
-        let layout = run.no_streams.handle.clone();
-        self.draw_output(&layout, &program, Some(&set), raster, &out, 0)?;
+        self.draw_tessellated_output(&run.domain, &program, raster, &out)?;
         if twin_writes {
             self.twins_out(PIXEL);
         }
