@@ -2,7 +2,12 @@
 //! piece at the guest's level inside Hypervisor.framework, each stop resolved through the position map, and
 //! compared whole with the WebAssembly output under wasmtime; the count at each stop is compared with
 //! definition E. Beside each drawn case of a load or store runs one of the bar's own made from it: across a
-//! page that refuses, tagged, with bit 55 set, or misaligned where the form checks alignment. It runs itself as a copy signed with the hypervisor entitlement.
+//! page that refuses, tagged, with bit 55 set, or misaligned where the form checks alignment. Beside them run
+//! the words layer 1 leaves out because they are compared with the real CPU and these are not: each drawn
+//! word with two of its register fields made one where `excluded` then names it (the register collisions),
+//! and, for forms swept whole, every value of their other fields that `excluded` names (registers answered by
+//! design, hints of features not presented, features not offered), each on a drawn case's registers. It runs
+//! itself as a copy signed with the hypervisor entitlement.
 //!
 //! Knobs: `WCONTAINERS_NATIVE_CASES` cases per form, `WCONTAINERS_NATIVE_SEED`, `WCONTAINERS_NATIVE_FORMS` (a
 //! comma-separated list of form names to run alone), `WCONTAINERS_NATIVE_JOBS` threads for the WebAssembly
@@ -17,6 +22,11 @@ mod protocol;
 
 #[cfg(target_os = "macos")]
 mod runner;
+
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+#[path = "../../wcontainers-arm64/tests/common/mod.rs"]
+mod words;
 
 #[cfg(target_os = "macos")]
 fn main() {
@@ -34,11 +44,16 @@ mod macos {
 
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
-    use wcontainers_arm64::forms;
-    use wcontainers_translator_test::layer1::{Case, Outcome, cases, covered, translated};
+    use wcontainers_arm64::encode::{self, field};
+    use wcontainers_arm64::forms::{self, Form};
+    use wcontainers_arm64::{Instruction as I, Reg, SystemRegister, decode};
+    use wcontainers_translator_test::layer1::{
+        Case, Outcome, cases, covered, excluded, translated,
+    };
 
     use crate::common::{be_signed, load_average, setting};
     use crate::runner::{Runner, edge};
+    use crate::words::{SWEPT_BITS, words_of};
 
     const CASES_VARIABLE: &str = "WCONTAINERS_NATIVE_CASES";
     const SEED_VARIABLE: &str = "WCONTAINERS_NATIVE_SEED";
@@ -65,6 +80,98 @@ mod macos {
             Config::default(),
             TestRng::from_seed(RngAlgorithm::ChaCha, &key),
         )
+    }
+
+    /// Why a word is left out here too: a branch to itself never finishes on the WebAssembly side.
+    const ENDLESS: &str = "branch to itself";
+
+    /// Whether `word` is one of `form`'s that layer 1 leaves out and this test runs.
+    fn left_out(form: &Form, word: u32) -> bool {
+        forms::form(word).is_some_and(|f| std::ptr::eq(f, form))
+            && form.presented(word)
+            && excluded(form, word).is_some_and(|why| why != ENDLESS)
+    }
+
+    /// The register fields of a form.
+    fn register_fields(form: &Form) -> Vec<&str> {
+        form.fields
+            .iter()
+            .filter(|(name, _, width)| {
+                name.starts_with(field::REGISTER) && *width == encode::REGISTER_BITS
+            })
+            .map(|(name, ..)| name.as_str())
+            .collect()
+    }
+
+    /// The drawn case with each word it becomes when one register field takes another's register, where
+    /// layer 1 leaves that word out.
+    fn collisions(form: &Form, case: &Case) -> Vec<Case> {
+        let fields = register_fields(form);
+        let mut words: Vec<u32> = Vec::new();
+        for &to in &fields {
+            for &from in &fields {
+                let Some(value) = form.field(case.word, from).filter(|_| to != from) else {
+                    continue;
+                };
+                if let Ok(word) = encode::replace(case.word, to, value)
+                    && left_out(form, word)
+                    && !words.contains(&word)
+                {
+                    words.push(word);
+                }
+            }
+        }
+        words
+            .into_iter()
+            .map(|word| Case {
+                word,
+                ..case.clone()
+            })
+            .collect()
+    }
+
+    /// The bits of a form other than its register fields that its words may set.
+    fn swept_bits(form: &Form) -> u32 {
+        let registers = form
+            .fields
+            .iter()
+            .filter(|(name, ..)| name.starts_with(field::REGISTER))
+            .fold(0u32, |m, &(_, low, width)| {
+                m | (((1u32 << width) - 1) << low)
+            });
+        (!form.mask & !form.should_mask & !registers).count_ones()
+    }
+
+    /// For a form swept whole, every word of it layer 1 leaves out, each on the registers of one of `drawn` in
+    /// turn.
+    fn swept(form: &Form, drawn: &[Case], seed: u64) -> Vec<Case> {
+        if !(1..=SWEPT_BITS).contains(&swept_bits(form)) {
+            return Vec::new();
+        }
+        let mut rng = fastrand::Rng::with_seed(seed);
+        let words: Vec<u32> = words_of(form, 1, &mut rng)
+            .into_iter()
+            .filter(|&w| left_out(form, w))
+            .collect();
+        words
+            .into_iter()
+            .zip(drawn.iter().cycle())
+            .map(|(word, case)| Case {
+                word,
+                ..case.clone()
+            })
+            .collect()
+    }
+
+    /// A counter read's destination: its value is the clock's when read, on either side.
+    fn clock_destination(word: u32) -> Option<usize> {
+        match decode(word) {
+            I::ReadSystem {
+                rt: Reg::X(n),
+                register: SystemRegister::Counter,
+            } => Some(usize::from(n)),
+            _ => None,
+        }
     }
 
     /// The WebAssembly output's outcomes of `cases`, on `jobs` threads.
@@ -100,6 +207,7 @@ mod macos {
         let mut failing = Vec::new();
         let mut total = 0u64;
         let mut edge_cases = 0u64;
+        let mut left_out_cases = 0u64;
         for form in &chosen {
             let mut generator = generator(seed, &form.name);
             let strategy = cases((*form).clone());
@@ -108,7 +216,11 @@ mod macos {
                 .collect();
             let edges: Vec<Case> = drawn.iter().filter_map(edge).collect();
             edge_cases += edges.len() as u64;
+            let mut collided: Vec<Case> = drawn.iter().flat_map(|c| collisions(form, c)).collect();
+            collided.extend(swept(form, &drawn, seed));
+            left_out_cases += collided.len() as u64;
             drawn.extend(edges);
+            drawn.extend(collided);
             let cases = drawn.len();
             let (wasm, native) = std::thread::scope(|scope| {
                 let wasm = scope.spawn(|| translated_all(&drawn, jobs));
@@ -119,6 +231,10 @@ mod macos {
             let mut failed = 0;
             for ((case, expected), got) in drawn.iter().zip(&wasm).zip(&native) {
                 total += 1;
+                let mut got = got.clone();
+                if let Some(rt) = clock_destination(case.word) {
+                    got.outcome.registers[rt] = expected.registers[rt];
+                }
                 if let Some(difference) = got.differs(expected) {
                     failed += 1;
                     first.get_or_insert_with(|| {
@@ -133,7 +249,7 @@ mod macos {
         }
         runner.finish();
         println!(
-            "native against WebAssembly: {} forms, {count} drawn cases each, {edge_cases} of the bar's own beside them ({total} in all), seed {seed:#x}, {} failing, in {:?}, load {}",
+            "native against WebAssembly: {} forms, {count} drawn cases each, {edge_cases} of the bar's own and {left_out_cases} words layer 1 leaves out beside them ({total} in all), seed {seed:#x}, {} failing, in {:?}, load {}",
             chosen.len(),
             failing.len(),
             started.elapsed(),

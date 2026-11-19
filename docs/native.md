@@ -797,9 +797,13 @@ any interrupt or fault in translated code:
 3. before the commit point, rolls back: the guest pc is that instruction's address and, with step 2,
    nothing of it is done;
 4. after the commit point, rolls forward: the guest pc is the instruction's successor (or its transfer's
-   target), and the map names the fix-ups the rest of the sequence would have made, from a closed set:
+   target), and the map names the fix-ups the rest of the sequence would have made, from a closed set.
+   They name host registers (a stand-in, not the guest register it stands in for) and are made first; the
+   relocations of step 2 are read after them:
    - a constant into a destination built in place (section 3.4's Rebase `adr` and `adrp`, x30 in the plain
      form of `blr x30`): the destination gets the constant the map holds;
+   - a register's value moved into another: the written back base of a vector load pair into one register
+     (section 3.4), which takes its new value from t after the load;
    - a slot address to a guest address (`ubfx g, s, #2, #45`): x30 in a call stub before its first
      instruction has run; the target in t after a plain call has begun x30 (the pc is then that target);
    - the exclusive monitor: after a load exclusive's load, the monitor written whole (the address from t,

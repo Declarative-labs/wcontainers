@@ -661,6 +661,12 @@ fn outcome(stop: Stop, state: &GuestState, changed: Vec<(u32, u8)>) -> Outcome {
     }
 }
 
+/// When the runs began, for the clock a counter read gets.
+fn started() -> std::time::Instant {
+    static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    *STARTED.get_or_init(std::time::Instant::now)
+}
+
 /// What a stop comes to.
 pub enum Resolved {
     /// The guest stopped there.
@@ -763,6 +769,13 @@ pub fn fixed_up(
     for fixup in &span.fixups {
         match *fixup {
             Fixup::Constant { register, value } => hardware.x[usize::from(register)] = value,
+            Fixup::Move { register, from } => {
+                let value = h.x[usize::from(from)];
+                match hardware.x.get_mut(usize::from(register)) {
+                    Some(x) => *x = value,
+                    None => hardware.sp = value,
+                }
+            }
             Fixup::Forget { status, read } => {
                 let remembered = [page.exclusive_low, page.exclusive_high];
                 let swapped = read[0].is_some()
@@ -1054,6 +1067,21 @@ fn resolve(
                 }
                 I::CodeChanged { .. } => {
                     return Resolved::Again(Box::new(after_call()), page.clone());
+                }
+                I::ReadSystem {
+                    rt,
+                    register: SystemRegister::Counter,
+                } => {
+                    // The clock, as the WebAssembly runner's: nanoseconds since the runs began.
+                    let now = started().elapsed().as_nanos() as u64;
+                    let (mut next, mut page) = (after_call(), page.clone());
+                    if let Reg::X(n) = *rt {
+                        match WITHHELD.iter().position(|&w| w == n) {
+                            Some(k) => page.withheld[k] = now,
+                            None => next.x[usize::from(n)] = now,
+                        }
+                    }
+                    return Resolved::Again(Box::new(next), page);
                 }
                 other => panic!("no answer for {other:?}"),
             },
