@@ -7,7 +7,8 @@ orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
 ## Where things stand
 
 - S1: complete; its third independent check's findings are settled (see "S1 check findings").
-- S2: built in its first run (see "S2"). The whole suite's result is under "Measurements".
+- S2: built in its first run, every item of its bar met (see "S2" and "Measurements"); waiting
+  for its independent check.
 - What comes next: S2's independent check. Not built and left open on purpose: export of a process
   (`suspend`, `resume`, `SuspendedProcess`, `ExportedProcess`; where they attach is in
   docs/embedder-interface.md), `set_thread_ordering`, the inspection hooks, `StopReason`; ends made
@@ -76,8 +77,8 @@ The bar, item by item (tests/embedder.rs, guest/embedder.c; this Mac, seeds 1 to
   from the saved copy on first touch; a fork's child fills from its parent's copy (found by
   `ProcessInfo::parent`). The 17 scripts of tests/shell.rs that compare with the reference give
   the reference's output, error and exit status, pages were filled in each, and no page was found
-  written past its watch. Passed at seed 1 (17.2 s, load about 100); the whole suite runs it at
-  seeds 1 to 3.
+  written past its watch. Passed at seed 1 (17.2 s, load about 100) and at seeds 1 to 3 in the
+  whole suite.
 - The whole suite with no hook implemented, and its speed: see "Measurements".
 - The literal check: passes (see "Literals").
 
@@ -129,6 +130,18 @@ Found on the way, fixed:
   `a_terminal_is_resized`, whose reference side failed: the Docker client never forwarded the resize
   (`the reference never showed "size 100 30"`). It passed at 21:15 and in every earlier run. Not
   this track's kernel (the reference is Docker); recorded as a reference-side flake under load.
+- Whole suite with no hook implemented (the test host forwards every hook to `hooks::Defaults`,
+  which does what `System`'s defaults do), at 0c569e7d, the command in "How to run" (scratch
+  streams/s2/suite.log, 70 minutes with the build, 21:55 to 23:05, load 92 at the start and 133 at
+  the end): 579 passed, 1 failed, 6 ignored. `streams/verdicts.py run3-suite.log s2/suite.log`:
+  every one of the 240 tests of S1's last suite has the same verdict but `busybox::system`, whose
+  `ls -l /dev/null` shows the minute the container started: the reference's said 05:59 and ours
+  06:00 (UTC). It passed alone at 22:34 (74.9 s, load 118). The four stream tests that the
+  comparison shows as gone are the renamed ones, passing under their new names. New and passing:
+  `credit_on_the_input_end_is_counted`, the six embedder tests (the lazy memory test at seeds 1 to
+  3 among them, 19.0 s for the six), and the literal check's own tests. The commits after
+  0c569e7d add the abi's `PerThreadWatch` declaration, two kernel unit tests (`system::tests`,
+  passing: refused orderings by name, the default counter's wrap) and documents.
 - Speed with no hook implemented: tests/shell.rs `runs_repeat_for_a_seed` (ours only, four
   background jobs of `seq 1 3000 | wc -l`, run at several seeds), its own test binary built at
   59056384 (before S2, in a scratch worktree, since removed) and at 0c569e7d, run alternately
