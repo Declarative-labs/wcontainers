@@ -116,7 +116,7 @@ fn run_ours_on(
         path,
         arguments,
         environment: reference::ENVIRONMENT,
-        working_directory: "/",
+        working_directory: reference::ROOT_DIRECTORY,
         backend,
         cached: false,
         published,
@@ -177,7 +177,14 @@ pub fn assert_same_output_on_backend_root_seeded(
     arguments: &[&str],
     saves: usize,
 ) -> Vec<driver::Run> {
-    same_output_seeded(out, name, arguments, saves, reference::run, Some("/"))
+    same_output_seeded(
+        out,
+        name,
+        arguments,
+        saves,
+        reference::run,
+        Some(reference::ROOT_DIRECTORY),
+    )
 }
 
 /// As [`assert_same_output_seeded`], with the reference on one CPU like the made-up machine.
@@ -277,7 +284,7 @@ pub fn assert_same_streams_on(
         path: &path,
         arguments: &all,
         environment: &environment,
-        working_directory: "/",
+        working_directory: reference::ROOT_DIRECTORY,
         backend,
         cached: false,
         published: &[],

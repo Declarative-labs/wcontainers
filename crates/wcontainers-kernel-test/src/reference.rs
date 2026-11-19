@@ -27,6 +27,62 @@ pub const PLATFORM: &str = "linux/arm64";
 /// Turns off the Docker client's hints, which it adds to a terminal after a failed run.
 const NO_HINTS: (&str, &str) = ("DOCKER_CLI_HINTS", "false");
 
+/// A default container's working directory.
+pub const ROOT_DIRECTORY: &str = "/";
+
+/// The Docker client and the words of its command line.
+pub mod docker {
+    /// The client's program name.
+    pub const CLIENT: &str = "docker";
+    /// Creates and starts a container.
+    pub const START_CONTAINER: &str = "run";
+    /// Writes a container's files as a tar archive.
+    pub const EXPORT: &str = "export";
+    /// Removes a container.
+    pub const REMOVE: &str = "rm";
+    /// With [`REMOVE`], stops a running container first.
+    pub const FORCE: &str = "--force";
+    /// With [`START_CONTAINER`], removes the container when it exits.
+    pub const REMOVE_ON_EXIT: &str = "--rm";
+    /// The platform option.
+    pub const PLATFORM_OPTION: &str = "--platform";
+    /// The container name option.
+    pub const NAME_OPTION: &str = "--name";
+    /// The host name option.
+    pub const HOSTNAME_OPTION: &str = "--hostname";
+    /// The bind mount option.
+    pub const VOLUME_OPTION: &str = "--volume";
+    /// Between the fields of a bind mount or a published port.
+    pub const FIELD_SEPARATOR: &str = ":";
+    /// A bind mount's option for read-only.
+    pub const READ_ONLY: &str = "ro";
+    /// Keeps standard input open, from the client's.
+    pub const INTERACTIVE: &str = "-i";
+    /// Gives the container a terminal.
+    pub const TERMINAL: &str = "-t";
+    /// Publishes a container port.
+    pub const PUBLISH_OPTION: &str = "--publish";
+}
+
+/// Between the parts of a container's name.
+const NAME_SEPARATOR: &str = "-";
+
+/// The names of the containers each kind of run makes.
+const REFERENCE_CONTAINERS: &str = "wc-kernel-reference";
+const COMMAND_CONTAINERS: &str = "wc-kernel-command";
+const STREAMS_CONTAINERS: &str = "wc-kernel-streams";
+
+/// A container name no other run of these tests uses: its kind, this process and a count.
+fn container_name(kind: &str) -> String {
+    static RUNS: AtomicU32 = AtomicU32::new(0);
+    [
+        kind,
+        &std::process::id().to_string(),
+        &RUNS.fetch_add(1, Ordering::Relaxed).to_string(),
+    ]
+    .join(NAME_SEPARATOR)
+}
+
 /// A path under [`GUEST_DIRECTORY`].
 pub fn in_guest_directory(name: impl AsRef<Path>) -> String {
     Path::new(GUEST_DIRECTORY)
@@ -37,7 +93,12 @@ pub fn in_guest_directory(name: impl AsRef<Path>) -> String {
 
 /// `--volume`'s value mounting `directory` read-only at [`GUEST_DIRECTORY`].
 fn guest_volume(directory: &Path) -> String {
-    format!("{}:{GUEST_DIRECTORY}:ro", directory.display())
+    [
+        &directory.to_string_lossy(),
+        GUEST_DIRECTORY,
+        docker::READ_ONLY,
+    ]
+    .join(docker::FIELD_SEPARATOR)
 }
 
 /// Checks Docker ran the container: its own failures are the statuses a shell gives a command it
@@ -52,7 +113,9 @@ fn assert_docker_ran(exit_code: i32, stderr: &[u8]) {
 
 /// Stops and removes a container by name, whatever state it is in.
 fn remove_container(name: &str) {
-    let _ = Command::new("docker").args(["rm", "-f", name]).output();
+    let _ = Command::new(docker::CLIENT)
+        .args([docker::REMOVE, docker::FORCE, name])
+        .output();
 }
 
 /// The environment a default Docker container gives its first process.
@@ -84,7 +147,17 @@ pub fn run_published(
 ) -> Outcome {
     let options: Vec<String> = published
         .iter()
-        .flat_map(|(inner, outer)| ["-p".to_string(), format!("127.0.0.1:{outer}:{inner}")])
+        .flat_map(|(inner, outer)| {
+            [
+                docker::PUBLISH_OPTION.to_string(),
+                [
+                    std::net::Ipv4Addr::LOCALHOST.to_string(),
+                    outer.to_string(),
+                    inner.to_string(),
+                ]
+                .join(docker::FIELD_SEPARATOR),
+            ]
+        })
         .collect();
     let options: Vec<&str> = options.iter().map(String::as_str).collect();
     run_beside(program, arguments, &options, beside)
@@ -100,23 +173,24 @@ fn run_beside(
     options: &[&str],
     beside: impl FnOnce(),
 ) -> Outcome {
-    static RUNS: AtomicU32 = AtomicU32::new(0);
-    let name = format!(
-        "wc-kernel-reference-{}-{}",
-        std::process::id(),
-        RUNS.fetch_add(1, Ordering::Relaxed)
-    );
+    let name = container_name(REFERENCE_CONTAINERS);
     let directory = program
         .parent()
         .expect("program has a directory")
         .canonicalize()
         .expect("program directory exists");
     let file = program.file_name().expect("program has a name");
-    let output = Command::new("docker")
-        .args(["run", "--rm", "--platform", PLATFORM, "--name", &name])
-        .args(["--hostname", HOSTNAME])
+    let output = Command::new(docker::CLIENT)
+        .args([docker::START_CONTAINER, docker::REMOVE_ON_EXIT])
+        .args([
+            docker::PLATFORM_OPTION,
+            PLATFORM,
+            docker::NAME_OPTION,
+            &name,
+        ])
+        .args([docker::HOSTNAME_OPTION, HOSTNAME])
         .args(options)
-        .arg("--volume")
+        .arg(docker::VOLUME_OPTION)
         .arg(guest_volume(&directory))
         .arg(IMAGE)
         .arg(in_guest_directory(file))
@@ -141,21 +215,22 @@ fn run_beside(
 /// container, and returns what it did and the container's files afterwards, as `docker export` gives
 /// them.
 pub fn run_command(command: &[&str]) -> (Outcome, Vec<crate::image::File>) {
-    static RUNS: AtomicU32 = AtomicU32::new(0);
-    let name = format!(
-        "wc-kernel-command-{}-{}",
-        std::process::id(),
-        RUNS.fetch_add(1, Ordering::Relaxed)
-    );
-    let output = Command::new("docker")
-        .args(["run", "--platform", PLATFORM, "--name", &name])
-        .args(["--hostname", HOSTNAME])
+    let name = container_name(COMMAND_CONTAINERS);
+    let output = Command::new(docker::CLIENT)
+        .arg(docker::START_CONTAINER)
+        .args([
+            docker::PLATFORM_OPTION,
+            PLATFORM,
+            docker::NAME_OPTION,
+            &name,
+        ])
+        .args([docker::HOSTNAME_OPTION, HOSTNAME])
         .arg(IMAGE)
         .args(command)
         .output()
         .expect("running docker");
-    let exported = Command::new("docker")
-        .args(["export", &name])
+    let exported = Command::new(docker::CLIENT)
+        .args([docker::EXPORT, &name])
         .output()
         .expect("running docker export");
     remove_container(&name);
@@ -207,27 +282,28 @@ pub fn run_outside(
 
     use crate::streams::Step;
 
-    static RUNS: AtomicU32 = AtomicU32::new(0);
-    let name = format!(
-        "wc-kernel-streams-{}-{}",
-        std::process::id(),
-        RUNS.fetch_add(1, Ordering::Relaxed)
-    );
+    let name = container_name(STREAMS_CONTAINERS);
     let directory = directory.canonicalize().expect("program directory exists");
-    let mut docker = Command::new("docker");
-    docker
+    let mut client = Command::new(docker::CLIENT);
+    client
         .env(NO_HINTS.0, NO_HINTS.1)
-        .args(["run", "--rm", "--platform", PLATFORM, "--name", &name])
-        .args(["--hostname", HOSTNAME])
-        .arg("--volume")
+        .args([docker::START_CONTAINER, docker::REMOVE_ON_EXIT])
+        .args([
+            docker::PLATFORM_OPTION,
+            PLATFORM,
+            docker::NAME_OPTION,
+            &name,
+        ])
+        .args([docker::HOSTNAME_OPTION, HOSTNAME])
+        .arg(docker::VOLUME_OPTION)
         .arg(guest_volume(&directory));
     if outside.input {
-        docker.arg("-i");
+        client.arg(docker::INTERACTIVE);
     }
     if outside.terminal.is_some() {
-        docker.arg("-t");
+        client.arg(docker::TERMINAL);
     }
-    docker.arg(IMAGE).args(command);
+    client.arg(IMAGE).args(command);
     let shown: Shown = Default::default();
     let pace = outside.output_pace.map(|pace| pace as usize);
     let reader = |mut from: std::fs::File, error: bool, pace: Option<usize>| {
@@ -256,7 +332,8 @@ pub fn run_outside(
     let mut input: Option<std::sync::mpsc::Sender<Vec<u8>>> = None;
     let mut threads = Vec::new();
     let mut child = if let (Some((columns, rows)), true) = (outside.terminal, outside.input) {
-        let (mut master_fd, mut slave_fd) = (0, 0);
+        let mut master_fd = libc::c_int::default();
+        let mut slave_fd = libc::c_int::default();
         let mut size = libc::winsize {
             ws_row: rows,
             ws_col: columns,
@@ -290,7 +367,7 @@ pub fn run_outside(
                 OwnedFd::from_raw_fd(slave_fd),
             )
         };
-        let child = docker
+        let child = client
             .stdin(Stdio::from(slave.try_clone().expect("slave")))
             .stdout(Stdio::from(slave.try_clone().expect("slave")))
             .stderr(Stdio::from(slave))
@@ -298,7 +375,7 @@ pub fn run_outside(
             .expect("running docker");
         // The command holds the slave's copies until it goes; the master reads EIO only once
         // every copy is closed.
-        drop(docker);
+        drop(client);
         threads.push(reader(
             master_file.try_clone().expect("master"),
             false,
@@ -307,7 +384,7 @@ pub fn run_outside(
         master = Some(master_file);
         child
     } else {
-        let mut child = docker
+        let mut child = client
             .stdin(if outside.input {
                 Stdio::piped()
             } else {
@@ -381,7 +458,7 @@ pub fn run_outside(
                     assert_eq!(
                         libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ, &size),
                         0,
-                        "TIOCSWINSZ"
+                        "setting the terminal size"
                     );
                     libc::kill(child.id() as i32, libc::SIGWINCH);
                 }

@@ -7,7 +7,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use wcontainers_kernel::reason;
 use wcontainers_kernel_test::driver::Run;
-use wcontainers_kernel_test::reference::in_guest_directory;
+use wcontainers_kernel_test::reference::{ROOT_DIRECTORY, in_guest_directory};
 use wcontainers_kernel_test::streams::{Outside, Step};
 use wcontainers_kernel_test::{assert_same_streams, guest_directory_entry, image_command};
 
@@ -22,7 +22,7 @@ fn text(seed: u64, bytes: usize) -> Vec<u8> {
     let mut text = Vec::new();
     while text.len() < bytes {
         let word = WORDS[random.random_range(0..WORDS.len())];
-        let number: u16 = random.random_range(0..1000);
+        let number: u16 = random.random();
         text.extend_from_slice(format!("{word} {number}\n").as_bytes());
     }
     text
@@ -98,7 +98,7 @@ fn input_reaches_a_container_still_starting_on_the_backend() {
         None,
         &["sh", "-c", "wc -l; echo done >&2"],
         &outside,
-        Some("/"),
+        Some(ROOT_DIRECTORY),
     );
 }
 
@@ -115,7 +115,12 @@ fn end_of_input_is_end_of_file() {
 #[test]
 fn large_input_to_a_slow_reader_is_held_to_the_credit() {
     let outside = input(send_all(text(3, 1 << 20)));
-    let runs = assert_same_streams(&out(), Some("stdin"), &["all", "512", "32"], &outside);
+    let runs = assert_same_streams(
+        &out(),
+        Some("stdin"),
+        &["all", &(1 << 9).to_string(), "32"],
+        &outside,
+    );
     for run in &runs {
         let size = pipe_size(run);
         assert!(
@@ -199,7 +204,7 @@ fn a_terminal_closed_before_the_start_finished() {
     };
     let shell = image_command("sh");
     let command = [shell.as_str(), "-c", "read x; exit 7"];
-    for run in run_ours(&out(), &command, outside, Some("/")) {
+    for run in run_ours(&out(), &command, outside, Some(ROOT_DIRECTORY)) {
         assert_eq!(run.outcome.exit_code, 7, "{:?}", run.outcome);
         assert!(run.broken.is_empty(), "{:?}", run.broken);
     }
@@ -207,7 +212,7 @@ fn a_terminal_closed_before_the_start_finished() {
 
 #[test]
 fn the_standard_descriptors_redirected_away() {
-    let outside = input(send_all(text(6, 5000)));
+    let outside = input(send_all(text(6, 5 << 10)));
     assert_same_streams(
         &out(),
         None,
@@ -228,8 +233,12 @@ fn large_output_to_a_slow_outside() {
             output_pace: Some(1 << 16),
             ..Default::default()
         };
-        let runs =
-            assert_same_streams(&out(), Some("stdout"), &["much", "8388608", mode], &outside);
+        let runs = assert_same_streams(
+            &out(),
+            Some("stdout"),
+            &["much", &(8 << 20).to_string(), mode],
+            &outside,
+        );
         only_warnings(&runs, &[]);
         // Nonblocking, the writer met a full pipe (here and in the reference, compared above).
         let blocked = String::from_utf8_lossy(&runs[0].outcome.stderr).contains("would block yes");
@@ -296,7 +305,7 @@ fn run_ours(
         path: command[0],
         arguments: command,
         environment: wcontainers_kernel_test::reference::ENVIRONMENT,
-        working_directory: "/",
+        working_directory: ROOT_DIRECTORY,
         backend,
         cached: false,
         published: &[],
@@ -432,7 +441,11 @@ fn an_outside_sending_past_its_credit_is_cut_off() {
         excess: 100,
         ..Default::default()
     };
-    for run in run_guest("stdin", &["all", "4096", "0"], outside) {
+    for run in run_guest(
+        "stdin",
+        &["all", &wcontainers_abi::PAGE_SIZE.to_string(), "0"],
+        outside,
+    ) {
         let past: u64 = run
             .counters
             .iter()

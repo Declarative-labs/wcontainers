@@ -4,6 +4,10 @@ use alloc::vec::Vec;
 
 use crate::linux::general;
 
+/// The container's root user and group, which own what the runtime makes for it.
+pub(crate) const ROOT_UID: u32 = 0;
+pub(crate) const ROOT_GID: u32 = 0;
+
 pub(crate) const CAP_CHOWN: u32 = general::CAP_CHOWN;
 pub(crate) const CAP_DAC_OVERRIDE: u32 = general::CAP_DAC_OVERRIDE;
 pub(crate) const CAP_DAC_READ_SEARCH: u32 = general::CAP_DAC_READ_SEARCH;

@@ -682,7 +682,9 @@ impl Kernel {
                     (None, Some(null)) => {
                         OpenFile::new(null, O_RDWR | O_LARGEFILE, NULL_PATH.to_vec(), 0)
                     }
-                    (None, None) => unreachable!("/dev/null is found for a start with no input"),
+                    (None, None) => {
+                        unreachable!("the null device is found for a start with no input")
+                    }
                 });
                 descriptors.push(self.end_pipe(cx, output, O_WRONLY));
                 descriptors.push(self.end_pipe(cx, error, O_WRONLY));
@@ -718,8 +720,8 @@ impl Kernel {
             ino,
             New {
                 mode: crate::syscall::pipe::MODE,
-                uid: 0,
-                gid: 0,
+                uid: crate::credentials::ROOT_UID,
+                gid: crate::credentials::ROOT_GID,
                 rdev: 0,
                 now,
                 content: Content::Pipe(crate::pipe::Pipe::new()),
