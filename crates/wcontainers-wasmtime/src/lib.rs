@@ -2733,6 +2733,7 @@ mod tests {
         CHUNK, Carry, Compiler, Cpu, CpuSide, Execution, Exit, Leaving, LookAhead, MemoryId,
         Optimise, Page, Pages, Permissions, RegisterBlock, Resume, ThreadId, Turn,
     };
+    use wcontainers_abi::LOWEST_ADDRESS;
     use wcontainers_arm64::Arm64;
     use zerocopy::FromZeros;
 
@@ -2802,20 +2803,21 @@ mod tests {
             let mut cpu =
                 CpuSide::<Arm64>::new(Compiler::new(None), look_ahead, Optimise::Speed, ());
             let memory = cpu.memory_new().unwrap();
-            code(&mut cpu, memory, 0x10000);
-            let first = start(&mut cpu, memory, 0x10000);
-            let other = start(&mut cpu, memory, 0x10000);
+            let (first_code, second_code) = (LOWEST_ADDRESS, 2 * LOWEST_ADDRESS);
+            code(&mut cpu, memory, first_code);
+            let first = start(&mut cpu, memory, first_code);
+            let other = start(&mut cpu, memory, first_code);
             let (block_at, made) = {
                 let record = &cpu.threads[&first];
                 let instance = record.instance.as_ref().expect("instances made at its run");
                 (record.block_at, format!("{:?}", instance.instance))
             };
             cpu.thread_drop(first);
-            code(&mut cpu, memory, 0x20000);
-            run_from(&mut cpu, other, 0x20000);
+            code(&mut cpu, memory, second_code);
+            run_from(&mut cpu, other, second_code);
             let loads = cpu.process(memory).loads.len();
             assert!(cpu.process(memory).kept[&block_at].loads < loads);
-            let next = start(&mut cpu, memory, 0x20000);
+            let next = start(&mut cpu, memory, second_code);
             let record = &cpu.threads[&next];
             assert_eq!(record.block_at, block_at);
             let instance = record.instance.as_ref().expect("instances");

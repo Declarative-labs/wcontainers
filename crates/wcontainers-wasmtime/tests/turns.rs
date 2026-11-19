@@ -9,7 +9,7 @@ use wcontainers_runtime::{Answer, Carry, Execution, Executor, Leaving, Turn};
 use wcontainers_wasmtime::{Compiler, CpuSide, LookAhead, Optimise, reason};
 use zerocopy::FromZeros;
 
-const CODE: u64 = 0x10000;
+use wcontainers_abi::LOWEST_ADDRESS as CODE;
 /// `mrs x0, cntvct_el0; b .-4`: reads the counter in a loop with no system call.
 const SPIN: [u32; 2] = [0xd53b_e040, 0x17ff_ffff];
 const LIMIT: u64 = 1000;

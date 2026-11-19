@@ -8,7 +8,7 @@ use wcontainers_runtime::{Answer, Carry, Execution, Leaving, Turn};
 use wcontainers_wasmtime::{Compiler, CpuSide, LookAhead, Optimise, reason};
 use zerocopy::FromZeros;
 
-const CODE: u64 = 0x10000;
+use wcontainers_abi::LOWEST_ADDRESS as CODE;
 /// `movz x0, #1; svc #0`.
 const ONE: [u32; 2] = [0xd280_0020, 0xd400_0001];
 /// `movz x0, #2; svc #0`.

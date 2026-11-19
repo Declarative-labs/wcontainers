@@ -7509,7 +7509,6 @@ redefinition	crates/wcontainers-kernel-test/src/network.rs	int	ETIMEDOUT	ETIMEDO
 redefinition	crates/wcontainers-kernel-test/src/standin.rs	int	copy_touched::CHUNK	CHUNK = 4096
 redefinition	crates/wcontainers-kernel-test/tests/java.rs	int	ESR_EC_DABT_LOW	ESR_EC_DABT_LOW = 36
 redefinition	crates/wcontainers-kernel-test/tests/java.rs	int	ESR_EC_SHIFT	ESR_EC_SHIFT = 26
-redefinition	crates/wcontainers-kernel-test/tests/standin.rs	int	CODE	CODE = 65536
 redefinition	crates/wcontainers-kernel/src/credentials.rs	int	CAP_CHOWN	CAP_CHOWN = 0
 redefinition	crates/wcontainers-kernel/src/credentials.rs	int	CAP_DAC_OVERRIDE	CAP_DAC_OVERRIDE = 1
 redefinition	crates/wcontainers-kernel/src/credentials.rs	int	CAP_DAC_READ_SEARCH	CAP_DAC_READ_SEARCH = 2
@@ -7567,14 +7566,8 @@ redefinition	crates/wcontainers-translator-test/tests/test_guest.rs	int	PERMISSI
 redefinition	crates/wcontainers-translator/src/contract.rs	str	PROBE	PROBE = "probe"
 redefinition	crates/wcontainers-wasmtime/src/lib.rs	int	Compiler<G>::parse::WORD	WORD = 8
 redefinition	crates/wcontainers-wasmtime/src/starts.rs	int	WORD	WORD = 8
-redefinition	crates/wcontainers-wasmtime/tests/cache.rs	int	CODE	CODE = 65536
-redefinition	crates/wcontainers-wasmtime/tests/code.rs	int	CODE	CODE = 65536
-redefinition	crates/wcontainers-wasmtime/tests/faults.rs	int	CODE	CODE = 65536
-redefinition	crates/wcontainers-wasmtime/tests/fork.rs	int	CODE	CODE = 65536
 redefinition	crates/wcontainers-wasmtime/tests/surface.rs	str	DOCKER_HOST_NAME	DOCKER_HOST_NAME = "host.docker.internal"
 redefinition	crates/wcontainers-wasmtime/tests/surface.rs	str	IMAGE	IMAGE = "alpine:3.22"
-redefinition	crates/wcontainers-wasmtime/tests/turns.rs	int	CODE	CODE = 65536
-redefinition	crates/wcontainers-wasmtime/tests/views.rs	int	CODE	CODE = 65536
 restated	crates/wcontainers-abi/src/registers.rs	int	tests::layout_is_fixed	256
 restated	crates/wcontainers-kernel-test/backend/src/main.rs	str	main	"wc-backend [--cached] pipe <directory> | mount <directory> <mount point> <command>..."
 restated	crates/wcontainers-kernel-test/backend/src/main.rs	str	mount	"wc-backend: {error:?}"
@@ -7735,16 +7728,6 @@ restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	two_accesses
 restated	crates/wcontainers-translator-test/tests/test_guest.rs	str	<Test<F> as Guest>::probe_module	"probe"
 restated	crates/wcontainers-translator-test/tests/valid.rs	int	long_chains_translate_on_a_small_stack	256
 restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_compiler_copied_by_fork_is_dropped_there	400u32
-restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_dropped_threads_instances_serve_the_next_thread	0x10000
-restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_dropped_threads_instances_serve_the_next_thread	0x10000
-restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_dropped_threads_instances_serve_the_next_thread	0x10000
-restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_dropped_threads_instances_serve_the_next_thread	0x20000
-restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_dropped_threads_instances_serve_the_next_thread	0x20000
-restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_dropped_threads_instances_serve_the_next_thread	0x20000
-restated	crates/wcontainers-wasmtime/tests/cache.rs	int	CODE	0x10000
-restated	crates/wcontainers-wasmtime/tests/code.rs	int	CODE	0x10000
-restated	crates/wcontainers-wasmtime/tests/faults.rs	int	CODE	0x10000
-restated	crates/wcontainers-wasmtime/tests/fork.rs	int	CODE	0x10000
 restated	crates/wcontainers-wasmtime/tests/fork.rs	int	HEAP	0x40_0000
 restated	crates/wcontainers-wasmtime/tests/fork.rs	int	SHOWN	0x80_0000
 restated	crates/wcontainers-wasmtime/tests/fork.rs	int	a_duplicate_made_after_the_host_process_forked_is_exact::PAGES	256
@@ -7811,8 +7794,6 @@ restated	crates/wcontainers-wasmtime/tests/surface.rs	str	the_command_line_progr
 restated	crates/wcontainers-wasmtime/tests/surface.rs	str	the_command_line_program_runs_a_container	"--tar"
 restated	crates/wcontainers-wasmtime/tests/surface.rs	str	the_command_line_program_runs_a_container	"--tar"
 restated	crates/wcontainers-wasmtime/tests/surface.rs	str	the_guest_sees_the_honoured_values	"mounts"
-restated	crates/wcontainers-wasmtime/tests/turns.rs	int	CODE	0x10000
-restated	crates/wcontainers-wasmtime/tests/views.rs	int	CODE	0x10000
 restated	crates/wcontainers-wasmtime/tests/views.rs	int	VIEWS	0x40_0000
 restated	crates/wcontainers-wasmtime/tests/views.rs	int	read_through_the_other	0x10_0000
 role	crates/wcontainers-kernel-test/backend/src/main.rs	int	mount	1
