@@ -6,7 +6,8 @@ use std::mem::offset_of;
 
 use wcontainers_abi::PAGE_SIZE;
 use wcontainers_guest_cpu::{
-    Fixup, Guest, Held, HostCode, InsideCall, Native, Registers, Resume, Route, Span, effects,
+    Fixup, Guest, Held, HostCode, InsideCall, Native, NativeReason, Registers, Resume, Route, Span,
+    effects,
 };
 
 use crate::encode::{self, Register, ZERO, field, form};
@@ -386,6 +387,7 @@ pub(crate) fn carry(i: &I, word: u32, address: u64, code: &mut HostCode) {
             stand_ins.push(StandIn { from, to, slot });
         }
     }
+    out.code.slow(NativeReason::WithheldRegisterNamed);
     for s in &stand_ins {
         if s.to != SCRATCH {
             out.put(store_page(s.to, saved_slot(s.slot)));
@@ -505,6 +507,15 @@ fn page_offset(address: &Address) -> u32 {
     }
 }
 
+/// The slow path a page test in front of an access of `bytes` is.
+fn page_test(bytes: u32) -> NativeReason {
+    if bytes > u32::from(Q_BYTES) {
+        NativeReason::AccessMayCrossPage
+    } else {
+        NativeReason::HostModelResultRouted
+    }
+}
+
 /// The one place a guest access is emitted (section 3.1): the alignment test when the form must be aligned
 /// (`align` bytes), the page test and probes when it may cross a page, then `prefix` and the copied instruction
 /// `word`, the commit point.
@@ -528,6 +539,7 @@ fn access(out: &mut Out, m: &MemoryAccess, align: Option<u32>, prefix: &[u32], w
         );
     }
     if align.is_none() && m.bytes > 1 {
+        out.code.slow(page_test(m.bytes));
         let page_bits = PAGE_SIZE.trailing_zeros();
         out.put(page_offset(&m.address));
         out.put(encode::and_immediate(SCRATCH, SCRATCH, PAGE_SIZE - 1).expect("a page mask"));
@@ -659,6 +671,7 @@ fn rebase(out: &mut Out, i: &I) {
     // Whether the access crosses a page is known here, from the guest address.
     let last = u64::from(bytes) - 1;
     if target % PAGE_SIZE + last >= PAGE_SIZE {
+        out.code.slow(page_test(bytes.into()));
         out.put(encode::load_store(form::LDRB, ZERO, SCRATCH, 0, 1).expect("fits"));
         out.put(encode::load_store(form::LDRB, ZERO, SCRATCH, last, 1).expect("fits"));
     }
@@ -688,6 +701,7 @@ fn transfer(out: &mut Out, i: &I, word: u32) {
             if let I::CompareBranch { rt, .. } | I::TestBranch { rt, .. } = *i
                 && WITHHELD.contains(&number(rt))
             {
+                out.code.slow(NativeReason::WithheldRegisterNamed);
                 out.put(load_page(SCRATCH, withheld_slot(number(rt))));
                 word = encode::replace(word, field::RT, SCRATCH.into()).expect("a register fits");
             }
@@ -718,6 +732,7 @@ fn jump(out: &mut Out, op: BranchRegister, rn: Reg) {
     };
     let return_address = out.address.wrapping_add(INSTRUCTION);
     if withheld {
+        out.code.slow(NativeReason::WithheldRegisterNamed);
         out.put(load_page(SCRATCH, withheld_slot(n)));
     }
     out.put(encode::ubfx(
