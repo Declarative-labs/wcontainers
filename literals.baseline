@@ -8607,7 +8607,6 @@ redefinition	crates/wcontainers-translator-test/reference/src/aarch64.rs	int	PC	
 redefinition	crates/wcontainers-translator-test/reference/src/aarch64.rs	int	SP	SP = 31
 redefinition	crates/wcontainers-translator-test/reference/src/aarch64.rs	int	frame_vectors::FPSIMD_MAGIC	FPSIMD_MAGIC = 1179680769
 redefinition	crates/wcontainers-translator-test/reference/src/main.rs	int	PAGE	PAGE = 4096
-redefinition	crates/wcontainers-translator-test/reference/src/x86_64.rs	int	AC	AC = 262144
 redefinition	crates/wcontainers-translator-test/reference/src/x86_64.rs	int	ARCH_SET_FS	ARCH_SET_FS = 4098
 redefinition	crates/wcontainers-translator-test/reference/src/x86_64.rs	int	AUDIT_ARCH_X86_64	AUDIT_ARCH_X86_64 = 3221225534
 redefinition	crates/wcontainers-translator-test/reference/src/x86_64.rs	int	FCW	FCW = 21
