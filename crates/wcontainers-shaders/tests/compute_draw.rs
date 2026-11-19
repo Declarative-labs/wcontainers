@@ -1,5 +1,5 @@
 //! Compute shaders with atomic operations, append, consume and counter views, storage textures
-//! (`compute.hlsl`), raw and structured shader resource views (`readonly.hlsl`), division (`divide.hlsl`) and typed buffers (`texels.hlsl`) on the WebGPU back end, against real Direct3D 11
+//! (`compute.hlsl`), raw and structured shader resource views (`readonly.hlsl`), division and an escape loop (`divide.hlsl`) and typed buffers (`texels.hlsl`) on the WebGPU back end, against real Direct3D 11
 //! running the same shaders on the same GPU. The values consumed and the texels read are seeded: `WCONTAINERS_COMPUTE_SEED` (default 1) and `WCONTAINERS_COMPUTE_CASES` seeds
 //! from it (default 4).
 
@@ -84,6 +84,7 @@ fn cases(seed: u64) -> Vec<Case> {
     let structured: Vec<u32> = (0..512).map(|_| next()).collect();
     let raw_read: Vec<u32> = (0..512).map(|_| next()).collect();
     let operands = division_operands(&mut next, DIVIDE_GROUPS * DIVIDE_GROUP_SIZE);
+    let points = escape_operands(&mut next, DIVIDE_GROUPS * DIVIDE_GROUP_SIZE);
     vec![
         Case {
             shader: "cs_atomics",
@@ -207,6 +208,28 @@ fn cases(seed: u64) -> Vec<Case> {
             ],
             groups: DIVIDE_GROUPS,
         },
+        Case {
+            shader: "cs_escape",
+            views: vec![
+                View {
+                    bytes: vec![0; size_of_val(points.as_slice())],
+                    raw: false,
+                    counter: None,
+                    append: false,
+                    read: false,
+                    first: 0,
+                },
+                View {
+                    bytes: words(&points),
+                    raw: false,
+                    counter: None,
+                    append: false,
+                    read: true,
+                    first: 0,
+                },
+            ],
+            groups: DIVIDE_GROUPS,
+        },
     ]
 }
 
@@ -230,6 +253,28 @@ fn division_operands(next: &mut impl FnMut() -> u32, invocations: u32) -> Vec<u3
                     (divisor as f32 / (1 + next() % DIVISORS) as f32).to_bits(),
                 ]
             }
+        })
+        .collect()
+}
+
+/// `cs_escape`'s operands, a point's x and y and an integer iteration scale as float bits for each
+/// invocation. Even ones are inside the set's main cardioid, so they run to the full count, whose
+/// quotient by the scale is an integer; odd ones are on the real axis right of the set, escaping
+/// after a few steps. Points near the set's edge are left out: their counts follow every rounding
+/// of the iteration, which Direct3D leaves free (one such point, from DXIL, was 4 steps apart).
+fn escape_operands(next: &mut impl FnMut() -> u32, invocations: u32) -> Vec<u32> {
+    const SCALES: u32 = 400;
+    const STEPS: u32 = 1 << 16;
+    let unit = |next: &mut dyn FnMut() -> u32| (next() % STEPS) as f32 / STEPS as f32;
+    (0..invocations)
+        .flat_map(|i| {
+            let (x, y) = if i % 2 == 0 {
+                (unit(next) * 0.5 - 0.5, unit(next) * 0.5 - 0.25)
+            } else {
+                (unit(next) * 1.5 + 0.5, 0.0)
+            };
+            let scale = 1 + next() % SCALES;
+            [x.to_bits(), y.to_bits(), (scale as f32).to_bits()]
         })
         .collect()
 }

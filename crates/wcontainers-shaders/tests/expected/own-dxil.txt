@@ -1,6 +1,7 @@
 cs_atomics.dxil	ok-wgsl glsl-write
 cs_decrement.dxil	ok-wgsl glsl-write
 cs_divide.dxil	ok-wgsl glsl-write
+cs_escape.dxil	ok-wgsl glsl-write
 cs_image_array.dxil	ok-wgsl glsl-write
 cs_images.dxil	unsupported StorageFormatKind
 cs_one_d.dxil	unsupported StorageFormatKind
