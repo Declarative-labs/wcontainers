@@ -46,8 +46,12 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   what comes next".
 - X4 (x86 at full look-ahead): run 1 (2026-11-18) fixed the X3 check's seven findings and a translator bug
   that lost every x86 callee's flags at full look-ahead; hello world and the benchmark set match the
-  i7-8750H at none and full. Not done yet: the layer 2 emitter, lazy flag shapes and direct conditions,
-  switches, loop proofs, layer 3 and the timings on the x86 machine (see "X4, run 1").
+  i7-8750H at none and full. Run 2 (the same day) adopted the literal check, built x86's layer 2 emitter,
+  the flag shapes and direct conditions, switch recognition for both compilers, the loop proofs' comparisons
+  and bounded loads, `pushf` and `leave`, x86's check programs, and fixed a translator bug that lost every
+  register passed into a piece but not out of it across a return (see "X4, run 2"). Not done yet: the
+  benchmark set timed in wasmtime and Chrome on the x86 machine (only natively there so far), layer 3, and
+  the independent check's own runs.
 
 Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0.5):
 - Suite: `WC_REFERENCE_X86_64=tom@192.168.2.240 nix develop -c cargo test -p wcontainers-guest-cpu -p
@@ -59,6 +63,66 @@ Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0
 - Clippy with `-D warnings` on the test crate (all targets), the interface, the translator, the browser
   crate and the runner for both CPUs; `cargo fmt --check`: clean.
 - origin/phase-1-translator: fetched at the start and end, nothing new since 8b5e420 (merged).
+
+## X4, run 2 (2026-11-18): partly done
+
+Machine for everything below: the Mac (Apple M5 Max, load 20 to 90 during the run) with the i7-8750H as the
+x86 reference (load 1.0 to 1.4 from other tracks' jobs). Logs in scratch `x4/run2/`.
+
+Done:
+- Literal check adopted: merged origin/phase-1-literals (f561838a) and ran its `init` in the merge commit
+  (0f3b3905; see "Departures", X4). Baseline lines of this track's crates at adoption: wcontainers-x86 339,
+  wcontainers-guest-cpu 28, wcontainers-translator 87, wcontainers-translator-test 2146 (9172 in all, the
+  other tracks' included). After this run: 3 fewer in the test crate (two panic texts and the `"layer2"`
+  name), none added; every new line of code this run names its values. `check` lists six changes that could
+  add lines: 0f3b3905 and 68214b2e (the starts: this branch's merge and the literals branch's own) and
+  89f88281, 7119e3f3, c3bf56d4, 31ec396f (the literals branch's new rules).
+- The brief's runner bug (fp + 472 read as the FP area's size) was already fixed at X3 run 3 (b4a8cda); no
+  recorded reference existed to be affected.
+- The uncommitted flag shapes of run 1 (`flags::SHAPES`, `shape`, `with_locals`, `condition_direct` for a
+  plain difference and the logic instructions) were checked and committed (78a77dd).
+- Translator bug: x86 is the first guest whose `PASSED_IN` is larger than `PASSED_OUT`. A callee's writes to
+  rdi, rsi, rcx, r8 and r9 were lost on return at every look-ahead (they live in parameters, which liveness
+  does not follow, and a return passes out only rsp, rax and rdx). Now a return stores the registers passed in
+  only into the block and a call reloads them (`code::passed_in_only`); for ARM64 the list is empty, so its
+  output is unchanged. Found by layer 2's first cases (a function that makes the model's system call).
+- `pushf`/`pushfq` (needed for the dump) and `leave` have meanings; layer 1 passes for `Pushfq`, `Pushfw`,
+  `Leaveq`, `Leavew` at 1,000 cases a form (seed 4404). Layer 1's reconcile clears the runner's own trap flag
+  in the image `pushf` stores, as it already did for r11 after `syscall`.
+- x86's layer 2 emitter (`src/guest/x86_64/assemble.rs`, iced's `CodeAssembler`, feature `code_asm` of the
+  existing iced dependency): every model operation, plus read-change-write stores, lods and stos with the
+  direction flag both ways, push and pop of registers and memory, calls and jumps through memory, partial
+  register writes (8-bit low and high, 16-bit, 32-bit), inc and dec (CF kept), cmov, setcc, the divisions
+  (divisor made odd, and positive when signed, so they never trap), shifts and rotates through cl,
+  red-zone saves in leaf functions, gcc's (`notrack jmp`, sum in the index) and clang's (sum in the table
+  register) position-independent switch tables, and `pushfq` for the dump. The model's registers for x86 are
+  now rax, rcx, rdx, rbx, rsi, rdi, r8 to r11 (r12 to r15 are the emitter's scratch and counters).
+- Switch recognition (`habits::jump_table`): the walk back from the jump crosses a conditional branch's
+  fall-through now (the translator's `before` stopped at every block end, so it never reached the guard;
+  ARM64 does not use `before`). `branch_comparison` (cmp or sub with a register or a non-negative immediate,
+  test r, r, dec before je or jne) and `loaded_max` (movzx, mov r32 of a double word) are built.
+- x86's `checks()`: both switch forms taken through their tables, which must count "jump through a register
+  not recognised" zero times (passes, also before the walk fix it failed), and a group failing across the
+  blob's end on a function's first instruction (none, full, Linux and Chrome agree).
+- `programs/x86_64/flags_across.c`: three functions of this run with flags live across calls (through a
+  callee that leaves them, set in part by a callee with sub then inc, and a loop driven by a callee's dec),
+  equal to the i7-8750H at none and full in both settings (`flags_across_calls_match_linux_x86_64`); run
+  natively by hand its output is `through 42 05`, `halves 01 00 01 00 01 00`, `loop 06 02`, as worked out.
+- `measure_benchmarks_x86_64` (ignored, as ARM64's): native on the x86 machine, wasmtime and Chrome here.
+
+Measured:
+- Layer 2, seed 1: 1,000 programs, each also on the CPU, 0 failing (342 faulted), twice (before and after
+  the recognisers), 108 s each with 3 at once. Seed 2026: see below.
+
+Not done (in order):
+1. The benchmark set in wasmtime and Chrome on the x86 machine. That machine has cargo (rustc 1.100) and
+   Chrome but no zig or wasmtime: the plan is a scratch copy of the tree there (`git archive`), zig in
+   `~/wcontainers-x86/zig`, and `measure_benchmarks_x86_64` run there with the reference on itself.
+2. Layer 3 (Csmith) for x86.
+3. `programs_match_linux` for x86 still reaches `bsr` and `bswap` in `integers` (X5's list).
+4. The first frame check covering a `Stack` return slot (plan 3.4) is not measured.
+5. The passed-in-only registers are stored at every return and loaded after every call; liveness of
+   parameters would let most of that go. Cost not measured.
 
 ## X4, run 1 (2026-11-18): partly done
 
@@ -1521,6 +1585,13 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## How to run
 
+- x86 (X4): layer 2 against the i7-8750H and against none, `WC_REFERENCE_X86_64=tom@192.168.2.240
+  WC_LAYER2_CASES=10000 WC_LAYER2_NATIVE=10000 WC_LAYER2_JOBS=3 WC_LAYER2_SEED=<n> nix develop -c cargo test
+  -p wcontainers-translator-test --test layer2 full_matches_none_and_the_cpu_x86_64 -- --nocapture`; the
+  checks, `--test checks x86_64`; flags across calls, `--test programs flags_across_calls_match_linux_x86_64`;
+  timings, `--release --test benchmarks measure_benchmarks_x86_64 -- --ignored --nocapture`. Scratch tools of
+  run 2 (one layer 2 case disassembled and run, a blob dump, the missing meanings of the shared programs) are
+  in scratch `x4/run2/tools/`: copy one into `tests/` to run it.
 - x86 (X3): layer 1 against the i7-8750H, `WC_REFERENCE_X86_64=tom@192.168.2.240 WC_LAYER1_CASES=1000
   WC_LAYER1_JOBS=6 nix develop -c cargo test -p wcontainers-translator-test --test layer1
   every_form_matches_the_cpu_x86_64` (`WC_LAYER1_FORMS`, `WC_LAYER1_SEED` as for ARM64); cases in no form,
@@ -1657,6 +1728,11 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## Cases actually run
 
+- X4 run 2: layer 2 x86 at seed 1, 16 programs (four times while fixing), 64 (twice), 1,000 (twice, every
+  program also on the CPU); at seed 2026, 10,000 (see "X4, run 2"); layer 1 at seed 4404, 1,000 cases a form,
+  for `Pushfq` and `Pushfw` (four times while fixing the reconcile) and with `Leaveq` and `Leavew` once; the
+  checks and the flags program once each after their last change; hand programs of the scratch tool.
+
 - X3 run 3: twelve forms (the bit tests, `pop`, three reserved NOPs, `jrcxz`, `jecxz`) at 1,200 cases a form,
   seed 5150 (twice: the first ended on the runner's start check, see "X3, run 3"); every x86 form (705) at
   1,200 cases a form, seed 5150; 10,000 cases in no form at seed 5150; the suite.
@@ -1743,7 +1819,8 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
   `instr_info`, to tell rep string instructions and gathers). Since X3 a dependency of `wcontainers-x86`
   (`no_std` and `decoder` only, behind `translate`; with `std` and `instr_info` as its build script's
   dependency and its tests'), and of the test crate (`std`, `decoder`, `encoder`, `op_code_info`, `instr_info`,
-  `intel`: forms, cases, disassembly). It brings `lazy_static` (MIT/Apache-2.0) and `spin` (MIT) without
+  `intel`: forms, cases, disassembly; since X4 also `code_asm` and the `block_encoder` it needs, for layer 2's
+  emitter, the same crate and licence). It brings `lazy_static` (MIT/Apache-2.0) and `spin` (MIT) without
   std.
 - `blake3` is since X2 a normal dependency of the test crate (the hashes in the lists compared between
   commits; it was also the reference runner's content hash until X2 run 7).
@@ -1770,9 +1847,18 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
 ## Departures from the plan
 
 X4 (each also written into the plan's text where the plan is wrong):
-- The literal check is not adopted yet, against the brief's "merge origin/phase-1-literals": its own
-  `docs/literals.md` (0eeb26e4) says a track merges main once main has the check, never the literals branch
-  directly, and main has no `wcontainers-literals` yet. The task names no merge either.
+- The literal check was adopted in run 2 by merging origin/phase-1-literals directly, as the brief's newest
+  section and the task say, against `docs/literals.md`'s step 1 (merge main once main has it; main does not
+  yet). The merge brought the other tracks' work that branch holds (kernel, runtime, wasmtime crates). One of
+  them, `wcontainers-wasmtime` (the runtime track's), does not build on this branch: it matches
+  `HookBody::CodeChanged` as a unit variant, which this branch's translator (from the translator track)
+  gives a field. Not this track's crate to edit; `cargo check --workspace` fails there, every crate this
+  track owns builds. Whoever merges the tracks meets it.
+- Layer 2's model registers for x86 changed (rbx kept, r12 to r15 scratch); no x86 program had been
+  generated before, so nothing to keep.
+- The translator's walk back for `jump_table` crosses a conditional branch's fall-through (plan 3.2 says
+  "`None` at the start of a block that more than one edge enters", which this now matches).
+- `pushf` and `leave` are built at X4 (X5's list): the dump and gcc's -O0 frames need them.
 - `machine-code` takes the guest and the library as arguments (it read ARM64 programs only).
 
 X3 (each also written into the plan's text where the plan is wrong):

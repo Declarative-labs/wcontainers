@@ -275,6 +275,13 @@ fn measure_calls_between_modules_arm64() {
     measure_calls_between_modules::<Arm64>();
 }
 
+/// The benchmark set built for x86-64: natively on the x86 reference, and translated at full here.
+#[test]
+#[ignore]
+fn measure_benchmarks_x86_64() {
+    measure_benchmarks::<wcontainers_x86::X86_64>();
+}
+
 /// x86-64's 128-by-64 long division (`programs/x86_64/divide.c`) against the CPU's own `div`: each with a
 /// high half (the long path) and with none (the fast path), natively on the reference and at look-ahead none
 /// in wasmtime here; their difference is the long path's own cost a division.
