@@ -113,6 +113,15 @@ Built, each tested against the reference:
   say what a machine does by mode). For thp02, thp03, sys_thp01 (they look for the tree; the
   reference passes them). See Departures.
 
+fork09 alone at 708289f3 (scratch k6c7/f.tsv, LTP_LIMIT 3600, 1 job, with Docker's container
+events kept in fork09-events.log; 18:49 to 19:49, load 35 to 65): no crash and no connection
+reset. The test ended as before, broken at 524273 files (TBROK, the test server's descriptor
+limit: Questions), after about 1900 s; LTP's clean-up then unlinked the files one backend round
+trip each (sampled: unlinkat waiting on the backend's answers, both sides nearly idle) and the
+run reached the 3600 s limit (timeout). The sixth run's "Connection reset by peer" came at about
+18:13, the minute Docker's daemon went away (below): Docker's fall, not the test server. So
+fork09 differs only by the harness cause in the Questions (and is slower than the limit after).
+
 Found: the sixth run's whole comparison (k6c5/whole.tsv at b37c8a43) and its suite stopped at
 18:15 when Docker's daemon went away (every later test "crash" or failed to reach Docker); the
 attempt to continue it at 13ca7e85 (k6c7/whole-b37c8a43-before-docker-fall.tsv) died with that
@@ -3809,10 +3818,10 @@ K6c, in this order (after the seventh run):
    <scratch>/kernel/k6c7/whole.tsv`, commit it as ltp/ours-20260930-708289f3.tsv, rerun at the
    newest code what later commits touch (memfd_create04, thp01 to 03, sys_thp01 and the hugetlb
    group for fcbc6807), and write the table from it. At 19:20 it had 495 done: 493 matching,
-   2 differing (controllers:controllers and af_alg07, both known).
-2. fork09 alone with Docker's events kept (scratch k6c7/f.tsv, f.out, fork09-events.log, LTP_LIMIT
-   3600): read why the test server's connection reset (an exit code or OOM kill of the
-   wc-kernel-backend container in the events log). It must give a verdict, not a crash.
+   2 differing (controllers:controllers and af_alg07, both known). It was stopped at 19:10 to
+   let the whole suite run within the test thread limit; start it again with the command above.
+2. fork09 gives a verdict now (broken where the reference passes, from the test server's
+   descriptor limit, then a timeout in LTP's clean-up): settle it with the Questions' answer.
 3. Not section 15, to build, largest first: the cgroup2 mount at /sys/fs/cgroup (read-only,
    Docker's, about 90 files: scratch k6c3/cgroup-reference.txt has names, modes and values; live:
    cgroup.procs, cgroup.threads, pids.current and .peak, memory.current and .peak, memory.stat,
@@ -3822,7 +3831,8 @@ K6c, in this order (after the seventh run):
 4. The Questions for the orchestrator: page residency (mincore03, mlock201, mlock05's smaps,
    mmap12's pagemap, vma01), layout randomization (aslr01), the harness causes (fork09, openat03,
    copy_file_range03), IPV6_RTHDR (setsockopt11, cve-2026-53362) for the gap list.
-5. The slow tests: one command for the orchestrator (hours; it continues its file):
+5. The slow tests: one command for the orchestrator (hours; it continues its file; started
+   with 1 job at 19:50 on the 18th, scratch k6c7/slow.tsv; read what it has):
    `LTP_TAR=<scratch>/kernel/ltp/ltp-20260930.tar LTP_JOBS=2 LTP_LIMIT=7200 nix develop -c
    <scratch>/kernel/k6c7/ltp-w ours <scratch>/kernel/k6c7/slow.tsv gf01 fsx01 rwtest01 creat05
    open04 float_bessel hackbench01 cve-2014-0196`, to show each gives the reference's verdict or
