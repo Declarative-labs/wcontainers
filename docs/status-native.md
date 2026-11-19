@@ -115,6 +115,14 @@ Results of the bar's other parts after these changes (all on the Mac):
   alike; bzip2's pipeline 12,618 exits.
 - interrupts 3627 forced interrupts over 8 functions at 3 look-aheads, 0 failed; exits 4 programs both modes, 0 failed
   (after the return change).
+- The whole suite of what this track owns, once before the push, at edf908c5 (suite.log, 10:52 to 11:05 by the Mac's
+  clock, load 31 to 48; guest-cpu, arm64, the inside, the monitor, the policy crate and the literal check's tests,
+  `--no-fail-fast`): one target failed, the speed test, because the bar fails (+64.50% [+63.29 .. +66.47], 15 pairs, a
+  second run alike to the one above). Everything else passed: busybox 56 commands as the reference at none and 256
+  (261 s); kernel alike at none and 256 (69 s); exits 4 programs both modes; floor 21 cases and 1 measurement, 0
+  failed, stop delay median 2292 ns, 99th 72417; interrupts 3627 at 3 look-aheads, 0 failed; native 32,562 cases, 0
+  failing (seed 0x2545f4914f6cdd1d); probe 0 forms of 16 bytes or fewer differ (44 larger, as before); carry; the
+  literal check's tests.
 
 What N4 still needs, in order:
 1. The call stub (plan 3.2): a call at G starts its own piece (the stub: `ubfx x30, x30, #2, #45`, the count's add,
