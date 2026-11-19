@@ -123,8 +123,8 @@ pub(super) struct Versioned {
 /// What [`versioned`] needs to know about the function.
 pub(super) struct LoopShape<'a> {
     pub(super) function: &'a Function,
-    pub(super) decoded: &'a HashMap<u64, Decoded>,
-    pub(super) checks: &'a HashMap<u64, CheckPlan>,
+    pub(super) decoded: &'a super::Decodes,
+    pub(super) checks: &'a FxHashMap<u64, CheckPlan>,
     pub(super) body: &'a [bool],
     /// Blocks of the body inside a loop within it.
     pub(super) nested: &'a [bool],
@@ -147,7 +147,7 @@ pub(super) fn versioned(shape: &LoopShape<'_>) -> Option<Versioned> {
                 .map(move |o| (b, o))
         })
     };
-    let mut defs: HashMap<u32, Vec<(usize, u64)>> = HashMap::new();
+    let mut defs: FxHashMap<u32, Vec<(usize, u64)>> = FxHashMap::default();
     for (b, o) in instructions() {
         for bit in shape.decoded[&o]
             .effects
@@ -468,13 +468,14 @@ fn counting_exit(
 fn index_bound(shape: &LoopShape<'_>, b: usize, at: u64, bit: u32, domain: Domain) -> Option<i64> {
     let function = shape.function;
     let sets = |o: &u64| shape.decoded[o].effects.defs.bits().any(|d| d == bit);
-    // The largest value a zero extending load leaves, when that is what sets the register.
+    // The largest value a zero extending load leaves in the register it loads (not a base it writes back).
     let loaded = |o: u64| match shape.decoded[&o].instruction {
         Instruction::Load {
             bytes,
             signed: None,
+            rt,
             ..
-        } if bytes <= 4 => Some((1i64 << (8 * bytes)) - 1),
+        } if bytes <= 4 && Registers::bit(rt) == Some(bit) => Some((1i64 << (8 * bytes)) - 1),
         _ => None,
     };
     let block = &function.blocks[b];

@@ -1,12 +1,14 @@
-//! C programs give the same output and exit status in Chrome, translated at look-ahead none and full, as on
+//! C programs give the same output and exit status in Chrome, translated at look-ahead none and full, and at
+//! bounded look-ahead from the first instruction with every other piece added while the program runs, as on
 //! real ARM64 Linux.
 
 use wcontainers_translator::{LookAhead, Omit};
 use wcontainers_translator_test::browser;
 use wcontainers_translator_test::programs::{Library, build, native};
 
-const PROGRAMS: [(&str, Library); 6] = [
+const PROGRAMS: [(&str, Library); 7] = [
     ("hello", Library::C),
+    ("differences", Library::C),
     ("bench", Library::None),
     ("integers", Library::None),
     ("tables", Library::None),
@@ -28,7 +30,7 @@ fn programs_match_linux_in_chrome() {
             }
             built.push(blob.bytes.clone());
             let theirs = native(&blob);
-            for look_ahead in [LookAhead::None, LookAhead::Full] {
+            for look_ahead in [LookAhead::None, LookAhead::Full, LookAhead::AT_RUN_TIME] {
                 let ours = browser::translated_with(&blob, look_ahead, Omit::default());
                 let what = format!("{name} at {optimisation}, look-ahead {look_ahead:?}");
                 assert_eq!(
@@ -44,6 +46,9 @@ fn programs_match_linux_in_chrome() {
                 );
                 assert_eq!(ours.ran.status, theirs.status, "exit status of {what}");
                 assert_eq!(ours.count("unsupported instruction reached"), 0);
+                if look_ahead == LookAhead::AT_RUN_TIME {
+                    assert!(ours.count("translated at run time") > 0, "{what}");
+                }
                 eprintln!(
                     "{what}: matches in {}, {:?}",
                     ours.user_agent, ours.counters

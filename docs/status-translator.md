@@ -4,22 +4,1158 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## Where things stand
 
-M0 (skeleton) and M1 (hello world at look-ahead none, in wasmtime and Chrome) are built, tested and
-pushed. M2 (full look-ahead) is built and tested: every part of the plan's list is in, hello and the
-benchmark set match none register by register and byte by byte, layer 2 runs, and size and speed numbers
-are below. The second M2 run fixed the two faults the independent check found (a frame and the stack
-alignment were relied on after a call that moved sp) and made checks cheaper by reading fixed values from
-locals. The third M2 run fixed a hang the next check found (a frame or group check failing on a function's
-first instruction looped for ever), added `tests/checks.rs`, and made layer 2 programs use stack frames of
-every size, x19 to x28, accesses through sp and groups through other registers, and fault. Speed is still
-far from the plan's hopes on call heavy and memory heavy code; see "Next".
+M5 (real code at scale): built in four runs (under "M5, fourth run" back to "M5, first run"); every part
+is built and recorded, and refinements are listed under "M5, fourth run, what comes next". M0 to M4 and S1 are built; their work is recorded
+below, newest first. The long runs to the plan's pass bars (layer 1 at 10,000 a form, layer 2 at one million
+programs, layer 3 at 100,000) are run once by the orchestrator at the end of the translator track; commands
+under "How to run".
 
-S1 (run speed at full look-ahead) is in progress; see "S1" below for what is done, what was measured and
-what comes next. The third run's work is under "S1, third run", the fourth's (measurements only) under
-"S1, fourth run", the fifth's (the proof over a loop's range) under "S1, fifth run", the sixth's (cheaper
-calls) under "S1, sixth run", the seventh's (the switch's case, and the floor of a call under the plan's
-rules) under "S1, seventh run", the eighth's (bounded indices proven, such as a switch's table) under "S1,
-eighth run", and what is left under "S1, what remains after the eighth run".
+## M5, fourth run
+
+Translation speed, profiled again on Bun (macOS `sample`, speed setting, translation only,
+`RAYON_NUM_THREADS=6`):
+- Half the time was one thread in `slice::contains`: a switch table's targets were kept once by searching
+  the list for each entry (`habits::jump_table`), and the addresses a function builds were each searched
+  for in every table's targets (`Finder::explore`). Both are now sets. Bun has a table of 360,445 entries
+  (left unrecognised later, as before), searched again each time the function was explored.
+- Then: loop pieces were found on one thread, and for each loop the set of the function's instructions
+  was made even when nothing used it (only stretches do). Now found per function on every core, the set
+  made once and only for stretches. The checks for irreducible loops and cuts after each round also run
+  on every core.
+- Then: the translator's maps used std's SipHash; now `rustc-hash` (already a dependency) everywhere in
+  `full.rs` and `full/proof.rs`.
+- Bun for speed, best of each step (load 26 to 46): 72.74 s (third run) / 33.71 s (sets) / 30.11 s
+  (loop pieces on every core) / 18.69 s (fast hash; 21.84 s again). Output the same bytes: total sizes the
+  same for Bun, and every module byte for byte the same as before for busybox, musl, rg, python and go in
+  both settings (`cmp` of `WC_BINARIES_DUMP`).
+- What is left of Bun's time is mostly making and emitting its 3.9 GB in parallel; a split translation is
+  still emitted twice (each module's code depends on which pieces it holds).
+
+Size, what is free (section 11, step 1). The meanings' own waste, each change measured by itself on the
+benchmark set (bytes of WebAssembly, speed / size setting) and run speed in both engines:
+- An addition or subtraction that sets no flags is a plain `add` or `sub` (it was `a + (b ^ -1) + 1`
+  through three locals, as the flag setting form needs), adding zero is a copy, and a `mov` or `mvn` (an or
+  or exclusive or with the zero register) is the copy alone. Benchmark set 312,148 / 133,089 to 297,773 /
+  125,813 (-4.6% / -5.5%); musl for size 7,313,689 to 7,121,191 (-2.6%).
+- A load or store with no write back lets the check untag the address in the local it was made in (it was
+  copied to a second local first), and an address the code makes from its own place (`adr`, a literal
+  load, the link register) adds the offset once (it added the instruction's offset, then the rest).
+  Benchmark set 297,773 to 295,287 (speed); musl for size 7,121,191 to 7,012,251 (-1.5%).
+- Run speed, speed setting, the three alternated over three rounds (sort, interpret, matrix; best of 3
+  each; load 26 to 65), base / first / both: wasmtime sort 1.078 / 1.085 / 1.078, interpret 0.514 / 0.511
+  / 0.512, matrix 0.222 / 0.227 / 0.226; Chrome sort 1.068 / 1.069 / 1.069, interpret 0.581 / 0.574 /
+  0.581, matrix 0.156 / 0.155 / 0.156. The whole set once each (load 20 to 50), base / first, speed:
+  wasmtime fib 2.254 / 2.139, sieve 0.640 / 0.613, hash 0.576 / 0.539, walk 2.213 / 2.143, search 0.238 /
+  0.250; size (where loops run with their checks): wasmtime fib 2.784 / 2.702, sieve 1.283 / 1.269, sort
+  1.608 / 1.273, interpret 0.673 / 0.603, matrix 0.303 / 0.336, search 0.408 / 0.280; Chrome sieve 0.668 /
+  0.668, matrix 0.783 / 0.774, search 1.445 / 1.421. No loss shows; kept in both settings.
+- Both together on the binaries (translation only, load about 35), speed / size: busybox 32,574,096
+  (-3.6%) / 13,592,810 (-4.9%); musl 14,572,720 (-3.5%) / 7,012,251 (-4.1%); rg 137,534,970 (-4.1%) /
+  42,064,664 (-5.1%); git 108,125,485 (-4.0%) / 44,008,090 (-5.7%); python 137,874,944 (-3.5%) /
+  57,840,097 (-4.7%); java 544,231,926 (-3.2%) / 235,856,675 (-4.6%); go 348,302,497 (-3.0%) / 148,452,670
+  (-4.3%). Gzipped about 10% less.
+- The bit that tells a callee the caller wants the flags is added into the return address constant (it
+  was an `or` after the add; instructions are 4 byte aligned, so the bit is clear).
+
+Each binary on this run's final code, translation only (`measure_binaries`, `WC_BINARIES_ENGINES=0`,
+`RAYON_NUM_THREADS=6`, one run, load 30 to 62). Bytes of WebAssembly (bytes a byte of code), gzipped, and
+translation time, speed / size:
+- busybox 32,472,392 (46.1), 6,103,289, 0.18 s / 13,533,418 (19.2), 3,012,555, 0.11 s.
+- musl 14,546,689 (39.3), 2,763,532, 0.08 s / 6,996,354 (18.9), 1,413,770, 0.05 s.
+- rg 137,298,326 (67.9), 22,141,772, 0.51 s / 41,973,706 (20.7), 7,555,446, 0.29 s.
+- git 107,719,042 (49.4), 18,926,550, 0.47 s / 43,777,767 (20.1), 9,368,089, 0.34 s.
+- python 137,603,117 (46.5), 21,758,085, 0.58 s / 57,678,120 (19.5), 10,426,703, 0.56 s.
+- java 543,298,928 (41.2), 81,396,412, 2.48 s / 235,237,352 (17.8), 40,699,810, 2.02 s.
+- go 347,710,233 (59.3), 47,273,601, 1.14 s / 148,076,420 (25.3), 24,231,195, 0.87 s.
+- bun 3,761,902,687 in 4 modules (72.3), 558,499,321, 24.97 s / 1,058,185,079 in 2 modules (20.3),
+  176,121,046, 10.92 s (third run: 72.74 s / 52.08 s).
+- node 2,515,099,638 in 3 modules (62.9), 380,762,969, 14.74 s / 895,334,387 in 1 module (22.4),
+  155,537,459, 8.11 s (third run: 18.79 s / 9.27 s).
+- The engines' figures (compile time, machine code, Chrome's memory) under "M5, third run" are for that
+  run's code, 3 to 6% larger; not taken again.
+
+What a call between two modules costs, again on this run's code (`measure_calls`, best of 3, load 24 to 32):
+wasmtime speed 2.81 ns, size 2.20 ns; Chrome speed 2.71 ns (0.135 s in one module, 0.406 s a module a
+piece), size 2.75 ns. Chrome's figures now agree across two runs (third run 2.65 and 2.75 ns).
+
+Cases run on this run's code: after the translation speed change, smoke, checks, programs and layer 2 at
+their defaults (release); after the size changes, smoke, checks, programs, layer 2, look-ahead, changes and
+layer 1 at 200 cases a form (release; layer 1 at 300 a form after the first size change), all passing.
+Last, every test of the three crates on the final code (debug, `RAYON_NUM_THREADS=4`, Chrome and layer 3's
+defaults included): 69 passed, 7 ignored (the measurements), 16 minutes, load 34 to 61. No long random run
+was made this run.
+
+M5, fourth run, what comes next (the milestone's parts are all built and recorded; these are refinements):
+1. Size: slow paths still write back their registers in place, the floating point ones with every live
+   vector register (`v128.store` is 1.4% of musl's instructions, size setting). A shared exit per function
+   would need every register's local to hold its value at every exit; not tried.
+2. Size mode: a proven loop with loops inside it still has only its checked copy.
+3. A split translation is emitted twice (Node and Bun only), as each module's code depends on which pieces
+   it holds.
+4. The engines' compile times and memory on this run's code alone, without Chrome or the other half beside
+   them.
+
+## M5, third run
+
+Size, slow paths out of line. Built and measured as free first, then found not to be free, so it is a
+size trade (section 11), not a change for both settings:
+- What it is: a write back on a path the thread never comes back on (a memory fault, leaving to exact code,
+  an unsupported instruction) stores the passed registers and pc through a function each module holds once
+  (`F_SAVE`, pc as a blob offset), and works out the flags word through a module function for each shape of
+  kept flags and one for flags in locals (`flags_word_functions`). The same work before a call, a jump to
+  another piece, a return, a stop check or a system call is always in place. The depth check at a piece's
+  entry uses `F_SAVE` in both settings (busybox speed 33,934,500 / 33,789,527, -0.4%).
+- Size, measured each by itself in the speed setting (translation only; load 120 to 260, which does not
+  change sizes): `F_SAVE` busybox 33,934,500 / 30,794,415 (-9.3%), musl 15,157,213 / 14,038,301 (-7.4%), rg
+  143,614,742 / 134,177,916 (-6.6%), git 112,987,851 / 101,607,621 (-10.1%), python 143,036,317 / 131,149,290
+  (-8.3%); then the flags word functions busybox 28,679,642 (-6.9%), musl 13,154,114 (-6.3%), rg 125,371,053
+  (-6.6%), git 95,563,100 (-5.9%), python 121,691,140 (-7.2%). Slow paths went from 33.4% to 24.3% of musl's
+  instructions.
+- Cost: the benchmark set in the speed setting showed nothing (best of 3, load 17 to 22: wasmtime fib 2.379,
+  sort 1.163, interpret 0.567, matrix 0.253, sieve 0.640), because its hot loops there run their copies without
+  checks. In the size setting, where loops run with their checks, sieve went from 0.910 (the run's start
+  commit, same tree, load 14) to 1.25 to 1.41 (several runs, load 14 to 40); with these paths in place again
+  0.827, with only the flags word in place 1.025. Calls on a path that ends in `unreachable` still slow the
+  engine's code for the loop around them (the register allocator does not know the path is cold). Checked
+  loops exist in the speed setting too (loops not proven), so it is made only for size.
+- Tried and dropped: a register's `local.set` followed by its `local.get` made a `local.tee`: 0.3% (busybox
+  24,543,043 / 24,463,163), not worth the state it needs.
+
+Size mode, the exact permission test (run only when the fast one fails) is a call to a module function
+(`F_PERMISSION`) instead of in place. Size, from the size setting with the slow paths out of line: busybox
+15,986,588 / 13,626,082 (-14.8%), musl 7,445,171 / 6,678,359 (-10.3%), rg 46,019,767 / 40,599,353 (-11.8%),
+git 52,999,449 / 44,966,585 (-15.2%), python 68,029,417 / 57,266,627 (-15.8%), java 284,163,910 / 238,563,513
+(-16.0%), go 184,241,116 / 149,926,790 (-18.6%) (load 12 to 22). Its cost was measured in the speed setting,
+alternating (best of 3, load 17 to 25, in place / called): wasmtime fib 2.379 / 2.876, sort 1.163 / 1.292,
+interpret 0.567 / 0.647, matrix 0.253 / 0.352 (1.39 times); Chrome interpret 0.597 / 0.807 (1.35 times), sort
+1.236 / 1.432, matrix 0.201 / 0.184, fib 2.321 / 2.209. The call returns into the piece, so the engine keeps
+every value live across it.
+
+Size mode, a proven loop with no loop inside it keeps its copy without checks (what trade 1 took away). The
+proof and both copies sit in a `loop`; a stop at the loop's own jump back in the unchecked copy loads the
+registers back and branches there, so the proof is made again with the registers as they are (it depends only
+on them at the loop's header). A loop with loops inside it still has only its checked copy, since a stop at an
+inner loop's jump back cannot carry on in the outer loop's checked copy without a loop piece. Size, from the
+line above: busybox 13,626,082 / 13,980,688 (+2.6%), musl +6.3%, rg +7.2%, git +2.2%, python +4.4%, java
++2.3%, go +2.4%. Speed (size setting, wasmtime, best of 3, load 20 to 40): matrix 0.770 without / 0.306 to
+0.350 with; search 0.328 with (0.478 at trade 2). Tests: `tests/checks.rs` now runs every case at full in both
+settings (the loop not proven counts hold in both), and `tests/changes.rs` translates for size when the plan's
+seed is odd.
+
+Translation speed: profiled Node with macOS `sample` (speed setting, translation only). It ran on one thread;
+finding functions (`Finder::explore`, with a SipHash map of decoded instructions) took about half, planning
+and emitting the rest. Now (with `rayon` and `rustc-hash`, both established crates): functions are found in
+rounds, every entry of a round explored at once; exploring decodes on the fly and keeps nothing, and the
+instructions of the functions found are decoded once afterwards into a map with a fast hash; plans, loop piece
+plans and emitting run on every core (on wasm32, where threads cannot start, rayon runs them on the calling
+thread). Same pieces and same bytes for all eight binaries tried. Measured with `RAYON_NUM_THREADS=6` (this
+machine's limit for one job), load 21 to 55: Node 92.98 s before (one thread) / 35.37 s with planning and
+emitting in parallel / 19.42 s with exploring too (2.06 MB of code a second); busybox 0.67 / 0.25 s, rg 2.63
+/ 0.95 s, java 12.16 / 3.76 s, go 5.49 / 1.73 s. What is left on one thread: the rounds' bookkeeping, the
+check for irreducible loops and cuts, and a translation split into modules is emitted twice (Node: 3
+modules).
+
+Static counters: each code module now carries how many places in its code may take each slow path
+(`CodeModule::sites`, by reason; floating point paths, decided by a hook at run time, are not counted), and
+`measure_binaries` prints them. Speed / size settings (load 22 to 11):
+- busybox: left to an address 37,300 / 21,944; jump through a register not recognised 528 / 459; stopped by the
+  flag 15,318 / 7,662; memory fault 63,243 / 35,346; loop not proven 346 / 0; engine stack nearly full 5,932 /
+  3,342.
+- musl: 11,567 / 7,465; 57 / 45; 7,310 / 3,396; 21,020 / 10,911; 414 / 0; 2,668 / 1,384 (same order).
+- rg: 109,780 / 43,750; 510 / 472; 30,807 / 12,322; 204,956 / 75,843; 2,403 / 0; 10,912 / 5,044.
+- git: 145,137 / 82,347; 341 / 317; 37,113 / 19,126; 235,899 / 125,274; 896 / 0; 15,163 / 8,931.
+- python: 113,812 / 68,483; 2,766 / 2,529; 31,049 / 15,406; 292,111 / 167,952; 1,822 / 0; 13,245 / 7,849.
+- java: 466,074 / 311,644; 3,579 / 3,212; 114,920 / 57,069; 1,143,350 / 687,197; 4,786 / 0; 51,636 / 32,337;
+  unsupported instruction reached 8 / 6.
+- go: 232,053 / 148,498; 391 / 286; 71,564 / 43,105; 883,594 / 552,437; 3,315 / 0; 28,393 / 18,144; unsupported
+  instruction reached 40 / 39.
+- (The size setting has fewer places because a function has no loop pieces, which repeat their loop's code.)
+
+Each binary in each setting with both engines, on the final code of this run (`measure_binaries`, release,
+`RAYON_NUM_THREADS=6`, one run, load 24 to 36). Bytes of WebAssembly; translation time; wasmtime's compile time
+and bytes of machine code; Chrome's time to make the modules compiled at first call / at once, and how much
+the resident memory of Chrome's processes grew from before the worker started to after the modules and their
+instances were made, at first call / at once. The difference of the two is Chrome's memory for the code its
+baseline compiler made (noise about 100 MB: git's first-call figure came out at -88 MB). Instances took at most
+11 ms everywhere.
+- busybox: speed 33,789,527, 0.25 s, wasmtime 2.28 s to 50.7 MB, Chrome 0.01 / 0.06 s, 62 / 352 MB; size
+  14,295,760, 0.13 s, 1.14 s to 27.2 MB, 0.00 / 0.03 s, 41 / 206 MB.
+- musl: speed 15,102,460, 0.10 s, 1.02 s to 22.5 MB, 0.00 / 0.03 s, 40 / 205 MB; size 7,313,689, 0.06 s, 0.62
+  s to 13.4 MB, 0.00 / 0.02 s, 32 / 143 MB.
+- rg: speed 143,403,426, 0.97 s, 13.41 s to 187.5 MB, 0.03 / 0.22 s, 182 / 1,375 MB; size 44,311,195, 0.37 s,
+  4.62 s to 72.1 MB, 0.01 / 0.10 s, 84 / 655 MB.
+- git: speed 112,629,083, 0.77 s, 8.16 s to 167.1 MB, 0.03 / 0.18 s, -88 / 1,030 MB; size 46,661,991, 0.41 s,
+  3.90 s to 86.7 MB, 0.01 / 0.10 s, 90 / 561 MB.
+- python: speed 142,820,698, 0.95 s, 10.77 s to 209.3 MB, 0.03 / 0.23 s, 190 / 1,374 MB; size 60,678,646, 0.55
+  s, 4.85 s to 112.0 MB, 0.02 / 0.13 s, 107 / 830 MB.
+- java: speed 562,179,318, 3.52 s, 44.13 s to 863.4 MB, 0.11 / 0.96 s, 679 / 4,789 MB; size 247,101,181, 2.34
+  s, 18.91 s to 516.8 MB, 0.06 / 0.46 s, 363 / 2,538 MB.
+- go: speed 358,903,616, 1.52 s, 24.26 s to 543.5 MB, 0.07 / 0.49 s, 437 / 3,009 MB; size 155,086,202, 1.00 s,
+  13.08 s to 313.7 MB, 0.03 / 0.28 s, 233 / 1,654 MB.
+- node (load 33 to 43): speed 2,605,496,053 in 3 modules, 18.79 s, wasmtime 194.03 s to 3,795.4 MB (beside
+  Chrome; 89.6 s in the first run), Chrome 0.73 s at first call (3,028 MB, mostly the module bytes it keeps);
+  compiled at once Chrome's page crashed again. Size 941,973,129 in 1 module (23.5 a byte of code), 9.27 s,
+  wasmtime 74.00 s to 1,886.0 MB, Chrome 0.26 / 2.83 s, 387 / 5,498 MB. Static counters, speed / size: left to
+  an address 1,885,890 / 1,047,843; jump through a register not recognised 8,143 / 6,025; unsupported
+  instruction reached 102 / 99; stopped by the flag 484,150 / 240,461; memory fault 5,036,524 / 2,393,326; loop
+  not proven 25,426 / 22,657; engine stack nearly full 185,164 / 98,982.
+- bun (load 34 to 43): speed 3,918,787,999 in 4 modules (75.3 a byte of code), 72.74 s (still slow: see next),
+  wasmtime 373.90 s to 5,507.2 MB (beside Chrome), Chrome 1.11 s at first call (4,312 MB); compiled at once its
+  page crashed. Size 1,115,588,488 in 2 modules (21.4 a byte), 52.08 s, wasmtime 102.08 s to 2,095.0 MB, Chrome
+  0.31 / 4.61 s, 1,498 / 3,871 MB. Static counters, speed / size: left to an address 3,455,257 / 1,268,611; jump
+  through a register not recognised 8,913 / 6,346; unsupported instruction reached 54 / 52; stopped by the flag
+  629,509 / 308,535; memory fault 6,234,847 / 2,258,415; loop not proven 32,887 / 30,158; engine stack nearly
+  full 257,328 / 136,310.
+- So all nine load in both engines in both settings; Chrome compiling everything at once refuses (the page
+  crashes) only Node and Bun for speed, whose baseline code would be about 20 GB.
+- Chrome's eager timings do cover compiling every function: its memory grows with the module's size, 7 to 9
+  bytes for each byte of WebAssembly (V8's baseline code is about 5 to 6.5 times wasmtime's machine code),
+  within the synchronous `new WebAssembly.Module`. Compiled at first call, it holds only the module.
+- (wasmtime's compile times here are about twice the second run's: it compiled beside Chrome's runs and the
+  other half's tests; not re-taken alone.)
+
+What a call between two modules costs in Chrome: the Chrome runner can now split a translation (`splitBytes`
+in its setup, `browser::repeated_split`). `measure_calls_between_modules` (best of 3, the program run twice in
+its instances, load 17 to 20): speed 0.135 s in one module, 0.400 s a module a piece, 2.65 ns more a call;
+size 0.152 / 0.427 s, 2.75 ns. wasmtime in the same run: speed 2.41 ns, size 2.35 ns.
+
+Cases run on this run's code (all passing): after each change, the changes, checks, layer 2 (300 cases),
+look-ahead, programs, smoke, Chrome and validity tests at their defaults (release). Last, every test of the
+three crates on the final code (debug, `RAYON_NUM_THREADS=4`, Chrome and layer 3's defaults included): 69
+passed, 7 ignored (the measurements), 16 minutes, load 26 to 38. No long random run was made this run. Bun's
+translation alone again: 76.73 s (load about 30).
+
+M5, third run, what comes next (most important first; the milestone's parts are all built and recorded):
+1. Bun still translates slowly (72.74 s for speed, 52 s for size, against Node's 18.79 s for less code): not
+   profiled after the parallel work. Likely the rounds of cuts (a function of more than 2048 blocks makes
+   every function be explored again) and a split translation being emitted twice.
+2. Size: nothing free was found this run. Left to try: the meanings' own waste (copies between locals, a
+   register's set then get), measured in both settings on loops that run with their checks (sieve in the size
+   setting shows what the benchmark set in the speed setting hides).
+3. Size mode: a proven loop with loops inside it still has only its checked copy.
+4. Chrome's own timings of calls between modules and of memory are from one run each.
+
+## M5, second run
+
+Lookup design (plan section 5), both built and measured, compact chosen:
+- Built: the lookup table now holds one slot per piece, and an array of slots in the state memory (one i32
+  per 4 bytes of guest address from `table_base`, 0 for no piece) gives each address its slot. A lookup is
+  the old range and alignment test, one i32 load from the array, and `table.get`. Slot 0 stays empty (so an
+  address with no piece finds none) and slot 1 (`EXACT_SLOT`) holds the exact path's one-instruction piece,
+  in place of the old last slot. Code modules put their pieces in order from `slot_base` (one element
+  segment); the runner gives each module its slots, grows the table and writes the array from
+  `CodeModule::pieces` (the Chrome runner reads the same list from the module's description section). The
+  array is per process and the table per thread, so a module gets the same slot base in every thread. New
+  imports `slots` and `slots_cover` (contract.rs).
+- Measured (benchmark set, -O2, full, best of 3, release; the old design run from a copy of commit 0d312ab,
+  rounds alternated, load 30 to 57; seconds, old round 1 / round 2 against new round 1 / round 2):
+  wasmtime fib 2.246 / 2.418 against 2.253 / 2.400; sieve 0.642 / 0.648 against 0.660 / 0.649; sort 1.133 /
+  1.215 against 1.162 / 1.318; interpret 0.525 / 0.561 against 0.551 / 0.626; matrix 0.237 / 0.251 against
+  0.249 / 0.262; walk 2.092 / 2.145 against 2.235 / 2.222; search 0.240 / 0.200 against 0.231 / 0.227.
+  Chrome fib 2.015 / 2.179 against 2.007 / 2.126; sort 1.072 / 1.170 against 1.109 / 1.237; interpret 0.585 /
+  0.604 against 0.589 / 0.637; the others within 0.01 s. Every difference is inside this machine's 10 to 15%
+  noise; the best of each points to the compact design costing up to a few percent on calls through
+  registers (sort 2.6%, interpret 5% in wasmtime). Not settled.
+- Memory: the old table had a slot (a pointer, 8 bytes in both engines) per 4 bytes of code; Node's
+  10,003,026 slots were 80 MB in every thread. Now the table has one slot per piece (Node 120,586) per thread,
+  and the array 4 bytes per 4 bytes of code once per process (40 MB for Node), in a shared memory where
+  untouched pages cost nothing. Measured only as these sizes, not as process memory.
+- Chosen: the compact design. It is the only one within Chrome's 10,000,000 table entries for Node and Bun,
+  and no speed difference could be shown. The old design is gone (one primitive).
+
+What a call between two modules costs (`measure_calls_between_modules`, `programs/calls.c` -O2, 100 million
+direct calls of a small function, the program in one module against every piece in a module of its own;
+best of 3, wasmtime): 2.60 ns more a call (0.208 s against 0.468 s; native 0.047 s; load 30 to 32), again
+2.95 and 2.91 ns in a later run (speed and size; load 25). Not measured in Chrome: the Chrome runner cannot
+split a translation into modules yet.
+
+Size, first what is free (section 11, step 1), each measured by itself (translation only, release, bytes of
+WebAssembly; before / after):
+- Flags written back: the NZCV word was built flag by flag, and for flags whose state is known only at run
+  time each of the four flags had its own choice between states, each working out the kept comparison again.
+  Now the word is worked out once for each state. busybox 38,916,859 / 33,934,500 (-12.8%), musl 17,145,765 /
+  15,157,213 (-11.6%), rg 160,947,565 / 143,614,742 (-10.8%), git 126,677,601 / 112,987,851 (-10.8%), python
+  161,387,477 / 143,036,317 (-11.4%), java 639,562,571 / 563,342,889 (-11.9%), go 408,425,275 / 359,573,773
+  (-12.0%); the benchmark set 360,994 / 312,018 (load 34 to 40). Run speed (benchmark set, best of 3, load
+  27 to 33, against the lookup rounds above): fib 2.405, sieve 0.650, sort 1.092, interpret 0.547, matrix
+  0.234, search 0.232 in wasmtime; Chrome fib 2.123, sort 1.079, interpret 0.603, matrix 0.168: no loss.
+  Kept in both settings.
+- Where the rest goes (the benchmark set after the change, `wasm-tools print` and a script in scratch,
+  `m5r2/slow.py`): 28% of the instructions are in slow paths that end in `unreachable` (623 of them, about 70
+  instructions each: registers written back, the flags word, the passed registers and pc, the hook call);
+  `main` alone is 32,440 of 154,391 lines of text. Not reduced yet.
+
+The setting (section 11): `Optimise::{Speed, Size}`, a parameter of `translate` (also of `translate_omitting`
+and `translate_in_modules`), written in the description section (format version 3: a byte after the
+look-ahead). Speed is the default and gives up nothing. The runners take it (`Machine::optimise_for`, used
+for code made at run time too; the Chrome runner's setup `optimise`). Mixed runs (layers 2 and 3, the program
+tests) now load full look-ahead translations in both settings, a bounded one in a random setting, and make
+code at run time in a random setting, so pieces of both settings meet in every mixed run. The size mode,
+one trade at a time:
+- Trade 1, no copy of a proven loop without its checks (every loop keeps only its checked copy). Size:
+  busybox 33,524,703 (-1.2% from speed), musl 14,671,148 (-3.2%), rg 139,745,007 (-2.7%), git 111,660,457
+  (-1.2%), python 140,363,235 (-1.9%), java 555,484,478 (-1.4%), go 355,632,306 (-1.1%); benchmark set
+  284,057 (-9%). Speed (benchmark set, best of 3, load 35 to 52, against speed's figures above): wasmtime
+  matrix 0.637 s (2.7 times slower), search 0.418 (1.8 times), interpret 0.595 (9%), others the same; Chrome
+  matrix 0.251 (1.5 times), search 0.362 (1.5 times), sieve 0.623 (18%). A poor trade on its own; kept
+  because trade 2 needs it (a loop without its own loop piece cannot carry on after a stop where its proof is
+  made again).
+- Trade 2, no loop pieces: a stop at a jump back carries on in place (what irreducible loops already did).
+  Size, from trade 1: busybox 19,077,708 (-43%; 27.1 bytes a byte of code), musl 8,646,183 (-41%), rg
+  53,558,478 (-62%), git 62,767,687 (-44%), python 80,524,723 (-43%), java 337,272,362 (-39%), go
+  222,990,220 (-37%); the benchmark set 130,762 (-54%) (load 42 to 49). Gzipped 7.9 to 12.8 bytes a gzipped
+  byte of code, against 14.2 to 25.9 for speed. Speed (best of 3, load 21 to 28): wasmtime about as trade 1
+  (sieve 0.803, matrix 0.507, search 0.478, interpret 0.639; fib, hash, sort, walk unchanged); Chrome much
+  slower where a long loop runs in a function entered once, because V8 only tiers a function up when it is
+  called again: matrix 1.360 s (8 times speed's 0.168), search 2.170 (9 times), hash 1.453 (2.5 times),
+  sieve 0.918 (1.7 times), interpret 0.800 (1.3 times); fib, sort, walk unchanged.
+- Translation is faster in size mode (busybox 0.50 s against 0.59 s; rg 1.53 against 2.31).
+
+elfconv (the benchmark to beat), set up and compared on the benchmark set:
+- Set up from its published image `ghcr.io/yomaytk/elfconv:arm64` (6.1 GB, built 2026-07-05; remill, LLVM 16,
+  WASI SDK 24, Emscripten), not built from source. Its lifter accepts only statically linked glibc programs (it
+  looks for glibc's `_start` pattern to find `main`), so the flat blobs of `bench.c` cannot be given to it.
+  Each workload was built inside the image as an ordinary static glibc program with clang 16 (`-O2 -static`,
+  bench.c's own `_start` renamed away) and converted with `TARGET=aarch64-wasi32 ./exe.sh` (about 55 s a
+  workload, 5.7 MB of WebAssembly each). Scripts in scratch: `m5r2/elfconv/convert.sh` and `time.sh`.
+- Run in wasmtime 50 (compiled ahead with `wasmtime compile`, best of 3, so the time includes wasmtime
+  starting and instantiating, a few milliseconds), and the same glibc executables natively in Docker (best of
+  3), load 24 to 30. Times native, each against its own native build (ours: speed setting, wasmtime, from the
+  run above; our blobs are built by zig's clang without a C library, elfconv's by clang 16 with glibc, so the
+  machine code differs and only the ratios compare): fib elfconv 8.7 (3.60 s / 0.414), ours 6.0; sieve 1.05
+  (0.48 / 0.459), ours 1.44; hash elfconv failed ("No lifted instruction at (0x40103c) was executed", no
+  output; native 0.640 s); sort 6.9 (2.42 / 0.353), ours 3.2; interpret 14.8 (4.14 / 0.279), ours 3.7; matrix
+  1.17 (0.11 / 0.094), ours 3.0; walk 0.84 (2.29 / 2.728), ours 0.96; search 1.17 (0.17 / 0.145), ours 1.9.
+- So elfconv is ahead on loops over memory (sieve, matrix, search, walk: LLVM -O3 optimises the lifted
+  loops, and it has no permission checks) and well behind on calls, calls through registers and the switch
+  interpreter (fib, sort, interpret). It also gave a wrong result where we do not (hash). Not compared in
+  Chrome (its browser output needs Emscripten's page).
+
+Measured with the engines, each binary in each setting (`measure_binaries`, release, one run each; load 25
+to 52). Bytes of WebAssembly, then wasmtime's compile time and bytes of machine code (the memory it uses for
+compiled code), then Chrome making the modules compiled at first call / at once by its baseline compiler.
+Instances took at most 18 ms in wasmtime and 177 ms in Chrome everywhere.
+- busybox: speed 33,934,500, 1.07 s, 50.8 MB, 0.01 / 0.06 s; size 19,077,708, 0.65 s, 29.6 MB, 0.00 / 0.04 s.
+- musl: speed 15,157,213, 0.46 s, 22.6 MB, 0.00 / 0.03 s; size 8,646,183, 0.28 s, 13.4 MB, 0.00 / 0.02 s.
+- rg: speed 143,614,742, 5.20 s, 187.7 MB, 0.03 / 0.21 s; size 53,558,478, 3.67 s, 73.8 MB, 0.01 / 0.10 s.
+- git: speed 112,987,851, 3.59 s, 167.4 MB, 0.02 / 0.17 s; size 62,767,687, 2.03 s, 95.3 MB, 0.02 / 0.10 s.
+- python: speed 143,036,317, 4.48 s, 209.5 MB, 0.03 / 0.22 s; size 80,524,723, 2.66 s, 121.6 MB, 0.02 / 0.13 s.
+- java: speed 563,342,889, 19.7 s, 863.9 MB, 0.11 / 1.04 s; size 337,272,362, 13.1 s, 531.9 MB, 0.07 / 0.62 s.
+- go: speed 359,573,773, 13.3 s, 543.8 MB, 0.07 / 0.55 s; size 222,990,220, 9.8 s, 341.2 MB, 0.05 / 0.30 s.
+- node: speed 2,608,644,243 in 3 modules (65.2 a byte of code), translated in 61 to 66 s; Chrome now makes its
+  modules (0.53 to 0.76 s at first call, instances 26 to 33 ms): the compact lookup's table fits. Compiled at
+  once, Chrome's page crashed ("Target crashed"; two runs), so 2.6 GB is past what one page can compile
+  eagerly here; wasmtime was not reached in these runs (the first run's figure: 89.6 s to 4.04 GB). Size:
+  1,253,423,350 in 2 modules (31.3 a byte), translated in 48 s; Chrome 0.28 s at first call and 2.57 s at once
+  (instances 24 and 177 ms); wasmtime 49.2 s to 1.88 GB of machine code.
+- bun (load 33 to 54): speed 3,922,908,246 in 4 modules (75.4 a byte), translated in 139 s; Chrome makes its
+  modules at first call in 1.06 s (instances 34 ms); compiled at once its page crashed; wasmtime 154.8 s to
+  5.51 GB of machine code. Size 1,408,316,068 in 2 modules (27.1 a byte), translated in 86 s; Chrome 0.32 s at
+  first call and 4.30 s at once (instances 31 and 193 ms); wasmtime 61.7 s to 2.06 GB.
+- So all nine binaries now load in Chrome (compiled at first call) in both settings; compiled at once, Node
+  and Bun load only for size.
+- A crashed page is now reported as a refusal, so the measurement goes on to wasmtime.
+- Chrome's memory for compiled code is not measured (nothing reads V8's code space yet); wasmtime's is the
+  machine code bytes above.
+
+Cases run on this run's code (all passing): after each change, the program, layer 2, look-ahead, changes,
+Chrome, smoke and checks tests at their defaults (release; mixed runs now hold pieces of both settings).
+Last, every test of the three crates on the final code (debug, Chrome and layer 3's defaults included): 69
+passed, 7 ignored (the measurements), 13.5 minutes, load 36 to 55. No long random run was made this run.
+
+M5, what comes next (most important first):
+1. Size, free reductions not yet done: slow paths are 28% of the output (each writes back its registers, the
+   flags word, the passed registers and pc, inline): a shared function per module for the part that is the
+   same everywhere (passed registers, pc, the hook call, the unwind). Then the meanings' own waste (a move
+   that is an `or` with zero, constants extended at run time, copies between locals), each measured.
+2. Size mode: a way for a proven loop to keep its unchecked copy without a loop piece (a stop at its jump
+   back going to a re-proof at the loop's entry), which would win back trade 1's loss.
+3. Records for each binary in each setting with both engines (started at the end of the second run; see
+   "Measured with the engines" below if it finished), Node and Bun in Chrome with the compact lookup, and the
+   memory each engine uses for compiled code (wasmtime: machine code bytes; Chrome: not measured, nothing
+   in the runner reads V8's code space yet).
+4. A call between modules in Chrome (the Chrome runner needs to split translations).
+5. Translation speed on the largest binaries (Node 65 to 99 s, Bun 137 to 165 s): not profiled again in
+   this run.
+6. Static counters for each binary: not recorded yet.
+7. Check that Chrome's eager-compile timings cover compiling every function.
+
+## M5, first run
+
+Fixes from the check of M4's second run:
+- Code the program writes while running now runs (the JIT pattern). The stand-in's load code hook translates
+  from guest memory as it is at that moment, not from the file's bytes: from the blob's code range when the
+  address is in it, otherwise from the run of pages that allow running code around the address (within what
+  the lookup table covers). Both runners' tables now cover the whole blob, not only its code. Test
+  `tests/programs.rs` `written_code_and_null_calls_match_linux` (`programs/written_code.c`: writes `add`,
+  `mul`, calls them in a loop, then writes `sub` over `add` and calls it again; -O0 and -O2 against Linux at
+  none, full, bounded and mixed, and in Chrome at full and bounded). Found on the way: the C library's
+  `__clear_cache` (zig's compiler-rt) leaves out the `dsb ish` after `ic ivau`, and real ARM64 Linux then ran
+  the old code (printed 1499000, not 1498000); the program uses Arm's full sequence itself.
+- A jump or call to an address with no code (null or not allowing running code) is now a memory fault
+  (`Exit::MemoryFault`, access `Execute`, pc and address the target), counted and warned as "memory fault",
+  SIGSEGV (status 139) as on Linux, in both runners. Test: the same one, with `programs/null_call.c` (Linux
+  139, "before"; ours the same at every look-ahead and in Chrome, one memory fault counted). `Stopped::NoCode`
+  is left only for an address that allows running code but has no slot in the runner's table (layer 1 uses a
+  one-slot table for this, so control that lands outside its instruction stops there; layer 1 maps an execute
+  fault to "landed", as its reference does with SIGSEGV at pc).
+- The changes test now keeps "may run code" as placed on every page (the stand-in drops no pieces when a page
+  stops allowing it, plan section 7), so its changes still touch reading and writing only.
+- The share of the changes test's run at full (M4 second run): the figure still comes from the instrumented
+  copy in scratch; its patch is now kept at `pyro-parked/wcontainers-scratch/translator/m4r2-share/share.patch`
+  (apply to commit 94db52f). It is approximate: a block's whole length is counted when it is entered, even if
+  it faults or leaves early. Not put in the repository: a per-block counter in the translator for one figure
+  would be measuring-only code with no other use.
+- Pieces made at run time from the middle of a function (after a lost stack, a go to address, a forgotten
+  piece) lose what full pieces recognise: switch tables and loop proofs. Counted and warned, never hidden, but
+  slower: the check measured `mine_deepthrow -O0` with 273,040 "jump through a register not recognised" at
+  full against 4,095,513 at Bounded(7) and Bounded(256), and 1,456,194 "loop not proven" in Chrome at
+  Bounded(256), none at full. Recorded under "Known gaps"; `measure_bound` times only bench.c.
+- Chrome's figure for translating and loading one piece at run time now includes the engine's compile: the
+  measurement runs Chrome three ways (V8 flags given only to the measuring run). Load 8 to 10, release:
+  bench -O2 at bounded 256, 26 pieces: wasmtime 2572 us a piece; Chrome 543 us compiling at first call (not
+  timed), 692 us with its baseline compiler eagerly (`--no-wasm-lazy-compilation`), 3915 us with its optimising
+  compiler alone (`--no-liftoff` too). hello -O2, 55 pieces: wasmtime 3669 us; Chrome 729, 924 and 6947 us.
+  At bounded 16 in wasmtime: bench 128 pieces at 1051 us, hello 127 at 975 us. (bench made 15 pieces at 256
+  in M4's figure and 26 now; not looked into.)
+- The Chrome runner now refuses (throws) to put code made at run time over a piece its table holds, as the
+  wasmtime runner asserts.
+
+What M5's first run built:
+- `src/binaries.rs` (test crate only; `object` 0.40 and `gimli` 0.34, both established crates): each binary is
+  taken once from its Docker image into `target/binaries` and read as the translator's input: the blob is the
+  whole loaded image (every loadable segment in place); the code range is from the first section of
+  instructions to the end of the last (the runnable segment also holds headers and read-only data, which would
+  only grow the lookup table); starts by means: the entry point and DT_INIT/DT_FINI; function symbols of both
+  symbol tables; every FDE of `.eh_frame`; the init, preinit and fini arrays (through their relocations);
+  addresses in data that point into code (what RELATIVE, ABS64, GLOB_DAT and JUMP_SLOT relocations and RELR
+  places hold; in a file that is not moved, every aligned word of its data segments).
+- Translations can be several code modules (`Translation { modules }`). The translator emits every piece for
+  one module first; if that passes an engine limit (1 GiB a module less 64 MiB, a million functions less a
+  thousand), it groups pieces in order and emits each group for a module of its own, where direct calls to
+  pieces of other modules go through the lookup (the dispatcher). A piece's loop pieces stay in its module. A
+  function whose body passes 7,654,321 bytes or 50,000 locals is cut in two (more starts) and all is done
+  again. Test-only entry `translate_in_modules` (measure feature) splits small programs into tiny modules:
+  `cut_functions_and_split_translations_match_linux` runs hello, differences, exceptions and many_blocks in
+  modules of 4 KiB and 64 KiB against Linux and none (registers and memory).
+- A function of more than `FUNCTION_BLOCKS` (2048, a new tuning number) blocks is cut in parts: blocks in depth
+  first order, cut into runs, and every place control passes from one run to another made an entry. Test
+  `programs/many_blocks.c` (one function of thousands of blocks) at every look-ahead, mixed, and in Chrome.
+- Emitting a function no longer recurses down chains of merges: the subtree a node's code ends with is
+  emitted by a loop. Bun overflowed the test thread's 2 MiB stack before; a chain of 4000 branches now
+  translates on a 256 KiB stack (`valid.rs` `long_chains_translate_on_a_small_stack`; before the change 1000
+  branches needed between 512 KiB and 1 MiB).
+- Translation speed: making loop pieces cloned the set of every entry once per loop (quadratic). Profiling
+  Bun showed it on top; fixed. Java went from 15.8 s to 12.2 s, Node (Alpine's package) from 42.7 s to 27.8 s
+  (load 20 to 60, so partly noise); Bun did not finish in 3 minutes before.
+- `tests/binaries.rs` `measure_binaries` (one command under "How to run"): for each binary its code and starts,
+  the translation at full (time, pieces, found by the translator, modules, size raw and gzipped), every module
+  validated (wasmparser), loaded in Chrome (made and instantiated, compiled lazily and eagerly), and compiled
+  and instantiated in wasmtime with the bytes of machine code it made.
+
+Measured (release; one run each, load in brackets; "a byte" is per byte of ARM64 code, gzip default level).
+"Chrome" is Chrome 157 making the modules and their instances: compiled at first call (V8's default, so the
+time is mostly not compiling) and compiled at once by its baseline compiler (`--no-wasm-lazy-compilation`).
+wasmtime 50 compiles with Cranelift on all cores at once; "machine code" is the size of what it made.
+- busybox (Alpine 3.22): code 704,368 bytes (176,092 instructions); starts 420 (entry 3, symbols 7, unwind 4,
+  init/fini 2, data 412); translated in 0.64 s (1.1 MB/s); 3520 pieces, 3100 found by the translator; 1 module,
+  38,951,871 bytes (55.3 a byte), 8,247,353 gzipped (19.5 a gzipped byte); wasmtime compile 1.17 s to 54.3 MB
+  of machine code, instantiate under 1 ms (load 60 to 70); Chrome 0.01 s at first call, 0.07 s at once,
+  instances 1 ms (load 56).
+- musl (`ld-musl-aarch64.so.1`): code 370,304 (92,576 instructions); starts 1513 (symbols 1483, unwind 22, data
+  15); 0.31 s; 1824 pieces, 311 found; 17,166,135 bytes (46.4), 3,604,109 gzipped (16.9); wasmtime 0.51 s,
+  23.8 MB; Chrome 0.00 s and 0.04 s.
+- rg: code 2,023,452 (505,863); starts 5073 (unwind 5070, data 1803); 2.44 s (0.83 MB/s); 5963 pieces, 890
+  found; 161,005,794 bytes (79.6), 29,171,765 gzipped (30.5); wasmtime 6.69 s, 199.3 MB; Chrome 0.03 s and 0.29 s
+  (load 90).
+- git: code 2,181,904 (545,476); starts 6084; 2.08 s; 9309 pieces, 3225 found; 126,781,906 bytes (58.1),
+  25,384,531 gzipped (20.0); wasmtime 3.99 s, 177.5 MB; Chrome 0.03 s and 0.25 s.
+- python (`libpython3.13.so.1.0`): code 2,959,628 (739,907); starts 5878 (symbols 1471, unwind 5538, data
+  4059); 2.81 s; 8242 pieces, 2364 found; 161,447,763 bytes (54.6), 29,420,342 gzipped (21.6); wasmtime 5.53 s,
+  223.1 MB; Chrome 0.04 s and 0.33 s. Peak memory of the whole measurement of rg, git and python: 7.7 GB.
+- java (`libjvm.so`): code 13,193,824 (3,298,456 instructions); starts 46,890 (symbols 46,874, unwind 46,871,
+  init/fini 790, data 19,348); 13.25 s (1.0 MB/s); 49,263 pieces, 2373 found; 1 module, 640,062,103 bytes
+  (48.5), 110,653,245 gzipped (20.4); wasmtime 30.5 s to 925.0 MB of machine code, instantiate 4 ms; Chrome
+  0.16 s and 1.31 s, instances 5 and 18 ms; peak memory 9.3 GB (load 90 to 97).
+- node (`node:24-alpine3.22`): code 40,012,104 (10,003,026 instructions); starts 99,365 (symbols 99,247,
+  unwind 96,688, init/fini 162, data 24,539); 98.7 s (0.41 MB/s; 65.1 s in an earlier run at load 60); 120,586
+  pieces, 21,221 found; 3 modules, 2,990,303,191 bytes (74.7), 529,078,428 gzipped (30.7); wasmtime 89.6 s to
+  4.04 GB of machine code, instantiate 11 ms; peak memory 22.2 GB; Chrome refused it: its table of 10,003,027
+  entries is past V8's 10,000,000 (load 55 to 100).
+- bun (`oven/bun:1.3-alpine`): code 52,050,800 (13,012,700 instructions); starts 64,343 (symbols 551, unwind
+  63,291, init/fini 5, data 15,375); 165.3 s (0.31 MB/s; 136.8 s in an earlier run); 143,538 pieces, 79,195
+  found; 5 modules, 4,452,427,570 bytes (85.5), 770,736,310 gzipped (35.2); wasmtime 169.8 s to 5.88 GB of
+  machine code, instantiate 13 ms; peak memory 27.7 GB; Chrome refused it (table of 13,012,701 entries)
+  (load 85 to 100). Before the switch table limit wasmtime refused it: one `br_table` of 360,445 targets.
+- go (the `go` command): code 5,860,244 (1,465,061 instructions); starts 17,595 (symbols 14,259, no unwind
+  tables, data 6482); 5.32 s (1.1 MB/s); 20,859 pieces, 3264 found; 1 module, 408,650,746 bytes (69.7),
+  64,816,902 gzipped (25.2); wasmtime 13.2 s to 578.6 MB, instantiate 1 ms; Chrome 0.07 s and 0.60 s; peak
+  memory 6.4 GB (load 98 to 84).
+- Every module of all nine validates (wasmparser) and wasmtime compiles and instantiates it; Chrome loads
+  seven of nine (all but Node and Bun, refused for the table's size only). The figures above for Chrome
+  compiling at once look fast (161 MB in 0.29 s); whether V8's synchronous compile waits for every function
+  was not checked.
+- Where the bytes go (rg and busybox, before the module split): loop pieces are 45% (busybox) and 64% (rg) of
+  the code; the largest piece is 4.76 MB (rg, a function of 12,966 instructions, 367 bytes an instruction).
+  Pieces carry much that the engine removes anyway (copies between locals, constant flag parts, a value pushed
+  and dropped) and every check's slow path inline. The size work of section 11 has not started.
+- Chrome allows 10,000,000 table entries. With one slot per 4 bytes of code, Node's 10,003,026 instruction
+  slots cannot be one table, so the compact lookup design is needed.
+
+Cases run on this run's code (all 0 mismatches): layer 2, 2000 cases seed 501, 10 on the CPU, each also at a
+bounded N and mixed (671 faulted, 161 left to an address at full, 6572 stacks lost and 6472 pieces forgotten;
+release, 104 s, load 24 to 40); `tests/changes.rs`, `tests/lookaheads.rs`, `tests/checks.rs`, layer 1 and
+`valid.rs` at their defaults (release); the written code, null call, cut and split tests (release). Last,
+every test of the three crates on the final code (debug, Chrome and layer 3's defaults included): 69 passed,
+6 ignored (the measurements), 21.5 minutes, load 39 to 99 (the large binaries were measured beside it).
+
+M5, what comes next (most important first):
+1. The compact lookup design (section 5: one slot per piece, and an array in memory from code offset to
+   slot), built beside the present one and measured on the benchmark set (calls through registers: interpret,
+   sort) and in memory; then choose against the engine limits. Node and Bun cannot be loaded in Chrome without
+   it. Questions to settle: where the array lives (state memory, per process or per thread; the table is per
+   thread instance), who writes it (a code module's start function, or the runner), and pieces made at run
+   time (the table must grow).
+2. Size (section 11), in its order. First what is free in both modes, each measured by itself on the nine
+   binaries and the benchmark set: what the engine removes anyway (copies between locals, `x | 0` for moves,
+   flag parts that are constant, values pushed and dropped); loop pieces that hold more than their loop (the
+   code after a loop up to the next loop header is copied into every loop piece that reaches it); slow paths
+   shared per piece instead of inline at every check. Then the size mode, one trade at a time (for example no
+   loop pieces, carrying on in place after a stop; slow paths out of line).
+3. For each binary in each mode: output size, the memory each engine uses for compiled code (wasmtime's is
+   recorded now as bytes of machine code; Chrome's is not measured yet), and what a call between two modules
+   costs (a direct call becomes a call through the lookup; not measured yet).
+4. elfconv (the benchmark to beat): not set up yet. It builds with remill and LLVM in Docker; how long that
+   takes is not known yet.
+5. Translation speed: Node 65 s and Bun 137 s (single thread, 0.4 to 0.6 MB of code a second, against 1 MB/s
+   on small binaries). Not yet profiled after the fix above; the module split emits everything twice when it
+   splits, and finding functions explores every entry again each round.
+6. Counters for each binary: nothing runs yet, so only what translation can count. Not recorded yet.
+7. The translator's input for a program's own pieces past the code range (PLT stubs are in it; data words
+   that look like code in fixed files make starts that are wrong guesses): look at how many pieces those
+   are.
+
+## M4, second run
+
+Fixes from the check of the first M4 run:
+- How much of the changes test's run is at full after a handled fault, measured. A copy of the tree in
+  scratch (`m4r2-share/tree`, not in the repository) adds to every block of a full or bounded piece, and to
+  every piece of look-ahead none, a count of its instructions in the state memory, kept by look-ahead, and
+  the changes test prints the full machine's counts (its tallies are the same as without the counts, so the
+  run is the same). Seed 21, 1000 random programs and the C programs (3 seeds; release, load 36 to 41):
+  random programs, all runs: 67.5% of instructions at full (344,132 of 509,493), 32.3% at bounded, 933 at
+  none (the instructions run alone); the runs with at least one handled fault: 60.1% at full (248,314 of
+  413,182). C programs (36 runs, every one with a handled fault): 57.4% at full (16,484,157 of 28,733,683),
+  42.6% at bounded, 31 at none. What runs at bounded is the rest of the functions in progress at each fault
+  (the C programs fault inside long loops of main, so main's rest runs at bounded); every call through the
+  table and every direct call between full pieces still reaches a full piece. Before M4 that rest ran at
+  none and took over the table entries of every function it reached.
+- Events in mixed runs now happen at random points over the whole run: a mixed run stops at every stop
+  check (the stop hook raises the flag again each time), and events are injected at random stops among
+  them, the first within 8 stops and each later gap drawn up to a quarter longer than the one before, so a
+  run has about 4.5 events for each doubling of its stops, spread through it. Each event is a lost stack or
+  a forgotten piece, half and half. A run whose mixing seed is a multiple of 4 stops nowhere and has nothing
+  injected, so pieces of every look-ahead also meet on their fast paths. The deep recursion test now runs
+  mixed too (seeds 0 to 2, as every program test).
+- Programs that switch stacks themselves, tried (`programs/fibers.c`: a fiber on its own stack switched with
+  setjmp and longjmp, from the check; `programs/coroutines.c`: two coroutines switched by a hand-written
+  context switch as coroutine libraries do, yielding from inside a recursion). Both at -O0 and -O2 match Linux
+  at none, full, bounded and mixed, and at full in Chrome (`stacks_switched_by_the_program_match_linux`).
+  What a switch costs (`switching_speed`, 2,000,000 round trips, -O2, best of 3, load 39 to 62): fibers
+  native 0.031 s, wasmtime 0.291 s (9.3 times), Chrome 0.851 s (27 times), about 65 ns more per switch than
+  native in wasmtime and 205 ns in Chrome; coroutines native 0.067 s, wasmtime 2.59 s (38 times), Chrome
+  10.96 s (163 times), about 316 ns and 1362 ns more per switch. The plan expected each switch to take "go to
+  address". It does for the hand-written switch (12,004 "left to an address" for 6002 switches at 3000
+  round trips, each switch a return that does not go where its caller expects, plus one or two "continued
+  after stack loss"). With setjmp and longjmp it does not: musl's longjmp ends in `br x30`, so each switch is
+  a "jump through a register not recognised" (6002 at 3000 round trips), which carries on through the table
+  without leaving the WebAssembly stack, and the stack fills and is left to the bottom loop now and then (19
+  "engine stack nearly full").
+- A function whose own frame estimate at full is past the stack budget no longer leaves at its entry for
+  ever: the entry compares the callers' depth (the parameter), not the callers' depth plus its own frame, with
+  the budget, so a piece called from the bottom loop (depth 0) always runs, and what it calls with its own
+  frame on top leaves as before. Test `a_frame_past_the_budget_matches_linux` (`programs/big_frame.S`: 150
+  loops through x0 to x27, so thousands of locals, calling itself three deep; none, full, bounded and mixed
+  against Linux, and at full "engine stack nearly full" counted): before the fix it ran for ever at full
+  (stopped after 120 s), after it passes. Bounded and none were not affected (none checks the parameter).
+- The wasmtime runner sets no limit on instances, tables and memories in its store (wasmtime's default is
+  10,000 instances), so runs with many lost stacks, forgotten pieces or pieces made at run time go on.
+- The first run's final suite had 3 ignored tests, not 2 (`measure_translating_at_run_time` was new).
+- "address above the host's cap" (`Reason::AddressAboveHostCap`) is never raised by the translator, the
+  runners or the hooks: it counts the kernel refusing a request for address space above what the host gives
+  (plan section 6: mmap, brk and the like), and the stand-in kernel has no such request. A guest access to an
+  address past guest memory is not a request: it reads the always-zero byte after the permission table and
+  is a memory fault with exact registers, as an access to an unmapped page is on Linux. With 32 bit memory
+  hosts (not built, see "Known gaps") the translator would raise it too.
+- The stack budget check: the kept check (in the stop check's branch) measured no difference from no check
+  at all in wasmtime and 4% in Chrome, both inside this machine's 10 to 15% noise, so no other way of
+  knowing (a counter in memory or a global, which also needs a decrement at every return) can be shown
+  cheaper here; not built.
+- The default N against others, measured (`measure_bound`): the benchmark set (`bench.c`, SCALE=1, -O2)
+  translated at bounded look-ahead from its first instruction, every other piece made at run time, best of 3
+  in wasmtime (release, load 87 to 110, so the differences under about 15% are not settled): N 16, 20.3 s
+  (0.47 s of it making 133 pieces); N 64, 10.5 s (35 pieces, 0.19 s); N 256, 8.2 s (17 pieces, 0.13 s);
+  N 1024, 8.5 s (12 pieces, 0.08 s); full, 8.7 s. So N 256 runs as fast as full here and well ahead of 64;
+  kept. Only one program; what larger programs reached at run time do at each N is not measured.
+Cases run on the final code (all 0 mismatches): the program tests touched (deep recursion, the big frame,
+unwinding, switched stacks; each also mixed with seeds 0 to 2; debug, 191 s, load about 50). Events in those
+mixed runs are now spread over the run, for example exceptions -O2 stopped 4,146,830 times with 26 stacks
+lost and 30 pieces forgotten, deep -O2 151,321 stops, 18 lost and 24 forgotten, jumps -O0 5916 stops, 13
+and 14 (the check saw 2 to 8 stops in a run of its programs). Layer 2, 1000 cases seed 31, 10 on the CPU (release,
+68 s, load 103 to 57): 357 faulted, 81 left to an address at full, 3110 stacks lost and 3105 pieces forgotten
+in mixed runs. Layer 3, 40 Csmith programs seed 15, 2 at once, 1 also in Chrome, and the hand-picked
+programs: 34 compared, 6 did not end in time on Linux (208 s, load 103 to 76; how much of that the stops at
+every check add was not measured). `tests/lookaheads.rs`, `tests/changes.rs` and `tests/smoke.rs` at their
+defaults (release). Last, every test of the three crates on the final code (debug, Chrome and layer 3's
+defaults included): 66 passed, 5 ignored (the measurements), 12.2 minutes, load 77 to 85.
+
+## M4, first run
+
+Fixes from the check of M3's fifth run:
+- FRSQRTS on the fast path gave the default NaN for the smallest denormal times an infinity: the branch for an
+  overflowed fused sum (-a/2 * b + 1.5) is now taken only when b is finite; with b infinite the infinite sum is
+  exact. Test `tests/layer1.rs` `step_edges_match_the_cpu` (FRECPS and FRSQRTS, 2s, 4s, 2d, s, d, denormals
+  against infinities, flags kept and not, against the CPU): failed before the fix, passes after. Layer 1 on the
+  four FRECPS/FRSQRTS forms: seed 4711 at 400 cases (the check's failing replay) and seed 4712 at 5000 cases: 0
+  failing (release, load 41 to 72).
+- The fifth run's flake "after the fix" count (about 10,200 fresh-container runs) rests on the leftover file
+  names of the workers' last runs (run-1-3416.bin, run-3-3422.bin), not on a summary the script wrote: the
+  workers were stopped before fresh.sh printed DONE, and it prints a line only for a bad run, so the three logs
+  are empty. The count is plausible but not recorded directly.
+- The scratch copy m3-close/tree had a .git file pointing at the real worktree's git directory; removed. Copies
+  of the tree for deliberate breaks must leave out .git (copy with rsync --exclude .git).
+- The check found that the random changes test does catch the break "kept runs allow 32 bytes" (seed 4713,
+  within 781 programs, shrinking included); the fifth run's note said only seed 1 at 1000 missed it.
+
+What M4 built:
+- Bounded look-ahead, `LookAhead::Bounded(n)`: one piece per start, holding what the code reaches from it in
+  its first n instructions (the next instruction is followed first), with everything full look-ahead does
+  inside it (registers in locals, kept flags, blocks and loops, loop pieces kept within the stretch, proofs,
+  kept runs, jump tables, direct calls). It leaves where the stretch ends through the lookup. Blocks that would
+  make a stretch irreducible are left out of it. `Bounded(1)` is the instruction's piece of look-ahead none
+  and nothing else. The default N, `BOUND`, is 256 (a tuning number, not measured against others).
+- Code reached at run time with no piece is translated at `LookAhead::AT_RUN_TIME` (bounded, the default N)
+  from that address and put in the table at that address only, and only where the table holds no piece (the
+  wasmtime runner asserts it). So carrying on after a fault, a go to address, an unrecognised jump or a lost
+  stack never takes over the table entry of a function translated at full.
+- The exact path (a frame or group check that fails, and floating point's slow path at full) runs the one
+  instruction from its piece of look-ahead none, which the load code hook puts in the lookup table's last
+  slot, a slot for no address; the hook takes a second argument for it (`exact`). The thread then carries on
+  through the table from the next instruction.
+- The bottom loop and "go to address" were there since M0; now the bottom loop passes an expected return
+  address no return can reach (`BOTTOM_RETURN`, i64::MIN: return targets are untagged), and a return that
+  does not go where its caller expects, when that caller is the bottom loop, sets pc and returns to it
+  instead of throwing. Each such return is counted and warned as "continued after stack loss": a function
+  that was in progress carries on without its WebAssembly frame (after a lost stack, a go to address, or a
+  stack left for being nearly full).
+- Deep recursion: every piece takes one more parameter, an estimate of the engine stack its callers use
+  (`frame_bytes`: 64 bytes, 8 per parameter and per i32/i64 local, 16 per vector local). A piece passes its
+  own estimate on to what it calls and its parameter to what it tail calls. At the entry of a piece that
+  calls or leaves to others, in the same branch as the entry stop check, a depth past `STACK_BUDGET` (128 KiB,
+  a tuning number) leaves to the bottom loop (`UNWIND_DEEP`, counted and warned as the new reason "engine
+  stack nearly full", 13) with exact registers and pc at the entry, so the WebAssembly stack starts empty
+  again; the frames given up continue one by one as they return to the bottom loop. Look-ahead none checks
+  at every piece's entry. The engine's own stack overflow is never relied on.
+- The stack is lost: a runner can make the thread leave at a stop and carry on from its registers in a fresh
+  thread instance (new lookup table, the code translated ahead of time instantiated again, nothing translated
+  since kept): `Paused::lose_stack` in the wasmtime runner.
+- Across the layers (`src/mixed.rs`): a run with the program's code at none, at bounded of a random N from its
+  first instruction and random other starts, and at full, each address's piece picked at random among them;
+  code at run time at a random look-ahead (1, a random N, or the default); and at random stop checks the stack
+  lost, an address forgotten ("no piece yet"), and the stop flag raised again at random. Layer 2 runs every
+  case at bounded of a random N (ahead of time and at run time) and mixed; layer 3 runs every Csmith and
+  hand-picked program at a bounded N and mixed; `tests/lookaheads.rs` runs C programs at random N with every
+  piece but the first made at run time; the changes test (permissions changed at random points, faults) now
+  carries on at bounded after each handled fault. All against none in the same engine (registers and memory),
+  and layer 2 and 3 against Linux.
+- Programs with setjmp and longjmp (`programs/jumps.c`), C++ exceptions (`programs/exceptions.cpp`, zig's
+  libc++ and libunwind) and Rust panics (`programs/panics.rs`, the standard library, catch_unwind): at -O0 and
+  -O2, against Linux at none, full and bounded, mixed with events injected (two seeds), and at full in Chrome
+  (`tests/programs.rs` `unwinding_matches_linux`). Built with `flat.ld`, which now keeps the unwind table's
+  index in a section of its own (the unwinder finds it through its program header; before, it was merged
+  into read-only data and C++ and Rust crashed), places thread local data, and keeps libc++'s replaceable
+  operators (`__lcxx_override`) in the code with their bounds.
+- Deep recursion against Linux on an 8 MiB stack (blobs now say their stack size, `Blob::stack_bytes`, and the
+  reference maps it): C 150,000 calls deep at -O0 and -O2, and a million calls deep through 8 byte frames
+  (`programs/deep_small_frames.S`), at none, full and bounded in wasmtime and at none and full in Chrome
+  (`deep_recursion_matches_linux`). The million-deep run at full left a nearly full stack 1831 times and
+  continued 999,726 frames from the bottom loop; the whole test took 3.2 s in a debug build before Chrome
+  was added (load about 60).
+- Adding code to a running program, proven in wasmtime (every look-ahead test above) and in Chrome
+  (`tests/browser.rs` now runs every program at bounded from its first instruction, every other piece added
+  while it runs, and checks some were).
+
+The changes test after a handled fault (the check's hand-over): before M4 the run carried on at none from the
+faulting instruction and that code took over the table entries of every function it reached. Now it carries
+on in pieces of bounded look-ahead put only at their own addresses (asserted on every load), so calls through
+the table, and every direct call between full pieces, still reach full pieces; what runs at bounded is the
+rest of each function that was in progress at the fault, and what was in progress at a lost stack. What
+share of the run's instructions ran at full was not measured (nothing counts instructions by piece). Tally at
+full (debug, load 50 to 90): 64 random programs seed 1, 181 faults handled, 133 pieces made at run time and 39
+instructions run alone after a check failed; the C programs, 1483 faults handled, 434 pieces made at run time,
+31 run alone; 1000 random programs seed 21 (release), 3294 faults handled, 2057 pieces made at run time, 933
+run alone. The same 1000 programs made 18,470 changes against 45,316 in the fifth run: changes are made at
+the full run's stops, and after a fault it no longer stops at every instruction as none did.
+
+Deliberate break: a return to the bottom loop that returns before setting pc, at full: layer 2's mixed runs
+fail on seed 1 within 64 cases (a stack lost at a stop).
+
+Cases run on the final code (release unless said; all 0 mismatches): layer 2, 2000 cases seed 2, 20 on the
+CPU, each case also at bounded of a random N and mixed (641 faulted, 133 left to an address at full, 1815
+stacks lost in mixed runs; 128 s, load 87 to 46); the changes test, 1000 random programs seed 21 and the C
+programs (3 seeds) (39 s, load 113); layer 3, 200 Csmith programs seed 14, 3 at once, 2 also in Chrome,
+each also at a bounded N and mixed: 173 compared, 27 did not end on Linux in time (336 s, load 87 to 30);
+`tests/lookaheads.rs`, 40 random N for each of five C programs, seed 2 (35 s, load 35 to 31). Last, every test of
+the three crates on the final code (debug, Chrome and layer 3's defaults included): 64 passed, 3 ignored (10
+minutes, load 27 to 34). The unwinding and deep recursion tests: as above.
+
+Measured (release, best of 5 unless said; load in brackets):
+- The stack budget check, on the call benchmarks (fib, sort), every check against the same without it.
+  As its own branch at the entry (best of 3, load 47 to 82): fib wasmtime 2.268 s against 2.151 (5% slower),
+  Chrome 2.049 against 1.980 (3.5%); sort 1.141 against 1.139 and 1.080 against 1.104 (no difference). In the
+  stop check's branch, kept (load 70 to 101): fib wasmtime 2.262 against 2.276 (no difference), Chrome 2.099
+  against 2.021 (4%); sort 1.153 against 1.145 and 1.083 against 1.078 (no difference). Identical runs vary
+  by 10 to 15% on this machine, so differences under that are not settled. A counter in memory or in a global
+  (which needs a decrement at every return too) was not built or measured.
+- Translating and loading one piece while a program runs (translation, the engine's compile and
+  instantiation, as the runner's counter times it; load 82 to 101): at bounded 256, bench 15 pieces, 4.1 ms
+  each in wasmtime and 0.87 ms in Chrome; hello 52 pieces, 6.7 ms in wasmtime and 0.71 ms in Chrome. At
+  bounded 16 in wasmtime: 1.1 ms and 0.95 ms. Chrome compiles lazily, so its compile is paid later, at
+  first call, and is not in its figure. An earlier run (load 44 to 50) gave 5.3 and 3.4 ms in wasmtime and
+  0.89 and 0.74 ms in Chrome at 256.
+
+## M3, close-out, second run (fifth run)
+
+Fixes from the check of the fourth run:
+- Layer 2 let accesses reach below its area, which since the fourth run is in the blob after the code and the
+  switch tables: a group from near the area's start pre-indexed down by up to 64 bytes an access, and a walk
+  of Q register pairs rounded its step after fitting it, which made a negative step longer (-17 became
+  -32). Stores then overwrote the program's code or tables, and Linux and ours ran garbage. Now a group (and
+  the accesses around a call) starts as far into the area as its accesses reach below their start
+  (`lowest`), and the pair's step is rounded towards zero. The area now ends on a page boundary after zeros,
+  and layer 2 checks after every program that the blob before the area is as built (`area_offset`). With
+  the generator fix undone, that check failed seed 4 within 1000 cases; with it, the checker's seed 4243 at
+  6000 cases and seeds 1, 2, 3, 4, 5, 6, 7 pass (under "Cases actually run").
+- A loop of structure loads and stores post-indexed by their size (`ld1 {v0.16b-v3.16b}, [x1], #64` and the
+  like) is now proven: `memory_access` gives them `PostIndex` by their size, so the proof sees the base as
+  an induction, groups keep following the base, and a pop by one at sp moves the frame. Post-indexing by a
+  register stays an offset of 0 with the base written, as before. Tests: `tests/checks.rs`
+  `structure_loops_are_proven` (ld1 of four, st4, ld4r; failed before: "loop not proven" 0 for a loop
+  running off the blob, now 1) and `structure_frames_off_the_stack` (frames made by st1 at sp and half
+  popped by ld4 post-indexed, 1000 turns and 20,000 that run off the stack, against Linux).
+- The reference runner's own failure (status 101 and its message on stderr) now fails the case in
+  `programs::native`; before, it was only caught by differing from our result.
+- Status corrections: the flake loop gave 4 failures in 20,000 runs, not 5; the summary no longer cites the
+  first M3 run's layer 1 run as the current code's.
+
+- Live fault fixed: a kept run allowed for accesses of at most 32 bytes (`LONGEST_ACCESS`), but LD1 to LD4
+  and ST1 to ST4 of three and four Q registers access 48 and 64 bytes, so such an access starting in the
+  last 63 bytes of a kept run ran onto the next page unchecked. Now each kept run allows for the longest
+  access that shares it (`kept_longest`, the largest `memory_access().bytes` among them), and the access
+  check asserts its size fits; `permission_exact` asserts a length of at most a page (the table's bits
+  reach only the next page). The other places a size is used already took the true size: groups (at most a
+  page in all), the frame check (a page at a time), proofs over a loop's range (`len` of the access or
+  group). Tests written first, both failed before the fix: `tests/checks.rs`
+  `structure_loops_running_onto_a_forbidden_page` (ld1, st1, ld4, st4 of four, ld1 and st3 of three
+  registers, steps 16, 32, 64, against Linux; full faulted two turns late) and `tests/changes.rs`
+  `longest_access_onto_a_page_changed_at_a_stop` (a proven loop of 64 byte loads and stores, the page after
+  made to allow nothing at its first stop; full ran to the end). `denied_at_the_first` now stops full at
+  every check only up to the change, so kept runs live after it.
+- Layer 2 now makes vector accesses: groups and walks load and store one Q register, a pair (LDP/STP Q)
+  and structures of three and four registers (LD1/ST1 of several, LD3/ST3, LD4/ST4, base only or
+  post-indexed), walks also index a Q register by a register; accesses through sp include LDP/STP Q and an
+  LD4 at sp. With the kept-run fix undone, layer 2 failed on seeds 1, 2 and 3 within 1000 cases.
+- A loop whose proof fails at its entry is counted and warned as the new reason "loop not proven" (12,
+  `Reason::LoopNotProven`, at the loop's address): one warn hook call where the copy with checks runs, once
+  per entry, nothing per access. Test: `tests/checks.rs` `loop_not_proven_is_counted` (a loop proven, 0;
+  one running off the blob, 1). A kept run that misses is not counted (ruling; see "Departures").
+- The changes test now changes pages of memory on the stack's side that is no frame: layer 2's area moved
+  from main's frame into the blob (main keeps a frame of the same size for its accesses through sp), so
+  groups, walks, kept runs and proofs through x29 and x18 have changes made under them. Tally, 1000 random
+  programs, seed 21: 45,358 changes, 4926 faults handled (the eleventh run: 2000 programs, 88,517 changes,
+  5418 faults). Deliberate breaks, 1000 cases, first failure counting shrinking (run in a copy of the tree,
+  scratch `m3-close/breaks.sh`, load 25 to 110): proof 156, 53, 95 (seeds 1 to 3; before 231, 248, 139);
+  kept run 221, 257, 143 (before 254, 325, 283); seed 1 only: groups not ended at a system call 625, loops
+  with a system call counted quiet 171, frame kept below sp 346, groups not ended at a call 180, loops with a call counted quiet 42. The new break "kept runs allow 32
+  bytes" passed 1000 programs of the changes test on seed 1 (it is caught by layer 2 and both directed tests).
+- The reference flake is found and fixed: it was the runner, not Linux. The runner is a static executable
+  at 0x200000, and Linux puts its heap (brk) at a random place up to 1 GiB after it. Now and then that place
+  is inside the range a blob is then mapped to, so `map` failed (`MAP_FIXED_NOREPLACE`: "File exists") and
+  the runner panicked. With `panic = "abort"`, musl's abort raises SIGABRT, which the first process of a
+  container ignores, and then ends itself by a fault, so Docker reported status 139, as if the guest had
+  ended by SIGSEGV. Evidence (scratch `m3-close/flake`, the blob of Csmith 2000136, a runner printing the
+  file's size and hash, and at a fault the address, registers, words at pc and /proc/self/maps): 20,000
+  runs in four containers (load 26 to 92): 4 failed, status 134 (the runner not the first process), each the
+  map panic with the heap inside 0x400000 to 0x455000; about 10,000 runs each in a fresh container as layer
+  3 runs them (five at once, load 49 to 117): 3 failed, status 139, the same panic. Fixes: the runner is
+  linked at 2 GiB (`--image-base=0x80000000` in `reference/.cargo/config.toml`), above every address a test
+  gives the guest, so its heap never reaches a blob or a stack; and a panic of the runner now ends it with
+  status 101 (a panic hook calling `_exit`) after its message on stderr, never a signal a guest could end
+  with, and `programs::native` fails the case on that status with that message (fifth run). After the fix (the same printing runner, linked at 2 GiB): about 10,200 runs, each in a fresh
+  container, three at once (load 27 to 113), all ended 0 with the checksum; 300 runs in one container, the
+  same. While looping, a script of mine ran two workers on one output file, which lost output and looked
+  like a Docker fault; it was not.
+- Vector and floating point registers in locals, measured on their own: `floats.c` now has four workloads
+  (`WORKLOAD` 1 to 4: an n-body step in double precision, a single precision matrix product with the sum
+  innermost, the product in i, k, j order which clang vectorises, and sums of absolute differences of
+  bytes, also vectorised), longer at SCALE=1, and `floats_speed` times each in wasmtime and Chrome. Best of
+  3, seconds at full (load 67 to 90 for both): with locals / with v0 to v31 read and written in the thread
+  block (scratch `m3-close/no-vector-locals.py`): n-body wasmtime 0.83 / 1.45, Chrome 0.55 / 1.60; matrix
+  wasmtime 1.11 / 1.11, Chrome 1.23 / 1.66; vector matrix wasmtime 0.62 / 0.83, Chrome 0.37 / 0.80; byte
+  differences wasmtime 0.90 / 1.40, Chrome 0.75 / 1.20. Locals kept. Times native with locals (native
+  0.43, 0.24, 0.17, 0.25 s): wasmtime 1.9, 4.6, 3.6, 3.6; Chrome 1.3, 5.1, 2.1, 3.0. The scalar matrix
+  product at 4.6 to 5 times native is the slowest; not looked into.
+
+## M3, third run
+
+- Layer 3's long run is one command that runs `WC_LAYER3_JOBS` cases at once (default 1), each case still
+  picked and replayed by its number alone; a line every thousand cases shows progress. Measured: 2000 Csmith
+  programs, seed 11, 12 at once, in 852 s (0.43 s a program; load 15 to 70, the full test suite ran beside it
+  for part of the time), against 3.8 s a program one at a time in the first run. At that rate 100,000 take
+  about 12 hours. Most of a program's time is Docker (gcc and the reference each start a container) and the
+  20 seconds Linux is given before a program that does not end is dropped (12% of programs).
+- A layer 3 blob that Linux ends by a signal is now compared (ours must end the same way, at none and full)
+  when the program built as an ordinary static Linux executable (`layer3::ordinary`, same compiler, level and
+  position, no `flat.ld`, 20 seconds) ends with the same status and output; otherwise the case fails, and the
+  report says what three more runs of the blob on Linux gave and how the ordinary executable ended. Found by
+  Csmith 12001408 (seed 12, case 1372, clang -O2, position independent), which faults on Linux as an ordinary
+  executable too, at -O2 also with an unlimited stack (at -O0 it ran for minutes): the program's own
+  undefined behaviour or a compiler fault, not ours. Replayed after the change: compared and matching Linux
+  (status 139, no output) at none and full, in wasmtime and Chrome. Csmith 12003654 (clang -O3) and 12004814
+  (clang -O1, position independent) were the same kind and match under the rule too (replayed).
+- The reference flake came back once: Csmith 12008340 (seed 12, case 8304, clang -O0, position
+  independent): Linux ended the blob by SIGSEGV with no output, then three more runs of the same blob gave
+  status 0 and the checksum. Load was 30 to 300 during that run. With the first run's 2000136 (also clang
+  -O0) that is 2 in about 12,300 programs on Linux, each time on the reference's side only. Not understood:
+  the blob mode maps fixed addresses with `MAP_FIXED_NOREPLACE` (an overlap would panic, not fault), and
+  nothing in it depends on time but the 20 second alarm. The case fails, as it should; under the new rule the
+  ordinary executable decides, so a flake like this can only fail a case, never pass a wrong one. At the
+  pass bar's 100,000 programs, expect about 16 such failures, each to be replayed with `WC_LAYER3_FROM`.
+- Instructions of features we do not offer now decode as `Unsupported`, not `Undefined`: both raise illegal
+  instruction at the instruction, but these are counted and warned as "unsupported instruction reached"
+  (the project's rule for anything unsupported). Two kinds: words of a form in Arm's list whose condition
+  holds on a CPU with every feature but not on ours (`forms::of_feature_not_offered`: the encryption
+  extensions, scalable vectors, pointer signing loads and branches, FlagM, MTE and so on), and encodings inside
+  a form we present that Arm's decode makes undefined without a feature (64 bit PMULL, half precision fixed
+  point conversions, the SSBS, DIT, TCO, RNDR, RNDRRS and CNTVCTSS registers, MSR to SSBS, DIT, SVCR and TCO,
+  and the MTE and persistence cache operations). The second kind is one list in layer 1
+  (`layer1::of_feature_not_offered`), which layer 1 leaves out of the comparison (the reference CPU has
+  most of these features) and which `every_offered_form_is_translated` checks the decoder against both ways.
+  Words in no form at all stay undefined and uncounted, as on any CPU. New tests:
+  `features_not_offered_are_unsupported` (AES, SHA, PMULL, SVE and the second kind),
+  `words_of_forms_not_offered_are_undefined_or_unsupported`, and `smoke`'s
+  `instructions_not_offered_are_illegal_and_counted` (end to end: illegal instruction at the word, registers
+  kept, counted once; a word in no form not counted). Layer 1 on the 13 forms concerned, 1000 cases each,
+  seed 8: 0 mismatches.
+
+## M3, second run
+
+- Floating point's slow path at full leaves the piece. `Emitter::float_mode` now returns whether the meaning
+  writes both paths (`float::paths` is the one place meanings use it). At none it pushes the mode and the
+  slow path is in place, as before. At full the instruction tests the mode (kept in a local) and, when it is
+  set, writes back and tail calls the code module's new function `exact` (`F_EXACT`, so pieces start at 12),
+  which saves the passed registers and `pc`, warns "left to an address", asks `load_code` for code at none
+  there (replacing a piece there, as after `UNWIND_GO_TO_EXACT`) and dispatches to it. The WebAssembly stack
+  is kept, unlike the throwing `UNWIND_GO_TO_EXACT`. Nothing of the instruction may be written before the
+  test; the full emitter asserts it (`every_form_is_valid` runs every form at full through it). The software
+  fused multiply-add on hosts that need it stays in place (it is not a slow twin but the only path there).
+  `differences_match_linux_on_other_hosts` now also asserts that full leaves the piece for it.
+- Measured (`floats_speed`, wasmtime, full, best of 3): 4.41 times native before (load 6), 2.43 to 2.45
+  after (three runs, load 4 to 5; again 2.42 to 2.45 at load 20 to 23). The first run's experiment with the
+  slow path made `unreachable` gave 2.5, so the test that stays costs little.
+- Vector registers in locals at full, measured alone (an experiment not kept: at full, vector registers read
+  and written in the thread block, as at none): `floats_speed` 3.84 to 3.85 times native, against 2.42 to
+  2.45 with locals (best of 3 each, load 17 to 23). Locals kept.
+- Position independent blobs are now loaded away from where they are linked (`programs::MOVED`, 0x23456000;
+  `Blob::load`). Layer 3 builds them as static position independent programs (`-static-pie -fPIE -z
+  norelro`; `flat.ld` keeps their dynamic sections), whose start (musl's `rcrt1`) relocates itself. It finds
+  where it is through `AT_PHDR`, so `flatten` places the ELF file's program headers after the blob (read with
+  the `object` crate) and both runners and the reference give `AT_PHDR`, `AT_PHENT` and `AT_PHNUM`
+  (`layout::initial_stack`; the reference takes two more arguments). Every C program blob now gets them, as
+  Linux gives them. `AT_BASE` alone does not work: Alpine's musl then reads an ELF header at that address.
+  Layer 3 now also fails a program that Linux ends by a signal, so a blob that did not relocate itself cannot
+  match by faulting the same way on both sides.
+- Chrome samples for both layers. Layer 3: `WC_LAYER3_CHROME` Csmith programs (default 1) also run in
+  Chrome at none and full and are compared with Linux. Layer 1: `sample_matches_the_cpu_in_chrome` runs
+  `WC_LAYER1_CHROME` cases a form (default 1, from `WC_LAYER1_SEED`) in Chrome and compares each with the
+  CPU through the same comparison as the wasmtime run. The browser runner got an instruction case mode
+  (`browser::cases`): many one-instruction cases one after another in the same page, memory and instances,
+  each with its thread state and data area given and read back, ending at a system call. A page runs 1000
+  cases (`CASES_A_PAGE`); a page given 6075 at once crashed. Found on the way: the page read the thread state
+  after a system call's result had gone into x0; it now keeps the state from when the thread stopped, as the
+  wasmtime runner does.
+- The layer 3 failure of the first run (Csmith 2000136, clang -O0, SIGSEGV once on Linux): its blob ran 160
+  more times on the reference, 8 at a time at load 16: 160 good. Not reproduced, not understood.
+
+## M3, first run
+
+What is built:
+- Decoding by Arm's forms (`wcontainers-arm64/src/decode_forms.rs`, `decode_simd.rs`): `forms::form(word)`
+  gives the form a word is on the CPU we present, and its name and fields give the instruction. The first
+  path (yaxpeax-arm) keeps the families it had. A word of an offered form that neither path gives an
+  instruction for is undefined (a reserved field value; layer 1 checks each against the CPU), no longer
+  "unsupported".
+- New instructions: CRC32; single instruction atomics (every `memop`, CAS, CASP); exclusives (LDXR, STXR and
+  pairs, plain and ordered) as a compare and exchange against the remembered address, size and value;
+  LDAR and STLR; CLREX; system registers FPCR, FPSR, TPIDRRO_EL0, the counter (CNTVCT_EL0 through a clock
+  hook, CNTFRQ_EL0 1 GHz), CTR_EL0, DCZID_EL0 and the identity registers as Linux answers them for the
+  CPU we present (MIDR 0x410fd083, a generic Arm core; ID_AA64ISAR0 shows CRC32 and atomics; PFR0 FP and
+  vectors without half precision; every other identity register zero; CRm 0 other than MIDR, MPIDR, REVIDR
+  and CRm 1 raise illegal instruction, as Linux does); DC ZVA (64 bytes), DC CVAU/CVAC/CIVAC (a read check),
+  IC IVAU (a read check and the new "code changed" hook); MSR to PSTATE fields is undefined (none is open
+  to EL0 on the CPU we present under Linux). A system call clears the exclusive monitor.
+- Scalar floating point (every floatdp1/2/3, compare, conditional compare, select, immediate, conversions
+  to and from integers and fixed point, FCVT between half, single and double), and every AdvSIMD form: one
+  `Instruction::Simd { op, shape, .. }` covers the same, misc, shift, three-different, by-element, across
+  and scalar pairwise groups; plus permutes, TBL/TBX, scalar DUP and LD1-LD4/ST1-ST4 (multiple, one lane,
+  replicate, post-indexed). Meanings: `simd.rs` (integer: WebAssembly SIMD where it has the operation, else
+  element by element on i64; FPSR.QC is always kept), `float.rs` and `float_simd.rs` (floating point),
+  `memory.rs` (atomics, exclusives, cache maintenance, structures). The old VectorBinary/Unary/Across are
+  gone; their forms are in `Simd`.
+- Floating point has two paths. Fast: WebAssembly's own operations (exact for numbers, as FPCR is at its
+  default whenever it runs). Slow: `exact.rs`, Arm's rules (not-a-number choice, flush to zero, default
+  not-a-number, alternative half precision, underflow when the exact result is tiny, overflow when rounding
+  gives the largest number, the estimates) over `rustc_apfloat` 0.2.3 and `ieee-apsqrt` 0.1.1 for the arithmetic,
+  through the new `float` hook, one call per element. The slow path runs when FPCR is not zero or the
+  program has written FPSR (a CPU-side word, `FLOAT_TRACKING`, is set then; until then the cumulative flags
+  are not kept), and always for fused multiply-adds on a host whose relaxed multiply-add does not fuse.
+  The runner counts it as "software fused multiply-add" (FPCR zero, flags not kept) or "exact floating point
+  requested". Reading FPSR while its flags are not kept is counted and warned too.
+- The start-up probe (`wcontainers-arm64/src/host.rs`): a module whose one export answers whether relaxed
+  multiply-add fuses and whether 34 not-a-number cases come out as Arm gives them. Its answer
+  (`wcontainers_arm64::Host`) is a new parameter of `translate` and part of the cache key. On a host whose
+  answer is no, a fix-up after each arithmetic operation puts Arm's not-a-number in. Conversions between
+  precisions always work out the not-a-number themselves. On this Mac (wasmtime 50) both answers are yes.
+- The translator's contract: three new hooks (`float`, `clock`, `code_changed`), and 32 bytes of the
+  CPU side's own after the abi's thread block (`THREAD_STATE_SIZE`: the float tracking word and the
+  exclusive monitor). Both runners give them; the browser translator exports `probe_module`, `float`,
+  `float_status` and `float_reason` for the page's hooks.
+
+Tests:
+- Layer 1 covers every offered form (`covered` is now "the form has a presented word"). Cases carry FPSR and
+  FPCR both ways (the reference sets them in the signal frame): half the cases in the fast mode, the rest
+  with flags kept, half of those with FPCR's bits random. In the fast mode the cumulative flags of FPSR are
+  not compared (they are not kept there by design), QC is. New value strategies: single, double and half
+  precision edge values and not-a-numbers with payloads.
+- `tests/browser.rs` runs `differences` too: matches Linux in Chrome at none and full (the page's float hook
+  calls the browser translator's `float`).
+- `tests/layer1.rs` `designed_answers_and_faults`: the values we answer by design, FPCR keeping only its
+  bits, and alignment faults of unaligned atomics, load-acquire and exclusives.
+- `tests/decoding.rs` `every_offered_form_is_translated`.
+- `tests/valid.rs` `every_form_is_valid`: 16 words of every form, at none and full, on a host needing every
+  fix-up: valid WebAssembly (relaxed SIMD now in the validator's features).
+- `wcontainers-arm64/tests/exact.rs`: the software path on known cases.
+- `programs/differences.c` (`tests/programs.rs`): division by zero and overflow, every rounding conversion of
+  edge values, fused multiply-add single and double, not-a-number bits through add, multiply, divide, max,
+  minnm and fmadd, the four rounding modes, each exception flag through fenv, flush to zero, LSE atomics,
+  CASP, an LDAXR/STLXR loop, a failing STXR after CLREX, C11 atomics, the counter, DCZID, DC ZVA, cache
+  maintenance and IC IVAU, pointer signing and branch marks, printf of numbers, qsort, strtod and vector
+  loops. Built at the five levels (3 distinct blobs), at none and full: output equal to Linux, full equal
+  to none in registers and memory. `differences_match_linux_on_other_hosts`: -O0 and -O2 translated for a
+  host that does not fuse and needs the fix-up: output equal to Linux, both slow paths counted.
+
+Layer 3 (`src/layer3.rs`, `tests/layer3.rs`): Csmith 2.4 programs (`--max-funcs 8 --max-block-depth 4`)
+and the hand-picked programs (hello: printf; differences: number printing, qsort, strtod and section 8),
+built with clang (zig cc) or gcc 15.2 (Alpine's, in the Docker image `wc-translator-gcc`, made once by the
+test) at -O0, -O1, -O2, -O3, -Os and -Oz, as flat blobs with fixed position code (`-fno-pic`) or position
+independent code (`-fPIE`, data through the global offset table), linked at the fixed load address. At none
+and full: output and status equal to Linux, full equal to none in registers and memory. A Csmith program
+that does not end on Linux in 20 seconds (the reference's blob mode now has that alarm) is not compared,
+and counted. `flat.ld` keeps unwind tables as read-only data now, as gcc's start files refer to them.
+(Since the second run position independent blobs are loaded away from their link address; see there.)
+
+Measured (floating point, `tests/programs.rs` `floats_speed`, ignored, one command; `programs/floats.c`
+at -O2 SCALE=1: an n-body step in double precision and a single precision matrix product; wasmtime, full,
+best of 3, load 13 to 31): 4.9 times native as first built (native 0.101 s), 4.3 to 4.5 with the float mode
+kept in a local at full (kept). Experiments not kept, each one run at load 15 to 165: with the mode test
+taken out, 2.3; with the test kept but the slow path made `unreachable`, 2.5; with one hook call in the
+slow path instead of one a lane, 4.2. So the cost is any call on the slow path inside the hot function, not
+the test itself: the next step is a slow path that leaves the piece (a tail call, or carrying on at none
+from the instruction) instead of calling the hook in place. Vector registers are locals at full since M2;
+how much locals gain for them alone is not measured (there is no variant without).
+
+Found by layer 1 and fixed on the way (each was a wrong meaning): selects with their operands swapped in
+saturating 64 bit add and subtract, signed shifts by register, half precision signs, rounding to infinity
+on overflow, polynomial multiply; a mask built as `cond - 0`; the denormal normalisation of FRSQRTE; FRECPX
+of denormals; unsigned saturation of unsigned 64 bit sources; apfloat not raising overflow when rounding
+gives the largest number; AHP not-a-numbers keeping their sign. Found by `differences.c`: the saturation
+local reused uncleared at full (meanings must clear the locals they read; fresh locals at none hid it).
+
+Layer 1 exclusions added, each with its reason in `excluded`: store exclusives whose status register is
+also transferred or the base, and load exclusive pairs into one register (constrained unpredictable);
+half precision encodings of the fixed point conversions and 64 bit PMULL (FEAT_FP16 and FEAT_PMULL, which
+the reference CPU has); system registers and PSTATE fields of DIT, TCO and CNTVCTSS (features the
+reference CPU has); MTE and DC CVAP/CVADP cache operations (likewise); registers we answer by design
+(CNTFRQ, CNTVCT, CTR, DCZID, the identity registers). Atomics, ordered accesses and exclusives get aligned
+bases, as the reference CPU runs unaligned ones (it has FEAT_LSE2, and even its exclusives do not fault);
+the faults are checked by `designed_answers_and_faults`. The reference CPU's answers that settled these
+were probed once (scratch `m3/`): it runs DIT, TCO, CFINV/XAFLAG/AXFLAG, CNTVCTSS and the MTE cache
+operations, reads CTR_EL0 as 0x9444c004 (IDC set, TminLine 9), CNTFRQ as 24 MHz, MIDR as 0x610f0000.
+
+## S1, close-out, third run (eleventh run)
+
+- Fixed a missed fault at full: when sp moved back up (`add sp, sp, #N`), `full.rs` kept the area the
+  pop left below sp as a frame known to be allowed, so later accesses there (`ldur x9, [sp, #-8]`) were
+  not checked, also after a system call or stop that changed that page. Memory below sp is no function's
+  frame, so the plan's exception does not cover it. Now `shift` drops what is left below sp. The contract's
+  text says so too ("at or above the stack pointer"). Tests in `tests/changes.rs`:
+  `below_sp_after_a_pop_across_a_syscall` and `below_sp_after_a_pop_in_a_loop` (change at a stop). Both
+  fail without the fix.
+- Made the changes test strong at calls, the half of the rule the tenth run left weak. With breaks F
+  (groups not ended at a call, `checks`) and G (loops holding a call counted as quiet, `quiet`), the old
+  generator passed 1000 cases on some seeds. Changes:
+  - every layer 2 function now saves and restores x28, x16 and x18 (its frame's first 32 bytes, so
+    accesses through sp start at 32 and frames are at least 544 bytes). A group through x28 can then hold
+    a call (`Chunk::Call` with `around`, half of calls), and loops counting in x16 (`Chunk::Loop`) and
+    walks through x18 whose base moves can call each turn (4 in 10 of them);
+  - a "writer" function that makes a system call and returns. Calls go to it or to a numbered function,
+    half and half. So calls are in every program, and a call often leads to a change. Before the writer,
+    F and G were caught late or not at all: F at 1942 (counting shrinking) on seed 1, passed 1000 on seed 2,
+    caught at 552 on seed 3; G passed 1000 on seed 1, caught at 2268 and 780 on seeds 2 and 3;
+  - a new layer 2 shape, `Chunk::Below`: move sp to its page's start, make and pop a frame there, then
+    access below sp straight away, after a system call, or in a loop. `changes.rs` now also picks the
+    page below sp's page as a page near a pointer;
+  - two directed tests, `group_across_a_call` and `loop_holding_a_call`, where the callee makes the
+    system call. They fail at once under F and G.
+  Old layer 2 seeds give other programs again.
+- The random test, 1000 cases each, seeds 1, 2 and 3, against all seven breaks. Numbers are the case of
+  the first failure, counting shrinking. Patches are in scratch `s1-close3/break.py`, run with
+  `breaks.sh`, at load 10 to 104. Every break was caught on every seed:
+  - A (proof survives a stop): 231, 248, 139.
+  - B (kept runs survive a stop): 254, 325, 283.
+  - C (groups not ended at a system call): 479, 475, 305.
+  - D (loops with a system call counted as quiet): 263, 282, 270.
+  - E (frame kept below sp): 54, 216, 92.
+  - F (groups not ended at a call): 176, 378, 162.
+  - G (loops with a call counted as quiet): 169, 285, 332.
+  F and G on the checker's seeds 4242 and 777, which passed before: F 265 and 428, G 141 and 403.
+- Not changed: a failed proof and a kept run that misses are still not counted (see "Departures"); the
+  orchestrator should rule on it.
+
+## S1, close-out, second run (tenth run)
+
+- Fixed a missed fault at full: the bounded index proof (`proof.rs`, `index_bound`) took the last
+  instruction writing the index register to be a narrow zero extending load and so bounded it by 255 or
+  65535, without asking whether the register was the load's destination. A post- or pre-indexed load
+  writes back its base, so `ldrb w9, [x14], #1` passed as a bound on the pointer x14 and the loop's copy
+  without checks read a page that allows nothing. Now the load must load into that register; the same
+  fix covers the 32 bit comparison path. Test: `tests/checks.rs`, `index_written_back_by_a_narrow_load`
+  (both forms, against Linux, none and full); it fails without the fix (full exits 0 where Linux and none
+  get SIGSEGV). Nothing in the generators made this shape; not added to them.
+- `tests/changes.rs` was not strong at system calls: two breaks of the system call half of the rule were
+  not caught (C: groups not ended at a system call, `full.rs` `checks`; D: loops holding a system call
+  counted as quiet, so they get kept runs and proofs). Causes found: the layer 2 area (and so every
+  access through x29) is on the stack, which changes leave alone (frames); a group was never split by a
+  system call; no loop over memory held a system call; changes at system calls came only one in `every`;
+  and 3 runs in 4 raised the flag at every pause, so after each system call the stop check forgot the
+  kept runs anyway. Changes made:
+  - every system call now makes a change (stops still one in `every`);
+  - near-register changes pick among registers that point at pages a change may touch (not frames), and
+    pick the register's own page half the time, otherwise the page before or one of the two after;
+  - the plan's `stop_everywhere` became `stops`, the chance that the full run raises its flag again at
+    each pause (1, 1, 1, 0.5, 0.1 or 0), so some system calls are followed by a stop and some are not;
+    the runner's `Paused` gained `raise_stop_flag`;
+  - layer 2: a group may hold a system call between its accesses or just after them (half of groups),
+    a walk may hold one after its access each turn (one in four), and the plain system call op is twice as
+    common. The registers the call sets (x0, x1, x2, x8) are kept off the group's base and the walk's
+    index and step. Old layer 2 seeds give other programs again.
+  - two directed tests in `tests/changes.rs` (`group_across_a_syscall`, `loop_holding_a_syscall`): a
+    page made to allow nothing at the first system call, full must fault as none does. Each fails at once
+    under its break.
+- The random test against all four breaks, 1000 cases each, seeds 1, 2, 3, first failure counting
+  shrinking (patches and `breaks.sh` in scratch `s1-close2/`, run in a copy of the tree, load 5 to 29):
+  every one caught on every seed. A (proof carried on in place after a stop): 200, 136, 138. B (kept runs
+  survive a stop that carries on in place): 619, 114, 60. C: 408, 403, 316. D: 184, 80, 76. Before this
+  run C and D passed 1000 to 5000 cases. In between (before walks held system calls) D passed 1000 cases
+  on seed 3; and with the flag raised at every pause in only 1 run in 4, A and B took longer (B passed
+  1000 on seed 1), which is why `stops` is 1 in half the runs.
+- Not counted: a proof that fails (the loop runs its copy with every check) and a kept run that misses
+  (the access is checked exactly). Both are the ordinary checked path that every loop took before S1, not
+  a slow twin, so no `Reason` was added; a counter on them would need a host call on every loop entry
+  whose proof fails or every page a walk crosses, in code S1 measured for speed. Noted under "Departures".
+- The shared crate's change in b0df319 is now recorded (see "Shared crate").
+
+## S1, close-out (ninth run)
+
+- The rule the dropped checks rest on (now in `contract.rs`'s documentation, "When the permission table
+  may change"): what a piece has found out about page permissions (a check another covers, a kept run,
+  a proof over a loop's range, a bounded index) holds only until the next point where its thread can stop:
+  a stop check whose hook runs, a system call, or leaving `run`. The one exception is the plan's own: a
+  frame checked when sp moved down holds until the next function entry, for memory at or above sp only
+  (since the eleventh run; before, the code also kept what a pop left below sp, see the third run). So whoever changes a process's
+  page permissions must first bring every other running thread of that process to a stop (raise its flag
+  and wait for its hook, or for it to leave `run`), as a real kernel interrupts the other processors
+  before it changes a page table. With one host thread this happens by itself; the later host-threads
+  work must do it.
+- The section 9 test, `tests/changes.rs` with `src/changes.rs`. The run at full makes changes and records
+  where; the run at none, stopping at every instruction, makes the same changes at the same points and
+  must end the same. A change is up to three pages, each set to nothing, read, write, read and write, or
+  everything; 60% are the page a register points at, the one before it or the two after it (so they land
+  on what a loop's proof or a kept run covers, and on the page after the one being accessed), the rest
+  any page of the blob, the page after it, the stack below sp or the page below the stack. Pages from
+  sp's page to the top of the stack are left alone (frames, the plan's exception). Changes came at one
+  pause in 1, 4, 32 or 256 (one in 16 or 1024 for the C programs), at stop checks (the full run stopped
+  at every check in 3 cases in 4) and after system calls; the tenth run changed this (see above). A fault on such a page is handled as a program's
+  handler would: the page is made readable and writable and the thread carries on from the faulting
+  instruction, up to 64 times a run, so one run meets many faults and every one is compared: why the
+  thread came back (fault address and kind), every register, then output, status and every byte of
+  those pages at the end. A system call point is found again by its count; a stop point by how often
+  the thread had come back before it plus its registers and a hash of that memory (a handled fault
+  returns to the same registers and memory, which first matched the wrong stop; found by the test
+  itself). Programs: layer 2's random programs, and walks (-O0, -O2), integers, tables and bench (-O0,
+  -O2, the small sizes), each with several seeds.
+- Layer 2's generator has two new shapes for it: a system call op (a write of nothing to standard
+  output, so stops and checks after a system call are exercised mid-function and the CPU agrees), and
+  a lookup loop that goes back to its head through a switch whose cases are the head and the way out (a
+  switch with a backward case, so a stop carries on in place inside a loop with kept runs). Before the
+  second, no test program reached that path. Old layer 2 seeds now give other programs.
+- Shown to fail by breaking the code on purpose: (A) a proven loop's copy without checks carrying on in
+  place after a stop at its jump back, instead of going to the loop piece that proves again (patch
+  `s9/break-proof.patch`): with the final test, caught at the first failing case on seeds 1, 2 and 3
+  (within 20, 6 and 28 cases counting shrinking; full ran past a fault none took, or faulted later).
+  (B) a stop that carries on in place leaving the kept
+  runs alive (`full.rs` `stop_check`, patch `s9/break-kept-run.patch` in scratch): not caught by 3000
+  cases before the backward switch shape existed (that path was never reached), caught within 232, 122
+  and 154 cases (seeds 1, 2, 3) after.
+- The switch that leaves checks out (`Omit`, `translate_omitting`) exists only with the translator
+  crate's `measure` feature; `translate` always translates with every check. Only the test crate and the
+  browser translator turn the feature on. Cargo merges features in one build, so a crate built in the
+  same build as the test crate sees `Omit` too, but must still call `translate_omitting` by name.
+- Search with only the permission check left out (5.6 times native in wasmtime, against 2.0 with no
+  check and 2.0 with every check), looked into for about half an hour, best of 3 to 5, load 6 to 13:
+  reproduced (0.66 to 0.73 s against 0.24 for no check and for every check). It is not a cost of any
+  check. The hot loop's machine code is the same as every check's proven copy (both hold the stop flag
+  load), 19 to 22 instructions a turn; no slow path is taken (no counter moves); `sample` puts 65% of
+  the samples on the instruction after the loop's first data dependent branch. Changing only what the
+  piece does at its entry (a few stores to unused state memory, an experiment not kept, patch
+  `s9/search/pad.patch`) changes how Cranelift allocates registers in that function: 10 of 11 such
+  builds stay at 0.66 to 0.73 s and one runs at 0.245 s, with the loop's running sum kept on the stack
+  instead of in a register. So it is an artefact of how Cranelift compiled that one function in that
+  variant, together with this CPU; why that code is three times slower was not traced (no hardware
+  counters here).
+- Output size, bench -O2 SCALE=1, all workloads, 4836 bytes of code, at full, each S1 commit built in a
+  scratch clone (`s9/size.sh`; bytes of WebAssembly, then gzipped at the default level):
+  - before S1 (d0e700d): 111,975 (23.2 per byte of code), 27,653 gzipped.
+  - registers in the thread block (5ab1eed): +27,411 to 139,386 (28.8). Every register outside the
+    locals is a load or store with its own offset, instead of a global.
+  - throwing through a helper, the module's own globals (2300a89): +316.
+  - re-entering the piece at its loops after a stop (7e8be55, replaced later): -4,322.
+  - kept page in loops (2382c4a): +3,381.
+  - the flags bit in the return address (87bb69e): +3,092 to 141,853 (29.3).
+  - loop pieces (af2566e): +188,027 to 329,880 (68.2), 69,297 gzipped. The largest by far: each loop
+    gets a piece that holds the loop and what follows it up to another loop's header, so code is copied
+    once per loop that reaches it.
+  - kept runs of up to eight pages and the write back before loops (1f7dfee): +10,708.
+  - the table's place from the module's globals in a kept run's check (86f24d5): -140.
+  - the proof over a loop's range and its copy without checks (dc7af11): +8,254; outer loops proven too
+    (c7b40ab): +1,690.
+  - two argument registers instead of four (93b955e): -10,479.
+  - the lookup in place at calls through a register (ceaf05f): +541; the switch's case from the
+    register (bd4adcf): +54.
+  - bounded indices proven (ce0fb6b): +13,382 to 353,890 (73.2), 78,378 gzipped. Unchanged since.
+  So of the growth from 23.2 to 73.2 bytes per byte of code, loop pieces are about 78%, registers in the
+  block about 11%, proofs (both kinds) about 10%, kept runs about 6%, and the rest small or negative.
+  Nothing was changed for size.
 
 ## S1: run speed at full look-ahead
 
@@ -722,19 +1858,118 @@ contract's bits, in both runners).
 - Lint the two side packages too: from `crates/wcontainers-translator-test/browser`,
   `nix develop ../../.. -c cargo clippy --target wasm32-unknown-unknown --target-dir ../../../target/browser -- -D warnings`;
   from `.../reference`, `nix develop ../../.. -c cargo clippy --release --target-dir ../../../target/reference -- -D warnings`.
-- Layer 1, long: `WC_LAYER1_CASES=10000 WC_LAYER1_SEED=<n> nix develop -c cargo test --release -p wcontainers-translator-test --test layer1 -- --nocapture 2>&1 | grep -v "^wcontainers warning"`
-  (defaults: 64 cases, seed 1). Replay a failure: same seed and cases, plus `WC_LAYER1_FORMS=<form name>`.
-  The filter drops the runner's warnings (memory faults and stops), one per case.
+- Layer 3: `WC_LAYER3_CASES=100000 WC_LAYER3_SEED=<n> WC_LAYER3_CHROME=100 WC_LAYER3_JOBS=6 nix develop -c cargo test --release -p wcontainers-translator-test --test layer3 -- --nocapture 2>&1 | grep -v "wcontainers warning"`
+  (defaults 4 Csmith programs, seed 1, the first 1 that ends in time also in Chrome at none and full, one at
+  a time; the hand-picked programs are 48 builds each run). Needs Docker, Chrome, and network once to make
+  the gcc image. Keep `WC_LAYER3_JOBS` at 6 or below: wider runs beside the other half's tests pushed the
+  load past 300. At the third run's rate (2000 programs in 14 minutes, 12 at once) 100,000 took about 12
+  hours at 12 at once; at 6, expect about twice that (not measured). Replay one program: the same seed with `WC_LAYER3_FROM=<case>` and `WC_LAYER3_CASES=1` (a failure
+  prints its case and its Csmith number, `seed * 1000003 + case`).
+- Floating point and vector timing: `nix develop -c cargo test --release -p wcontainers-translator-test --test programs floats_speed -- --ignored --nocapture`
+  (`WC_BENCH_RUNS`, `WC_BENCH_WORKLOADS` 1 to 4, `WC_BENCH_CHROME=0` as for the benchmarks).
+- Every form valid WebAssembly: `WC_VALID_WORDS=<n> nix develop -c cargo test -p wcontainers-translator --test valid`.
+- Layer 1, long: `WC_LAYER1_CASES=10000 WC_LAYER1_CHROME=100 WC_LAYER1_SEED=<n> nix develop -c cargo test --release -p wcontainers-translator-test --test layer1 -- --nocapture 2>&1 | grep -v "wcontainers warning"`
+  (defaults: 64 cases, seed 1, 1 case a form in Chrome, 1000 cases to a Chrome page; 6075 took 25.5 s).
+  Replay a failure: same seed and cases, plus `WC_LAYER1_FORMS=<form name>` (the wasmtime run only). The
+  filter drops the runners' warnings (memory faults and stops), one per case.
 - Decoding against Arm's forms: `WC_DECODE_CASES` (default 64 per form), `WC_DECODE_WORDS` (random words
   from the whole space, default 200,000), `WC_DECODE_SEED` (default 1).
 - Words in no form against the CPU: part of the layer 1 command; `WC_LAYER1_CASES` words.
 - Translator proptest: `PROPTEST_CASES`, `PROPTEST_RNG_SEED` (default seed 1).
 - Layer 2: `WC_LAYER2_CASES=1000000 WC_LAYER2_SEED=<n> WC_LAYER2_NATIVE=<k> nix develop -c cargo test --release -p wcontainers-translator-test --test layer2 -- --nocapture`
   (defaults 64 cases, seed 1, 8 of them on the CPU; each CPU case starts a container, about 0.3 s).
+- Bounded look-ahead of random N against none (C programs, every piece but the first made at run time):
+  `WC_LOOKAHEAD_CASES=<n> WC_LOOKAHEAD_SEED=<s> nix develop -c cargo test --release -p wcontainers-translator-test --test lookaheads -- --nocapture`
+  (defaults 4 a program, seed 1). Layers 2 and 3 also run every case at bounded look-ahead of a random N and
+  mixed with events injected (`src/mixed.rs`): layer 2's N and mixing seed come from its proptest case, layer
+  3's from a hash of the blob, so the same knobs replay them.
+- Time to translate and load one piece at run time, wasmtime and Chrome:
+  `nix develop -c cargo test --release -p wcontainers-translator-test --test lookaheads measure_translating -- --ignored --nocapture`.
+- The cost of the stack budget check: the benchmarks with `WC_BENCH_VARIANTS=1,5` (every check, no depth check).
+- What a switch of stacks costs (fibers and coroutines against native, wasmtime and Chrome):
+  `nix develop -c cargo test --release -p wcontainers-translator-test --test programs switching_speed -- --ignored --nocapture`.
+- The default N against others (the benchmark set made at run time at N 16, 64, 256, 1024, and full):
+  `nix develop -c cargo test --release -p wcontainers-translator-test --test lookaheads measure_bound -- --ignored --nocapture`.
+- Permissions changed at random stops and system calls: `WC_CHANGES_CASES=100000 WC_CHANGES_SEED=<n> WC_CHANGES_PROGRAM_SEEDS=<k> nix develop -c cargo test --release -p wcontainers-translator-test --test changes -- --nocapture 2>&1 | grep -v "^wcontainers warning"`
+  (defaults 64 random programs, seed 1, 3 seeds for each C program; since the eleventh run about 33 ms
+  a random program at load 16 to 21, as every program now calls a function that makes a system call).
+- Real binaries (M5): `WC_BINARIES=busybox,musl nix develop -c cargo test --release -p wcontainers-translator-test --test binaries measure_binaries -- --ignored --nocapture 2>&1 | grep -v "^chrome:"`
+  (names: busybox, musl, rg, git, node, python, bun, java, go; all when unset; each is taken from its Docker
+  image into `target/binaries` once, which needs network). Node and Bun take minutes each and 15 to 20 GB of
+  memory (wasmtime compiling several GB of WebAssembly); run them alone.
+- What a call between code modules costs (wasmtime and Chrome): `nix develop -c cargo test --release -p wcontainers-translator-test --test benchmarks measure_calls -- --ignored --nocapture`
+  (`WC_CALLS`, default 100 million; `WC_BENCH_RUNS`; `WC_BENCH_CHROME=0` leaves Chrome out).
+- The translator uses every core; on this machine set `RAYON_NUM_THREADS=6` for measurements and long runs.
+- Size only, no engines: `WC_BINARIES_ENGINES=0` on the real binaries command; `WC_OPTIMISE=speed` or `size`
+  for one setting (both by default); `WC_BINARIES_DUMP=<dir>` writes each module.
 - Benchmarks: `WC_BENCH_RUNS=3 nix develop -c cargo test --release -p wcontainers-translator-test --test benchmarks -- --ignored --nocapture 2>&1 | grep -v "^wcontainers warning"`
-  (`WC_BENCH_WORKLOADS=1,2` picks workloads, `WC_BENCH_CHROME=0` leaves Chrome out). About 15 minutes.
+  (`WC_BENCH_WORKLOADS=1,2` picks workloads, `WC_BENCH_CHROME=0` leaves Chrome out, `WC_OPTIMISE=size`
+  translates for size). About 15 minutes.
 
 ## Cases actually run
+
+- M3 close-out, second run (fifth run), release: layer 2 with the area check, the generator fixed and the
+  translator before the structure proof change: seed 4, 1000 cases (none on the CPU; with the generator fix
+  undone it failed, "a store below the area"); seed 4243, 6000 cases, 60 on the CPU (1993 faulted, 392
+  left to an address at full, 129 s); seeds 1, 2, 3, 5, 2000 cases each, 60 on the CPU: 0 mismatches (about
+  48 s each; load 43 to 261 over these runs). With the current translator: seeds 6 and 7, 2000 cases each,
+  40 on the CPU: 0 mismatches (46 s and 41 s, load 95 to 111); the changes test, 1000 random programs seed
+  21 and the C programs (3 seeds): 0 mismatches (45,316 changes, 4921 faults handled; 36 s, load 109 to
+  115). `tests/checks.rs` in full: pass. Layer 1 on the current code, 1215 forms x 300 cases, seed 13, and 1 a form in Chrome: 0
+  failing (548 s, load 64 to 115). Last, every test of the three crates passes (debug build, Chrome tests
+  and layer 3's defaults included; 59 passed, 2 ignored; 6.9 minutes, load 58 to 64).
+
+- M3 close-out, release unless said: layer 2, 500 cases seed 121 (40 on the CPU), 2000 seed 122 (20 on the
+  CPU), 1000 seed 123 (30 on the CPU), 1000 seed 124 (40 on the CPU), all with vector accesses: 0
+  mismatches (seed 124: 341 faulted, 61 left to an address at full; 22 s, load 83 to 90). The changes test,
+  300 random programs seed 1 and the C programs (3 seeds), then 1000 random programs seed 21: 0 mismatches.
+  `tests/checks.rs` and `tests/changes.rs` in full: pass. Every test of the three crates passes (debug build, Chrome tests
+  and layer 3's defaults included; 57 passed, 2 ignored; 8.7 minutes, load 49 to 93). Layer 3 after the
+  reference fixes, 200 Csmith programs seed 13, 3 at once, 2 also in Chrome: 174 compared and matching, 26
+  did not end on Linux in time, 0 failing (290 s, load 50 to 113). `floats_speed` (all four workloads, both
+  engines): output equal to Linux.
+
+- M3, third run, release: layer 3, 2000 Csmith programs, seed 11, 12 at once, 10 also in Chrome: 1751 compared
+  and matching, 249 did not end on Linux in 20 seconds, 0 failing (852 s, load 15 to 70). Layer 1, 1215 forms
+  x 64 cases, seed 9, with 100 cases a form in Chrome (121,500 Chrome cases): 0 mismatches (829 s, load 19 to
+  74). Layer 1, the 13 forms whose decoding changed, 1000 cases each, seed 8: 0 mismatches. Decoding,
+  `WC_DECODE_CASES=2000`: all pass. Layer 3, 10,000 Csmith programs, seed 12, 12 at once, 20 also in Chrome,
+  and the 48 hand-picked builds: 8780 compared and matching, 1216 did not end on Linux in time, 4 failing,
+  hand-picked all matching (4423 s, load 26 to 308). Of the 4, three were programs that fault as ordinary
+  executables too (compared and matching after the rule above, replayed one by one) and one the reference
+  flake (12008340). Every test of the three crates passes (debug build, Chrome tests included; 8.6 minutes,
+  load 17 to 67), and layer 3 at its defaults after the last change (69 s, load 14 to 17).
+
+- M3, second run, release, after its changes: layer 1, 1215 forms x 200 cases, seed 6: 0 mismatches
+  (243,000 cases, 292 s, load 15 to 21). Layer 3, 100 Csmith programs, seed 3 (moved position independent
+  blobs among them; 1 also in Chrome), and the 48 hand-picked builds: 86 compared and matching, 14 did not
+  end on Linux in 20 seconds, 0 failing (382 s, load 11 to 21). Every test of the three crates passes (debug
+  build, Chrome test and layer 3's defaults included; load 8 to 28). Layer 3, 8 Csmith programs, seed 4,
+  all 8 also in Chrome at none and full: 0 failing (38 s in all, load 10 to 18). Layer 1 in Chrome: 1215
+  forms x 1, seed 1, and 1215 x 5, seed 7 (6075 cases, 25.5 s, load 13 to 14): 0 mismatches against the CPU.
+  Last, every test of the three crates passes (debug build, Chrome tests included; 6.2 minutes, load 15 to 21).
+
+- M3, layer 1, release: 1215 forms x 100 cases, seed 2: 0 mismatches (121,500 cases, 177 s, load 18 to 21).
+  1215 x 1000, seed 3 (1,215,000 cases, 27 minutes, load 12 to 23): 4 forms failing, all in the software
+  path or its rules: underflow is raised when the exact result is tiny (before rounding, as Arm's
+  `FPRoundBase` does), not after; `ieee-apsqrt` rounds a denormal input wrongly under a directed rounding
+  (now the root of x * 2^64, scaled back); the software FRSQRTS halved an operand whose half is denormal.
+  Fixed; those 12 forms at 1000 seed 3 and the whole layer at 100, seed 4: 0 mismatches (153 s, load 19 to 23).
+  Then 1215 x 1000, seed 5: 0 mismatches (1,215,000 cases, 26 minutes, load 17 to 24). Every test of the
+  three crates passes after it (debug, Chrome and layer 3's defaults included).
+- M3, layer 3, release: 4 Csmith programs seed 1 and the 48 hand-picked builds (hello and differences x
+  clang, gcc x six levels x two positions): all match (59 s, load 5 to 6). 300 Csmith programs, seed 2
+  (18.8 minutes, load 5 to 30): 256 compared and matching, 43 did not end on Linux in 20 seconds, 1
+  failing: Csmith 2000136 (clang -O0), where Linux gave SIGSEGV and no output and ours printed the
+  checksum. The same blob on the reference afterwards: 15 runs of 15 print that same checksum, as does the
+  program built as an ordinary Linux executable, with a 1 MiB stack too. So the failure looks like a flake
+  of the reference's blob mode under load, not understood; the test is left as it is (it fails when that
+  happens) and this is recorded. A first 300 run hung: the reference is the first process in its container,
+  which SIGALRM's default action never kills; the blob mode now ends from a handler.
+
+- M3, release: layer 1, 1215 forms x 16 cases, seed 1: 0 mismatches (after the fixes above; 8 cases a form
+  first gave 104 failing forms, then 17). Debug run of every test: 1215 forms x 64, seed 1, 0 mismatches
+  after the last three fixes; those forms then 200 cases each, 0 mismatches. Load 4 to 6.
 
 - Layer 1: 261 forms x 64 cases, seed 1: 0 mismatches.
 - Layer 1: 261 forms x 1000 cases, seed 2: 0 mismatches (261,000 cases). This was before SP could be
@@ -778,6 +2013,22 @@ contract's bits, in both runners).
 - Layer 2, sixth S1 run, release: 300 cases seed 61 and 2000 seed 63, 10 on the CPU (two argument
   registers): 0 mismatches, 674 faulted; 2000 seed 65, 10 on the CPU (lookup in place): 0 mismatches, 668
   faulted, 150 left to an address at full (30 s, load 13). Not yet the pass bar.
+
+- S1 close-out, release: layer 2, 2000 cases seed 91, 40 on the CPU (with the new system call and
+  backward switch shapes): 0 mismatches, 704 faulted, 132 left to an address at full (35 s, load 4 to 8).
+  `tests/changes.rs`, 5000 random programs seed 11 and the C programs with 6 seeds each (72 runs): 0
+  mismatches; 205,661 changes made, 11,178 faults handled and compared (108 s, load 7.5 to 9). Not yet a
+  pass bar (the plan's one million random programs applies across layers 2 and 3).
+- S1 close-out, second run, release, after the fix and the new shapes: layer 2, 2000 cases seed 101, 10 on
+  the CPU: 0 mismatches, 715 faulted, 127 left to an address at full (37 s, load 17 to 20).
+  `tests/changes.rs`, 3000 random programs seed 12 and the C programs with 4 seeds each (48 runs): 0
+  mismatches; 142,304 changes made, 10,437 faults handled and compared (78 s, load 14 to 18). Every test
+  of the three crates passes (debug build, Chrome test included).
+- S1 close-out, third run, release, with the new shapes: layer 2, 1000 cases seed 111, 40 on the CPU:
+  0 mismatches, 352 faulted, 97 left to an address at full (25 s, load 33 to 37). `tests/changes.rs`,
+  2000 random programs seed 13 and the C programs with 3 seeds each (36 runs): 0 mismatches; 88,517
+  changes made, 5418 faults handled and compared in the random programs (66 s, load 16 to 21).
+  Every test of the three crates passes (debug build, Chrome test included; load 3 to 10).
 
 ## Measurements
 
@@ -872,34 +2123,43 @@ contract's bits, in both runners).
 
 ## Next
 
-1. Finish S1 (see "S1, what remains"): its aims are not met yet.
-2. Measure the second lookup design (M5 says settle it; nothing built yet).
-3. M3: every instruction.
+1. M5 is built; refinements under "M5, fourth run, what comes next". Then M6 as the plan says.
+2. At the end of the translator track, the long runs to the pass bars, started by the orchestrator
+   (commands under "How to run"; layer 3 expected to take about a day at 6 at once).
 
 ## Known gaps (behave as the plan says: illegal instruction, counted, warned)
 
-- Not translated yet (M3): floating point arithmetic, vector forms outside `VECTOR_FORMS`, CRC32, LSE
-  atomics, exclusives, LDAR/STLR family, system instructions (SYS, DC ZVA, IC IVAU, MSR to PSTATE), system
-  registers other than NZCV and TPIDR_EL0 (FPCR and FPSR included).
-- Layer 1 does not carry FPSR and FPCR yet; nothing translated so far reads or writes them.
-- Flat blobs have no program headers, so thread local data is not supported in test programs.
+- M5: pieces made at run time from the middle of a function (after a lost stack, a go to address or a
+  forgotten piece) do not recognise switch tables or prove loops the way the function's full piece does: much
+  slower on unwinder-heavy code (figures under "M5, first run"), counted and warned.
+- M5: code the program writes and calls directly is translated from memory when reached; a piece of
+  look-ahead none or full that holds written code inline (reached by a direct branch inside a stretch made
+  from the run of runnable pages) keeps the old code after `ic ivau`, as the "code changed" gap below says.
+- M5: a switch table of more than 65,520 slots (an engine limit for `br_table`) is left unrecognised (counted
+  as "jump through a register not recognised"); Bun has one of 360,445.
+- M5: translated for size, a long loop in a function entered once stays in V8's baseline code in Chrome (no
+  loop pieces to carry on in after a stop), up to 9 times slower than speed on the benchmark set. That is the
+  trade the size setting makes; measured under "M5, second run".
+
+- FPSR's cumulative exception flags are kept only once the program has written FPSR (or set FPCR); a
+  program that reads them without ever writing gets the flags it had, counted and warned as "exact
+  floating point requested". A thread made by the kernel (fork, a new thread) starts with them not kept.
+- CASP of 64 bit pairs is a plain load, compare and store: exact with one thread, not atomic with more
+  (WebAssembly has no 128 bit compare and exchange).
+- The "code changed" stand-in forgets the lookup table's pieces of the 64 byte line only; full pieces that
+  hold the code inline elsewhere keep it. Code that changes is out of phase one.
+- The float hook's counters carry the operation as their detail, not the address (registers are not saved
+  at that hook).
+- Flat blobs carry their program headers after the image, but the image has no PT_PHDR, so musl finds
+  thread local data (placed by `flat.ld` since M4) only in a blob that is not moved.
+- At full, a floating point instruction that must take the slow path runs alone from its piece of look-ahead
+  none (the table's last slot), then the function carries on in pieces of bounded look-ahead made from the
+  next instruction. Exact either way.
 - Only 64 bit guest memory. 32 bit memory hosts need the high-bit check (section 6).
-- The WebAssembly stack overflowing on deep guest recursion is not handled, at either look-ahead: every
-  guest call is a WebAssembly call at none too. The engine stops the guest ("call stack exhausted"), the
-  registers are lost and the runner panics; nothing is counted or warned. The independent check found it
-  with recursion 50,000 deep in 16 byte frames (800 KB of a 1 MiB stack), which Linux runs. The plan's way
-  out is the "stack is lost" path (M4): count call depth and, past a limit, leave to the bottom loop and
-  carry on from the guest's own stack. Not built; its cost on calls is unmeasured.
-- Not yet in the across-layer tests: pieces of different look-aheads mixed at random, injected rare events
-  (stack lost, missing piece, flag raised at a random check), and faults with the table changed at random
-  points (M4 per the plan's milestones). Layer 2 programs fault only on the page after the blob and below
-  the stack, with a table fixed for the run.
 - A test whose guest never ends hangs rather than fails (nothing bounds how long a translated run may
   take); the hang this run fixed showed as layer 2 and `tests/checks.rs` running for ever.
-- The full piece of a function keeps every local it may need; very large functions could pass V8's 50,000
-  locals or function size limits. Not checked yet (M5).
-- Finding functions explores every entry again when entries are added; fine for the test programs, not
-  measured on large binaries (M5).
+- Finding functions explores every entry again when a round of cuts adds entries (functions of more than
+  `FUNCTION_BLOCKS` blocks); measured on the large binaries under "M5, fourth run".
 - Stand-in brk never moves the break.
 - A stop flag raised from outside is tested in wasmtime only (`tests/smoke.rs`, before a run and by a
   second thread mid-loop). The Chrome runner has the same hook code.
@@ -910,6 +2170,114 @@ contract's bits, in both runners).
   features than the one we present).
 
 ## Departures from the plan
+
+- M5, fourth run: the translator's maps use `rustc-hash` (an established crate, already a dependency)
+  instead of std's SipHash: keys are guest offsets, and translation speed is a goal while hash flooding is
+  not a risk here (a hostile binary can only slow its own translation).
+- M5, third run: section 11 asks first for what makes the output smaller at no cost in run speed. The slow
+  paths out of line (shared functions for the write back on paths that never come back) were built as that,
+  and measured free on the benchmark set in the speed setting, but they slow loops that run with their checks
+  (sieve in the size setting 0.83 to 1.3 s), so they are a size trade. Nothing found this run is free; the
+  speed setting's output is as before (less 0.4% from the depth check's shared save).
+- M5, third run: the translator uses every core (rayon). Tuning the number of threads is the host's
+  (`RAYON_NUM_THREADS`), not a setting of the translator. The measurements here ran with 6.
+- M5, second run: the compact lookup's array of slots is in the state memory, per process, written by the
+  runner (later the kernel) from each code module's list of pieces; the table is per thread and grows; slot 0
+  is always empty and slot 1 holds the exact path's piece (the plan says only "an array in memory from code
+  offset to slot").
+- M5, second run: size mode's trades are no proven loop copies and no loop pieces; the first costs much in
+  loops and saves little, but the second needs it.
+
+- M5: Node is taken from the official `node:24-alpine3.22` image (Node 24.16.0, 125 MB, 40 MB of code, 10.0
+  million instructions), not Alpine's own `nodejs` package (Node 22, 51 MB, 25 MB of code): the plan's figures
+  (9.13 million instruction slots) are of a Node of that size. The other kinds: Python is
+  `libpython3.13.so.1.0` of `python:3.13-alpine3.22` (the interpreter is in it), Bun `oven/bun:1.3-alpine`,
+  Java `libjvm.so` of `eclipse-temurin:21-jre-alpine`, Go the `go` command of `golang:1.25-alpine3.22`.
+- M5: the code range given for a binary is from its first section of instructions to the end of its last,
+  not the whole runnable segment (which also holds headers and read-only data); the blob is the whole loaded
+  image, so jump tables and constants in read-only data are there.
+- M5: a translation is one or more code modules (`Translation { modules }`); pieces of one module reach
+  another's through the lookup. Grouping is in order of entry; a module holds at most 1 GiB less 64 MiB of
+  code and a million functions less a thousand. A test-only entry (`translate_in_modules`, measure feature)
+  splits small programs to test it.
+- M5: a new tuning number, `FUNCTION_BLOCKS` (2048): a function with more blocks is cut in parts at places
+  control passes between runs of its blocks in depth first order. Bodies or locals past the engine's limits
+  for one function cut it in two again. Not measured for speed: cut parts tail call each other.
+- M5: the stand-in's load code hook translates from guest memory as it is, from the blob's code range or, for
+  other addresses, from the run of pages that allow running code; a jump to a page that does not is a memory
+  fault with access `Execute`. The runners' tables cover the whole blob. The changes test keeps "may run code"
+  as placed.
+
+- M4, second run: "the stop flag is raised at a random check" (section 9) is done as a stop at every stop
+  check of a mixed run, with the stack lost or a piece forgotten at random stops among them; the only way to
+  reach a random check of a long computation without a system call is for the thread to stop at each one.
+  One mixed run in four (by seed) stops nowhere instead.
+- M4, second run: the stack budget is compared with the depth of a piece's callers, not with that plus the
+  piece's own frame, so the frame of the piece in progress may sit above the budget (otherwise a piece whose
+  own frame is past the budget could never run).
+- M4: every piece takes one more parameter than the plan's (passed registers and the expected return
+  address): the estimate of the engine stack its callers use, for leaving deep recursion to the bottom loop.
+  The plan names no mechanism; this one needs no memory access and nothing at returns.
+- M4: a return to the bottom loop that does not go where it expects returns to it (pc set) instead of
+  throwing, and is counted as "continued after stack loss" whatever lost the frame (a lost stack, a go to
+  address, a stack left for being nearly full). The plan counts "continued after stack loss" only for the
+  first.
+- M4: one new reason, "engine stack nearly full" (13), for leaving to the bottom loop at the stack budget.
+- M4: the lookup table has one slot more than the addresses it covers, holding the one-instruction piece of
+  the exact path, and the load code hook takes `exact` to fill it; the table's address slots are only ever
+  filled where empty, so code made at run time never replaces a piece.
+- M4: `Bounded(1)` is defined as the one instruction's piece of look-ahead none (seeing one instruction is
+  what none is); `LookAhead::None` still translates every instruction the starts reach, for the reference.
+- M4: a runner's reference machine at none translates code reached at run time at none (whatever its
+  starts reach), so the reference stays at none; other machines use bounded. The Chrome runner makes run time
+  pieces at the default N only.
+- M4: the C++ and Rust test programs bring their own allocator over a static area, because the stand-in has
+  no mmap (and its brk never moves); the Rust program is `#![no_main]`, so the C library calls its `main`
+  directly, because the standard library's own start makes system calls the stand-in does not answer (poll,
+  sigaction) and aborts on "not implemented". They are built at fixed positions only (musl finds thread
+  local data only in a blob that is not moved).
+- M4: blobs carry a stack size and the reference runner takes it as an argument (`<stack bytes>` after the
+  stack top); 1 MiB as before unless a test asks for more (deep recursion: 8 MiB, Linux's default).
+
+- M3, third run: layer 3 compares a blob that Linux ends by a signal (ours must end the same way) when the
+  program built as an ordinary Linux executable ends the same way; Csmith's programs are meant to have no
+  undefined behaviour, but some fault on Linux all the same.
+
+- M3, second run: at full the floating point slow path leaves the piece by a tail call to code at none
+  from the instruction (counted as "left to an address" besides the float hook's own count), instead of
+  calling the software path in place; a call in place doubled floating point code's time.
+- M3, second run: flat C blobs carry the ELF file's program headers after the image, and runners give
+  `AT_PHDR`, `AT_PHENT` and `AT_PHNUM`, so a static position independent program can relocate itself when
+  loaded away from its link address. This is test tooling standing in for the kernel phase's ELF loading.
+- M3: decoding of the new families goes by Arm's forms (names and fields from the machine readable
+  specification already in the repository), not yaxpeax-arm, whose AdvSIMD and system decoding leaves out
+  or misnames too much; yaxpeax-arm still decodes what it did.
+- M3: the plan's "a program that changes the mode gets floating point done in software" is done per
+  operation at run time (each floating point instruction tests FPCR and the tracking word), not by
+  translating again; and status flags are kept from the first write of FPSR, not from the start.
+- M3: the estimate instructions (FRECPE, FRSQRTE, FRECPX) have their table algorithm twice: as WebAssembly
+  for the fast path and in `exact.rs` for the slow one, which must also flush and raise flags. Every other
+  meaning is once as WebAssembly, with the software floating point library behind the slow path.
+- M3: the CPU side keeps two things of its own after the abi's thread block (the float tracking word and
+  the exclusive monitor), in the state memory; the kernel never sees them. A monitor lost at a stop only
+  makes a store exclusive fail, which programs retry.
+- M3: we answer CNTFRQ_EL0 as 1 GHz (the counter is the clock in nanoseconds) and CTR_EL0 with IDC and
+  DIC clear, so programs that write code tell us with IC IVAU.
+
+- A kept run that misses is not counted or warned: it is the ordinary exact check, not a slow path
+  (orchestrator's ruling, M3 close-out). A loop whose proof fails is counted ("loop not proven").
+
+- S1 close-out: in `tests/changes.rs` changes never touch the pages from sp's page to the top of the stack,
+  because the plan lets a frame's check hold until the next function entry ("What still gets through"), so
+  full and none may differ there by design. Memory there that is no frame is still covered: layer 2's area
+  is in the blob since the M3 close-out, so its pages change. The page below sp's page is changed (often,
+  since the eleventh run), and with it memory a popped frame left below sp. Faults the test handles make
+  the page readable and writable; the plan's section 9 asks only that faults reach the hook with the same
+  registers as none, the handling is there so a run meets many faults. Before M4 the test was weaker than its
+  tally of faults suggests: after the first fault it handled, the run carried on through code translated at
+  none, which replaced the table's pieces of every address it reached. Since M4 the run carries on in pieces
+  of bounded look-ahead put only at their own address, so every function's full piece stays in the table;
+  see "M4, first run".
 
 - Two kinds of module per thread: a thread module (lookup table, unwind tag, bottom loop) and code modules
   (pieces only, importing the thread module's table). The plan has every module export run and save/load;
@@ -971,13 +2339,11 @@ contract's bits, in both runners).
 - After a system call, and after the stop hook says carry on at a switch's jump back, registers are loaded
   back from the thread block instead of being kept across the call (it keeps registers out of
   callee-saved registers). Elsewhere since S1 a piece does not reload after carrying on: see S1.
-- A frame or group permission check that fails leaves to the instruction and carries on at none from
-  there ("left to an address"), instead of working out the exact fault in the piece. Exact either way.
-  For this the contract has a third unwind payload, `UNWIND_GO_TO_EXACT`, and the load code hook may be
-  asked for code at an address that has a piece (it puts one translated at none there, unless the one
-  there already is). After that the table holds none code at that address, so calls through the table run
-  it at none; direct calls still reach the full piece, whose check fails and leaves again each time
-  (counted and warned each time; the runner does not translate again).
+- A frame or group permission check that fails leaves to the instruction (`UNWIND_GO_TO_EXACT`, counted
+  as "left to an address") instead of working out the exact fault in the piece. Since M4 that one
+  instruction runs alone from its piece of look-ahead none, which the load code hook puts in the lookup
+  table's last slot (a slot for no address), and the thread carries on through the table from the next
+  instruction, in pieces of bounded look-ahead. The table's pieces are never replaced for it.
 - The permission check of none changed shape too (fast test, then exact test), so both look-aheads share
   it; layer 1 passed after the change.
 - Without the permission check (`Omit::permissions`, only for measuring) addresses are not untagged either,
@@ -992,13 +2358,9 @@ contract's bits, in both runners).
 - Layer 2 compares against the real CPU only for the first `WC_LAYER2_NATIVE` cases, because the
   reference runs one blob per container; full against none is compared for every case.
 - Layer 2 writes `mrs`/`msr nzcv` as raw words, because dynasm has no name for the register.
-- Code translated at run time is at look-ahead none, and its pieces replace whatever the table held for
-  every address it reaches (including full pieces). Correct; after a "go to address" later calls through
-  the table may reach none pieces. So one "left to an address" (a group or frame check that fails, a
-  tagged pointer in a group, a callee that moves sp, a jump through a table to a target not in it) runs
-  the rest of that function, and what it reaches, at none. The independent check measured this (one
-  unrecognised jump taken twice: 3 translations at run time). Left as is in M2: bounded look-ahead (M4)
-  is the plan's answer, and its pieces will not need to replace full ones.
+- Code translated at run time (M4): the load code hook puts one piece, of bounded look-ahead from the
+  address asked for, at that address only, and only where the table holds none (the wasmtime runner
+  asserts it). A runner's reference machine at none translates code reached at run time at none.
 - Vector registers, FPSR and FPCR at the start of a flat blob: the runners and the reference start v0 to
   v31 at zero, as Linux does at exec. The reference leaves FPSR and FPCR as its own process had them.
 
@@ -1038,14 +2400,32 @@ contract's bits, in both runners).
 
 ## Shared crate (wcontainers-abi)
 
+- M5, second run: no change. The array of slots, its imports and the exact slot are in the translator's
+  contract (`contract.rs`).
+
+- M5: no change. A jump to code that may not run uses the existing `Access::Execute`.
+
+- M4: no change. The new unwind payload, hook argument, reason and the piece's depth parameter are in the
+  translator's contract (`contract.rs`), not in the abi.
+
+- M3 close-out: no change. The new reason "loop not proven" is in the translator's contract
+  (`contract::Reason`), not in the abi.
+- M3, third run: no change.
+- M3, second run: no change.
+- M3: no change. The CPU side's own words (float tracking, exclusive monitor) are after the abi's block, in
+  the translator's contract (`THREAD_STATE_SIZE`), not in the abi.
+
 - Added `Exit::AlignmentFault { address }` (one new variant, additive): a load or store through an SP that
   is not a multiple of 16 (`pc` at the instruction, `address` = SP), or a jump to an address that is not a
   multiple of 4 (`pc` = `address` = the target). The kernel should deliver SIGBUS, BUS_ADRALN, si_addr =
   `address`, as Linux does. The kernel half must add a match arm for it. Needed because the independent
   check found the translator carrying on where Linux faults; without it the CPU side cannot report the
   fault. Later LDAR/STLR and exclusives on misaligned addresses will use it too.
-- Seen, not changed: `cargo clippy -p wcontainers-abi --all-targets -- -D warnings` fails on the abi's own
-  layout test (`assertions_on_constants`, registers.rs line 79).
+- Changed once after M2 (commit b0df319, "made the abi layout test pass the linter"): in `registers.rs`'s
+  test module, `assert!(STOP_FLAG_OFFSET + 4 <= THREAD_BLOCK_SIZE)` inside the layout test became a const
+  assertion next to it (`const _: () = assert!(...)`), because clippy with warnings denied failed on it
+  (`assertions_on_constants`). Only a test changed; no type, value or layout. Earlier versions of this
+  file wrongly said nothing in the shared crate changed in S1.
 - S1, first run: the CPU side kept one word for itself in the thread block's padding (offset 804). Since
   the second run's loop pieces it does not: the CPU side uses no byte of the block outside the abi's
-  layout. No change to the shared crate in S1.
+  layout.

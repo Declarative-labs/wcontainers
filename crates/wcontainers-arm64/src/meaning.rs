@@ -32,6 +32,61 @@ pub enum Trap {
     Alignment(u32),
 }
 
+/// A register of the thread that is never kept in a local: it lives in the thread's state, where the hooks
+/// and the runner can read and write it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Control {
+    /// `TPIDR_EL0`, i64.
+    ThreadPointer,
+    /// FPCR, i32, only the bits of [`FPCR_BITS`].
+    Fpcr,
+    /// FPSR, i32, only the bits of [`FPSR_BITS`].
+    Fpsr,
+    /// i32: not zero once the program has written FPSR, so the cumulative exception flags must be kept
+    /// exact from then on.
+    FloatTracking,
+    /// i32: the size in bytes of the access a load exclusive remembered, zero when nothing is remembered.
+    ExclusiveBytes,
+    /// i64: the address it remembered.
+    ExclusiveAddress,
+    /// i64 each: the value it loaded, low then high (for pairs of 64 bit registers).
+    ExclusiveLow,
+    ExclusiveHigh,
+}
+
+impl Control {
+    pub fn ty(self) -> ValType {
+        match self {
+            Control::Fpcr | Control::Fpsr | Control::FloatTracking | Control::ExclusiveBytes => {
+                ValType::I32
+            }
+            _ => ValType::I64,
+        }
+    }
+}
+
+/// A host function a meaning calls directly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hook {
+    /// `(operation: i32, a: i64, b: i64, c: i64) -> i64`: one floating point operation done in software
+    /// (see [`crate::exact`]), reading FPCR and adding to FPSR in the thread's state.
+    Float,
+    /// `() -> i64`: the monotonic clock in nanoseconds.
+    Clock,
+    /// `(address: i64)`: the code at the address may have changed.
+    CodeChanged,
+}
+
+/// What the host's engine does where WebAssembly leaves the result open, found by [`crate::host::probe`].
+/// It changes what is translated, so it is part of a translation's cache key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Host {
+    /// The relaxed fused multiply-add really fuses.
+    pub fused_multiply_add: bool,
+    /// Not-a-number results already follow Arm's rules.
+    pub arm_nans: bool,
+}
+
 /// One of the four condition flags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Flag {
@@ -101,8 +156,8 @@ pub trait Emitter {
     fn get(&mut self, r: Reg);
     /// Pop an i64 into a register. Writes to the zero register are dropped.
     fn set(&mut self, r: Reg);
-    /// Push the guest address of this instruction.
-    fn this_address(&mut self);
+    /// Push the guest address of this instruction plus `by`.
+    fn this_address(&mut self, by: i64);
     fn set_flags(&mut self, flags: Flags);
     /// Push one flag as an i32 0 or 1.
     fn flag(&mut self, flag: Flag);
@@ -110,9 +165,24 @@ pub trait Emitter {
     fn get_vector(&mut self, n: u8);
     /// Pop a v128 into SIMD and floating point register `n`.
     fn set_vector(&mut self, n: u8);
-    /// Push the thread pointer as an i64.
-    fn get_thread_pointer(&mut self);
-    fn set_thread_pointer(&mut self);
+    /// Push a register kept only in the thread's state, as a value of [`Control::ty`].
+    fn get_control(&mut self, control: Control);
+    /// Pop a value of [`Control::ty`] into a register kept only in the thread's state.
+    fn set_control(&mut self, control: Control);
+    /// Call a hook with its arguments pushed; it leaves its results.
+    fn hook(&mut self, hook: Hook);
+    /// What the host's engine does where WebAssembly leaves it open.
+    fn host(&self) -> Host;
+    /// Floating point takes the slow path when FPCR is not zero or FPSR's flags are kept. Push whether it
+    /// does, as an i32 not zero when it does, and return true: the meaning then writes both paths. Or, as
+    /// nothing of the instruction is written yet, carry on from this instruction in other code when it does,
+    /// and return false: the meaning then writes only the fast path.
+    fn float_mode(&mut self) -> bool {
+        self.get_control(Control::Fpcr);
+        self.get_control(Control::FloatTracking);
+        self.sink().i32_or();
+        true
+    }
     /// Whether the stack pointer is known here to be a multiple of 16, so its alignment needs no check.
     fn stack_aligned(&mut self) -> bool {
         false
@@ -400,7 +470,7 @@ fn eqz(sink: &mut InstructionSink<'_>, width: Width) {
     };
 }
 
-fn ty(width: Width) -> ValType {
+pub(crate) fn ty(width: Width) -> ValType {
     match width {
         Width::W32 => ValType::I32,
         Width::X64 => ValType::I64,
@@ -421,7 +491,7 @@ macro_rules! op {
     };
 }
 
-fn constant<E: Emitter + ?Sized>(e: &mut E, w: Width, value: u64) {
+pub(crate) fn constant<E: Emitter + ?Sized>(e: &mut E, w: Width, value: u64) {
     match w {
         Width::W32 => e.sink().i32_const(value as u32 as i32),
         Width::X64 => e.sink().i64_const(value as i64),
@@ -429,7 +499,7 @@ fn constant<E: Emitter + ?Sized>(e: &mut E, w: Width, value: u64) {
 }
 
 /// Push a register at a width.
-fn get<E: Emitter + ?Sized>(e: &mut E, r: Reg, w: Width) {
+pub(crate) fn get<E: Emitter + ?Sized>(e: &mut E, r: Reg, w: Width) {
     e.get(r);
     if w == Width::W32 {
         e.sink().i32_wrap_i64();
@@ -437,7 +507,7 @@ fn get<E: Emitter + ?Sized>(e: &mut E, r: Reg, w: Width) {
 }
 
 /// Pop a value of a width into a register; 32 bit results clear the top half.
-fn set<E: Emitter + ?Sized>(e: &mut E, r: Reg, w: Width) {
+pub(crate) fn set<E: Emitter + ?Sized>(e: &mut E, r: Reg, w: Width) {
     if w == Width::W32 {
         e.sink().i64_extend_i32_u();
     }
@@ -445,7 +515,7 @@ fn set<E: Emitter + ?Sized>(e: &mut E, r: Reg, w: Width) {
 }
 
 /// Pop a value of a width into a fresh local.
-fn save<E: Emitter + ?Sized>(e: &mut E, w: Width) -> u32 {
+pub(crate) fn save<E: Emitter + ?Sized>(e: &mut E, w: Width) -> u32 {
     let local = e.local(ty(w));
     e.sink().local_set(local);
     local
@@ -465,7 +535,7 @@ fn shift_by<E: Emitter + ?Sized>(e: &mut E, w: Width, shift: Shift, amount: u8) 
 }
 
 /// Push a register widened as `extend` says, as an i64.
-fn extended<E: Emitter + ?Sized>(e: &mut E, r: Reg, extend: Extend) {
+pub(crate) fn extended<E: Emitter + ?Sized>(e: &mut E, r: Reg, extend: Extend) {
     e.get(r);
     match (extend.signed, extend.from_bits) {
         (_, 64) => {}
@@ -571,7 +641,10 @@ pub fn untag(sink: &mut InstructionSink<'_>, local: u32) {
 
 /// The address of a load or store as the program computed it, in a fresh i64 local for the check to untag,
 /// and the write back to make after the access: the base register and what to add to the tagged address.
-fn address<E: Emitter + ?Sized>(e: &mut E, address: Address) -> (u32, Option<(Reg, u32, i64)>) {
+pub(crate) fn address<E: Emitter + ?Sized>(
+    e: &mut E,
+    address: Address,
+) -> (u32, Option<(Reg, u32, i64)>) {
     let local = e.local(ValType::I64);
     let base = match address {
         Address::Offset { base, .. }
@@ -618,14 +691,15 @@ fn address<E: Emitter + ?Sized>(e: &mut E, address: Address) -> (u32, Option<(Re
             }
             e.sink().i64_add();
         }
-        Address::Literal { offset } => {
-            e.this_address();
-            e.sink().i64_const(offset).i64_add();
-        }
+        Address::Literal { offset } => e.this_address(offset),
     }
     e.sink().local_set(local);
     if let Address::PreIndex { base, .. } = address {
         post = Some((base, 0));
+    }
+    // A write back keeps the tagged address; otherwise the check may untag it where it is.
+    if post.is_none() {
+        return (local, None);
     }
     let at = e.local(ValType::I64);
     e.sink().local_get(local).local_set(at);
@@ -633,7 +707,7 @@ fn address<E: Emitter + ?Sized>(e: &mut E, address: Address) -> (u32, Option<(Re
 }
 
 /// The write back of a pre or post indexed access, after the access itself.
-fn write_back<E: Emitter + ?Sized>(e: &mut E, update: Option<(Reg, u32, i64)>) {
+pub(crate) fn write_back<E: Emitter + ?Sized>(e: &mut E, update: Option<(Reg, u32, i64)>) {
     if let Some((base, local, offset)) = update {
         e.sink().local_get(local);
         if offset != 0 {
@@ -643,7 +717,7 @@ fn write_back<E: Emitter + ?Sized>(e: &mut E, update: Option<(Reg, u32, i64)>) {
     }
 }
 
-fn memory(offset: u64) -> MemArg {
+pub(crate) fn memory(offset: u64) -> MemArg {
     MemArg {
         offset,
         align: 0,
@@ -653,7 +727,13 @@ fn memory(offset: u64) -> MemArg {
 }
 
 /// Load from the address in `local` plus `offset`, leaving an i64.
-fn load<E: Emitter + ?Sized>(e: &mut E, local: u32, offset: u64, bytes: u8, signed: Option<Width>) {
+pub(crate) fn load<E: Emitter + ?Sized>(
+    e: &mut E,
+    local: u32,
+    offset: u64,
+    bytes: u8,
+    signed: Option<Width>,
+) {
     e.sink().local_get(local);
     if offset != 0 {
         e.sink().i64_const(offset as i64).i64_add();
@@ -675,7 +755,7 @@ fn load<E: Emitter + ?Sized>(e: &mut E, local: u32, offset: u64, bytes: u8, sign
 }
 
 /// Store the low `bytes` of a register at the address in `local` plus `offset`.
-fn store<E: Emitter + ?Sized>(e: &mut E, local: u32, offset: u64, bytes: u8, rt: Reg) {
+pub(crate) fn store<E: Emitter + ?Sized>(e: &mut E, local: u32, offset: u64, bytes: u8, rt: Reg) {
     e.sink().local_get(local);
     if offset != 0 {
         e.sink().i64_const(offset as i64).i64_add();
@@ -814,6 +894,25 @@ fn multiply_high<E: Emitter + ?Sized>(e: &mut E, a: u32, b: u32) {
 pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
     use Instruction as I;
     match *instruction {
+        // Without flags, a plain addition or subtraction; adding zero is a copy.
+        I::AddSub {
+            width: w,
+            subtract,
+            set_flags: false,
+            rd,
+            rn,
+            operand: source,
+        } => {
+            get(e, rn, w);
+            if source != Operand::Imm(0) {
+                operand(e, w, source);
+                match subtract {
+                    false => op!(e, w, i32_add, i64_add),
+                    true => op!(e, w, i32_sub, i64_sub),
+                }
+            }
+            set(e, rd, w);
+        }
         I::AddSub {
             width: w,
             subtract,
@@ -857,13 +956,18 @@ pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
             rn,
             operand: source,
         } => {
-            get(e, rn, w);
+            // A copy (`mov`, `mvn`) is an or or exclusive or with the zero register.
+            let copy = rn == Reg::Zero && op != Logic::And;
+            if !copy {
+                get(e, rn, w);
+            }
             operand(e, w, source);
             if invert {
                 constant(e, w, u64::MAX);
                 op!(e, w, i32_xor, i64_xor);
             }
             match op {
+                _ if copy => {}
                 Logic::And => op!(e, w, i32_and, i64_and),
                 Logic::Or => op!(e, w, i32_or, i64_or),
                 Logic::Xor => op!(e, w, i32_xor, i64_xor),
@@ -957,11 +1061,13 @@ pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
             set(e, rd, w);
         }
         I::PcRelative { rd, page, offset } => {
-            e.this_address();
             if page {
+                e.this_address(0);
                 e.sink().i64_const(!0xfff).i64_and();
+                e.sink().i64_const(offset).i64_add();
+            } else {
+                e.this_address(offset);
             }
-            e.sink().i64_const(offset).i64_add();
             e.set(rd);
         }
         I::CondCompare {
@@ -1340,9 +1446,6 @@ pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
             e.next();
         }
         I::VectorImmediate { .. }
-        | I::VectorBinary { .. }
-        | I::VectorUnary { .. }
-        | I::VectorAcross { .. }
         | I::DuplicateGeneral { .. }
         | I::DuplicateElement { .. }
         | I::MoveToGeneral { .. }
@@ -1350,7 +1453,47 @@ pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
         | I::InsertGeneral { .. }
         | I::InsertElement { .. }
         | I::ExtractVector { .. } => crate::vector::emit(e, instruction),
+        I::Simd { .. } | I::Permute { .. } | I::Table { .. } | I::ScalarElement { .. } => {
+            crate::simd::emit(e, instruction);
+            e.next();
+        }
+        I::Float { .. }
+        | I::FloatConvert { .. }
+        | I::FloatBinary { .. }
+        | I::FloatMulAdd { .. }
+        | I::FloatCompare { .. }
+        | I::FloatCondCompare { .. }
+        | I::FloatSelect { .. }
+        | I::FloatToInteger { .. }
+        | I::IntegerToFloat { .. } => {
+            crate::float::emit(e, instruction);
+            e.next();
+        }
+        I::Atomic { .. }
+        | I::CompareSwap { .. }
+        | I::LoadExclusive { .. }
+        | I::StoreExclusive { .. }
+        | I::LoadAcquire { .. }
+        | I::StoreRelease { .. }
+        | I::ClearExclusive
+        | I::ZeroBlock { .. }
+        | I::CleanCache { .. }
+        | I::CodeChanged { .. }
+        | I::SimdMemory { .. } => {
+            crate::memory::emit(e, instruction);
+            e.next();
+        }
+        I::Crc32 {
+            castagnoli,
+            bytes,
+            rd,
+            rn,
+            rm,
+        } => crc32(e, castagnoli, bytes, rd, rn, rm),
         I::Syscall => {
+            // A return from the kernel forgets any exclusive access.
+            e.sink().i32_const(0);
+            e.set_control(Control::ExclusiveBytes);
             e.syscall();
             e.next();
         }
@@ -1369,7 +1512,29 @@ pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
                             .i64_or();
                     }
                 }
-                SystemRegister::TpidrEl0 => e.get_thread_pointer(),
+                SystemRegister::TpidrEl0 => e.get_control(Control::ThreadPointer),
+                SystemRegister::Fpcr => {
+                    e.get_control(Control::Fpcr);
+                    e.sink().i64_extend_i32_u();
+                }
+                SystemRegister::Fpsr => {
+                    // The flags are only kept once asked for: reading them before is the slow path.
+                    e.get_control(Control::FloatTracking);
+                    e.sink().i32_eqz().if_(BlockType::Empty);
+                    e.sink()
+                        .i32_const(crate::exact::Operation::ReadStatus.encode(0))
+                        .i64_const(0)
+                        .i64_const(0)
+                        .i64_const(0);
+                    e.hook(Hook::Float);
+                    e.sink().drop().end();
+                    e.get_control(Control::Fpsr);
+                    e.sink().i64_extend_i32_u();
+                }
+                SystemRegister::Counter => e.hook(Hook::Clock),
+                SystemRegister::Fixed(value) => {
+                    e.sink().i64_const(value as i64);
+                }
             }
             e.set(rt);
             e.next();
@@ -1381,7 +1546,26 @@ pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
                     let packed = save(e, Width::X64);
                     e.set_flags(Flags::Packed(packed));
                 }
-                SystemRegister::TpidrEl0 => e.set_thread_pointer(),
+                SystemRegister::TpidrEl0 => e.set_control(Control::ThreadPointer),
+                SystemRegister::Fpcr => {
+                    e.sink()
+                        .i32_wrap_i64()
+                        .i32_const(FPCR_BITS as i32)
+                        .i32_and();
+                    e.set_control(Control::Fpcr);
+                }
+                SystemRegister::Fpsr => {
+                    e.sink()
+                        .i32_wrap_i64()
+                        .i32_const(FPSR_BITS as i32)
+                        .i32_and();
+                    e.set_control(Control::Fpsr);
+                    e.sink().i32_const(1);
+                    e.set_control(Control::FloatTracking);
+                }
+                SystemRegister::Counter | SystemRegister::Fixed(_) => {
+                    unreachable!("a register that cannot be written")
+                }
             }
             e.next();
         }
@@ -1393,10 +1577,41 @@ pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
     }
 }
 
+/// crc32 and crc32c, bit by bit on the reflected polynomial.
+fn crc32<E: Emitter + ?Sized>(e: &mut E, castagnoli: bool, bytes: u8, rd: Reg, rn: Reg, rm: Reg) {
+    let polynomial: i64 = if castagnoli { 0x82f6_3b78 } else { 0xedb8_8320 };
+    let crc = e.local(ValType::I64);
+    e.get(rn);
+    e.sink().i64_const(0xffff_ffff).i64_and();
+    e.get(rm);
+    if bytes < 8 {
+        e.sink().i64_const((1i64 << (8 * bytes)) - 1).i64_and();
+    }
+    let mut s = e.sink();
+    s.i64_xor().local_set(crc);
+    for _ in 0..8 * u32::from(bytes) {
+        // crc = (crc >> 1) ^ (polynomial if the low bit is set)
+        s.local_get(crc)
+            .i64_const(1)
+            .i64_shr_u()
+            .i64_const(polynomial)
+            .i64_const(0)
+            .local_get(crc)
+            .i32_wrap_i64()
+            .i32_const(1)
+            .i32_and()
+            .select()
+            .i64_xor()
+            .local_set(crc);
+    }
+    s.local_get(crc).i64_const(0xffff_ffff).i64_and();
+    e.set(rd);
+    e.next();
+}
+
 /// x30 = the address of the next instruction.
-fn link_register<E: Emitter + ?Sized>(e: &mut E) {
-    e.this_address();
-    e.sink().i64_const(4).i64_add();
+pub(crate) fn link_register<E: Emitter + ?Sized>(e: &mut E) {
+    e.this_address(4);
     e.set(Reg::X(30));
 }
 

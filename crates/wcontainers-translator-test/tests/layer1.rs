@@ -2,18 +2,63 @@
 //!
 //! `WC_LAYER1_CASES` cases per form (default 64), seeded from `WC_LAYER1_SEED` (default 1) and the form's
 //! name, so any failure replays with the same two values. `WC_LAYER1_FORMS` limits the run to a
-//! comma-separated list of form names.
+//! comma-separated list of form names. `WC_LAYER1_CHROME` cases per form (default 1), from the same seed,
+//! also run in Chrome, a thousand to a page, and are compared with the CPU.
 
 use proptest::prelude::*;
+use proptest::strategy::ValueTree;
 use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestRng, TestRunner};
 use std::cell::RefCell;
 use wcontainers_arm64::forms;
-use wcontainers_translator_test::layer1::{Case, Stop, cases, compare, covered, translated};
+use wcontainers_translator_test::layer1::{
+    Case, Stop, cases, compare, compare_outcome, covered, translated, translated_in_chrome,
+};
 use wcontainers_translator_test::layout::{CODE, DATA};
 use wcontainers_translator_test::reference::Cases;
 
 fn setting(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect("a number"))
+}
+
+/// The random generator for a form's cases, from the seed and the form's name.
+fn generator(seed: u64, name: &str, config: Config) -> TestRunner {
+    let mut key = [0u8; 32];
+    key[..8].copy_from_slice(&seed.to_le_bytes());
+    for (i, byte) in name.bytes().enumerate() {
+        key[8 + i % 24] ^= byte;
+    }
+    TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &key))
+}
+
+#[test]
+fn sample_matches_the_cpu_in_chrome() {
+    let count = setting("WC_LAYER1_CHROME", 1);
+    let seed = setting("WC_LAYER1_SEED", 1);
+    let mut sample: Vec<(String, Case)> = Vec::new();
+    for form in forms::all().iter().filter(|f| covered(f)) {
+        let mut runner = generator(seed, &form.name, Config::default());
+        let strategy = cases(form.clone());
+        for _ in 0..count {
+            let tree = strategy.new_tree(&mut runner).expect("a case");
+            sample.push((form.name.clone(), tree.current()));
+        }
+    }
+    let all: Vec<Case> = sample.iter().map(|(_, case)| case.clone()).collect();
+    let outcomes = translated_in_chrome(&all);
+    let mut reference = Cases::start();
+    let mut failures = Vec::new();
+    for ((name, case), outcome) in sample.iter().zip(outcomes) {
+        if let Err(error) = compare_outcome(&mut reference, case, outcome) {
+            eprintln!("{name} in Chrome: {error}");
+            failures.push(name.clone());
+        }
+    }
+    eprintln!(
+        "layer 1 in Chrome: {} cases ({count} a form), seed {seed}, {} failing: {failures:?}",
+        sample.len(),
+        failures.len()
+    );
+    assert!(failures.is_empty());
 }
 
 #[test]
@@ -37,13 +82,7 @@ fn every_covered_form_matches_the_cpu() {
         let mut config = Config::with_cases(count);
         config.failure_persistence = None;
         config.max_global_rejects = 100 * count;
-        let mut key = [0u8; 32];
-        key[..8].copy_from_slice(&seed.to_le_bytes());
-        for (i, byte) in form.name.bytes().enumerate() {
-            key[8 + i % 24] ^= byte;
-        }
-        let mut runner =
-            TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &key));
+        let mut runner = generator(seed, &form.name, config);
         let result = runner.run(&cases(form.clone()), |case| {
             compare(&mut reference.borrow_mut(), &case).map_err(TestCaseError::fail)
         });
@@ -95,6 +134,8 @@ fn alignment_faults_match_the_cpu() {
             word,
             registers,
             vectors: [0; 32],
+            float: [0; 2],
+            tracking: false,
             seed: 1,
         };
         compare(&mut reference, &case).unwrap_or_else(|report| panic!("{report}"));
@@ -115,6 +156,8 @@ fn vector_registers_reach_the_cpu() {
         word,
         registers: [0; 34],
         vectors,
+        float: [0; 2],
+        tracking: false,
         seed: 1,
     };
     let mut reference = Cases::start();
@@ -125,6 +168,68 @@ fn vector_registers_reach_the_cpu() {
         0x1112_1314_1516_1718_191a_1b1c_1d1e_1f01
     );
     assert_eq!(outcome.vectors[1..3], vectors[1..3]);
+}
+
+/// FRECPS and FRSQRTS of the smallest denormals against infinities, in every shape, with the flags kept
+/// and not: the fast path's overflow branch must not turn an exact infinity into not-a-number.
+#[test]
+fn step_edges_match_the_cpu() {
+    let lanes32 = |l: [u32; 4]| l.iter().rev().fold(0u128, |v, &x| v << 32 | u128::from(x));
+    let lanes64 = |l: [u64; 2]| u128::from(l[1]) << 64 | u128::from(l[0]);
+    let (inf32, inf64) = (0x7f80_0000u32, 0x7ff0_0000_0000_0000u64);
+    let pairs = [
+        (
+            lanes32([1, 0x8000_0001, inf32, inf32 | 1 << 31]),
+            lanes32([inf32, inf32, 1, 0x8000_0001]),
+        ),
+        (
+            lanes32([0x8000_0001, 1, 0x0000_0002, 0x7f7f_ffff]),
+            lanes32([inf32 | 1 << 31, inf32 | 1 << 31, inf32, 0x7f7f_ffff]),
+        ),
+        (
+            lanes64([1, inf64]),
+            lanes64([inf64 | 1 << 63, 0x8000_0000_0000_0001]),
+        ),
+        (
+            lanes64([0x8000_0000_0000_0001, 0x7fef_ffff_ffff_ffff]),
+            lanes64([inf64, 0x7fef_ffff_ffff_ffff]),
+        ),
+    ];
+    // frsqrts and frecps v0, v1, v2: 2s, 4s, 2d, s, d.
+    let words = [
+        0x0ea2_fc20u32,
+        0x4ea2_fc20,
+        0x4ee2_fc20,
+        0x5ea2_fc20,
+        0x5ee2_fc20,
+        0x0e22_fc20,
+        0x4e22_fc20,
+        0x4e62_fc20,
+        0x5e22_fc20,
+        0x5e62_fc20,
+    ];
+    let mut reference = Cases::start();
+    for word in words {
+        for (a, b) in pairs {
+            for tracking in [false, true] {
+                let mut vectors = [0u128; 32];
+                vectors[1] = a;
+                vectors[2] = b;
+                let mut registers = [0u64; 34];
+                registers[31] = DATA + 0x1000;
+                let case = Case {
+                    word,
+                    registers,
+                    vectors,
+                    float: [0; 2],
+                    tracking,
+                    seed: 1,
+                };
+                compare(&mut reference, &case)
+                    .unwrap_or_else(|report| panic!("{word:#010x}: {report}"));
+            }
+        }
+    }
 }
 
 /// Words in no form of Arm's list, for any feature, are illegal on the CPU and in ours. Random words,
@@ -151,6 +256,8 @@ fn words_in_no_form_are_illegal_as_on_the_cpu() {
             word,
             registers,
             vectors: [0; 32],
+            float: [0; 2],
+            tracking: false,
             seed,
         };
         compare(&mut reference.borrow_mut(), &case).map_err(TestCaseError::fail)?;
@@ -159,4 +266,68 @@ fn words_in_no_form_are_illegal_as_on_the_cpu() {
     });
     eprintln!("layer 1: {count} words in no form, seed {seed}");
     result.unwrap();
+}
+
+/// What we answer by design rather than as the reference CPU does, and the faults of the CPU we present
+/// where the reference CPU has more features: checked against their expected outcome.
+#[test]
+fn designed_answers_and_faults() {
+    use wcontainers_arm64::{CACHE_TYPE, MAIN_ID, ZERO_BLOCK_ID};
+    let run = |word: u32, x1: u64, x2: u64| {
+        let mut registers = [0u64; 34];
+        registers[1] = x1;
+        registers[2] = x2;
+        registers[31] = DATA + 0x1000;
+        translated(&Case {
+            word,
+            registers,
+            vectors: [0; 32],
+            float: [0; 2],
+            tracking: false,
+            seed: 1,
+        })
+    };
+    // mrs x0 of CNTFRQ_EL0, CTR_EL0, DCZID_EL0, MIDR_EL1, MPIDR_EL1, ID_AA64ISAR0_EL1, ID_AA64PFR0_EL1.
+    for (word, value) in [
+        (0xd53b_e000, 1_000_000_000),
+        (0xd53b_0020, CACHE_TYPE),
+        (0xd53b_00e0, ZERO_BLOCK_ID),
+        (0xd538_0000, MAIN_ID),
+        (0xd538_00a0, 0x8000_0000),
+        (0xd538_0600, 0x0021_0000),
+        (0xd538_0400, 0x11),
+    ] {
+        let outcome = run(word, 0, 0);
+        assert_eq!(outcome.stop, Stop::Landed(CODE + 4), "{word:#010x}");
+        assert_eq!(outcome.registers[0], value, "{word:#010x}");
+    }
+    // mrs x0, cntvct_el0 counts up.
+    assert_eq!(run(0xd53b_e040, 0, 0).stop, Stop::Landed(CODE + 4));
+    // msr fpcr, x1 keeps only the bits we present.
+    assert_eq!(
+        run(0xd51b_4401, u64::MAX, 0).float[1],
+        wcontainers_arm64::FPCR_BITS
+    );
+    // Unaligned atomics, load-acquire and exclusives fault, as a CPU without FEAT_LSE2 does:
+    // ldadd x2, x0, [x1]; cas x0, x2, [x1]; ldar x0, [x1]; stlr x0, [x1]; ldxr x0, [x1]; ldaxp x0, x3, [x1].
+    let unaligned = DATA + 0x101;
+    for word in [
+        0xf822_0020u32,
+        0xc8a0_7c22,
+        0xc8df_fc20,
+        0xc89f_fc20,
+        0xc85f_7c20,
+        0xc87f_8c20,
+    ] {
+        assert_eq!(
+            run(word, unaligned, 1).stop,
+            Stop::Alignment(unaligned),
+            "{word:#010x}"
+        );
+    }
+    // Aligned, they work: ldadd x2, x0, [x1] leaves the old value.
+    assert_eq!(
+        run(0xf822_0020, DATA + 0x100, 1).stop,
+        Stop::Landed(CODE + 4)
+    );
 }

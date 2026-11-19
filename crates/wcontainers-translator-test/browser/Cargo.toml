@@ -12,6 +12,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 wcontainers-abi = { path = "../../wcontainers-abi" }
+wcontainers-arm64 = { path = "../../wcontainers-arm64" }
 wcontainers-translator = { path = "../../wcontainers-translator", features = ["measure"] }
 serde_json = "1"
 

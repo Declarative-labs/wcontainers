@@ -27,17 +27,50 @@ function constant(value, type) {
   return new WebAssembly.Global({ value: type, mutable: false }, value);
 }
 
-function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp, stack, lookAhead, omit, repeat }) {
+function run({
+  translatorBytes,
+  blob,
+  codeBytes,
+  load,
+  memoryBytes,
+  regions,
+  sp,
+  stack,
+  lookAhead,
+  bound,
+  omit,
+  repeat,
+  cases,
+  caseBytes,
+  areas,
+  stopAtSyscall,
+  moduleBytes,
+  codeStart,
+  optimise,
+  splitBytes,
+}) {
   const translator = new WebAssembly.Instance(new WebAssembly.Module(translatorBytes)).exports;
   const result = (length) =>
     new Uint8Array(translator.memory.buffer, translator.output(), length).slice();
   const contract = JSON.parse(new TextDecoder().decode(result(translator.contract())));
+  // What this engine does where WebAssembly leaves results open.
+  const probe = new WebAssembly.Instance(new WebAssembly.Module(result(translator.probe_module()))).exports[
+    contract.probe
+  ]();
+  const startedAt = performance.now();
 
   const pageSize = contract.pageSize;
   // The table covers the whole memory, and one more byte, always zero, follows it.
   const permissionPages = (Math.ceil(memoryBytes / 65536) * 65536) / pageSize;
   const memory = memory64(Math.ceil(memoryBytes / 65536));
-  const statePages = Math.ceil((PERMISSIONS_AT + permissionPages + 1) / 65536);
+  // Modules translated ahead of time from an image have an array of slots for their code alone, from its
+  // start.
+  const tableBase = BigInt(load + (codeStart ?? 0));
+  // The array covers the whole blob, every page of it that may run code, so code the program writes runs;
+  // for modules translated ahead of time from an image, its code.
+  const slots = Math.ceil((moduleBytes.length ? codeBytes - codeStart : blob.length) / 4);
+  const slotsAt = Math.ceil((PERMISSIONS_AT + permissionPages + 1) / 4) * 4;
+  const statePages = Math.ceil((slotsAt + 4 * slots) / 65536);
   const state = new WebAssembly.Memory({ initial: statePages, maximum: statePages, shared: true });
   const guest = () => new Uint8Array(memory.buffer);
   const flags = () => new Int32Array(state.buffer);
@@ -49,10 +82,28 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
   const warnings = [];
   let stopped = null;
   let snapshot = null;
+  // The whole thread state when the thread stopped, which a system call's result may change afterwards.
+  let stateAtStop = null;
   let thread = null;
-  const blobs = [];
-  // Addresses code was translated from at run time: the table holds a piece of look-ahead none there.
-  const translatedFrom = new Set();
+  // What each page allows, as the permission table says.
+  const pagePermissions = new Uint8Array(permissionPages);
+  // By address, the piece of look-ahead none of the one instruction there, for the exact slot.
+  const exactPieces = new Map();
+  // The lookup table's next free slot.
+  let nextSlot = contract.exactSlot + 1;
+  // Where the array holds the slot for an address, as an index of 32 bit words, or null if it covers none.
+  function slotEntry(address) {
+    if (address < tableBase || address >= tableBase + 4n * BigInt(slots) || address % 4n !== 0n) return null;
+    return (slotsAt + Number(address - tableBase)) / 4;
+  }
+  function setSlot(address, slot) {
+    const at = slotEntry(address);
+    if (at !== null) new Uint32Array(state.buffer)[at] = slot;
+  }
+  const slotOf = (address) => {
+    const at = slotEntry(address);
+    return at === null ? 0 : new Uint32Array(state.buffer)[at];
+  };
   let programBreak = 0;
 
   // Count a slow path taken at an address (or for a number) and the time it took; warn once per address
@@ -88,6 +139,7 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
 
   function stop(why) {
     snapshot = registers();
+    stateAtStop = new Uint8Array(state.buffer, BLOCK_AT, contract.threadStateSize).slice();
     stopped = why;
   }
 
@@ -179,7 +231,15 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
   }
 
   const hooks = {
-    [contract.hookSyscall]: (number, ...a) => standIn(BigInt.asUintN(64, number), a.map((v) => BigInt.asUintN(64, v))),
+    [contract.hookSyscall]: (number, ...a) => {
+      // Instruction cases end at a system call, as the reference's do.
+      if (stopAtSyscall) {
+        stop({ kind: "syscall" });
+        raiseStopFlag();
+        return 0n;
+      }
+      return standIn(BigInt.asUintN(64, number), a.map((v) => BigInt.asUintN(64, v)));
+    },
     [contract.hookStop]: () => {
       Atomics.store(flags(), (BLOCK_AT + contract.stopFlag) / 4, 0);
       // The runner raised the flag itself to make the thread leave.
@@ -192,23 +252,72 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
       slowPath(reason("memory fault"), BigInt.asUintN(64, address), 0);
       stop({ kind: "memory fault", address: BigInt.asUintN(64, address).toString(), write: access === 1 });
     },
-    [contract.hookLoadCode]: (address) => {
+    // Code runs only from pages that allow it, as on Linux: a jump anywhere else faults there. Otherwise the
+    // code is translated as it is in memory now, which may be code the program wrote: the blob's code, or the
+    // run of pages that allow running code within the addresses the table covers.
+    [contract.hookLoadCode]: (address, exact) => {
       address = BigInt.asUintN(64, address);
-      if (translatedFrom.has(address)) return 1;
-      const index = blobs.findIndex(
-        (b) => address % 4n === 0n && address >= b.load + b.codeStart && address < b.load + b.codeEnd,
-      );
-      if (index < 0) {
+      const table = thread.exports[contract.lookup];
+      if (exact && exactPieces.has(address)) {
+        table.set(contract.exactSlot, exactPieces.get(address));
+        return 1;
+      }
+      const page = Number(address / BigInt(pageSize));
+      const executable = (p) => p >= 0 && p < permissionPages && (pagePermissions[p] & contract.execute) !== 0;
+      if (!executable(page)) {
+        slowPath(reason("memory fault"), address, 0);
+        stop({ kind: "memory fault", address: address.toString(), write: false, execute: true });
+        return 0;
+      }
+      const coveredEnd = tableBase + 4n * BigInt(slots);
+      if (address < tableBase || address >= coveredEnd) {
         stop({ kind: "no code", address: address.toString() });
         return 0;
       }
+      let first = page;
+      while (executable(first - 1)) first--;
+      let end = page + 1;
+      while (executable(end)) end++;
+      const known = address >= loaded.load + loaded.codeStart && address < loaded.load + loaded.codeEnd;
+      const runStart = known ? loaded.load + loaded.codeStart : BigInt(Math.max(first * pageSize, Number(tableBase)));
+      const runEnd = known ? loaded.load + loaded.codeEnd : BigInt(Math.min(end * pageSize, Number(coveredEnd)));
       const start = performance.now();
-      instantiateCode(index, address - blobs[index].load);
-      translatedFrom.add(address);
+      const code = { bytes: guest().slice(Number(runStart), Number(runEnd)), load: runStart };
+      const offset = address - runStart;
+      if (exact) {
+        instantiateCode(code, offset, 2, 0, 1, true);
+        exactPieces.set(address, table.get(contract.exactSlot));
+      } else {
+        // Code made at run time never takes the place of a piece the lookup finds.
+        if (slotOf(address) !== 0) throw new Error(`code asked for at 0x${address.toString(16)}, which has a piece`);
+        // The reference stays at none throughout.
+        if (lookAhead === 0) instantiateCode(code, offset, 0, 0);
+        else instantiateCode(code, offset, 2, 0, contract.bound);
+      }
       slowPath(reason("translated at run time"), address, performance.now() - start);
       return 1;
     },
     [contract.hookWarn]: (reasonIndex, detail) => slowPath(reasonIndex, BigInt.asUintN(64, detail), 0),
+    [contract.hookFloat]: (operation, a, b, c) => {
+      const block = new DataView(state.buffer, BLOCK_AT, contract.threadStateSize);
+      const fpcr = block.getUint32(contract.registerFpcr, true);
+      const tracking = block.getUint32(contract.floatTracking, true);
+      const value = translator.float(operation, a, b, c, fpcr, block.getUint32(contract.registerFpsr, true));
+      block.setUint32(contract.registerFpsr, translator.float_status(), true);
+      const fused = translator.float_reason(operation, fpcr, tracking) === 1;
+      // Registers are not saved here, so the detail is the operation, not the address.
+      slowPath(reason(fused ? "software fused multiply-add" : "exact floating point requested"), operation >>> 0, 0);
+      return value;
+    },
+    [contract.hookClock]: () => BigInt(Math.round((performance.now() - startedAt) * 1e6)),
+    // ic ivau: forget the pieces the lookup finds for the 64 byte line.
+    [contract.hookCodeChanged]: (address) => {
+      const line = BigInt.asUintN(64, address) & ~63n;
+      for (let at = line; at < line + 64n; at += 4n) {
+        setSlot(at, 0);
+        exactPieces.delete(at);
+      }
+    },
     [contract.hookTrap]: (kind, detail) => {
       const name = contract.trapKinds[kind];
       stop({ kind: name, detail: BigInt.asUintN(64, detail).toString() });
@@ -216,49 +325,154 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
     },
   };
 
-  // Translate blob `index` from `start` and instantiate it, adding its pieces to the lookup table. Code reached
-  // at run time is translated at look-ahead none.
-  function instantiateCode(index, start, lookAhead = 0, omit = 0) {
-    const b = blobs[index];
+  // Translate code `b` (its bytes, where they are, and where in them the code is, all of it when not said)
+  // from `start` and instantiate it, as `instantiateModule` says.
+  function instantiateCode(b, start, lookAhead, omit, bound = 0, exact = false) {
     // The translator's memory may grow while it makes room, so its buffer is taken after.
     const at = translator.input(b.bytes.length);
     new Uint8Array(translator.memory.buffer, at, b.bytes.length).set(b.bytes);
-    const length = translator.translate(b.codeStart, b.codeEnd, start, lookAhead, omit);
+    const length = translator.translate(
+      b.codeStart ?? 0n,
+      b.codeEnd ?? BigInt(b.bytes.length),
+      start,
+      lookAhead,
+      bound,
+      probe,
+      omit,
+      optimise ?? 0,
+      splitBytes ?? 0,
+    );
     if (length < 0) throw new Error(`no translation from ${start}`);
-    const module = new WebAssembly.Module(result(length));
+    const modules = [result(length)];
+    for (let i = 0; i < translator.more_modules(); i++) modules.push(result(translator.more_module(i)));
+    for (const bytes of modules) instantiateModule(new WebAssembly.Module(bytes), b, exact);
+  }
+
+  // The blob offsets of a code module's pieces, in slot order, from its description section.
+  function pieceOffsets(module) {
+    const [section] = WebAssembly.Module.customSections(module, contract.descriptionSection);
+    const bytes = new Uint8Array(section);
+    let at = 3;
+    const leb = () => {
+      let value = 0n;
+      let shift = 0n;
+      for (;;) {
+        const byte = bytes[at++];
+        value |= BigInt(byte & 0x7f) << shift;
+        shift += 7n;
+        if (byte < 0x80) return value;
+      }
+    };
+    leb();
+    at += 32;
+    const count = Number(leb());
+    return Array.from({ length: count }, leb);
+  }
+
+  // Instantiate a code module for code `b`, putting its pieces in new slots of the lookup table and giving
+  // each piece's address its slot; with `exact`, its one piece goes to the exact slot and to no address.
+  function instantiateModule(module, b, exact) {
+    const offsets = pieceOffsets(module);
+    const table = thread.exports[contract.lookup];
+    const first = exact ? contract.exactSlot : nextSlot;
+    if (!exact) {
+      nextSlot += offsets.length;
+      if (nextSlot > table.length) table.grow(nextSlot - table.length);
+    }
     new WebAssembly.Instance(module, {
       [contract.hooks]: hooks,
       [contract.env]: {
         [contract.memory]: memory,
         [contract.state]: state,
         [contract.loadAddress]: constant(b.load, "i64"),
-        [contract.slotBase]: constant(Number((b.load - tableBase) / 4n), "i32"),
+        [contract.slotBase]: constant(first, "i32"),
         [contract.tableBase]: constant(tableBase, "i64"),
         [contract.threadBlock]: constant(BLOCK_AT, "i32"),
         [contract.permissions]: constant(PERMISSIONS_AT, "i32"),
         [contract.permissionPages]: constant(BigInt(permissionPages), "i64"),
+        [contract.slots]: constant(slotsAt, "i32"),
+        [contract.slotsCover]: constant(4n * BigInt(slots), "i64"),
       },
       [contract.thread]: thread.exports,
     });
+    if (!exact) offsets.forEach((offset, i) => setSlot(b.load + offset, first + i));
   }
 
-  const tableBase = BigInt(load);
-  const threadModule = new WebAssembly.Module(result(translator.thread_module(Math.ceil(codeBytes / 4))));
+  const threadModule = new WebAssembly.Module(result(translator.thread_module()));
   thread = new WebAssembly.Instance(threadModule, {
     [contract.hooks]: hooks,
     [contract.env]: {
       [contract.state]: state,
       [contract.tableBase]: constant(tableBase, "i64"),
       [contract.threadBlock]: constant(BLOCK_AT, "i32"),
+      [contract.slots]: constant(slotsAt, "i32"),
+      [contract.slotsCover]: constant(4n * BigInt(slots), "i64"),
     },
   });
 
-  const table = new Uint8Array(permissionPages);
-  for (const [start, end, permissions] of regions) setPermissions(start, end, permissions, table);
+  for (const [start, end, permissions] of regions) setPermissions(start, end, permissions, pagePermissions);
   guest().set(blob, load);
-  blobs.push({ bytes: blob, load: BigInt(load), codeStart: 0n, codeEnd: BigInt(codeBytes) });
+  const loaded = { bytes: blob, load: BigInt(load), codeStart: 0n, codeEnd: BigInt(codeBytes) };
   programBreak = Math.ceil((load + blob.length) / pageSize) * pageSize;
-  instantiateCode(0, 0n, lookAhead, omit);
+  if (moduleBytes.length) return loadModules();
+  instantiateCode(loaded, 0n, lookAhead, omit, bound);
+
+  if (cases) return runCases();
+
+  // Code modules translated ahead of time, loaded only: how long making each module and its instance took.
+  function loadModules() {
+    let compiling = 0;
+    let instantiating = 0;
+    for (const bytes of moduleBytes) {
+      const started = performance.now();
+      const module = new WebAssembly.Module(bytes);
+      const compiled = performance.now();
+      instantiateModule(module, loaded, false);
+      compiling += compiled - started;
+      instantiating += performance.now() - compiled;
+    }
+    return { compiling, instantiating };
+  }
+
+  // Instruction cases, one after another in the same memory and instances: each is `codeBytes` of code put
+  // at the blob's place and translated there, the thread state, then the bytes of each of `areas`.
+  // Each gives how it stopped, the thread state after, and the bytes of the areas that changed, as
+  // [offset into the areas, value].
+  function runCases() {
+    const stateSize = contract.threadStateSize;
+    const placed = areas.reduce((sum, [, length]) => sum + length, 0);
+    const size = codeBytes + stateSize + placed;
+    const results = [];
+    for (let i = 0; i < cases; i++) {
+      const bytes = caseBytes.subarray(i * size, (i + 1) * size);
+      const code = bytes.slice(0, codeBytes);
+      guest().set(code, load);
+      loaded.bytes = code;
+      exactPieces.clear();
+      instantiateCode(loaded, 0n, lookAhead, omit, bound);
+      new Uint8Array(state.buffer, BLOCK_AT, stateSize).set(bytes.subarray(codeBytes, codeBytes + stateSize));
+      let at = codeBytes + stateSize;
+      for (const [address, length] of areas) {
+        guest().set(bytes.subarray(at, at + length), address);
+        at += length;
+      }
+      stopped = null;
+      snapshot = null;
+      stateAtStop = null;
+      thread.exports[contract.run]();
+      const changed = [];
+      let offset = 0;
+      at = codeBytes + stateSize;
+      for (const [address, length] of areas) {
+        const now = guest().subarray(address, address + length);
+        for (let j = 0; j < length; j++) if (now[j] !== bytes[at + j]) changed.push([offset + j, now[j]]);
+        offset += length;
+        at += length;
+      }
+      results.push({ stopped, state: [...stateAtStop], changed });
+    }
+    return { cases: results, counters: [...counters].map(([reason, c]) => ({ reason, ...c })) };
+  }
 
   // Each run starts the program afresh in the same instances: the blob and the stack placed again, the
   // registers as at the start, and the output of earlier runs dropped.
@@ -272,8 +486,8 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
     stderr.length = 0;
     stopped = null;
     snapshot = null;
-    const block = new DataView(state.buffer, BLOCK_AT, contract.threadBlockSize);
-    for (let i = 0; i < contract.threadBlockSize; i++) block.setUint8(i, 0);
+    const block = new DataView(state.buffer, BLOCK_AT, contract.threadStateSize);
+    for (let i = 0; i < contract.threadStateSize; i++) block.setUint8(i, 0);
     block.setBigUint64(contract.registerPc, BigInt(load), true);
     block.setBigUint64(contract.registerSp, BigInt(sp), true);
 

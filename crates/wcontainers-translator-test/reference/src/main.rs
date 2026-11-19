@@ -5,13 +5,13 @@
 //! and returns into the instruction; wherever control then lands raises the next signal, whose frame holds
 //! the registers after it. System calls made from the instruction are caught by seccomp and never run.
 //!
-//! `wcontainers-reference blob <file> <load address> <stack top>` runs a flat blob from its first byte with
-//! all registers zero and the starting stack of `initial_stack`, for real; its output and exit status are the
-//! program's.
+//! `wcontainers-reference blob <file> <load address> <stack top> <stack bytes>` runs a flat blob from its first
+//! byte with all registers zero and the starting stack of `initial_stack`, for real; its output and exit status
+//! are the program's.
 //!
-//! `wcontainers-reference time <runs> <file> <load address> <stack top>` runs the blob that many times, each
-//! in a child process, and writes each run's time in seconds to stderr: from just before the child is made
-//! until it has ended, so the reference's own start-up is not counted.
+//! `wcontainers-reference time <runs> <file> <load address> <stack top> <stack bytes>` runs the blob that many
+//! times, each in a child process, and writes each run's time in seconds to stderr: from just before the child
+//! is made until it has ended, so the reference's own start-up is not counted.
 
 #![allow(clippy::missing_safety_doc)]
 
@@ -21,6 +21,8 @@ use std::io::{Read, Write};
 include!("../../src/layout.rs");
 
 const PAGE: u64 = 4096;
+/// How long a blob may run.
+const BLOB_SECONDS: u32 = 20;
 const NZCV: u64 = 0xf000_0000;
 
 /// The registers the guest starts with: x0 to x30, sp, pc, pstate, thread pointer.
@@ -30,6 +32,9 @@ static mut LANDED: [u64; 35] = [0; 35];
 /// v0 to v31 the guest starts with, and where control landed.
 static mut GUEST_VECTORS: [u128; 32] = [0; 32];
 static mut LANDED_VECTORS: [u128; 32] = [0; 32];
+/// FPSR and FPCR the guest starts with, and where control landed.
+static mut GUEST_FLOAT: [u32; 2] = [0; 2];
+static mut LANDED_FLOAT: [u32; 2] = [0; 2];
 static mut SIGNAL: [u64; 3] = [0; 3];
 static mut HOST: core::mem::MaybeUninit<libc::mcontext_t> = core::mem::MaybeUninit::uninit();
 static mut HOST_THREAD_POINTER: u64 = 0;
@@ -59,6 +64,11 @@ unsafe fn frame_vectors(uc: *mut libc::ucontext_t) -> *mut [u128; 32] {
     }
 }
 
+/// FPSR and FPCR in a signal frame: right after the FPSIMD record's header.
+unsafe fn frame_float(uc: *mut libc::ucontext_t) -> *mut [u32; 2] {
+    unsafe { (frame_vectors(uc) as *mut u8).sub(8) as *mut [u32; 2] }
+}
+
 /// Entry: keep the host's frame, put the guest's registers in its place.
 extern "C" fn enter(_: libc::c_int, _: *mut libc::siginfo_t, context: *mut libc::c_void) {
     unsafe {
@@ -71,6 +81,7 @@ extern "C" fn enter(_: libc::c_int, _: *mut libc::siginfo_t, context: *mut libc:
         uc.uc_mcontext.pc = guest[32];
         uc.uc_mcontext.pstate = (uc.uc_mcontext.pstate & !NZCV) | (guest[33] & NZCV);
         frame_vectors(uc).write_unaligned(*addr_of!(GUEST_VECTORS));
+        frame_float(uc).write_unaligned(*addr_of!(GUEST_FLOAT));
         set_thread_pointer(guest[34]);
     }
 }
@@ -88,6 +99,7 @@ extern "C" fn land(signal: libc::c_int, info: *mut libc::siginfo_t, context: *mu
         landed[33] = uc.uc_mcontext.pstate & NZCV;
         landed[34] = guest_thread_pointer;
         *addr_of_mut!(LANDED_VECTORS) = frame_vectors(uc).read_unaligned();
+        *addr_of_mut!(LANDED_FLOAT) = frame_float(uc).read_unaligned();
         SIGNAL = [
             signal as u64,
             (*info).si_code as u64,
@@ -288,6 +300,11 @@ fn cases() {
                 let at = 12 + 8 * 34 + 16 * i;
                 *value = u128::from_le_bytes(request[at..at + 16].try_into().unwrap());
             }
+            let at = 12 + 8 * 34 + 16 * 32;
+            *addr_of_mut!(GUEST_FLOAT) = [
+                u32::from_le_bytes(request[at..at + 4].try_into().unwrap()),
+                u32::from_le_bytes(request[at + 4..at + 8].try_into().unwrap()),
+            ];
             timer(500_000);
             libc::raise(libc::SIGUSR1);
             timer(0);
@@ -312,6 +329,9 @@ fn cases() {
         for value in unsafe { *addr_of!(LANDED_VECTORS) } {
             result.extend_from_slice(&value.to_le_bytes());
         }
+        for value in unsafe { *addr_of!(LANDED_FLOAT) } {
+            result.extend_from_slice(&value.to_le_bytes());
+        }
         result.extend_from_slice(&(changed.len() as u32).to_le_bytes());
         for (offset, value) in changed {
             result.extend_from_slice(&offset.to_le_bytes());
@@ -322,7 +342,13 @@ fn cases() {
     }
 }
 
-fn blob(path: &str, load: u64, stack_top: u64) {
+/// The blob ran out of time: the status of a process killed by SIGALRM.
+extern "C" fn timed_out(_: libc::c_int, _: *mut libc::siginfo_t, _: *mut libc::c_void) {
+    unsafe { libc::_exit(128 + libc::SIGALRM) };
+}
+
+/// Run a flat blob at `load`; `headers` is where its program headers are and how many.
+fn blob(path: &str, load: u64, stack_top: u64, stack_bytes: u64, headers: Option<(u64, u64)>) {
     let bytes = std::fs::read(path).expect("read the blob");
     let length = (bytes.len() as u64).next_multiple_of(PAGE);
     // One mapping for code and data, as a flat blob needs.
@@ -337,9 +363,8 @@ fn blob(path: &str, load: u64, stack_top: u64) {
         synchronise(address);
         address += 64;
     }
-    const STACK: u64 = 1 << 20;
-    map(stack_top - STACK, STACK, libc::PROT_READ | libc::PROT_WRITE);
-    let (sp, stack) = initial_stack(stack_top);
+    map(stack_top - stack_bytes, stack_bytes, libc::PROT_READ | libc::PROT_WRITE);
+    let (sp, stack) = initial_stack(stack_top, headers);
     unsafe { core::ptr::copy_nonoverlapping(stack.as_ptr(), sp as *mut u8, stack.len()) };
     handle(libc::SIGUSR1, enter);
     unsafe {
@@ -347,16 +372,28 @@ fn blob(path: &str, load: u64, stack_top: u64) {
         *guest = [0; 35];
         guest[31] = sp;
         guest[32] = load;
+        // A program that does not end in this time ends as if killed by SIGALRM (random programs may
+        // loop). In Docker the runner is the first process, which a signal's default action never kills,
+        // so a handler ends it.
+        handle(libc::SIGALRM, timed_out);
+        libc::alarm(BLOB_SECONDS);
         libc::raise(libc::SIGUSR1);
     }
     unreachable!("the blob returned without exiting");
 }
 
-fn time(runs: u32, path: &str, load: u64, stack_top: u64) {
+fn time(
+    runs: u32,
+    path: &str,
+    load: u64,
+    stack_top: u64,
+    stack_bytes: u64,
+    headers: Option<(u64, u64)>,
+) {
     for _ in 0..runs {
         let start = std::time::Instant::now();
         match unsafe { libc::fork() } {
-            0 => blob(path, load, stack_top),
+            0 => blob(path, load, stack_top, stack_bytes, headers),
             -1 => panic!("fork failed"),
             child => {
                 let mut status = 0;
@@ -367,23 +404,46 @@ fn time(runs: u32, path: &str, load: u64, stack_top: u64) {
     }
 }
 
+/// The optional address and count of a blob's program headers.
+fn headers(arguments: &[String]) -> Option<(u64, u64)> {
+    match arguments {
+        [at, count] => Some((number(at), count.parse().expect("a count"))),
+        _ => None,
+    }
+}
+
 fn number(text: &str) -> u64 {
     u64::from_str_radix(text.trim_start_matches("0x"), 16).expect("a hexadecimal number")
 }
 
 fn main() {
+    // A failure of the runner itself ends with status 101 after this message on stderr, which `programs::native`
+    // fails the case on. (An abort is not enough: in Docker the runner is the first process, which ignores its
+    // own SIGABRT, so musl's abort ends it with SIGSEGV, as if the guest had faulted.)
+    std::panic::set_hook(Box::new(|info| {
+        eprintln!("wcontainers-reference: {info}");
+        unsafe { libc::_exit(101) };
+    }));
     let arguments: Vec<String> = std::env::args().collect();
     match arguments.get(1).map(String::as_str) {
         Some("cases") => cases(),
-        Some("blob") => blob(&arguments[2], number(&arguments[3]), number(&arguments[4])),
+        Some("blob") => blob(
+            &arguments[2],
+            number(&arguments[3]),
+            number(&arguments[4]),
+            number(&arguments[5]),
+            headers(&arguments[6..]),
+        ),
         Some("time") => time(
             arguments[2].parse().expect("a number of runs"),
             &arguments[3],
             number(&arguments[4]),
             number(&arguments[5]),
+            number(&arguments[6]),
+            headers(&arguments[7..]),
         ),
         _ => panic!(
-            "usage: wcontainers-reference cases | blob <file> <load> <stack top> | time <runs> <file> <load> <stack top>"
+            "usage: wcontainers-reference cases | blob <file> <load> <stack top> <stack bytes> [<headers> <count>] | time <runs> <file> <load> <stack top> <stack bytes> [<headers> <count>]"
         ),
     }
 }

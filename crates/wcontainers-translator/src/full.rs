@@ -4,17 +4,19 @@
 
 use crate::code::*;
 use crate::contract::*;
-use crate::state::{Slot, load_flag, store_flags};
+use crate::state::{Slot, load_flag};
 use crate::thread::memarg;
 use petgraph::algo::dominators;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::DfsPostOrder;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use rayon::prelude::*;
+use rustc_hash::{FxHashMap, FxHashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use wasm_encoder::{BlockType, InstructionSink, ValType};
 use wcontainers_arm64::{
-    Access, Address, BranchRegister, Carry, Cond, Effects, Emitter, Flag, Flags, Instruction,
-    Operand, Reg, Registers, Target, Trap, Width, condition_direct, condition_from_flags, emit,
-    flag_value, habits, untag,
+    Access, Address, BranchRegister, Carry, Cond, Control, Effects, Emitter, Flag, Flags, Hook,
+    Host, Instruction, Operand, Reg, Registers, Target, Trap, Width, condition_direct,
+    condition_from_flags, emit, flag_value, habits, untag,
 };
 
 mod proof;
@@ -22,86 +24,171 @@ mod proof;
 /// How far back a jump through a register looks for the switch it may come from.
 const SWITCH_WINDOW: u64 = 64;
 
-/// The pieces of a full translation: those the lookup table holds, by entry offset, and then the loop pieces,
-/// whose function indices follow the others in order.
+/// The functions of a full or bounded translation, found and planned, ready to be emitted in groups.
 ///
-/// A loop piece starts at the header of a loop of a function and holds that loop and what follows it up to
-/// the header of any other loop, going on there in that loop's piece. Only a stop check that carries on at a jump back enters one,
-/// so it may rely on what its function knows at the loop. That way a thread carries on in a new call, which
-/// runs whatever code the engine has made for the function by then, and the function itself has no second
-/// way into its loops.
-pub(crate) fn pieces(
-    code: &Code<'_>,
-    starts: &[u64],
+/// Each function becomes the piece the lookup table holds for its entry, and each of its loops with a loop
+/// piece one more function. A loop piece starts at the header of a loop of a function and holds that loop and
+/// what follows it up to the header of any other loop, going on there in that loop's piece. Only a stop check
+/// that carries on at a jump back enters one, so it may rely on what its function knows at the loop. That way
+/// a thread carries on in a new call, which runs whatever code the engine has made for the function by then,
+/// and the function itself has no second way into its loops.
+pub(crate) struct Planned<'a> {
+    finder: Finder<'a>,
+    functions: Vec<Function>,
+    plans: Vec<Plan>,
+    /// Each function's loop pieces, with their plans.
+    loops: Vec<Vec<(Function, Plan)>>,
     omit: Omit,
-) -> (
-    BTreeMap<u64, wasm_encoder::Function>,
-    Vec<wasm_encoder::Function>,
-) {
+    optimise: Optimise,
+}
+
+/// Find and plan the functions of a translation from `starts`: the whole blob's (`bound` none) or one stretch
+/// of at most `bound` instructions from each start.
+pub(crate) fn plan<'a>(
+    code: &'a Code<'a>,
+    starts: &[u64],
+    bound: Option<usize>,
+    omit: Omit,
+    optimise: Optimise,
+) -> Planned<'a> {
     let mut finder = Finder {
         code,
-        decoded: HashMap::new(),
+        decoded: Decodes::default(),
     };
-    let functions = finder.functions(starts);
+    let functions = match bound {
+        None => finder.functions(starts),
+        Some(limit) => finder.stretches(starts, limit),
+    };
     let entries: BTreeSet<u64> = functions.iter().map(|f| f.entry).collect();
-    let index: BTreeMap<u64, u32> = functions
-        .iter()
-        .enumerate()
-        .map(|(i, f)| (f.entry, F_FIRST_PIECE + i as u32))
-        .collect();
     let plans: Vec<Plan> = functions
-        .iter()
+        .par_iter()
         .map(|f| Plan::new(f, &finder.decoded, Seed::NOTHING))
         .collect();
 
-    // Loop pieces, by the function they come from; with no stop checks nothing enters them.
-    let mut loops: Vec<(usize, Function, Plan)> = Vec::new();
-    let mut loop_index: Vec<HashMap<u64, u32>> = vec![HashMap::new(); functions.len()];
-    let mut next = F_FIRST_PIECE + functions.len() as u32;
-    for (i, (function, plan)) in functions.iter().zip(&plans).enumerate() {
-        if omit.stop {
-            break;
-        }
-        for (h, others) in &plan.outside {
-            let mut bounds = entries.clone();
-            bounds.extend(others.iter().map(|&d| function.blocks[d].start));
-            let start = function.blocks[*h].start;
-            let piece = finder.explore(start, &bounds, &mut BTreeSet::new());
-            // Where a loop piece would need more entries, the stop check carries on in place instead.
-            if !irreducible(&piece).is_empty() {
-                continue;
+    // Loop pieces, by the function they come from; with no stop checks nothing enters them. Translated for
+    // size, there are none: a stop at a jump back carries on in place.
+    let pieced = !omit.stop && optimise == Optimise::Speed;
+    let loops: Vec<Vec<(Function, Plan)>> = functions
+        .par_iter()
+        .zip(&plans)
+        .map(|(function, plan)| {
+            if !pieced || plan.outside.is_empty() {
+                return Vec::new();
             }
-            let seed = Seed {
-                frame: plan.frame_in[*h],
-                aligned: plan.aligned_in[*h],
+            // A stretch's loop piece stays within the stretch.
+            let within: Option<FxHashSet<u64>> =
+                bound.map(|_| function_instructions(function).collect());
+            let reach = match &within {
+                None => Reach::All,
+                Some(within) => Reach::Within(within),
             };
-            let piece_plan = Plan::new(&piece, &finder.decoded, seed);
-            loop_index[i].insert(start, next);
-            next += 1;
-            loops.push((i, piece, piece_plan));
-        }
+            plan.outside
+                .iter()
+                .filter_map(|(h, others)| {
+                    let headers: Vec<u64> =
+                        others.iter().map(|&d| function.blocks[d].start).collect();
+                    let start = function.blocks[*h].start;
+                    let bounds = (&entries, &headers[..]);
+                    let piece = finder.explore(start, bounds, &mut BTreeSet::new(), reach);
+                    // Where a loop piece would need more entries, the stop check carries on in place instead.
+                    if !irreducible(&piece).is_empty() {
+                        return None;
+                    }
+                    let seed = Seed {
+                        frame: plan.frame_in[*h],
+                        aligned: plan.aligned_in[*h],
+                    };
+                    let plan = Plan::new(&piece, &finder.decoded, seed);
+                    Some((piece, plan))
+                })
+                .collect()
+        })
+        .collect();
+    Planned {
+        finder,
+        functions,
+        plans,
+        loops,
+        omit,
+        optimise,
+    }
+}
+
+impl Planned<'_> {
+    /// The entries of the pieces the lookup table holds, in order.
+    pub(crate) fn entries(&self) -> Vec<u64> {
+        self.functions.iter().map(|f| f.entry).collect()
     }
 
-    let decoded = &finder.decoded;
-    let table = functions
-        .iter()
-        .zip(&plans)
-        .enumerate()
-        .map(|(i, (function, plan))| {
-            let own = index[&function.entry];
-            let piece =
-                FullEmitter::piece(function, plan, decoded, &index, &loop_index[i], own, omit);
-            (function.entry, piece)
-        })
-        .collect();
-    let extra = loops
-        .iter()
-        .map(|(i, function, plan)| {
-            let own = loop_index[*i][&function.entry];
-            FullEmitter::piece(function, plan, decoded, &index, &loop_index[*i], own, omit)
-        })
-        .collect();
-    (table, extra)
+    /// Offsets that cut the `i`th function in two, as starts.
+    pub(crate) fn halves(&self, i: usize) -> Vec<u64> {
+        cuts(&self.functions[i], 2)
+    }
+
+    /// The pieces `group` of the table's (by their order), each with its loop pieces, emitted for a module that
+    /// holds that group alone: the table's pieces take the function indices from [`F_FIRST_PIECE`] in order,
+    /// then the loop pieces follow in order. Code outside the group is reached through the lookup.
+    pub(crate) fn emit(&self, group: std::ops::Range<usize>) -> Vec<Unit> {
+        let host = self.finder.code.host;
+        let index: BTreeMap<u64, u32> = self.functions[group.clone()]
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (f.entry, F_FIRST_PIECE + i as u32))
+            .collect();
+        let mut next = F_FIRST_PIECE + group.len() as u32;
+        let loop_index: Vec<FxHashMap<u64, u32>> = group
+            .clone()
+            .map(|i| {
+                self.loops[i]
+                    .iter()
+                    .map(|(piece, _)| {
+                        next += 1;
+                        (piece.entry, next - 1)
+                    })
+                    .collect()
+            })
+            .collect();
+        let decoded = &self.finder.decoded;
+        group
+            .clone()
+            .into_par_iter()
+            .zip(&loop_index)
+            .map(|(i, loops)| {
+                let function = &self.functions[i];
+                let emit = |function, plan, own| {
+                    let how = (self.omit, self.optimise, host);
+                    FullEmitter::piece(function, plan, decoded, &index, loops, own, how)
+                };
+                let (piece, mut locals, mut sites) =
+                    emit(function, &self.plans[i], index[&function.entry]);
+                let others = self.loops[i]
+                    .iter()
+                    .map(|(piece, plan)| {
+                        let (f, n, more) = emit(piece, plan, loops[&piece.entry]);
+                        locals = locals.max(n);
+                        add_sites(&mut sites, &more);
+                        f
+                    })
+                    .collect();
+                Unit {
+                    piece,
+                    others,
+                    locals,
+                    sites,
+                }
+            })
+            .collect()
+    }
+}
+
+fn decode_at(code: &Code<'_>, offset: u64) -> Decoded {
+    let word = code.word(offset);
+    let instruction = wcontainers_arm64::decode(word);
+    Decoded {
+        word,
+        instruction,
+        effects: instruction.effects(),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -126,12 +213,196 @@ struct Function {
     entry: u64,
     blocks: Vec<Block>,
     /// Block index by start offset.
-    at: HashMap<u64, usize>,
+    at: FxHashMap<u64, usize>,
 }
 
 struct Finder<'a> {
     code: &'a Code<'a>,
-    decoded: HashMap<u64, Decoded>,
+    decoded: Decodes,
+}
+
+/// Decoded instructions by offset.
+type Decodes = FxHashMap<u64, Decoded>;
+
+/// How far exploring a function may go.
+#[derive(Clone, Copy)]
+enum Reach<'a> {
+    All,
+    /// At most this many instructions.
+    Count(usize),
+    /// Only these instructions.
+    Within(&'a FxHashSet<u64>),
+}
+
+/// The flags of a kept shape with every local filled in: for an addition, `b` (when only the value subtracted
+/// was kept) and the result are worked out into `temporaries`, locals of the width's type.
+fn completed(s: &mut InstructionSink<'_>, flags: Flags, temporaries: (u32, u32)) -> Flags {
+    let Flags::Add {
+        width,
+        a,
+        b,
+        carry,
+        subtrahend,
+        ..
+    } = flags
+    else {
+        return flags;
+    };
+    let (inverted, result) = temporaries;
+    let b = match subtrahend {
+        Some(m) => {
+            s.local_get(m);
+            match width {
+                Width::W32 => s.i32_const(-1).i32_xor(),
+                Width::X64 => s.i64_const(-1).i64_xor(),
+            };
+            s.local_set(inverted);
+            inverted
+        }
+        None => b,
+    };
+    s.local_get(a).local_get(b);
+    let add = |s: &mut InstructionSink<'_>| match width {
+        Width::W32 => {
+            s.i32_add();
+        }
+        Width::X64 => {
+            s.i64_add();
+        }
+    };
+    add(s);
+    match carry {
+        Carry::Zero => {}
+        Carry::One => {
+            match width {
+                Width::W32 => s.i32_const(1),
+                Width::X64 => s.i64_const(1),
+            };
+            add(s);
+        }
+        Carry::Local(c) => {
+            s.local_get(c);
+            if width == Width::X64 {
+                s.i64_extend_i32_u();
+            }
+            add(s);
+        }
+    }
+    s.local_set(result);
+    Flags::Add {
+        width,
+        a,
+        b,
+        carry,
+        result,
+        subtrahend,
+    }
+}
+
+/// Push the flags word of the thread block from the four flags, each pushed by `flag` as 0 or 1.
+fn push_word(s: &mut InstructionSink<'_>, mut flag: impl FnMut(&mut InstructionSink<'_>, Flag)) {
+    for (i, f) in Flag::ALL.into_iter().enumerate() {
+        flag(s, f);
+        s.i32_const(f.bit() as i32).i32_shl();
+        if i > 0 {
+            s.i32_or();
+        }
+    }
+}
+
+/// Every shape a kept flag setting may have: a subtraction only ever has a carry of one.
+fn shapes() -> impl Iterator<Item = Shape> {
+    [Width::W32, Width::X64].into_iter().flat_map(|width| {
+        let adds = (0..3).map(move |carry| Shape::Add {
+            width,
+            carry,
+            subtract: false,
+        });
+        adds.chain([
+            Shape::Add {
+                width,
+                carry: 1,
+                subtract: true,
+            },
+            Shape::Logic(width),
+        ])
+    })
+}
+
+/// How many functions work out the flags word: one for flags in locals, one for each shape.
+pub(crate) const FLAGS_WORDS: u32 = 11;
+
+/// The function after [`F_FLAGS_WORD`] that works out the flags word for a shape.
+fn flags_word_function(shape: Shape) -> u32 {
+    let i = shapes()
+        .position(|s| s == shape)
+        .expect("every shape has one");
+    F_FLAGS_WORD + 1 + i as u32
+}
+
+/// The functions that work out the flags word for a write back on the way to the runner, with their
+/// parameters, all locals of the piece: first from the four flags (N, Z, C, V), then for each shape in the
+/// order of [`shapes`] from its kept locals (`a`, then `b` or the value subtracted, then the carry when it is
+/// a local; for logic, the result). Out of line, as such a write back is rare and the same everywhere.
+pub(crate) fn flags_word_functions() -> Vec<(Vec<ValType>, wasm_encoder::Function)> {
+    let mut functions = Vec::new();
+    let mut f = wasm_encoder::Function::new([]);
+    let mut s = f.instructions();
+    push_word(&mut s, |s, flag| {
+        let i = Flag::ALL.iter().position(|f| *f == flag).expect("a flag");
+        s.local_get(i as u32);
+    });
+    s.end();
+    functions.push((vec![ValType::I32; 4], f));
+    for shape in shapes() {
+        let (params, flags) = match shape {
+            Shape::Add {
+                width,
+                carry,
+                subtract,
+            } => {
+                let ty = match width {
+                    Width::W32 => ValType::I32,
+                    Width::X64 => ValType::I64,
+                };
+                let mut params = vec![ty, ty];
+                let carry = match carry {
+                    0 => Carry::Zero,
+                    1 => Carry::One,
+                    _ => {
+                        params.push(ValType::I32);
+                        Carry::Local(2)
+                    }
+                };
+                let flags = Flags::Add {
+                    width,
+                    a: 0,
+                    b: if subtract { u32::MAX } else { 1 },
+                    carry,
+                    result: u32::MAX,
+                    subtrahend: subtract.then_some(1),
+                };
+                (params, flags)
+            }
+            Shape::Logic(width) => {
+                let ty = match width {
+                    Width::W32 => ValType::I32,
+                    Width::X64 => ValType::I64,
+                };
+                (vec![ty], Flags::Logic { width, result: 0 })
+            }
+        };
+        let n = params.len() as u32;
+        let ty = params[0];
+        let mut f = wasm_encoder::Function::new([(2, ty)]);
+        let mut s = f.instructions();
+        let flags = completed(&mut s, flags, (n, n + 1));
+        push_word(&mut s, |s, flag| flag_value(s, flags, flag));
+        s.end();
+        functions.push((params, f));
+    }
+    assert_eq!(functions.len() as u32, FLAGS_WORDS);
+    functions
 }
 
 /// Whether control can leave an instruction other than by going on to the next one or by a call that returns.
@@ -142,72 +413,134 @@ fn ends_block(instruction: &Instruction) -> bool {
 }
 
 impl Finder<'_> {
-    fn get(&mut self, offset: u64) -> Decoded {
+    /// The instruction at an offset, decoded again unless it is kept.
+    fn get(&self, offset: u64) -> Decoded {
+        match self.decoded.get(&offset) {
+            Some(&d) => d,
+            None => decode_at(self.code, offset),
+        }
+    }
+
+    /// Keep every instruction of these functions decoded, for planning and emitting them.
+    fn keep(&mut self, functions: &[Function]) {
         let code = self.code;
-        *self.decoded.entry(offset).or_insert_with(|| {
-            let word = code.word(offset);
-            let instruction = wcontainers_arm64::decode(word);
-            Decoded {
-                word,
-                instruction,
-                effects: instruction.effects(),
-            }
-        })
+        let decoded = &self.decoded;
+        let missing: Vec<(u64, Decoded)> = functions
+            .par_iter()
+            .flat_map_iter(|f| function_instructions(f).filter(|o| !decoded.contains_key(o)))
+            .map(|o| (o, decode_at(code, o)))
+            .collect();
+        self.decoded.extend(missing);
     }
 
     /// Every function: the starts, targets of direct calls, addresses the code builds that point into code,
-    /// and the extra entries that keep every function's control flow reducible.
+    /// the extra entries that keep every function's control flow reducible, and those that cut functions too
+    /// large in parts.
     fn functions(&mut self, starts: &[u64]) -> Vec<Function> {
         let mut entries: BTreeSet<u64> = starts.iter().copied().collect();
         let mut explored = BTreeSet::new();
         loop {
+            // In rounds: every entry not yet explored, all at once, then what they found.
             let mut work: Vec<u64> = entries.difference(&explored).copied().collect();
-            while let Some(entry) = work.pop() {
-                explored.insert(entry);
-                let mut found = BTreeSet::new();
-                self.explore(entry, &entries, &mut found);
-                for offset in found {
+            while !work.is_empty() {
+                explored.extend(&work);
+                let found: Vec<BTreeSet<u64>> = work
+                    .par_iter()
+                    .map(|&entry| {
+                        let mut found = BTreeSet::new();
+                        self.explore(entry, (&entries, &[]), &mut found, Reach::All);
+                        found
+                    })
+                    .collect();
+                work = Vec::new();
+                for offset in found.into_iter().flatten() {
                     if self.code.inside(offset) && entries.insert(offset) {
                         work.push(offset);
                     }
                 }
             }
             let functions: Vec<Function> = entries
-                .iter()
-                .map(|&entry| self.explore(entry, &entries, &mut BTreeSet::new()))
+                .par_iter()
+                .map(|&entry| {
+                    self.explore(entry, (&entries, &[]), &mut BTreeSet::new(), Reach::All)
+                })
+                .collect();
+            let more_entries: Vec<Vec<u64>> = functions
+                .par_iter()
+                .map(|function| {
+                    let parts = function.blocks.len().div_ceil(FUNCTION_BLOCKS);
+                    let mut offsets = irreducible(function);
+                    offsets.extend(cuts(function, parts));
+                    offsets
+                })
                 .collect();
             let mut more = false;
-            for function in &functions {
-                for offset in irreducible(function) {
-                    more |= entries.insert(offset);
-                }
+            for offset in more_entries.into_iter().flatten() {
+                more |= entries.insert(offset);
             }
             if !more {
+                self.keep(&functions);
                 return functions;
             }
         }
     }
 
-    /// The function at an entry, with what it shows of other entries added to `found`.
+    /// One stretch per start: what the code reaches from it in its first `limit` instructions, stopping at the
+    /// other starts and at the blocks that would make its control flow irreducible.
+    fn stretches(&mut self, starts: &[u64], limit: usize) -> Vec<Function> {
+        let starts: BTreeSet<u64> = starts.iter().copied().collect();
+        let mut bounds = starts.clone();
+        loop {
+            let stretches: Vec<Function> = starts
+                .par_iter()
+                .map(|&s| {
+                    let reach = Reach::Count(limit);
+                    self.explore(s, (&bounds, &[]), &mut BTreeSet::new(), reach)
+                })
+                .collect();
+            let mut more = false;
+            for stretch in &stretches {
+                let parts = stretch.blocks.len().div_ceil(FUNCTION_BLOCKS);
+                for offset in irreducible(stretch).into_iter().chain(cuts(stretch, parts)) {
+                    more |= bounds.insert(offset);
+                }
+            }
+            if !more {
+                self.keep(&stretches);
+                return stretches;
+            }
+        }
+    }
+
+    /// The function at an entry, stopping at the other entries and at the other offsets given with them,
+    /// with what it shows of other entries added to `found`.
     fn explore(
-        &mut self,
+        &self,
         entry: u64,
-        entries: &BTreeSet<u64>,
+        (entries, others): (&BTreeSet<u64>, &[u64]),
         found: &mut BTreeSet<u64>,
+        reach: Reach<'_>,
     ) -> Function {
         let mut body = BTreeSet::new();
         let mut leaders = BTreeSet::from([entry]);
-        let mut tables: HashMap<u64, Vec<u64>> = HashMap::new();
+        let mut tables: FxHashMap<u64, Vec<u64>> = FxHashMap::default();
         // Addresses the code builds; those a jump table of this function goes to are its own blocks.
         let mut built = Vec::new();
         let mut work = vec![entry];
         while let Some(offset) = work.pop() {
-            if !self.code.inside(offset) || (offset != entry && entries.contains(&offset)) {
+            if !self.code.inside(offset)
+                || (offset != entry && (entries.contains(&offset) || others.contains(&offset)))
+                || body.contains(&offset)
+            {
                 continue;
             }
-            if !body.insert(offset) {
-                continue;
+            match reach {
+                Reach::All => {}
+                Reach::Count(limit) if body.len() < limit => {}
+                Reach::Within(allowed) if allowed.contains(&offset) => {}
+                _ => continue,
             }
+            body.insert(offset);
             let instruction = self.get(offset).instruction;
             let flow = instruction.flow();
             let mut jumps = Vec::new();
@@ -265,20 +598,18 @@ impl Finder<'_> {
                 jumps.push(offset.wrapping_add_signed(by));
             }
             leaders.extend(&jumps);
+            work.extend(jumps);
+            // The next instruction is seen first, so a bounded stretch follows the code in order.
             if flow.falls_through {
                 if ends_block(&instruction) {
                     leaders.insert(offset + 4);
                 }
                 work.push(offset + 4);
             }
-            work.extend(jumps);
         }
 
-        found.extend(
-            built
-                .into_iter()
-                .filter(|b| !tables.values().any(|t| t.contains(b))),
-        );
+        let switched: FxHashSet<u64> = tables.values().flatten().copied().collect();
+        found.extend(built.into_iter().filter(|b| !switched.contains(b)));
 
         // Cut the body into blocks, the entry's first.
         let mut blocks: Vec<Block> = Vec::new();
@@ -287,7 +618,7 @@ impl Finder<'_> {
             let joined = previous.is_some_and(|p| {
                 p + 4 == offset
                     && !leaders.contains(&offset)
-                    && !ends_block(&self.decoded[&p].instruction)
+                    && !ends_block(&self.get(p).instruction)
             });
             if joined {
                 blocks.last_mut().unwrap().end = offset + 4;
@@ -303,14 +634,14 @@ impl Finder<'_> {
         }
         let first = blocks.iter().position(|b| b.start == entry).unwrap();
         blocks.swap(0, first);
-        let at: HashMap<u64, usize> = blocks
+        let at: FxHashMap<u64, usize> = blocks
             .iter()
             .enumerate()
             .map(|(i, b)| (b.start, i))
             .collect();
         for block in &mut blocks {
             let last = block.end - 4;
-            let instruction = self.decoded[&last].instruction;
+            let instruction = self.get(last).instruction;
             let flow = instruction.flow();
             let mut targets = Vec::new();
             if let Some(by) = flow.target
@@ -336,7 +667,7 @@ impl Finder<'_> {
 
     /// The targets of a switch's jump table ending at the jump through a register at `offset`, if the code
     /// before it has that shape and every target is code.
-    fn jump_table(&mut self, offset: u64, rn: Reg) -> Option<Vec<u64>> {
+    fn jump_table(&self, offset: u64, rn: Reg) -> Option<Vec<u64>> {
         let first = offset
             .saturating_sub(4 * SWITCH_WINDOW)
             .max(self.code.range.start);
@@ -351,6 +682,45 @@ impl Finder<'_> {
             .all(|&t| self.code.inside(t))
             .then_some(targets)
     }
+}
+
+/// Offsets that cut a function in `parts`: the places control passes from one run of its instructions to
+/// another, with blocks in the order a depth first walk first reaches them, so that what follows a block
+/// tends to be in its run. Made entries, they leave each run a function of its own.
+fn cuts(function: &Function, parts: usize) -> Vec<u64> {
+    if parts <= 1 {
+        return Vec::new();
+    }
+    let (_, rank) = ranks(function);
+    let mut order: Vec<usize> = (0..function.blocks.len()).collect();
+    order.sort_unstable_by_key(|&b| rank[b]);
+    // Each instruction's place in that order.
+    let mut place: FxHashMap<u64, usize> = FxHashMap::default();
+    for &b in &order {
+        let block = &function.blocks[b];
+        for offset in (block.start..block.end).step_by(4) {
+            let next = place.len();
+            place.insert(offset, next);
+        }
+    }
+    let count = place.len();
+    let part = |offset: u64| place[&offset] * parts / count;
+    let mut found = Vec::new();
+    for block in &function.blocks {
+        for offset in (block.start + 4..block.end).step_by(4) {
+            if part(offset) != part(offset - 4) {
+                found.push(offset);
+            }
+        }
+        let from = part(block.end - 4);
+        for &s in &block.succs {
+            let to = function.blocks[s].start;
+            if part(to) != from {
+                found.push(to);
+            }
+        }
+    }
+    found
 }
 
 /// The order blocks are first reached in a depth first walk from the entry, reversed: each block's rank.
@@ -470,7 +840,7 @@ struct Plan {
     /// Registers that must hold their true value at the start of each block; the entry's are loaded.
     live_in: Vec<Registers>,
     /// Registers that must hold their true value after each instruction.
-    live_after: HashMap<u64, Registers>,
+    live_after: FxHashMap<u64, Registers>,
     dirty_in: Vec<Registers>,
     /// By loop header, the registers written back to the thread block when the loop is entered.
     written_before: Vec<Registers>,
@@ -480,11 +850,11 @@ struct Plan {
     shapes: Vec<Shape>,
     /// Some point does not know statically where the flags are, so a local says.
     dynamic_flags: bool,
-    checks: HashMap<u64, CheckPlan>,
+    checks: FxHashMap<u64, CheckPlan>,
     /// Ranges relative to the stack pointer before the instruction, checked as the stack grows.
-    frame_checks: HashMap<u64, (i64, u32)>,
+    frame_checks: FxHashMap<u64, (i64, u32)>,
     /// Calls after which a frame is known, so the stack pointer must come back unchanged.
-    frame_across: HashSet<u64>,
+    frame_across: FxHashSet<u64>,
     /// The piece calls or jumps to other pieces, so its entry needs the stop check.
     calls_out: bool,
     /// What is known at each block's start about the stack: its frame and whether it is aligned.
@@ -494,19 +864,21 @@ struct Plan {
     /// Accesses checked exactly inside a loop that makes no call or system call keep the run of pages last
     /// found to allow them and check again only when an access does not lie within that run. Accesses of
     /// one kind (read or write) through one base register in one loop share what they keep. Each such access's number for
-    /// what it keeps, and by loop header, the numbers forgotten when the loop is entered.
-    kept: HashMap<u64, usize>,
+    /// what it keeps, by number the longest of those accesses in bytes, and by loop header, the numbers
+    /// forgotten when the loop is entered.
+    kept: FxHashMap<u64, usize>,
+    kept_longest: Vec<u32>,
     kept_by_loop: Vec<Vec<usize>>,
     /// By loop header, the loops that have a copy without the checks their accesses are proven not to need.
-    versioned: HashMap<usize, proof::Versioned>,
+    versioned: FxHashMap<usize, proof::Versioned>,
     /// By the header of such a loop, the blocks outside it placed after both copies (and no longer under the
     /// block in the loop that dominates them), so either copy reaches them by a branch.
     after: Vec<Vec<usize>>,
     /// The accesses whose checks those copies leave out, with the header of the loop whose proof covers them.
-    proven: HashMap<u64, usize>,
+    proven: FxHashMap<u64, usize>,
     /// By edge leaving loops, registers those loops keep in the thread block: the ones needed after it are
     /// loaded there.
-    reload_on_exit: HashMap<(usize, usize), Registers>,
+    reload_on_exit: FxHashMap<(usize, usize), Registers>,
 }
 
 /// How the stack pointer moves at an instruction: by a known amount (before or after its access), or to
@@ -570,9 +942,13 @@ fn aligned_after(d: &Decoded, aligned: bool) -> bool {
     }
 }
 
-/// Shift a frame to a stack pointer moved by `delta`.
+/// Shift a frame to a stack pointer moved by `delta`. What is left below the stack pointer is no frame, so
+/// it is dropped.
 fn shift(frame: Frame, delta: i64) -> Frame {
-    frame.map(|(lo, hi)| (lo - delta, hi - delta))
+    frame.and_then(|(lo, hi)| {
+        let (lo, hi) = ((lo - delta).max(0), hi - delta);
+        (lo < hi).then_some((lo, hi))
+    })
 }
 
 fn covers(frame: Frame, lo: i64, hi: i64) -> bool {
@@ -595,7 +971,7 @@ impl Seed {
 }
 
 impl Plan {
-    fn new(function: &Function, decoded: &HashMap<u64, Decoded>, seed: Seed) -> Plan {
+    fn new(function: &Function, decoded: &Decodes, seed: Seed) -> Plan {
         let blocks = &function.blocks;
         let n = blocks.len();
         let (graph, rank) = ranks(function);
@@ -626,7 +1002,7 @@ impl Plan {
             }
             inside
         };
-        let bodies: HashMap<usize, Vec<bool>> = headers.iter().map(|&h| (h, body(h))).collect();
+        let bodies: FxHashMap<usize, Vec<bool>> = headers.iter().map(|&h| (h, body(h))).collect();
         let outside = headers
             .iter()
             .copied()
@@ -727,7 +1103,7 @@ impl Plan {
         // Registers kept in the thread block rather than in locals through a loop that neither reads nor
         // writes them, so they take no engine register while it runs: loaded again where it is left. Not
         // done for a loop left through a jump table, whose edges have no place for the loads.
-        let through: HashMap<usize, Registers> = bodies
+        let through: FxHashMap<usize, Registers> = bodies
             .iter()
             .map(|(&h, body)| {
                 let switch = (0..n).any(|b| body[b] && blocks[b].table.is_some());
@@ -747,7 +1123,7 @@ impl Plan {
                 .filter(|(_, body)| body[b] && !body[s])
                 .fold(Registers::NONE, |r, (h, _)| r.union(through[h]))
         };
-        let mut reload_on_exit = HashMap::new();
+        let mut reload_on_exit = FxHashMap::default();
         for (b, block) in blocks.iter().enumerate() {
             for &s in &block.succs {
                 let r = leaving(b, s);
@@ -820,7 +1196,7 @@ impl Plan {
         // Backward: registers that must hold their true value. Every register that may be dirty at a block's
         // start counts as needed there, so no path reaches a write back with a stale local.
         let mut live_in_blocks = vec![Registers::NONE; n];
-        let mut live_after = HashMap::new();
+        let mut live_after = FxHashMap::default();
         let mut changed = true;
         while changed {
             changed = false;
@@ -876,7 +1252,8 @@ impl Plan {
                 })
             })
         };
-        let mut kept = HashMap::new();
+        let mut kept = FxHashMap::default();
+        let mut kept_longest = Vec::new();
         let mut kept_by_loop = vec![Vec::new(); n];
         let mut keys = Vec::new();
         for b in 0..n {
@@ -899,10 +1276,12 @@ impl Plan {
                             Some(number) => number,
                             None => {
                                 keys.push(key);
+                                kept_longest.push(0);
                                 kept_by_loop[h].push(keys.len() - 1);
                                 keys.len() - 1
                             }
                         };
+                        kept_longest[number] = kept_longest[number].max(access.bytes);
                         kept.insert(o, number);
                     }
                 }
@@ -914,7 +1293,7 @@ impl Plan {
             doms.dominators(NodeIndex::new(b))
                 .is_some_and(|mut d| d.any(|x| x.index() == a))
         };
-        let mut versioned = HashMap::new();
+        let mut versioned = FxHashMap::default();
         let mut after = vec![Vec::new(); n];
         let mut homed = vec![false; n];
         let mut outermost_first = headers.clone();
@@ -1002,6 +1381,7 @@ impl Plan {
             frame_in,
             outside,
             kept,
+            kept_longest,
             kept_by_loop,
             versioned,
             after,
@@ -1050,21 +1430,21 @@ fn block_end(function: &Function, offset: u64) -> u64 {
 
 /// Which accesses need a check, where the stack's frame is checked, and the calls a frame is kept across.
 struct Checks {
-    plans: HashMap<u64, CheckPlan>,
-    frame_checks: HashMap<u64, (i64, u32)>,
-    frame_across: HashSet<u64>,
+    plans: FxHashMap<u64, CheckPlan>,
+    frame_checks: FxHashMap<u64, (i64, u32)>,
+    frame_across: FxHashSet<u64>,
 }
 
-fn checks(function: &Function, decoded: &HashMap<u64, Decoded>, frame_in: &[Frame]) -> Checks {
-    let mut plans = HashMap::new();
-    let mut frame_checks = HashMap::new();
-    let mut frame_across = HashSet::new();
+fn checks(function: &Function, decoded: &Decodes, frame_in: &[Frame]) -> Checks {
+    let mut plans = FxHashMap::default();
+    let mut frame_checks = FxHashMap::default();
+    let mut frame_across = FxHashSet::default();
     for (b, block) in function.blocks.iter().enumerate() {
         let mut frame = frame_in[b];
         // Per base register: how far its value has moved from where its current groups are measured.
-        let mut moved: HashMap<u8, i64> = HashMap::new();
+        let mut moved: FxHashMap<u8, i64> = FxHashMap::default();
         // Open groups by base register and write: first access, its start, and the bytes covered.
-        let mut open: HashMap<(u8, bool), usize> = HashMap::new();
+        let mut open: FxHashMap<(u8, bool), usize> = FxHashMap::default();
         let mut groups: Vec<(u64, i64, i64, i64, u32)> = Vec::new();
         for o in (block.start..block.end).step_by(4) {
             let d = &decoded[&o];
@@ -1197,6 +1577,8 @@ fn grow(frame: Frame, delta: i64) -> Frame {
 enum Label {
     Loop(usize),
     Merge(usize),
+    /// Where the proof of the loop at a header is made again, before both its copies.
+    Reprove(usize),
     Other,
 }
 
@@ -1209,6 +1591,8 @@ struct At {
     flags: FlagStates,
     /// The stack pointer is known to be a multiple of 16.
     aligned: bool,
+    /// The float mode local holds whether floating point takes the slow path.
+    float_mode: bool,
 }
 
 /// How a piece carries on when the stop hook says so.
@@ -1225,6 +1609,9 @@ enum AfterStop {
     Continue,
     /// Load back the tracked registers in the set, and the passed ones from the number given, and go on.
     Reload(Registers, u32),
+    /// Load back the tracked registers in the set and make the proof of the loop at this header again: the
+    /// stop may have changed what it proved.
+    Reprove(Registers, usize),
 }
 
 /// What a stop check or write back sets `pc` to.
@@ -1238,16 +1625,21 @@ enum Pc {
 struct FullEmitter<'a> {
     function: &'a Function,
     plan: &'a Plan,
-    decoded: &'a HashMap<u64, Decoded>,
+    decoded: &'a Decodes,
     index: &'a BTreeMap<u64, u32>,
     /// The loop pieces of the function this piece comes from, by header offset.
-    loops: &'a HashMap<u64, u32>,
+    loops: &'a FxHashMap<u64, u32>,
     omit: Omit,
+    optimise: Optimise,
+    host: Host,
+    /// Whether floating point takes the slow path, loaded once until something may change it.
+    float_mode_local: Option<u32>,
+    sites: Sites,
     body: Vec<u8>,
     locals: Vec<ValType>,
     free: Vec<(ValType, u32)>,
     taken: Vec<(ValType, u32)>,
-    registers: HashMap<u32, u32>,
+    registers: FxHashMap<u32, u32>,
     flag_locals: [u32; 4],
     /// Which flag state holds, when that is only known at run time.
     flag_state: u32,
@@ -1256,7 +1648,7 @@ struct FullEmitter<'a> {
     labels: Vec<Label>,
     at: At,
     /// Locals the immutable imported globals (by index) are copied into at the entry, once used.
-    fixed: [Option<u32>; 6],
+    fixed: [Option<u32>; IMPORTED_VALUES],
     /// The piece's own function index.
     own: u32,
     /// For each number in [`Plan::kept`], the i64 locals holding the run of pages last found allowed: its
@@ -1267,18 +1659,23 @@ struct FullEmitter<'a> {
     /// The piece checks the stop flag at its entry: when it calls or leaves to other pieces, and always for
     /// a loop piece, which a stop check at a jump back enters.
     entry_check: bool,
+    /// The instruction being emitted has written a register, the flags or a control register.
+    written: bool,
+    /// i64 local: the depth the piece passes to what it calls, its callers' and its own.
+    depth: u32,
 }
 
 impl<'a> FullEmitter<'a> {
+    #[allow(clippy::too_many_arguments)]
     fn piece(
         function: &'a Function,
         plan: &'a Plan,
-        decoded: &'a HashMap<u64, Decoded>,
+        decoded: &'a Decodes,
         index: &'a BTreeMap<u64, u32>,
-        loops: &'a HashMap<u64, u32>,
+        loops: &'a FxHashMap<u64, u32>,
         own: u32,
-        omit: Omit,
-    ) -> wasm_encoder::Function {
+        (omit, optimise, host): (Omit, Optimise, Host),
+    ) -> (wasm_encoder::Function, usize, Sites) {
         let loop_piece = index.get(&function.entry) != Some(&own);
         let mut e = FullEmitter {
             function,
@@ -1287,11 +1684,15 @@ impl<'a> FullEmitter<'a> {
             index,
             loops,
             omit,
+            optimise,
+            host,
+            float_mode_local: None,
+            sites: Sites::default(),
             body: Vec::new(),
             locals: Vec::new(),
             free: Vec::new(),
             taken: Vec::new(),
-            registers: HashMap::new(),
+            registers: FxHashMap::default(),
             flag_locals: [0; 4],
             flag_state: 0,
             canonical: Vec::new(),
@@ -1302,13 +1703,17 @@ impl<'a> FullEmitter<'a> {
                 dirty: Registers::NONE,
                 flags: 1 << FLAGS_IN_BLOCK,
                 aligned: false,
+                float_mode: false,
             },
-            fixed: [None; 6],
+            fixed: [None; IMPORTED_VALUES],
             own,
             kept_pages: Vec::new(),
             unchecked: Vec::new(),
             entry_check: (plan.calls_out || loop_piece) && !omit.stop,
+            written: false,
+            depth: 0,
         };
+        e.depth = e.new_local(ValType::I64);
         for _ in plan.kept_by_loop.iter().flatten() {
             let low = e.new_local(ValType::I64);
             let room = e.new_local(ValType::I64);
@@ -1325,7 +1730,9 @@ impl<'a> FullEmitter<'a> {
             e.sink().i32_const(FLAGS_IN_BLOCK as i32).local_set(state);
         }
         if e.entry_check {
-            e.stop_check(Pc::Offset(function.entry), AfterStop::Continue);
+            // One branch for both entry checks: the stop flag, and the stack budget.
+            let depth = (!omit.depth).then_some(function.entry);
+            e.stop_check_or_deep(Pc::Offset(function.entry), AfterStop::Continue, depth);
         }
         for bit in plan.live_in[0].bits() {
             let local = e.register(bit);
@@ -1341,10 +1748,20 @@ impl<'a> FullEmitter<'a> {
                 s.global_get(G_OWN + global as u32).local_set(*local);
             }
         }
+        s.local_get(L_DEPTH)
+            .i64_const(frame_bytes(&e.locals))
+            .i64_add()
+            .local_set(e.depth);
+        // Only a piece that calls or leaves to others can be part of deep recursion.
+        if (plan.calls_out || loop_piece) && !omit.depth && !e.entry_check {
+            depth_check(&mut s, L_DEPTH, function.entry);
+            e.sites[Reason::StackNearlyFull as usize] += 1;
+        }
+        let locals = e.locals.len();
         let mut f = wasm_encoder::Function::new_with_locals_types(e.locals);
         f.raw(entry);
         f.raw(e.body);
-        f
+        (f, locals, e.sites)
     }
 
     fn new_local(&mut self, ty: ValType) -> u32 {
@@ -1391,73 +1808,16 @@ impl<'a> FullEmitter<'a> {
     /// The flags of a kept shape with every local filled in: what was not kept is worked out into
     /// temporaries (an engine drops what is not used).
     fn shape_flags(&mut self, id: usize) -> Flags {
-        let Flags::Add {
-            width,
-            a,
-            b,
-            carry,
-            subtrahend,
-            ..
-        } = self.canonical[id]
-        else {
-            return self.canonical[id];
+        let flags = self.canonical[id];
+        let Flags::Add { width, .. } = flags else {
+            return flags;
         };
         let ty = match width {
             Width::W32 => ValType::I32,
             Width::X64 => ValType::I64,
         };
-        let b = match subtrahend {
-            Some(m) => {
-                let inverted = self.temporary(ty);
-                let mut s = self.sink();
-                s.local_get(m);
-                match width {
-                    Width::W32 => s.i32_const(-1).i32_xor(),
-                    Width::X64 => s.i64_const(-1).i64_xor(),
-                };
-                s.local_set(inverted);
-                inverted
-            }
-            None => b,
-        };
-        let result = self.temporary(ty);
-        let mut s = self.sink();
-        s.local_get(a).local_get(b);
-        let add = |s: &mut InstructionSink<'_>| match width {
-            Width::W32 => {
-                s.i32_add();
-            }
-            Width::X64 => {
-                s.i64_add();
-            }
-        };
-        add(&mut s);
-        match carry {
-            Carry::Zero => {}
-            Carry::One => {
-                match width {
-                    Width::W32 => s.i32_const(1),
-                    Width::X64 => s.i64_const(1),
-                };
-                add(&mut s);
-            }
-            Carry::Local(c) => {
-                s.local_get(c);
-                if width == Width::X64 {
-                    s.i64_extend_i32_u();
-                }
-                add(&mut s);
-            }
-        }
-        s.local_set(result);
-        Flags::Add {
-            width,
-            a,
-            b,
-            carry,
-            result,
-            subtrahend,
-        }
+        let temporaries = (self.temporary(ty), self.temporary(ty));
+        completed(&mut self.sink(), flags, temporaries)
     }
 
     /// The local of a register bit: a parameter for the passed ones.
@@ -1487,7 +1847,18 @@ impl<'a> FullEmitter<'a> {
 
     // Structure, after Ramsey's "Beyond Relooper".
 
+    /// Emit the subtree of the dominator tree at block `b`. The subtree that follows a node's own code last is
+    /// emitted in turn by this loop, not by recursion, so the translator's stack grows only with how deeply
+    /// the code nests.
     fn tree(&mut self, b: usize) {
+        let mut next = Some(b);
+        while let Some(b) = next {
+            next = self.node(b);
+        }
+    }
+
+    /// Emit block `b` and its subtree, except the subtree at the block returned, which follows it last.
+    fn node(&mut self, b: usize) -> Option<usize> {
         let merges: Vec<usize> = self.plan.children[b]
             .iter()
             .copied()
@@ -1515,6 +1886,12 @@ impl<'a> FullEmitter<'a> {
             }
             match self.plan.versioned.get(&b).filter(|_| self.copies(b)) {
                 Some(v) => {
+                    // With no loop piece to go on in after a stop, the copy without checks comes back here.
+                    let reprove = !self.loops.contains_key(&self.function.blocks[b].start);
+                    if reprove {
+                        self.sink().loop_(BlockType::Empty);
+                        self.labels.push(Label::Reprove(b));
+                    }
                     self.proof(v);
                     self.sink().if_(BlockType::Empty);
                     self.labels.push(Label::Other);
@@ -1532,56 +1909,86 @@ impl<'a> FullEmitter<'a> {
                                 dirty: self.plan.dirty_in[b],
                                 flags: self.plan.flags_in[b],
                                 aligned: self.plan.aligned_in[b],
+                                float_mode: false,
                             };
-                            self.write_back(false);
+                            self.write_back();
                             self.arguments();
                             self.sink().return_call(f);
                         }
-                        _ => self.loop_of(b, &merges),
+                        _ => {
+                            // Counted at each entry whose proof fails, warned once for the loop.
+                            self.sites[Reason::LoopNotProven as usize] += 1;
+                            self.sink().i32_const(Reason::LoopNotProven as i32);
+                            self.address(self.function.blocks[b].start);
+                            self.sink().call(F_WARN);
+                            self.loop_of(b, &merges);
+                        }
                     }
                     self.sink().end();
                     self.labels.pop();
+                    if reprove {
+                        self.sink().end();
+                        self.labels.pop();
+                    }
                 }
                 None => self.loop_of(b, &merges),
             }
+            let mut last = None;
             for &y in after.iter().rev() {
+                if let Some(t) = last.replace(y) {
+                    self.tree(t);
+                }
                 self.sink().end();
                 self.labels.pop();
-                self.tree(y);
             }
+            last
         } else {
-            self.within(b, &merges);
+            self.within(b, &merges)
         }
     }
 
     fn loop_of(&mut self, b: usize, merges: &[usize]) {
         self.sink().loop_(BlockType::Empty);
         self.labels.push(Label::Loop(b));
-        self.within(b, merges);
+        if let Some(t) = self.within(b, merges) {
+            self.tree(t);
+        }
         self.sink().end();
         self.labels.pop();
     }
 
     /// Whether the loop at block `b` gets its copy without proven checks: after a stop at a jump back in it
     /// or in any loop inside it, the thread must carry on where the proof is made again, at a loop's entry.
+    /// Translated for speed that is a loop piece; for size, with no loop pieces, only a loop with no loop
+    /// inside it has the copy, and a stop at its own jump back makes its proof again.
     fn copies(&self, b: usize) -> bool {
         let pieced = |h: usize| h == 0 || self.loops.contains_key(&self.function.blocks[h].start);
-        !self.omit.permissions
-            && (self.omit.stop
-                || (pieced(b) && self.plan.versioned[&b].inner.iter().all(|&g| pieced(g))))
+        let inner = &self.plan.versioned[&b].inner;
+        let stops_handled = match self.optimise {
+            Optimise::Speed => pieced(b) && inner.iter().all(|&g| pieced(g)),
+            Optimise::Size => inner.is_empty(),
+        };
+        !self.omit.permissions && (self.omit.stop || stops_handled)
     }
 
-    fn within(&mut self, b: usize, merges: &[usize]) {
+    /// Emit block `b` inside a block for each merge, each merge's subtree after its block; the subtree that
+    /// comes last is returned instead, for the caller to emit.
+    fn within(&mut self, b: usize, merges: &[usize]) -> Option<usize> {
         match merges.split_first() {
             Some((&m, rest)) => {
                 self.sink().block(BlockType::Empty);
                 self.labels.push(Label::Merge(m));
-                self.within(b, rest);
+                if let Some(t) = self.within(b, rest) {
+                    self.tree(t);
+                }
                 self.sink().end();
                 self.labels.pop();
-                self.tree(m);
+                Some(m)
             }
-            None => self.block_code(b),
+            None => {
+                self.block_code(b);
+                None
+            }
         }
     }
 
@@ -1593,9 +2000,11 @@ impl<'a> FullEmitter<'a> {
             dirty: self.plan.dirty_in[b],
             flags: self.plan.flags_in[b],
             aligned: self.plan.aligned_in[b],
+            float_mode: false,
         };
         for offset in (block.start..block.end).step_by(4) {
             self.at.offset = offset;
+            self.written = false;
             let mark = self.taken.len();
             if let Some(&(from, len)) = self.plan.frame_checks.get(&offset)
                 && !self.omit.permissions
@@ -1644,6 +2053,9 @@ impl<'a> FullEmitter<'a> {
                         _ if to == 0 && self.entry_check => AfterStop::Hand(self.own),
                         _ if to == 0 => AfterStop::Enter(self.own),
                         Some(&f) => AfterStop::Hand(f),
+                        None if self.unchecked.contains(&to) => {
+                            AfterStop::Reprove(self.plan.live_in[to], to)
+                        }
                         None => AfterStop::Reload(self.plan.live_in[to], 0),
                     };
                     self.stop_check(Pc::Offset(start), after);
@@ -1665,7 +2077,7 @@ impl<'a> FullEmitter<'a> {
             self.branch(b);
             return;
         }
-        self.write_back(false);
+        self.write_back();
         self.arguments();
         match self.index.get(&target).or(self.loops.get(&target)) {
             Some(&f) => {
@@ -1678,32 +2090,20 @@ impl<'a> FullEmitter<'a> {
         }
     }
 
+    /// Push the parameters of a tail call: the passed registers, the expected return address and the depth,
+    /// all as this piece was given them.
     fn arguments(&mut self) {
         let mut s = self.sink();
         for i in 0..PASSED {
             s.local_get(i);
         }
-        s.local_get(L_RETURN);
+        s.local_get(L_RETURN).local_get(L_DEPTH);
     }
 
-    fn push_pc(&mut self, pc: Pc) {
-        match pc {
-            Pc::Offset(offset) => self.address(offset),
-            Pc::Local(local) => {
-                self.sink().local_get(local);
-            }
-        }
-    }
-
-    /// Copy every register whose place in the thread block may be stale there, the flags too, and the
-    /// passed registers when asked.
-    fn write_back(&mut self, passed: bool) {
+    /// Copy every register whose place in the thread block may be stale there, and the flags too.
+    fn write_back(&mut self) {
         self.write_back_registers();
-        self.write_back_flags();
-        if passed {
-            let block = self.fixed(G_THREAD_BLOCK);
-            save_passed(&mut self.sink(), block);
-        }
+        self.write_back_flags(false);
     }
 
     /// Copy every tracked register that may be stale in the thread block there.
@@ -1715,11 +2115,89 @@ impl<'a> FullEmitter<'a> {
         }
     }
 
-    /// Put the flags in the thread block, unless they are there.
-    fn write_back_flags(&mut self) {
-        if self.at.flags != 1 << FLAGS_IN_BLOCK {
-            let block = self.fixed(G_THREAD_BLOCK);
-            store_flags(self, block, |e, flag| e.push_flag(flag));
+    /// Put the flags in the thread block, unless they are there. The word is worked out once for each state
+    /// the flags may be in; on the way to the runner (`out_of_line`) by the module's functions for it.
+    fn write_back_flags(&mut self, out_of_line: bool) {
+        let states = self.at.flags;
+        if states == 1 << FLAGS_IN_BLOCK {
+            return;
+        }
+        let block = self.fixed(G_THREAD_BLOCK);
+        block.push(&mut self.sink());
+        let ids: Vec<u32> = (0..32).filter(|i| states >> i & 1 == 1).collect();
+        for (k, &id) in ids.iter().enumerate() {
+            if k + 1 < ids.len() {
+                let state = self.flag_state;
+                self.sink()
+                    .local_get(state)
+                    .i32_const(id as i32)
+                    .i32_eq()
+                    .if_(BlockType::Result(ValType::I32));
+            }
+            self.push_flags_word(id, out_of_line);
+            if k + 1 < ids.len() {
+                self.sink().else_();
+            }
+        }
+        for _ in 1..ids.len() {
+            self.sink().end();
+        }
+        Slot::Flags.store(&mut self.sink());
+    }
+
+    /// Push the flags word of the thread block, with the flags in one state, `out_of_line` by the module's
+    /// functions for it.
+    fn push_flags_word(&mut self, state: u32, out_of_line: bool) {
+        match state {
+            FLAGS_IN_BLOCK => {
+                let block = self.fixed(G_THREAD_BLOCK);
+                let mut s = self.sink();
+                block.push(&mut s);
+                Slot::Flags.load(&mut s);
+            }
+            FLAGS_IN_LOCALS if out_of_line => {
+                let locals = self.flag_locals;
+                let mut s = self.sink();
+                for local in locals {
+                    s.local_get(local);
+                }
+                s.call(F_FLAGS_WORD);
+            }
+            FLAGS_IN_LOCALS => {
+                let locals = self.flag_locals;
+                push_word(&mut self.sink(), |s, flag| {
+                    let i = Flag::ALL.iter().position(|f| *f == flag).expect("a flag");
+                    s.local_get(locals[i]);
+                });
+            }
+            id if out_of_line => {
+                let id = id as usize - 2;
+                let function = flags_word_function(self.plan.shapes[id]);
+                let Flags::Add {
+                    a,
+                    b,
+                    carry,
+                    subtrahend,
+                    ..
+                } = self.canonical[id]
+                else {
+                    let Flags::Logic { result, .. } = self.canonical[id] else {
+                        unreachable!("a shape's flags are an addition or logic")
+                    };
+                    self.sink().local_get(result).call(function);
+                    return;
+                };
+                let mut s = self.sink();
+                s.local_get(a).local_get(subtrahend.unwrap_or(b));
+                if let Carry::Local(c) = carry {
+                    s.local_get(c);
+                }
+                s.call(function);
+            }
+            id => {
+                let flags = self.shape_flags(id as usize - 2);
+                push_word(&mut self.sink(), |s, flag| flag_value(s, flags, flag));
+            }
         }
     }
 
@@ -1760,18 +2238,55 @@ impl<'a> FullEmitter<'a> {
         true
     }
 
-    /// Write back everything, with `pc` set.
-    fn save(&mut self, pc: Pc) {
-        self.write_back(true);
-        let block = self.fixed(G_THREAD_BLOCK);
-        block.push(&mut self.sink());
-        self.push_pc(pc);
-        Slot::Pc.store(&mut self.sink());
+    /// Write back everything, with `pc` set, on the way to the runner. Translated for size, on a path the
+    /// thread never comes back on (`leaving`), through the module's functions; otherwise in place: calls even
+    /// on such a path make the engine's code for a loop around it slower.
+    fn save(&mut self, pc: Pc, leaving: bool) {
+        let out_of_line = leaving && self.optimise == Optimise::Size;
+        self.write_back_registers();
+        self.write_back_flags(out_of_line);
+        let load = self.fixed(G_LOAD_ADDRESS);
+        if !out_of_line {
+            let block = self.fixed(G_THREAD_BLOCK);
+            let mut s = self.sink();
+            save_passed(&mut s, block);
+            set_pc(&mut s, block, |s| match pc {
+                Pc::Offset(offset) => {
+                    load.push(s);
+                    s.i64_const(offset as i64).i64_add();
+                }
+                Pc::Local(local) => {
+                    s.local_get(local);
+                }
+            });
+            return;
+        }
+        save(&mut self.sink(), |s| match pc {
+            Pc::Offset(offset) => {
+                s.i64_const(offset as i64);
+            }
+            Pc::Local(local) => {
+                s.local_get(local);
+                load.push(s);
+                s.i64_sub();
+            }
+        });
     }
 
     /// Call the stop hook if the flag is raised, then carry on as `after` says: when the hook says carry on,
     /// nothing has changed.
     fn stop_check(&mut self, pc: Pc, after: AfterStop) {
+        self.stop_check_or_deep(pc, after, None);
+    }
+
+    /// [`Self::stop_check`], at a piece's entry also leaving to the bottom loop when the depth is past the
+    /// budget, with `pc` at the entry given.
+    fn stop_check_or_deep(&mut self, pc: Pc, after: AfterStop, deep: Option<u64>) {
+        self.sites[Reason::StoppedByFlag as usize] += 1;
+        if deep.is_some() {
+            self.sites[Reason::StackNearlyFull as usize] += 1;
+        }
+        self.at.float_mode = false;
         let block = self.fixed(G_THREAD_BLOCK);
         let mut s = self.sink();
         block.push(&mut s);
@@ -1779,15 +2294,26 @@ impl<'a> FullEmitter<'a> {
             MEMORY_STATE,
             wcontainers_abi::STOP_FLAG_OFFSET as u64,
             2,
-        ))
-        .if_(BlockType::Empty);
+        ));
+        if let Some(entry) = deep {
+            // The callers' depth, not this piece's own frame, so a piece called from the bottom loop always
+            // runs, however large its frame.
+            s.local_get(L_DEPTH)
+                .i64_const(STACK_BUDGET)
+                .i64_gt_u()
+                .i32_or()
+                .if_(BlockType::Empty);
+            depth_check(&mut s, L_DEPTH, entry);
+        } else {
+            s.if_(BlockType::Empty);
+        }
         if let AfterStop::Hand(f) = after {
-            self.write_back(false);
+            self.write_back();
             self.arguments();
             self.sink().return_call(f).end();
             return;
         }
-        self.save(pc);
+        self.save(pc, false);
         self.sink()
             .call(F_STOP)
             .if_(BlockType::Empty)
@@ -1806,6 +2332,15 @@ impl<'a> FullEmitter<'a> {
                 for (_, room) in self.kept_pages.clone() {
                     self.sink().i64_const(0).local_set(room);
                 }
+            }
+            AfterStop::Reprove(live, header) => {
+                self.reload(live, 0);
+                for (_, room) in self.kept_pages.clone() {
+                    self.sink().i64_const(0).local_set(room);
+                }
+                // Out of the stop check's `if` too.
+                let depth = self.depth(Label::Reprove(header)) + 1;
+                self.sink().br(depth);
             }
             AfterStop::Continue | AfterStop::Hand(_) => {}
         }
@@ -1828,7 +2363,8 @@ impl<'a> FullEmitter<'a> {
 
     /// Carry on at an instruction from code translated from there, which checks every access exactly.
     fn leave_to(&mut self, offset: u64) {
-        self.save(Pc::Offset(offset));
+        self.sites[Reason::LeftToAddress as usize] += 1;
+        self.save(Pc::Offset(offset), true);
         self.sink()
             .i32_const(UNWIND_GO_TO_EXACT)
             .call(F_UNWIND)
@@ -1839,12 +2375,9 @@ impl<'a> FullEmitter<'a> {
     /// instruction runs from code that checks each access.
     fn frame_check(&mut self, from: i64, len: u32) {
         let at = self.temporary(ValType::I64);
-        let locals = (
-            self.temporary(ValType::I64),
-            self.temporary(ValType::I32),
-            self.temporary(ValType::I64),
-        );
+        let (page, fault_at) = (self.temporary(ValType::I64), self.temporary(ValType::I64));
         let table = self.table();
+        let exact = self.exact(table, page);
         for chunk in (0..len).step_by(4096) {
             let piece = (len - chunk).min(4096);
             self.sink()
@@ -1853,8 +2386,8 @@ impl<'a> FullEmitter<'a> {
                 .i64_add()
                 .local_set(at);
             let mut s = self.sink();
-            permission_fast(&mut s, table, at, PAGE_READ | PAGE_WRITE, locals.0);
-            permission_exact(&mut s, table, at, piece, PAGE_READ | PAGE_WRITE, locals);
+            permission_fast(&mut s, table, at, PAGE_READ | PAGE_WRITE, page);
+            permission_exact(&mut s, at, piece, PAGE_READ | PAGE_WRITE, fault_at, exact);
             let offset = self.at.offset;
             self.leave_to(offset);
             self.sink().end().end();
@@ -1866,16 +2399,20 @@ impl<'a> FullEmitter<'a> {
         let local = match self.fixed[global as usize] {
             Some(local) => local,
             None => {
-                let ty = match global {
-                    G_LOAD_ADDRESS | G_TABLE_BASE | G_PERMISSION_PAGES => ValType::I64,
-                    _ => ValType::I32,
-                };
-                let local = self.new_local(ty);
+                let local = self.new_local(imported_value_type(global));
                 self.fixed[global as usize] = Some(local);
                 local
             }
         };
         Fixed::Local(local)
+    }
+
+    /// Where an exact permission test goes: in place for speed, in the module's function for size.
+    fn exact(&mut self, table: Table, page: u32) -> Exact {
+        match self.optimise {
+            Optimise::Speed => Exact::InPlace(table, (page, self.temporary(ValType::I32))),
+            Optimise::Size => Exact::Called,
+        }
     }
 
     fn table(&mut self) -> Table {
@@ -1968,6 +2505,11 @@ impl<'a> FullEmitter<'a> {
         let lo = present.iter().map(|c| c.0).min().unwrap();
         let hi = present.iter().map(|c| c.0).max().unwrap();
         let slots = (hi - lo) / 4 + 1;
+        // The engines take at most this many targets in one `br_table`.
+        if slots > BR_TABLE_TARGETS {
+            self.unrecognised_jump(target);
+            return;
+        }
         if !self.omit.stop
             && present
                 .iter()
@@ -2023,7 +2565,8 @@ impl<'a> FullEmitter<'a> {
 
     /// Leave the piece through the lookup, counted.
     fn unrecognised_jump(&mut self, target: u32) {
-        self.write_back(false);
+        self.sites[Reason::JumpThroughRegisterNotRecognised as usize] += 1;
+        self.write_back();
         self.sink()
             .i32_const(Reason::JumpThroughRegisterNotRecognised as i32)
             .local_get(target)
@@ -2037,13 +2580,12 @@ impl<'a> FullEmitter<'a> {
     fn look_up(&mut self, target: u32) -> u32 {
         let offset = self.temporary(ValType::I64);
         let piece = self.temporary(ValType::Ref(crate::thread::piece_ref()));
-        crate::thread::lookup(
-            &mut self.sink(),
-            target,
-            G_OWN + G_TABLE_BASE,
-            offset,
-            piece,
+        let slots = crate::code::slots(
+            self.fixed(G_TABLE_BASE),
+            self.fixed(G_SLOTS),
+            self.fixed(G_SLOTS_COVER),
         );
+        crate::thread::lookup(&mut self.sink(), target, slots, offset, piece);
         piece
     }
 
@@ -2090,6 +2632,7 @@ impl Emitter for FullEmitter<'_> {
     }
 
     fn set(&mut self, r: Reg) {
+        self.written = true;
         match Registers::bit(r) {
             Some(bit) => {
                 let local = self.register(bit);
@@ -2102,12 +2645,13 @@ impl Emitter for FullEmitter<'_> {
         }
     }
 
-    fn this_address(&mut self) {
-        let offset = self.at.offset;
+    fn this_address(&mut self, by: i64) {
+        let offset = self.at.offset.wrapping_add_signed(by);
         self.address(offset);
     }
 
     fn set_flags(&mut self, flags: Flags) {
+        self.written = true;
         let lazy = self.decoded().effects.flags.is_some();
         match Shape::of(flags).filter(|_| lazy) {
             Some(shape) => {
@@ -2183,29 +2727,71 @@ impl Emitter for FullEmitter<'_> {
     }
 
     fn set_vector(&mut self, n: u8) {
+        self.written = true;
         let bit = Registers::vector_bit(n);
         let local = self.register(bit);
         self.sink().local_set(local);
         self.at.dirty = self.at.dirty.union(Registers(1 << bit));
     }
 
-    fn get_thread_pointer(&mut self) {
+    fn get_control(&mut self, control: Control) {
         let block = self.fixed(G_THREAD_BLOCK);
         let mut s = self.sink();
         block.push(&mut s);
-        Slot::ThreadPointer.load(&mut s);
+        Slot::Control(control).load(&mut s);
+    }
+
+    fn hook(&mut self, hook: Hook) {
+        self.sink().call(hook_function(hook));
+    }
+
+    fn host(&self) -> Host {
+        self.host
+    }
+
+    /// The slow path leaves the piece by a tail call, so no call stays in the function, which would make the
+    /// engine keep values out of registers around it.
+    fn float_mode(&mut self) -> bool {
+        assert!(
+            !self.written,
+            "floating point's slow path tested after the instruction wrote"
+        );
+        let local = match self.float_mode_local {
+            Some(l) => l,
+            None => {
+                let l = self.new_local(ValType::I32);
+                self.float_mode_local = Some(l);
+                l
+            }
+        };
+        if !self.at.float_mode {
+            self.get_control(Control::Fpcr);
+            self.get_control(Control::FloatTracking);
+            self.sink().i32_or().local_set(local);
+            self.at.float_mode = true;
+        }
+        self.sink().local_get(local).if_(BlockType::Empty);
+        self.write_back();
+        self.arguments();
+        self.this_address(0);
+        self.sink().return_call(F_EXACT).end();
+        false
     }
 
     fn stack_aligned(&mut self) -> bool {
         self.at.aligned
     }
 
-    fn set_thread_pointer(&mut self) {
+    fn set_control(&mut self, control: Control) {
+        self.written = true;
+        if matches!(control, Control::Fpcr | Control::FloatTracking) {
+            self.at.float_mode = false;
+        }
         let block = self.fixed(G_THREAD_BLOCK);
-        let value = self.temporary(ValType::I64);
+        let value = self.temporary(Slot::Control(control).ty());
         let mut s = self.sink();
         s.local_set(value);
-        Slot::ThreadPointer.store_from(&mut s, block, value);
+        Slot::Control(control).store_from(&mut s, block, value);
     }
 
     fn check(&mut self, address: u32, bytes: u32, access: Access) {
@@ -2216,7 +2802,13 @@ impl Emitter for FullEmitter<'_> {
             Access::Read => PAGE_READ,
             Access::Write => PAGE_WRITE,
         };
-        let plan = self.plan.checks[&self.at.offset];
+        // An instruction whose access the plan does not know (cache maintenance) checks exactly.
+        let plan = self
+            .plan
+            .checks
+            .get(&self.at.offset)
+            .copied()
+            .unwrap_or(CheckPlan::Exact);
         if let CheckPlan::Skip = plan {
             return;
         }
@@ -2228,11 +2820,7 @@ impl Emitter for FullEmitter<'_> {
         {
             return;
         }
-        let locals = (
-            self.temporary(ValType::I64),
-            self.temporary(ValType::I32),
-            self.temporary(ValType::I64),
-        );
+        let (page, fault_at) = (self.temporary(ValType::I64), self.temporary(ValType::I64));
         let offset = self.at.offset;
         // A kept run's check is rare, so it reads the table's place from the module's globals rather than
         // keeping it alive through the loop.
@@ -2241,12 +2829,20 @@ impl Emitter for FullEmitter<'_> {
         } else {
             self.table()
         };
+        let exact = self.exact(table, page);
         match plan {
             CheckPlan::Skip => {}
             CheckPlan::Exact => {
-                let kept = self.plan.kept.get(&offset).map(|&n| self.kept_pages[n]);
+                let kept = self.plan.kept.get(&offset).map(|&n| {
+                    let longest = self.plan.kept_longest[n];
+                    assert!(
+                        bytes <= longest,
+                        "an access longer than its kept run allows for"
+                    );
+                    (self.kept_pages[n], longest)
+                });
                 let mut s = self.sink();
-                if let Some((low, room)) = kept {
+                if let Some(((low, room), _)) = kept {
                     // Checked again unless the access starts within the kept run of pages.
                     s.local_get(address)
                         .local_get(low)
@@ -2257,13 +2853,14 @@ impl Emitter for FullEmitter<'_> {
                 }
                 // An address the table allows has a clear top byte, so only one it does not is untagged and
                 // tried again.
-                permission_fast(&mut s, table, address, this, locals.0);
+                permission_fast(&mut s, table, address, this, page);
                 untag(&mut s, address);
                 s.local_set(address);
-                permission_exact(&mut s, table, address, bytes, this, locals);
-                self.save(Pc::Offset(offset));
+                permission_exact(&mut s, address, bytes, this, fault_at, exact);
+                self.sites[Reason::MemoryFault as usize] += 1;
+                self.save(Pc::Offset(offset), true);
                 let mut s = self.sink();
-                s.local_get(locals.2)
+                s.local_get(fault_at)
                     .i32_const(i32::from(access == Access::Write))
                     .call(F_MEMORY_FAULT)
                     .i32_const(UNWIND_LEAVE)
@@ -2271,9 +2868,9 @@ impl Emitter for FullEmitter<'_> {
                     .unreachable()
                     .end()
                     .end();
-                if let Some((low, room)) = kept {
+                if let Some(((low, room), longest)) = kept {
                     // The access is allowed, so the page it starts on allows this kind.
-                    keep_pages(&mut s, table, locals.0, this, low, room);
+                    keep_pages(&mut s, table, (address, page), this, longest, (low, room));
                     s.end();
                 }
             }
@@ -2285,8 +2882,8 @@ impl Emitter for FullEmitter<'_> {
                     .i64_add()
                     .local_set(start);
                 let mut s = self.sink();
-                permission_fast(&mut s, table, start, this, locals.0);
-                permission_exact(&mut s, table, start, len, this, locals);
+                permission_fast(&mut s, table, start, this, page);
+                permission_exact(&mut s, start, len, this, fault_at, exact);
                 self.leave_to(offset);
                 self.sink().end().end();
             }
@@ -2320,8 +2917,10 @@ impl Emitter for FullEmitter<'_> {
     }
 
     fn call(&mut self, target: Target) {
+        // The callee may change FPCR or FPSR.
+        self.at.float_mode = false;
         let offset = self.at.offset;
-        self.write_back(false);
+        self.write_back();
         let looked_up = match target {
             Target::Address(local) => Some(self.look_up(local)),
             Target::Relative(_) => None,
@@ -2330,10 +2929,15 @@ impl Emitter for FullEmitter<'_> {
         for i in 0..PASSED {
             s.local_get(i);
         }
-        self.address(offset + 4);
-        if self.flags_needed_after(offset) {
-            self.sink().i64_const(FLAGS_WANTED).i64_or();
-        }
+        // Instructions are 4 byte aligned, so the bit is clear in the address and adding it sets it.
+        let wanted = if self.flags_needed_after(offset) {
+            FLAGS_WANTED as u64
+        } else {
+            0
+        };
+        self.address(offset + 4 + wanted);
+        let depth = self.depth;
+        self.sink().local_get(depth);
         match target {
             Target::Relative(by) => {
                 let to = offset.wrapping_add_signed(by);
@@ -2397,7 +3001,7 @@ impl Emitter for FullEmitter<'_> {
                     .i64_and()
                     .i32_wrap_i64()
                     .if_(BlockType::Empty);
-                e.write_back_flags();
+                e.write_back_flags(false);
                 e.at.flags = flags;
                 e.sink().end();
             }
@@ -2425,19 +3029,21 @@ impl Emitter for FullEmitter<'_> {
         }
         s.return_().end();
         // Not where the caller expects: go to the address from the bottom loop.
-        self.write_back_flags();
+        self.write_back_flags(false);
         let block = self.fixed(G_THREAD_BLOCK);
         let mut s = self.sink();
-        save_passed(&mut s, block);
         set_pc(&mut s, block, |s| {
             s.local_get(target);
         });
+        bottom_return(&mut s);
+        save_passed(&mut s, block);
         s.i32_const(UNWIND_GO_TO).call(F_UNWIND).unreachable();
     }
 
     fn syscall(&mut self) {
+        self.at.float_mode = false;
         let next = self.at.offset + 4;
-        self.save(Pc::Offset(next));
+        self.save(Pc::Offset(next), false);
         self.get(Reg::X(8));
         for i in 0..6 {
             self.get(Reg::X(i));
@@ -2452,8 +3058,11 @@ impl Emitter for FullEmitter<'_> {
     }
 
     fn trap(&mut self, trap: Trap) {
+        if let Trap::Unsupported = trap {
+            self.sites[Reason::UnsupportedInstructionReached as usize] += 1;
+        }
         let offset = self.at.offset;
-        self.save(Pc::Offset(offset));
+        self.save(Pc::Offset(offset), true);
         let word = i64::from(self.decoded().word);
         let mut s = self.sink();
         match trap {
