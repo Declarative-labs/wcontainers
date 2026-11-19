@@ -21,6 +21,10 @@ use wcontainers_kernel::linux::errno as linux_errno;
 use crate::arrivals::{Arrival, Arrivals};
 use crate::errno;
 
+/// The names of the network's threads.
+const NETWORK_THREAD: &str = "wcontainers network";
+const LOOKUP_THREAD: &str = "wcontainers lookup";
+
 enum Socket {
     Stream(TcpStream),
     Datagram(UdpSocket),
@@ -102,7 +106,7 @@ impl Network {
         let thread = {
             let (poller, arrivals, gone) = (poller.clone(), arrivals.clone(), gone.clone());
             std::thread::Builder::new()
-                .name("wcontainers network".to_string())
+                .name(NETWORK_THREAD.to_string())
                 .spawn(move || watch(&poller, &arrivals, &gone))
                 .expect("a network thread")
         };
@@ -313,7 +317,7 @@ impl Network {
         let arrivals = self.arrivals.clone();
         let name = name.to_string();
         let started = std::thread::Builder::new()
-            .name("wcontainers lookup".to_string())
+            .name(LOOKUP_THREAD.to_string())
             .spawn(move || {
                 let arrival = match (name.as_str(), 0).to_socket_addrs() {
                     Ok(found) => {

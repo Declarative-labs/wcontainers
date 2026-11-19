@@ -63,6 +63,14 @@ fn mounts() -> Value {
     ])
 }
 
+/// The configuration's field that lists its mounts.
+const MOUNTS: &str = "mounts";
+
+/// A mount's field path, as the refusals name it.
+pub(crate) fn mount_field(index: usize) -> String {
+    format!("{MOUNTS}[{index}]")
+}
+
 /// The configuration of everything the kernel gives a container, with no program: what an image's
 /// configuration is converted into, and where a configuration for a plain tar starts.
 pub fn base_spec() -> Spec {
@@ -204,7 +212,7 @@ pub(crate) fn accept(spec: &Spec) -> Result<Accepted, Error> {
                 }
             }
             "root" => root(field)?,
-            "mounts" => {}
+            MOUNTS => {}
             "process" => process(field)?,
             "hostname" | "annotations" => {}
             "domainname" => absent(name, field, "the kernel taking a domain name at start")?,
@@ -224,7 +232,7 @@ pub(crate) fn accept(spec: &Spec) -> Result<Accepted, Error> {
     }
     // The kernel makes its mounts and namespaces whatever the configuration says, so leaving the lists
     // out is refused as leaving one of them out is.
-    let volume = check_mounts(fields.get("mounts").unwrap_or(&Value::Null))?;
+    let volume = check_mounts(fields.get(MOUNTS).unwrap_or(&Value::Null))?;
     if !fields.contains_key("linux") {
         namespaces(&Value::Null)?;
     }
@@ -312,7 +320,7 @@ fn check_mounts(value: &Value) -> Result<Option<Volume>, Error> {
         volume = Some(check_bind_mount(index, &given[index])?);
         if given.len() > index + 1 {
             return Err(refused(
-                format!("mounts[{}]", index + 1),
+                mount_field(index + 1),
                 "one directory of the host per container: the kernel takes one file backend",
             ));
         }
@@ -335,7 +343,7 @@ fn check_mounts(value: &Value) -> Result<Option<Volume>, Error> {
             && options(ours) == options(mount)
     };
     for (index, mount) in given.iter().enumerate() {
-        let field = format!("mounts[{index}]");
+        let field = mount_field(index);
         if let Some(name) = mount
             .as_object()
             .into_iter()
@@ -365,7 +373,7 @@ fn check_mounts(value: &Value) -> Result<Option<Volume>, Error> {
             .any(|mount| mount["destination"] == ours["destination"])
         {
             return Err(refused(
-                "mounts",
+                MOUNTS,
                 format!(
                     "lacks {}, which the kernel always mounts; leaving it out needs the kernel to \
                      take its mounts at start",
@@ -384,7 +392,7 @@ fn check_mounts(value: &Value) -> Result<Option<Volume>, Error> {
             .filter_map(|ours| ours["destination"].as_str())
             .collect();
         return Err(refused(
-            format!("mounts[{index}]"),
+            mount_field(index),
             format!(
                 "{}: the kernel makes its mounts once each, in the order {}; another order or a \
                  repeat needs the kernel to take its mounts at start",
@@ -436,7 +444,7 @@ fn terminal(process: &oci_spec::runtime::Process) -> Result<Option<TerminalSize>
 
 /// A bind mount of a host directory, read and write, at an absolute path other than the root.
 fn check_bind_mount(index: usize, mount: &Value) -> Result<Volume, Error> {
-    let field = format!("mounts[{index}]");
+    let field = mount_field(index);
     let options: Vec<&str> = mount["options"]
         .as_array()
         .into_iter()

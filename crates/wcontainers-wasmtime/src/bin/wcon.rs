@@ -26,6 +26,23 @@ type Back = CpuSide<Arm64>;
 /// The warning for a property of the configuration that is ignored, with its path and count.
 const IGNORED: &str = "a property the specification does not define, or an annotation, ignored";
 
+/// The program's options, as `docker run` names those it shares.
+const OCI: &str = "--oci";
+const TAR: &str = "--tar";
+const CONFIG: &str = "--config";
+const CACHE: &str = "--cache";
+const LOOK_AHEAD: &str = "--look-ahead";
+const VOLUME: &str = "--volume";
+const PUBLISH: &str = "--publish";
+const INTERACTIVE: &str = "--interactive";
+const TTY: &str = "--tty";
+const SIZE: &str = "--size";
+/// What ends the options: the arguments after it are `process.args`.
+const END_OF_OPTIONS: &str = "--";
+/// `--look-ahead`'s words; any other value is a bounded look-ahead's length.
+const LOOK_AHEAD_FULL: &str = "full";
+const LOOK_AHEAD_NONE: &str = "none";
+
 /// What separates the parts of `--volume` and `--publish`.
 const SEPARATOR: char = ':';
 
@@ -54,23 +71,23 @@ fn main() -> ExitCode {
 
 fn run() -> Result<u8, Box<dyn std::error::Error>> {
     let mut arguments = pico_args::Arguments::from_env();
-    let oci: Option<PathBuf> = arguments.opt_value_from_str("--oci")?;
-    let tar: Option<PathBuf> = arguments.opt_value_from_str("--tar")?;
-    let config: Option<PathBuf> = arguments.opt_value_from_str("--config")?;
-    let cache: Option<PathBuf> = arguments.opt_value_from_str("--cache")?;
+    let oci: Option<PathBuf> = arguments.opt_value_from_str(OCI)?;
+    let tar: Option<PathBuf> = arguments.opt_value_from_str(TAR)?;
+    let config: Option<PathBuf> = arguments.opt_value_from_str(CONFIG)?;
+    let cache: Option<PathBuf> = arguments.opt_value_from_str(CACHE)?;
     let look_ahead = match arguments
-        .opt_value_from_str::<_, String>("--look-ahead")?
+        .opt_value_from_str::<_, String>(LOOK_AHEAD)?
         .as_deref()
     {
-        None | Some("full") => LookAhead::Full,
-        Some("none") => LookAhead::None,
+        None | Some(LOOK_AHEAD_FULL) => LookAhead::Full,
+        Some(LOOK_AHEAD_NONE) => LookAhead::None,
         Some(n) => LookAhead::Bounded(n.parse()?),
     };
-    let volume: Option<String> = arguments.opt_value_from_str("--volume")?;
-    let published: Vec<String> = arguments.values_from_str("--publish")?;
-    let interactive = arguments.contains("--interactive");
-    let tty = arguments.contains("--tty");
-    let optimise = if arguments.contains("--size") {
+    let volume: Option<String> = arguments.opt_value_from_str(VOLUME)?;
+    let published: Vec<String> = arguments.values_from_str(PUBLISH)?;
+    let interactive = arguments.contains(INTERACTIVE);
+    let tty = arguments.contains(TTY);
+    let optimise = if arguments.contains(SIZE) {
         Optimise::Size
     } else {
         Optimise::Speed
@@ -81,7 +98,7 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
         .map(|a| a.into_string().map_err(|a| format!("{a:?} is not text")))
         .collect::<Result<_, _>>()?;
     let command: Vec<String> = match rest.split_first() {
-        Some((dashes, command)) if dashes == "--" => command.to_vec(),
+        Some((dashes, command)) if dashes == END_OF_OPTIONS => command.to_vec(),
         Some((unknown, _)) => return Err(format!("unexpected argument {unknown}").into()),
         None => Vec::new(),
     };
@@ -89,7 +106,7 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
     let image = match (oci, tar) {
         (Some(directory), None) => Image::oci(&directory, Back::ARCHITECTURE)?,
         (None, Some(file)) => Image::tar(&file)?,
-        _ => return Err("give one of --oci and --tar".into()),
+        _ => return Err(format!("give one of {OCI} and {TAR}").into()),
     };
     let mut spec = match config {
         Some(path) => {
@@ -107,7 +124,7 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
     if let Some(volume) = volume {
         let (source, destination) = volume
             .split_once(SEPARATOR)
-            .ok_or("--volume is SOURCE:DESTINATION")?;
+            .ok_or(format!("{VOLUME} is SOURCE{SEPARATOR}DESTINATION"))?;
         let mut mounts = spec.mounts().clone().unwrap_or_default();
         mounts.push(bind_mount(source.as_ref(), destination));
         spec.set_mounts(Some(mounts));
@@ -129,9 +146,9 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
         system.input(Box::new(std::io::stdin()));
     }
     for publish in published {
-        let (at, port) = publish
-            .rsplit_once(SEPARATOR)
-            .ok_or("--publish is ADDRESS:PORT:CONTAINER_PORT")?;
+        let (at, port) = publish.rsplit_once(SEPARATOR).ok_or(format!(
+            "{PUBLISH} is ADDRESS{SEPARATOR}PORT{SEPARATOR}CONTAINER_PORT"
+        ))?;
         system.publish(port.parse()?, at.parse::<SocketAddr>()?);
     }
     let translator_config = TranslatorConfig {

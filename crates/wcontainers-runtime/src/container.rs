@@ -8,6 +8,9 @@ use wcontainers_kernel::{Errno, Kernel, Start};
 
 use crate::{Ending, Execution, Image, Step, Stepper, StopFlag, System, spec};
 
+/// The start of the variable in `process.env` holding the user's home directory.
+const HOME_ASSIGNMENT: &str = "HOME=";
+
 /// The configuration of a runtime, shared by its containers.
 #[derive(Clone, Debug, Default)]
 pub struct RuntimeConfig {
@@ -112,8 +115,11 @@ impl<E: Executor> Runtime<E> {
         }
         let mut env = accepted.env;
         // As runc: a process without HOME gets its user's home directory.
-        if !env.iter().any(|variable| variable.starts_with("HOME=")) {
-            env.push(format!("HOME={}", image.home(accepted.uid)));
+        if !env
+            .iter()
+            .any(|variable| variable.starts_with(HOME_ASSIGNMENT))
+        {
+            env.push(format!("{HOME_ASSIGNMENT}{}", image.home(accepted.uid)));
         }
         let path = image
             .program(&accepted.args[0], &env, &accepted.cwd)
@@ -125,7 +131,7 @@ impl<E: Executor> Runtime<E> {
                 .serve_directory(&volume.source)
                 .map_err(|error| match error.kind() {
                     std::io::ErrorKind::Unsupported => Error::Refused {
-                        field: format!("mounts[{}]", volume.index),
+                        field: spec::mount_field(volume.index),
                         reason: "this system serves no directory of the host".to_string(),
                     },
                     _ => Error::Io {

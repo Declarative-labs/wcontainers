@@ -50,8 +50,14 @@ const TERMINAL: End = End(Named::Terminal as u32);
 /// The most the input's reader reads at once: a page, the unit a pipe's room is granted in.
 const INPUT_PIECE: u64 = PAGE_SIZE;
 
-/// Why the standard input stopped early.
+/// Why the standard input stopped early, and why output was lost.
 const INPUT_NOT_READ: &str = "standard input not read";
+const OUTPUT_NOT_WRITTEN: &str = "standard output not written";
+const ERROR_NOT_WRITTEN: &str = "standard error not written";
+
+/// The names of the system's threads.
+const TIMER_THREAD: &str = "wcontainers timer";
+const INPUT_THREAD: &str = "wcontainers input";
 
 /// The local system.
 pub struct LocalSystem {
@@ -450,8 +456,8 @@ impl Host for LocalSystem {
 
     fn stream_send(&mut self, end: End, bytes: &[u8]) {
         let (writer, name) = match end {
-            ERROR => (&mut self.error, "standard error not written"),
-            _ => (&mut self.output, "standard output not written"),
+            ERROR => (&mut self.error, ERROR_NOT_WRITTEN),
+            _ => (&mut self.output, OUTPUT_NOT_WRITTEN),
         };
         if let Err(error) = writer.write_all(bytes).and_then(|()| writer.flush()) {
             let detail = error.raw_os_error().map_or(u64::MAX, |code| code as u64);
@@ -546,7 +552,7 @@ impl System for LocalSystem {
         let thread = {
             let shared = shared.clone();
             std::thread::Builder::new()
-                .name("wcontainers timer".to_string())
+                .name(TIMER_THREAD.to_string())
                 .spawn(move || time(&shared, started, &flag))
                 .expect("a timer thread")
         };
@@ -637,7 +643,7 @@ impl System for LocalSystem {
             let credit = self.input_credit.clone();
             let arrivals = self.arrivals.clone();
             std::thread::Builder::new()
-                .name("wcontainers input".to_string())
+                .name(INPUT_THREAD.to_string())
                 .spawn(move || read_input(input, &credit, &arrivals))
                 .expect("an input thread");
         }
@@ -654,7 +660,7 @@ mod tests {
     const SLICE: Duration = Duration::from_millis(1);
     /// Long enough that the turn surely ends before it.
     const LONG_SLICE: Duration = Duration::from_millis(200);
-    const PAST_IT: Duration = Duration::from_millis(400);
+    const PAST_IT: Duration = LONG_SLICE.saturating_mul(2);
 
     fn system() -> (LocalSystem, StopFlag) {
         let flag = StopFlag::default();
