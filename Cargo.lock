@@ -2545,6 +2545,7 @@ dependencies = [
  "wcontainers-arm64",
  "wcontainers-guest-cpu",
  "wcontainers-inside",
+ "wcontainers-kernel-test-policy",
  "wcontainers-runtime",
  "wcontainers-translator",
  "wcontainers-translator-test",
@@ -2569,6 +2570,8 @@ dependencies = [
  "wcontainers-arm64",
  "wcontainers-guest-cpu",
  "wcontainers-kernel",
+ "wcontainers-kernel-test-policy",
+ "wcontainers-runtime",
  "zerocopy",
 ]
 
@@ -2603,9 +2606,20 @@ dependencies = [
  "wcontainers-abi",
  "wcontainers-arm64",
  "wcontainers-kernel",
+ "wcontainers-kernel-test-policy",
  "wcontainers-runtime",
  "wcontainers-wasmtime",
  "zerocopy",
+]
+
+[[package]]
+name = "wcontainers-kernel-test-policy"
+version = "0.1.0"
+dependencies = [
+ "rand 0.9.5",
+ "wcontainers-abi",
+ "wcontainers-kernel",
+ "wcontainers-runtime",
 ]
 
 [[package]]

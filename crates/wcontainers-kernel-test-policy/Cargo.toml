@@ -1,0 +1,19 @@
+[package]
+name = "wcontainers-kernel-test-policy"
+description = "The kernel test crate's policy: the seeded choices of a test run, built wherever the runtime's loop runs."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+wcontainers-abi.workspace = true
+wcontainers-kernel = { path = "../wcontainers-kernel" }
+wcontainers-runtime = { path = "../wcontainers-runtime", default-features = false }
+# The schedule's draws, the same generator the test crate uses.
+rand = { version = "0.9.2", default-features = false, features = ["std_rng"] }
+
+[lints]
+workspace = true

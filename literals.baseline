@@ -1635,11 +1635,6 @@ code	crates/wcontainers-kernel-test/src/driver.rs	float	report	1e6
 code	crates/wcontainers-kernel-test/src/driver.rs	float	report	1e6
 code	crates/wcontainers-kernel-test/src/driver.rs	float	report	1e6
 code	crates/wcontainers-kernel-test/src/driver.rs	int	<Injections as Default>::default	100
-code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as System>::ran	1000
-code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as System>::ran	1500
-code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as System>::ran	1500
-code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as System>::ran	500
-code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as System>::ran	500
 code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as System>::stopped	- 1
 code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as System>::stopped	32
 code	crates/wcontainers-kernel-test/src/driver.rs	int	Injecting::new	0x5197
@@ -1647,10 +1642,6 @@ code	crates/wcontainers-kernel-test/src/driver.rs	int	Injecting::new	0x5a7e
 code	crates/wcontainers-kernel-test/src/driver.rs	int	Injecting::new	0x6e07
 code	crates/wcontainers-kernel-test/src/driver.rs	int	Injecting::new	0x6e08
 code	crates/wcontainers-kernel-test/src/driver.rs	int	Injecting::new	10
-code	crates/wcontainers-kernel-test/src/driver.rs	int	TestHost::moved	0x5eed
-code	crates/wcontainers-kernel-test/src/driver.rs	int	TestHost::new	0x5eed
-code	crates/wcontainers-kernel-test/src/driver.rs	int	TestHost::repeatable	1_000_000_000
-code	crates/wcontainers-kernel-test/src/driver.rs	int	TestHost::repeatable	1_000_000_000
 code	crates/wcontainers-kernel-test/src/driver.rs	int	copied_run	65536
 code	crates/wcontainers-kernel-test/src/driver.rs	int	decode::Reader<'_>::number	8
 code	crates/wcontainers-kernel-test/src/driver.rs	int	exit_code	0x7f

@@ -9,6 +9,7 @@ use wcontainers_abi::{
     BackendRequestId, ConnectionId, CounterReading, Cpu, Event, Host, HostError, Stream, Warning,
 };
 use wcontainers_kernel::{Errno, FileRecord, Kernel, Start};
+use wcontainers_kernel_test_policy::{RepeatableClock, Schedule};
 use wcontainers_runtime::{Ending, Execution, System, Turn};
 
 use crate::standin::Unsupported;
@@ -184,21 +185,18 @@ pub struct Run {
 /// until a time, the host's clocks jump to it instead of waiting.
 pub struct TestHost {
     started: Instant,
-    /// How far the clocks have jumped ahead.
+    /// How far the wall clock has jumped ahead.
     skipped: u64,
     random: StdRng,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
     warnings: Vec<Warned>,
-    /// A clock that moves only when the driver says, so a run repeats exactly; none for the wall
+    /// Clocks that move only when the driver says, so a run repeats exactly; none for the wall
     /// clock (layer 1, where the reference runs beside it).
-    virtual_now: Option<u64>,
-    /// With a clock that moves only when the driver says, the wall clock's reading when the
-    /// monotonic clock read 0: the wall clock moves with it.
-    wall_base: u64,
+    repeatable: Option<RepeatableClock>,
     /// What a run's choices come from: how long each turn on the CPU side lasts, and when the
     /// backend's answers arrive.
-    schedule: StdRng,
+    schedule: Schedule,
     /// The file backend, for a container with a volume.
     pub(crate) backend: Option<crate::backend::Backend>,
     /// Connections to the outside and lookups.
@@ -257,9 +255,8 @@ impl TestHost {
             stdout: Vec::new(),
             stderr: Vec::new(),
             warnings: Vec::new(),
-            virtual_now: None,
-            wall_base: 0,
-            schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
+            repeatable: None,
+            schedule: Schedule::new(seed),
             backend: None,
             network: Default::default(),
             echo: false,
@@ -272,12 +269,10 @@ impl TestHost {
     /// so the kernel's choices repeat exactly for a seed, with the wall clock reading `wall_start`
     /// (the machine's clock when none) at the start.
     pub fn repeatable(seed: u64, wall_start: Option<u64>) -> Self {
-        let mut host = Self {
-            virtual_now: Some(1_000_000_000),
+        Self {
+            repeatable: Some(RepeatableClock::new(wall_start.unwrap_or_else(wall_clock))),
             ..Self::new(seed)
-        };
-        host.wall_base = wall_start.unwrap_or_else(wall_clock) - 1_000_000_000;
-        host
+        }
     }
 }
 
@@ -296,17 +291,16 @@ impl TestHost {
     /// one without the time the save took, moved on by `wall_step`); randomness and the length of
     /// turns come from `seed`.
     fn moved(&mut self, seed: u64, wall_step: u64) -> Self {
-        let wall = self.realtime_nanoseconds();
-        let mut host = Self {
+        let wall = self.realtime_nanoseconds() + wall_step;
+        Self {
             started: Instant::now(),
             skipped: self.skipped,
             random: StdRng::seed_from_u64(seed),
             stdout: self.stdout.clone(),
             stderr: self.stderr.clone(),
             warnings: self.warnings.clone(),
-            virtual_now: self.virtual_now.map(|_| 0),
-            wall_base: 0,
-            schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
+            repeatable: self.repeatable.map(|clock| clock.moved(wall)),
+            schedule: Schedule::new(seed),
             // The backend and the answers it owes go on with the copy.
             backend: self.backend.take(),
             // A new host has none of the old one's connections; its published ports go on.
@@ -314,29 +308,32 @@ impl TestHost {
             echo: self.echo,
             cpu_warnings: self.cpu_warnings.clone(),
             injecting: self.injecting.take(),
-        };
-        host.wall_base = wall + wall_step - host.monotonic_nanoseconds();
-        host
+        }
     }
 
     /// Moves the clocks forward to a time on the monotonic clock, as if the host had waited.
     pub fn skip_to(&mut self, until: u64) {
-        let now = self.monotonic_nanoseconds();
-        self.skipped += until.saturating_sub(now);
+        match &mut self.repeatable {
+            Some(clock) => clock.skip_to(until),
+            None => {
+                let now = self.monotonic_nanoseconds();
+                self.skipped += until.saturating_sub(now);
+            }
+        }
     }
 }
 
 impl Host for TestHost {
     fn monotonic_nanoseconds(&mut self) -> u64 {
-        match self.virtual_now {
-            Some(now) => now + self.skipped,
+        match &self.repeatable {
+            Some(clock) => clock.monotonic(),
             None => self.started.elapsed().as_nanos() as u64 + self.skipped,
         }
     }
 
     fn realtime_nanoseconds(&mut self) -> u64 {
-        match self.virtual_now {
-            Some(_) => self.wall_base + self.monotonic_nanoseconds(),
+        match &self.repeatable {
+            Some(clock) => clock.realtime(),
             None => wall_clock() + self.skipped,
         }
     }
@@ -679,7 +676,7 @@ impl System for TestHost {
     fn turn(&mut self, slice_nanoseconds: Option<u64>) -> Turn {
         // The seed chooses where in its slice each turn ends, so a run repeats for a seed and
         // threads interleave differently under different seeds.
-        let mut limit = slice_nanoseconds.map(|slice| self.schedule.random_range(1..=slice.max(1)));
+        let mut limit = self.schedule.turn_limit(slice_nanoseconds);
         // An answer owed arrives during the turn, at a moment drawn from the seed: the host raises
         // the running thread's stop flag then, as the boundary says.
         if self
@@ -687,7 +684,10 @@ impl System for TestHost {
             .as_ref()
             .is_some_and(|backend| backend.waiting())
         {
-            let arrival = self.schedule.random_range(1..=ANSWER_ARRIVES_WITHIN);
+            let arrival = self
+                .schedule
+                .draws()
+                .random_range(1..=ANSWER_ARRIVES_WITHIN);
             limit = Some(limit.map_or(arrival, |l| l.min(arrival)));
         }
         Turn::Counted { limit }
@@ -699,11 +699,9 @@ impl System for TestHost {
     /// seed. The speed moves the points where the scheduler switches threads, so seeds give
     /// different interleavings.
     fn ran(&mut self, progress: u64) {
-        let picoseconds = self.schedule.random_range(500..1500);
-        let step =
-            progress.saturating_mul(picoseconds) / 1000 + self.schedule.random_range(500..1500);
-        if let Some(now) = &mut self.virtual_now {
-            *now += step;
+        let step = self.schedule.turn_nanoseconds(progress);
+        if let Some(clock) = &mut self.repeatable {
+            clock.advance(step);
         }
     }
 
@@ -720,7 +718,7 @@ impl System for TestHost {
             .backend
             .as_ref()
             .is_some_and(|backend| backend.waiting())
-            && self.schedule.random_bool(0.5)
+            && self.schedule.draws().random_bool(0.5)
         {
             deliver(kernel, cpu, self);
         }
@@ -811,8 +809,7 @@ impl System for TestHost {
                 String::from_utf8_lossy(&self.stderr)
             );
         };
-        let now = self.monotonic_nanoseconds();
-        self.skipped += until.saturating_sub(now);
+        self.skip_to(until);
         kernel.event(cpu, self, Event::Timer);
     }
 
@@ -955,7 +952,7 @@ pub(crate) fn deliver(
     let Some(message) = host
         .backend
         .as_mut()
-        .and_then(|backend| backend.next(&mut host.schedule))
+        .and_then(|backend| backend.next(host.schedule.draws()))
     else {
         return;
     };
