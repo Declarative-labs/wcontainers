@@ -446,7 +446,8 @@ bitflags! {
         /// asked their size ([`crate::SlowPath::TextureInfoInHelpers`]).
         const TEXTURE_INFO = 1 << 9;
         /// The pixel shader's target 0 alpha multiplied by the line coverage the stage helper's
-        /// rectangle passes in ([`crate::SlowPath::AntialiasedLinesAsQuads`]).
+        /// rectangle passes in after the [`VariantKey::linked`] values
+        /// ([`crate::SlowPath::AntialiasedLinesAsQuads`]).
         const LINE_COVERAGE = 1 << 10;
         /// Clip distances made ordinary perspective-correct values between the stages (at
         /// [`VariantKey::linked`]), and the fragment stage discards where one is negative, or on
@@ -538,8 +539,9 @@ pub struct TargetInShader {
 /// f32 values from `location` holding the vertex program's `clip_distances` clip distances (with
 /// [`VariantFlags::CLIP_DISTANCE`], zero without), then its unclamped clip z (with
 /// [`VariantFlags::DEPTH_CLAMP`]), then the layer a geometry stage names (one flat u32, with
-/// [`VariantFlags::LAYER_FROM_STAGE`]). `location` is one past every location either program's
-/// reflection lists.
+/// [`VariantFlags::LAYER_FROM_STAGE`]), then the line coverage values (four f32 interpolated without
+/// perspective, with [`VariantFlags::LINE_COVERAGE`]). `location` is one past every location either
+/// program's reflection lists.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
