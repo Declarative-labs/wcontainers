@@ -38,9 +38,9 @@ const ERROR_NOT_WRITTEN: &str = "standard error not written";
 /// The shipped outside.
 pub struct System {
     started: Instant,
-    output: Box<dyn Write + Send>,
-    error: Box<dyn Write + Send>,
-    warnings: Vec<Warned>,
+    output: Mutex<Box<dyn Write + Send>>,
+    error: Mutex<Box<dyn Write + Send>>,
+    warnings: Mutex<Vec<Warned>>,
     timer: Option<Timer>,
 }
 
@@ -65,25 +65,25 @@ impl System {
     pub fn new(output: Box<dyn Write + Send>, error: Box<dyn Write + Send>) -> Self {
         Self {
             started: Instant::now(),
-            output,
-            error,
-            warnings: Vec::new(),
+            output: Mutex::new(output),
+            error: Mutex::new(error),
+            warnings: Mutex::default(),
             timer: None,
         }
     }
 
     /// Every warning so far, the kernel's and the back end's.
-    pub fn warnings(&self) -> &[Warned] {
-        &self.warnings
+    pub fn warnings(&self) -> Vec<Warned> {
+        lock(&self.warnings).clone()
     }
 
     fn now(&self) -> u64 {
         self.started.elapsed().as_nanos() as u64
     }
 
-    fn keep(&mut self, warning: Warning<'_>, cpu: bool) {
-        match self
-            .warnings
+    fn keep(&self, warning: Warning<'_>, cpu: bool) {
+        let mut warnings = lock(&self.warnings);
+        match warnings
             .iter_mut()
             .find(|w| w.cpu == cpu && w.reason == warning.reason)
         {
@@ -91,7 +91,7 @@ impl System {
                 kept.count = kept.count.max(warning.count);
                 kept.detail = warning.detail;
             }
-            None => self.warnings.push(Warned {
+            None => warnings.push(Warned {
                 reason: warning.reason.to_string(),
                 detail: warning.detail,
                 count: warning.count,
@@ -99,6 +99,11 @@ impl System {
             }),
         }
     }
+}
+
+/// What a lock holds, also after a thread panicked holding it.
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl Drop for System {
@@ -159,37 +164,37 @@ fn time(shared: &Deadline, started: Instant, flag: &StopFlag) {
 }
 
 impl Host for System {
-    fn monotonic_nanoseconds(&mut self) -> u64 {
+    fn monotonic_nanoseconds(&self) -> u64 {
         self.now()
     }
 
-    fn realtime_nanoseconds(&mut self) -> u64 {
+    fn realtime_nanoseconds(&self) -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |since| since.as_nanos() as u64)
     }
 
-    fn random(&mut self, into: &mut [u8]) {
+    fn random(&self, into: &mut [u8]) {
         getrandom::fill(into).expect("the system's randomness");
     }
 
-    fn warn(&mut self, warning: Warning<'_>) {
+    fn warn(&self, warning: Warning<'_>) {
         self.keep(warning, false);
     }
 
-    fn backend_send(&mut self, _: BackendRequestId, _: &[u8]) -> Result<(), HostError> {
+    fn backend_send(&self, _: BackendRequestId, _: &[u8]) -> Result<(), HostError> {
         Err(HostError::NotSupported)
     }
 
-    fn stream_send(&mut self, end: End, bytes: &[u8]) {
+    fn stream_send(&self, end: End, bytes: &[u8]) {
         let (writer, name) = match end {
-            OUTPUT => (&mut self.output, OUTPUT_NOT_WRITTEN),
-            _ => (&mut self.error, ERROR_NOT_WRITTEN),
+            OUTPUT => (&self.output, OUTPUT_NOT_WRITTEN),
+            _ => (&self.error, ERROR_NOT_WRITTEN),
         };
+        let mut writer = lock(writer);
         if let Err(error) = writer.write_all(bytes).and_then(|()| writer.flush()) {
             let detail = error.raw_os_error().map_or(u64::MAX, |code| code as u64);
-            let count = self
-                .warnings
+            let count = lock(&self.warnings)
                 .iter()
                 .find(|w| w.reason == name)
                 .map_or(1, |w| w.count + 1);
@@ -205,36 +210,36 @@ impl Host for System {
     }
 
     /// No end takes input: the kernel gives no credit.
-    fn stream_credit(&mut self, _: End, _: u64) {}
+    fn stream_credit(&self, _: End, _: u64) {}
 
     /// The writers stay open for this process's own use.
-    fn stream_close(&mut self, _: End) {}
+    fn stream_close(&self, _: End) {}
 
-    fn connect(&mut self, _: ConnectionId, _: &[u8], _: u16, _: bool) -> Result<(), HostError> {
+    fn connect(&self, _: ConnectionId, _: &[u8], _: u16, _: bool) -> Result<(), HostError> {
         Err(HostError::NotSupported)
     }
 
-    fn send(&mut self, _: ConnectionId, _: &[u8]) -> Result<usize, HostError> {
+    fn send(&self, _: ConnectionId, _: &[u8]) -> Result<usize, HostError> {
         Err(HostError::NotSupported)
     }
 
-    fn receive(&mut self, _: ConnectionId, _: &mut [u8]) -> Result<usize, HostError> {
+    fn receive(&self, _: ConnectionId, _: &mut [u8]) -> Result<usize, HostError> {
         Err(HostError::NotSupported)
     }
 
-    fn finish(&mut self, _: ConnectionId) {}
+    fn finish(&self, _: ConnectionId) {}
 
-    fn close(&mut self, _: ConnectionId) {}
+    fn close(&self, _: ConnectionId) {}
 
-    fn look_up(&mut self, _: u64, _: &str) -> Result<(), HostError> {
+    fn look_up(&self, _: u64, _: &str) -> Result<(), HostError> {
         Err(HostError::NotSupported)
     }
 
-    fn listen(&mut self, _: ConnectionId, _: u16) -> Result<(), HostError> {
+    fn listen(&self, _: ConnectionId, _: u16) -> Result<(), HostError> {
         Err(HostError::NotSupported)
     }
 
-    fn accept(&mut self, _: ConnectionId, _: ConnectionId) -> Result<(), HostError> {
+    fn accept(&self, _: ConnectionId, _: ConnectionId) -> Result<(), HostError> {
         Err(HostError::NotSupported)
     }
 }

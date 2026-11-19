@@ -268,7 +268,7 @@ struct Answering<'a, O> {
 impl<O: Outside> Answer for Answering<'_, O> {
     fn exit(&mut self, cpu: &mut dyn Cpu, exit: Exit, progress: u64) -> Carry {
         self.outside.ran(progress);
-        self.kernel.exit(cpu, &mut *self.outside, exit);
+        self.kernel.exit(cpu, &*self.outside, exit);
         if self.outside.arrived(self.kernel, cpu) {
             return Carry::Leave(Leaving::OutsideAsked);
         }

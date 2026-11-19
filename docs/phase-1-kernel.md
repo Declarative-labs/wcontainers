@@ -379,6 +379,10 @@ Later, with guest threads on separate host threads:
 
 Naive or "not supported" bodies are fine; the interface is not optional.
 
+Every host call takes the host shared (`&self`) and the host trait requires `Sync`, so that calls for
+different processes may later come at once; the host keeps what it changes in atomics or behind its
+own locks.
+
 Run a thread. Copy out of a memory. Copy into a memory. New memory. Duplicate a memory. Drop a memory.
 Set page permissions. Shared pages: make a block, map it into a memory, drop it. Start a thread. Code
 is here. Raise a stop flag, now or after a time. Wait until a time or an event.

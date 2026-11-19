@@ -114,7 +114,7 @@ impl<B: BackEnd> Runtime<B> {
         let standard = outside.standard();
         kernel.start(
             &mut cpu,
-            &mut outside,
+            &outside,
             &Start {
                 path: path.as_bytes(),
                 arguments: &arguments,

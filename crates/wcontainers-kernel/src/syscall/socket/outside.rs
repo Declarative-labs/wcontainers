@@ -229,7 +229,7 @@ pub(super) fn take(kernel: &mut Kernel, cx: &mut Context<'_>, listener: &SocketR
 
 impl Outside {
     /// Hands the host the connections released since the last call.
-    pub(crate) fn flush(&mut self, host: &mut dyn wcontainers_abi::Host) {
+    pub(crate) fn flush(&mut self, host: &dyn wcontainers_abi::Host) {
         for id in core::mem::take(&mut self.closing) {
             host.close(ConnectionId(id));
         }

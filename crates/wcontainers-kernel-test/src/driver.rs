@@ -1,6 +1,8 @@
 //! The driver loop and a host for tests: runs a program on the kernel with the stand-in CPU.
 
 use std::ops::ControlFlow;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rand::rngs::StdRng;
@@ -193,13 +195,13 @@ pub struct TestHost {
     started: Instant,
     /// How far the clocks have jumped ahead.
     skipped: u64,
-    random: StdRng,
+    random: Mutex<StdRng>,
     /// The other sides of the container's ends.
-    pub(crate) streams: Streams,
-    warnings: Vec<Warned>,
+    pub(crate) streams: Mutex<Streams>,
+    warnings: Mutex<Vec<Warned>>,
     /// A clock that moves only when the driver says, so a run repeats exactly; none for the wall
     /// clock (layer 1, where the reference runs beside it).
-    virtual_now: Option<u64>,
+    virtual_now: Option<AtomicU64>,
     /// With a clock that moves only when the driver says, the wall clock's reading when the
     /// monotonic clock read 0: the wall clock moves with it.
     wall_base: u64,
@@ -208,11 +210,11 @@ pub struct TestHost {
     schedule: StdRng,
     /// With a repeatable clock, the time the kernel's work on a turn's end takes, passed at the
     /// next reading of the clock.
-    kernel_work: u64,
+    kernel_work: AtomicU64,
     /// The file backend, for a container with a volume.
-    pub(crate) backend: Option<crate::backend::Backend>,
+    pub(crate) backend: Mutex<Option<crate::backend::Backend>>,
     /// Connections to the outside and lookups.
-    network: crate::network::Network,
+    network: Mutex<crate::network::Network>,
     /// The CPU side's own slow paths.
     cpu_warnings: Vec<Warned>,
     /// What a driven run has done to it between turns; none outside one.
@@ -260,14 +262,14 @@ impl TestHost {
         Self {
             started: Instant::now(),
             skipped: 0,
-            random: StdRng::seed_from_u64(seed),
-            streams: Streams::default(),
-            warnings: Vec::new(),
+            random: Mutex::new(StdRng::seed_from_u64(seed)),
+            streams: Mutex::default(),
+            warnings: Mutex::default(),
             virtual_now: None,
             wall_base: 0,
             schedule: StdRng::seed_from_u64(seed ^ SCHEDULE_SALT),
-            kernel_work: 0,
-            backend: None,
+            kernel_work: AtomicU64::default(),
+            backend: Mutex::default(),
             network: Default::default(),
             cpu_warnings: Vec::new(),
             injecting: None,
@@ -278,7 +280,7 @@ impl TestHost {
     /// so the kernel's choices repeat exactly for a seed.
     pub fn repeatable(seed: u64) -> Self {
         let mut host = Self {
-            virtual_now: Some(1_000_000_000),
+            virtual_now: Some(AtomicU64::new(1_000_000_000)),
             ..Self::new(seed)
         };
         host.wall_base = wall_clock() - 1_000_000_000;
@@ -305,17 +307,17 @@ impl TestHost {
         let mut host = Self {
             started: Instant::now(),
             skipped: self.skipped,
-            random: StdRng::seed_from_u64(seed),
-            streams: self.streams.clone(),
-            warnings: self.warnings.clone(),
-            virtual_now: self.virtual_now.map(|_| 0),
+            random: Mutex::new(StdRng::seed_from_u64(seed)),
+            streams: Mutex::new(held(&mut self.streams).clone()),
+            warnings: Mutex::new(held(&mut self.warnings).clone()),
+            virtual_now: self.virtual_now.as_ref().map(|_| AtomicU64::default()),
             wall_base: 0,
             schedule: StdRng::seed_from_u64(seed ^ SCHEDULE_SALT),
-            kernel_work: 0,
+            kernel_work: AtomicU64::default(),
             // The backend and the answers it owes go on with the copy.
-            backend: self.backend.take(),
+            backend: Mutex::new(self.backend().take()),
             // A new host has none of the old one's connections; its published ports go on.
-            network: self.network.moved(),
+            network: Mutex::new(held(&mut self.network).moved()),
             cpu_warnings: self.cpu_warnings.clone(),
             injecting: self.injecting.take(),
         };
@@ -330,30 +332,39 @@ impl TestHost {
     }
 }
 
+/// What a lock holds, also after a thread panicked holding it.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// What a lock holds, reached through its only owner.
+pub(crate) fn held<T>(mutex: &mut Mutex<T>) -> &mut T {
+    mutex.get_mut().unwrap_or_else(PoisonError::into_inner)
+}
+
 impl Host for TestHost {
-    fn monotonic_nanoseconds(&mut self) -> u64 {
-        match &mut self.virtual_now {
+    fn monotonic_nanoseconds(&self) -> u64 {
+        match &self.virtual_now {
             Some(now) => {
-                let read = *now + self.skipped;
-                *now += core::mem::take(&mut self.kernel_work);
-                read
+                let work = self.kernel_work.swap(0, Ordering::Relaxed);
+                now.fetch_add(work, Ordering::Relaxed) + self.skipped
             }
             None => self.started.elapsed().as_nanos() as u64 + self.skipped,
         }
     }
 
-    fn realtime_nanoseconds(&mut self) -> u64 {
-        match self.virtual_now {
+    fn realtime_nanoseconds(&self) -> u64 {
+        match &self.virtual_now {
             Some(_) => self.wall_base + self.monotonic_nanoseconds(),
             None => wall_clock() + self.skipped,
         }
     }
 
-    fn random(&mut self, into: &mut [u8]) {
-        self.random.fill_bytes(into);
+    fn random(&self, into: &mut [u8]) {
+        lock(&self.random).fill_bytes(into);
     }
 
-    fn warn(&mut self, warning: Warning<'_>) {
+    fn warn(&self, warning: Warning<'_>) {
         // Only a missing call's detail is a call number.
         let name = if warning.reason == wcontainers_kernel::reason::NOT_IMPLEMENTED {
             wcontainers_kernel::system_call_name(warning.detail).unwrap_or("")
@@ -367,15 +378,16 @@ impl Host for TestHost {
                 warning.reason, warning.detail, warning.count
             );
         }
-        self.warnings.push(Warned {
+        lock(&self.warnings).push(Warned {
             reason: warning.reason.to_string(),
             count: warning.count,
             detail: warning.detail,
         });
     }
 
-    fn backend_send(&mut self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError> {
-        let backend = self.backend.as_mut().ok_or(HostError::NotSupported)?;
+    fn backend_send(&self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError> {
+        let mut backend = lock(&self.backend);
+        let backend = backend.as_mut().ok_or(HostError::NotSupported)?;
         // The answer to a RETRIEVE this host sent in the server's place stays here.
         if request.0 & RETRIEVED == RETRIEVED {
             return Ok(());
@@ -384,65 +396,61 @@ impl Host for TestHost {
         Ok(())
     }
 
-    fn stream_send(&mut self, end: End, bytes: &[u8]) {
-        self.streams.send(end, bytes);
+    fn stream_send(&self, end: End, bytes: &[u8]) {
+        lock(&self.streams).send(end, bytes);
     }
 
-    fn stream_credit(&mut self, end: End, bytes: u64) {
-        self.streams.credit(end, bytes);
+    fn stream_credit(&self, end: End, bytes: u64) {
+        lock(&self.streams).credit(end, bytes);
     }
 
-    fn stream_close(&mut self, end: End) {
-        self.streams.close(end);
+    fn stream_close(&self, end: End) {
+        lock(&self.streams).close(end);
     }
 
     fn connect(
-        &mut self,
+        &self,
         connection: ConnectionId,
         address: &[u8],
         port: u16,
         stream: bool,
     ) -> Result<(), HostError> {
-        self.network.connect(connection.0, address, port, stream)
+        lock(&self.network).connect(connection.0, address, port, stream)
     }
 
-    fn send(&mut self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError> {
-        self.network.send(connection.0, bytes)
+    fn send(&self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError> {
+        lock(&self.network).send(connection.0, bytes)
     }
 
-    fn receive(&mut self, connection: ConnectionId, into: &mut [u8]) -> Result<usize, HostError> {
-        self.network.receive(connection.0, into)
+    fn receive(&self, connection: ConnectionId, into: &mut [u8]) -> Result<usize, HostError> {
+        lock(&self.network).receive(connection.0, into)
     }
 
-    fn finish(&mut self, connection: ConnectionId) {
-        self.network.finish(connection.0);
+    fn finish(&self, connection: ConnectionId) {
+        lock(&self.network).finish(connection.0);
     }
 
-    fn close(&mut self, connection: ConnectionId) {
-        self.network.close(connection.0);
+    fn close(&self, connection: ConnectionId) {
+        lock(&self.network).close(connection.0);
     }
 
-    fn look_up(&mut self, request: u64, name: &str) -> Result<(), HostError> {
-        self.network.look_up(request, name);
+    fn look_up(&self, request: u64, name: &str) -> Result<(), HostError> {
+        lock(&self.network).look_up(request, name);
         Ok(())
     }
 
-    fn listen(&mut self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
-        self.network.listen(listener.0, port)
+    fn listen(&self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
+        lock(&self.network).listen(listener.0, port)
     }
 
-    fn accept(
-        &mut self,
-        listener: ConnectionId,
-        connection: ConnectionId,
-    ) -> Result<(), HostError> {
-        self.network.accept(listener.0, connection.0)
+    fn accept(&self, listener: ConnectionId, connection: ConnectionId) -> Result<(), HostError> {
+        lock(&self.network).accept(listener.0, connection.0)
     }
 }
 
 impl StreamHost for TestHost {
     fn streams(&mut self) -> &mut Streams {
-        &mut self.streams
+        held(&mut self.streams)
     }
 
     fn choices(&mut self) -> &mut StdRng {
@@ -450,7 +458,7 @@ impl StreamHost for TestHost {
     }
 
     fn change_served(&mut self, path: &str, bytes: &[u8]) {
-        self.backend
+        self.backend()
             .as_ref()
             .expect("a container with a backend")
             .change(path, bytes);
@@ -636,9 +644,9 @@ pub fn run_prepared(
     let mut cpu = back_end(seed, container.address_space);
     let mut host = TestHost::repeatable(seed);
     host.injecting = Some(Injecting::new(seed, injections));
-    host.streams = Streams::new(outside);
-    host.streams.echo = echo;
-    host.network.published = container.published.iter().copied().collect();
+    *host.streams() = Streams::new(outside);
+    host.streams().echo = echo;
+    held(&mut host.network).published = container.published.iter().copied().collect();
     let root_on_backend = container.backend == Some("/");
     if container.backend.is_some() {
         let served = match container.root_image {
@@ -646,7 +654,7 @@ pub fn run_prepared(
             Some(image) => crate::backend::Served::Image(image),
             None => crate::backend::Served::Files(container.files),
         };
-        host.backend = Some(crate::backend::Backend::start(
+        *host.backend() = Some(crate::backend::Backend::start(
             &crate::backend::out(),
             served,
             container.cached,
@@ -674,7 +682,7 @@ pub fn run_prepared(
     };
     #[cfg(feature = "runtime")]
     let started = Instant::now();
-    kernel.start(&mut cpu, &mut host, &start);
+    kernel.start(&mut cpu, &host, &start);
     host.started(&mut kernel, &mut cpu);
     let status = match wcontainers_runtime::drive(&mut kernel, &mut cpu, &mut host) {
         Ok(Ending::Finished { status }) => status,
@@ -687,13 +695,13 @@ pub fn run_prepared(
     };
     #[cfg(feature = "runtime")]
     report(&cpu, container, started.elapsed());
-    let input_closed = host.streams.input_closed_by_kernel();
+    let input_closed = host.streams().input_closed_by_kernel();
     let outputs_closed = streams::finish(&mut kernel, &mut cpu, &mut host);
     if let Some(error) = kernel.start_failure() {
         // Never in a copy: no save is made before the first program runs.
         return Err(Failure::Start(error));
     }
-    let files = match &host.backend {
+    let files = match host.backend() {
         Some(_) if container.root_image.is_some() => Vec::new(),
         Some(backend) if root_on_backend => image::records(&backend.files()),
         _ => kernel.root_files(&mut cpu),
@@ -701,22 +709,23 @@ pub fn run_prepared(
     let report = host.injecting().report;
     let saved = host.injecting().saved;
     let turns = host.injecting().turns;
+    let streams = std::mem::take(host.streams());
     let run = Run {
         outcome: Outcome {
-            stdout: host.streams.stdout,
-            stderr: host.streams.stderr,
+            stdout: streams.stdout,
+            stderr: streams.stderr,
             exit_code: exit_code(status),
         },
-        warnings: host.warnings,
+        warnings: std::mem::take(held(&mut host.warnings)),
         cpu_warnings: host.cpu_warnings,
         counters: kernel.counters().collect(),
         files,
         saved,
         turns,
-        most_input_credit: host.streams.most_input_credit,
-        sent_within_credit: host.streams.sent_within_credit,
-        sends_past_credit: host.streams.sends_past_credit,
-        broken: host.streams.broken,
+        most_input_credit: streams.most_input_credit,
+        sent_within_credit: streams.sent_within_credit,
+        sends_past_credit: streams.sends_past_credit,
+        broken: streams.broken,
         outputs_closed,
         input_closed,
     };
@@ -724,6 +733,11 @@ pub fn run_prepared(
 }
 
 impl TestHost {
+    /// The file backend, for a container with a volume.
+    pub(crate) fn backend(&mut self) -> &mut Option<crate::backend::Backend> {
+        held(&mut self.backend)
+    }
+
     fn injecting(&mut self) -> &mut Injecting {
         self.injecting.as_mut().expect("a driven run")
     }
@@ -734,7 +748,7 @@ impl Outside for TestHost {
     type End = Run;
 
     fn standard(&self) -> Standard {
-        self.streams.outside.standard()
+        lock(&self.streams).outside.standard()
     }
 
     fn started(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
@@ -748,7 +762,7 @@ impl Outside for TestHost {
         // An answer owed arrives during the turn, at a moment drawn from the seed: the host raises
         // the running thread's stop flag then, as the boundary says.
         if self
-            .backend
+            .backend()
             .as_ref()
             .is_some_and(|backend| backend.waiting())
         {
@@ -768,8 +782,8 @@ impl Outside for TestHost {
         let picoseconds = self.schedule.random_range(500..1500);
         let kernel = self.schedule.random_range(500..1500);
         if let Some(now) = &mut self.virtual_now {
-            *now += progress.saturating_mul(picoseconds) / 1000;
-            self.kernel_work = kernel;
+            *now.get_mut() += progress.saturating_mul(picoseconds) / 1000;
+            *self.kernel_work.get_mut() = kernel;
         }
     }
 
@@ -784,7 +798,7 @@ impl Outside for TestHost {
         streams::act(kernel, cpu, self, false);
         // The backend's answers arrive at moments and in an order drawn from the seed.
         while self
-            .backend
+            .backend()
             .as_ref()
             .is_some_and(|backend| backend.waiting())
             && self.schedule.random_bool(0.5)
@@ -834,7 +848,7 @@ impl Outside for TestHost {
                     copy => {
                         libc::close(ends[1]);
                         // The copy alone holds the network from here on.
-                        drop(std::mem::take(&mut self.network));
+                        drop(std::mem::take(held(&mut self.network)));
                         let report = self.injecting().report;
                         return ControlFlow::Break(finish(copied_run(copy, ends[0]), report));
                     }
@@ -852,7 +866,7 @@ impl Outside for TestHost {
     fn idle(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu, until_nanoseconds: Option<u64>) {
         // An answer owed comes before any time passes.
         if self
-            .backend
+            .backend()
             .as_ref()
             .is_some_and(|backend| backend.waiting())
         {
@@ -861,7 +875,7 @@ impl Outside for TestHost {
         }
         // The outside answers in real time: a wait for it goes on as long as the kernel's next
         // timer, and at most ten seconds.
-        if self.network.waiting() {
+        if held(&mut self.network).waiting() {
             let now = self.monotonic_nanoseconds();
             let wait = until_nanoseconds.map_or(NETWORK_PATIENCE, |until| {
                 Duration::from_nanos(until.saturating_sub(now)).min(NETWORK_PATIENCE)
@@ -874,12 +888,13 @@ impl Outside for TestHost {
             return;
         }
         let Some(until) = until_nanoseconds else {
+            let streams = self.streams();
             panic!(
                 "the kernel is idle with nothing to wake it, and this host has no events \
                  (the outside waits at {:?}); output so far:\n{}{}",
-                self.streams.stuck_at(),
-                String::from_utf8_lossy(&self.streams.stdout),
-                String::from_utf8_lossy(&self.streams.stderr)
+                streams.stuck_at(),
+                String::from_utf8_lossy(&streams.stdout),
+                String::from_utf8_lossy(&streams.stderr)
             );
         };
         let now = self.monotonic_nanoseconds();
@@ -919,10 +934,10 @@ fn network_events(
     host: &mut TestHost,
     wait: Duration,
 ) -> bool {
-    if !host.network.waiting() {
+    if !held(&mut host.network).waiting() {
         return false;
     }
-    let owed = host.network.take(wait);
+    let owed = held(&mut host.network).take(wait);
     for event in &owed {
         event.with(|event| kernel.event(cpu, host, event));
     }
@@ -1028,8 +1043,7 @@ pub(crate) fn deliver(
     cpu: &mut dyn wcontainers_abi::Cpu,
     host: &mut TestHost,
 ) {
-    let Some(message) = host
-        .backend
+    let Some(message) = held(&mut host.backend)
         .as_mut()
         .and_then(|backend| backend.next(&mut host.schedule))
     else {

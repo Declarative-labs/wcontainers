@@ -61,7 +61,7 @@ use process::{Pid, Process, Thread, Tid};
 /// What a call into the kernel may use besides the kernel's own state.
 pub(crate) struct Context<'a> {
     pub cpu: &'a mut dyn Cpu,
-    pub host: &'a mut dyn Host,
+    pub host: &'a dyn Host,
     /// What is added to the host's monotonic clock to give the kernel's (see
     /// [`Kernel::restore`]).
     monotonic_offset: u64,
@@ -366,7 +366,7 @@ impl Kernel {
     }
 
     /// The thread from the last [`Next::Run`] has come back.
-    pub fn exit(&mut self, cpu: &mut dyn Cpu, host: &mut dyn Host, exit: Exit) {
+    pub fn exit(&mut self, cpu: &mut dyn Cpu, host: &dyn Host, exit: Exit) {
         let tid = self
             .running
             .take()
@@ -402,7 +402,7 @@ impl Kernel {
     }
 
     /// Something happened outside.
-    pub fn event(&mut self, cpu: &mut dyn Cpu, host: &mut dyn Host, event: Event<'_>) {
+    pub fn event(&mut self, cpu: &mut dyn Cpu, host: &dyn Host, event: Event<'_>) {
         let mut cx = Context {
             cpu,
             host,
@@ -478,7 +478,7 @@ impl Kernel {
     /// Sends a signal to the container's first process from outside the container, as `docker
     /// kill` does: from no process the container can see, and SIGKILL ends it even though Linux keeps
     /// other signals with no handler from that process.
-    pub fn kill(&mut self, cpu: &mut dyn Cpu, host: &mut dyn Host, signal: u32) {
+    pub fn kill(&mut self, cpu: &mut dyn Cpu, host: &dyn Host, signal: u32) {
         assert!(self.running.is_none(), "a signal sent while a thread runs");
         let mut cx = Context {
             cpu,
@@ -503,7 +503,7 @@ impl Kernel {
     /// anything: the kernel's monotonic clock goes on from where it was saved, every thread starts
     /// again from its saved registers, and every parked call runs again, its deadline on the clock
     /// it had.
-    pub fn restore(&mut self, cpu: &mut dyn Cpu, host: &mut dyn Host) {
+    pub fn restore(&mut self, cpu: &mut dyn Cpu, host: &dyn Host) {
         assert!(self.running.is_none(), "restored while a thread runs");
         self.monotonic_offset = self.last_now.wrapping_sub(host.monotonic_nanoseconds());
         let mut cx = Context {

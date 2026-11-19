@@ -715,7 +715,7 @@ impl Kernel {
     /// process. With the root on the backend this waits for the backend's answers like any call,
     /// so it may still be going on when this returns; a start that fails ends the container, and
     /// [`Kernel::start_failure`] says why.
-    pub fn start(&mut self, cpu: &mut dyn Cpu, host: &mut dyn Host, start: &Start<'_>) {
+    pub fn start(&mut self, cpu: &mut dyn Cpu, host: &dyn Host, start: &Start<'_>) {
         assert!(self.init.is_none(), "the container has already started");
         let mut cx = Context {
             cpu,

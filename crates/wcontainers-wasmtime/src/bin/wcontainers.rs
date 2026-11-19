@@ -89,7 +89,7 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
     }
     for Warned {
         reason, count, cpu, ..
-    } in container.outside().warnings()
+    } in container.outside().warnings().iter()
     {
         let side = if *cpu { "back end" } else { "kernel" };
         eprintln!("wcontainers: {side}: {reason}: {count}");
