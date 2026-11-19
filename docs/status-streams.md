@@ -198,6 +198,14 @@ Found on the way, fixed:
   "vpnkit-data.sock: connection reset by peer" with port forwards of other projects open) and
   everything after failed at `docker create`. Both stops came while python tests of this track and
   of the kernel track were running; whether those contribute is not known.
+- Second rerun (fourth run, the same tree as 565881d2, scratch streams/s2b/rerun-2.log, this Mac,
+  04:59 to 05:42; load 6 at the start, 73 when python began at 05:03, 39 at the end): the 34 test
+  binaries passed (90 tests), then python alone (3 tests, 2323 s). With the first rerun and the
+  suite's earlier tests (`cat s2b/suite.log s2b/rerun.log s2b/rerun-2.log`, later verdicts winning):
+  585 passed, 0 failed, 6 ignored. `streams/verdicts.py s2/suite.log s2b/combined.log`: every test
+  has the verdict it had at 0c569e7d but `busybox::system`, failed there (the minute flake above)
+  and passing now; new and passing: the three embedder tests and two `system::tests` unit tests
+  added since. The whole suite's verdicts with no hook implemented are unchanged.
 - Speed with no hook implemented: tests/shell.rs `runs_repeat_for_a_seed` (ours only, four
   background jobs of `seq 1 3000 | wc -l`, run at several seeds), its own test binary built at
   59056384 (before S2, in a scratch worktree, since removed) and at 0c569e7d, run alternately
