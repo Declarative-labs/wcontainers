@@ -14,7 +14,7 @@
 // it again.
 import { writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { serve, launch } from './chrome.mjs';
+import { serve, launch, NoAdapter, exitCode, ADAPTER_TRIES, ADAPTER_WAIT_MS } from './chrome.mjs';
 
 const [pkg, out, ...given] = process.argv.slice(2);
 if (!out) throw new Error('usage: node draw.mjs <pkg-dir> <out-dir> [twist...]');
@@ -22,7 +22,6 @@ const twists = given.length ? given : ['none'];
 const scenes = ['triangle', 'quads', 'instanced', 'quads-d24s8'];
 const server = await serve(pkg);
 const browser = await launch();
-class NoAdapter extends Error {}
 let failed = false;
 let noAdapter = false;
 try {
@@ -32,9 +31,9 @@ try {
   await page.goto(`http://127.0.0.1:${server.address().port}/scenes.html`);
   // An adapter request just after Chrome starts can fail while its GPU process comes up.
   let info;
-  for (let attempt = 1; !info && attempt <= 10; attempt++) {
+  for (let attempt = 1; !info && attempt <= ADAPTER_TRIES; attempt++) {
     info = await page.evaluate(() => window.adapterInfo()).catch(() => null);
-    if (!info) await page.waitForTimeout(200);
+    if (!info) await page.waitForTimeout(ADAPTER_WAIT_MS);
   }
   if (!info) throw new NoAdapter('no WebGPU adapter');
   console.log(`webgpu adapter: ${JSON.stringify(info)}`);
@@ -160,4 +159,4 @@ try {
   await browser.close();
   server.close();
 }
-process.exitCode = noAdapter && process.env.NO_ADAPTER ? Number(process.env.NO_ADAPTER) : failed ? 1 : 0;
+process.exitCode = exitCode(noAdapter, failed);

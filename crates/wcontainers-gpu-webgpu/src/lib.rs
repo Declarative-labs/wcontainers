@@ -755,7 +755,8 @@ fn caps(
         | Features::SEPARATE_SAMPLERS
         | Features::CLIP_DEPTH_ZERO_ONE
         | Features::DEPTH_BIAS_CLAMP
-        | Features::TEXTURE_LEVEL_QUERY;
+        | Features::TEXTURE_LEVEL_QUERY
+        | Features::FINE_DERIVATIVES;
     for (wgpu_feature, ours) in [
         (wgpu::Features::DEPTH_CLIP_CONTROL, Features::DEPTH_CLAMP),
         (wgpu::Features::CLIP_DISTANCES, Features::CLIP_DISTANCE),

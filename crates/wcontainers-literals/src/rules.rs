@@ -1,7 +1,7 @@
 //! The versions of the rules, one entry each saying what that version gates beyond the one before. The
-//! baseline may gain lines only at a change where this list is longer than at the baseline's previous
-//! change, and only for literals that were already in the tree (see the history module). Every change of
-//! the rules that finds more appends an entry here.
+//! baseline may gain lines only at a change where this list is longer than at its first parent, or right
+//! after a merge that made it longer, and only for literals that were already in the tree (see the
+//! history module). Every change of the rules that finds more appends an entry here.
 
 pub const RULES: &[&str] = &[
     "the rule of docs/literals.md as the literals track's milestone L1 left it",
@@ -10,6 +10,7 @@ pub const RULES: &[&str] = &[
     "a test that writes a named value inside a constant of its own, whatever the constant is called",
     "a test's constant with the name and value of a constant elsewhere (generated, downstream or in an unrelated crate) is a redefinition reported on the test's copy, never on the other",
     "a test's constant that no redefinition reports, such as an associated constant named like an associated constant of another type, is gated on its value like any test literal; a C string's text",
+    "a test's constant is a redefinition only when that very constant is the copy, not another of the same item path; code never evaluates a name to a test's constant; the baseline may gain lines only at the change that brings a new version, or the one right after the merge that brings it",
 ];
 
 /// This file, relative to the workspace root when Cargo builds it there.

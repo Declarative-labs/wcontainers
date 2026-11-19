@@ -1,5 +1,5 @@
 // The rig's pinned Chrome and a local server for this directory's pages and wasm-bindgen's output,
-// shared by draw.mjs and suite.mjs. Uses the rig's page-driver packages (tools/graphics-rig/browser,
+// shared by draw.mjs, suite.mjs and plain.mjs. Uses the rig's page-driver packages (tools/graphics-rig/browser,
 // installed by its install.ps1).
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -29,6 +29,29 @@ export async function serve(pkg) {
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   return server;
+}
+
+// Thrown where Chrome gave no WebGPU adapter at all: the script then exits with the environment's
+// NO_ADAPTER, and check.cmd launches it again.
+export class NoAdapter extends Error {}
+
+// A page script's exit code: NO_ADAPTER where Chrome gave no adapter, else 1 if a check failed.
+export function exitCode(noAdapter, failed) {
+  return noAdapter && process.env.NO_ADAPTER ? Number(process.env.NO_ADAPTER) : failed ? 1 : 0;
+}
+
+// How often, and how many milliseconds apart, a page asks for an adapter before giving up.
+export const ADAPTER_TRIES = 10;
+export const ADAPTER_WAIT_MS = 200;
+
+// Waits for Chrome's GPU process on `page` (an adapter request just after Chrome starts can fail
+// while it comes up); throws NoAdapter if no adapter comes.
+export async function adapter(page) {
+  for (let attempt = 1; attempt <= ADAPTER_TRIES; attempt++) {
+    if (await page.evaluate(async () => (await navigator.gpu.requestAdapter()) !== null).catch(() => false)) return;
+    await page.waitForTimeout(ADAPTER_WAIT_MS);
+  }
+  throw new NoAdapter('no WebGPU adapter');
 }
 
 // The rig's Chrome, headless. The developer features flag adds the backend, adapter type and full

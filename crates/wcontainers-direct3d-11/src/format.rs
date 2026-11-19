@@ -3,28 +3,21 @@
 use wcontainers_gpu::{Format, IndexFormat, ScalarKind, VertexFormat};
 
 use crate::error::{Error, Result, not_implemented};
+use wcontainers_directx_graphics_infrastructure::{dxgi, dxgi_vertex_format};
 
-/// `DXGI_FORMAT_UNKNOWN`.
-pub const UNKNOWN: u32 = 0;
-pub const R16_UINT: u32 = 57;
-pub const R32_UINT: u32 = 42;
-/// `DXGI_FORMAT_NV12`: a plane of 8-bit luma, then a plane of interleaved chroma pairs at half
-/// the width and height, held as two textures (`Texture::chroma`).
-pub const NV12: u32 = 103;
-/// `DXGI_FORMAT_YUY2`: a pair of pixels in four bytes (Y0 U Y1 V), held as an `rgba8unorm`
-/// texture of half the width, viewed through `R8G8B8A8_UNORM` and `_UINT`.
-pub const YUY2: u32 = 107;
-/// `DXGI_FORMAT_R8G8_TYPELESS`, the group NV12's chroma plane is viewed through.
-pub const R8G8_TYPELESS: u32 = 48;
-/// `DXGI_FORMAT_R8_TYPELESS`, the group NV12's luma plane is viewed through.
-pub const R8_TYPELESS: u32 = 60;
+/// The DXGI formats the front names elsewhere. NV12 (a plane of 8-bit luma, then a plane of
+/// interleaved chroma pairs at half the width and height) is held as two textures
+/// (`Texture::chroma`), its planes viewed through the R8_TYPELESS and R8G8_TYPELESS groups; YUY2
+/// (a pair of pixels in four bytes, Y0 U Y1 V) as an `rgba8unorm` texture of half the width,
+/// viewed through `R8G8B8A8_UNORM` and `_UINT`.
+pub use dxgi::{NV12, R8_TYPELESS, R8G8_TYPELESS, R16_UINT, R32_UINT, UNKNOWN, YUY2};
 
 /// The plane of an NV12 texture a view of DXGI format `view` names (0 luma, 1 chroma), or none
 /// for a format no view of NV12 takes.
 pub fn nv12_plane(view: u32) -> Option<usize> {
     match view {
-        61 | 62 => Some(0),
-        49 | 50 => Some(1),
+        dxgi::R8_UNORM | dxgi::R8_UINT => Some(0),
+        dxgi::R8G8_UNORM | dxgi::R8G8_UINT => Some(1),
         _ => None,
     }
 }
@@ -49,8 +42,9 @@ pub fn texture_format_of(dxgi: u32) -> Result<Format> {
 
 /// Not served for a defined DXGI format, invalid for others.
 fn unserved<T>(dxgi: u32) -> Result<T> {
-    // Defined DXGI formats: 1 to 132, the sampler feedback formats 189 and 190, and 191.
-    if matches!(dxgi, 1..=132 | 189..=191) {
+    // Defined DXGI formats: up to V408, the sampler feedback formats 189 and 190, and 191 (the
+    // infrastructure crate's table does not name the last three).
+    if matches!(dxgi, dxgi::R32G32B32A32_TYPELESS..=dxgi::V408 | 189..=191) {
         not_implemented("a DXGI format this front does not serve")
     } else {
         Err(Error::InvalidArg("unknown format"))
@@ -64,30 +58,30 @@ fn unserved<T>(dxgi: u32) -> Result<T> {
 pub fn storage_format(dxgi: u32, depth_bound: bool) -> Result<Format> {
     use Format::*;
     let typeless = match (dxgi, depth_bound) {
-        (1, _) => Rgba32Float,
-        (5, _) => Rgb32Float,
-        (9, _) => Rgba16Float,
-        (15, _) => Rg32Float,
-        (19, _) => Depth32FloatStencil8,
-        (23, _) => Rgb10a2Unorm,
-        (27, _) => Rgba8Unorm,
-        (33, _) => Rg16Float,
-        (39, true) => Depth32Float,
-        (39, false) => R32Float,
-        (44, _) => Depth24PlusStencil8,
-        (48, _) => Rg8Unorm,
-        (53, true) => Depth16Unorm,
-        (53, false) => R16Float,
-        (60, _) => R8Unorm,
-        (70, _) => Bc1RgbaUnorm,
-        (73, _) => Bc2RgbaUnorm,
-        (76, _) => Bc3RgbaUnorm,
-        (79, _) => Bc4RUnorm,
-        (82, _) => Bc5RgUnorm,
-        (90, _) => Bgra8Unorm,
-        (92, _) => Bgrx8Unorm,
-        (94, _) => Bc6hRgbUfloat,
-        (97, _) => Bc7RgbaUnorm,
+        (dxgi::R32G32B32A32_TYPELESS, _) => Rgba32Float,
+        (dxgi::R32G32B32_TYPELESS, _) => Rgb32Float,
+        (dxgi::R16G16B16A16_TYPELESS, _) => Rgba16Float,
+        (dxgi::R32G32_TYPELESS, _) => Rg32Float,
+        (dxgi::R32G8X24_TYPELESS, _) => Depth32FloatStencil8,
+        (dxgi::R10G10B10A2_TYPELESS, _) => Rgb10a2Unorm,
+        (dxgi::R8G8B8A8_TYPELESS, _) => Rgba8Unorm,
+        (dxgi::R16G16_TYPELESS, _) => Rg16Float,
+        (dxgi::R32_TYPELESS, true) => Depth32Float,
+        (dxgi::R32_TYPELESS, false) => R32Float,
+        (dxgi::R24G8_TYPELESS, _) => Depth24PlusStencil8,
+        (dxgi::R8G8_TYPELESS, _) => Rg8Unorm,
+        (dxgi::R16_TYPELESS, true) => Depth16Unorm,
+        (dxgi::R16_TYPELESS, false) => R16Float,
+        (dxgi::R8_TYPELESS, _) => R8Unorm,
+        (dxgi::BC1_TYPELESS, _) => Bc1RgbaUnorm,
+        (dxgi::BC2_TYPELESS, _) => Bc2RgbaUnorm,
+        (dxgi::BC3_TYPELESS, _) => Bc3RgbaUnorm,
+        (dxgi::BC4_TYPELESS, _) => Bc4RUnorm,
+        (dxgi::BC5_TYPELESS, _) => Bc5RgUnorm,
+        (dxgi::B8G8R8A8_TYPELESS, _) => Bgra8Unorm,
+        (dxgi::B8G8R8X8_TYPELESS, _) => Bgrx8Unorm,
+        (dxgi::BC6H_TYPELESS, _) => Bc6hRgbUfloat,
+        (dxgi::BC7_TYPELESS, _) => Bc7RgbaUnorm,
         // The luma plane; the chroma plane is a texture of its own.
         (NV12, _) => R8Unorm,
         (YUY2, _) => Rgba8Unorm,
@@ -109,8 +103,8 @@ pub fn view_format(view: u32, texture: u32, storage: Format) -> Result<(Format, 
     }
     if texture == YUY2 {
         return match view {
-            28 => Ok((Rgba8Unorm, false)),
-            30 => Ok((Rgba8Uint, false)),
+            dxgi::R8G8B8A8_UNORM => Ok((Rgba8Unorm, false)),
+            dxgi::R8G8B8A8_UINT => Ok((Rgba8Uint, false)),
             _ => Err(Error::InvalidArg(
                 "a view of a YUY2 texture is R8G8B8A8_UNORM or _UINT",
             )),
@@ -122,11 +116,14 @@ pub fn view_format(view: u32, texture: u32, storage: Format) -> Result<(Format, 
         ));
     }
     let aspect = match (storage, view) {
-        (Depth32FloatStencil8, 20 | 21) => Some(false),
-        (Depth32FloatStencil8, 22) => Some(true),
-        (Depth32Float, 40 | 41) | (Depth16Unorm, 55 | 56) => Some(false),
-        (Depth24PlusStencil8, 45 | 46) => Some(false),
-        (Depth24PlusStencil8, 47) => Some(true),
+        (Depth32FloatStencil8, dxgi::D32_FLOAT_S8X24_UINT | dxgi::R32_FLOAT_X8X24_TYPELESS) => {
+            Some(false)
+        }
+        (Depth32FloatStencil8, dxgi::X32_TYPELESS_G8X24_UINT) => Some(true),
+        (Depth32Float, dxgi::D32_FLOAT | dxgi::R32_FLOAT)
+        | (Depth16Unorm, dxgi::D16_UNORM | dxgi::R16_UNORM) => Some(false),
+        (Depth24PlusStencil8, dxgi::D24_UNORM_S8_UINT | dxgi::R24_UNORM_X8_TYPELESS) => Some(false),
+        (Depth24PlusStencil8, dxgi::X24_TYPELESS_G8_UINT) => Some(true),
         _ => None,
     };
     if let Some(stencil) = aspect {
@@ -145,12 +142,12 @@ pub fn reinterprets(format: Format, storage: Format) -> bool {
 /// The sRGB format of a linear one, or the linear one of an sRGB one, where the pair exists.
 pub fn srgb_twin(dxgi: u32) -> Option<u32> {
     match dxgi {
-        28 => Some(29),
-        29 => Some(28),
-        87 => Some(91),
-        91 => Some(87),
-        88 => Some(93),
-        93 => Some(88),
+        dxgi::R8G8B8A8_UNORM => Some(dxgi::R8G8B8A8_UNORM_SRGB),
+        dxgi::R8G8B8A8_UNORM_SRGB => Some(dxgi::R8G8B8A8_UNORM),
+        dxgi::B8G8R8A8_UNORM => Some(dxgi::B8G8R8A8_UNORM_SRGB),
+        dxgi::B8G8R8A8_UNORM_SRGB => Some(dxgi::B8G8R8A8_UNORM),
+        dxgi::B8G8R8X8_UNORM => Some(dxgi::B8G8R8X8_UNORM_SRGB),
+        dxgi::B8G8R8X8_UNORM_SRGB => Some(dxgi::B8G8R8X8_UNORM),
         _ => None,
     }
 }
@@ -159,27 +156,28 @@ pub fn srgb_twin(dxgi: u32) -> Option<u32> {
 pub fn is_typeless(dxgi: u32) -> bool {
     matches!(
         dxgi,
-        1 | 5
-            | 9
-            | 15
-            | 19
-            | 23
-            | 27
-            | 33
-            | 39
-            | 44
-            | 48
-            | 53
-            | 60
-            | 70
-            | 73
-            | 76
-            | 79
-            | 82
-            | 90
-            | 92
-            | 94
-            | 97
+        dxgi::R32G32B32A32_TYPELESS
+            | dxgi::R32G32B32_TYPELESS
+            | dxgi::R16G16B16A16_TYPELESS
+            | dxgi::R32G32_TYPELESS
+            | dxgi::R32G8X24_TYPELESS
+            | dxgi::R10G10B10A2_TYPELESS
+            | dxgi::R8G8B8A8_TYPELESS
+            | dxgi::R16G16_TYPELESS
+            | dxgi::R32_TYPELESS
+            | dxgi::R24G8_TYPELESS
+            | dxgi::R8G8_TYPELESS
+            | dxgi::R16_TYPELESS
+            | dxgi::R8_TYPELESS
+            | dxgi::BC1_TYPELESS
+            | dxgi::BC2_TYPELESS
+            | dxgi::BC3_TYPELESS
+            | dxgi::BC4_TYPELESS
+            | dxgi::BC5_TYPELESS
+            | dxgi::B8G8R8A8_TYPELESS
+            | dxgi::B8G8R8X8_TYPELESS
+            | dxgi::BC6H_TYPELESS
+            | dxgi::BC7_TYPELESS
     )
 }
 
@@ -187,98 +185,110 @@ pub fn is_typeless(dxgi: u32) -> bool {
 /// whatever the device: the depth-stencil groups with stencil hold no colour target or storage,
 /// and shared-exponent, two-pixel and block-compressed formats are only read.
 pub fn never_target_or_storage(dxgi: u32) -> bool {
-    matches!(dxgi, 19..=22 | 44..=47 | 67..=84 | 94..=99)
+    matches!(dxgi, dxgi::R32G8X24_TYPELESS..=dxgi::X32_TYPELESS_G8X24_UINT | dxgi::R24G8_TYPELESS..=dxgi::X24_TYPELESS_G8_UINT | dxgi::R9G9B9E5_SHAREDEXP..=dxgi::BC5_SNORM | dxgi::BC6H_TYPELESS..=dxgi::BC7_UNORM_SRGB)
 }
 
 /// Whether `dxgi` is an sRGB format: never viewed for unordered access, so a texture of one bound
 /// for it holds no storage.
 pub fn is_srgb(dxgi: u32) -> bool {
-    matches!(dxgi, 29 | 72 | 75 | 78 | 91 | 93 | 99)
+    matches!(
+        dxgi,
+        dxgi::R8G8B8A8_UNORM_SRGB
+            | dxgi::BC1_UNORM_SRGB
+            | dxgi::BC2_UNORM_SRGB
+            | dxgi::BC3_UNORM_SRGB
+            | dxgi::B8G8R8A8_UNORM_SRGB
+            | dxgi::B8G8R8X8_UNORM_SRGB
+            | dxgi::BC7_UNORM_SRGB
+    )
 }
 
 /// Whether `dxgi` is a typed depth format (`D32_FLOAT_S8X24_UINT`, `D32_FLOAT`,
 /// `D24_UNORM_S8_UINT`, `D16_UNORM`): such a texture is bound only for depth, and read through a
 /// typeless one.
 pub fn depth_only(dxgi: u32) -> bool {
-    matches!(dxgi, 20 | 40 | 45 | 55)
+    matches!(
+        dxgi,
+        dxgi::D32_FLOAT_S8X24_UINT | dxgi::D32_FLOAT | dxgi::D24_UNORM_S8_UINT | dxgi::D16_UNORM
+    )
 }
 
 /// The interface format a DXGI format is stored as, for the typed formats this front serves.
 pub fn texture_format(dxgi: u32) -> Option<Format> {
     use Format::*;
     Some(match dxgi {
-        2 => Rgba32Float,
-        3 => Rgba32Uint,
-        4 => Rgba32Sint,
-        6 => Rgb32Float,
-        7 => Rgb32Uint,
-        8 => Rgb32Sint,
-        10 => Rgba16Float,
-        11 => Rgba16Unorm,
-        12 => Rgba16Uint,
-        13 => Rgba16Snorm,
-        14 => Rgba16Sint,
-        16 => Rg32Float,
-        17 => Rg32Uint,
-        18 => Rg32Sint,
-        20 => Depth32FloatStencil8,
-        24 => Rgb10a2Unorm,
-        25 => Rgb10a2Uint,
-        26 => Rg11b10Float,
-        28 => Rgba8Unorm,
-        29 => Rgba8UnormSrgb,
-        30 => Rgba8Uint,
-        31 => Rgba8Snorm,
-        32 => Rgba8Sint,
-        34 => Rg16Float,
-        35 => Rg16Unorm,
-        36 => Rg16Uint,
-        37 => Rg16Snorm,
-        38 => Rg16Sint,
-        40 => Depth32Float,
-        41 => R32Float,
-        42 => R32Uint,
-        43 => R32Sint,
-        45 => Depth24PlusStencil8,
-        49 => Rg8Unorm,
-        50 => Rg8Uint,
-        51 => Rg8Snorm,
-        52 => Rg8Sint,
-        54 => R16Float,
-        55 => Depth16Unorm,
-        56 => R16Unorm,
-        57 => R16Uint,
-        58 => R16Snorm,
-        59 => R16Sint,
-        61 => R8Unorm,
-        62 => R8Uint,
-        63 => R8Snorm,
-        64 => R8Sint,
-        65 => A8Unorm,
-        67 => Rgb9e5Float,
-        68 => Rgbg8Unorm,
-        69 => Grgb8Unorm,
-        71 => Bc1RgbaUnorm,
-        72 => Bc1RgbaUnormSrgb,
-        74 => Bc2RgbaUnorm,
-        75 => Bc2RgbaUnormSrgb,
-        77 => Bc3RgbaUnorm,
-        78 => Bc3RgbaUnormSrgb,
-        80 => Bc4RUnorm,
-        81 => Bc4RSnorm,
-        83 => Bc5RgUnorm,
-        84 => Bc5RgSnorm,
-        85 => B5g6r5Unorm,
-        86 => Bgr5a1Unorm,
-        87 => Bgra8Unorm,
-        88 => Bgrx8Unorm,
-        91 => Bgra8UnormSrgb,
-        93 => Bgrx8UnormSrgb,
-        95 => Bc6hRgbUfloat,
-        96 => Bc6hRgbFloat,
-        98 => Bc7RgbaUnorm,
-        99 => Bc7RgbaUnormSrgb,
-        115 => Bgra4Unorm,
+        dxgi::R32G32B32A32_FLOAT => Rgba32Float,
+        dxgi::R32G32B32A32_UINT => Rgba32Uint,
+        dxgi::R32G32B32A32_SINT => Rgba32Sint,
+        dxgi::R32G32B32_FLOAT => Rgb32Float,
+        dxgi::R32G32B32_UINT => Rgb32Uint,
+        dxgi::R32G32B32_SINT => Rgb32Sint,
+        dxgi::R16G16B16A16_FLOAT => Rgba16Float,
+        dxgi::R16G16B16A16_UNORM => Rgba16Unorm,
+        dxgi::R16G16B16A16_UINT => Rgba16Uint,
+        dxgi::R16G16B16A16_SNORM => Rgba16Snorm,
+        dxgi::R16G16B16A16_SINT => Rgba16Sint,
+        dxgi::R32G32_FLOAT => Rg32Float,
+        dxgi::R32G32_UINT => Rg32Uint,
+        dxgi::R32G32_SINT => Rg32Sint,
+        dxgi::D32_FLOAT_S8X24_UINT => Depth32FloatStencil8,
+        dxgi::R10G10B10A2_UNORM => Rgb10a2Unorm,
+        dxgi::R10G10B10A2_UINT => Rgb10a2Uint,
+        dxgi::R11G11B10_FLOAT => Rg11b10Float,
+        dxgi::R8G8B8A8_UNORM => Rgba8Unorm,
+        dxgi::R8G8B8A8_UNORM_SRGB => Rgba8UnormSrgb,
+        dxgi::R8G8B8A8_UINT => Rgba8Uint,
+        dxgi::R8G8B8A8_SNORM => Rgba8Snorm,
+        dxgi::R8G8B8A8_SINT => Rgba8Sint,
+        dxgi::R16G16_FLOAT => Rg16Float,
+        dxgi::R16G16_UNORM => Rg16Unorm,
+        dxgi::R16G16_UINT => Rg16Uint,
+        dxgi::R16G16_SNORM => Rg16Snorm,
+        dxgi::R16G16_SINT => Rg16Sint,
+        dxgi::D32_FLOAT => Depth32Float,
+        dxgi::R32_FLOAT => R32Float,
+        dxgi::R32_UINT => R32Uint,
+        dxgi::R32_SINT => R32Sint,
+        dxgi::D24_UNORM_S8_UINT => Depth24PlusStencil8,
+        dxgi::R8G8_UNORM => Rg8Unorm,
+        dxgi::R8G8_UINT => Rg8Uint,
+        dxgi::R8G8_SNORM => Rg8Snorm,
+        dxgi::R8G8_SINT => Rg8Sint,
+        dxgi::R16_FLOAT => R16Float,
+        dxgi::D16_UNORM => Depth16Unorm,
+        dxgi::R16_UNORM => R16Unorm,
+        dxgi::R16_UINT => R16Uint,
+        dxgi::R16_SNORM => R16Snorm,
+        dxgi::R16_SINT => R16Sint,
+        dxgi::R8_UNORM => R8Unorm,
+        dxgi::R8_UINT => R8Uint,
+        dxgi::R8_SNORM => R8Snorm,
+        dxgi::R8_SINT => R8Sint,
+        dxgi::A8_UNORM => A8Unorm,
+        dxgi::R9G9B9E5_SHAREDEXP => Rgb9e5Float,
+        dxgi::R8G8_B8G8_UNORM => Rgbg8Unorm,
+        dxgi::G8R8_G8B8_UNORM => Grgb8Unorm,
+        dxgi::BC1_UNORM => Bc1RgbaUnorm,
+        dxgi::BC1_UNORM_SRGB => Bc1RgbaUnormSrgb,
+        dxgi::BC2_UNORM => Bc2RgbaUnorm,
+        dxgi::BC2_UNORM_SRGB => Bc2RgbaUnormSrgb,
+        dxgi::BC3_UNORM => Bc3RgbaUnorm,
+        dxgi::BC3_UNORM_SRGB => Bc3RgbaUnormSrgb,
+        dxgi::BC4_UNORM => Bc4RUnorm,
+        dxgi::BC4_SNORM => Bc4RSnorm,
+        dxgi::BC5_UNORM => Bc5RgUnorm,
+        dxgi::BC5_SNORM => Bc5RgSnorm,
+        dxgi::B5G6R5_UNORM => B5g6r5Unorm,
+        dxgi::B5G5R5A1_UNORM => Bgr5a1Unorm,
+        dxgi::B8G8R8A8_UNORM => Bgra8Unorm,
+        dxgi::B8G8R8X8_UNORM => Bgrx8Unorm,
+        dxgi::B8G8R8A8_UNORM_SRGB => Bgra8UnormSrgb,
+        dxgi::B8G8R8X8_UNORM_SRGB => Bgrx8UnormSrgb,
+        dxgi::BC6H_UF16 => Bc6hRgbUfloat,
+        dxgi::BC6H_SF16 => Bc6hRgbFloat,
+        dxgi::BC7_UNORM => Bc7RgbaUnorm,
+        dxgi::BC7_UNORM_SRGB => Bc7RgbaUnormSrgb,
+        dxgi::B4G4R4A4_UNORM => Bgra4Unorm,
         _ => return None,
     })
 }
@@ -287,28 +297,32 @@ pub fn texture_format(dxgi: u32) -> Option<Format> {
 /// itself for a format in no group.
 pub fn typeless_group(dxgi: u32) -> u32 {
     match dxgi {
-        1..=4 => 1,
-        5..=8 => 5,
-        9..=14 => 9,
-        15..=18 => 15,
-        19..=22 => 19,
-        23..=25 => 23,
-        27..=32 => 27,
-        33..=38 => 33,
-        39..=43 => 39,
-        44..=47 => 44,
-        48..=52 => 48,
-        53..=59 => 53,
-        60..=64 => 60,
-        70..=72 => 70,
-        73..=75 => 73,
-        76..=78 => 76,
-        79..=81 => 79,
-        82..=84 => 82,
-        87 | 90 | 91 => 90,
-        88 | 92 | 93 => 92,
-        94..=96 => 94,
-        97..=99 => 97,
+        dxgi::R32G32B32A32_TYPELESS..=dxgi::R32G32B32A32_SINT => dxgi::R32G32B32A32_TYPELESS,
+        dxgi::R32G32B32_TYPELESS..=dxgi::R32G32B32_SINT => dxgi::R32G32B32_TYPELESS,
+        dxgi::R16G16B16A16_TYPELESS..=dxgi::R16G16B16A16_SINT => dxgi::R16G16B16A16_TYPELESS,
+        dxgi::R32G32_TYPELESS..=dxgi::R32G32_SINT => dxgi::R32G32_TYPELESS,
+        dxgi::R32G8X24_TYPELESS..=dxgi::X32_TYPELESS_G8X24_UINT => dxgi::R32G8X24_TYPELESS,
+        dxgi::R10G10B10A2_TYPELESS..=dxgi::R10G10B10A2_UINT => dxgi::R10G10B10A2_TYPELESS,
+        dxgi::R8G8B8A8_TYPELESS..=dxgi::R8G8B8A8_SINT => dxgi::R8G8B8A8_TYPELESS,
+        dxgi::R16G16_TYPELESS..=dxgi::R16G16_SINT => dxgi::R16G16_TYPELESS,
+        dxgi::R32_TYPELESS..=dxgi::R32_SINT => dxgi::R32_TYPELESS,
+        dxgi::R24G8_TYPELESS..=dxgi::X24_TYPELESS_G8_UINT => dxgi::R24G8_TYPELESS,
+        dxgi::R8G8_TYPELESS..=dxgi::R8G8_SINT => dxgi::R8G8_TYPELESS,
+        dxgi::R16_TYPELESS..=dxgi::R16_SINT => dxgi::R16_TYPELESS,
+        dxgi::R8_TYPELESS..=dxgi::R8_SINT => dxgi::R8_TYPELESS,
+        dxgi::BC1_TYPELESS..=dxgi::BC1_UNORM_SRGB => dxgi::BC1_TYPELESS,
+        dxgi::BC2_TYPELESS..=dxgi::BC2_UNORM_SRGB => dxgi::BC2_TYPELESS,
+        dxgi::BC3_TYPELESS..=dxgi::BC3_UNORM_SRGB => dxgi::BC3_TYPELESS,
+        dxgi::BC4_TYPELESS..=dxgi::BC4_SNORM => dxgi::BC4_TYPELESS,
+        dxgi::BC5_TYPELESS..=dxgi::BC5_SNORM => dxgi::BC5_TYPELESS,
+        dxgi::B8G8R8A8_UNORM | dxgi::B8G8R8A8_TYPELESS | dxgi::B8G8R8A8_UNORM_SRGB => {
+            dxgi::B8G8R8A8_TYPELESS
+        }
+        dxgi::B8G8R8X8_UNORM | dxgi::B8G8R8X8_TYPELESS | dxgi::B8G8R8X8_UNORM_SRGB => {
+            dxgi::B8G8R8X8_TYPELESS
+        }
+        dxgi::BC6H_TYPELESS..=dxgi::BC6H_SF16 => dxgi::BC6H_TYPELESS,
+        dxgi::BC7_TYPELESS..=dxgi::BC7_UNORM_SRGB => dxgi::BC7_TYPELESS,
         f => f,
     }
 }
@@ -319,11 +333,17 @@ pub fn typeless_group(dxgi: u32) -> u32 {
 pub fn copy_cast(a: u32, b: u32) -> bool {
     let one = |x: u32, y: u32| match x {
         // R32: R9G9B9E5, R8G8_B8G8 and G8R8_G8B8.
-        39 | 41..=43 => matches!(y, 67..=69),
+        dxgi::R32_TYPELESS | dxgi::R32_FLOAT..=dxgi::R32_SINT => {
+            matches!(y, dxgi::R9G9B9E5_SHAREDEXP..=dxgi::G8R8_G8B8_UNORM)
+        }
         // R16G16B16A16 and R32G32: BC1 and BC4.
-        9..=18 => matches!(y, 70..=72 | 79..=81),
+        dxgi::R16G16B16A16_TYPELESS..=dxgi::R32G32_SINT => {
+            matches!(y, dxgi::BC1_TYPELESS..=dxgi::BC1_UNORM_SRGB | dxgi::BC4_TYPELESS..=dxgi::BC4_SNORM)
+        }
         // R32G32B32A32: BC2, BC3, BC5, BC6H and BC7.
-        1..=4 => matches!(y, 73..=78 | 82..=84 | 94..=99),
+        dxgi::R32G32B32A32_TYPELESS..=dxgi::R32G32B32A32_SINT => {
+            matches!(y, dxgi::BC2_TYPELESS..=dxgi::BC3_UNORM_SRGB | dxgi::BC5_TYPELESS..=dxgi::BC5_SNORM | dxgi::BC6H_TYPELESS..=dxgi::BC7_UNORM_SRGB)
+        }
         _ => false,
     };
     one(a, b) || one(b, a)
@@ -331,53 +351,7 @@ pub fn copy_cast(a: u32, b: u32) -> bool {
 
 /// The interface vertex format of a DXGI format an input element may have.
 pub fn vertex_format(dxgi: u32) -> Option<VertexFormat> {
-    use VertexFormat::*;
-    Some(match dxgi {
-        2 => Float32x4,
-        3 => Uint32x4,
-        4 => Sint32x4,
-        6 => Float32x3,
-        7 => Uint32x3,
-        8 => Sint32x3,
-        10 => Float16x4,
-        11 => Unorm16x4,
-        12 => Uint16x4,
-        13 => Snorm16x4,
-        14 => Sint16x4,
-        16 => Float32x2,
-        17 => Uint32x2,
-        18 => Sint32x2,
-        24 => Unorm10_10_10_2,
-        25 => Uint10_10_10_2,
-        26 => Float11_11_10,
-        28 => Unorm8x4,
-        30 => Uint8x4,
-        31 => Snorm8x4,
-        32 => Sint8x4,
-        34 => Float16x2,
-        35 => Unorm16x2,
-        36 => Uint16x2,
-        37 => Snorm16x2,
-        38 => Sint16x2,
-        41 => Float32x1,
-        42 => Uint32x1,
-        43 => Sint32x1,
-        49 => Unorm8x2,
-        50 => Uint8x2,
-        51 => Snorm8x2,
-        52 => Sint8x2,
-        54 => Float16x1,
-        56 => Unorm16x1,
-        57 => Uint16x1,
-        58 => Snorm16x1,
-        59 => Sint16x1,
-        61 => Unorm8x1,
-        62 => Uint8x1,
-        63 => Snorm8x1,
-        64 => Sint8x1,
-        87 => Bgra8Unorm,
-        _ => return None,
-    })
+    dxgi_vertex_format(dxgi).map(|(format, _)| format)
 }
 
 /// A vertex format of 32-bit components as the 32-bit format of the same bits of the type the

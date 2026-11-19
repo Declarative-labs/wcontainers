@@ -6,17 +6,28 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// The triangle at depth 0.1, and the depth loaded as a colour.
-const PROBE_WGSL: &str = "
-@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+/// The depth the probe's triangle is drawn at.
+const PROBE_DEPTH: f32 = 0.1;
+
+/// How far a read may be from the biased 24-bit step, in steps: one, with room for the read's
+/// own rounding.
+const STEP_TOLERANCE: f64 = 1.001;
+
+/// The triangle at `PROBE_DEPTH`, and the depth loaded as a colour.
+fn probe_wgsl() -> String {
+    format!(
+        "
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {{
     let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
-    return vec4f(p * 2.0 - 1.0, 0.1, 1.0);
-}
+    return vec4f(p * 2.0 - 1.0, {PROBE_DEPTH:?}, 1.0);
+}}
 @group(0) @binding(0) var depth: texture_2d<f32>;
-@fragment fn load(@builtin(position) p: vec4f) -> @location(0) vec4f {
+@fragment fn load(@builtin(position) p: vec4f) -> @location(0) vec4f {{
     return vec4f(textureLoad(depth, vec2i(p.xy), 0).x, 0.0, 0.0, 1.0);
+}}
+"
+    )
 }
-";
 
 /// What the probe found.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -33,11 +44,12 @@ pub enum Depth24 {
 impl Depth24 {
     /// Reads the answer: the depth 0.1 lands on, biased by one unit.
     pub fn of(read: f32) -> Depth24 {
-        let base = 0.1f32;
+        let base = PROBE_DEPTH;
+        let max = f64::from(crate::fill::UNORM24_MAX);
         // The 24-bit step 0.1 is stored as, one above; read back within one step, as programs read
         // 24-bit depth.
-        let step = (f64::from(base) * 16_777_215.0).round() + 1.0;
-        if (f64::from(read) * 16_777_215.0 - step).abs() < 1.001 {
+        let step = (f64::from(base) * max).round() + 1.0;
+        if (f64::from(read) * max - step).abs() < STEP_TOLERANCE {
             Depth24::Unorm(read)
         } else if read.to_bits() == base.to_bits() + 1 {
             Depth24::Float(read)
@@ -75,11 +87,11 @@ pub fn run(device: &wgpu::Device, queue: &wgpu::Queue) -> Depth24 {
     );
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
-        source: wgpu::ShaderSource::Wgsl(PROBE_WGSL.into()),
+        source: wgpu::ShaderSource::Wgsl(probe_wgsl().into()),
     });
     let vertex = wgpu::VertexState {
         module: &module,
-        entry_point: Some("vs"),
+        entry_point: None,
         compilation_options: Default::default(),
         buffers: &[],
     };
@@ -131,7 +143,7 @@ pub fn run(device: &wgpu::Device, queue: &wgpu::Queue) -> Depth24 {
         multisample: Default::default(),
         fragment: Some(wgpu::FragmentState {
             module: &module,
-            entry_point: Some("load"),
+            entry_point: None,
             compilation_options: Default::default(),
             targets: &[Some(wgpu::TextureFormat::R32Float.into())],
         }),
@@ -171,7 +183,7 @@ pub fn run(device: &wgpu::Device, queue: &wgpu::Queue) -> Depth24 {
             multiview_mask: None,
         });
         rp.set_pipeline(&biased);
-        rp.draw(0..3, 0..1);
+        rp.draw(crate::fill::COVER_VERTICES, 0..1);
     }
     {
         let view = color.create_view(&Default::default());
@@ -193,7 +205,7 @@ pub fn run(device: &wgpu::Device, queue: &wgpu::Queue) -> Depth24 {
         });
         rp.set_pipeline(&load);
         rp.set_bind_group(0, &group, &[]);
-        rp.draw(0..3, 0..1);
+        rp.draw(crate::fill::COVER_VERTICES, 0..1);
     }
     encoder.copy_texture_to_buffer(
         color.as_image_copy(),
