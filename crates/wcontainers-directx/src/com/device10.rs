@@ -153,6 +153,14 @@ fn blend11(d: &D3D10_BLEND_DESC) -> D3D11_BLEND_DESC {
 }
 
 impl Device_Impl {
+    /// No device-dependent counters, as Direct3D answers for a device without them.
+    pub(super) fn check_counter_info10(&self, info: *mut D3D10_COUNTER_INFO) {
+        if !info.is_null() {
+            // SAFETY: the program passes its own structure to fill.
+            unsafe { info.write(D3D10_COUNTER_INFO::default()) };
+        }
+    }
+
     /// The immediate context while Direct3D 10's behaviour is active on it.
     fn context10(&self) -> Option<ID3D11DeviceContext3> {
         let c = self.immediate();

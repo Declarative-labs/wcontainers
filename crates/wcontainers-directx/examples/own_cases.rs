@@ -7,9 +7,10 @@
 //! (`[earlydepthstencil]` with storage writes, depth writes off), `early_writes` (the same with
 //! depth writes on), `stencil` (a stencil view read after clears and a stencil draw),
 //! `msaa_lines` (lines under `MultisampleEnable`, each pixel's covered samples counted),
+//! `aliased_msaa_lines` (the same lines without it),
 //! `biased_lines` (a constant depth bias on a line and points), `staged_bias` (the same bias on
-//! what geometry and tessellation stages rasterise) and `aa_lines` (alpha-antialiased lines
-//! blended by their coverage). Shaders are compiled by
+//! what geometry and tessellation stages rasterise), `aa_lines` (alpha-antialiased lines
+//! blended by their coverage) and `aa_strip_indexed` (the same as an indexed strip). Shaders are compiled by
 //! the system's d3dcompiler_47.dll. Prints each answer and the resources' bytes as hex, for
 //! comparing with real Direct3D line by line.
 
@@ -868,9 +869,9 @@ fn main() -> windows::core::Result<()> {
                 print(&format!("{name} depth"), &depth, 4);
             }
         }
-        "msaa_lines" => {
-            // Lines under MultisampleEnable into four samples, each pixel's covered samples
-            // counted.
+        "msaa_lines" | "aliased_msaa_lines" => {
+            // Lines under MultisampleEnable (or, `aliased_msaa_lines`, aliased lines without it)
+            // into four samples, each pixel's covered samples counted.
             let drawn = make(
                 &Tex {
                     w: 16,
@@ -911,7 +912,7 @@ fn main() -> windows::core::Result<()> {
                 FillMode: D3D11_FILL_SOLID,
                 CullMode: D3D11_CULL_NONE,
                 DepthClipEnable: true.into(),
-                MultisampleEnable: true.into(),
+                MultisampleEnable: (case == "msaa_lines").into(),
                 ..Default::default()
             };
             unsafe { device.CreateRasterizerState(&desc, Some(&mut raster))? };
@@ -1207,10 +1208,12 @@ fn main() -> windows::core::Result<()> {
                 print(&format!("staged bias {name} depth"), &depth, 2);
             }
         }
-        "aa_lines" => {
+        "aa_lines" | "aa_strip_indexed" => {
             // Alpha-antialiased lines (antialiased lines without multisampling, back faces culled,
-            // which lines never are), a list and a strip with colours from their vertices,
-            // blended by their alpha over opaque black.
+            // which lines never are) with colours from their vertices, at perspective depths and
+            // through a viewport off the target's corner, blended by their alpha over transparent
+            // black, so the target's alpha holds each pixel's coverage: a list and a strip, or
+            // (`aa_strip_indexed`) an indexed strip cut by the restart index.
             let side = 32;
             let target = make(
                 &Tex {
@@ -1232,7 +1235,8 @@ fn main() -> windows::core::Result<()> {
                         float2(-0.95, 0.9), float2(-0.2, 0.7), float2(0.6, 0.85) };
                     float4 c[3] = { float4(1, 0, 0, 1), float4(0, 1, 0, 1), float4(0, 0, 1, 1) };
                     V v;
-                    v.p = float4(p[id], 0.5, 1);
+                    float w = 1 + (id % 4) * 0.25;
+                    v.p = float4(p[id] * w, 0.5 * w, w);
                     v.c = c[id % 3];
                     return v;
                 }");
@@ -1263,18 +1267,46 @@ fn main() -> windows::core::Result<()> {
             };
             let mut blend = None;
             unsafe { device.CreateBlendState(&blend_desc, Some(&mut blend))? };
+            // Vertices 0 to 5, cut, then the strip's three; drawn from base vertex 0.
+            let strip: [u16; 10] = [0, 1, 2, 3, 4, 5, u16::MAX, 8, 9, 10];
+            let index_desc = D3D11_BUFFER_DESC {
+                ByteWidth: std::mem::size_of_val(&strip) as u32,
+                Usage: D3D11_USAGE_IMMUTABLE,
+                BindFlags: D3D11_BIND_INDEX_BUFFER.0 as u32,
+                ..Default::default()
+            };
+            let index_data = D3D11_SUBRESOURCE_DATA {
+                pSysMem: strip.as_ptr().cast(),
+                ..Default::default()
+            };
+            let mut indices = None;
+            unsafe { device.CreateBuffer(&index_desc, Some(&index_data), Some(&mut indices))? };
             unsafe {
-                viewport(side, side);
-                context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0, 0.0, 0.0, 1.0]);
+                context.RSSetViewports(Some(&[D3D11_VIEWPORT {
+                    TopLeftX: 6.0,
+                    TopLeftY: 4.0,
+                    Width: 22.0,
+                    Height: 26.0,
+                    MaxDepth: 1.0,
+                    ..Default::default()
+                }]));
+                context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0; 4]);
                 context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
                 context.OMSetBlendState(blend.as_ref(), None, u32::MAX);
                 context.RSSetState(raster.as_ref());
                 context.VSSetShader(lines.as_ref(), None);
                 context.PSSetShader(coloured.as_ref(), None);
-                context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
-                context.Draw(8, 0);
-                context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINESTRIP);
-                context.Draw(3, 8);
+                if case == "aa_lines" {
+                    context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+                    context.Draw(8, 0);
+                    context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINESTRIP);
+                    context.Draw(3, 8);
+                } else {
+                    context.IASetIndexBuffer(indices.as_ref(), DXGI_FORMAT_R16_UINT, 0);
+                    context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINESTRIP);
+                    context.DrawIndexed(strip.len() as u32, 0, 0);
+                    context.IASetIndexBuffer(None, DXGI_FORMAT_R16_UINT, 0);
+                }
                 context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
                 context.RSSetState(None);
                 context.OMSetBlendState(None, None, u32::MAX);

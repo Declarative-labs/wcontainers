@@ -16,7 +16,12 @@ mod webgpu {
     use windows::Win32::UI::WindowsAndMessaging::{GWLP_HINSTANCE, GetWindowLongPtrW};
     use windows::core::{Error, Result};
 
+    use wcontainers_direct3d_11::WARNING_PREFIX;
+
     pub type Chosen = wcontainers_gpu_webgpu::WebGpu;
+
+    /// The environment variable naming WebGPU features taken as missing.
+    pub const FEATURES_OFF: &str = "WEBGPU_OFF";
 
     /// The `wgpu` instance on Direct3D 12, made once: back ends and the program's windows' surfaces
     /// come from it.
@@ -31,7 +36,9 @@ mod webgpu {
 
     /// Makes the back end on the most capable GPU `wgpu` finds through Direct3D 12, or none if there
     /// is none. Direct3D 12 is what browsers' WebGPU draws through on Windows, and it rasterises
-    /// aliased lines by Direct3D's rule, which `wgpu`'s Vulkan path does not.
+    /// aliased lines by Direct3D's rule, which `wgpu`'s Vulkan path does not. The WebGPU features
+    /// [`FEATURES_OFF`] lists by their kebab-case names (separated by spaces) are taken as missing, as
+    /// browsers without them lack them.
     pub fn make() -> Option<Chosen> {
         let adapter =
             pollster::block_on(instance().request_adapter(&wgpu::RequestAdapterOptions {
@@ -39,9 +46,17 @@ mod webgpu {
                 ..Default::default()
             }))
             .ok()?;
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&Chosen::device_descriptor(&adapter)))
-                .ok()?;
+        let mut descriptor = Chosen::device_descriptor(&adapter);
+        for name in std::env::var(FEATURES_OFF)
+            .unwrap_or_default()
+            .split_whitespace()
+        {
+            match name.parse::<wgpu::Features>() {
+                Ok(f) => descriptor.required_features.remove(f),
+                Err(_) => eprintln!("{WARNING_PREFIX}: no WebGPU feature {name}"),
+            }
+        }
+        let (device, queue) = pollster::block_on(adapter.request_device(&descriptor)).ok()?;
         Some(Chosen::new(&adapter, device, queue))
     }
 
@@ -86,6 +101,9 @@ mod webgl {
 
     pub type Chosen = wcontainers_gpu_webgl::WebGl;
 
+    /// The environment variable naming WebGL extensions taken as missing.
+    pub const FEATURES_OFF: &str = "WEBGL_OFF";
+
     /// The directory of ANGLE's libEGL.dll and libGLESv2.dll: `WEBGL_ANGLE_DIR`, as the WebGL 2 back
     /// end's tests name it, or where the desktop's build puts them.
     fn angle_dir() -> &'static PathBuf {
@@ -99,10 +117,10 @@ mod webgl {
     }
 
     /// Makes the back end on ANGLE's OpenGL ES 3.0 context, or none if ANGLE cannot make one. The
-    /// WebGL extensions `WEBGL_OFF` lists (separated by spaces) are taken as missing, as browsers
+    /// WebGL extensions [`FEATURES_OFF`] lists (separated by spaces) are taken as missing, as browsers
     /// without them lack them.
     pub fn make() -> Option<Chosen> {
-        let off = std::env::var("WEBGL_OFF").unwrap_or_default();
+        let off = std::env::var(FEATURES_OFF).unwrap_or_default();
         let off: Vec<&str> = off.split_whitespace().collect();
         Chosen::on_angle(angle_dir(), &off)
             .map_err(|e| eprintln!("wcontainers direct3d 11: no WebGL 2 back end: {e}"))

@@ -1906,6 +1906,9 @@ impl<B: Backend> Device<B> {
                 v.filter_in_shader |= 1 << t;
             }
         }
+        if matches!(stage, PIXEL | COMPUTE) {
+            v.stored_through = self.stored_through_slots(stage, s);
+        }
         if v.stencil != 0 {
             self.backend.slow_paths().hit(SlowPath::SwizzleInShader);
         }
@@ -2613,22 +2616,28 @@ impl<B: Backend> Device<B> {
         self.refresh_windows()?;
         self.update_set(COMPUTE, &[], &[])?;
         let cv = self.stage_variant(COMPUTE, &cs, 1);
-        if (StageVariant { formats: 0, ..cv }) != StageVariant::default() {
+        let plain = StageVariant {
+            formats: 0,
+            stored_through: 0,
+            ..cv
+        };
+        if plain != StageVariant::default() {
             return not_implemented(
                 "a compute shader sampling in a way the back end's sampler lacks (a bias, a resource clamp, border or mirror-once addressing, an unfilterable format)",
             );
         }
+        let varied = cv != StageVariant::default();
         let key = (cs.gpu.id, cv, 0, StageVariant::default());
         let (program, helpers) = match self.programs.get(&key) {
             Some(p) => (p.program.handle.clone(), p.helpers[0].clone()),
             None => {
-                if cv.formats != 0 && !self.variants.contains_key(&(cs.gpu.id, cv)) {
+                if varied && !self.variants.contains_key(&(cs.gpu.id, cv)) {
                     let key = self.variant_key(&cs, cv, SourceStage::Compute);
                     let v = self.convert_kept(&cs.bytecode, SourceStage::Compute, &key)?;
                     self.variants.insert((cs.gpu.id, cv), v);
                 }
                 let (shader, helpers) = match self.variants.get(&(cs.gpu.id, cv)) {
-                    Some(v) if cv.formats != 0 => (&v.shader.handle, v.helpers.clone()),
+                    Some(v) if varied => (&v.shader.handle, v.helpers.clone()),
                     _ => (&cs.gpu.handle, cs.helpers.clone()),
                 };
                 let p = self.backend.create_program(&Program::Compute(shader));
