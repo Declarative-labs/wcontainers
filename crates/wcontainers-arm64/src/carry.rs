@@ -520,6 +520,26 @@ fn base_of(address: &Address) -> Option<Reg> {
     }
 }
 
+/// Whether an access may cross a page. A stack pointer base is aligned to [`STACK_ALIGNMENT`] wherever an access
+/// is made through it (the hardware checks it, SA0, before any byte is touched), so an immediate offset from it
+/// stays in one page when it stays in one aligned run of that many bytes.
+fn may_cross_page(m: &MemoryAccess) -> bool {
+    let offset = match m.address {
+        Address::Offset {
+            base: Reg::Sp,
+            offset,
+        }
+        | Address::PreIndex {
+            base: Reg::Sp,
+            offset,
+        } => Some(offset),
+        Address::PostIndex { base: Reg::Sp, .. } => Some(0),
+        _ => None,
+    };
+    let run = STACK_ALIGNMENT as i64;
+    offset.is_none_or(|offset| offset.rem_euclid(run) + i64::from(m.bytes) > run)
+}
+
 /// The slow path a page test in front of an access of `bytes` is.
 fn page_test(bytes: u32) -> NativeReason {
     if bytes > u32::from(Q_BYTES) {
@@ -545,7 +565,7 @@ fn access(out: &mut Out, m: &MemoryAccess, align: Option<u32>, prefix: &[u32], w
             |t| t.call = Some(InsideCall::Misaligned),
         );
     }
-    if align.is_none() && m.bytes > 1 {
+    if align.is_none() && m.bytes > 1 && may_cross_page(m) {
         out.code.slow(page_test(m.bytes));
         let test = page_test_words(&m.address, m.bytes);
         out.put_all(&test[..test.len() - 1]);
