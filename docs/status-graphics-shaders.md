@@ -2016,7 +2016,11 @@ Run 45 (the fronts' line and primitive items, the literal sweep):
   gained `vs_line`, `ps_line` and `ps_primitive` (both builds; `ps_primitive`'s GLSL refused for
   `gl_PrimitiveID`, as `ps_primid`'s). Drawn on the RTX 3080 in one GPU job (run45/gpu8.log):
   draw 7 of 7, geometry_draw 4 of 4 (84, 36 and 48 comparisons), stage_draw 2 of 2 (32 and 40),
-  variant_draw 5 of 5. Chrome's compile of the new files was not run this run.
+  variant_draw 5 of 5. Chrome's compile of the own corpora (`web/check`, run45/chrome1.log): every
+  WGSL file compiles (own 124, own DXIL 66, the three new shaders among them); WebGL 2 refuses 13
+  and 6 GLSL files, run 44's plus `ps_primitive` (`gl_PrimitiveID`, as `ps_primid`). The line and
+  primitive programs and the variants' modules are not in the corpora; naga validates them in the
+  unit tests and wgpu's Direct3D 12 path compiled them in the drawn tests.
 - The laptop's loop script still gives cargo 5 jobs: its numbers are in the literal baseline, and
   every way of writing 4 there adds a line. Runs pass `CARGO_BUILD_JOBS=4` and `choom -n 600 --`
   inside the command instead (How to run).
