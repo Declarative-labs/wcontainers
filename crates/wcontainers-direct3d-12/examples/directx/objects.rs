@@ -2131,6 +2131,13 @@ impl Queue {
         gpu::call(move |d| d.queue_signal(queue, id, value)).map_err(hr)
     }
 
+    // Annotations for debugging tools: with none attached Direct3D 12 does nothing with them.
+    pub fn SetMarker(&self, _metadata: u32, _data: *const c_void, _size: u32) {}
+
+    pub fn BeginEvent(&self, _metadata: u32, _data: *const c_void, _size: u32) {}
+
+    pub fn EndEvent(&self) {}
+
     /// Timestamps count nanoseconds where the back end has them.
     pub fn GetTimestampFrequency(&self) -> Result<u64> {
         if gpu::call(|d| {
@@ -3276,6 +3283,13 @@ impl List {
     pub fn OMSetStencilRef(&self, value: u32) {
         self.record(Command::StencilRef(value));
     }
+
+    // Annotations for debugging tools: with none attached Direct3D 12 does nothing with them.
+    pub fn SetMarker(&self, _metadata: u32, _data: *const c_void, _size: u32) {}
+
+    pub fn BeginEvent(&self, _metadata: u32, _data: *const c_void, _size: u32) {}
+
+    pub fn EndEvent(&self) {}
 
     pub fn OMSetRenderTargets(
         &self,
