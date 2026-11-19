@@ -2,6 +2,7 @@
 //! an address space with its own identifier, its pages kept as the kernel says; shared blocks; threads; pieces
 //! translated through the link and loaded into the code area; and a thread run to its next exit.
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -227,7 +228,8 @@ pub struct NativeCpu {
     global: Table,
     memories: BTreeMap<MemoryId, Memory>,
     shared: BTreeMap<SharedId, Block>,
-    threads: BTreeMap<ThreadId, Thread>,
+    /// Boxed, so that a run takes its thread out and puts it back without copying it.
+    threads: BTreeMap<ThreadId, Box<Thread>>,
     next_id: u32,
     /// The next address-space identifier, none when they ran out.
     next_asid: Option<u16>,
@@ -1479,7 +1481,7 @@ impl Cpu for NativeCpu {
         .map_err(out_of_memory)?;
         self.threads.insert(
             id,
-            Thread {
+            Box::new(Thread {
                 memory,
                 state: GuestState {
                     x: [0; GENERAL],
@@ -1495,7 +1497,7 @@ impl Cpu for NativeCpu {
                 page_frame,
                 vectors: Default::default(),
                 tpidr: 0,
-            },
+            }),
         );
         Ok(id)
     }
