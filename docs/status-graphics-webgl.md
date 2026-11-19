@@ -5,12 +5,37 @@ Plan: docs/phase-2-graphics.md, sections 4, 5.8, 6.5, 10 and 12 (G3).
 
 ## Where things stand
 
+G3b run 5, 2026-11-18 (about 16:00 to 17:30 Pacific). Merged origin/phase-2-graphics (3 commits)
+and origin/phase-2-graphics-shaders (6 commits, run 33; its interface commit 34981564 changes only
+the doc comment of `TargetInShader::format`, which this back end does not read). Not merged:
+phase-1-literals (Magic literals). Fixed what the check of run 4 found:
+- `noperspective` (linear) values: built (`linear_by_w`), on ANGLE and in Chrome; before, the
+  front got `Invalid` for them. Fine derivatives: refused by name through the new interface bit
+  `Features::FINE_DERIVATIVES` (Interface changes). Details under "G3b: what the fronts ask".
+- The "about 400 programs" claim: corrected; it is not a bound on the count (Known failures).
+- Read backs that convert on the host (BGRA's swap, B5G6R5 packed again) now count
+  `FormatConverted`, now and later and into buffers; `half_floats_read_back_as_stored` and
+  `bgra_textures_keep_their_byte_order` assert it (Departures: reads that only narrow are not
+  counted).
+- The bare numbers of runs 3 and 4: B5G6R5's packing and BGRX's alpha byte derived; the
+  per-format widths wait for the interface (Magic literals).
+- The not-built list is current (19 `unbuilt` sites, three added).
+- Special float values written as constants: ANGLE folded them and lost -0 (and natively made a
+  vector all infinities). Fixed by reading such bits through a uniform zero (`opaque_float_bits`);
+  new check `special_float_values_keep_their_bits` passes on ANGLE and in Chrome.
+- The frame-time measurement: the front's share is still not measured, and a program with many
+  draws still did not record (Measurements, run G3b-5).
+- At the end the desktop's C:\wc\target\phase-2-graphics-webgl (12.8 GB: the debug,
+  WebAssembly, Direct3D 11 WebGL 2 and recording builds) and this checkout's own target (0.3 GB,
+  from `cargo check`) were deleted; no build folder was made in scratch. Nothing was installed on
+  the desktop.
+
 G3b run 4, 2026-11-18 (about 14:15 to 15:45 Pacific). Merged origin/phase-2-graphics (52 new
 commits; it held every track branch's newest work: storage words, binding kinds, indirect draws
 past a stream, none needing a change here). Done:
 - The device the shaders track's 16-seed `filter_draw` run lost (check9's open finding): cause
-  found. The test never destroys its programs; with about 400 alive mozangle's ANGLE removes its
-  Direct3D 11 device. With them destroyed, all 1,152 WebGL 2 draws of the 16 seeds pass; the other
+  narrowed. The test never destroys its programs; with about 400 of them alive mozangle's ANGLE
+  removes its Direct3D 11 device (not a bare count of programs: see Known failures). With them destroyed, all 1,152 WebGL 2 draws of the 16 seeds pass; the other
   devices of the process play no part (details under "G3b: what the fronts ask"). The fix is in
   the shaders track's test.
 - A depth texture a program both compares against and reads plainly (the shaders track's run
@@ -230,13 +255,41 @@ Read after merging (status-graphics-direct3d-11.md at 66e54fa6, status-graphics-
   viewports in one draw") for any other count.
 - Read back later through `glGetBufferSubData`, which GLES lacks natively: built earlier (natively
   through `glMapBufferRange`, platform.rs `get_buffer_sub_data`).
-- `noperspective` inputs (shaders track: not written for WebGL 2): refused, naga's GLSL writer
-  answers `MissingFeatures(NOPERSPECTIVE_QUALIFIER)` when the program is made. Not built: linear
-  interpolation needs the vertex stage to write the value times w and w beside it, which needs
-  both stages at once (Next).
+- `noperspective` inputs (shaders track: not written for WebGL 2): built in run 5. Runs 1 to 4
+  called them "refused by naga's writer", but the front saw only `Invalid` (a front's bug), not an
+  absent feature (check of run 4). Now each linear value is written perspective-correct times the
+  vertex's w into a varying of its own (`_wc_linear<location>`, the value itself kept for
+  transform feedback), and the fragment stage multiplies by `gl_FragCoord.w` (1 / w), or at the
+  centroid divides by w carried in a centroid varying beside it: a perspective-correct a·w over w
+  is the window-space value exactly, clipped vertices included. Each stage knows its own linear
+  locations (WGSL's interpolation is on both sides), so no pair is needed. `linear_by_w` in
+  src/shader.rs; unit test `linear_values_are_carried_times_w`; check
+  `linear_values_interpolate_in_window_space` (a triangle with w from 0.5 to 3 and one clipped at
+  the far plane, centre and centroid, against the window-space value within 1e-4, and the
+  perspective-correct value at least 0.05 away somewhere).
 - `SAMPLE_MASK` and `SAMPLE_SHADING`: absent (WebGL has no OES_sample_variables directive for
   `gl_SampleMask`; see Capabilities).
-- Fine derivatives: refused by naga's writer (`DERIVATIVE_CONTROL`), as the shaders track says.
+- Fine derivatives: refused by name in run 5 (before, the front saw `Invalid`, as for
+  noperspective). Interface change `Features::FINE_DERIVATIVES`; this back end lacks it (GLSL ES
+  3.00 has only `dFdx` and `dFdy`, which may be coarse), and `create_shader` answers
+  `Absent(FINE_DERIVATIVES)` for a program using `dpdxFine`, `dpdyFine` or `fwidthFine`
+  (`needs`). Coarse ones are made (GLSL's plain derivatives may be coarse). Checked in
+  `absent_features_are_refused`. Direct3D's levels below 11_0 have no fine derivatives, so the
+  front at 10_0 loses nothing; the WebGPU back end should declare the bit (WGSL always has them).
+  A shader naga still cannot write as GLSL ES 3.00 is `Invalid` (a front's bug), and naga's
+  reason is now printed on the host's error output.
+- (Run 5, from the check of run 4) Special float values held as constants: ANGLE folds a float
+  made from constant bits and writes it into HLSL as a decimal literal, so negative zero lost its
+  sign in Chrome and natively, and natively (mozangle) a vector of infinity, -0, 2^-24 and 65504
+  drew infinity in all four. Check `special_float_values_keep_their_bits` (+inf, -0, -inf, 1.5 into
+  `rgba32float` by four routes) failed before the fix: natively the constant route gave
+  [7f800000 x4], and the variable route (the DXBC converter's form for non-finite constants) and
+  a `-0.0` literal gave +0 for -0, on ANGLE and in Chrome; the uniform route was exact. Now every
+  `uintBitsToFloat`, `intBitsToFloat` and `-0.0` outside global constants reads its bits through
+  an exclusive or with a uniform that is never set (0 after the link), which neither ANGLE nor
+  the HLSL compiler can fold (`opaque_float_bits`, unit test `float_bits_are_kept_from_folding`).
+  The check passes on ANGLE and in Chrome. Cost: one integer operation per such call (not
+  measured). Left: global constants (Next 3).
 - (Run 2) The shared line's three new suite tests (copies within one depth or stencil
   subresource, the occlusion counter, every vertex format, which the shared status says GL ES may
   lack): pass on ANGLE and in Chrome with every extension; on the routes without
@@ -264,10 +317,11 @@ Read after merging (status-graphics-direct3d-11.md at 66e54fa6, status-graphics-
   cases loses ANGLE's Direct3D 11 device at some point, without a driver reset. The 32
   anisotropic differences are the shaders track's known failure (its tap footprint), not this
   back end's.
-  (Run 4) Cause found: the test never calls `destroy`, so every case leaves its WebGL 2 programs
+  (Run 4) Cause narrowed: the test never calls `destroy`, so every case leaves its WebGL 2 programs
   alive (WebGPU's objects end when their handles drop, this back end's only at `destroy`, as the
-  interface says), and with about 400 programs alive mozangle's ANGLE removes its Direct3D 11
-  device. A copy of the test's WebGL 2 draws (three per comparison, as at worst; seeds 1 to 16,
+  interface says), and with about 400 of its programs alive mozangle's ANGLE removes its Direct3D 11
+  device (run 5: not a bound on the count; the check of run 4 kept 800 small programs alive
+  without a loss, so it depends on the programs; see Known failures). A copy of the test's WebGL 2 draws (three per comparison, as at worst; seeds 1 to 16,
   1,152 draws; scratch g3b4/webgl_filter_diag.rs, put into the shaders crate's tests for the
   runs only and removed after; `gpu-job --alone`, desktop 14:56 to 15:07, nothing else on the
   GPU), logs g3b4/diag1.log and diag2.log:
@@ -489,7 +543,7 @@ tests/against_webgpu.rs and in Chrome by browser/against.mjs.
     waited for in the browser are ready at once (WebGL updates a sync object only between tasks).
   - What is not built loses the device when reached (`LossReason::Error`, `Err(DeviceLost)` where
     the call returns a result) with the missing piece named in `WebGl::last_log()`, never a panic.
-    Not built today (every `unbuilt` call in src/lib.rs, as of run 18):
+    Not built today (every `unbuilt` call in src/lib.rs, 19 sites, as of G3b run 5):
     - copies of multisampled depth, stencil and sRGB textures (`copy_samples`);
     - sRGB twins of formats `readPixels` reads wider than stored (no format with an sRGB twin is
       read that way today);
@@ -507,7 +561,15 @@ tests/against_webgpu.rs and in Chrome by browser/against.mjs.
     - draws, fans and loops without restart whose 32-bit indices hold both 0 and 2^32 - 1, or whose
       lowered indices need a base vertex past 2^31 - 1;
     - captures (`capture_vertices`) reaching below vertex 0 by a negative base vertex, or past
-      vertex 2^31 - 1.
+      vertex 2^31 - 1;
+    - (G3b) reading back a format through its integer twin (`bits_by_draw`: 16-bit floats and
+      R11G11B10) where the draw copying its bits into the twin is not built; every format with a
+      twin has that draw today, so no call reaches it;
+    - (G3b) reading a signed normalised texture's drawn texels into its host copy where the draw
+      into its signed integer twin is not built ("draws from this signed normalised format");
+    - (G3b) a pass drawing into BGRX and formats with alpha together without
+      OES_draw_buffers_indexed (BGRX keeps alpha one by the colour mask of its targets; Chrome and
+      mozangle both have the extension).
     `fetches of multisampled textures` also reads "not built", but needs `MULTISAMPLE_READ`, which
     is absent, so no valid call reaches it.
 - platform.rs: the context. In the browser `WebGl::on_canvas(WebGl2RenderingContext, off)`;
@@ -1448,6 +1510,43 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   reduced performance" (and the same for WebGPU). Per-draw timings taken there (G3's later work)
   must say so; whether a headed Chrome differs is not measured.
 
+## Measurements, run G3b-5
+
+- 2026-11-18, desktop (i9-9900K, RTX 3080, Chrome 157.0.8103.78), queued jobs in the hazard
+  group beside other tracks' builds, load not sampled. 102 suite tests and checks (the two new
+  checks among them).
+  - The new and touched checks (some.cmd "linear_values special_float absent_features half_floats
+    bgra_textures bgrx_textures", out C:\wc\out\webgl\g3b5-new, scratch g3b5/new4.log): 6 of 6 on
+    ANGLE and 6 of 6 in Chrome; unit tests 14 of 14. Before the fix, `special_float_...` failed
+    on both (new3.log, values under "G3b: what the fronts ask").
+  - Linear values (ANGLE, new4.log): at most 1.07e-4 from the window-space value, while the GPU's
+    own perspective-correct values are at most 1.17e-4 from the host's; the perspective-correct
+    value is up to 0.24 from the linear one. The first version of the check asked for 1e-4 and
+    failed at 1.07e-4 (first.log), which is the GPU's own interpolation precision, so the bar is
+    now 1e-3 with both numbers printed.
+  - Full run (all.cmd, out C:\wc\out\webgl\g3b5-all1, scratch g3b5/all1.log, at 34c7dfd8's tree):
+    Chrome 99 passed, 3 not run (clip and cull distances, timestamps, fractional bias), 0 failed
+    with every extension; 91 passed and 11 not run on the reduced route; 70 passed, 3 not run and
+    29 failed without EXT_clip_control, the same without it and WEBGL_provoking_vertex. ANGLE 102
+    of 102 with every extension, 74 of 102 on both reduced routes; all 56 reduced-route failures
+    natively are `Absent(CLIP_DEPTH_ZERO_ONE)` or `Absent(PROVOKING_VERTEX_FIRST)` from the
+    suite's own raster blocks. Against WebGPU natively 8 of 9, in Chrome 10 of 12 routes (the
+    known two). BC reference 1 of 2 (the known decoded route). Clippy with warnings denied:
+    native all targets, wasm32 (browser, draw-cost, replay with `trace`): clean.
+- The Direct3D 11 front's scenes through its WebGL 2 build, every scene, natively on ANGLE
+  (scratch g3b5/d3d11-scenes1.log): 88 outputs pass, 27 fail, 30 absent, as in run 4, the same
+  six scenes stopping in the front (raster and views `E_NOTIMPL`; constants "a stage reads more
+  uniform buffers than Limits::uniform_buffers_per_stage"; queries "counting the samples of a
+  pixel shader variant"; geometry and streamout `E_NOTIMPL`).
+- Recording bgfx-01-cubes (125 draws a frame) through the recording build with `--d3d11` (scratch
+  g3b5/record2.log): ANGLE made two devices, but no stream was written in 10 s (the trace files
+  kept their 09:49 times, so no recording device was made); as in run 2, bgfx draws nothing
+  through the WebGL 2 build. Not read further (the Direct3D 11 track's ground). So the per-draw
+  comparison still rests on SimpleLightingPC's 4 draws and 2 passes a frame (run G3b-3), and the
+  front's own share is not measured: it ran natively while recording, and the WebGPU track's
+  profiler route (frames/run) runs programs through the rig's forwarder, which recurses with
+  this back end's ANGLE.
+
 ## Measurements, run G3b-4
 
 - 2026-11-18, desktop (i9-9900K, RTX 3080, driver 32.0.16.2101, Chrome 157.0.8103.78), queued
@@ -1831,11 +1930,14 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 
 ## Known failures
 
-- (G3b run 4) Natively, about 400 WebGL 2 programs alive at once lose mozangle's ANGLE device
-  (Direct3D 11 "Failed to map D3D11 resource", reported as a lost device with GL error 0x502).
-  Found through the shaders track's `tests/filter_draw.rs`, which never destroys its programs
-  (see "G3b: what the fronts ask"); with them destroyed its 16 seeds pass. Whether Chrome's ANGLE
-  has such a bound is not measured.
+- (G3b run 4, corrected in run 5) Natively, the shaders track's `tests/filter_draw.rs` loses
+  mozangle's ANGLE device (Direct3D 11 "Failed to map D3D11 resource", reported as a lost device
+  with GL error 0x502) after about 400 of its programs are alive at once; with its programs
+  destroyed its 16 seeds pass. It is not a bound on the number of programs: the independent check
+  of run 4 kept 800 small distinct programs alive and drew each once, natively and in Chrome,
+  with no loss. So it depends on what the programs are (the filter test's are large tap loops,
+  which ANGLE compiles into large Direct3D shaders) or on what is made per program. The cause
+  inside ANGLE is not found; a real program keeping hundreds of large shaders alive may meet it.
 
 - (run 17) `decoded_on_the_host_equals_direct3d_11` (tests/bc_reference.rs): BC1 to BC5 decoded by
   bcdec_rs, the route of browsers without the BC extensions, are up to 13 8-bit steps from what the
@@ -1939,11 +2041,28 @@ const, 499 unit-test and 4,736 test findings, 2 redefinitions, 15 "restated").
   tests/suite.rs) and the 15 "restated" lines were read: the values only coincide with the named
   facts (256 bytes of a row against `Features::PROVOKING_VERTEX_LAST`, and so on), so nothing is
   imported for them.
-- The automatic check (branch phase-1-literals) has no check crate on it yet (its head is phase 1
-  work), so it is not merged and this branch has no baseline.
+- (G3b run 5) New bare numbers of runs 3 and 4 (check of run 4): B5G6R5's packing on read now
+  takes its shifts and steps from one named `B5G6R5_BITS` (format.rs) and its rounding from
+  `u8::MAX`; BGRX's alpha byte is `u8::MAX`. Left as they are: the per-format component widths
+  in convert.rs `bits()` (R11G11B10's `[11, 11, 10, 0]` among them) and `B5G6R5_BITS`, which the
+  audit (fix-graphics.md item 16) gives to `wcontainers-gpu` beside `Format::block()`; until the
+  interface has them, this crate keeps its one table and moves to the interface's when it lands.
+  The new code of this run (linear values, special float values, read counting) names its GLSL
+  names once (`VARYING`, `MAIN`, `RETURN`, `CARRIED`, `CENTROID_W` in shader.rs) and derives
+  sizes from types and formats.
+- The automatic check (branch phase-1-literals, 340 commits ahead, its third run on 2026-11-18
+  still in progress, merged by no graphics branch) is not merged: the task names only the
+  phase-2-graphics branches for merging. This branch has no baseline.
 
 ## Departures from the plan
 
+- (G3b run 5) Linear (`noperspective`) values, which GLSL ES 3.00 lacks, are built in the GLSL
+  writing (plan 6.5's place for such fixes), with no run-time slow path to count: a multiply per
+  value in each stage, and at the centroid one more varying (w) per program that has any.
+- (G3b run 5) Read backs count `FormatConverted` where the host converts the values read (BGRA's
+  swap, B5G6R5 packed again from bytes). Reads that only keep part of each texel `readPixels`
+  wrote wider (R8 read as RGBA bytes, and the like) are not counted: they are WebGL 2's only read
+  of those formats, a copy like dropping a row's padding, not a slower route beside a fast one.
 - (G3b run 4) Plan 6.5 lists GLSL ES 3.00's fixes; one more is made here, by the same rule (it
   needs nothing beyond the module): plain reads of a depth texture the program also compares
   against go through a float copy of its variable (`plain_depth_reads`). Like the sampler split
@@ -2163,6 +2282,12 @@ const, 499 unit-test and 4,736 test findings, 2 redefinitions, 15 "restated").
 
 ## Interface changes
 
+- 8beef003 (G3b run 5) "interface: fine derivatives in programs are a capability":
+  `Features::FINE_DERIVATIVES` (bit 57), and the plan's lists in 10 (WebGPU has it, WebGL 2 lacks
+  it). Before, a shader using `dpdxFine` reached this back end's GLSL writing and was answered
+  `Invalid`, so a front could not read the gap from the caps (check of G3b run 4). The WebGPU
+  back end lists its features by hand and does not declare the bit yet (its track's to add:
+  WGSL always has fine derivatives).
 - 62e28dfe (G3b run 2) "interface: derived serde for the resource, pass and clear descriptors, so a
   call stream can be saved and replayed": `Serialize` and `Deserialize` on the descriptors that
   had none (buffer, texture, view and sampler descriptions and their usages, origins, extents,
@@ -2279,20 +2404,22 @@ const, 499 unit-test and 4,736 test findings, 2 redefinitions, 15 "restated").
 
 ## Next
 
-G3b: every finding of check9 is settled (the last, the 16-seed filter run, in run 4: the test's
-leaked programs). In this order:
-0. How many live programs Chrome's ANGLE holds (natively about 400 lose the device): a check
-   making some hundreds of distinct programs, each drawn once and kept, in Chrome and natively,
-   run `gpu-job --alone`.
+G3b: every finding of the check of run 4 is settled or recorded (run 5). In this order:
+0. What about the filter test's programs loses mozangle's device after about 400 of them (800 small
+   programs do not; Known failures): keep its large tap-loop programs alive one by one and watch
+   ANGLE's memory, natively, `gpu-job --alone`; then the same in Chrome.
 1. Which texture's twin SimpleLightingPC refreshes every second frame (`CopyThroughBuffer` 291 of
    580 frames; likely an sRGB target view of its swap chain's buffer), and whether a draw or a blit
    can refresh it without the pixel buffer. It no longer waits (run 3), but it is a copy a frame.
-2. Record more real programs: one with many draws a frame (bgfx's examples drew nothing through
-   the WebGL 2 build; Godot's compatibility renderer overflowed its stack: ask the Direct3D 11
+2. Measure the front's share of a frame (a profiler run as the WebGPU track's frames/run does,
+   but with the libraries beside the program, as record-direct.ps1 places them), and record
+   more real programs: one with many draws a frame (bgfx's examples drew nothing through
+   the WebGL 2 build, again in run 5 with `--d3d11`; Godot's compatibility renderer overflowed its stack: ask the Direct3D 11
    track), and agree with the WebGPU track that it replays the same files (src/trace.rs is generic
    over `Backend`; scratch g3b2/atg-simplelightingpc.bin is one).
-3. `noperspective` inputs: the vertex stage writes the value times w and w beside it, the
-   fragment stage divides; needs the pair of stages at link time (refused by name today).
+3. Global GLSL constants holding negative zero or bits made floats are still folded by ANGLE
+   (`opaque_float_bits` cannot reach a constant initialiser); naga writes them only for named
+   module constants, which the converters do not make today.
 4. Rerun the Direct3D 11 front's WebGL 2 scenes after its next runs (constants: the front's
    constants through a texture past the uniform block limit; views at 10_0 through
    `ReinterpretCopy`). Formats, targets and mips pass since run 3.

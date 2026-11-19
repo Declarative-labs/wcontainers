@@ -168,6 +168,11 @@ bitflags! {
         const TEXEL_BUFFERS = 1 << 55;
         /// [`crate::FillMode::Point`]. WebGL's polygon mode draws lines only.
         const POLYGON_MODE_POINT = 1 << 56;
+        /// Fine derivatives in programs (WGSL's `dpdxFine`, `dpdyFine` and `fwidthFine`: each pixel
+        /// differenced within its own row or column of its 2 by 2 quad). Plain and coarse ones need no
+        /// bit. Without it a back end refuses such a shader with [`crate::GpuError::Absent`] of this
+        /// bit; Direct3D's feature levels below 11_0 have none.
+        const FINE_DERIVATIVES = 1 << 57;
     }
 }
 

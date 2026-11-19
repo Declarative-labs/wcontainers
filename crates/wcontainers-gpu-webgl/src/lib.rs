@@ -2466,6 +2466,9 @@ impl Gl {
         if read.repacks() {
             wide.resize(texels * read.texel_read(), 0);
         }
+        if read.converts() {
+            self.slow.hit(SlowPath::FormatConverted);
+        }
         for i in 0..extent.depth_or_layers as usize {
             let layer = self.read_layer(region, i as u32);
             self.read_framebuffer(t, region.mip, layer);
@@ -4014,8 +4017,8 @@ impl Backend for Gl {
                     let at = (layer * rows_per_layer as usize + r) * row_pitch as usize;
                     format::swap_red_blue(&mut swapped[at..at + row]);
                     if format::alpha_one(region.texture.desc.format) {
-                        for t in swapped[at..at + row].as_chunks_mut::<4>().0 {
-                            t[3] = 255;
+                        for [.., alpha] in swapped[at..at + row].as_chunks_mut::<4>().0 {
+                            *alpha = u8::MAX;
                         }
                     }
                 }
@@ -4913,6 +4916,9 @@ impl Backend for Gl {
             ReadSource::Buffer { .. } => None,
         }
         .filter(|r| r.repacks());
+        if repack.is_some_and(format::ReadAs::converts) {
+            self.slow.hit(SlowPath::FormatConverted);
+        }
         Ok(Handle(Rc::new(core::cell::RefCell::new(ReadbackObj {
             pbo: Some(pbo),
             queries: Vec::new(),
