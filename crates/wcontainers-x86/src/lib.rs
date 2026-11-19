@@ -28,7 +28,7 @@ pub mod encoding;
 #[cfg(feature = "translate")]
 pub use decode::{Instruction, claim_group, decode};
 #[cfg(feature = "translate")]
-pub use flags::{Flag, Flags, Shape};
+pub use flags::{Condition, Flag, Flags, Shape, Test};
 #[cfg(feature = "translate")]
 pub use guest::{Control, Offer, Reason, Trap};
 #[cfg(feature = "translate")]

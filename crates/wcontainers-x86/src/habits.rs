@@ -3,7 +3,7 @@
 
 use crate::X86_64;
 use crate::decode::Instruction;
-use crate::flags::{BELOW, BELOW_OR_EQUAL, EQUAL, LESS, LESS_OR_EQUAL};
+use crate::flags::{Condition, Test};
 use crate::guest::ALL_FLAGS;
 use crate::operand::{General, general, jcc, memory_bytes};
 use iced_x86::{Mnemonic, OpKind, Register};
@@ -126,8 +126,8 @@ pub fn jump_table(
         if let Some(cond) = jcc(ins.mnemonic()) {
             // Taken above the bound: `ja` (not below or equal) or `jae` (not below).
             let inclusive = match cond {
-                c if c == BELOW_OR_EQUAL | 1 => true,
-                c if c == BELOW | 1 => false,
+                Condition::Above => true,
+                Condition::AboveOrEqual => false,
                 _ => return None,
             };
             let (_, compare) = walk.get(k + 1)?;
@@ -172,17 +172,16 @@ pub fn branch_comparison(
     path: &[(u64, Instruction, Effects<X86_64>)],
     branch: &Instruction,
 ) -> Option<Comparison<u8>> {
-    // The even condition of each pair holds as the relation, the odd one is its negation.
     let cond = jcc(branch.iced.mnemonic())?;
-    let (relation, signed) = match cond & !1 {
-        EQUAL => (Relation::Eq, false),
-        BELOW => (Relation::Below { inclusive: false }, false),
-        BELOW_OR_EQUAL => (Relation::Below { inclusive: true }, false),
-        LESS => (Relation::Below { inclusive: false }, true),
-        LESS_OR_EQUAL => (Relation::Below { inclusive: true }, true),
-        _ => return None,
+    let (relation, signed) = match cond.test() {
+        Test::Equal => (Relation::Eq, false),
+        Test::Below => (Relation::Below { inclusive: false }, false),
+        Test::BelowOrEqual => (Relation::Below { inclusive: true }, false),
+        Test::Less => (Relation::Below { inclusive: false }, true),
+        Test::LessOrEqual => (Relation::Below { inclusive: true }, true),
+        Test::Overflow | Test::Sign | Test::Parity => return None,
     };
-    let relation = if cond & 1 == 1 {
+    let relation = if cond.negated() {
         relation.negated()
     } else {
         relation

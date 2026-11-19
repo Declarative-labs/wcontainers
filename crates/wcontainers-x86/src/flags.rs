@@ -283,32 +283,99 @@ pub fn flag_value(s: &mut InstructionSink<'_>, flags: Flags, flag: Flag) {
     }
 }
 
-/// Push whether condition `cond` (the low four bits of a `jcc` opcode) holds, from the flags one by one.
-pub fn condition_from_flags<E: Emitter<X86_64> + ?Sized>(e: &mut E, cond: u8) {
-    match cond >> 1 {
-        0 => e.flag(Flag::O),
-        1 => e.flag(Flag::C),
-        2 => e.flag(Flag::Z),
-        3 => {
+/// The condition of a `jcc`, `setcc` or `cmovcc`, in the order of its encoding (the low four bits of the
+/// opcode).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Condition {
+    Overflow,
+    NotOverflow,
+    Below,
+    AboveOrEqual,
+    Equal,
+    NotEqual,
+    BelowOrEqual,
+    Above,
+    Sign,
+    NotSign,
+    Parity,
+    NotParity,
+    Less,
+    GreaterOrEqual,
+    LessOrEqual,
+    Greater,
+}
+
+/// What a condition tests; a condition holds when the test does, or is its negation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Test {
+    Overflow,
+    Below,
+    Equal,
+    BelowOrEqual,
+    Sign,
+    Parity,
+    Less,
+    LessOrEqual,
+}
+
+impl Condition {
+    pub const fn test(self) -> Test {
+        use Condition::*;
+        match self {
+            Overflow | NotOverflow => Test::Overflow,
+            Below | AboveOrEqual => Test::Below,
+            Equal | NotEqual => Test::Equal,
+            BelowOrEqual | Above => Test::BelowOrEqual,
+            Sign | NotSign => Test::Sign,
+            Parity | NotParity => Test::Parity,
+            Less | GreaterOrEqual => Test::Less,
+            LessOrEqual | Greater => Test::LessOrEqual,
+        }
+    }
+
+    /// Whether it holds when its test fails.
+    pub const fn negated(self) -> bool {
+        use Condition::*;
+        matches!(
+            self,
+            NotOverflow
+                | AboveOrEqual
+                | NotEqual
+                | Above
+                | NotSign
+                | NotParity
+                | GreaterOrEqual
+                | Greater
+        )
+    }
+}
+
+/// Push whether `cond` holds, from the flags one by one.
+pub fn condition_from_flags<E: Emitter<X86_64> + ?Sized>(e: &mut E, cond: Condition) {
+    match cond.test() {
+        Test::Overflow => e.flag(Flag::O),
+        Test::Below => e.flag(Flag::C),
+        Test::Equal => e.flag(Flag::Z),
+        Test::BelowOrEqual => {
             e.flag(Flag::C);
             e.flag(Flag::Z);
             e.sink().i32_or();
         }
-        4 => e.flag(Flag::S),
-        5 => e.flag(Flag::P),
-        6 => {
+        Test::Sign => e.flag(Flag::S),
+        Test::Parity => e.flag(Flag::P),
+        Test::Less => {
             e.flag(Flag::S);
             e.flag(Flag::O);
             e.sink().i32_ne();
         }
-        _ => {
+        Test::LessOrEqual => {
             e.flag(Flag::Z);
             e.flag(Flag::S);
             e.flag(Flag::O);
             e.sink().i32_ne().i32_or();
         }
     }
-    if cond & 1 == 1 {
+    if cond.negated() {
         e.sink().i32_eqz();
     }
 }
@@ -522,18 +589,9 @@ fn signed(s: &mut InstructionSink<'_>, local: u32, width: u8) {
     }
 }
 
-/// The conditions by the low four bits of `jcc`, in pairs: the even one holds, the odd one is its negation.
-pub(crate) const BELOW: u8 = 2;
-pub(crate) const EQUAL: u8 = 4;
-pub(crate) const BELOW_OR_EQUAL: u8 = 6;
-const SIGN: u8 = 8;
-pub(crate) const LESS: u8 = 12;
-pub(crate) const LESS_OR_EQUAL: u8 = 14;
-
 /// Push whether `cond` holds as one comparison of the shape's operands, for a plain difference (cmp, sub)
 /// and the logic instructions (test, and); false where the flags must be worked out.
-pub fn condition_direct(s: &mut InstructionSink<'_>, flags: Flags, cond: u8) -> bool {
-    let holds = cond & !1;
+pub fn condition_direct(s: &mut InstructionSink<'_>, flags: Flags, cond: Condition) -> bool {
     match flags {
         Flags::Sub {
             width,
@@ -542,45 +600,45 @@ pub fn condition_direct(s: &mut InstructionSink<'_>, flags: Flags, cond: u8) -> 
             result,
             borrow: None,
             kept_carry: None,
-        } => match holds {
-            BELOW => {
+        } => match cond.test() {
+            Test::Below => {
                 s.local_get(a).local_get(b).i64_lt_u();
             }
-            EQUAL => {
+            Test::Equal => {
                 s.local_get(a).local_get(b).i64_eq();
             }
-            BELOW_OR_EQUAL => {
+            Test::BelowOrEqual => {
                 s.local_get(a).local_get(b).i64_le_u();
             }
-            SIGN => sign(s, width, result),
-            LESS => {
+            Test::Sign => sign(s, width, result),
+            Test::Less => {
                 signed(s, a, width);
                 signed(s, b, width);
                 s.i64_lt_s();
             }
-            LESS_OR_EQUAL => {
+            Test::LessOrEqual => {
                 signed(s, a, width);
                 signed(s, b, width);
                 s.i64_le_s();
             }
-            _ => return false,
+            Test::Overflow | Test::Parity => return false,
         },
         // CF and OF clear: below never holds, below or equal is ZF, less is SF, less or equal ZF or SF.
-        Flags::Logic { width, result } => match holds {
-            BELOW => {
+        Flags::Logic { width, result } => match cond.test() {
+            Test::Below => {
                 s.i32_const(0);
             }
-            EQUAL | BELOW_OR_EQUAL => zero(s, result),
-            SIGN | LESS => sign(s, width, result),
-            LESS_OR_EQUAL => {
+            Test::Equal | Test::BelowOrEqual => zero(s, result),
+            Test::Sign | Test::Less => sign(s, width, result),
+            Test::LessOrEqual => {
                 signed(s, result, width);
                 s.i64_const(0).i64_le_s();
             }
-            _ => return false,
+            Test::Overflow | Test::Parity => return false,
         },
         _ => return false,
     }
-    if cond & 1 == 1 {
+    if cond.negated() {
         s.i32_eqz();
     }
     true

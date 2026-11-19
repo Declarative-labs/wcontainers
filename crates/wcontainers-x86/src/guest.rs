@@ -2,7 +2,7 @@
 //! use.
 
 use crate::decode::Instruction;
-use crate::flags::{Flag, Flags, Shape};
+use crate::flags::{Condition, Flag, Flags, Shape};
 use crate::meaning::is_string;
 use crate::operand::*;
 use crate::{FLAGS_WORD, FS_BASE, GS_BASE, RFLAGS, X86_64, X86Block, XMM};
@@ -264,14 +264,13 @@ impl Guest for X86_64 {
         crate::flags::flag_value(sink, flags, flag);
     }
 
-    /// The low four bits of the opcode of `jcc`.
-    type Cond = u8;
+    type Cond = Condition;
 
-    fn condition_direct(sink: &mut InstructionSink<'_>, flags: Flags, cond: u8) -> bool {
+    fn condition_direct(sink: &mut InstructionSink<'_>, flags: Flags, cond: Condition) -> bool {
         crate::flags::condition_direct(sink, flags, cond)
     }
 
-    fn condition_from_flags<E: Emitter<Self> + ?Sized>(e: &mut E, cond: u8) {
+    fn condition_from_flags<E: Emitter<Self> + ?Sized>(e: &mut E, cond: Condition) {
         crate::flags::condition_from_flags(e, cond);
     }
 

@@ -3,6 +3,7 @@
 
 use crate::X86_64;
 use crate::decode::Instruction;
+use crate::flags::Condition;
 use iced_x86::{MemorySize, Mnemonic, OpKind, Register};
 use wasm_encoder::{MemArg, MemArgTarget, ValType};
 use wcontainers_guest_cpu::{
@@ -269,76 +270,76 @@ pub fn check_kind(kind: AccessKind) -> Access {
     }
 }
 
-/// The condition of a `jcc`, `cmovcc` or `setcc` mnemonic: the low four bits of its opcode.
-pub fn condition(m: Mnemonic) -> Option<u8> {
+/// The condition of a `jcc`, `cmovcc` or `setcc` mnemonic.
+pub fn condition(m: Mnemonic) -> Option<Condition> {
     jcc(m).or_else(|| cmovcc(m)).or_else(|| setcc(m))
 }
 
-pub fn jcc(m: Mnemonic) -> Option<u8> {
+pub fn jcc(m: Mnemonic) -> Option<Condition> {
     use Mnemonic::*;
     Some(match m {
-        Jo => 0,
-        Jno => 1,
-        Jb => 2,
-        Jae => 3,
-        Je => 4,
-        Jne => 5,
-        Jbe => 6,
-        Ja => 7,
-        Js => 8,
-        Jns => 9,
-        Jp => 10,
-        Jnp => 11,
-        Jl => 12,
-        Jge => 13,
-        Jle => 14,
-        Jg => 15,
+        Jo => Condition::Overflow,
+        Jno => Condition::NotOverflow,
+        Jb => Condition::Below,
+        Jae => Condition::AboveOrEqual,
+        Je => Condition::Equal,
+        Jne => Condition::NotEqual,
+        Jbe => Condition::BelowOrEqual,
+        Ja => Condition::Above,
+        Js => Condition::Sign,
+        Jns => Condition::NotSign,
+        Jp => Condition::Parity,
+        Jnp => Condition::NotParity,
+        Jl => Condition::Less,
+        Jge => Condition::GreaterOrEqual,
+        Jle => Condition::LessOrEqual,
+        Jg => Condition::Greater,
         _ => return None,
     })
 }
 
-pub fn cmovcc(m: Mnemonic) -> Option<u8> {
+pub fn cmovcc(m: Mnemonic) -> Option<Condition> {
     use Mnemonic::*;
     Some(match m {
-        Cmovo => 0,
-        Cmovno => 1,
-        Cmovb => 2,
-        Cmovae => 3,
-        Cmove => 4,
-        Cmovne => 5,
-        Cmovbe => 6,
-        Cmova => 7,
-        Cmovs => 8,
-        Cmovns => 9,
-        Cmovp => 10,
-        Cmovnp => 11,
-        Cmovl => 12,
-        Cmovge => 13,
-        Cmovle => 14,
-        Cmovg => 15,
+        Cmovo => Condition::Overflow,
+        Cmovno => Condition::NotOverflow,
+        Cmovb => Condition::Below,
+        Cmovae => Condition::AboveOrEqual,
+        Cmove => Condition::Equal,
+        Cmovne => Condition::NotEqual,
+        Cmovbe => Condition::BelowOrEqual,
+        Cmova => Condition::Above,
+        Cmovs => Condition::Sign,
+        Cmovns => Condition::NotSign,
+        Cmovp => Condition::Parity,
+        Cmovnp => Condition::NotParity,
+        Cmovl => Condition::Less,
+        Cmovge => Condition::GreaterOrEqual,
+        Cmovle => Condition::LessOrEqual,
+        Cmovg => Condition::Greater,
         _ => return None,
     })
 }
 
-pub fn setcc(m: Mnemonic) -> Option<u8> {
+pub fn setcc(m: Mnemonic) -> Option<Condition> {
     use Mnemonic::*;
     Some(match m {
-        Seto => 0,
-        Setno => 1,
-        Setb => 2,
-        Setae => 3,
-        Sete => 4,
-        Setne => 5,
-        Setbe => 6,
-        Seta => 7,
-        Sets => 8,
-        Setns => 9,
-        Setp => 10,
-        Setnp => 11,
-        Setl => 12,
-        Setge => 13,
-        Setle => 14,
-        Setg => 15,
+        Seto => Condition::Overflow,
+        Setno => Condition::NotOverflow,
+        Setb => Condition::Below,
+        Setae => Condition::AboveOrEqual,
+        Sete => Condition::Equal,
+        Setne => Condition::NotEqual,
+        Setbe => Condition::BelowOrEqual,
+        Seta => Condition::Above,
+        Sets => Condition::Sign,
+        Setns => Condition::NotSign,
+        Setp => Condition::Parity,
+        Setnp => Condition::NotParity,
+        Setl => Condition::Less,
+        Setge => Condition::GreaterOrEqual,
+        Setle => Condition::LessOrEqual,
+        Setg => Condition::Greater,
         _ => return None,
     })
 }
