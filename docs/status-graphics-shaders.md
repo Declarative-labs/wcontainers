@@ -2142,6 +2142,16 @@ scratch `graphics-shaders` (run40-*):
 - Desktop, at 3f73914a: Windows lint clean, then the whole suite as one GPU job
   (`cargo test -p wcontainers-shaders --no-fail-fast -- --test-threads 1 --skip mutated`,
   run40-suite-gpu.log): 21 test binaries, all pass.
+- Chrome's compile of every written file (`web/check`, run40-chrome.log, one GPU job): every WGSL
+  file of every corpus compiles (corpus 185, games 519, games-dxil 425, own 118, own-dxil 59, rig
+  79, rig-dxil 55, runner 1432, runner-dxil 1375), the new `ps_shadow_wide`, `ps_wave_signed` and
+  the runner's wave-ops-int among them. WebGL 2 fails 117 GLSL files, each of a kind it lacks
+  (bitfield operations and `findLSB`/`findMSB`, gathers, multisampled samplers, the primitive
+  index) or a cull-distance vertex shader's plain GLSL ("array size mismatch" at the cull
+  distance array; WebGL 2 has no cull route, so nothing runs it).
+- Clean-up: the laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders` (5.7 GB) and
+  the desktop's `C:\wc\target\phase-2-graphics-shaders` deleted; scratch keeps the logs and
+  `run40/out` (47 MB, the written files Chrome compiled).
 Run 39, 2026-11-19, counts only (laptop i7-8750H, load 3 to 11 with another track building, 4 or 5
 cargo jobs; it was unreachable twice for some minutes; desktop shared through the queue, 3 cargo
 jobs, load not taken), logs in scratch `graphics-shaders/run39`:
