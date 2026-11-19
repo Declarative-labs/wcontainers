@@ -56,8 +56,9 @@ committed run 35's work, dumped Godot's 3D platformer's refused shaders and swep
 buffers' literals; run 37 gave shader resource views storage offsets and DXIL targets four
 components; run 38 adopted the literal check, reflected system values from the signature (two
 clip distances were counted as one) and passed geometry shaders' clip distances on; run 39 built
-cull distances from vertex shaders through the stage helper (`CullDistanceAsGeometry`); what
-remains is under Next. Runs 21 to 33 merged origin/phase-2-graphics-webgpu,
+cull distances from vertex shaders through the stage helper (`CullDistanceAsGeometry`); run 40
+applied views' component mappings to depth textures read plainly and converted wave minimums and
+maximums of the other signedness; what remains is under Next. Runs 21 to 33 merged origin/phase-2-graphics-webgpu,
 -webgl, -direct3d-11, -direct3d-12 and -rig (run 28: one conflict in the interface's `slow.rs`,
 the same three slow paths in two orders, ours kept).
 
@@ -1688,7 +1689,64 @@ Run 39 (what both fronts wait on: cull distances):
   The laptop loop's job count stays 5 in the script (changing a script line with a number adds a
   baseline line); this run passed `-j 4` on its commands.
 
+Run 40 (the Direct3D 12 track's Godot refusal and wave item; the literal check after the merges):
+- Merged origin/phase-2-graphics-webgl (which held -webgpu), -direct3d-11 and -direct3d-12; one
+  conflict, in `literals.baseline` (neighbouring lines): both sides kept, sorted, and the 37 lines
+  the check then printed with `-` deleted (one commit). The shared line, -rig and phase-1-literals
+  had nothing new. Killed three of this branch's own orphaned jobs on the desktop (two submissions
+  left from 2026-11-18 and one from a job this run stopped), which held the branch's lock.
+- The literal check on the merged tree reports two `+` lines in other tracks' crates, which this
+  track may neither fix nor add: the WebGL back end's `shader.rs` literal 8, moved from `compile`
+  to `write` by its own commit 7c26c4b8 (its baseline still names `compile`), and the Direct3D 12
+  front's `device/early.rs` `TRIANGLE_VERTICES = 3`, a redefinition of this crate's
+  `stage::TRIANGLE_VERTICES` (both named in parallel on 2026-11-19). This run made
+  `stage::TRIANGLE_VERTICES` and the two adjacency counts public so that front can import it.
+- The Direct3D 12 track's five shader-crate lines its baseline lacked (its "Asked of other
+  tracks"): build.rs's `"."` and dxil.rs's `3` are named now (`BOUNDARY`, the boundary's
+  directory; `TableWord`, a new enum of `cpp/boundary.h` from which the C++ and the Rust both take
+  the table entries' word count, through the generated codes); compute_draw.rs's `512` and `2048`
+  are in this branch's baseline as `restated` lines and reach that branch when it merges this one.
+- `SwizzledDepth` (Godot's 3D platformer on Direct3D 12): a view's component mapping on a texture
+  the program compares against. A plain read of such a texture is widened to (depth, 0, 0, 1) on
+  both routes; the mapping now picks that widening's components (`variant/swizzle.rs`,
+  `depth_mapped`). Comparisons, gathers and reads used as their depth alone take the first
+  component, so they stay exact wherever the mapping keeps red first (whether or not Direct3D
+  applies the mapping before comparing); a mapping moving red away is still refused,
+  `SWIZZLED_DEPTH` (now a public constant). New own `ps_shadow_wide` (fxc and dxc): the texture read
+  whole by a load and a level-zero sample, and compared against a bound the compilers cannot fold
+  (fxc folded the first version's `lit > 2` away, leaving a plain texture). Unit test
+  `mapped_depth_views_compose_what_they_read`; drawn test
+  `depth_views_with_component_mappings_read_as_mapped` (shadow_draw.rs), against real
+  Direct3D 11's picture of the unmapped view with the mapping applied per texel on the CPU.
+- Wave minimums and maximums of the other signedness (the Direct3D 12 runner's wave-ops-int,
+  "GroupNonUniformSMin on integers of the other signedness"): subgroup operations work on values,
+  not memory, so the carried SPIR-V reader now reads the value in the signedness the instruction
+  names and gives the result its type's ("naga as carried"); atomics stay as they were. New own
+  `ps_wave_signed` (dxc); unit test `wave_minimums_of_the_other_signedness_read_their_operands_as_named`;
+  `wave_operations_draw_as_direct3d_12_does` draws it too: 0 of 4096 texels apart from real
+  Direct3D 12 (2591 drawn), wgpu on Vulkan, RTX 3080. Runner records: wave-ops-int-1 and -2 from
+  the refusal to `ok-wgsl glsl-write`.
+- Literal sweep, one step: the draw bases' helper block, built twice before (lower.rs, dxil.rs), is
+  one function `build::draw_bases_block` with its offsets and span from `#[repr(C)]` mirrors
+  (`DrawBases`, `DrawArguments`, `offset_of!`); the block's and members' names are constants. Found
+  on the way (check rule 8): naming the members `draw`, `indexed` and `first_instance` made the
+  Direct3D 12 front's tests (`"draw"`), two of this crate's tests and the carried naga's HLSL
+  writer (`SPECIAL_FIRST_INSTANCE`) restate them, so the members are now `draw_number`,
+  `arguments_indexed` and `start_instance` (names only; the layout is unchanged), and
+  `ARGUMENTS_OFFSET` is public for the test that looks for it. This crate's baseline lines (src,
+  build.rs, tests): 1121 after the merges (the Direct3D 12 side brought back lines this branch had
+  removed), 1077 at the end. The check passes but for the two other tracks' lines above; changes
+  that could add lines: 18 (run 39's 16, and 55435e40 the start, ca2eb3e8 the init after the
+  baseline arrived by a merge, both the Direct3D 12 track's, merged in).
+
 Next (in order):
+- The other tracks, from run 40's merge: the Direct3D 12 front deletes its own
+  `TRIANGLE_VERTICES` in `device/early.rs` and imports `wcontainers_shaders::stage::TRIANGLE_VERTICES`;
+  the WebGL back end's baseline line `compile 8` follows the literal to `write` (or the value is
+  named). Until then the literal check on a merged tree prints these two `+` lines.
+- The fronts (theirs, now possible since run 40): Godot's 3D platformer on Direct3D 12 past
+  `SwizzledDepth` (the depth view's mapping goes in `swizzled` as any view's); the runner's
+  wave-ops-int rerun.
 - The fronts (theirs, now possible since run 39): cull distances. Where the back end lacks
   `Features::CULL_DISTANCE` (every back end today) and a vertex shader's reflection lists
   `SystemValue::CullDistance`, convert it with every input pulled and `draw_base: Helpers` (and its
@@ -1748,8 +1806,8 @@ Next (in order):
   the program declares another (needs an interface field), `CalculateLevelOfDetail` (both routes;
   the reader's `ImageQueryLod`), `SampleClamp` (image operand MinLod), `SparseFeedback`,
   `globallycoherent` storage (memory operands at device scope), `CullDistance`, a DXIL pixel
-  shader's layer and viewport index (reader "unsupported builtin"), wave minimums and maximums of the
-  other signedness, native 16-bit floats (WebGPU's shader-f16, through a capability), and the
+  shader's layer and viewport index (reader "unsupported builtin"), native 16-bit floats
+  (WebGPU's shader-f16, through a capability), and the
   values that differ without a refusal (min16float constants, frexp; not investigated this run).
 - The Direct3D 11 track's items still open here: `LINE_COVERAGE` (alpha-antialiased lines),
   `GeometryStreams`, `PRIMITIVE_ID_FROM_STAGE`, and atg-simplecomputepc's division (not investigated; its shader
@@ -2071,6 +2129,29 @@ let reflection = &converted.reflection;
 
 ## Measurements
 
+Run 40, 2026-11-19, counts only (laptop i7-8750H, load 3 to 14 with another track building, 2 to
+4 cargo jobs; desktop shared through the queue's hazard group, 3 cargo jobs, load not taken), logs in
+scratch `graphics-shaders` (run40-*):
+- Desktop, RTX 3080: `depth_views_with_component_mappings_read_as_mapped` (run40-gpu4.log, seeds 1
+  to 4): 48 comparisons, all 0 texels apart, and the refusal of the mapping moving red checked on
+  both programs and routes; `textures_compared_and_read_plainly_draw_as_direct3d_does` 32
+  comparisons, all pass; `wave_operations_draw_as_direct3d_12_does` (run40-gpu2.log): `ps_wave` 0
+  of 4096 texels apart (2074 drawn), `ps_wave_signed` 0 of 4096 (2591 drawn).
+- Laptop, the whole suite but the fuzz with every corpus and glslang (run40-suite1.log): 20 test
+  binaries pass, the corpus binary fails only on the runner corpus's known `distance-4`.
+- Desktop, at 3f73914a: Windows lint clean, then the whole suite as one GPU job
+  (`cargo test -p wcontainers-shaders --no-fail-fast -- --test-threads 1 --skip mutated`,
+  run40-suite-gpu.log): 21 test binaries, all pass.
+- Chrome's compile of every written file (`web/check`, run40-chrome.log, one GPU job): every WGSL
+  file of every corpus compiles (corpus 185, games 519, games-dxil 425, own 118, own-dxil 59, rig
+  79, rig-dxil 55, runner 1432, runner-dxil 1375), the new `ps_shadow_wide`, `ps_wave_signed` and
+  the runner's wave-ops-int among them. WebGL 2 fails 117 GLSL files, each of a kind it lacks
+  (bitfield operations and `findLSB`/`findMSB`, gathers, multisampled samplers, the primitive
+  index) or a cull-distance vertex shader's plain GLSL ("array size mismatch" at the cull
+  distance array; WebGL 2 has no cull route, so nothing runs it).
+- Clean-up: the laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders` (5.7 GB) and
+  the desktop's `C:\wc\target\phase-2-graphics-shaders` deleted; scratch keeps the logs and
+  `run40/out` (47 MB, the written files Chrome compiled).
 Run 39, 2026-11-19, counts only (laptop i7-8750H, load 3 to 11 with another track building, 4 or 5
 cargo jobs; it was unreachable twice for some minutes; desktop shared through the queue, 3 cargo
 jobs, load not taken), logs in scratch `graphics-shaders/run39`:
@@ -2928,8 +3009,9 @@ the tree as published"), plus these changes, each a later commit touching only `
 - WGSL writer, the module's diagnostic filters are written as `diagnostic(...)` directives
   (`Severity::to_wgsl_ident` added beside `from_wgsl_ident`).
 - SPIR-V reader (run 5): integer instructions read in the signedness they name, the result given its
-  type's (`convert::op_signedness`, `glsl_signedness`, `Frontend::retype_int`); atomic and subgroup
-  minimum and maximum of the other signedness refused (`Error::UnsupportedSignedness`); texel offsets
+  type's (`convert::op_signedness`, `glsl_signedness`, `Frontend::retype_int`); atomic minimum and
+  maximum of the other signedness refused (`Error::UnsupportedSignedness`), subgroup ones (run 40)
+  read their value in the signedness they name and give the result its type's; texel offsets
   on `OpImageFetch` added to the coordinate; unknown load operands refused
   (`Error::UnsupportedImageLoadOperand`) instead of skipped with a log warning.
 - WGSL writer (run 5), `isnan`/`isinf` of f32 scalars and vectors written as bit tests (WGSL has

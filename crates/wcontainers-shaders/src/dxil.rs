@@ -73,7 +73,7 @@ pub(super) use crate::ir::class::COUNTER;
 use crate::ir::class::{CONSTANTS, SAMPLER, STORAGE, VIEW};
 
 /// One resource's (class, space, register).
-type Resource = [u32; 3];
+type Resource = [u32; crate::ir::table_word::COUNT];
 
 /// The words of one [`Resource`], and of one constant buffer's (space, register, size in bytes) on
 /// both routes.
@@ -1330,44 +1330,15 @@ fn draw_bases(
 
 /// The vertex stage's helper constants: the draw's bases at offset 0, laid out as the DXBC route's.
 fn helper_block(module: &mut Module, reflection: &mut Reflection) -> Handle<GlobalVariable> {
-    let mut scalar = |scalar| {
-        module.types.insert(
-            Type {
-                name: None,
-                inner: TypeInner::Scalar(scalar),
-            },
-            Span::UNDEFINED,
-        )
-    };
-    let (i32_ty, u32_ty) = (scalar(Scalar::I32), scalar(Scalar::U32));
-    let member = |name: &str, ty, offset| StructMember {
-        name: Some(name.into()),
-        ty,
-        binding: None,
-        offset,
-    };
-    let ty = module.types.insert(
-        Type {
-            name: Some("Helpers".into()),
-            inner: TypeInner::Struct {
-                members: alloc::vec![
-                    member("base_vertex", i32_ty, 0),
-                    member("first_instance", u32_ty, 4),
-                    member("draw", u32_ty, 8),
-                ],
-                span: 16,
-            },
-        },
-        Span::UNDEFINED,
-    );
+    let (ty, size) = crate::build::draw_bases_block(module);
     reflection.helpers.push(HelperSlot {
         value: HelperValue::DrawBase,
         offset: 0,
     });
-    reflection.helper_size = 16;
+    reflection.helper_size = size;
     module.global_variables.append(
         GlobalVariable {
-            name: Some("helpers".into()),
+            name: Some(crate::build::HELPERS.into()),
             space: AddressSpace::Uniform,
             binding: Some(naga::ResourceBinding {
                 group: HELPER_SET,

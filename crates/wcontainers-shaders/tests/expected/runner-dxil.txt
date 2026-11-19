@@ -1479,8 +1479,8 @@ hlsl+wave-ops-float-6-cs.dxil	ok-wgsl glsl-write
 hlsl+wave-ops-float-7-cs.dxil	ok-wgsl glsl-write
 hlsl+wave-ops-float-8-cs.dxil	ok-wgsl glsl-write
 hlsl+wave-ops-float-9-cs.dxil	ok-wgsl glsl-write
-hlsl+wave-ops-int-1-cs.dxil	spirv-reader GroupNonUniformSMin
-hlsl+wave-ops-int-2-cs.dxil	spirv-reader GroupNonUniformSMax
+hlsl+wave-ops-int-1-cs.dxil	ok-wgsl glsl-write
+hlsl+wave-ops-int-2-cs.dxil	ok-wgsl glsl-write
 hlsl+wave-ops-int-3-cs.dxil	unsupported Int64
 hlsl+wave-ops-int-4-cs.dxil	unsupported Int64
 hlsl+wave-ops-uint-1-cs.dxil	ok-wgsl glsl-write

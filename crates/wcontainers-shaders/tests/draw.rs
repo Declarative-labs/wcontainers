@@ -747,45 +747,56 @@ fn own_shaders_draw_as_direct3d_does() {
 /// Wave operations (`ps_wave`, shader model 6.0, dxc only) drawn through the WebGPU back end with
 /// subgroups against real Direct3D 12's picture of the same DXIL, texel for texel: lane counts,
 /// indices, sums, prefixes, ballots and reads of other lanes, with discarded pixels and the helper
-/// lanes at the triangles' edges taking no part. wgpu on Vulkan, as wgpu's Direct3D 12 path gives
-/// subgroups only through dxc.
+/// lanes at the triangles' edges taking no part; and minimums and maximums of signed values held as
+/// unsigned words (`ps_wave_signed`). wgpu on Vulkan, as wgpu's Direct3D 12 path gives subgroups only
+/// through dxc.
 #[test]
 fn wave_operations_draw_as_direct3d_12_does() {
-    let case = Case {
-        vs: "vs_transform",
-        ps: "ps_wave",
-        format: Format::Rgba32Uint,
-        tint: [1.0; 4],
-        grid: true,
-        not_on_webgl: [Some("WebGL 2 has no subgroups"); 2],
-        known_on_webgl: None,
-        dxil: true,
-        dxil_against_11: false,
-    };
     let gpu12 = wcontainers_graphics_test::d3d12::create(
         wcontainers_graphics_test::Driver::Hardware,
         false,
     )
     .unwrap();
-    let reference = direct3d_12(&gpu12, &case);
-    keep("vs_transform+ps_wave.d3d12", &reference, case.format);
     let mut backend = webgpu_with(wgpu::Backends::VULKAN, wgpu::Features::SUBGROUP);
-    let code = [bytecode("vs_transform.dxil"), bytecode("ps_wave.dxil")];
-    let grid = grid();
-    let draw = Draw::own(&case, &code, true, &grid);
-    let texels = ours(&mut backend, &draw, ProvokingVertex::First);
-    keep("vs_transform+ps_wave.webgpu-dxil", &texels, case.format);
-    let drawn = reference
-        .chunks(16)
-        .filter(|t| t.iter().any(|&b| b != 0))
-        .count();
-    let (count, largest) = differ(&reference, &texels, case.format);
-    eprintln!(
-        "ps_wave webgpu-dxil: {count} of {} texels differ from direct3d 12 ({drawn} drawn), largest difference {largest}",
-        SIZE * SIZE
-    );
-    assert!(drawn > 0);
-    assert_eq!(count, 0);
+    let texel = Format::Rgba32Uint.block().2 as usize;
+    for ps in ["ps_wave", "ps_wave_signed"] {
+        let case = Case {
+            vs: "vs_transform",
+            ps,
+            format: Format::Rgba32Uint,
+            tint: [1.0; 4],
+            grid: true,
+            not_on_webgl: [Some("WebGL 2 has no subgroups"); 2],
+            known_on_webgl: None,
+            dxil: true,
+            dxil_against_11: false,
+        };
+        let reference = direct3d_12(&gpu12, &case);
+        keep(&format!("vs_transform+{ps}.d3d12"), &reference, case.format);
+        let code = [
+            bytecode("vs_transform.dxil"),
+            bytecode(&format!("{ps}.dxil")),
+        ];
+        let grid = grid();
+        let draw = Draw::own(&case, &code, true, &grid);
+        let texels = ours(&mut backend, &draw, ProvokingVertex::First);
+        keep(
+            &format!("vs_transform+{ps}.webgpu-dxil"),
+            &texels,
+            case.format,
+        );
+        let drawn = reference
+            .chunks(texel)
+            .filter(|t| t.iter().any(|&b| b != 0))
+            .count();
+        let (count, largest) = differ(&reference, &texels, case.format);
+        eprintln!(
+            "{ps} webgpu-dxil: {count} of {} texels differ from direct3d 12 ({drawn} drawn), largest difference {largest}",
+            SIZE * SIZE
+        );
+        assert!(drawn > 0);
+        assert_eq!(count, 0, "{ps}");
+    }
 }
 
 /// Native 16-bit integers (`ps_narrow16`, shader model 6.2 with -enable-16bit-types, dxc only),
