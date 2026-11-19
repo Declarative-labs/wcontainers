@@ -80,8 +80,11 @@ The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three laye
   answering, and also shows how long the running chunk's log has been quiet. Use `WC_LONG_ACCEPT=c38b4ad
   WC_LONG_LIMIT=180` on any later restart too. Each restart appends to `driver.log`; the code it runs is the copy in
   `trees/<commit>`, so commits in the checkout do not reach it until it is restarted.
-- Docker outages: Docker's Linux machine stopped on its own twice (2026-11-18 18:14, back by 18:18;
-  2026-11-19 02:05, not back by itself). Since 99eda5e a case whose container Docker could not run fails
+- Docker outages: Docker's Linux machine stopped on its own three times (2026-11-18 18:14, back by
+  18:18; 2026-11-19 02:05, back at 02:39 when someone started it again; 02:52, still down at 03:15). The
+  VM's logs end with no reason given and the host showed no memory pressure; the cause is not known and
+  is outside this track. `resume.sh` restarted the driver at 02:42 on e8677a0 (only this file changed
+  since 6a705f8) and stopped it at 02:53 (chunk 153 again, no line). Since 99eda5e a case whose container Docker could not run fails
   with "Docker failed" and is never compared, so an outage fails a chunk; it does not pass a wrong one.
   When `docker version` answers again: check no `wc-translator-` container is left, then restart the
   driver with the command above (it runs the failed or stopped chunks again first). Do not quit, restart
