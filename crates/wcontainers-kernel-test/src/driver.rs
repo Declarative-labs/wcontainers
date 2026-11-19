@@ -593,6 +593,9 @@ pub struct Prepared {
     pub echo: bool,
     /// The outside of its standard streams.
     pub outside: streams::Outside,
+    /// Whether the guest's clocks are the machine's, so a test that runs for a span of time takes
+    /// that span, rather than moving only with the work run.
+    pub wall_clock: bool,
 }
 
 /// Puts a container's files in a new kernel's root, unless the root is on the backend.
@@ -606,6 +609,7 @@ pub fn prepare(container: &Container<'_>) -> Prepared {
         groups: image::root_groups(container.files),
         echo: false,
         outside: streams::Outside::default(),
+        wall_clock: false,
     }
 }
 
@@ -628,6 +632,7 @@ pub fn run_prepared(
         groups,
         echo,
         outside,
+        wall_clock,
     } = prepared;
     #[cfg(feature = "runtime")]
     let (_alone, _shared);
@@ -642,7 +647,11 @@ pub fn run_prepared(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
     }
     let mut cpu = back_end(seed, container.address_space);
-    let mut host = TestHost::repeatable(seed);
+    let mut host = if wall_clock {
+        TestHost::new(seed)
+    } else {
+        TestHost::repeatable(seed)
+    };
     host.injecting = Some(Injecting::new(seed, injections));
     *host.streams() = Streams::new(outside);
     host.streams().echo = echo;

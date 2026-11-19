@@ -388,6 +388,8 @@ fn run_one(
     root_image: &str,
 ) -> ! {
     prepared.echo = true;
+    // The suite's tests run for spans of the clock, as long as the reference's.
+    prepared.wall_clock = true;
     let file = std::fs::File::create(log).expect("the log");
     // SAFETY: points this process's standard output and error at the log.
     unsafe {

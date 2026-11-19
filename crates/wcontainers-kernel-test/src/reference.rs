@@ -352,7 +352,8 @@ pub fn run_outside(
                     &mut slave_fd,
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
-                    &mut size
+                    // A raw pointer: macOS's openpty takes it mutable, Linux's constant.
+                    &raw mut size
                 ),
                 0,
                 "openpty"
