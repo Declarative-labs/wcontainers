@@ -640,15 +640,10 @@ impl WebGpu {
 
     /// The line printed at each power of two frames presented ([`FRAME_REPORT`]).
     pub fn frame_report(&self) -> String {
-        let counters = format!("{:?}", self.counters);
-        let fields = counters
-            .split_once('{')
-            .and_then(|(_, rest)| rest.rsplit_once('}'))
-            .map_or("", |(fields, _)| fields);
         let mut line = format!("{FRAME_REPORT}{}", self.presented);
-        for field in fields.split(',') {
-            if let Some((name, count)) = field.split_once(':') {
-                line += &format!(" {}={}", name.trim(), count.trim());
+        if let Ok(serde_json::Value::Object(fields)) = serde_json::to_value(self.counters) {
+            for (name, count) in fields {
+                line += &format!(" {name}={count}");
             }
         }
         for path in wcontainers_gpu::SlowPath::ALL {

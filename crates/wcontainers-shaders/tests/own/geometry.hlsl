@@ -152,6 +152,53 @@ void gs_line_adjacent(lineadj GsIn l[4], uint primitive : SV_PrimitiveID,
         stream.Append(o);
     }
 }
+struct GsClipOut {
+    float4 position : SV_Position;
+    float4 colour : COLOR0;
+    nointerpolation uint4 ids : TEXCOORD0;
+    float2 clip : SV_ClipDistance0;
+    float more : SV_ClipDistance1;
+};
+
+// Each triangle passed on with three clip distances: two planes across the picture, and one that
+// drops every fourth primitive whole and cuts the others along a diagonal. No plane passes through
+// pixel centres, where Direct3D's clipped edge would follow its fill rule.
+[maxvertexcount(3)]
+void gs_clip(triangle GsIn t[3], uint primitive : SV_PrimitiveID,
+             inout TriangleStream<GsClipOut> stream) {
+    for (uint i = 0; i < 3; i++) {
+        GsClipOut o;
+        o.position = t[i].position;
+        o.colour = t[i].colour;
+        o.ids = uint4(t[i].ids, primitive, 0);
+        o.clip = float2(t[i].position.x + 0.3037, 0.4129 - t[i].position.y);
+        o.more = primitive % 4 == 1 ? -1.0 : t[i].position.x - t[i].position.y + 0.5113;
+        stream.Append(o);
+    }
+}
+
+
+struct CullOut {
+    float4 position : SV_Position;
+    float4 colour : COLOR0;
+    nointerpolation uint4 ids : TEXCOORD0;
+    float3 cull : SV_CullDistance0;
+    float clip : SV_ClipDistance0;
+};
+
+// vs_geometry's values as ps_geometry reads them, drawn without a geometry shader, with three cull
+// distances (primitives wholly left of a line, wholly above another, or of even vertex numbers only)
+// and a clip distance (a diagonal).
+CullOut vs_cull(float3 position : POSITION, float4 colour : COLOR0, uint vertex : SV_VertexID,
+                uint instance : SV_InstanceID) {
+    CullOut o;
+    o.position = float4(position.x + instance * 0.25, position.y, position.z, 1.0);
+    o.colour = colour;
+    o.ids = uint4(vertex, instance, 0, 0);
+    o.cull = float3(position.x + 0.3, 0.2 - position.y, (vertex & 1) ? 1.0 : -1.0);
+    o.clip = position.x - position.y + 0.9;
+    return o;
+}
 
 float4 ps_geometry(GsOut i) : SV_Target0 {
     return float4(i.colour.rgb, 1.0) * 0.75 + float4((i.ids % 4) / 16.0);

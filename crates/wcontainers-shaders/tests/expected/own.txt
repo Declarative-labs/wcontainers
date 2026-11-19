@@ -9,6 +9,7 @@ ds_line.dxbc	ok-wgsl glsl-write
 ds_quad.dxbc	ok-wgsl glsl-write
 ds_tri.dxbc	ok-wgsl glsl-write
 gs_adjacent.dxbc	ok-wgsl glsl-write
+gs_clip.dxbc	ok-wgsl glsl-write
 gs_cut.dxbc	ok-wgsl glsl-write
 gs_instances.dxbc	ok-wgsl glsl-write
 gs_layers.dxbc	ok-wgsl glsl-write
@@ -93,6 +94,7 @@ ps_rows_io.dxbc	ok
 ps_samples.dxbc	unsupported SampleCount
 ps_shade.dxbc	ok-wgsl glsl-write
 ps_shadow.dxbc	ok-wgsl glsl-write
+ps_shadow_wide.dxbc	ok-wgsl glsl-write
 ps_signed.dxbc	ok
 ps_size.dxbc	ok
 ps_spaces.dxbc	ok
@@ -105,6 +107,8 @@ ps_twospaces.dxbc	ok
 ps_window.dxbc	ok
 vs_carry.dxbc	ok
 vs_clip.dxbc	ok-wgsl glsl-compile
+vs_clip_six.dxbc	ok-wgsl glsl-compile
+vs_cull.dxbc	ok-wgsl glsl-compile
 vs_deep.dxbc	ok
 vs_early.dxbc	ok
 vs_evaluate.dxbc	ok

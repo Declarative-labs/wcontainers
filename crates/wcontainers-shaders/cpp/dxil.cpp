@@ -58,7 +58,7 @@ struct Resources {
   std::vector<uint32_t> table;
 
   // The words of one triple.
-  static constexpr size_t TRIPLE = 3;
+  static constexpr size_t TRIPLE = size_t(wcs::TableWord::eCount);
 
   uint32_t index(wcs::ResourceClass cls, const dxil_spv_d3d_binding& d) {
     for (size_t i = 0; i + TRIPLE <= table.size(); i += TRIPLE)

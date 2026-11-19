@@ -54,7 +54,11 @@ widened DXIL's 16-bit integers, read constant components picked at run time, ref
 and other unbuilt features by name and added the shader runner's corpus; run 36 verified and
 committed run 35's work, dumped Godot's 3D platformer's refused shaders and swept the typed
 buffers' literals; run 37 gave shader resource views storage offsets and DXIL targets four
-components; what remains is under Next. Runs 21 to 33 merged origin/phase-2-graphics-webgpu,
+components; run 38 adopted the literal check, reflected system values from the signature (two
+clip distances were counted as one) and passed geometry shaders' clip distances on; run 39 built
+cull distances from vertex shaders through the stage helper (`CullDistanceAsGeometry`); run 40
+applied views' component mappings to depth textures read plainly and converted wave minimums and
+maximums of the other signedness; what remains is under Next. Runs 21 to 33 merged origin/phase-2-graphics-webgpu,
 -webgl, -direct3d-11, -direct3d-12 and -rig (run 28: one conflict in the interface's `slow.rs`,
 the same three slow paths in two orders, ours kept).
 
@@ -1571,10 +1575,200 @@ DXIL targets; a literal sweep step):
   builder's component counts (lines 430 to 490) and the tessellation layout's word numbers. Left
   elsewhere: as listed in run 36.
 
+Run 38 (the literal check adopted; what the fronts wait on: two clip distances counted as one,
+clip distances from geometry shaders; a literal sweep step):
+- Merged origin/phase-2-graphics-direct3d-11 (which held -webgl, -webgpu and its adoption of the
+  literal check) and origin/phase-1-literals (tip 7668c010) without conflicts; -direct3d-12, -rig
+  and the shared line had nothing new. Adopted the literal check: `init` once in the commit after
+  the merge (cd5f44a1, run on the desktop: see Departures). This crate's lines in the baseline
+  (src, build.rs, tests): 1235 at adoption, 1173 after this run. `cargo run -q -p
+  wcontainers-literals -- check` passes (desktop). Changes that could add lines, as the check
+  lists them (12): 53789ba3 and 81489a2f, c33381de, 68214b2e the start; cd5f44a1, 5657abb6,
+  1e337706 the init after the baseline arrived by a merge; 89f88281, 7119e3f3, c3bf56d4,
+  31ec396f, 0f187563 new rules, for literals already in the tree.
+- `LinkedClipDistanceCount` (the Direct3D 11 track's test_clip_distance, `vs_multiple_code`: a
+  `float2 SV_ClipDistance`): the cause was the reflection, not the variant. DXBC system values
+  were reflected with register 0 and the mask of one array element (the IR has no register for a
+  built-in), so a front counting the distances' components got 1 where the program writes 2. Both
+  routes now take each system value's semantic, register and mask from the container's signature
+  (`container::place_system_values`; the signature reader now reads the `ISGN`/`OSGN`, `OSG5` and
+  `ISG1`/`OSG1` forms by their types), one value per signature element, so distances over two
+  registers are listed twice with their masks (the DXIL route took only the first element). New
+  own `vs_clip_six` (six distances over two registers, fxc and dxc); test
+  `clip_distances_are_listed_per_signature_register`; `variant_draw`'s clip distance draws now run
+  `vs_clip` and `vs_clip_six` with the count taken from the reflection as the front takes it:
+  natively on Vulkan 0 texels apart from real Direct3D 11, in the program on WebGPU and WebGL 2 14
+  of 4096 texels apart by at most 2 (the existing allowance: attributes interpolated over the
+  whole triangle), both routes.
+- `ClipDistance` written by a geometry shader (both fronts: test_clip_distance's geometry shader,
+  Direct3D 12's clip_distance): the geometry stage's records end with the distances' slots (four
+  a slot, after the layer and viewport slot), the pass-through reads them and writes the built-in
+  array, and under `VariantFlags::CLIP_DISTANCE` (now allowed on a geometry shader's key, with
+  `linked`) the pass-through passes them at the linked location for the pixel program, as the
+  vertex route does. Geometry shaders reading clip distances as inputs are still refused
+  (`ClipDistance`), as are cull distances. New own `gs_clip` (three distances over two signature
+  elements; one drops every fourth primitive whole); test `geometry_clip_distances_reach_the_
+  pass_through`; two `geometry_draw` cases (a list with instances, a strip) against real
+  Direct3D 11, clipped in the pixel program on wgpu's Direct3D 12 path: 4 seeds, 1 to 13 texels
+  apart per case by at most 1 (allowed 2, as above). Found on the way: with a plane through pixel
+  centres (the first `gs_clip` had x - y + 0.5 on a 64-pixel target) Direct3D's clipped edge
+  follows its fill rule, where the program keeps a distance of exactly zero; such ties differ
+  (Known gaps). The runner corpus's four `clip-cull-distance-1-18` to `-21` geometry shaders now
+  stop at `CullDistance` instead.
+- Literal sweep, one step: `stage/helper.rs` (the stream output program's values and table
+  offsets from a `#[repr(C)]` mirror of its WGSL block, its bindings, the stream buffer count
+  `STREAM_BUFFERS`, the packed element's shifts, word and slot bytes, index widths from their
+  types, the stand-in buffer's stride now the adapter's storage offset alignment instead of 256)
+  and `stage/tessellate.rs` (its values block from a mirror type, its passes and bindings named,
+  word and slot bytes); `CLIP_DISTANCE_TYPE` named once. Left: as listed in run 36, and the
+  refusal names (an enum would be an interface change).
+- Chrome's compile of every corpus (the first since the runner corpus arrived in run 35) found
+  four WGSL files every converter check had passed: two DXIL pixel shaders writing the coverage
+  (rig `msaa.ps_coverage`, runner `coverage-1`), where the reader's own output structure, kept as
+  an inner value after the entry point's result is rebuilt, still carried `@builtin(sample_mask)`
+  on its one-element array, which Tint checks on any structure (fixed in the carried naga's WGSL
+  writer: bindings only on entry point inputs and outputs, "naga as carried"); and the runner's
+  `depth-bounds-1-vs` (both builds), a vertex shader writing a storage view, which WebGPU's
+  vertex stage cannot have: now refused by name, `VertexStorageWrite` (the stage helper's compute
+  form could run it; not built). The corpus test now reports a shader's first refusal that is not
+  a view-kind mismatch when it retries with view formats (it reported the last view's).
+- DXIL converter reasons drop the log line's line end. The runner corpus's
+  `hlsl+distance-4-ps.dxil` stays the known failure ("convert rejected: Unknown type!", a reader
+  rejection, not a named refusal).
+
+Run 39 (what both fronts wait on: cull distances):
+- Merged origin/phase-2-graphics-direct3d-11 (which held -webgl, -direct3d-12 and the literal
+  check's newer rules) and then origin/phase-2-graphics-webgpu; one conflict, in
+  `literals.baseline` (neighbouring lines the Direct3D 11 track had removed: took its side). The
+  shared line, -rig and phase-1-literals had nothing new.
+- Cull distances (plan 4.12, `SlowPath::CullDistanceAsGeometry`), for vertex shaders by both
+  routes: the conversion writes them as naga's `CullDistance` array (reflected per signature
+  element as `SystemValue::CullDistance`, validated with naga's `CULL_DISTANCE` capability), and
+  the stage helper draws them: `Stages::culled(backend, &vertex, stream_output)` runs the vertex
+  shader's compute form, whose records hold the position, every output location of the converted
+  module (so values the key links, such as clip distances under `CLIP_DISTANCE`, ride along), the
+  clip distances and the cull distances; then a cull program (one invocation per API primitive,
+  `CULL_PROGRAM` in `stage.rs`) writes an index list after the records, each primitive's record
+  numbers in the API's order (odd strip triangles as (n, n + 2, n + 1): first vertex leading,
+  winding kept), or for a dropped primitive the numbers of an empty record whose position is
+  outside every clip volume. The front then draws `FinalDraw` as after a geometry stage (list
+  topology, indexed, `stages.passthrough()` and `stages.vertex_layout()`). New
+  `stage::cull_programs` (the compute form and pass-through, taken from the converted module) and
+  `stage::cull_program`. Adjacency with cull distances is refused by name
+  (`CullDistanceAdjacency`); cull distances from geometry, hull and domain shaders, and read by a
+  pixel shader, are still refused (`CullDistance`).
+- New own `vs_cull` (fxc and dxc): three cull distances (two planes and the vertex number's
+  parity) sharing a register with a clip distance. Unit test
+  `cull_distances_take_the_stage_helpers_route` (both routes) and `the_cull_program_validates`.
+  Drawn against real Direct3D 11 on the RTX 3080 (`geometry_draw`, six new cases: lists, a strip,
+  an indexed list, lines, a line strip with instances, indexed points), the clip distance clipped
+  in the pixel program on wgpu's Direct3D 12 path: 4 seeds, every case passes; triangles 0 to 15
+  texels apart per case by at most 1. Each case's planes drop primitives over the seeds (counted on
+  the CPU so a case dropping none fails).
+- Found on the way: the geometry test's index buffers held an odd number of 16-bit indices for
+  some cases (54 bytes), past what `StageIndex` allows (a multiple of 4): the last index read as 0.
+  The test now writes an even number. Line lists clipped in the pixel program differ from
+  Direct3D at one clipped line end in seeds 2 and 4 (one texel each; Known gaps): the test lists
+  texels within a pixel of the clip plane apart for line cases and fails on any other.
+- The corpus test writes the WGSL of a cull-distance vertex shader's compute form (every input
+  pulled in its reflected format), the program WebGPU runs. Records: own, own-dxil (`vs_cull`),
+  runner (3 DXBC, 4 DXIL `clip-cull-distance` vertex shaders from `unsupported CullDistance` to
+  `ok-wgsl glsl-compile`: glslang does not know ANGLE's cull distance extension, and WebGL 2 has no
+  cull route).
+- Literal sweep, one step: `stage.rs` and `stage/helper.rs` done but for the two included WGSL
+  paths, the `vertex_shader` function name (naming it would make a message in the Direct3D 11
+  track's `own_edges` example a restatement) and `WORKGROUP`: the pass-through's and compute
+  form's names, the refusals (`VERTEX_INPUT_NOT_PULLED` now public, the test imports it), the index
+  decoding's widths from `u8::BITS`, `u16::MAX` and `build::WORD`, the primitive vertex counts
+  (`TRIANGLE_VERTICES`, `LINE_ADJACENCY_VERTICES`, `TRIANGLE_ADJACENCY_VERTICES`), the tessellator's
+  bounds (`tess::MAX_FACTOR`, `FACTOR_WORDS`, `output_vertices` with `OUTPUT_POINT` and
+  `OUTPUT_LINE`). The cull program is one named constant instead of an included file (an
+  `include_str!` path is a literal the check cannot accept as a new line). This crate's baseline
+  lines: 1173 at the start of the run, 1112 after. The check passes (desktop, on a checkout with
+  `core.autocrlf` false: with Windows line ends it reported 143 multi-line strings of other crates).
+  The laptop loop's job count stays 5 in the script (changing a script line with a number adds a
+  baseline line); this run passed `-j 4` on its commands.
+
+Run 40 (the Direct3D 12 track's Godot refusal and wave item; the literal check after the merges):
+- Merged origin/phase-2-graphics-webgl (which held -webgpu), -direct3d-11 and -direct3d-12; one
+  conflict, in `literals.baseline` (neighbouring lines): both sides kept, sorted, and the 37 lines
+  the check then printed with `-` deleted (one commit). The shared line, -rig and phase-1-literals
+  had nothing new. Killed three of this branch's own orphaned jobs on the desktop (two submissions
+  left from 2026-11-18 and one from a job this run stopped), which held the branch's lock.
+- The literal check on the merged tree reports two `+` lines in other tracks' crates, which this
+  track may neither fix nor add: the WebGL back end's `shader.rs` literal 8, moved from `compile`
+  to `write` by its own commit 7c26c4b8 (its baseline still names `compile`), and the Direct3D 12
+  front's `device/early.rs` `TRIANGLE_VERTICES = 3`, a redefinition of this crate's
+  `stage::TRIANGLE_VERTICES` (both named in parallel on 2026-11-19). This run made
+  `stage::TRIANGLE_VERTICES` and the two adjacency counts public so that front can import it.
+- The Direct3D 12 track's five shader-crate lines its baseline lacked (its "Asked of other
+  tracks"): build.rs's `"."` and dxil.rs's `3` are named now (`BOUNDARY`, the boundary's
+  directory; `TableWord`, a new enum of `cpp/boundary.h` from which the C++ and the Rust both take
+  the table entries' word count, through the generated codes); compute_draw.rs's `512` and `2048`
+  are in this branch's baseline as `restated` lines and reach that branch when it merges this one.
+- `SwizzledDepth` (Godot's 3D platformer on Direct3D 12): a view's component mapping on a texture
+  the program compares against. A plain read of such a texture is widened to (depth, 0, 0, 1) on
+  both routes; the mapping now picks that widening's components (`variant/swizzle.rs`,
+  `depth_mapped`). Comparisons, gathers and reads used as their depth alone take the first
+  component, so they stay exact wherever the mapping keeps red first (whether or not Direct3D
+  applies the mapping before comparing); a mapping moving red away is still refused,
+  `SWIZZLED_DEPTH` (now a public constant). New own `ps_shadow_wide` (fxc and dxc): the texture read
+  whole by a load and a level-zero sample, and compared against a bound the compilers cannot fold
+  (fxc folded the first version's `lit > 2` away, leaving a plain texture). Unit test
+  `mapped_depth_views_compose_what_they_read`; drawn test
+  `depth_views_with_component_mappings_read_as_mapped` (shadow_draw.rs), against real
+  Direct3D 11's picture of the unmapped view with the mapping applied per texel on the CPU.
+- Wave minimums and maximums of the other signedness (the Direct3D 12 runner's wave-ops-int,
+  "GroupNonUniformSMin on integers of the other signedness"): subgroup operations work on values,
+  not memory, so the carried SPIR-V reader now reads the value in the signedness the instruction
+  names and gives the result its type's ("naga as carried"); atomics stay as they were. New own
+  `ps_wave_signed` (dxc); unit test `wave_minimums_of_the_other_signedness_read_their_operands_as_named`;
+  `wave_operations_draw_as_direct3d_12_does` draws it too: 0 of 4096 texels apart from real
+  Direct3D 12 (2591 drawn), wgpu on Vulkan, RTX 3080. Runner records: wave-ops-int-1 and -2 from
+  the refusal to `ok-wgsl glsl-write`.
+- Literal sweep, one step: the draw bases' helper block, built twice before (lower.rs, dxil.rs), is
+  one function `build::draw_bases_block` with its offsets and span from `#[repr(C)]` mirrors
+  (`DrawBases`, `DrawArguments`, `offset_of!`); the block's and members' names are constants. Found
+  on the way (check rule 8): naming the members `draw`, `indexed` and `first_instance` made the
+  Direct3D 12 front's tests (`"draw"`), two of this crate's tests and the carried naga's HLSL
+  writer (`SPECIAL_FIRST_INSTANCE`) restate them, so the members are now `draw_number`,
+  `arguments_indexed` and `start_instance` (names only; the layout is unchanged), and
+  `ARGUMENTS_OFFSET` is public for the test that looks for it. This crate's baseline lines (src,
+  build.rs, tests): 1121 after the merges (the Direct3D 12 side brought back lines this branch had
+  removed), 1077 at the end. The check passes but for the two other tracks' lines above; changes
+  that could add lines: 18 (run 39's 16, and 55435e40 the start, ca2eb3e8 the init after the
+  baseline arrived by a merge, both the Direct3D 12 track's, merged in).
+
 Next (in order):
-- First, on the laptop (down at the end of run 37): the whole suite with every corpus and glslang
-  (`ps_two`'s records were taken without glslang; the stage.rs and resource class steps have not
-  met the corpora), then Chrome's compile of the corpora and the WebAssembly comparison.
+- The other tracks, from run 40's merge: the Direct3D 12 front deletes its own
+  `TRIANGLE_VERTICES` in `device/early.rs` and imports `wcontainers_shaders::stage::TRIANGLE_VERTICES`;
+  the WebGL back end's baseline line `compile 8` follows the literal to `write` (or the value is
+  named). Until then the literal check on a merged tree prints these two `+` lines.
+- The fronts (theirs, now possible since run 40): Godot's 3D platformer on Direct3D 12 past
+  `SwizzledDepth` (the depth view's mapping goes in `swizzled` as any view's); the runner's
+  wave-ops-int rerun.
+- The fronts (theirs, now possible since run 39): cull distances. Where the back end lacks
+  `Features::CULL_DISTANCE` (every back end today) and a vertex shader's reflection lists
+  `SystemValue::CullDistance`, convert it with every input pulled and `draw_base: Helpers` (and its
+  usual key, `CLIP_DISTANCE` and `linked` included), make `Stages::culled(backend, &vertex, None)`
+  and draw as after a geometry stage. Direct3D 12's combined_clip_and_cull_distances, Direct3D 11's
+  test_clip_distance's cull part, the runner's `clip-cull-distance` files.
+- The fronts (theirs, now possible since run 38): rerun test_clip_distance (both fronts' files)
+  and Direct3D 12's clip_distance after merging: the vertex shader's two distances are now
+  counted 2 from the reflection, and geometry shaders writing distances convert; a front drawing
+  a geometry shader with distances where the back end has none sets `CLIP_DISTANCE` and `linked`
+  on the geometry shader's key (its pass-through) and the pixel shader's, as for a vertex shader.
+- Cull distances, the rest: from a geometry shader (the geometry stage's records and its
+  pass-through, as clip distances since run 38), from a domain shader, with stream output from the
+  same vertex shader drawn in the same run (built, not drawn in a test), DXIL on the drawn test
+  (converted and validated only), and on WebGL 2 (transform feedback replay, not built).
+- The Direct3D 11 track's layered item: a primitive naming a layer at or past the view's layer
+  count drawn in layer 0's run, and the named layer passed to the pixel program as a flat value
+  (needs the view's layer count as a helper value and a flag for the layer from the stage: an
+  interface change of two items, to agree with the fronts since their helper writers match every
+  value).
+- Laptop: the WebAssembly build of the C++ was killed for memory at 5 jobs in this run (the other
+  track's load was 15 to 39); run `wasm-run10.sh` with 2 jobs.
 - The Direct3D 12 front (theirs, now possible since run 37): drop the refusal "a raw or structured
   shader resource view at an offset the back end cannot bind (StorageOffset of shader resource
   slots)" in `own_storage` (bind.rs) and set `STORAGE_OFFSET` for such programs (buffer_srv test
@@ -1612,8 +1806,8 @@ Next (in order):
   the program declares another (needs an interface field), `CalculateLevelOfDetail` (both routes;
   the reader's `ImageQueryLod`), `SampleClamp` (image operand MinLod), `SparseFeedback`,
   `globallycoherent` storage (memory operands at device scope), `CullDistance`, a DXIL pixel
-  shader's layer and viewport index (reader "unsupported builtin"), wave minimums and maximums of the
-  other signedness, native 16-bit floats (WebGPU's shader-f16, through a capability), and the
+  shader's layer and viewport index (reader "unsupported builtin"), native 16-bit floats
+  (WebGPU's shader-f16, through a capability), and the
   values that differ without a refusal (min16float constants, frexp; not investigated this run).
 - The Direct3D 11 track's items still open here: `LINE_COVERAGE` (alpha-antialiased lines),
   `GeometryStreams`, `PRIMITIVE_ID_FROM_STAGE`, and atg-simplecomputepc's division (not investigated; its shader
@@ -1747,6 +1941,13 @@ Next (in order):
   the pixel shader, `stages.vertex_layout()`, `buffer` as stream 0, indices (u32) from `buffer` at
   `index_offset` when given, its topology, restart on, `count` vertices or indices, one instance.
   `tests/geometry_draw.rs` does exactly this.
+- Cull distances from a vertex shader without a geometry or hull stage (WebGPU, `Features::COMPUTE`,
+  the back end without `Features::CULL_DISTANCE`; since run 39): the vertex shader converted as for
+  a geometry shader (every input pulled, `draw_base: Helpers`, its other flags as for a plain draw,
+  `CLIP_DISTANCE` with `linked` where clip distances are not native), then
+  `Stages::culled(backend, &vertex, stream_output)` once per vertex shader and stream output
+  declaration, and per draw `stages.run` with no geometry sets; draw the returned `FinalDraw` as
+  after a geometry stage (indexed, list topology). `tests/geometry_draw.rs` (`CULLED`) does this.
 - Hull and domain shaders (WebGPU, `Features::COMPUTE`): convert the pixel shader first, the domain
   shader with `output_interpolation` from the pixel shader's inputs, the hull shader plain, the
   vertex shader with every input pulled. `Stages::tessellated(backend, &vertex, &hull, &domain)`
@@ -1927,6 +2128,75 @@ let reflection = &converted.reflection;
   conversion.
 
 ## Measurements
+
+Run 40, 2026-11-19, counts only (laptop i7-8750H, load 3 to 14 with another track building, 2 to
+4 cargo jobs; desktop shared through the queue's hazard group, 3 cargo jobs, load not taken), logs in
+scratch `graphics-shaders` (run40-*):
+- Desktop, RTX 3080: `depth_views_with_component_mappings_read_as_mapped` (run40-gpu4.log, seeds 1
+  to 4): 48 comparisons, all 0 texels apart, and the refusal of the mapping moving red checked on
+  both programs and routes; `textures_compared_and_read_plainly_draw_as_direct3d_does` 32
+  comparisons, all pass; `wave_operations_draw_as_direct3d_12_does` (run40-gpu2.log): `ps_wave` 0
+  of 4096 texels apart (2074 drawn), `ps_wave_signed` 0 of 4096 (2591 drawn).
+- Laptop, the whole suite but the fuzz with every corpus and glslang (run40-suite1.log): 20 test
+  binaries pass, the corpus binary fails only on the runner corpus's known `distance-4`.
+- Desktop, at 3f73914a: Windows lint clean, then the whole suite as one GPU job
+  (`cargo test -p wcontainers-shaders --no-fail-fast -- --test-threads 1 --skip mutated`,
+  run40-suite-gpu.log): 21 test binaries, all pass.
+Run 39, 2026-11-19, counts only (laptop i7-8750H, load 3 to 11 with another track building, 4 or 5
+cargo jobs; it was unreachable twice for some minutes; desktop shared through the queue, 3 cargo
+jobs, load not taken), logs in scratch `graphics-shaders/run39`:
+- Desktop, RTX 3080, `geometry_draw` (geomdraw5.txt, seeds 1 to 4): 84 drawn comparisons and 36
+  stream output comparisons, all pass; the six cull cases 0 to 15 texels apart per case by at most
+  1, two line cases one texel each at a clipped line end.
+- Laptop, every corpus with glslang (corpus2.txt, then suite1.txt and suite2.txt after the record
+  update): all pass but the runner corpus's known `distance-4`.
+- Clean-up at the end: the laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders`
+  (5.3 GB) and the desktop's `C:\wc\target\phase-2-graphics-shaders` and
+  `C:\wc\scratch-shaders-out` deleted; no build folder was made on the Mac or in scratch.
+- Desktop, after the sweep step: Windows lint clean (winlint2.txt), then the whole suite as one
+  GPU job (`cargo test -p wcontainers-shaders --no-fail-fast -- --test-threads 1 --skip mutated`,
+  suite-gpu.txt): 21 test binaries, all pass.
+- Literal check (check5.txt): passes; changes that could add lines: 16 (the 12 of run 38, and
+  4bcacbf5 the start, 2cc8ad76 the init after the baseline arrived by a merge, bd53fbb4 and
+  949667f2 new rules, for literals already in the tree, all from the merged tracks).
+Run 38, 2026-11-18, counts only (laptop i7-8750H, load 3 to 39 with another track building, 5
+cargo jobs, 2 when the load was 8 or more; desktop shared through the queue, 3 cargo jobs, load
+not taken), logs in scratch `graphics-shaders/run38`:
+- Laptop, the whole suite with every corpus and glslang after this run's changes (suite-2.log):
+  every test passes but the runner corpus's known `distance-4` (a reader rejection, not a named
+  refusal). Records updated in this run: own and own-dxil (the new `gs_clip`, `vs_clip_six`), runner
+  (four geometry shaders now `CullDistance`).
+- Laptop, WebAssembly against native (suite-2.log, `wasm-run10.sh` with 2 jobs after a first try
+  at 5 was killed for memory): rig, rig DXIL, own DXIL and games DXIL 0 files apart; corpus 2,
+  games 3 and own 1, all the known gap (dxbc-spirv's unspecified evaluation order in the
+  division and remainder helper): `116_cs_group_index_code` and `d599fbc7efa911be` as before, and
+  the new `gs_clip`'s line in own's `cache.txt` (its `primitive % 4`; compared natively and under
+  wasmtime: only the helper's operand order differs). The wasm corpus run stops at the runner test,
+  which needs `WCONTAINERS_RUNNER_SHADERS` (the script does not give it), after the others ran.
+- Desktop, RTX 3080, `variant_draw`, `geometry_draw`, `tessellation_draw` (gpu4.log, default
+  seeds and counts): all pass; `gs_clip` 1 to 13 texels apart per case by at most 1 over 4
+  seeds; `vs_clip_six` natively 0 apart, in the program 14 of 4096 by at most 2 (both routes).
+- Desktop, Windows lint (`cargo clippy -p wcontainers-shaders --all-targets -- -D warnings`)
+  clean, then the whole suite as one GPU job after every change of this run (`cargo test -p
+  wcontainers-shaders --no-fail-fast -- --test-threads 1 --skip mutated`, 22:57 to 23:07,
+  suite-gpu.log): 20 test binaries, all pass.
+- Literal check on the desktop (check3.txt, check4.txt after the last changes): passes.
+- Chrome's compile of every corpus as one GPU job (chrome.log before the WGSL writer fix,
+  chrome2.log after it and the `VertexStorageWrite` refusal; written files from the laptop's
+  suite run): every converted shader's WGSL compiles in Chrome's WebGPU: corpus 185, games 519,
+  games DXIL 425, own 116, own DXIL 56, rig 79, rig DXIL 55, runner 1429, runner DXIL 1369. GLSL
+  ES files Chrome's WebGL 2 refuses: corpus 15, games 10, games DXIL 1, own 11, own DXIL 4, rig 3,
+  rig DXIL 3, runner 35, runner DXIL 26, every one for what GLSL ES 3.00 lacks (bitfield
+  operations, `findMSB`/`findLSB`, `textureGather`, multisampled samplers, `gl_PrimitiveID`; 6.5
+  gives those to the WebGL 2 back end, or they are absent there), as before.
+- After those: the laptop's corpora once more (suite-4.log, records updated: the runner's
+  `depth-bounds-1-vs` now `VertexStorageWrite`, nine runner shaders now report
+  `RasterizerOrderedView` instead of a view kind) and the desktop's whole suite as one GPU job
+  with Windows lint first (suite-gpu2.log, 00:03 to 00:08): lint clean, every test binary passes.
+- Clean-up at the end: deleted the laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders`
+  (and run 37's), its `outw` and this run's literal-check clone, the desktop's
+  `C:\wc\target\phase-2-graphics-shaders` and `C:\wc\out\phase-2-graphics-shaders\chrome`.
+  Kept in scratch `run38`: logs and the last written files with Chrome's verdicts (`out2`).
 
 Run 37, 2026-11-18, counts only (laptop i7-8750H, load 1.0 to 5.4 with another track building, 5
 cargo jobs, until it went down at about 20:25 and stayed down to the end of the run; desktop shared
@@ -2717,6 +2987,10 @@ the tree as published"), plus these changes, each a later commit touching only `
   `int` in GLSL; 6.3's corpus had one shader failing on it).
 - GLSL writer, `BuiltIn::SampleMask`: written `gl_SampleMask[0] = int(...)` and read
   `uint(gl_SampleMaskIn[0])` (GLSL's are `int` arrays), requesting GL_OES_sample_variables on ES.
+- WGSL writer, a structure's member bindings are written only where the structure is an entry
+  point's argument or result (run 38): Tint checks them wherever written, and DXIL's reader keeps
+  its own output structure (the sample mask as a one-element array) as an inner value after the
+  entry point's result is rebuilt, which Chrome refused (`@builtin(sample_mask)` must be `u32`).
 - WGSL writer, an f32 literal whose shortest digits name a number past f32::MAX (f32::MAX itself) is
   written with the f64 digits of its exact value, which WGSL compilers accept.
 - HLSL writer (wgpu's Direct3D 12 path), a fragment entry point's position is passed on as
@@ -2725,8 +2999,9 @@ the tree as published"), plus these changes, each a later commit touching only `
 - WGSL writer, the module's diagnostic filters are written as `diagnostic(...)` directives
   (`Severity::to_wgsl_ident` added beside `from_wgsl_ident`).
 - SPIR-V reader (run 5): integer instructions read in the signedness they name, the result given its
-  type's (`convert::op_signedness`, `glsl_signedness`, `Frontend::retype_int`); atomic and subgroup
-  minimum and maximum of the other signedness refused (`Error::UnsupportedSignedness`); texel offsets
+  type's (`convert::op_signedness`, `glsl_signedness`, `Frontend::retype_int`); atomic minimum and
+  maximum of the other signedness refused (`Error::UnsupportedSignedness`), subgroup ones (run 40)
+  read their value in the signedness they name and give the result its type's; texel offsets
   on `OpImageFetch` added to the coordinate; unknown load operands refused
   (`Error::UnsupportedImageLoadOperand`) instead of skipped with a log warning.
 - WGSL writer (run 5), `isnan`/`isinf` of f32 scalars and vectors written as bit tests (WGSL has
@@ -2773,6 +3048,16 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 
 ## How to run
 
+- The literal check (every bar since run 38): `tools/graphics-rig/remote "cargo run -q -j 3 -p
+  wcontainers-literals -- check > C:\wc\incoming\shaders-check.txt 2>&1"`, then copy that file
+  back with scp (its output is long). It runs on the desktop because the laptop's git 2.25 lacks an
+  `ls-files` option it uses. Never run `remote` while one of this branch's GPU jobs waits in the
+  queue: it changes the desktop's tree and the waiting job then stops ("holds tree ..., not the
+  sent ..."). Lines it prints with `-` are to be deleted from `literals.baseline`. The desktop's
+  copy `C:\wc\src\phase-2-graphics-shaders` has `core.autocrlf` set to false (run 39): with
+  Windows line ends the check reads multi-line strings differently and fails on other crates'.
+- A GPU job running several test binaries needs `--no-fail-fast`, or the first failing binary
+  ends the job before the others run.
 - Linux laptop (no GPU), one command from the Mac: `tools/graphics-rig/linux <command>`. It copies the
   working tree (submodules included) to `~/wcontainers-graphics/src/<branch>` and builds into
   `~/wcontainers-graphics/target/<branch>`, with 5 cargo jobs (2 when the laptop's load is 8 or more).
@@ -2925,12 +3210,15 @@ were already there.
 
 ## Departures from the plan
 
-- The literal check (runs 36 and 37): the brief asks every track to merge origin/phase-1-literals and adopt
-  `wcontainers-literals`. Not done here (run 37: still not on the shared line, tip 629694af): this run's merge permission names only the
-  phase-2-graphics branches, and that branch brings 348 commits of the phase 1 crates and a
-  `rust-toolchain.toml` change into a branch the other five graphics tracks merge. It is better
-  merged once on the shared line (G1), which every graphics branch then takes; until then the
-  sweep is by hand, a step per run.
+- The literal check (run 38): adopted as the brief of 2026-11-18 (late) says, by merging
+  origin/phase-2-graphics-direct3d-11 (which had merged origin/phase-1-literals and adopted it)
+  and then origin/phase-1-literals itself (tip 7668c010), then `init` once in the commit after the
+  merge. The init ran on the desktop's checkout (the laptop's git 2.25 lacks an `ls-files` option
+  the check uses), where only the submodules this crate builds from are checked out: the
+  baseline's lines for scripts inside dxil-spirv's other submodules (SPIRV-Tools, SPIRV-Cross, its
+  copy of dxbc-spirv, dxbc-spirv's SPIRV-Headers) became four `unparsed` lines, as in this branch's
+  "After cloning". A checkout with every submodule checked out would see those scripts as growth;
+  a `skip` policy for third-party submodules is the literals track's to add.
 
 - Storage offsets (run 28; not built yet, see Next): 4.5 said every converted program adds
   `StorageOffset`; it is a flag (`VariantFlags::STORAGE_OFFSET`) instead, so programs whose views are aligned (most, on Direct3D
@@ -3032,6 +3320,14 @@ were already there.
 
 ## Known gaps found so far
 
+- Clip distances applied in the pixel program on lines (run 39): Direct3D clips a line and
+  rasterises the rest by its diamond rule, so a clipped end can light a pixel whose centre the
+  distance rejects; the program keeps exactly the pixels whose centres it accepts. Seen once in each
+  of two seeds of `vs_cull`'s line list (one texel each). Triangles are unaffected beyond rounding.
+- Clip distances in the program (run 38): where a pixel centre lies exactly on a clip plane,
+  Direct3D's clipped edge passes through it and its fill rule decides; the program keeps a
+  distance of exactly zero (and its interpolated value may round either side). Seen only with a
+  plane chosen through pixel centres; such pixels may differ.
 - The stage helper's vertex records carry no clip distances (run 31): a vertex shader's
   `SV_ClipDistance` feeding a geometry or hull stage is dropped, which is exact since nothing after
   reads it, but stream output straight from a vertex shader cannot stream it; a front must refuse a

@@ -127,7 +127,7 @@ fn geometry_refusals_are_named() {
     .unwrap();
     assert_eq!(
         stage::vertex_program(&plain, &gs).err(),
-        Some(ConvertError::Unsupported("VertexInputNotPulled"))
+        Some(ConvertError::Unsupported(stage::VERTEX_INPUT_NOT_PULLED))
     );
     // The last vertex stage's rewrites are not made for the stage helper's vertex program yet.
     let key = VariantKey {
@@ -138,6 +138,42 @@ fn geometry_refusals_are_named() {
         convert(Source::Dxbc(&own("gs_quads.dxbc")), &key, None).err(),
         Some(ConvertError::Unsupported("GeometryVariant"))
     );
+}
+
+/// A geometry shader writing three clip distances over two signature elements (`gs_clip`): the
+/// reflection counts all three, the pass-through writes them as the built-in, and under
+/// `CLIP_DISTANCE` it passes them at the linked location for the pixel program instead.
+#[test]
+fn geometry_clip_distances_reach_the_pass_through() {
+    let code = own("gs_clip.dxbc");
+    let plain = convert(Source::Dxbc(&code), &VariantKey::default(), None).unwrap();
+    let components: u32 = plain
+        .reflection
+        .outputs
+        .iter()
+        .filter(|v| v.system == Some(SystemValue::ClipDistance))
+        .map(|v| v.mask.count_ones())
+        .sum();
+    assert_eq!(components, 3, "{:?}", plain.reflection.outputs);
+    let text = wgsl(&plain.modules[1]);
+    assert!(text.contains("@builtin(clip_distances)"), "{text}");
+    assert!(text.contains("array<f32, 3>"), "{text}");
+    let location = stage::locations(&plain.reflection.outputs)
+        .last()
+        .map_or(0, |l| l + 1);
+    let key = VariantKey {
+        flags: wcontainers_gpu::VariantFlags::CLIP_DISTANCE,
+        linked: wcontainers_gpu::LinkedValues {
+            location,
+            clip_distances: 3,
+        },
+        ..Default::default()
+    };
+    let linked = convert(Source::Dxbc(&code), &key, None).unwrap();
+    let text = wgsl(&linked.modules[1]);
+    assert!(!text.contains("clip_distances"), "{text}");
+    assert!(text.contains(&format!("@location({location})")), "{text}");
+    assert_ne!(linked.modules[1].key, plain.modules[1].key);
 }
 
 /// A geometry shader writing its layer and viewport (`gs_layers`): both are in its reflection, its
@@ -191,6 +227,65 @@ fn the_stream_output_program_validates() {
     let m = stage::stream_program().unwrap();
     assert_eq!(m.stage, wcontainers_gpu::ShaderStage::Compute);
     wgsl(&m);
+}
+
+/// A vertex shader writing cull distances (`vs_cull`: three over one register, sharing it with a clip
+/// distance) converts by both routes, lists both from its signature, and gives the stage helper's
+/// cull route its programs: records of the position, both locations and a slot each of clip and cull
+/// distances, and a pass-through passing the clip distance on. Drawn in `tests/geometry_draw.rs`.
+#[test]
+fn cull_distances_take_the_stage_helpers_route() {
+    let key = VariantKey {
+        pulled: vec![(0, VertexFormat::Float32x3), (1, VertexFormat::Float32x4)],
+        ..Default::default()
+    };
+    let distances = |c: &Converted, system| -> u32 {
+        c.reflection
+            .outputs
+            .iter()
+            .filter(|v| v.system == Some(system))
+            .map(|v| v.mask.count_ones())
+            .sum()
+    };
+    fn source<'a>(route: &str, code: &'a [u8]) -> Source<'a> {
+        match route {
+            "dxbc" => Source::Dxbc(code),
+            _ => Source::Dxil(code),
+        }
+    }
+    for route in ["dxbc", "dxil"] {
+        let code = own(&format!("vs_cull.{route}"));
+        let source = |code| source(route, code);
+        let plain = convert(source(&code), &VariantKey::default(), None)
+            .unwrap_or_else(|e| panic!("{route}: {e}"));
+        assert_eq!(distances(&plain, SystemValue::CullDistance), 3, "{route}");
+        assert_eq!(distances(&plain, SystemValue::ClipDistance), 1, "{route}");
+        let c = convert(source(&code), &key, None).unwrap_or_else(|e| panic!("{route}: {e}"));
+        let programs = stage::cull_programs(&c).unwrap_or_else(|e| panic!("{route}: {e}"));
+        assert_eq!(programs.locations, stage::locations(&c.reflection.outputs));
+        assert_eq!(programs.locations.len(), 2, "{route}");
+        assert_eq!(
+            (programs.clip_distances, programs.cull_distances),
+            (1, 3),
+            "{route}"
+        );
+        assert_eq!(
+            programs.compute.stage,
+            wcontainers_gpu::ShaderStage::Compute
+        );
+        assert!(wgsl(&programs.compute).contains("fn main"), "{route}");
+        let passthrough = wgsl(&programs.passthrough);
+        assert!(passthrough.contains("clip_distances"), "{route}");
+        assert!(!passthrough.contains("cull"), "{route}");
+    }
+    // Without cull distances the route is refused.
+    assert!(stage::cull_programs(&vertex()).is_err());
+}
+
+#[test]
+fn the_cull_program_validates() {
+    let program = stage::cull_program().unwrap();
+    assert!(wgsl(&program).contains("fn main"));
 }
 
 #[test]

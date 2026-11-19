@@ -73,8 +73,14 @@ const IR_ENUMS: &[HeaderEnum] = &[
     ("dxbc/dxbc_parser.h", "ShaderType", "program", "u32"),
 ];
 
-/// This crate's own C++ boundary's enums, in the same form, so both sides share one table.
-const BOUNDARY_ENUMS: &[HeaderEnum] = &[("cpp/boundary.h", "ResourceClass", "class", "u32")];
+/// The directory of this crate's own C++ boundary.
+const BOUNDARY: &str = "cpp";
+
+/// The boundary's enums, in the same form, so both sides share one table.
+const BOUNDARY_ENUMS: &[HeaderEnum] = &[
+    ("boundary.h", "ResourceClass", "class", "u32"),
+    ("boundary.h", "TableWord", "table_word", "usize"),
+];
 
 const DXIL_SPIRV: &[&str] = &[
     "debug/logging.cpp",
@@ -149,7 +155,7 @@ fn main() {
             dxil.join("third_party/spirv-headers/include/spirv/unified1"),
             true,
         ),
-        (PathBuf::from("cpp"), true),
+        (PathBuf::from(BOUNDARY), true),
         (PathBuf::from("build.rs"), false),
     ];
     let mut sources = blake3::Hasher::new();
@@ -206,7 +212,7 @@ fn main() {
     compile(&build, "wcs_assertion", &objects);
 
     ir_codes(
-        &[(root, IR_ENUMS), (Path::new("."), BOUNDARY_ENUMS)],
+        &[(root, IR_ENUMS), (Path::new(BOUNDARY), BOUNDARY_ENUMS)],
         &PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("ir_codes.rs"),
     );
 
@@ -224,7 +230,7 @@ fn main() {
         converter.finalize().to_hex()
     );
     println!("cargo:rerun-if-env-changed=WASI_SDK_PATH");
-    for watched in ["cpp", "dxbc-spirv", "dxil-spirv", "src"] {
+    for watched in [BOUNDARY, "dxbc-spirv", "dxil-spirv", "src"] {
         println!("cargo:rerun-if-changed={watched}");
     }
     if naga.exists() {
@@ -416,7 +422,7 @@ fn base() -> cc::Build {
     build
         .cpp(true)
         .include("cpp/assert")
-        .include("cpp")
+        .include(BOUNDARY)
         .warnings(false);
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("wasi") {
         build.flag("-fno-exceptions");

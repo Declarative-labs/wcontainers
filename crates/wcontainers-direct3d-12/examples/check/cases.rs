@@ -2905,7 +2905,7 @@ unsafe fn filter_depth(c: &Ctx) -> Result<String> {
 /// then a strip of two triangles under `ALWAYS`, the second of the strip's other winding.
 unsafe fn early_per_primitive(c: &Ctx) -> Result<String> {
     unsafe {
-        const SIDE: u32 = 4;
+        const DEPTH_SIDE: u32 = 4;
         const DEPTH_CLEAR: f32 = 0.5;
         let vs = compile(
             "static const float2 corners[10] = { float2(-1, -1), float2(-1, 3), float2(3, -1),
@@ -2973,8 +2973,8 @@ unsafe fn early_per_primitive(c: &Ctx) -> Result<String> {
             D3D12_HEAP_TYPE_DEFAULT,
             &D3D12_RESOURCE_DESC {
                 Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
-                Width: u64::from(SIDE),
-                Height: SIDE,
+                Width: u64::from(DEPTH_SIDE),
+                Height: DEPTH_SIDE,
                 DepthOrArraySize: 1,
                 MipLevels: 1,
                 Format: DXGI_FORMAT_D32_FLOAT,
@@ -3005,14 +3005,14 @@ unsafe fn early_per_primitive(c: &Ctx) -> Result<String> {
         list.OMSetRenderTargets(0, None, false, Some(&dsv));
         list.SetGraphicsRootSignature(&root);
         list.RSSetViewports(&[D3D12_VIEWPORT {
-            Width: SIDE as f32,
-            Height: SIDE as f32,
+            Width: DEPTH_SIDE as f32,
+            Height: DEPTH_SIDE as f32,
             MaxDepth: 1.0,
             ..Default::default()
         }]);
         list.RSSetScissorRects(&[RECT {
-            right: SIDE as i32,
-            bottom: SIDE as i32,
+            right: DEPTH_SIDE as i32,
+            bottom: DEPTH_SIDE as i32,
             ..Default::default()
         }]);
         let at = counts.GetGPUVirtualAddress();

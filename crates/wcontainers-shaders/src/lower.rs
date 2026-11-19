@@ -38,6 +38,8 @@ type Result<T> = core::result::Result<T, ConvertError>;
 /// The clip and cull distances a vertex has in Direct3D 11 and 12, together
 /// (`D3D11_CLIP_OR_CULL_DISTANCE_COUNT`).
 const CLIP_OR_CULL_DISTANCES: u32 = 8;
+/// The refusal of clip distances of a type the common form's array cannot hold.
+pub(super) const CLIP_DISTANCE_TYPE: &str = "ClipDistanceType";
 
 fn unsupported(what: &'static str) -> ConvertError {
     ConvertError::Unsupported(what)
@@ -1071,8 +1073,14 @@ impl<'a> Lowering<'a> {
                 | builtin::GS_INSTANCE_ID
                 | builtin::GS_VERTEX_COUNT_IN,
             ) => true,
-            (SourceStage::Vertex | SourceStage::Domain, false, builtin::CLIP_DISTANCE) => true,
+            (
+                SourceStage::Vertex | SourceStage::Domain | SourceStage::Geometry,
+                false,
+                builtin::CLIP_DISTANCE,
+            ) => true,
             (SourceStage::Geometry, false, builtin::LAYER_INDEX | builtin::VIEWPORT_INDEX) => true,
+            // Drawn through the stage helper ([`crate::stage::Stages::culled`]).
+            (SourceStage::Vertex, false, builtin::CULL_DISTANCE) => true,
             (SourceStage::Vertex, true, builtin::VERTEX_ID | builtin::INSTANCE_ID) => true,
             (_, true, builtin::SAMPLE_COUNT) => self.variant.samples != 0,
             (SourceStage::Pixel, true, builtin::POSITION | builtin::IS_FRONT_FACE)
@@ -1110,22 +1118,9 @@ impl<'a> Lowering<'a> {
     /// The vertex stage's helper constants: the draw's bases at offset 0 (for bases from an indirect
     /// draw's arguments too, which the variant pass then reads from them).
     fn helper_block(&mut self) -> Result<()> {
-        let i32_ty = self.scalar_ty(Scalar::I32);
-        let u32_ty = self.scalar_ty(Scalar::U32);
-        let members = vec![
-            member("base_vertex", i32_ty, 0),
-            member("first_instance", u32_ty, 4),
-            member("draw", u32_ty, 8),
-        ];
-        let ty = self.module.types.insert(
-            Type {
-                name: Some("Helpers".into()),
-                inner: TypeInner::Struct { members, span: 16 },
-            },
-            Span::UNDEFINED,
-        );
+        let (ty, size) = crate::build::draw_bases_block(&mut self.module);
         let var = self.global(
-            "helpers".into(),
+            crate::build::HELPERS.into(),
             AddressSpace::Uniform,
             Some(ResourceBinding {
                 group: wcontainers_gpu::HELPER_SET,
@@ -1139,7 +1134,7 @@ impl<'a> Lowering<'a> {
             value: HelperValue::DrawBase,
             offset: 0,
         });
-        self.reflection.helper_size = 16;
+        self.reflection.helper_size = size;
         Ok(())
     }
 
@@ -1311,14 +1306,18 @@ impl<'a> Lowering<'a> {
                 continue;
             }
             let b = io.builtin.unwrap();
-            if b == builtin::CLIP_DISTANCE {
-                // The common form's clip distances are one array of f32, however the IR groups
-                // them: every declaration's, in order, made one array where the first is met.
+            let distances = match b {
+                builtin::CLIP_DISTANCE => Some(naga::BuiltIn::ClipDistances),
+                builtin::CULL_DISTANCE => Some(naga::BuiltIn::CullDistance),
+                _ => None,
+            };
+            if let Some(distances) = distances {
+                // The common form's clip (or cull) distances are one array of f32, however the IR
+                // groups them: every declaration's, in order, made one array where the first is met.
                 let clips: Vec<usize> = (0..io_count)
                     .filter(|&j| {
                         let (other, ref io) = self.io[j];
-                        io.builtin == Some(builtin::CLIP_DISTANCE)
-                            && self.ir.op(other).is_ok_and(|o| !input(o.code))
+                        io.builtin == Some(b) && self.ir.op(other).is_ok_and(|o| !input(o.code))
                     })
                     .collect();
                 if clips[0] != i {
@@ -1334,7 +1333,7 @@ impl<'a> Lowering<'a> {
                             size: 1,
                         }];
                     if !element || io.ty.dims.len() > 1 {
-                        return Err(unsupported("ClipDistanceType"));
+                        return Err(unsupported(CLIP_DISTANCE_TYPE));
                     }
                     let count: u32 = io.ty.dims.iter().product();
                     let (var, ty) = (io.var, io.ty.clone());
@@ -1355,7 +1354,7 @@ impl<'a> Lowering<'a> {
                 }
                 let count = parts.len() as u32;
                 if count > CLIP_OR_CULL_DISTANCES {
-                    return Err(unsupported("ClipDistanceType"));
+                    return Err(unsupported(CLIP_DISTANCE_TYPE));
                 }
                 let array = self.ty(TypeInner::Array {
                     base: f32_ty,
@@ -1370,11 +1369,7 @@ impl<'a> Lowering<'a> {
                         components: parts,
                     },
                 );
-                members.push((
-                    format!("b{b}"),
-                    array,
-                    naga::Binding::BuiltIn(naga::BuiltIn::ClipDistances),
-                ));
+                members.push((format!("b{b}"), array, naga::Binding::BuiltIn(distances)));
                 values.push(v);
                 continue;
             }
@@ -1749,19 +1744,11 @@ fn system_value(b: u64) -> Option<SystemValue> {
         builtin::SAMPLE_MASK => SystemValue::Coverage,
         builtin::DEPTH => SystemValue::Depth,
         builtin::CLIP_DISTANCE => SystemValue::ClipDistance,
+        builtin::CULL_DISTANCE => SystemValue::CullDistance,
         builtin::LAYER_INDEX => SystemValue::RenderTargetArrayIndex,
         builtin::VIEWPORT_INDEX => SystemValue::ViewportArrayIndex,
         _ => return None,
     })
-}
-
-fn member(name: &str, ty: Handle<Type>, offset: u32) -> StructMember {
-    StructMember {
-        name: Some(name.into()),
-        ty,
-        binding: None,
-        offset,
-    }
 }
 
 fn vector_size(n: u8) -> Result<VectorSize> {

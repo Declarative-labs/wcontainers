@@ -542,6 +542,51 @@ fn clip_distances_are_the_built_in_array() {
     }
 }
 
+/// Clip distances are listed as the signature has them, one value per register with its mask, so a
+/// front counting their components gets every distance, also when they span two registers; the
+/// program clips by that many in the program.
+#[test]
+fn clip_distances_are_listed_per_signature_register() {
+    use wcontainers_gpu::SystemValue;
+    for (name, count, registers) in [("vs_clip", 2, 1), ("vs_clip_six", 6, 2)] {
+        let code = own_pair(name);
+        for c in both(&code, &VariantKey::default()) {
+            let clips: Vec<_> = c
+                .reflection
+                .outputs
+                .iter()
+                .filter(|o| o.system == Some(SystemValue::ClipDistance))
+                .collect();
+            let components: u32 = clips.iter().map(|o| o.mask.count_ones()).sum();
+            assert_eq!((components, clips.len()), (count, registers), "{clips:?}");
+            assert!(
+                wgsl(&c).contains(&format!("array<f32, {count}>")),
+                "{}",
+                wgsl(&c)
+            );
+        }
+        let location = both(&code, &VariantKey::default())[0]
+            .reflection
+            .outputs
+            .iter()
+            .filter(|o| o.system.is_none())
+            .map(|o| o.location + 1)
+            .max()
+            .unwrap();
+        let key = VariantKey {
+            flags: VariantFlags::CLIP_DISTANCE,
+            linked: LinkedValues {
+                location,
+                clip_distances: count as u8,
+            },
+            ..Default::default()
+        };
+        for c in both(&code, &key) {
+            assert!(!wgsl(&c).contains("clip_distances"), "{}", wgsl(&c));
+        }
+    }
+}
+
 /// Constant buffers read as storage move to the storage range, named as added.
 #[test]
 fn constants_read_as_storage_are_added_bindings() {
@@ -640,7 +685,10 @@ fn draw_bases_from_arguments_read_the_argument_buffer() {
             text.contains("@group(3) @binding(11) \nvar<storage> draw_arguments: array<u32>"),
             "{text}"
         );
-        assert!(text.contains("arguments_offset"), "{text}");
+        assert!(
+            text.contains(wcontainers_shaders::ARGUMENTS_OFFSET),
+            "{text}"
+        );
     }
 }
 
@@ -1116,6 +1164,54 @@ fn swizzled_slots_compose_what_they_read() {
         for (c, plain) in both(&code, &key).iter().zip(&plain) {
             assert_ne!(wgsl(c), wgsl(plain), "{name} {map:?}");
         }
+    }
+}
+
+/// A mapped depth view read whole takes the mapping in the (depth, 0, 0, 1) it reads, by both routes;
+/// comparisons read the first component, so a mapping moving red away from it is refused by name.
+#[test]
+fn mapped_depth_views_compose_what_they_read() {
+    use wcontainers_gpu::ViewComponent as C;
+    let key = |map| VariantKey {
+        swizzled: vec![(0, map)],
+        ..VariantKey::default()
+    };
+    let code = own_pair("ps_shadow_wide");
+    let plain = both(&code, &VariantKey::default());
+    for (c, plain) in both(&code, &key([C::R, C::A, C::One, C::G]))
+        .iter()
+        .zip(&plain)
+    {
+        assert_ne!(wgsl(c), wgsl(plain));
+    }
+    both(&own_pair("ps_shadow"), &key([C::R, C::R, C::R, C::One]));
+    let moved = [C::Zero, C::R, C::A, C::G];
+    for name in ["ps_shadow", "ps_shadow_wide"] {
+        let code = own_pair(name);
+        for (route, source) in [Source::Dxbc(&code[0]), Source::Dxil(&code[1])]
+            .into_iter()
+            .enumerate()
+        {
+            match convert(source, &key(moved), None) {
+                Ok(c) => panic!("{name} route {route} converted:\n{}", wgsl(&c)),
+                Err(e) => assert_eq!(
+                    e,
+                    ConvertError::Unsupported(wcontainers_shaders::SWIZZLED_DEPTH)
+                ),
+            }
+        }
+    }
+}
+
+/// Wave minimums and maximums of signed values the converted DXIL holds as unsigned words read them
+/// as signed and give the result back as the words.
+#[test]
+fn wave_minimums_of_the_other_signedness_read_their_operands_as_named() {
+    let code = read("tests/own/ps_wave_signed.dxil");
+    let c = convert(Source::Dxil(&code), &VariantKey::default(), None).unwrap();
+    let text = wgsl(&c);
+    for op in ["subgroupMin(bitcast<i32>(", "subgroupMax(bitcast<i32>("] {
+        assert!(text.contains(op), "{op}: {text}");
     }
 }
 
