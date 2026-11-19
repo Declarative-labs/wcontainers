@@ -1413,6 +1413,13 @@ matrices between stages, `InterpolateAt`, the position of a program run per samp
 
 - Desktop, RTX 3080, shared, through the queue (16:17 to 16:19): `draw` (5 tests), `variant_draw`
   (5), `pull_draw`, `early_draw`, `shadow_draw`, `geometry_draw`, `filter_draw` (2 seeds) all pass.
+  The whole suite (`cargo test -p wcontainers-shaders -- --test-threads 1 --skip mutated`, default
+  seeds and case counts, ignored corpus and fuzz tests not run) passed as one GPU job (16:28 to
+  16:30, run34-suite.log). Not rerun this run (the laptop was down): the 191-shader corpus, the
+  games corpus, glslang, Chrome's compile and the WebAssembly comparison.
+- At the end the desktop's `C:\wc\target\phase-2-graphics-shaders` and the WGSL output folders
+  `C:\wc\shaders-out`, `C:\wc\shaders-out34` were deleted; nothing was built on the laptop or in
+  scratch (scratch run34-*.log and the fetched hex dumps are the evidence).
 
 Next (in order):
 - The fronts (theirs, now possible): the Direct3D 12 runner's PackedStageValues and array files,
