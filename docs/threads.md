@@ -648,9 +648,9 @@ a thread come back (the thread and why), an event, a signal from outside.
   a fault's address and access, nothing for a stop), and each byte it read from the thread's memory
   (suggested: a hook `on_kernel_entry_ended(thread, digest)`, made only for a thread in force
   `External` and only when the system orders entries; BLAKE3, which the cache key already uses,
-  tr/contract.rs:163-166). The registers at a stop are not in it, since a replay stops elsewhere. The kernel is a pure function of what it is handed (docs/runtime.md
-  section 12), so the same digests in the same order mean the same effects on everything outside the
-  process. This is the one recording point of the brief: the kernel keeps no list of which calls are
+  tr/contract.rs:163-166). The registers at a stop are not in it, since a replay stops elsewhere. The
+  kernel is a pure function of what it is handed (docs/runtime.md section 12), so the same digests in
+  the same order mean the same effects on everything outside the process. This is the one recording point of the brief: the kernel keeps no list of which calls are
   "outside".
 
 **What is exact.** A process in force `Exact` replays with the same registers and memory at every logged
