@@ -95,6 +95,24 @@ const LIST_SEPARATOR: &str = ",";
 const CONFIG_VOLUMES: &str = "config.Volumes";
 const CONFIG_USER: &str = "config.User";
 
+/// The account tables in the root (passwd(5), group(5)): their paths, what separates fields and
+/// the members of a group, and what starts a comment line.
+const PASSWD: &str = "etc/passwd";
+const GROUP: &str = "etc/group";
+const FIELD_SEPARATOR: char = ':';
+const MEMBER_SEPARATOR: char = ',';
+const COMMENT: char = '#';
+
+/// What separates the user from the group in an image configuration's `User` (config.md).
+const USER_GROUP_SEPARATOR: char = ':';
+
+/// The directory Docker writes its files in, and those files: the host name, the hosts file and
+/// the name server's.
+const ETC: &[u8] = b"etc";
+const HOSTNAME_FILE: &[u8] = b"etc/hostname";
+const HOSTS_FILE: &[u8] = b"etc/hosts";
+const RESOLV_CONF: &[u8] = b"etc/resolv.conf";
+
 /// Fields of a line of `/etc/passwd` (name, password, uid, gid, comment, home, shell) and of
 /// `/etc/group` (name, password, gid, members), by their places (passwd(5), group(5)).
 mod field {
@@ -264,9 +282,9 @@ impl Image {
     /// `process.user` for the image configuration's `User` (`user`, `uid`, `user:group`, `uid:gid`
     /// and the mixed forms), names looked up in the root's `/etc/passwd` and `/etc/group`.
     fn user(&self, text: &str) -> Result<User, Error> {
-        let passwd = self.table(b"etc/passwd");
-        let group = self.table(b"etc/group");
-        let (name, group_name) = match text.split_once(':') {
+        let passwd = self.table(PASSWD);
+        let group = self.table(GROUP);
+        let (name, group_name) = match text.split_once(USER_GROUP_SEPARATOR) {
             Some((name, group)) => (name, Some(group)),
             None => (text, None),
         };
@@ -311,7 +329,7 @@ impl Image {
 
     /// The user where the image names none: root, in its groups, as Docker gives it.
     fn root(&self) -> User {
-        let passwd = self.table(b"etc/passwd");
+        let passwd = self.table(PASSWD);
         let account = passwd
             .iter()
             .find(|fields| fields.get(field::UID).and_then(|f| f.parse().ok()) == Some(0));
@@ -331,12 +349,12 @@ impl Image {
     /// then each group `/etc/group` lists the user in, in its order.
     fn groups(&self, name: &str, gid: u32) -> Vec<u32> {
         let members = self
-            .table(b"etc/group")
+            .table(GROUP)
             .into_iter()
             .filter(|fields| {
                 fields
                     .get(field::GROUP_MEMBERS)
-                    .is_some_and(|members| members.split(',').any(|m| m == name))
+                    .is_some_and(|members| members.split(MEMBER_SEPARATOR).any(|m| m == name))
             })
             .filter_map(|fields| fields.get(field::GROUP_GID)?.parse().ok());
         std::iter::once(gid).chain(members).collect()
@@ -344,7 +362,7 @@ impl Image {
 
     /// The home directory of `uid` in the root's `/etc/passwd`, or `/` as runc has it.
     pub(crate) fn home(&self, uid: u32) -> String {
-        self.table(b"etc/passwd")
+        self.table(PASSWD)
             .iter()
             .find(|fields| fields.get(field::UID).and_then(|f| f.parse().ok()) == Some(uid))
             .and_then(|fields| fields.get(field::HOME))
@@ -353,16 +371,16 @@ impl Image {
     }
 
     /// The lines of a colon-separated table in the root, such as `/etc/passwd`, split into fields.
-    fn table(&self, path: &[u8]) -> Vec<Vec<&str>> {
-        match self.lookup(path) {
+    fn table(&self, path: &str) -> Vec<Vec<&str>> {
+        match self.lookup(path.as_bytes()) {
             Some(Entry {
                 kind: Kind::Regular(bytes),
                 ..
             }) => std::str::from_utf8(bytes)
                 .unwrap_or("")
                 .lines()
-                .filter(|line| !line.starts_with('#'))
-                .map(|line| line.split(':').collect())
+                .filter(|line| !line.starts_with(COMMENT))
+                .map(|line| line.split(FIELD_SEPARATOR).collect())
                 .collect(),
             _ => Vec::new(),
         }
@@ -433,11 +451,8 @@ impl Image {
     /// with the files Docker writes in every container in place of the image's own.
     pub(crate) fn add_to(&self, kernel: &mut Kernel, hostname: &str) -> Result<(), Error> {
         let written = docker_files(hostname);
-        let etc = match self.files.get(&b"etc"[..]) {
-            None => Some((
-                b"etc".to_vec(),
-                docker_file(DIRECTORY_MODE, Kind::Directory),
-            )),
+        let etc = match self.files.get(ETC) {
+            None => Some((ETC.to_vec(), docker_file(DIRECTORY_MODE, Kind::Directory))),
             Some(Entry {
                 kind: Kind::Directory,
                 ..
@@ -487,7 +502,7 @@ impl Image {
 
 /// What Docker writes over its mounts in every container: the host name, the hosts file with the
 /// kernel's made-up address for it, and the kernel's name server.
-fn docker_files(hostname: &str) -> [(Vec<u8>, Entry); 3] {
+fn docker_files(hostname: &str) -> Vec<(Vec<u8>, Entry)> {
     let address = std::net::Ipv4Addr::from(wcontainers_kernel::network::ADDRESS);
     let name_server = std::net::Ipv4Addr::from(wcontainers_kernel::network::NAME_SERVER);
     let (v4, v6) = (std::net::Ipv4Addr::LOCALHOST, std::net::Ipv6Addr::LOCALHOST);
@@ -497,11 +512,11 @@ fn docker_files(hostname: &str) -> [(Vec<u8>, Entry); 3] {
          {address}\t{hostname}\n"
     );
     let file = |bytes: String| docker_file(FILE_MODE, Kind::Regular(bytes.into_bytes()));
-    [
-        (b"etc/hostname".to_vec(), file(format!("{hostname}\n"))),
-        (b"etc/hosts".to_vec(), file(hosts)),
+    vec![
+        (HOSTNAME_FILE.to_vec(), file(format!("{hostname}\n"))),
+        (HOSTS_FILE.to_vec(), file(hosts)),
         (
-            b"etc/resolv.conf".to_vec(),
+            RESOLV_CONF.to_vec(),
             file(format!("nameserver {name_server}\n")),
         ),
     ]
@@ -893,10 +908,10 @@ mod tests {
             &[&[
                 ("etc/", ""),
                 (
-                    "etc/passwd",
+                    PASSWD,
                     "root:x:0:0::/root:/bin/sh\nweb:x:100:101::/:/bin/sh\n",
                 ),
-                ("etc/group", "root:x:0:\nweb:x:101:\nlog:x:4:web,root\n"),
+                (GROUP, "root:x:0:\nweb:x:101:\nlog:x:4:web,root\n"),
             ]],
             Some(serde_json::json!({
                 "User": "web", "Entrypoint": ["/serve"], "Cmd": ["--port", "80"],
@@ -970,12 +985,12 @@ mod tests {
         let files: &[(&str, &str)] = &[
             ("etc/", ""),
             (
-                "etc/passwd",
+                PASSWD,
                 "root:x:0:0::/root:/bin/sh
 ",
             ),
             (
-                "etc/group",
+                GROUP,
                 "root:x:0:root
 wheel:x:10:root
 bin:x:1:root,bin
