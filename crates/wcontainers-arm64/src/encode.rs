@@ -14,6 +14,7 @@ use crate::forms::{self, Form};
 pub mod form {
     pub const MOVZ: &str = "MOVZ_64_movewide";
     pub const MOVK: &str = "MOVK_64_movewide";
+    pub const MOVN: &str = "MOVN_64_movewide";
     pub const UBFM: &str = "UBFM_64M_bitfield";
     pub const BFM: &str = "BFM_64M_bitfield";
     pub const AND_IMMEDIATE: &str = "AND_64_log_imm";
@@ -62,9 +63,10 @@ pub mod form {
     pub const SYS: &str = "SYS_CR_systeminstrs";
 
     /// Every form above.
-    pub const ALL: [&str; 48] = [
+    pub const ALL: [&str; 49] = [
         MOVZ,
         MOVK,
+        MOVN,
         UBFM,
         BFM,
         AND_IMMEDIATE,
@@ -221,35 +223,41 @@ fn signed(value: i64, unit: i64, bits: u32) -> Result<u32, DoesNotFit> {
     Ok((scaled as u32) & ((1u32 << bits) - 1))
 }
 
-/// `movz rd, #imm16, lsl #(16 * half)`.
-pub fn movz(rd: Register, imm16: u16, half: u32) -> u32 {
+/// A wide move by form: `movz`, `movk` or `movn rd, #imm16, lsl #(16 * half)`.
+pub fn move_wide(name: &str, rd: Register, imm16: u16, half: u32) -> u32 {
     let fields = [
         (field::RD, rd.into()),
         (field::IMM16, imm16.into()),
         (field::HW, half),
     ];
-    word(form::MOVZ, &fields).expect("a move fits")
+    word(name, &fields).expect("a move fits")
+}
+
+/// `movz rd, #imm16, lsl #(16 * half)`.
+pub fn movz(rd: Register, imm16: u16, half: u32) -> u32 {
+    move_wide(form::MOVZ, rd, imm16, half)
 }
 
 /// `movk rd, #imm16, lsl #(16 * half)`.
 pub fn movk(rd: Register, imm16: u16, half: u32) -> u32 {
-    let fields = [
-        (field::RD, rd.into()),
-        (field::IMM16, imm16.into()),
-        (field::HW, half),
-    ];
-    word(form::MOVK, &fields).expect("a move fits")
+    move_wide(form::MOVK, rd, imm16, half)
 }
 
-/// The moves that build `value` in `rd`: a `movz` of its lowest half, then a `movk` for each higher half that
-/// is not zero.
+/// The moves that build `value` in `rd`: a `movz` of its lowest half, or a `movn` of it when more halves are
+/// all ones than are zero, then a `movk` for each higher half the first move did not already give.
 pub fn move_constant(rd: Register, value: u64) -> Vec<u32> {
     let halves = u64::BITS / MOVE_BITS;
     let half = |h: u32| (value >> (h * MOVE_BITS)) as u16;
-    std::iter::once(movz(rd, half(0), 0))
+    let all = |part: u16| (0..halves).filter(|&h| half(h) == part).count();
+    let (first, filled) = if all(u16::MAX) > all(0) {
+        (move_wide(form::MOVN, rd, !half(0), 0), u16::MAX)
+    } else {
+        (movz(rd, half(0), 0), 0)
+    };
+    std::iter::once(first)
         .chain(
             (1..halves)
-                .filter(|&h| half(h) != 0)
+                .filter(|&h| half(h) != filled)
                 .map(|h| movk(rd, half(h), h)),
         )
         .collect()
