@@ -1526,6 +1526,47 @@ fn dual_source_blending_is_not_served() {
 }
 
 #[test]
+fn a_counted_occlusion_query_answers_once_the_gpu_has_its_count_and_a_flushing_poll_sends_it() {
+    let mut dev = device();
+    dev.backend.reads_need_submit = true;
+    let elements = [
+        element("POSITION", RGB32F, 0),
+        element("COLOR", RGBA32F, 12),
+    ];
+    ready(
+        &mut dev,
+        "common.vs_color",
+        "common.ps_color",
+        &elements,
+        28,
+    );
+    let q = dev
+        .create_query(wcontainers_direct3d_11::query::kind::OCCLUSION, 0)
+        .unwrap();
+    dev.begin_query(&q);
+    dev.draw(3, 0);
+    let start = dev.backend.log.len();
+    dev.end_query(&q);
+    // The end neither submits nor waits for the count.
+    assert!(
+        !log_from(&dev, start)
+            .iter()
+            .any(|l| l.starts_with("submit") || l.starts_with("wait_read")),
+        "{:#?}",
+        log_from(&dev, start)
+    );
+    // Polls that may not flush start the read and are told the answer is not there.
+    assert!(dev.query_data(&q, false).unwrap().is_none());
+    assert!(dev.query_data(&q, false).unwrap().is_none());
+    // A poll that may flush sends the read the earlier poll started.
+    let start = dev.backend.log.len();
+    assert!(dev.query_data(&q, true).unwrap().is_none());
+    find(&log_from(&dev, start), "submit");
+    assert!(dev.query_data(&q, false).unwrap().is_some());
+    assert!(dev.removed.is_none());
+}
+
+#[test]
 fn staging_read_backs_start_at_the_copy_and_maps_may_not_wait() {
     let mut dev = device();
     dev.backend.reads_need_submit = true;
