@@ -686,7 +686,7 @@ fn flags_across_calls_match_linux_x86_64() {
 /// the lookup.
 #[test]
 fn compilers_switches_match_linux_x86_64() {
-    const NAME: &str = "switches";
+    const NAME: &str = "switch_tables";
     match_linux::<X86_64>(&[(NAME, Library::None)]);
     for optimisation in LEVELS {
         let blob = build::<X86_64>(NAME, optimisation, Library::None);
