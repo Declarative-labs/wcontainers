@@ -67,6 +67,9 @@ pub trait Native: Guest {
     fn call(code: &mut HostCode, call: InsideCall);
     /// Writes the exit to the direct guest `target` after the current instruction's commit point.
     fn exit(code: &mut HostCode, target: u64);
+    /// Whether the instruction at guest `address` is a call made through its own entry slot: its piece, the call
+    /// stub, holds it alone and is entered only by the slot's call, which is its commit point.
+    fn stub(i: &Self::Instruction, address: u64) -> bool;
     /// What a stop in one decoded instruction at guest `address` needs to know of it.
     fn stopping(i: &Self::Instruction, address: u64) -> Stopping;
 }
@@ -87,6 +90,8 @@ pub struct HostCode {
     pub sites: [u64; NativeReason::ALL.len()],
     /// The exits to direct targets, in the order they were written.
     pub exits: Vec<DirectExit>,
+    /// Whether the piece is a call stub, which its entry slot enters with a call and no exit may branch to.
+    pub stub: bool,
 }
 
 /// Code placed out of line, in the order it was deferred.
@@ -143,6 +148,11 @@ impl HostCode {
         self.owed = owed;
     }
 
+    /// Whether the current instruction is a counted event whose add is still ahead of its commit point.
+    pub fn owes(&self) -> bool {
+        self.owed
+    }
+
     /// Counts one site of a slow path.
     pub fn slow(&mut self, reason: NativeReason) {
         self.sites[reason.index()] += 1;
@@ -191,10 +201,11 @@ impl HostCode {
     }
 
     /// Writes the count's add for `events` events at or after the current instruction in the same
-    /// straight-line run: from here the count register is that far ahead, one less at each event's commit point.
+    /// straight-line run (or of a call stub's call, made before it): from here the count register is that
+    /// much further ahead, one less at each event's commit point.
     pub fn count(&mut self, bytes: &[u8], events: u32) {
         self.push(bytes);
-        self.state().lead += events;
+        self.state().lead += i32::try_from(events).expect("a run's events fit");
     }
 
     /// Writes the commit point; after it the guest goes on at `resume`.
@@ -209,7 +220,7 @@ impl HostCode {
         let now = self.state();
         now.side = Side::After;
         now.resume = resume;
-        now.lead -= u32::from(owed);
+        now.lead -= i32::from(owed);
     }
 
     /// From here on a guest register's value is held elsewhere.

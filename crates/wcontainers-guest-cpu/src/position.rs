@@ -119,8 +119,9 @@ pub struct Span {
     /// The guest instruction's address.
     pub guest: u64,
     pub side: Side,
-    /// How far the count register is ahead of the events completed here.
-    pub lead: u32,
+    /// How far the count register is ahead of the events completed here; behind when negative (a call stub
+    /// before its add).
+    pub lead: i32,
     /// Where the guest goes on, after the commit point.
     pub resume: Resume,
     pub relocated: Vec<Relocated>,
