@@ -3,6 +3,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// zig 0.16's object writer on aarch64-linux points debug information's relocations against
+/// `.text` at no section, which the link then refuses.
+const NO_DEBUG_INFO: &str = "-g0";
+
 /// Where the test programs' sources are.
 pub fn source_directory() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("guest")
@@ -20,7 +24,15 @@ pub fn build(name: &str, link_flags: &[&str], out: &Path) -> PathBuf {
     let built = out.join(format!("{name}.{unique}"));
     let program = out.join(name);
     zig(Command::new("zig")
-        .args(["cc", "-target", "aarch64-linux-musl", "-O2", "-c", "-o"])
+        .args([
+            "cc",
+            "-target",
+            "aarch64-linux-musl",
+            "-O2",
+            NO_DEBUG_INFO,
+            "-c",
+            "-o",
+        ])
         .arg(&object)
         .arg(&source));
     zig(Command::new("zig")
