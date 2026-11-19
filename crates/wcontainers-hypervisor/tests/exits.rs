@@ -29,14 +29,16 @@ mod macos {
     use std::process::Command;
     use std::time::Instant;
 
+    use linux_raw_sys::auxvec::{AT_NULL, AT_PAGESZ};
     use linux_raw_sys::errno::ENOSYS;
-    use linux_raw_sys::general::{__NR_exit, __NR_exit_group, __NR_write};
+    use linux_raw_sys::general::{__NR_exit, __NR_exit_group, __NR_write, __NR_writev, iovec};
     use object::elf::{PF_R, PF_W, PF_X};
     use object::{Object, ObjectSegment, SegmentFlags};
     use wcontainers_abi::{
         Cpu, Exit, MemoryId, PAGE_SIZE, Permissions, RegisterBlock, Resume, ThreadId, Warning,
     };
     use wcontainers_arm64::Arm64;
+    use wcontainers_arm64::thread_state::STACK_ALIGNMENT;
     use wcontainers_hypervisor::{
         Exit as VcpuExit, Host, Hypervisor, Loaded, Memory, Register, VirtualCpu, VirtualMachine,
         boot, link as link_page, routines, translate,
@@ -66,7 +68,18 @@ mod macos {
     const OWN_GUEST: &str = "tests/guest";
 
     /// Each program: its directory under this crate and its name.
-    const PROGRAMS: &[(&str, &str)] = &[(KERNEL_TEST_GUEST, "hello"), (OWN_GUEST, "exits")];
+    const PROGRAMS: &[(&str, &str, CLibrary)] = &[
+        (KERNEL_TEST_GUEST, "hello", CLibrary::Without),
+        (OWN_GUEST, "exits", CLibrary::Without),
+        (OWN_GUEST, "libc", CLibrary::Musl),
+    ];
+
+    /// Whether a program is linked with the C library.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum CLibrary {
+        Without,
+        Musl,
+    }
 
     /// The C compiler's target and the program's extension.
     const GUEST_TARGET: &str = "aarch64-linux-musl";
@@ -98,11 +111,11 @@ mod macos {
         let mut native = NativeSide::start(exact);
         let compiler = Compiler::<Arm64>::new(None);
         let mut failed = 0;
-        for (directory, name) in PROGRAMS {
-            let image = compile(directory, name);
+        for &(directory, name, library) in PROGRAMS {
+            let image = compile(directory, name, library);
             let mut wasm = WasmSide::new(&compiler);
             native.begin(exact);
-            match compare(&image, &mut native, &mut wasm) {
+            match compare(&image, name, &mut native, &mut wasm) {
                 Ok(outcome) => println!("{name} (exact {exact}): {outcome}"),
                 Err(why) => {
                     failed += 1;
@@ -123,7 +136,7 @@ mod macos {
     }
 
     /// Builds a static ARM64 Linux program with no C library from `directory/name.c` with zig's C compiler.
-    fn compile(directory: &str, name: &str) -> Vec<u8> {
+    fn compile(directory: &str, name: &str, library: CLibrary) -> Vec<u8> {
         let source = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join(directory)
             .join(name)
@@ -136,7 +149,9 @@ mod macos {
             .arg(&object)
             .arg(&source));
         zig(Command::new("zig")
-            .args(["cc", "-target", GUEST_TARGET, "-static", "-nostdlib", "-o"])
+            .args(["cc", "-target", GUEST_TARGET, "-static"])
+            .args((library == CLibrary::Without).then_some("-nostdlib"))
+            .arg("-o")
             .arg(&out)
             .arg(&object));
         std::fs::read(&out).expect("the built program")
@@ -422,7 +437,7 @@ mod macos {
     }
 
     /// Loads a static program's segments and its stack, and sets the thread at its entry.
-    fn load(image: &[u8], stack_top: u64, side: &mut dyn Side) {
+    fn load(image: &[u8], name: &str, stack_top: u64, side: &mut dyn Side) {
         let file = object::File::parse(image).expect("an ELF program");
         let mut pages: BTreeMap<u64, Permissions> = BTreeMap::new();
         for segment in file.segments() {
@@ -446,9 +461,29 @@ mod macos {
             STACK_BYTES,
             Permissions::READ | Permissions::WRITE,
         );
+        // The start's stack as Linux lays it out: the count of arguments, the one argument (the program's name,
+        // above), no environment, and an auxiliary vector with the page size alone.
+        let word = size_of::<u64>() as u64;
+        // Linux keeps the strings in the stack's top pages, with more above them; here a page above them is left.
+        let name_at = (stack_top - PAGE_SIZE - name.len() as u64 - 1) & !(word - 1);
+        let mut name_bytes = name.as_bytes().to_vec();
+        name_bytes.push(0);
+        side.write(name_at, &name_bytes);
+        let start = [
+            1,
+            name_at,
+            0,
+            0,
+            AT_PAGESZ.into(),
+            PAGE_SIZE,
+            AT_NULL.into(),
+            0,
+        ];
+        let sp = (name_at - start.len() as u64 * word) & !(STACK_ALIGNMENT - 1);
+        side.write(sp, start.as_bytes());
         side.set_registers(&RegisterBlock {
             pc: file.entry(),
-            sp: stack_top,
+            sp,
             ..RegisterBlock::ZERO
         });
     }
@@ -457,6 +492,7 @@ mod macos {
     /// and how it ended.
     fn compare(
         image: &[u8],
+        name: &str,
         native: &mut NativeSide,
         wasm: &mut WasmSide,
     ) -> Result<String, String> {
@@ -465,8 +501,8 @@ mod macos {
             .address_space()
             .end
             .min(1 << wcontainers_arm64::mirror::REACH_BITS);
-        load(image, stack_top, native);
-        load(image, stack_top, wasm);
+        load(image, name, stack_top, native);
+        load(image, name, stack_top, wasm);
         let mut outputs: [Vec<u8>; DESCRIPTORS] = Default::default();
         let mut resume = Resume::FromRegisters;
         let mut exits = 0u64;
@@ -509,6 +545,28 @@ mod macos {
                         String::from_utf8_lossy(&outputs[1]),
                         String::from_utf8_lossy(&outputs[2]),
                     ));
+                }
+                n if n == u64::from(__NR_writev) => {
+                    let table = size_of::<iovec>() as u64 * third;
+                    let vectors = native.read(second, table);
+                    if vectors != wasm.read(second, table) {
+                        return Err(format!("exit {exits}: the vectors written differ"));
+                    }
+                    let mut total = 0;
+                    for vector in vectors.chunks(size_of::<iovec>()) {
+                        let (base, length) = <[u64; 2]>::read_from_bytes(vector)
+                            .map(|[base, length]| (base, length))
+                            .expect("an iovec");
+                        let written = native.read(base, length);
+                        if written != wasm.read(base, length) {
+                            return Err(format!("exit {exits}: memory written differs"));
+                        }
+                        if let Some(out) = outputs.get_mut(first as usize) {
+                            out.extend(written);
+                        }
+                        total += length;
+                    }
+                    total
                 }
                 _ => (-i64::from(ENOSYS)) as u64,
             };

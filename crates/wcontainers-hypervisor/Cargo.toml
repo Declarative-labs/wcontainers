@@ -43,7 +43,7 @@ proptest = "1.12.0"
 wcontainers-wasmtime = { path = "../wcontainers-wasmtime" }
 wcontainers-runtime = { path = "../wcontainers-runtime" }
 # The system calls the exits test answers, by Linux's numbers.
-linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "errno", "no_std"] }
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "errno", "auxvec", "no_std"] }
 
 [[test]]
 name = "exits"
