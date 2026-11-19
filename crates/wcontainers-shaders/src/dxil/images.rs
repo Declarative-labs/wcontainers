@@ -35,6 +35,11 @@ pub(super) struct Declared {
 }
 
 impl Declared {
+    /// A typed buffer, not a storage image.
+    pub(super) fn buffer(&self) -> bool {
+        self.buffer
+    }
+
     /// Its slot once numbered (`bindings`): the binding's place in its kind's range.
     fn slot(&self, module: &Module, var: Handle<GlobalVariable>) -> u32 {
         let kind = match self.storage {

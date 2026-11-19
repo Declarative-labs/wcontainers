@@ -6,6 +6,7 @@ mod components;
 mod depth;
 mod images;
 mod nonfinite;
+mod one_d;
 mod registers;
 mod widths;
 
@@ -281,6 +282,7 @@ pub(crate) fn lower(
     nonfinite::calls(&mut module)?;
     arrays::split(&mut module, &mut resources, &mut declared)?;
     depth::widen(&mut module)?;
+    one_d::as_two_d(&mut module, &declared)?;
     let mut atomics = images::texel_atomics(&mut module)?;
     // WebGPU's storage buffers are read-only or read-write; one the program only writes is the latter.
     for (_, v) in module.global_variables.iter_mut() {
@@ -518,18 +520,6 @@ fn unconverted(module: &Module) -> Result<(), ConvertError> {
         .entry_points
         .first()
         .ok_or(ConvertError::Malformed("no entry point".into()))?;
-    if module.global_variables.iter().any(|(_, v)| {
-        matches!(
-            module.types[v.ty].inner,
-            TypeInner::Image {
-                dim: naga::ImageDimension::D1,
-                arrayed: true,
-                ..
-            }
-        )
-    }) {
-        return Err(ConvertError::Unsupported(crate::refusal::TEXTURE_1_D_ARRAY));
-    }
     // Every built-in the entry point reads or writes, with its type.
     let mut builtins = Vec::new();
     let mut add = |ty: Handle<Type>, binding: Option<&Binding>| {
@@ -1088,6 +1078,123 @@ fn direct3d_float_to_int(
         place_calls(f, &calls);
     }
     Ok(Some(moved))
+}
+
+/// Copies of the module's functions, then of its entry points' functions, in the order an index
+/// into "functions, then entry points" names them.
+fn all_functions(module: &Module) -> Vec<Function> {
+    module
+        .functions
+        .iter()
+        .map(|(_, f)| f.clone())
+        .chain(module.entry_points.iter().map(|ep| ep.function.clone()))
+        .collect()
+}
+
+/// One expression to be computed by a helper: the function holding it (an index into functions,
+/// then entry points), the expression, and the run-time operands passed to the helper with their
+/// types.
+struct Read {
+    function: usize,
+    user: Handle<Expression>,
+    passed: Vec<(Handle<Expression>, Handle<Type>)>,
+}
+
+/// Makes each expression of `found` (function index, expression) a call of the helper `build` makes
+/// for it, which takes the expression's operands that are neither constants nor globals. Each
+/// function's operands are typed after `stand_in` edits a copy of it with its expressions of `found`.
+fn outline(
+    module: &mut Module,
+    found: &[(usize, Handle<Expression>)],
+    stand_in: impl Fn(&mut Function, &[Handle<Expression>]),
+    build: impl Fn(&mut Module, &Function, &Read) -> Result<Function, ConvertError>,
+) -> Result<(), ConvertError> {
+    let n = module.functions.len();
+    let mut reads = Vec::new();
+    for (i, mut f) in all_functions(module).into_iter().enumerate() {
+        let here: Vec<_> = found.iter().filter(|r| r.0 == i).map(|r| r.1).collect();
+        if here.is_empty() {
+            continue;
+        }
+        let original = f.expressions.clone();
+        stand_in(&mut f, &here);
+        let mut typifier = naga::front::Typifier::new();
+        let ctx = naga::proc::ResolveContext::with_locals(module, &f.local_variables, &f.arguments);
+        for &h in &here {
+            let mut user = original[h].clone();
+            let mut passed = Vec::new();
+            for o in arrays::operands(&mut user)? {
+                let o = *o;
+                if arrays::constant(&f, o)
+                    || matches!(f.expressions[o], Expression::GlobalVariable(_))
+                {
+                    continue;
+                }
+                typifier
+                    .grow(o, &f.expressions, &ctx)
+                    .map_err(|e| ConvertError::Malformed(format!("{e}")))?;
+                passed.push((o, typifier.get(o, &module.types).clone()));
+            }
+            reads.push((i, h, passed));
+        }
+    }
+    let reads: Vec<Read> = reads
+        .into_iter()
+        .map(|(function, user, passed)| Read {
+            function,
+            user,
+            passed: passed
+                .into_iter()
+                .map(|(e, inner)| {
+                    let ty = module
+                        .types
+                        .insert(Type { name: None, inner }, Span::UNDEFINED);
+                    (e, ty)
+                })
+                .collect(),
+        })
+        .collect();
+    let mut built = Vec::new();
+    for r in &reads {
+        let f = match r.function < n {
+            true => {
+                module
+                    .functions
+                    .iter()
+                    .nth(r.function)
+                    .expect("a function")
+                    .1
+            }
+            false => &module.entry_points[r.function - n].function,
+        }
+        .clone();
+        built.push(build(module, &f, r)?);
+    }
+    let (helpers, moved) = functions_first(module, |module| -> Vec<Handle<Function>> {
+        built
+            .into_iter()
+            .map(|h| module.functions.append(h, Span::UNDEFINED))
+            .collect()
+    });
+    for i in 0..n + module.entry_points.len() {
+        let f = match moved.get(i) {
+            Some(&h) => &mut module.functions[h],
+            None => &mut module.entry_points[i - n].function,
+        };
+        let calls: Vec<Placed> = reads
+            .iter()
+            .zip(&helpers)
+            .filter(|(r, _)| r.function == i)
+            .map(|(r, &helper)| Placed {
+                result: r.user,
+                function: helper,
+                arguments: r.passed.iter().map(|p| p.0).collect(),
+                pre: None,
+            })
+            .collect();
+        place_calls(f, &calls);
+    }
+    Ok(())
 }
 
 /// Runs `make`, which appends functions, so that they come before every function the module had

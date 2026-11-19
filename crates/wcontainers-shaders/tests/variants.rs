@@ -1383,3 +1383,28 @@ fn storage_bindings_give_their_stride_and_offsets() {
         assert_eq!(sorted, storage, "{:?}", c.reflection.helpers);
     }
 }
+
+/// 1D textures and arrays (`cs_one_d`: loads, samples with an offset and gradients, sizes and stores)
+/// are 2D textures one texel high by both routes; atomic operations on one are refused by name.
+#[test]
+fn one_d_textures_are_2d_textures_one_texel_high() {
+    let key = VariantKey {
+        storage_formats: vec![(0, Format::R32Float), (1, Format::R32Uint)],
+        ..Default::default()
+    };
+    for (route, c) in ["dxbc", "dxil"]
+        .into_iter()
+        .zip(both(&own_pair("cs_one_d"), &key))
+    {
+        let text = wgsl(&c);
+        assert!(!text.contains("_1d"), "{route}: {text}");
+        for declared in [
+            "texture_2d<f32>",
+            "texture_2d_array<f32>",
+            "texture_storage_2d<r32float,write>",
+            "texture_storage_2d_array<r32uint,write>",
+        ] {
+            assert!(text.contains(declared), "{route}: {declared}: {text}");
+        }
+    }
+}
