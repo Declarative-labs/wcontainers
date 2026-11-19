@@ -18,7 +18,16 @@ for %%a in (dx12 vulkan) do "%BIN%\examples\scenes" %%a "%OUT%" || set FAILED=1
 for %%t in (blend-factor depth-function) do (
     for %%a in (dx12 vulkan) do "%BIN%\examples\scenes" %%a "%OUT%\%%t" %%t || set FAILED=1
 )
-node crates\wcontainers-gpu-webgpu\web\draw.mjs "%OUT%\pkg" "%OUT%" none blend-factor depth-function || set FAILED=1
+rem Chrome's first launch now and then gets no WebGPU adapter; draw.mjs then exits NO_ADAPTER and is
+rem launched again, up to LAUNCHES times in all.
+set NO_ADAPTER=3
+set LAUNCHES=3
+set LAUNCH=0
+:draw
+set /a LAUNCH+=1
+node crates\wcontainers-gpu-webgpu\web\draw.mjs "%OUT%\pkg" "%OUT%" none blend-factor depth-function
+if errorlevel %NO_ADAPTER% if %LAUNCH% lss %LAUNCHES% goto draw
+if errorlevel 1 set FAILED=1
 cargo test --locked -j 3 -p wcontainers-gpu-webgpu --test suite -- --list --format terse > "%OUT%\suite-list.txt" || set FAILED=1
 node crates\wcontainers-gpu-webgpu\web\suite.mjs "%OUT%\pkg" "%OUT%\suite-chrome.txt" "%OUT%\suite-list.txt" || set FAILED=1
 node crates\wcontainers-gpu-webgpu\web\plain.mjs "%OUT%\pkg" || set FAILED=1

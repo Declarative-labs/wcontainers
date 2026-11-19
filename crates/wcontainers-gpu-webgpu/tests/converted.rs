@@ -52,3 +52,16 @@ fn three_channel_formats_keep_every_bit_with_alpha_one() {
     let line = converted::three_channels(&mut b, seed, cases).unwrap();
     eprintln!("{line}");
 }
+
+/// The three-channel formats at the device's widest 2D texture, copied from a buffer, between
+/// textures and into a buffer, every bit kept: the raw textures the copies go through are three
+/// times as wide, so they are made in runs (before, past a third of the widest the device was
+/// lost on wgpu's validation).
+#[test]
+fn three_channel_copies_at_the_widest_texture_keep_every_bit() {
+    let (mut b, adapter) = pollster::block_on(draw::device(backends())).expect("a GPU adapter");
+    eprintln!("adapter: {adapter}");
+    let seed = env("WEBGPU_SEED", 1);
+    let line = converted::three_channels_at_widest(&mut b, seed).unwrap();
+    eprintln!("{line}");
+}

@@ -140,13 +140,7 @@ fn fan_and_windings() -> Vec<[f32; 7]> {
     v
 }
 
-const COLORED_WGSL: &str = r#"
-struct VOut { @builtin(position) pos: vec4f, @location(0) color: vec4f }
-@vertex fn vs(@location(0) pos: vec3f, @location(1) color: vec4f) -> VOut {
-    return VOut(vec4f(pos, 1.0), color);
-}
-@fragment fn ps(v: VOut) -> @location(0) vec4f { return v.color; }
-"#;
+use draw::COLORED_WGSL;
 
 /// The rig's fill picture: four 64-pixel cells, wireframe without culling, culling back faces and
 /// front faces, then solid.
