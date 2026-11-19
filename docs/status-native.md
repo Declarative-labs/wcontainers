@@ -120,6 +120,20 @@ Not done yet, in order (the next run starts here):
    the calls (`Exit`: landed at the resume; `Answer`: the Kernel route's meaning; `FloatBefore`/`After`: plan
    3.4's rule; `Trap`, `Misaligned`, `Unreachable`; a fault in the mirror range: the slot's guest address).
    A fault's address comes from the guest instruction, untagged as `untag` does (plan 3.4).
+   Blocked, for the orchestrator (below): the guest's vector registers, FPSR, FPCR and TPIDR_EL0 must come
+   through every exception untouched or saved, and the floor saves only x0 to x30, sp, pc and pstate
+   (floor/entry.rs). The inside is built for `aarch64-unknown-none`, whose prebuilt `core` and our own code
+   use the vector registers (LLVM copies structs with `ldp q`/`stp q`), so the floor clobbers them. Two ways,
+   neither this track's alone: (a) build the inside for `aarch64-unknown-none-softfloat`, so it never touches
+   them and the guest's float state stays live in the hardware across system calls (what a kernel at EL1
+   wants anyway: no 512-byte save each way); the runner then reads and writes them through an EL0 stub that
+   the encoder writes (no new assembly text). The Nix toolchain lacks that target's `core` (installed: the
+   host, aarch64 Linux musl, aarch64-unknown-none, the wasm32 ones, x86_64-unknown-none), and the flake is
+   not this track's. (b) save and restore them in floor/entry.rs's assembly, which changes a string the
+   literal baseline holds: the check refuses the new line, and the baseline may not grow outside a new
+   version of the rules. Expected: (a); not measured.
+1b. (Built already, kept for the runner) the larger structure run: seed 81985529216486895, 1000 words per form
+   (forms with at most 16 other free bits swept whole): 1,072,522 words carried, all in shape (load 59 to 66).
 2. The differential test against layer 1's `translated` (WebAssembly under wasmtime), using layer 1's `Case`
    and `cases(form)` with a seeded proptest runner, 1000 cases per form or more, giving layer 1's `Outcome`;
    plus the bar's own cases (misaligned and tagged targets, misaligned atomics, store-exclusive faults,
@@ -549,6 +563,11 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N2's runner needs the guest's float and vector state kept across exceptions in the floor: either the
+  `aarch64-unknown-none-softfloat` target added to the flake's Rust (preferred; the inside then never
+  touches that state), or one addition to the literal baseline for floor/entry.rs's changed assembly. See N2,
+  "Not done yet", item 1.
 
 - Decision 10: option C does not work on Hypervisor.framework on this M5 (no event counters; the cycle
   counter's overflow raises nothing). By the plan's recommendation the choice is now A or B, the owner's.
