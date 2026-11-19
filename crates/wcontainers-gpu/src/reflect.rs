@@ -436,8 +436,10 @@ bitflags! {
         const VIEWPORT_ADJUST = 1 << 8;
         /// Texture level and sample counts (Direct3D's `resinfo` and `sampleinfo`, `GetDimensions`)
         /// read from [`HelperValue::TextureLevels`] and [`HelperValue::TextureSamples`], which the front
-        /// writes from the bound views, instead of asked of the texture: for back ends without
-        /// [`crate::Features::TEXTURE_LEVEL_QUERY`] ([`crate::SlowPath::TextureInfoInHelpers`]).
+        /// writes from the bound views (zero levels for an empty slot), instead of asked of the
+        /// texture, and sizes read zero at a level at or past that count as Direct3D answers them:
+        /// for back ends without [`crate::Features::TEXTURE_LEVEL_QUERY`], and for empty slots
+        /// asked their size ([`crate::SlowPath::TextureInfoInHelpers`]).
         const TEXTURE_INFO = 1 << 9;
         /// The pixel shader's target 0 alpha multiplied by the line coverage the stage helper's
         /// rectangle passes in ([`crate::SlowPath::AntialiasedLinesAsQuads`]).
