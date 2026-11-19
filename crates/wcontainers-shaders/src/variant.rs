@@ -128,8 +128,12 @@ pub(crate) fn apply(
             let clamp = flags.contains(VariantFlags::DEPTH_CLAMP);
             let early = flags.contains(VariantFlags::EARLY_TESTS);
             let line = flags.contains(VariantFlags::LINE_COVERAGE);
+            let primitive = flags.contains(VariantFlags::PRIMITIVE_ID_FROM_STAGE);
             let targets = targets::needed(module, &variant.targets_in_shader)?;
-            if counting || mask || dual || bias || distances || clamp || early || line || targets {
+            let wraps = [
+                counting, mask, dual, bias, distances, clamp, early, line, primitive,
+            ];
+            if wraps.into_iter().any(|on| on) || targets {
                 let bias = bias.then(|| {
                     let vec4 = vector(module, 4, Scalar::F32);
                     helper(module, reflection, stage, HelperValue::DepthBias, vec4)
@@ -177,6 +181,10 @@ pub(crate) fn apply(
                         per_sample,
                         bias,
                     )?;
+                }
+                if primitive {
+                    let at = crate::stage::primitive_id_location(variant);
+                    primitive_from_stage(module, &mut w, at)?;
                 }
                 if line {
                     line_coverage(
@@ -1012,6 +1020,48 @@ fn clipped(
     Ok(())
 }
 
+/// The program's primitive index read from the flat value the stage helper's draw passes at `location`
+/// (`VariantFlags::PRIMITIVE_ID_FROM_STAGE`) instead of the built-in.
+fn primitive_from_stage(module: &mut Module, w: &mut Wrapped, location: u32) -> Result<()> {
+    let is_primitive = |b: &Binding| *b == Binding::BuiltIn(BuiltIn::PrimitiveIndex);
+    let Some(argument) =
+        w.f.arguments
+            .iter()
+            .position(|a| a.binding.as_ref().is_some_and(is_primitive))
+    else {
+        let in_struct = w.f.arguments.iter().any(|a| {
+            matches!(&module.types[a.ty].inner, TypeInner::Struct { members, .. }
+                if members.iter().any(|m| m.binding.as_ref().is_some_and(is_primitive)))
+        });
+        return match in_struct {
+            true => Err(ConvertError::Unsupported(
+                crate::refusal::PRIMITIVE_ID_IN_STRUCT,
+            )),
+            // A program not reading its primitive's number takes it from nowhere.
+            false => Ok(()),
+        };
+    };
+    // Read as four words, as the pass-through writes them: Direct3D 12 links stage values register
+    // by register, so a narrower input would be packed beside another.
+    let uvec4 = vector(module, crate::build::VEC4 as u8, Scalar::U32);
+    let words = w.input(
+        module,
+        |b| matches!(b, Binding::Location { location: l, .. } if *l == location),
+        Binding::Location {
+            location,
+            interpolation: Some(naga::Interpolation::Flat),
+            sampling: None,
+            blend_src: None,
+            per_primitive: false,
+        },
+        uvec4,
+    );
+    let value = index(&mut w.f, &mut w.prologue, words, 0);
+    w.replace(argument as u32, value);
+    w.changed = true;
+    Ok(())
+}
+
 /// How far past a line's axis and past each of its ends the coverage filter reaches, in pixels: the
 /// stage helper's rectangle around the line reaches as far.
 pub(crate) const LINE_REACH_ACROSS: f32 = (LINE_WIDTH + COVERAGE_BOX) / 2.0;
@@ -1028,7 +1078,7 @@ const COVERAGE_BOX: f32 = 1.0;
 /// [`LINE_WIDTH`] wide, covers.
 fn line_coverage(module: &mut Module, w: &mut Wrapped, location: u32) -> Result<()> {
     use naga::BinaryOperator::{Add, Multiply, Subtract};
-    let vec4 = vector(module, 4, Scalar::F32);
+    let vec4 = vector(module, crate::build::VEC4 as u8, Scalar::F32);
     let Some(at) = w.output(|b| matches!(b, Binding::Location { location: 0, .. })) else {
         // Without target 0 there is no alpha to multiply.
         return Ok(());

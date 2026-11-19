@@ -27,9 +27,8 @@ use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::core::s;
 
-/// Vertices per seed: position (x, y, z) and colour (r, g, b, a), 28 bytes each.
+/// Vertices per seed, each of `COLOURED_VERTEX_BYTES`.
 const VERTICES: usize = 64;
-const STRIDE: u32 = 28;
 
 struct Case {
     vs: &'static str,
@@ -289,7 +288,7 @@ fn dropped_by_planes(case: &Case, vertices: &[f32], indices: &[u8]) -> u32 {
             None => place as usize,
         }
     };
-    let floats = STRIDE as usize / std::mem::size_of::<f32>();
+    let floats = COLOURED_VERTEX_BYTES as usize / std::mem::size_of::<f32>();
     let below = |first: u32, plane: fn(f32, f32) -> f32| {
         (0..n).all(|k| {
             let v = vertex(first + k) * floats;
@@ -380,7 +379,9 @@ fn direct3d(gpu: &Gpu, case: &Case, vertices: &[f32], indices: &[u8]) -> Vec<u8>
     gpu.program(&vs, &ps, &elements).unwrap();
     let geometry =
         (!case.gs.is_empty()).then(|| gpu.gs(&bytecode(&format!("{}.dxbc", case.gs))).unwrap());
-    let _buffer = gpu.vertices(0, bytes_of(vertices), STRIDE).unwrap();
+    let _buffer = gpu
+        .vertices(0, bytes_of(vertices), COLOURED_VERTEX_BYTES)
+        .unwrap();
     let constants = gpu
         .immutable(&constants(), D3D11_BIND_CONSTANT_BUFFER)
         .unwrap();
@@ -586,7 +587,12 @@ fn ours<B: Backend>(
     let base = case.indexed.unwrap_or(case.first as i32);
     for h in &vs.reflection.helpers {
         let words = match h.value {
-            HelperValue::PulledStream { input } => [if input == 0 { 0 } else { 12 }, STRIDE, 0, 0],
+            HelperValue::PulledStream { input } => [
+                if input == 0 { 0 } else { POSITION_BYTES },
+                COLOURED_VERTEX_BYTES,
+                0,
+                0,
+            ],
             HelperValue::DrawBase => [base as u32, case.first_instance, 0, 0],
             _ => panic!("{h:?}"),
         };
@@ -909,7 +915,9 @@ fn direct3d_streamed(
         )
     })
     .unwrap();
-    let _buffer = gpu.vertices(0, bytes_of(vertices), STRIDE).unwrap();
+    let _buffer = gpu
+        .vertices(0, bytes_of(vertices), COLOURED_VERTEX_BYTES)
+        .unwrap();
     let constants = gpu
         .immutable(&constants(), D3D11_BIND_CONSTANT_BUFFER)
         .unwrap();

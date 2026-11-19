@@ -379,7 +379,8 @@ const PRIMITIVE_ARGUMENT: &str = "primitive_id";
 enum ExtraSlot {
     /// Line coverage values, four f32 without perspective.
     LineCoverage(u32),
-    /// The primitive's number, a flat u32 (the slot's first word).
+    /// The primitive's number in the first word of four flat u32: whole registers on both sides, as
+    /// Direct3D 12 links stage values register by register.
     PrimitiveId(u32),
 }
 const RUN_VARIABLE: &str = "draw_run";
@@ -691,10 +692,14 @@ pub fn primitive_programs(
     })
 }
 
-/// The primitive program (`primitives.wgsl`), which [`Stages`] runs after the vertex stage on the
+/// The primitive program's source: one invocation per API primitive copies its vertices' records with
+/// its number.
+const PRIMITIVE_PROGRAM: &str = include_str!("stage/primitives.wgsl");
+
+/// The primitive program ([`PRIMITIVE_PROGRAM`]), which [`Stages`] runs after the vertex stage on the
 /// primitive route.
 pub fn primitive_program() -> Result<wcontainers_gpu::ShaderModule> {
-    let text = include_str!("stage/primitives.wgsl");
+    let text = PRIMITIVE_PROGRAM;
     let module = naga::front::wgsl::parse_str(text)
         .map_err(|e| ConvertError::Malformed(format!("the primitive program: {e}")))?;
     Ok(wcontainers_gpu::ShaderModule {
@@ -1482,10 +1487,10 @@ fn passthrough_of(
                 SLOT_BYTES,
             ),
             ExtraSlot::PrimitiveId(at) => (
-                build::scalar(&mut module, Scalar::U32),
+                uvec4,
                 location(at, Some(Interpolation::Flat)),
-                b.field(raw, 0),
-                build::WORD,
+                raw,
+                SLOT_BYTES,
             ),
         };
         members.push(StructMember {

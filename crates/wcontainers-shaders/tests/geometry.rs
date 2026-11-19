@@ -316,7 +316,7 @@ fn cull_distances_take_the_stage_helpers_route() {
 /// by both routes: records of the position and both locations, the colour taken along the line and
 /// the number from the first vertex, and a pass-through writing the coverage at the pixel program's
 /// coverage location without perspective, where the pixel program made with `LINE_COVERAGE` reads it.
-/// Drawn in `tests/line_draw.rs`.
+/// Drawn in `tests/stage_draw.rs`.
 #[test]
 fn antialiased_lines_take_the_stage_helpers_route() {
     let key = VariantKey {
@@ -360,6 +360,61 @@ fn antialiased_lines_take_the_stage_helpers_route() {
             "{route}: {fragment}"
         );
     }
+}
+
+/// A pixel shader reading its primitive's number (`ps_primitive`) behind `vs_line` takes the stage
+/// helper's primitive route by both routes: the pass-through writes the number as a flat u32 where
+/// the pixel program made with `PRIMITIVE_ID_FROM_STAGE` reads it, which no longer reads the
+/// built-in. Drawn in `tests/stage_draw.rs`.
+#[test]
+fn primitive_numbers_take_the_stage_helpers_route() {
+    let key = VariantKey {
+        pulled: vec![(0, VertexFormat::Float32x3), (1, VertexFormat::Float32x4)],
+        ..Default::default()
+    };
+    for (route, dxil) in [("dxbc", false), ("dxil", true)] {
+        let read = |code| match dxil {
+            false => Source::Dxbc(code),
+            true => Source::Dxil(code),
+        };
+        let vs_code = own(&format!("vs_line.{route}"));
+        let ps_code = own(&format!("ps_primitive.{route}"));
+        let vs = convert(read(&vs_code), &key, None).unwrap_or_else(|e| panic!("{route}: {e}"));
+        let plain = convert(read(&ps_code), &VariantKey::default(), None)
+            .unwrap_or_else(|e| panic!("{route}: {e}"));
+        assert!(
+            wgsl(&plain.modules[0]).contains("primitive_index"),
+            "{route}"
+        );
+        let location = stage::locations(&vs.reflection.outputs)
+            .last()
+            .map_or(0, |l| l + 1);
+        let ps_key = VariantKey {
+            flags: VariantFlags::PRIMITIVE_ID_FROM_STAGE,
+            linked: LinkedValues {
+                location,
+                clip_distances: 0,
+            },
+            ..Default::default()
+        };
+        let programs =
+            stage::primitive_programs(&vs, &ps_key).unwrap_or_else(|e| panic!("{route}: {e}"));
+        let at = stage::primitive_id_location(&ps_key);
+        assert_eq!(at, location, "{route}");
+        let flat = format!("@location({at}) @interpolate(flat");
+        let passthrough = wgsl(&programs.passthrough);
+        assert!(passthrough.contains(&flat), "{route}: {passthrough}");
+        let ps = convert(read(&ps_code), &ps_key, None).unwrap_or_else(|e| panic!("{route}: {e}"));
+        let fragment = wgsl(&ps.modules[0]);
+        assert!(fragment.contains(&flat), "{route}: {fragment}");
+        assert!(!fragment.contains("primitive_index"), "{route}: {fragment}");
+    }
+}
+
+#[test]
+fn the_primitive_program_validates() {
+    let program = stage::primitive_program().unwrap();
+    assert!(wgsl(&program).contains("fn main"));
 }
 
 #[test]

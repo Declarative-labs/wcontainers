@@ -155,4 +155,6 @@ for %%e in (ps_msloop ps_msswap) do (
 "%DXC%" -nologo -T vs_6_0 -E vs_line -Gis -Fo vs_line.dxil lines.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_line /Fo ps_line.dxbc lines.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_line -Gis -Fo ps_line.dxil lines.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_0 /E ps_primitive /Fo ps_primitive.dxbc lines.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_primitive -Gis -Fo ps_primitive.dxil lines.hlsl || exit /b 1
 echo %FXC% %DXC%

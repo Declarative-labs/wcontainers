@@ -1,7 +1,8 @@
-//! Alpha-antialiased lines through the stage helper's line route on the WebGPU back end, against real
-//! Direct3D 11 and WARP drawing them, both blending each line's colour over the target by its alpha.
-//! Seeded lines: `WCONTAINERS_LINE_SEED` (default 1) and `WCONTAINERS_LINE_CASES` seeds from it
-//! (default 4); every case runs per seed.
+//! The stage helper's routes of a vertex shader alone on the WebGPU back end, against real Direct3D 11:
+//! alpha-antialiased lines (and WARP drawing them), both blending each line's colour over the target
+//! by its alpha; and the primitive's number for a pixel shader reading it. Seeded vertices:
+//! `WCONTAINERS_LINE_SEED` (default 1) and `WCONTAINERS_LINE_CASES` seeds from it (default 4); every
+//! case runs per seed.
 
 #![cfg(windows)]
 
@@ -25,10 +26,6 @@ use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::core::s;
 
-/// Position (x, y, z) and colour (r, g, b, a), 28 bytes each.
-const STRIDE: u32 = 28;
-/// The position's bytes, where the colour starts.
-const POSITION_BYTES: u32 = 12;
 /// Vertices per seed.
 const VERTICES: usize = 24;
 /// Pixels from the target's edges no vertex comes nearer than.
@@ -37,16 +34,67 @@ const MARGIN: f32 = 4.0;
 struct Case {
     topology: InputTopology,
     count: u32,
+    instances: u32,
 }
+
+/// Which route of the stage helper draws, and with which pixel shader.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Route {
+    /// `ps_line`, its alpha multiplied by the coverage (`LINE_COVERAGE`).
+    Lines,
+    /// `ps_primitive`, reading its primitive's number (`PRIMITIVE_ID_FROM_STAGE`).
+    Primitives,
+}
+
+impl Route {
+    fn pixel_shader(self) -> &'static str {
+        match self {
+            Route::Lines => "ps_line",
+            Route::Primitives => "ps_primitive",
+        }
+    }
+}
+
+/// Primitives of every list and strip, one draw instanced (Direct3D numbers each instance's
+/// primitives from zero).
+const NUMBERED: [Case; 5] = [
+    Case {
+        topology: InputTopology::TriangleList,
+        count: VERTICES as u32,
+        instances: 1,
+    },
+    Case {
+        topology: InputTopology::TriangleStrip,
+        count: 11,
+        instances: 2,
+    },
+    Case {
+        topology: InputTopology::LineList,
+        count: VERTICES as u32,
+        instances: 1,
+    },
+    Case {
+        topology: InputTopology::LineStrip,
+        count: 9,
+        instances: 1,
+    },
+    Case {
+        topology: InputTopology::PointList,
+        count: VERTICES as u32,
+        instances: 1,
+    },
+];
 
 const CASES: [Case; 2] = [
     Case {
         topology: InputTopology::LineList,
         count: VERTICES as u32,
+        instances: 1,
     },
     Case {
         topology: InputTopology::LineStrip,
         count: 9,
+        instances: 1,
     },
 ];
 
@@ -69,13 +117,19 @@ fn vertices(seed: u64) -> Vec<f32> {
 
 fn d3d_topology(t: InputTopology) -> D3D_PRIMITIVE_TOPOLOGY {
     match t {
+        InputTopology::PointList => D3D11_PRIMITIVE_TOPOLOGY_POINTLIST,
         InputTopology::LineList => D3D11_PRIMITIVE_TOPOLOGY_LINELIST,
-        _ => D3D11_PRIMITIVE_TOPOLOGY_LINESTRIP,
+        InputTopology::LineStrip => D3D11_PRIMITIVE_TOPOLOGY_LINESTRIP,
+        InputTopology::TriangleList => D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
+        _ => D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
     }
 }
 
-fn direct3d(gpu: &Gpu, case: &Case, vertices: &[f32], blending: bool) -> Vec<u8> {
-    let (vs, ps) = (bytecode("vs_line.dxbc"), bytecode("ps_line.dxbc"));
+fn direct3d(gpu: &Gpu, case: &Case, vertices: &[f32], blending: bool, route: Route) -> Vec<u8> {
+    let (vs, ps) = (
+        bytecode("vs_line.dxbc"),
+        bytecode(&format!("{}.dxbc", route.pixel_shader())),
+    );
     let elements = [
         d3d11::element(s!("POSITION"), 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, 0),
         d3d11::element(
@@ -88,10 +142,12 @@ fn direct3d(gpu: &Gpu, case: &Case, vertices: &[f32], blending: bool) -> Vec<u8>
         ),
     ];
     gpu.program(&vs, &ps, &elements).unwrap();
-    let _buffer = gpu.vertices(0, bytes_of(vertices), STRIDE).unwrap();
+    let _buffer = gpu
+        .vertices(0, bytes_of(vertices), COLOURED_VERTEX_BYTES)
+        .unwrap();
     let raster = gpu
         .rasterizer(&D3D11_RASTERIZER_DESC {
-            AntialiasedLineEnable: true.into(),
+            AntialiasedLineEnable: (route == Route::Lines).into(),
             ..d3d11::solid()
         })
         .unwrap();
@@ -116,7 +172,7 @@ fn direct3d(gpu: &Gpu, case: &Case, vertices: &[f32], blending: bool) -> Vec<u8>
         c.ClearRenderTargetView(&rtv, if blending { &CLEAR } else { &[0.0; 4] });
         c.OMSetRenderTargets(Some(&[Some(rtv)]), None);
         gpu.viewport(SIZE, SIZE);
-        c.Draw(case.count, 0);
+        c.DrawInstanced(case.count, case.instances, 0, 0);
         c.OMSetBlendState(None, None, !0);
     }
     read(gpu, &target, Format::Rgba8Unorm)
@@ -152,10 +208,11 @@ fn ours<B: Backend>(
     vertices: &[f32],
     dxil: bool,
     blending: bool,
+    route: Route,
 ) -> Vec<u8> {
     let kind = if dxil { "dxil" } else { "dxbc" };
     let code = |name: &str| bytecode(&format!("{name}.{kind}"));
-    let (vs_code, ps_code) = (code("vs_line"), code("ps_line"));
+    let (vs_code, ps_code) = (code("vs_line"), code(route.pixel_shader()));
     fn source(c: &[u8], dxil: bool) -> Source<'_> {
         if dxil {
             Source::Dxil(c)
@@ -164,8 +221,8 @@ fn ours<B: Backend>(
         }
     }
     let read = |c| source(c, dxil);
-    // Linked as a front links them: the pixel program's coverage past every value either program
-    // passes, every vertex input pulled.
+    // Linked as a front links them: the pixel program's coverage or primitive number past every value
+    // either program passes, every vertex input pulled.
     let plain = convert(read(&ps_code), &VariantKey::default(), None).unwrap();
     let vs_key = VariantKey {
         pulled: vec![(0, VertexFormat::Float32x3), (1, VertexFormat::Float32x4)],
@@ -183,7 +240,10 @@ fn ours<B: Backend>(
         .max()
         .unwrap_or(0);
     let ps_key = VariantKey {
-        flags: VariantFlags::LINE_COVERAGE,
+        flags: match route {
+            Route::Lines => VariantFlags::LINE_COVERAGE,
+            Route::Primitives => VariantFlags::PRIMITIVE_ID_FROM_STAGE,
+        },
         linked: LinkedValues {
             location,
             clip_distances: 0,
@@ -191,7 +251,10 @@ fn ours<B: Backend>(
         ..Default::default()
     };
     let ps = convert(read(&ps_code), &ps_key, None).unwrap();
-    let mut stages = Stages::antialiased_lines(b, &vs, &ps_key).unwrap();
+    let mut stages = match route {
+        Route::Lines => Stages::antialiased_lines(b, &vs, &ps_key).unwrap(),
+        Route::Primitives => Stages::primitive_numbered(b, &vs, &ps_key).unwrap(),
+    };
 
     // The vertex stage's sets: the pulled streams in set 0, their layout in its helper block.
     let vertex_buffer = buffer(
@@ -221,9 +284,12 @@ fn ours<B: Backend>(
     let mut helpers = vec![0u8; vs.reflection.helper_size as usize];
     for h in &vs.reflection.helpers {
         let words = match h.value {
-            HelperValue::PulledStream { input } => {
-                [if input == 0 { 0 } else { POSITION_BYTES }, STRIDE, 0, 0]
-            }
+            HelperValue::PulledStream { input } => [
+                if input == 0 { 0 } else { POSITION_BYTES },
+                COLOURED_VERTEX_BYTES,
+                0,
+                0,
+            ],
             HelperValue::DrawBase => [0; 4],
             _ => panic!("{h:?}"),
         };
@@ -245,26 +311,25 @@ fn ours<B: Backend>(
             }),
         }])
         .unwrap();
-    let last = stages
-        .run_antialiased_lines(
-            b,
-            &StageDraw {
-                vertex_sets: [Some(&vertex_set), None, None, Some(&vertex_helpers)],
-                geometry_sets: [None; 4],
-                index: None,
-                topology: case.topology,
-                range: DrawRange::Vertices {
-                    first: 0,
-                    count: case.count,
-                    first_instance: 0,
-                    instances: 1,
-                },
-                stream_output: None,
-            },
-            [SIZE as f32; 2],
-        )
-        .unwrap()
-        .expect("lines");
+    let draw = StageDraw {
+        vertex_sets: [Some(&vertex_set), None, None, Some(&vertex_helpers)],
+        geometry_sets: [None; 4],
+        index: None,
+        topology: case.topology,
+        range: DrawRange::Vertices {
+            first: 0,
+            count: case.count,
+            first_instance: 0,
+            instances: case.instances,
+        },
+        stream_output: None,
+    };
+    let last = match route {
+        Route::Lines => stages.run_antialiased_lines(b, &draw, [SIZE as f32; 2]),
+        Route::Primitives => stages.run(b, &draw),
+    }
+    .unwrap()
+    .expect("primitives");
 
     let vertex = b.create_shader(stages.passthrough().unwrap()).unwrap();
     let fragment = b.create_shader(&ps.modules[0]).unwrap();
@@ -368,12 +433,20 @@ fn ours<B: Backend>(
         blend_constant: [0; 4],
         stencil_reference: [0; 2],
         immediates: &[],
-        range: DrawRange::Indexed {
-            first: 0,
-            count: last.count,
-            base_vertex: 0,
-            first_instance: 0,
-            instances: 1,
+        range: match last.index_offset {
+            Some(_) => DrawRange::Indexed {
+                first: 0,
+                count: last.count,
+                base_vertex: 0,
+                first_instance: 0,
+                instances: 1,
+            },
+            None => DrawRange::Vertices {
+                first: 0,
+                count: last.count,
+                first_instance: 0,
+                instances: 1,
+            },
         },
     });
     b.end_pass();
@@ -441,7 +514,8 @@ fn print_coverage(name: &str, draw: impl FnOnce(&Case, &[f32]) -> Vec<u8>) {
     }
     let case = Case {
         topology: InputTopology::LineList,
-        count: (vertices.len() / (STRIDE as usize / 4)) as u32,
+        count: (vertices.len() / (COLOURED_VERTEX_BYTES as usize / 4)) as u32,
+        instances: 1,
     };
     let picture = draw(&case, &vertices);
     eprintln!("{name}: alpha, '.' where nothing is drawn");
@@ -490,12 +564,14 @@ fn antialiased_lines_draw_as_direct3d_does() {
         eprintln!("direct3d 11: {}", gpu.adapter().unwrap());
         if std::env::var_os("WCONTAINERS_LINE_COVERAGE").is_some() {
             print_coverage(&format!("{driver:?}"), |case, v| {
-                direct3d(gpu, case, v, false)
+                direct3d(gpu, case, v, false, Route::Lines)
             });
         }
     }
     if std::env::var_os("WCONTAINERS_LINE_COVERAGE").is_some() {
-        print_coverage("ours", |case, v| ours(&mut backend, case, v, false, false));
+        print_coverage("ours", |case, v| {
+            ours(&mut backend, case, v, false, false, Route::Lines)
+        });
     }
     let seed: u64 = std::env::var("WCONTAINERS_LINE_SEED")
         .map(|s| s.parse().unwrap())
@@ -511,7 +587,7 @@ fn antialiased_lines_draw_as_direct3d_does() {
         for (i, case) in CASES.iter().enumerate() {
             let references: Vec<_> = gpus
                 .iter()
-                .map(|(d, gpu)| (*d, direct3d(gpu, case, &vertices, true)))
+                .map(|(d, gpu)| (*d, direct3d(gpu, case, &vertices, true, Route::Lines)))
                 .collect();
             let between = apart(&references[0].1, &references[1].1);
             eprintln!(
@@ -522,7 +598,7 @@ fn antialiased_lines_draw_as_direct3d_does() {
             );
             spread = spread.max(*between.iter().max().unwrap());
             for dxil in [false, true] {
-                let picture = ours(&mut backend, case, &vertices, dxil, true);
+                let picture = ours(&mut backend, case, &vertices, dxil, true, Route::Lines);
                 for (driver, reference) in &references {
                     let name = format!(
                         "seed {seed} {:?} {} against {driver:?}",
@@ -586,5 +662,67 @@ fn antialiased_lines_draw_as_direct3d_does() {
         spread > ALLOWANCE,
         "the allowance exceeds what two Direct3D implementations differ by"
     );
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// A pixel shader reading its primitive's number, drawn through the stage helper's primitive route
+/// (`PRIMITIVE_ID_FROM_STAGE`, for adapters without the primitive index): every texel equal to real
+/// Direct3D 11's, from the fxc and the dxc build.
+#[test]
+fn primitive_numbers_from_the_stage_helper_draw_as_direct3d_does() {
+    let mut backend = webgpu();
+    let gpu = d3d11::create(Driver::Hardware, false, &[D3D_FEATURE_LEVEL_11_0]).unwrap();
+    eprintln!("direct3d 11: {}", gpu.adapter().unwrap());
+    let seed: u64 = std::env::var("WCONTAINERS_LINE_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_LINE_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(4);
+    let mut failures = Vec::new();
+    let mut compared = 0;
+    for seed in seed..seed + seeds {
+        let vertices = vertices(seed);
+        for case in &NUMBERED {
+            let reference = direct3d(&gpu, case, &vertices, false, Route::Primitives);
+            let drawn = reference
+                .chunks(4)
+                .filter(|t| *t != &reference[..4])
+                .count();
+            for dxil in [false, true] {
+                let picture = ours(
+                    &mut backend,
+                    case,
+                    &vertices,
+                    dxil,
+                    false,
+                    Route::Primitives,
+                );
+                let name = format!(
+                    "seed {seed} {:?} x{} {}",
+                    case.topology,
+                    case.instances,
+                    if dxil { "dxil" } else { "dxbc" }
+                );
+                let d = apart(&reference, &picture);
+                let count = d.iter().filter(|x| **x != 0).count();
+                compared += 1;
+                eprintln!("{name}: {drawn} texels drawn by direct3d, {count} differ");
+                if drawn == 0 || count != 0 {
+                    for (t, _) in d.iter().enumerate().filter(|(_, x)| **x != 0).take(16) {
+                        let (px, py) = (t as u32 % SIZE, t as u32 / SIZE);
+                        let at = t * 4;
+                        eprintln!(
+                            "  ({px}, {py}): direct3d {:?}, ours {:?}",
+                            &reference[at..at + 4],
+                            &picture[at..at + 4]
+                        );
+                    }
+                    failures.push(name);
+                }
+            }
+        }
+    }
+    eprintln!("{compared} comparisons, {} failed", failures.len());
     assert!(failures.is_empty(), "{failures:#?}");
 }

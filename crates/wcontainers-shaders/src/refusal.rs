@@ -74,6 +74,9 @@ pub const NORM_AS_INTEGER: &str = "NormAsInteger";
 pub const OUTPUT_ARRAY: &str = "OutputArray";
 pub const PACKED_VERTEX_INPUT: &str = "PackedVertexInput";
 pub const PRIMITIVE_ID: &str = "PrimitiveId";
+/// A pixel program's primitive index inside a struct of inputs, which the primitive route does not
+/// replace.
+pub const PRIMITIVE_ID_IN_STRUCT: &str = "PrimitiveIdInStruct";
 pub const PULLED_INPUT_IN_STRUCT: &str = "PulledInputInStruct";
 pub const PULLED_INPUT_TYPE: &str = "PulledInputType";
 pub const PULLED_INPUT_WIDTH: &str = "PulledInputWidth";

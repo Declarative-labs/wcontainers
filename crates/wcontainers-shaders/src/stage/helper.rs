@@ -280,6 +280,36 @@ const LINE_TOPOLOGY: &str = "AntialiasedLinesTopology";
 /// The line route run without the viewport's size, or another route with it.
 const LINE_VIEWPORT: &str = "the viewport's size, given to the line route alone";
 
+/// The primitive program and what its copies hold.
+struct Numbered<B: Backend> {
+    program: B::Program,
+    passthrough: ShaderModule,
+    /// Slots the pass-through reads after the position: the locations, the clip distances and the
+    /// primitive's number.
+    drawn_slots: u32,
+}
+
+/// The primitive program's values (`primitives.wgsl`'s `Values`), read through its layout.
+#[repr(C)]
+#[allow(dead_code, reason = "read through its layout")]
+struct PrimitiveValues {
+    units: u32,
+    primitives: u32,
+    count: u32,
+    vertices: u32,
+    strip: u32,
+    in_words: u32,
+    out_words: u32,
+    pad: u32,
+}
+
+/// The primitive program's bindings: its values, the vertex records, and the copies.
+const PRIMITIVE_VALUES_BINDING: u32 = 0;
+const PRIMITIVE_RECORDS_BINDING: u32 = 1;
+const PRIMITIVE_COPIES_BINDING: u32 = 2;
+/// A draw on the primitive route with adjacency, whose adjacent vertices Direct3D draws without.
+const PRIMITIVE_ID_ADJACENCY: &str = "PrimitiveIdAdjacency";
+
 /// The cull program's bindings: its values, and the records followed by the index list.
 const CULL_VALUES_BINDING: u32 = 0;
 const CULL_DATA_BINDING: u32 = 1;
@@ -383,6 +413,7 @@ pub struct Stages<B: Backend> {
     stream: Option<Stream<B>>,
     cull: Option<Cull<B>>,
     lines: Option<Lines<B>>,
+    numbered: Option<Numbered<B>>,
     /// Words per vertex record.
     in_words: u32,
     records: Option<Owned<B>>,
@@ -444,6 +475,7 @@ impl<B: Backend> Stages<B> {
             stream,
             cull: None,
             lines: None,
+            numbered: None,
             in_words: super::record_words(read.len()),
             records: None,
             out: None,
@@ -499,6 +531,7 @@ impl<B: Backend> Stages<B> {
                 distances: programs.cull_distances,
             }),
             lines: None,
+            numbered: None,
             in_words: super::record_words(
                 (drawn_slots + super::distance_slots(programs.cull_distances)) as usize,
             ),
@@ -546,6 +579,52 @@ impl<B: Backend> Stages<B> {
                 drawn_slots: record_slots + 1,
                 interpolated: programs.interpolated,
                 linear: programs.linear,
+            }),
+            numbered: None,
+            in_words: super::record_words(record_slots as usize),
+            records: None,
+            out: None,
+            unused,
+            unused_stride,
+        })
+    }
+
+    /// Makes the compute programs of `vertex` (converted with every input pulled) for a pixel program
+    /// converted with `pixel` (its key, with `VariantFlags::PRIMITIVE_ID_FROM_STAGE`) that reads its
+    /// primitive's number: each draw through [`Self::run`] runs it and copies each primitive's vertex
+    /// records with its number, which the final draw draws through [`Self::passthrough`]
+    /// ([`SlowPath::PrimitiveIdAsGeometry`]).
+    pub fn primitive_numbered(
+        backend: &mut B,
+        vertex: &Converted,
+        pixel: &wcontainers_gpu::VariantKey,
+    ) -> Result<Self, StageError> {
+        let programs = super::primitive_programs(vertex, pixel)?;
+        let shader = backend.create_shader(&programs.compute)?;
+        let vertex_program = backend.create_program(&Program::Compute(&shader))?;
+        let shader = backend.create_shader(&super::primitive_program()?)?;
+        let program = backend.create_program(&Program::Compute(&shader))?;
+        let record_slots =
+            programs.locations.len() as u32 + super::distance_slots(programs.clip_distances);
+        let unused_stride =
+            u64::from(backend.caps().limits.min_storage_offset_alignment).max(UNUSED_RANGE_BYTES);
+        let unused = backend.create_buffer(&BufferDesc {
+            size: UNUSED_RANGES * unused_stride,
+            usage: BufferUsage::STORAGE,
+            intent: MapIntent::Rarely,
+        })?;
+        Ok(Stages {
+            vertex: vertex_program,
+            geometry: None,
+            hull: None,
+            domain: None,
+            stream: None,
+            cull: None,
+            lines: None,
+            numbered: Some(Numbered {
+                program,
+                passthrough: programs.passthrough,
+                drawn_slots: record_slots + 1,
             }),
             in_words: super::record_words(record_slots as usize),
             records: None,
@@ -687,6 +766,7 @@ impl<B: Backend> Stages<B> {
             stream,
             cull: None,
             lines: None,
+            numbered: None,
             in_words: super::record_words(read.len()),
             records: None,
             out: None,
@@ -724,6 +804,9 @@ impl<B: Backend> Stages<B> {
         if let Some(l) = self.lines {
             backend.destroy(Object::Program(l.program));
         }
+        if let Some(n) = self.numbered {
+            backend.destroy(Object::Program(n.program));
+        }
         for owned in [self.records, self.out].into_iter().flatten() {
             backend.destroy(Object::Buffer(owned.buffer));
         }
@@ -733,11 +816,12 @@ impl<B: Backend> Stages<B> {
     /// The vertex program of the draw after a geometry stage or the cull program, for the front's
     /// program with its pixel program.
     pub fn passthrough(&self) -> Option<&ShaderModule> {
-        match (&self.geometry, &self.cull, &self.lines) {
-            (Some(g), _, _) => Some(&g.passthrough),
-            (None, Some(c), _) => Some(&c.passthrough),
-            (None, None, Some(l)) => Some(&l.passthrough),
-            (None, None, None) => None,
+        match (&self.geometry, &self.cull, &self.lines, &self.numbered) {
+            (Some(g), ..) => Some(&g.passthrough),
+            (None, Some(c), ..) => Some(&c.passthrough),
+            (None, None, Some(l), _) => Some(&l.passthrough),
+            (None, None, None, Some(n)) => Some(&n.passthrough),
+            (None, None, None, None) => None,
         }
     }
 
@@ -753,11 +837,13 @@ impl<B: Backend> Stages<B> {
 
     /// The vertex layout of that draw.
     pub fn vertex_layout(&self) -> Option<VertexLayoutDesc> {
-        let (words, slots) = match (&self.geometry, &self.cull, &self.lines) {
-            (Some(g), _, _) => (g.out_words, g.out_locations),
-            (None, Some(c), _) => (self.in_words, c.drawn_slots),
-            (None, None, Some(l)) => (self.in_words + crate::build::VEC4, l.drawn_slots),
-            (None, None, None) => return None,
+        let extended = self.in_words + crate::build::VEC4;
+        let (words, slots) = match (&self.geometry, &self.cull, &self.lines, &self.numbered) {
+            (Some(g), ..) => (g.out_words, g.out_locations),
+            (None, Some(c), ..) => (self.in_words, c.drawn_slots),
+            (None, None, Some(l), _) => (extended, l.drawn_slots),
+            (None, None, None, Some(n)) => (extended, n.drawn_slots),
+            (None, None, None, None) => return None,
         };
         let mut desc = VertexLayoutDesc {
             streams: [None; wcontainers_gpu::MAX_VERTEX_STREAMS],
@@ -872,6 +958,9 @@ impl<B: Backend> Stages<B> {
             {
                 return Err(StageError::Unsupported(LINE_TOPOLOGY));
             }
+            (None, None) if n > TRIANGLE_VERTICES && self.numbered.is_some() => {
+                return Err(StageError::Unsupported(PRIMITIVE_ID_ADJACENCY));
+            }
             (None, None) if n > TRIANGLE_VERTICES && self.cull.is_some() => {
                 return Err(StageError::Unsupported(CULL_DISTANCE_ADJACENCY));
             }
@@ -893,7 +982,8 @@ impl<B: Backend> Stages<B> {
         let drawn = self.geometry.is_some()
             || self.hull.is_some()
             || self.cull.is_some()
-            || self.lines.is_some();
+            || self.lines.is_some()
+            || self.numbered.is_some();
         if primitives == 0 || instances == 0 || (!drawn && !streamed) {
             return Ok(None);
         }
@@ -975,7 +1065,17 @@ impl<B: Backend> Stages<B> {
                     grow(backend, &mut self.out, bytes, usage)?;
                     (0, bytes, index_base)
                 }
-                None => (0, 0, 0),
+                None => match &self.numbered {
+                    Some(_) => {
+                        let copies = u64::from(primitives) * u64::from(instances) * u64::from(n);
+                        let words = copies * u64::from(self.in_words + crate::build::VEC4);
+                        let bytes = words * u64::from(WORD);
+                        let usage = BufferUsage::STORAGE | BufferUsage::VERTEX;
+                        grow(backend, &mut self.out, bytes, usage)?;
+                        (0, bytes, 0)
+                    }
+                    None => (0, 0, 0),
+                },
             },
         };
 
@@ -1106,11 +1206,7 @@ impl<B: Backend> Stages<B> {
             last = Some(FinalDraw {
                 buffer: records.clone(),
                 index_offset: Some(u64::from(list_base) * u64::from(WORD)),
-                topology: match n {
-                    1 => Topology::PointList,
-                    2 => Topology::LineList,
-                    _ => Topology::TriangleList,
-                },
+                topology: list_topology(n),
                 count: primitives * instances * n,
                 tessellated: None,
             });
@@ -1170,6 +1266,56 @@ impl<B: Backend> Stages<B> {
                 index_offset: Some(u64::from(index_base) * u64::from(WORD)),
                 topology: Topology::TriangleList,
                 count: units * LINE_INDICES,
+                tessellated: None,
+            });
+        }
+        if let Some(p) = &self.numbered {
+            backend.slow_paths().hit(SlowPath::PrimitiveIdAsGeometry);
+            let units = primitives * instances;
+            let mut pv = [0u32; word_at(size_of::<PrimitiveValues>())];
+            let at = |offset| word_at(offset);
+            pv[at(offset_of!(PrimitiveValues, units))] = units;
+            pv[at(offset_of!(PrimitiveValues, primitives))] = primitives;
+            pv[at(offset_of!(PrimitiveValues, count))] = count;
+            pv[at(offset_of!(PrimitiveValues, vertices))] = n;
+            pv[at(offset_of!(PrimitiveValues, strip))] = strip.into();
+            pv[at(offset_of!(PrimitiveValues, in_words))] = self.in_words;
+            pv[at(offset_of!(PrimitiveValues, out_words))] = self.in_words + crate::build::VEC4;
+            let bytes = words_as_bytes(&pv);
+            let mut offsets = [0u64];
+            let ring = backend.write_buffer_ring(
+                RingKind::Data,
+                &[&bytes],
+                limits.min_uniform_offset_alignment,
+                &mut offsets,
+            )?;
+            let out = &self.out.as_ref().unwrap().buffer;
+            let set = backend.create_binding_set(&[
+                BindingEntry {
+                    binding: PRIMITIVE_VALUES_BINDING,
+                    stages: StageSet::COMPUTE,
+                    resource: BindingResource::UniformBuffer(BufferRange {
+                        buffer: &ring,
+                        offset: offsets[0],
+                        size: bytes.len() as u64,
+                    }),
+                },
+                storage(PRIMITIVE_RECORDS_BINDING, records, record_bytes, false),
+                storage(PRIMITIVE_COPIES_BINDING, out, out_bytes, true),
+            ])?;
+            let mut sets = [None; MAX_BINDING_SETS];
+            sets[super::STAGE_SET as usize] = Some(&set);
+            backend.dispatch(&DispatchCall {
+                program: &p.program,
+                bindings: sets,
+                immediates: &[],
+                groups: groups(units, 1),
+            })?;
+            last = Some(FinalDraw {
+                buffer: out.clone(),
+                index_offset: None,
+                topology: list_topology(n),
+                count: units * n,
                 tessellated: None,
             });
         }
@@ -1566,6 +1712,15 @@ fn stream_parts<B: Backend>(
         entries,
         strides,
     })
+}
+
+/// The list of primitives of `n` vertices.
+fn list_topology(n: u32) -> Topology {
+    match n {
+        1 => Topology::PointList,
+        LINE_VERTICES => Topology::LineList,
+        _ => Topology::TriangleList,
+    }
 }
 
 fn words_as_bytes(words: &[u32]) -> Vec<u8> {

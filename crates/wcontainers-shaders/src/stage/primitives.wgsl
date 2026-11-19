@@ -47,14 +47,14 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         if strip && n == TRIANGLE_VERTICES && (primitive & 1u) == 1u && k != 0u {
             v = first + TRIANGLE_VERTICES - k;
         }
-        let from = (instance * values.count + v) * values.in_words;
-        let to = (unit * n + k) * values.out_words;
+        let source = (instance * values.count + v) * values.in_words;
+        let copy = (unit * n + k) * values.out_words;
         for (var w = 0u; w < values.in_words; w++) {
-            copies[to + w] = records[from + w];
+            copies[copy + w] = records[source + w];
         }
-        copies[to + values.in_words] = primitive;
+        copies[copy + values.in_words] = primitive;
         for (var w = 1u; w < SLOT_WORDS; w++) {
-            copies[to + values.in_words + w] = 0u;
+            copies[copy + values.in_words + w] = 0u;
         }
     }
 }

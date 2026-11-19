@@ -22,6 +22,10 @@ use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::core::{Interface, s};
 
 pub const SIZE: u32 = 64;
+/// A vertex of position (x, y, z) and colour (r, g, b, a): the position's bytes, where the colour
+/// starts, and the vertex's.
+pub const POSITION_BYTES: u32 = size_of::<[f32; 3]>() as u32;
+pub const COLOURED_VERTEX_BYTES: u32 = POSITION_BYTES + size_of::<[f32; 4]>() as u32;
 pub const TEXTURE_SIZE: u32 = 8;
 
 pub fn bytecode(name: &str) -> Vec<u8> {
