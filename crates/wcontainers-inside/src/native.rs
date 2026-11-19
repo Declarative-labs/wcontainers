@@ -41,7 +41,7 @@ use crate::routines::{FloatControl, Placed, Routines, Vectors};
 use crate::stop::{
     self, Exception, FloatStatus, GENERAL, GuestState, Interrupted, Resolved, SYSCALL_NUMBER, Stop,
 };
-use crate::translation::{self, LinkWords, Linking, Translate};
+use crate::translation::{self, Field, LinkWords, Linking, Translate};
 
 /// The identifier of no process: the idle address space's.
 const IDLE_IDENTIFIER: u16 = 0;
@@ -103,6 +103,9 @@ struct Loaded {
 struct Site {
     at: u64,
     word: u32,
+    /// The offset bits of a branch pointed at the target's piece itself; none when a direct branch replaces the
+    /// word.
+    retarget: Option<u32>,
 }
 
 struct Memory {
@@ -770,7 +773,14 @@ impl NativeCpu {
                 let word = &piece.code[start..start + size_of::<u32>()];
                 let at = base + u64::from(exit.start);
                 let word = u32::from_le_bytes(word.try_into().expect("a word"));
-                (exit.target, Site { at, word })
+                (
+                    exit.target,
+                    Site {
+                        at,
+                        word,
+                        retarget: exit.retarget,
+                    },
+                )
             })
             .collect();
         let m = self.memories.get_mut(&memory).expect("the memory is there");
@@ -800,23 +810,30 @@ impl NativeCpu {
             .get(&pc)
             .into_iter()
             .flatten()
-            .map(|site| (site.at, base));
+            .map(|site| (*site, base));
         let out = sites
             .iter()
             .filter(|(target, _)| *target != pc)
-            .filter_map(|(target, site)| Some((site.at, m.pieces.get(target)?.base)));
-        for (at, to) in into.chain(out).collect::<Vec<_>>() {
-            if let Some(word) = self.link_word(at, to) {
-                write_code(at, &[word]);
+            .filter_map(|(target, site)| Some((*site, m.pieces.get(target)?.base)));
+        for (site, to) in into.chain(out).collect::<Vec<_>>() {
+            if let Some(word) = self.link_word(&site, to) {
+                write_code(site.at, &[word]);
             }
         }
         Ok(())
     }
 
-    /// A direct branch at `at` to `to`, when it reaches.
-    fn link_word(&self, at: u64, to: u64) -> Option<u32> {
-        let offset = (to.wrapping_sub(at) as i64) / size_of::<u32>() as i64;
-        let branch = self.words.branch;
+    /// The word that links `site` to the piece at `to`, when it reaches: a direct branch over it, or its own
+    /// branch pointed there.
+    fn link_word(&self, site: &Site, to: u64) -> Option<u32> {
+        let offset = (to.wrapping_sub(site.at) as i64) / size_of::<u32>() as i64;
+        let branch = match site.retarget {
+            Some(mask) => Field {
+                clear: site.word & !mask,
+                mask,
+            },
+            None => self.words.branch,
+        };
         branch.fits(offset).then(|| branch.with(offset as u64))
     }
 
