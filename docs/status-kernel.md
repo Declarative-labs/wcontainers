@@ -2092,11 +2092,12 @@ Partial (inside the list above), each with its reason:
   (EOPNOTSUPP, as the reference).
 - mlock family: lock state and limits are kept; pages are not brought in (nothing to bring).
 - madvise: MADV_COLLAPSE (making huge pages now: needs huge pages and knowing which pages a mapping
-  holds), MADV_GUARD_INSTALL and MADV_GUARD_REMOVE (guard markers: pages that fault whatever their
-  protection, kept through mprotect and MADV_DONTNEED, moved by mremap, gone with munmap; glibc falls
-  back to mprotect when they are refused) are counted "madvise advice not built" and EINVAL, as a Linux
-  without them answers. Before K6's bar.
-- memfd_create: MFD_HUGETLB counted, ENOSYS (no hugetlbfs); the reference makes such files.
+  holds) is counted "madvise advice not built" and EINVAL, as a Linux without it answers.
+  MADV_GUARD_INSTALL and MADV_GUARD_REMOVE are built (K6c, sixth run).
+- io_submit: every opcode Linux has is built (IOCB_CMD_POLL in K6c's sixth run); reads, writes and
+  syncs finish within the call, so io_cancel finds only waiting poll requests.
+- memfd_create: MFD_HUGETLB counted, ENOSYS (no hugetlbfs); the reference makes such files, and
+  ours shows /sys/kernel/mm/hugepages, so this is a difference still to build (memfd_create04).
 - mincore: every mapped page reported in memory, counted "page residency not tracked".
 - Extended attributes: tmpfs's space limit for them (ENOSPC) is not modelled.
 - ioprio_get, ioprio_set: kept per thread; nothing does I/O by it.
