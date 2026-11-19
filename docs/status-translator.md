@@ -13,9 +13,12 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## Where things stand
 
-M0 to M5, S1 and P1 are built; their work is recorded below, newest first. P2 (the long runs to the plan's
-pass bars) is under way, in layer 3: its driver runs detached, but may be stopped for a Docker outage; see "P2" just below for how to
-check it is alive (do that first; never start a second one), watch it, restart it, and what is left. Refinements of M5 that remain are listed under "M5, fourth run, what comes next".
+M0 to M5, S1 and P1 are built; their work is recorded below, newest first. P2's long run reached the plan's
+pass bars on 2026-11-19 13:52 (layer 1 12,150,000 cases, layer 2 1,000,000 programs, layer 3 100,261 Csmith
+programs compared with Linux; 0 mismatches of the translator; every chunk that failed once is explained
+under "Failures found by the run" and passed later). The driver has ended; nothing of it runs. See "P2" just
+below for the totals, the confirmation run and the whole suite. Refinements of M5 that remain are listed under
+"M5, fourth run, what comes next".
 
 ## P2: the long runs to the pass bars
 
@@ -220,38 +223,48 @@ Progress (from the ledger):
   `arm-confirm/par.sh 10 7 8 9 10 11 12` (log `par.log`; `run-chunk-par.sh` is `run-chunk.sh` with the first
   chunk syncing the export of 8c7a4b5 and the others running beside it with `--no-sync`, 10 jobs each, and the
   guard reading only the Mac's ledger lines, since its driver is stopped).
+- Layer 3 done, 2026-11-17 02:37 to 2026-11-19 13:52: chunk 180 passed on the Mac (436 compared, 719 s, on
+  4e67cd6, only this file changed since 6a705f8's crates), and the driver then skipped 181 to 229 (passed on
+  the rented machine) and ended by itself: "layer 3: 100261 programs compared in 229 chunks". In all: 229 of
+  229 chunks passed, 114,500 programs made, 100,261 compared with Linux, 14,239 not compared because they
+  did not end on Linux within its 20 s alarm, 1,145 also in Chrome, 0 mismatches. 180 chunks ran on the Mac
+  (178,642 s of chunks, 573 to 4,963 s each, load at chunk start 5 to 152 on 18 cores), 49 on the rented
+  ARM64 machine (181 to 229; 36,183 s, 127 to 4,449 s each, 40 at 12 jobs and 9 at 48, load at start up to
+  55 on 96 cores). Passed chunks by commit (all layers): c38b4ad 3, 92b0866 29, 445e3cf 72, de8f4a2 2,
+  7ec7920 14, 33afa1e 14, 9d54ef3 29, 6b74146 12, 99eda5e 9, 6a705f8 18, e8677a0 3, 398df57 69, 4e67cd6 5;
+  each is c38b4ad or a later commit of this branch. Since c38b4ad the translator and arm64 crates changed
+  only in 92b0866 (the square root, failure 1); every later commit changed the test crate (its runner's
+  stop hook in de8f4a2, the generator, the guards, the driver) or this file.
+- Ledger check at the end (`p2/ledger-check.sh`): its nine non-pass lines (layer 1 chunk 3, layer 2 chunk
+  22, layer 3 chunks 55, 70, 84, 113, 126, 133, 176) each have a later pass of the same chunk and knobs;
+  layer 3's passed chunks are 1 to 229 with no gap and no chunk counted twice. Wall clock of the whole run:
+  2026-11-16 15:55 to 2026-11-19 13:52, about 70 hours, Docker outages, stopped and hung chunks included.
+- The whole suite of the three crates on the final code (4e67cd6; the crates are the same at d5dcb8a and
+  later, only this file changed), debug build, `cargo test -j 24 --no-fail-fast -p wcontainers-arm64 -p
+  wcontainers-translator -p wcontainers-translator-test`, on the rented ARM64 machine (arm-run name
+  `translator-suite`, 2026-11-19 21:48 to 22:15 UTC, load 7 to 37 on 96 cores; log in scratch
+  `p2/suite/arm-suite-4e67cd6d.log`): 74 passed, 7 ignored (marked so in the code: benchmarks 2, binaries 1, lookaheads 2, programs 2), 2
+  failed, both in `layer1` and both `MSR_SR_systemmove` (`MSR FPSR` keeping bits 28 and 29 on Graviton4:
+  the known reference difference under "Known gaps", which is why layer 1 bars on the Mac). `layer1` on
+  the Mac (`cargo test -j 4 -p wcontainers-translator-test --test layer1 -- --test-threads 3`, 14:04 to
+  14:08, load 3 to 31 on 18 cores, log `p2/suite/mac-layer1.log`): 7 passed. So every test of the three
+  crates passes where its verdict counts.
+- After the run: the run's build folders (`long/target`, `long/zig-cache`, `long/trees/*/target`) were
+  deleted; sources, logs and the ledger are kept.
 - 46 to 82 of each chunk's 500 programs (9 to 16 percent) do not end on Linux within the reference's 20 s
   alarm and are not compared (counted in `sample`). Across chunks 1 to 30 the count does not follow the load
   at the chunk's start (47 at load 65, 82 at load 13), so it is Csmith's programs that loop or run long,
   not the load.
 
-What is left of P2, in order:
-1. Let layer 3 run to 100,000 compared (at 02:07 on 2026-11-19: 152 chunks passed, 66,505 compared; the driver is stopped until Docker is back, see "Docker outages"). First
-   check the driver is alive (`pgrep -fl long-runs.sh`, the `bash .../long-runs.sh` line). Treat any failing
-   chunk as a real mismatch until shown otherwise: read its log (`logs/layer3-<k>-<commit>.log`, the line
-   `csmith <n> (case <i>): ...`), replay it with the ledger's `replay=` command, find the cause, write a
-   failing test, fix, commit, stop the driver right after a chunk ends, restart it with the command above
-   (with `WC_LONG_ACCEPT=c38b4ad WC_LONG_LIMIT=180`). A chunk with `cases=?` and no summary in its log was
-   killed (failure 6); `driver.log` now gives its exit status. A failed chunk is run again only when the
-   driver is restarted (it walks the chunks in order), so restart once after any failed chunk is fixed. When
-   the driver ends, check the total with the awk command above and that `grep -v result=pass` shows only
-   chunks that later passed; restart it if the total is short.
-2. After the last fix, the confirmation run on the final commit at 5 percent of each layer with base seed
-   200 (one command above), in a new directory. Its zig cache (`<dir>/zig-cache`) starts empty: warm it first
-   with one layer 3 run of 24 cases and one job, as in failure 4, so six cold builds do not race:
-   `ZIG_GLOBAL_CACHE_DIR=<dir>/zig-cache WC_LAYER3_CASES=24 WC_LAYER3_SEED=9 WC_LAYER3_JOBS=1
-   WC_LAYER3_CHROME=0 nix develop -c cargo test --release -p wcontainers-translator-test --test layer3
-   csmith_programs_match_linux` (not counted).
-3. The whole suite of the three crates on the final code once the driver has ended (not run at the end of
-   this run: the driver holds the 6 jobs this machine allows; the crates' own unit tests, `exact` and
-   `binaries` were run on the final code, and layers 1 and 2 of the long run cover the rest of the changes).
-   At the end of the run of 2026-11-18/19 (Docker down): the translator and arm64 crates' suites pass (10
-   tests, load 6 to 7); the test crate's `checks` failed in all 12 tests at `run_container`'s "Docker
-   failed", which is that guard working while Docker is down. The test crate's changes of that run
-   (99eda5e, 6a705f8) were checked by `programs`' three new tests and all of layer 3 at 8 cases (seed 7)
-   while Docker was up.
-5. Merge origin/main afterwards and adopt the literal check, as the brief asks (not before the run ends).
-4. Record the totals, the commits each chunk ran on (in the ledger), and the wall-clock time and load here.
+What is left of P2:
+1. The independent check: read the ledger against this account; rerun every failed program and twenty
+   passing ones from their seeds (each ledger line's knobs give its seed and range; `WC_LAYER3_FROM=<case>
+   WC_LAYER3_CASES=1` with the line's `WC_LAYER3_SEED` replays one Csmith program, and the failing cases are
+   named under "Failures found by the run"); confirm no test or guard was weakened to pass (the three guard
+   changes, failures 5, 7 and 9, are departures recorded under "Departures from the plan").
+2. Then, as the brief asks (not part of P2): merge origin/main and rerun layers 1 and 2 and a sample of layer
+   3 on the merged code; adopt the literal check from origin/phase-1-literals; rename what this track owns
+   from `...Settings` to `...Config`.
 
 Failures found by the run, each with its cause and fix:
 1. Layer 1 chunk 3 (seed 100002, c38b4ad): `FSQRT_D_floatdp1`, the root of a denormal (0x19) rounding up
@@ -2652,9 +2665,11 @@ contract's bits, in both runners).
 
 ## Next
 
-1. The long runs to the pass bars, started by the orchestrator with the driver (under "How to run"; its
-   length from the 1 percent run is under "P1, the long-run driver").
-2. Refinements of M5 under "M5, fourth run, what comes next".
+1. P2's independent check (under "What is left of P2").
+2. The brief's asks after the proof run: merge origin/main and rerun layers 1, 2 and a sample of 3; adopt
+   the literal check; `...Settings` to `...Config`; busybox `awk`'s unrecognised jump through a register;
+   the progress count (definition E) as its own milestone.
+3. Refinements of M5 under "M5, fourth run, what comes next".
 
 ## Known gaps (behave as the plan says: illegal instruction, counted, warned)
 
