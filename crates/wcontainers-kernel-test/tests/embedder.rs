@@ -1094,3 +1094,141 @@ fn the_distance_to_the_ceiling_and_the_compute_used_are_the_processes_own() {
         }
     }
 }
+
+/// Watches the buffer's writes in every process only as it exits, and meets each watch inside
+/// the hook.
+struct WatchAtExit;
+
+impl Hooks for WatchAtExit {
+    fn on_process_exiting(&mut self, mut process: Process<'_>) {
+        process.memory_watch(buffer(), Watch::Writes);
+    }
+
+    fn on_memory_accessing(
+        &mut self,
+        mut process: Process<'_>,
+        _: TaskId,
+        address: u64,
+        _: Access,
+    ) {
+        process.memory_watch(page_of(address), Watch::None);
+    }
+}
+
+#[test]
+fn a_watch_set_as_a_process_exits_changes_nothing_the_program_sees() {
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let plain = run_embedder_below(&["calls"], None, seed, None);
+        assert_eq!(plain.outcome.exit_code, 0, "{:?}", plain.outcome);
+        // The child that shares the memory clears the parent's word as it ends.
+        assert!(
+            stdout(&plain).contains("child cleartid 1"),
+            "{}",
+            stdout(&plain)
+        );
+        // The kernel's stores at a thread's end come before the hook, so the watch has nothing
+        // left to meet and the word is cleared as without it.
+        let run = run_embedder("calls", Box::new(WatchAtExit), seed);
+        assert_eq!(stdout(&run), stdout(&plain), "seed {seed}");
+        for counter in [
+            reason::COPY_UNDESCRIBED,
+            reason::WATCH_MET_AT_A_COPY,
+            reason::CALL_SHORT_OF_WATCHED_MEMORY,
+        ] {
+            assert_eq!(counted(&run, counter), 0, "{counter}: {:?}", run.counters);
+        }
+    }
+}
+
+/// In each child, watches the buffer's second page for writes; each watch met is ended and the
+/// next page watched All, which a call's walk may have passed already.
+#[derive(Default)]
+struct Chaser {
+    later: bool,
+    pending: Vec<(TaskId, u64)>,
+    touches: Arc<Mutex<Vec<(u64, Access)>>>,
+}
+
+impl Chaser {
+    fn chase(process: &mut Process<'_>, address: u64) {
+        let page = page_of(address);
+        process.memory_watch(page.clone(), Watch::None);
+        process.memory_watch(page.end..page.end + PAGE_SIZE, Watch::All);
+    }
+}
+
+impl Hooks for Chaser {
+    fn on_process_starting(&mut self, mut process: Process<'_>) {
+        if process.info().parent().is_some() {
+            process.memory_watch(page_of(BUFFER + PAGE_SIZE), Watch::Writes);
+        }
+    }
+
+    fn on_memory_accessing(
+        &mut self,
+        mut process: Process<'_>,
+        _: TaskId,
+        address: u64,
+        access: Access,
+    ) {
+        self.touches
+            .lock()
+            .unwrap()
+            .push((page_of(address).start, access));
+        if self.later {
+            self.pending.push((process.id(), address));
+        } else {
+            Self::chase(&mut process, address);
+        }
+    }
+
+    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+        let pending = std::mem::take(&mut self.pending);
+        for (id, address) in &pending {
+            let mut process = kernel.process(cpu, *id).expect("the process waits");
+            Self::chase(&mut process, *address);
+        }
+        !pending.is_empty()
+    }
+}
+
+#[test]
+fn a_watch_raised_behind_a_calls_walk_is_met_before_the_call_acts() {
+    let program = wcontainers_kernel_test::guest::build("embedder", &[], &out());
+    let (address, pages) = (format!("{BUFFER:#x}"), PAGES.to_string());
+    let theirs = reference::run(&program, &["scatter", &address, &pages]);
+    let theirs = String::from_utf8_lossy(&theirs.stdout);
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let plain = run_embedder_below(&["scatter"], None, seed, None);
+        assert_eq!(stdout(&plain), theirs, "seed {seed}");
+        for later in [false, true] {
+            let chaser = Chaser {
+                later,
+                ..Default::default()
+            };
+            let touches = chaser.touches.clone();
+            let run = run_embedder("scatter", Box::new(chaser), seed);
+            assert_eq!(stdout(&run), theirs, "seed {seed}, later {later}");
+            // recvfrom's walk meets the data's page, then the length's, then the address's: the
+            // address's page is watched while the walk is on the length, and the length's while
+            // it is on the address, so the walk starts again for it.
+            let page = |index: u64| BUFFER + index * PAGE_SIZE;
+            assert_eq!(
+                *touches.lock().unwrap(),
+                [
+                    (page(1), Access::Write),
+                    (page(2), Access::Write),
+                    (page(3), Access::Write)
+                ],
+                "seed {seed}, later {later}"
+            );
+            for counter in [
+                reason::COPY_UNDESCRIBED,
+                reason::WATCH_MET_AT_A_COPY,
+                reason::CALL_SHORT_OF_WATCHED_MEMORY,
+            ] {
+                assert_eq!(counted(&run, counter), 0, "{counter}: {:?}", run.counters);
+            }
+        }
+    }
+}

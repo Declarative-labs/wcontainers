@@ -68,10 +68,12 @@ take `&dyn System`: `Kernel::start`, `exit`, `event`, `kill`, `restore`.
 - `on_thread_starting`: a clone with `CLONE_THREAD`, at the end of the clone call, before the new
   thread's first instruction; `thread` is its number.
 - `on_process_exiting`: when a process is about to be torn down (`exit_group`, the last thread's
-  exit, a fatal signal), before any of its threads or memory go: its memory and records are still
-  readable. The number stays carried by the zombie until it is reaped (`task_id_free`). When the
-  container's first process ends it is announced first; then every other process is killed and
-  announced in turn, before the first's memory goes (Linux's first process of a namespace kills
+  exit, a fatal signal), after the kernel's last stores into its memory (each thread's robust
+  list and the word `CLONE_CHILD_CLEARTID` named, as Linux's `mm_release`) and before any of its
+  threads or memory go: its memory and records are still readable, and a watch set then has
+  nothing of the kernel's left to meet. The number stays carried by the zombie until it is reaped
+  (`task_id_free`). When the container's first process ends it is announced first; then every
+  other process is killed and announced in turn, before the first's memory goes (Linux's first process of a namespace kills
   the rest on its way out, `zap_pid_ns_processes`); once the container has ended every number
   still carried is freed.
 - `on_process_outgrown`: a request for memory would reach past the executor's ceiling: a fixed
@@ -175,7 +177,10 @@ Before a call runs, the kernel walks the memory its arguments say it will touch
 `on_memory_accessing` for each watched page in order; what names more memory (an iovec array, a
 msghdr or mmsghdr array, a string pointer array, a futex_waitv array, a robust list) is met
 before it is read. If a watch stays, the thread waits and the call runs again from the start once
-the watches change: nothing of it has happened. Every built call that touches program memory is
+the watches change: nothing of it has happened. If a hook raises a watch while the walk goes on
+(sets one, or widens one to `All`), the walk starts again from its beginning once it reaches its
+end, since the page may lie behind it; so does a signal's walk. Only a walk that meets no raised
+watch lets the call act. Every built call that touches program memory is
 described: the reads and writes of data, path and name strings (a page at a time to their zero),
 `execve`'s argument and environment strings, socket addresses with their lengths, the
 structures of the time, signal, scheduling, resource, capability, IPC and message queue calls,

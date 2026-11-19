@@ -163,22 +163,20 @@ impl Kernel {
         // The watched memory the call will touch is met before it acts, and its copies are
         // checked against what its description named.
         let watched = self.watched(tid);
-        if watched {
-            // A copy into this memory by another process's call left nothing for this one.
-            {
-                let watches = &mut self.process_of(tid).map.borrow_mut().watches;
-                watches.touched = None;
-                watches.described = Some(alloc::vec::Vec::new());
-            }
-            let mut memory = crate::system::CallMemory {
-                kernel: self,
-                cx,
-                tid,
-            };
-            if !syscall::touch::touch(&mut memory, call) {
-                self.wait_on_watch(tid, None, false);
-                return;
-            }
+        if watched
+            && !self.walk_watched(cx, tid, |kernel, cx| {
+                // A copy into this memory by another process's call left nothing for this one.
+                {
+                    let watches = &mut kernel.process_of(tid).map.borrow_mut().watches;
+                    watches.touched = None;
+                    watches.described = Some(alloc::vec::Vec::new());
+                }
+                let mut memory = crate::system::CallMemory { kernel, cx, tid };
+                syscall::touch::touch(&mut memory, call)
+            })
+        {
+            self.wait_on_watch(tid, None, false);
+            return;
         }
         self.threads[&tid].taken.borrow_mut().rewind();
         self.begin_asking(tid);
@@ -774,10 +772,19 @@ impl Kernel {
         if self.processes[&pid].ended.is_some() {
             return;
         }
+        let threads = self.processes[&pid].threads.clone();
+        let memory = self.processes[&pid].memory;
+        let shared = self.memory_in_use_elsewhere(pid, memory);
+        // The kernel's last stores into the process's memory, as Linux's `mm_release`, come
+        // before the embedder hears of the end, so a watch it sets then has nothing left to meet.
+        for (index, &tid) in threads.iter().enumerate() {
+            // Each thread's end sees the memory still used by those yet to end.
+            syscall::futex::thread_end(self, cx, tid, shared || index + 1 < threads.len());
+        }
         self.announce(cx, pid, |system, process| {
             system.on_process_exiting(process)
         });
-        // The container ends with its first process, and the rest are killed first, as Linux's
+        // The container ends with its first process, and the rest are killed then, as Linux's
         // first process of a namespace kills them on its way out (`zap_pid_ns_processes`).
         if self.init == Some(pid) {
             let others: alloc::vec::Vec<Pid> = self
@@ -790,16 +797,9 @@ impl Kernel {
                 self.end_process(cx, other, SIGKILL as i32);
             }
         }
-        let threads = self.processes[&pid].threads.clone();
         self.ids_let_go.extend(&threads);
         // The threads' descriptor tables, closed where the process's files close.
         let mut tables = alloc::vec::Vec::new();
-        let memory = self.processes[&pid].memory;
-        let shared = self.memory_in_use_elsewhere(pid, memory);
-        for (index, &tid) in threads.iter().enumerate() {
-            // Each thread's end sees the memory still used by those yet to end.
-            syscall::futex::thread_end(self, cx, tid, shared || index + 1 < threads.len());
-        }
         for tid in threads {
             syscall::timer::thread_end(self, tid);
             self.unschedule(tid);

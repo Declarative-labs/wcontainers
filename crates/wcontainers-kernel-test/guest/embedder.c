@@ -18,6 +18,9 @@
 //     writes the second and the third.
 //   spend BYTES: in a child, maps BYTES, spends some CPU time and prints the process's, in
 //     seconds and nanoseconds.
+//   scatter: in a child, receives the first of two datagrams with recvfrom into the buffer's
+//     second page, its address into the third and the address's length from the fourth, then
+//     the second datagram, and prints both.
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
@@ -47,6 +50,7 @@
 #include <sys/timerfd.h>
 #include <sys/times.h>
 #include <sys/uio.h>
+#include <sys/un.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -694,6 +698,29 @@ static int spend(long bytes) {
     return WEXITSTATUS(status);
 }
 
+static int scatter(void) {
+    pid_t child = fork();
+    if (child == 0) {
+        int ends[2];
+        if (socketpair(AF_UNIX, SOCK_DGRAM, 0, ends)) _exit(1);
+        send(ends[1], "one", 3, 0);
+        send(ends[1], "two", 3, 0);
+        char *data = buffer + page;
+        struct sockaddr *address = (struct sockaddr *)(buffer + 2 * page);
+        socklen_t *length = (socklen_t *)(buffer + 3 * page);
+        *length = sizeof(struct sockaddr_un);
+        long got = recvfrom(ends[0], data, 16, 0, address, length);
+        char next[16] = {0};
+        recv(ends[0], next, sizeof next - 1, MSG_DONTWAIT);
+        printf("recvfrom %ld %.*s len %d next %s\n", got, (int)(got > 0 ? got : 0), data, (int)*length, next);
+        fflush(stdout);
+        _exit(0);
+    }
+    int status;
+    waitpid(child, &status, 0);
+    return WEXITSTATUS(status);
+}
+
 int main(int argc, char **argv) {
     if (argc < 4) return 2;
     buffer = (char *)strtoul(argv[2], NULL, 0);
@@ -717,5 +744,6 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "shared") && argc > 4) return shared_read_only((char *)strtoul(argv[4], NULL, 0));
     if (!strcmp(mode, "attributes")) return attributes();
     if (!strcmp(mode, "spend") && argc > 4) return spend(strtol(argv[4], NULL, 0));
+    if (!strcmp(mode, "scatter")) return scatter();
     return 2;
 }

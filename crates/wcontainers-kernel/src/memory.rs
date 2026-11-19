@@ -260,6 +260,15 @@ pub(crate) struct AddressMap {
     outgrown: Rc<Cell<Option<u64>>>,
 }
 
+/// How much of a page's access a watch brings back: none, writes, everything.
+fn watch_rank(watch: Watch) -> u8 {
+    match watch {
+        Watch::None => 0,
+        Watch::Writes => 1,
+        Watch::All => 2,
+    }
+}
+
 /// The embedder's watches on one memory's pages, and the pages written since it last asked.
 #[derive(Clone, Default)]
 pub(crate) struct Watches {
@@ -273,6 +282,9 @@ pub(crate) struct Watches {
     pub described: Option<Vec<(u64, u64)>>,
     /// The first address a copy of the running call reached outside its description.
     pub undescribed: Option<u64>,
+    /// How many times a page's watch was raised (set, or widened to `All`): a walk over what a
+    /// call will touch starts again when this moves under it.
+    pub raised: u64,
 }
 
 impl Watches {
@@ -465,6 +477,9 @@ impl AddressMap {
                     _ => self.watches.pages.insert(page, watch),
                 };
                 changed |= before != Some(watch) && !(before.is_none() && watch == Watch::None);
+                if watch_rank(watch) > before.map_or(0, watch_rank) {
+                    self.watches.raised += 1;
+                }
             }
             page += PAGE_SIZE;
         }

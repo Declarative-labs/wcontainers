@@ -347,6 +347,27 @@ impl Kernel {
 }
 
 impl Kernel {
+    /// Runs a walk over what thread `tid` is about to touch until it meets no watch: from its
+    /// start again whenever a hook raised a watch during it, since that page may lie behind it;
+    /// false if the thread must wait.
+    pub(crate) fn walk_watched(
+        &mut self,
+        cx: &mut crate::Context<'_>,
+        tid: crate::process::Tid,
+        mut walk: impl FnMut(&mut Self, &mut crate::Context<'_>) -> bool,
+    ) -> bool {
+        let raised = |kernel: &Self| kernel.process_of(tid).map.borrow().watches.raised;
+        loop {
+            let before = raised(self);
+            if !walk(self, cx) {
+                return false;
+            }
+            if raised(self) == before {
+                return true;
+            }
+        }
+    }
+
     /// Tells the embedder that thread `tid` is about to touch a watched address; whether the watch
     /// is gone when the hook returns.
     pub(crate) fn watch_touched(
