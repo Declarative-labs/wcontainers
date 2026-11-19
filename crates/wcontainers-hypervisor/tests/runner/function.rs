@@ -14,6 +14,14 @@ struct Placed {
     code: HostCode,
 }
 
+impl Placed {
+    /// Points the hardware at the piece, entered as the inside enters it.
+    fn enter(&self, hardware: &mut Hardware) {
+        hardware.pc = self.va;
+        enter_piece(&self.code, self.guest, hardware);
+    }
+}
+
 /// A function's words and pieces.
 pub struct Function {
     pub entry: u64,
@@ -129,9 +137,8 @@ impl Runner {
         };
         let at = |guest: u64| function.pieces.iter().position(|p| p.guest == guest);
         let mut current = at(function.entry).expect("the entry has a piece");
-        hardware.pc = function.pieces[current].va;
-        let entry_span = &function.pieces[current].code.spans[0];
-        let mut trace = vec![entry_state(entry_span, &hardware, &page, &block)];
+        let mut trace = vec![entry_state(function.entry, &hardware, &page, &block)];
+        function.pieces[current].enter(&mut hardware);
         let end = |runner: &Runner, trace, stop, landings, interrupted| {
             let mut now = vec![0u8; DATA_BYTES as usize];
             runner.read(DATA, &mut now);
@@ -185,7 +192,7 @@ impl Runner {
                                 Some(k) => {
                                     current = k;
                                     (hardware, page) = rejoin(&state, trapped.page, &block);
-                                    hardware.pc = function.pieces[k].va;
+                                    function.pieces[k].enter(&mut hardware);
                                     returned = true;
                                 }
                                 None => {
@@ -215,7 +222,7 @@ impl Runner {
                 Some(k) => {
                     current = k;
                     (hardware, page) = rejoin(&state, interrupted_page, &block);
-                    hardware.pc = function.pieces[k].va;
+                    function.pieces[k].enter(&mut hardware);
                 }
                 None => {
                     let to = state.pc;

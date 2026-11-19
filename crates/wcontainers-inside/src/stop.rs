@@ -193,7 +193,7 @@ pub fn guest_state(span: &Span, hardware: &Interrupted, page: &RegisterPage) -> 
 /// The guest's state with these values relocated, the count this far ahead, at `pc`.
 fn state_of(
     relocated: &[Relocated],
-    lead: u32,
+    lead: i32,
     pc: u64,
     hardware: &Interrupted,
     page: &RegisterPage,
@@ -210,7 +210,7 @@ fn state_of(
         sp: hardware.sp,
         pc,
         flags: hardware.state & condition_flags(),
-        count: hardware.x[usize::from(COUNT)] - u64::from(lead),
+        count: hardware.x[usize::from(COUNT)].wrapping_add_signed(-i64::from(lead)),
         exclusive: page.exclusive(),
     }
 }
