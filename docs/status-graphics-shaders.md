@@ -2038,6 +2038,10 @@ not taken), logs in scratch `graphics-shaders/run38`:
   `depth-bounds-1-vs` now `VertexStorageWrite`, nine runner shaders now report
   `RasterizerOrderedView` instead of a view kind) and the desktop's whole suite as one GPU job
   with Windows lint first (suite-gpu2.log, 00:03 to 00:08): lint clean, every test binary passes.
+- Clean-up at the end: deleted the laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders`
+  (and run 37's), its `outw` and this run's literal-check clone, the desktop's
+  `C:\wc\target\phase-2-graphics-shaders` and `C:\wc\out\phase-2-graphics-shaders\chrome`.
+  Kept in scratch `run38`: logs and the last written files with Chrome's verdicts (`out2`).
 
 Run 37, 2026-11-18, counts only (laptop i7-8750H, load 1.0 to 5.4 with another track building, 5
 cargo jobs, until it went down at about 20:25 and stayed down to the end of the run; desktop shared
