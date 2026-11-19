@@ -838,6 +838,33 @@ mod gets_through {
         );
     }
 
+    /// A genuine new version lets in a literal the old rules also caught: the track commits it without
+    /// its line (its check fails), then merges the new rules and runs init, which cannot tell it from a
+    /// literal only the new rules find.
+    #[test]
+    fn a_failing_literal_admitted_by_a_genuine_new_version() {
+        let files = with_checker(&["first"]);
+        let root = repository("failing-then-new-rules", &borrowed(&files));
+        git(&root, &["checkout", "-q", "-b", "literals"]);
+        wcontainers_literals::init(&root).expect("init");
+        commit_all(&root, "baseline of main");
+        git(&root, &["checkout", "-q", "-b", "track"]);
+        append(&root, LIB, "\npub fn five(x: u64) -> u64 { x * 4089 }\n");
+        commit_all(&root, "a literal without its line");
+        assert!(!check(&root).clean, "the old rules catch it");
+        git(&root, &["checkout", "-q", "literals"]);
+        replace(&root, RULES_SOURCE, "\"first\",]", "\"first\",\"second\",]");
+        commit_all(&root, "new rules");
+        git(&root, &["checkout", "-q", "track"]);
+        git(&root, &["merge", "-q", "--no-edit", "literals"]);
+        set_baseline(&root, "");
+        wcontainers_literals::init(&root).expect("init after the new rules");
+        assert!(baseline(&root).contains(&key("five", "4089")));
+        commit_all(&root, "init for the new rules");
+        let out = check(&root);
+        assert!(out.clean, "{}", out.report());
+    }
+
     /// A made-up version in two commits: one adds a literal without its line (that commit fails its
     /// own check), the next appends a version and adds the line, since a new version may add lines for
     /// literals in its parent's tree. It shows only in the list of changes that could add lines.
