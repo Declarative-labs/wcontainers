@@ -251,7 +251,9 @@ pub fn memory_use(i: &Instruction) -> Option<AccessKind> {
     Some(match (at, ins.mnemonic()) {
         // A nop's memory operand is never reached: no access, no check, no fault.
         (_, Nop | Reservednop | Lea) => return None,
-        (0, Cmp | Test | Push | Call | Jmp | Mul | Imul | Div | Idiv | Bt) => AccessKind::Read,
+        (0, Cmp | Test | Push | Call | Jmp | Mul | Imul | Div | Idiv | Bt | Clflush) => {
+            AccessKind::Read
+        }
         (0, Mov | Pop | Movaps | Movups | Movapd | Movupd | Movdqa | Movdqu | Movq | Movd) => {
             AccessKind::Write
         }

@@ -162,7 +162,7 @@ fn shift(m: Mnemonic) -> Option<(u8, u8)> {
 
 /// Stop with general protection unless the address in `at` is a multiple of 16, as legacy SSE's aligned
 /// moves and its other 16-byte memory operands require, before the access's own check.
-fn aligned16<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32) {
+pub(crate) fn aligned16<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32) {
     e.sink()
         .local_get(at)
         .i64_const(15)

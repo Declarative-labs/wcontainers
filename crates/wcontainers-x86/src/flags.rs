@@ -107,7 +107,7 @@ fn bit_of(s: &mut InstructionSink<'_>, bit: u8) {
 }
 
 /// PF counts the low byte of the result.
-fn parity(s: &mut InstructionSink<'_>, result: u32) {
+pub(crate) fn parity(s: &mut InstructionSink<'_>, result: u32) {
     s.local_get(result)
         .i32_wrap_i64()
         .i32_const(u8::MAX.into())

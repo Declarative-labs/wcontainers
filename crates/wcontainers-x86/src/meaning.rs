@@ -5,7 +5,7 @@ use crate::decode::{Instruction, claim_group};
 use crate::flags::{Flag, Flags, KEPT_BY_SHIFT, Unmoved};
 use crate::guest::{Control, Reason, Trap};
 use crate::operand::*;
-use crate::{ALWAYS, DF, X86_64};
+use crate::{ALWAYS, ARITHMETIC_FLAGS, DF, X86_64};
 use iced_x86::{Mnemonic, OpKind};
 use wasm_encoder::{BlockType, ValType};
 use wcontainers_guest_cpu::{Access, Emitter, Target};
@@ -96,7 +96,10 @@ pub fn written(i: &Instruction) -> bool {
                     | Push | Pop | Call | Ret | Jmp | Shl | Sal | Shr | Sar | Rol | Ror | Rcl
                     | Rcr | Mul | Imul | Div | Idiv | Syscall | Nop | Pause | Reservednop | Int3
                     | Int1 | Int | Sysenter | Ud0 | Ud1 | Ud2 | Clc | Stc | Cmc | Cld | Std | Bt | Bts
-                    | Btr | Btc | Jrcxz | Jecxz | Pushf | Pushfq | Leave
+                    | Btr | Btc | Jrcxz | Jecxz | Pushf | Pushfq | Leave | Bsf | Bsr | Tzcnt
+                    | Lzcnt | Popcnt | Bswap | Movbe | Xadd | Cmpxchg | Cmpxchg8b | Cmpxchg16b
+                    | Shld | Shrd | Adcx | Adox | Loop | Loope | Loopne | Lahf | Sahf | Clflush
+                    | Rdfsbase | Rdgsbase | Wrfsbase | Wrgsbase
             ))
         // Far transfers through memory: a selector with the offset.
         && !(matches!(m, Call | Jmp) && is_memory(i, 0) && memory_bytes(i) != SLOT)
@@ -231,6 +234,34 @@ fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
         Shl | Sal | Shr | Sar | Rol | Ror | Rcl | Rcr => shift(e, i, m),
         Mul | Imul => multiply(e, i, m),
         Bt | Bts | Btr | Btc => bit_test(e, i, m),
+        Bsf | Bsr | Tzcnt | Lzcnt | Popcnt => bit_count(e, i, m),
+        Bswap | Movbe => byte_reverse(e, i, m),
+        Xadd => exchange_add(e, i),
+        Cmpxchg => compare_exchange(e, i),
+        Cmpxchg8b | Cmpxchg16b => compare_exchange_pair(e, i),
+        Shld | Shrd => double_shift(e, i, m),
+        Adcx => add_with(e, i, Flag::C),
+        Adox => add_with(e, i, Flag::O),
+        Loop | Loope | Loopne => loop_(e, i, m),
+        Lahf => load_flags(e),
+        Rdfsbase | Rdgsbase => {
+            let value = e.local(ValType::I64);
+            e.get(if m == Rdfsbase { FS } else { GS });
+            e.sink().local_set(value);
+            write(e, i, 0, None, value);
+        }
+        // A base that is not a canonical address gives general protection.
+        Wrfsbase | Wrgsbase => {
+            let value = read(e, i, 0, None);
+            canonical_target(e, value);
+            e.sink().local_get(value);
+            e.set(if m == Wrfsbase { FS } else { GS });
+        }
+        Sahf => store_flags(e),
+        // Only its access is seen: a line written back to memory changes nothing a program can tell.
+        Clflush => {
+            checked(e, i);
+        }
         Div | Idiv => divide(e, i, m == Idiv),
         Syscall => syscall(e, i),
         Nop | Pause | Reservednop => {}
@@ -1251,38 +1282,48 @@ fn shift<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
         e.sink().local_set(overflow);
     }
     if stays {
-        for (flag, new) in [(Flag::C, carry), (Flag::O, overflow)] {
-            e.flag(flag);
-            e.sink()
-                .local_get(new)
-                .local_get(moved)
-                .i64_eqz()
-                .select()
-                .local_set(new);
-        }
+        kept_when_unmoved(e, moved, carry, overflow);
     }
     let flags = if rotate {
         Flags::Each(each_with(e, &[(Flag::C, carry), (Flag::O, overflow)]))
     } else {
-        let unmoved = if stays {
-            let kept = KEPT_BY_SHIFT.map(|_| e.local(ValType::I32));
-            for (flag, local) in KEPT_BY_SHIFT.into_iter().zip(kept) {
-                e.flag(flag);
-                e.sink().local_set(local);
-            }
-            Some(Unmoved { count, kept })
-        } else {
-            None
-        };
         Flags::Shift {
             width: w,
             result,
             carry,
             overflow,
-            unmoved,
+            unmoved: stays.then(|| unmoved(e, count)),
         }
     };
     e.set_flags(flags);
+}
+
+/// CF and OF in their i32 locals become the flags as they are where the i64 in `moved` is zero.
+fn kept_when_unmoved<E: Emitter<X86_64> + ?Sized>(
+    e: &mut E,
+    moved: u32,
+    carry: u32,
+    overflow: u32,
+) {
+    for (flag, new) in [(Flag::C, carry), (Flag::O, overflow)] {
+        e.flag(flag);
+        e.sink()
+            .local_get(new)
+            .local_get(moved)
+            .i64_eqz()
+            .select()
+            .local_set(new);
+    }
+}
+
+/// What a shift by the i64 in `count` keeps for a count of zero: the flags of `KEPT_BY_SHIFT` as they are.
+fn unmoved<E: Emitter<X86_64> + ?Sized>(e: &mut E, count: u32) -> Unmoved {
+    let kept = KEPT_BY_SHIFT.map(|_| e.local(ValType::I32));
+    for (flag, local) in KEPT_BY_SHIFT.into_iter().zip(kept) {
+        e.flag(flag);
+        e.sink().local_set(local);
+    }
+    Unmoved { count, kept }
 }
 
 /// Push the high 64 bits of the unsigned 128-bit product of the i64 locals `a` and `b`.
@@ -1877,4 +1918,564 @@ fn bit_test<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         let each = each_with(e, &[(Flag::C, carry)]);
         e.set_flags(Flags::Each(each));
     }
+}
+
+/// Every other byte of a word: the bytes a byte swap moves by one byte.
+const ALTERNATE_BYTES: u64 = u64::MAX / u16::MAX as u64 * u8::MAX as u64;
+/// Every other 16 bits of a word.
+const ALTERNATE_HALVES: u64 = u64::MAX / u32::MAX as u64 * u16::MAX as u64;
+
+/// Reverse the bytes of the low `width` bits of the i64 in `value`, in place.
+fn byte_swap<E: Emitter<X86_64> + ?Sized>(e: &mut E, value: u32, width: u8) {
+    let mut s = e.sink();
+    s.local_get(value)
+        .i64_const(W32.into())
+        .i64_rotl()
+        .local_set(value);
+    for (moved, by) in [(ALTERNATE_HALVES, W16), (ALTERNATE_BYTES, W8)] {
+        s.local_get(value)
+            .i64_const(moved as i64)
+            .i64_and()
+            .i64_const(by.into())
+            .i64_shl()
+            .local_get(value)
+            .i64_const(by.into())
+            .i64_shr_u()
+            .i64_const(moved as i64)
+            .i64_and()
+            .i64_or()
+            .local_set(value);
+    }
+    if width < W64 {
+        s.local_get(value)
+            .i64_const((W64 - width).into())
+            .i64_shr_u()
+            .local_set(value);
+    }
+}
+
+/// Write the i64 in `value` to a general register where the i32 in `when` is not zero, and leave the whole
+/// register as it was where it is zero.
+fn set_general_when<E: Emitter<X86_64> + ?Sized>(e: &mut E, g: General, value: u32, when: u32) {
+    let whole = General {
+        width: if g.width == W32 { W64 } else { g.width },
+        ..g
+    };
+    let chosen = e.local(ValType::I64);
+    e.sink().local_get(value);
+    if g.width == W32 {
+        e.sink().i64_const(mask(W32)).i64_and();
+    }
+    get_general(e, whole);
+    e.sink().local_get(when).select().local_set(chosen);
+    set_general(e, whole, chosen);
+}
+
+/// The destination register of an instruction, which must be one.
+fn destination(i: &Instruction) -> General {
+    general(i.iced.op_register(0)).expect("a general register")
+}
+
+/// `bswap` and `movbe`: the operand's bytes reversed. `bswap` of 16 bits gives zero on the reference CPU.
+fn byte_reverse<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
+    let w = width(i, 0);
+    let mem = checked(e, i);
+    let value = if m == Mnemonic::Bswap {
+        let value = e.local(ValType::I64);
+        if w > W16 {
+            get_general(e, destination(i));
+        } else {
+            e.sink().i64_const(0);
+        }
+        e.sink().local_set(value);
+        value
+    } else {
+        read(e, i, 1, mem)
+    };
+    if w > W16 || m != Mnemonic::Bswap {
+        byte_swap(e, value, w);
+    }
+    write(e, i, 0, mem, value);
+}
+
+/// `bsf`, `bsr`, `tzcnt`, `lzcnt` and `popcnt`. Where the source is zero, `bsf` and `bsr` leave the whole
+/// destination as it was. Their flags are the reference CPU's: `bsf` and `bsr` ZF for a zero source and
+/// PF from the index (from zero for a zero source), `tzcnt` and `lzcnt` CF for a zero source and ZF for a
+/// zero count, `popcnt` ZF for a zero source; every other flag clear.
+fn bit_count<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
+    use Mnemonic::*;
+    let w = width(i, 0);
+    let wide = i64::from(w);
+    let mem = checked(e, i);
+    let source = read(e, i, 1, mem);
+    let result = e.local(ValType::I64);
+    {
+        let mut s = e.sink();
+        match m {
+            Bsf => s.local_get(source).i64_ctz(),
+            Bsr => s
+                .i64_const((W64 - 1).into())
+                .local_get(source)
+                .i64_clz()
+                .i64_sub(),
+            Tzcnt if w < W64 => s
+                .local_get(source)
+                .i64_const(1)
+                .i64_const(wide)
+                .i64_shl()
+                .i64_or()
+                .i64_ctz(),
+            Tzcnt => s.local_get(source).i64_ctz(),
+            Lzcnt => s
+                .local_get(source)
+                .i64_clz()
+                .i64_const(i64::from(W64 - w))
+                .i64_sub(),
+            _ => s.local_get(source).i64_popcnt(),
+        };
+        s.local_set(result);
+    }
+    let scan = matches!(m, Bsf | Bsr);
+    if scan {
+        let found = e.local(ValType::I32);
+        e.sink()
+            .local_get(source)
+            .i64_const(0)
+            .i64_ne()
+            .local_set(found);
+        set_general_when(e, destination(i), result, found);
+        // The index PF is worked out from: zero for a zero source.
+        e.sink()
+            .local_get(result)
+            .i64_const(0)
+            .local_get(found)
+            .select()
+            .local_set(result);
+    } else {
+        write(e, i, 0, None, result);
+    }
+    if !e.flags_live() {
+        return;
+    }
+    let word = e.local(ValType::I32);
+    let at = |s: &mut wasm_encoder::InstructionSink<'_>, flag: Flag| {
+        s.i32_const(flag.bit() as i32).i32_shl();
+    };
+    let mut s = e.sink();
+    s.local_get(source).i64_eqz();
+    match m {
+        Bsf | Bsr => {
+            at(&mut s, Flag::Z);
+            crate::flags::parity(&mut s, result);
+            at(&mut s, Flag::P);
+            s.i32_or();
+        }
+        Tzcnt | Lzcnt => {
+            at(&mut s, Flag::C);
+            s.local_get(result).i64_eqz();
+            at(&mut s, Flag::Z);
+            s.i32_or();
+        }
+        _ => at(&mut s, Flag::Z),
+    }
+    s.local_set(word);
+    e.set_flags(Flags::Packed(word));
+}
+
+/// `xadd`: the destination gets the sum and the source the destination's old value, flags as `add`.
+fn exchange_add<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
+    let w = width(i, 0);
+    let mem = checked(e, i);
+    let a = read(e, i, 0, mem);
+    let b = read(e, i, 1, None);
+    let result = e.local(ValType::I64);
+    e.sink()
+        .local_get(a)
+        .local_get(b)
+        .i64_add()
+        .local_set(result);
+    truncate(e, result, w);
+    write(e, i, 1, None, a);
+    write(e, i, 0, mem, result);
+    e.set_flags(Flags::Add {
+        width: w,
+        a,
+        b,
+        carry: None,
+        result,
+        kept_carry: None,
+    });
+}
+
+/// `cmpxchg`: flags as `cmp` of the accumulator with the destination. Where they are equal the destination
+/// gets the source, else the accumulator gets the destination; a register not chosen is not written at all,
+/// and a memory destination is always written.
+fn compare_exchange<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
+    let w = width(i, 0);
+    let mem = checked(e, i);
+    let dest = read(e, i, 0, mem);
+    let source = read(e, i, 1, None);
+    let acc = e.local(ValType::I64);
+    get_general(e, accumulator(w));
+    e.sink().local_set(acc);
+    let (equal, differ) = (e.local(ValType::I32), e.local(ValType::I32));
+    e.sink()
+        .local_get(acc)
+        .local_get(dest)
+        .i64_eq()
+        .local_tee(equal)
+        .i32_eqz()
+        .local_set(differ);
+    match mem {
+        Some(at) => {
+            let stored = e.local(ValType::I64);
+            e.sink()
+                .local_get(source)
+                .local_get(dest)
+                .local_get(equal)
+                .select()
+                .local_set(stored);
+            store(e, at, u32::from(w / W8), stored);
+        }
+        None => set_general_when(e, destination(i), source, equal),
+    }
+    set_general_when(e, accumulator(w), dest, differ);
+    let result = e.local(ValType::I64);
+    e.sink()
+        .local_get(acc)
+        .local_get(dest)
+        .i64_sub()
+        .local_set(result);
+    truncate(e, result, w);
+    e.set_flags(Flags::Sub {
+        width: w,
+        a: acc,
+        b: dest,
+        borrow: None,
+        result,
+        kept_carry: None,
+    });
+}
+
+/// `cmpxchg8b` and `cmpxchg16b`: rdx:rax (each half 32 bits for 8 bytes) against memory; equal, memory gets
+/// rcx:rbx, else rdx:rax gets memory, which is written either way. ZF is whether they were equal; no other
+/// flag changes. `cmpxchg16b` needs its operand aligned to 16 bytes.
+fn compare_exchange_pair<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
+    let bytes = memory_bytes(i);
+    let half = bytes / 2;
+    let w = (half * u8::BITS) as u8;
+    let at = address(e, i);
+    if bytes == u128::BITS / u8::BITS {
+        crate::simd::aligned16(e, at);
+    }
+    e.check(at, bytes, Access::Write, 0);
+    let high_at = e.local(ValType::I64);
+    e.sink()
+        .local_get(at)
+        .i64_const(half.into())
+        .i64_add()
+        .local_set(high_at);
+    let [low, high, rax, rdx, rbx, rcx] = core::array::from_fn(|_| e.local(ValType::I64));
+    for (local, from) in [(low, at), (high, high_at)] {
+        load(e, from, half);
+        e.sink().local_set(local);
+    }
+    for (local, number) in [(rax, RAX), (rdx, RDX), (rbx, RBX), (rcx, RCX)] {
+        get_general(e, register(number, w));
+        e.sink().local_set(local);
+    }
+    let (equal, differ) = (e.local(ValType::I32), e.local(ValType::I32));
+    e.sink()
+        .local_get(low)
+        .local_get(rax)
+        .i64_eq()
+        .local_get(high)
+        .local_get(rdx)
+        .i64_eq()
+        .i32_and()
+        .local_tee(equal)
+        .i32_eqz()
+        .local_set(differ);
+    for (memory, new, from) in [(low, rbx, at), (high, rcx, high_at)] {
+        let stored = e.local(ValType::I64);
+        e.sink()
+            .local_get(new)
+            .local_get(memory)
+            .local_get(equal)
+            .select()
+            .local_set(stored);
+        store(e, from, half, stored);
+    }
+    set_general_when(e, register(RAX, w), low, differ);
+    set_general_when(e, register(RDX, w), high, differ);
+    if e.flags_live() {
+        let each = each_with(e, &[(Flag::Z, equal)]);
+        e.set_flags(Flags::Each(each));
+    }
+}
+
+/// `shld` and `shrd`: the destination shifted with the source's bits shifted in, by the count masked as for
+/// the shifts. At 16 bits a count above 16 shifts the destination in again after the source, as the
+/// reference CPU does. Flags as the shifts: CF the last bit shifted out, OF what a count of one gives, AF
+/// clear, all six as they were for a count of zero.
+fn double_shift<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
+    let left = m == Mnemonic::Shld;
+    let w = width(i, 0);
+    let wide = i64::from(w);
+    let mem = checked(e, i);
+    let d = read(e, i, 0, mem);
+    let s = read(e, i, 1, None);
+    let count = e.local(ValType::I64);
+    let immediate = match i.iced.op_kind(2) {
+        OpKind::Register => {
+            e.get(RCX);
+            None
+        }
+        _ => {
+            e.sink().i64_const(i.iced.immediate(2) as i64);
+            Some(i.iced.immediate(2) & count_mask(w))
+        }
+    };
+    e.sink()
+        .i64_const(count_mask(w) as i64)
+        .i64_and()
+        .local_set(count);
+    let (result, carry, overflow) = (
+        e.local(ValType::I64),
+        e.local(ValType::I32),
+        e.local(ValType::I32),
+    );
+    let live = e.flags_live();
+    let bit = |s: &mut wasm_encoder::InstructionSink<'_>| {
+        s.i32_wrap_i64().i32_const(1).i32_and();
+    };
+    if w == W64 {
+        let mut x = e.sink();
+        // The source by 64 less the count, which a zero count would make a shift by 64: the result is then
+        // the destination's, chosen after.
+        x.local_get(d).local_get(count);
+        if left {
+            x.i64_shl();
+        } else {
+            x.i64_shr_u();
+        }
+        x.local_get(s).i64_const(wide).local_get(count).i64_sub();
+        if left {
+            x.i64_shr_u();
+        } else {
+            x.i64_shl();
+        }
+        // The masked count fits an i32: not zero, the shifted bits.
+        x.i64_or()
+            .local_get(d)
+            .local_get(count)
+            .i32_wrap_i64()
+            .select()
+            .local_set(result);
+        if live {
+            x.local_get(d);
+            if left {
+                x.i64_const(wide).local_get(count).i64_sub().i64_shr_u();
+            } else {
+                x.local_get(count).i64_const(1).i64_sub().i64_shr_u();
+            }
+            bit(&mut x);
+            x.local_set(carry);
+        }
+    } else {
+        // Both operands joined into one word: the destination above the source at 32 bits; at 16 bits the
+        // destination, the source and the destination again, from the top.
+        let joined = e.local(ValType::I64);
+        let bits = i64::from(if w == W32 { W64 } else { W64 - W16 });
+        let mut x = e.sink();
+        if w == W32 {
+            let (high, low) = if left { (d, s) } else { (s, d) };
+            x.local_get(high)
+                .i64_const(wide)
+                .i64_shl()
+                .local_get(low)
+                .i64_or();
+        } else {
+            x.local_get(d)
+                .i64_const(2 * wide)
+                .i64_shl()
+                .local_get(s)
+                .i64_const(wide)
+                .i64_shl()
+                .i64_or()
+                .local_get(d)
+                .i64_or();
+        }
+        x.local_set(joined).local_get(joined);
+        if left {
+            x.i64_const(bits - wide).local_get(count).i64_sub();
+        } else {
+            x.local_get(count);
+        }
+        x.i64_shr_u().i64_const(mask(w)).i64_and().local_set(result);
+        if live {
+            x.local_get(joined);
+            if left {
+                x.i64_const(bits).local_get(count).i64_sub();
+            } else {
+                x.local_get(count).i64_const(1).i64_sub();
+            }
+            x.i64_shr_u();
+            bit(&mut x);
+            x.local_set(carry);
+        }
+    }
+    write(e, i, 0, mem, result);
+    if !live {
+        return;
+    }
+    {
+        // OF as a count of one gives it: the top bit against the next bit in, the destination's next or the
+        // source's lowest.
+        let mut x = e.sink();
+        x.local_get(d).i64_const(wide - 1).i64_shr_u();
+        if left {
+            x.local_get(d).i64_const(wide - 2).i64_shr_u();
+        } else {
+            x.local_get(s);
+        }
+        x.i64_xor();
+        bit(&mut x);
+        x.local_set(overflow);
+    }
+    let stays = immediate.is_none_or(|k| k == 0);
+    if stays {
+        kept_when_unmoved(e, count, carry, overflow);
+    }
+    let unmoved = stays.then(|| unmoved(e, count));
+    e.set_flags(Flags::Shift {
+        width: w,
+        result,
+        carry,
+        overflow,
+        unmoved,
+    });
+}
+
+/// `adcx` and `adox`: an unsigned add with CF (or OF) in and out, no other flag touched.
+fn add_with<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, flag: Flag) {
+    let w = width(i, 0);
+    let mem = checked(e, i);
+    let a = read(e, i, 0, mem);
+    let b = read(e, i, 1, mem);
+    let (carry_in, carry, result) = (
+        e.local(ValType::I32),
+        e.local(ValType::I32),
+        e.local(ValType::I64),
+    );
+    e.flag(flag);
+    let mut s = e.sink();
+    s.local_set(carry_in)
+        .local_get(a)
+        .local_get(b)
+        .i64_add()
+        .local_get(carry_in)
+        .i64_extend_i32_u()
+        .i64_add()
+        .local_set(result);
+    if w == W64 {
+        // Out where the sum is below an operand, or equal to it with a carry in.
+        s.local_get(result)
+            .local_get(a)
+            .i64_lt_u()
+            .local_get(result)
+            .local_get(a)
+            .i64_eq()
+            .local_get(carry_in)
+            .i32_and()
+            .i32_or()
+            .local_set(carry);
+    } else {
+        s.local_get(result)
+            .i64_const(w.into())
+            .i64_shr_u()
+            .i32_wrap_i64()
+            .local_set(carry);
+    }
+    truncate(e, result, w);
+    write(e, i, 0, None, result);
+    if e.flags_live() {
+        let each = each_with(e, &[(flag, carry)]);
+        e.set_flags(Flags::Each(each));
+    }
+}
+
+/// `loop`, `loope` and `loopne`: rcx (ecx with an address-size prefix) less one, and a jump while it is not
+/// zero (and ZF is set, or clear). No flag changes.
+fn loop_<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
+    let g = register(RCX, if i.address32 { W32 } else { W64 });
+    let count = e.local(ValType::I64);
+    get_general(e, g);
+    e.sink().i64_const(1).i64_sub().local_set(count);
+    set_general(e, g, count);
+    e.sink().local_get(count);
+    if g.width < W64 {
+        e.sink().i64_const(mask(g.width)).i64_and();
+    }
+    e.sink().i64_const(0).i64_ne();
+    match m {
+        Mnemonic::Loope => {
+            e.flag(Flag::Z);
+            e.sink().i32_and();
+        }
+        Mnemonic::Loopne => {
+            e.flag(Flag::Z);
+            e.sink().i32_eqz().i32_and();
+        }
+        _ => {}
+    }
+    e.jump_if(Target::Relative(i.iced.near_branch64() as i64));
+}
+
+/// The flags of `lahf` and `sahf`: the low byte of rflags but bit 1, which is always set.
+const LOW_FLAGS: u64 = ARITHMETIC_FLAGS & u8::MAX as u64;
+
+/// `lahf`: ah gets SF, ZF, AF, PF and CF at their rflags places, with bit 1 set.
+fn load_flags<E: Emitter<X86_64> + ?Sized>(e: &mut E) {
+    let word = word_with(e, &[]);
+    let value = e.local(ValType::I64);
+    e.sink()
+        .local_get(word)
+        .i64_extend_i32_u()
+        .i64_const(LOW_FLAGS as i64)
+        .i64_and()
+        .i64_const((ALWAYS & u64::from(u8::MAX)) as i64)
+        .i64_or()
+        .local_set(value);
+    set_general(
+        e,
+        General {
+            number: RAX,
+            width: W8,
+            high: true,
+        },
+        value,
+    );
+}
+
+/// `sahf`: SF, ZF, AF, PF and CF from ah; OF as it was.
+fn store_flags<E: Emitter<X86_64> + ?Sized>(e: &mut E) {
+    if !e.flags_live() {
+        return;
+    }
+    let word = e.local(ValType::I32);
+    e.get(RAX);
+    e.sink()
+        .i64_const(W8.into())
+        .i64_shr_u()
+        .i32_wrap_i64()
+        .i32_const(LOW_FLAGS as i32)
+        .i32_and();
+    e.flag(Flag::O);
+    e.sink()
+        .i32_const(Flag::O.bit() as i32)
+        .i32_shl()
+        .i32_or()
+        .local_set(word);
+    e.set_flags(Flags::Packed(word));
 }

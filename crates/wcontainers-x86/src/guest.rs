@@ -478,7 +478,7 @@ impl Guest for X86_64 {
                 kind: FlowKind::Return,
             },
             Int3 | Int1 | Int | Sysenter | Ud0 | Ud1 | Ud2 => plain(false),
-            m if jcc(m).is_some() || matches!(m, Jrcxz | Jecxz) => Flow {
+            m if jcc(m).is_some() || matches!(m, Jrcxz | Jecxz | Loop | Loope | Loopne) => Flow {
                 falls_through: true,
                 target: Some(ins.near_branch64() as i64),
                 kind: FlowKind::Plain,
@@ -708,6 +708,18 @@ impl Guest for X86_64 {
                     | Clc
                     | Stc
                     | Cmc
+                    | Bsf
+                    | Bsr
+                    | Tzcnt
+                    | Lzcnt
+                    | Popcnt
+                    | Bswap
+                    | Shld
+                    | Shrd
+                    | Adcx
+                    | Adox
+                    | Lahf
+                    | Sahf
             ) || setcc(ins.mnemonic()).is_some()
                 || cmovcc(ins.mnemonic()).is_some()
                 || (ins.mnemonic() == Imul && ins.op_count() > 1))
@@ -745,6 +757,8 @@ impl Guest for X86_64 {
         }
         match ins.mnemonic() {
             Int => ins.immediate8() == crate::LINUX_32_BIT_SYSTEM_CALL,
+            // Intel leaves the result of 16 bits undefined.
+            Bswap => crate::meaning::width(i, 0) == crate::operand::W16,
             m => matches!(
                 m,
                 Mul | Imul
@@ -766,6 +780,12 @@ impl Guest for X86_64 {
                     | Bts
                     | Btr
                     | Btc
+                    | Bsf
+                    | Bsr
+                    | Tzcnt
+                    | Lzcnt
+                    | Shld
+                    | Shrd
                     | Sysenter
             ),
         }

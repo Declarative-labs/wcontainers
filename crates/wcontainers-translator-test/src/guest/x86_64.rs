@@ -497,6 +497,9 @@ fn build(code: Code, ops: &[Operand]) -> Option<Instruction> {
         [R(a), R(b), Unsigned(c)] => Instruction::with3(code, a, b, c),
         [R(a), M(b), Signed(c)] => Instruction::with3(code, a, b, c),
         [R(a), M(b), Unsigned(c)] => Instruction::with3(code, a, b, c),
+        [R(a), R(b), R(c)] => Instruction::with3(code, a, b, c),
+        [M(a), R(b), R(c)] => Instruction::with3(code, a, b, c),
+        [M(a), R(b), Unsigned(c)] => Instruction::with3(code, a, b, c),
         _ => return None,
     };
     made.ok()
