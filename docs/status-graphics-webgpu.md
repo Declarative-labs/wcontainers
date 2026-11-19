@@ -244,6 +244,11 @@ Run 25 = G2c run 7, 2026-11-19:
   fallback), subgroups, the primitive index and fine derivatives declared and drawn; Chrome's
   timestamps without developer features in 65,536 ns steps, stretches 9.830 and 19.595 ms. Every
   page got an adapter at its first launch, so the relaunch is still not seen working.
+- Frame time: chocolate-doom's breakdown repeated (Measurements, run 25); the other two
+  programs' breakdowns stand from run 22.
+- Removed at the end: the desktop's C:\wc\target\phase-2-graphics-webgpu (11.36 GB) and the
+  checkout's own target on the Mac (234 MB of `cargo check`). Scratch run25 holds logs and
+  pictures (4.3 MB). Nothing new installed on the desktop.
 
 Run 24 = G2c run 6, 2026-11-18 to 19:
 - Merged origin/phase-2-graphics-direct3d-11 (G4 run 24, with its own adoption of the literal
@@ -1405,6 +1410,22 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   depth-function]` (the example's binary).
 
 ## Measurements
+
+Run 25 (G2c), chocolate-doom's frame breakdown at 5bdc9a93 (after this run's merges and the
+frame report through serde; Direct3D 11 front, wgpu on Direct3D 12). Desktop (i9-9900K, 16
+threads, RTX 3080, driver 621.01), each job alone in the queue; log scratch run25/frames-doom2.log.
+The first try (frames-doom.log) stopped at `wpr -start` ("The profiles are already running"):
+another session was recording the system; this run waited until `wpr -status` showed it free.
+"FAIL, frames differ" is the rig's frame comparison of chocolate-doom, as in runs 22 and 23.
+- Load (typeperf, whole machine, from each job's "alone from"): short run 19.7 % mean (4.9 to
+  96.6) over 153 s; long run 7.5 % (3.5 to 10.7) over 7 s.
+- Per frame over 300 frames: wall 0.399 ms, CPU 1.680 ms: program 0.227, front 0.073, back end
+  -0.007 (the long run less the short, so near zero comes out signed), wgpu 0.007, driver 0.297,
+  system 1.083 (1.263 of it ntdll in a thread of the NVIDIA Direct3D 12 driver). Under the back
+  end's own functions 0.003 ms. Counts a frame (read through the new serde frame report):
+  MappedUploadWhole 3, bind_groups 1, buffer_bytes 496, pipeline_binds 3, renames 1,
+  spares_reused 1, texture_bytes 256,000, the same as runs 21 to 23. Our own code still costs
+  hundredths of a millisecond a frame; nothing new on our side to fix.
 
 Run 23 (G2c), chocolate-doom's frame breakdown repeated at 9d7b6b0c (after this run's merges;
 Direct3D 11 front, wgpu on Direct3D 12). Desktop (i9-9900K, 16 threads, RTX 3080, driver
