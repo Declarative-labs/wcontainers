@@ -190,9 +190,9 @@ pub enum CLibrary {
 }
 
 /// The C compiler's target and the program's extension.
-const GUEST_TARGET: &str = "aarch64-linux-musl";
-const C_SOURCE: &str = "c";
-const OBJECT: &str = "o";
+pub const GUEST_TARGET: &str = "aarch64-linux-musl";
+pub const C_SOURCE: &str = "c";
+pub const OBJECT: &str = "o";
 
 /// Where [`compile`] puts the program `name`.
 pub fn compiled(name: &str) -> PathBuf {
@@ -221,7 +221,7 @@ pub fn compile(directory: &str, name: &str, library: CLibrary) -> Vec<u8> {
     std::fs::read(&out).expect("the built program")
 }
 
-fn zig(command: &mut Command) {
+pub fn zig(command: &mut Command) {
     let output = command
         .output()
         .expect("running zig cc; run the test inside `nix develop`");

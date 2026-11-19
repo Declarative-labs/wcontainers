@@ -4,13 +4,14 @@
 
 #![allow(dead_code)]
 
+use linux_raw_sys::general::{S_IRGRP, S_IROTH, S_IRWXU, S_IXGRP, S_IXOTH};
 use wcontainers_abi::{BackendRequestId, ConnectionId, Host, HostError, Stream, Warning};
 use wcontainers_arm64::Arm64;
 use wcontainers_hypervisor::{
     Exit as VcpuExit, Loaded, Memory, Register, VirtualCpu, VirtualMachine, boot,
     link as link_page, routines, translate,
 };
-use wcontainers_inside::container::{self, File, Monitor, Starting};
+use wcontainers_inside::container::{self, File, FileKind, Monitor, Starting};
 use wcontainers_inside::link::{self, Fatal, Link, Parts, Ring};
 use wcontainers_inside::{host, routines as inside_routines, translation};
 use wcontainers_kernel::FileRecord;
@@ -157,6 +158,31 @@ pub struct Outcome {
     pub positions: Option<(u64, u64)>,
 }
 
+/// A container of one program at the root, started with `arguments` after its path.
+pub fn one_program(name: &str, image: Vec<u8>, arguments: &[String]) -> (Vec<File>, Starting) {
+    let path = format!("/{name}").into_bytes();
+    let files = vec![File {
+        path: path.clone(),
+        mode: S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH,
+        uid: 0,
+        gid: 0,
+        mtime_seconds: 0,
+        kind: FileKind::Regular(image),
+    }];
+    let starting = Starting {
+        path: path.clone(),
+        arguments: std::iter::once(path)
+            .chain(arguments.iter().map(|a| a.clone().into_bytes()))
+            .collect(),
+        environment: vec![b"PATH=/".to_vec()],
+        working_directory: b"/".to_vec(),
+        hostname: b"native".to_vec(),
+        groups: Vec::new(),
+        backend: None,
+    };
+    (files, starting)
+}
+
 /// Each warning's reason with its last count.
 pub fn summary(warnings: &[Warned]) -> std::collections::BTreeMap<&str, u64> {
     warnings
@@ -169,9 +195,16 @@ pub fn summary(warnings: &[Warned]) -> std::collections::BTreeMap<&str, u64> {
 /// none and at the bound [`look_ahead`] gives, which must agree in everything the guest and its host see and in
 /// the count at every stop; gives the bounded run's outcome.
 pub fn native(seed: u64, wall_start: u64, files: &[File], starting: &Starting) -> Outcome {
-    let none = native_at(LookAhead::None, seed, wall_start, files, starting);
+    let none = native_at(
+        program(),
+        LookAhead::None,
+        seed,
+        wall_start,
+        files,
+        starting,
+    );
     let bounded = look_ahead();
-    let outcome = native_at(bounded, seed, wall_start, files, starting);
+    let outcome = native_at(program(), bounded, seed, wall_start, files, starting);
     let what = |o: &Outcome| {
         (
             o.status,
@@ -191,16 +224,22 @@ pub fn native(seed: u64, wall_start: u64, files: &[File], starting: &Starting) -
     outcome
 }
 
-/// Runs the container in the kernel inside the machine at `look_ahead`, its wall clock starting at `wall_start`.
-fn native_at(
+/// The image of the test program inside, built once.
+pub fn program() -> &'static [u8] {
+    static PROGRAM_IMAGE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    PROGRAM_IMAGE.get_or_init(|| build(PROGRAM))
+}
+
+/// Runs the container in the kernel inside the machine of the test program's image `program` at `look_ahead`,
+/// its wall clock starting at `wall_start`.
+pub fn native_at(
+    program: &[u8],
     look_ahead: LookAhead,
     seed: u64,
     wall_start: u64,
     files: &[File],
     starting: &Starting,
 ) -> Outcome {
-    static PROGRAM_IMAGE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
-    let program = PROGRAM_IMAGE.get_or_init(|| build(PROGRAM));
     let (machine, memory, loaded, start) = machine(program, MEMORY, ONE_CPU);
     let mut cpu = machine.cpu().expect("a virtual CPU");
     boot(&mut cpu, &memory, &loaded, 0, start).expect("booting");

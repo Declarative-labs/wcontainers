@@ -38,11 +38,10 @@ use crate::reason::{
     MEMORY_FAULT, NOT_YET_TRANSLATED, TURN_LIMIT_STEPPED,
 };
 use crate::routines::{FloatControl, Placed, Routines, Vectors};
-use crate::stop::{self, Exception, FloatStatus, GENERAL, GuestState, Interrupted, Resolved, Stop};
+use crate::stop::{
+    self, Exception, FloatStatus, GENERAL, GuestState, Interrupted, Resolved, SYSCALL_NUMBER, Stop,
+};
 use crate::translation::{self, LinkWords, Linking, Translate};
-
-/// The general register a system call's number is in (Linux's ARM64 calling convention).
-const SYSCALL_NUMBER: usize = 8;
 
 /// The identifier of no process: the idle address space's.
 const IDLE_IDENTIFIER: u16 = 0;

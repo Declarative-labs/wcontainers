@@ -21,6 +21,9 @@ use crate::syndrome::{ALIGNMENT_FAULT, CACHE_MAINTENANCE, FAULT_STATUS, WRITE_NO
 /// The general registers.
 pub const GENERAL: usize = RegisterBlock::ZERO.x.len();
 
+/// The general register a system call's number is in (Linux's ARM64 calling convention).
+pub const SYSCALL_NUMBER: usize = 8;
+
 /// The cumulative saturation bit of FPSR, the highest the CPU we present has.
 const QC: u32 = 1 << (u32::BITS - 1 - FPSR_BITS.leading_zeros());
 

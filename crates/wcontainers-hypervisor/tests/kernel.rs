@@ -40,9 +40,7 @@ mod macos {
     use std::time::Instant;
 
     use linux_raw_sys::general::SIGSEGV;
-    use linux_raw_sys::general::{S_IRGRP, S_IROTH, S_IRWXU, S_IXGRP, S_IXOTH};
     use wcontainers_guest_cpu::reason::{CODE_CHANGED_AFTER_IT_RAN, MEMORY_FAULT};
-    use wcontainers_inside::container::{File, FileKind, Starting};
     use wcontainers_inside::reason::GUEST_PHYSICAL_SPACE_FULL;
     use wcontainers_kernel_test::driver::exit_code;
     use wcontainers_kernel_test::reference;
@@ -50,7 +48,9 @@ mod macos {
     use crate::common::{
         CLibrary, KERNEL_TEST_GUEST, MEMORY, OWN_GUEST, be_signed, compile, compiled, load_average,
     };
-    use crate::container::{Outcome, REALTIME_NANOSECONDS, native, seeds, summary, wasm};
+    use crate::container::{
+        Outcome, REALTIME_NANOSECONDS, native, one_program as container, seeds, summary, wasm,
+    };
 
     /// The bar's first program, from the kernel test crate.
     const HELLO: &str = "hello";
@@ -84,31 +84,6 @@ mod macos {
 
     /// The getppid calls of the exit count (ten to the fifth, as the independent check asks), and twice as many.
     const GETPPID_CALLS: u64 = 10_u64.pow(5);
-
-    /// A container of one program at the root, started with `arguments` after its path.
-    fn container(name: &str, image: Vec<u8>, arguments: &[String]) -> (Vec<File>, Starting) {
-        let path = format!("/{name}").into_bytes();
-        let files = vec![File {
-            path: path.clone(),
-            mode: S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH,
-            uid: 0,
-            gid: 0,
-            mtime_seconds: 0,
-            kind: FileKind::Regular(image),
-        }];
-        let starting = Starting {
-            path: path.clone(),
-            arguments: std::iter::once(path)
-                .chain(arguments.iter().map(|a| a.clone().into_bytes()))
-                .collect(),
-            environment: vec![b"PATH=/".to_vec()],
-            working_directory: b"/".to_vec(),
-            hostname: b"native".to_vec(),
-            groups: Vec::new(),
-            backend: None,
-        };
-        (files, starting)
-    }
 
     /// Runs a container on both sides, checks that the wait status and the root's files agree, and gives both
     /// outcomes, the native side's first.
