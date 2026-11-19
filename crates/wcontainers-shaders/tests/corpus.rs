@@ -133,7 +133,21 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
                         views = Some(format);
                         break;
                     }
-                    Err(e) => last = Some(Err(e)),
+                    // A view of the other kind tells nothing of the shader: any other refusal is
+                    // the one reported.
+                    Err(e) => {
+                        let kind = |e: &ConvertError| {
+                            matches!(
+                                e,
+                                ConvertError::Unsupported(
+                                    "StorageFormatKind" | "TypedBufferFormatKind"
+                                )
+                            )
+                        };
+                        if !matches!(&last, Some(Err(l)) if !kind(l)) {
+                            last = Some(Err(e));
+                        }
+                    }
                 }
             }
             match last.unwrap() {

@@ -82,6 +82,26 @@ ClipOut vs_clip(float3 position : POSITION, float2 uv : TEXCOORD0, uint id : SV_
     return o;
 }
 
+struct ClipSixOut {
+    float4 position : SV_Position;
+    float2 uv : TEXCOORD0;
+    nointerpolation uint id : TEXCOORD1;
+    float4 near : SV_ClipDistance0;
+    float2 far : SV_ClipDistance1;
+};
+
+// vs_transform with six clip distances over two registers: a frame cut from each side of the grid
+// and two diagonals cutting its corners.
+ClipSixOut vs_clip_six(float3 position : POSITION, float2 uv : TEXCOORD0, uint id : SV_VertexID) {
+    ClipSixOut o;
+    o.position = mul(float4(position, 1.0), world_view_projection);
+    o.uv = uv;
+    o.id = id;
+    o.near = float4(position.x + 0.7, 0.8 - position.x, position.y + 0.75, 0.6 - position.y);
+    o.far = float2(position.x + position.y + 1.1, 0.9 - position.x + position.y);
+    return o;
+}
+
 // vs_transform with depth stretched past the clip volume on both sides: z/w runs from -0.2 to 1.15
 // across the grid, where vs_transform's runs from 0.4 to 0.67.
 VsOut vs_deep(float3 position : POSITION, float2 uv : TEXCOORD0, uint id : SV_VertexID) {

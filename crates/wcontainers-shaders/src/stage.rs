@@ -38,7 +38,7 @@ type Result<T> = core::result::Result<T, ConvertError>;
 pub(crate) const STAGE_SET: u32 = 1;
 
 /// Bytes of one four-word slot of a record or block.
-const SLOT_BYTES: u32 = build::WORD * build::VEC4;
+pub(crate) const SLOT_BYTES: u32 = build::WORD * build::VEC4;
 /// Its draw's values (a uniform block of u32 words, [`word`]).
 pub(crate) const VALUES_BINDING: u32 = 0;
 /// The draw's index buffer, read as u32 words.
@@ -630,6 +630,21 @@ pub fn selects(reflection: &Reflection) -> bool {
     })
 }
 
+/// The clip distances a stage's outputs hold, counted from their components.
+pub(crate) fn clip_distances(reflection: &Reflection) -> u32 {
+    reflection
+        .outputs
+        .iter()
+        .filter(|v| v.system == Some(wcontainers_gpu::SystemValue::ClipDistance))
+        .map(|v| v.mask.count_ones())
+        .sum()
+}
+
+/// The record slots holding `distances` clip distances, four a slot.
+pub(crate) fn clip_slots(distances: u32) -> u32 {
+    distances.div_ceil(build::VEC4)
+}
+
 /// The helper constants of the vertex program after a geometry stage that writes a layer or viewport:
 /// the draw's run, whose primitives alone it keeps.
 pub const PASSTHROUGH_HELPERS: [wcontainers_gpu::HelperSlot; 2] = [
@@ -765,13 +780,52 @@ pub(crate) fn passthrough(reflection: &Reflection) -> Result<Module> {
         let outside = b.compose(vec4, alloc::vec![zero, zero, zero, below]);
         components[0] = b.select(keep.unwrap(), components[0], outside);
     }
+    let mut span = SLOT_BYTES * (1 + locations.len() as u32);
+    let distances = clip_distances(reflection);
+    if distances > 0 {
+        let first = 1 + locations.len() as u32 + u32::from(selects(reflection));
+        let mut parts = Vec::new();
+        for k in 0..clip_slots(distances) {
+            b.f.arguments.push(FunctionArgument {
+                name: Some(format!("clip{k}")),
+                ty: uvec4,
+                binding: Some(location(first + k, None)),
+            });
+            let raw = b.argument(b.f.arguments.len() as u32 - 1);
+            let slot = b.bitcast(raw, ScalarKind::Float);
+            for c in 0..build::VEC4 {
+                if (parts.len() as u32) < distances {
+                    parts.push(b.field(slot, c));
+                }
+            }
+        }
+        let f32_ty = build::scalar(&mut module, Scalar::F32);
+        let array = module.types.insert(
+            Type {
+                name: None,
+                inner: TypeInner::Array {
+                    base: f32_ty,
+                    size: naga::ArraySize::Constant(
+                        core::num::NonZeroU32::new(distances).expect("some distances"),
+                    ),
+                    stride: build::WORD,
+                },
+            },
+            Span::UNDEFINED,
+        );
+        members.push(StructMember {
+            name: None,
+            ty: array,
+            binding: Some(Binding::BuiltIn(BuiltIn::ClipDistances)),
+            offset: span,
+        });
+        components.push(b.compose(array, parts));
+        span += clip_slots(distances) * SLOT_BYTES;
+    }
     let ty = module.types.insert(
         Type {
             name: Some("Outputs".into()),
-            inner: TypeInner::Struct {
-                members,
-                span: SLOT_BYTES * (1 + locations.len() as u32),
-            },
+            inner: TypeInner::Struct { members, span },
         },
         Span::UNDEFINED,
     );
