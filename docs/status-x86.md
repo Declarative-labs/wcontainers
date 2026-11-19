@@ -60,8 +60,64 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   run, because Docker Desktop would not start, and must be run again. Run 5 (2026-11-19) ran those ARM64
   tests on the rented ARM64 machine, worked the literal list down (x86 crate 328 to 187 baseline lines), and
   wrote into plan 5.6 how a rep string's passes let a stop land between any two elements (see "X4, run 5").
+  Run 6 (2026-11-19) gave the two ARM64 layer 1 tests their Mac verdict through a Docker engine of its own in
+  a Linux VM on the Mac (Docker Desktop still does not start), ran the whole suite on the Mac that way (every
+  test passes), ran layer 2 at 10,000 again at a new seed, and worked the literal list down again (x86 crate
+  187 to 142 baseline lines) (see "X4, run 6"). Every part of X4's bar holds.
 
-## X4, run 5 (2026-11-19)
+## X4, run 6 (2026-11-19)
+
+Machines: the Mac (load 4 to 7), the i7-8750H (load 1.4 to 4.8), and a Linux VM on the Mac (below). Logs in
+scratch `x4/run6/`.
+
+- Docker Desktop on the Mac still says "Docker Desktop is unable to start"; it was left alone. In its place:
+  a Linux VM on the Mac's own CPU through Apple's Virtualization framework, made by Lima 2.3.0 (from nixpkgs,
+  Apache-2.0, a test tool only), with Docker Engine 29.10.0 inside (Ubuntu 26.04, Linux 7.0.0, 4 cores, 4 GB;
+  its `/proc/cpuinfo` says implementer 0x61, Apple). State under scratch `x86/lm`; the Docker socket is
+  forwarded to `x86/lm/d.sock`, and the tests reach it by `DOCKER_HOST` (how, under "How to run"). The
+  reference runner runs on the M5's cores as under Docker Desktop, so layer 1's verdict is the Mac's.
+- `every_form_matches_the_cpu_arm64` and `sample_matches_the_cpu_in_chrome_arm64` on the Mac that way (code of
+  ARM64, the translator, the interface and the abi crate unchanged since fc712bf3; `arm64-l1-shown.log`):
+  1,215 forms, 64 cases a form, seed 1, 0 failing; in Chrome 1,215 cases, 0 failing. FPSR's write matches on
+  the M5, as at fc712bf3.
+- Literals, a part of the fix list: x86's conditions are `Condition`, an enum of the sixteen in the order of
+  their encoding, with `test()` (what it tests, `Test`) and `negated()`, in place of the numbers 0 to 15 and
+  `>> 1`, `& 1` and `| 1` on them; `jcc`, `setcc` and `cmovcc` return it and `Guest::Cond` is it. PF's mask is
+  `u8::MAX` and AF's bit the low nibble's width. Baseline lines of wcontainers-x86: 187 to 142. Output sizes of
+  `measure_x86_64` (all twelve programs and look-aheads) are the same as run 5's after both changes
+  (`measure.log`, `measure2.log`).
+- Tests of the condition change against the i7-8750H: layer 1 for every jcc, setcc and cmovcc form (96 forms,
+  500 cases a form, seed 6006, `l1-conditions.log`, 1,903 s): 0 failing. The x86 crate's tests, x86's checks
+  and programs (`x86-crate.log`, `x86-programs.log`): pass. Layer 2, seed 7171, 1,000 programs, every one also
+  on the CPU (`l2-seed7171.log`, 185 s): 0 failing (360 faulted).
+- X4's layer 2 bar again on the condition change, at a new seed (c260a579, seed 8282, 10,000 programs, every
+  one at full in both settings, plain and stopping everywhere, bounded, mixed, against none and on the
+  i7-8750H, the first in Chrome; `l2-seed8282-10000.log`, 1,577 s, 3 at once; Mac load 6 rising to 80 from
+  other tracks, i7-8750H 3.3 to 5.3): 10,000 with 0 mismatches; 3,547 faulted, 1,273 left to an address at
+  full, 23,244 stacks lost and 23,311 pieces forgotten. The parity and adjust change after it keeps every
+  output size and is covered by the suite's layer 1 below.
+
+Proof at the end of run 6 (at 5d83b51b; the Mac, load 30 to 80 from other tracks; the i7-8750H as reference,
+load 1.6 to 1.7 at the end; Docker through the VM):
+- Suite (the command of run 3 with `DOCKER_HOST` set, scratch `x4/run6/suite.log`): 445 passed, 2 failed, 13
+  ignored. The 2 were layer 3's gcc tests, `csmith_programs_match_linux_arm64` and
+  `hand_picked_programs_match_linux_arm64`: gcc in the VM could not write its output, because Lima mounts the
+  home folder read-only. With `target/programs` mounted writable, `--test layer3` again (`layer3.log`, 545 s):
+  3 passed. So every test of the suite passes on the Mac: 447 passed, 0 failed, 13 ignored, the ARM64 tests
+  that need Docker among them.
+- `cargo run -q -p wcontainers-literals -- check`: exit 0. `cargo fmt --check`; clippy with `-D warnings` on
+  the x86, interface, translator and test crates (all targets): clean. Baseline lines: wcontainers-x86 142,
+  wcontainers-translator-test 2115, wcontainers-guest-cpu 28, wcontainers-translator 87. The check's list of
+  changes that could add lines is the same 10 as before (two starts, eight inits after merges of new rules).
+- Left in the x86 crate's literal list: the SIMD lane counts and shifts (`simd.rs`), the register numbers'
+  table and operand sizes (`operand.rs`), the guest's bit table (`guest.rs`), the block's layout (`lib.rs`),
+  the build script's strings, and the reference runner's own 0x37f, 0x1f80 and 80-bit mask (it depends on no
+  x86 crate).
+
+What comes next: nothing of X4's bar is open. The VM is stopped and kept (scratch `x86/lm`, 3.3 GB, plus
+Lima's image cache in `~/Library/Caches/lima`, 0.6 GB) for the independent check's Docker tests while Docker
+Desktop does not start; `limactl delete x` once it is no longer needed. The rest of "Left for later" under run
+4 stands.
 
 Machines: the Mac (load 4 to 8), the i7-8750H (load 1.4 to 3.3), the rented ARM64 machine (Graviton4).
 Logs in scratch `x4/run5/`. Docker Desktop on the Mac still says "Docker Desktop is unable to start"; it is the
@@ -101,9 +157,8 @@ Proof at the end of run 5:
 - `cargo run -q -p wcontainers-literals -- check`: exit 0. `cargo fmt --check`; clippy with `-D warnings` on
   the x86 and test crates (all targets): clean.
 
-What comes next for X4: when Docker Desktop on the Mac starts again, run `every_form_matches_the_cpu_arm64`
-and `sample_matches_the_cpu_in_chrome_arm64` (`--test layer1`) there, or the whole suite; nothing else of X4's
-bar is open. The rest of "Left for later" under run 4 stands.
+What came next for X4 (done in run 6): the Mac's verdict of `every_form_matches_the_cpu_arm64` and
+`sample_matches_the_cpu_in_chrome_arm64`.
 
 ## X4, run 4 (2026-11-19)
 
@@ -1836,6 +1891,14 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## How to run
 
+- Docker on the Mac without Docker Desktop (X4 run 6), for the ARM64 tests whose reference runs in Docker:
+  `export LIMA_HOME=<scratch>/x86/lm` and Lima from `nix build nixpkgs#lima`; `limactl start x` (made with
+  `--vm-type=vz --cpus=4 --memory=4 --disk=30 template:docker`; its rootless setup failed for want of the
+  archive over http, so inside it `docker` and `containerd` were unmasked and started as root and the socket
+  opened to its user); then forward the socket, `ssh -F $LIMA_HOME/x/ssh.config -o ControlMaster=no -o
+  ControlPath=none -N -L $LIMA_HOME/d.sock:/var/run/docker.sock lima-x &`, and run the tests with
+  `DOCKER_HOST=unix://$LIMA_HOME/d.sock`. `limactl stop x` when done; `limactl delete x` frees its disk.
+
 - Comparing builds on the x86 machine (X4 run 4): put each build's `time-blob` in `~/wcontainers-x86/variants/`
   (built from a `git archive` of its commit in `~/wcontainers-x86/tree`, `-j 4`, under `choom -n 600`), then
   `~/wcontainers-x86/counts.sh "<workloads>" <variant>...` counts user-mode instructions of one wasmtime run
@@ -2009,6 +2072,9 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## Cases actually run
 
+- X4 run 6: layer 1 x86 at seed 6006, 500 cases a form, the 96 conditional forms; layer 2 x86 at seed 7171,
+  1,000 programs, and at seed 8282, 10,000, every one also on the CPU; layer 1 ARM64 at the defaults (64 a
+  form, seed 1) twice on the Mac; the suite once at its defaults (see "X4, run 6").
 - X4 run 3: layer 2 x86 at seed 3, 1,000 programs, every one also on the CPU; at seed 7777, 10,000 (see "X4,
   run 3"); the tests of layer 2 (both guests at their defaults, seed 1), changes, checks, programs,
   look-aheads and the test guest once after the frame change; the suite at the end; the benchmark set 5
@@ -2127,6 +2193,8 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
 - Test tools on the x86 machine since X4 run 3, none a dependency of anything: Node.js 24.22.3 (MIT, the
   official linux-x64 tarball, checked against its SHA-256), playwright-core 1.63.0 (Apache-2.0, a copy of
   the Nix shell's), Google Chrome 158.0.8127.36 (Google's terms; unpacked, not installed).
+- Lima 2.3.0 (Apache-2.0, from nixpkgs) with an Ubuntu 26.04 cloud image and Docker Engine 29.10.0
+  (Apache-2.0) inside it, on the Mac since X4 run 6: a test tool only, a dependency of nothing.
 - sandsifter: BSD-3 (Battelle); read only, nothing copied.
 - RISU: EPL-1.0; read only, nothing copied.
 - gex: AGPL-3.0; not read, nothing used.
@@ -2137,6 +2205,9 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
 ## Departures from the plan
 
 X4 (each also written into the plan's text where the plan is wrong):
+- Run 6: the Mac's Docker verdicts (ARM64 layer 1 and the suite) came from Docker Engine in a Lima VM on the
+  Mac's own CPU, because Docker Desktop does not start; the reference still runs on the M5's cores, in the
+  same image, so the verdict is the Mac's. Its kernel is Ubuntu's 7.0.0, not Docker Desktop's.
 - The literal check was adopted in run 2 by merging origin/phase-1-literals directly, as the brief's newest
   section and the task say, against `docs/literals.md`'s step 1 (merge main once main has it; main does not
   yet). The merge brought the other tracks' work that branch holds (kernel, runtime, wasmtime crates). One of
