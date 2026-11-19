@@ -85,9 +85,9 @@ const ERR_CONSTRUCTOR: &str = "Err";
 const ERROR_TYPE_SUFFIX: &str = "Error";
 const ERROR_CONSTRUCTORS: &[&str] = &["new", "other"];
 /// Macros that take a configuration predicate, which is attribute-like and skipped as attributes are.
-const ATTRIBUTE_LIKE_MACROS: &[&str] = &["cfg"];
+const ATTRIBUTE_LIKE_MACROS: &[&str] = &[CFG_ATTRIBUTE];
 /// Attributes whose content is text or a configuration predicate, never a value of the program.
-const SKIPPED_ATTRIBUTES: &[&str] = &["doc", "cfg"];
+const SKIPPED_ATTRIBUTES: &[&str] = &["doc", CFG_ATTRIBUTE];
 /// `#[cfg_attr(predicate, attributes...)]`: the attributes after the predicate are read like any other.
 const CFG_ATTR: &str = "cfg_attr";
 /// Turns its tokens into a string literal.

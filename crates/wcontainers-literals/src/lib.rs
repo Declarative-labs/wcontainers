@@ -1670,7 +1670,6 @@ const CARGO_HOME_VARIABLE: &str = "CARGO_HOME";
 const HOME_VARIABLE: &str = "HOME";
 const CARGO_HOME_FOLDER: &str = ".cargo";
 const REGISTRY_SOURCES: &[&str] = &["registry", "src"];
-const PACKAGE_SOURCES: &str = "src";
 
 /// The workspace root at or above a folder: the nearest manifest with a `[workspace]` table.
 pub fn workspace_root(dir: &Path) -> Result<PathBuf, String> {
@@ -1731,7 +1730,7 @@ fn lock_references(root: &Path) -> Result<Vec<(String, PathBuf)>, String> {
                 .iter()
                 .map(|r| {
                     r.join(format!("{REFERENCE_PACKAGE}{PACKAGE_NAME_JOINER}{version}"))
-                        .join(PACKAGE_SOURCES)
+                        .join(SOURCE_FOLDER)
                         .join(arch)
                 })
                 .find(|d| d.is_dir())
