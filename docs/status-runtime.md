@@ -19,7 +19,10 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   equal to the stand-in's. Of the 22 others, 16 are the stand-in running past the 900 s limit where the back
   end and real Linux pass, 2 wait on the address ceiling (pth_str01, pth_str03), and 4 are the back end slower
   than the limit (gf16, gf17, mmapstress09, mmapstress10), run again with a longer limit (section "J5 run 5").
-- Next: WHOLE_NEXT
+- J5 run 6: the four slow LTP tests and the whole kernel test crate at each look-ahead on the ARM machine
+  (section "J5 run 6"); a program of this track's own against the library's public surface served a TCP
+  connection from the host and read and wrote files of a host directory at full, none and bound 7 (ARM machine).
+- Next: see "Left" at the end of section "J5 run 6".
 
 ## For the orchestrator
 
@@ -32,6 +35,10 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   asks of the orchestrator; but another track that adopted on its own branch first would meet a second start.
   And a later merge of origin/phase-1 that brings kernel code the check has not seen will fail the check here
   with `+` lines this track may not fix or add, until main has the check. The streams track had waited.
+- J5 run 6: the x86 machine went away at 21:58 UTC with a spot notice while it ran this track's lint. The owned
+  suite and two short checks ran on the ARM machine in a second copy (`--name runtime-check`, 8 jobs) beside this
+  track's suite job, against the manual's one job per track, while the machine's load was 16 to 84 of 96.
+  The kernel test crate warns under clippy on Linux at reference.rs:352 (the streams track's code).
 - J5 run 5: the whole LTP comparison ran on the ARM machine (section "J5 run 5"). The Mac's run of it
   (`j5run3/ltp-mac.sh whole`, on f119fa27, 2,422 stand-in results in about three hours) was stopped as no
   longer needed, and the scratch worktree j5run3/tree deleted.
@@ -153,6 +160,44 @@ the capability sets, the resource limits, no_new_privs, a seccomp filter, sysctl
 leave a default mount out), the domain name, and the per-process values (`oomScoreAdj`, `ioPriority`,
 `scheduler`, `execCPUAffinity`, `personality`, `timeOffsets`); and the address-space size and the memory
 size the guest is told (plan section 8), which `Machine` holds once the kernel takes them.
+
+## J5 run 6 (2026-11-19, the task's run 4 after a restart; the rented ARM machine, the rented x86 machine, and this Mac for git, edits and Docker Desktop)
+
+- origin/phase-1 (eb515b7a) and origin/phase-1-literals (7668c010) had nothing new.
+- Lint on Linux (x86 machine, 8db69434): two casts in files.rs were to the same type on Linux (the host's `st_dev`
+  and mode bits are other types on macOS) and failed clippy there; the identity is now typed by rustix's `Dev`
+  and the casts are inferred. Clippy with warnings denied passes for the owned crates on x86-64 Linux, ARM64
+  Linux and macOS. The kernel test crate warns on Linux at reference.rs:352 (`&mut size` to `openpty`,
+  `unnecessary_mut_passed`), the streams track's code (48c1692d): for the orchestrator.
+- The owned suite on the ARM machine (second copy `runtime-check`, 8 jobs, beside the suite job; 8db69434; load
+  73 to 21; j5run7/owned-arm.log): every test passed but two, which had never run against Docker on Linux, and
+  whose failures were the reference's, not ours (ours matched in both):
+  - `a_host_directory_is_served_through_a_bind_mount`: Docker on Linux leaves the files its root made owned by
+    root with mode 640, and the test's user could not read them to compare (EACCES). The reference now hands
+    its files to the test's user after the commands (`chown -R -h` in the same container).
+  - `a_tcp_connection_from_the_host_reaches_a_published_port`: Docker's forwarder on Linux takes a connection
+    before the server in the container listens, then resets it, and the reference's `nc` waited for ever. The
+    client now asks again until the server answers (the same client for ours and the reference).
+  - After the fix (1d09248f): both pass on the ARM machine 3 times at full and 3 at none (load 33 to 30), on
+    this Mac at full and none (load 5 to 11). The surface tests on the x86 machine fail (no ARM64 containers).
+- A program of this track's own against the library's public surface (scratch j5run7/surface_check.rs, built
+  as an example in the machine's copy only, never in the checkout; `j5run7/surface-arm.sh`): alpine 3.22 from
+  its OCI layout, a host directory bind-mounted at /data, the container's 8080 published on the host's
+  loopback. The container printed the host's file, wrote one and made a directory the host then read, served
+  one TCP connection from the host (the host's line saved into the host directory, the container's answer
+  read by the host). As expected at full (5.1 s), none (21.9 s) and bound 7 (10.4 s); ARM machine at 8db69434,
+  load 84 to 79.
+- The four slow LTP tests at full with a 3,600 s limit (ARM machine, job runtime/20261119-211734-4081895 on
+  97f79592, 4 jobs, load 18 to 15; j5run6/arm/slow-runtime.tsv.logs): gf16 passes in 2,391 s, gf17 in 2,528 s;
+  mmapstress09 and mmapstress10 run past 3,600 s. Why (read from the test's source and the driver, not
+  measured instruction by instruction): both run `-p 20 -t 0.2`, an `alarm` of 12 s after which the parent
+  stops at the next child's end; mmapstress10 printed 70,394 "Using ... tmpdir" lines in 3,600 s (the stand-in
+  15,355 to its pass), so its children run and end. The harness runs our kernel on the driver's repeatable
+  clock, which moves about 1 ns per unit of progress. On the stand-in a unit is an instruction (12 s is about
+  12e9 instructions, which fits the stand-in's 147 s to 234 s); with the executor it is a stop check passed
+  ("progress counted by stop checks", the placeholder unit), many instructions each, so the guest's 12 s takes
+  far longer. These two wait on the progress count
+  (the translator track builds it; with a count of the guest's instructions the clock moves as on the stand-in).
 
 ## J5 run 5 (2026-11-19, the task's run 4; this Mac, Apple M5 Max, 18 cores, 128 GiB; other tracks running; and the rented ARM machine)
 
