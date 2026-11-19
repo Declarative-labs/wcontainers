@@ -429,6 +429,8 @@ impl<G: Guest> Finder<'_, G> {
     ) -> Function {
         let mut body = BTreeMap::new();
         let mut leaders = BTreeSet::from([entry]);
+        // Where a jump enters, which no instruction before it falls through into alone.
+        let mut entered = BTreeSet::from([entry]);
         let mut tables: FxHashMap<u64, Vec<u64>> = FxHashMap::default();
         // Addresses the code builds; those a jump table of this function goes to are its own blocks.
         let mut built = Vec::new();
@@ -459,7 +461,7 @@ impl<G: Guest> Finder<'_, G> {
                 note(found, offset.wrapping_add_signed(by), Means::Call);
             }
             let blob = self.code.blob;
-            let before = |o: u64| self.before(&body, &leaders, o);
+            let before = |o: u64| self.before(&body, &entered, o);
             if let Some(address) =
                 G::built_address(offset, &instruction, blob, self.code.range.clone(), before)
             {
@@ -477,6 +479,7 @@ impl<G: Guest> Finder<'_, G> {
                 jumps.push(offset.wrapping_add_signed(by));
             }
             leaders.extend(&jumps);
+            entered.extend(&jumps);
             work.extend(jumps);
             // The next instruction is seen first, so a bounded stretch follows the code in order.
             if flow.falls_through {
@@ -563,15 +566,15 @@ impl<G: Guest> Finder<'_, G> {
         }
     }
 
-    /// The instruction of the walk so far that falls through into `offset`, with its offset; `None` when
-    /// none does, two do or a jump is known to enter there.
+    /// The instruction of the walk so far that falls through into `offset` (a conditional branch among
+    /// them), with its offset; `None` when none does, two do or a jump is known to enter there.
     fn before(
         &self,
         body: &BTreeMap<u64, u64>,
-        leaders: &BTreeSet<u64>,
+        entered: &BTreeSet<u64>,
         offset: u64,
     ) -> Option<(u64, G::Instruction)> {
-        if leaders.contains(&offset) {
+        if entered.contains(&offset) {
             return None;
         }
         let mut ending = ending_at::<G>(body, offset);
@@ -580,7 +583,8 @@ impl<G: Guest> Finder<'_, G> {
             return None;
         }
         let instruction = self.get(p).instruction;
-        (G::flow(&instruction).falls_through && !ends_block::<G>(&instruction))
+        G::flow(&instruction)
+            .falls_through
             .then_some((p, instruction))
     }
 
