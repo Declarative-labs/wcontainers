@@ -176,8 +176,37 @@ pub fn write_glsl(
         qualified.into_iter().filter(|q| q.linear).collect()
     };
     let out = opaque_float_bits(linear_by_w(out, stage, &carried));
+    let out = single_sample_masks(out);
     let (out, level_zero) = gathers_at_level_zero(gathers_by_samples(bit_functions(out)));
     Ok((out, reflection, level_zero))
+}
+
+/// How naga's GLSL writer starts the line writing the sample mask.
+const SAMPLE_MASK_WRITE: &str = "gl_SampleMask[0] = ";
+
+/// GL ignores the sample mask a program writes into a single-sample target, where Direct3D and
+/// WebGPU drop a fragment whose mask clears sample 0: so after the mask is written, a fragment
+/// drawn into one sample (`gl_NumSamples`, OES_sample_variables) whose mask clears it is discarded.
+fn single_sample_masks(source: String) -> String {
+    if !source.contains(SAMPLE_MASK_WRITE) {
+        return source;
+    }
+    let mut out = String::with_capacity(source.len() + SAMPLE_MASK_WRITE.len());
+    for line in source.lines() {
+        out.push_str(line);
+        out.push(LINE_END);
+        let trimmed = line.trim_start();
+        if let Some(mask) = trimmed
+            .strip_prefix(SAMPLE_MASK_WRITE)
+            .and_then(|m| m.strip_suffix(STATEMENT_END))
+        {
+            let indent = &line[..line.len() - trimmed.len()];
+            out.push_str(&format!(
+                "{indent}if (gl_NumSamples == 1 && (({mask}) & 1) == 0) {{ discard; }}\n"
+            ));
+        }
+    }
+    out
 }
 
 /// What [`gathers_by_samples`] makes of each gather's first argument, before its name.
@@ -352,6 +381,9 @@ const WORD_GAP: &str = " ";
 
 /// What ends each line of GLSL.
 const LINE_END: char = '\n';
+
+/// What ends a GLSL statement.
+const STATEMENT_END: char = ';';
 
 /// What separates the arguments of a call.
 const ARGUMENT_GAP: char = ',';
