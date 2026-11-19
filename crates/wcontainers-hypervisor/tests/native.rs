@@ -13,7 +13,8 @@
 //!
 //! Knobs: `WCONTAINERS_NATIVE_CASES` cases per form, `WCONTAINERS_NATIVE_SEED`, `WCONTAINERS_NATIVE_FORMS` (a
 //! comma-separated list of form names to run alone), `WCONTAINERS_NATIVE_JOBS` threads for the WebAssembly
-//! side.
+//! side; `WCONTAINERS_NATIVE_BOUND` the look-ahead the exclusive pairs are translated at, both of their words in one
+//! piece from look-ahead 2 on.
 
 #[cfg(target_os = "macos")]
 mod common;
@@ -50,11 +51,10 @@ mod macos {
     use wcontainers_arm64::forms::{self, Form};
     use wcontainers_arm64::{Arm64, Instruction as I, Reg, SystemRegister, decode};
     use wcontainers_guest_cpu::{Guest, Native, Route};
-    use wcontainers_translator::LookAhead;
     use wcontainers_translator_test::layer1::{Case, Stop, cases, covered, excluded, translated};
     use wcontainers_translator_test::layout::CODE;
 
-    use crate::common::{be_signed, load_average, setting};
+    use crate::common::{be_signed, load_average, look_ahead, setting};
     use crate::runner::function::{same_end, webassembly};
     use crate::runner::{Runner, edge};
     use crate::words::{SWEPT_BITS, words_of};
@@ -247,6 +247,7 @@ mod macos {
         let count = setting(CASES_VARIABLE, DEFAULT_CASES);
         let seed = setting(SEED_VARIABLE, DEFAULT_SEED);
         let jobs = setting(JOBS_VARIABLE, DEFAULT_JOBS).max(1) as usize;
+        let look_ahead = look_ahead();
         let only: Option<Vec<String>> = std::env::var(FORMS_VARIABLE)
             .ok()
             .map(|list| list.split(SEPARATOR).map(String::from).collect());
@@ -319,13 +320,13 @@ mod macos {
             let (wasm, native) = std::thread::scope(|scope| {
                 let wasm = scope.spawn(|| {
                     on_threads(&pairs, jobs, |(case, (words, _))| {
-                        webassembly(words, case, LookAhead::None)
+                        webassembly(words, case, look_ahead)
                     })
                 });
                 let native: Vec<_> = pairs
                     .iter()
                     .map(|(case, (words, _))| {
-                        let function = runner.load_function(words, LookAhead::None);
+                        let function = runner.load_function(words, look_ahead);
                         let end = CODE + words.len() as u64 * Arm64::MAX_LENGTH;
                         let run = runner.run_function(&function, case, end, None);
                         runner.unload();
@@ -361,7 +362,7 @@ mod macos {
         }
         runner.finish();
         println!(
-            "native against WebAssembly: {} forms, {count} drawn cases each, {edge_cases} of the bar's own, {left_out_cases} words layer 1 leaves out, {float_status_cases} float status words and {pair_cases} exclusive pairs ({stored} storing) beside them ({total} in all), seed {seed:#x}, {} failing, in {:?}, load {}",
+            "native against WebAssembly: {} forms, {count} drawn cases each, {edge_cases} of the bar's own, {left_out_cases} words layer 1 leaves out, {float_status_cases} float status words and {pair_cases} exclusive pairs ({stored} storing) beside them ({total} in all), the pairs at {look_ahead:?}, seed {seed:#x}, {} failing, in {:?}, load {}",
             chosen.len(),
             failing.len(),
             started.elapsed(),
