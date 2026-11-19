@@ -6,8 +6,8 @@ crates/wcontainers-direct3d-12.
 
 ## Where things stand
 
-Everything on G5's pass bar is done or on the written gap list (runs 35 and 36), ready for the
-independent check; the literal check passes again (run 36). Test files 186 of 198. Every failing file is on the gap list
+Everything on G5's pass bar is done or on the written gap list (runs 35 to 37), ready for the
+independent check; the literal check passes (runs 36 and 37). Test files 186 of 198. Every failing file is on the gap list
 with its cause: an absent feature reported as Direct3D 12 expects (8), a listed loss naming what
 the back end lacks (1), not to be matched (1), or a named item of the shaders track (2: one
 refused by name, one a value the converted program gives). None is the front's own unfinished
@@ -15,14 +15,36 @@ part. Wine's dxgi tests that make no Direct3D 10 or 11 device are now counted to
 2 fail on the absent software adapter). Real Direct3D 12 programs draw frames matching real
 Direct3D 12's: Microsoft's D3D12HelloTriangle and D3D12HelloConstBuffers, bgfx's 01-cubes,
 26-occlusion, 35-dynamic, 37-gpudrivenrendering and 38-bloom, and Godot's 2D platformer ("Real
-program"). Godot's 3D platformer, past the shaders track's `SwizzledDepth` (its run 40) and
-one-layer array storage views (run 36), now stops at the WebGPU back end's view usage (an sRGB
-view of a texture that also allows storage; "Asked of other tracks"). The rig's Direct3D 12
+program"). Godot's 3D platformer, past the shaders track's `SwizzledDepth` (its run 40),
+one-layer array storage views (run 36) and arrays of storage views (run 37, with the shaders
+track's run 41), still stops at the WebGPU back end's view usage (an sRGB view of a texture that
+also allows storage; "Asked of other tracks"). Clip distances are applied in the pixel program
+where the back end has none (run 37), measured on wgpu's Direct3D 12 path, which has none:
+clip_distance passes there. The rig's Direct3D 12
 scenes ("Scenes"): 86 outputs pass, 32 fail, 3 absent, each failure named; on wgpu's Direct3D 12
 path (run 36's experiment, not kept) the three differences the Vulkan path makes were measured
 gone, and four test files and the real programs regressed ("Next" 3).
 
-Latest results (run 36, 2026-11-19, desktop shared with other tracks; scratch run36/; at
+Latest results (run 37, 2026-11-19, desktop shared with other tracks; scratch run37/). At
+0b231aa9 (the merges and the array slots; logs *1.log): the literal check passes (lit1.log);
+lint clean (lint1.log); the crates' 50 tests pass (test1.log: 48 of the two crates, 2 of the interface's slow paths); test files 186 of 198, the same
+12 failing as run 36 (full1.log, fail1.txt); own cases 28 of 28 equal, draw 0 of 4096 pixels
+beyond 1 (check1.log); scenes 86 pass, 32 fail, 3 absent, as run 36 (scenes1.log); Wine's five
+dxgi tests 3 pass, the same 2 fail (dxgi1.log); Microsoft's two samples and Godot's 2D platformer
+equal real (p1-*.log); fence round trip `--alone` under "Measurements". The shader runner and
+bgfx 37 were cut off there by a dropped connection (runner1.log "scp: Connection closed") and
+were run again at e83ac416, the run's last code (the clip route, which changes nothing where the
+back end has clip distances), with lint, the crates' tests and every test file (logs *9.log):
+lint clean (lint9.log); the crates' 50 tests pass
+(test9.log); test files 186 of 198, the same 12 (full9.log); own cases 28 of 28 equal
+(check9.log); shader runner 214 of 302, the same 88 failing files as run 36 (runner9.log), with
+sm6-uav-rwtexture now failing no check (565 checks run against real's 781, a crash at its first
+array of storage textures before; the checks it does not reach were not traced this run) and
+object-references running 1048 of real's 1312; Godot's 2D platformer equal, its 3D platformer
+as at 0b231aa9 (p9-*.log); bgfx 37 702 to 852 pixels beyond 8 of 20,480 allowed, the overlay's
+text (p9-bgfx37.log).
+
+Results of run 36 (2026-11-19, desktop shared with other tracks; scratch run36/; at
 0b7b2f36, the run's last code, logs *3.log): the literal check passes (lit3.log); lint clean
 (lint3.log); the crates' 49 tests pass (test3.log); test files 186 of 198, the same 12 failing
 (full3.log); own cases 28 of 28 equal, draw 0 of 4096 pixels beyond 1 (check3.log); shader
@@ -127,6 +149,25 @@ milestone "G5 to the pass bar"):
   without unordered access): Godot's textures were refused there, and with them taken its 2D
   platformer draws every compared frame exactly as real Direct3D 12 does.
 
+- Run 37 (the eighth run of the milestone's current form): merged shaders (its run 41: DXIL
+  arrays of storage textures split into a view per element, the refusal names in a `refusal`
+  module) and direct3d-11 (nothing of this track's or of the interface); the shared line, webgpu,
+  webgl, rig and phase-1-literals had nothing new. No conflicts. The DXIL reader now gives every
+  element of an array of views its own slot (`dxil.rs`, `Reader::declared`: a resource's range
+  size from the resource list, an element per register, slots counted over the elements), as the
+  converter now declares a view per element; before, an array took one slot and the views after
+  it were numbered one too low. Godot's 3D platformer's `ResourceArray` compute shaders now
+  convert or stop at `StorageFormatKind` (3, below). Next 3a done: a vertex, geometry or domain
+  shader writing clip distances on a back end without `Features::CLIP_DISTANCE` is converted to
+  pass them past both programs' values (`VariantKey::linked`, `VariantFlags::CLIP_DISTANCE`), the
+  pixel program applies them (`ClipDistanceInShader`, counted per draw with the pipeline's slow
+  paths), and every vertex program made later from the pipeline's key (indirect arguments,
+  pulled streams, bound views) and the counting program carry the same values; the culling
+  stage's pass-through (cull distances with clip distances) is refused by name, a shaders item.
+  Measured on wgpu's Direct3D 12 path (run 36's patch applied for the run, not committed;
+  run37/files7.log): clip_distance passes (264 checks, before refused at wgpu's validation),
+  test_geometry_shader and tessellation_dcl_index_range pass, combined_clip_and_cull_distances
+  stops at the named refusal. The literal check's 8 lines of the old reader were deleted.
 - Run 36 (the seventh run of the milestone's current form): merged shaders (its run 40:
   `SwizzledDepth` lifted for mappings keeping red first, wave minimums and maximums of the other
   signedness, the vertex counts made public) and direct3d-11 (nothing of this track's or of the
@@ -1043,7 +1084,7 @@ debug builds, whole runs of 120 frames.
   driver's (harmless, absent in a container; `bgfx-run.ps1 <name> <seconds> ours nonvapi`
   keeps it out); a Rust panic in the library shows as 0xc0000409.
 
-## Gap list (the pass bar's written list, as of run 36)
+## Gap list (the pass bar's written list, as of run 37)
 
 Every failing test file, shader runner file and real-program difference is one of: an absent
 feature (reported absent as Direct3D 12 expects, or refused by name where Direct3D 12 has no
@@ -1052,7 +1093,8 @@ query), a listed loss naming what the back end lacks (counted and warned), not t
 the front reports by a named refusal until it lands or that gives another value in a converted
 program, or the front's own unfinished part. Every refusal below prints its name in the test's
 log ("wcontainers: ..."); none passes as success. Run 36's test files (12 failing at the run's
-last code, run36/full3.log and logs-full3/, the same 12 as run 35):
+last code, run36/full3.log and logs-full3/, the same 12 as run 35; and the same 12 at run 37's
+code, run37/full1.log and full9.log):
 
 Absent features, 8 files (final):
 - Tiled resources (`TiledResourcesTier` 0): create_reserved_resource, get_resource_tiling.
@@ -1139,7 +1181,9 @@ its compute shaders refused for `ResourceArray` and `StorageFormatKind` are the 
 too. Run 34's question (a view of another dimension than declared) was Godot binding one-layer
 2D array views to 2D declarations, now bound as 2D views (Departures), and in run 36 the same for
 storage views. Since the shaders track's run 40 lifted `SwizzledDepth` and run 36 bound those
-storage views, it stops at the WebGPU back end: Godot reads an `R8G8B8A8_UNORM_SRGB` shader
+storage views, it stops at the WebGPU back end (and so in run 37, after its `ResourceArray`
+compute shaders were lifted: of run 36's five refused compute shaders, three stop at the shaders
+track's `StorageFormatKind`, run37/p1-godot-platformer-3d-d3d12-output.log): Godot reads an `R8G8B8A8_UNORM_SRGB` shader
 resource view of a texture that also allows unordered access, and the back end makes every view
 with the texture's usages, which wgpu refuses for a format that cannot be stored ("Texture view
 format `Rgba8UnormSrgb` cannot be used as a storage binding", run36/p3-godot-platformer-3d-d3d12-output.log;
@@ -1178,6 +1222,23 @@ views of another dimension than the program declares, but one-layer 2D arrays bo
 declarations, which are bound as 2D views.
 
 ## Asked of other tracks
+
+Run 37: the shaders track's run 41 lifted DXIL arrays of storage textures (`ResourceArray`), and
+the front gives every element its slot. Asked newly:
+- Shaders (G6), Godot's 3D platformer: three compute shaders refused `StorageFormatKind` with
+  the front's key (run37/p1-godot-platformer-3d-d3d12-output.log). The one the shaders track
+  dumped (graphics-shaders/run36/godot-dump/17770b6eaab2fc88, made by Mesa's DXIL writer, its
+  `.ll` in graphics-shaders/run41/godot) declares seven storage textures at registers 800000 to
+  1400000 of space 0, `uint` at 800000, `int4` at 900000 to 1300000 and `float4` at 1400000, each
+  a one-element array; the key's storage formats are, by slot, `R32Uint`, five `R32Sint`,
+  `R32Float`, which is that order. So the converter's slot of some view differs from (space,
+  register) order there, or its declared kind from the resource list's; the front cannot tell
+  which.
+- Shaders (G6), clip distances through the culling stage: `Stages::culled`'s pass-through writes
+  the vertex program's clip distances as a built-in, and takes no variant; on a back end without
+  `Features::CLIP_DISTANCE` (wgpu's Direct3D 12 path, WebGL 2) the front refuses such pipelines
+  by name. Asked: apply `VariantFlags::CLIP_DISTANCE` with `linked` to that pass-through as the
+  geometry stage's pass-through takes it (combined_clip_and_cull_distances on that path).
 
 This track cannot change another's branch or status; these are the items its gap list waits on,
 read against origin/phase-2-graphics-shaders at its run 37 (aa4a1f46, merged in run 34), each
@@ -1230,7 +1291,7 @@ run 36).
    to run"); until it does, apply the one-line patch uncommitted for the run and never commit
    that file.
 2. The independent check of G5 (everything on the pass bar is done or on the gap list). Then,
-   after each shaders merge, rerun everything (scratch bin/all36.sh <n>: the literal check,
+   after each shaders merge, rerun everything (scratch bin/all37.sh <n>: the literal check,
    lint, the crates' tests, every test file, the own program, the shader runner, the scenes,
    the five dxgi tests, the real programs and the `--alone` fence timing), reclassify the runner
    (bin/classify30.py) and read the refusals. The front's part as G6 items land: a texture of
@@ -1247,13 +1308,9 @@ run 36).
    it (run36/*2.log): scenes samplers-filters, msaa-alpha_to_coverage and topology largest
    difference 0; own cases 28 of 28, shader runner 214 (the same files), dxgi tests the same. Not
    kept, for what it broke, each of which is the next step:
-   a. Clip distances: wgpu 30's Direct3D 12 path lacks `CLIP_DISTANCES`, so a vertex program
-      writing them is refused ("Entry point main at Vertex is invalid"): clip_distance and
-      combined_clip_and_cull_distances fail. Route `VariantFlags::CLIP_DISTANCE` with
-      `VariantKey::linked` (`SlowPath::ClipDistanceInShader`) where the back end lacks
-      `Features::CLIP_DISTANCE`, in every vertex and pixel conversion (pipeline, arguments,
-      pulled and bound-view variants) and the stage helper's pass-through, as the Direct3D 11
-      front does (its device.rs and context.rs).
+   a. Clip distances: done in run 37 (clip_distance passes on that path); the culling stage's
+      pass-through waits on the shaders track ("Asked of other tracks"), so
+      combined_clip_and_cull_distances stops at a named refusal there.
    b. clear_unordered_access_view_image (44 checks: "At layer 0, (0,0,0), expected 0x1, got 0"
       in dimensions 0 to 2) and copy_buffer_texture (2 checks, d3d12.c:27057 and 27083, into a
       3D texture) fail on that path only; not traced.
@@ -1549,7 +1606,9 @@ checked out recursively there, C:\wc\src\phase-2-graphics-direct3d-12). Baseline
 track's crates at adoption: wcontainers-direct3d-12 643 (517 numbers and 33 strings in code, 66
 restated, 23 redefinitions, the rest roles and a script), wcontainers-directx-graphics-infrastructure
 63; at the end of run 34, 622 and 63 (21 lines deleted: the DXBC token fields and the
-multisampled array dimension named). Changes that could add lines to the baseline, as the check printed them: 55435e4096b9,
+multisampled array dimension named); at the end of run 37, 584 and 63 (run 36's end 592: the 8
+lines of the DXIL reader's resource fields, now named `SPACE`, `LOWER_BOUND`, `RANGE_SIZE`,
+`KIND`, `SRV_EXTENDED`, `UAV_EXTENDED`). Changes that could add lines to the baseline, as the check printed them: 55435e4096b9,
 4bcacbf5c5b9, c33381def450, 68214b2eec10 and 81489a2f8fab (starts), ca2eb3e82b59, 2cc8ad761bf6,
 1e3377067526 and 5657abb6ba15 (inits after the baseline arrived by a merge), 89f882810517,
 7119e3f3a527, c3bf56d4ed9f, 31ec396f9a4a and 0f1875633508 (new rules); none is this branch's own
@@ -1613,6 +1672,12 @@ on a branch this one merges.
   section 12 keeps out of interface commits; history is not rewritten, so it stays as made.
 
 ## Measurements
+
+- Run 37, fence-wait (own program, 2000 rounds, RTX 3080) as `gpu-job --alone` at 0b231aa9
+  (run37/alone1.log, 08:13; desktop CPU load 1 % before and 2 % after, Win32_Processor
+  LoadPercentage): real first 7 µs, mean 1 µs, 99th percentile 1 µs, largest 67 µs; ours first
+  43 µs, mean 17 µs, 99th percentile 19 µs, largest 69 µs. Test files 4.7 min as one queued job
+  (07:38:07 to 07:42:47, not alone).
 
 - Run 36, fence-wait (own program, 2000 rounds, RTX 3080) as `gpu-job --alone` at 0b7b2f36
   (run36/alone3.log, 07:05; desktop CPU load 2 % before, Win32_Processor LoadPercentage; the
