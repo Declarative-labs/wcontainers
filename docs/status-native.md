@@ -50,7 +50,10 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   -2.2% cycles): the compute part still fails at +55.40% [+54.62 .. +56.03], the system-call part passes (87.4 ns [82.8 ..
   88.7]) (below, "N4 run 5"); run 6 made the page test two words in line for an access of one element at its base's
   alignment (matrix -36% cycles): on a quiet Mac the compute part is +47.51% [+46.17 .. +48.01], still failing against
-  +21.2%, and the system-call part passes at 67.9 ns [63.4 .. 71.7] (below, "N4 run 6"). T1's look-aheads come next.
+  +21.2%, and the system-call part passes at 67.9 ns [63.4 .. 71.7] (below, "N4 run 6"); run 7 fixed where a piece's
+  guest code ends, made pieces run on past forward conditional branches and wrote how 2 MiB entries get their frames
+  (reservations): the compute part is +45.38% [+44.74 .. +45.87] quiet, still failing, the system-call part passes at
+  69.1 ns (below, "N4 run 7"). T1's look-aheads come next.
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -116,10 +119,40 @@ Measured (M5 Max, all on the Mac, native runs of two builds alternating, 6 pairs
   bare-metal) and the monitor (n4r8/arm2.log); the literal check exits 0 on the Mac, no marks; busybox 56 commands gave
   the reference's output, exit code and files at none and 256 (n4r8/busybox.log, load 9 to 12).
 
+Speed bar after the change (n4r8/speed.log and speed.jsonl, 14:40 to 14:44 by the files' times, load 6 to 9, every run 100%
+on performance cores, 15 pairs, look-ahead 256, bootstrap seed 1 with 2000 resamples): compute part +45.38%, 95% interval
+[+44.74 .. +45.87], FAILS against +21.2% (run 6, quiet: +47.51%). Native against plain, cycles (instructions): fib +49.4
+(+86.1), sieve +16.7 (+31.7), hash +3.0 (+27.1), sort +85.3 (+144.0), interpret +111.4 (+105.0), matrix +29.4 (+66.0), walk
++17.4 (+81.1), search +86.7 (+45.4); calls +58.7 (+115.0). Untranslated against plain, cycles: fib -3.3, sieve +5.9, hash
+-2.5, sort -4.6, interpret -4.9, matrix -13.8, walk +16.0, search -9.4, calls -19.2. System-call part: 167.7 ns a call
+(median), the kernel's share 98.6 ns, the back end's 69.1 ns, 95% interval [66.6 .. 70.4], PASSES against 100 ns.
+
+The rest of the suite, once before the push, on the Mac (n4r8/suite-rest.log, load 8 to 10, exit 0): floor 21 cases and 1
+measurement, 0 failed; probe 0 forms of 16 bytes or fewer differ (44 larger, as before); registers; the inside's, the policy
+crate's and the literal check's tests pass. With the runs above that is the whole suite; only the speed test fails, on its
+compute part.
+
 Plan: 3.2 says how pieces are made until T1; 5.2 now answers run 5's open point on 2 MiB entries (reservations: a 2 MiB
 run of frames reserved at a range's first touch, each page taking its own frame from it, the block entry made when every
 page has its frame, untouched frames taken back when memory runs short, counted "reservation broken"); 3.7 names that slow
 path. Not built yet.
+
+Looked at and not done:
+- The jump's ceiling test (`ubfx`, `cbnz`): a build without it (not sound, measurement only, not committed; n4r8/ceiling.log,
+  4 alternating pairs, load 8 to 12) gave cycles fib -2%, sort -4%, calls -0.5%, interpret 0. So the two words are a small
+  part of a jump's cost; most of it is the two indirect branches (the jump's `br` to the slot and the slot's `br`). A slot
+  that is one direct `b` to its piece needs the piece within 128 MiB of the slot, which the code area is not (it is in
+  the lower half of the inside's half, the slots in the upper); and a return checked against one expected address in
+  line (`eor`, `cbz` to the piece) needs the expected address filled at run time. Both are changes of plan 3.2, not
+  made; see "For the orchestrator".
+
+What N4 still needs, in order:
+1. The compute part of the bar (figure below, "Speed bar").
+2. T1 from the translator track, then bounded look-ahead as stretches and full look-ahead.
+3. Load-time addresses, the cache with the native key and disk files, loaded translations shared between processes.
+4. 2 MiB entries by reservation (plan 5.2, now written), with the contiguous bit measured in the repository.
+5. For the independent check: the bar's measurements as alternating pairs again; the differential test at each look-ahead
+   with a new seed; the count across look-aheads on the benchmark set (the kernel test, none and 256).
 
 ## N4 run 6 (2026-11-19): a two-word page test, the bar on a quiet machine
 
@@ -1983,6 +2016,9 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 ## Departures from the plan
 
+- N4 run 7: until T1, a piece runs on past forward conditional branches by the emitter's own rule (plan 3.2 says pieces are
+  what the shared finder gives); it is the straight-line runs of N2 with side exits, no second finder, and goes when T1
+  gives stretches. The plan says so now.
 - N4 run 2: a guest return is the jump ending in `br t`, not `ret t` (plan 3.2), until the call stub pushes the return
   address's slot; measured, a `ret` with nothing pushed cost fib +544% against +109% (the plan says so now).
 - N4 run 2: the speed test's plain run is the same Linux program's file mapped in a host process, its `svc` words made
@@ -2132,6 +2168,15 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N4 run 7: pieces now run on past forward conditional branches (small gains: sieve -8%, matrix -3.5%, fib -2% cycles);
+  running on past backward ones too made fib 29% slower, so it is not done. Without the jump's ceiling test fib and sort
+  gain only 2 to 4%: what a call, return or jump through a register costs is mostly its two indirect branches. Two ways
+  to remove one, each a change of plan 3.2 this track would make if allowed: (a) pieces placed within 128 MiB of their
+  slots, so a slot is one `b` (the code area moves into the mirror's span, at slot pages of guest addresses that cannot
+  run code, given up when they can); (b) a return compared in line with the one address its site last went to (`eor`,
+  `cbz` to that piece), the slot only on a miss, the address filled by the inside on the first miss. Which, if either?
+  T1 is still on no branch: may this track make it?
 
 - N4 run 6: on a quiet Mac (load 4 to 7, every run on performance cores) the compute part is +47.51% [+46.17 .. +48.01]
   against +21.2%, after a two-word page test for aligned bases (matrix -36% cycles); the system-call part passes (67.9
