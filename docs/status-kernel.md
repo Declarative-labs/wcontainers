@@ -2,6 +2,16 @@
 
 Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
+## For the orchestrator
+
+- The LTP comparison on our kernel can bring Docker Desktop down on the Mac, as the
+  orchestrator's diagnosis (docker-guard/diagnosis/notes.md) found: its test backend is reached
+  over a published port with TCP_NODELAY, so request-heavy tests (cve-2014-0196, fork09, the
+  growfiles) send floods of small frames over Docker Desktop's vsock link, which failed with
+  ENOBUFS at each fall. No test of this track powers off, reboots or kills Docker's first
+  process. From the tenth run of K6c the LTP comparison on our kernel runs only on the rented
+  ARM64 machine (native Docker, no vsock link); the Mac's run was stopped at 07:40 on the 19th.
+
 ## Where things stand
 
 K6c, ninth run: the brief's second bug is fixed (a mapped backend file's pages are dropped when
