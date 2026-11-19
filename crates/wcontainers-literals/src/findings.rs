@@ -165,6 +165,9 @@ impl Kind {
     }
 }
 
+/// A line and a column in a file.
+pub type Position = (usize, usize);
+
 #[derive(Clone, Debug)]
 pub struct Finding {
     pub list: List,
@@ -182,8 +185,9 @@ pub struct Finding {
     pub note: String,
     /// The folder of the crate the finding is in; not printed.
     pub crate_dir: String,
-    /// The literal sits in a named constant's initialiser (in code or in a test); not printed.
-    pub in_const: bool,
+    /// The line and column of the name of the constant whose initialiser holds the literal (in code or
+    /// in a test), which tells apart two constants of one item path; not printed.
+    pub in_const: Option<Position>,
 }
 
 impl Finding {

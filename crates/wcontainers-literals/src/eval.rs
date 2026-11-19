@@ -639,6 +639,8 @@ fn resolve(
         .iter()
         .copied()
         .filter(|&c| c != at && defs[c].namespace() == defs[at].namespace())
+        // Code cannot name a test's constant: tests are built only for themselves.
+        .filter(|&c| defs[at].scope == ConstScope::Test || defs[c].scope != ConstScope::Test)
         .filter(|&c| match &wanted_type {
             Some(t) => defs[c].owner_type() == Some(t.as_str()),
             None => !defs[c].associated(),
