@@ -201,7 +201,9 @@ fn double_width(spirv: &[u32]) -> Option<&'static str> {
     let list = parse(spirv)?;
     list.iter().find_map(|i| match Op::from_u32(i.op) {
         Some(Op::TypeInt) if i.operands.get(1) == Some(&DOUBLE_BITS) => Some("Int64"),
-        Some(Op::TypeFloat) if i.operands.get(1) == Some(&DOUBLE_BITS) => Some("Float64"),
+        Some(Op::TypeFloat) if i.operands.get(1) == Some(&DOUBLE_BITS) => {
+            Some(crate::refusal::FLOAT_64)
+        }
         _ => None,
     })
 }
@@ -228,7 +230,7 @@ pub(crate) fn read(
         };
         if wide(scalar) {
             return Err(ConvertError::Unsupported(match scalar.kind {
-                ScalarKind::Float => "Float64",
+                ScalarKind::Float => crate::refusal::FLOAT_64,
                 _ => "Int64",
             }));
         }
@@ -306,13 +308,15 @@ pub(crate) fn widen(spirv: &mut Vec<u32>) -> Result<(), ConvertError> {
                     && [StorageClass::Input as u32, StorageClass::Output as u32]
                         .contains(&w[2]) =>
             {
-                return Err(ConvertError::Unsupported("Int16StageValue"));
+                return Err(ConvertError::Unsupported(
+                    crate::refusal::INT_16_STAGE_VALUE,
+                ));
             }
             _ => {}
         }
     }
     if laid_out.iter().any(|t| holding.contains(t)) {
-        return Err(ConvertError::Unsupported("Int16Storage"));
+        return Err(ConvertError::Unsupported(crate::refusal::INT_16_STORAGE));
     }
 
     // Each value's type.
@@ -429,7 +433,7 @@ pub(crate) fn widen(spirv: &mut Vec<u32>) -> Result<(), ConvertError> {
             } else if op == Op::Bitcast {
                 let source = i.operands.get(2).copied().is_some_and(is_narrow);
                 if source != narrow_result {
-                    return Err(ConvertError::Unsupported("Int16Bitcast"));
+                    return Err(ConvertError::Unsupported(crate::refusal::INT_16_BITCAST));
                 }
                 (Vec::new(), false)
             } else if SIGNED.contains(&op) {

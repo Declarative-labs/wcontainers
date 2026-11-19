@@ -91,7 +91,9 @@ fn copy(
             bits_of(f, u32_ty, x.to_bits(), &mut emit)
         }
         Expression::Literal(Literal::F64(_)) => {
-            return Err(ConvertError::Unsupported("NonFiniteConstant"));
+            return Err(ConvertError::Unsupported(
+                crate::refusal::NON_FINITE_CONSTANT,
+            ));
         }
         ref e @ (Expression::Literal(_) | Expression::ZeroValue(_)) => {
             f.expressions.append(e.clone(), Span::UNDEFINED)
@@ -110,7 +112,11 @@ fn copy(
             let value = copy(module, f, u32_ty, Value::Global(value))?;
             emit(f, Expression::Splat { size, value })
         }
-        _ => return Err(ConvertError::Unsupported("NonFiniteConstant")),
+        _ => {
+            return Err(ConvertError::Unsupported(
+                crate::refusal::NON_FINITE_CONSTANT,
+            ));
+        }
     })
 }
 
@@ -179,7 +185,7 @@ pub(super) fn calls(module: &mut Module) -> Result<()> {
         .iter()
         .any(|&(u, ..)| matches!(u, Use::Global(g) if module.global_variables[g].space != AddressSpace::Private))
     {
-        return Err(ConvertError::Unsupported("NonFiniteConstant"));
+        return Err(ConvertError::Unsupported(crate::refusal::NON_FINITE_CONSTANT));
     }
     // (function index, or entry point index + functions, and its (use, value, type))
     let mut found = Vec::new();

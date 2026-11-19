@@ -1,4 +1,4 @@
-@rem Compiles the entry points of own.hlsl, more.hlsl, spaces.hlsl, twospaces.hlsl, signed.hlsl, route.hlsl, values.hlsl, evaluate.hlsl, negate.hlsl, variants.hlsl, pull.hlsl, filter.hlsl, geometry.hlsl, compute.hlsl, readonly.hlsl, targets.hlsl, texels.hlsl, tessellation.hlsl, layers.hlsl, uav.hlsl, arrays.hlsl, msarray.hlsl, early.hlsl, shadow.hlsl, msloop.hlsl (shader model 4.0), narrow.hlsl, components.hlsl and waves.hlsl (dxc only) with
+@rem Compiles the entry points of own.hlsl, more.hlsl, spaces.hlsl, twospaces.hlsl, signed.hlsl, route.hlsl, values.hlsl, evaluate.hlsl, negate.hlsl, variants.hlsl, pull.hlsl, filter.hlsl, geometry.hlsl, compute.hlsl, readonly.hlsl, targets.hlsl, texels.hlsl, tessellation.hlsl, layers.hlsl, uav.hlsl, arrays.hlsl, msarray.hlsl, early.hlsl, shadow.hlsl, msloop.hlsl (shader model 4.0), divide.hlsl, narrow.hlsl, components.hlsl and waves.hlsl (dxc only) with
 @rem the Windows SDK's fxc (ps_spaces, vs_transform, ps_textured, signed.hlsl's, route.hlsl's, values.hlsl's, negate.hlsl's, variants.hlsl's, pull.hlsl's, filter.hlsl's, the geometry, the compute and the typed buffer shaders also
 @rem with its dxc, IEEE-strict so NaN tests stay), beside this file.
 @echo off
@@ -92,6 +92,8 @@ for %%e in (cs_atomics cs_decrement cs_images cs_shared) do (
 "%FXC%" /nologo /T ps_5_0 /E ps_two /Fo ps_two.dxbc targets.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_two -Gis -Fo ps_two.dxil targets.hlsl || exit /b 1
 "%FXC%" /nologo /T cs_5_0 /E cs_readonly /Fo cs_readonly.dxbc readonly.hlsl || exit /b 1
+"%FXC%" /nologo /T cs_5_0 /E cs_divide /Fo cs_divide.dxbc divide.hlsl || exit /b 1
+"%DXC%" -nologo -T cs_6_0 -E cs_divide -Fo cs_divide.dxil divide.hlsl || exit /b 1
 "%DXC%" -nologo -T cs_6_0 -E cs_readonly -Gis -Fo cs_readonly.dxil readonly.hlsl || exit /b 1
 "%FXC%" /nologo /T cs_5_0 /E cs_texels /Fo cs_texels.dxbc texels.hlsl || exit /b 1
 "%DXC%" -nologo -T cs_6_0 -E cs_texels -Gis -Fo cs_texels.dxil texels.hlsl || exit /b 1
@@ -127,6 +129,7 @@ for %%e in (gs_tess_point gs_tess_line gs_tess_tri) do (
 "%DXC%" -nologo -T ps_6_0 -E ps_layer -Gis -Fo ps_layer.dxil layers.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_halves -Gis -Fo ps_halves.dxil uav.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_array -Gis -Fo ps_array.dxil arrays.hlsl || exit /b 1
+"%DXC%" -nologo -T cs_6_0 -E cs_image_array -Gis -Fo cs_image_array.dxil arrays.hlsl || exit /b 1
 for %%e in (ps_fill ps_msarray) do (
   "%FXC%" /nologo /T ps_5_0 /E %%e /Fo %%e.dxbc msarray.hlsl || exit /b 1
   "%DXC%" -nologo -T ps_6_0 -E %%e -Gis -Fo %%e.dxil msarray.hlsl || exit /b 1

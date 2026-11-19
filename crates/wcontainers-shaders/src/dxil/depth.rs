@@ -64,16 +64,22 @@ fn plain_reads(module: &Module, f: &Function) -> Result<Vec<Handle<Expression>>>
             } if depth(module, f, image) => match (gather, level) {
                 (Some(SwizzleComponent::X), _) => continue,
                 (Some(_), _) => {
-                    return Err(ConvertError::Unsupported("DepthGatherComponent"));
+                    return Err(ConvertError::Unsupported(
+                        crate::refusal::DEPTH_GATHER_COMPONENT,
+                    ));
                 }
                 (None, SampleLevel::Bias(_)) => {
-                    return Err(ConvertError::Unsupported("DepthSampleBias"));
+                    return Err(ConvertError::Unsupported(crate::refusal::DEPTH_SAMPLE_BIAS));
                 }
                 (None, SampleLevel::Gradient { .. }) => {
-                    return Err(ConvertError::Unsupported("DepthSampleGradient"));
+                    return Err(ConvertError::Unsupported(
+                        crate::refusal::DEPTH_SAMPLE_GRADIENT,
+                    ));
                 }
                 (None, SampleLevel::Exact(l)) if whole_level(module, f, l).is_none() => {
-                    return Err(ConvertError::Unsupported("DepthSampleLevel"));
+                    return Err(ConvertError::Unsupported(
+                        crate::refusal::DEPTH_SAMPLE_LEVEL,
+                    ));
                 }
                 _ => {}
             },

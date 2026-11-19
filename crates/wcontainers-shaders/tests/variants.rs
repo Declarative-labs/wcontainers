@@ -302,7 +302,10 @@ fn early_tests_read_the_attachment_before_the_program() {
             ]
         );
     }
-    for (samples, name) in [(0, "SampleCount"), (2, "EarlyTestsSamples")] {
+    for (samples, name) in [
+        (0, "SampleCount"),
+        (2, wcontainers_shaders::refusal::EARLY_TESTS_SAMPLES),
+    ] {
         for source in [Source::Dxbc(&textured[0]), Source::Dxil(&textured[1])] {
             let got = convert(source, &key(samples, VariantFlags::empty()), None).map(|_| ());
             assert_eq!(got, Err(ConvertError::Unsupported(name)));
@@ -365,7 +368,9 @@ fn pixel_variants_convert_on_both_routes() {
     }
     assert_eq!(
         convert(Source::Dxbc(&textured[0]), &key, None).map(|_| ()),
-        Err(ConvertError::Unsupported("DualSourceWithoutTwoTargets"))
+        Err(ConvertError::Unsupported(
+            wcontainers_shaders::refusal::DUAL_SOURCE_WITHOUT_TWO_TARGETS
+        ))
     );
     let key = VariantKey {
         flags: VariantFlags::TEXTURE_INFO,
@@ -443,8 +448,14 @@ fn targets_of_another_type_take_the_outputs_bits() {
     .unwrap();
     assert_eq!(wgsl(&plain), wgsl(&same));
     for (key, name) in [
-        (target(Format::Rgba8Unorm, false), "NormAsInteger"),
-        (target(Format::Rgba32Float, true), "BlendInShader"),
+        (
+            target(Format::Rgba8Unorm, false),
+            wcontainers_shaders::refusal::NORM_AS_INTEGER,
+        ),
+        (
+            target(Format::Rgba32Float, true),
+            wcontainers_shaders::refusal::BLEND_IN_SHADER,
+        ),
     ] {
         let got = convert(Source::Dxbc(&code[0]), &key, None).map(|_| ());
         assert_eq!(got, Err(ConvertError::Unsupported(name)));
@@ -456,7 +467,12 @@ fn targets_of_another_type_take_the_outputs_bits() {
         None,
     )
     .map(|_| ());
-    assert_eq!(got, Err(ConvertError::Unsupported("TargetsInShader")));
+    assert_eq!(
+        got,
+        Err(ConvertError::Unsupported(
+            wcontainers_shaders::refusal::TARGETS_IN_SHADER
+        ))
+    );
 }
 
 /// The minimum level-of-detail clamp: samples go through the merged sampler of their pair in the helper
@@ -515,7 +531,9 @@ fn min_lod_clamp_samples_through_the_merged_sampler() {
         };
         assert_eq!(
             convert(source, &key, None).map(|_| ()),
-            Err(ConvertError::Unsupported("MinLodOnComparison"))
+            Err(ConvertError::Unsupported(
+                wcontainers_shaders::refusal::MIN_LOD_ON_COMPARISON
+            ))
         );
     }
 }
@@ -796,7 +814,7 @@ fn clip_distances_and_depth_clamp_pass_through_the_linked_location() {
             ..key.clone()
         },
         &ps,
-        "ClipDistanceSamples",
+        wcontainers_shaders::refusal::CLIP_DISTANCE_SAMPLES,
     );
     refused(
         VariantKey {
@@ -807,7 +825,7 @@ fn clip_distances_and_depth_clamp_pass_through_the_linked_location() {
             ..key.clone()
         },
         &vs,
-        "LinkedClipDistanceCount",
+        wcontainers_shaders::refusal::LINKED_CLIP_DISTANCE_COUNT,
     );
     refused(
         VariantKey {
@@ -818,7 +836,7 @@ fn clip_distances_and_depth_clamp_pass_through_the_linked_location() {
             ..key
         },
         &vs,
-        "LinkedLocationTaken",
+        wcontainers_shaders::refusal::LINKED_LOCATION_TAKEN,
     );
 }
 
@@ -1010,7 +1028,9 @@ fn filtering_in_the_program_reads_texels_with_loads() {
             None
         )
         .map(|_| ()),
-        Err(ConvertError::Unsupported("FilterInShaderOnCube"))
+        Err(ConvertError::Unsupported(
+            wcontainers_shaders::refusal::FILTER_IN_SHADER_ON_CUBE
+        ))
     );
 }
 
@@ -1028,7 +1048,9 @@ fn read_written_four_channel_storage_goes_through_a_buffer() {
     assert!(
         matches!(
             refused,
-            Err(ConvertError::Unsupported("ReadWriteStorageFormat"))
+            Err(ConvertError::Unsupported(
+                wcontainers_shaders::refusal::READ_WRITE_STORAGE_FORMAT
+            ))
         ),
         "{refused:?}"
     );
@@ -1059,6 +1081,42 @@ fn texture_arrays_are_a_texture_per_element() {
     let text = wgsl(&c);
     assert!(text.contains("switch"), "{text}");
     assert_eq!(text.matches("texture_2d<f32>;").count(), 4, "{text}");
+}
+
+/// An array of storage textures is one storage texture per element, each of its view's format; a
+/// read after a pick at run time is a switch in a function and a store to one is a switch in place.
+#[test]
+fn storage_texture_arrays_are_a_storage_texture_per_element() {
+    const ELEMENTS: u32 = 4;
+    let code = read("tests/own/cs_image_array.dxil");
+    let key = VariantKey {
+        storage_formats: (0..ELEMENTS).map(|s| (s, Format::R32Uint)).collect(),
+        ..Default::default()
+    };
+    let c = convert(Source::Dxil(&code), &key, None).unwrap();
+    let mut storage: Vec<_> = c
+        .reflection
+        .bindings
+        .iter()
+        .filter(|b| b.kind == SlotKind::Storage)
+        .map(|b| (b.register, b.slot()))
+        .collect();
+    storage.sort_unstable();
+    assert_eq!(storage, (0..ELEMENTS).map(|r| (r, r)).collect::<Vec<_>>());
+    let text = wgsl(&c);
+    assert_eq!(
+        text.matches("texture_storage_2d<r32uint,read_write>;")
+            .count(),
+        ELEMENTS as usize,
+        "{text}"
+    );
+    assert!(text.matches("switch").count() >= 3, "{text}");
+    assert_eq!(
+        convert(Source::Dxil(&code), &VariantKey::default(), None).err(),
+        Some(ConvertError::Unsupported(
+            wcontainers_shaders::refusal::STORAGE_FORMAT
+        ))
+    );
 }
 
 /// A texture both compared against and read plainly (`ps_shadow`: compared samples, a sample, a
@@ -1109,7 +1167,7 @@ fn multisampled_array_layers_are_a_texture_each() {
     ] {
         assert_eq!(
             convert(source, &VariantKey::default(), None).unwrap_err(),
-            ConvertError::Unsupported("MultisampledArrayTexture"),
+            ConvertError::Unsupported(wcontainers_shaders::refusal::MULTISAMPLED_ARRAY_TEXTURE),
             "{route}"
         );
         let key = VariantKey {

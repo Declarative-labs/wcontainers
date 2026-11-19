@@ -58,7 +58,9 @@ components; run 38 adopted the literal check, reflected system values from the s
 clip distances were counted as one) and passed geometry shaders' clip distances on; run 39 built
 cull distances from vertex shaders through the stage helper (`CullDistanceAsGeometry`); run 40
 applied views' component mappings to depth textures read plainly and converted wave minimums and
-maximums of the other signedness; what remains is under Next. Runs 21 to 33 merged origin/phase-2-graphics-webgpu,
+maximums of the other signedness; run 41 split DXIL arrays of storage textures (Godot's
+`ResourceArray` compute shaders), compared converted division with Direct3D's and named every
+refusal once; what remains is under Next. Runs 21 to 33 merged origin/phase-2-graphics-webgpu,
 -webgl, -direct3d-11, -direct3d-12 and -rig (run 28: one conflict in the interface's `slow.rs`,
 the same three slow paths in two orders, ours kept).
 
@@ -1739,11 +1741,82 @@ Run 40 (the Direct3D 12 track's Godot refusal and wave item; the literal check a
   that could add lines: 18 (run 39's 16, and 55435e40 the start, ca2eb3e8 the init after the
   baseline arrived by a merge, both the Direct3D 12 track's, merged in).
 
+Run 41 (Godot's `ResourceArray`, the Direct3D 11 track's division question, the literal sweep):
+- Merged origin/phase-2-graphics-webgl and -direct3d-11 (no conflicts); the others had nothing
+  new. The WebGL back end's `compile 8` line is gone from the check (that track named it).
+- The Linux laptop stopped answering mid-run (05:35 desktop time, "Host is down", no ping), so
+  every test of this run ran on the desktop inside GPU jobs (3 cargo jobs), with the corpora
+  copied to `C:\wc\incoming\shaders-corpus41` (games, Wine's DXBC, the runner's blobs). The
+  WebAssembly comparison and glslang, which need the laptop's tools, were not rerun.
+- DXIL arrays of storage textures (`RWTexture3D<float> t[8]`, Godot's 3D platformer's three
+  `ResourceArray` compute shaders, the runner's sm6-uav-rwtexture): split into a storage texture
+  per element as arrays of textures are (`dxil/arrays.rs`), each element declared as the array
+  was (`images::declare_elements`), so each takes its own slot's format from `storage_formats`.
+  Reads after a pick at run time go through the switching helper as before; a store to an
+  element picked at run time is now a switch on the index (read as unsigned; the last element for
+  any index past the array, which Direct3D leaves undefined) storing to the element named.
+  Atomic operations on an element picked at run time stay refused (`ResourceArray`), so none
+  lands silently on element 0. Texel pointers are typed as their image when the helper's
+  operands are typed (an atomic on a constant element stopped the typing before).
+  New own `cs_image_array` (arrays.hlsl, dxc): unit test
+  `storage_texture_arrays_are_a_storage_texture_per_element`; drawn test
+  `storage_texture_arrays_use_the_elements_picked` (compute_draw.rs, WebGPU on the RTX 3080,
+  seeded texels): 0 texels apart in each of 8 seeds from the results Direct3D's rules give (each
+  texel is touched by one invocation, so the result is determined; no Direct3D reference ran:
+  the DXBC route refuses arrays and Direct3D 11 has no shader model 5.1). Not yet: the
+  Godot dumps converted with their keys (the front's key names the array as one slot; the
+  elements now take a slot each, as for arrays of textures), and atomics on array elements
+  (through `texels_through_buffer`, untested).
+- The Direct3D 11 track's atg-simplecomputepc question (its fractal's `frc(div(1200, 300))`
+  suspected of giving just under 4): measured, the converted division is Direct3D's. New own
+  `cs_divide` (divide.hlsl, fxc without strictness as the program's, dxc default, which writes
+  `fdiv fast`): 256 divisions per seed, half of an exact multiple of the divisor, quotient and
+  fraction as bits, against real Direct3D 11 on the RTX 3080 in `atomics_and_counters_match_direct3d`
+  and `storage_views_at_any_first_element_match_direct3d`: 0 words apart, both routes, seeds 1 to
+  4 (run41/compute1.log). fxc's own build of fractal.hlsl uses only `div`, `frc`, `mad`, `dp2`
+  and `sample_l` there, so the 154,515 pixels differ for another reason (not found; the loop's
+  count or the colour map's sampling are what is left to compare).
+- Literal sweep, one step: the 122 refusal names (`ConvertError::Unsupported`) are constants
+  of the new public module `refusal`, used by the code and by this crate's tests. Two stay
+  literal because other crates' files hold them as strings (`SampleCount`, `StorageImageAtomics`;
+  naming them would make those restate it), and `SWIZZLED_DEPTH` and `VERTEX_STORAGE_WRITE` were
+  already named. This crate's baseline lines (src, build.rs, tests, examples): 883 at the end
+  (1077 at run 40's end). The check passes but for the Direct3D 12 front's `TRIANGLE_VERTICES`.
+  The check (version 4 rules) flags a test's literal or constant whose value equals any named
+  constant's, so the new tests' arbitrary data values were chosen unlike any (3000 divisors, xor
+  30001) and the division's invocation count is its groups times their size.
+- Records: games-dxil's three Godot compute shaders move from `ResourceArray` to
+  `StorageFormatKind` (the corpus test binds one format per kind; their arrays are `f32` views
+  beside `u32` ones), Godot's fragment shader 2893de73bed23900 and the runner's
+  object-references-7 and sm6-uav-rwtexture-5 convert, and the own records gain `cs_divide` and
+  `cs_image_array`.
+- Tests (desktop, all through the queue, sharing the GPU machine with five tracks): Windows
+  clippy with warnings denied clean; the whole suite (21 test binaries, `--include-ignored`, the
+  corpora copied as above) passes but for the runner corpus's long-known distance-4 entry
+  (run41/suite2.log, then corpus2.log after the records).
+- Chrome's compile of every written file (`web/check`, run41/chrome.log, one GPU job): every WGSL
+  file of every corpus compiles (corpus 185, games 519, games-dxil 426, own 119, own-dxil 61, rig
+  79, rig-dxil 55, runner 1432, runner-dxil 1377), the new `cs_divide`, `cs_image_array`, Godot's
+  fragment shader and the runner's two array shaders among them. WebGL 2 fails the same 117 GLSL
+  files as in run 40, each of a kind it lacks.
+- Clean-up: the desktop's `C:\wc\target\phase-2-graphics-shaders` and its written files
+  (`C:\wc\incoming\shaders-out41`) deleted; the corpora copy `C:\wc\incoming\shaders-corpus41`
+  (20 MB) is kept for desktop runs while the laptop is down. The laptop's build folder could not
+  be deleted (the laptop was down at the end); the next run deletes
+  `~/wcontainers-graphics/target/phase-2-graphics-shaders` there first.
+
 Next (in order):
+- The Direct3D 12 front (theirs, now possible since run 41): Godot's 3D platformer past its
+  three `ResourceArray` compute shaders: an array of storage views is one slot per element in
+  `storage_formats` (the element's place among the program's storage views, as for arrays of
+  textures). Its two `StorageFormatKind` shaders (17770b6eaab2fc88, 3412ef9e13dd769b in scratch
+  `run36/godot-dump`) have keys matching the declarations by (space, register) order as dxc lists
+  them; which view mismatches was not found this run (the laptop went down).
+- The Direct3D 11 track: atg-simplecomputepc's difference is not the division (run 41).
 - The other tracks, from run 40's merge: the Direct3D 12 front deletes its own
   `TRIANGLE_VERTICES` in `device/early.rs` and imports `wcontainers_shaders::stage::TRIANGLE_VERTICES`;
-  the WebGL back end's baseline line `compile 8` follows the literal to `write` (or the value is
-  named). Until then the literal check on a merged tree prints these two `+` lines.
+  the WebGL back end's line is fixed (run 41's merge). Until the first is done the literal check
+  on a merged tree prints its `+` line.
 - The fronts (theirs, now possible since run 40): Godot's 3D platformer on Direct3D 12 past
   `SwizzledDepth` (the depth view's mapping goes in `swizzled` as any view's); the runner's
   wave-ops-int rerun.
@@ -2142,6 +2215,16 @@ scratch `graphics-shaders` (run40-*):
 - Desktop, at 3f73914a: Windows lint clean, then the whole suite as one GPU job
   (`cargo test -p wcontainers-shaders --no-fail-fast -- --test-threads 1 --skip mutated`,
   run40-suite-gpu.log): 21 test binaries, all pass.
+- Chrome's compile of every written file (`web/check`, run40-chrome.log, one GPU job): every WGSL
+  file of every corpus compiles (corpus 185, games 519, games-dxil 425, own 118, own-dxil 59, rig
+  79, rig-dxil 55, runner 1432, runner-dxil 1375), the new `ps_shadow_wide`, `ps_wave_signed` and
+  the runner's wave-ops-int among them. WebGL 2 fails 117 GLSL files, each of a kind it lacks
+  (bitfield operations and `findLSB`/`findMSB`, gathers, multisampled samplers, the primitive
+  index) or a cull-distance vertex shader's plain GLSL ("array size mismatch" at the cull
+  distance array; WebGL 2 has no cull route, so nothing runs it).
+- Clean-up: the laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders` (5.7 GB) and
+  the desktop's `C:\wc\target\phase-2-graphics-shaders` deleted; scratch keeps the logs and
+  `run40/out` (47 MB, the written files Chrome compiled).
 Run 39, 2026-11-19, counts only (laptop i7-8750H, load 3 to 11 with another track building, 4 or 5
 cargo jobs; it was unreachable twice for some minutes; desktop shared through the queue, 3 cargo
 jobs, load not taken), logs in scratch `graphics-shaders/run39`:

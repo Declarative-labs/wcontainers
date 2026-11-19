@@ -39,9 +39,9 @@ fn runtime_array(module: &Module, ty: Handle<naga::Type>) -> Result<Option<(Opti
         TypeInner::Struct { members, .. } => match (members.len(), members.last()) {
             (1, Some(m)) => Ok(array(m.ty).map(|stride| (Some(0), stride))),
             // A block with sized members before its array: an offset cannot move them alone.
-            (_, Some(m)) if array(m.ty).is_some() => {
-                Err(ConvertError::Unsupported("StorageOffsetOfBlock"))
-            }
+            (_, Some(m)) if array(m.ty).is_some() => Err(ConvertError::Unsupported(
+                crate::refusal::STORAGE_OFFSET_OF_BLOCK,
+            )),
             _ => Ok(None),
         },
         _ => Ok(None),

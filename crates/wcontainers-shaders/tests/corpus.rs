@@ -65,8 +65,9 @@ fn records(path: &Path, file: &str) -> Result<String, String> {
             },
         ),
     ];
-    if let Err(ConvertError::Unsupported("StorageFormat" | "TypedBuffer")) =
-        convert(source, &VariantKey::default(), None)
+    if let Err(ConvertError::Unsupported(
+        wcontainers_shaders::refusal::STORAGE_FORMAT | wcontainers_shaders::refusal::TYPED_BUFFER,
+    )) = convert(source, &VariantKey::default(), None)
     {
         keys.extend(view_keys().map(|(f, k)| (format!("views-{f:?}"), k)));
     }
@@ -121,7 +122,11 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
     let mut views = None;
     let converted = match convert(source(&bytes), &key, None) {
         Ok(c) => c,
-        Err(ConvertError::Unsupported("StorageFormat" | "TypedBuffer" | "StorageImageAtomics")) => {
+        Err(ConvertError::Unsupported(
+            wcontainers_shaders::refusal::STORAGE_FORMAT
+            | wcontainers_shaders::refusal::TYPED_BUFFER
+            | "StorageImageAtomics",
+        )) => {
             let mut last = None;
             for (format, mut k) in view_keys() {
                 let mut made = convert(source(&bytes), &k, None);
@@ -143,7 +148,8 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
                             matches!(
                                 e,
                                 ConvertError::Unsupported(
-                                    "StorageFormatKind" | "TypedBufferFormatKind"
+                                    wcontainers_shaders::refusal::STORAGE_FORMAT_KIND
+                                        | wcontainers_shaders::refusal::TYPED_BUFFER_FORMAT_KIND
                                 )
                             )
                         };

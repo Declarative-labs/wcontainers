@@ -36,16 +36,19 @@ fn every_storage_format_and_dimension_gives_a_clear_program() {
                     naga::front::wgsl::parse_str(&wgsl).unwrap();
                     made += 1;
                 }
-                Err(e) => assert_eq!(e, ConvertError::Unsupported("StorageFormatAbsent")),
+                Err(e) => assert_eq!(
+                    e,
+                    ConvertError::Unsupported(wcontainers_shaders::refusal::STORAGE_FORMAT_ABSENT)
+                ),
             }
         }
         assert_eq!(
             storage_clear(format, ViewDimension::Cube).err(),
             Some(ConvertError::Unsupported(
                 if storage_clear(format, ViewDimension::D2).is_ok() {
-                    "ClearDimension"
+                    wcontainers_shaders::refusal::CLEAR_DIMENSION
                 } else {
-                    "StorageFormatAbsent"
+                    wcontainers_shaders::refusal::STORAGE_FORMAT_ABSENT
                 }
             )),
         );
@@ -79,7 +82,12 @@ fn integer_clears_store_each_components_own_bits() {
             let signed = ((c << (32 - bits)) as i32) >> (32 - bits);
             let r = v(f, [c, 0, 0, 0], false);
             if c == half {
-                assert_eq!(r, Err(ConvertError::Unsupported("SnormMostNegative")));
+                assert_eq!(
+                    r,
+                    Err(ConvertError::Unsupported(
+                        wcontainers_shaders::refusal::SNORM_MOST_NEGATIVE
+                    ))
+                );
                 continue;
             }
             let x = f32::from_bits(r.unwrap()[0]);
@@ -143,12 +151,16 @@ fn float_clears_pass_the_floats_and_refuse_integer_formats() {
     for f in [Format::Rgba8Uint, Format::R32Sint] {
         assert_eq!(
             storage_clear_value(f, values, true),
-            Err(ConvertError::Unsupported("FloatClearOfInteger"))
+            Err(ConvertError::Unsupported(
+                wcontainers_shaders::refusal::FLOAT_CLEAR_OF_INTEGER
+            ))
         );
     }
     assert_eq!(
         storage_clear_value(Format::Rgba8UnormSrgb, values, true),
-        Err(ConvertError::Unsupported("StorageFormatAbsent"))
+        Err(ConvertError::Unsupported(
+            wcontainers_shaders::refusal::STORAGE_FORMAT_ABSENT
+        ))
     );
 }
 

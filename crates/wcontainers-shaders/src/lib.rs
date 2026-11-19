@@ -11,6 +11,7 @@ mod dxbc;
 mod dxil;
 mod ir;
 mod lower;
+pub mod refusal;
 pub mod stage;
 mod variant;
 
@@ -115,7 +116,7 @@ pub fn convert(
                 (module, reflection, stage)
             }
             Source::Dxil(bytes) => dxil::lower(bytes, variant)?,
-            Source::SpirV(_) => return Err(ConvertError::Unsupported("SpirV")),
+            Source::SpirV(_) => return Err(ConvertError::Unsupported(crate::refusal::SPIR_V)),
         };
         // WebGPU gives vertex programs no writable storage.
         let writable = |g: &naga::GlobalVariable| {
@@ -178,7 +179,7 @@ fn geometry_variant(variant: &VariantKey) -> Result<(), ConvertError> {
         || !variant.pulled.is_empty()
         || variant.draw_base != DrawBaseSource::None
     {
-        return Err(ConvertError::Unsupported("GeometryVariant"));
+        return Err(ConvertError::Unsupported(crate::refusal::GEOMETRY_VARIANT));
     }
     Ok(())
 }
@@ -240,7 +241,7 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
     }
     let asked = [
         (*storage_packed != 0, "StoragePacked"),
-        (!decoded.is_empty(), "NormAsInteger"),
+        (!decoded.is_empty(), crate::refusal::NORM_AS_INTEGER),
         (
             *layout != [0; 32] || root_signature.is_some(),
             "RootSignatureLayout",

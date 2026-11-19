@@ -225,24 +225,30 @@ pub(crate) fn lower(
     // would take them through.
     match crate::container::program_type(dxil) {
         Some(crate::ir::program::GEOMETRY) => {
-            return Err(ConvertError::Unsupported("DxilGeometryShader"));
+            return Err(ConvertError::Unsupported(
+                crate::refusal::DXIL_GEOMETRY_SHADER,
+            ));
         }
-        Some(crate::ir::program::HULL) => return Err(ConvertError::Unsupported("DxilHullShader")),
+        Some(crate::ir::program::HULL) => {
+            return Err(ConvertError::Unsupported(crate::refusal::DXIL_HULL_SHADER));
+        }
         Some(crate::ir::program::DOMAIN) => {
-            return Err(ConvertError::Unsupported("DxilDomainShader"));
+            return Err(ConvertError::Unsupported(
+                crate::refusal::DXIL_DOMAIN_SHADER,
+            ));
         }
         _ => {}
     }
     let (mut spirv, mut resources) = to_spirv(dxil, variant.samples)?;
     if evaluates_inputs(&spirv) {
-        return Err(ConvertError::Unsupported("InterpolateAt"));
+        return Err(ConvertError::Unsupported(crate::refusal::INTERPOLATE_AT));
     }
     if let Some(name) = absent_extension(&spirv) {
         return Err(ConvertError::Unsupported(name));
     }
     widths::widen(&mut spirv)?;
     registers::encode(&mut spirv);
-    let declared = images::prepare(&mut spirv);
+    let mut declared = images::prepare(&mut spirv);
     let options = naga::front::spv::Options {
         adjust_coordinate_space: false,
         strict_capabilities: false,
@@ -250,7 +256,7 @@ pub(crate) fn lower(
     };
     let mut module = widths::read(&spirv, &options)?;
     nonfinite::calls(&mut module)?;
-    arrays::split(&mut module, &mut resources)?;
+    arrays::split(&mut module, &mut resources, &mut declared)?;
     depth::widen(&mut module)?;
     let mut atomics = images::texel_atomics(&mut module)?;
     // WebGPU's storage buffers are read-only or read-write; one the program only writes is the latter.
@@ -283,7 +289,7 @@ pub(crate) fn lower(
         naga::ShaderStage::Vertex => (ShaderStage::Vertex, SourceStage::Vertex, 0),
         naga::ShaderStage::Fragment => (ShaderStage::Fragment, SourceStage::Pixel, 1),
         naga::ShaderStage::Compute => (ShaderStage::Compute, SourceStage::Compute, 0),
-        _ => return Err(ConvertError::Unsupported("Stage")),
+        _ => return Err(ConvertError::Unsupported(crate::refusal::STAGE)),
     };
     let extras = match stage {
         ShaderStage::Compute => StageExtras::Compute {
@@ -493,7 +499,7 @@ fn unconverted(module: &Module) -> Result<(), ConvertError> {
             }
         )
     }) {
-        return Err(ConvertError::Unsupported("Texture1DArray"));
+        return Err(ConvertError::Unsupported(crate::refusal::TEXTURE_1_D_ARRAY));
     }
     // Every built-in the entry point reads or writes, with its type.
     let mut builtins = Vec::new();
@@ -521,23 +527,25 @@ fn unconverted(module: &Module) -> Result<(), ConvertError> {
     if ep.stage != naga::ShaderStage::Fragment
         && builtins.iter().any(|(b, _)| *b == BuiltIn::PrimitiveIndex)
     {
-        return Err(ConvertError::Unsupported("PrimitiveId"));
+        return Err(ConvertError::Unsupported(crate::refusal::PRIMITIVE_ID));
     }
     // Cull distances are drawn through the stage helper from a vertex program only, and no stage
     // reads clip distances.
     if ep.stage != naga::ShaderStage::Vertex
         && builtins.iter().any(|(b, _)| *b == BuiltIn::CullDistance)
     {
-        return Err(ConvertError::Unsupported("CullDistance"));
+        return Err(ConvertError::Unsupported(crate::refusal::CULL_DISTANCE));
     }
     if ep.stage == naga::ShaderStage::Fragment
         && builtins.iter().any(|(b, _)| *b == BuiltIn::ClipDistances)
     {
-        return Err(ConvertError::Unsupported("ClipDistance"));
+        return Err(ConvertError::Unsupported(crate::refusal::CLIP_DISTANCE));
     }
     // WebGPU's subgroups serve pixel and compute programs only, and have no subgroup barrier.
     if module.uses_subgroups() && ep.stage == naga::ShaderStage::Vertex {
-        return Err(ConvertError::Unsupported("SubgroupsInVertex"));
+        return Err(ConvertError::Unsupported(
+            crate::refusal::SUBGROUPS_IN_VERTEX,
+        ));
     }
     let functions = core::iter::once(&ep.function).chain(module.functions.iter().map(|(_, f)| f));
     for f in functions {
@@ -550,7 +558,7 @@ fn unconverted(module: &Module) -> Result<(), ConvertError> {
             });
         });
         if barrier {
-            return Err(ConvertError::Unsupported("SubgroupBarrier"));
+            return Err(ConvertError::Unsupported(crate::refusal::SUBGROUP_BARRIER));
         }
     }
     // dxil-spirv reads a component of a constant buffer picked at run time through a second view of
@@ -568,7 +576,9 @@ fn unconverted(module: &Module) -> Result<(), ConvertError> {
         .iter()
         .any(|(_, v)| v.space == AddressSpace::Uniform && scalar_view(v))
     {
-        return Err(ConvertError::Unsupported("ConstantComponentIndexing"));
+        return Err(ConvertError::Unsupported(
+            crate::refusal::CONSTANT_COMPONENT_INDEXING,
+        ));
     }
     // naga's IR holds no infinite or NaN literal; the reader makes them from SPIR-V's constants.
     let non_finite =
@@ -579,7 +589,9 @@ fn unconverted(module: &Module) -> Result<(), ConvertError> {
             .flat_map(|f| f.expressions.iter())
             .any(|(_, e)| non_finite(e))
     {
-        return Err(ConvertError::Unsupported("NonFiniteConstant"));
+        return Err(ConvertError::Unsupported(
+            crate::refusal::NON_FINITE_CONSTANT,
+        ));
     }
     if builtins.iter().any(|(b, ty)| {
         *b == BuiltIn::SampleMask && matches!(module.types[*ty].inner, TypeInner::Array { .. })
@@ -876,7 +888,9 @@ fn float_to_ints(module: &Module, f: &Function) -> Result<Vec<Conversion>, Conve
             continue;
         }
         if (scalar.width, width) != (4, 4) {
-            return Err(ConvertError::Unsupported("FloatToIntWidth"));
+            return Err(ConvertError::Unsupported(
+                crate::refusal::FLOAT_TO_INT_WIDTH,
+            ));
         }
         found.push((h, (kind, size), expr));
     }
@@ -1498,7 +1512,9 @@ fn sampled_pairs(
                 continue;
             };
             let (Some(texture), Some(sampler)) = (register(f, image), register(f, sampler)) else {
-                return Err(ConvertError::Unsupported("SampledThroughArgument"));
+                return Err(ConvertError::Unsupported(
+                    crate::refusal::SAMPLED_THROUGH_ARGUMENT,
+                ));
             };
             if !pairs.contains(&(texture, sampler)) {
                 pairs.push((texture, sampler));
@@ -1527,7 +1543,7 @@ fn bindings(
             continue;
         };
         if let TypeInner::BindingArray { .. } = module.types[var.ty].inner {
-            return Err(ConvertError::Unsupported("ResourceArray"));
+            return Err(ConvertError::Unsupported(crate::refusal::RESOURCE_ARRAY));
         }
         let &[class, space, register] = resources
             .get(binding.binding as usize)
@@ -1563,9 +1579,9 @@ fn bindings(
         let key = (rank(kind), space, register);
         let first = order.partition_point(|o| o.0 < key.0);
         let slot = (order.partition_point(|o| *o < key) - first) as u32;
-        let number = kind
-            .binding(slot)
-            .ok_or(ConvertError::Unsupported("BindingsBeyondLimit"))?;
+        let number = kind.binding(slot).ok_or(ConvertError::Unsupported(
+            crate::refusal::BINDINGS_BEYOND_LIMIT,
+        ))?;
         module.global_variables[handle].binding = Some(naga::ResourceBinding {
             group: set,
             binding: number,
@@ -1668,7 +1684,10 @@ fn absent_extension(spirv: &[u32]) -> Option<&'static str> {
 const VIEWPORT_ARRAY_INDEX: &str = "ViewportArrayIndex";
 /// SPIR-V extensions for features WebGPU lacks, and the features' names.
 const ABSENT_EXTENSIONS: [(&str, &str); 3] = [
-    ("SPV_EXT_fragment_shader_interlock", "RasterizerOrderedView"),
+    (
+        "SPV_EXT_fragment_shader_interlock",
+        crate::refusal::RASTERIZER_ORDERED_VIEW,
+    ),
     ("SPV_EXT_shader_stencil_export", "StencilRef"),
     ("SPV_EXT_shader_viewport_index_layer", VIEWPORT_ARRAY_INDEX),
 ];
