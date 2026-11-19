@@ -1,7 +1,7 @@
 //! Every decoded form has one route, and the route agrees with what the form's meaning touches: a form that is
 //! copied touches only what the hardware holds as presented, so no copied instruction can observe the host
-//! (docs/native.md section 3.4, the static test). Seeded: `WCONTAINERS_ROUTES_SEED` (decimal or after `0x`)
-//! and `WCONTAINERS_ROUTES_WORDS`, the words drawn per form.
+//! (docs/native.md section 3.4, the static test). Seeded: `WCONTAINERS_ROUTES_SEED` and
+//! `WCONTAINERS_ROUTES_WORDS`, the words drawn per form, both decimal.
 
 use std::collections::BTreeMap;
 
@@ -15,7 +15,6 @@ const WORDS_PER_FORM: u64 = 64;
 const SEED: u64 = 0x2545_f491_4f6c_dd1d;
 const SEED_VARIABLE: &str = "WCONTAINERS_ROUTES_SEED";
 const WORDS_VARIABLE: &str = "WCONTAINERS_ROUTES_WORDS";
-const HEX_PREFIX: &str = "0x";
 
 /// The hardware's own answer to what WebAssembly leaves open: it fuses and follows Arm's not-a-numbers.
 const HARDWARE: Host = Host {
@@ -242,11 +241,9 @@ fn mismatch(route: Route, seen: &Seen, word: u32) -> Option<String> {
 
 fn knob(name: &str, default: u64) -> u64 {
     match std::env::var(name) {
-        Ok(text) => match text.strip_prefix(HEX_PREFIX) {
-            Some(hex) => u64::from_str_radix(hex, 16),
-            None => text.parse(),
-        }
-        .unwrap_or_else(|_| panic!("{name} is not a number: {text}")),
+        Ok(text) => text
+            .parse()
+            .unwrap_or_else(|_| panic!("{name} is not a number: {text}")),
         Err(_) => default,
     }
 }
@@ -315,12 +312,12 @@ fn every_decoded_form_has_one_fitting_route() {
         forms_seen += u64::from(any);
     }
     println!(
-        "seed {seed:#x}, {draws} words drawn per form (forms with at most {SWEPT_BITS} other free bits swept whole): {decoded} decoded words of {forms_seen} forms; routes {routes:?}"
+        "seed {seed}, {draws} words drawn per form (forms with at most {SWEPT_BITS} other free bits swept whole): {decoded} decoded words of {forms_seen} forms; routes {routes:?}"
     );
     let shown = failures.len().min(usize::from(u8::MAX));
     assert!(
         failures.is_empty(),
-        "{} words routed against their meaning (seed {seed:#x}):\n{}",
+        "{} words routed against their meaning (seed {seed}):\n{}",
         failures.len(),
         failures[..shown].join("\n")
     );
