@@ -166,6 +166,46 @@ pub enum Fixup {
     FloatStatus,
 }
 
+/// A slow path of the native output that translating alone can count, per site (docs/native.md section 3.7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NativeReason {
+    /// A stand-in's moves, or a read from the register page, around a guest instruction naming a withheld
+    /// register.
+    WithheldRegisterNamed,
+    /// The page test and probes in front of a load or store of more than 16 bytes.
+    AccessMayCrossPage,
+    /// The page test in front of a load or store of 16 bytes or fewer, which the host's model is not relied on
+    /// to do as the meaning does.
+    HostModelResultRouted,
+}
+
+impl NativeReason {
+    pub const ALL: [Self; 3] = [
+        Self::WithheldRegisterNamed,
+        Self::AccessMayCrossPage,
+        Self::HostModelResultRouted,
+    ];
+
+    /// The fixed names their counters and warnings carry, in the order of [`Self::ALL`].
+    const NAMES: [&'static str; Self::ALL.len()] = [
+        "withheld register named by the guest",
+        "access that may cross a page probed",
+        "host-model result routed",
+    ];
+
+    fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|&r| r == self)
+            .expect("every reason is listed")
+    }
+
+    /// The fixed name its counter and warning carry.
+    pub fn name(self) -> &'static str {
+        Self::NAMES[self.index()]
+    }
+}
+
 /// What a stop at one host instruction means for the guest. A span holds from its start to the next span.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Span {
@@ -193,6 +233,9 @@ pub struct HostCode {
     owed: bool,
     /// Code placed out of line, written after the piece.
     deferred: Deferred,
+    /// Sites of each slow path, by [`NativeReason`] in the order of `NativeReason::ALL`, for the loader to count
+    /// and warn.
+    pub sites: [u64; NativeReason::ALL.len()],
 }
 
 /// Code placed out of line, in the order it was deferred.
@@ -245,6 +288,16 @@ impl HostCode {
     pub fn restore(&mut self, (span, owed): (Span, bool)) {
         self.now = Some(span);
         self.owed = owed;
+    }
+
+    /// Counts one site of a slow path.
+    pub fn slow(&mut self, reason: NativeReason) {
+        self.sites[reason.index()] += 1;
+    }
+
+    /// The sites of one slow path.
+    pub fn sites_of(&self, reason: NativeReason) -> u64 {
+        self.sites[reason.index()]
     }
 
     /// The offset the next byte is written at.
