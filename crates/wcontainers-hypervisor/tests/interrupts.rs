@@ -1,9 +1,12 @@
-//! N2's forced interrupts: three guest functions run as the native output's pieces, one piece after another,
-//! inside Hypervisor.framework. Each runs once whole and is compared with the WebAssembly output under
-//! wasmtime; its count at every instruction boundary is compared with definition E; then an interrupt is
-//! forced after every number of host instructions it executes (software step), and the guest state the
-//! position map resolves there (registers, pc, count) must be the state at the boundary before or after the
-//! instruction it fell in. It runs itself as a copy signed with the hypervisor entitlement.
+//! N2's forced interrupts and the count across look-aheads: guest functions run as the native output's pieces,
+//! one piece after another, inside Hypervisor.framework, at every look-ahead setting. At look-ahead none every
+//! instruction boundary is a stop, which gives the run's boundaries; each is checked against definition E's
+//! count, and the end against the WebAssembly output under wasmtime at every look-ahead. Then, at every
+//! look-ahead, the function runs whole and an interrupt is forced after every number of host instructions it
+//! executes (software step): the guest state the position map resolves there (registers, pc, count and the
+//! rest) must be one of the boundaries, in order, and every boundary must be reached by some interrupt. So the
+//! count at every stop is the same at every look-ahead. It runs itself as a copy signed with the hypervisor
+//! entitlement.
 
 #[cfg(target_os = "macos")]
 mod common;
@@ -29,8 +32,8 @@ fn main() {
 mod macos {
     use std::time::Instant;
 
-    use wcontainers_abi::{PAGE_SIZE, Permissions, RegisterBlock};
-    use wcontainers_arm64::{Arm64, decode};
+    use wcontainers_abi::{Access, Exit, PAGE_SIZE, Permissions, RegisterBlock};
+    use wcontainers_arm64::{Arm64, FPCR_BITS, FPSR_BITS, decode};
     use wcontainers_guest_cpu::{Guest, counted};
     use wcontainers_translator::LookAhead;
     use wcontainers_translator_test::layer1::{Case, Stop};
@@ -51,6 +54,11 @@ mod macos {
     const GENERAL: usize = RegisterBlock::ZERO.x.len();
     const LINK: usize = GENERAL - 1;
     const SEED: u64 = 0x1405_7b7e_f767_814f;
+    /// A bounded look-ahead shorter than most of the functions' straight-line runs, so that runs are cut.
+    const SHORT: u32 = 3;
+    /// Every look-ahead the functions run at; look-ahead none first, whose stops are every boundary.
+    const LOOK_AHEADS: [LookAhead; 3] =
+        [LookAhead::None, LookAhead::Bounded(SHORT), LookAhead::Full];
 
     /// Sums `x1` words from `x0`, keeping the sum in x27 and the pointer in x28 (both withheld: stand-ins).
     const SUM: [u32; 8] = [
@@ -101,6 +109,39 @@ mod macos {
         0xd65f03c0, // ret
     ];
 
+    /// `clrex` between a load and a store exclusive: the store fails.
+    const CLEARED: [u32; 4] = [
+        0xc85f7c02, // ldxr x2, [x0]
+        0xd5033f5f, // clrex
+        0xc8037c02, // stxr w3, x2, [x0]
+        0xd65f03c0, // ret
+    ];
+
+    /// A load exclusive and a store exclusive whose addresses the cases choose: the same writable one, the same
+    /// read-only one (the store faults), different ones, and a misaligned store.
+    const EXCLUSIVE: [u32; 3] = [
+        0xc85f7c02, // ldxr x2, [x0]
+        0xc8037c22, // stxr w3, x2, [x1]
+        0xd65f03c0, // ret
+    ];
+
+    /// Every float status form after a float operation that raised flags.
+    const FLOAT: [u32; 13] = [
+        0x1e6e1000, // fmov d0, #1.0
+        0x1e611001, // fmov d1, #3.0
+        0x1e611802, // fdiv d2, d0, d1
+        0xd53b4427, // mrs x7, fpsr
+        0x1e611803, // fdiv d3, d0, d1
+        0xd51b4428, // msr fpsr, x8
+        0x1e611804, // fdiv d4, d0, d1
+        0xd53b4409, // mrs x9, fpcr
+        0x1e611805, // fdiv d5, d0, d1
+        0xd51b440a, // msr fpcr, x10
+        0x1e611806, // fdiv d6, d0, d1
+        0xd53b442b, // mrs x11, fpsr
+        0xd65f03c0, // ret
+    ];
+
     /// A case's starting state with the registers given.
     fn start(registers: &[(usize, u64)]) -> Case {
         let mut all = [0u64; GENERAL + 3];
@@ -119,15 +160,35 @@ mod macos {
         }
     }
 
-    /// The WebAssembly output's run of the function: its stop, registers and data area.
-    fn webassembly(words: &[u32], case: &Case) -> (Stopped, RegisterBlock, Vec<u8>) {
+    /// The float function's cases: tracking on and off, FPCR default and not, each writing the other mode.
+    fn float_cases() -> Vec<Case> {
+        let mut cases = Vec::new();
+        for fpcr in [0, FPCR_BITS] {
+            for tracking in [false, true] {
+                let written = FPCR_BITS & !fpcr;
+                let mut case = start(&[(8, FPSR_BITS.into()), (10, written.into())]);
+                case.float = [0, fpcr];
+                case.tracking = tracking;
+                cases.push(case);
+            }
+        }
+        cases
+    }
+
+    /// The WebAssembly output's run of the function at `look_ahead`: its stop, registers and data area.
+    fn webassembly(
+        words: &[u32],
+        case: &Case,
+        look_ahead: LookAhead,
+    ) -> (Stop, RegisterBlock, Vec<u8>) {
         let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let slots = u32::try_from(words.len()).expect("a short function");
         let mut machine = Machine::new(CODE + CODE_SPAN, CODE, slots, Syscalls::Stop);
         machine.set_permissions(
-            DATA..DATA + DATA_BYTES,
+            DATA..DATA + DATA_WRITABLE,
             Permissions::READ | Permissions::WRITE,
         );
+        machine.set_permissions(DATA + DATA_WRITABLE..DATA + DATA_BYTES, Permissions::READ);
         machine.set_permissions(
             CODE - CODE_SPAN..CODE + CODE_SPAN,
             Permissions::READ | Permissions::EXECUTE,
@@ -138,47 +199,67 @@ mod macos {
         let starts: Vec<u64> = (0..bytes.len() as u64)
             .step_by(Arm64::MAX_LENGTH as usize)
             .collect();
-        machine.load(
-            &bytes,
-            0..bytes.len() as u64,
-            CODE,
-            &starts,
-            LookAhead::None,
-        );
+        machine.load(&bytes, 0..bytes.len() as u64, CODE, &starts, look_ahead);
         let mut registers = RegisterBlock::ZERO;
         registers.x.copy_from_slice(&case.registers[..GENERAL]);
         registers.sp = case.registers[GENERAL];
         registers.pc = CODE;
+        [registers.fpsr, registers.fpcr] = case.float;
         machine.set_registers(&registers);
+        if case.tracking {
+            machine.track_float_flags();
+        }
         let (stopped, after) = machine.run();
         machine.read(DATA, &mut data);
-        (stopped, after, data)
+        let stop = match stopped {
+            Stopped::NoCode(address)
+            | Stopped::Exit(Exit::MemoryFault {
+                address,
+                access: Access::Execute,
+            }) => Stop::Landed(address),
+            Stopped::Exit(Exit::MemoryFault { address, .. }) => Stop::MemoryFault(address),
+            Stopped::Exit(Exit::AlignmentFault { address }) => Stop::Alignment(address),
+            other => panic!("not a stop these functions make: {other:?}"),
+        };
+        (stop, after, data)
     }
 
-    /// What differs between two guest states.
-    fn differs(a: &GuestState, b: &GuestState) -> String {
-        format!("{a:x?}\n  against {b:x?}")
+    /// Whether the WebAssembly output's end is the native one's.
+    fn same_end(stop: Stop, after: &RegisterBlock, native_stop: Stop, last: &GuestState) -> bool {
+        stop == native_stop
+            && after.x == last.x
+            && after.sp == last.sp
+            && after.pc == last.pc
+            && after
+                .v
+                .map(|[low, high]| u128::from(high) << u64::BITS | u128::from(low))
+                == last.v
+            && [after.fpsr, after.fpcr] == last.float
     }
 
-    /// Runs one function's checks; gives the interrupts forced and how many failed.
-    fn check(runner: &mut Runner, name: &str, words: &[u32], case: &Case) -> (u64, u64) {
-        let function = runner.load_function(words);
-        let whole = runner.run_function(&function, case, RETURNS, None);
-        let stepped = runner.run_function(&function, case, RETURNS, Some(u64::MAX));
-        let mut failed = 0;
+    /// What one function's checks found.
+    #[derive(Default)]
+    struct Tally {
+        forced: u64,
+        failed: u64,
+    }
+
+    /// Runs one function's checks from one case.
+    fn check(runner: &mut Runner, name: &str, words: &[u32], case: &Case, tally: &mut Tally) {
         let mut fail = |what: String| {
             println!("FAIL {name}: {what}");
-            failed += 1;
+            tally.failed += 1;
         };
-        if whole.stop != Stop::Landed(RETURNS) {
-            fail(format!("stopped {:?}", whole.stop));
-        }
-        if whole.trace != stepped.trace || whole.data != stepped.data {
-            fail("stepping changed the run".into());
-        }
-        // The count at each boundary is definition E's over the instructions before it.
+        // Look-ahead none stops at every boundary: they are the run's boundaries.
+        let function = runner.load_function(words, LookAhead::None);
+        let reference = runner.run_function(&function, case, RETURNS, None);
+        runner.unload();
+        // A stop at an instruction (a fault) is at the boundary before it.
+        let mut boundaries = reference.trace.clone();
+        boundaries.dedup();
+        let boundaries = &boundaries;
         let mut count = 0;
-        for (k, state) in whole.trace.iter().enumerate() {
+        for (k, state) in boundaries.iter().enumerate() {
             if state.count != count {
                 fail(format!(
                     "count {} at boundary {k}, E gives {count}",
@@ -190,45 +271,76 @@ mod macos {
                 count += u64::from(counted(state.pc, &Arm64::flow(&decode(word))));
             }
         }
-        let (stopped, after, data) = webassembly(words, case);
-        let last = whole.trace.last().expect("a boundary");
-        if !matches!(stopped, Stopped::NoCode(RETURNS))
-            || after.x != last.x
-            || after.sp != last.sp
-            || after.pc != last.pc
-            || after
-                .v
-                .map(|[low, high]| u128::from(high) << u64::BITS | u128::from(low))
-                != last.v
-            || [after.fpsr, after.fpcr] != last.float
-            || data != whole.data
-        {
-            fail(format!(
-                "the WebAssembly output ends {stopped:?} {after:x?}, natively {last:x?}"
-            ));
-        }
-        let mut forced = 0;
-        for budget in 0..=stepped.steps {
-            let run: Run = runner.run_function(&function, case, RETURNS, Some(budget));
-            let (state, passed) = run.interrupted.expect("an interrupt");
-            forced += 1;
-            let before = &whole.trace[passed];
-            let after = whole.trace.get(passed + 1);
-            if state != *before && Some(&state) != after {
+        let last = boundaries.last().expect("a boundary");
+        for look_ahead in LOOK_AHEADS {
+            let (stop, after, data) = webassembly(words, case, look_ahead);
+            if !same_end(stop, &after, reference.stop, last) || data != reference.data {
                 fail(format!(
-                    "interrupt after {budget} host instructions: {}",
-                    differs(&state, before)
+                    "the WebAssembly output at {look_ahead:?} ends {stop:?} {after:x?}, natively {:?} {last:x?}",
+                    reference.stop
                 ));
             }
         }
-        runner.unload();
+        let mut lines = Vec::new();
+        for look_ahead in LOOK_AHEADS {
+            let function = runner.load_function(words, look_ahead);
+            let whole = runner.run_function(&function, case, RETURNS, None);
+            let stepped = runner.run_function(&function, case, RETURNS, Some(u64::MAX));
+            if whole.stop != reference.stop || whole.data != reference.data {
+                fail(format!(
+                    "at {look_ahead:?} the run ends {:?}, at none {:?}",
+                    whole.stop, reference.stop
+                ));
+            }
+            if whole.trace != stepped.trace || whole.data != stepped.data {
+                fail(format!("at {look_ahead:?} stepping changed the run"));
+            }
+            let mut from = 0;
+            for state in &whole.trace {
+                match boundaries[from..].iter().position(|b| b == state) {
+                    Some(k) => from += k,
+                    None => fail(format!(
+                        "at {look_ahead:?} a piece's stop is no boundary: {state:x?}"
+                    )),
+                }
+            }
+            let mut reached = vec![false; boundaries.len()];
+            let mut from = 0;
+            for budget in 0..=stepped.steps {
+                let run: Run = runner.run_function(&function, case, RETURNS, Some(budget));
+                let (state, _) = run.interrupted.expect("an interrupt");
+                tally.forced += 1;
+                match boundaries[from..].iter().position(|b| *b == state) {
+                    Some(k) => {
+                        from += k;
+                        reached[from] = true;
+                    }
+                    None => fail(format!(
+                        "at {look_ahead:?}, interrupt after {budget} host instructions: {state:x?}\n  boundary {from}: {:x?}",
+                        boundaries[from]
+                    )),
+                }
+            }
+            if let Some(k) = reached.iter().position(|r| !r) {
+                fail(format!(
+                    "at {look_ahead:?} no interrupt reached boundary {k}: {:x?}",
+                    boundaries[k]
+                ));
+            }
+            runner.unload();
+            lines.push(format!(
+                "{look_ahead:?} {} pieces run, {} host instructions",
+                whole.trace.len() - 1,
+                stepped.steps
+            ));
+        }
         println!(
-            "{name}: {} guest instructions, {} host instructions, {forced} interrupts, count {} at the end",
-            whole.trace.len() - 1,
-            stepped.steps,
-            last.count
+            "{name}: {} boundaries, stop {:?}, count {} at the end; {}",
+            boundaries.len(),
+            reference.stop,
+            last.count,
+            lines.join(", ")
         );
-        (forced, failed)
     }
 
     pub fn main() {
@@ -236,29 +348,49 @@ mod macos {
         let started = Instant::now();
         let mut runner = Runner::start();
         let words = 8;
-        let sum = start(&[(0, DATA), (1, words)]);
-        let calls = start(&[]);
-        let atomics = start(&[
-            (0, DATA + PAGE_SIZE / 2),
-            (1, DATA + PAGE_SIZE - size_of::<u32>() as u64),
-        ]);
-        let mut forced = 0;
-        let mut failed = 0;
-        for (name, words, case) in [
-            ("sum", &SUM[..], &sum),
-            ("calls", &CALLS[..], &calls),
-            ("atomics", &ATOMICS[..], &atomics),
-        ] {
-            let (f, n) = check(&mut runner, name, words, case);
-            forced += f;
-            failed += n;
+        let writable = DATA + PAGE_SIZE / 2;
+        let read_only = DATA + DATA_WRITABLE + PAGE_SIZE / 2;
+        let misaligned = writable + size_of::<u32>() as u64;
+        let functions: [(&str, &[u32], Vec<Case>); 6] = [
+            ("sum", &SUM, vec![start(&[(0, DATA), (1, words)])]),
+            ("calls", &CALLS, vec![start(&[])]),
+            (
+                "atomics",
+                &ATOMICS,
+                vec![start(&[
+                    (0, writable),
+                    (1, DATA + PAGE_SIZE - size_of::<u32>() as u64),
+                ])],
+            ),
+            ("cleared", &CLEARED, vec![start(&[(0, writable)])]),
+            (
+                "exclusive",
+                &EXCLUSIVE,
+                vec![
+                    start(&[(0, writable), (1, writable)]),
+                    start(&[(0, read_only), (1, read_only)]),
+                    start(&[(0, writable), (1, read_only)]),
+                    start(&[(0, writable), (1, misaligned)]),
+                ],
+            ),
+            ("float", &FLOAT, float_cases()),
+        ];
+        let mut tally = Tally::default();
+        for (name, words, cases) in &functions {
+            for case in cases {
+                check(&mut runner, name, words, case, &mut tally);
+            }
         }
         runner.finish();
         println!(
-            "forced interrupts: {forced} over three functions, {failed} failed, in {:?}, load {}",
+            "forced interrupts: {} over {} functions at {} look-aheads, {} failed, in {:?}, load {}",
+            tally.forced,
+            functions.len(),
+            LOOK_AHEADS.len(),
+            tally.failed,
             started.elapsed(),
             load_average()
         );
-        assert_eq!(failed, 0, "interrupts resolved wrong");
+        assert_eq!(tally.failed, 0, "interrupts resolved wrong");
     }
 }

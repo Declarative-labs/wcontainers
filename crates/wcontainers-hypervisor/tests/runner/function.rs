@@ -1,19 +1,20 @@
-//! Guest functions: each instruction's piece placed one after another and run from piece to piece, with an
-//! interrupt forced after any number of host instructions by software step (docs/native.md section 4).
+//! Guest functions: a piece for each instruction's address at one look-ahead, placed one after another and
+//! run from piece to piece, with an interrupt forced after any number of host instructions by software step
+//! (docs/native.md section 4).
 
 use super::*;
 
-/// One instruction's piece in the code area.
+/// The piece that starts at one guest address, in the code area.
 struct Placed {
     guest: u64,
     va: u64,
-    instruction: I,
     code: HostCode,
 }
 
-/// A function's pieces.
+/// A function's words and pieces.
 pub struct Function {
     pub entry: u64,
+    words: Vec<u32>,
     pieces: Vec<Placed>,
 }
 
@@ -96,28 +97,30 @@ fn interrupted(p: &Placed, h: &Hardware, page: &RegisterPage, block: &mut Block)
 }
 
 impl Runner {
-    /// Writes `words` at the guest's code address and their pieces in the code area, and enters the gate.
-    pub fn load_function(&mut self, words: &[u32]) -> Function {
+    /// Writes `words` at the guest's code address and, at `look_ahead`, the piece of every instruction's address
+    /// in the code area, and enters the gate.
+    pub fn load_function(&mut self, words: &[u32], look_ahead: LookAhead) -> Function {
+        let image: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let mut bytes = Vec::new();
         let mut pieces = Vec::new();
-        for (k, &word) in words.iter().enumerate() {
-            let guest = CODE + k as u64 * Arm64::MAX_LENGTH;
-            let code =
-                translate_native::<Arm64>(&word.to_le_bytes(), guest).expect("a decoded word");
+        for k in 0..words.len() {
+            let from = k * Arm64::MAX_LENGTH as usize;
+            let guest = CODE + from as u64;
+            let code = translate_native::<Arm64>(&image[from..], guest, look_ahead)
+                .expect("a decoded word");
             pieces.push(Placed {
                 guest,
                 va: PIECES + bytes.len() as u64,
-                instruction: decode(word),
                 code: HostCode::default(),
             });
             bytes.extend_from_slice(&code.bytes);
             pieces.last_mut().expect("just placed").code = code;
         }
-        let image: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         self.write(CODE, &image);
         self.load(&bytes);
         Function {
             entry: CODE,
+            words: words.to_vec(),
             pieces,
         }
     }
@@ -167,20 +170,22 @@ impl Runner {
             let class = ESR_EL1::EC.read(trapped.syndrome);
             if class == ESR_EL1::EC::Value::SoftwareStepLowerEL as u64 {
                 steps += 1;
-                block.enter(trapped.hardware.fpsr);
                 if Some(steps) == budget {
+                    // A stop: the inside takes the guest's float status as at every entry.
+                    block.enter(trapped.hardware.fpsr);
                     let p = &function.pieces[current];
                     let state = interrupted(p, &trapped.hardware, &trapped.page, &mut block);
                     let passed = trace.len() - 1;
                     return end(self, trace, Stop::Other(0, 0), steps, Some((state, passed)));
                 }
+                // An interrupt that is no stop goes back to the host instruction it came from, with the
+                // hardware as it was.
                 hardware = trapped.hardware;
-                hardware.fpsr = block.fpsr;
                 page = trapped.page;
                 continue;
             }
             let p = &function.pieces[current];
-            match resolve(&p.code, p.va, &p.instruction, &trapped, &mut block) {
+            match resolve(&p.code, p.va, &function.words, &trapped, &mut block) {
                 Resolved::Again(h, next) => (hardware, page) = (*h, next),
                 Resolved::Stop(Stop::Landed(to), state) => {
                     trace.push((*state).clone());

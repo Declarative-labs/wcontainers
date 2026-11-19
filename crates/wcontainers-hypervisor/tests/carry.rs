@@ -11,7 +11,7 @@ use wcontainers_arm64::carry::COUNT;
 use wcontainers_arm64::encode;
 use wcontainers_arm64::{Arm64, Host, Instruction as I, Reg, decode, forms};
 use wcontainers_guest_cpu::{Guest, InsideCall, Native, Side, counted, effects};
-use wcontainers_translator::translate_native;
+use wcontainers_translator::{LookAhead, translate_native};
 
 #[path = "../../wcontainers-arm64/tests/common/mod.rs"]
 mod common;
@@ -29,7 +29,8 @@ const HARDWARE: Host = Host {
 /// What is wrong with the piece of `word`, if anything.
 fn fault(word: u32) -> Option<String> {
     let i = decode(word);
-    let piece = translate_native::<Arm64>(&word.to_le_bytes(), AT).expect("a word decodes");
+    let piece = translate_native::<Arm64>(&word.to_le_bytes(), AT, LookAhead::None)
+        .expect("a word decodes");
     let add = encode::add_immediate(COUNT, COUNT, 1).expect("fits");
     let event = counted(AT, &Arm64::flow(&i));
     let unit = Arm64::MAX_LENGTH as usize;

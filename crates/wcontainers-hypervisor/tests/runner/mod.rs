@@ -29,7 +29,7 @@ use wcontainers_inside::layout::{
 };
 use wcontainers_inside::link::{self, Fatal, Start};
 use wcontainers_inside::syndrome::{ALIGNMENT_FAULT, FAULT_STATUS};
-use wcontainers_translator::translate_native;
+use wcontainers_translator::{LookAhead, translate_native};
 use wcontainers_translator_test::layer1::{Case, Outcome, Stop};
 use wcontainers_translator_test::layout::{
     CODE, CODE_SPAN, DATA, DATA_BYTES, DATA_READ_ONLY, DATA_WRITABLE, fill,
@@ -482,8 +482,8 @@ impl Runner {
 
     /// Runs one layer 1 case as the native output's piece.
     pub fn case(&mut self, case: &Case) -> NativeOutcome {
-        let piece =
-            translate_native::<Arm64>(&case.word.to_le_bytes(), CODE).expect("a decoded word");
+        let piece = translate_native::<Arm64>(&case.word.to_le_bytes(), CODE, LookAhead::None)
+            .expect("a decoded word");
         let mut data = vec![0u8; DATA_BYTES as usize];
         fill(case.seed, &mut data);
         self.write(DATA, &data);
@@ -498,7 +498,7 @@ impl Runner {
         let i = decode(case.word);
         let (stop, state) = loop {
             let trapped = self.enter(&hardware, &page, false);
-            match resolve(&piece, PIECES, &i, &trapped, &mut block) {
+            match resolve(&piece, PIECES, &[case.word], &trapped, &mut block) {
                 Resolved::Stop(stop, state) => break (stop, *state),
                 Resolved::Again(h, p) => (hardware, page) = (*h, p),
             }
@@ -716,7 +716,20 @@ fn fault_address(first: u64, fault: u64) -> u64 {
 }
 
 /// The stop a host exception comes to.
-fn resolve(piece: &HostCode, base: u64, i: &I, trapped: &Trapped, block: &mut Block) -> Resolved {
+/// The guest instruction at `address` of the code area's words.
+fn instruction_at(words: &[u32], address: u64) -> I {
+    decode(words[((address - CODE) / Arm64::MAX_LENGTH) as usize])
+}
+
+/// The stop a host exception in `piece`, placed at `base` and made from the guest's `words` at the code area,
+/// comes to.
+fn resolve(
+    piece: &HostCode,
+    base: u64,
+    words: &[u32],
+    trapped: &Trapped,
+    block: &mut Block,
+) -> Resolved {
     let h = &trapped.hardware;
     let page = &trapped.page;
     let class = ESR_EL1::EC.read(trapped.syndrome);
@@ -744,6 +757,8 @@ fn resolve(piece: &HostCode, base: u64, i: &I, trapped: &Trapped, block: &mut Bl
     }
     let offset = (h.pc - base) as u32;
     let span = piece.span(offset).expect("a span");
+    let instruction = instruction_at(words, span.guest);
+    let i = &instruction;
     if class == ESR_EL1::EC::Value::Brk64 as u64 {
         let call = InsideCall::from_code(ESR_EL1::ISS.read(trapped.syndrome) as u16)
             .expect("a call into the inside");
