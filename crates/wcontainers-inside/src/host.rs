@@ -1,0 +1,695 @@
+//! The kernel's [`Host`] through the link: each call is a request the monitor answers by calling the host's
+//! services. Bytes longer than one link go ahead of their request in [`Carry`] requests; an answer's bytes
+//! longer than one link are taken after it with [`Fetch`].
+
+use alloc::vec::Vec;
+
+use wcontainers_abi::{BackendRequestId, ConnectionId, Host, HostError, Stream, Warning};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
+
+use crate::link::{LINK_BYTES, Link, Message};
+
+crate::requests! {
+    first: crate::routines::Request::END;
+    /// Bytes of the next request's bytes, ahead of those it carries itself.
+    Carry {} -> ();
+    /// The next part of the last answer's bytes.
+    Fetch {} -> ();
+    MonotonicNanoseconds {} -> Value;
+    RealtimeNanoseconds {} -> Value;
+    /// `length` random bytes, in the answer's bytes.
+    Random { length } -> ();
+    /// A slow path: its reason in the bytes.
+    Warn { count, detail } -> ();
+    BackendSend { request } -> Outcome;
+    /// The bytes on the stream whose [`STREAMS`] index is `stream`.
+    Output { stream } -> ();
+    /// The address in the bytes; `stream` is 1 for TCP.
+    Connect { connection, port, stream } -> Outcome;
+    SendBytes { connection } -> Outcome;
+    /// Up to `length` bytes, in the answer's bytes.
+    Receive { connection, length } -> Outcome;
+    Finish { connection } -> ();
+    Close { connection } -> ();
+    /// The name in the bytes.
+    LookUp { request } -> Outcome;
+    Listen { listener, port } -> Outcome;
+    Accept { listener, connection } -> Outcome;
+}
+
+/// The standard streams by the index an [`Output`] carries.
+pub const STREAMS: [Stream; 2] = [Stream::Output, Stream::Error];
+
+/// One number as an answer.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, FromBytes, IntoBytes, Immutable, KnownLayout)]
+pub struct Value {
+    pub value: u64,
+}
+
+/// A `Result<usize, HostError>` as words.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, FromBytes, IntoBytes, Immutable, KnownLayout)]
+pub struct Outcome {
+    /// An [`OutcomeKind`]'s word.
+    pub kind: u64,
+    /// The count when done, the error number for [`HostError::Errno`].
+    pub value: u64,
+}
+
+/// What an [`Outcome`] says.
+#[repr(u64)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutcomeKind {
+    Done,
+    NotSupported,
+    WouldBlock,
+    Closed,
+    Errno,
+}
+
+impl Outcome {
+    pub fn of(result: Result<usize, HostError>) -> Outcome {
+        let (kind, value) = match result {
+            Ok(count) => (OutcomeKind::Done, count as u64),
+            Err(HostError::NotSupported) => (OutcomeKind::NotSupported, 0),
+            Err(HostError::WouldBlock) => (OutcomeKind::WouldBlock, 0),
+            Err(HostError::Closed) => (OutcomeKind::Closed, 0),
+            Err(HostError::Errno(errno)) => (OutcomeKind::Errno, i64::from(errno) as u64),
+        };
+        Outcome {
+            kind: kind as u64,
+            value,
+        }
+    }
+
+    pub fn result(self) -> Result<usize, HostError> {
+        match self.kind {
+            k if k == OutcomeKind::Done as u64 => Ok(self.value as usize),
+            k if k == OutcomeKind::WouldBlock as u64 => Err(HostError::WouldBlock),
+            k if k == OutcomeKind::Closed as u64 => Err(HostError::Closed),
+            k if k == OutcomeKind::Errno as u64 => Err(HostError::Errno(self.value as i64 as i32)),
+            _ => Err(HostError::NotSupported),
+        }
+    }
+
+    fn unit(self) -> Result<(), HostError> {
+        self.result().map(drop)
+    }
+}
+
+/// One link page and the way to have its request answered.
+pub trait Ring {
+    fn link(&mut self) -> &mut Link;
+    /// Hands the link's request to the monitor and returns once it is answered.
+    fn ring(&mut self);
+}
+
+/// The kernel's [`Host`] whose services are the monitor's, through a link.
+pub struct LinkHost<R> {
+    pub ring: R,
+}
+
+impl<R: Ring> LinkHost<R> {
+    /// Asks `message` with `bytes`, carrying ahead what does not fit one link.
+    fn ask<M: Message>(&mut self, message: &M, bytes: &[u8]) -> M::Answer {
+        let ahead = bytes.len().saturating_sub(1) / LINK_BYTES * LINK_BYTES;
+        for part in bytes[..ahead].chunks(LINK_BYTES) {
+            self.ring.link().ask(&Carry {}, part);
+            self.ring.ring();
+        }
+        self.ring.link().ask(message, &bytes[ahead..]);
+        self.ring.ring();
+        self.ring.link().get()
+    }
+
+    /// Fills `into` from the answer's bytes in the link, fetching the parts after the first.
+    fn take(&mut self, into: &mut [u8]) {
+        let mut at = 0;
+        loop {
+            let data = self.ring.link().data();
+            let part = data.len().min(into.len() - at);
+            into[at..at + part].copy_from_slice(&data[..part]);
+            at += part;
+            if at == into.len() || part == 0 {
+                return;
+            }
+            self.ring.link().ask(&Fetch {}, &[]);
+            self.ring.ring();
+        }
+    }
+}
+
+impl<R: Ring> Host for LinkHost<R> {
+    fn monotonic_nanoseconds(&mut self) -> u64 {
+        self.ask(&MonotonicNanoseconds {}, &[]).value
+    }
+
+    fn realtime_nanoseconds(&mut self) -> u64 {
+        self.ask(&RealtimeNanoseconds {}, &[]).value
+    }
+
+    fn random(&mut self, into: &mut [u8]) {
+        self.ask(
+            &Random {
+                length: into.len() as u64,
+            },
+            &[],
+        );
+        self.take(into);
+    }
+
+    fn warn(&mut self, warning: Warning<'_>) {
+        self.ask(
+            &Warn {
+                count: warning.count,
+                detail: warning.detail,
+            },
+            warning.reason.as_bytes(),
+        );
+    }
+
+    fn backend_send(&mut self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError> {
+        self.ask(&BackendSend { request: request.0 }, message)
+            .unit()
+    }
+
+    fn output(&mut self, stream: Stream, bytes: &[u8]) {
+        let stream = STREAMS
+            .iter()
+            .position(|s| *s == stream)
+            .unwrap_or_default() as u64;
+        self.ask(&Output { stream }, bytes);
+    }
+
+    fn connect(
+        &mut self,
+        connection: ConnectionId,
+        address: &[u8],
+        port: u16,
+        stream: bool,
+    ) -> Result<(), HostError> {
+        let message = Connect {
+            connection: connection.0.into(),
+            port: port.into(),
+            stream: stream.into(),
+        };
+        self.ask(&message, address).unit()
+    }
+
+    fn send(&mut self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError> {
+        let message = SendBytes {
+            connection: connection.0.into(),
+        };
+        self.ask(&message, bytes).result()
+    }
+
+    fn receive(&mut self, connection: ConnectionId, into: &mut [u8]) -> Result<usize, HostError> {
+        let message = Receive {
+            connection: connection.0.into(),
+            length: into.len() as u64,
+        };
+        let received = self.ask(&message, &[]).result()?;
+        let length = received.min(into.len());
+        self.take(&mut into[..length]);
+        Ok(received)
+    }
+
+    fn finish(&mut self, connection: ConnectionId) {
+        self.ask(
+            &Finish {
+                connection: connection.0.into(),
+            },
+            &[],
+        );
+    }
+
+    fn close(&mut self, connection: ConnectionId) {
+        self.ask(
+            &Close {
+                connection: connection.0.into(),
+            },
+            &[],
+        );
+    }
+
+    fn look_up(&mut self, request: u64, name: &str) -> Result<(), HostError> {
+        self.ask(&LookUp { request }, name.as_bytes()).unit()
+    }
+
+    fn listen(&mut self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
+        let message = Listen {
+            listener: listener.0.into(),
+            port: port.into(),
+        };
+        self.ask(&message, &[]).unit()
+    }
+
+    fn accept(
+        &mut self,
+        listener: ConnectionId,
+        connection: ConnectionId,
+    ) -> Result<(), HostError> {
+        let message = Accept {
+            listener: listener.0.into(),
+            connection: connection.0.into(),
+        };
+        self.ask(&message, &[]).unit()
+    }
+}
+
+/// The monitor's half: answers the requests above by calling a [`Host`].
+#[derive(Default)]
+pub struct Answering {
+    /// Bytes carried ahead of the next request.
+    carried: Vec<u8>,
+    /// The last answer's bytes not yet in the link.
+    owed: Vec<u8>,
+}
+
+/// A connection's number as the link carries it.
+fn connection(word: u64) -> ConnectionId {
+    ConnectionId(word as u32)
+}
+
+impl Answering {
+    /// Answers the request in `link` by calling `host`, if it is one of this set.
+    pub fn answer(&mut self, link: &mut Link, host: &mut dyn Host) -> Option<Request> {
+        let request = Request::from_word(link.head.request)?;
+        let mut bytes = core::mem::take(&mut self.carried);
+        bytes.extend_from_slice(link.data());
+        let mut answer = Vec::new();
+        let outcome = match request {
+            Request::Carry => {
+                self.carried = bytes;
+                None
+            }
+            Request::Fetch => {
+                answer = core::mem::take(&mut self.owed);
+                None
+            }
+            Request::MonotonicNanoseconds => {
+                link.put(&Value {
+                    value: host.monotonic_nanoseconds(),
+                });
+                None
+            }
+            Request::RealtimeNanoseconds => {
+                link.put(&Value {
+                    value: host.realtime_nanoseconds(),
+                });
+                None
+            }
+            Request::Random => {
+                let Random { length } = link.get();
+                answer.resize(length as usize, 0);
+                host.random(&mut answer);
+                None
+            }
+            Request::Warn => {
+                let Warn { count, detail } = link.get();
+                let reason = core::str::from_utf8(&bytes).expect("a warning's reason is text");
+                host.warn(Warning {
+                    reason,
+                    count,
+                    detail,
+                });
+                None
+            }
+            Request::BackendSend => {
+                let BackendSend { request } = link.get();
+                Some(
+                    host.backend_send(BackendRequestId(request), &bytes)
+                        .map(|()| 0),
+                )
+            }
+            Request::Output => {
+                let Output { stream } = link.get();
+                host.output(STREAMS[stream as usize], &bytes);
+                None
+            }
+            Request::Connect => {
+                let Connect {
+                    connection: id,
+                    port,
+                    stream,
+                } = link.get();
+                let result = host.connect(connection(id), &bytes, port as u16, stream != 0);
+                Some(result.map(|()| 0))
+            }
+            Request::SendBytes => {
+                let SendBytes { connection: id } = link.get();
+                Some(host.send(connection(id), &bytes))
+            }
+            Request::Receive => {
+                let Receive {
+                    connection: id,
+                    length,
+                } = link.get();
+                answer.resize(length as usize, 0);
+                let result = host.receive(connection(id), &mut answer);
+                answer.truncate(*result.as_ref().unwrap_or(&0));
+                Some(result)
+            }
+            Request::Finish => {
+                let Finish { connection: id } = link.get();
+                host.finish(connection(id));
+                None
+            }
+            Request::Close => {
+                let Close { connection: id } = link.get();
+                host.close(connection(id));
+                None
+            }
+            Request::LookUp => {
+                let LookUp { request } = link.get();
+                let name = core::str::from_utf8(&bytes).expect("a name to look up is text");
+                Some(host.look_up(request, name).map(|()| 0))
+            }
+            Request::Listen => {
+                let Listen { listener, port } = link.get();
+                Some(host.listen(connection(listener), port as u16).map(|()| 0))
+            }
+            Request::Accept => {
+                let Accept {
+                    listener,
+                    connection: id,
+                } = link.get();
+                Some(
+                    host.accept(connection(listener), connection(id))
+                        .map(|()| 0),
+                )
+            }
+        };
+        if let Some(result) = outcome {
+            link.put(&Outcome::of(result));
+        }
+        let part = answer.len().min(LINK_BYTES);
+        link.bytes[..part].copy_from_slice(&answer[..part]);
+        link.head.length = part as u64;
+        self.owed = answer.split_off(part);
+        Some(request)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use alloc::boxed::Box;
+    use alloc::string::String;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    use wcontainers_abi::{BackendRequestId, ConnectionId, Host, HostError, Stream, Warning};
+    use zerocopy::FromZeros;
+
+    use super::{Answering, LinkHost, Ring};
+    use crate::link::{LINK_BYTES, Link};
+
+    /// A host that records what it is given and answers from what it holds.
+    #[derive(Default)]
+    struct Recording {
+        calls: Vec<(String, Vec<u8>)>,
+        error: Option<HostError>,
+        /// What a receive or a random request gives.
+        given: Vec<u8>,
+    }
+
+    impl Recording {
+        fn record(&mut self, call: &str, bytes: &[u8]) {
+            self.calls.push((call.into(), bytes.to_vec()));
+        }
+
+        fn outcome(&self, count: usize) -> Result<usize, HostError> {
+            self.error.map_or(Ok(count), Err)
+        }
+    }
+
+    /// Each call's name as recorded.
+    const MONOTONIC: &str = "monotonic";
+    const REALTIME: &str = "realtime";
+    const RANDOM: &str = "random";
+    const WARN: &str = "warn";
+    const BACKEND: &str = "backend";
+    const OUTPUT: &str = "output";
+    const CONNECT: &str = "connect";
+    const SEND: &str = "send";
+    const RECEIVE: &str = "receive";
+    const FINISH: &str = "finish";
+    const CLOSE: &str = "close";
+    const LOOK_UP: &str = "look up";
+    const LISTEN: &str = "listen";
+    const ACCEPT: &str = "accept";
+
+    /// The clocks' readings.
+    const MONOTONIC_NANOSECONDS: u64 = 123_456_789;
+    const REALTIME_NANOSECONDS: u64 = 1_700_000_000_000_000_000;
+
+    impl Host for Recording {
+        fn monotonic_nanoseconds(&mut self) -> u64 {
+            self.record(MONOTONIC, &[]);
+            MONOTONIC_NANOSECONDS
+        }
+        fn realtime_nanoseconds(&mut self) -> u64 {
+            self.record(REALTIME, &[]);
+            REALTIME_NANOSECONDS
+        }
+        fn random(&mut self, into: &mut [u8]) {
+            self.record(RANDOM, &[]);
+            into.copy_from_slice(&self.given[..into.len()]);
+        }
+        fn warn(&mut self, warning: Warning<'_>) {
+            let mut bytes = warning.reason.as_bytes().to_vec();
+            bytes.extend_from_slice(&warning.count.to_le_bytes());
+            bytes.extend_from_slice(&warning.detail.to_le_bytes());
+            self.record(WARN, &bytes);
+        }
+        fn backend_send(
+            &mut self,
+            request: BackendRequestId,
+            message: &[u8],
+        ) -> Result<(), HostError> {
+            let mut bytes = request.0.to_le_bytes().to_vec();
+            bytes.extend_from_slice(message);
+            self.record(BACKEND, &bytes);
+            self.outcome(0).map(drop)
+        }
+        fn output(&mut self, stream: Stream, bytes: &[u8]) {
+            let mut all = vec![u8::from(stream == Stream::Error)];
+            all.extend_from_slice(bytes);
+            self.record(OUTPUT, &all);
+        }
+        fn connect(
+            &mut self,
+            connection: ConnectionId,
+            address: &[u8],
+            port: u16,
+            stream: bool,
+        ) -> Result<(), HostError> {
+            let mut bytes = connection.0.to_le_bytes().to_vec();
+            bytes.extend_from_slice(&port.to_le_bytes());
+            bytes.push(stream.into());
+            bytes.extend_from_slice(address);
+            self.record(CONNECT, &bytes);
+            self.outcome(0).map(drop)
+        }
+        fn send(&mut self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError> {
+            let mut all = connection.0.to_le_bytes().to_vec();
+            all.extend_from_slice(bytes);
+            self.record(SEND, &all);
+            self.outcome(bytes.len())
+        }
+        fn receive(
+            &mut self,
+            connection: ConnectionId,
+            into: &mut [u8],
+        ) -> Result<usize, HostError> {
+            self.record(RECEIVE, &connection.0.to_le_bytes());
+            let count = self.given.len().min(into.len());
+            into[..count].copy_from_slice(&self.given[..count]);
+            self.outcome(count)
+        }
+        fn finish(&mut self, connection: ConnectionId) {
+            self.record(FINISH, &connection.0.to_le_bytes());
+        }
+        fn close(&mut self, connection: ConnectionId) {
+            self.record(CLOSE, &connection.0.to_le_bytes());
+        }
+        fn look_up(&mut self, request: u64, name: &str) -> Result<(), HostError> {
+            let mut bytes = request.to_le_bytes().to_vec();
+            bytes.extend_from_slice(name.as_bytes());
+            self.record(LOOK_UP, &bytes);
+            self.outcome(0).map(drop)
+        }
+        fn listen(&mut self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
+            let mut bytes = listener.0.to_le_bytes().to_vec();
+            bytes.extend_from_slice(&port.to_le_bytes());
+            self.record(LISTEN, &bytes);
+            self.outcome(0).map(drop)
+        }
+        fn accept(
+            &mut self,
+            listener: ConnectionId,
+            connection: ConnectionId,
+        ) -> Result<(), HostError> {
+            let mut bytes = listener.0.to_le_bytes().to_vec();
+            bytes.extend_from_slice(&connection.0.to_le_bytes());
+            self.record(ACCEPT, &bytes);
+            self.outcome(0).map(drop)
+        }
+    }
+
+    /// The link and the monitor's half in one place: ringing answers at once.
+    struct Loopback {
+        link: Box<Link>,
+        answering: Answering,
+        host: Recording,
+        rung: usize,
+    }
+
+    impl Ring for Loopback {
+        fn link(&mut self) -> &mut Link {
+            &mut self.link
+        }
+        fn ring(&mut self) {
+            self.rung += 1;
+            self.answering
+                .answer(&mut self.link, &mut self.host)
+                .expect("a request of the host's set");
+        }
+    }
+
+    fn host() -> LinkHost<Loopback> {
+        LinkHost {
+            ring: Loopback {
+                link: Box::new(Link::new_zeroed()),
+                answering: Answering::default(),
+                host: Recording::default(),
+                rung: 0,
+            },
+        }
+    }
+
+    /// Bytes no single link holds, each different from its neighbours.
+    fn long(length: usize) -> Vec<u8> {
+        (0..length)
+            .map(|i| i as u8 ^ (i / LINK_BYTES) as u8)
+            .collect()
+    }
+
+    /// Lengths around the link's size.
+    const LENGTHS: [usize; 6] = [
+        0,
+        1,
+        LINK_BYTES - 1,
+        LINK_BYTES,
+        LINK_BYTES + 1,
+        3 * LINK_BYTES + 5,
+    ];
+
+    fn last(host: &LinkHost<Loopback>) -> &(String, Vec<u8>) {
+        host.ring.host.calls.last().expect("a call")
+    }
+
+    #[test]
+    fn every_call_arrives_whole() {
+        let mut host = host();
+        assert_eq!(host.monotonic_nanoseconds(), MONOTONIC_NANOSECONDS);
+        assert_eq!(host.realtime_nanoseconds(), REALTIME_NANOSECONDS);
+        for length in LENGTHS {
+            let bytes = long(length);
+            let rung = host.ring.rung;
+            host.output(Stream::Error, &bytes);
+            assert_eq!(
+                host.ring.rung - rung,
+                length.div_ceil(LINK_BYTES).max(1),
+                "one request a link's worth"
+            );
+            let mut expected = vec![1];
+            expected.extend_from_slice(&bytes);
+            assert_eq!(
+                *last(&host),
+                (OUTPUT.into(), expected),
+                "output of {length}"
+            );
+            let id = ConnectionId(length as u32);
+            assert_eq!(host.send(id, &bytes), Ok(length));
+            let mut expected = id.0.to_le_bytes().to_vec();
+            expected.extend_from_slice(&bytes);
+            assert_eq!(*last(&host), (SEND.into(), expected));
+            assert_eq!(
+                host.backend_send(BackendRequestId(length as u64), &bytes),
+                Ok(())
+            );
+            let mut expected = (length as u64).to_le_bytes().to_vec();
+            expected.extend_from_slice(&bytes);
+            assert_eq!(*last(&host), (BACKEND.into(), expected));
+
+            host.ring.host.given = long(length).into_iter().rev().collect();
+            let mut into = vec![0; length];
+            host.random(&mut into);
+            assert_eq!(into, host.ring.host.given, "random of {length}");
+            let mut into = vec![0; length + 1];
+            assert_eq!(host.receive(id, &mut into), Ok(length));
+            assert_eq!(
+                into[..length],
+                host.ring.host.given[..],
+                "received {length}"
+            );
+            assert_eq!(into[length], 0);
+        }
+        host.warn(Warning {
+            reason: "a reason",
+            count: 7,
+            detail: 0x40_1000,
+        });
+        let mut expected = b"a reason".to_vec();
+        expected.extend_from_slice(&7u64.to_le_bytes());
+        expected.extend_from_slice(&0x40_1000u64.to_le_bytes());
+        assert_eq!(*last(&host), (WARN.into(), expected));
+        let address = [10, 0, 0, 1];
+        assert_eq!(host.connect(ConnectionId(3), &address, 8080, true), Ok(()));
+        let mut expected = 3u32.to_le_bytes().to_vec();
+        expected.extend_from_slice(&8080u16.to_le_bytes());
+        expected.push(1);
+        expected.extend_from_slice(&address);
+        assert_eq!(*last(&host), (CONNECT.into(), expected));
+        assert_eq!(host.look_up(9, "example.org"), Ok(()));
+        let mut expected = 9u64.to_le_bytes().to_vec();
+        expected.extend_from_slice(b"example.org");
+        assert_eq!(*last(&host), (LOOK_UP.into(), expected));
+        assert_eq!(host.listen(ConnectionId(4), 80), Ok(()));
+        assert_eq!(host.accept(ConnectionId(4), ConnectionId(5)), Ok(()));
+        let mut expected = 4u32.to_le_bytes().to_vec();
+        expected.extend_from_slice(&5u32.to_le_bytes());
+        assert_eq!(*last(&host), (ACCEPT.into(), expected));
+        host.finish(ConnectionId(6));
+        assert_eq!(*last(&host), (FINISH.into(), 6u32.to_le_bytes().to_vec()));
+        host.close(ConnectionId(6));
+        assert_eq!(*last(&host), (CLOSE.into(), 6u32.to_le_bytes().to_vec()));
+    }
+
+    #[test]
+    fn every_error_comes_back() {
+        let errors = [
+            HostError::NotSupported,
+            HostError::WouldBlock,
+            HostError::Closed,
+            HostError::Errno(i32::MIN),
+            HostError::Errno(i32::MAX),
+        ];
+        let mut host = host();
+        for error in errors {
+            host.ring.host.error = Some(error);
+            let id = ConnectionId(1);
+            assert_eq!(host.send(id, b"x"), Err(error));
+            assert_eq!(host.receive(id, &mut [0; 4]), Err(error));
+            assert_eq!(host.connect(id, &[0; 16], 1, false), Err(error));
+            assert_eq!(host.backend_send(BackendRequestId(1), b"x"), Err(error));
+            assert_eq!(host.look_up(1, "x"), Err(error));
+            assert_eq!(host.listen(id, 1), Err(error));
+            assert_eq!(host.accept(id, id), Err(error));
+        }
+    }
+}

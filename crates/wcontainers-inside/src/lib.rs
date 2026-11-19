@@ -6,6 +6,7 @@ extern crate alloc;
 
 pub mod boot;
 pub mod build_environment;
+pub mod host;
 pub mod layout;
 pub mod link;
 pub mod routines;

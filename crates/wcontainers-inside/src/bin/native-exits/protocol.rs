@@ -8,7 +8,7 @@ use wcontainers_abi::{Access, Exit, Resume, Syscall};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 wcontainers_inside::requests! {
-    first: wcontainers_inside::routines::Request::END;
+    first: wcontainers_inside::host::Request::END;
     /// The next order, with what the last one gave in the link's bytes. Answered with an [`Order`], whose
     /// bytes are in the link.
     Next {} -> Order;

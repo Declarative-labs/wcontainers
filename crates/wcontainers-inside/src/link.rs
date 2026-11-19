@@ -2,7 +2,7 @@
 //! the doorbell; the monitor answers in the same page and resumes the virtual CPU.
 
 use wcontainers_abi::PAGE_SIZE;
-use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
+use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout};
 
 /// What the monitor tells a virtual CPU when it starts it, in memory the monitor wrote. Its inside address is
 /// in x0 at entry.
@@ -33,6 +33,7 @@ pub const LINK_WORDS: usize = 8;
 
 /// The words of a [`Link`] before its bytes.
 #[repr(C)]
+#[derive(FromZeros)]
 pub struct LinkHead {
     /// The request's word ([`Message::REQUEST`]).
     pub request: u64,
@@ -47,6 +48,7 @@ pub const LINK_BYTES: usize = PAGE_SIZE as usize - size_of::<LinkHead>();
 
 /// One request and its answer.
 #[repr(C)]
+#[derive(FromZeros)]
 pub struct Link {
     /// The request and its message.
     pub head: LinkHead,
