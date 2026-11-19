@@ -1,5 +1,5 @@
 //! The library surface: a runtime makes a container from what to run (the OCI runtime configuration),
-//! its root's files, how its translator works (the executor's translator settings) and what machine it sees, with a system.
+//! its root's files, how its translator works (the executor's translator configuration) and what machine it sees, with a system.
 
 use std::path::PathBuf;
 
@@ -8,9 +8,9 @@ use wcontainers_kernel::{Errno, Kernel, Start};
 
 use crate::{Ending, Execution, Image, Step, Stepper, StopFlag, System, spec};
 
-/// Settings of a runtime, shared by its containers.
+/// The configuration of a runtime, shared by its containers.
 #[derive(Clone, Debug, Default)]
-pub struct RuntimeSettings {
+pub struct RuntimeConfig {
     /// Where compiled translations are kept between runs and processes; none keeps them in memory.
     pub cache: Option<PathBuf>,
 }
@@ -20,16 +20,16 @@ pub trait Executor: Execution {
     /// What the containers of one runtime share, such as compiled translations.
     type Shared;
     /// How the translator works for a container: it changes speed, never behaviour.
-    type TranslatorSettings;
+    type TranslatorConfig;
     /// The CPU features the guest is told it has.
     type Offer;
     /// The architecture of the guests it runs, as an OCI image configuration names it.
     const ARCHITECTURE: &'static str;
 
-    fn shared(settings: &RuntimeSettings) -> Self::Shared;
+    fn shared(config: &RuntimeConfig) -> Self::Shared;
     fn new(
         shared: &Self::Shared,
-        translator_settings: &Self::TranslatorSettings,
+        translator_config: &Self::TranslatorConfig,
         offer: &Self::Offer,
     ) -> Self;
     /// What ends a free turn of this back end.
@@ -85,9 +85,9 @@ pub struct Runtime<E: Executor> {
 }
 
 impl<E: Executor> Runtime<E> {
-    pub fn new(settings: &RuntimeSettings) -> Self {
+    pub fn new(config: &RuntimeConfig) -> Self {
         Self {
-            shared: E::shared(settings),
+            shared: E::shared(config),
         }
     }
 
@@ -97,7 +97,7 @@ impl<E: Executor> Runtime<E> {
         &self,
         spec: &Spec,
         image: &Image,
-        translator_settings: &E::TranslatorSettings,
+        translator_config: &E::TranslatorConfig,
         machine: &GuestMachine<E::Offer>,
         mut system: S,
     ) -> Result<Container<E, S>, Error> {
@@ -134,7 +134,7 @@ impl<E: Executor> Runtime<E> {
                     },
                 })?;
         }
-        let mut cpu = E::new(&self.shared, translator_settings, &machine.offer);
+        let mut cpu = E::new(&self.shared, translator_config, &machine.offer);
         system.stop_flag(cpu.stop_flag());
         let arguments: Vec<&[u8]> = accepted.args.iter().map(|a| a.as_bytes()).collect();
         let environment: Vec<&[u8]> = env.iter().map(|v| v.as_bytes()).collect();

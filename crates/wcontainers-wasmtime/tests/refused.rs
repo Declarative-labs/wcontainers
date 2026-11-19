@@ -8,10 +8,10 @@ use std::sync::OnceLock;
 use serde_json::{Value, json};
 use wcontainers_arm64::Arm64;
 use wcontainers_runtime::{
-    Error, GuestMachine, Image, LocalSystem, Runtime, RuntimeSettings, base_spec, bind_mount,
+    Error, GuestMachine, Image, LocalSystem, Runtime, RuntimeConfig, base_spec, bind_mount,
     spec_from_json,
 };
-use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, TranslatorSettings};
+use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, TranslatorConfig};
 
 /// A root holding only its own directory.
 fn image() -> &'static PathBuf {
@@ -44,9 +44,9 @@ fn base() -> Value {
 /// Makes a container from the configuration; the properties it ignored.
 fn make(value: Value) -> Result<Vec<String>, Error> {
     let (spec, ignored) = spec_from_json(&serde_json::to_vec(&value).unwrap())?;
-    let runtime = Runtime::<CpuSide<Arm64>>::new(&RuntimeSettings::default());
+    let runtime = Runtime::<CpuSide<Arm64>>::new(&RuntimeConfig::default());
     let system = LocalSystem::new(Box::new(std::io::sink()), Box::new(std::io::sink()));
-    let translator_settings = TranslatorSettings {
+    let translator_config = TranslatorConfig {
         look_ahead: LookAhead::Full,
         optimise: Optimise::Speed,
     };
@@ -55,7 +55,7 @@ fn make(value: Value) -> Result<Vec<String>, Error> {
         .container(
             &spec,
             &image,
-            &translator_settings,
+            &translator_config,
             &GuestMachine { offer: () },
             system,
         )

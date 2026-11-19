@@ -795,18 +795,18 @@ methods as exports, `Cpu` and `Host` as imports) is asked of the kernel track.
 **User surface (the owner's rulings of 2026-11-17), as built in J3.** The library is the product; the
 command line program is a thin demonstration that only calls the library (J3, last). Names approved by
 the owner: the crates `wcontainers-runtime` and `wcontainers-wasmtime`, the types `Runtime`,
-`RuntimeSettings` and `Image`. `ContainerSettings` is withdrawn: it hand-rolled what the Open Container
+`RuntimeConfig` and `Image`. `ContainerSettings` is withdrawn: it hand-rolled what the Open Container
 Initiative (OCI) standardises and mixed what to run with how it runs. The surface takes what to run, the
 root's files, how we run and what machine the container sees as separate arguments, and an outside:
 
 ```rust
-let runtime = Runtime::<CpuSide<Arm64>>::new(&RuntimeSettings { cache: Some(path) });  // None: memory only
+let runtime = Runtime::<CpuSide<Arm64>>::new(&RuntimeConfig { cache: Some(path) });  // None: memory only
 let image = Image::oci(&layout, CpuSide::<Arm64>::ARCHITECTURE)?;  // or Image::tar(&file)
 let spec: oci_spec::runtime::Spec = image.spec()?;   // the image's conversion; or spec_from_json(config.json)
 let mut container = runtime.container(
     &spec,
     &image,
-    &TranslatorSettings { look_ahead: LookAhead::Full, optimise: Optimise::Speed }, // how the translator works
+    &TranslatorConfig { look_ahead: LookAhead::Full, optimise: Optimise::Speed }, // how the translator works
     &GuestMachine { offer: () },                                  // what machine the guest is told it runs on
     LocalSystem::new(Box::new(stdout()), Box::new(stderr())),     // the local system, or the user's
 )?;                       // Error::Refused names the first field it cannot honour
@@ -852,8 +852,8 @@ let ending = container.run()?;   // to the end; or container.step() and containe
   kernel's name server), mode 0644, owned by root, in place of the image's own, from either form of image.
   Docker writes them over its mounts; an OCI image's layers have no `/etc/resolv.conf`. `/.dockerenv` is
   not written: it marks the Docker engine, which this is not.
-- **How we run it** is the back end's own type (`Executor::TranslatorSettings`; for the WebAssembly back end
-  `TranslatorSettings { look_ahead, optimise }`): it changes speed and never behaviour, and is part of every cache key.
+- **How we run it** is the back end's own type (`Executor::TranslatorConfig`; for the WebAssembly back end
+  `TranslatorConfig { look_ahead, optimise }`): it changes speed and never behaviour, and is part of every cache key.
 - **What machine the container appears to run on** is `GuestMachine<Offer>`, separate because the guest sees it:
   today the CPU feature claim (`offer`, the guest's `Guest::Offer`, `()` for ARM64; x86-64's AVX claim with
   that guest). The address-space size and the memory size the guest is told join it when the kernel takes
@@ -861,7 +861,7 @@ let ending = container.run()?;   // to the end; or container.step() and containe
   `address_space` and the guest is told that size, so `GuestMachine` holds no field that would do nothing. The
   architecture comes from the image and must be the back end's.
 - **The back end the runtime makes** is a trait of the runtime crate, `Executor: Execution` (name suggested):
-  what a runtime's containers share (the compiler and its cache), `TranslatorSettings`, `Offer`, its architecture as the
+  what a runtime's containers share (the compiler and its cache), `TranslatorConfig`, `Offer`, its architecture as the
   image configuration names it, and its stop flag. The kernel tests' stand-in is no `Executor`; the test
   driver makes it itself.
 - **Every field of the configuration is honoured or refused by name.** A property the specification does
@@ -1095,7 +1095,7 @@ Each bar is checkable by running the named command on this Mac with Docker.
   the one-million run is one command. System call and fork cost measured (section 15), with both sides of the
   fork copy (the copy, and the first writes after it).
 - **J3, the user surface.** The library surface of section 14 as the owner ruled it: `oci_spec::runtime::Spec`
-  with every field honoured or refused by name, `TranslatorSettings` and `GuestMachine` apart from it, images from an OCI image
+  with every field honoured or refused by name, `TranslatorConfig` and `GuestMachine` apart from it, images from an OCI image
   in the OCI layout (by the image specification's conversion) and from a plain tar, the on-disk cache, the
   shipped outside (free turns with its timer thread, output streams; standard input waits for the kernel's
   interface, asked of the kernel track). Last, once the library bar passes, the command line program: thin,
@@ -1290,11 +1290,14 @@ under pyro-parked/wcontainers-scratch/runtime (outside the repository); the log 
 
 ## 20. Decisions for the owner
 
-- **Names**: approved for the crates and `Runtime`, `RuntimeSettings`, `Image`; and, by the owner's ruling of
-  2026-11-18 (built in J4a run 3): the trait the embedder implements `System` (first `Outside`), the
-  shipped one `LocalSystem` (first `System`), the back end trait `Executor` (first `BackEnd`), how the
-  translator works `TranslatorSettings` (first `Tuning`), what machine the guest is told it runs on
-  `GuestMachine` (first `Machine`), and the command line program `wcon`. Still yours: `StopFlag` (perhaps
+- **Names**: approved for the crates and `Runtime`, `Image`; and, by the owner's rulings of
+  2026-11-18 (built in J4a run 3 and J5 run 3): the trait the embedder implements `System` (first `Outside`), the
+  shipped one `LocalSystem` (first `System`), the back end trait `Executor` (first `BackEnd`), long-lived
+  configuration types ending in `Config` (`RuntimeConfig`, first `RuntimeSettings`; how the translator works
+  `TranslatorConfig`, first `Tuning` and then `TranslatorSettings`), what machine the guest is told it runs on
+  `GuestMachine` (first `Machine`), and the command line program `wcon`. The per-process
+  `ExecutionConfig { thread_ordering, replay_determinism, translator }` comes with the threads plan and the
+  progress count; until then the translator's configuration is given to `Runtime::container` alone. Still yours: `StopFlag` (perhaps
   `Interrupt`, and whether it stays in this form) and the kernel's own configuration (`base_spec`).
 - **The user surface**: ruled (section 14) and built in J3, the OCI image layout included as J3's task asked.
   Added in J5, names suggested: `System::serve_directory` (a system serving a host directory for the one bind

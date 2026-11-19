@@ -14,9 +14,9 @@ use serde_json::json;
 use wcontainers_arm64::Arm64;
 use wcontainers_runtime::oci_spec::runtime::Spec;
 use wcontainers_runtime::{
-    Container, Ending, GuestMachine, Image, LocalSystem, Runtime, RuntimeSettings, Step, base_spec,
+    Container, Ending, GuestMachine, Image, LocalSystem, Runtime, RuntimeConfig, Step, base_spec,
 };
-use wcontainers_wasmtime::{BOUND, CpuSide, LookAhead, Optimise, Origin, TranslatorSettings};
+use wcontainers_wasmtime::{BOUND, CpuSide, LookAhead, Optimise, Origin, TranslatorConfig};
 
 const IMAGE: &str = "alpine:3.22";
 const PIPELINE: &str = "cat /etc/os-release | grep ^ID= | tr a-z A-Z; ls /bin | sort -r | head -3; \
@@ -194,8 +194,8 @@ fn container_on(
     cache: Option<PathBuf>,
     system: LocalSystem,
 ) -> Container<CpuSide<Arm64>, LocalSystem> {
-    let runtime = Runtime::<CpuSide<Arm64>>::new(&RuntimeSettings { cache });
-    let translator_settings = TranslatorSettings {
+    let runtime = Runtime::<CpuSide<Arm64>>::new(&RuntimeConfig { cache });
+    let translator_config = TranslatorConfig {
         look_ahead: look_ahead(),
         optimise: Optimise::Speed,
     };
@@ -203,7 +203,7 @@ fn container_on(
         .container(
             spec,
             image,
-            &translator_settings,
+            &translator_config,
             &GuestMachine { offer: () },
             system,
         )
@@ -1064,16 +1064,16 @@ fn a_program_not_in_the_path_is_not_found() {
     process.set_env(Some(vec!["PATH=/nonexistent".to_string()]));
     process.set_cwd("/bin".into());
     spec.set_process(Some(process));
-    let runtime = Runtime::<CpuSide<Arm64>>::new(&RuntimeSettings { cache: None });
+    let runtime = Runtime::<CpuSide<Arm64>>::new(&RuntimeConfig { cache: None });
     let system = LocalSystem::new(Box::new(std::io::sink()), Box::new(std::io::sink()));
-    let translator_settings = TranslatorSettings {
+    let translator_config = TranslatorConfig {
         look_ahead: look_ahead(),
         optimise: Optimise::Speed,
     };
     match runtime.container(
         &spec,
         &image,
-        &translator_settings,
+        &translator_config,
         &GuestMachine { offer: () },
         system,
     ) {

@@ -26,7 +26,7 @@ use wcontainers_abi::{
 };
 use wcontainers_guest_cpu::{Guest, GuestId, HookBody, MemoryFault};
 use wcontainers_runtime::{
-    Answer, Carry, Execution, Executor, Leaving, RuntimeSettings, StopFlag, Turn,
+    Answer, Carry, Execution, Executor, Leaving, RuntimeConfig, StopFlag, Turn,
 };
 use wcontainers_translator::contract::{self, Reason, TrapKind};
 use wcontainers_translator::translate;
@@ -2931,7 +2931,7 @@ mod tests {
 /// How the translator works for a container: it changes speed, never behaviour, and is part of
 /// every cache key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TranslatorSettings {
+pub struct TranslatorConfig {
     pub look_ahead: LookAhead,
     pub optimise: Optimise,
 }
@@ -2941,7 +2941,7 @@ where
     G: Guest<Block = RegisterBlock>,
 {
     type Shared = Arc<Compiler<G>>;
-    type TranslatorSettings = TranslatorSettings;
+    type TranslatorConfig = TranslatorConfig;
     type Offer = G::Offer;
     const ARCHITECTURE: &'static str = match G::ID {
         GuestId::Arm64 => "arm64",
@@ -2949,19 +2949,19 @@ where
         GuestId::Rv64 => "riscv64",
     };
 
-    fn shared(settings: &RuntimeSettings) -> Arc<Compiler<G>> {
-        Compiler::new(settings.cache.clone())
+    fn shared(config: &RuntimeConfig) -> Arc<Compiler<G>> {
+        Compiler::new(config.cache.clone())
     }
 
     fn new(
         shared: &Arc<Compiler<G>>,
-        translator_settings: &TranslatorSettings,
+        translator_config: &TranslatorConfig,
         offer: &G::Offer,
     ) -> Self {
         CpuSide::new(
             shared.clone(),
-            translator_settings.look_ahead,
-            translator_settings.optimise,
+            translator_config.look_ahead,
+            translator_config.optimise,
             *offer,
         )
     }

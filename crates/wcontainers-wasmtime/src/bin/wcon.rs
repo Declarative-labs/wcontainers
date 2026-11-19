@@ -16,10 +16,10 @@ use std::process::ExitCode;
 
 use wcontainers_arm64::Arm64;
 use wcontainers_runtime::{
-    Ending, Executor, GuestMachine, Image, LocalSystem, Runtime, RuntimeSettings, Warned,
-    bind_mount, spec_from_json,
+    Ending, Executor, GuestMachine, Image, LocalSystem, Runtime, RuntimeConfig, Warned, bind_mount,
+    spec_from_json,
 };
-use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, TranslatorSettings};
+use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, TranslatorConfig};
 
 type Back = CpuSide<Arm64>;
 
@@ -123,7 +123,7 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
         spec.set_process(Some(process));
     }
 
-    let runtime = Runtime::<Back>::new(&RuntimeSettings { cache });
+    let runtime = Runtime::<Back>::new(&RuntimeConfig { cache });
     let mut system = LocalSystem::new(Box::new(std::io::stdout()), Box::new(std::io::stderr()));
     if interactive {
         system.input(Box::new(std::io::stdin()));
@@ -134,14 +134,14 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
             .ok_or("--publish is ADDRESS:PORT:CONTAINER_PORT")?;
         system.publish(port.parse()?, at.parse::<SocketAddr>()?);
     }
-    let translator_settings = TranslatorSettings {
+    let translator_config = TranslatorConfig {
         look_ahead,
         optimise,
     };
     let mut container = runtime.container(
         &spec,
         &image,
-        &translator_settings,
+        &translator_config,
         &GuestMachine { offer: () },
         system,
     )?;
