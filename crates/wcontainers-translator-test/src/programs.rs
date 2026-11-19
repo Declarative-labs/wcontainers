@@ -3,6 +3,7 @@
 use crate::layout::initial_stack;
 use crate::reference::{build as build_reference, container_name};
 use crate::runner::{Machine, Stopped, Syscalls};
+use linux_raw_sys::general::{SIGBUS, SIGILL, SIGSEGV, SIGTRAP};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -215,6 +216,9 @@ pub struct Ran {
     pub status: i32,
 }
 
+/// The exit status of a process that a signal ended is this plus the signal, as the shell and Docker give it.
+pub const SIGNALLED: i32 = 128;
+
 /// Where a flat blob and its stack go in guest memory, the same for every runner.
 pub struct Placement {
     /// Size of guest memory: everything up to the top of the stack.
@@ -350,14 +354,13 @@ pub fn ready_with(
 
 /// What a program did, from why its thread stopped. Panics if it stopped without exiting or faulting.
 pub fn ran(blob: &Blob, machine: &Machine, stopped: Stopped, registers: &RegisterBlock) -> Ran {
-    // Docker reports a process killed by a signal as 128 plus the signal's number.
     let status = match stopped {
         // Linux reports the low 8 bits of the status.
         Stopped::Finished(status) => status & 0xff,
-        Stopped::Exit(Exit::MemoryFault { .. }) => 128 + 11,
-        Stopped::Exit(Exit::AlignmentFault { .. }) => 128 + 7,
-        Stopped::Exit(Exit::IllegalInstruction) => 128 + 4,
-        Stopped::Exit(Exit::Breakpoint { .. }) => 128 + 5,
+        Stopped::Exit(Exit::MemoryFault { .. }) => SIGNALLED + SIGSEGV as i32,
+        Stopped::Exit(Exit::AlignmentFault { .. }) => SIGNALLED + SIGBUS as i32,
+        Stopped::Exit(Exit::IllegalInstruction) => SIGNALLED + SIGILL as i32,
+        Stopped::Exit(Exit::Breakpoint { .. }) => SIGNALLED + SIGTRAP as i32,
         other => {
             let at = registers.pc.wrapping_sub(blob.load) as usize;
             let word = blob

@@ -3,8 +3,10 @@
 //! position independent code, run on Linux and through the translator at none and full.
 
 use crate::programs::{
-    Blob, Ran, flatten, native, out_directory, run_container, source_directory, unique, zig,
+    Blob, Ran, SIGNALLED, flatten, native, out_directory, run_container, source_directory, unique,
+    zig,
 };
+use linux_raw_sys::general::SIGALRM;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -229,5 +231,5 @@ fn compile(
 pub fn native_in_time(blob: &Blob) -> Option<Ran> {
     let ran = native(blob);
     // The reference's own limit: SIGALRM, as Docker reports it.
-    (ran.status != 128 + 14).then_some(ran)
+    (ran.status != SIGNALLED + SIGALRM as i32).then_some(ran)
 }
