@@ -40,7 +40,10 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   their page at the monitor's look-ahead, filled entry slots, linked direct exits, turns with a count limit run in
   steps, and the count test across look-aheads (below, "N4 run 1"); run 2 fixed the mappings failure at look-ahead none,
   built the speed test and made returns go by `br`: the speed bar fails, +63.74% [+61.86 .. +65.48] against +21.2%
-  (below, "N4 run 2"). The call stub and T1's look-aheads come next.
+  (below, "N4 run 2"); run 3 built the call stub, measured it slower than plain calls and took it out, pointed conditional
+  branches straight at their targets' pieces, ran the benchmark set in the count test across look-aheads, built the
+  system-call part of the bar and cut that path from 10,000 to 6,000 instructions a call: both parts of the bar still fail
+  (below, "N4 run 3"). T1's look-aheads and the system-call path come next.
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -67,6 +70,74 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N4 run 3 (2026-11-19): the call stub measured and dropped, linked conditional branches, the system-call part
+
+Start: origin/main and origin/phase-1-literals had nothing new. T1 is still on no branch (origin/phase-1-translator
+8c7a4b5b).
+
+The call stub (plan 3.2), built, measured and taken out again (703d754f, 9d81f541, reverted by 9bb77014 and cc9d09d0):
+- Built as the plan says: a `bl`, or a `blr` through any register but x30, at G is a piece of its own entered only
+  through G's slot, whose last word is `blr t`; exits into it are not linked; it starts `ubfx x30, x30, #2, #45` and then
+  the call's add, the span there being after the commit point with x30 fixed up to G + 4 and the count one behind; returns
+  are `ret t`. Every test passed with it (interrupts 3636 forced interrupts at 3 look-aheads, native 32,562 cases, kernel
+  alike at none and 256, exits).
+- Measured against the plain calls as alternating pairs of the two builds' native runs (scratch native/ab/ab1.log,
+  12 pairs each, load 31 to 48): stub over plain cycles fib 1.248, sort 1.337, calls 1.618, interpret 1.070, hash 0.998;
+  instructions 1.113, 1.086, 1.173, 1.000, 1.000. The stub adds a jump to the slot and the slot's call, two more indirect
+  branches per call, and costs more than the predicted return saves. A host microbenchmark (native/ab/ras.c) shows a call
+  from a far slot returned by `ret xN` or `br xN` cost the same once both are predicted (0.94 to 0.99 ns against 0.60 to
+  0.66 for `bl`/`ret`). By the plan's rule the faster exact one is kept: plain calls, returns by `br t`.
+
+Built (6d238cd5, 5093d478, 41bd20ba, e2211c6d, 78cf43d3 and the commit after it):
+- A conditional branch's own branch is recorded as one more exit to its target (`DirectExit::retarget`, the offset bits of
+  the word), and the inside points it straight at the target's piece when in reach (b.cond and cbz 1 MiB, tbz 32 KiB),
+  writing the original word back when the target is dropped. A loop's back edge is then one taken branch. Alternating pairs
+  against the build before it (native/ab/ab-cond.log, 12 pairs, load 37 to 61): cycles sieve 0.918, matrix 0.948, sort
+  0.976, calls 0.982, fib 0.979, the others 0.995 to 1.030 (walk 1.030 with a spread of 0.93 to 1.14).
+- The kernel test runs bench.c (all eight workloads, SCALE 0) and calls.c (1000 calls) as single-thread programs on both
+  outputs and in the reference: their count at every stop agrees between look-ahead none and 256 (the positions' hash),
+  and their output and exit code are the reference's. The benchmark programs are built by one function in the tests'
+  common module (`freestanding`), at the linker's own place for this test and at 1 TiB for the speed test.
+- The speed test's system-call part (plan 8, section "As built"), and a verdict for each part: the test fails if either
+  fails or stays undecided at 60 pairs. `WCONTAINERS_SPEED_PROGRAMS=syscalls` runs that part alone.
+- The system-call path was 10,000 instructions a call. Found with timer probes in the inside (not committed): a run moved
+  its whole thread out of the map and back (`Thread` holds the vector registers), and cloned the vector registers at every
+  run. Threads are boxed now (78cf43d3) and the vectors are passed by reference: 6,276 then 5,979 instructions a call.
+- No dependency added. Literals: the check exits 0, no marks, nothing added to the baseline.
+
+Measured (M5 Max, all on the Mac):
+- The page test of the Split route (the plan's "measured on the benchmark programs, recorded, not a pass condition"):
+  a build with it left out for accesses of 16 bytes or fewer, alternating with the build that has it
+  (native/ab/ab-page.log, 12 pairs, load 34 to 54). Without it over with it, cycles: fib 0.748, sieve 1.004, hash 0.998,
+  sort 0.940, interpret 0.979, matrix 0.631, walk 0.991, search 0.991; geometric mean 0.899, so the test costs about +11%
+  on the bar's figure (fib +34%, matrix +58%). It is decision 14's routing, kept until the owner rules.
+- The speed test after this run's changes (speed-final.log, 11:41 to 12:01, load 39 to 63, look-ahead 256, 15 pairs,
+  bootstrap seed 1 with 2000 resamples; share on performance cores 23 to 34% on both sides): compute part +62.92%, 95%
+  interval [+61.17 .. +63.99], FAILS against +21.2%. fib +109.4, sieve +37.8, hash +3.4, sort +92.6, interpret +118.8,
+  matrix +98.9, walk +26.3, search +57.2; calls +57.8. Instructions +27 to +199%. System-call part: 396.8 ns a call
+  (median), the kernel's own share 117.1 ns (median, layer 1's method in the test's process), the back end's 279.7 ns,
+  95% interval [272.1 .. 287.1], FAILS against 100 ns. Before the threads were boxed it was 580.2 ns [569.1 .. 592.1]
+  (speed-syscalls.log, load 42 to 51); 9,972 instructions a call then, 5,979 now (3 pairs, probe.jsonl).
+- The count across look-aheads on the benchmark set: the kernel test (kernel-bench.log, load 49 to 68) ran bench.c and
+  calls.c at none and 256 with the same positions' hash, the WebAssembly side alike and the reference's output and exit
+  code.
+
+What N4 still needs, in order:
+1. The speed bar: the compute part fails (above). What is left that this track can do: pieces with branches inside them
+   (T1's stretches and functions; a loop's other exits and every fall-through still cost a branch), and the page test
+   (decision 14, the owner's). Plain calls and returns cost a jump sequence and two indirect branches per return.
+2. The system-call part fails: the back end's share about 300 ns against 100. The path still copies the guest's state
+   several times a call (`stop::resolve`'s `Resolved` and `GuestState` by value, `rejoin`, the register page read and
+   written whole) with the inside's word-at-a-time `memcpy` (compiler_builtins); about 6,000 instructions a call, of which
+   the kernel's own share is about 120 ns on the host.
+3. T1 (the finder apart from the WebAssembly plans) from the translator track, then bounded look-ahead as stretches and full
+   look-ahead.
+4. The untranslated run at EL0 on the floor beside each workload.
+5. Load-time addresses, the cache with the native key and disk files, loaded translations shared between processes.
+6. The dynamic register uses counted and the withheld registers chosen; 2 MiB entries with the contiguous bit measured.
+7. For the independent check: the bar's measurements as alternating pairs again, and the differential test at each
+   look-ahead with a new seed.
 
 ## N4 run 2 (2026-11-19): the mappings failure, the speed test, returns by br
 
@@ -1304,8 +1375,9 @@ From the checkout, in the Nix shell (on the Mac set CARGO_INCREMENTAL=0):
   command: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test speed` (knobs `WCONTAINERS_SPEED_PAIRS`,
   default 15, doubled while undecided up to 60; `WCONTAINERS_SPEED_SEED` and `WCONTAINERS_SPEED_RESAMPLES` for the
   bootstrap, default 1 and 2000; `WCONTAINERS_SPEED_RAW` the file each pair is appended to as a JSON line;
-  `WCONTAINERS_SPEED_PROGRAMS` a comma-separated subset, which gives figures but no verdict; `WCONTAINERS_NATIVE_BOUND`
-  the look-ahead; about 15 minutes at 15 pairs; it fails while the bar fails);
+  `WCONTAINERS_SPEED_PROGRAMS` a comma-separated subset, which gives figures but no verdict on the compute part, `syscalls`
+  naming the system-call part; `WCONTAINERS_NATIVE_BOUND` the look-ahead; about 20 minutes at 15 pairs; it fails while
+  either part fails);
 - N3's native CPU side against the WebAssembly one on static programs: `nix develop -c cargo test -j 4 -p
   wcontainers-hypervisor --test exits` (both modes; `WCONTAINERS_EXITS_EXACT=0` or `1` runs one; about 1 s);
 - N2's tests without the machine: `nix develop -c cargo test -j 4 -p wcontainers-arm64 --test native_routes --test encode --
@@ -1795,6 +1867,14 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N4 run 3, speed against something else, put to the orchestrator as the brief asks: (1) the Split route's page test in
+  front of every load and store of 2 to 16 bytes (decision 14's routing) costs about +11% on the bar's geometric mean
+  (fib +34%, matrix +58%), measured in alternating pairs; dropping it needs the owner's ruling on decision 14. (2) The call
+  stub of plan 3.2 was measured slower than plain calls (+25 to +62% cycles on the programs with calls) and is not kept,
+  as the plan's rule says; the return-address predictor is not used. (3) The bar's compute part cannot pass without
+  pieces that hold branches (T1): may this track make T1 in the translator's crate (making `Finder` and `plan`
+  reachable for the native emitter), or will the translator track? It has been asked since N4 run 1.
 
 - N4 run 1: turns with a count limit now run in single steps once pieces are linked (a departure, below); please confirm
   or rule (decision 10 is still the owner's). N4's full look-ahead and the finder's stretches need T1 in the translator

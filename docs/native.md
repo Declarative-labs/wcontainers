@@ -161,7 +161,9 @@ rewritten) would change only that function (brief).
   (ARM64): pieces are not yet shared between processes (each process loads its own), so every direct exit is
   written as the jump to its target's slot (the slot's address built in t, two or three moves as the encoder
   gives them, and `br t`) and is linked within its process: the inside writes a `b` to the target's piece over
-  the exit's first word when either of the two is loaded, and writes the first word back when the target's
+  the exit's first word when either of the two is loaded (and points a conditional branch's own branch, which
+  goes to its taken exit, straight at the target's piece when that is in its reach: N4 run 3, cycles -8% on
+  sieve, -5% on matrix, -2.5% on sort, in alternating pairs), and writes the first word back when the target's
   piece is dropped. The emitter hands the inside each exit's offset and target with the position map.
 - **Jumps through a register and returns, ARM64.** The entry mirror holds a 16-byte slot for every guest
   address G below 2^45, at the slot address `mask | (G << 2)`, `mask` being the logical immediate
@@ -200,10 +202,14 @@ rewritten) would change only that function (brief).
   G + 4 by `movz`/`movk`, then `br t`), since the slot's `blr` would overwrite the target; the first `movz`
   into x30 is the commit point, and section 4's constant fix-up finishes x30 if an interrupt lands among
   the `movk`s. N4 measures this against plain calls for every call
-  and keeps the faster exact one. As built at N4 run 2 there is no call stub yet: a call builds x30 in place
-  and leaves through its target's exit, and a return is the jump ending in `br t`, not `ret t` (a `ret` was
-  foreseen from a return-address stack holding none of the guest's: on the speed test, fib went from +544%
-  to +102% cycles and calls.c from +481% to +68% when it became a `br`).
+  and keeps the faster exact one. Measured at N4 run 3, and the plain calls kept: the stub was built (a call at
+  G a piece of its own entered only through its slot's `blr`, exits into it left unlinked, `ret t` for returns,
+  the stop at the stub's start taken as the call made with the count one behind until its add) and run against
+  plain calls in alternating pairs on the benchmark set: cycles +25% on fib, +34% on sort, +62% on calls.c,
+  for +9 to +17% instructions (the stub adds two indirect branches and a jump sequence to every call), so it
+  was taken out again. A call builds x30 in place and leaves through its target's exit, and a return is the
+  jump ending in `br t`, not `ret t` (a `ret` with no stub is foreseen from a return-address stack holding none
+  of the guest's: fib went from +544% to +102% cycles and calls.c from +481% to +68% when it became a `br`).
 - **The mirror's reach.** The mirror covers guest addresses below 2^45 (32 TiB), so the native ARM64 back
   end's address ceiling (`Cpu::address_space`, abi/cpu.rs:34-35) is 2^45, under the container's width of 2^48,
   as the brief's ruling on ceilings allows (section 6.2, K2; decision 9).
@@ -1666,7 +1672,11 @@ Handled, and proven by tests rather than assumed:
   `svc`, whose handler answers write and exit, so both sides run the workloads as the same bytes at the same
   addresses. Every run is its own process, measured at its end with `proc_pid_rusage` (`RUSAGE_INFO_V6`:
   cycles, instructions, and cycles on performance cores for the share); both runs' output and exit code must
-  be equal. The system-call part and the untranslated run at EL0 are not built yet.
+  be equal. The system-call part (N4 run 3) runs tests/guest/answered.c, a million `getppid` calls in a loop,
+  against its build with a `nop` in each call's place, both in `native-kernel`, in alternating pairs; beside each
+  pair the kernel's own share of a call is measured in the test's process over the kernel test crate's CPU side
+  that runs no instructions (layer 1's method), and the bootstrap is over the pairs of both. The untranslated run
+  at EL0 is not built yet.
 
 ## 9. Milestones
 
