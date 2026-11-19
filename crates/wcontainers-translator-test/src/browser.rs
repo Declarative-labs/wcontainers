@@ -7,6 +7,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use wcontainers_translator::{LookAhead, Omit, Optimise};
 
 fn package() -> PathBuf {
@@ -15,6 +16,24 @@ fn package() -> PathBuf {
 
 fn target() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/browser")
+}
+
+/// Where the page's runs keep their files, under the browser build.
+const CASES: &str = "cases";
+
+/// A new directory for one run of the page, under this process's and this call's numbers so that runs at the
+/// same time never share files; the caller removes it when the run has ended.
+fn case_directory<G: GuestTest>(name: &str) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let call = NEXT.fetch_add(1, Ordering::Relaxed);
+    let directory = target()
+        .join(CASES)
+        .join(G::NAME)
+        .join(name)
+        .join(std::process::id().to_string())
+        .join(call.to_string());
+    std::fs::create_dir_all(&directory).unwrap();
+    directory
 }
 
 /// Build the translator for the browser for a guest, once per process and guest, and return the module's
@@ -151,8 +170,7 @@ fn run_in_chrome<G: GuestTest>(
     module_bytes: u32,
 ) -> Report {
     let place = placement::<G>(blob);
-    let directory = target().join("cases").join(G::NAME).join(&blob.name);
-    std::fs::create_dir_all(&directory).unwrap();
+    let directory = case_directory::<G>(&blob.name);
     std::fs::copy(translator::<G>(), directory.join("translator.wasm")).unwrap();
     std::fs::write(directory.join("blob.bin"), &blob.bytes).unwrap();
     std::fs::write(directory.join("stack.bin"), &place.stack).unwrap();
@@ -186,6 +204,7 @@ fn run_in_chrome<G: GuestTest>(
             | (u8::from(omit.depth) << 3),
     });
     let result = launch(&directory, &setup, flags);
+    std::fs::remove_dir_all(&directory).unwrap();
     let bytes = |name: &str| -> Vec<u8> {
         result[name]
             .as_array()
@@ -299,11 +318,7 @@ pub fn load_modules<G: GuestTest>(
     modules: &[&[u8]],
     flags: &str,
 ) -> Result<Loaded, String> {
-    let directory = target()
-        .join("cases")
-        .join(G::NAME)
-        .join(format!("load-{name}"));
-    std::fs::create_dir_all(&directory).unwrap();
+    let directory = case_directory::<G>(&format!("load-{name}"));
     std::fs::copy(translator::<G>(), directory.join("translator.wasm")).unwrap();
     std::fs::write(directory.join("blob.bin"), image).unwrap();
     std::fs::write(directory.join("stack.bin"), []).unwrap();
@@ -363,8 +378,7 @@ pub fn cases<G: crate::guest::GuestTest>(
     places: &[std::ops::Range<u64>],
     cases: &[StateCase],
 ) -> Vec<StateRun> {
-    let directory = target().join("cases").join(G::NAME).join("instructions");
-    std::fs::create_dir_all(&directory).unwrap();
+    let directory = case_directory::<G>("instructions");
     std::fs::copy(translator::<G>(), directory.join("translator.wasm")).unwrap();
     let code_bytes = G::MAX_LENGTH as usize;
     let padded = |code: &crate::guest::Encoded| {
@@ -408,6 +422,7 @@ pub fn cases<G: crate::guest::GuestTest>(
         "standIn": stand_in::<G>(),
     });
     let result = launch(&directory, &setup, None);
+    std::fs::remove_dir_all(&directory).unwrap();
     let numbers = |value: &Value| -> Vec<u8> {
         value
             .as_array()
