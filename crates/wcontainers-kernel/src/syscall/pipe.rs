@@ -15,7 +15,7 @@ use crate::{Context, Errno, Kernel};
 /// The type and permission bits of a pipe (`create_pipe_files`).
 pub(crate) const MODE: u32 = S_IFIFO | S_IRUSR | S_IWUSR;
 
-/// The thread number of no thread, for the outside's reads, which no call makes.
+/// The thread number of no thread, for the embedder's reads, which no call makes.
 const NO_THREAD: Tid = 0;
 
 /// The channel a pipe's waiters park on.
@@ -366,7 +366,7 @@ pub(super) fn write(
     }
     lock(kernel, tid, file)?;
     let node = file.borrow().node.clone();
-    let outside = with_pipe(file, |pipe| pipe.outside_reader);
+    let embedder = with_pipe(file, |pipe| pipe.reading_end);
     let first_run = !kernel.threads[&tid].call.started;
     let mut done = kernel.threads[&tid].call.progress;
     let nonblocking = super::io::nonblocking(kernel, tid, file);
@@ -409,19 +409,25 @@ pub(super) fn write(
         if done == total {
             break Ok(());
         }
-        // An end outside reads it: with the pipe empty, bytes go out at once as far as its credit
-        // allows, a page at a time (a page that cannot be read in full ends the write, unsent).
-        if let Some(end) = outside
+        // An end reads it: with the pipe empty, bytes go out at once as far as its credit
+        // allows, in one send (a page that cannot be read in full ends the write, unsent, as when
+        // the write fills pages).
+        if let Some(end) = embedder
             && with_pipe(file, |pipe| pipe.is_empty())
         {
             let credit = kernel.ends.credit(end);
             if credit > 0 {
-                let (bytes, faulted) = next(kernel, cx, done, credit.min(PAGE_SIZE));
+                let (mut bytes, faulted) = next(kernel, cx, done, credit);
+                if faulted {
+                    bytes.truncate(bytes.len() / PAGE_SIZE as usize * PAGE_SIZE as usize);
+                }
+                if !bytes.is_empty() {
+                    kernel.ends.send(cx, end, &bytes);
+                    done += bytes.len() as u64;
+                }
                 if faulted {
                     break Err(Errno::EFAULT);
                 }
-                kernel.ends.send(cx, end, &bytes);
-                done += bytes.len() as u64;
                 continue;
             }
         }
@@ -514,10 +520,10 @@ pub(super) fn put(
     taken as u64
 }
 
-/// The outside's bytes into a pipe whose writer its end holds, within its credit: put in as far as
-/// there is room and the readers woken, the rest kept until there is; with no reader left they are
+/// The embedder's bytes into a pipe whose writer its end holds, within its credit: put in as far as
+/// there is space and the readers woken, the rest kept until there is; with no reader left they are
 /// dropped, as a write with none fails. Returns how many were past the credit, which are dropped.
-pub(crate) fn from_outside(
+pub(crate) fn receive_from_end(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     file: &FileRef,
@@ -541,12 +547,12 @@ pub(crate) fn from_outside(
         (taken, delivered)
     });
     if delivered > 0 {
-        woken_by_outside(kernel, cx, &node);
+        woken_by_end(kernel, cx, &node);
     }
     bytes.len() - taken
 }
 
-/// Moves the outside's kept bytes into a pipe whose writer its end holds, as far as there is room
+/// Moves the embedder's kept bytes into a pipe whose writer its end holds, as far as there is space
 /// (all are dropped once no reader is left). Returns whether any went in or were dropped.
 pub(crate) fn from_inbox(kernel: &mut Kernel, cx: &mut Context<'_>, file: &FileRef) -> bool {
     let node = file.borrow().node.clone();
@@ -555,44 +561,44 @@ pub(crate) fn from_inbox(kernel: &mut Kernel, cx: &mut Context<'_>, file: &FileR
         _ => (pipe.deliver_inbox(), 0),
     });
     if delivered > 0 {
-        woken_by_outside(kernel, cx, &node);
+        woken_by_end(kernel, cx, &node);
     }
     delivered + dropped > 0
 }
 
-fn woken_by_outside(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) {
+fn woken_by_end(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) {
     kernel.wake_poll(channel(node), EPOLLIN | EPOLLRDNORM);
     signal_ends(kernel, cx, node, true);
 }
 
-/// Credit to give the outside writing a pipe: the room its writes can take past what it may
-/// already send or has sent and waits, once that is worth a credit (a page, or any room with
+/// Credit to give the embedder writing a pipe: the space its writes can take past what it may
+/// already send or has sent and waits, once that is worth a credit (a page, or any space with
 /// nothing outstanding).
-pub(crate) fn promise_outside(file: &FileRef) -> u64 {
+pub(crate) fn credit_for_end(file: &FileRef) -> u64 {
     with_pipe(file, |pipe| {
         let outstanding = pipe.promised + pipe.inbox.len() as u64;
-        let room = pipe.room_outside().saturating_sub(outstanding);
-        if room < PAGE_SIZE && (outstanding > 0 || room == 0) {
+        let space = pipe.free_bytes_for_end().saturating_sub(outstanding);
+        if space < PAGE_SIZE && (outstanding > 0 || space == 0) {
             return 0;
         }
-        pipe.promised += room;
-        room
+        pipe.promised += space;
+        space
     })
 }
 
-/// Whether a pipe the outside writes has no reader left.
+/// Whether a pipe the embedder writes has no reader left.
 pub(crate) fn no_reader(file: &FileRef) -> bool {
     with_pipe(file, |pipe| pipe.readers() == 0)
 }
 
-/// Whether the outside's bytes kept for a pipe are all in.
+/// Whether the embedder's bytes kept for a pipe are all in.
 pub(crate) fn inbox_empty(file: &FileRef) -> bool {
     with_pipe(file, |pipe| pipe.inbox.is_empty())
 }
 
 /// Up to `most` bytes of a pipe whose reader an end holds, taken as a read takes them, writers
 /// woken; nothing while another call holds the pipe's lock.
-pub(crate) fn to_outside(
+pub(crate) fn send_to_end(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     file: &FileRef,

@@ -4455,7 +4455,7 @@ fn run_ours_on(
         hostname: reference::HOSTNAME.as_bytes(),
         groups: &[0, 0, 1, 2, 3, 4, 6, 10, 11, 20, 26, 27],
         backend: sequence.backend.then_some(BACKEND_ROOT.as_bytes()),
-        standard: crate::streams::Outside::default().standard(),
+        standard: crate::streams::StreamClient::default().standard(),
     };
     kernel.start(&mut cpu, &mut host, &start);
     crate::streams::begin(&mut kernel, &mut cpu, &mut host);

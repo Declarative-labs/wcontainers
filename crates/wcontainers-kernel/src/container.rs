@@ -426,8 +426,8 @@ impl Kernel {
         cx.host.random(&mut self.files.generation_key);
         self.machine.memory_bytes = cx.cpu.address_space().end;
         self.hostname = start.hostname.to_vec();
-        for end in start.standard.ends() {
-            self.ends.name(end);
+        for (end, sends) in start.standard.ends() {
+            self.ends.name(end, sends);
         }
         if let Some(path) = start.backend {
             self.mount_backend(path);
@@ -705,7 +705,7 @@ impl Kernel {
         for file in descriptors {
             files
                 .add(file, false, 0, limit)
-                .expect("room for the first descriptors");
+                .expect("space for the first descriptors");
         }
         Ok(())
     }
@@ -729,7 +729,7 @@ impl Kernel {
                 name: Vec::new(),
             },
         )
-        .expect("a new container's file systems have room");
+        .expect("a new container's file systems have space");
         let other = if flags == O_RDONLY {
             O_WRONLY
         } else {

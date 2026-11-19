@@ -1,7 +1,7 @@
 //! Pipes and named pipes, as Linux's `fs/pipe.c` keeps them: a ring of page-sized slots, small writes
 //! merged into the last slot, reads that take what is there, and waits that park until the other end
 //! moves.
-//! A pipe whose other side is an end outside knows that end, and the credit it has given it.
+//! A pipe one of whose sides is an end knows that end, and the credit it has given it.
 
 use alloc::collections::VecDeque;
 use alloc::rc::Weak;
@@ -38,13 +38,13 @@ pub(crate) struct Pipe {
     /// The open files of its ends, for counting readers and writers, each with the count of writers
     /// it has seen opened (`f_pipe`), which a named pipe's `POLLHUP` needs.
     ends: Vec<(Weak<RefCell<OpenFile>>, u32)>,
-    /// Bytes a writer outside may still send (credit given on its end) that have not come.
+    /// Bytes the embedder may still send (credit given on its end) that have not come.
     pub promised: u64,
-    /// Bytes a writer outside sent within its credit that found no room yet (a writer inside took
+    /// Bytes the embedder sent within its credit that found no space yet (a writer inside took
     /// it), as a writer outside Linux holds what it has not written.
     pub inbox: Vec<u8>,
     /// The end whose kernel side is this pipe's reader: a write goes straight to it.
-    pub outside_reader: Option<End>,
+    pub reading_end: Option<End>,
     /// How many times a reader and a writer has opened it (`r_counter`, `w_counter`).
     pub opened_readers: u32,
     pub opened_writers: u32,
@@ -74,7 +74,7 @@ impl Pipe {
             ends: Vec::new(),
             promised: 0,
             inbox: Vec::new(),
-            outside_reader: None,
+            reading_end: None,
             opened_readers: 0,
             opened_writers: 0,
             held_by: None,
@@ -159,9 +159,9 @@ impl Pipe {
         self.capacity.saturating_sub(self.slots.len())
     }
 
-    /// Bytes the outside's writes can take: the free pages and the room left in a last page they
+    /// Bytes the embedder's writes can take: the free pages and the space left in a last page they
     /// may join.
-    pub fn room_outside(&self) -> u64 {
+    pub fn free_bytes_for_end(&self) -> u64 {
         let free = self.capacity.saturating_sub(self.slots.len()) as u64 * PAGE_SIZE;
         let tail = match self.slots.back() {
             Some(last) if last.merge => PAGE_SIZE - last.page.len() as u64,
@@ -170,12 +170,12 @@ impl Pipe {
         free + tail
     }
 
-    /// Puts in what fits of the outside's bytes, filling the last page it may join and then new
+    /// Puts in what fits of the embedder's bytes, filling the last page it may join and then new
     /// pages. Returns how many went in.
     pub fn deliver(&mut self, bytes: &[u8]) -> usize {
         let fits = bytes
             .len()
-            .min(usize::try_from(self.room_outside()).unwrap_or(usize::MAX));
+            .min(usize::try_from(self.free_bytes_for_end()).unwrap_or(usize::MAX));
         let mut rest = &bytes[..fits];
         if let Some(last) = self.slots.back_mut().filter(|last| last.merge) {
             let joined = rest.len().min(PAGE_SIZE as usize - last.page.len());

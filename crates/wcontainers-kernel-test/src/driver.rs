@@ -10,7 +10,7 @@ use wcontainers_abi::{
 use wcontainers_kernel::{Errno, FileRecord, Kernel, Start};
 
 use crate::standin::{StandIn, Unsupported};
-use crate::streams::{Outside, StreamHost, Streams};
+use crate::streams::{StreamClient, StreamHost, Streams};
 use crate::{image, reference, streams};
 
 /// Why a run on our kernel gave no outcome.
@@ -54,7 +54,7 @@ pub struct Run {
     pub turns: u64,
     /// The most input credit the kernel had given and not seen used.
     pub most_input_credit: u64,
-    /// Input bytes the outside sent within the credit it held, and how many of its sends went past
+    /// Input bytes the client sent within the credit it held, and how many of its sends went past
     /// that credit (only when it breaks the rule on purpose).
     pub sent_within_credit: u64,
     pub sends_past_credit: u64,
@@ -62,7 +62,7 @@ pub struct Run {
     pub broken: Vec<String>,
     /// Whether the kernel closed every output end once the container ended.
     pub outputs_closed: bool,
-    /// Whether the kernel closed the input end before the outside did.
+    /// Whether the kernel closed the input end before the client did.
     pub input_closed: bool,
 }
 
@@ -324,15 +324,15 @@ pub struct Container<'a> {
     pub address_space: u64,
 }
 
-/// As [`run_injected`], with the outside of the container's standard streams.
-pub fn run_outside(
+/// As [`run_injected`], with the client of the container's standard streams.
+pub fn run_with_client(
     container: &Container<'_>,
-    outside: Outside,
+    client: StreamClient,
     seed: u64,
     injections: Injections,
 ) -> Result<Run, Failure> {
     let prepared = Prepared {
-        outside,
+        client,
         ..prepare(container)
     };
     run_prepared(prepared, container, seed, injections)
@@ -412,8 +412,8 @@ pub struct Prepared {
     pub groups: Vec<u32>,
     /// Whether the container's output also goes to this process's streams as it comes.
     pub echo: bool,
-    /// The outside of its standard streams.
-    pub outside: Outside,
+    /// The client of its standard streams.
+    pub client: StreamClient,
 }
 
 /// Puts a container's files in a new kernel's root, unless the root is on the backend.
@@ -426,7 +426,7 @@ pub fn prepare(container: &Container<'_>) -> Prepared {
         kernel,
         groups: image::root_groups(container.files),
         echo: false,
-        outside: Outside::default(),
+        client: StreamClient::default(),
     }
 }
 
@@ -441,11 +441,11 @@ pub fn run_prepared(
         mut kernel,
         groups,
         echo,
-        outside,
+        client,
     } = prepared;
     let mut at = moments_apart(seed ^ SAVES_SALT, injections.saves, injections.save_gap);
     let (signal, signals) = injections.signal.unwrap_or((0, 0));
-    let mut signal_at = moments(seed ^ 0x5197, signals);
+    let mut signal_at = moments(seed ^ SIGNALS_SALT, signals);
     // Notices come close together, so that a short program meets many of them.
     let mut notice_at = moments_apart(seed ^ 0x6e07, injections.notices, 10);
     let mut notices = StdRng::seed_from_u64(seed ^ 0x6e08);
@@ -455,8 +455,8 @@ pub fn run_prepared(
     let mut report: Option<i32> = None;
     let mut cpu = StandIn::with_space(container.address_space);
     let mut host = TestHost::repeatable(seed);
-    let standard = outside.standard();
-    host.streams = Streams::new(outside);
+    let standard = client.standard();
+    host.streams = Streams::new(client);
     host.streams.echo = echo;
     host.network.published = container.published.iter().copied().collect();
     let root_on_backend = container.backend == Some("/");
@@ -607,7 +607,7 @@ pub fn run_prepared(
                 let Some(until) = until_nanoseconds else {
                     panic!(
                         "the kernel is idle with nothing to wake it, and this host has no events \
-                         (the outside waits at {:?}); output so far:\n{}{}",
+                         (the client waits at {:?}); output so far:\n{}{}",
                         host.streams.stuck_at(),
                         String::from_utf8_lossy(&host.streams.stdout),
                         String::from_utf8_lossy(&host.streams.stderr)
@@ -651,10 +651,11 @@ pub fn run_prepared(
     Ok(finish(run, report))
 }
 
-/// Mixed into a run's seed for the schedule's choices and the moments of saves, so that each
-/// draws apart from the host's own randomness.
+/// Mixed into a run's seed for the schedule's choices and the moments of saves and signals, so
+/// that each draws apart from the host's own randomness.
 const SCHEDULE_SALT: u64 = 0x5eed;
 const SAVES_SALT: u64 = 0x5a7e;
+const SIGNALS_SALT: u64 = 0x5197;
 
 /// The longest the driver waits for the outside when nothing else can happen.
 const NETWORK_PATIENCE: Duration = Duration::from_secs(10);

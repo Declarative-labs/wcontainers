@@ -192,7 +192,7 @@ pub struct Kernel {
     poll_watches: syscall::epoll::Watches,
     /// The names local sockets are bound to.
     sockets: syscall::socket::Names,
-    /// The byte streams to the outside.
+    /// The byte streams to the embedder.
     ends: ends::Ends,
     machine: Machine,
     hostname: Vec<u8>,

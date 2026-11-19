@@ -160,7 +160,7 @@ pub mod reason {
     /// vmsplice copied the caller's pages into a pipe; Linux puts the pages themselves there, so a
     /// later change to them shows in what is read. Detail: the call number.
     pub const VMSPLICE_COPIED: &str = "vmsplice pages copied";
-    /// An outside sent more on an end than the credit the kernel gave; what was past it is
+    /// An embedder sent more on an end than the credit the kernel gave; what was past it is
     /// dropped. Detail: the end.
     pub const STREAM_PAST_CREDIT: &str = "stream data past its credit";
     /// An event arrived that no thread was waiting for.

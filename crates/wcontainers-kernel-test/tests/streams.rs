@@ -8,7 +8,7 @@ use rand::{Rng, SeedableRng};
 use wcontainers_kernel::reason;
 use wcontainers_kernel_test::driver::Run;
 use wcontainers_kernel_test::reference::{ROOT_DIRECTORY, in_guest_directory};
-use wcontainers_kernel_test::streams::{Outside, Step};
+use wcontainers_kernel_test::streams::{INPUT, Step, StreamClient};
 use wcontainers_kernel_test::{assert_same_streams, guest_directory_entry, image_command};
 
 fn out() -> PathBuf {
@@ -28,8 +28,8 @@ fn text(seed: u64, bytes: usize) -> Vec<u8> {
     text
 }
 
-fn input(script: Vec<Step>) -> Outside {
-    Outside {
+fn input(script: Vec<Step>) -> StreamClient {
+    StreamClient {
         input: true,
         script,
         ..Default::default()
@@ -74,7 +74,7 @@ fn pipe_size(run: &Run) -> u64 {
 
 #[test]
 fn a_pipeline_reads_all_of_its_input() {
-    let outside = input(send_all(text(1, 200_000)));
+    let client = input(send_all(text(1, 200_000)));
     let runs = assert_same_streams(
         &out(),
         None,
@@ -83,43 +83,43 @@ fn a_pipeline_reads_all_of_its_input() {
             "-c",
             "sort | uniq -c | sort -k1,1nr -k2 | head -5; echo done",
         ],
-        &outside,
+        &client,
     );
     only_warnings(&runs, &[]);
 }
 
 #[test]
 fn input_reaches_a_container_still_starting_on_the_backend() {
-    // With the root on the backend the start waits for its answers; the outside's credit and
+    // With the root on the backend the start waits for its answers; the client's credit and
     // input come meanwhile.
-    let outside = input(send_all(text(8, 20_000)));
+    let client = input(send_all(text(8, 20_000)));
     wcontainers_kernel_test::assert_same_streams_on(
         &out(),
         None,
         &["sh", "-c", "wc -l; echo done >&2"],
-        &outside,
+        &client,
         Some(ROOT_DIRECTORY),
     );
 }
 
 #[test]
 fn end_of_input_is_end_of_file() {
-    let outside = input(send_all(text(2, 3000)));
-    let runs = assert_same_streams(&out(), Some("stdin"), &["all", "100", "0"], &outside);
+    let client = input(send_all(text(2, 3000)));
+    let runs = assert_same_streams(&out(), Some("stdin"), &["all", "100", "0"], &client);
     only_warnings(&runs, &[]);
     // No input at all, then end of file.
-    let outside = input(vec![Step::CloseInput]);
-    assert_same_streams(&out(), Some("stdin"), &["all", "100", "0"], &outside);
+    let client = input(vec![Step::CloseInput]);
+    assert_same_streams(&out(), Some("stdin"), &["all", "100", "0"], &client);
 }
 
 #[test]
 fn large_input_to_a_slow_reader_is_held_to_the_credit() {
-    let outside = input(send_all(text(3, 1 << 20)));
+    let client = input(send_all(text(3, 1 << 20)));
     let runs = assert_same_streams(
         &out(),
         Some("stdin"),
         &["all", &(1 << 9).to_string(), "32"],
-        &outside,
+        &client,
     );
     for run in &runs {
         let size = pipe_size(run);
@@ -134,8 +134,8 @@ fn large_input_to_a_slow_reader_is_held_to_the_credit() {
 
 #[test]
 fn a_reader_that_closes_its_input_early() {
-    let outside = input(send_all(text(4, 1 << 20)));
-    let runs = assert_same_streams(&out(), Some("stdin"), &["early", "100"], &outside);
+    let client = input(send_all(text(4, 1 << 20)));
+    let runs = assert_same_streams(&out(), Some("stdin"), &["early", "100"], &client);
     for run in runs {
         assert!(run.input_closed, "the kernel closed the input end");
     }
@@ -144,7 +144,7 @@ fn a_reader_that_closes_its_input_early() {
 #[test]
 fn input_arrives_while_the_reader_waits() {
     for how in ["read", "poll", "select", "epoll"] {
-        let outside = input(vec![
+        let client = input(vec![
             expect("waiting 1"),
             send("one\n"),
             expect("waiting 2"),
@@ -152,7 +152,7 @@ fn input_arrives_while_the_reader_waits() {
             expect("waiting 3"),
             Step::CloseInput,
         ]);
-        assert_same_streams(&out(), Some("stdin"), &["wait", how], &outside);
+        assert_same_streams(&out(), Some("stdin"), &["wait", how], &client);
     }
 }
 
@@ -160,7 +160,7 @@ fn input_arrives_while_the_reader_waits() {
 fn children_inherit_the_standard_descriptors() {
     // Each reader takes exactly what it shows (the shell's `read` and `dd` a byte at a time), so
     // what each sees does not depend on how the input was cut into pieces.
-    let outside = input(send_all(text(5, 20_000)));
+    let client = input(send_all(text(5, 20_000)));
     assert_same_streams(
         &out(),
         None,
@@ -170,14 +170,14 @@ fn children_inherit_the_standard_descriptors() {
             "read first; echo \"first: $first\"; dd bs=1 count=10 2>/dev/null | od -c; cat | wc -c; \
              echo error >&2",
         ],
-        &outside,
+        &client,
     );
 }
 
 #[test]
 fn a_program_writing_its_own_input_pipe() {
-    // The input pipe's room is the writer inside's too: credit given outside does not hold it.
-    let outside = input(vec![expect("got"), Step::CloseInput]);
+    // The input pipe's space is the writer inside's too: credit given client does not hold it.
+    let client = input(vec![expect("got"), Step::CloseInput]);
     assert_same_streams(
         &out(),
         None,
@@ -186,25 +186,29 @@ fn a_program_writing_its_own_input_pipe() {
             "-c",
             "echo hi > /proc/self/fd/0; read x; echo got $x; echo more > /proc/self/fd/0; cat",
         ],
-        &outside,
+        &client,
     );
 }
 
 #[test]
 fn a_terminal_closed_before_the_start_finished() {
-    // With the root on the backend the start waits; the outside lets go of the terminal before
-    // it is made, and the slave is hung up as when the master closes (no reference: Docker's
-    // client cannot go before the container starts).
+    // With the root on the backend the start waits; the client lets go of the terminal before
+    // it is made, and the slave is hung up as when the master closes, its node gone from devpts
+    // (no reference: Docker's client cannot go before the container starts).
     std::fs::create_dir_all(out()).expect("creating the output directory");
-    let outside = Outside {
+    let client = StreamClient {
         input: true,
         terminal: Some((COLUMNS, ROWS)),
         script: vec![Step::CloseInput],
         ..Default::default()
     };
     let shell = image_command("sh");
-    let command = [shell.as_str(), "-c", "read x; exit 7"];
-    for run in run_ours(&out(), &command, outside, Some(ROOT_DIRECTORY)) {
+    let command = [
+        shell.as_str(),
+        "-c",
+        "read x; [ -e /dev/pts/0 ] && exit 8; exit 7",
+    ];
+    for run in run_ours(&out(), &command, client, Some(ROOT_DIRECTORY)) {
         assert_eq!(run.outcome.exit_code, 7, "{:?}", run.outcome);
         assert!(run.broken.is_empty(), "{:?}", run.broken);
     }
@@ -212,7 +216,7 @@ fn a_terminal_closed_before_the_start_finished() {
 
 #[test]
 fn the_standard_descriptors_redirected_away() {
-    let outside = input(send_all(text(6, 5 << 10)));
+    let client = input(send_all(text(6, 5 << 10)));
     assert_same_streams(
         &out(),
         None,
@@ -222,14 +226,14 @@ fn the_standard_descriptors_redirected_away() {
             "exec 3<&0 </dev/null; cat; echo [; cat <&3 | wc -c; exec 1>&2; echo to error; \
              ls -l /proc/self/fd/0 | sed 's/.*-> //'",
         ],
-        &outside,
+        &client,
     );
 }
 
 #[test]
-fn large_output_to_a_slow_outside() {
+fn large_output_to_a_slow_client() {
     for mode in ["block", "nonblock"] {
-        let outside = Outside {
+        let client = StreamClient {
             output_pace: Some(1 << 16),
             ..Default::default()
         };
@@ -237,7 +241,7 @@ fn large_output_to_a_slow_outside() {
             &out(),
             Some("stdout"),
             &["much", &(8 << 20).to_string(), mode],
-            &outside,
+            &client,
         );
         only_warnings(&runs, &[]);
         // Nonblocking, the writer met a full pipe (here and in the reference, compared above).
@@ -247,7 +251,7 @@ fn large_output_to_a_slow_outside() {
 }
 
 #[test]
-fn output_after_the_outside_closed() {
+fn output_after_the_client_closed() {
     let program = wcontainers_kernel_test::guest::build("stdout", &[], &out());
     let directory = program.parent().expect("a directory");
     for signal in ["default", "ignore"] {
@@ -265,21 +269,21 @@ fn output_after_the_outside_closed() {
                     false => writer.split(' ').map(str::to_string).collect(),
                 }
             };
-            // The reference shows a closed reader inside the container (see `run_outside`).
+            // The reference shows a closed reader inside the container (see `run_with_client`).
             let theirs = command("self");
             let theirs: Vec<&str> = theirs.iter().map(String::as_str).collect();
-            let reference = wcontainers_kernel_test::reference::run_outside(
+            let reference = wcontainers_kernel_test::reference::run_with_client(
                 directory,
                 &theirs,
-                &Outside::default(),
+                &StreamClient::default(),
             );
-            let ours = command("outside");
+            let ours = command("client");
             let ours: Vec<&str> = ours.iter().map(String::as_str).collect();
-            let outside = Outside {
+            let client = StreamClient {
                 script: vec![expect("ready"), Step::CloseOutput],
                 ..Default::default()
             };
-            for run in run_ours(directory, &ours, outside, None) {
+            for run in run_ours(directory, &ours, client, None) {
                 assert_eq!(run.outcome, reference, "{ours:?}");
                 assert!(run.broken.is_empty(), "{:?}", run.broken);
             }
@@ -288,11 +292,11 @@ fn output_after_the_outside_closed() {
 }
 
 /// Our runs of `command` (its first word a path) with the guest programs of `directory` at
-/// their place and the outside given, under every schedule seed.
+/// their place and the client given, under every schedule seed.
 fn run_ours(
     directory: &Path,
     command: &[&str],
-    outside: Outside,
+    client: StreamClient,
     backend: Option<&str>,
 ) -> Vec<Run> {
     let mut files = wcontainers_kernel_test::image::reference_image().to_vec();
@@ -313,9 +317,9 @@ fn run_ours(
     };
     wcontainers_kernel_test::schedule_seeds()
         .map(|seed| {
-            wcontainers_kernel_test::driver::run_outside(
+            wcontainers_kernel_test::driver::run_with_client(
                 &container,
-                outside.clone(),
+                client.clone(),
                 seed,
                 Default::default(),
             )
@@ -324,8 +328,8 @@ fn run_ours(
         .collect()
 }
 
-/// Our runs of a guest program with `arguments` and the outside given.
-fn run_guest(name: &str, arguments: &[&str], outside: Outside) -> Vec<Run> {
+/// Our runs of a guest program with `arguments` and the client given.
+fn run_guest(name: &str, arguments: &[&str], client: StreamClient) -> Vec<Run> {
     let program = wcontainers_kernel_test::guest::build(name, &[], &out());
     let path = in_guest_directory(name);
     let mut command = vec![path.as_str()];
@@ -333,7 +337,7 @@ fn run_guest(name: &str, arguments: &[&str], outside: Outside) -> Vec<Run> {
     run_ours(
         program.parent().expect("a directory"),
         &command,
-        outside,
+        client,
         None,
     )
 }
@@ -342,8 +346,8 @@ fn run_guest(name: &str, arguments: &[&str], outside: Outside) -> Vec<Run> {
 const COLUMNS: u16 = 80;
 const ROWS: u16 = 24;
 
-fn terminal(input: bool, script: Vec<Step>) -> Outside {
-    Outside {
+fn terminal(input: bool, script: Vec<Step>) -> StreamClient {
+    StreamClient {
         input,
         terminal: Some((COLUMNS, ROWS)),
         script,
@@ -354,17 +358,17 @@ fn terminal(input: bool, script: Vec<Step>) -> Outside {
 #[test]
 fn a_terminal_without_input() {
     // `docker run -t` with no terminal at the client has a terminal of no size.
-    let outside = Outside {
+    let client = StreamClient {
         terminal: Some((0, 0)),
         ..Default::default()
     };
-    let runs = assert_same_streams(&out(), Some("terminal"), &["info"], &outside);
+    let runs = assert_same_streams(&out(), Some("terminal"), &["info"], &client);
     only_warnings(&runs, &[reason::PROC_FIELDS_NOT_TRACKED]);
 }
 
 #[test]
 fn a_terminal_is_resized() {
-    let outside = terminal(
+    let client = terminal(
         true,
         vec![
             expect("ready"),
@@ -375,12 +379,12 @@ fn a_terminal_is_resized() {
             expect("size 100 30"),
         ],
     );
-    assert_same_streams(&out(), Some("terminal"), &["resize", "100", "30"], &outside);
+    assert_same_streams(&out(), Some("terminal"), &["resize", "100", "30"], &client);
 }
 
 #[test]
 fn canonical_and_raw_input_with_echo() {
-    let outside = terminal(
+    let client = terminal(
         true,
         vec![
             expect("ready"),
@@ -395,12 +399,12 @@ fn canonical_and_raw_input_with_echo() {
             expect("done"),
         ],
     );
-    assert_same_streams(&out(), Some("terminal"), &["lines"], &outside);
+    assert_same_streams(&out(), Some("terminal"), &["lines"], &client);
 }
 
 #[test]
 fn interrupt_and_suspend_reach_the_foreground_group() {
-    let outside = terminal(
+    let client = terminal(
         true,
         vec![
             expect("ready"),
@@ -410,17 +414,20 @@ fn interrupt_and_suspend_reach_the_foreground_group() {
             expect("child"),
         ],
     );
-    assert_same_streams(&out(), Some("terminal"), &["signals"], &outside);
+    assert_same_streams(&out(), Some("terminal"), &["signals"], &client);
 }
 
 #[test]
 fn a_shell_on_the_terminal() {
-    let outside = terminal(
+    let client = terminal(
         true,
         vec![
             expect("# "),
-            send("sleep 30\r"),
-            expect("sleep 30\r\n"),
+            // `start` is printed by the job itself, once the line editor has given back the
+            // terminal's settings and the job is the foreground group (the echoed line shows
+            // `st""art`), so the ^C cannot reach the editor's raw mode.
+            send("sh -c 'echo st\"\"art; exec sleep 30'\r"),
+            expect("start"),
             send("\x03"),
             expect("^C"),
             expect("# "),
@@ -429,13 +436,13 @@ fn a_shell_on_the_terminal() {
             send("exit\r"),
         ],
     );
-    assert_same_streams(&out(), None, &["sh"], &outside);
+    assert_same_streams(&out(), None, &["sh"], &client);
 }
 
 #[test]
-fn an_outside_sending_past_its_credit_is_cut_off() {
+fn a_client_sending_past_its_credit_is_cut_off() {
     let sent = text(7, 1 << 20);
-    let outside = Outside {
+    let client = StreamClient {
         input: true,
         script: send_all(sent.clone()),
         excess: 100,
@@ -444,7 +451,7 @@ fn an_outside_sending_past_its_credit_is_cut_off() {
     for run in run_guest(
         "stdin",
         &["all", &wcontainers_abi::PAGE_SIZE.to_string(), "0"],
-        outside,
+        client,
     ) {
         let past: u64 = run
             .counters
@@ -452,10 +459,7 @@ fn an_outside_sending_past_its_credit_is_cut_off() {
             .filter(|counter| counter.reason == reason::STREAM_PAST_CREDIT)
             .map(|counter| counter.count)
             .sum();
-        assert!(
-            run.sends_past_credit > 0,
-            "the outside went past its credit"
-        );
+        assert!(run.sends_past_credit > 0, "the client went past its credit");
         assert_eq!(
             past, run.sends_past_credit,
             "every send past the credit counted"
@@ -481,12 +485,40 @@ fn an_outside_sending_past_its_credit_is_cut_off() {
 }
 
 #[test]
-fn an_outside_that_never_reads_holds_the_writer_to_the_pipe() {
-    let outside = Outside {
+fn credit_on_the_input_end_is_counted() {
+    let mut script = vec![Step::Credit {
+        end: INPUT,
+        bytes: 1 << 30,
+    }];
+    script.extend(send_all(b"in\n".to_vec()));
+    let client = StreamClient {
+        input: true,
+        script,
+        ..Default::default()
+    };
+    for run in run_guest(
+        "stdin",
+        &["all", &wcontainers_abi::PAGE_SIZE.to_string(), "0"],
+        client,
+    ) {
+        let counted: Vec<_> = run
+            .counters
+            .iter()
+            .filter(|counter| counter.reason == reason::EVENT_UNEXPECTED)
+            .map(|counter| (counter.detail, counter.count))
+            .collect();
+        assert_eq!(counted, [(u64::from(INPUT.0), 1)], "{:?}", run.counters);
+        assert!(run.broken.is_empty(), "{:?}", run.broken);
+    }
+}
+
+#[test]
+fn a_client_that_never_reads_holds_the_writer_to_the_pipe() {
+    let client = StreamClient {
         output_pace: Some(0),
         ..Default::default()
     };
-    for run in run_guest("stdout", &["fill"], outside) {
+    for run in run_guest("stdout", &["fill"], client) {
         assert!(run.broken.is_empty(), "{:?}", run.broken);
         assert!(run.outcome.stdout.is_empty());
         let report = String::from_utf8_lossy(&run.outcome.stderr).into_owned();

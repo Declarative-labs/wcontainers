@@ -1,10 +1,10 @@
 // Standard output as `docker run` takes it.
 //   much <bytes> <block|nonblock>: writes <bytes> of a pattern in 8 KiB writes; nonblocking, it
-//     waits in poll for room after each EAGAIN and says on standard error whether one came.
+//     waits in poll for space after each EAGAIN and says on standard error whether one came.
 //   fill: writes without blocking until the pipe is full and says how much it took, and the
 //     pipe's size, on standard error.
-//   closed <outside|self> <default|ignore>: says "ready" on standard error, waits, then writes to
-//     standard output after its reader has gone: the outside's, or a pipe it closed itself (the
+//   closed <client|self> <default|ignore>: says "ready" on standard error, waits, then writes to
+//     standard output after its reader has gone: the client's, or a pipe it closed itself (the
 //     reference's way, since Docker's daemon always reads).
 #define _GNU_SOURCE
 #include <errno.h>

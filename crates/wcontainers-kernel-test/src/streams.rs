@@ -1,4 +1,4 @@
-//! The outside of a container's standard streams, as a test drives them: on our kernel the other
+//! The client of a container's standard streams, as a test drives them: on our kernel the other
 //! sides of its ends, in Docker the client's input, output and terminal.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,18 +14,18 @@ pub const OUTPUT: End = End(1);
 pub const ERROR: End = End(2);
 pub const TERMINAL: End = End(3);
 
-/// The output credit of an outside that reads everything as it comes.
+/// The output credit of a client that reads everything as it comes.
 pub const UNLIMITED: u64 = u64::MAX;
 
-/// The largest piece the outside sends at once; pieces are drawn from the seed up to this.
+/// The largest piece the client sends at once; pieces are drawn from the seed up to this.
 const MOST_AT_ONCE: u64 = 1 << 16;
 
-/// How many turns a container that never waits runs before the outside's next piece reaches it;
-/// one that waits gets it when it waits, as a real outside's bytes take longer to come than a
+/// How many turns a container that never waits runs before the client's next piece reaches it;
+/// one that waits gets it when it waits, as a real client's bytes take longer to come than a
 /// program takes to reach its next wait.
 const BUSY_TURNS: u64 = 10_000;
 
-/// One step of what the outside does.
+/// One step of what the client does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
     /// Waits until what the container has shown (its output or error, or all its terminal shows)
@@ -39,12 +39,14 @@ pub enum Step {
     CloseInput,
     /// Stops reading the output: closes the output end.
     CloseOutput,
+    /// Gives the kernel credit on an end, whichever way the end goes (to break the rules).
+    Credit { end: End, bytes: u64 },
 }
 
-/// What the outside is and does.
+/// What the client is and does.
 #[derive(Clone, Debug, Default)]
-pub struct Outside {
-    /// Descriptor 0 takes input from outside (`docker run -i`).
+pub struct StreamClient {
+    /// Descriptor 0 takes input from the client (`docker run -i`).
     pub input: bool,
     /// Descriptors 0 to 2 are a terminal of this many columns and rows (`docker run -t`).
     pub terminal: Option<(u16, u16)>,
@@ -56,7 +58,7 @@ pub struct Outside {
     pub excess: u64,
 }
 
-impl Outside {
+impl StreamClient {
     /// What the kernel is asked for at start.
     pub fn standard(&self) -> Standard {
         match self.terminal {
@@ -81,7 +83,7 @@ impl Outside {
         }
     }
 
-    /// The end the outside sends on, if any.
+    /// The end the client sends on, if any.
     fn input_end(&self) -> Option<End> {
         match self.terminal {
             Some(_) => Some(TERMINAL),
@@ -93,7 +95,7 @@ impl Outside {
 /// The test host's side of the ends.
 #[derive(Clone, Debug, Default)]
 pub struct Streams {
-    pub outside: Outside,
+    pub client: StreamClient,
     /// The next step of the script, and what is left to send of a step that sends.
     step: usize,
     sending: Option<Vec<u8>>,
@@ -123,9 +125,9 @@ pub struct Streams {
 }
 
 impl Streams {
-    pub fn new(outside: Outside) -> Self {
+    pub fn new(client: StreamClient) -> Self {
         Self {
-            outside,
+            client,
             ..Default::default()
         }
     }
@@ -156,7 +158,7 @@ impl Streams {
     }
 
     pub fn credit(&mut self, end: End, bytes: u64) {
-        if Some(end) != self.outside.input_end() {
+        if Some(end) != self.client.input_end() {
             self.broken
                 .push(format!("{end:?}: credit on an end that takes nothing"));
         }
@@ -168,7 +170,7 @@ impl Streams {
     }
 
     pub fn close(&mut self, end: End) {
-        if Some(end) == self.outside.input_end() && !self.closed_here.contains(&end) {
+        if Some(end) == self.client.input_end() && !self.closed_here.contains(&end) {
             self.input_closed_first = true;
         }
         if !self.closed_by_kernel.insert(end) {
@@ -178,12 +180,12 @@ impl Streams {
 
     /// Whether the script has steps left.
     pub fn waiting(&self) -> bool {
-        self.step < self.outside.script.len()
+        self.step < self.client.script.len()
     }
 
     /// Whether every output end has been closed by the kernel or here.
     pub fn outputs_closed(&self) -> bool {
-        self.outside
+        self.client
             .outputs()
             .iter()
             .all(|end| self.closed_by_kernel.contains(end) || self.closed_here.contains(end))
@@ -194,12 +196,12 @@ impl Streams {
         self.input_closed_first
     }
 
-    /// How much output credit the outside gives on `end` at a time, if it is slow.
+    /// How much output credit the client gives on `end` at a time, if it is slow.
     fn pace(&self, end: End) -> Option<u64> {
-        self.outside.output_pace.filter(|_| end != ERROR)
+        self.client.output_pace.filter(|_| end != ERROR)
     }
 
-    /// The credit the outside gives on an output end now: what it gives at a time, once the end
+    /// The credit the client gives on an output end now: what it gives at a time, once the end
     /// is open and the credit given before is used up.
     fn due(&self, end: End) -> u64 {
         let open = !self.closed_by_kernel.contains(&end) && !self.closed_here.contains(&end);
@@ -212,7 +214,7 @@ impl Streams {
 
     /// What the script waits for, for a run that can go on no further.
     pub fn stuck_at(&self) -> Option<&Step> {
-        self.outside.script.get(self.step)
+        self.client.script.get(self.step)
     }
 }
 
@@ -251,10 +253,10 @@ pub trait StreamHost: wcontainers_abi::Host {
     fn choices(&mut self) -> &mut StdRng;
 }
 
-/// What the outside does at the start, which may still be waiting on the backend: credit for all
+/// What the client does at the start, which may still be waiting on the backend: credit for all
 /// the output when it takes everything, and the script's first steps that wait for nothing.
 pub fn begin(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost) {
-    for end in host.streams().outside.outputs() {
+    for end in host.streams().client.outputs() {
         if host.streams().pace(end).is_none() {
             give(kernel, cpu, host, end, UNLIMITED);
         }
@@ -274,13 +276,13 @@ fn close_here(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost
     }
 }
 
-/// The outside's next move, after a turn or (`idle`) when the container can go on no other way:
+/// The client's next move, after a turn or (`idle`) when the container can go on no other way:
 /// a piece of what it sends (when idle, or after [`BUSY_TURNS`] turns without), output credit
 /// when it is slow and the container idle, and the script's other steps. Whether it did anything.
 pub fn act(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost, idle: bool) -> bool {
     let mut acted = false;
     if idle {
-        for end in host.streams().outside.outputs() {
+        for end in host.streams().client.outputs() {
             let due = host.streams().due(end);
             if due > 0 {
                 give(kernel, cpu, host, end, due);
@@ -290,7 +292,7 @@ pub fn act(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost, i
     }
     loop {
         let streams = host.streams();
-        let Some(step) = streams.outside.script.get(streams.step).cloned() else {
+        let Some(step) = streams.client.script.get(streams.step).cloned() else {
             return acted;
         };
         match step {
@@ -302,7 +304,7 @@ pub fn act(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost, i
             }
             Step::Send(bytes) => {
                 let end = streams
-                    .outside
+                    .client
                     .input_end()
                     .expect("a script that sends has an input");
                 let left = streams.sending.get_or_insert(bytes).clone();
@@ -319,7 +321,7 @@ pub fn act(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost, i
                     return acted;
                 }
                 streams.since_sent = 0;
-                let excess = streams.outside.excess;
+                let excess = streams.client.excess;
                 // Within the credit, a piece drawn from the seed; breaking the rule, all the
                 // credit and the excess past it.
                 let piece = match excess {
@@ -357,7 +359,7 @@ pub fn act(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost, i
             }
             Step::CloseInput => {
                 streams.step += 1;
-                let end = streams.outside.input_end().expect("an input to close");
+                let end = streams.client.input_end().expect("an input to close");
                 close_here(kernel, cpu, host, end);
                 acted = true;
             }
@@ -366,11 +368,16 @@ pub fn act(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost, i
                 close_here(kernel, cpu, host, OUTPUT);
                 acted = true;
             }
+            Step::Credit { end, bytes } => {
+                streams.step += 1;
+                kernel.event(cpu, host, Event::StreamCredit { end, bytes });
+                acted = true;
+            }
         }
     }
 }
 
-/// After the container's end: takes the output still held, at the outside's pace, until the kernel
+/// After the container's end: takes the output still held, at the client's pace, until the kernel
 /// closes every output end; then lets go of every end. Whether every output end was closed.
 pub fn finish(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost) -> bool {
     loop {
@@ -379,7 +386,7 @@ pub fn finish(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost
         }
         let before = (host.streams().stdout.len(), host.streams().stderr.len());
         let mut gave = false;
-        for end in host.streams().outside.outputs() {
+        for end in host.streams().client.outputs() {
             let due = host.streams().due(end);
             if due > 0 {
                 give(kernel, cpu, host, end, due);
@@ -396,8 +403,8 @@ pub fn finish(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost
         }
     }
     let closed = host.streams().outputs_closed();
-    let mut all: Vec<End> = host.streams().outside.outputs();
-    all.extend(host.streams().outside.input_end());
+    let mut all: Vec<End> = host.streams().client.outputs();
+    all.extend(host.streams().client.input_end());
     all.dedup();
     for end in all {
         close_here(kernel, cpu, host, end);
