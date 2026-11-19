@@ -200,7 +200,10 @@ rewritten) would change only that function (brief).
   G + 4 by `movz`/`movk`, then `br t`), since the slot's `blr` would overwrite the target; the first `movz`
   into x30 is the commit point, and section 4's constant fix-up finishes x30 if an interrupt lands among
   the `movk`s. N4 measures this against plain calls for every call
-  and keeps the faster exact one.
+  and keeps the faster exact one. As built at N4 run 2 there is no call stub yet: a call builds x30 in place
+  and leaves through its target's exit, and a return is the jump ending in `br t`, not `ret t` (a `ret` was
+  foreseen from a return-address stack holding none of the guest's: on the speed test, fib went from +544%
+  to +102% cycles and calls.c from +481% to +68% when it became a `br`).
 - **The mirror's reach.** The mirror covers guest addresses below 2^45 (32 TiB), so the native ARM64 back
   end's address ceiling (`Cpu::address_space`, abi/cpu.rs:34-35) is 2^45, under the container's width of 2^48,
   as the brief's ruling on ceilings allows (section 6.2, K2; decision 9).
@@ -1655,6 +1658,15 @@ Handled, and proven by tests rather than assumed:
   run again with twice the pairs, up to 60, and if still undecided, report it undecided to the orchestrator
   with the figures, to be run on a quieter machine. The orchestrator has decided this bar (decision 6),
   with E's cost as N2 measures it.
+  As built (N4 run 2, crates/wcontainers-hypervisor/tests/speed.rs, one command): each program is compiled
+  once by zig's C compiler (`-O2 -ffreestanding`, x18 reserved since macOS owns it) as a static ARM64 Linux
+  program placed at 1 TiB (macOS keeps addresses under 0x70_0000_0000 for itself) with every segment
+  starting a page; the native run is that file in `native-kernel` at the monitor's look-ahead, and the plain
+  run maps the same file's segments at their own addresses in a host process and puts a breakpoint over each
+  `svc`, whose handler answers write and exit, so both sides run the workloads as the same bytes at the same
+  addresses. Every run is its own process, measured at its end with `proc_pid_rusage` (`RUSAGE_INFO_V6`:
+  cycles, instructions, and cycles on performance cores for the share); both runs' output and exit code must
+  be equal. The system-call part and the untranslated run at EL0 are not built yet.
 
 ## 9. Milestones
 
