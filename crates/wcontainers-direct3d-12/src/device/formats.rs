@@ -38,6 +38,8 @@ pub(super) struct Bound {
     through: u64,
     clamped: u128,
     filtered: u128,
+    /// Storage views at offsets the back end cannot bind (`VariantFlags::STORAGE_OFFSET`).
+    offsets: bool,
 }
 
 /// A program made for what is bound, with its helper layout; `None` where the conversion
@@ -182,6 +184,7 @@ fn keyed(base: &VariantKey, made: &[(Slot, Format)], bound: Option<&Bound>) -> V
         key.texels_through_buffer = b.through;
         key.min_lod_clamped = b.clamped;
         key.filter_in_shader = b.filtered;
+        key.flags.set(VariantFlags::STORAGE_OFFSET, b.offsets);
         key.swizzled = b.swizzled.clone();
         key.texture_layers = b.layers.clone();
     }
@@ -399,7 +402,9 @@ impl<B: Backend> Device<B> {
                 ));
             }
         }
+        let offsets = self.bound_offsets.contains(&f.visibility);
         if formats == f.made
+            && !offsets
             && lod_bias == 0
             && border == 0
             && clamped == 0
@@ -441,6 +446,7 @@ impl<B: Backend> Device<B> {
             through,
             clamped,
             filtered,
+            offsets,
         }))
     }
 

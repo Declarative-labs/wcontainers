@@ -12,13 +12,10 @@ use wcontainers_gpu::{
     Backend, Extent, Features, Format, FormatUse, Origin, SlowPath, TextureRegion, TextureUsage,
 };
 
-/// `DXGI_FORMAT_D32_FLOAT` and `DXGI_FORMAT_D16_UNORM`.
-const DXGI_D32_FLOAT: u32 = 40;
-const DXGI_D16_UNORM: u32 = 55;
-
-use super::{Device, Resource, ResourceId, Storage, dxgi};
+use super::{Device, Resource, ResourceId, Storage, dxgi as format_of};
 use crate::Error;
 use crate::resource;
+use wcontainers_directx_graphics_infrastructure::dxgi;
 
 impl<B: Backend> Device<B> {
     /// Lists `id`, just placed, and the live resources it overlaps, `overlaps`, as inheriting from
@@ -59,7 +56,7 @@ impl<B: Backend> Device<B> {
     /// or, when the format reinterprets the stored bits of a colour texture and the back end lacks
     /// `FORMAT_REINTERPRET`, its twin in that format, made at the first such view.
     pub fn view_holder(&mut self, id: ResourceId, format: u32) -> Result<ResourceId, Error> {
-        let view = dxgi(format)?;
+        let view = format_of(format)?;
         let Some(Resource {
             storage: Storage::Texture { desc, .. },
             twins,
@@ -108,8 +105,8 @@ impl<B: Backend> Device<B> {
             }
         };
         let (depth, dxgi_depth) = match stored {
-            Format::R32Float => (Format::Depth32Float, DXGI_D32_FLOAT),
-            Format::R16Unorm => (Format::Depth16Unorm, DXGI_D16_UNORM),
+            Format::R32Float => (Format::Depth32Float, dxgi::D32_FLOAT),
+            Format::R16Unorm => (Format::Depth16Unorm, dxgi::D16_UNORM),
             _ => {
                 return Err(Error::NotImplemented(
                     "comparison sampling of a texture of no depth format's bits",
