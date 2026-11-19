@@ -833,7 +833,7 @@ impl<B: Backend> Device<B> {
         let lines = matches!(out.topology, Topology::LineList | Topology::LineStrip);
         // As the plain draw's lines (`ContextState::draw`).
         if lines && desc.antialiased_lines && !desc.multisample {
-            return not_implemented("alpha-antialiased lines (AntialiasedLinesAsQuads)");
+            return not_implemented(super::ALPHA_ANTIALIASED_LINES);
         }
         if (desc.depth_bias != 0 || desc.slope_scaled_depth_bias != 0.0)
             && !matches!(
@@ -847,7 +847,7 @@ impl<B: Backend> Device<B> {
             return Ok(());
         }
         if self.viewport_in_shader().is_some() {
-            return not_implemented("a viewport the back end would round, behind a geometry stage");
+            return not_implemented(super::VIEWPORT_BEHIND_GEOMETRY);
         }
         self.open_pass();
         if !self.open_stretch() {

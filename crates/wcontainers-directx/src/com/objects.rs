@@ -166,15 +166,17 @@ fn dxgi_usage(bind: u32) -> DXGI_USAGE {
     DXGI_USAGE(u)
 }
 
+/// The sharing calls not served, by name.
+const GET_SHARED_HANDLE: &str = "IDXGIResource::GetSharedHandle of a shared resource";
+const CREATE_SHARED_HANDLE: &str = "IDXGIResource1::CreateSharedHandle";
+
 /// `IDXGIResource::GetSharedHandle` of a resource of these misc flags: none for an unshared one, as
 /// Direct3D answers; the sharing itself is not served.
 fn shared_handle(misc: u32) -> Result<HANDLE> {
     if misc & (desc::MISC_SHARED | desc::MISC_SHARED_KEYEDMUTEX) == 0 {
         Ok(HANDLE::default())
     } else {
-        Err(missing(
-            "IDXGIResource::GetSharedHandle of a shared resource",
-        ))
+        Err(missing(GET_SHARED_HANDLE))
     }
 }
 
@@ -183,7 +185,7 @@ fn nt_shared_handle(misc: u32) -> Result<HANDLE> {
     if misc & desc::MISC_SHARED_NTHANDLE == 0 {
         Err(E_INVALIDARG.into())
     } else {
-        Err(missing("IDXGIResource1::CreateSharedHandle"))
+        Err(missing(CREATE_SHARED_HANDLE))
     }
 }
 

@@ -192,7 +192,7 @@ const DEFAULT_LEVELS: [u32; 6] = [
 
 /// Direct3D's largest textures at feature level `level`: the extent of 1D and 2D textures, of a
 /// cube's faces and of 3D textures, and the layers of an array (9_x has no arrays).
-fn level_texture_limits(level: u32) -> [u32; 4] {
+pub fn level_texture_limits(level: u32) -> [u32; 4] {
     match level {
         level::L9_1 | level::L9_2 => [2048, 512, 256, 1],
         level::L9_3 => [4096, 4096, 256, 1],
@@ -201,11 +201,17 @@ fn level_texture_limits(level: u32) -> [u32; 4] {
     }
 }
 
+/// The color targets of 9_3 (`D3D_FL9_3_SIMULTANEOUS_RENDER_TARGET_COUNT`).
+const L9_3_TARGETS: u32 = 4;
+
+/// Refused: sharing below 10_0, or of more or fewer than one kind.
+const SHARING_INVALID: &str = "sharing below 10_0, or not of exactly one kind";
+
 /// The color targets a pass takes at feature level `level`.
 fn level_targets(level: u32) -> u32 {
     match level {
         level::L9_1 | level::L9_2 => 1,
-        level::L9_3 => 4,
+        level::L9_3 => L9_3_TARGETS,
         _ => MAX_COLOR_TARGETS as u32,
     }
 }
@@ -846,9 +852,7 @@ impl<B: Backend> Device<B> {
         if (sharing != 0 || d.misc_flags & MISC_SHARED_NTHANDLE != 0)
             && (self.level < level::L10_0 || !sharing.is_power_of_two())
         {
-            return Err(Error::InvalidArg(
-                "sharing below 10_0, or not of exactly one kind",
-            ));
+            return Err(Error::InvalidArg(SHARING_INVALID));
         }
         let format = format::storage_format(d.format, d.bind_flags & bind::DEPTH_STENCIL != 0)?;
         // A count and quality the device reports no level for is invalid, as in Direct3D. The

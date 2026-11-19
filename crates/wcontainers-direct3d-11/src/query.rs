@@ -71,8 +71,9 @@ const SET_SLOTS: u32 = 4096;
 /// The bytes of a counted stretch's sum: the occlusion counter writes a u64.
 const SUM_BYTES: u64 = size_of::<u64>() as u64;
 
-/// Counted stretches' sums one buffer holds, so a frame of many stretches makes few buffers.
-const SUMS_PER_BUFFER: u64 = 256;
+/// Counted stretches' sums one buffer holds, so a frame of many stretches makes few buffers: as
+/// many as an occlusion set's slots.
+const SUMS_PER_BUFFER: u64 = SET_SLOTS as u64;
 
 /// The bytes `GetData` writes for a query of `kind`, or none for a kind Direct3D 11 does not have.
 pub fn data_size(kind: u32) -> Option<u32> {

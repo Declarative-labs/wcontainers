@@ -8,7 +8,7 @@ use wcontainers_direct3d_11::desc::*;
 use wcontainers_direct3d_11::object::{Buffer, Resource, ShaderView, Texture, View};
 use wcontainers_direct3d_11::record::Recorder;
 use wcontainers_direct3d_11::{
-    DOMAIN, Device, Error, GEOMETRY, HULL, PIXEL, Removal, VERTEX, shader,
+    DOMAIN, Device, Error, GEOMETRY, HULL, PIXEL, Removal, VERTEX, level_texture_limits, shader,
 };
 use wcontainers_gpu::{Backend, LossReason, SlowPath, SourceStage};
 
@@ -197,9 +197,10 @@ fn the_top_feature_level_is_the_highest_whose_sizes_targets_and_features_the_bac
     // An adapter of 10_x's sizes reports 10_1 with compute.
     assert_eq!(
         top(&|r| {
-            r.caps.limits.max_texture_2d = 8192;
-            r.caps.limits.max_texture_cube = 8192;
-            r.caps.limits.max_texture_layers = 512;
+            let [extent, cube, _, layers] = level_texture_limits(level::L10_1);
+            r.caps.limits.max_texture_2d = extent;
+            r.caps.limits.max_texture_cube = cube;
+            r.caps.limits.max_texture_layers = layers;
         }),
         Ok(level::L10_1)
     );
@@ -230,7 +231,7 @@ fn the_top_feature_level_is_the_highest_whose_sizes_targets_and_features_the_bac
         Ok(level::L9_2)
     );
     assert_eq!(
-        top(&|r| r.caps.limits.max_texture_2d = 1024),
+        top(&|r| r.caps.limits.max_texture_2d = level_texture_limits(level::L9_1)[0] / 2),
         Err(Error::Unsupported)
     );
     // A device asked for 10_0 alone on a back end without the geometry stage is not made.

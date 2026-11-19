@@ -345,12 +345,25 @@ const PER_PIXEL: u64 = u64::MAX;
 const PER_PIXEL_MASKED: u64 = u64::MAX - 1;
 const PER_SAMPLE: u64 = u64::MAX - 2;
 
+/// Words of `HelperValue::ViewportAdjust`: the scale and offset of clip x and y.
+const ADJUST_WORDS: usize = 4;
+
+/// Where a pixel's centre lies within it, in pixels from its top left corner.
+const PIXEL_CENTRE: f32 = 0.5;
+
+/// Draws refused by name.
+pub(crate) const ALPHA_ANTIALIASED_LINES: &str =
+    "alpha-antialiased lines (AntialiasedLinesAsQuads)";
+const LINE_BIAS_INTO_FLOAT_DEPTH: &str = "a depth bias on lines or points into float depth";
+const VIEWPORT_BEHIND_GEOMETRY: &str =
+    "a viewport the back end would round, behind a geometry stage";
+
 /// A viewport the vertex program maps positions onto (`ViewportInShader`): the whole-pixel
 /// viewport the back end draws with, the scale and offset of clip x and y
 /// (`HelperValue::ViewportAdjust`), and the pixels the API's viewport covers.
 struct ShaderViewport {
     viewport: Viewport,
-    adjust: [f32; 4],
+    adjust: [f32; ADJUST_WORDS],
     pixels: ScissorRect,
 }
 
@@ -2093,7 +2106,7 @@ impl<B: Backend> Device<B> {
             Format::Depth16Unorm => 16,
             _ if d24 => 24,
             _ if unbiased => {
-                return not_implemented("a depth bias on lines or points into float depth");
+                return not_implemented(LINE_BIAS_INTO_FLOAT_DEPTH);
             }
             _ => {
                 return not_implemented("a depth bias clamp on float depth without the back end's");
@@ -2121,8 +2134,8 @@ impl<B: Backend> Device<B> {
             let start = o.floor();
             let whole = (o + size).ceil() - start;
             let offset = (2.0 * (o - start) + size) / whole - 1.0;
-            let first = (o - 0.5).ceil().max(0.0);
-            let end = (o + size - 0.5).ceil().max(first);
+            let first = (o - PIXEL_CENTRE).ceil().max(0.0);
+            let end = (o + size - PIXEL_CENTRE).ceil().max(first);
             (
                 start,
                 whole,
@@ -3634,8 +3647,8 @@ impl<B: Backend> Device<B> {
                     let adjust = self
                         .viewport_in_shader()
                         .map_or([1.0, 1.0, 0.0, 0.0], |a| a.adjust);
-                    words[..4].copy_from_slice(&adjust.map(f32::to_bits));
-                    4
+                    words[..ADJUST_WORDS].copy_from_slice(&adjust.map(f32::to_bits));
+                    ADJUST_WORDS
                 }
                 HelperValue::DepthRange => {
                     let v = self.ctx.viewports.first().copied().unwrap_or_default();
@@ -4267,7 +4280,7 @@ impl<B: Backend> Device<B> {
             && raster.antialiased_lines
             && !raster.multisample
         {
-            return not_implemented("alpha-antialiased lines (AntialiasedLinesAsQuads)");
+            return not_implemented(ALPHA_ANTIALIASED_LINES);
         }
         let nothing = matches!(
             gpu_range,
