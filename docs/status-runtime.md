@@ -130,6 +130,33 @@ leave a default mount out), the domain name, and the per-process values (`oomSco
 `scheduler`, `execCPUAffinity`, `personality`, `timeOffsets`); and the address-space size and the memory
 size the guest is told (plan section 8), which `Machine` holds once the kernel takes them.
 
+## Findings of J4a run 3's check, and how each was settled (J5 run 1)
+
+- A process's threads are capped by its thread blocks with nothing counted (minor): fixed (9adca9d1). A new
+  thread past the last block is still refused as out of memory (the guest's pthread_create gets EAGAIN), now
+  counted and warned "no thread block left in the process" with the number of blocks as the detail; a process
+  whose memories the host refuses likewise ("the host refused a process's memories"). Unit test
+  `a_thread_past_the_blocks_is_counted_and_warned`. The cap (15 MiB / 848 bytes, 18,547 threads at once) is
+  not raised: that is the back end's capacity, as the brief's address ceilings are.
+- A stale deadline raised the stop flag after an idle (minor): fixed (948628c2). The local system drops a
+  turn's deadline when the turn ends (`stopped`), and the timer thread raises the flag only when it is the one
+  that clears the deadline it slept towards. Left: a deadline that passes in the instant between the back end
+  leaving `run` and `stopped` still raises once (one extra exit at most). Unit tests
+  `a_turn_past_its_deadline_is_stopped` and `an_idle_past_an_ended_turns_deadline_raises_nothing`.
+- The literal audit's fix list not acknowledged (minor): read now (orchestrator/magic-literals/fix-runtime.md).
+  Its one home for shared facts conflicts with two names J4a run 3 added: the back end's `SLOT_BYTES`
+  (`size_of::<i32>()`) and `wasm_page()` (from wasmtime's `MemoryType::page_size`) are to become the
+  translator's `contract::SLOT_BYTES` / `SlotEntry` and `contract::WASM_PAGE_BYTES`. Neither is on a branch
+  this track merges (origin/phase-1 is still 2edbc451), so both stay as they are until they land, as the
+  brief says. Of the list, step 1 items 1 and 2 are done in this run (starts.rs uses `PAGE_SIZE` itself;
+  `CHUNK` is derived from `CHUNK_BYTES` and `PAGE_SIZE`, 9adca9d1). origin/phase-1-literals exists (its
+  L1 is recorded done) but this run's task names only the merge of origin/phase-1, so it is not merged and
+  no baseline is made (under "For the orchestrator").
+- How to run named the program by its old name (minor): corrected (section "How to run").
+- J4a run 3's bar named the wrong commit (minor): corrected; the logs' f353e5be is named.
+- Memory grows with live threads times translations (information): no change; it is the plan's one instance
+  per thread (translator plan 6).
+
 ## Findings of J4a run 2's check, and how each was settled (J4a run 3)
 
 - Plan section 20 said the stand-in counts the placeholder unit and the translator's count comes before J4
@@ -221,8 +248,8 @@ Left, with why:
   The owned suite with it (scratch j4run3/owned-4.log; 68.0 s, load 41.9 to 78.2): 122 passed (the new
   annotation test), 1 ignored, 0 failed. (owned-3.log is the same run before spec.rs's own unit test was
   changed from a refusal to an ignored path: that test failed, as it should have.)
-- J4a's bar at 582a1ab0, every change of this run's code but the unknown properties, which nothing the
-  bar runs reads (the kernel tests read no config.json) (scratch j4/bars.sh bar --nocapture, logs
+- J4a's bar at f353e5be (the logs' headers; the same code as 582a1ab0, which changed only this file), every
+  change of this run's code but the unknown properties, which nothing the bar runs reads (the kernel tests read no config.json) (scratch j4/bars.sh bar --nocapture, logs
   j4run3/bar-full.log, bar-none.log, bar-bounded.log; the bar's 13 test files, now 36 tests with the two new
   repeats): full 36 passed (383.7 s with its build, load 93.9 to 64.0); none 36 passed (594.4 s, load 64.0 to
   60.9); bounded 36 passed (435.0 s, load 60.9 to 44.6; N drawn 237, 44, 38, 15, 51, 27 and 202). The repeats
@@ -1215,10 +1242,10 @@ run). Scratch is pyro-parked/wcontainers-scratch/runtime; J1's logs are in its `
 - The surface tests at a look-ahead: scratch `j4/surface.sh NAME full|none|bounded`.
 - Reusing a dropped thread's instances: `nix develop -c cargo test -j 4 -p wcontainers-wasmtime --lib --
   --test-threads 3 a_dropped`. Resident size against thread count through the command line program: scratch
-  `j4run2/many.sh LOOK COUNT...` (first copy `target/debug/wcontainers` into j4run2/cli and the check's
-  check-j4a/img/with-progs.tar into j4run2; both copies were deleted at the end of the run). The check's CPU
-  clock programs: `j4run2/cli/wcontainers --tar check-j4a/img/with-progs4.tar --look-ahead <l> --
-  /wc/sleepcpu` (or `/wc/cputhreads`). Repeats at bounded ROUNDS times, the first with the translation cache emptied: scratch
+  `j4run2/many.sh LOOK COUNT...` (first copy `target/debug/wcon` into j4run2/cli as `wcontainers`, the name
+  many.sh calls, and the check's check-j4a/img/with-progs.tar into j4run2; both copies were deleted at the
+  end of the run). The check's CPU clock programs: `target/debug/wcon --tar check-j4a/img/with-progs4.tar
+  --look-ahead <l> -- /wc/sleepcpu` (or `/wc/cputhreads`). Repeats at bounded ROUNDS times, the first with the translation cache emptied: scratch
   `j4run2/flake.sh PREFIX ROUNDS`.
 - J3's surface, refusals, back end and runtime tests (Docker with `alpine:3.22` for linux/arm64):
   `nix develop -c cargo test -j 4 -p wcontainers-runtime -p wcontainers-wasmtime -- --test-threads 3`
