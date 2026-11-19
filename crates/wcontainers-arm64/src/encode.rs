@@ -125,6 +125,8 @@ pub mod field {
     pub const B40: &str = "b40";
     pub const RM: &str = "Rm";
     pub const RT2: &str = "Rt2";
+    /// An exclusive's load bit: 1 loads, 0 stores.
+    pub const LOAD: &str = "L";
     pub const OPTION: &str = "option";
     pub const IMM3: &str = "imm3";
     pub const IMM7: &str = "imm7";
