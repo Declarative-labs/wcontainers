@@ -564,8 +564,10 @@ impl AddressMap {
         for (offset, watch) in watches {
             self.watches.pages.insert(start + offset, watch);
         }
-        self.watches.note_written(start, end);
-        self.reapply(cpu, memory, start, end);
+        if self.watches.narrows() {
+            self.watches.note_written(start, end);
+            self.reapply(cpu, memory, start, end);
+        }
     }
 
     /// Ends the watches of `[start, end)`, whose pages a fork's child gets fresh.
@@ -784,9 +786,16 @@ impl AddressMap {
         }
     }
 
-    /// Takes a range out of the table, splitting mappings at its ends, and returns what was there.
+    /// Takes a range out of the table, splitting mappings at its ends, and returns what was there;
+    /// its pages' watches and record go with them.
     pub fn remove(&mut self, start: u64, end: u64) -> Vec<Mapping> {
         self.watches.forget(start, end);
+        self.split_out(start, end)
+    }
+
+    /// Takes the mappings of a range out of the table to be put back changed, splitting them at
+    /// its ends; the pages, their watches and their record stay.
+    fn split_out(&mut self, start: u64, end: u64) -> Vec<Mapping> {
         let overlapping: Vec<u64> = self
             .mappings
             .range(..end)
@@ -863,8 +872,8 @@ impl AddressMap {
         end: u64,
         permissions: Permissions,
     ) -> Result<(), Errno> {
-        let removed = self.remove(start, end);
-        for mut mapping in removed {
+        let changed = self.split_out(start, end);
+        for mut mapping in changed {
             let had_code = mapping.permissions.contains(Permissions::EXECUTE);
             mapping.permissions = permissions;
             self.apply(cpu, memory, &mapping)?;
@@ -1009,7 +1018,7 @@ impl AddressMap {
 
     /// Locks or unlocks a range, every page of which is mapped.
     pub fn set_lock(&mut self, start: u64, end: u64, lock: Lock) {
-        for mut mapping in self.remove(start, end) {
+        for mut mapping in self.split_out(start, end) {
             if !mapping.keeps_lock() {
                 mapping.locked = lock;
             }
@@ -1020,7 +1029,7 @@ impl AddressMap {
 
     /// Sets what a fork does with a range, every page of which is mapped.
     pub fn set_on_fork(&mut self, start: u64, end: u64, change: impl Fn(&mut OnFork)) {
-        for mut mapping in self.remove(start, end) {
+        for mut mapping in self.split_out(start, end) {
             change(&mut mapping.on_fork);
             self.mappings.insert(mapping.start, mapping);
         }

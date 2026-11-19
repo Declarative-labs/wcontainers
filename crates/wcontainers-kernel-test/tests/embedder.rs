@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::Duration;
 
 use wcontainers_abi::{Cpu, PAGE_SIZE};
 use wcontainers_kernel::{Access, Kernel, MemoryError, Process, TaskId, Watch, reason};
@@ -908,5 +909,166 @@ fn a_read_only_shared_page_is_not_written_by_the_embedder() {
         );
         assert_eq!(stdout(&run), "file x mapped x\n", "{:?}", run.outcome);
         assert_eq!(*results.borrow(), [Err(MemoryError::SharedNotWritable)]);
+    }
+}
+
+/// In each child: keeps a record of written pages from its start, makes the buffer's second page
+/// lazy (saved, cleared and watched All) and watches its third for writes.
+#[derive(Default)]
+struct Attributes {
+    saved: BTreeMap<u64, Vec<u8>>,
+    touches: Rc<RefCell<Vec<(u64, Access)>>>,
+    changed: Rc<RefCell<Vec<Vec<u64>>>>,
+}
+
+impl Hooks for Attributes {
+    fn on_process_starting(&mut self, mut process: Process<'_>) {
+        if process.info().parent().is_none() {
+            return;
+        }
+        process.memory_changed();
+        let lazy = page_of(BUFFER + PAGE_SIZE);
+        let bytes = process.memory_read(lazy.clone()).expect("the buffer");
+        process
+            .memory_write(lazy.start, &vec![0; PAGE_SIZE as usize])
+            .expect("the buffer");
+        process.memory_watch(lazy.clone(), Watch::All);
+        self.saved.insert(lazy.start, bytes);
+        process.memory_watch(page_of(BUFFER + 2 * PAGE_SIZE), Watch::Writes);
+    }
+
+    fn on_memory_accessing(
+        &mut self,
+        mut process: Process<'_>,
+        _: TaskId,
+        address: u64,
+        access: Access,
+    ) {
+        let page = page_of(address);
+        self.touches.borrow_mut().push((page.start, access));
+        if let Some(bytes) = self.saved.remove(&page.start) {
+            process
+                .memory_write(page.start, &bytes)
+                .expect("a watched page");
+        }
+        process.memory_watch(page, Watch::None);
+    }
+
+    fn on_process_exiting(&mut self, mut process: Process<'_>) {
+        if process.info().parent().is_none() {
+            return;
+        }
+        let written = process
+            .memory_changed()
+            .into_iter()
+            .flat_map(|range| (range.start..range.end).step_by(PAGE_SIZE as usize))
+            .filter(|page| buffer().contains(page))
+            .map(|page| (page - BUFFER) / PAGE_SIZE)
+            .collect();
+        self.changed.borrow_mut().push(written);
+    }
+}
+
+#[test]
+fn watches_and_the_record_stay_through_attribute_changes() {
+    let program = wcontainers_kernel_test::guest::build("embedder", &[], &out());
+    let (address, pages) = (format!("{BUFFER:#x}"), PAGES.to_string());
+    let theirs = reference::run(&program, &["attributes", &address, &pages]);
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let plain = run_embedder_below(&["attributes"], None, seed, None);
+        assert_eq!(plain.outcome.exit_code, 0, "{:?}", plain.outcome);
+        let output = stdout(&plain);
+        assert_eq!(
+            output,
+            String::from_utf8_lossy(&theirs.stdout),
+            "seed {seed}"
+        );
+        let mut lines = output.lines();
+        let count: usize = lines
+            .next()
+            .and_then(|line| line.strip_prefix("attributes "))
+            .and_then(|count| count.parse().ok())
+            .expect("the number of changes");
+        let results: Vec<&str> = lines.collect();
+        assert_eq!(results.len(), count, "{output}");
+        for line in &results {
+            assert!(line.ends_with(" 0 read x"), "seed {seed}: {line}");
+        }
+        let attributes = Attributes::default();
+        let (touches, changed) = (attributes.touches.clone(), attributes.changed.clone());
+        let run = run_embedder_below(&["attributes"], Some(Box::new(attributes)), seed, None);
+        assert_eq!(stdout(&run), output, "seed {seed}");
+        // Every child meets the lazy page's watch at its read and the other at its write, after
+        // the change; its record holds the page written before the change and the two after.
+        let expected: Vec<(u64, Access)> = (0..count)
+            .flat_map(|_| {
+                [
+                    (BUFFER + PAGE_SIZE, Access::Read),
+                    (BUFFER + 2 * PAGE_SIZE, Access::Write),
+                ]
+            })
+            .collect();
+        assert_eq!(*touches.borrow(), expected, "seed {seed}");
+        assert_eq!(*changed.borrow(), vec![vec![0, 1, 2]; count], "seed {seed}");
+    }
+}
+
+/// A child's information when it starts and when it is about to end.
+#[derive(Default)]
+struct Spends(Rc<RefCell<Vec<(u64, Duration)>>>);
+
+impl Spends {
+    fn note(&self, process: &Process<'_>) {
+        if process.info().parent().is_some() {
+            let info = process.info();
+            self.0
+                .borrow_mut()
+                .push((info.ceiling_distance(), info.compute_used()));
+        }
+    }
+}
+
+impl Hooks for Spends {
+    fn on_process_starting(&mut self, process: Process<'_>) {
+        self.note(&process);
+    }
+
+    fn on_process_exiting(&mut self, process: Process<'_>) {
+        self.note(&process);
+    }
+}
+
+/// How much embedder.c's `spend` maps.
+const SPENT: u64 = 1 << 20;
+
+#[test]
+fn the_distance_to_the_ceiling_and_the_compute_used_are_the_processes_own() {
+    let bytes = SPENT.to_string();
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        for ceiling in [None, Some(CEILING)] {
+            let spends = Spends::default();
+            let notes = spends.0.clone();
+            let run = run_embedder_below(&["spend", &bytes], Some(Box::new(spends)), seed, ceiling);
+            let label = format!("seed {seed}, ceiling {ceiling:?}");
+            assert_eq!(run.outcome.exit_code, 0, "{label}: {:?}", run.outcome);
+            let output = stdout(&run);
+            let used: Vec<u64> = output
+                .strip_prefix("used ")
+                .expect("the time used")
+                .split_whitespace()
+                .map(|part| part.parse().expect("a number"))
+                .collect();
+            let printed = Duration::new(used[0], used[1] as u32);
+            let notes = notes.borrow();
+            let [(distance_before, used_before), (distance_after, used_after)] = notes[..] else {
+                panic!("{label}: {notes:?}");
+            };
+            assert_eq!(distance_before - distance_after, SPENT, "{label}");
+            assert_eq!(used_before, Duration::ZERO, "{label}");
+            assert!(
+                printed > Duration::ZERO && printed <= used_after,
+                "{label}: printed {printed:?}, at the end {used_after:?}"
+            );
+        }
     }
 }

@@ -10,11 +10,13 @@ orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
 - S2: built in its first run; its first independent check's ten findings settled in its second run
   (see "S2 check findings"); every item of its bar met, the whole suite at 565881d2 and the speed
   over five test binaries finished in the fourth run (see "Measurements"); its second independent
-  check's twelve findings settled in the fifth run (see "S2 second check findings").
-- What comes next: S2's third independent check. Not built and left open on purpose: export of a process
-  (`suspend`, `resume`, `SuspendedProcess`, `ExportedProcess`; where they attach is in
-  docs/embedder-interface.md), `set_thread_ordering`, the inspection hooks, `StopReason`; ends made
-  by connect, accept, export or import; `/dev/console` under `-t`.
+  check's twelve findings settled in the fifth run (see "S2 second check findings"); its third
+  check's eight findings settled in the sixth run (see "S2 third check findings").
+- What comes next: S2's fourth independent check. Not built and left open on purpose: export of a
+  process (`suspend`, `resume`, `SuspendedProcess`, `ExportedProcess`; where they attach is in
+  docs/embedder-interface.md), the report of which processes share memory and the watch put on
+  shared pages when one leaves (it comes with `suspend`), `set_thread_ordering`, the inspection
+  hooks, `StopReason`; ends made by connect, accept, export or import; `/dev/console` under `-t`.
 
 ## How to run
 
@@ -206,6 +208,39 @@ Found on the way, fixed:
 - [minor] `/proc/self/status` printing one `Vm` line where the reference prints 12: outside this
   track (the kernel track's `/proc`, counted as `proc fields not tracked`); left to it.
 
+## S2 third check findings, settled in the sixth run
+
+- [blocking] An attribute change dropped watches and the record: `mprotect`, `pkey_mprotect`,
+  `mlock`, `mlock2`, `munlock` and `madvise`'s fork advice took their range out of the table
+  through the same call as `munmap`, which forgets the pages' watches and record. They now split
+  the mappings without forgetting (memory.rs `split_out`); only unmapping and mapping over a page
+  end its watch. Test `watches_and_the_record_stay_through_attribute_changes` (embedder.c
+  `attributes`: seven changes, each in its own child, over the buffer's first three pages, the
+  first written before the change, the second lazy (saved, cleared, watched All) and read after
+  it, the third watched for writes and written after it): ours with no hooks prints what the
+  reference prints (`<change> 0 read x` for each), the hooked run prints the same, each child meets
+  exactly [read of the lazy page, write of the third], and each child's record is exactly pages
+  [0, 1, 2]. Without the fix every change printed `read \0` (checked once at seed 1).
+- [blocking] `memory_changed` lost pages written before such a change: the same fix; the same
+  test's record.
+- [blocking] Lazy memory over a page whose attributes change: the same fix; the same test's lazy
+  page is read correctly after each of the seven changes.
+- [minor] `moved_here` told the CPU side the moved pages' permissions again with nothing watched:
+  it now does so only when the process has a watch or a record.
+- [minor] The report of which processes share memory, and shared pages marked watched when one
+  leaves: not built; named in docs/embedder-interface.md's "Not built" list (it comes with
+  `suspend`) and above.
+- [minor] A wake made between steps is settled only when the embedder answers `Idle` at time 0:
+  the document now says an embedder that resolves watches between steps must answer it at once;
+  listed for the owner.
+- [minor] `ProcessInfo::compute_used` and `ceiling_distance` checked by value:
+  `the_distance_to_the_ceiling_and_the_compute_used_are_the_processes_own` (embedder.c `spend`: a
+  child maps 1 MiB, spends CPU time and prints its `CLOCK_PROCESS_CPUTIME_ID`): with and without a
+  ceiling, the distance at its end is exactly 1 MiB less than at its start, its compute used at
+  its start is zero, and at its end at least what it printed, which is above zero.
+- [minor] `getrusage`'s `ru_maxrss` in a forked child (ours above 0, the reference 0): the kernel
+  track's; listed for it under "For the orchestrator".
+
 ## Measurements
 
 - Third run's fixes, stream tests (20 tests, seeds 1 to 3): passed, 27.2 s, load 73 to 82 (21:15).
@@ -365,6 +400,13 @@ anything shipped.
   the reference program closed itself.
 
 ## For the orchestrator
+
+- For the kernel track (found by S2's third check): in a forked child `getrusage(RUSAGE_SELF)`
+  reports `ru_maxrss` above 0; the reference reports 0.
+- For the owner: a watch resolved between steps through `Kernel::process` wakes its thread only
+  once the embedder answers `Next::Idle { until_nanoseconds: Some(0) }` with `Event::Timer`, since
+  settling may announce hooks and free task ids, which need the `System`; `Kernel::next` does not
+  take it.
 
 - For the owner: `task_id_allocate` takes `previous` (the id handed out last), which the
   owner's names do not have; the provided default counter needs it, since a trait's default

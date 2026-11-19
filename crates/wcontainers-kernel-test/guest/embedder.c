@@ -13,6 +13,11 @@
 //   orphan: forks a child that waits for a signal, then ends with status 3.
 //   shared ADDRESS: maps a page of a file read-only and shared at ADDRESS, forks a child that
 //     ends at once, then prints the file's first byte and the mapping's.
+//   attributes: prints how many changes it has, then in a child each: writes the buffer's first
+//     page, changes the attributes of its first three pages and back, reads the second page and
+//     writes the second and the third.
+//   spend BYTES: in a child, maps BYTES, spends some CPU time and prints the process's, in
+//     seconds and nanoseconds.
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
@@ -620,6 +625,75 @@ static int shared_read_only(char *at) {
     return 0;
 }
 
+static int change_protection(char *at, long length) {
+    return mprotect(at, length, PROT_READ) || mprotect(at, length, PROT_READ | PROT_WRITE);
+}
+static int same_protection(char *at, long length) { return mprotect(at, length, PROT_READ | PROT_WRITE); }
+static int key_protection(char *at, long length) {
+    return syscall(SYS_pkey_mprotect, at, length, PROT_READ | PROT_WRITE, -1);
+}
+static int lock(char *at, long length) { return mlock(at, length) || munlock(at, length); }
+static int lock_on_fault(char *at, long length) {
+    return syscall(SYS_mlock2, at, length, MLOCK_ONFAULT) || munlock(at, length);
+}
+static int not_forked(char *at, long length) {
+    return madvise(at, length, MADV_DONTFORK) || madvise(at, length, MADV_DOFORK);
+}
+static int wiped_on_fork(char *at, long length) {
+    return madvise(at, length, MADV_WIPEONFORK) || madvise(at, length, MADV_KEEPONFORK);
+}
+
+// Calls that change a range's attributes and leave its pages and their bytes as they were.
+static const struct {
+    const char *name;
+    int (*change)(char *, long);
+} CHANGES[] = {
+    {"mprotect", change_protection},  {"mprotect-same", same_protection},
+    {"pkey_mprotect", key_protection}, {"mlock", lock},
+    {"mlock2", lock_on_fault},         {"madvise-dontfork", not_forked},
+    {"madvise-wipeonfork", wiped_on_fork},
+};
+
+static int attributes(void) {
+    int count = sizeof CHANGES / sizeof CHANGES[0];
+    printf("attributes %d\n", count);
+    fflush(stdout);
+    for (int which = 0; which < count; which++) {
+        pid_t child = fork();
+        if (child == 0) {
+            buffer[0] = 'p';
+            int result = CHANGES[which].change(buffer, 3 * page);
+            volatile char *pages = buffer;
+            char seen = pages[page];
+            pages[page + 1] = 'p';
+            pages[2 * page + 1] = 'p';
+            printf("%s %d read %c\n", CHANGES[which].name, result, seen);
+            fflush(stdout);
+            _exit(0);
+        }
+        waitpid(child, NULL, 0);
+    }
+    return 0;
+}
+
+static int spend(long bytes) {
+    pid_t child = fork();
+    if (child == 0) {
+        if (mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) == MAP_FAILED)
+            _exit(1);
+        volatile unsigned long sum = 0;
+        for (long i = 0; i < bytes; i++) sum += i;
+        struct timespec used;
+        clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &used);
+        printf("used %lld %ld\n", (long long)used.tv_sec, used.tv_nsec);
+        fflush(stdout);
+        _exit(0);
+    }
+    int status;
+    waitpid(child, &status, 0);
+    return WEXITSTATUS(status);
+}
+
 int main(int argc, char **argv) {
     if (argc < 4) return 2;
     buffer = (char *)strtoul(argv[2], NULL, 0);
@@ -641,5 +715,7 @@ int main(int argc, char **argv) {
         return remap((char *)strtoul(argv[4], NULL, 0), strtol(argv[5], NULL, 0));
     if (!strcmp(mode, "orphan")) return orphan();
     if (!strcmp(mode, "shared") && argc > 4) return shared_read_only((char *)strtoul(argv[4], NULL, 0));
+    if (!strcmp(mode, "attributes")) return attributes();
+    if (!strcmp(mode, "spend") && argc > 4) return spend(strtol(argv[4], NULL, 0));
     return 2;
 }

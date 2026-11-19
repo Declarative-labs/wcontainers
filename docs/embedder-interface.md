@@ -147,10 +147,12 @@ pub enum MemoryError { NotMapped, NotRead, SharedNotWritable, Executor(CpuError)
   process may not write is refused (`SharedNotWritable`), as Linux's forced writes (ptrace,
   `/proc/<pid>/mem`) refuse it: others share it.
 - `memory_watch` is a setting: idempotent, nothing returned. It acts on the mapped pages
-  (`PAGE_SIZE`) the range touches. A watch belongs to the page's bytes: unmapping a page ends it;
-  `mremap` takes it along to where the page moves; a fork's child has its parent's watches, as it
-  has its memory, except on pages it gets fresh (`MADV_WIPEONFORK`); `execve` ends them all with
-  the old memory. `Writes` watches writes; `All` watches reads, writes and running code (running
+  (`PAGE_SIZE`) the range touches. A watch belongs to the page's bytes: unmapping a page ends it,
+  as does mapping something new over it; `mremap` takes it along to where the page moves; a
+  fork's child has its parent's watches, as it has its memory, except on pages it gets fresh
+  (`MADV_WIPEONFORK`); `execve` ends them all with the old memory. Changing a page's attributes
+  (`mprotect`, `pkey_mprotect`, `mlock`, `mlock2`, `munlock`, `madvise`'s fork advice) keeps its
+  watch and its place in the record of written pages. `Writes` watches writes; `All` watches reads, writes and running code (running
   code is reported as `Read`).
 - `memory_changed` answers the pages whose bytes the process changed since it was last asked, as
   ranges: what its threads wrote, what the kernel's copies wrote for it, pages `mremap` moved (at
@@ -224,14 +226,16 @@ fires before the instruction is run again.
 
 A wake made between steps (a watch met through `Kernel::process`) makes `Kernel::next` answer
 `Next::Idle` with a time of 0, so the driver's `Event::Timer` lets the kernel settle the woken
-threads before anything runs.
+threads before anything runs: an embedder that resolves watches between steps must answer that
+idle at once.
 
 What watching costs: while no process has a watch or a record of written pages, a call, a
 signal or a fault pays one flag test (`Kernel::watching`), recomputed when watches are set, a
 program starts, or a process ends. Once some process has one, every other process's call and
 signal also looks up whether its own process has watched pages (its thread's and its process's
 entries, and a test); only a process with watched pages walks its calls' descriptions and has
-its copies checked.
+its copies checked. Page permissions are told to the CPU side again only for a process with a
+watch or a record (a move by `mremap` included).
 
 ## Running a process
 
@@ -269,4 +273,9 @@ pub enum Unsupported {
   of `Kernel` taking the `SuspendedProcess` and an `ExecutionConfig`. The process's records are the
   kernel's `Process` and `Thread` entries and its `AddressMap` (watches included); its memory is the
   executor's `MemoryId`.
+- Which processes share memory, and shared pages marked watched when one of them leaves (ruled
+  late on 2026-11-18): leaving is `suspend`, so it comes with it. The report will be a
+  `ProcessInfo` accessor read from the `AddressMap`s' shared mappings (`Mapping::shared` and the
+  file node they map); the marking will set `Watch::All` on those pages in every process still
+  sharing them, from `suspend`.
 - `set_thread_ordering`, the inspection hooks and `StopReason`: not ruled or not asked for yet.
