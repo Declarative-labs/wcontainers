@@ -4,7 +4,8 @@ Branch phase-2-graphics-nir. Plan: docs/phase-2-graphics.md, sections 15.2, 15.3
 
 ## Where it stands
 
-G8 run 2 (2026-11-19). Not complete.
+G8 run 3 (2026-11-19). Not complete: candidate B, GLSL, the rest of the corpus, the choice and the
+15.4 parts remain (Next).
 
 Done:
 - Mesa pinned and building on the rented x86-64 machine with llvmpipe and lavapipe (and Zink, whose
@@ -14,118 +15,112 @@ Done:
 - `crates/wcontainers-nir`: the crate, its C bridge (`bridge/bridge.c`, `bridge.h`) and its link to
   Mesa's compiler libraries (`build.rs`). Built when `WCONTAINERS_MESA` names the Mesa build folder;
   without it the crate builds without the NIR parts (cfg `mesa`), so the workspace builds everywhere.
-  `build.rs` takes everything about Mesa from Mesa's own build: the source folder from Meson's
-  `meson-info.json`, the defines and C standard from `compile_commands.json` (those of Zink's
-  `nir_to_spirv.c`), and the zlib and thread link arguments from `intro-dependencies.json`.
-- Candidate A runs end to end on one program (`tests/route.rs`): SPIR-V (written by naga from WGSL) to
-  NIR by `spirv_to_nir`, NIR's serialised bytes (`nir_serialize`, the cache key's source), then Zink's
-  `ntv_shader_prepare` and `nir_to_spirv` in its native Vulkan mode (`ntv_info.is_native_vulkan`, SPIR-V
-  1.3), read by naga's SPIR-V reader and validated. Nothing is compared yet.
-- The corpus run (`tests/corpus`, a test target without the test harness, one command under How to
-  run): every `.spv` under `WC_NIR_CORPUS`, each shader and route in a child process of its own (Mesa
-  aborts on some inputs; a crash inside a route is that route's failure, with Mesa's last lines of
-  errors as its reason), one JSON line a shader. Knobs: `WC_NIR_SHADERS` (a sample of that many,
-  drawn with `WC_NIR_SEED`, default 0x5eed), `WC_NIR_JOBS`, `WC_NIR_RESULTS`, `WC_NIR_DUMP` (each
-  route's intermediate form, for diagnosis). Today it converts only (no execution, no reference).
-- The corpus's sources are pinned in `crates/wcontainers-nir/corpus/sources` and fetched by
-  `corpus/fetch`. Only Sascha Willems' Vulkan samples so far (1005 SPIR-V files: GLSL, HLSL and Slang
-  compiled by their authors).
-- The NIR the routes take is shaped by one `nir_shader_compiler_options` in the bridge: what the
-  common form lacks is lowered by NIR itself (fsat, extract and insert of bytes and words, carry and
-  borrow, saturating adds, mul_high, all 64-bit integer operations, uniforms to a uniform block).
-  The list is Zink's, which serves the same purpose for Vulkan; the drivers (G9, G10) must report
-  the same options, or the NIR they hand over differs. Unused inputs, outputs and system values are
-  removed.
-- Candidate A's output is cleaned of what Zink writes that says nothing and that naga's reader
-  refuses: `Index 0` on every fragment output (read as dual-source blending), and the
-  `DrawParameters` capability where no base vertex, base instance or draw index built-in is used
-  (Zink declares it for any vertex program reading its instance index).
-- The binding rule of the common form (6.4), in NIR, for both routes (`wc_nir_bind`, Rust
-  `Nir::bind`, `src/bind.rs`): each combined image sampler is split into a texture and a bare sampler
-  of the same array shape at the same set and binding (every sampling instruction's sampler moved to
-  it); then every resource is renumbered into its stage's set (vertex and compute 0, fragment 1), each
-  kind (`SlotKind` uniform, sampler, texture, storage) from its range's first binding in the order of
-  the program's (set, binding), buffer accesses (`vulkan_resource_index`) pointed at the new numbers;
-  the reflection (`ReflectedBinding`) has the program's set as `space` and its binding as `register`.
-  Refused by name: more resources of a kind than its range holds, and unsized arrays of resources
-  (they need `RESOURCE_TABLES`). Held by `tests/route.rs`.
-- The meaning of the instance index: the routes' options set `instance_id_includes_base_index`, so
-  NIR's instance id is Vulkan's `InstanceIndex` and WGSL's `instance_index`, which both count from
-  the draw's first instance; `nir_lower_system_values` runs in the routes' common clean-up.
+  `build.rs` takes everything about Mesa from Mesa's own build (Meson's `meson-info`, the compile
+  commands, the introspected dependencies and targets, among them lavapipe's file).
+- The NIR the routes take is shaped by one `nir_shader_compiler_options` in the bridge (Zink's list
+  plus all 64-bit integer lowering and the instance index counting from the first instance); unused
+  inputs, outputs and system values are removed. The drivers (G9, G10) must hand over the same.
+- `Nir::to_common_form` (`wc_nir_to_common_form`), every route's step: sampled array layers rounded
+  to the nearest even integer (Vulkan's rule; the common form's layer is an integer, and naga's
+  SPIR-V reader truncates the float layer); the binding rule of 6.4 (each combined image sampler
+  split into a texture and a sampler at the same set and binding; every resource renumbered into its
+  stage's set kind by kind in the program's (set, binding) order; the reflection as
+  `ReflectedBinding`, program set in `space`, program binding in `register`; unsized arrays of
+  resources and overfull ranges refused by name).
 - The cache key (15.3): `Nir::key`, BLAKE3 of `nir_serialize`'s bytes and `CONVERTER_VERSION` (this
-  crate's version, the Mesa commit and a hash of `mesa/build`'s record of commit and options, handed
-  over by `build.rs`). Taken from the NIR as the driver hands it over, before any route changes it.
-  Held by `tests/route.rs` (same NIR, same key; different NIR, different key).
+  crate's version, the Mesa commit and a hash of `mesa/build`'s record of commit and options). Taken
+  from the NIR as the driver hands it over. Held by `tests/route.rs`.
+- Candidate A (`zink-spirv-naga`): Zink's `ntv_shader_prepare` and `nir_to_spirv` (native Vulkan,
+  SPIR-V 1.3), cleaned of Zink's `Index 0` decorations and its unneeded `DrawParameters`, read by
+  naga's SPIR-V reader and validated with what the common form allows.
+- The corpus run (`tests/corpus`, one command, How to run): every `.spv` under `WC_NIR_CORPUS`, each
+  shader and route in a child process of its own; a crash or hang is named and attributed to the step
+  it happened in (the route, or the comparison). One JSON line a shader. Knobs: `WC_NIR_SHADERS` (a
+  seeded sample), `WC_NIR_SEED` (the sample and every shader's inputs; default 0x5eed),
+  `WC_NIR_INPUT_SETS` (vertices or fragments a run, each with inputs of its own; default 64),
+  `WC_NIR_JOBS`, `WC_NIR_RESULTS`, `WC_NIR_DUMP`.
+- Counted apart before any route (`tests/corpus/needs.rs`): a program declaring a SPIR-V capability
+  beyond Vulkan 1.1's core, or one of 1.1's whose feature our Vulkan driver reports absent (15.4's
+  list of 26).
+- The comparison (`tests/corpus/compare.rs`, `lavapipe.rs`, `interface.rs`): the program as given
+  run by lavapipe (the reference), and the route's module written back to SPIR-V by naga's writer
+  and run by lavapipe the same way, on the same seeded inputs; the reference runs twice and must
+  agree with itself. Lavapipe is loaded from the pinned build by its own `vk_icdGetInstanceProcAddr`
+  (no loader), every Vulkan 1.0 to 1.3 feature it has enabled, with transform feedback and
+  robustness2 (accesses outside a binding read zero and write nothing, in both runs), one thread
+  (`LP_NUM_THREADS=0`, so racing programs repeat). Inputs: uniform, storage and immediate data filled
+  by type (floats in [-2, 2), integers in [-4, 4) or [0, 4): programs use them as indices and
+  counts), runtime arrays of 64 elements, 4-texel textures of one level (2 layers for arrays, 6
+  faces for cubes) with nearest clamped samplers, vertex attributes per input set. Compute: 2
+  workgroups, storage compared. Vertex: transform feedback of the position and every located output
+  (decorations added to both modules' words), rasteriser off. Fragment: a vertex program made with
+  naga feeds one point a pixel of a row, one input set each; 32-bit colour targets cleared to a
+  marker, depth where the program writes it, storage. Integers compared exactly; floats equal when
+  within 1024 units in the last place or 2^-20 apart (both runs on one driver and processor: only
+  the order and fusing of operations differ).
+- The comparison is checked to see differences: with every float constant of the route's module
+  raised by 1 (a temporary change, not kept), 37 of the 43 compared shaders of a 60-shader sample
+  differed (the 6 others use no float constant on what they output).
 
-Candidate A on the corpus, conversion only (run 2's last run, x86-64 machine, load 6 at the start,
-192 children at once, so the times are not a measurement for the choice): 1005 shaders; 138 have a
-stage the common form lacks (ray tracing 81, tessellation 30, geometry 10, mesh and task 6);
-9 crash Mesa's `spirv_to_nir` steps before any route (5 in `nir_lower_vars_to_ssa` on HLSL's
-variable rate shading sample, 4 in `align` on the descriptor heap samples); of the 858 left, 739
-convert and validate (231 at the run's first try), 119 fail. Conversion time of those converted:
-median 230 us, mean 284 us (load as above). The reasons, largest first:
-- 31 crashes in Zink's `emit_deref_array` on push constants: Zink's compiler takes push constants
-  only as its own words (`load_push_constant_zink`), never a program's block. The way out for this
-  route is the interface's spilled immediates (`AddedBinding::SpilledImmediates`, a uniform buffer,
-  counted slow path); candidate B can write `Immediate` globals directly.
-- 29 `DrawParameters` that is needed: Slang's and HLSL's vertex index subtracts the base vertex.
-  The common form has the draw's bases as helper values (`HelperValue::DrawBase`), a rewrite to take
-  from the shaders crate (Requests).
-- 21 more crashes in Zink's compiler: `deref_buffer_array_length` (7: `.length()` of a runtime array,
-  which Zink lowers itself first), sparse residency (3), `nir_instr_as_intrinsic` (4, buffer device
-  addresses), barycentrics (2), shading rate (1), `emit_vulkan_resource_index` (2, ray query),
-  arrays of samplers (2).
-- Each under 10: `As` of an HLSL vertex input (7), integer stage outputs without `flat` (6), input
-  attachments (6, the Vulkan driver lowers them to texture loads), multiview (3), arrays of textures
-  indexed at run time (3, 15.4's rewrite), unsized arrays of resources (3, refused by the binding
-  rule), formatless storage reads (3, 15.4's rewrite), HLSL's displacement sample without a position
-  output (3), and 5 single reader or validation gaps.
-- Several of these need what our Vulkan 1.1 does not report (ray query, buffer device addresses,
-  descriptor heaps, sparse residency, shading rate, barycentrics): to be counted apart (Next 0).
-- Not a failure but wrong: vertex shaders from glslang convert only because the module is validated
-  with `CLIP_DISTANCES` (`wcontainers_shaders::capabilities` adds it for a clip distance output). Zink
-  writes `gl_ClipDistance` and `gl_CullDistance` outputs the shader never writes (glslang's
-  `gl_PerVertex` members, still in the NIR after dead variables are removed), so these programs would
-  ask a back end for clip distances they do not use. To fix with the rest.
-- The module is validated with what the common form allows (`wcontainers_shaders::capabilities`,
-  plus `IMMEDIATES` where it has an `Immediate` global), not WebGPU's core capabilities alone.
+Candidate A on the whole corpus, held to lavapipe (run 3's last run; x86-64 machine, 192 children at
+once, load 0.3 at the start, 5.3 at the end; 124 s with the build): 1005 shaders.
+- 138 have a stage the common form lacks (ray tracing 81, tessellation 30, geometry 10, mesh and
+  task 6); 3 crash Mesa's `spirv_to_nir` steps before any route (HLSL's variable rate shading).
+- 25 need what our Vulkan 1.1 does not report: buffer device addresses 8 (with descriptor heaps and
+  untyped pointers in 4), sparse residency 5, descriptor indexing 3, shading rate 3, minimum LOD
+  3, barycentrics 2, ray query 2.
+- Of the 839 left: 726 convert and match the reference; 3 convert and differ; 8 convert and were not
+  compared; 102 fail to convert.
+- The 3 that differ: HLSL's `gears.vert`, `shadowmappingcascade/depthpass.vert` and `scene.frag`.
+  Cause: Zink's `get_glsl_type` writes `MatrixStride` and `RowMajor` only for a block member that is
+  a matrix, never for an array of matrices, and takes the stride from the column's size instead of
+  the type's explicit stride; HLSL's row-major arrays of matrices are then read column-major. A
+  candidate A defect (Zink's compiler expects its own lowering of buffers to words, which this route
+  does not run).
+- The 8 not compared: 6 `irradiancecube.frag` (the program loops with a step from its uniforms; with
+  a negative step it never ends: the reference hangs), 1 multisampled texture (the harness does not
+  fill those yet), 1 fragment program of the mesh shading sample with a block input.
+- The 102 failures: 29 `DrawParameters` needed (Slang's and HLSL's vertex index minus the base
+  vertex; the draw's bases are a rewrite to take from the shaders crate); 40 crashes in Zink's
+  compiler (31 in `emit_deref_array` on a variable mode it does not take, push constants among
+  them, which it takes only as its own words; 2 arrays of samplers; 7 `.length()` of runtime
+  arrays, which Zink lowers itself first); 7 naga reader `As` on HLSL
+  vertex inputs; 6 integer stage outputs without `flat`; 6 input attachments; 3 multiview; 3 vertex
+  programs without a position output; 3 formatless storage reads (15.4 rewrite); 2 naga type
+  resolution in HLSL's and Slang's order-independent transparency; 1 each: coherent image, arrays of
+  combined image samplers indexed at run time, a uniform block's alignment.
+- Conversion time of those converted: mean 380 us (192 at once, not a measurement for the choice).
+- Not a failure but wrong, still: Zink writes `gl_ClipDistance` and `gl_CullDistance` outputs a
+  glslang program never writes, so such modules ask a back end for clip distances they do not use
+  (validated with `CLIP_DISTANCES` today).
 
 Next, in this order:
-0. The corpus classified by what the program needs: a shader whose SPIR-V declares a capability our
-   Vulkan 1.1 does not report (15.4's list) is counted apart with that reason, not as a route
-   failure. Then candidate A's failures above, largest first (push constants as spilled immediates;
-   the unused clip and cull outputs; `.length()`).
-1. The harness (the pass bar needs it; nothing is compared yet): each corpus shader run on seeded
-   inputs (seed and number of input sets: knobs, recorded) by lavapipe (SPIR-V; load
-   `install/lib/libvulkan_lvp.so` and its `vk_icdGetInstanceProcAddr` with `ash` 0.38, already in the
-   lock file, through `ash::Entry::from_static_fn`, no loader) or llvmpipe (GLSL, EGL surfaceless),
-   and the route's module by `wcontainers_gpu_test::program::run` one invocation at a time (vertex:
-   attributes in, outputs out; fragment: varyings and the pixel centre in; compute: invocations of a
-   workgroup) with a `Resources` of the same seeded buffers and textures (nearest filtering, one
-   level). Vertex outputs of the reference by transform feedback (lavapipe has
-   `VK_EXT_transform_feedback`; the capture decorations are added to the SPIR-V words), fragment
-   outputs by drawing one point a pixel into 32-bit targets from a generated vertex program.
-   Derivatives, workgroup memory, atomics and storage writes of images are past the interpreter's
-   limits (run them through the rig's WebGPU back end). Integers compared exactly, floats within a
-   stated tolerance.
-2. GLSL into the bridge: Mesa's standalone GLSL compiler (`libglsl_standalone`; `standalone.cpp`
+1. Candidate B: NIR walked into naga in Rust. The bridge will need NIR's structures in Rust; bindgen
+   was tried and dropped in run 1 (Departures); a flattened form written by the C side (types,
+   variables, then each function's control flow and instructions, out of SSA into registers) and
+   read by Rust is the plan. Run it over the corpus beside candidate A (`ROUTES` in `run.rs`).
+2. Candidate A's fixable defects, so that the choice compares each at its best: Zink's matrix
+   decorations (a patch to the pinned Mesa: decorate arrays of matrices, take the explicit stride);
+   push constants as spilled immediates; the unused clip and cull outputs.
+3. GLSL into the bridge: Mesa's standalone GLSL compiler (`libglsl_standalone`; `standalone.cpp`
    shows the calls: `initialize_context_to_defaults`, `standalone_add_shader_source`,
    `_mesa_glsl_compile_shader`, `link_shaders_init`, `gl_nir_link_glsl`; the linked NIR is
    `_LinkedShaders[stage]->Program->nir`; a C++ file, so a second `cc::Build`), then st/mesa's
    after-link lowering for the caps the OpenGL driver will report (decide and record them: G9 must
-   report the same).
-3. Candidate B: NIR walked in Rust straight into naga. The bridge will need NIR's structures in Rust;
-   bindgen was tried and dropped in run 1 (Departures); a flattened form written by the C side is the
-   other choice.
+   report the same); the reference is llvmpipe (EGL surfaceless).
 4. The rest of the corpus (piglit and dEQP GLSL, Godot Compatibility, bgfx, Dolphin; Godot Forward+
    SPIR-V; the shaders of `dEQP-VK.pipeline.monolithic.multisample.alpha_to_one.*` and
    `dEQP-VK.robustness.buffer_access.*`), each pinned in `corpus/sources`.
-5. The choice by the numbers (count matching, then time per shader, timed alone: `WC_NIR_JOBS=1`
+5. The choice by the numbers (matching count, then time per shader, timed alone: `WC_NIR_JOBS=1`
    under `taskset`), with both routes' counts and times.
 6. The rewrites of 15.4 (formatless storage, gathers with run-time offsets, arrays of textures,
    samplers and combined image samplers indexed at run time), which need an entry point in the
-   shaders crate (Requests); alphaToOne's two steps with the exhaustive 16-bit test;
-   robustBufferAccess's three steps (needs `HelperValue::BufferRange`).
+   shaders crate (Requests); alphaToOne's two steps with the exhaustive 16-bit test (first check
+   whether lavapipe runs `demote_samples`); robustBufferAccess's three steps (needs
+   `HelperValue::BufferRange`).
+7. The harness's own limits: multisampled textures, block inputs, programs whose reference does not
+   end on the seeded inputs.
+8. The SPDX tag of every Mesa file actually linked, from the link map.
 
 ## How to run
 
@@ -135,9 +130,10 @@ Next, in this order:
   graphics-nir --jobs 64 -- 'crates/wcontainers-nir/corpus/fetch && export
   WCONTAINERS_MESA=$CARGO_TARGET_DIR/mesa/build && WC_NIR_CORPUS=$CARGO_TARGET_DIR/nir-corpus
   WC_NIR_RESULTS=$CARGO_TARGET_DIR/nir-results-a.jsonl cargo test -p wcontainers-nir --test corpus'`,
-  then `x86-run --fetch graphics-nir target/nir-results-a.jsonl <scratch>`. 1005 shaders take 12 s.
-  Run 2's results are in `pyro-parked/wcontainers-scratch/graphics-nir/results/nir-results-a.jsonl`;
-  `scripts/reasons.py <results> [n]` beside it counts the reasons.
+  then `x86-run --fetch graphics-nir target/nir-results-a.jsonl <scratch>`. 1005 shaders take about
+  2 minutes with the comparison (192 at once). Run 3's results are in
+  `pyro-parked/wcontainers-scratch/graphics-nir/results/run3/nir-results-a.jsonl` (run 2's, conversion
+  only, one folder up); `scripts/reasons.py <results> [n]` counts the reasons.
 
 - Build Mesa, from the Mac: `orchestrator/cloud/x86-run <checkout> --name graphics-nir --jobs 64 --
   'crates/wcontainers-nir/mesa/build path:/work/flake/graphics-nir'`. On any Linux machine with Nix:
@@ -157,6 +153,8 @@ Next, in this order:
   scripts (the baseline holds it not checked out): fetch only the shaders crate's two submodules and
   dxil-spirv's `third_party/spirv-headers`, which the shaders crate's build needs.
 
+- A quick look at one shader: copy it alone into a folder and point `WC_NIR_CORPUS` there with
+  `WC_NIR_DUMP` set; `nix shell nixpkgs#spirv-tools -c spirv-dis` reads the dumps.
 - Kept between runs: a shallow clone of the pinned Mesa for reading on the Mac
   (`pyro-parked/wcontainers-scratch/graphics-nir/mesa-src`, 560 MB, no build output; logs beside it in
   `logs/`), and the Mesa build and cargo target on the x86 machine (`/work/target/graphics-nir`).
@@ -170,7 +168,9 @@ Next, in this order:
   threads), `-j 64`: 45.9 s wall, 11 min 37 s user, load average 4.96 at the start and 10.51 at the
   end (other tracks' jobs). An earlier clean build of the same options with SPIRV-Tools: 45.9 s wall
   at load 0.43 at the start.
-- No route timings yet.
+- Corpus run with the comparison, 1005 shaders, 192 children, x86-64 machine at load 0.3 rising to
+  5.3: 124 s including an incremental build. Route timings for the choice are not taken yet (they
+  need `WC_NIR_JOBS=1` and both candidates).
 
 ## Routed decisions (15.9, owner not yet answered; followed as the orchestrator set them)
 
@@ -194,6 +194,8 @@ Next, in this order:
 - `blake3` 1 (CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception, already in the workspace), a
   dependency and build-dependency (the cache key and the converter's version).
 - `wcontainers-gpu` (ours), a dependency (`SlotKind`, `ReflectedBinding`, `ShaderStage`).
+- `ash` 0.38 (MIT OR Apache-2.0) and `libloading` 0.8 (ISC), dev-dependencies (lavapipe in the
+  corpus run); both already in the lock file through wgpu.
 - `spirv` 0.4 (Apache-2.0; the SPIR-V grammar's names, already in the workspace through naga), a
   dependency. `rand` 0.9 and `rand_chacha` 0.9 (MIT OR Apache-2.0, already in the workspace),
   dev-dependencies.
@@ -229,8 +231,19 @@ Next, in this order:
   is included from Cargo's `OUT_DIR`, whose name the literal check refuses as a new code string here
   (its one constant, `CARGO_OUT_DIR`, is private to wcontainers-literals).
 
-- The corpus run executes nothing yet: 15.3's comparison against llvmpipe and lavapipe is the next
-  harness step (Next).
+- The route's module is run by lavapipe through naga's SPIR-V writer, not by the recording back
+  end's interpreter (`wcontainers-gpu-test`) or the WebGPU back end on the RTX 3080 (15.3). Reasons:
+  the interpreter's limits (no derivatives, implicit levels only on one-level views, no atomics or
+  workgroup memory) would leave most real fragment programs to the GPU queue, while lavapipe runs
+  every program the reference runs, on the same machine, with one harness for both sides. What this
+  holds is the conversion (NIR to the common form); naga's SPIR-V writer is the same one wgpu's
+  Vulkan back end uses. The WebGPU back end's own conversion is the shaders track's.
+- The plan says "within the format's rounding" for floats; the targets are 32-bit, and two programs
+  that differ only in the order of operations differ by more than one rounding. The tolerance is
+  1024 units in the last place or 2^-20 absolute (`compare.rs`), stated and checked to still catch a
+  change of constants (Where it stands).
+- Vulkan capability classes: a program needing what our Vulkan 1.1 will not report is counted apart,
+  not as a route failure (the pass bar's "named reason").
 
 ## Interface changes
 
@@ -253,12 +266,17 @@ None.
 - Shaders track: `wcontainers_shaders::capabilities` to add `Capabilities::IMMEDIATES` for a module
   with an `AddressSpace::Immediate` global, as it adds the other extensions a front asks for only
   where the back end has them; until then the NIR route adds it itself.
+- Shaders track (a finding, not a request for this route): naga's SPIR-V reader turns a sampled
+  array layer into an integer with a truncating `As` (`front/spv/image.rs`), where Vulkan and
+  Direct3D round to the nearest even integer; a layer of 1.6 reads layer 1 instead of 2. The NIR
+  route rounds in NIR first; dxil-spirv's and dxbc-spirv's output reaches the same reader.
 - Literals track: `CARGO_OUT_DIR` public (in a public module), so a build script can name `OUT_DIR`
   through it.
 
 ## Literal check
 
 Adopted with the branch (merged from the shaders branch, which carries it). wcontainers-nir has no
-baseline lines: the check passes with none for it (run on the Mac, 2026-11-19 runs 1 and 2, exit 0). The list of
+baseline lines: the check passes with none for it (run on the Mac, 2026-11-19 runs 1 to 3, exit 0;
+it needs the git history, which the rented machines' copies lack). The list of
 changes that could add lines is the 18 the shaders branch brought; this branch added none. C files are
 not scanned; the bridge names its one version by `#define`s all the same.
