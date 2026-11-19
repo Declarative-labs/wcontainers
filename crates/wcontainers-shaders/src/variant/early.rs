@@ -3,8 +3,8 @@
 //! attachment and tested as the draw's tests say; a fragment no sample of which passes is discarded.
 
 use super::{
-    FOUR_SAMPLES, Result, Wrapped, biased, binary, f32_lit, helper, index, load_helper, push,
-    scalar, vector,
+    FOUR_SAMPLES, Result, SAMPLE_POSITION_STEPS, Wrapped, biased, binary, f32_lit, helper, index,
+    load_helper, push, scalar, vector,
 };
 use crate::ConvertError;
 use naga::{
@@ -203,7 +203,10 @@ pub(super) fn early_tests(
             });
             let mut kept = u32_lit(f, 0);
             for (s, (x, y)) in FOUR_SAMPLES.iter().enumerate() {
-                let (x, y) = (f32_lit(f, x / 16.0), f32_lit(f, y / 16.0));
+                let (x, y) = (
+                    f32_lit(f, x / SAMPLE_POSITION_STEPS),
+                    f32_lit(f, y / SAMPLE_POSITION_STEPS),
+                );
                 let along_x = binary(f, body, Multiply, dx, x);
                 let along_y = binary(f, body, Multiply, dy, y);
                 let moved = binary(f, body, Add, z, along_x);

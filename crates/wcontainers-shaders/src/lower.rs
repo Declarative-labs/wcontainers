@@ -29,6 +29,7 @@ use wcontainers_gpu::{
 
 use crate::variant::texel::{TexelBuffer, TexelPlace};
 
+mod evaluate;
 mod geometry;
 mod hull;
 
@@ -223,6 +224,8 @@ struct Lowering<'a> {
     /// Under Direct3D 12's numbering (shader model 5.1), every resource's (kind rank, space,
     /// register), sorted: a resource's slot is its place among its kind's.
     spaces: Option<Vec<(u32, u32, u32)>>,
+    /// Inputs a pixel program takes at other places in the pixel.
+    evaluated: evaluate::Evaluated,
 }
 
 impl<'a> Lowering<'a> {
@@ -307,6 +310,7 @@ impl<'a> Lowering<'a> {
             }),
             texels: HashMap::default(),
             spaces,
+            evaluated: evaluate::Evaluated::default(),
         })
     }
 
@@ -529,6 +533,9 @@ impl<'a> Lowering<'a> {
                 break;
             }
             self.declare_op(id, op)?;
+        }
+        if self.stage == SourceStage::Pixel {
+            self.declare_evaluated()?;
         }
         if let SourceStage::Vertex = self.stage
             && self.variant.draw_base != DrawBaseSource::None
@@ -1272,6 +1279,7 @@ impl<'a> Lowering<'a> {
             }
         }
 
+        self.evaluate_prologue(&mut f, &mut body, &mut e)?;
         let main = self.functions[&self.main];
         e.stmt(
             &f,
@@ -3102,7 +3110,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 }
             }
             c::INTERPOLATE_AT_CENTROID | c::INTERPOLATE_AT_SAMPLE | c::INTERPOLATE_AT_OFFSET => {
-                return Err(unsupported("InterpolateAt"));
+                self.evaluate(b, op)?
             }
             c::DERIV_X | c::DERIV_Y => {
                 let expr = self.get(b, r[0])?;

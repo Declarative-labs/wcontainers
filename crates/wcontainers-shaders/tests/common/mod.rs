@@ -179,6 +179,8 @@ pub struct Reference {
     pub address: Option<[D3D11_TEXTURE_ADDRESS_MODE; 3]>,
     /// Typed buffers bound at the pixel shader's texture slots instead of the texture.
     pub texel_buffers: Vec<TexelData>,
+    /// The target's sample count, where more than one: it is resolved for reading.
+    pub samples: u32,
 }
 
 /// A draw's range with bases, direct or from an argument buffer; an indexed draw's indices are 0, 1,
@@ -326,7 +328,16 @@ pub fn direct3d_11(
     }
     raster.DepthClipEnable = (!reference.depth_clip_off).into();
     let raster = gpu.rasterizer(&raster).unwrap();
-    let (target, rtv) = gpu.target(SIZE, SIZE, dxgi(format)).unwrap();
+    let (target, rtv) = match reference.samples {
+        0 | 1 => gpu.target(SIZE, SIZE, dxgi(format)).unwrap(),
+        samples => {
+            let mut desc = d3d11::tex2d(SIZE, SIZE, dxgi(format), D3D11_BIND_RENDER_TARGET);
+            desc.SampleDesc.Count = samples;
+            let texture = gpu.texture2d(&desc, &[]).unwrap();
+            let view = gpu.rtv(&texture.cast().unwrap(), None).unwrap();
+            (texture, view)
+        }
+    };
     let blend = reference.blend.map(|target| {
         let mut desc = D3D11_BLEND_DESC::default();
         desc.RenderTarget[0] = target;
@@ -460,6 +471,14 @@ pub fn direct3d_11(
             return (codes, count);
         }
         return (read(gpu, texture, Format::Depth32Float), count);
+    }
+    if reference.samples > 1 {
+        let (resolved, _) = gpu.target(SIZE, SIZE, dxgi(format)).unwrap();
+        unsafe {
+            gpu.context
+                .ResolveSubresource(&resolved, 0, &target, 0, dxgi(format))
+        };
+        return (read(gpu, &resolved, format), count);
     }
     (read(gpu, &target, format), count)
 }

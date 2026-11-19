@@ -108,3 +108,33 @@ PackOut vs_pack(float3 position : POSITION, float2 uv : TEXCOORD0) {
 float4 ps_pack(PackOut i) : SV_Target0 {
     return float4(i.a.x, i.b.y, i.c, i.a.y * i.b.x);
 }
+
+struct RowsOut {
+    float4 position : SV_Position;
+    float4 colour[2] : COLOR;
+    float2x3 frame : FRAME;
+    float2 uv : TEXCOORD3;
+    float shade : TEXCOORD4;
+    nointerpolation uint id : ID;
+    nointerpolation float level : LEVEL;
+};
+
+// Values in several registers (an array and a matrix) beside values a compiler packs into one,
+// integers among them.
+RowsOut vs_rows_io(float3 position : POSITION, float2 uv : TEXCOORD0, uint vertex : SV_VertexID) {
+    RowsOut o;
+    o.position = mul(float4(position, 1.0), world_view_projection);
+    o.colour[0] = float4(uv, 0.25, 1.0);
+    o.colour[1] = float4(frac(position.xy * 1.7), uv.y, 0.5);
+    o.frame = float2x3(uv.x, uv.y, 0.1, 0.3, uv.x * 0.5, uv.y * 0.25);
+    o.uv = uv;
+    o.shade = frac(position.x * 3.1);
+    o.id = vertex % 4;
+    o.level = uv.x * 0.5;
+    return o;
+}
+
+float4 ps_rows_io(RowsOut i) : SV_Target0 {
+    return float4(i.colour[1].x * i.uv.x + i.frame[1].z, i.colour[0].y * i.shade,
+                  frac(i.level + i.id * 0.25), i.frame[0].x * i.uv.y + i.colour[1].w * 0.1);
+}

@@ -6,6 +6,7 @@ extern crate alloc;
 mod build;
 pub mod builtin;
 pub mod cache;
+mod container;
 mod dxbc;
 mod dxil;
 mod ir;
