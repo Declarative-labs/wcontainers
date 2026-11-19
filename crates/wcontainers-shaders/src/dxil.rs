@@ -906,7 +906,7 @@ fn float_to_ints(module: &Module, f: &Function) -> Result<Vec<Conversion>, Conve
         if scalar.kind != ScalarKind::Float {
             continue;
         }
-        if (scalar.width, width) != (4, 4) {
+        if (scalar.width, width) != (FLOAT_BYTES, FLOAT_BYTES) {
             return Err(ConvertError::Unsupported(
                 crate::refusal::FLOAT_TO_INT_WIDTH,
             ));
@@ -918,9 +918,12 @@ fn float_to_ints(module: &Module, f: &Function) -> Result<Vec<Conversion>, Conve
 
 /// A function giving Direct3D's f32 to integer conversion: 0 for NaN, the integer's limits at and
 /// past them.
+/// The bytes of the 32-bit floats and integers Direct3D's conversions take.
+const FLOAT_BYTES: u8 = core::mem::size_of::<f32>() as u8;
+
 fn float_to_int_function(module: &mut Module, (kind, size): FloatToInt) -> Function {
     let mut ty = |kind| {
-        let scalar = Scalar { kind, width: 4 };
+        let scalar = Scalar { kind, width: FLOAT_BYTES };
         let inner = match size {
             None => TypeInner::Scalar(scalar),
             Some(size) => TypeInner::Vector { size, scalar },
@@ -952,10 +955,12 @@ fn float_to_int_function(module: &mut Module, (kind, size): FloatToInt) -> Funct
     let x = e.append(Expression::FunctionArgument(0), Span::UNDEFINED);
     let (above, below, max, min, zero) = if kind == ScalarKind::Sint {
         let (max, min) = (Literal::I32(i32::MAX), Literal::I32(i32::MIN));
-        (2_147_483_648.0, -2_147_483_648.0, max, min, Literal::I32(0))
+        // i32::MIN as f32 is exact, and the first float above the range is its negation.
+        (-(i32::MIN as f32), i32::MIN as f32, max, min, Literal::I32(0))
     } else {
         let (max, zero) = (Literal::U32(u32::MAX), Literal::U32(0));
-        (4_294_967_296.0, 0.0, max, zero, zero)
+        // u32::MAX rounds up to 2^32, the first float above the range.
+        (u32::MAX as f32, 0.0, max, zero, zero)
     };
     let literals = [
         Literal::F32(above),
@@ -963,8 +968,8 @@ fn float_to_int_function(module: &mut Module, (kind, size): FloatToInt) -> Funct
         max,
         min,
         zero,
-        Literal::U32(0x7fff_ffff),
-        Literal::U32(0x7f80_0000),
+        Literal::U32(!(-0.0f32).to_bits()),
+        Literal::U32(f32::INFINITY.to_bits()),
     ]
     .map(|l| e.append(Expression::Literal(l), Span::UNDEFINED));
     let start = e.len();
@@ -976,7 +981,7 @@ fn float_to_int_function(module: &mut Module, (kind, size): FloatToInt) -> Funct
     let converted = add(Expression::As {
         expr: x,
         kind,
-        convert: Some(4),
+        convert: Some(FLOAT_BYTES),
     });
     let bits = add(Expression::As {
         expr: x,
@@ -1788,6 +1793,14 @@ pub(crate) mod words {
     pub const VARIABLE_STORAGE_CLASS: usize = 3;
     pub const POINTER_WORDS: usize = POINTER_TYPE + 1;
 
+    /// A type declaration's result id.
+    pub const RESULT: usize = 1;
+    /// An instruction's result type and result id, where it has both.
+    pub const RESULT_TYPE: usize = 1;
+    pub const RESULT_AFTER_TYPE: usize = 2;
+    /// An atomic instruction's pointer, after its result type and result.
+    pub const ATOMIC_POINTER: usize = 3;
+
     /// `OpExtInst`'s instruction number (3.32.4), after the result type, result and set.
     pub const EXT_INSTRUCTION: usize = 4;
 }
@@ -1903,21 +1916,23 @@ fn atomic_signedness_differs(spirv: &[u32]) -> bool {
             at += count;
             continue;
         };
-        let w = &spirv[at + 1..at + count];
+        let w = &spirv[at..at + count];
         match op {
-            Op::TypeInt if w.len() >= 3 => {
-                signed.insert(w[0], w[2] != 0);
+            Op::TypeInt if w.len() >= words::type_int::WORDS => {
+                signed.insert(w[words::RESULT], w[words::type_int::SIGNEDNESS] != 0);
             }
-            Op::TypePointer if w.len() >= 3 => {
-                pointee.insert(w[0], w[2]);
+            Op::TypePointer if w.len() >= words::POINTER_WORDS => {
+                pointee.insert(w[words::RESULT], w[words::POINTER_TYPE]);
             }
-            _ if (SIGNED.contains(&op) || UNSIGNED.contains(&op)) && w.len() >= 3 => {
-                atomics.push((SIGNED.contains(&op), w[2]));
+            _ if (SIGNED.contains(&op) || UNSIGNED.contains(&op))
+                && w.len() > words::ATOMIC_POINTER =>
+            {
+                atomics.push((SIGNED.contains(&op), w[words::ATOMIC_POINTER]));
             }
             _ => {}
         }
-        if POINTERS.contains(&op) && w.len() >= 2 {
-            types.insert(w[1], w[0]);
+        if POINTERS.contains(&op) && w.len() > words::RESULT_AFTER_TYPE {
+            types.insert(w[words::RESULT_AFTER_TYPE], w[words::RESULT_TYPE]);
         }
         at += count;
     }
