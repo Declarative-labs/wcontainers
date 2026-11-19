@@ -13,8 +13,12 @@ orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
   the whole suite's verdicts at 565881d2 for the 35 test binaries lost to Docker, and the speed
   comparison over five test binaries (scratch streams/s2b/timing.sh, old build kept in
   streams/s2b/old).
-- What comes next: once Docker answers, `sh streams/s2b/rerun.sh streams/s2b/rerun-2.log`, then
-  `sh streams/s2b/timing.sh` with the old and new deps and crate folders (not at the same time:
+- What comes next: once Docker answers (it was still down at 04:52, after 2 hours),
+  `sh streams/s2b/rerun.sh streams/s2b/rerun-2.log`; then build the old binaries in the old
+  worktree (its target was removed: `nix develop -c cargo test --no-run -j 4 -p
+  wcontainers-kernel-test --test threads --test processes --test memory --test sigframe --test
+  shell` inside it) and run `sh streams/s2b/timing.sh` with the old and new deps and crate folders
+  (not at the same time as the rerun:
   two test binaries building guests at once hung zig), record both, remove the old worktree
   (`git worktree remove`) and its target. Then S2's independent check. Not built and left open on purpose: export of a process
   (`suspend`, `resume`, `SuspendedProcess`, `ExportedProcess`; where they attach is in
