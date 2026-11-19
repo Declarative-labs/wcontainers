@@ -17,6 +17,7 @@ use wcontainers_inside::link::{Link, Start};
 
 #[cfg(target_os = "macos")]
 pub mod hvf;
+pub mod routines;
 pub mod translate;
 
 /// The host's hypervisor.
