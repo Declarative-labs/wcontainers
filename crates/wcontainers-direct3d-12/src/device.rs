@@ -380,6 +380,9 @@ pub struct Device<B: Backend> {
     /// The storage textures the last binding sets made read through buffers: API stage and
     /// register; and the copies around their draw or dispatch.
     bound_through: Vec<(u32, u32)>,
+    /// The API stages a storage view of their own slots is bound to at an offset the back end
+    /// cannot bind (`VariantFlags::STORAGE_OFFSET`).
+    bound_offsets: Vec<u32>,
     /// The textures the last binding sets made bind under a minimum level-of-detail clamp (API
     /// stage, register, clamp in the view's levels), and every sampler they bind (API stage,
     /// register, descriptor), from which a clamped program's merged samplers are made.
@@ -440,6 +443,7 @@ impl<B: Backend> Device<B> {
             bound_helpers: Vec::new(),
             bound_sampling: Vec::new(),
             bound_through: Vec::new(),
+            bound_offsets: Vec::new(),
             bound_clamps: Vec::new(),
             bound_unfiltered: Vec::new(),
             bound_samplers: Vec::new(),
@@ -1082,10 +1086,19 @@ impl<B: Backend> Device<B> {
                     ));
                 }
                 if let Some(domain) = &m.domain {
+                    // A domain stage run as compute; drawn too unless a geometry stage follows.
+                    let stages = match (&m.geometry.after_domain, &m.late) {
+                        (None, _) => StageSet::VERTEX,
+                        (Some(_), Some(_)) => StageSet::COMPUTE,
+                        (Some(_), None) => StageSet::COMPUTE | StageSet::VERTEX,
+                    };
+                    b.extend(bind::stage_bindings(domain, geometry::DOMAIN, stages));
+                }
+                if let Some(late) = &m.late {
                     b.extend(bind::stage_bindings(
-                        domain,
-                        geometry::DOMAIN,
-                        StageSet::VERTEX,
+                        late,
+                        bind::GEOMETRY,
+                        StageSet::COMPUTE,
                     ));
                 }
                 b
@@ -1100,7 +1113,7 @@ impl<B: Backend> Device<B> {
         let mut stages = vec![&vs];
         if let Some(m) = &made {
             stages.extend([&m.vertex]);
-            stages.extend(m.shader.iter().chain(&m.domain));
+            stages.extend(m.shader.iter().chain(&m.domain).chain(&m.late));
         }
         stages.extend(&ps);
         let slow_paths = programs_slow_paths(&stages);
@@ -1153,6 +1166,7 @@ impl<B: Backend> Device<B> {
         let vs_shader = match made.as_ref().filter(|m| m.shader.is_some()) {
             Some(geometry::Made {
                 domain: Some(domain),
+                late: None,
                 ..
             }) => &domain.modules[0],
             Some(m) => m
@@ -3688,8 +3702,8 @@ impl<B: Backend> Replay<B> {
                     .find(v.address)
                     .ok_or(Error::Invalid("an index buffer view of no buffer"))?;
                 let format = match v.format {
-                    57 => IndexFormat::U16,
-                    42 => IndexFormat::U32,
+                    wcontainers_directx_graphics_infrastructure::dxgi::R16_UINT => IndexFormat::U16,
+                    wcontainers_directx_graphics_infrastructure::dxgi::R32_UINT => IndexFormat::U32,
                     _ => return Err(Error::Invalid("index format")),
                 };
                 Some((d.buffer(id)?.0.clone(), offset, format, id))

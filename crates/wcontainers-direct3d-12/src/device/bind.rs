@@ -493,6 +493,7 @@ impl<B: Backend> Device<B> {
         self.bound_unfiltered.clear();
         self.bound_swizzles.clear();
         self.bound_layers.clear();
+        self.bound_offsets.clear();
         // Views read through buffers before a binding failed.
         self.through.clear();
     }
@@ -545,7 +546,7 @@ impl<B: Backend> Device<B> {
                             ));
                         }
                         (SlotKind::Uniform, _) => self.constant_buffer(address, b.declared)?,
-                        (_, Form::Buffer { writable }) => self.root_buffer(address, writable)?,
+                        (_, Form::Buffer { writable }) => self.root_buffer(address, b, writable)?,
                         _ => {
                             return Err(Error::Invalid("a root descriptor for a shader's texture"));
                         }
@@ -566,7 +567,7 @@ impl<B: Backend> Device<B> {
                         (SlotKind::Texture, Descriptor::ShaderResource(v))
                             if b.form != Form::Plain =>
                         {
-                            self.buffer_view(&v, false)?
+                            self.buffer_view(&v, b, false)?
                         }
                         (SlotKind::Texture, Descriptor::ShaderResource(v)) => {
                             let view = self.shader_resource(&v, b)?;
@@ -605,7 +606,7 @@ impl<B: Backend> Device<B> {
                                     SlowPath::StorageFormatThroughBuffer,
                                 )?
                             }
-                            Form::Buffer { writable } => self.buffer_view(&v, writable)?,
+                            Form::Buffer { writable } => self.buffer_view(&v, b, writable)?,
                             Form::Image { writable, .. } => {
                                 self.note(v.resource, writable);
                                 let view = self.storage_texture(&v)?;
@@ -734,17 +735,70 @@ impl<B: Backend> Device<B> {
     }
 
     /// A root shader resource or unordered access view: the buffer from `address` to its end.
-    fn root_buffer(&mut self, address: u64, writable: bool) -> Result<Held<B>, Error> {
+    fn root_buffer(
+        &mut self,
+        address: u64,
+        b: &StageBinding,
+        writable: bool,
+    ) -> Result<Held<B>, Error> {
         let (id, offset) = self
             .addresses
             .find(address)
             .ok_or(Error::Invalid("a root buffer view of no buffer"))?;
         let size = self.resources[id.0 as usize].desc.width - offset;
-        self.storage_range(id, offset, size, writable)
+        self.own_storage(b, id, offset, size, writable)
+    }
+
+    /// A storage buffer of the program's own slot `b`: bytes `offset..offset + size` of buffer
+    /// `id`; where the back end cannot bind it at `offset`, bound from the largest offset below
+    /// it that is a multiple of both its storage alignment and the program's element, with the
+    /// rest in the program's
+    /// helper constants (`HelperValue::StorageOffset`), which a program made with
+    /// `VariantFlags::STORAGE_OFFSET` adds to its addresses.
+    fn own_storage(
+        &mut self,
+        b: &StageBinding,
+        id: ResourceId,
+        offset: u64,
+        size: u64,
+        writable: bool,
+    ) -> Result<Held<B>, Error> {
+        let align = u64::from(self.backend.caps().limits.min_storage_offset_alignment);
+        let stride = u64::from(b.binding.stride).max(1);
+        let step = (1..=stride)
+            .map(|k| align * k)
+            .find(|s| s.is_multiple_of(stride))
+            .unwrap_or(align * stride);
+        // A view the back end binds where it starts needs no rest.
+        let start = match offset.is_multiple_of(align) {
+            true => offset,
+            false => offset - offset % step,
+        };
+        let rest = offset - start;
+        if !rest.is_multiple_of(stride) {
+            return Err(Error::NotImplemented(
+                "a buffer view starting inside one of the program's elements",
+            ));
+        }
+        let value = HelperValue::StorageOffset {
+            set: b.binding.set,
+            binding: b.binding.binding,
+        };
+        self.bound_helpers
+            .push((b.visibility, value, pull::words(&[rest as u32])));
+        if rest != 0 {
+            self.bound_offsets.push(b.visibility);
+        }
+        self.storage_range(id, start, rest + size, writable)
     }
 
     /// A raw or structured buffer view, read or written as a storage buffer.
-    fn buffer_view(&mut self, v: &ResourceView, writable: bool) -> Result<Held<B>, Error> {
+    fn buffer_view(
+        &mut self,
+        v: &ResourceView,
+        b: &StageBinding,
+        writable: bool,
+    ) -> Result<Held<B>, Error> {
         let raw = v.flags & 1 != 0;
         let element = match (raw, v.stride) {
             (true, _) => 4,
@@ -766,7 +820,7 @@ impl<B: Backend> Device<B> {
         }
         let offset = v.first_element * element;
         let size = u64::from(v.count) * element;
-        self.storage_range(v.resource, offset, size, writable)
+        self.own_storage(b, v.resource, offset, size, writable)
     }
 
     /// A typed buffer view read through a storage buffer of its words: bound from its first
@@ -826,10 +880,8 @@ impl<B: Backend> Device<B> {
     ) -> Result<Held<B>, Error> {
         let align = u64::from(self.backend.caps().limits.min_storage_offset_alignment);
         if !offset.is_multiple_of(align) {
-            // The program would add the rest from its helper constants (`StorageOffset`), a
-            // variant the converter does not build yet.
-            return Err(Error::NotImplemented(
-                "a buffer view at an offset the back end cannot bind",
+            return Err(Error::Invalid(
+                "a storage range at an offset the back end cannot bind",
             ));
         }
         if offset + size > self.resources[id.0 as usize].desc.width.next_multiple_of(4) {
