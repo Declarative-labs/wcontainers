@@ -99,7 +99,7 @@ pub fn written(i: &Instruction) -> bool {
                     | Btr | Btc | Jrcxz | Jecxz | Pushf | Pushfq | Leave
             ))
         // Far transfers through memory: a selector with the offset.
-        && !(matches!(m, Call | Jmp) && is_memory(i, 0) && memory_bytes(i) != 8)
+        && !(matches!(m, Call | Jmp) && is_memory(i, 0) && memory_bytes(i) != SLOT)
         && !matches!(ins.op_kind(0), OpKind::FarBranch16 | OpKind::FarBranch32)
 }
 
@@ -162,9 +162,9 @@ fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
         }
         Cbw | Cwde | Cdqe => {
             let w = match m {
-                Cbw => 16,
-                Cwde => 32,
-                _ => 64,
+                Cbw => W16,
+                Cwde => W32,
+                _ => W64,
             };
             let value = e.local(ValType::I64);
             get_general(e, accumulator(w / 2));
@@ -174,9 +174,9 @@ fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
         }
         Cwd | Cdq | Cqo => {
             let w = match m {
-                Cwd => 16,
-                Cdq => 32,
-                _ => 64,
+                Cwd => W16,
+                Cdq => W32,
+                _ => W64,
             };
             let value = e.local(ValType::I64);
             get_general(e, accumulator(w));
@@ -184,7 +184,7 @@ fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
             sign_extend(e, value, w);
             e.sink()
                 .local_get(value)
-                .i64_const(63)
+                .i64_const((W64 - 1).into())
                 .i64_shr_s()
                 .local_set(value);
             set_general(e, register(RDX, w), value);
@@ -277,7 +277,7 @@ fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
         }
         Jrcxz | Jecxz => {
             // A jump when rcx (ecx with an address-size prefix) is zero; no flag is read.
-            get_general(e, register(RCX, if m == Jrcxz { 64 } else { 32 }));
+            get_general(e, register(RCX, if m == Jrcxz { W64 } else { W32 }));
             e.sink().i64_eqz();
             e.jump_if(Target::Relative(ins.near_branch64() as i64));
         }
@@ -321,10 +321,10 @@ fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
 pub fn width(i: &Instruction, n: u32) -> u8 {
     let ins = &i.iced;
     match ins.op_kind(n) {
-        OpKind::Register => general(ins.op_register(n)).map_or(64, |g| g.width),
-        OpKind::Memory => (memory_bytes(i) * 8) as u8,
+        OpKind::Register => general(ins.op_register(n)).map_or(W64, |g| g.width),
+        OpKind::Memory => (memory_bytes(i) * u8::BITS) as u8,
         _ if n > 0 => width(i, 0),
-        _ => 64,
+        _ => W64,
     }
 }
 
@@ -370,7 +370,7 @@ fn read<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, n: u32, mem: Op
         OpKind::Register => {
             get_general(e, general(ins.op_register(n)).expect("a general register"))
         }
-        OpKind::Memory => load(e, mem.expect("checked"), u32::from(w / 8)),
+        OpKind::Memory => load(e, mem.expect("checked"), u32::from(w / W8)),
         _ => {
             e.sink().i64_const(ins.immediate(n) as i64 & mask(w));
         }
@@ -394,14 +394,14 @@ fn write<E: Emitter<X86_64> + ?Sized>(
             general(ins.op_register(n)).expect("a general register"),
             value,
         ),
-        _ => store(e, mem.expect("checked"), u32::from(width(i, n) / 8), value),
+        _ => store(e, mem.expect("checked"), u32::from(width(i, n) / W8), value),
     }
 }
 
 /// Sign-extend the i64 in `value` from `width` bits, in place.
 fn sign_extend<E: Emitter<X86_64> + ?Sized>(e: &mut E, value: u32, width: u8) {
-    if width < 64 {
-        let shift = i64::from(64 - width);
+    if width < W64 {
+        let shift = i64::from(W64 - width);
         e.sink()
             .local_get(value)
             .i64_const(shift)
@@ -414,7 +414,7 @@ fn sign_extend<E: Emitter<X86_64> + ?Sized>(e: &mut E, value: u32, width: u8) {
 
 /// Mask the i64 in `value` to `width` bits, in place.
 fn truncate<E: Emitter<X86_64> + ?Sized>(e: &mut E, value: u32, width: u8) {
-    if width < 64 {
+    if width < W64 {
         e.sink()
             .local_get(value)
             .i64_const(mask(width))
@@ -677,13 +677,13 @@ fn call<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
             ..*i
         },
         RSP,
-        -8,
+        -i64::from(SLOT),
     );
-    e.check(at, 8, Access::Write, u8::from(mem.is_some()));
+    e.check(at, SLOT, Access::Write, u8::from(mem.is_some()));
     let back = e.local(ValType::I64);
     e.this_address(ins.len() as i64);
     e.sink().local_set(back);
-    store(e, at, 8, back);
+    store(e, at, SLOT, back);
     if let Some(target) = target {
         canonical_target(e, target);
     }
@@ -699,9 +699,9 @@ fn ret<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
     let at = e.local(ValType::I64);
     e.get(RSP);
     e.sink().local_set(at);
-    e.check(at, 8, Access::Read, 0);
+    e.check(at, SLOT, Access::Read, 0);
     let target = e.local(ValType::I64);
-    load(e, at, 8);
+    load(e, at, SLOT);
     e.sink().local_set(target);
     canonical_target(e, target);
     let extra = if i.iced.op_count() > 0 {
@@ -770,7 +770,7 @@ fn syscall<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
 fn string<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
     use Mnemonic::*;
     let bytes = element_bytes(i);
-    let w = (bytes * 8) as u8;
+    let w = (bytes * u8::BITS) as u8;
     let source = matches!(
         m,
         Movsb
@@ -878,7 +878,7 @@ fn string<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) 
             e.sink().local_get(step).i64_add().local_set(moved);
             let g = General {
                 number: register,
-                width: if i.address32 { 32 } else { 64 },
+                width: if i.address32 { W32 } else { W64 },
                 high: false,
             };
             set_general(e, g, moved);
@@ -946,7 +946,7 @@ fn shift<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
                     .i32_const(1)
                     .i32_and()
                     .local_set(carry);
-                if w < 64 {
+                if w < W64 {
                     // A count above the width shifts every bit out (for 8 and 16 bits).
                     s.local_get(carry)
                         .i32_const(0)
@@ -959,10 +959,10 @@ fn shift<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
             }
             Shr | Sar => {
                 s.local_get(v);
-                if m == Sar && w < 64 {
-                    s.i64_const(64 - wide)
+                if m == Sar && w < W64 {
+                    s.i64_const(i64::from(W64) - wide)
                         .i64_shl()
-                        .i64_const(64 - wide)
+                        .i64_const(i64::from(W64) - wide)
                         .i64_shr_s();
                 }
                 s.local_tee(rotated).local_get(count);
@@ -979,7 +979,7 @@ fn shift<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
                     s.i64_shr_u();
                 }
                 s.i32_wrap_i64().i32_const(1).i32_and().local_set(carry);
-                if w < 64 {
+                if w < W64 {
                     s.local_get(carry)
                         .i32_const(0)
                         .local_get(count)
@@ -1010,14 +1010,14 @@ fn shift<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
                     .i64_const(wide - 1)
                     .i64_and()
                     .local_set(rotated);
-                if w == 64 {
+                if w == W64 {
                     s.local_get(v).local_get(rotated);
                     if m == Rol {
                         s.i64_rotl();
                     } else {
                         s.i64_rotr();
                     }
-                } else if w == 32 {
+                } else if w == W32 {
                     s.local_get(v)
                         .i32_wrap_i64()
                         .local_get(rotated)
@@ -1054,7 +1054,7 @@ fn shift<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
             }
             _ => {
                 // Rcl, Rcr: through CF, the count modulo the width plus one at 8 and 16 bits.
-                if w < 32 {
+                if w < W32 {
                     s.local_get(count)
                         .i64_const(wide + 1)
                         .i64_rem_u()
@@ -1062,7 +1062,7 @@ fn shift<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
                 } else {
                     s.local_get(count).local_set(rotated);
                 }
-                if w < 64 {
+                if w < W64 {
                     // CF above the value, rotated within width + 1 bits.
                     let full = (1i64 << (w + 1)) - 1;
                     let joined = |s: &mut wasm_encoder::InstructionSink<'_>| {
@@ -1108,14 +1108,14 @@ fn shift<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
                         .local_get(v)
                         .i64_const(1)
                         .i64_shr_u()
-                        .i64_const(64)
+                        .i64_const(W64.into())
                         .local_get(rotated)
                         .i64_sub()
                         .i64_shr_u()
                         .i64_or()
                         .local_set(result);
                     s.local_get(v)
-                        .i64_const(64)
+                        .i64_const(W64.into())
                         .local_get(rotated)
                         .i64_sub()
                         .i64_shr_u()
@@ -1130,7 +1130,7 @@ fn shift<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
                         .i64_shr_u()
                         .local_get(old_carry)
                         .i64_extend_i32_u()
-                        .i64_const(64)
+                        .i64_const(W64.into())
                         .local_get(rotated)
                         .i64_sub()
                         .i64_shl()
@@ -1138,7 +1138,7 @@ fn shift<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
                         .local_get(v)
                         .i64_const(1)
                         .i64_shl()
-                        .i64_const(64)
+                        .i64_const(W64.into())
                         .local_get(rotated)
                         .i64_sub()
                         .i64_shl()
@@ -1156,7 +1156,7 @@ fn shift<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
                 }
             }
         }
-        if w < 64 {
+        if w < W64 {
             s.local_get(result)
                 .i64_const(m_all)
                 .i64_and()
@@ -1263,11 +1263,11 @@ fn high_product<E: Emitter<X86_64> + ?Sized>(e: &mut E, a: u32, b: u32, signed: 
     let mut s = e.sink();
     for (from, low, high) in [(a, a_low, a_high), (b, b_low, b_high)] {
         s.local_get(from)
-            .i64_const(0xffff_ffff)
+            .i64_const(u32::MAX.into())
             .i64_and()
             .local_set(low)
             .local_get(from)
-            .i64_const(32)
+            .i64_const(W32.into())
             .i64_shr_u()
             .local_set(high);
     }
@@ -1277,7 +1277,7 @@ fn high_product<E: Emitter<X86_64> + ?Sized>(e: &mut E, a: u32, b: u32, signed: 
         .local_get(b_low)
         .i64_mul()
         .local_get(t)
-        .i64_const(32)
+        .i64_const(W32.into())
         .i64_shr_u()
         .i64_add()
         .local_set(middle);
@@ -1285,7 +1285,7 @@ fn high_product<E: Emitter<X86_64> + ?Sized>(e: &mut E, a: u32, b: u32, signed: 
         .local_get(b_high)
         .i64_mul()
         .local_get(middle)
-        .i64_const(0xffff_ffff)
+        .i64_const(u32::MAX.into())
         .i64_and()
         .i64_add()
         .local_set(t);
@@ -1293,11 +1293,11 @@ fn high_product<E: Emitter<X86_64> + ?Sized>(e: &mut E, a: u32, b: u32, signed: 
         .local_get(b_high)
         .i64_mul()
         .local_get(middle)
-        .i64_const(32)
+        .i64_const(W32.into())
         .i64_shr_u()
         .i64_add()
         .local_get(t)
-        .i64_const(32)
+        .i64_const(W32.into())
         .i64_shr_u()
         .i64_add();
     if signed {
@@ -1335,14 +1335,14 @@ fn multiply<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         e.local(ValType::I64),
         e.local(ValType::I32),
     );
-    if w == 64 {
+    if w == W64 {
         e.sink().local_get(a).local_get(b).i64_mul().local_set(low);
         high_product(e, a, b, signed);
         e.sink().local_set(high);
         let mut s = e.sink();
         s.local_get(high);
         if signed {
-            s.local_get(low).i64_const(63).i64_shr_s();
+            s.local_get(low).i64_const((W64 - 1).into()).i64_shr_s();
         } else {
             s.i64_const(0);
         }
@@ -1384,15 +1384,15 @@ fn multiply<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         s.local_set(overflow);
     }
     if one_operand {
-        if w == 8 {
+        if w == W8 {
             e.sink()
                 .local_get(high)
-                .i64_const(8)
+                .i64_const(W8.into())
                 .i64_shl()
                 .local_get(low)
                 .i64_or()
                 .local_set(high);
-            set_general(e, accumulator(16), high);
+            set_general(e, accumulator(W16), high);
         } else {
             set_general(e, accumulator(w), low);
             set_general(e, register(RDX, w), high);
@@ -1419,20 +1419,20 @@ fn divide<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, signed: bool)
     let w = width(i, 0);
     let divisor = read(e, i, 0, mem);
     let (quotient, remainder) = (e.local(ValType::I64), e.local(ValType::I64));
-    if w == 64 {
+    if w == W64 {
         long_divide(e, divisor, signed, quotient, remainder);
-        set_general(e, accumulator(64), quotient);
-        set_general(e, register(RDX, 64), remainder);
+        set_general(e, accumulator(W64), quotient);
+        set_general(e, register(RDX, W64), remainder);
         return;
     }
     // The dividend is twice the width, which fits an i64.
     let dividend = e.local(ValType::I64);
-    let (low, high) = if w == 8 {
+    let (low, high) = if w == W8 {
         (
-            accumulator(8),
+            accumulator(W8),
             General {
                 high: true,
-                ..accumulator(8)
+                ..accumulator(W8)
             },
         )
     } else {
@@ -1517,7 +1517,7 @@ fn long_divide<E: Emitter<X86_64> + ?Sized>(
         let mut s = e.sink();
         s.local_get(high);
         if signed {
-            s.local_get(low).i64_const(63).i64_shr_s();
+            s.local_get(low).i64_const((W64 - 1).into()).i64_shr_s();
         } else {
             s.i64_const(0);
         }
@@ -1644,7 +1644,7 @@ fn divide_128<E: Emitter<X86_64> + ?Sized>(
     quotient: u32,
     remainder: u32,
 ) {
-    const DIGIT: i64 = 1 << 32;
+    const DIGIT: i64 = 1 << W32;
     let [
         shift,
         v,
@@ -1665,11 +1665,11 @@ fn divide_128<E: Emitter<X86_64> + ?Sized>(
         .local_get(shift)
         .i64_shl()
         .local_tee(v)
-        .i64_const(32)
+        .i64_const(W32.into())
         .i64_shr_u()
         .local_set(v_high);
     s.local_get(v)
-        .i64_const(0xffff_ffff)
+        .i64_const(u32::MAX.into())
         .i64_and()
         .local_set(v_low);
     // The dividend shifted left too; the bits of `low` that move up are none when the shift is zero.
@@ -1678,7 +1678,7 @@ fn divide_128<E: Emitter<X86_64> + ?Sized>(
         .i64_shl()
         .i64_const(0)
         .local_get(low)
-        .i64_const(64)
+        .i64_const(W64.into())
         .local_get(shift)
         .i64_sub()
         .i64_shr_u()
@@ -1689,11 +1689,11 @@ fn divide_128<E: Emitter<X86_64> + ?Sized>(
         .local_set(top);
     s.local_get(low).local_get(shift).i64_shl().local_set(below);
     s.local_get(below)
-        .i64_const(32)
+        .i64_const(W32.into())
         .i64_shr_u()
         .local_set(low_high);
     s.local_get(below)
-        .i64_const(0xffff_ffff)
+        .i64_const(u32::MAX.into())
         .i64_and()
         .local_set(low_low);
     // One digit of the quotient of `from` (with the next digit `next`) by v, into `digit`.
@@ -1717,7 +1717,7 @@ fn divide_128<E: Emitter<X86_64> + ?Sized>(
             .local_get(v_low)
             .i64_mul()
             .local_get(rhat)
-            .i64_const(32)
+            .i64_const(W32.into())
             .i64_shl()
             .local_get(next)
             .i64_or()
@@ -1738,7 +1738,7 @@ fn divide_128<E: Emitter<X86_64> + ?Sized>(
     step(&mut s, top, low_high, q1);
     // What is left after the first digit, with the next digit brought down.
     s.local_get(top)
-        .i64_const(32)
+        .i64_const(W32.into())
         .i64_shl()
         .local_get(low_high)
         .i64_or()
@@ -1749,13 +1749,13 @@ fn divide_128<E: Emitter<X86_64> + ?Sized>(
         .local_set(middle);
     step(&mut s, middle, low_low, q0);
     s.local_get(q1)
-        .i64_const(32)
+        .i64_const(W32.into())
         .i64_shl()
         .local_get(q0)
         .i64_or()
         .local_set(quotient);
     s.local_get(middle)
-        .i64_const(32)
+        .i64_const(W32.into())
         .i64_shl()
         .local_get(low_low)
         .i64_or()
@@ -1786,14 +1786,14 @@ fn bit_test<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
                 .local_get(extended)
                 .i64_const(i64::from(w.trailing_zeros()))
                 .i64_shr_s()
-                .i64_const(i64::from((w / 8).trailing_zeros()))
+                .i64_const(i64::from((w / W8).trailing_zeros()))
                 .i64_shl()
                 .i64_add()
                 .local_set(at);
             if i.address32 {
                 e.sink()
                     .local_get(at)
-                    .i64_const(0xffff_ffff)
+                    .i64_const(u32::MAX.into())
                     .i64_and()
                     .local_set(at);
             }
@@ -1802,7 +1802,7 @@ fn bit_test<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
             e.get(base);
             e.sink().local_get(at).i64_add().local_set(at);
         }
-        e.check(at, u32::from(w / 8), check_kind(kind), 0);
+        e.check(at, u32::from(w / W8), check_kind(kind), 0);
         at
     });
     let value = read(e, i, 0, mem);

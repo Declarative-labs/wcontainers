@@ -29,6 +29,14 @@ pub const R15: u8 = 15;
 pub const FS: u8 = 16;
 pub const GS: u8 = 17;
 
+/// Operand widths in bits.
+pub const W8: u8 = u8::BITS as u8;
+pub const W16: u8 = u16::BITS as u8;
+pub const W32: u8 = u32::BITS as u8;
+pub const W64: u8 = u64::BITS as u8;
+/// The bytes of a stack slot: a push, a pop and a return address.
+pub const SLOT: u32 = size_of::<u64>() as u32;
+
 /// A general register as iced names it: its number, its width in bits, and whether it is the second byte
 /// (ah, ch, dh, bh).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

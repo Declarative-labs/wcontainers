@@ -402,15 +402,15 @@ impl Guest for X86_64 {
                     if let Some((index, shift)) = operand {
                         start = start.wrapping_add(value(index) << shift);
                     }
-                    let unused = 64 - u32::from(width);
+                    let unused = u64::BITS - u32::from(width);
                     let offset =
                         ((value(reg) << unused) as i64 >> unused) >> width.trailing_zeros();
-                    start = start.wrapping_add((offset << (width / 8).trailing_zeros()) as u64);
+                    start = start.wrapping_add((offset << (width / W8).trailing_zeros()) as u64);
                 }
                 _ => {}
             }
-            if access.address_bits == 32 {
-                start &= 0xffff_ffff;
+            if access.address_bits == W32 {
+                start &= u64::from(u32::MAX);
             }
             if let Some(segment) = access.segment {
                 start = start.wrapping_add(value(segment));
@@ -500,7 +500,7 @@ impl Guest for X86_64 {
             let m = ins.mnemonic();
             let string = |register, kind| MemoryAccess {
                 segment: if register == RSI { segment(i) } else { None },
-                address_bits: if i.address32 { 32 } else { 64 },
+                address_bits: if i.address32 { W32 } else { W64 },
                 ..through(register, 0, bytes, kind)
             };
             let source = matches!(
@@ -567,18 +567,18 @@ impl Guest for X86_64 {
                 [Some(pop), destination]
             }
             Call => {
-                let push = through(RSP, -8, 8, AccessKind::Write);
+                let push = through(RSP, -i64::from(SLOT), SLOT, AccessKind::Write);
                 match explicit {
                     Some(m) => [Some(m), Some(push)],
                     None => [Some(push), None],
                 }
             }
-            Ret => [Some(through(RSP, 0, 8, AccessKind::Read)), None],
+            Ret => [Some(through(RSP, 0, SLOT, AccessKind::Read)), None],
             Bt | Bts | Btr | Btc if ins.op_kind(1) == OpKind::Register => [
                 explicit.map(|m| MemoryAccess {
                     index: Some(Index::BitOffset {
                         reg: general(ins.op_register(1)).unwrap().number,
-                        width: memory_bytes(i) as u8 * 8,
+                        width: memory_bytes(i) as u8 * W8,
                         operand: match m.index {
                             Some(Index::Register { reg, shift, .. }) => Some((reg, shift)),
                             _ => None,
@@ -613,12 +613,12 @@ impl Guest for X86_64 {
                 before_access: false,
             },
             Call => StackMove::By {
-                delta: -8,
+                delta: -i64::from(SLOT),
                 before_access: true,
             },
             Add | Sub
                 if writes_rsp
-                    && general(ins.op_register(0)).is_some_and(|g| g.width == 64)
+                    && general(ins.op_register(0)).is_some_and(|g| g.width == W64)
                     && !matches!(ins.op_kind(1), OpKind::Register | OpKind::Memory) =>
             {
                 let k = ins.immediate(1) as i64;
@@ -772,7 +772,7 @@ impl Guest for X86_64 {
         }
     }
 
-    const RETURN_ADDRESS: ReturnAddress = ReturnAddress::Stack { bytes: 8 };
+    const RETURN_ADDRESS: ReturnAddress = ReturnAddress::Stack { bytes: SLOT as u8 };
     const RED_ZONE: u64 = 128;
     const SP_ALIGNMENT_CHECKED: bool = false;
 
@@ -802,7 +802,7 @@ impl Guest for X86_64 {
             return None;
         }
         let g = general(ins.op_register(0))?;
-        if g.width < 32 {
+        if g.width < W32 {
             return None;
         }
         let (step, negate) = match ins.mnemonic() {

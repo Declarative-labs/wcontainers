@@ -8198,19 +8198,6 @@ code	crates/wcontainers-x86/src/flags.rs	int	condition_from_flags	4
 code	crates/wcontainers-x86/src/flags.rs	int	condition_from_flags	5
 code	crates/wcontainers-x86/src/flags.rs	int	condition_from_flags	6
 code	crates/wcontainers-x86/src/flags.rs	int	parity	0xff
-code	crates/wcontainers-x86/src/guest.rs	int	<X86_64 as Guest>::accesses	-8
-code	crates/wcontainers-x86/src/guest.rs	int	<X86_64 as Guest>::accesses	32
-code	crates/wcontainers-x86/src/guest.rs	int	<X86_64 as Guest>::accesses	64
-code	crates/wcontainers-x86/src/guest.rs	int	<X86_64 as Guest>::accesses	8
-code	crates/wcontainers-x86/src/guest.rs	int	<X86_64 as Guest>::accesses	8
-code	crates/wcontainers-x86/src/guest.rs	int	<X86_64 as Guest>::accesses	8
-code	crates/wcontainers-x86/src/guest.rs	int	<X86_64 as Guest>::induction	32
-code	crates/wcontainers-x86/src/guest.rs	int	<X86_64 as Guest>::memory_fault	0xffff_ffff
-code	crates/wcontainers-x86/src/guest.rs	int	<X86_64 as Guest>::memory_fault	32
-code	crates/wcontainers-x86/src/guest.rs	int	<X86_64 as Guest>::memory_fault	64
-code	crates/wcontainers-x86/src/guest.rs	int	<X86_64 as Guest>::memory_fault	8
-code	crates/wcontainers-x86/src/guest.rs	int	<X86_64 as Guest>::stack_move	-8
-code	crates/wcontainers-x86/src/guest.rs	int	<X86_64 as Guest>::stack_move	64
 code	crates/wcontainers-x86/src/guest.rs	int	<X86_64 as Guest>::trap_detail	8
 code	crates/wcontainers-x86/src/guest.rs	int	<X86_64 as Guest>::trap_detail	8
 code	crates/wcontainers-x86/src/guest.rs	int	BITS	16
@@ -8233,79 +8220,9 @@ code	crates/wcontainers-x86/src/lib.rs	int	Fxsave	96
 code	crates/wcontainers-x86/src/lib.rs	int	X86Block	16
 code	crates/wcontainers-x86/src/lib.rs	int	X86Block	16
 code	crates/wcontainers-x86/src/lib.rs	int	X86Block	16
-code	crates/wcontainers-x86/src/meaning.rs	int	bit_test	0xffff_ffff
-code	crates/wcontainers-x86/src/meaning.rs	int	bit_test	8
-code	crates/wcontainers-x86/src/meaning.rs	int	bit_test	8
-code	crates/wcontainers-x86/src/meaning.rs	int	call	-8
-code	crates/wcontainers-x86/src/meaning.rs	int	call	8
-code	crates/wcontainers-x86/src/meaning.rs	int	call	8
-code	crates/wcontainers-x86/src/meaning.rs	int	divide	64
-code	crates/wcontainers-x86/src/meaning.rs	int	divide	64
-code	crates/wcontainers-x86/src/meaning.rs	int	divide	64
-code	crates/wcontainers-x86/src/meaning.rs	int	divide	8
-code	crates/wcontainers-x86/src/meaning.rs	int	divide	8
-code	crates/wcontainers-x86/src/meaning.rs	int	divide	8
-code	crates/wcontainers-x86/src/meaning.rs	int	divide_128	0xffff_ffff
-code	crates/wcontainers-x86/src/meaning.rs	int	divide_128	0xffff_ffff
 code	crates/wcontainers-x86/src/meaning.rs	int	divide_128	12
-code	crates/wcontainers-x86/src/meaning.rs	int	divide_128	32
-code	crates/wcontainers-x86/src/meaning.rs	int	divide_128	32
-code	crates/wcontainers-x86/src/meaning.rs	int	divide_128	32
-code	crates/wcontainers-x86/src/meaning.rs	int	divide_128	32
-code	crates/wcontainers-x86/src/meaning.rs	int	divide_128	32
-code	crates/wcontainers-x86/src/meaning.rs	int	divide_128	32
-code	crates/wcontainers-x86/src/meaning.rs	int	divide_128	64
-code	crates/wcontainers-x86/src/meaning.rs	int	high_product	0xffff_ffff
-code	crates/wcontainers-x86/src/meaning.rs	int	high_product	0xffff_ffff
-code	crates/wcontainers-x86/src/meaning.rs	int	high_product	32
-code	crates/wcontainers-x86/src/meaning.rs	int	high_product	32
-code	crates/wcontainers-x86/src/meaning.rs	int	high_product	32
-code	crates/wcontainers-x86/src/meaning.rs	int	high_product	32
 code	crates/wcontainers-x86/src/meaning.rs	int	high_product	6
-code	crates/wcontainers-x86/src/meaning.rs	int	long_divide	63
-code	crates/wcontainers-x86/src/meaning.rs	int	meaning	16
-code	crates/wcontainers-x86/src/meaning.rs	int	meaning	16
-code	crates/wcontainers-x86/src/meaning.rs	int	meaning	32
-code	crates/wcontainers-x86/src/meaning.rs	int	meaning	32
-code	crates/wcontainers-x86/src/meaning.rs	int	meaning	32
-code	crates/wcontainers-x86/src/meaning.rs	int	meaning	63
-code	crates/wcontainers-x86/src/meaning.rs	int	meaning	64
-code	crates/wcontainers-x86/src/meaning.rs	int	meaning	64
-code	crates/wcontainers-x86/src/meaning.rs	int	meaning	64
-code	crates/wcontainers-x86/src/meaning.rs	int	multiply	16
-code	crates/wcontainers-x86/src/meaning.rs	int	multiply	63
-code	crates/wcontainers-x86/src/meaning.rs	int	multiply	64
-code	crates/wcontainers-x86/src/meaning.rs	int	multiply	8
-code	crates/wcontainers-x86/src/meaning.rs	int	multiply	8
-code	crates/wcontainers-x86/src/meaning.rs	int	read	8
-code	crates/wcontainers-x86/src/meaning.rs	int	ret	8
-code	crates/wcontainers-x86/src/meaning.rs	int	ret	8
-code	crates/wcontainers-x86/src/meaning.rs	int	shift	32
-code	crates/wcontainers-x86/src/meaning.rs	int	shift	32
-code	crates/wcontainers-x86/src/meaning.rs	int	shift	64
-code	crates/wcontainers-x86/src/meaning.rs	int	shift	64
-code	crates/wcontainers-x86/src/meaning.rs	int	shift	64
-code	crates/wcontainers-x86/src/meaning.rs	int	shift	64
-code	crates/wcontainers-x86/src/meaning.rs	int	shift	64
-code	crates/wcontainers-x86/src/meaning.rs	int	shift	64
-code	crates/wcontainers-x86/src/meaning.rs	int	shift	64
-code	crates/wcontainers-x86/src/meaning.rs	int	shift	64
-code	crates/wcontainers-x86/src/meaning.rs	int	shift	64
-code	crates/wcontainers-x86/src/meaning.rs	int	shift	64
-code	crates/wcontainers-x86/src/meaning.rs	int	shift	64
-code	crates/wcontainers-x86/src/meaning.rs	int	shift	64
-code	crates/wcontainers-x86/src/meaning.rs	int	sign_extend	64
-code	crates/wcontainers-x86/src/meaning.rs	int	sign_extend	64
 code	crates/wcontainers-x86/src/meaning.rs	int	string	-2
-code	crates/wcontainers-x86/src/meaning.rs	int	string	32
-code	crates/wcontainers-x86/src/meaning.rs	int	string	64
-code	crates/wcontainers-x86/src/meaning.rs	int	string	8
-code	crates/wcontainers-x86/src/meaning.rs	int	truncate	64
-code	crates/wcontainers-x86/src/meaning.rs	int	width	64
-code	crates/wcontainers-x86/src/meaning.rs	int	width	64
-code	crates/wcontainers-x86/src/meaning.rs	int	width	8
-code	crates/wcontainers-x86/src/meaning.rs	int	write	8
-code	crates/wcontainers-x86/src/meaning.rs	int	written	8
 code	crates/wcontainers-x86/src/operand.rs	int	cmovcc	10
 code	crates/wcontainers-x86/src/operand.rs	int	cmovcc	11
 code	crates/wcontainers-x86/src/operand.rs	int	cmovcc	12
