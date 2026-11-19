@@ -1,10 +1,10 @@
 //! Writes what the engines run for a test program at full look-ahead, for reading the machine code: the
 //! code module (`.wasm`) and wasmtime's compiled form of it with the runner's settings (`.cwasm`, an ELF file
 //! for `objdump -d`). Prints each piece's function index (as the module's lookup table gives it), blob offset
-//! and the program's symbol there. The program is ARM64's; the rest is written once over the guest.
+//! and the program's symbol there. Written once over the guest, named by its `GuestTest::NAME`.
 //!
-//! Usage: `machine-code <program> <optimisation> <out directory> [define ...]`, such as
-//! `machine-code bench -O2 out SCALE=1 WORKLOAD=2`. `WC_OMIT` (a list of stop, permissions, returns) leaves
+//! Usage: `machine-code <guest> <program> <optimisation> <library> <out directory> [define ...]`, the library
+//! `none` or `c`, such as `machine-code x86_64 bench -O2 none out SCALE=1 WORKLOAD=2`. `WC_OMIT` (a list of stop, permissions, returns) leaves
 //! checks out, as the benchmarks do.
 
 use std::process::Command;
@@ -13,11 +13,19 @@ use wcontainers_translator::{LookAhead, Omit, Optimise, translate_omitting};
 use wcontainers_translator_test::guest::GuestTest;
 use wcontainers_translator_test::programs::{Library, build_with};
 use wcontainers_translator_test::runner::precompile;
+use wcontainers_x86::X86_64;
 
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    let [program, optimisation, out, defines @ ..] = arguments.as_slice() else {
-        panic!("usage: machine-code <program> <optimisation> <out directory> [define ...]");
+    let [guest, program, optimisation, library, out, defines @ ..] = arguments.as_slice() else {
+        panic!(
+            "usage: machine-code <guest> <program> <optimisation> <library> <out directory> [define ...]"
+        );
+    };
+    let library = match library.as_str() {
+        "none" => Library::None,
+        "c" => Library::C,
+        other => panic!("no library {other}: none or c"),
     };
     let defines: Vec<&str> = defines.iter().map(String::as_str).collect();
     let omitted = std::env::var("WC_OMIT").unwrap_or_default();
@@ -27,11 +35,25 @@ fn main() {
         returns: omitted.contains("returns"),
         depth: omitted.contains("depth"),
     };
-    write::<Arm64>(program, optimisation, out, &defines, omit);
+    let build = (
+        program.as_str(),
+        optimisation.as_str(),
+        library,
+        out.as_str(),
+    );
+    match guest.as_str() {
+        Arm64::NAME => write::<Arm64>(build, &defines, omit),
+        X86_64::NAME => write::<X86_64>(build, &defines, omit),
+        other => panic!("no guest {other}: {} or {}", Arm64::NAME, X86_64::NAME),
+    }
 }
 
-fn write<G: GuestTest>(program: &str, optimisation: &str, out: &str, defines: &[&str], omit: Omit) {
-    let blob = build_with::<G>(program, optimisation, Library::None, defines);
+fn write<G: GuestTest>(
+    (program, optimisation, library, out): (&str, &str, Library, &str),
+    defines: &[&str],
+    omit: Omit,
+) {
+    let blob = build_with::<G>(program, optimisation, library, defines);
     let mut translation = translate_omitting::<G>(
         &blob.bytes,
         0..blob.code_bytes,

@@ -2866,12 +2866,8 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         let flags = self.at.flags;
         let wanted = |e: &mut Self| {
             if flags != 1 << FLAGS_IN_BLOCK {
-                e.sink()
-                    .local_get(G::L_RETURN)
-                    .i64_const(G::FLAGS_WANTED)
-                    .i64_and()
-                    .i32_wrap_i64()
-                    .if_(BlockType::Empty);
+                crate::code::push_flags_wanted::<G>(&mut e.sink());
+                e.sink().if_(BlockType::Empty);
                 e.write_back_flags(false);
                 e.at.flags = flags;
                 e.sink().end();

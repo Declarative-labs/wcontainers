@@ -667,11 +667,18 @@ fn switching_speed_arm64() {
     switching_speed::<Arm64>();
 }
 
-/// x86-64 runs at look-ahead none only until full look-ahead is built for it.
 #[test]
-fn hello_matches_linux_at_none_x86_64() {
-    match_linux_at::<X86_64>(
-        &[("hello", Library::C)],
-        &[(LookAhead::None, Optimise::Speed)],
-    );
+fn hello_matches_linux_x86_64() {
+    hello_matches_linux::<X86_64>();
+}
+
+#[test]
+fn benchmarks_match_linux_x86_64() {
+    benchmarks_match_linux::<X86_64>();
+}
+
+/// Flags a callee hands back to its caller, in every way a call and a return can be made.
+#[test]
+fn flag_returns_match_linux_x86_64() {
+    match_linux::<X86_64>(&[("flag_returns", Library::None)]);
 }

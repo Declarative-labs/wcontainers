@@ -1414,6 +1414,19 @@ pub(crate) fn pop_return_address<G: Guest>(s: &mut InstructionSink<'_>) {
     }
 }
 
+/// Push whether the caller asks for the flags, as an i32 not zero when it does. A bit in the low word is
+/// read by wrapping; one above it by a compare.
+pub(crate) fn push_flags_wanted<G: Guest>(s: &mut InstructionSink<'_>) {
+    s.local_get(G::L_RETURN)
+        .i64_const(G::FLAGS_WANTED)
+        .i64_and();
+    if G::FLAGS_WANTED as u64 <= u64::from(u32::MAX) {
+        s.i32_wrap_i64();
+    } else {
+        s.i64_const(0).i64_ne();
+    }
+}
+
 /// Push the return address the caller expects, without the flags-wanted bit.
 pub(crate) fn push_expected_return<G: Guest>(s: &mut InstructionSink<'_>) {
     s.local_get(G::L_RETURN);
