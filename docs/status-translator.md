@@ -167,6 +167,12 @@ What is left of P2, in order:
 3. The whole suite of the three crates on the final code once the driver has ended (not run at the end of
    this run: the driver holds the 6 jobs this machine allows; the crates' own unit tests, `exact` and
    `binaries` were run on the final code, and layers 1 and 2 of the long run cover the rest of the changes).
+   At the end of the run of 2026-11-18/19 (Docker down): the translator and arm64 crates' suites pass (10
+   tests, load 6 to 7); the test crate's `checks` failed in all 12 tests at `run_container`'s "Docker
+   failed", which is that guard working while Docker is down. The test crate's changes of that run
+   (99eda5e, 6a705f8) were checked by `programs`' three new tests and all of layer 3 at 8 cases (seed 7)
+   while Docker was up.
+5. Merge origin/main afterwards and adopt the literal check, as the brief asks (not before the run ends).
 4. Record the totals, the commits each chunk ran on (in the ledger), and the wall-clock time and load here.
 
 Failures found by the run, each with its cause and fix:
