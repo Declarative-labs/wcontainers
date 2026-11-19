@@ -122,7 +122,7 @@ fn rsp_based(access: &MemoryAccess<u8>) -> bool {
     access.segment.is_none()
         && matches!(
             access.base,
-            Some(Base::Register(RSP)) | Some(Base::Register(5))
+            Some(Base::Register(RSP)) | Some(Base::Register(RBP))
         )
 }
 
@@ -164,8 +164,11 @@ impl Guest for X86_64 {
     }
 
     const SP_BIT: u32 = RSP as u32;
-    const PASSED_IN: &'static [u32] = &[4, 7, 6, 2, 1, 8, 9, 0];
-    const PASSED_OUT: &'static [u32] = &[4, 0, 2];
+    const PASSED_IN: &'static [u32] = &[
+        RSP as u32, RDI as u32, RSI as u32, RDX as u32, RCX as u32, R8 as u32, R9 as u32,
+        RAX as u32,
+    ];
+    const PASSED_OUT: &'static [u32] = &[RSP as u32, RAX as u32, RDX as u32];
 
     type Flag = Flag;
     const FLAGS: &'static [(Flag, u32, u32)] = &[
@@ -698,7 +701,8 @@ impl Guest for X86_64 {
     /// by design (`int 0x80` and `sysenter`, which Linux runs as 32-bit system calls, give general protection),
     /// or stops where a CPU with more features runs on: an encoding iced calls invalid, every instruction
     /// outside the default claims, and one of them whose meaning is not written yet. Kernel-only instructions
-    /// of the claimed features fault on every CPU, and an instruction over 15 bytes too.
+    /// of the claimed features fault on every CPU under every kernel, but those a kernel can grant to user
+    /// code; an instruction over 15 bytes faults on every CPU.
     fn may_vary(i: &Instruction) -> bool {
         use crate::claims::{GROUP_DEFAULT, GROUP_KERNEL};
         use Mnemonic::*;
@@ -710,7 +714,14 @@ impl Guest for X86_64 {
             return true;
         }
         match crate::decode::claim_group(ins.code()) {
-            GROUP_KERNEL => return false,
+            // A kernel may let user code run these: rdpmc under CR4.PCE, port I/O and cli and sti after
+            // iopl or ioperm.
+            GROUP_KERNEL => {
+                return matches!(
+                    ins.mnemonic(),
+                    Rdpmc | In | Out | Insb | Insw | Insd | Outsb | Outsw | Outsd | Cli | Sti
+                );
+            }
             GROUP_DEFAULT if crate::meaning::written(i) => {}
             // Illegal instruction, where a CPU with the feature (or our own later meaning) runs it.
             _ => return true,
@@ -760,7 +771,7 @@ impl Guest for X86_64 {
     const UNREACHABLE_RETURN: i64 = i64::MIN;
     const SYSCALL: SyscallRegisters<u8> = SyscallRegisters {
         number: RAX,
-        args: [RDI, RSI, RDX, 10, 8, 9],
+        args: [RDI, RSI, RDX, R10, R8, R9],
         result: RAX,
     };
     const CODE_CHANGES: CodeChanges = CodeChanges::Detected;

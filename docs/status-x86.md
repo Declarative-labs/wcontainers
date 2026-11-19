@@ -299,7 +299,8 @@ Proof of run 1 (the Mac, Apple M5; the i7-8750H's load 0.8 to 1.2 at the start o
 1. The sixth independent check of X2.
 2. Plan 7.3's recorded reference results and layer 1 batching, proposed for X3 (see "Departures"); build them
    at X2 only if the orchestrator rules so. The plan's text now says they are not built.
-3. For X3: `presented`, `REFERENCE_HAS` and layer 1's rule for an `Err` case (plan 7.2 "As built"). For X4:
+3. For X3 (moved to X5, see "Departures", X3): `presented`, `REFERENCE_HAS` and layer 1's rule for an `Err`
+   case (plan 7.2 "As built"). For X4:
    the shared layer 2 model's operations are ARM64's (ccmp's nzcv immediate, ranges ARM64 encodes in one
    instruction), so x86's `assemble` expands them; the X2 check noted it.
 4. For X3: the x86 runner reports the signal frame's RF (bit 16) in rflags at every fault stop (seen on the
@@ -1713,9 +1714,18 @@ X3 (each also written into the plan's text where the plan is wrong):
   word (the last seven pack the five flags they keep with the new CF, which works out every flag of the
   instruction before them): this costs run speed until X4. The lazy `Shift` and `Bits` shapes and direct
   conditions come with X4's flags liveness.
-- `jrcxz` and `jecxz` are built at X3 (the manual puts them on the Jcc page); `loop`, `xlat`, `bswap`, `bsf`,
-  `bsr`, `leave`, `pushfq`, `cmpxchg`, `xadd` and the rep string instructions stay X5's "every default
-  instruction". Until then each gives illegal instruction, counted as "unsupported instruction reached".
+- `jrcxz` and `jecxz` are built at X3 (the manual puts them on the Jcc page). Every other default-claimed
+  instruction without a meaning stays X5's "every default instruction", among them some inside X3's own
+  categories: `shld` and `shrd` (shifts), push and pop of fs and gs (push and pop), mov to and from a segment
+  register (moves), and the far call, far jmp, `retf` and `iretq` that plan 5.3 puts in layer 1's forms.
+  The rest: `loop` and its kin, `xlat`, `bswap`, `bsf`, `bsr`, `enter`, `leave`, `pushfq`, `popfq`, `lahf`,
+  `sahf`, `cmpxchg`, `cmpxchg8b`, `cmpxchg16b`, `xadd`, `popcnt`, `lzcnt`, `tzcnt`, `movbe`, `adcx`, `adox`,
+  `crc32`, the fs and gs base reads and writes, `rdtsc`, `cpuid`, the fences, `movnti` and the rep string
+  instructions. Until then each gives illegal instruction, counted as "unsupported instruction reached".
+  (The independent check of X3 found this list understated; X4's own additions are under X4.)
+- `presented(code, offer)`, `REFERENCE_HAS` and layer 1's rule for an `Err` case (plan 7.2 "As built at X2"
+  had them at X3) come with X5's never-claimed list in layer 1: X3's layer 1 draws only forms whose meaning
+  is written, so no case reaches them before. Plan 7.2 says so now.
 - `Guest::may_vary` (added to the interface at X3) is in plan 3.2 now. x86's answer is true for an invalid
   encoding, every `Code` outside the default claims (illegal instruction by design where a CPU with the
   feature runs it), a default `Code` with no meaning yet, `int 0x80` and `sysenter`, and the instructions

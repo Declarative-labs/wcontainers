@@ -31,7 +31,7 @@ const YMMH: usize = 48;
 const FIELDS: usize = 64;
 
 /// The six flags and the bits of rflags user code keeps besides them.
-const SIX_FLAGS: u64 = 0x8d5;
+const SIX_FLAGS: u64 = wcontainers_x86::ARITHMETIC_FLAGS;
 const KEPT: u64 =
     wcontainers_x86::TF | wcontainers_x86::DF | wcontainers_x86::NT | wcontainers_x86::ID;
 /// RF: the CPU sets it in the frame of a fault; no instruction leaves it set.
@@ -91,8 +91,13 @@ impl GuestTest for X86_64 {
     }
 
     fn disassemble(code: &[u8]) -> String {
-        let instruction =
-            Decoder::with_ip(64, code, CODE, DecoderOptions::FORCE_RESERVED_NOP).decode();
+        let instruction = Decoder::with_ip(
+            wcontainers_x86::MODE_BITS,
+            code,
+            CODE,
+            DecoderOptions::FORCE_RESERVED_NOP,
+        )
+        .decode();
         let mut text = String::new();
         IntelFormatter::new().format(&instruction, &mut text);
         format!("{text} ({:?})", instruction.code())
@@ -153,20 +158,16 @@ impl GuestTest for X86_64 {
         state
             .extend([block.rip, block.user_rflags(), block.fs_base, block.gs_base].map(u128::from));
         let f = &block.fxsave;
-        let half = |at: usize| u128::from(u16::from_le_bytes([f[at], f[at + 1]]));
-        state.push(u128::from(u32::from_le_bytes(
-            f[24..28].try_into().unwrap(),
-        )));
-        state.extend([half(0), half(2), u128::from(f[4])]);
-        for r in 0..8 {
-            let slot = u128::from_le_bytes(f[32 + 16 * r..48 + 16 * r].try_into().unwrap());
-            state.push(slot & ((1 << 80) - 1));
+        state.extend([
+            f.mxcsr.into(),
+            f.fcw.into(),
+            f.fsw.into(),
+            u128::from(f.ftw),
+        ]);
+        for slot in f.st {
+            state.push(u128::from_le_bytes(slot) & ((1 << wcontainers_x86::X87_REGISTER_BITS) - 1));
         }
-        for x in 0..16 {
-            state.push(u128::from_le_bytes(
-                f[160 + 16 * x..176 + 16 * x].try_into().unwrap(),
-            ));
-        }
+        state.extend(f.xmm.map(u128::from_le_bytes));
         state.extend(block.ymm_high.map(u128::from_le_bytes));
         assert_eq!(state.len(), FIELDS);
         State(state)
@@ -184,15 +185,15 @@ impl GuestTest for X86_64 {
         block.fs_base = s[FS] as u64;
         block.gs_base = s[GS] as u64;
         let f = &mut block.fxsave;
-        f[24..28].copy_from_slice(&(s[MXCSR] as u32).to_le_bytes());
-        f[0..2].copy_from_slice(&(s[FCW] as u16).to_le_bytes());
-        f[2..4].copy_from_slice(&(s[FSW] as u16).to_le_bytes());
-        f[4] = s[FTW] as u8;
-        for r in 0..8 {
-            f[32 + 16 * r..48 + 16 * r].copy_from_slice(&s[R0 + r].to_le_bytes());
+        f.mxcsr = s[MXCSR] as u32;
+        f.fcw = s[FCW] as u16;
+        f.fsw = s[FSW] as u16;
+        f.ftw = s[FTW] as u8;
+        for (to, from) in f.st.iter_mut().zip(&s[R0..]) {
+            *to = from.to_le_bytes();
         }
-        for x in 0..16 {
-            f[160 + 16 * x..176 + 16 * x].copy_from_slice(&s[XMM + x].to_le_bytes());
+        for (to, from) in f.xmm.iter_mut().zip(&s[XMM..]) {
+            *to = from.to_le_bytes();
         }
         for (to, from) in block.ymm_high.iter_mut().zip(&s[YMMH..YMMH + 16]) {
             *to = from.to_le_bytes();
@@ -206,8 +207,13 @@ impl GuestTest for X86_64 {
     fn reconcile(case: &Case, expected: &mut Outcome, _actual: &Outcome) {
         // RF is in the frame of every fault, and the runner's own trap flag in r11 after `syscall`.
         expected.state.0[RFLAGS] &= !RF;
-        let instruction =
-            Decoder::with_ip(64, case.code.code(), CODE, DecoderOptions::NONE).decode();
+        let instruction = Decoder::with_ip(
+            wcontainers_x86::MODE_BITS,
+            case.code.code(),
+            CODE,
+            DecoderOptions::NONE,
+        )
+        .decode();
         if instruction.mnemonic() == Mnemonic::Syscall {
             const R11: usize = 11;
             expected.state.0[R11] &= !u128::from(wcontainers_x86::TF);
@@ -245,7 +251,8 @@ impl GuestTest for X86_64 {
     /// `int 0x80` and `sysenter` run Linux's 32-bit system calls on the reference, which this phase does
     /// not provide (plan 5.2); the designed-answers cases check what we give.
     fn excluded(code: &[u8]) -> Option<&'static str> {
-        let instruction = Decoder::with_ip(64, code, CODE, DecoderOptions::NONE).decode();
+        let instruction =
+            Decoder::with_ip(wcontainers_x86::MODE_BITS, code, CODE, DecoderOptions::NONE).decode();
         match instruction.code() {
             Code::Int_imm8
                 if instruction.immediate8() == wcontainers_x86::LINUX_32_BIT_SYSTEM_CALL =>
@@ -304,7 +311,7 @@ impl GuestTest for X86_64 {
     }
 
     fn smoke() -> Smoke {
-        panic!("x86-64's smoke programs come with its programs in milestone X3")
+        panic!("x86-64's smoke programs are milestone X5's")
     }
 
     fn checks() -> Vec<Check> {
@@ -494,6 +501,12 @@ fn string(code: Code, address_size: u32, segment: Register) -> Option<Instructio
     made.ok()
 }
 
+/// How near an edge of the address space a memory operand drawn there points.
+const EDGE_BYTES: u64 = 64;
+/// In a hundred: bit offsets aimed with their operand, and reserved NOPs drawn with REX.W.
+const AIMED_BIT_OFFSETS: u64 = 75;
+const DRAWN_REX_W: u64 = 30;
+
 /// Where a memory operand points: mostly into the data area, and a share of edges (just outside it, its
 /// read-only page, the last 64 bytes below 2^47, non-canonical).
 fn target(draw: &mut Draw, bytes: u64) -> u64 {
@@ -502,10 +515,10 @@ fn target(draw: &mut Draw, bytes: u64) -> u64 {
         13 => DATA + DATA_WRITABLE - bytes + draw.below(2 * bytes),
         14 => DATA - bytes + draw.below(2 * bytes),
         15 => DATA + DATA_BYTES - bytes + draw.below(2 * bytes),
-        16 | 17 => USER_END - 64 + draw.below(64),
+        16 | 17 => USER_END - EDGE_BYTES + draw.below(EDGE_BYTES),
         18 => 1 << (u64::BITS - 1) | draw.next() >> 1,
         // Just below the upper canonical half.
-        _ => USER_END.wrapping_neg().wrapping_sub(draw.below(64)),
+        _ => USER_END.wrapping_neg().wrapping_sub(draw.below(EDGE_BYTES)),
     }
 }
 
@@ -545,8 +558,8 @@ fn case(code: Code, seed: u64) -> Option<Case> {
     state[RFLAGS] = rflags(&mut draw);
     state[FS] = (draw.next() % USER_TOP).into();
     state[GS] = (draw.next() % USER_TOP).into();
-    state[MXCSR] = 0x1f80;
-    state[FCW] = 0x37f;
+    state[MXCSR] = wcontainers_x86::MXCSR_AT_START.into();
+    state[FCW] = wcontainers_x86::FCW_AT_START.into();
     for x in &mut state[XMM..XMM + 16] {
         *x = u128::from(draw.value()) << 64 | u128::from(draw.value());
     }
@@ -690,7 +703,7 @@ fn case(code: Code, seed: u64) -> Option<Case> {
             to &= !15;
         }
         // A bit offset in a register moves the address by whole operands: most are aimed with it.
-        let moved = if draw.chance(75) {
+        let moved = if draw.chance(AIMED_BIT_OFFSETS) {
             bit_offset_move(&instruction, &state)
         } else {
             0
@@ -725,7 +738,7 @@ fn with_drawn_prefixes(draw: &mut Draw, bytes: Vec<u8>) -> Vec<u8> {
         .expect("a two-byte opcode");
     let mut drawn = legacy;
     drawn.extend_from_slice(&bytes[..opcode]);
-    if draw.chance(30) {
+    if draw.chance(DRAWN_REX_W) {
         match drawn.last_mut() {
             Some(rex) if is_rex(*rex) => *rex |= REX_W,
             _ => drawn.push(REX | REX_W),
@@ -787,7 +800,13 @@ fn register_value(r: Register, state: &[u128]) -> Option<u64> {
 /// runner itself where a clean process faults.
 fn reaches_runner(bytes: &[u8], state: &[u128]) -> bool {
     let runner = crate::layout::x86_64::RUNNER;
-    let instruction = Decoder::with_ip(64, bytes, CODE, DecoderOptions::NONE).decode();
+    let instruction = Decoder::with_ip(
+        wcontainers_x86::MODE_BITS,
+        bytes,
+        CODE,
+        DecoderOptions::NONE,
+    )
+    .decode();
     if instruction.is_invalid() {
         return false;
     }
@@ -826,7 +845,13 @@ fn reaches_runner(bytes: &[u8], state: &[u128]) -> bool {
 /// A branch into its own bytes, which our side runs again where the reference stops there (and so never
 /// stops when it lands on its own start).
 fn branches_into_itself(bytes: &[u8]) -> bool {
-    let instruction = Decoder::with_ip(64, bytes, CODE, DecoderOptions::NONE).decode();
+    let instruction = Decoder::with_ip(
+        wcontainers_x86::MODE_BITS,
+        bytes,
+        CODE,
+        DecoderOptions::NONE,
+    )
+    .decode();
     instruction.op_count() == 1
         && instruction.op0_kind() == iced_x86::OpKind::NearBranch64
         && (CODE..CODE + bytes.len() as u64).contains(&instruction.near_branch64())
@@ -1030,8 +1055,8 @@ pub fn plain(code: &[u8]) -> Case {
     state[RSP] = (DATA + PAGE_SIZE).into();
     state[RIP] = CODE.into();
     state[RFLAGS] = 0x202;
-    state[MXCSR] = 0x1f80;
-    state[FCW] = 0x37f;
+    state[MXCSR] = wcontainers_x86::MXCSR_AT_START.into();
+    state[FCW] = wcontainers_x86::FCW_AT_START.into();
     Case {
         code: Encoded::new(code),
         state: State(state),
@@ -1093,7 +1118,8 @@ mod tests {
     /// The reserved NOP forms' cases reach encodings with each of `66`, `F2` and `F3` first, and with REX.W.
     #[test]
     fn reserved_nop_cases_draw_prefixes() {
-        let cases: Vec<Vec<u8>> = (0..4096)
+        const DRAWS: u64 = 4096;
+        let cases: Vec<Vec<u8>> = (0..DRAWS)
             .filter_map(|draw| case(Code::Reservednop_rm32_r32_0F1E, draw))
             .map(|c| c.code.code().to_vec())
             .collect();

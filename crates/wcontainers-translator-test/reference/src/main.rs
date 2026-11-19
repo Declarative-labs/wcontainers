@@ -755,8 +755,36 @@ fn hello() -> Vec<u8> {
     record
 }
 
+/// How long the server waits for a request before it ends: a connection that died without closing (a dropped
+/// network) never sends one nor ends its input, and the runner and its case child would stay for hours.
+const IDLE_MILLISECONDS: i32 = 15 * 60 * 1000;
+
+/// Whether a request starts within `IDLE_MILLISECONDS`, or the input ends.
+fn request_arrives(input: &std::io::BufReader<std::fs::File>) -> bool {
+    use std::os::fd::AsRawFd;
+    if !input.buffer().is_empty() {
+        return true;
+    }
+    let mut poll = libc::pollfd {
+        fd: input.get_ref().as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    loop {
+        match unsafe { libc::poll(&mut poll, 1, IDLE_MILLISECONDS) } {
+            0 => return false,
+            n if n > 0 => return true,
+            _ if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted => {}
+            _ => return true,
+        }
+    }
+}
+
 fn serve() {
-    let mut input = std::io::stdin().lock();
+    use std::os::fd::FromRawFd;
+    // Standard input as a file of our own, so its buffer can be seen before waiting on it.
+    let mut input =
+        std::io::BufReader::new(unsafe { std::fs::File::from_raw_fd(libc::STDIN_FILENO) });
     let mut output = std::io::stdout().lock();
     write_record(&mut output, &hello());
     SERVER.store(
@@ -764,7 +792,9 @@ fn serve() {
         core::sync::atomic::Ordering::Relaxed,
     );
     let mut child: Option<CaseChild> = None;
-    while let Some(request) = read_record(&mut input) {
+    while request_arrives(&input)
+        && let Some(request) = read_record(&mut input)
+    {
         let result = match request.first() {
             Some(&RECORD_CASE) => {
                 let serving = child.get_or_insert_with(start_case_child);

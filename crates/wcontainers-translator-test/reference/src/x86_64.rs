@@ -103,7 +103,10 @@ fn ymm_offset() -> usize {
 }
 
 /// The legacy FXSAVE area's bytes.
-const LEGACY_FP_BYTES: usize = 512;
+const LEGACY_FP_BYTES: usize = size_of::<libc::user_fpregs_struct>();
+
+/// MXCSR's place in it.
+const MXCSR_AT: usize = core::mem::offset_of!(libc::user_fpregs_struct, mxcsr);
 
 /// Linux's `struct _fpx_sw_bytes`, in the last 48 bytes of the legacy area of a signal frame
 /// (arch/x86/include/uapi/asm/sigcontext.h).
@@ -202,7 +205,7 @@ impl Machine for Cpu {
             put(fp, &(state[FCW] as u16).to_le_bytes());
             put(fp.add(2), &(state[FSW] as u16).to_le_bytes());
             *fp.add(4) = state[FTW] as u8;
-            put(fp.add(24), &(state[MXCSR] as u32).to_le_bytes());
+            put(fp.add(MXCSR_AT), &(state[MXCSR] as u32).to_le_bytes());
             // The frame holds the stack in order from ST(0); the state the physical registers.
             let top = (state[FSW] as usize >> 11) & 7;
             for i in 0..8 {
@@ -263,7 +266,7 @@ impl Machine for Cpu {
             } else {
                 3
             };
-            state[MXCSR] = u32::from_le_bytes(get(fp.add(24))).into();
+            state[MXCSR] = u32::from_le_bytes(get(fp.add(MXCSR_AT))).into();
             if bv & 1 != 0 {
                 state[FCW] = u16::from_le_bytes(get(fp)).into();
                 state[FSW] = u16::from_le_bytes(get(fp.add(2))).into();
@@ -348,7 +351,7 @@ impl Machine for Cpu {
             let (fp, _, extended) = fp_area(uc);
             core::ptr::write_bytes(fp, 0, 24);
             put(fp, &0x37fu16.to_le_bytes());
-            put(fp.add(24), &0x1f80u32.to_le_bytes());
+            put(fp.add(MXCSR_AT), &0x1f80u32.to_le_bytes());
             core::ptr::write_bytes(fp.add(32), 0, 128 + 256);
             if extended {
                 core::ptr::write_bytes(fp.add(ymm_offset()), 0, 256);

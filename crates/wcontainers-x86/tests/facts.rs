@@ -32,6 +32,11 @@ fn what_may_vary_between_cpus() {
         (&[0x62, 0xf1, 0x7c, 0x48, 0x58, 0xc0], true),
         (&[0xc5, 0xfc, 0x58, 0xc0], true),
         (&[0x06], true),
+        // Kernel-only instructions a kernel may let user code run: rdpmc, in, outsb, cli.
+        (&[0x0f, 0x33], true),
+        (&[0xec], true),
+        (&[0x6e], true),
+        (&[0xfa], true),
         // Fully defined: add, mov, push, a jump, int3, a kernel-only instruction, int 0x81.
         (&[0x48, 0x01, 0xc8], false),
         (&[0x48, 0x89, 0xc8], false),

@@ -2555,7 +2555,8 @@ As built at X2 (`src/guest/mod.rs`), where building it showed a signature must c
   `OFFERED_FEATURES`, and the abi's HWCAP bits by name), and one test written once checks they are the same
   set (it replaced ARM64's own check of `OFFERED_FEATURES` against HWCAP).
 - Not built at X2, each with the first CPU that gives it something to do: `presented(code, offer)`,
-  `REFERENCE_HAS` and layer 1's rule for an `Err` case come with x86's layer 1 (X3). ARM64 would answer `Ok`
+  `REFERENCE_HAS` and layer 1's rule for an `Err` case come with x86's never-claimed list in layer 1 (X5):
+  x86's layer 1 at X3 draws only forms whose meaning is written, so nothing reaches them before. ARM64 would answer `Ok`
   to every instance and give an empty list, so the rule would be code no case reaches; its words of features
   not offered stay among its `excluded` reasons, as above. `Stop::SingleStep` comes with X6, where the
   translated side first stops by the guest's own trap flag; until then no stop of either side maps to it

@@ -808,7 +808,7 @@ fn string<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) 
     let step = e.local(ValType::I64);
     e.get_control(Control::Rflags);
     e.sink()
-        .i64_const(10)
+        .i64_const(crate::DF.trailing_zeros().into())
         .i64_shr_u()
         .i64_const(1)
         .i64_and()

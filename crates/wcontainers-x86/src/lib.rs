@@ -53,9 +53,54 @@ pub struct X86Block {
     pub fs_base: u64,
     pub gs_base: u64,
     pub reserved1: u64,
-    pub fxsave: [u8; 512],
+    pub fxsave: Fxsave,
     pub ymm_high: [[u8; 16]; 16],
 }
+
+/// The FXSAVE area (Intel SDM Vol. 1 10.5.1, table 10-2), its x87 slots in physical order R0 to R7.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout)]
+#[repr(C)]
+pub struct Fxsave {
+    pub fcw: u16,
+    pub fsw: u16,
+    pub ftw: u8,
+    pub reserved0: u8,
+    pub fop: u16,
+    pub fip: u64,
+    pub fdp: u64,
+    pub mxcsr: u32,
+    pub mxcsr_mask: u32,
+    pub st: [[u8; 16]; 8],
+    pub xmm: [[u8; 16]; 16],
+    pub available: [u8; 96],
+}
+
+impl Fxsave {
+    pub const ZERO: Self = Fxsave {
+        fcw: 0,
+        fsw: 0,
+        ftw: 0,
+        reserved0: 0,
+        fop: 0,
+        fip: 0,
+        fdp: 0,
+        mxcsr: 0,
+        mxcsr_mask: 0,
+        st: [[0; 16]; 8],
+        xmm: [[0; 16]; 16],
+        available: [0; 96],
+    };
+}
+
+/// The x87 control word after `fninit` and MXCSR at reset (Linux's `MXCSR_DEFAULT`), as Linux starts a
+/// thread.
+pub const FCW_AT_START: u16 = 0x37f;
+pub const MXCSR_AT_START: u32 = 0x1f80;
+/// The bits of an x87 slot that hold its register.
+pub const X87_REGISTER_BITS: u32 = 80;
+
+/// rsp's number in the general registers.
+pub const RSP_NUMBER: u8 = 4;
 
 /// Byte offsets in the block.
 pub const RIP: usize = core::mem::offset_of!(X86Block, rip);
@@ -65,8 +110,8 @@ pub const FS_BASE: usize = core::mem::offset_of!(X86Block, fs_base);
 pub const GS_BASE: usize = core::mem::offset_of!(X86Block, gs_base);
 pub const FXSAVE: usize = core::mem::offset_of!(X86Block, fxsave);
 /// MXCSR and the xmm registers in the FXSAVE area.
-pub const MXCSR: usize = FXSAVE + 24;
-pub const XMM: usize = FXSAVE + 160;
+pub const MXCSR: usize = FXSAVE + core::mem::offset_of!(Fxsave, mxcsr);
+pub const XMM: usize = FXSAVE + core::mem::offset_of!(Fxsave, xmm);
 pub const YMM_HIGH: usize = core::mem::offset_of!(X86Block, ymm_high);
 /// The i32 stop flag after the block.
 pub const STOP_FLAG: usize = size_of::<X86Block>();
@@ -82,6 +127,10 @@ pub const TF: u64 = 1 << 8;
 pub const DF: u64 = 1 << 10;
 pub const NT: u64 = 1 << 14;
 pub const ID: u64 = 1 << 21;
+/// The six arithmetic flags.
+pub const ARITHMETIC_FLAGS: u64 = CF | PF | AF | ZF | SF | OF;
+/// iced's bitness of 64-bit mode.
+pub const MODE_BITS: u32 = u64::BITS;
 /// Linear address bits under 4-level paging (Intel SDM Vol. 3A 4.5). An address is canonical when the bits
 /// above them copy its top one.
 pub const VIRTUAL_ADDRESS_BITS: u32 = 48;
@@ -116,7 +165,7 @@ impl X86Block {
         fs_base: 0,
         gs_base: 0,
         reserved1: 0,
-        fxsave: [0; 512],
+        fxsave: Fxsave::ZERO,
         ymm_high: [[0; 16]; 16],
     };
 
@@ -138,10 +187,9 @@ impl Personality for X86_64 {
             rip: pc,
             ..X86Block::ZERO
         };
-        block.gpr[4] = sp;
-        // The x87 control word 0x37F and MXCSR 0x1F80, as Linux starts a thread.
-        block.fxsave[..2].copy_from_slice(&0x37fu16.to_le_bytes());
-        block.fxsave[24..28].copy_from_slice(&0x1f80u32.to_le_bytes());
+        block.gpr[usize::from(RSP_NUMBER)] = sp;
+        block.fxsave.fcw = FCW_AT_START;
+        block.fxsave.mxcsr = MXCSR_AT_START;
         block
     }
 }

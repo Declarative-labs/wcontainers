@@ -29,7 +29,7 @@ fn options() -> u32 {
 
 /// The instruction at the start of `code` with its length, `None` when it runs past the end.
 pub fn decode(code: &[u8]) -> Option<(Instruction, u8)> {
-    let mut decoder = Decoder::with_ip(64, code, 0, options());
+    let mut decoder = Decoder::with_ip(crate::MODE_BITS, code, 0, options());
     let mut iced = decoder.decode();
     // iced may want more bytes than the CPU counts for an invalid encoding.
     let cut = decoder.last_error() == DecoderError::NoMoreBytes;
