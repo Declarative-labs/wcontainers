@@ -43,7 +43,9 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   (below, "N4 run 2"); run 3 built the call stub, measured it slower than plain calls and took it out, pointed conditional
   branches straight at their targets' pieces, ran the benchmark set in the count test across look-aheads, built the
   system-call part of the bar and cut that path from 10,000 to 6,000 instructions a call: both parts of the bar still fail
-  (below, "N4 run 3"). T1's look-aheads and the system-call path come next.
+  (below, "N4 run 3"); run 4 found where a system call's time went (timer probes) and gave the inside Arm's memcpy: the
+  system-call part now passes (78.0 ns [71.9 .. 82.7] against 100), and a three-word page test brought the compute part
+  to +59.27% [+57.84 .. +60.45], which still fails against +21.2% (below, "N4 run 4"). T1's look-aheads come next.
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -70,6 +72,62 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N4 run 4 (2026-11-19): the system-call part passes; a shorter page test
+
+Start: origin/main and origin/phase-1-literals had nothing new. T1 is still on no branch (origin/phase-1-translator
+8c7a4b5b). Run 3's last edit of this file (its timer probes, below) was uncommitted and is kept.
+
+Where a system call's time went, found with timer probes in the inside (CNTVCT summed over the million calls, about 15 ns
+of probe in each of 16 segments; not committed; scratch native/n4r4/probe*.log, load 32 to 42):
+- `MDSCR_EL1.modify` after every run cost about 55 ns: the register is the hypervisor's to answer. It is written only for a
+  turn run in steps now.
+- The address-space switch wrote both table bases and an `isb` at every run, about 17 ns: now it reads them and writes only
+  when they differ (eb2a4b56).
+- The resolution of the stop took about 115 ns, nearly all of it copies of the guest's state through compiler_builtins'
+  `memcpy`. A pair-at-a-time loop cut that segment from 99 to 25 ns; the inside now links Arm's optimized-routines memcpy
+  (general registers only), vendored and assembled by the build script (84caba1c; licence below).
+
+The compute part (aaacbc76): the Split route's page test in front of an access with an immediate offset (or none) of a
+power-of-two size is three words, `add t, xN, #((offset + size - 1) mod PAGE_SIZE)`, `and t, t, #((PAGE_SIZE - 1) &
+!(size - 1))`, `cbz t, cross` (plan 3.4), where it was four; the register-offset forms keep four. A first byte at a
+page's start takes the probes too (harmless, they touch only the access's bytes). The carry test recognises both forms.
+
+Measured (M5 Max, all on the Mac):
+- The speed test (speed.log, 15 pairs each, look-ahead 256, bootstrap seed 1 with 2000 resamples, load 31 to 33; share
+  on performance cores 39 to 62% on both sides): compute part +59.27%, 95% interval [+57.84 .. +60.45], FAILS against
+  +21.2% (run 3: +62.92%). fib +88.6, sieve +40.3, hash +3.5, sort +88.0, interpret +114.5, matrix +93.9, walk +20.0,
+  search +61.1; calls +52.9. Instructions +27 to +190%. System-call part: 191.1 ns a call (median), the kernel's own
+  share 113.2 ns, the back end's 78.0 ns, 95% interval [71.9 .. 82.7], PASSES against 100 ns; 3,550 instructions and
+  800 cycles a call (run 3: 5,979 instructions, back end 279.7 ns). A first 5-pair run of the system-call part alone
+  (syscalls-a.jsonl, load 25 to 29) gave 62.7 ns [44.7 .. 73.5].
+- Tests after the changes: native 32,562 cases, 0 failing (seed 0x2545f4914f6cdd1d, native16.log); carry 1,100,823 words
+  in shape; exits 4 programs both modes; interrupts 3597 forced interrupts at 3 look-aheads, 0 failed; floor 21 cases and
+  1 measurement, 0 failed; kernel alike at none and 256 with the reference (blocks' KNOWN FAILURE on the WebAssembly side
+  only) and busybox 56 commands as the reference (kernel-busybox2.log, load 28 to 31). A first busybox run failed on
+  `ls -la`'s times only: the reference ran at 20:27 and the native side at 20:28 (the test compares the minute).
+- Literals: the check exits 0, no marks, nothing added to the baseline. The vendored assembly is not Rust and is Arm's.
+
+Looked at and not done:
+- A jump through a register could leave out its ceiling test (`ubfx`, `cbnz`, two of its six words) if every bit below
+  the tag went into the slot's address, so a target past 2^45 lands outside the mirror and faults. It cannot today: such
+  a target with bit 45 set lands in the low half of the inside's half, where the code area is executable at EL0. It
+  needs the code area moved into the user half above the ceiling.
+- Returns predicted by the return-address stack need either the call stub (measured slower, run 3) or a shadow stack in
+  the register page (about as many words as today's `br`); not built.
+
+What N4 still needs, in order:
+1. The compute part of the bar: +59% against +21%. What is left that this track can do without others: the ceiling test
+   above (with the code area moved), and the withheld registers chosen by dynamic counts (x26 to x28 today; bench's
+   pieces name them at 214 sites). Pieces that hold branches need T1. The page test's share (about +11%, run 3) is
+   decision 14's.
+2. T1 (the finder apart from the WebAssembly plans) from the translator track, then bounded look-ahead as stretches and
+   full look-ahead.
+3. The untranslated run at EL0 on the floor beside each workload.
+4. Load-time addresses, the cache with the native key and disk files, loaded translations shared between processes.
+5. 2 MiB entries with the contiguous bit measured.
+6. For the independent check: the bar's measurements as alternating pairs again, and the differential test at each
+   look-ahead with a new seed.
 
 ## N4 run 3 (2026-11-19): the call stub measured and dropped, linked conditional branches, the system-call part
 
@@ -130,7 +188,13 @@ What N4 still needs, in order:
 2. The system-call part fails: the back end's share about 300 ns against 100. The path still copies the guest's state
    several times a call (`stop::resolve`'s `Resolved` and `GuestState` by value, `rejoin`, the register page read and
    written whole) with the inside's word-at-a-time `memcpy` (compiler_builtins); about 6,000 instructions a call, of which
-   the kernel's own share is about 120 ns on the host.
+   the kernel's own share is about 120 ns on the host. Timer probes inside the machine (CNTVCT, 24 MHz, summed over the
+   million calls, before the boxing; not committed) put a call at: the exception and the guest's own loop 42 ns, the
+   resolution of the stop 112 ns, the kernel and the policy 71 ns (less than layer 1's 117 ns on the host), the switch of
+   address space 17 ns, the float control 8 ns, the rejoin 15 ns and the reads after the exception 16 ns; the thread's
+   move out of the map and back was 280 ns of the rest. Next: no state copied by value on the path (the resolution
+   writing into the thread), or a `memcpy` of 16 bytes a step for the inside (ARM's optimized-routines are MIT or
+   Apache-2.0).
 3. T1 (the finder apart from the WebAssembly plans) from the translator track, then bounded look-ahead as stretches and full
    look-ahead.
 4. The untranslated run at EL0 on the floor beside each workload.
@@ -1569,6 +1633,10 @@ which bring the workspace's translator dependencies into it, all already in Carg
 Apache-2.0 WITH LLVM-exception, wasm-encoder 0.263.0 Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT,
 yaxpeax-arch 0.3.3 and yaxpeax-arm 0.5.0 0BSD. zerocopy is a test-only dependency of the monitor (the cases'
 messages).
+N4 run 4: the inside links Arm's optimized-routines v25.07 `string/aarch64/memcpy.S` with its `asmdefs.h` and LICENSE,
+vendored unchanged in crates/wcontainers-inside/vendor/optimized-routines (MIT OR Apache-2.0 WITH LLVM-exception, the
+release's LICENSE file read 2026-11-19), assembled by `cc` 1.11.2 (MIT OR Apache-2.0, already in Cargo.lock as the
+monitor's), a new build-dependency of the inside.
 N3 run 9: the inside depends on rangemap 1.8.0 (MIT/Apache-2.0, crates.io licence field read 2026-11-19; already in
 Cargo.lock as the kernel's), for what each range of a process allows and which ranges show a shared block.
 
@@ -1867,6 +1935,9 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N4 run 4: the system-call part of the speed bar passes (78.0 ns against 100); the compute part still fails (+59.27%
+  against +21.2%). T1 is still needed and still on no branch: may this track make it?
 
 - N4 run 3, speed against something else, put to the orchestrator as the brief asks: (1) the Split route's page test in
   front of every load and store of 2 to 16 bytes (decision 14's routing) costs about +11% on the bar's geometric mean

@@ -692,7 +692,12 @@ WebAssembly output does.
   0.16.0-rc.0 is a pre-release and is not used) for page table entry types; `aarch64-cpu` 12.0.0
   (MIT/Apache-2.0) for system registers, with `arm-sysregs` 0.5.2 (MIT OR Apache-2.0) for the fields it lacks
   (SCTLR_EL1's, CTR_EL0's, PMCR_EL0's); `arm-gic` 0.11.0 (MIT OR Apache-2.0, with `safe-mmio` 0.4.0) for the
-  interrupt controller; `spin` 0.10.1 (MIT) for the lock over frames; `talc` 5.1.1 (MIT) as the allocator.
+  interrupt controller; `spin` 0.10.1 (MIT) for the lock over frames; `talc` 5.1.1 (MIT) as the allocator;
+  Arm's optimized-routines (v25.07, MIT OR Apache-2.0 WITH LLVM-exception) for `memcpy` and `memmove`, its
+  general-register `memcpy.S` vendored in crates/wcontainers-inside/vendor and assembled by `cc` 1.11.2 (MIT OR
+  Apache-2.0) in the build script, since compiler_builtins' word loop made a system call's copies of the guest's
+  state cost about 110 ns of its 400 (N4 run 4); its SIMD forms are not usable, as the vector registers hold the
+  guest's.
   The monitor reads the inside's ELF image with `object` 0.37.3 (Apache-2.0 OR MIT) and maps memory with
   `libc`. The page-table walk that
   copies, shares and write-protects is ours (section 5.2), since it is the speed of fork and of the write
