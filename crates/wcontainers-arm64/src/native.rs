@@ -216,6 +216,10 @@ impl Native for Arm64 {
         code.push(&carry::call_word(call).to_le_bytes());
     }
 
+    fn exit(code: &mut HostCode, target: u64) {
+        carry::exit(code, target);
+    }
+
     fn stopping(i: &I, _address: u64) -> Stopping {
         let register = |r: Reg| match r {
             Reg::X(n) => Base::Register(n),

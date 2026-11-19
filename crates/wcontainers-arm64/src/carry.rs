@@ -16,7 +16,7 @@ use crate::instruction::{
     Address, BranchRegister, Instruction as I, MemoryAccess, Reg, SystemRegister,
 };
 use crate::meaning::Host;
-use crate::mirror::{MIRROR, REACH_BITS, SLOT_SHIFT};
+use crate::mirror::{self, MIRROR, REACH_BITS, SLOT_MOVES, SLOT_SHIFT};
 pub use crate::thread_state::{
     BORROWED, COUNT, PAGE, RegisterPage, SCRATCH, STACK_ALIGNMENT, TAG_LOW, WITHHELD,
 };
@@ -698,20 +698,66 @@ fn rebase(out: &mut Out, i: &I) {
     out.commit(load, next);
 }
 
-/// A branch, call or return (section 3.2), at look-ahead none: every exit goes to the inside.
+/// The exit to the direct guest `target` (section 3.2): its entry slot's address built in t and a jump there,
+/// the first word being the one a loader links. A target beyond the mirror goes to the inside, which reports
+/// it as its jump's would be.
+pub(crate) fn exit(code: &mut HostCode, target: u64) {
+    if target >> REACH_BITS != 0 {
+        Arm64::call(code, InsideCall::Exit);
+        return;
+    }
+    let moves = encode::move_constant(SCRATCH, mirror::slot(target));
+    code.exit(&moves[0].to_le_bytes(), target);
+    for w in &moves[1..] {
+        code.push(&w.to_le_bytes());
+    }
+    code.push(&encode::branch_register(form::BR, SCRATCH).to_le_bytes());
+}
+
+/// The words a loader fills: a slot's moves and jump, and a direct branch (section 3.2).
+pub struct LinkWords {
+    /// Each move of a slot, from the lowest part up: the word with its immediate clear, and its immediate's bits.
+    pub moves: [(u32, u32); SLOT_MOVES],
+    /// The slot's jump through t.
+    pub jump: u32,
+    /// A direct branch with no offset, and its offset's bits.
+    pub branch: (u32, u32),
+    /// An empty slot's first word.
+    pub empty: u32,
+}
+
+/// The words a loader fills, from the encoder.
+pub fn link_words() -> LinkWords {
+    let moves = std::array::from_fn(|k| {
+        let half = k as u32;
+        let clear = encode::movk(SCRATCH, 0, half);
+        (clear, clear ^ encode::movk(SCRATCH, u16::MAX, half))
+    });
+    let clear = encode::branch(false, 0).expect("a branch");
+    let back = encode::branch(false, -(INSTRUCTION as i64)).expect("a branch");
+    LinkWords {
+        moves,
+        jump: encode::branch_register(form::BR, SCRATCH),
+        branch: (clear, clear ^ back),
+        empty: encode::exception(form::UDF, 0),
+    }
+}
+
+/// A branch, call or return (section 3.2): a direct target is left through its exit, a jump through a register
+/// through the target's entry slot.
 fn transfer(out: &mut Out, i: &I, word: u32) {
     let at = out.address;
     let next = out.next();
     let return_address = at.wrapping_add(INSTRUCTION);
     match *i {
         I::Branch { link, offset } => {
-            let target = Resume::At(at.wrapping_add_signed(offset));
+            let target = at.wrapping_add_signed(offset);
             if link {
-                out.build(Reg::X(LINK), return_address, target);
+                out.build(Reg::X(LINK), return_address, Resume::At(target));
             } else {
-                out.code.after(target);
+                out.code.after(Resume::At(target));
             }
-            out.call(InsideCall::Exit);
+            exit(out.code, target);
         }
         I::BranchCond { offset, .. }
         | I::CompareBranch { offset, .. }
@@ -727,10 +773,11 @@ fn transfer(out: &mut Out, i: &I, word: u32) {
             let taken = out.code.offset();
             out.put(encode::retarget(word, 0).expect("a branch"));
             out.code.after(next);
-            out.call(InsideCall::Exit);
+            exit(out.code, at.wrapping_add(INSTRUCTION));
             out.land(taken);
-            out.code.after(Resume::At(at.wrapping_add_signed(offset)));
-            out.call(InsideCall::Exit);
+            let target = at.wrapping_add_signed(offset);
+            out.code.after(Resume::At(target));
+            exit(out.code, target);
         }
         I::BranchRegister { op, rn } => jump(out, op, rn),
         _ => unreachable!("only transfers are routed as transfers"),

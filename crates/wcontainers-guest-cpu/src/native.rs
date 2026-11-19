@@ -3,7 +3,7 @@
 //! hardware computes it, and the meanings stay the definition the routes are proven against.
 
 use crate::position::{
-    Fixup, Held, InsideCall, NativeReason, Relocated, Resume, Side, Span, Stopping,
+    DirectExit, Fixup, Held, InsideCall, NativeReason, Relocated, Resume, Side, Span, Stopping,
 };
 use crate::{Flow, FlowKind, Guest};
 
@@ -65,6 +65,8 @@ pub trait Native: Guest {
     fn count(code: &mut HostCode, events: u32);
     /// Writes a call into the inside.
     fn call(code: &mut HostCode, call: InsideCall);
+    /// Writes the exit to the direct guest `target` after the current instruction's commit point.
+    fn exit(code: &mut HostCode, target: u64);
     /// What a stop in one decoded instruction at guest `address` needs to know of it.
     fn stopping(i: &Self::Instruction, address: u64) -> Stopping;
 }
@@ -83,6 +85,8 @@ pub struct HostCode {
     /// Sites of each slow path, by [`NativeReason`] in the order of `NativeReason::ALL`, for the loader to count
     /// and warn.
     pub sites: [u64; NativeReason::ALL.len()],
+    /// The exits to direct targets, in the order they were written.
+    pub exits: Vec<DirectExit>,
 }
 
 /// Code placed out of line, in the order it was deferred.
@@ -172,6 +176,13 @@ impl HostCode {
             self.spans.push(now);
         }
         self.bytes.extend_from_slice(bytes);
+    }
+
+    /// Writes the first bytes of an exit to the direct guest `target`, which a loader may link.
+    pub fn exit(&mut self, bytes: &[u8], target: u64) {
+        let start = u32::try_from(self.offset()).expect("host code fits in u32 offsets");
+        self.exits.push(DirectExit { start, target });
+        self.push(bytes);
     }
 
     /// Writes bytes over earlier ones (a branch whose target is now known).

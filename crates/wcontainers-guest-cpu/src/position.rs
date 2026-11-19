@@ -128,6 +128,16 @@ pub struct Span {
     pub stopping: Stopping,
 }
 
+/// A piece's exit to a direct target through its entry slot, which the loader may link straight to the target's
+/// piece by writing a direct branch over the exit's first word.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirectExit {
+    /// The exit's first host byte, from the start of the code.
+    pub start: u32,
+    /// The guest address it goes to.
+    pub target: u64,
+}
+
 /// A slow path of the native output that translating alone can count, per site (docs/native.md section 3.7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum NativeReason {

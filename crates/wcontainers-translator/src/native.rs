@@ -1,14 +1,14 @@
 //! The native output (docs/native.md section 3): host code of the guest's own architecture, each guest
 //! instruction carried over by its route, with the count's adds and the position map. No WebAssembly is made.
 
-use wcontainers_guest_cpu::{HostCode, InsideCall, Native, Route, count_placement, counted};
+use wcontainers_guest_cpu::{HostCode, Native, Route, count_placement, counted};
 
 use crate::LookAhead;
 
 /// The piece at guest `address`, whose bytes start `code`: the straight-line run from there, at most one
 /// instruction at look-ahead none, at most `n` at `Bounded(n)`, and up to the end of `code` at full, ended
 /// early by a transfer or a trap (whose routes make their own exits). Each instruction is carried over by its
-/// route and the run's end falls through to an exit to the inside. `None` when no instruction starts there.
+/// route and the run's end falls through to the exit to the next instruction. `None` when no instruction starts there.
 ///
 /// The count's adds are written only when `exact_replay` is set: the process asked for exact replay
 /// (`ReplayDeterminism::Exact`, from which the caller derives it and which keys its cache of translations).
@@ -42,6 +42,7 @@ pub fn translate_native<G: Native>(
         }
     }
     let ends_itself = matches!(run.last()?.3, Route::Transfer | Route::Trap);
+    let after = address.wrapping_add(at as u64);
     let events: Vec<bool> = run.iter().map(|r| r.4).collect();
     let placement = count_placement(&events);
     let mut out = HostCode::new();
@@ -53,7 +54,7 @@ pub fn translate_native<G: Native>(
         G::carry(instruction, &code[bytes.clone()], *here, &mut out);
     }
     if !ends_itself {
-        G::call(&mut out, InsideCall::Exit);
+        G::exit(&mut out, after);
     }
     out.finish();
     Some(out)

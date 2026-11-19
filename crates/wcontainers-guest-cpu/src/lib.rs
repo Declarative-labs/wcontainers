@@ -25,7 +25,7 @@ pub use native::{HostCode, Native, NativeClass, Route, count_placement, counted}
 pub mod position;
 pub mod reason;
 pub use position::{
-    Fixup, Held, InsideCall, NativeReason, Relocated, Resume, Side, Span, Stopping,
+    DirectExit, Fixup, Held, InsideCall, NativeReason, Relocated, Resume, Side, Span, Stopping,
 };
 #[cfg(feature = "translate")]
 pub use translate::*;

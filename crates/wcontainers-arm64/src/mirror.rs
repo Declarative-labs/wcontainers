@@ -9,3 +9,15 @@ pub const SLOT_BYTES: u64 = 16;
 pub const SLOT_SHIFT: u32 = (SLOT_BYTES / size_of::<u32>() as u64).trailing_zeros();
 /// The mirror's base: every bit above the slots of the reachable addresses.
 pub const MIRROR: u64 = u64::MAX << (REACH_BITS + SLOT_SHIFT);
+/// The moves of a slot that build its piece's address in the scratch register, before its jump.
+pub const SLOT_MOVES: usize = (SLOT_BYTES / size_of::<u32>() as u64) as usize - 1;
+/// The bits one of a slot's moves gives: a wide move's immediate.
+pub const SLOT_MOVE_BITS: u32 = u16::BITS;
+/// The bits of an address a slot's moves give: the rest are the scratch register's own, which holds the slot's
+/// address when the slot is entered, and must be the same in every piece's address.
+pub const SLOT_MOVED_BITS: u32 = SLOT_MOVES as u32 * SLOT_MOVE_BITS;
+
+/// The address of the entry slot of guest address `guest`.
+pub const fn slot(guest: u64) -> u64 {
+    MIRROR | guest << SLOT_SHIFT
+}
