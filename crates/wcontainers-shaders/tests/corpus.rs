@@ -431,6 +431,98 @@ fn dxil_reflection_matches_dxbc() {
     }
 }
 
+/// Values dxc packs into one register's components, and arrays and matrices taking several registers,
+/// leave a DXIL program one value per register between stages, each value reflected at its register
+/// and first component, with the same semantics, kinds and interpolation as the fxc build's.
+#[test]
+fn dxil_values_between_stages_take_whole_registers() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own");
+    for (name, between_inputs) in [
+        ("vs_pack", false),
+        ("ps_pack", true),
+        ("vs_rows_io", false),
+        ("ps_rows_io", true),
+    ] {
+        let read = |ext: &str| std::fs::read(dir.join(format!("{name}.{ext}"))).unwrap();
+        let (dxbc, dxil) = (read("dxbc"), read("dxil"));
+        let dxbc = convert(Source::Dxbc(&dxbc), &VariantKey::default(), None).unwrap();
+        let dxil = convert(Source::Dxil(&dxil), &VariantKey::default(), None).unwrap();
+        let module = &dxil.modules[0].module;
+        let function = &module.entry_points[0].function;
+        // Each register is one value of the entry point.
+        let location = |b: &Option<naga::Binding>| match b {
+            Some(naga::Binding::Location { location, .. }) => Some(*location),
+            _ => None,
+        };
+        let mut locations: Vec<u32> = if between_inputs {
+            function
+                .arguments
+                .iter()
+                .filter_map(|a| location(&a.binding))
+                .collect()
+        } else {
+            let result = function.result.as_ref().unwrap();
+            let naga::TypeInner::Struct { members, .. } = &module.types[result.ty].inner else {
+                panic!("{name}: outputs in a struct");
+            };
+            members
+                .iter()
+                .filter_map(|m| location(&m.binding))
+                .collect()
+        };
+        let all = locations.len();
+        locations.dedup();
+        assert_eq!(all, locations.len(), "{name}");
+        let values = |r: &wcontainers_gpu::Reflection| {
+            let mut v: Vec<_> = r
+                .inputs
+                .iter()
+                .chain(&r.outputs)
+                .filter(|v| v.system.is_none())
+                .map(|v| {
+                    // A vertex program's outputs take the interpolation the variant asks for.
+                    let interpolation = between_inputs.then_some(v.interpolation);
+                    (
+                        v.semantic.to_uppercase(),
+                        v.semantic_index,
+                        v.scalar,
+                        interpolation,
+                    )
+                })
+                .collect();
+            v.sort_by_key(|k| format!("{k:?}"));
+            v
+        };
+        // fxc leaves out what the program does not read; dxc keeps the whole signature.
+        let (fxc, dxc) = (values(&dxbc.reflection), values(&dxil.reflection));
+        assert!(
+            fxc.iter().all(|v| dxc.contains(v)),
+            "{name}: {fxc:?} {dxc:?}"
+        );
+        // Each value is placed apart from every other at its register.
+        let mut taken = std::collections::BTreeSet::new();
+        let reflection = &dxil.reflection;
+        let between = if between_inputs {
+            &reflection.inputs
+        } else {
+            &reflection.outputs
+        };
+        for v in between.iter().filter(|v| v.system.is_none()) {
+            assert_eq!(v.location, v.register, "{name} {}", v.semantic);
+            assert_eq!(u32::from(v.component), v.mask.trailing_zeros(), "{name}");
+            for c in 0..u8::BITS {
+                if v.mask & (1 << c) != 0 {
+                    assert!(
+                        taken.insert((v.register, c)),
+                        "{name}: {} overlaps",
+                        v.semantic
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// A DXIL vertex shader reading `SV_VertexID` reads the draw's bases from its helper block when asked,
 /// as the DXBC route does.
 #[test]

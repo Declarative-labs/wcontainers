@@ -51,19 +51,21 @@ const DXBC_SPIRV: &[&str] = &[
     "util/util_swizzle.cpp",
 ];
 
-/// dxbc-spirv's IR enums the lowering reads, by C++ name: the module of `ir.rs` each becomes, and the
-/// type its constants take where they are compared (the serialised form's literal operands are u64).
-const IR_ENUMS: &[(&str, &str, &str)] = &[
-    ("ScalarType", "scalar", "u8"),
-    ("OpCode", "code", "u16"),
-    ("OpFlag", "flag", "u8"),
-    ("BuiltIn", "builtin", "u64"),
-    ("ResourceKind", "kind", "u64"),
-    ("ShaderStage", "stage", "u64"),
-    ("PrimitiveType", "primitive", "u64"),
-    ("InterpolationMode", "interp", "u64"),
-    ("Construct", "construct", "u64"),
-    ("UavFlag", "uav", "u64"),
+/// dxbc-spirv's enums the lowering reads, by header and C++ name: the module of `ir.rs` each becomes,
+/// and the type its constants take where they are compared (the serialised IR's literal operands are
+/// u64).
+const IR_ENUMS: &[(&str, &str, &str, &str)] = &[
+    ("ir/ir.h", "ScalarType", "scalar", "u8"),
+    ("ir/ir.h", "OpCode", "code", "u16"),
+    ("ir/ir.h", "OpFlag", "flag", "u8"),
+    ("ir/ir.h", "BuiltIn", "builtin", "u64"),
+    ("ir/ir.h", "ResourceKind", "kind", "u64"),
+    ("ir/ir.h", "ShaderStage", "stage", "u64"),
+    ("ir/ir.h", "PrimitiveType", "primitive", "u64"),
+    ("ir/ir.h", "InterpolationMode", "interp", "u64"),
+    ("ir/ir.h", "Construct", "construct", "u64"),
+    ("ir/ir.h", "UavFlag", "uav", "u64"),
+    ("dxbc/dxbc_signature.h", "SignatureSysval", "sysval", "u32"),
 ];
 
 const DXIL_SPIRV: &[&str] = &[
@@ -196,7 +198,7 @@ fn main() {
     compile(&build, "wcs_assertion", &objects);
 
     ir_codes(
-        &root.join("ir/ir.h"),
+        root,
         &PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("ir_codes.rs"),
     );
 
@@ -222,19 +224,20 @@ fn main() {
     }
 }
 
-/// Writes `IR_ENUMS` as Rust constants from dxbc-spirv's own header, so the numbers the lowering
+/// Writes `IR_ENUMS` as Rust constants from dxbc-spirv's own headers, so the numbers the lowering
 /// compares are dxbc-spirv's, never retyped: `eSetCsWorkgroupSize` becomes `SET_CS_WORKGROUP_SIZE`.
-fn ir_codes(header: &Path, out: &Path) {
-    let text = std::fs::read_to_string(header).unwrap();
+fn ir_codes(root: &Path, out: &Path) {
     let mut rust = String::new();
-    for (cpp, module, ty) in IR_ENUMS {
+    for (file, cpp, module, ty) in IR_ENUMS {
+        let header = root.join(file);
+        let text = std::fs::read_to_string(&header).unwrap();
         let start = text
             .find(&format!("enum class {cpp} :"))
             .unwrap_or_else(|| panic!("{}: no enum {cpp}", header.display()));
         let body = &text[start..];
         let body = &body[body.find('{').unwrap() + 1..body.find("};").unwrap()];
         rust += &format!(
-            "/// dxbc-spirv's `ir::{cpp}`, from its `ir/ir.h`.\n#[allow(dead_code)]\npub mod {module} {{\n"
+            "/// dxbc-spirv's `{cpp}`, from its `{file}`.\n#[allow(dead_code)]\npub mod {module} {{\n"
         );
         let mut values: Vec<(String, u64)> = Vec::new();
         for entry in without_comments(body).split(',') {
