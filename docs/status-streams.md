@@ -9,8 +9,14 @@ orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
 - S1: complete; its third independent check's findings are settled (see "S1 check findings").
 - S2: built in its first run; its first independent check's ten findings settled in its second run
   (see "S2 check findings"); every item of its bar met (see "S2" and "Measurements"). Waiting for
-  its next check.
-- What comes next: S2's independent check. Not built and left open on purpose: export of a process
+  its next check, but for two runs Docker's stops took from the third run (see "Measurements"):
+  the whole suite's verdicts at 565881d2 for the 35 test binaries lost to Docker, and the speed
+  comparison over five test binaries (scratch streams/s2b/timing.sh, old build kept in
+  streams/s2b/old).
+- What comes next: once Docker answers, `sh streams/s2b/rerun.sh streams/s2b/rerun-2.log`, then
+  `sh streams/s2b/timing.sh` with the old and new deps and crate folders (not at the same time:
+  two test binaries building guests at once hung zig), record both, remove the old worktree
+  (`git worktree remove`) and its target. Then S2's independent check. Not built and left open on purpose: export of a process
   (`suspend`, `resume`, `SuspendedProcess`, `ExportedProcess`; where they attach is in
   docs/embedder-interface.md), `set_thread_ordering`, the inspection hooks, `StopReason`; ends made
   by connect, accept, export or import; `/dev/console` under `-t`.
@@ -174,6 +180,20 @@ Found on the way, fixed:
   3 among them, 19.0 s for the six), and the literal check's own tests. The commits after
   0c569e7d add the abi's `PerThreadWatch` declaration, two kernel unit tests (`system::tests`,
   passing: refused orderings by name, the default counter's wrap) and documents.
+- Whole suite at 565881d2 (third run, scratch streams/s2b/suite.log, 01:10 to 02:08, load 62 at the
+  start): 492 passed, 93 failed, 6 ignored, but not a verdict on the kernel: Docker Desktop stopped
+  at 02:04 ("Docker Desktop is unable to start", for every track) and every test started after it
+  failed at `docker create` or at the reference; `python::system_test_modules_match_reference`
+  failed when its backend container died at 02:04:20; the two `devopen` tests failed because two
+  `zig cc` guest builds hung for 19 minutes with every thread waiting (zig 0.16, the shared
+  ~/.cache/zig, while a second test binary also built guests) and were killed. The 35 test binaries
+  with failures are to be rerun by scratch streams/s2b/rerun.sh LOG (python last and alone).
+- First rerun (02:40 to 02:55, load 7 rising to 62, scratch streams/s2b/rerun.log): the two
+  `devopen` tests and `python::system_program_matches_reference` passed; Docker stopped again at
+  02:51 (its VM log: "multiplexer: read vsock:57: no buffer space available"; the 02:04 stop was
+  "vpnkit-data.sock: connection reset by peer" with port forwards of other projects open) and
+  everything after failed at `docker create`. Both stops came while python tests of this track and
+  of the kernel track were running; whether those contribute is not known.
 - Speed with no hook implemented: tests/shell.rs `runs_repeat_for_a_seed` (ours only, four
   background jobs of `seq 1 3000 | wc -l`, run at several seeds), its own test binary built at
   59056384 (before S2, in a scratch worktree, since removed) and at 0c569e7d, run alternately
