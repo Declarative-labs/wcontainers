@@ -5293,10 +5293,6 @@ code	crates/wcontainers-gpu-webgpu/src/fill.rs	str	WebGpu::read_program	"texture
 code	crates/wcontainers-gpu-webgpu/src/fill.rs	str	WebGpu::read_program	"texture_2d<f32>"
 code	crates/wcontainers-gpu-webgpu/src/fill.rs	str	WebGpu::read_program	"texture_2d<u32>"
 code	crates/wcontainers-gpu-webgpu/src/fill.rs	str	WebGpu::read_program	"v.x"
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	char	WebGpu::frame_report	','
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	char	WebGpu::frame_report	':'
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	char	WebGpu::frame_report	'{'
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	char	WebGpu::frame_report	'}'
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::begin_query	"begin_query outside a pass with an occlusion set, or nested"
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::configure_surface	"the window takes no 8-bit unorm format to present in"
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::current_texture	"getting the window's texture failed validation"
