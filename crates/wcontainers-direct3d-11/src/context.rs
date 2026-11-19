@@ -356,6 +356,11 @@ const PIXEL_CENTRE: f32 = 0.5;
 
 /// Draws refused by name.
 pub(crate) const ALPHA_ANTIALIASED_LINES: &str = "alpha-antialiased lines of a geometry or domain stage, an adjacency topology or beside stream output (AntialiasedLinesAsQuads)";
+const LINES_WITHOUT_COMPUTE: &str =
+    "alpha-antialiased lines without the back end's compute (AntialiasedLinesAsQuads)";
+const LINES_WITHOUT_PIXEL_SHADER: &str =
+    "alpha-antialiased lines without a pixel shader to apply their coverage";
+const LINES_FACING: &str = "a pixel shader reading its facing on alpha-antialiased lines";
 const VIEWPORT_BEHIND_GEOMETRY: &str =
     "a viewport the back end would round, behind a geometry stage";
 
@@ -4078,15 +4083,11 @@ impl<B: Backend> Device<B> {
             .is_some_and(|g| crate::shader::names_layer(&g.reflection.outputs));
         if aa_lines {
             if !self.backend.caps().has(Features::COMPUTE) {
-                return not_implemented(
-                    "alpha-antialiased lines without the back end's compute (AntialiasedLinesAsQuads)",
-                );
+                return not_implemented(LINES_WITHOUT_COMPUTE);
             }
             match &ps {
                 None => {
-                    return not_implemented(
-                        "alpha-antialiased lines without a pixel shader to apply their coverage",
-                    );
+                    return not_implemented(LINES_WITHOUT_PIXEL_SHADER);
                 }
                 Some(p)
                     if p.reflection
@@ -4094,9 +4095,7 @@ impl<B: Backend> Device<B> {
                         .iter()
                         .any(|i| i.system == Some(SystemValue::FrontFacing)) =>
                 {
-                    return not_implemented(
-                        "a pixel shader reading its facing on alpha-antialiased lines",
-                    );
+                    return not_implemented(LINES_FACING);
                 }
                 Some(_) => {}
             }
