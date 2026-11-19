@@ -202,6 +202,8 @@ suite!(
     bit_operations_equal_their_definition,
     gathers_equal_their_footprints,
     depth_textures_compared_and_read_plainly,
+    linear_values_interpolate_in_window_space,
+    special_float_values_keep_their_bits,
     vertices_captured_with_and_without_rasterising,
     captured_indices_drawn_both_ways,
     block_compressed_and_shared_exponent_textures_read_back_as_written,

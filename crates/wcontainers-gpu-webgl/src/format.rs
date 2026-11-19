@@ -253,6 +253,9 @@ pub fn uses(format: Format, ext: FormatExtensions) -> FormatUse {
     uses
 }
 
+/// The widths of B5G6R5's red, green and blue fields, red in the highest bits.
+const B5G6R5_BITS: [u32; 3] = [5, 6, 5];
+
 /// How `readPixels` reads a format's texels: always four components of `ty` (`comp_read` bytes each),
 /// of which the texel keeps the first `n`, each the low `comp_kept` bytes, red and blue swapped
 /// where `swap` is set; or, where `rgb565` is set, RGBA bytes packed again into B5G6R5's 16 bits
@@ -282,18 +285,24 @@ impl ReadAs {
         self.texel_read() != self.texel_kept() || self.swap
     }
 
+    /// Whether the host converts the values read, not only keeps part of each texel's bytes
+    /// ([`wcontainers_gpu::SlowPath::FormatConverted`]).
+    pub fn converts(self) -> bool {
+        self.swap || self.rgb565
+    }
+
     /// Keeps each texel's stored bytes of `read`, texels as `readPixels` wrote them, in `kept`.
     pub fn repack(self, read: &[u8], kept: &mut [u8]) {
         if self.rgb565 {
-            let to = |v: u8, max: u32| (u32::from(v) * max + 127) / 255;
-            for (from, to16) in read
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .zip(kept.as_chunks_mut::<2>().0)
-            {
-                let packed = to(from[0], 31) << 11 | to(from[1], 63) << 5 | to(from[2], 31);
-                to16.copy_from_slice(&(packed as u16).to_le_bytes());
+            // Each byte rounded to the nearest step of its field, red's field highest.
+            let byte = u32::from(u8::MAX);
+            let (r, k) = (self.texel_read(), self.texel_kept());
+            for (from, to) in read.chunks_exact(r).zip(kept.chunks_exact_mut(k)) {
+                let packed = B5G6R5_BITS.iter().zip(from).fold(0, |packed, (&bits, &v)| {
+                    let max = (1 << bits) - 1;
+                    (packed << bits) | ((u32::from(v) * max + byte / 2) / byte)
+                });
+                to.copy_from_slice(&(packed as u16).to_le_bytes());
             }
             return;
         }

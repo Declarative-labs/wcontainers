@@ -104,6 +104,14 @@ pub fn write_glsl(
         entry_point: module.entry_point.clone(),
         multiview: None,
     };
+    let linear = linear_values(module);
+    let perspective;
+    let module = if linear.is_empty() {
+        module
+    } else {
+        perspective = linear_as_perspective(module)?;
+        &perspective
+    };
     let mut out = String::new();
     let mut writer = glsl::Writer::new(
         &mut out,
@@ -129,7 +137,267 @@ pub fn write_glsl(
         }
         out = flipped;
     }
+    let out = opaque_float_bits(linear_by_w(out, stage, &linear));
     Ok((gathers_by_samples(bit_functions(out)), reflection))
+}
+
+/// The uniform [`opaque_float_bits`] reads its bits through: never set, so 0 as GL leaves every
+/// uniform after a link.
+const ZERO: &str = "_wc_zero";
+
+/// Floats made from bits and negative zero literals, each given its bits through an exclusive or
+/// with a uniform zero, outside global constants (whose initialisers must be constant). ANGLE folds
+/// such constants and writes them as decimal literals into HLSL, where negative zero loses its
+/// sign and, in mozangle's build, a vector of them can turn into infinities; values it cannot fold
+/// keep their bits. Costs one integer operation per such call.
+fn opaque_float_bits(source: String) -> String {
+    const FROM_UINT: &str = "uintBitsToFloat(";
+    const FROM_INT: &str = "intBitsToFloat(";
+    const NEGATIVE_ZERO: &str = "-0.0";
+    const OPAQUE_UINT: &str = "_wc_from_bits(";
+    const OPAQUE_INT: &str = "_wc_from_int_bits(";
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let number = |c: char| c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E');
+    let mut out = String::with_capacity(source.len());
+    let mut changed = false;
+    for line in source.lines() {
+        if line.starts_with("const ") {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        let mut rest = line;
+        while let Some(c) = rest.chars().next() {
+            let free = !out.ends_with(ident);
+            let swap = if !free {
+                None
+            } else if let Some(after) = rest.strip_prefix(FROM_UINT) {
+                Some((OPAQUE_UINT.to_string(), after))
+            } else if let Some(after) = rest.strip_prefix(FROM_INT) {
+                Some((OPAQUE_INT.to_string(), after))
+            } else if let Some(after) = rest.strip_prefix(NEGATIVE_ZERO)
+                && !after.starts_with(number)
+                && !out.ends_with(number)
+            {
+                Some((format!("{OPAQUE_UINT}{:#x}u)", (-0f32).to_bits()), after))
+            } else {
+                None
+            };
+            match swap {
+                Some((with, after)) => {
+                    out.push_str(&with);
+                    rest = after;
+                    changed = true;
+                }
+                None => {
+                    out.push(c);
+                    rest = &rest[c.len_utf8()..];
+                }
+            }
+        }
+        out.push('\n');
+    }
+    if !changed {
+        return source;
+    }
+    let mut helpers = format!("uniform highp uint {ZERO};\n");
+    for (float, uint, int) in [
+        ("float", "uint", "int"),
+        ("vec2", "uvec2", "ivec2"),
+        ("vec3", "uvec3", "ivec3"),
+        ("vec4", "uvec4", "ivec4"),
+    ] {
+        helpers.push_str(&format!(
+            "{float} {OPAQUE_UINT}{uint} v) {{ return {FROM_UINT}v ^ {ZERO}); }}\n\
+             {float} {OPAQUE_INT}{int} v) {{ return {FROM_INT}v ^ int({ZERO})); }}\n"
+        ));
+    }
+    after_header(&out, &helpers)
+}
+
+/// The name naga's GLSL writer gives a value from the vertex to the fragment stage, before its
+/// location.
+const VARYING: &str = "_vs2fs_location";
+
+/// The line naga's GLSL writer opens the entry point with.
+const MAIN: &str = "void main() {";
+
+/// How naga's GLSL writer ends each return from the entry point, on a line of its own.
+const RETURN: &str = "return;";
+
+/// The varying carrying a linear value at `location` perspective-correct (see [`linear_by_w`]).
+const CARRIED: &str = "_wc_linear";
+
+/// The varying carrying the vertex's w at the centroid, for linear values sampled there.
+const CENTROID_W: &str = "_wc_linear_w";
+
+/// The locations of the values the stage writes (vertex) or reads (fragment) with linear
+/// interpolation, each with whether it is sampled at the centroid.
+fn linear_values(module: &ShaderModule) -> Vec<(u32, bool)> {
+    let bindings: Vec<naga::Binding> = match module.stage {
+        ShaderStage::Vertex => results(module).map(|(b, _)| b).collect(),
+        _ => arguments(module).collect(),
+    };
+    bindings
+        .into_iter()
+        .filter_map(|b| match b {
+            naga::Binding::Location {
+                location,
+                interpolation: Some(naga::Interpolation::Linear),
+                sampling,
+                ..
+            } => Some((location, sampling == Some(naga::Sampling::Centroid))),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `module` with its entry point's linear values made perspective-correct, so naga writes them
+/// (GLSL ES 3.00 has no `noperspective`); [`linear_by_w`] then carries them in GLSL.
+fn linear_as_perspective(module: &ShaderModule) -> Result<ShaderModule, String> {
+    let perspective = |b: &mut Option<naga::Binding>| {
+        if let Some(naga::Binding::Location { interpolation, .. }) = b
+            && *interpolation == Some(naga::Interpolation::Linear)
+        {
+            *interpolation = Some(naga::Interpolation::Perspective);
+        }
+    };
+    let mut out = module.module.clone();
+    let Some(entry) = out
+        .entry_points
+        .iter_mut()
+        .find(|e| e.name == module.entry_point)
+    else {
+        return Err("no such entry point".into());
+    };
+    let mut structs = Vec::new();
+    let mut values: Vec<(&mut Option<naga::Binding>, naga::Handle<naga::Type>)> = entry
+        .function
+        .arguments
+        .iter_mut()
+        .map(|a| (&mut a.binding, a.ty))
+        .collect();
+    values.extend(
+        entry
+            .function
+            .result
+            .as_mut()
+            .map(|r| (&mut r.binding, r.ty)),
+    );
+    for (binding, ty) in values {
+        match binding {
+            Some(_) => perspective(binding),
+            None => structs.push(ty),
+        }
+    }
+    for ty in structs {
+        let mut t = out.types[ty].clone();
+        if let naga::TypeInner::Struct { members, .. } = &mut t.inner {
+            for m in members {
+                perspective(&mut m.binding);
+            }
+        }
+        if t != out.types[ty] {
+            if out.types.get(&t).is_some() {
+                return Err("its struct of linear values exists perspective-correct too".into());
+            }
+            out.types.replace(ty, t);
+        }
+    }
+    Ok(ShaderModule {
+        module: out,
+        info: module.info.clone(),
+        entry_point: module.entry_point.clone(),
+        stage: module.stage,
+        key: module.key,
+    })
+}
+
+/// Carries the linear values at `linear` (from [`linear_values`]) through GLSL ES 3.00, which has
+/// no `noperspective`: the vertex stage writes each one times its w into a perspective-correct
+/// varying of its own (keeping the value itself for transform feedback), and the fragment stage
+/// divides by the w interpolated at the same place: `gl_FragCoord.w` (1 / w) at the centre, the
+/// vertex's w carried beside it at the centroid. A perspective-correct a·w over w is
+/// Σbᵢaᵢ, the value interpolated in window space, exactly; the same holds where clipping made
+/// the vertex.
+fn linear_by_w(source: String, stage: naga::ShaderStage, linear: &[(u32, bool)]) -> String {
+    if linear.is_empty() {
+        return source;
+    }
+    let vertex = stage == naga::ShaderStage::Vertex;
+    let any_centroid = linear.iter().any(|&(_, c)| c);
+    let names: Vec<(String, String, bool)> = linear
+        .iter()
+        .map(|&(l, c)| (format!("{VARYING}{l}"), format!("{CARRIED}{l}"), c))
+        .collect();
+    let direction = if vertex { "out" } else { "in" };
+    let mut out = String::with_capacity(source.len() * 2);
+    let mut in_main = false;
+    let mut declared_w = false;
+    for line in source.lines() {
+        if !in_main {
+            in_main = line == MAIN;
+            out.push_str(line);
+            out.push('\n');
+            // Each declaration of a linear value is followed by its carrier's.
+            if let Some((name, carried, _)) = names
+                .iter()
+                .find(|(n, _, _)| line.ends_with(&format!(" {n};")))
+            {
+                let carrier = line.replacen(name.as_str(), carried, 1);
+                if vertex {
+                    out.push_str(&carrier);
+                    out.push('\n');
+                } else {
+                    // The fragment stage reads only the carrier.
+                    out.truncate(out.len() - line.len() - 1);
+                    out.push_str(&carrier);
+                    out.push('\n');
+                }
+                if any_centroid && !declared_w {
+                    out.push_str(&format!("centroid {direction} float {CENTROID_W};\n"));
+                    declared_w = true;
+                }
+            }
+            continue;
+        }
+        if vertex {
+            if line.trim_start() == RETURN {
+                let indent = &line[..line.len() - RETURN.len()];
+                for (name, carried, _) in &names {
+                    out.push_str(&format!("{indent}{carried} = {name} * gl_Position.w;\n"));
+                }
+                if any_centroid {
+                    out.push_str(&format!("{indent}{CENTROID_W} = gl_Position.w;\n"));
+                }
+            }
+            out.push_str(line);
+        } else {
+            let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+            let mut rest = line;
+            'scan: while !rest.is_empty() {
+                for (name, carried, centroid) in &names {
+                    if let Some(after) = rest.strip_prefix(name.as_str())
+                        && !after.starts_with(ident)
+                        && !out.ends_with(ident)
+                    {
+                        out.push_str(&if *centroid {
+                            format!("({carried} / {CENTROID_W})")
+                        } else {
+                            format!("({carried} * gl_FragCoord.w)")
+                        });
+                        rest = after;
+                        continue 'scan;
+                    }
+                }
+                let next = rest.chars().next().map_or(0, char::len_utf8);
+                out.push_str(&rest[..next]);
+                rest = &rest[next..];
+            }
+        }
+        out.push('\n');
+    }
+    out
 }
 
 /// GLSL ES 3.10's bit functions as naga writes them, defined for GLSL ES 3.00, which lacks them
@@ -940,8 +1208,11 @@ pub fn compile(
     }
     let module = split.as_ref().map_or(module, |s| &s.0);
     let own = &own[..];
-    let (source, reflection) = write_glsl(module, flip_y)
-        .map_err(|_| GpuError::Invalid("webgl: naga could not write the shader as GLSL ES 3.00"))?;
+    // What the back end lacks is refused by `needs` before this, so a refusal here is the front's.
+    let (source, reflection) = write_glsl(module, flip_y).map_err(|e| {
+        eprintln!("wcontainers webgl: naga could not write the shader as GLSL ES 3.00: {e}");
+        GpuError::Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+    })?;
     // A copy's slot is its texture's.
     let slot = |m: &naga::Module, var| {
         let at = slot(m, var)?;
@@ -1055,10 +1326,6 @@ fn arguments(module: &ShaderModule) -> impl Iterator<Item = naga::Binding> + '_ 
         })
 }
 
-/// The features a shader needs that a back end may lack, read from its inputs and outputs, the
-/// globals its entry point uses, its types and its expressions. Storage that a fragment program only
-/// reads is named by `FRAGMENT_STORAGE_WRITE`, as binding sets name it: the interface has no bit of
-/// its own for it.
 /// How many uniform blocks the GLSL of `module`'s entry point declares: one per uniform buffer it
 /// reads.
 pub fn uniform_blocks(module: &ShaderModule) -> u32 {
@@ -1077,6 +1344,10 @@ pub fn uniform_blocks(module: &ShaderModule) -> u32 {
         .count() as u32
 }
 
+/// The features a shader needs that a back end may lack, read from its inputs and outputs, the
+/// globals its entry point uses, its types and its expressions. Storage that a fragment program only
+/// reads is named by `FRAGMENT_STORAGE_WRITE`, as binding sets name it: the interface has no bit of
+/// its own for it.
 pub fn needs(module: &ShaderModule) -> Features {
     use naga::{
         AddressSpace, Binding, BuiltIn, Expression, ImageClass, ImageQuery, Sampling, ScalarKind,
@@ -1171,6 +1442,10 @@ pub fn needs(module: &ShaderModule) -> Features {
                 Expression::SubgroupBallotResult | Expression::SubgroupOperationResult { .. } => {
                     Features::SUBGROUPS
                 }
+                Expression::Derivative {
+                    ctrl: naga::DerivativeControl::Fine,
+                    ..
+                } => Features::FINE_DERIVATIVES,
                 _ => Features::empty(),
             };
         }
@@ -1274,7 +1549,7 @@ fn outputs(module: &ShaderModule) -> Vec<(String, u32)> {
     found.sort();
     found
         .into_iter()
-        .map(|(location, bytes)| (format!("_vs2fs_location{location}"), bytes))
+        .map(|(location, bytes)| (format!("{VARYING}{location}"), bytes))
         .collect()
 }
 
@@ -1728,6 +2003,75 @@ mod tests {
         assert_eq!(out.matches("float _wc_small_float(").count(), 1);
         let main = out.find("void main() {").expect("main");
         assert!(out[main..].contains("_p2vs_location3 = vec3(vec4(_wc_small_float("));
+    }
+
+    /// Linear values are carried times w beside the values themselves and divided by the w at
+    /// the same place; locations sharing a prefix stay apart.
+    #[test]
+    fn linear_values_are_carried_times_w() {
+        let wgsl = "
+            struct V {
+                @builtin(position) p: vec4<f32>,
+                @location(1) @interpolate(linear) a: vec2<f32>,
+                @location(10) @interpolate(linear, centroid) b: f32,
+                @location(2) c: f32,
+            }
+            @vertex fn vs(@location(0) p: vec4<f32>) -> V { return V(p, p.xy, p.z, p.w); }
+            @fragment fn fs(v: V) -> @location(0) vec4<f32> { return vec4<f32>(v.a, v.b, v.c); }";
+        let write = |entry: &str, stage| {
+            let module = ShaderModule::from_wgsl(wgsl, entry, stage).expect("validates");
+            write_glsl(&module, false).expect("writes").0
+        };
+        let vs = write("vs", ShaderStage::Vertex);
+        for line in [
+            "smooth out vec2 _vs2fs_location1;",
+            "smooth out vec2 _wc_linear1;",
+            "smooth centroid out float _wc_linear10;",
+            "centroid out float _wc_linear_w;",
+            "    _wc_linear1 = _vs2fs_location1 * gl_Position.w;",
+            "    _wc_linear10 = _vs2fs_location10 * gl_Position.w;",
+            "    _wc_linear_w = gl_Position.w;",
+        ] {
+            assert!(vs.lines().any(|l| l == line), "{line} in\n{vs}");
+        }
+        assert!(!vs.contains("_wc_linear2"), "{vs}");
+        let fs = write("fs", ShaderStage::Fragment);
+        assert!(!fs.contains("_vs2fs_location1;"), "{fs}");
+        assert!(!fs.contains("_vs2fs_location10"), "{fs}");
+        for text in [
+            "smooth in vec2 _wc_linear1;",
+            "smooth centroid in float _wc_linear10;",
+            "centroid in float _wc_linear_w;",
+            "(_wc_linear1 * gl_FragCoord.w)",
+            "(_wc_linear10 / _wc_linear_w)",
+            "_vs2fs_location2",
+        ] {
+            assert!(fs.contains(text), "{text} in\n{fs}");
+        }
+    }
+
+    /// Floats from bits and negative zero literals read their bits through the uniform zero;
+    /// global constants and other numbers stay.
+    #[test]
+    fn float_bits_are_kept_from_folding() {
+        let source = "#version 300 es\nprecision highp float;\nconst float k = -0.0;\n\
+                      void main() { a = uintBitsToFloat(uvec4(1u)); b = intBitsToFloat(i); \
+                      c = vec2(-0.0, -0.05); d = myuintBitsToFloat(x); e = 1e-0; }\n";
+        let out = opaque_float_bits(source.into());
+        let main = &out[out.find("void main").expect("main")..];
+        assert_eq!(
+            main,
+            "void main() { a = _wc_from_bits(uvec4(1u)); b = _wc_from_int_bits(i); \
+             c = vec2(_wc_from_bits(0x80000000u), -0.05); d = myuintBitsToFloat(x); e = 1e-0; }\n"
+        );
+        assert!(out.contains("const float k = -0.0;"), "{out}");
+        assert!(out.contains("uniform highp uint _wc_zero;"), "{out}");
+        assert!(
+            out.contains("vec4 _wc_from_bits(uvec4 v) { return uintBitsToFloat(v ^ _wc_zero); }"),
+            "{out}"
+        );
+        let plain = "#version 300 es\nvoid main() { a = 1.0 - 0.0; }\n";
+        assert_eq!(opaque_float_bits(plain.into()), plain);
     }
 
     #[test]
