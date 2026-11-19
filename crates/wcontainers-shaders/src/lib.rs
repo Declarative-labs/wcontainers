@@ -87,6 +87,9 @@ pub const CONVERTER_VERSION: &str = concat!(
     env!("WCS_CONVERTER_SOURCES")
 );
 
+/// The refusal of a vertex program writing storage views, which WebGPU's vertex stage cannot.
+const VERTEX_STORAGE_WRITE: &str = "VertexStorageWrite";
+
 /// Converts a shader into the common form, as the variant asks. `root_signature` is the Direct3D 12
 /// root signature the shader is used with.
 pub fn convert(
@@ -108,6 +111,15 @@ pub fn convert(
             Source::Dxil(bytes) => dxil::lower(bytes, variant)?,
             Source::SpirV(_) => return Err(ConvertError::Unsupported("SpirV")),
         };
+        // WebGPU gives vertex programs no writable storage.
+        let writable = |g: &naga::GlobalVariable| {
+            matches!(g.space, naga::AddressSpace::Storage { access }
+                if access.contains(naga::StorageAccess::STORE))
+        };
+        if stage == ShaderStage::Vertex && module.global_variables.iter().any(|(_, g)| writable(g))
+        {
+            return Err(ConvertError::Unsupported(VERTEX_STORAGE_WRITE));
+        }
         stage::clip_unpositioned(&mut module)?;
         variant::apply(&mut module, stage, variant, &mut reflection)?;
         variant::offset::strides(&module, &mut reflection);

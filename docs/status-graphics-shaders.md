@@ -1620,6 +1620,16 @@ clip distances from geometry shaders; a literal sweep step):
   and `stage/tessellate.rs` (its values block from a mirror type, its passes and bindings named,
   word and slot bytes); `CLIP_DISTANCE_TYPE` named once. Left: as listed in run 36, and the
   refusal names (an enum would be an interface change).
+- Chrome's compile of every corpus (the first since the runner corpus arrived in run 35) found
+  four WGSL files every converter check had passed: two DXIL pixel shaders writing the coverage
+  (rig `msaa.ps_coverage`, runner `coverage-1`), where the reader's own output structure, kept as
+  an inner value after the entry point's result is rebuilt, still carried `@builtin(sample_mask)`
+  on its one-element array, which Tint checks on any structure (fixed in the carried naga's WGSL
+  writer: bindings only on entry point inputs and outputs, "naga as carried"); and the runner's
+  `depth-bounds-1-vs` (both builds), a vertex shader writing a storage view, which WebGPU's
+  vertex stage cannot have: now refused by name, `VertexStorageWrite` (the stage helper's compute
+  form could run it; not built). The corpus test now reports a shader's first refusal that is not
+  a view-kind mismatch when it retries with view formats (it reported the last view's).
 - DXIL converter reasons drop the log line's line end. The runner corpus's
   `hlsl+distance-4-ps.dxil` stays the known failure ("convert rejected: Unknown type!", a reader
   rejection, not a named refusal).
@@ -2806,6 +2816,10 @@ the tree as published"), plus these changes, each a later commit touching only `
   `int` in GLSL; 6.3's corpus had one shader failing on it).
 - GLSL writer, `BuiltIn::SampleMask`: written `gl_SampleMask[0] = int(...)` and read
   `uint(gl_SampleMaskIn[0])` (GLSL's are `int` arrays), requesting GL_OES_sample_variables on ES.
+- WGSL writer, a structure's member bindings are written only where the structure is an entry
+  point's argument or result (run 38): Tint checks them wherever written, and DXIL's reader keeps
+  its own output structure (the sample mask as a one-element array) as an inner value after the
+  entry point's result is rebuilt, which Chrome refused (`@builtin(sample_mask)` must be `u32`).
 - WGSL writer, an f32 literal whose shortest digits name a number past f32::MAX (f32::MAX itself) is
   written with the f64 digits of its exact value, which WGSL compilers accept.
 - HLSL writer (wgpu's Direct3D 12 path), a fragment entry point's position is passed on as

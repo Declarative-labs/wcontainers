@@ -364,7 +364,7 @@ hlsl+default-values-6-ps.dxil	ok
 hlsl+default-values-7-ps.dxil	ok
 hlsl+default-values-8-ps.dxil	ok
 hlsl+default-values-9-ps.dxil	ok
-hlsl+depth-bounds-1-vs.dxil	ok-wgsl glsl-write
+hlsl+depth-bounds-1-vs.dxil	unsupported VertexStorageWrite
 hlsl+depth-bounds-2-ps.dxil	ok-wgsl glsl-write
 hlsl+depth-out-1-ps.dxil	ok
 hlsl+depth-out-2-vs.dxil	ok
