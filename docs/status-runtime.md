@@ -231,9 +231,23 @@ Tests run before the commits (this Mac, load 46 to 99; logs in scratch j5run3): 
 the kernel test crate's streams (19) and hello (1) pass (merge-streams-full.log); on the stand-in, streams'
 19 pass; the owned crates' lib tests (15), surface (16 then 19, 1 ignored as before) and refused (76) pass.
 
-J5's bar from a clean build (a new scratch worktree j5run3/tree at c16d0e00, its own empty target; scratch
-`j5run3/all.sh`: `final.sh`, the whole kernel test crate on the stand-in and at full, none and bounded,
-then `ltp.sh whole`), started at 01:00 on 2026-11-19 at load about 50: results below when read.
+Literals (b838cc2a, e8452968, ca519a78), from the trial merge's `+` lines in files this run touched: the local
+system's warning reasons and thread names, the network's thread names, the home variable, the mount field
+path (one `spec::mount_field`), wcon's options and look-ahead words, the test driver's turn lengths, answer
+chance and seed salts, and the image tests' directory mode are named. Left: the refusal reasons and JSON keys
+of spec.rs (fix list step 14), image.rs's Docker files, files.rs's `.` and `..`, the K6b tests' restated
+values (the kernel track's), and the rest of the fix list.
+
+The owned suite at ca519a78 (scratch j5run3/owned-2.log; 115.5 s, load 15 to 108): 135 passed, 1 ignored
+(`run_with_the_cache`, as before), 0 failed. At c16d0e00 (owned.log): the same.
+
+J5's bar has not completed in this run: Docker Desktop stopped twice under it ("Docker Desktop is unable to
+start"). The first try (scratch worktree j5run3/tree at c16d0e00, its own empty target, `j5run3/all.sh`,
+started 01:00 at load about 50) lost Docker at 02:04, 141 stand-in tests in (log j5run3/spoiled/); Docker
+answered again at 02:39. The second try (the same tree moved to ca519a78, its target kept) lost it at
+02:51, 102 tests in (j5run3/spoiled2/). Docker's own logs show its VM's event streams ending (EOF) and no
+cause this track could find; this track did not restart Docker (shared). Both tries were stopped and set
+aside, nothing of them is counted.
 
 ## J5 run 2 (2026-11-18; this Mac, Apple M5 Max, 18 cores, 128 GiB; other tracks running)
 
