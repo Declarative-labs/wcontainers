@@ -267,6 +267,18 @@ Run 27 = G2d run 1, 2026-11-19:
   gets them; the Direct3D 11 library's instance is asked to use DXC, Next); atg-simplecomputepc's
   division (measured, Measurements, run 27); atg-simpleinstancingpc's breakdown (repeated,
   Measurements, run 27).
+- Results at 472a8daf and 34ba8f87 (2026-11-19, desktop shared with other tracks' queued jobs, not
+  alone; scratch g2d/): the crate's whole suite on Vulkan and on Direct3D 12 with the interface
+  crate's own tests, 311 passed, 5 ignored (the known ignores), 0 failed (full1.log, at
+  472a8daf, the run's code before the literal renames); after the renames the four affected test
+  files and the interface's tests again on both APIs at 34ba8f87, all passing (after2.log). web/check
+  (webcheck1.log): every picture equal to Direct3D 11's at tolerance 0 natively on both APIs and
+  in Chrome, every twist differing, every check passing in Chrome including the three new ones,
+  and the shared suite in Chrome 44 passed, 0 failed (natively 44 on each API in full1.log).
+  Lint with warnings denied, native all targets and WebAssembly examples: clean. The literal
+  check at HEAD in the LF worktree: exit 0, 0 marks; this crate's baseline lines 192
+  (unchanged); the check's first run found 8 new literals, named or derived before committing
+  (lit1.log, lit2.log).
 
 Run 26 = G2c run 8, 2026-11-19:
 - Merged origin/phase-2-graphics-direct3d-11 (20 commits; it held -webgl's, -direct3d-12's
@@ -1544,9 +1556,17 @@ Run 27 (G2d):
   `begin_pass` (whole frame 0.73 to 0.78 ms), against 23 us a draw on the WebGL 2 back end. The
   native breakdowns above and below (0.01 to 0.04 ms a frame of the back end's own code) do not
   cover the browser.
-PROFILE
-DIVISION
-INSTANCING
+- atg-simplecomputepc's division (the G2c check's finding; tests/direct3d.rs
+  `divisions_match_direct3d`, 2026-11-19 15:18, desktop shared with other tracks' queued jobs,
+  not alone, load not taken; scratch g2d/after2.log): 64 draws of 64 seeded pairs (seed 1, the
+  first pair the sample's 1200 and 300), each divided by its run-time divisor and by 300 written
+  in the program, with fractions, through this back end on Vulkan and on Direct3D 12 against
+  real Direct3D 11 (FXC) on the RTX 3080: 0 of 4096 pairs differ in any bit on either API. Real
+  Direct3D 11 itself gives 1200 / 300 = 3.9999998 (fraction 0.99999976) when the divisor is a
+  run-time value and 4.0 (fraction 0) when it is written in the program. So this back end, wgpu
+  and the drivers divide exactly as Direct3D does; the sample's last texel comes from its
+  converted program dividing at run time where its bytecode's arithmetic gives 4.0 (the
+  converter's or the front's), not from this back end. Refused here by name: not this back end's.
 
 Run 26 (G2c), frame breakdowns at bf7ddf71 (every graphics branch merged; no code of this
 crate changed). Desktop (i9-9900K, 16 threads, RTX 3080, driver 621.01), each job alone in the
