@@ -66,6 +66,11 @@ Next, in this order:
   scripts (the baseline holds it not checked out): fetch only the shaders crate's two submodules and
   dxil-spirv's `third_party/spirv-headers`, which the shaders crate's build needs.
 
+- Kept between runs: a shallow clone of the pinned Mesa for reading on the Mac
+  (`pyro-parked/wcontainers-scratch/graphics-nir/mesa-src`, 560 MB, no build output; logs beside it in
+  `logs/`), and the Mesa build and cargo target on the x86 machine (`/work/target/graphics-nir`).
+  No scratch copy of the checkout and no cargo target was made on the Mac, the laptop or the desktop.
+
 ## Measurements
 
 - Mesa 26.3.1 clean build (configure, 1239 steps, install), x86-64 machine (c7i.metal-48xl, 192
