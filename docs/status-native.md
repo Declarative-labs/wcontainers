@@ -106,6 +106,10 @@ Measured (M5 Max, all on the Mac):
   1 measurement, 0 failed; kernel alike at none and 256 with the reference (blocks' KNOWN FAILURE on the WebAssembly side
   only) and busybox 56 commands as the reference (kernel-busybox2.log, load 28 to 31). A first busybox run failed on
   `ls -la`'s times only: the reference ran at 20:27 and the native side at 20:28 (the test compares the minute).
+- The rest of what this track owns, once before the push (suite-rest.log, 12:41, load 31 to 39, `--no-fail-fast`): guest-cpu,
+  arm64, the inside, the policy crate and the literal check's tests pass; the monitor's lib and probe tests pass (0 forms of
+  16 bytes or fewer differ, 44 larger as before). With the runs above that is the whole suite; only the speed test fails, on
+  its compute part.
 - Literals: the check exits 0, no marks, nothing added to the baseline. The vendored assembly is not Rust and is Arm's.
 
 Looked at and not done:
