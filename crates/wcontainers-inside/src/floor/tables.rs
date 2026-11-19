@@ -252,6 +252,34 @@ impl Table {
         Ok(())
     }
 
+    /// Maps `length` bytes at `va`, which nothing maps, to the frames from `frame` on: a block entry wherever a
+    /// whole block of the range is aligned at both ends of the mapping, page entries elsewhere.
+    pub fn map_range(
+        &self,
+        frames: &mut Frames,
+        va: u64,
+        frame: u64,
+        length: u64,
+        attributes: El1Attributes,
+    ) -> Result<(), Full> {
+        let end = va + length;
+        let mut at = va;
+        while at < end {
+            let to = frame + (at - va);
+            if at.is_multiple_of(BLOCK_SIZE)
+                && to.is_multiple_of(BLOCK_SIZE)
+                && end - at >= BLOCK_SIZE
+            {
+                self.map_block(frames, at, to, attributes)?;
+                at += BLOCK_SIZE;
+            } else {
+                self.map(frames, at, to, attributes)?;
+                at += PAGE_SIZE;
+            }
+        }
+        Ok(())
+    }
+
     /// Gives the page at `va` new attributes, keeping its frame, and invalidates it for every identifier, so
     /// every table root sharing this table sees the change. A block holding it is first split into pages with the
     /// block's attributes, break before make.

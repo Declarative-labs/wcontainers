@@ -9,6 +9,8 @@
 //! calls against the same program with a nop in each call's place, both in the kernel inside, in alternating pairs,
 //! the kernel's own share of a call measured beside each pair over a CPU side that runs no instructions (layer 1's
 //! method); the back end's share of a call, the per-call time less the kernel's, against 100 ns by the same rule.
+//! Beside each pair every workload also runs untranslated at the guest's level in the machine (the test program
+//! `native-untranslated`), recorded as what the virtual machine costs before any translation, never part of the bar.
 //!
 //! `WCONTAINERS_SPEED_PAIRS` sets the pairs to start with, `WCONTAINERS_SPEED_SEED` and
 //! `WCONTAINERS_SPEED_RESAMPLES` the bootstrap, `WCONTAINERS_SPEED_RAW` the file every pair is appended to and
@@ -18,6 +20,10 @@
 #[cfg(target_os = "macos")]
 #[path = "../../wcontainers-inside/src/bin/native-kernel/protocol.rs"]
 mod protocol;
+
+#[cfg(target_os = "macos")]
+#[path = "../../wcontainers-inside/src/bin/native-untranslated/protocol.rs"]
+mod untranslated;
 
 #[cfg(target_os = "macos")]
 mod common;
@@ -54,6 +60,10 @@ mod macos {
     use wcontainers_abi::{Exit, Next, Resume, Syscall};
     use wcontainers_arm64::encode::{self, form};
     use wcontainers_arm64::{Instruction, decode};
+    use wcontainers_hypervisor::{
+        Exit as VcpuExit, Register, VirtualCpu, VirtualMachine, boot, link as link_page,
+    };
+    use wcontainers_inside::link::{self, Fatal, Parts};
     use wcontainers_inside::stop::SYSCALL_NUMBER;
     use wcontainers_kernel::{Kernel, Start};
     use wcontainers_kernel_test::buffer::BufferCpu;
@@ -62,10 +72,11 @@ mod macos {
     use wcontainers_kernel_test::image::{File, Kind, add_files};
 
     use crate::common::{
-        BENCH, CALLS, IMAGE_BASE, OWN_GUEST, PROGRAMS_DIRECTORY, be_signed, compiled, freestanding,
-        load_average, look_ahead, page_size, setting,
+        BENCH, CALLS, IMAGE_BASE, MEMORY, ONE_CPU, OWN_GUEST, PROGRAMS_DIRECTORY, be_signed, build,
+        compiled, freestanding, load_average, look_ahead, machine, page_size, setting,
     };
     use crate::container::{DEFAULT_SEED, REALTIME_NANOSECONDS, native_at, one_program, program};
+    use crate::untranslated::{Exited, Load, Program as Loadable, Request, Segment};
 
     /// bench.c's workloads, in the order of its `WORKLOAD` numbers, which start at one.
     const WORKLOADS: [&str; 8] = [
@@ -85,17 +96,22 @@ mod macos {
     /// bench.c's size for timing.
     const TIMING_SCALE: u32 = 1;
 
-    /// Which side a child process runs: [`PLAIN`] or [`NATIVE`].
+    /// Which side a child process runs: [`PLAIN`], [`NATIVE`] or [`UNTRANSLATED`].
     const RUN_VARIABLE: &str = "WCONTAINERS_SPEED_RUN";
     const PLAIN: &str = "plain";
     const NATIVE: &str = "native";
+    const UNTRANSLATED: &str = "untranslated";
 
-    /// The program a child runs, and the image of the test program inside for a native one.
+    /// The program a child runs, and the image of the test program inside for the other two sides.
     const IMAGE_VARIABLE: &str = "WCONTAINERS_SPEED_IMAGE";
     const INSIDE_VARIABLE: &str = "WCONTAINERS_SPEED_INSIDE";
 
-    /// The file the inside's image is written to for the children.
+    /// The files the inside's images are written to for the children: the kernel's and the untranslated run's.
     const INSIDE_IMAGE: &str = "speed-inside";
+    const UNTRANSLATED_IMAGE: &str = "speed-untranslated";
+
+    /// The test program inside that runs a program untranslated.
+    const UNTRANSLATED_PROGRAM: &str = "native-untranslated";
 
     /// The lines a child reports on: the program's output, then its counts and exit code.
     const OUTPUT_LINE: &str = "speed-output";
@@ -241,7 +257,10 @@ mod macos {
         match std::env::var(RUN_VARIABLE).as_deref() {
             Ok(PLAIN) => run_plain(&std::fs::read(image_path()).expect("the program")),
             Ok(NATIVE) => run_native(),
-            Ok(other) => panic!("{RUN_VARIABLE}={other}: {PLAIN} or {NATIVE}"),
+            Ok(UNTRANSLATED) => {
+                run_untranslated(&std::fs::read(image_path()).expect("the program"))
+            }
+            Ok(other) => panic!("{RUN_VARIABLE}={other}: {PLAIN}, {NATIVE} or {UNTRANSLATED}"),
             Err(_) => measure(),
         }
     }
@@ -400,6 +419,81 @@ mod macos {
         report(exit_code(outcome.status), &outcome.host.stdout)
     }
 
+    /// Runs the program's own instructions at the guest's level in the machine, its segments mapped by the test
+    /// program `native-untranslated`, which hands its write and exit calls here.
+    fn run_untranslated(image: &[u8]) -> ! {
+        let inside = std::fs::read(std::env::var_os(INSIDE_VARIABLE).expect("the inside's image"))
+            .expect("the inside's image");
+        let elf = ElfFile64::<Endianness>::parse(image).expect("an ELF image");
+        let endian = elf.endian();
+        let segments: Vec<_> = elf
+            .elf_program_headers()
+            .iter()
+            .filter(|header| header.p_type(endian) == PT_LOAD)
+            .collect();
+        let (machine, memory, loaded, start) = machine(&inside, MEMORY, ONE_CPU);
+        let mut cpu = machine.cpu().expect("a virtual CPU");
+        boot(&mut cpu, &memory, &loaded, 0, start).expect("booting");
+        let mut parts = Parts::default();
+        let mut output = Vec::new();
+        loop {
+            match cpu.run().expect("running") {
+                VcpuExit::Doorbell => {}
+                other => panic!(
+                    "the inside stopped: {other:?} at {:#x}",
+                    cpu.get(Register::Pc).unwrap_or_default()
+                ),
+            }
+            let link = link_page(&memory, &loaded, 0);
+            let Some(bytes) = parts.request(link) else {
+                continue;
+            };
+            let word = link.head.request;
+            if let Some(request) = link::Request::from_word(word) {
+                match request {
+                    link::Request::Print => {
+                        println!("inside: {}", String::from_utf8_lossy(link.data()))
+                    }
+                    link::Request::Fatal => {
+                        let Fatal { esr, elr, far } = link.get();
+                        panic!("the inside faulted: ESR {esr:#x} ELR {elr:#x} FAR {far:#x}");
+                    }
+                    request => panic!("no {request:?} here"),
+                }
+                continue;
+            }
+            match Request::from_word(word).expect("a request of the untranslated run") {
+                Request::Segments => link.put(&Loadable {
+                    segments: segments.len() as u64,
+                    entry: elf.elf_header().e_entry(endian),
+                    stack: u64::from(_STK_LIM),
+                }),
+                Request::Load => {
+                    let Load { index } = link.get();
+                    let header = segments[index as usize];
+                    let flags = header.p_flags(endian);
+                    link.put(&Segment {
+                        address: header.p_vaddr(endian),
+                        memory_length: header.p_memsz(endian),
+                        file_length: header.p_filesz(endian),
+                        writable: u64::from(flags & PF_W != 0),
+                        executable: u64::from(flags & PF_X != 0),
+                    });
+                    let data = header.data(endian, image).expect("the segment's bytes");
+                    parts.answer(link, data.to_vec());
+                }
+                Request::Output => {
+                    output.extend_from_slice(&bytes);
+                    parts.answer(link, Vec::new());
+                }
+                Request::Exited => {
+                    let Exited { status } = link.get();
+                    report(status as i32, &output)
+                }
+            }
+        }
+    }
+
     /// One child's run.
     #[derive(Clone, Debug)]
     struct Run {
@@ -452,15 +546,36 @@ mod macos {
         }
     }
 
-    /// A plain run and a native run of one program, one after the other.
+    /// A plain run and a native run of one program, one after the other, with the untranslated run beside them.
     struct Pair {
         plain: Run,
         native: Run,
+        untranslated: Run,
     }
 
     impl Pair {
         fn ratio(&self, of: impl Fn(&Run) -> f64) -> f64 {
             of(&self.native) / of(&self.plain)
+        }
+
+        fn untranslated_ratio(&self, of: impl Fn(&Run) -> f64) -> f64 {
+            of(&self.untranslated) / of(&self.plain)
+        }
+    }
+
+    /// The images of the test programs inside: the kernel's and the untranslated run's.
+    struct Insides {
+        kernel: PathBuf,
+        untranslated: PathBuf,
+    }
+
+    impl Insides {
+        fn of(&self, side: &str) -> &Path {
+            if side == UNTRANSLATED {
+                &self.untranslated
+            } else {
+                &self.kernel
+            }
         }
     }
 
@@ -506,31 +621,42 @@ mod macos {
     }
 
     /// Runs `program`'s pairs up to `wanted`, the first after one discarded run of each side, appending each to
-    /// `raw`.
-    fn run_pairs(program: &mut Program, wanted: u64, inside: &Path, raw: &mut std::fs::File) {
+    /// `raw`. The untranslated run goes last in a pair that starts plain and first in one that starts native.
+    fn run_pairs(program: &mut Program, wanted: u64, insides: &Insides, raw: &mut std::fs::File) {
+        let sides = [PLAIN, NATIVE, UNTRANSLATED];
         if program.pairs.is_empty() {
-            for side in [PLAIN, NATIVE] {
-                run(side, &program.image, inside);
+            for side in sides {
+                run(side, &program.image, insides.of(side));
             }
         }
         while (program.pairs.len() as u64) < wanted {
             let index = program.pairs.len();
             let order = if index.is_multiple_of(2) {
-                [PLAIN, NATIVE]
+                sides
             } else {
-                [NATIVE, PLAIN]
+                [UNTRANSLATED, NATIVE, PLAIN]
             };
             let load = load_average();
-            let [first, second] = order.map(|side| run(side, &program.image, inside));
-            let (plain, native) = if order[0] == PLAIN {
-                (first, second)
-            } else {
-                (second, first)
+            let mut runs: Vec<(&str, Run)> = order
+                .into_iter()
+                .map(|side| (side, run(side, &program.image, insides.of(side))))
+                .collect();
+            let mut take = |side: &str| {
+                let at = runs
+                    .iter()
+                    .position(|(s, _)| *s == side)
+                    .expect("each side ran");
+                runs.swap_remove(at).1
             };
+            let (plain, native, untranslated) = (take(PLAIN), take(NATIVE), take(UNTRANSLATED));
             let expected = program
                 .expected
                 .get_or_insert_with(|| (plain.status, plain.output.clone()));
-            for (side, run) in [(PLAIN, &plain), (NATIVE, &native)] {
+            for (side, run) in [
+                (PLAIN, &plain),
+                (NATIVE, &native),
+                (UNTRANSLATED, &untranslated),
+            ] {
                 assert_eq!(
                     (&run.status, &run.output),
                     (&expected.0, &expected.1),
@@ -540,15 +666,20 @@ mod macos {
             }
             writeln!(
                 raw,
-                "{{\"program\":\"{}\",\"pair\":{index},\"first\":\"{}\",\"look_ahead\":\"{:?}\",\"load\":\"{load}\",\"plain\":{},\"native\":{}}}",
+                "{{\"program\":\"{}\",\"pair\":{index},\"first\":\"{}\",\"look_ahead\":\"{:?}\",\"load\":\"{load}\",\"plain\":{},\"native\":{},\"untranslated\":{}}}",
                 program.name,
                 order[0],
                 look_ahead(),
                 json(&plain),
-                json(&native)
+                json(&native),
+                json(&untranslated)
             )
             .expect("writing the raw pairs");
-            program.pairs.push(Pair { plain, native });
+            program.pairs.push(Pair {
+                plain,
+                native,
+                untranslated,
+            });
         }
     }
 
@@ -626,6 +757,15 @@ mod macos {
                     .collect::<Vec<_>>(),
             )
         };
+        let untranslated = |of: fn(&Run) -> f64| {
+            percent(median(
+                &mut program
+                    .pairs
+                    .iter()
+                    .map(|p| p.untranslated_ratio(of))
+                    .collect::<Vec<_>>(),
+            ))
+        };
         let plain_cycles = median(
             &mut program
                 .pairs
@@ -634,18 +774,27 @@ mod macos {
                 .collect::<Vec<_>>(),
         );
         println!(
-            "speed: {} over {} pairs, medians native against plain: {}; plain {plain_cycles:.0} cycles; on performance cores {:.0}% plain, {:.0}% native",
+            "speed: {} over {} pairs, medians native against plain: {}; untranslated against plain: cycles {:+.1}%, instructions {:+.1}%; plain {plain_cycles:.0} cycles; on performance cores {:.0}% plain, {:.0}% native, {:.0}% untranslated",
             program.name,
             program.pairs.len(),
             medians.join(", "),
+            untranslated(cycles),
+            untranslated(|r| r.counts.instructions as f64),
             share(|p| &p.plain),
             share(|p| &p.native),
+            share(|p| &p.untranslated),
         );
     }
 
     fn measure() {
-        let inside = compiled(INSIDE_IMAGE);
-        std::fs::write(&inside, program()).expect("writing the inside's image");
+        let insides = Insides {
+            kernel: compiled(INSIDE_IMAGE),
+            untranslated: compiled(UNTRANSLATED_IMAGE),
+        };
+        std::fs::write(&insides.kernel, program()).expect("writing the inside's image");
+        std::fs::write(&insides.untranslated, build(UNTRANSLATED_PROGRAM))
+            .expect("writing the untranslated run's image");
+        let inside = &insides.kernel;
         let wanted_names: Option<Vec<String>> = std::env::var(PROGRAMS_VARIABLE)
             .ok()
             .map(|list| list.split(PROGRAMS_SEPARATOR).map(str::to_owned).collect());
@@ -698,7 +847,7 @@ mod macos {
         );
         let compute = loop {
             for program in &mut programs {
-                run_pairs(program, wanted, &inside, &mut raw);
+                run_pairs(program, wanted, &insides, &mut raw);
                 summarize(program);
             }
             if programs.iter().filter(|p| p.in_bar).count() != WORKLOADS.len() {
@@ -721,7 +870,7 @@ mod macos {
             wanted *= 2;
         };
         let system_calls =
-            wanted_program(SYSTEM_CALLS).then(|| system_calls(&inside, seed, resamples, &mut raw));
+            wanted_program(SYSTEM_CALLS).then(|| system_calls(inside, seed, resamples, &mut raw));
         for (part, said) in [("compute", compute), ("system calls", system_calls)] {
             match said {
                 Some(Verdict::Fails) => panic!("speed: the {part} part of the bar fails"),
