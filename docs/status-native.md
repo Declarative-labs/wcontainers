@@ -81,6 +81,14 @@ Built for N3 (each its own commit):
   which the flake reads, so the Nix shell fetches it; c4153089). The inside's code then never touches the
   vector registers, FPSR or FPCR, so the guest's stay in the hardware across every exception and system call
   with no save. The kernel crate builds for it in release.
+- Translation through the link (bafa1440, 929f8a02): the position map types derive serde, and the inside's
+  `translation` module defines the native back end's request set after the floor's (`Translate { address,
+  exact }` with the guest code in the link's bytes; answer `Translated { code, map, sites }`, the host code then
+  the position map by postcard in the link's bytes). The monitor answers it with `translate_native` at
+  look-ahead none (`wcontainers_hypervisor::translate::translate`; the monitor now depends on the translator
+  with `native`). A unit test sends six words of different routes through a link page both ways (exact and
+  not) and gets the emitter's bytes, spans and sites back whole, and none for three bytes.
+  `NativeReason` moved to the position module, so the inside can name the slow paths it warns.
 
 Results (M5 Max, macOS 27.2):
 - Differential test, 16 drawn cases per form, seed 0x2545f4914f6cdd1d: 1215 forms, 19,440 drawn, 8114 of the
@@ -96,15 +104,19 @@ What comes next for N3, in order (everything this track can do without R1 and R3
 1. The guest's vector state for `Cpu::registers` and `set_registers` and thread switches: the inside's code no
    longer touches it, but reading and writing it needs FP instructions, and new assembly text is a new literal
    the check refuses. Expected way: the monitor writes two routines made by the encoder (store and load q0 to
-   q31, FPSR, FPCR at a pointer) into a frame it names in `Start`, which the inside maps executable at EL1.
+   q31, FPSR, FPCR at a pointer) into a frame it names in `Start`, which the inside maps executable at EL1
+   (`floor::inside_code()`). The encoder has `LDR_Q_ldst_pos` and `load_store`; it needs `STR_Q_ldst_pos` and
+   the `mrs`/`msr` words of FPSR and FPCR, whose system register numbers are written only as a match in
+   decode_forms.rs (the translator track's): name them once in arm64 and have the decoder use the names, or
+   find the word by decoding the form's values.
 2. The native `Cpu` side in the inside: a process is a table root and identifier, `memory_new`, `read`,
    `write`, `zero`, `set_permissions` (4 KiB entries from the kernel's record), `memory_duplicate` (copying at
    once is a correct slow path until copy-on-write at N5, counted), shared blocks, threads (register block,
    register page, float status), all over `floor::tables`.
-3. Translation through the link: a `Translate` request (guest address, look-ahead none, exact replay) whose
-   answer the monitor writes with `translate_native` into frames the inside names: host bytes, spans and slow
-   path sites; the inside loads them into the code area, counts and warns each site's reason, and keeps
-   guest address to piece.
+3. The inside's side of translation (the link's request and the monitor's answer are built): read the guest's
+   code (refused as an execute fault when its page cannot run), ask, load the host code into the code area
+   (pages mapped with `floor::code()`, made visible), count and warn each slow path site by its
+   `NativeReason`, and keep guest address to piece per process.
 4. A thread run to its next exit (the body the native `Execution::run` will wrap): rejoin, `enter_user`,
    `stop::resolve`, the next piece for `Landed`, the clock for `Clock`, an `Exit` otherwise; an execute fault
    when the code's page cannot run.
@@ -517,6 +529,8 @@ From the checkout, in the Nix shell:
   `WCONTAINERS_INTERRUPTS_SEED`, `WCONTAINERS_INTERRUPTS_STARTS` starting states per case, default 1; about
   a second per starting state) and `--test probe` (knobs `WCONTAINERS_PROBE_WORDS`, default 4, and `WCONTAINERS_PROBE_SEED`; about
   7 minutes);
+- the monitor's translate answer through a link page: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor
+  --lib`;
 - N2's tests without the machine: `nix develop -c cargo test -j 4 -p wcontainers-arm64 --test native_routes --test encode --
   --nocapture` (knobs `WCONTAINERS_ROUTES_SEED`, `WCONTAINERS_ROUTES_WORDS`, `WCONTAINERS_ENCODE_SEED`,
   `WCONTAINERS_ENCODE_CASES`, decimal), `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test carry
@@ -681,6 +695,11 @@ N2 run 1: wasmparser 0.263.0 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MI
 (Apache-2.0 OR MIT), dev-dependencies of wcontainers-arm64 for its routing and encoder tests, both already in
 Cargo.lock; the floor now calls aarch64-paging's `El1And0::invalidate_va` (already a dependency).
 Run 2 added zerocopy to the inside, already the workspace's (0.8.63, BSD-2-Clause OR Apache-2.0 OR MIT).
+N3 run 1 (crates.io licence fields read 2026-11-19): talc 5.1.1 MIT, with lock_api 0.4.14, scopeguard 1.2.0
+and allocator-api2 0.4.0, each MIT OR Apache-2.0 (the inside's heap; spin's `lock_api` feature); postcard
+1.1.3 and cobs 0.3.0 MIT OR Apache-2.0 (the inside, already in Cargo.lock); serde 1.0.229 with serde_derive
+and serde_core, MIT OR Apache-2.0 (guest-cpu's position map, already in Cargo.lock); the monitor depends on
+wcontainers-translator with `native` (was a dev-dependency).
 Run 3: the monitor depends on wcontainers-arm64 and wcontainers-guest-cpu (for `Guest::SP_ALIGNMENT_CHECKED`),
 which bring the workspace's translator dependencies into it, all already in Cargo.lock: rustc_apfloat 0.2.3
 Apache-2.0 WITH LLVM-exception, wasm-encoder 0.263.0 Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT,
@@ -700,6 +719,11 @@ messages).
   tests/surface.rs 4. None is in a crate this track owns. For the orchestrator: these pass once main carries
   the check with the runtime track's own baseline, or at the next version of the rules (they are in this
   tree now); this track does not name another track's literals and does not add their lines.
+- At N3 run 1's end: baseline lines in this track's files unchanged (26; the baseline file is unchanged this
+  run). Replaced in files touched: the exclusive monitor's `[u64; 4]` is `thread_state::Exclusive`, its length
+  derived from the register page; a second `WRITE_NOT_READ` in floor-cases is gone (imported from
+  `syndrome`); an instruction's bytes in `stop.rs` are `size_of::<u32>()` (arm64's `INSTRUCTION_BYTES` is the
+  translator track's to add).
 - At N2 run 5 the check lists 14: run 4's twelve, 1a889ca2 (this branch's merge of the seventh version) and
   0f187563 (literals branch). Baseline lines in this track's files: unchanged (26); run 5 added none.
 - At N2 run 4's end the check lists 12 changes that could add lines: 0e0f1102 the start, e4b998bd the init
