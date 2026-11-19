@@ -7665,7 +7665,6 @@ redefinition	crates/wcontainers-kernel/src/syscall/socket/inet.rs	int	datagram_t
 redefinition	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	send_packet::MAX_ALLOC	MAX_ALLOC = 16064
 redefinition	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	truesize::SHARED_INFO	SHARED_INFO = 320
 redefinition	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	truesize::SK_BUFF	SK_BUFF = 256
-redefinition	crates/wcontainers-kernel/src/syscall/socket/netlink.rs	int	ALIGN	ALIGN = 4
 redefinition	crates/wcontainers-kernel/src/syscall/socket/netlink.rs	int	MAX_LINKS	MAX_LINKS = 32
 redefinition	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	int	SS_CONNECTED	SS_CONNECTED = 3
 redefinition	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	int	SS_CONNECTING	SS_CONNECTING = 2

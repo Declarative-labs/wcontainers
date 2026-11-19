@@ -26,9 +26,8 @@ use crate::{Context, Errno, Kernel};
 const IF_READY: u32 = 0x8000_0000;
 /// `sizeof(struct sockaddr_nl)`.
 const ADDRESS_SIZE: usize = 12;
-/// `sizeof(struct nlmsghdr)` and the alignment of messages and attributes.
+/// `sizeof(struct nlmsghdr)`.
 const HEADER: usize = 16;
-const ALIGN: usize = 4;
 
 /// A netlink socket's own state.
 pub(crate) struct Netlink {
@@ -254,7 +253,7 @@ pub(super) fn send(
                     let mut messages = VecDeque::from(messages);
                     replies.extend(messages.pop_front());
                     part(socket).dump = messages;
-                    at += length.next_multiple_of(ALIGN);
+                    at += length.next_multiple_of(NLMSG_ALIGNTO as usize);
                     continue;
                 }
                 Ok(Answer::One(message)) => replies.push(message),
@@ -265,7 +264,7 @@ pub(super) fn send(
         if request_flags & NLM_F_ACK != 0 || error != 0 {
             replies.push(acknowledgement(request, error, portid, flags));
         }
-        at += length.next_multiple_of(ALIGN);
+        at += length.next_multiple_of(NLMSG_ALIGNTO as usize);
     }
     for reply in replies {
         queue(kernel, cx, tid, socket, reply);
@@ -362,7 +361,8 @@ impl Message {
 
     fn push(&mut self, bytes: &[u8]) {
         self.0.extend_from_slice(bytes);
-        self.0.resize(self.0.len().next_multiple_of(ALIGN), 0);
+        self.0
+            .resize(self.0.len().next_multiple_of(NLMSG_ALIGNTO as usize), 0);
     }
 
     /// An attribute (`struct rtattr`).
@@ -628,7 +628,7 @@ fn one_link(request: &[u8], portid: u32, body: &[u8]) -> Result<Answer, Errno> {
             let value = &body[at + 4..at + length];
             name = Some(&value[..value.iter().position(|&b| b == 0).unwrap_or(value.len())]);
         }
-        at += length.next_multiple_of(ALIGN);
+        at += length.next_multiple_of(NLMSG_ALIGNTO as usize);
     }
     let found = INTERFACES.iter().find(|interface| {
         if index > 0 {
@@ -979,7 +979,7 @@ fn route_get(
         } else if kind == RTA_OIF as u16 && data.len() >= 4 {
             oif = Some(u32::from_le_bytes(data[..4].try_into().expect("4 bytes")));
         }
-        at += length.next_multiple_of(ALIGN);
+        at += length.next_multiple_of(NLMSG_ALIGNTO as usize);
     }
     if family != AF_INET && family != AF_INET6 {
         return Err(Errno::EOPNOTSUPP);
