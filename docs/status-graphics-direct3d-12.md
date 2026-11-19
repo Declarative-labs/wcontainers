@@ -168,6 +168,8 @@ milestone "G5 to the pass bar"):
   run37/files7.log): clip_distance passes (264 checks, before refused at wgpu's validation),
   test_geometry_shader and tessellation_dcl_index_range pass, combined_clip_and_cull_distances
   stops at the named refusal. The literal check's 8 lines of the old reader were deleted.
+  At the end the desktop's build folder of this branch (8,386,073,614 bytes) and the scratch
+  worktree dev37 (no build output) were deleted; no build output was made on the Mac.
 - Run 36 (the seventh run of the milestone's current form): merged shaders (its run 40:
   `SwizzledDepth` lifted for mappings keeping red first, wave minimums and maximums of the other
   signedness, the vertex counts made public) and direct3d-11 (nothing of this track's or of the
