@@ -15,11 +15,10 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - The literal check is merged (its second version of the rules, phase-1-literals at 7119e3f3, in 21321c7e)
   and this branch's baseline started at e4b998bd. The check fails, on main's code only: see "Literals".
 - main is merged (787f8ceb, N2 run 1): the owner's names are in the plan's text and its runtime citations.
-- N2 (the native ARM64 output): every item of its bar is built and passes; see "N2 run 4" below for this
-  run, its measurements and what is left for the independent check. N3 needs decision 1 (R1, R3). N6 needs
-  K2 (below).
-- The literal check's fourth version of the rules is merged (e9ebf95e; init only re-sorted the baseline) and
-  the check passes on the whole tree (exit 0; main's 53 findings of run 1 are gone with it).
+- N2 (the native ARM64 output): the independent check of run 4 found four blocking problems and six minor
+  ones; run 5 settled every one (below, "N2 run 5"). N3 needs decision 1 (R1, R3). N6 needs K2 (below).
+- The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
+  the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
   and 10's final choice, which N1's trial narrows: option C does not work on Hypervisor.framework (below),
   so it is A or B.
@@ -234,9 +233,94 @@ presented form (1215), 1000 drawn cases each and 506,403 of the bar's own beside
 failing, in 5034 s (19:07 to 20:32, load 60 to 88 throughout). Logs: scratch native/n2r4-native1000-summary.log
 (and the whole log, gzipped, beside it).
 
-What is left for N2: the independent check (its own seed through the differential test, the forced
-interrupts, the cost measurement again, the WebAssembly output unchanged, the literal check). The count's
-cost was measured in run 1 (below) with the add at the start of the run, which is what the emitter places.
+The count's cost was measured in run 1 (below) on a model of the placements, not on the emitter's own output
+(no whole program runs on the native output before N3). The emitter places the add at the start of its run;
+at look-ahead none the run is one instruction, so the add sits directly before it: that is the "right before"
+placement (run 1 +13.65%, the check's repeat +11.75%); "start of the run" (+10.51%, repeat +10.85%) holds at
+bounded and full look-ahead only.
+
+## N2 run 5 (2026-11-18 night): the independent check of run 4, and how each finding was settled
+
+Start: merged phase-1-literals' seventh version of the rules (1a889ca2); init changed nothing and the check
+exits 0. main had nothing new.
+
+Blocking findings:
+1. The differential test never ran the words layer 1 leaves out (its `cases()` drops every word `excluded`
+   names, since those are compared with the real CPU). Now, beside each drawn case, it runs every word that
+   `excluded` names which the case's word becomes with one register field set to another's register (both
+   ways round: transfer and base, the two transfer registers, status and data or base), and, for forms with
+   1 to 16 other free bits, every left-out value of them (system registers answered by design, pointer
+   signing and BTI hints, features not offered), each on a drawn case's registers (5529138a). Still left out:
+   "branch to itself" (a one-instruction case that branches to itself never ends on the WebAssembly side;
+   its route is Transfer, like any branch's). A counter read (CNTVCT_EL0, the Kernel route) is answered by
+   the runner with nanoseconds since the runs began, as layer 1's WebAssembly runner answers its clock; its
+   destination register is the one thing not compared. The test prints the left-out words by reason.
+   What it found, all fixed: a load pair into one register gave the second word (finding 2); `ldp`, `ldnp`,
+   `ldpsw`, `ldxp` and `ldaxp` into the zero register twice were copied and are undefined on this M5 (the
+   routing's "same register" skipped the zero register): now Collision (`ldp t, xzr`), and an exclusive pair
+   loads its first element alone (the pair is in one page once aligned); every vector load pair into one
+   register (`ldp`, `ldnp` of s, d and q) was copied and is undefined on this M5: now Collision, the pair's
+   page test, then the first element alone loaded from t (SA0's check first for a stack pointer base), and a
+   written back base takes its new value from t after the load through a new fix-up, `Fixup::Move`
+   (2006232b, ba22bed8; plan section 4's closed set and section 3.4 say so).
+2. The Collision route of `ldp x1, x1` gave the second word: the meaning writes rt2, then rt, then the base,
+   so rt gets the first word; now `ldp x1, xzr` (200429af; plan 3.4 corrected, citing meaning.rs:1286-1303).
+3. Fix-ups named the host stand-in but were applied to the guest register of that number: fix-ups are now
+   defined on host registers and the register page (guest-cpu's `Fixup`), and a stop makes them first and
+   reads the relocations after (the runner's one `fixed_up`, used by the interrupt resolver and the jump's
+   call). The interrupt test gained a function `withheld` (`adr x27`, `ldxr x27, [x28]`, `stxr w26, x27,
+   [x28]`, `ldp x1, x1, [x28]`) with x28 writable and read-only: the check's T5 and WITHHELD_F (c207be12).
+4. Slow paths had no name or counter: `NativeReason` (guest-cpu) names "withheld register named by the
+   guest", "access that may cross a page probed" and "host-model result routed"; `HostCode::sites` counts
+   each where it is written (a stand-in's moves; the register page read of a `cbz`, `tbz` or jump through
+   a withheld register; a page test, or a literal load's crossing, by the access's size: more than 16 bytes
+   probed, else routed). The structure test checks every word's counts (de5e6a0c, 78fec519, a3f41b0a). The
+   warning is the loader's, when a loaded translation has any (plan 3.7); the loader is the inside, from N3
+   (Departures).
+
+Minor findings:
+5. The monitor fix-up is applied (written whole from guest memory), Forget clears the monitor, the guest
+   state compared at every boundary holds the exclusive monitor, and every forced interrupt now goes on from
+   the state it resolved to (as the inside returns to it) and must end exactly as the unbroken run: stop,
+   last state and data area (c207be12).
+6. The words-per-form knob: a form with at most 16 other free bits is swept again with other register
+   fields until the knob is met (c6d0bcf0). At 64: Exclusive 40 to 1600 words, Aligned 171 to 10,877. Forms
+   swept whole with more values than the knob (system register moves) still get one register draw per
+   value: the four FPSR and FPCR moves are 3 words of the structure test.
+7. The interrupt test's end comparison with the WebAssembly output includes NZCV and TPIDR_EL0, and the
+   cases start with seeded flags, thread pointer and vectors.
+8. The status's sentence on the count's placement is corrected (above, end of run 4).
+9. phase-1-literals' newest rules: merged.
+10. The plan carries the late rulings (ac74353f): `TranslatorConfig`, `ExecutionConfig`, `ThreadOrdering
+    { Serial, Parallel }`, `ReplayDeterminism { Exact, External, None }`, memory watches per process and per
+    thread (`PerThreadWatch`: each thread its own table root), `memory_changed` from the tables' written
+    marks, and the embedder's `System` inside the machine. `translate_native` takes `exact_replay` and writes
+    the count's adds only with it (72468a83); the structure test checks that a piece without it is the same
+    piece less the add (d51f44ee). `ReplayDeterminism` itself is the runtime's type and is not on a branch
+    merged here, so the caller derives the flag from it.
+
+Results (M5 Max, macOS 27.2):
+- Differential test, 16 drawn cases per form, seed 0x2545f4914f6cdd1d: 1215 forms, 19,440 drawn, 8114 of the
+  bar's own and 4528 left-out words beside them, 32,082 cases, 0 failing (147 s, load 88 to 115). Log:
+  scratch native/n2r5-native16.log.
+- Forced interrupts: 1751 over 7 functions (13 cases) at 3 look-aheads, 0 failed, each going on to the end
+  (1.0 s, load 98 to 108).
+- Routing test 1,100,729 words of 1215 forms; structure test 1,100,730 words, sites included: both pass.
+- The left-out words of that run, by layer 1's reason: write back to a transfer register 2000, load pair into
+  one register 979, store exclusive whose status is also transferred or the base 884, registers answered by
+  design 272, half precision (FEAT_FP16) 192, hints of pointer signing and later features 113, SSBS, DIT,
+  streaming mode and TCO 64, cache operations of features not offered 12, registers of features not offered
+  10, 64-bit pmull 2.
+- The whole suite of what this track owns, once before the push (21:25 to 21:34, load 92 to 135; log scratch
+  native/n2r5-suite.log): guest-cpu, arm64 (routing, encoder and the rest), the inside and the monitor (floor
+  21 cases and 1 measurement, 0 failed; carry; native as above, 123 s; interrupts as above; the behaviour
+  probe, 279 forms and 38,916 placements, 0 forms of 16 bytes or fewer differ, 253 s), the literal check's
+  own tests, and the translator with `native` (its tests unchanged). All pass. The translator differs from
+  main only in `native.rs`, the feature's lines in lib.rs and Cargo.toml.
+
+For later (not N2's): the Exclusive route loads with a plain `ldr`/`ldp` and stores with a plain
+`cas`/`casp`, so `ldaxr` and `stlxr` lose their acquire and release ordering. No single thread can see it;
+threads run in parallel (N5 on) need the acquire and release forms there.
 
 ## E's cost by placement (N2 run 1)
 
@@ -490,6 +574,8 @@ messages).
   tests/surface.rs 4. None is in a crate this track owns. For the orchestrator: these pass once main carries
   the check with the runtime track's own baseline, or at the next version of the rules (they are in this
   tree now); this track does not name another track's literals and does not add their lines.
+- At N2 run 5 the check lists 14: run 4's twelve, 1a889ca2 (this branch's merge of the seventh version) and
+  0f187563 (literals branch). Baseline lines in this track's files: unchanged (26); run 5 added none.
 - At N2 run 4's end the check lists 12 changes that could add lines: 0e0f1102 the start, e4b998bd the init
   after the baseline arrived by a merge, 21321c7e, 7175b04e, acbd6c1a, c891d78a and e9ebf95e new rules (this
   branch), 68214b2e the start, 89f88281, 7119e3f3, c3bf56d4 and 31ec396f new rules (literals branch).
@@ -615,6 +701,12 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 ./mirror` without the framework; the KVM runs as in kvm-laptop.out from ~/native-plan/vm on the laptop.
 
 ## Departures from the plan
+
+- N2 run 5, slow paths: the native output's three translation-time slow paths are named and counted per
+  site in `HostCode::sites`; their warning is raised by whoever loads translations (the inside, N3), since
+  nothing loads them before then.
+- N2 run 5, the differential test runs layer 1's left-out words except "branch to itself", and does not
+  compare a counter read's destination (a clock reading on each side).
 
 - N2 run 4, the runner: each case's state is set and read by the monitor at a gate the cases program calls,
   not by the floor (the floor's entry keeps no vector state); the plan's N2 text says so now.

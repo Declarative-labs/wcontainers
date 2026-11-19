@@ -208,6 +208,7 @@ mod macos {
         let mut total = 0u64;
         let mut edge_cases = 0u64;
         let mut left_out_cases = 0u64;
+        let mut reasons: std::collections::BTreeMap<&str, u64> = Default::default();
         for form in &chosen {
             let mut generator = generator(seed, &form.name);
             let strategy = cases((*form).clone());
@@ -219,6 +220,11 @@ mod macos {
             let mut collided: Vec<Case> = drawn.iter().flat_map(|c| collisions(form, c)).collect();
             collided.extend(swept(form, &drawn, seed));
             left_out_cases += collided.len() as u64;
+            for c in &collided {
+                *reasons
+                    .entry(excluded(form, c.word).expect("a left out word"))
+                    .or_default() += 1;
+            }
             drawn.extend(edges);
             drawn.extend(collided);
             let cases = drawn.len();
@@ -255,6 +261,7 @@ mod macos {
             started.elapsed(),
             load_average()
         );
+        println!("words layer 1 leaves out, by its reason: {reasons:?}");
         if !failing.is_empty() {
             println!("failing forms: {}", failing.join(" "));
         }
