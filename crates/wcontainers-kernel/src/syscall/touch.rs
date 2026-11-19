@@ -562,6 +562,23 @@ pub(crate) fn touch(memory: &mut dyn Memory, call: Syscall) -> bool {
         __NR_removexattr | __NR_lremovexattr => path(memory, a0) && name(memory, a1),
         __NR_fremovexattr => name(memory, a1),
         __NR_mincore => meet(memory, a2, a1.div_ceil(PAGE_SIZE), write),
+        // Pages put back to zero or to their file change as if written.
+        __NR_madvise => match a2 as u32 {
+            MADV_DONTNEED | MADV_DONTNEED_LOCKED | MADV_REMOVE => meet(memory, a0, a1, write),
+            _ => true,
+        },
+        // A move reads the pages it takes along; with `MREMAP_DONTUNMAP` it also puts the old
+        // ones back to zero or to their file.
+        __NR_mremap => {
+            let flags = a3 as u32;
+            if flags & MREMAP_DONTUNMAP != 0 {
+                meet(memory, a0, a1, write)
+            } else if flags & MREMAP_MAYMOVE != 0 {
+                meet(memory, a0, a1.min(a2), read)
+            } else {
+                true
+            }
+        }
         __NR_process_vm_readv | __NR_process_vm_writev => {
             let local = if number == __NR_process_vm_readv {
                 write

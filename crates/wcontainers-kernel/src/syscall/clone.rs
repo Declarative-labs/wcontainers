@@ -193,6 +193,7 @@ fn make_child(
                 cx.cpu
                     .zero(memory, mapping.start, length)
                     .map_err(errno::from_cpu)?;
+                map.forget_watches(cx.cpu, memory, mapping.start, mapping.end);
             }
         }
         map.set_lock_all(Lock::None);

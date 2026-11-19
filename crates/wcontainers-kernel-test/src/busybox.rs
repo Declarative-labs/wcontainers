@@ -149,7 +149,7 @@ pub fn run_ours_hooked(
     let path = on_path(command[0]);
     let container = container(command, &path, None);
     let prepared = driver::Prepared {
-        hooks,
+        hooks: Some(hooks),
         ..driver::prepare(&container)
     };
     driver::run_prepared(prepared, &container, seed, Default::default())

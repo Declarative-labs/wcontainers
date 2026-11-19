@@ -162,7 +162,8 @@ impl Kernel {
     fn system_call(&mut self, cx: &mut Context<'_>, tid: Tid, call: Syscall, again: bool) {
         // The watched memory the call will touch is met before it acts, and its copies are
         // checked against what its description named.
-        if self.watching {
+        let watched = self.watched(tid);
+        if watched {
             // A copy into this memory by another process's call left nothing for this one.
             {
                 let watches = &mut self.process_of(tid).map.borrow_mut().watches;
@@ -203,7 +204,7 @@ impl Kernel {
         // A copy outside the call's description is counted. If it met a watched page, a call that
         // failed for it runs again once the watch is met, doing again what it did before the
         // copy; one that did part of its work keeps its short result (both counted).
-        let (touched, undescribed) = match (self.watching, self.threads.get(&tid)) {
+        let (touched, undescribed) = match (watched, self.threads.get(&tid)) {
             (true, Some(thread)) => {
                 let watches = &mut self.processes[&thread.process].map.borrow_mut().watches;
                 watches.described = None;
@@ -240,9 +241,9 @@ impl Kernel {
                 syscall::Outcome::Parked | syscall::Outcome::Gone => {}
             }
         }
-        // A placement found no room below the executor's ceiling.
-        if self.ceiling < self.machine.memory_bytes
-            && let Some(bytes) = self.outgrown.take()
+        // A request outgrew the executor's ceiling. It failed before it had any effect, and its
+        // result reaches the thread only once the hook has returned.
+        if let Some(bytes) = self.outgrown.take()
             && let Some(thread) = self.threads.get(&tid)
         {
             let pid = thread.process;

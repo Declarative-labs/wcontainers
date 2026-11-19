@@ -1,12 +1,18 @@
 // Programs for the embedder's hooks and memory primitives, run as `embedder MODE BUFFER PAGES
-// [ADDRESS]`: BUFFER is where the test host expects a buffer of PAGES pages, mapped first.
+// [ARGUMENT...]`: BUFFER is where the test host expects a buffer of PAGES pages, mapped first.
 //   lifecycle: a thread, then a forked child that runs /bin/true, then an exit.
 //   paths: the other ways processes and numbers come and go, one after another.
 //   calls: prints how many calls it has, then in a child each, one call writes into the buffer.
 //   pages: in a child, writes known pages of the buffer, one of them by read().
 //   span: in a child, an 8-byte store that ends just inside the buffer's second page.
-//   outgrow: maps 64 MiB at a time until refused; prints how many and the error.
-//   fixed: maps a page at ADDRESS with MAP_FIXED, then with MAP_FIXED_NOREPLACE.
+//   outgrow BYTES: maps BYTES at a time until refused; prints how many and the error.
+//   fixed ADDRESS: maps a page at ADDRESS with MAP_FIXED, then with MAP_FIXED_NOREPLACE.
+//   brk BYTES: unmaps the buffer, then grows the heap by BYTES with brk.
+//   remap ADDRESS COUNT: in a child, moves the buffer's first COUNT pages to ADDRESS, sums them,
+//     writes the last moved page, drops the next page of the buffer and prints its first byte.
+//   orphan: forks a child that waits for a signal, then ends with status 3.
+//   shared ADDRESS: maps a page of a file read-only and shared at ADDRESS, forks a child that
+//     ends at once, then prints the file's first byte and the mapping's.
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
@@ -546,9 +552,9 @@ static int span(void) {
     return 0;
 }
 
-static int outgrow(void) {
+static int outgrow(long piece) {
     int count = 0;
-    while (mmap(NULL, 64 << 20, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) != MAP_FAILED)
+    while (mmap(NULL, piece, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) != MAP_FAILED)
         count++;
     printf("outgrown %d %s\n", count, errno == ENOMEM ? "ENOMEM" : "other");
     return 0;
@@ -560,6 +566,57 @@ static int fixed(char *at) {
     printf("fixed %s\n", first == at ? "mapped" : strerror(errno));
     void *second = mmap(at + page, page, flags, kind | MAP_FIXED_NOREPLACE, -1, 0);
     printf("noreplace %s\n", second == at + page ? "mapped" : strerror(errno));
+    return 0;
+}
+
+static int grow_heap(long bytes) {
+    munmap(buffer, pages * page);
+    long old = syscall(SYS_brk, 0);
+    long now = syscall(SYS_brk, old + bytes);
+    printf("brk %s\n", now == old + bytes ? "grown" : now == old ? "refused" : "other");
+    return 0;
+}
+
+static int remap(char *to, long count) {
+    pid_t child = fork();
+    if (child == 0) {
+        char *moved = mremap(buffer, count * page, count * page, MREMAP_MAYMOVE | MREMAP_FIXED, to);
+        if (moved != to) {
+            printf("mremap %s\n", strerror(errno));
+            fflush(stdout);
+            _exit(1);
+        }
+        unsigned long sum = 0;
+        for (long i = 0; i < count * page; i++) sum = sum * 31 + (unsigned char)moved[i];
+        moved[(count - 1) * page] = 'y';
+        madvise(buffer + count * page, page, MADV_DONTNEED);
+        printf("moved %lu dropped %d\n", sum, buffer[count * page]);
+        fflush(stdout);
+        _exit(0);
+    }
+    int status;
+    waitpid(child, &status, 0);
+    return WEXITSTATUS(status);
+}
+
+static int orphan(void) {
+    if (fork() == 0) {
+        pause();
+        _exit(0);
+    }
+    return 3;
+}
+
+static int shared_read_only(char *at) {
+    int fd = memfd_create("shared", 0);
+    if (fd < 0 || write(fd, "x", 1) != 1 || ftruncate(fd, page)) return 1;
+    if (mmap(at, page, PROT_READ, MAP_SHARED | MAP_FIXED, fd, 0) != at) return 1;
+    pid_t child = fork();
+    if (child == 0) _exit(0);
+    waitpid(child, NULL, 0);
+    char byte = 0;
+    pread(fd, &byte, 1, 0);
+    printf("file %c mapped %c\n", byte, at[0]);
     return 0;
 }
 
@@ -577,7 +634,12 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "calls")) return calls();
     if (!strcmp(mode, "pages")) return written_pages();
     if (!strcmp(mode, "span")) return span();
-    if (!strcmp(mode, "outgrow")) return outgrow();
+    if (!strcmp(mode, "outgrow") && argc > 4) return outgrow(strtol(argv[4], NULL, 0));
     if (!strcmp(mode, "fixed") && argc > 4) return fixed((char *)strtoul(argv[4], NULL, 0));
+    if (!strcmp(mode, "brk") && argc > 4) return grow_heap(strtol(argv[4], NULL, 0));
+    if (!strcmp(mode, "remap") && argc > 5)
+        return remap((char *)strtoul(argv[4], NULL, 0), strtol(argv[5], NULL, 0));
+    if (!strcmp(mode, "orphan")) return orphan();
+    if (!strcmp(mode, "shared") && argc > 4) return shared_read_only((char *)strtoul(argv[4], NULL, 0));
     return 2;
 }

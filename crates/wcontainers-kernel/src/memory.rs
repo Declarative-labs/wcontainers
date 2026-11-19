@@ -296,6 +296,11 @@ impl Watches {
         }
     }
 
+    /// Whether any page is watched.
+    pub fn any(&self) -> bool {
+        !self.pages.is_empty()
+    }
+
     /// Whether anything narrows what the CPU side allows.
     pub fn narrows(&self) -> bool {
         !self.pages.is_empty() || self.written.is_some()
@@ -359,6 +364,19 @@ impl Watches {
             page += PAGE_SIZE;
         }
         fresh
+    }
+
+    /// Takes the watches of `[start, end)`, by their pages' offsets from `start`.
+    fn take(&mut self, start: u64, end: u64) -> Vec<(u64, Watch)> {
+        let taken: Vec<(u64, Watch)> = self
+            .pages
+            .range(start..end)
+            .map(|(page, watch)| (*page - start, *watch))
+            .collect();
+        for (offset, _) in &taken {
+            self.pages.remove(&(start + offset));
+        }
+        taken
     }
 
     /// Forgets the watches and the record of `[start, end)`, which is unmapped.
@@ -514,6 +532,47 @@ impl AddressMap {
         for mapping in overlapping {
             // The ranges were mapped, so the CPU side takes them.
             let _ = apply_permissions_in(cpu, memory, &mapping, start, end, &self.watches);
+        }
+    }
+
+    /// Notes that the process's bytes in `[start, end)` changed, and lets the CPU side write the
+    /// pages it now may.
+    pub fn note_written(&mut self, cpu: &mut dyn Cpu, memory: MemoryId, start: u64, end: u64) {
+        if self.watches.note_written(start, end) {
+            self.reapply(cpu, memory, start, end);
+        }
+    }
+
+    /// Takes the watches of `[start, end)` along to pages a move is about to take there.
+    pub fn take_watches(&mut self, start: u64, end: u64) -> Vec<(u64, Watch)> {
+        if self.watches.pages.is_empty() {
+            return Vec::new();
+        }
+        self.watches.take(start, end)
+    }
+
+    /// Pages moved to `[start, end)`: the watches taken along with them are set here, and the
+    /// pages are noted as written.
+    pub fn moved_here(
+        &mut self,
+        cpu: &mut dyn Cpu,
+        memory: MemoryId,
+        start: u64,
+        end: u64,
+        watches: Vec<(u64, Watch)>,
+    ) {
+        for (offset, watch) in watches {
+            self.watches.pages.insert(start + offset, watch);
+        }
+        self.watches.note_written(start, end);
+        self.reapply(cpu, memory, start, end);
+    }
+
+    /// Ends the watches of `[start, end)`, whose pages a fork's child gets fresh.
+    pub fn forget_watches(&mut self, cpu: &mut dyn Cpu, memory: MemoryId, start: u64, end: u64) {
+        if self.watches.pages.range(start..end).next().is_some() {
+            self.watches.forget(start, end);
+            self.reapply(cpu, memory, start, end);
         }
     }
 
@@ -704,7 +763,9 @@ impl AddressMap {
         loop {
             let start = ceiling.checked_sub(length).filter(|start| *start >= floor);
             let Some(start) = start else {
-                self.outgrown.set(Some(length));
+                if self.ceiling < self.end {
+                    self.outgrown.set(Some(length));
+                }
                 return None;
             };
             // The highest mapping that, with the guard gap below one that grows down, overlaps

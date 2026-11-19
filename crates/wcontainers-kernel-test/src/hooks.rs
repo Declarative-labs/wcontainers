@@ -3,8 +3,8 @@
 use wcontainers_abi::Cpu;
 use wcontainers_kernel::{Access, Kernel, Process, TaskId, task_id_after};
 
-/// A test's side of the kernel's hooks and task id calls; each left alone does what the kernel's
-/// `System` does by default.
+/// A test's side of the kernel's hooks and task id calls, for the tests that act at some of them;
+/// each left alone does nothing, or for task ids, counts as the kernel's default does.
 pub trait Hooks {
     fn task_id_allocate(&mut self, previous: TaskId) -> TaskId {
         task_id_after(previous)
@@ -44,7 +44,23 @@ pub trait Hooks {
     }
 }
 
-/// The kernel's defaults for everything.
-pub struct Defaults;
+/// No hooks of the test's: the kernel's provided defaults answer.
+pub struct NoHooks;
 
-impl Hooks for Defaults {}
+/// What the driver asks of a host's hooks when the kernel has nothing to run.
+pub trait BetweenSteps {
+    /// Whether the hooks did anything that may let the kernel go on.
+    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool;
+}
+
+impl BetweenSteps for NoHooks {
+    fn between_steps(&mut self, _: &mut Kernel, _: &mut dyn Cpu) -> bool {
+        false
+    }
+}
+
+impl BetweenSteps for Box<dyn Hooks> {
+    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+        (**self).between_steps(kernel, cpu)
+    }
+}

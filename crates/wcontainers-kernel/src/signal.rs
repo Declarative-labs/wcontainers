@@ -553,7 +553,7 @@ impl Kernel {
         let mut resume = resume;
         // Taken off the CPU in its own code: its restartable sequence first.
         if self.threads[&tid].rseq_event {
-            if self.watching && !self.rseq_touched(cx, tid) {
+            if self.watched(tid) && !self.rseq_touched(cx, tid) {
                 self.wait_on_watch(tid, Some(resume), true);
                 return None;
             }
@@ -565,7 +565,7 @@ impl Kernel {
         let mut handled = false;
         loop {
             let mask = self.threads[&tid].signal_mask;
-            if self.watching && !self.frame_touched(cx, tid, !mask) {
+            if self.watched(tid) && !self.frame_touched(cx, tid, !mask) {
                 self.wait_on_watch(tid, Some(resume), true);
                 return None;
             }

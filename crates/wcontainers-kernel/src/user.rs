@@ -213,10 +213,7 @@ impl Guest<'_> {
     /// write fault would.
     fn copy_on_write(&mut self, address: u64, length: u64) -> Result<(), Errno> {
         let mut map = self.map.borrow_mut();
-        // The CPU side may write a page noted as written from now on.
-        if map.watches.note_written(address, address + length) {
-            map.reapply(self.cpu, self.memory, address, address + length);
-        }
+        map.note_written(self.cpu, self.memory, address, address + length);
         map.copy_on_write(self.cpu, self.memory, address, address + length)
     }
 

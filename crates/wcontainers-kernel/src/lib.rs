@@ -174,7 +174,8 @@ pub struct Kernel {
     last_id: i32,
     /// The highest address the executor can give a process now (at most the address space's end).
     ceiling: u64,
-    /// The embedder has watched pages, so calls look at the watches before they act.
+    /// Some process has watched pages or a record of written pages: a call, a signal or a fault
+    /// then looks at its own process's.
     watching: bool,
     /// The embedder's watches changed outside a call into the kernel and woke threads, which the
     /// kernel settles before anything runs.

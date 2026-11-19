@@ -1529,13 +1529,8 @@ code	crates/wcontainers-kernel-test/src/busybox.rs	str	shapes_of_image	"{major},
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	shapes_of_kernel	"{major},{minor}"
 code	crates/wcontainers-kernel-test/src/driver.rs	bytestr	notice	b"backend-file\0"
 code	crates/wcontainers-kernel-test/src/driver.rs	bytestr	notice	b"data"
-code	crates/wcontainers-kernel-test/src/driver.rs	float	run_prepared	0.5
 code	crates/wcontainers-kernel-test/src/driver.rs	int	<Injections as Default>::default	100
 code	crates/wcontainers-kernel-test/src/driver.rs	int	TestHost::ran	1000
-code	crates/wcontainers-kernel-test/src/driver.rs	int	TestHost::ran	1500
-code	crates/wcontainers-kernel-test/src/driver.rs	int	TestHost::ran	1500
-code	crates/wcontainers-kernel-test/src/driver.rs	int	TestHost::ran	500
-code	crates/wcontainers-kernel-test/src/driver.rs	int	TestHost::ran	500
 code	crates/wcontainers-kernel-test/src/driver.rs	int	TestHost::repeatable	1_000_000_000
 code	crates/wcontainers-kernel-test/src/driver.rs	int	TestHost::repeatable	1_000_000_000
 code	crates/wcontainers-kernel-test/src/driver.rs	int	copied_run	65536
@@ -1552,12 +1547,7 @@ code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	4
 code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	4096
 code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	6
 code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	8
-code	crates/wcontainers-kernel-test/src/driver.rs	int	run_prepared	- 1
-code	crates/wcontainers-kernel-test/src/driver.rs	int	run_prepared	0x6e07
-code	crates/wcontainers-kernel-test/src/driver.rs	int	run_prepared	0x6e08
-code	crates/wcontainers-kernel-test/src/driver.rs	int	run_prepared	10
 code	crates/wcontainers-kernel-test/src/driver.rs	str	prepare	"/"
-code	crates/wcontainers-kernel-test/src/driver.rs	str	run_prepared	"/"
 code	crates/wcontainers-kernel-test/src/driver.rs	str	wall_clock	"the clock is after 1970"
 code	crates/wcontainers-kernel-test/src/generate.rs	char	convert	'\n'
 code	crates/wcontainers-kernel-test/src/generate.rs	str	add_byte_derives	r"#\[derive\(Debug, Copy, Clone\)\]\npub struct ([A-Za-z0-9_]+) \{"

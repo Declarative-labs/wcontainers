@@ -58,13 +58,15 @@ pub(super) fn brk(
         map.brk = address;
         return Ok(address);
     }
-    // Growing: the new part must not touch the next mapping, nor a stack's guard gap.
+    // Growing past the ceiling is outgrowing it, whatever lies in the way (the stack sits just
+    // below the ceiling). Otherwise the new part must not touch the next mapping, nor a stack's
+    // guard gap.
+    if new_end > map.end || map.crosses_ceiling(new_end, new_end - old_end) {
+        return Ok(old);
+    }
     if let Some(next) = map.next_after(old_end)
         && next.start_gap() < new_end
     {
-        return Ok(old);
-    }
-    if new_end > map.end || map.crosses_ceiling(new_end, new_end - old_end) {
         return Ok(old);
     }
     // Linux's `check_data_rlimit` on the heap and the program's data, then `may_expand_vm` on the
@@ -780,7 +782,11 @@ pub(super) fn madvise(
     // anonymous memory. Linux's `madvise_remove`, mapping by mapping.
     if advice == MADV_REMOVE {
         let mut at = address;
-        while let Some(mapping) = process.map.borrow().next_after(at).cloned() {
+        loop {
+            let next = process.map.borrow().next_after(at).cloned();
+            let Some(mapping) = next else {
+                break;
+            };
             if mapping.start >= end {
                 break;
             }
@@ -817,6 +823,12 @@ pub(super) fn madvise(
                 }
                 _ => return Err(Errno::EINVAL),
             }
+            process.map.borrow_mut().note_written(
+                cx.cpu,
+                process.memory,
+                mapping.start.max(at),
+                mapping.end.min(end),
+            );
             at = mapping.end;
         }
         if !process.map.borrow().fully_mapped(address, end) {
@@ -1136,6 +1148,13 @@ fn remap_to(
     let process = kernel.process_of_mut(tid);
     let memory = process.memory;
     let mut map = process.map.borrow_mut();
+    // Outgrowing the ceiling is decided before anything is unmapped.
+    if request.flags & MREMAP_FIXED != 0
+        && request.new_address + request.new_length <= map.end
+        && map.crosses_ceiling(request.new_address + request.new_length, request.new_length)
+    {
+        return Err(Errno::ENOMEM);
+    }
     if request.flags & MREMAP_FIXED != 0 {
         let end = (request.new_address + request.new_length).min(map.end);
         if request.new_address < end {
@@ -1164,8 +1183,7 @@ fn remap_to(
         return Err(Errno::ENOMEM);
     }
     let destination = if request.flags & MREMAP_FIXED != 0 {
-        let end = request.new_address + request.new_length;
-        if end > map.end || map.crosses_ceiling(end, request.new_length) {
+        if request.new_address + request.new_length > map.end {
             return Err(Errno::ENOMEM);
         }
         request.new_address
@@ -1264,6 +1282,9 @@ fn move_range(
     cx.cpu
         .read(memory, old, &mut bytes)
         .map_err(errno::from_cpu)?;
+    // The embedder's watches go with the pages, which are new where they land.
+    let moved_length = old_length.min(new_length);
+    let watches = map.take_watches(old, old + moved_length);
     let mut moved = mapping.cut_public(old, old + new_length);
     let shift = |address: u64| address - old + destination;
     moved.start = destination;
@@ -1287,6 +1308,13 @@ fn move_range(
                 .map_err(errno::from_cpu)?;
         }
     }
+    map.moved_here(
+        cx.cpu,
+        memory,
+        destination,
+        destination + moved_length,
+        watches,
+    );
     drop(map);
     crate::shared::show(kernel, cx, memory, &moved)?;
     crate::shared::release(kernel, cx);
@@ -1307,12 +1335,14 @@ fn drop_pages(
         return Ok(());
     }
     match &mapping.backing {
-        Backing::File { .. } => map.drop_copies(cx.cpu, memory, from, to),
+        Backing::File { .. } => map.drop_copies(cx.cpu, memory, from, to)?,
         _ => cx
             .cpu
             .zero(memory, from, to - from)
-            .map_err(errno::from_cpu),
+            .map_err(errno::from_cpu)?,
     }
+    map.note_written(cx.cpu, memory, from, to);
+    Ok(())
 }
 
 pub(super) fn msync(

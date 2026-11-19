@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use wcontainers_abi::{Cpu, PAGE_SIZE};
-use wcontainers_kernel::{Access, Kernel, Process, TaskId, Watch, reason};
+use wcontainers_kernel::{Access, Kernel, MemoryError, Process, TaskId, Watch, reason};
 use wcontainers_kernel_test::driver::{self, Run};
-use wcontainers_kernel_test::hooks::{Defaults, Hooks};
+use wcontainers_kernel_test::hooks::Hooks;
 use wcontainers_kernel_test::reference::{self, ROOT_DIRECTORY, in_guest_directory};
 use wcontainers_kernel_test::{busybox, guest_directory_entry};
 
@@ -33,13 +33,14 @@ fn page_of(address: u64) -> std::ops::Range<u64> {
 
 /// Runs embedder.c in `mode` on our kernel with the test's hooks.
 fn run_embedder(mode: &str, hooks: Box<dyn Hooks>, seed: u64) -> Run {
-    run_embedder_below(&[mode], hooks, seed, None)
+    run_embedder_below(&[mode], Some(hooks), seed, None)
 }
 
-/// As [`run_embedder`], with more arguments and the executor's ceiling given at start.
+/// As [`run_embedder`], with more arguments, the executor's ceiling given at start, and with no
+/// hooks the kernel's provided defaults.
 fn run_embedder_below(
     mode: &[&str],
-    hooks: Box<dyn Hooks>,
+    hooks: Option<Box<dyn Hooks>>,
     seed: u64,
     ceiling: Option<u64>,
 ) -> Run {
@@ -273,17 +274,18 @@ impl Hooks for Outgrown {
     }
 }
 
-/// The piece embedder.c's `outgrow` maps at a time, and the ceiling the test gives.
+/// The piece embedder.c's `outgrow` is told to map at a time, and the ceiling the test gives.
 const PIECE: u64 = 64 << 20;
 const CEILING: u64 = 1 << 30;
 
 #[test]
 fn a_request_past_the_ceiling_is_announced_and_fails_as_out_of_memory() {
+    let piece = format!("{PIECE:#x}");
     for seed in wcontainers_kernel_test::schedule_seeds() {
         let seen = Rc::new(RefCell::new(Vec::new()));
         let run = run_embedder_below(
-            &["outgrow"],
-            Box::new(Outgrown(seen.clone())),
+            &["outgrow", &piece],
+            Some(Box::new(Outgrown(seen.clone()))),
             seed,
             Some(CEILING),
         );
@@ -301,7 +303,12 @@ fn a_request_past_the_ceiling_is_announced_and_fails_as_out_of_memory() {
         assert_eq!(counted(&run, reason::PROCESS_OUTGROWN), 1);
         // With no ceiling below the address space's end, nothing is announced.
         let seen_without = Rc::new(RefCell::new(Vec::new()));
-        let run = run_embedder("outgrow", Box::new(Outgrown(seen_without.clone())), seed);
+        let run = run_embedder_below(
+            &["outgrow", &piece],
+            Some(Box::new(Outgrown(seen_without.clone()))),
+            seed,
+            None,
+        );
         assert!(seen_without.borrow().is_empty());
         let more: u64 = stdout(&run)
             .split_whitespace()
@@ -320,7 +327,7 @@ fn a_fixed_request_past_the_ceiling_is_announced_and_fails_as_out_of_memory() {
         let seen = Rc::new(RefCell::new(Vec::new()));
         let run = run_embedder_below(
             &["fixed", &address],
-            Box::new(Outgrown(seen.clone())),
+            Some(Box::new(Outgrown(seen.clone()))),
             seed,
             Some(CEILING),
         );
@@ -341,8 +348,60 @@ fn a_fixed_request_past_the_ceiling_is_announced_and_fails_as_out_of_memory() {
         assert_eq!(counted(&run, reason::PROCESS_OUTGROWN), 2);
         assert_eq!(counted(&run, reason::ADDRESS_ABOVE_SPACE), 0);
         // Below the address space's end and with no ceiling, both are mapped, as on Linux.
-        let run = run_embedder_below(&["fixed", &address], Box::new(Defaults), seed, None);
+        let run = run_embedder_below(&["fixed", &address], None, seed, None);
         assert_eq!(stdout(&run), "fixed mapped\nnoreplace mapped\n");
+    }
+}
+
+#[test]
+fn heap_growth_past_the_ceiling_is_announced_and_fails_as_out_of_memory() {
+    let growth = format!("{CEILING:#x}");
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let run = run_embedder_below(
+            &["brk", &growth],
+            Some(Box::new(Outgrown(seen.clone()))),
+            seed,
+            Some(CEILING),
+        );
+        assert_eq!(stdout(&run), "brk refused\n", "{:?}", run.outcome);
+        assert_eq!(
+            seen.borrow()
+                .iter()
+                .map(|(bytes, _)| *bytes)
+                .collect::<Vec<_>>(),
+            [CEILING]
+        );
+        assert_eq!(counted(&run, reason::PROCESS_OUTGROWN), 1);
+        // With no ceiling below the address space's end the heap grows, as on Linux.
+        let run = run_embedder_below(&["brk", &growth], None, seed, None);
+        assert_eq!(stdout(&run), "brk grown\n", "{:?}", run.outcome);
+    }
+}
+
+#[test]
+fn the_first_process_is_announced_ending_before_the_others_it_takes_along() {
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let recorder = Recorder::default();
+        let seen = recorder.seen.clone();
+        let run = run_embedder("orphan", Box::new(recorder), seed);
+        assert_eq!(run.outcome.exit_code, 3, "{:?}", run.outcome);
+        let expected = [
+            Seen::Starting {
+                id: 1,
+                parent: None,
+            },
+            Seen::Program(1),
+            Seen::Starting {
+                id: 2,
+                parent: Some(1),
+            },
+            Seen::Exiting(1),
+            Seen::Exiting(2),
+            Seen::Free(1),
+            Seen::Free(2),
+        ];
+        assert_eq!(*seen.borrow(), expected, "seed {seed}");
     }
 }
 
@@ -492,7 +551,7 @@ fn calls_made(run: &Run) -> usize {
 #[test]
 fn a_watch_is_met_before_a_call_writes_and_the_result_is_unchanged() {
     for seed in wcontainers_kernel_test::schedule_seeds() {
-        let plain = run_embedder("calls", Box::new(Defaults), seed);
+        let plain = run_embedder_below(&["calls"], None, seed, None);
         assert_eq!(plain.outcome.exit_code, 0, "{:?}", plain.outcome);
         let calls = calls_made(&plain);
         assert_eq!(
@@ -724,5 +783,130 @@ fn lazy_memory_runs_the_shell_scripts_as_the_reference_does() {
                 written_past.borrow()
             );
         }
+    }
+}
+
+/// How many of the buffer's pages embedder.c's `remap` moves, and where to.
+const MOVED: u64 = PAGES / 2;
+const MOVED_TO: u64 = BUFFER + 2 * PAGES * PAGE_SIZE;
+
+/// In a child: keeps a record of written pages from its start, and watches the buffer's first
+/// pages, all of the pages to be moved but the last (lazily: saved, cleared and watched All), the
+/// last moved page for writes, and the page after them lazily.
+#[derive(Default)]
+struct Moves {
+    saved: BTreeMap<u64, Vec<u8>>,
+    touches: Rc<RefCell<Vec<(u64, Access)>>>,
+    changed: Rc<RefCell<Vec<std::ops::Range<u64>>>>,
+}
+
+impl Hooks for Moves {
+    fn on_process_starting(&mut self, mut process: Process<'_>) {
+        if process.info().parent().is_none() {
+            return;
+        }
+        process.memory_changed();
+        let zeros = vec![0; PAGE_SIZE as usize];
+        for index in (0..MOVED - 1).chain([MOVED]) {
+            let page = page_of(BUFFER + index * PAGE_SIZE);
+            let bytes = process.memory_read(page.clone()).expect("the buffer");
+            process
+                .memory_write(page.start, &zeros)
+                .expect("the buffer");
+            process.memory_watch(page.clone(), Watch::All);
+            self.saved.insert(page.start, bytes);
+        }
+        process.memory_watch(page_of(BUFFER + (MOVED - 1) * PAGE_SIZE), Watch::Writes);
+    }
+
+    fn on_memory_accessing(
+        &mut self,
+        mut process: Process<'_>,
+        _: TaskId,
+        address: u64,
+        access: Access,
+    ) {
+        self.touches.borrow_mut().push((address, access));
+        let page = page_of(address);
+        if let Some(bytes) = self.saved.remove(&page.start) {
+            process
+                .memory_write(page.start, &bytes)
+                .expect("a watched page");
+        }
+        process.memory_watch(page, Watch::None);
+    }
+
+    fn on_process_exiting(&mut self, mut process: Process<'_>) {
+        if process.info().parent().is_some() {
+            *self.changed.borrow_mut() = process.memory_changed();
+        }
+    }
+}
+
+#[test]
+fn watches_and_the_record_follow_pages_moved_or_dropped() {
+    let (to, count) = (format!("{MOVED_TO:#x}"), MOVED.to_string());
+    let arguments = ["remap", to.as_str(), count.as_str()];
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let plain = run_embedder_below(&arguments, None, seed, None);
+        assert_eq!(plain.outcome.exit_code, 0, "{:?}", plain.outcome);
+        assert!(
+            stdout(&plain).ends_with(" dropped 0\n"),
+            "{}",
+            stdout(&plain)
+        );
+        let moves = Moves::default();
+        let (touches, changed) = (moves.touches.clone(), moves.changed.clone());
+        let run = run_embedder_below(&arguments, Some(Box::new(moves)), seed, None);
+        assert_eq!(stdout(&run), stdout(&plain), "seed {seed}");
+        // The move reads the lazy pages where they are; the page watched for writes goes along
+        // and its write is met where it landed; dropping a lazy page is met as a write.
+        let page = |base: u64, index: u64| base + index * PAGE_SIZE;
+        let mut expected: Vec<(u64, Access)> = (0..MOVED - 1)
+            .map(|index| (page(BUFFER, index), Access::Read))
+            .collect();
+        expected.push((page(MOVED_TO, MOVED - 1), Access::Write));
+        expected.push((page(BUFFER, MOVED), Access::Write));
+        assert_eq!(*touches.borrow(), expected, "seed {seed}");
+        // Written since the child started: every moved page where it landed, and the dropped one.
+        let watched = BUFFER..page(MOVED_TO, MOVED);
+        let written: Vec<u64> = changed
+            .borrow()
+            .iter()
+            .flat_map(|range| (range.start..range.end).step_by(PAGE_SIZE as usize))
+            .filter(|at| watched.contains(at))
+            .collect();
+        let mut expected: Vec<u64> = vec![page(BUFFER, MOVED)];
+        expected.extend((0..MOVED).map(|index| page(MOVED_TO, index)));
+        assert_eq!(written, expected, "seed {seed}");
+    }
+}
+
+/// Tries to write into a child's read-only shared page at its start.
+struct SharedWrite(u64, Rc<RefCell<Vec<Result<(), MemoryError>>>>);
+
+impl Hooks for SharedWrite {
+    fn on_process_starting(&mut self, mut process: Process<'_>) {
+        if process.info().parent().is_some() {
+            let result = process.memory_write(self.0, b"y");
+            self.1.borrow_mut().push(result);
+        }
+    }
+}
+
+#[test]
+fn a_read_only_shared_page_is_not_written_by_the_embedder() {
+    let at = BUFFER + PAGES * PAGE_SIZE;
+    let address = format!("{at:#x}");
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let results = Rc::new(RefCell::new(Vec::new()));
+        let run = run_embedder_below(
+            &["shared", &address],
+            Some(Box::new(SharedWrite(at, results.clone()))),
+            seed,
+            None,
+        );
+        assert_eq!(stdout(&run), "file x mapped x\n", "{:?}", run.outcome);
+        assert_eq!(*results.borrow(), [Err(MemoryError::SharedNotWritable)]);
     }
 }

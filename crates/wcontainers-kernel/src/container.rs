@@ -775,6 +775,8 @@ impl Kernel {
     pub(crate) fn install_image(&mut self, cx: &mut Context<'_>, pid: Pid, tid: Tid, image: Image) {
         let thread = self.threads.get_mut(&tid).expect("thread");
         let process = self.processes.get_mut(&pid).expect("process");
+        // The container's first program replaces no memory: its process has none yet.
+        let first = self.init.is_none();
         let old_memory = core::mem::replace(&mut process.memory, image.memory);
         process.map = Rc::new(core::cell::RefCell::new(image.map));
         process.executable = image.executable;
@@ -825,7 +827,7 @@ impl Kernel {
         if lose_parent_death_signal {
             thread.parent_death_signal = 0;
         }
-        if old_memory.0 != 0 {
+        if !first {
             cx.cpu.thread_drop(thread.cpu);
             thread.cpu = cx
                 .cpu
@@ -839,13 +841,13 @@ impl Kernel {
         thread.resume = Resume::FromRegisters;
         // A `vfork` child gives its parent's memory back; any other old memory goes.
         self.release_vfork(tid);
-        if old_memory.0 != 0 && !self.memory_in_use_elsewhere(pid, old_memory) {
+        if !first && !self.memory_in_use_elsewhere(pid, old_memory) {
             cx.cpu.memory_drop(old_memory);
         }
         self.files_released(cx);
         crate::shared::release(self, cx);
         self.update_watching();
-        if old_memory.0 == 0 {
+        if first {
             self.announce(cx, pid, |system, process| {
                 system.on_process_starting(process)
             });

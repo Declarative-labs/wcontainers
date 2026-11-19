@@ -106,6 +106,9 @@ pub enum MemoryError {
     NotMapped,
     /// Part of the range is a page of a backend file not read yet.
     NotRead,
+    /// Part of the range is shared memory the process may not write, which Linux's forced
+    /// writes refuse too.
+    SharedNotWritable,
     /// The executor refused.
     Executor(wcontainers_abi::CpuError),
 }
@@ -235,12 +238,23 @@ impl Process<'_> {
         Ok(bytes)
     }
 
-    /// Writes into a mapped range, whatever its pages allow; not counted as written by the process.
+    /// Writes into a mapped range, whatever its private pages allow; not counted as written by
+    /// the process.
     pub fn memory_write(&mut self, address: u64, bytes: &[u8]) -> Result<(), MemoryError> {
         let process = &self.kernel.processes[&self.pid];
         let end = address + bytes.len() as u64;
         let mut map = process.map.borrow_mut();
         map.readable_whole(address..end)?;
+        if map.iter().any(|mapping| {
+            mapping.start < end
+                && mapping.end > address
+                && mapping.shared
+                && !mapping
+                    .permissions
+                    .contains(wcontainers_abi::Permissions::WRITE)
+        }) {
+            return Err(MemoryError::SharedNotWritable);
+        }
         map.copy_on_write(self.cpu, process.memory, address, end)
             .map_err(|_| MemoryError::NotMapped)?;
         self.cpu
@@ -309,6 +323,11 @@ impl Kernel {
             .processes
             .values()
             .any(|process| process.map.borrow().watches.narrows());
+    }
+
+    /// Whether thread `tid`'s process has watched pages, which its calls and signals meet first.
+    pub(crate) fn watched(&self, tid: crate::process::Tid) -> bool {
+        self.watching && self.process_of(tid).map.borrow().watches.any()
     }
 
     /// Announces a hook about process `pid` to the embedder.
