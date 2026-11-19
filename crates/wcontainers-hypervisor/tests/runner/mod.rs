@@ -14,10 +14,9 @@ use aarch64_cpu::registers::{ESR_EL1, MDSCR_EL1, SPSR_EL1};
 use wcontainers_abi::{PAGE_SIZE, RegisterBlock};
 use wcontainers_arm64::carry::{LINK, PAGE, RegisterPage, TAG_LOW, WITHHELD, call_word};
 use wcontainers_arm64::encode::{self, form};
-use wcontainers_arm64::mirror;
 use wcontainers_arm64::thread_state::{Exclusive, untag_address};
 use wcontainers_arm64::{Address, Arm64, Instruction as I, Reg, decode};
-use wcontainers_guest_cpu::position::{Operand, Resume, Side};
+use wcontainers_guest_cpu::position::Operand;
 use wcontainers_guest_cpu::{Guest, HostCode, InsideCall, Native, Route, Span, Stopping, counted};
 use wcontainers_hypervisor::{
     Exit, Host, Loaded, Memory, Register, VirtualCpu, VirtualMachine, boot, link as link_page,
@@ -468,7 +467,6 @@ impl Runner {
         self.write(CODE, &case.word.to_le_bytes());
         self.load(&piece.bytes);
         let (mut hardware, mut page) = start(case);
-        enter_piece(&piece, CODE, &mut hardware);
         let mut float = FloatStatus {
             fpsr: case.float[0],
             fpcr: case.float[1],
@@ -705,37 +703,18 @@ fn access_address(i: &I, at: u64, x: &[u64; GENERAL], sp: u64) -> u64 {
     untag_address(stop::access_first(&operand_of(i), at, x, sp))
 }
 
-/// The state at the start of the piece at guest `guest`: the guest's, before anything of it ran (a call stub's
-/// slot's call included), nothing relocated and the count in its register.
+/// The state at the start of a piece: the guest's, before anything of it ran.
 pub fn entry_state(
-    guest: u64,
+    span: &Span,
     hardware: &Hardware,
     page: &RegisterPage,
     float: &FloatStatus,
 ) -> GuestState {
-    let span = Span {
-        start: 0,
-        guest,
-        side: Side::Before,
-        lead: 0,
-        resume: Resume::At(guest),
-        relocated: Vec::new(),
-        fixups: Vec::new(),
-        stopping: Stopping::Plain,
-    };
     whole(
-        stop::guest_state(&span, &interrupted_of(hardware), page),
+        stop::guest_state(span, &interrupted_of(hardware), page),
         hardware,
         float,
     )
-}
-
-/// The hardware entering `piece` at guest `guest` as the inside enters it: a call stub as its slot's call leaves
-/// x30, holding the slot of the return address.
-pub fn enter_piece(piece: &HostCode, guest: u64, hardware: &mut Hardware) {
-    if piece.stub {
-        hardware.x[usize::from(LINK)] = mirror::slot(guest + Arm64::MAX_LENGTH);
-    }
 }
 
 /// The page boundaries of the data area where a page refuses: below it nothing is mapped, then the writable
@@ -873,7 +852,7 @@ fn resolve(
             Resolved::Stop(
                 Stop::Other(class as u32, unexpected.fault),
                 Box::new(entry_state(
-                    piece.spans[0].guest,
+                    &piece.spans[0],
                     &trapped.hardware,
                     &trapped.page,
                     float,

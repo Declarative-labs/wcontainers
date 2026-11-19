@@ -39,9 +39,6 @@ fn fault(word: u32) -> Option<String> {
     let add = encode::add_immediate(COUNT, COUNT, 1).expect("fits");
     let event = counted(AT, &Arm64::flow(&i));
     let unit = Arm64::MAX_LENGTH as usize;
-    // A call stub's add follows its first word, behind the call its slot made, so the count is behind until it.
-    let add_at = if piece.stub { unit } else { 0 };
-    let behind = if piece.stub { -i32::from(event) } else { 0 };
     if piece.bytes.is_empty() || !piece.bytes.len().is_multiple_of(unit) {
         return Some(format!("{} bytes", piece.bytes.len()));
     }
@@ -69,8 +66,8 @@ fn fault(word: u32) -> Option<String> {
             .has_bit(Arm64::reg_bit(Reg::X(COUNT)).expect("a bit"));
         if host == add {
             adds += 1;
-            if offset as usize != add_at || span.lead != behind {
-                return Some("the count's add is not where it belongs".into());
+            if offset != 0 || span.lead != 0 {
+                return Some("the count's add is not first".into());
             }
         } else if touches_count {
             return Some(format!(
@@ -78,9 +75,8 @@ fn fault(word: u32) -> Option<String> {
             ));
         }
         let lead = match (offset, span.side) {
-            _ if piece.stub && offset as usize <= add_at => behind,
             (0, _) => 0,
-            (_, Side::Before) => i32::from(event),
+            (_, Side::Before) => u32::from(event),
             (_, Side::After) => 0,
         };
         if span.lead != lead {
@@ -119,12 +115,11 @@ fn fault(word: u32) -> Option<String> {
     // Without exact replay the piece is the same less the add.
     let add_bytes = add.to_le_bytes();
     let less_add = match event {
-        true => (piece.bytes.get(add_at..add_at + unit) == Some(&add_bytes[..]))
-            .then(|| [&piece.bytes[..add_at], &piece.bytes[add_at + unit..]].concat()),
-        false => Some(piece.bytes.clone()),
+        true => piece.bytes.strip_prefix(&add_bytes[..]),
+        false => Some(&piece.bytes[..]),
     };
     let unpaid_leads = unpaid.spans.iter().all(|s| s.lead == 0);
-    if !unpaid_leads || less_add.is_none_or(|rest| !branches_aside(&rest, &unpaid.bytes)) {
+    if !unpaid_leads || less_add.is_none_or(|rest| !branches_aside(rest, &unpaid.bytes)) {
         return Some("without exact replay the piece is not the same less the count's add".into());
     }
     // A literal load's crossing is known when translating: its probes are written with no test.

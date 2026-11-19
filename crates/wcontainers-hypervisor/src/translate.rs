@@ -19,7 +19,6 @@ pub fn answer(link: &mut Link, look_ahead: LookAhead) {
             link.put(&LinkWords {
                 moves: words.moves.map(field),
                 jump: words.jump,
-                call: words.call,
                 branch: field(words.branch),
                 empty: words.empty,
             });
@@ -41,7 +40,6 @@ fn translate(link: &mut Link, look_ahead: LookAhead) {
                     spans: made.spans,
                     exits: made.exits,
                     sites: made.sites,
-                    stub: made.stub,
                 },
             );
         let instructions = piece.as_ref().map_or(0, |p| {

@@ -21,7 +21,7 @@ use wcontainers_abi::{
 };
 use wcontainers_arm64::CACHE_TYPE;
 use wcontainers_arm64::mirror::{self, MIRROR, REACH_BITS, SLOT_MOVE_BITS, SLOT_MOVES};
-use wcontainers_arm64::thread_state::{FPCR_BITS, RegisterPage, SCRATCH};
+use wcontainers_arm64::thread_state::{FPCR_BITS, RegisterPage};
 use wcontainers_guest_cpu::position::{NativeReason, Span};
 use wcontainers_runtime::{Answer, Carry, Execution, Turn};
 
@@ -96,8 +96,6 @@ struct Loaded {
     source: Vec<u8>,
     /// Its direct exits: each one's guest target and host address.
     exits: Vec<(u64, u64)>,
-    /// Whether it is a call stub, entered only through its slot's call.
-    stub: bool,
 }
 
 /// A direct exit: its first word's host address and that word as translated, which a link writes over.
@@ -787,7 +785,6 @@ impl NativeCpu {
                     .iter()
                     .map(|(target, site)| (*target, site.at))
                     .collect(),
-                stub: piece.stub,
             },
         );
         m.hosts.insert(base, pc);
@@ -795,24 +792,19 @@ impl NativeCpu {
             m.exits_to.entry(target).or_default().push(site);
         }
         // No frame for a page of the mirror: the process can only be killed.
-        self.fill_slot(memory, pc, base, piece.stub)
+        self.fill_slot(memory, pc, base)
             .map_err(|Full| Exit::MemoryFaultWithoutRegisters)?;
-        // A call stub is entered only through its slot's call, which makes the call.
         let m = &self.memories[&memory];
         let into = m
             .exits_to
             .get(&pc)
             .into_iter()
             .flatten()
-            .filter(|_| !piece.stub)
             .map(|site| (site.at, base));
         let out = sites
             .iter()
             .filter(|(target, _)| *target != pc)
-            .filter_map(|(target, site)| {
-                let to = m.pieces.get(target).filter(|p| !p.stub)?;
-                Some((site.at, to.base))
-            });
+            .filter_map(|(target, site)| Some((site.at, m.pieces.get(target)?.base)));
         for (at, to) in into.chain(out).collect::<Vec<_>>() {
             if let Some(word) = self.link_word(at, to) {
                 write_code(at, &[word]);
@@ -828,16 +820,9 @@ impl NativeCpu {
         branch.fits(offset).then(|| branch.with(offset as u64))
     }
 
-    /// Fills the entry slot of guest address `guest` in `memory` with a jump to the piece at `base`, or a call to
-    /// it when it is a call stub, mapping the slot's page at its first use; leaves `memory`'s address space
-    /// switched to.
-    fn fill_slot(
-        &mut self,
-        memory: MemoryId,
-        guest: u64,
-        base: u64,
-        stub: bool,
-    ) -> Result<(), Full> {
+    /// Fills the entry slot of guest address `guest` in `memory` with a jump to the piece at `base`, mapping the
+    /// slot's page at its first use; leaves `memory`'s address space switched to.
+    fn fill_slot(&mut self, memory: MemoryId, guest: u64, base: u64) -> Result<(), Full> {
         let at = mirror::slot(guest);
         let page = page_of(at);
         let m = self.memories.get_mut(&memory).expect("the memory is there");
@@ -850,11 +835,7 @@ impl NativeCpu {
             })?;
             m.slots.insert(page, frame);
         }
-        let mut words = [if stub {
-            self.words.call
-        } else {
-            self.words.jump
-        }; SLOT_MOVES + 1];
+        let mut words = [self.words.jump; SLOT_MOVES + 1];
         for (k, (word, field)) in words.iter_mut().zip(&self.words.moves).enumerate() {
             *word = field.with(base >> (k as u32 * SLOT_MOVE_BITS));
         }
@@ -988,14 +969,7 @@ impl NativeCpu {
             let blocks = &self.shared;
             let (mut hardware, mut page) =
                 stop::rejoin(&t.state, t.page.clone(), &t.float, t.register_page);
-            hardware.pc = if m.pieces[&pc].stub {
-                // Through the slot, whose call is the call; its moves keep t's high bits.
-                let slot = mirror::slot(pc);
-                hardware.x[usize::from(SCRATCH)] = slot;
-                slot
-            } else {
-                m.pieces[&pc].base
-            };
+            hardware.pc = m.pieces[&pc].base;
             let ended = loop {
                 write_page(t.page_frame, &page);
                 let mut user = UserRegisters {

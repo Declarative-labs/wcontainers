@@ -48,8 +48,6 @@ pub struct LinkWords {
     pub moves: [Field; SLOT_MOVES],
     /// The slot's jump through the scratch register.
     pub jump: u32,
-    /// A call stub's slot's call through the scratch register, in place of the jump.
-    pub call: u32,
     /// A direct branch, its field in instructions.
     pub branch: Field,
     /// The first word of an empty slot, which raises an exception as a fresh page's zeros do.
@@ -66,8 +64,6 @@ pub struct Translated {
     pub map: u64,
     /// The sites of each slow path in the piece, in [`NativeReason::ALL`]'s order.
     pub sites: [u64; NativeReason::ALL.len()],
-    /// 1 when the piece is a call stub, entered only through its slot's call.
-    pub stub: u64,
 }
 
 /// One translated piece as the link carries it.
@@ -77,7 +73,6 @@ pub struct Piece {
     pub spans: Vec<Span>,
     pub exits: Vec<DirectExit>,
     pub sites: [u64; NativeReason::ALL.len()],
-    pub stub: bool,
 }
 
 /// A piece too large for the link's bytes.
@@ -102,7 +97,6 @@ pub fn answer(link: &mut Link, piece: Option<&Piece>) -> Result<(), TooLarge> {
         code: code as u64,
         map: map as u64,
         sites: piece.sites,
-        stub: u64::from(piece.stub),
     });
     Ok(())
 }
@@ -129,6 +123,5 @@ pub fn piece(link: &Link) -> Option<Piece> {
         spans,
         exits,
         sites: answer.sites,
-        stub: answer.stub != 0,
     })
 }
