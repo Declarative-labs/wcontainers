@@ -407,6 +407,19 @@ struct LastGroup {
     count: usize,
 }
 
+/// Whether a clear value would change these bits of a format of 32-bit float channels: a
+/// denormal (flushed) or a NaN (its payload quieted) among the channels it has.
+fn float_bits_changed(format: wcontainers_gpu::Format, bits: [u32; 4]) -> bool {
+    let (_, _, bytes) = format.block();
+    let channels = format.components().count_ones();
+    format.kind() == FormatKind::Float
+        && bytes == channels * size_of::<f32>() as u32
+        && bits[..channels as usize].iter().any(|&b| {
+            let f = f32::from_bits(b);
+            f.is_subnormal() || f.is_nan()
+        })
+}
+
 fn color_value(bits: [u32; 4], kind: FormatKind) -> wgpu::Color {
     let [r, g, b, a] = match kind {
         FormatKind::Uint => bits.map(f64::from),
@@ -965,7 +978,9 @@ impl WebGpu {
                             }
                             _ => true,
                         };
-                        if self.float_clears && !bits.iter().all(|b| exact(*b)) {
+                        if (self.float_clears && !bits.iter().all(|b| exact(*b)))
+                            || float_bits_changed(v.format, bits)
+                        {
                             // Loaded, then cleared by a draw once the pass is open.
                             by_draw.push((i, bits));
                             None
