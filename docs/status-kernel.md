@@ -4,6 +4,11 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
+K6c, sixth run: fork09's hang was the test host (fixed: it reads the backend's answers while a
+send waits), and IOCB_CMD_POLL, guard pages (MADV_GUARD_*), an asynchronous request's RWF flags
+and Docker's masks over /proc and /sys are built. The whole LTP comparison at b37c8a43 is still
+running. K6c is not complete. See "K6c, sixth run".
+
 K6c, fifth run: remap_file_pages, /proc/<pid>/mem, /proc/<pid>/attr, PROCMAP_QUERY, per-user
 pipe pages, TCP's MSG_MORE inside the container and the backend's FOPEN_NOFLUSH are built;
 fork09 hangs on ours (to find); a whole LTP comparison at b37c8a43 was still running at the end.
@@ -57,6 +62,81 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## K6c, sixth run
+
+Fixed in the test host: fork09's hang (fifth run, Found) was a deadlock between the test host and
+the test backend. The host wrote each request with a blocking write and read answers only when
+the kernel asked for one; a process ending with 524273 backend files open sends a FLUSH for each
+at once, the one-thread server stops reading while its answers wait, and both sides blocked.
+`Backend::send` now reads the answers ahead while there is no room. backend
+`many_requests_before_answers_are_read` (200000 requests in a row) ran past 7.5 minutes before
+(killed) and passes in 7.8 s after (load 49 to 84). Not a kernel fault: the kernel sends and the
+host must take any number, as Linux's FUSE queues them.
+
+fork09 still cannot give the reference's verdict on this harness: the reference opens 1048573
+files before EMFILE; the test server holds two host descriptors for each open file (an O_PATH one
+for the node and the open one), and its container's limit is 1048576 (Docker's VM has
+fs.nr_open 1048576, so it cannot be raised), so OPEN answers EMFILE at 524273 and the child's
+fclose gets FLUSH's EMFILE (the server dups the descriptor), which ours passes on as Linux's FUSE
+would. Even with file handles in place of O_PATH descriptors the server would need a few more
+than 1048576. A harness cause; added to the Questions. Rerun with the fixed host started (scratch
+k6c6/b.tsv, ltp-b at c2a9b17f, LTP_LIMIT 3600): expected broken where the reference passes, not
+a hang.
+
+Built, each tested against the reference:
+- IOCB_CMD_POLL (`aio_poll`): ready at once, or the request waits and posts its event when a
+  wake reaches its file's queue: the events the wake names when it names any of the request's
+  (as `aio_poll_wake` completes inline: a pipe write gives POLLIN|POLLRDNORM), else what the
+  file's poll gives then; a file with no queue is EINVAL; io_cancel posts it with no events and
+  answers EINPROGRESS; a waiting request holds a ring slot. aio `poll_requests_match_reference`
+  (guest/aiopoll.c; waits for the cancel's and the hang-up's events, which Linux posts from its
+  work queue). Layer 1 makes no asynchronous I/O calls, so nothing was added there.
+- An asynchronous read's or write's RWF flags (io_submit04 is RWF_NOWAIT on an empty pipe, not
+  poll): taken at preparation as `aio_prep_rw` does, before EBADF, for plain requests as for
+  vectored ones; were refused and counted before. guest/aio.c's new part (EAGAIN in the event,
+  EOPNOTSUPP from io_submit for a tmpfs file and an unknown flag, RWF_APPEND).
+- Guard pages (`madvise_guard_install` and `_remove`): kept per page in the address map; the
+  CPU side allows them nothing through mprotect, dropping (MADV_DONTNEED), refreshes and
+  copy on write; a touch is SIGSEGV SEGV_MAPERR; the kernel's copies, process_vm_readv,
+  /proc/<pid>/mem (EIO) and MADV_POPULATE_* (EFAULT) stop there; mremap moves them, munmap and a
+  new mapping over them take them away, fork keeps them unless the memory is wiped or not given
+  to the child; installing drops private pages, is EINVAL on locked, secret and the kernel's own
+  mappings (removing is allowed on locked), ENOMEM over a gap. memory
+  `guard_pages_match_reference` (guest/guards.c). Layer 1 now gives madvise advice 102 and 103;
+  seed 9191102, 200 sequences in memory, matched. mapflags' counted-advice test now expects only
+  MADV_COLLAPSE.
+- Docker's masks: /dev/null's own node at /proc/interrupts, kcore, keys and timer_list, one empty
+  read-only tmpfs (size=4k, nr_inodes=1, mode 1777) at /proc/scsi and /sys/firmware; /proc lists
+  the five as its own entries; the mount table shows them in the reference's order. procns
+  `masked_entries_match_reference` (guest/masked.c), the mount table test now checks them too.
+  /proc/bus, fs, irq and sysrq-trigger (read-only binds in the reference) are not there because
+  those entries are not built.
+
+LTP reruns at c7d3e686 (scratch k6c6/a.tsv, ltp-a, 2 jobs, LTP_LIMIT 1800, load 55 to 70), each
+now the reference's verdict: cve-2016-7042 (broken: add_key refused by Docker's profile),
+send02, ioctl10, pipe15, cve-2017-2618, autogroup01 (broken, as the reference: EROFS),
+dirtyc0w, cve-2016-5195, cve-2017-1000405, thp04. io_submit04 was still broken there (the RWF
+flags, built after); shmctl05 twice was still running at the end. Started at c2a9b17f (k6c6/b.tsv):
+io_submit04, madvise12, fork09.
+
+LTP table at this run's end (not a whole comparison yet):
+- The whole comparison at b37c8a43 (scratch k6c5/whole.tsv, still running, 3 jobs): 651 of
+  4226 done, 625 matching, 26 differing: slower than 900 s 17 (cve-2011-0999, 2014-0196,
+  2017-10661, 2017-17052, dio30, gf01, gf06 to gf16), not built or a section 15 cause 9
+  (cve-2016-7042, built since and matching; cve-2017-7308 AF_PACKET; cve-2018-5803 SCTP;
+  cve-2026-53362 IPV6_RTHDR; af_alg07 and cve-2019-8912 one CPU; controllers cgroup2 mount;
+  cve-2017-2671 ping; cve-2021-26708 vsock).
+- Matching as far as reruns show: 4075 of 4226 (the fourth run's 4062, the fifth run's
+  remap_file_pages01 and 02 and swapping01, and this run's 10 above).
+- Differing 151, by cause: slower than the limit about 90 (msgstress01 among them, shown to pass
+  in 2328 s with a 3600 s limit); built since and awaiting rerun: io_submit04, madvise12,
+  shmctl05 twice; a harness cause 3 (fork09, openat03, copy_file_range03; Questions); not built
+  and not a section 15 cause: smaps (mlock05), pagemap (mmap12), page residency (mincore03,
+  mlock201; Questions), vma01, transparent huge pages (thp01 to 03, sys_thp01), hugetlb memfd
+  (memfd_create04), layout randomization (aslr01), the cgroup2 mount (controllers); a section 15
+  cause, the rest (the gap list under "K6c, fourth run", with IPV6_RTHDR proposed).
+- Excused with a gap: none final.
 
 ## K6c, fifth run
 
@@ -3468,6 +3548,10 @@ guest).
   (vma01) need to know which pages a program has touched; the Cpu trait does not say. Should the
   CPU side report touched pages (an addition to the shared crate), or is this a deliberate
   difference to add to section 15? (K6c, fifth run.)
+- fork09 (K6c, sixth run): the test server's own descriptor limit (two host descriptors for
+  each open file, 1048576 at most in Docker's VM) stops it at 524273 open files where the
+  reference opens 1048573. A harness cause like the two below; excuse it, or give the harness a
+  backend that can hold more files?
 - Harness causes of two LTP differences: openat03 (the test backend, fuse-backend-rs's
   passthrough, has no TMPFILE, so ours answers as Linux's FUSE does with such a server, where the
   reference's root is overlayfs) and copy_file_range03 (the guest's repeatable clock skips idle
@@ -3622,16 +3706,18 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 
 ## Next
 
-K6c, in this order (after the fifth run):
-1. Read the whole LTP comparison at b37c8a43 (scratch k6c5/whole.tsv, started 15:31 with 3 jobs,
-   LTP_LIMIT 900; `ltp compare` against crates/wcontainers-kernel-test/ltp/reference-20260930.tsv),
-   commit it as ours-20260930-b37c8a43.tsv, and rerun at the newest code the tests the later
-   commits touch: send02 (MSG_MORE), ioctl10 (PROCMAP_QUERY), cve-2017-2618 (attr), and for the
-   commits before b37c8a43 nothing. Write the table from it.
-2. fork09's hang (K6c, fifth run, Found): find whether the backend server stalls under 500000
-   releases or the kernel waits for an answer it will not get; a kernel wait with no answer coming
-   is a fault to fix.
-3. Not section 15, to build, largest first: the cgroup2 mount at /sys/fs/cgroup (read-only,
+K6c, in this order (after the sixth run):
+1. Read the whole LTP comparison at b37c8a43 (scratch k6c5/whole.tsv, started 15:31 on the 18th
+   with 3 jobs, LTP_LIMIT 900, 651 of 4226 done by 18:00; it continues its file when started
+   again with the command under "K6c, fifth run"; `ltp compare` against
+   crates/wcontainers-kernel-test/ltp/reference-20260930.tsv), commit it as
+   ours-20260930-b37c8a43.tsv, and rerun at the newest code what later commits touch:
+   cve-2016-7042, send02, ioctl10, cve-2017-2618, io_submit04, madvise12 (and those already
+   rerun in k6c6/a.tsv). Read k6c6/a.tsv (shmctl05) and k6c6/b.tsv (io_submit04, madvise12,
+   fork09). Write the table from it.
+2. (Done in the sixth run: fork09's hang was the test host.)
+3. Not section 15, to build, largest first (IOCB_CMD_POLL, MADV_GUARD_* and Docker's masks are
+   built): the cgroup2 mount at /sys/fs/cgroup (read-only,
    Docker's: files in scratch k6c3/cgroup-reference.txt, values live: cgroup.procs, pids.current,
    memory.current, cpu.stat; runtimes read cpu.max and memory.max) for controllers:controllers;
    Docker's masked paths (/proc/keys, /proc/kcore, /proc/timer_list, /proc/interrupts as /dev/null
