@@ -191,6 +191,12 @@ The LTP table at this run's end (4226 tests, verdicts of the ARM64 machine):
 - The reference's own failures, 3: clock_nanosleep02, select02 and prctl09 failed in the
   reference's one run under load and pass when it runs them again (fourth run), as ours does.
 
+Whole suite at 93b5b8f1 on the Mac (the ARM machine was gone; `cargo test -j 4 -p
+wcontainers-abi -p wcontainers-kernel -p wcontainers-kernel-test --no-fail-fast --
+--test-threads=3`, 09:06 to 11:24 on the 19th, load 40 to 50 at the start, 25 to 31 at the
+end; scratch k6c10/suite.log): 275 passed, 0 failed, 11 ignored (the same eleven). The status
+lines' commit after it (c2963599) was checked with mapflags, zombie and procstatus.
+
 Layer 1 at beee6e96 on the Mac (load 18 to 25): seeds 9191105, 9191106 and 9191107, each 300
 sequences in memory, 32 on the backend and 32 on the caching backend, matched (scratch
 k6c10/l1-seeds.log). Affected tests before the commits: sysfs 5, pollmask 1, pidfd 1, procns 4,
