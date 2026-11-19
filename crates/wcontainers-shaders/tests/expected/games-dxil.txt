@@ -386,12 +386,12 @@ godot-compute-69e6c6e5564b6bd2.dxil	ok-wgsl glsl-write
 godot-compute-6a87c9d74a12cf84.dxil	ok-wgsl glsl-write
 godot-compute-6b062b5823a3d10f.dxil	ok-wgsl glsl-write
 godot-compute-6f4fd1eda50abd4b.dxil	ok-wgsl glsl-write
-godot-compute-7002841a5274ea38.dxil	unsupported ResourceArray
+godot-compute-7002841a5274ea38.dxil	unsupported StorageFormatKind
 godot-compute-719f9c9048834d76.dxil	ok-wgsl glsl-write
 godot-compute-76b0d495b396c0bd.dxil	ok-wgsl glsl-write
 godot-compute-776eac4e2eb4fb62.dxil	unsupported StorageFormatKind
 godot-compute-84b318874709b503.dxil	ok-wgsl glsl-write
-godot-compute-861134a4d98b0b1b.dxil	unsupported ResourceArray
+godot-compute-861134a4d98b0b1b.dxil	unsupported StorageFormatKind
 godot-compute-88a0ad427a621385.dxil	ok-wgsl glsl-write
 godot-compute-89080d2fc83c7f7c.dxil	ok-wgsl glsl-write
 godot-compute-8ea2febf526f8e07.dxil	ok-wgsl glsl-write
@@ -423,9 +423,9 @@ godot-compute-e632254d7b6d7950.dxil	ok-wgsl glsl-write
 godot-compute-e9979b34ae5da997.dxil	ok-wgsl glsl-write
 godot-compute-ef54067cd5606132.dxil	ok-wgsl glsl-write
 godot-compute-f1bbd623757d7a64.dxil	ok-wgsl glsl-write
-godot-compute-f8ba5aa849fe70e5.dxil	unsupported ResourceArray
+godot-compute-f8ba5aa849fe70e5.dxil	unsupported StorageFormatKind
 godot-compute-fcdd20873fda5f78.dxil	ok-wgsl glsl-write
-godot-fragment-2893de73bed23900.dxil	unsupported ResourceArray
+godot-fragment-2893de73bed23900.dxil	ok-wgsl glsl-write
 godot-fragment-f0e16912c4aaaddb.dxil	ok-wgsl glsl-write
 godot-pixel-3ce334b77ff19481.dxil	ok-wgsl glsl-write
 godot-pixel-4f1f1cfce08f5627.dxil	ok-wgsl glsl-write
