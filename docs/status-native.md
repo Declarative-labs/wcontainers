@@ -6,15 +6,17 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 
 - N0 (the plan) is done. At the start of N1 (2026-11-18) the plan was corrected for the last check's open
   findings and the brief's newest rulings (commit 64e30e56; how, below).
-- N1 (the floor on Hypervisor.framework) is done: every item of its bar reports once and passes (20 cases
-  and the doorbell's round trip as a measurement, 21 named items, 0 failed), measurements below. Commits
+- N1 (the floor on Hypervisor.framework) is done: every item of its bar reports once and passes (21 cases
+  since N2 run 1 added `SharedInsideViews`, and the doorbell's round trip as a measurement, 22 named items,
+  0 failed), measurements below. Commits
   a1f1e82b (A1), 91fb63ff (the inside), 0c8ef62d (the monitor and the test), the two after them, run 2's
   ce3028f5 and run 3's 77eb6af6 (the independent checks' findings settled, below), each with the plan
   corrected after it.
 - The literal check is merged (its second version of the rules, phase-1-literals at 7119e3f3, in 21321c7e)
   and this branch's baseline started at e4b998bd. The check fails, on main's code only: see "Literals".
 - main is merged (787f8ceb, N2 run 1): the owner's names are in the plan's text and its runtime citations.
-- N2 (the native ARM64 output) is in progress: see "N2" below.
+- N2 (the native ARM64 output) is in progress, run 1 done: see "N2" below for what is built, what is
+  measured and exactly what comes next. N3 needs decision 1 (R1, R3). N6 needs K2 (below).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
   and 10's final choice, which N1's trial narrows: option C does not work on Hypervisor.framework (below),
   so it is A or B.
@@ -39,6 +41,75 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N2: the native ARM64 output (run 1, 2026-11-18)
+
+Done (each its own commit, in other tracks' crates as plan 6.2 G1 allows):
+- 4cf56a71, wcontainers-guest-cpu: `native.rs`, the `Native` trait (`route`, `hook_class`,
+  `control_class`), `Route` (the routes of plan 3.4), `NativeClass` (held by the hardware, bookkeeping, or
+  routed to a named route) and `counted(address, flow)`, definition E, with a unit test.
+- 02a62e99 and 577c71f6, wcontainers-arm64: `native.rs`, the route of every decoded instruction, and
+  tests/native_routes.rs, the static routing test. Every form of Arm's table that the CPU we present has,
+  words drawn per form (every value of the non-register bits for forms with at most 16 of them, so every
+  system register of a move is seen), each run through its meaning with a recording emitter (hooks with the
+  float operation read by `wasmparser`, controls read and written, system call, traps, transfers, memory
+  checks, own address). It fails a route that does not fit: a copy that touches what a route keeps, a
+  system call not sent to the inside, a trap or transfer not routed as one, an alignment trap with no test
+  (except a stack-pointer base, whose check SA0 makes), a memory access on a route that makes none, a
+  meaning that does nothing not routed as nothing, and the reverse. Passes: 64 words per form by default,
+  1,050,063 decoded words of 1215 forms (seed 2685821657736338717); 1000 per form with seed
+  0x9e3779b97f4a7c15 (before the sweep was added), 1,209,733 words.
+- a589fa06, wcontainers-arm64: `encode.rs`, the small encoder (movz/movk and a constant's moves, ubfx,
+  ubfiz, bfxil, and/eor immediate with the logical-immediate encoding, add/sub immediate, cbz/cbnz, tbnz,
+  b/bl, br/blr/ret, ldr/str/ldrb with an unsigned offset, staddb, cas, brk/udf). Every word is its form's
+  fixed bits from Arm's table (`forms.rs`) with named fields filled in, so no opcode or bit position is
+  written. tests/encode.rs reads each back with the crate's decoder: 10,000 seeded cases (seed
+  6364136223846793005), 20,000 logical immediates, all as meant.
+- E's cost by the add's placement (below), recorded in plan section 4.
+- The existing tests of wcontainers-guest-cpu and wcontainers-arm64 pass unchanged; nothing in the
+  translator crate or the WebAssembly output was touched.
+
+Not done yet, in order (the next run starts here):
+1. The native emitter in wcontainers-translator behind a cargo feature (`native`), generic over
+   `G: Guest + Native`, at look-ahead none: each route's host sequence (plan 3.4); `access` as the one place
+   a guest access is emitted (the page test and probes for Split, the alignment test); the stand-in rule for
+   the three withheld registers (x26 to x28 until N4 chooses); the count's add at the start of the event's
+   straight-line run (the placement chosen below); calls into the inside as `brk #code`, the position map
+   saying which instruction and route; and the position map itself: per run of host code the guest
+   instruction, the side of the commit point, the count register's lead, the relocated values, the fix-up.
+2. A runner on the floor: a program in the inside package (as floor-cases is) that maps guest pages, loads
+   seeded registers and memory, runs translated code at EL0, answers its calls into the inside (Kernel,
+   Float status and Trap routes as the meanings do, plan 4's fix-ups), and reports registers, flags,
+   FPSR/FPCR, memory and the stop. A fault's address comes from the guest instruction, untagged as `untag`
+   does (the third check's tagged-store finding).
+3. The differential test against the WebAssembly output under wasmtime, at least 1000 seeded cases per
+   form, with the cases the bar lists (plan 9, N2).
+4. A forced interrupt at every host offset (EL1 software step, plan 4), the behaviour probe and its time.
+
+## E's cost by placement (N2 run 1)
+
+Method: the eight bench.c workloads and calls.c of the cost rounds, compiled by clang -O2 with x26 to x28
+withheld (round 3's flags), the count's adds put in by `place.py` (scratch native/n2-count/src; one rule per
+placement), each run at EL0 inside Hypervisor.framework with 4 KiB stage 1 pages by round 3's runner
+(hvfrun, copied unchanged); every placement against the same build with no add, 15 alternating pairs per
+workload, warm-up discarded, cycles and instructions of the whole process (`proc_pid_rusage`), outputs
+checked equal. M5 Max, macOS 27.2, 2026-11-18 16:44 to 16:57, load 37 to 73. One command: `build.sh`, then
+`run.sh 15`, in scratch native/n2-count; `python3 -I summarize.py results/raw.jsonl 1 2000` (bootstrap seed
+1, 2000 resamples); raw pairs in results/raw.jsonl, the summary in results/summary.txt.
+- Under E every event is a transfer and ends its straight-line run, so a run never holds more than one event
+  and there is nothing to merge; the freedom is where in the run the add sits.
+- Right before the event (round 3's En): geometric mean of median cycle ratios +13.65% [+12.23 .. +14.97]
+  (round 3 measured +13 to +14%). fib +6.0, sieve +3.5, hash +0.3, sort +5.9, interpret +31.7, matrix
+  +11.5, walk +1.6, search +60.1; calls +17.7.
+- Before the compare a b.cond reads (else right before the event): +10.95% [+9.58 .. +12.96]. fib +2.0,
+  sieve +0.6, hash -0.1, sort +4.5, interpret +24.0, matrix +6.6, walk +4.2, search +55.3; calls +17.3.
+- At the start of the run (after its last label or branch): +10.51% [+9.61 .. +12.31]. fib +2.2, sieve
+  -0.6, hash -0.0, sort +5.8, interpret +23.0, matrix +9.3, walk +1.8, search +51.6; calls +17.8. Chosen.
+- Instructions rose 14 to 27% on the eight (37% on calls), alike for every placement.
+- What is left: search's inner loop (9 instructions) and interpret's dispatch carry two counted events per
+  pass (two backward conditional branches; a jump through a register and the back edge), so two adds on the
+  count register's chain of dependent adds bound the loop. That is expected from the code, not measured
+  apart.
 
 ## N1: what was built
 
@@ -78,7 +149,10 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 ## How to run
 
 From the checkout, in the Nix shell:
-- the bar: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test floor` (about half a second
+- N2 so far: `nix develop -c cargo test -j 4 -p wcontainers-arm64 --test native_routes --test encode --
+  --nocapture` (knobs `WCONTAINERS_ROUTES_SEED`, `WCONTAINERS_ROUTES_WORDS`, `WCONTAINERS_ENCODE_SEED`,
+  `WCONTAINERS_ENCODE_CASES`, decimal) and `nix develop -c cargo test -j 4 -p wcontainers-guest-cpu`;
+- N1's bar: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test floor` (about half a second
   once the cases program is built, which the test does first; the test signs a copy of itself ad hoc with crates/wcontainers-hypervisor/hypervisor.entitlements and runs
   that, since Hypervisor.framework refuses an unsigned binary); the stop test's knobs are environment
   variables: `WCONTAINERS_FLOOR_STOPS=1000 WCONTAINERS_FLOOR_SEED=0x0123456789abcdef` before the command
@@ -229,6 +303,9 @@ safe-mmio 0.4.0 MIT OR Apache-2.0; spin 0.10.1 MIT; object 0.37.3 Apache-2.0 OR 
 Apache-2.0; fastrand 2.5.0 Apache-2.0 OR MIT (test only). Brought in by those (new in Cargo.lock): num_enum
 and num_enum_derive 0.7.6 BSD-3-Clause OR MIT OR Apache-2.0; pastey 0.2.3, rustversion 1.0.23 and
 arm-targets 0.4.3 MIT OR Apache-2.0; arm-sysregs-aarch32, -common, -el0 and -el1 0.5.2 MIT OR Apache-2.0.
+N2 run 1: wasmparser 0.263.0 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT) and fastrand 2.5.0
+(Apache-2.0 OR MIT), dev-dependencies of wcontainers-arm64 for its routing and encoder tests, both already in
+Cargo.lock; the floor now calls aarch64-paging's `El1And0::invalidate_va` (already a dependency).
 Run 2 added zerocopy to the inside, already the workspace's (0.8.63, BSD-2-Clause OR Apache-2.0 OR MIT).
 Run 3: the monitor depends on wcontainers-arm64 and wcontainers-guest-cpu (for `Guest::SP_ALIGNMENT_CHECKED`),
 which bring the workspace's translator dependencies into it, all already in Cargo.lock: rustc_apfloat 0.2.3
@@ -367,6 +444,18 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 ./mirror` without the framework; the KVM runs as in kvm-laptop.out from ~/native-plan/vm on the laptop.
 
 ## Departures from the plan
+
+- N2, `Route::Collision`: the plan's register-field collisions (plan 3.4, "Encodings Arm leaves CONSTRAINED
+  UNPREDICTABLE") are a route of their own, so the routing test and the emitter see them by name.
+- N2, `counted` lives in wcontainers-guest-cpu's native module beside `Native` until T2 moves the count
+  into the shared finder; it depends only on `Flow` and the address.
+- N2, the encoder is in wcontainers-arm64 (`encode.rs`), not the translator: the translator knows no one
+  CPU; the emitter will call it through the guest crate.
+- N2, E's cost was measured with round 3's runner (hvfrun) at EL0 inside Hypervisor.framework with 4 KiB
+  pages, not on our floor: both put the same programs at EL0 in a virtual machine with 4 KiB stage 1
+  pages, and the ratio of each pair is what the speed bar uses. The floor runner comes with the emitter.
+- N2, a Kernel-routed form may touch what other routes keep (`svc` forgets the exclusive monitor): the
+  inside answers it wholly as the meaning does, so the routing test allows it.
 
 - N1, the build: the Nix shell links against the macOS 14.4 SDK, which does not declare Hypervisor.framework's
   GIC calls (macOS 15). The monitor's build script tells the linker to leave those seven
