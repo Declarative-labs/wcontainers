@@ -10,7 +10,12 @@
 //! name in the given directories; a sample in code inlined into a function counts as that
 //! function's. Other libraries count by their name.
 //!
-//!   frames <process> <short.json> <short frames> <long.json> <long frames> <pdb dir>...
+//! With `--log`, the back end's counters a frame too: from the program's log of the long run,
+//! the difference of its last report ([`wcontainers_gpu_webgpu::FRAME_REPORT`]) and the one at
+//! half its frames.
+//!
+//!   frames [--log <output.log>] <process> <short.json> <short frames> <long.json> <long frames>
+//!     <pdb dir>...
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -193,6 +198,22 @@ struct Counts {
     span: (f64, f64),
 }
 
+/// The times of a thread's samples, in milliseconds.
+fn sample_times(thread: &Value) -> Vec<f64> {
+    let samples = &thread["samples"];
+    let mut t = 0.0;
+    match samples["time"].as_array() {
+        Some(times) => times.iter().filter_map(Value::as_f64).collect(),
+        None => column(samples, "timeDeltas")
+            .iter()
+            .map(|d| {
+                t += d.as_f64().unwrap_or(0.0);
+                t
+            })
+            .collect(),
+    }
+}
+
 fn strings_of(profile: &Value, thread: &Value) -> Vec<String> {
     let list = thread["stringArray"]
         .as_array()
@@ -288,17 +309,7 @@ fn count(path: &str, process: &str, dirs: &[PathBuf]) -> Result<Counts> {
             .collect();
         let samples = &thread["samples"];
         let weights = column(samples, "weight");
-        let mut t = 0.0;
-        let times: Vec<f64> = match samples["time"].as_array() {
-            Some(times) => times.iter().filter_map(Value::as_f64).collect(),
-            None => column(samples, "timeDeltas")
-                .iter()
-                .map(|d| {
-                    t += d.as_f64().unwrap_or(0.0);
-                    t
-                })
-                .collect(),
-        };
+        let times = sample_times(thread);
         if let (Some(first), Some(last)) = (times.first(), times.last()) {
             counts.span = match counts.span {
                 (0.0, 0.0) => (*first, *last),
@@ -369,11 +380,69 @@ fn count(path: &str, process: &str, dirs: &[PathBuf]) -> Result<Counts> {
     Ok(counts)
 }
 
+/// The back end's reports in a program's log: frames presented, and each count by name.
+fn reports(log: &Path) -> Result<Vec<(u64, HashMap<String, u64>)>> {
+    let bytes = std::fs::read(log).with_context(|| format!("reading {}", log.display()))?;
+    let text = String::from_utf8_lossy(&bytes);
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let Some(rest) = line
+            .trim()
+            .strip_prefix(wcontainers_gpu_webgpu::FRAME_REPORT)
+        else {
+            continue;
+        };
+        let mut tokens = rest.split_whitespace();
+        let frames: u64 = tokens.next().context("a report without frames")?.parse()?;
+        let counts = tokens
+            .filter_map(|t| t.split_once('='))
+            .map(|(k, v)| Ok((k.to_string(), v.parse()?)))
+            .collect::<Result<_>>()?;
+        out.push((frames, counts));
+    }
+    Ok(out)
+}
+
+/// Prints each count that changed a frame between the log's last report and the one before it
+/// at half its frames (the same device's, as each device reports at powers of two).
+fn print_counters(log: &Path) -> Result<()> {
+    let reports = reports(log)?;
+    let Some((last, at_last)) = reports.last() else {
+        println!("  the log has no report of the back end's counters");
+        return Ok(());
+    };
+    let Some((first, at_first)) = reports.iter().rev().find(|(f, _)| f * 2 == *last) else {
+        println!("  the log has no report at half of {last} frames");
+        return Ok(());
+    };
+    let frames = (last - first) as f64;
+    let mut names: Vec<&String> = at_last.keys().collect();
+    names.sort();
+    print!("  back end counts a frame (frames {first} to {last} of the long run):");
+    for name in names {
+        let d = at_last[name] - at_first.get(name).copied().unwrap_or(0);
+        if d > 0 {
+            print!(" {name} {:.2};", d as f64 / frames);
+        }
+    }
+    println!();
+    Ok(())
+}
+
 fn main() -> Result<()> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let log = match args.first().map(String::as_str) {
+        Some("--log") if args.len() > 1 => {
+            let log = PathBuf::from(args.remove(1));
+            args.remove(0);
+            Some(log)
+        }
+        _ => None,
+    };
     let [process, short, short_frames, long, long_frames, dirs @ ..] = &args[..] else {
         return Err(anyhow!(
-            "usage: frames <process> <short.json> <short frames> <long.json> <long frames> <pdb dir>..."
+            "usage: frames [--log <output.log>] <process> <short.json> <short frames> <long.json> \
+             <long frames> <pdb dir>..."
         ));
     };
     let dirs: Vec<PathBuf> = dirs.iter().map(PathBuf::from).collect();
@@ -430,5 +499,8 @@ fn main() -> Result<()> {
         print!(" {name} {:.0};", *n * b.interval);
     }
     println!();
+    if let Some(log) = log {
+        print_counters(&log)?;
+    }
     Ok(())
 }

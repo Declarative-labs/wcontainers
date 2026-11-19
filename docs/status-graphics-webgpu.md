@@ -18,8 +18,12 @@ group copied into depth, prepared strips built for both index formats) and answe
 newest merges ask. G2b passed its fourth independent check. Run 19 is G2c run 1 (below): the
 check's open findings, the new requests (three-channel 32-bit textures), and where real programs'
 frame time goes. Run 20 is G2c run 2 (below): the interface's ruling on depth and stencil
-copies within one subresource built, subgroups, and the stencil view question answered. Every
-request found is built and tested or refused by name (list below). Earlier runs follow ("Run 5" to "Run 10" are G2 runs 1 to 6; G2a runs 1 to 4 after them).
+copies within one subresource built, subgroups, and the stencil view question answered. Run 21
+is G2c run 3 (below): the second G2c check's findings (the primitive index, the frame breakdown
+with counters, bytes and the machine's load, Direct3D 12 texture reads at unaligned offsets,
+three-channel copies at any width, Chrome's launch, subgroups in the browser, licences) and the
+first part of the literal sweep. Every request found is built and tested or refused by name
+(list below). Earlier runs follow ("Run 5" to "Run 10" are G2 runs 1 to 6; G2a runs 1 to 4 after them).
 
 What the fronts' status files ask of this back end (read at G2b runs 1 and 2, after merging every
 graphics branch), and where each stands:
@@ -149,11 +153,23 @@ graphics branch), and where each stands:
   wave operations): built (run 20). The device asks for wgpu's `SUBGROUP` where the adapter has
   it and declares `SUBGROUPS` then. Where it is: wgpu's Vulkan on the RTX 3080; wgpu's Direct3D
   12 only with DXC (shader model 6), so not with the FXC the fronts' instance uses; not in
-  Chrome, because wgpu 30's browser back end does not map WebGPU's `subgroups` feature (its
-  feature table has 16 entries, none of them subgroups), so the back end declares it absent
-  there. tests/subgroups.rs: declared exactly where the adapter has it; a fragment program using
-  `subgroupAll`, `subgroupAdd` and `subgroupBallot` draws every pixel as they define; a device
-  made without the feature declares none and refuses the program by name.
+  Chrome until run 21, because wgpu 30's browser back end did not map WebGPU's `subgroups` feature;
+  the vendored wgpu now maps it (run 21), so in Chrome it is declared where the adapter offers it.
+  tests/features.rs (was tests/subgroups.rs): declared exactly where the adapter has it; a
+  fragment program using `subgroupAll`, `subgroupAdd` and `subgroupBallot` draws every pixel as
+  they define; a device made without the feature declares none and refuses the program by name;
+  web/check runs the same draw in Chrome.
+- The primitive index (shaders track, run 31: "ask wgpu for `PRIMITIVE_INDEX` where the adapter
+  has it and declare `Features::PRIMITIVE_INDEX`", for the rig's geometry scene's ps_id; missed by
+  run 20, found by the second G2c check): built (run 21). The device asks for wgpu's
+  `PRIMITIVE_INDEX` where the adapter has it and declares `PRIMITIVE_INDEX` then. In the browser
+  the vendored wgpu now passes WebGPU's `primitive-index` (and `subgroups`) on: its feature table
+  had neither (third_party/wgpu, Departures). examples/scenes/features.rs, run natively by
+  tests/features.rs (declared exactly where the adapter has it; four triangles side by side, each
+  pixel reading its triangle's number; a device made without it declares none and refuses the
+  program by name; failed before: declared false where the adapter had it) and in Chrome by
+  web/check (`program_features`: fails if Chrome's adapter offers the feature and the device does
+  not declare it).
 - Stencil views reading 0 on wgpu's Direct3D 12 path (Direct3D 11 front, G4 run 19, Wine's
   test_depth_stencil_sampling): not reproduced in this back end. wgpu 30's Direct3D 12 stencil
   views use `X24_TYPELESS_G8_UINT` with a component mapping that moves the stencil (green) into
@@ -165,6 +181,83 @@ graphics branch), and where each stands:
   `depth32float-stencil8` (run 20; this test is native only). So a 0 seen through the front
   comes from the second component being read where the program's mapping was not applied, or
   from the front's path; asked back of the Direct3D 11 track under Next.
+
+Run 21 = G2c run 3, 2026-11-18:
+- Merged origin/phase-2-graphics (G1c run 9: `STORAGE_WORD`, every binding of the kind the program
+  declares, buffers a storage binding reaches the end of in whole words; the newest -webgl,
+  -direct3d-11 and -shaders commits with it) and origin/phase-2-graphics-shaders (run 33), no
+  conflicts; -direct3d-12 and -rig had nothing new. The interface changes need nothing here (this
+  back end already takes its layouts from the program); `STORAGE_WORD` is now used for the words
+  of storage bindings. Read the four front and the shared status files again: the one ask of
+  this back end not yet built was the shaders track's primitive index (below); the Direct3D 12
+  front still lists subgroups (built in run 20, absent on its FXC instance); nothing else new.
+- The second G2c check's findings:
+  - Primitive index: built (list above), natively and in Chrome.
+  - Frame breakdown with counters and load: the back end counts the bytes written into buffers
+    and textures (`Counters::buffer_bytes`, `texture_bytes`) and prints its counters and slow
+    paths at each power of two frames presented (`FRAME_REPORT`); examples/frames.rs `--log`
+    reads them a frame from the program's log; the desktop's load was sampled each second by
+    `typeperf` (Processor(_Total)) during the runs. Measurements, run 21.
+  - bgfx's NVAPI: recorded under Measurements.
+  - Direct3D 12 texture reads at offsets off its placement alignment overwrote the bytes
+    between rows (wgpu-hal's own intermediate buffer, copied back whole): fixed by going through
+    `RowsRepacked` there (Departures). examples/scenes/gaps.rs (tests/copies.rs
+    `texture_reads_into_a_buffer_keep_the_bytes_between_rows`, and web/check in Chrome): four
+    formats (two native, one converted, one three-channel), two layers, at (256, 512) and (0, 256),
+    every copied byte equal to the texture's and every other byte kept. Passes on Vulkan, Direct3D
+    12 and in Chrome. Not run with the fix taken out; the check's own diagnosis (own-padding.log)
+    showed 1296 to 1469 bytes changed on Direct3D 12 before.
+  - Three-channel textures wider than a third of the widest texture: their copies now go in runs
+    (`raw_run`), each starting on a Direct3D 12 placement and kept a placement short of the widest
+    texture. converted.rs `three_channels_at_widest`: each three-channel format at the device's
+    widest 2D texture, buffer to texture to texture to buffer, every bit kept: 32768 texels on
+    Vulkan, 16384 on Direct3D 12 and in Chrome. The first try (runs only as wide as fit) passed
+    natively but lost the device in Chrome (Dawn: "D3D12 closing pending command list failed with
+    E_INVALIDARG"), which starting each run on a placement and leaving a placement of room fixed
+    (logs/run21-webcheck.log, then -webcheck2.log). Why Dawn failed is inferred (it moves an
+    unplaced copy back to a placed offset, widening it past the widest texture), not read in
+    Dawn's code.
+  - web/check's first Chrome launch: draw.mjs exits with `NO_ADAPTER` when Chrome gives no
+    adapter and check.cmd launches it again (up to 3). Seen working in this run's first web/check
+    ("chrome: no WebGPU adapter", then the second launch drew everything).
+  - Subgroups in the browser: the vendored wgpu now maps `subgroups` and `primitive-index`;
+    Chrome 157 on the RTX 3080 offers both, and both are declared and drawn there.
+  - pdb's licences: recorded (Licences).
+  - Magic literals: the sweep's first part (below).
+- Literal sweep (the brief's rule; the audit's list for this crate is in
+  orchestrator/magic-literals/fix-graphics.md, 93 entries for wcontainers-gpu-webgpu in the
+  categories read). Replaced: every WebGPU copy, query, immediate and vertex alignment written as
+  4 or 8 (`wgpu::COPY_BUFFER_ALIGNMENT`, `QUERY_SIZE`, `IMMEDIATE_DATA_ALIGNMENT`,
+  `VERTEX_ALIGNMENT`, the interface's `STORAGE_WORD` for storage words), the anisotropy limit (one
+  `MAX_ANISOTROPY`), integer limits (`u8::MAX`, `i8::MAX`, `u16::MAX`, `i16::MAX`,
+  `f16::ONE`, `f32::MANTISSA_DIGITS`), the compute programs' workgroup size (one `GROUP`, put into
+  the programs' text), the pruning threshold, sizes of the probe's and fill's buffers (from their
+  types), and the tests' duplicated `W`, `H` and `COLORED_WGSL` (one definition each). New code
+  this run names its numbers. Left: BC block arithmetic in blocks.rs (4 by 4 texels and the
+  decoder's pitches; `Format::block` is not a `const fn`, so a named constant there needs care),
+  the packed formats' bit table (packed.rs `fields`, the one home of that fact, kept), the query
+  ring's replace flag `1 << 31` (shared with its program's text), shader text in Rust strings,
+  the remaining categories of the list (component counts, per-format facts, names and paths),
+  and the scripts. The automatic check (branch phase-1-literals) is not on any branch this one
+  merges; not merged here (the task names only the graphics branches).
+- Full runs at fb32cf1f (desktop, RTX 3080, NVIDIA 621.01, shared through the GPU queue; scratch
+  logs/run21-clippy2.log, run21-full2.log, run21-webcheck2.log, pictures in run21/web): lint of
+  both builds clean; natively Vulkan 127 passed and 3 ignored, Direct3D 12 128 passed and 2
+  ignored (the same ignored tests as run 20), 0 failed; the shared suite 44 of 44 on each API.
+  web/check passed whole: the twelve pictures and the viewports equal Direct3D 11's at tolerance
+  0, the twists differ, the shared suite 44 of 44 in Chrome 157 on the RTX 3080 (D3D12, discrete,
+  not a fallback), subgroups and the primitive index declared and drawn in Chrome, texture reads
+  into buffers and three-channel copies at 16384 texels exact in Chrome, timestamps without
+  developer features in 65,536 ns steps. e54cf4cb after it changes only examples/frames.rs.
+- Frame time: Measurements, run 21.
+- After this run's merges, -direct3d-11, -shaders and -webgl moved again (8, 3 and 11 commits,
+  among them interface and shared suite changes, and a two-line change to this crate's
+  Cargo.toml from -direct3d-11): not merged in this run, so the tests above are on this run's
+  merge; the next run merges them first and reruns both full runs.
+- Removed at the end: the desktop's C:\wc\target\phase-2-graphics-webgpu (16.53 GB, debug and
+  release) and the checkout's own target on the Mac (1.4 GB of `cargo check`); scratch holds logs,
+  pictures and load samples only (383 MB). Nothing new installed on the desktop (`typeperf` is
+  Windows' own).
 
 Run 20 = G2c run 2, 2026-11-18:
 - Merged origin/phase-2-graphics (G1c: the ruling on depth and stencil copies within one
@@ -918,8 +1011,10 @@ Run 4, 2026-11-17 (fixes from the independent check of run 3; merged origin/phas
   1 ns, `TIMESTAMPS` is declared absent. On the RTX 3080 the period is 1 ns on both of wgpu's APIs
   with or without the flag (tests/timestamps.rs prints it), so there it changes nothing.
 - `SUBGROUPS` is declared where wgpu offers `SUBGROUP`: on the RTX 3080 through wgpu's Vulkan,
-  not through its Direct3D 12 with FXC (the fronts' instance; DXC would offer it), and not in
-  the browser with wgpu 30. A program using subgroups on a device without them is refused at
+  not through its Direct3D 12 with FXC (the fronts' instance; DXC would offer it), and in the
+  browser where the adapter offers `subgroups`. `PRIMITIVE_INDEX` likewise where wgpu offers
+  `PRIMITIVE_INDEX` (natively on both of wgpu's APIs on the RTX 3080; in the browser where the
+  adapter offers `primitive-index`). A program using subgroups on a device without them is refused at
   `create_shader` with `GpuError::Invalid`, so fronts check the capability first.
 - Make it from a wgpu adapter: ask for the device with `WebGpu::device_descriptor(&adapter)` (the
   features the back end uses where present, and the adapter's highest limits), then
@@ -965,7 +1060,10 @@ Run 4, 2026-11-17 (fixes from the independent check of run 3; merged origin/phas
   clock's rate (tests/timestamps.rs).
 - `WebGpu::counters()` says how many pipelines, bind groups, layouts, buffer and texture renames
   (and how many took pooled storage, how much pooled storage was destroyed) and staged writes were
-  made; `slow_paths()` the slow paths taken.
+  made, and how many bytes were written into buffers and textures; `slow_paths()` the slow paths
+  taken. At each power of two frames presented the back end prints both on standard error as
+  one line (`FRAME_REPORT`, "webgpu: frames=<n> name=count ..."), so any program's log gives a
+  frame's counts between two reports (examples/frames.rs `--log` reads them).
 - Anything the back end does not carry out yet (list below) marks the device lost with
   `LossReason::Error` and prints `webgpu: <reason>` on standard error, so `status()` shows it.
 
@@ -975,7 +1073,7 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
 `cargo check -j 2`.
 - Tests on the RTX 3080 (tests/bindings.rs, blocks.rs, converted.rs, copies.rs, depth.rs,
   direct3d.rs (Windows only), fitted.rs, prepare.rs, pulled.rs, queries.rs, raster.rs, scenes.rs, surface.rs
-  (Windows only), subgroups.rs, timestamps.rs, vertices.rs, writes.rs and suite.rs, the shared suite; they need a
+  (Windows only), features.rs, timestamps.rs, vertices.rs, writes.rs and suite.rs, the shared suite; they need a
   GPU, and the suite's present test and surface.rs a desktop, so
   `--desktop`; `WEBGPU_API=dx12|vulkan|metal` picks wgpu's API, default the platform's, Vulkan on
   the desktop), both APIs in one job:
@@ -1036,9 +1134,14 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   (examples/scenes/vertices.rs, seed 188, 64 vertices each) and texture renaming
   (examples/scenes/renames.rs), query sets past 4096 and the query ring
   (examples/scenes/queries.rs), BGRA vertices (vertices.rs), prepared strips (prepare.rs) and
-  copies between `depth16unorm` and its group (depth16.rs) in Chrome, prints the instance data routes' timings in Chrome
+  copies between `depth16unorm` and its group (depth16.rs), texture reads into buffers keeping
+  the bytes between rows (gaps.rs), three-channel copies at the widest texture (converted.rs),
+  and subgroups and the primitive index where Chrome's adapter offers them (features.rs) in
+  Chrome, prints the instance data routes' timings in Chrome
   (examples/scenes/pulled.rs, failing if their pictures differ), then runs the shared suite
-  in Chrome, one page per test (suite-chrome.txt). Prints
+  in Chrome, one page per test (suite-chrome.txt). Where Chrome's first launch gets no WebGPU
+  adapter at all (seen about one launch in four), draw.mjs exits with check.cmd's `NO_ADAPTER`
+  and is launched again, up to `LAUNCHES` (3) times. Prints
   Chrome's WebGPU adapter and fails unless it is a GPU, not a fallback. With a directory, the
   pictures and the suite's results are copied there. About 7 minutes cold, the job itself 15 s.
 - Where real programs' frame time goes: `crates/wcontainers-gpu-webgpu/frames/run [--real]
@@ -1046,7 +1149,10 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   real Direct3D for comparison). It needs samply 0.13.1 in C:\wc\tools and an SSH session that
   may profile the system (the queue's desktop session may not: wpr "Failed to enable the policy").
   Each program is three GPU jobs and two traces of the whole machine, about 1 to 10 minutes;
-  results print at the end.
+  results print at the end: per frame, the CPU by part and place, the rest of the machine's load
+  during each run (other processes' samples in the same trace, as a share of its 16 threads),
+  and the back end's counts a frame from the long run's log (`FRAME_REPORT` lines, frames 128 to
+  256 of a 360-frame run).
 - Timestamps in Chrome as users have it, alone: after web/check has built the page, a GPU job
   `node crates\wcontainers-gpu-webgpu\web\plain.mjs C:\wc\out\phase-2-graphics-webgpu-webgpu\pkg`
   (web/check runs it too).
@@ -1056,6 +1162,47 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   depth-function]` (the example's binary).
 
 ## Measurements
+
+Run 21 (G2c), the frame breakdown again with the back end's counters and the machine's load.
+Desktop (i9-9900K, 16 threads, RTX 3080, driver 621.01), shared with the other tracks: each
+program ran alone in the queue's hazard group; builds and other tracks' remote commands could run
+beside. Load: the whole machine's `\Processor(_Total)\% Processor Time` sampled each second by
+`typeperf` over SSH beside the runs, averaged over each recorded run's job (start to end, so it
+includes start-up and our program itself). Method otherwise as run 19 (frames/run; logs
+run21-frames2.log for atg and bgfx, run21-frames3.log for doom; load samples run21/load-run21*.csv).
+Counts a frame are from the long run's log, frames 128 to 256 (`FRAME_REPORT`).
+- chocolate-doom (Direct3D 11 front, wgpu on Direct3D 12): wall time 0.258 ms a frame (it runs
+  uncapped; the first try of this run gave 2.485 ms, run 19 0.96: this number moves with the
+  machine), CPU 3.553 ms a frame. Ours: front 0.037 ms, back end 0.013, wgpu 0.027; under the back
+  end's functions 0.107 ms. Not ours: 3.537 ms in threads of the NVIDIA Direct3D 12 driver
+  (nvwgf2umx.dll) spinning in ntdll. Counts a frame: 3 `MappedUploadWhole` (the front), 1 bind
+  group, 1 buffer rename (from the pool), 3 pipeline binds, 496 bytes into buffers, 256,000 bytes
+  into textures (the 320x200 frame). Load: the recorded runs fell after the sampling window
+  (it covered 16:49 to 17:09, mean 25.7 %, 2.9 to 100 %; the runs were 17:11:47 and 17:14:56):
+  not measured for these two runs.
+- atg-simpleinstancingpc (Direct3D 11 front): wall 16.552 ms a frame (the display), CPU 79.3 ms.
+  Ours: front, back end and wgpu under 0.03 ms each; under the back end 0.163 ms (the driver's
+  present and buffer creation most of it). Not ours: 66.1 ms in the Direct3D 12 driver's threads
+  spinning, 13.7 ms in the program's. Counts a frame: 5 `MappedUploadWhole`, 3 pipeline binds,
+  935,856 bytes into buffers, no texture bytes. Load: short run mean 23.7 % (6.9 to 32.3; the
+  last 80 s of its job only), long run 10.7 % (1.9 to 19.1).
+- bgfx-01-cubes-d3d12 (Direct3D 12 front, wgpu on Vulkan): wall 16.841 ms a frame, CPU 218 ms.
+  Ours: front 0.350 ms, back end 0.033, wgpu 0.050; under the back end 3.223 ms, of it 3.037 ms
+  `memcpy` in `write_buffer_impl`. That copy is now sized: 14,680,328 bytes a frame into buffers,
+  in 4 `MappedUploadWhole` writes (the front writing whole upload buffers each submit), about
+  4.8 GB/s; also 251 pipeline binds, 125 `PixelInvocationsCounted` and 1 `UnalignedBufferEdge` a
+  frame. The GPU thread: 10.35 ms in ntdll under wgpu's Vulkan `acquire_texture` (the display
+  wait, run 20). Not ours: 100.3 ms in the NVIDIA Vulkan driver's threads, 67.0 ms in its Direct3D
+  12 driver's, spinning. Load: short 19.3 % (8.2 to 30.1), long 15.2 % (6.9 to 36.8). The rig
+  marked each bgfx run FAIL because nvapi64.dll was loaded from C:\Windows\System32 as well as
+  the empty one beside the program (as in run 19, whose bgfx breakdown came from such runs too).
+  Which module loaded the system copy was not found (expected: NVIDIA's Vulkan driver, which this
+  front draws through here, not bgfx); the frames themselves drew.
+- What is ours and cheap: nothing new. The back end's own functions take 0.01 to 0.03 ms a frame;
+  the one large cost under them is copying the bytes the fronts hand it, 14.7 MB a frame in bgfx,
+  which the Direct3D 12 front can cut by writing only what the frame's bindings and copies read
+  (Next). frames.rs's first load figure (other processes' samples in the trace) counted more than
+  the machine has and was dropped (e54cf4cb).
 
 Run 19 (G2c), where a real program's frame time goes on our side. Desktop (i9-9900K, RTX 3080,
 driver 621.01), shared with the other tracks: each program ran alone in the GPU queue (hazard
@@ -1563,6 +1710,8 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
   the window a surface is made from.
 - Immediates in the browser: `immediate_bytes` is 0 there (wgpu 30's browser back end has no
   `setImmediates`), so fronts spill them.
+- Copies of three-channel textures with buffers or between them are made in runs of columns the
+  device's widest 2D texture holds three times over (run 21); nothing is lost by width.
 - A converted vertex stream reaching past the largest storage binding (128 MiB by default) or
   more than 2^22 workgroups.
 - Drawing into the 16-bit packed formats: declared without `RENDER` (8-bit storage would keep
@@ -1596,8 +1745,7 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
    (device/bind.rs): at each `ExecuteCommandLists` every upload buffer a binding reads is written
    to the back end whole, and the back end copies what it is given. Writing only the ranges the
    recorded bindings and copies read (the binding's offset and size are at hand there) would cut
-   it to what the frame uses. The bytes a frame are not measured (the back end counts writes, not
-   bytes; the front would have to print them).
+   it to what the frame uses. Measured in run 21: 14,680,328 bytes a frame in 4 writes.
 6. For the Direct3D 11 track: stencil views (list above). The back end gives the stencil in the
    first component on wgpu's Direct3D 12 path, tested; check that the converted program for
    test_depth_stencil_sampling reads the first component and moves it to the second
@@ -1608,6 +1756,10 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
    present mode changes what the program asked for, so neither is taken. Find why some programs'
    runs on the hidden desktop last far longer than their frames (godot-platformer-2d-d3d12's
    pair), so the breakdown can be taken for Godot.
+8. Load sampling as part of frames/run (run 21 ran `typeperf` beside it by hand, and missed
+   doom's recorded runs): start it with each recorded run and print the mean with the breakdown.
+9. The literal sweep, the parts left (Run 21's list).
+10. Report wgpu-hal's Direct3D 12 gap overwrite upstream (Departures).
 
 ## Departures from the plan
 
@@ -1709,6 +1861,22 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
   into a texture of its own and not shown, with no error: the interface has no word for an
   unshown frame, and DXGI answers it with a success code (`DXGI_STATUS_OCCLUDED`).
 
+- Texture reads into a buffer at an offset off Direct3D 12's placement alignment (512) with gaps
+  between rows or layers go, on wgpu's Direct3D 12, through a buffer at offset 0 and one buffer
+  copy per row (`RowsRepacked`, run 21): wgpu-hal's Direct3D 12 copies such reads through a buffer
+  of its own and then copies that whole into place, gaps included, where the driver lacks
+  unrestricted pitches (dx12/command.rs `copy_texture_to_buffer` and `buf_tex_intermediate`; the
+  RTX 3080 on Windows 10 lacks them), so every byte between the rows was overwritten. Not
+  reported upstream yet. Vulkan and browsers copy directly. `RowsRepacked`'s name says "a pitch
+  the API does not take"; here it is a placement, the same route.
+- The vendored wgpu has a third change (run 21): its browser back end's feature table maps
+  WebGPU's `subgroups` and `primitive-index`, which wgpu 30 left out, so a browser device gets
+  them where the adapter offers them.
+- The back end prints a line of its counters at each power of two frames presented
+  (`FRAME_REPORT`). The plan asks for counters and warnings; a program's frame costs can only be
+  read from a log when the rig ends programs with `TerminateProcess` (no report at the end could
+  be printed), and powers of two keep it to a few lines a run.
+
 ## Interface changes
 
 - 1b06735 `interface: named the slow path of a resolve averaged by a draw loading every sample`:
@@ -1764,7 +1932,9 @@ js-sys 0.3.107 MIT OR Apache-2.0 (wasm-bindgen-futures is no longer used); polls
 bytemuck 1.25.2 Zlib OR Apache-2.0 OR MIT; fastrand 2.5.0 Apache-2.0 OR MIT (the random test). Tool: wasm-bindgen-cli 0.2.130 MIT OR Apache-2.0.
 
 New in run 19, test-only: serde_json 1.0.154 MIT OR Apache-2.0 (its Cargo.toml; already in the
-lock file), for examples/frames.rs. Tool on the desktop: samply 0.13.1 MIT OR Apache-2.0 (its
+lock file), and pdb 0.8.0 MIT OR Apache-2.0 with the crates it brings, scroll 0.11.0 MIT,
+fallible-iterator 0.2.0 MIT/Apache-2.0 and uuid 1.29.3 Apache-2.0 OR MIT (their Cargo.toml files,
+checked in run 21), for examples/frames.rs. Tool on the desktop: samply 0.13.1 MIT OR Apache-2.0 (its
 Cargo.toml at the tag), testing only.
 
 New in run 8, test-only: libtest-mimic 0.8.2 MIT/Apache-2.0 (its Cargo.toml); on macOS only,

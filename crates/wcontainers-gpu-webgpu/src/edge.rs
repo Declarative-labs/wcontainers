@@ -4,7 +4,7 @@
 
 use wcontainers_gpu::SlowPath;
 
-use crate::{Stream, WebGpu};
+use crate::{GROUP, Stream, WebGpu, with_group};
 
 /// Copies bytes of `src` over bytes of `dst` in the words it touches, keeping the rest of each word.
 const EDGE_WGSL: &str = r#"
@@ -17,7 +17,7 @@ fn src_byte(a: u32) -> u32 {
     return (src[a >> 2u] >> ((a & 3u) * 8u)) & 0xffu;
 }
 
-@compute @workgroup_size(64)
+@compute @workgroup_size(GROUP)
 fn main(@builtin(global_invocation_id) id: vec3u) {
     if id.x >= p.words {
         return;
@@ -35,8 +35,10 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 }
 "#;
 
-/// Threads per workgroup of the program.
-const GROUP: u64 = 64;
+/// Where and how much a native buffer copy may move.
+const ALIGN: u64 = wgpu::COPY_BUFFER_ALIGNMENT;
+/// The bytes of a word the program reads and writes.
+const WORD: u64 = wcontainers_gpu::STORAGE_WORD;
 
 /// The program, made at its first use.
 pub struct EdgeProgram {
@@ -61,18 +63,21 @@ impl WebGpu {
         if size == 0 {
             return;
         }
-        if [src_at, dst_at, size].iter().all(|v| v.is_multiple_of(4)) {
+        if [src_at, dst_at, size]
+            .iter()
+            .all(|v| v.is_multiple_of(ALIGN))
+        {
             self.stream(stream)
                 .copy_buffer_to_buffer(src, src_at, dst, dst_at, size);
             return;
         }
         self.slow.hit(SlowPath::UnalignedBufferEdge);
-        if src_at % 4 != dst_at % 4 {
+        if src_at % ALIGN != dst_at % ALIGN {
             self.merge(stream, src, src_at, dst, dst_at, size);
             return;
         }
-        let head = ((4 - dst_at % 4) % 4).min(size);
-        let middle = (size - head) & !3;
+        let head = ((ALIGN - dst_at % ALIGN) % ALIGN).min(size);
+        let middle = (size - head) & !(ALIGN - 1);
         let tail = size - head - middle;
         self.merge(stream, src, src_at, dst, dst_at, head);
         if middle > 0 {
@@ -109,9 +114,9 @@ impl WebGpu {
         let align = u64::from(limits.min_storage_buffer_offset_alignment);
         // A piece's window adds up to `align` bytes before it and a word after it, and one more
         // word may need one more workgroup.
-        let piece = ((u64::from(limits.max_compute_workgroups_per_dimension) - 1) * GROUP * 4)
-            .min(limits.max_storage_buffer_binding_size - align - 4)
-            & !3;
+        let piece = ((u64::from(limits.max_compute_workgroups_per_dimension) - 1) * GROUP * WORD)
+            .min(limits.max_storage_buffer_binding_size - align - WORD)
+            & !(WORD - 1);
         let mut done = 0;
         while done < size {
             let n = (size - done).min(piece);
@@ -135,18 +140,18 @@ impl WebGpu {
         let align = u64::from(self.caps.limits.min_storage_offset_alignment);
         // Each buffer is bound from the aligned offset below the range to the word after it.
         let window = |at: u64| {
-            let start = at & !3 & !(align - 1);
-            (start, (at + size).next_multiple_of(4) - start)
+            let start = at & !(WORD - 1) & !(align - 1);
+            (start, (at + size).next_multiple_of(WORD) - start)
         };
         let (dst_start, dst_len) = window(dst_at);
         let (src_start, src_len) = window(src_at);
-        let first_word = (dst_at & !3) - dst_start;
+        let first_word = (dst_at & !(WORD - 1)) - dst_start;
         let params: Vec<u8> = [
             src_at - src_start,
             dst_at - dst_start,
             size,
-            first_word / 4,
-            (dst_len - first_word) / 4,
+            first_word / WORD,
+            (dst_len - first_word) / WORD,
             0,
             0,
             0,
@@ -154,7 +159,7 @@ impl WebGpu {
         .iter()
         .flat_map(|v| (*v as u32).to_le_bytes())
         .collect();
-        let words = (dst_len - first_word) / 4;
+        let words = (dst_len - first_word) / WORD;
         let uniform = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size: params.len() as u64,
@@ -207,7 +212,7 @@ impl WebGpu {
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: None,
-                source: wgpu::ShaderSource::Wgsl(EDGE_WGSL.into()),
+                source: wgpu::ShaderSource::Wgsl(with_group(EDGE_WGSL).into()),
             });
         let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
             binding,

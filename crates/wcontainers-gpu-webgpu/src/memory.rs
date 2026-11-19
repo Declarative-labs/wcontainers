@@ -18,6 +18,16 @@ use crate::{
     TextureObj, WebGpu, convert, packed, row_bytes,
 };
 
+/// Where and how much buffer copies, queue writes and clears may move.
+const ALIGN: u64 = wgpu::COPY_BUFFER_ALIGNMENT;
+
+/// The bytes of one query result.
+const QUERY_BYTES: u64 = wgpu::QUERY_SIZE as u64;
+
+/// Direct3D 12's alignment of a texture's rows placed in a buffer
+/// (`D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT`).
+pub(crate) const DX12_PLACEMENT_ALIGNMENT: u64 = 512;
+
 /// The most bytes of pattern a non-zero clear uploads.
 const PATTERN_BLOCK: u64 = 64 * 1024;
 
@@ -355,7 +365,7 @@ impl WebGpu {
     /// The bytes are queued, so they land before the commands recorded until the next submit; the
     /// browser stages queued bytes in a ring of its own, natively wgpu copies them once more.
     fn staging_at(&mut self, at: u64, data: &[u8]) -> (wgpu::Buffer, u64) {
-        let size = (at + data.len() as u64).next_multiple_of(4).max(4);
+        let size = (at + data.len() as u64).next_multiple_of(ALIGN).max(ALIGN);
         let (buffer, base) = self.staging_region(size);
         let mut padded = vec![0; size as usize];
         padded[at as usize..at as usize + data.len()].copy_from_slice(data);
@@ -562,19 +572,19 @@ impl WebGpu {
     /// before it.
     fn write_now(&mut self, b: &BufferObj, offset: u64, data: &[u8]) {
         let at = b.base.get() + offset;
-        let words = at.is_multiple_of(4) && data.len().is_multiple_of(4);
+        let words = at.is_multiple_of(ALIGN) && (data.len() as u64).is_multiple_of(ALIGN);
         if words && !self.lead_pending(b) {
             self.queue.write_buffer(&b.raw.borrow(), at, data);
             return;
         }
-        let (staging, base) = self.staging_at(at % 4, data);
+        let (staging, base) = self.staging_at(at % ALIGN, data);
         self.counters.staged_writes += 1;
         b.lead_in.set(self.serial);
         let dst = b.raw.borrow().clone();
         self.copy_bytes(
             Stream::Lead,
             &staging,
-            base + at % 4,
+            base + at % ALIGN,
             &dst,
             at,
             data.len() as u64,
@@ -585,13 +595,13 @@ impl WebGpu {
     fn staged_write(&mut self, b: &BufferObj, offset: u64, data: &[u8]) {
         let at = b.base.get() + offset;
         // The staged bytes sit in the same place of their word as their destination.
-        let (staging, base) = self.staging_at(at % 4, data);
+        let (staging, base) = self.staging_at(at % ALIGN, data);
         self.counters.staged_writes += 1;
         b.used_in.set(self.serial);
         let dst = b.raw.borrow().clone();
         let size = data.len() as u64;
         self.split_pass(SlowPath::WriteSplitPass, |w| {
-            w.copy_bytes(Stream::Main, &staging, base + at % 4, &dst, at, size)
+            w.copy_bytes(Stream::Main, &staging, base + at % ALIGN, &dst, at, size)
         });
     }
 
@@ -792,10 +802,10 @@ impl WebGpu {
         if src.0.storage.get() == dst.0.storage.get() {
             self.slow.hit(SlowPath::CopyWithinBuffer);
             // The temporary holds the bytes in the same place of their word as the source.
-            let at = src_offset % 4;
+            let at = src_offset % ALIGN;
             let temp = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: None,
-                size: (at + size).next_multiple_of(4),
+                size: (at + size).next_multiple_of(ALIGN),
                 usage: wgpu::BufferUsages::COPY_SRC
                     | wgpu::BufferUsages::COPY_DST
                     | wgpu::BufferUsages::STORAGE,
@@ -1293,15 +1303,22 @@ impl WebGpu {
             }
         };
         let pitch = u64::from(buffer.row_pitch);
+        let (row, rows) = row_bytes(region_format(t, region), extent.width, extent.height);
+        let gaps = (rows > 1 && pitch > row)
+            || (extent.depth_or_layers > 1 && u64::from(buffer.rows_per_layer) > rows);
+        let gaps_kept = to_texture
+            || !self.padded_reads
+            || !gaps
+            || offset.is_multiple_of(DX12_PLACEMENT_ALIGNMENT);
         if pitch.is_multiple_of(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT))
-            && offset.is_multiple_of(4)
+            && offset.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT)
+            && gaps_kept
         {
             copy(self, &raw, offset, pitch, u64::from(buffer.rows_per_layer));
             return;
         }
-        // The rows go through a buffer at a pitch WebGPU takes, one buffer copy per row.
+        // The rows go through a buffer at a pitch and place WebGPU takes, one buffer copy per row.
         self.slow.hit(SlowPath::RowsRepacked);
-        let (row, rows) = row_bytes(region_format(t, region), extent.width, extent.height);
         let api_pitch = row.next_multiple_of(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT));
         let layers = u64::from(extent.depth_or_layers);
         let temp = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -1355,7 +1372,7 @@ impl WebGpu {
         let raw = buffer.0.raw.borrow().clone();
         let offset = buffer.0.base.get() + offset;
         let zero = pattern.iter().all(|b| *b == 0);
-        if zero && offset.is_multiple_of(4) && size.is_multiple_of(4) {
+        if zero && offset.is_multiple_of(ALIGN) && size.is_multiple_of(ALIGN) {
             self.encoder().clear_buffer(&raw, offset, Some(size));
             return;
         }
@@ -1374,7 +1391,7 @@ impl WebGpu {
             .cycle()
             .take(block_size as usize)
             .collect();
-        let at = offset % 4;
+        let at = offset % ALIGN;
         let (staging, base) = self.staging_at(at, &block);
         let mut done = 0;
         while done < size {
@@ -1387,7 +1404,7 @@ impl WebGpu {
     fn map_target(&self, size: u64) -> wgpu::Buffer {
         self.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: size.max(4),
+            size: size.max(ALIGN),
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         })
@@ -1446,8 +1463,8 @@ impl WebGpu {
                 offset,
                 size,
             } => {
-                let start = offset & !3;
-                let end = (offset + size).next_multiple_of(4);
+                let start = offset & !(ALIGN - 1);
+                let end = (offset + size).next_multiple_of(ALIGN);
                 let target = self.map_target(end - start);
                 buffer.0.used_in.set(self.serial);
                 let raw = buffer.0.raw.borrow().clone();
@@ -1589,7 +1606,7 @@ impl WebGpu {
                     })
             })
             .collect();
-        let size = u64::from(places) * 8;
+        let size = u64::from(places) * QUERY_BYTES;
         let (sums, at) = Ring::region(
             &mut self.query_ring,
             &self.device,
@@ -1604,13 +1621,13 @@ impl WebGpu {
                 &raw,
                 slot..slot + n,
                 &sums,
-                at + u64::from(place) * 8,
+                at + u64::from(place) * QUERY_BYTES,
             );
         }
         if !pairs.is_empty() {
             let spare_count = spares_last.next_multiple_of(PAGE_ALIGN)
                 + (obj.pages.borrow().len() - obj.own_pages) as u32 * max;
-            let (spare, spare_at) = self.staging_region(u64::from(spare_count) * 8);
+            let (spare, spare_at) = self.staging_region(u64::from(spare_count) * QUERY_BYTES);
             let e = self.encoder();
             if spares_last > 0 {
                 e.resolve_query_set(
@@ -1622,17 +1639,22 @@ impl WebGpu {
             }
             for page in obj.own_pages..obj.pages.borrow().len() {
                 let k = base(page, 0);
-                e.resolve_query_set(&obj.page(page), 0..max, &spare, spare_at + u64::from(k) * 8);
+                e.resolve_query_set(
+                    &obj.page(page),
+                    0..max,
+                    &spare,
+                    spare_at + u64::from(k) * QUERY_BYTES,
+                );
             }
             self.add_segments(
                 (&sums, at, size),
-                (&spare, spare_at, u64::from(spare_count) * 8),
+                (&spare, spare_at, u64::from(spare_count) * QUERY_BYTES),
                 &pairs,
             );
         }
         let parts = parts
             .into_iter()
-            .map(|(r, place, n)| (r, at + u64::from(place) * 8, n))
+            .map(|(r, place, n)| (r, at + u64::from(place) * QUERY_BYTES, n))
             .collect();
         Ok((sums, parts))
     }
@@ -1708,11 +1730,17 @@ impl WebGpu {
         count: u32,
     ) -> Result<Readback, GpuError> {
         let (sums, parts) = self.resolved(set, first, count)?;
-        let size = u64::from(count) * 8;
+        let size = u64::from(count) * QUERY_BYTES;
         let target = self.map_target(size);
         let e = self.encoder();
         for (r, at, n) in parts {
-            e.copy_buffer_to_buffer(&sums, at, &target, u64::from(r) * 8, u64::from(n) * 8);
+            e.copy_buffer_to_buffer(
+                &sums,
+                at,
+                &target,
+                u64::from(r) * QUERY_BYTES,
+                u64::from(n) * QUERY_BYTES,
+            );
         }
         Ok(self.readback(target, None, 0, size, size, 1))
     }
@@ -1725,13 +1753,13 @@ impl WebGpu {
         dst: &Buffer,
         dst_offset: u64,
     ) -> Result<(), GpuError> {
-        if !dst_offset.is_multiple_of(8) {
+        if !dst_offset.is_multiple_of(QUERY_BYTES) {
             return Err(GpuError::Invalid(
                 "query results go to multiples of 8 bytes",
             ));
         }
         if dst_offset
-            .checked_add(u64::from(count) * 8)
+            .checked_add(u64::from(count) * QUERY_BYTES)
             .is_none_or(|end| end > dst.0.desc.size)
         {
             return Err(GpuError::Invalid("query results past the buffer's end"));
@@ -1743,7 +1771,13 @@ impl WebGpu {
         let to = dst.0.base.get() + dst_offset;
         let e = self.encoder();
         for (r, at, n) in parts {
-            e.copy_buffer_to_buffer(&sums, at, &raw, to + u64::from(r) * 8, u64::from(n) * 8);
+            e.copy_buffer_to_buffer(
+                &sums,
+                at,
+                &raw,
+                to + u64::from(r) * QUERY_BYTES,
+                u64::from(n) * QUERY_BYTES,
+            );
         }
         Ok(())
     }

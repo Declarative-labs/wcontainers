@@ -7,8 +7,11 @@
 // chrome-webgpu-viewports-rounded.png, prints first-draw timings with and without prepare, and checks
 // prepared strips, timestamps, the formats held converted, the vertex formats read through shadows
 // and BGRA vertices, query sets past 4096 queries and the query ring, copies between depth16unorm
-// and its group, and the cost of instance data fetched in the program.
-// Fails unless WebGPU's adapter is a GPU (discrete or integrated, not a fallback).
+// and its group, texture reads into buffers, subgroups and the primitive index where the adapter offers them, and the cost of
+// instance data fetched in the program.
+// Fails unless WebGPU's adapter is a GPU (discrete or integrated, not a fallback). Exits with the
+// code in the environment's NO_ADAPTER where Chrome gave no adapter at all, so the caller can launch
+// it again.
 import { writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { serve, launch } from './chrome.mjs';
@@ -19,7 +22,9 @@ const twists = given.length ? given : ['none'];
 const scenes = ['triangle', 'quads', 'instanced', 'quads-d24s8'];
 const server = await serve(pkg);
 const browser = await launch();
+class NoAdapter extends Error {}
 let failed = false;
+let noAdapter = false;
 try {
   const page = await browser.newPage();
   page.on('console', (m) => console.log(`page: ${m.text()}`));
@@ -31,7 +36,7 @@ try {
     info = await page.evaluate(() => window.adapterInfo()).catch(() => null);
     if (!info) await page.waitForTimeout(200);
   }
-  if (!info) throw new Error('no WebGPU adapter');
+  if (!info) throw new NoAdapter('no WebGPU adapter');
   console.log(`webgpu adapter: ${JSON.stringify(info)}`);
   if (info.fallback || !['discrete GPU', 'integrated GPU'].includes(info.type)) {
     console.log('chrome: WebGPU did not use a GPU adapter');
@@ -122,6 +127,22 @@ try {
     console.log(`chrome depth group copies failed: ${e.message}`);
     failed = true;
   }
+  // Texture reads into buffers: rows exact, the bytes between them kept (seed 1).
+  try {
+    console.log(`chrome ${await page.evaluate(() => window.copyGaps(1))}`);
+  } catch (e) {
+    console.log(`chrome texture reads into buffers failed: ${e.message}`);
+    failed = true;
+  }
+  // Subgroups and the primitive index: declared wherever the adapter offers them, and drawn as
+  // they define.
+  try {
+    const lines = (await page.evaluate((o) => window.programFeatures(o), info.features)).split('\n');
+    for (const line of lines) console.log(`chrome ${line}`);
+  } catch (e) {
+    console.log(`chrome program features failed: ${e.message}`);
+    failed = true;
+  }
   // Instance data fetched in the program against vertex buffers (20 frames a route): the routes
   // draw alike; their timings are printed.
   try {
@@ -131,8 +152,12 @@ try {
     console.log(`chrome instance data failed: ${e.message}`);
     failed = true;
   }
+} catch (e) {
+  if (!(e instanceof NoAdapter)) throw e;
+  console.log(`chrome: ${e.message}`);
+  noAdapter = true;
 } finally {
   await browser.close();
   server.close();
 }
-process.exitCode = failed ? 1 : 0;
+process.exitCode = noAdapter && process.env.NO_ADAPTER ? Number(process.env.NO_ADAPTER) : failed ? 1 : 0;
