@@ -32,7 +32,9 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   look-ahead none) and a fork, exec and signal program alike on both outputs; Docker came back at 04:59 and the bar passed
   against the reference, 55 of 55 commands, and hello and the fork program give the reference's output and status (below,
   "N3 run 6"); run 7 settled the independent check's two blocking and five minor findings (below, "N3 run 7"); run 8 settled the
-  next check's three blocking and five minor findings (below, "N3 run 8"). N3 is done, for its independent check.
+  next check's three blocking and five minor findings (below, "N3 run 8"); run 9 settled the next check's blocking finding
+  (guest pages now get their frames at the first touch) and its minor ones (below, "N3 run 9"). N3 is done, for its
+  independent check.
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -59,6 +61,66 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N3 run 9 (2026-11-19): the independent check of run 8, and how each finding was settled
+
+Start: origin/main and origin/phase-1-literals had nothing new.
+
+The check's findings:
+- Blocking, an ordinary large anonymous mapping killed the whole inside: settled (309bb4d4). The CPU side took and zeroed a
+  frame for every page as soon as a range got permissions, and kept unmapped pages' frames; when frames ran out the inside's
+  own heap failed and it panicked. Now, as plan 5.1 and 5.2 say:
+  - what each range allows is kept as ranges (`rangemap`, already the kernel's dependency), and so are the ranges that show
+    a shared block; only pages that have a frame have a record and a table entry;
+  - a page gets its frame at its first touch: the fault on a page with no frame that allows the access backs it and runs
+    the same instruction again (a shared block's page gets its frame once, for every process showing it; the kernel's
+    `write` and `shared_write` back pages the same way; reads of a page with no frame give zeros);
+  - a whole page the kernel zeroes gives its frame back and reads as zeros until touched again (a part of a page is
+    zeroed in place; the old code zeroed the whole frame for a part, which `clear_user` reaches); zeroing ends sharing
+    with a private copy of what the page held, except for pages zeroed whole;
+  - the guest's frames leave Linux's minimum watermark for that much memory free for the inside's heap (4 MiB of the
+    test machine's 1 GiB), so the inside never fails because the guest used memory: a request the kernel makes then
+    fails with ENOMEM, and a touch kills its process (`MemoryFaultWithoutRegisters`, the kernel's SIGSEGV kill; Linux's
+    out-of-memory killer sends SIGKILL: Departures). Both count "guest-physical space full".
+  The plan says so now (5.1). A new program of this track's, tests/guest/mappings.c in the kernel test, does what the
+  check's bigmap and bigmap2 did and more: a 1536 MiB private mapping read and written at its ends, 64, 512, 700 and 900
+  MiB each touched and unmapped, 64 MiB written at every page, unmapped and mapped again 24 times (1.5 GiB in all, more
+  than the machine's 1 GiB), contents kept while pages allow nothing, and a 256 MiB shared mapping a child writes. Alike on
+  both sides and the reference's output and exit code. Asked to write every page of 1536 MiB, it is killed natively
+  (status 0xb) with "guest-physical space full" counted, and the inside goes on. 4096 MiB is left out: the WebAssembly
+  side's ceiling refuses it, a ruled difference.
+- Minor, "guest-physical space full" and "large entry split" never reached the policy: settled. `send_warnings` reports
+  both floor counters as it reports "asked the host"; the floor no longer prints its own warning lines. The names are the
+  inside's `reason::GUEST_PHYSICAL_SPACE_FULL` and `LARGE_ENTRY_SPLIT`.
+- Minor, "exact floating point requested" defined twice: settled (5fe18041). It is guest-cpu's
+  `reason::EXACT_FLOATING_POINT_REQUESTED`, which `Reason::name` and the inside use; its baseline line is gone.
+- Minor, a directory's size from `stat` (1680, the reference 4096) and the directory order seen through `tar`: the
+  kernel's, alike on both our outputs; passed to the kernel track (Asked of the kernel track, 3 and 4).
+- Minor, two `System` implementations for the test crate's policy: still waiting for the ruling on R1 and R3 (Departures,
+  N3 run 5); nothing changed.
+
+Results (M5 Max; scratch native/n3r9; all on the Mac, as the monitor's tests need Hypervisor.framework):
+- kernel test (kernel.log, 08:20, load 22 to 25, 37 s once built): hello, getppid, forks, code and mappings alike on both
+  sides and against the reference. Exits of the machine: 1867 with no getppid calls, 1870 with 100,000, 1870 with 200,000.
+  code: "code changed after it ran" 3 natively, 2 on the WebAssembly side. mappings asked to write 1536 MiB: status 0xb
+  natively, "guest-physical space full" 1.
+- exits test (exits.log, load 20 to 25): 4 programs, 0 failed, both modes, 4742 pieces.
+- floor test (floor.log, load 20 to 24): 21 cases and 1 measurement, 0 failed, 300 stops (pc outside the loop 0 times,
+  count went back 0 times), stop delay median 2292 ns, 99th 5292 ns.
+- The bar (busybox.log, 08:22 to 08:25, load 20 to 24): "busybox: 55 commands gave the reference's output, exit code and
+  files", seed 0x6b65726e, 169 s with Docker's runs; each command 8,119 to 14,125 exits of the machine, as in run 8. No
+  container of this run left.
+- Literals: the check exits 0; one baseline line fewer (guest-cpu's float name), none added, no mark.
+- The whole suite of what this track owns, once before the push (suite.log, 08:25 to 08:34, load 20 to 43): guest-cpu,
+  arm64, the inside, the monitor, the policy crate and the literal check's tests, `--no-fail-fast`: passed (36 test
+  binaries ok). In it: the bar again, 55 commands as the reference (173 s); kernel alike and against the reference; exits 4
+  programs, 0 failed, both modes; floor 21 cases and 1 measurement, 0 failed; native 32,562 cases, 0 failing; interrupts
+  2500, 0 failed; probe 0 forms of 16 bytes or fewer differ (44 larger, as before). The translator with `native`: passed.
+
+What comes next:
+1. N3's independent check (how to run it: "How to run"; `--test kernel` now also runs mappings.c).
+2. N4 (linking and speed), with decision 10 for turns that end at a count once pieces are linked.
+3. R3's rest, when the orchestrator rules on R1 and R3.
 
 ## N3 run 8 (2026-11-19): the independent check of run 7, and how each finding was settled
 
@@ -1013,7 +1075,7 @@ From the checkout, in the Nix shell:
 - the monitor's translate answer through a link page: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor
   --lib`;
 - N3's kernel and loop inside the machine against the same kernel, loop and policy on the WebAssembly CPU side, hello,
-  the getppid exit count and the fork, exec and signal program: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test kernel` (knob
+  the getppid exit count, the fork, exec and signal program, the code program and the mappings program: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test kernel` (knob
   `WCONTAINERS_KERNEL_SEED`, seeds the policy and the random bytes; about 8 s once built);
 - N3's bar, the busybox `text` and `files` commands in the kernel inside against the reference (needs Docker and alpine:3.22):
   `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test busybox` (knob `WCONTAINERS_KERNEL_SEED`; about 20 s for
@@ -1166,7 +1228,13 @@ From the checkout, in the Nix shell:
 2. Placement low first, in tiers, never depending on the ceiling (runtime.md section 8, lines 416-425), in
    place of top-down from 128 MiB below `address_space().end` (kernel/memory.rs:254-260 and :407-430, the end
    from loader.rs:503 and task.rs:726).
-With both, a process gets the same addresses and is told the same memory size under the WebAssembly back
+3. (N3 run 9, not K2) `munmap` only takes a range's permissions away (kernel/memory.rs:488) and zeroes it when the range
+   is mapped again (`clear_used`, :779), so on the native back end an unmapped page keeps its frame until then; Linux
+   frees it at once. Zeroing at the unmap (or a `Cpu` call that says the range is gone) would give it back at once.
+4. (N3 run 9, not K2) A directory's size from `stat` is 1680 for the image's /bin where the reference says 4096, and a
+   directory's entries come in another order than the reference's (seen through `find`, and `tar`, whose archive's bytes
+   differ for it). Alike on both our outputs.
+With 1 and 2, a process gets the same addresses and is told the same memory size under the WebAssembly back
 end (ceiling just under 4 GiB) and the native one (2^45), which replay across the outputs needs.
 
 ## Licences of what N1 added (crates.io, 2026-11-18)
@@ -1196,6 +1264,8 @@ which bring the workspace's translator dependencies into it, all already in Carg
 Apache-2.0 WITH LLVM-exception, wasm-encoder 0.263.0 Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT,
 yaxpeax-arch 0.3.3 and yaxpeax-arm 0.5.0 0BSD. zerocopy is a test-only dependency of the monitor (the cases'
 messages).
+N3 run 9: the inside depends on rangemap 1.8.0 (MIT/Apache-2.0, crates.io licence field read 2026-11-19; already in
+Cargo.lock as the kernel's), for what each range of a process allows and which ranges show a shared block.
 
 ## Literals
 
@@ -1343,6 +1413,15 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 ## Departures from the plan
 
+- N3 run 9, a touch for which no frame is left kills its process with the kernel's SIGSEGV kill
+  (`Exit::MemoryFaultWithoutRegisters`); Linux's out-of-memory killer sends SIGKILL. The abi's `Exit` has no other way to
+  say "kill this process" and is not this track's crate (For the orchestrator).
+- N3 run 9, the frames kept for the inside's heap are Linux's minimum free-memory watermark for the machine's memory
+  (`calculate_min_free_kbytes`: the square root of 16 times the kibibytes, in kibibytes), rounded up to whole 2 MiB blocks:
+  the plan named no amount. An unmapped page keeps its frame until the kernel zeroes its range (Asked of the kernel
+  track, 3).
+- N3 run 9, a page's first touch is not counted as a slow path: it is how memory is given, as on Linux.
+
 - N3 run 7, the whole TLB invalidation of a new generation of identifiers is a routine the monitor writes with the encoder
   (`encode::invalidate_whole_tlb`, the form SYS with TLBI VMALLE1IS's fields as one named constant), not inline assembly:
   the literal check counts an assembly template as a string literal and its baseline may only shrink. A new generation
@@ -1466,6 +1545,11 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N3 run 9: for the abi's owners: `Exit` has no way to say "kill this process" other than `MemoryFaultWithoutRegisters`
+  (SIGSEGV), so a touch the native back end has no frame for is killed with SIGSEGV where Linux's out-of-memory killer
+  sends SIGKILL. For the kernel track: Asked of the kernel track, 3 (frames of unmapped pages) and 4 (`stat`'s directory
+  size, directory order). R1 and the first R3 still wait for a ruling.
 
 - N3 run 8: for the WebAssembly output's owners (wcontainers-wasmtime, not this track's): its "code changed after it ran"
   compares bytes only of code ranges that carry a hash, so code written into an anonymous mapping, run, rewritten without
