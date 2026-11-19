@@ -38,8 +38,9 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   10"). N3 is done, for its independent check.
 - N4 (linking and speed) is started, not done: run 1 settled the last check's findings and built pieces to the end of
   their page at the monitor's look-ahead, filled entry slots, linked direct exits, turns with a count limit run in
-  steps, and the count test across look-aheads (below, "N4 run 1"). One known failure: the kernel test's mappings
-  program at look-ahead none.
+  steps, and the count test across look-aheads (below, "N4 run 1"); run 2 fixed the mappings failure at look-ahead none,
+  built the speed test and made returns go by `br`: the speed bar fails, +63.74% [+61.86 .. +65.48] against +21.2%
+  (below, "N4 run 2"). The call stub and T1's look-aheads come next.
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -66,6 +67,68 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N4 run 2 (2026-11-19): the mappings failure, the speed test, returns by br
+
+Start: origin/main and origin/phase-1-literals had nothing new. T1 is still not on any branch (origin/phase-1-translator
+8c7a4b5b: `Finder` and `plan` private in full.rs), so the finder's look-aheads stay undone.
+
+Fixed (482cc0f5, 86b4f1ee):
+- The mappings program at look-ahead none ran the inside out of heap. Found by printing each growth of the heap: making a
+  256 MiB shared anonymous mapping, the kernel writes 256 MiB of zeros into the new shared block (shared.rs `grow`) with
+  two 256 MiB buffers alive, and the native side gave every page of the block a frame for those zeros, so the 1 GiB
+  machine had no 129 free blocks in a row left at none (at 256 it just fit). Now zeros written to a block's page with no
+  frame take none (such a page reads as zeros already). Both look-aheads pass.
+- The run that writes 1.5 GiB and is killed when guest-physical memory is full then differed between look-aheads in the
+  positions' hash: where memory runs out depends on what the inside holds for itself (code, slot pages), which the
+  look-ahead changes. The stop where it ran out is still counted but its position is left out of the hash (the guest's
+  outcome, killed by SIGSEGV, is compared as before).
+
+Built:
+- tests/speed.rs (044b2552), the speed method of section 8, one command (plan section 8 says how it is built): bench.c's
+  eight workloads and calls.c, plain on the host against `native-kernel`, alternating pairs, cycles, instructions and the
+  share on performance cores from `proc_pid_rusage` v6, outputs and exit codes required equal, the seeded bootstrap and
+  the decision rule with doubling up to 60 pairs. Knobs in the file's head and "How to run".
+- Returns go by `br t`, not `ret t` (efead6ec): with no call stub a `ret` was foreseen from a return-address stack
+  holding none of the guest's. A departure until the call stub (below).
+- No dependency added. Literals: the check exits 0, no marks, nothing added to the baseline (the syscall number
+  register's constant moved to the inside's `stop` module so the test imports it).
+
+Measured (M5 Max, all on the Mac, look-ahead 256, 15 pairs per program, bootstrap seed 1 with 2000 resamples; raw pairs
+and logs in scratch native/n4r2):
+- Before the return change (speed-base.log, load 30 to 37): geometric mean of the eight median cycles ratios +102.25%,
+  95% interval [+100.04 .. +104.41]: fails the bar (+21.2%). fib +544.3, sieve +43.7, hash +3.4, sort +243.9, interpret
+  +120.9, matrix +91.5, walk +20.3, search +67.0; calls +480.8.
+- Returns by `br` (speed.log, load 37 to 60): +63.74% [+61.86 .. +65.48], fails the bar. fib +108.8, sieve +47.2, hash
+  +3.3, sort +94.4, interpret +119.9, matrix +95.6, walk +19.2, search +63.2; calls +63.0. Instructions +39 to +203%.
+  Share of cycles on performance cores 38 to 51% on both sides (the Mac is loaded). A quick check at 10 pairs on fib,
+  sort, interpret and calls alone (speed-br.log) gave the same picture.
+- What the figures point at (expected, not measured apart): calls and returns still cost a jump sequence and two
+  indirect branches each way; every loop's back edge leaves its piece through an exit linked by a `b` (a piece is a
+  straight-line run until T1 gives stretches); interpret's dispatch is a jump through a register. These are the call
+  stub's and T1's work.
+
+Results of the bar's other parts after these changes (all on the Mac):
+- kernel (kernel2.log, load 33 to 39): every program alike at none and 256, mappings included, blocks' KNOWN FAILURE on
+  the WebAssembly side only; 70 s.
+- busybox (busybox.log, load 20 to 34): 56 commands gave the reference's output, exit code and files, at none and 256
+  alike; bzip2's pipeline 12,618 exits.
+- interrupts 3627 forced interrupts over 8 functions at 3 look-aheads, 0 failed; exits 4 programs both modes, 0 failed
+  (after the return change).
+
+What N4 still needs, in order:
+1. The call stub (plan 3.2): a call at G starts its own piece (the stub: `ubfx x30, x30, #2, #45`, the count's add,
+   then the callee), G's slot ends in `blr` to it, exits into it are not linked (they must pass the slot's `blr`), a
+   return is the jump ending in `ret t`; the stop resolution takes a pc at the stub's start as the call made (x30 from
+   the slot address, the count with the call). Then measure it against today's plain calls.
+2. T1 (the finder apart from the WebAssembly plans) from the translator track, then bounded look-ahead as stretches
+   (loops inside one piece) and full look-ahead.
+3. The system-call part of the bar (10^6 getppid against the same program doing nothing, the kernel's share by layer 1)
+   and the untranslated run at EL0 on the floor beside each workload.
+4. Load-time addresses, the cache with the native key and disk files, loaded translations shared between processes.
+5. The dynamic register uses counted and the withheld registers chosen; 2 MiB entries with the contiguous bit measured;
+   the Split route's page test measured.
+6. The count identical across look-aheads on the benchmark set (the kernel and busybox tests do it for their programs).
 
 ## N4 run 1 (2026-11-19): the last check's findings, linking, and the count across look-aheads
 
@@ -1229,6 +1292,12 @@ From the checkout, in the Nix shell (on the Mac set CARGO_INCREMENTAL=0):
   `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test busybox` (knobs `WCONTAINERS_KERNEL_SEED` and
   `WCONTAINERS_KERNEL_SEEDS`; 56 commands, the last this track's; about 20 s a seed for the native side's runs, plus
   Docker's);
+- N4's speed bar (section 8), bench.c's eight workloads and calls.c plain on the host against the kernel inside, one
+  command: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test speed` (knobs `WCONTAINERS_SPEED_PAIRS`,
+  default 15, doubled while undecided up to 60; `WCONTAINERS_SPEED_SEED` and `WCONTAINERS_SPEED_RESAMPLES` for the
+  bootstrap, default 1 and 2000; `WCONTAINERS_SPEED_RAW` the file each pair is appended to as a JSON line;
+  `WCONTAINERS_SPEED_PROGRAMS` a comma-separated subset, which gives figures but no verdict; `WCONTAINERS_NATIVE_BOUND`
+  the look-ahead; about 15 minutes at 15 pairs; it fails while the bar fails);
 - N3's native CPU side against the WebAssembly one on static programs: `nix develop -c cargo test -j 4 -p
   wcontainers-hypervisor --test exits` (both modes; `WCONTAINERS_EXITS_EXACT=0` or `1` runs one; about 1 s);
 - N2's tests without the machine: `nix develop -c cargo test -j 4 -p wcontainers-arm64 --test native_routes --test encode --
@@ -1383,6 +1452,11 @@ From the checkout, in the Nix shell (on the Mac set CARGO_INCREMENTAL=0):
 4. (N3 run 9, not K2) A directory's size from `stat` is 1680 for the image's /bin where the reference says 4096, and a
    directory's entries come in another order than the reference's (seen through `find`, and `tar`, whose archive's bytes
    differ for it). Alike on both our outputs.
+5. (N4 run 2, not K2) A writable `PT_LOAD` segment with no bytes in the file (`p_filesz` 0, all zeroed data) that does
+   not start a page is mapped only from the first page boundary after its start (kernel/loader.rs:862-915: the file
+   mapping is skipped and the zeroed one starts at `page_up(file_end)`), so its first bytes fault; Linux maps it from
+   the page holding its start. zig's lld lays out a freestanding bench.c that way (bss at 0x1021400); the speed test
+   links with `-z separate-loadable-segments` to keep clear of it.
 With 1 and 2, a process gets the same addresses and is told the same memory size under the WebAssembly back
 end (ceiling just under 4 GiB) and the native one (2^45), which replay across the outputs needs.
 
@@ -1563,6 +1637,17 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 ./mirror` without the framework; the KVM runs as in kvm-laptop.out from ~/native-plan/vm on the laptop.
 
 ## Departures from the plan
+
+- N4 run 2: a guest return is the jump ending in `br t`, not `ret t` (plan 3.2), until the call stub pushes the return
+  address's slot; measured, a `ret` with nothing pushed cost fib +544% against +109% (the plan says so now).
+- N4 run 2: the speed test's plain run is the same Linux program's file mapped in a host process, its `svc` words made
+  breakpoints whose handler answers write and exit (the only calls bench.c and calls.c make), since macOS cannot run
+  Linux's system calls and bench.c belongs to the translator track. Its programs are built with
+  `-ffreestanding` (zig would otherwise call a memset bench.c does not have) and x18 reserved, and linked with
+  `-z separate-loadable-segments` to keep clear of a kernel loader bug (Asked of the kernel track, 5). The plan measured E's
+  cost with round 3's flags, which also had `-ffreestanding`.
+- N4 run 2: the speed test defines macOS's `rusage_info_v6`, its `ucontext_t` head and ARM64 thread state itself: libc
+  has `rusage_info_v4` only and no ARM64 macOS signal context. Its program base 1 TiB is a named constant there.
 
 - N4 run 1: plan 5.5 said a turn with a count limit is refused as `Failure` once pieces are linked, until decision 10.
   It runs in single steps instead (exact, no check in translated code, a counted slow path only in such turns), so the
