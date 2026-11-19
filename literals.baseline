@@ -2298,14 +2298,6 @@ code	crates/wcontainers-direct3d-12/src/dxil.rs	int	Reader::kind	5
 code	crates/wcontainers-direct3d-12/src/dxil.rs	int	Reader::kind	6
 code	crates/wcontainers-direct3d-12/src/dxil.rs	int	Reader::kind	7
 code	crates/wcontainers-direct3d-12/src/dxil.rs	int	Reader::kind	8
-code	crates/wcontainers-direct3d-12/src/dxil.rs	int	Reader::views	10
-code	crates/wcontainers-direct3d-12/src/dxil.rs	int	Reader::views	3
-code	crates/wcontainers-direct3d-12/src/dxil.rs	int	Reader::views	4
-code	crates/wcontainers-direct3d-12/src/dxil.rs	int	Reader::views	6
-code	crates/wcontainers-direct3d-12/src/dxil.rs	int	Reader::views	8
-code	crates/wcontainers-direct3d-12/src/dxil.rs	int	multisampled_arrays	3
-code	crates/wcontainers-direct3d-12/src/dxil.rs	int	multisampled_arrays	4
-code	crates/wcontainers-direct3d-12/src/dxil.rs	int	multisampled_arrays	6
 code	crates/wcontainers-direct3d-12/src/dxil.rs	int	resource_lists	16
 code	crates/wcontainers-direct3d-12/src/dxil.rs	int	resource_lists	20
 code	crates/wcontainers-direct3d-12/src/dxil.rs	int	resource_lists	4
