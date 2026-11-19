@@ -5,7 +5,7 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 ## Where things stand
 
 M0 to M5, S1 and P1 are built; their work is recorded below, newest first. P2 (the long runs to the plan's
-pass bars) is under way and its driver is running detached (layer 3 now): see "P2" just below for how to
+pass bars) is under way, in layer 3: its driver runs detached, but may be stopped for a Docker outage; see "P2" just below for how to
 check it is alive (do that first; never start a second one), watch it, restart it, and what is left. Refinements of M5 that remain are listed under "M5, fourth run, what comes next".
 
 ## P2: the long runs to the pass bars
@@ -69,12 +69,23 @@ The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three laye
   (failure 7 below), same command, chunk 113 first. Stopped 18:50 during chunk 127 (no line) after chunk
   126 failed on Docker's outage, and restarted 18:51 on 99eda5e (failure 8 below), same command. Stopped
   21:16 after chunk 135 (chunk 136 had just started, no line) and restarted 21:17 on 6a705f8 (failure 9
-  below), same command; that run (driver pid 42129 at the time of writing) is the one going now, chunk 133
-  first. To stop it right after a chunk ends: the scratch script
+  below), same command, chunk 133 first. Stopped 2026-11-19 02:07 during chunk 153 (no line): Docker's
+  Linux machine stopped again at 02:05 ("the virtualization process exited without being asked to"), and
+  this time Docker Desktop did not come back by itself but showed its error (offering Quit or Reset).
+  Docker is shared, so it was left alone and the driver stopped, rather than let it run through chunks
+  that can only fail. See "Docker outages" below for what to do. To stop it right after a chunk ends: the scratch script
   `.../p2/stop-after-chunk.sh` (waits up to 9 minutes for a ledger line, then stops the driver, its test
-  and containers). One look at the progress, waiting up to 9 minutes for a new line: `.../p2/look.sh`. Use `WC_LONG_ACCEPT=c38b4ad
+  and containers). One look at the progress, waiting up to 9 minutes for a new line: `.../p2/look.sh`;
+  `.../p2/watch.sh` waits 9.5 minutes, or less if a chunk does not pass, the driver ends or Docker stops
+  answering, and also shows how long the running chunk's log has been quiet. Use `WC_LONG_ACCEPT=c38b4ad
   WC_LONG_LIMIT=180` on any later restart too. Each restart appends to `driver.log`; the code it runs is the copy in
   `trees/<commit>`, so commits in the checkout do not reach it until it is restarted.
+- Docker outages: Docker's Linux machine stopped on its own twice (2026-11-18 18:14, back by 18:18;
+  2026-11-19 02:05, not back by itself). Since 99eda5e a case whose container Docker could not run fails
+  with "Docker failed" and is never compared, so an outage fails a chunk; it does not pass a wrong one.
+  When `docker version` answers again: check no `wc-translator-` container is left, then restart the
+  driver with the command above (it runs the failed or stopped chunks again first). Do not quit, restart
+  or reset Docker Desktop from this track: other tracks' containers run in it.
 - Disk: each copy's `trees/<commit>/target/programs` keeps every built program, about 330 MB a chunk
   (the copy of 445e3cf had 19 GB after 54 chunks). After a restart, delete `trees/<old commit>/target` of
   every copy no longer running (done 2026-11-18 18:50: 48 GB freed; sources and logs kept).
@@ -115,13 +126,18 @@ Progress (from the ledger):
   commit as above plus 9d54ef3 to chunk 114 and 6b74146 for 113 and 115 to 125. Chunks on 6b74146 took
   738 to 1,879 s at load 37 to 76. The remaining about 45,260 compared are about 103 chunks; at about 18
   minutes a chunk that is about 31 hours (an extrapolation).
+- Layer 3 at 2026-11-19 02:07: 152 chunks passed, 66,505 compared, 0 mismatches of the translator. Passed
+  chunks by commit: 445e3cf 54, de8f4a2 2, 7ec7920 14, 33afa1e 14, 9d54ef3 29, 6b74146 12, 99eda5e 9,
+  6a705f8 18 (chunks 133 and 136 to 152). On 99eda5e and 6a705f8 chunks took 671 to 1,819 s at load 25
+  to 152. The remaining about 33,500 compared are about 77 chunks; at about 16 minutes a chunk (the pace
+  from 21:17 to 02:05) that is about 21 hours once Docker is back (an extrapolation).
 - 46 to 82 of each chunk's 500 programs (9 to 16 percent) do not end on Linux within the reference's 20 s
   alarm and are not compared (counted in `sample`). Across chunks 1 to 30 the count does not follow the load
   at the chunk's start (47 at load 65, 82 at load 13), so it is Csmith's programs that loop or run long,
   not the load.
 
 What is left of P2, in order:
-1. Let layer 3 run to 100,000 compared (at 18:50 on 2026-11-18: 125 chunks passed, 54,740 compared). First
+1. Let layer 3 run to 100,000 compared (at 02:07 on 2026-11-19: 152 chunks passed, 66,505 compared; the driver is stopped until Docker is back, see "Docker outages"). First
    check the driver is alive (`pgrep -fl long-runs.sh`, the `bash .../long-runs.sh` line). Treat any failing
    chunk as a real mismatch until shown otherwise: read its log (`logs/layer3-<k>-<commit>.log`, the line
    `csmith <n> (case <i>): ...`), replay it with the ledger's `replay=` command, find the cause, write a
