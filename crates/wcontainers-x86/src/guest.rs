@@ -527,7 +527,7 @@ impl Guest for X86_64 {
             };
         }
         match ins.mnemonic() {
-            Push => {
+            Push | Pushf | Pushfq => {
                 let bytes = stack_bytes(i);
                 let push = through(RSP, -i64::from(bytes), bytes, AccessKind::Write);
                 match explicit {
@@ -583,7 +583,7 @@ impl Guest for X86_64 {
             && ins.op_kind(0) == OpKind::Register
             && general(ins.op_register(0)).is_some_and(|g| g.number == RSP);
         match ins.mnemonic() {
-            Push => StackMove::By {
+            Push | Pushf | Pushfq => StackMove::By {
                 delta: -i64::from(stack_bytes(i)),
                 before_access: true,
             },

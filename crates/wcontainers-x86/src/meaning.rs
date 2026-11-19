@@ -96,7 +96,7 @@ pub fn written(i: &Instruction) -> bool {
                     | Push | Pop | Call | Ret | Jmp | Shl | Sal | Shr | Sar | Rol | Ror | Rcl
                     | Rcr | Mul | Imul | Div | Idiv | Syscall | Nop | Pause | Reservednop | Int3
                     | Int1 | Int | Sysenter | Ud0 | Ud1 | Ud2 | Clc | Stc | Cmc | Cld | Std | Bt | Bts
-                    | Btr | Btc | Jrcxz | Jecxz
+                    | Btr | Btc | Jrcxz | Jecxz | Pushf | Pushfq
             ))
         // Far transfers through memory: a selector with the offset.
         && !(matches!(m, Call | Jmp) && is_memory(i, 0) && memory_bytes(i) != 8)
@@ -190,6 +190,20 @@ fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
             set_general(e, register(RDX, w), value);
         }
         Push => push(e, i),
+        Pushf | Pushfq => {
+            // rflags as user code sees it: the six flags, the bits kept in the block, and those always set.
+            let word = word_with(e, &[]);
+            let value = e.local(ValType::I64);
+            e.get_control(Control::Rflags);
+            let mut s = e.sink();
+            s.local_get(word)
+                .i64_extend_i32_u()
+                .i64_or()
+                .i64_const(crate::ALWAYS as i64)
+                .i64_or()
+                .local_set(value);
+            push_value(e, i, None, value);
+        }
         Pop => pop(e, i),
         Call => call(e, i),
         Ret => {
@@ -559,9 +573,19 @@ fn canonical_target<E: Emitter<X86_64> + ?Sized>(e: &mut E, local: u32) {
 }
 
 fn push<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
-    let bytes = stack_bytes(i);
     let mem = checked(e, i);
     let value = read(e, i, 0, mem);
+    push_value(e, i, mem, value);
+}
+
+/// Push the i64 in `value`, the instruction's operand (read from memory at `mem`) or what it makes.
+fn push_value<E: Emitter<X86_64> + ?Sized>(
+    e: &mut E,
+    i: &Instruction,
+    mem: Option<u32>,
+    value: u32,
+) {
+    let bytes = stack_bytes(i);
     // The stack's addresses are 64 bits whatever the operand's size is.
     let stack = Instruction {
         address32: false,

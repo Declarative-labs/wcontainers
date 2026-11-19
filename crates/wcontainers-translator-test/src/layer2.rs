@@ -294,6 +294,16 @@ pub enum WalkMove {
     },
 }
 
+/// The name of a layer 2 program's blob.
+pub const BLOB_NAME: &str = "layer2";
+
+/// A walk's counter kinds (`Walk::counter`).
+pub const COUNT_DOWN: u8 = 0;
+pub const COUNT_UP: u8 = 1;
+pub const UP_TO_BOUND: u8 = 2;
+pub const DOWN_TO_BOUND: u8 = 3;
+pub const DECREMENT: u8 = 4;
+
 /// A loop over memory: its counter and the access it makes each turn.
 #[derive(Clone, Copy, Debug)]
 pub struct Walk {

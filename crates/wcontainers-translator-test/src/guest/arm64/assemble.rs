@@ -1065,7 +1065,7 @@ pub(super) fn assemble(program: &Program) -> Blob {
     dynasm!(ops ; .arch aarch64 ; =>edge);
     let bytes = ops.finalize().expect("labels resolve");
     Blob {
-        name: "layer2".into(),
+        name: BLOB_NAME.into(),
         bytes,
         code_bytes,
         load: crate::programs::LOAD,

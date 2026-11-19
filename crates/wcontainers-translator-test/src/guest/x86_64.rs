@@ -1,6 +1,8 @@
 //! x86-64's part of the harness: the forms from iced-x86's own tables, cases drawn for each, the state both
 //! sides compare, and what a reference signal means.
 
+mod assemble;
+
 use super::*;
 use crate::layout::{CODE, DATA, DATA_BYTES, DATA_WRITABLE};
 use crate::reference::Target;
@@ -218,6 +220,31 @@ impl GuestTest for X86_64 {
             const R11: usize = 11;
             expected.state.0[R11] &= !u128::from(wcontainers_x86::TF);
         }
+        // The same trap flag in the image `pushf` stores; a byte it then leaves as it was is not changed.
+        if matches!(instruction.mnemonic(), Mnemonic::Pushf | Mnemonic::Pushfq)
+            && matches!(expected.stop, Stop::Landed(_))
+        {
+            let tf = wcontainers_x86::TF.trailing_zeros();
+            let bytes = u64::from(instruction.stack_pointer_increment().unsigned_abs());
+            let at = (case.state.0[RSP] as u64)
+                .wrapping_sub(bytes)
+                .wrapping_add(u64::from(tf / u8::BITS))
+                .wrapping_sub(DATA);
+            let mut start = vec![0; DATA_BYTES as usize];
+            crate::layout::fill(case.seed, &mut start);
+            if let Some(&first) = start.get(at as usize) {
+                let changed = &mut expected.changed;
+                let place = changed.partition_point(|&(o, _)| u64::from(o) < at);
+                let found = changed.get(place).filter(|&&(o, _)| u64::from(o) == at);
+                let stored = found.map_or(first, |&(_, v)| v) & !(1 << (tf % u8::BITS));
+                match (found.is_some(), stored == first) {
+                    (true, true) => _ = changed.remove(place),
+                    (true, false) => changed[place].1 = stored,
+                    (false, false) => changed.insert(place, (at as u32, stored)),
+                    (false, true) => {}
+                }
+            }
+        }
     }
 
     fn reference_stop(signal: &Signal, length: u8) -> Stop {
@@ -299,15 +326,19 @@ impl GuestTest for X86_64 {
         }),
     };
 
-    /// Every general register but rsp and rbp; system calls set rax, rcx and r11; rbx is kept.
-    const MODEL: crate::layer2::Model = crate::layer2::Model {
-        registers: &[0, 1, 2, 3, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
-        syscall_sets: &[0, 1, 11],
-        kept: 3,
+    /// Every general register but rsp, rbp (the area) and r12 to r15 (scratch, the loop and recursion
+    /// counters, a moving base); the model's system call sets rax, rcx, rdx, rsi, rdi and r11; rbx is kept.
+    const MODEL: crate::layer2::Model = {
+        use wcontainers_x86::{R8, R9, R10, R11, RAX, RBX, RCX, RDI, RDX, RSI};
+        crate::layer2::Model {
+            registers: &[RAX, RCX, RDX, RBX, RSI, RDI, R8, R9, R10, R11],
+            syscall_sets: &[RAX, RCX, RDX, RSI, RDI, R11],
+            kept: RBX,
+        }
     };
 
-    fn assemble(_program: &crate::layer2::Program) -> crate::programs::Blob {
-        panic!("x86-64's layer 2 programs are milestone X4's")
+    fn assemble(program: &crate::layer2::Program) -> crate::programs::Blob {
+        assemble::assemble(program)
     }
 
     fn smoke() -> Smoke {

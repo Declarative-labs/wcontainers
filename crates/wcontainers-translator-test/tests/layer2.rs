@@ -180,3 +180,8 @@ fn full_matches_none_and_the_cpu<G: GuestTest>() {
 fn full_matches_none_and_the_cpu_arm64() {
     full_matches_none_and_the_cpu::<Arm64>();
 }
+
+#[test]
+fn full_matches_none_and_the_cpu_x86_64() {
+    full_matches_none_and_the_cpu::<wcontainers_x86::X86_64>();
+}

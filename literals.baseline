@@ -7239,7 +7239,6 @@ code	crates/wcontainers-translator-test/src/guest/arm64/assemble.rs	int	stack_po
 code	crates/wcontainers-translator-test/src/guest/arm64/assemble.rs	int	stack_pointer	12
 code	crates/wcontainers-translator-test/src/guest/arm64/assemble.rs	int	stack_pointer	12
 code	crates/wcontainers-translator-test/src/guest/arm64/assemble.rs	int	stack_pointer	4096
-code	crates/wcontainers-translator-test/src/guest/arm64/assemble.rs	str	assemble	"layer2"
 code	crates/wcontainers-translator-test/src/guest/arm64/corpora.rs	int	alloca_loop_off_the_stack	0xffff
 code	crates/wcontainers-translator-test/src/guest/arm64/corpora.rs	int	alloca_loop_off_the_stack	1000u32
 code	crates/wcontainers-translator-test/src/guest/arm64/corpora.rs	int	alloca_loop_off_the_stack	16
@@ -7599,7 +7598,6 @@ code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	target	18
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	target	20
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	with_drawn_prefixes	40
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	xmm	16
-code	crates/wcontainers-translator-test/src/guest/x86_64.rs	str	<X86_64 as GuestTest>::assemble	"x86-64's layer 2 programs are milestone X4's"
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	str	<X86_64 as GuestTest>::cases	"no case of this draw"
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	str	<X86_64 as GuestTest>::changes	"x86-64's changes programs are milestone X6's"
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	str	<X86_64 as GuestTest>::checks	"x86-64's check programs are milestone X4's"

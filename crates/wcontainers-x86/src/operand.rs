@@ -13,6 +13,7 @@ use wcontainers_guest_cpu::{
 pub const RAX: u8 = 0;
 pub const RCX: u8 = 1;
 pub const RDX: u8 = 2;
+pub const RBX: u8 = 3;
 pub const RSP: u8 = crate::RSP_NUMBER;
 pub const RBP: u8 = 5;
 pub const RSI: u8 = 6;
@@ -21,6 +22,10 @@ pub const R8: u8 = 8;
 pub const R9: u8 = 9;
 pub const R10: u8 = 10;
 pub const R11: u8 = 11;
+pub const R12: u8 = 12;
+pub const R13: u8 = 13;
+pub const R14: u8 = 14;
+pub const R15: u8 = 15;
 pub const FS: u8 = 16;
 pub const GS: u8 = 17;
 
@@ -334,6 +339,8 @@ pub fn setcc(m: Mnemonic) -> Option<u8> {
 pub fn stack_bytes(i: &Instruction) -> u32 {
     let ins = &i.iced;
     let width = match ins.op_kind(0) {
+        // `pushf` with 66 pushes a word; it has no operand.
+        _ if ins.code() == iced_x86::Code::Pushfw => u16::BITS as u8,
         OpKind::Register => general(ins.op_register(0)).map_or(64, |g| g.width),
         OpKind::Memory => memory_bytes(i) as u8 * 8,
         // An immediate's width is the operand size: `push imm16` has 66.

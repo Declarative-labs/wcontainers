@@ -33,6 +33,8 @@ pub use guest::{Control, Offer, Reason, Trap};
 pub use meaning::written;
 #[cfg(feature = "translate")]
 pub use operand::{General, general as general_register, size_of_memory as memory_size_bytes};
+#[cfg(feature = "translate")]
+pub use operand::{R8, R9, R10, R11, R12, R13, R14, R15, RAX, RBP, RBX, RCX, RDI, RDX, RSI};
 
 /// The x86-64 guest, 64-bit user mode.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
