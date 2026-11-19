@@ -685,7 +685,10 @@ fn draw_bases_from_arguments_read_the_argument_buffer() {
             text.contains("@group(3) @binding(11) \nvar<storage> draw_arguments: array<u32>"),
             "{text}"
         );
-        assert!(text.contains("arguments_offset"), "{text}");
+        assert!(
+            text.contains(wcontainers_shaders::ARGUMENTS_OFFSET),
+            "{text}"
+        );
     }
 }
 

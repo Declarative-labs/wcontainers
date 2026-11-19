@@ -102,7 +102,7 @@ fn function_mut(module: &mut Module, owner: usize) -> &mut Function {
 /// (depth, 0, 0, 1), as Direct3D reads a depth view; that widening takes the mapped components. A
 /// read used as its depth alone, a comparison and a gather each take the first component, which
 /// stays the depth only where the mapping keeps red first.
-fn depth_mapped(f: &mut Function, h: Handle<Expression>, map: [ViewComponent; 4]) -> Result<()> {
+fn depth_mapped(f: &mut Function, h: Handle<Expression>, map: &[ViewComponent]) -> Result<()> {
     use ViewComponent as C;
     let plain = matches!(
         f.expressions[h],
@@ -125,8 +125,8 @@ fn depth_mapped(f: &mut Function, h: Handle<Expression>, map: [ViewComponent; 4]
             let Expression::Compose { components, .. } = f.expressions.get_mut(w) else {
                 unreachable!("found as a composition");
             };
-            let read = [components[0], components[1], components[2], components[3]];
-            for (to, from) in components.iter_mut().zip(map) {
+            let read = components.clone();
+            for (to, &from) in components.iter_mut().zip(map) {
                 *to = match from {
                     C::Zero => read[C::G as usize],
                     C::One => read[C::A as usize],
@@ -197,7 +197,7 @@ pub(super) fn swizzled(
         }
     }
     for (owner, h, map) in depths {
-        depth_mapped(function_mut(module, owner), h, map)?;
+        depth_mapped(function_mut(module, owner), h, &map)?;
     }
     for (owner, h, to) in gathers {
         let component = match to {

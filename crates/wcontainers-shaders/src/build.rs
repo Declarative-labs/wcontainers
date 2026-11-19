@@ -47,8 +47,12 @@ impl DrawArguments {
 
 /// The member names of [`DrawBases`] in the block.
 pub(crate) const BASE_VERTEX: &str = "base_vertex";
-pub(crate) const FIRST_INSTANCE: &str = "first_instance";
-pub(crate) const DRAW: &str = "draw";
+pub(crate) const FIRST_INSTANCE: &str = "start_instance";
+pub(crate) const DRAW: &str = "draw_number";
+
+/// The member names of [`DrawArguments`] in the block.
+pub const ARGUMENTS_OFFSET: &str = "arguments_offset";
+pub(crate) const INDEXED: &str = "arguments_indexed";
 
 /// The helper block's type holding only [`DrawBases`], and its size in bytes: a whole number of
 /// four-word slots, as a uniform block is laid out.

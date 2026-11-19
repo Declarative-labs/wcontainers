@@ -13321,7 +13321,6 @@ code	crates/wcontainers-shaders/build.rs	str	base	"WASI_SDK_PATH"
 code	crates/wcontainers-shaders/build.rs	str	base	"cargo:rustc-link-lib=static=c++"
 code	crates/wcontainers-shaders/build.rs	str	base	"cargo:rustc-link-lib=static=c++abi"
 code	crates/wcontainers-shaders/build.rs	str	base	"cargo:rustc-link-search=native={out}"
-code	crates/wcontainers-shaders/build.rs	str	base	"cpp"
 code	crates/wcontainers-shaders/build.rs	str	base	"cpp/assert"
 code	crates/wcontainers-shaders/build.rs	str	base	"libc++.a"
 code	crates/wcontainers-shaders/build.rs	str	base	"libc++abi.a"
@@ -13340,7 +13339,6 @@ code	crates/wcontainers-shaders/build.rs	str	hash_files	"/"
 code	crates/wcontainers-shaders/build.rs	str	ir_codes	"};"
 code	crates/wcontainers-shaders/build.rs	str	ir_codes	"}\n"
 code	crates/wcontainers-shaders/build.rs	str	main	"-fno-rtti"
-code	crates/wcontainers-shaders/build.rs	str	main	"."
 code	crates/wcontainers-shaders/build.rs	str	main	"../../third_party/naga/src"
 code	crates/wcontainers-shaders/build.rs	str	main	"AMD_EXTENSIONS"
 code	crates/wcontainers-shaders/build.rs	str	main	"DXBC_SPV_ENABLE_SM5"
@@ -13358,8 +13356,6 @@ code	crates/wcontainers-shaders/build.rs	str	main	"cargo:rerun-if-changed={watch
 code	crates/wcontainers-shaders/build.rs	str	main	"cargo:rerun-if-changed={}"
 code	crates/wcontainers-shaders/build.rs	str	main	"cargo:rerun-if-env-changed=WASI_SDK_PATH"
 code	crates/wcontainers-shaders/build.rs	str	main	"cargo:rustc-env=WCS_CONVERTER_SOURCES={}"
-code	crates/wcontainers-shaders/build.rs	str	main	"cpp"
-code	crates/wcontainers-shaders/build.rs	str	main	"cpp"
 code	crates/wcontainers-shaders/build.rs	str	main	"cpp/assertion.cpp"
 code	crates/wcontainers-shaders/build.rs	str	main	"cpp/dxbc.cpp"
 code	crates/wcontainers-shaders/build.rs	str	main	"cpp/dxil.cpp"
@@ -13476,7 +13472,6 @@ code	crates/wcontainers-shaders/src/dxbc.rs	str	to_ir	"the IR did not decode"
 code	crates/wcontainers-shaders/src/dxil.rs	float	float_to_int_function	-2_147_483_648.0
 code	crates/wcontainers-shaders/src/dxil.rs	float	float_to_int_function	2_147_483_648.0
 code	crates/wcontainers-shaders/src/dxil.rs	float	float_to_int_function	4_294_967_296.0
-code	crates/wcontainers-shaders/src/dxil.rs	int	Resource	3
 code	crates/wcontainers-shaders/src/dxil.rs	int	atomic_signedness_differs	3
 code	crates/wcontainers-shaders/src/dxil.rs	int	atomic_signedness_differs	3
 code	crates/wcontainers-shaders/src/dxil.rs	int	atomic_signedness_differs	3
@@ -13487,10 +13482,6 @@ code	crates/wcontainers-shaders/src/dxil.rs	int	float_to_int_function	4
 code	crates/wcontainers-shaders/src/dxil.rs	int	float_to_int_function	4
 code	crates/wcontainers-shaders/src/dxil.rs	int	float_to_ints	4
 code	crates/wcontainers-shaders/src/dxil.rs	int	float_to_ints	4
-code	crates/wcontainers-shaders/src/dxil.rs	int	helper_block	16
-code	crates/wcontainers-shaders/src/dxil.rs	int	helper_block	16
-code	crates/wcontainers-shaders/src/dxil.rs	int	helper_block	4
-code	crates/wcontainers-shaders/src/dxil.rs	int	helper_block	8
 code	crates/wcontainers-shaders/src/dxil.rs	str	absent_extension	"RenderTargetArrayIndex"
 code	crates/wcontainers-shaders/src/dxil.rs	str	bindings	"BindingsBeyondLimit"
 code	crates/wcontainers-shaders/src/dxil.rs	str	bindings	"ResourceArray"
@@ -13502,11 +13493,6 @@ code	crates/wcontainers-shaders/src/dxil.rs	str	float_to_int_function	"d3d_ftoi"
 code	crates/wcontainers-shaders/src/dxil.rs	str	float_to_int_function	"d3d_ftou"
 code	crates/wcontainers-shaders/src/dxil.rs	str	float_to_int_function	"x"
 code	crates/wcontainers-shaders/src/dxil.rs	str	float_to_ints	"FloatToIntWidth"
-code	crates/wcontainers-shaders/src/dxil.rs	str	helper_block	"Helpers"
-code	crates/wcontainers-shaders/src/dxil.rs	str	helper_block	"base_vertex"
-code	crates/wcontainers-shaders/src/dxil.rs	str	helper_block	"draw"
-code	crates/wcontainers-shaders/src/dxil.rs	str	helper_block	"first_instance"
-code	crates/wcontainers-shaders/src/dxil.rs	str	helper_block	"helpers"
 code	crates/wcontainers-shaders/src/dxil.rs	str	helper_invocations	"coverage"
 code	crates/wcontainers-shaders/src/dxil.rs	str	lower	"DxilDomainShader"
 code	crates/wcontainers-shaders/src/dxil.rs	str	lower	"DxilGeometryShader"
@@ -13764,10 +13750,6 @@ code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::entry_point	4
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::entry_point	4
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::entry_point	4
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::entry_point	4u32
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::helper_block	16
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::helper_block	16
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::helper_block	4
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::helper_block	8
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::new	3
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::scalar	10
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::scalar	11
@@ -13868,11 +13850,6 @@ code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::entry_point	"Outp
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::entry_point	"OutputArray"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::entry_point	"Outputs"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::entry_point	"vertex"
-code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::helper_block	"Helpers"
-code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::helper_block	"base_vertex"
-code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::helper_block	"draw"
-code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::helper_block	"first_instance"
-code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::helper_block	"helpers"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::ir_ty_of	"AtomicType"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::ir_ty_of	"StructAtomic"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::ir_ty_of	"a declaration without a type"
@@ -14041,10 +14018,7 @@ code	crates/wcontainers-shaders/src/variant.rs	int	counted	3
 code	crates/wcontainers-shaders/src/variant.rs	int	counted	4
 code	crates/wcontainers-shaders/src/variant.rs	int	depth	3
 code	crates/wcontainers-shaders/src/variant.rs	int	depth	4
-code	crates/wcontainers-shaders/src/variant.rs	int	draw_arguments	3
 code	crates/wcontainers-shaders/src/variant.rs	int	draw_arguments	4
-code	crates/wcontainers-shaders/src/variant.rs	int	draw_arguments	4
-code	crates/wcontainers-shaders/src/variant.rs	int	draw_arguments	8
 code	crates/wcontainers-shaders/src/variant.rs	int	linked_in	4
 code	crates/wcontainers-shaders/src/variant.rs	int	linked_in	4
 code	crates/wcontainers-shaders/src/variant.rs	int	linked_in	4
@@ -14077,18 +14051,10 @@ code	crates/wcontainers-shaders/src/variant.rs	str	constants_as_storage	"Binding
 code	crates/wcontainers-shaders/src/variant.rs	str	constants_as_storage	"a constant buffer without its variable"
 code	crates/wcontainers-shaders/src/variant.rs	str	counted	"count"
 code	crates/wcontainers-shaders/src/variant.rs	str	depth	"depth"
-code	crates/wcontainers-shaders/src/variant.rs	str	draw_arguments	"Helpers"
-code	crates/wcontainers-shaders/src/variant.rs	str	draw_arguments	"arguments_offset"
-code	crates/wcontainers-shaders/src/variant.rs	str	draw_arguments	"base_vertex"
 code	crates/wcontainers-shaders/src/variant.rs	str	draw_arguments	"draw bases without their block"
-code	crates/wcontainers-shaders/src/variant.rs	str	draw_arguments	"draw"
 code	crates/wcontainers-shaders/src/variant.rs	str	draw_arguments	"draw_arguments"
-code	crates/wcontainers-shaders/src/variant.rs	str	draw_arguments	"first_instance"
 code	crates/wcontainers-shaders/src/variant.rs	str	draw_arguments	"helper block not a struct"
-code	crates/wcontainers-shaders/src/variant.rs	str	draw_arguments	"indexed"
 code	crates/wcontainers-shaders/src/variant.rs	str	dual_source	"DualSourceWithoutTwoTargets"
-code	crates/wcontainers-shaders/src/variant.rs	str	helper	"Helpers"
-code	crates/wcontainers-shaders/src/variant.rs	str	helper	"helpers"
 code	crates/wcontainers-shaders/src/variant.rs	str	helper_name	"border_{sampler}"
 code	crates/wcontainers-shaders/src/variant.rs	str	helper_name	"levels_{texture}"
 code	crates/wcontainers-shaders/src/variant.rs	str	helper_name	"lod_bias_{sampler}"
@@ -14291,7 +14257,6 @@ code	crates/wcontainers-shaders/src/variant/pull.rs	str	pulled	"BindingsBeyondLi
 code	crates/wcontainers-shaders/src/variant/pull.rs	str	pulled	"pulled_{location}"
 code	crates/wcontainers-shaders/src/variant/swizzle.rs	int	swizzled	4
 code	crates/wcontainers-shaders/src/variant/swizzle.rs	int	swizzled	4
-code	crates/wcontainers-shaders/src/variant/swizzle.rs	str	swizzled	"SwizzledDepth"
 code	crates/wcontainers-shaders/src/variant/swizzle.rs	str	swizzled	"TextureArgument"
 code	crates/wcontainers-shaders/src/variant/swizzle.rs	str	swizzled	"a texture read that is not a vector"
 code	crates/wcontainers-shaders/src/variant/swizzle.rs	str	swizzled	"swizzled"

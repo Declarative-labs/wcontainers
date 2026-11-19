@@ -268,10 +268,6 @@ fn index(
     push(f, body, Expression::AccessIndex { base, index: i })
 }
 
-/// The member names of `build::DrawArguments` in the block.
-const ARGUMENTS_OFFSET: &str = "arguments_offset";
-const INDEXED: &str = "indexed";
-
 /// Reads member `member` of the stage's helper block.
 fn load_helper(
     f: &mut Function,
@@ -1474,7 +1470,7 @@ fn draw_arguments(
     let mut members = members.clone();
     let span = *span;
     {
-        use crate::build::{DRAW, DrawArguments};
+        use crate::build::{ARGUMENTS_OFFSET, DRAW, DrawArguments, INDEXED};
         use core::mem::offset_of;
         members.splice(
             ..DrawArguments::MEMBERS,
