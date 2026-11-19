@@ -7,7 +7,7 @@
 //! (`prepare_timings`, prepare.rs), checks timestamps (`timestamps`, timestamps.rs) and the formats
 //! held converted (`converted`, converted.rs) and the vertex formats WebGPU lacks
 //! (`vertex_formats`, vertices.rs), checks query sets past 4096 and the query ring (`query_sets`,
-//! queries.rs), checks subgroups, the primitive index and fine derivatives (`program_features`, features.rs),
+//! queries.rs), checks sRGB views of storage textures (`srgb_views`, views.rs), float clears' bits (`float_clears`, clears.rs), checks subgroups, the primitive index and fine derivatives (`program_features`, features.rs),
 //! measures instance data fetched in the program (`pulled_costs`,
 //! pulled.rs), and web/suite.html runs the shared suite (suite.rs).
 
@@ -82,6 +82,12 @@ mod features;
 
 #[cfg(target_arch = "wasm32")]
 mod gaps;
+
+#[cfg(target_arch = "wasm32")]
+mod views;
+
+#[cfg(target_arch = "wasm32")]
+mod clears;
 
 #[cfg(target_arch = "wasm32")]
 mod pulled;
@@ -213,6 +219,14 @@ mod web {
         )
     }
 
+    /// sRGB views of a texture that also allows storage, read as an sRGB texture is, on the
+    /// browser's WebGPU: one line, or the failed check.
+    #[wasm_bindgen(jspi)]
+    pub fn srgb_views() -> Result<String, JsError> {
+        let (mut b, _) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
+        super::views::srgb_views_of_storage_textures(&mut b).map_err(js)
+    }
+
     /// Copies between `depth16unorm` and its typeless group's colour formats, whole and in part,
     /// on the browser's WebGPU: one line, or the failed check.
     #[wasm_bindgen(jspi)]
@@ -244,12 +258,23 @@ mod web {
         Ok(lines.join("\n"))
     }
 
-    /// Texture reads into buffers that keep the bytes between rows (`gaps.rs`, `seed` picking the
-    /// texels) on the browser's WebGPU: one line, or the failed check.
+    /// Texture reads into buffers that keep the bytes between rows, and buffer copies into layers
+    /// lying apart (`gaps.rs`, `seed` picking the bytes) on the browser's WebGPU: one line each, or
+    /// the failed check.
     #[wasm_bindgen(jspi)]
     pub fn copy_gaps(seed: u64) -> Result<String, JsError> {
         let (mut b, _) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
-        super::gaps::reads_keep_the_bytes_between_rows(&mut b, seed).map_err(js)
+        let reads = super::gaps::reads_keep_the_bytes_between_rows(&mut b, seed).map_err(js)?;
+        let writes = super::gaps::writes_take_each_layer_from_its_rows(&mut b, seed).map_err(js)?;
+        Ok(format!("{reads}\n{writes}"))
+    }
+
+    /// Clears of 32-bit float formats keeping every bit, on the browser's WebGPU: one line, or the
+    /// failed check.
+    #[wasm_bindgen(jspi)]
+    pub fn float_clears() -> Result<String, JsError> {
+        let (mut b, _) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
+        super::clears::float_clears_keep_their_bits(&mut b).map_err(js)
     }
 
     /// Query sets past WebGPU's 4096 queries a set, and query results from one ring, on the
