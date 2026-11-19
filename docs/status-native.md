@@ -61,7 +61,9 @@ Done (each its own commit, in other tracks' crates as plan 6.2 G1 allows):
   0x9e3779b97f4a7c15 (before the sweep was added), 1,209,733 words.
 - a589fa06, wcontainers-arm64: `encode.rs`, the small encoder (movz/movk and a constant's moves, ubfx,
   ubfiz, bfxil, and/eor immediate with the logical-immediate encoding, add/sub immediate, cbz/cbnz, tbnz,
-  b/bl, br/blr/ret, ldr/str/ldrb with an unsigned offset, staddb, cas, brk/udf). Every word is its form's
+  b/bl, br/blr/ret, ldr/str/ldrb with an unsigned offset, staddb, cas, brk/udf). The add takes no shifted
+  immediate: naming Arm's field `sh` made other tracks' tests' "sh" restate it (literal rule 8), and nothing
+  uses the shift yet. Every word is its form's
   fixed bits from Arm's table (`forms.rs`) with named fields filled in, so no opcode or bit position is
   written. tests/encode.rs reads each back with the crate's decoder: 10,000 seeded cases (seed
   6364136223846793005), 20,000 logical immediates, all as meant.

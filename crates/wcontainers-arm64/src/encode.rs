@@ -65,7 +65,7 @@ pub mod form {
 }
 
 /// Arm's names of the fields filled in.
-pub mod field {
+mod field {
     pub const RD: &str = "Rd";
     pub const RN: &str = "Rn";
     pub const RT: &str = "Rt";
@@ -76,7 +76,6 @@ pub mod field {
     pub const IMMS: &str = "imms";
     pub const N: &str = "N";
     pub const IMM12: &str = "imm12";
-    pub const SH: &str = "sh";
     pub const IMM19: &str = "imm19";
     pub const IMM14: &str = "imm14";
     pub const IMM26: &str = "imm26";
@@ -265,28 +264,18 @@ pub fn eor_immediate(rd: Register, rn: Register, value: u64) -> Result<u32, Does
     logical(form::EOR_IMMEDIATE, rd, rn, value)
 }
 
-/// `add rd, rn, #value` (`sub` for a negative value), the immediate shifted when that is the only way it
-/// fits.
+/// `add rd, rn, #value` (`sub` for a negative value), unshifted.
 pub fn add_immediate(rd: Register, rn: Register, value: i64) -> Result<u32, DoesNotFit> {
     let name = if value < 0 {
         form::SUB_IMMEDIATE
     } else {
         form::ADD_IMMEDIATE
     };
-    let magnitude = value.unsigned_abs();
-    let bits = width(name, field::IMM12);
-    let (imm, shifted) = if magnitude >> bits == 0 {
-        (magnitude, 0)
-    } else if magnitude.trailing_zeros() >= bits && magnitude >> (2 * bits) == 0 {
-        (magnitude >> bits, 1)
-    } else {
-        return Err(DoesNotFit);
-    };
+    let imm = u32::try_from(value.unsigned_abs()).map_err(|_| DoesNotFit)?;
     let fields = [
         (field::RD, rd.into()),
         (field::RN, rn.into()),
-        (field::IMM12, imm as u32),
-        (field::SH, shifted),
+        (field::IMM12, imm),
     ];
     word(name, &fields)
 }
