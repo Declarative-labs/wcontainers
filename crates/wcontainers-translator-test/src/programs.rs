@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
-use wcontainers_abi::{Exit, Permissions};
+use wcontainers_abi::{Exit, PAGE_SIZE, Permissions};
 use wcontainers_translator::{LookAhead, Omit, Optimise};
 
 /// Where every blob is linked, and loaded unless it is moved.
@@ -319,7 +319,7 @@ pub struct Placement {
 }
 
 pub fn placement<G: GuestTest>(blob: &Blob) -> Placement {
-    let end = blob.load + (blob.bytes.len() as u64).next_multiple_of(4096);
+    let end = blob.load + (blob.bytes.len() as u64).next_multiple_of(PAGE_SIZE);
     let (sp, stack) = initial_stack(STACK_TOP, blob.headers_in_memory(), G::AUXILIARY);
     Placement {
         memory_bytes: STACK_TOP,

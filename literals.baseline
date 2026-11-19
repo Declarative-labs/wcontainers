@@ -7860,7 +7860,6 @@ code	crates/wcontainers-translator-test/src/programs.rs	int	check_ordinary_progr
 code	crates/wcontainers-translator-test/src/programs.rs	int	check_ordinary_programs	14
 code	crates/wcontainers-translator-test/src/programs.rs	int	check_ordinary_programs	3
 code	crates/wcontainers-translator-test/src/programs.rs	int	flatten	8
-code	crates/wcontainers-translator-test/src/programs.rs	int	placement	4096
 code	crates/wcontainers-translator-test/src/programs.rs	int	ran	0xff
 code	crates/wcontainers-translator-test/src/programs.rs	int	ran	11
 code	crates/wcontainers-translator-test/src/programs.rs	int	ran	11
@@ -8032,19 +8031,9 @@ code	crates/wcontainers-translator/src/code.rs	int	imports	5
 code	crates/wcontainers-translator/src/code.rs	int	imports	5
 code	crates/wcontainers-translator/src/code.rs	int	imports	7
 code	crates/wcontainers-translator/src/code.rs	int	keep_pages	0x0101_0101_0101_0101
-code	crates/wcontainers-translator/src/code.rs	int	keep_pages	12
-code	crates/wcontainers-translator/src/code.rs	int	keep_pages	12
-code	crates/wcontainers-translator/src/code.rs	int	keep_pages	12
 code	crates/wcontainers-translator/src/code.rs	int	keep_pages	3
-code	crates/wcontainers-translator/src/code.rs	int	keep_pages	4096
 code	crates/wcontainers-translator/src/code.rs	int	keep_pages	8
 code	crates/wcontainers-translator/src/code.rs	int	permission_byte	12
-code	crates/wcontainers-translator/src/code.rs	int	permission_checker	0x1000
-code	crates/wcontainers-translator/src/code.rs	int	permission_checker	0xfff
-code	crates/wcontainers-translator/src/code.rs	int	permission_checker	0xfff
-code	crates/wcontainers-translator/src/code.rs	int	permission_exact	0x1000
-code	crates/wcontainers-translator/src/code.rs	int	permission_exact	0xfff
-code	crates/wcontainers-translator/src/code.rs	int	permission_exact	0xfff
 code	crates/wcontainers-translator/src/code.rs	int	permission_range	12
 code	crates/wcontainers-translator/src/code.rs	int	permission_range	12
 code	crates/wcontainers-translator/src/code.rs	int	types	7
@@ -8056,12 +8045,9 @@ code	crates/wcontainers-translator/src/code.rs	str	Means::name	"given"
 code	crates/wcontainers-translator/src/code.rs	str	Means::name	"kept reducible"
 code	crates/wcontainers-translator/src/contract.rs	int	slot_entry	4
 code	crates/wcontainers-translator/src/full.rs	int	FullEmitter	8
-code	crates/wcontainers-translator/src/full.rs	int	FullEmitter<'a,G>::frame_check	4096
-code	crates/wcontainers-translator/src/full.rs	int	FullEmitter<'a,G>::frame_check	4096
 code	crates/wcontainers-translator/src/full.rs	int	FullEmitter<'a,G>::piece	8
 code	crates/wcontainers-translator/src/full.rs	int	FullEmitter<'a,G>::piece	8
 code	crates/wcontainers-translator/src/full.rs	int	aligned_after	16
-code	crates/wcontainers-translator/src/full.rs	int	checks	4096
 code	crates/wcontainers-translator/src/full.rs	str	FullEmitter<'a,G>::piece	"at most 8 tracked flags"
 code	crates/wcontainers-translator/src/full/proof.rs	int	Domain::bounds	31
 code	crates/wcontainers-translator/src/full/proof.rs	int	Domain::bounds	31

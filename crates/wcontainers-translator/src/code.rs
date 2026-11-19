@@ -11,10 +11,14 @@ use wasm_encoder::{
     FunctionSection, GlobalSection, GlobalType, ImportSection, InstructionSink, MemoryType, Module,
     TableType, TagKind, TagType, TypeSection, ValType,
 };
+use wcontainers_abi::PAGE_SIZE;
 use wcontainers_guest_cpu::{
     Access, Effects, Emitter, GUEST_REASONS, Guest, ReturnAddress, Target, TrapDetail, TrapKind,
     TrapPc,
 };
+
+/// The shift from an address to its page number.
+const PAGE_SHIFT: i64 = PAGE_SIZE.trailing_zeros() as i64;
 
 /// How much code the translator sees at once.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -805,7 +809,7 @@ pub(crate) fn permission_exact<G: Guest>(
     exact: Exact,
 ) {
     // The table's bits reach only to the next page.
-    assert!(u64::from(len) <= wcontainers_abi::PAGE_SIZE && len > 0);
+    assert!(u64::from(len) <= PAGE_SIZE && len > 0);
     let Exact::InPlace(table, (page, allowed)) = exact else {
         s.local_get(at)
             .i32_const(len as i32)
@@ -824,11 +828,11 @@ pub(crate) fn permission_exact<G: Guest>(
         .i32_const((this | next).into())
         .i32_const(this.into())
         .local_get(at)
-        .i64_const(0xfff)
+        .i64_const(PAGE_SIZE as i64 - 1)
         .i64_and()
         .i64_const(len.into())
         .i64_add()
-        .i64_const(0x1000)
+        .i64_const(PAGE_SIZE as i64)
         .i64_gt_u()
         .select()
         .i32_and()
@@ -836,7 +840,7 @@ pub(crate) fn permission_exact<G: Guest>(
     // The address itself if this page forbids it, otherwise the start of the next page.
     s.local_get(at)
         .local_get(at)
-        .i64_const(0xfff)
+        .i64_const(PAGE_SIZE as i64 - 1)
         .i64_or()
         .i64_const(1)
         .i64_add()
@@ -872,19 +876,19 @@ fn permission_checker() -> wasm_encoder::Function {
         .i32_or()
         .local_get(THIS)
         .local_get(AT)
-        .i64_const(0xfff)
+        .i64_const(PAGE_SIZE as i64 - 1)
         .i64_and()
         .local_get(LEN)
         .i64_extend_i32_u()
         .i64_add()
-        .i64_const(0x1000)
+        .i64_const(PAGE_SIZE as i64)
         .i64_gt_u()
         .select()
         .i32_and();
     // The address itself if this page forbids it, otherwise the start of the next page.
     s.local_get(AT)
         .local_get(AT)
-        .i64_const(0xfff)
+        .i64_const(PAGE_SIZE as i64 - 1)
         .i64_or()
         .i64_const(1)
         .i64_add()
@@ -911,10 +915,10 @@ pub(crate) fn keep_pages(
     (low, room): (u32, u32),
 ) {
     s.local_get(at)
-        .i64_const(12)
+        .i64_const(PAGE_SHIFT)
         .i64_shr_u()
         .local_tee(page)
-        .i64_const(12)
+        .i64_const(PAGE_SHIFT)
         .i64_shl()
         .local_set(low);
     // The table bytes of the page and the seven after it, when they are all in the table.
@@ -935,10 +939,10 @@ pub(crate) fn keep_pages(
         .i64_ctz()
         .i64_const(3)
         .i64_shr_u()
-        .i64_const(12)
+        .i64_const(PAGE_SHIFT)
         .i64_shl()
         .else_()
-        .i64_const(4096)
+        .i64_const(PAGE_SIZE as i64)
         .end()
         .i64_const(i64::from(longest) - 1)
         .i64_sub()
