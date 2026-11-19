@@ -44,7 +44,7 @@ impl Adapter {
             SharedSystemMemory: d.shared_system_memory as usize,
             AdapterLuid: LUID {
                 LowPart: d.luid as u32,
-                HighPart: (d.luid >> 32) as i32,
+                HighPart: (d.luid >> u32::BITS) as i32,
             },
             Flags: if d.software {
                 DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32

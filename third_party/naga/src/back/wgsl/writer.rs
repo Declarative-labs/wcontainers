@@ -693,10 +693,16 @@ impl<W: Write> Writer<W> {
         write!(self.out, "struct {}", self.names[&NameKey::Type(handle)])?;
         write!(self.out, " {{")?;
         writeln!(self.out)?;
+        // Bindings mean something only on an entry point's inputs and outputs; WGSL checks them
+        // wherever they are written, so a structure used otherwise is written without them.
+        let io = module.entry_points.iter().any(|ep| {
+            ep.function.arguments.iter().any(|a| a.ty == handle)
+                || ep.function.result.as_ref().is_some_and(|r| r.ty == handle)
+        });
         for (index, member) in members.iter().enumerate() {
             // The indentation is only for readability
             write!(self.out, "{}", back::INDENT)?;
-            if let Some(ref binding) = member.binding {
+            if let Some(ref binding) = member.binding.as_ref().filter(|_| io) {
                 self.write_attributes(&map_binding_to_attribute(binding))?;
             }
             // Write struct member name and type

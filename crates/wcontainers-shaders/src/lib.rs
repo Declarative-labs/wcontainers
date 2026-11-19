@@ -87,6 +87,9 @@ pub const CONVERTER_VERSION: &str = concat!(
     env!("WCS_CONVERTER_SOURCES")
 );
 
+/// The refusal of a vertex program writing storage views, which WebGPU's vertex stage cannot.
+const VERTEX_STORAGE_WRITE: &str = "VertexStorageWrite";
+
 /// Converts a shader into the common form, as the variant asks. `root_signature` is the Direct3D 12
 /// root signature the shader is used with.
 pub fn convert(
@@ -97,10 +100,26 @@ pub fn convert(
     unbuilt(variant, root_signature)?;
     let (module, reflection, stage) = contained(|| {
         let (mut module, mut reflection, stage) = match source {
-            Source::Dxbc(bytes) => lower::lower(&dxbc::to_ir(bytes)?, variant)?,
+            Source::Dxbc(bytes) => {
+                let (module, mut reflection, stage) = lower::lower(&dxbc::to_ir(bytes)?, variant)?;
+                let inputs = container::dxbc_signature(bytes, true);
+                container::place_system_values(&mut reflection.inputs, &inputs);
+                let outputs = container::dxbc_signature(bytes, false);
+                container::place_system_values(&mut reflection.outputs, &outputs);
+                (module, reflection, stage)
+            }
             Source::Dxil(bytes) => dxil::lower(bytes, variant)?,
             Source::SpirV(_) => return Err(ConvertError::Unsupported("SpirV")),
         };
+        // WebGPU gives vertex programs no writable storage.
+        let writable = |g: &naga::GlobalVariable| {
+            matches!(g.space, naga::AddressSpace::Storage { access }
+                if access.contains(naga::StorageAccess::STORE))
+        };
+        if stage == ShaderStage::Vertex && module.global_variables.iter().any(|(_, g)| writable(g))
+        {
+            return Err(ConvertError::Unsupported(VERTEX_STORAGE_WRITE));
+        }
         stage::clip_unpositioned(&mut module)?;
         variant::apply(&mut module, stage, variant, &mut reflection)?;
         variant::offset::strides(&module, &mut reflection);
@@ -117,7 +136,17 @@ pub fn convert(
     }];
     if let StageExtras::Geometry { .. } = reflection.extras {
         geometry_variant(variant)?;
-        let module = stage::passthrough(&reflection)?;
+        let mut module = stage::passthrough(&reflection)?;
+        if variant.flags.contains(VariantFlags::CLIP_DISTANCE) {
+            // The pass-through is the last vertex stage: it passes the distances to the pixel program.
+            let key = VariantKey {
+                flags: VariantFlags::CLIP_DISTANCE,
+                linked: variant.linked,
+                ..VariantKey::default()
+            };
+            let mut own = reflection.clone();
+            variant::apply(&mut module, ShaderStage::Vertex, &key, &mut own)?;
+        }
         modules.push(ShaderModule {
             info: validate(&module)?,
             module,
@@ -138,7 +167,6 @@ fn geometry_variant(variant: &VariantKey) -> Result<(), ConvertError> {
     let vertex_flags = VariantFlags::VIEWPORT_ADJUST
         | VariantFlags::VIEWPORT_DEPTH_FLIP
         | VariantFlags::CLIP_DEPTH_REWRITE
-        | VariantFlags::CLIP_DISTANCE
         | VariantFlags::DEPTH_CLAMP;
     if variant.flags.intersects(vertex_flags)
         || !variant.pulled.is_empty()
@@ -279,6 +307,9 @@ pub fn capabilities(module: &naga::Module) -> Capabilities {
                 } => capabilities |= Capabilities::DUAL_SOURCE_BLENDING,
                 naga::Binding::BuiltIn(naga::BuiltIn::ClipDistances) => {
                     capabilities |= Capabilities::CLIP_DISTANCES
+                }
+                naga::Binding::BuiltIn(naga::BuiltIn::CullDistance) => {
+                    capabilities |= Capabilities::CULL_DISTANCE
                 }
                 _ => {}
             }

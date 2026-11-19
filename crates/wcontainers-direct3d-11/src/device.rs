@@ -80,9 +80,9 @@ pub struct Device<B: Backend> {
     /// Pixel shaders converted for a variant, by id.
     pub(crate) variants: HashMap<(u64, StageVariant), Variant<B>>,
     /// Counting programs of counted occlusion queries, by the vertex shader's id and variant and the
-    /// pixel shader's id; and the pixel counter's, by the vertex shader's id and variant and a
-    /// number no pixel shader has.
-    pub(crate) counting: HashMap<(u64, StageVariant, u64), Kept<B, B::Program>>,
+    /// pixel shader's id and variant; and the pixel counter's, by the vertex shader's id and variant
+    /// and a number no pixel shader has.
+    pub(crate) counting: HashMap<CountingKey, Kept<B, B::Program>>,
     /// Exact counts of counted occlusion queries, and the targets their draws drew on (the pass
     /// tracker holds them for the counter; the front opens and ends its own passes).
     pub(crate) counter: wcontainers_gpu::OcclusionCounter<B>,
@@ -133,6 +133,8 @@ pub(crate) struct Zeros<B: Backend> {
     pub storage: Option<Kept<B, B::Buffer>>,
     /// A texture of one zero texel per layer and its view, by view dimension and kind.
     pub textures: HashMap<(ViewDimension, FormatKind, u32), ZeroView<B>>,
+    /// The zero buffer's bytes as a constants texture, for empty slots read through textures.
+    pub constants: Option<WindowCopy<B>>,
     pub sampler: Option<Rc<Sampler<B>>>,
 }
 
@@ -141,6 +143,10 @@ pub(crate) struct ZeroView<B: Backend> {
     _texture: Kept<B, B::Texture>,
     view: Kept<B, B::TextureView>,
 }
+
+/// A counting program's vertex shader id and variant, and pixel shader id (or pixel counter's
+/// number) and variant.
+pub(crate) type CountingKey = (u64, StageVariant, u64, StageVariant);
 
 /// Bytes of the zero buffer: 4096 constants of 16 bytes.
 pub(crate) const ZERO_BYTES: u64 = 65536;
@@ -282,6 +288,7 @@ impl<B: Backend> Device<B> {
                 buffer: None,
                 storage: None,
                 textures: HashMap::new(),
+                constants: None,
                 sampler: None,
             },
             staged: HashMap::new(),
@@ -625,7 +632,7 @@ impl<B: Backend> Device<B> {
             .retain(|(v, _, p), _| !ids.contains(v) && !ids.contains(p));
         self.variants.retain(|(p, _), _| !ids.contains(p));
         self.counting
-            .retain(|(v, _, p), _| !ids.contains(v) && !ids.contains(p));
+            .retain(|(v, _, p, _), _| !ids.contains(v) && !ids.contains(p));
         self.layouts
             .retain(|(l, _, v), _| !ids.contains(l) && !ids.contains(v));
         self.bury_built();
@@ -1511,15 +1518,13 @@ impl<B: Backend> Device<B> {
         count: u32,
         flags: u32,
     ) -> Result<Rc<ShaderView<B>>> {
-        const RAW: u32 = 1;
-        const APPEND: u32 = 2;
-        const COUNTER: u32 = 4;
+        use buffer_uav::{APPEND, COUNTER_FLAG, RAW};
         let raw = flags & RAW != 0;
         let (offset, size, texel) =
             self.buffer_span(buffer, bind::UNORDERED_ACCESS, format, first, count, raw)?;
         let structured = buffer.desc.misc_flags & MISC_STRUCTURED != 0;
-        let counted = flags & (APPEND | COUNTER);
-        if counted == APPEND | COUNTER || (counted != 0 && (!structured || raw)) {
+        let counted = flags & (APPEND | COUNTER_FLAG);
+        if counted == APPEND | COUNTER_FLAG || (counted != 0 && (!structured || raw)) {
             return Err(Error::InvalidArg(
                 "append and counter views are structured, one or the other",
             ));
@@ -1527,18 +1532,21 @@ impl<B: Backend> Device<B> {
         self.live()?;
         self.bury();
         let counter = if counted != 0 {
+            const COUNTER_BYTES: usize = size_of::<u32>();
             let desc = BufferDesc {
-                byte_width: 4,
+                byte_width: COUNTER_BYTES as u32,
                 usage: usage::DEFAULT,
                 bind_flags: bind::UNORDERED_ACCESS,
                 cpu_access_flags: 0,
                 misc_flags: 0,
                 structure_byte_stride: 0,
             };
-            let gpu = self.backend.create_buffer(&gpu_buffer(&desc, 4));
+            let gpu = self
+                .backend
+                .create_buffer(&gpu_buffer(&desc, COUNTER_BYTES as u64));
             let gpu = self.gpu(gpu)?;
             self.backend
-                .write_buffer(&gpu, 0, &[0; 4], WriteMode::Discard);
+                .write_buffer(&gpu, 0, &[0; COUNTER_BYTES], WriteMode::Discard);
             let id = self.id();
             Some(Kept::new(gpu, id, Object::Buffer, &self.graveyard))
         } else {
@@ -1588,7 +1596,7 @@ impl<B: Backend> Device<B> {
         count: u32,
         raw: bool,
     ) -> Result<(u64, u64, Option<TexelPlace>)> {
-        const R32_TYPELESS: u32 = 39;
+        const RAW_WORD_BYTES: u32 = size_of::<u32>() as u32;
         let d = &buffer.desc;
         if d.bind_flags & needs == 0 {
             return Err(Error::InvalidArg(
@@ -1596,10 +1604,10 @@ impl<B: Backend> Device<B> {
             ));
         }
         let (stride, typed) = if raw {
-            if format != R32_TYPELESS || d.misc_flags & MISC_ALLOW_RAW_VIEWS == 0 {
+            if format != format::R32_TYPELESS || d.misc_flags & MISC_ALLOW_RAW_VIEWS == 0 {
                 return Err(Error::InvalidArg("a raw view of a buffer not made for one"));
             }
-            (4, None)
+            (RAW_WORD_BYTES, None)
         } else if d.misc_flags & MISC_STRUCTURED != 0 {
             if format != format::UNKNOWN {
                 return Err(Error::InvalidArg("a structured view with a format"));
@@ -1819,6 +1827,38 @@ impl<B: Backend> Device<B> {
         let mirror_filtered = shader::mirror_filtered_slots(&converted);
         let helpers = Rc::new(shader::Helpers::of(&converted));
         let mut module = converted.modules.pop().expect("one module");
+        let constant_sizes = constant_sizes(&module.module);
+        let stand_ins = stand_ins(&module.module);
+        // Constant buffers past the back end's uniform buffers are read through textures.
+        let set = crate::context::set_of(if stage == wcontainers_gpu::SourceStage::Pixel {
+            crate::PIXEL
+        } else {
+            crate::VERTEX
+        });
+        let past_limit = if matches!(
+            stage,
+            wcontainers_gpu::SourceStage::Vertex | wcontainers_gpu::SourceStage::Pixel
+        ) {
+            shader::constants_past_limit(
+                &converted.reflection,
+                set,
+                0,
+                helpers.size > 0 || texture_info,
+                self.backend.caps().limits.uniform_buffers_per_stage,
+            )
+        } else {
+            0
+        };
+        if past_limit != 0 {
+            let key = StageVariant {
+                texture_info,
+                constants_as_texture: past_limit,
+                ..StageVariant::default()
+            }
+            .key(stage, &typed, layered, &[]);
+            let mut c = shader::convert_variant(bytecode, stage, &key)?;
+            module = c.modules.pop().expect("one module");
+        }
         // A vertex or domain program writing clip distances the back end lacks passes them on for
         // the pixel program to apply, at the location past its outputs.
         let mut clip = None;
@@ -1834,6 +1874,7 @@ impl<B: Backend> Device<B> {
             let key = StageVariant {
                 linked: at.0,
                 clip_distances: at.1,
+                constants_as_texture: past_limit,
                 ..StageVariant::default()
             }
             .key(stage, &typed, layered, &[]);
@@ -1853,8 +1894,6 @@ impl<B: Backend> Device<B> {
         self.bury();
         let gpu = self.backend.create_shader(&module);
         let gpu = self.gpu(gpu)?;
-        let constant_sizes = constant_sizes(&module.module);
-        let stand_ins = stand_ins(&module.module);
         let indexed_constants = shader::indexed_constants(bytecode)?;
         let id = self.id();
         let vertex = stage == wcontainers_gpu::SourceStage::Vertex;

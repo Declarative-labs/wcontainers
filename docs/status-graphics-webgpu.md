@@ -26,7 +26,11 @@ first part of the literal sweep. Run 22 is G2c run 4 (below): the late branches 
 derivatives declared, stencil views read as Wine's test reads them, the load sampled within each
 recorded program run, both full runs and web/check again, and a second part of the literal
 sweep. Run 23 is G2c run 5 (below): the late branches merged, the literal check adopted, a
-third part of the sweep, both full runs and web/check again. Every request found is built and
+third part of the sweep, both full runs and web/check again. Run 24 is G2c run 6 (below): the
+Direct3D 11 and literals branches merged (-direct3d-12 and -shaders not, for the literal check),
+nothing new asked, a fourth part of the sweep. Run 25 is G2c run 7 (below): -direct3d-11 and
+-webgl merged (-direct3d-12 and -shaders still not, for the literal check), nothing new asked,
+the frame report written through serde, both full runs and web/check. Every request found is built and
 tested or refused by name
 (list below). Earlier runs follow ("Run 5" to "Run 10" are G2 runs 1 to 6; G2a runs 1 to 4 after them).
 
@@ -191,7 +195,10 @@ graphics branch), and where each stands:
   position scales to, after clears of the stencil alone to several values): every value read in
   the first component on Vulkan and on Direct3D 12, for both combined formats. Wine's test itself
   through the Direct3D 11 front on this branch still reads 0 for every stencil value and passes
-  every depth check (Run 22): the front's side, asked of it under Next.
+  every depth check (Run 22): the front's side, asked of it under Next. Settled by the Direct3D
+  11 track's G4 run 24: its binding check took the stencil view's depth format for the wrong
+  kind and bound the empty slot's 1 by 1 stand-in; with that fixed, test_depth_stencil_sampling
+  passes through the front (its status). Nothing was needed here.
 - Fine derivatives (WebGL track, its run 5, with the interface's new `Features::FINE_DERIVATIVES`:
   "the WebGPU back end should declare the bit (WGSL always has them)"): built (run 22). `FINE_DERIVATIVES` is declared on every device (WGSL's
   `dpdxFine`, `dpdyFine` and `fwidthFine` are core). examples/scenes/features.rs draws a fragment
@@ -199,6 +206,101 @@ graphics branch), and where each stands:
   tests/features.rs `fine_derivatives_are_declared_and_difference_each_pixel_on_its_own` (Vulkan
   and Direct3D 12) and in Chrome by web/check (`program_features`). Before, the bit was not
   declared.
+
+Run 25 = G2c run 7, 2026-11-19:
+- Merged origin/phase-2-graphics-direct3d-11 (3 commits: constant buffers past the back end's
+  uniform buffers read through texture copies, more literals named) and -webgl (4: sample
+  masks, the frame breakdown's timing), no conflicts; the shared line, -rig and
+  phase-1-literals had nothing new. Nothing in this crate, the interface or the suite crate
+  changed.
+- Not merged, again: -direct3d-12 and -shaders, the same tips as in run 24 (neither has adopted
+  the literal check). Both merges were made and the check run on the desktop: it still fails on
+  their growth in crates this track may not edit (the shaders track's tests/compute_draw.rs
+  `2048`, and as before the Direct3D 12 front's), so the two unpushed merge commits were dropped.
+- Read the new text of the four status files. Nothing new is asked of this back end. The
+  Direct3D 11 front reads constant buffers past `uniform_buffers_per_stage` through textures;
+  this back end already declares the adapter's own limit (it asks wgpu for `adapter.limits()`),
+  so there is nothing to raise. The shaders track's two items naming WebGPU (narrower DXIL pixel
+  targets, a float4 written and read as float2 between stages) are the converter's, failing
+  WebGPU's own pipeline checks, not this back end's code. The Direct3D 12 front's new items are
+  its per-primitive early tests.
+- Seen in this run's web/check: Chrome 157's adapter on the RTX 3080 now offers
+  `texture-component-swizzle` (a view swizzle). wgpu 30 has none, natively or in its browser
+  back end, and the interface's views carry no mapping, so programs still apply mappings
+  themselves (`SwizzleInShader`). Not asked by any track; under Next.
+- Literal sweep, fifth part (4 lines): the frame report wrote its counters by parsing their
+  `Debug` text on `{`, `}`, `,` and `:`; it now takes them from serde (`Counters` derives
+  `Serialize`, `serde_json::to_value`). serde and serde_json move from dev-dependencies (serde
+  came through the interface already; both MIT or Apache-2.0; the lock file gains one line).
+  This crate's baseline lines: 196 at the start, 192 now. Left as run 22 to 24 list them; the 48
+  failure texts given to `fail` are the check's own "wrongly caught" case and stay.
+- Full run at d2f49a3f (desktop, RTX 3080, NVIDIA 621.01, shared through the GPU queue; scratch
+  run25/full-1.log): after `cargo clean` of this crate and the suite crate, lint of both builds
+  clean, the literal check exits 0, then both APIs: 265 passed, 5 ignored, 0 failed (the ignored
+  tests as in run 21), the shared suite 44 of 44 on each API. web/check at the same code
+  (run25/webcheck.log, pictures in run25/web) passed whole after cleaning the WebAssembly build:
+  the twelve pictures and the viewports equal Direct3D 11's at tolerance 0, the twists differ,
+  the shared suite 44 of 44 in Chrome 157.0.8103.78 on the RTX 3080 (D3D12, discrete, not a
+  fallback), subgroups, the primitive index and fine derivatives declared and drawn; Chrome's
+  timestamps without developer features in 65,536 ns steps, stretches 9.830 and 19.595 ms. Every
+  page got an adapter at its first launch, so the relaunch is still not seen working.
+- Frame time: chocolate-doom's breakdown repeated (Measurements, run 25); the other two
+  programs' breakdowns stand from run 22.
+- Removed at the end: the desktop's C:\wc\target\phase-2-graphics-webgpu (11.36 GB) and the
+  checkout's own target on the Mac (234 MB of `cargo check`). Scratch run25 holds logs and
+  pictures (4.3 MB). Nothing new installed on the desktop.
+
+Run 24 = G2c run 6, 2026-11-18 to 19:
+- Merged origin/phase-2-graphics-direct3d-11 (G4 run 24, with its own adoption of the literal
+  check) and origin/phase-1-literals (7668c010, the tip the brief names; no new version of the
+  rules, so no init). The Direct3D 11 merge conflicted only in literals.baseline, where both sides
+  had removed neighbouring lines: kept neither, as docs/literals.md says, and deleted the 7 lines
+  the check then printed (this crate's literals fixed in run 23 that the other side's baseline
+  still had). Nothing in this crate, the interface, the suite crate or the lock file changed.
+- Not merged: origin/phase-2-graphics-direct3d-12 (2 commits) and -shaders (5). Neither branch
+  has adopted the literal check, and each adds literals after its merge base that the check
+  counts as growth (`+`) in crates this track may not edit and may not add to the baseline: the
+  Direct3D 12 front's device/early.rs (three `3`s) and examples/check/cases.rs (`SIDE = 4`, a
+  redefinition of this crate's blocks.rs `SIDE`), and the shaders track's tests/compute_draw.rs
+  (`vec![0; 2048]`). Both merges were made, the check run (it failed on exactly these lines), and
+  the two unpushed merge commits dropped. Nothing in either is needed here (Departures). Their
+  status files were read from origin all the same.
+- Read the new text of the four status files. Nothing new is asked of this back end: the
+  Direct3D 11 front found the stencil views reading 0 were its own (list above) and asks the
+  interface, not this back end, for a `B8G8R8X8_UNORM` vertex format with the fourth component
+  1.0; the Direct3D 12 front's new commits are its per-primitive early tests and storage offsets;
+  the shaders track lists native 16-bit floats "through a capability", which this back end
+  already declares (`SHADER_F16` where wgpu has it); the WebGL track had nothing new.
+- Literal sweep, fourth part (18 lines): the draw cache keeps the interface's `Viewport` and
+  `ScissorRect` (was `[u32; 6]` and `[u32; 4]`), clear colours are destructured; format sample
+  counts come from wgpu's `supported_sample_counts`; a sampler's three address modes are
+  destructured and its largest level is WebGPU's default `lod_max_clamp`, not 32.0; a spare
+  texture's key holds its `Extent3d`; the arena's growth names `ARENA_SLICES_AT_LEAST`; the
+  vertex conversion's operations are a `Code` enum whose names the program's text defines (its
+  `switch` became an `if` chain on those constants), a typed `Operation`, and source bytes derived
+  from wgpu's single and four-component formats (`three_of`) or a word. New unit tests in
+  vertex.rs: `conversion_program_is_valid` (naga parses and validates the program with its codes)
+  and `lacking_formats_take_their_bytes_in_the_source`. This crate's baseline lines: 214 at the
+  start, 196 now. The check's list of changes that could add lines (12): run 23's ten, and
+  81489a2f the start and 5657abb6 the init after the baseline arrived by a merge (the Direct3D 11
+  track's adoption, merged in).
+- Full run at 3b3aa3bb (desktop, RTX 3080, NVIDIA 621.01, shared through the GPU queue; scratch
+  run24/full-1.log): lint of both builds clean, the literal check exits 0, then both APIs: 265
+  passed, 5 ignored, 0 failed in all (Vulkan and Direct3D 12 together; the two new unit tests on
+  each, the ignored tests as in run 21), the shared suite 44 of 44 on each API. web/check at
+  0f06945d (the status commit after 3b3aa3bb, same code; scratch run24/webcheck.log,
+  pictures in run24/web) passed whole: the twelve pictures and the viewports equal Direct3D 11's
+  at tolerance 0, the twists differ, vertex formats through shadows (seed 188, 64 vertices each)
+  as they mean in Chrome, the shared suite 44 of 44 in Chrome 157.0.8103.78 on the RTX 3080
+  (D3D12, discrete, not a fallback), subgroups, the primitive index and fine derivatives declared
+  and drawn; Chrome's timestamps without developer features were multiples of 65,536 ns again
+  (131,072 in run 23), stretches 9.830 and 19.595 ms. Every page got an adapter at its first
+  launch, so the relaunch is still not seen working.
+- Frame time: the breakdowns stand (Measurements, runs 22 and 23); nothing in this run changes a
+  frame's path but the vertex conversion's parameters, which are the same words as before.
+- Removed at the end: the desktop's C:\wc\target\phase-2-graphics-webgpu (8.99 GB) and the
+  checkout's own target on the Mac (510 MB of `cargo check`). Scratch holds logs and pictures
+  (401 MB). Nothing new installed on the desktop.
 
 Run 23 = G2c run 5, 2026-11-18:
 - Merged origin/phase-2-graphics-shaders, -direct3d-11, -direct3d-12 and -webgl (the moves left
@@ -1309,6 +1411,22 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
 
 ## Measurements
 
+Run 25 (G2c), chocolate-doom's frame breakdown at 5bdc9a93 (after this run's merges and the
+frame report through serde; Direct3D 11 front, wgpu on Direct3D 12). Desktop (i9-9900K, 16
+threads, RTX 3080, driver 621.01), each job alone in the queue; log scratch run25/frames-doom2.log.
+The first try (frames-doom.log) stopped at `wpr -start` ("The profiles are already running"):
+another session was recording the system; this run waited until `wpr -status` showed it free.
+"FAIL, frames differ" is the rig's frame comparison of chocolate-doom, as in runs 22 and 23.
+- Load (typeperf, whole machine, from each job's "alone from"): short run 19.7 % mean (4.9 to
+  96.6) over 153 s; long run 7.5 % (3.5 to 10.7) over 7 s.
+- Per frame over 300 frames: wall 0.399 ms, CPU 1.680 ms: program 0.227, front 0.073, back end
+  -0.007 (the long run less the short, so near zero comes out signed), wgpu 0.007, driver 0.297,
+  system 1.083 (1.263 of it ntdll in a thread of the NVIDIA Direct3D 12 driver). Under the back
+  end's own functions 0.003 ms. Counts a frame (read through the new serde frame report):
+  MappedUploadWhole 3, bind_groups 1, buffer_bytes 496, pipeline_binds 3, renames 1,
+  spares_reused 1, texture_bytes 256,000, the same as runs 21 to 23. Our own code still costs
+  hundredths of a millisecond a frame; nothing new on our side to fix.
+
 Run 23 (G2c), chocolate-doom's frame breakdown repeated at 9d7b6b0c (after this run's merges;
 Direct3D 11 front, wgpu on Direct3D 12). Desktop (i9-9900K, 16 threads, RTX 3080, driver
 621.01), each job alone in the queue; log scratch run23/frames-doom3.log. The first two tries
@@ -1937,21 +2055,17 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
    timestamp workload's 1.3 and 1.5 times): wgpu's `create_shader_module_trusted` without
    `force_loop_bounding` takes Direct3D's time, but lets a guest's endless loop be undefined in
    the driver's compiler, as on real Direct3D.
-3. Merge the graphics branches at the start of each run (now -direct3d-11, -direct3d-12,
-   -shaders and -phase-1-literals, which moved after run 23's tests) and read the fronts' status
-   files again; then both full runs, web/check and the literal check. Keep `cargo run -q -p wcontainers-literals -- check` passing (run through
+3. Merge the graphics branches at the start of each run and read the fronts' status files
+   again; then both full runs, web/check and the literal check. -direct3d-12 and -shaders are
+   not merged since run 24: each brings literals the check counts as growth in crates this track
+   may not edit (Run 24). Merge them once they have adopted the check (or named those values),
+   and run the check before committing such a merge. Keep `cargo run -q -p wcontainers-literals -- check` passing (run through
    `tools/graphics-rig/remote`); when a merge brings a newer version of its rules, run `init`
    before committing that merge or in the commit right after it.
-4. For the Direct3D 11 track (not this back end's code): Wine's test_depth_stencil_sampling reads 0 for
-   every stencil value through the front on this branch (run 22: 8 of 95 checks, all stencil;
-   log in scratch graphics-rig/wine-logs/phase-2-graphics-webgpu), while this back end's own test
-   of the same reads (tests/bindings.rs `stencil_views_bound_alone_read_each_stencil_clear`) gives
-   every value in the first component on both APIs. Check that the converted programs of
-   ps_stencil (the view at slot 0) and ps_depth_stencil (slot 1) get the move into the second
-   component (`StageVariant::stencil`), and that a `D3D11_CLEAR_STENCIL` clear reaches the
-   texture; if both hold, give this track the converted WGSL to run here.
-5. For the Direct3D 11 track: map DXGI 88 (`B8G8R8X8_UNORM`) to `VertexFormat::Bgra8Unorm` in
-   `format::vertex_format`, and rerun test_format_compatibility with this branch. Its library's
+4. (Done by the Direct3D 11 track in its G4 run 24: the stencil views reading 0 were its
+   binding check's.)
+5. For the Direct3D 11 track: `B8G8R8X8_UNORM` vertices it now asks of the interface (a format
+   reading X as 1.0); this back end reads BGRX as wgpu's `unorm8x4-bgra`. Its library's
    wgpu instance (wcontainers-directx com/chosen.rs) lacks `WebGpu::INSTANCE_FLAGS`, so on a GPU
    whose timestamp period is not 1 ns it would get no `TIMESTAMPS` (none on the RTX 3080). For
    atg-simplecomputepc's division: run the sample with the instance on Vulkan, or on wgpu's DXC,
@@ -1969,6 +2083,11 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
    pair), so the breakdown can be taken for Godot.
 8. The literal sweep, the parts left (Run 22's list).
 9. Report wgpu-hal's Direct3D 12 gap overwrite upstream (Departures).
+10. A view swizzle in the browser: Chrome 157 offers WebGPU's `texture-component-swizzle` (run
+    25). It would take a mapping in the interface's view description and a capability (an
+    interface change), and wgpu's browser back end passing it on; natively wgpu 30 has no
+    swizzle, so `SwizzleInShader` stays there. Worth it only if a front finds the in-program
+    mapping costly.
 
 ## Departures from the plan
 
@@ -1982,6 +2101,13 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
   carry, and every branch merging this one would stop building. The interface track has since
   ruled (G1c, `Backend::prepare`'s doc and plan 4.3): no index format in `PrepareDesc`, and a
   back end like this one prepares strips for both, so this is now the plan, not a departure.
+
+- Run 24 did not merge -direct3d-12 and -shaders, though the task says to merge the graphics
+  branches each run: both have not adopted the literal check, and merging either makes the check
+  fail on literals in their crates that this track may neither fix nor add to the baseline (the
+  brief: keep the check passing; docs/literals.md step 6: never add a line). Nothing in their new
+  commits is needed by this back end or its tests. The merge commits were made locally, checked,
+  and dropped before any push.
 
 - BGRX (`Bgrx8Unorm`, `Bgrx8UnormSrgb`) is held as BGRA with alpha one, so its unused X byte reads
   back as 255. The RTX 3080's Direct3D 11 keeps the X byte as written, from the host (128 of 128

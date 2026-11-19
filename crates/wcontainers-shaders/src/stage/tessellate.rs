@@ -3,7 +3,9 @@
 //! the tessellator owns.
 
 use super::helper::{Owned, StageError, grow};
-use super::tess;
+use super::{SLOT_BYTES, tess};
+use crate::build::WORD;
+use core::mem::size_of;
 use wcontainers_gpu::{
     Backend, BindingEntry, BindingResource, BufferRange, BufferUsage, DispatchCall, DispatchGroups,
     MAX_BINDING_SETS, Program, RingKind, StageSet,
@@ -34,6 +36,32 @@ pub struct Tessellator<B: Backend> {
 /// Invocations per workgroup of the tessellator program.
 const WORKGROUP: u32 = 64;
 
+/// The tessellator program's values (`tessellator.wgsl`'s `Values`), for its layout.
+#[repr(C)]
+#[allow(dead_code, reason = "read through its layout")]
+struct Values {
+    patches: u32,
+    mode: u32,
+    domain: u32,
+    partitioning: u32,
+    output: u32,
+    primitives: u32,
+    pad: [u32; 2],
+}
+
+/// The program's passes in order, chosen by `Values::mode`: counting each patch's points and indices,
+/// the scan giving each patch its first ones (one workgroup), and writing them.
+const MODES: [u32; 3] = [0, 1, 2];
+const SCAN_MODE: u32 = MODES[1];
+
+/// Its bindings: its values, the hull stage's patches, the counts (the indirect draw first), the
+/// points and the indices.
+const TESSELLATOR_VALUES_BINDING: u32 = 0;
+const TESSELLATOR_HULL_BINDING: u32 = 1;
+const TESSELLATOR_COUNTS_BINDING: u32 = 2;
+const TESSELLATOR_POINTS_BINDING: u32 = 3;
+const TESSELLATOR_INDICES_BINDING: u32 = 4;
+
 impl<B: Backend> Tessellator<B> {
     pub fn new(backend: &mut B) -> Result<Self, StageError> {
         let shader = backend.create_shader(&super::tessellator_program()?)?;
@@ -62,17 +90,17 @@ impl<B: Backend> Tessellator<B> {
         let (per_points, per_indices) = tess::patch_bounds(t.max_factor);
         let patches64 = u64::from(patches.max(1));
         let usage = BufferUsage::STORAGE | BufferUsage::COPY_SRC;
-        let counts_bytes = (u64::from(tess::COUNTS_BASE) + 2 * patches64) * 4;
+        let counts_bytes = (u64::from(tess::COUNTS_BASE) + 2 * patches64) * u64::from(WORD);
         grow(
             backend,
             &mut self.counts,
             counts_bytes,
             usage | BufferUsage::INDIRECT,
         )?;
-        let points_bytes = patches64 * u64::from(per_points) * 16;
+        let points_bytes = patches64 * u64::from(per_points) * u64::from(SLOT_BYTES);
         grow(backend, &mut self.points, points_bytes, usage)?;
         let indices_bytes =
-            (patches64 * u64::from(per_indices) + u64::from(tess::INDEX_HEADER)) * 4;
+            (patches64 * u64::from(per_indices) + u64::from(tess::INDEX_HEADER)) * u64::from(WORD);
         grow(
             backend,
             &mut self.indices,
@@ -81,7 +109,7 @@ impl<B: Backend> Tessellator<B> {
         )?;
 
         let limits = backend.caps().limits;
-        let values = |mode: u32| -> [u8; 32] {
+        let values = |mode: u32| -> [u8; size_of::<Values>()] {
             let words = [
                 patches,
                 mode,
@@ -89,46 +117,56 @@ impl<B: Backend> Tessellator<B> {
                 t.partitioning.into(),
                 t.output.into(),
                 primitives.max(1),
-                0,
-                0,
             ];
-            let mut bytes = [0; 32];
-            for (b, w) in bytes.chunks_mut(4).zip(words) {
+            let mut bytes = [0; size_of::<Values>()];
+            for (b, w) in bytes.chunks_mut(size_of::<u32>()).zip(words) {
                 b.copy_from_slice(&w.to_le_bytes());
             }
             bytes
         };
-        let parts = [values(0), values(1), values(2)];
-        let mut offsets = [0u64; 3];
+        let parts = MODES.map(values);
+        let mut offsets = [0u64; MODES.len()];
         let ring = backend.write_buffer_ring(
             RingKind::Data,
-            &[&parts[0], &parts[1], &parts[2]],
+            &parts.each_ref().map(|p| &p[..]),
             limits.min_uniform_offset_alignment,
             &mut offsets,
         )?;
         let groups = patches.div_ceil(WORKGROUP);
-        for (mode, offset) in offsets.into_iter().enumerate() {
+        for (mode, offset) in MODES.into_iter().zip(offsets) {
             let entries = [
                 BindingEntry {
-                    binding: 0,
+                    binding: TESSELLATOR_VALUES_BINDING,
                     stages: StageSet::COMPUTE,
                     resource: BindingResource::UniformBuffer(BufferRange {
                         buffer: &ring,
                         offset,
-                        size: 32,
+                        size: size_of::<Values>() as u64,
                     }),
                 },
                 BindingEntry {
-                    binding: 1,
+                    binding: TESSELLATOR_HULL_BINDING,
                     stages: StageSet::COMPUTE,
                     resource: BindingResource::StorageBuffer {
                         range: hull,
                         writable: false,
                     },
                 },
-                storage(2, &self.counts.as_ref().unwrap().buffer, counts_bytes),
-                storage(3, &self.points.as_ref().unwrap().buffer, points_bytes),
-                storage(4, &self.indices.as_ref().unwrap().buffer, indices_bytes),
+                storage(
+                    TESSELLATOR_COUNTS_BINDING,
+                    &self.counts.as_ref().unwrap().buffer,
+                    counts_bytes,
+                ),
+                storage(
+                    TESSELLATOR_POINTS_BINDING,
+                    &self.points.as_ref().unwrap().buffer,
+                    points_bytes,
+                ),
+                storage(
+                    TESSELLATOR_INDICES_BINDING,
+                    &self.indices.as_ref().unwrap().buffer,
+                    indices_bytes,
+                ),
             ];
             let set = backend.create_binding_set(&entries)?;
             let mut sets = [None; MAX_BINDING_SETS];
@@ -137,7 +175,7 @@ impl<B: Backend> Tessellator<B> {
                 program: &self.program,
                 bindings: sets,
                 immediates: &[],
-                groups: DispatchGroups::Direct([if mode == 1 { 1 } else { groups }, 1, 1]),
+                groups: DispatchGroups::Direct([if mode == SCAN_MODE { 1 } else { groups }, 1, 1]),
             })?;
         }
         Ok(())

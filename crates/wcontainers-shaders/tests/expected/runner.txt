@@ -246,22 +246,22 @@ hlsl+clamp-1-ps.dxbc	ok
 hlsl+clamp-2-ps.dxbc	ok
 hlsl+clip-1-ps.dxbc	ok
 hlsl+clip-2-ps.dxbc	ok
-hlsl+clip-cull-distance-1-1-vs.dxbc	unsupported CullDistance
+hlsl+clip-cull-distance-1-1-vs.dxbc	ok-wgsl glsl-compile
 hlsl+clip-cull-distance-1-10-ps.dxbc	ok
 hlsl+clip-cull-distance-1-11-vs.dxbc	ok-wgsl glsl-compile
 hlsl+clip-cull-distance-1-12-vs.dxbc	ok-wgsl glsl-compile
 hlsl+clip-cull-distance-1-13-vs.dxbc	ok-wgsl glsl-compile
 hlsl+clip-cull-distance-1-14-vs.dxbc	ok-wgsl glsl-compile
-hlsl+clip-cull-distance-1-15-vs.dxbc	unsupported CullDistance
+hlsl+clip-cull-distance-1-15-vs.dxbc	ok-wgsl glsl-compile
 hlsl+clip-cull-distance-1-16-gs.dxbc	unsupported ClipDistance
 hlsl+clip-cull-distance-1-17-vs.dxbc	ok
-hlsl+clip-cull-distance-1-18-gs.dxbc	unsupported ClipDistance
-hlsl+clip-cull-distance-1-19-gs.dxbc	unsupported ClipDistance
+hlsl+clip-cull-distance-1-18-gs.dxbc	unsupported CullDistance
+hlsl+clip-cull-distance-1-19-gs.dxbc	unsupported CullDistance
 hlsl+clip-cull-distance-1-2-ps.dxbc	ok
-hlsl+clip-cull-distance-1-20-gs.dxbc	unsupported ClipDistance
-hlsl+clip-cull-distance-1-21-gs.dxbc	unsupported ClipDistance
+hlsl+clip-cull-distance-1-20-gs.dxbc	unsupported CullDistance
+hlsl+clip-cull-distance-1-21-gs.dxbc	unsupported CullDistance
 hlsl+clip-cull-distance-1-4-ps.dxbc	ok
-hlsl+clip-cull-distance-1-5-vs.dxbc	unsupported CullDistance
+hlsl+clip-cull-distance-1-5-vs.dxbc	ok-wgsl glsl-compile
 hlsl+clip-cull-distance-1-6-ps.dxbc	unsupported CullDistance
 hlsl+clip-cull-distance-1-9-vs.dxbc	ok-wgsl glsl-compile
 hlsl+clip-cull-distance-2-1-vs.dxbc	ok-wgsl glsl-compile
@@ -333,7 +333,7 @@ hlsl+default-values-5-ps.dxbc	ok
 hlsl+default-values-6-ps.dxbc	ok
 hlsl+default-values-7-ps.dxbc	ok
 hlsl+default-values-8-ps.dxbc	ok
-hlsl+depth-bounds-1-vs.dxbc	ok-wgsl glsl-write
+hlsl+depth-bounds-1-vs.dxbc	unsupported VertexStorageWrite
 hlsl+depth-bounds-2-ps.dxbc	ok-wgsl glsl-write
 hlsl+depth-out-1-ps.dxbc	ok
 hlsl+depth-out-2-vs.dxbc	ok
@@ -917,8 +917,8 @@ hlsl+ps1-sampler-4-vs.dxbc	ok
 hlsl+ps1-sampler-5-vs.dxbc	ok
 hlsl+rasteriser-ordered-views-1-vs.dxbc	ok
 hlsl+rasteriser-ordered-views-2-ps.dxbc	ok-wgsl glsl-write
-hlsl+rasteriser-ordered-views-3-ps.dxbc	unsupported StorageFormatKind
-hlsl+rasteriser-ordered-views-4-ps.dxbc	unsupported TypedBufferFormatKind
+hlsl+rasteriser-ordered-views-3-ps.dxbc	unsupported RasterizerOrderedView
+hlsl+rasteriser-ordered-views-4-ps.dxbc	unsupported RasterizerOrderedView
 hlsl+rasteriser-ordered-views-5-ps.dxbc	unsupported RasterizerOrderedView
 hlsl+rcp-1-ps.dxbc	ok
 hlsl+rcp-2-ps.dxbc	ok
@@ -1429,7 +1429,7 @@ hlsl+uav-out-param-2-cs.dxbc	ok-wgsl glsl-write
 hlsl+uav-rwbuffer-1-ps.dxbc	ok-wgsl glsl-write
 hlsl+uav-rwbuffer-11-ps.dxbc	ok-wgsl glsl-write
 hlsl+uav-rwbuffer-12-ps.dxbc	ok-wgsl glsl-write
-hlsl+uav-rwbuffer-2-ps.dxbc	unsupported TypedBufferFormatKind
+hlsl+uav-rwbuffer-2-ps.dxbc	unsupported RasterizerOrderedView
 hlsl+uav-rwbuffer-4-ps.dxbc	ok
 hlsl+uav-rwbuffer-6-ps.dxbc	ok
 hlsl+uav-rwbyteaddressbuffer-1-ps.dxbc	ok-wgsl glsl-write
@@ -1460,19 +1460,19 @@ hlsl+uav-rwstructuredbuffer-7-ps.dxbc	ok-wgsl glsl-write
 hlsl+uav-rwstructuredbuffer-8-ps.dxbc	ok-wgsl glsl-write
 hlsl+uav-rwtexture-1-ps.dxbc	ok-wgsl glsl-write
 hlsl+uav-rwtexture-10-ps.dxbc	ok-wgsl glsl-write
-hlsl+uav-rwtexture-11-ps.dxbc	unsupported StorageFormatKind
+hlsl+uav-rwtexture-11-ps.dxbc	unsupported RasterizerOrderedView
 hlsl+uav-rwtexture-12-ps.dxbc	ok-wgsl glsl-write
-hlsl+uav-rwtexture-13-ps.dxbc	unsupported StorageFormatKind
+hlsl+uav-rwtexture-13-ps.dxbc	unsupported RasterizerOrderedView
 hlsl+uav-rwtexture-14-ps.dxbc	ok-wgsl glsl-write
-hlsl+uav-rwtexture-15-ps.dxbc	unsupported StorageFormatKind
+hlsl+uav-rwtexture-15-ps.dxbc	unsupported RasterizerOrderedView
 hlsl+uav-rwtexture-2-ps.dxbc	ok-wgsl glsl-write
 hlsl+uav-rwtexture-3-ps.dxbc	ok-wgsl glsl-write
 hlsl+uav-rwtexture-4-ps.dxbc	ok-wgsl glsl-write
 hlsl+uav-rwtexture-5-ps.dxbc	ok-wgsl glsl-write
 hlsl+uav-rwtexture-6-ps.dxbc	ok-wgsl glsl-write
-hlsl+uav-rwtexture-7-ps.dxbc	unsupported StorageFormatKind
+hlsl+uav-rwtexture-7-ps.dxbc	unsupported RasterizerOrderedView
 hlsl+uav-rwtexture-8-ps.dxbc	ok-wgsl glsl-write
-hlsl+uav-rwtexture-9-ps.dxbc	unsupported StorageFormatKind
+hlsl+uav-rwtexture-9-ps.dxbc	unsupported RasterizerOrderedView
 hlsl+uniform-parameters-1-ps.dxbc	ok
 hlsl+uniform-parameters-2-ps.dxbc	ok
 hlsl+uniform-semantics-1-ps.dxbc	ok

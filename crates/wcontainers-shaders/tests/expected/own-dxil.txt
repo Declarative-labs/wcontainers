@@ -6,6 +6,7 @@ cs_shared.dxil	ok-wgsl glsl-write
 cs_texels.dxil	unsupported TypedBufferFormatKind
 cs_through.dxil	unsupported StorageFormatKind
 gs_adjacent.dxil	unsupported DxilGeometryShader
+gs_clip.dxil	unsupported DxilGeometryShader
 gs_cut.dxil	unsupported DxilGeometryShader
 gs_instances.dxil	unsupported DxilGeometryShader
 gs_line_adjacent.dxil	unsupported DxilGeometryShader
@@ -59,6 +60,8 @@ ps_twospaces.dxil	ok
 ps_wave.dxil	ok-wgsl glsl-write
 vs_carry.dxil	ok
 vs_clip.dxil	ok-wgsl glsl-compile
+vs_clip_six.dxil	ok-wgsl glsl-compile
+vs_cull.dxil	ok-wgsl glsl-compile
 vs_deep.dxil	ok
 vs_early.dxil	ok
 vs_evaluate.dxil	ok

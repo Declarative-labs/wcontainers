@@ -10,7 +10,7 @@ mod registers;
 mod widths;
 
 use crate::ConvertError;
-use crate::container::{Element, signature};
+use crate::container::{self, Element, signature};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -46,7 +46,7 @@ unsafe extern "C" {
     fn wcs_free(p: *mut c_void);
 }
 
-/// The reason in `error` from the C side, freed.
+/// The reason in `error` from the C side (a log line, its line end dropped), freed.
 fn reason(error: *mut c_char) -> String {
     if error.is_null() {
         return String::from("dxil-spirv gave no reason");
@@ -54,6 +54,7 @@ fn reason(error: *mut c_char) -> String {
     // SAFETY: a NUL-terminated string from the C side, freed right after.
     let s = unsafe { core::ffi::CStr::from_ptr(error) }
         .to_string_lossy()
+        .trim_end()
         .into();
     unsafe { wcs_free(error.cast()) };
     s
@@ -317,17 +318,17 @@ pub(crate) fn lower(
             .push(wcontainers_gpu::SlowPath::AtomicExchangeLoop);
     }
     let ep = &module.entry_points[0].function;
-    let inputs = signature(dxil, b"ISG1");
-    let outputs = signature(dxil, b"OSG1");
+    let inputs = signature(dxil, &container::ISG1);
+    let outputs = signature(dxil, &container::OSG1);
     let pixel = stage == ShaderStage::Fragment;
     for a in &ep.arguments {
-        let into = &mut reflection.inputs;
-        stage_values(&module, a.ty, a.binding.as_ref(), &inputs, into);
+        stage_values(&module, a.ty, a.binding.as_ref(), &mut reflection.inputs);
     }
     if let Some(r) = &ep.result {
-        let into = &mut reflection.outputs;
-        stage_values(&module, r.ty, r.binding.as_ref(), &outputs, into);
+        stage_values(&module, r.ty, r.binding.as_ref(), &mut reflection.outputs);
     }
+    container::place_system_values(&mut reflection.inputs, &inputs);
+    container::place_system_values(&mut reflection.outputs, &outputs);
     for p in &placed {
         let (signature, into) = match p.output {
             false => (&inputs, &mut reflection.inputs),
@@ -522,8 +523,11 @@ fn unconverted(module: &Module) -> Result<(), ConvertError> {
     {
         return Err(ConvertError::Unsupported("PrimitiveId"));
     }
-    // WebGPU has no cull distances, and no clip distances read by a pixel program.
-    if builtins.iter().any(|(b, _)| *b == BuiltIn::CullDistance) {
+    // Cull distances are drawn through the stage helper from a vertex program only, and no stage
+    // reads clip distances.
+    if ep.stage != naga::ShaderStage::Vertex
+        && builtins.iter().any(|(b, _)| *b == BuiltIn::CullDistance)
+    {
         return Err(ConvertError::Unsupported("CullDistance"));
     }
     if ep.stage == naga::ShaderStage::Fragment
@@ -1377,18 +1381,17 @@ fn helper_block(module: &mut Module, reflection: &mut Reflection) -> Handle<Glob
     )
 }
 
-/// The reflection's built-in inputs or outputs: the entry point's, named from the signature.
+/// The reflection's built-in inputs or outputs: the entry point's, named from the signature later
+/// ([`crate::container::place_system_values`]).
 fn stage_values(
     module: &Module,
     ty: Handle<Type>,
     binding: Option<&Binding>,
-    signature: &[Element],
     out: &mut Vec<StageValue>,
 ) {
-    use crate::ir::sysval;
     if let TypeInner::Struct { ref members, .. } = module.types[ty].inner {
         for m in members {
-            stage_values(module, m.ty, m.binding.as_ref(), signature, out);
+            stage_values(module, m.ty, m.binding.as_ref(), out);
         }
         return;
     }
@@ -1401,19 +1404,19 @@ fn stage_values(
         TypeInner::Array { .. } => (ScalarKind::Float, 1),
         _ => return,
     };
-    let (system, code) = match b {
-        BuiltIn::Position { .. } => (SystemValue::Position, sysval::POSITION),
-        BuiltIn::VertexIndex => (SystemValue::VertexId, sysval::VERTEX_ID),
-        BuiltIn::InstanceIndex => (SystemValue::InstanceId, sysval::INSTANCE_ID),
-        BuiltIn::PrimitiveIndex => (SystemValue::PrimitiveId, sysval::PRIMITIVE_ID),
-        BuiltIn::FrontFacing => (SystemValue::FrontFacing, sysval::IS_FRONT_FACE),
-        BuiltIn::SampleIndex => (SystemValue::SampleIndex, sysval::SAMPLE_INDEX),
-        BuiltIn::SampleMask => (SystemValue::Coverage, sysval::COVERAGE),
-        BuiltIn::FragDepth => (SystemValue::Depth, sysval::DEPTH),
-        BuiltIn::ClipDistances => (SystemValue::ClipDistance, sysval::CLIP_DISTANCE),
+    let system = match b {
+        BuiltIn::Position { .. } => SystemValue::Position,
+        BuiltIn::VertexIndex => SystemValue::VertexId,
+        BuiltIn::InstanceIndex => SystemValue::InstanceId,
+        BuiltIn::PrimitiveIndex => SystemValue::PrimitiveId,
+        BuiltIn::FrontFacing => SystemValue::FrontFacing,
+        BuiltIn::SampleIndex => SystemValue::SampleIndex,
+        BuiltIn::SampleMask => SystemValue::Coverage,
+        BuiltIn::FragDepth => SystemValue::Depth,
+        BuiltIn::ClipDistances => SystemValue::ClipDistance,
+        BuiltIn::CullDistance => SystemValue::CullDistance,
         _ => return,
     };
-    let element = signature.iter().find(|e| e.system == code);
     let scalar = value_kind(kind);
     let interpolation = if scalar == ValueKind::Float {
         Interpolation::Perspective
@@ -1421,10 +1424,10 @@ fn stage_values(
         Interpolation::Flat
     };
     out.push(StageValue {
-        semantic: element.map(|e| e.semantic.clone()).unwrap_or_default(),
-        semantic_index: element.map_or(0, |e| e.index),
-        register: element.map_or(0, |e| e.register),
-        mask: element.map_or(((1u32 << size) - 1) as u8, |e| e.mask),
+        semantic: String::new(),
+        semantic_index: 0,
+        register: 0,
+        mask: ((1u32 << size) - 1) as u8,
         scalar,
         interpolation,
         system: Some(system),

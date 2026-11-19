@@ -4,16 +4,16 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use wcontainers_gpu::{
-    AspectOps, Backend, BindingEntry, BindingResource, BufferRange, ClearValue, ColorAttachment,
-    ColorTarget, CountedDraw, DRAW_ARGUMENTS_BINDING, DepthAttachment, DispatchCall,
-    DispatchGroups, DrawCall, DrawRange, EARLY_DEPTH_BINDING, EARLY_STENCIL_BINDING, EmptyPass,
-    Extent, Features, Filter, Format, FormatKind, FormatUse, HELPER_SET, HelperValue, IndexBinding,
-    IndexFormat, Interpolation, LoadOp, MAX_BINDING_SETS, Object, Origin, PassDesc, PassOps,
-    PassTargets, Program, ReadSource, ReadState, RingKind, SamplerDesc as GpuSampler, ScissorRect,
-    ShaderModule, ShaderStage, SlotKind, SlowPath, SourceStage, StageSet, StencilOp, StepMode,
-    StoreOp, SystemValue, Target, TargetInShader, TextureRegion, TextureUsage, TextureViewDesc,
-    Topology, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream,
-    ViewDimension, Viewport as GpuViewport, WriteMode, helper_binding,
+    AspectOps, Backend, BindingEntry, BindingResource, BufferRange, CONSTANTS_TEXTURE_WIDTH,
+    ClearValue, ColorAttachment, ColorTarget, CountedDraw, DRAW_ARGUMENTS_BINDING, DepthAttachment,
+    DispatchCall, DispatchGroups, DrawCall, DrawRange, EARLY_DEPTH_BINDING, EARLY_STENCIL_BINDING,
+    EmptyPass, Extent, Features, Filter, Format, FormatKind, FormatUse, HELPER_SET, HelperValue,
+    IndexBinding, IndexFormat, Interpolation, LoadOp, MAX_BINDING_SETS, Object, Origin, PassDesc,
+    PassOps, PassTargets, Program, ReadSource, ReadState, RingKind, SamplerDesc as GpuSampler,
+    ScissorRect, ShaderModule, ShaderStage, SlotKind, SlowPath, SourceStage, StageSet, StencilOp,
+    StepMode, StoreOp, SystemValue, Target, TargetInShader, TextureRegion, TextureUsage,
+    TextureViewDesc, Topology, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc,
+    VertexStream, ViewDimension, Viewport as GpuViewport, WriteMode, helper_binding,
 };
 
 use crate::desc::{
@@ -26,7 +26,7 @@ use crate::device::{
 use crate::error::{Error, Result, not_implemented};
 use crate::format;
 use crate::object::*;
-use crate::shader::{Helpers, StageVariant};
+use crate::shader::{ConstantsReadAs, Helpers, RelocatedConstants, StageVariant};
 
 mod geometry;
 mod split;
@@ -45,7 +45,7 @@ pub const COMPUTE: usize = 2;
 pub const GEOMETRY: usize = 3;
 pub const HULL: usize = 4;
 pub const DOMAIN: usize = 5;
-const STAGES: usize = 6;
+pub const STAGES: usize = 6;
 
 /// Unordered access slots of the pixel and compute stages at feature level 11_0.
 pub const UAV_SLOTS: usize = 8;
@@ -61,9 +61,13 @@ fn window_of<B: Backend>(c: &Buffer<B>, (first, count): (u32, u32)) -> (u64, u64
 
 /// A constant buffer window a stage reads through a copy: slot, buffer, offset, length and the
 /// block's size.
-type ConstantWindow<B> = (u32, Rc<Buffer<B>>, u64, u64, u64);
+type ConstantWindow<B> = (u32, Rc<Buffer<B>>, u64, u64, u64, ConstantsReadAs);
 
-fn set_of(stage: usize) -> u32 {
+/// Bytes of one constant: four 32-bit components.
+const CONSTANT_ROW_BYTES: u64 = size_of::<[u32; 4]>() as u64;
+
+/// The binding set `stage`'s slots are in.
+pub(crate) fn set_of(stage: usize) -> u32 {
     if stage == PIXEL { 1 } else { 0 }
 }
 
@@ -162,7 +166,7 @@ pub struct ContextState<B: Backend> {
     /// (`LayerSplit`, `MultiViewportSplit`), which pixel programs read as theirs; zero otherwise.
     run: [u32; 2],
     /// Per stage, the constant buffer slots its set binds as storage buffers.
-    stored: [u16; STAGES],
+    relocated: [u32; STAGES],
     /// The resources the open pass's draws wrote as storage and read as shader resources, by
     /// address and sorted: a draw using one the other way ends the pass (`UsageScopeSplit`).
     pass_written: Vec<usize>,
@@ -231,7 +235,7 @@ impl<B: Backend> ContextState<B> {
             pass_early: false,
             early_run: None,
             run: [0; 2],
-            stored: [0; STAGES],
+            relocated: [0; STAGES],
             pass_written: Vec::new(),
             pass_read: Vec::new(),
             fitted: None,
@@ -973,8 +977,9 @@ impl<B: Backend> Device<B> {
         vs: &Rc<Shader<B>>,
         vk: StageVariant,
         ps: Option<&Rc<Shader<B>>>,
+        pk: StageVariant,
     ) -> Result<(B::Program, bool)> {
-        let program = self.counting_program(vs, vk, ps)?;
+        let program = self.counting_program(vs, vk, ps, pk)?;
         self.track_targets()?;
         let ds = &self
             .ctx
@@ -1070,7 +1075,7 @@ impl<B: Backend> Device<B> {
                 d
             }
         };
-        let key = (vs.gpu.id, vk, id);
+        let key = (vs.gpu.id, vk, id, StageVariant::default());
         if let Some(p) = self.counting.get(&key) {
             return Ok((p.handle.clone(), off));
         }
@@ -1218,27 +1223,30 @@ impl<B: Backend> Device<B> {
         }
     }
 
-    /// The counting program of a vertex and pixel shader pair, made at its first counted draw.
+    /// The counting program of a vertex and pixel shader pair, made at its first counted draw from
+    /// the pixel shader's variant `pk`, so it reads the bindings the draw binds.
     fn counting_program(
         &mut self,
         vs: &Rc<Shader<B>>,
         vk: StageVariant,
         ps: Option<&Rc<Shader<B>>>,
+        pk: StageVariant,
     ) -> Result<B::Program> {
-        let key = (vs.gpu.id, vk, ps.map_or(0, |p| p.gpu.id));
+        let pair = (vs.gpu.id, vk, ps.map_or(0, |p| p.gpu.id));
+        let key = (pair.0, pair.1, pair.2, pk);
         if let Some(p) = self.counting.get(&key) {
             return Ok(p.handle.clone());
         }
         // Made after the pair's own program, so the vertex shader converted for its interpolation
         // and variant is there.
-        self.program(vs, vk, ps, StageVariant::default())?;
+        self.program(vs, vk, ps, pk)?;
         let module = match ps {
             Some(p) => {
-                let plain = StageVariant {
+                let counted = StageVariant {
                     samples: u8::from(p.reads_samples),
-                    ..StageVariant::default()
+                    ..pk
                 };
-                let key = self.variant_key(p, plain, SourceStage::Pixel);
+                let key = self.variant_key(p, counted, SourceStage::Pixel);
                 let mut c = crate::shader::convert_variant(&p.bytecode, SourceStage::Pixel, &key)?;
                 crate::counting::from_pixel_shader(&c.modules.pop().expect("one module"))?
             }
@@ -1248,7 +1256,7 @@ impl<B: Backend> Device<B> {
         let fragment = self.gpu(fragment)?;
         let vertex = self
             .interpolated
-            .get(&key)
+            .get(&pair)
             .map_or(&vs.gpu.handle, |s| &s.shader.handle);
         let program = self.backend.create_program(&Program::Render {
             vertex,
@@ -1797,9 +1805,7 @@ impl<B: Backend> Device<B> {
         let mut v = StageVariant {
             samples: if s.reads_samples { samples } else { 0 },
             formats,
-            // Variants filtering in the program read level counts too.
-            texture_info: !caps.has(Features::TEXTURE_LEVEL_QUERY),
-            ..StageVariant::default()
+            ..self.base_variant()
         };
         if s.samplers != 0 {
             for (i, b) in self.ctx.samplers[stage].iter().enumerate().take(16) {
@@ -1867,9 +1873,45 @@ impl<B: Backend> Device<B> {
         }
         if matches!(stage, VERTEX | PIXEL) {
             v.constants_as_storage = self.constants_past_declared(stage, s);
+            v.constants_as_texture = self.constants_past_uniform_limit(stage, s, &v);
         }
         self.program_paths(s);
         v
+    }
+
+    /// What every variant of a program takes on this back end, whatever is bound.
+    pub(crate) fn base_variant(&self) -> StageVariant {
+        StageVariant {
+            // Variants filtering in the program read level counts too.
+            texture_info: !self.backend.caps().has(Features::TEXTURE_LEVEL_QUERY),
+            ..StageVariant::default()
+        }
+    }
+
+    /// The variant of `s` drawn at `stage` with nothing bound that changes it.
+    pub(crate) fn unbound_variant(&self, stage: usize, s: &Shader<B>) -> StageVariant {
+        let v = self.base_variant();
+        StageVariant {
+            constants_as_texture: self.constants_past_uniform_limit(stage, s, &v),
+            ..v
+        }
+    }
+
+    /// The constant buffer slots `s` reads as uniform buffers past the back end's uniform buffers
+    /// per stage, where the variant `v` reads the others: its program reads them through textures.
+    fn constants_past_uniform_limit(&self, stage: usize, s: &Shader<B>, v: &StageVariant) -> u16 {
+        let plain = StageVariant {
+            formats: 0,
+            samples: 0,
+            ..*v
+        };
+        crate::shader::constants_past_limit(
+            &s.reflection,
+            set_of(stage),
+            v.constants_as_storage,
+            s.helpers.size > 0 || plain != StageVariant::default(),
+            self.backend.caps().limits.uniform_buffers_per_stage,
+        )
     }
 
     /// The constant buffer slots `s` indexes at run time whose buffer bound to `stage` is larger
@@ -2193,30 +2235,47 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
-    /// The copy of `c`'s window of `length` bytes at `offset` read by a block of `size` bytes: its
-    /// bytes past the window are zero; copied again where `c` was written since.
-    fn window(&mut self, c: &Buffer<B>, offset: u64, length: u64, size: u64) -> Result<B::Buffer> {
+    /// The copy of `c`'s window of `length` bytes at `offset` read by a block of `size` bytes, read
+    /// as `read_as`: its bytes past the window are zero; copied again where `c` was written since.
+    /// Gives its index in `c`'s windows.
+    fn window(
+        &mut self,
+        c: &Buffer<B>,
+        offset: u64,
+        length: u64,
+        size: u64,
+        read_as: ConstantsReadAs,
+    ) -> Result<usize> {
         let source = (c.writes.get(), c.gpu.borrow().id);
-        let found = c
-            .windows
-            .borrow()
-            .iter()
-            .position(|w| (w.offset, w.length, w.size) == (offset, length, size));
+        let found = c.windows.borrow().iter().position(|w| {
+            (w.offset, w.length, w.size) == (offset, length, size)
+                && matches!(
+                    (&w.copy, read_as),
+                    (WindowCopy::Texture { .. }, ConstantsReadAs::Texture)
+                        | (WindowCopy::Buffer(_), ConstantsReadAs::Storage)
+                )
+        });
         let i = match found {
             Some(i) => i,
             None => {
                 self.settle();
-                let twin = self.backend.create_buffer(&gpu_buffer(&c.desc, size));
-                let twin = self.gpu(twin)?;
-                self.backend.clear_buffer(&twin, 0, size, &[0]);
-                let id = self.id();
+                let copy = match read_as {
+                    ConstantsReadAs::Storage => {
+                        let twin = self.backend.create_buffer(&gpu_buffer(&c.desc, size));
+                        let twin = self.gpu(twin)?;
+                        self.backend.clear_buffer(&twin, 0, size, &[0]);
+                        let id = self.id();
+                        WindowCopy::Buffer(Kept::new(twin, id, Object::Buffer, &self.graveyard))
+                    }
+                    ConstantsReadAs::Texture => self.constants_texture(size)?,
+                };
                 let mut windows = c.windows.borrow_mut();
                 windows.push(Window {
                     offset,
                     length,
                     size,
                     copied: Cell::new(None),
-                    twin: Kept::new(twin, id, Object::Buffer, &self.graveyard),
+                    copy,
                 });
                 windows.len() - 1
             }
@@ -2224,27 +2283,147 @@ impl<B: Backend> Device<B> {
         let windows = c.windows.borrow();
         let w = &windows[i];
         if w.copied.get() != Some(source) {
-            self.backend.slow_paths().hit(SlowPath::ConstantBufferGrown);
             self.settle();
-            if length > 0 {
-                self.backend
-                    .copy_buffer(&c.handle(), offset, &w.twin.handle, 0, length);
+            match &w.copy {
+                WindowCopy::Buffer(twin) => {
+                    self.backend.slow_paths().hit(SlowPath::ConstantBufferGrown);
+                    if length > 0 {
+                        self.backend
+                            .copy_buffer(&c.handle(), offset, &twin.handle, 0, length);
+                    }
+                }
+                WindowCopy::Texture { texture, .. } => {
+                    self.copy_constant_rows(&c.handle(), offset, length, &texture.handle);
+                }
             }
             w.copied.set(Some(source));
         }
-        Ok(w.twin.handle.clone())
+        Ok(i)
     }
 
-    /// Copies again the constant buffer windows bound shorter than their blocks whose buffers were
-    /// written since.
+    /// A zeroed RGBA32 unsigned texture holding `size` bytes of constants as 16-byte rows,
+    /// `CONSTANTS_TEXTURE_WIDTH` rows to a texture row.
+    fn constants_texture(&mut self, size: u64) -> Result<WindowCopy<B>> {
+        let rows = size.div_ceil(CONSTANT_ROW_BYTES).max(1) as u32;
+        let extent = Extent {
+            width: CONSTANTS_TEXTURE_WIDTH,
+            height: rows.div_ceil(CONSTANTS_TEXTURE_WIDTH),
+            depth_or_layers: 1,
+        };
+        let desc = wcontainers_gpu::TextureDesc {
+            dimension: wcontainers_gpu::TextureDimension::D2,
+            format: Format::Rgba32Uint,
+            width: extent.width,
+            height: extent.height,
+            depth_or_layers: 1,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+            cube: false,
+            reinterpret: false,
+        };
+        let texture = self.backend.create_texture(&desc);
+        let texture = self.gpu(texture)?;
+        let row_pitch = CONSTANTS_TEXTURE_WIDTH * CONSTANT_ROW_BYTES as u32;
+        let zeros = vec![0; (row_pitch * extent.height) as usize];
+        self.backend.write_texture(
+            &TextureRegion {
+                texture: &texture,
+                mip: 0,
+                layer: 0,
+                origin: Origin { x: 0, y: 0, z: 0 },
+                stencil: false,
+            },
+            extent,
+            &zeros,
+            row_pitch,
+            extent.height,
+            WriteMode::Discard,
+        );
+        let view = self.backend.create_view(
+            &texture,
+            &TextureViewDesc {
+                format: Format::Rgba32Uint,
+                dimension: ViewDimension::D2,
+                base_mip: 0,
+                mip_count: 1,
+                base_layer: 0,
+                layer_count: 1,
+                stencil: false,
+            },
+        );
+        let view = self.gpu(view)?;
+        let (t, v) = (self.id(), self.id());
+        Ok(WindowCopy::Texture {
+            texture: Kept::new(texture, t, Object::Texture, &self.graveyard),
+            view: Kept::new(view, v, Object::TextureView, &self.graveyard),
+        })
+    }
+
+    /// The zero buffer's bytes as a constants texture, made at its first use.
+    fn zero_constants(&mut self) -> Result<B::TextureView> {
+        if self.zeros.constants.is_none() {
+            self.zeros.constants = Some(self.constants_texture(ZERO_BYTES)?);
+        }
+        match &self.zeros.constants {
+            Some(WindowCopy::Texture { view, .. }) => Ok(view.handle.clone()),
+            _ => unreachable!("made as a texture"),
+        }
+    }
+
+    /// Copies `length` bytes of constants at `offset` in `buffer` into a constants texture's rows.
+    fn copy_constant_rows(
+        &mut self,
+        buffer: &B::Buffer,
+        offset: u64,
+        length: u64,
+        texture: &B::Texture,
+    ) {
+        let rows = (length / CONSTANT_ROW_BYTES) as u32;
+        let row_pitch = CONSTANTS_TEXTURE_WIDTH * CONSTANT_ROW_BYTES as u32;
+        let whole = rows / CONSTANTS_TEXTURE_WIDTH;
+        let rest = rows % CONSTANTS_TEXTURE_WIDTH;
+        for (first, width, height) in [(0, CONSTANTS_TEXTURE_WIDTH, whole), (whole, rest, 1)] {
+            if width == 0 || height == 0 {
+                continue;
+            }
+            self.backend.copy_buffer_to_texture(
+                &wcontainers_gpu::CopyBufferTexture {
+                    buffer,
+                    offset: offset + u64::from(first * row_pitch),
+                    row_pitch,
+                    rows_per_layer: height,
+                },
+                &TextureRegion {
+                    texture,
+                    mip: 0,
+                    layer: 0,
+                    origin: Origin {
+                        x: 0,
+                        y: first,
+                        z: 0,
+                    },
+                    stencil: false,
+                },
+                Extent {
+                    width,
+                    height,
+                    depth_or_layers: 1,
+                },
+            );
+        }
+    }
+
+    /// Copies again the constant buffer windows read through copies whose buffers were written
+    /// since.
     fn refresh_windows(&mut self) -> Result<()> {
         for stage in 0..STAGES {
             if self.ctx.windows[stage].is_empty() {
                 continue;
             }
             let windows = self.ctx.windows[stage].clone();
-            for (_, c, offset, length, size) in &windows {
-                self.window(c, *offset, *length, *size)?;
+            for (_, c, offset, length, size, read_as) in &windows {
+                self.window(c, *offset, *length, *size, *read_as)?;
             }
         }
         Ok(())
@@ -2541,15 +2720,21 @@ impl<B: Backend> Device<B> {
     /// Makes `stage`'s binding set again where its bindings changed; `pulled` holds the binding of
     /// each vertex input the program fetches itself, by location.
     /// Makes `stage`'s binding set where it changed: with the streams `pulled` the vertex program
-    /// fetches and the constant buffers `stored` its program reads as storage, (slot, binding).
+    /// fetches and the constant buffers `relocated` its program reads through other bindings.
     fn update_set(
         &mut self,
         stage: usize,
         pulled: &[(u32, u32)],
-        stored: &[(u32, u32)],
+        relocated: &[RelocatedConstants],
     ) -> Result<()> {
-        let stored_slots = stored.iter().fold(0u16, |m, &(slot, _)| m | 1 << slot);
-        if stored_slots != self.ctx.stored[stage] {
+        let relocated_slots = relocated.iter().fold(0u32, |m, r| {
+            let kind = match r.read_as {
+                ConstantsReadAs::Storage => 0,
+                ConstantsReadAs::Texture => u16::BITS,
+            };
+            m | 1 << (r.slot + kind)
+        });
+        if relocated_slots != self.ctx.relocated[stage] {
             self.ctx.sets_dirty[stage] = true;
         }
         if !self.ctx.sets_dirty[stage] {
@@ -2687,8 +2872,16 @@ impl<B: Backend> Device<B> {
             Some(self.zero_storage()?)
         };
         // Windows shorter than their shader's block read through a copy of the block's size whose
-        // bytes past the window are zero.
+        // bytes past the window are zero, and constant buffers the program reads through textures
+        // through a texture copy.
+        let textured = |slot: u32| {
+            relocated
+                .iter()
+                .find(|r| r.slot == slot && r.read_as == ConstantsReadAs::Texture)
+                .map(|r| r.binding)
+        };
         let mut windows = Vec::new();
+        let mut empty_textured = Vec::new();
         for b in wanted().filter(|b| b.kind == SlotKind::Uniform) {
             let slot = b.register as usize;
             let declared = shader
@@ -2696,23 +2889,40 @@ impl<B: Backend> Device<B> {
                 .iter()
                 .find(|(n, _)| *n == b.binding)
                 .map_or(0, |s| s.1);
-            if let (Some(Some(c)), Some(Some(range))) = (
-                self.ctx.constant_buffers[stage].get(slot),
-                self.ctx.constant_ranges[stage].get(slot),
-            ) {
-                let (offset, length) = window_of(c, *range);
-                if length < declared {
-                    windows.push((b.register, c.clone(), offset, length, declared));
+            let read_as = if textured(b.register).is_some() {
+                ConstantsReadAs::Texture
+            } else {
+                ConstantsReadAs::Storage
+            };
+            let Some(Some(c)) = self.ctx.constant_buffers[stage].get(slot) else {
+                if read_as == ConstantsReadAs::Texture {
+                    empty_textured.push(b.register);
                 }
+                continue;
+            };
+            let range = self.ctx.constant_ranges[stage].get(slot).copied().flatten();
+            let (offset, length) = match range {
+                Some(range) => window_of(c, range),
+                None => (0, c.size.get()),
+            };
+            if read_as == ConstantsReadAs::Texture || (range.is_some() && length < declared) {
+                let size = declared.max(length);
+                windows.push((b.register, c.clone(), offset, length, size, read_as));
             }
         }
         let mut copies = Vec::new();
-        for (register, c, offset, length, declared) in &windows {
-            copies.push((
-                *register,
-                self.window(c, *offset, *length, *declared)?,
-                *declared,
-            ));
+        let mut texture_copies = Vec::new();
+        for (register, c, offset, length, size, read_as) in &windows {
+            let i = self.window(c, *offset, *length, *size, *read_as)?;
+            match &c.windows.borrow()[i].copy {
+                WindowCopy::Buffer(twin) => copies.push((*register, twin.handle.clone(), *size)),
+                WindowCopy::Texture { view, .. } => {
+                    texture_copies.push((*register, view.handle.clone()));
+                }
+            }
+        }
+        for register in empty_textured {
+            texture_copies.push((register, self.zero_constants()?));
         }
         self.ctx.windows[stage] = windows;
         let mut cbs = Vec::new();
@@ -2926,10 +3136,22 @@ impl<B: Backend> Device<B> {
                     Zero::Sampler(sampler) => BindingResource::Sampler(sampler),
                 },
             };
-            // A constant buffer the program reads as storage, at the variant's binding.
+            // A constant buffer the program reads as storage or through a texture, at the variant's
+            // binding.
+            let stored = relocated
+                .iter()
+                .find(|r| r.slot == b.register && r.read_as == ConstantsReadAs::Storage);
             let (binding, resource) = match (b.kind, resource) {
+                (SlotKind::Uniform, _)
+                    if let (Some(binding), Some((_, view))) = (
+                        textured(b.register),
+                        texture_copies.iter().find(|t| t.0 == b.register),
+                    ) =>
+                {
+                    (binding, BindingResource::Texture(view))
+                }
                 (SlotKind::Uniform, BindingResource::UniformBuffer(range))
-                    if let Some(&(_, binding)) = stored.iter().find(|s| s.0 == b.register) =>
+                    if let Some(&RelocatedConstants { binding, .. }) = stored =>
                 {
                     let resource = BindingResource::StorageBuffer {
                         range,
@@ -2955,7 +3177,7 @@ impl<B: Backend> Device<B> {
         let id = self.id();
         self.ctx.sets[stage] = Some(Kept::new(set, id, Object::BindingSet, &self.graveyard));
         self.ctx.sets_dirty[stage] = false;
-        self.ctx.stored[stage] = stored_slots;
+        self.ctx.relocated[stage] = relocated_slots;
         self.ctx.twins[stage] = self.ctx.resources[stage]
             .iter()
             .chain(&self.ctx.uavs[stage])
@@ -3860,11 +4082,14 @@ impl<B: Backend> Device<B> {
         if vk.pulled != self.ctx.pulled_set {
             self.ctx.sets_dirty[VERTEX] = true;
         }
-        self.update_set(VERTEX, &helpers[0].pulled, &helpers[0].stored)?;
+        self.update_set(VERTEX, &helpers[0].pulled, &helpers[0].relocated)?;
         self.ctx.pulled_set = vk.pulled;
-        self.update_set(PIXEL, &[], &helpers[1].stored)?;
-        if !helpers[0].stored.is_empty() || !helpers[1].stored.is_empty() {
-            self.backend.slow_paths().hit(SlowPath::ConstantsAsStorage);
+        self.update_set(PIXEL, &[], &helpers[1].relocated)?;
+        for r in helpers.iter().flat_map(|h| &h.relocated) {
+            self.backend.slow_paths().hit(match r.read_as {
+                ConstantsReadAs::Storage => SlowPath::ConstantsAsStorage,
+                ConstantsReadAs::Texture => SlowPath::ConstantsAsTexture,
+            });
         }
         // SV_VertexID and SV_InstanceID leave out the draw's bases, which the common form's indices
         // include: a vertex program reading them takes the bases from its helper constants or from
@@ -3984,10 +4209,7 @@ impl<B: Backend> Device<B> {
         let counting = if self.queries.counted.is_empty() {
             None
         } else {
-            if pk != StageVariant::default() {
-                return not_implemented("counting the samples of a pixel shader variant");
-            }
-            Some(self.prepare_counted(&vs, vk, ps.as_ref())?)
+            Some(self.prepare_counted(&vs, vk, ps.as_ref(), pk)?)
         };
         // A draw without a pixel shader invokes none.
         let pixel_counting = match &ps {

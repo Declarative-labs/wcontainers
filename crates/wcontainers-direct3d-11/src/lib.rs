@@ -17,7 +17,7 @@ pub mod record;
 pub mod shader;
 pub mod stream;
 
-pub use context::{COMPUTE, DOMAIN, GEOMETRY, HULL, Mapped, PIXEL, UAV_SLOTS, VERTEX};
+pub use context::{COMPUTE, DOMAIN, GEOMETRY, HULL, Mapped, PIXEL, STAGES, UAV_SLOTS, VERTEX};
 pub use device::{Device, Removal, top_level};
 pub use error::{Error, Result};
 pub use present::Chain;

@@ -38,7 +38,7 @@ type Result<T> = core::result::Result<T, ConvertError>;
 pub(crate) const STAGE_SET: u32 = 1;
 
 /// Bytes of one four-word slot of a record or block.
-const SLOT_BYTES: u32 = build::WORD * build::VEC4;
+pub(crate) const SLOT_BYTES: u32 = build::WORD * build::VEC4;
 /// Its draw's values (a uniform block of u32 words, [`word`]).
 pub(crate) const VALUES_BINDING: u32 = 0;
 /// The draw's index buffer, read as u32 words.
@@ -51,6 +51,11 @@ pub(crate) const GEOMETRY_BINDING: u32 = 3;
 pub(crate) const PATCHES_BINDING: u32 = 3;
 /// The tessellator's points, which the domain stage's compute form reads.
 pub(crate) const POINTS_BINDING: u32 = 4;
+/// Vertices of a triangle, the most a primitive without adjacency has.
+pub(crate) const TRIANGLE_VERTICES: u32 = 3;
+/// Vertices of a line and of a triangle with adjacency.
+pub(crate) const LINE_ADJACENCY_VERTICES: u32 = 4;
+pub(crate) const TRIANGLE_ADJACENCY_VERTICES: u32 = 6;
 /// Invocations per workgroup of the helper's compute programs.
 pub(crate) const WORKGROUP: u32 = 64;
 
@@ -109,7 +114,7 @@ pub(crate) fn values(module: &mut Module) -> Handle<naga::GlobalVariable> {
         .collect();
     let ty = module.types.insert(
         Type {
-            name: Some("StageValues".into()),
+            name: Some(VALUES_TYPE.into()),
             inner: TypeInner::Struct {
                 members,
                 span: word::COUNT_OF * build::WORD,
@@ -119,7 +124,7 @@ pub(crate) fn values(module: &mut Module) -> Handle<naga::GlobalVariable> {
     );
     build::global(
         module,
-        "stage_values",
+        VALUES_VARIABLE,
         AddressSpace::Uniform,
         Some(binding(VALUES_BINDING)),
         ty,
@@ -163,7 +168,7 @@ pub(crate) fn vertex_program_for(
         &vertex.modules[0],
         &vertex.modules[0].module,
         inputs,
-        b"vertex records",
+        VERTEX_RECORDS,
     )
 }
 
@@ -188,7 +193,7 @@ pub(crate) fn domain_program_for(
             _ => {}
         }
     }
-    compute_form(source, &module, inputs, b"domain records")
+    compute_form(source, &module, inputs, DOMAIN_RECORDS)
 }
 
 fn compute_form(
@@ -197,7 +202,21 @@ fn compute_form(
     inputs: &[u32],
     what: &[u8],
 ) -> Result<wcontainers_gpu::ShaderModule> {
-    let module = vertex_as_compute(module, inputs)?;
+    compute_module(
+        source,
+        vertex_as_compute(module, inputs, false)?,
+        inputs,
+        what,
+    )
+}
+
+/// A compute program made of `source` with the key of what it is and the record locations it writes.
+fn compute_module(
+    source: &wcontainers_gpu::ShaderModule,
+    module: Module,
+    inputs: &[u32],
+    what: &[u8],
+) -> Result<wcontainers_gpu::ShaderModule> {
     let mut key = blake3::Hasher::new();
     key.update(&source.key).update(what);
     for l in inputs {
@@ -223,6 +242,235 @@ pub fn stream_program() -> Result<wcontainers_gpu::ShaderModule> {
         entry_point: crate::ENTRY_POINT.into(),
         stage: wcontainers_gpu::ShaderStage::Compute,
         key: *blake3::hash(text.as_bytes()).as_bytes(),
+    })
+}
+
+/// The cull program's source: one invocation per API primitive writes its vertices' record numbers
+/// into the index list, or the empty record's for each when the primitive is dropped.
+const CULL_PROGRAM: &str = r#"// Cull distances (Direct3D drops a primitive when all its vertices are below zero on one of them): one
+// invocation per API primitive writes its vertices' record numbers into the index list, in the API's
+// order, or the empty record's number for each when the primitive is dropped. Triangles of a strip
+// are listed with their first vertex leading and their winding kept. Invocation 0 also writes the
+// empty record: a position outside every clip volume and zeros.
+
+struct Values {
+    // API primitives times API instances.
+    units: u32,
+    // API primitives per instance.
+    primitives: u32,
+    // API vertices per instance: records per instance.
+    count: u32,
+    // Vertices per primitive: 1, 2 or 3.
+    vertices: u32,
+    // Primitives come from a strip.
+    strip: u32,
+    // Words per record.
+    record_words: u32,
+    // The word of a record where the cull distances start, and how many there are.
+    cull_word: u32,
+    cull_count: u32,
+    // The word where the index list starts.
+    index_base: u32,
+    // The empty record's number.
+    empty: u32,
+    pad0: u32,
+    pad1: u32,
+}
+
+// The records, then the index list.
+@group(1) @binding(0) var<uniform> values: Values;
+@group(1) @binding(1) var<storage, read_write> data: array<u32>;
+
+const MOST_VERTICES: u32 = 3u;
+// The position's w, which no clip volume holds.
+const OUTSIDE_W: f32 = -1.0;
+const W_COMPONENT: u32 = 3u;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let unit = id.x;
+    if unit == 0u {
+        let empty = values.empty * values.record_words;
+        for (var w = 0u; w < values.record_words; w++) {
+            data[empty + w] = 0u;
+        }
+        data[empty + W_COMPONENT] = bitcast<u32>(OUTSIDE_W);
+    }
+    if unit >= values.units {
+        return;
+    }
+    let instance = unit / values.primitives;
+    let primitive = unit % values.primitives;
+    let n = values.vertices;
+    let strip = values.strip != 0u;
+    var first = primitive * n;
+    if strip {
+        first = primitive;
+    }
+    var records: array<u32, MOST_VERTICES>;
+    for (var k = 0u; k < n; k++) {
+        var v = first + k;
+        // An odd triangle of a strip: (first, first + 2, first + 1).
+        if strip && n == MOST_VERTICES && (primitive & 1u) == 1u && k != 0u {
+            v = first + MOST_VERTICES - k;
+        }
+        records[k] = instance * values.count + v;
+    }
+    var dropped = false;
+    for (var d = 0u; d < values.cull_count; d++) {
+        var below = true;
+        for (var k = 0u; k < n; k++) {
+            let at = records[k] * values.record_words + values.cull_word + d;
+            below = below && bitcast<f32>(data[at]) < 0.0;
+        }
+        dropped = dropped || below;
+    }
+    for (var k = 0u; k < n; k++) {
+        data[values.index_base + unit * n + k] = select(records[k], values.empty, dropped);
+    }
+}
+"#;
+
+/// The cull program ([`CULL_PROGRAM`]), which [`Stages`] runs after a vertex stage writing cull
+/// distances.
+pub fn cull_program() -> Result<wcontainers_gpu::ShaderModule> {
+    let text = CULL_PROGRAM;
+    let module = naga::front::wgsl::parse_str(text)
+        .map_err(|e| ConvertError::Malformed(format!("the cull program: {e}")))?;
+    Ok(wcontainers_gpu::ShaderModule {
+        info: crate::validate(&module)?,
+        module,
+        entry_point: crate::ENTRY_POINT.into(),
+        stage: wcontainers_gpu::ShaderStage::Compute,
+        key: *blake3::hash(text.as_bytes()).as_bytes(),
+    })
+}
+
+/// A vertex program writing cull distances, drawn through the stage helper
+/// ([`wcontainers_gpu::SlowPath::CullDistanceAsGeometry`]).
+pub struct CullPrograms {
+    /// Its compute form, writing records of its position, each output location (`locations`), its
+    /// clip distances' slots and its cull distances' slots.
+    pub compute: wcontainers_gpu::ShaderModule,
+    /// The vertex program drawing those records, passing on every output with its own binding and
+    /// the clip distances.
+    pub passthrough: wcontainers_gpu::ShaderModule,
+    pub locations: Vec<u32>,
+    pub clip_distances: u32,
+    pub cull_distances: u32,
+}
+
+/// Names in the pass-through program: its layer and viewport slot's argument, the run's type, members
+/// and variable, and its outputs' type.
+const SELECTION_ARGUMENT: &str = "selection";
+const RUN_TYPE: &str = "Run";
+const RUN_MEMBERS: [&str; 2] = ["layer", "viewport"];
+const RUN_VARIABLE: &str = "draw_run";
+const OUTPUTS_TYPE: &str = "Outputs";
+/// What the vertex and domain stages' compute forms are, in their keys.
+const VERTEX_RECORDS: &[u8] = b"vertex records";
+const DOMAIN_RECORDS: &[u8] = b"domain records";
+/// Names in the helper's programs: its values block's type and variable, the vertex compute form's
+/// index and record variables, its invocation argument, and the output type of a vertex program
+/// given a position.
+const VALUES_TYPE: &str = "StageValues";
+const VALUES_VARIABLE: &str = "stage_values";
+const INDICES_VARIABLE: &str = "stage_indices";
+const VERTICES_VARIABLE: &str = "stage_vertices";
+const ID_ARGUMENT: &str = "id";
+const POSITIONED_OUTPUTS_TYPE: &str = "PositionedOutputs";
+/// Refusals of a vertex program by the compute form, and what is malformed in one.
+pub const VERTEX_INPUT_NOT_PULLED: &str = "VertexInputNotPulled";
+const VERTEX_INPUT_FOR_GEOMETRY: &str = "VertexInputForGeometry";
+const VERTEX_WITHOUT_POSITION: &str = "VertexWithoutPosition";
+const NOT_A_VERTEX_PROGRAM: &str = "not a vertex program";
+const VERTEX_WITHOUT_OUTPUTS: &str = "a vertex program without outputs";
+const UNBOUND_OUTPUT: &str = "an unbound output";
+const VERTEX_OUTPUTS: &str = "vertex outputs";
+/// What [`CullPrograms::compute`] is, in its key.
+const CULL_RECORDS: &[u8] = b"cull records";
+/// What [`CullPrograms::passthrough`] is, in its key.
+const CULL_PASSTHROUGH: &[u8] = b"cull pass-through";
+const VERTEX_OUTPUT_SHAPE: &str = "VertexOutputShape";
+const VERTEX_OUTPUT_FOR_GEOMETRY: &str = "VertexOutputForGeometry";
+/// The refusal of a vertex program without cull distances on their route.
+const NO_CULL_DISTANCES: &str = "a vertex program without cull distances";
+
+/// The programs of `vertex` (converted with every input pulled) on the cull route. They take its
+/// outputs from its module, so every rewrite its key made (values linked for the pixel program
+/// among them) reaches the pixel program as it would from the vertex program.
+pub fn cull_programs(vertex: &crate::Converted) -> Result<CullPrograms> {
+    let source = &vertex.modules[0];
+    let module = &source.module;
+    let ep = module
+        .entry_points
+        .first()
+        .ok_or(ConvertError::Malformed(NO_CULL_DISTANCES.into()))?;
+    let result = ep
+        .function
+        .result
+        .as_ref()
+        .ok_or(ConvertError::Malformed(NO_CULL_DISTANCES.into()))?;
+    let outputs: Vec<(Handle<Type>, Binding)> =
+        match (&result.binding, &module.types[result.ty].inner) {
+            (Some(b), _) => alloc::vec![(result.ty, b.clone())],
+            (None, TypeInner::Struct { members, .. }) => members
+                .iter()
+                .filter_map(|m| m.binding.clone().map(|b| (m.ty, b)))
+                .collect(),
+            _ => Vec::new(),
+        };
+    let mut passed: Vec<(u32, ScalarKind, Binding)> = Vec::new();
+    let (mut clip, mut cull) = (0, 0);
+    for (ty, binding) in outputs {
+        let inner = &module.types[ty].inner;
+        match (&binding, inner) {
+            (Binding::Location { location, .. }, TypeInner::Vector { scalar, .. })
+            | (Binding::Location { location, .. }, TypeInner::Scalar(scalar)) => {
+                passed.push((*location, scalar.kind, binding.clone()));
+            }
+            (
+                Binding::BuiltIn(b),
+                TypeInner::Array {
+                    size: naga::ArraySize::Constant(n),
+                    ..
+                },
+            ) => match b {
+                BuiltIn::ClipDistances => clip = n.get(),
+                BuiltIn::CullDistance => cull = n.get(),
+                _ => return Err(ConvertError::Unsupported(VERTEX_OUTPUT_SHAPE)),
+            },
+            (Binding::BuiltIn(BuiltIn::Position { .. }), _) => {}
+            _ => return Err(ConvertError::Unsupported(VERTEX_OUTPUT_FOR_GEOMETRY)),
+        }
+    }
+    if cull == 0 {
+        return Err(ConvertError::Malformed(NO_CULL_DISTANCES.into()));
+    }
+    passed.sort_unstable_by_key(|(l, _, _)| *l);
+    let locations: Vec<u32> = passed.iter().map(|(l, _, _)| *l).collect();
+    let compute = compute_module(
+        source,
+        vertex_as_compute(module, &locations, true)?,
+        &locations,
+        CULL_RECORDS,
+    )?;
+    let slots: Vec<(ScalarKind, Binding)> = passed.into_iter().map(|(_, k, b)| (k, b)).collect();
+    let passthrough = passthrough_of(&slots, false, clip)?;
+    let mut key = blake3::Hasher::new();
+    key.update(&source.key).update(CULL_PASSTHROUGH);
+    Ok(CullPrograms {
+        compute,
+        passthrough: wcontainers_gpu::ShaderModule {
+            info: crate::validate(&passthrough)?,
+            module: passthrough,
+            entry_point: crate::ENTRY_POINT.into(),
+            stage: wcontainers_gpu::ShaderStage::Vertex,
+            key: *key.finalize().as_bytes(),
+        },
+        locations,
+        clip_distances: clip,
+        cull_distances: cull,
     })
 }
 
@@ -269,29 +517,58 @@ pub mod tess {
     /// Words at the start of the tessellator's indices buffer before the indices: the draw's index
     /// total, then unused. The indexed indirect draw starts at this index.
     pub const INDEX_HEADER: u32 = 4;
+    /// Words of a record's tessellation factors: outer 0 to 3 and inner 0 and 1, in two slots.
+    pub const FACTOR_WORDS: u32 = 8;
+    /// Direct3D's largest tessellation factor (`D3D11_TESSELLATOR_MAX_TESSELLATION_FACTOR`).
+    pub const MAX_FACTOR: f32 = 64.0;
+    /// Points along an edge past the factor rounded up: a segment more to reach the next odd or even
+    /// count, and the closing point.
+    const EDGE_POINTS_PAST_FACTOR: u32 = 3;
+    /// Indices of two triangles, the most a point adds.
+    const INDICES_PER_POINT: u32 = 6;
+    /// The hull shader's output primitive codes ([`wcontainers_gpu::StageExtras::Hull`]): points and
+    /// lines; the others are triangles.
+    pub const OUTPUT_POINT: u8 = 0;
+    pub const OUTPUT_LINE: u8 = 1;
+
+    /// Vertices per primitive the tessellator makes for `output` ([`OUTPUT_POINT`], ...).
+    pub fn output_vertices(output: u8) -> u32 {
+        match output {
+            OUTPUT_POINT => 1,
+            OUTPUT_LINE => 2,
+            _ => super::TRIANGLE_VERTICES,
+        }
+    }
 
     /// The most points and indices one patch can make with factors up to `max_factor`, for sizing
     /// the tessellator's output: at most `n` points along any edge, where `n` is the factor rounded up
     /// to the next odd or even number of segments plus one.
     pub fn patch_bounds(max_factor: f32) -> (u32, u32) {
         let f = if max_factor.is_nan() {
-            64.0
+            MAX_FACTOR
         } else {
-            max_factor.clamp(1.0, 64.0)
+            max_factor.clamp(1.0, MAX_FACTOR)
         };
-        let n = (f.ceil() as u32 + 3).min(66);
-        (n * n, 6 * n * n)
+        // At the largest factor, which is even, no segment is added.
+        let most = MAX_FACTOR as u32 + EDGE_POINTS_PAST_FACTOR - 1;
+        let n = (f.ceil() as u32 + EDGE_POINTS_PAST_FACTOR).min(most);
+        (n * n, INDICES_PER_POINT * n * n)
     }
 }
 
 /// A converted vertex program as a compute program writing vertex records with a slot for each of
-/// `locations` (the geometry stage's input locations). Its inputs must all be pulled
+/// `locations` (the geometry stage's input locations), then, with `distances`, the clip distances'
+/// slots and the cull distances' ([`distance_slots`] each). Its inputs must all be pulled
 /// (`VariantKey::pulled`), so it reads only the vertex and instance numbers, which it makes as a draw
 /// would: the first vertex plus the invocation's place, or the index there plus the base vertex.
-pub(crate) fn vertex_as_compute(vertex: &Module, locations: &[u32]) -> Result<Module> {
+pub(crate) fn vertex_as_compute(
+    vertex: &Module,
+    locations: &[u32],
+    distances: bool,
+) -> Result<Module> {
     let mut module = vertex.clone();
     if module.entry_points.len() != 1 || module.entry_points[0].stage != naga::ShaderStage::Vertex {
-        return Err(ConvertError::Malformed("not a vertex program".into()));
+        return Err(ConvertError::Malformed(NOT_A_VERTEX_PROGRAM.into()));
     }
     let entry = module.entry_points.remove(0);
     let mut inner = entry.function;
@@ -302,9 +579,9 @@ pub(crate) fn vertex_as_compute(vertex: &Module, locations: &[u32]) -> Result<Mo
             Some(Binding::BuiltIn(BuiltIn::VertexIndex)) => numbers.push(0),
             Some(Binding::BuiltIn(BuiltIn::InstanceIndex)) => numbers.push(1),
             Some(Binding::Location { .. }) => {
-                return Err(ConvertError::Unsupported("VertexInputNotPulled"));
+                return Err(ConvertError::Unsupported(VERTEX_INPUT_NOT_PULLED));
             }
-            _ => return Err(ConvertError::Unsupported("VertexInputForGeometry")),
+            _ => return Err(ConvertError::Unsupported(VERTEX_INPUT_FOR_GEOMETRY)),
         }
     }
     inner.arguments = arguments
@@ -314,9 +591,10 @@ pub(crate) fn vertex_as_compute(vertex: &Module, locations: &[u32]) -> Result<Mo
             ..a.clone()
         })
         .collect();
-    let result = inner.result.take().ok_or(ConvertError::Malformed(
-        "a vertex program without outputs".into(),
-    ))?;
+    let result = inner
+        .result
+        .take()
+        .ok_or(ConvertError::Malformed(VERTEX_WITHOUT_OUTPUTS.into()))?;
     inner.result = Some(FunctionResult {
         ty: result.ty,
         binding: None,
@@ -325,14 +603,32 @@ pub(crate) fn vertex_as_compute(vertex: &Module, locations: &[u32]) -> Result<Mo
     let mut position = None;
     // Each location's member, scalar kind and component count (a record's slot holds four).
     let mut slots: Vec<Option<(u32, ScalarKind, u32)>> = alloc::vec![None; locations.len()];
+    // The clip and the cull distances' member and count.
+    let mut clip = None;
+    let mut cull = None;
     let mut place = |binding: &Binding, member: Option<u32>, inner: &TypeInner| -> Result<()> {
         let (kind, size) = match inner {
             TypeInner::Vector { scalar, size } => (scalar.kind, *size as u32),
             TypeInner::Scalar(scalar) => (scalar.kind, 1),
-            // No stage after reads them: geometry and hull shaders reading clip distances are
-            // refused at their own conversion, and their own outputs clip.
-            _ if *binding == Binding::BuiltIn(BuiltIn::ClipDistances) => return Ok(()),
-            _ => return Err(ConvertError::Unsupported("VertexOutputShape")),
+            // Without `distances` no stage after reads them: geometry and hull shaders reading clip
+            // distances are refused at their own conversion, and only the last vertex stage's clip
+            // and cull.
+            TypeInner::Array {
+                size: naga::ArraySize::Constant(count),
+                ..
+            } if matches!(
+                binding,
+                Binding::BuiltIn(BuiltIn::ClipDistances | BuiltIn::CullDistance)
+            ) =>
+            {
+                let found = Some((member, count.get()));
+                match binding {
+                    Binding::BuiltIn(BuiltIn::ClipDistances) => clip = found,
+                    _ => cull = found,
+                }
+                return Ok(());
+            }
+            _ => return Err(ConvertError::Unsupported(VERTEX_OUTPUT_SHAPE)),
         };
         match binding {
             Binding::BuiltIn(BuiltIn::Position { .. }) => position = Some(member),
@@ -341,7 +637,7 @@ pub(crate) fn vertex_as_compute(vertex: &Module, locations: &[u32]) -> Result<Mo
                     slots[i] = Some((member.unwrap_or(0), kind, size));
                 }
             }
-            _ => return Err(ConvertError::Unsupported("VertexOutputForGeometry")),
+            _ => return Err(ConvertError::Unsupported(VERTEX_OUTPUT_FOR_GEOMETRY)),
         }
         Ok(())
     };
@@ -352,13 +648,13 @@ pub(crate) fn vertex_as_compute(vertex: &Module, locations: &[u32]) -> Result<Mo
                 let binding = m
                     .binding
                     .as_ref()
-                    .ok_or(ConvertError::Malformed("an unbound output".into()))?;
+                    .ok_or(ConvertError::Malformed(UNBOUND_OUTPUT.into()))?;
                 place(binding, Some(i as u32), &module.types[m.ty].inner)?;
             }
         }
-        _ => return Err(ConvertError::Malformed("vertex outputs".into())),
+        _ => return Err(ConvertError::Malformed(VERTEX_OUTPUTS.into())),
     }
-    let position = position.ok_or(ConvertError::Unsupported("VertexWithoutPosition"))?;
+    let position = position.ok_or(ConvertError::Unsupported(VERTEX_WITHOUT_POSITION))?;
     inner.name = Some("vertex_shader".into());
     let callee = module.functions.append(inner, Span::UNDEFINED);
 
@@ -367,7 +663,7 @@ pub(crate) fn vertex_as_compute(vertex: &Module, locations: &[u32]) -> Result<Mo
     let words = build::runtime_array(&mut module, u32_ty, build::WORD);
     let indices = build::global(
         &mut module,
-        "stage_indices",
+        INDICES_VARIABLE,
         AddressSpace::Storage {
             access: StorageAccess::LOAD,
         },
@@ -378,7 +674,7 @@ pub(crate) fn vertex_as_compute(vertex: &Module, locations: &[u32]) -> Result<Mo
     let records = build::runtime_array(&mut module, uvec4, SLOT_BYTES);
     let vertices = build::global(
         &mut module,
-        "stage_vertices",
+        VERTICES_VARIABLE,
         AddressSpace::Storage {
             access: StorageAccess::LOAD | StorageAccess::STORE,
         },
@@ -398,7 +694,7 @@ pub(crate) fn vertex_as_compute(vertex: &Module, locations: &[u32]) -> Result<Mo
 
     let mut b = Builder::new(crate::ENTRY_POINT);
     b.f.arguments.push(FunctionArgument {
-        name: Some("id".into()),
+        name: Some(ID_ARGUMENT.into()),
         ty: uvec3,
         binding: Some(Binding::BuiltIn(BuiltIn::GlobalInvocationId)),
     });
@@ -425,12 +721,12 @@ pub(crate) fn vertex_as_compute(vertex: &Module, locations: &[u32]) -> Result<Mo
         let p = b.at(p, w);
         let word = b.load(p);
         let half = b.binary(BinaryOperator::And, byte, two);
-        let eight = b.u32(8);
+        let eight = b.u32(u8::BITS);
         let shift = b.mul(half, eight);
         let shifted = b.binary(BinaryOperator::ShiftRight, word, shift);
-        let mask = b.u32(0xffff);
+        let mask = b.u32(u32::from(u16::MAX));
         let short = b.binary(BinaryOperator::And, shifted, mask);
-        let four = b.u32(4);
+        let four = b.u32(build::WORD);
         let wide = b.binary(BinaryOperator::Equal, index_bytes, four);
         let index = b.select(wide, word, short);
         let base = value(b, v, word::BASE_VERTEX);
@@ -453,7 +749,14 @@ pub(crate) fn vertex_as_compute(vertex: &Module, locations: &[u32]) -> Result<Mo
     let out = b.call(callee, passed, true).unwrap();
     let before = b.mul(instance, count);
     let r = b.add(before, x);
-    let per = b.u32(record_words(locations.len()) / 4);
+    let (clip, cull) = if distances {
+        (clip, cull)
+    } else {
+        (None, None)
+    };
+    let distance_count = |d: Option<(Option<u32>, u32)>| d.map_or(0, |(_, n)| distance_slots(n));
+    let slot_count = locations.len() as u32 + distance_count(clip) + distance_count(cull);
+    let per = b.u32(slot_count + 1);
     let record = b.mul(r, per);
     let write = |b: &mut Builder, slot: u32, value: Option<(Option<u32>, ScalarKind, u32)>| {
         let value = match value {
@@ -469,7 +772,7 @@ pub(crate) fn vertex_as_compute(vertex: &Module, locations: &[u32]) -> Result<Mo
                 };
                 // Fewer than four components fill the slot's first ones; the rest are zero.
                 match size {
-                    4 => v,
+                    build::VEC4 => v,
                     1 => {
                         let zero = b.u32(0);
                         b.compose(uvec4, alloc::vec![v, zero, zero, zero])
@@ -500,6 +803,35 @@ pub(crate) fn vertex_as_compute(vertex: &Module, locations: &[u32]) -> Result<Mo
             (member, kind, size)
         });
         write(&mut b, 1 + i as u32, member);
+    }
+    // The distances, four a slot, the last slot's unused components zero.
+    let mut next = 1 + locations.len() as u32;
+    for (member, count) in [clip, cull].into_iter().flatten() {
+        let array = match member {
+            Some(m) => b.field(out, m),
+            None => out,
+        };
+        for slot in 0..distance_slots(count) {
+            let zero = b.u32(0);
+            let parts = (0..build::VEC4)
+                .map(|c| {
+                    let index = slot * build::VEC4 + c;
+                    if index < count {
+                        let d = b.field(array, index);
+                        b.bitcast(d, ScalarKind::Uint)
+                    } else {
+                        zero
+                    }
+                })
+                .collect();
+            let value = b.compose(uvec4, parts);
+            let s = b.u32(next);
+            let at = b.add(record, s);
+            let p = b.global(vertices);
+            let p = b.at(p, at);
+            b.store(p, value);
+            next += 1;
+        }
     }
     b.ret(None);
     module.entry_points.push(naga::EntryPoint {
@@ -538,11 +870,11 @@ pub(crate) fn clip_unpositioned(module: &mut Module) -> Result<()> {
                     let b = m
                         .binding
                         .clone()
-                        .ok_or(ConvertError::Malformed("an unbound output".into()))?;
+                        .ok_or(ConvertError::Malformed(UNBOUND_OUTPUT.into()))?;
                     outputs.push((m.ty, b, Some(i as u32)));
                 }
             }
-            _ => return Err(ConvertError::Malformed("vertex outputs".into())),
+            _ => return Err(ConvertError::Malformed(VERTEX_OUTPUTS.into())),
         }
     }
     if outputs.iter().any(|(_, b, _)| is_position(b)) {
@@ -592,7 +924,7 @@ pub(crate) fn clip_unpositioned(module: &mut Module) -> Result<()> {
     let span = SLOT_BYTES * members.len() as u32;
     let ty = module.types.insert(
         Type {
-            name: Some("PositionedOutputs".into()),
+            name: Some(POSITIONED_OUTPUTS_TYPE.into()),
             inner: TypeInner::Struct {
                 members: members
                     .into_iter()
@@ -630,6 +962,21 @@ pub fn selects(reflection: &Reflection) -> bool {
     })
 }
 
+/// The clip distances a stage's outputs hold, counted from their components.
+pub(crate) fn clip_distances(reflection: &Reflection) -> u32 {
+    reflection
+        .outputs
+        .iter()
+        .filter(|v| v.system == Some(wcontainers_gpu::SystemValue::ClipDistance))
+        .map(|v| v.mask.count_ones())
+        .sum()
+}
+
+/// The record slots holding `distances` clip or cull distances, four a slot.
+pub(crate) fn distance_slots(distances: u32) -> u32 {
+    distances.div_ceil(build::VEC4)
+}
+
 /// The helper constants of the vertex program after a geometry stage that writes a layer or viewport:
 /// the draw's run, whose primitives alone it keeps.
 pub const PASSTHROUGH_HELPERS: [wcontainers_gpu::HelperSlot; 2] = [
@@ -650,13 +997,43 @@ pub const PASSTHROUGH_HELPERS: [wcontainers_gpu::HelperSlot; 2] = [
 /// vertices of the run its helper constants name ([`PASSTHROUGH_HELPERS`], at the vertex stage's
 /// helper binding), placing the others outside every clip volume.
 pub(crate) fn passthrough(reflection: &Reflection) -> Result<Module> {
+    let passed: Vec<(ScalarKind, Binding)> = locations(&reflection.outputs)
+        .into_iter()
+        .map(|loc| {
+            let value = reflection
+                .outputs
+                .iter()
+                .find(|v| v.system.is_none() && v.location == loc)
+                .expect("a listed location");
+            let kind = match value.scalar {
+                ValueKind::Float => ScalarKind::Float,
+                ValueKind::Sint => ScalarKind::Sint,
+                ValueKind::Uint => ScalarKind::Uint,
+            };
+            let interpolation = match kind {
+                ScalarKind::Float => value.interpolation,
+                _ => Interpolation::Flat,
+            };
+            (kind, location(loc, Some(interpolation)))
+        })
+        .collect();
+    passthrough_of(&passed, selects(reflection), clip_distances(reflection))
+}
+
+/// The pass-through vertex program reading records of a position slot, a slot for each of `passed`
+/// (written with its kind and binding), the layer and viewport slot when `selects`, then the slots of
+/// `distances` clip distances.
+fn passthrough_of(
+    passed: &[(ScalarKind, Binding)],
+    selects: bool,
+    distances: u32,
+) -> Result<Module> {
     let mut module = Module::default();
-    let locations = locations(&reflection.outputs);
     let uvec4 = build::vec4(&mut module, Scalar::U32);
     let mut b = Builder::new(crate::ENTRY_POINT);
     let mut members = Vec::new();
     let mut components = Vec::new();
-    for slot in 0..=locations.len() {
+    for slot in 0..=passed.len() {
         b.f.arguments.push(FunctionArgument {
             name: Some(format!("slot{slot}")),
             ty: uvec4,
@@ -668,24 +1045,7 @@ pub(crate) fn passthrough(reflection: &Reflection) -> Result<Module> {
                 ScalarKind::Float,
                 Binding::BuiltIn(BuiltIn::Position { invariant: false }),
             ),
-            _ => {
-                let loc = locations[slot - 1];
-                let value = reflection
-                    .outputs
-                    .iter()
-                    .find(|v| v.system.is_none() && v.location == loc)
-                    .unwrap();
-                let kind = match value.scalar {
-                    ValueKind::Float => ScalarKind::Float,
-                    ValueKind::Sint => ScalarKind::Sint,
-                    ValueKind::Uint => ScalarKind::Uint,
-                };
-                let interpolation = match kind {
-                    ScalarKind::Float => value.interpolation,
-                    _ => Interpolation::Flat,
-                };
-                (kind, location(loc, Some(interpolation)))
-            }
+            _ => passed[slot - 1].clone(),
         };
         let ty = build::vec4(
             &mut module,
@@ -707,10 +1067,10 @@ pub(crate) fn passthrough(reflection: &Reflection) -> Result<Module> {
         });
         components.push(v);
     }
-    if selects(reflection) {
-        let slot = 1 + locations.len() as u32;
+    if selects {
+        let slot = 1 + passed.len() as u32;
         b.f.arguments.push(FunctionArgument {
-            name: Some("selection".into()),
+            name: Some(SELECTION_ARGUMENT.into()),
             ty: uvec4,
             binding: Some(location(slot, None)),
         });
@@ -718,9 +1078,9 @@ pub(crate) fn passthrough(reflection: &Reflection) -> Result<Module> {
         let u32_ty = build::scalar(&mut module, Scalar::U32);
         let helpers_ty = module.types.insert(
             Type {
-                name: Some("Run".into()),
+                name: Some(RUN_TYPE.into()),
                 inner: TypeInner::Struct {
-                    members: ["layer", "viewport"]
+                    members: RUN_MEMBERS
                         .iter()
                         .enumerate()
                         .map(|(i, name)| StructMember {
@@ -737,7 +1097,7 @@ pub(crate) fn passthrough(reflection: &Reflection) -> Result<Module> {
         );
         let helpers = build::global(
             &mut module,
-            "run",
+            RUN_VARIABLE,
             AddressSpace::Uniform,
             Some(ResourceBinding {
                 group: wcontainers_gpu::HELPER_SET,
@@ -765,13 +1125,51 @@ pub(crate) fn passthrough(reflection: &Reflection) -> Result<Module> {
         let outside = b.compose(vec4, alloc::vec![zero, zero, zero, below]);
         components[0] = b.select(keep.unwrap(), components[0], outside);
     }
+    let mut span = SLOT_BYTES * (1 + passed.len() as u32);
+    if distances > 0 {
+        let first = 1 + passed.len() as u32 + u32::from(selects);
+        let mut parts = Vec::new();
+        for k in 0..distance_slots(distances) {
+            b.f.arguments.push(FunctionArgument {
+                name: Some(format!("clip{k}")),
+                ty: uvec4,
+                binding: Some(location(first + k, None)),
+            });
+            let raw = b.argument(b.f.arguments.len() as u32 - 1);
+            let slot = b.bitcast(raw, ScalarKind::Float);
+            for c in 0..build::VEC4 {
+                if (parts.len() as u32) < distances {
+                    parts.push(b.field(slot, c));
+                }
+            }
+        }
+        let f32_ty = build::scalar(&mut module, Scalar::F32);
+        let array = module.types.insert(
+            Type {
+                name: None,
+                inner: TypeInner::Array {
+                    base: f32_ty,
+                    size: naga::ArraySize::Constant(
+                        core::num::NonZeroU32::new(distances).expect("some distances"),
+                    ),
+                    stride: build::WORD,
+                },
+            },
+            Span::UNDEFINED,
+        );
+        members.push(StructMember {
+            name: None,
+            ty: array,
+            binding: Some(Binding::BuiltIn(BuiltIn::ClipDistances)),
+            offset: span,
+        });
+        components.push(b.compose(array, parts));
+        span += distance_slots(distances) * SLOT_BYTES;
+    }
     let ty = module.types.insert(
         Type {
-            name: Some("Outputs".into()),
-            inner: TypeInner::Struct {
-                members,
-                span: SLOT_BYTES * (1 + locations.len() as u32),
-            },
+            name: Some(OUTPUTS_TYPE.into()),
+            inner: TypeInner::Struct { members, span },
         },
         Span::UNDEFINED,
     );
@@ -783,7 +1181,7 @@ pub(crate) fn passthrough(reflection: &Reflection) -> Result<Module> {
         name: crate::ENTRY_POINT.into(),
         stage: naga::ShaderStage::Vertex,
         early_depth_test: None,
-        workgroup_size: [0; 3],
+        workgroup_size: Default::default(),
         workgroup_size_overrides: None,
         function: f,
         mesh_info: None,

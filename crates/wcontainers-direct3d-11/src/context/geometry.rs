@@ -393,7 +393,7 @@ impl<B: Backend> Device<B> {
             }
         }
         if let Some((_, ph)) = &program {
-            self.update_set(PIXEL, &[], &ph.stored)?;
+            self.update_set(PIXEL, &[], &ph.relocated)?;
             if !self.ctx.through[PIXEL].is_empty() {
                 return not_implemented(
                     "storage textures read through buffers behind a geometry shader",

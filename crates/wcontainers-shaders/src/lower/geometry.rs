@@ -5,7 +5,7 @@
 
 use super::{Lowering, Result, malformed, unsupported};
 use crate::build::{self, Builder, Expr};
-use crate::ir::{self, builtin, code, primitive};
+use crate::ir::{self, Basic, builtin, code, primitive, scalar};
 use crate::stage;
 use alloc::vec::Vec;
 use naga::{
@@ -114,6 +114,35 @@ impl Lowering<'_> {
         Ok((found != [None, None]).then_some(found))
     }
 
+    /// The clip distance outputs' variables and how many distances each holds, in declaration order:
+    /// each vertex record ends with their slots, four distances a slot ([`stage::distance_slots`]).
+    fn clip_outputs(&self) -> Result<Vec<(Handle<naga::GlobalVariable>, u32)>> {
+        let mut found = Vec::new();
+        for (id, io) in &self.io {
+            if io.builtin != Some(builtin::CLIP_DISTANCE)
+                || self.ir.op(*id)?.code != code::DCL_OUTPUT_BUILT_IN
+            {
+                continue;
+            }
+            let element = io.ty.members[..]
+                == [Basic {
+                    scalar: scalar::F32,
+                    size: 1,
+                }];
+            if !element || io.ty.dims.len() > 1 {
+                return Err(unsupported(super::CLIP_DISTANCE_TYPE));
+            }
+            found.push((io.var, io.ty.dims.iter().product()));
+        }
+        Ok(found)
+    }
+
+    /// The slots after the output locations: the layer and viewport slot, then the clip distances'.
+    fn extra_slots(&self) -> Result<usize> {
+        let distances: u32 = self.clip_outputs()?.iter().map(|c| c.1).sum();
+        Ok(usize::from(self.selection()?.is_some()) + stage::distance_slots(distances) as usize)
+    }
+
     fn strips(&self) -> bool {
         self.geometry
             .as_ref()
@@ -179,7 +208,8 @@ impl Lowering<'_> {
         let outputs = self.geometry_locations(false)?;
         let strips = self.strips();
         let selection = self.selection()?;
-        let record = stage::record_words(outputs.len() + usize::from(selection.is_some()));
+        let clips = self.clip_outputs()?;
+        let record = stage::record_words(outputs.len() + self.extra_slots()?);
 
         // emit: the outputs' current values into the next slot, and its index into the strip.
         let mut b = Builder::new("gs_emit");
@@ -244,6 +274,27 @@ impl Lowering<'_> {
             let zero = b.u32(0);
             comps.extend([zero, zero]);
             slots.push((b.compose(uvec4, comps), ScalarKind::Uint));
+        }
+        let mut distances = Vec::new();
+        for &(var, count) in &clips {
+            let p = b.global(var);
+            let v = b.load(p);
+            match self.module.types[self.module.global_variables[var].ty].inner {
+                naga::TypeInner::Array { .. } => {
+                    for i in 0..count {
+                        distances.push(b.field(v, i));
+                    }
+                }
+                _ => distances.push(v),
+            }
+        }
+        let vec4 = build::vec4(&mut self.module, Scalar::F32);
+        for chunk in distances.chunks(build::VEC4 as usize) {
+            let mut comps = chunk.to_vec();
+            while comps.len() < build::VEC4 as usize {
+                comps.push(b.expr(naga::Expression::Literal(naga::Literal::F32(0.0))));
+            }
+            slots.push((b.compose(vec4, comps), ScalarKind::Float));
         }
         for (i, (v, kind)) in slots.into_iter().enumerate() {
             let v = if kind == ScalarKind::Uint {
@@ -367,8 +418,7 @@ impl Lowering<'_> {
         let inputs = self.geometry_locations(true)?;
         let in_words = stage::record_words(inputs.len()) / 4;
         let outputs = self.geometry_locations(false)?;
-        let selected = usize::from(self.selection()?.is_some());
-        let out_words = stage::record_words(outputs.len() + selected);
+        let out_words = stage::record_words(outputs.len() + self.extra_slots()?);
 
         let uvec3 = self.vec_ty(3, Scalar::U32)?;
         let mut b = Builder::new(crate::ENTRY_POINT);
@@ -585,6 +635,16 @@ impl Lowering<'_> {
             if self.ir.op(id)?.code != code::DCL_OUTPUT
                 && self.ir.op(id)?.code != code::DCL_OUTPUT_BUILT_IN
             {
+                continue;
+            }
+            if io.builtin == Some(builtin::CLIP_DISTANCE) {
+                let member = *io
+                    .ty
+                    .members
+                    .first()
+                    .ok_or(unsupported(super::CLIP_DISTANCE_TYPE))?;
+                let system = Some(SystemValue::ClipDistance);
+                self.reflect_value(id, false, None, 0, member, 0, system);
                 continue;
             }
             let member = io.ty.basic().ok_or(unsupported("OutputArray"))?;

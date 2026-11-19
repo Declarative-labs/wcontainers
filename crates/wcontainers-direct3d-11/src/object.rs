@@ -98,7 +98,19 @@ pub struct Window<B: Backend> {
     pub size: u64,
     /// The buffer's write count and back-end buffer at the last copy.
     pub copied: Cell<Option<(u64, u64)>>,
-    pub twin: Kept<B, B::Buffer>,
+    pub copy: WindowCopy<B>,
+}
+
+/// Where a window is copied to, for the binding its program reads it through.
+pub enum WindowCopy<B: Backend> {
+    /// A buffer of the block's size.
+    Buffer(Kept<B, B::Buffer>),
+    /// An RGBA32 unsigned texture of its 16-byte rows, `CONSTANTS_TEXTURE_WIDTH` rows to a texture
+    /// row, as many as the block has.
+    Texture {
+        texture: Kept<B, B::Texture>,
+        view: Kept<B, B::TextureView>,
+    },
 }
 
 /// A staging subresource's shadow against the GPU's copy of it.
