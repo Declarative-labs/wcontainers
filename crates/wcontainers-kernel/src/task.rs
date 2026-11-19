@@ -476,7 +476,7 @@ impl Kernel {
 
     /// The thread `pick` would run now: the current one unless it is to give way, else the one in
     /// line with the least time, the current one going back in line behind those with as little.
-    fn next_to_run(&self) -> Option<Tid> {
+    pub(crate) fn next_to_run(&self) -> Option<Tid> {
         if let Some(current) = self.current.filter(|_| !self.resched) {
             return Some(current);
         }

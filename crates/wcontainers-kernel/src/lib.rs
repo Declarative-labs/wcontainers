@@ -373,6 +373,13 @@ impl Kernel {
         }
         self.settle(&mut cx);
         self.account_system(tid, entered);
+        // The kernel's time may give the turn to a woken thread, whose call runs before it goes on.
+        if self
+            .next_to_run()
+            .is_some_and(|next| self.woken.contains(&next))
+        {
+            self.settle(&mut cx);
+        }
     }
 
     /// Something happened outside.
