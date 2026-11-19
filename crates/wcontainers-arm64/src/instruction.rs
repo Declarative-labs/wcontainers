@@ -486,11 +486,7 @@ pub enum SystemRegister {
 /// The counter frequency we present, in Hz: one tick a nanosecond.
 pub const COUNTER_FREQUENCY: u64 = 1_000_000_000;
 
-/// The bits of FPCR the CPU we present has: alternative half precision, default not-a-number, flush to zero
-/// and the rounding mode.
-pub const FPCR_BITS: u32 = 0x07c0_0000;
-/// The bits of FPSR the CPU we present has: saturation and the cumulative exception flags.
-pub const FPSR_BITS: u32 = 0x0800_009f;
+pub use crate::thread_state::{FPCR_BITS, FPSR_BITS};
 
 /// What a single instruction atomic does to memory with the register's value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -43,6 +43,8 @@ pub mod mirror;
 mod native;
 #[cfg(feature = "translate")]
 mod simd;
+pub mod thread_state;
+pub use thread_state::{FPCR_BITS, FPSR_BITS};
 #[cfg(feature = "translate")]
 mod vector;
 

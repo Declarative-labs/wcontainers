@@ -134,8 +134,7 @@ pub mod field {
     pub const REGISTER: &str = "R";
 }
 
-/// A register number: 0 to 30, or [`ZERO`].
-pub type Register = u8;
+pub use crate::thread_state::Register;
 
 /// The register number that is the zero register (or the stack pointer, as the field's form reads it).
 pub const ZERO: Register = 31;

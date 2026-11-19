@@ -17,34 +17,10 @@ use crate::instruction::{
 };
 use crate::meaning::Host;
 use crate::mirror::{MIRROR, REACH_BITS, SLOT_SHIFT};
+pub use crate::thread_state::{
+    BORROWED, COUNT, PAGE, RegisterPage, SCRATCH, STACK_ALIGNMENT, TAG_LOW, WITHHELD,
+};
 use crate::{Arm64, FPCR_BITS, decode};
-
-/// The progress count of definition E (section 4).
-pub const COUNT: Register = 26;
-/// The scratch register t.
-pub const SCRATCH: Register = 27;
-/// The thread's register page, which the guest's level reads and writes.
-pub const PAGE: Register = 28;
-/// The withheld registers, in the order the register page keeps their guest values.
-pub const WITHHELD: [Register; 3] = [COUNT, SCRATCH, PAGE];
-
-/// Guest registers one sequence moves or borrows at most at once: `casp`'s two even pairs.
-const BORROWED: usize = 4;
-
-/// The thread's register page (section 3.3).
-#[repr(C)]
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct RegisterPage {
-    /// The guest's values of the withheld registers.
-    pub withheld: [u64; WITHHELD.len()],
-    /// A stand-in's own value while it holds another register's, then the registers a sequence borrows.
-    pub saved: [u64; 2 * BORROWED],
-    /// The exclusive monitor, as the meanings keep it.
-    pub exclusive_bytes: u64,
-    pub exclusive_address: u64,
-    pub exclusive_low: u64,
-    pub exclusive_high: u64,
-}
 
 /// The bytes of a 64-bit, a 32-bit and a 128-bit register.
 const X_BYTES: u8 = size_of::<u64>() as u8;
@@ -52,8 +28,6 @@ const W_BYTES: u8 = size_of::<u32>() as u8;
 const Q_BYTES: u8 = size_of::<u128>() as u8;
 /// The bytes of a half-word access.
 const H_BYTES: u8 = size_of::<u16>() as u8;
-/// The stack pointer's alignment when it is a base (SA0): a quadword.
-pub const STACK_ALIGNMENT: u64 = size_of::<u128>() as u64;
 
 /// The bytes of one instruction.
 const INSTRUCTION: u64 = Arm64::MAX_LENGTH;
@@ -64,8 +38,6 @@ pub fn call_word(call: InsideCall) -> u32 {
 }
 /// The low bits of a branch target that an aligned one has clear.
 const ALIGNMENT_BITS: u32 = INSTRUCTION.trailing_zeros();
-/// The lowest bit of the tag the top byte holds.
-pub const TAG_LOW: u32 = u64::BITS - u8::BITS;
 /// `adrp`'s pages, which are 4 KiB whatever the translation granule (Arm ARM, ADRP).
 const ADRP_PAGE: u64 = 1 << 12;
 /// What the hardware computes for the float meanings: fused multiply-adds and Arm's not-a-numbers.
