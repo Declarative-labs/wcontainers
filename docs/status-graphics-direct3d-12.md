@@ -130,9 +130,13 @@ record is in git ("recorded run N of g5").
   cache file before the first device (`examples/directx/cache.rs`), in the directory
   `WC_GPU_CACHE` names, under the Direct3D 11 library's name for it (`<exe stem>-<16 hex digits
   of BLAKE3 of the lower-case full path>.wcgpu`), so a run decodes what earlier runs converted;
-  without the variable conversions are kept for the process only. No state combinations are
-  recorded: pipelines are built when created (`prepare`), as plan section 8 says Direct3D 12
-  allows. Refused conversions are not kept and are tried again. Test tests/cache.rs (its own
+  without the variable conversions are kept for the process only. Pipelines are built when
+  created (`prepare`), as plan section 8 says Direct3D 12 allows, with the strides of the input
+  layout's packed elements, since Direct3D 12 gives strides only at `IASetVertexBuffers`. A draw
+  binding other strides (padded or interleaved streams) builds its pipeline at that draw
+  (`PipelineMiss`, counted and warned: the independent check of run 44 saw it on its `strip` and
+  `blend` programs), and no state combination is recorded, so it misses again in every run
+  (Next). Refused conversions are not kept and are tried again. Test tests/cache.rs (its own
   binary: the cache is the process's). Measured under "Real program".
 - Sequential blit swap chains (run 26, infrastructure crate): `DXGI_SWAP_EFFECT_SEQUENTIAL`
   with several buffers gives out every buffer (`chain.buffer(i)`), as DXGI does; at each present,
@@ -467,17 +471,21 @@ components (`StreamOutAsCompute`). `R32_FLOAT`, `R24_UNORM_X8_TYPELESS` and
 `R32_FLOAT_X8X24_TYPELESS` now equal real Direct3D 12's answers. One answer is beyond real
 Direct3D 12 on the RTX 3080: `R32G32B32_FLOAT` sampled and gathered, which the WebGPU back end
 now declares (it stores the format as `rgba32float` and filters it); the format tables leave it
-optional, and it is served, so it stays.
+optional, and it is served, so it stays. Run 45: the comparison names those two bits as served
+(`SERVED_BEYOND_REAL` in check_d3d12.rs), so it passes and any other answer above real fails it.
 
 The answers are plan section 9's (tests `webgpu_reports_11_0_and_tier_1`,
-`resource_tables_give_tier_3_but_not_11_1`, `no_device_without_compute_11_0_sizes_or_d32_s8_targets`;
-the own program's `features` against real Direct3D 12: the one answer beyond it above, none
-other). The front still refuses
-by name a few things feature level 11_0 allows; every one is in the gap list's "Refused by name
-in the front" (the independent check of run 34 found three missing there: views of 1D textures,
-constant buffer views past their buffer's end, adjacency without a geometry shader; run 35
-serves all three, below, and lists what is still refused of them). A program meeting a refusal
-gets E_NOTIMPL or a removed device, never a fake success.
+`resource_tables_give_tier_3_but_not_11_1`, `no_device_without_compute_11_0_sizes_or_d32_s8_targets`,
+`no_device_without_the_raster_and_blend_abilities_of_11_0`; the own program's
+`features` against real Direct3D 12). Feature level 11_0 also needs, since run 45, the raster and
+blend abilities the front draws only through the back end's own (`LEVEL_11_0_FIXED_FUNCTION`:
+`POLYGON_MODE`, `DEPTH_CLAMP`, `DEPTH_BIAS_CLAMP`, `INDEPENDENT_BLEND`, `SAMPLE_MASK`); without
+one, `D3D12CreateDevice` fails as on hardware below 11_0 (Departures; the independent check of
+run 44 found the front reporting 11_0 while refusing them). wgpu on the RTX 3080 has all five.
+Depth bias on lines and points is dropped, as real Direct3D 12 draws them (case `line-bias`), no
+longer refused. The front still refuses by name a few things feature level 11_0 allows; every
+one is in the gap list's "Refused by name in the front". A program meeting a refusal gets
+E_NOTIMPL or a removed device, never a fake success.
 
 ## The pass bar's cases against real Direct3D 12 (own program)
 
@@ -954,7 +962,11 @@ applied again for one run (run 41, run41/g3d1.log), frames 10, 60 and 120 were a
 of 518,400 pixels beyond 8 each, largest difference 48 at 921,317, and nothing of ours refused
 but `QueryVideoMemoryInfo`; the line pipeline is now made but draws in none of the 120 frames
 (its warning, "antialiased lines drawn as covered rectangles", is not printed), so it is not
-that pixel. The pixel is not traced.
+that pixel. The pixel is not traced. Without the back end's change, the back end records the
+first validation error as a lost device; since run 45 the front reads that at each
+`ExecuteCommandLists`, `Present` and `GetDeviceRemovedReason` and removes the device (plan 4.10;
+the independent check of run 44 found Godot drawing white frames while every call but `Present`
+succeeded; test `a_back_end_that_lost_its_device_removes_it`).
 
 The rig's Direct3D 12 scenes: see "Scenes" for every failing output and its cause (shaders
 track items, and three differences measured in run 36 to be the driver's Vulkan path: the
@@ -993,6 +1005,19 @@ program"; draws split per layer or viewport while a query runs, into target view
 layer counts or into a 3D texture's view; shader resource and (since run 36) unordered access
 views of another dimension than the program declares, but one-layer 2D arrays bound to 2D
 declarations, which are bound as 2D views.
+
+Abilities of 11_0 the front draws only through the back end's own, outside the pass bar (wgpu on
+the RTX 3080 has all of them), since run 45 required for feature level 11_0
+(`LEVEL_11_0_FIXED_FUNCTION`): without one, `D3D12CreateDevice` fails as on hardware below
+11_0, so no pipeline is refused for it. Wireframe needs `POLYGON_MODE` (browsers' WebGPU has no
+polygon mode; the plan's route, `FillModeConverted`, is built in neither Direct3D front);
+depth clamping needs `DEPTH_CLAMP` (WebGPU's optional `depth-clip-control`; the plan's route,
+`DepthClampInShader`, is built in the Direct3D 11 front only, and here it could not be compared
+with real Direct3D 12, as the desktop's back end has the feature); a depth bias clamp, independent
+blending and a partial sample mask are core WebGPU. Before run 45 the front reported 11_0 on any
+back end and refused such pipelines by name (the independent check of run 44). Depth bias on
+lines and points is no longer refused: real Direct3D 12 draws them unbiased, and so does the
+front (case `line-bias`).
 
 ## Asked of other tracks
 
@@ -1065,8 +1090,13 @@ run 36).
    Check whether the rig fixed its comparison (`tools/graphics-rig/desktop/wine-run.ps1`, "How
    to run"); until it does, apply the one-line patch uncommitted for the run and never commit
    that file.
-2. The independent check of G5, declared ready in run 44; next, fix only what it finds. Then,
-   after each shaders merge, rerun everything (scratch bin/all43.sh <n>: the literal check,
+2. The independent check of G5 (run 44's) found six items; run 45 fixed them or wrote them
+   here. Left from it, beyond the pass bar: state combinations a program's other vertex strides
+   need, recorded in the cache file so later runs build them ahead (as the Direct3D 11 front
+   records its combinations); `FillModeConverted` and `DepthClampInShader` in this front, each
+   with a way to compare it with real Direct3D 12 on a back end without the feature, after which
+   `LEVEL_11_0_FIXED_FUNCTION` loses that feature. Then,
+   after each shaders merge, rerun everything (scratch bin/all45.sh <n>: the literal check,
    lint, the crates' tests, every test file, the own program, the shader runner, the scenes,
    the five dxgi tests, the real programs and the `--alone` fence timing), reclassify the runner
    (bin/classify30.py) and read the refusals. The front's part as other tracks' items land: a
@@ -1637,6 +1667,18 @@ on a branch this one merges.
 
 ## Departures from the plan
 
+- Run 45: plan section 9 gives WebGPU feature level 11_0 with wireframe through
+  `FillModeConverted` and depth clamping through `DepthClampInShader`. Neither route is built in
+  this front, so feature level 11_0 now also needs `POLYGON_MODE` and `DEPTH_CLAMP` (with
+  `DEPTH_BIAS_CLAMP`, `INDEPENDENT_BLEND` and `SAMPLE_MASK`, which WebGPU always has), and on a
+  back end without them `D3D12CreateDevice` fails as on hardware below 11_0. Browsers' WebGPU has
+  no polygon mode, so it gets no Direct3D 12 device until `FillModeConverted` is built ("Next" 2).
+  Section 9's rule (report only levels whose required features are served) wins over its WebGPU
+  line; no build of this front runs on a browser yet.
+- Run 45: plan 5.7 and section 9 route depth bias on lines and points through
+  `DepthBiasInShader`. Real Direct3D 12 on the RTX 3080 draws them unbiased (case `line-bias`, as
+  the Direct3D 11 track measured for Direct3D 11), so the front draws them without the bias.
+
 - Run 41: the own program's cases are compared line for line, exactly; `antialiased-lines` is
   compared as a picture within 63 of 255 per channel instead. Direct3D 12 leaves the alpha-based
   line filter to the implementation (the RTX 3080 and WARP differ by up to 128, measured by the
@@ -1830,13 +1872,13 @@ Run 10's entries:
 - Typeless `R32` and `R16` textures allowing depth-stencil views are stored as `Depth32Float` and
   `Depth16Unorm` (as `R24G8` and `R32G8X24` already were); `R32_FLOAT` and `R16_UNORM` views of
   them read the depth. Before, such depth views failed on WebGPU (Godot's `D16` targets).
-- A draw writes a target view's first array slice only, and gets the first viewport and scissor
-  only: no stage can choose another (`SV_RenderTargetArrayIndex` and `SV_ViewportArrayIndex` from
-  the vertex stage are reported absent, geometry shaders are refused). Clears, with or without
-  rectangles, cover every slice of the view. A depth view made with no description covers every
-  slice.
+- Clears, with or without rectangles, cover every slice of the view. A depth view made with no
+  description covers every slice. (Which slice and viewport a draw uses: "Layered geometry
+  shaders".)
 - A pipeline with no primitive topology type (run 11: taken, as real Direct3D 12 takes it) builds
-  nothing ahead; its draws' topologies decide. Depth bias with no type is refused as for lines.
+  nothing ahead; its draws' topologies decide. A depth bias with no type is refused by name: the
+  front cannot tell whether its draws are triangles, which Direct3D biases, or lines and points,
+  which it draws unbiased.
 
 The next entries came with run 8's patch, committed in run 9 (d89ad8d).
 - Views reinterpreting a typeless texture's bits (run 8) get a twin texture in the view's format,
