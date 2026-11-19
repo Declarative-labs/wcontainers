@@ -33,8 +33,9 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   against the reference, 55 of 55 commands, and hello and the fork program give the reference's output and status (below,
   "N3 run 6"); run 7 settled the independent check's two blocking and five minor findings (below, "N3 run 7"); run 8 settled the
   next check's three blocking and five minor findings (below, "N3 run 8"); run 9 settled the next check's blocking finding
-  (guest pages now get their frames at the first touch) and its minor ones (below, "N3 run 9"). N3 is done, for its
-  independent check.
+  (guest pages now get their frames at the first touch) and its minor ones (below, "N3 run 9"); run 10 settled the next
+  check's blocking finding (a faulting `dc zva` or `dc c*` panicked the inside) and its three minor ones (below, "N3 run
+  10"). N3 is done, for its independent check.
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -61,6 +62,61 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N3 run 10 (2026-11-19): the independent check of run 9, and how each finding was settled
+
+Start: origin/main and origin/phase-1-literals had nothing new.
+
+The check's findings:
+- Blocking, a `dc zva`, `dc cvac`, `dc cvau` or `dc civac` that faults panicked the inside (busybox `bzip2` among them):
+  settled (be21a7cc). These forms are copied, and their spans had no operand, so the inside could not resolve their data
+  abort. `Native::stopping` now gives them the register's address as their operand, as for any load or store, so a fault
+  is resolved like any other: a page with no frame that allows the access is backed and the instruction runs again;
+  otherwise the guest gets SIGSEGV at the register's address. A cache maintenance fault sets the write bit together with
+  its CM bit; it is now taken as a read, as Linux takes it (`is_write_abort`), so `dc cvac` on a fresh read-only page runs.
+  The plan says so (sections 3.4 and 5.1).
+- Minor, the native side did not count the guest's memory faults: settled (f83adf43). `reason::MEMORY_FAULT` is defined
+  once in guest-cpu ("memory fault"), used by `Reason::name` and by the inside, which counts every fault it hands to the
+  kernel (one baseline line fewer). On `blocks` both sides count 10. Busybox commands now show "memory fault" 5 each:
+  faults the kernel answers by growing the main stack, which the WebAssembly side counts the same way.
+- Minor, no knob for how many seeds: settled (15c5c621). `WCONTAINERS_KERNEL_SEEDS` (default 1) runs the kernel test,
+  and each bar command, with that many seeds: `WCONTAINERS_KERNEL_SEED` and the ones after it. The bar runs the
+  reference once per command and checks every seed against it.
+- Minor, the routing test let a copied access without an operand through: settled (be21a7cc). A form whose meaning
+  touches memory on any route but Kernel must now have `Stopping::Access`. Without the fix the test fails on every
+  `ZeroBlock` and `CleanCache` word; with it, it passes (seed 2685821657736338717, 64 words per form, 1,100,822 words of
+  1215 forms).
+
+New test program, `tests/guest/blocks.c` in the kernel test: `dc zva`, `cvac`, `cvau` and `civac` at an address inside a
+block, on a page never touched, touched, read-only (fresh and touched), allowing nothing and unmapped, each with its
+fault's offset, and the zeroed block checked against its neighbours. Natively it gives the reference's output and exit
+code (Docker alpine:3.22: a zeroing's fault is reported at the register's address, +0x68 into its block). The
+WebAssembly side reports a zeroing's fault at the block's start (+0x40): its meaning of `dc zva` (crates/wcontainers-arm64
+memory.rs, not this track's) checks the aligned block. That one difference is a known failure the test prints ("KNOWN
+FAILURE"), with the other comparisons (wait status, files, memory fault count) still asserted; it is passed to the
+translator track (For the orchestrator). The bar gains one command of this track's, `bzip2 -c /etc/passwd | bzip2 -dc |
+md5sum`, which crashed the inside before.
+
+Results (M5 Max; scratch native/n3r10; all on the Mac, as the monitor's tests need Hypervisor.framework):
+- routing test (above): passes; fails on the old `stopping` with "a memory access whose fault has no operand to resolve it".
+- kernel test (kernel.log, 08:57 to 08:58, load 46 to 72, 57 s): hello, getppid, forks, code, blocks and mappings as
+  before; blocks gives the reference's output natively, KNOWN FAILURE on the WebAssembly side as above. Exits of the
+  machine: 1867 with no getppid calls, 1870 with 100,000, 1870 with 200,000.
+- The bar (busybox.log, 08:59 to 09:05, load 47 to 55): "busybox: 56 commands gave the reference's output, exit code and
+  files with each of 1 seeds from 0x6b65726e", 310 s with Docker's runs; bzip2's pipeline 36,299 exits of the machine.
+- Literals: the check exits 0; one baseline line fewer (guest-cpu's "memory fault"), none added, no mark.
+- The whole suite of what this track owns, once before the push (suite.log, 09:06 to 09:21, load 41 to 67): guest-cpu,
+  arm64, the inside, the monitor, the policy crate and the literal check's tests, `--no-fail-fast`: passed (36 test
+  binaries ok). In it: the bar again, 56 commands as the reference (279 s); kernel as above (65 s; blocks' KNOWN FAILURE on
+  the WebAssembly side only); exits 4 programs, 0 failed, both modes; floor 21 cases and 1 measurement, 0 failed, 300
+  stops (pc outside the loop 0 times, count went back 0 times), stop delay median 2125 ns, 99th 18500 ns; native 32,562
+  cases, 0 failing; interrupts 2500, 0 failed; probe 0 forms of 16 bytes or fewer differ (44 larger, as before). The
+  translator with `native`: passed (4 tests).
+
+What comes next:
+1. N3's independent check (how to run it: "How to run"; `--test kernel` now also runs blocks.c).
+2. N4 (linking and speed), with decision 10 for turns that end at a count once pieces are linked.
+3. R3's rest, when the orchestrator rules on R1 and R3.
 
 ## N3 run 9 (2026-11-19): the independent check of run 8, and how each finding was settled
 
@@ -1075,11 +1131,13 @@ From the checkout, in the Nix shell:
 - the monitor's translate answer through a link page: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor
   --lib`;
 - N3's kernel and loop inside the machine against the same kernel, loop and policy on the WebAssembly CPU side, hello,
-  the getppid exit count, the fork, exec and signal program, the code program and the mappings program: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test kernel` (knob
-  `WCONTAINERS_KERNEL_SEED`, seeds the policy and the random bytes; about 8 s once built);
+  the getppid exit count, the fork, exec and signal program, the code, blocks and mappings programs: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test kernel` (knobs
+  `WCONTAINERS_KERNEL_SEED`, seeds the policy and the random bytes, and `WCONTAINERS_KERNEL_SEEDS`, how many seeds from it;
+  about a minute once built);
 - N3's bar, the busybox `text` and `files` commands in the kernel inside against the reference (needs Docker and alpine:3.22):
-  `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test busybox` (knob `WCONTAINERS_KERNEL_SEED`; about 20 s for
-  the native side's 55 runs, plus Docker's);
+  `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test busybox` (knobs `WCONTAINERS_KERNEL_SEED` and
+  `WCONTAINERS_KERNEL_SEEDS`; 56 commands, the last this track's; about 20 s a seed for the native side's runs, plus
+  Docker's);
 - N3's native CPU side against the WebAssembly one on static programs: `nix develop -c cargo test -j 4 -p
   wcontainers-hypervisor --test exits` (both modes; `WCONTAINERS_EXITS_EXACT=0` or `1` runs one; about 1 s);
 - N2's tests without the machine: `nix develop -c cargo test -j 4 -p wcontainers-arm64 --test native_routes --test encode --
@@ -1545,6 +1603,11 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N3 run 10: for the translator track (crates/wcontainers-arm64/src/memory.rs, `ZeroBlock`): the WebAssembly output
+  reports a `dc zva` fault at the 64-byte block's start; Linux reports the address in the register (si_addr, measured in
+  Docker on this Mac with tests/guest/blocks.c: +0x3068, the WebAssembly side +0x3040). The native output gives Linux's
+  answer. The kernel test prints this as a known failure until that meaning reports the register's address.
 
 - N3 run 9: for the abi's owners: `Exit` has no way to say "kill this process" other than `MemoryFaultWithoutRegisters`
   (SIGSEGV), so a touch the native back end has no frame for is killed with SIGSEGV where Linux's out-of-memory killer
