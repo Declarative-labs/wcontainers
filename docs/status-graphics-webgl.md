@@ -5,6 +5,29 @@ Plan: docs/phase-2-graphics.md, sections 4, 5.8, 6.5, 10 and 12 (G3).
 
 ## Where things stand
 
+G3b run 6, 2026-11-18 (about 19:30 to 22:20 Pacific). Merged origin/phase-2-graphics-webgpu,
+-direct3d-11, -direct3d-12 and -shaders (the shared line and -rig had nothing new; no interface
+change among them needed anything here), and, as the brief now asks, origin/phase-1-literals
+(the literal check; see "Magic literals"). Fixed what the check of run 5 found:
+- The frame-time measurement now has the front's share: the WebGPU track's breakdown (Windows'
+  recorder, samply, its frames example) run on real programs drawing through the Direct3D 11
+  front on this back end over ANGLE (new crates/wcontainers-gpu-webgl/frames/run). Results and
+  method under "Measurements, run G3b-6"; the departures it needed are listed there.
+- `SAMPLE_MASK` and `SAMPLE_SHADING`: the reason was wrong. `SAMPLE_MASK` stays absent (no
+  `sampleMaski` in WebGL 2); `SAMPLE_SHADING` is now built in Chrome with OES_sample_variables and
+  OES_shader_multisample_interpolation, so the front's `SampleMaskInShader` route works there.
+- Gathers through a sampler with a minimum level of detail above 0: fixed (level-zero sampler
+  twins), compared equal with WebGPU natively and in Chrome.
+- Linear values take NV_shader_noperspective_interpolation where the context has it (Chrome).
+- The back end's reports (device lost, naga's refusals, the new frame report) now reach the
+  browser's console; before, they went nowhere in WebAssembly.
+- filter_draw's lost device: still not settled (Known failures, Next 0).
+- B5G6R5's widths: kept as this crate's one named constant (Departures, run 6).
+- The pass bar's stale suite count: replaced by a pointer to the newest measurements.
+- The check's leftovers on the desktop (C:\wc\target and C:\wc\src
+  phase-2-graphics-webgl-check11, and other -checkN folders): not made by this track's runs, so
+  not deleted (the task allows deleting only our own); they still need removing.
+
 G3b run 5, 2026-11-18 (about 16:00 to 17:30 Pacific). Merged origin/phase-2-graphics (3 commits)
 and origin/phase-2-graphics-shaders (6 commits, run 33; its interface commit 34981564 changes only
 the doc comment of `TargetInShader::format`, which this back end does not read). Not merged:
@@ -267,8 +290,50 @@ Read after merging (status-graphics-direct3d-11.md at 66e54fa6, status-graphics-
   `linear_values_interpolate_in_window_space` (a triangle with w from 0.5 to 3 and one clipped at
   the far plane, centre and centroid, against the window-space value within 1e-4, and the
   perspective-correct value at least 0.05 away somewhere).
-- `SAMPLE_MASK` and `SAMPLE_SHADING`: absent (WebGL has no OES_sample_variables directive for
-  `gl_SampleMask`; see Capabilities).
+- `SAMPLE_MASK` and `SAMPLE_SHADING` (shaders track: "SAMPLE_MASK cannot serve WebGL 2"; run 1 to
+  5 gave a wrong reason, check of run 5). Settled in run 6:
+  - `SAMPLE_MASK` is the raster block's mask (`RasterDesc::sample_mask`), which GL sets with
+    `glSampleMaski`: GLES 3.1, not in WebGL 2 or any WebGL extension (WebGL 2's
+    `sampleCoverage` takes a fraction, not bits). So it stays absent everywhere, and a front with
+    a mask clearing samples binds the `SampleMaskInShader` variant, which needs `SAMPLE_SHADING`.
+  - `SAMPLE_SHADING` (programs run per sample, read and write the mask, values interpolated per
+    sample): built where the context has OES_sample_variables and
+    OES_shader_multisample_interpolation, which Chrome 157 on the RTX 3080 has and mozangle lacks.
+    naga writes the sample number and mask under OES_sample_variables' directive itself; its
+    `sample` qualifier it writes only from GLSL ES 3.20, so the module is written with those
+    values at the centre and `sample` is put back on both stages' declarations under
+    OES_shader_multisample_interpolation's directive (`qualifiers_written` in src/shader.rs). The
+    web platform now enables these extensions with `getExtension` (glow does not). Check
+    `programs_run_per_sample_and_write_the_sample_mask` (four samples: each run sees its own
+    number, only its own coverage bit, its own interpolated place, and a written mask writes only
+    the samples it names): passes in Chrome; natively not run (absent). Unit test
+    `linear_and_per_sample_values_take_their_qualifiers`. So on Chrome the Direct3D 11 front's
+    sample masks are served through `SampleMaskInShader`; natively (mozangle) the front reports
+    single-sample targets for them, as the interface says. Still not run anywhere here: the suite's
+    `programs_run_per_sample_and_read_samples`, which also needs `MULTISAMPLE_READ` (WebGL 2 has
+    no multisampled textures).
+  - With `SAMPLE_SHADING` present the suite's `a_fragment_covering_no_sample_writes_nothing` ran
+    in Chrome for the first time and failed: GL ignores a program's sample mask on a
+    single-sample target, where Direct3D and WebGPU drop a fragment whose mask clears sample 0.
+    Now after the mask is written a fragment with `gl_NumSamples == 1` whose mask clears bit 0 is
+    discarded (`single_sample_masks`); the test passes in Chrome.
+- (Run 6, check of run 5) Linear values where the context has NV_shader_noperspective_interpolation
+  (Chrome 157 on the RTX 3080): declared `noperspective` under its directive and read as they are,
+  no extra varying, no multiply. The carried route (`linear_by_w`, below) stays for contexts
+  without it (mozangle; any browser lacking it), and Chrome's fourth suite route switches the
+  extension off so both routes run in Chrome. `linear_values_interpolate_in_window_space` passes
+  on both routes in Chrome and natively.
+- (Run 6, check of run 5) Gathers through a sampler whose minimum level of detail is above 0: GL
+  clamped the gather rewrite's `textureLod(..., 0.0)` to the minimum, so it sampled level 1 with
+  level 0's coordinates. Now a sampler with a minimum above 0 keeps a twin whose minimum is 0, and
+  a texture unit that gathers read binds the twin (`gathers_at_level_zero`, `SamplerObj::level_zero`):
+  the gathers' own unit where only gathers read the pair, else a second sampler uniform of its own
+  that the gathers read, so other samples through the pair keep the minimum. New comparison
+  `gathers_through_a_sampler_with_a_minimum_level_equal_webgpu` (8 by 8, four levels, red telling
+  every texel of every level apart; minimum 0 and 1; gathers alone and beside a sample through the
+  same pair): equal to WebGPU natively (wgpu, Direct3D 12) and in Chrome. Cost: one sampler object
+  more per sampler with a minimum above 0, and a texture unit more for a pair both gathered and
+  sampled; nothing per draw.
 - Fine derivatives: refused by name in run 5 (before, the front saw `Invalid`, as for
   noperspective). Interface change `Features::FINE_DERIVATIVES`; this back end lacks it (GLSL ES
   3.00 has only `dFdx` and `dFdy`, which may be coarse), and `create_shader` answers
@@ -384,9 +449,11 @@ the suite's pass counts below, five ran nothing here.
 Where each item is shown; "check" is a function of examples/common/checks.rs (or extensions.rs), run
 by both hosts; "against" is a comparison of examples/common/against.rs, run natively by
 tests/against_webgpu.rs and in Chrome by browser/against.mjs.
-- The shared suite in Chrome's WebGL 2: 39 of 39 with every extension, and with stencil texturing,
-  the format and the raster extensions off. Without EXT_clip_control: the 26 known failures (25
-  natively) of the suite's own raster blocks.
+- The shared suite (with this crate's checks) in Chrome's WebGL 2: every test passes with every
+  extension and on the reduced route, apart from those reported "not run" with their reason; the
+  current counts are in the newest "Measurements, run G3b-n" section. Without EXT_clip_control:
+  the known failures of the suite's own raster blocks (`Absent(CLIP_DEPTH_ZERO_ONE)` or
+  `Absent(PROVOKING_VERTEX_FIRST)`).
 - The absent list of 4.11 declared: check `absent_features_are_refused` (every absent feature
   left out of the caps and refused through `Absent`: blocks, samplers, bindings, query sets, and
   since run 14 shaders needing them, 14 shader cases). Every slow path counted: each route calls
@@ -1120,6 +1187,21 @@ All from the checkout root on the Mac.
 - If every rig command exits 2 at once with no output, the rig's ssh helper (common.sh `connect`)
   has met a missing ~/.ssh/wc-rig-refused on the Mac (`awk` on it fails under `pipefail`); an empty
   file there fixes it (made so in G3b run 3; the rig track's to fix).
+- The literal check (G3b run 6): commit, then run it at HEAD in the LF worktree on the desktop
+  (the desktop's own checkout is CRLF, which changes the keys of multi-line strings):
+  `tools/graphics-rig/remote "cd /d C:\wc\src\phase-2-graphics-webgl-lf && git -c core.autocrlf=false checkout -q -f --detach <commit> && set GIT_CONFIG_COUNT=1&& set GIT_CONFIG_KEY_0=core.autocrlf&& set GIT_CONFIG_VALUE_0=false&& set RAYON_NUM_THREADS=3&& cargo run -j 3 -q -p wcontainers-literals -- check"`
+  (scratch g3b6/lit-check.sh does exactly this at HEAD). It must print no `+`, `-`, `~`, `>` or
+  `!` line.
+- The frame-time breakdown of a real program through the Direct3D 11 front on this back end (G3b
+  run 6; crates/wcontainers-gpu-webgl/frames/run, from the Mac):
+  `crates/wcontainers-gpu-webgl/frames/run 3 10 30 atg-simplelightingpc simplelightingpc 'xbox-atg-samples\PCSamples\IntroGraphics\SimpleLightingPC\x64\Release\SimpleLightingPC.exe' xbox-atg-samples`
+  (cargo jobs, short and long seconds, a name, the process name to count, the program and its
+  working directory under C:\wc\programs\src, then its arguments and `NAME=value;...`
+  variables). It prints each part's CPU milliseconds per second of the run; divide by the frames
+  a second, from the two last `webgl: frames=` lines of
+  C:\wc\out\webgl\frames\<name>-<long>\output.log (each line starts with the seconds since the
+  program started). Sample the load beside it with `typeperf` over SSH, as the WebGPU track does.
+  About 8 minutes a program once built.
 - Lint and format: `nix develop -c cargo fmt -p wcontainers-gpu-webgl` and
   `nix develop -c cargo check -j 2 -p wcontainers-gpu-webgl [--target wasm32-unknown-unknown]` on the
   Mac; clippy on the desktop:
@@ -1162,12 +1244,13 @@ EXT_texture_compression_bptc: all four in Chrome 157 and mozangle on the RTX 308
 `DEPTH_CLAMP` (EXT_depth_clamp), `DEPTH_BIAS_CLAMP` (EXT_polygon_offset_clamp), `MIRROR_ONCE`
 (EXT_texture_mirror_clamp_to_edge). `CLIP_DISTANCE` and `CULL_DISTANCE` are built on
 WEBGL_clip_cull_distance but absent until they clip in Chrome (see "Known failures").
+Since G3b run 6: `SAMPLE_SHADING` with OES_sample_variables and
+OES_shader_multisample_interpolation (both in Chrome 157 on the RTX 3080, neither in mozangle; the
+`sample` qualifier is put back on naga's output, see "G3b: what the fronts ask"). Linear values
+take NV_shader_noperspective_interpolation's `noperspective` where the context has it (Chrome).
 Everything else is absent: `POLYGON_MODE_POINT` (WebGL draws polygon edges only), `OCCLUSION_COUNT`
-and `MULTISAMPLE_READ` (WebGL 2 has neither), and `SAMPLE_SHADING`, which OES_sample_variables and
-OES_shader_multisample_interpolation would give (both in Chrome 157 on the RTX 3080); not built:
-naga's GLSL writer takes the `sample` qualifier only from GLSL ES 3.20
-(third_party/naga/src/back/glsl/features.rs, `SAMPLE_QUALIFIER`), so the second extension needs a
-change in naga first (the shaders track's); it already writes OES_sample_variables' directive. The adapter is WebGL's renderer string
+and `MULTISAMPLE_READ` (WebGL 2 has neither), `SAMPLE_MASK` (no `sampleMaski` in WebGL 2), and
+`FINE_DERIVATIVES`. The adapter is WebGL's renderer string
 (unmasked in Chrome), PCI numbers 0 (WebGL gives none), software when it names SwiftShader,
 llvmpipe or Microsoft Basic Render Driver.
 
@@ -1509,6 +1592,77 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 - The headless Chrome the rig drives reports in chrome://gpu "WebGL: Hardware accelerated but at
   reduced performance" (and the same for WebGPU). Per-draw timings taken there (G3's later work)
   must say so; whether a headed Chrome differs is not measured.
+
+## Measurements, run G3b-6
+
+- The frame-time breakdown, 2026-11-18 20:33 to 21:42 desktop time: desktop (i9-9900K, 16
+  threads, RTX 3080, driver 32.0.16.2101), each program run alone in the queue's hazard group
+  with other tracks' builds and remote commands beside. Load: the whole machine's
+  `\Processor(_Total)\% Processor Time` sampled every 2 s by `typeperf` over SSH, averaged over
+  each recorded run's job. Method: crates/wcontainers-gpu-webgl/frames/run (How to run), 10 s
+  and 30 s runs, per second from their difference, divided by the frames a second between the
+  last two `webgl: frames=` reports of a long run. The front's libraries are the release
+  Direct3D 11 build on this back end over mozangle's ANGLE (feature level 10_0), so "front"
+  includes the interface helpers it calls, "back end" this crate and glow, "angle" ANGLE's
+  libraries. Logs: scratch g3b6/frames-atg.log, frames-atg2.log, frames-doom.log,
+  frames-inst.log; load g3b6/load-atg.csv, load-run6b.csv.
+  - atg-simplelightingpc (4 draws, 2 passes a frame; paced by the display: 59.98 frames a
+    second, 512 frames from 8.95 s to 17.48 s of the second set's long run): per frame front
+    0.009 ms, back end 0.007 ms, the program 0.015 ms; ANGLE 2.34 ms; the driver 2.05 ms. Under
+    the back end's functions 16.3 ms a frame, of which 12.8 ms in ntdll under
+    `wcontainers_gpu_webgl::Gl::upload` (texture writes: `texSubImage` through ANGLE waiting for
+    the GPU, spinning), 2.31 ms ANGLE and 0.47 ms the driver. The program's thread was busy all
+    30 s. Load: short run 5.4 % (3.7 to 8.6), long run 24.1 % (3.3 to 56.8). Counts a frame
+    (frame report): 3 `MappedUploadWhole` (the front), `CopyThroughBuffer` every second frame.
+    From the first set (frames-atg.log; its report lines were not yet timed, the rate is the
+    second set's). The second set's short recorded run ended with 0xc0000005 before its 10 s
+    (its wall time over the difference came to 1.40 s a second), so its breakdown is not used;
+    the crash was not read further (Next 1).
+  - chocolate-doom (attract mode, 35 frames a second: 256 frames from 8.37 s to 15.69 s): per
+    frame front 0.023 ms, back end 0.011 ms, ANGLE 0.116 ms, driver 0.79 ms (mostly its own
+    threads); under the back end's functions 0.153 ms (ANGLE 0.071, the driver 0.056). Counts a
+    frame: 1 `FormatConverted` (the BGRA frame swapped on the host), 3 `MappedUploadWhole`. Load:
+    short 6.4 % (2.9 to 12.4), long 3.4 % (1.7 to 8.0).
+  - atg-simpleinstancingpc (59.92 frames a second: 512 frames from 9.13 s to 17.67 s): per frame
+    front 0.009 ms, back end 0.009 ms, ANGLE 2.39 ms, driver 2.06 ms; under the back end's
+    functions 16.1 ms, of which 12.6 ms in ntdll under `Gl::upload`. Counts a frame: 5
+    `MappedUploadWhole`, `CopyThroughBuffer` every second frame. Load: short 7.8 % (4.1 to
+    18.9); the long run fell after the sampling window, not measured.
+  - Against the WebGPU back end (its status, run 21, same desktop, same method but to frames
+    through the rig's forwarder): chocolate-doom front 0.037 ms, back end 0.013, wgpu 0.027 a
+    frame (uncapped `-timedemo` there, attract mode here); atg-simpleinstancingpc front, back end
+    and wgpu under 0.03 ms each, 0.163 ms under the back end. So our own code costs about the
+    same on both (front 0.01 to 0.02 ms, back end about 0.01 ms a frame); the WebGL 2 route's
+    frame goes to ANGLE (0.1 to 2.4 ms a frame) and, in the ATG samples, to waiting inside
+    texture writes (about 12.7 ms of a 16.7 ms frame, CPU spinning in the driver).
+  - Per draw on the same frames in Chrome (the replayed stream of SimpleLightingPC, run G3b-3,
+    not repeated: no change since touches those calls' routes): WebGL 2 23.3 us a draw, WebGPU
+    53.9 us; whole frame 0.27 ms against 0.73 ms. The front's share above is native; in Chrome
+    the front does not run yet (no WebAssembly build of it).
+- The full run at the head before this status commit (all.cmd with wasm32 clippy as its build,
+  out C:\wc\out\webgl\g3b6-all2, scratch g3b6/all2.log, desktop about 22:10, queued beside
+  other tracks' jobs, not timed): unit tests 15 of 15. Chrome 100 passed, 3 not run (clip and
+  cull distances, timestamps, fractional bias), 0 failed with every extension; 92 passed and 11
+  not run on the reduced route (now also without NV_shader_noperspective_interpolation, so the
+  carried linear route runs in Chrome too); 70 passed, 3 not run and 30 failed without
+  EXT_clip_control, the same without it and WEBGL_provoking_vertex. ANGLE 103 of 103 with every
+  extension, 75 of 103 on both reduced routes; every reduced-route failure is
+  `Absent(CLIP_DEPTH_ZERO_ONE)` or `Absent(PROVOKING_VERTEX_FIRST)` from the suite's own raster
+  blocks (the suite's raster blocks; one more in Chrome than natively: the per-sample test that
+  now runs there). Against WebGPU natively 9 of 10, in Chrome 11 of 13 routes (the known two),
+  the new level-zero gather comparison equal on both. BC reference 1 of 2 (the known decoded
+  route). The run before it (all1.log) found the single-sample mask failure fixed since.
+  Clippy with warnings denied: native all targets, `record` with the trace test, wasm32
+  (browser, draw-cost; replay with `trace`), and the WebGPU crate's frames example: clean. The
+  literal check at the head: exit 0, nothing to do, 0 marks.
+- The new and touched checks (scratch g3b6/new3.log, mask1.log): `programs_run_per_sample_and_write_the_sample_mask`,
+  `linear_values_interpolate_in_window_space`, `absent_features_are_refused` and the suite's
+  per-sample tests pass in Chrome and on ANGLE (the per-sample check not run natively: absent).
+- The Direct3D 11 front's scenes through its WebGL 2 build, natively on ANGLE (rig `scenes --api
+  d3d11` with the build's three libraries, desktop 22:03, scratch g3b6/d3d11-scenes1.log): 88
+  pass, 27 fail, 30 absent, as in runs 4 and 5; the same six scenes stop in the front
+  (constants 3, geometry 8, queries 3, raster 5, streamout 4, views 4 outputs); formats,
+  targets, mips and samplers pass.
 
 ## Measurements, run G3b-5
 
@@ -2050,15 +2204,48 @@ const, 499 unit-test and 4,736 test findings, 2 redefinitions, 15 "restated").
   The new code of this run (linear values, special float values, read counting) names its GLSL
   names once (`VARYING`, `MAIN`, `RETURN`, `CARRIED`, `CENTROID_W` in shader.rs) and derives
   sizes from types and formats.
-- The automatic check (branch phase-1-literals, 340 commits ahead, its third run on 2026-11-18
-  still in progress, merged by no graphics branch) is not merged: the task names only the
-  phase-2-graphics branches for merging. This branch has no baseline.
+- (G3b run 5) The automatic check was not merged then.
+- (G3b run 6) Adopted the check as the brief of 19:20 asks: merged origin/phase-1-literals (tip
+  a295f55c, version 6 of the rules) in c33381de and ran its `init` once (1e337706). The
+  desktop's checkout has CRLF line ends (core.autocrlf true), which changes the keys of multi-line
+  strings (112 lines differed, 18 of them already in the literal branch's baseline), so the
+  baseline was made, and the check is run, in an LF worktree of the same repository,
+  C:\wc\src\phase-2-graphics-webgl-lf (How to run). Every graphics track running the check in its
+  desktop checkout will meet the same.
+  - This crate's baseline lines: 631 at adoption; 627 after run 6 (four removed: the run's new
+    code names its GLSL words, separators and messages once, and two old literals went with the
+    rewritten functions). The check exits 0 at the head, with 0 marks.
+  - The changes that could add lines to the baseline, as the check lists them at the head:
+    c33381def450 the start; 1e3377067526 the init after the baseline arrived by a merge;
+    68214b2eec10 the start; 89f882810517, 7119e3f3a527, c3bf56d4ed9f, 31ec396f9a4a and
+    0f1875633508 new rules, for literals already in the tree (the last six are the literal
+    branch's own).
+  - Naming the value "sample" as a constant made another crate's test restate it
+    (wcontainers-directx examples/own_min_lod.rs); the qualifiers are now a table instead, as
+    docs/literals.md step 8 asks.
 
 ## Departures from the plan
 
-- (G3b run 5) Linear (`noperspective`) values, which GLSL ES 3.00 lacks, are built in the GLSL
-  writing (plan 6.5's place for such fixes), with no run-time slow path to count: a multiply per
-  value in each stage, and at the centroid one more varying (w) per program that has any.
+- (G3b run 5, run 6) Linear (`noperspective`) values, which GLSL ES 3.00 lacks, take
+  NV_shader_noperspective_interpolation where the context has it (run 6) and are otherwise
+  carried times w in the GLSL writing (plan 6.5's place for such fixes): a multiply per value in
+  each stage, a varying per value, and at the centroid or per sample one more varying (w). Not a
+  counted slow path: it is the only route such a context has, chosen when the shader is made. A
+  program near the 30 varying vectors may fail its link on that route (a lost device), which no
+  limit tells the front.
+- (G3b run 6) The frame-time breakdown runs the WebGPU track's analysis (its examples/frames.rs),
+  which this run taught the WebGL 2 back end's crates (as "back end") and ANGLE's libraries (as a
+  part "angle"): five lines in crates/wcontainers-gpu-webgpu, which this track does not own,
+  committed alone (071cbbfc) so that track can see it; its WebGPU numbers are unchanged by it.
+  The programs run with the front's libraries beside them, not through the rig's forwarder (the
+  front hands ANGLE's own Direct3D 11 calls to the system's library by their caller's module,
+  which the forwarder hides, so they come back to the front), so they run for a time rather than
+  to a frame: per-second CPU from the two runs' difference, frames a second from the back end's
+  new frame reports (`FRAME_REPORT`, as the WebGPU back end prints), timed by direct.ps1.
+- (G3b run 6) B5G6R5's widths (`B5G6R5_BITS`, format.rs) stay a named constant of this crate
+  although the audit gives per-format widths to `wcontainers-gpu`, whose table is on no branch
+  yet: turning it back into bare numbers would add lines to the literal baseline, which the check
+  forbids. It moves to the interface's table when that lands.
 - (G3b run 5) Read backs count `FormatConverted` where the host converts the values read (BGRA's
   swap, B5G6R5 packed again from bytes). Reads that only keep part of each texel `readPixels`
   wrote wider (R8 read as RGBA bytes, and the like) are not counted: they are WebGL 2's only read
@@ -2114,8 +2301,9 @@ const, 499 unit-test and 4,736 test findings, 2 redefinitions, 15 "restated").
   Gathers are four samples at texel centres through the bound sampler rather than four
   `texelFetch` reads (the plan's words): fetches ignore the address mode, which places footprints
   past an edge. At a texel's centre a linear filter gives that texel exactly (measured: every
-  case of `gathers_equal_their_footprints` equal, ANGLE and Chrome on the RTX 3080); a sampler
-  whose minimum level of detail is above 0 would move the samples off level 0 (not tested).
+  case of `gathers_equal_their_footprints` equal, ANGLE and Chrome on the RTX 3080). A sampler
+  whose minimum level of detail is above 0 moved the samples off level 0 until run 6, which binds
+  such samplers' level-zero twins for gathers.
 
 - (run 14) `MapIntent::Often` buffers take `DYNAMIC_DRAW`, as plan 4.6 says, and `Discard` writes
   orphan them (`bufferData` at their size, GL's renaming); plan 5.8's "kept small and renamed" is not
@@ -2344,6 +2532,10 @@ const, 499 unit-test and 4,736 test findings, 2 redefinitions, 15 "restated").
 
 ## Installed on the desktop
 
+- (G3b run 6) C:\wc\src\phase-2-graphics-webgl-lf: a git worktree of this branch's desktop
+  repository with LF line ends, for the literal check (How to run); source only, its size not
+  measured. C:\wc\out\webgl\frames: the breakdown's profiles and logs. Nothing installed.
+
 - (G3b run 2) C:\wc\out\webgl\record-direct.ps1 (2 KB, the recording script of How to run) and
   C:\wc\out\webgl\trace (the recorded streams and replay results, under 1 MB).
 - C:\wc\tools\wasm-bindgen-0.2.130-x86_64-pc-windows-msvc (20 MB): the wasm-bindgen command, from its release
@@ -2404,25 +2596,29 @@ const, 499 unit-test and 4,736 test findings, 2 redefinitions, 15 "restated").
 
 ## Next
 
-G3b: every finding of the check of run 4 is settled or recorded (run 5). In this order:
-0. What about the filter test's programs loses mozangle's device after about 400 of them (800 small
-   programs do not; Known failures): keep its large tap-loop programs alive one by one and watch
-   ANGLE's memory, natively, `gpu-job --alone`; then the same in Chrome.
-1. Which texture's twin SimpleLightingPC refreshes every second frame (`CopyThroughBuffer` 291 of
-   580 frames; likely an sRGB target view of its swap chain's buffer), and whether a draw or a blit
-   can refresh it without the pixel buffer. It no longer waits (run 3), but it is a copy a frame.
-2. Measure the front's share of a frame (a profiler run as the WebGPU track's frames/run does,
-   but with the libraries beside the program, as record-direct.ps1 places them), and record
-   more real programs: one with many draws a frame (bgfx's examples drew nothing through
-   the WebGL 2 build, again in run 5 with `--d3d11`; Godot's compatibility renderer overflowed its stack: ask the Direct3D 11
-   track), and agree with the WebGPU track that it replays the same files (src/trace.rs is generic
-   over `Backend`; scratch g3b2/atg-simplelightingpc.bin is one).
+G3b: every finding of the check of run 5 is fixed or recorded (run 6). In this order:
+0. filter_draw's lost device (Known failures): not settled, neither built nor refused. What about
+   the shaders track's large tap-loop programs makes mozangle's ANGLE remove its Direct3D 11
+   device after about 400 live ones (800 small programs do not) is not found, and Chrome's own
+   ANGLE was not tried. Next: keep those programs alive one by one, natively and in Chrome (the
+   back end's reports now reach the console), watching ANGLE's memory; if a count or size bounds
+   it, declare it through a limit the front can read (an interface change), else find the leak.
+1. The ATG samples' frames wait about 12.7 ms of 16.7 in texture writes (`Gl::upload`,
+   `texSubImage` of a texture the GPU still reads, through ANGLE): find which texture the front
+   writes each frame and write it without the wait (a fresh texture for a whole write, as
+   buffers are orphaned); then measure again. Also read the 0xc0000005 of one SimpleLightingPC
+   run (Measurements, run G3b-6), and record a program with many draws a frame (bgfx drew
+   nothing through the WebGL 2 build in run 5).
+2. Which texture's twin SimpleLightingPC refreshes every second frame (`CopyThroughBuffer` on
+   half the frames; likely an sRGB view of its swap chain's buffer), and whether a draw or a blit
+   can refresh it without the pixel buffer.
 3. Global GLSL constants holding negative zero or bits made floats are still folded by ANGLE
    (`opaque_float_bits` cannot reach a constant initialiser); naga writes them only for named
    module constants, which the converters do not make today.
-4. Rerun the Direct3D 11 front's WebGL 2 scenes after its next runs (constants: the front's
-   constants through a texture past the uniform block limit; views at 10_0 through
-   `ReinterpretCopy`). Formats, targets and mips pass since run 3.
+4. Rerun the Direct3D 11 front's WebGL 2 scenes after its next runs (constants through a texture
+   past the uniform block limit; views at 10_0 through `ReinterpretCopy`).
+5. Per-format component widths: move `B5G6R5_BITS` and convert.rs `bits()` to the interface's
+   table once `wcontainers-gpu` has it (fix-graphics.md item 16), and work the literal list down.
 
 After G3b, from G3:
 What is left of G3's pass bar cannot be done in this crate:
@@ -2441,9 +2637,7 @@ After that, in about this order:
 2. Draws and captures whose base vertex reaches below vertex 0.
 3. `CLIP_DISTANCE` and `CULL_DISTANCE` in Chrome (see "Known failures"): built but kept absent,
    so `clip_and_cull_distances` runs nowhere.
-4. `SAMPLE_SHADING` with OES_sample_variables and OES_shader_multisample_interpolation, where
-   Chrome has them (absent today, and refused when a shader is made since run 14); needs naga to
-   write the `sample` qualifier on GLSL ES 3.00 with the extension (see "Capabilities").
+4. (Done in G3b run 6: `SAMPLE_SHADING` in Chrome.)
 5. Copies between signed normalised textures drawn into (Chrome) go through the host, a wait;
    both render, so copyTexSubImage could copy them on the GPU.
 6. The present-feature routes of `TIMESTAMPS` and `FRACTIONAL_DEPTH_BIAS` (`write_timestamp`,
