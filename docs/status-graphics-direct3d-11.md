@@ -7,9 +7,52 @@ which reported the milestone complete; the independent check found it was not, r
 (2026-11-19) worked on its findings, round 2, run 3 (2026-11-19) did what was left of this
 front's own and reported the milestone complete again, round 2, run 4 (2026-11-19) worked
 the independent check's findings on run 3 (Gap list), and round 2, run 5 (2026-11-19) did what
-was left of this front's own and reports the milestone complete for the independent check.
+was left of this front's own and reported the milestone complete for the independent check;
+the check found it was not, and round 2, run 6 (2026-11-19) worked its findings. The milestone
+is not complete (Gap list).
 
 ## Where things stand
+
+G4 round 2, run 6 (2026-11-19, about 14:15 to 16:00 Pacific). Worked the independent check's
+findings on run 5. The milestone is not complete: Wine's tests still fail outside the absent
+features (the shaders track's `GeometryStreams`, the interface's vertex format, the
+infrastructure crate's two swap chain tests), the WebGL 2 build still reports 9_3 (10_0 waits
+on the shaders track's `GeometryAsReplay`), and indexed strips and aliased lines into
+multisampled targets are still drawn wrong or refused (both now have failing tests). Each is in
+the Gap list with its cause and owner.
+- Merged origin/phase-2-graphics-direct3d-12 and -shaders (fast-forward, no conflict); the
+  others had nothing new.
+- Storage views of formats the back end cannot store into (`StorageFormatThroughBuffer`, the
+  listed case "without texture-formats-tier1"): such textures are made without the storage
+  usage, their unordered access views are accepted (`Device::stored_through`), and a draw's or
+  dispatch's variant (`StageVariant::stored_through`) converts the program with those slots read
+  and written through a buffer of their texels, as the atomics route does (the slow path is
+  counted per view, `Through::why`). The library takes the WebGPU features `WEBGPU_OFF` names as
+  missing, as it took WebGL extensions from `WEBGL_OFF` (one constant, `com::FEATURES_OFF`). New
+  library test `typed_storage_stores_without_texture_formats_tier1_as_direct3d_does`: own_cases
+  `typed` with `wgpu-texture-adapter-specific-format-features` off, equal to real Direct3D line
+  for line, and asserts the route's warning. On the desktop only `R11G11B10_FLOAT` goes through
+  the buffer: wgpu guarantees `R16G16_UNORM` storage with its 16-bit-norm feature, so that one is
+  stored natively there (in a browser without tier1 it would go the same way; not measured).
+- `AtomicExchangeLoop` is no longer refused (the shaders track removed the two ways its loop
+  could fail to end, run 31 of theirs). New own case `raw_signed_atomics` (every pixel of a draw,
+  some discarding, and every thread of a dispatch taking signed and unsigned minimums and
+  maximums of the same raw words, Wine's pattern) and library test
+  `raw_signed_atomics_from_pixels_and_threads_as_direct3d_does`: equal to real Direct3D, the loop
+  taken, run alone through the queue, no display reset. Then the rig's quarantine of Wine's
+  test_atomic_instructions was lifted (`resets lift`) and the test run alone (Wine's tests).
+- `aa_lines` now clears to transparent black, so the target's alpha holds each pixel's coverage,
+  and draws through a viewport off the corner at perspective depths (the check's probe). New
+  own case `aa_strip_indexed` and test
+  `an_indexed_alpha_antialiased_strip_blends_its_coverage_as_direct3d_does` (ignored, failing:
+  the stage helper's `StageIndexedStrip` removes the device). New own case `aliased_msaa_lines`
+  and test `aliased_lines_into_a_multisampled_target_hit_every_sample_as_direct3d_does`
+  (ignored, failing: real Direct3D covers all 4 samples of the first pixel of row 0 where ours
+  covers 3 of it and 1 of its neighbour).
+- `CheckCounterInfo` on both devices writes a zeroed structure, Direct3D's answer for no
+  device-dependent counters, where it printed a warning and left the program's structure as it
+  was (generate.py's hand table).
+- Literals: 836 baseline lines to 833 (Literals); the check passes.
 
 G4 round 2, run 5 (2026-11-19, about 11:00 to 13:30 Pacific; an earlier attempt of this run made
 the alpha-antialiased line commits and was cut off before recording them). What was left on the
@@ -919,7 +962,12 @@ Files passing (the bar: real Direct3D's verdict for every test, except the gap l
 
 The gap list: its own section below ("Gap list").
 
-## Gap list (the pass bar's written list, G4 round 2 run 5)
+## Gap list (the pass bar's written list, G4 round 2 run 6)
+
+The independent check on run 5 ruled that the bar allows a gap only where a named absent
+feature stands behind it, whoever's work would fix the rest: so every "Failing" item below,
+and the WebGL 2 cases, keep the milestone from being met, though none of them is this front's
+own work alone.
 
 Everything on G4's pass bar that does not give real Direct3D's verdict on the RTX 3080, each
 item in exactly one place, with its cause and whose work it is, read from this run's per-test
@@ -959,8 +1007,11 @@ test_atomic_instructions is not run):
 - Failing, the interface track's: test_vertex_formats (`B8G8R8X8_UNORM` vertices with the fourth
   component 1.0; Asked).
 - Failing, the infrastructure crate's (the Direct3D 12 track's): test_swapchain_flip (every
-  buffer of a sequential swap chain), test_desktop_window (wgpu's surface refuses the desktop
-  window; ours then crashes in Wine's test on the failed view).
+  buffer of a sequential swap chain), test_desktop_window (`CreateSwapChain` on the desktop
+  window answers S_OK though wgpu cannot configure that surface; the configure failure then
+  removes the whole device, the next `CreateRenderTargetView` answers
+  `DXGI_ERROR_DEVICE_REMOVED` (d3d11.c 32666) and Wine's test crashes on the failed view; real
+  Direct3D gives S_OK or `DXGI_ERROR_INVALID_CALL` at the call itself).
 - Passing since this run: test_clip_distance (a geometry stage's clip distances through its
   pass-through; a domain shader's before a geometry stage as plain outputs).
 
@@ -971,8 +1022,24 @@ test_clip_distance pass since this run.
 Wine's dxgi file: not run through this library. The rig has real Direct3D's verdicts for it
 (tools/graphics-rig/wine-baseline/dxgi-hardware.txt), but six of the eight display driver resets of
 2026-11-17 were dxgi_test.exe hanging the GPU through Direct3D 12 (docs/status-graphics-rig.md), and
-the file runs every test on Direct3D 12 too, which this library does not serve: not run until
-its Direct3D 12 tests can be kept off the GPU (Asked of the rig track).
+the file runs some tests on Direct3D 12 too, which this library does not serve. The check on
+run 5 pointed out that the rig runs chosen tests (dxgi:test_a/test_b), so the tests without a
+Direct3D 12 part can be run through our dxgi.dll: not done in run 6 (What comes next; Wine's
+dxgi.c is not yet in scratch to read which tests those are).
+
+Differences from the RTX 3080 that Wine's verdicts do not show:
+- d3d11 test_clear_buffer_unordered_access_view passes through ours where real Direct3D fails
+  223 of its 934 checks (wine-baseline/d3d11-hardware.failures, d3d11.c 17048 to 17060): ours
+  clears by the documented rule of `ClearUnorderedAccessViewUint` (each value's low bits of the
+  format's width), where NVIDIA's driver does not. The rig counts this as a pass; it is a
+  difference from the reference hardware, kept because the documented rule is what programs
+  are written against.
+- `IDXGISwapChain::GetContainingOutput` answers `E_NOTIMPL` through ours (atg-simplelightingpc
+  prints it as not served; the program copes), where real Direct3D gives the output. The
+  infrastructure crate's swap chain (the Direct3D 12 track's).
+- `ID3D11Device3::ReadFromSubresource` and `WriteToSubresource` print a warning and do nothing.
+  They read and write default-usage textures mapped with a null pointer, which this stack never
+  makes (`D3D11_OPTIONS2.MapOnDefaultTextures` FALSE), so no valid call reaches them.
 
 Scenes through the whole library (logs/r5e-scenes.log): absent are formats-b5g6r5_unorm.png and
 the support line of formats-support.caps (`B5G6R5_UNORM`), levels-results.caps (11_1),
@@ -1013,6 +1080,10 @@ three that differ:
   runs through ours. The rig's (Asked).
 
 Listed cases of the pass bar (section 12):
+- A compute shader storing to `R11G11B10_FLOAT` and `R16G16_UNORM` typed views on a device
+  made without texture-formats-tier1: `typed_storage_stores_without_texture_formats_tier1_as_direct3d_does`
+  (run 6), equal to real Direct3D; `R11G11B10_FLOAT` goes through `StorageFormatThroughBuffer`,
+  `R16G16_UNORM` is stored natively on the desktop's wgpu (above, Where things stand).
 - Alpha-antialiased lines (`AntialiasedLineEnable` without `MultisampleEnable`): lines of the
   vertex stage are drawn through the stage helper's rectangles (`AntialiasedLinesAsQuads`,
   counted and warned; the pixel program multiplies its alpha by the coverage the rectangle
@@ -1020,8 +1091,12 @@ Listed cases of the pass bar (section 12):
   `alpha_antialiased_lines_blend_their_coverage_as_direct3d_does` (own_cases `aa_lines`, a list and
   a strip blended by coverage, 32 by 32): 232 pixels drawn by real Direct3D, 237 by ours, largest
   channel difference 43, within the allowance of 64 (the specification, 3.4.4, leaves the
-  coverage filter to the implementation; the RTX 3080 and WARP differ by up to 128). Still
-  refused by name: lines of a geometry or domain stage, adjacency topologies and lines beside
+  coverage filter to the implementation; the RTX 3080 and WARP differ by up to 128). Run 6
+  made the case clear to transparent black, so alpha (the coverage) is compared too, and added
+  a viewport offset and perspective depths. An indexed strip, the ordinary form, removes the
+  device (`StageIndexedStrip`, below); its test
+  `an_indexed_alpha_antialiased_strip_blends_its_coverage_as_direct3d_does` is ignored as a
+  known failure. Still refused by name: lines of a geometry or domain stage, adjacency topologies and lines beside
   stream output (the stage helper takes the vertex stage's lines only; the shaders track's), and
   on a back end without compute (so on WebGL 2), without a pixel shader, or with a pixel shader
   reading its facing (this front's; none seen in the census).
@@ -1041,8 +1116,11 @@ Listed cases of the pass bar (section 12):
   4.12's "at most the ends and edges" is outside the specification. The fix is a route of the
   stage helper drawing each aliased line as the whole pixels the diamond rule picks (squares
   covering every sample), which the interface and the shaders track would have to provide; this
-  front would then take it as it takes the line route. No test yet (it would fail). Owners: the
-  shaders track (stage helper) and this front.
+  front would then take it as it takes the line route. Its test since run 6,
+  `aliased_lines_into_a_multisampled_target_hit_every_sample_as_direct3d_does` (own_cases
+  `aliased_msaa_lines`, 16 by 16, 4 samples, exact), fails and is ignored as a known failure:
+  row 0 already differs (real Direct3D 4 samples in one pixel, ours 3 there and 1 in the next).
+  Owners: the shaders track (stage helper) and this front.
 - Alpha-antialiased lines into a multisampled target: the specification (15.14) gives every
   sample of a pixel the same coverage; the line route's rectangles are rasterised per sample,
   so a pixel the rectangle's edge crosses gets the colour in some samples only, where its
@@ -1054,10 +1132,15 @@ Refused where real Direct3D draws, found by the independent check:
   a vertex shader writing cull distances on a back end without them, or any geometry shader or
   stream output draw, removes the device with `NotImplemented("StageIndexedStrip")`, named and
   warned. The stage helper's (the shaders track's): it takes indexed lists and non-indexed
-  strips only.
+  strips only. The same holds for alpha-antialiased indexed line strips (the check's probe
+  `aastrip`, and since run 6 the ignored test above).
 
 ## Known failures
 
+- `an_indexed_alpha_antialiased_strip_blends_its_coverage_as_direct3d_does` and
+  `aliased_lines_into_a_multisampled_target_hit_every_sample_as_direct3d_does` (library,
+  programs.rs) fail on every build and are marked `#[ignore]` with the reason (Gap list); run
+  them with `--include-ignored`.
 - On the WebGL 2 build only: every library test that makes a device of 10_0 or more fails, as
   the build reports 9_3 (Gap list, Departures), among them the three `own_level10` tests of the
   listed WebGL 2 cases. They are not marked in the code: the same tests pass on WebGPU. The
@@ -1065,8 +1148,17 @@ Refused where real Direct3D draws, found by the independent check:
 
 ## What comes next
 
-After G4 round 2 run 5, in order (the independent check first):
-- Whatever the independent check finds.
+After G4 round 2 run 6, in order:
+- Merge the other tracks; when the shaders track's stage helper takes indexed strips
+  (`StageIndexedStrip`), un-ignore the indexed alpha-antialiased strip test; when it has
+  `GeometryStreams` and `GeometryAsReplay`, rerun test_so_statistics_query and take WebGL 2 to
+  10_0 (below); when the interface has the `B8G8R8X8_UNORM` vertex format and the
+  infrastructure crate its two swap chain fixes, rerun both Wine files.
+- Wine's dxgi file through our dxgi.dll: copy Wine's dxgi.c into scratch winesrc, list the tests
+  without a Direct3D 12 part, run them as dxgi:test_a/test_b (never the quarantined
+  test_swapchain_backbuffer_index) and compare with wine-baseline/dxgi-hardware.txt.
+- Aliased lines into multisampled targets: a route drawing each line as the whole pixels the
+  diamond rule picks (an interface and stage helper question; Gap list), then un-ignore its test.
 - The WebGL 2 build's 10_0: geometry shaders once the shaders crate's `GeometryAsReplay` form
   exists (Asked); with it, stream output through `capture_vertices` (native transform feedback,
   `StreamOutRepacked` where the declaration needs it), `FillModeConverted` and `ReinterpretCopy`
@@ -1074,9 +1166,6 @@ After G4 round 2 run 5, in order (the independent check first):
   suite on that build.
 - Alpha-antialiased lines of a geometry or domain stage, adjacency topologies and lines beside
   stream output, once the stage helper takes them (Asked); then extend `aa_lines` to them.
-- Aliased lines into multisampled targets: a test against real Direct3D with Microsoft's
-  conformance tolerance for lines (read it first), and an aliased-line route if the loss is past
-  it (an interface question: WebGPU has no aliased-line rule).
 - atg-simplemsaa_pc's 6 edge pixels outside real Direct3D's spread: compare the converted vertex
   program's positions with real Direct3D's (stream output of both, or the rig's capture of the
   vertex stage if one comes) to prove or drop the inferred cause.
@@ -1204,13 +1293,15 @@ caught by it, so it does see that code.
 
 From the checkout root on the Mac (the desktop does all building and testing). The desktop's
 checkout needs the shaders crate's submodules, so commands start with `git submodule update --init --recursive -q`.
-- Front tests (recording back end, no GPU), 34 tests:
+- Front tests (recording back end, no GPU), 54 tests in front.rs, 1 in cache.rs, 5 unit:
   `tools/graphics-rig/remote "git submodule update --init --recursive -q && cargo test -q -j 3 -p wcontainers-direct3d-11"`.
 - Library tests (COM behaviour, the forwarder, threads, our programs; they make real devices and a
-  window, so a GPU job on the hidden desktop), 29 tests (com 15, programs 14):
+  window, so a GPU job on the hidden desktop), com 15 and programs 39 (2 ignored as known
+  failures; `--include-ignored` runs them):
   `tools/graphics-rig/gpu-job --desktop --build "git submodule update --init --recursive -q && cargo test -q -j 3 -p wcontainers-directx --no-run" -- "cargo test -q -j 3 -p wcontainers-directx -- --test-threads 1"`
   (add `--nocapture` to see what the programs print).
-  The random lifetimes comparison takes `WC_LIFETIMES=<first seed>,<seeds>,<steps>` (default 1,8,300);
+  The random lifetimes comparison takes `WC_LIFETIMES=<first seed>,<seeds>,<steps>` (default
+  1,8,300, programs.rs `lifetime_cases`, checked against the code in run 6);
   one seed alone: `set WC_LIFETIMES=17,1,300&& cargo test -q -j 3 -p wcontainers-directx --test
   programs object_lifetimes -- --nocapture`. A failure names the seed and the first line that differs.
   They work from a clean target directory: no `cargo build` is needed first.
@@ -1278,6 +1369,13 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
   profile's output directory (target\debug).
 
 ## Tests
+
+At G4 round 2 run 6: front.rs 54, tests/cache.rs 1, unit 5, com.rs 15, programs.rs 39, of which
+2 are ignored as known failures (the indexed alpha-antialiased strip and aliased lines into a
+multisampled target; Known failures). New: the untiered typed stores, raw signed atomics and
+those two. Run 5's aa_lines test (programs.rs 35 at run 5) was not counted in this section then.
+Every listed case of section 12 has its test against real Direct3D; on WebGPU all pass but
+aliased lines into multisampled targets, and the WebGL 2 listed cases fail on the WebGL 2 build.
 
 At G4 round 2 run 4: front.rs 54, tests/cache.rs 1, unit 5, com.rs 15, programs.rs 34 (new:
 `own_cases staged_bias`; resinfo_empty passes and is no longer ignored), all passing on the
@@ -2334,6 +2432,10 @@ All on the desktop (Windows 10, i9-9900K, RTX 3080) through the queue, not alone
 
 ## Literals
 
+- Round 2 run 6: wcontainers-direct3d-11 568, wcontainers-directx 265 (833, from 836): the
+  library's `WEBGL_OFF` is one constant beside `WEBGPU_OFF` (`com::FEATURES_OFF`), the two
+  `CheckCounterInfo` lines went with their warnings, and the library's new warning takes the
+  front's `WARNING_PREFIX` (now public). The check exits 0 (logs/r6d-literals.log).
 - Round 2 run 5: wcontainers-direct3d-11 620 to 568 lines, wcontainers-directx 268 (836): the
   front's descriptions name Direct3D 11's blend factors and operations, comparison functions,
   stencil operations, fill and cull modes, `COLOR_WRITE_ENABLE_ALL` and the default stencil
