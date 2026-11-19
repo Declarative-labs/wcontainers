@@ -20,6 +20,7 @@ ps_contend.dxil	ok-wgsl glsl-write
 ps_deriv.dxil	ok-wgsl glsl-write
 ps_dual.dxil	ok
 ps_early.dxil	ok-wgsl glsl-write
+ps_evaluate.dxil	unsupported InterpolateAt
 ps_fill.dxil	ok-wgsl glsl-compile
 ps_filter.dxil	ok-wgsl glsl-compile
 ps_ftoi.dxil	ok
@@ -36,10 +37,11 @@ ps_mirror.dxil	ok
 ps_msarray.dxil	unsupported MultisampledArrayTexture
 ps_negate.dxil	ok
 ps_offset.dxil	ok
-ps_pack.dxil	unsupported PackedStageValues
+ps_pack.dxil	ok
 ps_primid.dxil	ok-wgsl glsl-compile
 ps_pull.dxil	ok
 ps_rows.dxil	ok
+ps_rows_io.dxil	ok
 ps_samples.dxil	unsupported SampleCount
 ps_shadow.dxil	ok-wgsl glsl-write
 ps_signed.dxil	ok
@@ -54,9 +56,11 @@ vs_carry.dxil	ok
 vs_clip.dxil	ok-wgsl glsl-compile
 vs_deep.dxil	ok
 vs_early.dxil	ok
+vs_evaluate.dxil	ok
 vs_filter.dxil	ok
 vs_ids.dxil	ok
-vs_pack.dxil	unsupported PackedStageValues
+vs_pack.dxil	ok
 vs_pull.dxil	ok
+vs_rows_io.dxil	ok
 vs_texels.dxil	ok-wgsl glsl-write
 vs_transform.dxil	ok

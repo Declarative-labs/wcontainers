@@ -42,7 +42,7 @@ struct Case {
     dxil_against_11: bool,
 }
 
-const CASES: [Case; 25] = [
+const CASES: [Case; 26] = [
     Case {
         vs: "vs_transform",
         ps: "ps_twospaces",
@@ -327,7 +327,18 @@ const CASES: [Case; 25] = [
         grid: true,
         not_on_webgl: [None, None],
         known_on_webgl: None,
-        dxil: false,
+        dxil: true,
+        dxil_against_11: false,
+    },
+    Case {
+        vs: "vs_rows_io",
+        ps: "ps_rows_io",
+        format: Format::Rgba8Unorm,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: [None, None],
+        known_on_webgl: None,
+        dxil: true,
         dxil_against_11: false,
     },
 ];

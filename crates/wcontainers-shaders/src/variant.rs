@@ -216,7 +216,7 @@ fn scalar(module: &mut Module, s: Scalar) -> Handle<Type> {
     )
 }
 
-fn vector(module: &mut Module, n: u8, s: Scalar) -> Handle<Type> {
+pub(crate) fn vector(module: &mut Module, n: u8, s: Scalar) -> Handle<Type> {
     let size = match n {
         2 => VectorSize::Bi,
         3 => VectorSize::Tri,
@@ -232,7 +232,7 @@ fn vector(module: &mut Module, n: u8, s: Scalar) -> Handle<Type> {
 }
 
 /// Appends `e` to `f`, emitting it in `body` where naga wants it emitted.
-fn push(f: &mut Function, body: &mut Block, e: Expression) -> Handle<Expression> {
+pub(crate) fn push(f: &mut Function, body: &mut Block, e: Expression) -> Handle<Expression> {
     let pre = e.needs_pre_emit() || matches!(e, Expression::CallResult(_));
     let h = f.expressions.append(e, Span::UNDEFINED);
     if !pre {
@@ -417,32 +417,32 @@ fn helper_name(value: HelperValue) -> String {
 // The entry point wrapped.
 
 /// One output of the wrapped entry point.
-struct Output {
-    name: Option<String>,
-    ty: Handle<Type>,
-    binding: Binding,
-    value: Handle<Expression>,
+pub(crate) struct Output {
+    pub(crate) name: Option<String>,
+    pub(crate) ty: Handle<Type>,
+    pub(crate) binding: Binding,
+    pub(crate) value: Handle<Expression>,
 }
 
 /// The entry point moved into a function and called by a new entry point with the same inputs, so
 /// rewrites can read its inputs and replace, add or drop its outputs.
-struct Wrapped {
-    f: Function,
-    body: Block,
+pub(crate) struct Wrapped {
+    pub(crate) f: Function,
+    pub(crate) body: Block,
     /// Statements run before the wrapped program, which compute from its inputs alone.
-    prologue: Block,
+    pub(crate) prologue: Block,
     /// Where the call of the wrapped program is in `body`.
     call_at: usize,
-    outputs: Vec<Output>,
+    pub(crate) outputs: Vec<Output>,
     /// The original result: one bound value, or a struct of them.
     original: Option<(Handle<Type>, bool)>,
-    changed: bool,
+    pub(crate) changed: bool,
     /// Inputs the prologue computes instead: the argument's index and its value.
     replaced: Vec<(u32, Handle<Expression>)>,
 }
 
 impl Wrapped {
-    fn new(module: &mut Module) -> Wrapped {
+    pub(crate) fn new(module: &mut Module) -> Wrapped {
         let mut inner = core::mem::take(&mut module.entry_points[0].function);
         let arguments = core::mem::take(&mut inner.arguments);
         inner.arguments = arguments
@@ -539,7 +539,7 @@ impl Wrapped {
 
     /// Passes the wrapped program `value` for argument `argument`, which the entry point then no longer
     /// takes.
-    fn replace(&mut self, argument: u32, value: Handle<Expression>) {
+    pub(crate) fn replace(&mut self, argument: u32, value: Handle<Expression>) {
         self.replaced.push((argument, value));
     }
 
@@ -610,7 +610,7 @@ impl Wrapped {
         push(f, prologue, Expression::FunctionArgument(i))
     }
 
-    fn finish(mut self, module: &mut Module) {
+    pub(crate) fn finish(mut self, module: &mut Module) {
         self.drop_replaced();
         let prologue = core::mem::take(&mut self.prologue);
         self.body.splice(self.call_at..self.call_at, prologue);
@@ -849,8 +849,12 @@ fn linked_in(
     values
 }
 
-/// Direct3D's standard positions of four samples, in sixteenths of a pixel from its centre.
-const FOUR_SAMPLES: [(f32, f32); 4] = [(-2.0, -6.0), (6.0, -2.0), (-6.0, 2.0), (2.0, 6.0)];
+/// Direct3D's standard positions of four samples, in steps of [`SAMPLE_POSITION_STEPS`] from the
+/// pixel's centre.
+pub(crate) const FOUR_SAMPLES: [(f32, f32); 4] =
+    [(-2.0, -6.0), (6.0, -2.0), (-6.0, 2.0), (2.0, 6.0)];
+/// The steps of a pixel Direct3D's sample positions are given in.
+pub(crate) const SAMPLE_POSITION_STEPS: f32 = 16.0;
 
 /// Clipping by the clip distances `d`, before the program runs: one sample discards where any is
 /// negative at the pixel's centre; four take each distance over w (affine on the screen) to each
@@ -901,7 +905,10 @@ fn clipped(
                 .expressions
                 .append(Expression::Literal(Literal::U32(0)), Span::UNDEFINED);
             for (s, (x, y)) in FOUR_SAMPLES.iter().enumerate() {
-                let (x, y) = (f32_lit(f, x / 16.0), f32_lit(f, y / 16.0));
+                let (x, y) = (
+                    f32_lit(f, x / SAMPLE_POSITION_STEPS),
+                    f32_lit(f, y / SAMPLE_POSITION_STEPS),
+                );
                 let mut kept = None;
                 for &(q, dx, dy) in &sloped {
                     let along_x = binary(f, body, Multiply, dx, x);
