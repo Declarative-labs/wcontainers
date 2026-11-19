@@ -229,8 +229,10 @@ Tests and results (M5 Max, macOS 27.2):
   guest-cpu suites. The translator crate's default build and output are untouched (only `native.rs`, the
   feature's two lines in lib.rs and Cargo.toml's feature differ from main).
 
-The bar's long run: `WCONTAINERS_NATIVE_CASES=1000 WCONTAINERS_NATIVE_SEED=0x2545f4914f6cdd1d`, result
-below when it ends.
+The bar's long run: `WCONTAINERS_NATIVE_CASES=1000 WCONTAINERS_NATIVE_SEED=0x2545f4914f6cdd1d`, every
+presented form (1215), 1000 drawn cases each and 506,403 of the bar's own beside them, 1,721,403 cases: 0
+failing, in 5034 s (19:07 to 20:32, load 60 to 88 throughout). Logs: scratch native/n2r4-native1000-summary.log
+(and the whole log, gzipped, beside it).
 
 What is left for N2: the independent check (its own seed through the differential test, the forced
 interrupts, the cost measurement again, the WebAssembly output unchanged, the literal check). The count's
@@ -303,7 +305,7 @@ From the checkout, in the Nix shell:
   `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test native` (knobs `WCONTAINERS_NATIVE_CASES`
   drawn cases per form, default 16; `WCONTAINERS_NATIVE_SEED`; `WCONTAINERS_NATIVE_FORMS` a comma-separated
   list of form names; `WCONTAINERS_NATIVE_JOBS` threads for the WebAssembly side, default 3; the bar is
-  `WCONTAINERS_NATIVE_CASES=1000`, about 30 to 60 minutes here), `--test interrupts` (no knobs; under a
+  `WCONTAINERS_NATIVE_CASES=1000`, 84 minutes at load 60 to 88), `--test interrupts` (no knobs; under a
   second) and `--test probe` (knobs `WCONTAINERS_PROBE_WORDS`, default 4, and `WCONTAINERS_PROBE_SEED`; about
   7 minutes);
 - N2's tests without the machine: `nix develop -c cargo test -j 4 -p wcontainers-arm64 --test native_routes --test encode --
@@ -488,7 +490,10 @@ messages).
   tests/surface.rs 4. None is in a crate this track owns. For the orchestrator: these pass once main carries
   the check with the runtime track's own baseline, or at the next version of the rules (they are in this
   tree now); this track does not name another track's literals and does not add their lines.
-- The changes that could add lines, as the check lists them: 0e0f1102 the start, e4b998bd the init after
+- At N2 run 4's end the check lists 12 changes that could add lines: 0e0f1102 the start, e4b998bd the init
+  after the baseline arrived by a merge, 21321c7e, 7175b04e, acbd6c1a, c891d78a and e9ebf95e new rules (this
+  branch), 68214b2e the start, 89f88281, 7119e3f3, c3bf56d4 and 31ec396f new rules (literals branch).
+- Earlier (run 1), the changes that could add lines, as the check lists them: 0e0f1102 the start, e4b998bd the init after
   the baseline arrived by a merge, 21321c7e new rules, 68214b2e the start (literals branch), 89f88281 and
   7119e3f3 new rules (literals branch).
 - Baseline lines in this track's files: 26 at this run's end (all in the inside and the monitor), none in
