@@ -1,6 +1,6 @@
 //! How the native output carries each ARM64 instruction over to ARM64 host code (docs/native.md section 3.4).
 
-use wcontainers_guest_cpu::position::{Base, Index, Operand};
+use wcontainers_guest_cpu::position::{Base, DirectExit, Index, Operand};
 use wcontainers_guest_cpu::{HostCode, InsideCall, Native, NativeClass, Route, Stopping};
 
 use crate::Arm64;
@@ -218,6 +218,23 @@ impl Native for Arm64 {
 
     fn exit(code: &mut HostCode, target: u64) {
         carry::exit(code, target);
+    }
+
+    fn link(code: &mut HostCode, exit: &DirectExit, to: usize) -> bool {
+        let at = usize::try_from(exit.start).expect("a host offset fits usize");
+        let offset = to as i64 - at as i64;
+        let linked = match exit.retarget {
+            Some(_) => {
+                let bytes = code.bytes[at..at + size_of::<u32>()]
+                    .try_into()
+                    .expect("one word");
+                encode::retarget(u32::from_le_bytes(bytes), offset)
+            }
+            None => encode::branch(false, offset),
+        };
+        linked
+            .map(|word| code.patch(at, &word.to_le_bytes()))
+            .is_ok()
     }
 
     fn stopping(i: &I, _address: u64) -> Stopping {

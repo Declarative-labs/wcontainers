@@ -67,6 +67,9 @@ pub trait Native: Guest {
     fn call(code: &mut HostCode, call: InsideCall);
     /// Writes the exit to the direct guest `target` after the current instruction's commit point.
     fn exit(code: &mut HostCode, target: u64);
+    /// Points a direct exit of `code` at host offset `to` of the same code, as a loader links one; false where
+    /// its branch cannot reach.
+    fn link(code: &mut HostCode, exit: &DirectExit, to: usize) -> bool;
     /// What a stop in one decoded instruction at guest `address` needs to know of it.
     fn stopping(i: &Self::Instruction, address: u64) -> Stopping;
 }
