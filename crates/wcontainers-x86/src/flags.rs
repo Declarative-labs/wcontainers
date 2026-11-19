@@ -249,3 +249,233 @@ pub fn condition_from_flags<E: Emitter<X86_64> + ?Sized>(e: &mut E, cond: u8) {
         e.sink().i32_eqz();
     }
 }
+
+/// A way of setting the flags, without its locals: the key of a flags-word function.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Shape {
+    Add { width: u8, carry: bool, kept: bool },
+    Sub { width: u8, borrow: bool, kept: bool },
+    Logic { width: u8 },
+    Multiply { width: u8 },
+}
+
+/// The operand widths, smallest first.
+const WIDTHS: [u8; 4] = [
+    u8::BITS as u8,
+    u16::BITS as u8,
+    u32::BITS as u8,
+    u64::BITS as u8,
+];
+
+/// Shapes of each width: the plain sum or difference, with a carry or borrow in (adc, sbb), with CF kept (inc,
+/// dec), the logic instructions and the multiplications.
+const PER_WIDTH: usize = 8;
+
+/// Every shape, in flags-word function order.
+pub const SHAPES: [Shape; PER_WIDTH * WIDTHS.len()] = {
+    let mut shapes = [Shape::Logic { width: 0 }; PER_WIDTH * WIDTHS.len()];
+    let mut w = 0;
+    while w < WIDTHS.len() {
+        let width = WIDTHS[w];
+        let each = [
+            Shape::Add {
+                width,
+                carry: false,
+                kept: false,
+            },
+            Shape::Add {
+                width,
+                carry: true,
+                kept: false,
+            },
+            Shape::Add {
+                width,
+                carry: false,
+                kept: true,
+            },
+            Shape::Sub {
+                width,
+                borrow: false,
+                kept: false,
+            },
+            Shape::Sub {
+                width,
+                borrow: true,
+                kept: false,
+            },
+            Shape::Sub {
+                width,
+                borrow: false,
+                kept: true,
+            },
+            Shape::Logic { width },
+            Shape::Multiply { width },
+        ];
+        let mut k = 0;
+        while k < PER_WIDTH {
+            shapes[PER_WIDTH * w + k] = each[k];
+            k += 1;
+        }
+        w += 1;
+    }
+    shapes
+};
+
+pub fn shape(flags: Flags) -> Option<Shape> {
+    match flags {
+        Flags::Add {
+            width,
+            carry,
+            kept_carry,
+            ..
+        } => Some(Shape::Add {
+            width,
+            carry: carry.is_some(),
+            kept: kept_carry.is_some(),
+        }),
+        Flags::Sub {
+            width,
+            borrow,
+            kept_carry,
+            ..
+        } => Some(Shape::Sub {
+            width,
+            borrow: borrow.is_some(),
+            kept: kept_carry.is_some(),
+        }),
+        Flags::Logic { width, .. } => Some(Shape::Logic { width }),
+        Flags::Multiply { width, .. } => Some(Shape::Multiply { width }),
+        Flags::Packed(_) => None,
+    }
+}
+
+use wasm_encoder::ValType;
+
+/// The locals' types: the operands and the result, then a carry or borrow in, then a kept CF.
+pub fn shape_locals(shape: Shape) -> &'static [ValType] {
+    use ValType::{I32, I64};
+    match shape {
+        Shape::Add {
+            carry: false,
+            kept: false,
+            ..
+        }
+        | Shape::Sub {
+            borrow: false,
+            kept: false,
+            ..
+        } => &[I64, I64, I64],
+        Shape::Add { .. } | Shape::Sub { .. } => &[I64, I64, I64, I32],
+        Shape::Logic { .. } => &[I64],
+        Shape::Multiply { .. } => &[I64, I32],
+    }
+}
+
+/// The shape over these locals, in `shape_locals` order.
+pub fn with_locals(shape: Shape, locals: &[u32]) -> Flags {
+    let extra = locals.get(3).copied();
+    match shape {
+        Shape::Add { width, carry, kept } => Flags::Add {
+            width,
+            a: locals[0],
+            b: locals[1],
+            result: locals[2],
+            carry: extra.filter(|_| carry),
+            kept_carry: extra.filter(|_| kept),
+        },
+        Shape::Sub {
+            width,
+            borrow,
+            kept,
+        } => Flags::Sub {
+            width,
+            a: locals[0],
+            b: locals[1],
+            result: locals[2],
+            borrow: extra.filter(|_| borrow),
+            kept_carry: extra.filter(|_| kept),
+        },
+        Shape::Logic { width } => Flags::Logic {
+            width,
+            result: locals[0],
+        },
+        Shape::Multiply { width } => Flags::Multiply {
+            width,
+            result: locals[0],
+            overflow: locals[1],
+        },
+    }
+}
+
+/// Push an i64 local read signed at `width` bits, for a signed comparison.
+fn signed(s: &mut InstructionSink<'_>, local: u32, width: u8) {
+    s.local_get(local);
+    let unused = i64::from(u64::BITS) - i64::from(width);
+    if unused > 0 {
+        s.i64_const(unused).i64_shl().i64_const(unused).i64_shr_s();
+    }
+}
+
+/// The conditions by the low four bits of `jcc`, in pairs: the even one holds, the odd one is its negation.
+const BELOW: u8 = 2;
+const EQUAL: u8 = 4;
+const BELOW_OR_EQUAL: u8 = 6;
+const SIGN: u8 = 8;
+const LESS: u8 = 12;
+const LESS_OR_EQUAL: u8 = 14;
+
+/// Push whether `cond` holds as one comparison of the shape's operands, for a plain difference (cmp, sub)
+/// and the logic instructions (test, and); false where the flags must be worked out.
+pub fn condition_direct(s: &mut InstructionSink<'_>, flags: Flags, cond: u8) -> bool {
+    let holds = cond & !1;
+    match flags {
+        Flags::Sub {
+            width,
+            a,
+            b,
+            result,
+            borrow: None,
+            kept_carry: None,
+        } => match holds {
+            BELOW => {
+                s.local_get(a).local_get(b).i64_lt_u();
+            }
+            EQUAL => {
+                s.local_get(a).local_get(b).i64_eq();
+            }
+            BELOW_OR_EQUAL => {
+                s.local_get(a).local_get(b).i64_le_u();
+            }
+            SIGN => sign(s, width, result),
+            LESS => {
+                signed(s, a, width);
+                signed(s, b, width);
+                s.i64_lt_s();
+            }
+            LESS_OR_EQUAL => {
+                signed(s, a, width);
+                signed(s, b, width);
+                s.i64_le_s();
+            }
+            _ => return false,
+        },
+        // CF and OF clear: below never holds, below or equal is ZF, less is SF, less or equal ZF or SF.
+        Flags::Logic { width, result } => match holds {
+            BELOW => {
+                s.i32_const(0);
+            }
+            EQUAL | BELOW_OR_EQUAL => zero(s, result),
+            SIGN | LESS => sign(s, width, result),
+            LESS_OR_EQUAL => {
+                signed(s, result, width);
+                s.i64_const(0).i64_le_s();
+            }
+            _ => return false,
+        },
+        _ => return false,
+    }
+    if cond & 1 == 1 {
+        s.i32_eqz();
+    }
+    true
+}

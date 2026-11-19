@@ -2,7 +2,7 @@
 //! use.
 
 use crate::decode::Instruction;
-use crate::flags::{Flag, Flags};
+use crate::flags::{Flag, Flags, Shape};
 use crate::meaning::is_string;
 use crate::operand::*;
 use crate::{FLAGS_WORD, FS_BASE, GS_BASE, RFLAGS, X86_64, X86Block, XMM};
@@ -21,10 +21,6 @@ pub enum Control {
 /// No hooks yet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hook {}
-
-/// No flags-word functions yet: every flag setting is worked out when it is written back.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Shape {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Trap {
@@ -182,18 +178,18 @@ impl Guest for X86_64 {
     const FLAGS_WORD_OFFSET: usize = FLAGS_WORD;
     type Flags = Flags;
     type Shape = Shape;
-    const SHAPES: &'static [Shape] = &[];
+    const SHAPES: &'static [Shape] = &crate::flags::SHAPES;
 
-    fn shape(_flags: Flags) -> Option<Shape> {
-        None
+    fn shape(flags: Flags) -> Option<Shape> {
+        crate::flags::shape(flags)
     }
 
     fn shape_locals(shape: Shape) -> &'static [ValType] {
-        match shape {}
+        crate::flags::shape_locals(shape)
     }
 
-    fn with_locals(shape: Shape, _locals: &[u32]) -> Flags {
-        match shape {}
+    fn with_locals(shape: Shape, locals: &[u32]) -> Flags {
+        crate::flags::with_locals(shape, locals)
     }
 
     fn locals_of(flags: Flags) -> Locals {
@@ -256,8 +252,8 @@ impl Guest for X86_64 {
     /// The low four bits of the opcode of `jcc`.
     type Cond = u8;
 
-    fn condition_direct(_sink: &mut InstructionSink<'_>, _flags: Flags, _cond: u8) -> bool {
-        false
+    fn condition_direct(sink: &mut InstructionSink<'_>, flags: Flags, cond: u8) -> bool {
+        crate::flags::condition_direct(sink, flags, cond)
     }
 
     fn condition_from_flags<E: Emitter<Self> + ?Sized>(e: &mut E, cond: u8) {
