@@ -17,7 +17,8 @@ use syn::{
 use crate::RUST_EXTENSION;
 use crate::eval::{CExpr, ConstDef, ConstScope, IntType, Value};
 use crate::findings::{
-    FILE_SCOPE, Finding, Kind, List, PATH_COMPONENT_SEPARATOR, PATH_SEPARATOR, clean_literal,
+    FILE_SCOPE, Finding, Kind, List, PATH_COMPONENT_SEPARATOR, PATH_SEPARATOR, Position,
+    clean_literal,
 };
 use crate::text::message_text;
 
@@ -85,9 +86,9 @@ const ERR_CONSTRUCTOR: &str = "Err";
 const ERROR_TYPE_SUFFIX: &str = "Error";
 const ERROR_CONSTRUCTORS: &[&str] = &["new", "other"];
 /// Macros that take a configuration predicate, which is attribute-like and skipped as attributes are.
-const ATTRIBUTE_LIKE_MACROS: &[&str] = &["cfg"];
+const ATTRIBUTE_LIKE_MACROS: &[&str] = &[CFG_ATTRIBUTE];
 /// Attributes whose content is text or a configuration predicate, never a value of the program.
-const SKIPPED_ATTRIBUTES: &[&str] = &["doc", "cfg"];
+const SKIPPED_ATTRIBUTES: &[&str] = &["doc", CFG_ATTRIBUTE];
 /// `#[cfg_attr(predicate, attributes...)]`: the attributes after the predicate are read like any other.
 const CFG_ATTR: &str = "cfg_attr";
 /// Turns its tokens into a string literal.
@@ -219,12 +220,16 @@ pub struct FileScan {
     scope: Vec<String>,
     impls: Vec<ImplScope>,
     enums: Vec<String>,
-    const_depth: usize,
+    /// Where the name of every constant whose value is being visited is, innermost last; empty for
+    /// code that sits inside a constant but is not part of its value.
+    const_at: Vec<Position>,
     test_depth: usize,
     formatter_depth: usize,
     /// Private modules around the scan (the file's own, when its declaration is private): other crates
     /// cannot import what is inside one.
     hidden_depth: usize,
+    /// Function bodies around the scan: nothing outside the function can name what is inside one.
+    fn_depth: usize,
     /// Log macros the file imports by their bare name.
     log_macros: Vec<String>,
     /// The name a match arm's pattern is compared with, for 0 and 1 in the pattern.
@@ -260,10 +265,11 @@ impl FileScan {
             scope: Vec::new(),
             impls: Vec::new(),
             enums: Vec::new(),
-            const_depth: usize::default(),
+            const_at: Vec::new(),
             test_depth: usize::default(),
             formatter_depth: usize::default(),
             hidden_depth: usize::from(!exposed),
+            fn_depth: usize::default(),
             log_macros: Vec::new(),
             pattern_hint: None,
             return_hint: None,
@@ -305,7 +311,7 @@ impl FileScan {
             List::Generated
         } else if self.in_test() {
             List::Test
-        } else if self.const_depth > usize::default() {
+        } else if !self.const_at.is_empty() {
             List::Const
         } else {
             List::Code
@@ -359,7 +365,7 @@ impl FileScan {
             value: Value::of_lit(lit, negative),
             note,
             crate_dir: self.crate_dir.clone(),
-            in_const: self.const_depth > usize::default(),
+            in_const: self.const_at.last().copied(),
         });
     }
 
@@ -376,7 +382,7 @@ impl FileScan {
         if let Some((lit, negative)) = free_lit(e, false) {
             return self.report(lit, negative, hint.as_deref());
         }
-        let plain = expr_attrs(e).is_empty() && self.const_depth == usize::default();
+        let plain = expr_attrs(e).is_empty() && self.const_at.is_empty();
         match e {
             // A wrapped value, and a value chosen by a branch, go to the same name.
             Expr::Call(c) if plain && c.args.len() == 1 && is_wrapper(&c.func) => {
@@ -484,9 +490,17 @@ impl FileScan {
     /// Code that sits inside a constant's initialiser but is not part of the value being defined (an
     /// item, a closure, a loop, a statement): its literals belong to the code list.
     fn outside_const(&mut self, f: impl FnOnce(&mut Self)) {
-        let depth = std::mem::take(&mut self.const_depth);
+        let at = std::mem::take(&mut self.const_at);
         f(self);
-        self.const_depth = depth;
+        self.const_at = at;
+    }
+
+    /// Visits the value of the constant whose name is at `at`.
+    fn in_const(&mut self, at: proc_macro2::Span, f: impl FnOnce(&mut Self)) {
+        let start = at.start();
+        self.const_at.push((start.line, start.column + 1));
+        f(self);
+        self.const_at.pop();
     }
 
     fn record_const(
@@ -518,7 +532,10 @@ impl FileScan {
             ty: ty.and_then(int_type_of),
             scope,
             trait_impl: exposure.trait_impl,
-            public: exposure.public && self.hidden_depth == usize::default(),
+            public: exposure.public
+                && self.hidden_depth == usize::default()
+                && self.fn_depth == usize::default(),
+            local: self.fn_depth > usize::default(),
             value: None,
         });
     }
@@ -553,9 +570,7 @@ impl FileScan {
                 Exposure { trait_impl, public },
                 ident.span(),
             );
-            s.const_depth += 1;
-            visit_rest(s);
-            s.const_depth -= 1;
+            s.in_const(ident.span(), visit_rest);
         });
     }
 
@@ -789,9 +804,9 @@ impl FileScan {
             return;
         }
         if CONST_DEFINING_MACROS.contains(&name.as_str()) {
-            self.const_depth += 1;
-            self.tokens(mac.tokens.clone(), TokenMode::All);
-            self.const_depth -= 1;
+            self.in_const(last.ident.span(), |s| {
+                s.tokens(mac.tokens.clone(), TokenMode::All)
+            });
             return;
         }
         if name == MATCHES_MACRO
@@ -943,9 +958,7 @@ impl FileScan {
                 Exposure::PLAIN,
                 name.span(),
             );
-            s.const_depth += 1;
-            s.visit_expr(&expr);
-            s.const_depth -= 1;
+            s.in_const(name.span(), |s| s.visit_expr(&expr));
         });
         Some(end)
     }
@@ -971,7 +984,9 @@ impl FileScan {
         self.with_test(attrs, |s| {
             s.with_scope(sig.ident.to_string(), |s| {
                 s.formatter_depth += usize::from(formatter);
+                s.fn_depth += 1;
                 f(s);
+                s.fn_depth -= 1;
                 s.formatter_depth -= usize::from(formatter);
             })
         });
@@ -1439,7 +1454,7 @@ impl<'ast> Visit<'ast> for FileScan {
     }
 
     fn visit_block(&mut self, b: &'ast Block) {
-        if self.const_depth == usize::default() {
+        if self.const_at.is_empty() {
             // A block's last expression is the value of what holds the block: the function, or the
             // branch of an `if` that is that value.
             let value = self.value_hint.take();
@@ -1593,9 +1608,7 @@ impl<'ast> Visit<'ast> for FileScan {
                 Exposure::PLAIN,
                 v.ident.span(),
             );
-            s.const_depth += 1;
-            s.visit_expr(expr);
-            s.const_depth -= 1;
+            s.in_const(v.ident.span(), |s| s.visit_expr(expr));
         });
     }
 
