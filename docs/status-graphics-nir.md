@@ -160,7 +160,9 @@ Next, in this order:
 - Kept between runs: a shallow clone of the pinned Mesa for reading on the Mac
   (`pyro-parked/wcontainers-scratch/graphics-nir/mesa-src`, 560 MB, no build output; logs beside it in
   `logs/`), and the Mesa build and cargo target on the x86 machine (`/work/target/graphics-nir`).
-  No scratch copy of the checkout and no cargo target was made on the Mac, the laptop or the desktop.
+  No scratch copy of the checkout was made on the Mac, the laptop or the desktop. The literal check's
+  own build in the checkout's `target` (282 MB) is deleted at the end of each run. On the x86
+  machine `/work/target/graphics-nir` (8.5 GB: Mesa, the corpus, cargo's output) is kept.
 
 ## Measurements
 
