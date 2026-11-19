@@ -1,0 +1,36 @@
+#!/bin/bash
+# From the Mac: where a real program's CPU time goes when it draws through the Direct3D 11 front on
+# the WebGL 2 back end over ANGLE, measured as crates/wcontainers-gpu-webgpu/frames/run measures it
+# on the WebGPU back end and with its frames example. Builds the front's WebGL 2 libraries in
+# release with line tables. The rig's forwarder cannot run them, so direct.ps1 places them beside
+# the program and runs it for a time instead of to a frame: once unrecorded, then for <short> and
+# <long> seconds under Windows' recorder (wpr's CPU profile), converted by samply. The frames
+# example prints each part's CPU time per second (the two runs' difference over their difference
+# in seconds); the back end's frame reports in the long run give the frames a second, between the
+# last two reports. Profiles and logs stay on the desktop in C:\wc\out\webgl\frames.
+#   crates/wcontainers-gpu-webgl/frames/run <short s> <long s> <name> <process> <exe> <cwd> [<arguments> [<environment>]]
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+rig=$here/../../../tools/graphics-rig
+# shellcheck source=tools/graphics-rig/common.sh
+. "$rig/common.sh"
+[ $# -ge 6 ] || { echo "usage: run <short s> <long s> <name> <process> <exe> <cwd> [<arguments> [<environment>]]" >&2; exit 2; }
+short=$1 long=$2 program=$3 process=$4 exe=$5 cwd=$6 arguments=${7:-} environment=${8:-}
+T='%CARGO_TARGET_DIR%\webgl-frames'
+L="$T\\release"
+O='C:\wc\out\webgl\frames'
+"$rig/remote" "set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j 3 -p wcontainers-directx --features webgl --target-dir $T && cargo build --locked --release -j 3 -p wcontainers-gpu-webgpu --example frames && (if not exist $O mkdir $O)"
+run() {
+    "$rig/gpu-job" --desktop -- "powershell -NoProfile -ExecutionPolicy Bypass -File crates\\wcontainers-gpu-webgl\\frames\\direct.ps1 -Exe $exe -Cwd $cwd -Arguments \"$arguments\" -Environment \"$environment\" -Seconds $1 -Library $L -Out $O\\$program-$1"
+}
+# A first run unrecorded, so both recorded runs start with the caches it filled.
+run "$short"
+for seconds in "$short" "$long"; do
+    out="$O\\$program-$seconds"
+    rig_ssh "wpr -start CPU -filemode"
+    run "$seconds"
+    rig_ssh "wpr -stop $out.etl"
+    rig_ssh "C:\\wc\\tools\\samply-0.13.1\\samply.exe import --save-only -o $out.json $out.etl && del $out.etl"
+done
+E="C:\\wc\\target\\$name"
+rig_ssh "$E\\release\\examples\\frames.exe $process $O\\$program-$short.json $short $O\\$program-$long.json $long $E\\webgl-frames\\release"
