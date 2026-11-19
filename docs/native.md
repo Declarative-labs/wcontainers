@@ -662,7 +662,8 @@ WebAssembly output does.
   (section 3.4). ARM64's
   forms we emit (branches, `movz`/`movk`, `ubfx`/`ubfiz`/`bfxil`, `and`/`eor` immediate, `add`/`sub`
   immediate, `cbz`/`cbnz`, loads and stores with an immediate offset, `cas`, `mrs`) are a small encoder of
-  ours: fixed 4-byte fields, purpose-built. Rejected: `dynasmrt` 5.1.0 (MPL-2.0, a file-level copyleft
+  ours: fixed 4-byte fields, purpose-built, in the guest crate (arm64/encode.rs, since the translator knows no
+  one CPU), each word its form's fixed bits and fields as Arm's form table gives them (arm64/forms.rs). Rejected: `dynasmrt` 5.1.0 (MPL-2.0, a file-level copyleft
   licence, and an assembler driven by macros where we need a few encodings at run time).
 Licences checked on crates.io on 2026-11-18 (docs/status-native.md).
 
@@ -736,6 +737,15 @@ place decides the placement, beside `counted`, so measuring another placement ch
 measures E's cost on the M5 with this freedom used (one merged add per run, placed where it costs least),
 against round 3's figures for E (+13 to +14% cycles on the M5, against +4 to +6% for the head-pass form,
 one program swinging by layout), and the speed bar of section 8 uses that measured figure.
+N2's result (M5 Max, the eight bench.c workloads compiled with three registers withheld, run at EL0 inside
+Hypervisor.framework with 4 KiB pages by round 3's runner, 15 alternating pairs each against the same build
+with no add, load 37 to 73; docs/status-native.md): under E every counted event is a transfer and so ends
+its straight-line run, so a run holds at most one event and there is nothing to merge; the placement is the
+freedom left. Geometric mean of the median cycle ratios: the add right before its event (round 3's En) +13.7%
+[+12.2 .. +15.0], before the compare a conditional branch reads +11.0% [+9.6 .. +13.0], at the start of the
+event's run +10.5% [+9.6 .. +12.3]. The start of the run is chosen; the speed bar's E figure is +10.5%. What
+is left is mostly two workloads (search +52%, interpret +23%) whose short loops carry two counted events per
+pass, so two adds on the count register's chain of dependent adds bound the loop.
 
 **Why it keeps positions unique.** A position is reached at most once in a run only if no path of the
 guest's control flow comes back to the same pc without a counted event. Every path that comes back to a pc
