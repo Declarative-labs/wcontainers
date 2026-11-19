@@ -13536,20 +13536,7 @@ code	crates/wcontainers-shaders/src/lower.rs	int	Emit::swizzle	4
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::arithmetic	0x7f80_0000
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::arithmetic	0x7fff_ffff
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::arithmetic	3
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	10
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	11
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	12
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	13
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	13
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	14
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	14
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	3
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	3
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	4
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	5
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	6
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	7
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	9
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::depth_vec4	4
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::depth_vec4	4
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::depth_vec4	4
@@ -13567,7 +13554,6 @@ code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instru
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instruction	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instruction	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instruction	3
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instruction	4
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::math	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::offset_coordinate	26
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::sample	10
@@ -13587,13 +13573,8 @@ code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::texel_
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::texel_at	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::texel_store	4
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::texel_store	4
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::texel_store	4
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering	3
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::arrays	4
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::builtin_input	3
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::builtin_input	3
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::builtin_input	3
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::builtin_input	4
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::declare	10
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::declare	5
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::declare_op	3
@@ -13616,8 +13597,6 @@ code	crates/wcontainers-shaders/src/lower.rs	int	basic_align	16
 code	crates/wcontainers-shaders/src/lower.rs	int	basic_align	4
 code	crates/wcontainers-shaders/src/lower.rs	int	basic_align	8
 code	crates/wcontainers-shaders/src/lower.rs	int	basic_size	4
-code	crates/wcontainers-shaders/src/lower.rs	int	vector_size	3
-code	crates/wcontainers-shaders/src/lower.rs	int	vector_size	4
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::atomic	"atomic on a vector"
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::atomic	"atomic without its operation"
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::image	"not an image"
