@@ -24,6 +24,9 @@ change among them needed anything here), and, as the brief now asks, origin/phas
 - filter_draw's lost device: still not settled (Known failures, Next 0).
 - B5G6R5's widths: kept as this crate's one named constant (Departures, run 6).
 - The pass bar's stale suite count: replaced by a pointer to the newest measurements.
+- At the end the desktop's C:\wc\target\phase-2-graphics-webgl (17.2 GB: debug, WebAssembly,
+  the front's WebGL 2 debug and release builds, the frames example) and this checkout's target
+  (0.4 GB, from `cargo check`) were deleted. Kept: the LF worktree (Installed on the desktop).
 - The check's leftovers on the desktop (C:\wc\target and C:\wc\src
   phase-2-graphics-webgl-check11, and other -checkN folders): not made by this track's runs, so
   not deleted (the task allows deleting only our own); they still need removing.
