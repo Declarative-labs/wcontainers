@@ -4,6 +4,12 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
+K6c, ninth run: the brief's second bug is fixed (a mapped backend file's pages are dropped when
+its attributes show a change, as `fuse_change_attributes` and `fuse_reverse_inval_inode` do);
+/proc/net prints a kernel-numbered id where it printed a socket's heap address. Docker Desktop
+fell at 02:03 on the 19th and took the whole LTP comparison with it (rows after 639 were
+dropped). K6c is not complete. See "K6c, ninth run".
+
 K6c, eighth run: origin/phase-1 (the streams track's ends) and the literals check's seventh rules
 are merged, and the literals check passes (baseline 8566 to 8511 lines); a backend CREATE now
 carries O_EXCL and O_TRUNC (the brief's first bug); TCP_CORK holds bytes, and uncorking,
@@ -75,6 +81,75 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## K6c, ninth run
+
+origin/phase-1 had nothing new to merge (still eb515b7a); no `Settings` names are in the owned
+crates (the brief's rename).
+
+Built:
+- The brief's second bug, FUSE_AUTO_INVAL_DATA and mapped blocks. When an answer's attributes
+  show a mapped backend file's size changed, or (with FUSE_AUTO_INVAL_DATA granted by INIT) its
+  modification time, the pages its block holds are dropped (`fuse_change_attributes`'s
+  `invalidate_inode_pages2`), so the next touch of each, by the program or by a read, asks the
+  backend again; every mapping of the file is made to fault on them before the guest runs on
+  (the backend client lists the files, `settle` goes through them), and code run from it is
+  marked stale. FUSE_NOTIFY_INVAL_INODE with an offset drops its range the same way
+  (`fuse_reverse_inval_inode`), where it was only counted before. Pages a shared mapping has been
+  able to write (the block's new `dirtied`: a shared mapping of it had PROT_WRITE at some time)
+  are kept and counted "backend change not seen by mapped pages", since which pages hold writes
+  the backend lacks is not known (Linux writes its dirty pages back first; departure). The same
+  flag now decides the write-back at msync, fsync and the last unmap, which before went by a
+  shared mapping's being allowed to write (an O_RDWR descriptor) and so wrote back pages a
+  read-only shared mapping had never changed, over changes made outside.
+- The test server grants FUSE_AUTO_INVAL_DATA (as libfuse's servers do by default), so the
+  reference's Linux drops its page cache the same way; before, it did not ask for it, and Linux
+  kept stale pages too. The helper rebuilds the server when any file under backend/ changed (it
+  looked at main.rs and the manifests only, so a change to announcing.rs was not built).
+- A test of it: guest/backendchanged.c maps a file shared and private, reads it, then the
+  outside writes over it in the backend's directory (a new stream script step,
+  `Step::ChangeServed`, done by `docker exec` of busybox `dd` into the backend's container on
+  ours and into the reference's container there; `backend::reference_run` follows a script of
+  `Expect` and `ChangeServed` steps); the program waits until fstat shows the new modification
+  time and reads again. backend `cached_files_changed_outside_match_reference`. Without the
+  kernel change, at seed 1: ours "after: shared a b, private a p, read b", the reference "after:
+  shared x y, private x p, read y" (scratch k6c9/changed-before.log); with it they match.
+- /proc/net's pointer column (tcp, udp, unix, netlink) prints the socket's number from a
+  kernel-wide counter (`Kernel::next_object`), given when the socket is made, in place of its heap
+  address, so what the guest sees does not depend on where the host put it. Open files get a
+  number from the same counter, and epoll's item key is (descriptor, the file's number) where it
+  was the file's address (the address part ordered two items of one descriptor number).
+- Literals: the new values are named (`busybox::DD_APPLET`, `reference::docker::EXEC`; the
+  filter guest's "exec" mode is now "execve", since its word would restate `EXEC`); the server's
+  three file names went with the walk of its folder. Baseline 8511 to 8508, then 8499 with the
+  start values below.
+- The runtime track's "Asked of the kernel track" (its status on main), first part: the kernel's
+  start values are public constants the runtime's spec.rs can import instead of writing them a
+  second time: `DOCKER_CAPABILITIES` (the capability bits, the kernel's `DOCKER_DEFAULT`),
+  `DOCKER_LIMITS` (resource, soft and hard limit where not unlimited) and `DOCKER_UMASK`. Names
+  suggested for the owner. Not yet: the mounts with their options, the read-only and masked
+  paths, the wait status's parts, and taking any of them at start.
+
+Found:
+- Docker Desktop stopped at about 02:03 on the 19th ("Docker Desktop is unable to start") and was
+  back at 02:39, and stopped again at about 02:50. Every LTP test after the first fall crashed
+  in 0.1 s: the whole comparison's rows from 640 (fs:gf07) on were taken out of k6c7/whole.tsv
+  (kept in k6c7/whole-e1d37089-docker-fall.tsv), so the same command continues it.
+- cve-2014-0196 may be what brings Docker Desktop down: both falls came while it ran on ours
+  (slow runner, LTP_LIMIT 7200, 1 job; it started at about 01:59 and ended at 239 s, then was
+  started again at 02:41 and ended at 594 s), each time with the test host reading end of file
+  from the backend's container ("reading from the backend: UnexpectedEof") and Docker gone right
+  after. But in the whole comparisons (at b37c8a43 and at 708289f3, ending 22:11 on the 18th) it
+  ran out its 900 s limit with Docker staying up, so the link is not shown. The reference passes
+  it in 19.8 s. Not run a third time in this run; its row is out of k6c7/slow.tsv. Before it runs
+  again, watch the backend's container (memory, Docker's events) while it runs.
+- The slow tests (k6c7/slow.tsv, at 708289f3): open04 pass in 3660 s, float_bessel pass in 365 s,
+  hackbench01 pass in 365 s, all the reference's verdicts (33.4, 3.3 and 11.3 s there).
+- Left of the stable ids: wait channels (`Channel::Object`, `Channel::Held`, `Channel::Epoll`,
+  epoll's `Queue::Object`) are still object addresses. They are compared only for equality when
+  waking, so they order nothing a guest sees, but they differ between two runs of one record, so
+  the record-and-replay test needs them numbered too: a variant per numbered object (not ids in
+  the address variants, where a small number could equal an address on a 32-bit host).
 
 ## K6c, eighth run
 
@@ -3628,6 +3703,11 @@ All on this shared Mac; noisy, not benchmarks.
 - K5, third run: the TTL and type of service of datagrams from outside and of the name server's
   answers are not reported by the host: 64 and 0 are given when asked for (counted "outside
   datagram header made up").
+- K6c, ninth run: plan section 15 lists "a shared file mapping does not see changes made to the
+  file from outside the container"; the brief calls that a bug, so a mapped backend file's pages
+  are now dropped as Linux's FUSE drops them. Left of the section-15 item: pages a shared
+  mapping has been able to write are kept (counted "backend change not seen by mapped pages"),
+  since which of them hold writes is not known; Linux writes its dirty pages back and drops all.
 
 ## Not built, by counter
 
@@ -3947,6 +4027,19 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 - The object crate is built with its `unaligned` feature, so headers are read from any byte offset.
 
 ## Next
+
+K6c, after the ninth run (this changes the eighth run's list just below):
+- The whole LTP comparison: continue k6c7/whole.tsv (639 done) with a runner at the ninth run's
+  last commit (`nix develop -c cargo build -p wcontainers-kernel-test --bin ltp`, copy
+  target/debug/ltp to scratch kernel/k6c9/ltp-z, then the eighth run's command with ltp-z).
+  Rerun with it what the eighth and ninth runs changed among the first 639: tests creating files
+  on the root (backend CREATE flags), TCP tests (TCP_CORK), tests mapping files (pages dropped on
+  a change of size or time), and the hugetlb group.
+- The slow tests: only cve-2014-0196 is left (the same slow command with only its name continues
+  k6c7/slow.tsv), but read "K6c, ninth run", Found, first: Docker fell twice while it ran.
+- The stable ids: number open files and the other waited-on objects (see "K6c, ninth run",
+  Found), then the record-and-replay test. Then the rest of the brief's asks: mapping placement
+  and the memory ceiling, the runtime's start values.
 
 K6c, after the eighth run (it changes items 3 and 7 below):
 - Item 3: TCP_CORK holding and TCP_NODELAY pushing are built. The cgroup2 mount waits on the
