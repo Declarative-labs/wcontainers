@@ -111,7 +111,7 @@ fn to_spirv(dxil: &[u8], samples: u8) -> Result<(Vec<u32>, Resources), ConvertEr
             &mut error,
         )
     };
-    if status != 0 {
+    if status != SUCCESS {
         return Err(ConvertError::Rejected(reason(error)));
     }
     let spirv = self::words(out, words);
@@ -121,6 +121,9 @@ fn to_spirv(dxil: &[u8], samples: u8) -> Result<(Vec<u32>, Resources), ConvertEr
         .to_vec();
     Ok((spirv, resources))
 }
+
+/// The status the C side returns for a call that succeeded.
+const SUCCESS: c_int = 0;
 
 /// A C side reader of the DXIL's resource list, giving words it allocated.
 type ListReader =
@@ -133,7 +136,7 @@ fn resource_list(dxil: &[u8], read: ListReader) -> Result<Vec<u32>, ConvertError
     let mut error = core::ptr::null_mut();
     // SAFETY: the pointers are valid for the call; the C side allocates `out` and `error` with malloc.
     let status = unsafe { read(dxil.as_ptr(), dxil.len(), &mut out, &mut n, &mut error) };
-    if status != 0 {
+    if status != SUCCESS {
         return Err(ConvertError::Rejected(reason(error)));
     }
     Ok(words(out, n))
@@ -1777,13 +1780,13 @@ pub(crate) mod words {
         pub const TARGET: usize = 1;
         pub const DECORATION: usize = 2;
         pub const LITERAL: usize = 3;
-        pub const WORDS: usize = LITERAL + 1;
+        pub const DECORATE_WORDS: usize = LITERAL + 1;
     }
 
     /// `OpTypeInt`'s words (3.32.6): the result, the width, then the signedness.
     pub mod type_int {
         pub const SIGNEDNESS: usize = 3;
-        pub const WORDS: usize = SIGNEDNESS + 1;
+        pub const TYPE_INT_WORDS: usize = SIGNEDNESS + 1;
     }
 
     /// `OpTypeImage`'s words (3.32.6) up to its format; the access qualifier may follow.
@@ -1792,7 +1795,7 @@ pub(crate) mod words {
         pub const DIM: usize = 3;
         pub const SAMPLED: usize = 7;
         pub const FORMAT: usize = 8;
-        pub const WORDS: usize = FORMAT + 1;
+        pub const TYPE_IMAGE_WORDS: usize = FORMAT + 1;
         /// `Sampled` of an image used without a sampler: a storage image.
         pub const STORAGE: u32 = 2;
     }
@@ -1927,7 +1930,7 @@ fn atomic_signedness_differs(spirv: &[u32]) -> bool {
         };
         let w = &spirv[at..at + count];
         match op {
-            Op::TypeInt if w.len() >= words::type_int::WORDS => {
+            Op::TypeInt if w.len() >= words::type_int::TYPE_INT_WORDS => {
                 signed.insert(w[words::RESULT], w[words::type_int::SIGNEDNESS] != 0);
             }
             Op::TypePointer if w.len() >= words::POINTER_WORDS => {

@@ -2476,6 +2476,10 @@ fn loads(
     Ok(())
 }
 
+/// The name of the function giving a texture slot's size under [`VariantFlags::TEXTURE_INFO`], before
+/// the slot.
+const TEXTURE_SIZE_FUNCTION: &str = "texture_size_";
+
 /// What a texture query asks under [`VariantFlags::TEXTURE_INFO`].
 #[derive(Clone, Copy)]
 enum TextureInfo {
@@ -2551,7 +2555,7 @@ fn texture_info(
         let types = types_of(module, &f, &operands)?;
         let size_ty = *types.last().unwrap();
         let mut callee = Function {
-            name: Some(format!("texture_size_{texture}")),
+            name: Some(format!("{TEXTURE_SIZE_FUNCTION}{texture}")),
             result: Some(FunctionResult {
                 ty: size_ty,
                 binding: None,

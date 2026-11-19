@@ -76,7 +76,7 @@ pub(super) fn prepare(words: &mut [u32]) -> Vec<Declared> {
             break;
         };
         match Op::from_u32(w[0] & super::words::OPCODE_MASK) {
-            Some(Op::Decorate) if count >= decorate::WORDS => {
+            Some(Op::Decorate) if count >= decorate::DECORATE_WORDS => {
                 let (target, literal) = (w[decorate::TARGET], w[decorate::LITERAL]);
                 if w[decorate::DECORATION] == Decoration::DescriptorSet as u32 {
                     sets.insert(target, literal);
@@ -84,7 +84,7 @@ pub(super) fn prepare(words: &mut [u32]) -> Vec<Declared> {
                     bindings.insert(target, literal);
                 }
             }
-            Some(Op::TypeInt) if count >= type_int::WORDS => {
+            Some(Op::TypeInt) if count >= type_int::TYPE_INT_WORDS => {
                 let kind = if w[type_int::SIGNEDNESS] != 0 {
                     ScalarKind::Sint
                 } else {
@@ -95,7 +95,7 @@ pub(super) fn prepare(words: &mut [u32]) -> Vec<Declared> {
             Some(Op::TypeFloat) if count >= 3 => {
                 kinds.insert(w[1], ScalarKind::Float);
             }
-            Some(Op::TypeImage) if count >= type_image::WORDS => {
+            Some(Op::TypeImage) if count >= type_image::TYPE_IMAGE_WORDS => {
                 images.insert(w[1], at);
             }
             Some(Op::TypePointer) if count >= POINTER_WORDS => {

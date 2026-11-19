@@ -50,6 +50,17 @@ pub struct Writer<'a, W> {
     clip_distance_count: u32,
 }
 
+/// The first versions whose `mix` takes a boolean condition with integer and boolean values.
+const ES_INTEGER_MIX: u16 = 310;
+const DESKTOP_INTEGER_MIX: u16 = 450;
+/// The punctuation of a select written one component at a time.
+const OPEN: &str = "(";
+const CLOSE: &str = ")";
+const SEPARATOR: &str = ", ";
+const MEMBER: char = '.';
+const THEN: &str = " ? ";
+const ELSE: &str = " : ";
+
 impl<'a, W: Write> Writer<'a, W> {
     /// Creates a new [`Writer`] instance.
     ///
@@ -3073,8 +3084,8 @@ impl<'a, W: Write> Writer<'a, W> {
                         if vec_select
                             && scalar.kind != crate::ScalarKind::Float
                             && match self.options.version {
-                                Version::Embedded { version, .. } => version < 310,
-                                Version::Desktop(version) => version < 450,
+                                Version::Embedded { version, .. } => version < ES_INTEGER_MIX,
+                                Version::Desktop(version) => version < DESKTOP_INTEGER_MIX,
                             } =>
                     {
                         Some(size)
@@ -3083,15 +3094,18 @@ impl<'a, W: Write> Writer<'a, W> {
                 };
                 if let Some(size) = componentwise {
                     self.write_value_type(value_ty)?;
-                    write!(self.out, "(")?;
-                    for (i, component) in back::COMPONENTS[..size as usize].iter().enumerate() {
+                    self.out.write_str(OPEN)?;
+                    for (i, &component) in back::COMPONENTS[..size as usize].iter().enumerate() {
                         if i != 0 {
-                            write!(self.out, ", ")?;
+                            self.out.write_str(SEPARATOR)?;
                         }
-                        for (e, after) in [(condition, " ? "), (accept, " : "), (reject, "")] {
-                            write!(self.out, "(")?;
+                        for (e, after) in [(condition, THEN), (accept, ELSE), (reject, "")] {
+                            self.out.write_str(OPEN)?;
                             self.write_expr(e, ctx)?;
-                            write!(self.out, ").{component}{after}")?;
+                            self.out.write_str(CLOSE)?;
+                            self.out.write_char(MEMBER)?;
+                            self.out.write_char(component)?;
+                            self.out.write_str(after)?;
                         }
                     }
                 } else if vec_select {

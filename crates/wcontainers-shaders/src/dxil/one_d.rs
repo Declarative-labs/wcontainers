@@ -15,6 +15,10 @@ use naga::{
 
 type Result<T> = core::result::Result<T, ConvertError>;
 
+/// Why a module the reader gave cannot be made 2D.
+const COORDINATE_NOT_SCALAR: &str = "a 1D texture's coordinate that is not a scalar";
+const OPERAND_WITHOUT_TYPE: &str = "an operand without a type";
+
 /// Where a 1D read's coordinate falls in the one row: its centre.
 const ROW_CENTRE: f32 = 0.5;
 
@@ -94,9 +98,7 @@ fn type_of(module: &mut Module, f: &Function, e: Handle<Expression>) -> Result<H
 fn scalar_of(module: &Module, ty: Handle<Type>) -> Result<Scalar> {
     match module.types[ty].inner {
         TypeInner::Scalar(s) => Ok(s),
-        _ => Err(ConvertError::Malformed(
-            "a 1D texture's coordinate that is not a scalar".into(),
-        )),
+        _ => Err(ConvertError::Malformed(COORDINATE_NOT_SCALAR.into())),
     }
 }
 
@@ -185,7 +187,7 @@ fn helper(module: &mut Module, f: &Function, r: &Read) -> Result<Function> {
             .iter()
             .find(|t| t.0 == e)
             .map(|t| t.1)
-            .ok_or(ConvertError::Malformed("an operand without a type".into()))?;
+            .ok_or(ConvertError::Malformed(OPERAND_WITHOUT_TYPE.into()))?;
         scalar_of(module, ty)
     };
     let original = f.expressions[r.user].clone();

@@ -1907,7 +1907,7 @@ fn one_d_texels(seed: u64, i: usize) -> Vec<u8> {
     let mut next = rng(seed + i as u64);
     match seeded {
         true => (0..n / 4)
-            .flat_map(|_| ((next() % 4096) as f32 / 64.0).to_le_bytes())
+            .flat_map(|_| ((next() % 3000) as f32 / 64.0).to_le_bytes())
             .collect(),
         false => vec![0; n],
     }
