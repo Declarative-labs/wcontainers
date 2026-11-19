@@ -8,19 +8,9 @@ orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
 
 - S1: complete; its third independent check's findings are settled (see "S1 check findings").
 - S2: built in its first run; its first independent check's ten findings settled in its second run
-  (see "S2 check findings"); every item of its bar met (see "S2" and "Measurements"). Waiting for
-  its next check, but for two runs Docker's stops took from the third run (see "Measurements"):
-  the whole suite's verdicts at 565881d2 for the 35 test binaries lost to Docker, and the speed
-  comparison over five test binaries (scratch streams/s2b/timing.sh, old build kept in
-  streams/s2b/old).
-- What comes next: once Docker answers (it was still down at 04:52, after 2 hours),
-  `sh streams/s2b/rerun.sh streams/s2b/rerun-2.log`; then build the old binaries in the old
-  worktree (its target was removed: `nix develop -c cargo test --no-run -j 4 -p
-  wcontainers-kernel-test --test threads --test processes --test memory --test sigframe --test
-  shell` inside it) and run `sh streams/s2b/timing.sh` with the old and new deps and crate folders
-  (not at the same time as the rerun:
-  two test binaries building guests at once hung zig), record both, remove the old worktree
-  (`git worktree remove`) and its target. Then S2's independent check. Not built and left open on purpose: export of a process
+  (see "S2 check findings"); every item of its bar met, the whole suite at 565881d2 and the speed
+  over five test binaries finished in the fourth run (see "Measurements").
+- What comes next: S2's independent check. Not built and left open on purpose: export of a process
   (`suspend`, `resume`, `SuspendedProcess`, `ExportedProcess`; where they attach is in
   docs/embedder-interface.md), `set_thread_ordering`, the inspection hooks, `StopReason`; ends made
   by connect, accept, export or import; `/dev/console` under `-t`.
@@ -214,6 +204,26 @@ Found on the way, fixed:
   127 (21:59 to 22:01). Medians 2.08 s before and 2.06 s after: unchanged within this machine's
   noise. Expected, not measured: a process with no watch and no record pays one flag test per call
   and per fault (`Kernel::watching`), and none per page permission set.
+- Speed with no hook implemented over five whole test binaries (fourth run, this Mac): threads,
+  processes, memory, sigframe and shell, built before S2 (59056384, in a scratch worktree, since
+  removed) and at 565881d2's tree, each binary run alone with 3 test threads, old and new
+  alternately, a warm-up round not counted and three rounds counted, inside `nix develop`
+  (scratch streams/s2b/timing-2.sh, timing-5.log, timing-summary.py; 06:23 to 06:47, load 33 to
+  101). Wall and CPU (user plus system, the test's child processes included: Docker's client and
+  zig) medians, old then new: threads 41.4 / 40.5 s wall, 23.4 / 25.6 s CPU (rounds 22.9, 23.4,
+  24.3 against 22.8, 25.6, 25.6); processes 8.7 / 8.5 s, 1.63 / 1.61 s; memory 44.5 / 45.8 s,
+  7.88 / 7.97 s; sigframe 3.9 / 4.0 s, 0.44 / 0.44 s; shell 58.2 / 73.8 s wall (old's rounds 58,
+  54, 73; new's 75, 60, 74: the reference's Docker runs under the load), 8.29 / 8.27 s CPU. All
+  passed. Unchanged within this machine's noise.
+- A first try of the same (timing-4.log, 05:55 to 06:11, load 27 to 72) showed threads 60 %
+  slower, and it was not the kernel: the tests put the whole guest program folder
+  (target/tmp/guest) into each container, and the new build's held 151 programs (257 MB, from the
+  whole suite) against the old build's 20 (30 MB). A sample of `threads_survive_saving` showed the
+  same samples in the kernel and the stand-in on both sides (StandIn::run 22 and 22) and the extra
+  time in reading files. With the same folder on both sides (timing-5) the difference went. For
+  later measurements: compare builds with the same guest folder.
+- Zig: `zig cc` from Homebrew outside `nix develop` hung (three guest builds of one test binary
+  sleeping 10 minutes at the link); the timing now runs inside `nix develop`, where it did not.
 
 ## Literals
 
