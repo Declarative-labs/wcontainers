@@ -1540,6 +1540,13 @@ array of slots in microseconds.
 
 ## Dependencies
 
+Added in J5 run 1 to wcontainers-runtime (licences read from the registry's manifests on 2026-11-18), for the
+local system's file backend and network: fuse-abi 0.2.0 (MIT OR Apache-2.0; the kernel's, Linux's FUSE
+messages), rustix 1.1.6 with `fs` (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT), libc 0.2.191 (MIT OR
+Apache-2.0; `mknodat`, which rustix offers on Linux only), zerocopy (the workspace's), socket2 0.6.5 (MIT OR
+Apache-2.0), polling 3.11.0 (Apache-2.0 OR MIT), which brings concurrent-queue 2.5.0 (Apache-2.0 OR MIT) and
+hermit-abi 0.5.3 (MIT OR Apache-2.0), new to the lock.
+
 Added in J4a run 3 (licence read from the registry's manifest on 2026-11-18): serde_ignored 0.1.14 (MIT OR
 Apache-2.0) to wcontainers-runtime, for the properties of a config.json the specification does not define;
 its dependencies serde and serde_core were in the lock.
