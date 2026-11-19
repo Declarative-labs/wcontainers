@@ -207,6 +207,16 @@ lists j5/f-*.txt, 230 lines each but none's 222; `j5/compare.sh` diffs each agai
     times and "1 1 3" once (j5/sharedviews-repeat.log has 8 reruns of the test at full, all passed). It
     passed at none and bounded.
 
+The owned suite at b2262ae3 (the same code; scratch j5/owned-2.log; 215.9 s with its build, load about 103 to
+106, while the LTP run went on): 133 passed, 1 ignored (`run_with_the_cache`, as before), 0 failed.
+
+The whole LTP comparison (scratch `j5/after.sh` calling `j5/ltp.sh whole`, started at 23:34 on 2026-11-18 when
+the bar ended, detached, on j5/tree at 798f07ff; log j5/ltp/whole.log, results whole-standin.tsv,
+whole-runtime.tsv, comparison whole-compare.txt, after.done when it ends): the stand-in had 641 of the 2,694
+tests at 00:10 (load about 105). The kernel track's own stand-in file sums 10,725 s of test time; the back
+end took 1.3 to 12.9 s a test against the stand-in's 0.2 to 0.9 s in run 1's trial, so its half is expected
+(not measured) to take several times the stand-in's, about ten hours at three jobs.
+
 Built:
 - The local system's file backend (crates/wcontainers-runtime/src/files.rs, 1,157 lines with its unit test): a
   host directory served in Linux's FUSE messages for the kernel's file backend; plan section 14 says how.
