@@ -60,8 +60,9 @@ pub(crate) struct Variant<B: Backend> {
 pub(crate) type LayoutKey = (u64, [u32; 32], u64);
 
 /// A stage helper's shaders: the vertex shader's, input layout's, hull and domain shaders' (0
-/// for none), geometry shader object's and pixel shader's ids.
-pub(crate) type StageKey = (u64, u64, [u64; 2], u64, u64);
+/// for none), geometry shader object's and pixel shader's ids, and on the line route the pixel
+/// program's coverage location.
+pub(crate) type StageKey = (u64, u64, [u64; 2], u64, u64, Option<u32>);
 
 /// A Direct3D 11 device and its immediate context on back end `B`.
 pub struct Device<B: Backend> {

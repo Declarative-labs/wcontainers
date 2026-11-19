@@ -430,6 +430,9 @@ pub struct StageVariant {
     /// The pixel program reads its layer from the one a geometry stage names, passed after the
     /// linked values (`VariantFlags::LAYER_FROM_STAGE`).
     pub layer_from_stage: bool,
+    /// The pixel program multiplies target 0's alpha by the line coverage the stage helper's
+    /// rectangles pass after the linked values (`AntialiasedLinesAsQuads`).
+    pub line_coverage: bool,
     /// Texture slots whose bound view reads stencil, which Direct3D gives in the second component
     /// and the interface's stencil views in the first (`SwizzleInShader`).
     pub stencil: u128,
@@ -547,6 +550,9 @@ impl StageVariant {
         }
         if self.layer_from_stage {
             key.flags |= VariantFlags::LAYER_FROM_STAGE;
+        }
+        if self.line_coverage {
+            key.flags |= VariantFlags::LINE_COVERAGE;
         }
         if self.linked != 0 {
             key.linked = LinkedValues {

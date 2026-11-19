@@ -390,7 +390,7 @@ pub struct DepthStencil<B: Backend> {
 pub type ClampedSampler<B> = (u32, Kept<B, <B as Backend>::Sampler>);
 
 /// A raster block made as one twin key (`context::RasterKey`).
-pub type MaskedRaster<B> = ((u32, bool, bool), Kept<B, <B as Backend>::Raster>);
+pub type MaskedRaster<B> = (crate::context::RasterKey, Kept<B, <B as Backend>::Raster>);
 
 pub struct Rasterizer<B: Backend> {
     pub desc: RasterizerDesc,
