@@ -65,6 +65,8 @@ writing a layer or viewport, and converts `SV_PrimitiveID` in pixel shaders nati
   as at run 21 (g4s10j-programs.log, g4s10j-bgfx.log).
 - At the end: lint of both builds clean with warnings denied, front 46 + cache 1 + unit 5,
   library com 15 and programs 30 with 1 ignored (the empty slot's resinfo), all passing.
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (15.8 GB, debug builds of
+  both back ends) and the checkout's own target (600 MB, from `cargo check`) were deleted.
 - The shaders crate's work moved to this front: with the converter now serving them, layered
   geometry runs, stream output after a domain shader and clip distances in the program are this
   front's to build (gap list part B, What comes next).
