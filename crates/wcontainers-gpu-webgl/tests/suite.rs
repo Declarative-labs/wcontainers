@@ -301,6 +301,11 @@ fn linear_values_interpolate_in_window_space() {
 }
 
 #[test]
+fn programs_run_per_sample_and_write_the_sample_mask() {
+    sampled(checks::programs_run_per_sample_and_write_the_sample_mask::<Angle>);
+}
+
+#[test]
 fn special_float_values_keep_their_bits() {
     sampled(checks::special_float_values_keep_their_bits::<Angle>);
 }

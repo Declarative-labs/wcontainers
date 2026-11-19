@@ -118,6 +118,9 @@ pub(crate) struct Process {
     pub execed: bool,
     /// How many programs it has run (Linux's `self_exec_id`, which a fork copies).
     pub self_exec_id: u64,
+    /// Which mappings a core dump would hold (`/proc/<pid>/coredump_filter`, the memory's
+    /// `MMF_DUMP_FILTER_MASK` bits), which a fork and an exec keep.
+    pub coredump_filter: u32,
     /// The session's controlling terminal, if the process has one: a pair whose slave it is.
     pub terminal: Option<Rc<core::cell::RefCell<crate::tty::Pty>>>,
     /// For a session leader whose terminal was hung up, the foreground group it had
@@ -290,6 +293,8 @@ pub(crate) struct Thread {
     pub alternate_stack: (u64, u64, i32),
     /// The call the thread is in, while it has not finished: what it waits for and how far it got.
     pub call: Call,
+    /// What the call took from its arguments, kept while it waits so each run takes the same.
+    pub taken: RefCell<Taken>,
     /// The futexes the call waits on, while it is a futex wait.
     pub futex: crate::syscall::futex::Wait,
     /// What `restart_syscall` continues, for a call interrupted by a handler.
@@ -299,6 +304,9 @@ pub(crate) struct Thread {
     pub vruntime: u64,
     /// When the thread was woken and has not yet run, on the monotonic clock.
     pub woken_at: Option<u64>,
+    /// Whether it waits for pages of a mapped file its program touched, so once woken it goes on
+    /// from the instruction that touched them instead of running a call again.
+    pub filling: bool,
     /// The address and syndrome of the thread's last fault, which every later frame shows.
     pub fault: (u64, u64),
     /// Signals a fault forced on the thread, which even the first process acts on.
@@ -382,12 +390,111 @@ pub(crate) struct Call {
     pub wall: bool,
     /// How much of the call is done, such as bytes of a large write.
     pub progress: u64,
+    /// How many messages of sendmmsg or recvmmsg are done; `progress` is the current one's.
+    pub messages: u64,
     /// For F_SETLKW's wait: the descriptor table asking, and the table holding the lock in the way
     /// (none for an open file's lock), as Linux's `blocked_hash` finds them.
     pub lock_wait: Option<(u64, Option<u64>)>,
-    /// The pipe (its channel's address) whose lock the call holds while it waits, as
-    /// `splice_file_to_pipe` holds it around a terminal's read.
-    pub holds: Option<usize>,
+    /// The locks the call holds until it ends, while it waits too (see `Kernel::take_lock`): a
+    /// pipe's, as `splice_file_to_pipe` holds it around a terminal's read, an open file's
+    /// position, a backend file's writes.
+    pub holds: [Option<Channel>; 2],
+    /// Whether the call may not wait (RWF_NOWAIT, Linux's `IOCB_NOWAIT`): a read or write that
+    /// would wait answers EAGAIN as on a nonblocking file.
+    pub nowait: bool,
+}
+
+/// What a call took from its arguments, in order: the open files its descriptors named (`fdget`)
+/// and the paths it copied (`getname`). Linux takes each once per call; a call here runs again
+/// after each wait, and its later runs take these instead of reading the table and memory again.
+#[derive(Clone, Default)]
+pub(crate) struct Taken {
+    items: Vec<TakenItem>,
+    used: usize,
+}
+
+#[derive(Clone)]
+enum TakenItem {
+    File(i32, Result<crate::file::FileRef, crate::Errno>),
+    Path(u64, Result<Vec<u8>, crate::Errno>),
+    Value(u64),
+}
+
+impl Taken {
+    /// A run of the call starts: it takes from the start again.
+    pub fn rewind(&mut self) {
+        self.used = 0;
+    }
+
+    /// The call ended: what it took goes, its files given back (see `Kernel::give_back`).
+    pub fn clear(&mut self) -> Vec<crate::file::FileRef> {
+        self.used = 0;
+        self.items
+            .drain(..)
+            .filter_map(|item| match item {
+                TakenItem::File(_, Ok(file)) => Some(file),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// What the next item taken is, if an earlier run took it for the same argument.
+    fn next(&mut self, same: impl Fn(&TakenItem) -> bool) -> Option<TakenItem> {
+        let item = self.items.get(self.used).filter(|item| same(item))?.clone();
+        self.used += 1;
+        Some(item)
+    }
+
+    fn push(&mut self, item: TakenItem) {
+        self.items.truncate(self.used);
+        self.items.push(item);
+        self.used += 1;
+    }
+
+    /// The open file descriptor `fd` named when the call first took it, else `look` now.
+    pub fn file(
+        &mut self,
+        fd: i32,
+        look: impl FnOnce() -> Result<crate::file::FileRef, crate::Errno>,
+    ) -> Result<crate::file::FileRef, crate::Errno> {
+        if let Some(TakenItem::File(_, file)) =
+            self.next(|item| matches!(item, TakenItem::File(known, _) if *known == fd))
+        {
+            return file;
+        }
+        let file = look();
+        self.push(TakenItem::File(fd, file.clone()));
+        file
+    }
+
+    /// A value the call settles once, such as where an append goes: the one an earlier run
+    /// settled, else `value`.
+    pub fn value(&mut self, value: u64) -> u64 {
+        if let Some(TakenItem::Value(known)) = self.next(|item| matches!(item, TakenItem::Value(_)))
+        {
+            return known;
+        }
+        self.push(TakenItem::Value(value));
+        value
+    }
+
+    /// The path copied from `address` when the call first took it, else `read` now.
+    pub fn path(
+        &mut self,
+        address: u64,
+        read: impl FnOnce() -> Result<Vec<u8>, crate::Errno>,
+    ) -> Result<Vec<u8>, crate::Errno> {
+        if let Some(TakenItem::Path(_, path)) =
+            self.next(|item| matches!(item, TakenItem::Path(known, _) if *known == address))
+        {
+            return path;
+        }
+        let path = read();
+        if path != Err(crate::Errno::PARKED) {
+            self.push(TakenItem::Path(address, path.clone()));
+        }
+        path
+    }
 }
 
 /// What a parked call waits for, besides its deadline and a signal.
@@ -409,6 +516,14 @@ pub(crate) enum Channel {
     Vfork(Tid),
     /// A futex wake, requeue or lock handed over (the futexes know which).
     Futex,
+    /// An answer from the file backend; no signal ends this wait, as Linux's FUSE waits once a
+    /// request is sent.
+    Backend,
+    /// A lock that another call holds while it waits (the address of what it guards); no signal
+    /// ends this wait, as none ends Linux's `mutex_lock`.
+    Held(usize),
+    /// An event for an epoll instance (its address), which wakes one waiter at a time.
+    Epoll(usize),
 }
 
 /// What `restart_syscall` runs again.
@@ -456,11 +571,13 @@ impl Thread {
             pending: Pending::default(),
             alternate_stack: (0, 0, 0),
             call: Call::default(),
+            taken: RefCell::default(),
             futex: Default::default(),
             restart: None,
             runtime: 0,
             vruntime: 0,
             woken_at: None,
+            filling: false,
             fault: (0, 0),
             forced: 0,
             schedule: Schedule::default(),

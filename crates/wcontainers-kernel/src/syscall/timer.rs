@@ -57,6 +57,11 @@ enum Owner {
         tid: Tid,
         asked: u64,
     },
+    /// The end of a TCP connection's deferral (TCP_DEFER_ACCEPT) on a listener, or a held
+    /// connection's client sending again to a listener gone.
+    Deferral {
+        listener: Weak<RefCell<crate::syscall::socket::Socket>>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -90,6 +95,11 @@ struct Timer {
     /// wall clock has canceled it since (`moffs` at `KTIME_MAX`).
     might_cancel: bool,
     canceled: bool,
+    /// A descriptor's flags as its last `settime` gave them (`settime_flags`), which fdinfo shows.
+    settime_flags: u32,
+    /// A periodic POSIX timer whose signal was ignored when it fired, kept until the signal's
+    /// handler stops being SIG_IGN (Linux's `ignored_posix_timers`).
+    ignored: bool,
 }
 
 /// Every timer in the container.
@@ -181,8 +191,8 @@ impl Timers {
     }
 
     fn descriptor(&self, file: &FileRef) -> Option<u64> {
-        match file.borrow().anon {
-            Some(Anon::Timer(id)) => Some(id),
+        match &file.borrow().anon {
+            Some(Anon::Timer(id)) => Some(*id),
             _ => None,
         }
     }
@@ -345,8 +355,10 @@ fn fire(kernel: &mut Kernel, cx: &mut Context<'_>, id: u64) {
             id: number,
             notify,
         } => {
-            // Rearmed when its signal is taken (`posixtimer_deliver_signal`); until then it waits.
-            kernel.timers.all.get_mut(&id).expect("timer").expires = Some(expires);
+            // A periodic one is rearmed when its signal is taken (`posixtimer_deliver_signal`)
+            // and waits until then; a one-shot one is done (`posix_timer_queue_signal`).
+            let periodic = timer.interval > 0;
+            kernel.timers.all.get_mut(&id).expect("timer").expires = periodic.then_some(expires);
             let (target, signal, value) = match notify {
                 Notify::None => return,
                 Notify::Process { signal, value } => (None, signal, value),
@@ -358,7 +370,6 @@ fn fire(kernel: &mut Kernel, cx: &mut Context<'_>, id: u64) {
             }
             let entry = kernel.timers.all.get_mut(&id).expect("timer");
             entry.sent_at = Some(entry.sequence);
-            let info = timer_info(signal, number, 0, value);
             let live = match target {
                 Some(tid) => kernel.threads.contains_key(&tid),
                 None => kernel
@@ -366,7 +377,15 @@ fn fire(kernel: &mut Kernel, cx: &mut Context<'_>, id: u64) {
                     .get(&pid)
                     .is_some_and(|p| p.ended.is_none()),
             };
-            if live {
+            if !live {
+                return;
+            }
+            // An ignored signal leaves a periodic timer waiting for it to be caught again, and a
+            // one-shot one drops it (`posixtimer_send_sigqueue`).
+            let ignored = kernel.timer_signal_ignored(target, pid, signal);
+            kernel.timers.all.get_mut(&id).expect("timer").ignored = ignored && periodic;
+            if !ignored {
+                let info = timer_info(signal, number, 0, value);
                 kernel.send_from_timer(cx, target, pid, signal, info);
             }
         }
@@ -403,6 +422,45 @@ fn fire(kernel: &mut Kernel, cx: &mut Context<'_>, id: u64) {
         }
         // Disarmed, which tells the sleeper its time has come.
         Owner::Sleep { tid, .. } => kernel.wake_thread(tid),
+        Owner::Deferral { listener } => {
+            kernel.timers.remove(id);
+            if let Some(listener) = listener.upgrade() {
+                crate::syscall::socket::deferrals_due(kernel, cx, &listener);
+            }
+        }
+    }
+}
+
+/// `signal` of `pid` stopped being SIG_IGN: the periodic timers that fired while it was ignored
+/// send it now (`posixtimer_sig_unignore`).
+pub(crate) fn unignore(kernel: &mut Kernel, cx: &mut Context<'_>, pid: Pid, signal: u32) {
+    let waiting: alloc::vec::Vec<(u64, i32, Notify)> = kernel
+        .timers
+        .all
+        .iter()
+        .filter_map(|(id, timer)| match timer.owner {
+            Owner::Posix {
+                pid: owner,
+                id: number,
+                notify,
+            } if owner == pid && timer.ignored => Some((*id, number, notify)),
+            _ => None,
+        })
+        .collect();
+    for (id, number, notify) in waiting {
+        let (target, sends, value) = match notify {
+            Notify::None => continue,
+            Notify::Process { signal, value } => (None, signal, value),
+            Notify::Thread { tid, signal, value } => (Some(tid), signal, value),
+        };
+        if sends != signal {
+            continue;
+        }
+        kernel.timers.all.get_mut(&id).expect("timer").ignored = false;
+        if target.is_none_or(|tid| kernel.threads.contains_key(&tid)) {
+            let info = timer_info(signal, number, 0, value);
+            kernel.send_from_timer(cx, target, pid, signal, info);
+        }
     }
 }
 
@@ -463,7 +521,7 @@ pub(crate) fn process_end(kernel: &mut Kernel, pid: Pid, exec: bool) {
         .filter(|(_, timer)| match timer.owner {
             Owner::Posix { pid: owner, .. } => owner == pid,
             Owner::Interval { pid: owner, .. } => owner == pid && !exec,
-            Owner::Descriptor { .. } | Owner::Sleep { .. } => false,
+            Owner::Descriptor { .. } | Owner::Sleep { .. } | Owner::Deferral { .. } => false,
         })
         .map(|(id, _)| *id)
         .collect();
@@ -496,10 +554,41 @@ pub(super) fn start_cpu_sleep(
         charge: None,
         wall: false,
         might_cancel: false,
+        settime_flags: 0,
         canceled: false,
+        ignored: false,
     });
     kernel.timers.arm(id, until);
     id
+}
+
+/// Starts a timer that ends a listener's connection deferral at `until` on the monotonic clock
+/// (or, on a client, sends again what its gone listener dropped).
+pub(crate) fn start_deferral(
+    kernel: &mut Kernel,
+    listener: Weak<RefCell<crate::syscall::socket::Socket>>,
+    until: u64,
+) {
+    let id = kernel.timers.add(Timer {
+        owner: Owner::Deferral { listener },
+        clock: Clock::Wall,
+        expires: None,
+        interval: 0,
+        overrun: 0,
+        overrun_last: 0,
+        ticks: 0,
+        expired: false,
+        clock_id: CLOCK_MONOTONIC as i32,
+        sequence: 0,
+        sent_at: None,
+        charge: None,
+        wall: false,
+        might_cancel: false,
+        settime_flags: 0,
+        canceled: false,
+        ignored: false,
+    });
+    kernel.timers.arm(id, until);
 }
 
 /// What is left of a sleep on a CPU clock: 0 once its timer fired or its clock reached the time; the
@@ -592,8 +681,8 @@ fn expiry(kernel: &Kernel, cx: &mut Context<'_>, timer: &Timer, value: u64, abso
     }
 }
 
-/// What is left of a timer and its interval, as `gettime` reports them; a one that has fired and
-/// waits to be rearmed reports its next expiry.
+/// What is left of a timer and its interval, as `gettime` reports them; a periodic one that has
+/// fired and waits to be rearmed reports its next expiry, a one-shot one that has fired nothing.
 fn remaining(kernel: &Kernel, id: u64) -> (u64, u64) {
     let timer = &kernel.timers.all[&id];
     let Some(expires) = timer.expires else {
@@ -748,7 +837,9 @@ pub(super) fn timer_create(
         charge: Some(charge),
         wall: false,
         might_cancel: false,
+        settime_flags: 0,
         canceled: false,
+        ignored: false,
         clock_id,
     });
     Ok(0)
@@ -868,6 +959,10 @@ fn interval_value(kernel: &Kernel, pid: Pid, which: u32) -> (u64, u64) {
     let Some(expires) = timer.expires else {
         return (0, timer.interval);
     };
+    // The real one fired and waiting for SIGALRM to be taken is not running (`hrtimer_active`).
+    if !kernel.timers.due.contains(&(expires, id)) && !kernel.timers.cpu.contains(&id) {
+        return (0, timer.interval);
+    }
     let clock_now = now(kernel, timer.clock).unwrap_or(expires);
     // Due and not yet sent shows a little time left: a microsecond for the real one, a tick for
     // the CPU ones (`itimer_get_remtime`, `get_cpu_itimer`).
@@ -960,7 +1055,9 @@ pub(super) fn setitimer(
             clock_id: CLOCK_MONOTONIC as i32,
             wall: false,
             might_cancel: false,
+            settime_flags: 0,
             canceled: false,
+            ignored: false,
         }),
     };
     set(kernel, cx, id, value, interval, false);
@@ -1013,7 +1110,9 @@ pub(super) fn timerfd_create(
         charge: None,
         wall: false,
         might_cancel: false,
+        settime_flags: 0,
         canceled: false,
+        ignored: false,
         clock_id,
     });
     file.borrow_mut().anon = Some(Anon::Timer(id));
@@ -1078,8 +1177,10 @@ pub(super) fn timerfd_settime(
         kernel.timers.all[&id].clock_id as u32,
         CLOCK_REALTIME | CLOCK_REALTIME_ALARM
     );
-    kernel.timers.all.get_mut(&id).expect("timer").might_cancel =
+    let timer = kernel.timers.all.get_mut(&id).expect("timer");
+    timer.might_cancel =
         wall_clock && flags & TFD_TIMER_ABSTIME != 0 && flags & TFD_TIMER_CANCEL_ON_SET != 0;
+    timer.settime_flags = flags & (TFD_SETTIME_FLAGS | TFD_TIMER_CANCEL_ON_SET);
     if kernel.timers.all[&id].expired && kernel.timers.all[&id].interval > 0 {
         let timer = &kernel.timers.all[&id];
         let (expires, clock_now) = (timer.expires.unwrap_or(0), kernel.entry_now);
@@ -1165,10 +1266,27 @@ pub(super) fn timerfd_gettime(
     Ok(0)
 }
 
+/// `timerfd_show`: a descriptor's clock, expirations not yet read, flags, time left and interval,
+/// as they stand (no catching up on missed expirations, unlike `gettime`).
+pub(super) fn fdinfo(kernel: &Kernel, id: u64) -> alloc::string::String {
+    let timer = &kernel.timers.all[&id];
+    let (left, interval) = descriptor_remaining(kernel, id);
+    alloc::format!(
+        "clockid: {}\nticks: {}\nsettime flags: 0{:o}\nit_value: ({}, {})\nit_interval: ({}, {})\n",
+        timer.clock_id,
+        timer.ticks,
+        timer.settime_flags,
+        left / 1_000_000_000,
+        left % 1_000_000_000,
+        interval / 1_000_000_000,
+        interval % 1_000_000_000,
+    )
+}
+
 /// The descriptor's timer, if the file is one.
 pub(super) fn of(file: &OpenFile) -> Option<u64> {
-    match file.anon {
-        Some(Anon::Timer(id)) => Some(id),
+    match &file.anon {
+        Some(Anon::Timer(id)) => Some(*id),
         _ => None,
     }
 }
@@ -1187,7 +1305,7 @@ pub(super) fn read(
         return Err(Errno::EINVAL);
     }
     if kernel.timers.all[&id].ticks == 0 {
-        if file.borrow().flags & O_NONBLOCK != 0 {
+        if super::io::nonblocking(kernel, tid, file) {
             return Err(Errno::EAGAIN);
         }
         if kernel.signal_pending(tid) {

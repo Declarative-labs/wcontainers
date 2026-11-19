@@ -48,7 +48,7 @@ fn compare(label: &str, wanted: impl Fn(&str) -> bool, seeds: std::ops::Range<u6
         .join("libc-test")
         .join(label);
     let tests = libctest::build(&out, |name| wanted(name) && chosen(name));
-    let theirs = libctest::each(&tests, |test| {
+    let theirs = libctest::each(libctest::jobs(), &tests, |test| {
         let arguments = test.arguments();
         let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
         reference::run(&test.runner, &arguments)
@@ -57,7 +57,7 @@ fn compare(label: &str, wanted: impl Fn(&str) -> bool, seeds: std::ops::Range<u6
         .iter()
         .flat_map(|test| seeds.clone().map(move |seed| (test, seed)))
         .collect();
-    let ours = libctest::each(&runs, |(test, seed)| {
+    let ours = libctest::each(libctest::jobs(), &runs, |(test, seed)| {
         let directory = test.runner.parent().expect("a directory");
         let arguments = test.arguments();
         let mut all = vec!["/wc/runtest"];

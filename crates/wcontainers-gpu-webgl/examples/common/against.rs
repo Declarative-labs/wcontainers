@@ -25,6 +25,9 @@ pub enum Scene {
     Shapes,
     /// Gathers of a cube whose footprints cross each edge of each face.
     CubeGathers,
+    /// Gathers through samplers whose minimum level of detail is 0 and 1, alone and beside a sample
+    /// through the same pair.
+    LevelZeroGathers,
     /// `generate_mips` of a texture of `format` holding `values`, from `bytes()`.
     Mips {
         format: Format,
@@ -93,7 +96,7 @@ fn r32float_filtered_in_the_program_without_filtering(
 }
 
 /// Every comparison, each a test natively and a page in Chrome.
-pub const COMPARISONS: [Comparison; 8] = [
+pub const COMPARISONS: [Comparison; 9] = [
     Comparison {
         name: "both_window_origins_equal_webgpu",
         reference: Reference::Full,
@@ -133,6 +136,15 @@ pub const COMPARISONS: [Comparison; 8] = [
         reference: Reference::Full,
         routes: &[&[]],
         scene: Scene::CubeGathers,
+        expect: nothing,
+    },
+    // Gathers read level 0 whatever the sampler's minimum level of detail, as WebGPU's do, while a
+    // sample through the same pair keeps the minimum.
+    Comparison {
+        name: "gathers_through_a_sampler_with_a_minimum_level_equal_webgpu",
+        reference: Reference::Full,
+        routes: &[&[]],
+        scene: Scene::LevelZeroGathers,
         expect: nothing,
     },
     // `r32float` filtered in the program where OES_texture_float_linear is switched off, against
@@ -204,6 +216,7 @@ pub fn draw<B: Backend>(b: &mut B, scene: Scene) -> Result<Parts, String> {
         Scene::Fraction => fraction(b),
         Scene::Shapes => shapes(b),
         Scene::CubeGathers => cube_gathers(b),
+        Scene::LevelZeroGathers => level_zero_gathers(b),
         Scene::Mips {
             format,
             values,
@@ -661,6 +674,122 @@ fn cube_gathers<B: Backend>(b: &mut B) -> Parts {
         "gathers".to_string(),
         kit::read(b, &t, 0, 0, size, 4, false),
     )]
+}
+
+/// Gathers of red over an 8 by 8 target, alone and beside a sample at level 0 through the same
+/// texture and sampler, in alpha.
+const LEVEL_ZERO_GATHERS: &str = "
+@group(0) @binding(16) var s: sampler;
+@group(0) @binding(32) var t: texture_2d<f32>;
+@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(f32((v & 1u) << 2u) - 1.0, f32((v & 2u) << 1u) - 1.0, 0.0, 1.0);
+}
+@fragment fn gathered(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    return textureGather(0, t, s, (p.xy + 0.25) / 8.0);
+}
+@fragment fn gathered_and_sampled(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    let uv = (p.xy + 0.25) / 8.0;
+    return vec4<f32>(textureGather(0, t, s, uv).xyz, textureSampleLevel(t, s, uv, 0.0).x);
+}
+";
+
+/// Each program of [`LEVEL_ZERO_GATHERS`] through samplers whose minimum level of detail is 0 and
+/// 1, from an 8 by 8 texture of four levels whose red tells every texel of every level apart.
+fn level_zero_gathers<B: Backend>(b: &mut B) -> Parts {
+    let k = Kit::new(b);
+    let f = Format::Rgba8Unorm;
+    let levels = 4;
+    let side = 8;
+    let usage = TextureUsage::SAMPLE | TextureUsage::COPY_DST;
+    let texture = kit::texture(
+        b,
+        TextureDimension::D2,
+        f,
+        [side, side, 1],
+        levels,
+        usage,
+        false,
+    );
+    for level in 0..levels {
+        let width = side >> level;
+        let bytes: Vec<u8> = (0..width * width)
+            .flat_map(|i| [(64 * level + i) as u8, 0, 0, 255])
+            .collect();
+        b.write_texture(
+            &TextureRegion {
+                texture: &texture,
+                mip: level,
+                layer: 0,
+                origin: Origin::default(),
+                stencil: false,
+            },
+            Extent {
+                width,
+                height: width,
+                depth_or_layers: 1,
+            },
+            &bytes,
+            width * 4,
+            width,
+            WriteMode::Ordered,
+        );
+    }
+    let view = kit::view(b, &texture, f, ViewDimension::D2, 0, levels, 0, 1);
+    let size = [side, side, 1];
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let target = kit::texture(b, TextureDimension::D2, f, size, 1, usage, false);
+    let v = kit::target(b, &target, f, 0, 0);
+    let vp = [kit::viewport(0.0, 0.0, side as f32, side as f32)];
+    let mut parts = Vec::new();
+    for entry in ["gathered", "gathered_and_sampled"] {
+        let program = kit::program(b, LEVEL_ZERO_GATHERS, "vs", entry);
+        for minimum in [0f32, 1.0] {
+            let sampler = b
+                .create_sampler(&SamplerDesc {
+                    min: Filter::Nearest,
+                    mag: Filter::Nearest,
+                    mip: Filter::Nearest,
+                    address: [AddressMode::Clamp; 3],
+                    lod_range: [minimum.to_bits(), 32f32.to_bits()],
+                    compare: None,
+                    anisotropy: 1,
+                    border: BorderColor::TransparentBlack,
+                })
+                .expect("create_sampler");
+            let set = b
+                .create_binding_set(&[
+                    BindingEntry {
+                        binding: 16,
+                        stages: StageSet::FRAGMENT,
+                        resource: BindingResource::Sampler(&sampler),
+                    },
+                    BindingEntry {
+                        binding: 32,
+                        stages: StageSet::FRAGMENT,
+                        resource: BindingResource::Texture(&view),
+                    },
+                ])
+                .expect("create_binding_set");
+            b.begin_pass(&kit::pass(&v, [0; 4], None));
+            b.draw(&kit::call(
+                &k,
+                &program,
+                Some(&set),
+                &vp,
+                Topology::TriangleList,
+                3,
+            ));
+            b.end_pass();
+            parts.push((
+                format!("{entry}, minimum level {minimum}"),
+                kit::read(b, &target, 0, 0, size, 4, false),
+            ));
+            b.destroy(Object::BindingSet(set));
+            b.destroy(Object::Sampler(sampler));
+        }
+        b.destroy(Object::Program(program));
+    }
+    parts
 }
 
 /// `generate_mips` of an 8 by 8 texture of `format` holding `values`, written with `bytes`; every

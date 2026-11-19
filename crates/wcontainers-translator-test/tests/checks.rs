@@ -200,7 +200,7 @@ fn frame_partly_below_the_stack() {
     }
 }
 
-/// The checks that fail on a function's first instruction, at full in Chrome.
+/// The checks that fail on a function's first instruction, at full in Chrome, for speed and for size.
 #[test]
 fn failing_at_an_entry_in_chrome() {
     for blob in [
@@ -210,10 +210,13 @@ fn failing_at_an_entry_in_chrome() {
         frame_below(true),
     ] {
         let theirs = native(&blob);
-        let ours = browser::translated_with(&blob, LookAhead::Full, Omit::default());
-        eprintln!("{}: {:?}", blob.name, ours.counters);
-        assert_eq!(ours.ran, theirs, "{} in Chrome", blob.name);
-        assert!(ours.count(Reason::LeftToAddress.name()) > 0);
+        for optimise in [Optimise::Speed, Optimise::Size] {
+            let how = (LookAhead::Full, optimise);
+            let ours = browser::translated_with(&blob, how, Omit::default());
+            eprintln!("{} for {optimise:?}: {:?}", blob.name, ours.counters);
+            assert_eq!(ours.ran, theirs, "{} for {optimise:?} in Chrome", blob.name);
+            assert!(ours.count(Reason::LeftToAddress.name()) > 0);
+        }
     }
 }
 

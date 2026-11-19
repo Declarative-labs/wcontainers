@@ -1,10 +1,58 @@
 # Direct3D 11 front status
 
 Branch: phase-2-graphics-direct3d-11. Plan: docs/phase-2-graphics.md, milestone G4 (section 12).
-Runs so far: six on G4a, the first slice; then runs 1 to 23 of G4 as a whole (2026-11-17 and
-18; runs 13 to 23 are the orchestrator's second series on G4).
+Runs so far: six on G4a, the first slice; then runs 1 to 24 of G4 as a whole (2026-11-17 and
+18; runs 13 to 24 are the orchestrator's second series on G4).
 
 ## Where things stand
+
+G4 run 24 (2026-11-18, from about 18:15 Pacific). Run 23 had committed its code (728773d0) but
+not its status or a push; both are done first. Merged origin/phase-2-graphics-webgpu, -webgl and
+-direct3d-12 cleanly (-graphics, -shaders and -rig had nothing new). The WebGPU back end now asks
+wgpu for `PRIMITIVE_INDEX` and declares it; the interface gained `Features::FINE_DERIVATIVES`.
+The literal check is still not adopted: docs/literals.md (origin/phase-1-literals) says a track
+adopts it only through main once main has it, and origin/main holds no wcontainers-literals yet.
+- Geometry shaders and stream output after a domain shader (Wine's test_quad_tessellation): a
+  geometry shader object bound with hull and domain shaders now goes through the staged path
+  with the stage helper made by `Stages::tessellated_with` and run by `run_after_domain`; the
+  domain stage's set is made visible to compute for it (`domain_compute`) and again for the
+  tessellated draw. With a geometry stage its output is drawn as any geometry stage's (layered
+  runs included); with stream output alone the tessellated points are still drawn when stream 0
+  is. The stream output counters and statistics are the geometry path's. A geometry shader object
+  made from a domain shader's bytecode with a declaration is accepted (it was `E_INVALIDARG`).
+  Patches of more control points than the hull shader reads are taken (the stage helper accepts
+  them). The front test of hull and domain shaders now also streams the domain stage's output.
+- Clip distances from a domain shader where the back end has none: the domain program is
+  converted with the `CLIP_DISTANCE` variant at the linked location, as the vertex program is,
+  and the pixel program applies them; before a geometry shader they are refused by name.
+- The stage helper's vertex conversion, the hull and domain conversions and the pixel shader's
+  interpolation are each one function now (`pulled_vertex`, `tessellation_programs`,
+  `interpolation`), used by the plain, geometry and tessellation paths.
+- `B8G8R8X8_UNORM` vertices stay refused: the specification reads an X component as missing (A
+  is 1.0), which `unorm8x4-bgra` does not do (Asked of the interface track).
+- Stencil views reading 0 (test_depth_stencil_sampling, the rig's views scene) were this front's
+  fault, not the back end's: the binding check took a stencil view's storage format (depth with
+  stencil) for "the other kind" than the unsigned integers the program reads, so the slot was
+  bound to the empty slot's 1 by 1 stand-in (found by the new own_cases `stencil` case: width 1,
+  stencil 0, where real Direct3D reads 4 and 100). A stencil view now reads as unsigned
+  (`View::read_kind`). The case is compared with real Direct3D by the library test
+  `stencil_views_read_the_stencil_as_direct3d_does`; test_depth_stencil_sampling passes in both
+  files and the views scene matches.
+- The com test of a shader refused at creation used `geometry.ps_id`, which is served now that
+  the back end has the primitive index; it uses a vertex shader writing `SV_CullDistance`
+  (compiled by the system's d3dcompiler), which the shaders crate still refuses.
+- The front's DXGI numbers in format.rs are the infrastructure crate's names, and its vertex
+  format table is the infrastructure crate's (Literals).
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (17.9 GB) and the
+  checkout's own target (1.1 GB, from `cargo check`) were deleted.
+- Results (desktop, RTX 3080, through the queue, not alone; Measurements): at dd123eec, Wine's
+  d3d11 file 140 of 165 (138 at run 23), d3d10core 103 of 111 (102), the WebGL 2 build's scenes
+  88 match, 27 fail, 30 absent (67, 52, 27), real programs as at run 23. At 9f52cb91 (the last
+  code commit, the rename): lint of both builds clean; front 47, cache 1 and unit 5 passing;
+  library com 15 and programs 30 passing, 1 ignored (the known failure); every Direct3D 11 scene
+  through the library 135 pass, 0 fail, 4 absent (127, 9, 4 at run 23: the geometry scene by
+  the back end's primitive index, views by the stencil fix); Wine's d3d11 file 140 of 165, the
+  same 25 failing as at dd123eec (logs/g4s12f-*).
 
 G4 run 23 (2026-11-18, about 16:50 to 18:30 Pacific). Merged origin/phase-2-graphics,
 -shaders and -webgl cleanly (-webgpu, -direct3d-12 and -rig had nothing new). The shaders
@@ -476,6 +524,10 @@ and depth buffers larger than their targets.
 ## Wine's Direct3D 11 tests through ours
 
 Files passing (the bar: real Direct3D's verdict for every test, except the gap list):
+- d3d11: not passing. G4 run 24 (2026-11-18, RTX 3080 through the queue's hazard group, not
+  alone, rigfix/wine.sh, at dd123eec's tree): 140 pass of the 165 run (25 fail;
+  logs/g4s12e-wine.log, 168 s of tests). New: test_quad_tessellation (stages after a domain
+  shader), test_depth_stencil_sampling (stencil views bound); none lost.
 - d3d11: not passing. G4 run 23 (2026-11-18, RTX 3080 through the queue's hazard group, not
   alone, rigfix/wine.sh, at 728773d0's tree): 138 pass of the 165 run (27 fail;
   logs/g4s11f-wine.log). New: test_cb_relative_addressing (constant buffers read as storage),
@@ -505,6 +557,13 @@ Files passing (the bar: real Direct3D's verdict for every test, except the gap l
   since run 17: test_nv12.
 - Earlier runs of the file (G4 runs 1 to 17: 11, 56, 73, 68, 72, 74, 78, 79, 82, 88, 90, 104,
   113, 114, 118 and 127 passing) and their gap lists are in this file's git history.
+- d3d10core: not passing. G4 run 24 (RTX 3080 through the queue's hazard group, not alone, at
+  dd123eec's tree): 103 pass of 111 (8 fail; logs/g4s12e-wine10.log, 97 s of tests). New:
+  test_depth_stencil_sampling; none lost. The 8: three absent (logic ops and WARP:
+  test_format_support, test_swapchain_formats, test_resource_access), three the shaders track's
+  (test_layered_rendering's layers past the view, test_clip_distance's geometry shader distances,
+  test_combined_clip_and_cull_distances' cull distances), two the infrastructure crate's
+  (test_swapchain_flip, test_desktop_window).
 - d3d10core: not passing. G4 run 23 (RTX 3080 through the queue's hazard group, not alone, at
   728773d0's tree): 102 pass of 111 (9 fail; logs/g4s11f-wine10.log). New: test_layered_rtv_mismatch,
   test_cb_relative_addressing, test_multiple_viewports; none lost. The 9: three absent (logic ops
@@ -550,13 +609,13 @@ Files passing (the bar: real Direct3D's verdict for every test, except the gap l
 - dxgi: the rig has no
   baseline of real Direct3D's verdicts for it.
 
-The gap list, G4 run 23 (the 27 failing tests of the full file at 728773d0: run 22's 29 but
-test_cb_relative_addressing and test_multiple_viewports, which pass; test_atomic_instructions is
+The gap list, G4 run 24 (the 25 failing tests of the full file at dd123eec: run 23's 27 but
+test_quad_tessellation and test_depth_stencil_sampling, which pass; test_atomic_instructions is
 quarantined and not run, and is kept in part B; the first named refusal, skip or failed check of
-each, logs/g4s11f-wine.log and the per-test logs, read against Wine's d3d11.c in scratch
+each, logs/g4s12e-wine.log and the per-test logs, read against Wine's d3d11.c in scratch
 winesrc/). A test is in part A only where the first thing it fails on is a feature absent on this
 stack; everything else is work, in part B, with whose it is. Nothing is excluded for
-convenience: each of the 27 failing tests, and the quarantined one, is in exactly one place.
+convenience: each of the 25 failing tests, and the quarantined one, is in exactly one place.
 A. Absent on this stack (gaps), 18 tests (as at run 22):
 - Logic operations (WebGPU has none, so 11_1 is not offered; Wine's helper then asks for WARP,
   which this library does not provide): test_create_shader, test_state_refcounting,
@@ -571,22 +630,21 @@ A. Absent on this stack (gaps), 18 tests (as at run 22):
   test_texture3d_interfaces (their keyed-mutex entries).
 - The 10_0/10_1 rasteriser's corner rule for a negative viewport origin (WebGPU rasterises as
   11_0): test_negative_viewports at levels 10_x.
-B. Work, named (not gaps), 9 tests and the quarantined one:
-- This front's: stream output and geometry shaders after a domain shader (test_quad_tessellation;
-  refused by name at the draw, which removes the device, and the test then crashes; built in
-  run 23 after this run of the file, see Where things stand).
+B. Work, named (not gaps), 7 tests and the quarantined one:
+- This front's: none left. test_quad_tessellation (stream output and geometry shaders after a
+  domain shader) passes since run 24 (54 checks, as real Direct3D; logs/g4s12b-some11.log).
 - Shaders track: a primitive naming a layer past the view's (test_layered_rendering: drawn into
   the view's first layer with the value it named, nine checks; Asked); `LinkedClipDistanceCount`
-  and `ClipDistance` from a geometry shader (test_clip_distance; its single clip distance from a
-  vertex shader now draws as real Direct3D; also this front's refusal of clip distances from a
-  domain shader); test_atomic_instructions (quarantined after it reset the display driver; the
+  and `ClipDistance` from a geometry shader (test_clip_distance: its vertex and, since run 24,
+  domain shader clip distances draw as real Direct3D; the first failure is now the geometry
+  shader's creation at line 30396, and the test then crashes on the shader it did not get);
+  test_atomic_instructions (quarantined after it reset the display driver; the
   front still refuses `AtomicExchangeLoop` programs; Asked), `GeometryStreams`
   (test_so_statistics_query), `CullDistance` (test_combined_clip_and_cull_distances).
-- WebGPU back end: stencil views read 0 in the first component on wgpu's Direct3D 12 path
-  (test_depth_stencil_sampling).
-- Interface and WebGPU back end: a vertex format reading `B8G8R8X8_UNORM` (its fourth byte read
-  as one; WebGPU's `unorm8x4-bgra` reads it as alpha): test_vertex_formats runs 98 checks where
-  real Direct3D runs 100, since `CheckFormatSupport` claims no vertex use of it.
+- Interface track: a vertex format reading `B8G8R8X8_UNORM` with its fourth component as 1.0
+  (the specification's 19.1.3.3; WebGPU's `unorm8x4-bgra` reads the byte as alpha):
+  test_vertex_formats runs 98 checks where real Direct3D runs 100, since `CheckFormatSupport`
+  claims no vertex use of it (Asked, run 24).
 - Infrastructure crate: every buffer of a sequential swap chain (test_swapchain_flip, line
   16252); a swap chain on the desktop window (test_desktop_window: wgpu's surface refuses it at
   `Surface::configure`, the device is lost at line 32666).
@@ -601,20 +659,17 @@ B. Work, named (not gaps), 9 tests and the quarantined one:
 
 ## What comes next
 
-After G4 run 23. Done in run 23: layered geometry (layers and viewports), outputs of another
-kind, constant buffers read past their declaration, a vertex shader's clip distances in the
-program. At the head of the list now:
-- Stream output and geometry shaders after a domain shader (`Stages::tessellated_with` and
-  `run_after_domain`, with `DomainSets`: the domain stage's set must be made visible to compute,
-  and the stream output counters as in geometry.rs), and patches of more control points than
-  the hull shader reads: Wine's test_quad_tessellation; the front refuses both by name.
-- Clip distances from a domain shader where the back end has none (the domain program would be
-  converted with `CLIP_DISTANCE` as the vertex shader is); the rest of test_clip_distance waits
-  on the shaders crate (Asked).
-- Out-of-range layers in layered draws (Asked of the shaders track; Departures).
-- The primitive index in pixel shaders: refused by name where the back end lacks
-  `PRIMITIVE_INDEX`, which the WebGPU back end does not declare yet (it does not ask wgpu for
-  the feature; Asked) and WebGL 2 lacks; then `PrimitiveIdAsGeometry` (the stage helper's route).
+After G4 run 24. Done in run 24: stream output and geometry shaders after a domain shader,
+a domain shader's clip distances in the program, stencil views bound. No failing Wine test of
+the d3d11 file is this front's own work any more (gap list part B names whose each is). At the
+head of the list now:
+- Merge the other tracks as they land and rerun both Wine files: out-of-range layers in
+  layered draws, `LinkedClipDistanceCount`, `ClipDistance` from a geometry shader,
+  `CullDistance`, `GeometryStreams`, `AtomicExchangeLoop` (shaders track); the BGRX vertex
+  format (interface track); sequential swap chains and the desktop window (infrastructure).
+- The primitive index in pixel shaders where the back end lacks `PRIMITIVE_INDEX` (WebGL 2):
+  refused by name; `PrimitiveIdAsGeometry` (the stage helper's route) is not built.
+- Adopt the literal check once main has it (docs/literals.md), then work the fix list down.
 - Direct3D 10 programs: d3d10.dll and d3d10_1.dll forwarders need the effects framework and
   shader reflection they also export (not ours), so only d3d10core.dll is forwarded.
 - bgfx-26-occlusion: the counted occlusion query one sample short (49 for 50); then whether the
@@ -811,6 +866,11 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
   profile's output directory (target\debug).
 
 ## Tests
+
+At G4 run 24: front.rs 47 (run 23's layered test added one; the hull and domain test now also
+streams the domain stage's output), tests/cache.rs 1, unit 5, com.rs 15 (the shader refused at
+creation is now a vertex shader writing `SV_CullDistance`), programs.rs 31 (new: `own_cases
+stencil` against real Direct3D, passing; resinfo_empty ignored as a known failure).
 
 At G4 run 22: front.rs 46 (the primitive index refusal's expected name changed), tests/cache.rs
 1, unit 5, com.rs 15, programs.rs 30 (`own_cases early` split into `early` and
@@ -1209,6 +1269,18 @@ None in G4 runs 3 to 12.
 
 ## Measurements
 
+- 2026-11-18, G4 run 24, the desktop (i9-9900K, RTX 3080) through the queue, not alone (other
+  tracks' hazard jobs ran one at a time before ours; the Mac's load average was 62 to 85 at
+  20:15, from the other tracks), at dd123eec: Wine's d3d11 file 140 of 165 in 168 s of tests
+  (20:03 to 20:06 desktop time); d3d10core 103 of 111 in 97 s; every Direct3D 11 scene through
+  the whole library 135 pass, 0 fail, 4 absent; the WebGL 2 build's scenes 88 match, 27 fail,
+  30 absent (67, 52, 27 at run 23; logs/g4s12e-webgl.log); real programs through the whole
+  library, 120 frames each: 15 match real Direct3D on every compared frame, bgfx-24-nbody runs
+  to its last frame (never compared), and atg-simplecomputepc (154,515 pixels, division
+  precision, Asked), atg-simplemsaa_pc (8 pixels, 4 past the tiles' allowance) and
+  bgfx-26-occlusion (about 6,500 pixels: the overlay panel without NVAPI and the 49 for 50
+  count) differ as at run 23 (logs/g4s12e-programs.log, -bgfx.log). Module size and
+  building-ahead hits not measured again (run 16 above).
 - 2026-11-18, G4 run 21, the desktop (i9-9900K, RTX 3080) through the queue's hazard group, not
   alone (other tracks' hazard jobs one at a time beside ours; our jobs waited up to 40 minutes
   for theirs): Wine's d3d11 file 133 of 165 run, 151.6 s at d2892718 and 156.3 s at 944ff499
@@ -1465,6 +1537,14 @@ All on the desktop (Windows 10, i9-9900K, RTX 3080) through the queue, not alone
 
 ## Asked of other tracks
 
+- Interface track (G4 run 24): a vertex format for `B8G8R8X8_UNORM`, reading blue, green and red
+  with the fourth component as 1.0. The Direct3D 11.3 specification (19.1.3.3, "Defaults for
+  Missing Components") reads an X component as missing, so A is 1.0 (it gives
+  `R24_UNORM_X8_TYPELESS` as the example), which is also what the RTX 3080 reads. The WebGPU
+  track's answer (map it to `Bgra8Unorm`, X read as written, "undefined") would read the byte
+  written; so the front keeps `B8G8R8X8_UNORM` refused as a vertex format and `CheckFormatSupport`
+  claims no vertex use of it (Wine's test_vertex_formats runs 98 of real Direct3D's 100 checks).
+
 - Shaders track (G4 run 23): the pass-through after a geometry shader choosing a layer, to keep
   a primitive naming a layer at or past the view's layer count in the run of layer 0 (the count
   as a third value of `PASSTHROUGH_HELPERS`) and to pass the layer it named to the pixel program
@@ -1494,7 +1574,11 @@ All on the desktop (Windows 10, i9-9900K, RTX 3080) through the queue, not alone
   quarantined); this front refuses such programs until the loop is shown to end.
 - WebGPU track (G4 run 19): a stencil view read in WGSL gives 0 in its first component on wgpu's
   Direct3D 12 path (Wine's test_depth_stencil_sampling through this front: every stencil value
-  reads 0); WebGPU defines the stencil there.
+  reads 0); WebGPU defines the stencil there. Withdrawn in run 24: the WebGPU track found the
+  back end right, and the front's own_cases `stencil` case showed the view was never bound (the
+  program read the empty slot's 1 by 1 stand-in: width 1, stencil 0), because the front's
+  binding check took the stencil view's depth format for "the other kind" than the unsigned
+  integers the program reads. Fixed in the front (`View::read_kind`).
 
 - Shaders track (G4 run 18): `VariantFlags::LINE_COVERAGE` (`AntialiasedLinesAsQuads`, plan
   4.12) for alpha-antialiased lines, a listed case; the front refuses such line draws until the
@@ -1614,6 +1698,21 @@ final/lists/graphics-direct3d-11/: wcontainers-directx 311 code findings, 13 red
 named constants; wcontainers-direct3d-11 in final/lists/graphics/). The automatic check is not
 on a branch yet (origin/phase-1-literals holds no wcontainers-magic-literals crate at run 22),
 so no baseline is made.
+- Run 24, format.rs: the front's own copies of seven DXGI numbers (`UNKNOWN`, `R16_UINT`,
+  `R32_UINT`, `NV12`, `YUY2`, `R8G8_TYPELESS`, `R8_TYPELESS`) are now re-exports of the
+  infrastructure crate's `dxgi` constants, every DXGI number in its tables is the `dxgi` name
+  (storage, view, sRGB twin, typeless, target, sRGB, depth, texture, group, copy and index
+  tables), and `vertex_format` uses the infrastructure crate's `dxgi_vertex_format`, the same
+  table it had copied. Left: 189 to 191 in `unserved` (the infrastructure table names no
+  sampler feedback or A4B4G4R4 format), and DXGI numbers in device.rs and context.rs (view
+  checks and copies).
+- Run 24: still no baseline. docs/literals.md on origin/phase-1-literals (tip f561838a) says a
+  track adopts the check only by merging main once main has it, never the literals branch
+  itself; origin/main (77e50ddc) holds no wcontainers-literals yet. Written this run: the stencil
+  view formats in `View::reads_stencil` from the infrastructure crate's `dxgi` table
+  (`X24_TYPELESS_G8_UINT`, `X32_TYPELESS_G8X24_UINT`), which now names every DXGI format; the
+  front's other DXGI numbers (format.rs's tables, the view checks in device.rs) can take the same
+  names next. No new bare literal was written.
 - Run 23: origin/phase-1-literals now holds the check, but was not merged (Departures), so
   there is still no baseline. Written this run: the library's viewport limit from the windows
   crate (`D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE`); in the front, Direct3D's

@@ -1,5 +1,6 @@
 // What poll and select report for each kind of file one process can open: devices, tmpfs files and
-// directories, /proc files and directories (those built), memory files and O_PATH descriptors.
+// directories, /proc files and directories (those built), memory files, O_PATH descriptors and
+// fresh sockets.
 
 #define _GNU_SOURCE
 #include <fcntl.h>
@@ -7,6 +8,9 @@
 #include <stdio.h>
 #include <sys/mman.h>
 #include <sys/select.h>
+#include <sys/socket.h>
+#include <linux/netlink.h>
+#include <netinet/in.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -57,5 +61,8 @@ int main(void) {
     show("/dev/shm/p/f O_PATH", open("/dev/shm/p/f", O_PATH));
     show("memfd", (int)syscall(SYS_memfd_create, "m", 0));
     show("secret memory", (int)syscall(447, 0));
+    show("netlink", socket(AF_NETLINK, SOCK_RAW, 0));
+    show("udp", socket(AF_INET, SOCK_DGRAM, 0));
+    show("tcp", socket(AF_INET6, SOCK_STREAM, 0));
     return 0;
 }

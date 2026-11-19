@@ -10,11 +10,24 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use linux_raw_sys::general as linux;
 use linux_raw_sys::ioctl;
+use linux_raw_sys::net;
 use linux_raw_sys::ptrace as seccomp;
 use wcontainers_abi::{Event, Exit, Next, Syscall};
 use wcontainers_kernel::{Kernel, Start};
 
-use crate::buffer::BufferCpu;
+/// The CPU side the sequences run over: the buffer CPU, or with the `runtime` feature the WebAssembly
+/// back end's memories, permission tables, blocks of shared pages and fork copies.
+#[cfg(not(feature = "runtime"))]
+type Layer1Cpu = crate::buffer::BufferCpu;
+#[cfg(feature = "runtime")]
+type Layer1Cpu = crate::driver::Back;
+
+fn layer1_cpu() -> Layer1Cpu {
+    #[cfg(not(feature = "runtime"))]
+    return crate::buffer::BufferCpu::new();
+    #[cfg(feature = "runtime")]
+    return crate::driver::back_end(0, crate::standin::SPACE_32_BIT);
+}
 use crate::driver::TestHost;
 use crate::image::{File, Kind};
 use crate::{guest, reference};
@@ -30,6 +43,37 @@ pub const PLAY_PAGES: u64 = 16;
 const PATHS: u64 = 0;
 const IOVECS: u64 = 0x3000;
 const POLLS: u64 = 0x3600;
+/// Socket addresses: a local abstract name, IPv4 and IPv6 loopback at a port nothing listens on
+/// (no sequence binds it, so nothing a sequence leaves behind in the reference's network can
+/// change a later one), netlink's kernel, and the IPv4 any address with port 0.
+const SOCKET_ADDRESSES: u64 = 0x3680;
+const SOCKET_ADDRESS_AT: [(u64, u64); 5] = [(0, 6), (0x10, 16), (0x20, 28), (0x40, 12), (0x50, 16)];
+/// Where recvmsg puts control messages: the receive headers all point here, and both runners zero
+/// it after each recvmsg (a sender's process number and times land there).
+const RECV_CONTROL: u64 = 0x1500;
+const RECV_CONTROL_SIZE: u64 = 128;
+/// Control messages sendmsg's headers carry, one after another: descriptors (one, two, one not
+/// open), credentials naming process 0, a header alone, an IP_TTL for a datagram, and IPv4 packet
+/// information naming a source.
+const SEND_CONTROLS: u64 = 0x1580;
+/// Where the starting socketpair puts its two descriptors.
+const SOCKET_PAIR: u64 = 0x1ac0;
+/// `struct msghdr`s, 56 bytes each: the first `SEND_HEADERS` for sendmsg, the rest for recvmsg.
+const MSGHDRS: u64 = 0x1640;
+const MSGHDR_COUNT: u64 = 8;
+const SEND_HEADERS: u64 = 5;
+/// `struct mmsghdr`s for sendmmsg and recvmmsg, 64 bytes apart: two copies of the first send
+/// headers, then one of the first receive header.
+const MMSGHDRS: u64 = 0x3740;
+const MMSG_SENDS: u64 = 2;
+/// `struct epoll_event`s, 16 bytes apart on ARM64.
+const EPOLL_EVENTS: u64 = 0x3700;
+const EPOLL_EVENT_MASKS: [u32; 4] = [
+    linux::EPOLLIN | linux::EPOLLOUT,
+    linux::EPOLLIN | linux::EPOLLET,
+    linux::EPOLLOUT | linux::EPOLLONESHOT,
+    linux::EPOLLIN | linux::EPOLLEXCLUSIVE,
+];
 const VALUES: u64 = 0x3800;
 const UNREACHED_LIMITS: u64 = 0x3a00;
 const CPU_MASKS: u64 = 0x3a40;
@@ -317,7 +361,16 @@ pub struct Call {
 pub struct Sequence {
     pub arena: Vec<u8>,
     pub calls: Vec<Call>,
+    /// Whether its work directory is on the file backend, mounted at [`BACKEND_ROOT`].
+    pub backend: bool,
+    /// Whether that backend opens files for the page cache rather than for direct reads and
+    /// writes.
+    pub cached: bool,
 }
+
+/// Where the file backend is mounted for sequences on it: a name as long as `/dev/shm`, which it
+/// takes the place of in the path pool, so every path keeps its offset.
+pub const BACKEND_ROOT: &str = "/backend";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CallResult {
@@ -366,6 +419,151 @@ pub fn named_pipe_calls(sequence: &Sequence, theirs: &SequenceResult) -> u64 {
 /// The size of a play area record: a byte and the bytes of each page.
 const PLAY_RECORD: usize = PLAY_PAGES as usize * 4097;
 
+/// The control messages sendmsg's headers choose from: where each starts in `SEND_CONTROLS` and
+/// the length a header gives it.
+const SEND_CONTROL_AT: [(u64, u64); 7] = [
+    (0, 24),
+    (24, 24),
+    (48, 24),
+    (72, 32),
+    (104, 16),
+    (120, 24),
+    (144, 32),
+];
+
+/// Lays out sendmsg's control messages and the message headers, each chosen from a value: a
+/// destination or none, one to three of the vectors, and a control message, none or one too long
+/// for Linux; the receive headers name no sender (an automatic name is random) and give room for
+/// control messages from none to all of `RECV_CONTROL`.
+fn message_areas(arena: &mut [u8], values: &[u64]) {
+    let mut put = |at: u64, bytes: &[u8]| {
+        let at = at as usize;
+        arena[at..at + bytes.len()].copy_from_slice(bytes);
+    };
+    let header = |length: u64, level: u32, kind: u32| {
+        let mut bytes = length.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&level.to_le_bytes());
+        bytes.extend_from_slice(&kind.to_le_bytes());
+        bytes
+    };
+    let ints = |words: &[i32]| -> Vec<u8> { words.iter().flat_map(|w| w.to_le_bytes()).collect() };
+    let rights = linux_raw_sys::net::SCM_RIGHTS;
+    let solsocket = net::SOL_SOCKET;
+    put(
+        SEND_CONTROLS,
+        &[header(20, solsocket, rights), ints(&[3])].concat(),
+    );
+    put(
+        SEND_CONTROLS + 24,
+        &[header(24, solsocket, rights), ints(&[3, 4])].concat(),
+    );
+    put(
+        SEND_CONTROLS + 48,
+        &[header(20, solsocket, rights), ints(&[100])].concat(),
+    );
+    let credentials = linux_raw_sys::net::SCM_CREDENTIALS;
+    put(
+        SEND_CONTROLS + 72,
+        &[header(28, solsocket, credentials), ints(&[0, 0, 0])].concat(),
+    );
+    put(SEND_CONTROLS + 104, &header(8, solsocket, rights));
+    let ttl = header(20, net::IPPROTO_IP as u32, net::IP_TTL);
+    put(SEND_CONTROLS + 120, &[ttl, ints(&[7])].concat());
+    // IPv4 packet information naming no interface and 127.0.0.5 as the source.
+    let information = header(28, net::IPPROTO_IP as u32, net::IP_PKTINFO);
+    put(
+        SEND_CONTROLS + 144,
+        &[
+            information,
+            ints(&[0, i32::from_le_bytes([127, 0, 0, 5]), 0]),
+        ]
+        .concat(),
+    );
+    for index in 0..MSGHDR_COUNT {
+        let word = values
+            .get(index as usize)
+            .copied()
+            .unwrap_or(0)
+            .rotate_left(53);
+        let vector = ARENA + IOVECS + ((word >> 8) % 16) * 16;
+        let (name, length, count, control, room) = if index < SEND_HEADERS {
+            let (name, length) = match word % 6 {
+                0 | 1 => (0, 0),
+                choice => {
+                    let (at, length) = SOCKET_ADDRESS_AT[[0, 1, 2, 4][choice as usize - 2]];
+                    (ARENA + SOCKET_ADDRESSES + at, length)
+                }
+            };
+            let (control, room) = match (word >> 16) % 10 {
+                0 | 1 => (0, 0),
+                2 => (ARENA + SEND_CONTROLS, 0x8000_0000),
+                choice => {
+                    let (at, room) = SEND_CONTROL_AT[choice as usize - 3];
+                    (ARENA + SEND_CONTROLS + at, room)
+                }
+            };
+            (
+                name,
+                length,
+                pick(&[1u64, 1, 2, 0, 3], word >> 24),
+                control,
+                room,
+            )
+        } else {
+            let room = pick(&[0u64, 16, 20, 24, 48, RECV_CONTROL_SIZE], word >> 16);
+            (
+                0,
+                0,
+                pick(&[1u64, 1, 2, 3], word >> 24),
+                ARENA + RECV_CONTROL,
+                room,
+            )
+        };
+        let at = MSGHDRS + index * 56;
+        put(at, &name.to_le_bytes());
+        put(at + 8, &(length as u32).to_le_bytes());
+        put(at + 16, &vector.to_le_bytes());
+        put(at + 24, &count.to_le_bytes());
+        put(at + 32, &control.to_le_bytes());
+        put(at + 40, &room.to_le_bytes());
+        put(at + 48, &0u32.to_le_bytes());
+    }
+    for (slot, index) in [0, 1, SEND_HEADERS].into_iter().enumerate() {
+        let from = (MSGHDRS + index * 56) as usize;
+        let at = (MMSGHDRS + slot as u64 * 64) as usize;
+        arena.copy_within(from..from + 56, at);
+        arena[at + 56..at + 64].fill(0);
+    }
+}
+
+/// How many sendmsg calls with control messages and how many recvmsg calls the reference ran
+/// well, to show they are reached.
+pub fn message_calls(sequence: &Sequence, theirs: &SequenceResult) -> (u64, u64) {
+    let (mut sends, mut receives) = (0, 0);
+    for (call, each) in sequence.calls.iter().zip(&theirs.calls) {
+        if each.value < 0 {
+            continue;
+        }
+        match call.number {
+            linux::__NR_sendmsg => {
+                let at = (call.arguments[1] - ARENA + 32) as usize;
+                if sequence.arena[at..at + 8] != [0; 8] {
+                    sends += 1;
+                }
+            }
+            linux::__NR_sendmmsg => {
+                let at = (call.arguments[1] - ARENA + 32) as usize;
+                if sequence.arena[at..at + 8] != [0; 8] {
+                    sends += 1;
+                }
+            }
+            linux::__NR_recvmsg | linux::__NR_recvmmsg => receives += 1,
+            _ => {}
+        }
+    }
+    (sends, receives)
+}
+
 fn path_offsets() -> (Vec<u8>, Vec<u64>) {
     let mut bytes = Vec::new();
     let mut offsets = Vec::new();
@@ -388,19 +586,45 @@ fn path_offsets() -> (Vec<u8>, Vec<u64>) {
     bytes.extend_from_slice(FIFO.as_bytes());
     bytes.push(0);
     assert!(
-        PATHS + (bytes.len() as u64) <= UNAME,
-        "the paths reach uname's area"
+        PATHS + (bytes.len() as u64) <= RECV_CONTROL,
+        "the paths reach the message areas"
     );
     (bytes, offsets)
 }
 
-/// A generated call before its arguments are decoded: which kind, and random words to pick them with.
-pub type Raw = (u8, [u64; 6]);
+/// A generated call before its arguments are decoded: which kind (wide enough to reach every entry of
+/// a call list longer than 256), and random words to pick its arguments with.
+pub type Raw = (u16, [u64; 6]);
 
 /// Builds a sequence from generated parts: the arena's random values and the calls. The first two calls
 /// always make and enter the work directory.
 pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
-    let (paths, path_at) = path_offsets();
+    build_on(values, raw, false)
+}
+
+/// As [`build`], for a work directory on the file backend: the calls are those of
+/// [`BACKEND_CALLS`] and the paths under `/dev/shm` are under [`BACKEND_ROOT`].
+pub fn build_on_backend(values: &[u64], raw: &[Raw], cached: bool) -> Sequence {
+    Sequence {
+        cached,
+        ..build_on(values, raw, true)
+    }
+}
+
+fn build_on(values: &[u64], raw: &[Raw], backend: bool) -> Sequence {
+    let (mut paths, path_at) = path_offsets();
+    if backend {
+        let (from, to) = (b"/dev/shm".as_slice(), BACKEND_ROOT.as_bytes());
+        let mut at = 0;
+        while let Some(found) = paths[at..]
+            .windows(from.len())
+            .position(|window| window == from)
+        {
+            paths[at + found..at + found + to.len()].copy_from_slice(to);
+            at += found + to.len();
+        }
+    }
+    let calls_made = if backend { BACKEND_CALLS } else { CALLS };
     let mut arena = vec![0u8; OUTPUT as usize];
     arena[..paths.len()].copy_from_slice(&paths);
     // Sixteen vectors for readv and writev, each pointing into the output area or somewhere bad.
@@ -543,6 +767,23 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
         arena[at + 8..at + 16].copy_from_slice(&start.to_le_bytes());
         arena[at + 16..at + 24].copy_from_slice(&length.to_le_bytes());
         arena[at + 24..at + 28].copy_from_slice(&pid.to_le_bytes());
+    }
+    // Socket addresses and epoll events.
+    let mut put = |at: u64, bytes: &[u8]| {
+        let at = (SOCKET_ADDRESSES + at) as usize;
+        arena[at..at + bytes.len()].copy_from_slice(bytes);
+    };
+    put(0, &[1, 0, 0, b'l', b'1', b'x']);
+    put(0x10, &[2, 0, 0x13, 0xeb, 127, 0, 0, 1]);
+    put(0x20, &[10, 0, 0x13, 0xeb]);
+    put(0x20 + 23, &[1]);
+    put(0x40, &[16, 0]);
+    put(0x50, &[2, 0]);
+    message_areas(&mut arena, values);
+    for (index, mask) in EPOLL_EVENT_MASKS.iter().enumerate() {
+        let at = (EPOLL_EVENTS + index as u64 * 16) as usize;
+        arena[at..at + 4].copy_from_slice(&mask.to_le_bytes());
+        arena[at + 8..at + 16].copy_from_slice(&(index as u64 + 1).to_le_bytes());
     }
     // Values calls read: times, limits, masks, chosen to include the special ones. The last eight hold
     // the four sleeps `nanosleep` chooses from: short, none, and two invalid ones.
@@ -749,6 +990,62 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
         });
         calls.push(open("/dev/pts/0"));
     }
+    // A quarter start with a pair of local sockets of one kind, and an eighth with a UDP socket at
+    // the loopback port nothing else binds (which its datagrams to that address reach), on the
+    // descriptors calls choose most.
+    let mut next_fd = 3 + if (choice >> 3) % 4 == 0 { 2 } else { 0 };
+    let mut receivers = Vec::new();
+    if !backend && (choice >> 5) % 4 == 0 {
+        let kind = pick(
+            &[net::SOCK_STREAM, net::SOCK_DGRAM, net::SOCK_SEQPACKET],
+            choice >> 7,
+        );
+        calls.push(Call {
+            number: linux::__NR_socketpair,
+            arguments: [
+                u64::from(net::AF_UNIX),
+                u64::from(kind | linux::O_NONBLOCK),
+                0,
+                ARENA + SOCKET_PAIR,
+                0,
+                0,
+            ],
+        });
+        // A message to the other end, which a receive of it ends the sequence with.
+        calls.push(Call {
+            number: linux::__NR_sendmsg,
+            arguments: [
+                next_fd,
+                ARENA + MSGHDRS + ((choice >> 12) % SEND_HEADERS) * 56,
+                u64::from(net::MSG_DONTWAIT | net::MSG_NOSIGNAL),
+                0,
+                0,
+                0,
+            ],
+        });
+        receivers.push(next_fd + 1);
+        next_fd += 2;
+    }
+    if !backend && (choice >> 9) % 8 == 0 {
+        let flags = net::SOCK_DGRAM | linux::O_NONBLOCK;
+        calls.push(Call {
+            number: linux::__NR_socket,
+            arguments: [u64::from(net::AF_INET), u64::from(flags), 0, 0, 0, 0],
+        });
+        let (at, length) = SOCKET_ADDRESS_AT[1];
+        let address = ARENA + SOCKET_ADDRESSES + at;
+        calls.push(Call {
+            number: linux::__NR_bind,
+            arguments: [next_fd, address, length, 0, 0, 0],
+        });
+        // A datagram to itself.
+        let flags = u64::from(net::MSG_DONTWAIT);
+        calls.push(Call {
+            number: linux::__NR_sendto,
+            arguments: [next_fd, ARENA + OUTPUT, 7, flags, address, length],
+        });
+        receivers.push(next_fd);
+    }
     // Half the sequences may install seccomp filters, which needs no_new_privs (Docker's root lacks
     // CAP_SYS_ADMIN).
     if choice % 2 == 1 {
@@ -764,7 +1061,17 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
             ],
         });
     }
-    calls.extend(raw.iter().map(|raw| decode(raw, &path_at)));
+    calls.extend(raw.iter().map(|raw| decode(raw, &path_at, calls_made)));
+    for (index, fd) in receivers.into_iter().enumerate() {
+        let word = choice >> (15 + index * 5);
+        let header = SEND_HEADERS + word % (MSGHDR_COUNT - SEND_HEADERS);
+        let flags =
+            net::MSG_DONTWAIT | pick(&[0, net::MSG_PEEK, net::MSG_CMSG_CLOEXEC, 0], word >> 2);
+        calls.push(Call {
+            number: linux::__NR_recvmsg,
+            arguments: [fd, ARENA + MSGHDRS + header * 56, u64::from(flags), 0, 0, 0],
+        });
+    }
     let terminal = opens_terminal(&calls);
     if terminal {
         keep_terminals_settled(&mut arena, &mut calls);
@@ -849,7 +1156,12 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
         let at = (ACTIONS + index as u64 * 4) as usize;
         arena[at..at + 4].copy_from_slice(&action.to_le_bytes());
     }
-    Sequence { arena, calls }
+    Sequence {
+        arena,
+        calls,
+        backend,
+        cached: false,
+    }
 }
 
 /// Whether a call opens a pseudo-terminal's path.
@@ -1510,6 +1822,128 @@ pub const CALLS: &[u32] = &[
     linux::__NR_timerfd_create,
     linux::__NR_timerfd_settime,
     linux::__NR_timerfd_gettime,
+    linux::__NR_socket,
+    linux::__NR_socket,
+    linux::__NR_socketpair,
+    linux::__NR_bind,
+    linux::__NR_listen,
+    linux::__NR_connect,
+    linux::__NR_sendto,
+    linux::__NR_sendto,
+    linux::__NR_recvfrom,
+    linux::__NR_recvfrom,
+    linux::__NR_shutdown,
+    linux::__NR_setsockopt,
+    linux::__NR_setsockopt,
+    linux::__NR_getsockopt,
+    linux::__NR_accept4,
+    linux::__NR_sendmsg,
+    linux::__NR_sendmsg,
+    linux::__NR_recvmsg,
+    linux::__NR_recvmsg,
+    linux::__NR_sendmmsg,
+    linux::__NR_recvmmsg,
+    linux::__NR_eventfd2,
+    linux::__NR_epoll_create1,
+    linux::__NR_epoll_ctl,
+    linux::__NR_epoll_ctl,
+    linux::__NR_epoll_pwait,
+    linux::__NR_epoll_pwait2,
+    linux::__NR_inotify_init1,
+    linux::__NR_inotify_add_watch,
+    linux::__NR_inotify_add_watch,
+    linux::__NR_inotify_rm_watch,
+];
+
+/// The calls layer 1 makes on the backend: those of [`CALLS`] on files, memory and the identity
+/// file calls are checked against, and none that Docker's seccomp profile lets through only with
+/// CAP_SYS_ADMIN, which the reference's container has to mount its FUSE file system.
+pub const BACKEND_CALLS: &[u32] = &[
+    linux::__NR_openat,
+    linux::__NR_close,
+    linux::__NR_read,
+    linux::__NR_write,
+    linux::__NR_pread64,
+    linux::__NR_pwrite64,
+    linux::__NR_readv,
+    linux::__NR_writev,
+    linux::__NR_lseek,
+    linux::__NR_getdents64,
+    linux::__NR_dup,
+    linux::__NR_dup3,
+    linux::__NR_fcntl,
+    linux::__NR_ioctl,
+    linux::__NR_fsync,
+    linux::__NR_mkdirat,
+    linux::__NR_mknodat,
+    linux::__NR_symlinkat,
+    linux::__NR_linkat,
+    linux::__NR_unlinkat,
+    linux::__NR_renameat2,
+    linux::__NR_readlinkat,
+    linux::__NR_newfstatat,
+    linux::__NR_fstat,
+    linux::__NR_statx,
+    linux::__NR_faccessat2,
+    linux::__NR_fchmod,
+    linux::__NR_fchmodat,
+    linux::__NR_fchownat,
+    linux::__NR_utimensat,
+    linux::__NR_truncate,
+    linux::__NR_ftruncate,
+    linux::__NR_fallocate,
+    linux::__NR_getcwd,
+    linux::__NR_chdir,
+    linux::__NR_fchdir,
+    linux::__NR_umask,
+    linux::__NR_fstatfs,
+    linux::__NR_sendfile,
+    linux::__NR_mmap,
+    linux::__NR_munmap,
+    linux::__NR_mprotect,
+    linux::__NR_madvise,
+    linux::__NR_msync,
+    linux::__NR_mremap,
+    linux::__NR_setresuid,
+    linux::__NR_setresgid,
+    linux::__NR_setfsuid,
+    linux::__NR_setfsgid,
+    linux::__NR_setgroups,
+    linux::__NR_statfs,
+    linux::__NR_faccessat,
+    linux::__NR_fchmodat2,
+    linux::__NR_fchown,
+    linux::__NR_renameat,
+    linux::__NR_preadv,
+    linux::__NR_pwritev,
+    linux::__NR_fdatasync,
+    linux::__NR_syncfs,
+    linux::__NR_close_range,
+    linux::__NR_preadv2,
+    linux::__NR_pwritev2,
+    linux::__NR_copy_file_range,
+    linux::__NR_fadvise64,
+    linux::__NR_readahead,
+    linux::__NR_sync_file_range,
+    linux::__NR_flock,
+    linux::__NR_openat2,
+    linux::__NR_setxattr,
+    linux::__NR_lsetxattr,
+    linux::__NR_fsetxattr,
+    linux::__NR_getxattr,
+    linux::__NR_lgetxattr,
+    linux::__NR_fgetxattr,
+    linux::__NR_listxattr,
+    linux::__NR_llistxattr,
+    linux::__NR_flistxattr,
+    linux::__NR_removexattr,
+    linux::__NR_lremovexattr,
+    linux::__NR_fremovexattr,
+    linux::__NR_mincore,
+    linux::__NR_pipe2,
+    linux::__NR_splice,
+    linux::__NR_tee,
+    linux::__NR_cachestat,
 ];
 
 /// System V IPC's flag to return at once rather than wait (`linux/ipc.h`).
@@ -1518,8 +1952,8 @@ mod linux_extra_ipc {
 }
 
 /// Turns a generated call into real arguments.
-fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
-    let number = CALLS[*kind as usize % CALLS.len()];
+fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
+    let number = calls[*kind as usize % calls.len()];
     let [a, b, c, d, e, f] = *words;
     let (fifo, path_at) = path_at.split_last().expect("paths");
     let fifo = ARENA + fifo;
@@ -3321,6 +3755,310 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
                 _ => [target, name, 0, 0, 0, 0],
             }
         }
+        // Every socket is nonblocking and every send and receive asks not to wait or signal: a
+        // sequence never waits. Kinds and protocols the reference has and this kernel refuses on
+        // purpose (raw, ping, SCTP, other netlink protocols) are not made; nor are addresses read
+        // back from receives, which hold numbers each runner chooses at random.
+        linux::__NR_socket | linux::__NR_socketpair => {
+            let family = pick(
+                &[
+                    net::AF_UNIX,
+                    net::AF_UNIX,
+                    net::AF_INET,
+                    net::AF_INET6,
+                    net::AF_NETLINK,
+                    99,
+                ],
+                a,
+            );
+            let kinds: &[u32] = match family {
+                net::AF_UNIX => &[1, 2, 5, 3, 12],
+                net::AF_INET | net::AF_INET6 => &[1, 2, 2, 7],
+                _ => &[3, 2, 1],
+            };
+            let kind = pick(kinds, b) | linux::O_NONBLOCK | pick(&[0, linux::O_CLOEXEC], c);
+            let protocol = match family {
+                net::AF_INET | net::AF_INET6 => pick(&[0u64, 0, 6, 17], d),
+                _ => pick(&[0u64, 0, 0, 1], d),
+            };
+            if number == linux::__NR_socket {
+                [u64::from(family), u64::from(kind), protocol, 0, 0, 0]
+            } else {
+                [
+                    u64::from(family),
+                    u64::from(kind),
+                    protocol,
+                    buffer(e),
+                    0,
+                    0,
+                ]
+            }
+        }
+        linux::__NR_bind | linux::__NR_connect => {
+            // Binds take the any address with port 0 or the abstract name, never the port.
+            let choices: &[usize] = if number == linux::__NR_bind {
+                &[0, 4, 4, 3]
+            } else {
+                &[0, 1, 2, 3, 4]
+            };
+            let (at, length) = SOCKET_ADDRESS_AT[pick(choices, b)];
+            let length = pick(&[length, length, 2, 1, 200], c);
+            [fd(a), ARENA + SOCKET_ADDRESSES + at, length, 0, 0, 0]
+        }
+        linux::__NR_listen => [fd(a), pick(&[0u64, 1, 5, u64::MAX, 100000], b), 0, 0, 0, 0],
+        linux::__NR_sendto => {
+            let flags = u64::from(net::MSG_DONTWAIT | net::MSG_NOSIGNAL)
+                | pick(
+                    &[0u64, 0, u64::from(net::MSG_OOB), u64::from(net::MSG_MORE)],
+                    d,
+                );
+            let (address, length) = if e % 4 == 0 {
+                let (at, length) = SOCKET_ADDRESS_AT[(e >> 4) as usize % 5];
+                (ARENA + SOCKET_ADDRESSES + at, length)
+            } else {
+                (0, 0)
+            };
+            let size = pick(&[0u64, 1, 5, 100, 4096, 70000], c);
+            [fd(a), buffer(b), size, flags, address, length]
+        }
+        linux::__NR_recvfrom => {
+            let flags = u64::from(net::MSG_DONTWAIT)
+                | pick(
+                    &[
+                        0u64,
+                        u64::from(net::MSG_PEEK),
+                        u64::from(net::MSG_TRUNC),
+                        u64::from(net::MSG_WAITALL),
+                        u64::from(net::MSG_OOB),
+                    ],
+                    d,
+                );
+            [
+                fd(a),
+                buffer(b),
+                pick(&[0u64, 1, 3, 64, 4096], c),
+                flags,
+                0,
+                0,
+            ]
+        }
+        linux::__NR_shutdown => [fd(a), pick(&[0u64, 1, 2, 3], b), 0, 0, 0, 0],
+        // No address back: a connecting socket's automatic name or port is random.
+        linux::__NR_accept4 => [
+            fd(a),
+            0,
+            0,
+            u64::from(linux::O_NONBLOCK) | pick(&[0u64, u64::from(linux::O_CLOEXEC), 1], b),
+            0,
+            0,
+        ],
+        linux::__NR_sendmsg => {
+            let flags = u64::from(net::MSG_DONTWAIT | net::MSG_NOSIGNAL)
+                | pick(
+                    &[
+                        0u64,
+                        0,
+                        u64::from(net::MSG_OOB),
+                        u64::from(net::MSG_MORE),
+                        u64::from(net::MSG_EOR),
+                    ],
+                    c,
+                );
+            [
+                fd(a),
+                ARENA + MSGHDRS + (b % SEND_HEADERS) * 56,
+                flags,
+                0,
+                0,
+                0,
+            ]
+        }
+        linux::__NR_recvmsg => {
+            let flags = u64::from(net::MSG_DONTWAIT)
+                | pick(
+                    &[
+                        0u64,
+                        0,
+                        u64::from(net::MSG_PEEK),
+                        u64::from(net::MSG_TRUNC),
+                        u64::from(net::MSG_WAITALL),
+                        u64::from(net::MSG_OOB),
+                        u64::from(net::MSG_CMSG_CLOEXEC),
+                        u64::from(net::MSG_ERRQUEUE),
+                    ],
+                    c,
+                );
+            let header = SEND_HEADERS + b % (MSGHDR_COUNT - SEND_HEADERS);
+            [fd(a), ARENA + MSGHDRS + header * 56, flags, 0, 0, 0]
+        }
+        linux::__NR_sendmmsg => {
+            let flags = u64::from(net::MSG_DONTWAIT | net::MSG_NOSIGNAL)
+                | pick(&[0u64, 0, u64::from(net::MSG_MORE)], c);
+            [
+                fd(a),
+                ARENA + MMSGHDRS,
+                pick(&[1u64, MMSG_SENDS, 0], b),
+                flags,
+                0,
+                0,
+            ]
+        }
+        // One receive header (more would read the values past it as headers), no timeout.
+        linux::__NR_recvmmsg => {
+            let flags = u64::from(net::MSG_DONTWAIT)
+                | pick(
+                    &[
+                        0u64,
+                        0,
+                        u64::from(net::MSG_PEEK),
+                        u64::from(net::MSG_TRUNC),
+                        u64::from(net::MSG_CMSG_CLOEXEC),
+                        u64::from(net::MSG_ERRQUEUE),
+                    ],
+                    c,
+                );
+            [
+                fd(a),
+                ARENA + MMSGHDRS + MMSG_SENDS * 64,
+                pick(&[1u64, 1, 0], b),
+                flags,
+                0,
+                0,
+            ]
+        }
+        linux::__NR_setsockopt | linux::__NR_getsockopt => {
+            let (level, name) = pick(
+                &[
+                    (net::SOL_SOCKET, net::SO_RCVBUF),
+                    (net::SOL_SOCKET, net::SO_SNDBUF),
+                    (net::SOL_SOCKET, net::SO_REUSEADDR),
+                    (net::SOL_SOCKET, net::SO_KEEPALIVE),
+                    (net::SOL_SOCKET, net::SO_RCVLOWAT),
+                    (net::SOL_SOCKET, net::SO_PASSCRED),
+                    (net::SOL_SOCKET, net::SO_TYPE),
+                    (net::SOL_SOCKET, net::SO_ERROR),
+                    (net::SOL_SOCKET, net::SO_OOBINLINE),
+                    (net::SOL_SOCKET, net::SO_PEEK_OFF),
+                    (net::SOL_SOCKET, net::SO_PASSPIDFD),
+                    (net::SOL_SOCKET, net::SO_PEERPIDFD),
+                    (net::SOL_SOCKET, net::SO_PASSRIGHTS),
+                    (net::SOL_SOCKET, net::SO_INQ),
+                    (net::SOL_SOCKET, net::SO_TIMESTAMP_OLD),
+                    (net::SOL_SOCKET, net::SO_TIMESTAMPNS_NEW),
+                    (net::SOL_SOCKET, net::SO_LINGER),
+                    (net::SOL_SOCKET, net::SO_MARK),
+                    (net::SOL_SOCKET, net::SO_PRIORITY),
+                    (net::SOL_SOCKET, net::SO_RCVMARK),
+                    (net::SOL_SOCKET, net::SO_RCVPRIORITY),
+                    (net::SOL_SOCKET, net::SO_TXTIME),
+                    (net::IPPROTO_IP as u32, net::IP_TOS),
+                    (net::IPPROTO_TCP as u32, 1),
+                    (net::IPPROTO_IP as u32, 2),
+                    (net::IPPROTO_IP as u32, net::IP_PKTINFO),
+                    (net::IPPROTO_IP as u32, net::IP_RECVTTL),
+                    (net::IPPROTO_IP as u32, net::IP_RECVTOS),
+                    (net::IPPROTO_IPV6 as u32, 26),
+                    (net::IPPROTO_IPV6 as u32, net::IPV6_RECVPKTINFO),
+                    (999, 1),
+                ],
+                b,
+            );
+            let length = pick(&[4u64, 4, 0, 2, 8, u64::MAX], d);
+            if number == linux::__NR_setsockopt {
+                [
+                    fd(a),
+                    u64::from(level),
+                    u64::from(name),
+                    ARENA + VALUES + (c % 32) * 8,
+                    length,
+                    0,
+                ]
+            } else {
+                // The length is read from a value the arena holds, and written back there.
+                let at = ARENA + VALUES + (c % 32) * 8;
+                [fd(a), u64::from(level), u64::from(name), buffer(e), at, 0]
+            }
+        }
+        linux::__NR_eventfd2 => [
+            pick(&[0u64, 1, 5, u64::from(u32::MAX)], a),
+            u64::from(linux::EFD_NONBLOCK)
+                | pick(
+                    &[
+                        0u64,
+                        u64::from(linux::EFD_SEMAPHORE),
+                        u64::from(linux::EFD_CLOEXEC),
+                        1,
+                    ],
+                    b,
+                ),
+            0,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_epoll_create1 => [
+            pick(&[0u64, u64::from(linux::EPOLL_CLOEXEC), 1], a),
+            0,
+            0,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_epoll_ctl => [
+            fd(a),
+            pick(&[1u64, 1, 2, 3, 0, 4], b),
+            fd(c),
+            pick(
+                &[
+                    ARENA + EPOLL_EVENTS,
+                    ARENA + EPOLL_EVENTS + 16,
+                    ARENA + EPOLL_EVENTS + 32,
+                    ARENA + EPOLL_EVENTS + 48,
+                    0,
+                ],
+                d,
+            ),
+            0,
+            0,
+        ],
+        linux::__NR_epoll_pwait => [fd(a), buffer(b), pick(&[1u64, 4, 0, u64::MAX], c), 0, 0, 8],
+        // A timeout of zero: a sequence never waits.
+        linux::__NR_epoll_pwait2 => [
+            fd(a),
+            buffer(b),
+            pick(&[1u64, 4, 0, u64::MAX], c),
+            ARENA + NULLS,
+            0,
+            8,
+        ],
+        linux::__NR_inotify_init1 => [
+            u64::from(linux::IN_NONBLOCK) | pick(&[0u64, u64::from(linux::IN_CLOEXEC), 1], a),
+            0,
+            0,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_inotify_add_watch => [
+            fd(a),
+            path(b),
+            pick(
+                &[
+                    u64::from(linux::IN_ALL_EVENTS),
+                    u64::from(linux::IN_MODIFY | linux::IN_CLOSE_WRITE),
+                    u64::from(linux::IN_CREATE | linux::IN_DELETE),
+                    u64::from(linux::IN_ONESHOT | linux::IN_ATTRIB),
+                    0,
+                    u64::from(linux::IN_MASK_CREATE | linux::IN_OPEN),
+                    u64::from(linux::IN_MASK_ADD | linux::IN_ACCESS),
+                ],
+                c,
+            ),
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_inotify_rm_watch => [fd(a), pick(&[1u64, 1, 2, 3, u64::MAX], b), 0, 0, 0, 0],
         _ => unreachable!("every call in CALLS is decoded"),
     };
     Call { number, arguments }
@@ -3416,6 +4154,10 @@ fn machine_bytes(call: &Call) -> Vec<Clear> {
         linux::__NR_wait4 => vec![fixed(d, 144)],
         linux::__NR_waitid => vec![fixed(c + 16, 4), fixed(c + 32, 16), fixed(e, 144)],
         linux::__NR_getrandom => vec![by_value(a, b)],
+        // A sender's process number and the times (as in `volatile`).
+        linux::__NR_recvmsg | linux::__NR_recvmmsg => {
+            vec![fixed(ARENA + RECV_CONTROL, RECV_CONTROL_SIZE)]
+        }
         linux::__NR_sched_rr_get_interval => vec![fixed(b, 16)],
         linux::__NR_sched_getattr if c >= 32 => vec![fixed(b + 24, 8)],
         linux::__NR_uname => vec![fixed(a + 130, 130)],
@@ -3442,14 +4184,27 @@ pub struct Reference {
 }
 
 impl Reference {
-    pub fn start(runner: &Path) -> Self {
-        let name = format!("wc-kernel-layer1-{}", std::process::id());
+    /// The runner in the reference; `backend` mounts the first file backend through Linux's FUSE
+    /// at [`BACKEND_ROOT`] and runs the runner there without the power to mount, the server
+    /// opening files for the page cache if `cached`.
+    pub fn start(runner: &Path, backend: bool, cached: bool) -> Self {
+        let name = format!(
+            "wc-kernel-layer1-{}{}",
+            std::process::id(),
+            match (backend, cached) {
+                (false, _) => "",
+                (true, false) => "-backend",
+                (true, true) => "-cached",
+            }
+        );
         let directory = runner
             .parent()
             .expect("runner has a directory")
             .canonicalize()
             .expect("directory exists");
-        let mut child = Command::new("docker")
+        let program = Path::new("/wc").join(runner.file_name().expect("runner has a name"));
+        let mut command = Command::new("docker");
+        command
             .args([
                 "run",
                 "-i",
@@ -3461,9 +4216,31 @@ impl Reference {
             ])
             .args(["--hostname", reference::HOSTNAME])
             .arg("--volume")
-            .arg(format!("{}:/wc:ro", directory.display()))
-            .arg(reference::IMAGE)
-            .arg(Path::new("/wc").join(runner.file_name().expect("runner has a name")))
+            .arg(format!("{}:/wc:ro", directory.display()));
+        if backend {
+            let server = crate::backend::server(&crate::backend::out());
+            let script = format!(
+                "{} && mkdir -p {BACKEND_ROOT} && exec {} mount {} {BACKEND_ROOT} {} {BACKEND_ROOT}",
+                crate::backend::FUSE_DEVICE_LINK,
+                crate::backend::serve_command(cached),
+                crate::backend::SERVED,
+                program.display()
+            );
+            command
+                .args([
+                    "--device",
+                    crate::backend::FUSE_DEVICE,
+                    "--cap-add",
+                    "SYS_ADMIN",
+                ])
+                .args(["--tmpfs", crate::backend::SERVED])
+                .arg("--volume")
+                .arg(format!("{}:/wcb:ro", server.display()))
+                .args([reference::IMAGE, "sh", "-c", &script]);
+        } else {
+            command.arg(reference::IMAGE).arg(&program);
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -3579,6 +4356,20 @@ const SCRATCH_ZEROS: u64 = 0x1000;
 const SCRATCH_PLAY: u64 = 0x11000;
 const SCRATCH_SIZE: u64 = SCRATCH_PLAY + PLAY_PAGES * 4096;
 const MAX_RW_COUNT: u64 = 0x7fff_f000;
+
+/// Signals both runners' callers ignore, as guest/layer1.c's does: at their default Linux keeps
+/// them from our caller, the container's first process, and not from the reference's. SIGPIPE,
+/// SIGIO, and those F_SETSIG may choose.
+const IGNORED_SIGNALS: [u32; 8] = [
+    linux::SIGPIPE,
+    linux::SIGHUP,
+    linux::SIGTRAP,
+    linux::SIGFPE,
+    linux::SIGTTOU,
+    linux::SIGIO,
+    32,
+    64,
+];
 /// The reference runner's `DEADLINE_SECONDS`.
 const DEADLINE_SECONDS: u64 = 60;
 /// The status a child made by clone ends with at once (the runner's `CHILD_STATUS`).
@@ -3588,8 +4379,42 @@ const CHILD_STATUS: u64 = 7;
 /// the calls with no instructions run. Where the reference's runner zeroed a random device's bytes
 /// after a call (`theirs`), the same is done here, by the same calls.
 pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> SequenceResult {
-    let mut cpu = BufferCpu::new();
+    run_ours_with(sequence, runner, theirs, &mut None)
+}
+
+/// As [`run_ours`], with the file backend a sequence on it uses: one server for every sequence,
+/// started at the first, each kernel connecting afresh, and emptied after each as the reference's
+/// runner empties its own.
+pub fn run_ours_with(
+    sequence: &Sequence,
+    runner: &[u8],
+    theirs: &SequenceResult,
+    backend: &mut Option<crate::backend::Backend>,
+) -> SequenceResult {
     let mut host = TestHost::new(0);
+    if sequence.backend {
+        host.backend = Some(backend.take().unwrap_or_else(|| {
+            crate::backend::Backend::start(&crate::backend::out(), None, sequence.cached)
+        }));
+    }
+    let (result, mut host) = run_ours_on(sequence, runner, theirs, host);
+    if let Some(mut server) = host.backend.take() {
+        // Unmounted, as the reference's runner's mount lets go of everything a sequence looked up.
+        server.destroy();
+        server.empty();
+        *backend = Some(server);
+    }
+    result
+}
+
+/// The run itself, on `host`, which it gives back.
+fn run_ours_on(
+    sequence: &Sequence,
+    runner: &[u8],
+    theirs: &SequenceResult,
+    mut host: TestHost,
+) -> (SequenceResult, TestHost) {
+    let mut cpu = layer1_cpu();
     let mut kernel = Kernel::new();
     let files = [
         File {
@@ -3632,15 +4457,19 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
         .collect();
     let start = Start {
         path: b"/wc/layer1",
-        arguments: &[b"/wc/layer1"],
+        arguments: if sequence.backend {
+            &[b"/wc/layer1", BACKEND_ROOT.as_bytes()]
+        } else {
+            &[b"/wc/layer1"]
+        },
         environment: &environment,
         working_directory: b"/",
         hostname: reference::HOSTNAME.as_bytes(),
         groups: &[0, 0, 1, 2, 3, 4, 6, 10, 11, 20, 26, 27],
+        backend: sequence.backend.then_some(BACKEND_ROOT.as_bytes()),
     };
-    kernel
-        .start(&mut cpu, &mut host, &start)
-        .expect("starting the runner");
+    kernel.start(&mut cpu, &mut host, &start);
+    assert_eq!(kernel.start_failure(), None, "starting the runner");
     let memory = wcontainers_abi::MemoryId(1);
     let thread = match kernel.next() {
         Next::Run { thread, .. } => thread,
@@ -3653,7 +4482,7 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
     let deadline =
         wcontainers_abi::Host::monotonic_nanoseconds(&mut host) + DEADLINE_SECONDS * 1_000_000_000;
     let call = |kernel: &mut Kernel,
-                cpu: &mut BufferCpu,
+                cpu: &mut Layer1Cpu,
                 host: &mut TestHost,
                 call: Call|
      -> Result<i64, i32> {
@@ -3695,6 +4524,10 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
                 } => return Ok(value as i64),
                 Next::Run { resume, .. } => panic!("a call ended with {resume:?}"),
                 Next::Finished { status } => return Err(status),
+                // An answer the backend owes comes before any time passes.
+                Next::Idle { .. } if host.backend.as_ref().is_some_and(|b| b.waiting()) => {
+                    crate::driver::deliver(kernel, cpu, host);
+                }
                 // Waiting for ever: the runner kills such a sequence at its deadline.
                 Next::Idle {
                     until_nanoseconds: None,
@@ -3729,6 +4562,21 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
         call(&mut kernel, &mut cpu, &mut host, scratch),
         Ok(SCRATCH as i64)
     );
+    // An action of SIG_IGN at the scratch area's start, which the zeroing's vectors take later.
+    cpu.write(
+        memory,
+        SCRATCH,
+        &(linux_raw_sys::signal_macros::sig_ign().map_or(0, |handler| handler as usize) as u64)
+            .to_le_bytes(),
+    )
+    .expect("writing an action");
+    for signal in IGNORED_SIGNALS {
+        let ignore = Call {
+            number: linux::__NR_rt_sigaction,
+            arguments: [signal.into(), SCRATCH, 0, 8, 0, 0],
+        };
+        assert_eq!(call(&mut kernel, &mut cpu, &mut host, ignore), Ok(0));
+    }
     // The reference's runner has remade `/dev/null` before every sequence while the container's first
     // one stays held, so it is remade here too, while descriptor 0 holds the first one.
     let null = ARENA + PATHS + path_offset("/dev/null");
@@ -3764,7 +4612,7 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
     let pid = call(&mut kernel, &mut cpu, &mut host, own).expect("getpid") as u64;
     // The runner's `clear_range`: zeros up to the first page the process cannot write.
     let clear = |kernel: &mut Kernel,
-                 cpu: &mut BufferCpu,
+                 cpu: &mut Layer1Cpu,
                  host: &mut TestHost,
                  mut at: u64,
                  mut length: u64| {
@@ -3937,11 +4785,14 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
                 }
             }
             Err(status) => {
-                return SequenceResult {
-                    calls: results,
-                    status,
-                    play: None,
-                };
+                return (
+                    SequenceResult {
+                        calls: results,
+                        status,
+                        play: None,
+                    },
+                    host,
+                );
             }
         }
     }
@@ -3962,11 +4813,14 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
         let readable = match call(&mut kernel, &mut cpu, &mut host, read) {
             Ok(value) => value == 4096,
             Err(status) => {
-                return SequenceResult {
-                    calls: results,
-                    status,
-                    play: None,
-                };
+                return (
+                    SequenceResult {
+                        calls: results,
+                        status,
+                        play: None,
+                    },
+                    host,
+                );
             }
         };
         if readable {
@@ -3976,11 +4830,14 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
         play.push(u8::from(readable));
         play.extend_from_slice(&contents);
     }
-    SequenceResult {
-        calls: results,
-        status: 0,
-        play: Some(play),
-    }
+    (
+        SequenceResult {
+            calls: results,
+            status: 0,
+            play: Some(play),
+        },
+        host,
+    )
 }
 
 /// What is compared for one call: its value and the whole arena after it, with the bytes that must
@@ -4275,7 +5132,36 @@ fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
     if value < 0 {
         return out;
     }
-    if call.number == linux::__NR_readlinkat && (names_process(c, arena) || names_pipe(c, arena)) {
+    // The sender's process number and the times in a receive's control messages.
+    if matches!(call.number, linux::__NR_recvmsg | linux::__NR_recvmmsg) {
+        let length = read_word(arena, b + 40, 8)
+            .unwrap_or(0)
+            .min(RECV_CONTROL_SIZE);
+        let mut at = 0;
+        while at + 16 <= length {
+            let start = ARENA + RECV_CONTROL + at;
+            let size = read_word(arena, start, 8).unwrap_or(0);
+            if size < 16 {
+                break;
+            }
+            if read_word(arena, start + 8, 4) == Some(u64::from(net::SOL_SOCKET)) {
+                match read_word(arena, start + 12, 4).map(|kind| kind as u32) {
+                    Some(net::SCM_CREDENTIALS) => out.push((start + 16, 4)),
+                    Some(
+                        net::SO_TIMESTAMP_OLD
+                        | net::SO_TIMESTAMPNS_OLD
+                        | net::SO_TIMESTAMP_NEW
+                        | net::SO_TIMESTAMPNS_NEW,
+                    ) => out.push((start + 16, 16)),
+                    _ => {}
+                }
+            }
+            at += size.next_multiple_of(8);
+        }
+    }
+    if call.number == linux::__NR_readlinkat
+        && (names_process(c, arena) || names_counted_inode(c, arena))
+    {
         out.push((c, d));
     }
     if call.number == linux::__NR_getcwd && under_proc(a, arena) {
@@ -4325,13 +5211,15 @@ fn under_proc(address: u64, arena: &[u8]) -> bool {
         == Some(b"/proc/".as_slice())
 }
 
-/// Whether a link read to `address` names a pipe, whose inode number each machine hands out from
-/// its own count (`get_next_ino`).
-fn names_pipe(address: u64, arena: &[u8]) -> bool {
-    address
-        .checked_sub(ARENA)
-        .and_then(|offset| arena.get(offset as usize..offset as usize + 6))
-        .is_some_and(|bytes| bytes == b"pipe:[")
+/// Whether a link read to `address` names a pipe or a socket, whose inode numbers each machine
+/// hands out from its own count (`get_next_ino`).
+fn names_counted_inode(address: u64, arena: &[u8]) -> bool {
+    let at = |length: usize| {
+        address
+            .checked_sub(ARENA)
+            .and_then(|offset| arena.get(offset as usize..offset as usize + length))
+    };
+    at(6).is_some_and(|bytes| bytes == b"pipe:[") || at(8).is_some_and(|bytes| bytes == b"socket:[")
 }
 
 /// Whether the path at `address` names a process directory, `/proc/<pid>`, by number.
@@ -4351,7 +5239,7 @@ fn value_is_volatile(call: &Call, arena: &[u8]) -> bool {
         linux::__NR_getcwd => under_proc(call.arguments[0], arena),
         // So does a link to one, such as `/proc/self/cwd` there.
         linux::__NR_readlinkat => {
-            names_process(call.arguments[2], arena) || names_pipe(call.arguments[2], arena)
+            names_process(call.arguments[2], arena) || names_counted_inode(call.arguments[2], arena)
         }
         linux::__NR_mmap => call.arguments[3] & 0x10_0010 == 0,
         linux::__NR_getpid
@@ -4531,6 +5419,29 @@ pub fn seen(
     (out, result.status, play)
 }
 
+/// A message header as the sequence starts with it, and its first vector, for an account of a
+/// sendmsg or recvmsg.
+fn header_text(arena: &[u8], address: u64) -> String {
+    let word = |at: u64| {
+        let at = at.wrapping_sub(ARENA) as usize;
+        arena.get(at..at + 8).map_or(0, |bytes| {
+            u64::from_le_bytes(bytes.try_into().expect("8 bytes"))
+        })
+    };
+    let vector = word(address + 16);
+    format!(
+        " [name {:x} length {} vector {:x} count {} first ({:x}, {:x}) control {:x} room {:x}]",
+        word(address),
+        word(address + 8) as u32,
+        vector,
+        word(address + 24),
+        word(vector),
+        word(vector + 8),
+        word(address + 32),
+        word(address + 40)
+    )
+}
+
 /// A readable account of where two runs of a sequence part.
 pub fn difference(
     sequence: &Sequence,
@@ -4543,7 +5454,13 @@ pub fn difference(
     let mut text = String::new();
     for (index, call) in sequence.calls.iter().enumerate() {
         let name = wcontainers_kernel::system_call_name(call.number.into()).unwrap_or("?");
-        let line = format!("{index}: {name}({:x?})", call.arguments);
+        let mut line = format!("{index}: {name}({:x?})", call.arguments);
+        if matches!(
+            call.number,
+            linux::__NR_sendmsg | linux::__NR_recvmsg | linux::__NR_sendmmsg | linux::__NR_recvmmsg
+        ) {
+            line.push_str(&header_text(&sequence.arena, call.arguments[1]));
+        }
         match (our_seen.get(index), their_seen.get(index)) {
             (Some(our), Some(their)) if our == their => {
                 text.push_str(&format!("{line} = {}\n", our.value))

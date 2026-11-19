@@ -21,6 +21,7 @@ mod linux_extra;
 mod loader;
 mod locks;
 mod memory;
+pub mod network;
 mod pipe;
 mod process;
 mod schedule;
@@ -91,6 +92,8 @@ pub(crate) struct Files {
     pub numbers: Numbers,
     pub root: Node,
     pub proc_fs: FileSystem,
+    /// nsfs, mounted at boot with the fourth anonymous device number (measured).
+    pub nsfs: FileSystem,
     pub pipe_fs: FileSystem,
     /// The internal tmpfs memory files and shared anonymous memory live on (Linux's `shm_mnt`, mounted
     /// first at boot, so it has the first anonymous device number).
@@ -101,16 +104,26 @@ pub(crate) struct Files {
     pub pidfs: Option<FileSystem>,
     /// The anonymous inode, once a file needs it.
     pub anon: Option<crate::fs::Node>,
+    /// The file system sockets are on, once one is made.
+    pub sockfs: Option<FileSystem>,
     /// Files whose bytes are partly in a block of shared pages, while a mapping shares them.
     pub shared: Vec<Node>,
     /// The key tmpfs inodes' generation numbers are made from, as Linux draws each at random.
     pub generation_key: [u8; 16],
+    /// Every event descriptor's counter, for the lowest free number a new one takes.
+    pub event_counters: Vec<alloc::rc::Weak<core::cell::RefCell<syscall::eventfd::Counter>>>,
     /// Changed attributes of the `/proc` entries that keep them.
     pub proc_kept: BTreeMap<u64, fs::proc::Kept>,
     /// Every tmpfs's count of what it holds, for the machine's memory in use.
     pub spaces: Vec<Rc<fs::Space>>,
     /// Pseudo-terminal pairs by number, until both sides have closed.
     pub terminals: BTreeMap<u32, Rc<core::cell::RefCell<tty::Pty>>>,
+    /// The connection to the file backend, once one is mounted.
+    pub backend: Option<Rc<fs::backend::Client>>,
+    /// The directories file systems are mounted on.
+    pub mount_points: Vec<Node>,
+    /// The mount table, in the order the mounts were made.
+    pub mounts: Vec<fs::mounts::Mount>,
 }
 
 /// All kernel state. It is plain data, so a container is saved by copying it with the guest memories.
@@ -130,6 +143,8 @@ pub struct Kernel {
     /// Files closed with a descriptor table whose last holder has gone, for the kernel to finish
     /// releasing.
     released: Vec<file::FileRef>,
+    /// Notices that such closes took message queue requests away, for the kernel to send.
+    notices: Vec<(syscall::socket::SocketRef, alloc::vec::Vec<u8>)>,
     /// Parked threads whose wait ended, in line to run, whose calls are run again when their turn
     /// comes.
     woken: VecDeque<Tid>,
@@ -154,6 +169,10 @@ pub struct Kernel {
     init: Option<Pid>,
     /// The first process's wait status once it has ended.
     finished: Option<i32>,
+    /// The container's start while it waits for the backend.
+    starting: Option<alloc::boxed::Box<container::Starting>>,
+    /// Why the container's start failed.
+    start_failure: Option<Errno>,
     /// The last serial given to committed credentials; 0 is the credentials of whoever opened the
     /// container's first descriptors.
     last_credentials: u64,
@@ -167,6 +186,10 @@ pub struct Kernel {
     futexes: syscall::futex::Futexes,
     /// Every timer.
     timers: syscall::timer::Timers,
+    /// The epoll items watching each file's readiness.
+    poll_watches: syscall::epoll::Watches,
+    /// The names local sockets are bound to.
+    sockets: syscall::socket::Names,
     machine: Machine,
     hostname: Vec<u8>,
     domainname: Vec<u8>,
@@ -174,6 +197,8 @@ pub struct Kernel {
     boot: Time,
     boot_monotonic: u64,
     boot_id: [u8; 16],
+    /// The last cookie that ties a rename's two inotify events together.
+    move_cookie: u32,
 }
 
 impl Default for Kernel {
@@ -206,6 +231,7 @@ impl Kernel {
             running: None,
             parked: schedule::Parked::default(),
             released: Vec::new(),
+            notices: Vec::new(),
             woken: VecDeque::new(),
             signalled: VecDeque::new(),
             monotonic_offset: 0,
@@ -216,16 +242,26 @@ impl Kernel {
             last_id: 0,
             init: None,
             finished: None,
+            starting: None,
+            start_failure: None,
             last_credentials: 0,
             counters: Counters::default(),
             ipc: Default::default(),
             futexes: Default::default(),
             timers: Default::default(),
+            poll_watches: Default::default(),
+            sockets: Default::default(),
             signal_users: BTreeMap::new(),
             files: Files {
                 numbers,
                 root,
                 proc_fs,
+                nsfs: FileSystem {
+                    kind: fs::Kind::Nsfs,
+                    device: fs::encode_device(0, 4),
+                    flags: 0,
+                    space: None,
+                },
                 pipe_fs,
                 memfd_fs: FileSystem {
                     kind: fs::Kind::Tmpfs,
@@ -236,11 +272,16 @@ impl Kernel {
                 secretmem_fs: None,
                 pidfs: None,
                 anon: None,
+                sockfs: None,
                 shared: Vec::new(),
                 generation_key: [0; 16],
+                event_counters: Vec::new(),
                 proc_kept: BTreeMap::new(),
                 spaces,
                 terminals: BTreeMap::new(),
+                backend: None,
+                mount_points: Vec::new(),
+                mounts: Vec::new(),
             },
             machine: Machine {
                 release: "7.0.0-wcontainers",
@@ -252,6 +293,7 @@ impl Kernel {
             boot: Time::default(),
             boot_monotonic: 0,
             boot_id: [0; 16],
+            move_cookie: 0,
         }
     }
 
@@ -314,16 +356,61 @@ impl Kernel {
                 self.settle(&mut cx);
                 return;
             }
-            Event::BackendReply { request, .. } => request.0,
-            Event::BackendNotice { .. } => 0,
+            Event::BackendReply { request, reply } => {
+                self.entry_now = cx.monotonic();
+                self.backend_answered(&mut cx, request.0, reply);
+                self.settle(&mut cx);
+                return;
+            }
+            Event::BackendNotice { notice } => {
+                self.entry_now = cx.monotonic();
+                self.backend_notice(&mut cx, notice);
+                self.settle(&mut cx);
+                return;
+            }
             Event::Connected { connection, .. } | Event::ConnectionReady { connection } => {
+                self.entry_now = cx.monotonic();
+                if syscall::socket::outside_event(self, &mut cx, &event) {
+                    self.settle(&mut cx);
+                    return;
+                }
                 u64::from(connection.0)
             }
-            Event::LookedUp { request, .. } => request,
+            Event::LookedUp { request, .. } => {
+                self.entry_now = cx.monotonic();
+                if syscall::socket::outside_event(self, &mut cx, &event) {
+                    self.settle(&mut cx);
+                    return;
+                }
+                request
+            }
             Event::TerminalInput { .. } | Event::TerminalResized { .. } => 0,
         };
         self.counters
             .count(cx.host, reason::EVENT_UNEXPECTED, detail);
+        self.settle(&mut cx);
+    }
+
+    /// Sends a signal to the container's first process from outside the container, as `docker
+    /// kill` does: from no process the container can see, and SIGKILL ends it even though Linux keeps
+    /// other signals with no handler from that process.
+    pub fn kill(&mut self, cpu: &mut dyn Cpu, host: &mut dyn Host, signal: u32) {
+        assert!(self.running.is_none(), "a signal sent while a thread runs");
+        let mut cx = Context {
+            cpu,
+            host,
+            monotonic_offset: self.monotonic_offset,
+            refused: 0,
+        };
+        self.entry_now = cx.monotonic();
+        if let Some(pid) = self.init.filter(|_| self.finished.is_none()) {
+            if signal == linux::general::SIGKILL {
+                self.die_of(&mut cx, pid, signal);
+            } else {
+                let info = signal::sender_info(signal, linux::general::SI_USER as i32, 0, 0);
+                self.send_to_process(&mut cx, pid, signal, info);
+            }
+        }
         self.settle(&mut cx);
     }
 
@@ -371,6 +458,8 @@ impl Kernel {
         if moved != 0 {
             self.clock_was_set(moved, &tids);
         }
+        // The new host knows none of the old one's connections.
+        syscall::socket::restored(self, &mut cx);
         self.settle(&mut cx);
     }
 
@@ -454,6 +543,22 @@ impl Kernel {
         self.threads[&tid].files.borrow()
     }
 
+    /// The open file descriptor `fd` names, taken once per call (`fdget`): a call that waits
+    /// takes the same file in its later runs, whatever the table holds by then.
+    pub(crate) fn call_file(&self, tid: Tid, fd: i32) -> Result<file::FileRef, Errno> {
+        let thread = &self.threads[&tid];
+        thread
+            .taken
+            .borrow_mut()
+            .file(fd, || thread.files.borrow().file(fd))
+    }
+
+    /// A value `tid`'s call settles once, such as where an append goes (Linux computes it once
+    /// under the inode's lock): an earlier run's, else `value`.
+    pub(crate) fn settle_once(&self, tid: Tid, value: u64) -> u64 {
+        self.threads[&tid].taken.borrow_mut().value(value)
+    }
+
     pub(crate) fn files_mut(&self, tid: Tid) -> core::cell::RefMut<'_, file::FdTable> {
         self.threads[&tid].files.borrow_mut()
     }
@@ -474,6 +579,7 @@ impl Kernel {
             let mut table = table.into_inner();
             table.close_all(closer);
             self.released.extend(table.take_released());
+            self.notices.append(&mut table.notices);
             if table.take_let_go_locks() {
                 self.wake(process::Channel::Locks);
             }
@@ -505,6 +611,7 @@ impl Kernel {
             caller: pid,
             caller_thread: tid,
             fs: self.files.proc_fs.clone(),
+            nsfs: self.files.nsfs.clone(),
             boot: self.boot,
             kept: &self.files.proc_kept,
             counters: &self.counters,
@@ -513,11 +620,11 @@ impl Kernel {
             root: &context.root,
             credentials: &thread.credentials,
             proc: &view,
+            internal: core::cell::Cell::new(false),
         };
         f(&walk, &context)
     }
 
-    /// The time now on the wall clock.
     /// The memory in use, in bytes, and how much of it tmpfs holds: every mapped page and every
     /// tmpfs page, counted as present, since which pages a program has touched is not known.
     pub(crate) fn memory_in_use(&self) -> (u64, u64) {
@@ -547,6 +654,7 @@ impl Kernel {
         ((tmpfs + mapped).min(self.machine.memory_bytes), tmpfs)
     }
 
+    /// The time now on the wall clock.
     pub(crate) fn now(&self, cx: &mut Context<'_>) -> Time {
         Time::from_nanoseconds(cx.host.realtime_nanoseconds())
     }

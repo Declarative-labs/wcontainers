@@ -118,6 +118,8 @@ pub struct Binary {
     pub code: Range<u64>,
     /// Start addresses (image offsets in the code) by where the file says they are.
     pub starts: Starts,
+    /// Entries of the unwind tables that could not be read, each skipped.
+    pub unwind_errors: u64,
 }
 
 /// Start addresses by the means that found them. One address may be found by several.
@@ -201,6 +203,7 @@ impl Binary {
             image,
             code,
             starts: Starts::default(),
+            unwind_errors: 0,
         };
         binary.find_starts(&file, base);
         binary
@@ -329,19 +332,27 @@ impl Binary {
             }
         }
 
-        starts.unwind = self.unwind_starts(file, base);
+        (starts.unwind, self.unwind_errors) = self.unwind_starts(file, base);
         self.starts = starts;
     }
 
-    /// The first address of every function the unwind tables (`.eh_frame`) describe.
-    fn unwind_starts(&self, file: &File<'_>, base: u64) -> BTreeSet<u64> {
-        use gimli::UnwindSection;
+    /// The first address of every function the unwind tables (`.eh_frame`) describe, and how many entries
+    /// could not be read, each warned of. An entry that cannot be read is skipped; reading stops only where an
+    /// entry's length cannot be read, as nothing after it can be found.
+    fn unwind_starts(&self, file: &File<'_>, base: u64) -> (BTreeSet<u64>, u64) {
+        use gimli::{Reader, UnwindSection};
         let mut found = BTreeSet::new();
+        let mut errors = 0;
+        let mut warn = |what: String| {
+            errors += 1;
+            eprintln!("{}: warning: unwind tables: {what}", self.name);
+        };
         let Some(section) = file.section_by_name(".eh_frame") else {
-            return found;
+            return (found, 0);
         };
         let Ok(data) = section.data() else {
-            return found;
+            warn("the section's bytes could not be read".into());
+            return (found, errors);
         };
         let eh_frame = gimli::EhFrame::new(data, gimli::LittleEndian);
         let mut bases = gimli::BaseAddresses::default().set_eh_frame(section.address());
@@ -351,16 +362,34 @@ impl Binary {
         if let Some(got) = file.section_by_name(".got") {
             bases = bases.set_got(got.address());
         }
-        let mut entries = eh_frame.entries(&bases);
-        while let Ok(Some(entry)) = entries.next() {
-            if let gimli::CieOrFde::Fde(partial) = entry
-                && let Ok(fde) =
-                    partial.parse(|section, bases, offset| section.cie_from_offset(bases, offset))
-                && let Some(offset) = self.in_code(base, fde.initial_address())
-            {
-                found.insert(offset);
+        let mut rest = gimli::EndianSlice::new(data, gimli::LittleEndian);
+        while !rest.is_empty() {
+            let offset = data.len() - rest.len();
+            let entry = rest
+                .read_initial_length()
+                .and_then(|(length, _)| Ok((length, rest.split(length)?)));
+            let mut body = match entry {
+                // A zero length ends the table.
+                Ok((0, _)) => break,
+                Ok((_, body)) => body,
+                Err(error) => {
+                    warn(format!("stopped after {} functions: {error}", found.len()));
+                    break;
+                }
+            };
+            // A CIE has 0 where a function's entry has its CIE pointer.
+            if body.read_u32() == Ok(0) {
+                continue;
+            }
+            match eh_frame.fde_from_offset(
+                &bases,
+                gimli::EhFrameOffset(offset),
+                |section, bases, at| section.cie_from_offset(bases, at),
+            ) {
+                Ok(fde) => found.extend(self.in_code(base, fde.initial_address())),
+                Err(error) => warn(format!("a function's entry not read: {error}")),
             }
         }
-        found
+        (found, errors)
     }
 }

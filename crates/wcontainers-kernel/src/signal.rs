@@ -197,6 +197,15 @@ impl Kernel {
         let _ = self.send_queued(cx, target, signal, info, true);
     }
 
+    /// Whether a timer's signal to one thread or (with none) the process would be dropped as
+    /// ignored (`prepare_signal` failing in `posixtimer_send_sigqueue`).
+    pub(crate) fn timer_signal_ignored(&self, thread: Option<Tid>, pid: Pid, signal: u32) -> bool {
+        let Some(tid) = thread.or_else(|| self.processes[&pid].threads.first().copied()) else {
+            return false;
+        };
+        self.threads[&tid].signal_mask & bit(signal) == 0 && self.dropped(pid, signal)
+    }
+
     /// Linux's `posixtimer_init_sigqueue`: a place in the calling user's count for a new timer's
     /// signal, or none (EAGAIN) when the count is at the caller's RLIMIT_SIGPENDING.
     pub(crate) fn timer_charge(&mut self, tid: Tid) -> Option<crate::process::Charge> {
@@ -226,7 +235,6 @@ impl Kernel {
         file: &crate::file::FileRef,
         reason: u32,
     ) {
-        use crate::file::OwnerKind;
         let (owner, fd) = {
             let file = file.borrow();
             match (file.owner, file.async_fd) {
@@ -236,35 +244,8 @@ impl Kernel {
                 _ => return,
             }
         };
-        let live = |process: &crate::process::Process| process.ended.is_none();
-        let targets: alloc::vec::Vec<(Target, Pid)> = match owner.kind {
-            OwnerKind::Thread => self
-                .threads
-                .get(&owner.pid)
-                .map(|thread| (Target::Thread(owner.pid), thread.process))
-                .into_iter()
-                .collect(),
-            OwnerKind::Process => self
-                .processes
-                .get(&owner.pid)
-                .filter(|process| live(process))
-                .map(|process| (Target::Process(process.pid), process.pid))
-                .into_iter()
-                .collect(),
-            OwnerKind::Group => self
-                .processes
-                .values()
-                .filter(|process| process.group == owner.pid && live(process))
-                .map(|process| (Target::Process(process.pid), process.pid))
-                .collect(),
-        };
-        for (target, pid) in targets {
-            let credentials = self.task_credentials(pid);
-            let allowed = owner.euid == 0
-                || [owner.euid, owner.uid]
-                    .iter()
-                    .any(|user| *user == credentials.suid || *user == credentials.uid);
-            if !allowed {
+        for (target, pid) in self.owner_targets(&owner) {
+            if !self.may_signal_owner(&owner, pid) {
                 continue;
             }
             let (signal, info) = if owner.signal == 0 {
@@ -295,6 +276,60 @@ impl Kernel {
                 let _ = self.send(cx, target, SIGIO, kernel_info(SIGIO));
             }
         }
+    }
+
+    /// Linux's `send_sigurg`: SIGURG to an open file's owner's tasks that its namer may signal,
+    /// with or without `FASYNC`; false if it has no owner.
+    pub(crate) fn send_urgent_signal(
+        &mut self,
+        cx: &mut Context<'_>,
+        file: &crate::file::FileRef,
+    ) -> bool {
+        let Some(owner) = file.borrow().owner.filter(|owner| owner.pid != 0) else {
+            return false;
+        };
+        for (target, pid) in self.owner_targets(&owner) {
+            if self.may_signal_owner(&owner, pid) {
+                let _ = self.send(cx, target, SIGURG, kernel_info(SIGURG));
+            }
+        }
+        true
+    }
+
+    /// The live tasks a file's owner names, with their processes.
+    fn owner_targets(&self, owner: &crate::file::Owner) -> alloc::vec::Vec<(Target, Pid)> {
+        use crate::file::OwnerKind;
+        let live = |process: &crate::process::Process| process.ended.is_none();
+        match owner.kind {
+            OwnerKind::Thread => self
+                .threads
+                .get(&owner.pid)
+                .map(|thread| (Target::Thread(owner.pid), thread.process))
+                .into_iter()
+                .collect(),
+            OwnerKind::Process => self
+                .processes
+                .get(&owner.pid)
+                .filter(|process| live(process))
+                .map(|process| (Target::Process(process.pid), process.pid))
+                .into_iter()
+                .collect(),
+            OwnerKind::Group => self
+                .processes
+                .values()
+                .filter(|process| process.group == owner.pid && live(process))
+                .map(|process| (Target::Process(process.pid), process.pid))
+                .collect(),
+        }
+    }
+
+    /// `sigio_perm`: whether a file's owner, by who named it, may be sent its signals.
+    fn may_signal_owner(&self, owner: &crate::file::Owner, pid: Pid) -> bool {
+        let credentials = self.task_credentials(pid);
+        owner.euid == 0
+            || [owner.euid, owner.uid]
+                .iter()
+                .any(|user| *user == credentials.suid || *user == credentials.uid)
     }
 
     /// Sends a signal to every live process of a group; false if it has none.
@@ -448,9 +483,10 @@ impl Kernel {
             self.die_of(cx, pid, signal);
             return;
         }
-        if self.threads[&tid].call.wait.is_some() {
+        let wait = self.threads[&tid].call.wait;
+        if wait.is_some_and(|channel| !matches!(channel, Channel::Backend | Channel::Held(_))) {
             self.wake_thread(tid);
-        } else if self.running != Some(tid) && !self.signalled.contains(&tid) {
+        } else if wait.is_none() && self.running != Some(tid) && !self.signalled.contains(&tid) {
             self.signalled.push_back(tid);
         }
     }
@@ -1075,8 +1111,66 @@ impl Kernel {
     ) {
         let pid = self.threads[&tid].process;
         let may_lock_any = self.credentials(tid).has(CAP_IPC_LOCK);
+        let wanted = match access {
+            Access::Read => wcontainers_abi::Permissions::READ,
+            Access::Write => wcontainers_abi::Permissions::WRITE,
+            Access::Execute => wcontainers_abi::Permissions::EXECUTE,
+        };
+        let mapping = self.processes[&pid].map.borrow().find(address).cloned();
+        // A page of a backend file the mapping allows this access to, read when first touched.
+        if let Some(mapping) = &mapping
+            && let Backing::File {
+                node,
+                offset,
+                file_end,
+                ..
+            } = &mapping.backing
+            && address < *file_end
+            && crate::memory::cpu_permissions(mapping.permissions).contains(wanted)
+            && crate::fs::backend::remote(node).is_some()
+        {
+            let page = (offset + (address - mapping.start)) / wcontainers_abi::PAGE_SIZE;
+            if !crate::shared::unfilled(node, page..page + 1).is_empty() {
+                // Linux's read-around: the pages about the one touched (`do_sync_mmap_readahead`).
+                let around = crate::shared::readahead_pages(node);
+                let first = page.saturating_sub(around / 2);
+                self.begin_asking(tid);
+                let result = crate::shared::fill(node, first..(first + around).max(page + 1));
+                self.end_asking(tid, result == Err(Errno::PARKED));
+                match result {
+                    Err(Errno::PARKED) => {
+                        self.thread_mut(tid).filling = true;
+                        return;
+                    }
+                    Err(_) => {
+                        self.force_signal(
+                            tid,
+                            fault_info(SIGBUS, BUS_ADRERR as i32, address),
+                            (address, 0),
+                        );
+                        self.return_to_user(cx, tid, Resume::FromRegisters);
+                        return;
+                    }
+                    Ok(()) => {}
+                }
+            }
+            let process = &self.processes[&pid];
+            if !mapping.copies_on_write(address) || access != Access::Write {
+                // The pages read around it, as far as the mapping reaches.
+                let around = crate::shared::readahead_pages(node) * wcontainers_abi::PAGE_SIZE;
+                let refreshed = process.map.borrow_mut().refresh(
+                    cx.cpu,
+                    process.memory,
+                    address.saturating_sub(around / 2).max(mapping.start),
+                    address.saturating_add(around),
+                );
+                if refreshed.is_ok() {
+                    self.return_to_user(cx, tid, Resume::FromRegisters);
+                    return;
+                }
+            }
+        }
         let process = self.processes.get_mut(&pid).expect("process exists");
-        let mapping = process.map.borrow().find(address).cloned();
         // A first write to a private file page: it becomes the process's own copy.
         if access == Access::Write
             && mapping
@@ -1091,11 +1185,6 @@ impl Kernel {
             self.return_to_user(cx, tid, Resume::FromRegisters);
             return;
         }
-        let wanted = match access {
-            Access::Read => wcontainers_abi::Permissions::READ,
-            Access::Write => wcontainers_abi::Permissions::WRITE,
-            Access::Execute => wcontainers_abi::Permissions::EXECUTE,
-        };
         // A page that allows nothing has no valid entry: a translation fault even inside a mapping.
         let present = mapping
             .as_ref()
