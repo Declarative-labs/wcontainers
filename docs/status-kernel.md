@@ -14,6 +14,12 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
+K6c, tenth run: the LTP comparison on our kernel moved off the Mac (it is what brought Docker
+Desktop down: "For the orchestrator") to the rented ARM64 machine, which was lost after 1260 of
+4226 tests (1231 match; every difference is one already known); the cgroup2 mount at
+/sys/fs/cgroup is built; the flake builds the workspace on ARM64 Linux and the test programs
+link there. K6c is not complete. See "K6c, tenth run".
+
 K6c, ninth run: the brief's second bug is fixed (a mapped backend file's pages are dropped when
 its attributes show a change, as `fuse_change_attributes` and `fuse_reverse_inval_inode` do);
 /proc/net prints a kernel-numbered id where it printed a socket's heap address. Docker Desktop
@@ -91,6 +97,73 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## K6c, tenth run
+
+origin/phase-1 and origin/phase-1-literals had nothing new to merge.
+
+Moved and built:
+- The Mac's LTP run (k6c7/whole.tsv, 648 rows) was stopped at 07:40 on the 19th: the
+  orchestrator's diagnosis ties every Docker Desktop fall to its backend traffic (For the
+  orchestrator). It is not to run on the Mac again.
+- The LTP image on the ARM64 machine: `ltp/build.sh` there gives the same files as the Mac's
+  tar (2877 files under /opt/ltp, names, modes and contents compared with scratch
+  k6c10/tarsum.py and tarlist.py: all equal but testcases/bin/memtoy, a manual tool no runtest
+  file names). Copying the Mac's 718 MB tar ran at about 100 KB/s, building it takes 5 minutes.
+- The flake (brief): on Linux the shell sets LIBCLANG_PATH to nixpkgs' libclang (bindgen, for
+  unicorn-engine-sys) and links -latomic for the host's own target (unicorn's 16-byte atomics
+  under GCC); macOS's shell is unchanged (checked with `nix eval`). Shown on the ARM machine
+  only through arm-run, which sets the same two itself.
+- `procstatus::fdinfo_matches_reference` on ARM64 Linux (brief): zig 0.16.0 there writes the
+  relocations of debug information against `.text` as against no section (seen with readelf:
+  section symbol 22 is UND, used by `.rela.debug_*` and one ADR in `show`), so lld finds an
+  undefined symbol with no name. `-g0` links it (ARM machine), so test programs are now built
+  without debug information (`guest::NO_DEBUG_INFO`); procstatus and hello pass on the Mac with it.
+- The cgroup2 mount (the eighth run's item 3), as section 15's chosen subset of /sys: Docker's
+  read-only mount of the container's cgroup at /sys/fs/cgroup (`cgroup /sys/fs/cgroup cgroup2
+  ro,nosuid,nodev,noexec,relatime`, super options rw), its root numbered 1, statfs
+  CGROUP2_SUPER_MAGIC, file handles kernfs's (FILEID_KERNFS, the node's number). 23 files
+  (src/cgroup.rs `FILES`): the controllers, events, the limits and settings a default
+  container leaves unset (cpu.max "max 100000", memory.max "max", pids.max "max" and the
+  rest), and cgroup.procs and cgroup.threads, made at each read from the live processes. Not
+  built, each lookup counted "sys entry not built" (detail 9): every count of memory and CPU
+  (memory.current, .peak, .stat, cpu.stat, pids.current and .peak, the pressure files, hugetlb,
+  io and rdma), since resident pages are not known (Questions) and the rest are not kept.
+  sysfs `cgroup_matches_reference`: the mount line, mode, owner, statfs type and flags, every
+  built file's mode, size (0) and bytes, and EROFS for writes and mkdir, all equal to the
+  reference (the root's inode number is the host's cgroup's there, left out).
+  controllers:controllers (ours passed where the reference skips "V1 controller required, but
+  mounted on V2") should now skip; not yet rerun (the comparison below ran before it).
+- Literals: the cgroup values are one constant each or one table; proc's first global inode
+  number is named. Baseline 8499 to 8498.
+
+The whole LTP comparison on the ARM64 machine (`LTP_TAR=<its tar> LTP_JOBS=12 LTP_LIMIT=900
+cargo run -p wcontainers-kernel-test --bin ltp -- ours target/ltp-k6c10/whole.tsv`, code
+b79a3f1f, 16:01 UTC, load 21 there at the start, 55 at 16:43): the spot machine was lost at
+about 16:53 UTC with 1260 tests done (scratch k6c10/whole.tsv, from the followed log
+k6c10/whole-attach.log; the tests' own logs were on the machine and are lost). Against the bar
+(k6c10/compare-partial.txt): 1231 match, 29 differ, all known: not built 3 (cve-2017-7308
+AF_PACKET, cve-2018-5803 SCTP, cve-2026-53362 IPV6_RTHDR), wrong answers 7 (af_alg07,
+cve-2019-8912 and irqbalance01: one CPU; cve-2017-2671 ping sockets; cve-2021-26708 vsock;
+controllers:controllers, now built; aslr01, below), slower than 900 s 19 (cve-2011-0999,
+cve-2017-17052, dio30, gf01, gf06 to gf11, gf16 to gf18, gf29, rwtest01 to 04, iogen01). The
+groups done: can to kernel_misc, ltp-aio-stress, ltp-aiodio parts 1 and 2 and part of 3.
+
+Layer 1 at beee6e96 on the Mac (load 18 to 25): seeds 9191105, 9191106 and 9191107, each 300
+sequences in memory, 32 on the backend and 32 on the caching backend, matched (scratch
+k6c10/l1-seeds.log). Affected tests before the commits: sysfs 5, pollmask 1, pidfd 1, procns 4,
+procstatus 5, procwrite 5, rootbackend 3, unixsock 4, zombie 1, threads' two proc tests, the
+kernel's unit tests, hello 1 (scratch k6c10/cgroup-affected.log).
+
+Decided in this run, without the owner's answers (each a departure, under Questions too):
+- aslr01 (reference pass, ours "Large lib base address has less than 8 random bits"): this
+  kernel does not randomize layout, and kernel.randomize_va_space is not built (ENOENT). Not a
+  section 15 cause; to build with the brief's mapping placement (low first), from the host's
+  randomness, so the two are designed once.
+- Left as they were: wait channels keyed by address (`Channel::Object`, `Held`, `Epoll`,
+  `Queue::Object`). They are not equality-only: `Parked::by_channel` is a map keyed by channel,
+  and waking every channel of a kind (task.rs, `on(...)`) goes in its order, so numbering them
+  changes the order of some wakes; it goes with the record-and-replay test, after K6c's bar.
 
 ## K6c, ninth run
 
@@ -3888,7 +3961,12 @@ guest).
 
 ## Questions for the orchestrator (boundary)
 
-- Page residency: mincore, mlock2's counts (mlock201), smaps' Rss and anon_vma merging after fork
+- Layout randomization (tenth run): aslr01 fails as nothing is randomized. Build it with the
+  brief's low-first mapping placement (proposed), or name it in section 15?
+- IPV6_RTHDR (setsockopt11, cve-2026-53362): a sticky option that reroutes a socket's sends to
+  the routing header's address. Build it in the made-up network, or excuse it under "the network
+  is not Linux's network stack"?
+- Page residency (also the cgroup's memory.current, .peak and .stat, not built): mincore, mlock2's counts (mlock201), smaps' Rss and anon_vma merging after fork
   (vma01) need to know which pages a program has touched; the Cpu trait does not say. Should the
   CPU side report touched pages (an addition to the shared crate), or is this a deliberate
   difference to add to section 15? (K6c, fifth run.)
@@ -4053,6 +4131,26 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 - The object crate is built with its `unaligned` feature, so headers are read from any byte offset.
 
 ## Next
+
+K6c, after the tenth run (this replaces the ninth run's first two items just below):
+1. Continue the whole LTP comparison on the ARM64 machine only, never on the Mac. On a new
+   machine: build the image (`arm-run <checkout> --name kernel -- 'mkdir -p target/ltp-data &&
+   sh crates/wcontainers-kernel-test/ltp/build.sh $PWD/target/ltp-data'`, 5 minutes), put the
+   1260 rows there (`arm-run --ssh 'mkdir -p /work/target/kernel/ltp-k6c10 && cat >
+   /work/target/kernel/ltp-k6c10/whole.tsv' < <scratch>/kernel/k6c10/whole.tsv`), then
+   `arm-run <checkout> --name kernel --detach -- 'LTP_TAR=$PWD/target/ltp-data/ltp-20260930.tar
+   LTP_JOBS=$ARM_JOBS LTP_LIMIT=900 cargo run -q -j $ARM_JOBS -p wcontainers-kernel-test --bin
+   ltp -- ours target/ltp-k6c10/whole.tsv'` and keep `arm-run --attach kernel <id> >
+   <scratch>/kernel/k6c10/whole-attach.log` running beside it (append, the rows are only on the
+   machine otherwise; fetch target/ltp-k6c10 whole when it ends). Then `ltp compare`, commit it
+   as ltp/ours-20260930-<code>.tsv, and rerun there at the newest code the controllers group
+   (the cgroup2 mount) and every timeout with LTP_LIMIT 7200 and 12 jobs (cve-2014-0196, fork09
+   and the growfiles among them: on that machine they cannot reach Docker Desktop).
+2. Settle the owner's questions (Questions for the orchestrator) and aslr01 with mapping
+   placement, then write the final gap list and the table.
+3. The whole suite at the final code: on the ARM machine, and the 25 tests its manual lists on
+   the Mac. Fresh layer 1 seeds are done at beee6e96 (9191105 to 9191107); fresh ones start at
+   9191108.
 
 K6c, after the ninth run (this changes the eighth run's list just below):
 - The whole LTP comparison: k6c7/whole.tsv (639 done) was continued at 05:15 on the 19th with
