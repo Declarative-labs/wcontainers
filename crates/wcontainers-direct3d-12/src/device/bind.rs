@@ -33,9 +33,6 @@ pub(super) struct StageBinding {
     form: Form,
     /// Textures: the shape a null view of it takes.
     shape: Option<null::Shape>,
-    /// A texture the converted program declares one-dimensional, where the back end's textures
-    /// of one row are two-dimensional.
-    one_dimensional: bool,
     /// Textures read by comparison, which the back end samples only in depth formats.
     compared: bool,
     /// A typed buffer read through a storage buffer (`HelperValue::TexelBufferView` names it).
@@ -87,9 +84,6 @@ pub(super) const GEOMETRY: u32 = 4;
 pub(super) const PIXEL: u32 = 5;
 /// The bytes of one constant register, the step of a constant buffer's size.
 const CONSTANT_REGISTER: u64 = size_of::<[u32; 4]>() as u64;
-/// The refusal of a texture the converted program declares one-dimensional.
-const ONE_DIMENSIONAL_DECLARATION: &str =
-    "a texture the converted program declares one-dimensional (DXIL `Texture1D`)";
 
 /// Whether the program of binding `b`'s stage is converted again for what is bound to it:
 /// compute and pixel stages, and vertex stages drawn directly (run by the back end's vertex
@@ -127,16 +121,9 @@ pub(super) fn stage_bindings(
                     .is_some_and(|r| (r.group, r.binding) == (b.set, b.binding))
             });
             let (mut declared, mut form, mut shape) = (0, Form::Plain, None);
-            let (mut compared, mut one_dimensional) = (false, false);
+            let mut compared = false;
             if let Some((_, v)) = global {
                 shape = null::shape(&module.types[v.ty].inner);
-                one_dimensional = matches!(
-                    module.types[v.ty].inner,
-                    naga::TypeInner::Image {
-                        dim: naga::ImageDimension::D1,
-                        ..
-                    }
-                );
                 compared = matches!(
                     module.types[v.ty].inner,
                     naga::TypeInner::Image {
@@ -187,7 +174,6 @@ pub(super) fn stage_bindings(
                 declared,
                 form,
                 shape,
-                one_dimensional,
                 compared,
                 texel,
                 through,
@@ -1113,9 +1099,6 @@ impl<B: Backend> Device<B> {
         v: &ResourceView,
         b: &StageBinding,
     ) -> Result<B::TextureView, Error> {
-        if b.one_dimensional {
-            return Err(Error::NotImplemented(ONE_DIMENSIONAL_DECLARATION));
-        }
         // One-dimensional textures are stored as 2D ones of one row.
         let dimension = match v.dimension {
             UAV_DIMENSION_TEXTURE1D | UAV_DIMENSION_TEXTURE2D => ViewDimension::D2,
@@ -1215,9 +1198,6 @@ impl<B: Backend> Device<B> {
         } else {
             (v.resource, None)
         };
-        if b.one_dimensional {
-            return Err(Error::NotImplemented(ONE_DIMENSIONAL_DECLARATION));
-        }
         // One-dimensional textures are stored as 2D ones of one row.
         let (dimension, arrayed) = match v.dimension {
             SRV_DIMENSION_TEXTURE1D | SRV_DIMENSION_TEXTURE2D | SRV_DIMENSION_TEXTURE2DMS => {
