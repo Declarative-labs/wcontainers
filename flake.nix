@@ -31,26 +31,35 @@
           };
 
           # Docker and Chrome are used by the tests but stay outside Nix.
-          devShells.default = pkgs.mkShell {
-            packages = [
-              (pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml)
-              pkgs.nixfmt
-              pkgs.nodejs
-              pkgs.taplo
-              # running and inspecting WebAssembly
-              pkgs.wasmtime
-              pkgs.wasm-tools
-              # building ARM64 Linux test programs, and the C parts of test-only dependencies
-              pkgs.zig
-              pkgs.cmake
-              pkgs.pkg-config
-              # random C programs and shrinking the ones that fail
-              pkgs.csmith
-              pkgs.creduce
-            ];
-            # driving the installed Chrome from Node, for the browser runner
-            WC_PLAYWRIGHT_CORE = "${pkgs.playwright-driver}";
-          };
+          devShells.default = pkgs.mkShell (
+            {
+              packages = [
+                (pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml)
+                pkgs.nixfmt
+                pkgs.nodejs
+                pkgs.taplo
+                # running and inspecting WebAssembly
+                pkgs.wasmtime
+                pkgs.wasm-tools
+                # building ARM64 Linux test programs, and the C parts of test-only dependencies
+                pkgs.zig
+                pkgs.cmake
+                pkgs.pkg-config
+                # random C programs and shrinking the ones that fail
+                pkgs.csmith
+                pkgs.creduce
+              ];
+              # driving the installed Chrome from Node, for the browser runner
+              WC_PLAYWRIGHT_CORE = "${pkgs.playwright-driver}";
+            }
+            // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+              # bindgen, for unicorn-engine-sys; on macOS it finds Xcode's
+              LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+              # unicorn's 16-byte atomics are calls into libatomic under GCC
+              "CARGO_TARGET_${pkgs.stdenv.hostPlatform.rust.cargoEnvVarTarget}_RUSTFLAGS" =
+                "-C link-arg=-latomic";
+            }
+          );
 
           formatter = pkgs.nixfmt;
         };
