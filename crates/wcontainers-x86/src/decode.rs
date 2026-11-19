@@ -1,8 +1,15 @@
 //! The instruction at the start of some bytes, from iced-x86, with what iced does not say: the address size,
 //! and the length the CPU counts for an encoding iced calls invalid or one of a feature never presented.
 
-use crate::encoding::{ADDRESS_SIZE, LEGACY_PREFIXES, OPERAND_SIZE, REX_W, is_rex};
+use crate::X86_64;
+use crate::encoding::{
+    ADDRESS_SIZE, ESCAPE, ESCAPE_0F3A, ESCAPES_THREE_BYTE, EVEX, EVEX_LENGTH, LEGACY_PREFIXES,
+    MAP_0F, MAP_0F3A, MAP_0F38, MAP_ONE_BYTE, MODE_DISPLACEMENT8, MODE_DISPLACEMENT32,
+    MODE_REGISTER, MODRM_FIELD, MODRM_MODE_SHIFT, MODRM_REG_SHIFT, OPERAND_SIZE, REX_W,
+    RM_DISPLACEMENT32, RM_SIB, VEX_MAP_LOW, VEX2, VEX2_LENGTH, VEX3, VEX3_LENGTH, is_rex,
+};
 use iced_x86::{Code, Decoder, DecoderError, DecoderOptions};
+use wcontainers_guest_cpu::Guest;
 
 mod groups {
     include!(concat!(env!("OUT_DIR"), "/groups.rs"));
@@ -42,8 +49,8 @@ pub fn decode(code: &[u8]) -> Option<(Instruction, u8)> {
     // not their length.
     if cut || iced.is_invalid() || claim_group(iced.code()) == crate::claims::GROUP_NEVER {
         let length = cpu_length(code, prefixes)?;
-        too_long = length > 15;
-        iced.set_len(length.min(255));
+        too_long = length as u64 > X86_64::MAX_LENGTH;
+        iced.set_len(length.min(u8::MAX.into()));
     }
     let length = iced.len() as u8;
     Some((
@@ -63,16 +70,78 @@ fn prefix_run(code: &[u8]) -> usize {
         .count()
 }
 
-/// What the CPU's length decoder counts after each opcode of the one-byte map and of the 0F map, one
-/// character an opcode (from the reference's sweep, `tests/lengths.txt`; Intel's opcode map where a byte
-/// is a prefix or the instruction faults however short it is): `.` nothing, `m` a ModRM with the SIB and
-/// displacement it asks for, `i` a ModRM and an 8-bit immediate, `I` a ModRM and a 16- or 32-bit one, `r`
-/// a ModRM whose mode the CPU ignores (one byte), `b` an 8-bit immediate, `w` a 16-bit one, `e` a 16-bit and
-/// an 8-bit one, `z` a 16- or 32-bit one, `d` a 32-bit one whatever the operand size, `v` a 16-, 32- or
-/// 64-bit one, `p` a far pointer (`z` and 2 bytes), `o` an address (8 bytes, 4 with 67), `g` and `G` a
-/// ModRM and, for its reg field 0 or 1, an 8-bit or a `z` immediate. The 0F38 map counts a ModRM after
-/// every opcode, the 0F3A map a ModRM and an 8-bit immediate.
-const ONE_BYTE: &[u8] = concat!(
+/// What the CPU's length decoder counts after an opcode. A `z` immediate is 16 bits with 66 and 32
+/// without; a `v` one is 64 bits with REX.W and `z` without.
+#[derive(Clone, Copy)]
+enum After {
+    Nothing,
+    /// A ModRM with the SIB and displacement it asks for.
+    ModRm,
+    ModRmImm8,
+    ModRmImmZ,
+    /// A ModRM whose mode the CPU ignores (one byte).
+    ModRmIgnored,
+    Imm8,
+    Imm16,
+    Imm16Imm8,
+    ImmZ,
+    /// 32 bits whatever the operand size.
+    Imm32,
+    ImmV,
+    /// A `z` offset and a 16-bit selector.
+    FarPointer,
+    /// 64 bits, 32 with 67.
+    Address,
+    /// A ModRM and, for its reg field 0 or 1, an 8-bit immediate.
+    GroupImm8,
+    /// A ModRM and, for its reg field 0 or 1, a `z` immediate.
+    GroupImmZ,
+}
+
+/// The character standing for each `After` in the tables below.
+const KINDS: &[(u8, After)] = &[
+    (b'.', After::Nothing),
+    (b'm', After::ModRm),
+    (b'i', After::ModRmImm8),
+    (b'I', After::ModRmImmZ),
+    (b'r', After::ModRmIgnored),
+    (b'b', After::Imm8),
+    (b'w', After::Imm16),
+    (b'e', After::Imm16Imm8),
+    (b'z', After::ImmZ),
+    (b'd', After::Imm32),
+    (b'v', After::ImmV),
+    (b'p', After::FarPointer),
+    (b'o', After::Address),
+    (b'g', After::GroupImm8),
+    (b'G', After::GroupImmZ),
+];
+
+/// How many opcodes a map has.
+const OPCODES: usize = 1 << u8::BITS;
+
+/// A table of characters of `KINDS`, one an opcode, as `After`s.
+const fn kinds(table: &str) -> [After; OPCODES] {
+    let table = table.as_bytes();
+    assert!(table.len() == OPCODES);
+    let mut out = [After::Nothing; OPCODES];
+    let mut opcode = 0;
+    while opcode < OPCODES {
+        let mut k = 0;
+        while KINDS[k].0 != table[opcode] {
+            k += 1;
+        }
+        out[opcode] = KINDS[k].1;
+        opcode += 1;
+    }
+    out
+}
+
+/// What the CPU's length decoder counts after each opcode of the one-byte map and of the 0F map (from the
+/// reference's sweep, `tests/lengths.txt`; Intel's opcode map where a byte is a prefix or the instruction
+/// faults however short it is). The 0F38 map counts a ModRM after every opcode, the 0F3A map a ModRM and
+/// an 8-bit immediate.
+const ONE_BYTE: [After; OPCODES] = kinds(concat!(
     "mmmmbz..mmmmbz..",
     "mmmmbz..mmmmbz..",
     "mmmmbz..mmmmbz..",
@@ -89,9 +158,8 @@ const ONE_BYTE: &[u8] = concat!(
     "mmmmbb..mmmmmmmm",
     "bbbbbbbbddpb....",
     "......gG......mm",
-)
-.as_bytes();
-const TWO_BYTE: &[u8] = concat!(
+));
+const TWO_BYTE: [After; OPCODES] = kinds(concat!(
     "mmmm.........m..",
     "mmmmmmmmmmmmmmmm",
     "rrrr....mmmmmmmm",
@@ -108,9 +176,7 @@ const TWO_BYTE: &[u8] = concat!(
     "mmmmmmmmmmmmmmmm",
     "mmmmmmmmmmmmmmmm",
     "mmmmmmmmmmmmmmmm",
-)
-.as_bytes();
-const _: () = assert!(ONE_BYTE.len() == 256 && TWO_BYTE.len() == 256);
+));
 
 /// The length the CPU counts for an encoding iced reports as invalid, which iced stops reading early. The
 /// prefixes that can change a length are the last 66 and REX.W in a REX directly before the opcode (not
@@ -135,62 +201,77 @@ fn cpu_length(code: &[u8], prefixes: usize) -> Option<usize> {
     }
     let body = &code[prefixes..];
     let first = *body.first()?;
-    let vex = matches!(first, 0xc4 | 0xc5 | 0x62);
+    let vex = matches!(first, VEX3 | VEX2 | EVEX);
     let wide = !vex && rex.is_some_and(|r| r & REX_W != 0);
     let operand16 = operand16 && !vex && !wide;
     let (map, at) = match (first, body.get(1)) {
-        (0xc5, _) => (1, 2),
-        (0xc4 | 0x62, Some(&fields)) if fields & 3 != 0 => {
-            (fields & 3, if first == 0xc4 { 3 } else { 4 })
-        }
-        (0xc4 | 0x62, _) => {
+        (VEX2, _) => (MAP_0F, VEX2_LENGTH),
+        (VEX3 | EVEX, Some(&fields)) if fields & VEX_MAP_LOW != 0 => (
+            fields & VEX_MAP_LOW,
+            if first == VEX3 {
+                VEX3_LENGTH
+            } else {
+                EVEX_LENGTH
+            },
+        ),
+        (VEX3 | EVEX, _) => {
             let length = prefixes + 1 + modrm_length(body.get(1..)?)?;
             return (length <= code.len()).then_some(length);
         }
-        (0x0f, Some(&escape)) if (0x38..=0x3f).contains(&escape) => (2 + (escape >> 1 & 1), 2),
-        (0x0f, _) => (1, 1),
-        _ => (0, 0),
+        (ESCAPE, Some(&escape)) if ESCAPES_THREE_BYTE.contains(&escape) => {
+            let map = if escape & ESCAPE_0F3A != 0 {
+                MAP_0F3A
+            } else {
+                MAP_0F38
+            };
+            (map, 2)
+        }
+        (ESCAPE, _) => (MAP_0F, 1),
+        _ => (MAP_ONE_BYTE, 0),
     };
-    let opcode = usize::from(*body.get(at)?);
+    let opcode = *body.get(at)?;
     let rest = body.get(at + 1..)?;
     let kind = match map {
-        0 => ONE_BYTE[opcode],
-        1 if vex && (0x38..=0x3f).contains(&opcode) => b'.',
-        1 => TWO_BYTE[opcode],
-        2 => b'm',
-        _ => b'i',
+        MAP_ONE_BYTE => ONE_BYTE[usize::from(opcode)],
+        MAP_0F if vex && ESCAPES_THREE_BYTE.contains(&opcode) => After::Nothing,
+        MAP_0F => TWO_BYTE[usize::from(opcode)],
+        MAP_0F38 => After::ModRm,
+        _ => After::ModRmImm8,
     };
-    let z = if operand16 { 2 } else { 4 };
+    let z = if operand16 {
+        size_of::<u16>()
+    } else {
+        size_of::<u32>()
+    };
     let modrm = || modrm_length(rest);
-    let reg_low = || rest.first().map(|m| m >> 3 & 7 < 2);
+    let reg_low = || rest.first().map(|m| m >> MODRM_REG_SHIFT & MODRM_FIELD < 2);
     let after = match kind {
-        b'.' => 0,
-        b'm' => modrm()?,
-        b'i' => modrm()? + 1,
-        b'I' => modrm()? + z,
-        b'r' | b'b' => 1,
-        b'w' => 2,
-        b'e' => 3,
-        b'z' => z,
-        b'd' => 4,
-        b'v' => {
+        After::Nothing => 0,
+        After::ModRm => modrm()?,
+        After::ModRmImm8 => modrm()? + size_of::<u8>(),
+        After::ModRmImmZ => modrm()? + z,
+        After::ModRmIgnored | After::Imm8 => size_of::<u8>(),
+        After::Imm16 => size_of::<u16>(),
+        After::Imm16Imm8 => size_of::<u16>() + size_of::<u8>(),
+        After::ImmZ => z,
+        After::Imm32 => size_of::<u32>(),
+        After::ImmV => {
             if wide {
-                8
+                size_of::<u64>()
             } else {
                 z
             }
         }
-        b'p' => z + 2,
-        b'o' => {
+        After::FarPointer => z + size_of::<u16>(),
+        After::Address => {
             if address32 {
-                4
+                size_of::<u32>()
             } else {
-                8
+                size_of::<u64>()
             }
         }
-        b'g' => modrm()? + usize::from(reg_low()?),
-        b'G' => modrm()? + if reg_low()? { z } else { 0 },
-        other => unreachable!("no kind {}", other as char),
+        After::GroupImm8 => modrm()? + if reg_low()? { size_of::<u8>() } else { 0 },
+        After::GroupImmZ => modrm()? + if reg_low()? { z } else { 0 },
     };
     let length = prefixes + at + 1 + after;
     (length <= code.len()).then_some(length)
@@ -200,18 +281,18 @@ fn cpu_length(code: &[u8], prefixes: usize) -> Option<usize> {
 /// when they run past the end. 32-bit addressing (67) lays them out the same in 64-bit mode.
 fn modrm_length(rest: &[u8]) -> Option<usize> {
     let modrm = *rest.first()?;
-    let (mode, rm) = (modrm >> 6, modrm & 7);
+    let (mode, rm) = (modrm >> MODRM_MODE_SHIFT, modrm & MODRM_FIELD);
     let mut length = 1;
-    if mode != 3 && rm == 4 {
+    if mode != MODE_REGISTER && rm == RM_SIB {
         let sib = *rest.get(1)?;
         length += 1;
-        if mode == 0 && sib & 7 == 5 {
-            length += 4;
+        if mode == 0 && sib & MODRM_FIELD == RM_DISPLACEMENT32 {
+            length += size_of::<u32>();
         }
     }
     length += match (mode, rm) {
-        (1, _) => 1,
-        (2, _) | (0, 5) => 4,
+        (MODE_DISPLACEMENT8, _) => size_of::<u8>(),
+        (MODE_DISPLACEMENT32, _) | (0, RM_DISPLACEMENT32) => size_of::<u32>(),
         _ => 0,
     };
     Some(length)
