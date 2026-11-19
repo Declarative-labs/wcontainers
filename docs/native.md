@@ -752,9 +752,17 @@ with no add, load 37 to 73; docs/status-native.md): under E every counted event 
 its straight-line run, so a run holds at most one event and there is nothing to merge; the placement is the
 freedom left. Geometric mean of the median cycle ratios: the add right before its event (round 3's En) +13.7%
 [+12.2 .. +15.0], before the compare a conditional branch reads +11.0% [+9.6 .. +13.0], at the start of the
-event's run +10.5% [+9.6 .. +12.3]. The start of the run is chosen; the speed bar's E figure is +10.5%. What
-is left is mostly two workloads (search +52%, interpret +23%) whose short loops carry two counted events per
-pass, so two adds on the count register's chain of dependent adds bound the loop.
+event's run +10.5% [+9.6 .. +12.3]. The independent check's repeat (405 pairs, load 19 to 151): before
++12.0% [+8.9 .. +13.3], before the compare +10.4% [+8.9 .. +11.3], start of the run +10.5% [+9.3 .. +12.3].
+So the add right before its event is the dearest, and the other two cannot be told apart (their intervals
+overlap, and the two runs order them differently). The start of the run is chosen as the simpler rule (one
+place a run, whatever the event); the speed bar's E figure is +10.5%. At look-ahead none a run is one
+instruction, so the add sits right before its event there (+12 to +13.7%); the start of the run applies at
+bounded and full look-ahead. These figures come from clang's output with the adds put in by a script, one
+rule per placement, not from the native emitter's own output: no whole program runs on that output before
+N3, which measures it again. What is left is mostly two workloads (search +52%, interpret +23%) whose short
+loops carry two counted events per pass, so two adds on the count register's chain of dependent adds bound
+the loop.
 
 **Why it keeps positions unique.** A position is reached at most once in a run only if no path of the
 guest's control flow comes back to the same pc without a counted event. Every path that comes back to a pc
@@ -774,9 +782,16 @@ at N4; both outputs together at N6. Seeded, with the seed and the number of prog
 arguments. N2 already checks the native side on guest functions: its emitter makes, at every look-ahead, the
 straight-line run from a piece's start (one instruction at none, at most n at bounded, to the first
 transfer at full), with the run's add at its start; at look-ahead none every boundary is a stop, and at each
-look-ahead every stop and every forced interrupt (one after each host instruction) must resolve to one of
-those boundaries, count included, in order, and every boundary must be reached
-(crates/wcontainers-hypervisor/tests/interrupts.rs). Pieces with branches inside them come with N4.
+look-ahead every stop and every forced interrupt (one at each host instruction the guest's level is about to
+run: after each stepped instruction, and at every return from the inside, which software step does not
+reach) must resolve to one of those boundaries, count included, in order, and the run must go on from it to
+the unbroken run's end. Every boundary must be reached, except one at a Nothing-route instruction inside a
+run of more than one instruction: that instruction has no host bytes, so the host instruction before it is
+the one before its successor, and the position map names the successor (the same count and registers); only
+a stop asked for at that pc, replay's check, lands there (crates/wcontainers-hypervisor/tests/interrupts.rs).
+Intermediate states are checked against definition E and the native look-ahead-none run; the WebAssembly
+output is compared at each function's end, and stop by stop at N6. Pieces with branches inside them come
+with N4.
 
 **An interrupt between an add and its transfer.** An interrupt can land at any host instruction. Every host
 sequence that carries one guest instruction has one commit point: the one host instruction at which the
@@ -1640,7 +1655,9 @@ the ruling).
   store exclusive's faults, `clrex` between a load and a store exclusive, the hint space with full-width
   x30, every float status form after a float operation that raised flags (tracking on and off, FPCR
   default and not), every load and store across a page boundary with each page refusing, and every
-  register collision of section 3.4 are among its cases. The behaviour probe (section 5.8) runs on this
+  register collision of section 3.4 are among its cases, and each drawn load or store exclusive also runs
+  with its partner (same size and base), so the monitor one leaves or finds is compared through the store's
+  status and memory. The behaviour probe (section 5.8) runs on this
   M5 and its verdict and time are recorded (it is a record for decision 14, not a pass condition, as
   section 5.8 says).
 - **N3, the first real programs.** The kernel and the `no_std` loop inside with the test crate's policy,
