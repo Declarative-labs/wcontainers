@@ -2578,6 +2578,24 @@ Missing (5, each counted "system call not implemented" and ENOSYS), with what ea
 
 ## Known gaps (with reasons)
 
+The LTP tests these excuse, as decided in K6c's eleventh run without the owner's answers
+(Questions; each also under Departures):
+- Page residency is not known: the Cpu trait does not say which pages a program has touched, so
+  every mapped page counts as resident (mincore, counted "residency not tracked"), smaps has no
+  Rss lines, pagemap is not built, mlock2's on-fault counts and the cgroup's memory counts are
+  not kept. Excused: mincore03, mlock201, mlock05, mmap12, vma01. Built when the CPU side reports
+  touched pages (the streams track's written-page record is a start: it reports writes only).
+- Layout is not randomized (aslr01; kernel.randomize_va_space is not built, ENOENT): to be built
+  with the brief's low-first mapping placement, from the host's randomness.
+- IPV6_RTHDR (setsockopt11, cve-2026-53362): routing headers reroute IPv6 packets, and the made-up
+  network has no IPv6 route outside the container; section 15's "the network is not Linux's
+  network stack".
+- The test harness, not the kernel: the test backend (fuse-backend-rs's passthrough) holds host
+  descriptors for each open file and stops near 524273 (fork09, creat05, fcntl12, fcntl12_64,
+  where the guest's opens fail before RLIMIT_NOFILE), and has no TMPFILE (openat03, answered as
+  Linux's FUSE answers with such a server); the guest's repeatable clock skips idle waits while
+  the backend stamps real times (copy_file_range03).
+
 - Lock waiters wait on one channel for all files: a change to any owner's record locks, or the last
   close of an open file holding locks, wakes every lock waiter, where Linux wakes only those blocked
   on the lock that changed. A waiter woken for nothing is out of `posix_locks_deadlock`'s loops until
@@ -3471,6 +3489,15 @@ All on this shared Mac; noisy, not benchmarks.
 
 ## Departures from the plan
 
+- K6c, eleventh run: the owner's questions on page residency, layout randomization, IPV6_RTHDR
+  and the harness causes (Questions) had no answer after six runs, so K6c's gap list decides them
+  (Known gaps, first part): residency, IPV6_RTHDR and the harness causes are excused, layout
+  randomization is a gap to build with mapping placement. An answer that differs reopens them.
+- K6c, eleventh run: the owner's ruling that host calls take `&self` and the host trait requires
+  `Sync` changed the runtime crate's `System` (its writers and warnings behind locks,
+  `warnings()` now returns a copy) and one line of the wasmtime crate's binary, which this track
+  does not own: without them the workspace did not build. The streams track's `System: Host`
+  (phase-1-streams) will meet this change at its next merge.
 - K6c, eighth run: the merge of origin/phase-1 changed the runtime crate, which this track does
   not own (the `Outside` trait's `standard` and `started`, and `System` on the stream ends):
   without them neither side built, as phase-1 had the streams track's `Host` and main's crate
@@ -4008,6 +4035,9 @@ guest).
 - K2, first run: none. (Event, Host and the rest are used as they were.)
 
 ## Questions for the orchestrator (boundary)
+
+Unanswered since the fifth to tenth runs; the eleventh run decided each as written under Known
+gaps (and Departures) so that K6c's gap list could be final. An answer that differs reopens it.
 
 - Layout randomization (tenth run): aslr01 fails as nothing is randomized. Build it with the
   brief's low-first mapping placement (proposed), or name it in section 15?
