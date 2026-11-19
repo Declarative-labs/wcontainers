@@ -131,7 +131,25 @@ Measured:
   the flags or those registers (a callee's own liveness at entry); that stays a design question for the
   translator.
 
-Proof at the end of run 4: see the end of this section once the long runs below have finished.
+- Layer 1 for every shift, rotate, bt, bts, btr, btc, clc, stc and cmc form (123 forms), 1,000 cases a form,
+  seed 4405, after the shape change (`l1-shapes.log`, 2,017 s, Mac load 7 to 90, i7-8750H load 4 to 14): 120
+  forms with 0 mismatches; 3 (Rol_rm8_1, Ror_rm8_imm8, Sar_rm32_1) stopped when SSH to the x86 machine timed
+  out five times; run again alone with the same seed (`l1-shapes-again.log`): 0 mismatches.
+- X4's layer 2 bar after this run's changes, at a new seed (d4ad56d2, seed 31337, 10,000 programs, every one
+  at full in both settings, plain and stopping everywhere, bounded, mixed, against none and on the i7-8750H,
+  the first in Chrome; `l2-seed31337-10000.log`, 2,247 s, 3 at once): 9,997 with 0 mismatches; 3,483 faulted,
+  1,257 left to an address at full, 23,568 stacks lost and 23,506 pieces forgotten. Cases 676, 3192 and 5711
+  stopped in the same SSH outage; each run again alone (`l2-seed31337-again.log`): 0 failing. So 10,000 with 0
+  mismatches.
+
+Proof at the end of run 4: the whole suite (below).
+
+Left for later (in order; none is in X4's bar):
+1. interpret's absolute switch table (plan 3.4's decision, for X9).
+2. The flags word handed to every callee and the passed-in-only registers (measured above: 12.1% and 6.5% of
+   fib's instructions): a callee's liveness at entry would let both go; a translator design question.
+3. hash's 1.9% more instructions after the shape change, not explained.
+4. `programs_match_linux` for x86 still reaches `bsr` and `bswap` (X5's list); layer 3 is X5's.
 
 ## X4, run 3 (2026-11-18)
 
