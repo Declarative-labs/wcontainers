@@ -764,7 +764,12 @@ seeded positions under every look-ahead setting (none, bounded, full) and under 
 and native), and requires, at every stop, the same count for the same pc and the same final count. The
 WebAssembly side runs at T2 (the WebAssembly output counting by `counted`); the native side's look-aheads
 at N4; both outputs together at N6. Seeded, with the seed and the number of programs and stops as
-arguments.
+arguments. N2 already checks the native side on guest functions: its emitter makes, at every look-ahead, the
+straight-line run from a piece's start (one instruction at none, at most n at bounded, to the first
+transfer at full), with the run's add at its start; at look-ahead none every boundary is a stop, and at each
+look-ahead every stop and every forced interrupt (one after each host instruction) must resolve to one of
+those boundaries, count included, in order, and every boundary must be reached
+(crates/wcontainers-hypervisor/tests/interrupts.rs). Pieces with branches inside them come with N4.
 
 **An interrupt between an add and its transfer.** An interrupt can land at any host instruction. Every host
 sequence that carries one guest instruction has one commit point: the one host instruction at which the
@@ -1597,8 +1602,10 @@ the ruling).
   give back. Every report names its case, and the test checks that every case of the bar reported exactly
   once.
 - **N2, the native ARM64 output, instruction by instruction.** `Native` for ARM64, the small encoder, every
-  route of section 3.4 at look-ahead none, the stand-in register for withheld ones, the position map, run at
-  EL0 on N1's floor with no kernel: each case's state is set by the floor and read back by it. Needs no
+  route of section 3.4 at look-ahead none (and straight-line runs at the other look-aheads, for the count's
+  placement and the test across look-aheads of section 4), the stand-in register for withheld ones, the
+  position map, run at EL0 on N1's floor with no kernel: each case's state is set by the monitor and read
+  back by it at a gate the cases program calls (the floor's own entry keeps no vector state). Needs no
   other track's work; its changes in other tracks' crates are this track's, as the orchestrator allows by
   name (section 6.2, G1): the `Native` trait in wcontainers-guest-cpu, its ARM64 implementation and the
   static routing test in wcontainers-arm64, and the native emitter in wcontainers-translator behind a cargo
@@ -1611,8 +1618,9 @@ the ruling).
   store exclusive's faults, `clrex` between a load and a store exclusive, the hint space with full-width
   x30, every float status form after a float operation that raised flags (tracking on and off, FPCR
   default and not), every load and store across a page boundary with each page refusing, and every
-  register collision of section 3.4 are among its cases. The behaviour probe (section 5.8) passes on this
-  M5, and its time is recorded.
+  register collision of section 3.4 are among its cases. The behaviour probe (section 5.8) runs on this
+  M5 and its verdict and time are recorded (it is a record for decision 14, not a pass condition, as
+  section 5.8 says).
 - **N3, the first real programs.** The kernel and the `no_std` loop inside with the test crate's policy,
   translation on the host through the link, the count's adds from the shared `counted` (or, until T2, the
   same function in this track's code, moved at T2), one process at a time. Needs decision 1 and its changes

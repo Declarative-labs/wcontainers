@@ -15,8 +15,11 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - The literal check is merged (its second version of the rules, phase-1-literals at 7119e3f3, in 21321c7e)
   and this branch's baseline started at e4b998bd. The check fails, on main's code only: see "Literals".
 - main is merged (787f8ceb, N2 run 1): the owner's names are in the plan's text and its runtime citations.
-- N2 (the native ARM64 output) is in progress, runs 1 and 2 done: see "N2" below for what is built, what is
-  measured and exactly what comes next. N3 needs decision 1 (R1, R3). N6 needs K2 (below).
+- N2 (the native ARM64 output): every item of its bar is built and passes; see "N2 run 4" below for this
+  run, its measurements and what is left for the independent check. N3 needs decision 1 (R1, R3). N6 needs
+  K2 (below).
+- The literal check's fourth version of the rules is merged (e9ebf95e; init only re-sorted the baseline) and
+  the check passes on the whole tree (exit 0; main's 53 findings of run 1 are gone with it).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
   and 10's final choice, which N1's trial narrows: option C does not work on Hypervisor.framework (below),
   so it is A or B.
@@ -109,7 +112,7 @@ Run 2 (2026-11-18; merged phase-1-literals ace0433d, docs only, in 4eaf24a9; mai
 - The existing tests of wcontainers-guest-cpu, wcontainers-arm64, the inside and the monitor pass (floor: 21
   cases and 1 measurement, 0 failed, load 70); the literal check shows only main's 53 findings, as before.
 
-Not done yet, in order (the next run starts here):
+Run 2's list of what was not done (kept as written then; run 3 built the runner, run 4 finished it, below):
 1. A runner on the floor: a program in the inside package (as floor-cases is; `src/bin/native-cases`
    suggested) that maps layer 1's data area (crates/wcontainers-translator-test/src/layer1.rs: `DATA`,
    `DATA_WRITABLE` read-write, the rest read-only) and the code region readable (literal loads read it) at
@@ -144,6 +147,94 @@ Not done yet, in order (the next run starts here):
 3. A forced interrupt at every host offset (EL1 software step, plan 4) with the reported count and pc
    checked; the behaviour probe passing on this M5 with its time recorded.
 4. E's cost measured again on the real emitter's output, and the independent check's own runs.
+
+## N2 run 4 (2026-11-18 evening; this file had no section for run 3, whose 21 uncommitted files are here)
+
+Run 3 built a runner, the differential test and the forced interrupt test but committed nothing. This run
+read them, kept them (with the fixes below) and committed them in steps. main had nothing new;
+phase-1-literals' fourth version of the rules was merged (e9ebf95e).
+
+How the runner gets the guest's vector and float state through (run 2's blocker, settled without the
+flake): the cases program (crates/wcontainers-inside/src/bin/native-cases, a test program in the inside's
+package like floor-cases, with its own requests in protocol.rs) maps layer 1's data area (writable, then
+read-only), the code area's guest words (readable), the pieces (execute-only, in the global half), a
+register page and a gate page, and calls the gate for each run. The gate page holds vectors that are all
+`hvc #1` to the monitor and, after them, `hvc #1; eret; ret`. At the gate the monitor keeps the inside's
+registers (vectors included), sets the guest's EL0 state directly (x0 to x30, SP_EL0, TPIDR_EL0, FPSR, FPCR,
+v0 to v31, ELR_EL1, SPSR_EL1, MDSCR_EL1 for software step) and lets `eret` go to the guest's level; every
+exception from there reaches the monitor before the inside's code runs, and when the run ends the inside's
+registers go back and the gate returns. So nothing of the inside touches the guest's float state, and no
+target or floor assembly changed. The monitor gained the registers this needs (`Register::StackEl0` and
+the rest) and the vector registers; Hypervisor.framework takes a vector register's value in a vector
+register, which applevisor-sys declares as a `u128` that Rust passes in general registers, so the one call
+is made in C (src/hvf_vector.c, built by `cc`). `hvc #0` is not used: Hypervisor.framework answers an
+`hvc #0` whose x0 reads as an SMCCC fast call itself and never exits.
+
+Built and committed this run (each its own commit):
+- 53e2db3b, wcontainers-arm64: a load exclusive with a stack pointer base read address 0 (`ubfx` reads
+  register 31 as zero) and lost SA0's check (the access goes through t): t now takes the stack pointer by an
+  add, with the check SA0 would make (`STACK_ALIGNMENT`, a quadword) before it; `substitute` moves every
+  field naming a register of a `casp` pair (run 3's fix); `hvc` and `eret` in the encoder for the gate.
+- f2aa3a50, the inside: the native cases program; the vector table's sizes and the syndrome's fields named
+  once (layout.rs, syndrome.rs) and used by floor/entry.rs and both programs.
+- f15cb1d0, the monitor: the registers, the vectors, the shared test module (tests/common: signing, the
+  nested build, the machine, settings, the load average; floor.rs uses it), the runner (tests/runner), the
+  differential test (tests/native.rs) and the interrupt test (tests/interrupts.rs). Two bugs of run 3's
+  test fixed: the WebAssembly side of a function never got its registers, and its table had one slot.
+- 3714fc47, wcontainers-guest-cpu: `HostCode::start(address, counted)`: an add placed earlier in a
+  straight-line run is owed to the counted instruction that ends the run and is taken off at that
+  instruction's commit point; before that every span of the run says the count is one ahead.
+- dbe6ebb8, wcontainers-translator (feature `native` only): `translate_native::<G>(code, address,
+  look_ahead)` makes the straight-line run a look-ahead allows (one instruction at none, at most n at
+  `Bounded(n)`, to the end of the code at full), ended by the first transfer or trap, with the run's add at
+  its start (the placement measured cheapest), and an exit where the run falls through. Under E a run holds
+  at most one event, so there is nothing to merge.
+- 762cf2a6: the interrupt test at every look-ahead (below). Found and fixed on the way: an interrupt that
+  is no stop must go back to the host instruction it came from with the hardware untouched; the runner had
+  applied the float status rule there and so clobbered an `msr fpsr`'s value before its second call.
+- 35bb3e05 (arm64) and 7e2d26d3: one of the bar's own cases beside each drawn load or store
+  (`edge` in tests/runner): chosen by the case's seed, its access placed across one of the data area's three
+  boundaries where a page refuses (nothing mapped below, writable to read-only, read-only to nothing) at an
+  offset within the access, the same with a tag in the base's top byte, the base with bit 55 set, or (forms
+  that check alignment) the base moved off it. They found: the probes of a crossing access with a stack
+  pointer base went through t and so faulted before SA0's check: that check now comes first in the
+  crossing path (out of line, so the common path costs nothing more); a stack pointer alignment fault is
+  reported at the stack pointer as the meaning has it (tag and all), and a fault's address is the access's
+  first byte or the next page's first byte, the pages told apart by the bits below the tag (a load exclusive
+  untags with `ubfx`, so the hardware's fault address can lack the guest's top byte).
+- 5d14c87f: the behaviour probe as a test (tests/probe.rs, below).
+
+Tests and results (M5 Max, macOS 27.2):
+- Differential test, every presented form (1215) against the WebAssembly output under wasmtime:
+  64 drawn cases per form plus 32,400 of the bar's own, 110,160 cases, seed 0x2545f4914f6cdd1d: 0 failing
+  (100 s, load 35 to 63). The 1000-per-form run: see "The bar's long run" below.
+- The forced interrupt test: six functions (a loop summing through two withheld registers; calls through a
+  frame, `bl`, `blr` and a leaf; an exclusive loop, `cas`, a load, a store and a pair across a page and the
+  float status; `clrex` between a load and a store exclusive; a load and a store exclusive at the same
+  writable address, the same read-only one (the store faults), different ones, and a misaligned store;
+  every float status form after an `fdiv` that raised a flag, with tracking on and off and FPCR default and
+  not), 12 runs in all, each at look-aheads none, bounded 3 and full: 1419 forced interrupts, 0 failed
+  (0.5 to 0.9 s, load 29 to 64). At bounded and full the runs are real runs (sum: 36 pieces run at none, 17
+  at bounded 3, 9 at full), so interrupts land between a run's add and its transfer; each resolved to a
+  boundary of look-ahead none with the same count and registers, and every boundary was reached. Each
+  function's end matched the WebAssembly output at all three look-aheads.
+- The behaviour probe (4 words drawn per form, seed 0x27bb2ee687b0b0fd): 279 forms take the Split route's
+  test, 38,916 placements (every byte offset across each of the three refusing boundaries). 0 forms of 16
+  bytes or fewer differ from the meaning: this M5 would pass. 44 forms of more than 16 bytes differ, all
+  as section 3.4 says (part of the registers loaded or 16 bytes written), among them the 24-byte ones
+  (`ld1` and `st3` of three 8-byte registers). The hardware's runs took 4.4 s; the whole test 401 s, nearly
+  all of it the WebAssembly side's compiles (load 79 to 100). Log: scratch native/n2r4-probe.log.
+- Unchanged and passing: the routing test (1,050,063 words), the encoder test, the structure test
+  (1,050,058 words), the floor (21 cases, 1 measurement, 0 failed, load 52 to 66), the whole arm64 and
+  guest-cpu suites. The translator crate's default build and output are untouched (only `native.rs`, the
+  feature's two lines in lib.rs and Cargo.toml's feature differ from main).
+
+The bar's long run: `WCONTAINERS_NATIVE_CASES=1000 WCONTAINERS_NATIVE_SEED=0x2545f4914f6cdd1d`, result
+below when it ends.
+
+What is left for N2: the independent check (its own seed through the differential test, the forced
+interrupts, the cost measurement again, the WebAssembly output unchanged, the literal check). The count's
+cost was measured in run 1 (below) with the add at the start of the run, which is what the emitter places.
 
 ## E's cost by placement (N2 run 1)
 
@@ -208,7 +299,14 @@ checked equal. M5 Max, macOS 27.2, 2026-11-18 16:44 to 16:57, load 37 to 73. One
 ## How to run
 
 From the checkout, in the Nix shell:
-- N2 so far: `nix develop -c cargo test -j 4 -p wcontainers-arm64 --test native_routes --test encode --
+- N2's tests on the machine (each signs a copy of itself, as the floor test does):
+  `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test native` (knobs `WCONTAINERS_NATIVE_CASES`
+  drawn cases per form, default 16; `WCONTAINERS_NATIVE_SEED`; `WCONTAINERS_NATIVE_FORMS` a comma-separated
+  list of form names; `WCONTAINERS_NATIVE_JOBS` threads for the WebAssembly side, default 3; the bar is
+  `WCONTAINERS_NATIVE_CASES=1000`, about 30 to 60 minutes here), `--test interrupts` (no knobs; under a
+  second) and `--test probe` (knobs `WCONTAINERS_PROBE_WORDS`, default 4, and `WCONTAINERS_PROBE_SEED`; about
+  7 minutes);
+- N2's tests without the machine: `nix develop -c cargo test -j 4 -p wcontainers-arm64 --test native_routes --test encode --
   --nocapture` (knobs `WCONTAINERS_ROUTES_SEED`, `WCONTAINERS_ROUTES_WORDS`, `WCONTAINERS_ENCODE_SEED`,
   `WCONTAINERS_ENCODE_CASES`, decimal), `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test carry
   -- --nocapture` (knobs `WCONTAINERS_CARRY_SEED`, `WCONTAINERS_CARRY_WORDS`) and `nix develop -c cargo test
@@ -358,6 +456,9 @@ end (ceiling just under 4 GiB) and the native one (2^45), which replay across th
 
 ## Licences of what N1 added (crates.io, 2026-11-18)
 
+N2 run 4: the monitor builds src/hvf_vector.c with `cc` 1.11.2 (MIT OR Apache-2.0, already in Cargo.lock),
+and its tests use `proptest` 1.12.0 (MIT OR Apache-2.0) and the workspace's wcontainers-translator-test.
+
 applevisor 1.0.0 and applevisor-sys 1.0.0 MIT OR Apache-2.0; aarch64-paging 0.12.3 MIT OR Apache-2.0;
 aarch64-cpu 12.0.0 and tock-registers 0.12.0 MIT/Apache-2.0; arm-gic 0.11.0, arm-sysregs 0.5.2 and
 safe-mmio 0.4.0 MIT OR Apache-2.0; spin 0.10.1 MIT; object 0.37.3 Apache-2.0 OR MIT; libc MIT OR
@@ -390,6 +491,10 @@ messages).
 - The changes that could add lines, as the check lists them: 0e0f1102 the start, e4b998bd the init after
   the baseline arrived by a merge, 21321c7e new rules, 68214b2e the start (literals branch), 89f88281 and
   7119e3f3 new rules (literals branch).
+- Baseline lines in this track's files: 26 at this run's end (all in the inside and the monitor), none in
+  the native modules of other tracks' crates; this run added none (the check refused four new literals of
+  run 3's tests, which now import `LINK`, `TAG_LOW`, `STACK_ALIGNMENT` and `Arm64::MAX_LENGTH` and use their
+  own seed and names).
 - The native crates' lines are all text, none a number: assembly the crates offer no call for (`hvc #0`
   in the doorbell, `dc cvau` and `ic ivau`, the entry and vectors in floor/entry.rs, and the floor cases'
   EL0 snippets with their labels and `extern "C"`). The two `tlbi` strings left in N2 run 1.
@@ -506,6 +611,19 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 ## Departures from the plan
 
+- N2 run 4, the runner: each case's state is set and read by the monitor at a gate the cases program calls,
+  not by the floor (the floor's entry keeps no vector state); the plan's N2 text says so now.
+- N2 run 4, look-ahead in the native emitter: none, bounded and full make straight-line runs only (a piece
+  stops at its first transfer); pieces with branches inside come with N4. Every guest address of a function
+  gets its own piece in the tests, as the WebAssembly output's starts do.
+- N2 run 4, the behaviour probe is a record, not a pass condition (section 5.8 said so; section 9's N2 text
+  said "passes" and now says "recorded"). Its forms are those the native output gives the Split route's
+  test; the verdict is on those of 16 bytes or fewer, which a passing host would copy.
+- N2 run 4, the bar's own cases for loads and stores are made from drawn cases (one beside each) at the
+  three boundaries layer 1's data area has, since layer 1's layout is the translator track's; store
+  exclusive faults, `clrex` and the float status forms are functions in the interrupt test, so they also
+  take a forced interrupt at every host instruction.
+
 - N2 run 2, where the ARM64 sequences live: in wcontainers-arm64 (carry.rs), with `access`; the translator's
   native module is the generic loop. The translator knows no one CPU.
 - N2 run 2, the entry mirror's facts are wcontainers-arm64's (mirror.rs, in its `no_std` core), and the inside
@@ -564,10 +682,10 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 ## For the orchestrator
 
-- N2's runner needs the guest's float and vector state kept across exceptions in the floor: either the
-  `aarch64-unknown-none-softfloat` target added to the flake's Rust (preferred; the inside then never
-  touches that state), or one addition to the literal baseline for floor/entry.rs's changed assembly. See N2,
-  "Not done yet", item 1.
+- Run 2's ask (the guest's vector state across the floor's exceptions) is no longer needed for N2: the
+  runner sets and reads the guest's level from the monitor at a gate (N2 run 4). The inside proper still
+  needs it from N3 on (a kernel at EL1 that never touches the vector registers, or saves them); the
+  `aarch64-unknown-none-softfloat` target in the flake remains the expected way.
 
 - Decision 10: option C does not work on Hypervisor.framework on this M5 (no event counters; the cycle
   counter's overflow raises nothing). By the plan's recommendation the choice is now A or B, the owner's.
