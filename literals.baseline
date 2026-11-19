@@ -8132,8 +8132,6 @@ code	crates/wcontainers-wasmtime/src/lib.rs	int	CpuSide<G>::copy_from	4
 code	crates/wcontainers-wasmtime/src/lib.rs	int	CpuSide<G>::new_process	65536
 code	crates/wcontainers-wasmtime/src/lib.rs	int	CpuSide<G>::slot_entry	4
 code	crates/wcontainers-wasmtime/src/lib.rs	int	Key	32
-code	crates/wcontainers-wasmtime/src/lib.rs	int	code_line_changed	63
-code	crates/wcontainers-wasmtime/src/lib.rs	int	code_line_changed	64
 code	crates/wcontainers-wasmtime/src/lib.rs	int	hooks	3
 code	crates/wcontainers-wasmtime/src/lib.rs	int	hooks	4
 code	crates/wcontainers-wasmtime/src/lib.rs	int	hooks	5

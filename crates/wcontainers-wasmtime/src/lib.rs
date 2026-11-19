@@ -1945,16 +1945,16 @@ impl<G: Guest<Block = RegisterBlock>> starts::Guest for Reader<'_, G> {
     }
 }
 
-/// The guest's own code changed hook (ARM64 `ic ivau`): drops the pieces of the line at the address,
-/// and of the same line wherever its block of shared pages is shown, as the instruction reaches every
-/// CPU.
-fn code_line_changed<G>(caller: &mut Caller<'_, Data<G>>, address: u64)
+/// The guest's own code changed hook (ARM64 `ic ivau`): drops the pieces of the `size` bytes (a power of
+/// two) at the address, and of the same line wherever its block of shared pages is shown, as the
+/// instruction reaches every CPU.
+fn code_line_changed<G>(caller: &mut Caller<'_, Data<G>>, address: u64, size: u64)
 where
     G: Guest<Block = RegisterBlock>,
 {
     let side = side(caller);
     let memory = caller.data().memory;
-    let line = address & !63;
+    let line = address & !(size - 1);
     let mut lines = vec![(memory, line)];
     if let Some((block, offset)) = side.shown_at(memory, line) {
         for (other, process) in &side.processes {
@@ -1969,7 +1969,7 @@ where
     lines.sort_unstable();
     lines.dedup();
     for (memory, line) in lines {
-        if side.forget(memory, line..line + 64) {
+        if side.forget(memory, line..line + size) {
             let process = side.processes.get_mut(&memory).expect("a memory");
             if let Some(range) = process.ranges.iter_mut().find(|r| r.range.contains(&line)) {
                 range.changed = true;
@@ -2064,10 +2064,10 @@ where
                 }
                 answer(&caller).clock(progress) as i64
             }),
-            HookBody::CodeChanged => Func::wrap(
+            HookBody::CodeChanged { line } => Func::wrap(
                 &mut *store,
-                |mut caller: Caller<'_, Data<G>>, address: i64| {
-                    code_line_changed(&mut caller, address as u64)
+                move |mut caller: Caller<'_, Data<G>>, address: i64| {
+                    code_line_changed(&mut caller, address as u64, u64::from(line))
                 },
             ),
             HookBody::Cpu => {
