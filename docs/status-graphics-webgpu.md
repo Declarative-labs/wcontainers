@@ -250,6 +250,14 @@ Run 21 = G2c run 3, 2026-11-18:
   into buffers and three-channel copies at 16384 texels exact in Chrome, timestamps without
   developer features in 65,536 ns steps. e54cf4cb after it changes only examples/frames.rs.
 - Frame time: Measurements, run 21.
+- After this run's merges, -direct3d-11, -shaders and -webgl moved again (8, 3 and 11 commits,
+  among them interface and shared suite changes, and a two-line change to this crate's
+  Cargo.toml from -direct3d-11): not merged in this run, so the tests above are on this run's
+  merge; the next run merges them first and reruns both full runs.
+- Removed at the end: the desktop's C:\wc\target\phase-2-graphics-webgpu (16.53 GB, debug and
+  release) and the checkout's own target on the Mac (1.4 GB of `cargo check`); scratch holds logs,
+  pictures and load samples only (383 MB). Nothing new installed on the desktop (`typeperf` is
+  Windows' own).
 
 Run 20 = G2c run 2, 2026-11-18:
 - Merged origin/phase-2-graphics (G1c: the ruling on depth and stencil copies within one
@@ -1742,16 +1750,16 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
    first component on wgpu's Direct3D 12 path, tested; check that the converted program for
    test_depth_stencil_sampling reads the first component and moves it to the second
    (`STENCIL_READ`), and that its stencil clear reaches the texture.
-8. Load sampling as part of frames/run (run 21 ran `typeperf` beside it by hand, and missed
-   doom's recorded runs): start it with each recorded run and print the mean with the breakdown.
-9. The literal sweep, the parts left (Run 21's list).
-10. Report wgpu-hal's Direct3D 12 gap overwrite upstream (Departures).
 7. Frame time, what is left: the GPU thread's 10 ms a frame in the Vulkan driver's acquire is the
    wait for the display's next image under FIFO (Direct3D's `Present(1)`), which the NVIDIA Vulkan
    driver spins in rather than sleeps; acquiring later in the frame moves the wait, and another
    present mode changes what the program asked for, so neither is taken. Find why some programs'
    runs on the hidden desktop last far longer than their frames (godot-platformer-2d-d3d12's
    pair), so the breakdown can be taken for Godot.
+8. Load sampling as part of frames/run (run 21 ran `typeperf` beside it by hand, and missed
+   doom's recorded runs): start it with each recorded run and print the mean with the breakdown.
+9. The literal sweep, the parts left (Run 21's list).
+10. Report wgpu-hal's Direct3D 12 gap overwrite upstream (Departures).
 
 ## Departures from the plan
 
