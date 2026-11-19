@@ -799,6 +799,10 @@ and depth buffers larger than their targets.
 ## Wine's Direct3D 11 tests through ours
 
 Files passing (the bar: real Direct3D's verdict for every test, except the gap list):
+- d3d11, round 2 run 5 (2026-11-19, RTX 3080 through the queue's hazard group, not alone,
+  rigfix/wine.sh, code at ce2670e8): 143 pass of 165 (logs/r5e-wine.log, 158.5 s of tests), the
+  same 22 failing as at run 4, every one on the gap list. d3d10core: 109 of 111
+  (logs/r5e-wine10.log, 94.3 s), the same 2.
 - d3d11, round 2 run 3 (2026-11-19, RTX 3080 through the queue's hazard group, not alone,
   rigfix/wine.sh, at 9c93bded): 142 pass of 165 (logs/r3e-wine.log, 154.3 s of tests). New:
   test_combined_clip_and_cull_distances. Every failing test on the gap list.
