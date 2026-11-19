@@ -1171,6 +1171,10 @@ impl Context {
     }
 
     fn set_viewports(&self, list: Vec<D3D11_VIEWPORT>) {
+        // More viewports than a pipeline has is invalid: Direct3D keeps the bound ones.
+        if list.len() > D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE as usize {
+            return;
+        }
         let v: Vec<Viewport> = list
             .iter()
             .map(|v| Viewport {

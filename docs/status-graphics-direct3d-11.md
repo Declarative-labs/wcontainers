@@ -1,10 +1,59 @@
 # Direct3D 11 front status
 
 Branch: phase-2-graphics-direct3d-11. Plan: docs/phase-2-graphics.md, milestone G4 (section 12).
-Runs so far: six on G4a, the first slice; then runs 1 to 22 of G4 as a whole (2026-11-17 and
-18; runs 13 to 22 are the orchestrator's second series on G4).
+Runs so far: six on G4a, the first slice; then runs 1 to 23 of G4 as a whole (2026-11-17 and
+18; runs 13 to 23 are the orchestrator's second series on G4).
 
 ## Where things stand
+
+G4 run 23 (2026-11-18, about 16:50 to 18:30 Pacific). Merged origin/phase-2-graphics,
+-shaders and -webgl cleanly (-webgpu, -direct3d-12 and -rig had nothing new). The shaders
+crate now writes targets of another type than the program's output (`targets_in_shader`) and
+reads constant buffers as storage runtime-sized. origin/phase-1-literals exists but is a
+phase-one branch still changing its rules (344 commits, no passing milestone stated), and the
+task allows merging only the graphics branches, so it was not merged (Departures).
+- Layered geometry (plan 4.12, `LayerSplit`, `MultiViewportSplit`): a geometry shader writing
+  `SV_RenderTargetArrayIndex` or `SV_ViewportArrayIndex` is no longer refused. The stage helper
+  runs once; the final draw runs once per layer of the bound target and depth views (all of one
+  layer count, refused by name otherwise or when a view reinterprets its texture), each into
+  views of that layer alone (`View::layers`, made at the first such draw), and per bound viewport
+  with that viewport and its scissor rectangle; each run's layer and viewport go in the
+  pass-through's helpers (`Helpers::of_passthrough`, sized from its module) and in the pixel
+  program's `HelperValue::Layer`/`Viewport` (`ContextState::run`; zero for draws without such a
+  geometry shader, as Direct3D reads them). A primitive naming a viewport past the bound ones is
+  drawn nowhere, as real Direct3D on the RTX 3080 (Wine's test_multiple_viewports). A primitive
+  naming a layer past the view's is drawn nowhere too, where real Direct3D draws it into the
+  view's first layer and its pixel shader still reads the value it named: the pass-through keeps
+  only exact matches (Asked of the shaders track; test_layered_rendering's nine remaining
+  failures are exactly those, in both files). New front test
+  `a_geometry_shader_choosing_layers_and_viewports_draws_once_per_layer_and_viewport`.
+- A vertex or domain shader writing a layer or viewport index is `E_INVALIDARG`, as Direct3D
+  answers on a device without `VPAndRTArrayIndexFromAnyShaderFeedingRasterizer` (which ours
+  reports absent); it was `E_NOTIMPL`.
+- `RSSetViewports` with more viewports than a pipeline has
+  (`D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE`) changes nothing, as real
+  Direct3D. test_multiple_viewports now passes in both files.
+- A pixel output of another kind (float, unsigned, signed) than its target is written as the
+  target's type (`StageVariant::retyped`, the shaders crate's `targets_in_shader`), no longer
+  refused; a normalised target stays refused by the converter (`NormAsInteger`). Wine's
+  d3d10core test_layered_rtv_mismatch passes.
+- Constant buffers indexed at run time (the `dcl_constantbuffer` dynamic-indexed flag,
+  `shader::indexed_constants`) and bound larger than the shader declares are read as storage
+  buffers (`StageVariant::constants_as_storage`, `Helpers::stored`, `ConstantsAsStorage`
+  counted), so an index past the declared array reads the bound bytes as in Direct3D; the
+  binding set binds them at the variant's binding. Constant buffers are made with storage use
+  too. Not on a back end without storage buffers (the WebGL 2 build reads the declared array,
+  clamped). test_cb_relative_addressing passes in both files.
+- Clip distances where the back end has none (`ClipDistanceInShader`; the WebGPU back end on
+  the desktop declares no `CLIP_DISTANCE`): a vertex shader writing them is made with the
+  shaders crate's `CLIP_DISTANCE` variant, passing them at the location past its outputs
+  (`Shader::clip`, `shader::linked_location`), and each draw's pixel program applies them
+  (refused by name without a pixel shader, or when the pixel shader reads past the vertex
+  shader's outputs). Single clip distances from vertex shaders now draw as real Direct3D in
+  test_clip_distance; the test still fails on the converter's `LinkedClipDistanceCount` (two
+  distances) and `ClipDistance` from geometry shaders, and the front's refusal of clip distances
+  from a domain shader (Asked).
+- Results: see the Wine section (filled at the end of the run).
 
 G4 run 22 (2026-11-18, about 13:45 to 17:00 Pacific). Merged origin/phase-2-graphics,
 -webgpu and -shaders cleanly (-webgl, -direct3d-12 and -rig had nothing new beyond them). The
@@ -427,6 +476,10 @@ and depth buffers larger than their targets.
 ## Wine's Direct3D 11 tests through ours
 
 Files passing (the bar: real Direct3D's verdict for every test, except the gap list):
+- d3d11: not passing. G4 run 23 (2026-11-18, RTX 3080 through the queue's hazard group, not
+  alone, rigfix/wine.sh, at 728773d0's tree): 138 pass of the 165 run (27 fail;
+  logs/g4s11f-wine.log). New: test_cb_relative_addressing (constant buffers read as storage),
+  test_multiple_viewports (layered runs and the viewport limit); none lost.
 - d3d11: not passing. G4 run 22 (2026-11-18, RTX 3080 through the queue's hazard group, not
   alone, rigfix/wine.sh, at 3c7b577d's tree): 136 pass of the 165 run (29 fail;
   logs/g4s10j-wine.log). New: test_early_depth_stencil (this run's early tests),
@@ -452,6 +505,14 @@ Files passing (the bar: real Direct3D's verdict for every test, except the gap l
   since run 17: test_nv12.
 - Earlier runs of the file (G4 runs 1 to 17: 11, 56, 73, 68, 72, 74, 78, 79, 82, 88, 90, 104,
   113, 114, 118 and 127 passing) and their gap lists are in this file's git history.
+- d3d10core: not passing. G4 run 23 (RTX 3080 through the queue's hazard group, not alone, at
+  728773d0's tree): 102 pass of 111 (9 fail; logs/g4s11f-wine10.log). New: test_layered_rtv_mismatch,
+  test_cb_relative_addressing, test_multiple_viewports; none lost. The 9: three absent (logic ops
+  and WARP: test_format_support, test_swapchain_formats, test_resource_access), the shaders
+  track's (test_layered_rendering's layers past the view, test_clip_distance's two distances and
+  geometry shader distances, test_combined_clip_and_cull_distances), the WebGPU back end's
+  (test_depth_stencil_sampling), the infrastructure crate's (test_swapchain_flip,
+  test_desktop_window).
 - d3d10core: not passing. G4 run 22's last run (RTX 3080 through the queue's hazard group, not
   alone, at 3c7b577d's tree): 99 pass of 111 (12 fail; logs/g4s10j-wine10.log): the run below's
   14 but test_clear_state and test_state_refcounting, which pass. Each of the 12 is named below:
@@ -489,15 +550,14 @@ Files passing (the bar: real Direct3D's verdict for every test, except the gap l
 - dxgi: the rig has no
   baseline of real Direct3D's verdicts for it.
 
-The gap list, G4 run 22 (the 29 failing tests of the full file at 3c7b577d: run 21's 32 but
-test_early_depth_stencil, test_vs_input_relative_addressing and test_create_texture2d, which
-pass; test_atomic_instructions is quarantined and not run, and is kept in part B; the first
-named refusal, skip or failed check of each, logs/g4s10j-wine.log and the per-test logs, read
-against Wine's d3d11.c in scratch winesrc/). A test is in part A only where the first thing it
-fails on is a feature absent on this stack; everything else is work, in part B, with whose it
-is. Nothing is excluded for convenience: each of the 29 failing tests, and the quarantined one,
-is in exactly one place.
-A. Absent on this stack (gaps), 18 tests:
+The gap list, G4 run 23 (the 27 failing tests of the full file at 728773d0: run 22's 29 but
+test_cb_relative_addressing and test_multiple_viewports, which pass; test_atomic_instructions is
+quarantined and not run, and is kept in part B; the first named refusal, skip or failed check of
+each, logs/g4s11f-wine.log and the per-test logs, read against Wine's d3d11.c in scratch
+winesrc/). A test is in part A only where the first thing it fails on is a feature absent on this
+stack; everything else is work, in part B, with whose it is. Nothing is excluded for
+convenience: each of the 27 failing tests, and the quarantined one, is in exactly one place.
+A. Absent on this stack (gaps), 18 tests (as at run 22):
 - Logic operations (WebGPU has none, so 11_1 is not offered; Wine's helper then asks for WARP,
   which this library does not provide): test_create_shader, test_state_refcounting,
   test_resource_access, test_swapchain_formats, test_format_support, test_shared_resource,
@@ -511,23 +571,19 @@ A. Absent on this stack (gaps), 18 tests:
   test_texture3d_interfaces (their keyed-mutex entries).
 - The 10_0/10_1 rasteriser's corner rule for a negative viewport origin (WebGPU rasterises as
   11_0): test_negative_viewports at levels 10_x.
-B. Work, named (not gaps), 11 tests and the quarantined one:
-- This front's (the shaders crate now converts what they need): geometry shaders writing a
-  layer or viewport, drawn once per layer and viewport (test_layered_rendering,
-  test_multiple_viewports; refused by name at creation); stream output and geometry shaders
-  after a domain shader (test_quad_tessellation; refused by name at the draw, which removes the
-  device, and the test then crashes); clip distances in the program where the back end has
-  none (`VariantFlags::CLIP_DISTANCE`, `ClipDistanceInShader`: test_clip_distance; the WebGPU
-  back end on the desktop declares no `CLIP_DISTANCE`, so the vertex shader is refused at
-  creation).
-- Shaders track: test_atomic_instructions (quarantined after it reset the display driver; the
-  shaders crate has since changed its loops, and the front still refuses `AtomicExchangeLoop`
-  programs; Asked), `GeometryStreams` (test_so_statistics_query), `CullDistance`
-  (test_combined_clip_and_cull_distances), constants read past the declared array
-  (test_cb_relative_addressing).
+B. Work, named (not gaps), 9 tests and the quarantined one:
+- This front's: stream output and geometry shaders after a domain shader (test_quad_tessellation;
+  refused by name at the draw, which removes the device, and the test then crashes; built in
+  run 23 after this run of the file, see Where things stand).
+- Shaders track: a primitive naming a layer past the view's (test_layered_rendering: drawn into
+  the view's first layer with the value it named, nine checks; Asked); `LinkedClipDistanceCount`
+  and `ClipDistance` from a geometry shader (test_clip_distance; its single clip distance from a
+  vertex shader now draws as real Direct3D; also this front's refusal of clip distances from a
+  domain shader); test_atomic_instructions (quarantined after it reset the display driver; the
+  front still refuses `AtomicExchangeLoop` programs; Asked), `GeometryStreams`
+  (test_so_statistics_query), `CullDistance` (test_combined_clip_and_cull_distances).
 - WebGPU back end: stencil views read 0 in the first component on wgpu's Direct3D 12 path
-  (test_depth_stencil_sampling; run 19 moves the stencil in the program as the interface
-  defines).
+  (test_depth_stencil_sampling).
 - Interface and WebGPU back end: a vertex format reading `B8G8R8X8_UNORM` (its fourth byte read
   as one; WebGPU's `unorm8x4-bgra` reads it as alpha): test_vertex_formats runs 98 checks where
   real Direct3D runs 100, since `CheckFormatSupport` claims no vertex use of it.
@@ -545,22 +601,17 @@ B. Work, named (not gaps), 11 tests and the quarantined one:
 
 ## What comes next
 
-After G4 run 22. Done in run 22: early tests before storage writes (both halves), the d3d10core
-failures read and all but two fixed. At the head of the list now:
-- Layered geometry: draw a geometry shader that writes a layer or viewport once per layer of the
-  target views and per viewport (`Stages::selects`, per-layer views of the targets, the
-  pass-through's `PASSTHROUGH_HELPERS` and the pixel program's `HelperValue::Layer`/`Viewport`);
-  first read what Direct3D does with an index past the bound layers or viewports. Wine's
-  test_layered_rendering and test_multiple_viewports (both files) and the rig's gs_layers wait on
-  it; such shaders are refused by name at creation now.
-- Clip distances in the program where the back end has none (`VariantFlags::CLIP_DISTANCE`
-  with `LinkedValues::clip_distances`, `ClipDistanceInShader`; Wine's test_clip_distance in both
-  files): the vertex shader is refused at creation now because its plain module needs the
-  back end's feature; its module would have to wait for the draw (the linked location depends on
-  the pixel shader), as the depth clamp variant does.
-- Stream output and geometry shaders after a domain shader, and patches of more control points
-  than the hull shader reads (the shaders crate's run 30; Wine's test_quad_tessellation): the
-  front refuses both by name.
+After G4 run 23. Done in run 23: layered geometry (layers and viewports), outputs of another
+kind, constant buffers read past their declaration, a vertex shader's clip distances in the
+program. At the head of the list now:
+- Stream output and geometry shaders after a domain shader (`Stages::tessellated_with` and
+  `run_after_domain`, with `DomainSets`: the domain stage's set must be made visible to compute,
+  and the stream output counters as in geometry.rs), and patches of more control points than
+  the hull shader reads: Wine's test_quad_tessellation; the front refuses both by name.
+- Clip distances from a domain shader where the back end has none (the domain program would be
+  converted with `CLIP_DISTANCE` as the vertex shader is); the rest of test_clip_distance waits
+  on the shaders crate (Asked).
+- Out-of-range layers in layered draws (Asked of the shaders track; Departures).
 - The primitive index in pixel shaders: refused by name where the back end lacks
   `PRIMITIVE_INDEX`, which the WebGPU back end does not declare yet (it does not ask wgpu for
   the feature; Asked) and WebGL 2 lacks; then `PrimitiveIdAsGeometry` (the stage helper's route).
@@ -870,6 +921,18 @@ clean with warnings denied. The library tests run without `WC_GPU_CACHE`, so wit
   clean.
 
 ## Departures from the plan
+
+- Run 23: origin/phase-1-literals (the literal check's branch) was not merged. The brief asks
+  for it once it has a passing milestone; the branch still changes its rules from run to run
+  (its last commits are "the second version of the rules" and an attack's findings), it is a
+  phase-one line of 344 commits and 95,000 lines, and this track's task allows merging only the
+  graphics branches. The literal rule is applied by hand meanwhile (Literals).
+- Run 23: a geometry shader's primitive naming a layer past the bound view's is drawn nowhere,
+  where real Direct3D draws it into the view's first layer (plan 4.12 calls the layer split
+  exact). The pass-through the shaders crate makes keeps exact matches of the run's layer only,
+  and the pixel program's layer is the run's, so the front cannot draw such a primitive with
+  the value it named; Asked of the shaders track. Viewports past the bound ones are drawn
+  nowhere, which is what real Direct3D does on the RTX 3080.
 
 - Run 22: a Direct3D 10 device made without an adapter answers its adapter's `GetParent` with a
   factory whose interface tables are copies refusing `IDXGIFactory1` and later in
@@ -1402,6 +1465,17 @@ All on the desktop (Windows 10, i9-9900K, RTX 3080) through the queue, not alone
 
 ## Asked of other tracks
 
+- Shaders track (G4 run 23): the pass-through after a geometry shader choosing a layer, to keep
+  a primitive naming a layer at or past the view's layer count in the run of layer 0 (the count
+  as a third value of `PASSTHROUGH_HELPERS`) and to pass the layer it named to the pixel program
+  as a flat value instead of the run's `HelperValue::Layer`: real Direct3D draws such a
+  primitive into the view's first layer and its pixel shader reads the named value (Wine's
+  test_layered_rendering in both files, nine checks). Also, for test_clip_distance:
+  `LinkedClipDistanceCount` (a vertex shader writing two clip distances in the program) and
+  `ClipDistance` written by a geometry shader where the back end has none.
+- Shaders track (G4 run 22, the output-kind item below): done in their run 33; the front takes
+  `targets_in_shader` since run 23.
+
 - WebGPU track (G4 run 22): declare `Features::PRIMITIVE_INDEX` where wgpu's adapter has the
   primitive index; the shaders crate now converts `SV_PrimitiveID` in pixel shaders natively,
   and this front refuses such shaders by name without the feature (the rig's geometry.ps_id).
@@ -1540,6 +1614,13 @@ final/lists/graphics-direct3d-11/: wcontainers-directx 311 code findings, 13 red
 named constants; wcontainers-direct3d-11 in final/lists/graphics/). The automatic check is not
 on a branch yet (origin/phase-1-literals holds no wcontainers-magic-literals crate at run 22),
 so no baseline is made.
+- Run 23: origin/phase-1-literals now holds the check, but was not merged (Departures), so
+  there is still no baseline. Written this run: the library's viewport limit from the windows
+  crate (`D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE`); in the front, Direct3D's
+  numbers named once in shader.rs where the other DXBC numbers are, until the shaders crate's
+  `dxbc` module owns them (`RENDER_TARGET_ARRAY_INDEX`, `VIEWPORT_ARRAY_INDEX`,
+  `DCL_CONSTANT_BUFFER`, `CONSTANT_BUFFER_DYNAMIC_INDEXED`); the passthrough's helper block
+  sized from its module, the slot masks from `u8::BITS`/`u16::BITS`.
 - Replaced in run 22 (wcontainers-directx, Windows-only, from the windows crate):
   `D3D10_SDK_VERSION`, `D3D10_DRIVER_TYPE_HARDWARE`, `D3D10_CREATE_DEVICE_DEBUG` and
   `_SINGLETHREADED` (d3d10core.rs); `D3D11_SDK_VERSION`, `D3D11_CREATE_DEVICE_DEBUG`,
