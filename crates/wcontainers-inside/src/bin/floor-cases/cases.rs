@@ -16,7 +16,7 @@ use wcontainers_inside::layout::{
     BLOCK_LEVEL, BLOCK_SIZE, LEAF_LEVEL, MIRROR, Region, TOP_LEVEL, level_span, linear,
 };
 use wcontainers_inside::link::{GiveBack, Start};
-use wcontainers_inside::syndrome::FAULT_STATUS;
+use wcontainers_inside::syndrome::{FAULT_STATUS, WRITE_NOT_READ};
 
 use crate::protocol::{
     Case, Done, Echo, Footprint, Lower, Measurement, Nothing, RaiseLater, Report, StartCpu,
@@ -59,9 +59,6 @@ const STEPS: u64 = 8;
 
 /// The permission fault status code, plus the level the fault happened at.
 const PERMISSION_FAULT: u64 = 0b00_1100;
-
-/// ESR_EL1's ISS bit that says a data abort came from a write.
-const WRITE_NOT_READ: u64 = 1 << 6;
 
 /// The second virtual CPU's address-space identifiers start here, apart from the first's.
 const SECOND_CPU_ASIDS: u16 = 0x100;

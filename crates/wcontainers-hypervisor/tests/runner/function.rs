@@ -36,24 +36,25 @@ pub struct Run {
 }
 
 /// The guest's state carried back to the hardware and the register page, as the inside returns to it.
-fn rejoin(state: &GuestState, page: RegisterPage, block: &Block) -> (Hardware, RegisterPage) {
-    let mut page = with_exclusive(page, state);
-    let mut x = state.x;
-    for (slot, &r) in page.withheld.iter_mut().zip(&WITHHELD) {
-        *slot = x[usize::from(r)];
-        x[usize::from(r)] = 0;
-    }
-    x[usize::from(COUNT)] = state.count;
-    x[usize::from(PAGE)] = REGISTER_PAGE;
-    let hardware = Hardware {
-        x,
+fn rejoin(state: &GuestState, page: RegisterPage, float: &FloatStatus) -> (Hardware, RegisterPage) {
+    let inside = stop::GuestState {
+        x: state.x,
         sp: state.sp,
-        pc: 0,
-        state: state.flags,
+        pc: state.pc,
+        flags: state.flags,
+        count: state.count,
+        exclusive: state.exclusive,
+    };
+    let (h, page) = stop::rejoin(&inside, page, float, REGISTER_PAGE);
+    let hardware = Hardware {
+        x: h.x,
+        sp: h.sp,
+        pc: h.pc,
+        state: h.state,
         thread: state.thread,
         v: state.v,
-        fpsr: block.fpsr,
-        fpcr: block.fpcr,
+        fpsr: h.fpsr,
+        fpcr: h.fpcr,
     };
     (hardware, page)
 }
@@ -64,29 +65,17 @@ fn interrupted(
     p: &Placed,
     h: &Hardware,
     page: &RegisterPage,
-    block: &mut Block,
-    memory: &dyn Fn(u64, &mut [u8]),
+    float: &mut FloatStatus,
+    memory: &mut dyn FnMut(u64, &mut [u8]),
 ) -> GuestState {
-    if h.pc < p.va || h.pc >= p.va + p.code.bytes.len() as u64 {
-        // The jump is done and the guest is at its target's entry slot.
-        let span = Span {
-            relocated: Vec::new(),
-            lead: 0,
-            side: Side::After,
-            ..p.code.spans.last().expect("a span").clone()
-        };
-        let mut state = guest_state(&span, h, page, block);
-        state.pc = slot_target(h.pc);
-        return state;
-    }
-    let span = p.code.span((h.pc - p.va) as u32).expect("a span");
-    if span.side == Side::Before {
-        return guest_state(span, h, page, block);
-    }
-    let (fixed, fixed_page) = fixed_up(span, h, page, block, memory);
-    let mut state = guest_state(span, &fixed, &fixed_page, block);
-    state.pc = resume_address(span, h, page);
-    state
+    let piece = stop::Piece {
+        base: p.va,
+        length: p.code.bytes.len(),
+        spans: &p.code.spans,
+    };
+    let state = stop::interrupted(&piece, &interrupted_of(h), page, float, memory)
+        .expect("an interrupt in a piece or at its jump's slot");
+    whole(state, h, float)
 }
 
 impl Runner {
@@ -133,7 +122,7 @@ impl Runner {
         fill(case.seed, &mut data);
         self.write(DATA, &data);
         let (mut hardware, mut page) = start(case);
-        let mut block = Block {
+        let mut block = FloatStatus {
             fpsr: case.float[0],
             fpcr: case.float[1],
             tracking: case.tracking,
@@ -142,7 +131,7 @@ impl Runner {
         let mut current = at(function.entry).expect("the entry has a piece");
         hardware.pc = function.pieces[current].va;
         let entry_span = &function.pieces[current].code.spans[0];
-        let mut trace = vec![guest_state(entry_span, &hardware, &page, &block)];
+        let mut trace = vec![entry_state(entry_span, &hardware, &page, &block)];
         let end = |runner: &Runner, trace, stop, landings, interrupted| {
             let mut now = vec![0u8; DATA_BYTES as usize];
             runner.read(DATA, &mut now);
@@ -184,7 +173,8 @@ impl Runner {
                     landings += 1;
                 } else {
                     let p = &function.pieces[current];
-                    match resolve(&p.code, p.va, &function.words, &trapped, &mut block) {
+                    let mut memory = |va, bytes: &mut [u8]| self.read(va, bytes);
+                    match resolve(&p.code, p.va, &trapped, &mut block, &mut memory) {
                         Resolved::Again(h, next) => {
                             (hardware, page) = (*h, next);
                             returned = true;
@@ -215,9 +205,8 @@ impl Runner {
             };
             // A stop: the inside takes the guest's float status as at every entry, and the guest goes on
             // from the state it resolved to, as the inside returns to it, at that address's piece.
-            block.enter(h.fpsr);
             let p = &function.pieces[current];
-            let state = interrupted(p, &h, &interrupted_page, &mut block, &|va, b| {
+            let state = interrupted(p, &h, &interrupted_page, &mut block, &mut |va, b| {
                 self.read(va, b)
             });
             stepping = false;

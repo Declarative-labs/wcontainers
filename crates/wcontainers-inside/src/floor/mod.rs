@@ -2,6 +2,7 @@
 //! tables, address spaces, interrupts and the timer, code made visible, and the link out.
 
 pub mod entry;
+pub mod heap;
 pub mod tables;
 
 use core::arch::asm;

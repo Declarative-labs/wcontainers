@@ -12,17 +12,12 @@ pub mod function;
 
 use aarch64_cpu::registers::{ESR_EL1, MDSCR_EL1, SPSR_EL1};
 use wcontainers_abi::{PAGE_SIZE, RegisterBlock};
-use wcontainers_arm64::carry::{
-    COUNT, LINK, PAGE, RegisterPage, STACK_ALIGNMENT, TAG_LOW, WITHHELD, call_word,
-};
+use wcontainers_arm64::carry::{LINK, PAGE, RegisterPage, TAG_LOW, WITHHELD, call_word};
 use wcontainers_arm64::encode::{self, form};
-use wcontainers_arm64::mirror::{MIRROR, SLOT_SHIFT};
-use wcontainers_arm64::{
-    Address, Arm64, FPCR_BITS, FPSR_BITS, Instruction as I, Reg, SystemRegister, decode,
-};
-use wcontainers_guest_cpu::{
-    Fixup, Guest, Held, HostCode, InsideCall, Native, Resume, Route, Side, Span, counted,
-};
+use wcontainers_arm64::thread_state::{Exclusive, untag_address};
+use wcontainers_arm64::{Address, Arm64, Instruction as I, Reg, decode};
+use wcontainers_guest_cpu::position::Operand;
+use wcontainers_guest_cpu::{Guest, HostCode, InsideCall, Native, Route, Span, Stopping, counted};
 use wcontainers_hypervisor::{
     Exit, Host, Loaded, Memory, Register, VirtualCpu, VirtualMachine, boot, link as link_page,
 };
@@ -30,6 +25,7 @@ use wcontainers_inside::layout::{
     Region as Area, TOP_LEVEL, VECTOR_BYTES, VECTOR_TABLE_BYTES, level_span,
 };
 use wcontainers_inside::link::{self, Fatal, Start};
+use wcontainers_inside::stop::{self, FloatStatus, Interrupted};
 use wcontainers_inside::syndrome::{ALIGNMENT_FAULT, FAULT_STATUS};
 use wcontainers_translator::{LookAhead, translate_native};
 use wcontainers_translator_test::layer1::{Case, Outcome, Stop};
@@ -64,13 +60,8 @@ const VECTOR_KINDS: u64 = 4;
 const LOWER_AARCH64_GROUP: u64 = 2;
 /// The vector of a synchronous exception from the guest's level.
 const LOWER_SYNCHRONOUS: u64 = GATE + LOWER_AARCH64_GROUP * VECTOR_KINDS * VECTOR_BYTES;
-/// FPSR's cumulative saturation flag, which saturating instructions set whether flags are kept or not: the
-/// highest of the presented FPSR bits.
-const QC: u32 = 1 << (u32::BITS - 1 - FPSR_BITS.leading_zeros());
-/// The FPCR of the default mode.
-const DEFAULT_MODE: u32 = 0;
 /// The general registers the hardware holds for the guest, x0 to x30.
-const GENERAL: usize = RegisterBlock::ZERO.x.len();
+use wcontainers_inside::stop::GENERAL;
 /// The vector registers.
 const VECTORS: usize = RegisterBlock::ZERO.v.len();
 /// Layer 1's register arrays: x0 to x30, then sp, then (in a case) flags and thread pointer, (in an outcome)
@@ -81,26 +72,6 @@ const CASE_THREAD: usize = CASE_FLAGS + 1;
 const OUT_PC: usize = CASE_SP + 1;
 const OUT_FLAGS: usize = OUT_PC + 1;
 const OUT_THREAD: usize = OUT_FLAGS + 1;
-
-/// The guest's float status as the WebAssembly output's thread block keeps it.
-#[derive(Clone, Copy, Debug)]
-pub struct Block {
-    fpsr: u32,
-    fpcr: u32,
-    tracking: bool,
-}
-
-impl Block {
-    /// The rule at every entry into the inside (docs/native.md section 3.4): when the flags are kept or the
-    /// mode is not the default the block takes the hardware's, else it keeps its own and the hardware's QC.
-    fn enter(&mut self, hardware: u32) {
-        if self.tracking || self.fpcr != DEFAULT_MODE {
-            self.fpsr = hardware;
-        } else {
-            self.fpsr |= hardware & QC;
-        }
-    }
-}
 
 /// Everything of the guest's level the hardware holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -127,7 +98,7 @@ pub struct GuestState {
     pub float: [u32; 2],
     pub count: u64,
     /// The exclusive monitor: bytes, address, low and high words, as the register page keeps it.
-    pub exclusive: [u64; 4],
+    pub exclusive: Exclusive,
 }
 
 /// A native run's outcome: layer 1's, and the count at the stop.
@@ -495,7 +466,7 @@ impl Runner {
         self.write(CODE, &case.word.to_le_bytes());
         self.load(&piece.bytes);
         let (mut hardware, mut page) = start(case);
-        let mut block = Block {
+        let mut float = FloatStatus {
             fpsr: case.float[0],
             fpcr: case.float[1],
             tracking: case.tracking,
@@ -503,7 +474,8 @@ impl Runner {
         let i = decode(case.word);
         let (stop, state) = loop {
             let trapped = self.enter(&hardware, &page, false);
-            match resolve(&piece, PIECES, &[case.word], &trapped, &mut block) {
+            let mut memory = |va, bytes: &mut [u8]| self.read(va, bytes);
+            match resolve(&piece, PIECES, &trapped, &mut float, &mut memory) {
                 Resolved::Stop(stop, state) => break (stop, *state),
                 Resolved::Again(h, p) => (hardware, page) = (*h, p),
             }
@@ -571,7 +543,7 @@ impl Runner {
                 (Stop::Alignment(first()), CODE)
             } else {
                 (
-                    Stop::MemoryFault(fault_address(first(), trapped.fault)),
+                    Stop::MemoryFault(stop::fault_address(first(), trapped.fault)),
                     CODE,
                 )
             }
@@ -596,7 +568,7 @@ impl Runner {
             v: h.v,
             float: case.float,
             count: 0,
-            exclusive: exclusive_of(&RegisterPage::default()),
+            exclusive: RegisterPage::default().exclusive(),
         };
         outcome(stop, &state, changed)
     }
@@ -610,7 +582,7 @@ impl Runner {
 
 /// NZCV's bits in a saved state.
 pub fn nzcv() -> u64 {
-    (SPSR_EL1::N::SET + SPSR_EL1::Z::SET + SPSR_EL1::C::SET + SPSR_EL1::V::SET).value
+    stop::condition_flags()
 }
 
 /// The hardware and the register page at the start of a case: the withheld registers' guest values in the
@@ -675,196 +647,73 @@ pub enum Resolved {
     Again(Box<Hardware>, RegisterPage),
 }
 
-/// A guest address as the guest's branches and accesses use it: the top byte cleared unless bit 55 is set.
-pub fn untag(address: u64) -> u64 {
-    let select = TAG_LOW - 1;
-    if address >> select & 1 == 0 {
-        address & ((1 << TAG_LOW) - 1)
-    } else {
-        address
+/// The inside's view of the hardware: all but the vector registers and the thread pointer.
+pub fn interrupted_of(h: &Hardware) -> Interrupted {
+    Interrupted {
+        x: h.x,
+        sp: h.sp,
+        pc: h.pc,
+        state: h.state,
+        fpsr: h.fpsr,
+        fpcr: h.fpcr,
     }
 }
 
-/// A held guest value.
-fn held(h: Held, hardware: &Hardware, page: &RegisterPage) -> u64 {
-    match h {
-        Held::Register(r) => hardware.x[usize::from(r)],
-        Held::Page(offset) => {
-            // SAFETY: the page is plain words and the offset one of its words.
-            unsafe {
-                std::ptr::read(
-                    (page as *const RegisterPage)
-                        .cast::<u8>()
-                        .add(usize::from(offset))
-                        .cast::<u64>(),
-                )
-            }
-        }
+/// The hardware from the inside's view of it, the vector registers and thread pointer from `rest`.
+pub fn hardware_of(i: Interrupted, rest: &Hardware) -> Hardware {
+    Hardware {
+        x: i.x,
+        sp: i.sp,
+        pc: i.pc,
+        state: i.state,
+        thread: rest.thread,
+        v: rest.v,
+        fpsr: i.fpsr,
+        fpcr: i.fpcr,
     }
 }
 
-/// The guest's general registers at a span.
-fn guest_registers(span: &Span, hardware: &Hardware, page: &RegisterPage) -> [u64; GENERAL] {
-    let mut x = hardware.x;
-    for (k, &r) in WITHHELD.iter().enumerate() {
-        x[usize::from(r)] = page.withheld[k];
-    }
-    for r in &span.relocated {
-        x[usize::from(r.guest)] = held(r.held, hardware, page);
-    }
-    x
-}
-
-/// The guest's state at a stop at `span`, before its fix-ups.
-pub fn guest_state(
-    span: &Span,
-    hardware: &Hardware,
-    page: &RegisterPage,
-    block: &Block,
-) -> GuestState {
+/// The whole guest state from the inside's resolution, with the hardware's vectors and thread pointer and the
+/// thread's float status.
+pub fn whole(state: stop::GuestState, h: &Hardware, float: &FloatStatus) -> GuestState {
     GuestState {
-        x: guest_registers(span, hardware, page),
-        sp: hardware.sp,
-        pc: span.guest,
-        flags: hardware.state & nzcv(),
-        thread: hardware.thread,
-        v: hardware.v,
-        float: [block.fpsr, block.fpcr],
-        count: hardware.x[usize::from(COUNT)] - u64::from(span.lead),
-        exclusive: exclusive_of(page),
+        x: state.x,
+        sp: state.sp,
+        pc: state.pc,
+        flags: state.flags,
+        thread: h.thread,
+        v: h.v,
+        float: [float.fpsr, float.fpcr],
+        count: state.count,
+        exclusive: state.exclusive,
     }
 }
 
-/// The exclusive monitor a register page keeps.
-fn exclusive_of(page: &RegisterPage) -> [u64; 4] {
-    [
-        page.exclusive_bytes,
-        page.exclusive_address,
-        page.exclusive_low,
-        page.exclusive_high,
-    ]
-}
-
-/// The register page with the exclusive monitor of a guest state.
-pub fn with_exclusive(mut page: RegisterPage, state: &GuestState) -> RegisterPage {
-    [
-        page.exclusive_bytes,
-        page.exclusive_address,
-        page.exclusive_low,
-        page.exclusive_high,
-    ] = state.exclusive;
-    page
-}
-
-/// The hardware and the register page with a span's fix-ups made (docs/native.md section 4): they name host
-/// registers, so they come before the relocations are read. `memory` reads guest memory.
-pub fn fixed_up(
-    span: &Span,
-    h: &Hardware,
-    page: &RegisterPage,
-    block: &mut Block,
-    memory: &dyn Fn(u64, &mut [u8]),
-) -> (Hardware, RegisterPage) {
-    let (mut hardware, mut fixed) = (h.clone(), page.clone());
-    for fixup in &span.fixups {
-        match *fixup {
-            Fixup::Constant { register, value } => hardware.x[usize::from(register)] = value,
-            Fixup::Move { register, from } => {
-                let value = h.x[usize::from(from)];
-                match hardware.x.get_mut(usize::from(register)) {
-                    Some(x) => *x = value,
-                    None => hardware.sp = value,
-                }
-            }
-            Fixup::Forget { status, read } => {
-                let remembered = [page.exclusive_low, page.exclusive_high];
-                let swapped = read[0].is_some()
-                    && read
-                        .iter()
-                        .zip(remembered)
-                        .all(|(r, m)| r.is_none_or(|r| held(r, h, page) == m));
-                hardware.x[usize::from(status)] = u64::from(!swapped);
-                fixed.exclusive_bytes = 0;
-            }
-            Fixup::Remember {
-                bytes,
-                pair,
-                address,
-            } => {
-                let at = held(address, h, page);
-                let word = size_of::<u64>();
-                let total = usize::from(bytes) * if pair { 2 } else { 1 };
-                let read = |offset: usize, length: usize| {
-                    let mut value = [0u8; size_of::<u64>()];
-                    memory(at + offset as u64, &mut value[..length]);
-                    u64::from_le_bytes(value)
-                };
-                let two_words = pair && usize::from(bytes) == word;
-                fixed.exclusive_bytes = total as u64;
-                fixed.exclusive_address = at;
-                fixed.exclusive_low = read(0, total.min(word));
-                fixed.exclusive_high = if two_words { read(word, word) } else { 0 };
-            }
-            Fixup::FloatStatus => {
-                block.fpsr = h.fpsr;
-                block.fpcr = h.fpcr & FPCR_BITS;
-            }
-        }
+/// A load or store's operand, as the position map has it.
+fn operand_of(i: &I) -> Operand {
+    match Arm64::stopping(i, CODE) {
+        Stopping::Access(operand) => operand,
+        other => panic!("{i:?} is no access: {other:?}"),
     }
-    (hardware, fixed)
-}
-
-/// Where the guest goes on after a span's commit point.
-fn resume_address(span: &Span, hardware: &Hardware, page: &RegisterPage) -> u64 {
-    match span.resume {
-        Resume::At(at) => at,
-        Resume::Through(h) => untag(held(h, hardware, page)),
-        Resume::Slot(h) => slot_target(held(h, hardware, page)),
-    }
-}
-
-/// The guest address whose entry slot is at `slot`.
-fn slot_target(slot: u64) -> u64 {
-    (slot & !MIRROR) >> SLOT_SHIFT
 }
 
 /// The first byte of a guest access with the guest's registers `x` and stack pointer `sp`, untagged.
 fn access_address(i: &I, at: u64, x: &[u64; GENERAL], sp: u64) -> u64 {
-    untag(access_first(i, at, x, sp))
+    untag_address(stop::access_first(&operand_of(i), at, x, sp))
 }
 
-/// The first byte of a guest access as its registers give it, tag and all.
-fn access_first(i: &I, at: u64, x: &[u64; GENERAL], sp: u64) -> u64 {
-    let reg = |r: Reg| match r {
-        Reg::X(n) => x[usize::from(n)],
-        Reg::Sp => sp,
-        Reg::Zero => 0,
-    };
-    let m = i.memory_access().expect("an access");
-    match m.address {
-        Address::Offset { base, offset } | Address::PreIndex { base, offset } => {
-            reg(base).wrapping_add_signed(offset)
-        }
-        Address::PostIndex { base, .. } => reg(base),
-        Address::Indexed {
-            base,
-            index,
-            extend,
-            shift,
-        } => {
-            let value = reg(index);
-            let bits = u32::from(extend.from_bits);
-            let extended = if bits >= u64::BITS {
-                value
-            } else if extend.signed {
-                (((value << (u64::BITS - bits)) as i64) >> (u64::BITS - bits)) as u64
-            } else {
-                value & ((1 << bits) - 1)
-            };
-            reg(base).wrapping_add(extended << shift)
-        }
-        Address::Literal { offset } => at.wrapping_add_signed(offset),
-    }
+/// The state at the start of a piece: the guest's, before anything of it ran.
+pub fn entry_state(
+    span: &Span,
+    hardware: &Hardware,
+    page: &RegisterPage,
+    float: &FloatStatus,
+) -> GuestState {
+    whole(
+        stop::guest_state(span, &interrupted_of(hardware), page),
+        hardware,
+        float,
+    )
 }
 
 /// The page boundaries of the data area where a page refuses: below it nothing is mapped, then the writable
@@ -934,7 +783,7 @@ pub fn across(case: &Case, boundary: u64, within: u64) -> Option<Case> {
         x[slot] = 0;
     }
     // The access's first byte with a base of zero.
-    let delta = access_first(&i, CODE, &x, sp);
+    let delta = stop::access_first(&operand_of(&i), CODE, &x, sp);
     let mut moved = case.clone();
     moved.registers[slot] = boundary.wrapping_sub(within).wrapping_sub(delta);
     Some(moved)
@@ -945,182 +794,64 @@ pub fn access_bytes(case: &Case) -> Option<u64> {
     base_of(case).map(|(_, bytes, ..)| bytes)
 }
 
-/// Where a fault's address is reported: the access's first byte when it is in the page that refused, else
-/// the first byte of the next page. The pages are told apart by the address bits below the tag, which the
-/// hardware's fault address shares with the guest's whatever the host code untagged.
-fn fault_address(first: u64, fault: u64) -> u64 {
-    let below_tag = (1 << TAG_LOW) - 1;
-    if (first ^ fault) & below_tag & !(PAGE_SIZE - 1) == 0 {
-        first
-    } else {
-        (first | (PAGE_SIZE - 1)).wrapping_add(1)
-    }
-}
-
-/// The alignment fault of an access: the stack pointer's own, as Linux has the CPU check it first, when it is
-/// the base and not a multiple of 16, else at the access's first byte.
-fn misaligned(i: &I, at: u64, x: &[u64; GENERAL], sp: u64) -> Stop {
-    let sp_base = matches!(
-        i.memory_access().map(|m| m.address),
-        Some(
-            Address::Offset { base: Reg::Sp, .. }
-                | Address::PreIndex { base: Reg::Sp, .. }
-                | Address::PostIndex { base: Reg::Sp, .. }
-                | Address::Indexed { base: Reg::Sp, .. }
-        )
-    );
-    if sp_base && !sp.is_multiple_of(STACK_ALIGNMENT) {
-        Stop::Alignment(sp)
-    } else {
-        Stop::Alignment(access_address(i, at, x, sp))
-    }
-}
-
-/// The stop a host exception comes to.
-/// The guest instruction at `address` of the code area's words.
-fn instruction_at(words: &[u32], address: u64) -> I {
-    decode(words[((address - CODE) / Arm64::MAX_LENGTH) as usize])
-}
-
-/// The stop a host exception in `piece`, placed at `base` and made from the guest's `words` at the code area,
-/// comes to.
+/// The stop a host exception in `piece`, placed at `base`, comes to, through the inside's resolution; a
+/// counter read is answered with nanoseconds since the runs began, as the WebAssembly runner answers its clock.
 fn resolve(
     piece: &HostCode,
     base: u64,
-    words: &[u32],
     trapped: &Trapped,
-    block: &mut Block,
+    float: &mut FloatStatus,
+    memory: &mut dyn FnMut(u64, &mut [u8]),
 ) -> Resolved {
-    let h = &trapped.hardware;
-    let page = &trapped.page;
-    let class = ESR_EL1::EC.read(trapped.syndrome);
-    let in_piece = h.pc >= base && h.pc < base + piece.bytes.len() as u64;
-    if !in_piece {
-        // A jump that reached its entry slot: the guest lands at the slot's address.
-        block.enter(h.fpsr);
-        // The jump is done: no value is relocated and the count's add is behind it.
-        let span = Span {
-            relocated: Vec::new(),
-            lead: 0,
-            side: Side::After,
-            ..piece.spans.last().expect("a span").clone()
-        };
-        let span = &span;
-        let mut state = guest_state(span, h, page, block);
-        let target = slot_target(h.pc);
-        state.pc = target;
-        let stop = if class == ESR_EL1::EC::Value::PCAlignmentFault as u64 {
-            Stop::Alignment(target)
-        } else {
-            Stop::Landed(target)
-        };
-        return Resolved::Stop(stop, Box::new(state));
-    }
-    let offset = (h.pc - base) as u32;
-    let span = piece.span(offset).expect("a span");
-    let instruction = instruction_at(words, span.guest);
-    let i = &instruction;
-    if class == ESR_EL1::EC::Value::Brk64 as u64 {
-        let call = InsideCall::from_code(ESR_EL1::ISS.read(trapped.syndrome) as u16)
-            .expect("a call into the inside");
-        let after_call = || {
-            let mut next = h.clone();
-            next.pc += Arm64::MAX_LENGTH;
-            next
-        };
-        match call {
-            InsideCall::FloatBefore => {
-                block.enter(h.fpsr);
-                let mut next = after_call();
-                next.fpsr = block.fpsr;
-                return Resolved::Again(Box::new(next), page.clone());
-            }
-            InsideCall::FloatAfter => {
-                block.fpsr = h.fpsr;
-                block.fpcr = h.fpcr & FPCR_BITS;
-                if matches!(
-                    i,
-                    I::WriteSystem {
-                        register: SystemRegister::Fpsr,
-                        ..
-                    }
-                ) {
-                    block.tracking = true;
-                }
-                return Resolved::Again(Box::new(after_call()), page.clone());
-            }
-            _ => {}
-        }
-        block.enter(h.fpsr);
-        let mut state = guest_state(span, h, page, block);
-        let stop = match call {
-            InsideCall::Exit => {
-                let to = resume_address(span, h, page);
-                state.pc = to;
-                Stop::Landed(to)
-            }
-            InsideCall::Answer => match i {
-                I::Syscall => {
-                    // The system call's meaning stops after it.
-                    state.pc = span.guest + Arm64::MAX_LENGTH;
-                    Stop::Syscall
-                }
-                I::CodeChanged { .. } => {
-                    return Resolved::Again(Box::new(after_call()), page.clone());
-                }
-                I::ReadSystem {
-                    rt,
-                    register: SystemRegister::Counter,
-                } => {
-                    // The clock, as the WebAssembly runner's: nanoseconds since the runs began.
-                    let now = started().elapsed().as_nanos() as u64;
-                    let (mut next, mut page) = (after_call(), page.clone());
-                    if let Reg::X(n) = *rt {
-                        match WITHHELD.iter().position(|&w| w == n) {
-                            Some(k) => page.withheld[k] = now,
-                            None => next.x[usize::from(n)] = now,
-                        }
-                    }
-                    return Resolved::Again(Box::new(next), page);
-                }
-                other => panic!("no answer for {other:?}"),
-            },
-            InsideCall::Trap => match i {
-                I::Breakpoint { .. } => Stop::Breakpoint,
-                _ => Stop::Illegal,
-            },
-            InsideCall::Misaligned => misaligned(i, span.guest, &state.x, state.sp),
-            InsideCall::Unreachable => {
-                let no_memory =
-                    |_: u64, _: &mut [u8]| unreachable!("a jump's fix-ups read no memory");
-                let (fixed, fixed_page) = fixed_up(span, h, page, block, &no_memory);
-                state = guest_state(span, &fixed, &fixed_page, block);
-                let to = resume_address(span, h, page);
-                state.pc = to;
-                if to.is_multiple_of(Arm64::MAX_LENGTH) {
-                    Stop::Landed(to)
-                } else {
-                    Stop::Alignment(to)
-                }
-            }
-            InsideCall::FloatBefore | InsideCall::FloatAfter => unreachable!("answered above"),
-        };
-        return Resolved::Stop(stop, Box::new(state));
-    }
-    block.enter(h.fpsr);
-    let state = guest_state(span, h, page, block);
-    assert_eq!(span.side, Side::Before, "a fault before the commit point");
-    let status = ESR_EL1::ISS.read(trapped.syndrome) & FAULT_STATUS;
-    let data_abort = class == ESR_EL1::EC::Value::DataAbortLowerEL as u64;
-    let stop = if class == ESR_EL1::EC::Value::SPAlignmentFault as u64 {
-        Stop::Alignment(state.sp)
-    } else if data_abort && status == ALIGNMENT_FAULT {
-        Stop::Alignment(access_address(i, span.guest, &state.x, state.sp))
-    } else if data_abort {
-        let first = access_address(i, span.guest, &state.x, state.sp);
-        Stop::MemoryFault(fault_address(first, trapped.fault))
-    } else {
-        Stop::Other(class as u32, trapped.fault)
+    let h = interrupted_of(&trapped.hardware);
+    let exception = stop::Exception {
+        syndrome: trapped.syndrome,
+        fault: trapped.fault,
+        hardware: &h,
+        page: &trapped.page,
     };
-    Resolved::Stop(stop, Box::new(state))
+    let placed = stop::Piece {
+        base,
+        length: piece.bytes.len(),
+        spans: &piece.spans,
+    };
+    match stop::resolve(&placed, &exception, float, memory) {
+        Ok(stop::Resolved::Stop(stopped, state)) => {
+            let stop = match stopped {
+                stop::Stop::Landed(to) => Stop::Landed(to),
+                stop::Stop::Syscall => Stop::Syscall,
+                stop::Stop::Breakpoint(_) => Stop::Breakpoint,
+                stop::Stop::Illegal => Stop::Illegal,
+                stop::Stop::Alignment(at) => Stop::Alignment(at),
+                stop::Stop::MemoryFault { address, .. } => Stop::MemoryFault(address),
+            };
+            Resolved::Stop(stop, Box::new(whole(state, &trapped.hardware, float)))
+        }
+        Ok(stop::Resolved::Again(next, page)) => {
+            Resolved::Again(Box::new(hardware_of(next, &trapped.hardware)), page)
+        }
+        Ok(stop::Resolved::Clock {
+            into,
+            mut then,
+            mut page,
+        }) => {
+            let now = started().elapsed().as_nanos() as u64;
+            if let Some(n) = into {
+                stop::set_register(n, now, &mut then, &mut page);
+            }
+            Resolved::Again(Box::new(hardware_of(then, &trapped.hardware)), page)
+        }
+        Err(unexpected) => {
+            let class = ESR_EL1::EC.read(unexpected.syndrome);
+            Resolved::Stop(
+                Stop::Other(class as u32, unexpected.fault),
+                Box::new(entry_state(
+                    &piece.spans[0],
+                    &trapped.hardware,
+                    &trapped.page,
+                    float,
+                )),
+            )
+        }
+    }
 }
