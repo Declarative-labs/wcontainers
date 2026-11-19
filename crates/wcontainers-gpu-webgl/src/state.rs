@@ -71,7 +71,7 @@ impl GlValues {
             scissor: [i32::MIN; 4],
             blend_color: [0.0; 4],
             clip_depth,
-            provoking: crate::platform::LAST_VERTEX,
+            provoking: glow::LAST_VERTEX_CONVENTION,
         }
     }
 }
@@ -361,20 +361,20 @@ impl GlRaster {
             depth_clamp: !d.depth_clip,
             scissor_test: d.scissor,
             clip_depth: (!flipped).then_some(if d.depth_minus_one {
-                crate::platform::NEGATIVE_ONE_TO_ONE
+                glow::NEGATIVE_ONE_TO_ONE
             } else {
-                crate::platform::ZERO_TO_ONE
+                glow::ZERO_TO_ONE
             }),
             provoking: match d.provoking {
-                ProvokingVertex::First => crate::platform::FIRST_VERTEX,
-                ProvokingVertex::Last => crate::platform::LAST_VERTEX,
+                ProvokingVertex::First => glow::FIRST_VERTEX_CONVENTION,
+                ProvokingVertex::Last => glow::LAST_VERTEX_CONVENTION,
             },
         }
     }
 
     /// The vertex whose flat values the block's primitives take.
     pub fn provoking(&self) -> ProvokingVertex {
-        if self.provoking == crate::platform::FIRST_VERTEX {
+        if self.provoking == glow::FIRST_VERTEX_CONVENTION {
             ProvokingVertex::First
         } else {
             ProvokingVertex::Last
@@ -414,23 +414,18 @@ pub fn raster(gl: &glow::Context, v: &mut GlValues, r: &GlRaster, platform: &Pla
     }
     // WEBGL_polygon_mode, which `create_raster` asked for when a block draws lines; edges take the
     // offset as filled polygons do in Direct3D.
-    set_if!(v.fill_lines, r.fill_lines, |lines| platform.polygon_mode(
-        if lines {
-            crate::platform::LINE
-        } else {
-            crate::platform::FILL
-        }
-    ));
+    set_if!(v.fill_lines, r.fill_lines, |lines| platform
+        .polygon_mode(if lines { glow::LINE } else { glow::FILL }));
     let line_offset = r.fill_lines && r.polygon_offset.is_some();
     set_if!(v.line_offset, line_offset, |on| enable(
         gl,
-        crate::platform::POLYGON_OFFSET_LINE,
+        glow::POLYGON_OFFSET_LINE,
         on
     ));
     // EXT_depth_clamp, which `create_raster` asked for when a block clamps.
     set_if!(v.depth_clamp, r.depth_clamp, |on| enable(
         gl,
-        crate::platform::DEPTH_CLAMP,
+        glow::DEPTH_CLAMP,
         on
     ));
     set_if!(v.scissor_test, r.scissor_test, |on| enable(
@@ -441,7 +436,7 @@ pub fn raster(gl: &glow::Context, v: &mut GlValues, r: &GlRaster, platform: &Pla
     if let Some(depth) = r.clip_depth {
         set_if!(v.clip_depth, depth, |depth| platform.clip_control(
             gl,
-            crate::platform::UPPER_LEFT,
+            glow::UPPER_LEFT,
             depth
         ));
     }
@@ -517,8 +512,7 @@ impl GlLayout {
 /// The caller opens the write masks and the scissor.
 pub fn plain(gl: &glow::Context, v: &mut GlValues, rect: [i32; 4], platform: &Platform) {
     all_targets(v, false, |t| &mut t.on, |on| enable(gl, glow::BLEND, on));
-    set_if!(v.fill_lines, false, |_| platform
-        .polygon_mode(crate::platform::FILL));
+    set_if!(v.fill_lines, false, |_| platform.polygon_mode(glow::FILL));
     clip_distances(gl, v, 0);
     set_if!(v.alpha_to_coverage, false, |on| enable(
         gl,
@@ -544,7 +538,7 @@ pub fn plain(gl: &glow::Context, v: &mut GlValues, rect: [i32; 4], platform: &Pl
 pub fn clip_distances(gl: &glow::Context, v: &mut GlValues, n: u8) {
     let held = v.clip_distances;
     for i in n.min(held)..n.max(held) {
-        enable(gl, crate::platform::CLIP_DISTANCE0 + u32::from(i), i < n);
+        enable(gl, glow::CLIP_DISTANCE0 + u32::from(i), i < n);
     }
     v.clip_distances = n;
 }
@@ -638,10 +632,10 @@ pub fn factor(f: BlendFactor) -> u32 {
         BlendFactor::OneMinusConstant => glow::ONE_MINUS_CONSTANT_COLOR,
         BlendFactor::ConstantAlpha => glow::CONSTANT_ALPHA,
         BlendFactor::OneMinusConstantAlpha => glow::ONE_MINUS_CONSTANT_ALPHA,
-        BlendFactor::Src1 => crate::platform::SRC1_COLOR,
-        BlendFactor::OneMinusSrc1 => crate::platform::ONE_MINUS_SRC1_COLOR,
-        BlendFactor::Src1Alpha => crate::platform::SRC1_ALPHA,
-        BlendFactor::OneMinusSrc1Alpha => crate::platform::ONE_MINUS_SRC1_ALPHA,
+        BlendFactor::Src1 => glow::SRC1_COLOR,
+        BlendFactor::OneMinusSrc1 => glow::ONE_MINUS_SRC1_COLOR,
+        BlendFactor::Src1Alpha => glow::SRC1_ALPHA,
+        BlendFactor::OneMinusSrc1Alpha => glow::ONE_MINUS_SRC1_ALPHA,
     }
 }
 

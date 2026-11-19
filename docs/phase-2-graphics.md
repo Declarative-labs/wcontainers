@@ -896,7 +896,7 @@ the adapter):
   `SEPARATE_SAMPLERS`, `SHADER_F16`, `SUBGROUPS`, `PRIMITIVE_INDEX` where the adapter has
   primitive-index (85.1%), `BACKGROUND_PREPARE`,
   `CLIP_DEPTH_ZERO_ONE`, `DEPTH_BIAS_CLAMP`, `TEXTURE_LEVEL_QUERY` (`textureNumLevels`,
-  `textureNumSamples`), `DEPTH24_UNORM` where the probe below finds it, `FRACTIONAL_VIEWPORT` (WebGPU lets an implementation round
+  `textureNumSamples`), `FINE_DERIVATIVES` (WGSL's `dpdxFine` and the like), `DEPTH24_UNORM` where the probe below finds it, `FRACTIONAL_VIEWPORT` (WebGPU lets an implementation round
   viewports, at least to whole pixels; Chrome passes them to Metal, Direct3D 12 and Vulkan, which keep
   sub-pixel precision; G2 confirms by drawing with a viewport at a half-pixel offset against the
   reference, and if Chrome rounds, the bit goes and fronts take `ViewportInShader`), and
@@ -947,7 +947,8 @@ the adapter):
   `INDIRECT`, `BASE_VERTEX_INSTANCE` (the extension is at 0.21%), `TEXTURE_VIEWS`, `SEPARATE_SAMPLERS`,
   `TEXTURE_LEVEL_QUERY` (GLSL ES 3.00 has `textureSize` but no `textureQueryLevels`, and no multisampled
   samplers),
-  `MULTISAMPLE_READ`, `SUBGROUPS`, `LOGIC_OP`, `WIDE_LINES`, `FRACTIONAL_VIEWPORT` (`viewport` takes
+  `MULTISAMPLE_READ`, `SUBGROUPS`, `FINE_DERIVATIVES` (GLSL ES 3.00 has only `dFdx` and `dFdy`, which
+  may be coarse), `LOGIC_OP`, `WIDE_LINES`, `FRACTIONAL_VIEWPORT` (`viewport` takes
   integers), `OCCLUSION_COUNT` (GLES 3.0 has only
   any-samples queries), `RESTART_SWITCH`, `BORDER_COLOR`, `DEPTH_BOUNDS`, `SAMPLE_MASK` (GLES 3.0 has
   no `glSampleMaski`; the mask is written by the program with OES_sample_variables), and

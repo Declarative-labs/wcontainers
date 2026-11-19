@@ -223,11 +223,6 @@ fn link_with(gl: &glow::Context, vertex: &str, fragment: &str) -> Result<glow::P
     }
 }
 
-/// WEBGL_stencil_texturing's texture parameter and its two values.
-pub const DEPTH_STENCIL_TEXTURE_MODE: u32 = 0x90EA;
-pub const STENCIL_INDEX: u32 = 0x1901;
-pub const DEPTH_COMPONENT: u32 = 0x1902;
-
 /// What the stored depth of `format` is read as: the scale of [`DepthRead::scale`] and the bytes each
 /// texel keeps (Direct3D's: 16-bit unorm, 24-bit unorm in the low bits of a 32-bit word, 32-bit float).
 pub fn stored(format: wcontainers_gpu::Format) -> Option<(u32, usize)> {
