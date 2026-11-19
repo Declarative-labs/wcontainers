@@ -108,7 +108,7 @@ pub(crate) fn storage_offsets(
             set: rb.group,
             binding: rb.binding,
         };
-        let offset = helper(module, reflection, stage, value, u32_ty, 4);
+        let offset = helper(module, reflection, stage, value, u32_ty);
         buffers.push(Buffer {
             var,
             member,

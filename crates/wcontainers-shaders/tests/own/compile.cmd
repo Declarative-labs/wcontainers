@@ -1,4 +1,4 @@
-@rem Compiles the entry points of own.hlsl, more.hlsl, spaces.hlsl, twospaces.hlsl, signed.hlsl, route.hlsl, values.hlsl, negate.hlsl, variants.hlsl, pull.hlsl, filter.hlsl, geometry.hlsl, compute.hlsl, texels.hlsl, tessellation.hlsl, layers.hlsl, uav.hlsl, arrays.hlsl, msarray.hlsl, early.hlsl, shadow.hlsl, msloop.hlsl (shader model 4.0) and waves.hlsl (dxc only) with
+@rem Compiles the entry points of own.hlsl, more.hlsl, spaces.hlsl, twospaces.hlsl, signed.hlsl, route.hlsl, values.hlsl, evaluate.hlsl, negate.hlsl, variants.hlsl, pull.hlsl, filter.hlsl, geometry.hlsl, compute.hlsl, texels.hlsl, tessellation.hlsl, layers.hlsl, uav.hlsl, arrays.hlsl, msarray.hlsl, early.hlsl, shadow.hlsl, msloop.hlsl (shader model 4.0) and waves.hlsl (dxc only) with
 @rem the Windows SDK's fxc (ps_spaces, vs_transform, ps_textured, signed.hlsl's, route.hlsl's, values.hlsl's, negate.hlsl's, variants.hlsl's, pull.hlsl's, filter.hlsl's, the geometry, the compute and the typed buffer shaders also
 @rem with its dxc, IEEE-strict so NaN tests stay), beside this file.
 @echo off
@@ -38,6 +38,10 @@ for %%e in (ps_rows ps_clip) do (
 )
 "%FXC%" /nologo /T vs_5_0 /E vs_pack /Fo vs_pack.dxbc signed.hlsl || exit /b 1
 "%DXC%" -nologo -T vs_6_0 -E vs_pack -Gis -Fo vs_pack.dxil signed.hlsl || exit /b 1
+"%FXC%" /nologo /T vs_5_0 /E vs_rows_io /Fo vs_rows_io.dxbc signed.hlsl || exit /b 1
+"%DXC%" -nologo -T vs_6_0 -E vs_rows_io -Gis -Fo vs_rows_io.dxil signed.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_0 /E ps_rows_io /Fo ps_rows_io.dxbc signed.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_rows_io -Gis -Fo ps_rows_io.dxil signed.hlsl || exit /b 1
 for %%e in (ps_ftoi ps_table ps_deriv ps_coarse) do (
   "%FXC%" /nologo /T ps_5_0 /E %%e /Fo %%e.dxbc values.hlsl || exit /b 1
   "%DXC%" -nologo -T ps_6_0 -E %%e -Gis -Fo %%e.dxil values.hlsl || exit /b 1
@@ -120,4 +124,8 @@ for %%e in (ps_fill ps_msarray) do (
 for %%e in (ps_msloop ps_msswap) do (
   "%FXC%" /nologo /T ps_4_0 /E %%e /Fo %%e.dxbc msloop.hlsl || exit /b 1
 )
+"%FXC%" /nologo /T vs_5_0 /E vs_evaluate /Fo vs_evaluate.dxbc evaluate.hlsl || exit /b 1
+"%DXC%" -nologo -T vs_6_0 -E vs_evaluate -Gis -Fo vs_evaluate.dxil evaluate.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_0 /E ps_evaluate /Fo ps_evaluate.dxbc evaluate.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_evaluate -Gis -Fo ps_evaluate.dxil evaluate.hlsl || exit /b 1
 echo %FXC% %DXC%

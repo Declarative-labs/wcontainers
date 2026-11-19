@@ -24,6 +24,7 @@ mod layers;
 pub(crate) mod offset;
 pub(crate) mod pull;
 mod swizzle;
+mod targets;
 pub(crate) mod texel;
 
 type Result<T> = core::result::Result<T, ConvertError>;
@@ -35,6 +36,9 @@ pub(crate) fn apply(
     variant: &VariantKey,
     reflection: &mut Reflection,
 ) -> Result<()> {
+    if stage != ShaderStage::Fragment && !variant.targets_in_shader.is_empty() {
+        return Err(ConvertError::Unsupported("TargetsInShader"));
+    }
     if variant.flags.contains(VariantFlags::STORAGE_OFFSET) {
         offset::storage_offsets(module, stage, reflection)?;
     }
@@ -103,14 +107,7 @@ pub(crate) fn apply(
             if adjust || flip || clip || distances || clamp || pulls {
                 let viewport = adjust.then(|| {
                     let vec4 = vector(module, 4, Scalar::F32);
-                    helper(
-                        module,
-                        reflection,
-                        stage,
-                        HelperValue::ViewportAdjust,
-                        vec4,
-                        16,
-                    )
+                    helper(module, reflection, stage, HelperValue::ViewportAdjust, vec4)
                 });
                 let mut w = Wrapped::new(module);
                 pull::pulled(module, &mut w, &variant.pulled, reflection)?;
@@ -130,14 +127,15 @@ pub(crate) fn apply(
                 flags.contains(VariantFlags::CLIP_DISTANCE) && variant.linked.clip_distances > 0;
             let clamp = flags.contains(VariantFlags::DEPTH_CLAMP);
             let early = flags.contains(VariantFlags::EARLY_TESTS);
-            if counting || mask || dual || bias || distances || clamp || early {
+            let targets = targets::needed(module, &variant.targets_in_shader)?;
+            if counting || mask || dual || bias || distances || clamp || early || targets {
                 let bias = bias.then(|| {
                     let vec4 = vector(module, 4, Scalar::F32);
-                    helper(module, reflection, stage, HelperValue::DepthBias, vec4, 16)
+                    helper(module, reflection, stage, HelperValue::DepthBias, vec4)
                 });
                 let range = clamp.then(|| {
                     let vec2 = vector(module, 2, Scalar::F32);
-                    helper(module, reflection, stage, HelperValue::DepthRange, vec2, 8)
+                    helper(module, reflection, stage, HelperValue::DepthRange, vec2)
                 });
                 let per_sample = matches!(
                     reflection.extras,
@@ -148,14 +146,7 @@ pub(crate) fn apply(
                 );
                 let mask = mask.then(|| {
                     let u32_ty = scalar(module, Scalar::U32);
-                    helper(
-                        module,
-                        reflection,
-                        stage,
-                        HelperValue::SampleMask,
-                        u32_ty,
-                        4,
-                    )
+                    helper(module, reflection, stage, HelperValue::SampleMask, u32_ty)
                 });
                 let mut w = Wrapped::new(module);
                 let linked = if distances || clamp {
@@ -186,6 +177,7 @@ pub(crate) fn apply(
                         bias,
                     )?;
                 }
+                targets::targets_in_shader(module, &mut w, &variant.targets_in_shader, reflection)?;
                 if dual {
                     dual_source(&mut w)?;
                 }
@@ -224,7 +216,7 @@ fn scalar(module: &mut Module, s: Scalar) -> Handle<Type> {
     )
 }
 
-fn vector(module: &mut Module, n: u8, s: Scalar) -> Handle<Type> {
+pub(crate) fn vector(module: &mut Module, n: u8, s: Scalar) -> Handle<Type> {
     let size = match n {
         2 => VectorSize::Bi,
         3 => VectorSize::Tri,
@@ -240,7 +232,7 @@ fn vector(module: &mut Module, n: u8, s: Scalar) -> Handle<Type> {
 }
 
 /// Appends `e` to `f`, emitting it in `body` where naga wants it emitted.
-fn push(f: &mut Function, body: &mut Block, e: Expression) -> Handle<Expression> {
+pub(crate) fn push(f: &mut Function, body: &mut Block, e: Expression) -> Handle<Expression> {
     let pre = e.needs_pre_emit() || matches!(e, Expression::CallResult(_));
     let h = f.expressions.append(e, Span::UNDEFINED);
     if !pre {
@@ -292,15 +284,14 @@ fn load_helper(
 /// A member of the stage's helper block: the block and the member's index.
 type HelperMember = (Handle<GlobalVariable>, u32);
 
-/// Gives the stage's helper block (made on first use) a member for `value` of type `ty`, `size` bytes,
-/// aligned as uniform blocks align it; returns the block and the member's index.
+/// Gives the stage's helper block (made on first use) a member for `value` of type `ty`, aligned as
+/// uniform blocks align it; returns the block and the member's index.
 fn helper(
     module: &mut Module,
     reflection: &mut Reflection,
     stage: ShaderStage,
     value: HelperValue,
     ty: Handle<Type>,
-    size: u32,
 ) -> (Handle<GlobalVariable>, u32) {
     let binding = naga::ResourceBinding {
         group: HELPER_SET,
@@ -325,8 +316,20 @@ fn helper(
         .map(|m| m.offset + module.types[m.ty].inner.size(module.to_ctx()))
         .max()
         .unwrap_or(0);
-    let align = if size > 8 { 16 } else { size };
-    let offset = end.next_multiple_of(align);
+    let size = module.types[ty].inner.size(module.to_ctx());
+    let mut layouter = naga::proc::Layouter::default();
+    layouter
+        .update(module.to_ctx())
+        .expect("the module's types lay out");
+    let mut align = layouter[ty].alignment;
+    // A uniform block aligns arrays and structs to 16 bytes (std140, and WGSL's uniform rule).
+    if matches!(
+        module.types[ty].inner,
+        TypeInner::Array { .. } | TypeInner::Struct { .. }
+    ) {
+        align = align.max(naga::proc::Alignment::MIN_UNIFORM);
+    }
+    let offset = align.round_up(end);
     members.push(StructMember {
         name: Some(helper_name(value)),
         ty,
@@ -334,7 +337,7 @@ fn helper(
         offset,
     });
     let index = members.len() as u32 - 1;
-    let span = (offset + size).next_multiple_of(16);
+    let span = naga::proc::Alignment::MIN_UNIFORM.round_up(offset + size);
     let block = module.types.insert(
         Type {
             name: Some("Helpers".into()),
@@ -371,7 +374,6 @@ pub(crate) fn helper_once(
     stage: ShaderStage,
     value: HelperValue,
     ty: Handle<Type>,
-    size: u32,
 ) -> HelperMember {
     if reflection.helpers.iter().any(|s| s.value == value) {
         let binding = naga::ResourceBinding {
@@ -394,7 +396,7 @@ pub(crate) fn helper_once(
             return at;
         }
     }
-    helper(module, reflection, stage, value, ty, size)
+    helper(module, reflection, stage, value, ty)
 }
 
 fn helper_name(value: HelperValue) -> String {
@@ -415,32 +417,32 @@ fn helper_name(value: HelperValue) -> String {
 // The entry point wrapped.
 
 /// One output of the wrapped entry point.
-struct Output {
-    name: Option<String>,
-    ty: Handle<Type>,
-    binding: Binding,
-    value: Handle<Expression>,
+pub(crate) struct Output {
+    pub(crate) name: Option<String>,
+    pub(crate) ty: Handle<Type>,
+    pub(crate) binding: Binding,
+    pub(crate) value: Handle<Expression>,
 }
 
 /// The entry point moved into a function and called by a new entry point with the same inputs, so
 /// rewrites can read its inputs and replace, add or drop its outputs.
-struct Wrapped {
-    f: Function,
-    body: Block,
+pub(crate) struct Wrapped {
+    pub(crate) f: Function,
+    pub(crate) body: Block,
     /// Statements run before the wrapped program, which compute from its inputs alone.
-    prologue: Block,
+    pub(crate) prologue: Block,
     /// Where the call of the wrapped program is in `body`.
     call_at: usize,
-    outputs: Vec<Output>,
+    pub(crate) outputs: Vec<Output>,
     /// The original result: one bound value, or a struct of them.
     original: Option<(Handle<Type>, bool)>,
-    changed: bool,
+    pub(crate) changed: bool,
     /// Inputs the prologue computes instead: the argument's index and its value.
     replaced: Vec<(u32, Handle<Expression>)>,
 }
 
 impl Wrapped {
-    fn new(module: &mut Module) -> Wrapped {
+    pub(crate) fn new(module: &mut Module) -> Wrapped {
         let mut inner = core::mem::take(&mut module.entry_points[0].function);
         let arguments = core::mem::take(&mut inner.arguments);
         inner.arguments = arguments
@@ -537,7 +539,7 @@ impl Wrapped {
 
     /// Passes the wrapped program `value` for argument `argument`, which the entry point then no longer
     /// takes.
-    fn replace(&mut self, argument: u32, value: Handle<Expression>) {
+    pub(crate) fn replace(&mut self, argument: u32, value: Handle<Expression>) {
         self.replaced.push((argument, value));
     }
 
@@ -608,7 +610,7 @@ impl Wrapped {
         push(f, prologue, Expression::FunctionArgument(i))
     }
 
-    fn finish(mut self, module: &mut Module) {
+    pub(crate) fn finish(mut self, module: &mut Module) {
         self.drop_replaced();
         let prologue = core::mem::take(&mut self.prologue);
         self.body.splice(self.call_at..self.call_at, prologue);
@@ -625,32 +627,32 @@ impl Wrapped {
             }
             _ if self.outputs.is_empty() => None,
             _ => {
-                // A new struct, laid out as naga lays out pipeline values.
+                // A new struct, laid out by naga's own layout rules.
+                let mut layouter = naga::proc::Layouter::default();
+                layouter
+                    .update(module.to_ctx())
+                    .expect("the module's types lay out");
                 let mut offset = 0;
+                let mut alignment = naga::proc::Alignment::ONE;
                 let mut members = Vec::new();
                 for o in &self.outputs {
-                    let (size, align) = match module.types[o.ty].inner {
-                        TypeInner::Vector { size, .. } => {
-                            let n = size as u32;
-                            (4 * n, if n == 2 { 8 } else { 16 })
-                        }
-                        _ => (4, 4),
-                    };
-                    offset = u32::next_multiple_of(offset, align);
+                    let layout = layouter[o.ty];
+                    offset = layout.alignment.round_up(offset);
+                    alignment = alignment.max(layout.alignment);
                     members.push(StructMember {
                         name: o.name.clone(),
                         ty: o.ty,
                         binding: Some(o.binding.clone()),
                         offset,
                     });
-                    offset += size;
+                    offset += layout.size;
                 }
                 let ty = module.types.insert(
                     Type {
                         name: Some("Outputs".into()),
                         inner: TypeInner::Struct {
                             members,
-                            span: offset.next_multiple_of(16),
+                            span: alignment.round_up(offset),
                         },
                     },
                     Span::UNDEFINED,
@@ -847,8 +849,12 @@ fn linked_in(
     values
 }
 
-/// Direct3D's standard positions of four samples, in sixteenths of a pixel from its centre.
-const FOUR_SAMPLES: [(f32, f32); 4] = [(-2.0, -6.0), (6.0, -2.0), (-6.0, 2.0), (2.0, 6.0)];
+/// Direct3D's standard positions of four samples, in steps of [`SAMPLE_POSITION_STEPS`] from the
+/// pixel's centre.
+pub(crate) const FOUR_SAMPLES: [(f32, f32); 4] =
+    [(-2.0, -6.0), (6.0, -2.0), (-6.0, 2.0), (2.0, 6.0)];
+/// The steps of a pixel Direct3D's sample positions are given in.
+pub(crate) const SAMPLE_POSITION_STEPS: f32 = 16.0;
 
 /// Clipping by the clip distances `d`, before the program runs: one sample discards where any is
 /// negative at the pixel's centre; four take each distance over w (affine on the screen) to each
@@ -899,7 +905,10 @@ fn clipped(
                 .expressions
                 .append(Expression::Literal(Literal::U32(0)), Span::UNDEFINED);
             for (s, (x, y)) in FOUR_SAMPLES.iter().enumerate() {
-                let (x, y) = (f32_lit(f, x / 16.0), f32_lit(f, y / 16.0));
+                let (x, y) = (
+                    f32_lit(f, x / SAMPLE_POSITION_STEPS),
+                    f32_lit(f, y / SAMPLE_POSITION_STEPS),
+                );
                 let mut kept = None;
                 for &(q, dx, dy) in &sloped {
                     let along_x = binary(f, body, Multiply, dx, x);
@@ -1306,7 +1315,9 @@ fn without_storage_writes(module: &mut Module) {
 // Bindings.
 
 /// Constant buffers read as read-only storage buffers, each moved to the storage range past the
-/// highest storage binding the program uses.
+/// highest storage binding the program uses. The buffer's array of registers becomes runtime-sized,
+/// so an index past the array the shader declares reads the bound buffer's bytes, as Direct3D reads
+/// them, and a buffer smaller than the declaration binds.
 fn constants_as_storage(
     module: &mut Module,
     slots: u16,
@@ -1333,13 +1344,16 @@ fn constants_as_storage(
             group: b.set,
             binding: b.binding,
         };
-        let (_, g) = module
+        let (h, _) = module
             .global_variables
-            .iter_mut()
+            .iter()
             .find(|(_, g)| g.binding == Some(old))
             .ok_or(ConvertError::Malformed(
                 "a constant buffer without its variable".into(),
             ))?;
+        let open = runtime_sized(module, module.global_variables[h].ty);
+        let g = &mut module.global_variables[h];
+        g.ty = open;
         g.space = AddressSpace::Storage {
             access: StorageAccess::LOAD,
         };
@@ -1353,6 +1367,61 @@ fn constants_as_storage(
         next += 1;
     }
     Ok(())
+}
+
+/// `ty` with its array of registers runtime-sized: the type itself, or a struct's last member.
+fn runtime_sized(module: &mut Module, ty: Handle<Type>) -> Handle<Type> {
+    let open = |inner: &TypeInner| match *inner {
+        TypeInner::Array {
+            base,
+            size: naga::ArraySize::Constant(_),
+            stride,
+        } => Some(TypeInner::Array {
+            base,
+            size: naga::ArraySize::Dynamic,
+            stride,
+        }),
+        _ => None,
+    };
+    let inner = match &module.types[ty].inner {
+        TypeInner::Struct { members, .. } => {
+            let Some(last) = members.last() else {
+                return ty;
+            };
+            let Some(array) = open(&module.types[last.ty].inner) else {
+                return ty;
+            };
+            let TypeInner::Array { stride, .. } = array else {
+                return ty;
+            };
+            let mut layouter = naga::proc::Layouter::default();
+            if layouter.update(module.to_ctx()).is_err() {
+                return ty;
+            }
+            let (last_offset, members) = (last.offset, members.clone());
+            let array = module.types.insert(
+                Type {
+                    name: None,
+                    inner: array,
+                },
+                Span::UNDEFINED,
+            );
+            let mut members = members;
+            if let Some(m) = members.last_mut() {
+                m.ty = array;
+            }
+            TypeInner::Struct {
+                members,
+                span: layouter[ty].alignment.round_up(last_offset + stride),
+            }
+        }
+        other => match open(other) {
+            Some(array) => array,
+            None => return ty,
+        },
+    };
+    let name = module.types[ty].name.clone();
+    module.types.insert(Type { name, inner }, Span::UNDEFINED)
 }
 
 /// Bases read from an indirect draw's arguments: the draw bases' block (16 bytes at offset 0, made by
@@ -1744,6 +1813,7 @@ fn samples(
                 image,
                 sampler,
                 gather,
+                depth_ref,
                 ..
             } = *e
             else {
@@ -1755,14 +1825,25 @@ fn samples(
             };
             let t = global_of(f, image).ok_or(ConvertError::Unsupported("TextureArgument"))?;
             let texture = slot_of(module, reflection, t, SlotKind::Texture);
+            let in_texture_set = |set: u128, r: u32| r < u128::BITS && set & (1 << r) != 0;
+            let in_sampler_set = |set: u16| s < u16::BITS && set & (1 << s) != 0;
             let clamped = texture
-                .filter(|&r| r < 128 && variant.min_lod_clamped & (1 << r) != 0)
+                .filter(|&r| in_texture_set(variant.min_lod_clamped, r))
                 .map(|r| (r, module.global_variables[g].ty));
-            let biased = gather.is_none() && s < 16 && variant.lod_bias & (1 << s) != 0;
-            let mirrored = s < 16 && variant.mirror_once_in_shader & (1 << s) != 0;
-            let by_texture =
-                texture.is_some_and(|r| r < 128 && variant.filter_in_shader & (1 << r) != 0);
-            let by_sampler = s < 16 && variant.border_in_shader & (1 << s) != 0;
+            let biased = gather.is_none() && in_sampler_set(variant.lod_bias);
+            let mirrored = in_sampler_set(variant.mirror_once_in_shader);
+            // A comparison takes a depth texture, which every back end compares and filters natively.
+            let compared_depth = depth_ref.is_some()
+                && matches!(
+                    module.types[module.global_variables[t].ty].inner,
+                    TypeInner::Image {
+                        class: ImageClass::Depth { .. },
+                        ..
+                    }
+                );
+            let by_texture = !compared_depth
+                && texture.is_some_and(|r| in_texture_set(variant.filter_in_shader, r));
+            let by_sampler = in_sampler_set(variant.border_in_shader);
             let filtered = (by_texture || by_sampler).then_some(by_texture);
             if let Some(r) = texture {
                 if filtered.is_some() {
@@ -1802,7 +1883,7 @@ fn samples(
                     let value = HelperValue::LodBias {
                         sampler: site.sampler,
                     };
-                    let h = helper(module, reflection, stage, value, f32_ty, 4);
+                    let h = helper(module, reflection, stage, value, f32_ty);
                     biases.push((site.sampler, h));
                     h
                 }
@@ -2077,7 +2158,7 @@ fn sampler_state_helper(
         Span::UNDEFINED,
     );
     let value = HelperValue::SamplerState { sampler };
-    let h = helper(module, reflection, stage, value, ty, 48);
+    let h = helper(module, reflection, stage, value, ty);
     states.push((sampler, h));
     h
 }
@@ -2196,7 +2277,6 @@ fn min_lod_helper(
         stage,
         HelperValue::MinLod { texture },
         vec2,
-        8,
     );
     made.push((texture, at));
     at
@@ -2394,7 +2474,7 @@ fn texture_info(
             HelperValue::TextureLevels { texture }
         };
         let u32_ty = scalar(module, Scalar::U32);
-        let at = helper_once(module, reflection, stage, value, u32_ty, 4);
+        let at = helper_once(module, reflection, stage, value, u32_ty);
         let mut callee = Function {
             name: Some(helper_name(value)),
             result: Some(FunctionResult {

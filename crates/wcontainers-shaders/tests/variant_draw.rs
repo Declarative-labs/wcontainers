@@ -12,7 +12,8 @@ mod common;
 use common::*;
 use wcontainers_gpu::{
     AddressMode, BlendComponent, BlendFactor, BlendOp, DrawBaseSource, Filter, Format, HelperValue,
-    LinkedValues, ProvokingVertex, TexelBufferRoute, VariantFlags, VariantKey, VertexFormat,
+    LinkedValues, ProvokingVertex, TargetInShader, TexelBufferRoute, VariantFlags, VariantKey,
+    VertexFormat,
 };
 use wcontainers_shaders::{Source, convert};
 use windows::Win32::Graphics::Direct3D11::*;
@@ -127,6 +128,50 @@ fn variants_draw_as_the_native_feature_does() {
             bytecode(&format!("ps_textured.{route}")),
         ];
         let plain = grid_draw(&code, dxil, &grid);
+
+        // A target of another type than the program's output: the output's bits written as the
+        // target's type, against real Direct3D 11 drawing the same program into that target. fxc's
+        // ps_integer (uint4, no dxc build) into a float target too.
+        {
+            let mut cases = vec![("ps_textured", Format::Rgba32Uint, code.clone())];
+            if !dxil {
+                cases.push((
+                    "ps_integer",
+                    Format::Rgba32Float,
+                    [code[0].clone(), bytecode("ps_integer.dxbc")],
+                ));
+            }
+            for (ps, format, code) in cases {
+                let (reference, _) = direct3d_11(
+                    &d3d,
+                    "vs_transform",
+                    ps,
+                    format,
+                    [1.0, 0.75, 0.5, 1.5],
+                    true,
+                    &Reference::default(),
+                );
+                let mut variant = grid_draw(&code, dxil, &grid);
+                variant.format = format;
+                variant.clear = match format {
+                    Format::Rgba32Uint => [0; 4],
+                    _ => CLEAR.map(f32::to_bits),
+                };
+                variant.setup.ps_key.targets_in_shader = vec![TargetInShader {
+                    target: 0,
+                    format,
+                    combine: false,
+                }];
+                let texels = ours(&mut gpu, &variant, ProvokingVertex::First);
+                results.push(compare(
+                    format!("targets_in_shader {ps} {format:?} {route} webgpu"),
+                    &reference,
+                    &texels,
+                    Format::Rgba32Uint,
+                    (0, 0),
+                ));
+            }
+        }
 
         // The fractional viewport (3.25, 2.25, 50.5, 41.75) natively on WebGPU, and as the whole-pixel
         // one (3, 2, 51, 42) with clip x and y mapped in the program. Only the left edge is clipped by
@@ -1025,6 +1070,84 @@ fn variants_draw_as_the_native_feature_does() {
         ));
     }
 
+    let mut failures = Vec::new();
+    for r in &results {
+        eprintln!(
+            "{}: {} of {} texels differ, largest difference {} (allowed {} by {})",
+            r.name,
+            r.count,
+            SIZE * SIZE,
+            r.largest,
+            r.allowed.0,
+            r.allowed.1
+        );
+        if r.count > r.allowed.0 || r.largest > r.allowed.1 {
+            failures.push(r.name.clone());
+        }
+    }
+    assert!(failures.is_empty(), "differ: {failures:?}");
+}
+
+/// Inputs evaluated at an offset, at a sample and at the centroid, an input interpolated per sample
+/// evaluated at an offset, and the position of a program run per sample, drawn through the WebGPU
+/// back end at one and four samples against real Direct3D 11 (fxc's build; dxc's is refused as
+/// `InterpolateAt`). The shader sends each value through a steep wave, so a place a sixteenth of a
+/// pixel off moves a texel by several steps; the allowance is the filtering one, for the waves'
+/// rounding and the resolve.
+#[test]
+fn inputs_evaluated_elsewhere_match_direct3d() {
+    let mut gpu = webgpu();
+    let d3d = wcontainers_graphics_test::d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let grid = grid();
+    let code = [bytecode("vs_evaluate.dxbc"), bytecode("ps_evaluate.dxbc")];
+    let dxil = convert(
+        Source::Dxil(&bytecode("ps_evaluate.dxil")),
+        &VariantKey::default(),
+        None,
+    );
+    assert!(
+        matches!(
+            dxil,
+            Err(wcontainers_shaders::ConvertError::Unsupported(
+                "InterpolateAt"
+            ))
+        ),
+        "{dxil:?}"
+    );
+    let mut results = Vec::new();
+    for samples in [1u8, LAYER_SAMPLES as u8] {
+        let (reference, _) = direct3d_11(
+            &d3d,
+            "vs_evaluate",
+            "ps_evaluate",
+            Format::Rgba8Unorm,
+            [1.0, 0.75, 0.5, 1.5],
+            true,
+            &Reference {
+                samples: samples.into(),
+                ..Default::default()
+            },
+        );
+        let mut ours_draw = grid_draw(&code, false, &grid);
+        ours_draw.setup.samples = samples.into();
+        ours_draw.setup.ps_key.samples = samples;
+        let texels = ours(&mut gpu, &ours_draw, ProvokingVertex::First);
+        results.push(compare(
+            format!("evaluate {samples} samples webgpu against direct3d 11"),
+            &reference,
+            &texels,
+            Format::Rgba8Unorm,
+            (
+                SIZE as usize * SIZE as usize,
+                (FILTER_ALLOWANCE * f32::from(u8::MAX)).ceil() as u64,
+            ),
+        ));
+    }
     let mut failures = Vec::new();
     for r in &results {
         eprintln!(
