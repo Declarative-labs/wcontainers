@@ -4410,15 +4410,15 @@ fn scissor(r: &Rect) -> ScissorRect {
 fn components(format: wcontainers_gpu::Format) -> Option<&'static [u32]> {
     use wcontainers_gpu::Format::*;
     Some(match format {
-        R8Unorm | R8Snorm | R8Uint | R8Sint => &[8],
-        Rg8Unorm | Rg8Snorm | Rg8Uint | Rg8Sint => &[8; 2],
-        Rgba8Unorm | Rgba8Snorm | Rgba8Uint | Rgba8Sint => &[8; 4],
-        R16Unorm | R16Snorm | R16Uint | R16Sint | R16Float => &[16],
-        Rg16Unorm | Rg16Snorm | Rg16Uint | Rg16Sint | Rg16Float => &[16; 2],
-        Rgba16Unorm | Rgba16Snorm | Rgba16Uint | Rgba16Sint | Rgba16Float => &[16; 4],
-        R32Uint | R32Sint | R32Float => &[32],
-        Rg32Uint | Rg32Sint | Rg32Float => &[32; 2],
-        Rgba32Uint | Rgba32Sint | Rgba32Float => &[32; 4],
+        R8Unorm | R8Snorm | R8Uint | R8Sint => &[u8::BITS],
+        Rg8Unorm | Rg8Snorm | Rg8Uint | Rg8Sint => &[u8::BITS; 2],
+        Rgba8Unorm | Rgba8Snorm | Rgba8Uint | Rgba8Sint => &[u8::BITS; 4],
+        R16Unorm | R16Snorm | R16Uint | R16Sint | R16Float => &[u16::BITS],
+        Rg16Unorm | Rg16Snorm | Rg16Uint | Rg16Sint | Rg16Float => &[u16::BITS; 2],
+        Rgba16Unorm | Rgba16Snorm | Rgba16Uint | Rgba16Sint | Rgba16Float => &[u16::BITS; 4],
+        R32Uint | R32Sint | R32Float => &[u32::BITS],
+        Rg32Uint | Rg32Sint | Rg32Float => &[u32::BITS; 2],
+        Rgba32Uint | Rgba32Sint | Rgba32Float => &[u32::BITS; 4],
         Rgb10a2Unorm | Rgb10a2Uint => &[10, 10, 10, 2],
         Rg11b10Float => &[11, 11, 10],
         _ => return None,
@@ -4437,8 +4437,13 @@ fn normalised(format: wcontainers_gpu::Format) -> (bool, bool) {
     }
 }
 
+/// Bits of a half float.
+const HALF_BITS: u32 = (size_of::<half::f16>() as u32) * u8::BITS;
+/// Bits of a half float below its sign, whose top bits the small floats of `R11G11B10_FLOAT` keep.
+const HALF_MAGNITUDE_BITS: u32 = HALF_BITS - 1;
+
 fn mask(bits: u32) -> u32 {
-    if bits == 32 {
+    if bits == u32::BITS {
         u32::MAX
     } else {
         (1 << bits) - 1
@@ -4449,19 +4454,19 @@ fn mask(bits: u32) -> u32 {
 /// floats of `R11G11B10_FLOAT` (a half's exponent and top mantissa bits, negatives clamped to zero).
 fn small_float(f: f32, bits: u32) -> u32 {
     match bits {
-        32 => f.to_bits(),
-        16 => u32::from(half::f16::from_f32(f).to_bits()),
+        u32::BITS => f.to_bits(),
+        HALF_BITS => u32::from(half::f16::from_f32(f).to_bits()),
         _ if f.is_nan() => mask(bits),
-        _ => u32::from(half::f16::from_f32(f.max(0.0)).to_bits()) >> (15 - bits),
+        _ => u32::from(half::f16::from_f32(f.max(0.0)).to_bits()) >> (HALF_MAGNITUDE_BITS - bits),
     }
 }
 
 /// The value of a float component of `bits` stored bits.
 fn small_float_value(s: u32, bits: u32) -> f32 {
     match bits {
-        32 => f32::from_bits(s),
-        16 => half::f16::from_bits(s as u16).to_f32(),
-        _ => half::f16::from_bits((s << (15 - bits)) as u16).to_f32(),
+        u32::BITS => f32::from_bits(s),
+        HALF_BITS => half::f16::from_bits(s as u16).to_f32(),
+        _ => half::f16::from_bits((s << (HALF_MAGNITUDE_BITS - bits)) as u16).to_f32(),
     }
 }
 
@@ -4528,9 +4533,9 @@ fn storage_clear_value(
         *o = match format.kind() {
             FormatKind::Uint => s,
             // Sign-extended from the component's width.
-            FormatKind::Sint => (((s << (32 - bits)) as i32) >> (32 - bits)) as u32,
+            FormatKind::Sint => (((s << (u32::BITS - bits)) as i32) >> (u32::BITS - bits)) as u32,
             _ if snorm => {
-                let signed = ((s << (32 - bits)) as i32) >> (32 - bits);
+                let signed = ((s << (u32::BITS - bits)) as i32) >> (u32::BITS - bits);
                 (signed as f32 / (m >> 1) as f32).max(-1.0).to_bits()
             }
             _ if norm => (s as f32 / m as f32).to_bits(),
