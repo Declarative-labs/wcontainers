@@ -1,0 +1,23 @@
+[package]
+name = "wcontainers-nir"
+description = "NIR, the shader form Mesa's drivers receive, into the common form of wcontainers-gpu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+naga = { workspace = true, features = ["spv-in"] }
+wcontainers-shaders = { path = "../wcontainers-shaders" }
+
+[dev-dependencies]
+naga = { workspace = true, features = ["spv-in", "spv-out", "wgsl-in"] }
+
+[build-dependencies]
+cc = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints]
+workspace = true

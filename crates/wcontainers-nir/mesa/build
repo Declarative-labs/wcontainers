@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Fetches and builds the pinned Mesa (pin.toml) with the options of options.ini, in Nixpkgs' own Mesa
+# build environment taken from this repository's locked flake inputs.
+#
+#   crates/wcontainers-nir/mesa/build [flake]
+#
+# flake: the repository's flake reference whose locked nixpkgs gives the tools (default: this
+# checkout; on a rented machine the job's flake folder, `path:/work/flake/<name>`). Output, kept
+# between runs: $CARGO_TARGET_DIR/mesa (else target/mesa) with src/, build/ and install/; build/ is
+# what wcontainers-nir links (WCONTAINERS_MESA). Ninja runs $CARGO_BUILD_JOBS jobs when that is set.
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+repository=$(cd "$here/../../.." && pwd)
+mesa_dir=${CARGO_TARGET_DIR:-$repository/target}/mesa
+
+flake=${1:-$repository}
+home=$HOME
+set +u
+# Nixpkgs' Mesa environment, and its pre-configure step, which puts LLVM's llvm-config on the path.
+eval "$(nix print-dev-env --inputs-from "$flake" nixpkgs#mesa)"
+eval "${preConfigure:-}"
+set -u
+export HOME=$home
+
+field() { sed -n "s/^$1 *= *\"\(.*\)\"\$/\1/p" "$here/pin.toml"; }
+url=$(field url) tag=$(field tag) commit=$(field commit)
+[ -n "$url" ] && [ -n "$tag" ] && [ -n "$commit" ] || { echo "build: pin.toml lacks url, tag or commit" >&2; exit 1; }
+
+mkdir -p "$mesa_dir"
+if [ "$(git -C "$mesa_dir/src" rev-parse HEAD 2>/dev/null)" != "$commit" ]; then
+    rm -rf "$mesa_dir/src"
+    git init -q "$mesa_dir/src"
+    git -C "$mesa_dir/src" fetch -q --depth 1 "$url" "refs/tags/$tag"
+    fetched=$(git -C "$mesa_dir/src" rev-parse 'FETCH_HEAD^{commit}')
+    [ "$fetched" = "$commit" ] || { echo "build: $tag is $fetched upstream, not the pinned $commit" >&2; exit 1; }
+    git -C "$mesa_dir/src" checkout -q "$commit"
+fi
+
+jobs=()
+[ -z "${CARGO_BUILD_JOBS:-}" ] || jobs=(-j "$CARGO_BUILD_JOBS")
+echo "build: Mesa $tag ($commit), meson $(meson --version), $(llvm-config --version | sed 's/^/LLVM /'), $(cc --version | head -n 1)"
+# Meson reads a machine file's options only when a build folder is made, so a build made from other
+# options or another commit is made again from nothing.
+made_from=$mesa_dir/build/wcontainers-made-from
+if ! { echo "$commit"; cat "$here/options.ini"; } | cmp -s - "$made_from"; then
+    rm -rf "$mesa_dir/build" "$mesa_dir/install"
+fi
+[ -d "$mesa_dir/build" ] && setup=(--reconfigure) || setup=()
+meson setup "$mesa_dir/build" "$mesa_dir/src" --native-file "$here/options.ini" \
+    --prefix "$mesa_dir/install" --libdir lib "${setup[@]}"
+{ echo "$commit"; cat "$here/options.ini"; } >"$made_from"
+meson compile -C "$mesa_dir/build" "${jobs[@]}"
+meson install -C "$mesa_dir/build" --quiet
+
+# The two references must be there: llvmpipe in the Gallium library, lavapipe as its Vulkan driver.
+for library in "$mesa_dir"/install/lib/libgallium-*.so "$mesa_dir"/install/lib/libvulkan_lvp.so; do
+    [ -f "$library" ] || { echo "build: $library was not built" >&2; exit 1; }
+done
+grep -q llvmpipe "$mesa_dir"/install/lib/libgallium-*.so || { echo "build: llvmpipe is not in the Gallium library" >&2; exit 1; }
+echo "build: done, $mesa_dir"

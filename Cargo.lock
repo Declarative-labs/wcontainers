@@ -3803,6 +3803,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-nir"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "naga",
+ "serde",
+ "serde_json",
+ "wcontainers-shaders",
+]
+
+[[package]]
 name = "wcontainers-runtime"
 version = "0.1.0"
 dependencies = [
