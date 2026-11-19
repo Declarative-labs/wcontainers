@@ -42,7 +42,11 @@ pub fn monitors() -> Vec<(OutputDesc, HMONITOR)> {
         if !unsafe { GetMonitorInfoW(m, &mut info as *mut _ as *mut MONITORINFO) }.as_bool() {
             continue;
         }
-        let name_len = info.szDevice.iter().position(|&c| c == 0).unwrap_or(info.szDevice.len());
+        let name_len = info
+            .szDevice
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(info.szDevice.len());
         let mut mode = DEVMODEW {
             dmSize: size_of::<DEVMODEW>() as u16,
             ..Default::default()
@@ -120,7 +124,10 @@ impl Output {
     pub(super) fn get_desc(&self) -> Result<DXGI_OUTPUT_DESC> {
         let mut name = DXGI_OUTPUT_DESC::default().DeviceName;
         let room = name.len() - 1;
-        for (d, c) in name.iter_mut().zip(self.desc.name.encode_utf16().take(room)) {
+        for (d, c) in name
+            .iter_mut()
+            .zip(self.desc.name.encode_utf16().take(room))
+        {
             *d = c;
         }
         let [left, top, right, bottom] = self.desc.desktop;

@@ -818,8 +818,9 @@ impl Device_Impl {
             });
         }
         // 10_x takes shader model 4 compute shaders where raw and structured buffers come with
-        // them (`D3D10_X_HARDWARE_OPTIONS`); the front checks the model against the level.
-        if self.front.borrow().feature_level() < desc::level::L10_0 || !self.compute() {
+        // them (`D3D10_X_HARDWARE_OPTIONS`); the front checks the model against the level, so
+        // 9_x, which takes no compute model, answers `E_INVALIDARG` as Direct3D does.
+        if self.front.borrow().feature_level() >= desc::level::L10_0 && !self.compute() {
             return Err(missing(
                 "compute shaders without the back end's compute programs",
             ));
