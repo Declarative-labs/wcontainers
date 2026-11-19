@@ -97,6 +97,7 @@ pub fn outputs() -> Vec<(OutputDesc, isize)> {
 pub struct Output {
     pub desc: OutputDesc,
     pub monitor: isize,
+    pub adapter: IDXGIAdapter4,
 }
 
 fn mode_desc(m: &DisplayMode) -> DXGI_MODE_DESC {
@@ -152,7 +153,7 @@ unsafe fn fill<T>(modes: Vec<T>, count: *mut u32, list: *mut T) -> Result<()> {
 impl Output {
     /// The adapter the output belongs to.
     pub fn GetParent(&self, riid: *const GUID, out: *mut *mut c_void) -> Result<()> {
-        give(crate::objects::Factory::new(0).EnumAdapters1(0)?, riid, out)
+        give(self.adapter.clone(), riid, out)
     }
 
     fn name(&self) -> [u16; 32] {
@@ -690,7 +691,13 @@ impl SwapChain {
             .into_iter()
             .find(|(_, m)| *m == monitor.0 as isize)
             .ok_or(DXGI_ERROR_NOT_FOUND)?;
-        Ok(IDXGIOutput6::from(Output { desc, monitor }).into())
+        let adapter = crate::objects::Adapter::of(crate::objects::Factory::new(0).into());
+        Ok(IDXGIOutput6::from(Output {
+            desc,
+            monitor,
+            adapter,
+        })
+        .into())
     }
 
     pub fn GetHwnd(&self) -> Result<HWND> {

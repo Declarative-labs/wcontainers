@@ -19,6 +19,25 @@ pub struct TargetView {
     pub layers: u32,
 }
 
+/// `D3D12_SRV_DIMENSION` values.
+pub const SRV_DIMENSION_BUFFER: u32 = 1;
+pub const SRV_DIMENSION_TEXTURE1D: u32 = 2;
+pub const SRV_DIMENSION_TEXTURE1DARRAY: u32 = 3;
+pub const SRV_DIMENSION_TEXTURE2D: u32 = 4;
+pub const SRV_DIMENSION_TEXTURE2DARRAY: u32 = 5;
+pub const SRV_DIMENSION_TEXTURE2DMS: u32 = 6;
+pub const SRV_DIMENSION_TEXTURE2DMSARRAY: u32 = 7;
+pub const SRV_DIMENSION_TEXTURE3D: u32 = 8;
+pub const SRV_DIMENSION_TEXTURECUBE: u32 = 9;
+pub const SRV_DIMENSION_TEXTURECUBEARRAY: u32 = 10;
+/// `D3D12_UAV_DIMENSION` values.
+pub const UAV_DIMENSION_BUFFER: u32 = 1;
+pub const UAV_DIMENSION_TEXTURE1D: u32 = 2;
+pub const UAV_DIMENSION_TEXTURE1DARRAY: u32 = 3;
+pub const UAV_DIMENSION_TEXTURE2D: u32 = 4;
+pub const UAV_DIMENSION_TEXTURE2DARRAY: u32 = 5;
+pub const UAV_DIMENSION_TEXTURE3D: u32 = 8;
+
 /// A shader resource or unordered access view as a descriptor holds it
 /// (`D3D12_SHADER_RESOURCE_VIEW_DESC`, `D3D12_UNORDERED_ACCESS_VIEW_DESC`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

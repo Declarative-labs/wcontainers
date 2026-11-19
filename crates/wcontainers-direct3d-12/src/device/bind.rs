@@ -9,7 +9,14 @@ use wcontainers_gpu::{
 };
 
 use super::*;
-use crate::list::{ResourceView, RootArgument};
+use crate::list::{
+    ResourceView, RootArgument, SRV_DIMENSION_TEXTURE1D, SRV_DIMENSION_TEXTURE1DARRAY,
+    SRV_DIMENSION_TEXTURE2D, SRV_DIMENSION_TEXTURE2DARRAY, SRV_DIMENSION_TEXTURE2DMS,
+    SRV_DIMENSION_TEXTURE2DMSARRAY, SRV_DIMENSION_TEXTURE3D, SRV_DIMENSION_TEXTURECUBE,
+    SRV_DIMENSION_TEXTURECUBEARRAY, UAV_DIMENSION_BUFFER, UAV_DIMENSION_TEXTURE1D,
+    UAV_DIMENSION_TEXTURE1DARRAY, UAV_DIMENSION_TEXTURE2D, UAV_DIMENSION_TEXTURE2DARRAY,
+    UAV_DIMENSION_TEXTURE3D,
+};
 use crate::root::{RootParameterKind, RootSignatureDesc};
 
 /// One binding of one stage's program.
@@ -26,6 +33,9 @@ pub(super) struct StageBinding {
     form: Form,
     /// Textures: the shape a null view of it takes.
     shape: Option<null::Shape>,
+    /// A texture the converted program declares one-dimensional, where the back end's textures
+    /// of one row are two-dimensional.
+    one_dimensional: bool,
     /// Textures read by comparison, which the back end samples only in depth formats.
     compared: bool,
     /// A typed buffer read through a storage buffer (`HelperValue::TexelBufferView` names it).
@@ -61,8 +71,11 @@ enum Form {
 pub(super) const VERTEX: u32 = 1;
 pub(super) const GEOMETRY: u32 = 4;
 pub(super) const PIXEL: u32 = 5;
-/// `D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY`.
-const SRV_DIMENSION_2D_MS_ARRAY: u32 = 7;
+/// The bytes of one constant register, the step of a constant buffer's size.
+const CONSTANT_REGISTER: u64 = size_of::<[u32; 4]>() as u64;
+/// The refusal of a texture the converted program declares one-dimensional.
+const ONE_DIMENSIONAL_DECLARATION: &str =
+    "a texture the converted program declares one-dimensional (DXIL `Texture1D`)";
 
 /// Whether the program of binding `b`'s stage is converted again for what is bound to it:
 /// compute and pixel stages, and vertex stages drawn directly (run by the back end's vertex
@@ -100,9 +113,16 @@ pub(super) fn stage_bindings(
                     .is_some_and(|r| (r.group, r.binding) == (b.set, b.binding))
             });
             let (mut declared, mut form, mut shape) = (0, Form::Plain, None);
-            let mut compared = false;
+            let (mut compared, mut one_dimensional) = (false, false);
             if let Some((_, v)) = global {
                 shape = null::shape(&module.types[v.ty].inner);
+                one_dimensional = matches!(
+                    module.types[v.ty].inner,
+                    naga::TypeInner::Image {
+                        dim: naga::ImageDimension::D1,
+                        ..
+                    }
+                );
                 compared = matches!(
                     module.types[v.ty].inner,
                     naga::TypeInner::Image {
@@ -153,6 +173,7 @@ pub(super) fn stage_bindings(
                 declared,
                 form,
                 shape,
+                one_dimensional,
                 compared,
                 texel,
                 through,
@@ -271,8 +292,16 @@ pub(super) struct RootState {
 }
 
 impl RootState {
-    /// `Set*RootSignature`: every argument is unset again.
+    /// `Set*RootSignature`: every argument is unset again, unless the same root signature is
+    /// already set, whose bindings stay.
     pub fn set_root(&mut self, root: Option<RootSignature>) {
+        let same = match (&self.root, &root) {
+            (Some(a), Some(b)) => RootSignature::ptr_eq(a, b),
+            _ => false,
+        };
+        if same {
+            return;
+        }
         let n = root.as_ref().map_or(0, |s| s.parameters.len());
         self.arguments.clear();
         self.arguments.resize(n, None);
@@ -525,7 +554,13 @@ impl<B: Backend> Device<B> {
                         .iter()
                         .flat_map(|v| v.to_le_bytes())
                         .collect();
-                    bytes.resize(bytes.len().max(b.declared as usize).next_multiple_of(16), 0);
+                    bytes.resize(
+                        bytes
+                            .len()
+                            .max(b.declared as usize)
+                            .next_multiple_of(CONSTANT_REGISTER as usize),
+                        0,
+                    );
                     self.backend.slow_paths().hit(SlowPath::ImmediatesSpilled);
                     let align = self.backend.caps().limits.min_uniform_offset_alignment;
                     let mut offset = [0];
@@ -547,7 +582,9 @@ impl<B: Backend> Device<B> {
                                 "a counter of a root unordered access view",
                             ));
                         }
-                        (SlotKind::Uniform, _) => self.constant_buffer(address, b.declared)?,
+                        (SlotKind::Uniform, _) => {
+                            self.constant_buffer(address, None, b.declared)?
+                        }
                         (_, Form::Buffer { writable }) => self.root_buffer(address, b, writable)?,
                         _ => {
                             return Err(Error::Invalid("a root descriptor for a shader's texture"));
@@ -560,8 +597,8 @@ impl<B: Backend> Device<B> {
                     };
                     let handle = start + u64::from(index) * crate::address::DESCRIPTOR_SIZE;
                     match (kind, self.descriptor_at(handle)?) {
-                        (SlotKind::Uniform, Descriptor::ConstantBuffer { address, .. }) => {
-                            self.constant_buffer(address, b.declared)?
+                        (SlotKind::Uniform, Descriptor::ConstantBuffer { address, size }) => {
+                            self.constant_buffer(address, Some(u64::from(size)), b.declared)?
                         }
                         (SlotKind::Texture, Descriptor::ShaderResource(v)) if b.texel => {
                             self.texel_view(&v, b, false)?
@@ -611,7 +648,7 @@ impl<B: Backend> Device<B> {
                             Form::Buffer { writable } => self.buffer_view(&v, b, writable)?,
                             Form::Image { writable, .. } => {
                                 self.note(v.resource, writable);
-                                let view = self.storage_texture(&v)?;
+                                let view = self.storage_texture(&v, b)?;
                                 self.bound_formats.push((
                                     b.visibility,
                                     (true, b.binding.slot()),
@@ -648,7 +685,9 @@ impl<B: Backend> Device<B> {
             (SlotKind::Uniform, _) => Held::Uniform(
                 self.null_buffer(false)?,
                 0,
-                b.declared.clamp(16, null::NULL_BYTES).next_multiple_of(16),
+                b.declared
+                    .clamp(CONSTANT_REGISTER, null::NULL_BYTES)
+                    .next_multiple_of(CONSTANT_REGISTER),
             ),
             (_, Form::Buffer { writable }) => {
                 if b.through {
@@ -700,22 +739,66 @@ impl<B: Backend> Device<B> {
         })
     }
 
-    /// A uniform binding of `size` bytes at a GPU virtual address.
-    fn constant_buffer(&mut self, address: u64, size: u64) -> Result<Held<B>, Error> {
+    /// A uniform binding of the program's `declared` block at a GPU virtual address, through a
+    /// view of `view` bytes (a root descriptor has none). Direct3D reads a view past its end, and
+    /// a view past its buffer's end, as zeros: such a block is read from a copy of the bytes there
+    /// with a zero tail (`ConstantBufferGrown`).
+    fn constant_buffer(
+        &mut self,
+        address: u64,
+        view: Option<u64>,
+        declared: u64,
+    ) -> Result<Held<B>, Error> {
         let (id, offset) = self
             .addresses
             .find(address)
             .ok_or(Error::Invalid("a constant buffer view of no buffer"))?;
-        let size = size.max(16);
-        let width = self.resources[id.0 as usize].desc.width;
-        if offset + size > super::stored_size(width, self.backend.caps().limits.max_buffer_size) {
+        let size = declared.max(CONSTANT_REGISTER);
+        let r = &self.resources[id.0 as usize];
+        let (width, heap) = (r.desc.width, r.heap);
+        let stored = super::stored_size(width, self.backend.caps().limits.max_buffer_size);
+        let end = view.map_or(stored, |v| stored.min(offset.saturating_add(v)));
+        if offset + size <= end {
+            self.upload(id)?;
+            self.note(id, false);
+            return Ok(Held::Uniform(self.buffer(id)?.0.clone(), offset, size));
+        }
+        // Only an upload buffer's bytes are all the program's own; the GPU writes the others.
+        if heap != HeapType::Upload {
             return Err(Error::NotImplemented(
-                "a constant buffer view past its buffer's end",
+                "a constant buffer view shorter than the program's block, or past its buffer's \
+                 end, of a buffer not in an upload heap",
             ));
         }
-        self.upload(id)?;
-        self.note(id, false);
-        Ok(Held::Uniform(self.buffer(id)?.0.clone(), offset, size))
+        let Some(Resource {
+            storage: Storage::Buffer {
+                host: Some(host), ..
+            },
+            ..
+        }) = self.resources.get_mut(id.0 as usize)
+        else {
+            return Err(Error::Invalid("an upload buffer without its memory"));
+        };
+        self.backend.slow_paths().hit(SlowPath::ConstantBufferGrown);
+        let held = host.bytes();
+        let (start, end) = (
+            offset as usize,
+            (end.min(width) as usize).max(offset as usize),
+        );
+        let mut bytes = held
+            .get(start..end.min(held.len()))
+            .unwrap_or_default()
+            .to_vec();
+        bytes.resize(size.next_multiple_of(CONSTANT_REGISTER) as usize, 0);
+        let align = self.backend.caps().limits.min_uniform_offset_alignment;
+        let mut at = [0];
+        let buffer = self.backend.write_buffer_ring(
+            wcontainers_gpu::RingKind::Data,
+            &[&bytes],
+            align,
+            &mut at,
+        )?;
+        Ok(Held::Uniform(buffer, at[0], bytes.len() as u64))
     }
 
     /// The counter of an unordered access view, as a writable storage word; zeros whose writes
@@ -1011,17 +1094,25 @@ impl<B: Backend> Device<B> {
     }
 
     /// The texture view an unordered access view of a texture names.
-    fn storage_texture(&mut self, v: &ResourceView) -> Result<B::TextureView, Error> {
+    fn storage_texture(
+        &mut self,
+        v: &ResourceView,
+        b: &StageBinding,
+    ) -> Result<B::TextureView, Error> {
+        if b.one_dimensional {
+            return Err(Error::NotImplemented(ONE_DIMENSIONAL_DECLARATION));
+        }
+        // One-dimensional textures are stored as 2D ones of one row.
         let dimension = match v.dimension {
-            4 => ViewDimension::D2,
-            5 => ViewDimension::D2Array,
-            8 => ViewDimension::D3,
-            1 => {
+            UAV_DIMENSION_TEXTURE1D | UAV_DIMENSION_TEXTURE2D => ViewDimension::D2,
+            UAV_DIMENSION_TEXTURE1DARRAY | UAV_DIMENSION_TEXTURE2DARRAY => ViewDimension::D2Array,
+            UAV_DIMENSION_TEXTURE3D => ViewDimension::D3,
+            UAV_DIMENSION_BUFFER => {
                 return Err(Error::NotImplemented(
                     "typed buffer views bound as storage textures",
                 ));
             }
-            _ => return Err(Error::NotImplemented("one-dimensional storage textures")),
+            _ => return Err(Error::Invalid("an unordered access view's dimension")),
         };
         // Array sizes past the texture's layers (such as -1) take the layers left, as for
         // shader resource views.
@@ -1099,15 +1190,23 @@ impl<B: Backend> Device<B> {
         } else {
             (v.resource, None)
         };
+        if b.one_dimensional {
+            return Err(Error::NotImplemented(ONE_DIMENSIONAL_DECLARATION));
+        }
+        // One-dimensional textures are stored as 2D ones of one row.
         let (dimension, arrayed) = match v.dimension {
-            4 | 6 => (ViewDimension::D2, false),
-            5 => (ViewDimension::D2Array, true),
+            SRV_DIMENSION_TEXTURE1D | SRV_DIMENSION_TEXTURE2D | SRV_DIMENSION_TEXTURE2DMS => {
+                (ViewDimension::D2, false)
+            }
+            SRV_DIMENSION_TEXTURE1DARRAY | SRV_DIMENSION_TEXTURE2DARRAY => {
+                (ViewDimension::D2Array, true)
+            }
             // A multisampled array is read as a texture per layer (`VariantKey::texture_layers`).
-            7 => (ViewDimension::D2, true),
-            8 => (ViewDimension::D3, false),
-            9 => (ViewDimension::Cube, false),
-            10 => (ViewDimension::CubeArray, true),
-            _ => return Err(Error::NotImplemented("one-dimensional textures")),
+            SRV_DIMENSION_TEXTURE2DMSARRAY => (ViewDimension::D2, true),
+            SRV_DIMENSION_TEXTURE3D => (ViewDimension::D3, false),
+            SRV_DIMENSION_TEXTURECUBE => (ViewDimension::Cube, false),
+            SRV_DIMENSION_TEXTURECUBEARRAY => (ViewDimension::CubeArray, true),
+            _ => return Err(Error::Invalid("a shader resource view's dimension")),
         };
         let mip_count = if v.count == u32::MAX {
             mips.saturating_sub(v.mip)
@@ -1147,11 +1246,24 @@ impl<B: Backend> Device<B> {
                 "a texture read as another type than its view's format",
             ));
         }
+        // An array view of one layer bound where the program declares one 2D texture holds the
+        // same texels as a 2D view of that layer.
+        let dimension = match (dimension, b.shape.map(|s| s.dimension)) {
+            (ViewDimension::D2Array, Some(ViewDimension::D2)) if layer_count == 1 => {
+                ViewDimension::D2
+            }
+            (d, _) => d,
+        };
         // Direct3D leaves a view of another dimension than the declaration undefined, and the
         // back end refuses the binding; a multisampled array is read as a texture per layer.
-        if v.dimension != SRV_DIMENSION_2D_MS_ARRAY
-            && b.shape.is_some_and(|s| s.dimension != dimension)
+        if v.dimension != SRV_DIMENSION_TEXTURE2DMSARRAY
+            && let Some(shape) = b.shape.filter(|s| s.dimension != dimension)
         {
+            self.messages.push(format!(
+                "a shader resource view of D3D12_SRV_DIMENSION {} bound at slot {:?} of a \
+                 program declaring {:?}",
+                v.dimension, b.binding, shape.dimension
+            ));
             return Err(Error::NotImplemented(
                 "a shader resource view of another dimension than the program declares",
             ));
@@ -1165,7 +1277,7 @@ impl<B: Backend> Device<B> {
             layer_count,
             stencil,
         };
-        if v.dimension != SRV_DIMENSION_2D_MS_ARRAY {
+        if v.dimension != SRV_DIMENSION_TEXTURE2DMSARRAY {
             return self.texture_view(resource, desc);
         }
         if layer_count != 1 && !matches!(b.visibility, 0 | PIXEL) {
@@ -1372,8 +1484,53 @@ fn view_mapping(mapping: u32, stencil: bool) -> Option<[ViewComponent; 4]> {
 
 #[cfg(test)]
 mod tests {
-    use super::{reads_as_identity, view_mapping};
+    use super::{RootState, reads_as_identity, view_mapping};
+    use crate::list::RootArgument;
+    use crate::root::{RootParameter, RootParameterKind, RootSignature, RootSignatureDesc};
     use wcontainers_gpu::ViewComponent as C;
+
+    #[test]
+    fn setting_the_same_root_signature_again_keeps_its_bindings() {
+        let count = 4;
+        let signature = || {
+            RootSignature::new(RootSignatureDesc {
+                version: 1,
+                parameters: vec![
+                    RootParameter {
+                        kind: RootParameterKind::Constants {
+                            register: 0,
+                            space: 0,
+                            count,
+                        },
+                        visibility: 0,
+                    },
+                    RootParameter {
+                        kind: RootParameterKind::Table(Vec::new()),
+                        visibility: 0,
+                    },
+                ],
+                samplers: Vec::new(),
+                flags: 0,
+            })
+        };
+        let (first, equal_but_another) = (signature(), signature());
+        let constants = vec![7; count as usize];
+        let table = Some(RootArgument::Table(64));
+        let mut state = RootState::default();
+        state.set_root(Some(first.clone()));
+        state.constants[0].clone_from(&constants);
+        state.arguments[1] = table;
+        state.set_root(Some(first));
+        assert_eq!(
+            (&state.constants[0], state.arguments[1]),
+            (&constants, table)
+        );
+        state.set_root(Some(equal_but_another));
+        assert_eq!(
+            (&state.constants[0], state.arguments[1]),
+            (&vec![0; count as usize], None)
+        );
+    }
 
     #[test]
     fn stencil_views_read_the_stencil_where_their_mapping_names_green() {

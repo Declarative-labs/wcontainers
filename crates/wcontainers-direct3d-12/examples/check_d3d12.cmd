@@ -11,6 +11,8 @@ copy /y %E%\d3d12.dll %C%\ours\ >nul
 copy /y %E%\dxgi.dll %C%\ours\ >nul
 for %%w in (real ours) do (
   pushd %C%\%%w
+  rem A mode that fails writes no file, and the comparison then fails on its absence.
+  del /q draw.rgba features.txt outputs.txt answers.txt cases.txt 2>nul
   check_d3d12 draw draw.rgba
   check_d3d12 features features.txt
   check_d3d12 outputs outputs.txt
