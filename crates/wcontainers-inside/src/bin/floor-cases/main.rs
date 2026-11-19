@@ -5,6 +5,8 @@
 
 #[cfg(target_os = "none")]
 mod cases;
+#[cfg(target_os = "none")]
+mod protocol;
 
 /// Built for the host this program is empty: it only runs inside the virtual machine.
 #[cfg(not(target_os = "none"))]

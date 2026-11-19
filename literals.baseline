@@ -1441,7 +1441,6 @@ code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"stopped by 
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"system call not implemented"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"translated at run time"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"unsupported instruction reached"
-code	crates/wcontainers-hypervisor/src/lib.rs	str	programs	"/programs.rs"
 code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	(file)	"0: add x{counter}, x{counter}, #1\n b 0b"
 code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	(file)	"add x0, x0, #1\n add x0, x0, #1\n add x0, x0, #1\n add x0, x0, #1\n add x0, x0, #1\n add x0, x0, #1\n add x0, x0, #1\n add x0, x0, #1\n svc #0"
 code	crates/wcontainers-inside/src/bin/floor-cases/cases.rs	str	(file)	"adr x1, .\n ldr x0, [x1]\n svc #0"
@@ -1468,6 +1467,7 @@ code	crates/wcontainers-inside/src/floor/mod.rs	str	doorbell	"hvc #0"
 code	crates/wcontainers-inside/src/floor/mod.rs	str	make_code_visible	"dc cvau, {0}"
 code	crates/wcontainers-inside/src/floor/mod.rs	str	make_code_visible	"ic ivau, {0}"
 code	crates/wcontainers-inside/src/floor/tables.rs	str	invalidate	"tlbi vae1is, {0}"
+code	crates/wcontainers-inside/src/floor/tables.rs	str	invalidate_page	"tlbi vale1is, {0}"
 code	crates/wcontainers-kernel-test/backend/src/main.rs	int	main	3
 code	crates/wcontainers-kernel-test/backend/src/main.rs	int	main	4
 code	crates/wcontainers-kernel-test/backend/src/main.rs	int	mount	0o022
@@ -7673,7 +7673,6 @@ policy	generated	crates/wcontainers-kernel/src/linux/prctl.rs
 policy	generated	crates/wcontainers-kernel/src/linux/ptrace.rs
 policy	generated	crates/wcontainers-kernel/src/linux/system.rs
 policy	generated	crates/wcontainers-kernel/src/syscall/list.rs
-redefinition	crates/wcontainers-arm64/src/host.rs	str	PROBE	PROBE = "probe"
 redefinition	crates/wcontainers-kernel-test/src/layer1.rs	int	MAX_RW_COUNT	MAX_RW_COUNT = 2147479552
 redefinition	crates/wcontainers-kernel-test/src/layer1.rs	int	linux_extra_ipc::IPC_NOWAIT	IPC_NOWAIT = 2048
 redefinition	crates/wcontainers-kernel-test/src/network.rs	int	EADDRINUSE	EADDRINUSE = 98

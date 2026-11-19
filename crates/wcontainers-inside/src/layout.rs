@@ -3,14 +3,11 @@
 
 use wcontainers_abi::PAGE_SIZE;
 
-/// Bits of a guest page offset: the translation granule is the guest's page.
-pub const PAGE_SHIFT: u32 = PAGE_SIZE.trailing_zeros();
-
 /// Bytes of one table entry.
 pub const ENTRY_BYTES: u64 = size_of::<u64>() as u64;
 
 /// Bits of virtual address one table level resolves.
-pub const LEVEL_BITS: u32 = PAGE_SHIFT - ENTRY_BYTES.trailing_zeros();
+pub const LEVEL_BITS: u32 = PAGE_SIZE.trailing_zeros() - ENTRY_BYTES.trailing_zeros();
 
 /// Entries in one table.
 pub const ENTRIES: u64 = PAGE_SIZE / ENTRY_BYTES;
@@ -25,11 +22,11 @@ pub const LEAF_LEVEL: u32 = LEVELS - 1;
 pub const BLOCK_LEVEL: u32 = LEAF_LEVEL - 1;
 
 /// Width of a virtual address in either half.
-pub const VA_BITS: u32 = PAGE_SHIFT + LEVELS * LEVEL_BITS;
+pub const VA_BITS: u32 = PAGE_SIZE.trailing_zeros() + LEVELS * LEVEL_BITS;
 
 /// The bytes one entry at `level` covers.
 pub const fn level_span(level: u32) -> u64 {
-    1 << (PAGE_SHIFT + (LEAF_LEVEL - level) * LEVEL_BITS)
+    1 << (PAGE_SIZE.trailing_zeros() + (LEAF_LEVEL - level) * LEVEL_BITS)
 }
 
 /// The bytes a block entry covers.
@@ -37,7 +34,7 @@ pub const BLOCK_SIZE: u64 = level_span(BLOCK_LEVEL);
 
 /// The index of `va`'s entry in its table at `level`.
 pub const fn level_index(va: u64, level: u32) -> u64 {
-    (va >> (PAGE_SHIFT + (LEAF_LEVEL - level) * LEVEL_BITS)) & (ENTRIES - 1)
+    (va >> (PAGE_SIZE.trailing_zeros() + (LEAF_LEVEL - level) * LEVEL_BITS)) & (ENTRIES - 1)
 }
 
 /// The first address of the inside's half (ARM64: the TTBR1 half).

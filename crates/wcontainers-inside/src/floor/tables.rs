@@ -10,7 +10,7 @@ use aarch64_paging::descriptor::El1Attributes;
 use wcontainers_abi::PAGE_SIZE;
 
 use crate::layout::{
-    BLOCK_LEVEL, BLOCK_SIZE, ENTRIES, ENTRY_BYTES, LEAF_LEVEL, PAGE_SHIFT, level_index, linear,
+    BLOCK_LEVEL, BLOCK_SIZE, ENTRIES, ENTRY_BYTES, LEAF_LEVEL, level_index, linear,
 };
 
 /// Width of the output address field of a descriptor.
@@ -211,7 +211,7 @@ impl Table {
         let slot = self.slot(frames, va, LEAF_LEVEL);
         // SAFETY: the entry is ours, reached through the linear map.
         unsafe { ptr::write_volatile(slot, frame | attributes.bits() as u64 | table_or_page()) };
-        invalidate(va, asid);
+        invalidate_page(va, asid);
     }
 
     /// Breaks the block holding `va` into pages over the same frames with the same attributes.
@@ -267,10 +267,16 @@ pub fn barrier() {
     barrier::isb(SY);
 }
 
-/// Invalidates the TLB entries of the page at `va` for `asid` (and global ones) on every virtual CPU.
-pub fn invalidate(va: u64, asid: u16) {
-    let operand = (u64::from(asid) << TLBI_ASID_SHIFT)
-        | ((va >> TLBI_ADDRESS_SHIFT) & ((1 << TLBI_ADDRESS_BITS) - 1));
+/// The operand of a TLB invalidation by address and identifier.
+fn tlbi_operand(va: u64, asid: u16) -> u64 {
+    (u64::from(asid) << TLBI_ASID_SHIFT)
+        | ((va >> TLBI_ADDRESS_SHIFT) & ((1 << TLBI_ADDRESS_BITS) - 1))
+}
+
+/// Invalidates every cached entry of the walk for `va` and `asid` (and global ones) on every virtual CPU:
+/// for an entry whose level changes, as when a block becomes a table.
+fn invalidate(va: u64, asid: u16) {
+    let operand = tlbi_operand(va, asid);
     barrier::dsb(ISHST);
     // SAFETY: TLB maintenance only.
     unsafe { asm!("tlbi vae1is, {0}", in(reg) operand, options(nostack, preserves_flags)) };
@@ -278,8 +284,19 @@ pub fn invalidate(va: u64, asid: u16) {
     barrier::isb(SY);
 }
 
-/// The `PAGE_SHIFT` the tables use is the one TLB maintenance assumes for its addresses.
-const _: () = assert!(PAGE_SHIFT >= TLBI_ADDRESS_SHIFT);
+/// Invalidates the last-level entry of the page at `va` for `asid` (and global ones) on every virtual CPU:
+/// for a page whose permissions change, which leaves the tables above it as they were.
+fn invalidate_page(va: u64, asid: u16) {
+    let operand = tlbi_operand(va, asid);
+    barrier::dsb(ISHST);
+    // SAFETY: TLB maintenance only.
+    unsafe { asm!("tlbi vale1is, {0}", in(reg) operand, options(nostack, preserves_flags)) };
+    barrier::dsb(ISH);
+    barrier::isb(SY);
+}
+
+/// The page size the tables use is at least the one TLB maintenance assumes for its addresses.
+const _: () = assert!(PAGE_SIZE.trailing_zeros() >= TLBI_ADDRESS_SHIFT);
 
 /// The address field ends below the identifier.
 const _: () = assert!(TLBI_ADDRESS_BITS < TLBI_ASID_SHIFT);

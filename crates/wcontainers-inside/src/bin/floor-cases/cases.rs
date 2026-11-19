@@ -2,11 +2,10 @@
 
 use core::arch::global_asm;
 use core::fmt::Write as _;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::time::Duration;
 
 use aarch64_cpu::registers::{ESR_EL1, FAR_EL1, MDSCR_EL1, Read, SPSR_EL1, TPIDRRO_EL0, Write};
 use wcontainers_abi::PAGE_SIZE;
-use wcontainers_inside::INSTRUCTION_BYTES;
 use wcontainers_inside::floor::tables::large_entry_splits;
 use wcontainers_inside::floor::{
     self, AddressSpace, Floor, Taken, UserRegisters, code, counter, counter_frequency, enter_user,
@@ -16,9 +15,11 @@ use wcontainers_inside::floor::{
 use wcontainers_inside::layout::{
     BLOCK_LEVEL, BLOCK_SIZE, LEAF_LEVEL, MIRROR, Region, level_span, linear,
 };
-use wcontainers_inside::link::{
-    Done, Echo, Footprint, GiveBack, Lower, Measurement, Nothing, RaiseLater, Report, Start,
-    StartCpu, StopTest, Write as WriteCode,
+use wcontainers_inside::link::{GiveBack, Start};
+
+use crate::protocol::{
+    Case, Done, Echo, Footprint, Lower, Measurement, Nothing, RaiseLater, Report, StartCpu,
+    StopTest, Write as WriteCode,
 };
 
 /// Marks the cases put in registers and memory to tell their pages apart.
@@ -54,9 +55,6 @@ const GIVE_BACK_BLOCKS: u64 = 32;
 
 /// Instructions the software step case steps through before its system call.
 const STEPS: u64 = 8;
-
-/// Nanoseconds in a second.
-const NANOS: u64 = 1_000_000_000;
 
 /// The data or instruction fault status code in ESR_EL1's ISS.
 const FAULT_STATUS: u64 = 0b11_1111;
@@ -95,7 +93,7 @@ macro_rules! snippets {
             )*
             mark_a = const MARK_A,
             mark_b = const MARK_B,
-            instruction = const INSTRUCTION_BYTES,
+            instruction = const size_of::<u32>(),
             counter = const SPIN_COUNTER,
         );
         mod ends {
@@ -188,24 +186,20 @@ fn refused(run: &Run, far: u64, write: bool) -> bool {
         && run.write == write
 }
 
-/// Reports this virtual CPU has sent.
-static REPORTS: AtomicU64 = AtomicU64::new(0);
-
-/// Sends one case's report: its name, then what it saw.
-fn report(passed: bool, text: core::fmt::Arguments) {
-    REPORTS.fetch_add(1, Ordering::Relaxed);
+/// Sends `case`'s report: what it saw.
+fn report(case: Case, passed: bool, text: core::fmt::Arguments) {
     floor::send(
         &Report {
+            case: case as u64,
             passed: u64::from(passed),
         },
         text,
     );
 }
 
-/// Sends one measurement: what was measured, then the figures.
-fn measured(text: core::fmt::Arguments) {
-    REPORTS.fetch_add(1, Ordering::Relaxed);
-    floor::send(&Measurement {}, text);
+/// Sends `case`'s measurement: what was measured, and the figures.
+fn measured(case: Case, text: core::fmt::Arguments) {
+    floor::send(&Measurement { case: case as u64 }, text);
 }
 
 /// The cases' shared state.
@@ -261,6 +255,7 @@ impl Cases {
             && refused(&stored, target, true)
             && refused(&own_load, own, false);
         report(
+            Case::ExecuteOnly,
             passed,
             format_args!(
                 "execute-only code runs and refuses loads and stores: run x0 {:#x}; load EC {:#x} FSC {:#x} FAR {:#x}; store EC {:#x} FSC {:#x} write {} FAR {:#x}; own page FAR {:#x}",
@@ -293,6 +288,7 @@ impl Cases {
             passed = echoed == MARK_A;
         }
         report(
+            Case::SystemCallOut,
             passed,
             format_args!(
                 "a guest-level system call reaches the host through the floor's doorbell: system call x0 {:#x}",
@@ -315,6 +311,7 @@ impl Cases {
             && ran.far == page
             && ran.registers.pc == page;
         report(
+            Case::GuestNoExecute,
             passed,
             format_args!(
                 "guest pages refuse execution: EC {:#x} FSC {:#x} FAR {:#x} ELR {:#x}",
@@ -329,7 +326,7 @@ impl Cases {
         let space = self.process();
         let mut passed = true;
         let mut out = Line::new();
-        for offset in 1..INSTRUCTION_BYTES {
+        for offset in 1..size_of::<u32>() as u64 {
             let ran = run(&space, branch, target + offset, 0);
             passed &= ran.class == class(ESR_EL1::EC::Value::PCAlignmentFault)
                 && ran.far == target + offset
@@ -340,6 +337,7 @@ impl Cases {
             ));
         }
         report(
+            Case::MisalignedBranch,
             passed,
             format_args!("a misaligned br faults at its target: {}", out.as_str()),
         );
@@ -363,6 +361,7 @@ impl Cases {
             && branched.status == PERMISSION_FAULT + u64::from(LEAF_LEVEL)
             && branched.far == page;
         report(
+            Case::Tagged,
             passed,
             format_args!(
                 "tagged loads and branches ignore the top byte (TBI0): load x0 {:#x}; branch to {tagged:#x}: EC {:#x} FSC {:#x} FAR {:#x}",
@@ -384,6 +383,7 @@ impl Cases {
             && wrote.registers.pc == write
             && after == MARK_B;
         report(
+            Case::StopWord,
             passed,
             format_args!(
                 "TPIDRRO_EL0 is written at EL1, read at EL0, and an EL0 write is undefined: read {:#x}; write EC {:#x} at {:#x}; after {after:#x}",
@@ -422,6 +422,7 @@ impl Cases {
             && stored.class == class(ESR_EL1::EC::Value::SVC64)
             && after == MARK_B;
         report(
+            Case::RegisterPage,
             passed,
             format_args!(
                 "the register page is readable and writable at EL0: load {:#x}; store EC {:#x}; after {after:#x}",
@@ -444,6 +445,7 @@ impl Cases {
         let after = run(&space, store, va, MARK_A);
         let passed = called(&before, 0) && refused(&after, va, true);
         report(
+            Case::ProtectInsidePage,
             passed,
             format_args!(
                 "a page of the inside's half made read-only after use refuses at once: store before EC {:#x}; after EC {:#x} FSC {:#x} FAR {:#x}",
@@ -488,6 +490,7 @@ impl Cases {
             }
         }
         report(
+            Case::TwoContainers,
             passed,
             format_args!(
                 "two containers' processes see only their own mirror, register page and heap: {ROUNDS} rounds of switching with no invalidation {}",
@@ -522,6 +525,7 @@ impl Cases {
                 called(&wrote, 0) && refused(&refused_write, page, true) && called(&read, round);
         }
         report(
+            Case::ThreadViews,
             passed,
             format_args!(
                 "two threads of one process with their own table roots see one page writable and read-only: {ROUNDS} rounds, identifiers {writer_asid} and {reader_asid}, no invalidation"
@@ -553,6 +557,7 @@ impl Cases {
             && refused(&wrote_second, second, true)
             && called(&read_second, 0);
         report(
+            Case::AdjacentPages,
             passed,
             format_args!(
                 "two adjacent guest pages in one host page keep their own permissions: frames {frame:#x} and {:#x}, host page {host_page}, one host page {same_host_page}; second store EC {:#x} FSC {:#x} FAR {:#x}",
@@ -602,6 +607,7 @@ impl Cases {
             }
         }
         report(
+            Case::Block,
             passed,
             format_args!(
                 "a block entry reads and writes at EL0, and after one page's change only that page refuses: level before {level_before:?} after {level_after:?}, splits counted {counted}; changed page {changed:#x}: EC {:#x} FAR {:#x}",
@@ -634,6 +640,7 @@ impl Cases {
         }
         passed &= wrong == 0;
         report(
+            Case::LateCode,
             passed,
             format_args!(
                 "code the monitor writes next to code that ran runs as written after maintenance: {ROUNDS} rounds, {wrong} ran stale"
@@ -657,7 +664,7 @@ impl Cases {
             registers.pstate |= SPSR_EL1::SS::SET.value;
             let ran = resume(&space, registers);
             let ok = ran.class == class(ESR_EL1::EC::Value::SoftwareStepLowerEL)
-                && ran.registers.pc == before + INSTRUCTION_BYTES
+                && ran.registers.pc == before + size_of::<u32>() as u64
                 && ran.registers.x[0] == step + 1;
             if !ok && passed {
                 let _ = out.write_fmt(format_args!(
@@ -673,6 +680,7 @@ impl Cases {
         MDSCR_EL1.modify(MDSCR_EL1::SS::SoftwareStepDisabled);
         passed &= called(&last, STEPS);
         report(
+            Case::Step,
             passed,
             format_args!(
                 "EL1 software step of EL0 stops after each instruction: {STEPS} steps, then the system call gives EC {:#x}; {}",
@@ -700,6 +708,7 @@ impl Cases {
         }
         late.sort_unstable();
         report(
+            Case::Timer,
             passed,
             format_args!(
                 "the virtual timer's interrupt lands in the inside: {ROUNDS} interrupts, nanoseconds after the deadline: median {} max {}",
@@ -733,6 +742,7 @@ impl Cases {
         }
         delay.sort_unstable();
         report(
+            Case::Raised,
             passed,
             format_args!(
                 "an interrupt the host raises from another thread lands in the inside: {ROUNDS} interrupts, nanoseconds from raise to the inside: median {} max {}",
@@ -748,9 +758,10 @@ impl Cases {
             floor::ask(&Nothing {}, &[]);
         }
         let each = ticks_to_nanos(counter() - start) / DOORBELLS;
-        measured(format_args!(
-            "the doorbell's round trip: {DOORBELLS} round trips, {each} ns each"
-        ));
+        measured(
+            Case::Doorbell,
+            format_args!("the doorbell's round trip: {DOORBELLS} round trips, {each} ns each"),
+        );
     }
 
     fn give_back(&mut self) {
@@ -775,6 +786,7 @@ impl Cases {
         let fell = before.saturating_sub(after);
         let passed = fell >= length / 2 && reads == 0;
         report(
+            Case::GiveBack,
             passed,
             format_args!(
                 "memory given back through the link lowers the process's footprint: gave back {length} bytes; footprint {before} to {after}, fell {fell}; reads {reads:#x} after"
@@ -805,6 +817,7 @@ impl Cases {
         floor::ask(&Lower { interrupt }, &[]);
         let passed = ran.taken == Taken::Interrupt && id == Some(interrupt as u32);
         report(
+            Case::Stops,
             passed,
             format_args!(
                 "the spin stopped from another host thread ends by a raised interrupt: {} rounds of the spin",
@@ -821,7 +834,8 @@ fn make_code_visible_in(space: &AddressSpace, va: u64, length: u64) {
 }
 
 fn ticks_to_nanos(ticks: u64) -> u64 {
-    ticks * NANOS / counter_frequency()
+    let frequency = u32::try_from(counter_frequency()).expect("the counter frequency as a divisor");
+    (Duration::from_secs(ticks) / frequency).as_nanos() as u64
 }
 
 /// A short line of text built on the stack.
@@ -866,6 +880,7 @@ fn second(floor: Floor) {
     let space = cases.process();
     let ran = run(&space, target, 0, 0);
     report(
+        Case::SecondCpu,
         called(&ran, MARK_B),
         format_args!(
             "a second virtual CPU on another host thread runs the guest's level: cpu {} x0 {:#x}",
@@ -910,11 +925,6 @@ extern "C" fn floor_main(start: &Start) -> ! {
         cases.stops();
     }
     loop {
-        floor::ask(
-            &Done {
-                sent: REPORTS.load(Ordering::Relaxed),
-            },
-            &[],
-        );
+        floor::ask(&Done {}, &[]);
     }
 }

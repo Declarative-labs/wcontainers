@@ -18,8 +18,6 @@ pub struct Start {
     pub link: u64,
     /// This virtual CPU's index, which is also its redistributor's.
     pub cpu: u64,
-    /// Virtual CPUs the machine can have, so redistributors the interrupt controller has.
-    pub cpus: u64,
     /// The host's page size: memory is given back in whole host pages.
     pub host_page: u64,
     /// The guest-physical address of the top-level table of the boot map of the inside's half.
@@ -39,7 +37,7 @@ pub const LINK_BYTES: usize = PAGE_SIZE as usize - (LINK_WORDS + 2) * size_of::<
 /// One request and its answer.
 #[repr(C)]
 pub struct Link {
-    /// A [`Request`].
+    /// The request's word ([`Message::REQUEST`]).
     pub request: u64,
     /// The request's [`Message`] in, its answer out.
     message: [u64; LINK_WORDS],
@@ -53,8 +51,8 @@ const _: () = assert!(size_of::<Link>() as u64 == PAGE_SIZE);
 
 /// What one request carries, and what its answer is.
 pub trait Message: IntoBytes + FromBytes + Immutable + KnownLayout + Copy {
-    /// The request this message is.
-    const REQUEST: Request;
+    /// The word a [`Link`] carries for this request.
+    const REQUEST: u64;
     /// The answer the monitor writes back.
     type Answer: IntoBytes + FromBytes + Immutable + KnownLayout + Copy;
 }
@@ -77,7 +75,7 @@ impl Link {
 
     /// Writes `message` and `bytes` as a request.
     pub fn ask<M: Message>(&mut self, message: &M, bytes: &[u8]) {
-        self.request = M::REQUEST as u64;
+        self.request = M::REQUEST;
         self.put(message);
         self.length = bytes.len() as u64;
         self.bytes[..bytes.len()].copy_from_slice(bytes);
@@ -89,8 +87,12 @@ impl Link {
     }
 }
 
+/// Defines a set of requests: an enum `Request` of them, whose words start at `first`, and for each one a
+/// `#[repr(C)]` message type of `u64` fields with its answer's type. The floor's set is below; a program
+/// on the floor may define its own after it, from [`Request::END`].
+#[macro_export]
 macro_rules! requests {
-    ($(
+    (first: $first:expr; $(
         $(#[$doc:meta])*
         $name:ident { $($(#[$field_doc:meta])* $field:ident),* } -> $answer:ty;
     )*) => {
@@ -100,20 +102,41 @@ macro_rules! requests {
         pub enum Request { $($(#[$doc])* $name,)* }
 
         impl Request {
-            /// The request a [`Link::request`] word holds.
+            /// Every request of the set.
+            pub const ALL: &[Request] = &[$(Request::$name,)*];
+            /// The first request's word.
+            pub const FIRST: u64 = $first;
+            /// The word after the last request's: another set may start here.
+            pub const END: u64 = Self::FIRST + Self::ALL.len() as u64;
+
+            /// The word a link carries for this request.
+            pub const fn word(self) -> u64 {
+                Self::FIRST + self as u64
+            }
+
+            /// The request a link's request word holds, if it is one of this set.
             pub fn from_word(word: u64) -> Option<Request> {
-                [$(Request::$name,)*].into_iter().find(|r| *r as u64 == word)
+                Self::ALL.iter().copied().find(|r| r.word() == word)
             }
         }
 
         $(
             $(#[$doc])*
             #[repr(C)]
-            #[derive(Clone, Copy, Debug, Default, FromBytes, IntoBytes, Immutable, KnownLayout)]
+            #[derive(
+                Clone,
+                Copy,
+                Debug,
+                Default,
+                zerocopy::FromBytes,
+                zerocopy::IntoBytes,
+                zerocopy::Immutable,
+                zerocopy::KnownLayout,
+            )]
             pub struct $name { $($(#[$field_doc])* pub $field: u64,)* }
 
-            impl Message for $name {
-                const REQUEST: Request = Request::$name;
+            impl $crate::link::Message for $name {
+                const REQUEST: u64 = Request::$name.word();
                 type Answer = $answer;
             }
         )*
@@ -121,54 +144,11 @@ macro_rules! requests {
 }
 
 requests! {
-    /// Nothing; answered at once (the round trip's cost).
-    Nothing {} -> ();
-    /// The value comes back as it went.
-    Echo { value } -> Echo;
+    first: 0;
     /// Text for the host's log, in `bytes`.
     Print {} -> ();
-    /// The inside has finished.
-    Done {
-        /// Reports and measurements it sent.
-        sent
-    } -> ();
     /// The inside faulted itself.
     Fatal { esr, elr, far } -> ();
-    /// Write `bytes` at a guest-physical address (code into a frame the inside gave).
-    Write { at } -> ();
     /// Give back the host pages of a guest-physical range; they read as zeros after.
     GiveBack { at, length } -> ();
-    /// A test case's result: its name and what it saw, in `bytes`.
-    Report {
-        /// 1 when it passed.
-        passed
-    } -> ();
-    /// A measurement, not a check: what was measured, in `bytes`.
-    Measurement {} -> ();
-    /// The host process's memory footprint.
-    Footprint {} -> Bytes;
-    /// Raise an interrupt after a delay, from another host thread; answered at once.
-    RaiseLater { interrupt, delay_us } -> ();
-    /// Lower an interrupt; answered with the guest's counter at the moment it was raised.
-    Lower { interrupt } -> CounterValue;
-    /// Start another virtual CPU on a new host thread and answer when it is done.
-    StartCpu { cpu } -> ();
-    /// Stop this virtual CPU from another host thread, as many times as the host chooses, while it runs at
-    /// the guest's level in the loop from `loop_start` to `loop_end` counting in general register `counter`,
-    /// then raise `interrupt`.
-    StopTest { interrupt, loop_start, loop_end, counter } -> ();
-}
-
-/// A number of bytes.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, FromBytes, IntoBytes, Immutable, KnownLayout)]
-pub struct Bytes {
-    pub bytes: u64,
-}
-
-/// A reading of the guest's virtual counter.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, FromBytes, IntoBytes, Immutable, KnownLayout)]
-pub struct CounterValue {
-    pub counter: u64,
 }

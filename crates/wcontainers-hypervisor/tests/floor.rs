@@ -1,8 +1,14 @@
-//! N1's bar: boots the floor's cases program under the monitor, serves its link, makes the stops from another
-//! thread, and checks every case passed. It runs itself as a copy signed with the hypervisor entitlement.
+//! N1's bar: builds the floor's cases program (wcontainers-inside's `floor-cases`, never part of the monitor)
+//! for the bare-metal target, boots it under the monitor, serves its link, makes the stops from another
+//! thread, and checks that every case of the bar reported once and passed. It runs itself as a copy signed
+//! with the hypervisor entitlement.
 //!
 //! The stop test is seeded: `WCONTAINERS_FLOOR_STOPS` sets how many stops it makes and
 //! `WCONTAINERS_FLOOR_SEED` (decimal, or hexadecimal after `0x`) the seed of the waits between them.
+
+#[cfg(target_os = "macos")]
+#[path = "../../wcontainers-inside/src/bin/floor-cases/protocol.rs"]
+mod protocol;
 
 #[cfg(target_os = "macos")]
 fn main() {
@@ -18,19 +24,41 @@ fn main() {
 #[allow(deprecated)] // libc's Mach clock calls, which the test uses to time stops
 mod macos {
     use std::collections::HashMap;
+    use std::path::Path;
+    use std::process::Command;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
 
     use wcontainers_hypervisor::{
-        Exit, Host, Hypervisor, Loaded, Machine, Memory, Register, Stopper, VirtualCpu, boot, link,
-        load, programs,
+        Exit, Host, Hypervisor, Loaded, Memory, Register, Stopper, VirtualCpu, VirtualMachine,
+        boot, link as link_page, load,
     };
-    use wcontainers_inside::link::{
-        Bytes, CounterValue, Done, Fatal, GiveBack, Lower, RaiseLater, Report, Request, Start,
-        StartCpu, StopTest as StopRequest, Write,
+    use wcontainers_inside::link::{self, Fatal, GiveBack, Start};
+
+    use crate::protocol::{
+        self, Bytes, Case, CounterValue, Lower, Measurement, RaiseLater, Report, StartCpu,
+        StopTest as StopRequest, Write,
     };
+
+    /// The inside's package, which holds the cases program.
+    const INSIDE: &str = "wcontainers-inside";
+
+    /// The cases program.
+    const PROGRAM: &str = "floor-cases";
+
+    /// The bare-metal target of each host architecture the cases are built for.
+    const TARGETS: &[(&str, &str)] = &[("aarch64", "aarch64-unknown-none")];
+
+    /// The cargo profile the cases are built with.
+    const PROFILE: &str = "release";
+
+    /// Jobs the nested build may run.
+    const JOBS: &str = "4";
+
+    /// Settings of the test's environment that would build the bare-metal program for the host.
+    const LEAKED: [&str; 2] = ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"];
 
     /// Bytes of guest-physical memory the test reserves.
     const MEMORY: u64 = 1 << 30;
@@ -87,18 +115,16 @@ mod macos {
 
     /// One machine and what the cases told it.
     struct Shared {
-        machine: <Host as Hypervisor>::Machine,
+        machine: <Host as Hypervisor>::VirtualMachine,
         memory: Memory,
         loaded: Loaded,
         start: Start,
         stop_settings: StopSettings,
-        reports: Mutex<Vec<(bool, String)>>,
-        measurements: Mutex<Vec<String>>,
+        reports: Mutex<Vec<(Option<Case>, bool, String)>>,
+        measurements: Mutex<Vec<(Option<Case>, String)>>,
         raised_at: Mutex<HashMap<u64, u64>>,
         stop_delays: Mutex<Vec<f64>>,
         fatal: AtomicBool,
-        /// Reports the inside said it sent, when it finished.
-        sent: AtomicU64,
     }
 
     /// Set in the environment of the signed copy the test runs itself as.
@@ -134,38 +160,43 @@ mod macos {
             run_signed();
         }
         let started = Instant::now();
+        let program = build_cases();
+        let built = started.elapsed();
         let settings = stop_settings();
-        let shared = machine(settings);
+        let shared = machine(&program, settings);
         serve(&shared, 0);
         let reports = shared.reports.lock().unwrap().clone();
         let measurements = shared.measurements.lock().unwrap().clone();
         let delays = shared.stop_delays.lock().unwrap().clone();
         let fatal = shared.fatal.load(Ordering::Relaxed);
-        let sent = shared.sent.load(Ordering::Relaxed);
         drop(shared);
         let mut failed = 0;
-        for (passed, text) in &reports {
-            println!("{} {text}", if *passed { "pass" } else { "FAIL" });
+        for (case, passed, text) in &reports {
+            println!("{} {case:?}: {text}", if *passed { "pass" } else { "FAIL" });
             failed += usize::from(!*passed);
         }
-        for text in &measurements {
-            println!("measured {text}");
+        for (case, text) in &measurements {
+            println!("measured {case:?}: {text}");
         }
         print_delays(&delays, settings);
         println!("load {}", load_average());
         println!(
-            "{} cases, {failed} failed, in {:?}",
+            "{} cases and {} measurements of {}, {failed} failed, in {:?} ({built:?} of it building the cases)",
             reports.len(),
+            measurements.len(),
+            Case::ALL.len(),
             started.elapsed()
         );
         assert!(!fatal, "the inside faulted");
         assert_eq!(failed, 0, "cases failed");
-        // The inside counts what it sent; the stop test's report is the host's.
-        assert_eq!(
-            (reports.len() + measurements.len()) as u64,
-            sent + 1,
-            "a report went missing"
-        );
+        let mut seen: Vec<Option<Case>> = reports
+            .iter()
+            .map(|(case, ..)| *case)
+            .chain(measurements.iter().map(|(case, _)| *case))
+            .collect();
+        seen.sort_by_key(|case| case.map(|c| c as u64));
+        let every: Vec<Option<Case>> = Case::ALL.iter().copied().map(Some).collect();
+        assert_eq!(seen, every, "every case of the bar reports exactly once");
         assert_eq!(
             delays.len() as u64,
             settings.stops,
@@ -173,7 +204,43 @@ mod macos {
         );
     }
 
-    fn machine(stop_settings: StopSettings) -> Arc<Shared> {
+    /// Builds the cases program for the host's bare-metal target and gives its ELF image.
+    fn build_cases() -> Vec<u8> {
+        let target = TARGETS
+            .iter()
+            .find(|(arch, _)| *arch == std::env::consts::ARCH)
+            .map(|(_, target)| *target)
+            .expect("a bare-metal target for this host");
+        let target_dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(INSIDE);
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .with_file_name(INSIDE)
+            .join("Cargo.toml");
+        let mut cargo = Command::new(env!("CARGO"));
+        cargo
+            .args([
+                "build",
+                "--bin",
+                PROGRAM,
+                "--target",
+                target,
+                "--profile",
+                PROFILE,
+            ])
+            .args(["--jobs", JOBS])
+            .arg("--manifest-path")
+            .arg(&manifest)
+            .arg("--target-dir")
+            .arg(&target_dir);
+        for leaked in LEAKED {
+            cargo.env_remove(leaked);
+        }
+        let status = cargo.status().expect("running cargo for the cases");
+        assert!(status.success(), "building the cases failed");
+        std::fs::read(target_dir.join(target).join(PROFILE).join(PROGRAM))
+            .expect("the cases' image")
+    }
+
+    fn machine(program: &[u8], stop_settings: StopSettings) -> Arc<Shared> {
         let machine = Host::machine().expect("making the machine");
         let memory = Memory::reserve(MEMORY).expect("reserving memory");
         machine
@@ -184,11 +251,10 @@ mod macos {
                 MEMORY,
             )
             .expect("mapping memory");
-        let loaded = load(&memory, programs::FLOOR_CASES, CPUS).expect("loading the inside");
+        let loaded = load(&memory, program, CPUS).expect("loading the inside");
         let interrupts = machine.interrupts().expect("interrupt numbers");
         let start = Start {
             memory: MEMORY,
-            cpus: CPUS,
             host_page: page_size(),
             timer_interrupt: interrupts.timer.into(),
             first_raised_interrupt: interrupts.first_raised.into(),
@@ -205,7 +271,6 @@ mod macos {
             raised_at: Mutex::default(),
             stop_delays: Mutex::default(),
             fatal: AtomicBool::new(false),
-            sent: AtomicU64::new(0),
         })
     }
 
@@ -272,27 +337,38 @@ mod macos {
         offset: u64,
         stops: &mut Option<StopTest>,
     ) -> bool {
-        let page = link(&shared.memory, &shared.loaded, index);
+        let page = link_page(&shared.memory, &shared.loaded, index);
         let text = String::from_utf8_lossy(page.data()).into_owned();
-        match Request::from_word(page.request) {
-            Some(Request::Nothing | Request::Echo) => {}
-            Some(Request::Print) => println!("cpu {index}: {text}"),
-            Some(Request::Done) => {
-                // Every virtual CPU counts its reports in the same image; the first finishes last.
-                if index == 0 {
-                    shared
-                        .sent
-                        .store(page.get::<Done>().sent, Ordering::Relaxed);
+        if let Some(request) = link::Request::from_word(page.request) {
+            match request {
+                link::Request::Print => println!("cpu {index}: {text}"),
+                link::Request::Fatal => {
+                    let Fatal { esr, elr, far } = page.get();
+                    println!(
+                        "cpu {index}: the inside faulted: ESR {esr:#x} ELR {elr:#x} FAR {far:#x}"
+                    );
+                    shared.fatal.store(true, Ordering::Relaxed);
+                    return false;
                 }
-                return false;
+                link::Request::GiveBack => {
+                    let GiveBack { at, length } = page.get();
+                    shared
+                        .machine
+                        .give_back(&shared.memory, at, length)
+                        .expect("giving back");
+                }
             }
-            Some(Request::Fatal) => {
-                let Fatal { esr, elr, far } = page.get();
-                println!("cpu {index}: the inside faulted: ESR {esr:#x} ELR {elr:#x} FAR {far:#x}");
-                shared.fatal.store(true, Ordering::Relaxed);
-                return false;
-            }
-            Some(Request::Write) => {
+            return true;
+        }
+        let Some(request) = protocol::Request::from_word(page.request) else {
+            println!("cpu {index}: unknown request {:#x}", page.request);
+            shared.fatal.store(true, Ordering::Relaxed);
+            return false;
+        };
+        match request {
+            protocol::Request::Nothing | protocol::Request::Echo => {}
+            protocol::Request::Done => return false,
+            protocol::Request::Write => {
                 let Write { at } = page.get();
                 let bytes = page.data();
                 // SAFETY: the inside gave this frame for the write and runs nothing from it until answered.
@@ -304,20 +380,25 @@ mod macos {
                     )
                 };
             }
-            Some(Request::GiveBack) => {
-                let GiveBack { at, length } = page.get();
+            protocol::Request::Report => {
+                let Report { case, passed } = page.get();
+                let passed = passed == u64::from(true);
                 shared
-                    .machine
-                    .give_back(&shared.memory, at, length)
-                    .expect("giving back");
+                    .reports
+                    .lock()
+                    .unwrap()
+                    .push((Case::from_word(case), passed, text));
             }
-            Some(Request::Report) => {
-                let passed = page.get::<Report>().passed == u64::from(true);
-                shared.reports.lock().unwrap().push((passed, text));
+            protocol::Request::Measurement => {
+                let Measurement { case } = page.get();
+                shared
+                    .measurements
+                    .lock()
+                    .unwrap()
+                    .push((Case::from_word(case), text));
             }
-            Some(Request::Measurement) => shared.measurements.lock().unwrap().push(text),
-            Some(Request::Footprint) => page.put(&Bytes { bytes: footprint() }),
-            Some(Request::RaiseLater) => {
+            protocol::Request::Footprint => page.put(&Bytes { bytes: footprint() }),
+            protocol::Request::RaiseLater => {
                 let RaiseLater {
                     interrupt,
                     delay_us,
@@ -332,7 +413,7 @@ mod macos {
                         .expect("raising");
                 });
             }
-            Some(Request::Lower) => {
+            protocol::Request::Lower => {
                 let Lower { interrupt } = page.get();
                 shared
                     .machine
@@ -348,20 +429,15 @@ mod macos {
                     counter: raised.wrapping_sub(offset),
                 });
             }
-            Some(Request::StartCpu) => {
+            protocol::Request::StartCpu => {
                 let shared = Arc::clone(shared);
                 let StartCpu { cpu: other } = page.get();
                 thread::spawn(move || serve(&shared, other))
                     .join()
                     .expect("second virtual CPU");
             }
-            Some(Request::StopTest) => {
+            protocol::Request::StopTest => {
                 *stops = Some(StopTest::start(shared, cpu.stopper(), page.get()));
-            }
-            None => {
-                println!("cpu {index}: unknown request {:#x}", page.request);
-                shared.fatal.store(true, Ordering::Relaxed);
-                return false;
             }
         }
         true
@@ -446,6 +522,7 @@ mod macos {
             if asked == self.settings.stops {
                 let passed = self.outside_loop == 0 && self.went_back == 0;
                 shared.reports.lock().unwrap().push((
+                    Some(Case::HostStops),
                     passed,
                     format!(
                         "{} stops from another host thread (seed {:#x}): pc outside the loop {} times, count went back {} times",

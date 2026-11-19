@@ -66,14 +66,28 @@ pub struct BootRegisters {
     pub pstate: u64,
 }
 
-/// The registers for a boot map at `root`, on a CPU whose ID_AA64MMFR0_EL1 is `memory_model_features`.
-pub fn boot_registers(root: u64, memory_model_features: u64) -> BootRegisters {
+/// The translation granule of both halves, from the guest's page size: the 4 KiB granule, the one
+/// aarch64-paging's entries are built for. Another page size stops the build here.
+const GRANULE: (TCR_EL1::TG0::Value, TCR_EL1::TG1::Value) =
+    if PAGE_SIZE == aarch64_paging::paging::PAGE_SIZE as u64 {
+        (TCR_EL1::TG0::Value::KiB_4, TCR_EL1::TG1::Value::KiB_4)
+    } else {
+        panic!("no translation granule is set up for the guest's page size")
+    };
+
+/// The registers for a boot map at `root`, on a CPU whose ID_AA64MMFR0_EL1 is `memory_model_features`, with
+/// the guest's stack pointer alignment checked when `sp_alignment_checked` (the guest's `Guest` says).
+pub fn boot_registers(
+    root: u64,
+    memory_model_features: u64,
+    sp_alignment_checked: bool,
+) -> BootRegisters {
     let physical_range = ID_AA64MMFR0_EL1::PARange.read(memory_model_features);
     let size = u64::from(u64::BITS - VA_BITS);
     let tcr = TCR_EL1::T0SZ.val(size)
         + TCR_EL1::T1SZ.val(size)
-        + TCR_EL1::TG0::KiB_4
-        + TCR_EL1::TG1::KiB_4
+        + TCR_EL1::TG0.val(GRANULE.0 as u64)
+        + TCR_EL1::TG1.val(GRANULE.1 as u64)
         + TCR_EL1::SH0::Inner
         + TCR_EL1::SH1::Inner
         + TCR_EL1::IRGN0::WriteBack_ReadAlloc_WriteAlloc_Cacheable
@@ -95,7 +109,6 @@ pub fn boot_registers(root: u64, memory_model_features: u64) -> BootRegisters {
         | SctlrEl1::C
         | SctlrEl1::I
         | SctlrEl1::SA
-        | SctlrEl1::SA0
         | SctlrEl1::UCI
         | SctlrEl1::DZE
         | SctlrEl1::EIS
@@ -104,6 +117,11 @@ pub fn boot_registers(root: u64, memory_model_features: u64) -> BootRegisters {
         | SctlrEl1::TSCXT
         | SctlrEl1::NTLSMD
         | SctlrEl1::LSMAOE;
+    let sctlr = if sp_alignment_checked {
+        sctlr | SctlrEl1::SA0
+    } else {
+        sctlr
+    };
     let cpacr = CPACR_EL1::FPEN::TrapNothing;
     BootRegisters {
         mair: mair.value,

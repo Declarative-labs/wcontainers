@@ -4,12 +4,6 @@
 
 pub mod boot;
 pub mod build_environment;
-/// ARM64's general registers, x0 to x30.
-pub const GENERAL_REGISTERS: usize = 31;
-
-/// Bytes of an ARM64 instruction.
-pub const INSTRUCTION_BYTES: u64 = size_of::<u32>() as u64;
-
 pub mod layout;
 pub mod link;
 

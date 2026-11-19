@@ -9,6 +9,8 @@ use std::ptr::{self, NonNull};
 
 use object::{Object, ObjectSegment};
 use wcontainers_abi::PAGE_SIZE;
+use wcontainers_arm64::Arm64;
+use wcontainers_guest_cpu::Guest;
 use wcontainers_inside::boot::{BOOT_MAP_BYTES, BootRegisters, boot_registers, write_boot_map};
 use wcontainers_inside::layout::{IMAGE, MEMORY_BASE, linear};
 use wcontainers_inside::link::{Link, Start};
@@ -19,11 +21,6 @@ pub mod hvf;
 /// The host's hypervisor.
 #[cfg(target_os = "macos")]
 pub type Host = hvf::HypervisorFramework;
-
-/// The inside's programs, built for the host's architecture.
-pub mod programs {
-    include!(concat!(env!("OUT_DIR"), "/programs.rs"));
-}
 
 /// What went wrong.
 #[derive(Debug)]
@@ -81,13 +78,13 @@ pub struct Interrupts {
 
 /// A way of making hardware virtual machines.
 pub trait Hypervisor {
-    type Machine: Machine;
-    /// Makes the process's one machine.
-    fn machine() -> Result<Self::Machine>;
+    type VirtualMachine: VirtualMachine;
+    /// Makes the process's one virtual machine.
+    fn machine() -> Result<Self::VirtualMachine>;
 }
 
-/// One virtual machine.
-pub trait Machine: Send + Sync {
+/// One hardware virtual machine on the host.
+pub trait VirtualMachine: Send + Sync {
     type Cpu: VirtualCpu;
     /// Maps `length` bytes of host memory at `host` at guest-physical `at`.
     fn map(&self, host: NonNull<u8>, at: u64, length: u64) -> Result<()>;
@@ -100,8 +97,6 @@ pub trait Machine: Send + Sync {
     fn cpu(&self) -> Result<Self::Cpu>;
     /// The machine's interrupt numbers.
     fn interrupts(&self) -> Result<Interrupts>;
-    /// Virtual CPUs a machine can have.
-    fn max_cpus(&self) -> Result<u64>;
 }
 
 /// One virtual CPU.
@@ -279,7 +274,7 @@ pub fn boot<C: VirtualCpu>(
         cpacr,
         ttbr1,
         pstate,
-    } = boot_registers(loaded.boot_root, features);
+    } = boot_registers(loaded.boot_root, features, Arm64::SP_ALIGNMENT_CHECKED);
     for (register, value) in [
         (Register::Mair, mair),
         (Register::Tcr, tcr),

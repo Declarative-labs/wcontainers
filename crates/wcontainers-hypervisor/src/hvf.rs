@@ -8,7 +8,7 @@ use applevisor_sys::{
     HV_MEMORY_EXEC, HV_MEMORY_READ, HV_MEMORY_WRITE, hv_vcpu_t, hv_vcpus_exit, hv_vm_map,
     hv_vm_unmap,
 };
-use wcontainers_inside::GENERAL_REGISTERS;
+use wcontainers_abi::RegisterBlock;
 use wcontainers_inside::layout::{GIC_DISTRIBUTOR, GIC_REDISTRIBUTORS};
 
 use crate::{Error, Exit, Hypervisor, Interrupts, Memory, Register, Result, fresh};
@@ -17,7 +17,7 @@ use crate::{Error, Exit, Hypervisor, Interrupts, Memory, Register, Result, fresh
 pub struct HypervisorFramework;
 
 /// The process's machine, with its interrupt controller.
-pub struct HvfMachine {
+pub struct HvfVirtualMachine {
     vm: VirtualMachineInstance<GicEnabled>,
 }
 
@@ -45,20 +45,20 @@ fn code(code: i32) -> Result<()> {
 }
 
 impl Hypervisor for HypervisorFramework {
-    type Machine = HvfMachine;
+    type VirtualMachine = HvfVirtualMachine;
 
-    fn machine() -> Result<HvfMachine> {
+    fn machine() -> Result<HvfVirtualMachine> {
         let config = VirtualMachineConfig::new();
         let mut gic = GicConfig::new();
         check(gic.set_distributor_base(GIC_DISTRIBUTOR))?;
         check(gic.set_redistributor_base(GIC_REDISTRIBUTORS))?;
         let vm = VirtualMachine::with_gic(config, gic)
             .map_err(|e| Error::Hypervisor(format!("{e:?}")))?;
-        Ok(HvfMachine { vm })
+        Ok(HvfVirtualMachine { vm })
     }
 }
 
-impl crate::Machine for HvfMachine {
+impl crate::VirtualMachine for HvfVirtualMachine {
     type Cpu = HvfCpu;
 
     fn map(&self, host: NonNull<u8>, at: u64, length: u64) -> Result<()> {
@@ -74,7 +74,7 @@ impl crate::Machine for HvfMachine {
         code(unsafe { hv_vm_unmap(at, length as usize) })?;
         let host = NonNull::new(memory.host(at)).expect("host address");
         fresh(Some(host), length)?;
-        crate::Machine::map(self, host, at, length)
+        crate::VirtualMachine::map(self, host, at, length)
     }
 
     fn raise(&self, interrupt: u32, level: bool) -> Result<()> {
@@ -99,16 +99,10 @@ impl crate::Machine for HvfMachine {
             first_raised,
         })
     }
-
-    fn max_cpus(&self) -> Result<u64> {
-        Vcpu::get_max_count()
-            .map(u64::from)
-            .map_err(|e| Error::Hypervisor(format!("{e:?}")))
-    }
 }
 
 /// The general registers in order.
-const GENERAL: [Reg; GENERAL_REGISTERS] = [
+const GENERAL: [Reg; RegisterBlock::ZERO.x.len()] = [
     Reg::X0,
     Reg::X1,
     Reg::X2,

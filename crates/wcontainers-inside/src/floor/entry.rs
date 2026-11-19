@@ -3,13 +3,14 @@
 use core::arch::global_asm;
 use core::mem::offset_of;
 
-pub use crate::GENERAL_REGISTERS as GENERAL;
+use wcontainers_abi::RegisterBlock;
 
 /// A thread's registers at the guest's level, as the floor saves them when it takes an exception from there.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UserRegisters {
-    pub x: [u64; GENERAL],
+    /// x0 to x30, as many as the guest's register block holds.
+    pub x: [u64; RegisterBlock::ZERO.x.len()],
     pub sp: u64,
     pub pc: u64,
     pub pstate: u64,

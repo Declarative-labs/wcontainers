@@ -2492,7 +2492,10 @@ dependencies = [
  "libc",
  "object 0.37.3",
  "wcontainers-abi",
+ "wcontainers-arm64",
+ "wcontainers-guest-cpu",
  "wcontainers-inside",
+ "zerocopy",
 ]
 
 [[package]]
