@@ -169,8 +169,6 @@ struct Bound {
     ds: Option<Held<DomainShader_Impl>>,
     /// The stream output targets.
     so_targets: [Option<Held<Buffer_Impl>>; 4],
-    /// The offsets the stream output targets were bound at, as given (Direct3D 10 hands them back).
-    so_offsets: [u32; 4],
     /// Per stage (vertex, pixel, compute, geometry, hull, domain), per slot.
     constant_buffers: [Vec<Option<Held<Buffer_Impl>>>; 6],
     /// Per stage and slot, the constants bound (first, count); none for the whole buffer.
@@ -203,7 +201,6 @@ impl Default for Bound {
             hs: None,
             ds: None,
             so_targets: Default::default(),
-            so_offsets: [0; 4],
             constant_buffers: Default::default(),
             constant_ranges: Default::default(),
             resources: Default::default(),
@@ -590,8 +587,6 @@ impl Context {
         } else {
             (0..h.len()).map(|i| unsafe { *offsets.add(i) }).collect()
         };
-        let mut kept = [0; 4];
-        kept[..o.len()].copy_from_slice(&o);
         if self.run("SOSetTargets", move |f| f.so_set_targets(&b, &o)) {
             let mut targets: [Option<Held<Buffer_Impl>>; 4] = Default::default();
             for (t, h) in targets.iter_mut().zip(h) {
@@ -599,15 +594,16 @@ impl Context {
             }
             let mut bound = self.kept.bound.borrow_mut();
             bound.so_targets = targets;
-            bound.so_offsets = kept;
         }
     }
 
-    /// The stream output targets' offsets as bound, for Direct3D 10's `SOGetTargets`.
+    /// The stream output targets' offsets for Direct3D 10's `SOGetTargets`: whatever offset a
+    /// target was bound at, Direct3D 10 answers all ones for it, and zero for an empty slot.
     pub(super) fn so_get_offsets(&self, n: u32, out: *mut u32) {
-        let kept = self.seen().so_offsets;
+        let seen = self.seen();
         for i in 0..n as usize {
-            unsafe { out.add(i).write(kept.get(i).copied().unwrap_or(0)) };
+            let bound = seen.so_targets.get(i).is_some_and(Option::is_some);
+            unsafe { out.add(i).write(if bound { u32::MAX } else { 0 }) };
         }
     }
 
@@ -629,7 +625,9 @@ impl Context {
 
     /// Empties every slot holding the object at `address`, which the program released for the
     /// last time, as if the program had bound nothing there (Direct3D 10's device holds no
-    /// reference on what it binds).
+    /// reference on what it binds). Rasterizer, blend and depth-stencil states stay bound: the
+    /// device keeps those (Wine's test_state_refcounting reads a released rasterizer state back
+    /// from real Direct3D 10, and a released sampler as none).
     pub(super) fn unbind_released(&self, address: usize) {
         let was = self.calling10.replace(true);
         let found = {
@@ -639,24 +637,11 @@ impl Context {
                 holds(&b.ps, address),
                 holds(&b.gs, address),
                 holds(&b.layout, address),
-                holds(&b.raster, address),
                 holds(&b.index.0, address),
-                holds(&b.blend.0, address),
-                holds(&b.depth_stencil.0, address),
                 holds(&b.predication.0, address),
             ]
         };
-        let [
-            vs,
-            ps,
-            gs,
-            layout,
-            raster,
-            index,
-            blend,
-            depth_stencil,
-            predicate,
-        ] = found;
+        let [vs, ps, gs, layout, index, predicate] = found;
         if vs {
             self.vs_set_shader(Ref::default(), std::ptr::null(), 0);
         }
@@ -669,22 +654,8 @@ impl Context {
         if layout {
             self.ia_set_input_layout(Ref::default());
         }
-        if raster {
-            self.rs_set_state(Ref::default());
-        }
         if index {
             self.ia_set_index_buffer(Ref::default(), DXGI_FORMAT::default(), 0);
-        }
-        if blend {
-            let (factor, mask) = {
-                let b = self.kept.bound.borrow();
-                (b.blend.1, b.blend.2)
-            };
-            self.om_set_blend_state(Ref::default(), factor.as_ptr(), mask);
-        }
-        if depth_stencil {
-            let reference = self.kept.bound.borrow().depth_stencil.1;
-            self.om_set_depth_stencil_state(Ref::default(), reference);
         }
         if predicate {
             let value = self.kept.bound.borrow().predication.1;
