@@ -372,6 +372,113 @@ fn combined_depth_stencil_views_draw_and_read_each_aspect() {
     assert!(ran > 0, "every device holds depth24plus-stencil8");
 }
 
+/// Pixels of the row the stencil alone is read into.
+const STENCIL_ROW: u32 = 8;
+
+/// The stencil alone, read as Wine's test_depth_stencil_sampling reads it: its size asked of the
+/// view and each pixel loading the texel its position scales to; red is the stencil.
+fn stencil_alone_wgsl() -> String {
+    format!(
+        r#"
+@group(1) @binding(32) var s: texture_2d<u32>;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {{
+    let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
+}}
+@fragment fn ps(@builtin(position) p: vec4f) -> @location(0) vec4f {{
+    let size = vec2f(textureDimensions(s));
+    let at = vec2i(size * p.xy / vec2f({STENCIL_ROW}.0, 1.0));
+    return vec4f(f32(textureLoad(s, at, 0).r) / {}.0, 0.0, 0.0, 1.0);
+}}
+"#,
+        u8::MAX
+    )
+}
+
+/// A stencil view bound alone, after clears of the stencil alone, read at the texel each pixel's
+/// position scales to through the view's size: every pixel reads each cleared value.
+#[test]
+fn stencil_views_bound_alone_read_each_stencil_clear() {
+    let mut b = device();
+    let mut ran = 0;
+    for format in [Format::Depth24PlusStencil8, Format::Depth32FloatStencil8] {
+        if !b
+            .caps()
+            .formats
+            .get(format)
+            .contains(FormatUse::DEPTH_STENCIL | FormatUse::SAMPLE)
+        {
+            eprintln!("{format:?}: not held by this device");
+            continue;
+        }
+        let (texture, depth_view) = draw::texture_2d(
+            &mut b,
+            format,
+            STENCIL_ROW,
+            1,
+            TextureUsage::RENDER | TextureUsage::SAMPLE,
+        )
+        .unwrap();
+        let stencil_view = b
+            .create_view(
+                &texture,
+                &TextureViewDesc {
+                    format,
+                    dimension: ViewDimension::D2,
+                    base_mip: 0,
+                    mip_count: 1,
+                    base_layer: 0,
+                    layer_count: 1,
+                    stencil: true,
+                },
+            )
+            .unwrap();
+        let k = Kit {
+            program: draw::program(&mut b, &stencil_alone_wgsl()).unwrap(),
+            ..kit(&mut b, Format::Rgba8Unorm, STENCIL_ROW, &draw::opaque())
+        };
+        let set = b
+            .create_binding_set(&[BindingEntry {
+                binding: 32,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Texture(&stencil_view),
+            }])
+            .unwrap();
+        for stencil in [0, 100, u8::MAX] {
+            b.begin_pass(&PassDesc {
+                colors: Default::default(),
+                depth: Some(DepthAttachment {
+                    view: &depth_view,
+                    depth: Some(AspectOps {
+                        load: LoadOp::Load,
+                        store: StoreOp::Store,
+                        read_only: false,
+                    }),
+                    stencil: Some(AspectOps {
+                        load: LoadOp::Clear(stencil),
+                        store: StoreOp::Store,
+                        read_only: false,
+                    }),
+                }),
+                empty: None,
+                occlusion: None,
+            });
+            b.end_pass();
+            begin(&mut b, &k, [0.0; 4]);
+            draw_at(&mut b, &k, &set, None);
+            let got = finish(&mut b, &k, 4);
+            assert_eq!(b.status(), DeviceStatus::Ok, "{format:?}");
+            assert_eq!(
+                got,
+                [stencil, 0, 0, u8::MAX].repeat(STENCIL_ROW as usize),
+                "{format:?}, stencil {stencil}"
+            );
+        }
+        ran += 1;
+    }
+    assert!(ran > 0, "every device holds depth24plus-stencil8");
+}
+
 /// A vertex stage alone, moving the triangle by its constants: depth 0.5 with no fragment stage.
 const VERTEX_ONLY_WGSL: &str = r#"
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
