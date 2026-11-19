@@ -1,6 +1,7 @@
 //! How the native output carries each ARM64 instruction over to ARM64 host code (docs/native.md section 3.4).
 
-use wcontainers_guest_cpu::{HostCode, InsideCall, Native, NativeClass, Route};
+use wcontainers_guest_cpu::position::{Base, Index, Operand};
+use wcontainers_guest_cpu::{HostCode, InsideCall, Native, NativeClass, Route, Stopping};
 
 use crate::Arm64;
 use crate::carry::{self, COUNT};
@@ -213,5 +214,60 @@ impl Native for Arm64 {
 
     fn call(code: &mut HostCode, call: InsideCall) {
         code.push(&carry::call_word(call).to_le_bytes());
+    }
+
+    fn stopping(i: &I, _address: u64) -> Stopping {
+        let register = |r: Reg| match r {
+            Reg::X(n) => Base::Register(n),
+            Reg::Sp => Base::StackPointer,
+            Reg::Zero => Base::Zero,
+        };
+        if let Some(m) = i.memory_access() {
+            let (base, offset, index) = match m.address {
+                Address::Offset { base, offset } | Address::PreIndex { base, offset } => {
+                    (register(base), offset, None)
+                }
+                Address::PostIndex { base, .. } => (register(base), 0, None),
+                Address::Indexed {
+                    base,
+                    index,
+                    extend,
+                    shift,
+                } => (
+                    register(base),
+                    0,
+                    Some(Index {
+                        register: register(index),
+                        bits: extend.from_bits,
+                        signed: extend.signed,
+                        shift,
+                    }),
+                ),
+                Address::Literal { offset } => (Base::Pc, offset, None),
+            };
+            return Stopping::Access(Operand {
+                base,
+                offset,
+                index,
+            });
+        }
+        match *i {
+            I::Syscall => Stopping::Syscall,
+            I::CodeChanged { .. } => Stopping::CodeChanged,
+            I::ReadSystem {
+                rt,
+                register: SystemRegister::Counter,
+            } => Stopping::Counter(match rt {
+                Reg::X(n) => Some(n),
+                _ => None,
+            }),
+            I::Breakpoint { comment } => Stopping::Breakpoint(comment),
+            I::WriteSystem {
+                register: SystemRegister::Fpsr,
+                ..
+            } => Stopping::FloatStatusWrite,
+            _ if Self::route(i) == Route::Trap => Stopping::Illegal,
+            _ => Stopping::Plain,
+        }
     }
 }

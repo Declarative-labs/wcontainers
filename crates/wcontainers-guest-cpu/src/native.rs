@@ -2,6 +2,7 @@
 //! carried over to host code of the same architecture. It never says what an instruction computes; the
 //! hardware computes it, and the meanings stay the definition the routes are proven against.
 
+use crate::position::{Fixup, Held, InsideCall, Relocated, Resume, Side, Span, Stopping};
 use crate::{Flow, FlowKind, Guest};
 
 /// How one decoded instruction is carried over (docs/native.md section 3.4).
@@ -62,111 +63,8 @@ pub trait Native: Guest {
     fn count(code: &mut HostCode, events: u32);
     /// Writes a call into the inside.
     fn call(code: &mut HostCode, call: InsideCall);
-}
-
-/// A call into the inside from translated code, named by the code it carries (ARM64 `brk`'s immediate).
-/// What it is about is the position map's span at the call.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[repr(u16)]
-pub enum InsideCall {
-    /// Translated code ends here: the guest goes on where the span resumes.
-    Exit,
-    /// The inside answers the instruction as its meaning does (the Kernel route).
-    Answer,
-    /// Before a float status instruction: the hardware is loaded with the guest's flags.
-    FloatBefore,
-    /// After it: the block takes the hardware's status.
-    FloatAfter,
-    /// The instruction traps as its meaning does (the Trap route).
-    Trap,
-    /// The instruction's access is not a multiple of its size: an alignment trap at its address.
-    Misaligned,
-    /// A jump through a register to an address no piece can be at: the guest lands there and faults.
-    Unreachable,
-}
-
-impl InsideCall {
-    /// Every call.
-    pub const ALL: [Self; 7] = [
-        Self::Exit,
-        Self::Answer,
-        Self::FloatBefore,
-        Self::FloatAfter,
-        Self::Trap,
-        Self::Misaligned,
-        Self::Unreachable,
-    ];
-
-    /// The code a call carries.
-    pub fn code(self) -> u16 {
-        self as u16
-    }
-
-    /// The call a code names.
-    pub fn from_code(code: u16) -> Option<Self> {
-        Self::ALL.into_iter().find(|c| c.code() == code)
-    }
-}
-
-/// Which side of its instruction's commit point a host instruction is on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Side {
-    /// Nothing of the guest instruction is done: a stop here is at the instruction.
-    Before,
-    /// The guest instruction is done, or its fix-ups finish it: a stop here is where it goes on.
-    After,
-}
-
-/// Where a guest value is while it is not in its own register: in a host register, or at a byte offset of the
-/// thread's register page.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Held {
-    Register(u8),
-    Page(u16),
-}
-
-/// A guest register whose value is held elsewhere.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Relocated {
-    /// The guest register, by number.
-    pub guest: u8,
-    pub held: Held,
-}
-
-/// Where the guest goes on after a commit point.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Resume {
-    /// This guest address.
-    At(u64),
-    /// The address held there, untagged as the guest's branches untag it (a jump through a register).
-    Through(Held),
-    /// The guest address of the entry slot whose address is held there (a jump on its way to the slot).
-    Slot(Held),
-}
-
-/// What the rest of a sequence would have done after its commit point (docs/native.md section 4), to the host
-/// registers and the register page: a stop makes its fix-ups first, then reads the guest's values where the
-/// span's relocations say they are.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Fixup {
-    /// The host register, by number, gets the constant being built in it.
-    Constant { register: u8, value: u64 },
-    /// The host register, by number (the zero register's number: the stack pointer), gets host register
-    /// `from`'s value.
-    Move { register: u8, from: u8 },
-    /// The exclusive monitor is written whole for an access of `bytes` (`pair`: two of them) at the address
-    /// held there, its value read again from guest memory.
-    Remember {
-        bytes: u8,
-        pair: bool,
-        address: Held,
-    },
-    /// The exclusive monitor is forgotten and the status host register, by number, written: 0 if the swap read
-    /// the remembered value, its low and (a pair of 64-bit registers) high words held at `read`, else 1
-    /// (`read` empty: no swap was tried, 1).
-    Forget { status: u8, read: [Option<Held>; 2] },
-    /// The block takes the hardware's float status.
-    FloatStatus,
+    /// What a stop in one decoded instruction at guest `address` needs to know of it.
+    fn stopping(i: &Self::Instruction, address: u64) -> Stopping;
 }
 
 /// A slow path of the native output that translating alone can count, per site (docs/native.md section 3.7).
@@ -209,22 +107,6 @@ impl NativeReason {
     }
 }
 
-/// What a stop at one host instruction means for the guest. A span holds from its start to the next span.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Span {
-    /// Its first host byte, from the start of the code.
-    pub start: u32,
-    /// The guest instruction's address.
-    pub guest: u64,
-    pub side: Side,
-    /// How far the count register is ahead of the events completed here.
-    pub lead: u32,
-    /// Where the guest goes on, after the commit point.
-    pub resume: Resume,
-    pub relocated: Vec<Relocated>,
-    pub fixups: Vec<Fixup>,
-}
-
 /// Host code with its position map, written one guest instruction after another.
 #[derive(Debug, Default)]
 pub struct HostCode {
@@ -259,9 +141,10 @@ impl HostCode {
         Self::default()
     }
 
-    /// Starts the guest instruction at `address`, `counted` when it is one of the count's events. The count's
-    /// lead carries over from what came before: an add placed earlier in the run may be this one's.
-    pub fn start(&mut self, address: u64, counted: bool) {
+    /// Starts the guest instruction at `address`, `counted` when it is one of the count's events, with what a
+    /// stop in it needs to know of it. The count's lead carries over from what came before: an add placed
+    /// earlier in the run may be this one's.
+    pub fn start(&mut self, address: u64, counted: bool, stopping: Stopping) {
         let lead = self.now.as_ref().map_or(0, |s| s.lead);
         self.now = Some(Span {
             start: 0,
@@ -271,6 +154,7 @@ impl HostCode {
             resume: Resume::At(address),
             relocated: Vec::new(),
             fixups: Vec::new(),
+            stopping,
         });
         self.owed = counted;
     }
@@ -393,11 +277,7 @@ impl HostCode {
 
     /// The span holding the host byte at `offset`.
     pub fn span(&self, offset: u32) -> Option<&Span> {
-        let after = self.spans.partition_point(|s| s.start <= offset);
-        after
-            .checked_sub(1)
-            .map(|i| &self.spans[i])
-            .filter(|_| (offset as usize) < self.bytes.len())
+        crate::position::span_at(&self.spans, self.bytes.len(), offset)
     }
 }
 

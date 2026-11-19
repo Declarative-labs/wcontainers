@@ -46,7 +46,7 @@ pub fn translate_native<G: Native>(
     let placement = count_placement(&events);
     let mut out = HostCode::new();
     for (k, (instruction, bytes, here, _, event)) in run.iter().enumerate() {
-        out.start(*here, *event);
+        out.start(*here, *event, G::stopping(instruction, *here));
         if let Some((_, total)) = placement.filter(|&(at, _)| at == k) {
             G::count(&mut out, total);
         }

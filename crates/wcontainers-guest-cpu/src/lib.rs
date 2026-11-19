@@ -9,6 +9,8 @@
 
 #![cfg_attr(not(feature = "translate"), no_std)]
 
+extern crate alloc;
+
 #[cfg(feature = "translate")]
 mod effects;
 #[cfg(feature = "translate")]
@@ -19,10 +21,9 @@ mod translate;
 #[cfg(feature = "translate")]
 pub use effects::{Effects, effects};
 #[cfg(feature = "translate")]
-pub use native::{
-    Fixup, Held, HostCode, InsideCall, Native, NativeClass, NativeReason, Relocated, Resume, Route,
-    Side, Span, count_placement, counted,
-};
+pub use native::{HostCode, Native, NativeClass, NativeReason, Route, count_placement, counted};
+pub mod position;
+pub use position::{Fixup, Held, InsideCall, Relocated, Resume, Side, Span, Stopping};
 #[cfg(feature = "translate")]
 pub use translate::*;
 
