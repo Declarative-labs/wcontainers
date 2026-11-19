@@ -57,7 +57,53 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   found: switch tables as the compilers really write them for a 32-bit index, the lazy `Shift` shape and
   the flags of rotates and bit tests, the literal check's closing version merged, and the measurements the
   check found missing (see "X4, run 4"); the whole suite's ARM64 tests that need Docker on the Mac could not
-  run, because Docker Desktop would not start, and must be run again.
+  run, because Docker Desktop would not start, and must be run again. Run 5 (2026-11-19) ran those ARM64
+  tests on the rented ARM64 machine, worked the literal list down (x86 crate 328 to 187 baseline lines), and
+  wrote into plan 5.6 how a rep string's passes let a stop land between any two elements (see "X4, run 5").
+
+## X4, run 5 (2026-11-19)
+
+Machines: the Mac (load 4 to 8), the i7-8750H (load 1.4 to 3.3), the rented ARM64 machine (Graviton4).
+Logs in scratch `x4/run5/`. Docker Desktop on the Mac still says "Docker Desktop is unable to start"; it is the
+owner's and was left alone.
+
+- The ARM64 tests the suite could not run on the Mac: run on the rented ARM64 machine at 0f8df9bb (the code of
+  5122abd0 plus the plan sentence below), `arm-run <checkout> --name x86 -- 'cargo test -j $ARM_JOBS -p
+  wcontainers-translator-test --no-fail-fast -- arm64'` (`arm-arm64.log`, 1,480 s, machine load 7.7 to 15.2):
+  50 passed, 2 failed. Of the 25 Mac failures of run 4, 23 pass there: browser 1, checks 2, layer 2 1, layer 3 3
+  (the machine's manual says layer 3 gives the Mac's verdicts), programs 13, and layer 1's no-form, hand-made and
+  refusal tests. The 2 failures are `every_form_matches_the_cpu_arm64` and `sample_matches_the_cpu_in_chrome_arm64`,
+  each failing only on `MSR_SR_systemmove` writing FPSR, the difference of that machine's CPU the manual lists
+  (Neoverse V2 keeps FPSR bits 28 and 29); its manual puts layer 1's bars on the Mac. So those two still need
+  the Mac's Docker. Nothing in ARM64, the translator or the interface changed since fc712bf3, where the whole
+  suite passed on the Mac.
+- Plan 5.6 now says how a rep string's passes let a stop land between any two elements (each pass ends on an
+  element boundary through the one stop check, and a bulk pass's element count is the one value a limit would
+  bound). Nothing of the progress count is built (the translator track builds definition E).
+- Literals, a part of the fix list: the length decoder's encoding bytes (VEX, EVEX, the three-byte escapes,
+  the maps), ModRM's fields and modes, and its immediate and displacement sizes are named in `encoding.rs` or
+  derived from `size_of`, and its tables are read as an `After` enum at compile time; the length sweep imports
+  the prefix, escape and VEX bytes, rip's field and the length limit; the meanings use `W8` to `W64` and
+  `SLOT` (`operand.rs`) instead of bare bit and byte counts. Every replacement keeps the value, and the output
+  is unchanged: `measure_x86_64` gives the same WebAssembly and gzip sizes, byte for byte, for all twelve
+  programs and look-aheads as run 4 (`measure.log`); `lengths_are_the_reference_cpus` (the whole sweep) and the
+  x86 programs and checks against the i7-8750H pass (`x86-after-widths.log`). The sweep binary itself was not
+  run again (25 minutes on the reference; its probes are the same bytes). Baseline lines: wcontainers-x86 328
+  to 187, wcontainers-translator-test 2138 to 2115, guest-cpu 28, translator 87. Left in the x86 crate: the
+  SIMD lane counts and shifts (`simd.rs`), the register numbers' table (`operand.rs`), the reference runner's
+  own 0x37f, 0x1f80 and 80-bit mask.
+
+Proof at the end of run 5:
+- Suite on the Mac (the command of run 3, at 018231ef, Mac load 5.5 to 7.7, the i7-8750H as reference;
+  `suite.log`): 422 passed, 25 failed, 13 ignored. The 25 are the same ARM64 tests as in run 4, every one
+  panicking because Docker Desktop on the Mac does not start; every other test passes. 23 of them pass on the
+  ARM64 machine (above).
+- `cargo run -q -p wcontainers-literals -- check`: exit 0. `cargo fmt --check`; clippy with `-D warnings` on
+  the x86 and test crates (all targets): clean.
+
+What comes next for X4: when Docker Desktop on the Mac starts again, run `every_form_matches_the_cpu_arm64`
+and `sample_matches_the_cpu_in_chrome_arm64` (`--test layer1`) there, or the whole suite; nothing else of X4's
+bar is open. The rest of "Left for later" under run 4 stands.
 
 ## X4, run 4 (2026-11-19)
 
