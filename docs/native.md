@@ -365,7 +365,13 @@ tr/code.rs:124-127), under "withheld register named by the guest" (section 3.7).
   #(size - 1)`, `tbnz t, #log2(PAGE_SIZE), cross`. An access through the stack pointer (immediate offset,
   pre-index or post-index) whose bytes stay in one aligned run of the stack's alignment (16 bytes, the
   offset taken modulo 16) takes no test at all: the hardware checks SA0 before any byte is touched, so the
-  base is a multiple of 16 and such an access cannot cross a page (N4 run 5). An
+  base is a multiple of 16 and such an access cannot cross a page (N4 run 5). An access of one element (not a
+  pair) whose address equals its base modulo its size (an immediate offset that is a multiple of the size, a
+  post-index, or a register index shifted by at least log2 of the size) and whose base is not the stack pointer
+  takes two words in line, `and t, xN, #(size - 1)`, `cbnz t, exact`: a base aligned to the size keeps the
+  access in one aligned run of that many bytes, which no page boundary splits; `exact`, out of line, is the
+  exact test above, which goes back to the access when it does not cross and to the probes when it does (N4
+  run 7). An
   access within one page is copied as it is (one page refuses all of it or none). On `cross` a probe of
   each of the two pages comes first (a load: `ldrb wzr` at the access's first and last byte; a store:
   `staddb wzr` there, which needs write permission and changes nothing, measured in experiments/n0r3/

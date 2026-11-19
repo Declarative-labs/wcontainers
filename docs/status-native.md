@@ -48,7 +48,9 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   to +59.27% [+57.84 .. +60.45], which still fails against +21.2% (below, "N4 run 4"); run 5 built the untranslated run,
   left out the page test for aligned stack accesses, counted dynamic register uses and withheld x18, x23 and x28 (sort
   -2.2% cycles): the compute part still fails at +55.40% [+54.62 .. +56.03], the system-call part passes (87.4 ns [82.8 ..
-  88.7]) (below, "N4 run 5"). T1's look-aheads come next.
+  88.7]) (below, "N4 run 5"); run 6 made the page test two words in line for an access of one element at its base's
+  alignment (matrix -36% cycles): on a quiet Mac the compute part is +47.51% [+46.17 .. +48.01], still failing against
+  +21.2%, and the system-call part passes at 67.9 ns [63.4 .. 71.7] (below, "N4 run 6"). T1's look-aheads come next.
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -75,6 +77,58 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N4 run 6 (2026-11-19): a two-word page test, the bar on a quiet machine
+
+Start: origin/main and origin/phase-1-literals had nothing new; T1 is still on no branch. The run 5 status lines left
+uncommitted were committed (28a0adb2), and the register test's instruction size now comes from the arm64 crate (ab3c8f1a).
+Logs are in scratch native/n4r7.
+
+Built:
+- The page test in front of an access of one element (not a pair) whose address equals its base modulo its size (an
+  immediate offset that is a multiple of the size, a post-index, or a register index shifted by at least log2 of the size)
+  and whose base is not the stack pointer is now two words in line, `and t, xN, #(size - 1)`, `cbnz t`: a base aligned
+  to the size keeps such an access in one aligned run, which no page boundary splits. When the base is not aligned the
+  exact test runs out of line and goes back to the access, or to the probes when it crosses (83d9cfe6; plan 3.4). What
+  is routed and probed is unchanged (decision 14's routing stands), so nothing rests on the host's model.
+
+Measured (M5 Max, all on the Mac):
+- The change, as alternating pairs of the two builds' native runs (n4r7/ab-page.log, 6 pairs each, load 4 to 9, ab.py
+  beside it): cycles new over old matrix 0.638 [0.434 .. 0.643] (instructions 0.801), fib 0.974, sort 0.980
+  (instructions 0.940), interpret 0.998 (instructions 0.955), sieve 1.002, hash 1.002, walk 0.993, search 1.000.
+- The speed test after it (n4r7/speed.log, 14:07 to 14:30, load 4 to 7, every run 99 to 100% on performance cores, 15
+  pairs, look-ahead 256, bootstrap seed 1 with 2000 resamples): compute part +47.51%, 95% interval [+46.17 .. +48.01],
+  FAILS against +21.2%. Native against plain, cycles (instructions): fib +55.3 (+88.1), sieve +28.2 (+36.5), hash +2.9
+  (+27.1), sort +83.6 (+145.0), interpret +110.6 (+105.0), matrix +28.2 (+66.0), walk +17.8 (+81.1), search +87.3
+  (+45.4); calls +60.5 (+115.0). Untranslated against plain, cycles: fib -3.4, sieve +7.5, hash -2.6, sort -5.2,
+  interpret -5.8, matrix -14.0, walk +16.4, search -9.4, calls -19.5. System-call part: 165.0 ns a call (median), the
+  kernel's share 97.1 ns, the back end's 67.9 ns, 95% interval [63.4 .. 71.7], PASSES against 100 ns.
+- The load moves the figures: under load 83 to 133 (run 5, 12 to 22% of each run on performance cores) the same
+  method gave +55.40%, fib +68.7 and search +48.1. The bar's figure is best taken on a quiet machine, as this one was.
+- Search's cycles rose from +48% under load to +87% quiet while its instructions stayed at +45% (its plain run took 636
+  M cycles quiet against 866 M under load, the native run about the same in both); why is not looked into yet.
+- Tests after the change: native 32,422 cases, 0 failing (seed 0x6e34720701, n4r7/native16.log, load 6 to 42); arm64,
+  guest-cpu and the translator with the native feature pass on the rented ARM64 machine (n4r7/suite-arm.log), and the
+  carry test there too (n4r7-arm64.log); clippy with warnings denied for arm64 (with and without its default features)
+  and the hypervisor crate passes there; the literal check exits 0 on the Mac, no marks, the baseline 8148 lines as at
+  the run's start. The Mac suites: below.
+
+What N4 still needs, in order:
+1. The compute part of the bar: +47.5% against +21.2% (quiet machine). Where the rest goes, by the instruction counts:
+   calls and returns (sort, fib, calls.c: each `blr` builds x30 in three moves and jumps through the six-word sequence and
+   a four-word slot, each `ret` the same; two indirect branches per jump), interpret's dispatch (the same sequence), and
+   the page tests still in line. Small steps left to this track: within a piece, no second test of a base already tested
+   and not written since; 2 MiB entries (about a point, after run 5's open point); the jump's ceiling test (not
+   measured). The larger ones need others: T1 (pieces with branches inside), decision 14 (the page test). See "For the
+   orchestrator".
+2. The system-call part passes (67.9 ns [63.4 .. 71.7] quiet; 87.4 ns [82.8 .. 88.7] at load 83 to 105); the independent
+   check repeats it.
+3. T1 from the translator track, then bounded look-ahead as stretches and full look-ahead.
+4. Load-time addresses, the cache with the native key and disk files, loaded translations shared between processes.
+5. 2 MiB entries for guest memory (after the open point), the contiguous bit measured in the repository.
+6. For the independent check: the bar's measurements as alternating pairs again; the differential test at each look-ahead
+   with a new seed (`WCONTAINERS_NATIVE_BOUND`, its pairs follow it); the count across look-aheads on the benchmark set
+   (the kernel test, none and 256).
 
 ## N4 run 5 (2026-11-19): the untranslated run, the stack's page test, the withheld registers chosen
 
@@ -2031,6 +2085,12 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N4 run 6: on a quiet Mac (load 4 to 7, every run on performance cores) the compute part is +47.51% [+46.17 .. +48.01]
+  against +21.2%, after a two-word page test for aligned bases (matrix -36% cycles); the system-call part passes (67.9
+  ns). The same method under load 83 to 133 gave +55.40%, so the bar is best taken quiet. What remains is mostly calls,
+  returns and jumps through a register, and pieces that end at every branch: T1 is still on no branch. May this track
+  make T1 in the translator's crate?
 
 - N4 run 5: the compute part of the speed bar is at +55.40% against +21.2% and this track has run out of changes of its own
   that move it by more than a point or two. Where the cycles go, by the measurements so far: the Split route's page test
