@@ -797,7 +797,8 @@ impl<B: Backend> Device<B> {
         self.storage_range(id, start, rest + size, writable)
     }
 
-    /// A raw or structured buffer view, read or written as a storage buffer.
+    /// A raw or structured buffer view, read or written as a storage buffer. A typed view the
+    /// program declares raw or structured is its elements' bytes, as the hardware addresses them.
     fn buffer_view(
         &mut self,
         v: &ResourceView,
@@ -807,11 +808,7 @@ impl<B: Backend> Device<B> {
         let raw = v.flags & 1 != 0;
         let element = match (raw, v.stride) {
             (true, _) => 4,
-            (false, 0) => {
-                return Err(Error::NotImplemented(
-                    "typed buffer views bound as storage buffers",
-                ));
-            }
+            (false, 0) => u64::from(dxgi(v.format)?.block().2),
             (false, stride) => u64::from(stride),
         };
         if !matches!(
