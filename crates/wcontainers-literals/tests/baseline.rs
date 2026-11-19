@@ -772,6 +772,98 @@ fn init_before_committing_the_merge_that_brings_new_rules() {
     assert!(out.clean, "{}", out.report());
 }
 
+/// A literal committed without its line and its line committed later: the history must refuse the line.
+fn line_added_later_is_growth(root: &Path, literal: &str) {
+    append(
+        root,
+        LIB,
+        &format!("\npub fn late(x: u64) -> u64 {{ x * {literal} }}\n"),
+    );
+    commit_all(root, "a literal without its line");
+    set_baseline(root, &with(&baseline(root), &key("late", literal)));
+    commit_all(root, "its line, later");
+    let out = check(root);
+    let grown = lines_starting(&out, GROWN_MARK);
+    assert!(
+        grown.len() == 1 && grown[0].contains(literal),
+        "{}",
+        out.report()
+    );
+}
+
+/// A branch with a baseline, and a track branched from it, at the first version of the rules.
+fn literals_and_track(name: &str) -> PathBuf {
+    let files = with_checker(&["first"]);
+    let root = repository(name, &borrowed(&files));
+    git(&root, &["checkout", "-q", "-b", "literals"]);
+    wcontainers_literals::init(&root).expect("init");
+    commit_all(&root, "baseline of main");
+    git(&root, &["checkout", "-q", "-b", "track"]);
+    git(&root, &["checkout", "-q", "literals"]);
+    replace(&root, RULES_SOURCE, "\"first\",]", "\"first\",\"second\",]");
+    commit_all(&root, "new rules that find nothing new here");
+    root
+}
+
+/// A new version that changes no line of the baseline opens nothing for later changes.
+#[test]
+fn the_window_closes_after_new_rules_that_change_nothing() {
+    let root = literals_and_track("window-tip");
+    line_added_later_is_growth(&root, "4087");
+}
+
+/// After a merge that brings new rules, with init run before committing it, a later change may not
+/// add lines.
+#[test]
+fn the_window_closes_after_init_in_the_merge() {
+    let root = literals_and_track("window-in-merge");
+    git(&root, &["checkout", "-q", "track"]);
+    git(
+        &root,
+        &[
+            "merge",
+            "-q",
+            "--no-ff",
+            "--no-commit",
+            "--no-edit",
+            "literals",
+        ],
+    );
+    wcontainers_literals::init(&root).expect("init in the merge");
+    commit_all(&root, "the merge, with init");
+    line_added_later_is_growth(&root, "4085");
+}
+
+/// For a track whose init changes nothing, the window closes with the change after the merge.
+#[test]
+fn the_window_closes_after_a_merge_whose_init_changes_nothing() {
+    let root = literals_and_track("window-no-init");
+    git(&root, &["checkout", "-q", "track"]);
+    git(&root, &["merge", "-q", "--no-ff", "--no-edit", "literals"]);
+    let out = check(&root);
+    assert!(out.clean, "{}", out.report());
+    line_added_later_is_growth(&root, "4083");
+}
+
+/// Init after new rules belongs in the merge or in the commit right after it; once another commit
+/// follows the merge, init is refused.
+#[test]
+fn init_must_follow_the_merge_that_brings_new_rules() {
+    let root = literals_and_track("window-late-init");
+    git(&root, &["checkout", "-q", "track"]);
+    git(&root, &["merge", "-q", "--no-ff", "--no-edit", "literals"]);
+    assert!(
+        check(&root)
+            .summary
+            .iter()
+            .any(|l| l.contains("new version")),
+        "the change after the merge may run init"
+    );
+    append(&root, LIB, "\n// another change\n");
+    commit_all(&root, "another change");
+    assert!(wcontainers_literals::init(&root).is_err());
+}
+
 /// Replace refs are not read: a graft that turns a growth into the start hides nothing.
 #[test]
 fn a_graft_does_not_hide_growth() {
@@ -836,6 +928,26 @@ mod gets_through {
             "{}",
             out.report()
         );
+    }
+
+    /// When the baseline arrives by a merge and the track's init changes nothing, the next change of
+    /// the baseline, however much later, may still add any line.
+    #[test]
+    fn a_line_added_long_after_the_baseline_arrived() {
+        let root = repository("late-arrival-init", FILES);
+        git(&root, &["checkout", "-q", "-b", "literals"]);
+        wcontainers_literals::init(&root).expect("init on the literals branch");
+        commit_all(&root, "baseline of main");
+        git(&root, &["checkout", "-q", "main"]);
+        git(&root, &["checkout", "-q", "-b", "track"]);
+        git(&root, &["merge", "-q", "--no-ff", "--no-edit", "literals"]);
+        assert!(check(&root).clean, "init would change nothing");
+        append(&root, LIB, "\npub fn five(x: u64) -> u64 { x * 4079 }\n");
+        commit_all(&root, "a literal without its line");
+        set_baseline(&root, &with(&baseline(&root), &key("five", "4079")));
+        commit_all(&root, "its line, later");
+        let out = check(&root);
+        assert!(out.clean, "{}", out.report());
     }
 
     /// A genuine new version lets in a literal the old rules also caught: the track commits it without
