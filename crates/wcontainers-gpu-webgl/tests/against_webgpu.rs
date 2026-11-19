@@ -12,15 +12,15 @@ mod kit;
 
 use against::{COMPARISONS, Reference};
 use std::path::PathBuf;
-use wcontainers_gpu_webgl::WebGl;
+use wcontainers_gpu_webgl::Gl;
 use wcontainers_gpu_webgpu::WebGpu;
 
-fn webgl(off: &[&str]) -> WebGl {
+fn webgl(off: &[&str]) -> Gl {
     let dir = std::env::var_os("WEBGL_ANGLE_DIR").map_or_else(
         || PathBuf::from(r"C:\wc\tools\angle-mozangle-0.7.1"),
         PathBuf::from,
     );
-    let b = WebGl::on_angle(&dir, off).expect("ANGLE's OpenGL ES 3.0 context");
+    let b = Gl::on_angle(&dir, off).expect("ANGLE's OpenGL ES 3.0 context");
     assert!(b.last_log().is_empty(), "{}", b.last_log());
     b
 }
@@ -83,6 +83,7 @@ comparisons!(
     both_window_origins_equal_webgpu,
     a_fractional_viewport_in_the_program_equals_webgpu_native,
     cube_array_and_3d_textures_equal_webgpu,
+    cube_gathers_across_face_edges_equal_webgpu,
     generate_mips_of_r32float_without_float_filtering_equals_webgpu,
     generate_mips_of_r32float_filtered_in_the_program_on_both_equals_webgpu,
     generate_mips_of_an_integer_twin_equals_webgpu,

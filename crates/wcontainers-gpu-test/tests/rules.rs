@@ -2444,8 +2444,21 @@ fn buffer_bindings_are_aligned_inside_the_buffer_and_the_limits() {
     assert_eq!(
         bind(&mut r, storage_at(256, 6)),
         Err(GpuError::Invalid(
-            "a storage binding whose size is not a multiple of four"
+            "a storage binding whose size is not a whole number of words"
         ))
+    );
+    // A six-byte buffer bound whole as storage, rounded up to whole words, passes its end: a front
+    // makes a buffer it may bind so a whole number of words.
+    let odd = buffer(&mut r, 6, BufferUsage::STORAGE);
+    assert_eq!(
+        bind(
+            &mut r,
+            BindingResource::StorageBuffer {
+                range: range(&odd, 0, 6_u64.next_multiple_of(STORAGE_WORD)),
+                writable: false,
+            }
+        ),
+        Err(GpuError::Invalid("a buffer binding past the buffer's end"))
     );
     assert!(
         bind(
@@ -3246,9 +3259,16 @@ fn writing(d: &mut Drawing, depth: bool, stencil: bool) -> Id {
     .unwrap()
 }
 
-/// Draws with `block` in a pass whose depth-stencil attachment has its depth or its stencil
-/// read-only.
+/// Draws with a block writing depth or stencil in a pass whose depth-stencil attachment has its
+/// depth or its stencil read-only.
 fn draw_read_only(depth_read_only: bool, depth: bool, stencil: bool) -> Drawing {
+    let (mut d, p) = begin_read_only(depth_read_only, depth, stencil);
+    d.draw(&p, None, Topology::TriangleList, false);
+    d
+}
+
+/// Begins the pass of [`draw_read_only`], giving the program to draw.
+fn begin_read_only(depth_read_only: bool, depth: bool, stencil: bool) -> (Drawing, Id) {
     let mut d = Drawing::new();
     let ds = texture(&mut d.r, Format::Depth24PlusStencil8, 2, ALL);
     let ds = view(&mut d.r, &ds, Format::Depth24PlusStencil8);
@@ -3272,8 +3292,7 @@ fn draw_read_only(depth_read_only: bool, depth: bool, stencil: bool) -> Drawing 
         }),
         ..pass_of([color(&v)])
     });
-    d.draw(&p, None, Topology::TriangleList, false);
-    d
+    (d, p)
 }
 
 #[test]
@@ -3412,10 +3431,11 @@ fn regions_lie_inside_their_texture() {
 }
 
 #[test]
-fn a_load_names_a_sample_exactly_when_its_texture_is_multisampled() {
-    let mismatch =
-        "a load naming a sample from a single-sampled texture, or none from a multisampled one";
+fn a_texture_is_multisampled_exactly_where_the_program_reads_one() {
     for (fragment, binding, samples) in [("loads", 32, 4), ("loads_sample", 33, 1)] {
+        let mismatch = format!(
+            "a texture at (0, {binding}) multisampled where the program's is not, or the reverse"
+        );
         let mut d = Drawing::new();
         let t = if samples > 1 {
             multisampled(&mut d.r, Format::Rgba8Unorm, 2).unwrap()
@@ -3433,7 +3453,7 @@ fn a_load_names_a_sample_exactly_when_its_texture_is_multisampled() {
         let p = d.program(fragment);
         d.begin();
         d.draw(&p, Some(&set), Topology::TriangleList, false);
-        d.refused(mismatch);
+        d.refused(&mismatch);
     }
 }
 
@@ -4150,6 +4170,101 @@ fn bindings_hold_the_kind_of_resource_the_program_reads() {
 }
 
 #[test]
+fn buffer_and_texture_bindings_take_the_program_declarations_kind() {
+    fn storage(b: &Id, writable: bool) -> BindingResource<'_, Recorder> {
+        BindingResource::StorageBuffer {
+            range: BufferRange {
+                buffer: b,
+                offset: 0,
+                size: 32,
+            },
+            writable,
+        }
+    }
+    fn uniform(b: &Id) -> BindingResource<'_, Recorder> {
+        BindingResource::UniformBuffer(BufferRange {
+            buffer: b,
+            offset: 0,
+            size: 32,
+        })
+    }
+    type Make = for<'a> fn(&'a Id, &'a Id, &'a Id, &'a Id) -> BindingResource<'a, Recorder>;
+    // The resources: a buffer, an `r32uint` view, a one-layer 2D array view of `rgba8unorm`, and a
+    // `rgba8unorm` 2D view.
+    let cases: [(&str, u32, Make, &str); 6] = [
+        (
+            "colored",
+            0,
+            |b, _, _, _| storage(b, false),
+            "a storage buffer at group 0 binding 0, a uniform block in the program",
+        ),
+        (
+            "first_element",
+            160,
+            |b, _, _, _| uniform(b),
+            "a uniform buffer at group 0 binding 160, a storage block in the program",
+        ),
+        (
+            "first_element",
+            160,
+            |b, _, _, _| storage(b, true),
+            "a storage buffer at group 0 binding 160 writable where the program's block is not, or the reverse",
+        ),
+        (
+            "loads",
+            32,
+            |_, u, _, _| BindingResource::Texture(u),
+            "a R32Uint view at (0, 32) where the program reads another sample type",
+        ),
+        (
+            "loads",
+            32,
+            |_, _, a, _| BindingResource::Texture(a),
+            "a view at (0, 32) of another dimension than the program reads",
+        ),
+        (
+            "compared",
+            34,
+            |_, _, _, c| BindingResource::Texture(c),
+            "a Rgba8Unorm view at (0, 34) where the program reads another sample type",
+        ),
+    ];
+    for (fragment, binding, make, violation) in cases {
+        let mut d = Drawing::new();
+        let b = buffer(&mut d.r, 256, BufferUsage::UNIFORM | BufferUsage::STORAGE);
+        let u = texture(&mut d.r, Format::R32Uint, 2, ALL);
+        let u = view(&mut d.r, &u, Format::R32Uint);
+        let c = texture(&mut d.r, Format::Rgba8Unorm, 2, ALL);
+        let a =
+            d.r.create_view(
+                &c,
+                &TextureViewDesc {
+                    format: Format::Rgba8Unorm,
+                    dimension: ViewDimension::D2Array,
+                    base_mip: 0,
+                    mip_count: 1,
+                    base_layer: 0,
+                    layer_count: 1,
+                    stencil: false,
+                },
+            )
+            .unwrap();
+        let c = view(&mut d.r, &c, Format::Rgba8Unorm);
+        let set =
+            d.r.create_binding_set(&[BindingEntry {
+                binding,
+                stages: StageSet::FRAGMENT,
+                resource: make(&b, &u, &a, &c),
+            }])
+            .unwrap();
+        let p = d.program(fragment);
+        d.begin();
+        d.draw(&p, Some(&set), Topology::TriangleList, false);
+        d.refused(violation);
+    }
+}
+
+#[test]
 fn draw_ranges_end_within_a_u32() {
     let range = "a draw's range past the largest vertex or index";
     let instances = "a draw's instances past the largest instance index";
@@ -4314,6 +4429,158 @@ fn an_indexed_draw_fetching_past_a_stream_still_reads_no_subresource_it_writes()
     });
     assert_eq!(d.r.dropped_draws, 0);
     d.refused("a subresource bound for reading while it is a written attachment");
+}
+
+/// A recording back end with its pass begun, the program to draw and the binding set to draw with.
+type Prepared = (Drawing, Id, Option<Id>);
+
+/// Begins `d`'s pass with the program of `fragment` and no binding set.
+fn begun(mut d: Drawing, fragment: &str) -> Prepared {
+    let p = d.program(fragment);
+    d.begin();
+    (d, p, None)
+}
+
+/// As [`begun`], with a set binding at `binding` a texture view or 16 bytes of a read-only storage
+/// buffer.
+fn begun_with(
+    mut d: Drawing,
+    fragment: &str,
+    binding: u32,
+    resource: Id,
+    texture: bool,
+) -> Prepared {
+    let set =
+        d.r.create_binding_set(&[BindingEntry {
+            binding,
+            stages: StageSet::FRAGMENT,
+            resource: if texture {
+                BindingResource::Texture(&resource)
+            } else {
+                BindingResource::StorageBuffer {
+                    range: BufferRange {
+                        buffer: &resource,
+                        offset: 0,
+                        size: 16,
+                    },
+                    writable: false,
+                }
+            },
+        }])
+        .unwrap();
+    let (d, p, _) = begun(d, fragment);
+    (d, p, Some(set))
+}
+
+#[test]
+fn an_indexed_draw_fetching_past_a_stream_still_holds_the_draw_rules() {
+    type Case = (&'static str, fn() -> Prepared);
+    let cases: Vec<Case> = vec![
+        ("a draw writing depth into a read-only attachment", || {
+            let (d, p) = begin_read_only(true, true, false);
+            (d, p, None)
+        }),
+        ("a draw writing stencil into a read-only attachment", || {
+            let (d, p) = begin_read_only(false, false, true);
+            (d, p, None)
+        }),
+        ("nothing bound at group 0 binding 0", || {
+            begun(Drawing::new(), "colored")
+        }),
+        ("no buffer at group 0 binding 0", || {
+            let mut d = Drawing::new();
+            let t = texture(&mut d.r, Format::Rgba8Unorm, 2, ALL);
+            let v = view(&mut d.r, &t, Format::Rgba8Unorm);
+            begun_with(d, "colored", 0, v, true)
+        }),
+        (
+            "a storage buffer at group 0 binding 0, a uniform block in the program",
+            || {
+                let mut d = Drawing::new();
+                let b = buffer(&mut d.r, 256, BufferUsage::STORAGE);
+                begun_with(d, "colored", 0, b, false)
+            },
+        ),
+        (
+            "a texture at (0, 32) multisampled where the program's is not, or the reverse",
+            || {
+                let mut d = Drawing::new();
+                let t = multisampled(&mut d.r, Format::Rgba8Unorm, 2).unwrap();
+                let v = view(&mut d.r, &t, Format::Rgba8Unorm);
+                begun_with(d, "loads", 32, v, true)
+            },
+        ),
+        ("a program run per sample without SAMPLE_SHADING", || {
+            begun(
+                Drawing::with_caps(|c| c.features.remove(Features::SAMPLE_SHADING)),
+                "per_sample",
+            )
+        }),
+        (
+            "blending into Rgba8Unorm, which this back end does not blend",
+            || {
+                let mut d = Drawing::with_caps(|c| {
+                    c.formats.uses[Format::Rgba8Unorm.index()].remove(FormatUse::BLEND)
+                });
+                let add = component(BlendFactor::One, BlendFactor::One);
+                d.blend = d.r.create_blend(&blend_desc(Some((add, add)))).unwrap();
+                begun(d, "plain")
+            },
+        ),
+        ("no attribute at location 0", || {
+            let mut d = Drawing::new();
+            let mut desc = VertexLayoutDesc {
+                streams: [None; MAX_VERTEX_STREAMS],
+                attributes: [None; MAX_VERTEX_STREAMS],
+            };
+            desc.streams[0] = Some(VertexStream {
+                stride: 8,
+                step: StepMode::Vertex,
+            });
+            desc.attributes[0] = Some(VertexAttribute {
+                location: 1,
+                stream: 0,
+                offset: 0,
+                format: VertexFormat::Float32x2,
+            });
+            d.layout = d.r.create_vertex_layout(&desc).unwrap();
+            begun(d, "plain")
+        }),
+    ];
+    // The 24 bytes of vertices hold vertices 0 to 2: last index 2 fetches inside the stream, 3 past
+    // it. Either way the draw is refused, not dropped.
+    for &(violation, prepare) in &cases {
+        for last in [2u16, 3] {
+            let (mut d, p, set) = prepare();
+            let indices: Vec<u8> = [0u16, 1, last, 0]
+                .iter()
+                .flat_map(|i| i.to_le_bytes())
+                .collect();
+            d.r.write_buffer(&d.spare, 0, &indices, WriteMode::Ordered);
+            d.draw_with(
+                &p,
+                set.as_ref(),
+                Topology::TriangleList,
+                false,
+                |c, spare| {
+                    c.index = Some(IndexBinding {
+                        buffer: spare,
+                        offset: 0,
+                        format: IndexFormat::U16,
+                    });
+                    c.range = DrawRange::Indexed {
+                        first: 0,
+                        count: 3,
+                        base_vertex: 0,
+                        first_instance: 0,
+                        instances: 1,
+                    };
+                },
+            );
+            assert_eq!(d.r.dropped_draws, 0, "{violation}, index {last}");
+            d.refused(violation);
+        }
+    }
 }
 
 #[test]

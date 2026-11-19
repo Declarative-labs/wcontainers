@@ -3,6 +3,7 @@
 
 use glow::HasContext;
 use std::collections::BTreeSet;
+use wcontainers_gpu::LossReason;
 
 /// GL_UPPER_LEFT_EXT and GL_ZERO_TO_ONE_EXT, and their defaults, for `clipControlEXT`.
 pub const UPPER_LEFT: u32 = 0x8CA2;
@@ -143,6 +144,8 @@ mod native {
         polygon_mode: Option<PolygonMode>,
         offset_clamp: Option<OffsetClamp>,
         egl: Egl,
+        /// The context could not be made current; no context is, so later calls draw nothing.
+        lost: core::cell::Cell<bool>,
     }
 
     struct Egl {
@@ -180,14 +183,19 @@ mod native {
             CURRENT.set(self.id());
             Ok(())
         }
+
+        /// Leaves no context current on the thread.
+        fn release(&self) {
+            let _ = self.instance.make_current(self.display, None, None, None);
+            CURRENT.set(0);
+        }
     }
 
     impl Drop for Egl {
         fn drop(&mut self) {
             let e = &self.instance;
             if CURRENT.get() == self.id() {
-                let _ = e.make_current(self.display, None, None, None);
-                CURRENT.set(0);
+                self.release();
             }
             if let Some(window) = self.window {
                 let _ = e.destroy_surface(self.display, window);
@@ -213,9 +221,15 @@ mod native {
         /// current since.
         #[inline]
         pub fn current(&self) {
-            if CURRENT.get() != self.egl.id() {
-                let _ = self.egl.make_current();
+            if CURRENT.get() != self.egl.id() && self.egl.make_current().is_err() {
+                self.egl.release();
+                self.lost.set(true);
             }
+        }
+
+        /// The loss the platform has seen: natively, a context that could not be made current.
+        pub fn lost(&self) -> Option<LossReason> {
+            self.lost.get().then_some(LossReason::Removed)
         }
 
         pub fn clip_control(&self, _gl: &glow::Context, origin: u32, depth: u32) {
@@ -280,6 +294,13 @@ mod native {
                 // SAFETY: the pointer was loaded for this context's glPolygonOffsetClampEXT.
                 unsafe { f(factor, units, clamp) }
             }
+        }
+
+        /// Uniform blocks GL counts that a stage cannot use: mozangle 0.7.1 numbers a stage's
+        /// blocks from register b2 (b0 and b1 hold its own constants) and asserts each register
+        /// below the block count, so a program using the last two aborts the process.
+        pub fn unusable_uniform_blocks(&self) -> u32 {
+            2
         }
 
         /// How many bits the GPU's timestamps have; zero where it writes none.
@@ -558,6 +579,7 @@ mod native {
                 window: None,
                 windows: Default::default(),
             },
+            lost: core::cell::Cell::new(false),
         };
         Ok((gl, platform))
     }
@@ -637,6 +659,12 @@ mod web {
         #[inline(always)]
         pub fn current(&self) {}
 
+        /// The loss the platform has seen: a lost context, which the page reports without asking
+        /// the GPU process.
+        pub fn lost(&self) -> Option<LossReason> {
+            self.context.is_context_lost().then_some(LossReason::Reset)
+        }
+
         pub fn clip_control(&self, _gl: &glow::Context, origin: u32, depth: u32) {
             if let Some((ext, f)) = &self.clip_control {
                 let _ = f.call2(ext, &JsValue::from(origin), &JsValue::from(depth));
@@ -682,6 +710,11 @@ mod web {
                 &self.offset_clamp,
                 &[factor.into(), units.into(), clamp.into()],
             );
+        }
+
+        /// Every uniform block GL counts is usable.
+        pub fn unusable_uniform_blocks(&self) -> u32 {
+            0
         }
 
         /// How many bits the GPU's timestamps have; zero where it writes none.

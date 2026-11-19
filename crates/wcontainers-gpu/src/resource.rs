@@ -43,7 +43,9 @@ pub enum MapIntent {
     Often,
 }
 
-/// A buffer to create.
+/// A buffer to create. A front whose API makes a buffer of a size that is not a whole number of
+/// [`crate::STORAGE_WORD`]s, and may bind it as storage up to its end, rounds the size up, so that
+/// the binding, rounded up too, lies inside it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct BufferDesc {
     pub size: u64,
@@ -284,7 +286,8 @@ pub enum BindingResource<'a, B: Backend> {
     /// buffer ([`crate::SlowPath::ConstantBufferGrown`]).
     UniformBuffer(BufferRange<&'a B::Buffer>),
     /// The offset is a multiple of [`crate::Limits::min_storage_offset_alignment`] and the size at most
-    /// [`crate::Limits::max_storage_buffer_size`], a multiple of four (WebGPU's rule), and at least
+    /// [`crate::Limits::max_storage_buffer_size`], a whole number of [`crate::STORAGE_WORD`]s
+    /// (WebGPU's rule; a front rounds its API's range up), and at least
     /// the size of the program's block, a runtime-sized array counted as one element. A front whose API binds at any offset binds from
     /// the largest offset below it that is a multiple of both the alignment and the program's element
     /// stride ([`crate::ReflectedBinding::stride`]), and writes the rest into the program's helper
@@ -332,7 +335,13 @@ pub struct BindingLayoutKey {
     pub unfilterable_textures: u128,
 }
 
-/// One slot of a binding set: which program binding it fills, and with what.
+/// One slot of a binding set: which program binding it fills, and with what. Every binding a draw's
+/// or dispatch's program reads is filled by the sets it names, whatever the draw then covers or
+/// fetches, with the kind the program declares there (WebGPU's binding layouts, which back ends take
+/// from the program): a sampler; a texture view of the program's dimension, multisampled exactly
+/// where the program's is, of a format whose sample type the program reads (depth also as floats,
+/// stencil as unsigned integers); a uniform buffer for a uniform block; a storage buffer writable
+/// exactly where the program's block is.
 #[derive(Debug)]
 pub struct BindingEntry<'a, B: Backend> {
     /// The binding number the shader converter gave this slot (see the plan, section 6). A texture the

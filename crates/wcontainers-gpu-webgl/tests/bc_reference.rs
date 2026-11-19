@@ -12,7 +12,7 @@ mod kit;
 use rand::RngCore;
 use std::path::{Path, PathBuf};
 use wcontainers_gpu::*;
-use wcontainers_gpu_webgl::WebGl;
+use wcontainers_gpu_webgl::Gl;
 use wcontainers_graphics_test::{check, compare, load, save, scene::CLEAR};
 
 /// The rig's block-compressed formats in its order, with the bytes of a block of each.
@@ -76,19 +76,19 @@ const LOAD: &str = "
 }
 ";
 
-fn webgl(off: &[&str]) -> WebGl {
+fn webgl(off: &[&str]) -> Gl {
     let dir = std::env::var_os("WEBGL_ANGLE_DIR").map_or_else(
         || PathBuf::from(r"C:\wc\tools\angle-mozangle-0.7.1"),
         PathBuf::from,
     );
-    let b = WebGl::on_angle(&dir, off).expect("ANGLE's OpenGL ES 3.0 context");
+    let b = Gl::on_angle(&dir, off).expect("ANGLE's OpenGL ES 3.0 context");
     assert!(b.last_log().is_empty(), "{}", b.last_log());
     b
 }
 
 /// The rig's picture of one part: a 128 by 128 `rgba32float` target cleared to the rig's colour, each
 /// format's texture loaded into its 32-pixel cell, four cells to a row.
-fn draw(b: &mut WebGl, newer: bool) -> image::DynamicImage {
+fn draw(b: &mut Gl, newer: bool) -> image::DynamicImage {
     let k = kit::Kit::new(b);
     let program = kit::program(b, LOAD, "vs", "fs");
     let all = blocks();

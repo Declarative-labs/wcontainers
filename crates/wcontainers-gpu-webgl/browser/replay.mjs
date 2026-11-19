@@ -9,6 +9,11 @@ import { serve, launch } from './chrome.mjs';
 const [pkg, stream, out, skip = '10'] = process.argv.slice(2);
 if (!out) throw new Error('usage: node replay.mjs <pkg-dir> <stream-file> <out-file> [<frames skipped>]');
 await copyFile(stream, join(pkg, 'stream.bin'));
+// A page that stops answering would hold the GPU job: the process ends, and Chrome with it.
+const limit = setTimeout(() => {
+  console.error('replay: no result in 300 s; stopped');
+  process.exit(2);
+}, 300000);
 const server = await serve(pkg);
 const browser = await launch();
 let result;
@@ -16,7 +21,7 @@ try {
   const page = await browser.newPage();
   page.on('console', (m) => console.log(`console: ${m.text()}`));
   await page.goto(`http://127.0.0.1:${server.address().port}/replay.html?skip=${skip}`);
-  await page.waitForFunction(() => window.done !== undefined, null, { timeout: 600000, polling: 1000 });
+  await page.waitForFunction(() => window.done !== undefined, null, { timeout: 240000, polling: 1000 });
   result = await page.evaluate(() => window.done);
   result.lines.unshift(`chrome ${browser.version()}, stream ${stream}`);
 } finally {
@@ -25,4 +30,5 @@ try {
 }
 console.log(result.lines.join('\n'));
 await writeFile(out, `${result.lines.join('\n')}\n`);
+clearTimeout(limit);
 process.exitCode = result.ok ? 0 : 1;

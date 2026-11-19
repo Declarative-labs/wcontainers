@@ -19,7 +19,7 @@ use scenes::{Change, Scene};
 use std::cell::RefCell;
 use wasm_bindgen::prelude::*;
 use wcontainers_gpu::Backend;
-use wcontainers_gpu_webgl::WebGl;
+use wcontainers_gpu_webgl::Gl;
 
 #[wasm_bindgen]
 extern "C" {
@@ -36,7 +36,7 @@ extern "C" {
 
 /// One back end on one canvas, kept between calls as a front would keep it.
 #[wasm_bindgen]
-pub struct Device(WebGl);
+pub struct Device(Gl);
 
 #[wasm_bindgen]
 impl Device {
@@ -44,7 +44,7 @@ impl Device {
     #[wasm_bindgen(constructor)]
     pub fn new(context: web_sys::WebGl2RenderingContext, off: &str) -> Device {
         let off: Vec<&str> = off.split_whitespace().collect();
-        Device(WebGl::on_canvas(context, &off))
+        Device(Gl::on_canvas(context, &off))
     }
 
     /// Draws a scene (`change` empty, or the name of a change) and returns its texels.
@@ -98,20 +98,20 @@ thread_local! {
 struct Chrome;
 
 impl wcontainers_gpu_test::Host for Chrome {
-    type Backend = WebGl;
+    type Backend = Gl;
 
-    fn make() -> WebGl {
+    fn make() -> Gl {
         OFF.with_borrow(|off| {
             let off: Vec<&str> = off.split_whitespace().collect();
-            WebGl::on_canvas(make_context(), &off)
+            Gl::on_canvas(make_context(), &off)
         })
     }
 
-    fn window(_: &mut WebGl) -> u32 {
+    fn window(_: &mut Gl) -> u32 {
         0
     }
 
-    fn shown(_: &mut WebGl, _: u32) -> Vec<u8> {
+    fn shown(_: &mut Gl, _: u32) -> Vec<u8> {
         shown_texels()
     }
 }
@@ -171,6 +171,8 @@ suite!(
     a_copy_within_one_depth_or_stencil_subresource_moves_the_region,
     the_occlusion_counter_counts_every_sample_that_passes,
     every_vertex_format_reads_its_element,
+    a_copy_within_one_3d_or_compressed_subresource_moves_the_region,
+    an_indexed_draw_past_a_streams_end_covers_only_what_its_stream_allows,
     present_shows_the_frame;
     vertex_and_instance_numbers_include_the_bases,
     discard_then_no_overwrite_writes,
@@ -209,6 +211,7 @@ suite!(
     copies_into_and_out_of_host_kept_textures,
     srgb_views_of_block_compressed_textures,
     bgra_textures_keep_their_byte_order,
+    bgrx_textures_hold_alpha_one,
     sampled_views_are_whole_textures_of_one_mip_range,
     generate_mipmap_equals_the_draws,
     sixteen_bit_normalised_formats_follow_their_extension,
@@ -225,6 +228,7 @@ suite!(
     clip_and_cull_distances,
     points_sized_by_the_program,
     broken_rules_lose_the_device,
+    stages_past_the_uniform_buffer_limit_are_refused,
 );
 
 thread_local! {
@@ -308,7 +312,7 @@ mod comparisons {
         let (device, queue) = block_on(adapter.request_device(&device_desc))
             .map_err(|e| JsError::new(&format!("no WebGPU device: {e}")))?;
         let mut gpu = WebGpu::new(&adapter, device, queue);
-        let verdicts = against::compare(c, &mut gpu, |off| WebGl::on_canvas(make_context(), off));
+        let verdicts = against::compare(c, &mut gpu, |off| Gl::on_canvas(make_context(), off));
         let mut lines = vec![format!(
             "webgpu adapter: {} ({:?}, {:?})",
             info.name, info.device_type, info.backend

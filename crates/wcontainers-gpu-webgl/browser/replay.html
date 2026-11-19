@@ -7,7 +7,7 @@
 // frame by frame with a 20 ms pause between frames so the GPU keeps up: once with each call timed
 // inside the back end, once timing only whole frames (so the clock's own cost stays out of them).
 // Frames before `skip` (loading) are left out of the sums. Sets window.done to { ok, lines }.
-import init, { replay_on_webgl, replay_on_webgpu, replay_frame, replay_report } from './pkg/replay.js';
+import init, { replay_on_webgl, replay_on_webgpu, replay_frame, replay_report, replay_end } from './pkg/replay.js';
 const skip = Number(new URLSearchParams(location.search).get('skip') ?? 10);
 const pause = () => new Promise((r) => setTimeout(r, 20));
 const median = (t) => { const s = [...t].sort((a, b) => a - b); return s.length ? s[s.length >> 1] : NaN; };
@@ -16,12 +16,15 @@ window.makeCanvas = () => document.createElement('canvas');
 // One replay; answers the frames' whole times, their times inside the back end, the kinds' sums
 // and the failures.
 async function replay(start, timed) {
+  console.log(`replay (${timed ? 'timed' : 'untimed'}): starting the device`);
   await start();
+  console.log('replay: device made');
   const r = { whole: [], inside: [], kinds: new Map(), frames: 0, failed: 0, first: '' };
   for (let i = 0; ; i++) {
     const text = await replay_frame(timed);
     if (text === undefined || text === null) break;
     r.frames++;
+    if (i % 100 === 0) console.log(`replay: frame ${i}`);
     let sum = 0;
     for (const line of text.split('\n')) {
       const [kind, a, ...rest] = line.split(' ');
@@ -42,6 +45,9 @@ async function replay(start, timed) {
     await pause();
   }
   r.report = replay_report();
+  console.log(`replay: ${r.frames} frames; ending the device`);
+  replay_end();
+  console.log('replay: device ended');
   return r;
 }
 async function run(name, start) {
