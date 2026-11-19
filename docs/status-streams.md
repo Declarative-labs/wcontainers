@@ -325,6 +325,31 @@ Found on the way, fixed:
   not measured again: with no hook the path is the same one flag test per call, and the host with
   no hooks now forwards nothing.
 
+- Sixth run, after the third check's fixes (2e91a1fb): the embedder tests (15, seeds 1 to 3),
+  memory and faults passed on this Mac (scratch streams/s2d/affected-1.log, 09:20 to 09:27, load
+  68 to 64; embedder 140 s). The ARM machine could not be reached (arm-run: "taken away or is
+  down", 09:31 and 09:33), so the whole suite ran on this Mac, the command in "How to run"
+  (scratch streams/s2d/suite.log, 09:28 to 10:39, load 67 at the start, 23 at the end): 597
+  tests, 591 passed, 0 failed, 6 ignored. `streams/verdicts.py s2b/combined.log s2d/suite.log`:
+  every test of the fourth run's whole suite has the same verdict; the six tests added since are
+  new and pass.
+- Speed with no hook implemented, sixth run (2e91a1fb against 59056384, before S2), this Mac:
+  threads, processes, memory, sigframe and shell, both built into this track's one target folder
+  (59056384 from a source-only scratch worktree, its five binaries copied aside, then this tree
+  rebuilt; S2's counter text found only in the new binaries), so both sides share one guest
+  folder; run alternately with 3 test threads inside `nix develop`, a warm-up round and three
+  counted (scratch streams/s2d/timing-6.sh, timing-6.log, 10:42 to 11:11, load 29 to 63; summary
+  by s2b/timing-summary.py). Medians, old then new, wall and CPU (user plus system): threads 46.6 /
+  56.7 s wall, 23.6 / 24.6 s CPU; processes 10.3 / 9.3 s, 1.66 / 1.63 s; memory 58.4 / 63.3 s,
+  8.79 / 8.58 s; sigframe 4.4 / 4.7 s, 0.42 / 0.41 s; shell 87.4 / 88.9 s, 8.11 / 8.14 s. All
+  passed. Threads' wall looked slower, so three more rounds of it alone, new first (timing-7.log,
+  11:12 to 11:16, load 29 to 43): new 43.3, 54.8, 51.7 s, old 46.3, 55.1, 47.8 s; CPU new 22.6,
+  23.5, 23.0 s, old 23.9, 22.4, 22.1 s. Over the six rounds: wall medians new 55.3 s, old 47.2 s,
+  ranges overlapping (new 43.3 to 66.3, old 46.3 to 56.9); CPU medians new 23.4 s, old 23.2 s. The
+  kernel runs inside the test process, so its work is in the CPU time, which is unchanged within
+  1 %; the wall difference is not explained by it (the tests also wait on Docker's reference).
+  Measured only on this loaded Mac; a quiet machine would settle the threads wall time.
+
 ## Literals
 
 - Adopted at da21d326 (`init` once on this tree, version 7 of the rules): 7612 baseline lines, of
@@ -338,6 +363,7 @@ Found on the way, fixed:
   keeps its key). Its `1000` (picoseconds in a nanosecond) stays: as a named constant the check
   takes three test inputs of 1000 elsewhere in the crate for restatements of it, and as a mark it
   says 1000 has a name (`AUDIT_GET`).
+- After the sixth run: unchanged, 7589 lines; the check passes (exit 0).
 - The check's list of changes that could add lines: one, `da21d326f277 the start`.
 - Still waiting for their owners: reference.rs `125`, `127` (Docker's failure statuses; the abi's
   `exit` module, runtime track) and tty.rs `"/dev/pts/{index}"` (the kernel track's path separator).
