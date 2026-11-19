@@ -1027,7 +1027,8 @@ What is checked, and what was found:
   `check6`, 53,526 in `three` on two processors), with every check above still passing.
 What it does not cover: masks, weighted time, more than six threads, a call that parks for
 something else after its call-in, the merging of two groups after a join (a join is modelled as a
-call that names both groups, and the groups stay apart afterwards), and the code. Section 12's test is for the code.
+call that names both groups, and the groups stay apart afterwards), and the code. Section 12's test
+is for the code.
 
 **20. A barrier as a hardware instruction, single-threaded** (for finding 6).
 run7/native-barrier/barrier.c: a round is a store to one word, the barrier, a load of another word,
