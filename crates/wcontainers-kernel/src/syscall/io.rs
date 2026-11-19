@@ -1,5 +1,6 @@
 //! Reading, writing and moving around in open files, and what descriptors refer to.
 
+use alloc::rc::Rc;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -12,7 +13,7 @@ use crate::fs::Content;
 use crate::fs::dev::Device;
 use crate::fs::proc::{Style, Writing};
 use crate::linux::general::*;
-use crate::process::Tid;
+use crate::process::{Channel, Tid};
 use crate::user::{Guest, access_ok};
 use crate::{Context, Errno, Kernel};
 
@@ -30,7 +31,7 @@ pub(super) const MAX_SEGMENTS: u64 = 1024;
 const END_OF_DIRECTORY: u64 = i32::MAX as u64;
 
 pub(super) fn file(kernel: &Kernel, tid: Tid, fd: u64) -> Result<FileRef, Errno> {
-    kernel.files(tid).file(fd as i32)
+    kernel.call_file(tid, fd as i32)
 }
 
 /// A descriptor's open file as `fdget` finds it: not an `O_PATH` one.
@@ -42,6 +43,12 @@ pub(super) fn open_file(kernel: &Kernel, tid: Tid, fd: u64) -> Result<FileRef, E
     Ok(found)
 }
 
+/// Whether a read or write of the file in this call answers EAGAIN instead of waiting: the file is
+/// nonblocking or the call may not wait (RWF_NOWAIT).
+pub(super) fn nonblocking(kernel: &Kernel, tid: Tid, file: &FileRef) -> bool {
+    file.borrow().flags & O_NONBLOCK != 0 || kernel.threads[&tid].call.nowait
+}
+
 pub(super) fn read(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -49,6 +56,7 @@ pub(super) fn read(
     [fd, buffer, count, ..]: Args,
 ) -> Result<u64, Errno> {
     let file = file(kernel, tid, fd)?;
+    lock_position(kernel, tid, &file)?;
     if !file.borrow().readable() {
         return Err(Errno::EBADF);
     }
@@ -77,6 +85,7 @@ pub(super) fn write(
     [fd, buffer, count, ..]: Args,
 ) -> Result<u64, Errno> {
     let file = file(kernel, tid, fd)?;
+    lock_position(kernel, tid, &file)?;
     if !file.borrow().writable() {
         return Err(Errno::EBADF);
     }
@@ -196,7 +205,9 @@ fn vectored2(
         return Err(Errno::EINVAL);
     }
     let file = file(kernel, tid, fd)?;
-    if !current {
+    if current {
+        lock_position(kernel, tid, &file)?;
+    } else {
         positioned(&file, writing)?;
     }
     let allowed = if writing {
@@ -222,9 +233,9 @@ fn vectored2(
         };
         verify_area(position, total)?;
     }
-    // A file without Linux's iterating read or write (directories, message queues, and writes to
-    // `/dev/full`) is moved a segment at a time by `do_loop_readv_writev`, which takes no flag but
-    // RWF_HIPRI.
+    // A file without Linux's iterating read or write (directories, message queues, inotify
+    // instances, and writes to `/dev/full` and event descriptors) is moved a segment at a time by
+    // `do_loop_readv_writev`, which takes no flag but RWF_HIPRI.
     let looped = {
         let file = file.borrow();
         let inode = file.node.borrow();
@@ -234,17 +245,26 @@ fn vectored2(
                 && matches!(Device::from_number(inode.rdev), Some(Device::Full))
             || matches!(inode.content, Content::Proc(entry) if entry.loops(writing))
             || matches!(inode.content, Content::Mqueue(_))
+            || super::inotify::of(&file).is_some()
+            || writing && matches!(file.anon, Some(crate::file::Anon::Event(_)))
     };
     if looped && flags & !RWF_HIPRI != 0 {
         return Err(Errno::EOPNOTSUPP);
     }
-    // `/proc`'s files, tmpfs's regular files and terminals do not take reads or writes that may
-    // not wait (`FMODE_NOWAIT` unset; measured: devices and pipes take them).
+    // `/proc`'s files, tmpfs's and the backend's regular files, named pipes, terminals and
+    // `/dev/full` do not take reads or writes that may not wait (`FMODE_NOWAIT` unset; measured:
+    // the other devices and the pipes `pipe2` makes take them, a named pipe opened by its path
+    // does not).
     let waits = super::tty::end(&file).is_some() || {
         let file = file.borrow();
         let inode = file.node.borrow();
         matches!(inode.content, Content::Proc(_))
-            || inode.fs.kind == crate::fs::Kind::Tmpfs && inode.file_type() == S_IFREG
+            || (inode.fs.kind == crate::fs::Kind::Tmpfs
+                || matches!(inode.content, Content::Backend(_)))
+                && inode.file_type() == S_IFREG
+            || inode.file_type() == S_IFIFO && inode.fs.kind != crate::fs::Kind::Pipe
+            || matches!(inode.content, Content::Special)
+                && matches!(Device::from_number(inode.rdev), Some(Device::Full))
     };
     if waits && flags & RWF_NOWAIT != 0 {
         return Err(Errno::EOPNOTSUPP);
@@ -265,6 +285,7 @@ fn vectored2(
         append = true;
     }
     let at = (!current).then_some(offset);
+    kernel.thread_mut(tid).call.nowait = flags & RWF_NOWAIT != 0;
     vectored(
         kernel,
         cx,
@@ -446,8 +467,10 @@ pub(super) fn positioned(file: &FileRef, writing: bool) -> Result<(), Errno> {
     let sequence = matches!(inode.content, Content::Proc(entry)
         if inode.file_type() == S_IFREG && entry.style() == Style::Sequence);
     // Terminals are opened unseekable (`nonseekable_open`).
-    if matches!(inode.content, Content::Pipe(_) | Content::Anon)
-        || inode.is_secret()
+    if matches!(
+        inode.content,
+        Content::Pipe(_) | Content::Anon | Content::Socket(_)
+    ) || inode.is_secret()
         || (writing && sequence)
         || file.terminal.is_some()
     {
@@ -463,10 +486,14 @@ pub(super) fn moves_bytes(file: &FileRef, writing: bool) -> Result<(), Errno> {
     let inode = file.node.borrow();
     let no_write = matches!(inode.content, Content::Proc(entry)
         if inode.file_type() == S_IFREG && entry.writing() == Writing::None);
-    // A signal descriptor only reads; a process descriptor does neither.
-    let anon_write = writing && matches!(inode.content, Content::Anon | Content::Mqueue(_));
+    // A signal or timer descriptor only reads, an event descriptor does both, an epoll instance
+    // and a process descriptor neither.
+    let anon_write = writing
+        && matches!(inode.content, Content::Anon | Content::Mqueue(_))
+        && super::eventfd::of(&file).is_none();
+    let epoll = super::epoll::of(&file).is_some();
     let pidfd = matches!(inode.content, Content::Pidfd(..));
-    if inode.is_secret() || (writing && no_write) || anon_write || pidfd {
+    if inode.is_secret() || (writing && no_write) || anon_write || pidfd || epoll {
         return Err(Errno::EINVAL);
     }
     Ok(())
@@ -602,6 +629,7 @@ pub(super) fn readv(
     [fd, vector, count, ..]: Args,
 ) -> Result<u64, Errno> {
     let file = file(kernel, tid, fd)?;
+    lock_position(kernel, tid, &file)?;
     if !file.borrow().readable() {
         return Err(Errno::EBADF);
     }
@@ -617,6 +645,7 @@ pub(super) fn writev(
     [fd, vector, count, ..]: Args,
 ) -> Result<u64, Errno> {
     let file = file(kernel, tid, fd)?;
+    lock_position(kernel, tid, &file)?;
     if !file.borrow().writable() {
         return Err(Errno::EBADF);
     }
@@ -682,7 +711,34 @@ fn appends(file: &FileRef) -> bool {
     clippy::too_many_arguments,
     reason = "one call shape for every vectored read and write"
 )]
+/// As [`vectored_unwatched`], telling the file's inotify watches.
 fn vectored(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    parts: &[(u64, u64)],
+    offset: Option<u64>,
+    writing: Option<bool>,
+) -> Result<u64, Errno> {
+    let result = vectored_unwatched(kernel, cx, tid, file, parts, offset, writing);
+    if let Ok(count) = result
+        && count > 0
+    {
+        super::inotify::file_changed(
+            kernel,
+            file,
+            if writing.is_some() {
+                IN_MODIFY
+            } else {
+                IN_ACCESS
+            },
+        );
+    }
+    result
+}
+
+fn vectored_unwatched(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
@@ -703,6 +759,12 @@ fn vectored(
             None => super::tty::read(kernel, cx, tid, file, parts),
         };
     }
+    if super::socket::of(file).is_some() {
+        return match writing {
+            Some(_) => super::socket::write(kernel, cx, tid, file, parts),
+            None => super::socket::read(kernel, cx, tid, file, parts),
+        };
+    }
     // A pipe takes or gives the whole vector in one go (`pipe_read`, `pipe_write`).
     if super::pipe::is_pipe(file) {
         return match writing {
@@ -712,6 +774,15 @@ fn vectored(
     }
     if writing.is_none() && super::signalfd::mask_of(&file.borrow()).is_some() {
         return super::signalfd::read(kernel, cx, tid, file, parts);
+    }
+    if writing.is_none() && super::inotify::of(&file.borrow()).is_some() {
+        return super::inotify::read(kernel, cx, tid, file, parts);
+    }
+    if super::eventfd::of(&file.borrow()).is_some() {
+        return match writing {
+            Some(_) => super::eventfd::write(kernel, cx, tid, file, parts),
+            None => super::eventfd::read(kernel, cx, tid, file, parts),
+        };
     }
     if writing.is_none() && super::timer::of(&file.borrow()).is_some() {
         return super::timer::read(kernel, cx, tid, file, parts);
@@ -746,6 +817,12 @@ fn vectored(
         )
     {
         return random_bytes(kernel, cx, tid, &parts);
+    }
+    if on_backend_regular(file) {
+        return match writing {
+            Some(append) => write_parts(kernel, cx, tid, file, &parts, offset, append),
+            None => read_parts(kernel, cx, tid, file, &parts, offset),
+        };
     }
     let mut done = 0;
     for &(base, length) in &parts {
@@ -788,7 +865,15 @@ pub(super) fn file_bytes(
     };
     Ok(match &inode.content {
         Content::Directory(_) => return Err(Errno::EISDIR),
-        Content::Proc(_) if inode.is_directory() => return Err(Errno::EISDIR),
+        Content::Proc(_) | Content::Backend(_) if inode.is_directory() => {
+            return Err(Errno::EISDIR);
+        }
+        Content::Backend(_) => {
+            drop(inode);
+            let file = file.borrow();
+            let handle = file.backend.as_ref().ok_or(Errno::EBADF)?;
+            return crate::shared::backend_read(cx, &node, handle, offset, count);
+        }
         Content::Regular(regular) => regular.read(cx.cpu, offset, count),
         Content::Proc(_) => window(file.borrow().contents.as_deref().unwrap_or_default()),
         Content::Special => match Device::from_number(inode.rdev) {
@@ -801,7 +886,13 @@ pub(super) fn file_bytes(
             }
             _ => return Err(Errno::ENXIO),
         },
-        Content::Pipe(_) | Content::Symlink(_) | Content::Pidfd(..) | Content::Anon => {
+        // nsfs files have no read (`ns_file_operations`).
+        Content::Pipe(_)
+        | Content::Symlink(_)
+        | Content::Pidfd(..)
+        | Content::Anon
+        | Content::Socket(_)
+        | Content::Namespace(_) => {
             return Err(Errno::EINVAL);
         }
         // `mqueue_read_file`: the queue's size and request, which a read that returns bytes marks
@@ -818,6 +909,14 @@ pub(super) fn file_bytes(
             bytes
         }
     })
+}
+
+/// Whether a file is on the backend, which opened it for direct reads and writes (FOPEN_DIRECT_IO).
+pub(super) fn direct_on_backend(file: &FileRef) -> bool {
+    file.borrow()
+        .backend
+        .as_ref()
+        .is_some_and(|handle| handle.direct_io())
 }
 
 fn is_sysctl(file: &FileRef) -> bool {
@@ -918,7 +1017,26 @@ pub(super) fn copy_to_segments(
 }
 
 /// Reads up to `count` bytes into the guest at the file's position, or at `at` without moving it.
+/// As [`read_at_unwatched`], telling the file's inotify watches of a read.
 pub(super) fn read_at(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    buffer: u64,
+    count: u64,
+    at: Option<u64>,
+) -> Result<u64, Errno> {
+    let result = read_at_unwatched(kernel, cx, tid, file, buffer, count, at);
+    if let Ok(count) = result
+        && count > 0
+    {
+        super::inotify::file_changed(kernel, file, IN_ACCESS);
+    }
+    result
+}
+
+fn read_at_unwatched(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
@@ -933,11 +1051,20 @@ pub(super) fn read_at(
     if super::pipe::is_pipe(file) {
         return super::pipe::read(kernel, cx, tid, file, &[(buffer, count)]);
     }
+    if super::socket::of(file).is_some() {
+        return super::socket::read(kernel, cx, tid, file, &[(buffer, count)]);
+    }
     if super::signalfd::mask_of(&file.borrow()).is_some() {
         return super::signalfd::read(kernel, cx, tid, file, &[(buffer, count)]);
     }
     if super::timer::of(&file.borrow()).is_some() {
         return super::timer::read(kernel, cx, tid, file, &[(buffer, count)]);
+    }
+    if super::eventfd::of(&file.borrow()).is_some() {
+        return super::eventfd::read(kernel, cx, tid, file, &[(buffer, count)]);
+    }
+    if super::inotify::of(&file.borrow()).is_some() {
+        return super::inotify::read(kernel, cx, tid, file, &[(buffer, count)]);
     }
     // The zero devices clear the buffer in place and keep no position. `/dev/zero` stops at the first
     // short clear (Linux's `read_zero`); `/dev/full` clears again from where it stopped until nothing
@@ -974,6 +1101,9 @@ pub(super) fn read_at(
     if is_sysctl(file) {
         return read_sysctl(kernel, cx, tid, file, &[(buffer, count)], at);
     }
+    if on_backend_regular(file) {
+        return read_parts(kernel, cx, tid, file, &[(buffer, count)], at);
+    }
     let offset = at.unwrap_or(file.borrow().offset);
     refresh_proc(kernel, cx, tid, file, offset)?;
     let bytes = file_bytes(cx, file, count, offset)?;
@@ -1000,10 +1130,183 @@ pub(super) fn read_at(
     Ok(written as u64)
 }
 
+/// Whether a file is a regular file on the backend.
+fn on_backend_regular(file: &FileRef) -> bool {
+    let file = file.borrow();
+    let inode = file.node.borrow();
+    matches!(inode.content, Content::Backend(_)) && !inode.is_directory()
+}
+
+/// Reads a backend file into the segments in one go at the file's position, or at `at` without
+/// moving it, as Linux's FUSE takes the whole iterator: a run of the call after a wait asks the
+/// same questions again.
+fn read_parts(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    parts: &[(u64, u64)],
+    at: Option<u64>,
+) -> Result<u64, Errno> {
+    let offset = at.unwrap_or(file.borrow().offset);
+    let total: u64 = parts.iter().map(|(_, length)| length).sum();
+    // `fuse_direct_io`: a file the backend opened for direct reads and writes is read into the
+    // buffers' pages, taken first: as far as they can be written, EFAULT if not at all.
+    let count = if direct_on_backend(file) {
+        let mut guest = guest(kernel, cx, tid);
+        let mut reachable = 0;
+        for &(base, length) in parts {
+            let part = guest.accessible(base, length, Permissions::WRITE);
+            reachable += part;
+            if part < length {
+                break;
+            }
+        }
+        if reachable == 0 && total > 0 {
+            return Err(Errno::EFAULT);
+        }
+        reachable
+    } else {
+        total
+    };
+    let bytes = file_bytes(cx, file, count, offset)?;
+    let (node, flags) = (file.borrow().node.clone(), file.borrow().flags);
+    accessed(kernel, cx, &node, flags);
+    // Pages of files reach exactly up to a fault (measured).
+    let mut written = 0;
+    let mut guest = guest(kernel, cx, tid);
+    for &(base, length) in parts {
+        let piece = &bytes[written..(written + length as usize).min(bytes.len())];
+        if piece.is_empty() {
+            break;
+        }
+        let stored = guest.write_partial(base, piece);
+        written += stored;
+        if stored < piece.len() {
+            break;
+        }
+    }
+    if written == 0 && !bytes.is_empty() {
+        return Err(Errno::EFAULT);
+    }
+    let mut file = file.borrow_mut();
+    file.read_position = offset + written as u64;
+    if at.is_none() {
+        file.offset = offset + written as u64;
+    }
+    Ok(written as u64)
+}
+
+/// Writes the segments to a regular file in one go at the file's position, or at `at` without
+/// moving it, or at the file's end if `append`: as much as can be read, up to the file size limit.
+#[allow(clippy::too_many_arguments, reason = "every write names where it goes")]
+fn write_parts(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    parts: &[(u64, u64)],
+    at: Option<u64>,
+    append: bool,
+) -> Result<u64, Errno> {
+    let node = file.borrow().node.clone();
+    lock_backend_writes(kernel, tid, &node)?;
+    // A backend's file ends where the backend says now (`fuse_update_attributes`).
+    if append && let Some(handle) = &file.borrow().backend {
+        crate::fs::backend::getattr(&node, Some(handle.fh))?;
+    }
+    let offset = if append {
+        kernel.settle_once(tid, node.borrow().size())
+    } else {
+        at.unwrap_or(file.borrow().offset)
+    };
+    let total = parts.iter().map(|(_, length)| length).sum();
+    let count = write_limit(kernel, cx, tid, file, offset, total)?;
+    // As much of the buffers as can be read; where it stops, the write ends (`write_bytes`).
+    let mut bytes = Vec::new();
+    let mut left = count;
+    let mut guest = guest(kernel, cx, tid);
+    for &(base, length) in parts {
+        let length = length.min(left);
+        let readable = guest.accessible(base, length, Permissions::READ);
+        bytes.extend_from_slice(&guest.read(base, readable)?);
+        left -= length;
+        if readable < length || left == 0 {
+            break;
+        }
+    }
+    write_bytes(kernel, cx, tid, file, &bytes, count, at, append)
+}
+
+/// `inode_lock` around a write to a backend file (`fuse_direct_write_iter` without
+/// FOPEN_PARALLEL_DIRECT_WRITES, `fuse_cache_write_iter`), a truncation (`do_truncate`) or an
+/// allocation that changes its size or bytes (`fuse_file_fallocate`), held while the call waits
+/// for the backend. Files in memory finish these without waiting, so nothing else needs it.
+pub(super) fn lock_backend_writes(
+    kernel: &mut Kernel,
+    tid: Tid,
+    node: &crate::fs::Node,
+) -> Result<(), Errno> {
+    let holder = match &node.borrow().content {
+        Content::Backend(remote) if !node.borrow().is_directory() => remote.writer.get(),
+        _ => return Ok(()),
+    };
+    kernel.take_lock(
+        tid,
+        holder,
+        Channel::Held(Rc::as_ptr(node) as *const () as usize),
+    )?;
+    if let Content::Backend(remote) = &node.borrow().content {
+        remote.writer.set(Some(tid));
+    }
+    Ok(())
+}
+
+/// `fdget_pos`: a regular file's or directory's position is moved by one call at a time
+/// (`f_pos_lock` under FMODE_ATOMIC_POS), held while the call waits.
+pub(super) fn lock_position(kernel: &mut Kernel, tid: Tid, file: &FileRef) -> Result<(), Errno> {
+    let kind = file.borrow().node.borrow().file_type();
+    if kind != S_IFREG && kind != S_IFDIR {
+        return Ok(());
+    }
+    let holder = file.borrow().position_holder;
+    kernel.take_lock(
+        tid,
+        holder,
+        Channel::Held(Rc::as_ptr(file) as *const () as usize),
+    )?;
+    file.borrow_mut().position_holder = Some(tid);
+    Ok(())
+}
+
 /// Writes up to `count` bytes from the guest at the file's position, or at `at` without moving it, or
 /// at the file's end if `append`.
 #[allow(clippy::too_many_arguments, reason = "every write names where it goes")]
+/// As [`write_at_unwatched`], telling the file's inotify watches of a write.
 pub(super) fn write_at(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    buffer: u64,
+    count: u64,
+    at: Option<u64>,
+    append: bool,
+) -> Result<u64, Errno> {
+    let result = write_at_unwatched(kernel, cx, tid, file, buffer, count, at, append);
+    if let Ok(count) = result
+        && count > 0
+    {
+        super::inotify::file_changed(kernel, file, IN_MODIFY);
+    }
+    result
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a write names its bytes, where they go and how"
+)]
+fn write_at_unwatched(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
@@ -1020,7 +1323,13 @@ pub(super) fn write_at(
     if super::pipe::is_pipe(file) {
         return super::pipe::write(kernel, cx, tid, file, &[(buffer, count)]);
     }
+    if super::socket::of(file).is_some() {
+        return super::socket::write(kernel, cx, tid, file, &[(buffer, count)]);
+    }
     moves_bytes(file, true)?;
+    if super::eventfd::of(&file.borrow()).is_some() {
+        return super::eventfd::write(kernel, cx, tid, file, &[(buffer, count)]);
+    }
     let entry = match &node.borrow().content {
         Content::Proc(entry) => Some(*entry),
         _ => None,
@@ -1031,21 +1340,13 @@ pub(super) fn write_at(
     let (regular, device) = {
         let inode = node.borrow();
         (
-            matches!(inode.content, Content::Regular(_)),
+            matches!(inode.content, Content::Regular(_))
+                || matches!(inode.content, Content::Backend(_)) && !inode.is_directory(),
             Device::from_number(inode.rdev),
         )
     };
     if regular {
-        let offset = if append {
-            node.borrow().size()
-        } else {
-            at.unwrap_or(file.borrow().offset)
-        };
-        let count = write_limit(kernel, cx, tid, file, offset, count)?;
-        // As much of the buffer as can be read; where it stops, the write ends (`write_bytes`).
-        let readable = guest(kernel, cx, tid).accessible(buffer, count, Permissions::READ);
-        let bytes = guest(kernel, cx, tid).read(buffer, readable)?;
-        return write_bytes(kernel, cx, tid, file, &bytes, count, at, append);
+        return write_parts(kernel, cx, tid, file, &[(buffer, count)], at, append);
     }
     // The random devices take in as much of the buffer as can be read (`write_pool_user`); the rest
     // only count the bytes.
@@ -1085,6 +1386,20 @@ fn write_proc(
             kernel.thread_mut(task.tid).set_name_exact(&bytes);
             Ok(count)
         }
+        // `proc_coredump_filter_write`: a number as `kstrtouint` reads it in base 0, whose
+        // filter bits are kept.
+        Writing::CoredumpFilter => {
+            // The whole write is the number (measured with 29 bytes).
+            let bytes = guest(kernel, cx, tid).read(buffer, count.min(PAGE_SIZE))?;
+            let value = crate::fs::proc::parse_unsigned(&bytes)?;
+            let crate::fs::proc::Entry::ProcessFile(task, _) = entry else {
+                return Err(Errno::EINVAL);
+            };
+            if let Some(process) = kernel.processes.get_mut(&task.pid) {
+                process.coredump_filter = value & 0x1ff;
+            }
+            Ok(count)
+        }
         Writing::Io => Err(Errno::EIO),
         Writing::Sysctl => Err(Errno::EROFS),
         Writing::None => Err(Errno::EINVAL),
@@ -1106,12 +1421,51 @@ pub(super) fn write_bytes(
     append: bool,
 ) -> Result<u64, Errno> {
     let node = file.borrow().node.clone();
+    lock_backend_writes(kernel, tid, &node)?;
     let now = kernel.now(cx);
     let may_keep_privileges = kernel.credentials(tid).has(crate::credentials::CAP_FSETID);
     let mut inode = node.borrow_mut();
     let rdev = inode.rdev;
     let regular = match &mut inode.content {
         Content::Regular(regular) => regular,
+        Content::Backend(remote) => {
+            let offset = if append {
+                kernel.settle_once(tid, remote.size.get())
+            } else {
+                at.unwrap_or(file.borrow().offset)
+            };
+            drop(inode);
+            if offset
+                .checked_add(bytes.len() as u64)
+                .is_none_or(|end| end > i64::MAX as u64)
+            {
+                return Err(Errno::EFBIG);
+            }
+            let written = {
+                let file = file.borrow();
+                let handle = file.backend.as_ref().ok_or(Errno::EBADF)?;
+                let written = crate::fs::backend::write(handle, offset, bytes)?;
+                // Linux's page cache takes what a cached write wrote (`fuse_fill_write_pages`).
+                if !handle.direct_io() {
+                    crate::shared::backend_written(cx, &node, offset, &bytes[..written as usize]);
+                }
+                written
+            };
+            // `fuse_write_update_attr`: the file ends at least where the write did.
+            if let Content::Backend(remote) = &node.borrow().content
+                && remote.size.get() < offset + written
+            {
+                remote.set_size(offset + written);
+            }
+            crate::shared::changed(kernel, cx, &node)?;
+            if written == 0 && wanted > 0 {
+                return Err(Errno::EFAULT);
+            }
+            if at.is_none() {
+                file.borrow_mut().offset = offset + written;
+            }
+            return Ok(written);
+        }
         Content::Pipe(_) => {
             drop(inode);
             return Ok(super::pipe::put(cx, kernel, file, bytes, 0));
@@ -1130,7 +1484,9 @@ pub(super) fn write_bytes(
         | Content::Symlink(_)
         | Content::Pidfd(..)
         | Content::Anon
-        | Content::Mqueue(_) => {
+        | Content::Socket(_)
+        | Content::Mqueue(_)
+        | Content::Namespace(_) => {
             return Err(Errno::EINVAL);
         }
     };
@@ -1262,13 +1618,13 @@ fn send(
         if output.borrow().flags & O_APPEND != 0 {
             return Err(Errno::EINVAL);
         }
-        // A pipe, a terminal, secret memory and a process descriptor as input cannot seek
-        // (`FMODE_LSEEK`), even for nothing; timer and signal descriptors can, but have no
+        // A pipe, a socket, a terminal, secret memory and a process descriptor as input cannot
+        // seek (`FMODE_LSEEK`), even for nothing; timer and signal descriptors can, but have no
         // `splice_read`, so only nothing is moved from them (measured; into a pipe nothing is
         // moved without asking it).
         if matches!(
             input_node.borrow().content,
-            Content::Pipe(_) | Content::Pidfd(..)
+            Content::Pipe(_) | Content::Pidfd(..) | Content::Socket(_)
         ) || super::tty::end(&input).is_some()
             || input_node.borrow().is_secret()
         {
@@ -1378,6 +1734,23 @@ fn send(
             Err(Errno::EINVAL)
         } else if super::tty::end(&output).is_some() {
             super::tty::put(kernel, cx, tid, &output, &bytes)
+        } else if super::socket::of(&output).is_some() {
+            // A send that waits keeps what it sent in the call's progress; the call's rerun goes
+            // on after all that was moved.
+            let flags = if output.borrow().flags & O_NONBLOCK != 0 {
+                crate::linux::net::MSG_DONTWAIT
+            } else {
+                0
+            };
+            kernel.thread_mut(tid).call.progress = 0;
+            let held = core::cell::RefCell::new(core::mem::take(&mut bytes));
+            let sent = super::socket::send_bytes(kernel, cx, tid, &output, &held, flags);
+            if sent == Err(Errno::PARKED) {
+                let progress = kernel.threads[&tid].call.progress;
+                kernel.thread_mut(tid).call.progress = moved + progress;
+                return Err(Errno::PARKED);
+            }
+            sent
         } else if matches!(output_node.borrow().content, Content::Regular(_)) {
             let at = output.borrow().offset;
             write_limit(kernel, cx, tid, &output, at, bytes.len() as u64).and_then(|allowed| {
@@ -1437,6 +1810,7 @@ pub(super) fn lseek(
     [fd, offset, whence, ..]: Args,
 ) -> Result<u64, Errno> {
     let file_ref = file(kernel, tid, fd)?;
+    lock_position(kernel, tid, &file_ref)?;
     let mut file = file_ref.borrow_mut();
     if file.is_path() {
         return Err(Errno::EBADF);
@@ -1455,10 +1829,28 @@ pub(super) fn lseek(
             .checked_add(offset)
             .ok_or(Errno::EINVAL)
     };
+    if let Some(handle) = &file.backend {
+        // `fuse_file_llseek`: the backend finds data and holes; the end is where it says now. A
+        // directory seeks over the size it holds (`generic_file_llseek`).
+        match whence {
+            SEEK_END if !handle.directory => {
+                crate::fs::backend::getattr(&file.node, Some(handle.fh))?
+            }
+            SEEK_DATA | SEEK_HOLE if !handle.directory => {
+                let position = crate::fs::backend::lseek(handle, offset, whence)?;
+                file.offset = position;
+                return Ok(position);
+            }
+            _ => {}
+        }
+    }
     let inode = file.node.borrow();
     let mut sequence = None;
     let new = match &inode.content {
-        Content::Pipe(_) | Content::Pidfd(..) => return Err(Errno::ESPIPE),
+        // nsfs files have no seek.
+        Content::Pipe(_) | Content::Pidfd(..) | Content::Socket(_) | Content::Namespace(_) => {
+            return Err(Errno::ESPIPE);
+        }
         // Signal descriptors keep their position at 0 (`noop_llseek`).
         Content::Anon => file.offset as i64,
         // A queue seeks as `default_llseek` does over the size it shows.
@@ -1480,6 +1872,18 @@ pub(super) fn lseek(
             Some(Device::Null | Device::Zero | Device::Full) => 0,
             _ => file.offset as i64,
         },
+        Content::Backend(remote) => {
+            let size = remote.size.get() as i64;
+            match whence {
+                SEEK_SET => offset,
+                SEEK_CUR => current()?,
+                SEEK_END => size.checked_add(offset).ok_or(Errno::EINVAL)?,
+                // Only directories come here: all data up to the size, as an unsigned offset.
+                SEEK_DATA | SEEK_HOLE if offset as u64 >= size as u64 => return Err(Errno::ENXIO),
+                SEEK_DATA => offset,
+                _ => size,
+            }
+        }
         Content::Regular(regular) => {
             let size = regular.size() as i64;
             match whence {
@@ -1584,7 +1988,12 @@ pub(super) fn accessed(kernel: &Kernel, cx: &mut Context<'_>, node: &crate::fs::
 }
 
 /// Linux's `touch_atime` itself, which a splice also makes for a device it read.
-fn touch_atime(kernel: &Kernel, cx: &mut Context<'_>, node: &crate::fs::Node, flags: u32) {
+pub(super) fn touch_atime(
+    kernel: &Kernel,
+    cx: &mut Context<'_>,
+    node: &crate::fs::Node,
+    flags: u32,
+) {
     let now = kernel.now(cx);
     let mut inode = node.borrow_mut();
     if inode.fs.kind != crate::fs::Kind::Tmpfs
@@ -1644,6 +2053,7 @@ pub(super) fn getdents64(
     [fd, buffer, count, ..]: Args,
 ) -> Result<u64, Errno> {
     let file = file(kernel, tid, fd)?;
+    lock_position(kernel, tid, &file)?;
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
     }
@@ -1720,6 +2130,17 @@ pub(super) fn getdents64(
                     }
                 }
             }
+            // `fuse_readdir`: the backend's entries from the position, which it numbers.
+            Content::Backend(_) => {
+                drop(inode);
+                let file = file.borrow();
+                let handle = file.backend.as_ref().ok_or(Errno::EBADF)?;
+                let mut own = position;
+                for entry in crate::fs::backend::readdir(handle, position, count)? {
+                    entries.push((entry.name, entry.ino, entry.kind, own, entry.next));
+                    own = entry.next;
+                }
+            }
             Content::Proc(entry) => {
                 let entry = *entry;
                 drop(inode);
@@ -1733,7 +2154,7 @@ pub(super) fn getdents64(
                     let mut out = Vec::new();
                     for (name, child, position) in crate::fs::proc::list(walk.proc, &entry) {
                         let jumps = match child {
-                            Entry::Fd(..) | Entry::ThreadSelfLink => true,
+                            Entry::Fd(..) | Entry::FdInfo(..) | Entry::ThreadSelfLink => true,
                             Entry::Process(task) => !task.own,
                             _ => false,
                         };
@@ -1743,7 +2164,7 @@ pub(super) fn getdents64(
                         out.push((name, child_inode.ino, kind, position, jumps));
                     }
                     let end = match entry {
-                        Entry::Fds(task) => walk
+                        Entry::Fds(task) | Entry::FdInfos(task) => walk
                             .proc
                             .threads
                             .get(&task.tid)
@@ -1753,7 +2174,7 @@ pub(super) fn getdents64(
                     Ok((out, end))
                 })?;
                 let ino = node.borrow().ino;
-                let fds = matches!(entry, Entry::Fds(_));
+                let fds = matches!(entry, Entry::Fds(_) | Entry::FdInfos(_));
                 if position == 0 {
                     entries.push((b".".to_vec(), ino, DT_DIR as u8, 0, 1));
                 }
@@ -1887,9 +2308,22 @@ pub(super) fn close(
     [fd, ..]: Args,
 ) -> Result<u64, Errno> {
     let pid = kernel.threads[&tid].process;
-    kernel.files_mut(tid).remove(fd as i32, pid)?;
-    kernel.files_released(cx);
-    Ok(0)
+    // `file_close_fd` takes the descriptor first; then `filp_close` flushes a file on the backend
+    // there, and the call waits for that answer.
+    let file = kernel.call_file(tid, fd as i32)?;
+    if kernel.threads[&tid].call.progress == 0 {
+        kernel.thread_mut(tid).call.progress = 1;
+        kernel.files_mut(tid).remove(fd as i32, pid, true)?;
+        kernel.files_released(cx);
+    }
+    let flushed = match &file.borrow().backend {
+        Some(handle) => crate::fs::backend::flush(handle, kernel.files(tid).lock_owner()),
+        None => Ok(()),
+    };
+    if flushed == Err(Errno::PARKED) {
+        return Err(Errno::PARKED);
+    }
+    flushed.map(|()| 0)
 }
 
 fn nofile_limit(kernel: &Kernel, tid: Tid) -> u64 {
@@ -1923,7 +2357,7 @@ pub(super) fn close_range(
         if flags & CLOSE_RANGE_CLOEXEC != 0 {
             files.get_mut(fd)?.close_on_exec = true;
         } else {
-            files.remove(fd, pid)?;
+            files.remove(fd, pid, false)?;
         }
     }
     drop(files);
@@ -2016,7 +2450,7 @@ fn fcntl_typed(
         command,
         F_GETLK | F_SETLK | F_SETLKW | F_OFD_GETLK | F_OFD_SETLK | F_OFD_SETLKW
     ) {
-        let file = kernel.files(tid).file(fd)?;
+        let file = kernel.call_file(tid, fd)?;
         if file.borrow().is_path() {
             return Err(Errno::EBADF);
         }
@@ -2114,6 +2548,7 @@ fn record_lock(
             LockOwner::Table(kernel.files(tid).lock_owner())
         },
         pid,
+        file: alloc::rc::Rc::downgrade(file),
         write,
         start: start as u64,
         end: end as u64,
@@ -2281,27 +2716,8 @@ fn fcntl_other(
         }
         // No lease can be taken, so a file never holds one.
         F_GETLEASE if !path_only => Ok(u64::from(F_UNLCK)),
-        F_GETOWN if !path_only => {
-            let owner = descriptor.file.borrow().owner;
-            Ok(owner.map_or(0, |owner| match owner_lives(kernel, &owner) {
-                true if owner.kind == OwnerKind::Group => -owner.pid,
-                true => owner.pid,
-                false => 0,
-            }) as i64 as u64)
-        }
-        F_SETOWN if !path_only => {
-            // `f_setown`: below zero names a group.
-            let who = argument as i32;
-            if who == i32::MIN {
-                return Err(Errno::EINVAL);
-            }
-            let kind = if who < 0 {
-                OwnerKind::Group
-            } else {
-                OwnerKind::Process
-            };
-            set_owner(kernel, tid, &descriptor.file, who.abs(), kind)
-        }
+        F_GETOWN if !path_only => Ok(get_owner(kernel, &descriptor.file) as i64 as u64),
+        F_SETOWN if !path_only => set_owner_number(kernel, tid, &descriptor.file, argument as i32),
         F_GETOWN_EX if !path_only => {
             let owner = descriptor.file.borrow().owner.unwrap_or_default();
             let pid = if owner_lives(kernel, &owner) {
@@ -2410,6 +2826,34 @@ fn fcntl_other(
     }
 }
 
+/// `f_getown`: the owner's number, below zero for a group, 0 for none or one that is gone.
+pub(super) fn get_owner(kernel: &Kernel, file: &FileRef) -> i32 {
+    let owner = file.borrow().owner;
+    owner.map_or(0, |owner| match owner_lives(kernel, &owner) {
+        true if owner.kind == OwnerKind::Group => -owner.pid,
+        true => owner.pid,
+        false => 0,
+    })
+}
+
+/// `f_setown`: below zero names a group.
+pub(super) fn set_owner_number(
+    kernel: &Kernel,
+    tid: Tid,
+    file: &FileRef,
+    who: i32,
+) -> Result<u64, Errno> {
+    if who == i32::MIN {
+        return Err(Errno::EINVAL);
+    }
+    let kind = if who < 0 {
+        OwnerKind::Group
+    } else {
+        OwnerKind::Process
+    };
+    set_owner(kernel, tid, file, who.abs(), kind)
+}
+
 /// Whether a number is in use by a thread, process, group or session (Linux's `find_vpid`).
 fn pid_in_use(kernel: &Kernel, pid: i32) -> bool {
     kernel.threads.contains_key(&pid)
@@ -2464,16 +2908,44 @@ pub(super) fn set_owner_of(kernel: &Kernel, tid: Tid, file: &FileRef, pid: i32, 
 /// way to be synced refuse.
 pub(super) fn fsync(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    cx: &mut Context<'_>,
     tid: Tid,
     [fd, ..]: Args,
+) -> Result<u64, Errno> {
+    sync_file(kernel, cx, tid, fd, false)
+}
+
+pub(super) fn fdatasync(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [fd, ..]: Args,
+) -> Result<u64, Errno> {
+    sync_file(kernel, cx, tid, fd, true)
+}
+
+/// `vfs_fsync`: a file on the backend is synced there, its mapped pages written back first
+/// (`fuse_fsync`); tmpfs has nothing to write.
+fn sync_file(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    fd: u64,
+    data_only: bool,
 ) -> Result<u64, Errno> {
     let file = file(kernel, tid, fd)?;
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
     }
-    // Only tmpfs's files and directories have a sync operation; pipes, devices and the process
-    // information tree have none.
+    let handle = file.borrow().backend.clone();
+    if let Some(handle) = &handle {
+        let node = file.borrow().node.clone();
+        crate::shared::backend_write_back(kernel, cx, &node, 0, u64::MAX, true)?;
+        crate::fs::backend::fsync(handle, data_only)?;
+        return Ok(0);
+    }
+    // Only tmpfs's files and directories have a sync operation; pipes, devices, sockets and the
+    // process information tree have none.
     let file = file.borrow();
     let inode = file.node.borrow();
     match inode.content {
@@ -2482,7 +2954,9 @@ pub(super) fn fsync(
         | Content::Proc(_)
         | Content::Pidfd(..)
         | Content::Anon
-        | Content::Mqueue(_) => Err(Errno::EINVAL),
+        | Content::Mqueue(_)
+        | Content::Socket(_)
+        | Content::Namespace(_) => Err(Errno::EINVAL),
         _ if inode.is_secret() => Err(Errno::EINVAL),
         _ => Ok(0),
     }
@@ -2507,7 +2981,7 @@ pub(super) fn sync(_: &mut Kernel, _: &mut Context<'_>, _: Tid, _: Args) -> Resu
 
 /// What `poll` reports for an open file: Linux's `DEFAULT_POLLMASK` for files without a poll operation,
 /// or what the file's own says. The host's pipes always have room.
-fn poll_mask(kernel: &Kernel, tid: Tid, file: &FileRef) -> u16 {
+pub(super) fn poll_mask(kernel: &Kernel, tid: Tid, file: &FileRef) -> u16 {
     use crate::fs::proc::{Entry, ProcessFile};
     if super::tty::end(file).is_some() {
         return super::tty::poll(file);
@@ -2519,28 +2993,39 @@ fn poll_mask(kernel: &Kernel, tid: Tid, file: &FileRef) -> u16 {
     let node = file.node.borrow();
     match &node.content {
         Content::Pipe(pipe) => crate::pipe::poll(pipe, &file),
+        Content::Socket(socket) => super::socket::poll(socket),
         // `random_poll`: the generator is ready from the start here. `/dev/urandom` has no poll.
         Content::Special if Device::from_number(node.rdev) == Some(Device::Random) => {
             (POLLIN | POLLRDNORM) as u16
         }
         // `mounts_poll`: the mount table cannot change within the container.
-        Content::Proc(Entry::ProcessFile(_, ProcessFile::Mounts)) => (POLLIN | POLLRDNORM) as u16,
+        Content::Proc(Entry::ProcessFile(_, ProcessFile::Mounts | ProcessFile::Mountinfo)) => {
+            (POLLIN | POLLRDNORM) as u16
+        }
         Content::Pidfd(..) => {
             drop(node);
             super::pidfd::poll(kernel, &file)
         }
         Content::Mqueue(queue) => queue.poll(),
-        Content::Anon => match (super::signalfd::mask_of(&file), super::timer::of(&file)) {
-            (Some(mask), _) => super::signalfd::poll(kernel, tid, mask),
-            (_, Some(timer)) => super::timer::poll(kernel, timer),
-            _ => 0,
+        Content::Anon => match &file.anon {
+            Some(crate::file::Anon::Signals(mask)) => super::signalfd::poll(kernel, tid, *mask),
+            Some(crate::file::Anon::Timer(timer)) => super::timer::poll(kernel, *timer),
+            Some(crate::file::Anon::Event(counter)) => super::eventfd::poll(&counter.borrow()),
+            Some(crate::file::Anon::Inotify(instance)) => super::inotify::poll(&instance.borrow()),
+            Some(crate::file::Anon::Epoll(epoll)) => {
+                let epoll = epoll.clone();
+                drop(node);
+                drop(file);
+                super::epoll::poll(kernel, tid, &epoll)
+            }
+            None => 0,
         },
         _ => (POLLIN | POLLOUT | POLLRDNORM | POLLWRNORM) as u16,
     }
 }
 
 /// A wait's timeout as `poll_select_set_timeout` checks it: its length.
-fn read_timeout(
+pub(super) fn read_timeout(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
@@ -2563,7 +3048,7 @@ fn read_timeout(
 /// The first run of `ppoll` or `pselect6`: when the wait ends (kept in the call's slot as the time
 /// asked for, and with `select_estimate_accuracy`'s slack as when the thread is woken), then the
 /// temporary signal mask (`set_user_sigmask`).
-fn start_wait(
+pub(super) fn start_wait(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,

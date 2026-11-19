@@ -46,8 +46,9 @@ impl LockOwner {
 #[derive(Clone)]
 pub(crate) struct RecordLock {
     pub owner: LockOwner,
-    /// The process that took it (`flc_pid`).
+    /// The process that took it (`flc_pid`), and the open file it was taken through (`flc_file`).
     pub pid: i32,
+    pub file: Weak<RefCell<OpenFile>>,
     pub write: bool,
     pub start: u64,
     /// The last byte, inclusive.
@@ -104,8 +105,8 @@ pub(crate) fn set(
     let own: Vec<RecordLock> = locks
         .extract_if(.., |held| held.owner.same(&request.owner))
         .collect();
-    // The owner's ranges with the request's cut out, then the request.
-    let mut kept = Vec::with_capacity(own.len() + 2);
+    // The owner's ranges with the request's cut out, then the request (marked as it).
+    let mut kept: Vec<(RecordLock, bool)> = Vec::with_capacity(own.len() + 2);
     let mut changed = false;
     for held in own {
         if held.end < request.start || held.start > request.end {
@@ -114,39 +115,54 @@ pub(crate) fn set(
                 && held.write == request.write
                 && (held.end.checked_add(1) == Some(request.start)
                     || request.end.checked_add(1) == Some(held.start));
-            kept.push(held);
+            kept.push((held, false));
             continue;
         }
         changed = true;
         if held.start < request.start {
-            kept.push(RecordLock {
-                end: request.start - 1,
-                ..held.clone()
-            });
+            kept.push((
+                RecordLock {
+                    end: request.start - 1,
+                    ..held.clone()
+                },
+                false,
+            ));
         }
         if held.end > request.end {
-            kept.push(RecordLock {
-                start: request.end + 1,
-                ..held
-            });
+            kept.push((
+                RecordLock {
+                    start: request.end + 1,
+                    ..held
+                },
+                false,
+            ));
         }
     }
     if !unlock {
-        kept.push(request);
+        kept.push((request, true));
     }
-    kept.sort_by_key(|held| held.start);
-    let mut joined: Vec<RecordLock> = Vec::with_capacity(kept.len());
-    for held in kept {
-        if let Some(last) = joined.last_mut()
+    kept.sort_by_key(|(held, _)| held.start);
+    let mut joined: Vec<(RecordLock, bool)> = Vec::with_capacity(kept.len());
+    for (held, is_request) in kept {
+        if let Some((last, last_is_request)) = joined.last_mut()
             && last.write == held.write
             && last.end.checked_add(1) == Some(held.start)
         {
-            last.end = held.end;
+            // A request joining a held lock grows the held one, which keeps its taker and file.
+            if *last_is_request && !is_request {
+                *last = RecordLock {
+                    start: last.start,
+                    ..held
+                };
+                *last_is_request = false;
+            } else {
+                last.end = held.end;
+            }
             continue;
         }
-        joined.push(held);
+        joined.push((held, is_request));
     }
-    locks.splice(at..at, joined);
+    locks.splice(at..at, joined.into_iter().map(|(held, _)| held));
     Ok(changed)
 }
 

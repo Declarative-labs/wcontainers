@@ -48,14 +48,14 @@ fn park(kernel: &mut Kernel, tid: Tid, pipe: &FileRef) -> Errno {
 /// After bytes went into a pipe: its readers wake and hear of them (`wakeup_pipe_readers`).
 fn readers_woken(kernel: &mut Kernel, cx: &mut Context<'_>, pipe: &FileRef) {
     let node = pipe.borrow().node.clone();
-    kernel.wake(channel(&node));
+    kernel.wake_poll(channel(&node), EPOLLIN | EPOLLRDNORM);
     signal_ends(kernel, cx, &node, true);
 }
 
 /// After a pipe's slots went: its writers wake and hear of the room (`wakeup_pipe_writers`).
 fn writers_woken(kernel: &mut Kernel, cx: &mut Context<'_>, pipe: &FileRef) {
     let node = pipe.borrow().node.clone();
-    kernel.wake(channel(&node));
+    kernel.wake_poll(channel(&node), EPOLLOUT | EPOLLWRNORM);
     signal_ends(kernel, cx, &node, false);
 }
 
@@ -184,6 +184,9 @@ pub(super) fn splice(
             }
             verify_area(at, length)?;
             let nonblock = nonblock || file_nonblock(&input);
+            if super::socket::of(&output).is_some() {
+                return pipe_to_socket(kernel, cx, tid, &input, &output, length, nonblock);
+            }
             let mut at = at;
             let moved = pipe_to_file(kernel, cx, tid, &input, &output, &mut at, length, nonblock);
             match out_offset {
@@ -203,6 +206,19 @@ pub(super) fn splice(
                 None => input.borrow().offset,
             };
             verify_area(at, length)?;
+            if super::socket::of(&input).is_some() {
+                let pipe_nonblock = nonblock || file_nonblock(&output);
+                return socket_to_pipe(
+                    kernel,
+                    cx,
+                    tid,
+                    &input,
+                    &output,
+                    length,
+                    pipe_nonblock,
+                    nonblock,
+                );
+            }
             let nonblock = nonblock || file_nonblock(&output);
             let mut at = at;
             let moved = file_to_pipe(kernel, cx, tid, &input, &output, &mut at, length, nonblock);
@@ -292,6 +308,9 @@ pub(super) fn file_to_pipe(
     if length == 0 {
         return Ok(0);
     }
+    if super::socket::of(input).is_some() {
+        return socket_to_pipe(kernel, cx, tid, input, output, length, nonblock, false);
+    }
     let free = with_pipe(output, |pipe| {
         if pipe.host.is_some() {
             pipe.capacity as u64
@@ -348,6 +367,84 @@ pub(super) fn file_to_pipe(
     Ok(taken)
 }
 
+/// `splice_to_socket`: the pipe's bytes sent on the socket in one message, waiting for bytes
+/// first. A send that waits for room parks with nothing taken from the pipe; its rerun sends the
+/// same bytes on from where the send got to.
+fn pipe_to_socket(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    input: &FileRef,
+    output: &FileRef,
+    length: u64,
+    nonblock: bool,
+) -> Result<u64, Errno> {
+    if kernel.signal_pending(tid) {
+        return Err(Errno::ERESTARTSYS);
+    }
+    if with_pipe(input, |pipe| pipe.is_empty()) {
+        if with_pipe(input, |pipe| pipe.writers()) == 0 {
+            return Ok(0);
+        }
+        if nonblock {
+            return Err(Errno::EAGAIN);
+        }
+        return Err(park(kernel, tid, input));
+    }
+    let wanted = length.min(usize::MAX as u64) as usize;
+    let bytes = core::cell::RefCell::new(with_pipe(input, |pipe| pipe.unread_bytes(wanted)));
+    let flags = if output.borrow().flags & O_NONBLOCK != 0 {
+        crate::linux::net::MSG_DONTWAIT
+    } else {
+        0
+    };
+    let sent = super::socket::send_bytes(kernel, cx, tid, output, &bytes, flags)?;
+    if sent > 0 && with_pipe(input, |pipe| pipe.consume_front(sent as usize)) {
+        writers_woken(kernel, cx, input);
+    }
+    Ok(sent)
+}
+
+/// `sock_splice_read`: room in the pipe first, then what the socket has, as a read of it gives it,
+/// up to the room. SPLICE_F_NONBLOCK keeps a local stream socket's read from waiting
+/// (`unix_stream_splice_read`); TCP's and datagram sockets' reads wait unless the socket is
+/// nonblocking (measured).
+#[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
+fn socket_to_pipe(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    input: &FileRef,
+    output: &FileRef,
+    length: u64,
+    nonblock: bool,
+    flag_nonblock: bool,
+) -> Result<u64, Errno> {
+    output_ready(kernel, cx, tid, output, nonblock, true)?;
+    let local_stream = super::socket::of(input).is_some_and(|socket| {
+        let socket = socket.borrow();
+        socket.family == crate::linux::net::AF_UNIX && socket.kind == crate::linux::net::SOCK_STREAM
+    });
+    let flags = if flag_nonblock && local_stream {
+        crate::linux::net::MSG_DONTWAIT
+    } else {
+        0
+    };
+    let free = with_pipe(output, |pipe| {
+        if pipe.host.is_some() {
+            pipe.capacity as u64
+        } else {
+            (pipe.capacity - pipe.occupancy()) as u64
+        }
+    });
+    let length = length.min(free * PAGE_SIZE).min(MAX_RW_COUNT);
+    let bytes = super::socket::receive_bytes(kernel, cx, tid, input, length, flags)?;
+    if bytes.is_empty() {
+        return Ok(0);
+    }
+    Ok(super::pipe::put(cx, kernel, output, &bytes, 0))
+}
+
 /// `iter_file_splice_write` (and `splice_write_null` for the devices that drop what they get): slot
 /// after slot written to the file at `at`, waiting for bytes only before the first.
 #[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
@@ -371,16 +468,19 @@ fn pipe_to_file(
             Content::Special => Device::from_number(inode.rdev),
             _ => None,
         };
+        let backend_file =
+            matches!(inode.content, Content::Backend(_)) && inode.file_type() == S_IFREG;
         // Only files with `splice_write` take a splice (`do_splice_from`): tmpfs files other than
-        // secret memory, and the devices other than `/dev/full`; not `/proc` files, process,
-        // event, timer and signal descriptors or message queues.
+        // secret memory, backend files, and the devices other than `/dev/full`; not `/proc` files,
+        // process, event, timer and signal descriptors or message queues.
         let splice_write = match inode.content {
             Content::Regular(_) => !inode.is_secret(),
+            Content::Backend(_) => backend_file,
             Content::Special => device != Some(Device::Full),
             _ => false,
         };
         (
-            matches!(inode.content, Content::Regular(_)),
+            matches!(inode.content, Content::Regular(_)) || backend_file,
             splice_write,
             !matches!(device, Some(Device::Null | Device::Zero)),
         )
@@ -408,9 +508,16 @@ fn pipe_to_file(
             }
             break Err(park(kernel, tid, input));
         }
+        // A terminal takes a slot at a time; a file every slot's bytes in one write, which a
+        // backend's file takes as one request and nothing leaves the pipe until it is answered.
+        let wanted = (length - done).min(usize::MAX as u64) as usize;
         let bytes = with_pipe(input, |pipe| {
-            let front = pipe.front_bytes();
-            front[..front.len().min((length - done) as usize)].to_vec()
+            if terminal {
+                let front = pipe.front_bytes();
+                front[..front.len().min(wanted)].to_vec()
+            } else {
+                pipe.unread_bytes(wanted)
+            }
         });
         let written = if terminal {
             super::tty::put(kernel, cx, tid, output, &bytes)
