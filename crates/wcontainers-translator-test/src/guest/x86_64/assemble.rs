@@ -546,6 +546,18 @@ impl Emitter {
                 slot,
             } => {
                 let at = i32::from(slot) * WORD;
+                // The model makes a pair loaded into one register two by taking the next number, which on
+                // x86 may be rsp or rbp: the next of the model's registers instead.
+                let rt2 = if REGISTERS.contains(&rt2) {
+                    rt2
+                } else {
+                    *REGISTERS
+                        .iter()
+                        .cycle()
+                        .skip_while(|&&r| r != rt)
+                        .nth(1)
+                        .unwrap()
+                };
                 if load {
                     self.a.push(qword_ptr(rbp + (at + WORD)))?;
                     self.a.push(qword_ptr(rbp + at))?;
