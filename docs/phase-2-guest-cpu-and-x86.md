@@ -1457,7 +1457,12 @@ Tests (section 7 gives the detail):
   clc, stc and cmc change only CF (and OF), so they keep no shape: `Flags::Each` holds the six flags in
   locals of their own (the kept ones read as they were), which the translator copies into its flag locals.
   `Bits` for bsf, bsr, popcnt, lzcnt and tzcnt comes with those instructions at X5. `Packed` stays for
-  popf, the system call's return and the bottom loop. What the reference CPU leaves where Intel says undefined, found
+  popf, the system call's return and the bottom loop. With look-ahead, an instruction whose flags nothing
+  reads before every one is set again (`flags_needed_after`) emits nothing for them, on both guests:
+  `set_flags` writes nothing (no shape copies, no flag state), and a meaning asks `Emitter::flags_live`
+  first so that what it works out only for the flags is left out too (a shift's or rotate's CF and OF, a bit
+  test's CF, the flags `Each` keeps, `inc` and `dec`'s kept CF, the high half of a two- or three-operand
+  `imul`). Look-ahead none answers that every flag is live. What the reference CPU leaves where Intel says undefined, found
   by layer 1 and a scratch sweep of every shift and rotate at every width and count 0 to 31 (scratch
   `x3/run1/shifts.txt`): OF after a shift or rotate is what a count of one gives, from the value before it,
   for every count, except `rol` and `ror` of a register by an immediate above one, which keep OF; AF is clear

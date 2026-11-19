@@ -2536,8 +2536,15 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         self.address(offset);
     }
 
+    fn flags_live(&self) -> bool {
+        self.flags_needed_after(self.at.offset)
+    }
+
     fn set_flags(&mut self, flags: G::Flags) {
         self.written = true;
+        if !self.flags_live() {
+            return;
+        }
         let lazy = self.decoded().effects.flags.is_some();
         match G::shape(flags).filter(|_| lazy) {
             Some(shape) => {

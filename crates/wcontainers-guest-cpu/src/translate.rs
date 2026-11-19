@@ -259,6 +259,11 @@ pub trait Emitter<G: Guest> {
     fn set(&mut self, r: G::Reg);
     /// Push the guest address of this instruction plus `by`.
     fn this_address(&mut self, by: i64);
+    /// Whether anything may read the flags this instruction sets. When not, `set_flags` writes nothing and
+    /// a meaning need work out nothing only for them.
+    fn flags_live(&self) -> bool {
+        true
+    }
     fn set_flags(&mut self, flags: G::Flags);
     /// Push one flag as an i32 0 or 1.
     fn flag(&mut self, flag: G::Flag);

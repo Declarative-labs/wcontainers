@@ -257,6 +257,8 @@ fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
             e.trap(Trap::Undefined);
             return true;
         }
+        // Nothing reads the carry they set.
+        Clc | Stc | Cmc if !e.flags_live() => {}
         Clc | Stc | Cmc => {
             let carry = e.local(ValType::I32);
             match m {
@@ -531,6 +533,10 @@ fn unary<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
     };
     e.sink().local_set(result);
     truncate(e, result, w);
+    if !e.flags_live() {
+        write(e, i, 0, mem, result);
+        return;
+    }
     let kept = matches!(m, Inc | Dec).then(|| {
         let c = e.local(ValType::I32);
         e.flag(Flag::C);
@@ -929,11 +935,33 @@ fn shift<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
         e.sink().local_set(old_carry);
     }
     let m_all = mask(w);
+    let live = e.flags_live();
     {
         let mut s = e.sink();
         match m {
             Shl | Sal => {
                 s.local_get(v).local_get(count).i64_shl().local_set(result);
+            }
+            Shr | Sar => {
+                s.local_get(v);
+                if m == Sar && w < W64 {
+                    s.i64_const(i64::from(W64) - wide)
+                        .i64_shl()
+                        .i64_const(i64::from(W64) - wide)
+                        .i64_shr_s();
+                }
+                s.local_tee(rotated).local_get(count);
+                if m == Sar {
+                    s.i64_shr_s();
+                } else {
+                    s.i64_shr_u();
+                }
+                s.local_set(result);
+            }
+            _ => {}
+        }
+        match m {
+            Shl | Sal if live => {
                 // The last bit shifted out.
                 s.local_get(v)
                     .local_get(count)
@@ -957,21 +985,8 @@ fn shift<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
                         .local_set(carry);
                 }
             }
+            Shl | Sal | Shr | Sar if !live => {}
             Shr | Sar => {
-                s.local_get(v);
-                if m == Sar && w < W64 {
-                    s.i64_const(i64::from(W64) - wide)
-                        .i64_shl()
-                        .i64_const(i64::from(W64) - wide)
-                        .i64_shr_s();
-                }
-                s.local_tee(rotated).local_get(count);
-                if m == Sar {
-                    s.i64_shr_s();
-                } else {
-                    s.i64_shr_u();
-                }
-                s.local_set(result);
                 s.local_get(rotated).local_get(count).i64_const(1).i64_sub();
                 if m == Sar {
                     s.i64_shr_s();
@@ -1045,12 +1060,14 @@ fn shift<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
                     s.i64_or();
                 }
                 s.local_set(result);
-                // CF: ROL the result's low bit, ROR its top bit.
-                s.local_get(result);
-                if m == Ror {
-                    s.i64_const(wide - 1).i64_shr_u();
+                if live {
+                    // CF: ROL the result's low bit, ROR its top bit.
+                    s.local_get(result);
+                    if m == Ror {
+                        s.i64_const(wide - 1).i64_shr_u();
+                    }
+                    s.i32_wrap_i64().i32_const(1).i32_and().local_set(carry);
                 }
-                s.i32_wrap_i64().i32_const(1).i32_and().local_set(carry);
             }
             _ => {
                 // Rcl, Rcr: through CF, the count modulo the width plus one at 8 and 16 bits.
@@ -1088,11 +1105,13 @@ fn shift<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
                         s.i64_shl();
                     }
                     s.i64_or().i64_const(full).i64_and().local_set(result);
-                    s.local_get(result)
-                        .i64_const(wide)
-                        .i64_shr_u()
-                        .i32_wrap_i64()
-                        .local_set(carry);
+                    if live {
+                        s.local_get(result)
+                            .i64_const(wide)
+                            .i64_shr_u()
+                            .i32_wrap_i64()
+                            .local_set(carry);
+                    }
                 } else if m == Rcl {
                     // (v << c) | (CF << (c - 1)) | (v >> (65 - c)), and CF the bit 64 - c.
                     s.local_get(v)
@@ -1114,15 +1133,17 @@ fn shift<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
                         .i64_shr_u()
                         .i64_or()
                         .local_set(result);
-                    s.local_get(v)
-                        .i64_const(W64.into())
-                        .local_get(rotated)
-                        .i64_sub()
-                        .i64_shr_u()
-                        .i32_wrap_i64()
-                        .i32_const(1)
-                        .i32_and()
-                        .local_set(carry);
+                    if live {
+                        s.local_get(v)
+                            .i64_const(W64.into())
+                            .local_get(rotated)
+                            .i64_sub()
+                            .i64_shr_u()
+                            .i32_wrap_i64()
+                            .i32_const(1)
+                            .i32_and()
+                            .local_set(carry);
+                    }
                 } else {
                     // (v >> c) | (CF << (64 - c)) | (v << (65 - c)), and CF the bit c - 1.
                     s.local_get(v)
@@ -1144,15 +1165,17 @@ fn shift<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
                         .i64_shl()
                         .i64_or()
                         .local_set(result);
-                    s.local_get(v)
-                        .local_get(rotated)
-                        .i64_const(1)
-                        .i64_sub()
-                        .i64_shr_u()
-                        .i32_wrap_i64()
-                        .i32_const(1)
-                        .i32_and()
-                        .local_set(carry);
+                    if live {
+                        s.local_get(v)
+                            .local_get(rotated)
+                            .i64_const(1)
+                            .i64_sub()
+                            .i64_shr_u()
+                            .i32_wrap_i64()
+                            .i32_const(1)
+                            .i32_and()
+                            .local_set(carry);
+                    }
                 }
             }
         }
@@ -1162,37 +1185,39 @@ fn shift<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
                 .i64_and()
                 .local_set(result);
         }
-        // OF is what a count of one would give, for every count (the reference CPU's answer where Intel
-        // leaves it undefined): from the value's top bit and the bit below it, its low bit, or CF.
-        let top = |s: &mut wasm_encoder::InstructionSink<'_>, bit: i64| {
-            s.local_get(v)
-                .i64_const(bit)
-                .i64_shr_u()
-                .i32_wrap_i64()
-                .i32_const(1)
-                .i32_and();
-        };
-        match m {
-            Sar => {
-                s.i32_const(0);
+        if live {
+            // OF is what a count of one would give, for every count (the reference CPU's answer where Intel
+            // leaves it undefined): from the value's top bit and the bit below it, its low bit, or CF.
+            let top = |s: &mut wasm_encoder::InstructionSink<'_>, bit: i64| {
+                s.local_get(v)
+                    .i64_const(bit)
+                    .i64_shr_u()
+                    .i32_wrap_i64()
+                    .i32_const(1)
+                    .i32_and();
+            };
+            match m {
+                Sar => {
+                    s.i32_const(0);
+                }
+                Shr => top(&mut s, wide - 1),
+                Ror => {
+                    top(&mut s, wide - 1);
+                    top(&mut s, 0);
+                    s.i32_xor();
+                }
+                Rcr => {
+                    top(&mut s, wide - 1);
+                    s.local_get(old_carry).i32_xor();
+                }
+                _ => {
+                    top(&mut s, wide - 1);
+                    top(&mut s, wide - 2);
+                    s.i32_xor();
+                }
             }
-            Shr => top(&mut s, wide - 1),
-            Ror => {
-                top(&mut s, wide - 1);
-                top(&mut s, 0);
-                s.i32_xor();
-            }
-            Rcr => {
-                top(&mut s, wide - 1);
-                s.local_get(old_carry).i32_xor();
-            }
-            _ => {
-                top(&mut s, wide - 1);
-                top(&mut s, wide - 2);
-                s.i32_xor();
-            }
+            s.local_set(overflow);
         }
-        s.local_set(overflow);
     }
     if matches!(m, Rcl | Rcr) {
         e.sink()
@@ -1204,6 +1229,9 @@ fn shift<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
             .local_set(result);
     }
     write(e, i, 0, mem, result);
+    if !live {
+        return;
+    }
     let rotate = matches!(m, Rol | Ror | Rcl | Rcr);
     let immediate = match i.iced.op_kind(1) {
         OpKind::Register => None,
@@ -1335,18 +1363,24 @@ fn multiply<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         e.local(ValType::I64),
         e.local(ValType::I32),
     );
+    let live = e.flags_live();
     if w == W64 {
         e.sink().local_get(a).local_get(b).i64_mul().local_set(low);
-        high_product(e, a, b, signed);
-        e.sink().local_set(high);
-        let mut s = e.sink();
-        s.local_get(high);
-        if signed {
-            s.local_get(low).i64_const((W64 - 1).into()).i64_shr_s();
-        } else {
-            s.i64_const(0);
+        // The high half: a result of the one-operand forms, else only what OF and CF are worked out from.
+        if one_operand || live {
+            high_product(e, a, b, signed);
+            e.sink().local_set(high);
         }
-        s.i64_ne().local_set(overflow);
+        if live {
+            let mut s = e.sink();
+            s.local_get(high);
+            if signed {
+                s.local_get(low).i64_const((W64 - 1).into()).i64_shr_s();
+            } else {
+                s.i64_const(0);
+            }
+            s.i64_ne().local_set(overflow);
+        }
     } else {
         if signed {
             sign_extend(e, a, w);
@@ -1361,27 +1395,31 @@ fn multiply<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
             .i64_const(mask(w))
             .i64_and()
             .local_set(low);
-        e.sink()
-            .local_get(product)
-            .i64_const(w.into())
-            .i64_shr_s()
-            .i64_const(mask(w))
-            .i64_and()
-            .local_set(high);
+        if one_operand || live {
+            e.sink()
+                .local_get(product)
+                .i64_const(w.into())
+                .i64_shr_s()
+                .i64_const(mask(w))
+                .i64_and()
+                .local_set(high);
+        }
         // The product does not fit the width: as unsigned, any high bit; as signed, the low half
         // sign-extended differs from it.
-        let extended = e.local(ValType::I64);
-        e.sink().local_get(low).local_set(extended);
-        if signed {
-            sign_extend(e, extended, w);
+        if live {
+            let extended = e.local(ValType::I64);
+            e.sink().local_get(low).local_set(extended);
+            if signed {
+                sign_extend(e, extended, w);
+            }
+            let mut s = e.sink();
+            if signed {
+                s.local_get(extended).local_get(product).i64_ne();
+            } else {
+                s.local_get(high).i64_const(0).i64_ne();
+            }
+            s.local_set(overflow);
         }
-        let mut s = e.sink();
-        if signed {
-            s.local_get(extended).local_get(product).i64_ne();
-        } else {
-            s.local_get(high).i64_const(0).i64_ne();
-        }
-        s.local_set(overflow);
     }
     if one_operand {
         if w == W8 {
@@ -1400,11 +1438,13 @@ fn multiply<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
     } else {
         write(e, i, 0, None, low);
     }
-    e.set_flags(Flags::Multiply {
-        width: w,
-        result: low,
-        overflow,
-    });
+    if live {
+        e.set_flags(Flags::Multiply {
+            width: w,
+            result: low,
+            overflow,
+        });
+    }
 }
 
 /// Stop with a divide error when the i32 on the stack is not zero.
@@ -1806,20 +1846,12 @@ fn bit_test<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         at
     });
     let value = read(e, i, 0, mem);
-    let (bit, carry) = (e.local(ValType::I64), e.local(ValType::I32));
+    let bit = e.local(ValType::I64);
     e.sink()
         .local_get(offset)
         .i64_const(i64::from(w - 1))
         .i64_and()
         .local_set(bit);
-    e.sink()
-        .local_get(value)
-        .local_get(bit)
-        .i64_shr_u()
-        .i32_wrap_i64()
-        .i32_const(1)
-        .i32_and()
-        .local_set(carry);
     if m != Mnemonic::Bt {
         let result = e.local(ValType::I64);
         let mut s = e.sink();
@@ -1832,6 +1864,17 @@ fn bit_test<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         s.local_set(result);
         write(e, i, 0, mem, result);
     }
-    let each = each_with(e, &[(Flag::C, carry)]);
-    e.set_flags(Flags::Each(each));
+    if e.flags_live() {
+        let carry = e.local(ValType::I32);
+        e.sink()
+            .local_get(value)
+            .local_get(bit)
+            .i64_shr_u()
+            .i32_wrap_i64()
+            .i32_const(1)
+            .i32_and()
+            .local_set(carry);
+        let each = each_with(e, &[(Flag::C, carry)]);
+        e.set_flags(Flags::Each(each));
+    }
 }
