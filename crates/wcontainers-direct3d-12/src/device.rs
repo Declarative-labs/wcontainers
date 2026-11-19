@@ -32,7 +32,11 @@ use crate::list::{
 };
 use crate::resource::{self, HeapType, ResourceDesc};
 use crate::root::{RootSignature, deserialize};
-use crate::state::{Blend, DepthStencil, InputElement, Raster, resolve_offsets, vertex_format};
+use crate::state::{
+    Blend, DepthStencil, FILL_MODE_WIREFRAME, InputElement, Raster, TOPOLOGY_TYPE_LINE,
+    TOPOLOGY_TYPE_PATCH, TOPOLOGY_TYPE_POINT, TOPOLOGY_TYPE_TRIANGLE, TOPOLOGY_TYPE_UNDEFINED,
+    resolve_offsets, vertex_format,
+};
 use pull::{Helpers, PulledKey, VertexProgram};
 
 macro_rules! id {
@@ -972,7 +976,9 @@ impl<B: Backend> Device<B> {
         )?;
         let tessellated = !desc.hs.is_empty();
         // Hull and domain shaders come together, with patches.
-        if tessellated != !desc.ds.is_empty() || tessellated != (desc.topology_type == 4) {
+        if tessellated != !desc.ds.is_empty()
+            || tessellated != (desc.topology_type == TOPOLOGY_TYPE_PATCH)
+        {
             return Err(Error::Invalid(
                 "hull and domain shaders without each other or without patches",
             ));
@@ -1001,6 +1007,14 @@ impl<B: Backend> Device<B> {
             Some((c, k)) => (Some(c), Some(k)),
             None => (None, None),
         };
+        // Alpha-antialiased lines (multisampling off) are drawn as the stage helper's covered
+        // rectangles, the pixel program multiplying target 0's alpha by the coverage
+        // (`AntialiasedLinesAsQuads`).
+        let antialiased = desc.raster.antialiased_line && !desc.raster.multisample;
+        let antialiased_lines = antialiased
+            && desc.topology_type == TOPOLOGY_TYPE_LINE
+            && !has_geometry
+            && desc.stream_output.is_none();
         // WebGPU and GLSL ES require the stages to agree on interpolation, which in Direct3D the
         // pixel shader alone chooses: the vertex shader writes its outputs so.
         let mut interpolation: Vec<(u32, Interpolation)> = ps
@@ -1025,13 +1039,34 @@ impl<B: Backend> Device<B> {
         let mut vs = self.convert(desc.vs, ShaderStage::Vertex, vs_key.clone())?;
         // Cull distances, which the back ends lack, are drawn through the stage helper.
         let culled = !has_geometry && geometry::writes_cull_distances(&vs);
-        let staged = has_geometry || desc.stream_output.is_some() || culled;
+        // The vertex stage alone runs as compute and the stage helper's pass-through draws.
+        let vertex_alone = culled || antialiased_lines;
+        let lines_key = match antialiased_lines {
+            true => {
+                let (Some(p), Some(key)) = (&mut ps, &mut ps_key) else {
+                    return Err(Error::NotImplemented(
+                        "alpha-antialiased lines without a pixel shader",
+                    ));
+                };
+                key.flags |= VariantFlags::LINE_COVERAGE;
+                key.linked = LinkedValues {
+                    location: linked_location(
+                        vs.reflection.outputs.iter().chain(&p.reflection.inputs),
+                    ),
+                    clip_distances: 0,
+                };
+                *p = self.convert(desc.ps, ShaderStage::Fragment, key.clone())?;
+                Some(key.clone())
+            }
+            false => None,
+        };
+        let staged = has_geometry || desc.stream_output.is_some() || vertex_alone;
         // Clip distances the back end lacks: the vertex program passes them past both programs'
         // values and the pixel program applies them (`ClipDistanceInShader`). A program the
         // stage helper makes is checked where it is drawn, below.
         let clip_distances = clip_distances(&vs.reflection.outputs);
         let mut slow_paths = Vec::new();
-        let drawn_directly = !has_geometry && !culled;
+        let drawn_directly = !has_geometry && !vertex_alone;
         if clip_distances != 0
             && drawn_directly
             && !self.backend.caps().has(Features::CLIP_DISTANCE)
@@ -1093,6 +1128,7 @@ impl<B: Backend> Device<B> {
                 &interpolation,
                 desc.stream_output.as_ref(),
                 ps.as_ref().map(|p| p.reflection.inputs.as_slice()),
+                lines_key.as_ref(),
             )?),
             false => None,
         };
@@ -1132,7 +1168,7 @@ impl<B: Backend> Device<B> {
             Some(m) => {
                 // Without a geometry stage the draw after the stream output binds the vertex
                 // stage's sets too; after culling, the pass-through draws.
-                let stages = match m.shader.is_some() || culled {
+                let stages = match m.shader.is_some() || vertex_alone {
                     true => StageSet::COMPUTE,
                     false => StageSet::COMPUTE | StageSet::VERTEX,
                 };
@@ -1187,37 +1223,45 @@ impl<B: Backend> Device<B> {
         // With no topology type (`UNDEFINED`) the draws' topologies decide, and nothing is built
         // ahead. A geometry stage draws the primitives it makes.
         let topology = match desc.topology_type {
-            0 => None,
-            1 => Some(Topology::PointList),
-            2 => Some(Topology::LineList),
-            3 => Some(Topology::TriangleList),
+            TOPOLOGY_TYPE_UNDEFINED => None,
+            TOPOLOGY_TYPE_POINT => Some(Topology::PointList),
+            TOPOLOGY_TYPE_LINE => Some(Topology::LineList),
+            TOPOLOGY_TYPE_TRIANGLE => Some(Topology::TriangleList),
             // The domain stage's output, below.
-            4 => None,
+            TOPOLOGY_TYPE_PATCH => None,
             _ => return Err(Error::Invalid("unknown primitive topology type")),
         };
         let topology = made.as_ref().and_then(|m| m.output).or(topology);
-        let raster = desc.raster.block(
+        let mut raster = desc.raster.block(
             caps,
             desc.sample_mask,
             targets.samples,
-            matches!(
-                topology,
-                Some(Topology::TriangleList | Topology::TriangleStrip)
-            ),
+            !antialiased_lines
+                && matches!(
+                    topology,
+                    Some(Topology::TriangleList | Topology::TriangleStrip)
+                ),
         )?;
+        // Lines are not culled, and their rectangles are filled.
+        if antialiased_lines {
+            raster.cull = wcontainers_gpu::CullMode::None;
+            raster.fill = wcontainers_gpu::FillMode::Solid;
+        }
         let depth_stencil = desc.depth_stencil.block(targets.depth_stencil.is_some())?;
         let depth_stencil_bound = match targets.depth_stencil {
             None => Some(desc.depth_stencil.block(true)?),
             Some(_) => None,
         };
-        // Alpha-antialiased lines need the stage helper's covered rectangles
-        // (`AntialiasedLinesAsQuads`), which the front does not route yet.
+        // Other alpha-antialiased lines the stage helper's line route does not take.
         let draws_lines = !matches!(
             topology,
             Some(Topology::TriangleList | Topology::TriangleStrip | Topology::PointList)
-        ) || desc.raster.fill == 2;
-        if draws_lines && desc.raster.antialiased_line && !desc.raster.multisample {
-            return Err(Error::NotImplemented("alpha-antialiased lines"));
+        ) || desc.raster.fill == FILL_MODE_WIREFRAME;
+        if draws_lines && antialiased && !antialiased_lines {
+            return Err(Error::NotImplemented(
+                "alpha-antialiased lines after a geometry or tessellation stage or stream output, \
+                 or of wireframe triangles",
+            ));
         }
         // Direct3D 12 writes the bits of an output of another type than its target, which the
         // back ends' pipelines do not take: the program writes them as the target's type. After
@@ -1229,7 +1273,7 @@ impl<B: Backend> Device<B> {
                 *p = self.convert(desc.ps, ShaderStage::Fragment, key.clone())?;
             }
         }
-        let vs_shader = match made.as_ref().filter(|m| m.shader.is_some() || culled) {
+        let vs_shader = match made.as_ref().filter(|m| m.shader.is_some() || vertex_alone) {
             Some(geometry::Made {
                 domain: Some(domain),
                 late: None,
@@ -1248,8 +1292,8 @@ impl<B: Backend> Device<B> {
             && !self.backend.caps().has(Features::CLIP_DISTANCE)
         {
             return Err(Error::NotImplemented(
-                "clip distances from a geometry, domain or culling stage without the back end's \
-                 (ClipDistanceInShader)",
+                "clip distances from a geometry, domain, culling or antialiased line stage without \
+                 the back end's (ClipDistanceInShader)",
             ));
         }
         let vs_shader = self.backend.create_shader(vs_shader)?;
@@ -1304,8 +1348,12 @@ impl<B: Backend> Device<B> {
                 true => Some(self.per_primitive(&depth_stencil, &raster, &vs.modules[0])?),
                 false => None,
             };
-        let linked = match &made {
-            Some(m) if m.shader.is_some() => m.linked,
+        let linked = match (&made, &lines_key) {
+            (_, Some(key)) => Link {
+                flags: VariantFlags::LINE_COVERAGE,
+                values: key.linked,
+            },
+            (Some(m), None) if m.shader.is_some() => m.linked,
             _ => Link {
                 flags: vs_typed.flags & VariantFlags::CLIP_DISTANCE,
                 values: vs_typed.linked,

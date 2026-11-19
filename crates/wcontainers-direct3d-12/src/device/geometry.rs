@@ -44,6 +44,9 @@ pub(super) struct Geometry<B: Backend> {
     /// (`SV_ViewportArrayIndex`): the draw after it is drawn once per layer of the bound views
     /// (`LayerSplit`) and per viewport (`MultiViewportSplit`).
     pub selects: Selects,
+    /// The stage helper draws the vertex stage's lines alpha-antialiased
+    /// (`AntialiasedLinesAsQuads`), for the first viewport's size.
+    pub antialiased_lines: bool,
 }
 
 /// Whether a geometry stage writes a layer and a viewport, and the bytes of the pass-through
@@ -161,7 +164,8 @@ impl<B: Backend> Device<B> {
     /// The stages of a pipeline with a geometry shader `gs` (or none, empty), stream output `so`,
     /// or hull and domain shaders `hs` and `ds` (or none): `vs` converted with every input of
     /// `inputs` fetched in the program, the last stage before the pixel stage writing its
-    /// outputs as that interpolates them, and the stage helper made from them.
+    /// outputs as that interpolates them, and the stage helper made from them; with `lines`, the
+    /// pixel program's key, `vs` alone drawing its lines alpha-antialiased.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn geometry_stage(
         &mut self,
@@ -173,6 +177,7 @@ impl<B: Backend> Device<B> {
         interpolation: &[(u32, Interpolation)],
         so: Option<&(StreamOutput, u32)>,
         pixel_inputs: Option<&[StageValue]>,
+        lines: Option<&VariantKey>,
     ) -> Result<Made<B>, Error> {
         if !self.backend.caps().has(Features::COMPUTE) {
             return Err(Error::NotImplemented(
@@ -268,6 +273,8 @@ impl<B: Backend> Device<B> {
         };
         let last = late.as_ref().or(shader.as_ref());
         let output = match last.map(|s| &s.reflection.extras) {
+            // The line route draws rectangles of two triangles.
+            None if lines.is_some() => Some(Topology::TriangleList),
             None => None,
             Some(StageExtras::Geometry {
                 output_vertices, ..
@@ -285,8 +292,10 @@ impl<B: Backend> Device<B> {
             }),
             Some(_) => return Err(Error::Invalid("a shader stage without its declarations")),
         };
-        let stages = match (&shader, &domain) {
-            (Some(hull), Some(domain)) => Stages::tessellated_with(
+        let lines = lines.filter(|_| direct);
+        let stages = match (&shader, &domain, lines) {
+            (_, _, Some(pixel)) => Stages::antialiased_lines(&mut self.backend, &vertex, pixel),
+            (Some(hull), Some(domain), None) => Stages::tessellated_with(
                 &mut self.backend,
                 &vertex,
                 hull,
@@ -358,6 +367,7 @@ impl<B: Backend> Device<B> {
                 after_domain: (tessellated && (late.is_some() || so.is_some()))
                     .then(|| late.as_ref().map(Helpers::of)),
                 selects,
+                antialiased_lines: lines.is_some(),
             },
             vertex,
             shader,
@@ -450,11 +460,12 @@ impl<B: Backend> Replay<B> {
         let fetch = fetch?;
         let r = d.render_mut(pid);
         let g = r.geometry.as_ref().expect("a geometry stage");
-        let (helpers, has_geometry, streamed, rasterized) = (
+        let (helpers, has_geometry, streamed, rasterized, antialiased_lines) = (
             g.helpers.clone(),
             g.layout.is_some(),
             g.streamed,
             g.rasterized,
+            g.antialiased_lines,
         );
         let (middle, middle_helpers) = g.middle.clone();
         let domain = g.domain.clone();
@@ -683,6 +694,15 @@ impl<B: Backend> Replay<B> {
                     geometry_sets: late_sets.each_ref().map(Option::as_ref),
                 },
             ),
+            None if antialiased_lines => match self.viewports.first() {
+                Some(v) => stages.run_antialiased_lines(
+                    &mut d.backend,
+                    &draw,
+                    [f32::from_bits(v.width), f32::from_bits(v.height)],
+                ),
+                // With no viewport nothing is rasterised.
+                None => Ok(None),
+            },
             None => stages.run(&mut d.backend, &draw),
         };
         let tessellated = match d.render_mut(pid).geometry.as_mut() {

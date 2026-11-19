@@ -15,6 +15,17 @@ use wcontainers_shaders::stage::{
 
 use crate::Error;
 
+/// `D3D12_PRIMITIVE_TOPOLOGY_TYPE_UNDEFINED`, `_POINT`, `_LINE`, `_TRIANGLE` and `_PATCH`.
+pub const TOPOLOGY_TYPE_UNDEFINED: u32 = 0;
+pub const TOPOLOGY_TYPE_POINT: u32 = 1;
+pub const TOPOLOGY_TYPE_LINE: u32 = 2;
+pub const TOPOLOGY_TYPE_TRIANGLE: u32 = 3;
+pub const TOPOLOGY_TYPE_PATCH: u32 = 4;
+
+/// `D3D12_FILL_MODE_WIREFRAME` and `_SOLID`.
+pub const FILL_MODE_WIREFRAME: u32 = 2;
+pub const FILL_MODE_SOLID: u32 = 3;
+
 /// `D3D12_RENDER_TARGET_BLEND_DESC`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TargetBlend {
@@ -274,8 +285,8 @@ impl Raster {
         triangles: bool,
     ) -> Result<RasterDesc, Error> {
         let fill = match self.fill {
-            2 => FillMode::Line,
-            3 => FillMode::Solid,
+            FILL_MODE_WIREFRAME => FillMode::Line,
+            FILL_MODE_SOLID => FillMode::Solid,
             _ => return Err(Error::Invalid("unknown fill mode")),
         };
         if fill == FillMode::Line && !caps.has(Features::POLYGON_MODE) {

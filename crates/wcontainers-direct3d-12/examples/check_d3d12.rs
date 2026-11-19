@@ -14,6 +14,7 @@
 //!   check_d3d12 answers <out.txt>   (results of calls at the edges of the API, for compare-features)
 //!   check_d3d12 cases <out.txt>   (the pass bar's cases, each in a process of its own; check/cases.rs)
 //!   check_d3d12 compare-cases <real.txt> <ours.txt>
+//!   check_d3d12 compare-case-pictures <real dir> <ours dir> [<case>]   (the pictures cases write)
 //! It draws with the rig's triangle shaders.
 
 #[cfg(windows)]
@@ -32,53 +33,27 @@ fn main() -> windows::core::Result<()> {
             let a = std::fs::read(&args[2]).expect("the first picture");
             let b = std::fs::read(&args[3]).expect("the second picture");
             let tolerance: u8 = args[4].parse().expect("a tolerance");
-            assert_eq!(a.len(), b.len(), "pictures of different sizes");
-            let largest = a
+            std::process::exit(i32::from(!compare_pictures(&a, &b, tolerance)));
+        }
+        Some("compare-case-pictures") => {
+            let mut same = true;
+            let named = args.get(4);
+            for (name, tolerance) in cases::PICTURES
                 .iter()
-                .zip(&b)
-                .map(|(x, y)| x.abs_diff(*y))
-                .max()
-                .unwrap_or(0);
-            let beyond = a
-                .chunks(4)
-                .zip(b.chunks(4))
-                .filter(|(x, y)| {
-                    x.iter()
-                        .zip(y.iter())
-                        .any(|(p, q)| p.abs_diff(*q) > tolerance)
-                })
-                .count();
-            println!(
-                "{beyond} of {} pixels beyond {tolerance}, largest difference {largest}",
-                a.len() / 4
-            );
-            if beyond > 0 {
-                // Where they differ, one character per 4 by 4 block; then the first differing pixel.
-                let side = ((a.len() / 4) as f64).sqrt() as usize;
-                for by in 0..side / 4 {
-                    let line: String = (0..side / 4)
-                        .map(|bx| {
-                            let differs = (0..16).any(|i| {
-                                let p = ((by * 4 + i / 4) * side + bx * 4 + i % 4) * 4;
-                                (0..4).any(|c| a[p + c].abs_diff(b[p + c]) > tolerance)
-                            });
-                            if differs { '#' } else { '.' }
-                        })
-                        .collect();
-                    println!("{line}");
+                .filter(|(name, _)| named.is_none_or(|n| n == name))
+            {
+                let file = format!("{name}.{}", cases::PICTURE_EXTENSION);
+                let read = |dir: &String| std::fs::read(std::path::Path::new(dir).join(&file));
+                print!("{name}: ");
+                match (read(&args[2]), read(&args[3])) {
+                    (Ok(a), Ok(b)) => same &= compare_pictures(&a, &b, *tolerance),
+                    _ => {
+                        println!("a picture is missing");
+                        same = false;
+                    }
                 }
-                let p = (0..a.len() / 4)
-                    .find(|p| (0..4).any(|c| a[p * 4 + c].abs_diff(b[p * 4 + c]) > tolerance))
-                    .unwrap();
-                println!(
-                    "pixel {} {}: {:?} and {:?}",
-                    p % side,
-                    p / side,
-                    &a[p * 4..p * 4 + 4],
-                    &b[p * 4..p * 4 + 4]
-                );
             }
-            std::process::exit(i32::from(beyond > 0));
+            std::process::exit(i32::from(!same));
         }
         Some("features") => {
             std::fs::write(&args[2], features()?).expect("writing the answers");
@@ -144,6 +119,59 @@ fn main() -> windows::core::Result<()> {
         ),
     }
     Ok(())
+}
+
+/// Prints how many pixels of pictures `a` and `b` differ beyond `tolerance` in a channel, and where,
+/// and returns whether none does.
+#[cfg(windows)]
+fn compare_pictures(a: &[u8], b: &[u8], tolerance: u8) -> bool {
+    assert_eq!(a.len(), b.len(), "pictures of different sizes");
+    let largest = a
+        .iter()
+        .zip(b)
+        .map(|(x, y)| x.abs_diff(*y))
+        .max()
+        .unwrap_or(0);
+    let beyond = a
+        .chunks(4)
+        .zip(b.chunks(4))
+        .filter(|(x, y)| {
+            x.iter()
+                .zip(y.iter())
+                .any(|(p, q)| p.abs_diff(*q) > tolerance)
+        })
+        .count();
+    println!(
+        "{beyond} of {} pixels beyond {tolerance}, largest difference {largest}",
+        a.len() / 4
+    );
+    if beyond > 0 {
+        // Where they differ, one character per 4 by 4 block; then the first differing pixel.
+        let side = ((a.len() / 4) as f64).sqrt() as usize;
+        for by in 0..side / 4 {
+            let line: String = (0..side / 4)
+                .map(|bx| {
+                    let differs = (0..16).any(|i| {
+                        let p = ((by * 4 + i / 4) * side + bx * 4 + i % 4) * 4;
+                        (0..4).any(|c| a[p + c].abs_diff(b[p + c]) > tolerance)
+                    });
+                    if differs { '#' } else { '.' }
+                })
+                .collect();
+            println!("{line}");
+        }
+        let p = (0..a.len() / 4)
+            .find(|p| (0..4).any(|c| a[p * 4 + c].abs_diff(b[p * 4 + c]) > tolerance))
+            .unwrap();
+        println!(
+            "pixel {} {}: {:?} and {:?}",
+            p % side,
+            p / side,
+            &a[p * 4..p * 4 + 4],
+            &b[p * 4..p * 4 + 4]
+        );
+    }
+    beyond == 0
 }
 
 /// Prints each answer of ours beyond real Direct3D 12's (every differing one with `all`) and returns whether none of ours promises more than real

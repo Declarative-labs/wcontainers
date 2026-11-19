@@ -3,8 +3,9 @@
 //! (buffers written by a copy, a storage view and the CPU; identical textures at one offset), copy
 //! and compute queues waiting on each other and on a late CPU signal, binary occlusion resolved,
 //! read back and used by `SetPredication`, `ExecuteIndirect`, pipeline and stream output
-//! statistics, geometry shaders, layers a geometry shader names, timestamps, and views a vertex
-//! shader reads in the program.
+//! statistics, geometry shaders, layers a geometry shader names, timestamps, views a vertex
+//! shader reads in the program, and alpha-antialiased lines (whose picture is compared within
+//! [`PICTURES`]' tolerance, as their filter is the implementation's own).
 
 use std::cell::Cell;
 use std::fmt::Write;
@@ -81,7 +82,20 @@ pub const CASES: &[&str] = &[
     "no-scissors",
     "early-per-primitive",
     "layers",
+    ANTIALIASED_LINES,
 ];
+
+/// The antialiased lines case's name.
+const ANTIALIASED_LINES: &str = "antialiased-lines";
+
+/// The cases writing a picture (`<name>.rgba` in the working directory), each compared with
+/// real Direct3D 12's within its tolerance: Direct3D leaves the antialiased line's filter to the
+/// implementation (the RTX 3080's and WARP's differ by up to 128 of 255), so a quarter of the
+/// range.
+pub const PICTURES: &[(&str, u8)] = &[(ANTIALIASED_LINES, u8::MAX / 4)];
+
+/// The extension of a case's picture file.
+pub const PICTURE_EXTENSION: &str = "rgba";
 
 /// Runs case `name` and returns its line of results.
 pub fn run(name: &str) -> Result<String> {
@@ -118,6 +132,7 @@ pub fn run(name: &str) -> Result<String> {
             "no-scissors" => no_scissors(&c),
             "early-per-primitive" => early_per_primitive(&c),
             "layers" => layers(&c),
+            ANTIALIASED_LINES => antialiased_lines(&c),
             _ => panic!("no case {name}"),
         }
     }
@@ -2664,6 +2679,124 @@ unsafe fn layers(c: &Ctx) -> Result<String> {
             .unwrap();
         }
         Ok(out)
+    }
+}
+
+/// The vertices of the antialiased lines case: position (x, y, z) and colour (r, g, b, a).
+const LINE_VERTEX_FLOATS: usize = 7;
+
+/// Alpha-antialiased lines (`AntialiasedLineEnable`, multisampling off) blended over the target:
+/// a line list at many slopes and lengths, ends on and between pixel centres, then a line strip,
+/// with back faces culled (lines are never culled). Writes the picture for [`PICTURES`].
+unsafe fn antialiased_lines(c: &Ctx) -> Result<String> {
+    unsafe {
+        let layout = [
+            element(s!("POSITION"), DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, None),
+            element(
+                s!("COLOR"),
+                DXGI_FORMAT_R32G32B32A32_FLOAT,
+                0,
+                D3D12_APPEND_ALIGNED_ELEMENT,
+                None,
+            ),
+        ];
+        let root = c.root(
+            &[],
+            D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+        )?;
+        let code = |b: &[u8]| D3D12_SHADER_BYTECODE {
+            pShaderBytecode: b.as_ptr().cast(),
+            BytecodeLength: b.len(),
+        };
+        let mut blend = D3D12_BLEND_DESC::default();
+        blend.RenderTarget[0] = D3D12_RENDER_TARGET_BLEND_DESC {
+            BlendEnable: true.into(),
+            SrcBlend: D3D12_BLEND_SRC_ALPHA,
+            DestBlend: D3D12_BLEND_INV_SRC_ALPHA,
+            BlendOp: D3D12_BLEND_OP_ADD,
+            SrcBlendAlpha: D3D12_BLEND_ONE,
+            DestBlendAlpha: D3D12_BLEND_INV_SRC_ALPHA,
+            BlendOpAlpha: D3D12_BLEND_OP_ADD,
+            RenderTargetWriteMask: D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8,
+            ..Default::default()
+        };
+        let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
+            pRootSignature: transmute_copy(&root),
+            VS: code(own!("vs_line")),
+            PS: code(own!("ps_line")),
+            BlendState: blend,
+            SampleMask: u32::MAX,
+            RasterizerState: D3D12_RASTERIZER_DESC {
+                FillMode: D3D12_FILL_MODE_SOLID,
+                CullMode: D3D12_CULL_MODE_BACK,
+                DepthClipEnable: true.into(),
+                AntialiasedLineEnable: true.into(),
+                ..Default::default()
+            },
+            InputLayout: D3D12_INPUT_LAYOUT_DESC {
+                pInputElementDescs: layout.as_ptr(),
+                NumElements: layout.len() as u32,
+            },
+            PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE,
+            NumRenderTargets: 1,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            ..Default::default()
+        };
+        desc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+        let pso: ID3D12PipelineState = c.device.CreateGraphicsPipelineState(&desc)?;
+        // Lines from the centre out to a ring, every other end on a pixel centre, in colours of
+        // 0, 0.5 and 1 per channel.
+        let size = SIZE as f32;
+        let pixel = 2.0 / size;
+        let spokes = 12;
+        let mut vertices = Vec::new();
+        for i in 0..spokes {
+            let turn = i as f32 * std::f32::consts::TAU / spokes as f32;
+            let reach = if i % 2 == 0 { 0.8 } else { 0.55 };
+            let half = if i % 2 == 0 { pixel / 2.0 } else { 0.0 };
+            let colour = [(i % 3) as f32 / 2.0, ((i / 3) % 3) as f32 / 2.0, 1.0, 0.9];
+            for (x, y) in [
+                (half, half),
+                (reach * turn.cos() + half, reach * turn.sin() + half),
+            ] {
+                vertices.extend([x, y, 0.5]);
+                vertices.extend(colour);
+            }
+        }
+        let strip_from = vertices.len() / LINE_VERTEX_FLOATS;
+        for (x, y) in [(-0.9, -0.9), (-0.3, -0.75), (0.2, -0.95), (0.9, -0.6)] {
+            vertices.extend([x, y, 0.5, 1.0, 0.5, 0.0, 1.0]);
+        }
+        let count = vertices.len() / LINE_VERTEX_FLOATS;
+        let stride = (LINE_VERTEX_FLOATS * size_of::<f32>()) as u32;
+        let bytes: Vec<u8> = vertices.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let buffer = c.upload(&bytes)?;
+        let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        let (target, _heap, _rtv) = c.target(&list)?;
+        list.SetGraphicsRootSignature(&root);
+        list.SetPipelineState(&pso);
+        list.IASetVertexBuffers(
+            0,
+            Some(&[D3D12_VERTEX_BUFFER_VIEW {
+                BufferLocation: buffer.GetGPUVirtualAddress(),
+                SizeInBytes: bytes.len() as u32,
+                StrideInBytes: stride,
+            }]),
+        );
+        list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+        list.DrawInstanced(strip_from as u32, 1, 0, 0);
+        list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINESTRIP);
+        list.DrawInstanced((count - strip_from) as u32, 1, strip_from as u32, 0);
+        c.run(&list)?;
+        let pixels = c.pixels(&target, D3D12_RESOURCE_STATE_RENDER_TARGET)?;
+        let file = format!("{ANTIALIASED_LINES}.{PICTURE_EXTENSION}");
+        std::fs::write(&file, &pixels).expect("writing the picture");
+        // The picture is compared within a tolerance; the line says only that it was drawn.
+        let lit = pixels.chunks(4).filter(|p| p[..3] != [0, 0, 0]).count() > 0;
+        Ok(format!("drawn {lit}, picture {file}"))
     }
 }
 

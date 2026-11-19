@@ -12,7 +12,7 @@ copy /y %E%\dxgi.dll %C%\ours\ >nul
 for %%w in (real ours) do (
   pushd %C%\%%w
   rem A mode that fails writes no file, and the comparison then fails on its absence.
-  del /q draw.rgba features.txt outputs.txt answers.txt cases.txt 2>nul
+  del /q *.rgba features.txt outputs.txt answers.txt cases.txt 2>nul
   check_d3d12 draw draw.rgba
   check_d3d12 features features.txt
   check_d3d12 outputs outputs.txt
@@ -32,3 +32,5 @@ echo answers:
 %C%\real\check_d3d12 compare-features %C%\real\answers.txt %C%\ours\answers.txt all
 echo cases:
 %C%\real\check_d3d12 compare-cases %C%\real\cases.txt %C%\ours\cases.txt
+echo case pictures:
+%C%\real\check_d3d12 compare-case-pictures %C%\real %C%\ours
