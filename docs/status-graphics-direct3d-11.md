@@ -47,6 +47,9 @@ to other tracks remain.
   Tests section's claims corrected. Not done: atg-simplemsaa_pc's 4 edge pixels at the sample
   level, building ahead's unused guesses (What comes next).
 - Literals: the front's warnings use its one prefix; the check passes (Literals).
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (21.7 GB) and the Mac's
+  scratch mac-target (1.0 GB, from `cargo clippy -j 2` of the front alone) were deleted; nothing
+  was installed on the desktop.
 - Results (Measurements): Wine's d3d11 file 143 of 165 (was 142), d3d10core 109 of 111 (was
   107), scenes 135, 0, 4, WebGL 2 scenes 2, 0, 137, the three programs of the pass bar matching;
   the whole library suite on WebGL 2 for the first time (com 14 of 15, programs 1 of 34, all the
