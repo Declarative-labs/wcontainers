@@ -2562,11 +2562,13 @@ dependencies = [
  "arm-sysregs",
  "postcard",
  "safe-mmio",
+ "serde",
  "spin",
  "talc",
  "wcontainers-abi",
  "wcontainers-arm64",
  "wcontainers-guest-cpu",
+ "wcontainers-kernel",
  "zerocopy",
 ]
 

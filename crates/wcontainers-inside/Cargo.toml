@@ -13,7 +13,11 @@ wcontainers-abi.workspace = true
 wcontainers-arm64 = { path = "../wcontainers-arm64", default-features = false }
 # The position map, which stops are resolved with.
 wcontainers-guest-cpu = { path = "../wcontainers-guest-cpu", default-features = false }
-# The position map as the link carries it.
+# The kernel, which runs inside.
+wcontainers-kernel = { path = "../wcontainers-kernel" }
+# The container's files and start as the link carries them.
+serde = { version = "1.0.229", default-features = false, features = ["derive", "alloc"] }
+# The position map, the container's files and its start as the link carries them.
 postcard = { version = "1.1.3", default-features = false, features = ["alloc"] }
 # The link's messages as words.
 zerocopy.workspace = true
