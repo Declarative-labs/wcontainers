@@ -246,10 +246,10 @@ impl Injecting {
             injections,
             at: moments_apart(seed ^ SAVES_SALT, injections.saves, injections.save_gap),
             signal,
-            signal_at: moments(seed ^ 0x5197, signals),
+            signal_at: moments(seed ^ SIGNALS_SALT, signals),
             // Notices come close together, so that a short program meets many of them.
-            notice_at: moments_apart(seed ^ 0x6e07, injections.notices, 10),
-            notices: StdRng::seed_from_u64(seed ^ 0x6e08),
+            notice_at: moments_apart(seed ^ NOTICES_SALT, injections.notices, NOTICES_APART),
+            notices: StdRng::seed_from_u64(seed ^ NOTICE_KINDS_SALT),
             turns: 0,
             saved: 0,
             report: None,
@@ -743,9 +743,9 @@ impl System for TestHost {
     /// seed. The speed moves the points where the scheduler switches threads, so seeds give
     /// different interleavings.
     fn ran(&mut self, progress: u64) {
-        let picoseconds = self.schedule.random_range(500..1500);
-        let step =
-            progress.saturating_mul(picoseconds) / 1000 + self.schedule.random_range(500..1500);
+        let picoseconds = self.schedule.random_range(UNIT_PICOSECONDS);
+        let step = progress.saturating_mul(picoseconds) / PICOSECONDS_PER_NANOSECOND
+            + self.schedule.random_range(TURN_NANOSECONDS);
         if let Some(now) = &mut self.virtual_now {
             *now += step;
         }
@@ -765,7 +765,7 @@ impl System for TestHost {
             .backend
             .as_ref()
             .is_some_and(|backend| backend.waiting())
-            && self.schedule.random_bool(0.5)
+            && self.schedule.random_bool(ANSWER_NOW)
         {
             deliver(kernel, cpu, self);
         }
@@ -891,10 +891,25 @@ impl System for TestHost {
     }
 }
 
+/// What one turn on the CPU side takes on a repeatable clock: picoseconds per unit of progress and
+/// nanoseconds more, each drawn from these.
+const UNIT_PICOSECONDS: std::ops::Range<u64> = 500..1500;
+const TURN_NANOSECONDS: std::ops::Range<u64> = 500..1500;
+const PICOSECONDS_PER_NANOSECOND: u64 = 1000;
+
+/// How likely an answer the backend owes arrives after a turn, each time one is owed.
+const ANSWER_NOW: f64 = 0.5;
+
 /// Mixed into a run's seed for the schedule's choices and the moments of saves, so that each
 /// draws apart from the host's own randomness.
 const SCHEDULE_SALT: u64 = 0x5eed;
 const SAVES_SALT: u64 = 0x5a7e;
+/// Mixed into a run's seed for the moments of signals and of notices, and for the notices' kinds.
+const SIGNALS_SALT: u64 = 0x5197;
+const NOTICES_SALT: u64 = 0x6e07;
+const NOTICE_KINDS_SALT: u64 = 0x6e08;
+/// The most turns between two notices.
+const NOTICES_APART: u64 = 10;
 
 /// The longest the driver waits for the outside when nothing else can happen.
 const NETWORK_PATIENCE: Duration = Duration::from_secs(10);
