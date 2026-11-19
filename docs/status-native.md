@@ -99,6 +99,11 @@ Results (M5 Max, macOS 27.2):
   resolution (0.9 s, load 11 to 44).
 - Routing test 1,100,822 words, structure test 1,100,823 words (FloatStatus 96 in each); floor 21 cases and 1
   measurement, 0 failed (programs built soft-float); literal check exit 0.
+- The whole suite of what this track owns, once before the push (02:18 to 02:21, load 5 to 10; scratch
+  native/n3r1/suite.log): guest-cpu, arm64, the inside and the monitor (its translate test; floor 21 cases and
+  1 measurement, 0 failed, stop delay median 1.17 µs; carry; native 32,562 cases, 0 failing; interrupts 2500,
+  0 failed; the behaviour probe 279 forms, 38,916 placements, 0 forms of 16 bytes or fewer differ, 44 larger
+  ones differ as before), the translator with `native`, the literal check's tests and the check (exit 0).
 
 What comes next for N3, in order (everything this track can do without R1 and R3 first):
 1. The guest's vector state for `Cpu::registers` and `set_registers` and thread switches: the inside's code no
