@@ -36,6 +36,7 @@ mod macos {
     use std::time::Instant;
 
     use linux_raw_sys::general::{S_IRGRP, S_IROTH, S_IRWXU, S_IXGRP, S_IXOTH};
+    use wcontainers_guest_cpu::reason::CODE_CHANGED_AFTER_IT_RAN;
     use wcontainers_inside::container::{File, FileKind, Starting};
     use wcontainers_kernel_test::driver::exit_code;
     use wcontainers_kernel_test::reference;
@@ -58,6 +59,10 @@ mod macos {
 
     /// This track's program that writes code and announces it.
     const CODE: &str = "code";
+
+    /// The changes `code` makes to code that ran: one announced, one announced by a child sharing the memory, and
+    /// one the kernel learns of when the page stops being executable.
+    const CODE_CHANGES: u64 = 3;
 
     /// The getppid calls of the exit count (ten to the fifth, as the independent check asks), and twice as many.
     const GETPPID_CALLS: u64 = 10_u64.pow(5);
@@ -171,8 +176,24 @@ mod macos {
         print!("{FORKS}: {}", String::from_utf8_lossy(&native.host.stdout));
         against_reference(FORKS, &native);
         let code = compile(OWN_GUEST, CODE, CLibrary::Musl);
-        let (native, _) = both(seed, CODE, &code, &[]);
+        let (native, wasm) = both(seed, CODE, &code, &[]);
         print!("{CODE}: {}", String::from_utf8_lossy(&native.host.stdout));
+        let changed = |outcome: &Outcome| {
+            summary(&outcome.warnings)
+                .get(CODE_CHANGED_AFTER_IT_RAN)
+                .copied()
+                .unwrap_or_default()
+        };
+        println!(
+            "{CODE}: \"{CODE_CHANGED_AFTER_IT_RAN}\" {} natively, {} on the WebAssembly side",
+            changed(&native),
+            changed(&wasm)
+        );
+        assert_eq!(
+            changed(&native),
+            CODE_CHANGES,
+            "{CODE}: \"{CODE_CHANGED_AFTER_IT_RAN}\" natively"
+        );
         against_reference(CODE, &native);
         println!(
             "kernel: ran alike to the end; seed {seed:#x}; in {:?}, load {}",
