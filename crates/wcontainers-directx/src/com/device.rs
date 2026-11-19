@@ -32,7 +32,7 @@ use super::*;
 pub struct Device {
     /// The immediate context's bindings and state object, kept for the device's life (dropped
     /// first, while the front lives).
-    immediate_kept: Locked<Rc<super::context::Kept>>,
+    pub(super) immediate_kept: Locked<Rc<super::context::Kept>>,
     pub front: Locked<Shared>,
     pub(super) private: Private,
     /// The immediate context while it lives, held without a reference (it holds one on the device).
@@ -128,15 +128,18 @@ fn depth_stencil_key(d: &D3D11_DEPTH_STENCIL_DESC) -> Vec<u32> {
 }
 
 /// Makes a device and its immediate context at the first of `levels` served.
+/// `dxgi10` gives it the adapter of a factory of DXGI 1.0, as Direct3D 10 makes its devices
+/// without an adapter.
 pub fn create_device(
     levels: &[u32],
     flags: u32,
+    dxgi10: bool,
 ) -> Result<(ID3D11Device, ID3D11DeviceContext, u32)> {
     let _lock = lock();
     super::cache::open_once();
     let backend = backend().ok_or(windows::Win32::Graphics::Dxgi::DXGI_ERROR_UNSUPPORTED)?;
     let front = Front::new(backend, levels).map_err(hresult)?;
-    let adapter = Adapter::new(wcontainers_gpu::Backend::caps(&front.backend));
+    let adapter = Adapter::new(wcontainers_gpu::Backend::caps(&front.backend), dxgi10);
     let level = front.feature_level();
     let device: ID3D11Device3 = Device {
         immediate_kept: Locked::new(Rc::default()),
@@ -156,15 +159,22 @@ pub fn create_device(
     unsafe {
         let table = device.as_raw() as *mut *const ID3D11Device3_Vtbl;
         *table = patched_table(*table);
-        gate::<IDXGIDevice3_Vtbl, 1>(device.cast::<IDXGIDevice3>()?.as_raw());
+        gate::<IDXGIDevice3_Vtbl, 1>(device.cast::<IDXGIDevice3>()?.as_raw(), |_| ());
         gate::<windows::core::IInspectable_Vtbl, 2>(
             device.cast::<windows::core::IUnknown>()?.as_raw(),
+            |_| (),
         );
-        gate::<ID3D10Multithread_Vtbl, 3>(device.cast::<ID3D10Multithread>()?.as_raw());
+        gate::<ID3D10Multithread_Vtbl, 3>(device.cast::<ID3D10Multithread>()?.as_raw(), |_| ());
         let device10 = device
             .cast_object_ref::<Device>()?
             .to_interface::<ID3D10Device1>();
-        gate::<ID3D10Device1_Vtbl, 4>(device10.as_raw());
+        gate::<ID3D10Device1_Vtbl, 4>(device10.as_raw(), |table| {
+            let device = &mut table.base__;
+            let _ = CHECK_QUALITY_LEVELS[TABLE_10].set(device.CheckMultisampleQualityLevels);
+            device.CheckMultisampleQualityLevels = check_quality_levels::<TABLE_10>;
+            let _ = CHECK_FORMAT_SUPPORT[TABLE_10].set(device.CheckFormatSupport);
+            device.CheckFormatSupport = check_format_support::<TABLE_10>;
+        });
     }
     let context = unsafe { device.GetImmediateContext() }?;
     Ok((device.into(), context, level))
@@ -176,8 +186,14 @@ type QualityLevels =
     unsafe extern "system" fn(*mut c_void, DXGI_FORMAT, u32, *mut u32) -> windows::core::HRESULT;
 type FormatSupport =
     unsafe extern "system" fn(*mut c_void, DXGI_FORMAT, *mut u32) -> windows::core::HRESULT;
-static CHECK_QUALITY_LEVELS: std::sync::OnceLock<QualityLevels> = std::sync::OnceLock::new();
-static CHECK_FORMAT_SUPPORT: std::sync::OnceLock<FormatSupport> = std::sync::OnceLock::new();
+/// Those entries of Direct3D 11's table and of Direct3D 10's, by these indices.
+static CHECK_QUALITY_LEVELS: [std::sync::OnceLock<QualityLevels>; TABLES] =
+    [const { std::sync::OnceLock::new() }; TABLES];
+static CHECK_FORMAT_SUPPORT: [std::sync::OnceLock<FormatSupport>; TABLES] =
+    [const { std::sync::OnceLock::new() }; TABLES];
+const TABLE_11: usize = 0;
+const TABLE_10: usize = 1;
+const TABLES: usize = 2;
 
 /// The device's table with `CheckMultisampleQualityLevels` and `CheckFormatSupport` answering as
 /// Direct3D does, made once from the first device's.
@@ -195,22 +211,23 @@ fn patched_table(original: *const ID3D11Device3_Vtbl) -> *const ID3D11Device3_Vt
             let _ = QUERY_INTERFACE[0].set(unknown.QueryInterface);
             unknown.QueryInterface = query_gated::<0>;
             let device = &mut table.base__.base__.base__;
-            let _ = CHECK_QUALITY_LEVELS.set(device.CheckMultisampleQualityLevels);
-            device.CheckMultisampleQualityLevels = check_quality_levels;
-            let _ = CHECK_FORMAT_SUPPORT.set(device.CheckFormatSupport);
-            device.CheckFormatSupport = check_format_support;
+            let _ = CHECK_QUALITY_LEVELS[TABLE_11].set(device.CheckMultisampleQualityLevels);
+            device.CheckMultisampleQualityLevels = check_quality_levels::<TABLE_11>;
+            let _ = CHECK_FORMAT_SUPPORT[TABLE_11].set(device.CheckFormatSupport);
+            device.CheckFormatSupport = check_format_support::<TABLE_11>;
             Table(table)
         })
         .0
 }
 
-/// Points interface pointer `p`'s table at a copy (made once, for table `N`) whose
-/// `QueryInterface` is gated (`query_gated`).
+/// Points interface pointer `p`'s table at a copy (made once, for table `N`, and given to
+/// `patch`) whose `QueryInterface` is gated (`query_gated`).
 ///
 /// # Safety
 /// `p` is an interface pointer of the device, and `V` its table's type.
-unsafe fn gate<V: 'static, const N: usize>(p: *mut c_void) {
-    static TABLES: [std::sync::OnceLock<usize>; 5] = [const { std::sync::OnceLock::new() }; 5];
+unsafe fn gate<V: 'static, const N: usize>(p: *mut c_void, patch: impl FnOnce(&mut V)) {
+    static TABLES: [std::sync::OnceLock<usize>; GATED_TABLES] =
+        [const { std::sync::OnceLock::new() }; GATED_TABLES];
     let slot = p as *mut *const V;
     let copy = *TABLES[N].get_or_init(|| {
         // SAFETY: the windows crate's table, copied bit for bit; every table starts with
@@ -220,6 +237,7 @@ unsafe fn gate<V: 'static, const N: usize>(p: *mut c_void) {
             unsafe { &mut *(&mut table as *mut V).cast::<windows::core::IUnknown_Vtbl>() };
         let _ = QUERY_INTERFACE[N].set(unknown.QueryInterface);
         unknown.QueryInterface = query_gated::<N>;
+        patch(&mut table);
         Box::leak(Box::new(table)) as *const V as usize
     });
     unsafe { *slot = copy as *const V };
@@ -231,8 +249,11 @@ type QueryInterface = unsafe extern "system" fn(
     *mut *mut c_void,
 ) -> windows::core::HRESULT;
 /// The windows crate's `QueryInterface` entries of the device's tables.
-static QUERY_INTERFACE: [std::sync::OnceLock<QueryInterface>; 5] =
-    [const { std::sync::OnceLock::new() }; 5];
+static QUERY_INTERFACE: [std::sync::OnceLock<QueryInterface>; GATED_TABLES] =
+    [const { std::sync::OnceLock::new() }; GATED_TABLES];
+/// The device's tables whose `QueryInterface` is gated: its Direct3D 11 device's, DXGI device's,
+/// identity's, `ID3D10Multithread`'s and Direct3D 10 device's.
+const GATED_TABLES: usize = 5;
 
 /// `QueryInterface` answering `ID3D10Device` and `ID3D10Device1` only once a context state was
 /// made, as Direct3D's device does.
@@ -259,7 +280,7 @@ unsafe extern "system" fn query_gated<const N: usize>(
 
 /// `CheckMultisampleQualityLevels`: `E_INVALIDARG` for a null out pointer, and the count zeroed
 /// for a sample count it has no levels for (`E_FAIL`), as Direct3D answers.
-unsafe extern "system" fn check_quality_levels(
+unsafe extern "system" fn check_quality_levels<const T: usize>(
     this: *mut c_void,
     format: DXGI_FORMAT,
     samples: u32,
@@ -269,7 +290,9 @@ unsafe extern "system" fn check_quality_levels(
         return E_INVALIDARG;
     }
     let mut n = 0;
-    let entry = CHECK_QUALITY_LEVELS.get().expect("the table was patched");
+    let entry = CHECK_QUALITY_LEVELS[T]
+        .get()
+        .expect("the table was patched");
     let hr = unsafe { entry(this, format, samples, &mut n) };
     if hr.is_ok() || hr == windows::Win32::Foundation::E_FAIL {
         unsafe { *out = n };
@@ -1512,7 +1535,7 @@ fn all_given(count: u32, resources: *const Option<IDXGIResource>) -> bool {
 
 /// `CheckFormatSupport`: `E_INVALIDARG` for a null out pointer, and no uses written when the
 /// format is not supported, as Direct3D answers.
-unsafe extern "system" fn check_format_support(
+unsafe extern "system" fn check_format_support<const T: usize>(
     this: *mut c_void,
     format: DXGI_FORMAT,
     out: *mut u32,
@@ -1521,7 +1544,9 @@ unsafe extern "system" fn check_format_support(
         return E_INVALIDARG;
     }
     let mut uses = 0;
-    let entry = CHECK_FORMAT_SUPPORT.get().expect("the table was patched");
+    let entry = CHECK_FORMAT_SUPPORT[T]
+        .get()
+        .expect("the table was patched");
     let hr = unsafe { entry(this, format, &mut uses) };
     unsafe { *out = if hr.is_ok() { uses } else { 0 } };
     hr

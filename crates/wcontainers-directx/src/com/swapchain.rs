@@ -22,9 +22,6 @@ use wcontainers_gpu::TextureUsage;
 use super::counted::{Held, public_count};
 use super::*;
 
-/// `DXGI_PRESENT_TEST`.
-const PRESENT_TEST: u32 = 1;
-
 #[implement(IDXGIFactory6)]
 pub struct Factory {
     pub(super) private: Private,
@@ -323,7 +320,7 @@ impl SwapChain_Impl {
         if hidden {
             return DXGI_STATUS_OCCLUDED;
         }
-        if flags.0 & PRESENT_TEST != 0 {
+        if flags.0 & DXGI_PRESENT_TEST.0 != 0 {
             return S_OK;
         }
         let mut chain = self.chain.borrow_mut();

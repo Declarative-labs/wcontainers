@@ -73,6 +73,7 @@ pub unsafe fn release_public<O: Counted>(o: *mut O) -> u32 {
     };
     let n = held - 1;
     if n == 0 {
+        unsafe { &*o }.child().released(o as usize);
         let device = unsafe { &*o }.child().device().as_raw();
         unsafe { release_private(o) };
         // The object may be gone; its device reference is given back through the copied pointer.
@@ -117,6 +118,11 @@ impl<O: Counted> Held<O> {
     /// Whether two are the same object.
     pub fn same(&self, other: &Self) -> bool {
         self.0 == other.0
+    }
+
+    /// The object's address, which names it.
+    pub fn address(&self) -> usize {
+        self.0.as_ptr() as usize
     }
 }
 

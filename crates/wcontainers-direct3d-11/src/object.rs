@@ -252,6 +252,9 @@ pub struct View<B: Backend> {
     /// elements the view's one-row texture holds, copied in at a pass's start and out at its end
     /// (`ReinterpretCopy`).
     pub buffer: Option<(Rc<Buffer<B>>, u64)>,
+    /// A depth-stencil view's stencil aspect, read by pixel programs running their forced early
+    /// tests themselves; made at the first such draw.
+    pub stencil_aspect: RefCell<Option<Kept<B, B::TextureView>>>,
 }
 
 impl<B: Backend> View<B> {
