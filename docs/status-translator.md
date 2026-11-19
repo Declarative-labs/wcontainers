@@ -98,13 +98,15 @@ The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three laye
   When `docker version` answers again: check no `wc-translator-` container is left, then restart the
   driver with the command above (it runs the failed or stopped chunks again first). Do not quit, restart
   or reset Docker Desktop from this track: other tracks' containers run in it.
-- The scratch script `.../p2/resume.sh` does that by itself, for a day from its start (started 2026-11-19
-  02:29, log `.../p2/resume.log`): when Docker has not answered for a minute it stops the driver, and when
-  Docker has answered for two minutes and no driver runs it removes any `wc-translator-` container and
-  restarts the driver with the command above (not on a checkout with uncommitted changes); it ends when
-  the driver logs "long runs ended". It never touches Docker. Is it running: `pgrep -fl '^bash .*p2/resume.sh'`.
-  Before stopping the driver by hand, stop it too (`stop-after-chunk.sh` now does so first), or it starts
-  the driver again two minutes later. Match the driver as `pgrep -f '^bash [^ ]*/long-runs\.sh$'`: the
+- The scratch script `.../p2/resume2.sh` does that by itself for both the long run and the confirmation run,
+  for a day from its start (2026-11-19 12:48, log `.../p2/resume.log`): when Docker has not answered for a
+  minute it stops each driver with its whole process tree, and when Docker has answered for two minutes it
+  starts each stopped driver again with its restart command (the long run's above, the confirmation's under
+  "Confirmation run"; not on a checkout with uncommitted changes); a run is left alone once its driver logs
+  "long runs ended". It never touches Docker. It replaces `resume.sh` (02:29 to 12:47), which watched the
+  long run only and, on stopping it, would also have killed the confirmation run's test by name. Is it
+  running: `pgrep -fl '^bash resume2\.sh$'`. Before stopping a driver by hand, stop it too
+  (`stop-after-chunk.sh` does so first), or it starts the driver again two minutes later. Match the driver as `pgrep -f '^bash [^ ]*/long-runs\.sh$'`: the
   looser pattern above also matches any shell whose command text holds the name.
 - Rented ARM64 machine (AWS Graviton4, Linux 7.0.0-1017-aws; manual in the orchestrator's scratch
   `cloud/arm-machine.md`): from 2026-11-19 03:00 a separate agent of the orchestrator ran layer 3 chunks
@@ -135,7 +137,10 @@ The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three laye
   Layers 1 and 2 passed (607,500 cases, 825 s; 2 x 25,000 programs, 1,517 and 1,539 s; load 44 to 89).
   Layer 3 of it started 10:44 on 8c7a4b5 (status-only change since 1f9c030) after its cache was warmed
   (`confirm/warm.log`), same command with `WC_LONG_LAYERS=3` and no `WC_LONG_ACCEPT` (so it accepts 8c7a4b5
-  on; a restart needs `WC_LONG_ACCEPT=8c7a4b5`): about 37 minutes a chunk at 3 jobs, load 19 to 49. Its
+  on; a restart needs `WC_LONG_ACCEPT=8c7a4b5`; the restart command, from the checkout root:
+  `CARGO_BUILD_JOBS=4 WC_LONG_DIR=.../p2/confirm WC_LONG_PERCENT=5 WC_LONG_SEED=200 WC_LONG_LAYERS=3
+  WC_LONG_JOBS=3 WC_LONG_LIMIT=180 WC_LONG_ACCEPT=8c7a4b5 nohup nix develop -c
+  crates/wcontainers-translator-test/long-runs.sh >> .../p2/confirm/driver.log 2>&1 &`): about 37 minutes a chunk at 3 jobs, load 19 to 49. Its
   chunks from 12 downward run on the rented machine once the long run's runners there end
   (`arm-confirm/down.sh 12`, log `down.log`; `run-chunk.sh` there is the long run's with seed
   200, `WC_LAYER3_JOBS=3` in the knobs, the confirmation ledger and an export of 8c7a4b5). `resume.sh` and `watch.sh` now tell the long run's
@@ -147,7 +152,7 @@ The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three laye
   every copy no longer running (done 2026-11-18 18:50: 48 GB freed; sources and logs kept).
 - Layer 3's progress in programs compared: `awk -F'\t' '$1=="layer=3" && $10=="result=pass" {split($4,c,"=");
   s+=c[2]} END {print s}' .../p2/long/ledger.txt`. Any chunk that did not pass: `grep -v result=pass
-  .../p2/long/ledger.txt` (each is one of failures 1 to 9 below).
+  .../p2/long/ledger.txt` (each is one of failures 1 to 10 below).
 - After the last fix: the confirmation, 5 percent of each layer on the final commit with base seed 200 (not
   used before): the same command with `WC_LONG_PERCENT=5 WC_LONG_SEED=200` and a new `WC_LONG_DIR`.
 - Expected length (from P1's 1 percent rates at load about 30, not measured): about 50 hours, more at higher
@@ -367,6 +372,18 @@ Failures found by the run, each with its cause and fix:
    already in the workspace for the kernel test crate) and the 128 of a signalled status is one constant,
    `programs::SIGNALLED` (`layer1.rs` and `browser.rs` still have their own copies: for the literal check
    after P2). The case passes on the change, compared and in Chrome, 40 s at load 92 to 102.
+10. Layer 3 chunk 176 (cases 87500 to 87999, 398df57) and the confirmation run's layer 3 chunk 4 (seed 200,
+   cases 1500 to 1999, 8c7a4b5): the reference, not the translator. Docker Desktop on the Mac went away at
+   about 12:45 on 2026-11-19 (its socket gone; its back end started again at 12:46:55 and answered at 12:47,
+   restarted by the orchestrator's watcher). Both tests ended at 12:46:26 with exit status 143 (SIGTERM from
+   outside this track; at 12:44 two of this session's waiting shells and the rented machine's `arm-run`
+   client of chunk 225 were also sent SIGTERM), with no summary: ledger `fail`, `cases=?`. The next chunks
+   (177; confirmation 5) started at 12:46:26 with Docker down and failed case after case at `run_container`'s
+   "Docker failed" and `gcc failed` (the guard of failure 8 working: nothing was compared). Both drivers and
+   their whole process trees were stopped at 12:47 (no line for 177 or confirmation 5), the three
+   `wc-translator-` containers left removed, and both restarted by `resume2.sh` once Docker had answered
+   for two minutes, on the checkout's head (only this file changed since 6a705f8's crates), so 176 and 177
+   and confirmation 4 and 5 run again. No code changed.
 
 ## P1: close-out of M5 and the long-run driver
 
