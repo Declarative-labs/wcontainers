@@ -27,7 +27,6 @@ mod text;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 
 use rayon::prelude::*;
 
@@ -236,6 +235,9 @@ struct SourceFile {
     crate_root: bool,
     /// Other crates can import its public items: no private module declaration leads to it.
     exposed: bool,
+    /// Cargo builds it as a crate of its own beside the library (an integration test, a bench or an
+    /// example), which can import only the library's public items.
+    separate: bool,
 }
 
 /// A path relative to the root, with `.` and `..` resolved by their names (`tests/../src/a.rs`).
@@ -303,6 +305,7 @@ impl Walk {
                 role,
                 crate_root,
                 exposed: true,
+                separate: test,
             });
         } else if scripts::is_script(&path) {
             self.scripts.push((path, crate_dir.to_string()));
@@ -533,6 +536,7 @@ fn mark_test_modules(root: &Path, files: &mut Vec<SourceFile>) {
                         role,
                         crate_root: false,
                         exposed: true,
+                        separate: false,
                     });
                 }
             }
@@ -579,6 +583,7 @@ fn mark_test_modules(root: &Path, files: &mut Vec<SourceFile>) {
             file.role = FileRole::Test;
         } else if file.role == FileRole::Test && placed.contains(&canonical(&file.path)) {
             file.role = FileRole::Code;
+            file.separate = false;
         }
     }
 }
@@ -688,6 +693,7 @@ fn literal_keys(root: &Path, rel: &str, text: &str) -> HashSet<String> {
         role: FileRole::Code,
         crate_root: false,
         exposed: true,
+        separate: false,
     };
     let scanned = scan_text(&file, text, None);
     let marks = scanned.marks.iter().map(|m| {
@@ -832,18 +838,21 @@ impl<'a> ValueIndex<'a> {
         defs
     }
 
-    /// The constants with this value that the crate could import or already has: public ones, its own,
-    /// and the reference crates'.
+    /// The constants with this value that the crate could import or already has: public ones, its own
+    /// unless it is a `separate` crate beside its library, and the reference crates'.
     fn importable(
         &self,
         value: &Value,
         crate_dir: &str,
+        separate: bool,
         own: Option<(&str, &str)>,
     ) -> Vec<(Closeness, &'a ConstDef)> {
         self.matches(value, crate_dir, own)
             .into_iter()
             .filter(|(_, d)| {
-                d.public || d.crate_dir == crate_dir || matches!(d.scope, ConstScope::Reference(_))
+                d.public
+                    || (!separate && d.crate_dir == crate_dir)
+                    || matches!(d.scope, ConstScope::Reference(_))
             })
             .collect()
     }
@@ -920,9 +929,10 @@ fn specific_words(name: &str) -> Vec<String> {
 }
 
 /// Tests and constant initialisers that restate, by value, a constant their crate can already name.
-/// A literal in a test is gated on its value alone; a literal in a named constant only when the two
-/// names also share a specific word (`LOCAL_PAGE` and `PAGE_SIZE`), so that a different fact of the
-/// same value can be given its own name.
+/// A literal in a test, in a constant or not, is gated on its value alone against what the test's crate
+/// can import (`separate` holds the files built as crates beside their library); a literal in a named
+/// constant of code only when the two names also share a specific word (`LOCAL_PAGE` and
+/// `PAGE_SIZE`), so that a different fact of the same value can be given its own name.
 fn restated(all: &mut [Finding], index: &ValueIndex) {
     for f in all
         .iter_mut()
@@ -955,19 +965,25 @@ fn restated(all: &mut [Finding], index: &ValueIndex) {
         // The same name and value is a redefinition, reported as one.
         let own_name = f.item.rsplit(PATH_SEPARATOR).next().unwrap_or_default();
         let own_words = specific_words(own_name);
+        let test = f.list == List::Test;
         let named_alike = |d: &ConstDef| {
             !f.in_const
                 || (d.bare != own_name
-                    && specific_words(&d.bare)
-                        .iter()
-                        .any(|w| own_words.contains(w)))
+                    && (test
+                        || specific_words(&d.bare)
+                            .iter()
+                            .any(|w| own_words.contains(w))))
         };
-        let defs: Vec<(Closeness, &ConstDef)> = index
-            .matches(
-                value,
-                &f.crate_dir,
-                Some((f.path.as_str(), f.item.as_str())),
-            )
+        let all_defs = index.matches(
+            value,
+            &f.crate_dir,
+            Some((f.path.as_str(), f.item.as_str())),
+        );
+        // A test's copy of a constant under its own name is that redefinition only.
+        if test && f.in_const && all_defs.iter().any(|(_, d)| d.bare == own_name) {
+            continue;
+        }
+        let defs: Vec<(Closeness, &ConstDef)> = all_defs
             .into_iter()
             .filter(|(c, d)| wanted(*c, d) && d.scope == ConstScope::Code && named_alike(d))
             .collect();
@@ -1224,7 +1240,6 @@ struct Scanned {
 
 /// Scans the workspace under `root` with the baseline's policy.
 fn scan_tree(root: &Path, policy: Policy) -> Result<Scanned, String> {
-    let started = Instant::now();
     let mut tree = walk(root, &policy)?;
     let proposed = tree
         .rust
@@ -1247,6 +1262,7 @@ fn scan_tree(root: &Path, policy: Policy) -> Result<Scanned, String> {
             role: FileRole::Code,
             crate_root: false,
             exposed: true,
+            separate: false,
         };
         unparsed(
             &folder,
@@ -1270,6 +1286,7 @@ fn scan_tree(root: &Path, policy: Policy) -> Result<Scanned, String> {
                 role: FileRole::Code,
                 crate_root: false,
                 exposed: true,
+                separate: false,
             })
             .collect();
         defs.extend(scan_all(&files, Some(&label)).consts);
@@ -1278,11 +1295,18 @@ fn scan_tree(root: &Path, policy: Policy) -> Result<Scanned, String> {
     let crates = Crates::read(root, &tree.crate_dirs);
 
     let index = ValueIndex::new(&defs, &crates);
+    let separate: HashSet<&str> = tree
+        .rust
+        .iter()
+        .filter(|f| f.separate)
+        .map(|f| f.rel.as_str())
+        .collect();
     for f in all.iter_mut().filter(|f| f.list != List::Message) {
         if let Some(v) = &f.value {
             let note = ValueIndex::note(&index.importable(
                 v,
                 &f.crate_dir,
+                separate.contains(f.path.as_str()),
                 Some((f.path.as_str(), f.item.as_str())),
             ))
             .unwrap_or_default();
@@ -1306,7 +1330,7 @@ fn scan_tree(root: &Path, policy: Policy) -> Result<Scanned, String> {
             &rel_string(path, root),
             crate_dir,
             &text,
-            &|v, c| ValueIndex::note(&index.importable(v, c, None)),
+            &|v, c| ValueIndex::note(&index.importable(v, c, false, None)),
         ));
     }
     all.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
@@ -1325,11 +1349,10 @@ fn scan_tree(root: &Path, policy: Policy) -> Result<Scanned, String> {
         .map(|(l, (n, s))| format!("{} {n} numbers {s} strings", l.name()))
         .collect();
     let summary = format!(
-        "{PROGRAM} (version {} of the rules): {} Rust files, {} scripts, {:?}; {}",
+        "{PROGRAM} (version {} of the rules): {} Rust files, {} scripts; {}",
         rules::RULES.len(),
         tree.rust.len(),
         tree.scripts.len(),
-        started.elapsed(),
         lists.join(NOTE_LIST_SEPARATOR)
     );
     Ok(Scanned {
@@ -1353,7 +1376,7 @@ pub struct Outcome {
     pub lines: Vec<String>,
     /// Every mark with its reason, after a line that counts them.
     pub marks: Vec<String>,
-    /// File counts, time taken, the numbers and strings in each list, and where the baseline started.
+    /// File counts, the numbers and strings in each list, and where the baseline started.
     pub summary: Vec<String>,
 }
 
@@ -1581,7 +1604,8 @@ pub fn check(root: &Path) -> Result<Outcome, String> {
 /// of it that are read (the guests the project runs).
 const REFERENCE_PACKAGE: &str = "linux-raw-sys";
 const REFERENCE_ARCHITECTURES: &[&str] = &["aarch64", "x86_64"];
-const LOCK_FILE: &str = "Cargo.lock";
+/// The lock file at the workspace root, which names the reference crate's versions.
+pub const LOCK_FILE: &str = "Cargo.lock";
 const LOCK_PACKAGES: &str = "package";
 const LOCK_NAME: &str = "name";
 const LOCK_VERSION: &str = "version";

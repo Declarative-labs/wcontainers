@@ -9,11 +9,11 @@ mod common;
 use std::sync::OnceLock;
 
 use common::{Row, list, workspace};
-use wcontainers_literals::List;
+use wcontainers_literals::{List, MANIFEST};
 
 const FILES: &[(&str, &str)] = &[
     (
-        "Cargo.toml",
+        MANIFEST,
         r#"[workspace]
 members = ["crates/*"]
 resolver = "2"

@@ -23,7 +23,7 @@ pub fn three(x: u64) -> u64 { x >> 12 }
 pub fn four(x: u64) -> u64 { x % 1000 }
 ";
 const FILES: &[(&str, &str)] = &[
-    ("Cargo.toml", "[workspace]\nmembers = [\"crates/*\"]\n"),
+    (MANIFEST, "[workspace]\nmembers = [\"crates/*\"]\n"),
     ("crates/a/Cargo.toml", "[package]\nname = \"a\"\n"),
     (LIB, CODE),
 ];
@@ -755,4 +755,95 @@ fn a_graft_does_not_hide_growth() {
         "{}",
         out.report()
     );
+}
+
+/// Still gets through, or is still refused wrongly (docs/literals.md).
+mod gets_through {
+    use super::*;
+
+    /// Baseline lines are per enclosing item, so a literal may move anywhere inside its function.
+    #[test]
+    fn a_literal_moved_within_its_function() {
+        let root = started("moved-within");
+        replace(&root, LIB, "x * 4096", "{ let page = || 4096; x * page() }");
+        commit_all(&root, "the literal moved into a closure");
+        let out = check(&root);
+        assert!(out.clean, "{}", out.report());
+    }
+
+    /// A made-up version of the rules in one merge: the merged side added a literal without a line,
+    /// and the merge appends a version and adds the line. It shows only in the list of changes that
+    /// could add lines.
+    #[test]
+    fn a_made_up_version_in_one_merge() {
+        let files = with_checker(&["first"]);
+        let root = repository("made-up", &borrowed(&files));
+        wcontainers_literals::init(&root).expect("init");
+        commit_all(&root, "baseline");
+        git(&root, &["checkout", "-q", "-b", "side"]);
+        append(&root, LIB, "\npub fn five(x: u64) -> u64 { x * 4093 }\n");
+        commit_all(&root, "a literal without its line");
+        git(&root, &["checkout", "-q", "main"]);
+        git(&root, &["merge", "-q", "--no-ff", "--no-commit", "side"]);
+        replace(
+            &root,
+            RULES_SOURCE,
+            "\"first\",]",
+            "\"first\",\"made up\",]",
+        );
+        set_baseline(&root, &with(&baseline(&root), &key("five", "4093")));
+        commit_all(&root, "the merge, with a made-up version");
+        let merge = git(&root, &["describe", "--always", "--abbrev=12"]);
+        let out = check(&root);
+        assert!(out.clean, "{}", out.report());
+        assert!(
+            out.summary
+                .iter()
+                .any(|l| l.contains(merge.trim()) && l.contains("new rules")),
+            "{}",
+            out.report()
+        );
+    }
+
+    /// The history reads the superproject's commits, which hold only a submodule's commit, so a new
+    /// version of the rules cannot add the line of a literal that sits in a submodule.
+    #[test]
+    fn a_new_version_cannot_add_a_submodule_s_literal() {
+        let sub_files = [
+            (MANIFEST, "[package]\nname = \"sub\"\n"),
+            (
+                "src/lib.rs",
+                "pub fn in_submodule(x: u64) -> u64 { x * 4095 }\n",
+            ),
+        ];
+        let source = repository("new-rules-sub-source", &sub_files);
+        let files = with_checker(&["first"]);
+        let root = repository("new-rules-sub", &borrowed(&files));
+        wcontainers_literals::init(&root).expect("init");
+        commit_all(&root, "baseline");
+        let source = source.to_string_lossy().into_owned();
+        let add = [
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            &source,
+            "crates/sub",
+        ];
+        git(&root, &add);
+        set_baseline(&root, &without(&baseline(&root), &key("two", "77")));
+        replace(&root, LIB, "x + 77", "x");
+        commit_all(&root, "a submodule, and a fix");
+        replace(&root, RULES_SOURCE, "\"first\",]", "\"first\",\"second\",]");
+        wcontainers_literals::init(&root).expect("init after new rules");
+        commit_all(&root, "the baseline for the new rules");
+        let out = check(&root);
+        let grown = lines_starting(&out, GROWN_MARK);
+        assert!(
+            grown.len() == 1 && grown[0].contains("4095"),
+            "{}",
+            out.report()
+        );
+    }
 }

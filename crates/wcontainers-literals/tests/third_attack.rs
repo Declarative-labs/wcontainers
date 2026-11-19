@@ -9,7 +9,7 @@ mod common;
 use std::sync::OnceLock;
 
 use common::{Row, commit_all, list, repository, workspace};
-use wcontainers_literals::List;
+use wcontainers_literals::{LOCK_FILE, List, MANIFEST};
 
 const ABI: &str = r#"pub const PAGE_SIZE: u64 = 4096;
 pub const CONFIG_KEY: &str = "st_uid";
@@ -63,7 +63,7 @@ const PYTHON: &str = "size = 1\nif 4096>size:\n    print(size)\nopen(\"/etc/host
 const SHELL: &str = "#!/bin/sh\necho $((4096>>2)) 2>/dev/null\ncat /etc/hosts\n";
 
 const FILES: &[(&str, &str)] = &[
-    ("Cargo.toml", "[workspace]\nmembers = [\"crates/*\"]\n"),
+    (MANIFEST, "[workspace]\nmembers = [\"crates/*\"]\n"),
     ("crates/abi/Cargo.toml", "[package]\nname = \"abi\"\n"),
     ("crates/abi/src/lib.rs", ABI),
     (
@@ -170,7 +170,7 @@ mod gets_through {
 const HIDING_LIB: &str = "pub mod tagged;\n#[path = \"../.impl/m.rs\"]\npub mod hidden;\n#[path = \"../ignored/n.rs\"]\npub mod ignored;\n";
 
 const HIDING_FILES: &[(&str, &str)] = &[
-    ("Cargo.toml", "[workspace]\nmembers = [\"crates/*\"]\n"),
+    (MANIFEST, "[workspace]\nmembers = [\"crates/*\"]\n"),
     ("crates/a/Cargo.toml", "[package]\nname = \"a\"\n"),
     ("crates/a/src/lib.rs", HIDING_LIB),
     ("crates/a/src/tagged/CACHEDIR.TAG", ""),
@@ -207,9 +207,9 @@ fn code_in_tagged_hidden_and_ignored_folders_is_scanned() {
 }
 
 const UNFETCHED_FILES: &[(&str, &str)] = &[
-    ("Cargo.toml", "[workspace]\nmembers = [\"crates/*\"]\n"),
+    (MANIFEST, "[workspace]\nmembers = [\"crates/*\"]\n"),
     (
-        "Cargo.lock",
+        LOCK_FILE,
         "version = 4\n\n[[package]]\nname = \"linux-raw-sys\"\nversion = \"0.0.0-absent\"\n",
     ),
     ("crates/a/Cargo.toml", "[package]\nname = \"a\"\n"),

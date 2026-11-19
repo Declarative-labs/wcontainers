@@ -80,7 +80,7 @@ const HIDE_TEST: &str =
     "#[test]\nfn h04_test_not_rs() { assert_eq!(abi::PAGE_SIZE as u64, 4096); }\n";
 
 const FILES: &[(&str, &str)] = &[
-    ("Cargo.toml", "[workspace]\nmembers = [\"crates/*\"]\n"),
+    (MANIFEST, "[workspace]\nmembers = [\"crates/*\"]\n"),
     ("crates/abi/Cargo.toml", "[package]\nname = \"abi\"\n"),
     ("crates/abi/src/lib.rs", ABI),
     ("crates/other/Cargo.toml", "[package]\nname = \"other\"\n"),

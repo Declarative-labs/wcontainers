@@ -7736,6 +7736,7 @@ restated	crates/wcontainers-kernel-test/tests/python.rs	int	system_program_match
 restated	crates/wcontainers-kernel-test/tests/python.rs	str	prepare	"run"
 restated	crates/wcontainers-kernel-test/tests/script.rs	int	scripts_match_reference	0o755
 restated	crates/wcontainers-kernel-test/tests/splice.rs	str	splicing_matches_reference	"vmsplice pages copied"
+restated	crates/wcontainers-kernel-test/tests/standin.rs	int	CODE	0x10000
 restated	crates/wcontainers-kernel-test/tests/standin.rs	int	exits_are_exact	1_000_000
 restated	crates/wcontainers-kernel-test/tests/standin.rs	int	exits_are_exact	4096
 restated	crates/wcontainers-kernel-test/tests/standin.rs	int	permissions_change_while_running	0x10000
@@ -7753,6 +7754,18 @@ restated	crates/wcontainers-kernel-test/tests/standin.rs	int	unaligned_exclusive
 restated	crates/wcontainers-kernel-test/tests/threads.rs	str	clone_sharing_matches_reference	"proc fields not tracked"
 restated	crates/wcontainers-kernel-test/tests/threads.rs	str	proc_task_matches_reference	"proc fields not tracked"
 restated	crates/wcontainers-kernel-test/tests/threads.rs	str	thread_credentials_match_reference	"proc fields not tracked"
+restated	crates/wcontainers-kernel-test/tests/timers.rs	int	wall_clock_setting_moves_its_timers::TWO_HOURS	1_000_000_000
+restated	crates/wcontainers-kernel/src/seccomp.rs	int	tests::MEASURED	256
+restated	crates/wcontainers-kernel/src/seccomp.rs	int	tests::MEASURED	280
+restated	crates/wcontainers-kernel/src/seccomp.rs	int	tests::MEASURED	300
+restated	crates/wcontainers-kernel/src/seccomp.rs	int	tests::MEASURED	304
+restated	crates/wcontainers-kernel/src/seccomp.rs	int	tests::MEASURED	312
+restated	crates/wcontainers-kernel/src/seccomp.rs	int	tests::MEASURED	320
+restated	crates/wcontainers-kernel/src/seccomp.rs	int	tests::MEASURED	368
+restated	crates/wcontainers-kernel/src/seccomp.rs	int	tests::MEASURED	372
+restated	crates/wcontainers-kernel/src/seccomp.rs	int	tests::MEASURED	384
+restated	crates/wcontainers-kernel/src/seccomp.rs	int	tests::MEASURED	387
+restated	crates/wcontainers-kernel/src/seccomp.rs	int	tests::MEASURED	400
 restated	crates/wcontainers-literals/src/scan.rs	str	CARGO_OUT_DIR	"OUT_DIR"
 restated	crates/wcontainers-runtime/src/image.rs	int	tests::layer	0o755
 restated	crates/wcontainers-runtime/src/image.rs	int	tests::layer	0o755
@@ -7771,6 +7784,7 @@ restated	crates/wcontainers-translator-test/tests/binaries.rs	float	measure_bina
 restated	crates/wcontainers-translator-test/tests/binaries.rs	float	measure_binaries	1e3
 restated	crates/wcontainers-translator-test/tests/binaries.rs	float	measure_binaries	1e6
 restated	crates/wcontainers-translator-test/tests/binaries.rs	float	measure_binaries	1e6
+restated	crates/wcontainers-translator-test/tests/binaries.rs	int	LOAD	0x10_0000
 restated	crates/wcontainers-translator-test/tests/changes.rs	int	plan	256
 restated	crates/wcontainers-translator-test/tests/changes.rs	int	programs_with_changes_match_none	1024
 restated	crates/wcontainers-translator-test/tests/changes.rs	int	start	0x1000
@@ -7799,14 +7813,20 @@ restated	crates/wcontainers-translator-test/tests/lookaheads.rs	float	measure_tr
 restated	crates/wcontainers-translator-test/tests/lookaheads.rs	float	measure_translating_at_run_time	1e3
 restated	crates/wcontainers-translator-test/tests/lookaheads.rs	int	measure_bound	1024
 restated	crates/wcontainers-translator-test/tests/lookaheads.rs	int	measure_bound	256
+restated	crates/wcontainers-translator-test/tests/output.rs	int	LOOK_AHEADS	4096
 restated	crates/wcontainers-translator-test/tests/output.rs	str	bench	"thread"
 restated	crates/wcontainers-translator-test/tests/programs.rs	float	measure	1e6
 restated	crates/wcontainers-translator-test/tests/programs.rs	float	switching_speed	1e9
 restated	crates/wcontainers-translator-test/tests/programs.rs	int	stops_at_every_check_change_nothing	1000
+restated	crates/wcontainers-translator-test/tests/smoke.rs	int	LOAD	0x10000
 restated	crates/wcontainers-translator-test/tests/smoke.rs	int	run_with	0x1000
 restated	crates/wcontainers-translator-test/tests/smoke.rs	int	run_with	1024
 restated	crates/wcontainers-translator-test/tests/smoke.rs	int	stop_flag_raised_while_running	0x1000
 restated	crates/wcontainers-translator-test/tests/smoke.rs	int	stop_flag_raised_while_running	1024
+restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	LOAD	0x10000
+restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	LOOK_AHEADS	256
+restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	LOOK_AHEADS	4096
+restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	MEMORY_BYTES	0x100000
 restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	a_range_is_checked_at_run_time	0x800
 restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	accesses_from_a_segment_base_are_grouped_and_fault_exactly	0x100
 restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	accesses_from_a_segment_base_are_grouped_and_fault_exactly	0x100
@@ -7822,6 +7842,13 @@ restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_dropped_threads_ins
 restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_dropped_threads_instances_serve_the_next_thread	0x20000
 restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_dropped_threads_instances_serve_the_next_thread	0x20000
 restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_dropped_threads_instances_serve_the_next_thread	0x20000
+restated	crates/wcontainers-wasmtime/tests/cache.rs	int	CODE	0x10000
+restated	crates/wcontainers-wasmtime/tests/code.rs	int	CODE	0x10000
+restated	crates/wcontainers-wasmtime/tests/faults.rs	int	CODE	0x10000
+restated	crates/wcontainers-wasmtime/tests/fork.rs	int	CODE	0x10000
+restated	crates/wcontainers-wasmtime/tests/fork.rs	int	HEAP	0x40_0000
+restated	crates/wcontainers-wasmtime/tests/fork.rs	int	SHOWN	0x80_0000
+restated	crates/wcontainers-wasmtime/tests/fork.rs	int	a_duplicate_made_after_the_host_process_forked_is_exact::PAGES	256
 restated	crates/wcontainers-wasmtime/tests/refused.rs	int	(file)	1024
 restated	crates/wcontainers-wasmtime/tests/refused.rs	int	(file)	1024
 restated	crates/wcontainers-wasmtime/tests/refused.rs	int	image	0o755
@@ -7832,6 +7859,9 @@ restated	crates/wcontainers-wasmtime/tests/surface.rs	int	tar_with	0o755
 restated	crates/wcontainers-wasmtime/tests/surface.rs	str	a_program_not_in_the_path_is_not_found	"run"
 restated	crates/wcontainers-wasmtime/tests/surface.rs	str	a_threaded_program_matches_the_reference	"run"
 restated	crates/wcontainers-wasmtime/tests/surface.rs	str	reference	"run"
+restated	crates/wcontainers-wasmtime/tests/turns.rs	int	CODE	0x10000
+restated	crates/wcontainers-wasmtime/tests/views.rs	int	CODE	0x10000
+restated	crates/wcontainers-wasmtime/tests/views.rs	int	VIEWS	0x40_0000
 restated	crates/wcontainers-wasmtime/tests/views.rs	int	read_through_the_other	0x10_0000
 role	crates/wcontainers-hypervisor/src/hvf.rs	int	code	0
 role	crates/wcontainers-kernel-test/backend/src/main.rs	int	mount	1
