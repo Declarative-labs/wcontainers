@@ -27,9 +27,11 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   container's first process in the kernel inside the machine, alike with the WebAssembly side (below, "N3 run 4"); run 5 did R1 and a
   first R3 itself, in commits of their own (a departure, below), and runs hello to its end inside the machine with the runtime's
   loop and the test crate's policy, alike with the WebAssembly side, and counts the machine's exits over 100,000 getppid calls:
-  4 more than with none, the same with 200,000 (below, "N3 run 5"). Not done: the bar (busybox through the native back end
-  against the reference; Docker on the Mac and the rented machine were both down) and the fork, exec and signal program, which
-  needs a turn that ends at a limit natively (decision 10).
+  4 more than with none, the same with 200,000 (below, "N3 run 5"); run 6 built the bar's test (busybox `text` and `files` in the
+  kernel inside, against the reference), the root's files sent back, turns that end at their limit (between pieces, at
+  look-ahead none) and a fork, exec and signal program alike on both outputs (below, "N3 run 6"). Not done: the bar has not run
+  against the reference (Docker on the Mac and the rented machine were down all run; checked against the kernel test crate's
+  stand-in CPU on Alpine's minirootfs instead, 55 of 55 alike).
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -56,6 +58,60 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N3 run 6 (2026-11-19)
+
+Start: origin/main and origin/phase-1-literals had nothing new. Run 5's three unpushed commits were pushed after the whole suite
+of what this track owns passed (04:13 to 04:16, load 6.0 to 12.4, M5 Max; scratch native/n3r6/suite-start.log; the literal
+check exit 0).
+
+Built (each its own commit):
+- 8f902f1c, wcontainers-kernel-test (the kernel track's crate): the busybox `text` and `files` commands moved from its
+  tests/busybox.rs into src/busybox.rs as `TEXT` and `FILES`, its per-command loop as `each`, and `compare`'s check of one run
+  against the reference split out as `Reference::of(command)` and `Reference::check(command, root, outcome, files)`;
+  `on_path`, `shapes_of_kernel` and `image::as_started` made public. `compare` does exactly what it did. Two baseline lines left
+  (a "\n" now inside a message, and the moved "8192").
+- a98966bc, the inside: `container::send_root` sends every file of the kernel's root (`Kernel::root_files`) back through the
+  link as a `RootFile` request (a postcard `FileRecord`, through serde's remote derive); the monitor's half of a container is
+  now `container::Monitor` (files to send, the start, the root sent back). `native-kernel` sends the root after the run.
+- 7479e2ac, the monitor's tests: the runner of tests/kernel.rs moved to tests/container (shared), which also compares the
+  root's files at the end; tests/busybox.rs is N3's bar (every `TEXT` and `FILES` command in `native-kernel`, root in memory,
+  look-ahead none, against the reference through `Reference`).
+- 54407249, the inside: a turn with a limit is no longer refused. At look-ahead none with nothing linked every piece is one
+  instruction and comes back to the inside, so `NativeCpu::run` takes `until` (the count at which the turn ends) and returns
+  `Exit::Stop` at the first boundary where the thread's count has reached it; no check in translated code. A process without
+  the count refuses such a turn (`Refused::TurnLimitWithoutCount`); `native-kernel` now makes its CPU side with the count, as
+  the test crate's policy counts its turns. From N4 (linked pieces) this no longer sees every boundary: decision 10 again.
+- bdcab6aa, tests/kernel.rs: this track's `tests/guest/forks.c` (musl): forks a child that execs the program again, works,
+  sends the parent SIGUSR1 and exits 7, while the parent spins with no system call until its handler ran; then a second child
+  in `pause()` killed by SIGTERM. Run on both sides: status, every host call and the root must agree (turns only for the
+  one-thread programs: with limits the WebAssembly output ends turns at its own stop checks, the native one by definition E).
+- c51b60e4, the busybox test gives the policy the machine's wall clock at the start, as the kernel test crate's driver does
+  (a file's time shown to the minute must match the reference's).
+
+Results (M5 Max; scratch native/n3r6):
+- kernel test (kernel2.log, load 2.7 to 3.1): hello and getppid alike as before, roots alike. Exits of the machine: 2140 with no
+  getppid calls, 2144 with 100,000, 2144 with 200,000 (more than run 5's 1707 because the root's files now come back through
+  the link). forks: status 0x300 (3) on both sides, the same 7 host calls and root; output "child: 7d3dc125bddc46a0",
+  "parent: signal 10 taken, child exited 7", "parent: second child killed by 15"; 44 turns on each side; natively 3892 exits,
+  warned "memory copied at once when duplicated" 2, "host-model result routed" 577, "withheld register named by the guest" 52,
+  "access that may cross a page probed" 21. The parent spins with no system call until the child's signal, so the run can end
+  only because its turns ended at their limits (reasoned, not counted).
+- busybox (the bar's commands), not yet against the reference: Docker Desktop on the Mac said "unable to start" all run and the
+  rented ARM machine was unreachable. For development only, with a stand-in `docker` in scratch (native/n3r6/fakedocker) that
+  hands out Alpine's minirootfs 3.22.8 for aarch64 as the image's export, all 55 commands were run natively and checked with
+  `Reference::check` against the kernel test crate's own run of the same command on its stand-in CPU (busybox-dev3.log): 55 of 55
+  alike in output, exit code and files, 18.7 s for all, load 3.6. The first try (busybox-dev2.log) differed only in `ls -la`'s
+  times, which led to c51b60e4. Each command 9,000 to 15,000 exits of the machine, 0.15 to 0.27 s (md5sum of busybox 2.0 s).
+
+What comes next for N3, in order:
+1. The bar against the reference, once Docker runs on the Mac: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test
+   busybox` (needs alpine:3.22 for linux/arm64 pulled). Then forks.c against the reference: build it as the kernel test does
+   (`zig cc -target aarch64-linux-musl -O2 -static`), `docker run --rm --platform linux/arm64 -v <dir>:/wc:ro alpine:3.22
+   /wc/forks`; expected the three lines above and exit 3.
+2. The kernel test crate's own tests once Docker is back (`cargo test -p wcontainers-kernel-test --test busybox` at least, after
+   8f902f1c; and run 5's `TestHost` change).
+3. R3's rest (backend answers, network events, notices and signals to the policy; `TestHost`'s `System` on `TestPolicy`).
 
 ## N3 run 5 (2026-11-19)
 
@@ -792,9 +848,12 @@ From the checkout, in the Nix shell:
   7 minutes);
 - the monitor's translate answer through a link page: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor
   --lib`;
-- N3's kernel and loop inside the machine against the same kernel, loop and policy on the WebAssembly CPU side, hello and
-  the getppid exit count: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test kernel` (knob
+- N3's kernel and loop inside the machine against the same kernel, loop and policy on the WebAssembly CPU side, hello,
+  the getppid exit count and the fork, exec and signal program: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test kernel` (knob
   `WCONTAINERS_KERNEL_SEED`, seeds the policy and the random bytes; about 8 s once built);
+- N3's bar, the busybox `text` and `files` commands in the kernel inside against the reference (needs Docker and alpine:3.22):
+  `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test busybox` (knob `WCONTAINERS_KERNEL_SEED`; about 20 s for
+  the native side's 55 runs, plus Docker's);
 - N3's native CPU side against the WebAssembly one on static programs: `nix develop -c cargo test -j 4 -p
   wcontainers-hypervisor --test exits` (both modes; `WCONTAINERS_EXITS_EXACT=0` or `1` runs one; about 1 s);
 - N2's tests without the machine: `nix develop -c cargo test -j 4 -p wcontainers-arm64 --test native_routes --test encode --
@@ -1120,12 +1179,22 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 ## Departures from the plan
 
+- N3 run 6, the bar runs from the monitor's own test (tests/busybox.rs), not from a `native` feature of the kernel test
+  crate's driver as run 5 expected: the driver would have had to build, sign and boot the inside. The kernel test crate only
+  made its commands, `each` and the reference's check public (8f902f1c), so neither the list nor the check exists twice.
+- N3 run 6, a turn with a limit ends exactly at look-ahead none, by the inside between pieces (plan 5.5 said such a turn is
+  refused until decision 10). It needs no check in translated code and no ruling while every piece returns to the inside;
+  from N4 the refusal of plan 5.5 applies again unless the owner has ruled.
+- N3 run 6, `native-kernel` makes its CPU side with the count (exact replay): the test crate's policy counts its turns.
+- N3 run 6, the root's files come back through a container request (`RootFile`) after the run, carried as a postcard of the
+  kernel's `FileRecord` through serde's remote derive, so the kernel crate is unchanged.
+
 - N3 run 5, R1 and a first R3 were made by this track (plan 6.2 says by the runtime and kernel tracks, or by this track if
   they agree; no ruling came in four runs). R1 is the plan's form (a std feature; the loop `no_std`). R3 is smaller than the
   plan's: `System` is not split into two traits; a policy is a type generic over its services (`TestPolicy<H: Host>`), and
   only the test crate's seeded turns and clocks moved; the shipped `LocalSystem` is not split yet.
-- N3 run 5, the native `Execution` refuses a turn with a limit (decision 10) and tells counter reads no progress (the
-  progress before one is handed with the next exit).
+- N3 run 5, the native `Execution` tells counter reads no progress (the progress before one is handed with the next exit).
+  (It also refused a turn with a limit; run 6 ends such a turn between pieces instead.)
 - N3 run 5, `TestPolicy` refuses connections, lookups, listeners and a file backend as unsupported, counted, until the
   outside's events reach the policy.
 
@@ -1225,6 +1294,13 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N3 run 6: the bar is built but has not run against the reference: Docker Desktop on the Mac was "unable to start" all run and
+  the rented ARM machine was unreachable. The bar must run on the Mac (Hypervisor.framework). Also: wcontainers-kernel-test
+  changed again (8f902f1c: the busybox commands and the reference check made public for the native test; no behaviour change),
+  and the monitor now has that GPL-2.0-only crate as a dev-dependency (test only, never shipped). For the owner: a native turn
+  with a limit now ends exactly at look-ahead none, by the inside between pieces (no check in translated code); decision 10 is
+  still needed from N4, when pieces are linked.
 
 - N3 run 5: R1 and a first R3 are built on this branch in commits of their own (8463b5ec in wcontainers-runtime, 07c64ff0 a
   new crate wcontainers-kernel-test-policy and wcontainers-kernel-test's driver.rs, 0e690abf one line of the kernel's

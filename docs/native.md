@@ -692,8 +692,9 @@ these names (suggested; the owner chooses names):
 - "step handed to a virtual CPU": each `Container::step` a caller makes is one handoff to a pool thread and
   back (section 6.1), where `Container::run` hands over once and runs `drive` inside;
 - "turn limited by a count" (only under option B of decision 10);
-- "turn limited by a count alone" (until the owner rules on decision 10: such a turn is answered as
-  `Failure`, never run past its limit, section 5.5);
+- "turn limited by a count alone" (from N4, with linked pieces, until the owner rules on decision 10: such a
+  turn is answered as `Failure`, never run past its limit; at look-ahead none the inside ends it between
+  pieces, section 5.5);
 - "address-space identifiers ran out" (a new generation and one whole invalidation, section 5.2);
 - "guest-physical space full" (a request for memory fails at the bound of section 5.1);
 - "address above the ceiling" (a request for an address at or above the native ceiling fails until moving
@@ -1149,10 +1150,15 @@ next exit, as `LocalSystem`'s would.
   is the owner's (decision 10): option A changes turns to end at a position or when stopped (R4); option B
   translates a container whose policy gives count limits with the replay check's compare at every counted
   event, against the thread page's limit word; decision 10 says what each option costs and option C, which
-  needs an experiment. Until the owner rules, the native back end answers such a turn as `Failure` (named
-  "turn limited by a count alone"), never by running past it. A turn with no limit (`limit: None`, which the
-  test crate's `System` gives when the kernel gives no slice: a single thread with no deadline and no CPU timer) runs
-  until it exits, so N3's single-process programs need no ruling; N5's suites wait for it (section 9).
+  needs an experiment. At look-ahead none with nothing linked (N3), every piece is one instruction and comes
+  back to the inside, which so sees every instruction boundary: it ends the turn at the first boundary where
+  the thread's count has gone `n` past the turn's start, with no check in translated code (built at N3, run 6;
+  the count must be in the pieces, so a process without exact replay refuses such a turn as `Failure`,
+  "turn limit without the count"). Once pieces are linked (N4) the inside no longer sees every boundary, and
+  until the owner rules on decision 10 such a turn is answered as `Failure` there (named "turn limited by a
+  count alone"), never by running past it. A turn with no limit (`limit: None`, which the test crate's
+  `System` gives when the kernel gives no slice: a single thread with no deadline and no CPU timer) runs until
+  it exits.
 - **An event from outside** is a real interrupt raised from a host thread: Hypervisor.framework's
   `hv_gic_set_spi` (Apple's documentation, macOS 15 and later; the round 3 prototype made the same GIC with
   `hv_gic_create`, hvfrun.c, but raised only its timer through it), KVM's `KVM_IRQFD` or `KVM_IRQ_LINE` with
@@ -1679,7 +1685,13 @@ the ruling).
   and files inside Hypervisor.framework at look-ahead none. Those runs are single-process with no timer and
   nothing owed by a test backend, so the test crate's `System` gives them turns with no limit (ktest/driver.rs:
   668-683, kernel/task.rs:43-60). The second run of `compare` (the root on the test backend, whose owed
-  answers give count limits) waits for decision 10 and N5.
+  answers give count limits) waits for decision 10 and N5. How it runs (N3 run 6): the monitor's test
+  crates/wcontainers-hypervisor/tests/busybox.rs takes the commands, the reference image, the reference's run
+  and the comparison from the kernel test crate (`busybox::TEXT`, `FILES`, `Reference`, made public there
+  for it), and runs each command in the test program `native-kernel`, which sends the root's files back
+  through the link at the end. Beside the bar, tests/kernel.rs runs a program of this track's that forks,
+  execs itself and takes signals (its turns end at the policy's limits, between pieces, section 5.5) on both
+  outputs.
 - **N4, linking and speed.** Needs T1 (the finder apart from the WebAssembly plans, section 6.2; today
   `plan` and `Finder` are private to the translator, tr/full.rs:44 and :228), by the translator track or by
   this track if it agrees. Bounded and full look-ahead, load-time addresses, linked exits, the entry
