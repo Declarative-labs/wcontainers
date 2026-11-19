@@ -311,6 +311,12 @@ Results (M5 Max, macOS 27.2):
   design 272, half precision (FEAT_FP16) 192, hints of pointer signing and later features 113, SSBS, DIT,
   streaming mode and TCO 64, cache operations of features not offered 12, registers of features not offered
   10, 64-bit pmull 2.
+- The bar's long run, one command (scratch native/n2r5-native1000.sh: `WCONTAINERS_NATIVE_CASES=1000
+  WCONTAINERS_NATIVE_SEED=0x2545f4914f6cdd1d`, the differential test): 1215 forms, 1000 drawn cases each,
+  506,403 of the bar's own and 198,901 left-out words beside them, 1,920,304 cases, 0 failing, in 8579 s
+  (21:35 to 23:58, load 71 to 141). Left out by reason: write back to a transfer register 89,556, store
+  exclusive whose status is also transferred or the base 54,565, load pair into one register 54,115, and the
+  swept ones as above. Log: scratch native/n2r5-native1000.log.
 - The whole suite of what this track owns, once before the push (21:25 to 21:34, load 92 to 135; log scratch
   native/n2r5-suite.log): guest-cpu, arm64 (routing, encoder and the rest), the inside and the monitor (floor
   21 cases and 1 measurement, 0 failed; carry; native as above, 123 s; interrupts as above; the behaviour
