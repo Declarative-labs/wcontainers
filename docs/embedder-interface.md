@@ -67,17 +67,20 @@ Kernel calls that take the embedder take `&mut dyn System`: `Kernel::start`, `ex
 - `on_process_exiting`: when a process is about to be torn down (`exit_group`, the last thread's
   exit, a fatal signal), before any of its threads or memory go: its memory and records are still
   readable. The number stays carried by the zombie until it is reaped (`task_id_free`). When the
-  container's first process ends, every other process is killed first (as Linux's first process
-  of a namespace kills the rest), each announced in turn, then the first; once the container has
-  ended every number still carried is freed.
+  container's first process ends it is announced first; then every other process is killed and
+  announced in turn, before the first's memory goes (Linux's first process of a namespace kills
+  the rest on its way out, `zap_pid_ns_processes`); once the container has ended every number
+  still carried is freed.
 - `on_process_outgrown`: a request for memory would reach past the executor's ceiling: a fixed
   mapping (`MAP_FIXED`, `MAP_FIXED_NOREPLACE`, `MREMAP_FIXED`) or a heap growth (`brk`) ending
-  above it, a program segment the loader would place above it (the loader works on the new
-  program's map before the old one is destroyed), or a placement (mmap, mremap, the loader) that
-  finds no room below it. It fires before the call returns, with the bytes asked for; when it
-  returns the request fails as out of memory (ENOMEM; `brk` returns the old break), counted
-  (`process outgrew the ceiling`) and warned. The ceiling is given at start (`Start::ceiling`, at
-  most the address space's end); with none below the end it never fires.
+  above it, whatever lies in the way (the stack sits just below the ceiling, so heap growth past
+  it is always outgrowing it), a program segment the loader would place above it (the loader
+  works on the new program's map before the old one is destroyed), or a placement (mmap, mremap,
+  the loader) that finds no room below it. The request is refused before it has any effect; the
+  hook fires with the bytes asked for, and only when it returns does the thread get its result,
+  out of memory (ENOMEM; `brk` returns the old break), counted (`process outgrew the ceiling`)
+  and warned. The ceiling is given at start (`Start::ceiling`, at most the address space's end);
+  with none below the end it never fires.
 - The container's address width stays the executor's address space: a fixed request above the
   width fails as before (`address above the address space`). Until low-first placement lands, the
   stack's top and the mmap base are put at the ceiling, so that what is placed stays below it.
@@ -129,7 +132,7 @@ impl ProcessInfo<'_> {
 
 pub enum Watch { None, Writes, All }
 pub enum Access { Read, Write }
-pub enum MemoryError { NotMapped, NotRead, Executor(CpuError) }
+pub enum MemoryError { NotMapped, NotRead, SharedNotWritable, Executor(CpuError) }
 ```
 
 - Hooks receive the handle by value (the owner's agreement of the night of 2026-11-18), so a later
@@ -138,15 +141,22 @@ pub enum MemoryError { NotMapped, NotRead, Executor(CpuError) }
   can still take below the ceiling (the gaps between the heap's end and the mmap base);
   `compute_used` is the CPU time of the live threads plus the ended ones; `parent` is the
   process's parent as `getppid` reports it.
-- `memory_read` and `memory_write` work on mapped ranges whatever their pages allow; a page of a
-  backend file not read yet is `NotRead`. A write makes a private file page the process's own copy
-  first, and is not counted as written by the process.
+- `memory_read` and `memory_write` work on mapped ranges whatever their private pages allow; a
+  page of a backend file not read yet is `NotRead`. A write makes a private file page the
+  process's own copy first, and is not counted as written by the process. A shared page the
+  process may not write is refused (`SharedNotWritable`), as Linux's forced writes (ptrace,
+  `/proc/<pid>/mem`) refuse it: others share it.
 - `memory_watch` is a setting: idempotent, nothing returned. It acts on the mapped pages
-  (`PAGE_SIZE`) the range touches; unmapping a page ends its watch; a fork's child has its parent's
-  watches, as it has its memory; `execve` ends them all with the old memory. `Writes` watches
-  writes; `All` watches reads, writes and running code (running code is reported as `Read`).
-- `memory_changed` answers the pages the process wrote (its threads, and the kernel's copies for
-  it) since it was last asked, as ranges. The first answer is every page mapped writable, since
+  (`PAGE_SIZE`) the range touches. A watch belongs to the page's bytes: unmapping a page ends it;
+  `mremap` takes it along to where the page moves; a fork's child has its parent's watches, as it
+  has its memory, except on pages it gets fresh (`MADV_WIPEONFORK`); `execve` ends them all with
+  the old memory. `Writes` watches writes; `All` watches reads, writes and running code (running
+  code is reported as `Read`).
+- `memory_changed` answers the pages whose bytes the process changed since it was last asked, as
+  ranges: what its threads wrote, what the kernel's copies wrote for it, pages `mremap` moved (at
+  their new place, as Linux's soft-dirty bits mark them) and pages `madvise` put back to zero or
+  to their file (`MADV_DONTNEED`, `MADV_REMOVE`, and the old pages of `MREMAP_DONTUNMAP`). A new
+  mapping is not in it until written. The first answer is every page mapped writable, since
   nothing was recorded before it; from then on the record costs one fault per page per interval. A
   fork's child starts with no record.
 - `memory_watch_thread` is declared for executors that can watch one thread and not its siblings
@@ -166,8 +176,16 @@ described: the reads and writes of data, path and name strings (a page at a time
 structures of the time, signal, scheduling, resource, capability, IPC and message queue calls,
 `fcntl`'s locks and owners, `ioctl` by its request's encoded direction and size or, for the
 terminal requests that predate the encoding, by their structure, `futex` by operation, `prctl`
-and `seccomp` by option. A vfork parent going on after its child let go stores nothing more and
+and `seccomp` by option. Calls that change a page's bytes without copying are described too: a
+move by `mremap` reads the pages it takes along (and with `MREMAP_DONTUNMAP` writes the old
+ones, put back to zero), and `madvise`'s `MADV_DONTNEED`, `MADV_DONTNEED_LOCKED` and
+`MADV_REMOVE` write theirs. A vfork parent going on after its child let go stores nothing more and
 meets nothing.
+
+The walk names what a call's arguments say it may touch, before it knows what it will: a read of
+10 bytes into a 1 MiB buffer meets every watched page of the buffer as a write, and `nanosleep`'s
+remaining time is met as a write though it is written only when the sleep is interrupted. An
+embedder is told of every access that can happen, and of some that then do not.
 
 The kernel's own stores are met the same way before what makes them acts:
 - the ends of the threads a call or signal ends (`exit`; `exit_group` and a fatal signal, every
@@ -208,9 +226,11 @@ A wake made between steps (a watch met through `Kernel::process`) makes `Kernel:
 `Next::Idle` with a time of 0, so the driver's `Event::Timer` lets the kernel settle the woken
 threads before anything runs.
 
-What watching costs: while no process has a watch or a record of written pages, a call or fault
-pays one flag test (`Kernel::watching`), recomputed when watches are set, a program starts, or a
-process ends.
+What watching costs: while no process has a watch or a record of written pages, a call, a
+signal or a fault pays one flag test (`Kernel::watching`), recomputed when watches are set, a
+program starts, or a process ends. Once some process has one, every other process's call and
+signal also looks up whether its own process has watched pages (a map lookup and a test); only a
+process with watched pages walks its calls' descriptions and has its copies checked.
 
 ## Running a process
 

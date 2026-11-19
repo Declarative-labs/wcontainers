@@ -9,8 +9,9 @@ orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
 - S1: complete; its third independent check's findings are settled (see "S1 check findings").
 - S2: built in its first run; its first independent check's ten findings settled in its second run
   (see "S2 check findings"); every item of its bar met, the whole suite at 565881d2 and the speed
-  over five test binaries finished in the fourth run (see "Measurements").
-- What comes next: S2's independent check. Not built and left open on purpose: export of a process
+  over five test binaries finished in the fourth run (see "Measurements"); its second independent
+  check's twelve findings settled in the fifth run (see "S2 second check findings").
+- What comes next: S2's third independent check. Not built and left open on purpose: export of a process
   (`suspend`, `resume`, `SuspendedProcess`, `ExportedProcess`; where they attach is in
   docs/embedder-interface.md), `set_thread_ordering`, the inspection hooks, `StopReason`; ends made
   by connect, accept, export or import; `/dev/console` under `-t`.
@@ -44,8 +45,10 @@ What exists (signatures and firing points in docs/embedder-interface.md):
   touches and what thread ends touch; task.rs walks it before a call, signal.rs before a signal or
   an rseq check; `Guest::accessible` checks each copy against the description and treats a watched
   page as not there; a program's fault on a watched page announces the hook.
-- test host: `hooks::Hooks` (the test's side of every hook and task id call, plus a call between
-  steps), `driver::Prepared::{hooks, ceiling}`, `busybox::run_ours_hooked`.
+- test host: `driver::TestHost<H>`: with `hooks::NoHooks` (every test but the embedder's) it
+  overrides nothing of `System`, so the kernel's own provided defaults answer; with
+  `Box<dyn hooks::Hooks>` (the test's side of every hook and task id call, plus a call between
+  steps) it forwards them. `driver::Prepared::{hooks, ceiling}`, `busybox::run_ours_hooked`.
 
 The bar, item by item (tests/embedder.rs, guest/embedder.c; this Mac, seeds 1 to 3 unless said):
 - Each hook's firing point and order over fork, exec, thread creation and exit:
@@ -136,23 +139,72 @@ Found on the way, fixed:
 - [minor] A fault's span is looked at only when the CPU side allows the access all of the faulting
   page (no watch, no held-back write, no copy-on-write, no backend page not read). Test
   `an_access_that_ends_before_a_watched_page_does_not_announce_it` (the check's case).
-- [minor] When the first process ends, every other process is ended first (SIGKILL, as
-  `zap_pid_ns_processes`), each with `on_process_exiting`, and every number still carried is freed
-  once the container has ended.
+- [minor] When the first process ends, every other process is killed (SIGKILL, as
+  `zap_pid_ns_processes`), each with `on_process_exiting` (after the first's, see the second
+  check), and every number still carried is freed once the container has ended.
 - [minor] The order test now has a second program (`paths`): death by a fatal signal, `execve` from
   a second thread (its old number freed after `on_program_starting`), vfork, a group leader reaped
   while its group lives on (its number freed only when the grandchild leaves by `setpgid`, then by
   `setsid`, after a child made in between), and a child whose parent ignores SIGCHLD. Exact order
   at seeds 1 to 3.
 - [minor] Speed over more than one test: see "Measurements".
-- [minor] embedder.c defines no constant of the test's any more: the buffer's address and pages
-  come as arguments, the page size from `sysconf`, and the number of calls is printed by the
-  program from its own table.
+- [minor] embedder.c's constants: the buffer's address and pages come as arguments, the page size
+  from `sysconf`, and the number of calls is printed by the program from its own table (the size
+  `outgrow` maps was still a literal on both sides; see the second check).
 - [minor] `task_id_allocate`: an answer out of range fails at once (`task id out of range`,
   EAGAIN); each carried answer is counted (`task id still carried`) before the next try. The
   `previous` argument stays (the default counter needs it) and is listed for the owner.
 - [minor] `Kernel::watching` is recomputed (any process with watches or a record) when watches
   change, a program starts and a process ends, instead of staying on.
+
+## S2 second check findings, settled in the fifth run
+
+- [blocking] mremap dropped watches and left moved pages out of the record. A watch now belongs to
+  its page's bytes: a move's walk meets the pages it takes along as reads (an `All` watch fires
+  where the page is, so lazy memory fills it before it moves), the remaining watches go along to
+  the new place, and the moved pages are noted written there (as Linux's soft-dirty bits). The
+  same gap was in `madvise`: `MADV_DONTNEED`, `MADV_DONTNEED_LOCKED` and `MADV_REMOVE` are met as
+  writes and their pages noted written, as are the old pages of `MREMAP_DONTUNMAP`; a fork's
+  child's pages wiped by `MADV_WIPEONFORK` lose their watches. Test
+  `watches_and_the_record_follow_pages_moved_or_dropped` (a child moves 4 watched pages with
+  `MREMAP_FIXED`, sums them, writes the last, drops the next page of the buffer): the same output
+  as with no hooks (`dropped 0`, as Linux), hooks exactly [read at pages 0, 1, 2 where they were,
+  write at the carried page where it landed, write at the dropped page], record exactly the 4
+  moved pages where they landed and the dropped one.
+- [blocking] The first process's end: the document said the others were announced first; the
+  code (and Linux, whose first process kills the rest after its own memory is gone) announces the
+  first, then each other. The document now says so. Test
+  `the_first_process_is_announced_ending_before_the_others_it_takes_along`: exactly starting(1),
+  program(1), starting(2, parent 1), exiting(1), exiting(2), free(1), free(2), exit status 3.
+- [blocking] brk past the ceiling could never be announced: the stack (just below the ceiling)
+  was met first. Growth ending above the ceiling is now outgrowing it, checked before what lies in
+  the way. Test `heap_growth_past_the_ceiling_is_announced_and_fails_as_out_of_memory` (the buffer
+  unmapped, brk grown by 1 GiB): with a 1 GiB ceiling announced once with 1 GiB, refused, counted
+  once; with none it grows.
+- [blocking] The size `outgrow` maps was a literal in embedder.c and `PIECE` in the test: it is now
+  an argument, `PIECE` its one definition.
+- [minor] `on_process_outgrown`'s moment: every place that decides it does so before the request
+  has any effect (`MREMAP_FIXED`'s ceiling check moved before it unmaps the destination), and the
+  thread gets its result only after the hook returns, so a later `suspend` in the hook can run the
+  call again. `find_free` notes nothing without a ceiling, and the note is taken after every call.
+- [minor] The cost of watching is confined: a call or signal walks its description only when its
+  own process has watched pages (`Kernel::watched`, after the kernel-wide flag). Not measured.
+- [minor] The test host's defaults: with no hooks the host is `TestHost<NoHooks>`, which overrides
+  nothing of `System`, so the whole suite runs the kernel's own provided defaults; only the
+  embedder's tests go through `Hooks`, whose no-op methods are the tests' convenience.
+- [minor] The two task id departures (no generation, the `previous` argument) are now under
+  "Departures".
+- [minor] The walk announces what a call's arguments name, not what it writes: kept (nothing else
+  is known before the call runs), now said in the document and under "Departures".
+- [minor] `memory_write` into a shared page the process may not write is refused
+  (`MemoryError::SharedNotWritable`), as Linux's `check_vma_flags` refuses a forced write there.
+  Test `a_read_only_shared_page_is_not_written_by_the_embedder` (a read-only shared memfd page):
+  refused, the file and the mapping still read `x`.
+- [minor] The first program is told apart by the kernel having no first process yet
+  (`Kernel::init`), not by `MemoryId(0)`; the placeholder id stays only until that program's
+  memory exists, and nothing reads it.
+- [minor] `/proc/self/status` printing one `Vm` line where the reference prints 12: outside this
+  track (the kernel track's `/proc`, counted as `proc fields not tracked`); left to it.
 
 ## Measurements
 
@@ -231,6 +283,13 @@ Found on the way, fixed:
   them wcontainers-kernel 2269, wcontainers-kernel-test 2434, wcontainers-abi 4, and 11 policy lines
   (the kernel's generated Linux files only). After this run: 3 lines fewer (the moved `"/"` in
   busybox.rs, now `ROOT_DIRECTORY`, and the two `!15` of the frame, now `STACK_ALIGNMENT`).
+- After the fifth run: 7589 lines; wcontainers-kernel 2257, wcontainers-kernel-test 2423,
+  wcontainers-abi 4. The fifth run named what the driver's renamed functions held (the notices'
+  salts and gap, the chance of a second answer in a turn, a turn's time ranges, the backend's
+  root) and kept the clock step in `TestHost::ran` (an associated function now, so the generic host
+  keeps its key). Its `1000` (picoseconds in a nanosecond) stays: as a named constant the check
+  takes three test inputs of 1000 elsewhere in the crate for restatements of it, and as a mark it
+  says 1000 has a name (`AUDIT_GET`).
 - The check's list of changes that could add lines: one, `da21d326f277 the start`.
 - Still waiting for their owners: reference.rs `125`, `127` (Docker's failure statuses; the abi's
   `exit` module, runtime track) and tty.rs `"/dev/pts/{index}"` (the kernel track's path separator).
@@ -275,6 +334,13 @@ anything shipped.
   hook, until inspection is built), and thread-end stores when the container ends.
 - The first process's end now kills the others in the kernel (Docker kills them from outside), so
   each is announced and its number freed.
+- Task ids: the embedder's id carries no generation (the earlier ruling said it would): the
+  embedder hands out every number and hears when each is free, so a number it keeps never names
+  another process without its knowing. `task_id_allocate` takes `previous`, the id handed out
+  last, which the owner's names do not have: the provided default counter needs it, since a
+  trait's default method keeps no state. Both for the owner to confirm.
+- `on_memory_accessing` before a call is announced for what the call's arguments name, which can
+  be more than it then writes (a short read, `nanosleep`'s remaining time).
 - `Access` is the kernel's own two-variant enum; the abi's `Access` (with `Execute`) stays for
   faults. Running code on a watched page is reported as `Read`.
 - Watch waits are not ended by signals, as backend waits are not.
