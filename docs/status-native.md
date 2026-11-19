@@ -127,7 +127,14 @@ interrupts 3443 at none, bounded 3 and full, 0 failed; kernel alike at none and 
 set's count the same at both (n4r9/kernel4.log, load 7 to 16); busybox 56 commands gave the reference's output, exit
 code and files at none and 256 (n4r9/busybox.log, load 8 to 16); arm64, guest-cpu and the translator (native feature)
 pass and clippy with warnings denied is clean on the rented ARM64 machine (arm64, translator, guest-cpu, inside, and the
-no_std cores); hypervisor and translator clippy clean on the Mac; the literal check exits 0.
+no_std cores); hypervisor and translator clippy clean on the Mac; the literal check exits 0. The differential test at
+three look-aheads with new seeds, 0 failing each (n4r9/native-*.log, load 8 to 19): none 32,316 cases (seed
+0x6e34720811), bounded 16 32,267 (0x6e34720820), bounded 256 32,349 (0x6e34720910). At whole-page look-ahead
+(`WCONTAINERS_NATIVE_BOUND=4294967295`, the same walk as full): kernel alike at none and whole page with the reference,
+the benchmark set's count the same at both, and busybox's 56 commands gave the reference's output, exit code and files
+(n4r9/whole-page.log, load 10 to 14). A unit test of a piece's shape (e24abc61, crates/wcontainers-hypervisor/src/
+translate.rs): a loop held whole with its branch back linked inside, the code after it an exit, a call's next
+instruction left out. literals.baseline did not change this run; no marks.
 
 What N4 still needs, in order:
 1. The compute part of the bar. What is left is mostly calls, returns and jumps through a register (two indirect
@@ -1694,7 +1701,7 @@ checked equal. M5 Max, macOS 27.2, 2026-11-18 16:44 to 16:57, load 37 to 73. One
 
 From the checkout, in the Nix shell (on the Mac set CARGO_INCREMENTAL=0):
 - the look-ahead the monitor translates at in the exits, kernel and busybox tests: `WCONTAINERS_NATIVE_BOUND`, the most
-  instructions in a piece (1 is look-ahead none; default 256); the kernel and busybox tests run every native container at
+  instructions in a piece (1 is look-ahead none; default 256; 4294967295 reaches the whole page, as full does); the kernel and busybox tests run every native container at
   look-ahead none and at that bound and require them to agree, the count at every stop included;
 - N2's tests on the machine (each signs a copy of itself, as the floor test does):
   `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test native` (knobs `WCONTAINERS_NATIVE_CASES`
