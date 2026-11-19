@@ -4,8 +4,8 @@
 //! `depth_filter` (an `R32_FLOAT` depth and a colour texture sampled through one linear
 //! sampler), `deep` (a depth buffer larger than its target), `msaa_copy` (a copy between
 //! multisampled textures), `stream` (stream output whose stream is also drawn), `early`
-//! (`[earlydepthstencil]` with storage writes, depth writes off) and `early_writes` (the same with
-//! depth writes on). Shaders are compiled by
+//! (`[earlydepthstencil]` with storage writes, depth writes off), `early_writes` (the same with
+//! depth writes on) and `stencil` (a stencil view read after clears and a stencil draw). Shaders are compiled by
 //! the system's d3dcompiler_47.dll. Prints each answer and the resources' bytes as hex, for
 //! comparing with real Direct3D line by line.
 
@@ -537,6 +537,98 @@ fn main() -> windows::core::Result<()> {
             }
             print("target", &target, 4);
             print("depth", &depth, 4);
+        }
+        "stencil" => {
+            // A stencil view read after a clear of the stencil alone, after a stencil
+            // replacing draw, and beside a depth view of the same texture.
+            let target = make(
+                &Tex {
+                    w: 4,
+                    h: 4,
+                    format: DXGI_FORMAT_R32G32B32A32_FLOAT,
+                    samples: 1,
+                    bind: D3D11_BIND_RENDER_TARGET,
+                },
+                None,
+            )?;
+            let depth = make(
+                &Tex {
+                    w: 4,
+                    h: 4,
+                    format: DXGI_FORMAT_R24G8_TYPELESS,
+                    samples: 1,
+                    bind: D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE,
+                },
+                None,
+            )?;
+            let mut dsv = None;
+            let desc = D3D11_DEPTH_STENCIL_VIEW_DESC {
+                Format: DXGI_FORMAT_D24_UNORM_S8_UINT,
+                ViewDimension: D3D11_DSV_DIMENSION_TEXTURE2D,
+                ..Default::default()
+            };
+            unsafe { device.CreateDepthStencilView(&depth, Some(&desc), Some(&mut dsv))? };
+            let stencil = srv(&depth, DXGI_FORMAT_X24_TYPELESS_G8_UINT);
+            let depth_view = srv(&depth, DXGI_FORMAT_R24_UNORM_X8_TYPELESS);
+            let read = ps("Texture2D<uint4> t : register(t0); Texture2D d : register(t1);
+                float4 main(float4 p : SV_Position) : SV_Target {
+                    float2 s; t.GetDimensions(s.x, s.y);
+                    return float4(t.Load(int3(p.xy, 0)).y, t[uint2(p.xy)].y, s.x, d.Load(int3(p.xy, 0)).r);
+                }");
+            let mut replace = None;
+            let op = D3D11_DEPTH_STENCILOP_DESC {
+                StencilFailOp: D3D11_STENCIL_OP_KEEP,
+                StencilDepthFailOp: D3D11_STENCIL_OP_KEEP,
+                StencilPassOp: D3D11_STENCIL_OP_REPLACE,
+                StencilFunc: D3D11_COMPARISON_ALWAYS,
+            };
+            let dss = D3D11_DEPTH_STENCIL_DESC {
+                DepthEnable: false.into(),
+                DepthWriteMask: D3D11_DEPTH_WRITE_MASK_ZERO,
+                DepthFunc: D3D11_COMPARISON_ALWAYS,
+                StencilEnable: true.into(),
+                StencilReadMask: D3D11_DEFAULT_STENCIL_READ_MASK as u8,
+                StencilWriteMask: D3D11_DEFAULT_STENCIL_WRITE_MASK as u8,
+                FrontFace: op,
+                BackFace: op,
+            };
+            unsafe { device.CreateDepthStencilState(&dss, Some(&mut replace))? };
+            let rt = rtv(&target);
+            let none = ps("float4 main(float4 p : SV_Position) : SV_Target { return 0; }");
+            unsafe {
+                context.VSSetShader(vs(FULL).as_ref(), None);
+                viewport(4, 4);
+                context.ClearDepthStencilView(
+                    dsv.as_ref().unwrap(),
+                    D3D11_CLEAR_DEPTH.0 | D3D11_CLEAR_STENCIL.0,
+                    0.5,
+                    0,
+                );
+                context.ClearDepthStencilView(
+                    dsv.as_ref().unwrap(),
+                    D3D11_CLEAR_STENCIL.0,
+                    0.0,
+                    100,
+                );
+            }
+            let draw_read = |what: &str| unsafe {
+                context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
+                context.OMSetDepthStencilState(None, 0);
+                context.PSSetShader(read.as_ref(), None);
+                context.PSSetShaderResources(0, Some(&[stencil.clone(), depth_view.clone()]));
+                context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0; 4]);
+                context.Draw(3, 0);
+                context.PSSetShaderResources(0, Some(&[None, None]));
+                print(what, &target, 16);
+            };
+            draw_read("after clear");
+            unsafe {
+                context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), dsv.as_ref());
+                context.OMSetDepthStencilState(replace.as_ref(), 7);
+                context.PSSetShader(none.as_ref(), None);
+                context.Draw(3, 0);
+            }
+            draw_read("after replace");
         }
         "msaa_copy" => {
             let ms = |bind| Tex {

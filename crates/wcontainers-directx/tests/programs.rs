@@ -272,6 +272,11 @@ fn early_depth_tests_before_storage_writes_writing_depth_as_direct3d_does() {
 }
 
 #[test]
+fn stencil_views_read_the_stencil_as_direct3d_does() {
+    case("stencil");
+}
+
+#[test]
 fn minimum_level_clamps_and_both_helper_blocks_as_direct3d_does() {
     let (code, want) = run("own_min_lod", &place("min-lod-system", false));
     assert_eq!(code, 0, "{want}");
