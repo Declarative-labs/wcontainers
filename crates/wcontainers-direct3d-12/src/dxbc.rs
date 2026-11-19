@@ -28,50 +28,138 @@ pub struct TypedView {
 
 /// `D3D10_SB_OPCODE_DCL_RESOURCE`.
 const DCL_RESOURCE: u32 = 88;
-/// `D3D11_SB_OPCODE_DCL_UNORDERED_ACCESS_VIEW_TYPED`.
+/// `D3D11_SB_OPCODE_DCL_UNORDERED_ACCESS_VIEW_TYPED`, `..._RAW` and `..._STRUCTURED`.
 const DCL_UAV_TYPED: u32 = 156;
+const DCL_UAV_RAW: u32 = 157;
+const DCL_UAV_STRUCTURED: u32 = 158;
+/// `D3D11_SB_OPCODE_DCL_RESOURCE_RAW` and `..._STRUCTURED`.
+const DCL_RESOURCE_RAW: u32 = 161;
+const DCL_RESOURCE_STRUCTURED: u32 = 162;
 /// `D3D10_SB_OPCODE_CUSTOMDATA`, whose length is the word after its opcode.
 const CUSTOMDATA: u32 = 53;
 /// `D3D10_SB_RESOURCE_DIMENSION_BUFFER` and `..._TEXTURE2DMSARRAY`.
 const DIMENSION_BUFFER: u32 = 1;
 const DIMENSION_2D_MS_ARRAY: u32 = 9;
+/// An operand's index dimension with one index (a register, shader model 5.0) and with three
+/// (an identifier and the range's bounds, shader model 5.1, whose declarations end in their space).
+const ONE_INDEX: u32 = 1;
+const RANGE_INDICES: u32 = 3;
+/// `D3D10_SB_OPCODE_TYPE_MASK`.
+const OPCODE_TYPE_MASK: u32 = 0x7ff;
+/// `D3D10_SB_RESOURCE_DIMENSION_MASK` and its shift.
+const RESOURCE_DIMENSION_SHIFT: u32 = 11;
+const RESOURCE_DIMENSION_MASK: u32 = 0x1f;
+/// The bit of an opcode or operand token saying an extended token follows.
+const EXTENDED_SHIFT: u32 = 31;
+/// `D3D10_SB_OPERAND_INDEX_DIMENSION_MASK` and its shift.
+const INDEX_DIMENSION_SHIFT: u32 = 20;
+const INDEX_DIMENSION_MASK: u32 = 3;
+/// `D3D10_SB_RESOURCE_RETURN_TYPE_MASK` of the x component and the return types.
+const RETURN_TYPE_MASK: u32 = 0xf;
+const RETURN_TYPE_UNORM: u32 = 1;
+const RETURN_TYPE_SNORM: u32 = 2;
+const RETURN_TYPE_SINT: u32 = 3;
+const RETURN_TYPE_UINT: u32 = 4;
+const RETURN_TYPE_FLOAT: u32 = 5;
+
+/// One view declaration: an unordered access view (else a shader resource view), its (space,
+/// register) place, its dimension and its opcode.
+struct Declared {
+    storage: bool,
+    place: (u32, u32),
+    dimension: u32,
+    opcode: u32,
+    /// Its return type's x component, for typed views.
+    kind: Option<Kind>,
+}
+
+/// Every view `code` declares and whether they are numbered as Direct3D 12 numbers them (shader
+/// model 5.1); `None` where it holds no DXBC program chunk or its tokens are malformed.
+fn views(code: &[u8]) -> Option<(Vec<Declared>, bool)> {
+    let mut views = Vec::new();
+    let mut spaces = false;
+    declarations(code, |opcode, instruction| {
+        let storage = match opcode & OPCODE_TYPE_MASK {
+            DCL_UAV_TYPED | DCL_UAV_RAW | DCL_UAV_STRUCTURED => true,
+            DCL_RESOURCE | DCL_RESOURCE_RAW | DCL_RESOURCE_STRUCTURED => false,
+            _ => return Some(()),
+        };
+        let (place, ranged, kind) = view(instruction)?;
+        spaces |= ranged;
+        views.push(Declared {
+            storage,
+            place,
+            dimension: (opcode >> RESOURCE_DIMENSION_SHIFT) & RESOURCE_DIMENSION_MASK,
+            opcode: opcode & OPCODE_TYPE_MASK,
+            kind,
+        });
+        Some(())
+    })?;
+    Some((views, spaces))
+}
+
+/// The slot of each of `views`: its register under Direct3D 11's numbering, its place among its
+/// kind's views in (space, register) order under Direct3D 12's (`spaces`), as the converter
+/// numbers them.
+fn slots(views: &[Declared], spaces: bool) -> Vec<u32> {
+    let all = |storage: bool| {
+        let places: Vec<_> = views
+            .iter()
+            .filter(|v| v.storage == storage)
+            .map(|v| v.place)
+            .collect();
+        crate::dxil::sorted_places(&places)
+    };
+    let (uavs, srvs) = (all(true), all(false));
+    views
+        .iter()
+        .map(|v| match spaces {
+            true => crate::dxil::slot(if v.storage { &uavs } else { &srvs }, v.place),
+            false => v.place.1,
+        })
+        .collect()
+}
 
 /// The typed unordered access views and typed buffers `code` declares (shader resource views of
 /// textures left out); `None` where `code` holds no DXBC program chunk or its tokens are
 /// malformed.
 pub fn typed_views(code: &[u8]) -> Option<Vec<TypedView>> {
-    let mut views = Vec::new();
-    declarations(code, |opcode, instruction| {
-        let dimension = (opcode >> 11) & 0x1f;
-        let buffer = dimension == DIMENSION_BUFFER;
-        let storage = match opcode & 0x7ff {
+    let (views, spaces) = views(code)?;
+    let slots = slots(&views, spaces);
+    let typed = views.iter().zip(slots).filter_map(|(v, slot)| {
+        let buffer = v.dimension == DIMENSION_BUFFER;
+        let typed = match v.opcode {
             DCL_UAV_TYPED => true,
-            DCL_RESOURCE if buffer => false,
-            _ => return Some(()),
+            DCL_RESOURCE => buffer,
+            _ => false,
         };
-        let (register, kind) = typed_view(instruction)?;
-        views.push(TypedView {
-            storage,
-            buffer,
-            slot: register,
-            kind,
-        });
-        Some(())
-    })?;
-    Some(views)
+        typed.then_some((v, buffer, slot))
+    });
+    typed
+        .map(|(v, buffer, slot)| {
+            Some(TypedView {
+                storage: v.storage,
+                buffer,
+                slot,
+                kind: v.kind?,
+            })
+        })
+        .collect()
 }
 
 /// The texture slots of the multisampled array textures (`Texture2DMSArray`) `code` declares;
 /// `None` where it holds no DXBC program chunk or its tokens are malformed.
 pub fn multisampled_arrays(code: &[u8]) -> Option<Vec<u32>> {
-    let mut slots = Vec::new();
-    declarations(code, |opcode, instruction| {
-        if opcode & 0x7ff == DCL_RESOURCE && (opcode >> 11) & 0x1f == DIMENSION_2D_MS_ARRAY {
-            slots.push(typed_view(instruction)?.0);
-        }
-        Some(())
-    })?;
-    Some(slots)
+    let (views, spaces) = views(code)?;
+    let slots = slots(&views, spaces);
+    Some(
+        views
+            .iter()
+            .zip(slots)
+            .filter(|(v, _)| v.opcode == DCL_RESOURCE && v.dimension == DIMENSION_2D_MS_ARRAY)
+            .map(|(_, slot)| slot)
+            .collect(),
+    )
 }
 
 /// Calls `f` with each instruction's opcode token and words; `None` where `code` holds no
@@ -82,7 +170,7 @@ fn declarations(code: &[u8], mut f: impl FnMut(u32, &[u32]) -> Option<()>) -> Op
     let mut at = 2;
     while at < tokens.len() {
         let opcode = tokens[at];
-        let length = match opcode & 0x7ff {
+        let length = match opcode & OPCODE_TYPE_MASK {
             CUSTOMDATA => *tokens.get(at + 1)? as usize,
             _ => ((opcode >> 24) & 0x7f) as usize,
         };
@@ -95,38 +183,46 @@ fn declarations(code: &[u8], mut f: impl FnMut(u32, &[u32]) -> Option<()>) -> Op
     Some(())
 }
 
-/// One `dcl_uav_typed` or `dcl_resource`: the opcode, its extended tokens, the operand with its
-/// indices (one in shader model 5.0; the identifier and the range's bounds in 5.1), then the
-/// return type token.
-fn typed_view(instruction: &[u32]) -> Option<(u32, Kind)> {
+/// One view declaration: the opcode, its extended tokens, the operand with its indices (one in
+/// shader model 5.0; the identifier and the range's bounds in 5.1), then for typed views the
+/// return type token, for structured ones the stride, and in 5.1 the space last. Gives the
+/// (space, register) place, whether the operand names a range (5.1), and the return type's x
+/// component where the declaration is typed and names one.
+fn view(instruction: &[u32]) -> Option<((u32, u32), bool, Option<Kind>)> {
     let mut at = 1;
-    let mut extended = instruction[0] >> 31 != 0;
+    let mut extended = instruction[0] >> EXTENDED_SHIFT != 0;
     while extended {
-        extended = *instruction.get(at)? >> 31 != 0;
+        extended = *instruction.get(at)? >> EXTENDED_SHIFT != 0;
         at += 1;
     }
     let operand = *instruction.get(at)?;
     at += 1;
-    let mut extended = operand >> 31 != 0;
+    let mut extended = operand >> EXTENDED_SHIFT != 0;
     while extended {
-        extended = *instruction.get(at)? >> 31 != 0;
+        extended = *instruction.get(at)? >> EXTENDED_SHIFT != 0;
         at += 1;
     }
     // Every index is an immediate word.
-    let register = match (operand >> 20) & 3 {
-        1 => *instruction.get(at)?,
-        3 => *instruction.get(at + 1)?,
+    let indices = (operand >> INDEX_DIMENSION_SHIFT) & INDEX_DIMENSION_MASK;
+    let (register, ranged) = match indices {
+        ONE_INDEX => (*instruction.get(at)?, false),
+        RANGE_INDICES => (*instruction.get(at + 1)?, true),
         _ => return None,
     };
-    at += ((operand >> 20) & 3) as usize;
-    // The x component's `D3D10_SB_RESOURCE_RETURN_TYPE`.
-    let kind = match *instruction.get(at)? & 0xf {
-        1 | 2 | 5 => Kind::Float,
-        3 => Kind::Sint,
-        4 => Kind::Uint,
-        _ => return None,
+    at += indices as usize;
+    let space = match ranged {
+        true => *instruction.last()?,
+        false => 0,
     };
-    Some((register, kind))
+    let kind = instruction
+        .get(at)
+        .and_then(|t| match t & RETURN_TYPE_MASK {
+            RETURN_TYPE_UNORM | RETURN_TYPE_SNORM | RETURN_TYPE_FLOAT => Some(Kind::Float),
+            RETURN_TYPE_SINT => Some(Kind::Sint),
+            RETURN_TYPE_UINT => Some(Kind::Uint),
+            _ => None,
+        });
+    Some(((space, register), ranged, kind))
 }
 
 /// The bytes of a container's first chunk named `fourcc`.
@@ -252,14 +348,28 @@ mod tests {
     }
 
     #[test]
-    fn shader_model_5_1_views_name_their_range_start() {
-        // dcl_uav_typed_texture2darray (uint,uint,uint,uint) U0[4:4], space=0.
+    fn shader_model_5_1_views_take_their_place_by_space_and_register() {
+        // dcl_uav_typed_texture2darray (uint,uint,uint,uint) U0[4:4], space=0;
+        // dcl_uav_raw U1[0:0], space=1; dcl_uav_typed_buffer (float) U2[2:2], space=0;
+        // dcl_resource_buffer (sint) T0[7:7], space=3. Unordered access views in (space, register)
+        // order: (0, 2), (0, 4), (1, 0); the shader resource view alone.
         let operand = 0x0030_1000 | (30 << 12);
+        let srv = 0x0030_1000 | (7 << 12);
         let decl = DCL_UAV_TYPED | (8 << 11) | (7 << 24);
-        let tokens = [0x51, 0, decl, operand, 0, 4, 4, 0x4444, 0];
+        let raw = DCL_UAV_RAW | (1 << 11) | (6 << 24);
+        let buffer = DCL_UAV_TYPED | (1 << 11) | (7 << 24);
+        let srv_buffer = DCL_RESOURCE | (1 << 11) | (7 << 24);
+        let tokens = [
+            0x51, 0, decl, operand, 0, 4, 4, 0x4444, 0, raw, operand, 1, 0, 0, 1, buffer, operand,
+            2, 2, 2, 0x5555, 0, srv_buffer, srv, 0, 7, 7, 0x3333, 3,
+        ];
         assert_eq!(
             typed_views(&container(&tokens)),
-            Some(vec![view(true, false, 4, Kind::Uint)])
+            Some(vec![
+                view(true, false, 1, Kind::Uint),
+                view(true, true, 0, Kind::Float),
+                view(false, true, 0, Kind::Sint),
+            ])
         );
     }
 }

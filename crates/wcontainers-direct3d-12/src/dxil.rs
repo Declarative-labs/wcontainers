@@ -184,7 +184,7 @@ impl Reader {
 }
 
 /// A class's (space, register) places, sorted, each once.
-fn sorted_places(places: &[(u32, u32)]) -> Vec<(u32, u32)> {
+pub(crate) fn sorted_places(places: &[(u32, u32)]) -> Vec<(u32, u32)> {
     let mut all = places.to_vec();
     all.sort_unstable();
     all.dedup();
@@ -193,7 +193,7 @@ fn sorted_places(places: &[(u32, u32)]) -> Vec<(u32, u32)> {
 
 /// The slot of the view at `place` under Direct3D 12's numbering: its place among its class's
 /// views in (space, register) order, as the converter numbers them.
-fn slot(all: &[(u32, u32)], place: (u32, u32)) -> u32 {
+pub(crate) fn slot(all: &[(u32, u32)], place: (u32, u32)) -> u32 {
     all.partition_point(|&p| p < place) as u32
 }
 
