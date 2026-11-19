@@ -1,8 +1,112 @@
 # Status of the parallel-threads plan
 
 2026-11-18. The plan is docs/threads.md. Nothing is built. The plan was written, checked by an independent
-agent three times, and corrected after each check (the three lists are below, newest first). It stops
+agent four times, and corrected after each check (the four lists are below, newest first). It stops
 here until the owner has ruled on its section 16.
+
+## The fourth check's findings, and how each was settled
+
+Two blocking and nine smaller. All eleven were right, and none is argued against. Each was checked
+against the code before it was settled. Settling them turned up four more faults of the same kinds,
+which the check did not have; they are marked "found with it". Nothing was built and nothing new was
+measured for this correction: the fourth checker's one experiment is recorded as item 14 below, and
+its files were read again.
+
+1. **An idle processor could stay idle with a thread it could run** (blocking). Right. The plan woke a
+   processor when an entry made a thread ready, and three changes make a ready thread runnable with
+   no thread becoming ready: a call-in's mark taken off, a `Serial` sibling leaving its processor, a
+   mask gaining a processor. A fourth of the same kind is a config in force that becomes `Parallel`.
+   Settled in section 5 as the check's second suggestion, a condition and not a longer list: when
+   the kernel's lock is let go, no processor is marked idle that `next` would hand a thread to. It is
+   kept cheap by two counts (idle processors; ready threads their groups would let run), so a system
+   call on a busy container tests two numbers. A test build makes the walk at every release and
+   counts a breach. 4.5 says why taking the mark off wakes processors, 4.3 covers the widened mask,
+   and section 12 has the check's two cases and two more.
+   - Found with it: **a ready thread could wait for ever behind threads that have no slice.** A
+     thread gets a fair slice only if somebody waits at its hand-out (kernel/task.rs:43-53). With
+     several processors a thread can become ready through another processor's entry while every
+     processor runs a thread with no slice, and nothing then brings one in. Section 5 gives the
+     condition a second half: one of them is asked in, and the scheduler's tick decides
+     (kernel/task.rs:88-104).
+2. **A signal sent to a process could be stranded** (blocking). Right: `complete` picks one thread
+   and tells nobody else (kernel/signal.rs:459-492), and nothing in the kernel picks again (`grep
+   -rni retarget crates/wcontainers-kernel/src` finds nothing). Settled in 4.5: the kernel picks
+   again when a thread's mask gains a signal pending on its process and when a thread ends with such
+   a signal not blocked, as Linux does. Linux's source was read for it (6.12, kernel/signal.c:
+   `retarget_shared_pending` at 2974-2998, called from `exit_signals` at 3033 and from
+   `__set_task_blocked` at 3076). The mask is written in nine places today; they become one
+   function.
+   - Found with it: the check places this in `Parallel` groups. **It reaches `Serial` groups too**,
+     so it is T1's work and not T2's. The picked thread runs on another processor, blocks the
+     signal in its next call, and its sibling parked in `read` is never woken. Section 12 tests
+     both.
+3. **The argument that the executor's try-lock never fires had a gap.** Right: the asked-in bit can
+   be set after the thread has looked at it and before it has the kernel's lock. Settled in 4.5 and
+   7.2 as suggested, and one step further. The bit is taken off inside the entry, after the lock is
+   taken. And the lock rule no longer looks at the bit: a worker lets its process's lock go before
+   the kernel's lock whenever its thread is not told to carry on.
+   - Found with it: **the kernel acted on threads that were not running at the end of every
+     entry.** Today `settle` runs a woken thread's call again, and writes a signal's frame on a
+     waiting thread's stack, in whichever entry comes next (kernel/task.rs:343-404). With several
+     processors that touches a `Serial` group's memory while a sibling runs and has its lock. 4.3
+     now says both are done when the thread is chosen for a processor. 7.2 also says what happens
+     when the call that wanted a group runs again on the very worker of the thread that came in
+     last: that worker has the lock and uses it.
+4. **The owner's guarantee for hooks was narrowed without asking him.** Right. The narrowing stays,
+   and is now stated where it is made (4.4 item 7, section 6) and asked (decision 8), with what
+   keeping the guarantee whole costs: the kernel would call the group in before each hook that
+   fires with other threads running, so every watched access of a (`Parallel`, `Exact`) process
+   would stop every thread of the group through the kernel.
+5. **Reading a process while the container runs was closed off.** Right, and for no reason.
+   `kernel.process(id)` now answers at any time, under the kernel's lock; reads of the kernel's
+   records are always legal and are not kernel entries. One rule says what else a handle may do: an
+   operation is carried out with whatever stop it needs when that stop can be made in place, and
+   answers an error only where it would need a call-in (section 5, decision 8).
+6. **A permission lost on a page of another thread's live frame was caught only for watches.**
+   Right (tr/contract.rs:20-23). Settled in 4.5: after a page that allowed reading and writing has
+   lost a permission, been unmapped or remapped under a group stop, each other thread of the memory
+   gives up its frames, at 300.8 ns each (docs/runtime.md section 10).
+   - Found with it: **the plan's test for which threads, taken from the x86 plan, was not sound.**
+     It asked whether the page lay at or above the thread's stack pointer in the same mapping. A
+     frame is kept across a call whenever the callee gives the stack pointer back unchanged
+     (tr/full.rs:2835-2853), so a thread that moves to another stack inside a call still relies on
+     its frames on the first when it comes back. Go's `systemstack` has that shape. The test is now
+     by the page: a frame is only proved over pages that allow reading and writing
+     (tr/full.rs:730-731), so only such a page makes anybody give up frames. Section 8 uses the
+     same test for watches, which costs every hand-over from a writer one more 300 ns. The x86
+     track is asked to use it for code on a live stack.
+   - The plan also said such a thread "leaves `Execution::run`". It does not: it leaves the
+     translated code and is entered again from the bottom loop, inside `Execution::run` and with no
+     kernel entry, as a thread whose code changed under it does today (wt/lib.rs:1729-1733,
+     :2314-2317). The plan now has a word for it, "gives up its frames", and uses it for code drops
+     too.
+7. **A 128 bit atomic of a process with one thread could lose a write of the kernel's.** Right.
+   Settled in 7.3 by the check's second suggestion: a write from outside into a memory whose byte
+   is 0 is made under a group stop of that memory, so its one thread is at a stop point and not
+   inside the inline form. Rejected, with the reason: the byte at 1 for every `Parallel` process,
+   which would take from a process with one thread what the byte is there to spare.
+8. **Nothing said how a timer expires when every processor is busy.** Right
+   (kernel/task.rs:55-60). Settled in section 5: the kernel's deadline is in nobody's slice. The
+   kernel announces its earliest deadline when an entry moves it (a hook, suggested
+   `on_deadline_changed`), the system hands in one `Event::Timer` for the container, and that
+   entry stops nobody by itself. An expiry with every processor busy brings in one thread at most
+   (item 1's second half). Rejected: the deadline in one processor's slice.
+9. **A change T1 needs was scheduled for T2.** Right: `code_line_changed` walks every memory that
+   shows the block (wt/lib.rs:2008-2029). "A drop reaches the caller's group only" is now in T1's
+   list, and 7.5 says why.
+10. **The compiler's pass does four things, not three.** Right: its header lists dead-store
+    elimination (cranelift-codegen 0.137.1, src/alias_analysis.rs:57-66) and the optimiser acts on
+    it (src/egraph/mod.rs:570-573). 7.6 says four, says why the fourth does not happen to guest
+    stores today, and section 12 has the shape in the ordering tests and in the machine-code test,
+    so a release that starts doing it is noticed.
+11. **The repeatable one-worker mode could not be built on `run` as defined.** Right. Settled in
+    4.6 and section 11 as suggested: the test system answers `Later` for every hand-out but the one
+    its seed draws, which is a log made up as the run goes. A processor told `Later` is not marked
+    idle. The mode holds for processes in force `Exact`, and the plan says so.
+
+Section 16 still has ten decisions. Decision 8 changed (what an embedder may do to a process while
+its threads run, in three parts); decision 9's list gained `on_deadline_changed` and
+`kernel.process(id)` at any time.
 
 ## The third check's findings, and how each was settled
 
@@ -296,6 +400,23 @@ check suggested, and two more problems turned up while settling them; both are s
   branches have moved since the plan pinned them (origin/phase-2-native is at a7099033 and
   origin/phase-2-x86 at cbbb05ee); the plan's line numbers stay those of the pinned commits.
 
+- For the fourth check's findings: the brief and the interface notes to their ends again (nothing in
+  them is newer than what the third correction followed); how a process's signal picks its thread
+  and every place a thread's mask is written (kernel/signal.rs:457-492 and the nine lines listed in
+  the plan's 4.5); the hand-out, its slice and the tick (kernel/task.rs:17-104); the end of an entry
+  and how a thread is woken and put in line (`settle`, `wake_thread`, `make_runnable`,
+  `check_preempt`, kernel/task.rs:341-404, :519-582); the entry points (kernel/lib.rs:300-360); the
+  loop and the local system's timer thread (rt/lib.rs:100-300, rt/system.rs:1-140, :230-300); the
+  executor's run loop and its `rerun` path (wt/lib.rs:1719-1745, :2235-2345) and `code_line_changed`
+  (:2008-2035); how a piece keeps what it knows about its frame, and across which calls
+  (tr/contract.rs:1-27, tr/full.rs:725-870, :1310-1345, :2825-2910; docs/phase-1-translator.md,
+  "Checks the translator drops" and "Go to address"); the x86 plan's rule for code on a live stack
+  (its lines 1880-1905); docs/runtime.md section 10 for what leaving `run` costs; docs/native.md at
+  ab448e58, section 5.5, for its timer; cranelift-codegen 0.137.1 src/alias_analysis.rs:44-70 and
+  src/egraph/mod.rs:545-580; Linux 6.12's kernel/signal.c (fetched from its public source, read at
+  lines 994-1035 and 2966-3082, and deleted again); the fourth checker's files in
+  wcontainers-scratch/threads/check4/independent.
+
 ## What the first agent left
 
 No docs/threads.md was in the checkout, committed or not. In wcontainers-scratch/threads it left a clone of
@@ -538,6 +659,29 @@ form.
 Build output was deleted afterwards on both machines (the scratch `target` folders and the compiled
 modules); sources, logs and the patched crate's source are kept.
 
+### By the plan's fourth checker
+
+**14. Whether the compiler's pass drops an overwritten store.** check4/independent/dse.wat, five
+functions on a shared 64 bit memory, compiled with wasmtime 49.0.2's `wasmtime compile` from `nix
+develop` of this checkout on this Mac (load 101 to 109 by the checker's note) and disassembled
+(dse-default.dis), then again with `-C cranelift-enable_alias_analysis=false` (dse-noalias.dis).
+- "[x] = 1; [y] = 2; [x] = 3" and "[x] = 1; f = [y]; [x] = 3", each with the addresses in two
+  registers and again as constant offsets from one base: all ten stores are in the output.
+- "[p]; [p+8]; [p]": the repeated load is merged into one, as item 10 found by register.
+- The two disassemblies are the same, line for line, as in item 10.
+- For this correction the two .dis files were read again (ten store instructions; `diff` empty). It
+  was not compiled again, and nothing was run with two threads: there is no outcome to look for
+  while every store is kept.
+- So the pass's dead-store elimination does not reach guest stores in this version. Its header says
+  why: an instruction that may trap counts as seeing every store, and every access to the guest
+  memory may trap.
+
+### Fourth run, for the fourth check's findings
+
+Nothing was built or run. Every finding was a matter of the plan's own rules against the code, and
+each was settled by reading (the list is under "What was read"). No scratch files were added and
+there was no build output to delete.
+
 ## What was not measured
 
 Listed in docs/threads.md section 15. The ones that matter most to the plan's decisions:
@@ -557,7 +701,14 @@ Listed in docs/threads.md section 15. The ones that matter most to the plan's de
   thrown away because its code was dropped meanwhile;
 - a group stop with several threads running, and a page hand-over through per-thread watches, are both
   estimated from parts measured apart (the stop flag's latency in Chrome from docs/phase-1-translator.md,
-  leaving `Execution::run` and coming back from docs/runtime.md section 10).
+  leaving `Execution::run` and coming back from docs/runtime.md section 10);
+- how often a `Parallel` group takes a permission from a data page or unmaps one, which now makes
+  each of its other running threads give up its frames, and what their returns through the bottom
+  loop cost afterwards;
+- a timer sent by the local system's timer thread while every processor is busy, and how many
+  threads a real program's timers bring in. The design brings in one at most for each expiry;
+- whether the frame rule's claim about a thread on a second stack shows in a run: it was read in the
+  translator (tr/full.rs:2835-2853), not run. Section 12 has the test.
 
 ## What the plan asks of other tracks
 
@@ -570,25 +721,32 @@ Listed in docs/threads.md section 15. The ones that matter most to the plan's de
   the barriers); the mark for hooks that are stop points, with all registers saved before them and
   what the piece knew forgotten after them; a word on whether a check that covers several accesses can
   span a call or a jump out of the piece; `raise_stop` as an atomic or. The stop word's meaning to
-  translated code does not change.
+  translated code does not change. Only if T2 or T3 measures it to matter: a bound on where a
+  thread's live frames are, so that fewer threads give up their frames after a permission is lost
+  (docs/threads.md 4.5).
 - The x86 track: for the Parallel form, lock prefixes and `xchg` with memory as WebAssembly atomic
   operations, with a hook, made a stop point, for misaligned ones; `cmpxchg16b` as a 128 bit pair
   behind the byte; `mfence` as the tested fence; the sequence lock and the store-back among its
   ordering tests (docs/threads.md 7.3, section 9). Its Serial form does not change. Its rule for code on
-  a live stack frame (its lines 1898-1905) is used again for watches (section 8), so it is built once.
+  a live stack frame (its lines 1898-1905) tests by the thread's stack pointer and its mapping. That
+  misses a thread that has moved to another stack inside a call. It should use the plan's test, by
+  the page (a page that allowed reading and writing), and the plan's one piece of code for a thread
+  that gives up its frames (4.5).
 - The native track: `dmb`, `dsb`, `isb` and `mfence` copied instead of dropped; the exclusive load's
   fix-up made safe for threads in parallel; each held virtual CPU dropping its own cached translations
   before it is let go; an interrupt from one virtual CPU to another inside the machine measured; a
   request to stop kept until the thread's next entry; a stop lock per memory and the count of drops;
-  call-ins, not group stops, for a change of the kernel's in a group in force `Exact` (section 10).
-  Nothing before its own thread milestone.
+  call-ins, not group stops, for a change of the kernel's in a group in force `Exact` (section 10);
+  one timer inside for the container's deadline, armed from `on_deadline_changed`, beside its timer
+  for slices (section 5). Nothing before its own thread milestone.
 - The kernel track's K7: the kernel as a WebAssembly module built for a shared memory, for more than one
   caller (4.2).
 - The embedder interface: `ExecutionConfig` with both fields at the container's start; `suspend` and
   `resume`; the config in force beside the config given; memory watches before T4, with a thread's
   position readable while it is held; who shares memory with whom, and shared pages marked watched when
   one process of a group leaves; the hook's thread made optional and
-  `Process::replace_execution_config` (decision 9); `Kernel::process_call_in` and its hook (decision 8).
+  `Process::replace_execution_config` (decision 9); `Kernel::process_call_in` and its hook, and
+  `kernel.process(id)` at any time with the rule for which operations answer an error (decision 8).
 - The runtime track: the renames to `RuntimeConfig`, `TranslatorConfig`, `run` and `run_until_finished`
   in the code, which this plan already uses; two wasmtime engines in the executor, and the cache key's
   two new fields (7.2).
