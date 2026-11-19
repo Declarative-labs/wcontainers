@@ -868,13 +868,13 @@ let ending = container.run()?;   // to the end; or container.step() and containe
   not define is ignored with a warning (`spec_from_json`, above), and `accept` refuses any field of
   oci-spec's it does not know. Honoured:
   `ociVersion` 1.x, `process.args`, `process.env`, `process.cwd` (absolute),
-  `process.user.additionalGids`, `hostname` (absent or empty: `localhost`; runc sets no host name when it is
+  `process.user.additionalGids`, `process.terminal` and `process.consoleSize` (below), `hostname` (absent or empty: `localhost`; runc sets no host name when it is
   empty), `annotations` (data, no behaviour), and
   these when they are what the kernel gives: `process.user.uid` and `gid` 0, `process.user.umask` 0022,
   `process.capabilities` Docker's 14 in bounding, effective and permitted and none in inheritable and ambient
   (a set left out is empty, as the specification says, so leaving out `capabilities` or one of those three
   is refused),
-  `process.rlimits` at the kernel's values, `process.terminal` and `process.noNewPrivileges` false,
+  `process.rlimits` at the kernel's values, `process.noNewPrivileges` false,
   `mounts` exactly the kernel's six, once each and in the order the kernel makes them (`/proc`, `/dev`,
   `/dev/pts`, `/sys`, `/dev/mqueue`, `/dev/shm`, each with Docker's type, source and options; the standard
   makes mounts in the listed order, so another order or a repeat is refused at the first `mounts[n]` that
@@ -913,8 +913,6 @@ let ending = container.run()?;   // to the end; or container.step() and containe
     a program installs);
   - `root.readonly`, `linux.maskedPaths`, `linux.readonlyPaths` other than `/proc/sys`, `linux.rootfsPropagation`,
     `linux.mountLabel`: read-only, masking and labelled mounts in the kernel;
-  - `process.terminal` and `process.consoleSize`: standard input in the kernel's interface (asked of the
-    kernel track) and the terminal surface;
   - `process.apparmorProfile`, `process.selinuxLabel`: a security module in the kernel;
   - `process.oomScoreAdj`, `process.ioPriority`, `process.scheduler`, `process.execCPUAffinity`,
     `linux.personality`, `linux.intelRdt`, `linux.memoryPolicy`, `linux.timeOffsets`, `linux.netDevices`,
@@ -942,15 +940,23 @@ let ending = container.run()?;   // to the end; or container.step() and containe
     flag and wake `idle`, names are looked up by the host's resolver on a thread each, and a container's TCP
     port is reached from the host only where `LocalSystem::publish(port, address)` puts it (as `docker run
     --publish`); a listen on a port not published succeeds and nothing outside reaches it.
-  Terminal input waits for the kernel's streams. Standard input is not in the
-  surface: the kernel gives the first process /dev/null as descriptor 0, the abi has only output streams, and
-  terminal input events are counted as unexpected; what the kernel's interface needs is asked of the kernel
-  track (status file). A system learns the back end's stop flag through `System::stop_flag` before the
+  - standard input, output and error on the kernel's stream ends (docs/streams.md): `System::standard` names
+    the ends of descriptors 0 to 2 when the container is made, a terminal of `process.consoleSize`'s size
+    when `process.terminal` is true (0 by 0 without a size, as `docker run --tty` gives a client with no
+    terminal; a size past 65,535 is refused by name), else pipes. The local system gives each output end all
+    the credit it will ever take (it writes everything as it comes) and lets go of an end the kernel closed.
+    With `LocalSystem::input(reader)` (as `docker run --interactive`) descriptor 0 is a pipe, or the terminal
+    takes input; without it, /dev/null. The input is read on a thread of its own, never more than the
+    credit the kernel gave, each piece handed over as an arrival that raises the stop flag and wakes `idle`;
+    its end of file lets go of a pipe's end (the guest reads end of file) and leaves a terminal's end open;
+    a read error is counted and warned. A terminal's resizing has no surface yet.
+  A system learns the back end's stop flag through `System::stop_flag` before the
   first turn; one that counts every turn, as the kernel tests' does, needs none.
 - **The command line program** (`wcon`, the owner's name; crates/wcontainers-wasmtime/src/bin/wcon.rs):
   `--oci DIRECTORY` or `--tar FILE`, `--config config.json`, `--cache DIRECTORY`, `--look-ahead
   full|none|N`, `--size`, `--volume SOURCE:DESTINATION` (adds `bind_mount`'s mount), `--publish
-  ADDRESS:PORT:CONTAINER_PORT` (repeatable; `LocalSystem::publish`), and `-- ARGUMENTS` for `process.args`; it prints the warnings by reason and exits
+  ADDRESS:PORT:CONTAINER_PORT` (repeatable; `LocalSystem::publish`), `--interactive` (its own standard input
+  as the container's; `LocalSystem::input`), `--tty` (`process.terminal`), and `-- ARGUMENTS` for `process.args`; it prints the warnings by reason and exits
   with the container's status, 125 when the library refuses. Its arguments are read with pico-args.
 
 ## 15. Testing
@@ -1135,10 +1141,13 @@ Each bar is checkable by running the named command on this Mac with Docker.
   (taken from what the kernel test host does, written for shipping; section 14), with one bind mount of the
   configuration honoured, and `root.path` refused with why. Bar: the whole kernel test crate with
   `--features runtime` gives the same verdicts as without, test by test, at full, none and bounded
-  look-ahead, except the tests listed by name in the status file as waiting (standard input, the count
+  look-ahead, except the tests listed by name in the status file as waiting (the count
   comparison of J4b, and the K6b runtimes that J6 brings, whose processes reserve more than the back end's
   address ceiling); the surface tests of the file backend and the network match the reference
-  (`a_host_directory_is_served_through_a_bind_mount`, `a_tcp_connection_from_the_host_reaches_a_published_port`);
+  (`a_host_directory_is_served_through_a_bind_mount`, `a_tcp_connection_from_the_host_reaches_a_published_port`),
+  and, once the streams track's ends are merged, standard input and the terminal match `docker run
+  --interactive` and `--tty` (`standard_input_matches_docker_interactive`, `a_terminal_matches_docker_tty`,
+  `the_command_line_program_passes_its_input`);
   the Linux Test Project's verdicts, at full,
   equal the stand-in run's for every test (the kernel's ltp harness, one command, run by the orchestrator).
 - **J6, the runtimes of K6b.** Python, Node, a Go program and Java as the kernel track lands them, with code
