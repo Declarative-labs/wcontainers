@@ -1120,8 +1120,28 @@ impl Gl {
             if kept.is_some() {
                 self.upload_blocks(&region(to), extent);
             } else {
-                self.copy_through_pbo(&region(from), &region(to), extent);
+                self.copy_same_bytes(&region(from), &region(to), extent);
             }
+        }
+    }
+
+    /// Copies a region between textures whose texels have the same bytes, the source's read by
+    /// `readPixels` as stored: by a draw where one carries both formats and they are not floats,
+    /// which stays on the GPU, else through a pixel buffer, whose unpack ANGLE waits for on the CPU
+    /// ([`SlowPath::CopyThroughBuffer`] either way).
+    fn copy_same_bytes(
+        &mut self,
+        src: &TextureRegion<'_, Self>,
+        dst: &TextureRegion<'_, Self>,
+        extent: Extent,
+    ) {
+        let float = [src, dst]
+            .iter()
+            .any(|r| format::float_bits(r.texture.desc.format));
+        if !float && self.copy_by_draw(src, dst, extent) {
+            self.slow.hit(SlowPath::CopyThroughBuffer);
+        } else {
+            self.copy_through_pbo(src, dst, extent);
         }
     }
 
@@ -4483,12 +4503,8 @@ impl Backend for Gl {
                 to,
                 Format::R16Float | Format::Rg16Float | Format::Rgba16Float
             );
-            // Integer and normalised texels go by draw where one carries them: the pixel buffer's
-            // unpack waits for its pack on the CPU (ANGLE maps it), a draw stays on the GPU.
-            if !float && !format::float_bits(to) && self.copy_by_draw(src, dst, extent) {
-                self.slow.hit(SlowPath::CopyThroughBuffer);
-            } else if as_stored && from.block() == to.block() {
-                self.copy_through_pbo(src, dst, extent);
+            if as_stored && from.block() == to.block() {
+                self.copy_same_bytes(src, dst, extent);
             } else if half {
                 // A draw writes half floats from 32-bit ones, which lose NaN payloads; the host
                 // writes the bits.
