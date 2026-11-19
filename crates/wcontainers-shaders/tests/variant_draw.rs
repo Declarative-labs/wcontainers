@@ -1028,12 +1028,18 @@ fn variants_draw_as_the_native_feature_does() {
                     );
                     eprintln!("not required: {} texels differ", hardware.count);
                 }
+                // WARP interpolates the coordinate written to alpha a step apart from the GPU;
+                // a size is many steps (1/16 and 1/32 of the range), so one step hides none.
+                let allowed = match unbound {
+                    true => (0, 0),
+                    false => (d3d11.len() / Format::Rgba8Unorm.block().2 as usize, 1),
+                };
                 results.push(compare(
                     format!("texture_info {shader} {route} {back_end} against {against}"),
                     &d3d11,
                     &texels,
                     Format::Rgba8Unorm,
-                    (0, 0),
+                    allowed,
                 ));
             }
         }
