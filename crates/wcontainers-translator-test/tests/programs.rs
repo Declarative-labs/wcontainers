@@ -161,9 +161,9 @@ fn written_code_and_null_calls_match_linux<G: GuestTest>() {
 }
 
 /// A function of more blocks than one piece may hold, cut in parts, at every look-ahead as on Linux, and in
-/// Chrome. Then programs whose translation at full is split into many small code modules, so that their
-/// pieces call each other and return across modules, as on Linux.
-fn cut_functions_and_split_translations_match_linux<G: GuestTest>() {
+/// Chrome. Then programs (`split`, each with its optimisation) whose translation at full is split into many
+/// small code modules, so that their pieces call each other and return across modules, as on Linux.
+fn cut_functions_and_split_translations_match_linux<G: GuestTest>(split: &[(&str, &str)]) {
     for optimisation in ["-O0", "-O2"] {
         let blob = build::<G>("many_blocks", optimisation, Library::C);
         let theirs = native::<G>(&blob);
@@ -171,12 +171,7 @@ fn cut_functions_and_split_translations_match_linux<G: GuestTest>() {
         every_look_ahead_matches::<G>(&blob, &theirs, |_, _| {});
         full_matches_in_chrome::<G>(&blob, &theirs);
     }
-    for (name, optimisation) in [
-        ("hello", "-O2"),
-        ("differences", "-O0"),
-        ("exceptions", "-O2"),
-        ("many_blocks", "-O2"),
-    ] {
+    for &(name, optimisation) in split {
         let blob = build::<G>(name, optimisation, Library::C);
         let theirs = native::<G>(&blob);
         let (none, mut none_machine, none_registers) = translated::<G>(&blob, LookAhead::None);
@@ -600,7 +595,12 @@ fn written_code_and_null_calls_match_linux_arm64() {
 
 #[test]
 fn cut_functions_and_split_translations_match_linux_arm64() {
-    cut_functions_and_split_translations_match_linux::<Arm64>();
+    cut_functions_and_split_translations_match_linux::<Arm64>(&[
+        ("hello", "-O2"),
+        ("differences", "-O0"),
+        ("exceptions", "-O2"),
+        ("many_blocks", "-O2"),
+    ]);
 }
 
 #[test]
@@ -714,4 +714,39 @@ fn compilers_switches_match_linux_x86_64() {
 #[test]
 fn shift_flags_across_calls_match_linux_x86_64() {
     match_linux::<X86_64>(&[("shift_flags", Library::None)]);
+}
+
+#[test]
+fn programs_match_linux_x86_64() {
+    programs_match_linux::<X86_64>();
+}
+
+#[test]
+fn stack_moved_by_a_callee_matches_linux_x86_64() {
+    stack_moved_by_a_callee_matches_linux::<X86_64>();
+}
+
+#[test]
+fn deep_recursion_matches_linux_x86_64() {
+    deep_recursion_matches_linux::<X86_64>();
+}
+
+#[test]
+fn a_frame_past_the_budget_matches_linux_x86_64() {
+    a_frame_past_the_budget_matches_linux::<X86_64>();
+}
+
+/// x86 has no `differences` program yet (it is ARM64's list of where its CPU and WebAssembly differ).
+#[test]
+fn cut_functions_and_split_translations_match_linux_x86_64() {
+    cut_functions_and_split_translations_match_linux::<X86_64>(&[
+        ("hello", "-O2"),
+        ("exceptions", "-O2"),
+        ("many_blocks", "-O2"),
+    ]);
+}
+
+#[test]
+fn stops_at_every_check_change_nothing_x86_64() {
+    stops_at_every_check_change_nothing::<X86_64>();
 }
