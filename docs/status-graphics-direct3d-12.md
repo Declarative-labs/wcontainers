@@ -7,7 +7,7 @@ crates/wcontainers-direct3d-12.
 ## Where things stand
 
 Everything on G5's pass bar is done or on the written gap list (runs 35 to 41), ready for the
-independent check; the literal check passes (runs 36 to 41). Test files 186 of 198. Every failing file is on the gap list
+independent check; the literal check passes (runs 36 to 43). Test files 186 of 198. Every failing file is on the gap list
 with its cause: an absent feature reported as Direct3D 12 expects (8), a listed loss naming what
 the back end lacks (1), not to be matched (1), or a named item of the shaders track (2: one
 refused by name, one a value the converted program gives). None is the front's own unfinished
@@ -26,7 +26,22 @@ fail, 3 absent, each failure named (the textures scene passes since run 38, with
 textures). On wgpu's Direct3D 12 path (run 36's experiment, not kept) the three differences the
 Vulkan path makes were measured gone; what that path still lacks is other tracks' ("Next" 3).
 
-Latest results (run 41, 2026-11-19, desktop shared with other tracks; scratch run41/). At
+Latest results (run 43, 2026-11-19, desktop shared with other tracks; scratch run43/). At
+4518fd0e, the run's last code (the run's literal sweep, tested before it was committed; logs
+*1.log, `bin/all43.sh 1`): the literal check passes (lit1.log; lit5.log after the baseline was
+pruned); lint clean (lint1.log); the crates' 50 tests pass (test1.log); test files 186 of 198, the
+same 12 failing as runs 39 to 42 (full1.log, fail1.txt); own cases 30 of 30 equal, draw 0 of 4096
+pixels beyond 1, `antialiased-lines` 0 of 4096 pixels beyond 63, largest difference 38
+(check1.log); shader runner 214 of 302, the same 88 failing files (runner1.log, rfail1.txt);
+scenes 95 pass, 22 fail, 3 absent, the same outputs (scenes1.log, sfail1.txt); Wine's five dxgi
+tests 3 pass, the same 2 fail (dxgi1.log); Microsoft's two samples (2.6 and 2.5 s) and Godot's 2D
+platformer (4.3 s) equal real (p1-*.log); Godot's 3D platformer still stops at the back end's
+sRGB view (p1-godot-platformer-3d-d3d12-output.log); bgfx 37 727 to 791 pixels beyond 8 of
+20,480 allowed, the overlay's text (p1-bgfx37.log); fence round trip `--alone` under
+"Measurements". Run 42 (cut off before it wrote anything here) had run the same set at 236fd376,
+the merge of the shaders track's run 46, with the same results (scratch run42/*1.log).
+
+Results of run 41 (2026-11-19, desktop shared with other tracks; scratch run41/). At
 731791fe, the run's last code (logs *1.log, `bin/all41.sh 1`): the literal check passes
 (lit1.log); lint clean (lint1.log); the crates' 50 tests pass (test1.log); test files 186 of
 198, the same 12 failing as run 39 (full1.log, fail1.txt); own cases 30 of 30 equal (the new
@@ -188,6 +203,13 @@ milestone "G5 to the pass bar"):
   without unordered access): Godot's textures were refused there, and with them taken its 2D
   platformer draws every compared frame exactly as real Direct3D 12 does.
 
+- Run 43 (the thirteenth run of the milestone's current form): run 42 had merged the shaders
+  track's run 46 (236fd376: its tests' corpus and the Direct3D 11 front's alpha-antialiased
+  lines, nothing of this track's crates or of the interface) and rerun everything, then stopped
+  before committing or pushing anything else. This run merged direct3d-11 (c261e247: its own
+  crate, the shared programs' tests and the baseline, nothing of this track's), checked the
+  literal check there, pushed both merges, and took the next part of the literal sweep (4518fd0e,
+  "No magic numbers"). The shared line, webgpu, webgl and rig had nothing new.
 - Run 41 (the eleventh run of the milestone's current form; run 40 stopped before committing
   anything but the merge 2e1dc463 of the shaders track's run 45, and left the line route below
   uncommitted, which this run checked, finished and committed): no branch had anything newer
@@ -1540,6 +1562,11 @@ A working example of all of it is this track's Windows library: `examples/direct
 - Direct3D's shared values (`d3d` module, run 39): `PipelineStatistics` and
   `StreamOutputStatistics` (the query data, `repr(C)`, `bytemuck::Pod`), `APPEND_ALIGNED_ELEMENT`,
   `SO_NO_RASTERIZED_STREAM`, the placement alignments.
+- Indirect arguments (run 43, `d3d` module): `DrawArguments`, `DrawIndexedArguments`,
+  `DispatchArguments` (`repr(C)`, `bytemuck::Pod`), for argument sizes and reading arguments back.
+  The depth-stencil view's read-only flags (`D3D11_DSV_READ_ONLY_DEPTH`, `_STENCIL`, the same
+  values as Direct3D 12's) are not there yet: adding them makes the literal check flag your
+  copies, so add them with your import in one commit; this front's `list.rs` will then import them.
 - Format queries: `format_support(caps, DXGI_FORMAT)` gives `support1` and `support2`; empty means
   the API's E_FAIL. `takes_samples(caps, format, count)`; `dxgi_vertex_format(DXGI_FORMAT)`.
 
@@ -1717,6 +1744,29 @@ Run 11's entries:
 
 ## No magic numbers (the owner's rule of 2026-11-18)
 
+Run 43: the check passes at 4518fd0e (run43/lit5.log, lit1.log). Named this run (fix-graphics.md
+items 11, 17 and the shader program text): the indirect argument layouts as `repr(C)` mirrors in
+the infrastructure crate's `d3d` module (`DrawArguments`, `DrawIndexedArguments`,
+`DispatchArguments`), with `list::VertexBufferView` and `IndexBufferView` made `repr(C)` and
+`Pod`; `IndirectArgument::size` and `read_back_indirect` take sizes and fields from them
+(`bytemuck::pod_read_unaligned`), and a predicated draw's record is `DrawIndexedArguments`'s size;
+`address::GpuVirtualAddress` (root views) and `address.rs`'s alignment from
+`DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT`; the own compute programs' bindings from the interface's
+numbering (`OWN_SOURCE`, `OWN_RESULT`, `OWN_PARAMETERS` from `SlotKind::first_binding`), their
+group size (`OWN_GROUP`) and entry (`wcontainers_shaders::ENTRY_POINT`, also for the counting
+programs), their WGSL written with `format!` from those names and from `IndexFormat`'s sizes and
+restart values; the index formats by `device::index_format` (the DXGI names) and the restart
+decision once (`restart_rewritten`, `STRIP_CUT_0XFFFF`), used by `draw`, `ExecuteIndirect` and the
+statistics' strip count; the query answer, predicate and command count sizes from their types;
+`D3D12_QUERY_HEAP_TYPE` 4 and 7 named; the uniform block rounded to `CONSTANT_REGISTER`. 58 lines
+deleted. Not done: the depth-stencil view's read-only flags in the `d3d` module (both fronts
+define them with the same values): adding them there makes the check fail on the Direct3D 11
+front's copies (they become redefinitions of the new constant, `+` lines this branch may not add
+or fix), so they wait for the Direct3D 11 track, which can add them to the `d3d` module and import
+them in one commit ("For the Direct3D 11 track"). Baseline lines at the end of run 43:
+wcontainers-direct3d-12 471, the infrastructure crate 63. Changes that could add lines: the same
+18 as run 35.
+
 Run 41: the check passes at 731791fe (run41/lit1.log). The front's topology types and fill modes
 are named once in `state.rs` (`TOPOLOGY_TYPE_UNDEFINED` to `_PATCH`, `FILL_MODE_WIREFRAME`,
 `_SOLID`, after Direct3D 12's names; a module `topology_type` with `UNDEFINED` was caught as a
@@ -1873,6 +1923,15 @@ on a branch this one merges.
   section 12 keeps out of interface commits; history is not rewritten, so it stays as made.
 
 ## Measurements
+
+- Run 43, fence-wait (own program, 2000 rounds, RTX 3080) as `gpu-job --alone` at 4518fd0e's
+  code (run43/alone1.log, 14:17; desktop CPU load 1 % before and 0 % after, Win32_Processor
+  LoadPercentage): real first 7 µs, mean 1 µs, 99th percentile 2 µs, largest 14 µs; ours first
+  108 µs, mean 20 µs, 99th percentile 59 µs, largest 117 µs. Run 42 at 236fd376
+  (run42/alone1.log, 13:50; load 1 % before, 2 % after): real mean 1 µs, 99th percentile 1 µs;
+  ours first 42 µs, mean 17 µs, 99th percentile 26 µs, largest 61 µs. Programs (not alone,
+  shared desktop, load not taken): Microsoft's samples 2.6 and 2.5 s, Godot's 2D platformer 4.3 s
+  (run43/p1-*.log).
 
 - Run 41, fence-wait (own program, 2000 rounds, RTX 3080) as `gpu-job --alone` at 731791fe
   (run41/alone1.log, 13:02; desktop CPU load 4 % before, Win32_Processor LoadPercentage; the load
