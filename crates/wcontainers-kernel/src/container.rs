@@ -294,7 +294,7 @@ const KSM_FILES: [(&[u8], bool, &str); 23] = [
 const COUNT_MODE: u32 = S_IRUSR | S_IRGRP | S_IROTH;
 
 /// The mode of a sysfs file anyone may read, which its owner may write if it is a setting.
-fn sys_mode(setting: bool) -> u32 {
+pub(crate) fn sys_mode(setting: bool) -> u32 {
     COUNT_MODE | if setting { S_IWUSR } else { 0 }
 }
 /// Each hugetlb size's counts and settings, all 0 as none is reserved.
@@ -394,24 +394,70 @@ const TRANSPARENT_HUGE_PAGE_STATS: [(&[u8], bool); 17] = [
     (b"zswpout", false),
 ];
 
-/// `/sys/kernel/mm`: `hugepages`, a directory per huge page size, none of them ever reserved, as
-/// in a default container, where `/proc/sys/vm` cannot be written (write-only `demote` is left
-/// out); and `ksm` ([`KSM_FILES`]).
-fn make_memory_management(numbers: &mut Numbers, sys: &Node, now: Time) {
-    let directory = |numbers: &mut Numbers, at: &Node, name: &[u8]| {
+/// The mode of a sysfs directory.
+const SYS_DIRECTORY_MODE: u32 = S_IFDIR | S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH;
+
+fn sys_directory(numbers: &mut Numbers, at: &Node, name: &[u8], now: Time) -> Node {
+    make(
+        numbers,
+        at,
+        name,
+        SYS_DIRECTORY_MODE,
+        ROOT_UID,
+        ROOT_GID,
+        crate::fs::NO_DEVICE,
+        now,
+        Content::Directory(Directory::new()),
+    )
+    .expect("a new container's file systems have room")
+}
+
+/// `/sys/fs/cgroup`: the container's cgroup ([`crate::cgroup`]), read-only on a writable file
+/// system, its root numbered 1 as kernfs numbers roots.
+fn make_cgroup(numbers: &mut Numbers, sys: &Node, now: Time) -> Node {
+    // The directories below `/sys` on the way.
+    let mut point = sys.clone();
+    for name in crate::cgroup::MOUNT
+        .point
+        .as_bytes()
+        .split(|byte| *byte == crate::fs::PATH_SEPARATOR)
+        .skip(2)
+    {
+        point = sys_directory(numbers, &point, name, now);
+    }
+    let root = mount_tmpfs(
+        numbers,
+        &point,
+        SYS_DIRECTORY_MODE & !S_IFMT,
+        now,
+        Kind::Cgroup2,
+        ST_RDONLY | ST_NOSUID | ST_NODEV | ST_NOEXEC | ST_RELATIME,
+        None,
+    );
+    root.borrow_mut().ino = 1;
+    for (index, (name, setting, _)) in crate::cgroup::FILES.iter().enumerate() {
         make(
             numbers,
-            at,
-            name,
-            S_IFDIR | sys_mode(true) | S_IXUSR | S_IXGRP | S_IXOTH,
+            &root,
+            name.as_bytes(),
+            S_IFREG | sys_mode(*setting),
             ROOT_UID,
             ROOT_GID,
             crate::fs::NO_DEVICE,
             now,
-            Content::Directory(Directory::new()),
+            Content::Proc(crate::fs::proc::Entry::Cgroup(index)),
         )
-        .expect("a new container's file systems have room")
-    };
+        .expect("a new container's file systems have room");
+    }
+    root
+}
+
+/// `/sys/kernel/mm`: `hugepages`, a directory per huge page size, none of them ever reserved, as
+/// in a default container, where `/proc/sys/vm` cannot be written (write-only `demote` is left
+/// out); and `ksm` ([`KSM_FILES`]).
+fn make_memory_management(numbers: &mut Numbers, sys: &Node, now: Time) {
+    let directory =
+        |numbers: &mut Numbers, at: &Node, name: &[u8]| sys_directory(numbers, at, name, now);
     let file = |numbers: &mut Numbers, at: &Node, name: &[u8], mode: u32, text: &str| {
         make(
             numbers,
@@ -1277,6 +1323,7 @@ impl Kernel {
         );
         sys.borrow_mut().ino = 1;
         make_memory_management(&mut self.files.numbers, &sys, now);
+        let cgroup = make_cgroup(&mut self.files.numbers, &sys, now);
 
         let view = fs::proc::View {
             processes: &self.processes,
@@ -1391,6 +1438,13 @@ impl Kernel {
                 read_only_super: true,
                 ..mount(fs_of(&sys), "/sys", "sysfs", "sysfs", "")
             },
+            mount(
+                fs_of(&cgroup),
+                crate::cgroup::MOUNT.point,
+                crate::cgroup::MOUNT.source,
+                crate::cgroup::MOUNT.kind,
+                ""
+            ),
             mount(mqueue_fs, "/dev/mqueue", "mqueue", "mqueue", ""),
             mount(fs_of(&shm), "/dev/shm", "shm", "tmpfs", "size=65536k"),
         ];

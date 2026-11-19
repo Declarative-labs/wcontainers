@@ -90,6 +90,8 @@ pub(crate) enum Entry {
     Tasks(Pid),
     /// A directory or file outside the process directories, by its index in [`GLOBAL`].
     Global(usize),
+    /// A file of the container's cgroup, by its index in [`crate::cgroup::FILES`].
+    Cgroup(usize),
 }
 
 /// Whose directory: the thread whose details its files show, and its process. A thread's own
@@ -326,6 +328,9 @@ pub(crate) enum Global {
     /// A symbolic link to a path below `/proc`.
     Link(&'static str),
 }
+
+/// The inode number of the first entry of [`GLOBAL`]; the numbers below are the root's and links'.
+const FIRST_GLOBAL_INO: u64 = 16;
 
 pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("cgroups", Global::File(0o444)),
@@ -709,7 +714,11 @@ impl Entry {
             | Entry::Namespaces(task)
             | Entry::Namespace(task, _) => Some(task.pid),
             Entry::Tasks(pid) => Some(pid),
-            Entry::Root | Entry::SelfLink | Entry::ThreadSelfLink | Entry::Global(_) => None,
+            Entry::Root
+            | Entry::SelfLink
+            | Entry::ThreadSelfLink
+            | Entry::Global(_)
+            | Entry::Cgroup(_) => None,
         }
     }
 
@@ -794,6 +803,9 @@ impl Entry {
                 Global::File(permissions) => S_IFREG | permissions,
                 Global::Link(_) => S_IFLNK | 0o777,
             },
+            Entry::Cgroup(index) => {
+                S_IFREG | crate::container::sys_mode(crate::cgroup::FILES[*index].1)
+            }
             Entry::ProcessFile(
                 _,
                 ProcessFile::Comm
@@ -822,7 +834,8 @@ impl Entry {
             Entry::Root => 1,
             Entry::SelfLink => 2,
             Entry::ThreadSelfLink => 3,
-            Entry::Global(index) => 16 + *index as u64,
+            Entry::Global(index) => FIRST_GLOBAL_INO + *index as u64,
+            Entry::Cgroup(index) => FIRST_GLOBAL_INO + (GLOBAL.len() + *index) as u64,
             Entry::Process(t) => task(t, 1),
             Entry::Fds(t) => task(t, 2),
             Entry::Net(t) => task(t, 4),
@@ -857,6 +870,7 @@ impl Entry {
             | Entry::SelfLink
             | Entry::ThreadSelfLink
             | Entry::Global(_)
+            | Entry::Cgroup(_)
             | Entry::Net(_)
             | Entry::NetFile(..) => {
                 return (0, 0);
@@ -1393,7 +1407,7 @@ pub(crate) fn list(view: &View<'_>, entry: &Entry) -> Vec<(Vec<u8>, Entry, u64)>
 
 /// A process's threads as its `task` directory lists them: the first, which stays until the process
 /// is reaped, then the others in the order they were made.
-fn tasks(process: &Process) -> impl Iterator<Item = Tid> + '_ {
+pub(crate) fn tasks(process: &Process) -> impl Iterator<Item = Tid> + '_ {
     core::iter::once(process.pid).chain(
         process
             .threads
@@ -1599,6 +1613,9 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
     let mut out = String::new();
     match entry {
         Entry::Global(index) if GLOBAL[*index].0 == "config.gz" => return Ok(CONFIG_GZ.to_vec()),
+        Entry::Cgroup(index) => {
+            return Ok(crate::cgroup::contents(source.view, *index).into_bytes());
+        }
         Entry::ProcessFile(task, file) => {
             let process = source.view.processes.get(&task.pid).ok_or(Errno::ESRCH)?;
             return process_file(source, process, *task, *file);

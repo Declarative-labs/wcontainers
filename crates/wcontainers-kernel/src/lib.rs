@@ -10,6 +10,7 @@
 
 extern crate alloc;
 
+mod cgroup;
 mod container;
 mod counters;
 mod credentials;

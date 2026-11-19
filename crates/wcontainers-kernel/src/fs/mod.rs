@@ -245,6 +245,8 @@ pub(crate) enum Kind {
     Nsfs,
     /// The read-only sysfs at `/sys`, holding none of Linux's entries.
     Sysfs,
+    /// The container's cgroup, at `/sys/fs/cgroup`.
+    Cgroup2,
     /// The internal hugetlbfs of one huge page size (log2 of its bytes), which huge page memory
     /// files live on.
     Hugetlbfs {
@@ -278,6 +280,7 @@ impl Kind {
             | Kind::Sockfs
             | Kind::Nsfs
             | Kind::Sysfs
+            | Kind::Cgroup2
             | Kind::Hugetlbfs { .. } => i64::MAX as u64,
             Kind::Devpts | Kind::Proc | Kind::Mqueue => i32::MAX as u64,
         }
@@ -299,6 +302,7 @@ impl Kind {
             Kind::Sockfs => SOCKFS_MAGIC.into(),
             Kind::Nsfs => NSFS_MAGIC.into(),
             Kind::Sysfs => SYSFS_MAGIC.into(),
+            Kind::Cgroup2 => CGROUP2_SUPER_MAGIC.into(),
             Kind::Hugetlbfs { .. } => HUGETLBFS_MAGIC.into(),
         }
     }
@@ -1475,8 +1479,10 @@ impl<'a> Walk<'a> {
                 Content::Directory(entries) => match entries.get(name) {
                     Some(found) => found,
                     None => {
-                        if inode.fs.kind == Kind::Sysfs {
-                            sys_not_built(self.proc.counters, inode.ino == 1, name);
+                        match inode.fs.kind {
+                            Kind::Sysfs => sys_not_built(self.proc.counters, inode.ino == 1, name),
+                            Kind::Cgroup2 => sys_not_built(self.proc.counters, false, name),
+                            _ => {}
                         }
                         return Err(Errno::ENOENT);
                     }

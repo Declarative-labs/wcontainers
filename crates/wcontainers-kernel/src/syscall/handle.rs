@@ -45,7 +45,8 @@ pub(super) fn encode(
             FILEID_INO32_GEN,
             alloc::vec![generation(kernel, inode.ino), ino[0], ino[1]],
         )),
-        Kind::Pidfs => Ok((FILEID_KERNFS, ino.to_vec())),
+        // `kernfs_encode_fh`: the node's id, its inode number where that is 64 bits wide.
+        Kind::Pidfs | Kind::Cgroup2 => Ok((FILEID_KERNFS, ino.to_vec())),
         // `nsfs_encode_fh`: the namespace's id (here its number), its type and its number.
         Kind::Nsfs => {
             let crate::fs::Content::Namespace(namespace) = inode.content else {

@@ -24,8 +24,26 @@ fn sys_entries_not_built_are_counted() {
         .map(|counter| counter.detail)
         .collect();
     counted.sort();
-    // devices and fs, and a name below the root; a name Linux lacks at the root is not counted.
-    assert_eq!(counted, [4, 6, 9]);
+    // devices, and names below the root (one in the cgroup); a name Linux lacks at the root is not
+    // counted.
+    assert_eq!(counted, [4, 9]);
+}
+
+#[test]
+fn cgroup_matches_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    let ours = assert_same_output(&out, "sysfs", &["cgroup"]);
+    // The mount table leaves out Docker's masks, and the name mkdir looks up is not there.
+    let expected = [
+        (reason::PROC_FIELDS_NOT_TRACKED, 3),
+        (reason::SYS_ENTRY_NOT_BUILT, 9),
+    ];
+    for warning in &ours.warnings {
+        assert!(
+            expected.contains(&(warning.reason.as_str(), warning.detail)),
+            "{warning:?}"
+        );
+    }
 }
 
 #[test]

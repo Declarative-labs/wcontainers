@@ -1,5 +1,5 @@
 // /sys: the read-only sysfs a default container mounts there, its root's details, its file
-// system, and what may not be done on it. With "lookups", looks up names Linux has under it and
+// system, and what may not be done on it. With "cgroup", the cgroup mounted in it. With "lookups", looks up names Linux has under it and
 // prints nothing.
 
 #define _GNU_SOURCE
@@ -154,7 +154,48 @@ static void transparent(void) {
     }
 }
 
+// The container's cgroup at /sys/fs/cgroup: its mount, root, file system, the settings no default
+// container changes, its processes, and that nothing there can be changed.
+static void cgroup(void) {
+    const char *base = "/sys/fs/cgroup";
+    FILE *mounts = fopen("/proc/self/mounts", "r");
+    char line[512];
+    while (fgets(line, sizeof line, mounts)) {
+        if (strstr(line, " /sys/fs/cgroup ")) {
+            printf("mount %s", line);
+        }
+    }
+    fclose(mounts);
+    struct stat st;
+    p("stat", stat(base, &st));
+    // Its number is the host's cgroup's.
+    printf("mode %o uid %u gid %u\n", st.st_mode, st.st_uid, st.st_gid);
+    struct statfs fs;
+    p("statfs", statfs(base, &fs));
+    printf("type %lx flags %lx\n", (unsigned long)fs.f_type, (unsigned long)fs.f_flags);
+    const char *files[] = {"cgroup.controllers", "cgroup.events", "cgroup.freeze",
+                           "cgroup.max.depth", "cgroup.max.descendants", "cgroup.procs",
+                           "cgroup.subtree_control", "cgroup.threads", "cgroup.type", "cpu.idle",
+                           "cpu.max", "cpu.max.burst", "cpu.weight", "cpu.weight.nice",
+                           "cpuset.cpus.partition", "memory.high", "memory.low", "memory.max",
+                           "memory.min", "memory.oom.group", "memory.swap.high",
+                           "memory.swap.max", "pids.max"};
+    char path[256];
+    for (unsigned i = 0; i < sizeof files / sizeof *files; i++) {
+        snprintf(path, sizeof path, "%s/%s", base, files[i]);
+        show(path);
+        stat(path, &st);
+        printf("size %ld uid %u\n", (long)st.st_size, st.st_uid);
+    }
+    p("write", open("/sys/fs/cgroup/cpu.max", O_WRONLY));
+    p("mkdir", mkdir("/sys/fs/cgroup/made", 0755));
+}
+
 int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "cgroup") == 0) {
+        cgroup();
+        return 0;
+    }
     if (argc > 1 && strcmp(argv[1], "hugepages") == 0) {
         hugepages();
         return 0;
@@ -166,7 +207,7 @@ int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "lookups") == 0) {
         struct stat st;
         stat("/sys/kernel/mm/lru_gen/enabled", &st);
-        stat("/sys/fs/cgroup/cpu.max", &st);
+        stat("/sys/fs/cgroup/memory.current", &st);
         stat("/sys/devices/system/cpu/online", &st);
         stat("/sys/no-such-entry", &st);
         return 0;
