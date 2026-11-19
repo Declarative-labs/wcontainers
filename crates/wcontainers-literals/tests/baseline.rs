@@ -791,7 +791,14 @@ fn line_added_later_is_growth(root: &Path, literal: &str) {
     );
 }
 
-/// A branch with a baseline, and a track branched from it, at the first version of the rules.
+/// A commit of a branch's own that changes no literal.
+fn own_commit(root: &Path) {
+    std::fs::write(root.join("notes.txt"), "a branch's own work\n").expect("write");
+    commit_all(root, "a commit of the branch's own");
+}
+
+/// A branch with a baseline, and a track branched from it with a commit of its own, at the first
+/// version of the rules; then a second version on the branch.
 fn literals_and_track(name: &str) -> PathBuf {
     let files = with_checker(&["first"]);
     let root = repository(name, &borrowed(&files));
@@ -799,6 +806,7 @@ fn literals_and_track(name: &str) -> PathBuf {
     wcontainers_literals::init(&root).expect("init");
     commit_all(&root, "baseline of main");
     git(&root, &["checkout", "-q", "-b", "track"]);
+    own_commit(&root);
     git(&root, &["checkout", "-q", "literals"]);
     replace(&root, RULES_SOURCE, "\"first\",]", "\"first\",\"second\",]");
     commit_all(&root, "new rules that find nothing new here");
@@ -864,6 +872,139 @@ fn init_must_follow_the_merge_that_brings_new_rules() {
     assert!(wcontainers_literals::init(&root).is_err());
 }
 
+/// Once another commit follows the merge that brings new rules, undoing the commits after it (their
+/// changes kept) lets init run as the commit right after the merge.
+#[test]
+fn init_after_undoing_the_commits_that_followed_the_merge() {
+    let root = literals_and_track("window-redo");
+    git(&root, &["checkout", "-q", "track"]);
+    append(&root, LIB, "\npub fn five(x: u64) -> u64 { x * 4071 }\n");
+    commit_all(&root, "a literal the old rules let through");
+    git(&root, &["merge", "-q", "--no-ff", "--no-edit", "literals"]);
+    append(&root, LIB, "\n// another change\n");
+    commit_all(&root, "another change");
+    assert!(wcontainers_literals::init(&root).is_err());
+    git(&root, &["reset", "-q", "--soft", "HEAD~1"]);
+    wcontainers_literals::init(&root).expect("init right after the merge");
+    commit_all(&root, "init, with the other change");
+    let out = check(&root);
+    assert!(out.clean, "{}", out.report());
+}
+
+/// The branch at the new rules commits a literal without its line (`literals`), and is then merged
+/// into its own commit from before the rules arrived (`old`), there or on a commit of `old`'s own,
+/// committing the merge or not.
+fn merged_into_its_older_commit(name: &str, own: bool, literal: &str, commit: bool) -> PathBuf {
+    let root = literals_and_track(name);
+    append(
+        &root,
+        LIB,
+        &format!("\npub fn late(x: u64) -> u64 {{ x * {literal} }}\n"),
+    );
+    commit_all(&root, "a literal without its line, after the rules arrived");
+    git(&root, &["checkout", "-q", "-b", "old", "literals~2"]);
+    if own {
+        own_commit(&root);
+    }
+    let mut merge = vec!["merge", "-q", "--no-ff", "--no-edit"];
+    if !commit {
+        merge.push("--no-commit");
+    }
+    merge.push("literals");
+    git(&root, &merge);
+    root
+}
+
+/// The line of a literal committed after the rules arrived is refused when that branch is merged
+/// into its own older commit, with init run after committing the merge or before.
+#[test]
+fn a_merge_into_the_branch_s_own_older_commit_opens_nothing() {
+    for commit in [true, false] {
+        let name = format!("window-reversed-{commit}");
+        let root = merged_into_its_older_commit(&name, false, "4069", commit);
+        assert!(wcontainers_literals::init(&root).is_err());
+        set_baseline(&root, &with(&baseline(&root), &key("late", "4069")));
+        commit_all(&root, "its line");
+        let out = check(&root);
+        let grown = lines_starting(&out, GROWN_MARK);
+        assert!(
+            grown.len() == 1 && grown[0].contains("4069"),
+            "{}",
+            out.report()
+        );
+    }
+}
+
+/// A crate of its own with one constant, laid out like crate `a`.
+fn crate_with(root: &Path, name: &str, constant: &str) {
+    let lib = root.join(LIB.replacen("/a/", &format!("/{name}/"), 1));
+    let source = lib.parent().expect("source folder");
+    std::fs::create_dir_all(source).expect("crate folder");
+    let manifest = source.parent().expect("crate folder").join(MANIFEST);
+    std::fs::write(manifest, format!("[package]\nname = {name:?}\n")).expect("manifest");
+    std::fs::write(lib, constant).expect("library");
+}
+
+/// A merge that brings new rules can make a literal of the newer side gated through something of the
+/// track's (a constant of the same name and value in another crate); init in or right after that
+/// merge adds its line, which the track could neither fix nor add otherwise.
+#[test]
+fn a_rules_merge_admits_a_newer_side_s_literal_the_track_makes_gated() {
+    for commit in [true, false] {
+        let root = literals_and_track(&format!("window-combined-{commit}"));
+        crate_with(&root, "z", "pub const SHARED: u64 = 4059;\n");
+        commit_all(&root, "a constant on the branch with the new rules");
+        git(&root, &["checkout", "-q", "track"]);
+        crate_with(&root, "b", "pub const SHARED: u64 = 4059;\n");
+        commit_all(&root, "the same constant in a crate of the track's");
+        let mut merge = vec!["merge", "-q", "--no-ff", "--no-edit"];
+        if !commit {
+            merge.push("--no-commit");
+        }
+        merge.push("literals");
+        git(&root, &merge);
+        assert!(
+            !check(&root).clean,
+            "the merge makes the copy a redefinition"
+        );
+        wcontainers_literals::init(&root).expect("init for the new rules");
+        commit_all(&root, "init");
+        let out = check(&root);
+        assert!(out.clean, "{}", out.report());
+    }
+}
+
+/// A literal written into the merge that brings new rules is in neither parent's tree, so its line is
+/// refused, with init in the merge or right after it.
+#[test]
+fn a_literal_written_into_the_merge_that_brings_new_rules_gets_no_line() {
+    for commit_first in [true, false] {
+        let root = literals_and_track(&format!("window-in-merge-literal-{commit_first}"));
+        git(&root, &["checkout", "-q", "track"]);
+        git(
+            &root,
+            &["merge", "-q", "--no-ff", "--no-commit", "literals"],
+        );
+        append(
+            &root,
+            LIB,
+            "\npub fn resolved(x: u64) -> u64 { x * 4065 }\n",
+        );
+        if commit_first {
+            commit_all(&root, "the merge, with a literal of its own");
+        }
+        wcontainers_literals::init(&root).expect("init for the new rules");
+        commit_all(&root, "init");
+        let out = check(&root);
+        let grown = lines_starting(&out, GROWN_MARK);
+        assert!(
+            grown.len() == 1 && grown[0].contains("4065"),
+            "{}",
+            out.report()
+        );
+    }
+}
+
 /// Replace refs are not read: a graft that turns a growth into the start hides nothing.
 #[test]
 fn a_graft_does_not_hide_growth() {
@@ -898,7 +1039,8 @@ mod gets_through {
 
     /// A made-up version of the rules in one merge: the merged side added a literal without a line,
     /// and the merge appends a version and adds the line. It shows only in the list of changes that
-    /// could add lines.
+    /// could add lines. (Where the branch has no commit of its own since the side forked, the merge
+    /// brings nothing and the line is refused.)
     #[test]
     fn a_made_up_version_in_one_merge() {
         let files = with_checker(&["first"]);
@@ -909,6 +1051,7 @@ mod gets_through {
         append(&root, LIB, "\npub fn five(x: u64) -> u64 { x * 4093 }\n");
         commit_all(&root, "a literal without its line");
         git(&root, &["checkout", "-q", "main"]);
+        own_commit(&root);
         git(&root, &["merge", "-q", "--no-ff", "--no-commit", "side"]);
         replace(
             &root,
@@ -975,6 +1118,47 @@ mod gets_through {
         commit_all(&root, "init for the new rules");
         let out = check(&root);
         assert!(out.clean, "{}", out.report());
+    }
+
+    /// A literal committed, without its line, on a fork of a commit from before the rules arrived gets
+    /// its line when the fork merges the branch that has them, however long after they arrived; the
+    /// merge is listed as one more change for new rules.
+    #[test]
+    fn a_literal_on_a_fork_from_before_the_rules_arrived() {
+        let root = literals_and_track("window-old-fork");
+        git(&root, &["checkout", "-q", "track"]);
+        append(&root, LIB, "\npub fn forked(x: u64) -> u64 { x * 4063 }\n");
+        commit_all(&root, "a literal without its line, on the old fork");
+        git(&root, &["merge", "-q", "--no-ff", "--no-edit", "literals"]);
+        wcontainers_literals::init(&root).expect("init for the merge's new rules");
+        assert!(baseline(&root).contains(&key("forked", "4063")));
+        commit_all(&root, "init");
+        let init = git(&root, &["describe", "--always", "--abbrev=12"]);
+        let out = check(&root);
+        assert!(out.clean, "{}", out.report());
+        assert!(
+            out.summary
+                .iter()
+                .any(|l| l.contains(init.trim()) && l.contains("new rules")),
+            "{}",
+            out.report()
+        );
+    }
+
+    /// A literal committed without its line after the rules arrived gets its line when its branch is
+    /// merged into a fork of a commit from before they arrived, with a commit of the fork's own: that
+    /// merge brings the rules, and a merge may add lines for literals of either side.
+    #[test]
+    fn a_branch_merged_into_a_fork_of_its_older_commit() {
+        for commit in [true, false] {
+            let name = format!("window-fork-{commit}");
+            let root = merged_into_its_older_commit(&name, true, "4067", commit);
+            wcontainers_literals::init(&root).expect("init for the merge's new rules");
+            assert!(baseline(&root).contains(&key("late", "4067")));
+            commit_all(&root, "init");
+            let out = check(&root);
+            assert!(out.clean, "{}", out.report());
+        }
     }
 
     /// A made-up version in two commits: one adds a literal without its line (that commit fails its
