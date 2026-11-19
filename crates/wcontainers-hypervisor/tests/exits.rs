@@ -49,8 +49,8 @@ mod macos {
     use zerocopy::{FromBytes, IntoBytes};
 
     use crate::common::{
-        CLibrary, KERNEL_TEST_GUEST, MEMORY, ONE_CPU, be_signed, build, compile, load_average,
-        machine, setting,
+        CLibrary, KERNEL_TEST_GUEST, MEMORY, ONE_CPU, OWN_GUEST, be_signed, build, compile,
+        load_average, machine, setting,
     };
     use crate::protocol::{self, ExitWords, Order, OrderKind, ResumeWords, Warned};
 
@@ -62,9 +62,6 @@ mod macos {
 
     /// The guest's stack's size; its top is the end of the smaller address space of the two sides.
     const STACK_BYTES: u64 = 64 * PAGE_SIZE;
-
-    /// This test's own programs.
-    const OWN_GUEST: &str = "tests/guest";
 
     /// Each program: its directory under this crate and its name.
     const PROGRAMS: &[(&str, &str, CLibrary)] = &[

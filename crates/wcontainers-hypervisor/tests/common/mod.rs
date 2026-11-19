@@ -161,6 +161,9 @@ pub fn load_average() -> String {
 /// The kernel test crate's programs, of which `hello` is the bar's.
 pub const KERNEL_TEST_GUEST: &str = "../wcontainers-kernel-test/guest";
 
+/// This track's own test programs.
+pub const OWN_GUEST: &str = "tests/guest";
+
 /// Whether a program is linked with the C library.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CLibrary {
