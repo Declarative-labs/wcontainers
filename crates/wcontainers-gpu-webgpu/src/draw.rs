@@ -502,7 +502,7 @@ impl WebGpu {
                         .formats
                         .get(v.0.format)
                         .contains(FormatUse::FILTER);
-                    if let Some(bit) = e.binding.checked_sub(32).filter(|b| *b < 128)
+                    if let Some(bit) = crate::layout::texture_bit(e.binding)
                         && !filterable
                     {
                         layout_key.unfilterable_textures |= 1u128 << bit;

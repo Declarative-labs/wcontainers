@@ -35,6 +35,7 @@ use wcontainers_gpu::{
 };
 
 pub use draw::Counters;
+pub use fill::UNORM24_MAX;
 pub use probe::Depth24;
 #[cfg(target_arch = "wasm32")]
 pub use wait::block_on;
