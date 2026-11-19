@@ -149,7 +149,7 @@ pub fn run(device: &wgpu::Device, queue: &wgpu::Queue) -> Depth24 {
     });
     let read = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        size: 4,
+        size: size_of::<f32>() as u64,
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -220,7 +220,7 @@ pub fn run(device: &wgpu::Device, queue: &wgpu::Queue) -> Depth24 {
     });
     crate::wait::until(device, Some(index), || mapped.load(Ordering::Acquire));
     let value = match read.slice(..).get_mapped_range() {
-        Ok(bytes) => f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+        Ok(bytes) => f32::from_le_bytes(*bytes.first_chunk().expect("one depth value")),
         Err(_) => f32::NAN,
     };
     Depth24::of(value)

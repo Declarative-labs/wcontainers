@@ -216,7 +216,7 @@ const RESOLVE_WGSL: &str = "
 fn uniform(device: &wgpu::Device, words: [u32; 4]) -> wgpu::Buffer {
     let b = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        size: 16,
+        size: size_of::<[u32; 4]>() as u64,
         usage: wgpu::BufferUsages::UNIFORM,
         mapped_at_creation: true,
     });
@@ -940,7 +940,7 @@ impl WebGpu {
             rp.set_pipeline(&clear);
             rp.set_stencil_reference(0);
             rp.draw(0..3, 8..9);
-            rp.set_stencil_reference(0xff);
+            rp.set_stencil_reference(u8::MAX.into());
             for (bit, pipeline) in (0u32..).zip(&bits) {
                 rp.set_pipeline(pipeline);
                 rp.draw(0..3, bit..bit + 1);
@@ -982,7 +982,7 @@ impl WebGpu {
                         stencil: wgpu::StencilState {
                             front: face,
                             back: face,
-                            read_mask: 0xff,
+                            read_mask: u8::MAX.into(),
                             write_mask,
                         },
                         bias: wgpu::DepthBiasState::default(),
@@ -999,7 +999,7 @@ impl WebGpu {
                 })
         };
         let program = StencilProgram {
-            clear: make(0xff),
+            clear: make(u8::MAX.into()),
             bits: std::array::from_fn(|bit| make(1 << bit)),
             layout,
         };

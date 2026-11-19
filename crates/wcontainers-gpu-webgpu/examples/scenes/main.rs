@@ -7,7 +7,8 @@
 //! (`prepare_timings`, prepare.rs), checks timestamps (`timestamps`, timestamps.rs) and the formats
 //! held converted (`converted`, converted.rs) and the vertex formats WebGPU lacks
 //! (`vertex_formats`, vertices.rs), checks query sets past 4096 and the query ring (`query_sets`,
-//! queries.rs), measures instance data fetched in the program (`pulled_costs`,
+//! queries.rs), checks subgroups and the primitive index (`program_features`, features.rs),
+//! measures instance data fetched in the program (`pulled_costs`,
 //! pulled.rs), and web/suite.html runs the shared suite (suite.rs).
 
 #[path = "../../../wcontainers-graphics-test/src/scene.rs"]
@@ -75,6 +76,12 @@ mod vertices;
 
 #[cfg(target_arch = "wasm32")]
 mod renames;
+
+#[cfg(target_arch = "wasm32")]
+mod features;
+
+#[cfg(target_arch = "wasm32")]
+mod gaps;
 
 #[cfg(target_arch = "wasm32")]
 mod pulled;
@@ -177,7 +184,8 @@ mod web {
         let (mut b, _) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
         let line = super::converted::check(&mut b, seed, cases).map_err(js)?;
         let three = super::converted::three_channels(&mut b, seed, cases).map_err(js)?;
-        Ok(format!("{line}\n{three}"))
+        let widest = super::converted::three_channels_at_widest(&mut b, seed).map_err(js)?;
+        Ok(format!("{line}\n{three}\n{widest}"))
     }
 
     /// The vertex formats WebGPU lacks, `n` seeded vertices each, read through shadow streams on
@@ -211,6 +219,34 @@ mod web {
     pub fn depth_group_copies() -> Result<String, JsError> {
         let (mut b, _) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
         super::depth16::group_copies(&mut b).map_err(js)
+    }
+
+    /// The program features of `features.rs` on the browser's WebGPU: one line each, saying
+    /// whether the device declares it and, where it does, that it drew as defined; or the failed
+    /// check, also where the browser's adapter offers a feature (`offered`, its `GPUFeatureName`s)
+    /// the device does not declare.
+    #[wasm_bindgen(jspi)]
+    pub fn program_features(offered: Vec<String>) -> Result<String, JsError> {
+        let (mut b, _) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
+        let mut lines = Vec::new();
+        for f in super::features::Feature::ALL {
+            if offered.iter().any(|o| o == f.web_name()) && !b.caps().has(f.declared()) {
+                return Err(js(format!(
+                    "the adapter offers {}, the device does not declare it",
+                    f.web_name()
+                )));
+            }
+            lines.push(super::features::check(&mut b, f).map_err(js)?);
+        }
+        Ok(lines.join("\n"))
+    }
+
+    /// Texture reads into buffers that keep the bytes between rows (`gaps.rs`, `seed` picking the
+    /// texels) on the browser's WebGPU: one line, or the failed check.
+    #[wasm_bindgen(jspi)]
+    pub fn copy_gaps(seed: u64) -> Result<String, JsError> {
+        let (mut b, _) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
+        super::gaps::reads_keep_the_bytes_between_rows(&mut b, seed).map_err(js)
     }
 
     /// Query sets past WebGPU's 4096 queries a set, and query results from one ring, on the

@@ -11,8 +11,9 @@ use crate::draw;
 
 type Tex = <WebGpu as Backend>::Texture;
 
-const W: u32 = 8;
-const H: u32 = 4;
+/// The size of the textures the copies here and in tests/copies.rs move between.
+pub const W: u32 = 8;
+pub const H: u32 = 4;
 
 fn at(texture: &Tex, x: u32, y: u32) -> TextureRegion<'_, WebGpu> {
     TextureRegion {

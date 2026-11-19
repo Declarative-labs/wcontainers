@@ -607,3 +607,14 @@ pub fn png_of(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
     e.write_header()?.write_image_data(rgba)?;
     Ok(out)
 }
+
+/// common.hlsl's coloured vertices: position and colour, passed through (tests/depth.rs and
+/// tests/raster.rs; the example itself does not draw it).
+#[allow(dead_code)]
+pub const COLORED_WGSL: &str = r#"
+struct VOut { @builtin(position) pos: vec4f, @location(0) color: vec4f }
+@vertex fn vs(@location(0) pos: vec3f, @location(1) color: vec4f) -> VOut {
+    return VOut(vec4f(pos, 1.0), color);
+}
+@fragment fn ps(v: VOut) -> @location(0) vec4f { return v.color; }
+"#;
