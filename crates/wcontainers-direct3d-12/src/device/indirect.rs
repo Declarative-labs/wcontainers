@@ -6,22 +6,39 @@
 //! programs that read `SV_VertexID` or `SV_InstanceID`, and commands a pipeline statistics query
 //! counts read the arguments back and record ordinary calls (`IndirectReadBack`).
 
-use super::query::Own;
+use super::query::{OWN_ENTRY, OWN_GROUP, OWN_PARAMETERS, OWN_RESULT, OWN_SOURCE, Own};
 use super::*;
+use crate::address::GpuVirtualAddress;
 use crate::list::{CommandSignature, IndexBufferView, IndirectArgument, RootArgument};
+use wcontainers_directx_graphics_infrastructure::d3d::{
+    DispatchArguments, DrawArguments, DrawIndexedArguments,
+};
+
+/// The count `ExecuteIndirect` reads from its count buffer.
+type CommandCount = u32;
+const COUNT_BYTES: u64 = size_of::<CommandCount>() as u64;
 
 /// Zeroes the first word (the vertex, index or group count) of each command past the count.
-pub(super) const EXPAND: &str = "
-@group(0) @binding(32) var<storage, read> count: array<u32>;
-@group(0) @binding(160) var<storage, read_write> commands: array<u32>;
-struct Expand { word: u32, stride: u32, max: u32 }
-@group(0) @binding(0) var<uniform> expand: Expand;
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3u) {
-    if id.x >= expand.max || id.x < count[expand.word] { return; }
+pub(super) fn expand_source() -> String {
+    format!(
+        "
+@group(0) @binding({OWN_SOURCE}) var<storage, read> count: array<u32>;
+@group(0) @binding({OWN_RESULT}) var<storage, read_write> commands: array<u32>;
+struct Expand {{ word: u32, stride: u32, max: u32 }}
+@group(0) @binding({OWN_PARAMETERS}) var<uniform> expand: Expand;
+@compute @workgroup_size({OWN_GROUP})
+fn {OWN_ENTRY}(@builtin(global_invocation_id) id: vec3u) {{
+    if id.x >= expand.max || id.x < count[expand.word] {{ return; }}
     commands[id.x * expand.stride] = 0u;
+}}
+"
+    )
 }
-";
+
+/// The value of type `T` at byte `at` of `bytes`.
+fn read_at<T: bytemuck::Pod>(bytes: &[u8], at: usize) -> T {
+    bytemuck::pod_read_unaligned(&bytes[at..at + size_of::<T>()])
+}
 
 impl<B: Backend> Device<B> {
     /// Writes the upload buffer at a GPU virtual address to the GPU, for vertex and index buffers
@@ -98,7 +115,7 @@ impl<B: Backend> Replay<B> {
             n => u64::from(n - 1) * u64::from(s.stride) + u64::from(size),
         };
         if let Some((c, offset)) = count
-            && (!offset.is_multiple_of(4) || offset + 4 > width(d, c)?)
+            && (!offset.is_multiple_of(COUNT_BYTES) || offset + COUNT_BYTES > width(d, c)?)
         {
             return Err(Error::Invalid("an indirect count past its buffer's end"));
         }
@@ -141,11 +158,10 @@ impl<B: Backend> Replay<B> {
             .map_or(0, |r| r.strip_cut);
         let rewritten = call == IndirectArgument::DrawIndexed
             && matches!(self.topology, Topology::LineStrip | Topology::TriangleStrip)
-            && match self.index.map(|v| v.format) {
-                Some(57) => strip_cut != 1,
-                Some(42) => strip_cut == 1,
-                _ => false,
-            };
+            && self
+                .index
+                .and_then(|v| index_format(v.format))
+                .is_some_and(|f| restart_rewritten(f, strip_cut));
         // The stage helper takes direct draws only.
         let staged = d.pipelines[pid.0 as usize]
             .render
@@ -173,7 +189,7 @@ impl<B: Backend> Replay<B> {
                 d.backend.slow_paths().hit(SlowPath::IndirectCountExpanded);
                 d.upload(c)?;
                 let counts = d.buffer(c)?.0.clone();
-                let counts_size = width(d, c)?.next_multiple_of(4);
+                let counts_size = width(d, c)?.next_multiple_of(STORAGE_WORD);
                 let scratch = d.scratch(
                     span,
                     BufferUsage::STORAGE | BufferUsage::INDIRECT | BufferUsage::COPY_DST,
@@ -182,10 +198,14 @@ impl<B: Backend> Replay<B> {
                     .copy_buffer(&source, args_offset, &scratch, 0, span);
                 d.run_own(
                     Own::Expand,
-                    &[(count_offset / 4) as u32, s.stride / 4, max],
                     &[
-                        (32, &counts, counts_size, false),
-                        (160, &scratch, span, true),
+                        (count_offset / STORAGE_WORD) as u32,
+                        s.stride / STORAGE_WORD as u32,
+                        max,
+                    ],
+                    &[
+                        (OWN_SOURCE, &counts, counts_size, false),
+                        (OWN_RESULT, &scratch, span, true),
                     ],
                     max,
                 )?;
@@ -237,8 +257,7 @@ impl<B: Backend> Replay<B> {
         let bytes = d.read_now(args, args_offset, span)?;
         let n = match count {
             Some((c, offset)) => {
-                let v = d.read_now(c, offset, 4)?;
-                u32::from_le_bytes([v[0], v[1], v[2], v[3]]).min(max)
+                read_at::<CommandCount>(&d.read_now(c, offset, COUNT_BYTES)?, 0).min(max)
             }
             None => max,
         };
@@ -246,58 +265,58 @@ impl<B: Backend> Replay<B> {
         for i in 0..n as usize {
             let mut at = i * s.stride as usize;
             for &a in &s.arguments {
-                let w = |k: usize| {
-                    let p = at + 4 * k;
-                    u32::from_le_bytes([bytes[p], bytes[p + 1], bytes[p + 2], bytes[p + 3]])
-                };
-                let address = || u64::from(w(0)) | u64::from(w(1)) << 32;
                 match a {
-                    IndirectArgument::Draw => self.draw(
-                        d,
-                        DrawRange::Vertices {
-                            count: w(0),
-                            instances: w(1),
-                            first: w(2),
-                            first_instance: w(3),
-                        },
-                        None,
-                    )?,
-                    IndirectArgument::DrawIndexed => self.draw(
-                        d,
-                        DrawRange::Indexed {
-                            count: w(0),
-                            instances: w(1),
-                            first: w(2),
-                            base_vertex: w(3) as i32,
-                            first_instance: w(4),
-                        },
-                        None,
-                    )?,
-                    IndirectArgument::Dispatch => self.dispatch(d, [w(0), w(1), w(2)], None)?,
+                    IndirectArgument::Draw => {
+                        let v: DrawArguments = read_at(&bytes, at);
+                        self.draw(
+                            d,
+                            DrawRange::Vertices {
+                                count: v.vertex_count_per_instance,
+                                instances: v.instance_count,
+                                first: v.start_vertex_location,
+                                first_instance: v.start_instance_location,
+                            },
+                            None,
+                        )?
+                    }
+                    IndirectArgument::DrawIndexed => {
+                        let v: DrawIndexedArguments = read_at(&bytes, at);
+                        self.draw(
+                            d,
+                            DrawRange::Indexed {
+                                count: v.index_count_per_instance,
+                                instances: v.instance_count,
+                                first: v.start_index_location,
+                                base_vertex: v.base_vertex_location,
+                                first_instance: v.start_instance_location,
+                            },
+                            None,
+                        )?
+                    }
+                    IndirectArgument::Dispatch => {
+                        let v: DispatchArguments = read_at(&bytes, at);
+                        let groups = [
+                            v.thread_group_count_x,
+                            v.thread_group_count_y,
+                            v.thread_group_count_z,
+                        ];
+                        self.dispatch(d, groups, None)?
+                    }
                     IndirectArgument::VertexBuffer { slot } => {
-                        d.upload_at(address())?;
+                        let view: VertexBufferView = read_at(&bytes, at);
+                        d.upload_at(view.address)?;
                         self.run(
                             d,
                             &Command::VertexBuffers {
                                 start: slot,
-                                views: vec![VertexBufferView {
-                                    address: address(),
-                                    size: w(2),
-                                    stride: w(3),
-                                }],
+                                views: vec![view],
                             },
                         )?
                     }
                     IndirectArgument::IndexBuffer => {
-                        d.upload_at(address())?;
-                        self.run(
-                            d,
-                            &Command::IndexBuffer(Some(IndexBufferView {
-                                address: address(),
-                                size: w(2),
-                                format: w(3),
-                            })),
-                        )?
+                        let view: IndexBufferView = read_at(&bytes, at);
+                        d.upload_at(view.address)?;
+                        self.run(d, &Command::IndexBuffer(Some(view)))?
                     }
                     IndirectArgument::Constants {
                         root,
@@ -309,7 +328,9 @@ impl<B: Backend> Replay<B> {
                             compute,
                             index: root,
                             offset,
-                            values: (0..count as usize).map(w).collect(),
+                            values: (0..count as usize)
+                                .map(|k| read_at(&bytes, at + k * size_of::<u32>()))
+                                .collect(),
                         },
                     )?,
                     IndirectArgument::RootView { root } => self.run(
@@ -317,7 +338,9 @@ impl<B: Backend> Replay<B> {
                         &Command::RootArgument {
                             compute,
                             index: root,
-                            argument: RootArgument::Descriptor(address()),
+                            argument: RootArgument::Descriptor(read_at::<GpuVirtualAddress>(
+                                &bytes, at,
+                            )),
                         },
                     )?,
                 }
