@@ -252,6 +252,11 @@ fn texture_atomics_as_direct3d_does() {
 }
 
 #[test]
+fn raw_signed_atomics_from_pixels_and_threads_as_direct3d_does() {
+    case("raw_signed_atomics");
+}
+
+#[test]
 fn typed_storage_stores_as_direct3d_does() {
     case("typed");
 }
