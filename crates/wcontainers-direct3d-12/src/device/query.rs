@@ -9,6 +9,9 @@ use wcontainers_gpu::{
 };
 
 use super::*;
+use wcontainers_directx_graphics_infrastructure::d3d::{
+    PipelineStatistics, StreamOutputStatistics,
+};
 
 /// `D3D12_QUERY_HEAP_TYPE` values.
 const HEAP_OCCLUSION: u32 = 0;
@@ -24,16 +27,22 @@ pub const QUERY_PIPELINE_STATISTICS: u32 = 3;
 /// `SO_STATISTICS_STREAM0` to `STREAM3`.
 pub const QUERY_SO_STATISTICS: std::ops::RangeInclusive<u32> = 4..=7;
 
-/// The bytes of one query's value the front writes, by heap type: an exact occlusion count,
-/// `D3D12_QUERY_DATA_PIPELINE_STATISTICS`, `D3D12_QUERY_DATA_SO_STATISTICS`.
+/// An exact occlusion count, the value of `D3D12_QUERY_TYPE_OCCLUSION`.
+type OcclusionCount = u64;
+
+/// The bytes of one query's value the front writes, by heap type.
 fn value_size(heap: u32) -> Option<u64> {
-    match heap {
-        HEAP_OCCLUSION => Some(8),
-        HEAP_PIPELINE_STATISTICS => Some(88),
-        HEAP_SO_STATISTICS => Some(16),
-        _ => None,
-    }
+    let size = match heap {
+        HEAP_OCCLUSION => size_of::<OcclusionCount>(),
+        HEAP_PIPELINE_STATISTICS => size_of::<PipelineStatistics>(),
+        HEAP_SO_STATISTICS => size_of::<StreamOutputStatistics>(),
+        _ => return None,
+    };
+    Some(size as u64)
 }
+
+/// The bytes of one counted field of a query's value.
+const FIELD_BYTES: u64 = size_of::<u64>() as u64;
 
 /// One argument record of a predicated draw or dispatch: five words, the count first.
 const RECORD: u64 = 20;
@@ -387,31 +396,30 @@ impl<B: Backend> Device<B> {
     }
 
     /// Writes the value of query `index` of `heap`, which the front counted, in order with the work
-    /// recorded around it: one u64 a field of the heap type's value.
+    /// recorded around it: the bytes of the heap type's value.
     pub(super) fn write_value(
         &mut self,
         heap: QueryHeapId,
         index: u32,
-        value: &[u64],
+        value: &[u8],
     ) -> Result<(), Error> {
         let h = self
             .query_heaps
             .get(heap.0 as usize)
             .ok_or(Error::Invalid("no such query heap"))?;
         match (&h.values, value_size(h.kind)) {
-            (Some(v), Some(size)) if index < h.count && size == value.len() as u64 * 8 => {
+            (Some(v), Some(size)) if index < h.count && size == value.len() as u64 => {
                 let v = v.clone();
-                let bytes: Vec<u8> = value.iter().flat_map(|f| f.to_le_bytes()).collect();
                 self.backend
-                    .write_buffer(&v, u64::from(index) * size, &bytes, WriteMode::Ordered);
+                    .write_buffer(&v, u64::from(index) * size, value, WriteMode::Ordered);
                 Ok(())
             }
             _ => Err(Error::Invalid("a query of another heap type")),
         }
     }
 
-    /// Copies the u64 at the start of `from` into field `field` of the value of query `index` of
-    /// `heap`, in order with the work recorded around it.
+    /// Copies the u64 at the start of `from` into the field at byte `field` of the value of query
+    /// `index` of `heap`, in order with the work recorded around it.
     pub(super) fn copy_into_value(
         &mut self,
         heap: QueryHeapId,
@@ -420,11 +428,12 @@ impl<B: Backend> Device<B> {
         from: &B::Buffer,
     ) -> Result<(), Error> {
         let (v, at) = self.value_at(heap, index, field)?;
-        self.backend.copy_buffer(from, 0, &v, at, 8);
+        self.backend.copy_buffer(from, 0, &v, at, FIELD_BYTES);
         Ok(())
     }
 
-    /// The buffer holding the values of `heap` and the offset of field `field` of query `index`'s.
+    /// The buffer holding the values of `heap` and the offset of the field at byte `field` of query
+    /// `index`'s.
     pub(super) fn value_at(
         &self,
         heap: QueryHeapId,
@@ -436,8 +445,8 @@ impl<B: Backend> Device<B> {
             .get(heap.0 as usize)
             .ok_or(Error::Invalid("no such query heap"))?;
         match (&h.values, value_size(h.kind)) {
-            (Some(v), Some(size)) if index < h.count && (field as u64 + 1) * 8 <= size => {
-                Ok((v.clone(), u64::from(index) * size + field as u64 * 8))
+            (Some(v), Some(size)) if index < h.count && field as u64 + FIELD_BYTES <= size => {
+                Ok((v.clone(), u64::from(index) * size + field as u64))
             }
             _ => Err(Error::Invalid("a query of another heap type")),
         }

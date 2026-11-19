@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 wcontainers-gpu = { path = "../wcontainers-gpu" }
+bytemuck = { version = "1.25.2", features = ["derive"] }
 
 [lints]
 workspace = true
