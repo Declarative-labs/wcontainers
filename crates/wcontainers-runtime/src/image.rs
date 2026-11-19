@@ -13,6 +13,10 @@ use oci_spec::image::{
 };
 use oci_spec::runtime::{Spec, User};
 use sha2::{Digest as _, Sha256};
+use wcontainers_kernel::linux::general::{
+    S_IRGRP, S_IROTH, S_IRUSR, S_IRWXG, S_IRWXO, S_IRWXU, S_ISGID, S_ISUID, S_ISVTX, S_IWUSR,
+    S_IXGRP, S_IXOTH, S_IXUSR,
+};
 use wcontainers_kernel::{Attributes, Kernel, NewFile};
 
 use crate::Error;
@@ -46,6 +50,25 @@ pub struct Image {
 /// Symbolic links followed in one lookup before it fails, as Linux's `MAXSYMLINKS`.
 const MOST_LINKS: usize = 40;
 
+/// The permission bits of a mode, the rest being its kind.
+const PERMISSION_BITS: u32 = S_ISUID | S_ISGID | S_ISVTX | S_IRWXU | S_IRWXG | S_IRWXO;
+/// Execute permission for anyone.
+const EXECUTABLE: u32 = S_IXUSR | S_IXGRP | S_IXOTH;
+/// `rwxr-xr-x` and `rw-r--r--`, the modes Docker gives the directory and files it writes.
+const DIRECTORY_MODE: u32 = S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH;
+const FILE_MODE: u32 = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
+
+/// Fields of a line of `/etc/passwd` (name, password, uid, gid, comment, home, shell) and of
+/// `/etc/group` (name, password, gid, members), by their places (passwd(5), group(5)).
+mod field {
+    pub const NAME: usize = 0;
+    pub const UID: usize = 2;
+    pub const GID: usize = 3;
+    pub const HOME: usize = 5;
+    pub const GROUP_GID: usize = 2;
+    pub const GROUP_MEMBERS: usize = 3;
+}
+
 impl Image {
     /// A plain tar of the root's files, such as `docker export` writes.
     pub fn tar(path: &Path) -> Result<Self, Error> {
@@ -58,7 +81,7 @@ impl Image {
     }
 
     /// An image in the OCI image layout (the directory `docker save` writes as a tar): the manifest for
-    /// `architecture` (as the image configuration names it, [`crate::BackEnd::ARCHITECTURE`]) on
+    /// `architecture` (as the image configuration names it, [`crate::Executor::ARCHITECTURE`]) on
     /// Linux, its blobs checked against their digests and its layers applied in order.
     pub fn oci(directory: &Path, architecture: &str) -> Result<Self, Error> {
         let layout = directory.join("oci-layout");
@@ -168,7 +191,7 @@ impl Image {
                     field: "config.Volumes".to_string(),
                     reason: format!(
                         "{volumes:?}: a volume is a mount of a directory from outside, which needs \
-                         the shipped outside's file backend"
+                         the local system's file backend"
                     ),
                 });
             }
@@ -217,15 +240,15 @@ impl Image {
             reason,
         };
         let account = passwd.iter().find(|fields| {
-            fields.first() == Some(&name)
-                || name
-                    .parse::<u32>()
-                    .is_ok_and(|uid| fields.get(2).and_then(|f| f.parse().ok()) == Some(uid))
+            fields.get(field::NAME) == Some(&name)
+                || name.parse::<u32>().is_ok_and(|uid| {
+                    fields.get(field::UID).and_then(|f| f.parse().ok()) == Some(uid)
+                })
         });
         let uid = match name.parse::<u32>() {
             Ok(uid) => uid,
             Err(_) => account
-                .and_then(|fields| fields.get(2)?.parse().ok())
+                .and_then(|fields| fields.get(field::UID)?.parse().ok())
                 .ok_or_else(|| refused(format!("no user {name} in /etc/passwd")))?,
         };
         let gid = match group_name {
@@ -233,12 +256,12 @@ impl Image {
                 Ok(gid) => gid,
                 Err(_) => group
                     .iter()
-                    .find(|fields| fields.first() == Some(&group_name))
-                    .and_then(|fields| fields.get(2)?.parse().ok())
+                    .find(|fields| fields.get(field::NAME) == Some(&group_name))
+                    .and_then(|fields| fields.get(field::GROUP_GID)?.parse().ok())
                     .ok_or_else(|| refused(format!("no group {group_name} in /etc/group")))?,
             },
             None => account
-                .and_then(|fields| fields.get(3)?.parse().ok())
+                .and_then(|fields| fields.get(field::GID)?.parse().ok())
                 .unwrap_or(0),
         };
         let mut user = User::default();
@@ -254,13 +277,15 @@ impl Image {
     /// The user where the image names none: root, in its groups, as Docker gives it.
     fn root(&self) -> User {
         let passwd = self.table(b"etc/passwd");
-        let account = passwd.iter().find(|fields| fields.get(2) == Some(&"0"));
+        let account = passwd
+            .iter()
+            .find(|fields| fields.get(field::UID).and_then(|f| f.parse().ok()) == Some(0));
         let gid = account
-            .and_then(|fields| fields.get(3)?.parse().ok())
+            .and_then(|fields| fields.get(field::GID)?.parse().ok())
             .unwrap_or(0);
         let mut user = User::default();
         user.set_gid(gid);
-        let name = account.and_then(|fields| fields.first().copied());
+        let name = account.and_then(|fields| fields.get(field::NAME).copied());
         user.set_additional_gids(Some(
             name.map_or_else(|| vec![gid], |name| self.groups(name, gid)),
         ));
@@ -275,10 +300,10 @@ impl Image {
             .into_iter()
             .filter(|fields| {
                 fields
-                    .get(3)
+                    .get(field::GROUP_MEMBERS)
                     .is_some_and(|members| members.split(',').any(|m| m == name))
             })
-            .filter_map(|fields| fields.get(2)?.parse().ok());
+            .filter_map(|fields| fields.get(field::GROUP_GID)?.parse().ok());
         std::iter::once(gid).chain(members).collect()
     }
 
@@ -286,8 +311,8 @@ impl Image {
     pub(crate) fn home(&self, uid: u32) -> String {
         self.table(b"etc/passwd")
             .iter()
-            .find(|fields| fields.get(2).and_then(|f| f.parse().ok()) == Some(uid))
-            .and_then(|fields| fields.get(5))
+            .find(|fields| fields.get(field::UID).and_then(|f| f.parse().ok()) == Some(uid))
+            .and_then(|fields| fields.get(field::HOME))
             .filter(|home| !home.is_empty())
             .map_or_else(|| "/".to_string(), |home| home.to_string())
     }
@@ -343,14 +368,15 @@ impl Image {
 
     /// The program `process.args[0]` names, as runc finds it: a name with a slash from the working
     /// directory, any other name in the directories of `PATH` in `env`, the first that is a file anyone
-    /// may run. A name not found is handed on as it is, for the kernel to fail as exec does.
-    pub(crate) fn program(&self, name: &str, env: &[String], cwd: &str) -> String {
+    /// may run. None for a name with no slash found in none of them; a path with a slash is the
+    /// kernel's to fail as exec does.
+    pub(crate) fn program(&self, name: &str, env: &[String], cwd: &str) -> Option<String> {
         if name.contains('/') {
-            return if name.starts_with('/') {
+            return Some(if name.starts_with('/') {
                 name.to_string()
             } else {
                 format!("{}/{name}", cwd.trim_end_matches('/'))
-            };
+            });
         }
         let path = env
             .iter()
@@ -363,23 +389,43 @@ impl Image {
             .find(|candidate| {
                 matches!(
                     self.lookup(candidate.as_bytes()),
-                    Some(Entry { attributes, kind: Kind::Regular(_) }) if attributes.mode & 0o111 != 0
+                    Some(Entry { attributes, kind: Kind::Regular(_) }) if attributes.mode & EXECUTABLE != 0
                 )
             })
-            .unwrap_or_else(|| name.to_string())
     }
 
-    /// Puts the files in a new kernel's root, directories before what they hold and hard links last.
-    pub(crate) fn add_to(&self, kernel: &mut Kernel) -> Result<(), Error> {
+    /// Puts the files in a new kernel's root, directories before what they hold and hard links last,
+    /// with the files Docker writes in every container in place of the image's own.
+    pub(crate) fn add_to(&self, kernel: &mut Kernel, hostname: &str) -> Result<(), Error> {
+        let written = docker_files(hostname);
+        let etc = match self.files.get(&b"etc"[..]) {
+            None => Some((
+                b"etc".to_vec(),
+                docker_file(DIRECTORY_MODE, Kind::Directory),
+            )),
+            Some(Entry {
+                kind: Kind::Directory,
+                ..
+            }) => None,
+            Some(_) => {
+                return Err(Error::Image(
+                    "/etc is not a directory, where the host name and name server files go".into(),
+                ));
+            }
+        };
         let hard_links = self
             .files
             .iter()
             .filter(|(_, entry)| matches!(entry.kind, Kind::HardLink(_)));
-        let others = self
-            .files
+        let others = self.files.iter().filter(|(path, entry)| {
+            !matches!(entry.kind, Kind::HardLink(_))
+                && !written.iter().any(|(ours, _)| ours == *path)
+        });
+        let added = etc
             .iter()
-            .filter(|(_, entry)| !matches!(entry.kind, Kind::HardLink(_)));
-        for (path, entry) in others.chain(hard_links) {
+            .chain(&written)
+            .map(|(path, entry)| (path, entry));
+        for (path, entry) in others.chain(added).chain(hard_links) {
             let file = match &entry.kind {
                 Kind::Directory => NewFile::Directory,
                 Kind::Regular(bytes) => NewFile::Regular(bytes),
@@ -401,6 +447,41 @@ impl Image {
                 })?;
         }
         Ok(())
+    }
+}
+
+/// What Docker writes over its mounts in every container: the host name, the hosts file with the
+/// kernel's made-up address for it, and the kernel's name server.
+fn docker_files(hostname: &str) -> [(Vec<u8>, Entry); 3] {
+    let address = std::net::Ipv4Addr::from(wcontainers_kernel::network::ADDRESS);
+    let name_server = std::net::Ipv4Addr::from(wcontainers_kernel::network::NAME_SERVER);
+    let (v4, v6) = (std::net::Ipv4Addr::LOCALHOST, std::net::Ipv6Addr::LOCALHOST);
+    let hosts = format!(
+        "{v4}\tlocalhost\n{v6}\tlocalhost ip6-localhost ip6-loopback\nfe00::\tip6-localnet\n\
+         ff00::\tip6-mcastprefix\nff02::1\tip6-allnodes\nff02::2\tip6-allrouters\n\
+         {address}\t{hostname}\n"
+    );
+    let file = |bytes: String| docker_file(FILE_MODE, Kind::Regular(bytes.into_bytes()));
+    [
+        (b"etc/hostname".to_vec(), file(format!("{hostname}\n"))),
+        (b"etc/hosts".to_vec(), file(hosts)),
+        (
+            b"etc/resolv.conf".to_vec(),
+            file(format!("nameserver {name_server}\n")),
+        ),
+    ]
+}
+
+/// An entry owned by root, dated at 0 so that a run repeats.
+fn docker_file(mode: u32, kind: Kind) -> Entry {
+    Entry {
+        attributes: Attributes {
+            mode,
+            uid: 0,
+            gid: 0,
+            mtime_seconds: 0,
+        },
+        kind,
     }
 }
 
@@ -577,7 +658,7 @@ fn read_layer(
         };
         let number = |value: std::io::Result<u64>| value.map_err(|error| fail(error.to_string()));
         let attributes = Attributes {
-            mode: header.mode().map_err(|error| fail(error.to_string()))? & 0o7777,
+            mode: header.mode().map_err(|error| fail(error.to_string()))? & PERMISSION_BITS,
             uid: number(header.uid())? as u32,
             gid: number(header.gid())? as u32,
             mtime_seconds: number(header.mtime())? as i64,
@@ -759,13 +840,17 @@ mod tests {
                 ("bin/sh", "->busybox"),
                 ("usr/", ""),
                 ("usr/bin", "->../bin"),
+                ("tmp/", ""),
+                ("tmp/run", "\x7fELF"),
             ]],
             None,
         );
         let env = ["PATH=/usr/local/bin:/usr/bin".to_string()];
-        assert_eq!(image.program("sh", &env, "/"), "/usr/bin/sh");
-        assert_eq!(image.program("ls", &env, "/"), "ls");
-        assert_eq!(image.program("./run", &env, "/tmp"), "/tmp/./run");
+        let found = |name, cwd| image.program(name, &env, cwd);
+        assert_eq!(found("sh", "/").as_deref(), Some("/usr/bin/sh"));
+        // Never from the working directory, which holds it.
+        assert_eq!(found("run", "/tmp"), None);
+        assert_eq!(found("./run", "/tmp").as_deref(), Some("/tmp/./run"));
     }
 
     #[test]

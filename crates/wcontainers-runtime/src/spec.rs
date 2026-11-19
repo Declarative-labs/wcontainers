@@ -1,6 +1,5 @@
-//! Every field of the OCI runtime configuration honoured or refused by name. A configuration read
-//! from its JSON is checked against that JSON, so a field oci-spec does not read is refused too,
-//! never passed over.
+//! Every field of the OCI runtime configuration honoured or refused by name. A property of a
+//! configuration's JSON that the specification does not define is ignored and named, for a warning.
 
 use oci_spec::runtime::Spec;
 use serde_json::{Value, json};
@@ -8,7 +7,7 @@ use serde_json::{Value, json};
 use crate::Error;
 
 /// The powers the kernel gives the first process: a default Docker container's.
-const CAPABILITIES: [&str; 14] = [
+const CAPABILITIES: &[&str] = &[
     "CAP_CHOWN",
     "CAP_DAC_OVERRIDE",
     "CAP_FSETID",
@@ -27,7 +26,7 @@ const CAPABILITIES: [&str; 14] = [
 
 /// The limits the kernel starts the first process with, as (name, soft, hard); every other limit is
 /// unlimited.
-const LIMITS: [(&str, u64, u64); 7] = [
+const LIMITS: &[(&str, u64, u64)] = &[
     ("RLIMIT_STACK", 8 << 20, u64::MAX),
     ("RLIMIT_CORE", 0, u64::MAX),
     ("RLIMIT_NOFILE", 1 << 20, 1 << 20),
@@ -38,13 +37,13 @@ const LIMITS: [(&str, u64, u64); 7] = [
 ];
 
 /// The namespaces every container has its own of, by construction.
-const NAMESPACES: [&str; 6] = ["pid", "network", "ipc", "uts", "mount", "cgroup"];
+const NAMESPACES: &[&str] = &["pid", "network", "ipc", "uts", "mount", "cgroup"];
 
 /// The umask the kernel starts the first process with.
 const UMASK: u64 = 0o022;
 
 /// The paths the kernel mounts again read-only, as a default Docker container has the first of its.
-const READONLY_PATHS: [&str; 1] = ["/proc/sys"];
+const READONLY_PATHS: &[&str] = &["/proc/sys"];
 
 /// The mounts the kernel always makes, as a default Docker container has them.
 fn mounts() -> Value {
@@ -90,42 +89,39 @@ pub fn base_spec() -> Spec {
     .expect("the base configuration is one oci-spec reads")
 }
 
-/// A configuration from its JSON, refusing by name the first field oci-spec does not read.
-pub fn spec_from_json(json: &[u8]) -> Result<Spec, Error> {
-    let given: Value =
-        serde_json::from_slice(json).map_err(|error| Error::Configuration(error.to_string()))?;
-    let spec: Spec = serde_json::from_value(given.clone())
-        .map_err(|error| Error::Configuration(error.to_string()))?;
-    let read = serde_json::to_value(&spec).expect("a configuration is JSON");
-    match unread(&given, &read, "") {
-        Some(field) => Err(refused(field, "a field this runtime does not know")),
-        None => Ok(spec),
+/// A configuration from its JSON, and the path of each property in it that the specification, as
+/// oci-spec's types read it, does not define, and of each annotation (this runtime acts on none).
+/// Those are ignored, as the specification's extensibility rule says ("Runtimes MAY log unknown
+/// properties but MUST otherwise ignore them"), for the caller to warn of; a defined field this
+/// runtime cannot honour is refused when the container is made.
+pub fn spec_from_json(json: &[u8]) -> Result<(Spec, Vec<String>), Error> {
+    let failed = |error: serde_json::Error| Error::Configuration(error.to_string());
+    let mut ignored = Vec::new();
+    let mut deserializer = serde_json::Deserializer::from_slice(json);
+    let spec: Spec = serde_ignored::deserialize(&mut deserializer, |path| {
+        ignored.push(path_name(&path));
+    })
+    .map_err(failed)?;
+    deserializer.end().map_err(failed)?;
+    if let Some(annotations) = spec.annotations() {
+        ignored.extend(annotations.keys().map(|key| format!("annotations.{key}")));
     }
+    Ok((spec, ignored))
 }
 
-/// The first field of `given` that is not in `read`, by its path.
-fn unread(given: &Value, read: &Value, path: &str) -> Option<String> {
-    let at = |name: &str| {
-        if path.is_empty() {
-            name.to_string()
-        } else {
-            format!("{path}.{name}")
-        }
-    };
-    match (given, read) {
-        (Value::Object(given), Value::Object(read)) => given
-            .iter()
-            .filter(|(_, value)| !value.is_null())
-            .find_map(|(name, value)| match read.get(name) {
-                None => Some(at(name)),
-                Some(kept) => unread(value, kept, &at(name)),
-            }),
-        (Value::Array(given), Value::Array(read)) => given
-            .iter()
-            .zip(read)
-            .enumerate()
-            .find_map(|(index, (value, kept))| unread(value, kept, &format!("{path}[{index}]"))),
-        _ => None,
+/// A path as the refusals name fields: `process.args`, `mounts[2].options`.
+fn path_name(path: &serde_ignored::Path) -> String {
+    use serde_ignored::Path;
+    match path {
+        Path::Root => String::new(),
+        Path::Seq { parent, index } => format!("{}[{index}]", path_name(parent)),
+        Path::Map { parent, key } => match path_name(parent) {
+            parent if parent.is_empty() => key.clone(),
+            parent => format!("{parent}.{key}"),
+        },
+        Path::Some { parent }
+        | Path::NewtypeStruct { parent }
+        | Path::NewtypeVariant { parent } => path_name(parent),
     }
 }
 
@@ -193,7 +189,7 @@ pub(crate) fn accept(spec: &Spec) -> Result<Accepted, Error> {
             "hooks" => absent(
                 name,
                 field,
-                "the shipped outside running host programs at the points the runtime \
+                "the local system running host programs at the points the runtime \
                  specification names",
             )?,
             "linux" => linux(field)?,
@@ -245,9 +241,11 @@ pub(crate) fn accept(spec: &Spec) -> Result<Accepted, Error> {
         args,
         env: process.env().clone().unwrap_or_default(),
         cwd,
+        // As runc, an empty name sets none.
         hostname: spec
             .hostname()
             .clone()
+            .filter(|name| !name.is_empty())
             .unwrap_or_else(|| "localhost".to_string()),
         groups: process.user().additional_gids().clone().unwrap_or_default(),
         uid: process.user().uid(),
@@ -261,7 +259,7 @@ fn root(value: &Value) -> Result<(), Error> {
                 "root.path",
                 field,
                 "the root's files are the image argument; a root read from a directory of the host \
-                 needs the shipped outside's file backend",
+                 needs the local system's file backend",
             )?,
             "readonly" => absent("root.readonly", field, "read-only mounts in the kernel")?,
             _ => {
@@ -275,7 +273,8 @@ fn root(value: &Value) -> Result<(), Error> {
     Ok(())
 }
 
-/// The mounts must be the kernel's own, each as it makes it: it makes all of them, and no others.
+/// The mounts must be the kernel's own, each as it makes it and in its order: it makes all of them,
+/// once each, and no others, and the standard makes them in the listed order.
 fn check_mounts(value: &Value) -> Result<(), Error> {
     let kernel = mounts();
     let kernel = kernel.as_array().expect("a list");
@@ -289,6 +288,12 @@ fn check_mounts(value: &Value) -> Result<(), Error> {
             .collect();
         options.sort();
         options
+    };
+    let same = |ours: &Value, mount: &Value| {
+        ours["destination"] == mount["destination"]
+            && ours["type"] == mount["type"]
+            && ours["source"] == mount["source"]
+            && options(ours) == options(mount)
     };
     for (index, mount) in given.iter().enumerate() {
         let field = format!("mounts[{index}]");
@@ -304,18 +309,12 @@ fn check_mounts(value: &Value) -> Result<(), Error> {
                 "id-mapped mounts: user namespaces in the kernel",
             ));
         }
-        let same = kernel.iter().find(|ours| {
-            ours["destination"] == mount["destination"]
-                && ours["type"] == mount["type"]
-                && ours["source"] == mount["source"]
-                && options(ours) == options(mount)
-        });
-        if same.is_none() {
+        if !kernel.iter().any(|ours| same(ours, mount)) {
             return Err(refused(
                 field,
                 format!(
                     "{mount}: only the kernel's own mounts are made; bind mounts of host \
-                     directories need the shipped outside's file backend, other file systems the \
+                     directories need the local system's file backend, other file systems the \
                      kernel"
                 ),
             ));
@@ -335,6 +334,25 @@ fn check_mounts(value: &Value) -> Result<(), Error> {
                 ),
             ));
         }
+    }
+    if let Some(index) = (0..given.len()).find(|&index| {
+        kernel
+            .get(index)
+            .is_none_or(|ours| !same(ours, &given[index]))
+    }) {
+        let order: Vec<&str> = kernel
+            .iter()
+            .filter_map(|ours| ours["destination"].as_str())
+            .collect();
+        return Err(refused(
+            format!("mounts[{index}]"),
+            format!(
+                "{}: the kernel makes its mounts once each, in the order {}; another order or a \
+                 repeat needs the kernel to take its mounts at start",
+                given[index],
+                order.join(", ")
+            ),
+        ));
     }
     Ok(())
 }
@@ -480,7 +498,7 @@ fn linux(value: &Value) -> Result<(), Error> {
             "devices" => absent(
                 &path,
                 field,
-                "device nodes in the kernel for each, with the outside behind them",
+                "device nodes in the kernel for each, with the system behind them",
             )?,
             "seccomp" => absent(
                 &path,
@@ -551,7 +569,7 @@ fn namespaces(value: &Value) -> Result<(), Error> {
             ));
         }
     }
-    for kind in NAMESPACES {
+    for &kind in NAMESPACES {
         if !given.iter().any(|namespace| namespace["type"] == kind) {
             return Err(refused(
                 "linux.namespaces",
@@ -567,7 +585,8 @@ mod tests {
     use super::*;
 
     /// A configuration as `runc spec` writes it, with resources, seccomp and devices added: every
-    /// field is one oci-spec reads, so none is refused as unknown.
+    /// field is one oci-spec reads, so none is ignored; a property deep in it that the
+    /// specification does not define is ignored and named by its path.
     #[test]
     fn a_whole_configuration_is_read_with_nothing_unread() {
         let given = json!({
@@ -611,12 +630,11 @@ mod tests {
                 "readonlyPaths": ["/proc/bus", "/proc/sys"]
             }
         });
-        spec_from_json(&serde_json::to_vec(&given).unwrap()).unwrap();
+        let (_, ignored) = spec_from_json(&serde_json::to_vec(&given).unwrap()).unwrap();
+        assert_eq!(ignored, Vec::<String>::new());
         let mut unknown = given;
         unknown["linux"]["resources"]["memory"]["limitt"] = json!(1);
-        match spec_from_json(&serde_json::to_vec(&unknown).unwrap()) {
-            Err(Error::Refused { field, .. }) => assert_eq!(field, "linux.resources.memory.limitt"),
-            other => panic!("{:?}", other.map(drop)),
-        }
+        let (_, ignored) = spec_from_json(&serde_json::to_vec(&unknown).unwrap()).unwrap();
+        assert_eq!(ignored, ["linux.resources.memory.limitt"]);
     }
 }

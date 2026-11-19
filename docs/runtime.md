@@ -1,6 +1,6 @@
 # wcontainers: the runtime (joining the kernel to the translator)
 
-Status: plan, 2026-11-17; J1 and J2 built (2026-11-18); J3 next.
+Status: plan, 2026-11-17; J1 to J4a built (2026-11-18); J4b waits for the progress unit.
 
 Words used here:
 - **kernel**: crates/wcontainers-kernel, driven from outside through `wcontainers-abi`.
@@ -173,7 +173,7 @@ stand-in's own exits with no kernel.
   translated or cached and nothing of the host's threads assumed (it is called in a copy of the process
   made at a save, section 11). It is on `Execution` because the outside that makes a save is generic over
   the back end and must not know which one it has.
-- `Outside`: the kernel's `Host` plus six methods the loop calls: `turn(slice)` gives how the next turn
+- `System`: the kernel's `Host` plus six methods the loop calls: `turn(slice)` gives how the next turn
   ends; `ran(progress)` is told how far the thread got; `arrived(kernel, cpu)` hands the kernel what arrived
   since the last exit (events, signals) and says whether something needs the thread out of `run` first;
   `stopped(kernel, cpu: &mut E) -> ControlFlow<Self::End>` does that something once no thread is in `run`
@@ -407,7 +407,7 @@ pages are 4 KiB, decided by measuring a program that writes shared memory heavil
   2^47). It is the kernel's, held in its state, saved with it, the same on every machine and every back end,
   and never read from where the container runs. The memory size the guest is told (today
   `machine.memory_bytes`, container.rs:398) is the container's too, held by the kernel; the runtime gives it
-  in `Start`, from the container's `Machine` (section 14; proposed default 4 GiB).
+  in `Start`, from the container's `GuestMachine` (section 14; proposed default 4 GiB).
 - *An address ceiling* belongs to a way of running a process: the back end and the form of its output. A
   process can run there only while its highest address in use is under that ceiling. Nothing in the runtime
   assumes one ceiling: the WebAssembly back end computes its own from the output's memory widths and
@@ -537,7 +537,10 @@ stopped whenever the kernel changes a table, as contract.rs:17-27 requires.
   code instances (one instance per thread, translator plan 6). Code made at run time by one thread is
   instantiated in every thread of the process at once, with the same slot, so every thread's table holds the
   same piece in the same slot (contract.rs:10-11). A dropped thread's block and instances are kept and given
-  to the process's next new thread, so a program that starts and ends many threads does not grow its store.
+  to the process's next new thread, so a program that starts and ends many threads does not grow its store:
+  the instances import the block's address, so they are kept by block, with the thread's exact pieces and
+  how many of the process's translations they hold; at the new thread's first run the translations added
+  since are instantiated in them. A process brought back from a save makes its instances again.
 - **Progress** has one meaning on every back end, at every look-ahead and in both settings: a count of the
   guest's own instructions. Where the translator puts its stop checks changes with look-ahead, with the
   starts and with code made at run time, so a count of stop checks would differ between settings and back
@@ -551,14 +554,16 @@ stopped whenever the kernel changes a table, as contract.rs:17-27 requires.
   count does not survive it: the kernel drops the thread and makes a new one for the new program
   (container.rs:718-728), whose block, count included, starts at zero (abi cpu.rs:91), so points of the new
   program are counted from its first instruction, the same on every back end. A fork child's thread is new
-  too and starts from zero. Who counts:
-  - the kernel's changes of pc, on every back end, by the loop, from J2: one at each
+  too and starts from zero. Who counts, once the owner rules on the unit (with J4b; none of the three is
+  built yet, and the orchestrator confirmed that the first two wait for the ruling too, since either alone
+  changes the stand-in's results):
+  - the kernel's changes of pc, on every back end, by the loop: one at each
     `Resume::FromRegisters` it applies to a thread that has run before, except the first run of each thread
     after `Kernel::restore` (a restore puts back a point, it does not move it). The loop is the one place
     that sees every resume, so every back end gets the same count for it. That a delivered signal and
     `rt_sigreturn` come as `FromRegisters` is the abi's promise (abi/exit.rs:47-55); a new thread (exec, a
     fork child, `clone`) has not run before, so its first `FromRegisters` is not counted;
-  - the guest's own transfers on the stand-in, from J2: Unicorn's block hook gives each block's address and
+  - the guest's own transfers on the stand-in: Unicorn's block hook gives each block's address and
     size (standin.rs:138-140). The last instruction of a block is at start + size - 4. A block is a counted
     transfer when its start is at or below the address of the last instruction of the block before it in the
     same turn. A block that Unicorn split for its own reasons (its size limit, a page boundary, a hook) starts
@@ -570,9 +575,10 @@ stopped whenever the kernel changes a table, as contract.rs:17-27 requires.
     progress >= limit`, the stop check and the counter as one piece of code, raising the flag becoming
     `limit = 0`; asked of the translator track, which owns the emitted code and its measurement). Until then
     it reports stop checks passed in its place: a named gap ("progress counted by stop checks"), counted and
-    warned once per container, recorded in the status file. Nothing in J1 to J3's bars depends on where a
-    counted turn ends (each compares output with the reference); J4's seeded thread switches do, so J4 is
-    built on the translator's count.
+    warned once per container, recorded in the status file. Nothing in J1 to J4a's bars depends on where a
+    counted turn ends (each compares output with the reference, and J4a's repeats compare runs at one
+    look-ahead only); J4b's comparison of counts across settings and back ends does, so J4b is built on the
+    translator's count.
 - **Turns.** The outside turns the kernel's slice into a `Turn`, one of two kinds:
   - *Counted*: the back end counts progress and stops the thread after the given amount (or never, with no
     limit). Until the translator's count exists, the WebAssembly back end raises the flag at every check, as
@@ -589,9 +595,14 @@ stopped whenever the kernel changes a table, as contract.rs:17-27 requires.
     flag. The back end gives the outside a `StopFlag` (runtime crate; `Send`, cloned) that raises whichever
     thread is running (an atomic store to its flag word in the state memory, as runner.rs:542-551), or the
     next to run when none runs; the back end enters it at `run` and leaves it after. The stop hook then hands
-    the kernel `Exit::Stop` with no progress. The shipped outside arms one timer thread with it at the
+    the kernel `Exit::Stop` with no progress. The local system arms one timer thread with it at the
     slice's deadline on the host's monotonic clock; with no slice no timer is armed. Costs nothing between
-    checks.
+    checks. The kernel charges a thread for a free turn the time on the outside's monotonic clock from
+    handing it out to its return (kernel task.rs `account`), so the CPU side's own work in the turn
+    (instantiating a thread's instances when its block kept none, translating at run time) and the host's
+    preemption of the host thread show in the guest's CPU clocks, timers and `RLIMIT_CPU`. Charging only
+    the guest's own run needs the kernel to take the charge from the outside; asked of the kernel track
+    (status file).
   - The two kinds exist only because counting at every check costs a hook call per check. Once the
     translator emits the count with its limit word, they are one mechanism: every turn counts at full speed,
     a free turn is a counted turn with no limit, and raising the flag is storing a limit of 0. `Turn` then
@@ -634,7 +645,7 @@ kernel track's to bring down; the runtime adds about 10 ns.
 Leaving is the slow twin of answering in the hook, so it is counted by why, with the call number as the
 detail (`u64::MAX` after a stop): "left run: the call waits" (nothing can run), "left run: another thread
 runs", "left run: new registers" (a signal delivered, `rt_sigreturn`), "left run: the container finished"
-and "left run: the outside asked" (`Outside::arrived`); each warns as every counter does. The loop says why
+and "left run: the system asked" (`System::arrived`); each warns as every counter does. The loop says why
 (`Carry::Leave(Leaving)`). A fault or a trap has already left when it is answered, so leaving after it costs
 nothing more and is not counted again.
 
@@ -725,7 +736,7 @@ built in this track's milestones unless named; each has its place, and nothing h
   - random number instructions: ARM64's `RNDR` is not offered and is an illegal instruction
     (arm64/decode_forms.rs:253), so it is repeatable as it is;
   - where turns end and where events land: the stop flag's timing in free turns (the outside's timer and
-    event threads), and which exit an event is handed in after (`Outside::arrived`);
+    event threads), and which exit an event is handed in after (`System::arrived`);
   - the host's answers: `backend_send` and the network calls' results, `Event::BackendReply`, the network
     events and terminal input (the outside), and when `idle` returns;
   - the back end's own answers to the kernel: `CpuError` from `memory_new`, `memory_duplicate` and
@@ -762,7 +773,7 @@ methods as exports, `Cpu` and `Host` as imports) is asked of the kernel track.
 ## 14. Crates and the smallest user surface (proposals)
 
 **Crates.**
-- `wcontainers-runtime` (MIT OR Apache-2.0, shipped): `step` and `drive`, the `Execution` and `Outside` traits, the
+- `wcontainers-runtime` (MIT OR Apache-2.0, shipped): `step` and `drive`, the `Execution` and `System` traits, the
   shipped outside for an operating system (clocks, randomness, output, files, network, the timer thread),
   and the user surface, generic over the back end. Depends on the kernel and the abi; never on wasmtime,
   Unicorn or any test crate.
@@ -774,7 +785,7 @@ methods as exports, `Cpu` and `Host` as imports) is asked of the kernel track.
   (section 11), on macOS mach2, and, at build time only, blake3, cargo_metadata and cargo-lock (the build identity). The split keeps wasmtime out of every build that does not run WebAssembly
   (the kernel tests on the stand-in, a later native back end).
 - No new test crate. The kernel test crate's driver calls `drive`; its stand-in implements `Execution`; its
-  `TestHost` implements `Outside`, holding the per-turn work the driver loop does today (backend answers,
+  `TestHost` implements `System`, holding the per-turn work the driver loop does today (backend answers,
   notices, signals and saves at the seed's moments, the repeatable clock). A cargo feature `runtime` of that
   crate puts `CpuSide<Arm64>` behind every one of its tests (layers 1 to 3). One loop, one set of tests, the
   back end chosen when the test binary is built. This is the one change outside the runtime's own crates;
@@ -795,9 +806,9 @@ let spec: oci_spec::runtime::Spec = image.spec()?;   // the image's conversion; 
 let mut container = runtime.container(
     &spec,
     &image,
-    &Tuning { look_ahead: LookAhead::Full, optimise: Optimise::Speed },   // how we run it (suggested name)
-    &Machine { offer: () },                                              // what machine it sees (suggested)
-    System::new(Box::new(stdout()), Box::new(stderr())),                 // the shipped outside, or the user's
+    &TranslatorSettings { look_ahead: LookAhead::Full, optimise: Optimise::Speed }, // how the translator works
+    &GuestMachine { offer: () },                                  // what machine the guest is told it runs on
+    LocalSystem::new(Box::new(stdout()), Box::new(stderr())),     // the local system, or the user's
 )?;                       // Error::Refused names the first field it cannot honour
 let ending = container.run()?;   // to the end; or container.step() and container.idle() from the user's loop
 ```
@@ -806,8 +817,13 @@ let ending = container.run()?;   // to the end; or container.step() and containe
   it. `base_spec()` is the configuration of everything the kernel gives a container (its mounts, its
   read-only path, its namespaces, Docker's capabilities, root, `PATH`), with no program and no `root`: a
   plain tar's configuration (`Image::spec` of a tar) and an image's conversion start from it.
-  `spec_from_json` reads a `config.json`: oci-spec drops fields it does not model, so the JSON is compared
-  with what oci-spec read and the first field it did not read is refused by its path.
+  `spec_from_json` reads a `config.json` with oci-spec's types through `serde_ignored` (MIT OR Apache-2.0),
+  and gives back with the configuration the path of every property the specification, as oci-spec reads
+  it, does not define, and of every annotation (the runtime acts on none): the standard's extensibility rule
+  ("Runtimes MAY log unknown properties but MUST otherwise ignore them"), by the owner's ruling of
+  2026-11-18. Those are ignored, and the caller warns of each by path with a count (`wcon` does). A field the
+  specification defines that this runtime cannot honour is refused by name ("Runtimes MUST generate an error
+  when invalid or unsupported values are encountered").
 - **An OCI image** (`Image::oci`, a directory in the OCI image layout, which `docker save` writes as a tar):
   the index's manifest for linux and the back end's architecture (through nested indexes; a manifest whose
   configuration is not an image's, such as an attestation, is passed over), every blob checked against its
@@ -826,32 +842,43 @@ let ending = container.run()?;   // to the end; or container.step() and containe
 - **HOME**: as runc, a process whose `process.env` has no `HOME` gets its user's home directory from the
   root's `/etc/passwd` (`/` when none).
 - **`process.args[0]`** is found as runc finds it: with a slash from the working directory, else in the
-  directories of `PATH` in `process.env`, the first regular file anyone may run, following the root's links;
-  a name not found goes to the kernel as it is, which fails the start as exec does (status 127).
-- **How we run it** is the back end's own type (`BackEnd::Tuning`; for the WebAssembly back end
-  `Tuning { look_ahead, optimise }`): it changes speed and never behaviour, and is part of every cache key.
-- **What machine the container appears to run on** is `Machine<Offer>`, separate because the guest sees it:
+  directories of `PATH` in `process.env`, the first regular file anyone may run, following the root's links.
+  A name with no slash that is not found there makes no container (`Error::NotFound`, runc's "executable
+  file not found in $PATH"; the command line program exits 127, as Docker does); it is never looked up in
+  the working directory. A path with a slash goes to the kernel, which fails the start as exec does
+  (status 127).
+- **The files Docker writes in every container**: `/etc/hostname` (the host name), `/etc/hosts` (as
+  Docker writes it, with the kernel's made-up address for the host name) and `/etc/resolv.conf` (the
+  kernel's name server), mode 0644, owned by root, in place of the image's own, from either form of image.
+  Docker writes them over its mounts; an OCI image's layers have no `/etc/resolv.conf`. `/.dockerenv` is
+  not written: it marks the Docker engine, which this is not.
+- **How we run it** is the back end's own type (`Executor::TranslatorSettings`; for the WebAssembly back end
+  `TranslatorSettings { look_ahead, optimise }`): it changes speed and never behaviour, and is part of every cache key.
+- **What machine the container appears to run on** is `GuestMachine<Offer>`, separate because the guest sees it:
   today the CPU feature claim (`offer`, the guest's `Guest::Offer`, `()` for ARM64; x86-64's AVX claim with
   that guest). The address-space size and the memory size the guest is told join it when the kernel takes
   them at start (section 8; asked of the kernel track): until then the kernel lays out inside the back end's
-  `address_space` and the guest is told that size, so `Machine` holds no field that would do nothing. The
+  `address_space` and the guest is told that size, so `GuestMachine` holds no field that would do nothing. The
   architecture comes from the image and must be the back end's.
-- **The back end the runtime makes** is a trait of the runtime crate, `BackEnd: Execution` (name suggested):
-  what a runtime's containers share (the compiler and its cache), `Tuning`, `Offer`, its architecture as the
-  image configuration names it, and its stop flag. The kernel tests' stand-in is no `BackEnd`; the test
+- **The back end the runtime makes** is a trait of the runtime crate, `Executor: Execution` (name suggested):
+  what a runtime's containers share (the compiler and its cache), `TranslatorSettings`, `Offer`, its architecture as the
+  image configuration names it, and its stop flag. The kernel tests' stand-in is no `Executor`; the test
   driver makes it itself.
-- **Every field of the configuration is honoured or refused by name.** A `config.json` is read by
-  `spec_from_json`, so a field oci-spec does not read is refused too, and `accept` refuses any field of
+- **Every field of the configuration is honoured or refused by name.** A property the specification does
+  not define is ignored with a warning (`spec_from_json`, above), and `accept` refuses any field of
   oci-spec's it does not know. Honoured:
   `ociVersion` 1.x, `process.args`, `process.env`, `process.cwd` (absolute),
-  `process.user.additionalGids`, `hostname` (absent: `localhost`), `annotations` (data, no behaviour), and
+  `process.user.additionalGids`, `hostname` (absent or empty: `localhost`; runc sets no host name when it is
+  empty), `annotations` (data, no behaviour), and
   these when they are what the kernel gives: `process.user.uid` and `gid` 0, `process.user.umask` 0022,
   `process.capabilities` Docker's 14 in bounding, effective and permitted and none in inheritable and ambient
   (a set left out is empty, as the specification says, so leaving out `capabilities` or one of those three
   is refused),
   `process.rlimits` at the kernel's values, `process.terminal` and `process.noNewPrivileges` false,
-  `mounts` exactly the kernel's six (`/proc`, `/dev`, `/dev/pts`, `/sys`, `/dev/mqueue`, `/dev/shm`, each
-  with Docker's type, source and options), `linux.readonlyPaths` exactly `/proc/sys` (the one the kernel
+  `mounts` exactly the kernel's six, once each and in the order the kernel makes them (`/proc`, `/dev`,
+  `/dev/pts`, `/sys`, `/dev/mqueue`, `/dev/shm`, each with Docker's type, source and options; the standard
+  makes mounts in the listed order, so another order or a repeat is refused at the first `mounts[n]` that
+  differs), `linux.readonlyPaths` exactly `/proc/sys` (the one the kernel
   makes), `linux.namespaces` exactly pid, network, ipc, uts, mount and
   cgroup with no `path`; a configuration without `mounts`, `linux` or `linux.readonlyPaths` is refused as
   one leaving those out is, since the kernel makes them whatever it says. The surface tests check that the
@@ -859,14 +886,14 @@ let ending = container.run()?;   // to the end; or container.step() and containe
   path), so a change in the kernel fails a test rather than leaving a refusal stale. Refused, each with what
   supporting it would take:
   - `root.path`: the root's files are the `Image` argument; a root read from a directory of the host needs
-    the shipped outside's file backend (J5), with the files' owners and devices as the host keeps them;
+    the local system's file backend (J5), with the files' owners and devices as the host keeps them;
   - the user, umask, capabilities, limits and no_new_privs at other values, and `linux.sysctl`: the kernel
     taking them at start (today `Start` takes the program, arguments, environment, working directory, host
     name, groups and the backend, kernel container.rs);
   - `mounts` other than the kernel's, or lacking one of them: bind mounts of host directories need the shipped
-    outside's file backend (J5), other file systems the kernel, and leaving one out the kernel taking its
-    mounts at start; id-mapped mounts (`mounts[n].uidMappings`, `gidMappings`): user namespaces;
-  - `hooks` (they run host programs): the shipped outside running them at the lifecycle points the runtime
+    outside's file backend (J5), other file systems the kernel, and leaving one out, another order or a
+    repeat the kernel taking its mounts at start; id-mapped mounts (`mounts[n].uidMappings`, `gidMappings`): user namespaces;
+  - `hooks` (they run host programs): the local system running them at the lifecycle points the runtime
     specification names;
   - `linux.resources` and `linux.cgroupsPath` (cgroups): the kernel accounting CPU, memory, pids and I/O per
     group and enforcing limits;
@@ -886,7 +913,7 @@ let ending = container.run()?;   // to the end; or container.step() and containe
     `domainname`: each the kernel taking the value at start;
   - `process.commandLine`, `process.user.username`, and the `solaris`, `windows`, `vm` and `zos` sections:
     another kind of host.
-- **The outside** is a parameter. `System`, the shipped one, writes standard output and error to the byte
+- **The system** is a parameter. `LocalSystem`, the shipped one, writes standard output and error to the byte
   streams it is given, answers the clocks from the host's, randomness from the system's (`getrandom`), keeps
   the kernel's and the back end's warnings by reason, gives free turns ended by one timer thread at the
   kernel's slice (the turn stores its deadline in an atomic and wakes the thread only for an earlier one), and
@@ -894,9 +921,9 @@ let ending = container.run()?;   // to the end; or container.step() and containe
   for them answer `NotSupported`, which the kernel turns into Linux's errors. Standard input is not in the
   surface: the kernel gives the first process /dev/null as descriptor 0, the abi has only output streams, and
   terminal input events are counted as unexpected; what the kernel's interface needs is asked of the kernel
-  track (status file). An outside learns the back end's stop flag through `Outside::stop_flag` before the
+  track (status file). A system learns the back end's stop flag through `System::stop_flag` before the
   first turn; one that counts every turn, as the kernel tests' does, needs none.
-- **The command line program** (`wcontainers`, name suggested; crates/wcontainers-wasmtime/src/bin):
+- **The command line program** (`wcon`, the owner's name; crates/wcontainers-wasmtime/src/bin/wcon.rs):
   `--oci DIRECTORY` or `--tar FILE`, `--config config.json`, `--cache DIRECTORY`, `--look-ahead
   full|none|N`, `--size`, and `-- ARGUMENTS` for `process.args`; it prints the warnings by reason and exits
   with the container's status, 125 when the library refuses. Its arguments are read with pico-args.
@@ -920,10 +947,11 @@ let ending = container.run()?;   // to the end; or container.step() and containe
   knob for the count).
 - **At every look-ahead.** The kernel test crate's look-ahead comes from the environment, as its seeds do
   (`SCHEDULE_SEED`, lib.rs:150-161): `LOOK_AHEAD` is `full` (also when unset), `none` or `bounded`. At
-  `bounded` the container's N is drawn from 1 to 64 from the run's seed, as the translator plan's "bounded
-  with random N" (phase-1-translator.md line 456), and printed, so the run repeats. One N per container,
+  `bounded` the container's N is drawn from 1 to the translator's default bound (`BOUND`, 256) from the
+  run's seed, as the translator plan's "bounded with random N" (phase-1-translator.md line 456), and printed, so the run repeats. One N per container,
   not per range: the look-ahead is a setting of the container, and drawing it per range would be a test's
-  behaviour inside the shipped back end. Which look-aheads each bar runs is named in the
+  behaviour inside the shipped back end. The back end's surface tests (crates/wcontainers-wasmtime/tests/surface.rs)
+  read `LOOK_AHEAD` the same way; having no run seed, their bounded N is drawn from `LOOK_AHEAD_SEED` alone. Which look-aheads each bar runs is named in the
   milestone (section 16): J1 full, with hello also at none and bounded; J2 to J5 full, none and bounded;
   J5's Linux Test Project full only; J6 full and bounded, not none (section 7: libpython at none measured 113.9 s to compile and 16.9 GB); J7
   full; J8 full and bounded. Bounded runs with the default seed unless the bar names more. Injections (the stop flag, a signal, a thread switch, save and
@@ -935,7 +963,7 @@ let ending = container.run()?;   // to the end; or container.step() and containe
   The check is a `diff` of every test's verdict line before and after (J1). The stand-in's change of
   unit (instructions to the placeholder count, section 9) is a later commit (J2), checked the same way.
 - **Benchmarks.** The translator's benchmark set (programs/bench.c and the others its benchmark test runs),
-  built as ordinary static programs, run in a container on the shipped outside (free turns), and in the
+  built as ordinary static programs, run in a container on the local system (free turns), and in the
   translator's runner. The bar is instructions retired by the process during the guest's run, after
   translation and compilation (macOS `proc_pid_rusage`, `ri_instructions`), median of 3 on each side,
   within 5%. Times are reported beside it as the median ratio of 11 alternating pairs with the load, but are
@@ -955,7 +983,7 @@ Each bar is checkable by running the named command on this Mac with Docker.
 
 - **J1, first light: a static hello, then busybox's single programs.** Only what those two need.
   - Merge 84e9a937 (section 3).
-  - `wcontainers-runtime`: `step`, `drive`, `Execution` (with `Failure` and `restored`), `Outside` (with
+  - `wcontainers-runtime`: `step`, `drive`, `Execution` (with `Failure` and `restored`), `System` (with
     `End`), `Answer`, `Turn`, `Step` (section 5). The loop's count of the kernel's changes of pc comes in
     J2 with the stand-in's own count: in J1 the stand-in's unit stays its instructions, so that its results
     are unchanged, and progress has two meanings (instructions on the stand-in, stop checks on the
@@ -989,7 +1017,7 @@ Each bar is checkable by running the named command on this Mac with Docker.
     not built for this back end until J2, where it is the fork copy's body; no J1 test saves. `Failure` is
     `Infallible`.
   - The kernel test crate, as its own commits, in this order:
-    1. The stand-in implements `Execution` (`Failure` = `Unsupported`), and `TestHost` implements `Outside`
+    1. The stand-in implements `Execution` (`Failure` = `Unsupported`), and `TestHost` implements `System`
        with the driver's per-turn work. Its `stopped` makes the save by copying the process and answers
        `Break` with the copy's report in the parent (driver.rs:494-524). The driver calls `drive`.
        Checked against the merge commit, before this commit lands:
@@ -1042,12 +1070,12 @@ Each bar is checkable by running the named command on this Mac with Docker.
   the one-million run is one command. System call and fork cost measured (section 15), with both sides of the
   fork copy (the copy, and the first writes after it).
 - **J3, the user surface.** The library surface of section 14 as the owner ruled it: `oci_spec::runtime::Spec`
-  with every field honoured or refused by name, `Tuning` and `Machine` apart from it, images from an OCI image
+  with every field honoured or refused by name, `TranslatorSettings` and `GuestMachine` apart from it, images from an OCI image
   in the OCI layout (by the image specification's conversion) and from a plain tar, the on-disk cache, the
   shipped outside (free turns with its timer thread, output streams; standard input waits for the kernel's
   interface, asked of the kernel track). Last, once the library bar passes, the command line program: thin,
   calling only the library, with nothing the library lacks (its name is the owner's; suggested
-  `wcontainers`). Free turns need the back end to run a turn with no stop-check hook: `Turn` gains a free
+  `wcon`). Free turns need the back end to run a turn with no stop-check hook: `Turn` gains a free
   kind and the back end a `StopFlag` any host thread raises (section 9).
   Measured: what counting at every stop check costs a busybox `echo` and a busybox shell loop against free
   turns (moved from J1; the static hello is not in the alpine image the surface runs).
@@ -1057,14 +1085,28 @@ Each bar is checkable by running the named command on this Mac with Docker.
   (tests/refused.rs) fails naming that field; a second run of the same container in a new process starts
   from the disk cache (every range's translation from disk; measured); the command line program runs the
   same pipeline from both and fails naming a refused field.
-- **J4, threads and turns.** Starts once the translator emits the guest-defined count (section 9), so seeded
-  thread switches land at the same guest points at every look-ahead. Many threads per process, futexes,
-  timers, outside events raising the flag in free turns. Bar: `threads`, `turns`, `timers`, `deadlines`,
-  `cputime`, `cpulimit`, `clocks`, `lockwaits`, `rseqabort`, `priorities`, `schedattr` and
-  `shell::runs_repeat_for_a_seed` pass with `--features runtime` at full, none and bounded, with the same
-  count at every exit for a seed at each look-ahead and on the stand-in; a test runs a threaded program
-  through the public surface in free turns and matches the reference.
-- **J5, files outside, sockets, network, and the whole suite.** The shipped outside's backend and network
+- **J4, threads and turns**, split by the orchestrator's ruling of 2026-11-18 into J4a, built now on the unit
+  the back end has today (stop checks passed, warned "progress counted by stop checks" as the interim it
+  is), and J4b, which waits for the guest-defined count (section 9) with the stand-in's count and the loop's
+  count of the kernel's changes of pc.
+  - **J4a.** Many threads per process, a dropped thread's block and instances given to the process's next
+    new thread (section 9), futexes, timers, and the stop flag raised from another host thread in free turns.
+    The local system's one such source today is its slice timer; arrivals from a file backend, the
+    network (J5) and input (the kernel track's streams) raise it the same way once they exist.
+    Bar: `threads`, `turns`, `timers`, `deadlines`, `cputime`, `cpulimit`, `clocks`, `lockwaits`,
+    `rseqabort`, `priorities`, `schedattr` and `shell::runs_repeat_for_a_seed` pass with `--features
+    runtime` at full, none and bounded; a seeded run repeats exactly at each look-ahead taken alone
+    (the kernel test crate's `repeats`: output, warnings, counters, the CPU side's warnings, the turn
+    count and the files left, with and without saves, `REPEAT_RUNS` times per seed; programs whose threads
+    switch only at system calls, and one whose threads only compute, so that where the seed ends a turn
+    decides which thread runs next, which it checks happened); a test runs a threaded
+    program through the public surface in free turns and matches the reference
+    (crates/wcontainers-wasmtime/tests/surface.rs `a_threaded_program_matches_the_reference`, at the
+    look-ahead `LOOK_AHEAD` names); a new thread given a dropped thread's block runs on its instances
+    (the back end's unit test `a_dropped_threads_instances_serve_the_next_thread`).
+  - **J4b.** The same count at every exit for a seed across look-ahead settings and against the stand-in.
+    Starts once the owner rules on the unit and the translator emits it.
+- **J5, files outside, sockets, network, and the whole suite.** The local system's backend and network
   (taken from what the kernel test host does, written for shipping). Bar: the whole kernel test crate with
   `--features runtime` gives the same verdicts as without, test by test, at full, none and bounded
   look-ahead; the Linux Test Project's verdicts, at full,
@@ -1218,10 +1260,12 @@ under pyro-parked/wcontainers-scratch/runtime (outside the repository); the log 
 
 ## 20. Decisions for the owner
 
-- **Names**: approved for the crates and `Runtime`, `RuntimeSettings`, `Image`. Yours to choose, as built in
-  J3 under suggested names: how we run (`Tuning`), what machine the container sees (`Machine`), the trait of a
-  back end the runtime makes (`BackEnd`), the shipped outside (`System`), the kernel's own configuration
-  (`base_spec`), and the command line program (`wcontainers`).
+- **Names**: approved for the crates and `Runtime`, `RuntimeSettings`, `Image`; and, by the owner's ruling of
+  2026-11-18 (built in J4a run 3): the trait the embedder implements `System` (first `Outside`), the
+  shipped one `LocalSystem` (first `System`), the back end trait `Executor` (first `BackEnd`), how the
+  translator works `TranslatorSettings` (first `Tuning`), what machine the guest is told it runs on
+  `GuestMachine` (first `Machine`), and the command line program `wcon`. Still yours: `StopFlag` (perhaps
+  `Interrupt`, and whether it stays in this form) and the kernel's own configuration (`base_spec`).
 - **The user surface**: ruled (section 14) and built in J3, the OCI image layout included as J3's task asked.
   Yours: the host name a configuration without `hostname` gets (built: `localhost`; runc would keep the
   host's, which the container never sees).
@@ -1241,9 +1285,10 @@ under pyro-parked/wcontainers-scratch/runtime (outside the repository); the log 
   places mappings low first by one rule
   with each process's highest address in use, fails a crossing of the ceiling as running out of memory with a
   counter and a warning, and settles standard input in the abi before J3; the kernel test crate's driver
-  loop is replaced by the runtime's `step` and `drive`, its stand-in
-  implements `Execution` and counts the placeholder unit, its test host implements `Outside`, with a
-  `runtime` feature and `LOOK_AHEAD` (made by this track in J1 and J2); K7's module exports the kernel's six methods
+  loop is replaced by the runtime's `step` and `drive`, its stand-in implements `Execution` (counting
+  Unicorn's instructions as its progress until the owner rules on the unit; its count of the placeholder
+  unit is built with J4b, section 9), its test host implements `System`, with a `runtime` feature and
+  `LOOK_AHEAD` (made by this track in J1 and J2); K7's module exports the kernel's six methods
   and imports `Cpu` and `Host`; the translator emits the guest-defined progress count with a limit word
-  (before J4), and gives a form of its output with the table and the array of slots in 64 bit memory,
+  (before J4b), and gives a form of its output with the table and the array of slots in 64 bit memory,
   its widths in the cache key (before x86 runs here, and before any ARM64 process needs more than 4080 MiB).

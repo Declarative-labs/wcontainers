@@ -172,22 +172,21 @@ pub unsafe fn copy_pages(from: *const u8, to: *mut u8, runs: &[Range<usize>]) {
         // map is opened for each copy: an open one stays bound to the process that opened it, which
         // after a fork of the host process is not this one.
         use std::os::unix::fs::FileExt;
+        use zerocopy::IntoBytes;
         let pagemap = std::fs::File::open("/proc/self/pagemap").expect("/proc/self/pagemap");
         let page = host_page() as usize;
-        let mut entries = Vec::new();
+        let mut entries: Vec<u64> = Vec::new();
         for run in runs {
             let pages = (run.end - run.start) / page;
-            entries.resize(pages * 8, 0);
+            entries.resize(pages, 0);
             pagemap
                 .read_exact_at(
-                    &mut entries,
-                    ((from as usize + run.start) / page * 8) as u64,
+                    entries.as_mut_bytes(),
+                    ((from as usize + run.start) / page * PAGEMAP_ENTRY) as u64,
                 )
                 .expect("reading /proc/self/pagemap");
             let held = |index: usize| {
-                let entry =
-                    u64::from_le_bytes(entries[index * 8..index * 8 + 8].try_into().expect("8"));
-                entry & (3 << 62) != 0
+                u64::from_le(entries[index]) & (PAGEMAP_PRESENT | PAGEMAP_SWAPPED) != 0
             };
             let mut index = 0;
             while index < pages {
@@ -223,6 +222,29 @@ pub unsafe fn copy_pages(from: *const u8, to: *mut u8, runs: &[Range<usize>]) {
     }
 }
 
+/// Bytes of one entry of Linux's `/proc/self/pagemap`, and its bits for a page present in memory and
+/// one swapped out (Linux's Documentation/admin-guide/mm/pagemap.rst).
+#[cfg(target_os = "linux")]
+const PAGEMAP_ENTRY: usize = size_of::<u64>();
+#[cfg(target_os = "linux")]
+const PAGEMAP_PRESENT: u64 = 1 << 63;
+#[cfg(target_os = "linux")]
+const PAGEMAP_SWAPPED: u64 = 1 << 62;
+
+/// Bytes of one entry of the array of slots, an i32 (the translator's contract).
+pub(crate) const SLOT_BYTES: u64 = size_of::<i32>() as u64;
+
+/// Bytes a 32 bit memory addresses, the state memory's size at most.
+const STATE_MEMORY_BYTES: u64 = 1 << u32::BITS;
+
+/// Thread blocks start at a multiple of the guest's widest register, a 128 bit vector register.
+const THREAD_ALIGN: usize = size_of::<u128>();
+
+/// Bytes of a WebAssembly page at the default page size, the unit memories are sized in.
+pub(crate) fn wasm_page() -> u64 {
+    MemoryType::new(0, None).page_size()
+}
+
 /// Bytes of the state memory given to thread blocks.
 const BLOCKS_BYTES: u64 = 15 << 20;
 
@@ -232,12 +254,13 @@ pub struct Layout {
     /// The addresses a process may use on this back end: guest memory, the permission table and the
     /// array of slots all cover 0 to this.
     pub ceiling: u64,
-    /// Bytes of one thread's state: its block and the CPU side's own words, a multiple of 16.
+    /// Bytes of one thread's state: its block and the CPU side's own words, a multiple of
+    /// `THREAD_ALIGN`.
     pub thread_bytes: u32,
     pub permissions_at: u32,
     pub permission_pages: u64,
     pub slots_at: u32,
-    /// Pages of 64 KiB of the state memory.
+    /// WebAssembly pages of the state memory.
     pub state_pages: u32,
 }
 
@@ -249,22 +272,22 @@ impl Layout {
         const STEP: u64 = 4 << 20;
         let page = wcontainers_abi::PAGE_SIZE;
         let fits = |ceiling: u64| {
-            let slots_at = (BLOCKS_BYTES + ceiling / page + 1).next_multiple_of(4);
-            (slots_at + 4 * (ceiling / G::ALIGN) <= 1 << 32).then_some(slots_at)
+            let slots_at = (BLOCKS_BYTES + ceiling / page + 1).next_multiple_of(SLOT_BYTES);
+            (slots_at + SLOT_BYTES * (ceiling / G::ALIGN) <= STATE_MEMORY_BYTES).then_some(slots_at)
         };
-        let mut ceiling = 1u64 << 32;
+        let mut ceiling = STATE_MEMORY_BYTES;
         while fits(ceiling).is_none() {
             ceiling -= STEP;
         }
         let slots_at = fits(ceiling).expect("fits");
-        let end = slots_at + 4 * (ceiling / G::ALIGN);
+        let end = slots_at + SLOT_BYTES * (ceiling / G::ALIGN);
         Layout {
             ceiling,
-            thread_bytes: contract::thread_state_size::<G>().next_multiple_of(16) as u32,
+            thread_bytes: contract::thread_state_size::<G>().next_multiple_of(THREAD_ALIGN) as u32,
             permissions_at: BLOCKS_BYTES as u32,
             permission_pages: ceiling / page,
             slots_at: slots_at as u32,
-            state_pages: end.div_ceil(65536) as u32,
+            state_pages: end.div_ceil(wasm_page()) as u32,
         }
     }
 
@@ -323,16 +346,19 @@ mod tests {
             }
             .expect("paging out");
             use std::os::unix::fs::FileExt;
-            let mut entry = [0u8; 8];
+            let mut entry = [0u8; PAGEMAP_ENTRY];
             std::fs::File::open("/proc/self/pagemap")
                 .unwrap()
-                .read_exact_at(&mut entry, (out.as_ptr() as usize / page * 8) as u64)
+                .read_exact_at(
+                    &mut entry,
+                    (out.as_ptr() as usize / page * PAGEMAP_ENTRY) as u64,
+                )
                 .unwrap();
             let entry = u64::from_le_bytes(entry);
             eprintln!(
                 "a paged out page: present {}, swapped {}",
-                entry >> 63,
-                entry >> 62 & 1
+                entry & PAGEMAP_PRESENT != 0,
+                entry & PAGEMAP_SWAPPED != 0
             );
         }
         let expected = source.to_vec();
