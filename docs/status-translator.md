@@ -105,8 +105,18 @@ The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three laye
   (`README.md`, `chunks.tsv`). It first ran chunk 152 there with the Mac's verdicts in every field (not in
   the ledger). In the ledger from there: chunks 198, 199 and 200 (441, 448 and 426 compared, 0 mismatches).
   Chunk 197 was lost when the spot machine was taken away at 04:08 (no ledger line; the driver runs it when
-  it gets there). At 04:15 the machine could not be reached (`arm-run --status`) and its down loop had
-  stopped.
+  it gets there). A second machine came up about 05:00 and that agent's loop went on from chunk 197 down,
+  at the driver's commit since 05:01 (398df57).
+- Chunks above 200 on the rented machine, run by this track: from 06:21, scratch `translator/p2/arm-up`
+  (`up.sh`, `run-chunk.sh`: the top-down agent's chunk script with the track name `translator` and its own
+  logs, `up.log`, `chunks.tsv`, `logs/`) runs chunks 201 upward under arm-run name `translator` at 12 jobs,
+  from its own export of 398df57 (identical to the other agent's), with the same ledger format and mark. It
+  stops when the programs compared, counting each chunk up to 200 not yet passed at 440, reach 100,000, or
+  when the Mac's driver has reached its next chunk. Its zig cache was warmed first (24 cases, seed 9, one
+  job, passed, not counted). Running: `pgrep -fl '^bash up.sh$'`. All three runners at once:
+  `.../p2/w3.sh` (waits like `watch.sh`).
+- Docker on the Mac came back at 04:58 (someone started it); `resume.sh` restarted the driver at 05:01 on
+  398df57 (only this file changed since 6a705f8); chunk 153 ran first and passed.
 - Disk: each copy's `trees/<commit>/target/programs` keeps every built program, about 330 MB a chunk
   (the copy of 445e3cf had 19 GB after 54 chunks). After a restart, delete `trees/<old commit>/target` of
   every copy no longer running (done 2026-11-18 18:50: 48 GB freed; sources and logs kept).
