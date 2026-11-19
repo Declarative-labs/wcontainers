@@ -196,17 +196,13 @@ struct Counts {
     places: HashMap<String, f64>,
     /// The first and last sample's times of the process, in milliseconds.
     span: (f64, f64),
-    /// Samples of every other process but the idle one within the process's span: the rest of
-    /// the machine's load while it ran.
-    others: f64,
 }
 
-/// Times and weights of a thread's samples.
-fn sample_times(thread: &Value) -> (Vec<f64>, Vec<f64>) {
+/// The times of a thread's samples, in milliseconds.
+fn sample_times(thread: &Value) -> Vec<f64> {
     let samples = &thread["samples"];
-    let weights = column(samples, "weight");
     let mut t = 0.0;
-    let times: Vec<f64> = match samples["time"].as_array() {
+    match samples["time"].as_array() {
         Some(times) => times.iter().filter_map(Value::as_f64).collect(),
         None => column(samples, "timeDeltas")
             .iter()
@@ -215,15 +211,8 @@ fn sample_times(thread: &Value) -> (Vec<f64>, Vec<f64>) {
                 t
             })
             .collect(),
-    };
-    let weights = (0..times.len())
-        .map(|i| weights.get(i).and_then(Value::as_f64).unwrap_or(1.0))
-        .collect();
-    (times, weights)
+    }
 }
-
-/// The name Windows' traces give the process of idle processors.
-const IDLE_PROCESS: &str = "idle";
 
 fn strings_of(profile: &Value, thread: &Value) -> Vec<String> {
     let list = thread["stringArray"]
@@ -258,17 +247,12 @@ fn count(path: &str, process: &str, dirs: &[PathBuf]) -> Result<Counts> {
         ..Default::default()
     };
     let process = process.to_ascii_lowercase();
-    let mut others = Vec::new();
     for thread in profile["threads"].as_array().context("threads")? {
         let pname = thread["processName"]
             .as_str()
             .unwrap_or("")
             .to_ascii_lowercase();
         if !pname.contains(&process) {
-            if pname != IDLE_PROCESS {
-                let (times, weights) = sample_times(thread);
-                others.extend(times.into_iter().zip(weights));
-            }
             continue;
         }
         let strings = strings_of(&profile, thread);
@@ -325,7 +309,7 @@ fn count(path: &str, process: &str, dirs: &[PathBuf]) -> Result<Counts> {
             .collect();
         let samples = &thread["samples"];
         let weights = column(samples, "weight");
-        let (times, _) = sample_times(thread);
+        let times = sample_times(thread);
         if let (Some(first), Some(last)) = (times.first(), times.last()) {
             counts.span = match counts.span {
                 (0.0, 0.0) => (*first, *last),
@@ -393,12 +377,6 @@ fn count(path: &str, process: &str, dirs: &[PathBuf]) -> Result<Counts> {
         counts.samples > 0.0,
         "no samples of a process named like {process} in {path}"
     );
-    let (from, to) = counts.span;
-    counts.others = others
-        .iter()
-        .filter(|(t, _)| (from..=to).contains(t))
-        .map(|(_, w)| w)
-        .sum();
     Ok(counts)
 }
 
@@ -483,15 +461,6 @@ fn main() -> Result<()> {
     let total: f64 = PARTS.iter().map(|p| per(|c| &c.own, p)).sum();
     let wall = ((b.span.1 - b.span.0) - (a.span.1 - a.span.0)) / frames;
     println!("  wall time {wall:.3} ms a frame (first to last sample of the process)");
-    let threads = std::thread::available_parallelism()?.get() as f64;
-    for (run, c) in [("short", &a), ("long", &b)] {
-        let span = c.span.1 - c.span.0;
-        println!(
-            "  the rest of the machine while the {run} run ran: {:.1} % of its {threads} threads \
-             (other processes' samples in the same trace)",
-            100.0 * c.others * c.interval / (span * threads).max(f64::MIN_POSITIVE)
-        );
-    }
     println!("  CPU {total:.3} ms a frame, by innermost part:");
     for p in PARTS {
         let v = per(|c| &c.own, p);

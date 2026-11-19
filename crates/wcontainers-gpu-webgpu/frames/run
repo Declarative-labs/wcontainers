@@ -5,7 +5,8 @@
 # CPU profile, a sample with stacks every millisecond, the whole machine) is started over SSH,
 # whose session may profile the system (the queue's desktop session may not), the program runs as
 # one GPU job through the rig's programs.ps1, the recorder stops, and samply converts the trace.
-# Then examples/frames.rs prints the breakdown of a frame's CPU time. Profiles stay on the desktop
+# Then examples/frames.rs prints the breakdown of a frame's CPU time and the back end's counts a
+# frame from the long run's log. The machine's load is sampled apart (status file, run 21). Profiles stay on the desktop
 # in C:\wc\out\phase-2-graphics-webgpu\frames.
 # With --real, the programs draw through real Direct3D instead, for comparison.
 #   crates/wcontainers-gpu-webgpu/frames/run [--real] [--short n] [--long n] <program>...
