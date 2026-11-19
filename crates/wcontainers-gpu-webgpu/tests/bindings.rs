@@ -15,6 +15,9 @@ mod draw;
 #[path = "../examples/scenes/renames.rs"]
 mod renames;
 
+#[path = "../examples/scenes/views.rs"]
+mod views;
+
 use renames::{Kit, LOAD_WGSL, begin, draw_at, finish, kit};
 
 use wcontainers_gpu::{
@@ -241,6 +244,16 @@ fn load_only_textures_keep_one_pipeline_for_any_view() {
 #[test]
 fn discarded_textures_are_renamed_from_the_pool() {
     renames::discarded_textures_are_renamed_from_the_pool(&mut device());
+}
+
+/// An sRGB view of a texture that also allows storage reads as an sRGB texture does, also after a
+/// rename (examples/scenes/views.rs; in Chrome too, through web/check).
+#[test]
+fn srgb_views_of_storage_textures_read_as_srgb_textures() {
+    eprintln!(
+        "{}",
+        views::srgb_views_of_storage_textures(&mut device()).unwrap()
+    );
 }
 
 const ASPECTS_WGSL: &str = r#"

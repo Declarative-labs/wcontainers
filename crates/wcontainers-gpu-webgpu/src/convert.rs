@@ -13,6 +13,18 @@ pub fn srgb_twin(format: T) -> Option<T> {
         .or_else(|| (format.add_srgb_suffix() != format).then(|| format.add_srgb_suffix()))
 }
 
+/// The usages of a view of `texture` in `format`, whose usages on the device are `allowed`: the
+/// texture's, less the attachment and storage usages a view in its other sRGB form lacks, as
+/// WebGPU's `createView` takes them; None (the texture's) for a view in the texture's own format.
+pub fn view_usage(
+    texture: &wgpu::Texture,
+    format: T,
+    allowed: wgpu::TextureUsages,
+) -> Option<wgpu::TextureUsages> {
+    let checked = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::STORAGE_BINDING;
+    (format != texture.format()).then(|| texture.usage() - (checked - allowed))
+}
+
 /// The wgpu format a texture of `format` is made in (converted formats in their wider one,
 /// packed.rs); None for formats WebGPU does not hold, which the back end declares without bits.
 pub fn texture_format(format: Format) -> Option<T> {
