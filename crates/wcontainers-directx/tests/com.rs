@@ -26,7 +26,7 @@ fn refs<I: Interface>(i: &I) -> u32 {
 }
 
 fn device() -> (ID3D11Device, ID3D11DeviceContext) {
-    let (d, c, _) = create_device(&[], 0).unwrap();
+    let (d, c, _) = create_device(&[], 0, false).unwrap();
     (d, c)
 }
 

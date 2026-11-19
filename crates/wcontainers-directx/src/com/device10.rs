@@ -419,6 +419,9 @@ impl Device_Impl {
         src_box: *const D3D10_BOX,
     ) {
         let (d, s) = (one::<_, ID3D11Resource>(dst), one::<_, ID3D11Resource>(src));
+        if into_depth_from_colour(&d, &s) {
+            return;
+        }
         self.on10(|c| {
             c.copy_subresource_region(
                 Ref::from(&d),
@@ -435,6 +438,9 @@ impl Device_Impl {
 
     pub(super) fn copy_resource10(&self, dst: Ref<ID3D10Resource>, src: Ref<ID3D10Resource>) {
         let (d, s) = (one::<_, ID3D11Resource>(dst), one::<_, ID3D11Resource>(src));
+        if into_depth_from_colour(&d, &s) {
+            return;
+        }
         self.on10(|c| c.copy_resource(Ref::from(&d), Ref::from(&s)));
     }
 
@@ -762,9 +768,9 @@ impl Device_Impl {
             v.as_mut_ptr()
         };
         self.get10(|c| c.rs_get_viewports(count, p));
+        // Every entry asked for is written, zero past those bound, as Direct3D 11's getter does.
         if !out.is_null() {
-            let got = unsafe { *count }.min(n) as usize;
-            for (i, v) in v.iter().take(got).enumerate() {
+            for (i, v) in v.iter().enumerate() {
                 unsafe { out.add(i).write(viewport10(v)) };
             }
         }
@@ -992,23 +998,17 @@ impl Device_Impl {
                 OutputSlot: e.OutputSlot,
             })
             .collect();
-        let slots = list
-            .iter()
-            .map(|e| e.OutputSlot as usize + 1)
-            .max()
-            .unwrap_or(1)
-            .min(4);
-        let strides: Vec<u32> = if slots == 1 {
-            vec![stride]
+        // The stride is the first buffer's, which alone is written; entries naming other buffers
+        // are packed into them, the stride then zero. Without entries and stride the shader
+        // writes no stream.
+        let several = list.iter().any(|e| e.OutputSlot != 0);
+        if several && stride != 0 {
+            return Err(E_INVALIDARG.into());
+        }
+        let strides: Vec<u32> = if several || (list.is_empty() && stride == 0) {
+            Vec::new()
         } else {
-            (0..slots)
-                .map(|s| {
-                    list.iter()
-                        .filter(|e| e.OutputSlot as usize == s)
-                        .map(|e| u32::from(e.ComponentCount) * 4)
-                        .sum()
-                })
-                .collect()
+            vec![stride]
         };
         as_one(out, |o| {
             self.create_geometry_shader_with_stream_output(
@@ -1020,7 +1020,11 @@ impl Device_Impl {
                     e.as_ptr()
                 },
                 count,
-                strides.as_ptr(),
+                if strides.is_empty() {
+                    std::ptr::null()
+                } else {
+                    strides.as_ptr()
+                },
                 strides.len() as u32,
                 0,
                 Ref::default(),
@@ -1129,6 +1133,16 @@ impl Device_Impl {
         on
     }
 
+    /// Direct3D 10's device holds no reference on what it binds: an object the program released
+    /// for the last time leaves every slot of the immediate context.
+    pub(super) fn unbind_released(&self, address: usize) {
+        if !self.immediate_kept.emulates10() {
+            return;
+        }
+        let _lock = lock();
+        self.on_immediate(|c| c.unbind_released(address));
+    }
+
     fn on_immediate(&self, f: impl FnOnce(&Context)) {
         let c = self.immediate();
         f(c.cast_object_ref::<Context>().expect("ours"));
@@ -1180,4 +1194,17 @@ impl Device_Impl {
     pub(super) fn unmap10(&self, resource: &ID3D11Resource, sub: u32) {
         self.on10(|c| c.unmap(Ref::from(&Some(resource.clone())), sub));
     }
+}
+
+/// Whether a copy goes into a depth-stencil texture from one that is not: Direct3D 10's device
+/// copies nothing then, where Direct3D 11's copies the bits.
+fn into_depth_from_colour(dst: &Option<ID3D11Resource>, src: &Option<ID3D11Resource>) -> bool {
+    let depth = |r: &Option<ID3D11Resource>| match r.as_ref().and_then(super::objects::resource_of)
+    {
+        Some(wcontainers_direct3d_11::object::Resource::Texture(t)) => {
+            t.desc.bind_flags & D3D11_BIND_DEPTH_STENCIL.0 as u32 != 0
+        }
+        _ => false,
+    };
+    depth(dst) && !depth(src)
 }

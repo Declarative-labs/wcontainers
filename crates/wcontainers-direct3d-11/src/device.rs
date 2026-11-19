@@ -28,6 +28,9 @@ pub(crate) struct HelperBlocks<B: Backend> {
     pub arguments: u64,
     /// The ids of the merged samplers bound beside the blocks.
     pub samplers: Vec<u64>,
+    /// The id of the depth-stencil view whose aspects are bound beside them for early tests in
+    /// the program (0 for none).
+    pub early: u64,
     pub set: Kept<B, B::BindingSet>,
 }
 
@@ -655,6 +658,9 @@ impl<B: Backend> Device<B> {
 
     pub fn create_buffer(&mut self, d: &BufferDesc, init: Option<&[u8]>) -> Result<Rc<Buffer<B>>> {
         check_buffer(d, init.is_some())?;
+        if d.misc_flags & (MISC_GENERATE_MIPS | MISC_TEXTURECUBE | MISC_GDI_COMPATIBLE) != 0 {
+            return Err(Error::InvalidArg("a texture's misc flags on a buffer"));
+        }
         if d.misc_flags
             & !(MISC_DRAWINDIRECT_ARGS | MISC_ALLOW_RAW_VIEWS | MISC_STRUCTURED | MISC_SHARED)
             != 0
@@ -866,6 +872,12 @@ impl<B: Backend> Device<B> {
                 "a cube texture needs at least six square faces",
             ));
         }
+        // Arrays of cubes came with 10_1.
+        if cube && self.level < level::L10_1 && d.array_size != 6 {
+            return Err(Error::InvalidArg(
+                "a cube texture below 10_1 has exactly six faces",
+            ));
+        }
         match d.usage {
             usage::IMMUTABLE if !has_init => {
                 return Err(Error::InvalidArg("an immutable texture needs initial data"));
@@ -967,6 +979,18 @@ impl<B: Backend> Device<B> {
             && [2, 4, 8, 16].iter().any(|&n| self.takes_samples(format, n));
         if d.sample_count > 1 || resolves_into {
             usage |= TextureUsage::RENDER;
+        }
+        // A depth buffer is read by pixel programs running their forced early tests themselves
+        // (`EarlyTestsInShader`), where the back end can sample its format.
+        if d.bind_flags & bind::DEPTH_STENCIL != 0
+            && self
+                .backend
+                .caps()
+                .formats
+                .get(format)
+                .contains(FormatUse::SAMPLE)
+        {
+            usage |= TextureUsage::SAMPLE;
         }
         // Unordered access views are cleared by clearing passes where the format can be drawn into.
         if d.bind_flags & bind::UNORDERED_ACCESS != 0
@@ -1406,6 +1430,7 @@ impl<B: Backend> Device<B> {
             twin,
             window,
             buffer: None,
+            stencil_aspect: RefCell::new(None),
         }))
     }
 
@@ -1785,6 +1810,14 @@ impl<B: Backend> Device<B> {
         {
             return not_implemented("clip distances without the back end's (ClipDistanceInShader)");
         }
+        if wcontainers_shaders::capabilities(&module.module)
+            .contains(naga::valid::Capabilities::PRIMITIVE_INDEX)
+            && !self.backend.caps().has(Features::PRIMITIVE_INDEX)
+        {
+            return not_implemented(
+                "the primitive index without the back end's (PrimitiveIdAsGeometry)",
+            );
+        }
         self.live()?;
         self.bury();
         let gpu = self.backend.create_shader(&module);
@@ -1850,6 +1883,10 @@ impl<B: Backend> Device<B> {
             let layered = shader::multisampled_arrays(bytecode)?;
             let key = shader::base_key(SourceStage::Geometry, &typed, layered);
             let converted = shader::convert_geometry(bytecode, &key)?;
+            if wcontainers_shaders::stage::selects(&converted.reflection) {
+                // The draw would run once per layer and viewport; those runs are not built.
+                return not_implemented("a geometry shader writing a layer or viewport index");
+            }
             let stage = self.geometry_stage(bytecode, &converted, typed, layered)?;
             Some((stage, converted))
         };
@@ -2198,7 +2235,7 @@ pub(crate) fn compare_fn(f: u32) -> Result<CompareFn> {
     })
 }
 
-fn stencil_op(op: u32) -> Result<StencilOp> {
+pub(crate) fn stencil_op(op: u32) -> Result<StencilOp> {
     Ok(match op {
         1 => StencilOp::Keep,
         2 => StencilOp::Zero,

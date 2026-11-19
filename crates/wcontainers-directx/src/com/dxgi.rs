@@ -15,13 +15,17 @@ use super::*;
 pub struct Adapter {
     pub(super) private: Private,
     desc: AdapterDesc,
+    /// The adapter of a factory of DXGI 1.0 (Direct3D 10's devices made without an adapter),
+    /// which answers none of the later factory interfaces.
+    dxgi10: bool,
 }
 
 impl Adapter {
-    pub fn new(caps: &wcontainers_gpu::Caps) -> Self {
+    pub fn new(caps: &wcontainers_gpu::Caps, dxgi10: bool) -> Self {
         Adapter {
             private: Private::default(),
             desc: AdapterDesc::from_caps(caps),
+            dxgi10,
         }
     }
 
@@ -85,6 +89,69 @@ impl Adapter_Impl {
     /// A factory enumerating this adapter, which makes swap chains of its devices.
     pub(super) fn get_parent(&self, riid: *const GUID, parent: *mut *mut c_void) -> Result<()> {
         let factory: IDXGIFactory6 = Factory::new(self.to_interface()).into();
+        if self.dxgi10 {
+            unsafe {
+                restrict::<IDXGIFactory6_Vtbl, 0>(factory.as_raw());
+                restrict::<windows::core::IInspectable_Vtbl, 1>(
+                    factory.cast::<windows::core::IUnknown>()?.as_raw(),
+                );
+            }
+        }
         unsafe { factory.query(riid, parent).ok() }
     }
+}
+
+type QueryInterface =
+    unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> windows::core::HRESULT;
+/// The windows crate's `QueryInterface` entries of a factory's two tables.
+static QUERY_INTERFACE: [std::sync::OnceLock<QueryInterface>; FACTORY_TABLES] =
+    [const { std::sync::OnceLock::new() }; FACTORY_TABLES];
+/// A factory's tables: `IDXGIFactory6`'s and its identity's.
+const FACTORY_TABLES: usize = 2;
+
+/// Points interface pointer `p`'s table at a copy (made once, for table `N`) whose
+/// `QueryInterface` answers as DXGI 1.0's factory (`query_factory10`).
+///
+/// # Safety
+/// `p` is an interface pointer of a factory of ours, and `V` its table's type.
+unsafe fn restrict<V: 'static, const N: usize>(p: *mut c_void) {
+    static TABLES: [std::sync::OnceLock<usize>; FACTORY_TABLES] =
+        [const { std::sync::OnceLock::new() }; FACTORY_TABLES];
+    let slot = p as *mut *const V;
+    let copy = *TABLES[N].get_or_init(|| {
+        // SAFETY: the windows crate's table, copied bit for bit; every table starts with
+        // IUnknown's.
+        let mut table = unsafe { std::ptr::read(*slot) };
+        let unknown =
+            unsafe { &mut *(&mut table as *mut V).cast::<windows::core::IUnknown_Vtbl>() };
+        let _ = QUERY_INTERFACE[N].set(unknown.QueryInterface);
+        unknown.QueryInterface = query_factory10::<N>;
+        Box::leak(Box::new(table)) as *const V as usize
+    });
+    unsafe { *slot = copy as *const V };
+}
+
+/// `QueryInterface` of DXGI 1.0's factory: `IDXGIFactory1` and its successors are not answered.
+unsafe extern "system" fn query_factory10<const N: usize>(
+    this: *mut c_void,
+    iid: *const GUID,
+    out: *mut *mut c_void,
+) -> windows::core::HRESULT {
+    let later = [
+        IDXGIFactory1::IID,
+        IDXGIFactory2::IID,
+        IDXGIFactory3::IID,
+        IDXGIFactory4::IID,
+        IDXGIFactory5::IID,
+        IDXGIFactory6::IID,
+        IDXGIFactory7::IID,
+    ];
+    if !iid.is_null() && later.contains(unsafe { &*iid }) {
+        if !out.is_null() {
+            unsafe { *out = std::ptr::null_mut() };
+        }
+        return windows::Win32::Foundation::E_NOINTERFACE;
+    }
+    let entry = QUERY_INTERFACE[N].get().expect("the table was patched");
+    unsafe { entry(this, iid, out) }
 }
