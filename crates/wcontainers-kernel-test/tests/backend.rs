@@ -381,3 +381,33 @@ fn messages_per_call() {
         assert!(!per_call.is_empty(), "{kind} sent nothing to the backend");
     }
 }
+
+/// The test host takes any number of requests sent in a row before their answers are read, as
+/// Linux's FUSE queues them: a process that ends with many backend files open sends a flush for
+/// each at once.
+#[test]
+fn many_requests_before_answers_are_read() {
+    use fuse_abi::linux::{fuse_getattr_in, fuse_in_header, fuse_opcode};
+    use zerocopy::IntoBytes;
+    const REQUESTS: u64 = 200_000;
+    let mut server = backend::Backend::start(&backend::out(), backend::Served::Empty, false);
+    for unique in 1..=REQUESTS {
+        let header = fuse_in_header {
+            len: (size_of::<fuse_in_header>() + size_of::<fuse_getattr_in>()) as u32,
+            opcode: fuse_opcode::FUSE_GETATTR as u32,
+            unique,
+            nodeid: 1,
+            ..Default::default()
+        };
+        let mut message = header.as_bytes().to_vec();
+        message.extend_from_slice(fuse_getattr_in::default().as_bytes());
+        server.send(unique, &message);
+    }
+    let mut answers = 0;
+    while let Some(message) = server.receive() {
+        if matches!(message, backend::Message::Answer(..)) {
+            answers += 1;
+        }
+    }
+    assert_eq!(answers, REQUESTS);
+}

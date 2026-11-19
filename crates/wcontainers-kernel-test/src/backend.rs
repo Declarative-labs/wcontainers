@@ -113,6 +113,8 @@ pub struct Backend {
     output: TcpStream,
     /// Requests sent whose answers have not been read, in order: the server answers in order.
     outstanding: VecDeque<u64>,
+    /// The server's bytes read while a send waited for room, not yet taken as messages.
+    unread: VecDeque<u8>,
     /// Messages read from the server and not yet handed to the kernel: a host may hand them over
     /// in any order, as a backend that answers from many threads does.
     held: Vec<Message>,
@@ -222,6 +224,7 @@ impl Backend {
             input,
             output,
             outstanding: VecDeque::new(),
+            unread: VecDeque::new(),
             held: Vec::new(),
             sent: 0,
             archive: kept,
@@ -278,10 +281,53 @@ impl Backend {
         crate::image::from_tar(&output.stdout)
     }
 
-    /// Hands the server one request.
+    /// Hands the server one request. Any number may be sent before their answers are read, as
+    /// Linux's FUSE queues requests: the server reads no more while its answers wait to be read, so
+    /// while there is no room for the request its answers are read ahead.
     pub fn send(&mut self, unique: u64, bytes: &[u8]) {
-        self.input.write_all(bytes).expect("writing to the backend");
-        self.input.flush().expect("writing to the backend");
+        use std::os::fd::AsRawFd;
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            let mut ready = libc::pollfd {
+                fd: self.input.as_raw_fd(),
+                events: libc::POLLOUT | libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: waits on one descriptor this backend owns.
+            let polled = unsafe { libc::poll(&mut ready, 1, -1) };
+            if polled < 0 {
+                let error = std::io::Error::last_os_error();
+                assert_eq!(error.kind(), std::io::ErrorKind::Interrupted, "{error}");
+                continue;
+            }
+            self.input
+                .set_nonblocking(true)
+                .expect("a nonblocking send");
+            if ready.revents & libc::POLLIN != 0 {
+                let mut buffer = [0u8; 1 << 16];
+                loop {
+                    match self.output.read(&mut buffer) {
+                        Ok(0) => panic!("the backend ended its connection"),
+                        Ok(read) => self.unread.extend(&buffer[..read]),
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(error) => panic!("reading from the backend: {error}"),
+                    }
+                }
+            }
+            match self.input.write(rest) {
+                Ok(written) => rest = &rest[written..],
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    ) => {}
+                Err(error) => panic!("writing to the backend: {error}"),
+            }
+            self.input
+                .set_nonblocking(false)
+                .expect("a blocking connection");
+        }
         self.sent += 1;
         let opcode = u32::from_le_bytes(bytes[4..8].try_into().expect("a request header"));
         if answered(opcode) {
@@ -316,22 +362,30 @@ impl Backend {
             return None;
         }
         let mut header = [0u8; 16];
-        self.output
-            .read_exact(&mut header)
-            .expect("reading from the backend");
+        self.read_exact(&mut header);
         let length = u32::from_le_bytes(header[0..4].try_into().expect("four")) as usize;
         let unique = u64::from_le_bytes(header[8..16].try_into().expect("eight"));
         let mut message = header.to_vec();
         message.resize(length.max(16), 0);
-        self.output
-            .read_exact(&mut message[16..])
-            .expect("reading from the backend");
+        self.read_exact(&mut message[16..]);
         if unique == 0 {
             return Some(Message::Notice(message));
         }
         let expected = self.outstanding.pop_front();
         assert_eq!(expected, Some(unique), "the server answers in order");
         Some(Message::Answer(unique, message))
+    }
+
+    /// Fills `buffer` with the server's next bytes: those read ahead first, then the
+    /// connection's, waiting for them.
+    fn read_exact(&mut self, buffer: &mut [u8]) {
+        let ahead = buffer.len().min(self.unread.len());
+        for (byte, unread) in buffer.iter_mut().zip(self.unread.drain(..ahead)) {
+            *byte = unread;
+        }
+        self.output
+            .read_exact(&mut buffer[ahead..])
+            .expect("reading from the backend");
     }
 }
 
