@@ -1296,6 +1296,15 @@ impl<B: Backend> Device<B> {
                  the back end's (ClipDistanceInShader)",
             ));
         }
+        if ps.as_ref().is_some_and(|p| {
+            wcontainers_shaders::capabilities(&p.modules[0].module)
+                .contains(naga::valid::Capabilities::PRIMITIVE_INDEX)
+        }) && !self.backend.caps().has(Features::PRIMITIVE_INDEX)
+        {
+            return Err(Error::NotImplemented(
+                "the primitive index without the back end's (PrimitiveIdAsGeometry)",
+            ));
+        }
         let vs_shader = self.backend.create_shader(vs_shader)?;
         let ps_shader = match &ps {
             Some(ps) => match self.backend.create_shader(&ps.modules[0]) {
