@@ -19,6 +19,24 @@ pub(crate) const BYTE_SHIFT: u32 = u8::BITS.trailing_zeros();
 /// The components of a four-component vector.
 pub(crate) const VEC4: u32 = VectorSize::Quad as u32;
 
+/// An f32's significand (its stored fraction and the implicit one), fraction and exponent bias.
+pub(crate) const F32_SIGNIFICAND_BITS: u32 = f32::MANTISSA_DIGITS;
+pub(crate) const F32_FRACTION_BITS: u32 = F32_SIGNIFICAND_BITS - 1;
+pub(crate) const F32_EXPONENT_BIAS: u32 = f32::MAX_EXP as u32 - 1;
+/// An f32's bits with every exponent bit set (infinity), and its fraction's bits.
+pub(crate) const F32_EXPONENT_MASK: u32 = f32::INFINITY.to_bits();
+pub(crate) const F32_FRACTION_MASK: u32 = (1 << F32_FRACTION_BITS) - 1;
+/// An f32's sign bit.
+pub(crate) const F32_SIGN_MASK: u32 = (-0.0f32).to_bits();
+/// Bytes of an f32, as naga's conversions name a width.
+pub(crate) const F32_WIDTH: u8 = core::mem::size_of::<f32>() as u8;
+/// Exponent bits of Direct3D's half, 11- and 10-bit floats, the exponent of infinity and NaN there,
+/// and their bias.
+pub(crate) const SMALL_FLOAT_EXPONENT_BITS: u32 = 5;
+pub(crate) const SMALL_FLOAT_EXPONENT_MASK: u32 = (1 << SMALL_FLOAT_EXPONENT_BITS) - 1;
+pub(crate) const SMALL_FLOAT_EXPONENT_BIAS: u32 = SMALL_FLOAT_EXPONENT_MASK >> 1;
+/// Bits of a half float, the only small float with a sign.
+pub(crate) const HALF_BITS: u32 = u16::BITS;
 /// The name of each program's helper constants and of their block's type.
 pub(crate) const HELPERS: &str = "helpers";
 pub(crate) const HELPERS_TYPE: &str = "Helpers";

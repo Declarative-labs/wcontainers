@@ -818,7 +818,16 @@ fn small_float(f: &mut Function, body: &mut Block, v: Expr, bits: u32) -> Expr {
         f.expressions
             .append(Expression::Literal(Literal::U32(x)), Span::UNDEFINED)
     };
-    let m = if bits == 16 { 10 } else { bits - 5 };
+    use crate::build::{
+        F32_EXPONENT_BIAS, F32_EXPONENT_MASK, F32_FRACTION_BITS, F32_FRACTION_MASK, F32_SIGN_MASK,
+        HALF_BITS, SMALL_FLOAT_EXPONENT_BIAS, SMALL_FLOAT_EXPONENT_BITS, SMALL_FLOAT_EXPONENT_MASK,
+    };
+    let signed = bits == HALF_BITS;
+    let m = bits - SMALL_FLOAT_EXPONENT_BITS - u32::from(signed);
+    // The f32 exponents of the small float's lowest normal and the first past its largest.
+    let rebias = F32_EXPONENT_BIAS - SMALL_FLOAT_EXPONENT_BIAS;
+    let lowest_normal = rebias + 1;
+    let past_largest = rebias + SMALL_FLOAT_EXPONENT_MASK;
     let u = push(
         f,
         body,
@@ -828,54 +837,54 @@ fn small_float(f: &mut Function, body: &mut Block, v: Expr, bits: u32) -> Expr {
             convert: None,
         },
     );
-    let abs_mask = lit(f, 0x7fff_ffff);
+    let abs_mask = lit(f, !F32_SIGN_MASK);
     let a = binary(f, body, B::And, u, abs_mask);
-    let twenty_three = lit(f, 23);
-    let e = binary(f, body, B::ShiftRight, a, twenty_three);
-    let drop = lit(f, 23 - m);
+    let fraction_bits = lit(f, F32_FRACTION_BITS);
+    let e = binary(f, body, B::ShiftRight, a, fraction_bits);
+    let drop = lit(f, F32_FRACTION_BITS - m);
     let fraction = binary(f, body, B::ShiftRight, a, drop);
     let mantissa_mask = lit(f, (1 << m) - 1);
     let fraction = binary(f, body, B::And, fraction, mantissa_mask);
-    let top = lit(f, 0x1f << m);
+    let top = lit(f, SMALL_FLOAT_EXPONENT_MASK << m);
     // NaN: the exponent's ones and the top mantissa bits, made quiet.
     let quiet = lit(f, 1 << (m - 1));
     let nan = binary(f, body, B::InclusiveOr, top, quiet);
     let nan = binary(f, body, B::InclusiveOr, nan, fraction);
     // The largest finite value.
-    let largest = lit(f, (0x1e << m) | ((1 << m) - 1));
-    // Normal: the exponent rebiased from 127 to 15.
-    let rebias = lit(f, 112);
+    let largest = lit(f, ((SMALL_FLOAT_EXPONENT_MASK - 1) << m) | ((1 << m) - 1));
+    // Normal: the exponent rebiased from f32's.
+    let rebias = lit(f, rebias);
     let ne = binary(f, body, B::Subtract, e, rebias);
     let by = lit(f, m);
     let ne = binary(f, body, B::ShiftLeft, ne, by);
     let normal = binary(f, body, B::InclusiveOr, ne, fraction);
     // Denormal: the full mantissa shifted down, toward zero.
-    let mantissa_all = lit(f, 0x7f_ffff);
+    let mantissa_all = lit(f, F32_FRACTION_MASK);
     let full = binary(f, body, B::And, a, mantissa_all);
-    let implicit = lit(f, 0x80_0000);
+    let implicit = lit(f, 1 << F32_FRACTION_BITS);
     let full = binary(f, body, B::InclusiveOr, full, implicit);
-    let base = lit(f, 136 - m);
+    let base = lit(f, lowest_normal + F32_FRACTION_BITS - m);
     let e_small = math(f, body, MathFunction::Min, [e, base]);
     let shift = binary(f, body, B::Subtract, base, e_small);
-    let thirty_one = lit(f, 31);
-    let shift = math(f, body, MathFunction::Min, [shift, thirty_one]);
+    let most_shift = lit(f, u32::BITS - 1);
+    let shift = math(f, body, MathFunction::Min, [shift, most_shift]);
     let denormal = binary(f, body, B::ShiftRight, full, shift);
-    let infinity = lit(f, 0x7f80_0000);
+    let infinity = lit(f, F32_EXPONENT_MASK);
     let is_nan = binary(f, body, B::Greater, a, infinity);
     let is_inf = binary(f, body, B::Equal, a, infinity);
-    let past = lit(f, 143);
+    let past = lit(f, past_largest);
     let is_big = binary(f, body, B::GreaterEqual, e, past);
-    let low = lit(f, 113);
+    let low = lit(f, lowest_normal);
     let is_small = binary(f, body, B::Less, e, low);
     let r = select(f, body, is_small, denormal, normal);
     let r = select(f, body, is_big, largest, r);
     let r = select(f, body, is_inf, top, r);
     let r = select(f, body, is_nan, nan, r);
-    let thirty_one = lit(f, 31);
-    let sign = binary(f, body, B::ShiftRight, u, thirty_one);
-    if bits == 16 {
-        let fifteen = lit(f, 15);
-        let sign = binary(f, body, B::ShiftLeft, sign, fifteen);
+    let sign_at = lit(f, u32::BITS - 1);
+    let sign = binary(f, body, B::ShiftRight, u, sign_at);
+    if signed {
+        let half_sign_at = lit(f, HALF_BITS - 1);
+        let sign = binary(f, body, B::ShiftLeft, sign, half_sign_at);
         return binary(f, body, B::InclusiveOr, r, sign);
     }
     // No sign: negative values (not NaN) are zero.

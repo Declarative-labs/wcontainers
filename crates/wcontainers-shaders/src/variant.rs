@@ -113,7 +113,7 @@ pub(crate) fn apply(
                 pull::pulled(module, &mut w, &variant.pulled, reflection)?;
                 let z = position(&mut w, viewport, flip, clip, clamp);
                 if distances || clamp {
-                    linked_out(module, &mut w, variant.linked, distances, z)?;
+                    linked_out(module, &mut w, variant, distances, z)?;
                 }
                 w.finish(module);
             }
@@ -768,10 +768,11 @@ fn linked_binding(location: u32) -> Binding {
 fn linked_out(
     module: &mut Module,
     w: &mut Wrapped,
-    linked: LinkedValues,
+    variant: &VariantKey,
     distances: bool,
     z: Option<Handle<Expression>>,
 ) -> Result<()> {
+    let linked = variant.linked;
     let mut values = Vec::new();
     if distances && let Some(at) = w.output(|b| *b == Binding::BuiltIn(BuiltIn::ClipDistances)) {
         let o = w.outputs.remove(at);
@@ -794,9 +795,15 @@ fn linked_out(
             crate::refusal::LINKED_CLIP_DISTANCE_COUNT,
         ));
     }
-    let taken = w.outputs.iter().any(
-        |o| matches!(o.binding, Binding::Location { location, .. } if location >= linked.location),
-    );
+    // The named layer a pass-through made with `LAYER_FROM_STAGE` writes follows these values.
+    let named_layer = variant
+        .flags
+        .contains(VariantFlags::LAYER_FROM_STAGE)
+        .then(|| crate::stage::named_layer_location(variant));
+    let taken = w.outputs.iter().any(|o| {
+        matches!(o.binding, Binding::Location { location, .. }
+            if location >= linked.location && Some(location) != named_layer)
+    });
     if taken {
         return Err(ConvertError::Unsupported(
             crate::refusal::LINKED_LOCATION_TAKEN,
@@ -805,9 +812,10 @@ fn linked_out(
     values.extend(z);
     let vec4 = vector(module, 4, Scalar::F32);
     let zero = f32_lit(&mut w.f, 0.0);
-    for (k, chunk) in values.chunks(4).enumerate() {
+    let per_slot = crate::build::VEC4 as usize;
+    for (k, chunk) in values.chunks(per_slot).enumerate() {
         let mut components = chunk.to_vec();
-        components.resize(4, zero);
+        components.resize(per_slot, zero);
         let value = push(
             &mut w.f,
             &mut w.body,

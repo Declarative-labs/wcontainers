@@ -69,6 +69,9 @@ const IR_ENUMS: &[HeaderEnum] = &[
     ("ir/ir.h", "InterpolationMode", "interp", "u64"),
     ("ir/ir.h", "Construct", "construct", "u64"),
     ("ir/ir.h", "UavFlag", "uav", "u64"),
+    ("ir/ir.h", "AtomicOp", "atomic_op", "u64"),
+    ("ir/ir.h", "RoundMode", "round", "u64"),
+    ("ir/ir.h", "DerivativeMode", "derivative", "u64"),
     ("dxbc/dxbc_signature.h", "SignatureSysval", "sysval", "u32"),
     ("dxbc/dxbc_parser.h", "ShaderType", "program", "u32"),
 ];

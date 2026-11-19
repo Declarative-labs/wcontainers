@@ -94,6 +94,8 @@ for %%e in (cs_atomics cs_decrement cs_images cs_shared) do (
 "%FXC%" /nologo /T cs_5_0 /E cs_readonly /Fo cs_readonly.dxbc readonly.hlsl || exit /b 1
 "%FXC%" /nologo /T cs_5_0 /E cs_divide /Fo cs_divide.dxbc divide.hlsl || exit /b 1
 "%DXC%" -nologo -T cs_6_0 -E cs_divide -Fo cs_divide.dxil divide.hlsl || exit /b 1
+"%FXC%" /nologo /T cs_5_0 /E cs_escape /Fo cs_escape.dxbc divide.hlsl || exit /b 1
+"%DXC%" -nologo -T cs_6_0 -E cs_escape -Fo cs_escape.dxil divide.hlsl || exit /b 1
 "%DXC%" -nologo -T cs_6_0 -E cs_readonly -Gis -Fo cs_readonly.dxil readonly.hlsl || exit /b 1
 "%FXC%" /nologo /T cs_5_0 /E cs_texels /Fo cs_texels.dxbc texels.hlsl || exit /b 1
 "%DXC%" -nologo -T cs_6_0 -E cs_texels -Gis -Fo cs_texels.dxil texels.hlsl || exit /b 1

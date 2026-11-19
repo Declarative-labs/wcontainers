@@ -22,13 +22,15 @@ use naga::{
     Module, ResourceBinding, Scalar, ScalarKind, Span, StorageAccess, StructMember, Type,
     TypeInner,
 };
-use wcontainers_gpu::{Interpolation, Reflection, ScalarKind as ValueKind};
+use wcontainers_gpu::{
+    Interpolation, Reflection, ScalarKind as ValueKind, VariantFlags, VariantKey,
+};
 
 mod helper;
 mod tessellate;
 pub use helper::{
-    DomainSets, FinalDraw, InputTopology, StageDraw, StageError, StageIndex, Stages, StreamOutput,
-    StreamOutputEntry, StreamTargets, TessellatedDraw,
+    DomainSets, FinalDraw, InputTopology, STREAM_BUFFERS, StageDraw, StageError, StageIndex,
+    Stages, StreamOutput, StreamOutputEntry, StreamTargets, TessellatedDraw,
 };
 pub use tessellate::{Tessellation, Tessellator};
 
@@ -364,7 +366,11 @@ pub struct CullPrograms {
 /// and variable, and its outputs' type.
 const SELECTION_ARGUMENT: &str = "selection";
 const RUN_TYPE: &str = "Run";
-const RUN_MEMBERS: [&str; 2] = ["layer", "viewport"];
+const RUN_MEMBERS: [&str; 3] = ["layer", "viewport", "layer_count"];
+/// The member of the selection slot and of the run naming the layer.
+const LAYER_MEMBER: u32 = 0;
+const LAYER_COUNT_MEMBER: u32 = 2;
+const NAMED_LAYER_ARGUMENT: &str = "named_layer";
 const RUN_VARIABLE: &str = "draw_run";
 const OUTPUTS_TYPE: &str = "Outputs";
 /// What the vertex and domain stages' compute forms are, in their keys.
@@ -456,7 +462,7 @@ pub fn cull_programs(vertex: &crate::Converted) -> Result<CullPrograms> {
         CULL_RECORDS,
     )?;
     let slots: Vec<(ScalarKind, Binding)> = passed.into_iter().map(|(_, k, b)| (k, b)).collect();
-    let passthrough = passthrough_of(&slots, false, clip)?;
+    let passthrough = passthrough_of(&slots, false, clip, None)?;
     let mut key = blake3::Hasher::new();
     key.update(&source.key).update(CULL_PASSTHROUGH);
     Ok(CullPrograms {
@@ -990,13 +996,33 @@ pub const PASSTHROUGH_HELPERS: [wcontainers_gpu::HelperSlot; 2] = [
     },
 ];
 
+/// The helper constant the pass-through made with `VariantFlags::LAYER_FROM_STAGE` reads beside
+/// [`PASSTHROUGH_HELPERS`].
+pub const PASSTHROUGH_LAYER_COUNT: wcontainers_gpu::HelperSlot = wcontainers_gpu::HelperSlot {
+    value: wcontainers_gpu::HelperValue::LayerCount,
+    offset: build::WORD * LAYER_COUNT_MEMBER,
+};
+
+/// Where a pixel program made with `VariantFlags::LAYER_FROM_STAGE` reads the layer its primitive
+/// names: the location after the values `linked` holds.
+pub(crate) fn named_layer_location(variant: &VariantKey) -> u32 {
+    let distances = match variant.flags.contains(VariantFlags::CLIP_DISTANCE) {
+        true => u32::from(variant.linked.clip_distances),
+        false => 0,
+    };
+    let clamp = u32::from(variant.flags.contains(VariantFlags::DEPTH_CLAMP));
+    variant.linked.location + (distances + clamp).div_ceil(build::VEC4)
+}
+
 /// The vertex program of the draw after a geometry stage: each vertex attribute is a four-word slot of
 /// the geometry output's record (location 0 the position, 1 + i the stage's i-th output location),
 /// passed on with the type and interpolation the geometry shader's reflection gives. When the stage
 /// writes a layer or viewport, the record's last slot holds them and the program keeps only the
 /// vertices of the run its helper constants name ([`PASSTHROUGH_HELPERS`], at the vertex stage's
-/// helper binding), placing the others outside every clip volume.
-pub(crate) fn passthrough(reflection: &Reflection) -> Result<Module> {
+/// helper binding), placing the others outside every clip volume. With `named_layer`, the location
+/// it passes the named layer at, a vertex naming a layer at or past [`PASSTHROUGH_LAYER_COUNT`] is
+/// kept in layer 0's run.
+pub(crate) fn passthrough(reflection: &Reflection, named_layer: Option<u32>) -> Result<Module> {
     let passed: Vec<(ScalarKind, Binding)> = locations(&reflection.outputs)
         .into_iter()
         .map(|loc| {
@@ -1017,16 +1043,23 @@ pub(crate) fn passthrough(reflection: &Reflection) -> Result<Module> {
             (kind, location(loc, Some(interpolation)))
         })
         .collect();
-    passthrough_of(&passed, selects(reflection), clip_distances(reflection))
+    let selects = selects(reflection);
+    passthrough_of(
+        &passed,
+        selects,
+        clip_distances(reflection),
+        named_layer.filter(|_| selects),
+    )
 }
 
 /// The pass-through vertex program reading records of a position slot, a slot for each of `passed`
 /// (written with its kind and binding), the layer and viewport slot when `selects`, then the slots of
-/// `distances` clip distances.
+/// `distances` clip distances, and the named layer as a flat value at `named_layer`.
 fn passthrough_of(
     passed: &[(ScalarKind, Binding)],
     selects: bool,
     distances: u32,
+    named_layer: Option<u32>,
 ) -> Result<Module> {
     let mut module = Module::default();
     let uvec4 = build::vec4(&mut module, Scalar::U32);
@@ -1067,6 +1100,7 @@ fn passthrough_of(
         });
         components.push(v);
     }
+    let mut named_layer_value = None;
     if selects {
         let slot = 1 + passed.len() as u32;
         b.f.arguments.push(FunctionArgument {
@@ -1106,17 +1140,31 @@ fn passthrough_of(
             helpers_ty,
         );
         let run = b.global(helpers);
-        let mut keep = None;
-        for i in 0..2 {
+        let mut matches = Vec::new();
+        for i in 0..PASSTHROUGH_HELPERS.len() as u32 {
             let p = b.field(run, i);
             let want = b.load(p);
             let have = b.field(selection, i);
-            let same = b.binary(BinaryOperator::Equal, have, want);
-            keep = Some(match keep {
-                None => same,
-                Some(k) => b.binary(BinaryOperator::LogicalAnd, k, same),
-            });
+            matches.push(b.binary(BinaryOperator::Equal, have, want));
         }
+        if let Some(at) = named_layer {
+            // Direct3D draws a primitive naming a layer past the views' into the first layer.
+            let p = b.field(run, LAYER_COUNT_MEMBER);
+            let count = b.load(p);
+            let named = b.field(selection, LAYER_MEMBER);
+            let past = b.binary(BinaryOperator::GreaterEqual, named, count);
+            let p = b.field(run, LAYER_MEMBER);
+            let run_layer = b.load(p);
+            let zero = b.expr(naga::Expression::Literal(naga::Literal::U32(0)));
+            let first = b.binary(BinaryOperator::Equal, run_layer, zero);
+            let into_first = b.binary(BinaryOperator::LogicalAnd, past, first);
+            let layer = LAYER_MEMBER as usize;
+            matches[layer] = b.binary(BinaryOperator::LogicalOr, matches[layer], into_first);
+            named_layer_value = Some((at, named));
+        }
+        let keep = matches
+            .into_iter()
+            .reduce(|k, same| b.binary(BinaryOperator::LogicalAnd, k, same));
         let vec4 = build::vec4(&mut module, Scalar::F32);
         let lit =
             |b: &mut Builder, x: f32| b.expr(naga::Expression::Literal(naga::Literal::F32(x)));
@@ -1165,6 +1213,16 @@ fn passthrough_of(
         });
         components.push(b.compose(array, parts));
         span += distance_slots(distances) * SLOT_BYTES;
+    }
+    if let Some((at, named)) = named_layer_value {
+        members.push(StructMember {
+            name: Some(NAMED_LAYER_ARGUMENT.into()),
+            ty: build::scalar(&mut module, Scalar::U32),
+            binding: Some(location(at, Some(Interpolation::Flat))),
+            offset: span,
+        });
+        components.push(named);
+        span += build::WORD;
     }
     let ty = module.types.insert(
         Type {

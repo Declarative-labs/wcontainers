@@ -1424,7 +1424,11 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
   volume tables): the stage helper's output carries each primitive's layer, and the draw runs once per
   layer used, into a pass on that layer's view, keeping only that layer's primitives (`LayerSplit`).
   Exact. A pixel shader reading its layer or viewport index reads the run's (`HelperValue::Layer`,
-  `HelperValue::Viewport`; zero where no earlier stage writes one). The layer or viewport from the vertex shader (an optional Direct3D 11.3 capability) is
+  `HelperValue::Viewport`; zero where no earlier stage writes one). A primitive naming a layer at or
+  past the views' layer count is drawn into their first layer and its pixel shader reads the layer it
+  named, as Direct3D draws it: the geometry shader's pass-through and the pixel shader made with
+  `LAYER_FROM_STAGE` keep it in layer 0's run (`HelperValue::LayerCount`) and pass the named layer
+  as a flat value. The layer or viewport from the vertex shader (an optional Direct3D 11.3 capability) is
   reported absent. Several viewports: `MultiViewportSplit`.
 - Vertex input: every format can be named (`VertexFormat` has every component count of every type),
   and every back end takes every one, converting what its API lacks itself (WebGPU: a shadow stream a
