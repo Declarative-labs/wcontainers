@@ -2021,7 +2021,7 @@ Run 36: for the Direct3D 12 path's experiment the Windows SDK's dxcompiler.dll a
 (14,261,232 and 1,503,656 bytes, copies of the SDK's own) were put in
 C:\wc\out\phase-2-graphics-direct3d-12\dxc and beside the own program and bgfx; all were deleted
 again the same run, and bgfx-capture.ps1 put back as it was. Deleted at the end of the run:
-C:\wc\target\phase-2-graphics-direct3d-12. No build output was made in scratch or on the Mac.
+C:\wc\target\phase-2-graphics-direct3d-12 (8,405,526,107 bytes). No build output was made in scratch or on the Mac.
 Run 29: nothing installed. Deleted at the end of the run: C:\wc\target\phase-2-graphics-direct3d-12,
 and the checkout's own `target` (219 MB) that a `cargo check` on the Mac left (the shaders
 crate's build script fails there; check on the desktop). Logs stay in scratch run29.
