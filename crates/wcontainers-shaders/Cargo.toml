@@ -25,10 +25,13 @@ fastrand = "2"
 serde = { version = "1", features = ["derive"] }
 naga = { workspace = true, features = ["wgsl-in", "glsl-out", "hlsl-out", "msl-out", "wgsl-out"] }
 
+# tests/corpus.rs: GLSL ES as the WebGL 2 back end writes it.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+wcontainers-gpu-webgl = { path = "../wcontainers-gpu-webgl" }
+
 # tests/draw.rs: real Direct3D 11 beside the WebGPU and WebGL 2 back ends.
 [target.'cfg(windows)'.dev-dependencies]
 pollster = "1.0.1"
-wcontainers-gpu-webgl = { path = "../wcontainers-gpu-webgl" }
 wcontainers-gpu-webgpu = { path = "../wcontainers-gpu-webgpu" }
 wcontainers-graphics-test = { path = "../wcontainers-graphics-test" }
 wgpu = "30.0.2"

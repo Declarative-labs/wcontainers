@@ -216,7 +216,9 @@ fn storage_textures_convert_through_buffers() {
     };
     assert!(matches!(
         convert(Source::Dxbc(&bytes), &plain, None),
-        Err(ConvertError::Unsupported("StorageImageAtomics"))
+        Err(ConvertError::Unsupported(
+            wcontainers_shaders::refusal::STORAGE_IMAGE_ATOMICS
+        ))
     ));
     let mut k = key;
     k.storage_formats.pop();

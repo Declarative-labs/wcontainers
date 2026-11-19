@@ -13171,29 +13171,8 @@ code	crates/wcontainers-shaders/src/builtin.rs	str	storage_clear	"clear.value"
 code	crates/wcontainers-shaders/src/builtin.rs	str	storage_clear	"texture_storage_2d"
 code	crates/wcontainers-shaders/src/builtin.rs	str	storage_clear	"texture_storage_2d_array"
 code	crates/wcontainers-shaders/src/builtin.rs	str	storage_clear	"texture_storage_3d"
-code	crates/wcontainers-shaders/src/cache.rs	int	<Cache as Default>::default	4
-code	crates/wcontainers-shaders/src/cache.rs	int	Cache	32
-code	crates/wcontainers-shaders/src/cache.rs	int	Cache::entries	32
-code	crates/wcontainers-shaders/src/cache.rs	int	Cache::get	32
-code	crates/wcontainers-shaders/src/cache.rs	int	Cache::index_entry	32
-code	crates/wcontainers-shaders/src/cache.rs	int	Cache::insert	32
-code	crates/wcontainers-shaders/src/cache.rs	int	Cache::insert_raw	32
-code	crates/wcontainers-shaders/src/cache.rs	int	Cache::load	10
-code	crates/wcontainers-shaders/src/cache.rs	int	Cache::load	11
-code	crates/wcontainers-shaders/src/cache.rs	int	decode	32
-code	crates/wcontainers-shaders/src/cache.rs	int	entry	32
-code	crates/wcontainers-shaders/src/cache.rs	int	entry	33
-code	crates/wcontainers-shaders/src/cache.rs	int	entry	33
-code	crates/wcontainers-shaders/src/cache.rs	int	entry	37
-code	crates/wcontainers-shaders/src/cache.rs	int	entry	37
-code	crates/wcontainers-shaders/src/cache.rs	int	entry	37
-code	crates/wcontainers-shaders/src/cache.rs	int	entry	41
-code	crates/wcontainers-shaders/src/cache.rs	int	module_key	32
-code	crates/wcontainers-shaders/src/cache.rs	int	module_key	32
-code	crates/wcontainers-shaders/src/cache.rs	int	shader_key	32
 code	crates/wcontainers-shaders/src/cache.rs	str	<LoadError as core::fmt::Display>::fmt	"not a cache file"
 code	crates/wcontainers-shaders/src/cache.rs	str	Cache::insert_raw	"a cache payload under 4 GiB"
-code	crates/wcontainers-shaders/src/cache.rs	str	entry	"32 bytes"
 code	crates/wcontainers-shaders/src/container.rs	bytestr	program_type	b"DXIL"
 code	crates/wcontainers-shaders/src/container.rs	bytestr	program_type	b"SHDR"
 code	crates/wcontainers-shaders/src/container.rs	bytestr	program_type	b"SHEX"
@@ -13206,7 +13185,6 @@ code	crates/wcontainers-shaders/src/container.rs	int	chunks	4
 code	crates/wcontainers-shaders/src/container.rs	int	signature	4
 code	crates/wcontainers-shaders/src/dxbc.rs	str	to_ir	"dxbc-spirv gave no reason"
 code	crates/wcontainers-shaders/src/dxbc.rs	str	to_ir	"the IR did not decode"
-code	crates/wcontainers-shaders/src/dxil.rs	str	absent_extension	"RenderTargetArrayIndex"
 code	crates/wcontainers-shaders/src/dxil.rs	str	bindings	"a binding past the resource list"
 code	crates/wcontainers-shaders/src/dxil.rs	str	bindings	"a resource of another class"
 code	crates/wcontainers-shaders/src/dxil.rs	str	bindings	"a resource of no class"
@@ -13215,7 +13193,6 @@ code	crates/wcontainers-shaders/src/dxil.rs	str	float_to_int_function	"d3d_ftoi"
 code	crates/wcontainers-shaders/src/dxil.rs	str	float_to_int_function	"d3d_ftou"
 code	crates/wcontainers-shaders/src/dxil.rs	str	float_to_int_function	"x"
 code	crates/wcontainers-shaders/src/dxil.rs	str	helper_invocations	"coverage"
-code	crates/wcontainers-shaders/src/dxil.rs	str	lower	"SampleCount"
 code	crates/wcontainers-shaders/src/dxil.rs	str	lower	"no entry point"
 code	crates/wcontainers-shaders/src/dxil.rs	str	reason	"dxil-spirv gave no reason"
 code	crates/wcontainers-shaders/src/dxil.rs	str	unconverted	"no entry point"
@@ -13240,7 +13217,6 @@ code	crates/wcontainers-shaders/src/dxil/images.rs	str	Texels::image_functions	"
 code	crates/wcontainers-shaders/src/dxil/images.rs	str	Texels::image_functions	"{name}_size"
 code	crates/wcontainers-shaders/src/dxil/images.rs	str	Texels::image_functions	"{name}_store"
 code	crates/wcontainers-shaders/src/dxil/images.rs	str	counter_atomic	"a counter compared"
-code	crates/wcontainers-shaders/src/dxil/images.rs	str	finish	"StorageImageAtomics"
 code	crates/wcontainers-shaders/src/dxil/images.rs	str	plan	"a typed view's operand"
 code	crates/wcontainers-shaders/src/dxil/images.rs	str	storage_image	"a storage image's type"
 code	crates/wcontainers-shaders/src/dxil/images.rs	str	texel_atomics	"an atomic's result"
@@ -13308,9 +13284,6 @@ code	crates/wcontainers-shaders/src/ir.rs	int	literal_string	8
 code	crates/wcontainers-shaders/src/ir.rs	int	literal_string	8
 code	crates/wcontainers-shaders/src/ir.rs	str	(file)	"/ir_codes.rs"
 code	crates/wcontainers-shaders/src/lib.rs	int	unbuilt	32
-code	crates/wcontainers-shaders/src/lib.rs	str	unbuilt	"ProvokingRewrite"
-code	crates/wcontainers-shaders/src/lib.rs	str	unbuilt	"RootSignatureLayout"
-code	crates/wcontainers-shaders/src/lib.rs	str	unbuilt	"StoragePacked"
 code	crates/wcontainers-shaders/src/lower.rs	float	FunctionLowering<'l,'a>::coords	0.5
 code	crates/wcontainers-shaders/src/lower.rs	int	Emit::swizzle	3
 code	crates/wcontainers-shaders/src/lower.rs	int	Emit::swizzle	4
@@ -13376,7 +13349,6 @@ code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::atomic
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::atomic	"atomic without its operation"
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::image	"not an image"
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::image_store	"store to a texture that is not a storage view"
-code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::instruction	"StorageImageAtomics"
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::instruction	"an emit outside a geometry shader"
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::instruction	"call before callee"
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::instruction	"composite index is not a constant"
@@ -13394,13 +13366,6 @@ code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::walk	"
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::walk_struct	"a struct member chosen at run time"
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::walk_struct	"a struct member past the last"
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::walk_struct	"a struct member's address"
-code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::check_builtin	"BuiltIn"
-code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::check_builtin	"InnerCoverage"
-code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::check_builtin	"RenderTargetArrayIndex"
-code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::check_builtin	"SampleCount"
-code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::check_builtin	"SamplePosition"
-code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::check_builtin	"StencilRef"
-code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::check_builtin	"ViewportArrayIndex"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::declare_io	"in"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::declare_io	"out"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::declare_op	"image type"
@@ -13426,7 +13391,6 @@ code	crates/wcontainers-shaders/src/lower/evaluate.rs	str	Lowering<'_>::declare_
 code	crates/wcontainers-shaders/src/lower/evaluate.rs	str	Lowering<'_>::declare_evaluated	"w_at"
 code	crates/wcontainers-shaders/src/lower/evaluate.rs	str	Lowering<'_>::declare_evaluated	"w_slope"
 code	crates/wcontainers-shaders/src/lower/evaluate.rs	str	Lowering<'_>::evaluate_prologue	"the position is not a vector"
-code	crates/wcontainers-shaders/src/lower/evaluate.rs	str	Lowering<'_>::sample_positions	"SampleCount"
 code	crates/wcontainers-shaders/src/lower/evaluate.rs	str	Lowering<'_>::sample_positions	"sample_positions"
 code	crates/wcontainers-shaders/src/lower/geometry.rs	int	Lowering<'_>::geometry_entry_point	3
 code	crates/wcontainers-shaders/src/lower/geometry.rs	int	Lowering<'_>::geometry_entry_point	3
@@ -13543,7 +13507,6 @@ code	crates/wcontainers-shaders/src/variant.rs	int	sampler_state_helper	4
 code	crates/wcontainers-shaders/src/variant.rs	int	vector	3
 code	crates/wcontainers-shaders/src/variant.rs	str	Wrapped::finish	"Outputs"
 code	crates/wcontainers-shaders/src/variant.rs	str	Wrapped::new	"shader"
-code	crates/wcontainers-shaders/src/variant.rs	str	clipped	"SampleCount"
 code	crates/wcontainers-shaders/src/variant.rs	str	constants_as_storage	"a constant buffer without its variable"
 code	crates/wcontainers-shaders/src/variant.rs	str	counted	"count"
 code	crates/wcontainers-shaders/src/variant.rs	str	depth	"depth"
@@ -13587,7 +13550,6 @@ code	crates/wcontainers-shaders/src/variant/constants.rs	str	constants_as_textur
 code	crates/wcontainers-shaders/src/variant/constants.rs	str	constants_as_texture	"constants_{}"
 code	crates/wcontainers-shaders/src/variant/constants.rs	str	fetch	"constants"
 code	crates/wcontainers-shaders/src/variant/early.rs	int	early_tests	3
-code	crates/wcontainers-shaders/src/variant/early.rs	str	early_tests	"SampleCount"
 code	crates/wcontainers-shaders/src/variant/early.rs	str	early_tests	"early_depth"
 code	crates/wcontainers-shaders/src/variant/early.rs	str	early_tests	"early_stencil"
 code	crates/wcontainers-shaders/src/variant/filter.rs	int	sample	3
@@ -22884,7 +22846,6 @@ redefinition	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	send_packet
 redefinition	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	truesize::SHARED_INFO	SHARED_INFO = 320
 redefinition	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	truesize::SK_BUFF	SK_BUFF = 256
 redefinition	crates/wcontainers-kernel/src/syscall/socket/netlink.rs	int	ALIGN	ALIGN = 4
-redefinition	crates/wcontainers-kernel/src/syscall/socket/netlink.rs	int	HEADER	HEADER = 16
 redefinition	crates/wcontainers-kernel/src/syscall/socket/netlink.rs	int	MAX_LINKS	MAX_LINKS = 32
 redefinition	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	int	SS_CONNECTED	SS_CONNECTED = 3
 redefinition	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	int	SS_CONNECTING	SS_CONNECTING = 2
@@ -22892,7 +22853,6 @@ redefinition	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	int	SS_DISC
 redefinition	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	int	SS_UNCONNECTED	SS_UNCONNECTED = 1
 redefinition	crates/wcontainers-literals/src/history.rs	byte	LINE_END	LINE_END = b'\n'
 redefinition	crates/wcontainers-shaders/src/build.rs	int	WORD	WORD = 4
-redefinition	crates/wcontainers-shaders/src/cache.rs	int	HEADER	HEADER = 16
 redefinition	crates/wcontainers-shaders/tests/common/mod.rs	int	SIZE	SIZE = 64
 redefinition	crates/wcontainers-translator-test/reference/src/main.rs	int	NZCV	NZCV = 4026531840
 redefinition	crates/wcontainers-translator-test/reference/src/main.rs	int	PAGE	PAGE = 4096
@@ -23343,7 +23303,6 @@ restated	crates/wcontainers-shaders/tests/contention_draw.rs	float	triangle	4096
 restated	crates/wcontainers-shaders/tests/contention_draw.rs	int	triangle	4096
 restated	crates/wcontainers-shaders/tests/corpus.rs	int	dynamically_indexed_constants_keep_their_declared_size	256
 restated	crates/wcontainers-shaders/tests/corpus.rs	int	dynamically_indexed_constants_keep_their_declared_size	4096
-restated	crates/wcontainers-shaders/tests/corpus.rs	int	verdict	300
 restated	crates/wcontainers-shaders/tests/draw.rs	float	CASES	2_147_483_648.0
 restated	crates/wcontainers-shaders/tests/early_draw.rs	float	case	256.0
 restated	crates/wcontainers-shaders/tests/early_draw.rs	float	case	4096.0

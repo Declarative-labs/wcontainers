@@ -1,14 +1,14 @@
-cs_atomics.dxil	ok-wgsl glsl-write
-cs_decrement.dxil	ok-wgsl glsl-write
-cs_divide.dxil	ok-wgsl glsl-write
-cs_escape.dxil	ok-wgsl glsl-write
-cs_image_array.dxil	ok-wgsl glsl-write
-cs_images.dxil	unsupported StorageFormatKind
-cs_one_d.dxil	unsupported StorageFormatKind
-cs_readonly.dxil	ok-wgsl glsl-write
-cs_shared.dxil	ok-wgsl glsl-write
-cs_texels.dxil	unsupported TypedBufferFormatKind
-cs_through.dxil	unsupported StorageFormatKind
+cs_atomics.dxil	ok ; glsl absent compute
+cs_decrement.dxil	ok ; glsl absent compute
+cs_divide.dxil	ok ; glsl absent compute
+cs_escape.dxil	ok ; glsl absent compute
+cs_image_array.dxil	ok views:R32Uint ; glsl absent compute
+cs_images.dxil	unsupported StorageFormatKind (with views)
+cs_one_d.dxil	unsupported StorageFormatKind (with views)
+cs_readonly.dxil	ok ; glsl absent compute
+cs_shared.dxil	ok ; glsl absent compute
+cs_texels.dxil	unsupported TypedBufferFormatKind (with views)
+cs_through.dxil	unsupported StorageFormatKind (with views)
 gs_adjacent.dxil	unsupported DxilGeometryShader
 gs_clip.dxil	unsupported DxilGeometryShader
 gs_cut.dxil	unsupported DxilGeometryShader
@@ -18,67 +18,67 @@ gs_lines.dxil	unsupported DxilGeometryShader
 gs_points.dxil	unsupported DxilGeometryShader
 gs_quads.dxil	unsupported DxilGeometryShader
 gs_unplaced.dxil	unsupported DxilGeometryShader
-ps_array.dxil	ok
-ps_cases.dxil	ok
-ps_clip.dxil	ok
-ps_coarse.dxil	ok
-ps_component.dxil	ok
-ps_contend.dxil	ok-wgsl glsl-write
-ps_deriv.dxil	ok-wgsl glsl-write
-ps_dual.dxil	ok
-ps_early.dxil	ok-wgsl glsl-write
+ps_array.dxil	ok ; glsl compiles
+ps_cases.dxil	ok ; glsl compiles
+ps_clip.dxil	ok ; glsl compiles
+ps_coarse.dxil	ok ; glsl compiles
+ps_component.dxil	ok ; glsl compiles
+ps_contend.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+ps_deriv.dxil	ok ; glsl needs FINE_DERIVATIVES write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+ps_dual.dxil	ok ; glsl compiles
+ps_early.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
 ps_evaluate.dxil	unsupported InterpolateAt
-ps_fill.dxil	ok-wgsl glsl-compile
-ps_filter.dxil	ok-wgsl glsl-compile
-ps_ftoi.dxil	ok
-ps_gatheroff.dxil	ok-wgsl glsl-compile
-ps_halves.dxil	ok-wgsl glsl-write
-ps_helper.dxil	ok-wgsl glsl-write
-ps_ids.dxil	ok
-ps_layer.dxil	spirv-reader unsupported
-ps_levels.dxil	ok-wgsl glsl-write
-ps_levels_past.dxil	ok-wgsl glsl-write
-ps_line.dxil	ok
-ps_mark.dxil	ok
-ps_mingather.dxil	ok-wgsl glsl-compile
-ps_minlod.dxil	ok
-ps_mirror.dxil	ok
+ps_fill.dxil	ok ; glsl needs SAMPLE_SHADING compile
+ps_filter.dxil	ok ; glsl compiles
+ps_ftoi.dxil	ok ; glsl compiles
+ps_gatheroff.dxil	ok ; glsl compiles
+ps_halves.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+ps_helper.dxil	ok ; glsl needs SAMPLE_SHADING|FINE_DERIVATIVES write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+ps_ids.dxil	ok ; glsl compiles
+ps_layer.dxil	spirv-reader unsupported builtin %9
+ps_levels.dxil	ok ; glsl compiles
+ps_levels_past.dxil	ok ; glsl compiles
+ps_line.dxil	ok ; glsl compiles
+ps_mark.dxil	ok ; glsl compiles
+ps_mingather.dxil	ok ; glsl compiles
+ps_minlod.dxil	ok ; glsl compiles
+ps_mirror.dxil	ok ; glsl compiles
 ps_msarray.dxil	unsupported MultisampledArrayTexture
-ps_narrow.dxil	ok
-ps_narrow16.dxil	ok
-ps_negate.dxil	ok
-ps_offset.dxil	ok
-ps_pack.dxil	ok
-ps_primid.dxil	ok-wgsl glsl-compile
-ps_primitive.dxil	ok-wgsl glsl-compile
-ps_pull.dxil	ok
-ps_rows.dxil	ok
-ps_rows_io.dxil	ok
+ps_narrow.dxil	ok ; glsl compiles
+ps_narrow16.dxil	ok ; glsl compiles
+ps_negate.dxil	ok ; glsl compiles
+ps_offset.dxil	ok ; glsl compiles
+ps_pack.dxil	ok ; glsl compiles
+ps_primid.dxil	ok ; glsl needs PRIMITIVE_INDEX compile
+ps_primitive.dxil	ok ; glsl needs PRIMITIVE_INDEX compile
+ps_pull.dxil	ok ; glsl compiles
+ps_rows.dxil	ok ; glsl compiles
+ps_rows_io.dxil	ok ; glsl compiles
 ps_samples.dxil	unsupported SampleCount
-ps_shadow.dxil	ok-wgsl glsl-write
-ps_shadow_wide.dxil	ok-wgsl glsl-write
-ps_signed.dxil	ok
-ps_spaces.dxil	ok
-ps_special.dxil	ok
-ps_table.dxil	ok
-ps_texels.dxil	unsupported TypedBufferFormatKind
-ps_textured.dxil	ok
-ps_two.dxil	ok
-ps_twospaces.dxil	ok
-ps_wave.dxil	ok-wgsl glsl-write
-ps_wave_signed.dxil	ok-wgsl glsl-write
-vs_carry.dxil	ok
-vs_clip.dxil	ok-wgsl glsl-compile
-vs_clip_six.dxil	ok-wgsl glsl-compile
-vs_cull.dxil	ok-wgsl glsl-compile
-vs_deep.dxil	ok
-vs_early.dxil	ok
-vs_evaluate.dxil	ok
-vs_filter.dxil	ok
-vs_ids.dxil	ok
-vs_line.dxil	ok
-vs_pack.dxil	ok
-vs_pull.dxil	ok
-vs_rows_io.dxil	ok
-vs_texels.dxil	ok-wgsl glsl-write
-vs_transform.dxil	ok
+ps_shadow.dxil	ok ; glsl compiles
+ps_shadow_wide.dxil	ok ; glsl compiles
+ps_signed.dxil	ok ; glsl compiles
+ps_spaces.dxil	ok ; glsl compiles
+ps_special.dxil	ok ; glsl compiles
+ps_table.dxil	ok ; glsl compiles
+ps_texels.dxil	unsupported TypedBufferFormatKind (with views)
+ps_textured.dxil	ok ; glsl compiles
+ps_two.dxil	ok ; glsl compiles
+ps_twospaces.dxil	ok ; glsl compiles
+ps_wave.dxil	ok ; glsl needs SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+ps_wave_signed.dxil	ok ; glsl needs SAMPLE_SHADING|SUBGROUPS write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+vs_carry.dxil	ok ; glsl compiles
+vs_clip.dxil	ok ; glsl needs CLIP_DISTANCE compile
+vs_clip_six.dxil	ok ; glsl needs CLIP_DISTANCE compile
+vs_cull.dxil	ok ; glsl needs CLIP_DISTANCE|CULL_DISTANCE compile
+vs_deep.dxil	ok ; glsl compiles
+vs_early.dxil	ok ; glsl compiles
+vs_evaluate.dxil	ok ; glsl compiles
+vs_filter.dxil	ok ; glsl compiles
+vs_ids.dxil	ok ; glsl compiles
+vs_line.dxil	ok ; glsl compiles
+vs_pack.dxil	ok ; glsl compiles
+vs_pull.dxil	ok ; glsl compiles
+vs_rows_io.dxil	ok ; glsl compiles
+vs_texels.dxil	ok views:R32Float ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+vs_transform.dxil	ok ; glsl compiles
