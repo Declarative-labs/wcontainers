@@ -18,7 +18,9 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - N2 (the native ARM64 output): the independent check of run 5 found one blocking problem and four minor
   ones; run 6 settled every one (below, "N2 run 6"). N6 needs K2 (below).
 - N3 (the first real programs) is started, not done: run 1 settled the last check's five findings and built
-  the inside's own stop resolution, its heap and the soft-float build (below, "N3 run 1"). Blocked for its
+  the inside's own stop resolution, its heap and the soft-float build (below, "N3 run 1"); run 2 built the
+  inside's native `Cpu` side, piece loading and a thread run to its next exit, and the float state routines
+  (below, "N3 run 2"), compiled and linted but not yet run on the floor. Blocked for its
   bar: R1 and R3 (the runtime's loop `no_std`, the `System` split into policy and services) are the runtime
   and kernel tracks' crates, which this track has not been agreed to change (see "For the orchestrator").
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
@@ -47,6 +49,59 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N3 run 2 (2026-11-19)
+
+Start: origin/main and origin/phase-1-literals had nothing new. phase-1-runtime is 38 commits past main and
+still rewriting lib.rs (its `run`, `StopReason` and `System` hooks), so R1 and R3 were not attempted here.
+
+Built (each its own commit):
+- b4bf2aa2, wcontainers-arm64 (encode.rs, this track's): `FloatStatusMoves::with(rt)`, the `mrs`/`msr` words of
+  FPSR and FPCR, found by trying every system register the MRS and MSR forms can name and keeping the one the
+  native routing singles out (`Route::FloatStatus`, `Stopping::FloatStatusWrite`); FPCR's read is the MRS form
+  with FPCR's write's register bits. No system register number is written. Form names `STR_Q`, `MRS`, `MSR`.
+- d40b2873, the monitor: `routines::answer` serves a `Routines { at }` request by writing four routines the
+  encoder makes into the inside's frame: read FPSR and FPCR (returned in x0, x1), write them, store q0 to q31
+  at x0, load them from x0. Unit tests: the four moves are the expected words, the routines fit a page.
+- 391bf980, the inside: `native::NativeCpu`, the native `Cpu` side (target-only):
+  - a memory is a floor `AddressSpace` with its own identifier and a page record (frame, permissions, shared
+    block); `read` (unmapped pages read as zeros), `write` (a page with no frame gets one allowing nothing),
+    `zero` (a shared page gets a private zero frame), `set_permissions` (4 KiB entries: write gives read and
+    write, read gives read only, nothing else gives an entry the guest's level cannot touch; execute is never
+    given to guest pages, it is checked when a piece is translated), `memory_duplicate` copies every private page
+    at once (counted and warned "memory copied at once when duplicated", until copy-on-write at N5), shared
+    blocks as lists of frames mapped and unmapped (unmapping copies), `code_changed` and losing execute drop the
+    range's pieces;
+  - threads: a register page in the Threads region of the memory's own half, the guest state, float status,
+    vectors and thread pointer; `registers` and `set_registers` move the vectors with the routines when the
+    thread holds the hardware's; a thread switch saves the last thread's vectors and loads the next one's;
+  - `load`: a piece for a guest pc is asked through the link (`Translate`), placed in the code area (frames mapped
+    with `floor::code()`, made visible), each slow path site counted and warned by its `NativeReason`, kept per
+    memory by guest address; an unaligned pc is `AlignmentFault`, a pc whose page cannot run `MemoryFault` with
+    `Access::Execute`;
+  - `run(thread, resume, clock, warn) -> Exit`: rejoin, `enter_user`, `stop::resolve` (calls answered and gone
+    on from, counter reads from `clock`), the next piece on `Landed`, otherwise the `Exit`; an interrupt is
+    `Exit::Stop`, left pending for the caller (the floor's `take_interrupt`); every slow path since the last run
+    goes to `warn` as the runtime's `Answer::warn` takes it.
+  - floor: `Table::replace` and `Table::unmap` (break before make, invalidated), `ask_link` (an answer read from
+    the link page whole), `guest_no_access`.
+- The FPSR and FPCR accessors of arm-sysregs do not assemble for the soft-float target, and `#[target_feature
+  (enable = "neon")]` there is a future-incompatibility warning, so the routines are the only way the inside
+  names those registers.
+
+Not done this run, in order:
+1. A test on the floor of `NativeCpu` (expected shape: a test program `native-exits` in the inside's package that
+   takes a static program's segments and start through its own requests after `routines::Request::END`, runs it
+   with `NativeCpu::run`, and reports each exit and the register block; the monitor's test does the same with the
+   WebAssembly output's `CpuSide` (wcontainers-wasmtime) and compares every exit, answering each system call
+   alike on both sides, starting with the kernel test crate's hello).
+2. The `Host` through the link, the image's files at start, the kernel inside, then the loop and the test
+   crate's policy once R1 and R3 exist; then the bar and the independent check's own programs (fork, exec and a
+   signal; exits counted over 100,000 getppid calls).
+
+Literals: the check exits 0; this run added no baseline line. The syscall number register is a named constant
+in the inside (`SYSCALL_NUMBER`), as wcontainers-abi's `SYSCALL_NUMBER_REGISTER` is not on a branch merged here
+(the magic-literals README gives it to abi): replace it when it lands.
 
 ## N3 run 1 (2026-11-19)
 
@@ -856,6 +911,12 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 ./mirror` without the framework; the KVM runs as in kvm-laptop.out from ~/native-plan/vm on the laptop.
 
 ## Departures from the plan
+
+- N3 run 2, the inside reads and writes the guest's FPSR, FPCR and vector registers only through four routines
+  the monitor writes with the encoder at start (the soft-float target cannot name them).
+- N3 run 2, one table root per process for now: a thread's own table root (`PerThreadWatch`) comes with
+  parallel threads. Frames of a dropped memory's tables, and code area space of dropped pieces, are not
+  reclaimed yet.
 
 - N3 run 1, the inside's heap is one `talc` heap in the linear map (global), not one per container in the
   non-global heap region: N3 runs one container; the per-container heap comes with several containers (N5).
