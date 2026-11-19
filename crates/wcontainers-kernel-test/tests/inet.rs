@@ -150,18 +150,12 @@ fn options_not_acted_on_are_counted() {
         .map(|counter| counter.detail)
         .collect();
     counted.sort();
-    // SOL_SOCKET's SO_MAX_PACING_RATE, then TCP_CORK, TCP_SAVE_SYN, TCP_FASTOPEN_CONNECT and
-    // TCP_TX_DELAY (MSG_MORE on a connection inside the container is acted on).
+    // SOL_SOCKET's SO_MAX_PACING_RATE, then TCP_SAVE_SYN, TCP_FASTOPEN_CONNECT and TCP_TX_DELAY
+    // (MSG_MORE and TCP_CORK on a connection inside the container are acted on).
     let option = |level: u64, name: u64| (level << 32) | name;
     assert_eq!(
         counted,
-        [
-            option(1, 47),
-            option(6, 3),
-            option(6, 27),
-            option(6, 30),
-            option(6, 37)
-        ]
+        [option(1, 47), option(6, 27), option(6, 30), option(6, 37)]
     );
 }
 
@@ -180,6 +174,8 @@ fn socket_ioctl_checks_match_reference() {
     assert_same_output(&out, "sockioctls", &[]);
 }
 
+/// TCP bytes held back by MSG_MORE and TCP_CORK, and what sends them: a send without MSG_MORE,
+/// the cork's removal, TCP_NODELAY, the probe timer and the connection's end.
 #[test]
 fn held_back_sends_match_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");

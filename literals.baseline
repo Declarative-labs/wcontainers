@@ -5426,7 +5426,6 @@ code	crates/wcontainers-kernel/src/syscall/socket/inet.rs	int	tcp_info	1_000_000
 code	crates/wcontainers-kernel/src/syscall/socket/inet.rs	int	tcp_info	1_000_000
 code	crates/wcontainers-kernel/src/syscall/socket/inet.rs	int	tcp_info	1_000_000
 code	crates/wcontainers-kernel/src/syscall/socket/inet.rs	int	tcp_info	1_000_000
-code	crates/wcontainers-kernel/src/syscall/socket/inet.rs	int	tcp_info	201_000
 code	crates/wcontainers-kernel/src/syscall/socket/inet.rs	int	tcp_info	250_000
 code	crates/wcontainers-kernel/src/syscall/socket/inet.rs	int	tcp_info	2_000_000
 code	crates/wcontainers-kernel/src/syscall/socket/inet.rs	int	tcp_info	3

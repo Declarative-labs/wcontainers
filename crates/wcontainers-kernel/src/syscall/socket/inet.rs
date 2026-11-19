@@ -173,9 +173,12 @@ pub(crate) struct Inet {
     pub errors: VecDeque<QueuedError>,
     /// A UDP datagram being corked.
     pub cork: Option<Corked>,
-    /// TCP bytes sent with MSG_MORE and held back, short of a whole segment, until a send
-    /// without it or the connection's end pushes them (`TCP_NAGLE_CORK`).
+    /// TCP bytes sent with MSG_MORE or under TCP_CORK and held back, short of a whole segment,
+    /// until a send that pushes them, the cork's removal, TCP_NODELAY, the probe timer or the
+    /// connection's end (`TCP_NAGLE_CORK`).
     corked: Option<Packet>,
+    /// The probe timer that sends the held bytes if nothing pushes them first (`ICSK_TIME_PROBE0`).
+    probe: Option<u64>,
     /// What TCP_INFO tells of a connection's traffic.
     pub traffic: Traffic,
     /// The IPv4 multicast groups it joined, each on an interface (`mc_list`).
@@ -225,6 +228,7 @@ impl Inet {
             errors: VecDeque::new(),
             cork: None,
             corked: None,
+            probe: None,
             traffic: Traffic::default(),
             groups: Vec::new(),
         }
@@ -482,6 +486,48 @@ fn established(socket: &SocketRef) -> bool {
     }
 }
 
+/// A loopback connection's retransmission timeout (`tcpi_rto`, measured), after which its probe
+/// timer sends what it holds back (`tcp_probe0_base`; measured 204 to 260 ms).
+const LOOPBACK_RTO_MICROSECONDS: u32 = 201_000;
+
+/// Sends what a connection holds back now, and stops its probe timer.
+fn push_held(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+    if let Some(probe) = inet(socket).probe.take() {
+        crate::syscall::timer::stop(kernel, probe);
+    }
+    let held = inet(socket).corked.take();
+    let peer = socket.borrow().peer.clone();
+    if let (Some(packet), Some(peer)) = (held, peer) {
+        deliver(kernel, cx, socket, &peer, packet, false);
+    }
+}
+
+/// Holds back bytes on a connection, starting its probe timer if it is not running.
+fn hold(kernel: &mut Kernel, socket: &SocketRef, packet: Packet) {
+    inet(socket).corked = Some(packet);
+    if inet_ref(socket).probe.is_none() {
+        let until = kernel.entry_now
+            + core::time::Duration::from_micros(LOOPBACK_RTO_MICROSECONDS.into()).as_nanos() as u64;
+        let probe = crate::syscall::timer::start_held_bytes(kernel, Rc::downgrade(socket), until);
+        inet(socket).probe = Some(probe);
+    }
+}
+
+/// A connection's probe timer fired: what it holds back goes (`tcp_write_wakeup`).
+pub(super) fn held_bytes_due(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+    inet(socket).probe = None;
+    push_held(kernel, cx, socket);
+}
+
+/// Whether TCP_CORK is set on a socket.
+fn corked_by_option(socket: &SocketRef) -> bool {
+    socket
+        .borrow()
+        .options
+        .get(&(SOL_TCP, TCP_CORK))
+        .is_some_and(|value| value.iter().any(|byte| *byte != 0))
+}
+
 /// `tcp_get_info` for a TCP socket, from the model in [`Traffic`].
 fn tcp_info(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) -> Vec<u8> {
     let own = socket.borrow();
@@ -579,7 +625,10 @@ fn tcp_info(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) -> Ve
     out.extend_from_slice(&[state, 0, 0, 0, 0, options, 0xaa, u8::from(app_limited)]);
     let ato = if traffic.data_segs_in > 0 { 40_000 } else { 0 };
     let rcv_mss = traffic.largest.max(TCP_MSS_UNCONNECTED as u32);
-    u32s(&mut out, &[201_000, ato, mss, rcv_mss, 0, 0, 0, 0, 0]);
+    u32s(
+        &mut out,
+        &[LOOPBACK_RTO_MICROSECONDS, ato, mss, rcv_mss, 0, 0, 0, 0, 0],
+    );
     u32s(
         &mut out,
         &[
@@ -1951,11 +2000,8 @@ fn send_fin(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
     let Some(peer) = socket.borrow().peer.clone() else {
         return;
     };
-    // The FIN goes after what MSG_MORE held back.
-    let corked = inet(socket).corked.take();
-    if let Some(packet) = corked {
-        deliver(kernel, cx, socket, &peer, packet, false);
-    }
+    // The FIN goes after what is held back.
+    push_held(kernel, cx, socket);
     let other_done = inet_ref(socket).done;
     if !other_done {
         inet(socket).closed_first = true;
@@ -2219,10 +2265,20 @@ pub(super) fn send(
             // Urgent data to the outside is refused only where it would go: an unconnected
             // socket fails first (`sk_stream_wait_connect`).
             let outside = established && inet_ref(socket).outside.is_some();
-            if message.flags & MSG_MORE != 0 && total > 0 && outside {
-                kernel
-                    .counters
-                    .count(cx.host, crate::reason::OPTION_NOT_ACTED_ON, MSG_MORE.into());
+            // Held bytes go to the outside at once: the host has no cork.
+            let held = [
+                (message.flags & MSG_MORE != 0, u64::from(MSG_MORE)),
+                (
+                    corked_by_option(socket),
+                    (u64::from(SOL_TCP) << u32::BITS) | u64::from(TCP_CORK),
+                ),
+            ];
+            for (asked, detail) in held {
+                if asked && total > 0 && outside {
+                    kernel
+                        .counters
+                        .count(cx.host, crate::reason::OPTION_NOT_ACTED_ON, detail);
+                }
             }
             if message.flags & MSG_OOB != 0 && total > 0 && outside {
                 return Err(kernel.counters.refuse_flag(
@@ -2357,28 +2413,34 @@ fn tcp_send(
         // later ones join them; a whole segment goes, and its acknowledgement, which on loopback
         // comes at once, pushes the rest (`tcp_data_snd_check`: Nagle's rule with nothing in
         // flight), as it does for a whole segment an earlier round of this call sent. Without
-        // MSG_MORE everything held goes with the new bytes.
-        let more = message.flags & MSG_MORE != 0 && last.is_none();
-        let mut packet = inet(socket).corked.take().unwrap_or_else(|| Packet {
-            data: Vec::new(),
-            consumed: 0,
-            files: Vec::new(),
-            cred: super::own_cred(kernel, tid),
-            sender: Rc::downgrade(socket),
-            truesize: 0,
-            source: None,
-            arrival: None,
-            time: None,
-            urgent: false,
-            owner: 0,
-        });
+        // MSG_MORE everything held goes with the new bytes. Under TCP_CORK whole segments go and
+        // the rest stays held, as the cork outlasts the acknowledgement.
+        let cork = corked_by_option(socket);
+        let more = (message.flags & MSG_MORE != 0 || cork) && last.is_none();
+        let mut packet = inet(socket)
+            .corked
+            .take()
+            .unwrap_or_else(|| empty_packet(kernel, tid, socket, 0));
         packet.data.extend_from_slice(&data);
         let family = socket.borrow().family;
         let mss = send_mss(family, &inet_ref(socket).traffic) as usize;
-        if more && packet.data.len() < mss && !went {
-            inet(socket).corked = Some(packet);
+        if more && packet.data.len() < mss && (!went || cork) {
+            hold(kernel, socket, packet);
+        } else if cork && last.is_none() {
+            let whole = packet.data.len() / mss * mss;
+            let rest = packet.data.split_off(whole);
+            let owner = packet.owner;
+            went = true;
+            push_held(kernel, cx, socket);
+            deliver(kernel, cx, socket, &peer, packet, false);
+            if !rest.is_empty() {
+                let mut held = empty_packet(kernel, tid, socket, owner);
+                held.data = rest;
+                hold(kernel, socket, held);
+            }
         } else {
             went |= !packet.data.is_empty();
+            push_held(kernel, cx, socket);
             deliver(kernel, cx, socket, &peer, packet, last.is_some());
         }
         sent += fresh;
@@ -2386,6 +2448,23 @@ fn tcp_send(
             urgent_arrives(kernel, cx, tid, socket, &peer, byte);
             sent += 1;
         }
+    }
+}
+
+/// A packet of nothing yet from a connection's sender, whose descriptors count against `owner`.
+fn empty_packet(kernel: &Kernel, tid: Tid, socket: &SocketRef, owner: u32) -> Packet {
+    Packet {
+        data: Vec::new(),
+        consumed: 0,
+        files: Vec::new(),
+        cred: super::own_cred(kernel, tid),
+        sender: Rc::downgrade(socket),
+        truesize: 0,
+        source: None,
+        arrival: None,
+        time: None,
+        urgent: false,
+        owner,
     }
 }
 
@@ -4183,7 +4262,23 @@ pub(super) fn set_option(
                 {
                     Some(Err(Errno::EINVAL))
                 }
-                TCP_CORK | TCP_FASTOPEN_CONNECT => {
+                // Taking the cork off sends what it held (`__tcp_sock_set_cork`).
+                TCP_CORK => {
+                    let stored = store(socket, i32::from(value != 0));
+                    if value == 0 {
+                        push_held(kernel, cx, socket);
+                    }
+                    stored
+                }
+                // Setting it sends what is held, even under the cork (`__tcp_sock_set_nodelay`).
+                TCP_NODELAY => {
+                    let stored = store(socket, i32::from(value != 0));
+                    if value != 0 {
+                        push_held(kernel, cx, socket);
+                    }
+                    stored
+                }
+                TCP_FASTOPEN_CONNECT => {
                     if value != 0 {
                         kernel.counters.count(
                             cx.host,
@@ -4193,7 +4288,7 @@ pub(super) fn set_option(
                     }
                     store(socket, i32::from(value != 0))
                 }
-                TCP_NODELAY | TCP_THIN_LINEAR_TIMEOUTS | TCP_FASTOPEN_NO_COOKIE | TCP_INQ => {
+                TCP_THIN_LINEAR_TIMEOUTS | TCP_FASTOPEN_NO_COOKIE | TCP_INQ => {
                     store(socket, i32::from(value != 0))
                 }
                 TCP_THIN_DUPACK => Some(if (0..=1).contains(&value) {

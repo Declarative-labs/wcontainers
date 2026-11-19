@@ -403,6 +403,11 @@ pub(crate) fn deferrals_due(kernel: &mut Kernel, cx: &mut Context<'_>, listener:
     inet::deferrals_due(kernel, cx, listener);
 }
 
+/// A connection's probe timer fired ([`inet::held_bytes_due`]).
+pub(crate) fn held_bytes_due(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+    inet::held_bytes_due(kernel, cx, socket);
+}
+
 /// After a restore: connections to the outside read as closed.
 pub(crate) fn restored(kernel: &mut Kernel, cx: &mut Context<'_>) {
     outside::restored(kernel, cx);

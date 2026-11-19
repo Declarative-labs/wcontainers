@@ -64,6 +64,10 @@ enum Owner {
     Deferral {
         listener: Weak<RefCell<crate::syscall::socket::Socket>>,
     },
+    /// A TCP connection's probe timer, which sends the bytes it holds back (`tcp_probe_timer`).
+    HeldBytes {
+        socket: Weak<RefCell<crate::syscall::socket::Socket>>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -451,6 +455,12 @@ fn fire(kernel: &mut Kernel, cx: &mut Context<'_>, id: u64) {
                 crate::syscall::socket::deferrals_due(kernel, cx, &listener);
             }
         }
+        Owner::HeldBytes { socket } => {
+            kernel.timers.remove(id);
+            if let Some(socket) = socket.upgrade() {
+                crate::syscall::socket::held_bytes_due(kernel, cx, &socket);
+            }
+        }
     }
 }
 
@@ -544,7 +554,10 @@ pub(crate) fn process_end(kernel: &mut Kernel, pid: Pid, exec: bool) {
         .filter(|(_, timer)| match timer.owner {
             Owner::Posix { pid: owner, .. } => owner == pid,
             Owner::Interval { pid: owner, .. } => owner == pid && !exec,
-            Owner::Descriptor { .. } | Owner::Sleep { .. } | Owner::Deferral { .. } => false,
+            Owner::Descriptor { .. }
+            | Owner::Sleep { .. }
+            | Owner::Deferral { .. }
+            | Owner::HeldBytes { .. } => false,
         })
         .map(|(id, _)| *id)
         .collect();
@@ -593,8 +606,27 @@ pub(crate) fn start_deferral(
     listener: Weak<RefCell<crate::syscall::socket::Socket>>,
     until: u64,
 ) {
+    start_once(kernel, Owner::Deferral { listener }, until);
+}
+
+/// Starts a connection's probe timer at `until` on the monotonic clock; its id, to stop it.
+pub(crate) fn start_held_bytes(
+    kernel: &mut Kernel,
+    socket: Weak<RefCell<crate::syscall::socket::Socket>>,
+    until: u64,
+) -> u64 {
+    start_once(kernel, Owner::HeldBytes { socket }, until)
+}
+
+/// Stops a timer [`start_held_bytes`] started, if it has not fired.
+pub(crate) fn stop(kernel: &mut Kernel, id: u64) {
+    kernel.timers.remove(id);
+}
+
+/// Starts a timer of the kernel's own that fires once at `until` on the monotonic clock.
+fn start_once(kernel: &mut Kernel, owner: Owner, until: u64) -> u64 {
     let id = kernel.timers.add(Timer {
-        owner: Owner::Deferral { listener },
+        owner,
         clock: Clock::Wall,
         expires: None,
         interval: 0,
@@ -614,6 +646,7 @@ pub(crate) fn start_deferral(
         ignored: false,
     });
     kernel.timers.arm(id, until);
+    id
 }
 
 /// What is left of a sleep on a CPU clock: 0 once its timer fired or its clock reached the time; the
