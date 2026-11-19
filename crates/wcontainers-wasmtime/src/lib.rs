@@ -112,7 +112,11 @@ const TRANSLATOR_BUILD: &str = env!("WCONTAINERS_TRANSLATOR_BUILD");
 /// The back end and its output's memory widths (guest memory 64 bit, state memory 32 bit), as the
 /// cache key names them.
 fn output_form() -> String {
-    format!("wasmtime guest-memory-{} state-memory-{}", u64::BITS, u32::BITS)
+    format!(
+        "wasmtime guest-memory-{} state-memory-{}",
+        u64::BITS,
+        u32::BITS
+    )
 }
 
 /// The middle of a cache file's name while it is being written.

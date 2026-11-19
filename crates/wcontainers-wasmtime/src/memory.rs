@@ -347,9 +347,10 @@ mod tests {
                 )
             }
             .expect("paging out");
+            use super::{PAGEMAP, PAGEMAP_ENTRY, PAGEMAP_PRESENT, PAGEMAP_SWAPPED};
             use std::os::unix::fs::FileExt;
             let mut entry = [0u8; PAGEMAP_ENTRY];
-            std::fs::File::open(super::PAGEMAP)
+            std::fs::File::open(PAGEMAP)
                 .unwrap()
                 .read_exact_at(
                     &mut entry,
