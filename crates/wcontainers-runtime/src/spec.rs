@@ -279,8 +279,10 @@ fn root(value: &Value) -> Result<(), Error> {
             "path" => absent(
                 "root.path",
                 field,
-                "the root's files are the image argument; a root read from a directory of the host \
-                 needs the local system's file backend",
+                "the root's files are the image argument; the local system's file backend serves a \
+                 host directory with the host user's rights, so a root from one would show every file \
+                 owned by that user and could make no set-id or device files, unlike the image's own \
+                 root; it needs an image read from a directory and owners mapped (user namespaces)",
             )?,
             "readonly" => absent("root.readonly", field, "read-only mounts in the kernel")?,
             _ => {
