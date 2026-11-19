@@ -192,7 +192,7 @@ const DEFAULT_LEVELS: [u32; 6] = [
 
 /// Direct3D's largest textures at feature level `level`: the extent of 1D and 2D textures, of a
 /// cube's faces and of 3D textures, and the layers of an array (9_x has no arrays).
-fn level_texture_limits(level: u32) -> [u32; 4] {
+pub fn level_texture_limits(level: u32) -> [u32; 4] {
     match level {
         level::L9_1 | level::L9_2 => [2048, 512, 256, 1],
         level::L9_3 => [4096, 4096, 256, 1],
@@ -201,19 +201,58 @@ fn level_texture_limits(level: u32) -> [u32; 4] {
     }
 }
 
-/// The highest feature level `backend` serves (plan section 9): 11_0 with compute, 10_0 without.
-pub fn top_level(caps: &wcontainers_gpu::Caps) -> u32 {
-    if caps.has(Features::COMPUTE) {
-        level::L11_0
-    } else {
-        level::L10_0
+/// The color targets of 9_3 (`D3D_FL9_3_SIMULTANEOUS_RENDER_TARGET_COUNT`).
+const L9_3_TARGETS: u32 = 4;
+
+/// Refused: cull distances where the back end has none.
+const CULL_DISTANCES_UNSERVED: &str =
+    "cull distances without the back end's (CullDistanceAsGeometry)";
+
+/// Refused: clip distances written by a geometry shader where the back end has none.
+const GEOMETRY_CLIP_DISTANCES_UNSERVED: &str =
+    "clip distances from a geometry shader without the back end's (ClipDistanceInShader)";
+
+/// Refused: sharing below 10_0, or of more or fewer than one kind.
+const SHARING_INVALID: &str = "sharing below 10_0, or not of exactly one kind";
+
+/// The color targets a pass takes at feature level `level`.
+fn level_targets(level: u32) -> u32 {
+    match level {
+        level::L9_1 | level::L9_2 => 1,
+        level::L9_3 => L9_3_TARGETS,
+        _ => MAX_COLOR_TARGETS as u32,
     }
+}
+
+/// Whether `caps` serves every requirement of feature level `level` (plan section 9): its texture
+/// sizes and targets within the adapter's limits; from 10_0 `D32_FLOAT_S8X24_UINT` targets, float
+/// targets, and the geometry stage and stream output, which only the stage helper's compute route
+/// serves (`GeometryAsReplay` is not built); at 11_0 compute.
+fn serves(caps: &wcontainers_gpu::Caps, level: u32) -> bool {
+    let limits = &caps.limits;
+    let [extent, cube_extent, volume, layers] = level_texture_limits(level);
+    let sized = limits.max_texture_2d >= extent
+        && limits.max_texture_cube >= cube_extent
+        && limits.max_texture_3d >= volume
+        && limits.max_texture_layers >= layers
+        && limits.color_targets >= level_targets(level);
+    let renders = |f: Format, u: FormatUse| caps.formats.get(f).contains(u);
+    sized
+        && (level < level::L10_0
+            || (renders(Format::Depth32FloatStencil8, FormatUse::DEPTH_STENCIL)
+                && renders(Format::Rgba32Float, FormatUse::RENDER)
+                && caps.has(Features::COMPUTE)))
+}
+
+/// The highest feature level `caps` serves, if any.
+pub fn top_level(caps: &wcontainers_gpu::Caps) -> Option<u32> {
+    DEFAULT_LEVELS.into_iter().find(|&l| serves(caps, l))
 }
 
 impl<B: Backend> Device<B> {
     /// Makes the device at the first of `levels` (or of Direct3D's default list) the back end serves.
     pub fn new(mut backend: B, levels: &[u32]) -> Result<Self> {
-        let top = top_level(backend.caps());
+        let top = top_level(backend.caps()).ok_or(Error::Unsupported)?;
         let asked: &[u32] = if levels.is_empty() {
             &DEFAULT_LEVELS
         } else {
@@ -309,10 +348,10 @@ impl<B: Backend> Device<B> {
     pub fn format_support(&self, dxgi: u32) -> u32 {
         use crate::desc::support::*;
         let mut bits = 0;
-        if format::vertex_format(dxgi).is_some() {
+        if format::vertex_format(dxgi).is_some() && format::level_vertex_buffer(dxgi, self.level) {
             bits |= IA_VERTEX_BUFFER;
         }
-        if format::index_format(dxgi).is_some() {
+        if format::index_format(dxgi).is_some() && format::level_index_buffer(dxgi, self.level) {
             bits |= IA_INDEX_BUFFER;
         }
         // A typeless format is reported as its storage: textures of it, not its uses (its members').
@@ -382,7 +421,9 @@ impl<B: Backend> Device<B> {
         if format::depth_only(dxgi) {
             bits &= !(SHADER_LOAD | SHADER_SAMPLE | MULTISAMPLE_LOAD);
         }
-        if self.level < crate::desc::level::L10_1 && format::signed_normalized(f) {
+        if self.level < crate::desc::level::L10_1 && format::signed_normalized(f)
+            || !format::level_blended(dxgi, self.level)
+        {
             bits &= !BLENDABLE;
         }
         if format::displayed(dxgi, self.level) {
@@ -813,10 +854,13 @@ impl<B: Backend> Device<B> {
                 "the format does not support the bind flags",
             ));
         }
-        if d.misc_flags & MISC_SHARED != 0 && d.misc_flags & MISC_SHARED_KEYEDMUTEX != 0 {
-            return Err(Error::InvalidArg(
-                "shared and shared with a keyed mutex exclude each other",
-            ));
+        // Sharing is from 10_0, of exactly one kind: shared or with a keyed mutex, either through an
+        // NT handle or not.
+        let sharing = d.misc_flags & (MISC_SHARED | MISC_SHARED_KEYEDMUTEX);
+        if (sharing != 0 || d.misc_flags & MISC_SHARED_NTHANDLE != 0)
+            && (self.level < level::L10_0 || !sharing.is_power_of_two())
+        {
+            return Err(Error::InvalidArg(SHARING_INVALID));
         }
         let format = format::storage_format(d.format, d.bind_flags & bind::DEPTH_STENCIL != 0)?;
         // A count and quality the device reports no level for is invalid, as in Direct3D. The
@@ -1888,6 +1932,13 @@ impl<B: Backend> Device<B> {
             module = c.modules.pop().expect("one module");
             clip = Some(at);
         }
+        // The stage helper's route for cull distances (`CullDistanceAsGeometry`) is not built here.
+        if wcontainers_shaders::capabilities(&module.module)
+            .contains(naga::valid::Capabilities::CULL_DISTANCE)
+            && !self.backend.caps().has(Features::CULL_DISTANCE)
+        {
+            return not_implemented(CULL_DISTANCES_UNSERVED);
+        }
         if wcontainers_shaders::capabilities(&module.module)
             .contains(naga::valid::Capabilities::PRIMITIVE_INDEX)
             && !self.backend.caps().has(Features::PRIMITIVE_INDEX)
@@ -1984,6 +2035,14 @@ impl<B: Backend> Device<B> {
         layered: u128,
     ) -> Result<Rc<Shader<B>>> {
         let compute = &converted.modules[0];
+        // The pass-through passing a geometry shader's clip distances on where the back end has
+        // none (`ClipDistanceInShader` behind a geometry stage) is not built here.
+        if wcontainers_shaders::capabilities(&converted.modules[1].module)
+            .contains(naga::valid::Capabilities::CLIP_DISTANCES)
+            && !self.backend.caps().has(Features::CLIP_DISTANCE)
+        {
+            return not_implemented(GEOMETRY_CLIP_DISTANCES_UNSERVED);
+        }
         self.live()?;
         self.bury();
         let gpu = self.backend.create_shader(&converted.modules[1]);

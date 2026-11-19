@@ -129,6 +129,14 @@ impl Buffer {
         Ok(dxgi_usage(self.front.desc.bind_flags))
     }
 
+    pub(super) fn shared_handle(&self) -> Result<HANDLE> {
+        shared_handle(self.front.desc.misc_flags)
+    }
+
+    pub(super) fn nt_shared_handle(&self) -> Result<HANDLE> {
+        nt_shared_handle(self.front.desc.misc_flags)
+    }
+
     /// DXGI's surface of a buffer: a row of its bytes of no format.
     pub(super) fn get_desc_dxgi(&self) -> Result<DXGI_SURFACE_DESC> {
         Ok(DXGI_SURFACE_DESC {
@@ -156,6 +164,29 @@ fn dxgi_usage(bind: u32) -> DXGI_USAGE {
         u |= DXGI_USAGE_UNORDERED_ACCESS.0;
     }
     DXGI_USAGE(u)
+}
+
+/// The sharing calls not served, by name.
+const GET_SHARED_HANDLE: &str = "IDXGIResource::GetSharedHandle of a shared resource";
+const CREATE_SHARED_HANDLE: &str = "IDXGIResource1::CreateSharedHandle";
+
+/// `IDXGIResource::GetSharedHandle` of a resource of these misc flags: none for an unshared one, as
+/// Direct3D answers; the sharing itself is not served.
+fn shared_handle(misc: u32) -> Result<HANDLE> {
+    if misc & (desc::MISC_SHARED | desc::MISC_SHARED_KEYEDMUTEX) == 0 {
+        Ok(HANDLE::default())
+    } else {
+        Err(missing(GET_SHARED_HANDLE))
+    }
+}
+
+/// `IDXGIResource1::CreateSharedHandle`: invalid for a resource not shared through NT handles.
+fn nt_shared_handle(misc: u32) -> Result<HANDLE> {
+    if misc & desc::MISC_SHARED_NTHANDLE == 0 {
+        Err(E_INVALIDARG.into())
+    } else {
+        Err(missing(CREATE_SHARED_HANDLE))
+    }
 }
 
 /// A texture of one dimension: its interface, description structure, conversion and resource type.
@@ -246,6 +277,14 @@ macro_rules! texture {
 
             pub(super) fn get_usage(&self) -> Result<DXGI_USAGE> {
                 Ok(dxgi_usage(self.front.desc.bind_flags))
+            }
+
+            pub(super) fn shared_handle(&self) -> Result<HANDLE> {
+                shared_handle(self.front.desc.misc_flags)
+            }
+
+            pub(super) fn nt_shared_handle(&self) -> Result<HANDLE> {
+                nt_shared_handle(self.front.desc.misc_flags)
             }
 
             /// Whether DXGI sees the texture as a surface: one level of one layer or slice.

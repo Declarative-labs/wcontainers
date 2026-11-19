@@ -8,7 +8,7 @@ use wcontainers_direct3d_11::desc::*;
 use wcontainers_direct3d_11::object::{Buffer, Resource, ShaderView, Texture, View};
 use wcontainers_direct3d_11::record::Recorder;
 use wcontainers_direct3d_11::{
-    DOMAIN, Device, Error, GEOMETRY, HULL, PIXEL, Removal, VERTEX, shader,
+    DOMAIN, Device, Error, GEOMETRY, HULL, PIXEL, Removal, VERTEX, level_texture_limits, shader,
 };
 use wcontainers_gpu::{Backend, LossReason, SlowPath, SourceStage};
 
@@ -181,6 +181,64 @@ fn feature_level_is_the_first_asked_for_that_is_served() {
     assert_eq!(dev.feature_level(), level::L11_0);
     assert_eq!(
         Device::new(Recorder::new(None), &[level::L11_1]).err(),
+        Some(Error::Unsupported)
+    );
+}
+
+#[test]
+fn the_top_feature_level_is_the_highest_whose_sizes_targets_and_features_the_back_end_serves() {
+    use wcontainers_gpu::{Features, Format, FormatUse};
+    let top = |change: &dyn Fn(&mut Recorder)| {
+        let mut r = Recorder::new(None);
+        change(&mut r);
+        Device::new(r, &[]).map(|d| d.feature_level())
+    };
+    assert_eq!(top(&|_| {}), Ok(level::L11_0));
+    // An adapter of 10_x's sizes reports 10_1 with compute.
+    assert_eq!(
+        top(&|r| {
+            let [extent, cube, _, layers] = level_texture_limits(level::L10_1);
+            r.caps.limits.max_texture_2d = extent;
+            r.caps.limits.max_texture_cube = cube;
+            r.caps.limits.max_texture_layers = layers;
+        }),
+        Ok(level::L10_1)
+    );
+    // No `D32_FLOAT_S8X24_UINT` target, no float targets, or no geometry stage: 9_3.
+    let unformatted =
+        |f: Format, u: FormatUse| move |r: &mut Recorder| r.caps.formats.uses[f.index()] -= u;
+    assert_eq!(
+        top(&unformatted(
+            Format::Depth32FloatStencil8,
+            FormatUse::DEPTH_STENCIL
+        )),
+        Ok(level::L9_3)
+    );
+    assert_eq!(
+        top(&unformatted(Format::Rgba32Float, FormatUse::RENDER)),
+        Ok(level::L9_3)
+    );
+    assert_eq!(
+        top(&|r| r.caps.features -= Features::COMPUTE),
+        Ok(level::L9_3)
+    );
+    // Short of 9_3's four targets: 9_2; short of 9_1's sizes: no device.
+    assert_eq!(
+        top(&|r| {
+            r.caps.features -= Features::COMPUTE;
+            r.caps.limits.color_targets = 1;
+        }),
+        Ok(level::L9_2)
+    );
+    assert_eq!(
+        top(&|r| r.caps.limits.max_texture_2d = level_texture_limits(level::L9_1)[0] / 2),
+        Err(Error::Unsupported)
+    );
+    // A device asked for 10_0 alone on a back end without the geometry stage is not made.
+    let mut r = Recorder::new(None);
+    r.caps.features -= Features::COMPUTE;
+    assert_eq!(
+        Device::new(r, &[level::L10_0]).err(),
         Some(Error::Unsupported)
     );
 }
@@ -1112,8 +1170,12 @@ fn vertex_ids_read_the_draws_bases_from_the_helper_constants() {
 }
 
 #[test]
-fn lines_by_the_quadrilateral_or_alpha_rule_are_not_served() {
-    for (multisample, antialiased_lines) in [(true, false), (false, true)] {
+fn multisampled_lines_draw_by_the_back_ends_rule_and_alpha_antialiased_lines_are_not_served() {
+    for (multisample, antialiased_lines, drawn) in [
+        (true, false, true),
+        (true, true, true),
+        (false, true, false),
+    ] {
         let mut dev = device();
         let target = dev
             .create_texture(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
@@ -1139,21 +1201,72 @@ fn lines_by_the_quadrilateral_or_alpha_rule_are_not_served() {
             })
             .unwrap();
         dev.rs_set_state(Some(state));
-        // Triangles are drawn as usual; lines are not.
         dev.ia_set_primitive_topology(topology::TRIANGLELIST);
         dev.draw(3, 0);
         assert!(dev.removed.is_none());
         dev.ia_set_primitive_topology(topology::LINELIST);
         dev.draw(2, 0);
-        assert!(dev.removed.is_some());
+        assert_eq!(dev.removed.is_none(), drawn);
+        let draws = dev
+            .backend
+            .log
+            .iter()
+            .filter(|l| l.starts_with("draw "))
+            .count();
+        assert_eq!(draws, 1 + usize::from(drawn));
+    }
+}
+
+#[test]
+fn depth_bias_on_lines_and_points_is_added_in_the_program_into_normalised_depth() {
+    use wcontainers_directx_graphics_infrastructure::dxgi;
+    for (depth_format, drawn) in [(dxgi::D16_UNORM, true), (D32F, false)] {
+        let mut dev = device();
+        let target = dev
+            .create_texture(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
+            .unwrap();
+        let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
+        let depth = dev
+            .create_texture(&tex2d(16, 16, depth_format, bind::DEPTH_STENCIL), &[])
+            .unwrap();
+        let dsv = dev.create_view(&depth, None, bind::DEPTH_STENCIL).unwrap();
+        begin(&mut dev, &rtv, Some(&dsv), 16.0);
+        let elements = [
+            element("POSITION", RGB32F, 0),
+            element("COLOR", RGBA32F, 12),
+        ];
+        program(&mut dev, "common.vs_color", "common.ps_color", &elements);
+        let vertices = immutable(&mut dev, &[0; 28 * 4], bind::VERTEX_BUFFER);
+        dev.ia_set_vertex_buffers(0, &[Some((vertices, 28, 0))])
+            .unwrap();
+        let state = dev
+            .create_rasterizer_state(&RasterizerDesc {
+                fill: 3,
+                cull: 1,
+                depth_clip: true,
+                depth_bias: 4,
+                ..Default::default()
+            })
+            .unwrap();
+        dev.rs_set_state(Some(state));
+        let before = dev.backend.slow_paths().count(SlowPath::DepthBiasInShader);
+        dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+        dev.draw(3, 0);
         assert_eq!(
-            dev.backend
-                .log
-                .iter()
-                .filter(|l| l.starts_with("draw "))
-                .count(),
-            1
+            dev.backend.slow_paths().count(SlowPath::DepthBiasInShader),
+            before
         );
+        for t in [topology::LINELIST, topology::POINTLIST] {
+            dev.ia_set_primitive_topology(t);
+            dev.draw(2, 0);
+        }
+        assert_eq!(dev.removed.is_none(), drawn);
+        if drawn {
+            assert_eq!(
+                dev.backend.slow_paths().count(SlowPath::DepthBiasInShader),
+                before + 2
+            );
+        }
     }
 }
 
@@ -1260,6 +1373,57 @@ fn ready(dev: &mut Dev, vs: &str, ps: &str, elements: &[InputElement], stride: u
     dev.ia_set_vertex_buffers(0, &[Some((vertices, stride, 0))])
         .unwrap();
     dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+}
+
+#[test]
+fn a_negative_fractional_viewport_origin_below_11_0_is_mapped_in_the_vertex_program() {
+    for (l, mapped) in [(level::L10_0, true), (level::L11_0, false)] {
+        let mut dev = Device::new(Recorder::new(None), &[l]).unwrap();
+        let elements = [
+            element("POSITION", RGB32F, 0),
+            element("COLOR", RGBA32F, 12),
+        ];
+        ready(
+            &mut dev,
+            "common.vs_color",
+            "common.ps_color",
+            &elements,
+            28,
+        );
+        dev.rs_set_viewports(&[Viewport {
+            x: -0.4,
+            y: -0.4,
+            width: 16.0,
+            height: 16.0,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        }]);
+        dev.draw(3, 0);
+        assert!(dev.removed.is_none(), "{:?}", dev.removed);
+        let draw = dev
+            .backend
+            .log
+            .iter()
+            .rev()
+            .find(|l| l.starts_with("draw "))
+            .unwrap()
+            .clone();
+        let counted = dev.backend.slow_paths().count(SlowPath::ViewportInShader);
+        if mapped {
+            // The enclosing whole-pixel viewport, cut to the pixels whose centres the API's covers.
+            assert!(
+                draw.contains("viewports [[-1.0, -1.0, 17.0, 17.0]] scissors [[0, 0, 16, 16]]"),
+                "{draw}"
+            );
+            assert_eq!(counted, 1);
+        } else {
+            assert!(
+                draw.contains("viewports [[-0.4, -0.4, 16.0, 16.0]] scissors []"),
+                "{draw}"
+            );
+            assert_eq!(counted, 0);
+        }
+    }
 }
 
 #[test]
@@ -1586,6 +1750,43 @@ fn format_support_follows_the_feature_level_for_display_and_signed_normalised_bl
     ));
     assert!(!has(&l10, dxgi::R8G8B8A8_SNORM, support::BLENDABLE));
     assert!(has(&l10_1, dxgi::R8G8B8A8_SNORM, support::BLENDABLE));
+    // 9_x follows Microsoft's 10Level9 tables for blending, vertex and index buffers.
+    let (l9_1, l9_2) = (at(level::L9_1), at(level::L9_2));
+    assert!(!has(&l9_1, dxgi::R16G16B16A16_FLOAT, support::BLENDABLE));
+    assert!(has(&l9, dxgi::R16G16B16A16_FLOAT, support::BLENDABLE));
+    for f in [dxgi::R32_FLOAT, dxgi::R10G10B10A2_UNORM, dxgi::R16G16_UNORM] {
+        assert!(!has(&l9, f, support::BLENDABLE));
+        assert!(has(&l10, f, support::BLENDABLE));
+    }
+    assert!(has(&l9_1, dxgi::R8G8B8A8_UNORM, support::BLENDABLE));
+    for f in [dxgi::R8G8_UINT, dxgi::R11G11B10_FLOAT, dxgi::R16_FLOAT] {
+        assert!(!has(&l9, f, support::IA_VERTEX_BUFFER));
+        assert!(has(&l10, f, support::IA_VERTEX_BUFFER));
+    }
+    assert!(!has(&l9_1, dxgi::R16G16_FLOAT, support::IA_VERTEX_BUFFER));
+    assert!(has(&l9, dxgi::R16G16_FLOAT, support::IA_VERTEX_BUFFER));
+    assert!(!has(&l9_1, dxgi::R32_UINT, support::IA_INDEX_BUFFER));
+    assert!(has(&l9_2, dxgi::R32_UINT, support::IA_INDEX_BUFFER));
+    assert!(has(&l9_1, dxgi::R16_UINT, support::IA_INDEX_BUFFER));
+}
+
+#[test]
+fn texture_sharing_is_from_10_0_and_of_exactly_one_kind() {
+    let made = |l: u32, misc: u32| {
+        let mut dev = Device::new(Recorder::new(None), &[l]).unwrap();
+        let mut d = tex2d(4, 4, RGBA8, bind::SHADER_RESOURCE);
+        d.misc_flags = misc;
+        dev.create_texture(&d, &[]).map(|_| ())
+    };
+    let invalid = |r: Result<(), Error>| matches!(r, Err(Error::InvalidArg(_)));
+    assert!(invalid(made(level::L9_3, MISC_SHARED)));
+    assert!(made(level::L10_0, MISC_SHARED).is_ok());
+    assert!(invalid(made(level::L11_0, MISC_SHARED_NTHANDLE)));
+    assert!(invalid(made(
+        level::L11_0,
+        MISC_SHARED | MISC_SHARED_KEYEDMUTEX
+    )));
+    assert!(made(level::L11_0, 0).is_ok());
 }
 
 #[test]

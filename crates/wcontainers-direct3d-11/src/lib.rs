@@ -18,7 +18,7 @@ pub mod shader;
 pub mod stream;
 
 pub use context::{COMPUTE, DOMAIN, GEOMETRY, HULL, Mapped, PIXEL, STAGES, UAV_SLOTS, VERTEX};
-pub use device::{Device, Removal, top_level};
+pub use device::{Device, Removal, level_texture_limits, top_level};
 pub use error::{Error, Result};
 pub use present::Chain;
 pub use wcontainers_directx_graphics_infrastructure::{Model, SwapChainDesc};
