@@ -33,15 +33,13 @@ use wcontainers_translator_test::layout::{
     CODE, CODE_SPAN, DATA, DATA_BYTES, DATA_READ_ONLY, DATA_WRITABLE, fill,
 };
 
-use crate::common::{build, machine};
+use crate::common::{ONE_CPU, build, machine};
 use crate::protocol::{self, Code, GATE_OFFSET, Kind, Map, Region};
 
 /// The native cases program.
 const PROGRAM: &str = "native-cases";
 /// Bytes of guest-physical memory: the regions' frames and tables fit with room.
 const MEMORY: u64 = 1 << 29;
-/// The one virtual CPU.
-const CPUS: u64 = 1;
 /// Bytes of the code area the pieces may fill.
 const PIECE_BYTES: u64 = 1 << 20;
 /// The gate's region, at the start of the code area.
@@ -218,7 +216,7 @@ impl Runner {
     /// Boots the program and serves it until it asks for its first run.
     pub fn start() -> Runner {
         let program = build(PROGRAM);
-        let (machine, memory, loaded, start) = machine(&program, MEMORY, CPUS);
+        let (machine, memory, loaded, start) = machine(&program, MEMORY, ONE_CPU);
         let mut cpu = machine.cpu().expect("a virtual CPU");
         boot(&mut cpu, &memory, &loaded, 0, Start { ..start }).expect("booting");
         let mut runner = Runner {

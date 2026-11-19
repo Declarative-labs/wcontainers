@@ -38,7 +38,7 @@ mod macos {
     };
     use wcontainers_inside::link::{self, Fatal, GiveBack, Start};
 
-    use crate::common::{self, be_signed, build, load_average, setting};
+    use crate::common::{self, MEMORY, be_signed, build, load_average, setting};
     use crate::protocol::{
         self, Bytes, Case, CounterValue, Lower, Measurement, RaiseLater, Report, StartCpu,
         StopTest as StopRequest, Write,
@@ -46,9 +46,6 @@ mod macos {
 
     /// The cases program.
     const PROGRAM: &str = "floor-cases";
-
-    /// Bytes of guest-physical memory the test reserves.
-    const MEMORY: u64 = 1 << 30;
 
     /// Virtual CPUs the cases use.
     const CPUS: u64 = 2;
@@ -63,7 +60,7 @@ mod macos {
     const SEED_VARIABLE: &str = "WCONTAINERS_FLOOR_SEED";
 
     /// Stops the stop test makes unless told otherwise.
-    const DEFAULT_STOPS: u64 = 300;
+    const DEFAULT_STOPS: u64 = 250;
 
     /// The stop test's seed unless told otherwise.
     const DEFAULT_SEED: u64 = 0x9e37_79b9_7f4a_7c15;

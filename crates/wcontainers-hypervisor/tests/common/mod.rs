@@ -10,6 +10,12 @@ use wcontainers_hypervisor::{Host, Hypervisor, Loaded, Memory, VirtualMachine, l
 use wcontainers_inside::layout::MEMORY_BASE;
 use wcontainers_inside::link::Start;
 
+/// Bytes of guest-physical memory a test running one program reserves.
+pub const MEMORY: u64 = 1 << 30;
+
+/// The virtual CPUs of a test that needs only one.
+pub const ONE_CPU: u64 = 1;
+
 /// The inside's package, which holds the test programs.
 const INSIDE: &str = "wcontainers-inside";
 

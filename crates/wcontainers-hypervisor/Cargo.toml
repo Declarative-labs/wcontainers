@@ -39,6 +39,15 @@ zerocopy.workspace = true
 # Layer 1's cases and the WebAssembly output's outcomes, which the differential test compares with.
 wcontainers-translator-test = { path = "../wcontainers-translator-test" }
 proptest = "1.12.0"
+# The exits test's other side: the WebAssembly output's CPU side, run as the runtime's loop runs it.
+wcontainers-wasmtime = { path = "../wcontainers-wasmtime" }
+wcontainers-runtime = { path = "../wcontainers-runtime" }
+# The system calls the exits test answers, by Linux's numbers.
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "errno", "no_std"] }
+
+[[test]]
+name = "exits"
+harness = false
 
 [[test]]
 name = "floor"

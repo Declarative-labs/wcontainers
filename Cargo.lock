@@ -2538,14 +2538,17 @@ dependencies = [
  "cc",
  "fastrand",
  "libc",
+ "linux-raw-sys",
  "object 0.37.3",
  "proptest",
  "wcontainers-abi",
  "wcontainers-arm64",
  "wcontainers-guest-cpu",
  "wcontainers-inside",
+ "wcontainers-runtime",
  "wcontainers-translator",
  "wcontainers-translator-test",
+ "wcontainers-wasmtime",
  "zerocopy",
 ]
 
