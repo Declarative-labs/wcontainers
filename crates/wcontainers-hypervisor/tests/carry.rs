@@ -2,15 +2,18 @@
 //! the floor rely on (docs/native.md section 4): every host word is an instruction we present, the map covers
 //! every byte in order, a call into the inside sits on the side of the commit point its kind needs, the count's
 //! lead is the add ahead of its event and nothing after the commit point, nothing but the add touches the count,
-//! and no exit leaves a guest value relocated. Seeded: `WCONTAINERS_CARRY_SEED` and `WCONTAINERS_CARRY_WORDS`,
+//! no exit leaves a guest value relocated, and each slow path is counted at the sites it is written. Seeded: `WCONTAINERS_CARRY_SEED` and `WCONTAINERS_CARRY_WORDS`,
 //! the words drawn per form, both decimal.
 
 use std::collections::BTreeMap;
 
-use wcontainers_arm64::carry::COUNT;
+use wcontainers_abi::PAGE_SIZE;
+use wcontainers_arm64::carry::{COUNT, SCRATCH, WITHHELD};
 use wcontainers_arm64::encode;
-use wcontainers_arm64::{Arm64, Host, Instruction as I, Reg, decode, forms};
-use wcontainers_guest_cpu::{Guest, InsideCall, Native, Side, counted, effects};
+use wcontainers_arm64::{Address, Arm64, Host, Instruction as I, Reg, decode, forms};
+use wcontainers_guest_cpu::{
+    Guest, InsideCall, Native, NativeReason, Route, Side, counted, effects,
+};
 use wcontainers_translator::{LookAhead, translate_native};
 
 #[path = "../../wcontainers-arm64/tests/common/mod.rs"]
@@ -43,6 +46,7 @@ fn fault(word: u32) -> Option<String> {
         return Some("spans out of order".into());
     }
     let mut adds = 0;
+    let mut page_tests = 0;
     for (k, chunk) in piece.bytes.chunks(unit).enumerate() {
         let host = u32::from_le_bytes(chunk.try_into().expect("a word"));
         let offset = (k * unit) as u32;
@@ -76,6 +80,16 @@ fn fault(word: u32) -> Option<String> {
         if span.lead != lead {
             return Some(format!("lead {} at {offset} on {:?}", span.lead, span.side));
         }
+        if let I::TestBranch {
+            rt: Reg::X(SCRATCH),
+            bit,
+            ..
+        } = h
+            && u32::from(bit) == PAGE_SIZE.trailing_zeros()
+            && !matches!(i, I::TestBranch { .. })
+        {
+            page_tests += 1;
+        }
         if let I::Breakpoint { comment } = h {
             let call = InsideCall::from_code(comment).expect("our own calls only");
             let side = match call {
@@ -95,6 +109,56 @@ fn fault(word: u32) -> Option<String> {
     }
     if adds != u32::from(event) {
         return Some(format!("{adds} adds for {event}"));
+    }
+    // A literal load's crossing is known when translating: its probes are written with no test.
+    let literal_crossing = match (i, i.memory_access()) {
+        (
+            I::Load {
+                address: Address::Literal { offset },
+                ..
+            }
+            | I::LoadVector {
+                address: Address::Literal { offset },
+                ..
+            },
+            Some(m),
+        ) => AT.wrapping_add_signed(offset) % PAGE_SIZE + u64::from(m.bytes) > PAGE_SIZE,
+        _ => false,
+    };
+    let page_sites = page_tests + u64::from(literal_crossing);
+    let wide = i
+        .memory_access()
+        .is_some_and(|m| m.bytes > size_of::<u128>() as u32);
+    let (probed, routed) = if wide {
+        (page_sites, 0)
+    } else {
+        (0, page_sites)
+    };
+    let e = effects::<Arm64>(&i, HARDWARE, ());
+    let named = WITHHELD.iter().any(|&w| {
+        e.uses
+            .union(e.defs)
+            .has_bit(Arm64::reg_bit(Reg::X(w)).expect("a bit"))
+    });
+    let read_where_kept = matches!(
+        Arm64::route(&i),
+        Route::Kernel | Route::Trap | Route::Nothing
+    );
+    let expected = [
+        (
+            NativeReason::WithheldRegisterNamed,
+            u64::from(named && !read_where_kept),
+        ),
+        (NativeReason::AccessMayCrossPage, probed),
+        (NativeReason::HostModelResultRouted, routed),
+    ];
+    for (reason, sites) in expected {
+        if piece.sites_of(reason) != sites {
+            return Some(format!(
+                "{} sites of {reason:?}, expected {sites}",
+                piece.sites_of(reason)
+            ));
+        }
     }
     None
 }
