@@ -1,8 +1,10 @@
 //! How the native output carries each ARM64 instruction over to ARM64 host code (docs/native.md section 3.4).
 
-use wcontainers_guest_cpu::{Native, NativeClass, Route};
+use wcontainers_guest_cpu::{HostCode, InsideCall, Native, NativeClass, Route};
 
 use crate::Arm64;
+use crate::carry::{self, COUNT};
+use crate::encode::{self, form};
 use crate::exact::Operation;
 use crate::instruction::{Address, Instruction as I, Reg, SystemRegister};
 use crate::meaning::{Control, Hook};
@@ -195,5 +197,19 @@ impl Native for Arm64 {
             | Control::ExclusiveLow
             | Control::ExclusiveHigh => NativeClass::Routed(Route::Exclusive),
         }
+    }
+
+    fn carry(i: &I, bytes: &[u8], address: u64, code: &mut HostCode) {
+        let word = u32::from_le_bytes(bytes.try_into().expect("an instruction is one word"));
+        carry::carry(i, word, address, code);
+    }
+
+    fn count(code: &mut HostCode) {
+        let add = encode::add_immediate(COUNT, COUNT, 1).expect("one fits");
+        code.count(&add.to_le_bytes());
+    }
+
+    fn call(code: &mut HostCode, call: InsideCall) {
+        code.push(&encode::exception(form::BRK, call.code()).to_le_bytes());
     }
 }

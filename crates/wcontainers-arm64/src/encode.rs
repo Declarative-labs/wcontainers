@@ -35,9 +35,28 @@ pub mod form {
     pub const CAS: &str = "CAS_C64_comswap";
     pub const BRK: &str = "BRK_EX_exception";
     pub const UDF: &str = "UDF_only_perm_undef";
+    pub const ADD_EXTENDED: &str = "ADD_64_addsub_ext";
+    pub const SUB_EXTENDED: &str = "SUB_64_addsub_ext";
+    pub const EOR_SHIFTED: &str = "EOR_64_log_shift";
+    pub const ORR_SHIFTED: &str = "ORR_64_log_shift";
+    pub const LDR_32: &str = "LDR_32_ldst_pos";
+    pub const LDRH: &str = "LDRH_32_ldst_pos";
+    pub const LDRSW: &str = "LDRSW_64_ldst_pos";
+    pub const LDR_S: &str = "LDR_S_ldst_pos";
+    pub const LDR_D: &str = "LDR_D_ldst_pos";
+    pub const LDR_Q: &str = "LDR_Q_ldst_pos";
+    pub const LDP_32: &str = "LDP_32_ldstpair_off";
+    pub const LDP_64: &str = "LDP_64_ldstpair_off";
+    pub const LDADDH: &str = "LDADDH_32_memop";
+    pub const LDADD_32: &str = "LDADD_32_memop";
+    pub const LDADD_64: &str = "LDADD_64_memop";
+    pub const CASB: &str = "CASB_C32_comswap";
+    pub const CASH: &str = "CASH_C32_comswap";
+    pub const CAS_32: &str = "CAS_C32_comswap";
+    pub const CASP: &str = "CASP_CP64_comswappr";
 
     /// Every form above.
-    pub const ALL: [&str; 23] = [
+    pub const ALL: [&str; 42] = [
         MOVZ,
         MOVK,
         UBFM,
@@ -61,11 +80,30 @@ pub mod form {
         CAS,
         BRK,
         UDF,
+        ADD_EXTENDED,
+        SUB_EXTENDED,
+        EOR_SHIFTED,
+        ORR_SHIFTED,
+        LDR_32,
+        LDRH,
+        LDRSW,
+        LDR_S,
+        LDR_D,
+        LDR_Q,
+        LDP_32,
+        LDP_64,
+        LDADDH,
+        LDADD_32,
+        LDADD_64,
+        CASB,
+        CASH,
+        CAS_32,
+        CASP,
     ];
 }
 
 /// Arm's names of the fields filled in.
-mod field {
+pub mod field {
     pub const RD: &str = "Rd";
     pub const RN: &str = "Rn";
     pub const RT: &str = "Rt";
@@ -81,6 +119,13 @@ mod field {
     pub const IMM26: &str = "imm26";
     pub const B5: &str = "b5";
     pub const B40: &str = "b40";
+    pub const RM: &str = "Rm";
+    pub const RT2: &str = "Rt2";
+    pub const OPTION: &str = "option";
+    pub const IMM3: &str = "imm3";
+    pub const IMM7: &str = "imm7";
+    /// What the names of register fields start with.
+    pub const REGISTER: &str = "R";
 }
 
 /// A register number: 0 to 30, or [`ZERO`].
@@ -88,6 +133,9 @@ pub type Register = u8;
 
 /// The register number that is the zero register (or the stack pointer, as the field's form reads it).
 pub const ZERO: Register = 31;
+
+/// The bits of a register field.
+pub const REGISTER_BITS: u32 = u8::BITS - ZERO.leading_zeros();
 
 /// The bytes of one instruction: branch offsets count in them.
 const UNIT: i64 = Arm64::MAX_LENGTH as i64;
@@ -332,24 +380,113 @@ pub fn load_store(
     word(name, &fields)
 }
 
-/// `staddb ws, [rn]`: `ldaddb` into the zero register.
-pub fn store_add_byte(rs: Register, rn: Register) -> u32 {
-    let fields = [
-        (field::RS, rs.into()),
-        (field::RN, rn.into()),
-        (field::RT, ZERO.into()),
-    ];
-    word(form::LDADDB, &fields).expect("registers fit")
+/// The field `field` of a word of any form Arm's table has, set to `value`: a copied instruction with a register
+/// changed.
+pub fn replace(word: u32, field: &str, value: u32) -> Result<u32, DoesNotFit> {
+    let form = forms::form(word).ok_or(DoesNotFit)?;
+    let &(_, low, width) = form
+        .fields
+        .iter()
+        .find(|(f, ..)| f == field)
+        .ok_or(DoesNotFit)?;
+    if u64::from(value) >> width != 0 {
+        return Err(DoesNotFit);
+    }
+    let mask = ((1u64 << width) - 1) as u32;
+    Ok(word & !(mask << low) | value << low)
 }
 
-/// `cas xs, xt, [rn]`.
-pub fn compare_swap(rs: Register, rt: Register, rn: Register) -> u32 {
+/// A copied direct branch of any form, its offset changed to `offset` bytes.
+pub fn retarget(word: u32, offset: i64) -> Result<u32, DoesNotFit> {
+    let form = forms::form(word).ok_or(DoesNotFit)?;
+    let &(ref name, _, width) = form
+        .fields
+        .iter()
+        .find(|(f, ..)| [field::IMM26, field::IMM19, field::IMM14].contains(&f.as_str()))
+        .ok_or(DoesNotFit)?;
+    replace(word, name, signed(offset, UNIT, width)?)
+}
+
+/// How an extended-register operand is extended: from `from_bits` bits, signed or not.
+fn option(signed: bool, from_bits: u32) -> u32 {
+    let sign = width(form::ADD_EXTENDED, field::OPTION) - 1;
+    u32::from(signed) << sign | (from_bits / u8::BITS).trailing_zeros()
+}
+
+/// `add rd, rn, rm, extend #shift` (`subtract`: `sub`), where `rn` 31 is the stack pointer.
+pub fn add_extended(
+    subtract: bool,
+    rd: Register,
+    rn: Register,
+    rm: Register,
+    signed: bool,
+    from_bits: u32,
+    shift: u32,
+) -> Result<u32, DoesNotFit> {
+    let name = if subtract {
+        form::SUB_EXTENDED
+    } else {
+        form::ADD_EXTENDED
+    };
+    let fields = [
+        (field::RD, rd.into()),
+        (field::RN, rn.into()),
+        (field::RM, rm.into()),
+        (field::OPTION, option(signed, from_bits)),
+        (field::IMM3, shift),
+    ];
+    word(name, &fields)
+}
+
+/// `eor rd, rn, rm` or `orr rd, rn, rm`, by form, unshifted.
+pub fn logical_register(name: &str, rd: Register, rn: Register, rm: Register) -> u32 {
+    let fields = [
+        (field::RD, rd.into()),
+        (field::RN, rn.into()),
+        (field::RM, rm.into()),
+    ];
+    word(name, &fields).expect("registers fit")
+}
+
+/// `mov rd, rn` of general registers (`orr rd, xzr, rn`).
+pub fn move_register(rd: Register, rn: Register) -> u32 {
+    logical_register(form::ORR_SHIFTED, rd, ZERO, rn)
+}
+
+/// `bfi rd, rn, #lsb, #bits`: the low `bits` bits of `rn` put at `lsb` in `rd`, the rest kept.
+pub fn bfi(rd: Register, rn: Register, lsb: u32, bits: u32) -> u32 {
+    bitfield(form::BFM, rd, rn, (u64::BITS - lsb) % u64::BITS, bits - 1)
+}
+
+/// `ldp rt, rt2, [rn]` of 32-bit or 64-bit registers, by form.
+pub fn load_pair(name: &str, rt: Register, rt2: Register, rn: Register) -> u32 {
+    let fields = [
+        (field::RT, rt.into()),
+        (field::RT2, rt2.into()),
+        (field::RN, rn.into()),
+        (field::IMM7, 0),
+    ];
+    word(name, &fields).expect("registers fit")
+}
+
+/// `ldadd{b,h} rs, rt, [rn]` and the other sizes, by form; with `rt` the zero register it is `stadd`.
+pub fn load_add(name: &str, rs: Register, rt: Register, rn: Register) -> u32 {
     let fields = [
         (field::RS, rs.into()),
         (field::RT, rt.into()),
         (field::RN, rn.into()),
     ];
-    word(form::CAS, &fields).expect("registers fit")
+    word(name, &fields).expect("registers fit")
+}
+
+/// `cas{b,h} rs, rt, [rn]` of any size, or `casp` of two even pairs, by form.
+pub fn compare_swap_of(name: &str, rs: Register, rt: Register, rn: Register) -> u32 {
+    let fields = [
+        (field::RS, rs.into()),
+        (field::RT, rt.into()),
+        (field::RN, rn.into()),
+    ];
+    word(name, &fields).expect("registers fit")
 }
 
 /// `brk #imm16`, or `udf #imm16`, by form.

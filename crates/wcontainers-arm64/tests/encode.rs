@@ -1,7 +1,7 @@
 //! The native output's own encodings, each read back by the decoder (which `yaxpeax-arm` drives) as the
 //! instruction it was meant to be. Seeded: `WCONTAINERS_ENCODE_SEED` and `WCONTAINERS_ENCODE_CASES`, decimal.
 
-use wcontainers_arm64::encode::{self, ZERO, form};
+use wcontainers_arm64::encode::{self, ZERO, field, form};
 use wcontainers_arm64::{
     Address, Bitfield, BranchRegister, Instruction as I, Logic, MoveWide, Operand, Reg, Width,
     decode,
@@ -159,13 +159,75 @@ fn every_encoding_decodes_as_meant() {
             }
         );
         assert!(matches!(
-            decode(encode::store_add_byte(rs, rn)),
+            decode(encode::load_add(form::LDADDB, rs, ZERO, rn)),
             I::Atomic { bytes: 1, rs: s, rt: Reg::Zero, rn: n, .. } if s == x(rs) && n == x(rn)
         ));
+        for (name, size) in [(form::LDADDH, 2), (form::LDADD_32, 4), (form::LDADD_64, 8)] {
+            assert!(matches!(
+                decode(encode::load_add(name, rs, rd, rn)),
+                I::Atomic { bytes, rs: s, rt: t, rn: n, .. } if bytes == size && s == x(rs) && t == x(rd) && n == x(rn)
+            ));
+        }
+        for (name, size) in [
+            (form::CASB, 1),
+            (form::CASH, 2),
+            (form::CAS_32, 4),
+            (form::CAS, 8),
+        ] {
+            assert!(matches!(
+                decode(encode::compare_swap_of(name, rs, rd, rn)),
+                I::CompareSwap { bytes, pair: false, rs: s, rt: t, rn: n } if bytes == size && s == x(rs) && t == x(rd) && n == x(rn)
+            ));
+        }
+        let (even, even2) = (rs & !1, rd & !1);
         assert!(matches!(
-            decode(encode::compare_swap(rs, rd, rn)),
-            I::CompareSwap { bytes: 8, pair: false, rs: s, rt: t, rn: n } if s == x(rs) && t == x(rd) && n == x(rn)
+            decode(encode::compare_swap_of(form::CASP, even, even2, rn)),
+            I::CompareSwap { bytes: 8, pair: true, rs: s, rt: t, rn: n } if s == x(even) && t == x(even2) && n == x(rn)
         ));
+        for (name, size) in [(form::LDP_32, 4), (form::LDP_64, 8)] {
+            assert!(matches!(
+                decode(encode::load_pair(name, rd, rs, rn)),
+                I::LoadPair { bytes, signed: false, rt, rt2, address: Address::Offset { base, offset: 0 } }
+                    if bytes == size && rt == x(rd) && rt2 == x(rs) && base == x(rn)
+            ));
+        }
+        let (signed, from_bits, shift) = (
+            rng.bool(),
+            [u8::BITS, u32::BITS, u64::BITS][rng.usize(..3)],
+            rng.u32(..=4),
+        );
+        let subtract = rng.bool();
+        let word = encode::add_extended(subtract, rd, rn, rs, signed, from_bits, shift).unwrap();
+        assert!(
+            matches!(
+                decode(word),
+                I::AddSub { width: Width::X64, subtract: s, set_flags: false, rd: d, rn: n, operand: Operand::Extended { rm, extend, amount: sh } }
+                    if s == subtract && d == x(rd) && n == x(rn) && rm == x(rs) && extend.signed == signed && u32::from(extend.from_bits) == from_bits && u32::from(sh) == shift
+            ),
+            "{word:#x} {:?}",
+            decode(word)
+        );
+        assert!(matches!(
+            decode(encode::logical_register(form::EOR_SHIFTED, rd, rn, rs)),
+            I::Logical { op: Logic::Xor, invert: false, set_flags: false, rd: d, rn: n, .. } if d == x(rd) && n == x(rn)
+        ));
+        assert!(matches!(
+            decode(encode::move_register(rd, rs)),
+            I::Logical { op: Logic::Or, rd: d, rn: Reg::Zero, .. } if d == x(rd)
+        ));
+        let (lsb, bits) = (rng.u32(..u64::BITS), 1);
+        assert!(matches!(
+            decode(encode::bfi(rd, rn, lsb, bits)),
+            I::Bitfield { op: Bitfield::Insert, rd: d, rn: n, .. } if d == x(rd) && n == x(rn)
+        ));
+        // A copied branch retargeted and a copied load given another register.
+        let moved =
+            encode::retarget(encode::compare_branch(false, rd, offset).unwrap(), near).unwrap();
+        assert!(matches!(decode(moved), I::CompareBranch { offset: o, .. } if o == near));
+        let load = encode::load_store(form::LDR, rd, rn, 0, 8).unwrap();
+        assert!(
+            matches!(decode(encode::replace(load, field::RT, rs.into()).unwrap()), I::Load { rt, .. } if rt == x(rs))
+        );
         for (name, op) in [
             (form::BR, BranchRegister::Br),
             (form::BLR, BranchRegister::Blr),

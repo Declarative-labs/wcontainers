@@ -9,6 +9,8 @@ use wcontainers_abi::{RegisterBlock, THREAD_BLOCK_SIZE};
 use wcontainers_guest_cpu::Personality;
 
 #[cfg(feature = "translate")]
+pub mod carry;
+#[cfg(feature = "translate")]
 mod decode;
 #[cfg(feature = "translate")]
 mod decode_forms;
@@ -36,6 +38,7 @@ mod instruction;
 mod meaning;
 #[cfg(feature = "translate")]
 mod memory;
+pub mod mirror;
 #[cfg(feature = "translate")]
 mod native;
 #[cfg(feature = "translate")]
