@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use common::{fresh, place_libraries, profile};
+use wcontainers_directx::com::FEATURES_OFF;
 
 /// Runs example `name` from `dir` (copying it there) with `args`, returning its exit code and output.
 fn run_with(name: &str, dir: &Path, args: &[&str]) -> (i32, String) {
@@ -19,6 +20,17 @@ fn run_with(name: &str, dir: &Path, args: &[&str]) -> (i32, String) {
 
 /// As [`run_with`], with environment variables `env` set.
 fn run_env(name: &str, dir: &Path, args: &[&str], env: &[(&str, &str)]) -> (i32, String) {
+    let (code, text, _) = run_logged(name, dir, args, env);
+    (code, text)
+}
+
+/// As [`run_env`], also returning what the program wrote to its error output.
+fn run_logged(
+    name: &str,
+    dir: &Path,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> (i32, String, String) {
     let exe = dir.join(format!("{name}.exe"));
     std::fs::copy(profile().join(format!("examples/{name}.exe")), &exe).unwrap();
     let out = Command::new(&exe)
@@ -28,12 +40,9 @@ fn run_env(name: &str, dir: &Path, args: &[&str], env: &[(&str, &str)]) -> (i32,
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
-    eprintln!(
-        "{name} in {}:\n{text}{}",
-        dir.display(),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    (out.status.code().unwrap_or(-1), text)
+    let errors = String::from_utf8_lossy(&out.stderr).into_owned();
+    eprintln!("{name} in {}:\n{text}{errors}", dir.display());
+    (out.status.code().unwrap_or(-1), text, errors)
 }
 
 fn run(name: &str, dir: &Path) -> (i32, String) {
@@ -170,13 +179,24 @@ fn nv12_planes_view_write_copy_and_map_as_direct3d_does() {
 /// naming a filtered result within one unit a channel (Direct3D's filtering tolerance), every
 /// other line exactly.
 fn case(name: &str) {
+    case_env(name, "ours", &[]);
+}
+
+/// As [`case`], ours run with environment variables `env` set (in a directory labelled `label`),
+/// returning what ours wrote to its error output.
+fn case_env(name: &str, label: &str, env: &[(&str, &str)]) -> String {
     let (code, want) = run_with(
         "own_cases",
         &place(&format!("{name}-system"), false),
         &[name],
     );
     assert_eq!(code, 0, "{want}");
-    let (code, got) = run_with("own_cases", &place(&format!("{name}-ours"), true), &[name]);
+    let (code, got, errors) = run_logged(
+        "own_cases",
+        &place(&format!("{name}-{label}"), true),
+        &[name],
+        env,
+    );
     assert_eq!(code, 0, "{got}");
     for (w, g) in want.lines().zip(got.lines()) {
         if w.starts_with("filtered") {
@@ -189,6 +209,7 @@ fn case(name: &str) {
         }
     }
     assert_eq!(want.lines().count(), got.lines().count());
+    errors
 }
 
 /// Runs one case of `own_level10` beside both libraries and compares what each printed, line by
@@ -198,7 +219,7 @@ fn level10(name: &str) {
     let (code, want) = run_with("own_level10", &label("system"), &[name]);
     assert_eq!(code, 0, "{want}");
     let off: &[(&str, &str)] = if cfg!(feature = "webgl") {
-        &[("WEBGL_OFF", "OES_draw_buffers_indexed")]
+        &[(FEATURES_OFF, "OES_draw_buffers_indexed")]
     } else {
         &[]
     };
@@ -233,6 +254,19 @@ fn texture_atomics_as_direct3d_does() {
 #[test]
 fn typed_storage_stores_as_direct3d_does() {
     case("typed");
+}
+
+/// Without `texture-formats-tier1` (natively, the adapter's own format features), the formats
+/// WebGPU cannot store into are stored through a buffer of their texels.
+#[cfg(not(feature = "webgl"))]
+#[test]
+fn typed_storage_stores_without_texture_formats_tier1_as_direct3d_does() {
+    let tier1 = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+        .as_str()
+        .unwrap();
+    let errors = case_env("typed", "untiered", &[(FEATURES_OFF, tier1)]);
+    let route = wcontainers_gpu::SlowPath::StorageFormatThroughBuffer.reason();
+    assert!(errors.contains(route), "{errors}");
 }
 
 #[test]
@@ -350,6 +384,15 @@ fn multisampled_lines_differ_from_direct3d_only_at_their_ends_and_edges() {
     assert_eq!(rest(&want), rest(&got));
 }
 
+/// Aliased lines (`MultisampleEnable` FALSE) into four samples: every sample of each pixel a
+/// line covers is hit, as Direct3D 11.3's functional specification requires (15.14), with no
+/// leeway away from the viewport's edges (3.4.3).
+#[test]
+#[ignore = "WebGPU rasterises lines into a multisampled target by its own multisampled rule; the interface has no aliased-line route"]
+fn aliased_lines_into_a_multisampled_target_hit_every_sample_as_direct3d_does() {
+    case("aliased_msaa_lines");
+}
+
 /// The most a channel of an alpha-antialiased line's pixel may differ from real Direct3D's, in
 /// steps of 8 bits: the functional specification (3.4.4) leaves the coverage's filter to the
 /// implementation, and the RTX 3080 and WARP differ by up to 128 (the shaders track's
@@ -357,10 +400,22 @@ fn multisampled_lines_differ_from_direct3d_only_at_their_ends_and_edges() {
 const ANTIALIASED_LINE_ALLOWANCE: u8 = 64;
 
 /// Alpha-antialiased lines, a list and a strip blended by their coverage: every channel within
-/// the allowance of real Direct3D's.
+/// the allowance of real Direct3D's, alpha (the coverage) included.
 #[test]
 fn alpha_antialiased_lines_blend_their_coverage_as_direct3d_does() {
-    let name = "aa_lines";
+    antialiased_lines("aa_lines");
+}
+
+/// The same lines as an indexed strip cut by the restart index.
+#[test]
+#[ignore = "the stage helper refuses indexed strips (StageIndexedStrip, the shaders track's), which removes the device"]
+fn an_indexed_alpha_antialiased_strip_blends_its_coverage_as_direct3d_does() {
+    antialiased_lines("aa_strip_indexed");
+}
+
+/// Runs own case `name`, alpha-antialiased lines, beside both libraries and compares the
+/// target's bytes within the allowance and the rest line by line.
+fn antialiased_lines(name: &str) {
     let (code, want) = run_with(
         "own_cases",
         &place(&format!("{name}-system"), false),
@@ -372,7 +427,8 @@ fn alpha_antialiased_lines_blend_their_coverage_as_direct3d_does() {
     let prefix = "aa lines: row ";
     let (w, g) = (hex_rows(&want, prefix), hex_rows(&got, prefix));
     assert!(!w.is_empty());
-    assert_eq!((w.len(), w[0].len()), (g.len(), g[0].len()));
+    assert_eq!(w.len(), g.len(), "{got}");
+    assert_eq!(w[0].len(), g[0].len());
     let texel = std::mem::size_of::<u32>();
     let drawn = |rows: &[Vec<u8>]| {
         rows.iter()
