@@ -206,10 +206,35 @@ fn unserved_shaders_are_refused_not_faked() {
         Some(windows::Win32::Foundation::E_INVALIDARG)
     );
     assert!(out.is_none());
-    // A valid vertex shader writing a cull distance, which the converter does not provide yet:
-    // E_NOTIMPL.
-    let source = "float4 main(float4 p : POSITION, out float c : SV_CullDistance) : SV_Position {
-        c = p.x; return p; }";
+    // A vertex shader writing a cull distance the back end lacks is drawn through the stage
+    // helper; a domain shader writing one is not served: E_NOTIMPL, nothing made.
+    let vertex = compile(
+        "float4 main(float4 p : POSITION, out float c : SV_CullDistance) : SV_Position {
+        c = p.x; return p; }",
+        windows::core::s!("vs_5_0"),
+    );
+    let mut out = None;
+    unsafe { device.CreateVertexShader(&vertex, None, Some(&mut out)) }.unwrap();
+    assert!(out.is_some());
+    let domain = compile(
+        "struct P { float e[3] : SV_TessFactor; float i : SV_InsideTessFactor; };
+        struct V { float4 p : POSITION; };
+        [domain(\"tri\")] float4 main(P p, float3 uvw : SV_DomainLocation,
+            const OutputPatch<V, 3> c, out float d : SV_CullDistance) : SV_Position {
+        d = uvw.x; return c[0].p; }",
+        windows::core::s!("ds_5_0"),
+    );
+    let mut out = None;
+    let r = unsafe { device.CreateDomainShader(&domain, None, Some(&mut out)) };
+    assert_eq!(
+        r.err().map(|e| e.code()),
+        Some(windows::Win32::Foundation::E_NOTIMPL)
+    );
+    assert!(out.is_none());
+}
+
+/// The bytecode of HLSL `source` compiled by the system's compiler for `target`.
+fn compile(source: &str, target: windows::core::PCSTR) -> Vec<u8> {
     let mut blob = None;
     unsafe {
         windows::Win32::Graphics::Direct3D::Fxc::D3DCompile(
@@ -219,7 +244,7 @@ fn unserved_shaders_are_refused_not_faked() {
             None,
             None::<&windows::Win32::Graphics::Direct3D::ID3DInclude>,
             windows::core::s!("main"),
-            windows::core::s!("vs_5_0"),
+            target,
             0,
             0,
             &mut blob,
@@ -228,16 +253,10 @@ fn unserved_shaders_are_refused_not_faked() {
     }
     .unwrap();
     let blob = blob.unwrap();
-    let code = unsafe {
+    unsafe {
         std::slice::from_raw_parts(blob.GetBufferPointer().cast::<u8>(), blob.GetBufferSize())
-    };
-    let mut out = None;
-    let r = unsafe { device.CreateVertexShader(code, None, Some(&mut out)) };
-    assert_eq!(
-        r.err().map(|e| e.code()),
-        Some(windows::Win32::Foundation::E_NOTIMPL)
-    );
-    assert!(out.is_none());
+    }
+    .to_vec()
 }
 
 #[test]

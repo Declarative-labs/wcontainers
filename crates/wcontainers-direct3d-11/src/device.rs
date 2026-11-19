@@ -111,6 +111,9 @@ pub struct Device<B: Backend> {
     /// layout's, hull and domain shaders' (0 for none), geometry shader object's and pixel
     /// shader's ids.
     pub(crate) staged: HashMap<StageKey, crate::context::StageRun<B>>,
+    /// The geometry stage of a draw without a geometry shader object, which a culled vertex
+    /// shader's draws take through the stage helper; made at its first use.
+    pub(crate) no_geometry: Option<Rc<Geometry<B>>>,
     /// The stage helper of each vertex shader, input layout, hull, domain and pixel shader drawn
     /// together.
     pub(crate) tessellated: HashMap<(u64, u64, u64, u64, u64), crate::context::TessRun<B>>,
@@ -204,9 +207,10 @@ pub fn level_texture_limits(level: u32) -> [u32; 4] {
 /// The color targets of 9_3 (`D3D_FL9_3_SIMULTANEOUS_RENDER_TARGET_COUNT`).
 const L9_3_TARGETS: u32 = 4;
 
-/// Refused: cull distances where the back end has none.
-const CULL_DISTANCES_UNSERVED: &str =
-    "cull distances without the back end's (CullDistanceAsGeometry)";
+/// Refused: cull distances where the back end has none, outside a vertex shader or without
+/// compute programs for the stage helper.
+const CULL_DISTANCES_UNSERVED: &str = "cull distances past the vertex stage, or without the back end's or its compute programs \
+     (CullDistanceAsGeometry)";
 
 /// Refused: clip distances written by a geometry shader where the back end has none.
 const GEOMETRY_CLIP_DISTANCES_UNSERVED: &str =
@@ -331,6 +335,7 @@ impl<B: Backend> Device<B> {
                 sampler: None,
             },
             staged: HashMap::new(),
+            no_geometry: None,
             tessellated: HashMap::new(),
             stream_filled: None,
             split_depth: None,
@@ -1932,12 +1937,27 @@ impl<B: Backend> Device<B> {
             module = c.modules.pop().expect("one module");
             clip = Some(at);
         }
-        // The stage helper's route for cull distances (`CullDistanceAsGeometry`) is not built here.
-        if wcontainers_shaders::capabilities(&module.module)
+        // A vertex program writing cull distances the back end lacks is drawn through the stage
+        // helper, which drops the primitives they cull, and the back end holds its pass-through.
+        let culled = wcontainers_shaders::capabilities(&module.module)
             .contains(naga::valid::Capabilities::CULL_DISTANCE)
-            && !self.backend.caps().has(Features::CULL_DISTANCE)
-        {
-            return not_implemented(CULL_DISTANCES_UNSERVED);
+            && !self.backend.caps().has(Features::CULL_DISTANCE);
+        if culled {
+            if stage != wcontainers_gpu::SourceStage::Vertex
+                || !self.backend.caps().has(Features::COMPUTE)
+            {
+                return not_implemented(CULL_DISTANCES_UNSERVED);
+            }
+            let (linked, clip_distances) = clip.unwrap_or_default();
+            let key = StageVariant {
+                texture_info,
+                linked,
+                clip_distances,
+                constants_as_texture: past_limit,
+                ..StageVariant::default()
+            }
+            .key(stage, &typed, layered, &[]);
+            module = shader::cull_passthrough(bytecode, key, &converted.reflection.inputs)?;
         }
         if wcontainers_shaders::capabilities(&module.module)
             .contains(naga::valid::Capabilities::PRIMITIVE_INDEX)
@@ -1957,6 +1977,7 @@ impl<B: Backend> Device<B> {
         let shader = Rc::new(Shader {
             indexed_constants,
             clip,
+            culled,
             gpu: Kept::new(gpu, id, Object::Shader, &self.graveyard),
             key: module.key,
             reflection: converted.reflection,
@@ -1971,10 +1992,13 @@ impl<B: Backend> Device<B> {
             typed,
             layered,
         });
-        if matches!(
-            stage,
-            wcontainers_gpu::SourceStage::Vertex | wcontainers_gpu::SourceStage::Pixel
-        ) {
+        // A culled vertex shader's draws are the stage helper's, which nothing builds ahead.
+        if !culled
+            && matches!(
+                stage,
+                wcontainers_gpu::SourceStage::Vertex | wcontainers_gpu::SourceStage::Pixel
+            )
+        {
             self.build_ahead(&shader, vertex);
         }
         Ok(shader)
@@ -2062,6 +2086,7 @@ impl<B: Backend> Device<B> {
             helpers: Rc::new(shader::Helpers::of(converted)),
             indexed_constants: shader::indexed_constants(bytecode)?,
             clip: None,
+            culled: false,
             typed,
             layered,
         }))

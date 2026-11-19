@@ -1583,7 +1583,8 @@ impl<B: Backend> Device<B> {
             .layout
             .as_ref()
             .is_some_and(|l| !l.pulled.is_empty())
-            || self.ctx.gs.is_some();
+            || self.ctx.gs.is_some()
+            || self.ctx.vs.as_ref().is_some_and(|vs| vs.culled);
         let r = if !pulls
             && self
                 .backend
@@ -4123,7 +4124,11 @@ impl<B: Backend> Device<B> {
                 instances,
             );
         }
-        if let Some(gs) = self.ctx.gs.clone() {
+        let gs = match self.ctx.gs.clone() {
+            None if vs.culled => Some(self.no_geometry()),
+            gs => gs,
+        };
+        if let Some(gs) = gs {
             let topology = match geometry::input_topology(self.ctx.topology) {
                 Some(t) => t,
                 None if self.ctx.topology == topology::UNDEFINED => return Ok(()),

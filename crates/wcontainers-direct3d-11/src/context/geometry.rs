@@ -32,6 +32,9 @@ pub(crate) struct StageRun<B: Backend> {
     /// After a hull and domain stage, the draw of the tessellated points where no geometry stage
     /// follows.
     domain: Option<DomainDraw<B>>,
+    /// The vertex stage's cull distances are applied by the helper, whose output the pass-through
+    /// draws (`CullDistanceAsGeometry`).
+    culled: bool,
 }
 
 /// The bytes of the stage helper's filled sizes and primitive counts.
@@ -102,6 +105,21 @@ impl<B: Backend> Device<B> {
         Ok(f)
     }
 
+    /// The geometry stage of a draw without a geometry shader object: none, stream 0 drawn.
+    pub(super) fn no_geometry(&mut self) -> Rc<Geometry<B>> {
+        if let Some(g) = &self.no_geometry {
+            return g.clone();
+        }
+        let g = Rc::new(Geometry {
+            id: self.id(),
+            stage: None,
+            stream: None,
+            drawn: true,
+        });
+        self.no_geometry = Some(g.clone());
+        g
+    }
+
     /// `DrawAuto`: as many vertices as stream output filled the buffer bound at vertex slot 0
     /// with, past its offset (read back now, `ReadBackWait`).
     pub fn draw_auto(&mut self) {
@@ -142,27 +160,30 @@ impl<B: Backend> Device<B> {
         ))
     }
 
-    /// The vertex shader converted with every input fetched in the program, for the stage helper.
-    pub(super) fn pulled_vertex(&self, vs: &Shader<B>) -> Result<Converted> {
+    /// The vertex shader converted as `vk` asks with every input fetched in the program, for the
+    /// stage helper.
+    pub(super) fn pulled_vertex(&self, vs: &Shader<B>, vk: StageVariant) -> Result<Converted> {
         let pulled = self.ctx.layout.as_ref().map_or(Vec::new(), |l| {
             l.all.iter().map(|e| (e.location, e.format)).collect()
         });
         let key = VariantKey {
             pulled,
-            ..self.variant_key(vs, StageVariant::default(), SourceStage::Vertex)
+            ..self.variant_key(vs, StageVariant { pulled: 0, ..vk }, SourceStage::Vertex)
         };
         crate::shader::convert_variant(&vs.bytecode, SourceStage::Vertex, &key)
     }
 
     /// The stage helper of the bound shaders, made at their first draw together; `tess` are the
-    /// hull and domain shaders before the geometry shader object, when bound.
+    /// hull and domain shaders before the geometry shader object, when bound, and `vk` the vertex
+    /// shader's variant.
     fn make_staged(
         &mut self,
         gs: &Geometry<B>,
         vs: &Shader<B>,
+        vk: StageVariant,
         tess: Option<(&Shader<B>, &Shader<B>)>,
     ) -> Result<StageRun<B>> {
-        let vertex = self.pulled_vertex(vs)?;
+        let vertex = self.pulled_vertex(vs, vk)?;
         // The geometry stage writes its outputs as the pixel shader interpolates them.
         let interpolation = interpolation(self.ctx.ps.as_deref());
         let (geometry, passthrough, passthrough_id) = match &gs.stage {
@@ -183,7 +204,12 @@ impl<B: Backend> Device<B> {
                 (Some(c), Some(kept), id)
             }
         };
+        let culled = vs.culled && geometry.is_none() && tess.is_none();
         let (stages, domain) = match tess {
+            None if culled => (
+                Stages::culled(&mut self.backend, &vertex, gs.stream.as_ref()),
+                None,
+            ),
             None => (
                 Stages::new(
                     &mut self.backend,
@@ -217,6 +243,19 @@ impl<B: Backend> Device<B> {
             }
         };
         let stages = stages.map_err(|e| self.staged_error(e))?;
+        // The cull route's pass-through, made for this conversion's outputs.
+        let (passthrough, passthrough_id) = match stages.passthrough() {
+            Some(module) if culled => {
+                let gpu = self.backend.create_shader(module);
+                let gpu = self.gpu(gpu)?;
+                let id = self.id();
+                (
+                    Some(Kept::new(gpu, id, Object::Shader, &self.graveyard)),
+                    id,
+                )
+            }
+            _ => (passthrough, passthrough_id),
+        };
         let run_helpers = match &geometry {
             Some(c) if stages.selects() => Rc::new(Helpers::of_passthrough(&c.modules[1])),
             _ => Rc::default(),
@@ -238,6 +277,7 @@ impl<B: Backend> Device<B> {
             passthrough_id,
             run_helpers,
             domain,
+            culled,
         })
     }
 
@@ -265,7 +305,19 @@ impl<B: Backend> Device<B> {
                  statistics query runs",
             );
         }
-        if (StageVariant { pulled: 0, ..vk }) != StageVariant::default() {
+        // Behind a culled vertex shader the pixel program applies its clip distances and clamped
+        // depth, which the pass-through passes on.
+        let drawn_variant = StageVariant {
+            pulled: 0,
+            linked: 0,
+            clip_distances: 0,
+            depth_clamp: false,
+            texture_info: false,
+            ..vk
+        };
+        let passed = (StageVariant { pulled: 0, ..vk }) == StageVariant::default()
+            || (vs.culled && gs.stage.is_none() && drawn_variant == StageVariant::default());
+        if !passed {
             return not_implemented("a vertex shader variant behind a geometry shader");
         }
         let (start, count, base, indexed) = match range {
@@ -299,7 +351,7 @@ impl<B: Backend> Device<B> {
         );
         let mut staged = match self.staged.remove(&key) {
             Some(s) => s,
-            None => self.make_staged(gs, vs, tess.as_ref().map(|(h, d)| (&**h, &**d)))?,
+            None => self.make_staged(gs, vs, vk, tess.as_ref().map(|(h, d)| (&**h, &**d)))?,
         };
         let r = self.run_staged(
             gs,
@@ -344,8 +396,18 @@ impl<B: Backend> Device<B> {
         let bases = [if indexed { base } else { start }, first_instance];
         // The program of the pass-through (or the domain stage's) and pixel stages, and the pixel
         // stage's helpers.
+        let culled = staged.culled;
         let program = match (&gs.stage, &staged.domain) {
             _ if !gs.drawn => None,
+            (None, None) if culled => {
+                let vertex = staged
+                    .passthrough
+                    .as_ref()
+                    .expect("the cull route's pass-through")
+                    .handle
+                    .clone();
+                Some(self.stage_program(&vertex, staged.passthrough_id, ps, pk)?)
+            }
             (Some((s, _)), _) => {
                 let vertex = match &staged.passthrough {
                     Some(k) => k.handle.clone(),
@@ -541,7 +603,7 @@ impl<B: Backend> Device<B> {
             }
             self.stream_counted(f)?;
         }
-        if !geometry && !tessellated {
+        if !geometry && !tessellated && !culled {
             return Ok(gs.drawn);
         }
         let (Some(out), Some((program, ph))) = (out, program) else {
@@ -561,7 +623,7 @@ impl<B: Backend> Device<B> {
         let layout = staged
             .layout
             .as_ref()
-            .expect("a geometry stage's layout")
+            .expect("a geometry or cull stage's layout")
             .handle
             .clone();
         if selects {

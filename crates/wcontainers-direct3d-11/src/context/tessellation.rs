@@ -59,7 +59,7 @@ impl<B: Backend> Device<B> {
         hs: &Shader<B>,
         ds: &Shader<B>,
     ) -> Result<TessRun<B>> {
-        let vertex = self.pulled_vertex(vs)?;
+        let vertex = self.pulled_vertex(vs, StageVariant::default())?;
         let (hull, domain) = self.tessellation_programs(hs, ds)?;
         let stages = Stages::tessellated(&mut self.backend, &vertex, &hull, &domain)
             .map_err(|e| self.tessellation_error(e))?;
