@@ -3,6 +3,8 @@
 
 use std::path::Path;
 
+use wcontainers_abi::PAGE_SIZE;
+use wcontainers_kernel_test::streams::{Outside, Step};
 use wcontainers_kernel_test::{backend, driver, guest, image, reference};
 
 /// Where both mount the backend, and where the program starts.
@@ -16,9 +18,19 @@ fn same_on_backend(name: &str, injections: driver::Injections) -> Vec<driver::Ru
 
 /// As [`same_on_backend`], with the backend opening files for the page cache if `cached`.
 fn same_on(name: &str, injections: driver::Injections, cached: bool) -> Vec<driver::Run> {
+    same_on_outside(name, injections, cached, Vec::new())
+}
+
+/// As [`same_on`], with what goes on outside the container as `script` says.
+fn same_on_outside(
+    name: &str,
+    injections: driver::Injections,
+    cached: bool,
+    script: Vec<Step>,
+) -> Vec<driver::Run> {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     let program = guest::build(name, &[], &out);
-    let theirs = backend::reference_run(&backend::out(), &program, AT, &[], cached);
+    let theirs = backend::reference_run(&backend::out(), &program, AT, &[], cached, &script);
     let mut files = image::reference_image().to_vec();
     files.extend(image::host_directory(
         program.parent().expect("a directory"),
@@ -39,8 +51,12 @@ fn same_on(name: &str, injections: driver::Injections, cached: bool) -> Vec<driv
             root_image: None,
             address_space: wcontainers_kernel_test::standin::SPACE_32_BIT,
         };
-        let ours =
-            driver::run_injected(&container, seed, injections).expect("an outcome on our kernel");
+        let outside = Outside {
+            script: script.clone(),
+            ..Default::default()
+        };
+        let ours = driver::run_outside(&container, outside, seed, injections)
+            .expect("an outcome on our kernel");
         let ours_text = String::from_utf8_lossy(&ours.outcome.stdout).into_owned();
         let theirs_text = String::from_utf8_lossy(&theirs.stdout).into_owned();
         let differences: Vec<String> = ours_text
@@ -224,6 +240,27 @@ fn cached_file_mappings_match_reference() {
     };
     for run in same_on("backendmap", injections, true) {
         assert_only_written_whole(&run);
+    }
+}
+
+/// A mapped file changed on the backend from outside the container: its mappings and reads see the
+/// change once its attributes show it, with nothing counted.
+#[test]
+fn cached_files_changed_outside_match_reference() {
+    let script = vec![
+        Step::Expect(b"change it\n".to_vec()),
+        Step::ChangeServed {
+            path: "changed".into(),
+            bytes: [vec![b'x'; PAGE_SIZE as usize], vec![b'y']].concat(),
+        },
+    ];
+    for run in same_on_outside(
+        "backendchanged",
+        driver::Injections::default(),
+        true,
+        script,
+    ) {
+        assert_warned_only(&run, &[]);
     }
 }
 

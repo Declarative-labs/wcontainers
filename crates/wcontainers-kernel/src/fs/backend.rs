@@ -164,6 +164,8 @@ struct State {
     fills: BTreeMap<u64, Fill>,
     /// Pages a fault or copy outside a call needed and could not ask for, for their counter.
     unasked: u64,
+    /// Mapped files whose pages were dropped since the kernel last made their mappings fault.
+    dropped: Vec<Weak<RefCell<Inode>>>,
     /// Inodes the backend numbered, while the kernel holds them.
     nodes: BTreeMap<u64, Weak<RefCell<Inode>>>,
     /// Lookups the backend counted for each node, given back with FORGET when its inode goes.
@@ -221,6 +223,14 @@ pub(crate) struct Pages {
     pub handle: Rc<Handle>,
     /// Whether a shared mapping that may write has shown it, so its bytes go back to the backend.
     pub written: bool,
+    /// Whether a shared mapping has been able to write it, so its pages may hold bytes the backend
+    /// lacks (Linux's dirty pages, not known one by one here).
+    pub dirtied: bool,
+    /// Counts the kernel's changes to the file's bytes on the backend (writes, truncations,
+    /// write-backs), and what it was when attributes were last taken: a change of size or time
+    /// with none of them since may only have come from outside.
+    pub sent: Cell<u64>,
+    pub sent_at_attributes: u64,
 }
 
 impl Remote {
@@ -239,6 +249,40 @@ impl Remote {
     /// Lets go of the access control lists held (`forget_all_cached_acls`).
     pub fn forget_acls(&self) {
         *self.acls.borrow_mut() = [None, None];
+    }
+}
+
+/// Counts a request that changes a mapped file's bytes or times as the kernel's own change of it
+/// (`Pages::sent`): WRITE, SETATTR, FALLOCATE, and COPY_FILE_RANGE for the file it writes.
+fn count_change(
+    nodes: &BTreeMap<u64, Weak<RefCell<Inode>>>,
+    opcode: u32,
+    nodeid: u64,
+    parts: &[&[u8]],
+) {
+    let changed = match opcode {
+        code if code == fuse_opcode::FUSE_WRITE as u32
+            || code == fuse_opcode::FUSE_SETATTR as u32
+            || code == fuse_opcode::FUSE_FALLOCATE as u32 =>
+        {
+            nodeid
+        }
+        code if code == fuse_opcode::FUSE_COPY_FILE_RANGE as u32 => {
+            match parts
+                .first()
+                .map(|body| fuse_copy_file_range_in::read_from_prefix(body))
+            {
+                Some(Ok((input, _))) => input.nodeid_out,
+                _ => return,
+            }
+        }
+        _ => return,
+    };
+    if let Some(node) = nodes.get(&changed).and_then(Weak::upgrade)
+        && let Content::Backend(remote) = &node.borrow().content
+        && let Some(held) = &remote.pages
+    {
+        held.sent.set(held.sent.get() + 1);
     }
 }
 
@@ -590,6 +634,7 @@ impl Client {
                 version: state.attr_version,
             };
             state.calls.get_mut(&asker.tid).expect("asked").waiting = Some(request);
+            count_change(&state.nodes, opcode as u32, nodeid, parts);
             let bytes = message(unique, opcode as u32, nodeid, &asker, parts);
             state.outbox.push(Outgoing {
                 unique,
@@ -621,6 +666,7 @@ impl Client {
             gid: 0,
             pid: 0,
         };
+        count_change(&state.nodes, opcode, nodeid, parts);
         let bytes = message(unique, opcode, nodeid, &nobody, parts);
         // FORGET and BATCH_FORGET have no answer.
         let answered = opcode != fuse_opcode::FUSE_FORGET as u32
@@ -955,6 +1001,25 @@ impl Client {
             remote.fresh.set(run);
             return;
         }
+        // `fuse_change_attributes`: a mapped file's pages are dropped when its size changed, or
+        // with FUSE_AUTO_INVAL_DATA granted its modification time.
+        // Pages a shared mapping may have written stay without a word when the kernel itself
+        // changed the file since (see `shared::backend_drop`).
+        let auto_inval = self.settled().flags & FUSE_AUTO_INVAL_DATA != 0;
+        let new_mtime = time(attr.mtime, attr.mtimensec);
+        let mtime = inode.mtime;
+        let stale = match &mut inode.content {
+            Content::Backend(remote) => {
+                let size = remote.size.get();
+                remote.pages.as_mut().is_some_and(|held| {
+                    let ours = held.sent.get() != held.sent_at_attributes;
+                    held.sent_at_attributes = held.sent.get();
+                    (size != attr.size || (mtime != new_mtime && auto_inval))
+                        && !(held.dirtied && ours)
+                })
+            }
+            _ => false,
+        };
         inode.ino = attr.ino;
         inode.mode = attr.mode;
         inode.uid = attr.uid;
@@ -971,6 +1036,22 @@ impl Client {
             remote.blocks.set(attr.blocks);
             remote.block_size.set(attr.blksize);
         }
+        drop(inode);
+        if stale {
+            crate::shared::backend_drop(node, 0..u64::MAX);
+            self.state.borrow_mut().dropped.push(Rc::downgrade(node));
+        }
+    }
+
+    /// The mapped files whose pages were dropped since this was last asked.
+    pub fn take_dropped(&self) -> Vec<Node> {
+        let dropped = core::mem::take(&mut self.state.borrow_mut().dropped);
+        dropped.iter().filter_map(Weak::upgrade).collect()
+    }
+
+    /// Whether mapped files' pages were dropped since [`Self::take_dropped`] was last asked.
+    pub fn has_dropped(&self) -> bool {
+        !self.state.borrow().dropped.is_empty()
     }
 
     /// A new attribute version, for a change to what an inode holds.
@@ -2070,13 +2151,20 @@ impl crate::Kernel {
                         remote.fresh.set(0);
                         remote.changed();
                         remote.forget_acls();
-                        if out.off >= 0 && remote.pages.is_some() {
-                            self.counters.count(
-                                cx.host,
-                                crate::reason::BACKEND_CHANGE_NOT_MAPPED,
-                                out.ino,
-                            );
-                        }
+                    }
+                    // `fuse_reverse_inval_inode`: from `off`, `len` bytes (0 or less for all) of
+                    // its pages are dropped.
+                    if let Some(node) = client.node_of(out.ino)
+                        && out.off >= 0
+                        && node.borrow().content.block().is_some()
+                    {
+                        let first = out.off as u64 / PAGE_SIZE;
+                        let last = match out.len {
+                            len if len > 0 => (out.off as u64 + len as u64 - 1) / PAGE_SIZE + 1,
+                            _ => u64::MAX,
+                        };
+                        crate::shared::backend_drop(&node, first..last);
+                        let _ = crate::shared::backend_dropped(self, cx, &node);
                     }
                 }))
             }

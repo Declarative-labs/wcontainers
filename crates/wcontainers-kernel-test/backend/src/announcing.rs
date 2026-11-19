@@ -1,5 +1,7 @@
 //! The passthrough file system announcing writes of many pages (BIG_WRITES and MAX_PAGES), which
-//! it serves but does not offer itself; every other operation is passed through unchanged.
+//! it serves but does not offer itself, and that a file's cached pages are dropped when its
+//! modification time changes (AUTO_INVAL_DATA, which libfuse's servers ask for by default); every
+//! other operation is passed through unchanged.
 
 use std::ffi::CStr;
 use std::io;
@@ -22,7 +24,9 @@ impl FileSystem for Announcing {
 
     fn init(&self, capable: FsOptions) -> io::Result<FsOptions> {
         let wanted = self.0.init(capable)?;
-        Ok(wanted | (capable & (FsOptions::BIG_WRITES | FsOptions::MAX_PAGES)))
+        Ok(wanted
+            | (capable
+                & (FsOptions::BIG_WRITES | FsOptions::MAX_PAGES | FsOptions::AUTO_INVAL_DATA)))
     }
 
     fn destroy(&self) {

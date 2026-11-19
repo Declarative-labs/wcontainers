@@ -58,6 +58,8 @@ pub mod docker {
     pub const READ_ONLY: &str = "ro";
     /// Keeps standard input open, from the client's.
     pub const INTERACTIVE: &str = "-i";
+    /// Runs a command in a running container.
+    pub const EXEC: &str = "exec";
     /// Gives the container a terminal.
     pub const TERMINAL: &str = "-t";
     /// Publishes a container port.
@@ -113,7 +115,7 @@ fn assert_docker_ran(exit_code: i32, stderr: &[u8]) {
 }
 
 /// Stops and removes a container by name, whatever state it is in.
-fn remove_container(name: &str) {
+pub(crate) fn remove_container(name: &str) {
     let _ = Command::new(docker::CLIENT)
         .args([docker::REMOVE, docker::FORCE, name])
         .output();
@@ -253,10 +255,10 @@ pub fn run_command(command: &[&str]) -> (Outcome, Vec<crate::image::File>) {
 }
 
 /// How long the reference waits for output a script expects.
-const EXPECT_PATIENCE: std::time::Duration = std::time::Duration::from_secs(60);
+pub(crate) const EXPECT_PATIENCE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// How often the reference looks again for output a script expects.
-const EXPECT_LOOK: std::time::Duration = std::time::Duration::from_millis(5);
+pub(crate) const EXPECT_LOOK: std::time::Duration = std::time::Duration::from_millis(5);
 
 /// How long a slow outside pauses after each piece of output it takes.
 const SLOW_PAUSE: std::time::Duration = std::time::Duration::from_millis(20);
@@ -469,6 +471,9 @@ pub fn run_outside(
                 input = None;
             }
             Step::CloseOutput => panic!("Docker reads the output for its log; see run_outside"),
+            Step::ChangeServed { .. } => {
+                panic!("only a run with a backend changes its files; see backend::reference_run")
+            }
         }
     }
     let status = child.wait().expect("docker ran");

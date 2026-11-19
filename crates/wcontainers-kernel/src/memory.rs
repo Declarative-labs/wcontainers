@@ -1122,6 +1122,9 @@ fn apply_permissions_in(
         set(split, mapping.end, Permissions::empty())?;
     }
     if let Backing::File { node, offset, .. } = &mapping.backing {
+        if mapping.shared && mapping.permissions.contains(Permissions::WRITE) {
+            crate::shared::backend_writable(node);
+        }
         let first = offset / PAGE_SIZE;
         let address = |page: u64| mapping.start + (page - first) * PAGE_SIZE;
         let page = |address: u64| first + (address - mapping.start) / PAGE_SIZE;

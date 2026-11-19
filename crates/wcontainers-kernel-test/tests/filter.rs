@@ -18,7 +18,7 @@ fn filters_match_reference() {
         ("killthread", 159),
         ("unknownaction", 159),
         ("divzero", 159),
-        ("exec", 0),
+        ("execve", 0),
         ("limit", 0),
     ] {
         let arguments: &[&str] = if ending.is_empty() { &[] } else { &[ending] };

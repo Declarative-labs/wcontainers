@@ -448,6 +448,13 @@ impl StreamHost for TestHost {
     fn choices(&mut self) -> &mut StdRng {
         &mut self.schedule
     }
+
+    fn change_served(&mut self, path: &str, bytes: &[u8]) {
+        self.backend
+            .as_ref()
+            .expect("a container with a backend")
+            .change(path, bytes);
+    }
 }
 
 /// The exit code `docker run` gives for a wait status.

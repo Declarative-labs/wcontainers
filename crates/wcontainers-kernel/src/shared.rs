@@ -105,6 +105,9 @@ fn backend_grow(
                     block: new,
                     handle: through.clone(),
                     written: false,
+                    dirtied: false,
+                    sent: core::cell::Cell::new(0),
+                    sent_at_attributes: 0,
                     filled: rangemap::RangeSet::new(),
                     failed: rangemap::RangeSet::new(),
                     changes: 0,
@@ -388,6 +391,66 @@ fn changed_bytes(node: &Node) {
     }
 }
 
+/// Drops the file pages `pages` a mapped backend file's block holds, so each is read again when
+/// next touched (`invalidate_inode_pages2_range`), unless a shared mapping may have written the
+/// block: which pages were written is not known, so all are kept ([`backend_dropped`] counts it).
+pub(crate) fn backend_drop(node: &Node, pages: Range<u64>) {
+    if let Content::Backend(remote) = &mut node.borrow_mut().content
+        && let Some(held) = &mut remote.pages
+        && !held.dirtied
+    {
+        held.filled.remove(pages.clone());
+        held.failed.remove(pages);
+        held.changes += 1;
+    }
+}
+
+/// After [`backend_drop`]: every mapping of the file faults on the pages dropped, and code run from
+/// it is stale; counted when the pages were kept.
+pub(crate) fn backend_dropped(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    node: &Node,
+) -> Result<(), Errno> {
+    let kept = match &node.borrow().content {
+        Content::Backend(remote) => remote.pages.as_ref().map(|held| held.dirtied),
+        _ => None,
+    };
+    match kept {
+        None => return Ok(()),
+        Some(true) => {
+            let ino = node.borrow().ino;
+            kernel
+                .counters
+                .count(cx.host, crate::reason::BACKEND_CHANGE_NOT_MAPPED, ino);
+        }
+        Some(false) => {
+            for process in kernel.processes.values() {
+                let mut map = process.map.borrow_mut();
+                let shown: Vec<Range<u64>> = map
+                    .iter()
+                    .filter(|mapping| mapped_offset(&mapping.backing, node).is_some())
+                    .map(|mapping| mapping.start..mapping.end)
+                    .collect();
+                for range in shown {
+                    map.refresh(cx.cpu, process.memory, range.start, range.end)?;
+                }
+            }
+        }
+    }
+    changed(kernel, cx, node)
+}
+
+/// A shared mapping can write the backend file `node` maps: its pages may hold bytes the backend
+/// lacks from now on.
+pub(crate) fn backend_writable(node: &Node) {
+    if let Content::Backend(remote) = &mut node.borrow_mut().content
+        && let Some(held) = &mut remote.pages
+    {
+        held.dirtied = true;
+    }
+}
+
 /// Zeroes `[from, to)` of a backend file's block, for bytes the backend dropped (a truncation or a
 /// punched hole), as Linux's `truncate_pagecache_range`.
 pub(crate) fn backend_cut(cx: &mut Context<'_>, node: &Node, from: u64, to: u64) {
@@ -403,8 +466,9 @@ pub(crate) fn backend_cut(cx: &mut Context<'_>, node: &Node, from: u64, to: u64)
 }
 
 /// Writes the pages a backend file's block holds in `[from, to)` back, up to the file's end, if a
-/// shared mapping may have written them: waiting for the answers, or with nothing to wait sending
-/// them on their own. Every page held goes, changed or not, since which were written is not known.
+/// shared mapping has been able to write them: waiting for the answers, or with nothing to wait
+/// sending them on their own. Every page held goes, changed or not, since which were written is not
+/// known.
 pub(crate) fn backend_write_back(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -415,7 +479,7 @@ pub(crate) fn backend_write_back(
 ) -> Result<(), Errno> {
     let (handle, size, block) = match &node.borrow().content {
         Content::Backend(remote) => match &remote.pages {
-            Some(pages) if pages.written => (pages.handle.clone(), remote.size.get(), pages.block),
+            Some(pages) if pages.dirtied => (pages.handle.clone(), remote.size.get(), pages.block),
             _ => return Ok(()),
         },
         _ => return Ok(()),

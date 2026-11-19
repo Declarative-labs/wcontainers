@@ -331,7 +331,7 @@ static void ending(const char *how) {
         printf("limit 1 after %ld\n", install(0, program + 4095, 1));
         status();
         return;
-    } else if (!strcmp(how, "exec")) {
+    } else if (!strcmp(how, "execve")) {
         printf("errno ppid %ld\n", only(SYS_getppid, SECCOMP_RET_ERRNO | 66));
         execl("/proc/self/exe", "filter", "after", (char *)0);
         printf("exec failed %d\n", errno);

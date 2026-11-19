@@ -8,6 +8,9 @@ use crate::{driver, reference};
 /// Busybox's applet that removes files, which shares its name with Docker's command.
 pub const RM_APPLET: &str = "rm";
 
+/// Busybox's `dd` applet.
+pub const DD_APPLET: &str = "dd";
+
 /// What a file is, for comparing: type and permission bits, owner, group, and contents.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Shape {

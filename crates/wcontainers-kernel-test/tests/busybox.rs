@@ -1,7 +1,7 @@
 //! Single programs from busybox in the reference image run and match the reference in output, exit
 //! status and the files they leave behind.
 
-use wcontainers_kernel_test::busybox::{RM_APPLET, compare};
+use wcontainers_kernel_test::busybox::{DD_APPLET, RM_APPLET, compare};
 
 /// Runs each command in both runners and compares, reporting every command that differs.
 fn all(commands: &[&[&str]]) {
@@ -86,7 +86,7 @@ fn files() {
         &["readlink", "-f", "/bin/sh"],
         &["realpath", "/usr/../etc/./passwd"],
         &[
-            "dd",
+            DD_APPLET,
             "if=/dev/zero",
             "of=/tmp/zero",
             "bs=1024",

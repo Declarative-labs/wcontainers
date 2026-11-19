@@ -39,6 +39,9 @@ pub enum Step {
     CloseInput,
     /// Stops reading the output: closes the output end.
     CloseOutput,
+    /// Writes bytes over the start of a file the backend serves (a path in its directory), as
+    /// another program beside the backend would, not through the container's kernel.
+    ChangeServed { path: String, bytes: Vec<u8> },
 }
 
 /// What the outside is and does.
@@ -249,6 +252,8 @@ impl Found {
 pub trait StreamHost: wcontainers_abi::Host {
     fn streams(&mut self) -> &mut Streams;
     fn choices(&mut self) -> &mut StdRng;
+    /// Does [`Step::ChangeServed`].
+    fn change_served(&mut self, path: &str, bytes: &[u8]);
 }
 
 /// What the outside does at the start, which may still be waiting on the backend: credit for all
@@ -364,6 +369,11 @@ pub fn act(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost, i
             Step::CloseOutput => {
                 streams.step += 1;
                 close_here(kernel, cpu, host, OUTPUT);
+                acted = true;
+            }
+            Step::ChangeServed { path, bytes } => {
+                streams.step += 1;
+                host.change_served(&path, &bytes);
                 acted = true;
             }
         }

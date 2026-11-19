@@ -32,6 +32,18 @@ pub fn out() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/wc-kernel-test")
 }
 
+/// When the newest file under `path` was last changed.
+fn newest_modified(path: &Path) -> Option<std::time::SystemTime> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_dir() {
+        return meta.modified().ok();
+    }
+    std::fs::read_dir(path)
+        .ok()?
+        .filter_map(|entry| newest_modified(&entry.ok()?.path()))
+        .max()
+}
+
 /// Builds the server once into `out/wc-backend/` and returns the directory holding it.
 pub fn server(out: &Path) -> PathBuf {
     // Tests of one binary ask at once: one builds while the others wait for it.
@@ -42,10 +54,7 @@ pub fn server(out: &Path) -> PathBuf {
     let directory = out.join("wc-backend");
     let program = directory.join("wc-backend");
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("backend");
-    let newest_source = ["Cargo.toml", "Cargo.lock", "src/main.rs"]
-        .iter()
-        .filter_map(|file| std::fs::metadata(source.join(file)).ok()?.modified().ok())
-        .max();
+    let newest_source = newest_modified(&source);
     let built = std::fs::metadata(&program)
         .ok()
         .and_then(|meta| meta.modified().ok());
@@ -94,6 +103,45 @@ pub fn serve_command(cached: bool) -> &'static str {
     } else {
         "/wcb/wc-backend"
     }
+}
+
+/// Busybox `dd`'s words for the file it writes and for keeping that file's length.
+const DD_OUTPUT_FILE: &str = "of=";
+const DD_IN_PLACE: &str = "conv=notrunc";
+
+/// Writes `bytes` over the start of `path` in the served directory of container `name`, from
+/// outside FUSE.
+fn change_served(name: &str, path: &str, bytes: &[u8]) {
+    use crate::reference::docker;
+    let mut writer = Command::new(docker::CLIENT)
+        .args([
+            docker::EXEC,
+            docker::INTERACTIVE,
+            name,
+            crate::busybox::DD_APPLET,
+        ])
+        .arg(format!(
+            "{DD_OUTPUT_FILE}{}",
+            Path::new(SERVED).join(path).display()
+        ))
+        .arg(DD_IN_PLACE)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("running docker exec");
+    writer
+        .stdin
+        .take()
+        .expect("the writer's input")
+        .write_all(bytes)
+        .expect("writing to docker exec");
+    let output = writer.wait_with_output().expect("docker exec ran");
+    assert!(
+        output.status.success(),
+        "changing a served file: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// The port the server listens at in its container.
@@ -267,6 +315,11 @@ impl Backend {
         );
     }
 
+    /// Writes `bytes` over the start of `path` in the served directory, from outside FUSE.
+    pub fn change(&self, path: &str, bytes: &[u8]) {
+        change_served(&self.name, path, bytes);
+    }
+
     /// The files of the served directory now, as a tar archive of it gives them.
     pub fn files(&self) -> Vec<crate::image::File> {
         let output = Command::new("docker")
@@ -438,6 +491,7 @@ pub fn reference_run(
     at: &str,
     arguments: &[&str],
     cached: bool,
+    steps: &[crate::streams::Step],
 ) -> crate::driver::Outcome {
     let serve = serve_command(cached);
     static RUNS: AtomicU32 = AtomicU32::new(0);
@@ -455,7 +509,7 @@ pub fn reference_run(
     let file = Path::new("/wc").join(program.file_name().expect("program has a name"));
     let script =
         format!("{FUSE_DEVICE_LINK} && mkdir -p {at} && exec {serve} mount {SERVED} {at} \"$@\"");
-    let output = Command::new("docker")
+    let mut child = Command::new("docker")
         .args(["run", "--rm", "--platform", "linux/arm64", "--name", &name])
         .args(["--hostname", HOSTNAME])
         .args(["--device", FUSE_DEVICE, "--cap-add", "SYS_ADMIN"])
@@ -467,12 +521,73 @@ pub fn reference_run(
         .args([IMAGE, "sh", "-c", &script, "sh"])
         .arg(&file)
         .args(arguments)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .expect("running docker");
+    let reader = follow(&name, &mut child, steps);
+    let mut output = child.wait_with_output().expect("docker ran");
+    if let Some(reader) = reader {
+        output.stdout = reader.join().expect("the reader");
+    }
     let exit_code = output.status.code().expect("docker exited normally");
     crate::driver::Outcome {
         stdout: output.stdout,
         stderr: output.stderr,
         exit_code,
     }
+}
+
+/// Does a script's steps in the reference container `name` as its output shows what they wait for:
+/// [`Step::Expect`](crate::streams::Step::Expect) on its output and
+/// [`Step::ChangeServed`](crate::streams::Step::ChangeServed). With a script, what it read of the
+/// output comes from the thread returned once the container has ended.
+fn follow(
+    name: &str,
+    child: &mut Child,
+    script: &[crate::streams::Step],
+) -> Option<std::thread::JoinHandle<Vec<u8>>> {
+    use std::io::BufRead;
+
+    use crate::streams::Step;
+    if script.is_empty() {
+        return None;
+    }
+    let stdout = child.stdout.take().expect("the reference's output");
+    let shown = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let reader = {
+        let shown = shown.clone();
+        std::thread::spawn(move || {
+            let mut stdout = std::io::BufReader::new(stdout);
+            while let Ok(piece) = stdout.fill_buf()
+                && !piece.is_empty()
+            {
+                let count = piece.len();
+                shown.lock().expect("shown").extend_from_slice(piece);
+                stdout.consume(count);
+            }
+            std::mem::take(&mut *shown.lock().expect("shown"))
+        })
+    };
+    let mut found = crate::streams::Found::default();
+    for step in script {
+        match step {
+            Step::Expect(bytes) => {
+                let started = std::time::Instant::now();
+                while !found.look(&shown.lock().expect("shown"), &[], bytes) {
+                    if started.elapsed() >= crate::reference::EXPECT_PATIENCE {
+                        crate::reference::remove_container(name);
+                        panic!(
+                            "the reference never showed {:?}",
+                            String::from_utf8_lossy(bytes)
+                        );
+                    }
+                    std::thread::sleep(crate::reference::EXPECT_LOOK);
+                }
+            }
+            Step::ChangeServed { path, bytes } => change_served(name, path, bytes),
+            other => panic!("a backend run does no {other:?}"),
+        }
+    }
+    Some(reader)
 }

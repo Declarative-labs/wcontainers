@@ -403,6 +403,17 @@ impl Kernel {
                 }
                 continue;
             }
+            if let Some(client) = self
+                .files
+                .backend
+                .as_ref()
+                .filter(|client| client.has_dropped())
+            {
+                for node in client.take_dropped() {
+                    let _ = crate::shared::backend_dropped(self, cx, &node);
+                }
+                continue;
+            }
             if self
                 .files
                 .backend
