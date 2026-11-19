@@ -11,11 +11,10 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   a1f1e82b (A1), 91fb63ff (the inside), 0c8ef62d (the monitor and the test), the two after them, run 2's
   ce3028f5 and run 3's 77eb6af6 (the independent checks' findings settled, below), each with the plan
   corrected after it.
-- The literal check is merged (phase-1-literals at 7b7aaf22 in 0e0f1102; its third run, e5f90171, in run 3)
-  and this branch's baseline started at e4b998bd. The check passes.
-- Next: N2 (the native ARM64 output, instruction by instruction), which needs no other track's work; its
-  changes in other tracks' crates are this track's by the orchestrator's leave (plan 6.2, G1). It also
-  measures E's cost with the add's placement free. N3 needs decision 1 (R1, R3). N6 needs K2 (below).
+- The literal check is merged (its second version of the rules, phase-1-literals at 7119e3f3, in 21321c7e)
+  and this branch's baseline started at e4b998bd. The check fails, on main's code only: see "Literals".
+- main is merged (787f8ceb, N2 run 1): the owner's names are in the plan's text and its runtime citations.
+- N2 (the native ARM64 output) is in progress: see "N2" below.
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
   and 10's final choice, which N1's trial narrows: option C does not work on Hypervisor.framework (below),
   so it is A or B.
@@ -186,6 +185,30 @@ From the checkout, in the Nix shell:
 - The bar's count not checked: every report and measurement names its `Case`; the test asserts that the
   sorted list of reported cases equals `Case::ALL`, each exactly once.
 
+## The third independent check of N1's remaining findings, settled at the start of N2 (run 1)
+
+- main not merged: merged (787f8ceb). The literal check then fails on main's code; see "Literals".
+- The views of one process share the inside's half, but `protect` invalidated for one identifier: every
+  change now invalidates with `tlbi vaae1is` (every identifier, every level) through `aarch64-paging`'s
+  `El1And0::invalidate_va`, one primitive for a page change and a split; `protect` takes no identifier. A
+  case of the bar, `SharedInsideViews`, takes the check's scenario (two views of one process, both store,
+  the page made read-only, the other view's store must be refused; 24 rounds) and passes. Cost: other
+  processes' entries at that address are dropped too (plan 5.2 says so; N4 measures it if copy-on-write
+  shows it).
+- The baseline line `tlbi vale1is, {0}` added through an adoption window: gone with the code (the crate's
+  call replaces both assembly strings), and so is `tlbi vae1is, {0}`.
+- Unused build-dependencies of the monitor (wcontainers-arm64, wcontainers-guest-cpu): removed.
+- Plan 5.5 and decision 10's stale "untried": corrected with N1's results.
+- boot.rs's comment claimed Linux's settings: it now says what the value is for (the presented guest level,
+  `wfi`/`wfe` and CTR_EL0 trapping on purpose).
+- Literal points: translation levels are `TOP_LEVEL` (new, layout.rs) and `TOP_LEVEL + 1`; `LINK_BYTES` is the
+  page less `size_of::<LinkHead>()`, the link's head now a struct of its own.
+- A faulting tagged store's FAR keeps the tag: N2's fault reports take the address from the guest
+  instruction and untag it as the WebAssembly output's `untag` does (plan 3.4), compared by the differential
+  test.
+- Frames used up panicked: `Frames::take` and `take_block` return `Err(Full)`, counted "guest-physical space
+  full" (`floor::space_full()`) and warned at the first; every table call that takes a frame passes it on.
+
 ## Asked of the kernel track (K2, needed before N6)
 
 1. The memory size the guest is told (MemTotal and the rest of /proc/meminfo, `sysinfo`, tmpfs limits)
@@ -215,20 +238,23 @@ messages).
 
 ## Literals
 
-- The check is merged and passes; the baseline's start for this branch is e4b998bd. Its 27 lines for the
-  native crates are all text, none a number: assembly the crates offer no call for (`hvc #0` in the
-  doorbell, `dc cvau` and `ic ivau`, `tlbi vae1is` and since run 3 `tlbi vale1is`, the entry and vectors
-  in floor/entry.rs, and the floor cases' EL0 snippets with their labels and `extern "C"`).
-- Run 3 merged the literal track's third run, whose new rules found four cargo directives in the two build
-  scripts; they are named now (`build_environment::RERUN_IF_ENV_CHANGED`, `LINK_ARG`, `LINK_ARG_BINS`, and
-  each script's linker option). `init` ran in the change after that merge (77eb6af6), as the adoption steps
-  say, and changed the baseline by three lines: the include path of the generated programs file left (the
-  file is gone); a `redefinition` line of wcontainers-arm64's `PROBE`, which that crate no longer has, left;
-  and one line came in: `tlbi vale1is, {0}` in floor/tables.rs `invalidate_page`, the check's last-level
-  invalidation, assembly text that no crate offers a call for and `asm!` takes only as a literal. For the
-  reviewer: that one added line is new code of this track, not a literal the new rules found. The check
-  now lists 8 changes that could add lines: the 7 before and 77eb6af6 ("the change after a merge that
-  brought new rules").
+- The check is merged and the baseline's start for this branch is e4b998bd. N2 run 1 merged main
+  (787f8ceb) and then the literals branch's second version of the rules (21321c7e), and ran `init` in that
+  merge, as adoption step 4 allows for new rules. Under version 2 a new version may add lines only for
+  literals already in the tree at the baseline's previous change; main's literals were not (main has no
+  baseline, and its renames make every literal of a renamed item new to the check). So the 54 lines `init`
+  added for main's code were taken out again (7175b04e), and the check fails with 53 `+` findings, every one
+  in another track's files: wcontainers-kernel-test/src/driver.rs 8, wcontainers-runtime container.rs 2,
+  image.rs 9, spec.rs 7, system.rs 3, wcontainers-wasmtime bin/wcon.rs 12, lib.rs 7, starts.rs 1,
+  tests/surface.rs 4. None is in a crate this track owns. For the orchestrator: these pass once main carries
+  the check with the runtime track's own baseline, or at the next version of the rules (they are in this
+  tree now); this track does not name another track's literals and does not add their lines.
+- The changes that could add lines, as the check lists them: 0e0f1102 the start, e4b998bd the init after
+  the baseline arrived by a merge, 21321c7e new rules, 68214b2e the start (literals branch), 89f88281 and
+  7119e3f3 new rules (literals branch).
+- The native crates' lines are all text, none a number: assembly the crates offer no call for (`hvc #0`
+  in the doorbell, `dc cvau` and `ic ivau`, the entry and vectors in floor/entry.rs, and the floor cases'
+  EL0 snippets with their labels and `extern "C"`). The two `tlbi` strings left in N2 run 1.
 - Facts another crate owns, written where used until the owner's constant is on a branch merged here
   (orchestrator/magic-literals/README.md): `PAGE_SIZE.trailing_zeros()` in layout.rs and tables.rs
   (wcontainers-abi's `PAGE_SHIFT`), `size_of::<u32>()` for an instruction's bytes in floor-cases/cases.rs
