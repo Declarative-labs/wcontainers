@@ -50,6 +50,65 @@ fn whole_level(module: &Module, f: &Function, e: Handle<Expression>) -> Option<i
     (whole as f32 == v && whole >= 0).then_some(whole)
 }
 
+/// The plain samples and loads of depth textures in `f`; refuses those WGSL cannot make.
+fn plain_reads(module: &Module, f: &Function) -> Result<Vec<Handle<Expression>>> {
+    let mut found = Vec::new();
+    for (h, e) in f.expressions.iter() {
+        match *e {
+            Expression::ImageSample {
+                image,
+                depth_ref: None,
+                gather,
+                level,
+                ..
+            } if depth(module, f, image) => match (gather, level) {
+                (Some(SwizzleComponent::X), _) => continue,
+                (Some(_), _) => {
+                    return Err(ConvertError::Unsupported("DepthGatherComponent"));
+                }
+                (None, SampleLevel::Bias(_)) => {
+                    return Err(ConvertError::Unsupported("DepthSampleBias"));
+                }
+                (None, SampleLevel::Gradient { .. }) => {
+                    return Err(ConvertError::Unsupported("DepthSampleGradient"));
+                }
+                (None, SampleLevel::Exact(l)) if whole_level(module, f, l).is_none() => {
+                    return Err(ConvertError::Unsupported("DepthSampleLevel"));
+                }
+                _ => {}
+            },
+            Expression::ImageLoad { image, .. } if depth(module, f, image) => {}
+            _ => continue,
+        }
+        found.push(h);
+    }
+    Ok(found)
+}
+
+/// The module's `vec4<f32>`, which a widened read gives.
+pub(super) fn vec4(module: &mut Module) -> Handle<Type> {
+    module.types.insert(
+        Type {
+            name: None,
+            inner: TypeInner::Vector {
+                size: VectorSize::Quad,
+                scalar: Scalar::F32,
+            },
+        },
+        Span::UNDEFINED,
+    )
+}
+
+/// `f` with each plain read of a depth texture standing as the four components [`widen`] makes it
+/// give (`vec4` from [`vec4`]), for typing `f`'s expressions before `widen` runs.
+pub(super) fn as_widened(module: &Module, f: &Function, vec4: Handle<Type>) -> Result<Function> {
+    let mut typed = f.clone();
+    for h in plain_reads(module, f)? {
+        *typed.expressions.get_mut(h) = Expression::ZeroValue(vec4);
+    }
+    Ok(typed)
+}
+
 /// Makes every plain sample and load of a depth texture give four components.
 pub(super) fn widen(module: &mut Module) -> Result<()> {
     let n = module.functions.len();
@@ -64,49 +123,12 @@ pub(super) fn widen(module: &mut Module) -> Result<()> {
     // The plain reads, by function.
     let mut found = Vec::new();
     for (i, f) in all(module).iter().enumerate() {
-        for (h, e) in f.expressions.iter() {
-            match *e {
-                Expression::ImageSample {
-                    image,
-                    depth_ref: None,
-                    gather,
-                    level,
-                    ..
-                } if depth(module, f, image) => match (gather, level) {
-                    (Some(SwizzleComponent::X), _) => continue,
-                    (Some(_), _) => {
-                        return Err(ConvertError::Unsupported("DepthGatherComponent"));
-                    }
-                    (None, SampleLevel::Bias(_)) => {
-                        return Err(ConvertError::Unsupported("DepthSampleBias"));
-                    }
-                    (None, SampleLevel::Gradient { .. }) => {
-                        return Err(ConvertError::Unsupported("DepthSampleGradient"));
-                    }
-                    (None, SampleLevel::Exact(l)) if whole_level(module, f, l).is_none() => {
-                        return Err(ConvertError::Unsupported("DepthSampleLevel"));
-                    }
-                    _ => {}
-                },
-                Expression::ImageLoad { image, .. } if depth(module, f, image) => {}
-                _ => continue,
-            }
-            found.push((i, h));
-        }
+        found.extend(plain_reads(module, f)?.into_iter().map(|h| (i, h)));
     }
     if found.is_empty() {
         return Ok(());
     }
-    let vec4 = module.types.insert(
-        Type {
-            name: None,
-            inner: TypeInner::Vector {
-                size: VectorSize::Quad,
-                scalar: Scalar::F32,
-            },
-        },
-        Span::UNDEFINED,
-    );
+    let vec4 = vec4(module);
     // The operands' types, each function typed with its plain reads standing as the four
     // components they will give.
     let mut reads = Vec::new();

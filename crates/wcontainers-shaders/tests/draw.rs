@@ -42,7 +42,7 @@ struct Case {
     dxil_against_11: bool,
 }
 
-const CASES: [Case; 26] = [
+const CASES: [Case; 28] = [
     Case {
         vs: "vs_transform",
         ps: "ps_twospaces",
@@ -335,6 +335,31 @@ const CASES: [Case; 26] = [
         ps: "ps_rows_io",
         format: Format::Rgba8Unorm,
         tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: [None, None],
+        known_on_webgl: None,
+        dxil: true,
+        dxil_against_11: false,
+    },
+    Case {
+        vs: "vs_transform",
+        ps: "ps_narrow",
+        format: Format::Rgba32Uint,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: [
+            Some("GLSL ES 3.00 has no bitfield operations (fxc inserts bits)"),
+            None,
+        ],
+        known_on_webgl: None,
+        dxil: true,
+        dxil_against_11: false,
+    },
+    Case {
+        vs: "vs_transform",
+        ps: "ps_component",
+        format: Format::Rgba32Uint,
+        tint: [0.25, 0.5, 0.75, 1.5],
         grid: true,
         not_on_webgl: [None, None],
         known_on_webgl: None,
@@ -761,6 +786,130 @@ fn wave_operations_draw_as_direct3d_12_does() {
     );
     assert!(drawn > 0);
     assert_eq!(count, 0);
+}
+
+/// Native 16-bit integers (`ps_narrow16`, shader model 6.2 with -enable-16bit-types, dxc only),
+/// whose results wrap at 16 bits, drawn through the WebGPU and WebGL 2 back ends against real
+/// Direct3D 12's picture of the same DXIL, texel for texel.
+#[test]
+fn native_16_bit_integers_draw_as_direct3d_12_does() {
+    let case = Case {
+        vs: "vs_transform",
+        ps: "ps_narrow16",
+        format: Format::Rgba32Uint,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: [None, None],
+        known_on_webgl: None,
+        dxil: true,
+        dxil_against_11: false,
+    };
+    // The back ends first: wgpu then finds the GPU's adapter whatever the reference draw does to
+    // the process's Direct3D 12 device.
+    let mut wgpu_backend = webgpu();
+    let mut gl = webgl();
+    let gpu12 = wcontainers_graphics_test::d3d12::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+    )
+    .unwrap();
+    let reference = direct3d_12(&gpu12, &case);
+    keep("vs_transform+ps_narrow16.d3d12", &reference, case.format);
+    let code = [bytecode("vs_transform.dxil"), bytecode("ps_narrow16.dxil")];
+    let grid = grid();
+    let draw = Draw::own(&case, &code, true, &grid);
+    let provoking = if gl.caps().has(Features::PROVOKING_VERTEX_FIRST) {
+        ProvokingVertex::First
+    } else {
+        ProvokingVertex::Last
+    };
+    let runs = [
+        (
+            "webgpu",
+            ours(&mut wgpu_backend, &draw, ProvokingVertex::First),
+        ),
+        ("webgl", ours(&mut gl, &draw, provoking)),
+    ];
+    let mut failures = Vec::new();
+    for (back_end, texels) in runs {
+        keep(
+            &format!("vs_transform+ps_narrow16.{back_end}-dxil"),
+            &texels,
+            case.format,
+        );
+        let (count, largest) = differ(&reference, &texels, case.format);
+        eprintln!(
+            "ps_narrow16 {back_end}-dxil: {count} of {} texels differ from direct3d 12, largest difference {largest}",
+            SIZE * SIZE
+        );
+        if count > 0 {
+            failures.push(back_end);
+        }
+    }
+    assert!(failures.is_empty(), "differ from Direct3D 12: {failures:?}");
+}
+
+/// A DXIL target of two components into a four-component format (`ps_two`, a `uint2` into
+/// `R32G32B32A32_UINT`), through both back ends against real Direct3D 12: the two components it
+/// writes are exact; Direct3D leaves the other two undefined, so they are not compared.
+#[test]
+fn narrower_targets_draw_as_direct3d_12_does() {
+    let case = Case {
+        vs: "vs_transform",
+        ps: "ps_two",
+        format: Format::Rgba32Uint,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: [None, None],
+        known_on_webgl: None,
+        dxil: true,
+        dxil_against_11: false,
+    };
+    let mut wgpu_backend = webgpu();
+    let mut gl = webgl();
+    let gpu12 = wcontainers_graphics_test::d3d12::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+    )
+    .unwrap();
+    let texel = case.format.block().2 as usize;
+    // `ps_two` writes a `uint2`.
+    let written = texel / case.format.components() as usize * 2;
+    // Only the components the program writes.
+    let written_only = |mut texels: Vec<u8>| {
+        for t in texels.chunks_mut(texel) {
+            t[written..].fill(0);
+        }
+        texels
+    };
+    let reference = written_only(direct3d_12(&gpu12, &case));
+    let code = [bytecode("vs_transform.dxil"), bytecode("ps_two.dxil")];
+    let grid = grid();
+    let draw = Draw::own(&case, &code, true, &grid);
+    let provoking = if gl.caps().has(Features::PROVOKING_VERTEX_FIRST) {
+        ProvokingVertex::First
+    } else {
+        ProvokingVertex::Last
+    };
+    let runs = [
+        (
+            "webgpu",
+            ours(&mut wgpu_backend, &draw, ProvokingVertex::First),
+        ),
+        ("webgl", ours(&mut gl, &draw, provoking)),
+    ];
+    let mut failures = Vec::new();
+    for (back_end, texels) in runs {
+        let (count, largest) = differ(&reference, &written_only(texels), case.format);
+        eprintln!(
+            "ps_two {back_end}-dxil: {count} of {} texels differ from direct3d 12, largest difference {largest}",
+            SIZE * SIZE
+        );
+        if count > 0 {
+            failures.push(back_end);
+        }
+    }
+    assert!(failures.is_empty(), "differ from Direct3D 12: {failures:?}");
 }
 
 /// The primitive index in a pixel shader without a geometry shader (`ps_primid`), natively through

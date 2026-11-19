@@ -1,21 +1,23 @@
 cs_atomics.dxil	ok-wgsl glsl-write
 cs_decrement.dxil	ok-wgsl glsl-write
 cs_images.dxil	unsupported StorageFormatKind
+cs_readonly.dxil	ok-wgsl glsl-write
 cs_shared.dxil	ok-wgsl glsl-write
 cs_texels.dxil	unsupported TypedBufferFormatKind
 cs_through.dxil	unsupported StorageFormatKind
-gs_adjacent.dxil	spirv-reader unsupported
-gs_cut.dxil	spirv-reader unsupported
-gs_instances.dxil	spirv-reader unsupported
-gs_line_adjacent.dxil	spirv-reader unsupported
-gs_lines.dxil	spirv-reader unsupported
-gs_points.dxil	spirv-reader unsupported
-gs_quads.dxil	spirv-reader unsupported
-gs_unplaced.dxil	spirv-reader unsupported
+gs_adjacent.dxil	unsupported DxilGeometryShader
+gs_cut.dxil	unsupported DxilGeometryShader
+gs_instances.dxil	unsupported DxilGeometryShader
+gs_line_adjacent.dxil	unsupported DxilGeometryShader
+gs_lines.dxil	unsupported DxilGeometryShader
+gs_points.dxil	unsupported DxilGeometryShader
+gs_quads.dxil	unsupported DxilGeometryShader
+gs_unplaced.dxil	unsupported DxilGeometryShader
 ps_array.dxil	ok
 ps_cases.dxil	ok
 ps_clip.dxil	ok
 ps_coarse.dxil	ok
+ps_component.dxil	ok
 ps_contend.dxil	ok-wgsl glsl-write
 ps_deriv.dxil	ok-wgsl glsl-write
 ps_dual.dxil	ok
@@ -35,6 +37,8 @@ ps_mingather.dxil	ok-wgsl glsl-compile
 ps_minlod.dxil	ok
 ps_mirror.dxil	ok
 ps_msarray.dxil	unsupported MultisampledArrayTexture
+ps_narrow.dxil	ok
+ps_narrow16.dxil	ok
 ps_negate.dxil	ok
 ps_offset.dxil	ok
 ps_pack.dxil	ok
@@ -50,6 +54,7 @@ ps_special.dxil	ok
 ps_table.dxil	ok
 ps_texels.dxil	unsupported TypedBufferFormatKind
 ps_textured.dxil	ok
+ps_two.dxil	ok
 ps_twospaces.dxil	ok
 ps_wave.dxil	ok-wgsl glsl-write
 vs_carry.dxil	ok

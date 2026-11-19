@@ -11,9 +11,9 @@ use wcontainers_gpu::{
     IndexFormat, Interpolation, LoadOp, MAX_BINDING_SETS, Object, Origin, PassDesc, PassOps,
     PassTargets, Program, ReadSource, ReadState, RingKind, SamplerDesc as GpuSampler, ScissorRect,
     ShaderModule, ShaderStage, SlotKind, SlowPath, SourceStage, StageSet, StencilOp, StepMode,
-    StoreOp, Target, TextureRegion, TextureUsage, TextureViewDesc, Topology, VariantKey,
-    VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream, ViewDimension,
-    Viewport as GpuViewport, WriteMode, helper_binding,
+    StoreOp, SystemValue, Target, TargetInShader, TextureRegion, TextureUsage, TextureViewDesc,
+    Topology, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream,
+    ViewDimension, Viewport as GpuViewport, WriteMode, helper_binding,
 };
 
 use crate::desc::{
@@ -67,6 +67,20 @@ fn set_of(stage: usize) -> u32 {
     if stage == PIXEL { 1 } else { 0 }
 }
 
+/// The interpolation the pixel shader `ps` reads its inputs with where it is not the default, by
+/// location: the stage before it writes its outputs so.
+fn interpolation<B: Backend>(ps: Option<&Shader<B>>) -> Vec<(u32, Interpolation)> {
+    let mut interpolation: Vec<(u32, Interpolation)> = ps
+        .iter()
+        .flat_map(|p| &p.reflection.inputs)
+        .filter(|i| i.system.is_none() && i.interpolation != Interpolation::Perspective)
+        .map(|i| (i.location, i.interpolation))
+        .collect();
+    interpolation.sort_by_key(|i| i.0);
+    interpolation.dedup_by_key(|i| i.0);
+    interpolation
+}
+
 /// A vertex buffer slot: buffer, stride, offset.
 type VertexSlot<B> = (Rc<Buffer<B>>, u32, u32);
 
@@ -100,6 +114,8 @@ pub struct ContextState<B: Backend> {
     so_targets: [Option<Rc<Buffer<B>>>; 4],
     /// The vertex stage's set is made for the stage helper's compute programs.
     vertex_compute: bool,
+    /// The domain stage's set is made for the stage helper's compute programs.
+    domain_compute: bool,
     /// Per stage, the storage views its set reads through buffers.
     through: [Vec<Through<B>>; STAGES],
     /// Per stage, whether a view bound to it is made on a twin of its texture.
@@ -142,6 +158,11 @@ pub struct ContextState<B: Backend> {
     /// The draw is the testing run of one primitive of a draw whose forced early tests are run per
     /// primitive (`EarlyTestsPerPrimitive`), and the API draw's bases its helpers give.
     early_run: Option<[u32; 2]>,
+    /// The layer and viewport of the draw's run after a geometry shader choosing them
+    /// (`LayerSplit`, `MultiViewportSplit`), which pixel programs read as theirs; zero otherwise.
+    run: [u32; 2],
+    /// Per stage, the constant buffer slots its set binds as storage buffers.
+    stored: [u16; STAGES],
     /// The resources the open pass's draws wrote as storage and read as shader resources, by
     /// address and sorted: a draw using one the other way ends the pass (`UsageScopeSplit`).
     pass_written: Vec<usize>,
@@ -176,6 +197,7 @@ impl<B: Backend> ContextState<B> {
             ds: None,
             so_targets: Default::default(),
             vertex_compute: false,
+            domain_compute: false,
             through: Default::default(),
             twins: [false; STAGES],
             layout: None,
@@ -208,6 +230,8 @@ impl<B: Backend> ContextState<B> {
             early: false,
             pass_early: false,
             early_run: None,
+            run: [0; 2],
+            stored: [0; STAGES],
             pass_written: Vec::new(),
             pass_read: Vec::new(),
             fitted: None,
@@ -1725,14 +1749,7 @@ impl<B: Backend> Device<B> {
         }
         // WebGPU and GLSL ES require the stages to agree on interpolation, which in Direct3D the
         // pixel shader alone chooses: the vertex shader is converted again to write its outputs so.
-        let mut interpolation: Vec<(u32, Interpolation)> = ps
-            .iter()
-            .flat_map(|p| &p.reflection.inputs)
-            .filter(|i| i.system.is_none() && i.interpolation != Interpolation::Perspective)
-            .map(|i| (i.location, i.interpolation))
-            .collect();
-        interpolation.sort_by_key(|i| i.0);
-        interpolation.dedup_by_key(|i| i.0);
+        let interpolation = interpolation(ps.map(|p| &**p));
         if interpolation.is_empty() && vk == StageVariant::default() {
             return Ok(());
         }
@@ -1848,8 +1865,41 @@ impl<B: Backend> Device<B> {
         if v.stencil != 0 {
             self.backend.slow_paths().hit(SlowPath::SwizzleInShader);
         }
+        if matches!(stage, VERTEX | PIXEL) {
+            v.constants_as_storage = self.constants_past_declared(stage, s);
+        }
         self.program_paths(s);
         v
+    }
+
+    /// The constant buffer slots `s` indexes at run time whose buffer bound to `stage` is larger
+    /// than `s` declares, where the back end has storage buffers to read them through.
+    fn constants_past_declared(&self, stage: usize, s: &Shader<B>) -> u16 {
+        if s.indexed_constants == 0 || self.backend.caps().limits.storage_buffers_per_stage == 0 {
+            return 0;
+        }
+        let mut slots = 0;
+        for b in &s.reflection.bindings {
+            let slot = b.register as usize;
+            if b.kind != SlotKind::Uniform
+                || b.set != set_of(stage)
+                || s.indexed_constants & (1 << slot) == 0
+            {
+                continue;
+            }
+            let Some(Some(c)) = self.ctx.constant_buffers[stage].get(slot) else {
+                continue;
+            };
+            let bound = match self.ctx.constant_ranges[stage].get(slot) {
+                Some(Some(range)) => window_of(c, *range).1,
+                _ => c.size.get(),
+            };
+            let declared = s.constant_sizes.iter().find(|(n, _)| *n == b.binding);
+            if declared.is_some_and(|&(_, d)| bound > d) {
+                slots |= 1 << slot;
+            }
+        }
+        slots
     }
 
     /// Counts the slow paths `s`'s program takes by itself, whatever its variant.
@@ -1892,6 +1942,11 @@ impl<B: Backend> Device<B> {
         {
             return 0;
         }
+        self.format_list_id(formats)
+    }
+
+    /// The device's number for the list `formats` (from one).
+    fn format_list_id(&mut self, formats: Vec<Format>) -> u32 {
         if let Some(&id) = self.format_ids.get(&formats) {
             return id;
         }
@@ -1907,7 +1962,46 @@ impl<B: Backend> Device<B> {
             0 => &[][..],
             n => &self.format_lists[n as usize - 1],
         };
-        v.key(stage, &s.typed, s.layered, formats)
+        let mut key = v.key(stage, &s.typed, s.layered, formats);
+        if v.retyped != 0 {
+            let formats = &self.format_lists[v.retyped_formats as usize - 1];
+            key.targets_in_shader = (0..u8::BITS as u8)
+                .filter(|t| v.retyped & (1 << t) != 0)
+                .zip(formats)
+                .map(|(target, &format)| TargetInShader {
+                    target,
+                    format,
+                    combine: false,
+                })
+                .collect();
+        }
+        key
+    }
+
+    /// The targets `ps` writes an output of another kind (float, unsigned, signed) than their
+    /// format to, whose bits Direct3D writes (`StageVariant::retyped`), and the device's number
+    /// for their formats; zeros where every output fits its target.
+    fn retyped_targets(&mut self, ps: &Shader<B>) -> (u8, u32) {
+        let mut retyped = 0u8;
+        let mut formats = Vec::new();
+        for (n, t) in self.ctx.targets.iter().enumerate() {
+            let Some(f) = t.as_ref().map(|v| v.format) else {
+                continue;
+            };
+            let output = ps
+                .reflection
+                .outputs
+                .iter()
+                .find(|o| o.system == Some(SystemValue::Target(n as u8)));
+            if output.is_some_and(|o| !crate::ahead::fits_target(o.scalar, f)) {
+                retyped |= 1 << n;
+                formats.push(f);
+            }
+        }
+        if retyped == 0 {
+            return (0, 0);
+        }
+        (retyped, self.format_list_id(formats))
     }
 
     /// The smallest step of the bound depth target's format where the pixel program adds the depth
@@ -2194,7 +2288,7 @@ impl<B: Backend> Device<B> {
         self.settle();
         self.grow_constants()?;
         self.refresh_windows()?;
-        self.update_set(COMPUTE, &[])?;
+        self.update_set(COMPUTE, &[], &[])?;
         let cv = self.stage_variant(COMPUTE, &cs, 1);
         if (StageVariant { formats: 0, ..cv }) != StageVariant::default() {
             return not_implemented(
@@ -2446,7 +2540,18 @@ impl<B: Backend> Device<B> {
     /// Makes the binding set of `stage` from its slots and its shader's reflection, when it changed.
     /// Makes `stage`'s binding set again where its bindings changed; `pulled` holds the binding of
     /// each vertex input the program fetches itself, by location.
-    fn update_set(&mut self, stage: usize, pulled: &[(u32, u32)]) -> Result<()> {
+    /// Makes `stage`'s binding set where it changed: with the streams `pulled` the vertex program
+    /// fetches and the constant buffers `stored` its program reads as storage, (slot, binding).
+    fn update_set(
+        &mut self,
+        stage: usize,
+        pulled: &[(u32, u32)],
+        stored: &[(u32, u32)],
+    ) -> Result<()> {
+        let stored_slots = stored.iter().fold(0u16, |m, &(slot, _)| m | 1 << slot);
+        if stored_slots != self.ctx.stored[stage] {
+            self.ctx.sets_dirty[stage] = true;
+        }
         if !self.ctx.sets_dirty[stage] {
             return Ok(());
         }
@@ -2470,7 +2575,7 @@ impl<B: Backend> Device<B> {
         };
         let stages = match stage {
             VERTEX if !self.ctx.vertex_compute => StageSet::VERTEX,
-            DOMAIN => StageSet::VERTEX,
+            DOMAIN if !self.ctx.domain_compute => StageSet::VERTEX,
             PIXEL => StageSet::FRAGMENT,
             _ => StageSet::COMPUTE,
         };
@@ -2502,7 +2607,7 @@ impl<B: Backend> Device<B> {
                             !reads_buffer(b.binding)
                                 && match stand_in(b.binding) {
                                     Some(StandIn::Zeros(_, kind, _)) => {
-                                        same_kind(v.format.kind(), kind)
+                                        same_kind(v.read_kind(), kind)
                                     }
                                     _ => true,
                                 }
@@ -2821,8 +2926,21 @@ impl<B: Backend> Device<B> {
                     Zero::Sampler(sampler) => BindingResource::Sampler(sampler),
                 },
             };
+            // A constant buffer the program reads as storage, at the variant's binding.
+            let (binding, resource) = match (b.kind, resource) {
+                (SlotKind::Uniform, BindingResource::UniformBuffer(range))
+                    if let Some(&(_, binding)) = stored.iter().find(|s| s.0 == b.register) =>
+                {
+                    let resource = BindingResource::StorageBuffer {
+                        range,
+                        writable: false,
+                    };
+                    (binding, resource)
+                }
+                (_, resource) => (b.binding, resource),
+            };
             entries.push(BindingEntry {
-                binding: b.binding,
+                binding,
                 stages,
                 resource,
             });
@@ -2837,6 +2955,7 @@ impl<B: Backend> Device<B> {
         let id = self.id();
         self.ctx.sets[stage] = Some(Kept::new(set, id, Object::BindingSet, &self.graveyard));
         self.ctx.sets_dirty[stage] = false;
+        self.ctx.stored[stage] = stored_slots;
         self.ctx.twins[stage] = self.ctx.resources[stage]
             .iter()
             .chain(&self.ctx.uavs[stage])
@@ -3265,6 +3384,14 @@ impl<B: Backend> Device<B> {
                     words[..values.len()].copy_from_slice(&values);
                     values.len()
                 }
+                HelperValue::Layer => {
+                    words[0] = self.ctx.run[0];
+                    1
+                }
+                HelperValue::Viewport => {
+                    words[0] = self.ctx.run[1];
+                    1
+                }
                 _ => unreachable!("refused at conversion"),
             };
             for (k, w) in words[..n].iter().enumerate() {
@@ -3513,14 +3640,11 @@ impl<B: Backend> Device<B> {
         };
         let ps = self.ctx.ps.clone();
         // Direct3D writes the bits of an output of another kind (float, unsigned, signed) than
-        // its target; the back ends refuse such a pipeline.
-        if ps.as_ref().is_some_and(|p| {
-            !crate::ahead::writes(p, |n| {
-                self.ctx.targets.get(n).cloned().flatten().map(|v| v.format)
-            })
-        }) {
-            return not_implemented("a pixel shader output of another kind than its target");
-        }
+        // its target, which the back ends' pipelines refuse: the program writes them so.
+        let (retyped, retyped_formats) = match &ps {
+            Some(p) => self.retyped_targets(p),
+            None => (0, 0),
+        };
         let dual_source = ps.is_some()
             && self
                 .ctx
@@ -3548,27 +3672,50 @@ impl<B: Backend> Device<B> {
             .desc
             .depth_clip
             && !self.backend.caps().has(Features::DEPTH_CLAMP);
-        let linked = if clamps {
+        // Clip distances the back end lacks, applied by the pixel program
+        // (`ClipDistanceInShader`), passed at the location the vertex program (or behind a hull
+        // shader the domain program) was made with.
+        let tessellated = self.ctx.hs.is_some() || self.ctx.ds.is_some();
+        let feeding = match &self.ctx.ds {
+            Some(ds) if tessellated => ds.clone(),
+            _ => vs.clone(),
+        };
+        let clip = feeding.clip;
+        let linked = if clamps || clip.is_some() {
             let Some(p) = &ps else {
                 return not_implemented(
-                    "depth clamping the back end lacks, without a pixel shader to clamp it",
+                    "depth clamping or clip distances the back end lacks, without a pixel shader to apply them",
                 );
             };
-            vs.reflection
-                .outputs
-                .iter()
-                .chain(&p.reflection.inputs)
-                .map(|v| v.location + 1)
-                .max()
-                .unwrap_or(0)
-                .max(1)
+            let at = crate::shader::linked_location(
+                feeding
+                    .reflection
+                    .outputs
+                    .iter()
+                    .chain(&p.reflection.inputs),
+            );
+            if clip.is_some_and(|(made, _)| made != at) {
+                return not_implemented(
+                    "a pixel shader reading past its vertex shader's outputs, under clip distances in the program",
+                );
+            }
+            at
         } else {
             0
         };
+        let clip_distances = clip.map_or(0, |c| c.1);
+        // Behind a hull shader the domain program passes the clip distances.
+        let vertex_clip = if tessellated { 0 } else { clip_distances };
         let vk = StageVariant {
             from_arguments: indirect && vs.helpers.size > 0,
             pulled,
-            linked,
+            linked: if vertex_clip == 0 && !clamps {
+                0
+            } else {
+                linked
+            },
+            depth_clamp: clamps,
+            clip_distances: vertex_clip,
             ..self.stage_variant(VERTEX, &vs, target_samples)
         };
         if depth_bias && ps.is_none() {
@@ -3582,11 +3729,22 @@ impl<B: Backend> Device<B> {
                 dual_source,
                 depth_bias,
                 linked,
+                depth_clamp: clamps,
+                clip_distances,
                 early_tests: early,
+                retyped,
+                retyped_formats,
                 ..self.stage_variant(PIXEL, p, target_samples)
             });
-        let pk = if early {
-            self.backend.slow_paths().hit(SlowPath::EarlyTestsInShader);
+        if clip.is_some() {
+            self.backend
+                .slow_paths()
+                .hit(SlowPath::ClipDistanceInShader);
+        }
+        let pk = if early || clip.is_some() {
+            if early {
+                self.backend.slow_paths().hit(SlowPath::EarlyTestsInShader);
+            }
             StageVariant {
                 samples: target_samples,
                 ..pk
@@ -3648,6 +3806,11 @@ impl<B: Backend> Device<B> {
             );
         }
         if let Some(gs) = self.ctx.gs.clone() {
+            let topology = match geometry::input_topology(self.ctx.topology) {
+                Some(t) => t,
+                None if self.ctx.topology == topology::UNDEFINED => return Ok(()),
+                None => return not_implemented("patches without hull and domain shaders"),
+            };
             let drawn = self.draw_staged(
                 &gs,
                 &vs,
@@ -3658,6 +3821,7 @@ impl<B: Backend> Device<B> {
                 range,
                 first_instance,
                 instances,
+                topology,
             )?;
             if !drawn {
                 return Ok(());
@@ -3696,9 +3860,12 @@ impl<B: Backend> Device<B> {
         if vk.pulled != self.ctx.pulled_set {
             self.ctx.sets_dirty[VERTEX] = true;
         }
-        self.update_set(VERTEX, &helpers[0].pulled)?;
+        self.update_set(VERTEX, &helpers[0].pulled, &helpers[0].stored)?;
         self.ctx.pulled_set = vk.pulled;
-        self.update_set(PIXEL, &[])?;
+        self.update_set(PIXEL, &[], &helpers[1].stored)?;
+        if !helpers[0].stored.is_empty() || !helpers[1].stored.is_empty() {
+            self.backend.slow_paths().hit(SlowPath::ConstantsAsStorage);
+        }
         // SV_VertexID and SV_InstanceID leave out the draw's bases, which the common form's indices
         // include: a vertex program reading them takes the bases from its helper constants or from
         // the indirect arguments; level-of-detail biases are helper constants too.

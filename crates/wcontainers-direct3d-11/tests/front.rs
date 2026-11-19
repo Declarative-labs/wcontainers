@@ -2630,6 +2630,51 @@ fn hull_and_domain_shaders_run_as_compute_before_the_domain_programs_draw() {
             .count(SlowPath::TessellationAsCompute),
         1
     );
+    // Stream output of the domain stage (a geometry shader object made from its bytecode): the
+    // domain stage runs as compute too, its output is streamed, and the tessellated points are
+    // still drawn.
+    let dsb = corpus("tessellation.ds_tri");
+    let entry = wcontainers_direct3d_11::stream::DeclEntry {
+        stream: 0,
+        semantic: Some("SV_Position".into()),
+        semantic_index: 0,
+        start_component: 0,
+        component_count: 4,
+        slot: 0,
+    };
+    let so = dev
+        .create_geometry_shader(&dsb, Some((Some(&[entry]), None, 0)))
+        .unwrap();
+    let target = dev
+        .create_buffer(
+            &BufferDesc {
+                byte_width: 256,
+                usage: usage::DEFAULT,
+                bind_flags: bind::STREAM_OUTPUT,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+    dev.gs_set_shader(Some(so));
+    dev.so_set_targets(&[Some(target)], &[0]).unwrap();
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none(), "{:?}", dev.removed);
+    let log = log_from(&dev, from);
+    let draw = find(&log, "draw ");
+    let dispatches = log[..draw]
+        .iter()
+        .filter(|l| l.starts_with("dispatch "))
+        .count();
+    assert!(dispatches >= 4, "{log:#?}");
+    assert!(log[draw].contains("IndexedIndirect"), "{}", log[draw]);
+    assert_eq!(
+        dev.backend.slow_paths().count(SlowPath::StreamOutAsCompute),
+        1
+    );
+    dev.gs_set_shader(None);
+    dev.so_set_targets(&[], &[]).unwrap();
     // Without the hull and domain shaders a triangle list is drawn as usual.
     dev.hs_set_shader(None);
     dev.ds_set_shader(None);
@@ -2851,4 +2896,86 @@ fn targets_blended_differently_without_the_back_ends_draw_once_per_group_from_sa
     assert_eq!(copies.len(), 2, "{log:#?}");
     assert!(copies[0] < begins[0] && begins[0] < copies[1] && copies[1] < begins[1]);
     assert_eq!(dev.backend.slow_paths().count(SlowPath::TargetsSplit), 1);
+}
+
+#[test]
+fn a_geometry_shader_choosing_layers_and_viewports_draws_once_per_layer_and_viewport() {
+    const LAYERS: u32 = 4;
+    let mut dev = device();
+    let target = dev
+        .create_texture(
+            &TextureDesc {
+                array_size: LAYERS,
+                ..tex2d(16, 16, RGBA8, bind::RENDER_TARGET)
+            },
+            &[],
+        )
+        .unwrap();
+    let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
+    dev.om_set_render_targets(&[Some(rtv)], None).unwrap();
+    let whole = Viewport {
+        width: 16.0,
+        height: 16.0,
+        max_depth: 1.0,
+        ..Default::default()
+    };
+    let viewports = [whole, Viewport { x: 8.0, ..whole }];
+    dev.rs_set_viewports(&viewports);
+    let vs = dev
+        .create_shader(&own("vs_fullscreen"), SourceStage::Vertex)
+        .unwrap();
+    let ps = dev
+        .create_shader(&own("ps_layer"), SourceStage::Pixel)
+        .unwrap();
+    let gs = dev.create_geometry_shader(&own("gs_layers"), None).unwrap();
+    dev.vs_set_shader(Some(vs));
+    dev.ps_set_shader(Some(ps));
+    dev.gs_set_shader(Some(gs));
+    dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    // A view of each layer alone, a pass on each, and in each a draw through each viewport.
+    let layer_views: Vec<&String> = log
+        .iter()
+        .filter(|l| l.starts_with("create_view") && l.contains("layers "))
+        .collect();
+    assert_eq!(layer_views.len(), LAYERS as usize, "{log:#?}");
+    for (i, v) in layer_views.iter().enumerate() {
+        assert!(v.ends_with(&format!("layers {i}+1")), "{v}");
+    }
+    let passes = log.iter().filter(|l| l.starts_with("begin_pass")).count();
+    assert_eq!(passes, LAYERS as usize, "{log:#?}");
+    let draws: Vec<&String> = log.iter().filter(|l| l.starts_with("draw ")).collect();
+    assert_eq!(draws.len(), LAYERS as usize * viewports.len(), "{log:#?}");
+    for (i, d) in draws.iter().enumerate() {
+        let v = viewports[i % viewports.len()];
+        let expected = format!("viewports [[{:?}, {:?},", v.x, v.y);
+        assert!(d.contains(&expected), "{d}");
+    }
+    // Each run's layer and viewport in the pass-through's helpers, after the stage helper's.
+    let vertex = wcontainers_gpu::helper_binding(wcontainers_gpu::ShaderStage::Vertex);
+    let staged = find(&log, "create_view");
+    let runs: Vec<[u32; 2]> = log
+        .iter()
+        .enumerate()
+        .skip(staged)
+        .filter(|(_, l)| {
+            l.starts_with("create_binding_set") && l.contains(&format!(" {vertex}=uniform "))
+        })
+        .map(|(i, _)| {
+            let w = helper_words(&dev, &log[i..], vertex);
+            [w[0], w[1]]
+        })
+        .collect();
+    let expected: Vec<[u32; 2]> = (0..LAYERS)
+        .flat_map(|l| (0..viewports.len() as u32).map(move |v| [l, v]))
+        .collect();
+    assert_eq!(runs, expected, "{log:#?}");
+    assert_eq!(dev.backend.slow_paths().count(SlowPath::LayerSplit), 1);
+    assert_eq!(
+        dev.backend.slow_paths().count(SlowPath::MultiViewportSplit),
+        1
+    );
 }

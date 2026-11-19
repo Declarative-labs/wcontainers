@@ -23,36 +23,36 @@ draws.vs.dxil	ok
 formats.ps_float.dxil	ok
 formats.ps_sint.dxil	ok
 formats.ps_uint.dxil	ok
-geometry.gs_adjacency.dxil	spirv-reader unsupported
-geometry.gs_layers.dxil	spirv-reader unsupported
-geometry.gs_points.dxil	spirv-reader unsupported
-geometry.gs_strips.dxil	spirv-reader unsupported
+geometry.gs_adjacency.dxil	unsupported DxilGeometryShader
+geometry.gs_layers.dxil	unsupported DxilGeometryShader
+geometry.gs_points.dxil	unsupported DxilGeometryShader
+geometry.gs_strips.dxil	unsupported DxilGeometryShader
 geometry.ps.dxil	ok
 geometry.ps_id.dxil	ok-wgsl glsl-compile
 geometry.ps_primitive.dxil	ok
 geometry.vs.dxil	ok
-msaa.ps_coverage.dxil	spirv-reader the
+msaa.ps_coverage.dxil	ok-wgsl glsl-compile
 msaa.ps_load.dxil	ok-wgsl glsl-compile
 msaa.ps_sample.dxil	ok-wgsl glsl-compile
-raster.gs.dxil	spirv-reader unsupported
+raster.gs.dxil	unsupported DxilGeometryShader
 raster.ps.dxil	spirv-reader unsupported
 raster.vs.dxil	ok
 samplers.ps_compare.dxil	ok
 samplers.ps_compare_zero.dxil	ok
 samplers.ps_gather.dxil	ok-wgsl glsl-compile
 samplers.ps_sample.dxil	ok
-streamout.gs.dxil	spirv-reader unsupported
+streamout.gs.dxil	unsupported DxilGeometryShader
 streamout.vs_back.dxil	ok
 targets.ps.dxil	ok
-tessellation.ds_line.dxil	spirv-reader unsupported
-tessellation.ds_quad.dxil	spirv-reader unsupported
-tessellation.ds_tri.dxil	spirv-reader unsupported
-tessellation.hs_line.dxil	spirv-reader unsupported
-tessellation.hs_quad_even.dxil	spirv-reader unsupported
-tessellation.hs_quad_integer.dxil	spirv-reader unsupported
-tessellation.hs_quad_odd.dxil	spirv-reader unsupported
-tessellation.hs_quad_pow2.dxil	spirv-reader unsupported
-tessellation.hs_tri.dxil	spirv-reader unsupported
+tessellation.ds_line.dxil	unsupported DxilDomainShader
+tessellation.ds_quad.dxil	unsupported DxilDomainShader
+tessellation.ds_tri.dxil	unsupported DxilDomainShader
+tessellation.hs_line.dxil	unsupported DxilHullShader
+tessellation.hs_quad_even.dxil	unsupported DxilHullShader
+tessellation.hs_quad_integer.dxil	unsupported DxilHullShader
+tessellation.hs_quad_odd.dxil	unsupported DxilHullShader
+tessellation.hs_quad_pow2.dxil	unsupported DxilHullShader
+tessellation.hs_tri.dxil	unsupported DxilHullShader
 tessellation.ps.dxil	ok
 tessellation.vs.dxil	ok
 textures.ps_1d.dxil	ok

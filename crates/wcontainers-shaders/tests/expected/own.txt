@@ -1,6 +1,7 @@
 cs_atomics.dxbc	ok-wgsl glsl-write
 cs_decrement.dxbc	ok-wgsl glsl-write
 cs_images.dxbc	unsupported StorageFormatKind
+cs_readonly.dxbc	ok-wgsl glsl-write
 cs_shared.dxbc	ok-wgsl glsl-write
 cs_texels.dxbc	unsupported TypedBufferFormatKind
 cs_through.dxbc	unsupported StorageFormatKind
@@ -54,6 +55,7 @@ hs_tri_pow2_point.dxbc	ok-wgsl glsl-write
 ps_cases.dxbc	ok-wgsl glsl-compile
 ps_clip.dxbc	ok
 ps_coarse.dxbc	ok
+ps_component.dxbc	ok-wgsl glsl-compile
 ps_contend.dxbc	ok-wgsl glsl-write
 ps_depth.dxbc	ok
 ps_deriv.dxbc	ok-wgsl glsl-write
@@ -80,6 +82,7 @@ ps_mirror.dxbc	ok
 ps_msarray.dxbc	unsupported MultisampledArrayTexture
 ps_msloop.dxbc	ok-wgsl glsl-compile
 ps_msswap.dxbc	ok-wgsl glsl-compile
+ps_narrow.dxbc	ok-wgsl glsl-compile
 ps_negate.dxbc	ok
 ps_offset.dxbc	ok
 ps_pack.dxbc	ok
@@ -97,6 +100,7 @@ ps_special.dxbc	ok
 ps_table.dxbc	ok
 ps_texels.dxbc	unsupported TypedBufferFormatKind
 ps_textured.dxbc	ok
+ps_two.dxbc	ok
 ps_twospaces.dxbc	ok
 ps_window.dxbc	ok
 vs_carry.dxbc	ok

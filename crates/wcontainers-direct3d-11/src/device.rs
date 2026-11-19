@@ -59,6 +59,10 @@ pub(crate) struct Variant<B: Backend> {
 /// vertex program whose input types it gives.
 pub(crate) type LayoutKey = (u64, [u32; 32], u64);
 
+/// A stage helper's shaders: the vertex shader's, input layout's, hull and domain shaders' (0
+/// for none), geometry shader object's and pixel shader's ids.
+pub(crate) type StageKey = (u64, u64, [u64; 2], u64, u64);
+
 /// A Direct3D 11 device and its immediate context on back end `B`.
 pub struct Device<B: Backend> {
     pub backend: B,
@@ -104,8 +108,9 @@ pub struct Device<B: Backend> {
     /// What empty slots read.
     pub(crate) zeros: Zeros<B>,
     /// The stage helpers of geometry shaders and stream output, by the vertex shader's, input
-    /// layout's, geometry shader object's and pixel shader's ids.
-    pub(crate) staged: HashMap<(u64, u64, u64, u64), crate::context::StageRun<B>>,
+    /// layout's, hull and domain shaders' (0 for none), geometry shader object's and pixel
+    /// shader's ids.
+    pub(crate) staged: HashMap<StageKey, crate::context::StageRun<B>>,
     /// The stage helper of each vertex shader, input layout, hull, domain and pixel shader drawn
     /// together.
     pub(crate) tessellated: HashMap<(u64, u64, u64, u64, u64), crate::context::TessRun<B>>,
@@ -1431,6 +1436,7 @@ impl<B: Backend> Device<B> {
             window,
             buffer: None,
             stencil_aspect: RefCell::new(None),
+            layers: RefCell::new(Vec::new()),
         }))
     }
 
@@ -1789,6 +1795,15 @@ impl<B: Backend> Device<B> {
         stage: wcontainers_gpu::SourceStage,
     ) -> Result<Rc<Shader<B>>> {
         shader::check_model(bytecode, self.level)?;
+        if matches!(
+            stage,
+            wcontainers_gpu::SourceStage::Vertex | wcontainers_gpu::SourceStage::Domain
+        ) && shader::writes_layer_or_viewport(bytecode)?
+        {
+            return Err(Error::InvalidArg(
+                "a layer or viewport index written before the geometry stage",
+            ));
+        }
         let mut typed = shader::typed_views(bytecode)?;
         if typed.iter().any(|t| t.buffer)
             && self.backend.caps().limits.storage_buffers_per_stage == 0
@@ -1803,12 +1818,28 @@ impl<B: Backend> Device<B> {
         let textures = shader::texture_slots(&converted);
         let mirror_filtered = shader::mirror_filtered_slots(&converted);
         let helpers = Rc::new(shader::Helpers::of(&converted));
-        let module = converted.modules.pop().expect("one module");
+        let mut module = converted.modules.pop().expect("one module");
+        // A vertex or domain program writing clip distances the back end lacks passes them on for
+        // the pixel program to apply, at the location past its outputs.
+        let mut clip = None;
         if wcontainers_shaders::capabilities(&module.module)
             .contains(naga::valid::Capabilities::CLIP_DISTANCES)
             && !self.backend.caps().has(Features::CLIP_DISTANCE)
         {
-            return not_implemented("clip distances without the back end's (ClipDistanceInShader)");
+            let outputs = &converted.reflection.outputs;
+            let at = (
+                shader::linked_location(outputs),
+                shader::clip_distances(outputs),
+            );
+            let key = StageVariant {
+                linked: at.0,
+                clip_distances: at.1,
+                ..StageVariant::default()
+            }
+            .key(stage, &typed, layered, &[]);
+            let mut c = shader::convert_variant(bytecode, stage, &key)?;
+            module = c.modules.pop().expect("one module");
+            clip = Some(at);
         }
         if wcontainers_shaders::capabilities(&module.module)
             .contains(naga::valid::Capabilities::PRIMITIVE_INDEX)
@@ -1824,9 +1855,12 @@ impl<B: Backend> Device<B> {
         let gpu = self.gpu(gpu)?;
         let constant_sizes = constant_sizes(&module.module);
         let stand_ins = stand_ins(&module.module);
+        let indexed_constants = shader::indexed_constants(bytecode)?;
         let id = self.id();
         let vertex = stage == wcontainers_gpu::SourceStage::Vertex;
         let shader = Rc::new(Shader {
+            indexed_constants,
+            clip,
             gpu: Kept::new(gpu, id, Object::Shader, &self.graveyard),
             key: module.key,
             reflection: converted.reflection,
@@ -1860,7 +1894,7 @@ impl<B: Backend> Device<B> {
         shader::check_model(bytecode, self.level)?;
         let vertex = match shader::stage(bytecode)? {
             SourceStage::Geometry => false,
-            SourceStage::Vertex if so.is_some() => true,
+            SourceStage::Vertex | SourceStage::Domain if so.is_some() => true,
             _ => {
                 return Err(Error::InvalidArg(
                     "the bytecode is a shader of another stage",
@@ -1883,10 +1917,6 @@ impl<B: Backend> Device<B> {
             let layered = shader::multisampled_arrays(bytecode)?;
             let key = shader::base_key(SourceStage::Geometry, &typed, layered);
             let converted = shader::convert_geometry(bytecode, &key)?;
-            if wcontainers_shaders::stage::selects(&converted.reflection) {
-                // The draw would run once per layer and viewport; those runs are not built.
-                return not_implemented("a geometry shader writing a layer or viewport index");
-            }
             let stage = self.geometry_stage(bytecode, &converted, typed, layered)?;
             Some((stage, converted))
         };
@@ -1926,6 +1956,8 @@ impl<B: Backend> Device<B> {
             mirror_filtered: shader::mirror_filtered_slots(converted),
             reads_samples: false,
             helpers: Rc::new(shader::Helpers::of(converted)),
+            indexed_constants: shader::indexed_constants(bytecode)?,
+            clip: None,
             typed,
             layered,
         }))
@@ -2050,7 +2082,11 @@ pub(crate) fn gpu_buffer(d: &BufferDesc, size: u64) -> GpuBuffer {
     for (flag, u) in [
         (bind::VERTEX_BUFFER, BufferUsage::VERTEX),
         (bind::INDEX_BUFFER, BufferUsage::INDEX),
-        (bind::CONSTANT_BUFFER, BufferUsage::UNIFORM),
+        // Also storage, for programs reading past their declared array (`ConstantsAsStorage`).
+        (
+            bind::CONSTANT_BUFFER,
+            BufferUsage::UNIFORM.union(BufferUsage::STORAGE),
+        ),
         (bind::SHADER_RESOURCE, BufferUsage::STORAGE),
         (bind::UNORDERED_ACCESS, BufferUsage::STORAGE),
     ] {
