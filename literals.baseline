@@ -1697,7 +1697,6 @@ code	crates/wcontainers-direct3d-11/src/desc.rs	int	SamplerDesc::default_state	4
 code	crates/wcontainers-direct3d-11/src/device.rs	float	gpu_sampler	32.0
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::buffer_span	4
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::buffer_span	4
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::buffer_span	4
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::check_texture	0xb000
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::check_texture	32
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::check_texture	6
@@ -1710,9 +1709,6 @@ code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_blend_st
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_blend_state	5
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_blend_state	8
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_blend_state	8
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_buffer_uav	4
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_buffer_uav	4
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_buffer_uav	4
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_input_layout	32
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_input_layout	32
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_input_layout	32
@@ -1865,18 +1861,6 @@ code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_size	8
 code	crates/wcontainers-direct3d-11/src/format.rs	str	unserved	"a DXGI format this front does not serve"
 code	crates/wcontainers-direct3d-11/src/object.rs	int	InputLayout	32
 code	crates/wcontainers-direct3d-11/src/object.rs	int	Shader	32
-code	crates/wcontainers-direct3d-11/src/query.rs	int	Answer	11
-code	crates/wcontainers-direct3d-11/src/query.rs	int	Device<B>::begin_query	11
-code	crates/wcontainers-direct3d-11/src/query.rs	int	Device<B>::end_query	11
-code	crates/wcontainers-direct3d-11/src/query.rs	int	Device<B>::query_data	8
-code	crates/wcontainers-direct3d-11/src/query.rs	int	data_size	16
-code	crates/wcontainers-direct3d-11/src/query.rs	int	data_size	16
-code	crates/wcontainers-direct3d-11/src/query.rs	int	data_size	4
-code	crates/wcontainers-direct3d-11/src/query.rs	int	data_size	4
-code	crates/wcontainers-direct3d-11/src/query.rs	int	data_size	6
-code	crates/wcontainers-direct3d-11/src/query.rs	int	data_size	8
-code	crates/wcontainers-direct3d-11/src/query.rs	int	data_size	88
-code	crates/wcontainers-direct3d-11/src/query.rs	int	short	11
 code	crates/wcontainers-direct3d-11/src/query.rs	str	Device<B>::create_query	"not a query Direct3D 11 has"
 code	crates/wcontainers-direct3d-11/src/query.rs	str	Device<B>::create_query	"per-stream stream output queries need feature level 11_0"
 code	crates/wcontainers-direct3d-11/src/query.rs	str	Device<B>::query_data	"wcontainers direct3d 11: timestamps reported disjoint: the back end writes none"
@@ -2687,28 +2671,16 @@ code	crates/wcontainers-directx/src/com/chosen.rs	str	webgl::make	"wcontainers d
 code	crates/wcontainers-directx/src/com/chosen.rs	str	webgl::own_directory	"\\"
 code	crates/wcontainers-directx/src/com/chosen.rs	str	webgpu::add_window	"wcontainers direct3d 11: no surface for the window: {e}"
 code	crates/wcontainers-directx/src/com/context.rs	int	<Bound as Default>::default	4
-code	crates/wcontainers-directx/src/com/context.rs	int	Bound	3
 code	crates/wcontainers-directx/src/com/context.rs	int	Bound	4
-code	crates/wcontainers-directx/src/com/context.rs	int	Bound	4
-code	crates/wcontainers-directx/src/com/context.rs	int	Bound	6
-code	crates/wcontainers-directx/src/com/context.rs	int	Bound	6
-code	crates/wcontainers-directx/src/com/context.rs	int	Bound	6
-code	crates/wcontainers-directx/src/com/context.rs	int	Bound	6
 code	crates/wcontainers-directx/src/com/context.rs	int	Context::clear_render_target_view	4
 code	crates/wcontainers-directx/src/com/context.rs	int	Context::clear_unordered_access_view_float	4
 code	crates/wcontainers-directx/src/com/context.rs	int	Context::clear_unordered_access_view_uint	4
 code	crates/wcontainers-directx/src/com/context.rs	int	Context::clear_view	4
 code	crates/wcontainers-directx/src/com/context.rs	int	Context::dispatch_indirect	3
-code	crates/wcontainers-directx/src/com/context.rs	int	Context::get_constant_ranges	4096
-code	crates/wcontainers-directx/src/com/context.rs	int	Context::get_data	8
-code	crates/wcontainers-directx/src/com/context.rs	int	Context::get_data	88
 code	crates/wcontainers-directx/src/com/context.rs	int	Context::om_get_blend_state	4
 code	crates/wcontainers-directx/src/com/context.rs	int	Context::om_set_blend_state	4
 code	crates/wcontainers-directx/src/com/context.rs	int	Context::om_set_blend_state	4
-code	crates/wcontainers-directx/src/com/context.rs	int	Context::reapply	4
 code	crates/wcontainers-directx/src/com/context.rs	int	Context::set_scissor_rects	4
-code	crates/wcontainers-directx/src/com/context.rs	int	Context::so_set_targets	4
-code	crates/wcontainers-directx/src/com/context.rs	int	Context::so_set_targets	4
 code	crates/wcontainers-directx/src/com/context.rs	str	Context::after_list	"ClearState"
 code	crates/wcontainers-directx/src/com/context.rs	str	Context::begin	"Begin"
 code	crates/wcontainers-directx/src/com/context.rs	str	Context::clear_depth_stencil_view	"ClearDepthStencilView"
@@ -2772,16 +2744,7 @@ code	crates/wcontainers-directx/src/com/context.rs	str	Context::update_subresour
 code	crates/wcontainers-directx/src/com/context.rs	str	Context::update_subresource	"UpdateSubresource"
 code	crates/wcontainers-directx/src/com/context.rs	str	Context::vs_set_shader	"VSSetShader"
 code	crates/wcontainers-directx/src/com/context.rs	str	settle	"wcontainers direct3d 11: {what} dropped: {why}"
-code	crates/wcontainers-directx/src/com/convert.rs	int	LogicOps	8
-code	crates/wcontainers-directx/src/com/convert.rs	int	blend_split	8
-code	crates/wcontainers-directx/src/com/convert.rs	int	blend_split	8
-code	crates/wcontainers-directx/src/com/convert.rs	int	blend_stored	8
-code	crates/wcontainers-directx/src/com/convert.rs	int	depth_stencil_stored	0xff
-code	crates/wcontainers-directx/src/com/convert.rs	int	depth_stencil_stored	0xff
-code	crates/wcontainers-directx/src/com/convert.rs	int	sampler_stored	0x40
-code	crates/wcontainers-directx/src/com/convert.rs	int	sampler_stored	3
 code	crates/wcontainers-directx/src/com/convert.rs	int	sampler_stored	4
-code	crates/wcontainers-directx/src/com/convert.rs	int	sampler_stored	7
 code	crates/wcontainers-directx/src/com/convert.rs	int	srv	6
 code	crates/wcontainers-directx/src/com/convert.rs	int	srv	6
 code	crates/wcontainers-directx/src/com/convert.rs	int	srv_back	6
@@ -2799,23 +2762,8 @@ code	crates/wcontainers-directx/src/com/d3d10core.rs	str	D3D10CoreGetVersion	"d3
 code	crates/wcontainers-directx/src/com/d3d10core.rs	str	D3D10CreateDevice	"d3d10.dll"
 code	crates/wcontainers-directx/src/com/d3d10core.rs	str	D3D10CreateDevice1	"d3d10_1.dll"
 code	crates/wcontainers-directx/src/com/d3d10core.rs	str	create10	"D3D10CreateDevice with a software, reference, WARP or null driver"
-code	crates/wcontainers-directx/src/com/device.rs	int	Device_Impl::check_multisample_quality_levels	132
-code	crates/wcontainers-directx/src/com/device.rs	int	Device_Impl::check_multisample_quality_levels	189
-code	crates/wcontainers-directx/src/com/device.rs	int	Device_Impl::check_multisample_quality_levels	191
-code	crates/wcontainers-directx/src/com/device.rs	int	Device_Impl::check_multisample_quality_levels	32
-code	crates/wcontainers-directx/src/com/device.rs	int	Device_Impl::create_blend_state	8
-code	crates/wcontainers-directx/src/com/device.rs	int	Device_Impl::create_compute_shader	0xa000
-code	crates/wcontainers-directx/src/com/device.rs	int	Device_Impl::create_device_context_state	0x9100
-code	crates/wcontainers-directx/src/com/device.rs	int	Device_Impl::geometry_shader	0xa000
-code	crates/wcontainers-directx/src/com/device.rs	int	Device_Impl::offer_resources	3
-code	crates/wcontainers-directx/src/com/device.rs	int	Device_Impl::set_maximum_frame_latency	16
-code	crates/wcontainers-directx/src/com/device.rs	int	Device_Impl::tessellation_shader	0xb000
-code	crates/wcontainers-directx/src/com/device.rs	int	Device_Impl::unserved_shader	0xa000
-code	crates/wcontainers-directx/src/com/device.rs	int	create_device	3
 code	crates/wcontainers-directx/src/com/device.rs	int	create_device	3
 code	crates/wcontainers-directx/src/com/device.rs	int	create_device	4
-code	crates/wcontainers-directx/src/com/device.rs	int	words	4
-code	crates/wcontainers-directx/src/com/device.rs	int	words	4
 code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::create_blend_state1	"logic operations"
 code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::create_compute_shader	"class linkage"
 code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::create_compute_shader	"compute shaders without the back end's compute programs"
@@ -2828,12 +2776,9 @@ code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::rasterizer_st
 code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::tessellation_shader	"class linkage"
 code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::tessellation_shader	"hull and domain shaders without the back end's compute programs"
 code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::texture_of	"target views of buffers"
-code	crates/wcontainers-directx/src/com/dxgi.rs	int	Adapter::get_desc1	32
 code	crates/wcontainers-directx/src/com/factory.rs	cstr	wc_CreateDXGIFactory	c"CreateDXGIFactory"
 code	crates/wcontainers-directx/src/com/factory.rs	cstr	wc_CreateDXGIFactory1	c"CreateDXGIFactory1"
 code	crates/wcontainers-directx/src/com/factory.rs	cstr	wc_CreateDXGIFactory2	c"CreateDXGIFactory2"
-code	crates/wcontainers-directx/src/com/factory.rs	int	caller_is_program	1024
-code	crates/wcontainers-directx/src/com/factory.rs	int	system_directory	260
 code	crates/wcontainers-directx/src/com/factory.rs	str	system_directory	"\\"
 code	crates/wcontainers-directx/src/com/factory.rs	str	wc_CreateDXGIFactory	"dxgi.dll"
 code	crates/wcontainers-directx/src/com/factory.rs	str	wc_CreateDXGIFactory1	"dxgi.dll"
@@ -2936,10 +2881,6 @@ code	crates/wcontainers-directx/src/com/objects.rs	int	Dc::new	4
 code	crates/wcontainers-directx/src/com/objects.rs	int	Dc::pitch	4
 code	crates/wcontainers-directx/src/com/objects.rs	int	Dc::read	3
 code	crates/wcontainers-directx/src/com/objects.rs	int	macro_rules! texture	3
-code	crates/wcontainers-directx/src/com/output.rs	int	Output::get_desc	31
-code	crates/wcontainers-directx/src/com/output.rs	int	Output::get_desc	32
-code	crates/wcontainers-directx/src/com/output.rs	int	monitors	32
-code	crates/wcontainers-directx/src/com/swapchain.rs	int	SwapChain_Impl::present	4
 code	crates/wcontainers-directx/src/com/swapchain.rs	str	Factory_Impl::make	"fullscreen swap chains"
 code	crates/wcontainers-directx/src/com/swapchain.rs	str	Factory_Impl::make	"multisampled or stereo swap chains"
 code	crates/wcontainers-directx/src/com/swapchain.rs	str	SwapChain_Impl::set_fullscreen_state	"fullscreen swap chains"
@@ -23690,21 +23631,6 @@ policy	generated	third_party/wgpu/src/backend/webgpu/webgpu_sys/mod.rs
 redefinition	crates/wcontainers-arm64/src/host.rs	str	PROBE	PROBE = "probe"
 redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	map::READ	READ = 1
 redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	map::WRITE	WRITE = 2
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::BLENDABLE	BLENDABLE = 32768
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::DEPTH_STENCIL	DEPTH_STENCIL = 65536
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::IA_INDEX_BUFFER	IA_INDEX_BUFFER = 4
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::IA_VERTEX_BUFFER	IA_VERTEX_BUFFER = 2
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::MIP	MIP = 4096
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::MULTISAMPLE_LOAD	MULTISAMPLE_LOAD = 4194304
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::MULTISAMPLE_RENDERTARGET	MULTISAMPLE_RENDERTARGET = 2097152
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::MULTISAMPLE_RESOLVE	MULTISAMPLE_RESOLVE = 262144
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::RENDER_TARGET	RENDER_TARGET = 16384
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::SHADER_LOAD	SHADER_LOAD = 256
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::SHADER_SAMPLE	SHADER_SAMPLE = 512
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::TEXTURE2D	TEXTURE2D = 32
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::TEXTURECUBE	TEXTURECUBE = 128
-redefinition	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::buffer_span::R32_TYPELESS	R32_TYPELESS = 39
-redefinition	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_buffer_uav::COUNTER	COUNTER = 4
 redefinition	crates/wcontainers-direct3d-11/tests/front.rs	int	a_geometry_shader_choosing_layers_and_viewports_draws_once_per_layer_and_viewport::LAYERS	LAYERS = 4
 redefinition	crates/wcontainers-direct3d-11/tests/front.rs	int	nv12_is_two_planes_viewed_apart_and_written_copied_and_mapped_as_joined_rows::NV12	NV12 = 103
 redefinition	crates/wcontainers-direct3d-11/tests/front.rs	int	yuy2_is_a_half_width_texture_of_pixel_pairs_viewed_as_rgba8::YUY2	YUY2 = 107

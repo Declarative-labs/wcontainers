@@ -1511,15 +1511,13 @@ impl<B: Backend> Device<B> {
         count: u32,
         flags: u32,
     ) -> Result<Rc<ShaderView<B>>> {
-        const RAW: u32 = 1;
-        const APPEND: u32 = 2;
-        const COUNTER: u32 = 4;
+        use buffer_uav::{APPEND, COUNTER_FLAG, RAW};
         let raw = flags & RAW != 0;
         let (offset, size, texel) =
             self.buffer_span(buffer, bind::UNORDERED_ACCESS, format, first, count, raw)?;
         let structured = buffer.desc.misc_flags & MISC_STRUCTURED != 0;
-        let counted = flags & (APPEND | COUNTER);
-        if counted == APPEND | COUNTER || (counted != 0 && (!structured || raw)) {
+        let counted = flags & (APPEND | COUNTER_FLAG);
+        if counted == APPEND | COUNTER_FLAG || (counted != 0 && (!structured || raw)) {
             return Err(Error::InvalidArg(
                 "append and counter views are structured, one or the other",
             ));
@@ -1527,18 +1525,21 @@ impl<B: Backend> Device<B> {
         self.live()?;
         self.bury();
         let counter = if counted != 0 {
+            const COUNTER_BYTES: usize = size_of::<u32>();
             let desc = BufferDesc {
-                byte_width: 4,
+                byte_width: COUNTER_BYTES as u32,
                 usage: usage::DEFAULT,
                 bind_flags: bind::UNORDERED_ACCESS,
                 cpu_access_flags: 0,
                 misc_flags: 0,
                 structure_byte_stride: 0,
             };
-            let gpu = self.backend.create_buffer(&gpu_buffer(&desc, 4));
+            let gpu = self
+                .backend
+                .create_buffer(&gpu_buffer(&desc, COUNTER_BYTES as u64));
             let gpu = self.gpu(gpu)?;
             self.backend
-                .write_buffer(&gpu, 0, &[0; 4], WriteMode::Discard);
+                .write_buffer(&gpu, 0, &[0; COUNTER_BYTES], WriteMode::Discard);
             let id = self.id();
             Some(Kept::new(gpu, id, Object::Buffer, &self.graveyard))
         } else {
@@ -1588,7 +1589,7 @@ impl<B: Backend> Device<B> {
         count: u32,
         raw: bool,
     ) -> Result<(u64, u64, Option<TexelPlace>)> {
-        const R32_TYPELESS: u32 = 39;
+        const RAW_WORD_BYTES: u32 = size_of::<u32>() as u32;
         let d = &buffer.desc;
         if d.bind_flags & needs == 0 {
             return Err(Error::InvalidArg(
@@ -1596,10 +1597,10 @@ impl<B: Backend> Device<B> {
             ));
         }
         let (stride, typed) = if raw {
-            if format != R32_TYPELESS || d.misc_flags & MISC_ALLOW_RAW_VIEWS == 0 {
+            if format != format::R32_TYPELESS || d.misc_flags & MISC_ALLOW_RAW_VIEWS == 0 {
                 return Err(Error::InvalidArg("a raw view of a buffer not made for one"));
             }
-            (4, None)
+            (RAW_WORD_BYTES, None)
         } else if d.misc_flags & MISC_STRUCTURED != 0 {
             if format != format::UNKNOWN {
                 return Err(Error::InvalidArg("a structured view with a format"));

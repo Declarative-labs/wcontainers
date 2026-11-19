@@ -45,7 +45,7 @@ pub const COMPUTE: usize = 2;
 pub const GEOMETRY: usize = 3;
 pub const HULL: usize = 4;
 pub const DOMAIN: usize = 5;
-const STAGES: usize = 6;
+pub const STAGES: usize = 6;
 
 /// Unordered access slots of the pixel and compute stages at feature level 11_0.
 pub const UAV_SLOTS: usize = 8;

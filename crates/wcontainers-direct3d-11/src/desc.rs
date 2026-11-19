@@ -44,25 +44,13 @@ pub mod clear {
     pub const STENCIL: u32 = 2;
 }
 
-/// `D3D_FEATURE_LEVEL`.
 /// `D3D11_FORMAT_SUPPORT` bits.
 pub mod support {
-    pub const IA_VERTEX_BUFFER: u32 = 0x2;
-    pub const IA_INDEX_BUFFER: u32 = 0x4;
-    pub const TEXTURE2D: u32 = 0x20;
-    pub const TEXTURECUBE: u32 = 0x80;
-    pub const SHADER_LOAD: u32 = 0x100;
-    pub const SHADER_SAMPLE: u32 = 0x200;
-    pub const MIP: u32 = 0x1000;
-    pub const RENDER_TARGET: u32 = 0x4000;
-    pub const BLENDABLE: u32 = 0x8000;
-    pub const DEPTH_STENCIL: u32 = 0x10000;
+    pub use wcontainers_directx_graphics_infrastructure::support1::*;
     pub const CPU_LOCKABLE: u32 = 0x20000;
-    pub const MULTISAMPLE_RESOLVE: u32 = 0x40000;
-    pub const MULTISAMPLE_RENDERTARGET: u32 = 0x200000;
-    pub const MULTISAMPLE_LOAD: u32 = 0x400000;
 }
 
+/// `D3D_FEATURE_LEVEL`.
 pub mod level {
     pub const L9_1: u32 = 0x9100;
     pub const L9_2: u32 = 0x9200;
@@ -117,6 +105,12 @@ pub struct TextureDesc {
 pub const MISC_DRAWINDIRECT_ARGS: u32 = 0x10;
 pub const MISC_ALLOW_RAW_VIEWS: u32 = 0x20;
 pub const MISC_STRUCTURED: u32 = 0x40;
+/// `D3D11_BUFFER_UAV_FLAG`.
+pub mod buffer_uav {
+    pub const RAW: u32 = 0x1;
+    pub const APPEND: u32 = 0x2;
+    pub const COUNTER_FLAG: u32 = 0x4;
+}
 /// `D3D11_RESOURCE_MISC_GENERATE_MIPS`.
 pub const MISC_GENERATE_MIPS: u32 = 0x1;
 /// `D3D11_RESOURCE_MISC_TEXTURECUBE`.

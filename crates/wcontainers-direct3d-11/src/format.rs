@@ -10,7 +10,7 @@ use wcontainers_directx_graphics_infrastructure::{dxgi, dxgi_vertex_format};
 /// (`Texture::chroma`), its planes viewed through the R8_TYPELESS and R8G8_TYPELESS groups; YUY2
 /// (a pair of pixels in four bytes, Y0 U Y1 V) as an `rgba8unorm` texture of half the width,
 /// viewed through `R8G8B8A8_UNORM` and `_UINT`.
-pub use dxgi::{NV12, R8_TYPELESS, R8G8_TYPELESS, R16_UINT, R32_UINT, UNKNOWN, YUY2};
+pub use dxgi::{NV12, R8_TYPELESS, R8G8_TYPELESS, R16_UINT, R32_TYPELESS, R32_UINT, UNKNOWN, YUY2};
 
 /// The plane of an NV12 texture a view of DXGI format `view` names (0 luma, 1 chroma), or none
 /// for a format no view of NV12 takes.
