@@ -427,4 +427,17 @@ godot-compute-f8ba5aa849fe70e5.dxil	unsupported ResourceArray
 godot-compute-fcdd20873fda5f78.dxil	ok-wgsl glsl-write
 godot-fragment-2893de73bed23900.dxil	unsupported ResourceArray
 godot-fragment-f0e16912c4aaaddb.dxil	ok-wgsl glsl-write
+godot-pixel-3ce334b77ff19481.dxil	ok-wgsl glsl-write
+godot-pixel-4f1f1cfce08f5627.dxil	ok-wgsl glsl-write
+godot-pixel-683372801f6cdeef.dxil	ok-wgsl glsl-write
+godot-pixel-6c45dd7c62f78cdb.dxil	ok-wgsl glsl-write
+godot-pixel-6c790c72decb251a.dxil	ok-wgsl glsl-write
+godot-pixel-77afaad9b1afc36c.dxil	ok-wgsl glsl-write
+godot-pixel-7c3616d036375caa.dxil	ok-wgsl glsl-write
+godot-pixel-93fb6139263fd00a.dxil	ok-wgsl glsl-write
+godot-pixel-b672aecf523d5376.dxil	ok-wgsl glsl-write
+godot-pixel-bcba683d4c9e3430.dxil	ok-wgsl glsl-write
+godot-pixel-d073303300ab0bdb.dxil	ok-wgsl glsl-write
+godot-pixel-e58e8b8071c6514c.dxil	ok-wgsl glsl-write
+godot-pixel-fce09f62b8749734.dxil	ok-wgsl glsl-write
 godot-vertex-ae47f85da0f11cca.dxil	ok-wgsl glsl-write
