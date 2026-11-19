@@ -1305,7 +1305,8 @@ under pyro-parked/wcontainers-scratch/runtime (outside the repository); the log 
 
 - **Names**: approved for the crates and `Runtime`, `Image`; and, by the owner's rulings of
   2026-11-18 (built in J4a run 3 and J5 run 3): the trait the embedder implements `System` (first `Outside`), the
-  shipped one `LocalSystem` (first `System`), the back end trait `Executor` (first `BackEnd`), long-lived
+  shipped one `LocalSystem` (first `System`), the execution side's trait `Executor` (first `BackEnd`; its
+  getter `Container::executor`, first `back_end`), long-lived
   configuration types ending in `Config` (`RuntimeConfig`, first `RuntimeSettings`; how the translator works
   `TranslatorConfig`, first `Tuning` and then `TranslatorSettings`), what machine the guest is told it runs on
   `GuestMachine` (first `Machine`), and the command line program `wcon`. The per-process

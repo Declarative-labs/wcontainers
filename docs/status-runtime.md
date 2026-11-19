@@ -206,6 +206,19 @@ scratch j5run5, the second part's from j5run6.
   - 2 waiting on the address ceiling: sched pth_str01 and pth_str03 (above).
   - 4 slower than the 900 s limit with the back end (still ending turns): fs gf16, gf17, mm mmapstress09,
     mmapstress10. Run again with a 3,600 s limit at the start of the whole-suite job below.
+- The tests the ARM machine's manual says to settle on the Mac (its 25 differing tests and procstatus), on this Mac
+  at 97f79592 (`j5run6/mac-list.sh`: the 20 test files that hold them, whole; logs j5run6/mac-*.log, lists
+  m-*.txt by `j5run6/verdicts.sh`): 94 tests, every one passes on the stand-in (323 s, load 86 to 82), at full
+  (390 s, load 82 to 75), none (505 s, load 75 to 47) and bounded (658 s, load 47 to 91).
+- The rest of the owner's renames (4016099d): `Container::back_end` is
+  `Container::executor`, and the owned crates' comments, descriptions, a refusal and wcon's warnings say
+  executor where they still said back end. Two of fork.rs's tests are renamed with it.
+- Literal fixes: the account tables' and etc's names formatted into the messages that name them (2d8a1447);
+  wcon's warnings print their side in the message (4016099d). Baseline lines of what this track owns at the end
+  of this run: wcontainers-runtime 265, wcontainers-wasmtime 94, the kernel test driver 31 (adoption: 325, 117,
+  39); the whole file 8,076. Marks: none. The check exits 0.
+- The owned suite at 4016099d (this Mac, j5run6/owned.log): 135 passed, 1 ignored (`run_with_the_cache`, as
+  before), 0 failed, 142 s with its build, load 152 to 124 at the end.
 
 ## J5 run 4 (2026-11-19; this Mac, Apple M5 Max, 18 cores, 128 GiB; other tracks running)
 
