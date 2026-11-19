@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use common::{append, check, commit_all, git, replace, repository};
 use wcontainers_literals::{
     BASELINE_FILE, DELETE_LINE, DO, FIELD_SEPARATOR, GROWN_MARK, HIDDEN_MARK, Kind,
-    LOCATION_SEPARATOR, List, MARK_WORD, MARKS_HEADING, NEW_MARK, ORDER_MARK, PolicyKind,
-    STALE_MARK, WORKING_TREE, policy_line,
+    LOCATION_SEPARATOR, List, MANIFEST, MARK_WORD, MARKS_HEADING, NEW_MARK, ORDER_MARK, PolicyKind,
+    RULES_SOURCE, STALE_MARK, WORKING_TREE, policy_line,
 };
 
 const LIB: &str = "crates/a/src/lib.rs";
@@ -139,7 +139,7 @@ fn a_fixed_literal_asks_for_its_line_to_go() {
     assert_eq!(
         lines_starting(&out, STALE_MARK),
         [format!(
-            "{STALE_MARK}{}{FIELD_SEPARATOR}{DO}{DELETE_LINE}",
+            "{STALE_MARK}{}{FIELD_SEPARATOR}{DO}{DELETE_LINE}{BASELINE_FILE}",
             key("one", "4096")
         )],
         "{}",
@@ -623,33 +623,70 @@ fn a_side_adoption_merged_into_a_track_is_listed() {
     );
 }
 
-/// The checker's own crate, so that a change to its source is a change of the rules.
-const CHECKER_LIB: &str = "crates/wcontainers-literals/src/lib.rs";
-const WITH_CHECKER: &[(&str, &str)] = &[
-    ("Cargo.toml", "[workspace]\nmembers = [\"crates/*\"]\n"),
-    ("crates/a/Cargo.toml", "[package]\nname = \"a\"\n"),
-    (LIB, CODE),
-    (
-        "crates/wcontainers-literals/Cargo.toml",
-        "[package]\nname = \"wcontainers-literals\"\n",
-    ),
-    (CHECKER_LIB, "pub fn rules() {}\n"),
-];
+/// The checker's own crate, whose rules file counts the versions of the rules.
+fn with_checker(versions: &[&str]) -> Vec<(String, String)> {
+    let rules = Path::new(RULES_SOURCE);
+    let manifest = rules
+        .parent()
+        .and_then(Path::parent)
+        .expect("the checker's crate folder")
+        .join(MANIFEST);
+    let quoted: String = versions.iter().map(|v| format!("{v:?},")).collect();
+    vec![
+        (
+            MANIFEST.into(),
+            "[workspace]\nmembers = [\"crates/*\"]\n".into(),
+        ),
+        (
+            "crates/a/Cargo.toml".into(),
+            "[package]\nname = \"a\"\n".into(),
+        ),
+        (LIB.into(), CODE.into()),
+        (
+            manifest.to_string_lossy().into_owned(),
+            format!("[package]\nname = {:?}\n", env!("CARGO_PKG_NAME")),
+        ),
+        (
+            RULES_SOURCE.into(),
+            format!("pub const RULES: &[&str] = &[{quoted}];\n"),
+        ),
+    ]
+}
 
-/// A change of the checker's rules may add lines in the same commit, and a merge that brings new rules
-/// lets the branch's next change add them; each such change is listed. Growth without new rules fails.
+fn borrowed(files: &[(String, String)]) -> Vec<(&str, &str)> {
+    files
+        .iter()
+        .map(|(p, t)| (p.as_str(), t.as_str()))
+        .collect()
+}
+
+/// A new version of the rules lets the branch's next change of the baseline add lines for literals
+/// that were already in the tree, also after a merge that brings it; each such change is listed. A
+/// literal added with the new rules is growth, and so is any growth when only the checker's code
+/// changes.
 #[test]
-fn new_rules_may_add_lines_and_are_listed() {
-    let root = repository("new-rules", WITH_CHECKER);
-    git(&root, &["branch", "before"]);
+fn new_rules_may_add_lines_for_literals_already_there() {
+    let files = with_checker(&["first"]);
+    let root = repository("new-rules", &borrowed(&files));
     git(&root, &["checkout", "-q", "-b", "literals"]);
     wcontainers_literals::init(&root).expect("init");
     commit_all(&root, "baseline of main");
     git(&root, &["checkout", "-q", "-b", "track"]);
     let five = "\npub fn five(x: u64) -> u64 { x * 6161 }\n";
+    let six = "\npub fn six(x: u64) -> u64 { x * 6262 }\n";
     append(&root, LIB, five);
-    set_baseline(&root, &with(&baseline(&root), &key("five", "6161")));
-    commit_all(&root, "growth with old rules");
+    set_baseline(&root, &without(&baseline(&root), &key("two", "77")));
+    replace(&root, LIB, "x + 77", "x");
+    commit_all(&root, "a literal the old rules let through, and a fix");
+
+    // The checker's code changes without a new version: growth is still growth.
+    git(&root, &["checkout", "-q", "literals"]);
+    append(&root, RULES_SOURCE, "pub fn stricter() {}\n");
+    commit_all(&root, "a change of the checker's code");
+    git(&root, &["checkout", "-q", "track"]);
+    git(&root, &["merge", "-q", "--no-edit", "literals"]);
+    let merged = baseline(&root);
+    set_baseline(&root, &with(&merged, &key("five", "6161")));
     let out = check(&root);
     assert_eq!(
         lines_starting(&out, GROWN_MARK).len(),
@@ -657,14 +694,36 @@ fn new_rules_may_add_lines_and_are_listed() {
         "{}",
         out.report()
     );
-    git(&root, &["reset", "-q", "--hard", "HEAD~1"]);
+    assert!(wcontainers_literals::init(&root).is_err());
+    set_baseline(&root, &merged);
 
     git(&root, &["checkout", "-q", "literals"]);
-    append(&root, CHECKER_LIB, "pub fn stricter() {}\n");
+    replace(&root, RULES_SOURCE, "\"first\",]", "\"first\",\"second\",]");
     commit_all(&root, "new rules");
     git(&root, &["checkout", "-q", "track"]);
     git(&root, &["merge", "-q", "--no-edit", "literals"]);
-    append(&root, LIB, five);
+    append(&root, LIB, six);
+    wcontainers_literals::init(&root).expect("init after new rules");
+    let out = check(&root);
+    let grown = lines_starting(&out, GROWN_MARK);
+    assert!(
+        grown.len() == 1 && grown[0].contains("6262") && grown[0].contains(WORKING_TREE),
+        "{}",
+        out.report()
+    );
+    commit_all(
+        &root,
+        "the baseline for the new rules, with a literal added with them",
+    );
+    let out = check(&root);
+    let grown = lines_starting(&out, GROWN_MARK);
+    assert!(
+        grown.len() == 1 && grown[0].contains("6262"),
+        "{}",
+        out.report()
+    );
+
+    git(&root, &["reset", "-q", "--hard", "HEAD~1"]);
     wcontainers_literals::init(&root).expect("init after new rules");
     commit_all(&root, "the baseline for the new rules");
     let init = git(&root, &["describe", "--always", "--abbrev=12"]);
@@ -673,9 +732,27 @@ fn new_rules_may_add_lines_and_are_listed() {
     assert!(
         out.summary
             .iter()
-            .any(|l| l.contains(init.trim()) && l.contains("rules changed")),
+            .any(|l| l.contains(init.trim()) && l.contains("new rules")),
         "{}",
         out.report()
     );
     assert!(wcontainers_literals::init(&root).is_err());
+}
+
+/// Replace refs are not read: a graft that turns a growth into the start hides nothing.
+#[test]
+fn a_graft_does_not_hide_growth() {
+    let root = started("graft");
+    append(&root, LIB, "\npub fn five(x: u64) -> u64 { x * 6363 }\n");
+    set_baseline(&root, &with(&baseline(&root), &key("five", "6363")));
+    commit_all(&root, "growth");
+    let growth = git(&root, &["describe", "--always"]);
+    git(&root, &["replace", "--graft", growth.trim()]);
+    let out = check(&root);
+    assert_eq!(
+        lines_starting(&out, GROWN_MARK).len(),
+        1,
+        "{}",
+        out.report()
+    );
 }

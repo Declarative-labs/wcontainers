@@ -36,5 +36,7 @@ pub fn first_unsorted(text: &str) -> Option<usize> {
 /// The file's text for these lines: sorted, one per line.
 pub fn render(mut keys: Vec<String>) -> String {
     keys.sort();
-    keys.iter().map(|k| format!("{k}\n")).collect()
+    keys.iter()
+        .map(|k| format!("{k}{}", crate::NEW_LINE))
+        .collect()
 }

@@ -20,6 +20,7 @@ mod findings;
 mod history;
 mod marks;
 mod modules;
+mod rules;
 mod scan;
 mod scripts;
 mod text;
@@ -34,15 +35,16 @@ pub use baseline::BASELINE_FILE;
 use deps::Crates;
 use eval::{ConstDef, ConstScope, Value};
 pub use findings::{FIELD_SEPARATOR, Kind, LOCATION_SEPARATOR, List, PATH_SEPARATOR};
-use findings::{FILE_SCOPE, Finding, PATH_COMPONENT_SEPARATOR, clean_literal};
+use findings::{FILE_SCOPE, Finding, NOTE_MARK, PATH_COMPONENT_SEPARATOR, clean_literal};
 pub use history::WORKING_TREE;
 pub use marks::MARK_WORD;
+pub use rules::SOURCE as RULES_SOURCE;
 use scan::{FileRole, FileScan};
 
-pub const USAGE: &str = "usage: wcontainers-literals (check | init | list) [WORKSPACE_ROOT]\n\
-                         \x20 check: fail on anything outside the baseline, a baseline line no longer needed, or a baseline that grew\n\
-                         \x20 init:  write the baseline from the tree, once, when it starts or has just arrived by a merge, and again after new rules\n\
-                         \x20 list:  print every finding of every list, gated or not";
+/// The command line program, as Cargo names it.
+const PROGRAM: &str = env!("CARGO_PKG_NAME");
+/// Between the commands in the usage line.
+const ALTERNATIVES: &str = " | ";
 
 /// The commands, each named by its variant in lower case.
 #[derive(Clone, Copy, Debug)]
@@ -55,11 +57,39 @@ enum Command {
 impl Command {
     const ALL: [Command; 3] = [Command::Check, Command::Init, Command::List];
 
-    fn named(name: &str) -> Option<Command> {
-        Command::ALL
-            .into_iter()
-            .find(|c| format!("{c:?}").to_lowercase() == name)
+    fn name(self) -> String {
+        format!("{self:?}").to_lowercase()
     }
+
+    fn named(name: &str) -> Option<Command> {
+        Command::ALL.into_iter().find(|c| c.name() == name)
+    }
+
+    fn what(self) -> &'static str {
+        match self {
+            Command::Check => CHECK_DOES,
+            Command::Init => INIT_DOES,
+            Command::List => LIST_DOES,
+        }
+    }
+}
+
+const CHECK_DOES: &str = "fail on anything outside the baseline, a baseline line no longer needed, or a baseline that grew";
+const INIT_DOES: &str = "write the baseline from the tree, once, when it starts or has just arrived by a merge, and again after a new version of the rules";
+const LIST_DOES: &str = "print every finding of every list, gated or not";
+
+/// How to call the command line program.
+pub fn usage() -> String {
+    let names: Vec<String> = Command::ALL.iter().map(|c| c.name()).collect();
+    let mut out = format!(
+        "usage: {PROGRAM} ({}) [WORKSPACE_ROOT]",
+        names.join(ALTERNATIVES)
+    );
+    for c in Command::ALL {
+        out.push(NEW_LINE);
+        out.push_str(&format!("{ADDITION_INDENT}{}: {}", c.name(), c.what()));
+    }
+    out
 }
 /// Cargo writes a crate name with underscores where its package name has hyphens.
 const CRATE_NAME_JOINER: char = '_';
@@ -67,7 +97,7 @@ const PACKAGE_NAME_JOINER: char = '-';
 /// The extension of Rust source files.
 pub(crate) const RUST_EXTENSION: &str = "rs";
 /// A crate's (and a workspace's) manifest.
-pub(crate) const MANIFEST: &str = "Cargo.toml";
+pub const MANIFEST: &str = "Cargo.toml";
 /// The files git tracks, and new files it does not ignore: build output and other ignored files are
 /// left out by the repository's own ignore rules, and everything committed is scanned.
 const LIST_FILES: &[&str] = &[
@@ -88,7 +118,7 @@ const TARGET_PATH: &str = "path";
 const PACKAGE_TABLE: &str = "package";
 const BUILD_KEY: &str = "build";
 const PACKAGE_NAME: &str = "name";
-/// A crate's source folder, whose changes in the checker's crate are changes of the rules.
+/// A crate's source folder.
 const SOURCE_FOLDER: &str = "src";
 /// A crate's folders of test code, by their position in the crate (not anywhere in a path).
 const TEST_DIRECTORIES: &[&str] = &["tests", "benches", "examples"];
@@ -114,11 +144,11 @@ pub const GROWN_MARK: &str = "> ";
 pub const ORDER_MARK: &str = "! ";
 /// Introduces what to do about an output line.
 pub const DO: &str = "do: ";
-pub const DELETE_LINE: &str = "delete this line from literals.baseline";
+/// What to do about a baseline line no longer needed, before the baseline's name.
+pub const DELETE_LINE: &str = "delete this line from ";
 const UNHIDE: &str = "undo the move and name the value: it was hidden, not fixed";
-const DO_NOT_GROW: &str =
-    "delete this line from literals.baseline and name the value instead: the baseline only shrinks";
-const SORT_IT: &str = "sort literals.baseline (LC_ALL=C sort), which is how the check writes it";
+const DO_NOT_GROW: &str = "and name the value instead: the baseline only shrinks";
+const SORT_IT: &str = "(LC_ALL=C sort), which is how the check writes it";
 /// The first field of a baseline policy line.
 const POLICY_LIST: &str = "policy";
 /// Characters around a word of a message that are punctuation, not part of the word.
@@ -349,8 +379,7 @@ fn target_roots(root: &Path, crate_dir: &str) -> Vec<String> {
         .collect()
 }
 
-/// The checker's own source folder, relative to the root, when the checker's crate is in the tree:
-/// a change there is a change of the rules, after which the baseline may be written again.
+/// The checker's own source folder, relative to the root, when the checker's crate is in the tree.
 fn own_source(root: &Path, crate_dirs: &BTreeSet<String>) -> Option<String> {
     crate_dirs
         .iter()
@@ -362,7 +391,7 @@ fn own_source(root: &Path, crate_dirs: &BTreeSet<String>) -> Option<String> {
                     m.get(PACKAGE_TABLE)
                         .and_then(|p| p.get(PACKAGE_NAME))
                         .and_then(|n| n.as_str())
-                        == Some(env!("CARGO_PKG_NAME"))
+                        == Some(PROGRAM)
                 })
         })
         .map(|d| [d.as_str(), SOURCE_FOLDER].join(PATH_COMPONENT_SEPARATOR))
@@ -490,22 +519,23 @@ struct FileResult {
 }
 
 fn scan_file(file: &SourceFile, reference: Option<&str>) -> FileResult {
-    let text = match std::fs::read_to_string(&file.path) {
-        Ok(t) => t,
-        Err(e) => {
-            return FileResult {
-                findings: vec![unparsed(
-                    file,
-                    &e.to_string(),
-                    proc_macro2::LineColumn {
-                        line: usize::default(),
-                        column: usize::default(),
-                    },
-                )],
-                ..FileResult::default()
-            };
-        }
-    };
+    match std::fs::read_to_string(&file.path) {
+        Ok(text) => scan_text(file, &text, reference),
+        Err(e) => FileResult {
+            findings: vec![unparsed(
+                file,
+                &e.to_string(),
+                proc_macro2::LineColumn {
+                    line: usize::default(),
+                    column: usize::default(),
+                },
+            )],
+            ..FileResult::default()
+        },
+    }
+}
+
+fn scan_text(file: &SourceFile, text: &str, reference: Option<&str>) -> FileResult {
     let module = reference.map(|label| {
         let stem = file
             .path
@@ -514,7 +544,7 @@ fn scan_file(file: &SourceFile, reference: Option<&str>) -> FileResult {
             .unwrap_or_default();
         format!("{label}{PATH_SEPARATOR}{stem}")
     });
-    match syn::parse_file(&text) {
+    match syn::parse_file(text) {
         Ok(ast) => {
             let mut scan = FileScan::new(
                 file.rel.clone(),
@@ -526,7 +556,7 @@ fn scan_file(file: &SourceFile, reference: Option<&str>) -> FileResult {
             scan.scan_file(&ast);
             let marks = match reference {
                 Some(_) => Vec::new(),
-                None => marks::parse(&text)
+                None => marks::parse(text)
                     .into_iter()
                     .map(|mark| FileMark {
                         path: file.rel.clone(),
@@ -547,6 +577,61 @@ fn scan_file(file: &SourceFile, reference: Option<&str>) -> FileResult {
         },
         Err(_) => FileResult::default(),
     }
+}
+
+/// A constant's place, which a redefinition line is matched on.
+fn item_key(path: &str, item: &str) -> String {
+    [path, item].join(&FIELD_SEPARATOR.to_string())
+}
+
+/// The keys of the literals in a file's text, without their lists: what the history compares a line
+/// added at a new version of the rules with. A constant also gives its place, and a mark its number.
+fn literal_keys(root: &Path, rel: &str, text: &str) -> HashSet<String> {
+    let path = root.join(rel);
+    if path.extension().is_none_or(|e| e != RUST_EXTENSION) {
+        return scripts::scan(rel, "", text, &|_, _| None)
+            .iter()
+            .map(Finding::rest_key)
+            .collect();
+    }
+    let file = SourceFile {
+        path,
+        rel: rel.to_string(),
+        crate_dir: String::new(),
+        role: FileRole::Code,
+        crate_root: false,
+    };
+    let scanned = scan_text(&file, text, None);
+    let marks = scanned.marks.iter().map(|m| {
+        [
+            rel.to_string(),
+            Kind::Mark.name(),
+            FILE_SCOPE.to_string(),
+            clean_literal(&m.mark.literal),
+        ]
+        .join(&FIELD_SEPARATOR.to_string())
+    });
+    scanned
+        .findings
+        .iter()
+        .map(Finding::rest_key)
+        .chain(scanned.consts.iter().map(|d| item_key(&d.path, &d.item)))
+        .chain(marks)
+        .collect()
+}
+
+/// The path of the literal a baseline line stands for, and its key among [`literal_keys`]; none for a
+/// policy line.
+fn line_literal(line: &str) -> Option<(String, String)> {
+    let (list, rest) = line.split_once(FIELD_SEPARATOR)?;
+    let list = List::named(list)?;
+    let mut fields = rest.split(FIELD_SEPARATOR);
+    let path = fields.next()?.to_string();
+    let key = match list {
+        List::Redefinition => item_key(&path, fields.nth(1)?),
+        _ => rest.to_string(),
+    };
+    Some((path, key))
 }
 
 fn unparsed(file: &SourceFile, message: &str, at: proc_macro2::LineColumn) -> Finding {
@@ -956,6 +1041,15 @@ fn apply_marks(all: &mut Vec<Finding>, found: &[FileMark], index: &ValueIndex) -
     report
 }
 
+/// How the history reads literals in this tree.
+fn literals<'a>(root: &'a Path, scanned: &Scanned) -> history::Literals<'a> {
+    history::Literals {
+        of_file: Box::new(move |rel, text| literal_keys(root, rel, text)),
+        of_line: line_literal,
+        rules: scanned.rules.clone(),
+    }
+}
+
 /// Everything one scan of the tree found.
 struct Scanned {
     findings: Vec<Finding>,
@@ -964,7 +1058,7 @@ struct Scanned {
     /// `generated` policy lines for files that say they are generated (proposed by init).
     proposed: Vec<String>,
     summary: String,
-    /// The checker's own source folder, when it is in the tree.
+    /// The file that counts the versions of the rules, when the checker is in the tree.
     rules: Option<String>,
 }
 
@@ -1026,10 +1120,13 @@ fn scan_tree(root: &Path, policy: Policy) -> Result<Scanned, String> {
     all.extend(redefinitions(&defs, &crates));
     let marks = apply_marks(&mut all, &found, &index);
     for (path, crate_dir) in &tree.scripts {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
         all.extend(scripts::scan(
             &rel_string(path, root),
             crate_dir,
-            path,
+            &text,
             &|v, c| ValueIndex::note(&index.matches(v, c, None)),
         ));
     }
@@ -1049,7 +1146,8 @@ fn scan_tree(root: &Path, policy: Policy) -> Result<Scanned, String> {
         .map(|(l, (n, s))| format!("{} {n} numbers {s} strings", l.name()))
         .collect();
     let summary = format!(
-        "wcontainers-literals: {} Rust files, {} scripts, {:?}; {}",
+        "{PROGRAM} (version {} of the rules): {} Rust files, {} scripts, {:?}; {}",
+        rules::RULES.len(),
         tree.rust.len(),
         tree.scripts.len(),
         started.elapsed(),
@@ -1060,7 +1158,11 @@ fn scan_tree(root: &Path, policy: Policy) -> Result<Scanned, String> {
         marks,
         proposed,
         summary,
-        rules: own_source(root, &tree.crate_dirs),
+        rules: own_source(root, &tree.crate_dirs).and_then(|src| {
+            Path::new(RULES_SOURCE)
+                .file_name()
+                .map(|name| [src.as_str(), &name.to_string_lossy()].join(PATH_COMPONENT_SEPARATOR))
+        }),
     })
 }
 
@@ -1089,7 +1191,7 @@ impl Outcome {
     }
 }
 
-const NEW_LINE: char = '\n';
+pub(crate) const NEW_LINE: char = '\n';
 /// Heads the list of changes allowed to add lines to the baseline.
 pub const ADDITIONS_HEADING: &str = "changes that could add lines to the baseline: ";
 const ADDITION_INDENT: &str = "  ";
@@ -1144,10 +1246,10 @@ pub fn init(root: &Path) -> Result<Outcome, String> {
     let accepted = baseline::parse(&baseline::read(&path)?);
     let mut policy = Policy::of_keys(&accepted);
     let first = scan_tree(&root, policy.clone())?;
-    let history = history::read(&root, BASELINE_FILE, first.rules.as_deref(), &accepted)?;
+    let history = history::read(&root, BASELINE_FILE, &literals(&root, &first), &accepted)?;
     if !history.may_init {
         return Err(format!(
-            "{}: init writes the baseline once, and again only after the checker's rules change; from now on it only shrinks",
+            "{}: init writes the baseline once, and again only after a new version of the rules; from now on it only shrinks",
             history.start
         ));
     }
@@ -1201,11 +1303,11 @@ pub fn check(root: &Path) -> Result<Outcome, String> {
     let mut accepted = baseline::parse(&text);
     let current = accepted.clone();
     let scanned = scan_tree(&root, Policy::of_keys(&accepted))?;
-    let history = history::read(&root, BASELINE_FILE, scanned.rules.as_deref(), &current)?;
+    let history = history::read(&root, BASELINE_FILE, &literals(&root, &scanned), &current)?;
     let mut lines = Vec::new();
     if let Some(line) = baseline::first_unsorted(&text) {
         lines.push(format!(
-            "{ORDER_MARK}{BASELINE_FILE}{LOCATION_SEPARATOR}{line}{FIELD_SEPARATOR}{DO}{SORT_IT}"
+            "{ORDER_MARK}{BASELINE_FILE}{LOCATION_SEPARATOR}{line}{FIELD_SEPARATOR}{DO}sort {BASELINE_FILE} {SORT_IT}"
         ));
     }
 
@@ -1226,7 +1328,7 @@ pub fn check(root: &Path) -> Result<Outcome, String> {
         }
         let f = ungated.get(rest)?;
         Some(format!(
-            "{key}{FIELD_SEPARATOR}# was {list}, now in the {} list at {}{LOCATION_SEPARATOR}{}{FIELD_SEPARATOR}{DO}{UNHIDE}",
+            "{key}{FIELD_SEPARATOR}{NOTE_MARK}was {list}, now in the {} list at {}{LOCATION_SEPARATOR}{}{FIELD_SEPARATOR}{DO}{UNHIDE}",
             f.list.name(),
             f.path,
             f.line
@@ -1246,7 +1348,7 @@ pub fn check(root: &Path) -> Result<Outcome, String> {
         if let Some((_, prefix)) = Policy::parse_line(key) {
             if !root.join(prefix).exists() {
                 lines.push(format!(
-                    "{STALE_MARK}{key}{FIELD_SEPARATOR}{DO}{DELETE_LINE}"
+                    "{STALE_MARK}{key}{FIELD_SEPARATOR}{DO}{DELETE_LINE}{BASELINE_FILE}"
                 ));
             }
             continue;
@@ -1257,7 +1359,9 @@ pub fn check(root: &Path) -> Result<Outcome, String> {
                     hidden_keys.insert(key.clone());
                     format!("{HIDDEN_MARK}{h}")
                 }
-                None => format!("{STALE_MARK}{key}{FIELD_SEPARATOR}{DO}{DELETE_LINE}"),
+                None => {
+                    format!("{STALE_MARK}{key}{FIELD_SEPARATOR}{DO}{DELETE_LINE}{BASELINE_FILE}")
+                }
             });
         }
     }
@@ -1275,7 +1379,9 @@ pub fn check(root: &Path) -> Result<Outcome, String> {
         .iter()
         .filter(|(k, _)| current.contains_key(k))
     {
-        lines.push(format!("{GROWN_MARK}{key}{FIELD_SEPARATOR}# added by {commit}{FIELD_SEPARATOR}{DO}{DO_NOT_GROW}"));
+        lines.push(format!(
+            "{GROWN_MARK}{key}{FIELD_SEPARATOR}{NOTE_MARK}added by {commit}{FIELD_SEPARATOR}{DO}{DELETE_LINE}{BASELINE_FILE} {DO_NOT_GROW}"
+        ));
     }
     for (what, action) in &history.problems {
         lines.push(format!("{GROWN_MARK}{what}{FIELD_SEPARATOR}{DO}{action}"));
@@ -1389,14 +1495,14 @@ pub fn main_with(args: &[String]) -> Result<Outcome, String> {
     let (command, dir) = match args {
         [command] => (command, std::env::current_dir().map_err(|e| e.to_string())?),
         [command, dir] => (command, PathBuf::from(dir)),
-        _ => return Err(USAGE.to_string()),
+        _ => return Err(usage()),
     };
     let root = workspace_root(&dir)?;
     match Command::named(command) {
         Some(Command::Check) => check(&root),
         Some(Command::Init) => init(&root),
         Some(Command::List) => list(&root),
-        None => Err(USAGE.to_string()),
+        None => Err(usage()),
     }
 }
 
