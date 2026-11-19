@@ -1548,6 +1548,24 @@ array of slots in microseconds.
 - The tests draw bounded look-ahead from 1 to the translator's `BOUND` (256), not 1 to 64 as plan section 15
   first said: the range is then derived from the translator, not a second constant (J4a run 3; plan
   corrected). The N a seed gives changed with it.
+- J5's bar leaves out, listed by name as waiting, the K6b runtimes' tests that fail with the back end
+  because their processes reserve more address space than its ceiling (4080 MiB; the kernel counts and
+  warns "address above the address space"): java `start_up_matches_reference` and
+  `threads_and_collections_match_reference` ("Could not reserve enough space for 1044480KB object heap"),
+  node `system_program_matches_reference` (V8's worker isolates: "Failed to reserve virtual memory for
+  CodeRange"), python `system_test_modules_match_reference` (test_mmap's `test_around_2GB` and
+  `test_around_4GB`). They are J6's (plan section 16), and need the translator's form with the table and
+  slots in 64 bit memory (plan section 20, asked of the translator track). At none look-ahead the K6b
+  runtimes' six tests are not run at all (plan section 15: J6 runs them at full and bounded only; libpython at
+  none measured 16.9 GB to compile). No test of the crate needs standard input or the count comparison, so
+  none waits for those.
+- The file backend of the local system is written here, not taken from a crate: fuse-backend-rs (the kernel
+  tests' server) has its passthrough file system on Linux only, and on macOS it and fuser speak macFUSE's
+  messages, not Linux's, which the kernel sends. It is written on fuse-abi's Linux types and rustix.
+- `root.path` stays refused (J5's task allowed either), for the reason in plan section 14.
+- `System` gained `serve_directory` (with a default that answers `Unsupported`, so the kernel test driver did
+  not change) and `LocalSystem` gained `publish`: the surface had no way to name a host directory or a
+  published port. Names suggested, the owner's (plan section 20).
 
 ## Dependencies
 
