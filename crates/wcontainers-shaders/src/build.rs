@@ -10,6 +10,15 @@ use naga::{
 
 pub(crate) type Expr = Handle<Expression>;
 
+/// The bytes of a 32-bit word, the unit storage buffers of words are addressed in.
+pub(crate) const WORD: u32 = core::mem::size_of::<u32>() as u32;
+/// The shift turning a byte address into a word index.
+pub(crate) const WORD_SHIFT: u32 = WORD.trailing_zeros();
+/// The shift turning a byte count into a bit count.
+pub(crate) const BYTE_SHIFT: u32 = u8::BITS.trailing_zeros();
+/// The components of a four-component vector.
+pub(crate) const VEC4: u32 = VectorSize::Quad as u32;
+
 /// Builds one function, statement by statement, into the innermost open block.
 pub(crate) struct Builder {
     pub f: Function,

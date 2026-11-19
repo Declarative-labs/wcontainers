@@ -12,7 +12,7 @@ use wcontainers_gpu::{Format, TEXEL_BUFFER_TEXTURE_WIDTH, VertexFormat};
 
 use super::pull::{Component, Kind, decode, layout, select};
 use super::*;
-use crate::build::{self, Builder, Expr};
+use crate::build::{self, BYTE_SHIFT, Builder, Expr, VEC4, WORD, WORD_SHIFT};
 
 /// The vertex format of the same bytes, whose layout and decoding a typed buffer element shares.
 pub(crate) fn vertex_format(format: Format) -> Option<VertexFormat> {
@@ -65,6 +65,9 @@ pub(crate) fn vertex_format(format: Format) -> Option<VertexFormat> {
         _ => return None,
     })
 }
+
+/// The component an absent alpha reads as one in.
+const ALPHA: u32 = VEC4 - 1;
 
 /// Where a view's elements are.
 #[derive(Clone, Copy, PartialEq)]
@@ -127,7 +130,7 @@ impl TexelBuffer {
             ),
             None => scalar(module, Scalar::U32),
         };
-        build::runtime_array(module, base, 4)
+        build::runtime_array(module, base, WORD)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -167,7 +170,7 @@ impl TexelBuffer {
 
     /// Whether elements are narrower than a word, so writes need atomic words.
     pub(crate) fn narrow(size: u32) -> bool {
-        !size.is_multiple_of(4)
+        !size.is_multiple_of(WORD)
     }
 
     /// `(offset, length)` of the view, read from the helper constants.
@@ -211,14 +214,15 @@ impl TexelBuffer {
         let TexelPlace::Image(slot) = self.place else {
             unreachable!("a layout belongs to a storage texture");
         };
-        let vec4u = vector(module, 4, Scalar::U32);
+        let vec4u = build::vec4(module, Scalar::U32);
+        let stride = module.types[vec4u].inner.size(module.to_ctx());
         let two = module.types.insert(
             Type {
                 name: None,
                 inner: TypeInner::Array {
                     base: vec4u,
                     size: naga::ArraySize::Constant(core::num::NonZeroU32::new(2).unwrap()),
-                    stride: 16,
+                    stride,
                 },
             },
             Span::UNDEFINED,
@@ -294,7 +298,7 @@ impl TexelBuffer {
         if let Some(f) = self.size_of {
             return f;
         }
-        let vec3u = vector(module, 3, Scalar::U32);
+        let vec3u = vector(module, naga::VectorSize::Tri as u8, Scalar::U32);
         let mut b = Builder::new(&format!("{}_size", self.name));
         b.f.result = Some(FunctionResult {
             ty: vec3u,
@@ -327,7 +331,7 @@ impl TexelBuffer {
             return f;
         }
         let natural = self.scalar();
-        let out = vector(module, 4, natural);
+        let out = build::vec4(module, natural);
         let u32_ty = scalar(module, Scalar::U32);
         let mut b = Builder::new(&format!("{}_load", self.name));
         b.f.arguments.push(FunctionArgument {
@@ -375,14 +379,15 @@ impl TexelBuffer {
         for &(byte, shift, bits) in &self.components {
             let at = b.u32(byte);
             let a = b.add(address, at);
-            let two = b.u32(2);
-            let i = b.binary(B::ShiftRight, a, two);
+            let by = b.u32(WORD_SHIFT);
+            let i = b.binary(B::ShiftRight, a, by);
             let p = b.at(words, i);
             let mut raw = self.word(&mut b, p);
-            if bits < 32 {
-                let three = b.u32(3);
-                let in_word = b.binary(B::And, a, three);
-                let bit = b.binary(B::ShiftLeft, in_word, three);
+            if bits < u32::BITS {
+                let byte_mask = b.u32(WORD - 1);
+                let in_word = b.binary(B::And, a, byte_mask);
+                let to_bits = b.u32(BYTE_SHIFT);
+                let bit = b.binary(B::ShiftLeft, in_word, to_bits);
                 let field = b.u32(shift);
                 let from = b.add(bit, field);
                 let shifted = b.binary(B::ShiftRight, raw, from);
@@ -392,8 +397,8 @@ impl TexelBuffer {
             let kind = self.kind;
             values.push(b.raw(|f, body| decode(f, body, kind, raw, bits)));
         }
-        for i in values.len()..4 {
-            values.push(b.expr(Expression::Literal(literal(natural, (i == 3) as u32))));
+        for i in values.len() as u32..VEC4 {
+            values.push(b.expr(Expression::Literal(literal(natural, (i == ALPHA) as u32))));
         }
         let read = b.compose(out, values);
         let zero = self.past_length(&mut b, out, natural);
@@ -407,12 +412,12 @@ impl TexelBuffer {
     /// What an element past the length reads: zero in the format's components, the defaults in the
     /// others.
     fn past_length(&self, b: &mut Builder, ty: Handle<Type>, natural: Scalar) -> Expr {
-        let zeros = (0..4)
+        let zeros = (0..VEC4)
             .map(|i| {
-                let missing = i >= self.components.len();
+                let missing = i as usize >= self.components.len();
                 b.expr(Expression::Literal(literal(
                     natural,
-                    (missing && i == 3) as u32,
+                    (missing && i == ALPHA) as u32,
                 )))
             })
             .collect();
@@ -451,7 +456,7 @@ impl TexelBuffer {
             return f;
         }
         let natural = self.scalar();
-        let value_ty = vector(module, 4, natural);
+        let value_ty = build::vec4(module, natural);
         let u32_ty = scalar(module, Scalar::U32);
         let mut b = Builder::new(&format!("{}_store", self.name));
         for (name, ty) in [("index", u32_ty), ("value", value_ty)] {
@@ -469,22 +474,22 @@ impl TexelBuffer {
         let size = b.u32(self.size);
         let moved = b.mul(index, size);
         let address = b.add(offset, moved);
-        let two = b.u32(2);
-        let first = b.binary(B::ShiftRight, address, two);
+        let by = b.u32(WORD_SHIFT);
+        let first = b.binary(B::ShiftRight, address, by);
         let words = b.global(self.var);
         // Each word's bits, from the components lying in it.
-        let count = self.size.div_ceil(4);
+        let count = self.size.div_ceil(WORD);
         let mut parts: Vec<Option<Expr>> = vec![None; count as usize];
         for (c, &(byte, shift, bits)) in self.components.iter().enumerate() {
             let v = b.field(value, c as u32);
             let kind = self.kind;
             let mut raw = b.raw(|f, body| encode(f, body, kind, v, bits));
-            let at = (byte % 4) * 8 + shift;
+            let at = ((byte % WORD) << BYTE_SHIFT) + shift;
             if at != 0 {
                 let by = b.u32(at);
                 raw = b.binary(B::ShiftLeft, raw, by);
             }
-            let w = (byte / 4) as usize;
+            let w = (byte / WORD) as usize;
             parts[w] = Some(match parts[w] {
                 Some(p) => b.binary(B::InclusiveOr, p, raw),
                 None => raw,
@@ -492,12 +497,13 @@ impl TexelBuffer {
         }
         if Self::narrow(self.size) {
             // One word holds the element: its bits replaced by compare-exchange.
-            let three = b.u32(3);
-            let in_word = b.binary(B::And, address, three);
-            let bit = b.binary(B::ShiftLeft, in_word, three);
+            let byte_mask = b.u32(WORD - 1);
+            let in_word = b.binary(B::And, address, byte_mask);
+            let to_bits = b.u32(BYTE_SHIFT);
+            let bit = b.binary(B::ShiftLeft, in_word, to_bits);
             let bits = parts[0].expect("a component");
             let bits = b.binary(B::ShiftLeft, bits, bit);
-            let ones = b.u32(((1u64 << (self.size * 8)) - 1) as u32);
+            let ones = b.u32(((1u64 << (self.size << BYTE_SHIFT)) - 1) as u32);
             let mask = b.binary(B::ShiftLeft, ones, bit);
             let keep = b.expr(Expression::Unary {
                 op: naga::UnaryOperator::BitwiseNot,
@@ -576,7 +582,7 @@ impl TexelBuffer {
         fun: AtomicFunction,
     ) -> Result<Handle<Function>> {
         let s = match self.atomic {
-            Some(s) if self.size == 4 && self.components.len() == 1 => s,
+            Some(s) if self.size == WORD && self.components.len() == 1 => s,
             _ => return Err(ConvertError::Unsupported("TypedBufferAtomicFormat")),
         };
         let code = atomic_code(fun);
@@ -627,8 +633,8 @@ impl TexelBuffer {
         let (offset, length) = self.view(module, reflection, &mut b);
         let inside = b.binary(B::Less, index, length);
         b.open();
-        let two = b.u32(2);
-        let first = b.binary(B::ShiftRight, offset, two);
+        let by = b.u32(WORD_SHIFT);
+        let first = b.binary(B::ShiftRight, offset, by);
         let i = b.add(first, index);
         let words = b.global(self.var);
         let p = b.at(words, i);
@@ -712,7 +718,7 @@ fn encode(f: &mut Function, body: &mut Block, kind: Kind, v: Expr, bits: u32) ->
             .append(Expression::Literal(l), Span::UNDEFINED)
     };
     let mask = |f: &mut Function, body: &mut Block, x: Expr| {
-        if bits == 32 {
+        if bits == u32::BITS {
             return x;
         }
         let m = lit(f, Literal::U32(((1u64 << bits) - 1) as u32));
@@ -730,13 +736,13 @@ fn encode(f: &mut Function, body: &mut Block, kind: Kind, v: Expr, bits: u32) ->
         )
     };
     match kind {
-        Kind::Uint if bits == 32 => v,
+        Kind::Uint if bits == u32::BITS => v,
         Kind::Uint => {
             let max = lit(f, Literal::U32(((1u64 << bits) - 1) as u32));
             math(f, body, MathFunction::Min, [v, max])
         }
         Kind::Sint => {
-            let v = if bits == 32 {
+            let v = if bits == u32::BITS {
                 v
             } else {
                 let lo = lit(f, Literal::I32(-(1 << (bits - 1))));
@@ -783,17 +789,17 @@ fn encode(f: &mut Function, body: &mut Block, kind: Kind, v: Expr, bits: u32) ->
                     Expression::As {
                         expr: c,
                         kind: ScalarKind::Sint,
-                        convert: Some(4),
+                        convert: Some(Scalar::I32.width),
                     },
                 );
                 let u = to_u32(f, body, i, None);
                 mask(f, body, u)
             } else {
                 let c = binary(f, body, B::Add, c, half);
-                to_u32(f, body, c, Some(4))
+                to_u32(f, body, c, Some(Scalar::U32.width))
             }
         }
-        Kind::Float if bits == 32 => to_u32(f, body, v, None),
+        Kind::Float if bits == u32::BITS => to_u32(f, body, v, None),
         Kind::Float => small_float(f, body, v, bits),
     }
 }

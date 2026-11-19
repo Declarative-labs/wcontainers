@@ -6,6 +6,7 @@
 
 use super::{Placed, functions_first, place_calls};
 use crate::ConvertError;
+use crate::build::{VEC4 as ROW_COMPONENTS, WORD};
 use alloc::vec::Vec;
 use naga::proc::Alignment;
 use naga::{
@@ -19,11 +20,6 @@ type Result<T> = core::result::Result<T, ConvertError>;
 fn refused() -> ConvertError {
     ConvertError::Unsupported("ConstantComponentIndexing")
 }
-
-/// The bytes of a component of a row.
-const WORD: u32 = core::mem::size_of::<u32>() as u32;
-/// The components of a row.
-const ROW_COMPONENTS: u32 = VectorSize::Quad as u32;
 
 /// The array a constant buffer's view holds: its element type and stride.
 fn array_of(module: &Module, v: &GlobalVariable) -> Option<(Handle<Type>, u32)> {
