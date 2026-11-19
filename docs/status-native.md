@@ -31,8 +31,8 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   kernel inside, against the reference), the root's files sent back, turns that end at their limit (between pieces, at
   look-ahead none) and a fork, exec and signal program alike on both outputs; Docker came back at 04:59 and the bar passed
   against the reference, 55 of 55 commands, and hello and the fork program give the reference's output and status (below,
-  "N3 run 6"); run 7 settled the independent check's two blocking and five minor findings (below, "N3 run 7"). N3 is done, for
-  its independent check.
+  "N3 run 6"); run 7 settled the independent check's two blocking and five minor findings (below, "N3 run 7"); run 8 settled the
+  next check's three blocking and five minor findings (below, "N3 run 8"). N3 is done, for its independent check.
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -59,6 +59,70 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N3 run 8 (2026-11-19): the independent check of run 7, and how each finding was settled
+
+Start: origin/main and origin/phase-1-literals had nothing new.
+
+The check's findings:
+- Blocking, `code`'s private line not deterministic in the reference: settled, the cause was the program's toolchain. zig's
+  compiler-rt `__clear_cache` does `dc cvau`, `dsb ish`, `ic ivau`, then `isb` with no `dsb ish` after the `ic ivau`
+  (seen in the disassembly of the built program), so real hardware may run the old code: in Docker the old program gave
+  "private: 1 1" in 9 of 2,000 runs and 64 of 10,000. code.c now announces with the architecture's whole sequence itself
+  (`dc cvau`, `dsb ish`, `ic ivau`, `dsb ish`, `isb`; one line of each, as the function starts a page): 0 of 10,000 runs
+  differ in Docker, every line ("private: 1 2", "shared, changed by a child: 3 4" and the new line below) the same each
+  time (scratch native/n3r8/docker-code*.log, M5 Max, load 33 to 49). All three lines stay checked against the reference.
+- Blocking, the stop test's default cut to 250: settled. 300 again, derived and not marked: the delays' report gives the
+  99th percentile, and the default is the count that leaves three stops above it (`STOPS_ABOVE_HIGHEST_PERCENTILE * PERCENT
+  / (PERCENT - HIGHEST_PERCENTILE)`; the report's percentile is the same constant). The plan's N1 bar (300) is true again.
+  The floor test: 21 cases and 1 measurement, 0 failed, "300 stops from another host thread (seed 0x9e3779b97f4a7c15): pc
+  outside the loop 0 times, count went back 0 times", stop delay median 2250 ns, 99th 4667 ns (load 39).
+- Blocking, run 7's status gave the bar's exits per command as 8,700 to 12,500: corrected to what its log says, 8,119 to
+  14,125 (below, this run's own range).
+- Minor, `find`'s order of the image's files: the kernel's, passed to the kernel track again (For the orchestrator).
+- Minor, the native address ceiling: a known named difference, ruled (decision 9a, 2^45). How to see it: a static program
+  that `mmap`s with MAP_FIXED at 1<<33, 1<<40, 1<<44 and 1<<46; natively the first three are mapped and 1<<46 is refused
+  (the kernel counts ADDRESS_ABOVE_SPACE, syscall/memory.rs); the reference maps all four; the WebAssembly side refuses
+  all four (its ceiling is lower). Not a test of this track's: the ceiling is the rule, not a fault.
+- Minor, the kernel's announcements of changed code not counted natively: settled. Each piece now keeps the guest bytes
+  it was translated from; when the kernel announces a range (unmapped, made not executable, mapped over) or a page stops
+  being executable or is mapped over by a shared block, the inside drops the range's pieces and counts "code changed after
+  it ran" once if a dropped piece's bytes are no longer those (a page no longer there is not compared). code.c has a third
+  part for it: a function giving 5 is rewritten to give 6 without an announcement and only then is its page (the first of
+  two mapped together) made not executable; it is announced and made executable before it runs ("private, changed before
+  it was made not executable: 5 6"). The kernel test now checks the native count: 3 (the three changes of code that ran).
+  The WebAssembly side counts 2 on the same program: it compares bytes only of code ranges with a recorded hash, which an
+  anonymous mapping's range does not have, so it misses the third (For the orchestrator, the translator or runtime
+  track's crate).
+- Minor, other tracks' crates changed by N3 (R1, a first R3, the test crate's API): still no ruling; nothing more changed
+  outside this track's crates this run.
+- Minor, turns that end at their count between pieces: as recorded (Departures, N3 run 6). N3's runs with more than one
+  process depend on it: forks.c's parent spins with no system call and ends only because its turns end at their limit (44
+  turns at seed 0x6b65726e). N4's linking takes that away (pieces no longer come back to the inside each instruction), so
+  N4 needs decision 10's ruling or must bring back plan 5.5's refusal of such a turn.
+
+Results (M5 Max; scratch native/n3r8):
+- kernel test (kernel2.log, load 37 to 40, 29 s once built): hello, getppid, forks and code alike on both sides and against
+  the reference. Exits of the machine: 1867 with no getppid calls, 1870 with 100,000, 1870 with 200,000. code: "code changed
+  after it ran" 3 natively, 2 on the WebAssembly side (above).
+- exits test (floor-exits.log, load 39): 4 programs, 0 failed, both modes, 4742 pieces.
+- The bar (busybox.log, 07:06 to 07:13, load 28 to 38): "busybox: 55 commands gave the reference's output, exit code and
+  files", seed 0x6b65726e, 200 s with Docker's runs. Each command 8,119 to 14,125 exits of the machine, the same count for
+  every command as run 7's log. No container of this run left (two alpine containers of another track's were running).
+- The whole suite of what this track owns, once before the push (suite.log, 07:15 to 07:28, load 26 to 47, M5 Max):
+  guest-cpu, arm64, the inside, the monitor, the policy crate and the literal check's tests, `--no-fail-fast`: passed (36
+  test binaries ok). In it: the bar again, 55 commands as the reference (229 s); kernel alike and against the reference;
+  exits 4 programs, 0 failed, both modes; floor 21 cases and 1 measurement, 0 failed, 300 stops; native 32,562 cases, 0
+  failing; interrupts 2500, 0 failed; probe 0 forms of 16 bytes or fewer differ (44 larger, as before). The translator with
+  `native`: passed. The literal check: exit 0. All on the Mac (the monitor's tests need Hypervisor.framework).
+
+Dependencies: no new crate. Literals: the check exits 0; no baseline line added (the restored 300 is derived, not marked).
+
+What comes next:
+1. N3's independent check (how to run it: "How to run" below; the bar `--test busybox` with Docker, `--test kernel` for
+   hello, getppid's exit count, forks and code against the reference, `--test exits`, `--test floor`).
+2. N4 (linking and speed), with decision 10 for turns that end at a count once pieces are linked (above).
+3. R3's rest, when the orchestrator rules on R1 and R3.
 
 ## N3 run 7 (2026-11-19): the independent check of run 6, and how each finding was settled
 
@@ -115,7 +179,8 @@ Results (M5 Max; scratch native/n3r7):
   "address-space identifiers ran out" 1, 4742 pieces asked of the host.
 - The whole suite of the monitor and the inside, guest-cpu and arm64 unit tests, after the last change (suite2.log, 06:07 to
   06:15, load 35 to 50, M5 Max): passed. The bar: "busybox: 55 commands gave the reference's output, exit code and files"
-  (207 s with Docker's runs), each command 8,700 to 12,500 exits, all of them now warned as "asked the host". kernel test as
+  (207 s with Docker's runs), each command 8,119 to 14,125 exits (corrected in run 8: an earlier draft gave 8,700 to 12,500,
+  which no log backs), all of them now warned as "asked the host". kernel test as
   above (28 s, its WebAssembly translations cached); exits 4 programs, 0 failed, both modes; floor 21 cases and 1
   measurement, 0 failed; native 32,562 cases, 0 failing; interrupts 2500, 0 failed; probe 0 forms of 16 bytes or fewer
   differ (44 larger, as before); carry passed. wcontainers-wasmtime's tests/code.rs 4 passed (Mac). No container left.
@@ -354,7 +419,8 @@ Built (each its own commit):
   without and with the count; `WCONTAINERS_EXITS_EXACT=0|1` runs one. `MEMORY` and `ONE_CPU` moved into the tests'
   common module (the literal check found them defined twice).
 - The stop test's default count is 250 stops (was 300): the new dev-dependency on the runtime brings the kernel,
-  whose `RESERVED_PIDS` is also 300, and the literal check reads the test's 300 as restating it.
+  whose `RESERVED_PIDS` is also 300, and the literal check reads the test's 300 as restating it. (Undone in N3 run 8: 300
+  again, derived.)
 
 Results (M5 Max; scratch native/n3r3/exits.log):
 - hello: status 3, "hello, world\n" and "hello, error\n", 3 exits, identical on both sides, both modes.
@@ -1400,6 +1466,14 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N3 run 8: for the WebAssembly output's owners (wcontainers-wasmtime, not this track's): its "code changed after it ran"
+  compares bytes only of code ranges that carry a hash, so code written into an anonymous mapping, run, rewritten without
+  an announcement and then made not executable is not counted (tests/guest/code.c's third line: 2 there, 3 natively).
+  For the kernel track, again: `find` lists the image's files in another order than the reference (the check's
+  `find /etc/apk -type f`). For whoever writes guest programs with zig: its `__clear_cache` leaves out the `dsb ish` after
+  `ic ivau`, so such a program may run old code on real hardware (64 of 10,000 runs in Docker on this Mac).
+  R1 and the first R3 still wait for a ruling.
 
 - N3 run 7: two changes outside this track's crates, each in this run's commits: wcontainers-wasmtime's
   `reason::CODE_CHANGED_AFTER_IT_RAN` is now `pub use wcontainers_guest_cpu::reason::CODE_CHANGED_AFTER_IT_RAN` (the start
