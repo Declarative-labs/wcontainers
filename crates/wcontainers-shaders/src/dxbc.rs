@@ -79,7 +79,7 @@ fn declared_sizes(ir: &mut Ir, declared: &[u32]) {
     for op in ir.ops.iter_mut().filter(|op| op.code == code::DCL_CBV) {
         let at = (op.lits.first().copied(), op.lits.get(1).copied());
         let size = declared
-            .as_chunks::<3>()
+            .as_chunks::<{ crate::dxil::TRIPLE }>()
             .0
             .iter()
             .find(|d| (Some(u64::from(d[0])), Some(u64::from(d[1]))) == at);

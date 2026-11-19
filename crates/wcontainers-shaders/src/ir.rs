@@ -42,9 +42,8 @@ impl Ty {
     }
 }
 
-// dxbc-spirv's enums (`ScalarType`, `OpCode`, `OpFlag`, `BuiltIn`, `ResourceKind`, `ShaderStage`,
-// `PrimitiveType`, `InterpolationMode`, `Construct`, `UavFlag`) as modules of constants, written by build.rs
-// from its `ir/ir.h`.
+// dxbc-spirv's enums the lowering reads, and the C++ boundary's own (`ResourceClass`), as modules of
+// constants written by build.rs from their headers.
 include!(concat!(env!("OUT_DIR"), "/ir_codes.rs"));
 
 /// A decoded shader.

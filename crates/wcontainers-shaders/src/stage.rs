@@ -36,6 +36,9 @@ type Result<T> = core::result::Result<T, ConvertError>;
 
 /// The set of the stage helper's own bindings in its compute programs.
 pub(crate) const STAGE_SET: u32 = 1;
+
+/// Bytes of one four-word slot of a record or block.
+const SLOT_BYTES: u32 = build::WORD * build::VEC4;
 /// Its draw's values (a uniform block of u32 words, [`word`]).
 pub(crate) const VALUES_BINDING: u32 = 0;
 /// The draw's index buffer, read as u32 words.
@@ -90,7 +93,7 @@ pub(crate) fn binding(binding: u32) -> ResourceBinding {
 
 /// Words per record of a stage holding `locations` user locations.
 pub(crate) fn record_words(locations: usize) -> u32 {
-    (1 + locations as u32) * 4
+    (1 + locations as u32) * build::VEC4
 }
 
 /// The values block's global.
@@ -101,7 +104,7 @@ pub(crate) fn values(module: &mut Module) -> Handle<naga::GlobalVariable> {
             name: Some(format!("w{i}")),
             ty: u32_ty,
             binding: None,
-            offset: i * 4,
+            offset: i * build::WORD,
         })
         .collect();
     let ty = module.types.insert(
@@ -109,7 +112,7 @@ pub(crate) fn values(module: &mut Module) -> Handle<naga::GlobalVariable> {
             name: Some("StageValues".into()),
             inner: TypeInner::Struct {
                 members,
-                span: word::COUNT_OF * 4,
+                span: word::COUNT_OF * build::WORD,
             },
         },
         Span::UNDEFINED,
@@ -361,7 +364,7 @@ pub(crate) fn vertex_as_compute(vertex: &Module, locations: &[u32]) -> Result<Mo
 
     let values = values(&mut module);
     let u32_ty = build::scalar(&mut module, Scalar::U32);
-    let words = build::runtime_array(&mut module, u32_ty, 4);
+    let words = build::runtime_array(&mut module, u32_ty, build::WORD);
     let indices = build::global(
         &mut module,
         "stage_indices",
@@ -372,7 +375,7 @@ pub(crate) fn vertex_as_compute(vertex: &Module, locations: &[u32]) -> Result<Mo
         words,
     );
     let uvec4 = build::vec4(&mut module, Scalar::U32);
-    let records = build::runtime_array(&mut module, uvec4, 16);
+    let records = build::runtime_array(&mut module, uvec4, SLOT_BYTES);
     let vertices = build::global(
         &mut module,
         "stage_vertices",
@@ -586,7 +589,7 @@ pub(crate) fn clip_unpositioned(module: &mut Module) -> Result<()> {
         Binding::BuiltIn(BuiltIn::Position { invariant: false }),
     ));
     components.push(position);
-    let span = 16 * members.len() as u32;
+    let span = SLOT_BYTES * members.len() as u32;
     let ty = module.types.insert(
         Type {
             name: Some("PositionedOutputs".into()),
@@ -598,7 +601,7 @@ pub(crate) fn clip_unpositioned(module: &mut Module) -> Result<()> {
                         name: Some(format!("v{i}")),
                         ty,
                         binding: Some(binding),
-                        offset: 16 * i as u32,
+                        offset: SLOT_BYTES * i as u32,
                     })
                     .collect(),
                 span,
@@ -636,7 +639,7 @@ pub const PASSTHROUGH_HELPERS: [wcontainers_gpu::HelperSlot; 2] = [
     },
     wcontainers_gpu::HelperSlot {
         value: wcontainers_gpu::HelperValue::Viewport,
-        offset: 4,
+        offset: build::WORD,
     },
 ];
 
@@ -684,7 +687,13 @@ pub(crate) fn passthrough(reflection: &Reflection) -> Result<Module> {
                 (kind, location(loc, Some(interpolation)))
             }
         };
-        let ty = build::vec4(&mut module, Scalar { kind, width: 4 });
+        let ty = build::vec4(
+            &mut module,
+            Scalar {
+                kind,
+                width: Scalar::U32.width,
+            },
+        );
         let v = if kind == ScalarKind::Uint {
             raw
         } else {
@@ -694,7 +703,7 @@ pub(crate) fn passthrough(reflection: &Reflection) -> Result<Module> {
             name: Some(format!("v{slot}")),
             ty,
             binding: Some(binding),
-            offset: 16 * slot as u32,
+            offset: SLOT_BYTES * slot as u32,
         });
         components.push(v);
     }
@@ -718,10 +727,10 @@ pub(crate) fn passthrough(reflection: &Reflection) -> Result<Module> {
                             name: Some((*name).into()),
                             ty: u32_ty,
                             binding: None,
-                            offset: 4 * i as u32,
+                            offset: build::WORD * i as u32,
                         })
                         .collect(),
-                    span: 16,
+                    span: SLOT_BYTES,
                 },
             },
             Span::UNDEFINED,
@@ -761,7 +770,7 @@ pub(crate) fn passthrough(reflection: &Reflection) -> Result<Module> {
             name: Some("Outputs".into()),
             inner: TypeInner::Struct {
                 members,
-                span: 16 * (1 + locations.len() as u32),
+                span: SLOT_BYTES * (1 + locations.len() as u32),
             },
         },
         Span::UNDEFINED,
