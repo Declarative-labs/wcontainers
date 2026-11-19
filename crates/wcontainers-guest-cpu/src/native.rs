@@ -187,8 +187,8 @@ pub struct HostCode {
     /// In order of their starts, the first at 0.
     pub spans: Vec<Span>,
     now: Option<Span>,
-    /// Adds placed ahead of the current instruction's own event: 0 or 1.
-    owed: u32,
+    /// Whether the current instruction is a counted event whose add is still ahead of its commit point.
+    owed: bool,
     /// Code placed out of line, written after the piece.
     deferred: Deferred,
 }
@@ -211,8 +211,9 @@ impl HostCode {
         Self::default()
     }
 
-    /// Starts the guest instruction at `address`. The count's lead carries over from what came before.
-    pub fn start(&mut self, address: u64) {
+    /// Starts the guest instruction at `address`, `counted` when it is one of the count's events. The count's
+    /// lead carries over from what came before: an add placed earlier in the run may be this one's.
+    pub fn start(&mut self, address: u64, counted: bool) {
         let lead = self.now.as_ref().map_or(0, |s| s.lead);
         self.now = Some(Span {
             start: 0,
@@ -223,7 +224,7 @@ impl HostCode {
             relocated: Vec::new(),
             fixups: Vec::new(),
         });
-        self.owed = 0;
+        self.owed = counted;
     }
 
     fn state(&mut self) -> &mut Span {
@@ -231,7 +232,7 @@ impl HostCode {
     }
 
     /// The current state, to come back to for code placed out of line.
-    pub fn snapshot(&self) -> (Span, u32) {
+    pub fn snapshot(&self) -> (Span, bool) {
         (
             self.now.clone().expect("an instruction was started"),
             self.owed,
@@ -239,7 +240,7 @@ impl HostCode {
     }
 
     /// Goes back to a state taken with [`Self::snapshot`].
-    pub fn restore(&mut self, (span, owed): (Span, u32)) {
+    pub fn restore(&mut self, (span, owed): (Span, bool)) {
         self.now = Some(span);
         self.owed = owed;
     }
@@ -274,11 +275,11 @@ impl HostCode {
         self.bytes[at..at + bytes.len()].copy_from_slice(bytes);
     }
 
-    /// Writes the count's add for the current instruction's event, ahead of it.
+    /// Writes the count's add for an event at or after the current instruction in the same straight-line run:
+    /// from here until that event's commit point the count register is one ahead.
     pub fn count(&mut self, bytes: &[u8]) {
         self.push(bytes);
         self.state().lead += 1;
-        self.owed += 1;
     }
 
     /// Writes the commit point; after it the guest goes on at `resume`.
@@ -293,7 +294,7 @@ impl HostCode {
         let now = self.state();
         now.side = Side::After;
         now.resume = resume;
-        now.lead -= owed;
+        now.lead -= u32::from(owed);
     }
 
     /// From here on a guest register's value is held elsewhere.

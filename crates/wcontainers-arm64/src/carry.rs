@@ -147,7 +147,7 @@ struct Out<'a> {
 
 /// Code out of line: a test's other way, entered from the branch at `from` in the state it had there.
 struct Tail {
-    state: (Span, u32),
+    state: (Span, bool),
     from: usize,
     words: Vec<u32>,
     /// What a stop in it means, when it differs from the branch's state.
