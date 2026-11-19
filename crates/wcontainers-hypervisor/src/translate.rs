@@ -44,6 +44,7 @@ fn translate(link: &mut Link, look_ahead: LookAhead) {
             );
         let instructions = piece.as_ref().map_or(0, |p| {
             let mut guests: Vec<u64> = p.spans.iter().map(|span| span.guest).collect();
+            guests.sort_unstable();
             guests.dedup();
             guests.len()
         });

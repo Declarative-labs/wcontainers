@@ -202,7 +202,7 @@ fn write_code(at: u64, words: &[u32]) {
 impl Loaded {
     /// Whether the guest code this piece was translated from overlaps `range`.
     fn overlaps(&self, at: u64, range: &core::ops::Range<u64>) -> bool {
-        let end = self.spans.last().map_or(at, |span| span.guest) + size_of::<u32>() as u64;
+        let end = at + self.source.len() as u64;
         at < range.end && range.start < end
     }
 }
@@ -759,10 +759,13 @@ impl NativeCpu {
                 self.slow(reason.name(), sites, pc);
             }
         }
+        // Code placed out of line comes after the run's last instruction, so the run ends at its highest guest.
         let covered = piece
             .spans
-            .last()
-            .map_or(0, |span| span.guest + size_of::<u32>() as u64 - pc);
+            .iter()
+            .map(|span| span.guest + size_of::<u32>() as u64 - pc)
+            .max()
+            .unwrap_or(0);
         code.truncate(covered as usize);
         let sites: Vec<(u64, Site)> = piece
             .exits
