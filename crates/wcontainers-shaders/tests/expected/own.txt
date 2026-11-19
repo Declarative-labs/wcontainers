@@ -78,6 +78,7 @@ ps_integer.dxbc	ok-wgsl glsl-compile
 ps_layer.dxbc	ok
 ps_levels.dxbc	ok-wgsl glsl-write
 ps_levels_past.dxbc	ok-wgsl glsl-write
+ps_line.dxbc	ok
 ps_local.dxbc	ok
 ps_loop.dxbc	ok
 ps_mark.dxbc	ok
@@ -92,6 +93,7 @@ ps_negate.dxbc	ok
 ps_offset.dxbc	ok
 ps_pack.dxbc	ok
 ps_primid.dxbc	ok-wgsl glsl-compile
+ps_primitive.dxbc	ok-wgsl glsl-compile
 ps_pull.dxbc	ok
 ps_rows.dxbc	ok
 ps_rows_io.dxbc	ok
@@ -120,6 +122,7 @@ vs_filter.dxbc	ok
 vs_fullscreen.dxbc	ok-wgsl glsl-compile
 vs_geometry.dxbc	ok
 vs_ids.dxbc	ok
+vs_line.dxbc	ok
 vs_pack.dxbc	ok
 vs_patch.dxbc	ok
 vs_pull.dxbc	ok

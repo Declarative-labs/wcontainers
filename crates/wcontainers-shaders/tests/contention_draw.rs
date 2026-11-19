@@ -24,8 +24,6 @@ use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::core::Interface;
 
-const SIZE: u32 = 64;
-
 fn rng(seed: u64) -> impl FnMut() -> u32 {
     let mut s = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
     move || {

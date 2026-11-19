@@ -26,8 +26,6 @@ use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::core::Interface;
 
-const SIZE: u32 = 64;
-
 /// One scene: the depth and stencil cleared, the first draw's corners (one depth) and stencil value,
 /// the second draw's corners and tests (none: off; stencil front and back), reference and read mask.
 #[derive(Clone, Debug)]

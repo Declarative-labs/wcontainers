@@ -18,6 +18,8 @@ pub(crate) const WORD_SHIFT: u32 = WORD.trailing_zeros();
 pub(crate) const BYTE_SHIFT: u32 = u8::BITS.trailing_zeros();
 /// The components of a four-component vector.
 pub(crate) const VEC4: u32 = VectorSize::Quad as u32;
+/// The alpha component of a four-component colour.
+pub(crate) const ALPHA: u32 = VEC4 - 1;
 
 /// An f32's significand (its stored fraction and the implicit one), fraction and exponent bias.
 pub(crate) const F32_SIGNIFICAND_BITS: u32 = f32::MANTISSA_DIGITS;

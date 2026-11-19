@@ -68,13 +68,6 @@ fn unbuilt_variants_are_refused_by_name() {
         ),
         (
             VariantKey {
-                flags: VariantFlags::LINE_COVERAGE | VariantFlags::CLIP_DEPTH_REWRITE,
-                ..Default::default()
-            },
-            "AntialiasedLinesAsQuads",
-        ),
-        (
-            VariantKey {
                 storage_packed: 1,
                 ..Default::default()
             },

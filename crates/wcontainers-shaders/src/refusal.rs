@@ -55,6 +55,8 @@ pub const INTERPOLATE_AT: &str = "InterpolateAt";
 pub const INT_16_BITCAST: &str = "Int16Bitcast";
 pub const INT_16_STAGE_VALUE: &str = "Int16StageValue";
 pub const INT_16_STORAGE: &str = "Int16Storage";
+/// Line coverage for a program whose target 0 is not four floats, which has no alpha to multiply.
+pub const LINE_COVERAGE_TARGET: &str = "LineCoverageTarget";
 pub const LINKED_CLIP_DISTANCE_COUNT: &str = "LinkedClipDistanceCount";
 pub const LINKED_LOCATION_TAKEN: &str = "LinkedLocationTaken";
 pub const LOD_BIAS_ON_COMPARISON: &str = "LodBiasOnComparison";
@@ -72,6 +74,9 @@ pub const NORM_AS_INTEGER: &str = "NormAsInteger";
 pub const OUTPUT_ARRAY: &str = "OutputArray";
 pub const PACKED_VERTEX_INPUT: &str = "PackedVertexInput";
 pub const PRIMITIVE_ID: &str = "PrimitiveId";
+/// A pixel program's primitive index inside a struct of inputs, which the primitive route does not
+/// replace.
+pub const PRIMITIVE_ID_IN_STRUCT: &str = "PrimitiveIdInStruct";
 pub const PULLED_INPUT_IN_STRUCT: &str = "PulledInputInStruct";
 pub const PULLED_INPUT_TYPE: &str = "PulledInputType";
 pub const PULLED_INPUT_WIDTH: &str = "PulledInputWidth";

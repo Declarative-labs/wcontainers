@@ -38,6 +38,7 @@ ps_ids.dxil	ok
 ps_layer.dxil	spirv-reader unsupported
 ps_levels.dxil	ok-wgsl glsl-write
 ps_levels_past.dxil	ok-wgsl glsl-write
+ps_line.dxil	ok
 ps_mark.dxil	ok
 ps_mingather.dxil	ok-wgsl glsl-compile
 ps_minlod.dxil	ok
@@ -49,6 +50,7 @@ ps_negate.dxil	ok
 ps_offset.dxil	ok
 ps_pack.dxil	ok
 ps_primid.dxil	ok-wgsl glsl-compile
+ps_primitive.dxil	ok-wgsl glsl-compile
 ps_pull.dxil	ok
 ps_rows.dxil	ok
 ps_rows_io.dxil	ok
@@ -74,6 +76,7 @@ vs_early.dxil	ok
 vs_evaluate.dxil	ok
 vs_filter.dxil	ok
 vs_ids.dxil	ok
+vs_line.dxil	ok
 vs_pack.dxil	ok
 vs_pull.dxil	ok
 vs_rows_io.dxil	ok

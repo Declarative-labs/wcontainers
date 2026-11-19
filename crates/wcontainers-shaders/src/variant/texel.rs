@@ -12,7 +12,7 @@ use wcontainers_gpu::{Format, TEXEL_BUFFER_TEXTURE_WIDTH, VertexFormat};
 
 use super::pull::{Component, Kind, decode, layout, select};
 use super::*;
-use crate::build::{self, BYTE_SHIFT, Builder, Expr, VEC4, WORD, WORD_SHIFT};
+use crate::build::{self, ALPHA, BYTE_SHIFT, Builder, Expr, VEC4, WORD, WORD_SHIFT};
 
 /// The vertex format of the same bytes, whose layout and decoding a typed buffer element shares.
 pub(crate) fn vertex_format(format: Format) -> Option<VertexFormat> {
@@ -65,9 +65,6 @@ pub(crate) fn vertex_format(format: Format) -> Option<VertexFormat> {
         _ => return None,
     })
 }
-
-/// The component an absent alpha reads as one in.
-const ALPHA: u32 = VEC4 - 1;
 
 /// Where a view's elements are.
 #[derive(Clone, Copy, PartialEq)]

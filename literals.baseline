@@ -13433,8 +13433,6 @@ code	crates/wcontainers-shaders/src/ir.rs	int	literal_string	8
 code	crates/wcontainers-shaders/src/ir.rs	int	literal_string	8
 code	crates/wcontainers-shaders/src/ir.rs	str	(file)	"/ir_codes.rs"
 code	crates/wcontainers-shaders/src/lib.rs	int	unbuilt	32
-code	crates/wcontainers-shaders/src/lib.rs	str	unbuilt	"AntialiasedLinesAsQuads"
-code	crates/wcontainers-shaders/src/lib.rs	str	unbuilt	"PrimitiveIdAsGeometry"
 code	crates/wcontainers-shaders/src/lib.rs	str	unbuilt	"ProvokingRewrite"
 code	crates/wcontainers-shaders/src/lib.rs	str	unbuilt	"RootSignatureLayout"
 code	crates/wcontainers-shaders/src/lib.rs	str	unbuilt	"StoragePacked"
@@ -23020,11 +23018,7 @@ redefinition	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	int	SS_UNCO
 redefinition	crates/wcontainers-literals/src/history.rs	byte	LINE_END	LINE_END = b'\n'
 redefinition	crates/wcontainers-shaders/src/build.rs	int	WORD	WORD = 4
 redefinition	crates/wcontainers-shaders/src/cache.rs	int	HEADER	HEADER = 16
-redefinition	crates/wcontainers-shaders/src/stage.rs	int	WORKGROUP	WORKGROUP = 64
-redefinition	crates/wcontainers-shaders/src/stage/tessellate.rs	int	WORKGROUP	WORKGROUP = 64
 redefinition	crates/wcontainers-shaders/tests/common/mod.rs	int	SIZE	SIZE = 64
-redefinition	crates/wcontainers-shaders/tests/contention_draw.rs	int	SIZE	SIZE = 64
-redefinition	crates/wcontainers-shaders/tests/early_draw.rs	int	SIZE	SIZE = 64
 redefinition	crates/wcontainers-translator-test/reference/src/main.rs	int	NZCV	NZCV = 4026531840
 redefinition	crates/wcontainers-translator-test/reference/src/main.rs	int	PAGE	PAGE = 4096
 redefinition	crates/wcontainers-translator-test/reference/src/main.rs	int	frame_vectors::FPSIMD_MAGIC	FPSIMD_MAGIC = 1179680769

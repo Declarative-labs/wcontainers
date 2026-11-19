@@ -232,14 +232,7 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         samples: _,
         layout,
     } = variant;
-    let unbuilt_flags = [
-        (VariantFlags::PROVOKING_LAST, "ProvokingRewrite"),
-        (VariantFlags::LINE_COVERAGE, "AntialiasedLinesAsQuads"),
-        (
-            VariantFlags::PRIMITIVE_ID_FROM_STAGE,
-            "PrimitiveIdAsGeometry",
-        ),
-    ];
+    let unbuilt_flags = [(VariantFlags::PROVOKING_LAST, "ProvokingRewrite")];
     if let Some((_, name)) = unbuilt_flags.iter().find(|(f, _)| flags.contains(*f)) {
         return Err(ConvertError::Unsupported(name));
     }
