@@ -61,6 +61,8 @@ fn translate(link: &mut Link, look_ahead: LookAhead) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use wcontainers_arm64::Arm64;
     use wcontainers_guest_cpu::Guest;
     use wcontainers_inside::link::Link;
@@ -120,6 +122,40 @@ mod tests {
             None,
             "no instruction in three bytes"
         );
+    }
+
+    /// The guest addresses a piece holds code for, and the targets of its exits.
+    fn shape(words: &[u32], at: u64) -> (BTreeSet<u64>, BTreeSet<u64>) {
+        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let made = translate_native::<Arm64>(&bytes, at, LookAhead::Bounded(u32::MAX), true)
+            .expect("a piece");
+        (
+            made.spans.iter().map(|span| span.guest).collect(),
+            made.exits.iter().map(|exit| exit.target).collect(),
+        )
+    }
+
+    /// At bounded look-ahead a loop is held whole, its branch back going straight to its head, and the code after it
+    /// is reached through an exit; a call's next instruction is left to the return.
+    #[test]
+    fn pieces_hold_loops_and_leave_calls() {
+        let at = 0x40_1000;
+        let step = u64::from(Arm64::MAX_LENGTH);
+        let looping = [
+            0xd100_0400u32, // sub x0, x0, #1
+            0xb5ff_ffe0,    // cbnz x0, . - 4
+            0xd65f_03c0,    // ret
+        ];
+        let (held, exits) = shape(&looping, at);
+        assert_eq!(held, BTreeSet::from([at, at + step]));
+        assert_eq!(exits, BTreeSet::from([at + 2 * step]));
+        let calling = [
+            0x9400_0040u32, // bl . + 0x100
+            0xd65f_03c0,    // ret
+        ];
+        let (held, exits) = shape(&calling, at);
+        assert_eq!(held, BTreeSet::from([at]));
+        assert_eq!(exits, BTreeSet::from([at + 0x100]));
     }
 
     /// An answer whose position map does not decode fails loudly, never as the guest's illegal instruction.
