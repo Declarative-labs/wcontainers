@@ -29,6 +29,101 @@ pub(crate) const STACK_LIMIT: u64 = 8 << 20;
 /// The gap Linux keeps below a stack that may grow (`stack_guard_gap`, 256 pages).
 pub(crate) const STACK_GUARD_GAP: u64 = 256 * PAGE_SIZE;
 
+/// The least room Linux leaves between the top of the address space and the mapping base
+/// (`MIN_GAP`).
+const MIN_GAP: u64 = 128 << 20;
+
+/// `kernel.randomize_va_space`: the stack, the mappings, the vDSO and the heap placed at random.
+pub(crate) const RANDOMIZE_VA_SPACE: u32 = 2;
+
+/// The addresses a 32-bit pointer reaches; an address space no larger is placed at random as Linux
+/// places 32-bit tasks.
+const ADDRESSES_32_BIT: u64 = 1 << u32::BITS;
+
+/// Linux's `MAX_GAP`, the most room left above the mapping base, as a share of the space.
+const MAX_GAP_SHARE: (u64, u64) = (5, 6);
+
+/// `CONFIG_ARCH_MMAP_RND_BITS` and `CONFIG_ARCH_MMAP_RND_COMPAT_BITS`, at ARM64's defaults for
+/// 4 KiB pages.
+const MMAP_RANDOM_BITS: u32 = 18;
+const MMAP_RANDOM_BITS_32_BIT: u32 = 11;
+
+/// ARM64's `STACK_RND_MASK`, in pages, for 64-bit and 32-bit tasks.
+const STACK_RANDOM_PAGES: u64 = 0x3ffff;
+const STACK_RANDOM_PAGES_32_BIT: u64 = 0x7ff;
+
+/// ARM64's `arch_randomize_brk` ranges above a program's end, for 64-bit and 32-bit tasks.
+const BRK_RANDOM_RANGE: u64 = 1 << 30;
+const BRK_RANDOM_RANGE_32_BIT: u64 = 32 << 20;
+
+/// How far `execve` moves a program's parts at random (Linux's `PF_RANDOMIZE` layout). An address
+/// space no larger than a 32-bit task's takes Linux's values for 32-bit tasks, so that randomness
+/// spends a small share of it.
+#[derive(Clone, Copy)]
+pub(crate) struct LayoutRandomization {
+    /// `vm.mmap_rnd_bits`: pages of randomness below the mapping base and above the base of a
+    /// program that can be placed anywhere.
+    pub mmap_bits: u32,
+    /// The pages the stack's top moves down by, at most, as a mask.
+    pub stack_pages: u64,
+    /// The range above a program's end where its heap starts.
+    pub brk_range: u64,
+}
+
+impl LayoutRandomization {
+    pub fn for_space(end: u64) -> Self {
+        if end <= ADDRESSES_32_BIT {
+            Self {
+                mmap_bits: MMAP_RANDOM_BITS_32_BIT,
+                stack_pages: STACK_RANDOM_PAGES_32_BIT,
+                brk_range: BRK_RANDOM_RANGE_32_BIT,
+            }
+        } else {
+            Self {
+                mmap_bits: MMAP_RANDOM_BITS,
+                stack_pages: STACK_RANDOM_PAGES,
+                brk_range: BRK_RANDOM_RANGE,
+            }
+        }
+    }
+
+    /// `arch_mmap_rnd`: a page-aligned offset from `random`.
+    pub fn mmap_offset(&self, random: u64) -> u64 {
+        (random & ((1 << self.mmap_bits) - 1)) * PAGE_SIZE
+    }
+
+    /// `randomize_stack_top`'s offset down from the top, from `random`.
+    pub fn stack_offset(&self, random: u64) -> u64 {
+        (random & self.stack_pages) * PAGE_SIZE
+    }
+
+    /// `randomize_page`: a page in the heap's range above `start`, from `random`.
+    pub fn brk_start(&self, start: u64, random: u64) -> u64 {
+        let start = page_up(start);
+        start + random % (self.brk_range / PAGE_SIZE) * PAGE_SIZE
+    }
+}
+
+/// Linux's `mmap_base` for a top-down layout: below the stack's limit, its guard gap and, when
+/// randomized, its random move, with at least `MIN_GAP` and at most five sixths of the space left
+/// above, then `offset` lower.
+pub(crate) fn mmap_base(
+    end: u64,
+    stack_limit: u64,
+    randomization: Option<LayoutRandomization>,
+    offset: u64,
+) -> u64 {
+    let pad = STACK_GUARD_GAP + randomization.map_or(0, |random| random.stack_pages * PAGE_SIZE);
+    let gap = stack_limit.checked_add(pad).unwrap_or(stack_limit);
+    let most = end / MAX_GAP_SHARE.1 * MAX_GAP_SHARE.0;
+    let gap = if gap < MIN_GAP && MIN_GAP < most {
+        MIN_GAP
+    } else {
+        gap.min(most)
+    };
+    page_up(end.saturating_sub(gap).saturating_sub(offset))
+}
+
 /// What a range holds, for `/proc/<pid>/maps` and for what happens past the end of a file.
 #[derive(Clone)]
 pub(crate) enum Backing {
@@ -270,8 +365,7 @@ impl AddressMap {
             used: BTreeMap::new(),
             guards: BTreeSet::new(),
             end,
-            // Linux leaves at least 128 MiB below the stack's top for the stack and its gap.
-            mmap_base: page_down(end - (128 << 20)),
+            mmap_base: mmap_base(end, STACK_LIMIT, None, 0),
             brk_start: 0,
             brk: 0,
             data_size: 0,

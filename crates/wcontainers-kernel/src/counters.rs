@@ -42,6 +42,10 @@ pub mod reason {
     /// brought in, or a core dump took anonymous memory as touched and pages of zeros as never
     /// touched: which pages a program has touched is not known here. Detail: none.
     pub const RESIDENCY_NOT_TRACKED: &str = "page residency not tracked";
+    /// A program started with an unlimited stack or `ADDR_COMPAT_LAYOUT`, for which Linux places
+    /// new mappings upwards from a low base; here they go downwards from below the stack, as
+    /// otherwise. Detail: none.
+    pub const BOTTOM_UP_LAYOUT_NOT_BUILT: &str = "bottom-up mapping layout not built";
     /// A seccomp filter asked for a listener, through which another process would answer the calls it
     /// stops; not built. Detail: the flags.
     pub const SECCOMP_LISTENER_NOT_IMPLEMENTED: &str = "seccomp listener not implemented";

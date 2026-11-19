@@ -42,6 +42,27 @@ pub const ENVIRONMENT: &[&str] = &[
     "TMPDIR=/tmp",
 ];
 
+/// The suite's variable that scales its own time limits for a slow machine.
+const TIMEOUT_MULTIPLIER: &str = "LTP_TIMEOUT_MUL";
+
+/// What joins an environment variable's name to its value.
+const ASSIGNMENT: &str = "=";
+
+/// tst_test.h's `DEFAULT_TIMEOUT`: the suite's own limit for a test that names none.
+const SUITE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The environment on our kernel: the reference's, with the suite's own time limits scaled up to
+/// the harness's `limit`, so that a test slow on the stand-in CPU ends as the harness's timeout
+/// and not as the suite's broken verdict.
+fn environment_on_ours(limit: Duration) -> Vec<String> {
+    let multiplier = limit.as_secs().div_ceil(SUITE_TIMEOUT.as_secs()).max(1);
+    ENVIRONMENT
+        .iter()
+        .map(|variable| (*variable).to_owned())
+        .chain([format!("{TIMEOUT_MULTIPLIER}{ASSIGNMENT}{multiplier}")])
+        .collect()
+}
+
 /// One test: a line of a `runtest` file, its name and the shell command that runs it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Test {
@@ -267,6 +288,8 @@ pub fn run_ours(
     mut report: impl FnMut(&Line),
 ) -> Vec<Line> {
     let served = served_image_name();
+    let environment = environment_on_ours(limit);
+    let environment: Vec<&str> = environment.iter().map(String::as_str).collect();
     let found = Command::new("docker")
         .args(["image", "inspect", &served])
         .stdout(Stdio::null())
@@ -279,7 +302,12 @@ pub fn run_ours(
             std::fs::read(tar).unwrap_or_else(|error| panic!("reading {}: {error}", tar.display()));
         let files = image::from_tar(&bytes);
         drop(bytes);
-        Some(driver::prepare(&container(&files, &[], &served)))
+        Some(driver::prepare(&container(
+            &files,
+            &[],
+            &environment,
+            &served,
+        )))
     };
     let mut lines: Vec<Option<Line>> = vec![None; tests.len()];
     let mut running: BTreeMap<libc::pid_t, (usize, Instant)> = BTreeMap::new();
@@ -299,6 +327,7 @@ pub fn run_ours(
                     test,
                     seed,
                     &log,
+                    &environment,
                     &served,
                 ),
                 child => {
@@ -353,13 +382,14 @@ pub fn run_ours(
 fn container<'a>(
     files: &'a [image::File],
     arguments: &'a [&'a str],
+    environment: &'a [&'a str],
     root_image: &'a str,
 ) -> driver::Container<'a> {
     driver::Container {
         files,
         path: "/bin/sh",
         arguments,
-        environment: ENVIRONMENT,
+        environment,
         working_directory: "/",
         backend: Some("/"),
         // Opened for the page cache, so files map shared as on the reference's overlay.
@@ -385,6 +415,7 @@ fn run_one(
     test: &Test,
     seed: u64,
     log: &Path,
+    environment: &[&str],
     root_image: &str,
 ) -> ! {
     prepared.echo = true;
@@ -431,7 +462,7 @@ fn run_one(
     let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         driver::run_prepared(
             prepared,
-            &container(&[], &arguments, root_image),
+            &container(&[], &arguments, environment, root_image),
             seed,
             driver::Injections::default(),
         )

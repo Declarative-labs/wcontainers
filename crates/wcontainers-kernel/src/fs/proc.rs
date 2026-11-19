@@ -332,6 +332,19 @@ pub(crate) enum Global {
 /// The inode number of the first entry of [`GLOBAL`]; the numbers below are the root's and links'.
 const FIRST_GLOBAL_INO: u64 = 16;
 
+/// What ends a line of a `/proc` file.
+const PROC_LINE_END: char = '\n';
+
+/// Writes a setting's value as its file shows it: alone on a line.
+fn value_line(out: &mut String, value: impl core::fmt::Display) {
+    out.push_str(&alloc::string::ToString::to_string(&value));
+    out.push(PROC_LINE_END);
+}
+
+/// `/proc`'s files of the layout's randomization.
+const RANDOMIZE_VA_SPACE: &str = "sys/kernel/randomize_va_space";
+const MMAP_RND_BITS: &str = "sys/vm/mmap_rnd_bits";
+
 pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("cgroups", Global::File(0o444)),
     ("cmdline", Global::File(0o444)),
@@ -416,6 +429,7 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/kernel/random/entropy_avail", Global::File(0o444)),
     ("sys/kernel/random/poolsize", Global::File(0o444)),
     ("sys/kernel/random/uuid", Global::File(0o444)),
+    (RANDOMIZE_VA_SPACE, Global::File(0o644)),
     ("sys/kernel/sched_autogroup_enabled", Global::File(0o644)),
     ("sys/kernel/sem", Global::File(0o644)),
     ("sys/kernel/shmall", Global::File(0o644)),
@@ -443,6 +457,7 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/vm", Global::Directory),
     ("sys/vm/drop_caches", Global::File(0o200)),
     ("sys/vm/hugetlb_shm_group", Global::File(0o644)),
+    (MMAP_RND_BITS, Global::File(0o600)),
     ("sys/vm/nr_hugepages", Global::File(0o644)),
     ("sys/vm/nr_overcommit_hugepages", Global::File(0o644)),
     ("sys/vm/overcommit_memory", Global::File(0o644)),
@@ -1866,6 +1881,14 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                 | "sys/vm/nr_hugepages"
                 | "sys/vm/nr_overcommit_hugepages" => out.push_str("0\n"),
                 "sys/vm/overcommit_memory" => out.push_str("1\n"),
+                RANDOMIZE_VA_SPACE => {
+                    value_line(&mut out, crate::memory::RANDOMIZE_VA_SPACE);
+                }
+                MMAP_RND_BITS => {
+                    let random =
+                        crate::memory::LayoutRandomization::for_space(machine.memory_bytes);
+                    value_line(&mut out, random.mmap_bits);
+                }
                 "sysvipc/msg" => out = crate::syscall::ipc::proc_msg(source.ipc),
                 "sysvipc/sem" => out = crate::syscall::ipc::proc_sem(source.ipc),
                 "sysvipc/shm" => {

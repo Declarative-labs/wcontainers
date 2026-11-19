@@ -44,10 +44,16 @@ pub(crate) const ACL_PERMISSIONS: u16 = 0x04 | 0x02 | 0x01;
 /// The id of an entry that names no user or group (`ACL_UNDEFINED_ID`).
 pub(crate) const ACL_UNDEFINED_ID: u32 = u32::MAX;
 
+/// `linux/personality.h`'s `ADDR_NO_RANDOMIZE`: a new program's layout is not placed at random.
+pub(crate) const ADDR_NO_RANDOMIZE: u32 = 0x0040000;
+/// `linux/personality.h`'s `ADDR_COMPAT_LAYOUT`: new mappings go up from a low base.
+pub(crate) const ADDR_COMPAT_LAYOUT: u32 = 0x0200000;
+
 /// `personality` bits `execve` clears when a program gains privileges (`PER_CLEAR_ON_SETID`, from
 /// `linux/personality.h`'s `READ_IMPLIES_EXEC`, `ADDR_NO_RANDOMIZE`, `ADDR_COMPAT_LAYOUT` and
 /// `MMAP_PAGE_ZERO`).
-pub(crate) const PER_CLEAR_ON_SETID: u32 = 0x0400000 | 0x0040000 | 0x0200000 | 0x0100000;
+pub(crate) const PER_CLEAR_ON_SETID: u32 =
+    0x0400000 | ADDR_NO_RANDOMIZE | ADDR_COMPAT_LAYOUT | 0x0100000;
 
 /// `sched_setattr`'s and `sched_getattr`'s structure (`linux/sched/types.h`), which linux-raw-sys does
 /// not generate. Its first version ends after `sched_period`.

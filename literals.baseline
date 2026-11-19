@@ -4431,7 +4431,6 @@ code	crates/wcontainers-kernel/src/loader.rs	int	ArgumentRoom::new	3
 code	crates/wcontainers-kernel/src/loader.rs	int	ArgumentRoom::new	4
 code	crates/wcontainers-kernel/src/loader.rs	int	ArgumentRoom::new	4
 code	crates/wcontainers-kernel/src/loader.rs	int	ArgumentRoom::new	8
-code	crates/wcontainers-kernel/src/loader.rs	int	build_stack	15
 code	crates/wcontainers-kernel/src/loader.rs	int	build_stack	16
 code	crates/wcontainers-kernel/src/loader.rs	int	build_stack	16
 code	crates/wcontainers-kernel/src/loader.rs	int	build_stack	8
@@ -4456,8 +4455,6 @@ code	crates/wcontainers-kernel/src/loader.rs	int	place	3
 code	crates/wcontainers-kernel/src/loader.rs	int	program_headers	65536
 code	crates/wcontainers-kernel/src/loader.rs	str	place_vdso	"[vdso]"
 code	crates/wcontainers-kernel/src/loader.rs	str	place_vdso	"[vvar]"
-code	crates/wcontainers-kernel/src/memory.rs	int	AddressMap::new	128
-code	crates/wcontainers-kernel/src/memory.rs	int	AddressMap::new	20
 code	crates/wcontainers-kernel/src/memory.rs	str	AddressMap::forced_reach	"[vvar]"
 code	crates/wcontainers-kernel/src/pipe.rs	int	round_size	31
 code	crates/wcontainers-kernel/src/process.rs	byte	Thread::set_name	b'/'

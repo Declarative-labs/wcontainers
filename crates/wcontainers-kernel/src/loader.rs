@@ -13,8 +13,13 @@ use wcontainers_abi::{
 
 use crate::fs::{Content, Node};
 use crate::linux::auxvec::*;
-use crate::linux::general::{ARG_MAX, PATH_MAX, R_OK, S_IFLNK, S_IFMT, S_IFREG, X_OK};
-use crate::memory::{AddressMap, Backing, Mapping, STACK_LIMIT, page_down, page_up};
+use crate::linux::general::{
+    ARG_MAX, PATH_MAX, R_OK, RLIM_INFINITY, RLIMIT_STACK, S_IFLNK, S_IFMT, S_IFREG, X_OK,
+};
+use crate::linux_extra::{ADDR_COMPAT_LAYOUT, ADDR_NO_RANDOMIZE, PER_CLEAR_ON_SETID};
+use crate::memory::{
+    AddressMap, Backing, LayoutRandomization, Mapping, STACK_LIMIT, page_down, page_up,
+};
 use crate::process::{StartingStack, Tid};
 use crate::{Context, Errno, Kernel, errno};
 
@@ -32,6 +37,9 @@ const SCRIPT_LINE: usize = 256;
 
 /// What the stack is given beyond the arguments when a program starts (Linux's `stack_expand`).
 const STACK_EXPAND: u64 = 128 << 10;
+
+/// The alignment of the stack pointer a program starts with, and of the tables below its strings.
+const STACK_ALIGNMENT: u64 = 16;
 
 /// An ELF file header and program header as Linux reads them.
 type Header = elf::FileHeader64<LittleEndian>;
@@ -560,12 +568,6 @@ fn place(
     };
     let properties_of = interpreter.as_ref().map_or(&program, |(found, ..)| found);
     check_properties(properties_of, property.as_ref())?;
-    // Where Linux puts a program that can be placed anywhere: two thirds of the way up.
-    let bias = if header.e_type(endian) == elf::ET_EXEC {
-        0
-    } else {
-        page_down(end / 3 * 2)
-    };
     let readable = readable
         && interpreter
             .as_ref()
@@ -605,6 +607,34 @@ fn place(
                 capabilities,
             })?
     };
+    // In the order of Linux's `load_elf_binary`: the personality bits a gain of privileges clears,
+    // whether the layout is random, the mapping base, the stack's top, the program's base, the heap.
+    let mut personality = kernel.threads[&tid].personality;
+    if after.gained {
+        personality &= !PER_CLEAR_ON_SETID;
+    }
+    let randomization =
+        (personality & ADDR_NO_RANDOMIZE == 0).then(|| LayoutRandomization::for_space(end));
+    let mut stack_limit = kernel.process_of(tid).limits[RLIMIT_STACK as usize].current;
+    if after.secure {
+        stack_limit = stack_limit.min(STACK_LIMIT);
+    }
+    if personality & ADDR_COMPAT_LAYOUT != 0 || stack_limit == RLIM_INFINITY as u64 {
+        kernel
+            .counters
+            .count(cx.host, crate::reason::BOTTOM_UP_LAYOUT_NOT_BUILT, 0);
+        stack_limit = 0;
+    }
+    let mmap_offset = randomization.map_or(0, |random| random.mmap_offset(random_word(cx)));
+    map.mmap_base = crate::memory::mmap_base(end, stack_limit, randomization, mmap_offset);
+    let top = end - randomization.map_or(0, |random| random.stack_offset(random_word(cx)));
+    // Where Linux puts a program that can be placed anywhere: two thirds of the way up.
+    let bias = if header.e_type(endian) == elf::ET_EXEC {
+        0
+    } else {
+        page_down(end / 3 * 2)
+            + randomization.map_or(0, |random| random.mmap_offset(random_word(cx)))
+    };
     let main_tails = segment_tails(&program, &segments)?;
     let interpreter_tails = match &interpreter {
         Some((found, _, segments)) => segment_tails(found, segments)?,
@@ -636,7 +666,11 @@ fn place(
         Some(bias),
     )
     .map_err(fatal)?;
-    map.brk_start = page_up(main.end);
+    map.brk_start = match randomization {
+        // A page's gap above the program, then a random page of the range.
+        Some(random) => random.brk_start(main.end + PAGE_SIZE, random_word(cx)),
+        None => page_up(main.end),
+    };
     map.brk = map.brk_start;
     map.data_size = main.data;
 
@@ -679,10 +713,12 @@ fn place(
         (AT_EGID, credentials.egid.into()),
         (AT_SECURE, after.secure.into()),
     ];
+    // `arch_align_stack`: the tables start up to a page below the strings.
+    let below_strings = randomization.map_or(0, |_| random_word(cx) % PAGE_SIZE);
     let (sp, starting_stack) = build_stack(
         cx,
         memory,
-        end,
+        (top, below_strings),
         exec_path,
         arguments,
         environment,
@@ -695,7 +731,7 @@ fn place(
         memory,
         Mapping {
             start: stack_start,
-            end,
+            end: top,
             permissions: Permissions::READ | Permissions::WRITE,
             allowed: Permissions::all(),
             shared: false,
@@ -992,10 +1028,17 @@ fn segment_permissions(flags: u32) -> Permissions {
 /// From the top down: the program's file name, the environment strings, the argument strings, the
 /// platform name, 16 random bytes, then, 16 byte aligned, `argc`, the argument pointers, the environment
 /// pointers and the auxiliary vector.
+/// A word of the host's randomness.
+fn random_word(cx: &Context<'_>) -> u64 {
+    let mut bytes = [0; size_of::<u64>()];
+    cx.host.random(&mut bytes);
+    u64::from_le_bytes(bytes)
+}
+
 fn build_stack(
     cx: &mut Context<'_>,
     memory: MemoryId,
-    top: u64,
+    (top, below_strings): (u64, u64),
     file_name: &[u8],
     arguments: &[Vec<u8>],
     environment: &[Vec<u8>],
@@ -1022,7 +1065,8 @@ fn build_stack(
 
     // Linux leaves one null pointer's worth of space at the very top.
     let strings_start = top - 8 - strings.len() as u64;
-    let platform = strings_start - PLATFORM.len() as u64;
+    let platform =
+        ((strings_start - below_strings) & !(STACK_ALIGNMENT - 1)) - PLATFORM.len() as u64;
     let random = platform - 16;
     let mut random_bytes = [0u8; 16];
     cx.host.random(&mut random_bytes);
@@ -1036,7 +1080,7 @@ fn build_stack(
         (AT_NULL, 0),
     ]);
     let words = 1 + arguments.len() + 1 + environment.len() + 1 + 2 * vector.len();
-    let sp = (random - 8 * words as u64) & !15;
+    let sp = (random - 8 * words as u64) & !(STACK_ALIGNMENT - 1);
 
     let mut table = Vec::with_capacity(words * 8);
     table.extend_from_slice(&(arguments.len() as u64).to_le_bytes());
