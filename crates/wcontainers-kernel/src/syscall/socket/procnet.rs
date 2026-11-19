@@ -137,9 +137,9 @@ fn holders(kernel: &Kernel, protocol: Protocol) -> Vec<SocketRef> {
         .collect()
 }
 
-/// A number unique to a socket while it lives, where Linux prints its hashed address.
+/// A number unique to a socket, where Linux prints its hashed address.
 fn pointer(socket: &SocketRef) -> u64 {
-    socket.as_ptr() as usize as u64
+    socket.borrow().id
 }
 
 /// The unread bytes of a socket's queue.

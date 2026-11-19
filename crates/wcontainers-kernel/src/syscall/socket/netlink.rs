@@ -65,7 +65,7 @@ pub(super) fn create(
             Errno::EPROTONOSUPPORT,
         ));
     }
-    let mut socket = Socket::new(AF_NETLINK, kind, protocol);
+    let mut socket = Socket::new(kernel.next_object(), AF_NETLINK, kind, protocol);
     socket.netlink = Some(alloc::boxed::Box::new(Netlink {
         portid: 0,
         groups: 0,

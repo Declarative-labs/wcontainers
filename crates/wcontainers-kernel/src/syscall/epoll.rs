@@ -45,8 +45,8 @@ pub(crate) enum Queue {
     Signals(Pid),
 }
 
-/// An item's key: its descriptor number and its open file's address (`epoll_filefd`).
-type Key = (i32, usize);
+/// An item's key: its descriptor number and its open file (`epoll_filefd`), by the file's number.
+type Key = (i32, u64);
 
 /// One instance.
 #[derive(Default)]
@@ -308,7 +308,7 @@ pub(super) fn epoll_create1(
     }
     let node = super::anon_node(kernel, cx);
     let opener = kernel.credentials(tid).serial;
-    let file = OpenFile::new(node, O_RDWR, LINK.to_vec(), opener);
+    let file = OpenFile::new(kernel.next_object(), node, O_RDWR, LINK.to_vec(), opener);
     file.borrow_mut().anon = Some(Anon::Epoll(Rc::default()));
     let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
     let fd = kernel
@@ -362,7 +362,7 @@ pub(super) fn epoll_ctl(
     {
         return Err(Errno::ELOOP);
     }
-    let key = (fd as i32, Rc::as_ptr(&target) as *const () as usize);
+    let key = (fd as i32, target.borrow().id);
     let exists = epoll.borrow().items.contains_key(&key);
     match op {
         EPOLL_CTL_ADD => {

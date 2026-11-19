@@ -770,6 +770,7 @@ pub(super) fn open(
     // `build_open_how` has reduced to `O_PATH_FLAGS`.
     let large = if flags & O_PATH == 0 { O_LARGEFILE } else { 0 };
     let file = OpenFile::new(
+        kernel.next_object(),
         node.clone(),
         (flags | large) & !(O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC | O_CLOEXEC),
         full_path,
@@ -890,6 +891,7 @@ fn tmpfile_opened(
 ) -> crate::file::FileRef {
     let name = alloc::format!("#{ino}").into_bytes();
     let file = OpenFile::new(
+        kernel.next_object(),
         node,
         (flags | O_LARGEFILE) & !(O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC | O_CLOEXEC),
         path_in(kernel, tid, directory, &name),

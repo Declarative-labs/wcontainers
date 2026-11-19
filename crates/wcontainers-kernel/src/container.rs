@@ -940,9 +940,13 @@ impl Kernel {
             } => {
                 descriptors.push(match (input, null) {
                     (Some(end), _) => self.end_pipe(cx, end, O_RDONLY),
-                    (None, Some(null)) => {
-                        OpenFile::new(null, O_RDWR | O_LARGEFILE, NULL_PATH.into(), 0)
-                    }
+                    (None, Some(null)) => OpenFile::new(
+                        self.next_object(),
+                        null,
+                        O_RDWR | O_LARGEFILE,
+                        NULL_PATH.into(),
+                        0,
+                    ),
                     (None, None) => {
                         unreachable!("the null device is found for a start with no input")
                     }
@@ -996,8 +1000,8 @@ impl Kernel {
         } else {
             O_RDONLY
         };
-        let guest = OpenFile::new(pipe.clone(), flags, Vec::new(), 0);
-        let held = OpenFile::new(pipe.clone(), other, Vec::new(), 0);
+        let guest = OpenFile::new(self.next_object(), pipe.clone(), flags, Vec::new(), 0);
+        let held = OpenFile::new(self.next_object(), pipe.clone(), other, Vec::new(), 0);
         crate::syscall::pipe::attach(&pipe, &guest);
         crate::syscall::pipe::attach(&pipe, &held);
         self.attach_end(cx, end, held);

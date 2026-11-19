@@ -91,7 +91,13 @@ pub(super) fn memfd_create(
     let mut path: Vec<u8> = b"/".to_vec();
     path.extend_from_slice(&full_name);
     let opener = kernel.credentials(tid).serial;
-    let file = OpenFile::new(node, O_RDWR | O_LARGEFILE, path, opener);
+    let file = OpenFile::new(
+        kernel.next_object(),
+        node,
+        O_RDWR | O_LARGEFILE,
+        path,
+        opener,
+    );
     file.borrow_mut().direct_io = false;
     let added = kernel
         .files_mut(tid)
@@ -136,7 +142,13 @@ pub(super) fn memfd_secret(
         },
     )?;
     let opener = kernel.credentials(tid).serial;
-    let file = OpenFile::new(node, O_RDWR | O_LARGEFILE, b"/secretmem".to_vec(), opener);
+    let file = OpenFile::new(
+        kernel.next_object(),
+        node,
+        O_RDWR | O_LARGEFILE,
+        b"/secretmem".to_vec(),
+        opener,
+    );
     let added = kernel
         .files_mut(tid)
         .add(file, flags & O_CLOEXEC != 0, 0, limit)?;

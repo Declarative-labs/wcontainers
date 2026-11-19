@@ -53,7 +53,13 @@ pub(super) fn signalfd4(
     }
     let node = super::anon_node(kernel, cx);
     let opener = kernel.credentials(tid).serial;
-    let file = OpenFile::new(node, O_RDWR | (flags & O_NONBLOCK), LINK.to_vec(), opener);
+    let file = OpenFile::new(
+        kernel.next_object(),
+        node,
+        O_RDWR | (flags & O_NONBLOCK),
+        LINK.to_vec(),
+        opener,
+    );
     file.borrow_mut().anon = Some(Anon::Signals(mask));
     let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
     let fd = kernel

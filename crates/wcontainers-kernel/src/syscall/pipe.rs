@@ -66,12 +66,14 @@ pub(super) fn pipe2(
     // Only the writing end takes packet mode (`create_pipe_files`).
     let opener = kernel.credentials(tid).serial;
     let reader = OpenFile::new(
+        kernel.next_object(),
         node.clone(),
         O_RDONLY | (flags & O_NONBLOCK),
         Vec::new(),
         opener,
     );
     let writer = OpenFile::new(
+        kernel.next_object(),
         node.clone(),
         O_WRONLY | (flags & (O_NONBLOCK | O_DIRECT)),
         Vec::new(),

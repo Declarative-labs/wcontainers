@@ -820,7 +820,7 @@ pub(super) fn create(
         SOCK_SEQPACKET => return refuse(kernel, cx, Errno::ESOCKTNOSUPPORT),
         _ => return Err(Errno::ESOCKTNOSUPPORT),
     };
-    let mut socket = Socket::new(family, kind, number);
+    let mut socket = Socket::new(kernel.next_object(), family, kind, number);
     if protocol == Protocol::Tcp {
         socket.sndbuf = TCP_SNDBUF;
         socket.rcvbuf = TCP_RCVBUF;
@@ -1812,10 +1812,11 @@ pub(super) fn embryo(
     address: [u8; 16],
     remote: Endpoint,
 ) -> SocketRef {
+    let id = kernel.next_object();
     let embryo = {
         let them = listener.borrow();
         let listening = them.inet.as_deref().unwrap();
-        let mut new = Socket::new(them.family, SOCK_STREAM, TCP);
+        let mut new = Socket::new(id, them.family, SOCK_STREAM, TCP);
         new.state = State::Connected;
         new.options = them.options.clone();
         // The accept queue's settings are not the new socket's (`inet_csk_clone_lock`).

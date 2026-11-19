@@ -344,6 +344,7 @@ pub(super) fn mq_open(
     let mut path = b"/".to_vec();
     path.extend(&name);
     let file = crate::file::OpenFile::new(
+        kernel.next_object(),
         node,
         flags & !(O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC | O_CLOEXEC),
         path,

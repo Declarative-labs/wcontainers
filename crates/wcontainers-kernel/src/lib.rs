@@ -236,6 +236,8 @@ pub struct Kernel {
     boot_id: [u8; 16],
     /// The last cookie that ties a rename's two inotify events together.
     move_cookie: u32,
+    /// The last number given to a kernel object as its identity (see [`Kernel::next_object`]).
+    last_object: u64,
 }
 
 impl Default for Kernel {
@@ -340,6 +342,7 @@ impl Kernel {
             boot_monotonic: 0,
             boot_id: [0; 16],
             move_cookie: 0,
+            last_object: 0,
         }
     }
 
@@ -629,6 +632,13 @@ impl Kernel {
             .taken
             .borrow_mut()
             .file(fd, || thread.files.borrow().file(fd))
+    }
+
+    /// A number for a new kernel object, unique in the container: what a guest sees of the object
+    /// where Linux shows its address, so nothing it sees depends on where the host put it.
+    pub(crate) fn next_object(&mut self) -> u64 {
+        self.last_object += 1;
+        self.last_object
     }
 
     /// A value `tid`'s call settles once, such as where an append goes (Linux computes it once

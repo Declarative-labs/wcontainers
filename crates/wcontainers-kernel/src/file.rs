@@ -12,6 +12,8 @@ use crate::process::Pid;
 
 /// One open file description: what `open` makes, shared by `dup` and kept across `exec`.
 pub(crate) struct OpenFile {
+    /// Its number from `Kernel::next_object`, which waits and epoll know it by.
+    pub id: u64,
     pub node: Node,
     /// The access mode and status flags (`O_APPEND`, `O_NONBLOCK`, ...), as `F_GETFL` reports them.
     pub flags: u32,
@@ -96,9 +98,10 @@ pub(crate) enum OwnerKind {
 pub(crate) type FileRef = Rc<RefCell<OpenFile>>;
 
 impl OpenFile {
-    pub fn new(node: Node, flags: u32, path: Vec<u8>, opener: u64) -> FileRef {
+    pub fn new(id: u64, node: Node, flags: u32, path: Vec<u8>, opener: u64) -> FileRef {
         let direct_io = node.borrow().takes_direct_io();
         Rc::new(RefCell::new(Self {
+            id,
             node,
             flags,
             offset: 0,

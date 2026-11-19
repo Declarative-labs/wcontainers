@@ -143,7 +143,13 @@ pub(super) fn inotify_init1(
     }
     let node = super::anon_node(kernel, cx);
     let opener = kernel.credentials(tid).serial;
-    let file = OpenFile::new(node, O_RDONLY | (flags & O_NONBLOCK), LINK.to_vec(), opener);
+    let file = OpenFile::new(
+        kernel.next_object(),
+        node,
+        O_RDONLY | (flags & O_NONBLOCK),
+        LINK.to_vec(),
+        opener,
+    );
     let instance: Rc<RefCell<Instance>> = Rc::default();
     kernel
         .inotify_instances

@@ -805,7 +805,13 @@ fn namespace_ioctl(
             let node =
                 crate::fs::proc::namespace_node(kernel.files.nsfs.clone(), kernel.boot, user);
             let opener = kernel.credentials(tid).serial;
-            let file = crate::file::OpenFile::new(node, O_RDONLY, user.link(), opener);
+            let file = crate::file::OpenFile::new(
+                kernel.next_object(),
+                node,
+                O_RDONLY,
+                user.link(),
+                opener,
+            );
             let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
             Ok(kernel.files_mut(tid).add(file, true, 0, limit)? as u64)
         }

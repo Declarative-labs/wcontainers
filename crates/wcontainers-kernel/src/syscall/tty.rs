@@ -1124,6 +1124,7 @@ fn open_peer(
     let path = slave_path(index);
     let serial = kernel.credentials(tid).serial;
     let file = OpenFile::new(
+        kernel.next_object(),
         node,
         (flags | O_LARGEFILE) & !(O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC | O_CLOEXEC),
         path,
@@ -1274,7 +1275,13 @@ pub(crate) fn start_terminal(
     let ptmx = kernel.with_walk(pid, |walk, process| {
         walk.resolve(&process.cwd, PTMX_PATH.as_bytes(), true)
     })?;
-    let master = OpenFile::new(ptmx, O_RDWR | O_LARGEFILE, PTMX_PATH.into(), 0);
+    let master = OpenFile::new(
+        kernel.next_object(),
+        ptmx,
+        O_RDWR | O_LARGEFILE,
+        PTMX_PATH.into(),
+        0,
+    );
     open_master(kernel, cx, pid, &master)?;
     let (pty, ..) = end(&master).expect("a terminal");
     pty.borrow_mut().locked = false;
@@ -1285,7 +1292,7 @@ pub(crate) fn start_terminal(
     };
     let flags = O_RDWR | O_NOCTTY | O_CLOEXEC;
     let path = slave_path(index);
-    let slave = OpenFile::new(node, flags & !O_NOCTTY, path, 0);
+    let slave = OpenFile::new(kernel.next_object(), node, flags & !O_NOCTTY, path, 0);
     open_slave(kernel, cx, pid, &slave, &pty, flags)?;
     set_controlling(kernel, pid, &pty);
     Ok((master, slave))

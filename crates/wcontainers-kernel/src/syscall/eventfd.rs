@@ -46,7 +46,13 @@ pub(super) fn eventfd2(
     }
     let node = super::anon_node(kernel, cx);
     let opener = kernel.credentials(tid).serial;
-    let file = OpenFile::new(node, O_RDWR | (flags & O_NONBLOCK), LINK.to_vec(), opener);
+    let file = OpenFile::new(
+        kernel.next_object(),
+        node,
+        O_RDWR | (flags & O_NONBLOCK),
+        LINK.to_vec(),
+        opener,
+    );
     let counters = &mut kernel.files.event_counters;
     counters.retain(|counter| counter.strong_count() > 0);
     let mut taken: alloc::vec::Vec<u32> = counters

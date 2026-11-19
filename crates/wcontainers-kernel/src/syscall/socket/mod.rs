@@ -96,6 +96,8 @@ pub(crate) enum State {
 
 /// One socket.
 pub(crate) struct Socket {
+    /// Its number from [`Kernel::next_object`].
+    pub id: u64,
     pub family: u32,
     pub kind: u32,
     pub protocol: u32,
@@ -165,8 +167,9 @@ pub(crate) struct Socket {
 }
 
 impl Socket {
-    fn new(family: u32, kind: u32, protocol: u32) -> Self {
+    fn new(id: u64, family: u32, kind: u32, protocol: u32) -> Self {
         Self {
+            id,
             family,
             kind,
             protocol,
@@ -504,7 +507,13 @@ fn make_file(
     )?;
     let link = alloc::format!("socket:[{ino}]").into_bytes();
     let opener = kernel.credentials(tid).serial;
-    let file = OpenFile::new(node, O_RDWR | (flags & O_NONBLOCK), link, opener);
+    let file = OpenFile::new(
+        kernel.next_object(),
+        node,
+        O_RDWR | (flags & O_NONBLOCK),
+        link,
+        opener,
+    );
     socket.borrow_mut().file = Rc::downgrade(&file);
     Ok(file)
 }
@@ -573,7 +582,12 @@ fn create(
         return Err(refuse_alg(kernel, cx));
     }
     match family {
-        AF_UNIX => Ok(Socket::new(family, unix_kind(kind, protocol as u32)?, 0)),
+        AF_UNIX => Ok(Socket::new(
+            kernel.next_object(),
+            family,
+            unix_kind(kind, protocol as u32)?,
+            0,
+        )),
         AF_INET | AF_INET6 => inet::create(kernel, cx, family, kind, protocol as u32),
         AF_NETLINK => netlink::create(kernel, cx, kind, protocol as u32),
         // A family Linux has no protocol family for.
@@ -627,7 +641,14 @@ pub(super) fn socketpair(
     let (family, kind) = (made.family, made.kind);
     let cred = own_cred(kernel, tid);
     let groups = kernel.credentials(tid).groups.clone();
-    let ends = [(); 2].map(|()| Rc::new(RefCell::new(Socket::new(family, kind, 0))));
+    let ends = [(); 2].map(|()| {
+        Rc::new(RefCell::new(Socket::new(
+            kernel.next_object(),
+            family,
+            kind,
+            0,
+        )))
+    });
     for (one, other) in [(0, 1), (1, 0)] {
         let mut socket = ends[one].borrow_mut();
         socket.peer = Some(ends[other].clone());
@@ -1024,7 +1045,12 @@ pub(super) fn connect(
     }
     // The listener's end of the connection, waiting to be accepted; it takes the listener's name
     // and the connecting process's credentials.
-    let embryo = Rc::new(RefCell::new(Socket::new(socket.borrow().family, kind, 0)));
+    let embryo = Rc::new(RefCell::new(Socket::new(
+        kernel.next_object(),
+        socket.borrow().family,
+        kind,
+        0,
+    )));
     {
         let mut new = embryo.borrow_mut();
         let listener = other.borrow();

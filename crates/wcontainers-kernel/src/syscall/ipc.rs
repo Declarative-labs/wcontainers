@@ -407,7 +407,8 @@ pub(super) fn shmat(
     let size = segment.size;
     let mut path = alloc::vec![b'/'];
     path.extend(segment_name(segment.created_key));
-    let file = crate::file::OpenFile::new(segment.file.clone(), open_flags, path, 0);
+    let node = segment.file.clone();
+    let file = crate::file::OpenFile::new(kernel.next_object(), node, open_flags, path, 0);
     if address != 0 && flags & SHM_REMAP == 0 {
         let end = address.checked_add(size).ok_or(Errno::EINVAL)?;
         if kernel.process_of(tid).map.borrow().any_mapped(address, end) {

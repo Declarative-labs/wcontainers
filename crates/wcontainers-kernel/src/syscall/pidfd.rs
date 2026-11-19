@@ -132,7 +132,13 @@ pub(super) fn make(
         }
     };
     let opener = kernel.credentials(tid).serial;
-    Ok(OpenFile::new(node, O_RDWR | flags, LINK.to_vec(), opener))
+    Ok(OpenFile::new(
+        kernel.next_object(),
+        node,
+        O_RDWR | flags,
+        LINK.to_vec(),
+        opener,
+    ))
 }
 
 pub(super) fn pidfd_open(
