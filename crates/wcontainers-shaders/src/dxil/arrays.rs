@@ -385,7 +385,7 @@ pub(super) fn split(
             .map(|h| module.functions.append(h, Span::UNDEFINED))
             .collect()
     });
-    for i in 0..n + module.entry_points.len() {
+    for (i, picks) in stored.iter().enumerate() {
         let f = match moved.get(i) {
             Some(&h) => &mut module.functions[h],
             None => &mut module.entry_points[i - n].function,
@@ -402,7 +402,6 @@ pub(super) fn split(
             })
             .collect();
         place_calls(f, &calls);
-        let picks = &stored[i];
         if !picks.is_empty() {
             let mut expressions = core::mem::take(&mut f.expressions);
             super::each_block(&mut f.body, &mut |block| {
