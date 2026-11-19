@@ -43,6 +43,8 @@ adopts it only through main once main has it, and origin/main holds no wcontaine
   (compiled by the system's d3dcompiler), which the shaders crate still refuses.
 - The front's DXGI numbers in format.rs are the infrastructure crate's names, and its vertex
   format table is the infrastructure crate's (Literals).
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (17.9 GB) and the
+  checkout's own target (1.1 GB, from `cargo check`) were deleted.
 - Results (desktop, RTX 3080, through the queue, not alone; Measurements): at dd123eec, Wine's
   d3d11 file 140 of 165 (138 at run 23), d3d10core 103 of 111 (102), the WebGL 2 build's scenes
   88 match, 27 fail, 30 absent (67, 52, 27), real programs as at run 23. At 9f52cb91 (the last
