@@ -24,8 +24,8 @@ pub(crate) const CAP_SYS_RAWIO: u32 = general::CAP_SYS_RAWIO;
 pub(crate) const CAP_LINUX_IMMUTABLE: u32 = general::CAP_LINUX_IMMUTABLE;
 pub(crate) const CAP_SETFCAP: u32 = general::CAP_SETFCAP;
 
-/// The powers a default Docker container gives its processes.
-pub(crate) const DOCKER_DEFAULT: u64 = bits(&[
+/// The powers a default Docker container gives its processes, one bit per capability.
+pub const DOCKER_DEFAULT: u64 = bits(&[
     general::CAP_CHOWN,
     general::CAP_DAC_OVERRIDE,
     general::CAP_FOWNER,

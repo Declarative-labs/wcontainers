@@ -28,24 +28,31 @@ pub(crate) struct Limit {
     pub maximum: u64,
 }
 
+/// The resource limits a default Docker container's first process starts with where they are
+/// not unlimited: resource, soft limit, hard limit.
+pub const DOCKER_LIMITS: [(u32, u64, u64); 7] = {
+    use crate::linux::general::*;
+    [
+        (RLIMIT_STACK, 8 << 20, RLIM_INFINITY as u64),
+        (RLIMIT_CORE, 0, RLIM_INFINITY as u64),
+        (RLIMIT_NOFILE, 1 << 20, 1 << 20),
+        (RLIMIT_NICE, 0, 0),
+        (RLIMIT_RTPRIO, 0, 0),
+        (RLIMIT_SIGPENDING, 128_302, 128_302),
+        (RLIMIT_MSGQUEUE, 819_200, 819_200),
+    ]
+};
+
 /// The resource limits a default Docker container's first process starts with.
 pub(crate) fn docker_limits() -> [Limit; LIMITS] {
-    use crate::linux::general::*;
     let unlimited = Limit {
-        current: RLIM_INFINITY as u64,
-        maximum: RLIM_INFINITY as u64,
+        current: crate::linux::general::RLIM_INFINITY as u64,
+        maximum: crate::linux::general::RLIM_INFINITY as u64,
     };
     let mut limits = [unlimited; LIMITS];
-    let set = |limits: &mut [Limit; LIMITS], resource: u32, current: u64, maximum: u64| {
+    for (resource, current, maximum) in DOCKER_LIMITS {
         limits[resource as usize] = Limit { current, maximum };
-    };
-    set(&mut limits, RLIMIT_STACK, 8 << 20, RLIM_INFINITY as u64);
-    set(&mut limits, RLIMIT_CORE, 0, RLIM_INFINITY as u64);
-    set(&mut limits, RLIMIT_NOFILE, 1 << 20, 1 << 20);
-    set(&mut limits, RLIMIT_NICE, 0, 0);
-    set(&mut limits, RLIMIT_RTPRIO, 0, 0);
-    set(&mut limits, RLIMIT_SIGPENDING, 128_302, 128_302);
-    set(&mut limits, RLIMIT_MSGQUEUE, 819_200, 819_200);
+    }
     limits
 }
 

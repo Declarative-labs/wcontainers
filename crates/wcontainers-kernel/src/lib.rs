@@ -43,12 +43,14 @@ use alloc::vec::Vec;
 use wcontainers_abi::{CounterReading, Cpu, Event, Exit, Host, Next};
 
 pub use container::{
-    Attributes, DEVPTS_PATH, EXIT_NOT_FOUND, EXIT_NOT_RUNNABLE, EXIT_START_FAILED, FileRecord,
-    NULL_PATH, NewFile, Start,
+    Attributes, DEVPTS_PATH, DOCKER_UMASK, EXIT_NOT_FOUND, EXIT_NOT_RUNNABLE, EXIT_START_FAILED,
+    FileRecord, NULL_PATH, NewFile, Start,
 };
 pub use counters::reason;
+pub use credentials::DOCKER_DEFAULT as DOCKER_CAPABILITIES;
 pub use ends::Standard;
 pub use errno::Errno;
+pub use process::DOCKER_LIMITS;
 pub use syscall::tty::PTMX_PATH;
 
 use counters::Counters;

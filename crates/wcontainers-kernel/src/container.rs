@@ -69,6 +69,9 @@ pub struct Start<'a> {
     pub standard: Standard,
 }
 
+/// The file mode creation mask a default Docker container's first process starts with.
+pub const DOCKER_UMASK: u32 = 0o022;
+
 /// Where the first process's descriptor 0 opens when it has no input.
 pub const NULL_PATH: &str = "/dev/null";
 
@@ -750,7 +753,7 @@ impl Kernel {
         let fs = Rc::new(core::cell::RefCell::new(crate::process::FsContext {
             root: root.clone(),
             cwd: root.clone(),
-            umask: 0o022,
+            umask: DOCKER_UMASK,
         }));
         let thread = Thread::new(pid, wcontainers_abi::ThreadId(0), files, fs, credentials);
         self.threads.insert(pid, thread);
