@@ -24,9 +24,12 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   and two programs of this track's own (one a static musl program) give the same exits, registers and output as
   the WebAssembly output's CPU side, with and without the count, and the reference's output (below, "N3 run 3"); run 4
   carried the kernel's `Host` calls, the image's files and the container's start through the link and started a
-  container's first process in the kernel inside the machine, alike with the WebAssembly side (below, "N3 run 4"). Blocked for its
-  bar: R1 and R3 (the runtime's loop `no_std`, the `System` split into policy and services) are the runtime
-  and kernel tracks' crates, which this track has not been agreed to change (see "For the orchestrator").
+  container's first process in the kernel inside the machine, alike with the WebAssembly side (below, "N3 run 4"); run 5 did R1 and a
+  first R3 itself, in commits of their own (a departure, below), and runs hello to its end inside the machine with the runtime's
+  loop and the test crate's policy, alike with the WebAssembly side, and counts the machine's exits over 100,000 getppid calls:
+  4 more than with none, the same with 200,000 (below, "N3 run 5"). Not done: the bar (busybox through the native back end
+  against the reference; Docker on the Mac and the rented machine were both down) and the fork, exec and signal program, which
+  needs a turn that ends at a limit natively (decision 10).
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -53,6 +56,72 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N3 run 5 (2026-11-19)
+
+Start: origin/main and origin/phase-1-literals had nothing new; the brief still has no ruling on R1 and R3. After four runs
+waiting, this run built them in their smallest form, each its own commit, so N3 could go on (a departure, below; the owner
+or the runtime and kernel tracks may take them over or redo them).
+
+Built (each its own commit):
+- 8463b5ec, wcontainers-runtime (the runtime track's crate), R1: a `std` cargo feature, on by default; without it the crate
+  is `no_std` and holds only the loop (`Turn`, `Carry`, `Leaving`, `Answer`, `Execution`, `System`, `Step`, `Ending`,
+  `Stepper`, `drive`). `StopFlag`, `System::stop_flag`, containers, images, the spec and `LocalSystem` and their crates
+  are the std part. Nothing changes with the feature on; the runtime's 7 tests pass.
+- 0e690abf, wcontainers-kernel (the kernel track's crate): the netlink code uses linux-raw-sys's `NLMSG_ALIGNTO` in place of
+  its own `ALIGN = 4` (same value). Needed because the new crate below made the literal check read arm64's `Arm64::ALIGN`
+  as a copy of the kernel's; one redefinition line left the baseline.
+- 07c64ff0, R3 for the test crate, first form: the new crate `wcontainers-kernel-test-policy` (`no_std`, MIT OR Apache-2.0,
+  never shipped; name a suggestion) holds the test crate's seeded choices: `Schedule` (turn limits and turn times from the
+  seed, the same draws as before), `RepeatableClock` (the clocks that move only with turns and skipped waits) and
+  `TestPolicy<H: Host>`, the `System` that runs where the loop runs, with the host's services behind any `Host`: clocks from
+  its repeatable clock, turns from the schedule, a wait for a time skips to it, the CPU side's slow paths kept. A file
+  backend, a connection, a lookup or a listener is refused as `NotSupported`, counted and kept under "outside's events not
+  carried to the policy" (their events cannot reach the policy yet). The kernel test crate's `TestHost` now uses `Schedule`
+  and `RepeatableClock` (same draws, same clocks); its own `System` impl keeps the backend, network, injections and saves,
+  which need the services' half of `arrived` and `idle` (R3's rest, with N5 and N7). Nine baseline lines of driver.rs left.
+- 1e014c7d, the inside: `Execution for NativeCpu`: a loop over `NativeCpu::run` handing each exit to `Answer::exit` with the
+  count's progress since the run (0 without the count), counter reads to `Answer::clock` (told no progress; the progress
+  before one goes with the next exit), slow paths to `Answer::warn` (`NativeCpu::send_warnings`, split from `run`). A turn
+  with a limit is refused (`Unbuilt::TurnWithLimit`, decision 10); `restored` panics as N7's. The inside depends on the
+  runtime without std.
+- 149c3111, `native-kernel` and tests/kernel.rs: inside, after `container::start`, `drive` with `TestPolicy` over `LinkHost`
+  on `NativeCpu`; the policy's warnings and the end come back through the link. On the host the same kernel, `drive` and
+  `TestPolicy` run the same container on the WebAssembly `CpuSide`. Compared: wait status, turns, every call of the
+  services (output, random bytes, kernel warnings).
+- 25fbae0a, the inside's heap takes a run of blocks as large as one allocation needs (musl's program made the kernel ask for
+  2 MiB at once, more than one block).
+- 9133a439, tests/kernel.rs: this track's `tests/guest/getppid.c` (musl) makes as many getppid calls as its argument says;
+  the test runs it with 0, 100,000 and 200,000 on both sides and counts the virtual machine's exits natively.
+
+Results (M5 Max, load 8 to 13; scratch native/n3r5/kernel4.log):
+- hello: status 0x300 after 3 turns, 5 service calls, identical on both sides; 28 exits of the machine natively.
+- getppid: identical on both sides at each count (status 0, 4, 100,004 and 200,004 turns). Exits of the machine: 1707 with
+  no calls, 1711 with 100,000, 1711 with 200,000: a system call does not leave the machine (the 4 are the loop's pieces
+  translated). Native slow paths warned: "host-model result routed" 243, "withheld register named by the guest" 27, "access
+  that may cross a page probed" 9. The whole test 8.0 s once built.
+- exits test after the change to `run`: 3 programs, 0 failed, both modes. Floor: 21 cases and 1 measurement, 0 failed.
+
+Not run: the kernel test crate's own tests after the `TestHost` change, beyond building and linting them (Docker Desktop on
+the Mac was "unable to start" all run and the rented ARM machine was gone at 04:40). Its draws and clocks are unchanged by
+construction (the same calls in the same order); run `cargo test -p wcontainers-kernel-test` once either is back.
+
+Dependencies added: rand 0.9 with `std_rng` only (MIT OR Apache-2.0, the version the test crate uses) in the policy crate;
+the inside and the monitor's tests depend on the policy crate and the runtime (this workspace, MIT OR Apache-2.0).
+
+Literals: the check exits 0; ten baseline lines left (nine of driver.rs, one redefinition of netlink.rs), none added.
+
+What comes next for N3, in order:
+1. The bar: the kernel test crate's busybox `text` and `files` commands through the native back end. Expected shape: a
+   `native` feature of wcontainers-kernel-test (as `runtime` chooses the WebAssembly back end) whose `run_prepared` runs the
+   container through the monitor with `TestHost` as the services and refuses a backend, network or injections; for that the
+   monitor's library needs a `run` of a container (the boot, the link loop of tests/kernel.rs, building and signing from
+   tests/common), and the inside must send the root's files back (`Kernel::root_files`) for the `files` test. Then
+   `compare`'s first run (root in memory) is the bar; its second (root on the backend) is refused until N5.
+2. The fork, exec and signal program: written once a turn with a limit can run natively (a fork puts a second thread in the
+   run queue and the kernel then gives turns a slice; decision 10 decides how a native turn ends at one).
+3. R3's rest: the services' half of `arrived` and `idle` (backend answers, network events, notices, signals) carried to the
+   policy, and `TestHost`'s `System` built on `TestPolicy`.
 
 ## N3 run 4 (2026-11-19)
 
@@ -723,8 +792,9 @@ From the checkout, in the Nix shell:
   7 minutes);
 - the monitor's translate answer through a link page: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor
   --lib`;
-- N3's kernel inside the machine against the same kernel on the WebAssembly CPU side, starting hello: `nix develop -c
-  cargo test -j 4 -p wcontainers-hypervisor --test kernel` (knob `WCONTAINERS_KERNEL_SEED`; about 1 s once built);
+- N3's kernel and loop inside the machine against the same kernel, loop and policy on the WebAssembly CPU side, hello and
+  the getppid exit count: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test kernel` (knob
+  `WCONTAINERS_KERNEL_SEED`, seeds the policy and the random bytes; about 8 s once built);
 - N3's native CPU side against the WebAssembly one on static programs: `nix develop -c cargo test -j 4 -p
   wcontainers-hypervisor --test exits` (both modes; `WCONTAINERS_EXITS_EXACT=0` or `1` runs one; about 1 s);
 - N2's tests without the machine: `nix develop -c cargo test -j 4 -p wcontainers-arm64 --test native_routes --test encode --
@@ -1050,6 +1120,15 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 ## Departures from the plan
 
+- N3 run 5, R1 and a first R3 were made by this track (plan 6.2 says by the runtime and kernel tracks, or by this track if
+  they agree; no ruling came in four runs). R1 is the plan's form (a std feature; the loop `no_std`). R3 is smaller than the
+  plan's: `System` is not split into two traits; a policy is a type generic over its services (`TestPolicy<H: Host>`), and
+  only the test crate's seeded turns and clocks moved; the shipped `LocalSystem` is not split yet.
+- N3 run 5, the native `Execution` refuses a turn with a limit (decision 10) and tells counter reads no progress (the
+  progress before one is handed with the next exit).
+- N3 run 5, `TestPolicy` refuses connections, lookups, listeners and a file backend as unsupported, counted, until the
+  outside's events reach the policy.
+
 - N3 run 2, the inside reads and writes the guest's FPSR, FPCR and vector registers only through four routines
   the monitor writes with the encoder at start (the soft-float target cannot name them).
 - N3 run 2, one table root per process for now: a thread's own table root (`PerThreadWatch`) comes with
@@ -1146,6 +1225,13 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N3 run 5: R1 and a first R3 are built on this branch in commits of their own (8463b5ec in wcontainers-runtime, 07c64ff0 a
+  new crate wcontainers-kernel-test-policy and wcontainers-kernel-test's driver.rs, 0e690abf one line of the kernel's
+  netlink.rs for the literal check). They will meet phase-1-runtime's changes to lib.rs's `System` (`standard`,
+  `serve_directory`) at a merge; `serve_directory` names `std::path` and must go to the std part. Please have the runtime and
+  kernel tracks look at them, or rule. The bar also needs the kernel test crate to choose the native back end (driver.rs) and
+  Docker for the reference: Docker Desktop on the Mac was down all run and the rented machine was gone.
 
 - N3's bar needs R1 (the runtime's `Turn`, `Carry`, `Leaving`, `Answer`, `Execution`, `Step`, `Stepper` and
   the policy trait buildable without the standard library) and R3 (`System` split into a policy and

@@ -1353,7 +1353,10 @@ The changes:
   `TestHost`) splits so too, its seeded `turn` and `ran` in the policy. A policy is a type the inside is
   built with: the runtime's inside carries the shipped policy and the test crate's; an embedding that
   wants its own policy builds its own inside program from the inside library with its type (one build
-  script call). Rejected: forwarding every `System` call to the host (an exit for `ran`, `arrived` and
+  script call). Its first form (built at N3): a policy is a type generic over its services, `TestPolicy<H: Host>` in
+  the `no_std` crate wcontainers-kernel-test-policy, which answers the clocks itself (repeatable) and hands every other
+  `Host` call to `H` (`LinkHost` inside, the test host on the host); the two-trait split and `LocalSystem`'s follow.
+  Rejected: forwarding every `System` call to the host (an exit for `ran`, `arrived` and
   `turn` at every system call, 0.7 to 6.2 µs each against 21 to 32 ns).
 - **R5 (runtime track, and the kernel track for its test crate): a save the policy asks for is made by the
   back end.** Today the test crate's `System`'s `stopped` makes the copy itself with `libc::fork`
