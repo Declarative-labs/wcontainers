@@ -56,6 +56,20 @@ pub(super) fn null_shapes(bindings: &[StageBinding]) -> Vec<(null::Shape, bool)>
         .collect()
 }
 
+/// The dimension a view of `dimension` and `layer_count` layers is bound as for `b`: an array
+/// view of one layer where the program declares one 2D texture holds the same texels as a 2D
+/// view of that layer.
+fn declared_dimension(
+    dimension: ViewDimension,
+    layer_count: u32,
+    b: &StageBinding,
+) -> ViewDimension {
+    match (dimension, b.shape.map(|s| s.dimension)) {
+        (ViewDimension::D2Array, Some(ViewDimension::D2)) if layer_count == 1 => ViewDimension::D2,
+        (d, _) => d,
+    }
+}
+
 /// The form of a resource binding in the converted program.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Form {
@@ -1132,6 +1146,17 @@ impl<B: Backend> Device<B> {
                 "storage views of part of a 3D texture",
             ));
         }
+        let dimension = declared_dimension(dimension, layer_count, b);
+        if let Some(shape) = b.shape.filter(|s| s.dimension != dimension) {
+            self.messages.push(format!(
+                "an unordered access view of D3D12_UAV_DIMENSION {} bound at slot {:?} of a \
+                 program declaring {:?}",
+                v.dimension, b.binding, shape.dimension
+            ));
+            return Err(Error::NotImplemented(
+                "an unordered access view of another dimension than the program declares",
+            ));
+        }
         self.texture_view(
             v.resource,
             TextureViewDesc {
@@ -1246,14 +1271,7 @@ impl<B: Backend> Device<B> {
                 "a texture read as another type than its view's format",
             ));
         }
-        // An array view of one layer bound where the program declares one 2D texture holds the
-        // same texels as a 2D view of that layer.
-        let dimension = match (dimension, b.shape.map(|s| s.dimension)) {
-            (ViewDimension::D2Array, Some(ViewDimension::D2)) if layer_count == 1 => {
-                ViewDimension::D2
-            }
-            (d, _) => d,
-        };
+        let dimension = declared_dimension(dimension, layer_count, b);
         // Direct3D leaves a view of another dimension than the declaration undefined, and the
         // back end refuses the binding; a multisampled array is read as a texture per layer.
         if v.dimension != SRV_DIMENSION_TEXTURE2DMSARRAY

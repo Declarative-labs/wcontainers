@@ -253,3 +253,20 @@ fn fine_derivatives_are_refused_by_glsl_es() {
     assert!(out.contains("dFdx("), "{out}");
     assert!(out.contains("fwidth("), "{out}");
 }
+
+/// GLSL ES 3.00's `mix` takes a boolean condition with float values only, so a select of integer
+/// vectors by a boolean vector is written one component at a time.
+#[test]
+fn integer_vector_selects_are_written_per_component() {
+    let wgsl = "
+@fragment fn main(@location(0) @interpolate(flat) a: vec2u, @location(1) @interpolate(flat) b: vec2u) -> @location(0) vec4u {
+    return vec4u(select(a, b, a < b), select(a, b, a.x < 3u));
+}";
+    let out = write_glsl(
+        wgsl,
+        naga::ShaderStage::Fragment,
+        glsl::WriterFlags::empty(),
+    );
+    assert!(!out.contains("mix("), "{out}");
+    assert!(out.contains(").x ? ("), "{out}");
+}

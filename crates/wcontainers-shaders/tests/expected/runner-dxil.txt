@@ -1138,7 +1138,7 @@ hlsl+sm6-uav-rwtexture-3-ps.dxil	ok-wgsl glsl-write
 hlsl+sm6-uav-rwtexture-4-ps.dxil	ok-wgsl glsl-write
 hlsl+sm6-uav-rwtexture-5-ps.dxil	ok-wgsl glsl-write
 hlsl+sm6-uav-rwtexture-6-ps.dxil	ok-wgsl glsl-write
-hlsl+sm6-uav-rwtexture-7-ps.dxil	unsupported Texture1DArray
+hlsl+sm6-uav-rwtexture-7-ps.dxil	ok-wgsl glsl-write
 hlsl+sm6-uav-rwtexture-8-ps.dxil	ok-wgsl glsl-write
 hlsl+sm6-uav-rwtexture-9-ps.dxil	ok-wgsl glsl-write
 hlsl+smoothstep-1-ps.dxil	ok

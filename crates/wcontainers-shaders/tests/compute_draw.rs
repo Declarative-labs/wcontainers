@@ -9,10 +9,11 @@ mod common;
 
 use common::*;
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, BufferRange, BufferUsage, DispatchCall, DispatchGroups,
-    Extent, Format, HELPER_SET, HelperValue, Origin, Program, ReadSource, ShaderStage, SlotKind,
-    StageSet, TexelBufferRoute, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
-    TextureViewDesc, VariantKey, ViewDimension, WriteMode, helper_binding,
+    AddressMode, Backend, BindingEntry, BindingResource, BorderColor, BufferRange, BufferUsage,
+    DispatchCall, DispatchGroups, Extent, Filter, Format, HELPER_SET, HelperValue, Origin, Program,
+    ReadSource, SamplerDesc, ShaderStage, SlotKind, StageSet, TexelBufferRoute, TextureDesc,
+    TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, VariantKey, ViewDimension,
+    WriteMode, helper_binding,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::{ConvertError, Source, convert};
@@ -1885,5 +1886,302 @@ fn storage_textures_through_buffers_match_direct3d() {
         }
     }
     eprintln!("{seeds} seeds, {} failed", failures.len());
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// `cs_one_d`'s textures: register, whether an unordered access view, format, layers (none for a
+/// texture that is not an array), and whether seeded.
+const ONE_D: [(u32, bool, Format, Option<u32>, bool); 4] = [
+    (0, false, Format::R32Float, None, true),
+    (1, false, Format::R32Float, Some(3), true),
+    (0, true, Format::R32Float, None, false),
+    (1, true, Format::R32Uint, Some(2), false),
+];
+/// Their width, one group of `cs_one_d`.
+const ONE_D_WIDTH: u32 = 64;
+
+/// A 1D texture's texels, layer after layer: seeded floats, or zeros.
+fn one_d_texels(seed: u64, i: usize) -> Vec<u8> {
+    let (_, _, format, layers, seeded) = ONE_D[i];
+    let n = (ONE_D_WIDTH * layers.unwrap_or(1) * format.block().2) as usize;
+    let mut next = rng(seed + i as u64);
+    match seeded {
+        true => (0..n / 4)
+            .flat_map(|_| ((next() % 3000) as f32 / 64.0).to_le_bytes())
+            .collect(),
+        false => vec![0; n],
+    }
+}
+
+/// Each output texture's texels after real Direct3D 11 runs `cs_one_d` on 1D textures.
+fn direct3d_one_d(gpu: &Gpu, seed: u64) -> Vec<Vec<u8>> {
+    let shader = gpu.cs(&bytecode("cs_one_d.dxbc")).unwrap();
+    let mut srvs = Vec::new();
+    let mut uavs = Vec::new();
+    let mut outputs = Vec::new();
+    for (i, &(_, uav, format, layers, _)) in ONE_D.iter().enumerate() {
+        let desc = D3D11_TEXTURE1D_DESC {
+            Width: ONE_D_WIDTH,
+            MipLevels: 1,
+            ArraySize: layers.unwrap_or(1),
+            Format: dxgi(format),
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: match uav {
+                true => D3D11_BIND_UNORDERED_ACCESS.0 as u32,
+                false => D3D11_BIND_SHADER_RESOURCE.0 as u32,
+            },
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let texels = one_d_texels(seed, i);
+        let row = ONE_D_WIDTH * format.block().2;
+        let data: Vec<_> = texels
+            .chunks(row as usize)
+            .map(|layer| d3d11::data(layer, row, row))
+            .collect();
+        let texture: ID3D11Texture1D = d3d11::made(|o| unsafe {
+            gpu.device
+                .CreateTexture1D(&desc, Some(data.as_ptr()), Some(o))
+        })
+        .unwrap();
+        let resource: ID3D11Resource = texture.cast().unwrap();
+        match uav {
+            true => {
+                uavs.push(Some(gpu.uav(&resource, None).unwrap()));
+                outputs.push((texture, desc, row));
+            }
+            false => srvs.push(Some(gpu.srv(&resource, None).unwrap())),
+        }
+    }
+    let sampler = gpu
+        .sampler(&D3D11_SAMPLER_DESC {
+            Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+            AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
+            AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
+            AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+            MaxAnisotropy: 1,
+            ComparisonFunc: D3D11_COMPARISON_NEVER,
+            MaxLOD: f32::MAX,
+            ..Default::default()
+        })
+        .unwrap();
+    unsafe {
+        let c = &gpu.context;
+        c.CSSetShader(&shader, None);
+        c.CSSetShaderResources(0, Some(&srvs));
+        c.CSSetSamplers(0, Some(&[Some(sampler)]));
+        c.CSSetUnorderedAccessViews(0, uavs.len() as u32, Some(uavs.as_ptr()), None);
+        c.Dispatch(1, 1, 1);
+        let none: Vec<Option<ID3D11UnorderedAccessView>> = vec![None; uavs.len()];
+        c.CSSetUnorderedAccessViews(0, none.len() as u32, Some(none.as_ptr()), None);
+    }
+    outputs
+        .iter()
+        .map(|(texture, desc, row)| {
+            let mut staging_desc = *desc;
+            staging_desc.Usage = D3D11_USAGE_STAGING;
+            staging_desc.BindFlags = 0;
+            staging_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+            let staging: ID3D11Texture1D = d3d11::made(|o| unsafe {
+                gpu.device.CreateTexture1D(&staging_desc, None, Some(o))
+            })
+            .unwrap();
+            let mut out = Vec::new();
+            unsafe {
+                gpu.context.CopyResource(&staging, texture);
+                for layer in 0..desc.ArraySize {
+                    let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                    gpu.context
+                        .Map(&staging, layer, D3D11_MAP_READ, 0, Some(&mut mapped))
+                        .unwrap();
+                    out.extend_from_slice(std::slice::from_raw_parts(
+                        mapped.pData.cast::<u8>(),
+                        *row as usize,
+                    ));
+                    gpu.context.Unmap(&staging, layer);
+                }
+            }
+            out
+        })
+        .collect()
+}
+
+/// The same through the WebGPU back end on 2D textures one texel high, as the fronts make 1D ones,
+/// from fxc's bytecode (DXBC) or dxc's (DXIL).
+fn ours_one_d<B: Backend>(b: &mut B, seed: u64, dxil: bool) -> Vec<Vec<u8>> {
+    let key = VariantKey {
+        storage_formats: ONE_D.iter().filter(|t| t.1).map(|t| (t.0, t.2)).collect(),
+        ..Default::default()
+    };
+    let c = match dxil {
+        true => convert(Source::Dxil(&bytecode("cs_one_d.dxil")), &key, None),
+        false => convert(Source::Dxbc(&bytecode("cs_one_d.dxbc")), &key, None),
+    }
+    .unwrap();
+    assert!(c.reflection.helpers.is_empty());
+    let shader = b.create_shader(&c.modules[0]).unwrap();
+    let program = b.create_program(&Program::Compute(&shader)).unwrap();
+    let mut textures = Vec::new();
+    for (i, &(_, uav, format, layers, _)) in ONE_D.iter().enumerate() {
+        let count = layers.unwrap_or(1);
+        let texture = b
+            .create_texture(&TextureDesc {
+                dimension: TextureDimension::D2,
+                format,
+                width: ONE_D_WIDTH,
+                height: 1,
+                depth_or_layers: count,
+                mip_levels: 1,
+                samples: 1,
+                usage: match uav {
+                    true => TextureUsage::STORAGE,
+                    false => TextureUsage::SAMPLE,
+                } | TextureUsage::COPY_SRC
+                    | TextureUsage::COPY_DST,
+                cube: false,
+                reinterpret: false,
+            })
+            .unwrap();
+        let view = b
+            .create_view(
+                &texture,
+                &TextureViewDesc {
+                    format,
+                    dimension: match layers {
+                        Some(_) => ViewDimension::D2Array,
+                        None => ViewDimension::D2,
+                    },
+                    base_mip: 0,
+                    mip_count: 1,
+                    base_layer: 0,
+                    layer_count: count,
+                    stencil: false,
+                },
+            )
+            .unwrap();
+        let extent = Extent {
+            width: ONE_D_WIDTH,
+            height: 1,
+            depth_or_layers: count,
+        };
+        b.write_texture(
+            &TextureRegion {
+                texture: &texture,
+                mip: 0,
+                layer: 0,
+                origin: Origin::default(),
+                stencil: false,
+            },
+            extent,
+            &one_d_texels(seed, i),
+            ONE_D_WIDTH * format.block().2,
+            1,
+            WriteMode::Ordered,
+        );
+        textures.push((texture, view, extent));
+    }
+    let sampler = b
+        .create_sampler(&SamplerDesc {
+            min: Filter::Linear,
+            mag: Filter::Linear,
+            mip: Filter::Linear,
+            address: [AddressMode::Clamp; 3],
+            lod_range: [0, f32::MAX.to_bits()],
+            anisotropy: 1,
+            compare: None,
+            border: BorderColor::TransparentBlack,
+        })
+        .unwrap();
+    let entries: Vec<_> = c
+        .reflection
+        .bindings
+        .iter()
+        .map(|r| {
+            let at = |uav: bool| {
+                ONE_D
+                    .iter()
+                    .position(|t| (t.0, t.1) == (r.register, uav))
+                    .unwrap()
+            };
+            BindingEntry {
+                binding: r.binding,
+                stages: StageSet::COMPUTE,
+                resource: match r.kind {
+                    SlotKind::Texture => BindingResource::Texture(&textures[at(false)].1),
+                    SlotKind::Storage => BindingResource::StorageTexture {
+                        view: &textures[at(true)].1,
+                        writable: true,
+                    },
+                    SlotKind::Sampler => BindingResource::Sampler(&sampler),
+                    k => panic!("{k:?}"),
+                },
+            }
+        })
+        .collect();
+    let set = b.create_binding_set(&entries).unwrap();
+    b.dispatch(&DispatchCall {
+        program: &program,
+        bindings: [Some(&set), None, None, None],
+        immediates: &[],
+        groups: DispatchGroups::Direct([1, 1, 1]),
+    })
+    .unwrap();
+    ONE_D
+        .iter()
+        .zip(&textures)
+        .filter(|(t, _)| t.1)
+        .map(|(t, (texture, _, extent))| {
+            let mut out = vec![0; (extent.width * extent.depth_or_layers * t.2.block().2) as usize];
+            b.read_back_now(
+                &ReadSource::Texture {
+                    region: TextureRegion {
+                        texture,
+                        mip: 0,
+                        layer: 0,
+                        origin: Origin::default(),
+                        stencil: false,
+                    },
+                    extent: *extent,
+                },
+                &mut out,
+            )
+            .unwrap();
+            out
+        })
+        .collect()
+}
+
+/// 1D textures and arrays, loaded, sampled, sized and stored, through both routes as 2D textures one
+/// texel high, against real Direct3D 11's 1D textures.
+#[test]
+fn one_d_textures_match_direct3d() {
+    let mut backend = webgpu();
+    let gpu = d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let seed: u64 = std::env::var("WCONTAINERS_COMPUTE_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_COMPUTE_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(4);
+    let mut failures = Vec::new();
+    for seed in seed..seed + seeds {
+        let reference = direct3d_one_d(&gpu, seed);
+        for (dxil, source) in [(false, "dxbc"), (true, "dxil")] {
+            let made = ours_one_d(&mut backend, seed, dxil);
+            for (k, (a, o)) in reference.iter().zip(&made).enumerate() {
+                let apart = a.chunks(4).zip(o.chunks(4)).filter(|(x, y)| x != y).count();
+                eprintln!("seed {seed} {source} u{k}: {apart} words apart");
+                if apart > 0 {
+                    failures.push(format!("seed {seed} {source} u{k}"));
+                }
+            }
+        }
+    }
+    eprintln!("{} seeds, {} failed", seeds, failures.len());
     assert!(failures.is_empty(), "{failures:#?}");
 }

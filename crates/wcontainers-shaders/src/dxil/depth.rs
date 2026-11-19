@@ -3,8 +3,8 @@
 //! plainly). A plain read of a depth texture gives one value where the program expects four, so
 //! each becomes a call of a function giving (depth, 0, 0, 1), as Direct3D reads a depth view.
 
-use super::arrays::{constant, copy_constant, operands};
-use super::{Placed, functions_first, place_calls};
+use super::Read;
+use super::arrays::{copy_constant, operands};
 use crate::ConvertError;
 use alloc::vec::Vec;
 use naga::{
@@ -13,14 +13,6 @@ use naga::{
 };
 
 type Result<T> = core::result::Result<T, ConvertError>;
-
-/// One plain read: the function (index into functions, then entry points), the reading
-/// expression, and the operands passed to its helper with their types.
-struct Read {
-    function: usize,
-    user: Handle<Expression>,
-    passed: Vec<(Handle<Expression>, Handle<Type>)>,
-}
 
 /// Whether `image` of `f` names a depth texture of `module`.
 fn depth(module: &Module, f: &Function, image: Handle<Expression>) -> bool {
@@ -117,114 +109,26 @@ pub(super) fn as_widened(module: &Module, f: &Function, vec4: Handle<Type>) -> R
 
 /// Makes every plain sample and load of a depth texture give four components.
 pub(super) fn widen(module: &mut Module) -> Result<()> {
-    let n = module.functions.len();
-    let all = |module: &Module| -> Vec<Function> {
-        module
-            .functions
-            .iter()
-            .map(|(_, f)| f.clone())
-            .chain(module.entry_points.iter().map(|ep| ep.function.clone()))
-            .collect()
-    };
-    // The plain reads, by function.
     let mut found = Vec::new();
-    for (i, f) in all(module).iter().enumerate() {
+    for (i, f) in super::all_functions(module).iter().enumerate() {
         found.extend(plain_reads(module, f)?.into_iter().map(|h| (i, h)));
     }
     if found.is_empty() {
         return Ok(());
     }
     let vec4 = vec4(module);
-    // The operands' types, each function typed with its plain reads standing as the four
-    // components they will give.
-    let mut reads = Vec::new();
-    for (i, mut f) in all(module).into_iter().enumerate() {
-        let here: Vec<_> = found.iter().filter(|r| r.0 == i).map(|r| r.1).collect();
-        if here.is_empty() {
-            continue;
-        }
-        let original = f.expressions.clone();
-        for &h in &here {
-            *f.expressions.get_mut(h) = Expression::ZeroValue(vec4);
-        }
-        let mut typifier = naga::front::Typifier::new();
-        let ctx = naga::proc::ResolveContext::with_locals(module, &f.local_variables, &f.arguments);
-        let mut types = Vec::new();
-        for &h in &here {
-            let mut user = original[h].clone();
-            let mut passed = Vec::new();
-            for o in operands(&mut user)? {
-                let o = *o;
-                if constant(&f, o) || matches!(f.expressions[o], Expression::GlobalVariable(_)) {
-                    continue;
-                }
-                typifier
-                    .grow(o, &f.expressions, &ctx)
-                    .map_err(|e| ConvertError::Malformed(alloc::format!("{e}")))?;
-                passed.push((o, typifier.get(o, &module.types).clone()));
+    // Each function's operands are typed with its plain reads standing as the four components they
+    // will give.
+    super::outline(
+        module,
+        &found,
+        |f, here| {
+            for &h in here {
+                *f.expressions.get_mut(h) = Expression::ZeroValue(vec4);
             }
-            types.push((h, passed));
-        }
-        reads.push((i, types));
-    }
-    let mut ty = |inner| {
-        module
-            .types
-            .insert(Type { name: None, inner }, Span::UNDEFINED)
-    };
-    let reads: Vec<Read> = reads
-        .into_iter()
-        .flat_map(|(function, types)| {
-            types
-                .into_iter()
-                .map(move |(user, passed)| (function, user, passed))
-        })
-        .map(|(function, user, passed)| Read {
-            function,
-            user,
-            passed: passed.into_iter().map(|(e, t)| (e, ty(t))).collect(),
-        })
-        .collect();
-    let mut built = Vec::new();
-    for r in &reads {
-        let f = match r.function < n {
-            true => {
-                module
-                    .functions
-                    .iter()
-                    .nth(r.function)
-                    .expect("a function")
-                    .1
-            }
-            false => &module.entry_points[r.function - n].function,
-        };
-        built.push(helper(module, f, r, vec4)?);
-    }
-    let (helpers, moved) = functions_first(module, |module| -> Vec<Handle<Function>> {
-        built
-            .into_iter()
-            .map(|h| module.functions.append(h, Span::UNDEFINED))
-            .collect()
-    });
-    for i in 0..n + module.entry_points.len() {
-        let f = match moved.get(i) {
-            Some(&h) => &mut module.functions[h],
-            None => &mut module.entry_points[i - n].function,
-        };
-        let calls: Vec<Placed> = reads
-            .iter()
-            .zip(&helpers)
-            .filter(|(r, _)| r.function == i)
-            .map(|(r, &helper)| Placed {
-                result: r.user,
-                function: helper,
-                arguments: r.passed.iter().map(|p| p.0).collect(),
-                pre: None,
-            })
-            .collect();
-        place_calls(f, &calls);
-    }
-    Ok(())
+        },
+        |module, f, r| helper(module, f, r, vec4),
+    )
 }
 
 /// The helper for one plain read: it takes the read's run-time operands, reads, and gives

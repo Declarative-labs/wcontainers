@@ -13409,19 +13409,6 @@ code	crates/wcontainers-shaders/src/container.rs	int	chunks	4
 code	crates/wcontainers-shaders/src/container.rs	int	signature	4
 code	crates/wcontainers-shaders/src/dxbc.rs	str	to_ir	"dxbc-spirv gave no reason"
 code	crates/wcontainers-shaders/src/dxbc.rs	str	to_ir	"the IR did not decode"
-code	crates/wcontainers-shaders/src/dxil.rs	float	float_to_int_function	-2_147_483_648.0
-code	crates/wcontainers-shaders/src/dxil.rs	float	float_to_int_function	2_147_483_648.0
-code	crates/wcontainers-shaders/src/dxil.rs	float	float_to_int_function	4_294_967_296.0
-code	crates/wcontainers-shaders/src/dxil.rs	int	atomic_signedness_differs	3
-code	crates/wcontainers-shaders/src/dxil.rs	int	atomic_signedness_differs	3
-code	crates/wcontainers-shaders/src/dxil.rs	int	atomic_signedness_differs	3
-code	crates/wcontainers-shaders/src/dxil.rs	int	evaluates_inputs	4
-code	crates/wcontainers-shaders/src/dxil.rs	int	float_to_int_function	0x7f80_0000
-code	crates/wcontainers-shaders/src/dxil.rs	int	float_to_int_function	0x7fff_ffff
-code	crates/wcontainers-shaders/src/dxil.rs	int	float_to_int_function	4
-code	crates/wcontainers-shaders/src/dxil.rs	int	float_to_int_function	4
-code	crates/wcontainers-shaders/src/dxil.rs	int	float_to_ints	4
-code	crates/wcontainers-shaders/src/dxil.rs	int	float_to_ints	4
 code	crates/wcontainers-shaders/src/dxil.rs	str	absent_extension	"RenderTargetArrayIndex"
 code	crates/wcontainers-shaders/src/dxil.rs	str	bindings	"a binding past the resource list"
 code	crates/wcontainers-shaders/src/dxil.rs	str	bindings	"a resource of another class"
@@ -13441,23 +13428,6 @@ code	crates/wcontainers-shaders/src/dxil/images.rs	int	components	3
 code	crates/wcontainers-shaders/src/dxil/images.rs	int	finish	64
 code	crates/wcontainers-shaders/src/dxil/images.rs	int	prepare	3
 code	crates/wcontainers-shaders/src/dxil/images.rs	int	prepare	3
-code	crates/wcontainers-shaders/src/dxil/images.rs	int	prepare	3
-code	crates/wcontainers-shaders/src/dxil/images.rs	int	prepare	3
-code	crates/wcontainers-shaders/src/dxil/images.rs	int	prepare	3
-code	crates/wcontainers-shaders/src/dxil/images.rs	int	prepare	3
-code	crates/wcontainers-shaders/src/dxil/images.rs	int	prepare	3
-code	crates/wcontainers-shaders/src/dxil/images.rs	int	prepare	3
-code	crates/wcontainers-shaders/src/dxil/images.rs	int	prepare	3
-code	crates/wcontainers-shaders/src/dxil/images.rs	int	prepare	4
-code	crates/wcontainers-shaders/src/dxil/images.rs	int	prepare	4
-code	crates/wcontainers-shaders/src/dxil/images.rs	int	prepare	4
-code	crates/wcontainers-shaders/src/dxil/images.rs	int	prepare	4
-code	crates/wcontainers-shaders/src/dxil/images.rs	int	prepare	4
-code	crates/wcontainers-shaders/src/dxil/images.rs	int	prepare	7
-code	crates/wcontainers-shaders/src/dxil/images.rs	int	prepare	7
-code	crates/wcontainers-shaders/src/dxil/images.rs	int	prepare	8
-code	crates/wcontainers-shaders/src/dxil/images.rs	int	prepare	8
-code	crates/wcontainers-shaders/src/dxil/images.rs	int	prepare	9
 code	crates/wcontainers-shaders/src/dxil/images.rs	int	rewrite	4
 code	crates/wcontainers-shaders/src/dxil/images.rs	int	rewrite	4
 code	crates/wcontainers-shaders/src/dxil/images.rs	int	texel_index	3
@@ -13487,7 +13457,6 @@ code	crates/wcontainers-shaders/src/dxil/images.rs	str	through_image	"a storage 
 code	crates/wcontainers-shaders/src/dxil/images.rs	str	through_image	"a storage image's type"
 code	crates/wcontainers-shaders/src/dxil/images.rs	str	typed_buffer	"a typed buffer without a binding"
 code	crates/wcontainers-shaders/src/dxil/images.rs	str	typed_buffer	"a typed buffer's type"
-code	crates/wcontainers-shaders/src/dxil/registers.rs	int	encode	3
 code	crates/wcontainers-shaders/src/dxil/registers.rs	str	lay_out	"a target not at a register's first component"
 code	crates/wcontainers-shaders/src/dxil/widths.rs	bytestr	widen	b"GLSL.std.450\0"
 code	crates/wcontainers-shaders/src/dxil/widths.rs	int	widen	3
@@ -13553,24 +13522,7 @@ code	crates/wcontainers-shaders/src/lower.rs	int	Emit::swizzle	4
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::arithmetic	0x7f80_0000
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::arithmetic	0x7fff_ffff
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::arithmetic	3
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::arithmetic	4
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::arithmetic	4
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::arithmetic	4
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::arithmetic	8
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	10
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	11
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	12
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	13
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	13
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	14
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	14
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	3
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	3
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	4
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	5
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	6
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	7
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	9
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::depth_vec4	4
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::depth_vec4	4
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::depth_vec4	4
@@ -13588,12 +13540,8 @@ code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instru
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instruction	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instruction	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instruction	3
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::instruction	4
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::layer	4
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::math	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::offset_coordinate	26
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::offset_coordinate	4
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::offset_coordinate	4
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::sample	10
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::sample	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::sample	4
@@ -13611,42 +13559,22 @@ code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::texel_
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::texel_at	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::texel_store	4
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::texel_store	4
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::texel_store	4
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering	3
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::arrays	4
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::builtin_input	3
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::builtin_input	3
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::builtin_input	3
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::builtin_input	4
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::declare	10
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::declare	5
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::declare	6
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::declare	7
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::declare	8
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::declare	9
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::declare_op	3
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::declare_op	36
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::declare_op	37
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::declare_op	4
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::declare_op	47
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::declare_op	64
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::declared_ty	3
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::entry_point	3
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::entry_point	4
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::entry_point	4
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::entry_point	4
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::entry_point	4u32
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::new	3
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::scalar	10
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::scalar	11
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::scalar	13
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::scalar	14
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::scalar	17
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::scalar	3
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::scalar	4
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::scalar	6
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::scalar	7
-code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::scalar	8
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::storage_image	4
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::struct_ty	4u32
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::texel_buffer	4
@@ -13655,8 +13583,6 @@ code	crates/wcontainers-shaders/src/lower.rs	int	basic_align	16
 code	crates/wcontainers-shaders/src/lower.rs	int	basic_align	4
 code	crates/wcontainers-shaders/src/lower.rs	int	basic_align	8
 code	crates/wcontainers-shaders/src/lower.rs	int	basic_size	4
-code	crates/wcontainers-shaders/src/lower.rs	int	vector_size	3
-code	crates/wcontainers-shaders/src/lower.rs	int	vector_size	4
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::atomic	"atomic on a vector"
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::atomic	"atomic without its operation"
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::image	"not an image"
@@ -13816,8 +13742,6 @@ code	crates/wcontainers-shaders/src/variant.rs	int	draw_arguments	4
 code	crates/wcontainers-shaders/src/variant.rs	int	linked_in	4
 code	crates/wcontainers-shaders/src/variant.rs	int	linked_in	4
 code	crates/wcontainers-shaders/src/variant.rs	int	linked_in	4
-code	crates/wcontainers-shaders/src/variant.rs	int	linked_out	4
-code	crates/wcontainers-shaders/src/variant.rs	int	linked_out	4
 code	crates/wcontainers-shaders/src/variant.rs	int	linked_out	4
 code	crates/wcontainers-shaders/src/variant.rs	int	loads	128
 code	crates/wcontainers-shaders/src/variant.rs	int	loads	4
@@ -23297,8 +23221,6 @@ redefinition	crates/wcontainers-shaders/src/stage/tessellate.rs	int	WORKGROUP	WO
 redefinition	crates/wcontainers-shaders/tests/common/mod.rs	int	SIZE	SIZE = 64
 redefinition	crates/wcontainers-shaders/tests/contention_draw.rs	int	SIZE	SIZE = 64
 redefinition	crates/wcontainers-shaders/tests/early_draw.rs	int	SIZE	SIZE = 64
-redefinition	crates/wcontainers-shaders/tests/geometry_draw.rs	int	layered_geometry_draws_as_direct3d_11_does::LAYERS	LAYERS = 4
-redefinition	crates/wcontainers-shaders/tests/variant_draw.rs	int	layer_and_viewport_inputs_read_the_draws_run::LAYERS	LAYERS = 4
 redefinition	crates/wcontainers-translator-test/reference/src/main.rs	int	NZCV	NZCV = 4026531840
 redefinition	crates/wcontainers-translator-test/reference/src/main.rs	int	PAGE	PAGE = 4096
 redefinition	crates/wcontainers-translator-test/reference/src/main.rs	int	frame_vectors::FPSIMD_MAGIC	FPSIMD_MAGIC = 1179680769
@@ -24074,7 +23996,6 @@ role	crates/wcontainers-kernel/src/task.rs	int	Kernel::notify_parent	0
 role	crates/wcontainers-kernel/src/task.rs	int	Kernel::over_process_limit	0
 role	crates/wcontainers-kernel/src/task.rs	int	Kernel::send_parent_death_signals	0
 role	crates/wcontainers-shaders/src/dxbc.rs	int	to_ir	0
-role	crates/wcontainers-shaders/src/dxil.rs	int	constant_sizes	0
 role	crates/wcontainers-shaders/src/dxil.rs	int	to_spirv	0
 role	crates/wcontainers-shaders/src/ir.rs	int	first_literal	1
 role	crates/wcontainers-shaders/src/variant/texel.rs	int	atomic_code	0

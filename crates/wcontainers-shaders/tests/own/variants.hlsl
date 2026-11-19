@@ -21,6 +21,13 @@ float4 ps_levels(VsOut i) : SV_Target0 {
     return float4(levels / 8.0, w / 16.0, h / 32.0, saturate(i.uv.x));
 }
 
+// The texture's size at a level past its count (the test binds 4), which Direct3D gives as zero.
+float4 ps_levels_past(VsOut i) : SV_Target0 {
+    uint w, h, levels;
+    albedo.GetDimensions(5, w, h, levels);
+    return float4(levels / 8.0, w / 16.0, h / 32.0, saturate(i.uv.x));
+}
+
 // The targets' sample count.
 float4 ps_samples(VsOut i) : SV_Target0 {
     return float4(GetRenderTargetSampleCount() / 8.0, saturate(i.uv), 1.0);

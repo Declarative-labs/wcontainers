@@ -50,6 +50,14 @@ pub struct Writer<'a, W> {
     clip_distance_count: u32,
 }
 
+/// The punctuation of a select written one component at a time.
+const OPEN: &str = "(";
+const CLOSE: &str = ")";
+const COMPONENT_GAP: &str = ", ";
+const MEMBER: char = '.';
+const THEN: &str = " ? ";
+const ELSE: &str = " : ";
+
 impl<'a, W: Write> Writer<'a, W> {
     /// Creates a new [`Writer`] instance.
     ///
@@ -3065,8 +3073,34 @@ impl<'a, W: Write> Writer<'a, W> {
                     false
                 };
 
-                // TODO: Boolean mix on desktop required GL_EXT_shader_integer_mix
-                if vec_select {
+                // `mix` with a boolean condition takes integer and boolean values only from GLSL ES
+                // 3.10 and GLSL 4.50, so such a select is written one component at a time.
+                let value_ty = ctx.resolve_type(accept, &self.module.types);
+                let componentwise = match *value_ty {
+                    TypeInner::Vector { size, scalar }
+                        if vec_select && scalar.kind != crate::ScalarKind::Float =>
+                    {
+                        Some(size)
+                    }
+                    _ => None,
+                };
+                if let Some(size) = componentwise {
+                    self.write_value_type(value_ty)?;
+                    self.out.write_str(OPEN)?;
+                    for (i, &component) in back::COMPONENTS[..size as usize].iter().enumerate() {
+                        if i != 0 {
+                            self.out.write_str(COMPONENT_GAP)?;
+                        }
+                        for (e, after) in [(condition, THEN), (accept, ELSE), (reject, "")] {
+                            self.out.write_str(OPEN)?;
+                            self.write_expr(e, ctx)?;
+                            self.out.write_str(CLOSE)?;
+                            self.out.write_char(MEMBER)?;
+                            self.out.write_char(component)?;
+                            self.out.write_str(after)?;
+                        }
+                    }
+                } else if vec_select {
                     // Glsl defines that for mix when the condition is a boolean the first element
                     // is picked if condition is false and the second if condition is true
                     write!(self.out, "mix(")?;

@@ -56,7 +56,7 @@ tessellation.hs_tri.dxil	unsupported DxilHullShader
 tessellation.ps.dxil	ok
 tessellation.vs.dxil	ok
 textures.ps_1d.dxil	ok
-textures.ps_1d_array.dxil	unsupported Texture1DArray
+textures.ps_1d_array.dxil	ok
 textures.ps_2d_array.dxil	ok
 textures.ps_3d.dxil	ok
 textures.ps_cube.dxil	ok

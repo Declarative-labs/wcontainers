@@ -18,7 +18,8 @@ use wcontainers_gpu::{
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::stage::{
-    InputTopology, StageDraw, StageIndex, Stages, StreamOutput, StreamOutputEntry, StreamTargets,
+    InputTopology, PASSTHROUGH_HELPERS, PASSTHROUGH_LAYER_COUNT, StageDraw, StageIndex, Stages,
+    StreamOutput, StreamOutputEntry, StreamTargets,
 };
 use wcontainers_shaders::{Source, convert};
 use windows::Win32::Graphics::Direct3D::*;
@@ -1303,10 +1304,25 @@ fn geometry_shaders_draw_as_direct3d_does() {
 /// pass-through's and the pixel program's helper constants. Every texel of every layer equal.
 #[test]
 fn layered_geometry_draws_as_direct3d_11_does() {
+    layered_geometry(GS_LAYERS_NAMED);
+}
+
+/// As [`layered_geometry_draws_as_direct3d_11_does`] into views of half the layers `gs_layers` names:
+/// Direct3D draws the primitives naming a layer past the views' into the first layer, its pixel
+/// shader reading the layer named; ours keeps them in layer 0's run (`LAYER_FROM_STAGE`).
+#[test]
+fn layers_past_the_views_draw_into_the_first_as_direct3d_11_does() {
+    layered_geometry(GS_LAYERS_NAMED / 2);
+}
+
+/// The layers `gs_layers` names, one per instance.
+const GS_LAYERS_NAMED: u32 = 4;
+
+fn layered_geometry(layers: u32) {
     use wcontainers_gpu::{
-        DeviceStatus, LoadOp, TextureDesc, TextureDimension, TextureViewDesc, ViewDimension,
+        DeviceStatus, LoadOp, TextureDesc, TextureDimension, TextureViewDesc, VariantFlags,
+        ViewDimension,
     };
-    const LAYERS: u32 = 4;
     let viewports = [
         [0.0f32, 0.0, SIZE as f32, SIZE as f32],
         [8.0, 4.0, 40.0, 48.0],
@@ -1330,7 +1346,7 @@ fn layered_geometry_draws_as_direct3d_11_does() {
         DXGI_FORMAT_R8G8B8A8_UNORM,
         D3D11_BIND_RENDER_TARGET,
     );
-    desc.ArraySize = LAYERS;
+    desc.ArraySize = layers;
     let target = gpu.texture2d(&desc, &[]).unwrap();
     let rtv = gpu
         .rtv(&windows::core::Interface::cast(&target).unwrap(), None)
@@ -1359,9 +1375,33 @@ fn layered_geometry_draws_as_direct3d_11_does() {
 
     let mut b = webgpu();
     let plain = VariantKey::default();
-    let ps = convert(Source::Dxbc(&ps_code), &plain, None).unwrap();
-    let gs = convert(Source::Dxbc(&gs_code), &plain, None).unwrap();
     let vs = convert(Source::Dxbc(&vs_code), &plain, None).unwrap();
+    // The named layer passes one past every location the geometry and pixel programs list.
+    let listed = |c: &wcontainers_shaders::Converted, outputs: bool| {
+        let values = if outputs {
+            &c.reflection.outputs
+        } else {
+            &c.reflection.inputs
+        };
+        values
+            .iter()
+            .filter(|v| v.system.is_none())
+            .map(|v| v.location + 1)
+            .max()
+            .unwrap_or(0)
+    };
+    let mut keyed = plain.clone();
+    keyed.flags = VariantFlags::LAYER_FROM_STAGE;
+    keyed.linked.location = listed(
+        &convert(Source::Dxbc(&ps_code), &plain, None).unwrap(),
+        false,
+    )
+    .max(listed(
+        &convert(Source::Dxbc(&gs_code), &plain, None).unwrap(),
+        true,
+    ));
+    let ps = convert(Source::Dxbc(&ps_code), &keyed, None).unwrap();
+    let gs = convert(Source::Dxbc(&gs_code), &keyed, None).unwrap();
     for c in [&vs, &gs] {
         assert!(
             c.reflection.bindings.is_empty(),
@@ -1449,7 +1489,7 @@ fn layered_geometry_draws_as_direct3d_11_does() {
             format: Format::Rgba8Unorm,
             width: SIZE,
             height: SIZE,
-            depth_or_layers: LAYERS,
+            depth_or_layers: layers,
             mip_levels: 1,
             samples: 1,
             usage: TextureUsage::RENDER | TextureUsage::COPY_SRC,
@@ -1457,7 +1497,7 @@ fn layered_geometry_draws_as_direct3d_11_does() {
             reinterpret: false,
         })
         .unwrap();
-    for layer in 0..LAYERS {
+    for layer in 0..layers {
         let view = b
             .create_view(
                 &texture,
@@ -1476,8 +1516,11 @@ fn layered_geometry_draws_as_direct3d_11_does() {
             // The run's layer and viewport: the pass-through's helper constants, then the pixel
             // program's.
             let mut run = [0u8; 16];
-            run[..4].copy_from_slice(&layer.to_le_bytes());
-            run[4..8].copy_from_slice(&(viewport as u32).to_le_bytes());
+            let values = [layer, viewport as u32, layers];
+            let slots = PASSTHROUGH_HELPERS.iter().chain([&PASSTHROUGH_LAYER_COUNT]);
+            for (slot, value) in slots.zip(values) {
+                run[slot.offset as usize..][..4].copy_from_slice(&value.to_le_bytes());
+            }
             let mut pixel = vec![0u8; ps.reflection.helper_size.max(16) as usize];
             for h in &ps.reflection.helpers {
                 let value = match h.value {
@@ -1570,7 +1613,7 @@ fn layered_geometry_draws_as_direct3d_11_does() {
         }
     }
     let mut failed = Vec::new();
-    for layer in 0..LAYERS {
+    for layer in 0..layers {
         let reference = gpu.read(&target, 0, layer).unwrap().to_rgba8().into_raw();
         let mut made = vec![0; (SIZE * SIZE * 4) as usize];
         b.read_back_now(
@@ -1592,11 +1635,15 @@ fn layered_geometry_draws_as_direct3d_11_does() {
         )
         .unwrap();
         keep(
-            &format!("layered-{layer}-direct3d"),
+            &format!("layered-{layers}-{layer}-direct3d"),
             &reference,
             Format::Rgba8Unorm,
         );
-        keep(&format!("layered-{layer}-ours"), &made, Format::Rgba8Unorm);
+        keep(
+            &format!("layered-{layers}-{layer}-ours"),
+            &made,
+            Format::Rgba8Unorm,
+        );
         let apart = reference.iter().zip(&made).filter(|(a, b)| a != b).count();
         let drawn = reference
             .chunks(4)
