@@ -2565,6 +2565,7 @@ dependencies = [
  "arm-sysregs",
  "postcard",
  "rangemap",
+ "rustc-hash",
  "safe-mmio",
  "serde",
  "spin",
