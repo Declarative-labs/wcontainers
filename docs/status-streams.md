@@ -72,7 +72,12 @@ What exists:
   room wait in the pipe's inbox (at most the credit given). They go in as readers make room, and a
   close from outside lets go of the writer only once they are in. New test
   `a_program_writing_its_own_input_pipe` (the check's command, with `cat` after a second write):
-  matches Docker.
+  matches Docker. Not compared with Docker: the inbox itself (the outside's bytes meeting a pipe a
+  guest writer filled). Two tries to show it failed in Docker, and I did not find why. `dd bs=4096
+  count=16 of=/proc/self/fd/0` wrote nothing (`wc -c` then counted only the outside's 6 bytes;
+  dd's errors were hidden). `head -c 65536 /dev/zero > /proc/self/fd/0` never finished, and I
+  removed that container. The inbox is tested only by reading, and by the stream tests passing
+  through it when it is empty.
 - Costs on unrelated pipes and wakes (minor): a pipe write now reads one field of the pipe it
   already holds (`outside_reader`) instead of walking the ends. A channel is removed from `watched`
   when its file is let go, so a wake compares against at most the live ends' channels (3 today).
@@ -144,6 +149,19 @@ failed every run with the root on the backend: the output credit came before the
 the ends and was lost. Fixed by naming the ends when `start` is called (6ca181b8), with a test.
 
 ## Measurements
+
+- Second run, stream tests (`tests/streams.rs`, 19 tests): seeds 1 to 3, 35.8 s, load 40 to 48
+  (16:43); seeds 40 to 52 (`SCHEDULE_SEED=40 SCHEDULE_SEEDS=13`), all pass, 92.9 s, load about
+  49 to 57 (16:47 to 16:49).
+- Second run, whole suite at 3597a068 (scratch streams/run2-suite.log, the command in "How to
+  run", 58 minutes with the build, load 54.5 at the start and 50.9 at the end): 234 passed, 0
+  failed, 6 ignored. `streams/verdicts.py base-suite.log run2-suite.log`: every one of the 220
+  tests from before this work has the same verdict; the 20 others are the 19 stream tests and the
+  abi's unit test. Layer 1's seeded sequences passed in it at their default counts.
+  `priority_inheriting_futexes_match_reference` passed in this run.
+- clippy (`--all-targets -- -D warnings`) and `cargo fmt --check` on the abi, the kernel and the
+  test crate: clean. How the literals were checked: the added lines of `git diff` with a digit or
+  a path, read by eye (list in "S1, second run").
 
 - Whole suite before this work, at 2edbc451 (a clean copy with its own build, scratch
   streams/base-suite.log, `RUST_TEST_THREADS=3 cargo test --no-fail-fast -j 4 -p wcontainers-kernel
