@@ -865,6 +865,53 @@ fn a_tcp_connection_from_the_host_reaches_a_published_port() {
     assert_eq!(ours, reference);
 }
 
+/// Docker Desktop's name for the machine it runs on, as the reference's container reaches it.
+const DOCKER_HOST_NAME: &str = "host.docker.internal";
+
+/// This machine's address on its outward network: the source address of a route out (a datagram
+/// socket connected to a documentation address sends nothing).
+fn outward_address() -> std::net::IpAddr {
+    let socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+    socket
+        .connect((std::net::Ipv4Addr::new(192, 0, 2, 1), SERVED_PORT))
+        .unwrap();
+    socket.local_addr().unwrap().ip()
+}
+
+/// A server on this machine answering one connection: what it read, after "echo: ".
+fn echo_server() -> (u16, std::thread::JoinHandle<()>) {
+    use std::io::{BufRead, BufReader};
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let thread = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        BufReader::new(&stream).read_line(&mut line).unwrap();
+        (&stream)
+            .write_all(format!("echo: {line}").as_bytes())
+            .unwrap();
+    });
+    (port, thread)
+}
+
+/// A program in the container connects to a server on this machine through the local system's
+/// network, as the reference's reaches one through Docker Desktop.
+#[test]
+fn a_connection_from_the_container_reaches_a_host_server() {
+    let (layout, _) = images();
+    let image = Image::oci(layout, "arm64").unwrap();
+    let command = |host: &str, port: u16| format!("echo hello | nc {host} {port}; echo status $?");
+    let (port, server) = echo_server();
+    let ours_command = command(&outward_address().to_string(), port);
+    let spec = with_args(image.spec().unwrap(), &["sh", "-c", &ours_command]);
+    let (ours, _) = ours(&spec, &image, None);
+    server.join().unwrap();
+    let (port, server) = echo_server();
+    let reference = reference(&command(DOCKER_HOST_NAME, port));
+    server.join().unwrap();
+    assert_eq!(ours, reference);
+}
+
 /// The threaded program tests/programs/threaded.c, built for linux/arm64 with zig's C compiler.
 fn threaded_program() -> PathBuf {
     let directory = scratch().join(format!("threaded-{}", std::process::id()));
