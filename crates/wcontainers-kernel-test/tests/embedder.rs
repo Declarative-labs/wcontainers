@@ -752,6 +752,45 @@ fn the_pages_changed_are_exactly_those_a_program_wrote_or_mapped_anew() {
     }
 }
 
+/// A span as wide as a 48-bit address space, far wider than what the program maps.
+const VAST: u64 = 1 << 48;
+/// Far more than watching every mapped page of a small program takes, and far less than visiting
+/// every page of `VAST` would.
+const VAST_WATCH_LIMIT: Duration = Duration::from_secs(1);
+
+/// Watches all of `VAST` for writes, then ends the watches, as each program starts; notes how
+/// long that took.
+struct VastWatch(Arc<Mutex<Vec<Duration>>>);
+
+impl Hooks for VastWatch {
+    fn on_program_starting(&mut self, mut process: Process<'_>) {
+        let started = std::time::Instant::now();
+        process.memory_watch(0..VAST, Watch::Writes);
+        process.memory_watch(0..VAST, Watch::None);
+        self.0.lock().unwrap().push(started.elapsed());
+    }
+}
+
+#[test]
+fn watching_a_vast_range_costs_its_mapped_pages_not_its_length() {
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let plain = run_embedder_below(&["pages"], None, seed, None);
+        let took = Arc::new(Mutex::new(Vec::new()));
+        let run = run_embedder("pages", Box::new(VastWatch(took.clone())), seed);
+        assert_eq!(
+            run.outcome.exit_code, plain.outcome.exit_code,
+            "seed {seed}"
+        );
+        assert_eq!(stdout(&run), stdout(&plain), "seed {seed}");
+        let took = took.lock().unwrap();
+        assert!(!took.is_empty(), "seed {seed}");
+        assert!(
+            took.iter().all(|spent| *spent < VAST_WATCH_LIMIT),
+            "seed {seed}: {took:?}"
+        );
+    }
+}
+
 /// Lazy memory from the two primitives: a new program's writable pages are saved, cleared and
 /// watched, and each is filled from the saved copy when first touched; a fork's child fills from
 /// its parent's copy. A page found changed when it is filled was written past its watch.
