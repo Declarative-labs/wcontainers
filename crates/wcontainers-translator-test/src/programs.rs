@@ -404,16 +404,14 @@ pub fn native_seconds(blob: &Blob, runs: u32) -> f64 {
         blob.stack_bytes,
         headers_arguments(blob).join(" ")
     );
-    let output = Command::new("docker")
-        .args(["run", "--rm", "--network", "none", "--name"])
-        .arg(container_name("timing"))
-        .arg("-v")
-        .arg(format!("{}:/r:ro", reference.display()))
-        .arg("-v")
-        .arg(format!("{}:/p:ro", directory.display()))
-        .args(["alpine:latest", "sh", "-c", &script])
-        .output()
-        .expect("run docker");
+    let output = run_container("timing", |command| {
+        command
+            .arg("-v")
+            .arg(format!("{}:/r:ro", reference.display()))
+            .arg("-v")
+            .arg(format!("{}:/p:ro", directory.display()))
+            .args(["alpine:latest", "sh", "-c", &script]);
+    });
     std::fs::remove_file(directory.join(&file)).unwrap();
     let times: Vec<f64> = String::from_utf8_lossy(&output.stderr)
         .lines()
@@ -430,6 +428,40 @@ fn headers_arguments(blob: &Blob) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Run a Linux container for `purpose` to its end, with the further `docker run` arguments `add` gives.
+/// Fails when Docker itself failed (it made no container, or the container did not start), so that
+/// Docker's own failure is never taken for the program's ending.
+pub fn run_container(purpose: &str, add: impl FnOnce(&mut Command)) -> std::process::Output {
+    let name = container_name(purpose);
+    let directory = out_directory().join("containers");
+    std::fs::create_dir_all(&directory).unwrap();
+    // Docker writes the container's id here once it has made the container.
+    let made = directory.join(&name);
+    let mut command = Command::new("docker");
+    command
+        .args(["run", "--rm", "--network", "none", "--name"])
+        .arg(&name)
+        .arg("--cidfile")
+        .arg(&made);
+    add(&mut command);
+    let output = command.output().expect("run docker");
+    let was_made = std::fs::remove_file(&made).is_ok();
+    let status = output.status.code().expect("an exit status");
+    let did_not_start =
+        DOCKER_FAILED.contains(&status) && output.stderr.starts_with(DOCKER_FAILED_SAYS);
+    assert!(
+        was_made && !did_not_start,
+        "Docker failed to run {name} (status {status}): {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+}
+
+/// Docker's own exit statuses for a container it could not run (its daemon's error, a command that cannot
+/// be invoked, a command not found), and what it writes on stderr with them.
+const DOCKER_FAILED: std::ops::RangeInclusive<i32> = 125..=127;
+const DOCKER_FAILED_SAYS: &[u8] = b"docker: Error response from daemon: ";
+
 /// Run a blob natively on ARM64 Linux in Docker.
 pub fn native(blob: &Blob) -> Ran {
     let reference = build_reference();
@@ -438,21 +470,19 @@ pub fn native(blob: &Blob) -> Ran {
     std::fs::create_dir_all(&directory).unwrap();
     let file = format!("{}.bin", unique(&blob.name));
     std::fs::write(directory.join(&file), &blob.bytes).unwrap();
-    let output = Command::new("docker")
-        .args(["run", "--rm", "--network", "none", "--name"])
-        .arg(container_name("program"))
-        .arg("-v")
-        .arg(format!("{}:/r:ro", reference.display()))
-        .arg("-v")
-        .arg(format!("{}:/p:ro", directory.display()))
-        .args(["alpine:latest", "/r/wcontainers-reference", "blob"])
-        .arg(format!("/p/{file}"))
-        .arg(format!("{:#x}", blob.load))
-        .arg(format!("{STACK_TOP:#x}"))
-        .arg(format!("{:#x}", blob.stack_bytes))
-        .args(headers_arguments(blob))
-        .output()
-        .expect("run docker");
+    let output = run_container("program", |command| {
+        command
+            .arg("-v")
+            .arg(format!("{}:/r:ro", reference.display()))
+            .arg("-v")
+            .arg(format!("{}:/p:ro", directory.display()))
+            .args(["alpine:latest", "/r/wcontainers-reference", "blob"])
+            .arg(format!("/p/{file}"))
+            .arg(format!("{:#x}", blob.load))
+            .arg(format!("{STACK_TOP:#x}"))
+            .arg(format!("{:#x}", blob.stack_bytes))
+            .args(headers_arguments(blob));
+    });
     std::fs::remove_file(directory.join(&file)).unwrap();
     let status = output.status.code().expect("an exit status");
     // The runner's own failure is no result of the guest's: it fails the case, never compares.

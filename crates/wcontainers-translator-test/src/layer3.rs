@@ -2,7 +2,9 @@
 //! (zig's) or gcc (Alpine's, in Docker) at an optimisation level, as flat blobs of fixed position or
 //! position independent code, run on Linux and through the translator at none and full.
 
-use crate::programs::{Blob, Ran, flatten, native, out_directory, source_directory, unique, zig};
+use crate::programs::{
+    Blob, Ran, flatten, native, out_directory, run_container, source_directory, unique, zig,
+};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -122,18 +124,16 @@ pub fn build(source: &Path, compiler: Compiler, optimisation: &str, position: Po
 /// blob's fault can be told to be the program's own.
 pub fn ordinary(source: &Path, compiler: Compiler, optimisation: &str, position: Position) -> Ran {
     let (elf, ..) = compile(source, compiler, optimisation, position, false);
-    let output = Command::new("docker")
-        .args(["run", "--rm", "--network", "none", "--name"])
-        .arg(crate::reference::container_name("ordinary"))
-        .arg("-v")
-        .arg(format!("{}:/o:ro", out_directory().display()))
-        .args(["alpine:latest", "sh", "-c"])
-        .arg(format!(
-            "timeout -s KILL 20 /o/{}",
-            elf.file_name().unwrap().to_str().unwrap()
-        ))
-        .output()
-        .expect("run docker");
+    let output = run_container("ordinary", |command| {
+        command
+            .arg("-v")
+            .arg(format!("{}:/o:ro", out_directory().display()))
+            .args(["alpine:latest", "sh", "-c"])
+            .arg(format!(
+                "timeout -s KILL 20 /o/{}",
+                elf.file_name().unwrap().to_str().unwrap()
+            ));
+    });
     std::fs::remove_file(&elf).unwrap();
     Ran {
         stdout: output.stdout,

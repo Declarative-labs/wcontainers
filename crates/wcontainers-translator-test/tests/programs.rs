@@ -5,8 +5,8 @@ use wcontainers_translator::{LookAhead, Optimise};
 use wcontainers_translator_test::browser;
 use wcontainers_translator_test::mixed::mixed;
 use wcontainers_translator_test::programs::{
-    Blob, Library, Ran, build, build_with, native, ran, reachable_memory, ready_with, translated,
-    translated_for, translated_stopping_everywhere,
+    Blob, Library, Ran, build, build_with, native, ran, reachable_memory, ready_with,
+    run_container, translated, translated_for, translated_stopping_everywhere,
 };
 use wcontainers_translator_test::runner::Machine;
 
@@ -22,6 +22,30 @@ fn full_matches_in_chrome(blob: &Blob, theirs: &Ran) {
             blob.name
         );
     }
+}
+
+#[test]
+#[should_panic(expected = "Docker failed")]
+fn a_container_docker_does_not_make_fails_the_case() {
+    run_container("unmade", |command| {
+        command.args(["-v", "/r:/r:not-a-mode", "alpine:latest", "true"]);
+    });
+}
+
+#[test]
+#[should_panic(expected = "Docker failed")]
+fn a_container_that_does_not_start_fails_the_case() {
+    run_container("unstarted", |command| {
+        command.args(["alpine:latest", "/no-such-command"]);
+    });
+}
+
+#[test]
+fn a_programs_own_ending_is_its_result() {
+    let output = run_container("own-ending", |command| {
+        command.args(["alpine:latest", "sh", "-c", "exit 125"]);
+    });
+    assert_eq!(output.status.code(), Some(125));
 }
 
 #[test]
