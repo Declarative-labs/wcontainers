@@ -26,7 +26,7 @@ fn try_write_glsl(
     };
     let pipeline = glsl::PipelineOptions {
         shader_stage: stage,
-        entry_point: "main".into(),
+        entry_point: wcontainers_shaders::ENTRY_POINT.into(),
         multiview: None,
     };
     let mut out = String::new();

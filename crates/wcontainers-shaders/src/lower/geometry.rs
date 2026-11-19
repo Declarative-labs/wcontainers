@@ -371,7 +371,7 @@ impl Lowering<'_> {
         let out_words = stage::record_words(outputs.len() + selected);
 
         let uvec3 = self.vec_ty(3, Scalar::U32)?;
-        let mut b = Builder::new("main");
+        let mut b = Builder::new(crate::ENTRY_POINT);
         b.f.arguments.push(FunctionArgument {
             name: Some("id".into()),
             ty: uvec3,
@@ -618,7 +618,7 @@ impl Lowering<'_> {
             streams: 1,
         };
         self.module.entry_points.push(naga::EntryPoint {
-            name: "main".into(),
+            name: crate::ENTRY_POINT.into(),
             stage: naga::ShaderStage::Compute,
             early_depth_test: None,
             workgroup_size: [stage::WORKGROUP, 1, 1],

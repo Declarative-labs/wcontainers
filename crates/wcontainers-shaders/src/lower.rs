@@ -1194,7 +1194,7 @@ impl<'a> Lowering<'a> {
             _ => None,
         };
         let mut f = Function {
-            name: Some("main".into()),
+            name: Some(crate::ENTRY_POINT.into()),
             ..Default::default()
         };
         let mut body = Block::new();
@@ -1538,7 +1538,7 @@ impl<'a> Lowering<'a> {
             _ => StageExtras::None,
         };
         self.module.entry_points.push(naga::EntryPoint {
-            name: "main".into(),
+            name: crate::ENTRY_POINT.into(),
             stage,
             early_depth_test,
             workgroup_size: if stage == naga::ShaderStage::Compute {

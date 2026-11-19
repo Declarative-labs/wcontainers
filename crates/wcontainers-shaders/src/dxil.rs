@@ -284,7 +284,7 @@ pub(crate) fn lower(
         ShaderStage::Fragment => pixel_extras(&module, !atomics.is_empty()),
         _ => StageExtras::None,
     };
-    module.entry_points[0].name = "main".into();
+    module.entry_points[0].name = crate::ENTRY_POINT.into();
     module.entry_points[0].early_depth_test = None;
     let placed = match stage {
         ShaderStage::Compute => Vec::new(),
@@ -1233,7 +1233,7 @@ fn draw_bases(
     let callee = module.functions.append(inner, Span::UNDEFINED);
 
     let mut f = Function {
-        name: Some("main".into()),
+        name: Some(crate::ENTRY_POINT.into()),
         result,
         ..Default::default()
     };

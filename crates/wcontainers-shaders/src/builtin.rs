@@ -58,7 +58,7 @@ pub fn storage_clear(
     Ok(ShaderModule {
         info: crate::validate(&module)?,
         module,
-        entry_point: "main".into(),
+        entry_point: crate::ENTRY_POINT.into(),
         stage: ShaderStage::Compute,
         key: *blake3::hash(text.as_bytes()).as_bytes(),
     })

@@ -198,7 +198,7 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
     };
     let pipeline = naga::back::glsl::PipelineOptions {
         shader_stage: stage,
-        entry_point: "main".into(),
+        entry_point: wcontainers_shaders::ENTRY_POINT.into(),
         multiview: None,
     };
     let mut glsl = String::new();

@@ -35,7 +35,7 @@ fn glsl(c: &wcontainers_shaders::Converted) -> Result<String, String> {
     };
     let pipeline = naga::back::glsl::PipelineOptions {
         shader_stage: m.module.entry_points[0].stage,
-        entry_point: "main".into(),
+        entry_point: wcontainers_shaders::ENTRY_POINT.into(),
         multiview: None,
     };
     let mut text = String::new();
