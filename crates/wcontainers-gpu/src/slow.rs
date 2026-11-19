@@ -281,11 +281,14 @@ pub enum SlowPath {
     /// A storage buffer bound from below its view's start, with the rest added to every address in
     /// the program (`VariantFlags::STORAGE_OFFSET`).
     StorageOffsetInShader,
+    /// A 32-bit float colour clear whose bits the API's clear value would change (denormals flushed,
+    /// NaN payloads quieted), made by a draw writing the bits.
+    FloatBitsClearByDraw,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 107] = [
+    pub const ALL: [SlowPath; 108] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -393,6 +396,7 @@ impl SlowPath {
         SlowPath::SequentialBuffersCopied,
         SlowPath::IndirectFetchPastEnd,
         SlowPath::StorageOffsetInShader,
+        SlowPath::FloatBitsClearByDraw,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -525,6 +529,7 @@ impl SlowPath {
                 "indirect draw skipped whole if it fetches past a vertex buffer's end"
             }
             SlowPath::StorageOffsetInShader => STORAGE_OFFSET_IN_SHADER,
+            SlowPath::FloatBitsClearByDraw => "float colour clear made by a draw keeping its bits",
         }
     }
 }
@@ -610,7 +615,7 @@ mod tests {
             PatternClearCopied ConstantBufferGrown IntegerClearByDraw StencilWrittenByDraw \
             PresentConverted CaptureExpanded CopyWithinTexture PixelInvocationsCounted \
             SwizzleInShader AtomicExchangeLoop SequentialBuffersCopied IndirectFetchPastEnd \
-            StorageOffsetInShader";
+            StorageOffsetInShader FloatBitsClearByDraw";
         let held: Vec<_> = HELD.split_whitespace().collect();
         assert!(held.len() <= SlowPath::ALL.len());
         for (i, name) in held.iter().enumerate() {

@@ -1885,7 +1885,9 @@ converted vertex shader.
   group, through a buffer (`CopyThroughBuffer`), into `depth32float` by a draw (`DepthWrittenByDraw`);
   copies within one buffer through a temporary one (`CopyWithinBuffer`); integer colour clears past
   2^24 where the API clears through a float (wgpu's native Direct3D 12), by a draw writing the value
-  (`IntegerClearByDraw`); the 24-bit depth probe (4.11).
+  (`IntegerClearByDraw`), and 32-bit float colour clears of denormals or NaNs, whose bits a clear
+  value would change, by a draw writing the bits (`FloatBitsClearByDraw`); the 24-bit depth probe
+  (4.11).
   The fast-path defaults it keeps: `clear_texture`, `clear_rects`, `generate_mips` (filtering in the
   program for `r32float` and the like without `float32-filterable`, and for `NormAsInteger` textures),
   `write_buffer_ring`, `draw_fan_or_loop`. Its override: `resolve_queries` by `resolveQuerySet` and a
