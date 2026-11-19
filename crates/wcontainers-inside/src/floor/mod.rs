@@ -74,7 +74,7 @@ pub fn ask_link<M: Message, T>(message: &M, bytes: &[u8], read: impl FnOnce(&Lin
 /// The running virtual CPU's link page and doorbell.
 pub struct Doorbell;
 
-impl crate::host::Ring for Doorbell {
+impl crate::link::Ring for Doorbell {
     fn link(&mut self) -> &mut Link {
         link_page()
     }

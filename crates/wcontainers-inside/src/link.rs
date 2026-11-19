@@ -1,6 +1,8 @@
 //! The link: the one way the inside asks the host for something. The inside writes a [`Link`] page and rings
 //! the doorbell; the monitor answers in the same page and resumes the virtual CPU.
 
+use alloc::vec::Vec;
+
 use wcontainers_abi::PAGE_SIZE;
 use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout};
 
@@ -160,4 +162,79 @@ requests! {
     Fatal { esr, elr, far } -> ();
     /// Give back the host pages of a guest-physical range; they read as zeros after.
     GiveBack { at, length } -> ();
+    /// Bytes of the next request's bytes, ahead of those it carries itself.
+    Carry {} -> ();
+    /// The next part of the last answer's bytes.
+    Fetch {} -> ();
+}
+
+/// One link page and the way to have its request answered.
+pub trait Ring {
+    fn link(&mut self) -> &mut Link;
+    /// Hands the link's request to the monitor and returns once it is answered.
+    fn ring(&mut self);
+
+    /// Asks `message` with `bytes`, carrying ahead what does not fit one link.
+    fn ask<M: Message>(&mut self, message: &M, bytes: &[u8]) -> M::Answer {
+        let ahead = bytes.len().saturating_sub(1) / LINK_BYTES * LINK_BYTES;
+        for part in bytes[..ahead].chunks(LINK_BYTES) {
+            self.link().ask(&Carry {}, part);
+            self.ring();
+        }
+        self.link().ask(message, &bytes[ahead..]);
+        self.ring();
+        self.link().get()
+    }
+
+    /// Fills `into` from the last answer's bytes, fetching the parts after the first.
+    fn take(&mut self, into: &mut [u8]) {
+        let mut at = 0;
+        loop {
+            let data = self.link().data();
+            let part = data.len().min(into.len() - at);
+            into[at..at + part].copy_from_slice(&data[..part]);
+            at += part;
+            if at == into.len() || part == 0 {
+                return;
+            }
+            self.link().ask(&Fetch {}, &[]);
+            self.ring();
+        }
+    }
+}
+
+/// The monitor's half of bytes longer than one link: what was carried ahead of a request, and what an
+/// answer still owes.
+#[derive(Default)]
+pub struct Parts {
+    carried: Vec<u8>,
+    owed: Vec<u8>,
+}
+
+impl Parts {
+    /// The whole bytes of the request in `link`; none for a [`Carry`] or [`Fetch`], which this answers.
+    pub fn request(&mut self, link: &mut Link) -> Option<Vec<u8>> {
+        let mut bytes = core::mem::take(&mut self.carried);
+        bytes.extend_from_slice(link.data());
+        match Request::from_word(link.head.request) {
+            Some(Request::Carry) => {
+                self.carried = bytes;
+                None
+            }
+            Some(Request::Fetch) => {
+                let owed = core::mem::take(&mut self.owed);
+                self.answer(link, owed);
+                None
+            }
+            _ => Some(bytes),
+        }
+    }
+
+    /// Writes an answer's bytes, owing what does not fit the link.
+    pub fn answer(&mut self, link: &mut Link, mut bytes: Vec<u8>) {
+        let part = bytes.len().min(LINK_BYTES);
+        link.bytes[..part].copy_from_slice(&bytes[..part]);
+        link.head.length = part as u64;
+        self.owed = bytes.split_off(part);
+    }
 }

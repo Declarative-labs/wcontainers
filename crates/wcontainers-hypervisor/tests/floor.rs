@@ -233,6 +233,9 @@ mod macos {
                         .give_back(&shared.memory, at, length)
                         .expect("giving back");
                 }
+                link::Request::Carry | link::Request::Fetch => {
+                    panic!("no bytes longer than a link here")
+                }
             }
             return true;
         }

@@ -1,20 +1,15 @@
 //! The kernel's [`Host`] through the link: each call is a request the monitor answers by calling the host's
-//! services. Bytes longer than one link go ahead of their request in [`Carry`] requests; an answer's bytes
-//! longer than one link are taken after it with [`Fetch`].
+//! services.
 
 use alloc::vec::Vec;
 
 use wcontainers_abi::{BackendRequestId, ConnectionId, Host, HostError, Stream, Warning};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-use crate::link::{LINK_BYTES, Link, Message};
+use crate::link::{Link, Ring};
 
 crate::requests! {
     first: crate::routines::Request::END;
-    /// Bytes of the next request's bytes, ahead of those it carries itself.
-    Carry {} -> ();
-    /// The next part of the last answer's bytes.
-    Fetch {} -> ();
     MonotonicNanoseconds {} -> Value;
     RealtimeNanoseconds {} -> Value;
     /// `length` random bytes, in the answer's bytes.
@@ -98,69 +93,32 @@ impl Outcome {
     }
 }
 
-/// One link page and the way to have its request answered.
-pub trait Ring {
-    fn link(&mut self) -> &mut Link;
-    /// Hands the link's request to the monitor and returns once it is answered.
-    fn ring(&mut self);
-}
-
 /// The kernel's [`Host`] whose services are the monitor's, through a link.
 pub struct LinkHost<R> {
     pub ring: R,
 }
 
-impl<R: Ring> LinkHost<R> {
-    /// Asks `message` with `bytes`, carrying ahead what does not fit one link.
-    fn ask<M: Message>(&mut self, message: &M, bytes: &[u8]) -> M::Answer {
-        let ahead = bytes.len().saturating_sub(1) / LINK_BYTES * LINK_BYTES;
-        for part in bytes[..ahead].chunks(LINK_BYTES) {
-            self.ring.link().ask(&Carry {}, part);
-            self.ring.ring();
-        }
-        self.ring.link().ask(message, &bytes[ahead..]);
-        self.ring.ring();
-        self.ring.link().get()
-    }
-
-    /// Fills `into` from the answer's bytes in the link, fetching the parts after the first.
-    fn take(&mut self, into: &mut [u8]) {
-        let mut at = 0;
-        loop {
-            let data = self.ring.link().data();
-            let part = data.len().min(into.len() - at);
-            into[at..at + part].copy_from_slice(&data[..part]);
-            at += part;
-            if at == into.len() || part == 0 {
-                return;
-            }
-            self.ring.link().ask(&Fetch {}, &[]);
-            self.ring.ring();
-        }
-    }
-}
-
 impl<R: Ring> Host for LinkHost<R> {
     fn monotonic_nanoseconds(&mut self) -> u64 {
-        self.ask(&MonotonicNanoseconds {}, &[]).value
+        self.ring.ask(&MonotonicNanoseconds {}, &[]).value
     }
 
     fn realtime_nanoseconds(&mut self) -> u64 {
-        self.ask(&RealtimeNanoseconds {}, &[]).value
+        self.ring.ask(&RealtimeNanoseconds {}, &[]).value
     }
 
     fn random(&mut self, into: &mut [u8]) {
-        self.ask(
+        self.ring.ask(
             &Random {
                 length: into.len() as u64,
             },
             &[],
         );
-        self.take(into);
+        self.ring.take(into);
     }
 
     fn warn(&mut self, warning: Warning<'_>) {
-        self.ask(
+        self.ring.ask(
             &Warn {
                 count: warning.count,
                 detail: warning.detail,
@@ -170,7 +128,8 @@ impl<R: Ring> Host for LinkHost<R> {
     }
 
     fn backend_send(&mut self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError> {
-        self.ask(&BackendSend { request: request.0 }, message)
+        self.ring
+            .ask(&BackendSend { request: request.0 }, message)
             .unit()
     }
 
@@ -179,7 +138,7 @@ impl<R: Ring> Host for LinkHost<R> {
             .iter()
             .position(|s| *s == stream)
             .unwrap_or_default() as u64;
-        self.ask(&Output { stream }, bytes);
+        self.ring.ask(&Output { stream }, bytes);
     }
 
     fn connect(
@@ -194,14 +153,14 @@ impl<R: Ring> Host for LinkHost<R> {
             port: port.into(),
             stream: stream.into(),
         };
-        self.ask(&message, address).unit()
+        self.ring.ask(&message, address).unit()
     }
 
     fn send(&mut self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError> {
         let message = SendBytes {
             connection: connection.0.into(),
         };
-        self.ask(&message, bytes).result()
+        self.ring.ask(&message, bytes).result()
     }
 
     fn receive(&mut self, connection: ConnectionId, into: &mut [u8]) -> Result<usize, HostError> {
@@ -209,14 +168,14 @@ impl<R: Ring> Host for LinkHost<R> {
             connection: connection.0.into(),
             length: into.len() as u64,
         };
-        let received = self.ask(&message, &[]).result()?;
+        let received = self.ring.ask(&message, &[]).result()?;
         let length = received.min(into.len());
-        self.take(&mut into[..length]);
+        self.ring.take(&mut into[..length]);
         Ok(received)
     }
 
     fn finish(&mut self, connection: ConnectionId) {
-        self.ask(
+        self.ring.ask(
             &Finish {
                 connection: connection.0.into(),
             },
@@ -225,7 +184,7 @@ impl<R: Ring> Host for LinkHost<R> {
     }
 
     fn close(&mut self, connection: ConnectionId) {
-        self.ask(
+        self.ring.ask(
             &Close {
                 connection: connection.0.into(),
             },
@@ -234,7 +193,7 @@ impl<R: Ring> Host for LinkHost<R> {
     }
 
     fn look_up(&mut self, request: u64, name: &str) -> Result<(), HostError> {
-        self.ask(&LookUp { request }, name.as_bytes()).unit()
+        self.ring.ask(&LookUp { request }, name.as_bytes()).unit()
     }
 
     fn listen(&mut self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
@@ -242,7 +201,7 @@ impl<R: Ring> Host for LinkHost<R> {
             listener: listener.0.into(),
             port: port.into(),
         };
-        self.ask(&message, &[]).unit()
+        self.ring.ask(&message, &[]).unit()
     }
 
     fn accept(
@@ -254,17 +213,8 @@ impl<R: Ring> Host for LinkHost<R> {
             listener: listener.0.into(),
             connection: connection.0.into(),
         };
-        self.ask(&message, &[]).unit()
+        self.ring.ask(&message, &[]).unit()
     }
-}
-
-/// The monitor's half: answers the requests above by calling a [`Host`].
-#[derive(Default)]
-pub struct Answering {
-    /// Bytes carried ahead of the next request.
-    carried: Vec<u8>,
-    /// The last answer's bytes not yet in the link.
-    owed: Vec<u8>,
 }
 
 /// A connection's number as the link carries it.
@@ -272,124 +222,108 @@ fn connection(word: u64) -> ConnectionId {
     ConnectionId(word as u32)
 }
 
-impl Answering {
-    /// Answers the request in `link` by calling `host`, if it is one of this set.
-    pub fn answer(&mut self, link: &mut Link, host: &mut dyn Host) -> Option<Request> {
-        let request = Request::from_word(link.head.request)?;
-        let mut bytes = core::mem::take(&mut self.carried);
-        bytes.extend_from_slice(link.data());
-        let mut answer = Vec::new();
-        let outcome = match request {
-            Request::Carry => {
-                self.carried = bytes;
-                None
-            }
-            Request::Fetch => {
-                answer = core::mem::take(&mut self.owed);
-                None
-            }
-            Request::MonotonicNanoseconds => {
-                link.put(&Value {
-                    value: host.monotonic_nanoseconds(),
-                });
-                None
-            }
-            Request::RealtimeNanoseconds => {
-                link.put(&Value {
-                    value: host.realtime_nanoseconds(),
-                });
-                None
-            }
-            Request::Random => {
-                let Random { length } = link.get();
-                answer.resize(length as usize, 0);
-                host.random(&mut answer);
-                None
-            }
-            Request::Warn => {
-                let Warn { count, detail } = link.get();
-                let reason = core::str::from_utf8(&bytes).expect("a warning's reason is text");
-                host.warn(Warning {
-                    reason,
-                    count,
-                    detail,
-                });
-                None
-            }
-            Request::BackendSend => {
-                let BackendSend { request } = link.get();
-                Some(
-                    host.backend_send(BackendRequestId(request), &bytes)
-                        .map(|()| 0),
-                )
-            }
-            Request::Output => {
-                let Output { stream } = link.get();
-                host.output(STREAMS[stream as usize], &bytes);
-                None
-            }
-            Request::Connect => {
-                let Connect {
-                    connection: id,
-                    port,
-                    stream,
-                } = link.get();
-                let result = host.connect(connection(id), &bytes, port as u16, stream != 0);
-                Some(result.map(|()| 0))
-            }
-            Request::SendBytes => {
-                let SendBytes { connection: id } = link.get();
-                Some(host.send(connection(id), &bytes))
-            }
-            Request::Receive => {
-                let Receive {
-                    connection: id,
-                    length,
-                } = link.get();
-                answer.resize(length as usize, 0);
-                let result = host.receive(connection(id), &mut answer);
-                answer.truncate(*result.as_ref().unwrap_or(&0));
-                Some(result)
-            }
-            Request::Finish => {
-                let Finish { connection: id } = link.get();
-                host.finish(connection(id));
-                None
-            }
-            Request::Close => {
-                let Close { connection: id } = link.get();
-                host.close(connection(id));
-                None
-            }
-            Request::LookUp => {
-                let LookUp { request } = link.get();
-                let name = core::str::from_utf8(&bytes).expect("a name to look up is text");
-                Some(host.look_up(request, name).map(|()| 0))
-            }
-            Request::Listen => {
-                let Listen { listener, port } = link.get();
-                Some(host.listen(connection(listener), port as u16).map(|()| 0))
-            }
-            Request::Accept => {
-                let Accept {
-                    listener,
-                    connection: id,
-                } = link.get();
-                Some(
-                    host.accept(connection(listener), connection(id))
-                        .map(|()| 0),
-                )
-            }
-        };
-        if let Some(result) = outcome {
-            link.put(&Outcome::of(result));
+/// The monitor's half: answers `request`, whose whole bytes are `bytes`, by calling `host`; gives the answer's
+/// bytes.
+pub fn answer(request: Request, link: &mut Link, bytes: &[u8], host: &mut dyn Host) -> Vec<u8> {
+    let mut answer = Vec::new();
+    let outcome = match request {
+        Request::MonotonicNanoseconds => {
+            link.put(&Value {
+                value: host.monotonic_nanoseconds(),
+            });
+            None
         }
-        let part = answer.len().min(LINK_BYTES);
-        link.bytes[..part].copy_from_slice(&answer[..part]);
-        link.head.length = part as u64;
-        self.owed = answer.split_off(part);
-        Some(request)
+        Request::RealtimeNanoseconds => {
+            link.put(&Value {
+                value: host.realtime_nanoseconds(),
+            });
+            None
+        }
+        Request::Random => {
+            let Random { length } = link.get();
+            answer.resize(length as usize, 0);
+            host.random(&mut answer);
+            None
+        }
+        Request::Warn => {
+            let Warn { count, detail } = link.get();
+            let reason = core::str::from_utf8(bytes).expect("a warning's reason is text");
+            host.warn(Warning {
+                reason,
+                count,
+                detail,
+            });
+            None
+        }
+        Request::BackendSend => {
+            let BackendSend { request } = link.get();
+            Some(
+                host.backend_send(BackendRequestId(request), bytes)
+                    .map(|()| 0),
+            )
+        }
+        Request::Output => {
+            let Output { stream } = link.get();
+            host.output(STREAMS[stream as usize], bytes);
+            None
+        }
+        Request::Connect => {
+            let Connect {
+                connection: id,
+                port,
+                stream,
+            } = link.get();
+            let result = host.connect(connection(id), bytes, port as u16, stream != 0);
+            Some(result.map(|()| 0))
+        }
+        Request::SendBytes => {
+            let SendBytes { connection: id } = link.get();
+            Some(host.send(connection(id), bytes))
+        }
+        Request::Receive => {
+            let Receive {
+                connection: id,
+                length,
+            } = link.get();
+            answer.resize(length as usize, 0);
+            let result = host.receive(connection(id), &mut answer);
+            answer.truncate(*result.as_ref().unwrap_or(&0));
+            Some(result)
+        }
+        Request::Finish => {
+            let Finish { connection: id } = link.get();
+            host.finish(connection(id));
+            None
+        }
+        Request::Close => {
+            let Close { connection: id } = link.get();
+            host.close(connection(id));
+            None
+        }
+        Request::LookUp => {
+            let LookUp { request } = link.get();
+            let name = core::str::from_utf8(bytes).expect("a name to look up is text");
+            Some(host.look_up(request, name).map(|()| 0))
+        }
+        Request::Listen => {
+            let Listen { listener, port } = link.get();
+            Some(host.listen(connection(listener), port as u16).map(|()| 0))
+        }
+        Request::Accept => {
+            let Accept {
+                listener,
+                connection: id,
+            } = link.get();
+            Some(
+                host.accept(connection(listener), connection(id))
+                    .map(|()| 0),
+            )
+        }
+    };
+    if let Some(result) = outcome {
+        link.put(&Outcome::of(result));
     }
+    answer
 }
 
 #[cfg(test)]
@@ -404,8 +338,8 @@ mod tests {
     use wcontainers_abi::{BackendRequestId, ConnectionId, Host, HostError, Stream, Warning};
     use zerocopy::FromZeros;
 
-    use super::{Answering, LinkHost, Ring};
-    use crate::link::{LINK_BYTES, Link};
+    use super::{LinkHost, Request};
+    use crate::link::{LINK_BYTES, Link, Parts, Ring};
 
     /// A host that records what it is given and answers from what it holds.
     #[derive(Default)]
@@ -543,7 +477,7 @@ mod tests {
     /// The link and the monitor's half in one place: ringing answers at once.
     struct Loopback {
         link: Box<Link>,
-        answering: Answering,
+        parts: Parts,
         host: Recording,
         rung: usize,
     }
@@ -554,9 +488,13 @@ mod tests {
         }
         fn ring(&mut self) {
             self.rung += 1;
-            self.answering
-                .answer(&mut self.link, &mut self.host)
-                .expect("a request of the host's set");
+            let Some(bytes) = self.parts.request(&mut self.link) else {
+                return;
+            };
+            let request =
+                Request::from_word(self.link.head.request).expect("a request of the host's set");
+            let answer = super::answer(request, &mut self.link, &bytes, &mut self.host);
+            self.parts.answer(&mut self.link, answer);
         }
     }
 
@@ -564,7 +502,7 @@ mod tests {
         LinkHost {
             ring: Loopback {
                 link: Box::new(Link::new_zeroed()),
-                answering: Answering::default(),
+                parts: Parts::default(),
                 host: Recording::default(),
                 rung: 0,
             },

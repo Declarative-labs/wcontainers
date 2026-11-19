@@ -276,6 +276,9 @@ impl Runner {
                         panic!("the inside faulted: ESR {esr:#x} ELR {elr:#x} FAR {far:#x}");
                     }
                     link::Request::GiveBack => panic!("no give-back here"),
+                    link::Request::Carry | link::Request::Fetch => {
+                        panic!("no bytes longer than a link here")
+                    }
                 }
                 continue;
             }
