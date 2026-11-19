@@ -15,8 +15,8 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - The literal check is merged (its second version of the rules, phase-1-literals at 7119e3f3, in 21321c7e)
   and this branch's baseline started at e4b998bd. The check fails, on main's code only: see "Literals".
 - main is merged (787f8ceb, N2 run 1): the owner's names are in the plan's text and its runtime citations.
-- N2 (the native ARM64 output): the independent check of run 4 found four blocking problems and six minor
-  ones; run 5 settled every one (below, "N2 run 5"). N3 needs decision 1 (R1, R3). N6 needs K2 (below).
+- N2 (the native ARM64 output): the independent check of run 5 found one blocking problem and four minor
+  ones; run 6 settled every one (below, "N2 run 6"). N3 needs decision 1 (R1, R3). N6 needs K2 (below).
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -328,6 +328,57 @@ For later (not N2's): the Exclusive route loads with a plain `ldr`/`ldp` and sto
 `cas`/`casp`, so `ldaxr` and `stlxr` lose their acquire and release ordering. No single thread can see it;
 threads run in parallel (N5 on) need the acquire and release forms there.
 
+## N2 run 6 (2026-11-19): the independent check of run 5, and how each finding was settled
+
+Start: origin/main and origin/phase-1-literals had nothing new.
+
+1. Blocking, the forced interrupts missed every host instruction right after a call into the inside. Software
+   step only stops after a stepped instruction, and the runner answered each `brk` (Exit, Answer,
+   FloatBefore, FloatAfter) and went on stepping, so no interrupt landed at the first host instruction of a
+   piece after the first, after FloatBefore, or after FloatAfter or Answer. Now the runner counts a landing
+   point at every host instruction the guest's level is about to run: after each step, at the entry, and at
+   every return from the inside (an answered call, or the next piece), and the test forces an interrupt at
+   each (0433e073). The check's three functions (its check_n2b.rs, the runner's new count of landing points)
+   then pass: 3016 interrupts, 0 failed (scratch native/n2r6/check_n2b.log). A new function `system` (the
+   thread pointer and NZCV copied, DCZID read as a constant, `ic ivau` answered by the inside, `nop` and
+   `yield` as whole pieces and after float status writes) runs from the four float status cases.
+   One thing the old rule asked cannot hold: at bounded and full look-ahead a Nothing-route instruction
+   inside a run has no host bytes, so no interrupt lands at the boundary before it; the host instruction
+   there is its successor's, and the position map gives the successor's pc with the same count and
+   registers. The test exempts exactly those boundaries (the plan, section 4, says why); replay reaches such
+   a pc by its check.
+2. The differential test never seeded or compared the exclusive monitor. Layer 1's runner (the translator
+   track's) has no way to set or read the WebAssembly side's monitor, so the monitor is compared by what it
+   does: each drawn load or store exclusive also runs as a two-instruction function with its partner (the
+   store after the load, the load before the store; same size, acquire bit and base; the partner's other
+   registers ones the word does not name), on both outputs, ends and data area compared (5382d1fd). Of 1536
+   pairs at 64 cases per form, 1127 stored (status 0); the rest fault or fail on both sides alike.
+3. The interrupt test had no knobs: `WCONTAINERS_INTERRUPTS_SEED` and `WCONTAINERS_INTERRUPTS_STARTS`
+   (seeded starting states per case: flags, thread pointer, vectors, data area; the first is the seed's
+   own, so a failure replays with the seed it prints).
+4. The cost text: plan section 4 now gives the check's repeat beside run 1's, says the start of the run and
+   before the compare cannot be told apart (the start is chosen as the simpler rule), that at look-ahead
+   none the add sits right before its event, and that the figures are from clang's output with the adds put
+   in by a script, not the emitter's own output (N3 measures that).
+5. The interrupt test compares the WebAssembly output at each function's end only; intermediate states
+   are checked against E and the native look-ahead-none run. The plan says so; stop by stop across outputs
+   is N6's.
+
+Results (M5 Max, macOS 27.2):
+- Forced interrupts: 2500 over 8 functions (18 cases) at 3 look-aheads, 0 failed (1.1 s, load 49); with
+  three starting states, 7500 over 54 cases, 0 failed (5.8 s, load 65). Log scratch native/n2r6.
+- Differential test, the 24 exclusive forms (the only ones the pairs change) at the bar's 1000 cases per
+  form, seed 0x2545f4914f6cdd1d: 24,000 drawn, 24,000 of the bar's own, 62,565 left-out words and 24,000
+  exclusive pairs (17,426 storing), 134,565 cases, 0 failing (334 s, load 57 to 90; n2r6/native-excl1000.log).
+  Every other form's cases are run 5's, unchanged, and run 5's 1000-per-form run passed them.
+- The whole suite of what this track owns, once before the push (00:58 to 01:02, load 45 to 88;
+  n2r6/suite.log): guest-cpu, arm64 (routing, encoder and the rest), the inside and the monitor (floor 21
+  cases and 1 measurement, 0 failed; carry 1,100,730 words; native at 16 cases, 32,466 cases with 384 pairs,
+  0 failing; interrupts as above; the behaviour probe, 279 forms, 38,916 placements, 0 forms of 16 bytes or
+  fewer differ), the translator with `native`, the literal check's tests, and the check itself (exit 0;
+  baseline lines in this track's files unchanged, 26). The translator still differs from main only in
+  `native.rs`, the feature's lines in lib.rs and Cargo.toml.
+
 ## E's cost by placement (N2 run 1)
 
 Method: the eight bench.c workloads and calls.c of the cost rounds, compiled by clang -O2 with x26 to x28
@@ -395,8 +446,9 @@ From the checkout, in the Nix shell:
   `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test native` (knobs `WCONTAINERS_NATIVE_CASES`
   drawn cases per form, default 16; `WCONTAINERS_NATIVE_SEED`; `WCONTAINERS_NATIVE_FORMS` a comma-separated
   list of form names; `WCONTAINERS_NATIVE_JOBS` threads for the WebAssembly side, default 3; the bar is
-  `WCONTAINERS_NATIVE_CASES=1000`, 84 minutes at load 60 to 88), `--test interrupts` (no knobs; under a
-  second) and `--test probe` (knobs `WCONTAINERS_PROBE_WORDS`, default 4, and `WCONTAINERS_PROBE_SEED`; about
+  `WCONTAINERS_NATIVE_CASES=1000`, 143 minutes at load 71 to 141), `--test interrupts` (knobs
+  `WCONTAINERS_INTERRUPTS_SEED`, `WCONTAINERS_INTERRUPTS_STARTS` starting states per case, default 1; about
+  a second per starting state) and `--test probe` (knobs `WCONTAINERS_PROBE_WORDS`, default 4, and `WCONTAINERS_PROBE_SEED`; about
   7 minutes);
 - N2's tests without the machine: `nix develop -c cargo test -j 4 -p wcontainers-arm64 --test native_routes --test encode --
   --nocapture` (knobs `WCONTAINERS_ROUTES_SEED`, `WCONTAINERS_ROUTES_WORDS`, `WCONTAINERS_ENCODE_SEED`,
@@ -708,6 +760,12 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 ## Departures from the plan
 
+- N2 run 6, the exclusive monitor in the differential test is compared through each drawn exclusive's
+  partner (status and memory), not read directly: layer 1's WebAssembly runner, the translator track's,
+  offers no way to set or read it.
+- N2 run 6, the interrupt test does not require a boundary at a Nothing-route instruction inside a run of
+  more than one instruction to be reached: no host instruction is its (plan section 4).
+
 - N2 run 5, slow paths: the native output's three translation-time slow paths are named and counted per
   site in `HostCode::sites`; their warning is raised by whoever loads translations (the inside, N3), since
   nothing loads them before then.
@@ -725,7 +783,8 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 - N2 run 4, the bar's own cases for loads and stores are made from drawn cases (one beside each) at the
   three boundaries layer 1's data area has, since layer 1's layout is the translator track's; store
   exclusive faults, `clrex` and the float status forms are functions in the interrupt test, so they also
-  take a forced interrupt at every host instruction.
+  take a forced interrupt at every host instruction the guest's level is about to run (since run 6, also
+  those right after a call into the inside).
 
 - N2 run 2, where the ARM64 sequences live: in wcontainers-arm64 (carry.rs), with `access`; the translator's
   native module is the generic loop. The translator knows no one CPU.
