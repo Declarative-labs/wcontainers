@@ -150,8 +150,8 @@ pub fn summary(warnings: &[Warned]) -> std::collections::BTreeMap<&str, u64> {
         .collect()
 }
 
-/// Runs the container in the kernel inside the machine.
-pub fn native(seed: u64, files: &[File], starting: &Starting) -> Outcome {
+/// Runs the container in the kernel inside the machine, its wall clock starting at `wall_start`.
+pub fn native(seed: u64, wall_start: u64, files: &[File], starting: &Starting) -> Outcome {
     static PROGRAM_IMAGE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
     let program = PROGRAM_IMAGE.get_or_init(|| build(PROGRAM));
     let (machine, memory, loaded, start) = machine(program, MEMORY, ONE_CPU);
@@ -204,10 +204,7 @@ pub fn native(seed: u64, files: &[File], starting: &Starting) -> Outcome {
             parts.answer(link, answer);
         } else {
             match protocol::Request::from_word(word).expect("a request of the set") {
-                protocol::Request::Policy => link.put(&PolicySeeds {
-                    seed,
-                    wall_start: REALTIME_NANOSECONDS,
-                }),
+                protocol::Request::Policy => link.put(&PolicySeeds { seed, wall_start }),
                 protocol::Request::Warned => {
                     let protocol::Warned { count, detail } = link.get();
                     warnings.push(Warned {
@@ -259,10 +256,10 @@ impl Ring for Loopback<'_> {
 }
 
 /// Runs the container in the same kernel, loop and policy on the host, on the WebAssembly output's CPU side.
-pub fn wasm(seed: u64, files: &[File], starting: &Starting) -> Outcome {
+pub fn wasm(seed: u64, wall_start: u64, files: &[File], starting: &Starting) -> Outcome {
     let compiler = Compiler::<Arm64>::new(None);
     let mut cpu = CpuSide::new(compiler, LookAhead::None, Optimise::Speed, ());
-    let mut policy = TestPolicy::new(Recorded::new(seed), seed, REALTIME_NANOSECONDS);
+    let mut policy = TestPolicy::new(Recorded::new(seed), seed, wall_start);
     let mut kernel = Kernel::new();
     let mut files = files.iter().cloned();
     let mut ring = Loopback {

@@ -27,7 +27,7 @@ fn main() {
 #[cfg(target_os = "macos")]
 mod macos {
     use std::path::MAIN_SEPARATOR_STR;
-    use std::time::Instant;
+    use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
     use wcontainers_inside::container::{File, FileKind, Starting};
     use wcontainers_kernel_test::busybox::{FILES, Reference, TEXT, each, on_path};
@@ -88,9 +88,13 @@ mod macos {
         let files = files(image);
         let commands: Vec<&[&str]> = TEXT.iter().chain(FILES).copied().collect();
         each(&commands, |command| {
-            let theirs = Reference::of(command);
             let began = Instant::now();
-            let ours = native(seed, &files, &starting(command, image));
+            // The reference's clock is the machine's: a file's time shown to the minute must match.
+            let wall_start = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("a clock after 1970")
+                .as_nanos() as u64;
+            let ours = native(seed, wall_start, &files, &starting(command, image));
             println!(
                 "{command:?}: status {:#x} after {} turns, {} exits, {:?}, warned {:?}",
                 ours.status,
@@ -104,7 +108,7 @@ mod macos {
                 stderr: ours.host.stderr,
                 exit_code: exit_code(ours.status),
             };
-            theirs.check(command, ROOT_IN_MEMORY, &outcome, &ours.root);
+            Reference::of(command).check(command, ROOT_IN_MEMORY, &outcome, &ours.root);
         });
         println!(
             "busybox: {} commands gave the reference's output, exit code and files; seed {seed:#x}; in {:?}, load {}",

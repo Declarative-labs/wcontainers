@@ -39,7 +39,9 @@ mod macos {
     use crate::common::{
         CLibrary, KERNEL_TEST_GUEST, OWN_GUEST, be_signed, compile, load_average, setting,
     };
-    use crate::container::{DEFAULT_SEED, Outcome, SEED_VARIABLE, native, summary, wasm};
+    use crate::container::{
+        DEFAULT_SEED, Outcome, REALTIME_NANOSECONDS, SEED_VARIABLE, native, summary, wasm,
+    };
 
     /// The bar's first program, from the kernel test crate.
     const HELLO: &str = "hello";
@@ -82,8 +84,8 @@ mod macos {
     /// root's files agree, and gives both outcomes, the native side's first.
     fn both(seed: u64, name: &str, image: &[u8], arguments: &[String]) -> (Outcome, Outcome) {
         let (files, starting) = container(name, image.to_vec(), arguments);
-        let native = native(seed, &files, &starting);
-        let wasm = wasm(seed, &files, &starting);
+        let native = native(seed, REALTIME_NANOSECONDS, &files, &starting);
+        let wasm = wasm(seed, REALTIME_NANOSECONDS, &files, &starting);
         for (side, outcome) in [("native", &native), ("WebAssembly", &wasm)] {
             println!(
                 "{name} {arguments:?} on the {side} side: status {:#x} after {} turns, {} host calls, {} exits, {} files at the end, warned {:?}",
