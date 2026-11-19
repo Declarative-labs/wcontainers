@@ -5,6 +5,7 @@
 use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::hash::Hasher as _;
 use core::ops::Range;
 use core::ptr;
 
@@ -13,6 +14,7 @@ use aarch64_cpu::registers::{ESR_EL1, FAR_EL1, MDSCR_EL1, Read, SPSR_EL1, TPIDR_
 use aarch64_paging::descriptor::El1Attributes;
 use arm_sysregs::el0::registers::CtrEl0;
 use rangemap::RangeMap;
+use rustc_hash::FxHasher;
 use wcontainers_abi::{
     Access, AddressSpace as Addresses, Cpu, CpuError, Exit, MemoryId, PAGE_SIZE, Permissions,
     RegisterBlock, Resume, SharedId, Syscall, ThreadId, Warning,
@@ -249,8 +251,11 @@ pub struct NativeCpu {
     load_vectors: extern "C" fn(*const Vectors),
     invalidate_whole_tlb: extern "C" fn(),
     counters: BTreeMap<&'static str, u64>,
-    /// Slow paths not yet handed to a run's `warn`: reason, count and detail.
-    unsent: Vec<(&'static str, u64, u64)>,
+    /// Slow paths not yet handed to a run's `warn`: each reason's latest count, which holds every one before it, and detail.
+    unsent: BTreeMap<&'static str, (u64, u64)>,
+    /// How many times a thread stopped, and a hash of the position, count and pc, of each stop in order.
+    stops: u64,
+    positions: FxHasher,
 }
 
 fn out_of_memory(_: Full) -> CpuError {
@@ -359,7 +364,9 @@ impl NativeCpu {
             load_vectors,
             invalidate_whole_tlb,
             counters: BTreeMap::new(),
-            unsent: Vec::new(),
+            unsent: BTreeMap::new(),
+            stops: 0,
+            positions: FxHasher::default(),
         })
     }
 
@@ -373,7 +380,7 @@ impl NativeCpu {
     fn slow(&mut self, reason: &'static str, times: u64, detail: u64) {
         let count = self.counters.entry(reason).or_default();
         *count += times;
-        self.unsent.push((reason, *count, detail));
+        self.unsent.insert(reason, (*count, detail));
     }
 
     fn id(&mut self) -> u32 {
@@ -814,8 +821,8 @@ impl NativeCpu {
         branch.fits(offset).then(|| branch.with(offset as u64))
     }
 
-    /// Fills the entry slot of guest address `guest` in `memory`, the running process's, with a jump to the piece at
-    /// `base`, mapping the slot's page at its first use.
+    /// Fills the entry slot of guest address `guest` in `memory` with a jump to the piece at `base`, mapping the
+    /// slot's page at its first use; leaves `memory`'s address space switched to.
     fn fill_slot(&mut self, memory: MemoryId, guest: u64, base: u64) -> Result<(), Full> {
         let at = mirror::slot(guest);
         let page = page_of(at);
@@ -833,6 +840,9 @@ impl NativeCpu {
         for (k, (word, field)) in words.iter_mut().zip(&self.words.moves).enumerate() {
             *word = field.with(base >> (k as u32 * SLOT_MOVE_BITS));
         }
+        // Written where the guest runs it, in its process's address space, which dropping another process's
+        // pieces may have switched away from.
+        m.space.switch();
         write_code(at, &words);
         Ok(())
     }
@@ -859,8 +869,17 @@ impl NativeCpu {
         if not_kept != 0 {
             self.slow(EXACT_FLOATING_POINT_REQUESTED, not_kept, t.state.pc);
         }
+        self.stops += 1;
+        self.positions.write_u64(t.state.count);
+        self.positions.write_u64(t.state.pc);
         self.threads.insert(thread, t);
         exit
+    }
+
+    /// How many times a thread stopped, and a hash of each stop's position (its count and pc) in order: the
+    /// same under every look-ahead, since the count is defined on the guest's instructions alone.
+    pub fn positions(&self) -> (u64, u64) {
+        (self.stops, self.positions.finish())
     }
 
     /// Hands `warn` every slow path taken since it was last called.
@@ -885,10 +904,10 @@ impl NativeCpu {
             if count != *reported {
                 *reported = count;
                 self.counters.insert(reason, count);
-                self.unsent.push((reason, count, detail));
+                self.unsent.insert(reason, (count, detail));
             }
         }
-        for (reason, count, detail) in core::mem::take(&mut self.unsent) {
+        for (reason, (count, detail)) in core::mem::take(&mut self.unsent) {
             warn(Warning {
                 reason,
                 count,
@@ -1068,6 +1087,8 @@ impl NativeCpu {
                 Ended::TurnOver => return Exit::Stop,
                 Ended::CodeChanged(address) => {
                     self.code_line_changed(memory, address);
+                    // Dropping another process's pieces switched to its address space.
+                    self.memories[&memory].space.switch();
                     if reached(&t.state) {
                         return Exit::Stop;
                     }
