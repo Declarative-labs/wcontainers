@@ -4,6 +4,7 @@
 //! into naga. The parts that read NIR link the pinned Mesa and are built when `WCONTAINERS_MESA`
 //! names its build (`mesa/build`).
 
+pub mod bind;
 #[cfg(mesa)]
 pub mod mesa;
 pub mod spirv;
@@ -17,6 +18,9 @@ pub enum ConvertError {
     Reader(String),
     /// The module failed naga's validation.
     Invalid(String),
+    /// The program's resources do not fit the common form's binding rule (plan 6.4), for the named
+    /// reason.
+    Bindings(&'static str),
 }
 
 impl core::fmt::Display for ConvertError {
@@ -25,6 +29,7 @@ impl core::fmt::Display for ConvertError {
             ConvertError::Mesa(step) => write!(f, "mesa refused at {step}"),
             ConvertError::Reader(s) => write!(f, "spirv-reader: {s}"),
             ConvertError::Invalid(s) => write!(f, "invalid: {s}"),
+            ConvertError::Bindings(why) => write!(f, "bindings: {why}"),
         }
     }
 }

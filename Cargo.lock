@@ -3813,6 +3813,7 @@ dependencies = [
  "serde",
  "serde_json",
  "spirv",
+ "wcontainers-gpu",
  "wcontainers-shaders",
 ]
 

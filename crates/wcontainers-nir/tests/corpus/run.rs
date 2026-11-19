@@ -348,17 +348,17 @@ fn shader(file: &Path, route: &str) -> ShaderResult {
     };
     provisional(&result, route);
     match route {
-        ROUTE_ZINK => result.routes.push(zink_route(nir, file)),
+        ROUTE_ZINK => result.routes.push(zink_route(nir, stage, file)),
         other => panic!("no route named {other}"),
     }
     result
 }
 
-/// Candidate A: Zink's SPIR-V, naga's reader and validation. With `WC_NIR_DUMP` set, Zink's SPIR-V
+/// Candidate A: the binding rule, Zink's SPIR-V, naga's reader and validation. With `WC_NIR_DUMP` set, Zink's SPIR-V
 /// is also written there (outside the time measured), under the shader's own path.
-fn zink_route(nir: Nir, file: &Path) -> RouteResult {
+fn zink_route(mut nir: Nir, stage: Stage, file: &Path) -> RouteResult {
     let started = Instant::now();
-    let words = nir.into_spirv();
+    let words = nir.bind(stage).and_then(|_| nir.into_spirv());
     let mut elapsed = started.elapsed();
     if let (Some(dir), Ok(words)) = (std::env::var_os(DUMP), &words) {
         let relative: PathBuf = file

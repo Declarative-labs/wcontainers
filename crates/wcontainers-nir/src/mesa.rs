@@ -1,8 +1,10 @@
 //! NIR from the pinned Mesa, owned, with the steps the routes take on it (through `bridge/bridge.c`).
 
 use crate::ConvertError;
+use crate::bind::{self, KINDS};
 use std::ffi::{CString, c_char};
 use std::sync::Once;
+use wcontainers_gpu::{ReflectedBinding, ShaderStage};
 
 /// The program stages the routes take (`enum wc_stage`).
 #[repr(C)]
@@ -11,6 +13,49 @@ pub enum Stage {
     Vertex,
     Fragment,
     Compute,
+}
+
+impl Stage {
+    pub const fn shader_stage(self) -> ShaderStage {
+        match self {
+            Stage::Vertex => ShaderStage::Vertex,
+            Stage::Fragment => ShaderStage::Fragment,
+            Stage::Compute => ShaderStage::Compute,
+        }
+    }
+}
+
+#[repr(C)]
+struct SlotRange {
+    first: u32,
+    slots: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Binding {
+    kind: u32,
+    set: u32,
+    binding: u32,
+    count: u32,
+    new_binding: u32,
+    stride: u32,
+}
+
+#[repr(C)]
+struct Bindings {
+    data: *mut Binding,
+    count: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code, reason = "the bridge makes every value")]
+enum BindResult {
+    Ok,
+    BeyondLimit,
+    Unbounded,
+    OutOfMemory,
 }
 
 #[repr(C)]
@@ -38,6 +83,13 @@ unsafe extern "C" {
         stage: Stage,
         entry_point: *const c_char,
     ) -> *mut NirShader;
+    fn wc_nir_bind(
+        nir: *mut NirShader,
+        set: u32,
+        ranges: *const SlotRange,
+        out: *mut Bindings,
+    ) -> BindResult;
+    fn wc_bindings_free(bindings: *mut Bindings);
     fn wc_nir_serialize(nir: *const NirShader, out: *mut Bytes) -> bool;
     fn wc_nir_to_spirv(nir: *mut NirShader, out: *mut Words) -> bool;
     fn wc_nir_free(nir: *mut NirShader);
@@ -66,6 +118,48 @@ impl Nir {
             return Err(ConvertError::Mesa(SPIRV_TO_NIR));
         }
         Ok(Nir(nir))
+    }
+
+    /// Applies the common form's binding rule ([`crate::bind`]) to the program of `stage`, splitting
+    /// combined image samplers, and gives each resource's reflection.
+    pub fn bind(&mut self, stage: Stage) -> Result<Vec<ReflectedBinding>, ConvertError> {
+        let ranges = KINDS.map(|k| SlotRange {
+            first: k.first_binding(),
+            slots: k.slots(),
+        });
+        let set = bind::stage_set(stage.shader_stage());
+        let mut out = Bindings {
+            data: std::ptr::null_mut(),
+            count: 0,
+        };
+        // SAFETY: self.0 is a live shader, ranges holds one range a kind, and the bridge fills `out`.
+        let result = unsafe { wc_nir_bind(self.0, set, ranges.as_ptr(), &mut out) };
+        let made: Vec<ReflectedBinding> = if out.data.is_null() {
+            Vec::new()
+        } else {
+            // SAFETY: data holds count entries until wc_bindings_free.
+            unsafe { std::slice::from_raw_parts(out.data, out.count) }
+                .iter()
+                .map(|b| ReflectedBinding {
+                    kind: KINDS[b.kind as usize],
+                    space: b.set,
+                    register: b.binding,
+                    count: b.count,
+                    set,
+                    binding: b.new_binding,
+                    added: None,
+                    stride: b.stride,
+                })
+                .collect()
+        };
+        // SAFETY: out came from the bridge and is freed once.
+        unsafe { wc_bindings_free(&mut out) };
+        match result {
+            BindResult::Ok => Ok(made),
+            BindResult::BeyondLimit => Err(ConvertError::Bindings(bind::BEYOND_LIMIT)),
+            BindResult::Unbounded => Err(ConvertError::Bindings(bind::UNBOUNDED)),
+            BindResult::OutOfMemory => Err(ConvertError::Bindings(bind::OUT_OF_MEMORY)),
+        }
     }
 
     /// NIR's serialised bytes, the cache's key with the converter's version (plan 15.3).
