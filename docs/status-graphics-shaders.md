@@ -1867,9 +1867,8 @@ Run 42 (Godot's `StorageFormatKind` shaders, the Direct3D 11 track's empty slot 
   (gpu5.log), `compute_draw` 7 of 7 (gpu2.log). Chrome's compile (`web/check`) was not rerun this
   run; the WGSL of `cs_one_d` and `ps_levels_past` is new and unchecked there.
 - Clean-up: this checkout's target folder and the desktop's
-  `C:\wc\target\phase-2-graphics-shaders` deleted at the end; the laptop's
-  `~/wcontainers-graphics/target/phase-2-graphics-shaders` (3.5 GB at the start) could not be
-  deleted (the laptop was down).
+  `C:\wc\target\phase-2-graphics-shaders` deleted at the end, and the laptop's
+  `~/wcontainers-graphics/target/phase-2-graphics-shaders` (it answered again at the very end).
 
 Next (in order):
 - The Direct3D 12 front (theirs, now possible since run 42): Godot's 3D platformer rerun; its five
@@ -1912,7 +1911,6 @@ Next (in order):
   value).
 - Chrome's compile of the new own shaders' WGSL and GLSL (`web/check`, laptop's out folder);
   restore the desktop's runner corpus copy if the laptop stays down.
-- Laptop: delete `~/wcontainers-graphics/target/phase-2-graphics-shaders` when it answers.
 - Laptop: the WebAssembly build of the C++ was killed for memory at 5 jobs in this run (the other
   track's load was 15 to 39); run `wasm-run10.sh` with 2 jobs.
 - The Direct3D 12 front (theirs, now possible since run 37): drop the refusal "a raw or structured
