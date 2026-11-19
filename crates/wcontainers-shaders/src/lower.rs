@@ -35,6 +35,10 @@ mod hull;
 
 type Result<T> = core::result::Result<T, ConvertError>;
 
+/// The clip and cull distances a vertex has in Direct3D 11 and 12, together
+/// (`D3D11_CLIP_OR_CULL_DISTANCE_COUNT`).
+const CLIP_OR_CULL_DISTANCES: u32 = 8;
+
 fn unsupported(what: &'static str) -> ConvertError {
     ConvertError::Unsupported(what)
 }
@@ -1308,43 +1312,70 @@ impl<'a> Lowering<'a> {
             }
             let b = io.builtin.unwrap();
             if b == builtin::CLIP_DISTANCE {
-                // The common form's clip distances are one array of f32, however the IR groups them.
-                let element = io.ty.members[..]
-                    == [Basic {
-                        scalar: scalar::F32,
-                        size: 1,
-                    }];
-                let count: u32 = io.ty.dims.iter().product();
-                if !element || !(1..=8).contains(&count) {
+                // The common form's clip distances are one array of f32, however the IR groups
+                // them: every declaration's, in order, made one array where the first is met.
+                let clips: Vec<usize> = (0..io_count)
+                    .filter(|&j| {
+                        let (other, ref io) = self.io[j];
+                        io.builtin == Some(builtin::CLIP_DISTANCE)
+                            && self.ir.op(other).is_ok_and(|o| !input(o.code))
+                    })
+                    .collect();
+                if clips[0] != i {
+                    continue;
+                }
+                let f32_ty = self.scalar_ty(Scalar::F32);
+                let mut parts = Vec::new();
+                for &j in &clips {
+                    let (other, ref io) = self.io[j];
+                    let element = io.ty.members[..]
+                        == [Basic {
+                            scalar: scalar::F32,
+                            size: 1,
+                        }];
+                    if !element || io.ty.dims.len() > 1 {
+                        return Err(unsupported("ClipDistanceType"));
+                    }
+                    let count: u32 = io.ty.dims.iter().product();
+                    let (var, ty) = (io.var, io.ty.clone());
+                    let p = e.add(&mut f, &mut body, Expression::GlobalVariable(var));
+                    let v = e.add(&mut f, &mut body, Expression::Load { pointer: p });
+                    if ty.dims.is_empty() {
+                        parts.push(v);
+                    } else {
+                        for index in 0..count {
+                            parts.push(e.add(
+                                &mut f,
+                                &mut body,
+                                Expression::AccessIndex { base: v, index },
+                            ));
+                        }
+                    }
+                    self.reflect_value(other, false, None, 0, ty.members[0], 0, system_value(b));
+                }
+                let count = parts.len() as u32;
+                if count > CLIP_OR_CULL_DISTANCES {
                     return Err(unsupported("ClipDistanceType"));
                 }
-                let (var, ty) = (io.var, io.ty.clone());
-                let p = e.add(&mut f, &mut body, Expression::GlobalVariable(var));
-                let mut v = e.add(&mut f, &mut body, Expression::Load { pointer: p });
-                let f32_ty = self.scalar_ty(Scalar::F32);
                 let array = self.ty(TypeInner::Array {
                     base: f32_ty,
                     size: ArraySize::Constant(NonZeroU32::new(count).unwrap()),
-                    stride: 4,
+                    stride: core::mem::size_of::<f32>() as u32,
                 });
-                if ty.dims.is_empty() {
-                    v = e.add(
-                        &mut f,
-                        &mut body,
-                        Expression::Compose {
-                            ty: array,
-                            components: alloc::vec![v],
-                        },
-                    );
-                }
+                let v = e.add(
+                    &mut f,
+                    &mut body,
+                    Expression::Compose {
+                        ty: array,
+                        components: parts,
+                    },
+                );
                 members.push((
                     format!("b{b}"),
                     array,
                     naga::Binding::BuiltIn(naga::BuiltIn::ClipDistances),
                 ));
                 values.push(v);
-                let element = ty.members[0];
-                self.reflect_value(id, false, None, 0, element, 0, system_value(b));
                 continue;
             }
             let member = io.ty.basic().ok_or(unsupported("BuiltInArray"))?;
@@ -1437,23 +1468,33 @@ impl<'a> Lowering<'a> {
             }
         }
         if !members.is_empty() {
+            // Each member at the next offset its type's alignment allows, as WGSL lays a
+            // structure out.
+            let mut layouter = naga::proc::Layouter::default();
+            layouter
+                .update(self.module.to_ctx())
+                .map_err(|e| malformed(format!("output layout: {e}")))?;
             let mut offset = 0;
+            let mut largest = naga::proc::Alignment::ONE;
             let mut struct_members = Vec::new();
             for (name, ty, binding) in members {
+                let layout = layouter[ty];
+                offset = layout.alignment.round_up(offset);
+                largest = largest.max(layout.alignment);
                 struct_members.push(StructMember {
                     name: Some(name),
                     ty,
                     binding: Some(binding),
                     offset,
                 });
-                offset += 16;
+                offset += layout.size;
             }
             let ty = self.module.types.insert(
                 Type {
                     name: Some("Outputs".into()),
                     inner: TypeInner::Struct {
                         members: struct_members,
-                        span: offset,
+                        span: largest.round_up(offset),
                     },
                 },
                 Span::UNDEFINED,
@@ -2833,6 +2874,10 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                     None => return Ok(()),
                 }
             }
+            // Rasterizer ordered views (WebGPU has no fragment interlock).
+            c::ROV_SCOPED_LOCK_BEGIN | c::ROV_SCOPED_LOCK_END => {
+                return Err(unsupported("RasterizerOrderedView"));
+            }
             c::BARRIER => {
                 let (exec, mem) = (op.lits[0], op.lits[2]);
                 let mut flags = naga::Barrier::empty();
@@ -4046,7 +4091,12 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         };
         let gather_component = if gather {
             let c = op.lits.first().copied().unwrap_or(0) as usize;
-            Some(SwizzleComponent::XYZW[c.min(3)])
+            // A depth texture has only its first component in the common form; Direct3D gathers
+            // the others' defaults, through the sampler's comparison where it compares.
+            if res.depth && c != 0 {
+                return Err(unsupported("DepthGatherComponent"));
+            }
+            Some(SwizzleComponent::XYZW[c.min(SwizzleComponent::XYZW.len() - 1)])
         } else {
             None
         };

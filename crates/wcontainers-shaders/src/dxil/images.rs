@@ -330,6 +330,7 @@ pub(super) fn texel_atomics(module: &mut Module) -> Result<Vec<TexelAtomic>> {
             };
             let c = insert(module, c);
             let v = insert(module, v);
+            let r = r.map(|r| spelled(module, r));
             let compared = matches!(fun, AtomicFunction::Exchange { compare: Some(_) });
             let shape = (g, core::mem::discriminant(&fun), compared, c, v, r);
             let k = match shapes.iter().position(|(s, _)| *s == shape) {
@@ -1453,3 +1454,27 @@ pub(super) fn finish(
     }
     Ok(())
 }
+
+/// A structure WGSL can name in place of a predeclared one (an atomic compare-exchange's result,
+/// which WGSL spells only as the built-in's return): the same members under a declared name.
+fn spelled(module: &mut Module, ty: Handle<Type>) -> Handle<Type> {
+    if !module
+        .special_types
+        .predeclared_types
+        .values()
+        .any(|&t| t == ty)
+    {
+        return ty;
+    }
+    let inner = module.types[ty].inner.clone();
+    module.types.insert(
+        Type {
+            name: Some(COMPARE_EXCHANGE_RESULT.into()),
+            inner,
+        },
+        Span::UNDEFINED,
+    )
+}
+
+/// The declared name of a compare-exchange's result returned from a function.
+const COMPARE_EXCHANGE_RESULT: &str = "CompareExchangeResult";

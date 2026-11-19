@@ -2,10 +2,12 @@
 //! given the binding rule of plan section 6.4 and stripped of what WGSL cannot express.
 
 mod arrays;
+mod components;
 mod depth;
 mod images;
 mod nonfinite;
 mod registers;
+mod widths;
 
 use crate::ConvertError;
 use crate::container::{Element, signature};
@@ -211,10 +213,26 @@ pub(crate) fn lower(
     dxil: &[u8],
     variant: &VariantKey,
 ) -> Result<(Module, Reflection, ShaderStage), ConvertError> {
+    // naga's reader has no geometry or tessellation execution models, which the stage helper
+    // would take them through.
+    match crate::container::program_type(dxil) {
+        Some(crate::ir::program::GEOMETRY) => {
+            return Err(ConvertError::Unsupported("DxilGeometryShader"));
+        }
+        Some(crate::ir::program::HULL) => return Err(ConvertError::Unsupported("DxilHullShader")),
+        Some(crate::ir::program::DOMAIN) => {
+            return Err(ConvertError::Unsupported("DxilDomainShader"));
+        }
+        _ => {}
+    }
     let (mut spirv, mut resources) = to_spirv(dxil, variant.samples)?;
     if evaluates_inputs(&spirv) {
         return Err(ConvertError::Unsupported("InterpolateAt"));
     }
+    if let Some(name) = absent_extension(&spirv) {
+        return Err(ConvertError::Unsupported(name));
+    }
+    widths::widen(&mut spirv)?;
     registers::encode(&mut spirv);
     let declared = images::prepare(&mut spirv);
     let options = naga::front::spv::Options {
@@ -222,9 +240,7 @@ pub(crate) fn lower(
         strict_capabilities: false,
         block_ctx_dump_prefix: None,
     };
-    let mut module = naga::front::spv::Frontend::new(spirv.iter().copied(), &options)
-        .parse()
-        .map_err(|e| ConvertError::Reader(format!("{e}")))?;
+    let mut module = widths::read(&spirv, &options)?;
     nonfinite::calls(&mut module)?;
     arrays::split(&mut module, &mut resources)?;
     depth::widen(&mut module)?;
@@ -238,6 +254,8 @@ pub(crate) fn lower(
         }
     }
     sample_mask_input(&mut module);
+    sample_mask_output(&mut module);
+    components::rows(&mut module)?;
     unconverted(&module)?;
     if !module.overrides.is_empty() {
         // dxil-spirv's only specialisation constant here: the targets' sample count.
@@ -497,6 +515,15 @@ fn unconverted(module: &Module) -> Result<(), ConvertError> {
     {
         return Err(ConvertError::Unsupported("PrimitiveId"));
     }
+    // WebGPU has no cull distances, and no clip distances read by a pixel program.
+    if builtins.iter().any(|(b, _)| *b == BuiltIn::CullDistance) {
+        return Err(ConvertError::Unsupported("CullDistance"));
+    }
+    if ep.stage == naga::ShaderStage::Fragment
+        && builtins.iter().any(|(b, _)| *b == BuiltIn::ClipDistances)
+    {
+        return Err(ConvertError::Unsupported("ClipDistance"));
+    }
     // WebGPU's subgroups serve pixel and compute programs only, and have no subgroup barrier.
     if module.uses_subgroups() && ep.stage == naga::ShaderStage::Vertex {
         return Err(ConvertError::Unsupported("SubgroupsInVertex"));
@@ -518,13 +545,12 @@ fn unconverted(module: &Module) -> Result<(), ConvertError> {
     // dxil-spirv reads a component of a constant buffer picked at run time through a second view of
     // the buffer as scalars, 4 bytes apart; WebGPU's uniform arrays step by 16 bytes, and WGSL takes
     // one variable per binding.
-    let scalar_view = |v: &GlobalVariable| {
-        match module.types[v.ty].inner {
+    let scalar_view = |v: &GlobalVariable| match module.types[v.ty].inner {
         TypeInner::Struct { ref members, .. } => members.iter().any(|m| {
-            matches!(module.types[m.ty].inner, TypeInner::Array { stride, .. } if stride % 16 != 0)
+            matches!(module.types[m.ty].inner, TypeInner::Array { stride, .. }
+                if !naga::proc::Alignment::MIN_UNIFORM.is_aligned(stride))
         }),
         _ => false,
-    }
     };
     if module
         .global_variables
@@ -552,6 +578,115 @@ fn unconverted(module: &Module) -> Result<(), ConvertError> {
         ));
     }
     Ok(())
+}
+
+/// dxil-spirv declares the coverage output as SPIR-V's one-element array too: the entry point's result
+/// structure takes a u32 in its place, the array's element 0, composed again before each return.
+fn sample_mask_output(module: &mut Module) {
+    let Some(result) = module
+        .entry_points
+        .first()
+        .and_then(|e| e.function.result.as_ref())
+    else {
+        return;
+    };
+    let old = result.ty;
+    let TypeInner::Struct { members, span } = module.types[old].inner.clone() else {
+        return;
+    };
+    let Some(mask) = members.iter().position(|m| {
+        matches!(m.binding, Some(Binding::BuiltIn(BuiltIn::SampleMask)))
+            && matches!(module.types[m.ty].inner, TypeInner::Array { .. })
+    }) else {
+        return;
+    };
+    let u32_ty = module.types.insert(
+        Type {
+            name: None,
+            inner: TypeInner::Scalar(Scalar::U32),
+        },
+        Span::UNDEFINED,
+    );
+    // The reader starts the private array at its element's value (all samples covered): the
+    // array of that value.
+    let array = members[mask].ty;
+    for (_, v) in module.global_variables.iter_mut() {
+        if let Some(init) = v.init
+            && v.ty == array
+            && matches!(module.global_expressions[init], Expression::Literal(_))
+        {
+            v.init = Some(module.global_expressions.append(
+                Expression::Compose {
+                    ty: array,
+                    components: alloc::vec![init],
+                },
+                Span::UNDEFINED,
+            ));
+        }
+    }
+    let mut members = members;
+    members[mask].ty = u32_ty;
+    let new = module.types.insert(
+        Type {
+            name: module.types[old].name.clone(),
+            inner: TypeInner::Struct { members, span },
+        },
+        Span::UNDEFINED,
+    );
+    let count = match &module.types[new].inner {
+        TypeInner::Struct { members, .. } => members.len() as u32,
+        _ => return,
+    };
+    let f = &mut module.entry_points[0].function;
+    f.result.as_mut().unwrap().ty = new;
+    let mut body = core::mem::take(&mut f.body);
+    each_block(&mut body, &mut |block| {
+        let mut out = naga::Block::with_capacity(block.len());
+        for (s, span) in core::mem::take(block).span_into_iter() {
+            let Statement::Return { value: Some(value) } = s else {
+                out.push(s, span);
+                continue;
+            };
+            let first = f.expressions.len();
+            let components = (0..count)
+                .map(|index| {
+                    let member = f
+                        .expressions
+                        .append(Expression::AccessIndex { base: value, index }, span);
+                    if index as usize != mask {
+                        return member;
+                    }
+                    f.expressions.append(
+                        Expression::AccessIndex {
+                            base: member,
+                            index: 0,
+                        },
+                        span,
+                    )
+                })
+                .collect();
+            let composed = f.expressions.append(
+                Expression::Compose {
+                    ty: new,
+                    components,
+                },
+                span,
+            );
+            let start = f.expressions.iter().nth(first).map(|(h, _)| h).unwrap();
+            out.push(
+                Statement::Emit(Range::new_from_bounds(start, composed)),
+                span,
+            );
+            out.push(
+                Statement::Return {
+                    value: Some(composed),
+                },
+                span,
+            );
+        }
+        *block = out;
+    });
+    f.body = body;
 }
 
 /// Calls `f` on `block` and on every block nested in it.
@@ -1473,6 +1608,8 @@ fn bindings(
 /// instruction, and where an instruction's first word keeps its word count and its opcode.
 pub(crate) mod words {
     pub const HEADER: usize = 5;
+    /// The header's word holding the bound of the module's ids.
+    pub const BOUND: usize = 3;
     pub const COUNT_SHIFT: u32 = u16::BITS;
     pub const OPCODE_MASK: u32 = u16::MAX as u32;
 }
@@ -1504,6 +1641,56 @@ fn evaluates_inputs(spirv: &[u32]) -> bool {
     }
     false
 }
+
+/// The name of the feature WebGPU lacks that `spirv` asks for by a SPIR-V extension: fragment
+/// interlock (rasterizer ordered views), the stencil reference from a pixel program, and the layer
+/// or viewport chosen before the geometry stage. The names are the DXBC route's.
+fn absent_extension(spirv: &[u32]) -> Option<&'static str> {
+    use spirv::{BuiltIn, Decoration, Op};
+    let mut extensions = Vec::new();
+    let mut layer = false;
+    let mut at = words::HEADER;
+    while at < spirv.len() {
+        let count = (spirv[at] >> words::COUNT_SHIFT) as usize;
+        if count == 0 || at + count > spirv.len() {
+            return None;
+        }
+        let w = &spirv[at + 1..at + count];
+        match Op::from_u32(spirv[at] & words::OPCODE_MASK) {
+            Some(Op::Extension) => {
+                let name: Vec<u8> = w.iter().flat_map(|x| x.to_le_bytes()).collect();
+                extensions.push(name);
+            }
+            // OpDecorate: the target, the decoration, then the built-in.
+            Some(Op::Decorate)
+                if w.get(1) == Some(&(Decoration::BuiltIn as u32))
+                    && w.get(2) == Some(&(BuiltIn::Layer as u32)) =>
+            {
+                layer = true;
+            }
+            _ => {}
+        }
+        at += count;
+    }
+    let has = |name: &str| {
+        extensions
+            .iter()
+            .any(|e| e.split(|&b| b == 0).next() == Some(name.as_bytes()))
+    };
+    let (_, name) = ABSENT_EXTENSIONS.iter().find(|(e, _)| has(e))?;
+    Some(match *name {
+        VIEWPORT_ARRAY_INDEX if layer => "RenderTargetArrayIndex",
+        name => name,
+    })
+}
+
+const VIEWPORT_ARRAY_INDEX: &str = "ViewportArrayIndex";
+/// SPIR-V extensions for features WebGPU lacks, and the features' names.
+const ABSENT_EXTENSIONS: [(&str, &str); 3] = [
+    ("SPV_EXT_fragment_shader_interlock", "RasterizerOrderedView"),
+    ("SPV_EXT_shader_stencil_export", "StencilRef"),
+    ("SPV_EXT_shader_viewport_index_layer", VIEWPORT_ARRAY_INDEX),
+];
 
 /// Whether an atomic minimum or maximum in `spirv` is of the other signedness than the integers it
 /// works on, which naga's reader makes a compare-exchange loop.

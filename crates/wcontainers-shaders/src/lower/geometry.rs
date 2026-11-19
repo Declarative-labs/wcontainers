@@ -52,6 +52,8 @@ fn input_vertices(input: u64) -> Result<u32> {
         primitive::LINES_ADJ => 4,
         primitive::TRIANGLES => 3,
         primitive::TRIANGLES_ADJ => 6,
+        // Patches as a geometry shader's input (without tessellation): not built.
+        p if p > primitive::PATCH => return Err(unsupported("GeometryPatchInput")),
         _ => return Err(malformed("geometry input primitive".into())),
     })
 }

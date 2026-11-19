@@ -29,6 +29,9 @@ pub(crate) struct Tessellation {
 }
 
 /// The output locations of a hull shader: control point data (arrays) and patch constants.
+/// The most control points a patch has in Direct3D 11 and 12 (`D3D11_IA_PATCH_MAX_CONTROL_POINT_COUNT`).
+pub(crate) const PATCH_MAX_POINTS: u32 = 32;
+
 fn sorted(mut v: Vec<u32>) -> Vec<u32> {
     v.sort_unstable();
     v.dedup();
@@ -133,7 +136,11 @@ impl Lowering<'_> {
     pub(super) fn hull_entry_point(&mut self) -> Result<()> {
         let t = self.tessellation.as_ref().unwrap();
         let (points_in, points_out) = (t.points_in, t.points_out);
-        if points_in == 0 || points_out == 0 || points_in > 32 || points_out > 32 {
+        if points_out == 0 {
+            // A patch handing the domain shader no control points: not built.
+            return Err(unsupported("HullWithoutControlPoints"));
+        }
+        if points_in == 0 || points_in > PATCH_MAX_POINTS || points_out > PATCH_MAX_POINTS {
             return Err(malformed("a hull shader's control point counts".into()));
         }
         // Inputs: the vertex records' slots, in order of location.

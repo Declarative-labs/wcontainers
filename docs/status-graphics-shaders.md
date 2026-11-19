@@ -1421,6 +1421,73 @@ matrices between stages, `InterpolateAt`, the position of a program run per samp
   `C:\wc\shaders-out`, `C:\wc\shaders-out34` were deleted; nothing was built on the laptop or in
   scratch (scratch run34-*.log and the fetched hex dumps are the evidence).
 
+Run 35 (the Direct3D 12 track's converter items: 16-bit integers, refusals by name, constant
+components picked at run time, the coverage output; a corpus of the runner's shaders):
+- Merged origin/phase-2-graphics-webgl and -direct3d-11 without conflicts; the shared line, -webgpu,
+  -direct3d-12 and -rig had nothing new. The laptop answered at the start (load 0.1 to 0.9) and
+  went down again at about 16:52 (no ping, to the end of the run); later builds and corpus runs ran
+  on the desktop (3 cargo jobs, shared) and only `cargo fmt`, `check` and `clippy -j 2` on the Mac.
+- A corpus of the Direct3D 12 front's shader runner: vkd3d's shader tests (the 280 hlsl and 15
+  d3dbc files in the Direct3D 12 track's scratch `run30/vkd3d-tests`; LGPL, test data, outside the
+  tree). Scratch `graphics-shaders/runner/extract.py` writes every shader section not expected to
+  fail to compile as HLSL (entry `main`) with a compile.cmd: fxc at shader model 4.0, 5.0 or 5.1 by
+  the file's `[require]`, dxc at 6.0 where it allows 6.0. 1951 sections; fxc and dxc 10.0.26100 on
+  the desktop compiled 1503 DXBC and 1517 DXIL (scratch `runner/blobs`; desktop
+  `C:\wc\shaders-runner\hlsl`, laptop `~/wcontainers-graphics/corpus/runner`). New ignored test
+  `runner_shaders_give_their_recorded_verdicts` (`WCONTAINERS_RUNNER_SHADERS`), records
+  `tests/expected/runner.txt` and `runner-dxil.txt`. It still fails on 1 DXIL shader dxil-spirv
+  rejects (`convert rejected`: distance-4 "Unknown type!"). Counts under Measurements.
+- 16-bit integers (DXIL; minimum precision `min16int`/`min16uint`, which dxc makes i16, and native
+  `int16_t`/`uint16_t`): new `src/dxil/widths.rs` widens them in the SPIR-V before naga reads it.
+  Each becomes a 32-bit word holding the 16 bits with zeros above: results that may carry past 16
+  bits (add, subtract, multiply, shift left, negate, signed division and remainder, conversions to
+  16 bits, GLSL.std.450's signed minimum, maximum, clamp, abs, sign and bit searches) are masked,
+  and operands read as signed (signed division, comparisons, arithmetic shift, conversion to float
+  or wider) are sign-extended first by two shifts. So every value equals the 16-bit one, as native
+  16-bit types require and minimum precision allows. A 16-bit integer in laid-out memory
+  (`Int16Storage`), between stages (`Int16StageValue`), under a bit cast to another width
+  (`Int16Bitcast`) or under an instruction not listed (a reader refusal naming it) is refused. 16-bit
+  floats stay what dxil-spirv makes them (32-bit for minimum precision; native `half` would need
+  WebGPU's shader-f16, not offered). Removes the runner's "invalid type width" (arithmetic-int-uniform,
+  arithmetic-uint, minimum-precision) and the u16 types naga refused (shader-interstage-interface):
+  18 runner shaders and 1 game shader convert now. New own `ps_narrow` (narrow.hlsl, fxc and dxc 6.0;
+  fxc refuses signed division of minimum precision, so it has none) and `ps_narrow16` (dxc 6.2 with
+  -enable-16bit-types: only unsigned arithmetic wraps, as signed overflow is undefined in HLSL),
+  drawn in `tests/draw.rs` (`ps_narrow` in the cases, new `native_16_bit_integers_draw_as_direct3d_12_does`).
+- 64-bit types (DXIL) are refused by name, `Int64` and `Float64`, where the reader fails on them or
+  the module keeps them (they were invalid modules or reader errors; 46 runner shaders).
+- Refused by name instead of failing (each was an invalid module, a malformed IR or a reader
+  error): DXBC gathers of a depth texture's other components (`DepthGatherComponent`, as DXIL;
+  gather-cmp), geometry shaders taking patches (`GeometryPatchInput`), hull shaders of no output
+  control points (`HullWithoutControlPoints`), rasterizer ordered views on both routes
+  (`RasterizerOrderedView`); DXIL by SPIR-V extension: `StencilRef`, `RenderTargetArrayIndex`,
+  `ViewportArrayIndex`; DXIL `CullDistance` and clip distances read by a pixel shader
+  (`ClipDistance`); DXIL geometry, hull and domain shaders before dxil-spirv runs
+  (`DxilGeometryShader`, `DxilHullShader`, `DxilDomainShader`: naga's reader has no such execution
+  models; 61 runner, rig and own shaders, which were "unsupported execution model", and one
+  geometry shader of patches dxil-spirv rejected).
+- DXBC clip distances declared in several registers (`SV_ClipDistance0` and `1`) are one array of
+  them all in order (clip-cull-distance-1's vertex shader was invalid), and the DXBC entry point's
+  output structure is laid out by its members' sizes and alignments (it put every member 16 bytes
+  apart, which a 5-element array overran).
+- DXIL coverage written by a pixel shader (`SV_Coverage` out): the result structure takes a u32, the
+  array's element 0, and the private array's start value (all samples) is made an array (the
+  rig's msaa.ps_coverage was "the sample mask stays an array"). Converts; not drawn yet.
+- DXIL constant components picked at run time (`ConstantComponentIndexing` before; new
+  `src/dxil/components.rs`): each read of dxil-spirv's second view of the buffer (scalars or pairs 4
+  bytes apart) is a call of a function reading the same bytes through the buffer's own 16-byte rows;
+  the second view goes. 3 runner shaders (expr-indexing, hard-copy-prop) convert, and one game
+  shader passes that step. New own `ps_component` (components.hlsl, fxc and dxc), drawn in
+  `tests/draw.rs`.
+- The compare-exchange helper of typed views (`texel_atomic`, DXIL) returned WGSL's predeclared
+  result structure, which WGSL cannot name (runner uav-atomics: Chrome's parse failed); it returns a
+  declared structure of the same members now.
+- No magic numbers in what this run touched: the 16-bit widths and masks from `u16::BITS`/`u16::MAX`,
+  SPIR-V's header word of the id bound `dxil::words::BOUND`, the extensions as one table, the
+  clip distance count `CLIP_OR_CULL_DISTANCES` and the patch limit `PATCH_MAX_POINTS` (named once,
+  from Direct3D's constants), a gather's last component from `XYZW.len()`, uniform strides by naga's
+  `Alignment::MIN_UNIFORM`, program types generated from dxbc-spirv's `ShaderType` (build.rs).
+
 Next (in order):
 - The fronts (theirs, now possible): the Direct3D 12 runner's PackedStageValues and array files,
   eval-attrib and shader_eval_attribute (DXBC) rerun after merging; Direct3D 12's front can drop
@@ -1439,13 +1506,22 @@ Next (in order):
   differs from its target's (replacing the Direct3D 12 front's `outputs_fit_targets` refusal; not
   for normalised formats); `constants_as_storage` where a shader indexes a constant buffer bound
   larger than its declaration (Direct3D 11's test_cb_relative_addressing).
-- The Direct3D 12 track's converter items (its status, "Asked of other tracks" and "Shader
-  runner", run 30), not yet in this list: a texture slot read in its view's type
-  where the program declares another, 16-bit and minimum-precision types ("invalid type width"),
-  `CalculateLevelOfDetail`, `SampleClamp`, `SparseFeedback`, `globallycoherent` storage, and the
-  converted programs naga refuses (color-clamping, conditional, entry-point-semantics, loop-sm3,
-  semantic-cascading, shader-interstage-interface, gather-cmp, switch) or that give other values
-  (min16float constants, frexp). Read each failing runner file's shader first.
+- The fronts (theirs, now possible since run 35): the Direct3D 12 front's runner files with 16-bit
+  integers (arithmetic-int-uniform, arithmetic-uint, minimum-precision,
+  shader-interstage-interface), constant components picked at run time (expr-indexing,
+  hard-copy-prop), coverage, uav-atomics and gather-cmp (now refused by name), rerun after
+  merging; the runner corpus here (`runner_shaders_give_their_recorded_verdicts`) is the
+  converter's side of the same files.
+- The Direct3D 12 track's converter items still open (its status, "Asked of other tracks" and
+  "Shader runner", run 30; the runner corpus's records name each): DXIL geometry, hull and domain
+  shaders (`DxilGeometryShader` and the others: naga's SPIR-V reader has no such execution models;
+  the stage helper takes them by the DXBC route only), a texture slot read in its view's type where
+  the program declares another (needs an interface field), `CalculateLevelOfDetail` (both routes;
+  the reader's `ImageQueryLod`), `SampleClamp` (image operand MinLod), `SparseFeedback`,
+  `globallycoherent` storage (memory operands at device scope), `CullDistance`, a DXIL pixel
+  shader's layer and viewport index (reader "unsupported builtin"), wave minimums and maximums of the
+  other signedness, native 16-bit floats (WebGPU's shader-f16, through a capability), and the
+  values that differ without a refusal (min16float constants, frexp; not investigated this run).
 - The Direct3D 11 track's items still open here: `LINE_COVERAGE` (alpha-antialiased lines),
   `GeometryStreams`, `PRIMITIVE_ID_FROM_STAGE`, and atg-simplecomputepc's division (not investigated; its shader
   is not in the games corpus).
@@ -1478,9 +1554,6 @@ Next (in order):
 - DXIL signed minimum and maximum on buffers dxil-spirv declares as unsigned words
   (`cs_atomics.dxil`, the D3D fronts' `AtomicSignedness`): a compare-exchange loop in the program
   (needs a named slow path) or the memory retyped where only signed ones use it.
-- DXIL's `ConstantComponentIndexing` (one game shader): the calls of `place_calls` (as
-  `nonfinite.rs` and `arrays.rs` use them) can read a scalar of a constant buffer through a helper
-  taking the index, so no arena rebuild is needed.
 - A drawn test of arrays of textures (`ps_array` or a compute shader picking `t[i]` per thread, against
   real Direct3D 12); implicit-derivative samples of an element picked at run time differ within a
   quad (the switch puts lanes of one quad in different cases): sample with gradients taken before
@@ -1761,6 +1834,23 @@ let reflection = &converted.reflection;
   conversion.
 
 ## Measurements
+
+Run 35, 2026-11-18, counts only (desktop shared through the queue, 3 cargo jobs, load not taken;
+the laptop down from 16:52), logs in scratch `graphics-shaders/run35`:
+- The runner corpus (verdict classes; DXBC 1503, DXIL 1517), at the start of the run (laptop, with
+  glslang) and at its end (desktop, glslang absent there, the records keep the laptop's
+  `glsl-compile` verdicts where the desktop says ok): DXBC converting 1429 then 1430, refused by
+  name 61 then 73, other failures 13 then 0. DXIL converting 1346 then 1370, refused by name 35
+  then 133, refused by naga's reader 93 then 13 (wave minimums and maximums of the other
+  signedness 2, a pixel shader's layer and viewport index 2, `CalculateLevelOfDetail` 4,
+  `SampleClamp` 2, sparse feedback 3), other failures 45 then 1 (dxil-spirv's rejection of distance-4).
+- The games corpus (DXBC 529, DXIL 430, desktop): every verdict as recorded; 3 DXIL changed this
+  run (one converts, one now `RenderTargetArrayIndex`, one past `ConstantComponentIndexing` to
+  `TypedBufferFormatKind`, the corpus test's views of mixed kinds); the run 34 record update (2
+  `PackedStageValues` now converting) was found by the laptop's first run.
+- The 191-shader corpus, rig and own: as recorded (laptop at the start; rig and own on the desktop
+  after every change). Not rerun this run: glslang over the new verdicts, Chrome's compile, the
+  WebAssembly comparison (the laptop was down).
 
 Run 33, 2026-11-18, counts only (laptop load 4 to 8, another track building; desktop shared through
 the queue's hazard group), logs in scratch `graphics-shaders/run33`:
