@@ -6,7 +6,6 @@
 use alloc::vec::Vec;
 
 use super::{Args, guest};
-use crate::counters::reason;
 use crate::linux::general::*;
 use crate::linux_extra::*;
 use crate::process::{Channel, Pid, Tid};
@@ -310,6 +309,8 @@ fn submit_one(
         IOCB_CMD_PREAD | IOCB_CMD_PWRITE | IOCB_CMD_PREADV | IOCB_CMD_PWRITEV => {
             let write = matches!(opcode, IOCB_CMD_PWRITE | IOCB_CMD_PWRITEV);
             let vectored = matches!(opcode, IOCB_CMD_PREADV | IOCB_CMD_PWRITEV);
+            // `aio_prep_rw` takes the flags first.
+            super::io::rw_flags_allowed(&file, rw_flags)?;
             {
                 let open = file.borrow();
                 if open.is_path()
@@ -331,14 +332,6 @@ fn submit_one(
             }
             if vectored && length > u64::from(UIO_MAXIOV) {
                 return Err(Errno::EINVAL);
-            }
-            if !vectored && rw_flags != 0 {
-                return Err(kernel.counters.refuse(
-                    cx.host,
-                    reason::FLAG_NOT_BUILT,
-                    (u64::from(__NR_io_submit) << 32) | u64::from(rw_flags),
-                    Errno::EINVAL,
-                ));
             }
             run_rw(
                 kernel, cx, tid, fd, buffer, length, offset, rw_flags, write, vectored,
@@ -457,7 +450,16 @@ fn run_rw(
     write: bool,
     vectored: bool,
 ) -> Result<Result<u64, Errno>, Errno> {
+    // A request's flags (`kiocb_set_rw_flags`) are taken as preadv2 and pwritev2 take them.
     let positioned = |kernel: &mut Kernel, cx: &mut Context<'_>, at: u64| match (write, vectored) {
+        (_, false) if rw_flags != 0 => super::io::vectored2(
+            kernel,
+            cx,
+            tid,
+            [fd, at, u64::from(rw_flags)],
+            super::io::Bytes::Buffer(buffer, length),
+            write,
+        ),
         (false, false) => super::io::pread64(kernel, cx, tid, [fd, buffer, length, at, 0, 0]),
         (true, false) => super::io::pwrite64(kernel, cx, tid, [fd, buffer, length, at, 0, 0]),
         (false, true) => super::io::preadv2(
@@ -474,7 +476,7 @@ fn run_rw(
         ),
     };
     let result = match positioned(kernel, cx, offset) {
-        Err(Errno::ESPIPE) if vectored => positioned(kernel, cx, u64::MAX),
+        Err(Errno::ESPIPE) if vectored || rw_flags != 0 => positioned(kernel, cx, u64::MAX),
         Err(Errno::ESPIPE) if write => {
             super::io::write(kernel, cx, tid, [fd, buffer, length, 0, 0, 0])
         }

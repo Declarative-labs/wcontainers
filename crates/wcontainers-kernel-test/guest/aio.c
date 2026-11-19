@@ -154,6 +154,28 @@ int main(void) {
     printf("pipe read %.5s eventfd %llu\n", back, (unsigned long long)count);
     events(ctx, requests, 2);
 
+    // A request's flags: one that may not wait on an empty pipe, on a file that cannot take it,
+    // an unknown one, and appending.
+    int empty[2];
+    pipe(empty);
+    requests[0] = make(IOCB_CMD_PREAD, empty[0], back, 4, 0);
+    requests[0].aio_rw_flags = RWF_NOWAIT;
+    R(submit(ctx, 1, list));
+    events(ctx, requests, 1);
+    requests[0] = make(IOCB_CMD_PREAD, fd, back, 4, 0);
+    requests[0].aio_rw_flags = RWF_NOWAIT;
+    R(submit(ctx, 1, list));
+    requests[0].aio_rw_flags = 0x80000000;
+    R(submit(ctx, 1, list));
+    requests[0] = make(IOCB_CMD_PWRITE, reader, back, 4, 0);
+    requests[0].aio_rw_flags = RWF_NOWAIT;
+    R(submit(ctx, 1, list));
+    requests[0] = make(IOCB_CMD_PWRITE, fd, "tail", 4, 0);
+    requests[0].aio_rw_flags = RWF_APPEND;
+    R(submit(ctx, 1, list));
+    events(ctx, requests, 1);
+    printf("size after append %ld\n", (long)lseek(fd, 0, SEEK_END));
+
     // io_getevents' checks and waits.
     struct io_event got[4];
     struct timespec short_wait = {0, 10000000};

@@ -179,7 +179,14 @@ pub(super) fn preadv2(
     tid: Tid,
     [fd, vector, count, offset, _, flags]: Args,
 ) -> Result<u64, Errno> {
-    vectored2(kernel, cx, tid, [fd, vector, count, offset, flags], false)
+    vectored2(
+        kernel,
+        cx,
+        tid,
+        [fd, offset, flags],
+        Bytes::Vector(vector, count),
+        false,
+    )
 }
 
 pub(super) fn pwritev2(
@@ -188,17 +195,33 @@ pub(super) fn pwritev2(
     tid: Tid,
     [fd, vector, count, offset, _, flags]: Args,
 ) -> Result<u64, Errno> {
-    vectored2(kernel, cx, tid, [fd, vector, count, offset, flags], true)
+    vectored2(
+        kernel,
+        cx,
+        tid,
+        [fd, offset, flags],
+        Bytes::Vector(vector, count),
+        true,
+    )
 }
 
-fn vectored2(
+/// Where the bytes of a read or write that takes flags are: a vector in the program, or one
+/// buffer (an asynchronous request's).
+pub(super) enum Bytes {
+    Vector(u64, u64),
+    Buffer(u64, u64),
+}
+
+/// A read or write with `RWF_*` flags, at the offset or, for -1, at the file's position.
+pub(super) fn vectored2(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
-    [fd, vector, count, offset, flags]: [u64; 5],
+    [fd, offset, flags]: [u64; 3],
+    bytes: Bytes,
     writing: bool,
 ) -> Result<u64, Errno> {
-    use crate::linux_extra::{RWF_ATOMIC, RWF_DONTCACHE, RWF_NOAPPEND, RWF_NOSIGNAL};
+    use crate::linux_extra::RWF_NOAPPEND;
     let flags = flags as u32;
     let current = offset as i64 == -1;
     if !current && (offset as i64) < 0 {
@@ -219,7 +242,13 @@ fn vectored2(
         return Err(Errno::EBADF);
     }
     moves_bytes(&file, writing)?;
-    let parts = segments(&mut guest(kernel, cx, tid), vector, count)?;
+    let parts = match bytes {
+        Bytes::Vector(vector, count) => segments(&mut guest(kernel, cx, tid), vector, count)?,
+        Bytes::Buffer(buffer, length) if access_ok(buffer, length) => {
+            alloc::vec![(buffer, length.min(MAX_RW_COUNT))]
+        }
+        Bytes::Buffer(..) => return Err(Errno::EFAULT),
+    };
     if parts.iter().all(|(_, length)| *length == 0) {
         return Ok(0);
     }
@@ -251,11 +280,36 @@ fn vectored2(
     if looped && flags & !RWF_HIPRI != 0 {
         return Err(Errno::EOPNOTSUPP);
     }
+    rw_flags_allowed(&file, flags)?;
+    let mut append = appends(&file);
+    if flags & RWF_NOAPPEND != 0 {
+        append = false;
+    }
+    if flags & RWF_APPEND != 0 {
+        append = true;
+    }
+    let at = (!current).then_some(offset);
+    kernel.thread_mut(tid).call.nowait = flags & RWF_NOWAIT != 0;
+    vectored(
+        kernel,
+        cx,
+        tid,
+        &file,
+        &parts,
+        at,
+        writing.then_some(append),
+    )
+}
+
+/// Whether a file takes `RWF_*` flags (`kiocb_set_rw_flags`): known ones, RWF_NOWAIT only where
+/// a read or write may not wait.
+pub(super) fn rw_flags_allowed(file: &FileRef, flags: u32) -> Result<(), Errno> {
+    use crate::linux_extra::{RWF_ATOMIC, RWF_DONTCACHE, RWF_NOAPPEND, RWF_NOSIGNAL};
     // `/proc`'s files, tmpfs's and the backend's regular files, named pipes, terminals and
     // `/dev/full` do not take reads or writes that may not wait (`FMODE_NOWAIT` unset; measured:
     // the other devices and the pipes `pipe2` makes take them, a named pipe opened by its path
     // does not).
-    let waits = super::tty::end(&file).is_some() || {
+    let waits = super::tty::end(file).is_some() || {
         let file = file.borrow();
         let inode = file.node.borrow();
         matches!(inode.content, Content::Proc(_))
@@ -277,24 +331,7 @@ fn vectored2(
     {
         return Err(Errno::EOPNOTSUPP);
     }
-    let mut append = appends(&file);
-    if flags & RWF_NOAPPEND != 0 {
-        append = false;
-    }
-    if flags & RWF_APPEND != 0 {
-        append = true;
-    }
-    let at = (!current).then_some(offset);
-    kernel.thread_mut(tid).call.nowait = flags & RWF_NOWAIT != 0;
-    vectored(
-        kernel,
-        cx,
-        tid,
-        &file,
-        &parts,
-        at,
-        writing.then_some(append),
-    )
+    Ok(())
 }
 
 pub(super) fn copy_file_range(
