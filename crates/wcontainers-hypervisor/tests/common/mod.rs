@@ -14,7 +14,7 @@ use wcontainers_inside::link::Start;
 const INSIDE: &str = "wcontainers-inside";
 
 /// The bare-metal target of each host architecture the programs are built for.
-const TARGETS: &[(&str, &str)] = &[("aarch64", "aarch64-unknown-none")];
+const TARGETS: &[(&str, &str)] = &[("aarch64", "aarch64-unknown-none-softfloat")];
 
 /// The cargo profile the programs are built with.
 const PROFILE: &str = "release";

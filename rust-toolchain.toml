@@ -4,5 +4,6 @@ profile = "minimal"
 components = ["rustfmt", "clippy", "rust-src"]
 # wasm32 is what we ship; aarch64 Linux is for the reference runners that execute on real ARM64 Linux;
 # wasm32v1-none, which has no standard library, checks that what the kernel uses builds without it.
-# The two bare-metal targets build the native back end's inside, the program run in the virtual machine.
-targets = ["wasm32-unknown-unknown", "aarch64-unknown-linux-musl", "wasm32v1-none", "aarch64-unknown-none", "x86_64-unknown-none"]
+# The bare-metal targets build the native back end's inside, the program run in the virtual machine; the
+# soft-float one leaves the guest's vector and float registers to the guest.
+targets = ["wasm32-unknown-unknown", "aarch64-unknown-linux-musl", "wasm32v1-none", "aarch64-unknown-none", "aarch64-unknown-none-softfloat", "x86_64-unknown-none"]
