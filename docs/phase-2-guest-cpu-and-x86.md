@@ -1882,6 +1882,10 @@ writing a segment register is general protection unless the value is one Linux a
   exact to the element. This is the slow twin, counted "string instruction one element at a time" with the
   reason (direction flag set, trap flag set, overlap, range not all allowed).
 - **repe and repne cmps and scas** stop on data, so they are always one element per pass.
+- **Stops between any two elements**: every pass of either path ends on an element boundary with exact rcx,
+  rsi and rdi and goes through the one stop check, and a bulk pass's element count is the one value a
+  stop limit would bound (the brief: the stop flag becomes a limit on a progress count), so a stop can land
+  after any element and elements can be counted without a second path.
 - What the reference does (section 2): the trap flag stops it after each element, so layer 1 lets the
   reference step on while rip stays on a rep string instruction, up to the case's rcx (kept small by the
   generator), and compares the end state (`Machine::unfinished`, section 7.2, which steps on only for rep
