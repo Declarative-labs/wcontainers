@@ -413,10 +413,10 @@ impl Gl {
         );
         let flip_y = !extensions.contains("EXT_clip_control");
         let clip_depth = if flip_y {
-            platform::NEGATIVE_ONE_TO_ONE
+            glow::NEGATIVE_ONE_TO_ONE
         } else {
-            platform.clip_control(&gl, platform::UPPER_LEFT, platform::ZERO_TO_ONE);
-            platform::ZERO_TO_ONE
+            platform.clip_control(&gl, glow::UPPER_LEFT, glow::ZERO_TO_ONE);
+            glow::ZERO_TO_ONE
         };
         // SAFETY: plain GL calls on the current context.
         let empty_fragment = unsafe {
@@ -631,7 +631,7 @@ impl Gl {
             // SAFETY: plain GL calls; the program and the framebuffer are alive.
             unsafe {
                 self.gl.use_program(Some(program));
-                let clip = if self.values.clip_depth == platform::ZERO_TO_ONE {
+                let clip = if self.values.clip_depth == glow::ZERO_TO_ONE {
                     z
                 } else {
                     2.0 * z - 1.0
@@ -1927,13 +1927,13 @@ impl Gl {
     fn own_draw(&mut self) {
         if !self.flip_y {
             self.platform
-                .clip_control(&self.gl, platform::LOWER_LEFT, self.values.clip_depth);
+                .clip_control(&self.gl, glow::LOWER_LEFT, self.values.clip_depth);
         }
         // SAFETY: the caller bound the program, the target and the state.
         unsafe { self.gl.draw_arrays(glow::TRIANGLES, 0, 3) };
         if !self.flip_y {
             self.platform
-                .clip_control(&self.gl, platform::UPPER_LEFT, self.values.clip_depth);
+                .clip_control(&self.gl, glow::UPPER_LEFT, self.values.clip_depth);
         }
     }
 
@@ -1976,15 +1976,15 @@ impl Gl {
     fn aspect(&mut self, texture: &TextureObj, stencil: bool) {
         if texture.stencil_mode.get() != stencil {
             let mode = if stencil {
-                depth::STENCIL_INDEX
+                glow::STENCIL_INDEX
             } else {
-                depth::DEPTH_COMPONENT
+                glow::DEPTH_COMPONENT
             };
             // SAFETY: a plain GL call on the bound texture.
             unsafe {
                 self.gl.tex_parameter_i32(
                     texture.target,
-                    depth::DEPTH_STENCIL_TEXTURE_MODE,
+                    glow::DEPTH_STENCIL_TEXTURE_MODE,
                     mode as i32,
                 )
             };
@@ -3501,7 +3501,7 @@ impl Backend for Gl {
             AddressMode::Clamp => Ok(glow::CLAMP_TO_EDGE),
             AddressMode::Border => Err(GpuError::Absent(Features::BORDER_COLOR)),
             AddressMode::MirrorOnce if self.caps.has(Features::MIRROR_ONCE) => {
-                Ok(platform::MIRROR_CLAMP_TO_EDGE)
+                Ok(glow::MIRROR_CLAMP_TO_EDGE)
             }
             AddressMode::MirrorOnce => Err(GpuError::Absent(Features::MIRROR_ONCE)),
         };
@@ -5737,7 +5737,7 @@ impl Backend for Gl {
         }
         let q = self.query_slot(set, index).ok_or(GpuError::DeviceLost)?;
         // SAFETY: a plain GL call the extension defines.
-        unsafe { self.gl.query_counter(q, platform::TIMESTAMP) };
+        unsafe { self.gl.query_counter(q, glow::TIMESTAMP) };
         Ok(())
     }
 
