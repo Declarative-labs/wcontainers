@@ -67,7 +67,72 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   found: with look-ahead nothing is emitted or worked out for flags nobody reads (it was, for shifts, rotates,
   bit tests and the carry instructions, against what the plan and this file said), x86's "general registers
   only" programs had SSE in them, bare page sizes in files X4 changed; then layer 2 at 10,000 at a new seed
-  and the suite (see "X4, run 7"). Every part of X4's bar holds.
+  and the suite (see "X4, run 7"). Run 8 (2026-11-19) fixed what the next check found: the whole workspace
+  did not build (the wasmtime runtime's hook), and the orchestrator's question on 5-level paging had no answer
+  here (see "For the orchestrator" and "X4, run 8"). Every part of X4's bar holds.
+
+## For the orchestrator
+
+The brief's question of 2026-11-19 08:20 (which rule defines a guest's behaviour above bit 47, and whether
+the rented x86-64 machine should be booted with 5-level paging off). My answer:
+- A guest's behaviour is defined by the machine the container sees, never by the host's. The owner ruled the
+  address width a property of the container, chosen at start and the same wherever it runs, like the page
+  size. An x86-64 container today is a 4-level paging machine: canonical addresses are those whose bits 63 to
+  47 are all equal, and an access, push or jump beyond that gives what the i7-8750H gives (general
+  protection, `SIGSEGV` `SI_KERNEL` with address 0, or `SIGBUS` through the stack). That is what the
+  translator does now, from one constant (`wcontainers_x86::CANONICAL_SHIFT`). The rented machine's answer
+  (a page fault at the address) is the answer of a different machine, one with a 57-bit width.
+- Linux itself keeps user space to 47 bits on a 5-level machine unless a program asks `mmap` for an address
+  above it, so a program sees the same memory on both; only the fault for an address no 47-bit program can
+  map differs. Nothing in the brief or plan asks for a 57-bit x86-64 container. If one is ever offered, the
+  canonical width becomes part of that container's machine (and of the cache key), and a 5-level CPU is its
+  reference.
+- So yes: boot the rented machine with `no5lvl`, so it gives the 48-bit answer. The 851,000 layer 1 cases the
+  orchestrator compared there showed no other difference, so I expect the four tests to pass there then; that
+  is expected, not measured, so run them there once after the reboot before the laptop's verdict is dropped.
+  The features it has beyond the laptop (AVX-512, AMX, tpause and the rest in its manual) are not claimed by
+  our cpuid either way. Until then the four tests the manual names keep taking their verdict from the laptop,
+  as runs 1 to 8 did.
+
+## X4, run 8 (2026-11-19)
+
+Machines: the Mac (load 33 to 51), the rented x86-64 machine (load about 12), the rented ARM64 machine (load
+20 to 37, shared), the i7-8750H (load 0.4 to 4.7). Logs in scratch `x4/run8/`.
+
+The independent check's findings:
+- The workspace did not build (blocking): fixed in ec1f39b2. `wcontainers-wasmtime` matched
+  `HookBody::CodeChanged` as a unit variant; its hook now takes the variant's `line` and drops the pieces of
+  that many bytes, where it had a bare 63 and 64 (two baseline lines fewer). Runs 2 to 7 had left it, and
+  this file said it was not this track's to fix, against the brief of 08:20; that departure is corrected
+  where it stands.
+- No "For the orchestrator" answer on 5-level paging (minor): written above.
+- The checkout clean at 55bff253, not three uncommitted files (information): so it was; the task text was
+  out of date.
+- Chrome's interpret at 105 to 143 times native (information): as recorded; the absolute switch table is
+  plan 3.4's X9 item.
+- The reference runner's xfeatures bug the task names was fixed in X3 run 3 (above, under that run).
+
+Proof (at ec1f39b2's code):
+- `cargo check --workspace --all-targets` and `cargo clippy --workspace --all-targets -- -D warnings` on the
+  rented x86-64 machine (`workspace.log`): both clean, the whole workspace.
+- The runtime's tests (`wcontainers-wasmtime`, `wcontainers-runtime`, `wcontainers-kernel-test`) on the rented
+  ARM64 machine (`runtime-arm-all.log`, 2,455 s): 305 passed, 26 failed, 8 ignored. Every failure is one of
+  the 25 kernel tests its manual lists as giving their verdict on the Mac only, or `fdinfo`, which its manual
+  says Nix's zig cannot build there. Every test of `wcontainers-wasmtime` passed, `code.rs` and `views.rs`
+  (which reach the changed hook) among them. On the x86-64 machine the same crate's `surface.rs` fails 5 of 8,
+  because Docker there cannot run the ARM64 reference images ("exec format error"): not a verdict.
+- The track's suite (run 3's command) on the rented x86-64 machine from a clean build of the track's crates
+  (`suite-x86.log`, 201 s): 417 passed, 30 failed, 13 ignored. The 30 are exactly the ones its manual
+  names: 25 ARM64 tests (no ARM64 reference there), the baseline test (no .git) and the four 5-level paging
+  ones. Those four, and the rest of x86's layer 1 and reference tests, against the i7-8750H from the Mac
+  (`laptop-four.log`, 219 s): 10 passed, 0 failed. The literal crate's tests on the Mac, the baseline test
+  among them: 19 passed. The ARM64 tests were not run again: nothing they build on changed since run 7's
+  suite on the Mac.
+- `cargo run -q -p wcontainers-literals -- check`: exit 0; `cargo fmt --check`: clean. Baseline lines of
+  this track's crates unchanged from run 7 (wcontainers-x86 142, wcontainers-translator-test 2114,
+  wcontainers-guest-cpu 28, wcontainers-translator 74); wcontainers-wasmtime 2 fewer.
+
+What comes next: nothing of X4's bar is open.
 
 ## X4, run 7 (2026-11-19)
 
@@ -2163,6 +2228,9 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## Cases actually run
 
+- X4 run 8: the track's suite once on the rented x86-64 machine at its defaults (seed 1); the x86 layer 1
+  tests and the x86 reference's tests once at their defaults against the i7-8750H; the runtime's and the
+  kernel test crate's tests once on the rented ARM64 machine (see "X4, run 8").
 - X4 run 7: layer 2 x86 at seed 9393, 1,000 programs, and at seed 5353, 10,000, every one also on the CPU;
   every x86 test of the test crate once at its defaults; the ARM64 tests of the test crate once on the rented
   machine and the suite once on the Mac, at their defaults (see "X4, run 7").
@@ -2313,10 +2381,11 @@ X4 (each also written into the plan's text where the plan is wrong):
 - The literal check was adopted in run 2 by merging origin/phase-1-literals directly, as the brief's newest
   section and the task say, against `docs/literals.md`'s step 1 (merge main once main has it; main does not
   yet). The merge brought the other tracks' work that branch holds (kernel, runtime, wasmtime crates). One of
-  them, `wcontainers-wasmtime` (the runtime track's), does not build on this branch: it matches
-  `HookBody::CodeChanged` as a unit variant, which this branch's translator (from the translator track)
-  gives a field. Not this track's crate to edit; `cargo check --workspace` fails there, every crate this
-  track owns builds. Whoever merges the tracks meets it.
+  them, `wcontainers-wasmtime` (the runtime track's), did not build on this branch: it matched
+  `HookBody::CodeChanged` as a unit variant, which this track's interface gives the line size as a field.
+  Runs 2 to 7 left it, wrongly: the brief of 2026-11-19 08:20 says to fix it here. Run 8 fixed it in that
+  crate (its hook takes the line size from the variant instead of a bare 64), the one edit this track made
+  outside what it owns.
 - Layer 2's model registers for x86 changed (rbx kept, r12 to r15 scratch); no x86 program had been
   generated before, so nothing to keep.
 - The translator's walk back for `jump_table` crosses a conditional branch's fall-through (plan 3.2 says
