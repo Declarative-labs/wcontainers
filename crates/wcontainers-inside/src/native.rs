@@ -879,7 +879,7 @@ impl NativeCpu {
         if let Resume::Return(value) = resume {
             t.state.x[0] = value;
         }
-        self.take_hardware(thread, &t.vectors.clone());
+        self.take_hardware(thread, &t.vectors);
         let mut not_kept = 0;
         let exit = self.run_taken(&mut t, clock, until, &mut not_kept);
         // The guest's level writes its thread pointer itself.
