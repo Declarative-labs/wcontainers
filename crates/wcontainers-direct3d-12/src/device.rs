@@ -10,16 +10,16 @@ use slab::Slab;
 use wcontainers_directx_graphics_infrastructure::{SwapChain, SwapChainDesc, SwapChainError};
 use wcontainers_gpu::{
     AspectOps, Backend, BufferDesc, BufferUsage, ClearValue, ColorAttachment, ColorTarget,
-    CopyBufferTexture, CountedDraw, DepthAttachment, DispatchCall, DispatchGroups, DrawBaseSource,
-    DrawCall, DrawRange, EmptyPass, Extent, Features, Format, FormatKind, FormatUse, GpuError,
-    HELPER_SET, HelperValue, IndexBinding, IndexFormat, Interpolation, LinkedValues, LoadOp,
-    MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, MapIntent, Object, OcclusionCounter, Origin, PassDesc,
-    PassTargets, PassTracker, PrepareDesc, Program, ReadSource, ReadState, STORAGE_WORD,
-    SamplerDesc, ScissorRect, ShaderModule, ShaderStage, SlowPath, StageSet, StageValue, StepMode,
-    StoreOp, SystemValue, Target, TargetInShader, TargetLayout, TexelBufferRoute, TextureDesc,
-    TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, Topology, VariantFlags,
-    VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream, ViewComponent,
-    ViewDimension, Viewport, WriteMode,
+    CopyBufferTexture, CountedDraw, DepthAttachment, DeviceStatus, DispatchCall, DispatchGroups,
+    DrawBaseSource, DrawCall, DrawRange, EmptyPass, Extent, Features, Format, FormatKind,
+    FormatUse, GpuError, HELPER_SET, HelperValue, IndexBinding, IndexFormat, Interpolation,
+    LinkedValues, LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, MapIntent, Object,
+    OcclusionCounter, Origin, PassDesc, PassTargets, PassTracker, PrepareDesc, Program, ReadSource,
+    ReadState, STORAGE_WORD, SamplerDesc, ScissorRect, ShaderModule, ShaderStage, SlowPath,
+    StageSet, StageValue, StepMode, StoreOp, SystemValue, Target, TargetInShader, TargetLayout,
+    TexelBufferRoute, TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc,
+    Topology, VariantFlags, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc,
+    VertexStream, ViewComponent, ViewDimension, Viewport, WriteMode,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source};
 
@@ -483,8 +483,18 @@ impl<B: Backend> Device<B> {
     }
 
     /// The error that removed the device, if one did (`GetDeviceRemovedReason`).
-    pub fn removed(&self) -> Option<Error> {
+    pub fn removed(&mut self) -> Option<Error> {
+        self.poll_lost();
         self.removed
+    }
+
+    /// Removes the device where the back end lost its own (an error it recorded, a reset).
+    fn poll_lost(&mut self) {
+        if self.removed.is_none()
+            && let DeviceStatus::Lost(_) = self.backend.status()
+        {
+            self.removed = Some(Error::DeviceRemoved);
+        }
     }
 
     /// Removes the device for `e`, as Direct3D 12 does for a call it cannot carry out; the first
@@ -1236,11 +1246,12 @@ impl<B: Backend> Device<B> {
             caps,
             desc.sample_mask,
             targets.samples,
-            !antialiased_lines
-                && matches!(
-                    topology,
-                    Some(Topology::TriangleList | Topology::TriangleStrip)
-                ),
+            match antialiased_lines {
+                true => Some(false),
+                false => {
+                    topology.map(|t| matches!(t, Topology::TriangleList | Topology::TriangleStrip))
+                }
+            },
         )?;
         // Lines are not culled, and their rectangles are filled.
         if antialiased_lines {
@@ -1884,6 +1895,7 @@ impl<B: Backend> Device<B> {
 
     /// `ExecuteCommandLists`: replayed and submitted now, unless the queue waits.
     pub fn execute(&mut self, queue: QueueId, lists: &[Arc<[Command]>]) -> Result<(), Error> {
+        self.poll_lost();
         self.live()?;
         if let Some(Work::Execute(lists)) = self.hold(queue, Work::Execute(lists.to_vec()))? {
             self.replay(&lists)?;
@@ -2088,6 +2100,7 @@ impl<B: Backend> Device<B> {
 
     /// `Present`: the work executed so far is submitted with the copy into the window.
     pub fn present(&mut self, id: ChainId, sync_interval: u32) -> Result<(), SwapChainError> {
+        self.poll_lost();
         self.live().map_err(|_| GpuError::DeviceLost)?;
         let c = self
             .chains

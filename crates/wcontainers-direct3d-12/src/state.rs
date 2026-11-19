@@ -275,14 +275,15 @@ impl Blend {
 }
 
 impl Raster {
-    /// The rasterising block, with the pipeline's sample mask; `triangles` for pipelines drawing
-    /// triangles, the only primitives back ends bias.
+    /// The rasterising block, with the pipeline's sample mask; `triangles` whether the pipeline
+    /// draws triangles, the only primitives Direct3D biases, or None where its draws' topologies
+    /// decide.
     pub fn block(
         &self,
         caps: &Caps,
         sample_mask: u32,
         samples: u32,
-        triangles: bool,
+        triangles: Option<bool>,
     ) -> Result<RasterDesc, Error> {
         let fill = match self.fill {
             FILL_MODE_WIREFRAME => FillMode::Line,
@@ -298,10 +299,17 @@ impl Raster {
             3 => CullMode::Back,
             _ => return Err(Error::Invalid("unknown cull mode")),
         };
-        let biased = self.depth_bias != 0 || self.slope_scaled_depth_bias != 0.0;
-        if biased && !triangles {
-            return Err(Error::NotImplemented("depth bias of lines and points"));
-        }
+        // Direct3D draws lines and points without the depth bias (the own case `line-bias`).
+        let asks_bias = self.depth_bias != 0 || self.slope_scaled_depth_bias != 0.0;
+        let biased = match triangles {
+            Some(triangles) => asks_bias && triangles,
+            None if asks_bias => {
+                return Err(Error::NotImplemented(
+                    "a depth bias with no primitive topology type",
+                ));
+            }
+            None => false,
+        };
         if biased && self.depth_bias_clamp != 0.0 && !caps.has(Features::DEPTH_BIAS_CLAMP) {
             return Err(Error::NotImplemented("a depth bias clamp"));
         }

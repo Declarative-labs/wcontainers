@@ -118,6 +118,16 @@ fn the_triangle_scene_replays() {
 }
 
 #[test]
+fn a_back_end_that_lost_its_device_removes_it() {
+    let mut device = Device::new(Recorder::new());
+    let queue = device.create_queue().unwrap();
+    assert_eq!(device.removed(), None);
+    device.backend().lost = Some(wcontainers_gpu::LossReason::Error);
+    assert_eq!(device.execute(queue, &[]), Err(Error::DeviceRemoved));
+    assert_eq!(device.removed(), Some(Error::DeviceRemoved));
+}
+
+#[test]
 fn a_bad_list_fails_at_close() {
     let mut list = CommandList::new();
     list.fail(Error::NotImplemented("root descriptor tables"));
