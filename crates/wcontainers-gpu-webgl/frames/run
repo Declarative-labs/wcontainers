@@ -8,15 +8,16 @@
 # example prints each part's CPU time per second (the two runs' difference over their difference
 # in seconds); the back end's frame reports in the long run give the frames a second, between the
 # last two reports. Profiles and logs stay on the desktop in C:\wc\out\webgl\frames.
-#   crates/wcontainers-gpu-webgl/frames/run <short s> <long s> <name> <process> <exe> <cwd> [<arguments> [<environment>]]
+# <jobs> is how many jobs the build may give cargo on the shared desktop.
+#   crates/wcontainers-gpu-webgl/frames/run <jobs> <short s> <long s> <name> <process> <exe> <cwd> [<arguments> [<environment>]]
 set -euo pipefail
-# The most jobs a build of ours may give cargo on the shared desktop.
-cargo_jobs=3
 here=$(cd "$(dirname "$0")" && pwd)
 rig=$here/../../../tools/graphics-rig
 # shellcheck source=tools/graphics-rig/common.sh
 . "$rig/common.sh"
-usage="usage: run <short s> <long s> <name> <process> <exe> <cwd> [<arguments> [<environment>]]"
+usage="usage: run <jobs> <short s> <long s> <name> <process> <exe> <cwd> [<arguments> [<environment>]]"
+cargo_jobs=${1:?$usage}
+shift
 short=${1:?$usage} long=${2:?$usage} program=${3:?$usage} process=${4:?$usage} exe=${5:?$usage} cwd=${6:?$usage}
 arguments=${7:-} environment=${8:-}
 T='%CARGO_TARGET_DIR%\webgl-frames'
