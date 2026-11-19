@@ -745,22 +745,28 @@ add and its event is corrected by that map, exactly as an add before an untaken 
 place decides the placement, beside `counted`, so measuring another placement changes one function. N2
 measures E's cost on the M5 with this freedom used (one merged add per run, placed where it costs least),
 against round 3's figures for E (+13 to +14% cycles on the M5, against +4 to +6% for the head-pass form,
-one program swinging by layout), and the speed bar of section 8 uses that measured figure.
+one program swinging by layout), and the speed bar of section 8 uses that measured figure. That place is
+`count_placement` in wcontainers-guest-cpu's native module: it gives the run's instruction before which one
+add of all the run's events is written.
 N2's result (M5 Max, the eight bench.c workloads compiled with three registers withheld, run at EL0 inside
 Hypervisor.framework with 4 KiB pages by round 3's runner, 15 alternating pairs each against the same build
 with no add, load 37 to 73; docs/status-native.md): under E every counted event is a transfer and so ends
 its straight-line run, so a run holds at most one event and there is nothing to merge; the placement is the
 freedom left. Geometric mean of the median cycle ratios: the add right before its event (round 3's En) +13.7%
 [+12.2 .. +15.0], before the compare a conditional branch reads +11.0% [+9.6 .. +13.0], at the start of the
-event's run +10.5% [+9.6 .. +12.3]. The independent check's repeat (405 pairs, load 19 to 151): before
-+12.0% [+8.9 .. +13.3], before the compare +10.4% [+8.9 .. +11.3], start of the run +10.5% [+9.3 .. +12.3].
-So the add right before its event is the dearest, and the other two cannot be told apart (their intervals
-overlap, and the two runs order them differently). The start of the run is chosen as the simpler rule (one
-place a run, whatever the event); the speed bar's E figure is +10.5%. At look-ahead none a run is one
-instruction, so the add sits right before its event there (+12 to +13.7%); the start of the run applies at
+event's run +10.5% [+9.6 .. +12.3]. The independent checks repeated it three times (405 pairs each, loads 19
+to 151): before +11.8%, +12.0% and +12.8%, before the compare +11.0%, +10.4% and +11.8%, start of the run
++10.9%, +10.5% and +12.0%, so a single run's figure for one placement moves by about 1.5 points. Pooled over
+the four runs (1620 pairs, 60 per workload and placement; bootstrap seed 1, 2000 resamples): before +12.1%
+[+11.6 .. +12.7], before the compare +10.8% [+10.2 .. +11.5], start of the run +11.2% [+10.4 .. +11.7]. So
+the add right before its event is the dearest by its point in the pooled pairs and in three of the four
+runs (in the fourth all three are about +12% with overlapping intervals), and the other two cannot be told
+apart. The start of the run is chosen as the simpler rule (one place a run, whatever the event); the speed
+bar's E figure is the pooled +11.2%. At look-ahead none a run is one
+instruction, so the add sits right before its event there (pooled +12.1%, runs +11.8 to +13.7%); the start of the run applies at
 bounded and full look-ahead. These figures come from clang's output with the adds put in by a script, one
 rule per placement, not from the native emitter's own output: no whole program runs on that output before
-N3, which measures it again. What is left is mostly two workloads (search +52%, interpret +23%) whose short
+N3, which measures it again. What is left is mostly two workloads (pooled, start of the run: search +58%, interpret +25%) whose short
 loops carry two counted events per pass, so two adds on the count register's chain of dependent adds bound
 the loop.
 
@@ -1017,7 +1023,7 @@ starts a new generation and invalidates the whole TLB once, as Linux does on bot
 "address-space identifiers ran out". A change the kernel makes to one process's tables is followed by the
 invalidation of those pages for every identifier (ARM64 `tlbi vaae1is`, every identifier and every level,
 through `aarch64-paging`'s `El1And0::invalidate_va`, one primitive both for a page whose permissions change
-in a table several views share, a process's inside half among its threads, and for a block split into a
+in a table several table roots share, a process's inside half among its threads, and for a block split into a
 table of pages; x86-64 `invpcid`), broadcast to the other virtual CPUs as section 5.3 says. It also drops
 other processes' entries at that address, which costs them a walk and no correctness; N4 measures it if
 copy-on-write shows it. Rejected: global heap entries with a full
@@ -1081,12 +1087,12 @@ maps another region (brief: leaving for more memory), up to the bound of section
     process share every lower table whose entries are the same for all of them and have their own where a
     page's permission differs between them. This is what serves the embedder's watches: `memory_watch`
     per process on every executor, and `memory_watch_thread` per thread, since this executor implements
-    `PerThreadWatch`: a watched page is invalid (Watch::All) or read-only (Watch::Writes) in the views
+    `PerThreadWatch`: a watched page is invalid (Watch::All) or read-only (Watch::Writes) in the table roots
     the watch covers, so a touch faults to the inside, which calls `on_memory_accessing` and lets the
-    thread go on once the watch is gone. A change to a shared page's entry is written into every view
+    thread go on once the watch is gone. A change to a shared page's entry is written into every table root
     holding it and invalidated for each identifier, broadcast. Under Serial every thread of a process may
     keep the process's one root, as today. N1 built and tested the per-thread root (two threads of one
-    process, one page writable in one view and read-only in the other, switched back and forth with no
+    process, one page writable under one root and read-only under the other, switched back and forth with no
     invalidation).
   - `memory_changed`: the ranges written since last asked come from the page tables' written marks (ARM64
     hardware dirty state, DBM, where the CPU has it, else a write-protect and first-write fault; x86-64's
@@ -1103,7 +1109,7 @@ maps another region (brief: leaving for more memory), up to the bound of section
   - Holding states, ownership recording and pages on other machines are the embedder's, composed from the
     watches and the hooks (the kernel knows nothing of "elsewhere"); a page carried in or out is one link
     message of one page (section 5.6).
-  - A setting changes at a stop: the floor rebuilds the process's views from the kernel's record.
+  - A setting changes at a stop: the floor rebuilds the process's table roots from the kernel's record.
 - **The embedder's `System` runs inside** (the owner's word on decision 1, 2026-11-18, late night): its hooks
   and its loop around `run` execute in the virtual machine beside the kernel, as plain function calls; only
   its services that need the host (files, network, time, carrying pages and streams to other machines) leave
@@ -1579,7 +1585,7 @@ Handled, and proven by tests rather than assumed:
   so a wall-time bar could not be decided there. Proposed bar, two parts:
   - Compute: the geometric mean, over the eight bench.c workloads, of each workload's median cycles ratio
     within E's measured cycles cost plus 10 points, E's cost being the figure N2 measures with the add's
-    placement free (section 4; round 3 measured E at +13 to +14% cycles on the M5, and the forms from +5.1%
+    placement free (section 4: +11.2%, pooled over four runs, so the bar is +21.2%; round 3 measured E at +13 to +14% cycles on the M5, and the forms from +5.1%
     (Hn) to +17.2% (Tn), geometric means over the eight workloads, summary-main-r0.txt lines 115-118).
   - System calls: the back end's own share of a system call answered inside, at or under 100 ns. Method:
     a guest program makes 10^6 `getppid` calls in a loop, against the same program with each call replaced
