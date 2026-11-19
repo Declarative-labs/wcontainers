@@ -149,12 +149,20 @@ rewritten) would change only that function (brief).
   a piece of its own), nor a backward branch's next instruction, where a loop is left (measured: following
   it put fib's return sequence right after its loop's branch and cost fib +37% cycles in alternating pairs;
   leaving it out kept fib's cycles and gave interpret -10%, sort -4%, search -2%, matrix +9% against the
-  pieces of run 7, every workload's instructions unchanged, n4r9/ab-reach-noback.log). The instructions are
+  pieces of run 7, every workload's instructions unchanged, n4r9/ab-reach-noback.log). The one exception
+  (N4 run 9): a backward branch to before the piece's start (out of the piece, an outer loop's) has the code
+  after it held when that code comes back into the piece, the rest of a turn of the piece's own loop; code
+  after it that only leaves (fib's return after its loop) still starts its own piece. Measured in alternating
+  pairs against run 8 (n4r10/ab-comesback.log, 6 pairs, load 4 to 5, counted ahead as section 4 says):
+  search -34.7% cycles (its inner loop had been two pieces crossing by linked exits each turn), every other
+  workload within 2.5% and its instructions unchanged; following every such next instruction instead gave
+  fib +38% again (n4r10/ab-outer.log). The instructions are
   laid out in address order, each carried over by its route (section 3.4). A branch to an instruction the
   piece holds goes straight to it (the emitter links it as a loader links an exit, `Native::link`), any
   other target is an exit; a conditional branch's taken side is an exit placed out of line. Each
   straight-line part (entered only at its start, ended by a branch or where the next instruction is not the
-  next in the piece) has its own add, so the count is exact wherever the piece is entered or left.
+  next in the piece) has its own add, or is counted ahead by the one part it is entered from (section 4),
+  so the count is exact wherever the piece is entered or left.
   Why not the shared finder (T1): its functions hold what a native piece cannot enter (code after a call,
   which the return reaches through its slot; the targets of a jump table, reached through their slots) and
   are cut where WebAssembly's structured control needs it (irreducible flow, block limits), which native
@@ -849,6 +857,15 @@ rule per placement, not from the native emitter's own output: no whole program r
 N3, which measures it again. What is left is mostly two workloads (pooled, start of the run: search +58%, interpret +25%) whose short
 loops carry two counted events per pass, so two adds on the count register's chain of dependent adds bound
 the loop.
+Counted ahead across parts (N4 run 9, a departure: the brief's freedom is within one straight-line run).
+Inside a piece, a part entered only from one part that goes on only to it has its events counted by that
+part's add (`counted_ahead` in the native emitter), so a loop of parts adds once a turn; the position map
+gives every host instruction its lead as before, a part is entered with the lead its one predecessor leaves,
+and any exit taken while the count is still ahead first subtracts the lead (`sub c, c, #lead`, the loader
+linking past it and never pointing the branch before it at another piece), so the count is the guest's
+wherever the piece is left and exact at every stop. The definition is E unchanged; only where the adds sit
+moves. Measured on search (alternating pairs, together with the walk change of section 3.2): -34.7% cycles,
+-13.8% instructions.
 
 **Why it keeps positions unique.** A position is reached at most once in a run only if no path of the
 guest's control flow comes back to the same pc without a counted event. Every path that comes back to a pc

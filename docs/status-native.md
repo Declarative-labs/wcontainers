@@ -55,7 +55,9 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   (reservations): the compute part is +45.38% [+44.74 .. +45.87] quiet, still failing, the system-call part passes at
   69.1 ns (below, "N4 run 7"); run 8 built bounded and full look-ahead by the native emitter's own walk (a departure
   from T1) and a test for run 7's fix: the compute part is +44.67% [+44.16 .. +44.98], still failing, the system-call
-  part passes at 71.9 ns (below, "N4 run 8").
+  part passes at 71.9 ns (below, "N4 run 8"); run 9 counted a loop of parts once a turn (adds ahead across parts, a
+  departure) and held the rest of a turn after an outer loop's branch: search went from +83% to +24% cycles and the
+  compute part to +37.71% [+37.26 .. +37.91], still failing; the system-call part passes at 68.6 ns (below, "N4 run 9").
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -82,6 +84,72 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N4 run 9 (2026-11-19): a loop of parts adds once a turn; the rest of a turn held
+
+Start: origin/main and origin/phase-1-literals had nothing new; no answer in the brief or the orchestrator's notes to
+the asks below. Builds and clippy of arm64, guest-cpu, the translator and the inside ran on the rented ARM64 machine
+(n4r10/arm1.log, arm2.log); what needs Hypervisor.framework, Docker or a git checkout ran on the Mac (-j 4). Logs are in
+scratch native/n4r10.
+
+Found: search's inner loop (`ldurb`, `cmp`, `b.ne` back, with a `b.eq` to the outer loop in its middle) ran as two pieces
+crossing by linked exits every turn, since the walk did not follow the `b.eq`'s next instruction, and each piece had its
+own add, two adds a turn on the count register's chain: the loop was bound by that chain (2 cycles a turn against the
+plain loop's one taken branch), which is search's +83%.
+
+Built:
+- Counted ahead (35b9321e guest-cpu, 14f136ec arm64, e704d3c7 the emitter; plan section 4): a part entered only from one
+  part that goes on only to it is counted by that part's add; `HostCode::enter_ahead` gives a part its lead,
+  `HostCode::settling_exit` writes an exit's `sub` of the lead (the loader links after it), and a conditional branch
+  taken while the count is ahead is never pointed at another piece by the loader (`HostCode::for_loader`). A departure
+  (below).
+- The rest of a turn (e704d3c7; plan 3.2): after a branch back before the piece's start, the code is held when it comes
+  back into the piece, and otherwise starts its own piece as before (fib's return).
+- Tests: three unit tests of `counted_ahead` (the translator), and `pieces_hold_the_rest_of_a_turn` (55467100, the
+  monitor's translate tests: search's shape held whole, fib's shape leaving its return out).
+
+Measured (M5 Max, native runs of two builds alternating, ab.py beside the logs, 6 pairs each):
+- Counted ahead alone (n4r10/ab-ahead.log, load 4 to 5): every workload unchanged (instructions 1.000): the loops it
+  helps were not yet held whole.
+- Following every next instruction of a branch back before the start (n4r10/ab-outer.log, load 3 to 4): search 0.665,
+  fib 1.382 (instructions 0.987), sort 1.043, others within 1.5%. Not kept.
+- As committed (n4r10/ab-comesback.log, load 4 to 5): search cycles 0.653 [0.651 .. 0.658], instructions 0.862; fib 1.023
+  [0.956 .. 1.027], sieve 1.004, hash 1.001, sort 1.001, interpret 1.005, matrix 1.009, walk 0.997, calls 1.001, every
+  instruction count but search's within 0.03%.
+
+Speed bar (n4r10/speed.log and speed.jsonl, 15:48 to 15:52, load 3 to 10, every run 100% on performance cores, 15
+pairs, look-ahead 256, seed 1, 2000 resamples): compute part +37.71%, 95% interval [+37.26 .. +37.91], FAILS against
++21.2% (run 8: +44.67%). Native against plain, cycles (instructions): fib +53.5 (+86.1), sieve +18.1 (+31.8), hash +2.9
+(+27.2), sort +78.5 (+144.2), interpret +91.0 (+105.0), matrix +39.6 (+66.1), walk +17.3 (+81.2), search +24.1 (+26.6;
+run 8 +83.0); calls +57.4 (+115.0). Untranslated against plain, cycles: fib -3.4, sieve +7.3, hash -2.5, sort -4.7,
+interpret -5.0, matrix -14.1, walk +15.7, search -9.6, calls -18.6. System-call part: 160.3 ns a call, the kernel's
+share 91.7 ns, the back end's 68.6 ns [66.9 .. 70.8], PASSES against 100 ns.
+
+Tests after the change: monitor lib 7, exits 4 programs both modes (424 and 426 pieces), forced interrupts 3443 at none,
+bounded 3 and full, 0 failed (n4r10/mac1.log, load 3 to 6); kernel alike at none and 256 with the reference, the
+benchmark set's count the same at both, the two known failures of the WebAssembly side as before (n4r10/kernel.log); the
+differential test at three look-aheads with new seeds, 0 failing each (n4r10/native-*.log, load 7 to 11): none 32,566
+cases (seed 0x6e34721011), bounded 16 32,550 (0x6e347210016), bounded 256 32,473 (0x6e34721001); on the rented ARM64
+machine the translator (both feature sets), guest-cpu and arm64 tests pass and clippy with warnings denied is clean for
+them, their no_std cores and the inside; the literal check exits 0, no marks, the baseline unchanged; busybox 56
+commands gave the reference's output, exit code and files at none and 256 (n4r10/busybox.log, load 5 to 6). At
+whole-page look-ahead (`WCONTAINERS_NATIVE_BOUND=4294967295`): kernel alike at none and whole page with the reference,
+the benchmark set's count the same at both, and busybox's 56 commands as the reference (n4r10/whole-page.log, load 5 to
+7).
+
+The rest of the suite, once before the push, on the Mac (n4r10/suite-rest.log, 15:54 to 15:56, load 5 to 6, exit 0 each):
+floor; probe 0 forms of 16 bytes or fewer differ (44 larger, the Split route's, as before); registers; carry; the
+inside's, the policy crate's and the literal check's tests pass. With the runs above that is the whole suite of what
+this track owns; only the speed test fails, on its compute part.
+
+What N4 still needs, in order:
+1. The compute part of the bar (+37.71% against +21.2%): calls, returns and jumps through a register (two indirect
+   branches each) and the page test (decision 14) need a ruling; see "For the orchestrator".
+2. Load-time addresses, the cache with the native key and disk files, loaded translations shared between processes.
+3. 2 MiB entries by reservation (plan 5.2), with the contiguous bit measured in the repository.
+4. For the independent check: the bar's measurements as alternating pairs again; the differential test at each
+   look-ahead with a new seed; the count across look-aheads on the benchmark set (the kernel test, none, 256 and whole
+   page).
 
 ## N4 run 8 (2026-11-19): bounded and full look-ahead by the native emitter's own walk
 
@@ -2084,6 +2152,13 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 ## Departures from the plan
 
+- N4 run 9: the count's adds may now sit in an earlier straight-line part of the same piece, not only in the event's own
+  run as the brief's ruling words the freedom: a part entered only from one part that goes on only to it is counted by
+  that part's add, and every exit taken while the count is ahead subtracts the lead first. The definition (E) and the
+  count at every stop are unchanged (the position map gives each host instruction its lead, and the count is the guest's
+  wherever a piece is entered or left); a loop of two parts adds once a turn instead of twice. Plan section 4 says so.
+  For the orchestrator to confirm.
+
 - N4 run 8: native pieces at bounded and full look-ahead are found by the native emitter itself, not by the shared
   finder (T1, asked of the orchestrator since N4 run 1 with no answer). The shared finder's functions hold what a native
   piece cannot enter (code after a call, which the return reaches through its slot; jump tables' targets) and are cut for
@@ -2242,6 +2317,13 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N4 run 9: the compute part is now +37.71% against +21.2% (search fixed: its loop is held whole and adds once a turn).
+  Please confirm the departure: adds counted ahead across parts of one piece, with exits settling the count (E and the
+  count at every stop unchanged). What is left is calls, returns and jumps through a register (fib +53.5, sort +78.5,
+  interpret +91.0, calls.c +57.4) and the page test (matrix +39.6, decision 14). This track has no change of its own left
+  that closes a gap of 16 points; the bar needs a ruling on run 7's (a) or (b) below, or on dropping the page test for
+  accesses of 16 bytes or fewer (the owner's decision 14), or a different bar.
 
 - N4 run 8: T1 had no answer, so native pieces at bounded and full look-ahead are now found by the native emitter's own
   walk (Departures). The compute part is +44.67% against +21.2%. The two ways to remove one of the two indirect branches
