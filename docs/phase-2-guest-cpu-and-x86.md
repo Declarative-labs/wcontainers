@@ -712,7 +712,8 @@ pub trait Guest: Personality {
         before: impl Fn(u64) -> Option<(u64, Self::Instruction)>) -> Option<u64>;
     /// The targets of the jump through `reg` at blob offset `at`, made from a switch statement, as blob
     /// offsets, each once, in table order. The CPU gathers the instructions before the jump itself:
-    /// `before(o)` is the function's instruction that falls through into offset `o` (with its offset),
+    /// `before(o)` is the function's instruction that falls through into offset `o` (with its offset, a
+    /// conditional branch among them, so a switch's guard is reached),
     /// `None` at the start of a block that more than one edge enters. ARM64 does not use `before`: it
     /// decodes the 64 words before `at` that lie in `code` from the blob, as today (full.rs:670-678 and
     /// `habits::jump_table` move into the CPU crate unchanged), so its tables are found exactly as now.
@@ -919,7 +920,9 @@ pub struct HookDone { pub results: [i64; 2], pub reason: Option<u32> }
 Built whole at X1, before any x86 code: every item above, and the translator's side of each, so that what
 x86-64 and RV64GC need of the translator lands while ARM64's byte-for-byte proof guards it. The translator
 passes `PASSED_IN` as parameters and gives `PASSED_OUT` back as results (a register passed out but not in
-is read from, and also kept in, the thread block); keys check plans by (offset, which access) and groups
+is read from, and also kept in, the thread block; a register passed in but not out, which a callee may
+change, is stored into the thread block by every return and reloaded by the caller after the call, as
+built at X4); keys check plans by (offset, which access) and groups
 accesses by (segment, base, write), forgetting a segment's groups when its base register is written;
 checks frames down to `RED_ZONE` below the stack pointer; moves the stack pointer up past a `Stack` return
 address in `ret`, and after a `call` expects it `bytes` above its value at the call (the frame analysis
