@@ -3,6 +3,7 @@
 //! translated through the link and loaded into the code area; and a thread run to its next exit.
 
 use alloc::collections::BTreeMap;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::ptr;
 
@@ -51,11 +52,21 @@ struct Page {
     shared: Option<SharedId>,
 }
 
+/// What dropping the pieces of a range found.
+#[derive(Default)]
+struct Forgotten {
+    dropped: bool,
+    /// The guest code of a dropped piece is no longer what it was translated from.
+    changed: bool,
+}
+
 /// A piece loaded into the code area.
 struct Loaded {
     base: u64,
     length: usize,
     spans: Vec<Span>,
+    /// The guest code it was translated from.
+    source: Vec<u8>,
 }
 
 struct Memory {
@@ -287,15 +298,40 @@ impl NativeCpu {
         Ok(())
     }
 
-    /// Drops the pieces translated from a range, saying whether there were any.
-    fn forget_code(&mut self, memory: MemoryId, address: u64, length: u64) -> bool {
-        let Some(m) = self.memories.get_mut(&memory) else {
-            return false;
+    /// Drops the pieces translated from a range.
+    fn forget_code(&mut self, memory: MemoryId, address: u64, length: u64) -> Forgotten {
+        let mut forgotten = Forgotten::default();
+        let Some(Memory {
+            pages: mapped,
+            pieces,
+            ..
+        }) = self.memories.get_mut(&memory)
+        else {
+            return forgotten;
         };
         let range = address..address + length;
-        let before = m.pieces.len();
-        m.pieces.retain(|&at, loaded| !loaded.overlaps(at, &range));
-        m.pieces.len() != before
+        pieces.retain(|&at, loaded| {
+            if !loaded.overlaps(at, &range) {
+                return true;
+            }
+            forgotten.dropped = true;
+            let end = at + loaded.source.len() as u64;
+            if pages(page_of(at), end - page_of(at)).all(|page| mapped.contains_key(&page)) {
+                let mut now = vec![0; loaded.source.len()];
+                read_pages(mapped, at, &mut now);
+                forgotten.changed |= now != loaded.source;
+            }
+            false
+        });
+        forgotten
+    }
+
+    /// Drops the pieces of a range the kernel changed, counting "code changed after it ran" when the guest code
+    /// of one is no longer what it was translated from.
+    fn forget_changed_code(&mut self, memory: MemoryId, address: u64, length: u64) {
+        if self.forget_code(memory, address, length).changed {
+            self.slow(CODE_CHANGED_AFTER_IT_RAN, 1, address);
+        }
     }
 
     /// The guest said the code at `address` changed: drops what was translated from its line, in every memory
@@ -322,7 +358,7 @@ impl NativeCpu {
         lines.sort_unstable();
         lines.dedup();
         for (other, line) in lines {
-            if self.forget_code(other, line, CODE_LINE) {
+            if self.forget_code(other, line, CODE_LINE).dropped {
                 self.slow(CODE_CHANGED_AFTER_IT_RAN, 1, line);
             }
         }
@@ -461,6 +497,7 @@ impl NativeCpu {
                     base,
                     length: piece.code.len(),
                     spans: piece.spans,
+                    source: word.to_vec(),
                 },
             );
         Ok(())
@@ -806,7 +843,7 @@ impl Cpu for NativeCpu {
     ) -> Result<(), CpuError> {
         self.check(address, length)?;
         if !permissions.contains(Permissions::EXECUTE) {
-            self.forget_code(memory, address, length);
+            self.forget_changed_code(memory, address, length);
         }
         let m = self.memory(memory)?;
         let table = m.space.user;
@@ -842,7 +879,7 @@ impl Cpu for NativeCpu {
     }
 
     fn code_changed(&mut self, memory: MemoryId, address: u64, length: u64, _starts: &[u64]) {
-        self.forget_code(memory, address, length);
+        self.forget_changed_code(memory, address, length);
     }
 
     fn shared_new(&mut self, length: u64) -> Result<SharedId, CpuError> {
@@ -900,7 +937,7 @@ impl Cpu for NativeCpu {
                 }
             }
         }
-        self.forget_code(memory, address, length);
+        self.forget_changed_code(memory, address, length);
         Ok(())
     }
 
