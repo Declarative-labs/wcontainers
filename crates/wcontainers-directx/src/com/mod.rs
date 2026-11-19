@@ -48,7 +48,7 @@ use dxgi::Adapter_Impl;
 use output::Output_Impl;
 use swapchain::{Factory, Factory_Impl, SwapChain_Impl};
 
-pub use chosen::Chosen;
+pub use chosen::{Chosen, FEATURES_OFF};
 pub type Front = wcontainers_direct3d_11::Device<Chosen>;
 pub type Shared = Rc<RefCell<Front>>;
 

@@ -73,7 +73,7 @@ structs = {
 }
 
 hand = {
-    "ID3D11Device": "CreateBuffer CreateTexture1D CreateTexture2D CreateTexture3D CreateShaderResourceView CreateRenderTargetView CreateDepthStencilView CreateInputLayout CreateVertexShader CreatePixelShader CreateBlendState CreateDepthStencilState CreateRasterizerState CreateSamplerState CreateQuery CreatePredicate CreateUnorderedAccessView CreateComputeShader CreateGeometryShader CreateGeometryShaderWithStreamOutput CreateHullShader CreateDomainShader CreateDeferredContext CheckFormatSupport CheckMultisampleQualityLevels CheckFeatureSupport GetFeatureLevel GetCreationFlags GetDeviceRemovedReason GetImmediateContext SetExceptionMode GetExceptionMode",
+    "ID3D11Device": "CreateBuffer CreateTexture1D CreateTexture2D CreateTexture3D CreateShaderResourceView CreateRenderTargetView CreateDepthStencilView CreateInputLayout CreateVertexShader CreatePixelShader CreateBlendState CreateDepthStencilState CreateRasterizerState CreateSamplerState CreateQuery CreatePredicate CreateUnorderedAccessView CreateComputeShader CreateGeometryShader CreateGeometryShaderWithStreamOutput CreateHullShader CreateDomainShader CreateDeferredContext CheckFormatSupport CheckMultisampleQualityLevels CheckFeatureSupport CheckCounterInfo GetFeatureLevel GetCreationFlags GetDeviceRemovedReason GetImmediateContext SetExceptionMode GetExceptionMode",
     "ID3D11Device1": "GetImmediateContext1 CreateDeferredContext1 CreateDeviceContextState CreateBlendState1 CreateRasterizerState1",
     "ID3D11Device2": "GetImmediateContext2 CreateDeferredContext2 CheckMultisampleQualityLevels1",
     "ID3D11Device3": "CreateTexture2D1 CreateTexture3D1 CreateRasterizerState2 CreateShaderResourceView1 CreateUnorderedAccessView1 CreateRenderTargetView1 CreateQuery1 GetImmediateContext3 CreateDeferredContext3",
@@ -136,10 +136,10 @@ on_resource = {
     ("IDXGIResource1", "CreateSharedHandle"): "self.nt_shared_handle()",
 }
 # Direct3D 10's device on the device: calls of the same form as Direct3D 11's served by those, the
-# counters and shared resources not served, every other by a method named with a 10 after it.
+# counters (but their absence) and shared resources not served, every other by a method named with a 10 after it.
 dev10_same = {"GetDeviceRemovedReason", "SetExceptionMode", "GetExceptionMode", "GetCreationFlags",
               "CheckFormatSupport", "CheckMultisampleQualityLevels"}
-dev10_missing = {"CreateCounter", "CheckCounterInfo", "CheckCounter", "OpenSharedResource"}
+dev10_missing = {"CreateCounter", "CheckCounter", "OpenSharedResource"}
 # The immediate context's calls that do nothing while Direct3D 10's behaviour is active on it: all
 # but the swap itself and the getters, which read the default state then, except `PSGetSamplers`,
 # which writes nothing (as real Direct3D's does: Wine's test_device_context_state).

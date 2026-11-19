@@ -2425,7 +2425,6 @@ code	crates/wcontainers-directx/src/com/cache.rs	str	open_once	"wcontainers dire
 code	crates/wcontainers-directx/src/com/chosen.rs	char	webgl::own_directory	'\\'
 code	crates/wcontainers-directx/src/com/chosen.rs	str	webgl::angle_dir	"WEBGL_ANGLE_DIR"
 code	crates/wcontainers-directx/src/com/chosen.rs	str	webgl::angle_dir	r"C:\wc\tools\angle-mozangle-0.7.1"
-code	crates/wcontainers-directx/src/com/chosen.rs	str	webgl::make	"WEBGL_OFF"
 code	crates/wcontainers-directx/src/com/chosen.rs	str	webgl::make	"wcontainers direct3d 11: no WebGL 2 back end: {e}"
 code	crates/wcontainers-directx/src/com/chosen.rs	str	webgl::own_directory	"\\"
 code	crates/wcontainers-directx/src/com/chosen.rs	str	webgpu::add_window	"wcontainers direct3d 11: no surface for the window: {e}"
@@ -2553,7 +2552,6 @@ code	crates/wcontainers-directx/src/com/generated.rs	str	<Context_Impl as ID3D11
 code	crates/wcontainers-directx/src/com/generated.rs	str	<Context_Impl as ID3D11DeviceContext2_Impl>::UpdateTiles	"ID3D11DeviceContext2::UpdateTiles"
 code	crates/wcontainers-directx/src/com/generated.rs	str	<Context_Impl as ID3D11DeviceContext3_Impl>::SetHardwareProtectionState	"ID3D11DeviceContext3::SetHardwareProtectionState"
 code	crates/wcontainers-directx/src/com/generated.rs	str	<Device_Impl as ID3D10Device_Impl>::CheckCounter	"ID3D10Device::CheckCounter"
-code	crates/wcontainers-directx/src/com/generated.rs	str	<Device_Impl as ID3D10Device_Impl>::CheckCounterInfo	"ID3D10Device::CheckCounterInfo"
 code	crates/wcontainers-directx/src/com/generated.rs	str	<Device_Impl as ID3D10Device_Impl>::CreateCounter	"ID3D10Device::CreateCounter"
 code	crates/wcontainers-directx/src/com/generated.rs	str	<Device_Impl as ID3D10Device_Impl>::OpenSharedResource	"ID3D10Device::OpenSharedResource"
 code	crates/wcontainers-directx/src/com/generated.rs	str	<Device_Impl as ID3D11Device1_Impl>::OpenSharedResource1	"ID3D11Device1::OpenSharedResource1"
@@ -2562,7 +2560,6 @@ code	crates/wcontainers-directx/src/com/generated.rs	str	<Device_Impl as ID3D11D
 code	crates/wcontainers-directx/src/com/generated.rs	str	<Device_Impl as ID3D11Device3_Impl>::ReadFromSubresource	"ID3D11Device3::ReadFromSubresource"
 code	crates/wcontainers-directx/src/com/generated.rs	str	<Device_Impl as ID3D11Device3_Impl>::WriteToSubresource	"ID3D11Device3::WriteToSubresource"
 code	crates/wcontainers-directx/src/com/generated.rs	str	<Device_Impl as ID3D11Device_Impl>::CheckCounter	"ID3D11Device::CheckCounter"
-code	crates/wcontainers-directx/src/com/generated.rs	str	<Device_Impl as ID3D11Device_Impl>::CheckCounterInfo	"ID3D11Device::CheckCounterInfo"
 code	crates/wcontainers-directx/src/com/generated.rs	str	<Device_Impl as ID3D11Device_Impl>::CreateClassLinkage	"ID3D11Device::CreateClassLinkage"
 code	crates/wcontainers-directx/src/com/generated.rs	str	<Device_Impl as ID3D11Device_Impl>::CreateCounter	"ID3D11Device::CreateCounter"
 code	crates/wcontainers-directx/src/com/generated.rs	str	<Device_Impl as ID3D11Device_Impl>::OpenSharedResource	"ID3D11Device::OpenSharedResource"
