@@ -7,10 +7,14 @@ use syn::{Attribute, Expr, Item, Lit, Meta};
 
 use crate::RUST_EXTENSION;
 
+/// The library's root file under a crate's source folder when the manifest names none.
+pub const LIB_FILE: &str = "lib.rs";
+/// The binary's root file under a crate's source folder when the manifest names none.
+pub const MAIN_FILE: &str = "main.rs";
 /// Files whose child modules live next to them rather than in a folder of their own name.
-const MOD_RS_FILES: &[&str] = &["mod.rs", "lib.rs", "main.rs", "build.rs"];
+const MOD_RS_FILES: &[&str] = &["mod.rs", LIB_FILE, MAIN_FILE, "build.rs"];
 /// The folder of a crate's extra binaries, each of which is a crate root.
-const BIN_FOLDER: &str = "bin";
+pub const BIN_FOLDER: &str = "bin";
 /// `#[path = "..."]` on a module declaration.
 const PATH_ATTRIBUTE: &str = "path";
 

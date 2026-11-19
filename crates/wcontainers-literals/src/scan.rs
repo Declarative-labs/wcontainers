@@ -225,6 +225,8 @@ pub struct FileScan {
     /// Private modules around the scan (the file's own, when its declaration is private): other crates
     /// cannot import what is inside one.
     hidden_depth: usize,
+    /// Function bodies around the scan: nothing outside the function can name what is inside one.
+    fn_depth: usize,
     /// Log macros the file imports by their bare name.
     log_macros: Vec<String>,
     /// The name a match arm's pattern is compared with, for 0 and 1 in the pattern.
@@ -264,6 +266,7 @@ impl FileScan {
             test_depth: usize::default(),
             formatter_depth: usize::default(),
             hidden_depth: usize::from(!exposed),
+            fn_depth: usize::default(),
             log_macros: Vec::new(),
             pattern_hint: None,
             return_hint: None,
@@ -518,7 +521,10 @@ impl FileScan {
             ty: ty.and_then(int_type_of),
             scope,
             trait_impl: exposure.trait_impl,
-            public: exposure.public && self.hidden_depth == usize::default(),
+            public: exposure.public
+                && self.hidden_depth == usize::default()
+                && self.fn_depth == usize::default(),
+            local: self.fn_depth > usize::default(),
             value: None,
         });
     }
@@ -971,7 +977,9 @@ impl FileScan {
         self.with_test(attrs, |s| {
             s.with_scope(sig.ident.to_string(), |s| {
                 s.formatter_depth += usize::from(formatter);
+                s.fn_depth += 1;
                 f(s);
+                s.fn_depth -= 1;
                 s.formatter_depth -= usize::from(formatter);
             })
         });

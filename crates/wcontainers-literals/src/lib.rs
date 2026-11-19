@@ -273,6 +273,10 @@ struct Roots {
     shipped: Vec<String>,
     /// Targets Cargo builds only for tests (`[[test]]`, `[[bench]]`, `[[example]]`).
     test: Vec<String>,
+    /// Binaries of a crate that also has a library: crates of their own beside it, by root file or
+    /// by folder (`src/bin`).
+    bins: Vec<String>,
+    bin_folders: Vec<String>,
 }
 
 impl Walk {
@@ -298,6 +302,9 @@ impl Walk {
             } else {
                 FileRole::Code
             };
+            let separate = test
+                || roots.bins.contains(&rel)
+                || roots.bin_folders.iter().any(|f| under(&rel, f));
             self.rust.push(SourceFile {
                 path,
                 rel,
@@ -305,7 +312,7 @@ impl Walk {
                 role,
                 crate_root,
                 exposed: true,
-                separate: test,
+                separate,
             });
         } else if scripts::is_script(&path) {
             self.scripts.push((path, crate_dir.to_string()));
@@ -449,12 +456,25 @@ fn target_roots(root: &Path, crate_dir: &str, roots: &mut Roots) {
         .and_then(|b| b.as_str())
         .map(String::from);
     let place = |p: String| rel_string(&root.join(crate_dir).join(p), root);
-    roots.shipped.extend(
-        lib.into_iter()
-            .chain(tables(BIN_TABLES))
-            .chain(build)
-            .map(place),
-    );
+    let source = |file: &str| [SOURCE_FOLDER, file].join(PATH_COMPONENT_SEPARATOR);
+    let bins = tables(BIN_TABLES);
+    if lib.is_some()
+        || root
+            .join(crate_dir)
+            .join(source(modules::LIB_FILE))
+            .is_file()
+    {
+        roots.bins.extend(
+            bins.iter()
+                .cloned()
+                .chain([source(modules::MAIN_FILE)])
+                .map(place),
+        );
+        roots.bin_folders.push(place(source(modules::BIN_FOLDER)));
+    }
+    roots
+        .shipped
+        .extend(lib.into_iter().chain(bins).chain(build).map(place));
     roots
         .test
         .extend(TEST_TABLES.iter().flat_map(|t| tables(t)).map(place));
@@ -585,6 +605,29 @@ fn mark_test_modules(root: &Path, files: &mut Vec<SourceFile>) {
             file.role = FileRole::Code;
             file.separate = false;
         }
+    }
+    // A module of a file built as a crate of its own belongs to that crate.
+    let mut apart: HashSet<PathBuf> = files
+        .iter()
+        .filter(|f| f.separate)
+        .map(|f| canonical(&f.path))
+        .collect();
+    loop {
+        let more: Vec<PathBuf> = files
+            .iter()
+            .zip(&declared)
+            .filter(|(f, _)| apart.contains(&canonical(&f.path)))
+            .flat_map(|(_, (_, d))| d.code.iter().chain(d.test.iter().map(|m| &m.file)))
+            .map(|p| canonical(p))
+            .filter(|p| !apart.contains(p))
+            .collect();
+        if more.is_empty() {
+            break;
+        }
+        apart.extend(more);
+    }
+    for file in files.iter_mut() {
+        file.separate = apart.contains(&canonical(&file.path));
     }
 }
 
@@ -785,6 +828,22 @@ enum Closeness {
     Elsewhere,
 }
 
+/// How close a constant is to a crate.
+fn closeness(crates: &Crates, d: &ConstDef, crate_dir: &str) -> Closeness {
+    let upstream = crates.upstream(crate_dir, &d.crate_dir);
+    match &d.scope {
+        ConstScope::Code if upstream => Closeness::Upstream,
+        ConstScope::Code if d.crate_dir == crate_dir => Closeness::SameCrate,
+        ConstScope::Generated if upstream || d.crate_dir == crate_dir => Closeness::Reachable,
+        ConstScope::Reference(module)
+            if crates.uses_package(crate_dir, &reference_package(module)) =>
+        {
+            Closeness::Reachable
+        }
+        _ => Closeness::Elsewhere,
+    }
+}
+
 /// Constants by value, for naming what a literal restates.
 struct ValueIndex<'a> {
     by_value: HashMap<&'a Value, Vec<&'a ConstDef>>,
@@ -802,23 +861,6 @@ impl<'a> ValueIndex<'a> {
         ValueIndex { by_value, crates }
     }
 
-    fn closeness(&self, d: &ConstDef, crate_dir: &str) -> Closeness {
-        let upstream = self.crates.upstream(crate_dir, &d.crate_dir);
-        match &d.scope {
-            ConstScope::Code if upstream => Closeness::Upstream,
-            ConstScope::Code if d.crate_dir == crate_dir => Closeness::SameCrate,
-            ConstScope::Generated if upstream || d.crate_dir == crate_dir => Closeness::Reachable,
-            ConstScope::Reference(module)
-                if self
-                    .crates
-                    .uses_package(crate_dir, &reference_package(module)) =>
-            {
-                Closeness::Reachable
-            }
-            _ => Closeness::Elsewhere,
-        }
-    }
-
     /// The constants with this value, closest first, leaving out the item the literal is in.
     fn matches(
         &self,
@@ -832,14 +874,13 @@ impl<'a> ValueIndex<'a> {
             .into_iter()
             .flatten()
             .filter(|d| own.is_none_or(|(path, item)| !(d.path == path && d.item == item)))
-            .map(|d| (self.closeness(d, crate_dir), *d))
+            .map(|d| (closeness(self.crates, d, crate_dir), *d))
             .collect();
         defs.sort_by_key(|(c, d)| (*c, self.crates.depth(&d.crate_dir), d.path.as_str(), d.line));
         defs
     }
 
-    /// The constants with this value that the crate could import or already has: public ones, its own
-    /// unless it is a `separate` crate beside its library, and the reference crates'.
+    /// The constants with this value that the crate could import or already has.
     fn importable(
         &self,
         value: &Value,
@@ -849,11 +890,7 @@ impl<'a> ValueIndex<'a> {
     ) -> Vec<(Closeness, &'a ConstDef)> {
         self.matches(value, crate_dir, own)
             .into_iter()
-            .filter(|(_, d)| {
-                d.public
-                    || (!separate && d.crate_dir == crate_dir)
-                    || matches!(d.scope, ConstScope::Reference(_))
-            })
+            .filter(|(_, d)| can_import(d, crate_dir, separate))
             .collect()
     }
 
@@ -895,6 +932,15 @@ impl<'a> ValueIndex<'a> {
     }
 }
 
+/// A file of `crate_dir` can import or already has this constant: a public one, its crate's own
+/// outside a function unless the file is built as a `separate` crate beside its library, or a
+/// reference crate's.
+fn can_import(d: &ConstDef, crate_dir: &str, separate: bool) -> bool {
+    d.public
+        || (!separate && !d.local && d.crate_dir == crate_dir)
+        || matches!(d.scope, ConstScope::Reference(_))
+}
+
 /// A value specific enough that writing it where a constant of the same value can be named restates
 /// that constant: a number that does not fit in a byte, or text of more than one character.
 fn distinctive(value: &Value) -> bool {
@@ -930,10 +976,11 @@ fn specific_words(name: &str) -> Vec<String> {
 
 /// Tests and constant initialisers that restate, by value, a constant their crate can already name.
 /// A literal in a test, in a constant or not, is gated on its value alone against what the test's crate
-/// can import (`separate` holds the files built as crates beside their library); a literal in a named
-/// constant of code only when the two names also share a specific word (`LOCAL_PAGE` and
-/// `PAGE_SIZE`), so that a different fact of the same value can be given its own name.
-fn restated(all: &mut [Finding], index: &ValueIndex) {
+/// can name; a literal in a named constant of code only when the two names also share a specific word
+/// (`LOCAL_PAGE` and `PAGE_SIZE`), so that a different fact of the same value can be given its own
+/// name. A test's note names what the file can import (`separate` holds the files built as crates
+/// beside their library), or says that the constant must first be made importable.
+fn restated(all: &mut [Finding], index: &ValueIndex, separate: &HashSet<&str>) {
     for f in all
         .iter_mut()
         .filter(|f| matches!(f.list, List::Test | List::Const))
@@ -979,7 +1026,8 @@ fn restated(all: &mut [Finding], index: &ValueIndex) {
             &f.crate_dir,
             Some((f.path.as_str(), f.item.as_str())),
         );
-        // A test's copy of a constant under its own name is that redefinition only.
+        // A test's copy of a constant under its own name is that redefinition only, which
+        // `redefinitions` reports on the test's copy.
         if test && f.in_const && all_defs.iter().any(|(_, d)| d.bare == own_name) {
             continue;
         }
@@ -987,13 +1035,23 @@ fn restated(all: &mut [Finding], index: &ValueIndex) {
             .into_iter()
             .filter(|(c, d)| wanted(*c, d) && d.scope == ConstScope::Code && named_alike(d))
             .collect();
-        if let Some(names) = ValueIndex::names(&defs) {
-            let was = f.list.name();
-            f.list = List::Restated;
-            f.note = format!("{was} literal restates {names}");
-        }
+        let file_separate = separate.contains(f.path.as_str());
+        let (importable, hidden): (Vec<_>, Vec<_>) = defs
+            .iter()
+            .partition(|(_, d)| !test || can_import(d, &f.crate_dir, file_separate));
+        let note = match (ValueIndex::names(&importable), ValueIndex::names(&hidden)) {
+            (Some(names), _) => names,
+            (None, Some(names)) => format!("{names}, {NOT_IMPORTABLE}"),
+            (None, None) => continue,
+        };
+        let was = f.list.name();
+        f.list = List::Restated;
+        f.note = format!("{was} literal restates {note}");
     }
 }
+
+/// What a restated literal's note adds when the file cannot import the constant it restates.
+const NOT_IMPORTABLE: &str = "which this file cannot import: make it public, outside any function and in public modules, then import it";
 
 /// A word of a message that looks like a name (a key, a variable, a crate) rather than plain English.
 fn name_like(word: &str) -> bool {
@@ -1044,21 +1102,18 @@ fn named_in_text(all: &mut [Finding], index: &ValueIndex, crates: &Crates) {
 }
 
 /// Constants that restate, by the same name and value, a constant defined elsewhere; reported on the
-/// copy: a constant is left out when its crate owns the fact over every other definition's crate.
+/// copy: a constant is left out when its crate owns the fact over every other definition's crate. A
+/// test's constant never owns a fact that code, generated code or a reference crate also defines.
 fn redefinitions(defs: &[ConstDef], crates: &Crates) -> Vec<Finding> {
     let mut by_bare: HashMap<&str, Vec<&ConstDef>> = HashMap::new();
     for d in defs.iter().filter(|d| d.value.is_some()) {
         by_bare.entry(&d.bare).or_default().push(d);
     }
     // A reference crate is upstream of everything; a generated copy is the owner within its crate.
-    let upstream_of = |d: &ConstDef, o: &ConstDef| match o.scope {
-        ConstScope::Reference(_) => false,
-        _ => {
-            crates.owns(&d.crate_dir, &o.crate_dir)
-                || (o.crate_dir == d.crate_dir
-                    && d.scope == ConstScope::Code
-                    && o.scope == ConstScope::Test)
-        }
+    let upstream_of = |d: &ConstDef, o: &ConstDef| match (&d.scope, &o.scope) {
+        (ConstScope::Test, ConstScope::Test) => crates.owns(&d.crate_dir, &o.crate_dir),
+        (ConstScope::Test, _) | (_, ConstScope::Reference(_)) => false,
+        _ => crates.owns(&d.crate_dir, &o.crate_dir),
     };
     let mut out = Vec::new();
     for d in defs
@@ -1076,6 +1131,7 @@ fn redefinitions(defs: &[ConstDef], crates: &Crates) -> Vec<Finding> {
             .flatten()
             .filter(|o| !(o.path == d.path && o.line == d.line))
             .filter(|o| o.value.as_ref().is_some_and(|v| v.same_as(value)))
+            .filter(|o| d.scope == ConstScope::Test || o.scope != ConstScope::Test)
             .filter(|o| {
                 matches!(o.scope, ConstScope::Reference(_))
                     || !(d.associated() && o.associated())
@@ -1318,7 +1374,7 @@ fn scan_tree(root: &Path, policy: Policy) -> Result<Scanned, String> {
                 .join(NOTE_LIST_SEPARATOR);
         }
     }
-    restated(&mut all, &index);
+    restated(&mut all, &index, &separate);
     named_in_text(&mut all, &index, &crates);
     all.extend(redefinitions(&defs, &crates));
     let marks = apply_marks(&mut all, &found, &index);

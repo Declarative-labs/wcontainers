@@ -4,7 +4,8 @@
 //! starts the file on a first-parent chain; when that commit is a merge (the file arrived from another
 //! branch), the next change, which is the branch's `init`; and a change where the rules have more
 //! versions than at the baseline's previous change (or than before a merge that brought them, for the
-//! change after it), which may add only literals that were already in the tree before it. Every such
+//! change after it), which may add only literals that were already in the tree before it: at the
+//! baseline's previous change or in one of the change's parents. Every such
 //! change, on every side, is listed by every run, so that none passes unseen.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -387,10 +388,12 @@ impl Walker<'_> {
             } else if arrived && i == 1 {
                 allowed.push((change.commit.clone(), AFTER_ARRIVAL, None));
             } else if new_rules {
-                // What the change may add was in the tree at the previous change, or on a side it merges.
+                // What the change may add was in the tree at the previous change or in a parent: a
+                // side it merges, or the branch's own commits since the previous change, which an
+                // init run before committing the merge that brings the rules finds.
                 let bases = previous
                     .iter()
-                    .chain(change.parents.iter().skip(1))
+                    .chain(change.parents.iter())
                     .cloned()
                     .collect();
                 allowed.push((change.commit.clone(), NEW_RULES, Some(bases)));

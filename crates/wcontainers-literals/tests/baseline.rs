@@ -6,7 +6,7 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use common::{append, check, commit_all, git, replace, repository};
+use common::{append, check, commit_all, git, git_output, replace, repository};
 use wcontainers_literals::{
     BASELINE_FILE, DELETE_LINE, DO, FIELD_SEPARATOR, GROWN_MARK, HIDDEN_MARK, Kind,
     LOCATION_SEPARATOR, List, MANIFEST, MARK_WORD, MARKS_HEADING, NEW_MARK, ORDER_MARK, PolicyKind,
@@ -739,6 +739,39 @@ fn new_rules_may_add_lines_for_literals_already_there() {
     assert!(wcontainers_literals::init(&root).is_err());
 }
 
+/// A track committed a literal after its last change of the baseline; the merge that brings new rules
+/// conflicts in the baseline, and the track runs init before committing the merge: the merge may add
+/// that literal's line, as the init after a committed merge may.
+#[test]
+fn init_before_committing_the_merge_that_brings_new_rules() {
+    let files = with_checker(&["first"]);
+    let root = repository("init-in-merge", &borrowed(&files));
+    git(&root, &["checkout", "-q", "-b", "literals"]);
+    wcontainers_literals::init(&root).expect("init");
+    commit_all(&root, "baseline of main");
+    git(&root, &["checkout", "-q", "-b", "track"]);
+    set_baseline(&root, &without(&baseline(&root), &key("one", "4096")));
+    replace(&root, LIB, "x * 4096", "x");
+    commit_all(&root, "a fix");
+    append(&root, LIB, "\npub fn five(x: u64) -> u64 { x * 6464 }\n");
+    commit_all(&root, "a literal the old rules let through");
+
+    git(&root, &["checkout", "-q", "literals"]);
+    set_baseline(&root, &without(&baseline(&root), &key("three", "12")));
+    replace(&root, LIB, "x >> 12", "x");
+    replace(&root, RULES_SOURCE, "\"first\",]", "\"first\",\"second\",]");
+    commit_all(&root, "new rules, and a fix beside the track's");
+    git(&root, &["checkout", "-q", "track"]);
+    let merge = git_output(&root, &["merge", "-q", "--no-edit", "literals"]);
+    assert!(!merge.status.success(), "the baselines should conflict");
+    set_baseline(&root, "");
+    wcontainers_literals::init(&root).expect("init in the merge");
+    assert!(baseline(&root).contains(&key("five", "6464")));
+    commit_all(&root, "the merge, with the baseline for the new rules");
+    let out = check(&root);
+    assert!(out.clean, "{}", out.report());
+}
+
 /// Replace refs are not read: a graft that turns a growth into the start hides nothing.
 #[test]
 fn a_graft_does_not_hide_growth() {
@@ -800,6 +833,37 @@ mod gets_through {
             out.summary
                 .iter()
                 .any(|l| l.contains(merge.trim()) && l.contains("new rules")),
+            "{}",
+            out.report()
+        );
+    }
+
+    /// A made-up version in two commits: one adds a literal without its line (that commit fails its
+    /// own check), the next appends a version and adds the line, since a new version may add lines for
+    /// literals in its parent's tree. It shows only in the list of changes that could add lines.
+    #[test]
+    fn a_made_up_version_in_two_commits() {
+        let files = with_checker(&["first"]);
+        let root = repository("made-up-two", &borrowed(&files));
+        wcontainers_literals::init(&root).expect("init");
+        commit_all(&root, "baseline");
+        append(&root, LIB, "\npub fn five(x: u64) -> u64 { x * 4091 }\n");
+        commit_all(&root, "a literal without its line");
+        replace(
+            &root,
+            RULES_SOURCE,
+            "\"first\",]",
+            "\"first\",\"made up\",]",
+        );
+        set_baseline(&root, &with(&baseline(&root), &key("five", "4091")));
+        commit_all(&root, "a made-up version");
+        let made_up = git(&root, &["describe", "--always", "--abbrev=12"]);
+        let out = check(&root);
+        assert!(out.clean, "{}", out.report());
+        assert!(
+            out.summary
+                .iter()
+                .any(|l| l.contains(made_up.trim()) && l.contains("new rules")),
             "{}",
             out.report()
         );
