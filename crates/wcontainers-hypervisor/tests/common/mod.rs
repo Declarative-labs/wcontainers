@@ -25,6 +25,9 @@ const TARGETS: &[(&str, &str)] = &[("aarch64", "aarch64-unknown-none-softfloat")
 /// The cargo profile the programs are built with.
 const PROFILE: &str = "release";
 
+/// The inside's feature that builds its test programs which need test-only crates.
+const TEST_PROGRAMS: &str = "kernel-test";
+
 /// Jobs the nested build may run.
 const JOBS: &str = "4";
 
@@ -106,6 +109,7 @@ pub fn build(program: &str) -> Vec<u8> {
             "--profile",
             PROFILE,
         ])
+        .args(["--features", TEST_PROGRAMS])
         .args(["--jobs", JOBS])
         .arg("--manifest-path")
         .arg(&manifest)
@@ -176,13 +180,18 @@ const GUEST_TARGET: &str = "aarch64-linux-musl";
 const C_SOURCE: &str = "c";
 const OBJECT: &str = "o";
 
+/// Where [`compile`] puts the program `name`.
+pub fn compiled(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_TARGET_TMPDIR")).join(name)
+}
+
 /// Builds a static ARM64 Linux program from `directory/name.c` with zig's C compiler.
 pub fn compile(directory: &str, name: &str, library: CLibrary) -> Vec<u8> {
     let source = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join(directory)
         .join(name)
         .with_extension(C_SOURCE);
-    let out: PathBuf = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let out = compiled(name);
     let object = out.with_extension(OBJECT);
     // Compiled with the C library's headers; linked with its code or without it.
     zig(Command::new("zig")
