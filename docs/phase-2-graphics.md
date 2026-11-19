@@ -1330,8 +1330,10 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
   ask (naga refused 11 corpus shaders for it, 6.3), so on WebGL 2 the front binds the variant
   `VariantFlags::TEXTURE_INFO`, which the shaders crate makes by reading `HelperValue::TextureLevels`
   and `TextureSamples` for each texture slot the shader asks about; the front writes them from the bound
-  views (the view's level count; one sample, as WebGL 2 textures are never multisampled) when the
-  bindings change (`TextureInfoInHelpers`). Exact.
+  views (the view's level count, zero for an empty slot; one sample, as WebGL 2 textures are never
+  multisampled) when the bindings change (`TextureInfoInHelpers`). Under the same flag a size asked at
+  a level at or past that count reads zero, as Direct3D answers for an empty slot or a level past the
+  view's, so a front on any back end binds it where a slot asked its size is empty. Exact.
 - Logic operations: optional at Direct3D 11_0 and reported absent there. OpenGL's `glLogicOp` (core)
   runs in the program reading a copy of the target taken before the draw (`LogicOpInShader`; the copy
   is bound in the helper set at `TARGET_COPY_BINDING` plus the target, the operation is in the helper

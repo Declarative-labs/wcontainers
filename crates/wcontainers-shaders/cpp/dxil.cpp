@@ -1,6 +1,9 @@
-// The one boundary to dxil-spirv: DXIL bytes in, SPIR-V words out, and the constant buffers' sizes.
+// The one boundary to dxil-spirv: DXIL bytes in, SPIR-V words out, the constant buffers' sizes and
+// the registers the resource list declares.
 
+#include <cstdint>
 #include <cstdlib>
+#include <iterator>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -189,33 +192,85 @@ bool integer(const llvm::MDNode* node, unsigned index, uint32_t* value) {
   return true;
 }
 
-// (space, register, size in bytes) of every constant buffer the module's resource list declares.
-int constant_sizes(const uint8_t* data, size_t size, uint32_t** out, size_t* out_words, char** error) {
+// The lists of DXIL's resource list (`dx.resources`), in its order, with the class each list's
+// resources take.
+constexpr wcs::ResourceClass LIST_CLASSES[] = { wcs::ResourceClass::eView, wcs::ResourceClass::eStorage,
+                                                wcs::ResourceClass::eConstants, wcs::ResourceClass::eSampler };
+constexpr unsigned CONSTANTS_LIST = 2;
+
+// The operands of a resource's node in DXIL's resource list that are read here.
+enum ResourceOperand : unsigned {
+  eSpace = 3,
+  eLowerBound = 4,
+  eRangeSize = 5,
+  // A constant buffer's size in bytes.
+  eConstantBytes = 6,
+};
+
+// The range size DXIL gives an unbounded range.
+constexpr uint32_t UNBOUNDED = UINT32_MAX;
+
+// Calls `f(list, node)` for every resource node of the module's resource list.
+template <typename F>
+bool each_resource(const uint8_t* data, size_t size, char** error, F&& f) {
   dxil_spv::DXILContainerParser container;
   dxil_spv::LLVMBCParser bitcode;
   if (!container.parse_container(data, size, false) ||
       !(container.is_dxbc_binary() ? bitcode.parseDXBCBinary(data, size)
                                    : bitcode.parse(container.get_blob().data(), container.get_blob().size()))) {
     *error = wcs::copy("the DXIL did not parse");
-    return 1;
+    return false;
   }
-  std::vector<uint32_t> sizes;
   auto* resources = bitcode.get_module().getNamedMetadata("dx.resources");
   auto* lists = resources && resources->getNumOperands() ? resources->getOperand(0) : nullptr;
-  auto* cbvs = lists && lists->getNumOperands() > 2 ? llvm::dyn_cast<llvm::MDNode>(lists->getOperand(2)) : nullptr;
-  for (unsigned i = 0; cbvs && i < cbvs->getNumOperands(); i++) {
-    auto* cbv = llvm::dyn_cast<llvm::MDNode>(cbvs->getOperand(i));
-    uint32_t space, reg, bytes;
-    if (cbv && integer(cbv, 3, &space) && integer(cbv, 4, &reg) && integer(cbv, 6, &bytes))
-      sizes.insert(sizes.end(), { space, reg, bytes });
+  for (unsigned list = 0; lists && list < std::size(LIST_CLASSES) && list < lists->getNumOperands(); list++) {
+    auto* nodes = llvm::dyn_cast<llvm::MDNode>(lists->getOperand(list));
+    for (unsigned i = 0; nodes && i < nodes->getNumOperands(); i++)
+      if (auto* node = llvm::dyn_cast<llvm::MDNode>(nodes->getOperand(i)))
+        f(list, node);
   }
-  if (!(*out = static_cast<uint32_t*>(std::malloc(sizes.size() * 4 + 4)))) {
+  return true;
+}
+
+// `words` copied into a malloc'd `out`.
+int give(const std::vector<uint32_t>& words, uint32_t** out, size_t* out_words, char** error) {
+  if (!(*out = static_cast<uint32_t*>(std::malloc(words.size() * sizeof(uint32_t) + sizeof(uint32_t))))) {
     *error = wcs::copy("out of memory");
     return 3;
   }
-  std::memcpy(*out, sizes.data(), sizes.size() * 4);
-  *out_words = sizes.size();
+  std::memcpy(*out, words.data(), words.size() * sizeof(uint32_t));
+  *out_words = words.size();
   return 0;
+}
+
+// (space, register, size in bytes) of every constant buffer the module's resource list declares.
+int constant_sizes(const uint8_t* data, size_t size, uint32_t** out, size_t* out_words, char** error) {
+  std::vector<uint32_t> sizes;
+  if (!each_resource(data, size, error, [&](unsigned list, const llvm::MDNode* node) {
+        uint32_t space, reg, bytes;
+        if (list == CONSTANTS_LIST && integer(node, eSpace, &space) && integer(node, eLowerBound, &reg) &&
+            integer(node, eConstantBytes, &bytes))
+          sizes.insert(sizes.end(), { space, reg, bytes });
+      }))
+    return 1;
+  return give(sizes, out, out_words, error);
+}
+
+// (class, space, register) of every register a range of the module's resource list covers, used by
+// the program or not; an unbounded range gives its first register.
+int declared_registers(const uint8_t* data, size_t size, uint32_t** out, size_t* out_words, char** error) {
+  std::vector<uint32_t> registers;
+  if (!each_resource(data, size, error, [&](unsigned list, const llvm::MDNode* node) {
+        uint32_t space, first, count;
+        if (!integer(node, eSpace, &space) || !integer(node, eLowerBound, &first) ||
+            !integer(node, eRangeSize, &count))
+          return;
+        uint32_t covered = count == UNBOUNDED || count == 0 ? 1 : count;
+        for (uint32_t r = 0; r < covered; r++)
+          registers.insert(registers.end(), { uint32_t(LIST_CLASSES[list]), space, first + r });
+      }))
+    return 1;
+  return give(registers, out, out_words, error);
 }
 
 }
@@ -228,6 +283,17 @@ extern "C" int wcs_dxil_constant_sizes(const uint8_t* data, size_t size, uint32_
   *out_words = 0;
   *error = nullptr;
   return wcs::contained("dxil-spirv", error, [&] { return constant_sizes(data, size, out, out_words, error); });
+}
+
+// Returns 0 and the (class, space, register) triples of every register the resource list declares in
+// `out` (free with wcs_free), or nonzero with the reason in `error`.
+extern "C" int wcs_dxil_declared_registers(const uint8_t* data, size_t size, uint32_t** out, size_t* out_words,
+                                           char** error) {
+  *out = nullptr;
+  *out_words = 0;
+  *error = nullptr;
+  return wcs::contained("dxil-spirv", error,
+                        [&] { return declared_registers(data, size, out, out_words, error); });
 }
 
 // Returns 0, the SPIR-V in `out` and the resources' (class, space, register) triples in `table` (both

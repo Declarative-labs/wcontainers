@@ -6,6 +6,7 @@ mod components;
 mod depth;
 mod images;
 mod nonfinite;
+mod one_d;
 mod registers;
 mod widths;
 
@@ -37,6 +38,13 @@ unsafe extern "C" {
         error: *mut *mut c_char,
     ) -> c_int;
     fn wcs_dxil_constant_sizes(
+        data: *const u8,
+        size: usize,
+        out: *mut *mut u32,
+        out_words: *mut usize,
+        error: *mut *mut c_char,
+    ) -> c_int;
+    fn wcs_dxil_declared_registers(
         data: *const u8,
         size: usize,
         out: *mut *mut u32,
@@ -114,18 +122,37 @@ fn to_spirv(dxil: &[u8], samples: u8) -> Result<(Vec<u32>, Resources), ConvertEr
     Ok((spirv, resources))
 }
 
-/// (space, register, size in bytes) of every constant buffer the DXIL declares.
-fn constant_sizes(dxil: &[u8]) -> Result<Vec<u32>, ConvertError> {
+/// The status the C side returns for a call that succeeded.
+const SUCCESS: c_int = 0;
+
+/// A C side reader of the DXIL's resource list, giving words it allocated.
+type ListReader =
+    unsafe extern "C" fn(*const u8, usize, *mut *mut u32, *mut usize, *mut *mut c_char) -> c_int;
+
+/// The words `read` gives for `dxil`.
+fn resource_list(dxil: &[u8], read: ListReader) -> Result<Vec<u32>, ConvertError> {
     let mut out = core::ptr::null_mut();
     let mut n = 0;
     let mut error = core::ptr::null_mut();
     // SAFETY: the pointers are valid for the call; the C side allocates `out` and `error` with malloc.
-    let status =
-        unsafe { wcs_dxil_constant_sizes(dxil.as_ptr(), dxil.len(), &mut out, &mut n, &mut error) };
-    if status != 0 {
+    let status = unsafe { read(dxil.as_ptr(), dxil.len(), &mut out, &mut n, &mut error) };
+    if status != SUCCESS {
         return Err(ConvertError::Rejected(reason(error)));
     }
     Ok(words(out, n))
+}
+
+/// (space, register, size in bytes) of every constant buffer the DXIL declares.
+fn constant_sizes(dxil: &[u8]) -> Result<Vec<u32>, ConvertError> {
+    resource_list(dxil, wcs_dxil_constant_sizes)
+}
+
+/// Every register the DXIL's resource list declares, used by the program or not, as resources.
+fn declared_registers(dxil: &[u8]) -> Result<Resources, ConvertError> {
+    Ok(resource_list(dxil, wcs_dxil_declared_registers)?
+        .as_chunks::<TRIPLE>()
+        .0
+        .to_vec())
 }
 
 /// The largest constant buffer, in bytes, which dxil-spirv declares for every dynamically indexed one.
@@ -258,6 +285,7 @@ pub(crate) fn lower(
     nonfinite::calls(&mut module)?;
     arrays::split(&mut module, &mut resources, &mut declared)?;
     depth::widen(&mut module)?;
+    one_d::as_two_d(&mut module, &declared)?;
     let mut atomics = images::texel_atomics(&mut module)?;
     // WebGPU's storage buffers are read-only or read-write; one the program only writes is the latter.
     for (_, v) in module.global_variables.iter_mut() {
@@ -342,7 +370,13 @@ pub(crate) fn lower(
         };
         into.push(placed_value(&module, p, pixel && p.output, signature));
     }
-    let slots = bindings(&mut module, &resources, set, &mut reflection)?;
+    let slots = bindings(
+        &mut module,
+        &resources,
+        &declared_registers(dxil)?,
+        set,
+        &mut reflection,
+    )?;
     reflection.sampled_pairs = sampled_pairs(&module, &slots)?;
     draw_bases(&mut module, variant, &mut reflection)?;
     images::finish(
@@ -489,18 +523,6 @@ fn unconverted(module: &Module) -> Result<(), ConvertError> {
         .entry_points
         .first()
         .ok_or(ConvertError::Malformed("no entry point".into()))?;
-    if module.global_variables.iter().any(|(_, v)| {
-        matches!(
-            module.types[v.ty].inner,
-            TypeInner::Image {
-                dim: naga::ImageDimension::D1,
-                arrayed: true,
-                ..
-            }
-        )
-    }) {
-        return Err(ConvertError::Unsupported(crate::refusal::TEXTURE_1_D_ARRAY));
-    }
     // Every built-in the entry point reads or writes, with its type.
     let mut builtins = Vec::new();
     let mut add = |ty: Handle<Type>, binding: Option<&Binding>| {
@@ -887,7 +909,7 @@ fn float_to_ints(module: &Module, f: &Function) -> Result<Vec<Conversion>, Conve
         if scalar.kind != ScalarKind::Float {
             continue;
         }
-        if (scalar.width, width) != (4, 4) {
+        if (scalar.width, width) != (FLOAT_BYTES, FLOAT_BYTES) {
             return Err(ConvertError::Unsupported(
                 crate::refusal::FLOAT_TO_INT_WIDTH,
             ));
@@ -899,9 +921,15 @@ fn float_to_ints(module: &Module, f: &Function) -> Result<Vec<Conversion>, Conve
 
 /// A function giving Direct3D's f32 to integer conversion: 0 for NaN, the integer's limits at and
 /// past them.
+/// The bytes of the 32-bit floats and integers Direct3D's conversions take.
+const FLOAT_BYTES: u8 = core::mem::size_of::<f32>() as u8;
+
 fn float_to_int_function(module: &mut Module, (kind, size): FloatToInt) -> Function {
     let mut ty = |kind| {
-        let scalar = Scalar { kind, width: 4 };
+        let scalar = Scalar {
+            kind,
+            width: FLOAT_BYTES,
+        };
         let inner = match size {
             None => TypeInner::Scalar(scalar),
             Some(size) => TypeInner::Vector { size, scalar },
@@ -933,10 +961,18 @@ fn float_to_int_function(module: &mut Module, (kind, size): FloatToInt) -> Funct
     let x = e.append(Expression::FunctionArgument(0), Span::UNDEFINED);
     let (above, below, max, min, zero) = if kind == ScalarKind::Sint {
         let (max, min) = (Literal::I32(i32::MAX), Literal::I32(i32::MIN));
-        (2_147_483_648.0, -2_147_483_648.0, max, min, Literal::I32(0))
+        // i32::MIN as f32 is exact, and the first float above the range is its negation.
+        (
+            -(i32::MIN as f32),
+            i32::MIN as f32,
+            max,
+            min,
+            Literal::I32(0),
+        )
     } else {
         let (max, zero) = (Literal::U32(u32::MAX), Literal::U32(0));
-        (4_294_967_296.0, 0.0, max, zero, zero)
+        // u32::MAX rounds up to 2^32, the first float above the range.
+        (u32::MAX as f32, 0.0, max, zero, zero)
     };
     let literals = [
         Literal::F32(above),
@@ -944,8 +980,8 @@ fn float_to_int_function(module: &mut Module, (kind, size): FloatToInt) -> Funct
         max,
         min,
         zero,
-        Literal::U32(0x7fff_ffff),
-        Literal::U32(0x7f80_0000),
+        Literal::U32(!(-0.0f32).to_bits()),
+        Literal::U32(f32::INFINITY.to_bits()),
     ]
     .map(|l| e.append(Expression::Literal(l), Span::UNDEFINED));
     let start = e.len();
@@ -957,7 +993,7 @@ fn float_to_int_function(module: &mut Module, (kind, size): FloatToInt) -> Funct
     let converted = add(Expression::As {
         expr: x,
         kind,
-        convert: Some(4),
+        convert: Some(FLOAT_BYTES),
     });
     let bits = add(Expression::As {
         expr: x,
@@ -1059,6 +1095,123 @@ fn direct3d_float_to_int(
         place_calls(f, &calls);
     }
     Ok(Some(moved))
+}
+
+/// Copies of the module's functions, then of its entry points' functions, in the order an index
+/// into "functions, then entry points" names them.
+fn all_functions(module: &Module) -> Vec<Function> {
+    module
+        .functions
+        .iter()
+        .map(|(_, f)| f.clone())
+        .chain(module.entry_points.iter().map(|ep| ep.function.clone()))
+        .collect()
+}
+
+/// One expression to be computed by a helper: the function holding it (an index into functions,
+/// then entry points), the expression, and the run-time operands passed to the helper with their
+/// types.
+struct Read {
+    function: usize,
+    user: Handle<Expression>,
+    passed: Vec<(Handle<Expression>, Handle<Type>)>,
+}
+
+/// Makes each expression of `found` (function index, expression) a call of the helper `build` makes
+/// for it, which takes the expression's operands that are neither constants nor globals. Each
+/// function's operands are typed after `stand_in` edits a copy of it with its expressions of `found`.
+fn outline(
+    module: &mut Module,
+    found: &[(usize, Handle<Expression>)],
+    stand_in: impl Fn(&mut Function, &[Handle<Expression>]),
+    build: impl Fn(&mut Module, &Function, &Read) -> Result<Function, ConvertError>,
+) -> Result<(), ConvertError> {
+    let n = module.functions.len();
+    let mut reads = Vec::new();
+    for (i, mut f) in all_functions(module).into_iter().enumerate() {
+        let here: Vec<_> = found.iter().filter(|r| r.0 == i).map(|r| r.1).collect();
+        if here.is_empty() {
+            continue;
+        }
+        let original = f.expressions.clone();
+        stand_in(&mut f, &here);
+        let mut typifier = naga::front::Typifier::new();
+        let ctx = naga::proc::ResolveContext::with_locals(module, &f.local_variables, &f.arguments);
+        for &h in &here {
+            let mut user = original[h].clone();
+            let mut passed = Vec::new();
+            for o in arrays::operands(&mut user)? {
+                let o = *o;
+                if arrays::constant(&f, o)
+                    || matches!(f.expressions[o], Expression::GlobalVariable(_))
+                {
+                    continue;
+                }
+                typifier
+                    .grow(o, &f.expressions, &ctx)
+                    .map_err(|e| ConvertError::Malformed(format!("{e}")))?;
+                passed.push((o, typifier.get(o, &module.types).clone()));
+            }
+            reads.push((i, h, passed));
+        }
+    }
+    let reads: Vec<Read> = reads
+        .into_iter()
+        .map(|(function, user, passed)| Read {
+            function,
+            user,
+            passed: passed
+                .into_iter()
+                .map(|(e, inner)| {
+                    let ty = module
+                        .types
+                        .insert(Type { name: None, inner }, Span::UNDEFINED);
+                    (e, ty)
+                })
+                .collect(),
+        })
+        .collect();
+    let mut built = Vec::new();
+    for r in &reads {
+        let f = match r.function < n {
+            true => {
+                module
+                    .functions
+                    .iter()
+                    .nth(r.function)
+                    .expect("a function")
+                    .1
+            }
+            false => &module.entry_points[r.function - n].function,
+        }
+        .clone();
+        built.push(build(module, &f, r)?);
+    }
+    let (helpers, moved) = functions_first(module, |module| -> Vec<Handle<Function>> {
+        built
+            .into_iter()
+            .map(|h| module.functions.append(h, Span::UNDEFINED))
+            .collect()
+    });
+    for i in 0..n + module.entry_points.len() {
+        let f = match moved.get(i) {
+            Some(&h) => &mut module.functions[h],
+            None => &mut module.entry_points[i - n].function,
+        };
+        let calls: Vec<Placed> = reads
+            .iter()
+            .zip(&helpers)
+            .filter(|(r, _)| r.function == i)
+            .map(|(r, &helper)| Placed {
+                result: r.user,
+                function: helper,
+                arguments: r.passed.iter().map(|p| p.0).collect(),
+                pre: None,
+            })
+            .collect();
+        place_calls(f, &calls);
+    }
+    Ok(())
 }
 
 /// Runs `make`, which appends functions, so that they come before every function the module had
@@ -1525,8 +1678,9 @@ fn sampled_pairs(
 }
 
 /// Numbers every resource by Direct3D 12's rule (6.4): within the stage's set, each kind's slots are
-/// the program's own resources of that kind in (space, register) order, from the kind's first
-/// binding, so register spaces and registers of any size fit while the program has no more resources
+/// the registers of that kind the DXIL's resource list declares (`declared`, used by the program or
+/// not, so the numbering is the one a front reads from the container) in (space, register) order,
+/// from the kind's first binding, so register spaces and registers of any size fit while the program has no more resources
 /// of a kind than its range holds. Kinds follow Direct3D's register classes as on the DXBC route
 /// (shader resource views, buffers among them, are textures; unordered access views are storage); a
 /// counter takes its view's slot. A slot (`binding - kind.first_binding()`) is what the variant's
@@ -1534,6 +1688,7 @@ fn sampled_pairs(
 fn bindings(
     module: &mut Module,
     resources: &Resources,
+    declared_registers: &Resources,
     set: u32,
     reflection: &mut Reflection,
 ) -> Result<Vec<(Handle<GlobalVariable>, u32)>, ConvertError> {
@@ -1548,14 +1703,8 @@ fn bindings(
         let &[class, space, register] = resources
             .get(binding.binding as usize)
             .ok_or_else(|| ConvertError::Malformed("a binding past the resource list".into()))?;
-        let kind = match binding.group {
-            CONSTANTS => SlotKind::Uniform,
-            VIEW => SlotKind::Texture,
-            STORAGE => SlotKind::Storage,
-            SAMPLER => SlotKind::Sampler,
-            COUNTER => SlotKind::Counter,
-            _ => return Err(ConvertError::Malformed("a resource of no class".into())),
-        };
+        let kind = slot_kind(binding.group)
+            .ok_or_else(|| ConvertError::Malformed("a resource of no class".into()))?;
         if binding.group != class && !(binding.group == COUNTER && class == STORAGE) {
             return Err(ConvertError::Malformed(
                 "a resource of another class".into(),
@@ -1568,9 +1717,13 @@ fn bindings(
         SlotKind::Counter => SlotKind::Storage as u32,
         k => k as u32,
     };
+    let listed = declared_registers
+        .iter()
+        .filter_map(|&[class, space, register]| Some((rank(slot_kind(class)?), space, register)));
     let mut order: Vec<(u32, u32, u32)> = declared
         .iter()
         .map(|&(_, kind, space, register)| (rank(kind), space, register))
+        .chain(listed)
         .collect();
     order.sort_unstable();
     order.dedup();
@@ -1601,6 +1754,18 @@ fn bindings(
     Ok(slots)
 }
 
+/// The slot kind of a resource class (`cpp/boundary.h`).
+fn slot_kind(class: u32) -> Option<SlotKind> {
+    match class {
+        CONSTANTS => Some(SlotKind::Uniform),
+        VIEW => Some(SlotKind::Texture),
+        STORAGE => Some(SlotKind::Storage),
+        SAMPLER => Some(SlotKind::Sampler),
+        COUNTER => Some(SlotKind::Counter),
+        _ => None,
+    }
+}
+
 /// SPIR-V's physical layout (its specification, 2.3 and 2.2.1): the header's words before the first
 /// instruction, and where an instruction's first word keeps its word count and its opcode.
 pub(crate) mod words {
@@ -1609,6 +1774,47 @@ pub(crate) mod words {
     pub const BOUND: usize = 3;
     pub const COUNT_SHIFT: u32 = u16::BITS;
     pub const OPCODE_MASK: u32 = u16::MAX as u32;
+
+    /// `OpDecorate`'s words (3.32.2): the target, the decoration, then its first literal.
+    pub mod decorate {
+        pub const TARGET: usize = 1;
+        pub const DECORATION: usize = 2;
+        pub const LITERAL: usize = 3;
+        pub const DECORATE_WORDS: usize = LITERAL + 1;
+    }
+
+    /// `OpTypeInt`'s words (3.32.6): the result, the width, then the signedness.
+    pub mod type_int {
+        pub const SIGNEDNESS: usize = 3;
+        pub const TYPE_INT_WORDS: usize = SIGNEDNESS + 1;
+    }
+
+    /// `OpTypeImage`'s words (3.32.6) up to its format; the access qualifier may follow.
+    pub mod type_image {
+        pub const SAMPLED_TYPE: usize = 2;
+        pub const DIM: usize = 3;
+        pub const SAMPLED: usize = 7;
+        pub const FORMAT: usize = 8;
+        pub const TYPE_IMAGE_WORDS: usize = FORMAT + 1;
+        /// `Sampled` of an image used without a sampler: a storage image.
+        pub const STORAGE: u32 = 2;
+    }
+
+    /// `OpTypePointer`'s and `OpVariable`'s third word: the pointee type, the storage class.
+    pub const POINTER_TYPE: usize = 3;
+    pub const VARIABLE_STORAGE_CLASS: usize = 3;
+    pub const POINTER_WORDS: usize = POINTER_TYPE + 1;
+
+    /// A type declaration's result id.
+    pub const RESULT: usize = 1;
+    /// An instruction's result type and result id, where it has both.
+    pub const RESULT_TYPE: usize = 1;
+    pub const RESULT_AFTER_TYPE: usize = 2;
+    /// An atomic instruction's pointer, after its result type and result.
+    pub const ATOMIC_POINTER: usize = 3;
+
+    /// `OpExtInst`'s instruction number (3.32.4), after the result type, result and set.
+    pub const EXT_INSTRUCTION: usize = 4;
 }
 
 /// Whether `spirv` takes an input at another place in the pixel (GLSL.std.450's `InterpolateAt*`),
@@ -1626,8 +1832,7 @@ fn evaluates_inputs(spirv: &[u32]) -> bool {
         if count == 0 || at + count > spirv.len() {
             return false;
         }
-        // OpExtInst: result type, result, set, instruction.
-        let instruction = at + 4;
+        let instruction = at + words::EXT_INSTRUCTION;
         if spirv[at] & words::OPCODE_MASK == Op::ExtInst as u32
             && instruction < at + count
             && EVALUATIONS.iter().any(|&e| e as u32 == spirv[instruction])
@@ -1723,21 +1928,23 @@ fn atomic_signedness_differs(spirv: &[u32]) -> bool {
             at += count;
             continue;
         };
-        let w = &spirv[at + 1..at + count];
+        let w = &spirv[at..at + count];
         match op {
-            Op::TypeInt if w.len() >= 3 => {
-                signed.insert(w[0], w[2] != 0);
+            Op::TypeInt if w.len() >= words::type_int::TYPE_INT_WORDS => {
+                signed.insert(w[words::RESULT], w[words::type_int::SIGNEDNESS] != 0);
             }
-            Op::TypePointer if w.len() >= 3 => {
-                pointee.insert(w[0], w[2]);
+            Op::TypePointer if w.len() >= words::POINTER_WORDS => {
+                pointee.insert(w[words::RESULT], w[words::POINTER_TYPE]);
             }
-            _ if (SIGNED.contains(&op) || UNSIGNED.contains(&op)) && w.len() >= 3 => {
-                atomics.push((SIGNED.contains(&op), w[2]));
+            _ if (SIGNED.contains(&op) || UNSIGNED.contains(&op))
+                && w.len() > words::ATOMIC_POINTER =>
+            {
+                atomics.push((SIGNED.contains(&op), w[words::ATOMIC_POINTER]));
             }
             _ => {}
         }
-        if POINTERS.contains(&op) && w.len() >= 2 {
-            types.insert(w[1], w[0]);
+        if POINTERS.contains(&op) && w.len() > words::RESULT_AFTER_TYPE {
+            types.insert(w[words::RESULT_AFTER_TYPE], w[words::RESULT_TYPE]);
         }
         at += count;
     }
@@ -1748,4 +1955,67 @@ fn atomic_signedness_differs(spirv: &[u32]) -> bool {
             .and_then(|p| signed.get(p))
             .is_some_and(|&memory_signed| memory_signed != op_signed)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Registers the resource list declares but the program leaves unused still take their slots, as
+    /// a front reading the container numbers them.
+    #[test]
+    fn declared_but_unused_registers_keep_their_slots() {
+        let mut module = Module::default();
+        let ty = module.types.insert(
+            Type {
+                name: None,
+                inner: TypeInner::Image {
+                    dim: naga::ImageDimension::D2,
+                    arrayed: false,
+                    class: naga::ImageClass::Storage {
+                        format: naga::StorageFormat::R32Sint,
+                        access: naga::StorageAccess::LOAD,
+                    },
+                },
+            },
+            Span::UNDEFINED,
+        );
+        // The program uses u1 and u3 of space 0; the resource list declares u0 to u3.
+        let used = [1, 3];
+        let resources: Resources = used.iter().map(|&r| [STORAGE, 0, r]).collect();
+        let vars: Vec<_> = (0..used.len() as u32)
+            .map(|binding| {
+                module.global_variables.append(
+                    naga::GlobalVariable {
+                        name: None,
+                        space: AddressSpace::Handle,
+                        binding: Some(naga::ResourceBinding {
+                            group: STORAGE,
+                            binding,
+                        }),
+                        ty,
+                        init: None,
+                        memory_decorations: Default::default(),
+                    },
+                    Span::UNDEFINED,
+                )
+            })
+            .collect();
+        let declared: Resources = (0..=used[1]).map(|r| [STORAGE, 0, r]).collect();
+        let mut reflection = Reflection {
+            stage: SourceStage::Compute,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            bindings: Vec::new(),
+            helpers: Vec::new(),
+            helper_size: 0,
+            sampled_pairs: Vec::new(),
+            extras: StageExtras::None,
+            slow_paths: Vec::new(),
+        };
+        let slots = bindings(&mut module, &resources, &declared, 0, &mut reflection).unwrap();
+        assert_eq!(slots, [(vars[0], used[0]), (vars[1], used[1])]);
+        let slots: Vec<u32> = reflection.bindings.iter().map(|b| b.slot()).collect();
+        assert_eq!(slots, used);
+    }
 }

@@ -60,7 +60,10 @@ cull distances from vertex shaders through the stage helper (`CullDistanceAsGeom
 applied views' component mappings to depth textures read plainly and converted wave minimums and
 maximums of the other signedness; run 41 split DXIL arrays of storage textures (Godot's
 `ResourceArray` compute shaders), compared converted division with Direct3D's and named every
-refusal once; what remains is under Next. Runs 21 to 33 merged origin/phase-2-graphics-webgpu,
+refusal once; run 42 numbered DXIL resources over every register the resource list declares
+(Godot's two `StorageFormatKind` compute shaders), read sizes past the helper's level count as zero
+under `TEXTURE_INFO` and made DXIL 1D textures 2D textures one texel high; what remains is under
+Next. Runs 21 to 33 merged origin/phase-2-graphics-webgpu,
 -webgl, -direct3d-11, -direct3d-12 and -rig (run 28: one conflict in the interface's `slow.rs`,
 the same three slow paths in two orders, ours kept).
 
@@ -1805,13 +1808,79 @@ Run 41 (Godot's `ResourceArray`, the Direct3D 11 track's division question, the 
   be deleted (the laptop was down at the end); the next run deletes
   `~/wcontainers-graphics/target/phase-2-graphics-shaders` there first.
 
+Run 42 (Godot's `StorageFormatKind` shaders, the Direct3D 11 track's empty slot sizes, the Direct3D
+12 track's 1D textures):
+- Merged origin/phase-2-graphics-direct3d-11 and -direct3d-12 (one conflict in
+  `literals.baseline`, neighbouring lines, resolved by keeping neither as docs/literals.md says);
+  the others had nothing new. The laptop answers again.
+- Godot's two `StorageFormatKind` compute shaders (17770b6eaab2fc88, 3412ef9e13dd769b, scratch
+  `run36/godot-dump`): Godot's compiler keeps views the program never uses in the resource list
+  (u800000 and u1400000 there), dxil-spirv drops them, and the slots were numbered over the used
+  ones only, so every later view took an earlier view's format. DXIL slots are now numbered over
+  every register the resource list declares, used or not (`cpp/dxil.cpp`
+  `wcs_dxil_declared_registers`; each register of a bounded range is one place, an unbounded range
+  its first), which is what the Direct3D 12 front reads from the container. Both shaders convert
+  with the keys the front gave them. Unit test `declared_but_unused_registers_keep_their_slots`.
+  For the front: an array of views takes one place per element (its registers), as run 41 split
+  them; the front's `sorted_places` counts an array once.
+- `TEXTURE_INFO` (the Direct3D 11 track's empty slot, `an_empty_slots_size_and_level_count_at_10_0`):
+  a size asked under the flag is now the texture's size where the level is below the helper's level
+  count and zero otherwise, so an empty slot (the front writes zero levels) answers 0 by 0 as Direct3D
+  does, and so does a level past the view's count. Interface change (doc of `TEXTURE_INFO`, plan
+  4.12). New own `ps_levels_past` (fxc, dxc). Drawn tests in `variant_draw` against real Direct3D 11
+  with an empty slot (new `Reference::unbound`): 0 of 4096 texels apart, both routes, WebGPU and
+  WebGL 2 (run42/gpu5.log). With level 5 of 4 (`ps_levels_past`) the RTX 3080's Direct3D 11
+  answers a size of one texel (2591 texels apart from ours), where WARP, the specification and
+  dxbc-spirv's own `resinfo` answer zero; that case is compared with WARP (every texel one step
+  apart in the interpolated alpha, allowed; no size differs) and the hardware's count is printed.
+- DXIL 1D textures and 1D arrays (the Direct3D 12 track's runner `Texture1DArray` and its 1D
+  binding refusal): made 2D textures one texel high as the DXBC route and the fronts make them
+  (`dxil/one_d.rs`): reads at (x, the row's centre), loads and stores at (x, 0), offsets and
+  gradients with a zero second component, sizes their width. Typed buffers (read as 1D images by
+  the reader) are left alone. Atomic operations on a 1D storage texture are refused by name
+  (`Texture1DAtomic`, replacing `Texture1DArray`). The depth widening's outlining is now one
+  function (`dxil::outline`) both use. New own `cs_one_d` (fxc, dxc); unit test
+  `one_d_textures_are_2d_textures_one_texel_high`; drawn test `one_d_textures_match_direct3d`
+  (compute_draw, both routes on WebGPU on the RTX 3080 against real Direct3D 11's 1D textures,
+  seeded): 0 words apart in both outputs, both routes, seeds 1 to 4 (run42/gpu2.log). Records:
+  the rig's `textures.ps_1d_array.dxil` and the runner's sm6-uav-rwtexture-7 now convert.
+- naga's GLSL writer (carried): a select of integer vectors by a boolean vector was written as
+  `mix(.., bvecN)`, which GLSL ES 3.00 takes for floats only (ANGLE refused `ps_levels_past`'s
+  DXBC build, whose `resinfo` dxbc-spirv already zeroes past the level count); it is now written
+  one component at a time in every version (one path; GLSL ES 3.10 and GLSL 4.50 would take `mix`). Test
+  `integer_vector_selects_are_written_per_component`.
+- Literal sweep, one step: the SPIR-V operand words the DXIL readers use are named once in
+  `dxil::words` (`decorate`, `type_int`, `type_image`, pointer, variable, atomic and extended
+  instruction words), DXIL's resource list operands in `cpp/dxil.cpp`'s `ResourceOperand`, and the
+  float to integer conversion's bounds and masks are derived from `i32`, `u32` and `f32`.
+  This crate's baseline lines (src, build.rs, tests, examples): 851 at the end (883 at run 41's
+  end). The check passes but for the Direct3D 12 front's `TRIANGLE_VERTICES` (run42/check3.txt).
+  `to_spirv`'s status 0 stays baselined: naming it made the checker read the `0` left in that
+  function as the literal moved (`~`).
+- Tests: the laptop's whole suite (`--include-ignored`, corpora dxbc, games, runner, glslang) at
+  4c628ebd passed but for the runner corpus's long-known distance-4 entry (run42/suite3.log); the
+  laptop then stopped answering again (about 08:30 desktop time). After the GLSL writer and literal
+  commits, on the desktop: Windows clippy with warnings denied clean; lib, glsl_writer, variants,
+  compute and corpus tests pass (desk2.log); the whole suite in one GPU job passes but for the
+  runner corpus, whose desktop copy (`C:\wc\incoming\shaders-corpus41\runner`) is gone: every
+  shader present matched, the runner files were missing (suite4.log). Drawn: `variant_draw` 5 of 5
+  (gpu5.log), `compute_draw` 7 of 7 (gpu2.log). Chrome's compile (`web/check`) was not rerun this
+  run; the WGSL of `cs_one_d` and `ps_levels_past` is new and unchecked there.
+- Clean-up: this checkout's target folder and the desktop's
+  `C:\wc\target\phase-2-graphics-shaders` deleted at the end, and the laptop's
+  `~/wcontainers-graphics/target/phase-2-graphics-shaders` (it answered again at the very end).
+
 Next (in order):
-- The Direct3D 12 front (theirs, now possible since run 41): Godot's 3D platformer past its
-  three `ResourceArray` compute shaders: an array of storage views is one slot per element in
-  `storage_formats` (the element's place among the program's storage views, as for arrays of
-  textures). Its two `StorageFormatKind` shaders (17770b6eaab2fc88, 3412ef9e13dd769b in scratch
-  `run36/godot-dump`) have keys matching the declarations by (space, register) order as dxc lists
-  them; which view mismatches was not found this run (the laptop went down).
+- The Direct3D 12 front (theirs, now possible since run 42): Godot's 3D platformer rerun; its five
+  refused compute shaders convert here with the front's keys (the two `StorageFormatKind` ones
+  since run 42, the three `ResourceArray` ones since run 41 once the front numbers an array's
+  elements as one place each: `dxil::sorted_places` takes each register of a range). DXIL slots
+  count every register the container's resource list declares, used or not (run 42), as the
+  front's do. Drop the front's refusal of 1D views and of DXIL `Texture1DArray` and bind 1D views
+  as 2D views one texel high (run 42).
+- The Direct3D 11 front (theirs, now possible since run 42): set `TEXTURE_INFO` where a slot the
+  program asks its size of is empty (and write `TextureLevels` zero there) on WebGPU too; then
+  `an_empty_slots_size_and_level_count_at_10_0_as_direct3d_does` should pass.
 - The Direct3D 11 track: atg-simplecomputepc's difference is not the division (run 41).
 - The other tracks, from run 40's merge: the Direct3D 12 front deletes its own
   `TRIANGLE_VERTICES` in `device/early.rs` and imports `wcontainers_shaders::stage::TRIANGLE_VERTICES`;
@@ -1840,6 +1909,8 @@ Next (in order):
   (needs the view's layer count as a helper value and a flag for the layer from the stage: an
   interface change of two items, to agree with the fronts since their helper writers match every
   value).
+- Chrome's compile of the new own shaders' WGSL and GLSL (`web/check`, laptop's out folder);
+  restore the desktop's runner corpus copy if the laptop stays down.
 - Laptop: the WebAssembly build of the C++ was killed for memory at 5 jobs in this run (the other
   track's load was 15 to 39); run `wasm-run10.sh` with 2 jobs.
 - The Direct3D 12 front (theirs, now possible since run 37): drop the refusal "a raw or structured
@@ -3629,3 +3700,8 @@ were already there.
   key the interpolation ..."): how the pixel program interpolates each vertex output, by location,
   where not `Perspective`; the vertex program writes them so. A variant field, as 4.4 has all
   rewrites that depend on what else is bound; plan text in section 4 says so.
+
+- `VariantFlags::TEXTURE_INFO` (run 42, commit "interface: texture_info also reads sizes as zero
+  ..."): under the flag a size asked at a level at or past `HelperValue::TextureLevels` reads
+  zero, so a front binds it where a slot asked its size is empty (zero levels written there), on
+  any back end; doc of the flag and plan 4.12 only, no new field.

@@ -30,8 +30,11 @@ pub(crate) fn encode(spirv: &mut [u32]) {
         if count == 0 || at + count > spirv.len() {
             return;
         }
-        // OpDecorate: the target, the decoration, then its literal.
-        let (target, decoration, literal) = (at + 1, at + 2, at + 3);
+        let (target, decoration, literal) = (
+            at + words::decorate::TARGET,
+            at + words::decorate::DECORATION,
+            at + words::decorate::LITERAL,
+        );
         if spirv[at] & words::OPCODE_MASK == Op::Decorate as u32 && literal < at + count {
             if spirv[decoration] == Decoration::Component as u32 {
                 components.push((spirv[target], spirv[literal]));
@@ -42,7 +45,7 @@ pub(crate) fn encode(spirv: &mut [u32]) {
         at += count;
     }
     for literal in locations {
-        let target = spirv[literal - 2];
+        let target = spirv[literal - words::decorate::LITERAL + words::decorate::TARGET];
         let component = components
             .iter()
             .find(|(t, _)| *t == target)
