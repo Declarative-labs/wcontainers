@@ -183,7 +183,8 @@ impl Personality for X86_64 {
     type Block = X86Block;
     const PC_OFFSET: usize = RIP;
     const STOP_FLAG_OFFSET: usize = STOP_FLAG;
-    const BLOCK_SIZE: usize = (STOP_FLAG + 4).next_multiple_of(16);
+    const BLOCK_SIZE: usize =
+        (STOP_FLAG + size_of::<i32>()).next_multiple_of(wcontainers_guest_cpu::BLOCK_ALIGNMENT);
     const PRIVATE_BYTES: usize = 0;
 
     fn initial_block(pc: u64, sp: u64) -> X86Block {

@@ -19,6 +19,9 @@ pub use effects::{Effects, effects};
 #[cfg(feature = "translate")]
 pub use translate::*;
 
+/// What a thread's block size is a multiple of: the bytes of a 128-bit vector.
+pub const BLOCK_ALIGNMENT: usize = size_of::<u128>();
+
 /// What is true of one guest CPU that the kernel and the runners need without translating anything: the
 /// register block they see and where the thread's state words are.
 pub trait Personality: Sized + Send + Sync + 'static {
@@ -28,7 +31,7 @@ pub trait Personality: Sized + Send + Sync + 'static {
     const PC_OFFSET: usize;
     /// Where the i32 stop flag is, from the block's start (after the block).
     const STOP_FLAG_OFFSET: usize;
-    /// Bytes of the block and its stop flag, a multiple of 16.
+    /// Bytes of the block and its stop flag, a multiple of [`BLOCK_ALIGNMENT`].
     const BLOCK_SIZE: usize;
     /// Bytes after those that only the CPU side uses, zero when a thread is made. A thread's state is
     /// `BLOCK_SIZE + PRIVATE_BYTES` bytes.
