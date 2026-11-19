@@ -4,7 +4,11 @@
 use std::sync::Arc;
 
 use crate::Error;
+use crate::address::GpuVirtualAddress;
 use crate::device::{PipelineId, QueryHeapId, ResourceId};
+use wcontainers_directx_graphics_infrastructure::d3d::{
+    DispatchArguments, DrawArguments, DrawIndexedArguments,
+};
 
 /// A render target view as a descriptor holds it (`D3D12_RENDER_TARGET_VIEW_DESC` resolved against
 /// its resource): the program copies descriptors as bytes, so this is plain data.
@@ -137,7 +141,8 @@ pub struct StreamView {
 }
 
 /// `D3D12_VERTEX_BUFFER_VIEW`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct VertexBufferView {
     pub address: u64,
     pub size: u32,
@@ -145,7 +150,8 @@ pub struct VertexBufferView {
 }
 
 /// `D3D12_INDEX_BUFFER_VIEW`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct IndexBufferView {
     pub address: u64,
     pub size: u32,
@@ -178,14 +184,16 @@ pub enum IndirectArgument {
 impl IndirectArgument {
     /// The bytes it takes in each command.
     pub fn size(self) -> u32 {
-        match self {
-            IndirectArgument::Draw => 16,
-            IndirectArgument::DrawIndexed => 20,
-            IndirectArgument::Dispatch => 12,
-            IndirectArgument::VertexBuffer { .. } | IndirectArgument::IndexBuffer => 16,
-            IndirectArgument::Constants { count, .. } => 4 * count,
-            IndirectArgument::RootView { .. } => 8,
-        }
+        let size = match self {
+            IndirectArgument::Draw => size_of::<DrawArguments>(),
+            IndirectArgument::DrawIndexed => size_of::<DrawIndexedArguments>(),
+            IndirectArgument::Dispatch => size_of::<DispatchArguments>(),
+            IndirectArgument::VertexBuffer { .. } => size_of::<VertexBufferView>(),
+            IndirectArgument::IndexBuffer => size_of::<IndexBufferView>(),
+            IndirectArgument::Constants { count, .. } => size_of::<u32>() * count as usize,
+            IndirectArgument::RootView { .. } => size_of::<GpuVirtualAddress>(),
+        };
+        size as u32
     }
 }
 

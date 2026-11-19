@@ -1970,12 +1970,6 @@ code	crates/wcontainers-direct3d-12/src/device.rs	int	Device<B>::write_immediate
 code	crates/wcontainers-direct3d-12/src/device.rs	int	Replay	4
 code	crates/wcontainers-direct3d-12/src/device.rs	int	Replay	4
 code	crates/wcontainers-direct3d-12/src/device.rs	int	Replay<B>::dispatch	3
-code	crates/wcontainers-direct3d-12/src/device.rs	int	Replay<B>::draw	0xffff
-code	crates/wcontainers-direct3d-12/src/device.rs	int	Replay<B>::draw	160
-code	crates/wcontainers-direct3d-12/src/device.rs	int	Replay<B>::draw	32
-code	crates/wcontainers-direct3d-12/src/device.rs	int	Replay<B>::draw	4
-code	crates/wcontainers-direct3d-12/src/device.rs	int	Replay<B>::draw	4
-code	crates/wcontainers-direct3d-12/src/device.rs	int	Replay<B>::draw	4
 code	crates/wcontainers-direct3d-12/src/device.rs	int	Replay<B>::draw	4
 code	crates/wcontainers-direct3d-12/src/device.rs	int	Replay<B>::draw	4
 code	crates/wcontainers-direct3d-12/src/device.rs	int	Replay<B>::draw	4
@@ -2013,9 +2007,6 @@ code	crates/wcontainers-direct3d-12/src/device.rs	int	storage_texel	8
 code	crates/wcontainers-direct3d-12/src/device.rs	str	Device<B>::clear_storage	"clearing a structured buffer view whose stride is no multiple of 4"
 code	crates/wcontainers-direct3d-12/src/device.rs	str	Device<B>::clear_volume_rects	"clearing rectangles of a 3D texture's view in another format"
 code	crates/wcontainers-direct3d-12/src/device.rs	str	Device<B>::convert_stage	"StorageImageAtomics"
-code	crates/wcontainers-direct3d-12/src/device.rs	str	Device<B>::counting_program	"@fragment fn main() -> @location(0) vec4f { return vec4f(1.0); }"
-code	crates/wcontainers-direct3d-12/src/device.rs	str	Device<B>::counting_program	"main"
-code	crates/wcontainers-direct3d-12/src/device.rs	str	Replay<B>::draw	"Direct3D 12 has no 8-bit indices"
 code	crates/wcontainers-direct3d-12/src/device.rs	str	Replay<B>::draw	"a vertex buffer view read past its end at an address not a multiple of 4"
 code	crates/wcontainers-direct3d-12/src/device.rs	str	Replay<B>::draw	"an index past 4 GiB"
 code	crates/wcontainers-direct3d-12/src/device.rs	str	Replay<B>::draw::macro_rules! call	"a graphics pipeline"
@@ -2080,26 +2071,7 @@ code	crates/wcontainers-direct3d-12/src/device/geometry.rs	int	Targets	4
 code	crates/wcontainers-direct3d-12/src/device/geometry.rs	int	Targets	4
 code	crates/wcontainers-direct3d-12/src/device/geometry.rs	str	Replay<B>::target_layers	"a draw choosing the slice of a 3D texture's target view"
 code	crates/wcontainers-direct3d-12/src/device/indirect.rs	int	Device<B>::read_now	4
-code	crates/wcontainers-direct3d-12/src/device/indirect.rs	int	Replay<B>::execute_indirect	160
 code	crates/wcontainers-direct3d-12/src/device/indirect.rs	int	Replay<B>::execute_indirect	3
-code	crates/wcontainers-direct3d-12/src/device/indirect.rs	int	Replay<B>::execute_indirect	32
-code	crates/wcontainers-direct3d-12/src/device/indirect.rs	int	Replay<B>::execute_indirect	4
-code	crates/wcontainers-direct3d-12/src/device/indirect.rs	int	Replay<B>::execute_indirect	4
-code	crates/wcontainers-direct3d-12/src/device/indirect.rs	int	Replay<B>::execute_indirect	4
-code	crates/wcontainers-direct3d-12/src/device/indirect.rs	int	Replay<B>::execute_indirect	4
-code	crates/wcontainers-direct3d-12/src/device/indirect.rs	int	Replay<B>::execute_indirect	4
-code	crates/wcontainers-direct3d-12/src/device/indirect.rs	int	Replay<B>::execute_indirect	42
-code	crates/wcontainers-direct3d-12/src/device/indirect.rs	int	Replay<B>::execute_indirect	57
-code	crates/wcontainers-direct3d-12/src/device/indirect.rs	int	Replay<B>::read_back_indirect	3
-code	crates/wcontainers-direct3d-12/src/device/indirect.rs	int	Replay<B>::read_back_indirect	3
-code	crates/wcontainers-direct3d-12/src/device/indirect.rs	int	Replay<B>::read_back_indirect	3
-code	crates/wcontainers-direct3d-12/src/device/indirect.rs	int	Replay<B>::read_back_indirect	3
-code	crates/wcontainers-direct3d-12/src/device/indirect.rs	int	Replay<B>::read_back_indirect	3
-code	crates/wcontainers-direct3d-12/src/device/indirect.rs	int	Replay<B>::read_back_indirect	3
-code	crates/wcontainers-direct3d-12/src/device/indirect.rs	int	Replay<B>::read_back_indirect	32
-code	crates/wcontainers-direct3d-12/src/device/indirect.rs	int	Replay<B>::read_back_indirect	4
-code	crates/wcontainers-direct3d-12/src/device/indirect.rs	int	Replay<B>::read_back_indirect	4
-code	crates/wcontainers-direct3d-12/src/device/indirect.rs	int	Replay<B>::read_back_indirect	4
 code	crates/wcontainers-direct3d-12/src/device/null.rs	int	Device<B>::prepare_nulls	6
 code	crates/wcontainers-direct3d-12/src/device/null.rs	int	Device<B>::zero_texture	4
 code	crates/wcontainers-direct3d-12/src/device/null.rs	int	shape	4
@@ -2122,34 +2094,10 @@ code	crates/wcontainers-direct3d-12/src/device/pull.rs	int	put	5
 code	crates/wcontainers-direct3d-12/src/device/pull.rs	int	put	9
 code	crates/wcontainers-direct3d-12/src/device/pull.rs	int	words	9
 code	crates/wcontainers-direct3d-12/src/device/pull.rs	str	Device<B>::fetch	"a per-instance element beyond 4 GiB"
-code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::clock_calibration	8
-code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::create_query_heap	4
-code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::create_query_heap	7
-code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::predicate	160
-code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::predicate	32
-code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::predicate	4
-code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::predicate	5
-code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::predicate	8
-code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::predicate	8
-code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::resolve_query_data	160
-code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::resolve_query_data	8
-code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::run_own	16
-code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::run_own	64
-code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::skips	8
-code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::skips	8
-code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::skips	8
-code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::skips	8
-code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Programs	4
-code	crates/wcontainers-direct3d-12/src/device/query.rs	str	Device<B>::own_program	"main"
 code	crates/wcontainers-direct3d-12/src/device/statistics.rs	int	Device<B>::counting_blocks	0xff
 code	crates/wcontainers-direct3d-12/src/device/statistics.rs	int	Device<B>::counting_blocks	0xff
-code	crates/wcontainers-direct3d-12/src/device/statistics.rs	int	Replay<B>::indexed_strip	0xff
-code	crates/wcontainers-direct3d-12/src/device/statistics.rs	int	Replay<B>::indexed_strip	4
-code	crates/wcontainers-direct3d-12/src/device/statistics.rs	int	Replay<B>::indexed_strip	57
 code	crates/wcontainers-direct3d-12/src/device/statistics.rs	int	primitives	3
-code	crates/wcontainers-direct3d-12/src/device/statistics.rs	str	Device<B>::pixel_counting	"main"
 code	crates/wcontainers-direct3d-12/src/device/statistics.rs	str	counting_program	"@builtin(sample_index) i: u32"
-code	crates/wcontainers-direct3d-12/src/device/statistics.rs	str	counting_program	"@group({HELPER_SET}) @binding({COUNTER_BINDING})\nvar<storage, read_write> count: array<atomic<u32>, 2>;\n@fragment fn main({input}) {{\n    if atomicAdd(&coun… #c22bca51eb9f9f40
 code	crates/wcontainers-direct3d-12/src/device/through.rs	int	Device<B>::texels_through	256
 code	crates/wcontainers-direct3d-12/src/device/through.rs	int	Device<B>::texels_through	64
 code	crates/wcontainers-direct3d-12/src/device/through.rs	str	Device<B>::texels_through	"a storage texture read through a buffer at a slot past 63"
@@ -2207,12 +2155,6 @@ code	crates/wcontainers-direct3d-12/src/list.rs	int	Command	4
 code	crates/wcontainers-direct3d-12/src/list.rs	int	Command	6
 code	crates/wcontainers-direct3d-12/src/list.rs	int	CommandSignature::fits	4
 code	crates/wcontainers-direct3d-12/src/list.rs	int	CommandSignature::new	4
-code	crates/wcontainers-direct3d-12/src/list.rs	int	IndirectArgument::size	12
-code	crates/wcontainers-direct3d-12/src/list.rs	int	IndirectArgument::size	16
-code	crates/wcontainers-direct3d-12/src/list.rs	int	IndirectArgument::size	16
-code	crates/wcontainers-direct3d-12/src/list.rs	int	IndirectArgument::size	20
-code	crates/wcontainers-direct3d-12/src/list.rs	int	IndirectArgument::size	4
-code	crates/wcontainers-direct3d-12/src/list.rs	int	IndirectArgument::size	8
 code	crates/wcontainers-direct3d-12/src/list.rs	int	Rect	4
 code	crates/wcontainers-direct3d-12/src/list.rs	int	ResourceView::counter	32
 code	crates/wcontainers-direct3d-12/src/list.rs	int	ResourceView::with_counter	32
