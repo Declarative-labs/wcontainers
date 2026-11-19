@@ -13,6 +13,13 @@ use wcontainers_inside::layout::{GIC_DISTRIBUTOR, GIC_REDISTRIBUTORS};
 
 use crate::{Error, Exit, Hypervisor, Interrupts, Memory, Register, Result, fresh};
 
+// The framework takes a vector register's value in a vector register, as C passes a 16-byte vector, and
+// applevisor-sys declares it as a `u128`, which Rust passes in two general registers: the call is made in C
+// (src/hvf_vector.c).
+unsafe extern "C" {
+    fn wcontainers_set_vector(vcpu: hv_vcpu_t, reg: SimdFpReg, value: *const u128) -> i32;
+}
+
 /// Hypervisor.framework.
 pub struct HypervisorFramework;
 
@@ -136,6 +143,42 @@ const GENERAL: [Reg; RegisterBlock::ZERO.x.len()] = [
     Reg::X30,
 ];
 
+/// The vector registers in order.
+const VECTOR: [SimdFpReg; RegisterBlock::ZERO.v.len()] = [
+    SimdFpReg::Q0,
+    SimdFpReg::Q1,
+    SimdFpReg::Q2,
+    SimdFpReg::Q3,
+    SimdFpReg::Q4,
+    SimdFpReg::Q5,
+    SimdFpReg::Q6,
+    SimdFpReg::Q7,
+    SimdFpReg::Q8,
+    SimdFpReg::Q9,
+    SimdFpReg::Q10,
+    SimdFpReg::Q11,
+    SimdFpReg::Q12,
+    SimdFpReg::Q13,
+    SimdFpReg::Q14,
+    SimdFpReg::Q15,
+    SimdFpReg::Q16,
+    SimdFpReg::Q17,
+    SimdFpReg::Q18,
+    SimdFpReg::Q19,
+    SimdFpReg::Q20,
+    SimdFpReg::Q21,
+    SimdFpReg::Q22,
+    SimdFpReg::Q23,
+    SimdFpReg::Q24,
+    SimdFpReg::Q25,
+    SimdFpReg::Q26,
+    SimdFpReg::Q27,
+    SimdFpReg::Q28,
+    SimdFpReg::Q29,
+    SimdFpReg::Q30,
+    SimdFpReg::Q31,
+];
+
 enum Which {
     General(Reg),
     System(SysReg),
@@ -154,6 +197,16 @@ fn which(register: Register) -> Which {
         Register::Ttbr1 => Which::System(SysReg::TTBR1_EL1),
         Register::Affinity => Which::System(SysReg::MPIDR_EL1),
         Register::MemoryModelFeatures => Which::System(SysReg::ID_AA64MMFR0_EL1),
+        Register::StackEl0 => Which::System(SysReg::SP_EL0),
+        Register::ExceptionLink => Which::System(SysReg::ELR_EL1),
+        Register::SavedState => Which::System(SysReg::SPSR_EL1),
+        Register::Syndrome => Which::System(SysReg::ESR_EL1),
+        Register::FaultAddress => Which::System(SysReg::FAR_EL1),
+        Register::Vectors => Which::System(SysReg::VBAR_EL1),
+        Register::DebugControl => Which::System(SysReg::MDSCR_EL1),
+        Register::ThreadPointer => Which::System(SysReg::TPIDR_EL0),
+        Register::FloatStatus => Which::General(Reg::FPSR),
+        Register::FloatControl => Which::General(Reg::FPCR),
     }
 }
 
@@ -194,6 +247,17 @@ impl crate::VirtualCpu for HvfCpu {
             Which::System(r) => self.vcpu.set_sys_reg(r, value),
         };
         done.map_err(|e| Error::Hypervisor(format!("{register:?}: {e:?}")))
+    }
+
+    fn vector(&self, n: u8) -> Result<u128> {
+        self.vcpu
+            .get_simd_fp_reg(VECTOR[usize::from(n)])
+            .map_err(|e| Error::Hypervisor(format!("v{n}: {e:?}")))
+    }
+
+    fn set_vector(&mut self, n: u8, value: u128) -> Result<()> {
+        // SAFETY: the value is read during the call; the identifier is this CPU's.
+        code(unsafe { wcontainers_set_vector(self.vcpu.id(), VECTOR[usize::from(n)], &value) })
     }
 
     fn stopper(&self) -> HvfStopper {

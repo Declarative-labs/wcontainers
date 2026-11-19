@@ -26,6 +26,8 @@ applevisor-sys = "1.0.0"
 [build-dependencies]
 # The names of the build environment.
 wcontainers-inside = { path = "../wcontainers-inside" }
+# The call that sets a vector register, in C.
+cc = "1.11.2"
 
 [dev-dependencies]
 # The native output's pieces, carried through the emitter in the structure test.
@@ -34,9 +36,20 @@ wcontainers-translator = { path = "../wcontainers-translator", features = ["nati
 fastrand = "2.5.0"
 # The floor cases' messages.
 zerocopy.workspace = true
+# Layer 1's cases and the WebAssembly output's outcomes, which the differential test compares with.
+wcontainers-translator-test = { path = "../wcontainers-translator-test" }
+proptest = "1.12.0"
 
 [[test]]
 name = "floor"
+harness = false
+
+[[test]]
+name = "native"
+harness = false
+
+[[test]]
+name = "interrupts"
 harness = false
 
 [lints]

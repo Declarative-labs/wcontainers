@@ -11,6 +11,9 @@
 mod protocol;
 
 #[cfg(target_os = "macos")]
+mod common;
+
+#[cfg(target_os = "macos")]
 fn main() {
     macos::main();
 }
@@ -24,8 +27,6 @@ fn main() {
 #[allow(deprecated)] // libc's Mach clock calls, which the test uses to time stops
 mod macos {
     use std::collections::HashMap;
-    use std::path::Path;
-    use std::process::Command;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
     use std::thread;
@@ -33,32 +34,18 @@ mod macos {
 
     use wcontainers_hypervisor::{
         Exit, Host, Hypervisor, Loaded, Memory, Register, Stopper, VirtualCpu, VirtualMachine,
-        boot, link as link_page, load,
+        boot, link as link_page,
     };
     use wcontainers_inside::link::{self, Fatal, GiveBack, Start};
 
+    use crate::common::{self, be_signed, build, load_average, setting};
     use crate::protocol::{
         self, Bytes, Case, CounterValue, Lower, Measurement, RaiseLater, Report, StartCpu,
         StopTest as StopRequest, Write,
     };
 
-    /// The inside's package, which holds the cases program.
-    const INSIDE: &str = "wcontainers-inside";
-
     /// The cases program.
     const PROGRAM: &str = "floor-cases";
-
-    /// The bare-metal target of each host architecture the cases are built for.
-    const TARGETS: &[(&str, &str)] = &[("aarch64", "aarch64-unknown-none")];
-
-    /// The cargo profile the cases are built with.
-    const PROFILE: &str = "release";
-
-    /// Jobs the nested build may run.
-    const JOBS: &str = "4";
-
-    /// Settings of the test's environment that would build the bare-metal program for the host.
-    const LEAKED: [&str; 2] = ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"];
 
     /// Bytes of guest-physical memory the test reserves.
     const MEMORY: u64 = 1 << 30;
@@ -81,29 +68,11 @@ mod macos {
     /// The stop test's seed unless told otherwise.
     const DEFAULT_SEED: u64 = 0x9e37_79b9_7f4a_7c15;
 
-    /// What starts a hexadecimal setting.
-    const HEX_PREFIX: &str = "0x";
-
-    /// The radix of a hexadecimal setting.
-    const HEX_RADIX: u32 = 16;
-
     /// The stop test's settings.
     #[derive(Clone, Copy, Debug)]
     struct StopSettings {
         stops: u64,
         seed: u64,
-    }
-
-    /// A number from the environment variable `name`, or `default`.
-    fn setting(name: &str, default: u64) -> u64 {
-        let Ok(text) = std::env::var(name) else {
-            return default;
-        };
-        let parsed = match text.strip_prefix(HEX_PREFIX) {
-            Some(hex) => u64::from_str_radix(hex, HEX_RADIX),
-            None => text.parse(),
-        };
-        parsed.unwrap_or_else(|e| panic!("{name}={text}: {e}"))
     }
 
     fn stop_settings() -> StopSettings {
@@ -127,40 +96,10 @@ mod macos {
         fatal: AtomicBool,
     }
 
-    /// Set in the environment of the signed copy the test runs itself as.
-    const SIGNED: &str = "WCONTAINERS_FLOOR_TEST_SIGNED";
-
-    /// Hypervisor.framework refuses a binary without the hypervisor entitlement, which cargo's test binaries
-    /// lack: the test signs a copy of itself ad hoc with the entitlement and runs that.
-    fn run_signed() -> ! {
-        let me = std::env::current_exe().expect("the test's own path");
-        let copy = me.with_extension("signed");
-        std::fs::copy(&me, &copy).expect("copying the test");
-        let entitlements = concat!(env!("CARGO_MANIFEST_DIR"), "/hypervisor.entitlements");
-        let signed = std::process::Command::new("codesign")
-            .args(["-s", "-", "-f", "--entitlements", entitlements])
-            .arg(&copy)
-            .output()
-            .expect("running codesign");
-        assert!(
-            signed.status.success(),
-            "codesign: {}",
-            String::from_utf8_lossy(&signed.stderr)
-        );
-        let status = std::process::Command::new(&copy)
-            .args(std::env::args_os().skip(1))
-            .env(SIGNED, "1")
-            .status()
-            .expect("running the signed test");
-        std::process::exit(status.code().unwrap_or(1));
-    }
-
     pub fn main() {
-        if std::env::var_os(SIGNED).is_none() {
-            run_signed();
-        }
+        be_signed();
         let started = Instant::now();
-        let program = build_cases();
+        let program = build(PROGRAM);
         let built = started.elapsed();
         let settings = stop_settings();
         let shared = machine(&program, settings);
@@ -204,62 +143,8 @@ mod macos {
         );
     }
 
-    /// Builds the cases program for the host's bare-metal target and gives its ELF image.
-    fn build_cases() -> Vec<u8> {
-        let target = TARGETS
-            .iter()
-            .find(|(arch, _)| *arch == std::env::consts::ARCH)
-            .map(|(_, target)| *target)
-            .expect("a bare-metal target for this host");
-        let target_dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(INSIDE);
-        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .with_file_name(INSIDE)
-            .join("Cargo.toml");
-        let mut cargo = Command::new(env!("CARGO"));
-        cargo
-            .args([
-                "build",
-                "--bin",
-                PROGRAM,
-                "--target",
-                target,
-                "--profile",
-                PROFILE,
-            ])
-            .args(["--jobs", JOBS])
-            .arg("--manifest-path")
-            .arg(&manifest)
-            .arg("--target-dir")
-            .arg(&target_dir);
-        for leaked in LEAKED {
-            cargo.env_remove(leaked);
-        }
-        let status = cargo.status().expect("running cargo for the cases");
-        assert!(status.success(), "building the cases failed");
-        std::fs::read(target_dir.join(target).join(PROFILE).join(PROGRAM))
-            .expect("the cases' image")
-    }
-
     fn machine(program: &[u8], stop_settings: StopSettings) -> Arc<Shared> {
-        let machine = Host::machine().expect("making the machine");
-        let memory = Memory::reserve(MEMORY).expect("reserving memory");
-        machine
-            .map(
-                std::ptr::NonNull::new(memory.host(wcontainers_inside::layout::MEMORY_BASE))
-                    .unwrap(),
-                wcontainers_inside::layout::MEMORY_BASE,
-                MEMORY,
-            )
-            .expect("mapping memory");
-        let loaded = load(&memory, program, CPUS).expect("loading the inside");
-        let interrupts = machine.interrupts().expect("interrupt numbers");
-        let start = Start {
-            memory: MEMORY,
-            host_page: page_size(),
-            timer_interrupt: interrupts.timer.into(),
-            first_raised_interrupt: interrupts.first_raised.into(),
-            ..Start::default()
-        };
+        let (machine, memory, loaded, start) = common::machine(program, MEMORY, CPUS);
         Arc::new(Shared {
             machine,
             memory,
@@ -274,12 +159,6 @@ mod macos {
         })
     }
 
-    fn page_size() -> u64 {
-        // SAFETY: a plain query.
-        unsafe { libc::sysconf(libc::_SC_PAGESIZE) as u64 }
-    }
-
-    /// Runs virtual CPU `index` on this thread until its inside is done.
     fn serve(shared: &Arc<Shared>, index: u64) {
         let mut cpu = shared.machine.cpu().expect("making a virtual CPU");
         boot(
@@ -573,15 +452,5 @@ mod macos {
         };
         assert_eq!(done, 0, "proc_pid_rusage");
         info.ri_phys_footprint
-    }
-
-    /// The load averages the system keeps: over 1, 5 and 15 minutes.
-    const LOAD_AVERAGES: usize = 3;
-
-    fn load_average() -> String {
-        let mut loads = [0f64; LOAD_AVERAGES];
-        // SAFETY: fills three values.
-        unsafe { libc::getloadavg(loads.as_mut_ptr(), loads.len() as i32) };
-        format!("{:.1} {:.1} {:.1}", loads[0], loads[1], loads[2])
     }
 }

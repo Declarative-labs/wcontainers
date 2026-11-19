@@ -2500,14 +2500,17 @@ dependencies = [
  "aarch64-cpu",
  "applevisor",
  "applevisor-sys",
+ "cc",
  "fastrand",
  "libc",
  "object 0.37.3",
+ "proptest",
  "wcontainers-abi",
  "wcontainers-arm64",
  "wcontainers-guest-cpu",
  "wcontainers-inside",
  "wcontainers-translator",
+ "wcontainers-translator-test",
  "zerocopy",
 ]
 

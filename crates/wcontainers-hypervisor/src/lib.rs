@@ -67,6 +67,26 @@ pub enum Register {
     Affinity,
     /// ID_AA64MMFR0_EL1.
     MemoryModelFeatures,
+    /// SP_EL0: the guest's level's stack pointer.
+    StackEl0,
+    /// ELR_EL1: where an exception taken to the inside came from, and where `eret` goes.
+    ExceptionLink,
+    /// SPSR_EL1: the state an exception taken to the inside saved, and that `eret` restores.
+    SavedState,
+    /// ESR_EL1: why an exception was taken to the inside.
+    Syndrome,
+    /// FAR_EL1: the address a fault taken to the inside was at.
+    FaultAddress,
+    /// VBAR_EL1: the inside's exception vectors.
+    Vectors,
+    /// MDSCR_EL1: the debug controls, software step among them.
+    DebugControl,
+    /// TPIDR_EL0: the guest's level's thread pointer.
+    ThreadPointer,
+    /// FPSR.
+    FloatStatus,
+    /// FPCR.
+    FloatControl,
 }
 
 /// The interrupt numbers of a machine.
@@ -106,6 +126,9 @@ pub trait VirtualCpu {
     fn run(&mut self) -> Result<Exit>;
     fn get(&self, register: Register) -> Result<u64>;
     fn set(&mut self, register: Register, value: u64) -> Result<()>;
+    /// A vector register, v0 to v31, whole.
+    fn vector(&self, n: u8) -> Result<u128>;
+    fn set_vector(&mut self, n: u8, value: u128) -> Result<()>;
     /// What stops it from another thread.
     fn stopper(&self) -> Self::Stopper;
     /// The guest's virtual counter reads the host's counter less this.
