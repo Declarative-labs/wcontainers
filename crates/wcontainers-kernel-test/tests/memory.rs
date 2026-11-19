@@ -25,3 +25,10 @@ fn memory_matches_reference() {
     }
     assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
+
+/// Guard pages, through every change a mapping goes through.
+#[test]
+fn guard_pages_match_reference() {
+    let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    wcontainers_kernel_test::assert_same_output(&out, "guards", &[]);
+}

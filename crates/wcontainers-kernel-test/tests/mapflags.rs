@@ -25,5 +25,5 @@ fn advice_not_built_is_counted() {
         .map(|counter| counter.detail)
         .collect();
     counted.sort();
-    assert_eq!(counted, [25, 102, 103]);
+    assert_eq!(counted, [25]);
 }

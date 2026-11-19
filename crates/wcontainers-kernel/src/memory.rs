@@ -240,6 +240,9 @@ pub(crate) struct AddressMap {
     mappings: BTreeMap<u64, Mapping>,
     /// Ranges that have been mapped at some time, so may hold old bytes. Start to end.
     used: BTreeMap<u64, u64>,
+    /// Guard pages (`MADV_GUARD_INSTALL`, Linux's guard markers) by address: never accessible,
+    /// through any change of protection, until removed, unmapped or mapped over.
+    guards: BTreeSet<u64>,
     /// One past the highest address.
     pub end: u64,
     /// New mappings with no address go below this, highest first.
@@ -265,6 +268,7 @@ impl AddressMap {
         Self {
             mappings: BTreeMap::new(),
             used: BTreeMap::new(),
+            guards: BTreeSet::new(),
             end,
             // Linux leaves at least 128 MiB below the stack's top for the stack and its gap.
             mmap_base: page_down(end - (128 << 20)),
@@ -351,16 +355,70 @@ impl AddressMap {
         let mut at = address;
         while at < end {
             let Some(mapping) = self.find(at) else { break };
-            if !mapping.page_permissions(at).contains(wanted) {
+            if !mapping.page_permissions(at).contains(wanted) || self.guarded(at) {
                 break;
             }
             let reach = match &mapping.backing {
                 Backing::File { file_end, .. } if at < *file_end => (*file_end).min(mapping.end),
                 _ => mapping.end,
             };
-            at = reach.min(end);
+            at = self.guard_from(at, reach).min(end);
         }
         at - address
+    }
+
+    /// Whether the page holding `address` is a guard page.
+    pub fn guarded(&self, address: u64) -> bool {
+        self.guards.contains(&page_down(address))
+    }
+
+    /// The first guard page in `[from, to)`, or `to`.
+    pub fn guard_from(&self, from: u64, to: u64) -> u64 {
+        self.guards
+            .range(page_down(from)..to)
+            .next()
+            .copied()
+            .unwrap_or(to)
+            .max(from)
+    }
+
+    /// The guard pages of `[start, end)`, taken away.
+    pub fn take_guards(&mut self, start: u64, end: u64) -> Vec<u64> {
+        let taken: Vec<u64> = self.guards.range(start..end).copied().collect();
+        for page in &taken {
+            self.guards.remove(page);
+        }
+        taken
+    }
+
+    /// Makes `pages` guard pages, which the CPU side then allows nothing.
+    pub fn add_guards(
+        &mut self,
+        cpu: &mut dyn Cpu,
+        memory: MemoryId,
+        pages: impl IntoIterator<Item = u64>,
+    ) -> Result<(), Errno> {
+        for page in pages {
+            self.guards.insert(page);
+            cpu.set_permissions(memory, page, PAGE_SIZE, Permissions::empty())
+                .map_err(errno::from_cpu)?;
+        }
+        Ok(())
+    }
+
+    /// Takes the guard pages of `[start, end)` away and tells the CPU side what their mappings
+    /// allow again.
+    pub fn remove_guards(
+        &mut self,
+        cpu: &mut dyn Cpu,
+        memory: MemoryId,
+        start: u64,
+        end: u64,
+    ) -> Result<(), Errno> {
+        for page in self.take_guards(start, end) {
+            self.refresh(cpu, memory, page, page + PAGE_SIZE)?;
+        }
+        Ok(())
     }
 
     /// How many bytes from `address` on, up to `length`, another task's access may reach, as Linux's
@@ -376,7 +434,7 @@ impl AddressMap {
         let mut at = address;
         while at < end {
             let Some(mapping) = self.find(at) else { break };
-            if !mapping.permissions.contains(wanted) || mapping.is_secret() {
+            if !mapping.permissions.contains(wanted) || mapping.is_secret() || self.guarded(at) {
                 break;
             }
             let reach = match &mapping.backing {
@@ -384,7 +442,7 @@ impl AddressMap {
                 Backing::File { file_end, .. } => (*file_end).min(mapping.end),
                 _ => mapping.end,
             };
-            at = reach.min(end);
+            at = self.guard_from(at, reach).min(end);
         }
         at - address
     }
@@ -408,6 +466,7 @@ impl AddressMap {
             if !allowed
                 || mapping.is_secret()
                 || matches!(mapping.backing, Backing::Special("[vvar]"))
+                || self.guarded(at)
             {
                 break;
             }
@@ -416,7 +475,7 @@ impl AddressMap {
                 Backing::File { file_end, .. } => (*file_end).min(mapping.end),
                 _ => mapping.end,
             };
-            at = reach.min(end);
+            at = self.guard_from(at, reach).min(end);
         }
         at - address
     }
@@ -504,6 +563,7 @@ impl AddressMap {
         mapping: Mapping,
     ) -> Result<(), Errno> {
         let removed = self.remove(mapping.start, mapping.end);
+        self.take_guards(mapping.start, mapping.end);
         let had_code = removed
             .iter()
             .any(|old| old.permissions.contains(Permissions::EXECUTE));
@@ -526,6 +586,7 @@ impl AddressMap {
         end: u64,
     ) -> Result<(), Errno> {
         let removed = self.remove(start, end);
+        self.take_guards(start, end);
         for old in &removed {
             cpu.set_permissions(memory, old.start, old.end - old.start, Permissions::empty())
                 .map_err(errno::from_cpu)?;
@@ -783,7 +844,7 @@ impl AddressMap {
         match self.find(start).cloned() {
             Some(mapping) => {
                 let (lo, hi) = (page_down(start), page_up(end));
-                apply_permissions_in(cpu, memory, &mapping, lo, hi)
+                apply_permissions_in(cpu, memory, &mapping, &self.guards, lo, hi)
             }
             None => Ok(()),
         }
@@ -796,7 +857,14 @@ impl AddressMap {
         memory: MemoryId,
         mapping: &Mapping,
     ) -> Result<(), Errno> {
-        apply_permissions_in(cpu, memory, mapping, mapping.start, mapping.end)
+        apply_permissions_in(
+            cpu,
+            memory,
+            mapping,
+            &self.guards,
+            mapping.start,
+            mapping.end,
+        )
     }
 
     /// Zeroes the parts of a range that held something before, and marks it all as used.
@@ -1019,12 +1087,13 @@ pub(crate) fn cpu_permissions(asked: Permissions) -> Permissions {
 
 /// Tells the CPU side what a mapping's pages in `[lo, hi)` allow: nothing wholly past a file's
 /// end, nothing where a backend file's page is not read yet, so the first touch comes back to read
-/// it, and no writing where a private file page is not copied yet, so the first write comes back
-/// to copy it.
+/// it, no writing where a private file page is not copied yet, so the first write comes back
+/// to copy it, and nothing on a guard page.
 fn apply_permissions_in(
     cpu: &mut dyn Cpu,
     memory: MemoryId,
     mapping: &Mapping,
+    guards: &BTreeSet<u64>,
     lo: u64,
     hi: u64,
 ) -> Result<(), Errno> {
@@ -1061,6 +1130,9 @@ fn apply_permissions_in(
                 set(address(run.start), address(run.end), Permissions::empty())?;
             }
         }
+    }
+    for &guard in guards.range(page_down(lo)..hi) {
+        set(guard, guard + PAGE_SIZE, Permissions::empty())?;
     }
     Ok(())
 }

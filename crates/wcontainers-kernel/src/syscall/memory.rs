@@ -822,14 +822,12 @@ pub(super) fn madvise(
             | MADV_POPULATE_READ
             | MADV_POPULATE_WRITE
             | MADV_DONTNEED_LOCKED
+            | MADV_GUARD_INSTALL
+            | MADV_GUARD_REMOVE
     );
-    // Making huge pages now (MADV_COLLAPSE) and guard markers that make pages fault (MADV_GUARD_*)
-    // are not built: refused as by a Linux without them. Poisoning pages (MADV_HWPOISON,
-    // MADV_SOFT_OFFLINE) is not in the reference's kernel either.
-    if matches!(
-        advice,
-        MADV_COLLAPSE | MADV_GUARD_INSTALL | MADV_GUARD_REMOVE
-    ) {
+    // Making huge pages now (MADV_COLLAPSE) is not built: refused as by a Linux without it.
+    // Poisoning pages (MADV_HWPOISON, MADV_SOFT_OFFLINE) is not in the reference's kernel either.
+    if advice == MADV_COLLAPSE {
         return Err(kernel.counters.refuse(
             cx.host,
             reason::ADVICE_NOT_BUILT,
@@ -858,6 +856,37 @@ pub(super) fn madvise(
     let end = address + length;
     let now = kernel.now(cx);
     let process = kernel.process_of_mut(tid);
+    // Guard pages (`madvise_guard_install`, `madvise_guard_remove`), mapping by mapping: refused on
+    // special mappings, and installing on locked ones; installing drops what private pages held.
+    if matches!(advice, MADV_GUARD_INSTALL | MADV_GUARD_REMOVE) {
+        let install = advice == MADV_GUARD_INSTALL;
+        let memory = process.memory;
+        let mut map = process.map.borrow_mut();
+        let mut at = address;
+        while let Some(mapping) = map.next_after(at).cloned() {
+            if mapping.start >= end {
+                break;
+            }
+            if mapping.is_special()
+                || matches!(mapping.backing, Backing::Special(_))
+                || (install && (mapping.locked != Lock::None || mapping.is_secret()))
+            {
+                return Err(Errno::EINVAL);
+            }
+            let (from, to) = (mapping.start.max(at), mapping.end.min(end));
+            if install {
+                drop_pages(cx, memory, &mut map, &mapping, from, to)?;
+                map.add_guards(cx.cpu, memory, (from..to).step_by(PAGE_SIZE as usize))?;
+            } else {
+                map.remove_guards(cx.cpu, memory, from, to)?;
+            }
+            at = mapping.end;
+        }
+        if !map.fully_mapped(address, end) {
+            return Err(Errno::ENOMEM);
+        }
+        return Ok(0);
+    }
     // Removing pages punches a hole in what a shared mapping is backed by: its file, or its shared
     // anonymous memory. Linux's `madvise_remove`, mapping by mapping.
     if advice == MADV_REMOVE {
@@ -974,6 +1003,8 @@ pub(super) fn madvise(
                 Backing::File { file_end, .. } => to.min(*file_end).max(at),
                 _ => to,
             };
+            // A guard page faults with SIGSEGV, EFAULT here too.
+            let reach = process.map.borrow().guard_from(at, reach);
             if advice == MADV_POPULATE_WRITE {
                 process
                     .map
@@ -1352,12 +1383,16 @@ fn move_range(
     if let Backing::File { file_end, .. } = &mut moved.backing {
         *file_end = shift((*file_end).clamp(old, old + new_length));
     }
+    // Guard pages go with the pages (`move_ptes`).
+    let guards = map.take_guards(old, old + old_length.min(new_length));
     if request.flags & MREMAP_DONTUNMAP != 0 {
         drop_pages(cx, memory, &mut map, mapping, old, old_end)?;
+        map.refresh(cx.cpu, memory, old, old_end)?;
     } else {
         map.unmap(cx.cpu, memory, old, old_end)?;
     }
     map.insert(cx.cpu, memory, moved.clone())?;
+    map.add_guards(cx.cpu, memory, guards.into_iter().map(shift))?;
     let kept_end = destination + kept;
     for (from, to, own) in moved.runs() {
         let to = to.min(kept_end);

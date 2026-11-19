@@ -168,6 +168,9 @@ fn make_child(
             let wipe = mapping.on_fork.wipe
                 || matches!(mapping.backing, crate::memory::Backing::Droppable);
             let length = mapping.end - mapping.start;
+            // The child's guard pages are its parent's, but where nothing is copied.
+            let unguarded = (mapping.on_fork.skip || wipe)
+                && !map.take_guards(mapping.start, mapping.end).is_empty();
             if mapping.on_fork.skip {
                 map.remove(mapping.start, mapping.end);
                 cx.cpu
@@ -185,6 +188,9 @@ fn make_child(
                 cx.cpu
                     .zero(memory, mapping.start, length)
                     .map_err(errno::from_cpu)?;
+                if unguarded {
+                    map.refresh(cx.cpu, memory, mapping.start, mapping.end)?;
+                }
             }
         }
         map.set_lock_all(Lock::None);

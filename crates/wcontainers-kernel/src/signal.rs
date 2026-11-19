@@ -1158,7 +1158,13 @@ impl Kernel {
             Access::Write => wcontainers_abi::Permissions::WRITE,
             Access::Execute => wcontainers_abi::Permissions::EXECUTE,
         };
-        let mapping = self.processes[&pid].map.borrow().find(address).cloned();
+        // A guard page has no entry and never gets one (`handle_pte_marker`'s VM_FAULT_SIGSEGV).
+        let guarded = self.processes[&pid].map.borrow().guarded(address);
+        let mapping = if guarded {
+            None
+        } else {
+            self.processes[&pid].map.borrow().find(address).cloned()
+        };
         // A page of a backend file the mapping allows this access to, read when first touched.
         if let Some(mapping) = &mapping
             && let Backing::File {
@@ -1233,17 +1239,18 @@ impl Kernel {
             .is_some_and(|mapping| !crate::memory::cpu_permissions(mapping.permissions).is_empty());
         let (signal, code) = match mapping {
             None => {
-                if process
-                    .map
-                    .borrow_mut()
-                    .grow_stack(
-                        cx.cpu,
-                        process.memory,
-                        address,
-                        &process.limits,
-                        may_lock_any,
-                    )
-                    .unwrap_or(false)
+                if !guarded
+                    && process
+                        .map
+                        .borrow_mut()
+                        .grow_stack(
+                            cx.cpu,
+                            process.memory,
+                            address,
+                            &process.limits,
+                            may_lock_any,
+                        )
+                        .unwrap_or(false)
                 {
                     self.return_to_user(cx, tid, Resume::FromRegisters);
                     return;

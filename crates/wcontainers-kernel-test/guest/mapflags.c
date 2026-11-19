@@ -80,8 +80,6 @@ int main(int argc, char **argv) {
         char *memory = mmap(NULL, 4 << 20, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         memory[0] = 1;
         show("collapse", madvise(memory, 4 << 20, MADV_COLLAPSE));
-        show("guard install", madvise(memory, 4096, MADV_GUARD_INSTALL));
-        show("guard remove", madvise(memory, 4096, MADV_GUARD_REMOVE));
         return 0;
     }
     int file = open("/dev/shm/m", O_RDWR | O_CREAT, 0600);
