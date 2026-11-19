@@ -76,6 +76,25 @@ const OPAQUE_WHITEOUT: &[u8] = b".wh..wh..opq";
 /// The start of a PAX header key holding an extended attribute.
 const XATTR_PAX_PREFIX: &[u8] = b"SCHILY.xattr.";
 
+/// The annotations conversion.md makes of an image configuration's fields.
+mod annotation {
+    pub const OS: &str = "org.opencontainers.image.os";
+    pub const ARCHITECTURE: &str = "org.opencontainers.image.architecture";
+    pub const VARIANT: &str = "org.opencontainers.image.variant";
+    pub const OS_VERSION: &str = "org.opencontainers.image.os.version";
+    pub const OS_FEATURES: &str = "org.opencontainers.image.os.features";
+    pub const AUTHOR: &str = "org.opencontainers.image.author";
+    pub const STOP_SIGNAL: &str = "org.opencontainers.image.stopSignal";
+    pub const EXPOSED_PORTS: &str = "org.opencontainers.image.exposedPorts";
+}
+
+/// What joins the items of a list in an annotation (conversion.md).
+const LIST_SEPARATOR: &str = ",";
+
+/// The image configuration's fields this runtime refuses values of, as the refusals name them.
+const CONFIG_VOLUMES: &str = "config.Volumes";
+const CONFIG_USER: &str = "config.User";
+
 /// Fields of a line of `/etc/passwd` (name, password, uid, gid, comment, home, shell) and of
 /// `/etc/group` (name, password, gid, members), by their places (passwd(5), group(5)).
 mod field {
@@ -179,21 +198,24 @@ impl Image {
         };
         // Implicit annotations first, so that a label of the same key takes precedence.
         let mut annotations: HashMap<String, String> = [
-            ("os", Some(configuration.os().to_string())),
+            (annotation::OS, Some(configuration.os().to_string())),
             (
-                "architecture",
+                annotation::ARCHITECTURE,
                 Some(configuration.architecture().to_string()),
             ),
-            ("variant", configuration.variant().clone()),
-            ("os.version", configuration.os_version().clone()),
+            (annotation::VARIANT, configuration.variant().clone()),
+            (annotation::OS_VERSION, configuration.os_version().clone()),
             (
-                "os.features",
-                configuration.os_features().as_ref().map(|f| f.join(",")),
+                annotation::OS_FEATURES,
+                configuration
+                    .os_features()
+                    .as_ref()
+                    .map(|f| f.join(LIST_SEPARATOR)),
             ),
-            ("author", configuration.author().clone()),
+            (annotation::AUTHOR, configuration.author().clone()),
         ]
         .into_iter()
-        .filter_map(|(name, value)| Some((format!("org.opencontainers.image.{name}"), value?)))
+        .filter_map(|(name, value)| Some((name.to_string(), value?)))
         .chain(
             configuration
                 .created()
@@ -204,7 +226,7 @@ impl Image {
         if let Some(config) = configuration.config() {
             if let Some(volumes) = config.volumes().as_ref().filter(|v| !v.is_empty()) {
                 return Err(Error::Refused {
-                    field: "config.Volumes".to_string(),
+                    field: CONFIG_VOLUMES.to_string(),
                     reason: format!(
                         "{volumes:?}: a volume is a mount of a directory from outside, which needs \
                          the local system's file backend"
@@ -224,15 +246,12 @@ impl Image {
                 process.set_user(self.user(user)?);
             }
             if let Some(signal) = config.stop_signal() {
-                annotations.insert(
-                    "org.opencontainers.image.stopSignal".to_string(),
-                    signal.clone(),
-                );
+                annotations.insert(annotation::STOP_SIGNAL.to_string(), signal.clone());
             }
             if let Some(ports) = config.exposed_ports().as_ref().filter(|p| !p.is_empty()) {
                 annotations.insert(
-                    "org.opencontainers.image.exposedPorts".to_string(),
-                    ports.join(","),
+                    annotation::EXPOSED_PORTS.to_string(),
+                    ports.join(LIST_SEPARATOR),
                 );
             }
             annotations.extend(config.labels().clone().unwrap_or_default());
@@ -252,7 +271,7 @@ impl Image {
             None => (text, None),
         };
         let refused = |reason: String| Error::Refused {
-            field: "config.User".to_string(),
+            field: CONFIG_USER.to_string(),
             reason,
         };
         let account = passwd.iter().find(|fields| {
@@ -906,10 +925,7 @@ mod tests {
         );
         let annotations = spec.annotations().as_ref().unwrap();
         assert_eq!(annotations["name"], "web");
-        assert_eq!(
-            annotations["org.opencontainers.image.stopSignal"],
-            "SIGQUIT"
-        );
+        assert_eq!(annotations[annotation::STOP_SIGNAL], "SIGQUIT");
     }
 
     #[test]
@@ -918,8 +934,7 @@ mod tests {
             &[&[]],
             Some(serde_json::json!({
                 "Env": ["PATH=/bin"], "StopSignal": "SIGQUIT",
-                "Labels": {"org.opencontainers.image.stopSignal": "SIGINT",
-                           "org.opencontainers.image.os": "label"},
+                "Labels": {(annotation::STOP_SIGNAL): "SIGINT", (annotation::OS): "label"},
             })),
         );
         let configuration = image.configuration.as_mut().unwrap();
@@ -931,20 +946,17 @@ mod tests {
         let spec = image.spec().unwrap();
         let annotations = spec.annotations().as_ref().unwrap();
         let expected = [
-            ("os", "label"),
-            ("architecture", "arm64"),
-            ("variant", "v8"),
-            ("os.version", "6.1"),
-            ("os.features", "a,b"),
-            ("author", "someone"),
-            ("created", "2026-11-18T00:00:00Z"),
-            ("stopSignal", "SIGINT"),
+            (annotation::OS, "label"),
+            (annotation::ARCHITECTURE, "arm64"),
+            (annotation::VARIANT, "v8"),
+            (annotation::OS_VERSION, "6.1"),
+            (annotation::OS_FEATURES, "a,b"),
+            (annotation::AUTHOR, "someone"),
+            (ANNOTATION_CREATED, "2026-11-18T00:00:00Z"),
+            (annotation::STOP_SIGNAL, "SIGINT"),
         ];
         for (name, value) in expected {
-            assert_eq!(
-                annotations[&format!("org.opencontainers.image.{name}")],
-                value
-            );
+            assert_eq!(annotations[name], value);
         }
         assert_eq!(annotations.len(), expected.len());
         let process = spec.process().as_ref().unwrap();
@@ -988,7 +1000,7 @@ web:x:2:
     fn volumes_are_refused_by_name() {
         let image = image(&[&[]], Some(serde_json::json!({"Volumes": {"/data": {}}})));
         match image.spec() {
-            Err(Error::Refused { field, .. }) => assert_eq!(field, "config.Volumes"),
+            Err(Error::Refused { field, .. }) => assert_eq!(field, CONFIG_VOLUMES),
             other => panic!("{:?}", other.map(|_| ())),
         }
     }
