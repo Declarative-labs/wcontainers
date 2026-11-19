@@ -137,7 +137,7 @@ The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three laye
   (`confirm/warm.log`), same command with `WC_LONG_LAYERS=3` and no `WC_LONG_ACCEPT` (so it accepts 8c7a4b5
   on; a restart needs `WC_LONG_ACCEPT=8c7a4b5`): about 37 minutes a chunk at 3 jobs, load 19 to 49. Its
   chunks from 12 downward run on the rented machine once the long run's runners there end
-  (`arm-confirm/down.sh 12`, log `down.log`, started 12:20; `run-chunk.sh` there is the long run's with seed
+  (`arm-confirm/down.sh 12`, log `down.log`; `run-chunk.sh` there is the long run's with seed
   200, `WC_LAYER3_JOBS=3` in the knobs, the confirmation ledger and an export of 8c7a4b5). `resume.sh` and `watch.sh` now tell the long run's
   driver from this one by its working directory (`lsof`), so neither takes one for the other.
 - Docker on the Mac came back at 04:58 (someone started it); `resume.sh` restarted the driver at 05:01 on
@@ -190,14 +190,21 @@ Progress (from the ledger):
 - Layer 3 at 2026-11-19 04:15: 155 chunks passed, 67,820 compared, 0 mismatches of the translator: chunks
   1 to 152 on the Mac as above, and 198 to 200 on the rented machine. Docker on the Mac down since 02:52,
   the rented machine gone since 04:08, so nothing runs.
-- Layer 3 at 2026-11-19 12:10: 214 chunks passed, 93,686 compared, 0 mismatches of the translator, no new
+- Layer 3 at 2026-11-19 12:05: 214 chunks passed, 93,686 compared, 0 mismatches of the translator, no new
   non-pass line since failure 9. Not yet passed: 174 to 181 (the Mac's driver is in 174, on 398df57) and
-  223 upward (`arm-up/up.sh` is in 223). Mac load 32 to 45.
-- From 12:08 the scratch script `arm-up/after-up.sh` (log `after-up.log`) waits for `up.sh` to stop at the
-  expected bar, then runs `arm-up/gap.sh 181`: chunks 181 downward on the rented machine until the next one
-  is one the Mac's driver has started or finished (one translator job there at a time, as the manual asks).
-  Its ledger lines are marked "run downward from chunk 181 by the translator track after its upward run"
-  (script `run-chunk-gap.sh`, `run-chunk.sh` with only that mark changed); log `gap.log`.
+  223 upward (`arm-up/up.sh` is in 223). Mac load 32 to 45. From 12:05 `arm-up/after-up.sh` waited for
+  `up.sh` to stop at the expected bar, to run `gap.sh 181` then.
+- At 12:44 something outside this track sent SIGTERM to the Mac's `arm-run` client of chunk 225 (and to two
+  of this session's own waiting shells at the same moment; who is not known). The job itself ran on there, so
+  `run-chunk.sh` saw no summary and recorded chunk 225 as `fail` with `cases=?` in `arm-up/chunks.tsv` only
+  (not in the ledger), and `up.sh` stopped when arm-run refused chunk 226 beside the running job. Not a
+  verdict on any program. `arm-up/chain.sh` (log `chain.log`, from 12:45) attaches to that job and parses
+  its log as `run-chunk.sh` does (`harvest.sh`), then runs `up.sh 226`, then `gap.sh 181`, then the
+  confirmation's `down.sh 12`, one after another (`after-up.sh` is stopped). `gap.sh 181` runs chunks 181
+  downward on the rented machine until the next one is one the Mac's driver has started or finished (one
+  translator job there at a time, as the manual asks). Its ledger lines are marked "run downward from chunk
+  181 by the translator track after its upward run" (script `run-chunk-gap.sh`, `run-chunk.sh` with only
+  that mark changed); log `gap.log`. Is it running: `pgrep -fl 'chain.sh|harvest.sh|up.sh|gap.sh|down.sh'`.
 - 46 to 82 of each chunk's 500 programs (9 to 16 percent) do not end on Linux within the reference's 20 s
   alarm and are not compared (counted in `sample`). Across chunks 1 to 30 the count does not follow the load
   at the chunk's start (47 at load 65, 82 at load 13), so it is Csmith's programs that loop or run long,
