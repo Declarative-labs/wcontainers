@@ -775,14 +775,6 @@ impl<B: Backend> Device<B> {
             false => offset - offset % step,
         };
         let rest = offset - start;
-        // The converter gives an element stride, and adds the rest, only to the storage buffers
-        // of unordered access slots; one of a shader resource slot would read from `start`.
-        if rest != 0 && b.binding.stride == 0 {
-            return Err(Error::NotImplemented(
-                "a raw or structured shader resource view at an offset the back end cannot bind \
-                 (StorageOffset of shader resource slots)",
-            ));
-        }
         if !rest.is_multiple_of(stride) {
             return Err(Error::NotImplemented(
                 "a buffer view starting inside one of the program's elements",
@@ -795,6 +787,9 @@ impl<B: Backend> Device<B> {
         self.bound_helpers
             .push((b.visibility, value, pull::words(&[rest as u32])));
         if rest != 0 {
+            self.backend
+                .slow_paths()
+                .hit(SlowPath::StorageOffsetInShader);
             self.bound_offsets.push(b.visibility);
         }
         self.storage_range(id, start, rest + size, writable)
