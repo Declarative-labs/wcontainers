@@ -14,18 +14,20 @@ use wcontainers_gpu::{
     DrawCall, DrawRange, EmptyPass, Extent, Features, Format, FormatKind, FormatUse, GpuError,
     HELPER_SET, HelperValue, IndexBinding, IndexFormat, Interpolation, LoadOp, MAX_COLOR_TARGETS,
     MAX_VERTEX_STREAMS, MapIntent, Object, OcclusionCounter, Origin, PassDesc, PassTargets,
-    PassTracker, PrepareDesc, Program, ReadSource, ReadState, SamplerDesc, ScissorRect,
-    ShaderModule, ShaderStage, SlowPath, StageSet, StepMode, StoreOp, Target, TargetLayout,
-    TexelBufferRoute, TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc,
-    Topology, VariantFlags, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc,
-    VertexStream, ViewComponent, ViewDimension, Viewport, WriteMode,
+    PassTracker, PrepareDesc, Program, ReadSource, ReadState, STORAGE_WORD, SamplerDesc,
+    ScissorRect, ShaderModule, ShaderStage, SlowPath, StageSet, StepMode, StoreOp, Target,
+    TargetInShader, TargetLayout, TexelBufferRoute, TextureDesc, TextureDimension, TextureRegion,
+    TextureUsage, TextureViewDesc, Topology, VariantFlags, VariantKey, VertexAttribute,
+    VertexBinding, VertexLayoutDesc, VertexStream, ViewComponent, ViewDimension, Viewport,
+    WriteMode,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source};
 
 use crate::Error;
 use crate::address::AddressMap;
 use crate::list::{
-    Command, CopyLocation, Descriptor, Rect, TargetView, VertexBufferView, ViewportF,
+    Command, CopyLocation, DSV_READ_ONLY_DEPTH, DSV_READ_ONLY_STENCIL, Descriptor, Rect,
+    TargetView, VertexBufferView, ViewportF,
 };
 use crate::resource::{self, HeapType, ResourceDesc};
 use crate::root::{RootSignature, deserialize};
@@ -61,6 +63,7 @@ id!(
 
 mod alias;
 mod bind;
+mod early;
 mod formats;
 mod geometry;
 mod indirect;
@@ -261,10 +264,11 @@ struct Render<B: Backend> {
     per_sample: bool,
     pixel_counting: Option<B::Program>,
     writes_depth_stencil: bool,
-    /// The pixel shader forces early depth and stencil tests, which change what it does (storage
-    /// writes, or a discard while depth or stencil is written), and the pipeline tests depth or
-    /// stencil: its draws while a depth-stencil view is bound need `EarlyTestsInShader`.
-    early_tests: bool,
+    /// Where the pixel shader forces early depth and stencil tests, which change what it does
+    /// (storage writes, or a discard while depth or stencil is written), and the pipeline tests
+    /// depth or stencil: the tests, which its draws while a depth-stencil view is bound run in the
+    /// program (`EarlyTestsInShader`).
+    early_tests: Option<DepthStencil>,
     alpha_to_coverage: bool,
     /// Every per-instance element steps by one instance.
     instances_step_by_one: bool,
@@ -373,6 +377,9 @@ pub struct Device<B: Backend> {
     bound_formats: Vec<(u32, formats::Slot, Format)>,
     /// The helper values the last binding sets made give: API stage, value and its words.
     bound_helpers: Vec<(u32, HelperValue, pull::Words)>,
+    /// The draw being bound runs its pixel stage's forced early tests in the program
+    /// (`early::`), so its pixel program is the one converted to.
+    early_draw: bool,
     /// The samplers the last binding sets made bind whose sampling the program applies: API
     /// stage, register, and whether it adds the bias and applies the addressing
     /// (`state::in_program`).
@@ -441,6 +448,7 @@ impl<B: Backend> Device<B> {
             messages: Vec::new(),
             bound_formats: Vec::new(),
             bound_helpers: Vec::new(),
+            early_draw: false,
             bound_sampling: Vec::new(),
             bound_through: Vec::new(),
             bound_offsets: Vec::new(),
@@ -978,7 +986,7 @@ impl<B: Backend> Device<B> {
             let converted = self.convert_stage(desc.ps, ShaderStage::Fragment, &mut key)?;
             Some((converted, key))
         };
-        let (ps, ps_key) = match ps {
+        let (mut ps, mut ps_key) = match ps {
             Some((c, k)) => (Some(c), Some(k)),
             None => (None, None),
         };
@@ -1109,7 +1117,13 @@ impl<B: Backend> Device<B> {
             bindings.extend(bind::stage_bindings(ps, bind::PIXEL, StageSet::FRAGMENT));
         }
         bind::check(&root, &bindings)?;
-        self.prepare_nulls(&bind::null_shapes(&bindings))?;
+        let early_tests =
+            early_tests_matter(ps.as_ref(), &desc.depth_stencil).then_some(desc.depth_stencil);
+        let mut nulls = bind::null_shapes(&bindings);
+        if early_tests.is_some() {
+            nulls.push((early::stencil_stand_in(targets.samples), false));
+        }
+        self.prepare_nulls(&nulls)?;
         let mut stages = vec![&vs];
         if let Some(m) = &made {
             stages.extend([&m.vertex]);
@@ -1154,14 +1168,15 @@ impl<B: Backend> Device<B> {
         if draws_lines && desc.raster.antialiased_line && !desc.raster.multisample {
             return Err(Error::NotImplemented("alpha-antialiased lines"));
         }
-        // After the description's own checks, which Direct3D 12 makes first.
-        if ps
-            .as_ref()
-            .is_some_and(|ps| !outputs_fit_targets(ps, &colors))
-        {
-            return Err(Error::NotImplemented(
-                "a pixel shader output of another type than its render target's format",
-            ));
+        // Direct3D 12 writes the bits of an output of another type than its target, which the
+        // back ends' pipelines do not take: the program writes them as the target's type. After
+        // the description's own checks, which Direct3D 12 makes first.
+        if let (Some(p), Some(key)) = (&mut ps, &mut ps_key) {
+            let retyped = retyped_targets(p, &colors);
+            if !retyped.is_empty() {
+                key.targets_in_shader = retyped;
+                *p = self.convert(desc.ps, ShaderStage::Fragment, key.clone())?;
+            }
         }
         let vs_shader = match made.as_ref().filter(|m| m.shader.is_some()) {
             Some(geometry::Made {
@@ -1247,7 +1262,7 @@ impl<B: Backend> Device<B> {
                 && (desc.depth_stencil.depth_enable && desc.depth_stencil.depth_write_all
                     || desc.depth_stencil.stencil_enable
                         && desc.depth_stencil.stencil_write_mask != 0),
-            early_tests: early_tests_matter(ps.as_ref(), &desc.depth_stencil),
+            early_tests,
             alpha_to_coverage: desc.blend.alpha_to_coverage,
             instances_step_by_one,
             geometry: made.map(|m| m.geometry),
@@ -1443,6 +1458,7 @@ impl<B: Backend> Device<B> {
                     | HelperValue::MinLod { .. }
                     | HelperValue::Layer
                     | HelperValue::Viewport
+                    | HelperValue::EarlyTests
             )
         }) {
             return Err(Error::NotImplemented(
@@ -2141,12 +2157,17 @@ impl<B: Backend> Device<B> {
 
     /// The back end's view for a render target or depth view, made once per resource and view.
     fn view(&mut self, v: &TargetView) -> Result<B::TextureView, Error> {
+        self.view_at(v, 0)
+    }
+
+    /// As `view`, of the view's `layer`th layer past its first.
+    fn view_at(&mut self, v: &TargetView, layer: u32) -> Result<B::TextureView, Error> {
         let three_d = matches!(
             self.resources.get(v.resource.0 as usize).map(|r| &r.storage),
             Some(Storage::Texture { desc, .. }) if desc.dimension == TextureDimension::D3
         );
-        // Draws write the view's first slice: no stage chooses another (`SV_RenderTargetArrayIndex`
-        // is reported absent). Clears of every slice go by `clear_texture`.
+        // Draws write one slice: the view's first, or the run's of a draw split per layer. Clears
+        // of every slice go by `clear_texture`.
         self.texture_view(
             v.resource,
             TextureViewDesc {
@@ -2158,7 +2179,7 @@ impl<B: Backend> Device<B> {
                 },
                 base_mip: v.mip,
                 mip_count: 1,
-                base_layer: if three_d { 0 } else { v.first_layer },
+                base_layer: if three_d { 0 } else { v.first_layer + layer },
                 layer_count: 1,
                 stencil: false,
             },
@@ -2594,6 +2615,12 @@ struct Replay<B: Backend> {
     pass_open: bool,
     /// The open pass has no targets.
     empty_pass: bool,
+    /// The open pass, or the next one, holds its depth-stencil attachment read only, for draws
+    /// running their early tests in the program.
+    pass_early: bool,
+    /// The layer of the bound target views the next pass draws into, past each view's first: a
+    /// run of a draw split per layer (`LayerSplit`).
+    pass_layer: u32,
     graphics: bind::RootState,
     compute: bind::RootState,
     /// Whole-view clears not yet done: each becomes the next pass's `Clear` load, or a clear of its
@@ -2657,6 +2684,8 @@ impl<B: Backend> Replay<B> {
             depth: None,
             pass_open: false,
             empty_pass: false,
+            pass_early: false,
+            pass_layer: 0,
             graphics: bind::RootState::default(),
             compute: bind::RootState::default(),
             clears: Vec::new(),
@@ -3319,7 +3348,7 @@ impl<B: Backend> Replay<B> {
                 &[(compute, StageSet::COMPUTE, block)],
                 &[],
                 &merged,
-                None,
+                Vec::new(),
             )?);
         }
         d.alias_settle()?;
@@ -3362,15 +3391,18 @@ impl<B: Backend> Replay<B> {
             .as_ref()
             .ok_or(Error::Invalid("drawing with a compute pipeline state"))?;
         let geometry = r.geometry.is_some();
-        // The back ends test depth and stencil after the pixel shader; the program testing them
-        // first (`VariantFlags::EARLY_TESTS`) is not built yet.
-        if r.early_tests && matches!(self.depth, Some(Descriptor::DepthStencil { .. })) {
-            return Err(Error::NotImplemented(
-                "early depth-stencil tests before a pixel shader's storage writes or discards",
-            ));
-        }
         if !d.arguments_set(&self.graphics, pid) {
             return Ok(());
+        }
+        // The back ends test depth and stencil after the pixel shader: forced early tests that
+        // matter run in the program, in a pass reading the depth-stencil view only.
+        let early = self.early_tests(d, pid)?;
+        if self.pass_open && self.pass_early != early {
+            self.end_pass(d)?;
+        }
+        self.pass_early = early;
+        if early {
+            d.backend.slow_paths().hit(SlowPath::EarlyTestsInShader);
         }
         d.pipeline_slow_paths(pid);
         if geometry && !self.draw_geometry(d, pid, same_range(&range), record)? {
@@ -3543,15 +3575,27 @@ impl<B: Backend> Replay<B> {
                 .ok_or(Error::Invalid("a pulled stream the draw does not bind"))?;
             extra.push((binding, buffer, *offset, *size));
         }
-        let (mut sets, bound) = d.binding_sets(
+        d.early_draw = early;
+        let bound = d.binding_sets(
             &self.graphics,
             pid,
             &[],
             &extra,
             StageSet::VERTEX,
             Some(kind),
-        )?;
+        );
+        d.early_draw = false;
+        let (mut sets, bound) = bound?;
         d.vertex_formats(pid)?;
+        let early_views = match &self.depth {
+            Some(Descriptor::DepthStencil { view, .. }) if early => {
+                let words = self.early_words(d, pid)?;
+                d.bound_helpers
+                    .push((bind::PIXEL, HelperValue::EarlyTests, words));
+                Some(d.early_views(view)?)
+            }
+            _ => None,
+        };
         // A vertex program converted for what is bound reads its own helper block.
         if let Some((_, _, Some((vertex, pulled)))) = &bound {
             if self.counted.is_some() || self.statistics.is_some() {
@@ -3572,7 +3616,9 @@ impl<B: Backend> Replay<B> {
             Some(_) => Some(d.pixel_counter()?),
             None => None,
         };
-        if helpers.size != 0 || pixel.size != 0 || counter.is_some() {
+        if helpers.size != 0 || pixel.size != 0 || counter.is_some() || early_views.is_some() {
+            let mut entries: Vec<_> = counter.iter().map(statistics::counter_entry).collect();
+            entries.extend(early_views.iter().flat_map(early::entries));
             let source = match (bases, &range) {
                 (Some(b), _) => pull::Bases::Direct(b),
                 (None, DrawRange::Indirect { args, offset }) => pull::Bases::Arguments {
@@ -3593,7 +3639,7 @@ impl<B: Backend> Replay<B> {
                 &fetch.inputs,
                 StageSet::VERTEX,
                 Some(&pixel),
-                counter.as_ref(),
+                entries,
             )?);
         }
         if d.aliased != 0 {
@@ -3747,7 +3793,10 @@ impl<B: Backend> Replay<B> {
                         "an index buffer view not aligned to its format",
                     ));
                 }
-                let held = d.resources[id.0 as usize].desc.width.next_multiple_of(4);
+                let held = d.resources[id.0 as usize]
+                    .desc
+                    .width
+                    .next_multiple_of(STORAGE_WORD);
                 let out = d.scratch(
                     u64::from(count) * 4,
                     BufferUsage::STORAGE | BufferUsage::INDEX,
@@ -3817,9 +3866,9 @@ impl<B: Backend> Replay<B> {
                     }),
                     topology: self.topology,
                     restart,
-                    // With no stage choosing a viewport (geometry shaders are refused, and
-                    // `SV_ViewportArrayIndex` from the vertex stage is reported absent), Direct3D 12
-                    // draws through the first viewport and scissor.
+                    // With no stage choosing a viewport (a geometry stage's draw goes by
+                    // `draw_runs`, and `SV_ViewportArrayIndex` from the vertex stage is reported
+                    // absent), Direct3D 12 draws through the first viewport and scissor.
                     viewports: &self.viewports[..self.viewports.len().min(1)],
                     scissors: &self.scissors[..self.scissors.len().min(1)],
                     blend_constant: self.blend_constant,
@@ -4011,7 +4060,7 @@ impl<B: Backend> Replay<B> {
                     ));
                 }
             };
-            views.push(Some(d.view(v)?));
+            views.push(Some(d.view_at(v, self.pass_layer)?));
             let clear = self.clears.iter().position(|(k, _)| k == v);
             loads.push(match clear {
                 Some(i) => match self.clears.swap_remove(i).1 {
@@ -4024,7 +4073,16 @@ impl<B: Backend> Replay<B> {
         let depth = match self.depth {
             None | Some(Descriptor::Empty) => None,
             Some(Descriptor::DepthStencil { view: v, read_only }) => {
-                let view = d.view(&v)?;
+                // A draw testing early in the program reads the view as it draws: a clear
+                // waiting for it is done first, as the pass cannot both clear and only read.
+                let read_only = if self.pass_early {
+                    let waiting: Vec<_> = self.clears.extract_if(.., |(k, _)| *k == v).collect();
+                    Self::clear_now(d, waiting)?;
+                    DSV_READ_ONLY_DEPTH | DSV_READ_ONLY_STENCIL
+                } else {
+                    read_only
+                };
+                let view = d.view_at(&v, self.pass_layer)?;
                 let (has_depth, has_stencil) = aspects(dxgi(v.format)?);
                 let (mut depth, mut stencil) = (None, None);
                 if let Some(i) = self.clears.iter().position(|(k, _)| *k == v)
@@ -4040,8 +4098,9 @@ impl<B: Backend> Replay<B> {
                 }
                 Some((
                     view,
-                    has_depth.then(|| aspect_ops(depth, read_only & 1 != 0)),
-                    has_stencil.then(|| aspect_ops(stencil, read_only & 2 != 0)),
+                    has_depth.then(|| aspect_ops(depth, read_only & DSV_READ_ONLY_DEPTH != 0)),
+                    has_stencil
+                        .then(|| aspect_ops(stencil, read_only & DSV_READ_ONLY_STENCIL != 0)),
                 ))
             }
             Some(_) => {
@@ -4476,13 +4535,14 @@ fn copy_texture<B: Backend>(
     Ok(())
 }
 
-/// The bytes a buffer of `width` is stored in: whole blocks of 256 (Direct3D's constant buffer
-/// alignment), zero past `width`, so a constant buffer view may declare more than the buffer's
-/// last bytes hold, which Direct3D 12 reads from the buffer's page.
+/// The bytes a buffer of `width` is stored in: whole blocks of Direct3D's constant buffer
+/// alignment, zero past `width`, so a constant buffer view may declare more than the buffer's
+/// last bytes hold, which Direct3D 12 reads from the buffer's page; at least whole storage words,
+/// as a storage binding reaching its end is.
 pub(crate) fn stored_size(width: u64, max: u64) -> u64 {
     width
-        .next_multiple_of(256)
-        .min(max.max(width.next_multiple_of(4)))
+        .next_multiple_of(resource::CONSTANT_BUFFER_ALIGNMENT)
+        .min(max.max(width.next_multiple_of(STORAGE_WORD)))
 }
 
 /// The slow paths converted `programs` take by themselves, each once.
@@ -4516,24 +4576,30 @@ fn early_tests_matter(ps: Option<&Converted>, ds: &DepthStencil) -> bool {
         })
 }
 
-/// Whether each of the pixel shader's colour outputs is of the scalar kind of the target it
-/// writes: Direct3D 12 writes another kind's bits as they are, which the back ends' pipelines do
-/// not take.
-fn outputs_fit_targets(ps: &Converted, colors: &[Option<Format>]) -> bool {
-    ps.reflection.outputs.iter().all(|o| {
-        let Some(wcontainers_gpu::SystemValue::Target(t)) = o.system else {
-            return true;
-        };
-        let Some(Some(format)) = colors.get(usize::from(t)) else {
-            return true;
-        };
-        matches!(
-            (format.kind(), o.scalar),
-            (FormatKind::Float, wcontainers_gpu::ScalarKind::Float)
-                | (FormatKind::Uint, wcontainers_gpu::ScalarKind::Uint)
-                | (FormatKind::Sint, wcontainers_gpu::ScalarKind::Sint)
-        )
-    })
+/// The pixel shader's colour outputs not of the scalar kind of the target they write, each to be
+/// written in the program as its target's format (`VariantKey::targets_in_shader`).
+fn retyped_targets(ps: &Converted, colors: &[Option<Format>]) -> Vec<TargetInShader> {
+    ps.reflection
+        .outputs
+        .iter()
+        .filter_map(|o| {
+            let Some(wcontainers_gpu::SystemValue::Target(target)) = o.system else {
+                return None;
+            };
+            let format = (*colors.get(usize::from(target))?)?;
+            let fits = matches!(
+                (format.kind(), o.scalar),
+                (FormatKind::Float, wcontainers_gpu::ScalarKind::Float)
+                    | (FormatKind::Uint, wcontainers_gpu::ScalarKind::Uint)
+                    | (FormatKind::Sint, wcontainers_gpu::ScalarKind::Sint)
+            );
+            (!fits).then_some(TargetInShader {
+                target,
+                format,
+                combine: false,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
