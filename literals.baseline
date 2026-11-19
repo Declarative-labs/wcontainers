@@ -2179,9 +2179,6 @@ code	crates/wcontainers-direct3d-12/src/device/bind.rs	str	Device<B>::arguments_
 code	crates/wcontainers-direct3d-12/src/device/bind.rs	str	Device<B>::note_clamp	"a minimum level-of-detail clamp in a vertex or geometry shader or past \\n                 texture slot 127"
 code	crates/wcontainers-direct3d-12/src/device/bind.rs	str	Device<B>::sampler	"sampling in the program through a sampler slot past 15"
 code	crates/wcontainers-direct3d-12/src/device/bind.rs	str	Device<B>::storage_texture	"storage views of part of a 3D texture"
-code	crates/wcontainers-direct3d-12/src/device/early.rs	int	Replay<B>::draw_per_primitive	3
-code	crates/wcontainers-direct3d-12/src/device/early.rs	int	Replay<B>::draw_per_primitive	3
-code	crates/wcontainers-direct3d-12/src/device/early.rs	int	Replay<B>::draw_per_primitive	3
 code	crates/wcontainers-direct3d-12/src/device/formats.rs	int	Bound	4
 code	crates/wcontainers-direct3d-12/src/device/formats.rs	int	Device<B>::stage_bound	128
 code	crates/wcontainers-direct3d-12/src/device/formats.rs	int	Device<B>::stage_bound	4
@@ -5057,7 +5054,6 @@ code	crates/wcontainers-gpu-webgl/src/shader.rs	char	write_glsl	'\n'
 code	crates/wcontainers-gpu-webgl/src/shader.rs	int	Linked	3
 code	crates/wcontainers-gpu-webgl/src/shader.rs	int	ProgramObj	4
 code	crates/wcontainers-gpu-webgl/src/shader.rs	int	bit_functions	4
-code	crates/wcontainers-gpu-webgl/src/shader.rs	int	compile	8
 code	crates/wcontainers-gpu-webgl/src/shader.rs	int	convert_inputs	1024
 code	crates/wcontainers-gpu-webgl/src/shader.rs	int	convert_inputs	16u32
 code	crates/wcontainers-gpu-webgl/src/shader.rs	int	convert_inputs	3
@@ -5272,15 +5268,6 @@ code	crates/wcontainers-gpu-webgpu/src/fill.rs	str	WebGpu::read_program	"texture
 code	crates/wcontainers-gpu-webgpu/src/fill.rs	str	WebGpu::read_program	"texture_2d<f32>"
 code	crates/wcontainers-gpu-webgpu/src/fill.rs	str	WebGpu::read_program	"texture_2d<u32>"
 code	crates/wcontainers-gpu-webgpu/src/fill.rs	str	WebGpu::read_program	"v.x"
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	char	WebGpu::frame_report	','
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	char	WebGpu::frame_report	':'
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	char	WebGpu::frame_report	'{'
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	char	WebGpu::frame_report	'}'
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	float	<WebGpu as Backend>::create_sampler	32.0
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	int	<WebGpu as Backend>::create_sampler	3
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	int	caps	16
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	int	caps	4
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	int	caps	8
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::begin_query	"begin_query outside a pass with an occlusion set, or nested"
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::configure_surface	"the window takes no 8-bit unorm format to present in"
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::current_texture	"getting the window's texture failed validation"
@@ -14034,15 +14021,6 @@ code	crates/wcontainers-shaders/src/lower/hull.rs	str	Lowering<'_>::tessellation
 code	crates/wcontainers-shaders/src/lower/hull.rs	str	Lowering<'_>::tessellation_declaration	"tessellation domain"
 code	crates/wcontainers-shaders/src/lower/hull.rs	str	Lowering<'_>::tessellation_declaration	"tessellator output"
 code	crates/wcontainers-shaders/src/lower/hull.rs	str	Lowering<'_>::tessellation_declaration	"tessellator partitioning"
-code	crates/wcontainers-shaders/src/stage.rs	bytestr	domain_program_for	b"domain records"
-code	crates/wcontainers-shaders/src/stage.rs	bytestr	vertex_program_for	b"vertex records"
-code	crates/wcontainers-shaders/src/stage.rs	float	tess::patch_bounds	64.0
-code	crates/wcontainers-shaders/src/stage.rs	float	tess::patch_bounds	64.0
-code	crates/wcontainers-shaders/src/stage.rs	int	passthrough	3
-code	crates/wcontainers-shaders/src/stage.rs	int	tess::patch_bounds	3
-code	crates/wcontainers-shaders/src/stage.rs	int	tess::patch_bounds	6
-code	crates/wcontainers-shaders/src/stage.rs	int	tess::patch_bounds	66
-code	crates/wcontainers-shaders/src/stage.rs	int	vertex_as_compute	0xffff
 code	crates/wcontainers-shaders/src/stage.rs	int	vertex_as_compute	4
 code	crates/wcontainers-shaders/src/stage.rs	int	vertex_as_compute	4
 code	crates/wcontainers-shaders/src/stage.rs	str	clip_unpositioned	"vertex_shader"
@@ -23467,26 +23445,11 @@ policy	generated	third_party/wgpu/src/backend/webgpu/webgpu_sys/mod.rs
 redefinition	crates/wcontainers-arm64/src/host.rs	str	PROBE	PROBE = "probe"
 redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	map::READ	READ = 1
 redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	map::WRITE	WRITE = 2
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::BLENDABLE	BLENDABLE = 32768
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::DEPTH_STENCIL	DEPTH_STENCIL = 65536
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::IA_INDEX_BUFFER	IA_INDEX_BUFFER = 4
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::IA_VERTEX_BUFFER	IA_VERTEX_BUFFER = 2
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::MIP	MIP = 4096
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::MULTISAMPLE_LOAD	MULTISAMPLE_LOAD = 4194304
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::MULTISAMPLE_RENDERTARGET	MULTISAMPLE_RENDERTARGET = 2097152
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::MULTISAMPLE_RESOLVE	MULTISAMPLE_RESOLVE = 262144
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::RENDER_TARGET	RENDER_TARGET = 16384
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::SHADER_LOAD	SHADER_LOAD = 256
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::SHADER_SAMPLE	SHADER_SAMPLE = 512
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::TEXTURE2D	TEXTURE2D = 32
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::TEXTURECUBE	TEXTURECUBE = 128
-redefinition	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::buffer_span::R32_TYPELESS	R32_TYPELESS = 39
 redefinition	crates/wcontainers-direct3d-11/tests/front.rs	int	a_geometry_shader_choosing_layers_and_viewports_draws_once_per_layer_and_viewport::LAYERS	LAYERS = 4
 redefinition	crates/wcontainers-direct3d-11/tests/front.rs	int	nv12_is_two_planes_viewed_apart_and_written_copied_and_mapped_as_joined_rows::NV12	NV12 = 103
 redefinition	crates/wcontainers-direct3d-11/tests/front.rs	int	yuy2_is_a_half_width_texture_of_pixel_pairs_viewed_as_rgba8::YUY2	YUY2 = 107
 redefinition	crates/wcontainers-direct3d-12/examples/check/cases.rs	int	PAGE	PAGE = 65536
 redefinition	crates/wcontainers-direct3d-12/examples/check/cases.rs	int	SIZE	SIZE = 64
-redefinition	crates/wcontainers-direct3d-12/examples/check/cases.rs	int	early_per_primitive::SIDE	SIDE = 4
 redefinition	crates/wcontainers-direct3d-12/examples/check_d3d12.rs	int	draw::SIZE	SIZE = 64
 redefinition	crates/wcontainers-direct3d-12/src/device/bind.rs	int	VERTEX	VERTEX = 1
 redefinition	crates/wcontainers-direct3d-12/src/device/geometry.rs	int	FILLED_BYTES	FILLED_BYTES = 32
