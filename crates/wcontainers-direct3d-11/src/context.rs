@@ -66,7 +66,8 @@ type ConstantWindow<B> = (u32, Rc<Buffer<B>>, u64, u64, u64, ConstantsReadAs);
 /// Bytes of one constant: four 32-bit components.
 const CONSTANT_ROW_BYTES: u64 = size_of::<[u32; 4]>() as u64;
 
-fn set_of(stage: usize) -> u32 {
+/// The binding set `stage`'s slots are in.
+pub(crate) fn set_of(stage: usize) -> u32 {
     if stage == PIXEL { 1 } else { 0 }
 }
 
@@ -1804,9 +1805,7 @@ impl<B: Backend> Device<B> {
         let mut v = StageVariant {
             samples: if s.reads_samples { samples } else { 0 },
             formats,
-            // Variants filtering in the program read level counts too.
-            texture_info: !caps.has(Features::TEXTURE_LEVEL_QUERY),
-            ..StageVariant::default()
+            ..self.base_variant()
         };
         if s.samplers != 0 {
             for (i, b) in self.ctx.samplers[stage].iter().enumerate().take(16) {
@@ -1880,34 +1879,39 @@ impl<B: Backend> Device<B> {
         v
     }
 
+    /// What every variant of a program takes on this back end, whatever is bound.
+    pub(crate) fn base_variant(&self) -> StageVariant {
+        StageVariant {
+            // Variants filtering in the program read level counts too.
+            texture_info: !self.backend.caps().has(Features::TEXTURE_LEVEL_QUERY),
+            ..StageVariant::default()
+        }
+    }
+
+    /// The variant of `s` drawn at `stage` with nothing bound that changes it.
+    pub(crate) fn unbound_variant(&self, stage: usize, s: &Shader<B>) -> StageVariant {
+        let v = self.base_variant();
+        StageVariant {
+            constants_as_texture: self.constants_past_uniform_limit(stage, s, &v),
+            ..v
+        }
+    }
+
     /// The constant buffer slots `s` reads as uniform buffers past the back end's uniform buffers
-    /// per stage, the highest first, keeping one for the helper constants where the variant `v`
-    /// has them: its program reads them through textures.
+    /// per stage, where the variant `v` reads the others: its program reads them through textures.
     fn constants_past_uniform_limit(&self, stage: usize, s: &Shader<B>, v: &StageVariant) -> u16 {
-        let limit = self.backend.caps().limits.uniform_buffers_per_stage as usize;
         let plain = StageVariant {
             formats: 0,
             samples: 0,
             ..*v
         };
-        let helpers = s.helpers.size > 0 || plain != StageVariant::default();
-        let room = limit.saturating_sub(usize::from(helpers));
-        let mut slots: Vec<u32> = s
-            .reflection
-            .bindings
-            .iter()
-            .filter(|b| {
-                b.kind == SlotKind::Uniform
-                    && b.set == set_of(stage)
-                    && v.constants_as_storage & (1 << b.register) == 0
-            })
-            .map(|b| b.register)
-            .collect();
-        if slots.len() <= room {
-            return 0;
-        }
-        slots.sort_unstable();
-        slots[room..].iter().fold(0, |m, &slot| m | 1 << slot)
+        crate::shader::constants_past_limit(
+            &s.reflection,
+            set_of(stage),
+            v.constants_as_storage,
+            s.helpers.size > 0 || plain != StageVariant::default(),
+            self.backend.caps().limits.uniform_buffers_per_stage,
+        )
     }
 
     /// The constant buffer slots `s` indexes at run time whose buffer bound to `stage` is larger

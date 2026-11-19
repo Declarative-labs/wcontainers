@@ -1827,6 +1827,38 @@ impl<B: Backend> Device<B> {
         let mirror_filtered = shader::mirror_filtered_slots(&converted);
         let helpers = Rc::new(shader::Helpers::of(&converted));
         let mut module = converted.modules.pop().expect("one module");
+        let constant_sizes = constant_sizes(&module.module);
+        let stand_ins = stand_ins(&module.module);
+        // Constant buffers past the back end's uniform buffers are read through textures.
+        let set = crate::context::set_of(if stage == wcontainers_gpu::SourceStage::Pixel {
+            crate::PIXEL
+        } else {
+            crate::VERTEX
+        });
+        let past_limit = if matches!(
+            stage,
+            wcontainers_gpu::SourceStage::Vertex | wcontainers_gpu::SourceStage::Pixel
+        ) {
+            shader::constants_past_limit(
+                &converted.reflection,
+                set,
+                0,
+                helpers.size > 0 || texture_info,
+                self.backend.caps().limits.uniform_buffers_per_stage,
+            )
+        } else {
+            0
+        };
+        if past_limit != 0 {
+            let key = StageVariant {
+                texture_info,
+                constants_as_texture: past_limit,
+                ..StageVariant::default()
+            }
+            .key(stage, &typed, layered, &[]);
+            let mut c = shader::convert_variant(bytecode, stage, &key)?;
+            module = c.modules.pop().expect("one module");
+        }
         // A vertex or domain program writing clip distances the back end lacks passes them on for
         // the pixel program to apply, at the location past its outputs.
         let mut clip = None;
@@ -1842,6 +1874,7 @@ impl<B: Backend> Device<B> {
             let key = StageVariant {
                 linked: at.0,
                 clip_distances: at.1,
+                constants_as_texture: past_limit,
                 ..StageVariant::default()
             }
             .key(stage, &typed, layered, &[]);
@@ -1861,8 +1894,6 @@ impl<B: Backend> Device<B> {
         self.bury();
         let gpu = self.backend.create_shader(&module);
         let gpu = self.gpu(gpu)?;
-        let constant_sizes = constant_sizes(&module.module);
-        let stand_ins = stand_ins(&module.module);
         let indexed_constants = shader::indexed_constants(bytecode)?;
         let id = self.id();
         let vertex = stage == wcontainers_gpu::SourceStage::Vertex;

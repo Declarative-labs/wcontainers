@@ -3,9 +3,9 @@
 
 use wcontainers_gpu::{
     AddedBinding, CLAMPED_SAMPLER_BINDING, DrawBaseSource, Format, FormatKind, HELPER_SET,
-    HelperSlot, HelperValue, LinkedValues, ShaderModule, ShaderStage, SlotKind, SourceStage,
-    StageValue, SystemValue, TexelBufferRoute, VariantFlags, VariantKey, ViewComponent,
-    helper_binding,
+    HelperSlot, HelperValue, LinkedValues, Reflection, ShaderModule, ShaderStage, SlotKind,
+    SourceStage, StageValue, SystemValue, TexelBufferRoute, VariantFlags, VariantKey,
+    ViewComponent, helper_binding,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source};
 
@@ -438,6 +438,33 @@ pub struct StageVariant {
     /// Constant buffer slots past the back end's uniform buffers per stage: the program reads them
     /// through textures the front copies the bound windows into (`ConstantsAsTexture`).
     pub constants_as_texture: u16,
+}
+
+/// The constant buffer slots of `reflection`'s set `set` read as uniform buffers (all but those in
+/// `elsewhere`) past `limit` uniform buffers, the highest first, keeping one for the helper
+/// constants where the program has them (`helpers`): its program reads them through textures
+/// (`ConstantsAsTexture`).
+pub fn constants_past_limit(
+    reflection: &Reflection,
+    set: u32,
+    elsewhere: u16,
+    helpers: bool,
+    limit: u32,
+) -> u16 {
+    let room = (limit as usize).saturating_sub(usize::from(helpers));
+    let mut slots: Vec<u32> = reflection
+        .bindings
+        .iter()
+        .filter(|b| {
+            b.kind == SlotKind::Uniform && b.set == set && elsewhere & (1 << b.register) == 0
+        })
+        .map(|b| b.register)
+        .collect();
+    if slots.len() <= room {
+        return 0;
+    }
+    slots.sort_unstable();
+    slots[room..].iter().fold(0, |m, &slot| m | 1 << slot)
 }
 
 /// What a stencil view's components read in Direct3D: the stencil in the second.
