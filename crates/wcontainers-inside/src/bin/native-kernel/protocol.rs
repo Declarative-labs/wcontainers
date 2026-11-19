@@ -28,7 +28,7 @@ impl Started {
             Next::Run { thread, .. } => Started {
                 kind: NextKind::Run as u64,
                 thread: thread.0.into(),
-                status: 0,
+                ..Started::default()
             },
             Next::Idle { .. } => Started {
                 kind: NextKind::Idle as u64,

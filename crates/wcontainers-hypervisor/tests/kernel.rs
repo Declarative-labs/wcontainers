@@ -27,6 +27,8 @@ fn main() {
 mod macos {
     use std::time::Instant;
 
+    use linux_raw_sys::general::{S_IRGRP, S_IROTH, S_IRWXU, S_IXGRP, S_IXOTH};
+
     use wcontainers_abi::{
         BackendRequestId, ConnectionId, Cpu, Host, HostError, RegisterBlock, Stream, Warning,
     };
@@ -58,7 +60,7 @@ mod macos {
     const DEFAULT_SEED: u64 = 0x5eed;
 
     /// The clocks the test host reads.
-    const MONOTONIC_NANOSECONDS: u64 = 1_000_000;
+    const MONOTONIC_NANOSECONDS: u64 = 1_234_567;
     const REALTIME_NANOSECONDS: u64 = 1_763_500_000_000_000_000;
 
     /// A host with fixed clocks and seeded random bytes, recording every call, with no network or backend.
@@ -169,7 +171,7 @@ mod macos {
         let path = format!("/{HELLO}").into_bytes();
         let files = vec![File {
             path: path.clone(),
-            mode: 0o755,
+            mode: S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH,
             uid: 0,
             gid: 0,
             mtime_seconds: 0,
