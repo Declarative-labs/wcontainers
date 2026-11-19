@@ -77,7 +77,9 @@ impl GuestTest for X86_64 {
         ],
     };
     const C_TARGET: &'static str = "x86_64-linux-musl";
-    const GENERAL_ONLY: &'static [&'static str] = &["-mgeneral-regs-only"];
+    // zig sets the CPU's features itself, and `-mgeneral-regs-only` does not keep its vectoriser off SSE;
+    // this leaves out the vector units.
+    const GENERAL_ONLY: &'static [&'static str] = &["-mcpu=x86_64-sse-sse2-mmx"];
     const NAME: &'static str = "x86_64";
     const ELF_MACHINE: object::elf::Machine = object::elf::EM_X86_64;
     const MUSL_LOADER: &'static str = "/lib/ld-musl-x86_64.so.1";
