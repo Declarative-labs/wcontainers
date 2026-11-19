@@ -3065,7 +3065,9 @@ apply unchanged.
   entries.
 - The cost of lazy flags with PF and AF on demand, and of partial flag setters, on real programs.
 - The cost of the canonical-address check on every `ret` and every jump or call through a register or
-  memory (four operations each, section 3.4).
+  memory (four operations each, section 3.4): measured at X4 as user-mode instructions of a wasmtime run on
+  the i7-8750H with and without it, the benchmark set at full: 1.4% of fib's, 2.0% of sort's, 1.4% of
+  interpret's, 4.4% of search's; within the ±2% that code layout moves the workloads without calls.
 - The cost of the approximate reciprocals' formula (about 30 vector operations for four lanes, section 5.8).
 - The size of `astro-float` in the real x86 browser build (40,947 bytes brotli in a scratch cdylib, section 5.8).
 - How often programs translate code from a live stack frame, and how often parallel threads must be
@@ -3079,8 +3081,8 @@ apply unchanged.
 - x87 in software against native on programs that use `long double`, and how many transcendental cases
   the reference rounds differently from the correctly rounded result.
 - The passed-register lists for x86.
-- Engine compile time and memory for x86 output, which is expected to differ from ARM64's because x86
-  instructions do more each.
+- Engine memory for x86 output. (Compile time and output size against input size, raw and gzipped, at
+  none and full: `measure_x86_64`, first at X4, in the status file.)
 - Not seen on the reference: which fault the CPU gives for an encoding past 15 bytes that runs into an
   unmapped page (section 5.2 treats it as running past the end of the code range); layer 1 places no case
   there today.

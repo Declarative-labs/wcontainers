@@ -53,7 +53,83 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   timed the benchmark set natively, in wasmtime and in Chrome on the x86 machine in alternating rounds,
   built the frame checks plan 3.4 and 5.3 describe for x86 (one check for a run of pushes, none for a call's
   callee, the return address covered), found why interpret is slow, and ran layer 2 at 10,000 again at a
-  new seed: X4's pass bar holds (see "X4, run 3").
+  new seed: X4's pass bar holds (see "X4, run 3"). Run 4 (2026-11-19) fixed what the independent check of X4
+  found: switch tables as the compilers really write them for a 32-bit index, the lazy `Shift` shape and
+  the flags of rotates and bit tests, the literal check's closing version merged, and the measurements the
+  check found missing (see "X4, run 4").
+
+## X4, run 4 (2026-11-19)
+
+Machines: the Mac (Apple M5 Max, load 40 to 90) and the i7-8750H (load 3.8 to 10.3 from other tracks' jobs).
+Logs in scratch `x4/run4/`.
+
+The independent check's findings, each fixed:
+- Switch tables (blocking): gcc and clang put a zero-extending `mov r32, s32` of the index between the guard
+  and the table load for a switch on a 32-bit value; the guard search stopped at it, so every such switch
+  went through the lookup. `habits::jump_table` now follows the index through that move (`zero_extended`).
+  Layer 2's emitter writes both compilers' real forms (gcc: table address, `mov t32, t32`, `notrack jmp`;
+  clang: `mov u32, t32` into the register the entry is loaded into, then the table address).
+  `programs/x86_64/switch_tables.c` holds gcc 9.4's and clang 10's own output as they wrote it;
+  `compilers_switches_match_linux_x86_64` checks it against the i7-8750H at none and full and that full
+  counts no "jump through a register not recognised" at every level and in both settings. Without the fix
+  it fails (1,400 such jumps at -O0).
+- Lazy flags of shifts (blocking): shl, sal, shr and sar keep a `Shift` shape (three locals, or eight when the
+  count may be zero), so their PF, ZF and SF are worked out only when read, and nothing is worked out for
+  flags nobody reads. Rotates, bt and its kin, clc, stc and cmc hand the six flags over each in a local
+  (`Flags::Each`) instead of packing a word and unpacking it. How this departs from plan 5.1's text is under
+  "Departures", X4; plan 5.1's "As built" paragraph is rewritten. Layer 2's emitter now also writes shifts
+  and rotates by immediates 0 to 64, bt, bts, btr and btc, and clc, stc and cmc.
+- Literal check: merged origin/phase-1-literals at its closing tip 7668c010 and ran its init once (6e7d8d8d,
+  the commit after the merge, which changed one line). Baseline lines of this track's crates now:
+  wcontainers-x86 328 (11 fewer: `Flag::bit` and the flags table derive from `CF` to `OF`, the shape table's
+  size from its one width's list, `with_locals` matches slices, the shift count's mask is one function),
+  wcontainers-guest-cpu 28, wcontainers-translator 87, wcontainers-translator-test 2138. Left: the reference
+  runner's own 0x37f, 0x1f80 and 80-bit mask (it depends on no x86 crate), as recorded at X4 run 1.
+- The canonical-address check's cost: measured (below; plan 12 updated).
+- Size and compile time of x86 output at full: measured (below). The `measure` test now runs at none and full
+  for each guest (`measure_x86_64` added).
+- fib's per-call costs: measured (below); still a design question, not changed.
+- Plan 7.4's rep strings in layer 2: recorded as left to X5 (plan 7.4 and "Departures", X4).
+- The stale proof paragraph of X2 run 1 is gone from "Where things stand".
+
+Also: `programs/x86_64/shift_flags.c`, three functions of this run with flags of shifts, rotates and bit tests
+live across calls (a shift by cl of 0 keeping a compare's flags, by 1, and by 32 which masks to 0; shr and
+sar by immediates; a rotate, a bt, and a callee's stc and cmc under a sub's ZF). Native output on the
+i7-8750H, as worked out by hand first: `kept 0 1 1 0 1 0`, `kept 1 1 0 0 0 1`, `kept 32 1 1 0 1 0`,
+`shifted 1 0 1 1 1 0`, `turned 1 0 1 1 1 0 1`. `shift_flags_across_calls_match_linux_x86_64` matches it at
+none and full in both settings.
+
+Measured:
+- Layer 2 x86, seed 4, 500 programs, every one also on the CPU, after the switch change (Mac load 60 to 80):
+  0 failing (162 faulted). Seed 5, 1,000 programs, after the shape change and the new emitter forms (Mac load
+  38 to 72): 0 failing (351 faulted, 130 left to an address at full, 2,341 stacks lost, 2,346 pieces forgotten).
+- Output at none (from every instruction) and full (from the entry), translated for speed, best of 5,
+  `measure_x86_64` on the Mac at load 7 (`measure.log`; sizes the same in an earlier run at load 60 to 90):
+  bench -O2, 7,868 bytes of code (3,595 gzipped): none 390,793 bytes of WebAssembly (49.7 a byte of code;
+  46,680 gzipped, 13.0 a gzipped byte), translated in 1.91 ms, compiled by wasmtime in 42.8 ms; full 641,282
+  bytes (81.5; 106,716 gzipped, 29.7), 5.01 ms, 36.1 ms. hello -O2 with the C library, 13,583 bytes (8,880):
+  none 716,610 (52.8; 88,246, 9.9), 3.43 ms, 85.9 ms; full (what the entry reaches) 119,343 (8.8; 20,844, 2.3),
+  1.37 ms, 5.7 ms. integers -O2, 3,693 bytes: none 178,041 (48.2), 0.90 ms, 20.9 ms; full 187,822 (50.9), 2.50
+  ms, 15.1 ms. tables -O2, 1,758 bytes: none 86,126 (49.0), 0.49 ms, 8.6 ms; full 91,416 (52.0), 1.14 ms, 8.5
+  ms. The -O0 builds are in the log.
+- Timings of the shape change and of the canonical check, in wasmtime on the i7-8750H, three builds
+  alternating one run each a round, 5 rounds (`variants.log`, `variants.sh`; load 3.8 to 8.9, with this run's
+  layer 1 on the same machine for part of it): the spread between rounds (interpret 11.2 to 29.8 s) was far
+  larger than any difference between the builds, so the times decide nothing. Counted instead as user-mode
+  instructions of one run (`perf stat -e instructions:u`, `counts.sh`; repeated runs agree to 0.01%):
+- The shapes (b1ccb5ba against c72c85c5): hash 10.507 G to 10.710 G (+1.9%, its loop's `shr $29` flags are
+  never read; not explained), sort 54.72 G to 53.74 G (-1.8%), the others within 0.15%.
+- The canonical-address check (c72c85c5 against the same with the check emptied): fib 1.4%, sort 2.0%,
+  interpret 1.4%, search 4.4% of their instructions; sieve, hash and matrix move by up to 1.7% the other way,
+  which is the noise of code layout.
+- fib's per-call costs (c72c85c5 against builds without each, wrong in general and made only to count): the
+  flags word packed into the block before every call is 12.1% of fib's instructions and 9.7% of sort's; the
+  passed-in-only registers stored at each return and loaded after each call are 6.5% of fib's and 3.6% of
+  sort's. Interpret and search: 1.4% each, or less. Doing without them needs to know whether a callee reads
+  the flags or those registers (a callee's own liveness at entry); that stays a design question for the
+  translator.
+
+Proof at the end of run 4: see the end of this section once the long runs below have finished.
 
 ## X4, run 3 (2026-11-18)
 
@@ -1682,6 +1758,14 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 - The plan's header now counts nine checks.
 
 ## How to run
+
+- Comparing builds on the x86 machine (X4 run 4): put each build's `time-blob` in `~/wcontainers-x86/variants/`
+  (built from a `git archive` of its commit in `~/wcontainers-x86/tree`, `-j 4`, under `choom -n 600`), then
+  `~/wcontainers-x86/counts.sh "<workloads>" <variant>...` counts user-mode instructions of one wasmtime run
+  each with the kernel-versioned `perf` in /usr/lib/linux-tools (the unversioned `perf` does not run there),
+  and `~/wcontainers-x86/variants.sh <rounds> <workloads>` alternates times (scratch `x4/run4/` holds both and
+  `patch-variants.py`, which makes the timing-only builds without the flags hand-over or the passed-in-only
+  registers).
 
 - x86 benchmarks on the x86 machine (X4 run 3), natively, in wasmtime and in Chrome in alternating rounds,
   one command there once the blobs and the tree are in place: `~/wcontainers-x86/time-rounds.sh <rounds>
