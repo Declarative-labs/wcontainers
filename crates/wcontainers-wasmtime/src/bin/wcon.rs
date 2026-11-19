@@ -1,18 +1,21 @@
 //! A demonstration of the library: runs one container to its end and exits with its status.
 //!
 //! wcon (--oci DIRECTORY | --tar FILE) [--config config.json] [--cache DIRECTORY]
-//!      [--look-ahead full|none|N] [--size] [-- ARGUMENTS...]
+//!      [--look-ahead full|none|N] [--size] [--volume SOURCE:DESTINATION]
+//!      [--publish ADDRESS:PORT:CONTAINER_PORT]... [-- ARGUMENTS...]
 //!
 //! What runs is the OCI image's configuration converted, or the runtime's base configuration for a
-//! plain tar, or `--config`'s; the arguments, when given, replace `process.args`.
+//! plain tar, or `--config`'s; the arguments, when given, replace `process.args`. `--volume` adds a
+//! bind mount of a host directory to it; `--publish` lets the host reach a TCP port of the container.
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use wcontainers_arm64::Arm64;
 use wcontainers_runtime::{
     Ending, Executor, GuestMachine, Image, LocalSystem, Runtime, RuntimeSettings, Warned,
-    spec_from_json,
+    bind_mount, spec_from_json,
 };
 use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, TranslatorSettings};
 
@@ -20,6 +23,9 @@ type Back = CpuSide<Arm64>;
 
 /// The warning for a property of the configuration that is ignored, with its path and count.
 const IGNORED: &str = "a property the specification does not define, or an annotation, ignored";
+
+/// What separates the parts of `--volume` and `--publish`.
+const SEPARATOR: char = ':';
 
 /// Docker's exit statuses for a program not found and for its own failures.
 const NOT_FOUND: u8 = 127;
@@ -58,6 +64,8 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
         Some("none") => LookAhead::None,
         Some(n) => LookAhead::Bounded(n.parse()?),
     };
+    let volume: Option<String> = arguments.opt_value_from_str("--volume")?;
+    let published: Vec<String> = arguments.values_from_str("--publish")?;
     let optimise = if arguments.contains("--size") {
         Optimise::Size
     } else {
@@ -92,6 +100,14 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
         }
         None => image.spec()?,
     };
+    if let Some(volume) = volume {
+        let (source, destination) = volume
+            .split_once(SEPARATOR)
+            .ok_or("--volume is SOURCE:DESTINATION")?;
+        let mut mounts = spec.mounts().clone().unwrap_or_default();
+        mounts.push(bind_mount(source.as_ref(), destination));
+        spec.set_mounts(Some(mounts));
+    }
     if !command.is_empty() {
         let mut process = spec.process().clone().unwrap_or_default();
         process.set_args(Some(command));
@@ -99,7 +115,13 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
     }
 
     let runtime = Runtime::<Back>::new(&RuntimeSettings { cache });
-    let system = LocalSystem::new(Box::new(std::io::stdout()), Box::new(std::io::stderr()));
+    let mut system = LocalSystem::new(Box::new(std::io::stdout()), Box::new(std::io::stderr()));
+    for publish in published {
+        let (at, port) = publish
+            .rsplit_once(SEPARATOR)
+            .ok_or("--publish is ADDRESS:PORT:CONTAINER_PORT")?;
+        system.publish(port.parse()?, at.parse::<SocketAddr>()?);
+    }
     let translator_settings = TranslatorSettings {
         look_ahead,
         optimise,

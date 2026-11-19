@@ -147,11 +147,13 @@ pub(crate) struct Volume {
 
 /// The mount type of a bind mount, and the options that make one.
 const BIND: &str = "bind";
-const BIND_OPTIONS: &[&str] = &[BIND, "rbind"];
+const RBIND: &str = "rbind";
+const BIND_OPTIONS: &[&str] = &[BIND, RBIND];
 
 /// The other options of a bind mount that the kernel's mount of the file backend has: read and
 /// write, and no propagation to or from the host.
-const HONOURED_OPTIONS: &[&str] = &["rw", "private", "rprivate"];
+const READ_WRITE: &str = "rw";
+const HONOURED_OPTIONS: &[&str] = &[READ_WRITE, "private", "rprivate"];
 
 fn refused(field: impl Into<String>, reason: impl Into<String>) -> Error {
     Error::Refused {
@@ -302,7 +304,7 @@ fn check_mounts(value: &Value) -> Result<Option<Volume>, Error> {
     let mut volume = None;
     if given.len() > kernel.len() {
         let index = kernel.len();
-        volume = Some(bind_mount(index, &given[index])?);
+        volume = Some(check_bind_mount(index, &given[index])?);
         if given.len() > index + 1 {
             return Err(refused(
                 format!("mounts[{}]", index + 1),
@@ -389,8 +391,19 @@ fn check_mounts(value: &Value) -> Result<Option<Volume>, Error> {
     Ok(volume)
 }
 
+/// The bind mount of host directory `source` at `destination`, read and write, as this runtime
+/// honours one: to be added after the configuration's other mounts.
+pub fn bind_mount(source: &std::path::Path, destination: &str) -> oci_spec::runtime::Mount {
+    let mut mount = oci_spec::runtime::Mount::default();
+    mount.set_destination(destination.into());
+    mount.set_typ(Some(BIND.to_string()));
+    mount.set_source(Some(source.to_path_buf()));
+    mount.set_options(Some(vec![RBIND.to_string(), READ_WRITE.to_string()]));
+    mount
+}
+
 /// A bind mount of a host directory, read and write, at an absolute path other than the root.
-fn bind_mount(index: usize, mount: &Value) -> Result<Volume, Error> {
+fn check_bind_mount(index: usize, mount: &Value) -> Result<Volume, Error> {
     let field = format!("mounts[{index}]");
     let options: Vec<&str> = mount["options"]
         .as_array()

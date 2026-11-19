@@ -20,7 +20,7 @@ mod system;
 pub use container::{Container, Error, Executor, GuestMachine, Runtime, RuntimeSettings};
 pub use image::Image;
 pub use oci_spec;
-pub use spec::{base_spec, spec_from_json};
+pub use spec::{base_spec, bind_mount, spec_from_json};
 pub use system::{LocalSystem, Warned};
 
 /// How a turn ends.
