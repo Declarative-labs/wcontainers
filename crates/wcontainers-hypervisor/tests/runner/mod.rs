@@ -828,9 +828,14 @@ fn resolve(
             };
             Resolved::Stop(stop, Box::new(whole(state, &trapped.hardware, float)))
         }
-        Ok(stop::Resolved::Again(next, page) | stop::Resolved::FloatStatusNotKept(next, page)) => {
-            Resolved::Again(Box::new(hardware_of(next, &trapped.hardware)), page)
-        }
+        // One instruction alone has no translations of its own to drop.
+        Ok(
+            stop::Resolved::Again(next, page)
+            | stop::Resolved::FloatStatusNotKept(next, page)
+            | stop::Resolved::CodeChanged {
+                then: next, page, ..
+            },
+        ) => Resolved::Again(Box::new(hardware_of(next, &trapped.hardware)), page),
         Ok(stop::Resolved::Clock {
             into,
             mut then,

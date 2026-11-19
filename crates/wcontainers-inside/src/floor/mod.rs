@@ -84,8 +84,24 @@ impl crate::link::Ring for Doorbell {
     }
 }
 
+/// Exits through the link, every virtual CPU's: the slow path "asked the host".
+static ASKED: AtomicU64 = AtomicU64::new(0);
+
+/// The request word of the last exit through the link.
+static LAST_REQUEST: AtomicU64 = AtomicU64::new(0);
+
+/// How many exits through the link there have been, and the last one's request word.
+pub fn asked() -> (u64, u64) {
+    (
+        ASKED.load(Ordering::Relaxed),
+        LAST_REQUEST.load(Ordering::Relaxed),
+    )
+}
+
 /// Rings the doorbell: the virtual CPU leaves to the monitor and comes back answered.
 fn doorbell() {
+    ASKED.fetch_add(1, Ordering::Relaxed);
+    LAST_REQUEST.store(link_page().head.request, Ordering::Relaxed);
     barrier::dsb(SY);
     // SAFETY: the monitor answers in the link page and resumes at the next instruction.
     unsafe { asm!("hvc #0", options(nostack)) };

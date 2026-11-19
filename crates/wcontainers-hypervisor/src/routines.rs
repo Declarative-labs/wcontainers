@@ -1,4 +1,4 @@
-//! The inside's float state routines, made by the encoder and written into the frame the inside names.
+//! The inside's float state routines and its whole TLB invalidation, made by the encoder and written into the frame the inside names.
 
 use wcontainers_arm64::carry::LINK;
 use wcontainers_arm64::encode::{self, FloatStatusMoves, Register, form};
@@ -38,6 +38,7 @@ fn routines() -> (Vec<u32>, [usize; ROUTINES]) {
         vec![first.write_fpsr, second.write_fpcr, ret],
         each(form::STR_Q),
         each(form::LDR_Q),
+        vec![encode::invalidate_whole_tlb(), ret],
     ];
     let mut words = Vec::new();
     let mut starts = [0; ROUTINES];
@@ -63,12 +64,14 @@ pub fn answer(link: &mut Link, memory: &Memory) {
         write_float_control,
         save_vectors,
         load_vectors,
+        invalidate_whole_tlb,
     ] = starts.map(|start| (start * size_of::<u32>()) as u64);
     link.put(&Placed {
         read_float_control,
         write_float_control,
         save_vectors,
         load_vectors,
+        invalidate_whole_tlb,
     });
 }
 
@@ -84,6 +87,14 @@ mod tests {
         assert_eq!(moves.read_fpcr, 0xd53b_4400);
         assert_eq!(moves.write_fpsr, 0xd51b_4420);
         assert_eq!(moves.write_fpcr, 0xd51b_4400);
+    }
+
+    #[test]
+    fn the_invalidation_is_tlbi_vmalle1is() {
+        assert_eq!(
+            wcontainers_arm64::encode::invalidate_whole_tlb(),
+            0xd508_831f
+        );
     }
 
     #[test]

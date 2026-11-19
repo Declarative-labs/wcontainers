@@ -13,14 +13,16 @@ mod protocol;
 
 #[cfg(target_os = "none")]
 mod kernel {
+    use alloc::collections::BTreeMap;
+
     use wcontainers_inside::container;
     use wcontainers_inside::floor::{self, Doorbell, Floor};
     use wcontainers_inside::host::LinkHost;
     use wcontainers_inside::link::Start;
     use wcontainers_inside::native::NativeCpu;
     use wcontainers_kernel::Kernel;
-    use wcontainers_kernel_test_policy::TestPolicy;
-    use wcontainers_runtime::{Ending, drive};
+    use wcontainers_kernel_test_policy::{TestPolicy, Warned as Kept};
+    use wcontainers_runtime::{Ending, System as _, drive};
 
     use crate::protocol::{Ended, Policy, PolicySeeds, Warned};
 
@@ -41,7 +43,14 @@ mod kernel {
             Err(refused) => panic!("the native back end refused: {refused:?}"),
         };
         container::send_root(&mut Doorbell, &kernel, &mut cpu);
-        for warned in &policy.warnings {
+        cpu.send_warnings(&mut |warning| policy.cpu_warning(warning));
+        // Each reason's last warning, which carries its count.
+        let last: BTreeMap<&str, &Kept> = policy
+            .warnings
+            .iter()
+            .map(|warned| (warned.reason.as_str(), warned))
+            .collect();
+        for warned in last.into_values() {
             floor::ask(
                 &Warned {
                     count: warned.count,

@@ -336,6 +336,37 @@ impl Table {
     pub fn reserve_top(&self, frames: &mut Frames, va: u64) -> Result<(), Full> {
         self.slot(frames, va, TOP_LEVEL + 1).map(|_| ())
     }
+
+    /// The top-level entry at `index`.
+    pub fn top_entry(&self, index: u64) -> u64 {
+        // SAFETY: the top-level table is reached through the linear map.
+        unsafe { ptr::read_volatile((linear(self.root) + index * ENTRY_BYTES) as *const u64) }
+    }
+
+    /// Gives back this table and the tables below the top-level entries `owned` names by index, never the frames
+    /// pages and blocks map. Nothing may walk it afterwards.
+    pub fn free(&self, frames: &mut Frames, owned: impl Fn(u64) -> bool) {
+        for index in (0..ENTRIES).filter(|&index| owned(index)) {
+            free_below(frames, self.top_entry(index), TOP_LEVEL);
+        }
+        frames.give(self.root);
+    }
+}
+
+/// Gives back the table `entry` at `level` points to, if it points to one, and every table below it.
+fn free_below(frames: &mut Frames, entry: u64, level: u32) {
+    let table_bit = El1Attributes::TABLE_OR_PAGE.bits() as u64;
+    if level == LEAF_LEVEL || !valid(entry) || entry & table_bit == 0 {
+        return;
+    }
+    let table = entry & OUTPUT_ADDRESS;
+    for index in 0..ENTRIES {
+        // SAFETY: table entries are reached through the linear map.
+        let below =
+            unsafe { ptr::read_volatile((linear(table) + index * ENTRY_BYTES) as *const u64) };
+        free_below(frames, below, level + 1);
+    }
+    frames.give(table);
 }
 
 /// Makes table writes visible to the table walker.

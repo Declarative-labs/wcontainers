@@ -3,6 +3,8 @@
 //! calls into the inside answered. The inside resolves its guest threads' stops with this, and the tests
 //! that run pieces on the floor resolve theirs with the same code.
 
+use alloc::boxed::Box;
+
 use aarch64_cpu::registers::ESR_EL1;
 use wcontainers_abi::{PAGE_SIZE, RegisterBlock};
 use wcontainers_arm64::mirror::{MIRROR, SLOT_SHIFT};
@@ -126,6 +128,14 @@ pub enum Resolved {
     /// `into` (none: nowhere), through [`set_register`].
     Clock {
         into: Option<u8>,
+        then: Interrupted,
+        page: RegisterPage,
+    },
+    /// The guest announced that the code at `address` changed: the guest's level goes on from `then` once the
+    /// translations of that line are dropped, or stops at `at` when it may not read there.
+    CodeChanged {
+        address: u64,
+        at: Box<GuestState>,
         then: Interrupted,
         page: RegisterPage,
     },
@@ -400,7 +410,14 @@ pub fn resolve(
                     state.pc = span.guest + size_of::<u32>() as u64;
                     Stop::Syscall
                 }
-                Stopping::CodeChanged => return Ok(Resolved::Again(after_call(h), page.clone())),
+                Stopping::CodeChanged(register) => {
+                    return Ok(Resolved::CodeChanged {
+                        address: register.map_or(0, |r| state.x[usize::from(r)]),
+                        at: Box::new(state),
+                        then: after_call(h),
+                        page: page.clone(),
+                    });
+                }
                 Stopping::Counter(into) => {
                     return Ok(Resolved::Clock {
                         into,

@@ -10,6 +10,7 @@ pub mod container;
 pub mod host;
 pub mod layout;
 pub mod link;
+pub mod reason;
 pub mod routines;
 pub mod stop;
 pub mod syndrome;

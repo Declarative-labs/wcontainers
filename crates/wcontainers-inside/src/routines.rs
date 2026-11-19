@@ -34,4 +34,7 @@ pub struct Placed {
     pub save_vectors: u64,
     /// `extern "C" fn(from: *const Vectors)`.
     pub load_vectors: u64,
+    /// `extern "C" fn()`, which invalidates every TLB entry of every identifier on every virtual CPU, without
+    /// the barriers around it.
+    pub invalidate_whole_tlb: u64,
 }

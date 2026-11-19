@@ -253,7 +253,10 @@ impl Native for Arm64 {
         }
         match *i {
             I::Syscall => Stopping::Syscall,
-            I::CodeChanged { .. } => Stopping::CodeChanged,
+            I::CodeChanged { rn } => Stopping::CodeChanged(match rn {
+                Reg::X(n) => Some(n),
+                _ => None,
+            }),
             I::ReadSystem {
                 rt,
                 register: SystemRegister::Counter,

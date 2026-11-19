@@ -180,8 +180,9 @@ pub enum Stopping {
     Access(Operand),
     /// A system call.
     Syscall,
-    /// Code made visible to instruction fetch: the inside answers and the guest goes on.
-    CodeChanged,
+    /// Code made visible to instruction fetch at the address in this general register (`None`: zero): the
+    /// inside drops what it translated from that line and the guest goes on.
+    CodeChanged(Option<u8>),
     /// A read of the counter into this general register (`None`: nowhere).
     Counter(Option<u8>),
     /// A breakpoint with its comment.
