@@ -3,9 +3,11 @@
 // prints nothing.
 
 #define _GNU_SOURCE
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
@@ -77,14 +79,93 @@ static void hugepages(void) {
     fclose(meminfo);
 }
 
+// A file's mode only, for files whose values say what each machine does.
+static void mode_of(const char *path) {
+    struct stat st;
+    int r = stat(path, &st);
+    printf("%s: %s %o\n", path, r < 0 ? "stat errno" : "mode", r < 0 ? errno : st.st_mode);
+}
+
+static int by_name(const void *a, const void *b) {
+    return strcmp(*(char *const *)a, *(char *const *)b);
+}
+
+// The modes of a directory's entries, sorted by name.
+static void modes_in(const char *path) {
+    char *names[32];
+    unsigned count = 0;
+    DIR *dir = opendir(path);
+    struct dirent *entry;
+    while (dir && (entry = readdir(dir)) && count < 32) {
+        if (entry->d_name[0] != '.') {
+            names[count++] = strdup(entry->d_name);
+        }
+    }
+    if (dir) {
+        closedir(dir);
+    }
+    qsort(names, count, sizeof *names, by_name);
+    for (unsigned i = 0; i < count; i++) {
+        char file[300];
+        snprintf(file, sizeof file, "%s/%s", path, names[i]);
+        mode_of(file);
+    }
+}
+
+// Transparent huge pages: the settings and their choices; whether any are made, and the counts,
+// are each machine's own.
+static void transparent(void) {
+    const char *base = "/sys/kernel/mm/transparent_hugepage";
+    const char *same[] = {"defrag", "shmem_enabled", "shrink_underused", "use_zero_page",
+                          "hpage_pmd_size", "khugepaged/alloc_sleep_millisecs", "khugepaged/defrag",
+                          "khugepaged/max_ptes_none", "khugepaged/max_ptes_shared",
+                          "khugepaged/max_ptes_swap", "khugepaged/pages_to_scan",
+                          "khugepaged/scan_sleep_millisecs"};
+    const char *own[] = {"enabled", "khugepaged/full_scans", "khugepaged/pages_collapsed"};
+    char path[256];
+    for (unsigned i = 0; i < sizeof same / sizeof *same; i++) {
+        snprintf(path, sizeof path, "%s/%s", base, same[i]);
+        show(path);
+    }
+    for (unsigned i = 0; i < sizeof own / sizeof *own; i++) {
+        snprintf(path, sizeof path, "%s/%s", base, own[i]);
+        mode_of(path);
+    }
+    p("write enabled", open("/sys/kernel/mm/transparent_hugepage/enabled", O_WRONLY));
+    // Every entry, sorted, and in each size the files and counts.
+    char *names[64];
+    unsigned count = 0;
+    DIR *dir = opendir(base);
+    struct dirent *entry;
+    while ((entry = readdir(dir)) && count < 64) {
+        names[count++] = strdup(entry->d_name);
+    }
+    closedir(dir);
+    qsort(names, count, sizeof *names, by_name);
+    for (unsigned i = 0; i < count; i++) {
+        printf("entry %s\n", names[i]);
+        if (strncmp(names[i], "hugepages-", 10) != 0) {
+            continue;
+        }
+        snprintf(path, sizeof path, "%s/%s", base, names[i]);
+        modes_in(path);
+        snprintf(path, sizeof path, "%s/%s/stats", base, names[i]);
+        modes_in(path);
+    }
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "hugepages") == 0) {
         hugepages();
         return 0;
     }
+    if (argc > 1 && strcmp(argv[1], "transparent") == 0) {
+        transparent();
+        return 0;
+    }
     if (argc > 1 && strcmp(argv[1], "lookups") == 0) {
         struct stat st;
-        stat("/sys/kernel/mm/transparent_hugepage/hpage_pmd_size", &st);
+        stat("/sys/kernel/mm/lru_gen/enabled", &st);
         stat("/sys/fs/cgroup/cpu.max", &st);
         stat("/sys/devices/system/cpu/online", &st);
         stat("/sys/no-such-entry", &st);

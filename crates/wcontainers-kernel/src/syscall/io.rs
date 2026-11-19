@@ -517,7 +517,8 @@ pub(super) fn positioned(file: &FileRef, writing: bool) -> Result<(), Errno> {
 }
 
 /// Whether a file has a read or write operation at all (Linux's `FMODE_CAN_READ` and
-/// `FMODE_CAN_WRITE`): a secret memory file has neither, and most of `/proc`'s files no write.
+/// `FMODE_CAN_WRITE`): a secret memory file has neither, a hugetlbfs file and most of `/proc`'s
+/// files no write.
 pub(super) fn moves_bytes(file: &FileRef, writing: bool) -> Result<(), Errno> {
     let file = file.borrow();
     let inode = file.node.borrow();
@@ -530,7 +531,8 @@ pub(super) fn moves_bytes(file: &FileRef, writing: bool) -> Result<(), Errno> {
         && super::eventfd::of(&file).is_none();
     let epoll = super::epoll::of(&file).is_some();
     let pidfd = matches!(inode.content, Content::Pidfd(..));
-    if inode.is_secret() || (writing && no_write) || anon_write || pidfd || epoll {
+    let huge = writing && inode.huge_page_size().is_some();
+    if inode.is_secret() || (writing && no_write) || anon_write || pidfd || epoll || huge {
         return Err(Errno::EINVAL);
     }
     Ok(())

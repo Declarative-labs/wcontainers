@@ -7,9 +7,11 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/shm.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/vfs.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 // Newer than the C library's headers (Linux's `linux/memfd.h` and `linux/fcntl.h`).
@@ -38,12 +40,91 @@ static long memfd(const char *name, unsigned flags) {
     return syscall(SYS_memfd_create, name, flags);
 }
 
+// Whether touching a byte of `at` ends a child with a signal, and which.
+static void touch(const char *what, volatile char *at) {
+    pid_t child = fork();
+    if (child == 0) {
+        at[0] = 1;
+        _exit(0);
+    }
+    int status;
+    waitpid(child, &status, 0);
+    printf("%s: %s %d\n", what, WIFSIGNALED(status) ? "signal" : "exit",
+           WIFSIGNALED(status) ? WTERMSIG(status) : WEXITSTATUS(status));
+}
+
+// Huge page memory files, on a machine that offers the sizes and reserves no pages.
+static void huge(void) {
+    // Each size Linux names, as log2 of the size in the flags' top bits.
+    static const unsigned logs[] = {0, 16, 19, 21, 23, 24, 25, 28, 29, 30, 31, 34};
+    for (unsigned i = 0; i < sizeof logs / sizeof logs[0]; i++) {
+        char what[32];
+        snprintf(what, sizeof what, "size log %u", logs[i]);
+        long fd = memfd("x", MFD_HUGETLB | (logs[i] << 26));
+        show(what, fd);
+        if (fd >= 0) {
+            struct stat st;
+            fstat(fd, &st);
+            printf("  blksize %ld blocks %ld\n", (long)st.st_blksize, (long)st.st_blocks);
+            close(fd);
+        }
+    }
+    show("noexec", memfd("x", MFD_HUGETLB | MFD_NOEXEC_SEAL));
+    int fd = memfd("huge", MFD_HUGETLB | MFD_ALLOW_SEALING);
+    describe("huge", fd);
+    struct statfs fs;
+    show("fstatfs", fstatfs(fd, &fs));
+    printf("magic %lx bsize %ld blocks %ld free %ld files %ld\n", (unsigned long)fs.f_type,
+           (long)fs.f_bsize, (long)fs.f_blocks, (long)fs.f_bfree, (long)fs.f_files);
+    long huge_size = fs.f_bsize;
+    show("write", write(fd, "abc", 3));
+    show("truncate odd", ftruncate(fd, 4096));
+    show("truncate", ftruncate(fd, 2 * huge_size));
+    describe("truncated", fd);
+    char bytes[8] = {9, 9, 9, 9, 9, 9, 9, 9};
+    show("read", pread(fd, bytes, sizeof bytes, 0));
+    printf("bytes %d %d\n", bytes[0], bytes[7]);
+    show("read past end", pread(fd, bytes, sizeof bytes, 2 * huge_size));
+    show("pwrite", pwrite(fd, "abc", 3, 0));
+    show("seek end", lseek(fd, 0, SEEK_END));
+    show("fallocate", fallocate(fd, 0, 0, huge_size));
+    show("punch", fallocate(fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, 0, huge_size));
+    void *odd = mmap(NULL, huge_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 4096);
+    show("map odd offset", odd == MAP_FAILED ? -1 : 0);
+    char *shared = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    show("map shared", shared == MAP_FAILED ? -1 : 0);
+    if (shared != MAP_FAILED) {
+        printf("aligned %d\n", (int)((unsigned long)shared % huge_size == 0));
+        touch("touch shared", shared);
+        show("unmap part", munmap(shared, 4096));
+        show("unmap", munmap(shared, huge_size));
+    }
+    char *private = mmap(NULL, huge_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+    show("map private", private == MAP_FAILED ? -1 : 0);
+    if (private != MAP_FAILED) {
+        touch("touch private", private);
+        munmap(private, huge_size);
+    }
+    // Anonymous huge pages and huge page segments, by the size their flags name.
+    static const unsigned anonymous_logs[] = {0, 19, 21, 30};
+    for (unsigned i = 0; i < sizeof anonymous_logs / sizeof anonymous_logs[0]; i++) {
+        unsigned size = anonymous_logs[i] << 26;
+        void *at = mmap(NULL, huge_size, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | size, -1, 0);
+        printf("anonymous log %u: %d %d\n", anonymous_logs[i], at == MAP_FAILED ? -1 : 0,
+               at == MAP_FAILED ? errno : 0);
+        show("segment", shmget(IPC_PRIVATE, huge_size, SHM_HUGETLB | size | 0600));
+    }
+    show("grow seal", fcntl(fd, F_ADD_SEALS, F_SEAL_GROW));
+    show("truncate sealed", ftruncate(fd, 4 * huge_size));
+    show("truncate down", ftruncate(fd, huge_size));
+    describe("shrunk", fd);
+}
+
 int main(int argc, char **argv) {
     (void)argv;
     if (argc > 1) {
-        // Huge page memory files.
-        show("hugetlb", memfd("x", MFD_HUGETLB));
-        show("hugetlb size", memfd("x", MFD_HUGETLB | MFD_HUGE_2MB));
+        huge();
         return 0;
     }
     char name[300];

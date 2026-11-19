@@ -26,7 +26,6 @@ fn memory_files_match_reference() {
 }
 
 #[test]
-#[ignore = "known failure: huge page memory files need hugetlbfs, not built; refused with ENOSYS"]
 fn huge_page_memory_files_match_reference() {
     compare(&["hugetlb"]);
 }

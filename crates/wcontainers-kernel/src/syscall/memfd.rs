@@ -45,18 +45,22 @@ pub(super) fn memfd_create(
     };
     let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
     kernel.files(tid).lowest_free(0, limit)?;
-    // Huge page files live on hugetlbfs, which is not built: refused as by a kernel without it.
-    if flags & MFD_HUGETLB != 0 {
-        return Err(kernel.counters.refuse_flag(
-            cx.host,
-            __NR_memfd_create,
-            MFD_HUGETLB.into(),
-            Errno::ENOSYS,
-        ));
-    }
+    // Huge page files live on the internal hugetlbfs of their size (`hugetlb_file_setup`), and
+    // take no pages until something is mapped or allocated.
+    let fs = if flags & MFD_HUGETLB != 0 {
+        let page_shift = crate::hugetlb::page_shift((flags >> MFD_HUGE_SHIFT) & MFD_HUGE_MASK)?;
+        let numbers = &mut kernel.files.numbers;
+        kernel
+            .files
+            .hugetlb_fs
+            .entry(page_shift)
+            .or_insert_with(|| numbers.file_system(Kind::Hugetlbfs { page_shift }, 0))
+            .clone()
+    } else {
+        kernel.files.memfd_fs.clone()
+    };
     let (uid, gid) = (kernel.credentials(tid).fsuid, kernel.credentials(tid).fsgid);
     let now = kernel.now(cx);
-    let fs = kernel.files.memfd_fs.clone();
     let ino = kernel.files.numbers.ino();
     let mut regular = Regular::default();
     let mut mode = S_IFREG | 0o777;
@@ -139,11 +143,16 @@ pub(super) fn memfd_secret(
     Ok(added as u64)
 }
 
-/// The seals of the file an open file is, where it has them: tmpfs's regular files.
+/// The seals of the file an open file is, where it has them: tmpfs's and hugetlbfs's regular
+/// files (`memfd_file_seals_ptr`).
 fn seals_of(file: &OpenFile) -> Option<u32> {
     let inode = file.node.borrow();
     match &inode.content {
-        Content::Regular(regular) if inode.fs.kind == Kind::Tmpfs => Some(regular.seals),
+        Content::Regular(regular)
+            if matches!(inode.fs.kind, Kind::Tmpfs | Kind::Hugetlbfs { .. }) =>
+        {
+            Some(regular.seals)
+        }
         _ => None,
     }
 }

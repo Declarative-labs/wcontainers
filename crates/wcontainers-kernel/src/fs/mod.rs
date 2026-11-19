@@ -242,6 +242,11 @@ pub(crate) enum Kind {
     Nsfs,
     /// The read-only sysfs at `/sys`, holding none of Linux's entries.
     Sysfs,
+    /// The internal hugetlbfs of one huge page size (log2 of its bytes), which huge page memory
+    /// files live on.
+    Hugetlbfs {
+        page_shift: u32,
+    },
 }
 
 impl Kind {
@@ -250,6 +255,7 @@ impl Kind {
     pub fn block_size(self) -> u32 {
         match self {
             Kind::Proc | Kind::Devpts => 1024,
+            Kind::Hugetlbfs { page_shift } => 1 << page_shift,
             _ => 4096,
         }
     }
@@ -268,7 +274,8 @@ impl Kind {
             | Kind::Overlay
             | Kind::Sockfs
             | Kind::Nsfs
-            | Kind::Sysfs => i64::MAX as u64,
+            | Kind::Sysfs
+            | Kind::Hugetlbfs { .. } => i64::MAX as u64,
             Kind::Devpts | Kind::Proc | Kind::Mqueue => i32::MAX as u64,
         }
     }
@@ -289,6 +296,7 @@ impl Kind {
             Kind::Sockfs => SOCKFS_MAGIC.into(),
             Kind::Nsfs => NSFS_MAGIC.into(),
             Kind::Sysfs => SYSFS_MAGIC.into(),
+            Kind::Hugetlbfs { .. } => HUGETLBFS_MAGIC.into(),
         }
     }
 }
@@ -974,6 +982,14 @@ impl Inode {
         self.fs.kind == Kind::Secretmem
     }
 
+    /// The size of its huge pages, for a file on hugetlbfs.
+    pub fn huge_page_size(&self) -> Option<u64> {
+        match self.fs.kind {
+            Kind::Hugetlbfs { page_shift } => Some(1 << page_shift),
+            _ => None,
+        }
+    }
+
     /// Whether its name is shown as deleted: it was unlinked, or never had one in any directory.
     pub fn shown_deleted(&self) -> bool {
         self.nlink == 0 || self.is_secret()
@@ -1136,6 +1152,9 @@ impl Numbers {
         ino
     }
 }
+
+/// The device number of a file that is no device.
+pub(crate) const NO_DEVICE: u64 = 0;
 
 /// A device number as `st_dev` and `st_rdev` hold it (Linux's `new_encode_dev`).
 pub(crate) fn encode_device(major: u32, minor: u32) -> u64 {

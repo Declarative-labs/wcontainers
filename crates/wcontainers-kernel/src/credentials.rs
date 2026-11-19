@@ -12,6 +12,10 @@ pub(crate) const CAP_FOWNER: u32 = general::CAP_FOWNER;
 pub(crate) const CAP_FSETID: u32 = general::CAP_FSETID;
 pub(crate) const CAP_SETGID: u32 = general::CAP_SETGID;
 pub(crate) const CAP_SETUID: u32 = general::CAP_SETUID;
+/// The user id of root (`GLOBAL_ROOT_UID`).
+pub(crate) const ROOT_UID: u32 = 0;
+/// The group id of root (`GLOBAL_ROOT_GID`).
+pub(crate) const ROOT_GID: u32 = 0;
 pub(crate) const CAP_MKNOD: u32 = general::CAP_MKNOD;
 pub(crate) const CAP_SYS_CHROOT: u32 = general::CAP_SYS_CHROOT;
 pub(crate) const CAP_SYS_ADMIN: u32 = general::CAP_SYS_ADMIN;

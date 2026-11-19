@@ -3724,7 +3724,7 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
             0,
             0,
         ],
-        // Not huge page files (hugetlbfs is not built).
+        // Huge page files of the default size, of sizes offered and of a size not offered.
         linux::__NR_memfd_create => {
             let names = xattr_names().len() as u64;
             let name = match a % 4 {
@@ -3732,8 +3732,26 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
                 1 => ARENA + XATTR_NAMES + xattr_name_offset((a >> 8) as usize % names as usize),
                 _ => path(a >> 8),
             };
+            let huge = |size: u32| u64::from(linux::MFD_HUGETLB | size);
             let flags = pick(
-                &[0u64, 1, 2, 3, 8, 0x10, 0x18, 0x100, 0x0a, 0x12, 21 << 26],
+                &[
+                    0u64,
+                    1,
+                    2,
+                    3,
+                    8,
+                    0x10,
+                    0x18,
+                    0x100,
+                    0x0a,
+                    0x12,
+                    21 << 26,
+                    huge(0),
+                    huge(linux::MFD_HUGE_2MB),
+                    huge(linux::MFD_HUGE_64KB),
+                    huge(linux::MFD_HUGE_1GB),
+                    huge(linux::MFD_HUGE_512KB),
+                ],
                 b,
             );
             [name, flags, 0, 0, 0, 0]

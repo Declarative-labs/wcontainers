@@ -130,6 +130,20 @@ pub(super) fn mmap(
     do_mmap(kernel, cx, tid, address, length, prot, flags, file, offset)
 }
 
+/// Why a mapping of huge pages fails: none is free to reserve; one that reserves none
+/// (`MAP_NORESERVE`), which Linux makes and faults on every touch, is refused and counted.
+fn no_huge_pages(kernel: &mut Kernel, cx: &mut Context<'_>, flags: u32) -> Errno {
+    if flags & MAP_NORESERVE != 0 {
+        return kernel.counters.refuse_flag(
+            cx.host,
+            __NR_mmap,
+            MAP_NORESERVE.into(),
+            Errno::ENOMEM,
+        );
+    }
+    Errno::ENOMEM
+}
+
 /// Linux's `do_mmap`: maps `file` (or anonymous memory) at `offset`, which is page aligned.
 #[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
 pub(super) fn do_mmap(
@@ -143,18 +157,23 @@ pub(super) fn do_mmap(
     file: Option<crate::file::FileRef>,
     offset: u64,
 ) -> Result<u64, Errno> {
-    // `ksys_mmap_pgoff`: only a hugetlbfs file takes huge pages, and none can be made here.
-    if flags & MAP_HUGETLB != 0 && file.is_some() {
-        return Err(Errno::EINVAL);
-    }
-    if flags & MAP_HUGETLB != 0 {
-        return Err(kernel.counters.refuse_flag(
-            cx.host,
-            __NR_mmap,
-            MAP_HUGETLB.into(),
-            Errno::ENOMEM,
-        ));
-    }
+    // `ksys_mmap_pgoff`: a hugetlbfs file is mapped in whole huge pages; anonymous huge pages are
+    // a hugetlbfs file made for the mapping, whose pages are reserved at once unless
+    // `MAP_NORESERVE` (`hugetlb_file_setup`). The machine holds no huge pages, so a reservation
+    // fails; a mapping that reserves none, whose every touch would fault, is not built.
+    let huge = file
+        .as_ref()
+        .and_then(|file| file.borrow().node.borrow().huge_page_size());
+    let length = match huge {
+        Some(huge) => length.next_multiple_of(huge),
+        None if flags & MAP_HUGETLB == 0 => length,
+        None if file.is_some() => return Err(Errno::EINVAL),
+        None => {
+            crate::hugetlb::page_shift((flags >> MAP_HUGE_SHIFT) & MAP_HUGE_MASK)
+                .map_err(|_| Errno::EINVAL)?;
+            return Err(no_huge_pages(kernel, cx, flags));
+        }
+    };
     if length == 0 {
         return Err(Errno::EINVAL);
     }
@@ -311,6 +330,15 @@ pub(super) fn do_mmap(
                 socket_tcp = Some(
                     matches!(&inode.content, Content::Socket(socket) if socket.borrow().tcp()),
                 );
+            }
+            // `hugetlbfs_file_mmap`: whole huge pages from the file's start, reserved now.
+            if let Some(huge) = huge {
+                if !offset.is_multiple_of(huge) {
+                    return Err(Errno::EINVAL);
+                }
+                drop(inode);
+                drop(file);
+                return Err(no_huge_pages(kernel, cx, flags));
             }
             // A sealed file is not written through a mapping, then or later (`memfd_check_seals_mmap`).
             if let Content::Regular(regular) = &inode.content

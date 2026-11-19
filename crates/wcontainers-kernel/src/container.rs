@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 
 use wcontainers_abi::{Cpu, Host, PAGE_SIZE, Resume, Stream};
 
-use crate::credentials::Credentials;
+use crate::credentials::{Credentials, ROOT_GID, ROOT_UID};
 use crate::file::{FdTable, OpenFile};
 use crate::fs::dev::DOCKER_DEVICES;
 use crate::fs::mounts::Mount;
@@ -243,42 +243,137 @@ fn overlay_root_mount(fs: FileSystem) -> Mount {
     }
 }
 
-/// The huge page sizes the reference's ARM64 kernel offers with 4 KiB pages, in KiB, with the
-/// size each demotes to.
-const HUGE_PAGE_SIZES: [(u64, Option<u64>); 4] = [
-    (64, None),
-    (2048, Some(64)),
-    (32768, Some(2048)),
-    (1048576, Some(32768)),
-];
-
 /// `/sys/kernel/mm/ksm` as the reference's kernel has it: same-page merging built but never
 /// run (`run` 0, which a container's read-only /sys cannot change), so it merges nothing and
 /// every count stays 0. The files, modes and values as measured.
-const KSM_FILES: [(&[u8], u32, &str); 23] = [
-    (b"advisor_max_cpu", 0o644, "70\n"),
-    (b"advisor_max_pages_to_scan", 0o644, "30000\n"),
-    (b"advisor_min_pages_to_scan", 0o644, "500\n"),
-    (b"advisor_mode", 0o644, "[none] scan-time\n"),
-    (b"advisor_target_scan_time", 0o644, "200\n"),
-    (b"full_scans", 0o444, "0\n"),
-    (b"general_profit", 0o444, "0\n"),
-    (b"ksm_zero_pages", 0o444, "0\n"),
-    (b"max_page_sharing", 0o644, "256\n"),
-    (b"pages_scanned", 0o444, "0\n"),
-    (b"pages_shared", 0o444, "0\n"),
-    (b"pages_sharing", 0o444, "0\n"),
-    (b"pages_skipped", 0o444, "0\n"),
-    (b"pages_to_scan", 0o644, "100\n"),
-    (b"pages_unshared", 0o444, "0\n"),
-    (b"pages_volatile", 0o444, "0\n"),
-    (b"run", 0o644, "0\n"),
-    (b"sleep_millisecs", 0o644, "20\n"),
-    (b"smart_scan", 0o644, "1\n"),
-    (b"stable_node_chains", 0o444, "0\n"),
-    (b"stable_node_chains_prune_millisecs", 0o644, "2000\n"),
-    (b"stable_node_dups", 0o444, "0\n"),
-    (b"use_zero_pages", 0o644, "0\n"),
+const KSM_FILES: [(&[u8], bool, &str); 23] = [
+    (b"advisor_max_cpu", true, "70\n"),
+    (b"advisor_max_pages_to_scan", true, "30000\n"),
+    (b"advisor_min_pages_to_scan", true, "500\n"),
+    (b"advisor_mode", true, "[none] scan-time\n"),
+    (b"advisor_target_scan_time", true, "200\n"),
+    (b"full_scans", false, "0\n"),
+    (b"general_profit", false, "0\n"),
+    (b"ksm_zero_pages", false, "0\n"),
+    (b"max_page_sharing", true, "256\n"),
+    (b"pages_scanned", false, "0\n"),
+    (b"pages_shared", false, "0\n"),
+    (b"pages_sharing", false, "0\n"),
+    (b"pages_skipped", false, "0\n"),
+    (b"pages_to_scan", true, "100\n"),
+    (b"pages_unshared", false, "0\n"),
+    (b"pages_volatile", false, "0\n"),
+    (b"run", true, "0\n"),
+    (b"sleep_millisecs", true, "20\n"),
+    (b"smart_scan", true, "1\n"),
+    (b"stable_node_chains", false, "0\n"),
+    (b"stable_node_chains_prune_millisecs", true, "2000\n"),
+    (b"stable_node_dups", false, "0\n"),
+    (b"use_zero_pages", true, "0\n"),
+];
+
+/// A file anyone may read and none write, as sysfs's counts are.
+const COUNT_MODE: u32 = S_IRUSR | S_IRGRP | S_IROTH;
+
+/// The mode of a sysfs file anyone may read, which its owner may write if it is a setting.
+fn sys_mode(setting: bool) -> u32 {
+    COUNT_MODE | if setting { S_IWUSR } else { 0 }
+}
+/// Each hugetlb size's counts and settings, all 0 as none is reserved.
+const HUGE_PAGE_COUNTS: [(&[u8], bool); 5] = [
+    (b"free_hugepages", false),
+    (b"nr_hugepages", true),
+    (b"nr_overcommit_hugepages", true),
+    (b"resv_hugepages", false),
+    (b"surplus_hugepages", false),
+];
+/// The size a hugetlb size's pages may be split into.
+const DEMOTE_SIZE_FILE: &[u8] = b"demote_size";
+/// A huge page size's directory is named for its size in KiB, between these.
+const SIZE_DIRECTORY_PREFIX: &str = "hugepages-";
+const SIZE_DIRECTORY_UNIT: &str = "kB";
+const TRANSPARENT_HUGE_PAGE_DIRECTORY: &[u8] = b"transparent_hugepage";
+const KHUGEPAGED_DIRECTORY: &[u8] = b"khugepaged";
+/// The size of a PMD's huge page, the size transparent huge pages take by default.
+const PMD_SIZE_FILE: &[u8] = b"hpage_pmd_size";
+/// Each transparent huge page size's counts.
+const STATS_DIRECTORY: &[u8] = b"stats";
+
+/// Each transparent huge page size's settings: whether it is of anonymous memory only, and what
+/// it reads for a PMD's size (which follows the top setting) and for the smaller ones (off).
+const TRANSPARENT_SIZE_FILES: [(&[u8], bool, &str, &str); 2] = [
+    (
+        b"enabled",
+        true,
+        "always [inherit] madvise never\n",
+        "always inherit madvise [never]\n",
+    ),
+    (
+        b"shmem_enabled",
+        false,
+        "always [inherit] within_size advise never\n",
+        "always inherit within_size advise [never]\n",
+    ),
+];
+
+/// `/sys/kernel/mm/transparent_hugepage` as the reference's kernel has it, set to what this kernel
+/// does: it never makes a transparent huge page, so every size is `never` and every count 0. The
+/// files, modes and choices as measured.
+const TRANSPARENT_HUGE_PAGE_FILES: [(&[u8], bool, &str); 5] = [
+    (
+        b"defrag",
+        true,
+        "always defer defer+madvise [madvise] never\n",
+    ),
+    (b"enabled", true, "always madvise [never]\n"),
+    (
+        b"shmem_enabled",
+        true,
+        "always within_size advise [never] deny force\n",
+    ),
+    (b"shrink_underused", true, "1\n"),
+    (b"use_zero_page", true, "1\n"),
+];
+
+/// `/sys/kernel/mm/transparent_hugepage/khugepaged`: its settings as measured, nothing scanned or
+/// collapsed.
+const KHUGEPAGED_FILES: [(&[u8], bool, &str); 9] = [
+    (b"alloc_sleep_millisecs", true, "60000\n"),
+    (b"defrag", true, "1\n"),
+    (b"full_scans", false, "0\n"),
+    (b"max_ptes_none", true, "511\n"),
+    (b"max_ptes_shared", true, "256\n"),
+    (b"max_ptes_swap", true, "64\n"),
+    (b"pages_collapsed", false, "0\n"),
+    (b"pages_to_scan", true, "4096\n"),
+    (b"scan_sleep_millisecs", true, "10000\n"),
+];
+
+/// The sizes of transparent huge pages the reference's kernel offers, in KiB: every power of two
+/// from two pages to a PMD's.
+const TRANSPARENT_HUGE_PAGE_SIZES: core::ops::RangeInclusive<u32> =
+    (2 * wcontainers_abi::PAGE_SIZE / crate::hugetlb::KIB).trailing_zeros()
+        ..=crate::hugetlb::DEFAULT_SIZE.trailing_zeros();
+
+/// Each size's counts (`stats`), all 0, and whether each is of anonymous memory only.
+const TRANSPARENT_HUGE_PAGE_STATS: [(&[u8], bool); 17] = [
+    (b"anon_fault_alloc", true),
+    (b"anon_fault_fallback", true),
+    (b"anon_fault_fallback_charge", true),
+    (b"nr_anon", true),
+    (b"nr_anon_partially_mapped", true),
+    (b"shmem_alloc", false),
+    (b"shmem_fallback", false),
+    (b"shmem_fallback_charge", false),
+    (b"split", false),
+    (b"split_deferred", true),
+    (b"split_failed", false),
+    (b"swpin", false),
+    (b"swpin_fallback", false),
+    (b"swpin_fallback_charge", false),
+    (b"swpout", false),
+    (b"swpout_fallback", false),
+    (b"zswpout", false),
 ];
 
 /// `/sys/kernel/mm`: `hugepages`, a directory per huge page size, none of them ever reserved, as
@@ -290,64 +385,95 @@ fn make_memory_management(numbers: &mut Numbers, sys: &Node, now: Time) {
             numbers,
             at,
             name,
-            S_IFDIR | 0o755,
-            0,
-            0,
-            0,
+            S_IFDIR | sys_mode(true) | S_IXUSR | S_IXGRP | S_IXOTH,
+            ROOT_UID,
+            ROOT_GID,
+            crate::fs::NO_DEVICE,
             now,
             Content::Directory(Directory::new()),
         )
         .expect("a new container's file systems have room")
     };
-    let kernel = directory(numbers, sys, b"kernel");
-    let mm = directory(numbers, &kernel, b"mm");
-    let ksm = directory(numbers, &mm, b"ksm");
-    for (name, mode, text) in KSM_FILES {
+    let file = |numbers: &mut Numbers, at: &Node, name: &[u8], mode: u32, text: &str| {
         make(
             numbers,
-            &ksm,
+            at,
             name,
             S_IFREG | mode,
-            0,
-            0,
-            0,
+            ROOT_UID,
+            ROOT_GID,
+            crate::fs::NO_DEVICE,
             now,
             Content::Regular(Regular::with_bytes(text.as_bytes().to_vec())),
         )
         .expect("a new container's file systems have room");
+    };
+    // Every count here is of nothing.
+    let none_counted = alloc::format!("{}\n", u64::MIN);
+    let kernel = directory(numbers, sys, b"kernel");
+    let mm = directory(numbers, &kernel, b"mm");
+    let ksm = directory(numbers, &mm, b"ksm");
+    for (name, setting, text) in KSM_FILES {
+        file(numbers, &ksm, name, sys_mode(setting), text);
     }
     let huge = directory(numbers, &mm, b"hugepages");
-    for (size, demotes_to) in HUGE_PAGE_SIZES {
-        let at = directory(
-            numbers,
-            &huge,
-            alloc::format!("hugepages-{size}kB").as_bytes(),
-        );
-        let mut files: Vec<(&[u8], u32, alloc::string::String)> = alloc::vec![
-            (b"free_hugepages", 0o444, "0\n".into()),
-            (b"nr_hugepages", 0o644, "0\n".into()),
-            (b"nr_overcommit_hugepages", 0o644, "0\n".into()),
-            (b"resv_hugepages", 0o444, "0\n".into()),
-            (b"surplus_hugepages", 0o444, "0\n".into()),
-        ];
-        if let Some(to) = demotes_to {
-            files.push((b"demote_size", 0o644, alloc::format!("{to}kB\n")));
+    for (size, demotes_to) in crate::hugetlb::SIZES {
+        let at = directory(numbers, &huge, size_directory(size).as_bytes());
+        for (name, setting) in HUGE_PAGE_COUNTS {
+            file(numbers, &at, name, sys_mode(setting), &none_counted);
         }
-        for (name, mode, text) in files {
-            make(
-                numbers,
-                &at,
-                name,
-                S_IFREG | mode,
-                0,
-                0,
-                0,
-                now,
-                Content::Regular(Regular::with_bytes(text.into_bytes())),
-            )
-            .expect("a new container's file systems have room");
+        if let Some(to) = demotes_to {
+            let text = alloc::format!("{to}{SIZE_DIRECTORY_UNIT}\n");
+            file(numbers, &at, DEMOTE_SIZE_FILE, sys_mode(true), &text);
         }
     }
+    let transparent = directory(numbers, &mm, TRANSPARENT_HUGE_PAGE_DIRECTORY);
+    for (name, setting, text) in TRANSPARENT_HUGE_PAGE_FILES {
+        file(numbers, &transparent, name, sys_mode(setting), text);
+    }
+    let pmd_size = alloc::format!("{}\n", crate::hugetlb::DEFAULT_SIZE * crate::hugetlb::KIB);
+    file(
+        numbers,
+        &transparent,
+        PMD_SIZE_FILE,
+        sys_mode(false),
+        &pmd_size,
+    );
+    let khugepaged = directory(numbers, &transparent, KHUGEPAGED_DIRECTORY);
+    for (name, setting, text) in KHUGEPAGED_FILES {
+        file(numbers, &khugepaged, name, sys_mode(setting), text);
+    }
+    for shift in TRANSPARENT_HUGE_PAGE_SIZES {
+        let size = 1u64 << shift;
+        let at = directory(numbers, &transparent, size_directory(size).as_bytes());
+        // Anonymous memory takes no size below four pages (`THP_ORDERS_ALL_ANON`).
+        let anonymous = shift > *TRANSPARENT_HUGE_PAGE_SIZES.start();
+        for (name, anonymous_only, pmd, smaller) in TRANSPARENT_SIZE_FILES {
+            if anonymous || !anonymous_only {
+                let text = if size == crate::hugetlb::DEFAULT_SIZE {
+                    pmd
+                } else {
+                    smaller
+                };
+                file(numbers, &at, name, sys_mode(true), text);
+            }
+        }
+        let stats = directory(numbers, &at, STATS_DIRECTORY);
+        for (name, anonymous_only) in TRANSPARENT_HUGE_PAGE_STATS {
+            if anonymous || !anonymous_only {
+                file(numbers, &stats, name, sys_mode(false), &none_counted);
+            }
+        }
+    }
+}
+
+/// The directory of a huge page size given in KiB, as hugetlb's and transparent huge pages' are
+/// named.
+fn size_directory(size: u64) -> alloc::string::String {
+    let mut name = alloc::string::String::from(SIZE_DIRECTORY_PREFIX);
+    name.push_str(&alloc::string::ToString::to_string(&size));
+    name.push_str(SIZE_DIRECTORY_UNIT);
+    name
 }
 
 /// The size Docker gives the tmpfs at `/dev` (runc's `size=65536k`) and at `/dev/shm` (its default

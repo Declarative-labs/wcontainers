@@ -284,14 +284,23 @@ pub(super) fn shmget(
         return Err(Errno::ENOSPC);
     }
     if flags & SHM_HUGETLB != 0 {
+        // `newseg`: the size its flags name (all of Linux's huge page flags share
+        // `HUGETLB_FLAG_ENCODE_SHIFT`), then `hugetlb_file_setup`'s checks.
+        crate::hugetlb::page_shift((flags >> MAP_HUGE_SHIFT) & MAP_HUGE_MASK)
+            .map_err(|_| Errno::EINVAL)?;
         // `can_do_hugetlb_shm`: CAP_IPC_LOCK or the group `vm.hugetlb_shm_group` names (0).
         if !credentials.has(CAP_IPC_LOCK) && !credentials.in_group(0, true) {
             return Err(Errno::EPERM);
         }
+        // No huge page is free to reserve; a segment that reserves none, whose every touch
+        // would fault, is not built.
+        if flags & SHM_NORESERVE == 0 {
+            return Err(Errno::ENOMEM);
+        }
         return Err(kernel.counters.refuse_flag(
             cx.host,
             __NR_shmget,
-            SHM_HUGETLB.into(),
+            SHM_NORESERVE.into(),
             Errno::ENOMEM,
         ));
     }

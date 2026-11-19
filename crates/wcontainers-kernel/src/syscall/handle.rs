@@ -83,6 +83,7 @@ pub(super) fn encode(
         | Kind::Devpts
         | Kind::Pipe
         | Kind::Secretmem
+        | Kind::Hugetlbfs { .. }
         | Kind::Anon
         | Kind::Mqueue
         | Kind::Sockfs
@@ -97,6 +98,7 @@ pub(super) fn encode(
         | Kind::Devpts
         | Kind::Pipe
         | Kind::Secretmem
+        | Kind::Hugetlbfs { .. }
         | Kind::Anon
         | Kind::Mqueue
         | Kind::Sockfs => Err(Errno::EOPNOTSUPP),

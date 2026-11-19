@@ -16,6 +16,7 @@ mod credentials;
 mod errno;
 mod file;
 mod fs;
+mod hugetlb;
 pub mod linux;
 mod linux_extra;
 mod loader;
@@ -108,6 +109,8 @@ pub(crate) struct Files {
     pub memfd_fs: FileSystem,
     /// The internal file system secret memory files live on, made at the first `memfd_secret`.
     pub secretmem_fs: Option<FileSystem>,
+    /// The internal hugetlbfs of each huge page size, by page shift, made at its first file.
+    pub hugetlb_fs: alloc::collections::BTreeMap<u32, FileSystem>,
     /// The file system process descriptors are on, once one is made.
     pub pidfs: Option<FileSystem>,
     /// The anonymous inode, once a file needs it.
@@ -302,6 +305,7 @@ impl Kernel {
                     space: Some(memfd_space),
                 },
                 secretmem_fs: None,
+                hugetlb_fs: Default::default(),
                 pidfs: None,
                 anon: None,
                 sockfs: None,

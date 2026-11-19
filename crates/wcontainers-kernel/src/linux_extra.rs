@@ -408,6 +408,8 @@ pub(crate) const SHM_INFO: i32 = 14;
 pub(crate) const SHM_STAT_ANY: i32 = 15;
 /// `shmget` flags: huge pages, and no reservation of memory.
 pub(crate) const SHM_HUGETLB: u32 = 0o4000;
+/// A huge page segment reserves no pages (`SHM_NORESERVE`).
+pub(crate) const SHM_NORESERVE: u32 = 0o10000;
 /// `shmat` flags.
 pub(crate) const SHM_RDONLY: u32 = 0o10000;
 pub(crate) const SHM_RND: u32 = 0o20000;

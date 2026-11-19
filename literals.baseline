@@ -3872,16 +3872,10 @@ code	crates/wcontainers-kernel/src/container.rs	bytestr	Kernel::run_start	b"/pro
 code	crates/wcontainers-kernel/src/container.rs	bytestr	Kernel::run_start	b"/sys"
 code	crates/wcontainers-kernel/src/container.rs	bytestr	Kernel::start_first	b"/dev/null"
 code	crates/wcontainers-kernel/src/container.rs	bytestr	Kernel::start_first	b"/dev/null"
-code	crates/wcontainers-kernel/src/container.rs	bytestr	make_memory_management	b"demote_size"
-code	crates/wcontainers-kernel/src/container.rs	bytestr	make_memory_management	b"free_hugepages"
 code	crates/wcontainers-kernel/src/container.rs	bytestr	make_memory_management	b"hugepages"
 code	crates/wcontainers-kernel/src/container.rs	bytestr	make_memory_management	b"kernel"
 code	crates/wcontainers-kernel/src/container.rs	bytestr	make_memory_management	b"ksm"
 code	crates/wcontainers-kernel/src/container.rs	bytestr	make_memory_management	b"mm"
-code	crates/wcontainers-kernel/src/container.rs	bytestr	make_memory_management	b"nr_hugepages"
-code	crates/wcontainers-kernel/src/container.rs	bytestr	make_memory_management	b"nr_overcommit_hugepages"
-code	crates/wcontainers-kernel/src/container.rs	bytestr	make_memory_management	b"resv_hugepages"
-code	crates/wcontainers-kernel/src/container.rs	bytestr	make_memory_management	b"surplus_hugepages"
 code	crates/wcontainers-kernel/src/container.rs	bytestr	overlay_root_mount	b"/"
 code	crates/wcontainers-kernel/src/container.rs	int	Kernel::add_file	0o777
 code	crates/wcontainers-kernel/src/container.rs	int	Kernel::add_file	0o7777
@@ -3907,13 +3901,6 @@ code	crates/wcontainers-kernel/src/container.rs	int	Kernel::start	0o022
 code	crates/wcontainers-kernel/src/container.rs	int	Kernel::start	0x23
 code	crates/wcontainers-kernel/src/container.rs	int	Kernel::start_first	0o600
 code	crates/wcontainers-kernel/src/container.rs	int	directory_at	0o755
-code	crates/wcontainers-kernel/src/container.rs	int	make_memory_management	0o444
-code	crates/wcontainers-kernel/src/container.rs	int	make_memory_management	0o444
-code	crates/wcontainers-kernel/src/container.rs	int	make_memory_management	0o444
-code	crates/wcontainers-kernel/src/container.rs	int	make_memory_management	0o644
-code	crates/wcontainers-kernel/src/container.rs	int	make_memory_management	0o644
-code	crates/wcontainers-kernel/src/container.rs	int	make_memory_management	0o644
-code	crates/wcontainers-kernel/src/container.rs	int	make_memory_management	0o755
 code	crates/wcontainers-kernel/src/container.rs	int	new_root	0o755
 code	crates/wcontainers-kernel/src/container.rs	int	start_failed	125
 code	crates/wcontainers-kernel/src/container.rs	int	start_failed	126
@@ -3971,12 +3958,6 @@ code	crates/wcontainers-kernel/src/container.rs	str	backend_mount	"/"
 code	crates/wcontainers-kernel/src/container.rs	str	backend_mount	"fuse"
 code	crates/wcontainers-kernel/src/container.rs	str	backend_mount	"user_id=0,group_id=0,default_permissions,allow_other"
 code	crates/wcontainers-kernel/src/container.rs	str	backend_mount	"wcontainers"
-code	crates/wcontainers-kernel/src/container.rs	str	make_memory_management	"0\n"
-code	crates/wcontainers-kernel/src/container.rs	str	make_memory_management	"0\n"
-code	crates/wcontainers-kernel/src/container.rs	str	make_memory_management	"0\n"
-code	crates/wcontainers-kernel/src/container.rs	str	make_memory_management	"0\n"
-code	crates/wcontainers-kernel/src/container.rs	str	make_memory_management	"0\n"
-code	crates/wcontainers-kernel/src/container.rs	str	make_memory_management	"hugepages-{size}kB"
 code	crates/wcontainers-kernel/src/container.rs	str	overlay_root_mount	"/"
 code	crates/wcontainers-kernel/src/container.rs	str	overlay_root_mount	"lowerdir=/var/lib/wcontainers/lower,upperdir=/var/lib/wcontainers/upper,\\n                  workdir=/var/lib/wcontainers/work,nouserxattr"
 code	crates/wcontainers-kernel/src/container.rs	str	overlay_root_mount	"overlay"
@@ -4799,7 +4780,6 @@ code	crates/wcontainers-kernel/src/syscall/files.rs	int	proc_contents	16
 code	crates/wcontainers-kernel/src/syscall/files.rs	int	proc_contents	3
 code	crates/wcontainers-kernel/src/syscall/files.rs	int	proc_contents	4
 code	crates/wcontainers-kernel/src/syscall/files.rs	int	proc_contents	5
-code	crates/wcontainers-kernel/src/syscall/files.rs	int	statfs_of	255
 code	crates/wcontainers-kernel/src/syscall/files.rs	int	statfs_of	8
 code	crates/wcontainers-kernel/src/syscall/files.rs	int	statfs_of	8
 code	crates/wcontainers-kernel/src/syscall/files.rs	int	statx	512
@@ -8331,12 +8311,6 @@ role	crates/wcontainers-kernel/src/container.rs	int	Kernel::start_first	0
 role	crates/wcontainers-kernel/src/container.rs	int	Kernel::start_first	0
 role	crates/wcontainers-kernel/src/container.rs	int	directory_at	0
 role	crates/wcontainers-kernel/src/container.rs	int	directory_at	0
-role	crates/wcontainers-kernel/src/container.rs	int	make_memory_management	0
-role	crates/wcontainers-kernel/src/container.rs	int	make_memory_management	0
-role	crates/wcontainers-kernel/src/container.rs	int	make_memory_management	0
-role	crates/wcontainers-kernel/src/container.rs	int	make_memory_management	0
-role	crates/wcontainers-kernel/src/container.rs	int	make_memory_management	0
-role	crates/wcontainers-kernel/src/container.rs	int	make_memory_management	0
 role	crates/wcontainers-kernel/src/container.rs	int	mount_tmpfs	0
 role	crates/wcontainers-kernel/src/container.rs	int	mount_tmpfs	0
 role	crates/wcontainers-kernel/src/container.rs	int	new_root	0

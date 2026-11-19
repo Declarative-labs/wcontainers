@@ -45,3 +45,10 @@ fn huge_pages_match_reference() {
         );
     }
 }
+
+#[test]
+fn transparent_huge_pages_match_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    let ours = assert_same_output(&out, "sysfs", &["transparent"]);
+    assert!(ours.warnings.is_empty(), "{:?}", ours.warnings);
+}

@@ -2633,6 +2633,14 @@ fn truncate_node_unwatched(
         return Err(Errno::EINVAL);
     }
     super::io::new_size_ok(kernel, cx, tid, size, length)?;
+    // A hugetlbfs file's size is whole huge pages (`hugetlbfs_setattr`).
+    if node
+        .borrow()
+        .huge_page_size()
+        .is_some_and(|huge| !length.is_multiple_of(huge))
+    {
+        return Err(Errno::EINVAL);
+    }
     let mut inode = node.borrow_mut();
     let Content::Regular(regular) = &mut inode.content else {
         return Err(Errno::EINVAL);
@@ -2819,9 +2827,25 @@ fn fallocate_unwatched(
     let now = kernel.now(cx);
     let mut inode = node.borrow_mut();
     // Files of `/proc` have no `fallocate`.
+    let huge = inode.huge_page_size();
     let Content::Regular(regular) = &mut inode.content else {
         return Err(Errno::EOPNOTSUPP);
     };
+    // `hugetlbfs_fallocate`: a hole is punched in whole huge pages, of which none is ever held;
+    // an allocation finds no huge page free.
+    if let Some(huge) = huge {
+        if punch {
+            let whole = offset.next_multiple_of(huge) < end / huge * huge;
+            if whole && regular.seals & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE) != 0 {
+                return Err(Errno::EPERM);
+            }
+            return Ok(0);
+        }
+        if regular.seals & F_SEAL_GROW != 0 && end > regular.size() {
+            return Err(Errno::EPERM);
+        }
+        return Err(Errno::ENOSPC);
+    }
     if punch && regular.seals & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE) != 0
         || !punch && regular.seals & F_SEAL_GROW != 0 && end > regular.size()
     {
@@ -2963,7 +2987,8 @@ pub(super) fn umask(
 
 /// What `statfs` reports for the file system holding `node`: tmpfs's limits and what is in use
 /// (`shmem_statfs`; a limit of zero, as on the internal mount, reports nothing), and nothing for
-/// the others (`simple_statfs`).
+/// the others (`simple_statfs`); hugetlbfs's blocks are its huge pages (`hugetlbfs_statfs`, with no
+/// limits on the internal mount).
 fn statfs_of(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) -> Result<statfs, Errno> {
     let mut out: statfs = zerocopy::FromZeros::new_zeroed();
     // `fuse_statfs`: what the backend says, with no file system id (`convert_fuse_statfs`).
@@ -2991,9 +3016,10 @@ fn statfs_of(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) -> Result<s
     }
     let inode = node.borrow();
     out.f_type = inode.fs.kind.magic() as i64;
-    out.f_bsize = wcontainers_abi::PAGE_SIZE as i64;
-    out.f_namelen = 255;
-    out.f_frsize = wcontainers_abi::PAGE_SIZE as i64;
+    let block = inode.huge_page_size().unwrap_or(wcontainers_abi::PAGE_SIZE) as i64;
+    out.f_bsize = block;
+    out.f_namelen = NAME_MAX.into();
+    out.f_frsize = block;
     if let Some(space) = &inode.fs.space {
         if space.max_blocks() != 0 {
             let free = space.free_blocks();
