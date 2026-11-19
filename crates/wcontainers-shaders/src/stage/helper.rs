@@ -4,8 +4,9 @@
 
 use super::tessellate::{Tessellation, Tessellator};
 use super::{
-    GEOMETRY_BINDING, INDICES_BINDING, PATCHES_BINDING, POINTS_BINDING, VALUES_BINDING,
-    VERTICES_BINDING, WORKGROUP, tess, word,
+    GEOMETRY_BINDING, INDICES_BINDING, LINE_ADJACENCY_VERTICES, PATCHES_BINDING, POINTS_BINDING,
+    TRIANGLE_ADJACENCY_VERTICES, TRIANGLE_VERTICES, VALUES_BINDING, VERTICES_BINDING, WORKGROUP,
+    tess, word,
 };
 use crate::build::WORD;
 use crate::{ConvertError, Converted};
@@ -235,8 +236,20 @@ struct CullValues {
 /// The cull program's bindings: its values, and the records followed by the index list.
 const CULL_VALUES_BINDING: u32 = 0;
 const CULL_DATA_BINDING: u32 = 1;
-/// The most vertices a primitive without adjacency has.
-const TRIANGLE_VERTICES: u32 = 3;
+/// Refusals by name, and what is malformed in a call.
+const WITHOUT_WORK: &str = "the stage helper without work";
+const GEOMETRY_TRIANGLE_STRIP_ADJACENCY: &str = "GeometryTriangleStripAdjacency";
+const STAGE_INDEX_U8: &str = "StageIndexU8";
+const STAGE_INDEXED_STRIP: &str = "StageIndexedStrip";
+const STAGE_INDIRECT: &str = "StageIndirect";
+const DOMAIN_SETS: &str = "the sets of the stages after a domain stage";
+const GEOMETRY_PRIMITIVE_ID_AFTER_DOMAIN: &str = "GeometryPrimitiveIdAfterDomain";
+const NOT_A_DOMAIN_SHADER: &str = "not a domain shader";
+const NOT_A_HULL_SHADER: &str = "not a hull shader";
+const NOT_A_GEOMETRY_SHADER: &str = "not a geometry shader";
+const STREAM_OUTPUT_ENTRIES: &str = "StreamOutputEntries";
+const STREAM_OUTPUT_STREAMS: &str = "StreamOutputStreams";
+const STREAM_OUTPUT_SYSTEM_VALUE: &str = "StreamOutputSystemValue";
 /// Stream output of a vertex stage drawn with adjacency.
 const STREAM_OUTPUT_ADJACENCY: &str = "StreamOutputAdjacency";
 /// A vertex stage writing cull distances, drawn with adjacency, which Direct3D draws without the
@@ -343,7 +356,7 @@ impl<B: Backend> Stages<B> {
     ) -> Result<Self, StageError> {
         if geometry.is_none() && stream_output.is_none() {
             return Err(StageError::Convert(ConvertError::Malformed(
-                "the stage helper without work".into(),
+                WITHOUT_WORK.into(),
             )));
         }
         // The vertex records hold what the next stage reads: the geometry shader's inputs, or every
@@ -480,7 +493,7 @@ impl<B: Backend> Stages<B> {
         } = hull.reflection.extras
         else {
             return Err(StageError::Convert(ConvertError::Malformed(
-                "not a hull shader".into(),
+                NOT_A_HULL_SHADER.into(),
             )));
         };
         match domain.reflection.extras {
@@ -488,7 +501,7 @@ impl<B: Backend> Stages<B> {
             StageExtras::Domain { .. } => return Err(StageError::Declaration),
             _ => {
                 return Err(StageError::Convert(ConvertError::Malformed(
-                    "not a domain shader".into(),
+                    NOT_A_DOMAIN_SHADER.into(),
                 )));
             }
         }
@@ -497,38 +510,36 @@ impl<B: Backend> Stages<B> {
         let vertex_program = backend.create_program(&Program::Compute(&shader))?;
         let shader = backend.create_shader(&hull.modules[0])?;
         let hull_program = backend.create_program(&Program::Compute(&shader))?;
-        let patch_words = u32::from(output_control_points) * 4 * u32::from(point_locations)
-            + 4 * u32::from(constant_locations)
-            + 8;
+        let slot = crate::build::VEC4;
+        let patch_words = u32::from(output_control_points) * slot * u32::from(point_locations)
+            + slot * u32::from(constant_locations)
+            + tess::FACTOR_WORDS;
         // After the domain stage: its records hold what the next stage reads.
-        let tessellated_vertices = match output_primitive {
-            0 => 1,
-            1 => 2,
-            _ => 3,
-        };
+        let tessellated_vertices = tess::output_vertices(output_primitive);
         let (geometry, domain_stage, stream) = match (geometry, stream_output) {
             (None, None) => (None, None, None),
             _ => {
-                let (read, last) = match geometry {
-                    Some(g) => {
-                        if g.reflection
-                            .inputs
-                            .iter()
-                            .any(|v| v.system == Some(wcontainers_gpu::SystemValue::PrimitiveId))
-                        {
-                            // Its primitive would be the patch's, which the domain's records lack.
-                            return Err(StageError::Unsupported("GeometryPrimitiveIdAfterDomain"));
+                let (read, last) =
+                    match geometry {
+                        Some(g) => {
+                            if g.reflection.inputs.iter().any(|v| {
+                                v.system == Some(wcontainers_gpu::SystemValue::PrimitiveId)
+                            }) {
+                                // Its primitive would be the patch's, which the domain's records lack.
+                                return Err(StageError::Unsupported(
+                                    GEOMETRY_PRIMITIVE_ID_AFTER_DOMAIN,
+                                ));
+                            }
+                            (
+                                super::locations(&g.reflection.inputs),
+                                &g.reflection.outputs,
+                            )
                         }
-                        (
-                            super::locations(&g.reflection.inputs),
-                            &g.reflection.outputs,
-                        )
-                    }
-                    None => (
-                        super::locations(&domain.reflection.outputs),
-                        &domain.reflection.outputs,
-                    ),
-                };
+                        None => (
+                            super::locations(&domain.reflection.outputs),
+                            &domain.reflection.outputs,
+                        ),
+                    };
                 let shader = backend.create_shader(&super::domain_program_for(domain, &read)?)?;
                 let program = backend.create_program(&Program::Compute(&shader))?;
                 let geometry = match geometry {
@@ -696,7 +707,7 @@ impl<B: Backend> Stages<B> {
     ) -> Result<Option<FinalDraw<B>>, StageError> {
         if self.domain.is_some() != later.is_some() {
             return Err(StageError::Convert(ConvertError::Malformed(
-                "the sets of the stages after a domain stage".into(),
+                DOMAIN_SETS.into(),
             )));
         }
         let (first, count, base_vertex, first_instance, instances) = match draw.range {
@@ -713,20 +724,20 @@ impl<B: Backend> Stages<B> {
                 first_instance,
                 instances,
             } => (first, count, base_vertex, first_instance, instances),
-            _ => return Err(StageError::Unsupported("StageIndirect")),
+            _ => return Err(StageError::Unsupported(STAGE_INDIRECT)),
         };
         use InputTopology as T;
         let (n, strip) = match draw.topology {
             T::PointList => (1, false),
             T::LineList => (2, false),
             T::LineStrip => (2, true),
-            T::TriangleList => (3, false),
-            T::TriangleStrip => (3, true),
-            T::LineListAdjacency => (4, false),
-            T::LineStripAdjacency => (4, true),
-            T::TriangleListAdjacency => (6, false),
+            T::TriangleList => (TRIANGLE_VERTICES, false),
+            T::TriangleStrip => (TRIANGLE_VERTICES, true),
+            T::LineListAdjacency => (LINE_ADJACENCY_VERTICES, false),
+            T::LineStripAdjacency => (LINE_ADJACENCY_VERTICES, true),
+            T::TriangleListAdjacency => (TRIANGLE_ADJACENCY_VERTICES, false),
             T::TriangleStripAdjacency => {
-                return Err(StageError::Unsupported("GeometryTriangleStripAdjacency"));
+                return Err(StageError::Unsupported(GEOMETRY_TRIANGLE_STRIP_ADJACENCY));
             }
             T::PatchList(n) => (u32::from(n), false),
         };
@@ -748,7 +759,7 @@ impl<B: Backend> Stages<B> {
         if strip && draw.index.is_some() {
             // Direct3D's indexed strips restart at the largest index, which needs a pass over the
             // indices to number the primitives.
-            return Err(StageError::Unsupported("StageIndexedStrip"));
+            return Err(StageError::Unsupported(STAGE_INDEXED_STRIP));
         }
         let primitives = match strip {
             false => count / n,
@@ -787,11 +798,7 @@ impl<B: Backend> Stages<B> {
         let listed = match (&self.hull, &self.domain) {
             (Some(h), Some(_)) => {
                 let (per_points, per_indices) = tess::patch_bounds(h.tessellation.max_factor);
-                let vertices = match h.tessellation.output {
-                    0 => 1,
-                    1 => 2,
-                    _ => 3,
-                };
+                let vertices = tess::output_vertices(h.tessellation.output);
                 let points = u64::from(patch_total) * u64::from(per_points);
                 let points = u32::try_from(points.next_multiple_of(u64::from(WORKGROUP)))
                     .map_err(|_| GpuError::OutOfMemory)?;
@@ -836,7 +843,7 @@ impl<B: Backend> Stages<B> {
                 let bytes = match index.format {
                     IndexFormat::U16 => size_of::<u16>() as u32,
                     IndexFormat::U32 => size_of::<u32>() as u32,
-                    IndexFormat::U8 => return Err(StageError::Unsupported("StageIndexU8")),
+                    IndexFormat::U8 => return Err(StageError::Unsupported(STAGE_INDEX_U8)),
                 };
                 let align = u64::from(limits.min_storage_offset_alignment);
                 let start = index.offset - index.offset % align;
@@ -1275,7 +1282,7 @@ fn geometry_parts<B: Backend>(
     } = geometry.reflection.extras
     else {
         return Err(StageError::Convert(ConvertError::Malformed(
-            "not a geometry shader".into(),
+            NOT_A_GEOMETRY_SHADER.into(),
         )));
     };
     let selects = super::selects(&geometry.reflection);
@@ -1309,7 +1316,7 @@ fn stream_parts<B: Backend>(
     let mut entries = Vec::new();
     for e in &so.entries {
         if e.stream != 0 {
-            return Err(StageError::Unsupported("StreamOutputStreams"));
+            return Err(StageError::Unsupported(STREAM_OUTPUT_STREAMS));
         }
         let (buffer, count, start) = (
             usize::from(e.slot),
@@ -1332,7 +1339,7 @@ fn stream_parts<B: Backend>(
                     let i = locations.iter().position(|&l| l == value.location).unwrap();
                     (1 + i as u32, u32::from(value.component) + start)
                 }
-                Some(_) => return Err(StageError::Unsupported("StreamOutputSystemValue")),
+                Some(_) => return Err(StageError::Unsupported(STREAM_OUTPUT_SYSTEM_VALUE)),
             };
             if first + count > crate::build::VEC4 {
                 return Err(StageError::Declaration);
@@ -1343,7 +1350,7 @@ fn stream_parts<B: Backend>(
         ends[buffer] += WORD * count;
     }
     if entries.len() > STREAM_ENTRIES {
-        return Err(StageError::Unsupported("StreamOutputEntries"));
+        return Err(StageError::Unsupported(STREAM_OUTPUT_ENTRIES));
     }
     // A buffer's stride holds its elements; a single buffer declared without one is packed.
     let mut strides = so.strides;

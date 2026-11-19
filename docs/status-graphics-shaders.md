@@ -1674,11 +1674,19 @@ Run 39 (what both fronts wait on: cull distances):
   runner (3 DXBC, 4 DXIL `clip-cull-distance` vertex shaders from `unsupported CullDistance` to
   `ok-wgsl glsl-compile`: glslang does not know ANGLE's cull distance extension, and WebGL 2 has no
   cull route).
-- Literal sweep: the pass-through's names, the stage helper's adjacency bound and refusals named;
-  the cull program kept as one named constant instead of an included file (an `include_str!` path
-  is a literal the check cannot accept as a new line). The laptop loop's job count stays 5 in the
-  script (changing a script line with a number adds a baseline line); this run passed `-j 4` and
-  ran under `choom` by hand where it mattered.
+- Literal sweep, one step: `stage.rs` and `stage/helper.rs` done but for the two included WGSL
+  paths, the `vertex_shader` function name (naming it would make a message in the Direct3D 11
+  track's `own_edges` example a restatement) and `WORKGROUP`: the pass-through's and compute
+  form's names, the refusals (`VERTEX_INPUT_NOT_PULLED` now public, the test imports it), the index
+  decoding's widths from `u8::BITS`, `u16::MAX` and `build::WORD`, the primitive vertex counts
+  (`TRIANGLE_VERTICES`, `LINE_ADJACENCY_VERTICES`, `TRIANGLE_ADJACENCY_VERTICES`), the tessellator's
+  bounds (`tess::MAX_FACTOR`, `FACTOR_WORDS`, `output_vertices` with `OUTPUT_POINT` and
+  `OUTPUT_LINE`). The cull program is one named constant instead of an included file (an
+  `include_str!` path is a literal the check cannot accept as a new line). This crate's baseline
+  lines: 1173 at the start of the run, 1112 after. The check passes (desktop, on a checkout with
+  `core.autocrlf` false: with Windows line ends it reported 143 multi-line strings of other crates).
+  The laptop loop's job count stays 5 in the script (changing a script line with a number adds a
+  baseline line); this run passed `-j 4` on its commands.
 
 Next (in order):
 - The fronts (theirs, now possible since run 39): cull distances. Where the back end lacks
@@ -2063,6 +2071,20 @@ let reflection = &converted.reflection;
 
 ## Measurements
 
+Run 39, 2026-11-19, counts only (laptop i7-8750H, load 3 to 11 with another track building, 4 or 5
+cargo jobs; it was unreachable twice for some minutes; desktop shared through the queue, 3 cargo
+jobs, load not taken), logs in scratch `graphics-shaders/run39`:
+- Desktop, RTX 3080, `geometry_draw` (geomdraw5.txt, seeds 1 to 4): 84 drawn comparisons and 36
+  stream output comparisons, all pass; the six cull cases 0 to 15 texels apart per case by at most
+  1, two line cases one texel each at a clipped line end.
+- Laptop, every corpus with glslang (corpus2.txt, then suite1.txt and suite2.txt after the record
+  update): all pass but the runner corpus's known `distance-4`.
+- Desktop, after the sweep step: Windows lint clean (winlint2.txt), then the whole suite as one
+  GPU job (`cargo test -p wcontainers-shaders --no-fail-fast -- --test-threads 1 --skip mutated`,
+  suite-gpu.txt): 21 test binaries, all pass.
+- Literal check (check5.txt): passes; changes that could add lines: 16 (the 12 of run 38, and
+  4bcacbf5 the start, 2cc8ad76 the init after the baseline arrived by a merge, bd53fbb4 and
+  949667f2 new rules, for literals already in the tree, all from the merged tracks).
 Run 38, 2026-11-18, counts only (laptop i7-8750H, load 3 to 39 with another track building, 5
 cargo jobs, 2 when the load was 8 or more; desktop shared through the queue, 3 cargo jobs, load
 not taken), logs in scratch `graphics-shaders/run38`:

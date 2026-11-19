@@ -51,6 +51,11 @@ pub(crate) const GEOMETRY_BINDING: u32 = 3;
 pub(crate) const PATCHES_BINDING: u32 = 3;
 /// The tessellator's points, which the domain stage's compute form reads.
 pub(crate) const POINTS_BINDING: u32 = 4;
+/// Vertices of a triangle, the most a primitive without adjacency has.
+pub(crate) const TRIANGLE_VERTICES: u32 = 3;
+/// Vertices of a line and of a triangle with adjacency.
+pub(crate) const LINE_ADJACENCY_VERTICES: u32 = 4;
+pub(crate) const TRIANGLE_ADJACENCY_VERTICES: u32 = 6;
 /// Invocations per workgroup of the helper's compute programs.
 pub(crate) const WORKGROUP: u32 = 64;
 
@@ -109,7 +114,7 @@ pub(crate) fn values(module: &mut Module) -> Handle<naga::GlobalVariable> {
         .collect();
     let ty = module.types.insert(
         Type {
-            name: Some("StageValues".into()),
+            name: Some(VALUES_TYPE.into()),
             inner: TypeInner::Struct {
                 members,
                 span: word::COUNT_OF * build::WORD,
@@ -119,7 +124,7 @@ pub(crate) fn values(module: &mut Module) -> Handle<naga::GlobalVariable> {
     );
     build::global(
         module,
-        "stage_values",
+        VALUES_VARIABLE,
         AddressSpace::Uniform,
         Some(binding(VALUES_BINDING)),
         ty,
@@ -163,7 +168,7 @@ pub(crate) fn vertex_program_for(
         &vertex.modules[0],
         &vertex.modules[0].module,
         inputs,
-        b"vertex records",
+        VERTEX_RECORDS,
     )
 }
 
@@ -188,7 +193,7 @@ pub(crate) fn domain_program_for(
             _ => {}
         }
     }
-    compute_form(source, &module, inputs, b"domain records")
+    compute_form(source, &module, inputs, DOMAIN_RECORDS)
 }
 
 fn compute_form(
@@ -362,6 +367,26 @@ const RUN_TYPE: &str = "Run";
 const RUN_MEMBERS: [&str; 2] = ["layer", "viewport"];
 const RUN_VARIABLE: &str = "draw_run";
 const OUTPUTS_TYPE: &str = "Outputs";
+/// What the vertex and domain stages' compute forms are, in their keys.
+const VERTEX_RECORDS: &[u8] = b"vertex records";
+const DOMAIN_RECORDS: &[u8] = b"domain records";
+/// Names in the helper's programs: its values block's type and variable, the vertex compute form's
+/// index and record variables, its invocation argument, and the output type of a vertex program
+/// given a position.
+const VALUES_TYPE: &str = "StageValues";
+const VALUES_VARIABLE: &str = "stage_values";
+const INDICES_VARIABLE: &str = "stage_indices";
+const VERTICES_VARIABLE: &str = "stage_vertices";
+const ID_ARGUMENT: &str = "id";
+const POSITIONED_OUTPUTS_TYPE: &str = "PositionedOutputs";
+/// Refusals of a vertex program by the compute form, and what is malformed in one.
+pub const VERTEX_INPUT_NOT_PULLED: &str = "VertexInputNotPulled";
+const VERTEX_INPUT_FOR_GEOMETRY: &str = "VertexInputForGeometry";
+const VERTEX_WITHOUT_POSITION: &str = "VertexWithoutPosition";
+const NOT_A_VERTEX_PROGRAM: &str = "not a vertex program";
+const VERTEX_WITHOUT_OUTPUTS: &str = "a vertex program without outputs";
+const UNBOUND_OUTPUT: &str = "an unbound output";
+const VERTEX_OUTPUTS: &str = "vertex outputs";
 /// What [`CullPrograms::compute`] is, in its key.
 const CULL_RECORDS: &[u8] = b"cull records";
 /// What [`CullPrograms::passthrough`] is, in its key.
@@ -492,18 +517,42 @@ pub mod tess {
     /// Words at the start of the tessellator's indices buffer before the indices: the draw's index
     /// total, then unused. The indexed indirect draw starts at this index.
     pub const INDEX_HEADER: u32 = 4;
+    /// Words of a record's tessellation factors: outer 0 to 3 and inner 0 and 1, in two slots.
+    pub const FACTOR_WORDS: u32 = 8;
+    /// Direct3D's largest tessellation factor (`D3D11_TESSELLATOR_MAX_TESSELLATION_FACTOR`).
+    pub const MAX_FACTOR: f32 = 64.0;
+    /// Points along an edge past the factor rounded up: a segment more to reach the next odd or even
+    /// count, and the closing point.
+    const EDGE_POINTS_PAST_FACTOR: u32 = 3;
+    /// Indices of two triangles, the most a point adds.
+    const INDICES_PER_POINT: u32 = 6;
+    /// The hull shader's output primitive codes ([`wcontainers_gpu::StageExtras::Hull`]): points and
+    /// lines; the others are triangles.
+    pub const OUTPUT_POINT: u8 = 0;
+    pub const OUTPUT_LINE: u8 = 1;
+
+    /// Vertices per primitive the tessellator makes for `output` ([`OUTPUT_POINT`], ...).
+    pub fn output_vertices(output: u8) -> u32 {
+        match output {
+            OUTPUT_POINT => 1,
+            OUTPUT_LINE => 2,
+            _ => super::TRIANGLE_VERTICES,
+        }
+    }
 
     /// The most points and indices one patch can make with factors up to `max_factor`, for sizing
     /// the tessellator's output: at most `n` points along any edge, where `n` is the factor rounded up
     /// to the next odd or even number of segments plus one.
     pub fn patch_bounds(max_factor: f32) -> (u32, u32) {
         let f = if max_factor.is_nan() {
-            64.0
+            MAX_FACTOR
         } else {
-            max_factor.clamp(1.0, 64.0)
+            max_factor.clamp(1.0, MAX_FACTOR)
         };
-        let n = (f.ceil() as u32 + 3).min(66);
-        (n * n, 6 * n * n)
+        // At the largest factor, which is even, no segment is added.
+        let most = MAX_FACTOR as u32 + EDGE_POINTS_PAST_FACTOR - 1;
+        let n = (f.ceil() as u32 + EDGE_POINTS_PAST_FACTOR).min(most);
+        (n * n, INDICES_PER_POINT * n * n)
     }
 }
 
@@ -519,7 +568,7 @@ pub(crate) fn vertex_as_compute(
 ) -> Result<Module> {
     let mut module = vertex.clone();
     if module.entry_points.len() != 1 || module.entry_points[0].stage != naga::ShaderStage::Vertex {
-        return Err(ConvertError::Malformed("not a vertex program".into()));
+        return Err(ConvertError::Malformed(NOT_A_VERTEX_PROGRAM.into()));
     }
     let entry = module.entry_points.remove(0);
     let mut inner = entry.function;
@@ -530,9 +579,9 @@ pub(crate) fn vertex_as_compute(
             Some(Binding::BuiltIn(BuiltIn::VertexIndex)) => numbers.push(0),
             Some(Binding::BuiltIn(BuiltIn::InstanceIndex)) => numbers.push(1),
             Some(Binding::Location { .. }) => {
-                return Err(ConvertError::Unsupported("VertexInputNotPulled"));
+                return Err(ConvertError::Unsupported(VERTEX_INPUT_NOT_PULLED));
             }
-            _ => return Err(ConvertError::Unsupported("VertexInputForGeometry")),
+            _ => return Err(ConvertError::Unsupported(VERTEX_INPUT_FOR_GEOMETRY)),
         }
     }
     inner.arguments = arguments
@@ -542,9 +591,10 @@ pub(crate) fn vertex_as_compute(
             ..a.clone()
         })
         .collect();
-    let result = inner.result.take().ok_or(ConvertError::Malformed(
-        "a vertex program without outputs".into(),
-    ))?;
+    let result = inner
+        .result
+        .take()
+        .ok_or(ConvertError::Malformed(VERTEX_WITHOUT_OUTPUTS.into()))?;
     inner.result = Some(FunctionResult {
         ty: result.ty,
         binding: None,
@@ -598,13 +648,13 @@ pub(crate) fn vertex_as_compute(
                 let binding = m
                     .binding
                     .as_ref()
-                    .ok_or(ConvertError::Malformed("an unbound output".into()))?;
+                    .ok_or(ConvertError::Malformed(UNBOUND_OUTPUT.into()))?;
                 place(binding, Some(i as u32), &module.types[m.ty].inner)?;
             }
         }
-        _ => return Err(ConvertError::Malformed("vertex outputs".into())),
+        _ => return Err(ConvertError::Malformed(VERTEX_OUTPUTS.into())),
     }
-    let position = position.ok_or(ConvertError::Unsupported("VertexWithoutPosition"))?;
+    let position = position.ok_or(ConvertError::Unsupported(VERTEX_WITHOUT_POSITION))?;
     inner.name = Some("vertex_shader".into());
     let callee = module.functions.append(inner, Span::UNDEFINED);
 
@@ -613,7 +663,7 @@ pub(crate) fn vertex_as_compute(
     let words = build::runtime_array(&mut module, u32_ty, build::WORD);
     let indices = build::global(
         &mut module,
-        "stage_indices",
+        INDICES_VARIABLE,
         AddressSpace::Storage {
             access: StorageAccess::LOAD,
         },
@@ -624,7 +674,7 @@ pub(crate) fn vertex_as_compute(
     let records = build::runtime_array(&mut module, uvec4, SLOT_BYTES);
     let vertices = build::global(
         &mut module,
-        "stage_vertices",
+        VERTICES_VARIABLE,
         AddressSpace::Storage {
             access: StorageAccess::LOAD | StorageAccess::STORE,
         },
@@ -644,7 +694,7 @@ pub(crate) fn vertex_as_compute(
 
     let mut b = Builder::new(crate::ENTRY_POINT);
     b.f.arguments.push(FunctionArgument {
-        name: Some("id".into()),
+        name: Some(ID_ARGUMENT.into()),
         ty: uvec3,
         binding: Some(Binding::BuiltIn(BuiltIn::GlobalInvocationId)),
     });
@@ -671,12 +721,12 @@ pub(crate) fn vertex_as_compute(
         let p = b.at(p, w);
         let word = b.load(p);
         let half = b.binary(BinaryOperator::And, byte, two);
-        let eight = b.u32(8);
+        let eight = b.u32(u8::BITS);
         let shift = b.mul(half, eight);
         let shifted = b.binary(BinaryOperator::ShiftRight, word, shift);
-        let mask = b.u32(0xffff);
+        let mask = b.u32(u32::from(u16::MAX));
         let short = b.binary(BinaryOperator::And, shifted, mask);
-        let four = b.u32(4);
+        let four = b.u32(build::WORD);
         let wide = b.binary(BinaryOperator::Equal, index_bytes, four);
         let index = b.select(wide, word, short);
         let base = value(b, v, word::BASE_VERTEX);
@@ -722,7 +772,7 @@ pub(crate) fn vertex_as_compute(
                 };
                 // Fewer than four components fill the slot's first ones; the rest are zero.
                 match size {
-                    4 => v,
+                    build::VEC4 => v,
                     1 => {
                         let zero = b.u32(0);
                         b.compose(uvec4, alloc::vec![v, zero, zero, zero])
@@ -820,11 +870,11 @@ pub(crate) fn clip_unpositioned(module: &mut Module) -> Result<()> {
                     let b = m
                         .binding
                         .clone()
-                        .ok_or(ConvertError::Malformed("an unbound output".into()))?;
+                        .ok_or(ConvertError::Malformed(UNBOUND_OUTPUT.into()))?;
                     outputs.push((m.ty, b, Some(i as u32)));
                 }
             }
-            _ => return Err(ConvertError::Malformed("vertex outputs".into())),
+            _ => return Err(ConvertError::Malformed(VERTEX_OUTPUTS.into())),
         }
     }
     if outputs.iter().any(|(_, b, _)| is_position(b)) {
@@ -874,7 +924,7 @@ pub(crate) fn clip_unpositioned(module: &mut Module) -> Result<()> {
     let span = SLOT_BYTES * members.len() as u32;
     let ty = module.types.insert(
         Type {
-            name: Some("PositionedOutputs".into()),
+            name: Some(POSITIONED_OUTPUTS_TYPE.into()),
             inner: TypeInner::Struct {
                 members: members
                     .into_iter()

@@ -127,7 +127,7 @@ fn geometry_refusals_are_named() {
     .unwrap();
     assert_eq!(
         stage::vertex_program(&plain, &gs).err(),
-        Some(ConvertError::Unsupported("VertexInputNotPulled"))
+        Some(ConvertError::Unsupported(stage::VERTEX_INPUT_NOT_PULLED))
     );
     // The last vertex stage's rewrites are not made for the stage helper's vertex program yet.
     let key = VariantKey {
