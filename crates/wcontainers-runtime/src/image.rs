@@ -751,7 +751,7 @@ mod tests {
             header.set_mtime(0);
             if path.ends_with('/') {
                 header.set_entry_type(tar::EntryType::Directory);
-                header.set_mode(0o755);
+                header.set_mode(DIRECTORY_MODE);
                 header.set_size(0);
                 builder
                     .append_data(&mut header, path, std::io::empty())
@@ -763,7 +763,7 @@ mod tests {
                 builder.append_link(&mut header, path, target).unwrap();
             } else {
                 header.set_entry_type(tar::EntryType::Regular);
-                header.set_mode(0o755);
+                header.set_mode(DIRECTORY_MODE);
                 header.set_size(contents.len() as u64);
                 builder
                     .append_data(&mut header, path, contents.as_bytes())
