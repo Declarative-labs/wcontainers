@@ -6,8 +6,8 @@
 //! Corpora: the rig's compiled Direct3D shaders in `wcontainers-graphics-test/shaders/{dxbc,dxil}`, this
 //! crate's own in `tests/own`, and (an ignored test) the directory in `WCONTAINERS_SHADER_CORPUS` (the
 //! plan's 191 DXBC blobs from Wine's tests, kept outside the repository). `WCONTAINERS_SHADERS_OUT` names
-//! a directory for the written files, a verdict per shader (`verdicts.txt`) and the classes in the
-//! expected files' form (`classes.txt`); with it, `GLSLANG` names the glslangValidator to run.
+//! a directory for the written files and a verdict per shader in the expected files' form
+//! (`verdicts.txt`); with it, `GLSLANG` names the glslangValidator to run.
 //!
 //! Every converted shader also goes through the cache's record (plan section 8) under each variant
 //! key a front asks for today, and must come back to the same bytes; `cache.txt` lists each key and
@@ -121,7 +121,7 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
         }
     };
     let named = |e: ConvertError| match e {
-        ConvertError::Unsupported(what) => format!("unsupported {what}"),
+        ConvertError::Unsupported(what) => format!("{UNSUPPORTED}{what}"),
         ConvertError::Reader(what) => format!("spirv-reader {what}"),
         e => format!("convert {e}"),
     };
@@ -135,12 +135,15 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
         Err(ConvertError::Unsupported(
             wcontainers_shaders::refusal::STORAGE_FORMAT
             | wcontainers_shaders::refusal::TYPED_BUFFER
-            | "StorageImageAtomics",
+            | wcontainers_shaders::refusal::STORAGE_IMAGE_ATOMICS,
         )) => {
             let mut last = None;
             for (format, mut k) in view_keys() {
                 let mut made = convert(source(&bytes), &k, None);
-                if let Err(ConvertError::Unsupported("StorageImageAtomics")) = made {
+                if let Err(ConvertError::Unsupported(
+                    wcontainers_shaders::refusal::STORAGE_IMAGE_ATOMICS,
+                )) = made
+                {
                     k.texels_through_buffer = u64::MAX;
                     made = convert(source(&bytes), &k, None);
                 }
@@ -237,67 +240,170 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
     }
 
     // GLSL ES is written from the module the WebGL 2 back end's front asks for, whose language
-    // cannot ask texture level and sample counts.
-    let webgl = match convert(source(&bytes), &webgl_key(&key), None) {
-        Ok(c) => c,
-        Err(e) => return format!("ok-wgsl glsl-key {}", named(e)),
+    // cannot ask texture level and sample counts, by that back end's own writing.
+    #[cfg(not(target_arch = "wasm32"))]
+    let ok = {
+        let glsl = match convert(source(&bytes), &webgl_key(&key), None) {
+            Ok(webgl) => glsl_verdict(&webgl.modules[0], &name, out),
+            Err(e) => format!("{KEY_FAILED}{}", named(e)),
+        };
+        format!("{ok}{GLSL_PART}{glsl}")
     };
-    let m = &webgl.modules[0];
-    let stage = m.module.entry_points[0].stage;
-    // The options the WebGL 2 back end writes with (`wcontainers-gpu-webgl`'s `write_glsl`, on a
-    // context with EXT_clip_control, so without its y flip).
-    let options = naga::back::glsl::Options {
-        version: naga::back::glsl::Version::Embedded {
-            version: 300,
-            is_webgl: true,
-        },
-        writer_flags: naga::back::glsl::WriterFlags::FORCE_POINT_SIZE,
-        ..Default::default()
-    };
-    let pipeline = naga::back::glsl::PipelineOptions {
-        shader_stage: stage,
-        entry_point: wcontainers_shaders::ENTRY_POINT.into(),
-        multiview: None,
-    };
-    let mut glsl = String::new();
-    let written = naga::back::glsl::Writer::new(
-        &mut glsl,
-        &m.module,
-        &m.info,
-        &options,
-        &pipeline,
-        naga::proc::BoundsCheckPolicies::default(),
-    )
-    .and_then(|mut w| w.write().map(|_| ()));
-    if let Err(e) = written {
-        return format!("ok-wgsl glsl-write {e}");
+    ok
+}
+
+/// Where a verdict's GLSL ES part begins; a WebAssembly build checks only what comes before it.
+const GLSL_PART: &str = " ; glsl ";
+
+/// The GLSL ES outcome naming that the step was not run (no `GLSLANG`): it stands for any compile
+/// outcome in a record.
+const WRITTEN: &str = "written";
+
+/// The need a cube array view names beside the back end's features.
+const CUBE_ARRAY_VIEW: &str = "CUBE_ARRAY_VIEW";
+
+/// The GLSL ES outcomes from glslang.
+const COMPILES: &str = "compiles";
+const COMPILE_FAILED: &str = "compile";
+
+/// The WebGL 2 back end's verdict on one module: the features it needs beyond the core language
+/// (`needs NAME|NAME`, absent from the part where none), then `absent compute`, `written`,
+/// `compiles`, `compile` (refused by glslang) or `write` with the back end's reason.
+#[cfg(not(target_arch = "wasm32"))]
+fn glsl_verdict(m: &ShaderModule, name: &str, out: Option<&Path>) -> String {
+    use wcontainers_gpu_webgl::glsl;
+    if m.stage == wcontainers_gpu::ShaderStage::Compute {
+        return "absent compute".into();
     }
-    let ext = if stage == naga::ShaderStage::Vertex {
+    let needs = glsl::needs(m);
+    let mut names: Vec<&str> = needs.iter_names().map(|(n, _)| n).collect();
+    // A cube array view, which the interface has no feature for and WebGL 2 cannot make.
+    let cube_array = m.module.types.iter().any(|(_, t)| {
+        matches!(
+            t.inner,
+            naga::TypeInner::Image {
+                dim: naga::ImageDimension::Cube,
+                arrayed: true,
+                ..
+            }
+        )
+    });
+    if cube_array {
+        names.push(CUBE_ARRAY_VIEW);
+    }
+    let needed = if names.is_empty() {
+        String::new()
+    } else {
+        format!("{NEEDS}{} ", names.join("|"))
+    };
+    // A context with EXT_clip_control and NV_shader_noperspective_interpolation, as Chrome's on the
+    // RTX 3080.
+    let settings = glsl::GlslSettings {
+        flip_y: false,
+        noperspective: true,
+    };
+    let text = match glsl::write(m, settings) {
+        Ok(t) => t,
+        Err(e) => return format!("{needed}{WRITE_FAILED}{e:?}"),
+    };
+    let (Some(out), Ok(glslang)) = (out, std::env::var("GLSLANG")) else {
+        return format!("{needed}{WRITTEN}");
+    };
+    let ext = if m.stage == wcontainers_gpu::ShaderStage::Vertex {
         "vert"
     } else {
         "frag"
     };
-    if let Some(out) = out {
-        let file = out.join(format!("{name}.{ext}"));
-        std::fs::write(&file, &glsl).unwrap();
-        if let Ok(glslang) = std::env::var("GLSLANG") {
-            let run = std::process::Command::new(glslang)
-                .arg(&file)
-                .output()
-                .unwrap();
-            if !run.status.success() {
-                let text = String::from_utf8_lossy(&run.stdout);
-                let first = text
-                    .lines()
-                    .find(|l| l.contains("ERROR"))
-                    .unwrap_or("")
-                    .to_string();
-                return format!("ok-wgsl glsl-compile {first}");
-            }
-        }
+    let file = out.join(format!("{name}.{ext}"));
+    std::fs::write(&file, &text.source).unwrap();
+    let run = std::process::Command::new(glslang)
+        .arg(&file)
+        .output()
+        .unwrap();
+    if run.status.success() {
+        return format!("{needed}{COMPILES}");
     }
-    ok
+    // glslang's words differ between its versions: they are kept beside the file, not recorded.
+    let mut log = file.into_os_string();
+    log.push(GLSLANG_LOG);
+    std::fs::write(log, &run.stdout).unwrap();
+    format!("{needed}{COMPILE_FAILED}")
 }
+
+/// Appended to a GLSL file's name for glslang's output where it refuses the file.
+const GLSLANG_LOG: &str = ".log";
+
+/// What a record says as far as this run checks: without glslang, a compile outcome reads as
+/// written; in a WebAssembly build, the GLSL ES part is not checked at all.
+fn as_checked(record: &str, glslang: bool) -> String {
+    let Some((wgsl, glsl)) = record.split_once(GLSL_PART) else {
+        return record.into();
+    };
+    if cfg!(target_arch = "wasm32") {
+        return wgsl.into();
+    }
+    if glslang {
+        return record.into();
+    }
+    let (needed, outcome) = split_needs(glsl);
+    if outcome == COMPILES || outcome == COMPILE_FAILED {
+        format!("{wgsl}{GLSL_PART}{needed}{WRITTEN}")
+    } else {
+        record.into()
+    }
+}
+
+/// A verdict's class for the counts: the conversion's outcome (with a refusal's name), then the GLSL
+/// ES step's outcome and whether the shader needs features beyond the core language.
+fn class_of(verdict: &str) -> String {
+    let (wgsl, glsl) = verdict.split_once(GLSL_PART).unwrap_or((verdict, ""));
+    let mut class: Vec<&str> = wgsl.split_whitespace().take(2).collect();
+    if class.first() == Some(&"ok") {
+        class.truncate(1);
+    }
+    let (needed, outcome) = split_needs(glsl);
+    if !glsl.is_empty() {
+        class.push(GLSL_PART.trim());
+    }
+    if !needed.is_empty() {
+        class.push(NEEDS.trim());
+    }
+    class.extend(outcome.split_whitespace().next());
+    class.join(" ")
+}
+
+/// A verdict names its outcome: a conversion, or a refusal by name; a GLSL ES failure only where
+/// the shader needs a feature the core language lacks (the back end's or glslang's refusal of it is
+/// then the feature's absence, and Chrome's compile decides where WebGL 2 has it).
+fn is_named(verdict: &str) -> bool {
+    let (wgsl, glsl) = verdict.split_once(GLSL_PART).unwrap_or((verdict, ""));
+    let wgsl_named = ["ok", UNSUPPORTED.trim(), "spirv-reader"]
+        .contains(&wgsl.split_whitespace().next().unwrap_or(""));
+    let (needed, outcome) = split_needs(glsl);
+    let failed = outcome.starts_with(WRITE_FAILED) || outcome == COMPILE_FAILED;
+    let key_named = outcome
+        .strip_prefix(KEY_FAILED)
+        .is_none_or(|refusal| refusal.starts_with(UNSUPPORTED));
+    wgsl_named && (!failed || !needed.is_empty()) && key_named
+}
+
+/// A verdict's GLSL ES part as its `needs` words (with their space, empty where none) and the
+/// outcome after them.
+fn split_needs(glsl: &str) -> (&str, &str) {
+    let Some(rest) = glsl.strip_prefix(NEEDS) else {
+        return ("", glsl);
+    };
+    let names = rest.split_once(' ').map_or(rest.len(), |(n, _)| n.len());
+    glsl.split_at((NEEDS.len() + names + 1).min(glsl.len()))
+}
+
+/// The words a verdict's GLSL ES part begins with: the features needed, the back end's refusal to
+/// write, and the WebGL 2 key's refusal to convert.
+const NEEDS: &str = "needs ";
+const WRITE_FAILED: &str = "write ";
+const KEY_FAILED: &str = "key ";
+/// A named refusal's first word.
+const UNSUPPORTED: &str = "unsupported ";
 
 fn writes_cull_distances(converted: &Converted) -> bool {
     converted
@@ -373,7 +479,6 @@ fn verdicts(dir: &Path, ext: &str, label: &str) -> (BTreeMap<String, usize>, Str
         .collect();
     let mut counts = BTreeMap::new();
     let mut lines = String::new();
-    let mut classes = String::new();
     let mut differ = Vec::new();
     let mut cached = String::new();
     for path in shaders(dir, ext) {
@@ -383,18 +488,15 @@ fn verdicts(dir: &Path, ext: &str, label: &str) -> (BTreeMap<String, usize>, Str
             Err(e) => differ.push(e),
         }
         let v = verdict(&path, out.as_deref());
-        let class: String = v.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
-        *counts.entry(class.clone()).or_insert(0) += 1;
+        // Counted by the first step's outcome and the GLSL ES part's last word before its reason.
+        let class = class_of(&v);
+        *counts.entry(class).or_insert(0) += 1;
         lines.push_str(&format!("{file}\t{v}\n"));
-        classes.push_str(&format!("{file}\t{class}\n"));
-        // Without glslang, a shader glslang refuses is written and reads as "ok".
-        let matches = expected.get(&file).is_some_and(|e| {
-            *e == class || (!glslang && e == "ok-wgsl glsl-compile" && class == "ok")
-        });
+        let matches = expected
+            .get(&file)
+            .is_some_and(|e| as_checked(e, glslang) == v);
         // Only conversions and named failures may be recorded.
-        let named = ["ok", "ok-wgsl", "unsupported", "spirv-reader"]
-            .contains(&v.split_whitespace().next().unwrap_or(""));
-        if !matches || !named {
+        if !matches || !is_named(&v) {
             differ.push(format!(
                 "{file}: expected {:?}, got {v:?}",
                 expected.get(&file)
@@ -403,7 +505,6 @@ fn verdicts(dir: &Path, ext: &str, label: &str) -> (BTreeMap<String, usize>, Str
     }
     if let Some(out) = &out {
         std::fs::write(out.join("verdicts.txt"), &lines).unwrap();
-        std::fs::write(out.join("classes.txt"), &classes).unwrap();
         std::fs::write(out.join("cache.txt"), &cached).unwrap();
     }
     eprintln!("{label}:");
@@ -457,8 +558,13 @@ fn corpus_gives_its_recorded_verdicts() {
 fn game_shaders_give_their_recorded_verdicts() {
     let dir = std::env::var_os("WCONTAINERS_GAME_SHADERS")
         .expect("WCONTAINERS_GAME_SHADERS must name the directory of the real programs' shaders");
-    let dxbc = run(Path::new(&dir), "dxbc", "games");
-    let dxil = run(Path::new(&dir), "dxil", "games-dxil");
+    // Both kinds are checked before either fails, so one kind's difference never hides the other's.
+    let (dxbc, dxbc_failures) = verdicts(Path::new(&dir), "dxbc", "games");
+    let (dxil, dxil_failures) = verdicts(Path::new(&dir), "dxil", "games-dxil");
+    assert!(
+        dxbc_failures.is_empty() && dxil_failures.is_empty(),
+        "{dxbc_failures}\n{dxil_failures}"
+    );
     assert!(dxbc.values().sum::<usize>() > 0 && dxil.values().sum::<usize>() > 0);
 }
 

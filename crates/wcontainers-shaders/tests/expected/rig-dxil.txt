@@ -1,49 +1,49 @@
-blend.ps_dest.dxil	ok
-blend.ps_dual.dxil	ok
-blend.vs.dxil	ok
-common.ps_color.dxil	ok
-common.vs_color.dxil	ok
-common.vs_full.dxil	ok
-constants.ps_slots.dxil	ok
-constants.ps_window.dxil	ok
-d3d12.cs_add.dxil	ok-wgsl glsl-write
-d3d12.cs_image.dxil	ok-wgsl glsl-write
-d3d12.ps_bundle.dxil	ok
-d3d12.ps_constants.dxil	ok
-d3d12.ps_image.dxil	ok
-d3d12.ps_root_cbv.dxil	ok
-d3d12.ps_root_srv.dxil	ok-wgsl glsl-write
-d3d12.ps_static.dxil	ok
-d3d12.ps_table.dxil	ok
-depth.ps_depth.dxil	ok
-depth.ps_greater.dxil	ok
-depth.ps_less.dxil	ok
-draws.ps.dxil	ok
-draws.vs.dxil	ok
-formats.ps_float.dxil	ok
-formats.ps_sint.dxil	ok
-formats.ps_uint.dxil	ok
+blend.ps_dest.dxil	ok ; glsl compiles
+blend.ps_dual.dxil	ok ; glsl compiles
+blend.vs.dxil	ok ; glsl compiles
+common.ps_color.dxil	ok ; glsl compiles
+common.vs_color.dxil	ok ; glsl compiles
+common.vs_full.dxil	ok ; glsl compiles
+constants.ps_slots.dxil	ok ; glsl compiles
+constants.ps_window.dxil	ok ; glsl compiles
+d3d12.cs_add.dxil	ok ; glsl absent compute
+d3d12.cs_image.dxil	ok views:R32Float ; glsl absent compute
+d3d12.ps_bundle.dxil	ok ; glsl compiles
+d3d12.ps_constants.dxil	ok ; glsl compiles
+d3d12.ps_image.dxil	ok ; glsl compiles
+d3d12.ps_root_cbv.dxil	ok ; glsl compiles
+d3d12.ps_root_srv.dxil	ok ; glsl needs FRAGMENT_STORAGE_WRITE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+d3d12.ps_static.dxil	ok ; glsl compiles
+d3d12.ps_table.dxil	ok ; glsl compiles
+depth.ps_depth.dxil	ok ; glsl compiles
+depth.ps_greater.dxil	ok ; glsl compiles
+depth.ps_less.dxil	ok ; glsl compiles
+draws.ps.dxil	ok ; glsl compiles
+draws.vs.dxil	ok ; glsl compiles
+formats.ps_float.dxil	ok ; glsl compiles
+formats.ps_sint.dxil	ok ; glsl compiles
+formats.ps_uint.dxil	ok ; glsl compiles
 geometry.gs_adjacency.dxil	unsupported DxilGeometryShader
 geometry.gs_layers.dxil	unsupported DxilGeometryShader
 geometry.gs_points.dxil	unsupported DxilGeometryShader
 geometry.gs_strips.dxil	unsupported DxilGeometryShader
-geometry.ps.dxil	ok
-geometry.ps_id.dxil	ok-wgsl glsl-compile
-geometry.ps_primitive.dxil	ok
-geometry.vs.dxil	ok
-msaa.ps_coverage.dxil	ok-wgsl glsl-compile
-msaa.ps_load.dxil	ok-wgsl glsl-compile
-msaa.ps_sample.dxil	ok-wgsl glsl-compile
+geometry.ps.dxil	ok ; glsl compiles
+geometry.ps_id.dxil	ok ; glsl needs PRIMITIVE_INDEX compile
+geometry.ps_primitive.dxil	ok ; glsl compiles
+geometry.vs.dxil	ok ; glsl compiles
+msaa.ps_coverage.dxil	ok ; glsl needs SAMPLE_SHADING compile
+msaa.ps_load.dxil	ok ; glsl needs MULTISAMPLE_READ compile
+msaa.ps_sample.dxil	ok ; glsl needs SAMPLE_SHADING compile
 raster.gs.dxil	unsupported DxilGeometryShader
-raster.ps.dxil	spirv-reader unsupported
-raster.vs.dxil	ok
-samplers.ps_compare.dxil	ok
-samplers.ps_compare_zero.dxil	ok
-samplers.ps_gather.dxil	ok-wgsl glsl-compile
-samplers.ps_sample.dxil	ok
+raster.ps.dxil	spirv-reader unsupported builtin %10
+raster.vs.dxil	ok ; glsl compiles
+samplers.ps_compare.dxil	ok ; glsl compiles
+samplers.ps_compare_zero.dxil	ok ; glsl compiles
+samplers.ps_gather.dxil	ok ; glsl compiles
+samplers.ps_sample.dxil	ok ; glsl compiles
 streamout.gs.dxil	unsupported DxilGeometryShader
-streamout.vs_back.dxil	ok
-targets.ps.dxil	ok
+streamout.vs_back.dxil	ok ; glsl compiles
+targets.ps.dxil	ok ; glsl compiles
 tessellation.ds_line.dxil	unsupported DxilDomainShader
 tessellation.ds_quad.dxil	unsupported DxilDomainShader
 tessellation.ds_tri.dxil	unsupported DxilDomainShader
@@ -53,20 +53,20 @@ tessellation.hs_quad_integer.dxil	unsupported DxilHullShader
 tessellation.hs_quad_odd.dxil	unsupported DxilHullShader
 tessellation.hs_quad_pow2.dxil	unsupported DxilHullShader
 tessellation.hs_tri.dxil	unsupported DxilHullShader
-tessellation.ps.dxil	ok
-tessellation.vs.dxil	ok
-textures.ps_1d.dxil	ok
-textures.ps_1d_array.dxil	ok
-textures.ps_2d_array.dxil	ok
-textures.ps_3d.dxil	ok
-textures.ps_cube.dxil	ok
-textures.ps_cube_array.dxil	ok-wgsl glsl-write
-textures.ps_load.dxil	ok
-textures.ps_mips.dxil	ok
-triangle.ps.dxil	ok
-triangle.vs.dxil	ok
-views.ps_array.dxil	ok
-views.ps_depth.dxil	ok
-views.ps_level0.dxil	ok
-views.ps_stencil.dxil	ok
-views.ps_uint.dxil	ok
+tessellation.ps.dxil	ok ; glsl compiles
+tessellation.vs.dxil	ok ; glsl compiles
+textures.ps_1d.dxil	ok ; glsl compiles
+textures.ps_1d_array.dxil	ok ; glsl compiles
+textures.ps_2d_array.dxil	ok ; glsl compiles
+textures.ps_3d.dxil	ok ; glsl compiles
+textures.ps_cube.dxil	ok ; glsl compiles
+textures.ps_cube_array.dxil	ok ; glsl needs CUBE_ARRAY_VIEW write Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+textures.ps_load.dxil	ok ; glsl compiles
+textures.ps_mips.dxil	ok ; glsl compiles
+triangle.ps.dxil	ok ; glsl compiles
+triangle.vs.dxil	ok ; glsl compiles
+views.ps_array.dxil	ok ; glsl compiles
+views.ps_depth.dxil	ok ; glsl compiles
+views.ps_level0.dxil	ok ; glsl compiles
+views.ps_stencil.dxil	ok ; glsl compiles
+views.ps_uint.dxil	ok ; glsl compiles
