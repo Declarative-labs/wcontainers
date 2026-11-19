@@ -890,7 +890,8 @@ holds:
     output's `untag`; measured, branch.out case E: a load through a tagged pointer works with TBI0 = 1
     and faults with TBI0 = 0), A1 = 0
     (the address-space identifier comes from TTBR0); SCTLR_EL1.A = 0 (unaligned plain accesses allowed), SA0
-    as `Guest::SP_ALIGNMENT_CHECKED` says (gcpu/translate.rs:196), UCI set as Linux sets it, DZE set (`dc
+    as `Guest::SP_ALIGNMENT_CHECKED` says (gcpu/translate.rs:196; the monitor reads it from the guest's
+    `Guest` and passes it to the inside's boot registers, since that trait is the translating half's), UCI set as Linux sets it, DZE set (`dc
     zva` with the presented block size, which the probe requires of the host), nTWI and nTWE clear (a `wfi`
     or `wfe` at EL0 traps; none is ever emitted, section 3.4's Nothing route), the pointer authentication
     enables and BT0 clear; MAIR_EL1, VBAR_EL1;
@@ -908,7 +909,8 @@ holds:
 - the runtime's loop (`Stepper`, rt/lib.rs:189-244), the native `Execution` (section 6) and the policy half
   of a `System` (section 6.2), all `no_std`.
 The workspace's toolchain file gains the two targets (rust-toolchain.toml lists none of them today). The
-monitor carries the inside as bytes made by a build script that runs cargo for the target.
+monitor carries the inside as bytes made by a build script that runs cargo for the target, from N3, when
+there is an inside program to ship (N1's test builds its own cases program).
 
 **Page tables.** The kernel's `Cpu` side today is a software record per page, written through
 `set_permissions`, `memory_new`, `memory_duplicate`, the shared blocks and `code_changed` (abi/cpu.rs:35-97).
@@ -947,7 +949,9 @@ contiguous bit (16 entries as one) for ranges that cannot take a block. Rejected
 cycles before any translation, most of section 8's margin).
 
 A later 16 KiB guest mode (brief) changes `PAGE_SIZE` and nothing in this design's shape: on ARM64 the floor
-takes the granule from it (TCR_EL1 TG0 and TG1; the M5's virtual CPU offers both granules, ID_AA64MMFR0_EL1
+takes the granule from it (TCR_EL1 TG0 and TG1, chosen from `PAGE_SIZE` in one place, which today knows
+the 4 KiB granule only, the one aarch64-paging's entries are built for, and stops the build for any other
+size; the M5's virtual CPU offers both granules, ID_AA64MMFR0_EL1
 TGran4 0 and TGran16 1, experiments/n0r3/idregs.out), and x86-64, which has no 16 KiB pages, writes each
 guest page as four consecutive 4 KiB entries with the same permissions. The mirror and the lookup are per
 guest address and do not change.
@@ -968,14 +972,15 @@ ID_AA64MMFR0_EL1 ASIDBits 2, idregs.out) and the 12-bit PCID on x86-64 (the lapt
 `invpcid`, /proc/cpuinfo; whether its KVM passes them on is checked at N8). When they run out, the floor
 starts a new generation and invalidates the whole TLB once, as Linux does on both architectures, counted
 "address-space identifiers ran out". A change the kernel makes to one process's tables is followed by the
-invalidation of those pages for its identifier (ARM64 `tlbi vale1is` with the identifier; x86-64 `invpcid`),
-broadcast to the other virtual CPUs as section 5.3 says. Rejected: global heap entries with a full
+invalidation of those pages for its identifier (ARM64 `tlbi vale1is` with the identifier, last level only,
+since the tables above the page are unchanged; `tlbi vae1is`, every level, only where an entry's level
+changes, as when a block is split into a table of pages; x86-64 `invpcid`), broadcast to the other virtual CPUs as section 5.3 says. Rejected: global heap entries with a full
 invalidation at every switch between containers (a cost at every turn that changes container), and
 different heap addresses per container (a save could then come back only where its addresses are free).
 
 **Memory from the host.** Guest-physical memory is one large reservation the monitor maps into the virtual
 machine at start; the host gives it pages only when touched. The inside gives memory back through the link,
-in whole host pages, and the monitor frees them through `Machine::give_back` (section 5.9), whose
+in whole host pages, and the monitor frees them through `VirtualMachine::give_back` (section 5.9), whose
 Hypervisor.framework body unmaps the range from the virtual machine, maps
 fresh anonymous memory over it and maps it in again (`hv_vm_unmap`, `mmap` with MAP_FIXED, `hv_vm_map`;
 costs-round-3/virtual-machine/src/arm64/hvfrun.c:228-240). Measured on the M5 (mac-tests.jsonl "hvf_memory",
@@ -1210,8 +1215,9 @@ Asked of the translator track: the stop point in a translation request, and the 
 ### 5.9 One interface of ours over KVM and Hypervisor.framework
 
 A trait in the monitor's crate, resolved at compile time per host (a host has one of the two):
-`Hypervisor` with `Machine` (map guest-physical memory, give back the host pages of a range, raise an
-interrupt, make a virtual CPU) and
+`Hypervisor` with `VirtualMachine` (the host's hardware virtual machine, never the guest's `GuestMachine`:
+map guest-physical memory, give back the host pages of a range, raise an interrupt, make a virtual CPU,
+give its interrupt numbers) and
 `VirtualCpu` (run until an exit, read and write registers, be stopped from another thread). Exits are one
 enum of ours: doorbell, fault the inside could not take, stopped. KVM ARM64 and KVM x86-64 differ only in
 registers and the doorbell; Hypervisor.framework differs in the call names and in binding a virtual CPU to
@@ -1568,7 +1574,12 @@ the ruling).
   PMUVer set by the host (section 5.1), whether the emulated counter counts EL0 instructions, whether its
   overflow interrupt reaches the inside, and how late. (Run at N1; once C was out its code had no use and
   was removed: the trial as run is at commit fe3a4bff, crates/wcontainers-inside/src/bin/floor-cases/cases.rs
-  `counter_trial` and tests/floor.rs.)
+  `counter_trial` and tests/floor.rs.) The cases program is a test program in the inside's package
+  (`src/bin/floor-cases`), never part of the monitor: the test builds it for the bare-metal target itself,
+  and its requests (reports, measurements, the stop test's and the rest) are its own set after the floor's,
+  in one file the program and the test share. The floor's own set is what the floor sends (print, fatal) and
+  give back. Every report names its case, and the test checks that every case of the bar reported exactly
+  once.
 - **N2, the native ARM64 output, instruction by instruction.** `Native` for ARM64, the small encoder, every
   route of section 3.4 at look-ahead none, the stand-in register for withheld ones, the position map, run at
   EL0 on N1's floor with no kernel: each case's state is set by the floor and read back by it. Needs no
@@ -1671,8 +1682,10 @@ choice. The count's definition is E (section 4).
    crate's own `fork` (R5)? Recommended: yes; the alternative, every policy call through the link, leaves the
    machine at every system call, and no virtual machine survives a host `fork`.
 2. Names: the monitor crate (`wcontainers-hypervisor`?), the inside program (`wcontainers-inside`?), the
-   native back end (`wcontainers-native`?), the policy and services halves (`Policy`, `Services`?), the slow
-   paths of section 3.7, and whether the native emitter is a module of `wcontainers-translator` behind a
+   native back end (`wcontainers-native`?), the policy and services halves (`Policy`, `Services`?), the
+   monitor's interface over the host's hypervisor (section 5.9: `Hypervisor`, `VirtualMachine` for the
+   host's hardware virtual machine, kept apart from `GuestMachine`, which is what the guest is told it runs
+   on; `VirtualCpu`, `Stopper`?), the slow paths of section 3.7, and whether the native emitter is a module of `wcontainers-translator` behind a
    cargo feature (recommended) or a crate of its own.
 3. The translator split into a finder and two emitters behind features (T1), the native build still
    carrying the meanings and wasm-encoder for the finder's effects (section 3.1): agreed? Recommended: yes.

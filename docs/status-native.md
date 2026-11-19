@@ -6,13 +6,13 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 
 - N0 (the plan) is done. At the start of N1 (2026-11-18) the plan was corrected for the last check's open
   findings and the brief's newest rulings (commit 64e30e56; how, below).
-- N1 (the floor on Hypervisor.framework) is done: every case of its bar passes (20 cases, 0 failed, and
-  the doorbell's round trip reported as a measurement), measurements below. Commits a1f1e82b (A1), 91fb63ff
-  (the inside), 0c8ef62d (the monitor and the test), the two after them, and run 2's ce3028f5 (the
-  independent check's findings settled, below), with the plan corrected in the commit after it.
-- The literal check (phase-1-literals at 7b7aaf22) is merged (0e0f1102) and this branch's baseline started
-  (e4b998bd, the commit the check prints as "the last that could add lines"; it must never change). The
-  check passes.
+- N1 (the floor on Hypervisor.framework) is done: every item of its bar reports once and passes (20 cases
+  and the doorbell's round trip as a measurement, 21 named items, 0 failed), measurements below. Commits
+  a1f1e82b (A1), 91fb63ff (the inside), 0c8ef62d (the monitor and the test), the two after them, run 2's
+  ce3028f5 and run 3's 77eb6af6 (the independent checks' findings settled, below), each with the plan
+  corrected after it.
+- The literal check is merged (phase-1-literals at 7b7aaf22 in 0e0f1102; its third run, e5f90171, in run 3)
+  and this branch's baseline started at e4b998bd. The check passes.
 - Next: N2 (the native ARM64 output, instruction by instruction), which needs no other track's work; its
   changes in other tracks' crates are this track's by the orchestrator's leave (plan 6.2, G1). It also
   measures E's cost with the add's placement free. N3 needs decision 1 (R1, R3). N6 needs K2 (below).
@@ -45,23 +45,33 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 
 - crates/wcontainers-inside (`no_std`; names are suggestions): `layout` (the guest-physical and virtual
   layout, every number one constant derived from `PAGE_SIZE` where it can be), `link` (the start record,
-  the link page, and the requests as typed messages: one `#[repr(C)]` struct per request with its answer
-  type, written over the page's message words through `zerocopy`, so both sides read one definition),
-  `build_environment` (the cargo variable names both build scripts read), `boot` (the boot map and boot registers the monitor applies), and, built
+  the link page, and requests as typed messages: one `#[repr(C)]` struct per request with its answer
+  type, written over the page's message words through `zerocopy`, so both sides read one definition; the
+  `requests!` macro makes a set, and the floor's own set is print, fatal and give back),
+  `build_environment` (the cargo variable names and directives both build scripts use), `boot` (the boot
+  map and boot registers the monitor applies; the granule chosen from `PAGE_SIZE` in one place, SA0 as the
+  monitor passes it from `Arm64`'s `Guest::SP_ALIGNMENT_CHECKED`), and, built
   only for `aarch64-unknown-none`, `floor`: entry and vectors (`floor/entry.rs`), frames and translation
   tables with page and block entries, split break before make (counted "large entry split" and warned the
-  first time), TLB invalidation (`floor/tables.rs`),
+  first time), TLB invalidation (`floor/tables.rs`: `tlbi vale1is` for a page's change, `tlbi vae1is` for
+  a split),
   address spaces with per-process TTBR1 tops sharing the global entries, a table root and identifier per
   view (per thread), the GIC through `arm-gic`, the virtual timer, code made visible (CTR_EL0's lines),
-  the stop word in TPIDRRO_EL0, the doorbell. `src/bin/floor-cases` is N1's test program (never shipped):
-  hand-written EL0 snippets, one report per case.
-- crates/wcontainers-hypervisor: the `Hypervisor`, `Machine`, `VirtualCpu` and `Stopper` traits (plan 5.9),
+  the stop word in TPIDRRO_EL0, the doorbell. `src/bin/floor-cases` is N1's test program: hand-written EL0
+  snippets, one report per case, each naming its `Case`; `protocol.rs` there is the cases' own request set
+  (after the floor's) and the case list, which the host test includes by path. Nothing of the monitor
+  builds or carries it.
+- crates/wcontainers-hypervisor: the `Hypervisor`, `VirtualMachine` (the host's hardware virtual machine;
+  `Machine` until run 3, renamed away from the runtime's `GuestMachine`), `VirtualCpu` and `Stopper` traits
+  (plan 5.9),
   their Hypervisor.framework implementation over `applevisor` (`src/hvf.rs`, the only file that names the
   platform), guest memory as one reservation, give-back as `Machine::give_back` with one body per platform
-  (Hypervisor.framework's: unmap, fresh mmap, map), the ELF loader and boot. Its build script builds the inside for the bare-metal target with a nested cargo into its own
-  output directory and embeds the programs (`programs::FLOOR_CASES`).
-- tests/floor.rs (harness off): boots the cases, serves the link, makes the stops from another thread (300
-  by default, seeded), and checks every report.
+  (Hypervisor.framework's: unmap, fresh mmap, map), the ELF loader and boot. Its build script only tells
+  the linker about the GIC calls (Departures).
+- tests/floor.rs (harness off): builds the cases program for the bare-metal target with a nested cargo
+  into cargo's test scratch folder (target/tmp/wcontainers-inside), boots it, serves the link, makes the
+  stops from another thread (300 by default, seeded), and checks that every `Case` reported exactly once
+  and passed.
 - The counter trial (decision 10, option C) ran in run 1 and its result is below; its code (a machine with
   EL2, the store doorbell, the PMU registers) had no use once C was out and was removed in run 2. The trial
   as run is at commit fe3a4bff: check that commit out into a scratch worktree and run the bar there.
@@ -69,8 +79,8 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 ## How to run
 
 From the checkout, in the Nix shell:
-- the bar: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test floor` (about half a second; the
-  test signs a copy of itself ad hoc with crates/wcontainers-hypervisor/hypervisor.entitlements and runs
+- the bar: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test floor` (about half a second
+  once the cases program is built, which the test does first; the test signs a copy of itself ad hoc with crates/wcontainers-hypervisor/hypervisor.entitlements and runs
   that, since Hypervisor.framework refuses an unsigned binary); the stop test's knobs are environment
   variables: `WCONTAINERS_FLOOR_STOPS=1000 WCONTAINERS_FLOOR_SEED=0x0123456789abcdef` before the command
   (seed in decimal or after `0x`; the run prints both); the whole suite of both crates is
@@ -81,7 +91,20 @@ From the checkout, in the Nix shell:
 - the literal check: `nix develop -c cargo run -q -p wcontainers-literals -- check` (exit 0 is clean), and
   `nix develop -c cargo test -j 4 -p wcontainers-literals -- --test-threads 3` before a push.
 
-## N1 measurements (M5 Max, macOS 27.2, the floor test; load 55 to 92 over the runs)
+## N1 measurements (M5 Max, macOS 27.2, the floor test; load 55 to 142 over the runs)
+
+- Run 3 (after the third check's findings, 2026-11-18 16:10 to 16:17, load 76 to 104): four runs, each 20
+  cases and 1 measurement of the 21 named items, 0 failed; the third from a clean build (`cargo clean -p`
+  of both crates and the cases' scratch build folder removed, then the whole suite: 53 s, 14.8 s of it the
+  test's nested build of the cases). Doorbell 885, 886, 889 and 903 ns. Stops, 300 with seed 0x9e3779b97f4a7c15
+  (runs 1 to 3): medians 2.29, 2.21 and 2.33 µs, 90th 6.2, 3.7 and 3.0 µs, 99th 14.0 ms, 0.19 ms and 8.1 µs,
+  maxima 31.8, 1.46 and 0.18 ms; run 4, 1000 stops with seed 0x0123456789abcdef: median 2.21 µs, 90th 2.9
+  µs, 99th 4.8 µs, max 2.8 ms. Every stop in the spin loop, its count never back. Raised interrupt medians
+  3.67, 3.38, 3.42 and 2.29 µs;
+  timer median 41 ns in each; give-back 67,141,680 bytes of 67,108,864 each time. The two adjacent 4 KiB
+  pages in one 16 KiB host page: the store to the read-only one faults into the inside as a level 3
+  permission fault (EC 0x24, FSC 0xf) at its own address, the writable one takes the store. Logs: scratch
+  native/n1-run3-suite.log and n1-run3-clean.log.
 
 - Run 2 (after the check's findings were settled, 2026-11-18 15:33 to 15:42, load 110 to 142): four runs,
   each 20 cases with 0 failed (the cases now include an inside-half page made read-only after use, and the
@@ -138,6 +161,31 @@ From the checkout, in the Nix shell:
 - The doorbell case always passed: it is reported as a measurement, not counted among the cases.
 - Decision 10's evidence: the plan cites the check's hpmn.c result (MDCR_EL2.HPMN).
 
+## The third independent check of N1, and how each finding was settled (run 3)
+
+- Blocking, facts owned by other crates defined in the inside: no copy is defined any more. The page shift
+  (wcontainers-abi's `PAGE_SHIFT` to come) is written `PAGE_SIZE.trailing_zeros()` where used; the general
+  register count is the length of abi's `RegisterBlock::x` (`RegisterBlock::ZERO.x.len()`); an
+  instruction's bytes (wcontainers-arm64's `INSTRUCTION_BYTES` to come) is written `size_of::<u32>()` in
+  the three places of the cases that use it; nanoseconds per second (abi's `NANOSECONDS_PER_SECOND` to
+  come) is not needed: the cases divide a `core::time::Duration` by the counter's frequency. When the
+  owners' constants land, these places take them (Literals, below).
+- The granule and SA0: the granule comes from `PAGE_SIZE` in one place (`boot::GRANULE`), which knows the
+  4 KiB granule only (aarch64-paging's) and stops the build for any other size; SA0 is set as the monitor
+  passes `Arm64::SP_ALIGNMENT_CHECKED` (Departures).
+- No use today: `max_cpus` and `Start.cpus` removed.
+- Test requests in the shipped link, and the monitor building the test program: the link's own set is the
+  floor's (print, fatal, give back); the cases' requests moved to `src/bin/floor-cases/protocol.rs` as a
+  second set after the floor's; the monitor's build script builds nothing and `programs` is gone; the test
+  builds the cases program itself.
+- `tlbi vae1is` for every page change: page changes use `tlbi vale1is`; `vae1is` stays for the split, where
+  a block entry becomes a table (the plan says both now).
+- Stale departure on decision 4: corrected (Departures).
+- `Machine` beside the runtime's `GuestMachine`: renamed `VirtualMachine`; decision 2 now lists the
+  interface's names for the owner.
+- The bar's count not checked: every report and measurement names its `Case`; the test asserts that the
+  sorted list of reported cases equals `Case::ALL`, each exactly once.
+
 ## Asked of the kernel track (K2, needed before N6)
 
 1. The memory size the guest is told (MemTotal and the rest of /proc/meminfo, `sysinfo`, tmpfs limits)
@@ -159,14 +207,32 @@ Apache-2.0; fastrand 2.5.0 Apache-2.0 OR MIT (test only). Brought in by those (n
 and num_enum_derive 0.7.6 BSD-3-Clause OR MIT OR Apache-2.0; pastey 0.2.3, rustversion 1.0.23 and
 arm-targets 0.4.3 MIT OR Apache-2.0; arm-sysregs-aarch32, -common, -el0 and -el1 0.5.2 MIT OR Apache-2.0.
 Run 2 added zerocopy to the inside, already the workspace's (0.8.63, BSD-2-Clause OR Apache-2.0 OR MIT).
+Run 3: the monitor depends on wcontainers-arm64 and wcontainers-guest-cpu (for `Guest::SP_ALIGNMENT_CHECKED`),
+which bring the workspace's translator dependencies into it, all already in Cargo.lock: rustc_apfloat 0.2.3
+Apache-2.0 WITH LLVM-exception, wasm-encoder 0.263.0 Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT,
+yaxpeax-arch 0.3.3 and yaxpeax-arm 0.5.0 0BSD. zerocopy is a test-only dependency of the monitor (the cases'
+messages).
 
 ## Literals
 
 - The check is merged and passes; the baseline's start for this branch is e4b998bd. Its 27 lines for the
   native crates are all text, none a number: assembly the crates offer no call for (`hvc #0` in the
-  doorbell, `dc cvau` and `ic ivau`, `tlbi vae1is`, the entry and vectors in floor/entry.rs, and the
-  floor cases' EL0 snippets with their labels and `extern "C"`), and the include path of the generated
-  programs file (`include!` takes only a literal).
+  doorbell, `dc cvau` and `ic ivau`, `tlbi vae1is` and since run 3 `tlbi vale1is`, the entry and vectors
+  in floor/entry.rs, and the floor cases' EL0 snippets with their labels and `extern "C"`).
+- Run 3 merged the literal track's third run, whose new rules found four cargo directives in the two build
+  scripts; they are named now (`build_environment::RERUN_IF_ENV_CHANGED`, `LINK_ARG`, `LINK_ARG_BINS`, and
+  each script's linker option). `init` ran in the change after that merge (77eb6af6), as the adoption steps
+  say, and changed the baseline by three lines: the include path of the generated programs file left (the
+  file is gone); a `redefinition` line of wcontainers-arm64's `PROBE`, which that crate no longer has, left;
+  and one line came in: `tlbi vale1is, {0}` in floor/tables.rs `invalidate_page`, the check's last-level
+  invalidation, assembly text that no crate offers a call for and `asm!` takes only as a literal. For the
+  reviewer: that one added line is new code of this track, not a literal the new rules found. The check
+  now lists 8 changes that could add lines: the 7 before and 77eb6af6 ("the change after a merge that
+  brought new rules").
+- Facts another crate owns, written where used until the owner's constant is on a branch merged here
+  (orchestrator/magic-literals/README.md): `PAGE_SIZE.trailing_zeros()` in layout.rs and tables.rs
+  (wcontainers-abi's `PAGE_SHIFT`), `size_of::<u32>()` for an instruction's bytes in floor-cases/cases.rs
+  (wcontainers-arm64's `INSTRUCTION_BYTES`); the register count is derived from abi's `RegisterBlock`.
 - Replaced in run 2: every barrier now calls `aarch64_cpu::asm::barrier`; the build scripts' cargo
   variables, options and file names are named constants, the variables shared in `build_environment`; the
   cases' names went into their format strings; `[1, 2, 3]` is `1..INSTRUCTION_BYTES`; the `1` given to
@@ -294,7 +360,13 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 - The brief's addendum asks that our pages the guest can reach either fault as on Linux or be named and
   counted. The plan names them (plan 7.2) but does not count accesses to them: counting would need a check
-  on every guest access. Decision 4 puts this to the owner.
+  on every guest access. The orchestrator settled decision 4: accepted as a named difference, with the two
+  free measures the plan lists (plan section 10).
+- N1, the cases program: the test builds it with a nested cargo at test time instead of a build script of
+  the monitor, so nothing shipped builds or carries it; the first test run after a change to the inside
+  pays that build (14.8 s cold at load 80, 0.1 s when up to date).
+- N1, SA0: the plan has the floor set it as `Guest::SP_ALIGNMENT_CHECKED` says; that trait is in the CPU
+  crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
 
