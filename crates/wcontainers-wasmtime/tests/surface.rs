@@ -785,10 +785,17 @@ fn a_host_directory_is_served_through_a_bind_mount() {
     );
     spec.set_mounts(Some(mounts));
     let (ours, _) = ours(&spec, &image, None);
+    // Docker on Linux leaves the files its root made owned by root: the reference hands them to the
+    // test's user after the commands, so that the test reads them.
+    use std::os::unix::fs::MetadataExt;
+    let ours_owner = std::fs::metadata(&ours_directory).unwrap();
+    let owner = format!("{}:{}", ours_owner.uid(), ours_owner.gid());
+    let reference_command =
+        format!("{command}; ended=$?; chown -R -h {owner} {VOLUME}; exit $ended");
     let output = Command::new("docker")
         .args(["run", "--rm", "--platform", "linux/arm64", "--volume"])
         .arg(format!("{}:{VOLUME}", reference_directory.display()))
-        .args([IMAGE, "sh", "-c", &command])
+        .args([IMAGE, "sh", "-c", &reference_command])
         .output()
         .unwrap();
     let reference = Outcome {
@@ -811,24 +818,30 @@ fn serve_command() -> String {
     format!("echo pong | nc -l -p {SERVED_PORT}; echo served")
 }
 
-/// Connects to `at` until the server listens, sends "ping" and reads to the end.
+/// Sends "ping" to `at` and reads to the end, again until the server answers: a forwarder (Docker's on
+/// Linux) may take a connection before the server listens and then reset or close it.
 fn client(at: std::net::SocketAddr) -> String {
     use std::io::Read;
     let started = Instant::now();
-    let mut stream = loop {
-        match std::net::TcpStream::connect(at) {
-            Ok(stream) => break stream,
-            Err(error) => {
-                assert!(started.elapsed().as_secs() < 120, "never listened: {error}");
+    loop {
+        let answered = std::net::TcpStream::connect(at).and_then(|mut stream| {
+            stream.write_all(b"ping\n")?;
+            stream.shutdown(std::net::Shutdown::Write)?;
+            let mut answer = String::new();
+            stream.read_to_string(&mut answer)?;
+            Ok(answer)
+        });
+        match answered {
+            Ok(answer) if !answer.is_empty() => return answer,
+            outcome => {
+                assert!(
+                    started.elapsed().as_secs() < 120,
+                    "never answered: {outcome:?}"
+                );
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
         }
-    };
-    stream.write_all(b"ping\n").unwrap();
-    stream.shutdown(std::net::Shutdown::Write).unwrap();
-    let mut answer = String::new();
-    stream.read_to_string(&mut answer).unwrap();
-    answer
+    }
 }
 
 /// A free port of the host's loopback.
