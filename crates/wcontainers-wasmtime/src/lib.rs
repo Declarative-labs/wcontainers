@@ -1913,11 +1913,6 @@ where
 {
     let side = side(caller);
     let (memory, thread) = (caller.data().memory, caller.data().thread);
-    // Pages under the view lock do not hold what the guest wrote through another page yet; a step ends
-    // here.
-    if !side.process(memory).viewing.is_empty() || side.stepping.is_some() {
-        side.flush(memory);
-    }
     // Code runs only from pages that allow it, as on Linux.
     let page = address / PAGE_SIZE;
     let runs = side
@@ -1936,6 +1931,23 @@ where
     }
     let index = side.range_at(memory, address);
     let range = side.process(memory).ranges[index].range.clone();
+    let record = &side.process(memory).ranges[index];
+    // A new run is translated with its image's starts, read from beyond the range.
+    let new_run =
+        !exact && !record.changed && !record.covered.iter().any(|run| run.contains(&address));
+    // Pages under the view lock do not hold what the guest wrote through another page yet, so they
+    // are brought up to date before code is read from them; a step ends here. Otherwise the locks
+    // stay, so that a write let through for the instruction about to run is not locked again first.
+    let code_pages = range.start / PAGE_SIZE..range.end.div_ceil(PAGE_SIZE);
+    let viewed = side
+        .process(memory)
+        .viewing
+        .range(code_pages)
+        .next()
+        .is_some();
+    if new_run || viewed || side.stepping.is_some() {
+        side.flush(memory);
+    }
     let instance = side.threads[&thread]
         .instance
         .clone()
@@ -1952,8 +1964,8 @@ where
             .expect("the exact slot");
         return 1;
     }
-    let code = &side.process(memory).ranges[index];
-    if !code.changed && !code.covered.iter().any(|run| run.contains(&address)) {
+    if new_run {
+        let code = &side.process(memory).ranges[index];
         let first = code.covered.is_empty();
         let before = code.hash.clone();
         let run = side.executable_run(memory, &range, &code.covered, address);
