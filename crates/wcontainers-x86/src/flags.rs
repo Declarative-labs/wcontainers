@@ -106,10 +106,11 @@ fn bit_of(s: &mut InstructionSink<'_>, bit: u8) {
     s.i32_wrap_i64().i32_const(1).i32_and();
 }
 
+/// PF counts the low byte of the result.
 fn parity(s: &mut InstructionSink<'_>, result: u32) {
     s.local_get(result)
         .i32_wrap_i64()
-        .i32_const(0xff)
+        .i32_const(u8::MAX.into())
         .i32_and()
         .i32_popcnt()
         .i32_const(1)
@@ -118,13 +119,15 @@ fn parity(s: &mut InstructionSink<'_>, result: u32) {
         .i32_xor();
 }
 
+/// AF is the carry out of the low nibble.
 fn adjust(s: &mut InstructionSink<'_>, a: u32, b: u32, result: u32) {
+    const NIBBLE: u8 = (u8::BITS / 2) as u8;
     s.local_get(a)
         .local_get(b)
         .i64_xor()
         .local_get(result)
         .i64_xor();
-    bit_of(s, 4);
+    bit_of(s, NIBBLE);
 }
 
 fn zero(s: &mut InstructionSink<'_>, result: u32) {

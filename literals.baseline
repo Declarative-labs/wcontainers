@@ -8192,8 +8192,6 @@ code	crates/wcontainers-x86/build.rs	str	main	"groups.rs"
 code	crates/wcontainers-x86/build.rs	str	main	"{},"
 code	crates/wcontainers-x86/build.rs	str	main	"{}] = ["
 code	crates/wcontainers-x86/src/decode.rs	str	groups	"/groups.rs"
-code	crates/wcontainers-x86/src/flags.rs	int	adjust	4
-code	crates/wcontainers-x86/src/flags.rs	int	parity	0xff
 code	crates/wcontainers-x86/src/guest.rs	int	<X86_64 as Guest>::trap_detail	8
 code	crates/wcontainers-x86/src/guest.rs	int	<X86_64 as Guest>::trap_detail	8
 code	crates/wcontainers-x86/src/guest.rs	int	BITS	16
