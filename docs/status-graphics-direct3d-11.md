@@ -44,7 +44,13 @@ to other tracks remain.
   passes on WebGPU and is no longer ignored.
 - The check's other findings are recorded where they belong: the WebGL 2 level as a departure,
   `StageIndexedStrip` and aliased lines into multisampled targets in the Gap list, and the
-  Tests section's claims corrected.
+  Tests section's claims corrected. Not done: atg-simplemsaa_pc's 4 edge pixels at the sample
+  level, building ahead's unused guesses (What comes next).
+- Literals: the front's warnings use its one prefix; the check passes (Literals).
+- Results (Measurements): Wine's d3d11 file 143 of 165 (was 142), d3d10core 109 of 111 (was
+  107), scenes 135, 0, 4, WebGL 2 scenes 2, 0, 137, the three programs of the pass bar matching;
+  the whole library suite on WebGL 2 for the first time (com 14 of 15, programs 1 of 34, all the
+  9_3 level).
 
 G4 round 2, run 3 (2026-11-19, about 06:40 to 08:30 Pacific). What was left on the pass bar that
 is this front's own is done or measured; everything else on it waits on another track, each
@@ -929,8 +935,9 @@ listed cases "per-target blends without OES_draw_buffers_indexed" and "resinfo o
 library tests `targets_blended_and_masked_each_their_own_way_at_10_0_as_direct3d_does`,
 `view_sizes_and_level_counts_at_10_0_as_direct3d_does` and
 `an_empty_slots_size_and_level_count_at_10_0_as_direct3d_does` fail on the WebGL 2 build (no
-10_0 device; Known failures). The whole library suite on the WebGL 2 build: logs/r4d-webglall.log
-(most programs tests ask for 10_0 or more and fail the same way). This front's own work for
+10_0 device; Known failures). The whole library suite on the WebGL 2 build (logs/r4e-webglall.log): com 14
+of 15, programs 1 of 34; every failure is the 9_3 level (a device above 9_3 refused, a shader
+model above 9_3's refused, or a texture past 9_3's size). This front's own work for
 10_0 on WebGL 2, not built: stream output through native transform feedback
 (`capture_vertices`, `StreamOutRepacked`), wireframe without WEBGL_polygon_mode
 (`FillModeConverted`), and `ReinterpretCopy` for the views the WebGL 2 back end lacks. None of
@@ -1198,7 +1205,7 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
 At G4 round 2 run 4: front.rs 54, tests/cache.rs 1, unit 5, com.rs 15, programs.rs 34 (new:
 `own_cases staged_bias`; resinfo_empty passes and is no longer ignored), all passing on the
 WebGPU build (logs/r4d-front.log, r4d-lib.log). On the WebGL 2 build the whole library suite
-was run for the first time (logs/r4d-webglall.log; counts in Measurements): the tests needing
+was run for the first time (logs/r4e-webglall.log; counts in Measurements): the tests needing
 a 10_0 device fail there (Known failures). Every listed case of section 12 has its test against
 real Direct3D, passing on WebGPU, except alpha-antialiased lines (refused, no test) and aliased
 lines into multisampled targets (no test); the WebGL 2 listed cases fail on the WebGL 2 build.
@@ -1661,6 +1668,23 @@ None in G4 runs 3 to 12.
   the plan's text in section 7 (Direct3D 11's constant buffers).
 
 ## Measurements
+
+- Round 2 run 4 (desktop, RTX 3080, i9-9900K; through the queue, not alone, other tracks' jobs
+  sharing the machine; 10:28 to 11:20 Pacific), at ff44b593 (logs/r4d-*): literal check exit 0;
+  lint of both builds clean with warnings denied; front 54 (plus 5 unit and 1 cache); library
+  com 15 and programs 34, none ignored; Wine's d3d11 file 143 of 165, d3d10core 109 of 111;
+  every scene through the library 135 pass, 0 fail, 4 absent; the WebGL 2 build's scenes 2
+  pass, 0 fail, 137 absent; 13 real programs (bgfx's not rerun), 11 matching, the three of the
+  pass bar among them; atg-simplemsaa_pc and atg-simplecomputepc differ as at run 3 (8 and
+  154,515 pixels of frame 10). The WebGL 2 build's whole library suite (r4e-webglall.log, run
+  with `--no-fail-fast`): com 14 of 15, programs 1 of 34, every failure the 9_3 level.
+- Same run, module size (section 10), release builds on the desktop at 11:00 and 11:03
+  (r4d-sizes.log): wcontainers_directx.dll 13,846,016 bytes on WebGPU and 9,416,704 on WebGL 2
+  (run 3: 13,786,624 and 9,355,776); the forwarders 1,024 bytes each.
+- Same run, building ahead (r4d-warm.log, the same five programs, a cold then a warm start):
+  unchanged from round 2 run 1 and run 3. Godot 3D on its warm start built the 61 recorded
+  combinations at start, all 61 drawn since; 124 built ahead at shaders' arrival, none drawn;
+  26 built at their first draw. The other four as before.
 
 - Round 2 run 3 (desktop, RTX 3080, i9-9900K; through the queue, not alone, other tracks' jobs
   sharing the machine; 07:25 to 08:25 Pacific), at 9c93bded unless named (logs/r3e-*): library
