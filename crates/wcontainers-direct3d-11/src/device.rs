@@ -60,8 +60,9 @@ pub(crate) struct Variant<B: Backend> {
 pub(crate) type LayoutKey = (u64, [u32; 32], u64);
 
 /// A stage helper's shaders: the vertex shader's, input layout's, hull and domain shaders' (0
-/// for none), geometry shader object's and pixel shader's ids.
-pub(crate) type StageKey = (u64, u64, [u64; 2], u64, u64);
+/// for none), geometry shader object's and pixel shader's ids, and on the line route the pixel
+/// program's coverage location.
+pub(crate) type StageKey = (u64, u64, [u64; 2], u64, u64, Option<u32>);
 
 /// A Direct3D 11 device and its immediate context on back end `B`.
 pub struct Device<B: Backend> {
@@ -1738,7 +1739,8 @@ impl<B: Backend> Device<B> {
             check_blend_factor(t.dst, false)?;
             check_blend_factor(t.src_alpha, true)?;
             check_blend_factor(t.dst_alpha, true)?;
-            if !(1..=5).contains(&t.op) || !(1..=5).contains(&t.op_alpha) {
+            let known = blend_operation::ADD..=blend_operation::MAX;
+            if !known.contains(&t.op) || !known.contains(&t.op_alpha) {
                 return Err(Error::InvalidArg("unknown blend operation"));
             }
         }
@@ -1829,11 +1831,13 @@ impl<B: Backend> Device<B> {
     }
 
     pub fn create_rasterizer_state(&mut self, d: &RasterizerDesc) -> Result<Rc<Rasterizer<B>>> {
-        if !(2..=3).contains(&d.fill) || !(1..=3).contains(&d.cull) {
+        if !(fill_mode::WIREFRAME..=fill_mode::SOLID).contains(&d.fill)
+            || !(cull_mode::NONE..=cull_mode::BACK).contains(&d.cull)
+        {
             return Err(Error::InvalidArg("unknown fill or cull mode"));
         }
         let caps = self.backend.caps();
-        if d.fill == 2 && !caps.has(Features::POLYGON_MODE) {
+        if d.fill == fill_mode::WIREFRAME && !caps.has(Features::POLYGON_MODE) {
             return not_implemented("wireframe without the back end's polygon mode");
         }
         self.live()?;
@@ -2396,35 +2400,40 @@ fn check_buffer(d: &BufferDesc, has_init: bool) -> Result<()> {
 
 pub(crate) fn compare_fn(f: u32) -> Result<CompareFn> {
     Ok(match f {
-        1 => CompareFn::Never,
-        2 => CompareFn::Less,
-        3 => CompareFn::Equal,
-        4 => CompareFn::LessEqual,
-        5 => CompareFn::Greater,
-        6 => CompareFn::NotEqual,
-        7 => CompareFn::GreaterEqual,
-        8 => CompareFn::Always,
+        comparison::NEVER => CompareFn::Never,
+        comparison::LESS => CompareFn::Less,
+        comparison::EQUAL => CompareFn::Equal,
+        comparison::LESS_EQUAL => CompareFn::LessEqual,
+        comparison::GREATER => CompareFn::Greater,
+        comparison::NOT_EQUAL => CompareFn::NotEqual,
+        comparison::GREATER_EQUAL => CompareFn::GreaterEqual,
+        comparison::ALWAYS => CompareFn::Always,
         _ => return Err(Error::InvalidArg("unknown comparison")),
     })
 }
 
 pub(crate) fn stencil_op(op: u32) -> Result<StencilOp> {
     Ok(match op {
-        1 => StencilOp::Keep,
-        2 => StencilOp::Zero,
-        3 => StencilOp::Replace,
-        4 => StencilOp::IncrementClamp,
-        5 => StencilOp::DecrementClamp,
-        6 => StencilOp::Invert,
-        7 => StencilOp::IncrementWrap,
-        8 => StencilOp::DecrementWrap,
+        stencil_operation::KEEP => StencilOp::Keep,
+        stencil_operation::ZERO => StencilOp::Zero,
+        stencil_operation::REPLACE => StencilOp::Replace,
+        stencil_operation::INCR_SAT => StencilOp::IncrementClamp,
+        stencil_operation::DECR_SAT => StencilOp::DecrementClamp,
+        stencil_operation::INVERT => StencilOp::Invert,
+        stencil_operation::INCR => StencilOp::IncrementWrap,
+        stencil_operation::DECR => StencilOp::DecrementWrap,
         _ => return Err(Error::InvalidArg("unknown stencil operation")),
     })
 }
 
 fn check_blend_factor(f: u32, alpha: bool) -> Result<()> {
-    let colour_only = matches!(f, 3 | 4 | 9 | 10 | 16 | 17);
-    if !matches!(f, 1..=11 | 14..=19) || (alpha && colour_only) {
+    use blend::*;
+    let colour_only = matches!(
+        f,
+        SRC_COLOR | INV_SRC_COLOR | DEST_COLOR | INV_DEST_COLOR | SRC1_COLOR | INV_SRC1_COLOR
+    );
+    if !matches!(f, ZERO..=SRC_ALPHA_SAT | BLEND_FACTOR..=INV_SRC1_ALPHA) || (alpha && colour_only)
+    {
         return Err(Error::InvalidArg("a blend factor the slot cannot take"));
     }
     Ok(())
@@ -2433,32 +2442,32 @@ fn check_blend_factor(f: u32, alpha: bool) -> Result<()> {
 fn blend_factor(f: u32) -> BlendFactor {
     use BlendFactor::*;
     match f {
-        1 => Zero,
-        2 => One,
-        3 => Src,
-        4 => OneMinusSrc,
-        5 => SrcAlpha,
-        6 => OneMinusSrcAlpha,
-        7 => DstAlpha,
-        8 => OneMinusDstAlpha,
-        9 => Dst,
-        10 => OneMinusDst,
-        11 => SrcAlphaSaturated,
-        14 => Constant,
-        15 => OneMinusConstant,
-        16 => Src1,
-        17 => OneMinusSrc1,
-        18 => Src1Alpha,
+        blend::ZERO => Zero,
+        blend::ONE => One,
+        blend::SRC_COLOR => Src,
+        blend::INV_SRC_COLOR => OneMinusSrc,
+        blend::SRC_ALPHA => SrcAlpha,
+        blend::INV_SRC_ALPHA => OneMinusSrcAlpha,
+        blend::DEST_ALPHA => DstAlpha,
+        blend::INV_DEST_ALPHA => OneMinusDstAlpha,
+        blend::DEST_COLOR => Dst,
+        blend::INV_DEST_COLOR => OneMinusDst,
+        blend::SRC_ALPHA_SAT => SrcAlphaSaturated,
+        blend::BLEND_FACTOR => Constant,
+        blend::INV_BLEND_FACTOR => OneMinusConstant,
+        blend::SRC1_COLOR => Src1,
+        blend::INV_SRC1_COLOR => OneMinusSrc1,
+        blend::SRC1_ALPHA => Src1Alpha,
         _ => OneMinusSrc1Alpha,
     }
 }
 
 fn blend_op(op: u32) -> BlendOp {
     match op {
-        1 => BlendOp::Add,
-        2 => BlendOp::Subtract,
-        3 => BlendOp::ReverseSubtract,
-        4 => BlendOp::Min,
+        blend_operation::ADD => BlendOp::Add,
+        blend_operation::SUBTRACT => BlendOp::Subtract,
+        blend_operation::REV_SUBTRACT => BlendOp::ReverseSubtract,
+        blend_operation::MIN => BlendOp::Min,
         _ => BlendOp::Max,
     }
 }
@@ -2526,14 +2535,14 @@ pub(crate) fn raster_block(d: &RasterizerDesc, caps: &Caps) -> RasterDesc {
         0.0
     };
     RasterDesc {
-        fill: if d.fill == 2 {
+        fill: if d.fill == fill_mode::WIREFRAME {
             FillMode::Line
         } else {
             FillMode::Solid
         },
         cull: match d.cull {
-            2 => CullMode::Front,
-            3 => CullMode::Back,
+            cull_mode::FRONT => CullMode::Front,
+            cull_mode::BACK => CullMode::Back,
             _ => CullMode::None,
         },
         front: if d.front_counter_clockwise {

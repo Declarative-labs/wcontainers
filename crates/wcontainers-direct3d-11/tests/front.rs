@@ -1170,11 +1170,11 @@ fn vertex_ids_read_the_draws_bases_from_the_helper_constants() {
 }
 
 #[test]
-fn multisampled_lines_draw_by_the_back_ends_rule_and_alpha_antialiased_lines_are_not_served() {
-    for (multisample, antialiased_lines, drawn) in [
-        (true, false, true),
-        (true, true, true),
-        (false, true, false),
+fn multisampled_lines_draw_by_the_back_ends_rule_and_alpha_antialiased_lines_as_rectangles() {
+    for (multisample, antialiased_lines, rectangles) in [
+        (true, false, false),
+        (true, true, false),
+        (false, true, true),
     ] {
         let mut dev = device();
         let target = dev
@@ -1205,15 +1205,27 @@ fn multisampled_lines_draw_by_the_back_ends_rule_and_alpha_antialiased_lines_are
         dev.draw(3, 0);
         assert!(dev.removed.is_none());
         dev.ia_set_primitive_topology(topology::LINELIST);
+        let from = dev.backend.log.len();
         dev.draw(2, 0);
-        assert_eq!(dev.removed.is_none(), drawn);
-        let draws = dev
-            .backend
-            .log
-            .iter()
-            .filter(|l| l.starts_with("draw "))
-            .count();
-        assert_eq!(draws, 1 + usize::from(drawn));
+        assert!(dev.removed.is_none());
+        let log = log_from(&dev, from);
+        let draws: Vec<&String> = log.iter().filter(|l| l.starts_with("draw ")).collect();
+        assert_eq!(draws.len(), 1, "{log:#?}");
+        let dispatches = log.iter().filter(|l| l.starts_with("dispatch ")).count();
+        // The vertex stage's and the line program's dispatches, then the rectangles' triangles.
+        if rectangles {
+            assert_eq!(dispatches, 2, "{log:#?}");
+            assert!(draws[0].contains("TriangleList"), "{}", draws[0]);
+        } else {
+            assert_eq!(dispatches, 0, "{log:#?}");
+            assert!(draws[0].contains("LineList"), "{}", draws[0]);
+        }
+        assert_eq!(
+            dev.backend
+                .slow_paths()
+                .count(SlowPath::AntialiasedLinesAsQuads),
+            u64::from(rectangles)
+        );
     }
 }
 

@@ -5,10 +5,54 @@ Runs so far: six on G4a, the first slice; then runs 1 to 25 of G4 as a whole (20
 18; runs 13 to 25 are the orchestrator's second series on G4); then round 2, run 1 (2026-11-19),
 which reported the milestone complete; the independent check found it was not, round 2, run 2
 (2026-11-19) worked on its findings, round 2, run 3 (2026-11-19) did what was left of this
-front's own and reported the milestone complete again, and round 2, run 4 (2026-11-19) worked
-the independent check's findings on run 3 (Gap list).
+front's own and reported the milestone complete again, round 2, run 4 (2026-11-19) worked
+the independent check's findings on run 3 (Gap list), and round 2, run 5 (2026-11-19) did what
+was left of this front's own and reports the milestone complete for the independent check.
 
 ## Where things stand
+
+G4 round 2, run 5 (2026-11-19, about 11:00 to 13:30 Pacific; an earlier attempt of this run made
+the alpha-antialiased line commits and was cut off before recording them). What was left on the
+pass bar that is this front's own is done or measured; everything else on it waits on another
+track, each item named in the Gap list with its cause and owner, so the milestone is reported
+complete for the independent check, as the round's task asks.
+- Alpha-antialiased lines of the vertex stage are drawn through the stage helper's rectangles
+  (`AntialiasedLinesAsQuads`, counted and warned): the stage helper expands each line into a
+  rectangle passing its coverage, and the pixel program multiplies target 0's alpha by it
+  (`StageVariant::line_coverage`). New `own_cases aa_lines` and library test
+  `alpha_antialiased_lines_blend_their_coverage_as_direct3d_does`: within 43 of real Direct3D in
+  every channel (allowance 64; Gap list). What stays refused is named once in context.rs. Front
+  test renamed `multisampled_lines_draw_by_the_back_ends_rule_and_alpha_antialiased_lines_as_rectangles`.
+- Merged origin/phase-2-graphics-direct3d-12 (the infrastructure crate's new `d3d` module), no
+  conflict; the others had nothing new. The facts that module now owns are imported, not
+  defined again here, and a part of the literal list was worked: 888 baseline lines to 836
+  (Literals).
+- atg-simplemsaa_pc read against real Direct3D's own spread (scratch msaa-spread.sh and .py,
+  pictures/r5i-msaa): 10 runs on real Direct3D, each its own queue job, all passing, and one
+  through ours. Frame 10 through ours has 8 pixels beyond the tolerance. Two of them (634 and
+  635, row 528) take exactly the value real Direct3D gave in 2 of its 10 runs. The other 6 (752
+  and 753 on row 568; 307 on rows 573 to 576) are 9 or 10 steps lighter in every channel than
+  every real run and the reference. Real Direct3D's own runs changed 4 other pixels the same way
+  (singles and pairs, 9 to 11 steps). So run 3's "4 of the 8 change on real Direct3D" was wrong:
+  2 do, 6 are ours alone. A step of 9 to 11 on these light edges is what one sample of four
+  changing coverage gives, so ours is inferred to cover one sample differently at those edge
+  pixels. Not proven: the samples were not read, because real Direct3D's multisampled target
+  cannot be read before the program resolves it without a capture layer the rig does not have.
+  The likely cause, the converted vertex program's positions differing in their last bits, is
+  also inferred only.
+- Measured on the current tree: the release modules are 13,871,104 bytes (WebGPU) and 9,445,376
+  bytes (WebGL 2). Building ahead is unchanged: Godot 3D's warm start built its 61 recorded
+  combinations, and all 61 were drawn; 124 were built ahead at shader arrival and none was drawn;
+  26 were built at their first draw (Measurements).
+- Results (Measurements): the same as at run 4. Wine's d3d11 file 143 of 165 and d3d10core 109
+  of 111 (the same failing tests). Scenes 135 pass, 0 fail, 4 absent; WebGL 2 scenes 2, 0, 137.
+  The three programs of the pass bar match real Direct3D.
+- The first try of the bar (r5e) had its library step refused, because the tree changed while it
+  ran (this run's own commit). Its last steps were cut off at the sizes step. They were all run
+  again as r5i on the final tree.
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (23.8 GB) and the Mac's
+  scratch mac-target (626 MB, from `cargo check -j 2` of the front) were deleted. Nothing was
+  installed on the desktop.
 
 G4 round 2, run 4 (2026-11-19, about 09:30 to 12:00 Pacific). Worked the independent check's
 findings on run 3. The milestone is not complete: the WebGL 2 build reports 9_3 where plan
@@ -758,6 +802,10 @@ and depth buffers larger than their targets.
 ## Wine's Direct3D 11 tests through ours
 
 Files passing (the bar: real Direct3D's verdict for every test, except the gap list):
+- d3d11, round 2 run 5 (2026-11-19, RTX 3080 through the queue's hazard group, not alone,
+  rigfix/wine.sh, code at ce2670e8): 143 pass of 165 (logs/r5e-wine.log, 158.5 s of tests), the
+  same 22 failing as at run 4, every one on the gap list. d3d10core: 109 of 111
+  (logs/r5e-wine10.log, 94.3 s), the same 2.
 - d3d11, round 2 run 3 (2026-11-19, RTX 3080 through the queue's hazard group, not alone,
   rigfix/wine.sh, at 9c93bded): 142 pass of 165 (logs/r3e-wine.log, 154.3 s of tests). New:
   test_combined_clip_and_cull_distances. Every failing test on the gap list.
@@ -871,7 +919,7 @@ Files passing (the bar: real Direct3D's verdict for every test, except the gap l
 
 The gap list: its own section below ("Gap list").
 
-## Gap list (the pass bar's written list, G4 round 2 run 4)
+## Gap list (the pass bar's written list, G4 round 2 run 5)
 
 Everything on G4's pass bar that does not give real Direct3D's verdict on the RTX 3080, each
 item in exactly one place, with its cause and whose work it is, read from this run's per-test
@@ -884,7 +932,7 @@ of d3d11 test_create_device (its child process makes a swap chain with `Windowed
 would take the owner's screen; tools/graphics-rig/wine-excluded.txt) applies to real Direct3D's
 run too; it is not run.
 
-Wine's d3d11 file (22 failing of 165 at r4d, logs/r4d-wine.log; the quarantined
+Wine's d3d11 file (22 failing of 165 at r5e, logs/r5e-wine.log, the same 22 as at r4d; the quarantined
 test_atomic_instructions is not run):
 - Absent, the 11_1 device (`D3D11CreateDevice` with 11_1 alone fails; logic operations have no
   route, plan section 9) and Wine's WARP fallback (this library offers no WARP adapter):
@@ -916,7 +964,7 @@ test_atomic_instructions is not run):
 - Passing since this run: test_clip_distance (a geometry stage's clip distances through its
   pass-through; a domain shader's before a geometry stage as plain outputs).
 
-Wine's d3d10core file (2 failing of 111 at r4d, logs/r4d-wine10.log): test_swapchain_flip,
+Wine's d3d10core file (2 failing of 111 at r5e, logs/r5e-wine10.log, as at r4d): test_swapchain_flip,
 test_desktop_window (the infrastructure crate's, as above). test_layered_rendering and
 test_clip_distance pass since this run.
 
@@ -926,7 +974,7 @@ Wine's dxgi file: not run through this library. The rig has real Direct3D's verd
 the file runs every test on Direct3D 12 too, which this library does not serve: not run until
 its Direct3D 12 tests can be kept off the GPU (Asked of the rig track).
 
-Scenes through the whole library (logs/r4d-scenes.log): absent are formats-b5g6r5_unorm.png and
+Scenes through the whole library (logs/r5e-scenes.log): absent are formats-b5g6r5_unorm.png and
 the support line of formats-support.caps (`B5G6R5_UNORM`), levels-results.caps (11_1),
 samplers-reduction.png (min/max filtering).
 
@@ -946,36 +994,60 @@ model above 9_3's refused, or a texture past 9_3's size). This front's own work 
 (`FillModeConverted`), and `ReinterpretCopy` for the views the WebGL 2 back end lacks. None of
 them raises the level without `GeometryAsReplay`.
 
-Real programs (logs/r4d-programs.log): the three programs of the pass bar
+Real programs (logs/r5e-programs.log and r5e-bgfx.log): the three programs of the pass bar
 (godot-platformer-3d-d3d11, chocolate-doom, atg-simplelightingpc) match real Direct3D on every
 compared frame, as do sdk-tutorial02 and 04 to 07, atg-simplebezierpc, atg-simpleinstancingpc and
-godot-platformer-2d-d3d11; bgfx's examples as at run 3 (not rerun this run). The two that differ:
+godot-platformer-2d-d3d11, and bgfx 01, 35, 37 and 38 (24 runs to its end, uncompared). The
+three that differ:
 - atg-simplecomputepc: every pixel inside the Mandelbrot set differs (154,515 pixels): the
   converted compute program's division gives just below 4 where real Direct3D gives 4
   (inferred, run 17). The shaders track's (Asked).
-- atg-simplemsaa_pc: frame 10 has 8 pixels beyond the channel tolerance (largest 11), frames 60
-  and 120 pass. Ours gives the same frame on every run; 4 of the 8 are pixels real Direct3D
-  itself changes between runs, the other 4 are two pairs of edge pixels 8 to 11 steps lighter in
-  ours than in both real runs. This front's: not read at the sample level (not done this run).
+- atg-simplemsaa_pc: frame 10 has 8 pixels beyond the channel tolerance (largest 11). Frames 60
+  and 120 pass. Ours gives the same frame on every run. Against 10 real runs, each its own job
+  (run 5): 2 of the 8 take a value real Direct3D gave in 2 runs. The other 6 (a pair on row 568
+  and a column of four at x 307) are 9 or 10 steps lighter than every real run, which is one
+  sample of four covered differently at an edge (inferred). The samples cannot be read on real
+  Direct3D without a capture layer the rig lacks. The cause is not proven; the likely one,
+  converted vertex positions differing in their last bits, would be the shaders track's.
 - bgfx-26-occlusion: the overlay panel one line short without NVAPI, which the rig keeps out of
   runs through ours. The rig's (Asked).
 
 Listed cases of the pass bar (section 12):
-- Alpha-antialiased lines: not met, refused by name (the device is removed at the draw), and no
-  test compares them with real Direct3D. The route (plan section 7) needs the stage helper's line
-  expansion and the shaders crate's `LINE_COVERAGE` variant, which that crate lists unbuilt
-  (`AntialiasedLinesAsQuads`). The shaders track's (Asked, run 18 and round 2 run 2).
+- Alpha-antialiased lines (`AntialiasedLineEnable` without `MultisampleEnable`): lines of the
+  vertex stage are drawn through the stage helper's rectangles (`AntialiasedLinesAsQuads`,
+  counted and warned; the pixel program multiplies its alpha by the coverage the rectangle
+  passes), and compared with real Direct3D by the library test
+  `alpha_antialiased_lines_blend_their_coverage_as_direct3d_does` (own_cases `aa_lines`, a list and
+  a strip blended by coverage, 32 by 32): 232 pixels drawn by real Direct3D, 237 by ours, largest
+  channel difference 43, within the allowance of 64 (the specification, 3.4.4, leaves the
+  coverage filter to the implementation; the RTX 3080 and WARP differ by up to 128). Still
+  refused by name: lines of a geometry or domain stage, adjacency topologies and lines beside
+  stream output (the stage helper takes the vertex stage's lines only; the shaders track's), and
+  on a back end without compute (so on WebGL 2), without a pixel shader, or with a pixel shader
+  reading its facing (this front's; none seen in the census).
 - The WebGL 2 cases: not met (above).
 - Lines under `MultisampleEnable`, depth bias on lines and points, and depth bias on what
   geometry and tessellation stages rasterise have their tests against real Direct3D, passing.
-- Aliased lines (`MultisampleEnable` FALSE) into a multisampled target: no test. The
-  independent check measured (its probe `lines`, 32 by 32, 4 samples) that real Direct3D covers
-  one pixel per step in all 4 samples, where ours covers neighbouring pixels partly and some
-  pixels real Direct3D covers fully in 1 to 3 samples: WebGPU draws lines into a multisampled
-  target by its own multisampled rule, and the interface has no aliased-line rule. Plan 4.12
-  lists this loss as at most the pixels at a line's ends and along its edges; it is not
-  compared with Microsoft's conformance tolerance, which was not read. This front's and the
-  interface's (Departures).
+- Aliased lines (`MultisampleEnable` FALSE) into a multisampled target: failing, not a
+  tolerated loss. The independent check measured (its probe `lines`, 32 by 32, 4 samples) that
+  real Direct3D covers one pixel per step in all 4 samples, where ours covers neighbouring
+  pixels partly and some pixels real Direct3D covers fully in 1 to 3 samples: WebGPU draws lines
+  into a multisampled target by its own multisampled rule, and the interface has no aliased-line
+  rule. Microsoft's conformance tolerance, read this run (Direct3D 11.3 functional
+  specification, saved in scratch downloads/d3d11spec): 3.4.3's aliased rule allows a
+  difference only in viewport-edge pixels (geometric clipping), D3D11 removed the leeway D3D10
+  had for it (section 1's change list), and 15.14 says that with `MultisampleEnable` false
+  "when the line covers a pixel ... all of the MSAA samples in the pixel are hit". So plan
+  4.12's "at most the ends and edges" is outside the specification. The fix is a route of the
+  stage helper drawing each aliased line as the whole pixels the diamond rule picks (squares
+  covering every sample), which the interface and the shaders track would have to provide; this
+  front would then take it as it takes the line route. No test yet (it would fail). Owners: the
+  shaders track (stage helper) and this front.
+- Alpha-antialiased lines into a multisampled target: the specification (15.14) gives every
+  sample of a pixel the same coverage; the line route's rectangles are rasterised per sample,
+  so a pixel the rectangle's edge crosses gets the colour in some samples only, where its
+  coverage is near zero (the rectangle reaches past the line by the filter's reach). Not
+  compared with real Direct3D.
 
 Refused where real Direct3D draws, found by the independent check:
 - An indexed triangle strip (with or without a restart index) drawn through the stage helper:
@@ -993,19 +1065,21 @@ Refused where real Direct3D draws, found by the independent check:
 
 ## What comes next
 
-After G4 round 2 run 4, in order (the independent check first):
+After G4 round 2 run 5, in order (the independent check first):
 - Whatever the independent check finds.
 - The WebGL 2 build's 10_0: geometry shaders once the shaders crate's `GeometryAsReplay` form
   exists (Asked); with it, stream output through `capture_vertices` (native transform feedback,
   `StreamOutRepacked` where the declaration needs it), `FillModeConverted` and `ReinterpretCopy`
   for the views the WebGL 2 back end lacks. Rerun the WebGL 2 scenes and the whole library
   suite on that build.
-- Alpha-antialiased lines once the shaders crate builds `LINE_COVERAGE` and the stage helper's
-  line expansion (Asked); then a test against real Direct3D.
+- Alpha-antialiased lines of a geometry or domain stage, adjacency topologies and lines beside
+  stream output, once the stage helper takes them (Asked); then extend `aa_lines` to them.
 - Aliased lines into multisampled targets: a test against real Direct3D with Microsoft's
   conformance tolerance for lines (read it first), and an aliased-line route if the loss is past
   it (an interface question: WebGPU has no aliased-line rule).
-- atg-simplemsaa_pc's 4 deterministic edge pixels, read sample by sample.
+- atg-simplemsaa_pc's 6 edge pixels outside real Direct3D's spread: compare the converted vertex
+  program's positions with real Direct3D's (stream output of both, or the rig's capture of the
+  vertex stage if one comes) to prove or drop the inferred cause.
 - A vertex shader's layer and viewport (`VPAndRTArrayIndexFromAnyShaderFeedingRasterizer`),
   through the stage helper's pass-through as the cull route draws, then report it.
 - Building ahead: draws through geometry or tessellation stages and the stage helper's
@@ -1672,6 +1746,31 @@ None in G4 runs 3 to 12.
 
 ## Measurements
 
+- Round 2 run 5 (desktop, RTX 3080, i9-9900K; through the queue, not alone, other tracks' jobs
+  sharing the machine, the Direct3D 12 and shaders tracks' among them; 12:08 to 13:00 Pacific).
+  Code at ce2670e8 (the commits after it change only literals.baseline and this file). Literal
+  check exit 0 at c2b2986b (logs/r5h-literals.log). Lint of both builds clean with warnings
+  denied, front 54 (plus 5 unit and 1 cache), library com 15 and programs 35, none ignored
+  (logs/r5i-*). Wine's d3d11 file 143 of 165 (158.5 s of tests) and d3d10core 109 of 111 (94.3
+  s), the same failing tests as at r4d. Every scene through the library: 135 pass, 0 fail, 4
+  absent. The WebGL 2 build's scenes: 2 pass, 0 fail, 137 absent. 19 real programs: 16 pass, and
+  bgfx-24-nbody ran to its end with no frame compared. atg-simplecomputepc, atg-simplemsaa_pc
+  and bgfx-26-occlusion differ as before (logs/r5e-*). The whole library suite on the WebGL 2
+  build: com 14 of 15, the 9_3 failure as at r4e; programs were not reached, as cargo stops at
+  the failing binary (logs/r5i-webglall.log).
+- Same run, module size (section 10), release builds on the desktop at 12:43 and 12:46 from
+  ce2670e8's tree: wcontainers_directx.dll is 13,871,104 bytes on WebGPU and 9,445,376 bytes on
+  WebGL 2 (ANGLE not counted). The forwarders are 1,024 bytes each (logs/r5i-sizes.log; 13,846,016
+  and 9,416,704 at run 4).
+- Same run, building-ahead hits (scratch run-warm.sh: the five programs run twice from one cache
+  directory, 12:54 to 12:57; logs/r5i-warm.log): as at run 4. Godot 3D on its warm start built
+  its 61 recorded combinations at start and drew all 61; 124 were built ahead at shader arrival
+  and none drawn; 26 were built at their first draw. Godot 2D built 3 at start, drew 3, and
+  built 10 at first draw. The others build everything at start and draw it.
+- Same run, atg-simplemsaa_pc's spread (scratch msaa-spread.sh r5i-msaa 10, 12:57 to 13:00):
+  10 runs on real Direct3D, each its own queue job, all pass. Ours fails frame 10 as before (8
+  pixels; 6 of them outside every real run; Where things stand).
+
 - Round 2 run 4 (desktop, RTX 3080, i9-9900K; through the queue, not alone, other tracks' jobs
   sharing the machine; 10:28 to 11:20 Pacific), at ff44b593 (logs/r4d-*): literal check exit 0;
   lint of both builds clean with warnings denied; front 54 (plus 5 unit and 1 cache); library
@@ -2234,6 +2333,18 @@ All on the desktop (Windows 10, i9-9900K, RTX 3080) through the queue, not alone
   dxgi.dll only), so the forwarder placement can be checked by the scenes command.
 
 ## Literals
+
+- Round 2 run 5: wcontainers-direct3d-11 620 to 568 lines, wcontainers-directx 268 (836): the
+  front's descriptions name Direct3D 11's blend factors and operations, comparison functions,
+  stencil operations, fill and cull modes, `COLOR_WRITE_ENABLE_ALL` and the default stencil
+  masks once (`desc::blend`, `blend_operation`, `comparison`, `stencil_operation`, `fill_mode`,
+  `cull_mode`), used by the default states and the translations to the interface; the blend
+  description's target count is the interface's `MAX_COLOR_TARGETS`. The facts the merged
+  infrastructure crate now owns are imported from its `d3d` module, not defined again:
+  `APPEND_ALIGNED_ELEMENT`, `SO_NO_RASTERIZED_STREAM`, and the pipeline statistics' and stream
+  output statistics' layouts (`query::statistic` takes each word from the field offsets of
+  `PipelineStatistics`). No line added, no mark. The check exits 0 at c2b2986b
+  (logs/r5h-literals.log). Left as before: the stream output target count (Asked).
 
 - Round 2 run 4: wcontainers-direct3d-11 631 to 620 lines, wcontainers-directx 268 (888): the
   front's nine warnings that spelled the prefix now use `error::WARNING_PREFIX` (the library's

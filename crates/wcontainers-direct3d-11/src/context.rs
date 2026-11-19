@@ -355,8 +355,12 @@ const ADJUST_WORDS: usize = 4;
 const PIXEL_CENTRE: f32 = 0.5;
 
 /// Draws refused by name.
-pub(crate) const ALPHA_ANTIALIASED_LINES: &str =
-    "alpha-antialiased lines (AntialiasedLinesAsQuads)";
+pub(crate) const ALPHA_ANTIALIASED_LINES: &str = "alpha-antialiased lines of a geometry or domain stage, an adjacency topology or beside stream output (AntialiasedLinesAsQuads)";
+const LINES_WITHOUT_COMPUTE: &str =
+    "alpha-antialiased lines without the back end's compute (AntialiasedLinesAsQuads)";
+const LINES_WITHOUT_PIXEL_SHADER: &str =
+    "alpha-antialiased lines without a pixel shader to apply their coverage";
+const LINES_FACING: &str = "a pixel shader reading its facing on alpha-antialiased lines";
 const VIEWPORT_BEHIND_GEOMETRY: &str =
     "a viewport the back end would round, behind a geometry stage";
 
@@ -2092,6 +2096,18 @@ impl<B: Backend> Device<B> {
         (r.depth_bias != 0 || r.slope_scaled_depth_bias != 0.0)
             && self.ctx.depth.is_some()
             && !self.draws_triangles()
+    }
+
+    /// The bound raster state draws lines alpha-antialiased: antialiased lines without
+    /// multisampling.
+    pub(super) fn lines_alpha_antialiased(&self) -> bool {
+        let r = &self
+            .ctx
+            .raster
+            .as_ref()
+            .unwrap_or(&self.defaults.raster)
+            .desc;
+        r.antialiased_lines && !r.multisample
     }
 
     /// The primitives rasterised are triangles: a geometry stage's output, else the tessellator's,
@@ -3991,10 +4007,19 @@ impl<B: Backend> Device<B> {
                 .unwrap_or(&self.defaults.raster)
                 .desc
                 .scissor;
-        let masked_key = (masks || unbiased || scissored).then_some((
+        // Alpha-antialiased lines of the vertex stage: the stage helper draws a rectangle around
+        // each, unculled and filled, and the pixel program multiplies its alpha by the coverage
+        // passed after the linked values (`AntialiasedLinesAsQuads`).
+        let aa_lines = self.lines_alpha_antialiased()
+            && matches!(self.ctx.topology, topology::LINELIST | topology::LINESTRIP)
+            && self.ctx.gs.is_none()
+            && self.ctx.hs.is_none()
+            && self.ctx.ds.is_none();
+        let masked_key = (masks || unbiased || scissored || aa_lines).then_some((
             if masks { mask } else { u32::MAX },
             unbiased,
             scissored,
+            aa_lines,
         ));
         let masked = match masked_key {
             Some(key) => Some(self.raster_twin(key)?),
@@ -4056,7 +4081,26 @@ impl<B: Backend> Device<B> {
         let layer_named = geometry_stage
             .as_ref()
             .is_some_and(|g| crate::shader::names_layer(&g.reflection.outputs));
-        let linked = if clamps || clip.is_some() || layer_named {
+        if aa_lines {
+            if !self.backend.caps().has(Features::COMPUTE) {
+                return not_implemented(LINES_WITHOUT_COMPUTE);
+            }
+            match &ps {
+                None => {
+                    return not_implemented(LINES_WITHOUT_PIXEL_SHADER);
+                }
+                Some(p)
+                    if p.reflection
+                        .inputs
+                        .iter()
+                        .any(|i| i.system == Some(SystemValue::FrontFacing)) =>
+                {
+                    return not_implemented(LINES_FACING);
+                }
+                Some(_) => {}
+            }
+        }
+        let linked = if clamps || clip.is_some() || layer_named || aa_lines {
             if ps.is_none() && (clamps || clip.is_some()) {
                 return not_implemented(
                     "depth clamping or clip distances the back end lacks, without a pixel shader to apply them",
@@ -4116,6 +4160,7 @@ impl<B: Backend> Device<B> {
                 depth_clamp: clamps,
                 clip_distances,
                 layer_from_stage: layer_named,
+                line_coverage: aa_lines,
                 early_tests: early,
                 retyped,
                 retyped_formats,
@@ -4191,7 +4236,7 @@ impl<B: Backend> Device<B> {
             );
         }
         let gs = match self.ctx.gs.clone() {
-            None if vs.culled => Some(self.no_geometry()),
+            None if vs.culled || aa_lines => Some(self.no_geometry()),
             gs => gs,
         };
         if let Some(gs) = gs {
@@ -4338,18 +4383,12 @@ impl<B: Backend> Device<B> {
                 (t, r, Some(ring))
             }
         };
-        // Direct3D draws lines alpha-antialiased when the state asks for antialiased lines without
-        // multisampling (`AntialiasedLinesAsQuads`, not built); with multisampling it draws them by
-        // the quadrilateral rule, here by the back end's (a listed loss, plan 4.12).
-        let raster = &self
-            .ctx
-            .raster
-            .as_ref()
-            .unwrap_or(&self.defaults.raster)
-            .desc;
+        // Alpha-antialiased lines reach here only beside stream output without a geometry stage or
+        // from an adjacency topology, which the line route does not take; with multisampling
+        // Direct3D draws lines by the quadrilateral rule, here by the back end's (a listed loss,
+        // plan 4.12).
         if matches!(topology, Topology::LineList | Topology::LineStrip)
-            && raster.antialiased_lines
-            && !raster.multisample
+            && self.lines_alpha_antialiased()
         {
             return not_implemented(ALPHA_ANTIALIASED_LINES);
         }
@@ -5431,8 +5470,10 @@ pub(crate) fn layout_desc(
 }
 
 /// A raster block's twin: its sample mask, without the depth bias (the pixel program adds it, or
-/// the draw is of lines or points), and with the scissor test on (a fitted pass).
-pub(crate) type RasterKey = (u32, bool, bool);
+/// the draw is of lines or points), with the scissor test on (a fitted pass), and unculled and
+/// filled (the rectangles of alpha-antialiased lines, which Direct3D neither culls nor fills as
+/// wireframe).
+pub(crate) type RasterKey = (u32, bool, bool, bool);
 
 /// The raster block of `desc` as twin `key`.
 fn twin_block(
@@ -5449,6 +5490,10 @@ fn twin_block(
         block.depth_bias = 0;
         block.depth_bias_slope = 0;
         block.depth_bias_clamp = 0;
+    }
+    if key.3 {
+        block.cull = wcontainers_gpu::CullMode::None;
+        block.fill = wcontainers_gpu::FillMode::Solid;
     }
     block
 }
