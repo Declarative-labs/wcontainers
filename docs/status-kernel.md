@@ -145,6 +145,14 @@ LTP table at this run's end (not a whole comparison yet):
   cause, the rest (the gap list under "K6c, fourth run", with IPV6_RTHDR proposed).
 - Excused with a gap: none final.
 
+Whole suite at c2a9b17f (`cargo test -p wcontainers-kernel -p wcontainers-kernel-test
+--no-fail-fast -- --test-threads=2`, started 17:47, load 50 to 70; scratch k6c6/suite.log): still
+running when this run ended; 40 test binaries done, 106 passed, 0 failed, 6 ignored.
+The fifth run's suite (k6c5/suite.log) was stopped: later test builds had replaced its binaries,
+so it mixed code. Do not rebuild in this checkout's target while a suite runs. Layer 1: seed
+9191102 (200 sequences in memory) matched; the three fresh end-of-milestone seeds (from 9191013)
+are not run yet.
+
 ## K6c, fifth run
 
 Built, each tested against the reference:
