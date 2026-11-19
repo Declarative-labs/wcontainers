@@ -39,6 +39,10 @@ pub struct Counters {
     pub slices: u64,
     /// Writes ordered through a staging buffer and a copy.
     pub staged_writes: u64,
+    /// Bytes the device was asked to write into buffers (`write_buffer`, every route).
+    pub buffer_bytes: u64,
+    /// Bytes the device was asked to write into textures (`write_texture`, as given).
+    pub texture_bytes: u64,
     /// Staging rings made (the first, and each larger one a submit's staged bytes needed).
     pub staging_rings: u64,
     /// Query rings made, which resolved query results are taken from as staged bytes are from
@@ -313,7 +317,7 @@ impl Caches {
     /// Forgets binding sets and bind groups nothing holds any more.
     pub fn prune(&mut self) {
         prune(&mut self.sets, &mut self.sets_alive);
-        if self.groups.len() > 2 * self.groups_alive.max(64) {
+        if self.groups.len() > 2 * self.groups_alive.max(PRUNE_LEAST) {
             let now = self.group_prunings;
             self.groups
                 .retain(|_, g| Rc::strong_count(g) > 1 || g.used.get() == now);
@@ -323,20 +327,24 @@ impl Caches {
     }
 }
 
+/// Entries a table may hold before it is first pruned.
+const PRUNE_LEAST: usize = 64;
+
 /// Immediates padded to whole words, as WebGPU sets them.
 fn words(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
-    if bytes.len().is_multiple_of(4) {
+    let align = wgpu::IMMEDIATE_DATA_ALIGNMENT as usize;
+    if bytes.len().is_multiple_of(align) {
         return bytes.into();
     }
     let mut padded = bytes.to_vec();
-    padded.resize(bytes.len().next_multiple_of(4), 0);
+    padded.resize(bytes.len().next_multiple_of(align), 0);
     padded.into()
 }
 
 /// Forgets entries nothing holds, once the table has doubled since it was last pruned, so each
 /// insert costs constant time on average.
 fn prune<K, V>(table: &mut HashMap<K, Weak<V>>, alive: &mut usize) {
-    if table.len() > 2 * (*alive).max(64) {
+    if table.len() > 2 * (*alive).max(PRUNE_LEAST) {
         table.retain(|_, v| v.strong_count() > 0);
         *alive = table.len();
     }
@@ -956,8 +964,10 @@ impl WebGpu {
                     LoadOp::Clear(bits) => {
                         let kind = v.format.kind();
                         let exact = |b: u32| match kind {
-                            FormatKind::Uint => b <= 1 << 24,
-                            FormatKind::Sint => (b as i32).unsigned_abs() <= 1 << 24,
+                            FormatKind::Uint => b <= 1 << f32::MANTISSA_DIGITS,
+                            FormatKind::Sint => {
+                                (b as i32).unsigned_abs() <= 1 << f32::MANTISSA_DIGITS
+                            }
                             _ => true,
                         };
                         if self.float_clears && !bits.iter().all(|b| exact(*b)) {
