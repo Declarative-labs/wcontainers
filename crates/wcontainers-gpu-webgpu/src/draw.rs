@@ -840,7 +840,7 @@ impl WebGpu {
                     t.write_mask = wgpu::ColorWrites::empty();
                     t.blend = None;
                 }
-                Some((self.no_fragment(), "none", targets))
+                Some((self.no_fragment(), crate::fill::NO_FRAGMENT, targets))
             }
         };
         let raster = &call.raster.0.desc;
