@@ -1273,6 +1273,10 @@ run 36).
 - Shaders (G6), needing the interface: a texture slot read in its view's type and handed to a
   program declaring another (runner texture-load lines 235 to 267; the front refuses it by name,
   `read_as` in bind.rs).
+- WebGPU back end (G2), on wgpu's Direct3D 12 path (run 37): buffer-to-texture copies of
+  several slices or layers whose `rows_per_image` exceeds the copy's height read the slices at
+  the wrong pitch (wgpu-hal 30 sets the placed footprint's `Height` to the copy's height); copy
+  slice by slice there (copy_buffer_texture, "Next" 3b).
 - WebGPU back end (G2), Godot's 3D platformer (run 36): `raw_views` makes every view with
   `usage: None`, which wgpu takes as the texture's usages, and wgpu refuses a view whose format
   cannot be stored on a texture allowing storage ("Texture view format `Rgba8UnormSrgb` cannot be
@@ -1311,9 +1315,24 @@ run 36).
    a. Clip distances: done in run 37 (clip_distance passes on that path); the culling stage's
       pass-through waits on the shaders track ("Asked of other tracks"), so
       combined_clip_and_cull_distances stops at a named refusal there.
-   b. clear_unordered_access_view_image (44 checks: "At layer 0, (0,0,0), expected 0x1, got 0"
-      in dimensions 0 to 2) and copy_buffer_texture (2 checks, d3d12.c:27057 and 27083, into a
-      3D texture) fail on that path only; not traced.
+   b. Traced in run 37 (run37/files5.log, logs-files5), not yet fixed:
+      - copy_buffer_texture (2 checks, d3d12.c:27057 and 27083): a 4 by 4 by 4 box copied from a
+        buffer footprint 100 rows high into a 3D texture reads its second slice from row 4 of
+        the first (got 0x00010501 for 0x00020101 at (2, 2, 3)). wgpu-hal 30's Direct3D 12 path
+        makes the copy's placed footprint `Height` the copy's height
+        (`to_subresource_footprint` in wgpu-hal's dx12/command.rs), so `rows_per_image` is not
+        the slice pitch there; the front passes the footprint's height as `rows_per_layer`. An
+        item of the WebGPU back end (copy slice by slice where `rows_per_image` exceeds the
+        copy's height on that path) or of wgpu upstream; "Asked of other tracks".
+      - clear_unordered_access_view_image (44 checks): every failing check is a
+        `ClearUnorderedAccessViewUint` of an `R32_FLOAT` view with the bits 0x1, a denormal
+        (tests 0, 1 and 4 of its table; float-valued clears pass). The front clears textures
+        with the bits as a colour (`ClearValue::Color`), and the clear on the Direct3D 12 path
+        flushes the denormal to 0, where Direct3D 12 writes the bits. The front's part: a uint
+        clear of a float format whose bits a colour clear does not keep (denormals, NaN
+        payloads) done by a copy from a buffer filled with the texel's bits (`storage_texel`,
+        `clear_buffer`, `copy_buffer_to_texture`), a new counted slow path (an interface
+        change).
    c. The real programs run behind the rig's forwarding library, which is the program's
       d3d12.dll; on the device thread wgpu then loads it too, so it wraps wgpu's own device
       (Microsoft's samples: "census has no command-list SetGraphicsRootSignature") and, asked by
