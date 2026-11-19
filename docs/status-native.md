@@ -22,7 +22,9 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   inside's native `Cpu` side, piece loading and a thread run to its next exit, and the float state routines
   (below, "N3 run 2"); run 3 ran that CPU side on the floor for the first time: the kernel test crate's hello
   and two programs of this track's own (one a static musl program) give the same exits, registers and output as
-  the WebAssembly output's CPU side, with and without the count, and the reference's output (below, "N3 run 3"). Blocked for its
+  the WebAssembly output's CPU side, with and without the count, and the reference's output (below, "N3 run 3"); run 4
+  carried the kernel's `Host` calls, the image's files and the container's start through the link and started a
+  container's first process in the kernel inside the machine, alike with the WebAssembly side (below, "N3 run 4"). Blocked for its
   bar: R1 and R3 (the runtime's loop `no_std`, the `System` split into policy and services) are the runtime
   and kernel tracks' crates, which this track has not been agreed to change (see "For the orchestrator").
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
@@ -51,6 +53,59 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N3 run 4 (2026-11-19)
+
+Start: origin/main and origin/phase-1-literals had nothing new; the brief has no ruling on R1 and R3 yet, and
+phase-1-runtime has no `no_std` loop either. Run 3's suite had passed before its push, so nothing was rerun first.
+
+Built (each its own commit):
+- 27ffd093, 99699ccc, the inside: the kernel's `Host` through the link (`host` module). Each `Host` call is a
+  request of its own set (after the routines'); `LinkHost<R: Ring>` is the kernel's `Host` inside (`Ring` is a link
+  page and its doorbell; the floor's is `floor::Doorbell`), `host::answer` is the monitor's half, calling any
+  `&mut dyn Host`. Bytes longer than one link (output, send, a backend message, an address, a name) go ahead in
+  `Carry` requests and an answer's (random bytes, received bytes) come after it with `Fetch`; both are the floor's
+  own requests now, with `link::Parts` the monitor's half, so any later set uses them too. `HostError` crosses as an
+  `Outcome`. Unit tests (on the host, through a link in memory): every call arrives whole at lengths 0, 1, a link
+  less one, a link, a link and one, three links and five, one request per link's worth; every `HostError` comes back.
+- 0fb076ab, the inside: the image's files and the container's start through the link (`container` module). The
+  monitor answers `NextFile` with each `container::File` (path, mode, owner, time and the kernel's `NewFile`, owning
+  its bytes) and `StartContainer` with a `Starting` (the kernel's `Start`, owned), each by postcard; inside,
+  `container::start` puts every file in the kernel's root with `Kernel::add_file` and calls `Kernel::start`. Unit
+  test: files of every kind (one three links long) and a start arrive whole. The inside now depends on the kernel.
+- 650915ae, the monitor's tests: building the guest programs with zig moved into the tests' common module.
+- 38f9a3d4, 57783c21: the test program `native-kernel` (never shipped) and the test `tests/kernel.rs`. Inside: the
+  floor, `NativeCpu` (no count), `LinkHost` over the doorbell, `Kernel::new`, `container::start`, then
+  `Kernel::next`, and it reports what the kernel runs next with the first thread's register block. On the host the
+  same kernel and the same `container::start` (over a link in memory) start the same container on the WebAssembly
+  output's `CpuSide`. The test host has fixed clocks, seeded random bytes (`WCONTAINERS_KERNEL_SEED`, default
+  0x5eed) and records every call. Compared: what the kernel runs next, every host call in order, and the whole
+  register block but the stack pointer, whose top each side's kernel places from its own ceiling until K2.
+
+Results (M5 Max, load 6.1 to 6.4; scratch native/n3r4):
+- kernel test: the kernel test crate's `hello` started alike: both run thread 3 next at pc 0x10101b4, the same 9 host
+  calls (clocks, AT_RANDOM's bytes and the like), the same registers; stack pointers 0x1ffffffffe50 natively and
+  0xfefffe50 on the WebAssembly side. 0.8 s once built.
+- exits test after the link's change: 3 programs, 0 failed, both modes, 4725 native pieces, the same slow paths as run 3.
+- inside unit tests: 3 passed.
+- The whole suite of what this track owns, once before the push (03:40 to 03:43, load 6.4 to 9.1, M5 Max; scratch
+  native/n3r4/suite-end.log): guest-cpu, arm64, the inside and the monitor (kernel started alike; exits 3 programs,
+  0 failed, both modes; floor 21 cases and 1 measurement, 0 failed; carry; native 32,562 cases, 0 failing;
+  interrupts 2500, 0 failed; probe 279 forms, 0 of 16 bytes or fewer differ, 44 larger differ as before), the
+  literal check's tests, the translator with `native`; all passed. Literal check exit 0.
+
+Dependencies the inside gained: wcontainers-kernel (this workspace, MIT OR Apache-2.0) and serde 1.0.229 with derive
+and alloc (MIT OR Apache-2.0, the version guest-cpu already uses).
+
+Literals: the check exits 0; no baseline line added (three findings in the new test were fixed before the push).
+
+What comes next for N3, in order:
+1. With R1 and R3: in `native-kernel` (then the shipped inside), after `container::start`, `Stepper::drive` with the
+   native `Execution` (a loop over `NativeCpu::run` that hands each exit to `Answer::exit`, `Answer::clock` for counter
+   reads, `Answer::warn` for slow paths, as plan 6.3 says) and the test crate's policy; the policy's services are
+   `LinkHost`. Then the kernel test runs hello to its end, then the bar (busybox `text` and `files` against the
+   reference, the kernel test crate choosing the native back end), then the independent check's programs.
+2. The policy's `idle` as a link request (plan 6.1), when a program waits.
 
 ## N3 run 3 (2026-11-19)
 
@@ -668,6 +723,8 @@ From the checkout, in the Nix shell:
   7 minutes);
 - the monitor's translate answer through a link page: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor
   --lib`;
+- N3's kernel inside the machine against the same kernel on the WebAssembly CPU side, starting hello: `nix develop -c
+  cargo test -j 4 -p wcontainers-hypervisor --test kernel` (knob `WCONTAINERS_KERNEL_SEED`; about 1 s once built);
 - N3's native CPU side against the WebAssembly one on static programs: `nix develop -c cargo test -j 4 -p
   wcontainers-hypervisor --test exits` (both modes; `WCONTAINERS_EXITS_EXACT=0` or `1` runs one; about 1 s);
 - N2's tests without the machine: `nix develop -c cargo test -j 4 -p wcontainers-arm64 --test native_routes --test encode --
@@ -839,6 +896,8 @@ and allocator-api2 0.4.0, each MIT OR Apache-2.0 (the inside's heap; spin's `loc
 1.1.3 and cobs 0.3.0 MIT OR Apache-2.0 (the inside, already in Cargo.lock); serde 1.0.229 with serde_derive
 and serde_core, MIT OR Apache-2.0 (guest-cpu's position map, already in Cargo.lock); the monitor depends on
 wcontainers-translator with `native` (was a dev-dependency).
+N3 run 4: the inside depends on wcontainers-kernel (this workspace) and serde 1.0.229 (MIT OR Apache-2.0, already in
+Cargo.lock); the kernel's own dependencies were already in Cargo.lock.
 Run 3: the monitor depends on wcontainers-arm64 and wcontainers-guest-cpu (for `Guest::SP_ALIGNMENT_CHECKED`),
 which bring the workspace's translator dependencies into it, all already in Cargo.lock: rustc_apfloat 0.2.3
 Apache-2.0 WITH LLVM-exception, wasm-encoder 0.263.0 Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT,
@@ -1095,6 +1154,15 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   driver.rs). The plan lets this track make them only if those tracks agree. Until one of the two happens,
   this track builds everything else N3 needs and the bar cannot run. Writing the loop again in the inside
   would be a second loop, which the brief forbids.
+- N3 run 4: still no ruling. Everything of N3 this track can build without R1 and R3 is now built: the kernel runs
+  inside the machine on the native CPU side, takes the image's files and the start through the link, calls its host
+  through the link, and starts hello exactly as on the WebAssembly side. What is left is the loop itself. The
+  smallest R1 this track sees: lib.rs's `Turn`, `Carry`, `Leaving`, `Answer`, `Execution`, `Step`, `Ending`,
+  `Stepper` and `drive` use only `core` (and `Kernel`), so they can move into a `no_std` part as they are; only
+  `StopFlag` (std's `Arc` and `Mutex`) and `System::stop_flag` stay in the std part (that is R2's). R3 then splits
+  `System`'s `Host` supertrait (services, `LinkHost` inside) from `turn`, `ran`, `arrived`, `stopped`, `idle`'s
+  decision and `cpu_warning` (policy). Either the runtime track does it on phase-1-runtime, or this track is told it
+  may, in a commit of its own on this branch.
 - N3 run 3: still no ruling in the brief. The native CPU side now runs three static programs (one with musl) as
   the WebAssembly output does. Besides R1 and R3, the bar needs the kernel test crate to run its busybox tests
   through the native back end: its driver.rs makes the WebAssembly `CpuSide` by name (driver.rs:51-57), so a way
