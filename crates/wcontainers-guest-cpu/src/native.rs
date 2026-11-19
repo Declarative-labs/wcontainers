@@ -144,10 +144,12 @@ pub enum Resume {
     Slot(Held),
 }
 
-/// What the rest of a sequence would have done after its commit point (docs/native.md section 4).
+/// What the rest of a sequence would have done after its commit point (docs/native.md section 4), to the host
+/// registers and the register page: a stop makes its fix-ups first, then reads the guest's values where the
+/// span's relocations say they are.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Fixup {
-    /// The register, by number, gets the constant being built in it.
+    /// The host register, by number, gets the constant being built in it.
     Constant { register: u8, value: u64 },
     /// The exclusive monitor is written whole for an access of `bytes` (`pair`: two of them) at the address
     /// held there, its value read again from guest memory.
@@ -156,7 +158,7 @@ pub enum Fixup {
         pair: bool,
         address: Held,
     },
-    /// The exclusive monitor is forgotten and the status register, by number, written: 0 if the swap read
+    /// The exclusive monitor is forgotten and the status host register, by number, written: 0 if the swap read
     /// the remembered value, its low and (a pair of 64-bit registers) high words held at `read`, else 1
     /// (`read` empty: no swap was tried, 1).
     Forget { status: u8, read: [Option<Held>; 2] },

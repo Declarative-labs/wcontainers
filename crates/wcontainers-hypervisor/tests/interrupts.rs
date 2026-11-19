@@ -44,7 +44,7 @@ mod macos {
 
     use crate::common::{be_signed, load_average};
     use crate::runner::function::Run;
-    use crate::runner::{GuestState, Runner};
+    use crate::runner::{GuestState, Runner, nzcv};
 
     /// Where the functions return to: an address with no code.
     const RETURNS: u64 = CODE + PAGE_SIZE;
@@ -125,6 +125,17 @@ mod macos {
         0xd65f03c0, // ret
     ];
 
+    /// Fix-ups on stand-ins: a constant built for a withheld register, a store exclusive whose status, data and
+    /// base are all withheld, and a load pair into one register.
+    const WITHHELD: [u32; 6] = [
+        0x1000007b, // adr x27, #12
+        0xaa1b03e1, // mov x1, x27
+        0xc85f7f9b, // ldxr x27, [x28]
+        0xc81a7f9b, // stxr w26, x27, [x28]
+        0xa9400781, // ldp x1, x1, [x28]
+        0xd65f03c0, // ret
+    ];
+
     /// Every float status form after a float operation that raised flags.
     const FLOAT: [u32; 13] = [
         0x1e6e1000, // fmov d0, #1.0
@@ -142,18 +153,22 @@ mod macos {
         0xd65f03c0, // ret
     ];
 
-    /// A case's starting state with the registers given.
+    /// A case's starting state with the registers given, the flags, thread pointer and vectors drawn from the
+    /// seed.
     fn start(registers: &[(usize, u64)]) -> Case {
+        let mut rng = fastrand::Rng::with_seed(SEED);
         let mut all = [0u64; GENERAL + 3];
         for &(r, v) in registers {
             all[r] = v;
         }
         all[LINK] = RETURNS;
         all[GENERAL] = STACK;
+        all[GENERAL + 1] = rng.u64(..) & nzcv();
+        all[GENERAL + 2] = rng.u64(..);
         Case {
             word: 0,
             registers: all,
-            vectors: [0; RegisterBlock::ZERO.v.len()],
+            vectors: std::array::from_fn(|_| rng.u128(..)),
             float: [0, 0],
             tracking: false,
             seed: SEED,
@@ -205,6 +220,9 @@ mod macos {
         registers.sp = case.registers[GENERAL];
         registers.pc = CODE;
         [registers.fpsr, registers.fpcr] = case.float;
+        registers.pstate = case.registers[GENERAL + 1];
+        registers.tpidr_el0 = case.registers[GENERAL + 2];
+        registers.v = case.vectors.map(|v| [v as u64, (v >> u64::BITS) as u64]);
         machine.set_registers(&registers);
         if case.tracking {
             machine.track_float_flags();
@@ -235,6 +253,8 @@ mod macos {
                 .map(|[low, high]| u128::from(high) << u64::BITS | u128::from(low))
                 == last.v
             && [after.fpsr, after.fpcr] == last.float
+            && after.pstate == last.flags
+            && after.tpidr_el0 == last.thread
     }
 
     /// What one function's checks found.
@@ -308,8 +328,20 @@ mod macos {
             let mut from = 0;
             for budget in 0..=stepped.steps {
                 let run: Run = runner.run_function(&function, case, RETURNS, Some(budget));
-                let (state, _) = run.interrupted.expect("an interrupt");
+                let (state, _) = run.interrupted.as_ref().expect("an interrupt").clone();
                 tally.forced += 1;
+                if run.stop != whole.stop
+                    || run.trace.last() != whole.trace.last()
+                    || run.data != whole.data
+                {
+                    fail(format!(
+                        "at {look_ahead:?}, going on after an interrupt after {budget} host instructions ends {:?} {:x?}, unbroken {:?} {:x?}",
+                        run.stop,
+                        run.trace.last(),
+                        whole.stop,
+                        whole.trace.last()
+                    ));
+                }
                 match boundaries[from..].iter().position(|b| *b == state) {
                     Some(k) => {
                         from += k;
@@ -351,7 +383,7 @@ mod macos {
         let writable = DATA + PAGE_SIZE / 2;
         let read_only = DATA + DATA_WRITABLE + PAGE_SIZE / 2;
         let misaligned = writable + size_of::<u32>() as u64;
-        let functions: [(&str, &[u32], Vec<Case>); 6] = [
+        let functions: [(&str, &[u32], Vec<Case>); 7] = [
             ("sum", &SUM, vec![start(&[(0, DATA), (1, words)])]),
             ("calls", &CALLS, vec![start(&[])]),
             (
@@ -374,6 +406,11 @@ mod macos {
                 ],
             ),
             ("float", &FLOAT, float_cases()),
+            (
+                "withheld",
+                &WITHHELD,
+                vec![start(&[(28, writable)]), start(&[(28, read_only)])],
+            ),
         ];
         let mut tally = Tally::default();
         for (name, words, cases) in &functions {

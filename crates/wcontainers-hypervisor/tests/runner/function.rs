@@ -32,7 +32,8 @@ pub struct Run {
 }
 
 /// The guest's state carried back to the hardware and the register page, as the inside returns to it.
-fn rejoin(state: &GuestState, mut page: RegisterPage, block: &Block) -> (Hardware, RegisterPage) {
+fn rejoin(state: &GuestState, page: RegisterPage, block: &Block) -> (Hardware, RegisterPage) {
+    let mut page = with_exclusive(page, state);
     let mut x = state.x;
     for (slot, &r) in page.withheld.iter_mut().zip(&WITHHELD) {
         *slot = x[usize::from(r)];
@@ -53,8 +54,15 @@ fn rejoin(state: &GuestState, mut page: RegisterPage, block: &Block) -> (Hardwar
     (hardware, page)
 }
 
-/// The guest's state at an interrupt that landed at the hardware's pc while `p` ran.
-fn interrupted(p: &Placed, h: &Hardware, page: &RegisterPage, block: &mut Block) -> GuestState {
+/// The guest's state at an interrupt that landed at the hardware's pc while `p` ran; `memory` reads guest
+/// memory for the fix-ups.
+fn interrupted(
+    p: &Placed,
+    h: &Hardware,
+    page: &RegisterPage,
+    block: &mut Block,
+    memory: &dyn Fn(u64, &mut [u8]),
+) -> GuestState {
     if h.pc < p.va || h.pc >= p.va + p.code.bytes.len() as u64 {
         // The jump is done and the guest is at its target's entry slot.
         let span = Span {
@@ -68,31 +76,12 @@ fn interrupted(p: &Placed, h: &Hardware, page: &RegisterPage, block: &mut Block)
         return state;
     }
     let span = p.code.span((h.pc - p.va) as u32).expect("a span");
-    let mut state = guest_state(span, h, page, block);
-    if span.side == Side::After {
-        state.pc = resume_address(span, h, page);
-        for fixup in &span.fixups {
-            match *fixup {
-                Fixup::Constant { register, value } => state.x[usize::from(register)] = value,
-                Fixup::Forget { status, read } => {
-                    let remembered = [page.exclusive_low, page.exclusive_high];
-                    let swapped = read[0].is_some()
-                        && read
-                            .iter()
-                            .zip(remembered)
-                            .all(|(r, m)| r.is_none_or(|r| held(r, h, page) == m));
-                    state.x[usize::from(status)] = u64::from(!swapped);
-                }
-                // Only the exclusive monitor changes, which the register page holds.
-                Fixup::Remember { .. } => {}
-                Fixup::FloatStatus => {
-                    block.fpsr = h.fpsr;
-                    block.fpcr = h.fpcr & FPCR_BITS;
-                    state.float = [block.fpsr, block.fpcr];
-                }
-            }
-        }
+    if span.side == Side::Before {
+        return guest_state(span, h, page, block);
     }
+    let (fixed, fixed_page) = fixed_up(span, h, page, block, memory);
+    let mut state = guest_state(span, &fixed, &fixed_page, block);
+    state.pc = resume_address(span, h, page);
     state
 }
 
@@ -126,7 +115,8 @@ impl Runner {
     }
 
     /// Runs `function` from the state of `case` (its word unused) until it returns to `returns` or stops,
-    /// stepping every host instruction when `budget` is given and resolving an interrupt after that many.
+    /// stepping every host instruction when `budget` is given and resolving an interrupt after that many, then
+    /// going on from the state the interrupt resolved to, as the inside returns to it.
     pub fn run_function(
         &mut self,
         function: &Function,
@@ -160,13 +150,32 @@ impl Runner {
                 data: now,
             }
         };
+        let mut stepping = budget.is_some();
+        let mut interrupt: Option<(GuestState, usize)> = None;
         if budget == Some(0) {
-            let state = interrupted(&function.pieces[current], &hardware, &page, &mut block);
-            let passed = trace.len() - 1;
-            return end(self, trace, Stop::Other(0, 0), 0, Some((state, passed)));
+            let p = &function.pieces[current];
+            let state = interrupted(p, &hardware, &page, &mut block, &|va, b| self.read(va, b));
+            interrupt = Some((state, 0));
+            stepping = false;
+        }
+        // An interrupt that is a stop: the guest goes on from the state it resolved to, as the inside
+        // returns to it, at that address's piece.
+        if let Some((state, _)) = &interrupt {
+            match at(state.pc).filter(|_| state.pc != returns) {
+                Some(k) => {
+                    current = k;
+                    (hardware, page) = rejoin(state, page.clone(), &block);
+                    hardware.pc = function.pieces[k].va;
+                }
+                None => {
+                    let to = state.pc;
+                    trace.push(state.clone());
+                    return end(self, trace, Stop::Landed(to), 0, interrupt);
+                }
+            }
         }
         loop {
-            let trapped = self.enter(&hardware, &page, budget.is_some());
+            let trapped = self.enter(&hardware, &page, stepping);
             let class = ESR_EL1::EC.read(trapped.syndrome);
             if class == ESR_EL1::EC::Value::SoftwareStepLowerEL as u64 {
                 steps += 1;
@@ -174,9 +183,26 @@ impl Runner {
                     // A stop: the inside takes the guest's float status as at every entry.
                     block.enter(trapped.hardware.fpsr);
                     let p = &function.pieces[current];
-                    let state = interrupted(p, &trapped.hardware, &trapped.page, &mut block);
-                    let passed = trace.len() - 1;
-                    return end(self, trace, Stop::Other(0, 0), steps, Some((state, passed)));
+                    let state =
+                        interrupted(p, &trapped.hardware, &trapped.page, &mut block, &|va, b| {
+                            self.read(va, b)
+                        });
+                    stepping = false;
+                    match at(state.pc).filter(|_| state.pc != returns) {
+                        Some(k) => {
+                            current = k;
+                            (hardware, page) = rejoin(&state, trapped.page, &block);
+                            hardware.pc = function.pieces[k].va;
+                            interrupt = Some((state, trace.len() - 1));
+                        }
+                        None => {
+                            let to = state.pc;
+                            interrupt = Some((state.clone(), trace.len() - 1));
+                            trace.push(state);
+                            return end(self, trace, Stop::Landed(to), steps, interrupt);
+                        }
+                    }
+                    continue;
                 }
                 // An interrupt that is no stop goes back to the host instruction it came from, with the
                 // hardware as it was.
@@ -195,12 +221,12 @@ impl Runner {
                             (hardware, page) = rejoin(&state, trapped.page, &block);
                             hardware.pc = function.pieces[k].va;
                         }
-                        None => return end(self, trace, Stop::Landed(to), steps, None),
+                        None => return end(self, trace, Stop::Landed(to), steps, interrupt),
                     }
                 }
                 Resolved::Stop(stop, state) => {
                     trace.push(*state);
-                    return end(self, trace, stop, steps, None);
+                    return end(self, trace, stop, steps, interrupt);
                 }
             }
         }

@@ -126,6 +126,8 @@ pub struct GuestState {
     pub v: [u128; VECTORS],
     pub float: [u32; 2],
     pub count: u64,
+    /// The exclusive monitor: bytes, address, low and high words, as the register page keeps it.
+    pub exclusive: [u64; 4],
 }
 
 /// A native run's outcome: layer 1's, and the count at the stop.
@@ -593,6 +595,7 @@ impl Runner {
             v: h.v,
             float: case.float,
             count: 0,
+            exclusive: exclusive_of(&RegisterPage::default()),
         };
         outcome(stop, &state, changed)
     }
@@ -605,7 +608,7 @@ impl Runner {
 }
 
 /// NZCV's bits in a saved state.
-fn nzcv() -> u64 {
+pub fn nzcv() -> u64 {
     (SPSR_EL1::N::SET + SPSR_EL1::Z::SET + SPSR_EL1::C::SET + SPSR_EL1::V::SET).value
 }
 
@@ -721,7 +724,80 @@ pub fn guest_state(
         v: hardware.v,
         float: [block.fpsr, block.fpcr],
         count: hardware.x[usize::from(COUNT)] - u64::from(span.lead),
+        exclusive: exclusive_of(page),
     }
+}
+
+/// The exclusive monitor a register page keeps.
+fn exclusive_of(page: &RegisterPage) -> [u64; 4] {
+    [
+        page.exclusive_bytes,
+        page.exclusive_address,
+        page.exclusive_low,
+        page.exclusive_high,
+    ]
+}
+
+/// The register page with the exclusive monitor of a guest state.
+pub fn with_exclusive(mut page: RegisterPage, state: &GuestState) -> RegisterPage {
+    [
+        page.exclusive_bytes,
+        page.exclusive_address,
+        page.exclusive_low,
+        page.exclusive_high,
+    ] = state.exclusive;
+    page
+}
+
+/// The hardware and the register page with a span's fix-ups made (docs/native.md section 4): they name host
+/// registers, so they come before the relocations are read. `memory` reads guest memory.
+pub fn fixed_up(
+    span: &Span,
+    h: &Hardware,
+    page: &RegisterPage,
+    block: &mut Block,
+    memory: &dyn Fn(u64, &mut [u8]),
+) -> (Hardware, RegisterPage) {
+    let (mut hardware, mut fixed) = (h.clone(), page.clone());
+    for fixup in &span.fixups {
+        match *fixup {
+            Fixup::Constant { register, value } => hardware.x[usize::from(register)] = value,
+            Fixup::Forget { status, read } => {
+                let remembered = [page.exclusive_low, page.exclusive_high];
+                let swapped = read[0].is_some()
+                    && read
+                        .iter()
+                        .zip(remembered)
+                        .all(|(r, m)| r.is_none_or(|r| held(r, h, page) == m));
+                hardware.x[usize::from(status)] = u64::from(!swapped);
+                fixed.exclusive_bytes = 0;
+            }
+            Fixup::Remember {
+                bytes,
+                pair,
+                address,
+            } => {
+                let at = held(address, h, page);
+                let word = size_of::<u64>();
+                let total = usize::from(bytes) * if pair { 2 } else { 1 };
+                let read = |offset: usize, length: usize| {
+                    let mut value = [0u8; size_of::<u64>()];
+                    memory(at + offset as u64, &mut value[..length]);
+                    u64::from_le_bytes(value)
+                };
+                let two_words = pair && usize::from(bytes) == word;
+                fixed.exclusive_bytes = total as u64;
+                fixed.exclusive_address = at;
+                fixed.exclusive_low = read(0, total.min(word));
+                fixed.exclusive_high = if two_words { read(word, word) } else { 0 };
+            }
+            Fixup::FloatStatus => {
+                block.fpsr = h.fpsr;
+                block.fpcr = h.fpcr & FPCR_BITS;
+            }
+        }
+    }
+    (hardware, fixed)
 }
 
 /// Where the guest goes on after a span's commit point.
@@ -986,11 +1062,10 @@ fn resolve(
             },
             InsideCall::Misaligned => misaligned(i, span.guest, &state.x, state.sp),
             InsideCall::Unreachable => {
-                for fixup in &span.fixups {
-                    if let Fixup::Constant { register, value } = *fixup {
-                        state.x[usize::from(register)] = value;
-                    }
-                }
+                let no_memory =
+                    |_: u64, _: &mut [u8]| unreachable!("a jump's fix-ups read no memory");
+                let (fixed, fixed_page) = fixed_up(span, h, page, block, &no_memory);
+                state = guest_state(span, &fixed, &fixed_page, block);
                 let to = resume_address(span, h, page);
                 state.pc = to;
                 if to.is_multiple_of(Arm64::MAX_LENGTH) {
