@@ -5,7 +5,7 @@
 
 use wcontainers_gpu::{
     AddedBinding, BindingEntry, BindingResource, BufferRange, CLAMPED_SAMPLER_BINDING,
-    COUNTER_BINDING, DRAW_ARGUMENTS_BINDING, HelperSlot, RingKind, VertexFormat, helper_binding,
+    DRAW_ARGUMENTS_BINDING, HelperSlot, RingKind, VertexFormat, helper_binding,
 };
 
 use super::*;
@@ -148,7 +148,7 @@ impl<B: Backend> Device<B> {
                 .caps()
                 .limits
                 .min_storage_offset_alignment
-                .max(4),
+                .max(STORAGE_WORD as u32),
         );
         let mut fetched = Vec::new();
         for (e, location) in inputs
@@ -169,9 +169,12 @@ impl<B: Backend> Device<B> {
             let start = offset - offset % align;
             let rest = (offset - start) as u32;
             if ranges[slot].is_none() {
-                let width = self.resources[id.0 as usize].desc.width.next_multiple_of(4);
+                let width = self.resources[id.0 as usize]
+                    .desc
+                    .width
+                    .next_multiple_of(STORAGE_WORD);
                 let size = (u64::from(rest) + u64::from(v.size))
-                    .next_multiple_of(4)
+                    .next_multiple_of(STORAGE_WORD)
                     .min(width - start);
                 ranges[slot] = Some((self.buffer(id)?.0.clone(), start, size));
             }
@@ -286,8 +289,8 @@ impl<B: Backend> Device<B> {
     /// bases (`DrawBaseInHelpers`), where its indirect arguments lie, with them bound
     /// (`DrawBaseFromArguments`), its pulled inputs' words and what its bindings give; for the
     /// back end's `stages` that run it (the vertex stage, or compute for its form before a
-    /// geometry stage). `pixel` adds the pixel stage's block, `counter` the pixel counter
-    /// (`COUNTER_BINDING`).
+    /// geometry stage). `pixel` adds the pixel stage's block, `extra` other bindings of the set
+    /// (the pixel counter, views a program testing early reads).
     pub(super) fn helper_set(
         &mut self,
         helpers: &Helpers,
@@ -295,7 +298,7 @@ impl<B: Backend> Device<B> {
         pulled: &[(u32, VertexFormat, [u32; 4])],
         stages: StageSet,
         pixel: Option<&Helpers>,
-        counter: Option<&B::Buffer>,
+        extra: Vec<BindingEntry<'_, B>>,
     ) -> Result<B::BindingSet, Error> {
         let mut blocks = Vec::with_capacity(2);
         let mut arguments = None;
@@ -359,7 +362,7 @@ impl<B: Backend> Device<B> {
                 )
             })
             .collect();
-        self.helper_blocks(&blocks, &reads, &merged, counter)
+        self.helper_blocks(&blocks, &reads, &merged, extra)
     }
 
     /// A clamped program's merged samplers (binding, the back end's stages, sampler): each pair
@@ -395,14 +398,25 @@ impl<B: Backend> Device<B> {
     }
 
     /// The helper block of a pixel or compute stage (API stage `visibility`), from what its
-    /// bindings give. The layer and viewport a pixel shader reads are zero: no earlier stage
-    /// writes them (the converter refuses those outputs), so each draw is one run of layer 0
-    /// through viewport 0.
+    /// bindings give. The layer and viewport a pixel shader reads are zero: a draw not split per
+    /// layer or viewport is one run of layer 0 through viewport 0.
     pub(super) fn stage_block(&self, helpers: &Helpers, visibility: u32) -> Result<Vec<u8>, Error> {
+        self.run_block(helpers, visibility, [0, 0])
+    }
+
+    /// As `stage_block`, for the run `run` (layer, viewport) of a draw split per layer or
+    /// viewport after a geometry stage choosing them.
+    pub(super) fn run_block(
+        &self,
+        helpers: &Helpers,
+        visibility: u32,
+        run: [u32; 2],
+    ) -> Result<Vec<u8>, Error> {
         let mut block = vec![0u8; helpers.size as usize];
         for slot in &helpers.slots {
             let words = match slot.value {
-                HelperValue::Layer | HelperValue::Viewport => words(&[0]),
+                HelperValue::Layer => words(&[run[0]]),
+                HelperValue::Viewport => words(&[run[1]]),
                 value => self.bound_helper(visibility, value)?,
             };
             put(&mut block, slot.offset, slot.value, words)?;
@@ -423,13 +437,13 @@ impl<B: Backend> Device<B> {
 
     /// A helper set of `blocks` (binding, the back end's stages, bytes), written into the data
     /// ring, with read-only storage buffers `reads` (binding, the back end's stages, range) bound,
-    /// such as an indirect draw's arguments.
+    /// such as an indirect draw's arguments, and `extra` added as they are.
     pub(super) fn helper_blocks(
         &mut self,
         blocks: &[(u32, StageSet, Vec<u8>)],
         reads: &[(u32, StageSet, BufferRange<&B::Buffer>)],
         samplers: &[(u32, StageSet, B::Sampler)],
-        counter: Option<&B::Buffer>,
+        extra: Vec<BindingEntry<'_, B>>,
     ) -> Result<B::BindingSet, Error> {
         let align = self.backend.caps().limits.min_uniform_offset_alignment;
         let mut offsets = vec![0; blocks.len()];
@@ -467,20 +481,7 @@ impl<B: Backend> Device<B> {
                 writable: false,
             },
         }));
-        if let Some(counter) = counter {
-            entries.push(BindingEntry {
-                binding: COUNTER_BINDING,
-                stages: StageSet::FRAGMENT,
-                resource: BindingResource::StorageBuffer {
-                    range: BufferRange {
-                        buffer: counter,
-                        offset: 0,
-                        size: 8,
-                    },
-                    writable: true,
-                },
-            });
-        }
+        entries.extend(extra);
         Ok(self.backend.create_binding_set(&entries)?)
     }
 }

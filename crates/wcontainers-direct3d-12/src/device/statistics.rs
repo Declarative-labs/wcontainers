@@ -11,11 +11,30 @@
 //! statistics are the stage helper's counts of primitives written and needed, read back.
 
 use wcontainers_gpu::{
-    BlendDesc, COUNTER_BINDING, ColorWrites, DepthStencilDesc, HELPER_SET, Reflection,
-    RenderTargetBlend, StageExtras, SystemValue,
+    BindingEntry, BindingResource, BlendDesc, BufferRange, COUNTER_BINDING, ColorWrites,
+    DepthStencilDesc, HELPER_SET, Reflection, RenderTargetBlend, StageExtras, SystemValue,
 };
 
 use super::*;
+
+/// The bytes of the pixel counter: one u64.
+const COUNTER_BYTES: u64 = size_of::<u64>() as u64;
+
+/// The helper set's entry binding the pixel counter `counter` for the counting draws.
+pub(super) fn counter_entry<B: Backend>(counter: &B::Buffer) -> BindingEntry<'_, B> {
+    BindingEntry {
+        binding: COUNTER_BINDING,
+        stages: StageSet::FRAGMENT,
+        resource: BindingResource::StorageBuffer {
+            range: BufferRange {
+                buffer: counter,
+                offset: 0,
+                size: COUNTER_BYTES,
+            },
+            writable: true,
+        },
+    }
+}
 
 /// The fields of `D3D12_QUERY_DATA_PIPELINE_STATISTICS`, in order.
 const IA_VERTICES: usize = 0;
@@ -157,7 +176,7 @@ impl<B: Backend> Device<B> {
             logic_op: None,
         })?;
         let counter = self.backend.create_buffer(&BufferDesc {
-            size: 8,
+            size: COUNTER_BYTES,
             usage: BufferUsage::STORAGE | BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
             intent: MapIntent::Rarely,
         })?;
@@ -191,7 +210,7 @@ impl<B: Backend> Replay<B> {
         }
         self.end_pass(d)?;
         let counter = d.pixel_counter()?;
-        d.backend.clear_buffer(&counter, 0, 8, &[0]);
+        d.backend.clear_buffer(&counter, 0, COUNTER_BYTES, &[0]);
         self.statistics = Some(Running {
             heap,
             index,

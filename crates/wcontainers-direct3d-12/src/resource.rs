@@ -22,6 +22,9 @@ pub const FLAG_DENY_SHADER_RESOURCE: u32 = 8;
 pub const PITCH_ALIGNMENT: u64 = 256;
 /// Subresources in a buffer start at multiples of this (`D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT`).
 pub const PLACEMENT_ALIGNMENT: u64 = 512;
+/// Constant buffer views start at, and span, multiples of this
+/// (`D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT`).
+pub const CONSTANT_BUFFER_ALIGNMENT: u64 = 256;
 
 /// `D3D12_RESOURCE_DESC`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
