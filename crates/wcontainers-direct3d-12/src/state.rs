@@ -9,7 +9,9 @@ use wcontainers_gpu::{
 };
 
 use wcontainers_directx_graphics_infrastructure::dxgi_vertex_format;
-use wcontainers_shaders::stage::InputTopology;
+use wcontainers_shaders::stage::{
+    InputTopology, LINE_ADJACENCY_VERTICES, TRIANGLE_ADJACENCY_VERTICES, TRIANGLE_VERTICES,
+};
 
 use crate::Error;
 
@@ -416,8 +418,6 @@ pub fn topology(value: u32) -> Result<Topology, Error> {
     })
 }
 
-/// Vertices of one triangle.
-pub(crate) const TRIANGLE_VERTICES: u32 = 3;
 /// `D3D_PRIMITIVE_TOPOLOGY_LINELIST_ADJ`, `_LINESTRIP_ADJ`, `_TRIANGLELIST_ADJ` and
 /// `_TRIANGLESTRIP_ADJ`.
 pub const TOPOLOGY_LINELIST_ADJ: u32 = 10;
@@ -430,16 +430,15 @@ pub const TOPOLOGY_TRIANGLESTRIP_ADJ: u32 = 13;
 /// `None` for other topologies. Each vertex of a primitive with adjacency is followed by one
 /// adjacent vertex, but a line's ends, which have one before and after.
 pub fn adjacency_dropped(value: u32, first: u32, count: u32) -> Option<(Topology, Vec<u32>)> {
-    let line = 2;
     let (topology, kept): (Topology, Vec<u32>) = match value {
         TOPOLOGY_LINELIST_ADJ => {
-            let per = line * 2;
-            let kept = (0..count / per).flat_map(|p| (1..=line).map(move |v| p * per + v));
+            let per = LINE_ADJACENCY_VERTICES;
+            let kept = (0..count / per).flat_map(|p| (1..=per / 2).map(move |v| p * per + v));
             (Topology::LineList, kept.collect())
         }
         TOPOLOGY_LINESTRIP_ADJ => (Topology::LineStrip, (1..count.saturating_sub(1)).collect()),
         TOPOLOGY_TRIANGLELIST_ADJ => {
-            let per = TRIANGLE_VERTICES * 2;
+            let per = TRIANGLE_ADJACENCY_VERTICES;
             let kept =
                 (0..count / per).flat_map(|p| (0..TRIANGLE_VERTICES).map(move |v| p * per + v * 2));
             (Topology::TriangleList, kept.collect())

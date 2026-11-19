@@ -8,11 +8,11 @@
 
 use super::*;
 use crate::list::{DSV_READ_ONLY_DEPTH, DSV_READ_ONLY_STENCIL};
-use crate::state::TRIANGLE_VERTICES;
 use wcontainers_gpu::{
     BindingEntry, BindingResource, DepthStencilDesc, EARLY_DEPTH_BINDING, EARLY_STENCIL_BINDING,
     FrontFace, StencilOp,
 };
+use wcontainers_shaders::stage::TRIANGLE_VERTICES;
 
 /// The texture bound as the stencil a program tests early where the view's format has none, of
 /// the depth view's sample count `samples`; the program then never reads it (its stencil test is
