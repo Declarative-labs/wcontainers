@@ -54,6 +54,8 @@ required-features = ["kernel-test"]
 wcontainers-abi.workspace = true
 # The layout, which the build script reads too.
 wcontainers-arm64 = { path = "../wcontainers-arm64", default-features = false }
+# Assembles Arm's memcpy.
+cc = "1.11.2"
 
 [lints]
 workspace = true

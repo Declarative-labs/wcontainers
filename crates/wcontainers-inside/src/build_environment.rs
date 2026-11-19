@@ -11,6 +11,9 @@ pub const TARGET_OS: &str = "CARGO_CFG_TARGET_OS";
 /// the script's own code).
 pub const RERUN_IF_ENV_CHANGED: &str = "cargo::rerun-if-env-changed=";
 
+/// Runs the build script again when the file or directory after it changes.
+pub const RERUN_IF_CHANGED: &str = "cargo::rerun-if-changed=";
+
 /// Gives the linker the option after it, for every target of the package.
 pub const LINK_ARG: &str = "cargo::rustc-link-arg=";
 
