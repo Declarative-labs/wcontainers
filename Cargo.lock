@@ -2541,6 +2541,7 @@ dependencies = [
  "linux-raw-sys",
  "object 0.37.3",
  "proptest",
+ "unicorn-engine",
  "wcontainers-abi",
  "wcontainers-arm64",
  "wcontainers-guest-cpu",
