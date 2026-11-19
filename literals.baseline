@@ -2040,12 +2040,8 @@ code	crates/wcontainers-direct3d-12/src/device.rs	bytestr	Device<B>::convert_sta
 code	crates/wcontainers-direct3d-12/src/device.rs	bytestr	Device<B>::pipeline_root	b"RTS0"
 code	crates/wcontainers-direct3d-12/src/device.rs	int	Device	4
 code	crates/wcontainers-direct3d-12/src/device.rs	int	Device<B>::clear_storage	3
-code	crates/wcontainers-direct3d-12/src/device.rs	int	Device<B>::clear_storage	3
 code	crates/wcontainers-direct3d-12/src/device.rs	int	Device<B>::clear_storage	4
 code	crates/wcontainers-direct3d-12/src/device.rs	int	Device<B>::clear_storage	4
-code	crates/wcontainers-direct3d-12/src/device.rs	int	Device<B>::clear_storage	4
-code	crates/wcontainers-direct3d-12/src/device.rs	int	Device<B>::clear_storage	5
-code	crates/wcontainers-direct3d-12/src/device.rs	int	Device<B>::clear_storage	8
 code	crates/wcontainers-direct3d-12/src/device.rs	int	Device<B>::counting_program	32
 code	crates/wcontainers-direct3d-12/src/device.rs	int	Device<B>::create_graphics_pipeline	3
 code	crates/wcontainers-direct3d-12/src/device.rs	int	Device<B>::create_graphics_pipeline	32
@@ -2129,30 +2125,16 @@ code	crates/wcontainers-direct3d-12/src/device.rs	str	Replay<B>::draw::macro_rul
 code	crates/wcontainers-direct3d-12/src/device.rs	str	Replay<B>::draw::macro_rules! call	"a made program"
 code	crates/wcontainers-direct3d-12/src/device/alias.rs	int	Device<B>::alias_copy	4
 code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::buffer_view	4
-code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::constant_buffer	16
 code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::note_clamp	128
 code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::null	0b1111
-code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::null	16
-code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::null	16
 code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::null	5
-code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::resolve	16
 code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::sampler	16
 code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::shader_resource	0b1111
-code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::shader_resource	10
 code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::shader_resource	22
-code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::shader_resource	4
 code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::shader_resource	47
-code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::shader_resource	5
 code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::shader_resource	6
 code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::shader_resource	6
 code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::shader_resource	6
-code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::shader_resource	6
-code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::shader_resource	7
-code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::shader_resource	8
-code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::shader_resource	9
-code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::storage_texture	4
-code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::storage_texture	5
-code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::storage_texture	8
 code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::view_counter	4
 code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	Device<B>::view_counter	4
 code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	locate	12
@@ -2281,11 +2263,7 @@ code	crates/wcontainers-direct3d-12/src/device/statistics.rs	str	Device<B>::pixe
 code	crates/wcontainers-direct3d-12/src/device/statistics.rs	str	counting_program	"@builtin(sample_index) i: u32"
 code	crates/wcontainers-direct3d-12/src/device/statistics.rs	str	counting_program	"@group({HELPER_SET}) @binding({COUNTER_BINDING})\nvar<storage, read_write> count: array<atomic<u32>, 2>;\n@fragment fn main({input}) {{\n    if atomicAdd(&coun… #c22bca51eb9f9f40
 code	crates/wcontainers-direct3d-12/src/device/through.rs	int	Device<B>::texels_through	256
-code	crates/wcontainers-direct3d-12/src/device/through.rs	int	Device<B>::texels_through	3
-code	crates/wcontainers-direct3d-12/src/device/through.rs	int	Device<B>::texels_through	4
-code	crates/wcontainers-direct3d-12/src/device/through.rs	int	Device<B>::texels_through	5
 code	crates/wcontainers-direct3d-12/src/device/through.rs	int	Device<B>::texels_through	64
-code	crates/wcontainers-direct3d-12/src/device/through.rs	int	Device<B>::texels_through	8
 code	crates/wcontainers-direct3d-12/src/device/through.rs	str	Device<B>::texels_through	"a storage texture read through a buffer at a slot past 63"
 code	crates/wcontainers-direct3d-12/src/dxbc.rs	bytestr	chunk	b"DXBC"
 code	crates/wcontainers-direct3d-12/src/dxbc.rs	bytestr	program	b"SHDR"
@@ -2495,10 +2473,6 @@ code	crates/wcontainers-direct3d-12/src/state.rs	int	compare	7
 code	crates/wcontainers-direct3d-12/src/state.rs	int	compare	8
 code	crates/wcontainers-direct3d-12/src/state.rs	int	in_program	4
 code	crates/wcontainers-direct3d-12/src/state.rs	int	in_program	5
-code	crates/wcontainers-direct3d-12/src/state.rs	int	input_topology	10
-code	crates/wcontainers-direct3d-12/src/state.rs	int	input_topology	11
-code	crates/wcontainers-direct3d-12/src/state.rs	int	input_topology	12
-code	crates/wcontainers-direct3d-12/src/state.rs	int	input_topology	13
 code	crates/wcontainers-direct3d-12/src/state.rs	int	input_topology	3
 code	crates/wcontainers-direct3d-12/src/state.rs	int	input_topology	32
 code	crates/wcontainers-direct3d-12/src/state.rs	int	input_topology	33
@@ -2537,8 +2511,6 @@ code	crates/wcontainers-direct3d-12/src/state.rs	int	sampler_state	6
 code	crates/wcontainers-direct3d-12/src/state.rs	int	sampler_state	7
 code	crates/wcontainers-direct3d-12/src/state.rs	int	sampler_state	9
 code	crates/wcontainers-direct3d-12/src/state.rs	int	sampler_state	9
-code	crates/wcontainers-direct3d-12/src/state.rs	int	staged_only	10
-code	crates/wcontainers-direct3d-12/src/state.rs	int	staged_only	13
 code	crates/wcontainers-direct3d-12/src/state.rs	int	staged_only	33
 code	crates/wcontainers-direct3d-12/src/state.rs	int	staged_only	64
 code	crates/wcontainers-direct3d-12/src/state.rs	int	static_sampler	3
@@ -2556,8 +2528,6 @@ code	crates/wcontainers-direct3d-12/src/state.rs	int	stencil_op	5
 code	crates/wcontainers-direct3d-12/src/state.rs	int	stencil_op	6
 code	crates/wcontainers-direct3d-12/src/state.rs	int	stencil_op	7
 code	crates/wcontainers-direct3d-12/src/state.rs	int	stencil_op	8
-code	crates/wcontainers-direct3d-12/src/state.rs	int	topology	10
-code	crates/wcontainers-direct3d-12/src/state.rs	int	topology	13
 code	crates/wcontainers-direct3d-12/src/state.rs	int	topology	3
 code	crates/wcontainers-direct3d-12/src/state.rs	int	topology	33
 code	crates/wcontainers-direct3d-12/src/state.rs	int	topology	4

@@ -1022,8 +1022,8 @@ impl<B: Backend> Device<B> {
         };
         let vs = self.convert(desc.vs, ShaderStage::Vertex, vs_key.clone())?;
         // Cull distances, which the back ends lack, are drawn through the stage helper.
-        let staged =
-            has_geometry || desc.stream_output.is_some() || geometry::writes_cull_distances(&vs);
+        let culled = !has_geometry && geometry::writes_cull_distances(&vs);
+        let staged = has_geometry || desc.stream_output.is_some() || culled;
         let vertex_formats = match staged {
             true => None,
             false => {
@@ -1092,10 +1092,10 @@ impl<B: Backend> Device<B> {
         let mut bindings = match &made {
             Some(m) => {
                 // Without a geometry stage the draw after the stream output binds the vertex
-                // stage's sets too.
-                let stages = match m.shader {
-                    Some(_) => StageSet::COMPUTE,
-                    None => StageSet::COMPUTE | StageSet::VERTEX,
+                // stage's sets too; after culling, the pass-through draws.
+                let stages = match m.shader.is_some() || culled {
+                    true => StageSet::COMPUTE,
+                    false => StageSet::COMPUTE | StageSet::VERTEX,
                 };
                 let mut b = bind::stage_bindings(&m.vertex, bind::VERTEX, stages);
                 if let Some(shader) = &m.shader {
@@ -1190,7 +1190,7 @@ impl<B: Backend> Device<B> {
                 *p = self.convert(desc.ps, ShaderStage::Fragment, key.clone())?;
             }
         }
-        let vs_shader = match made.as_ref().filter(|m| m.shader.is_some()) {
+        let vs_shader = match made.as_ref().filter(|m| m.shader.is_some() || culled) {
             Some(geometry::Made {
                 domain: Some(domain),
                 late: None,
