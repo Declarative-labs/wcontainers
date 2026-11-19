@@ -1,7 +1,7 @@
 //! The versions of the rules, one entry each saying what that version gates beyond the one before. The
-//! baseline may gain lines only at a change where this list is longer than at the baseline's previous
-//! change, and only for literals that were already in the tree (see the history module). Every change of
-//! the rules that finds more appends an entry here.
+//! baseline may gain lines only at a change where this list is longer than at its first parent, or right
+//! after a merge that made it longer, and only for literals that were already in the tree (see the
+//! history module). Every change of the rules that finds more appends an entry here.
 
 pub const RULES: &[&str] = &[
     "the rule of docs/literals.md as the literals track's milestone L1 left it",

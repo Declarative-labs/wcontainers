@@ -8,8 +8,9 @@
 //! side, is listed by every run, so that none passes unseen.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use crate::baseline::{self, Keys};
 
@@ -38,6 +39,11 @@ const ADDED_FILTER: &str = "--diff-filter=A";
 const CHANGE_FORMAT: &str = "--format=%H %P";
 const PARENTS_FORMAT: &str = "--format=%P";
 const ONE: &str = "-1";
+/// Shows the named commits only, not their history.
+const NO_WALK: &str = "--no-walk=unsorted";
+const BATCH: &str = "--batch";
+const BLOB: &str = "blob";
+const LINE_END: u8 = b'\n';
 const PATCH_FORMAT: &str = "--format=commit %H";
 const COMMIT_PREFIX: &str = "commit ";
 const PATHS: &str = "--";
@@ -230,6 +236,78 @@ impl Walker<'_> {
         Ok(self.parents(parent)?.len() > 1 && self.steps(parent)?)
     }
 
+    /// Each revision's parents, in one call.
+    fn parents_of(&self, revisions: &[String]) -> Result<HashMap<String, Vec<String>>, String> {
+        if revisions.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut args = vec![LOG, NO_WALK, CHANGE_FORMAT];
+        args.extend(revisions.iter().map(String::as_str));
+        Ok(text(self.root, &args)?
+            .lines()
+            .filter_map(|l| {
+                let mut ids = l.split_whitespace().map(String::from);
+                Some((ids.next()?, ids.collect()))
+            })
+            .collect())
+    }
+
+    /// How many versions the rules have at each revision, read in one call; a revision without the
+    /// rules file is left out.
+    fn rules_of(&self, revisions: &[String]) -> Result<HashMap<String, usize>, String> {
+        let Some(rules) = &self.literals.rules else {
+            return Ok(HashMap::new());
+        };
+        let input: String = revisions
+            .iter()
+            .map(|r| format!("{r}{IN_REVISION}{rules}\n"))
+            .collect();
+        let mut child = Command::new(GIT)
+            .arg(NO_REPLACE)
+            .arg(GIT_IN)
+            .arg(self.root)
+            .args([CAT_FILE, BATCH])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("cannot run git: {e}"))?;
+        // Written from another thread, so that a full output pipe cannot stall the input.
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| format!("{GIT} {CAT_FILE} has no input"))?;
+        let writer = std::thread::spawn(move || stdin.write_all(input.as_bytes()));
+        let out = child
+            .wait_with_output()
+            .map_err(|e| format!("{GIT} {CAT_FILE}: {e}"))?;
+        writer
+            .join()
+            .map_err(|_| format!("{GIT} {CAT_FILE}: the input thread failed"))?
+            .map_err(|e| format!("{GIT} {CAT_FILE}: {e}"))?;
+        let mut versions = HashMap::new();
+        let mut rest = out.stdout.as_slice();
+        for revision in revisions {
+            let Some(end) = rest.iter().position(|b| *b == LINE_END) else {
+                break;
+            };
+            let header = String::from_utf8_lossy(&rest[..end]).into_owned();
+            rest = &rest[end + 1..];
+            let size = match header.split_whitespace().collect::<Vec<_>>().as_slice() {
+                [_, BLOB, size] => size.parse::<usize>().ok(),
+                _ => None,
+            };
+            if let Some(size) = size {
+                let body = rest.get(..size).unwrap_or(rest);
+                versions.insert(
+                    revision.clone(),
+                    crate::rules::version(&String::from_utf8_lossy(body)),
+                );
+                rest = rest.get(size + 1..).unwrap_or_default();
+            }
+        }
+        Ok(versions)
+    }
+
     /// The literal a baseline line stands for was in the tree at one of these revisions.
     fn was_there(&mut self, revisions: &[String], line: &str) -> Result<bool, String> {
         let Some((path, key)) = (self.literals.of_line)(line) else {
@@ -394,16 +472,40 @@ impl Walker<'_> {
         };
         let arrived = started && changes.first().is_some_and(|c| c.parents.len() > 1);
         let mut allowed = Vec::new();
+        // The versions of the rules at every change, its first parent, and that parent's first parent
+        // when it is a merge: read in two or three calls, whatever the length of the chain.
+        let firsts: Vec<String> = changes
+            .iter()
+            .filter_map(|c| c.parents.first().cloned())
+            .collect();
+        let parents = self.parents_of(&firsts)?;
+        let mut revisions: Vec<String> = changes.iter().map(|c| c.commit.clone()).collect();
+        revisions.extend(firsts.iter().cloned());
+        revisions.extend(
+            parents
+                .values()
+                .filter(|p| p.len() > 1)
+                .filter_map(|p| p.first().cloned()),
+        );
+        revisions.sort();
+        revisions.dedup();
+        let versions = self.rules_of(&revisions)?;
+        let version = |r: &str| versions.get(r).copied().unwrap_or_default();
+        let steps = |commit: &str, first: Option<&String>| {
+            first.is_some_and(|f| version(commit) > version(f))
+        };
         for (i, change) in changes.iter().enumerate() {
+            let first = change.parents.first();
             if started && i == usize::default() {
                 allowed.push((change.commit.clone(), AT_START, None));
             } else if arrived && i == 1 {
                 allowed.push((change.commit.clone(), AFTER_ARRIVAL, None));
-            } else if self.steps(&change.commit)?
-                || match change.parents.first() {
-                    Some(first) => self.after_merge_of_rules(first)?,
-                    None => false,
-                }
+            } else if steps(&change.commit, first)
+                || first.is_some_and(|f| {
+                    parents
+                        .get(f)
+                        .is_some_and(|p| p.len() > 1 && steps(f, p.first()))
+                })
             {
                 // What the change may add was in the tree of a parent: a side it merges, or the
                 // branch's own commit before it, which an init run before committing the merge that
