@@ -935,12 +935,14 @@ fn a_merge_into_the_branch_s_own_older_commit_opens_nothing() {
     }
 }
 
-/// A crate of its own with one constant.
+/// A crate of its own with one constant, laid out like crate `a`.
 fn crate_with(root: &Path, name: &str, constant: &str) {
-    let dir = root.join(format!("crates/{name}"));
-    std::fs::create_dir_all(dir.join("src")).expect("crate folder");
-    std::fs::write(dir.join(MANIFEST), format!("[package]\nname = {name:?}\n")).expect("manifest");
-    std::fs::write(dir.join("src/lib.rs"), constant).expect("library");
+    let lib = root.join(LIB.replacen("/a/", &format!("/{name}/"), 1));
+    let source = lib.parent().expect("source folder");
+    std::fs::create_dir_all(source).expect("crate folder");
+    let manifest = source.parent().expect("crate folder").join(MANIFEST);
+    std::fs::write(manifest, format!("[package]\nname = {name:?}\n")).expect("manifest");
+    std::fs::write(lib, constant).expect("library");
 }
 
 /// A merge that brings new rules can make a literal of the newer side gated through something of the
