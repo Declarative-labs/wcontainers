@@ -11,17 +11,23 @@ repository.workspace = true
 wcontainers-abi.workspace = true
 wcontainers-kernel = { path = "../wcontainers-kernel" }
 # What to run: the OCI runtime configuration, and the OCI image types it is made from.
-oci-spec = { version = "0.10.0", default-features = false, features = ["runtime", "image"] }
-serde_json = "1.0.154"
+oci-spec = { version = "0.10.0", default-features = false, features = ["runtime", "image"], optional = true }
+serde_json = { version = "1.0.154", optional = true }
 # The properties of a config.json the specification does not define, by path.
-serde_ignored = "0.1.14"
+serde_ignored = { version = "0.1.14", optional = true }
 # An image's layers and a plain tar of files.
-tar = "0.4.46"
-flate2 = "1.1.11"
+tar = { version = "0.4.46", optional = true }
+flate2 = { version = "1.1.11", optional = true }
 # Image blobs are checked against their digests.
-sha2 = "0.10.9"
+sha2 = { version = "0.10.9", optional = true }
 # The local system's randomness.
-getrandom = "0.3.4"
+getrandom = { version = "0.3.4", optional = true }
+
+[features]
+default = ["std"]
+# Containers, images and the local system. Without it only the loop is built, for a back end whose loop runs
+# where there is no standard library.
+std = ["dep:oci-spec", "dep:serde_json", "dep:serde_ignored", "dep:tar", "dep:flate2", "dep:sha2", "dep:getrandom"]
 
 [lints]
 workspace = true

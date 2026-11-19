@@ -1,23 +1,39 @@
 //! The runtime: one loop that drives the kernel, a back end that runs the guest's instructions
 //! ([`Execution`]) and what surrounds them ([`System`]). Both are type parameters, resolved at compile
 //! time; the loop knows no back end and no host.
+//!
+//! Without the `std` feature only the loop is built, for a back end whose loop runs where there is no
+//! standard library.
+
+#![cfg_attr(not(feature = "std"), no_std)]
 
 use core::ops::ControlFlow;
+#[cfg(feature = "std")]
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+#[cfg(feature = "std")]
 use std::sync::{Arc, Mutex, PoisonError};
 
 use wcontainers_abi::{Cpu, Exit, Host, Next, Resume, ThreadId, Warning};
 pub use wcontainers_kernel::Kernel;
 
+#[cfg(feature = "std")]
 mod container;
+#[cfg(feature = "std")]
 mod image;
+#[cfg(feature = "std")]
 mod spec;
+#[cfg(feature = "std")]
 mod system;
 
+#[cfg(feature = "std")]
 pub use container::{Container, Error, Executor, GuestMachine, Runtime, RuntimeSettings};
+#[cfg(feature = "std")]
 pub use image::Image;
+#[cfg(feature = "std")]
 pub use oci_spec;
+#[cfg(feature = "std")]
 pub use spec::{base_spec, spec_from_json};
+#[cfg(feature = "std")]
 pub use system::{LocalSystem, Warned};
 
 /// How a turn ends.
@@ -32,9 +48,11 @@ pub enum Turn {
 
 /// Ends a free turn from any host thread: raises the stop flag of the thread running, or of the next
 /// one to run when none runs.
+#[cfg(feature = "std")]
 #[derive(Clone, Default)]
 pub struct StopFlag(Arc<Raising>);
 
+#[cfg(feature = "std")]
 #[derive(Default)]
 struct Raising {
     raised: AtomicBool,
@@ -42,6 +60,7 @@ struct Raising {
     running: Mutex<usize>,
 }
 
+#[cfg(feature = "std")]
 impl StopFlag {
     pub fn raise(&self) {
         self.0.raised.store(true, Ordering::SeqCst);
@@ -163,6 +182,7 @@ pub trait System: Host {
     fn cpu_warning(&mut self, warning: Warning<'_>);
     /// The back end's stop flag, before the first turn, for a system that gives free turns; one that
     /// counts every turn needs none.
+    #[cfg(feature = "std")]
     fn stop_flag(&mut self, _flag: StopFlag) {}
 }
 
