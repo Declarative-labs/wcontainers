@@ -831,8 +831,11 @@ fn jump(out: &mut Out, op: BranchRegister, rn: Reg) {
     );
     let slot = Resume::Slot(Held::Register(SCRATCH));
     match op {
-        BranchRegister::Br => out.commit(encode::branch_register(form::BR, SCRATCH), slot),
-        BranchRegister::Ret => out.commit(encode::branch_register(form::RET, SCRATCH), slot),
+        // A return goes by `br` too until calls push the return address's slot (the call stub): a `ret` would be
+        // foreseen from a return-address stack that holds none of the guest's.
+        BranchRegister::Br | BranchRegister::Ret => {
+            out.commit(encode::branch_register(form::BR, SCRATCH), slot)
+        }
         BranchRegister::Blr => {
             out.build(Reg::X(LINK), return_address, slot);
             out.put(encode::branch_register(form::BR, SCRATCH));
