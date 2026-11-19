@@ -1,6 +1,6 @@
 [package]
 name = "wcontainers-wasmtime"
-description = "The WebAssembly back end of the wcontainers runtime: the translator's output run by wasmtime behind the kernel."
+description = "The WebAssembly executor of the wcontainers runtime: the translator's output run by wasmtime behind the kernel."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

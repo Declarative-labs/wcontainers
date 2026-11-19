@@ -1,6 +1,6 @@
-//! The runtime: one loop that drives the kernel, a back end that runs the guest's instructions
+//! The runtime: one loop that drives the kernel, an executor that runs the guest's instructions
 //! ([`Execution`]) and what surrounds them ([`System`]). Both are type parameters, resolved at compile
-//! time; the loop knows no back end and no host.
+//! time; the loop knows no executor and no host.
 
 use core::ops::ControlFlow;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -34,7 +34,7 @@ pub struct TerminalSize {
 /// How a turn ends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Turn {
-    /// The back end counts progress and ends the turn after `limit` units, or never with no limit.
+    /// The executor counts progress and ends the turn after `limit` units, or never with no limit.
     Counted { limit: Option<u64> },
     /// Nothing is counted: the turn ends at the guest's next stop check after the system raises the
     /// [`StopFlag`].
@@ -62,12 +62,12 @@ impl StopFlag {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         if *running != 0 {
-            // SAFETY: the back end keeps the word valid while it is entered (`entered`).
+            // SAFETY: the executor keeps the word valid while it is entered (`entered`).
             unsafe { &*(*running as *const AtomicU32) }.store(1, Ordering::SeqCst);
         }
     }
 
-    /// For the back end: a thread whose stop flag is `flag` runs until [`StopFlag::left`]; raised at once
+    /// For the executor: a thread whose stop flag is `flag` runs until [`StopFlag::left`]; raised at once
     /// if a raise is waiting.
     ///
     /// # Safety
@@ -84,7 +84,7 @@ impl StopFlag {
         }
     }
 
-    /// For the back end: no thread runs.
+    /// For the executor: no thread runs.
     pub fn left(&self) {
         *self
             .0
@@ -93,13 +93,13 @@ impl StopFlag {
             .unwrap_or_else(PoisonError::into_inner) = 0;
     }
 
-    /// For the back end: whether it was raised since this was last asked.
+    /// For the executor: whether it was raised since this was last asked.
     pub fn take(&self) -> bool {
         self.0.raised.swap(false, Ordering::SeqCst)
     }
 }
 
-/// What a back end does with its thread once an exit has been answered.
+/// What an executor does with its thread once an exit has been answered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Carry {
     /// Carry on in place with this resume, for this next turn.
@@ -108,7 +108,7 @@ pub enum Carry {
     Leave(Leaving),
 }
 
-/// Why a thread leaves `run`, for a back end that counts leaving as a slow path.
+/// Why a thread leaves `run`, for an executor that counts leaving as a slow path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Leaving {
     /// No thread can run until an event arrives or time passes.
@@ -123,7 +123,7 @@ pub enum Leaving {
     SystemAsked,
 }
 
-/// What a back end calls while its thread runs. The loop implements it.
+/// What an executor calls while its thread runs. The loop implements it.
 pub trait Answer {
     /// The thread came back with `exit`, having made `progress` since its last exit. `cpu` is the back
     /// end itself, handed on to the kernel.
@@ -131,13 +131,13 @@ pub trait Answer {
     /// The guest reads the clock without a system call, having made `progress` since its last exit:
     /// the system's monotonic clock, after the system is told the progress.
     fn clock(&mut self, progress: u64) -> u64;
-    /// A slow path the back end took.
+    /// A slow path the executor took.
     fn warn(&mut self, warning: Warning<'_>);
 }
 
-/// The back end: runs guest threads behind the kernel's [`Cpu`] side.
+/// The executor: runs guest threads behind the kernel's [`Cpu`] side.
 pub trait Execution: Cpu + Sized {
-    /// What the back end cannot run at all.
+    /// What the executor cannot run at all.
     type Failure;
     /// Runs a thread, handing every exit to `answer`, until `answer` says leave.
     fn run(
@@ -147,7 +147,7 @@ pub trait Execution: Cpu + Sized {
         turn: Turn,
         answer: &mut dyn Answer,
     ) -> Result<(), Self::Failure>;
-    /// A new back end of the same kind holding the same memories, blocks of shared pages and thread
+    /// A new executor of the same kind holding the same memories, blocks of shared pages and thread
     /// blocks under the same handles, with nothing translated or cached, for a copy of this process
     /// made at a save.
     fn restored(&self) -> Self;
@@ -170,12 +170,12 @@ pub trait System: Host + Sync {
     /// Nothing can run: waits for an event, or until the time on the monotonic clock, and hands it to
     /// the kernel.
     fn idle(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu, until_nanoseconds: Option<u64>);
-    /// A slow path of the back end, apart from the kernel's warnings.
+    /// A slow path of the executor, apart from the kernel's warnings.
     fn cpu_warning(&self, warning: Warning<'_>);
     /// Names the ends of the first process's descriptors 0 to 2, whose other sides the system holds:
     /// a terminal of this size when the configuration asks for one, else pipes.
     fn standard(&self, terminal: Option<TerminalSize>) -> Standard;
-    /// The back end's stop flag, before the first turn, for a system that gives free turns; one that
+    /// The executor's stop flag, before the first turn, for a system that gives free turns; one that
     /// counts every turn needs none.
     fn stop_flag(&self, _flag: StopFlag) {}
     /// Serves a directory of the host as the kernel's file backend, for a bind mount of the

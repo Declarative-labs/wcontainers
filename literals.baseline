@@ -7461,8 +7461,6 @@ code	crates/wcontainers-wasmtime/build.rs	str	main	"cargo:rustc-env=WCONTAINERS_
 code	crates/wcontainers-wasmtime/build.rs	str	main	"wcontainers-guest-cpu"
 code	crates/wcontainers-wasmtime/build.rs	str	main	"wcontainers-translator"
 code	crates/wcontainers-wasmtime/build.rs	str	main	"wcontainers-translator"
-code	crates/wcontainers-wasmtime/src/bin/wcon.rs	str	run	"back end"
-code	crates/wcontainers-wasmtime/src/bin/wcon.rs	str	run	"kernel"
 code	crates/wcontainers-wasmtime/src/lib.rs	int	code_line_changed	63
 code	crates/wcontainers-wasmtime/src/lib.rs	int	code_line_changed	64
 code	crates/wcontainers-wasmtime/src/lib.rs	int	hooks	3

@@ -33,14 +33,14 @@ impl Answer for Recorder {
     }
 }
 
-/// Runs the program on a new back end of `compiler`; x0 at its system call and where its code came
+/// Runs the program on a new executor of `compiler`; x0 at its system call and where its code came
 /// from.
 fn run(compiler: std::sync::Arc<Compiler<Arm64>>, look_ahead: LookAhead) -> (u64, Origin) {
     let (value, origin, _) = run_warned(compiler, look_ahead);
     (value, origin)
 }
 
-/// As `run`, with the back end's warnings.
+/// As `run`, with the executor's warnings.
 fn run_warned(
     compiler: std::sync::Arc<Compiler<Arm64>>,
     look_ahead: LookAhead,

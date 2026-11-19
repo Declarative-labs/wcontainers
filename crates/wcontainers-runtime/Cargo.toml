@@ -1,6 +1,6 @@
 [package]
 name = "wcontainers-runtime"
-description = "Runs a Linux container: drives the wcontainers kernel, a back end that runs the guest's instructions, and an outside."
+description = "Runs a Linux container: drives the wcontainers kernel, an executor that runs the guest's instructions, and the system the embedder supplies."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

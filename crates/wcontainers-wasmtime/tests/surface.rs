@@ -230,7 +230,7 @@ fn ours(spec: &Spec, image: &Image, cache: Option<PathBuf>) -> (Outcome, Vec<(bo
     let mut container = container(spec, image, cache, &stdout, &stderr);
     let Ok(Ending::Finished { status }) = container.run();
     let origins = container
-        .back_end()
+        .executor()
         .translated()
         .iter()
         .map(|t| (t.at_run_time, t.origin))

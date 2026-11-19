@@ -18,7 +18,7 @@ pub struct RuntimeConfig {
     pub cache: Option<PathBuf>,
 }
 
-/// An executor: the back end the runtime makes for each container.
+/// What runs a container's guest threads; the runtime makes one for each container.
 pub trait Executor: Execution {
     /// What the containers of one runtime share, such as compiled translations.
     type Shared;
@@ -35,7 +35,7 @@ pub trait Executor: Execution {
         translator_config: &Self::TranslatorConfig,
         offer: &Self::Offer,
     ) -> Self;
-    /// What ends a free turn of this back end.
+    /// What ends a free turn of this executor.
     fn stop_flag(&self) -> StopFlag;
 }
 
@@ -82,7 +82,7 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// Makes containers on one kind of back end.
+/// Makes containers on one kind of executor.
 pub struct Runtime<E: Executor> {
     shared: E::Shared,
 }
@@ -109,7 +109,7 @@ impl<E: Executor> Runtime<E> {
             && architecture != E::ARCHITECTURE
         {
             return Err(Error::Image(format!(
-                "it is for {architecture}; this back end runs {}",
+                "it is for {architecture}; this executor runs {}",
                 E::ARCHITECTURE
             )));
         }
@@ -209,7 +209,7 @@ impl<E: Executor, S: System> Container<E, S> {
         &mut self.system
     }
 
-    pub fn back_end(&self) -> &E {
+    pub fn executor(&self) -> &E {
         &self.cpu
     }
 }

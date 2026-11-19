@@ -1,6 +1,6 @@
-//! The WebAssembly back end of the runtime: the translator's output for a guest `G`, run by wasmtime,
+//! The WebAssembly executor of the runtime: the translator's output for a guest `G`, run by wasmtime,
 //! behind the kernel's `Cpu` side. One store per process; a thread's instances are made at its first
-//! run; code is translated at first use and kept in a cache shared by every back end of a [`Compiler`].
+//! run; code is translated at first use and kept in a cache shared by every executor of a [`Compiler`].
 
 mod memory;
 pub mod starts;
@@ -37,7 +37,7 @@ use memory::SLOT_BYTES;
 pub use starts::Sources;
 pub use wcontainers_translator::{BOUND, LookAhead, Optimise};
 
-/// The back end's own slow paths, besides the translator's [`Reason`]s.
+/// The executor's own slow paths, besides the translator's [`Reason`]s.
 pub mod reason {
     /// Progress is counted by stop checks passed until the translator emits the guest's own count.
     pub const PROGRESS_BY_STOP_CHECKS: &str = "progress counted by stop checks";
@@ -68,7 +68,7 @@ pub mod reason {
     /// A file of the cache's directory could not be read whole or wasmtime refused it, so its
     /// translation is made again; the detail is the host's error number (`u64::MAX` when it gave none).
     pub const TRANSLATION_REFUSED: &str = "translation in the cache's directory refused";
-    /// The guest read the counter on a back end brought back from a save, whose clock hook answers the
+    /// The guest read the counter on an executor brought back from a save, whose clock hook answers the
     /// system's monotonic clock without the kernel's offset until the kernel makes its clock public.
     pub const COUNTER_WITHOUT_KERNEL_OFFSET: &str = "counter read without the kernel's offset";
     /// A new thread found every thread block of its process's state memory in use, so the kernel
@@ -80,7 +80,7 @@ pub mod reason {
     pub const NOT_A_CALL: u64 = u64::MAX;
 }
 
-/// What every back end of one engine shares: the engine, the thread module, the pool translation and
+/// What every executor of one engine shares: the engine, the thread module, the pool translation and
 /// compiling run in, the probe's answer, the compiled translations kept in memory, and the directory
 /// they are kept in between runs.
 pub struct Compiler<G: Guest> {
@@ -95,7 +95,7 @@ pub struct Compiler<G: Guest> {
     directory: Option<PathBuf>,
 }
 
-/// Where a translation a back end used came from.
+/// Where a translation an executor used came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Origin {
     /// Compiled modules kept in memory.
@@ -109,7 +109,7 @@ pub enum Origin {
 /// Names the build of the translator and its guests, made from their sources by the build script.
 const TRANSLATOR_BUILD: &str = env!("WCONTAINERS_TRANSLATOR_BUILD");
 
-/// The back end and its output's memory widths (guest memory 64 bit, state memory 32 bit), as the
+/// The executor and its output's memory widths (guest memory 64 bit, state memory 32 bit), as the
 /// cache key names them.
 fn output_form() -> String {
     format!(
@@ -168,7 +168,7 @@ impl<G: Guest> Compiler<G> {
         let engine = Engine::new(&config).expect("a wasmtime engine");
         let pool = rayon::ThreadPoolBuilder::new()
             .build()
-            .expect("the back end's pool");
+            .expect("the executor's pool");
         let thread_module = pool
             .install(|| Module::new(&engine, wcontainers_translator::thread_module::<G>()))
             .expect("the thread module");
@@ -197,7 +197,7 @@ impl<G: Guest> Compiler<G> {
     fn file(&self, directory: &Path, key: &Key) -> PathBuf {
         let mut hasher = blake3::Hasher::new();
         hasher.update(TRANSLATOR_BUILD.as_bytes());
-        // The back end, the guest, the host's answer, and the output's memory widths.
+        // The executor, the guest, the host's answer, and the output's memory widths.
         hasher.update(output_form().as_bytes());
         hasher.update(&(G::ID as u32).to_le_bytes());
         hasher.update(&G::host_key(self.host).to_le_bytes());
@@ -388,7 +388,7 @@ impl<G: Guest> Compiler<G> {
     }
 }
 
-/// A slow path the cache's directory took, for the back end to count: why, its detail and the time
+/// A slow path the cache's directory took, for the executor to count: why, its detail and the time
 /// it cost. The run goes on either way.
 struct CacheSlowPath {
     reason: &'static str,
@@ -407,7 +407,7 @@ impl<G: Guest> Drop for Compiler<G> {
     }
 }
 
-/// One translation a back end used: where, how, and what it cost.
+/// One translation an executor used: where, how, and what it cost.
 #[derive(Clone, Debug)]
 pub struct Translated {
     pub start: u64,
@@ -422,7 +422,7 @@ pub struct Translated {
     pub origin: Origin,
 }
 
-/// The WebAssembly back end for guest `G`.
+/// The WebAssembly executor for guest `G`.
 pub struct CpuSide<G: Guest> {
     compiler: Arc<Compiler<G>>,
     look_ahead: LookAhead,
@@ -464,7 +464,7 @@ struct Running {
     code_dropped: bool,
 }
 
-/// One guest process: its store, its memories and what the back end keeps about its pages and code.
+/// One guest process: its store, its memories and what the executor keeps about its pages and code.
 struct Process<G: Guest> {
     /// None while one of its threads runs.
     store: Option<Store<Data<G>>>,
@@ -505,12 +505,12 @@ const LOCK_SHARED: u8 = 1;
 /// the same memory, whose copy alone holds the writes until the copies are made.
 const LOCK_VIEW: u8 = 2;
 
-/// What the back end keeps about one guest page.
+/// What the executor keeps about one guest page.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Page {
     /// What the kernel last said the page allows.
     allows: Permissions,
-    /// The back end's write locks on it, by reason bit.
+    /// The executor's write locks on it, by reason bit.
     locks: u8,
     /// It may hold anything but zeros: given access or written since last zeroed.
     data: bool,
@@ -702,7 +702,7 @@ impl<G: Guest> CpuSide<G>
 where
     G: Guest<Block = RegisterBlock>,
 {
-    /// A back end translating at `look_ahead` for `optimise`, with the CPU features `offer` claims.
+    /// An executor translating at `look_ahead` for `optimise`, with the CPU features `offer` claims.
     pub fn new(
         compiler: Arc<Compiler<G>>,
         look_ahead: LookAhead,
@@ -786,12 +786,12 @@ where
         }
     }
 
-    /// Bytes of a thread's state. They are the state memory's, which is shared, not the back end's.
+    /// Bytes of a thread's state. They are the state memory's, which is shared, not the executor's.
     #[allow(clippy::mut_from_ref)]
     fn block_bytes(&self, memory: MemoryId, block_at: u32, length: usize) -> &mut [u8] {
         let process = self.process(memory);
         // SAFETY: inside the state memory's thread blocks; no guest thread runs or is in a hook that
-        // reads these bytes while the back end changes them.
+        // reads these bytes while the executor changes them.
         unsafe { std::slice::from_raw_parts_mut(process.state_base.add(block_at as usize), length) }
     }
 
@@ -1292,7 +1292,7 @@ where
         })
     }
 
-    /// Makes `into`, a new process, a copy of `source` (of this back end or another of the same guest):
+    /// Makes `into`, a new process, a copy of `source` (of this executor or another of the same guest):
     /// every page that may hold data copied exactly, the same pages' permissions, locks and blocks
     /// shown, and, with `code`, the same translations at the same slots. Threads are not copied.
     fn copy_from(&self, into: &mut Process<G>, source: &Process<G>, code: bool) {
@@ -1709,10 +1709,10 @@ fn instantiate<G: Guest>(
     Instance::new(&mut store, module, &imports).expect("an instance of a translated module")
 }
 
-/// The back end a hook's store belongs to.
+/// The executor a hook's store belongs to.
 fn side<'a, G: Guest>(caller: &Caller<'_, Data<G>>) -> &'a mut CpuSide<G> {
-    // SAFETY: set by `run` for the call in progress, which has given up its own use of the back end
-    // until the call returns; the running store is not inside the back end.
+    // SAFETY: set by `run` for the call in progress, which has given up its own use of the executor
+    // until the call returns; the running store is not inside the executor.
     unsafe { &mut *caller.data().side }
 }
 
@@ -2869,7 +2869,7 @@ mod tests {
     }
 
     /// A compiler copied into a fork of this process, where its pool's threads are not, is dropped
-    /// there whatever those threads were doing at the fork, as a save's copy drops the back end it
+    /// there whatever those threads were doing at the fork, as a save's copy drops the executor it
     /// was brought back from.
     #[test]
     fn a_compiler_copied_by_fork_is_dropped_there() {

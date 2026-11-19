@@ -1,5 +1,5 @@
 //! A counted turn ends after its progress however often the guest reads the clock, leaving `run`
-//! from a hook is counted by why, and a counter read on a back end brought back from a save is a
+//! from a hook is counted by why, and a counter read on an executor brought back from a save is a
 //! counted slow path. A free turn counts nothing and ends when another host thread raises the stop
 //! flag, or at once when it was raised before.
 
@@ -42,8 +42,8 @@ impl Answer for Recorder {
     }
 }
 
-/// Runs the spin for one counted turn, on a back end brought back from a save when `restored`; the
-/// back end's warnings.
+/// Runs the spin for one counted turn, on an executor brought back from a save when `restored`; the
+/// executor's warnings.
 fn spin(look_ahead: LookAhead, restored: bool) -> Vec<(String, u64)> {
     let mut cpu = CpuSide::<Arm64>::new(Compiler::new(None), look_ahead, Optimise::Speed, ());
     let memory = cpu.memory_new().unwrap();

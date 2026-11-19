@@ -21,7 +21,7 @@ use crate::files::Files;
 use crate::net::Network;
 use crate::{Execution, StopFlag, System, TerminalSize, Turn};
 
-/// A warning as the system keeps it: the kernel's or the back end's, by reason.
+/// A warning as the system keeps it: the kernel's or the executor's, by reason.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Warned {
     pub reason: String,
@@ -29,7 +29,7 @@ pub struct Warned {
     pub detail: u64,
     /// How many times so far, as the last warning counted.
     pub count: u64,
-    /// From the back end, not the kernel.
+    /// From the executor, not the kernel.
     pub cpu: bool,
 }
 
@@ -155,7 +155,7 @@ impl LocalSystem {
         }
     }
 
-    /// Every warning so far, the kernel's and the back end's.
+    /// Every warning so far, the kernel's and the executor's.
     pub fn warnings(&self) -> Vec<Warned> {
         self.state().warnings.clone()
     }

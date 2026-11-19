@@ -1,4 +1,4 @@
-//! Guest memories the back end maps itself and hands to wasmtime, and where things sit in a process's
+//! Guest memories the executor maps itself and hands to wasmtime, and where things sit in a process's
 //! state memory.
 
 use std::ffi::c_void;
@@ -253,7 +253,7 @@ const BLOCKS_BYTES: u64 = 15 << 20;
 /// Where things sit in a process's state memory, and the address ceiling that follows.
 #[derive(Clone, Copy, Debug)]
 pub struct Layout {
-    /// The addresses a process may use on this back end: guest memory, the permission table and the
+    /// The addresses a process may use on this executor: guest memory, the permission table and the
     /// array of slots all cover 0 to this.
     pub ceiling: u64,
     /// Bytes of one thread's state: its block and the CPU side's own words, a multiple of

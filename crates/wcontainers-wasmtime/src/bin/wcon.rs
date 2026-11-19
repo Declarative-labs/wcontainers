@@ -170,8 +170,11 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
         reason, count, cpu, ..
     } in container.system().warnings()
     {
-        let side = if cpu { "back end" } else { "kernel" };
-        eprintln!("wcon: {side}: {reason}: {count}");
+        if cpu {
+            eprintln!("wcon: executor: {reason}: {count}");
+        } else {
+            eprintln!("wcon: kernel: {reason}: {count}");
+        }
     }
     // As a shell reports it.
     Ok(if status & SIGNAL_BITS == 0 {
