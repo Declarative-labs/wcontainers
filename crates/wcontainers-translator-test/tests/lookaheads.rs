@@ -142,16 +142,12 @@ fn measure_bound<G: GuestTest>() {
                 best = (seconds, making.0, making.1);
             }
         }
-        let load = std::process::Command::new("sysctl")
-            .args(["-n", "vm.loadavg"])
-            .output()
-            .expect("sysctl");
         println!(
             "bench at {look_ahead:?}: {:.3} s, of which {:.3} s making {} pieces at run time (load {})",
             best.0,
             best.1,
             best.2,
-            String::from_utf8_lossy(&load.stdout).trim()
+            wcontainers_translator_test::programs::load()
         );
     }
 }

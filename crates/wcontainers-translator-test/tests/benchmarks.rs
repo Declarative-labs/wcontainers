@@ -14,7 +14,7 @@ use wcontainers_translator::{LookAhead, Omit, Optimise, translate};
 use wcontainers_translator_test::browser;
 use wcontainers_translator_test::guest::GuestTest;
 use wcontainers_translator_test::programs::{
-    Blob, Library, build_with, native, native_seconds, translated_omitting,
+    Blob, Library, build_with, load, native, native_seconds, translated_omitting,
 };
 use wcontainers_translator_test::runner::compile_time;
 use wcontainers_x86::X86_64;
@@ -66,14 +66,6 @@ fn variants() -> [(&'static str, Omit); 6] {
             },
         ),
     ]
-}
-
-fn load() -> String {
-    let output = std::process::Command::new("sysctl")
-        .args(["-n", "vm.loadavg"])
-        .output()
-        .expect("sysctl");
-    String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
 fn gzip(bytes: &[u8]) -> usize {

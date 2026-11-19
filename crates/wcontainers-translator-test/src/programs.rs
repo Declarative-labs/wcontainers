@@ -2,7 +2,7 @@
 
 use crate::guest::GuestTest;
 use crate::layout::initial_stack;
-use crate::reference::{BlobRan, BlobRequest, with_reference};
+use crate::reference::{BlobRan, BlobRequest, RUNNER_EXECUTABLE, with_reference};
 use crate::runner::{Fault, Machine, Stopped, Syscalls};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -502,6 +502,29 @@ pub fn reachable_memory<G: GuestTest>(machine: &mut Machine<G>, blob: &Blob) -> 
 
 /// The shortest of `runs` native runs of a blob on the reference, in seconds, each timed by the reference
 /// from making a child process to its end (so the reference's start-up is not counted).
+/// Linux's file of load averages.
+const LINUX_LOAD: &str = "/proc/loadavg";
+/// macOS's tool and name for them.
+const SYSCTL: &str = "sysctl";
+const MACOS_LOAD: &str = "vm.loadavg";
+/// sysctl's switch for the value alone.
+const VALUE_ONLY: &str = "-n";
+
+/// This machine's load averages, recorded beside every time.
+pub fn load() -> String {
+    if cfg!(target_os = "linux") {
+        return std::fs::read_to_string(LINUX_LOAD)
+            .expect("the load averages")
+            .trim()
+            .to_string();
+    }
+    let output = Command::new(SYSCTL)
+        .args([VALUE_ONLY, MACOS_LOAD])
+        .output()
+        .expect("sysctl");
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
 pub fn native_seconds<G: GuestTest>(blob: &Blob, runs: u32) -> f64 {
     on_reference::<G>(blob, runs.max(1)).seconds
 }
@@ -548,12 +571,10 @@ pub fn native_program<G: GuestTest>(executable: &[u8]) -> Ran {
 /// the guest's: it fails the case, never compares.
 fn runner_did_not_fail(ran: Result<BlobRan, String>) -> BlobRan {
     let ran = ran.unwrap_or_else(|e| panic!("the reference runner failed: {e}"));
+    let says = format!("{RUNNER_EXECUTABLE}{RUNNER_FAILED_AFTER_NAME}");
     assert!(
         !(ran.status == RUNNER_FAILED
-            && ran
-                .stderr
-                .windows(RUNNER_FAILED_SAYS.len())
-                .any(|w| w == RUNNER_FAILED_SAYS)),
+            && ran.stderr.windows(says.len()).any(|w| w == says.as_bytes())),
         "the reference runner failed: {}",
         String::from_utf8_lossy(&ran.stderr)
     );
@@ -562,4 +583,4 @@ fn runner_did_not_fail(ran: Result<BlobRan, String>) -> BlobRan {
 
 /// How the reference runner ends when it fails itself, and what it writes on stderr before.
 const RUNNER_FAILED: i32 = 101;
-const RUNNER_FAILED_SAYS: &[u8] = b"wcontainers-reference: ";
+const RUNNER_FAILED_AFTER_NAME: &str = ": ";

@@ -1,8 +1,8 @@
 // Runs one flat blob in Chrome through the browser runner and prints what happened as JSON.
 //
 // Usage: node run.mjs <case directory>. The directory holds case.json (where things go in guest memory, and
-// how many times to run the program in the same instances), blob.bin, stack.bin and translator.wasm. Chrome is the one installed on the machine; playwright-core comes
-// from the Nix shell (WC_PLAYWRIGHT_CORE).
+// how many times to run the program in the same instances), blob.bin, stack.bin and translator.wasm. Chrome is the one installed on the machine, or the executable
+// WC_CHROME_EXECUTABLE names; playwright-core comes from the Nix shell (WC_PLAYWRIGHT_CORE).
 
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
@@ -50,8 +50,10 @@ const origin = `http://127.0.0.1:${server.address().port}`;
 
 // V8 flags, only for measuring what the engine does (such as which compiler runs the code).
 const jsFlags = process.env.WC_CHROME_JS_FLAGS;
+// A Chrome kept outside the system's place, for a machine whose installed Chrome is too old.
+const executablePath = process.env.WC_CHROME_EXECUTABLE;
 const browser = await chromium.launch({
-  channel: "chrome",
+  ...(executablePath ? { executablePath } : { channel: "chrome" }),
   headless: true,
   args: jsFlags ? [`--js-flags=${jsFlags}`] : [],
 });

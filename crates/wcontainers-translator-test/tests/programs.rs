@@ -512,16 +512,9 @@ fn switching_speed<G: GuestTest>() {
 /// Times a blob natively and at full in wasmtime and (unless `WC_BENCH_CHROME=0`) Chrome, best of
 /// `WC_BENCH_RUNS` (default 3), checking each run's result; prints and returns the seconds.
 fn time_against_native<G: GuestTest>(name: &str, blob: &Blob) -> (f64, f64, Option<f64>) {
-    use wcontainers_translator_test::programs::{native_seconds, translated_omitting};
+    use wcontainers_translator_test::programs::{load, native_seconds, translated_omitting};
     let runs = std::env::var("WC_BENCH_RUNS").map_or(3, |v| v.parse().unwrap());
     let chrome = std::env::var("WC_BENCH_CHROME").map_or(true, |v| v != "0");
-    let load = || {
-        let output = std::process::Command::new("sysctl")
-            .args(["-n", "vm.loadavg"])
-            .output()
-            .expect("sysctl");
-        String::from_utf8_lossy(&output.stdout).trim().to_string()
-    };
     let theirs = native::<G>(blob);
     let native = native_seconds::<G>(blob, runs);
     let mut best = f64::MAX;

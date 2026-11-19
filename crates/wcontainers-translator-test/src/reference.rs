@@ -33,6 +33,10 @@ pub const IMAGE: &str =
 const SSH_TRIES: u32 = 5;
 /// How many times a request whose connection was lost is sent again over a new one before the run fails.
 const RECONNECTS: u32 = 5;
+/// The runner's executable, as its package names it.
+pub const RUNNER_EXECUTABLE: &str = "wcontainers-reference";
+/// The runner's command that answers requests on its standard input.
+const SERVE: &str = "serve";
 
 fn workspace() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -74,7 +78,7 @@ pub fn build(target: &Target) -> (PathBuf, String) {
         .join(std::process::id().to_string())
         .join(target.rust_target);
     std::fs::create_dir_all(&own).unwrap();
-    let copy = own.join("wcontainers-reference");
+    let copy = own.join(RUNNER_EXECUTABLE);
     std::fs::copy(
         target_directory()
             .join(target.rust_target)
@@ -141,7 +145,7 @@ fn upload(
         has(&remote),
         has(&part)
     );
-    let file = std::fs::File::open(local.join("wcontainers-reference")).unwrap();
+    let file = std::fs::File::open(local.join(RUNNER_EXECUTABLE)).unwrap();
     let output = ssh(host)
         .arg(script)
         .stdin(file)
@@ -228,10 +232,15 @@ pub struct Reference {
 }
 
 impl Reference {
-    /// Start a runner for `target`: in Docker here, or over SSH, retried while the machine cannot be
-    /// reached. Fails with a message naming the variable when the host is needed and not set.
+    /// Start a runner for `target`: here, directly on Linux and in Docker elsewhere, or over SSH, retried
+    /// while the machine cannot be reached. Fails with a message naming the variable when the host is needed
+    /// and not set.
     pub fn start(target: &Target) -> Self {
         let (directory, hash) = build(target);
+        if local(target) && cfg!(target_os = "linux") {
+            let mut command = Command::new(directory.join(RUNNER_EXECUTABLE));
+            return Self::connect(command.arg(SERVE), target).expect("the reference here");
+        }
         if local(target) {
             let mut command = Command::new("docker");
             command
@@ -241,7 +250,7 @@ impl Reference {
                 .arg(container_name("reference"))
                 .arg("-v")
                 .arg(format!("{}:/r:ro", directory.display()))
-                .args([IMAGE, "/r/wcontainers-reference", "serve"]);
+                .args([IMAGE, "/r/wcontainers-reference", SERVE]);
             return Self::connect(&mut command, target).expect("the reference in Docker");
         }
         let host = std::env::var(target.reference_host).unwrap_or_else(|_| {
@@ -256,7 +265,7 @@ impl Reference {
                 std::thread::sleep(std::time::Duration::from_secs(10));
             }
             let started = upload(&host, target.remote_directory, &directory, &hash)
-                .and_then(|remote| Self::connect(ssh(&host).arg(remote).arg("serve"), target));
+                .and_then(|remote| Self::connect(ssh(&host).arg(remote).arg(SERVE), target));
             match started {
                 Ok(reference) => return reference,
                 Err(e) => error = e,
