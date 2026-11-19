@@ -1509,6 +1509,72 @@ pub fn two_devices_on_one_thread_keep_their_own_objects<H: Host>() {
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
 
+/// Two colours from one module, for shaders of equal text made more than once.
+const COLOURS: &str = "
+@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(f32((v & 1u) << 2u) - 1.0, f32((v & 2u) << 1u) - 1.0, 0.0, 1.0);
+}
+@fragment fn red() -> @location(0) vec4<f32> { return vec4<f32>(1.0, 0.0, 0.0, 1.0); }
+@fragment fn green() -> @location(0) vec4<f32> { return vec4<f32>(0.0, 1.0, 0.0, 1.0); }
+";
+
+/// Programs of shaders of equal text each draw, whichever of them was destroyed first, and draw
+/// again when made after the last was destroyed.
+pub fn programs_of_equal_shaders_draw_until_each_is_destroyed<H: Host>() {
+    use crate::kit;
+    let mut b = H::make();
+    let k = kit::Kit::new(&mut b);
+    let f = Format::Rgba8Unorm;
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let side = 4;
+    let t = kit::texture(&mut b, TextureDimension::D2, f, [side, side, 1], 1, usage, false);
+    let view = kit::target(&mut b, &t, f, 0, 0);
+    let viewports = [kit::viewport(0.0, 0.0, side as f32, side as f32)];
+    let make = |b: &mut H::Backend, fs: &str| {
+        let module = |entry, stage| ShaderModule::from_wgsl(COLOURS, entry, stage).expect("WGSL");
+        let v = b
+            .create_shader(&module("vs", ShaderStage::Vertex))
+            .expect("create_shader");
+        let f = b
+            .create_shader(&module(fs, ShaderStage::Fragment))
+            .expect("create_shader");
+        let p = b
+            .create_program(&Program::Render {
+                vertex: &v,
+                fragment: Some(&f),
+            })
+            .expect("create_program");
+        (v, f, p)
+    };
+    let draw = |b: &mut H::Backend, p: &<H::Backend as Backend>::Program| {
+        b.begin_pass(&kit::pass(&view, [0; 4], None));
+        b.draw(&kit::call(&k, p, None, &viewports, Topology::TriangleStrip, 4));
+        b.end_pass();
+        kit::read(b, &t, 0, 0, [side, side, 1], 4, false)
+    };
+    let destroy = |b: &mut H::Backend, (v, f, p)| {
+        b.destroy(Object::Program(p));
+        b.destroy(Object::Shader(v));
+        b.destroy(Object::Shader(f));
+    };
+    let red = [u8::MAX, 0, 0, u8::MAX].repeat((side * side) as usize);
+    let green = [0, u8::MAX, 0, u8::MAX].repeat((side * side) as usize);
+    let first = make(&mut b, "red");
+    let second = make(&mut b, "red");
+    let other = make(&mut b, "green");
+    assert_eq!(draw(&mut b, &first.2), red, "the first");
+    assert_eq!(draw(&mut b, &other.2), green, "the other");
+    destroy(&mut b, first);
+    assert_eq!(draw(&mut b, &second.2), red, "the second, the first destroyed");
+    destroy(&mut b, second);
+    assert_eq!(draw(&mut b, &other.2), green, "the other, both destroyed");
+    let again = make(&mut b, "red");
+    assert_eq!(draw(&mut b, &again.2), red, "made again after both were destroyed");
+    destroy(&mut b, again);
+    destroy(&mut b, other);
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
 /// Bit operations on seeded values: each pixel of an 8 by 8 target hashes its index with the seed
 /// into `x` and `y`, an offset and a count up to 35 (past the width, which the operations cut).
 const BITS: &str = "

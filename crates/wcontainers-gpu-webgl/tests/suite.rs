@@ -281,6 +281,11 @@ fn two_devices_on_one_thread_keep_their_own_objects() {
 }
 
 #[test]
+fn programs_of_equal_shaders_draw_until_each_is_destroyed() {
+    sampled(checks::programs_of_equal_shaders_draw_until_each_is_destroyed::<Angle>);
+}
+
+#[test]
 fn bit_operations_equal_their_definition() {
     sampled(checks::bit_operations_equal_their_definition::<Angle>);
 }

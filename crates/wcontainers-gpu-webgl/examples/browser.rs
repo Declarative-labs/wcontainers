@@ -199,6 +199,7 @@ suite!(
     signed_normalised_minimum_judged_by_whole_components,
     half_floats_read_back_as_stored,
     two_devices_on_one_thread_keep_their_own_objects,
+    programs_of_equal_shaders_draw_until_each_is_destroyed,
     bit_operations_equal_their_definition,
     gathers_equal_their_footprints,
     depth_textures_compared_and_read_plainly,

@@ -341,6 +341,8 @@ pub struct Gl {
     glsl: shader::GlslSettings,
     values: GlValues,
     applied: Applied,
+    /// The live shaders by their text, so shaders of equal text are one.
+    shaders: HashMap<Rc<shader::ShaderText>, Shader>,
     programs: HashMap<(Id, Id), GlProgram>,
     framebuffers: HashMap<FramebufferKey, glow::Framebuffer>,
     /// Framebuffers of passes without attachments, each on an `R8` renderbuffer of its own that no
@@ -463,6 +465,7 @@ impl Gl {
             },
             values: GlValues::initial(clip_depth),
             applied: Applied::new(),
+            shaders: HashMap::new(),
             programs: HashMap::new(),
             framebuffers: HashMap::new(),
             empty_passes: HashMap::new(),
@@ -3640,9 +3643,20 @@ impl Backend for Gl {
                 "a stage reads more uniform buffers than Limits::uniform_buffers_per_stage",
             ));
         }
-        let id = self.id();
-        let shader = shader::compile(&self.gl, id, module, self.glsl)?;
-        Ok(Handle(Rc::new(shader)))
+        let text = Rc::new(shader::write(module, self.glsl)?);
+        if let Some(s) = self.shaders.get(&text) {
+            s.handles.set(s.handles.get() + 1);
+            return Ok(s.clone());
+        }
+        let raw = shader::start_compile(&self.gl, text.stage, &text.source)?;
+        let s = Handle(Rc::new(shader::ShaderObj {
+            id: self.id(),
+            raw,
+            handles: core::cell::Cell::new(1),
+            text: text.clone(),
+        }));
+        self.shaders.insert(text, s.clone());
+        Ok(s)
     }
 
     fn create_program(&mut self, program: &Program<'_, Self>) -> Result<GlProgram, GpuError> {
@@ -3947,7 +3961,13 @@ impl Backend for Gl {
                         gl.delete_sampler(twin);
                     }
                 }
-                Object::Shader(s) => gl.delete_shader(s.raw),
+                Object::Shader(s) => {
+                    s.handles.set(s.handles.get() - 1);
+                    if s.handles.get() == 0 {
+                        self.shaders.remove(&s.text);
+                        gl.delete_shader(s.raw);
+                    }
+                }
                 Object::Program(p) => {
                     p.handles.set(p.handles.get() - 1);
                     if p.handles.get() == 0 {
