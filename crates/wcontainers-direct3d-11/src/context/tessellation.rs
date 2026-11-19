@@ -60,7 +60,7 @@ impl<B: Backend> Device<B> {
         ds: &Shader<B>,
     ) -> Result<TessRun<B>> {
         let vertex = self.pulled_vertex(vs, StageVariant::default())?;
-        let (hull, domain) = self.tessellation_programs(hs, ds)?;
+        let (hull, domain) = self.tessellation_programs(hs, ds, false)?;
         let stages = Stages::tessellated(&mut self.backend, &vertex, &hull, &domain)
             .map_err(|e| self.tessellation_error(e))?;
         Ok(TessRun {
@@ -77,6 +77,7 @@ impl<B: Backend> Device<B> {
         &mut self,
         hs: &Shader<B>,
         ds: &Shader<B>,
+        before_geometry: bool,
     ) -> Result<(Converted, Converted)> {
         let hull = crate::shader::convert_variant(
             &hs.bytecode,
@@ -84,8 +85,9 @@ impl<B: Backend> Device<B> {
             &crate::shader::base_key(SourceStage::Hull, &hs.typed, hs.layered),
         )?;
         // A domain program writing clip distances the back end lacks passes them on for the pixel
-        // program, as the vertex program does without tessellation.
-        let (linked, clip_distances) = ds.clip.unwrap_or_default();
+        // program, as the vertex program does without tessellation; before a geometry stage they
+        // are outputs that stage reads.
+        let (linked, clip_distances) = ds.clip.filter(|_| !before_geometry).unwrap_or_default();
         let key = VariantKey {
             output_interpolation: interpolation(self.ctx.ps.as_deref()),
             ..StageVariant {
@@ -146,7 +148,7 @@ impl<B: Backend> Device<B> {
                 Error::NotImplemented(what)
             }
             StageError::Convert(e) => {
-                eprintln!("wcontainers direct3d 11: the tessellation stages' programs: {e}");
+                eprintln!("{WARNING_PREFIX}: the tessellation stages' programs: {e}");
                 Error::NotImplemented("a tessellation stage the converter got wrong")
             }
             StageError::TopologyMismatch | StageError::Declaration => {

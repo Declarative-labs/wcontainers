@@ -23,7 +23,7 @@ use crate::desc::{
 use crate::device::{
     Device, HelperBlocks, Linked, Variant, ZERO_BYTES, gpu_buffer, integer_format, resolvable,
 };
-use crate::error::{Error, Result, not_implemented};
+use crate::error::{Error, Result, WARNING_PREFIX, not_implemented};
 use crate::format;
 use crate::object::*;
 use crate::shader::{ConstantsReadAs, Helpers, RelocatedConstants, StageVariant};
@@ -165,6 +165,8 @@ pub struct ContextState<B: Backend> {
     /// The layer and viewport of the draw's run after a geometry shader choosing them
     /// (`LayerSplit`, `MultiViewportSplit`), which pixel programs read as theirs; zero otherwise.
     run: [u32; 2],
+    /// The layer count of that run's views, which the pass-through reads (`LAYER_FROM_STAGE`).
+    run_layers: u32,
     /// Per stage, the constant buffer slots its set binds as storage buffers.
     relocated: [u32; STAGES],
     /// The resources the open pass's draws wrote as storage and read as shader resources, by
@@ -235,6 +237,7 @@ impl<B: Backend> ContextState<B> {
             pass_early: false,
             early_run: None,
             run: [0; 2],
+            run_layers: 0,
             relocated: [0; STAGES],
             pass_written: Vec::new(),
             pass_read: Vec::new(),
@@ -1863,6 +1866,15 @@ impl<B: Backend> Device<B> {
                     v.stencil |= 1 << i;
                 }
             }
+            // An empty slot asked its size answers zero, which its stand-in cannot: the program
+            // reads sizes past the helpers' level count, zero for an empty slot, as zero.
+            let resources = &self.ctx.resources[stage];
+            if (0..u128::BITS as usize)
+                .filter(|&i| s.textures & (1 << i) != 0)
+                .any(|i| resources.get(i).is_none_or(Option::is_none))
+            {
+                v.texture_info = true;
+            }
         }
         // Textures of formats the back end cannot filter, sampled through a filtering sampler (an
         // empty slot reads Direct3D's default, which filters linearly).
@@ -2082,8 +2094,25 @@ impl<B: Backend> Device<B> {
             && !self.draws_triangles()
     }
 
-    /// The bound topology is of triangles.
+    /// The primitives rasterised are triangles: a geometry stage's output, else the tessellator's,
+    /// else the bound topology's.
     fn draws_triangles(&self) -> bool {
+        let triangles = wcontainers_shaders::stage::TRIANGLE_VERTICES;
+        if let Some((gs, _)) = self.ctx.gs.as_ref().and_then(|g| g.stage.as_ref())
+            && let wcontainers_gpu::StageExtras::Geometry {
+                output_vertices, ..
+            } = gs.reflection.extras
+        {
+            return u32::from(output_vertices) == triangles;
+        }
+        if let Some(hs) = &self.ctx.hs
+            && let wcontainers_gpu::StageExtras::Hull {
+                output_primitive, ..
+            } = hs.reflection.extras
+        {
+            return wcontainers_shaders::stage::tess::output_vertices(output_primitive)
+                == triangles;
+        }
         matches!(
             plain_topology(self.ctx.topology),
             Some(Topology::TriangleList | Topology::TriangleStrip)
@@ -3720,6 +3749,10 @@ impl<B: Backend> Device<B> {
                     words[0] = self.ctx.run[1];
                     1
                 }
+                HelperValue::LayerCount => {
+                    words[0] = self.ctx.run_layers;
+                    1
+                }
                 _ => unreachable!("refused at conversion"),
             };
             for (k, w) in words[..n].iter().enumerate() {
@@ -4002,26 +4035,39 @@ impl<B: Backend> Device<B> {
             .depth_clip
             && !self.backend.caps().has(Features::DEPTH_CLAMP);
         // Clip distances the back end lacks, applied by the pixel program
-        // (`ClipDistanceInShader`), passed at the location the vertex program (or behind a hull
-        // shader the domain program) was made with.
+        // (`ClipDistanceInShader`), passed at the location the last stage before the rasteriser
+        // (the vertex program, the domain program behind a hull shader, or a geometry stage's
+        // pass-through) was made with.
         let tessellated = self.ctx.hs.is_some() || self.ctx.ds.is_some();
-        let feeding = match &self.ctx.ds {
-            Some(ds) if tessellated => ds.clone(),
+        let geometry_stage = self
+            .ctx
+            .gs
+            .as_ref()
+            .and_then(|g| g.stage.as_ref())
+            .map(|(s, _)| s.clone());
+        let feeding = match (&geometry_stage, &self.ctx.ds) {
+            (Some(g), _) => g.clone(),
+            (None, Some(ds)) if tessellated => ds.clone(),
             _ => vs.clone(),
         };
         let clip = feeding.clip;
-        let linked = if clamps || clip.is_some() {
-            let Some(p) = &ps else {
+        // A geometry stage naming layers passes the layer named to the pixel program after the
+        // linked values (`LAYER_FROM_STAGE`).
+        let layer_named = geometry_stage
+            .as_ref()
+            .is_some_and(|g| crate::shader::names_layer(&g.reflection.outputs));
+        let linked = if clamps || clip.is_some() || layer_named {
+            if ps.is_none() && (clamps || clip.is_some()) {
                 return not_implemented(
                     "depth clamping or clip distances the back end lacks, without a pixel shader to apply them",
                 );
-            };
+            }
             let at = crate::shader::linked_location(
                 feeding
                     .reflection
                     .outputs
                     .iter()
-                    .chain(&p.reflection.inputs),
+                    .chain(ps.iter().flat_map(|p| &p.reflection.inputs)),
             );
             if clip.is_some_and(|(made, _)| made != at) {
                 return not_implemented(
@@ -4033,8 +4079,12 @@ impl<B: Backend> Device<B> {
             0
         };
         let clip_distances = clip.map_or(0, |c| c.1);
-        // Behind a hull shader the domain program passes the clip distances.
-        let vertex_clip = if tessellated { 0 } else { clip_distances };
+        // Behind a hull shader or a geometry stage a later program passes the clip distances.
+        let vertex_clip = if tessellated || geometry_stage.is_some() {
+            0
+        } else {
+            clip_distances
+        };
         let shader_viewport = self.viewport_in_shader();
         if shader_viewport.is_some() {
             self.backend.slow_paths().hit(SlowPath::ViewportInShader);
@@ -4065,6 +4115,7 @@ impl<B: Backend> Device<B> {
                 linked,
                 depth_clamp: clamps,
                 clip_distances,
+                layer_from_stage: layer_named,
                 early_tests: early,
                 retyped,
                 retyped_formats,

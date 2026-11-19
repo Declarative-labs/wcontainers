@@ -6,8 +6,9 @@
 //! multisampled textures), `stream` (stream output whose stream is also drawn), `early`
 //! (`[earlydepthstencil]` with storage writes, depth writes off), `early_writes` (the same with
 //! depth writes on), `stencil` (a stencil view read after clears and a stencil draw),
-//! `msaa_lines` (lines under `MultisampleEnable`, each pixel's covered samples counted) and
-//! `biased_lines` (a constant depth bias on a line and points). Shaders are compiled by
+//! `msaa_lines` (lines under `MultisampleEnable`, each pixel's covered samples counted),
+//! `biased_lines` (a constant depth bias on a line and points) and `staged_bias` (the same bias on
+//! what geometry and tessellation stages rasterise). Shaders are compiled by
 //! the system's d3dcompiler_47.dll. Prints each answer and the resources' bytes as hex, for
 //! comparing with real Direct3D line by line.
 
@@ -1025,6 +1026,184 @@ fn main() -> windows::core::Result<()> {
                     context.OMSetRenderTargets(None, None);
                 }
                 print(&format!("{name} depth"), &depth, texel);
+            }
+        }
+        "staged_bias" => {
+            // A constant depth bias on what geometry and tessellation stages rasterise: triangles
+            // made from points, from lines and from a patch, and a line strip made from a
+            // triangle, into 16-bit depth cleared to 0.5.
+            let corners = vs("float4 main(uint id : SV_VertexID) : SV_Position {
+                    float2 q[3] = { float2(-0.5, 0.0), float2(0.5, 0.0), float2(0.0, 0.6) };
+                    return float4(q[id], 0.25, 1);
+                }");
+            let control = vs("struct V { float4 p : POS; };
+                V main(uint id : SV_VertexID) {
+                    float2 q[3] = { float2(-0.9, -0.9), float2(0.0, 0.9), float2(0.9, -0.9) };
+                    V v; v.p = float4(q[id], 0.25, 1); return v;
+                }");
+            let geometry = |src: &str| {
+                let mut gs = None;
+                let r = unsafe {
+                    device.CreateGeometryShader(&compile(src, s!("gs_5_0")), None, Some(&mut gs))
+                };
+                println!("CreateGeometryShader {:#010x}", code(r));
+                gs
+            };
+            let from_points = geometry(
+                "struct V { float4 p : SV_Position; };
+                [maxvertexcount(4)] void main(point V i[1], inout TriangleStream<V> s) {
+                    float2 d[4] = { float2(-0.2, 0.4), float2(0.2, 0.4), float2(-0.2, -0.4),
+                        float2(0.2, -0.4) };
+                    V o;
+                    for (int k = 0; k < 4; ++k) { o.p = i[0].p + float4(d[k], 0, 0); s.Append(o); }
+                }",
+            );
+            let from_lines = geometry(
+                "struct V { float4 p : SV_Position; };
+                [maxvertexcount(4)] void main(line V i[2], inout TriangleStream<V> s) {
+                    V o;
+                    o.p = i[0].p + float4(0, 0.3, 0, 0); s.Append(o);
+                    o.p = i[1].p + float4(0, 0.3, 0, 0); s.Append(o);
+                    o.p = i[0].p - float4(0, 0.3, 0, 0); s.Append(o);
+                    o.p = i[1].p - float4(0, 0.3, 0, 0); s.Append(o);
+                }",
+            );
+            let outline = geometry(
+                "struct V { float4 p : SV_Position; };
+                [maxvertexcount(4)] void main(triangle V i[3], inout LineStream<V> s) {
+                    for (int k = 0; k < 4; ++k) s.Append(i[k % 3]);
+                }",
+            );
+            let (mut hs, mut ds) = (None, None);
+            unsafe {
+                let r = device.CreateHullShader(
+                    &compile(
+                        "struct V { float4 p : POS; };
+                        struct C { float e[3] : SV_TessFactor; float i : SV_InsideTessFactor; };
+                        C pc(InputPatch<V, 3> ip) {
+                            C c; c.e[0] = 2; c.e[1] = 2; c.e[2] = 2; c.i = 2; return c;
+                        }
+                        [domain(\"tri\")] [partitioning(\"integer\")]
+                        [outputtopology(\"triangle_cw\")] [outputcontrolpoints(3)]
+                        [patchconstantfunc(\"pc\")]
+                        V main(InputPatch<V, 3> ip, uint i : SV_OutputControlPointID) {
+                            return ip[i];
+                        }",
+                        s!("hs_5_0"),
+                    ),
+                    None,
+                    Some(&mut hs),
+                );
+                println!("CreateHullShader {:#010x}", code(r));
+                let r = device.CreateDomainShader(
+                    &compile(
+                        "struct V { float4 p : POS; };
+                        struct C { float e[3] : SV_TessFactor; float i : SV_InsideTessFactor; };
+                        [domain(\"tri\")] float4 main(C c, float3 uvw : SV_DomainLocation,
+                            const OutputPatch<V, 3> q) : SV_Position {
+                            return q[0].p * uvw.x + q[1].p * uvw.y + q[2].p * uvw.z;
+                        }",
+                        s!("ds_5_0"),
+                    ),
+                    None,
+                    Some(&mut ds),
+                );
+                println!("CreateDomainShader {:#010x}", code(r));
+            }
+            let flat = ps("float4 main(float4 p : SV_Position) : SV_Target { return 1; }");
+            let target = make(
+                &Tex {
+                    w: 16,
+                    h: 8,
+                    format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                    samples: 1,
+                    bind: D3D11_BIND_RENDER_TARGET,
+                },
+                None,
+            )?;
+            let rt = rtv(&target);
+            let mut raster = None;
+            let desc = D3D11_RASTERIZER_DESC {
+                FillMode: D3D11_FILL_SOLID,
+                CullMode: D3D11_CULL_NONE,
+                DepthBias: 1000,
+                DepthClipEnable: true.into(),
+                ..Default::default()
+            };
+            unsafe { device.CreateRasterizerState(&desc, Some(&mut raster))? };
+            let mut always = None;
+            let dss = D3D11_DEPTH_STENCIL_DESC {
+                DepthEnable: true.into(),
+                DepthWriteMask: D3D11_DEPTH_WRITE_MASK_ALL,
+                DepthFunc: D3D11_COMPARISON_ALWAYS,
+                ..Default::default()
+            };
+            unsafe { device.CreateDepthStencilState(&dss, Some(&mut always))? };
+            for name in ["points", "lines", "patches", "outline"] {
+                let depth = make(
+                    &Tex {
+                        w: 16,
+                        h: 8,
+                        format: DXGI_FORMAT_R16_TYPELESS,
+                        samples: 1,
+                        bind: D3D11_BIND_DEPTH_STENCIL,
+                    },
+                    None,
+                )?;
+                let mut dsv = None;
+                let desc = D3D11_DEPTH_STENCIL_VIEW_DESC {
+                    Format: DXGI_FORMAT_D16_UNORM,
+                    ViewDimension: D3D11_DSV_DIMENSION_TEXTURE2D,
+                    ..Default::default()
+                };
+                unsafe { device.CreateDepthStencilView(&depth, Some(&desc), Some(&mut dsv))? };
+                unsafe {
+                    viewport(16, 8);
+                    context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0; 4]);
+                    context.ClearDepthStencilView(
+                        dsv.as_ref().unwrap(),
+                        D3D11_CLEAR_DEPTH.0,
+                        0.5,
+                        0,
+                    );
+                    context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), dsv.as_ref());
+                    context.OMSetDepthStencilState(always.as_ref(), 0);
+                    context.RSSetState(raster.as_ref());
+                    context.PSSetShader(flat.as_ref(), None);
+                    let (shader, topology) = match name {
+                        "points" => (&corners, D3D_PRIMITIVE_TOPOLOGY_POINTLIST),
+                        "lines" => (&corners, D3D_PRIMITIVE_TOPOLOGY_LINELIST),
+                        "outline" => (&corners, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST),
+                        _ => (&control, D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST),
+                    };
+                    context.VSSetShader(shader.as_ref(), None);
+                    match name {
+                        "points" => context.GSSetShader(from_points.as_ref(), None),
+                        "lines" => context.GSSetShader(from_lines.as_ref(), None),
+                        "outline" => context.GSSetShader(outline.as_ref(), None),
+                        _ => {
+                            context.HSSetShader(hs.as_ref(), None);
+                            context.DSSetShader(ds.as_ref(), None);
+                        }
+                    }
+                    context.IASetPrimitiveTopology(topology);
+                    context.Draw(
+                        if matches!(name, "points" | "lines") {
+                            2
+                        } else {
+                            3
+                        },
+                        0,
+                    );
+                    context.GSSetShader(None, None);
+                    context.HSSetShader(None, None);
+                    context.DSSetShader(None, None);
+                    context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                    context.RSSetState(None);
+                    context.OMSetDepthStencilState(None, 0);
+                    context.OMSetRenderTargets(None, None);
+                }
+                print(&format!("staged bias {name} depth"), &depth, 2);
             }
         }
         _ => println!("no case {case:?}"),

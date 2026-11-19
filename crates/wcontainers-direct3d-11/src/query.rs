@@ -24,7 +24,7 @@ use wcontainers_gpu::{
 };
 
 use crate::device::Device;
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, WARNING_PREFIX};
 use crate::object::Kept;
 
 /// `D3D11_QUERY`.
@@ -406,7 +406,7 @@ impl<B: Backend> Device<B> {
                     static WARNED: std::sync::Once = std::sync::Once::new();
                     WARNED.call_once(|| {
                         eprintln!(
-                            "wcontainers direct3d 11: timestamps reported disjoint: the back end writes none"
+                            "{WARNING_PREFIX}: timestamps reported disjoint: the back end writes none"
                         )
                     });
                     short(&[NANOSECONDS, 1])
