@@ -50,6 +50,10 @@ name = "exits"
 harness = false
 
 [[test]]
+name = "kernel"
+harness = false
+
+[[test]]
 name = "floor"
 harness = false
 
