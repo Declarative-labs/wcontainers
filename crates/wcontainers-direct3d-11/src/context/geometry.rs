@@ -237,13 +237,7 @@ impl<B: Backend> Device<B> {
                 None,
             ),
             Some((hs, ds)) => {
-                if ds.clip.is_some() && geometry.is_some() {
-                    return not_implemented(
-                        "clip distances from a domain shader before a geometry shader, without the \
-                         back end's",
-                    );
-                }
-                let (hull, domain) = self.tessellation_programs(hs, ds)?;
+                let (hull, domain) = self.tessellation_programs(hs, ds, geometry.is_some())?;
                 let drawn = match geometry {
                     None if gs.drawn => Some(self.domain_draw(&domain)?),
                     _ => None,
