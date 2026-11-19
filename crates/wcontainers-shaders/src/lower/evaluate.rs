@@ -125,7 +125,7 @@ impl Lowering<'_> {
         let positions: &[(f32, f32)] = match self.variant.samples {
             1 => &[(0.0, 0.0)],
             n if usize::from(n) == FOUR_SAMPLES.len() => &FOUR_SAMPLES,
-            _ => return Err(unsupported("SampleCount")),
+            _ => return Err(unsupported(crate::refusal::SAMPLE_COUNT)),
         };
         let vec2 = self.vec_ty(2, Scalar::F32)?;
         let array = self.ty(TypeInner::Array {

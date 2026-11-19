@@ -37,7 +37,7 @@ pub(super) fn early_tests(
 ) -> Result<()> {
     use naga::BinaryOperator::{Add, Equal, InclusiveOr, LogicalAnd, Multiply};
     let multi = match (samples, per_sample) {
-        (0, _) => return Err(ConvertError::Unsupported("SampleCount")),
+        (0, _) => return Err(ConvertError::Unsupported(crate::refusal::SAMPLE_COUNT)),
         (1, _) => false,
         (MULTI, false) => true,
         (MULTI, true) => {

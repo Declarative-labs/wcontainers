@@ -64,21 +64,21 @@ fn unbuilt_variants_are_refused_by_name() {
                 flags: VariantFlags::PROVOKING_LAST,
                 ..Default::default()
             },
-            "ProvokingRewrite",
+            wcontainers_shaders::refusal::PROVOKING_REWRITE,
         ),
         (
             VariantKey {
                 storage_packed: 1,
                 ..Default::default()
             },
-            "StoragePacked",
+            wcontainers_shaders::refusal::STORAGE_PACKED,
         ),
         (
             VariantKey {
                 layout: [1; 32],
                 ..Default::default()
             },
-            "RootSignatureLayout",
+            wcontainers_shaders::refusal::ROOT_SIGNATURE_LAYOUT,
         ),
     ];
     for (key, name) in cases {
@@ -88,7 +88,12 @@ fn unbuilt_variants_are_refused_by_name() {
         }
     }
     let got = convert(Source::Dxbc(&dxbc), &VariantKey::default(), Some(&[0; 4])).map(|_| ());
-    assert_eq!(got, Err(ConvertError::Unsupported("RootSignatureLayout")));
+    assert_eq!(
+        got,
+        Err(ConvertError::Unsupported(
+            wcontainers_shaders::refusal::ROOT_SIGNATURE_LAYOUT
+        ))
+    );
     assert!(convert(Source::Dxbc(&dxbc), &VariantKey::default(), None).is_ok());
     assert!(convert(Source::Dxil(&dxil), &VariantKey::default(), None).is_ok());
 }
@@ -296,7 +301,7 @@ fn early_tests_read_the_attachment_before_the_program() {
         );
     }
     for (samples, name) in [
-        (0, "SampleCount"),
+        (0, wcontainers_shaders::refusal::SAMPLE_COUNT),
         (2, wcontainers_shaders::refusal::EARLY_TESTS_SAMPLES),
     ] {
         for source in [Source::Dxbc(&textured[0]), Source::Dxil(&textured[1])] {
@@ -660,7 +665,9 @@ fn the_sample_count_comes_from_the_variant() {
     ] {
         assert_eq!(
             convert(source, &VariantKey::default(), None).map(|_| ()),
-            Err(ConvertError::Unsupported("SampleCount"))
+            Err(ConvertError::Unsupported(
+                wcontainers_shaders::refusal::SAMPLE_COUNT
+            ))
         );
         let text = wgsl(&convert(fixed, &key, None).unwrap());
         assert!(text.contains("4u"), "{text}");
@@ -805,7 +812,7 @@ fn clip_distances_and_depth_clamp_pass_through_the_linked_location() {
         linked,
         ..Default::default()
     };
-    refused(key.clone(), &ps, "SampleCount");
+    refused(key.clone(), &ps, wcontainers_shaders::refusal::SAMPLE_COUNT);
     refused(
         VariantKey {
             samples: 2,

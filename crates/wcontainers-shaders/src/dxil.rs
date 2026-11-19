@@ -301,7 +301,7 @@ pub(crate) fn lower(
     unconverted(&module)?;
     if !module.overrides.is_empty() {
         // dxil-spirv's only specialisation constant here: the targets' sample count.
-        return Err(ConvertError::Unsupported("SampleCount"));
+        return Err(ConvertError::Unsupported(crate::refusal::SAMPLE_COUNT));
     }
     if let Some(moved) = direct3d_float_to_int(&mut module)? {
         images::remap(&mut atomics, &moved);
@@ -1881,20 +1881,22 @@ fn absent_extension(spirv: &[u32]) -> Option<&'static str> {
     };
     let (_, name) = ABSENT_EXTENSIONS.iter().find(|(e, _)| has(e))?;
     Some(match *name {
-        VIEWPORT_ARRAY_INDEX if layer => "RenderTargetArrayIndex",
+        crate::refusal::VIEWPORT_ARRAY_INDEX if layer => crate::refusal::RENDER_TARGET_ARRAY_INDEX,
         name => name,
     })
 }
 
-const VIEWPORT_ARRAY_INDEX: &str = "ViewportArrayIndex";
 /// SPIR-V extensions for features WebGPU lacks, and the features' names.
 const ABSENT_EXTENSIONS: [(&str, &str); 3] = [
     (
         "SPV_EXT_fragment_shader_interlock",
         crate::refusal::RASTERIZER_ORDERED_VIEW,
     ),
-    ("SPV_EXT_shader_stencil_export", "StencilRef"),
-    ("SPV_EXT_shader_viewport_index_layer", VIEWPORT_ARRAY_INDEX),
+    ("SPV_EXT_shader_stencil_export", crate::refusal::STENCIL_REF),
+    (
+        "SPV_EXT_shader_viewport_index_layer",
+        crate::refusal::VIEWPORT_ARRAY_INDEX,
+    ),
 ];
 
 /// Whether an atomic minimum or maximum in `spirv` is of the other signedness than the integers it

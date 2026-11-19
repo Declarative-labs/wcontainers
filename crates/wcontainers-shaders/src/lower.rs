@@ -1143,13 +1143,13 @@ impl<'a> Lowering<'a> {
             builtin::CLIP_DISTANCE => crate::refusal::CLIP_DISTANCE,
             builtin::CULL_DISTANCE => crate::refusal::CULL_DISTANCE,
             builtin::PRIMITIVE_ID => crate::refusal::PRIMITIVE_ID,
-            builtin::LAYER_INDEX => "RenderTargetArrayIndex",
-            builtin::VIEWPORT_INDEX => "ViewportArrayIndex",
-            builtin::SAMPLE_COUNT => "SampleCount",
-            builtin::SAMPLE_POSITION => "SamplePosition",
-            builtin::STENCIL_REF => "StencilRef",
-            builtin::IS_FULLY_COVERED => "InnerCoverage",
-            _ => "BuiltIn",
+            builtin::LAYER_INDEX => crate::refusal::RENDER_TARGET_ARRAY_INDEX,
+            builtin::VIEWPORT_INDEX => crate::refusal::VIEWPORT_ARRAY_INDEX,
+            builtin::SAMPLE_COUNT => crate::refusal::SAMPLE_COUNT,
+            builtin::SAMPLE_POSITION => crate::refusal::SAMPLE_POSITION,
+            builtin::STENCIL_REF => crate::refusal::STENCIL_REF,
+            builtin::IS_FULLY_COVERED => crate::refusal::INNER_COVERAGE,
+            _ => crate::refusal::BUILT_IN,
         }))
     }
 
@@ -3201,7 +3201,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 return Ok(());
             }
             c::IMAGE_ATOMIC if self.texel(r[0])?.is_none() => {
-                return Err(unsupported("StorageImageAtomics"));
+                return Err(unsupported(crate::refusal::STORAGE_IMAGE_ATOMICS));
             }
             c::LDS_ATOMIC | c::BUFFER_ATOMIC | c::IMAGE_ATOMIC | c::COUNTER_ATOMIC => {
                 match self.atomic(b, op)? {

@@ -902,7 +902,7 @@ fn clipped(
 ) -> Result<()> {
     use naga::BinaryOperator::{Add, Equal, GreaterEqual, InclusiveOr, Less, LogicalAnd, Multiply};
     let mask = match samples {
-        0 => return Err(ConvertError::Unsupported("SampleCount")),
+        0 => return Err(ConvertError::Unsupported(crate::refusal::SAMPLE_COUNT)),
         1 => None,
         4 if per_sample => {
             return Err(ConvertError::Unsupported(
