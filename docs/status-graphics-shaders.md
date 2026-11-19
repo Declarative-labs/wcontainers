@@ -2025,7 +2025,19 @@ not taken), logs in scratch `graphics-shaders/run38`:
   clean, then the whole suite as one GPU job after every change of this run (`cargo test -p
   wcontainers-shaders --no-fail-fast -- --test-threads 1 --skip mutated`, 22:57 to 23:07,
   suite-gpu.log): 20 test binaries, all pass.
-- Literal check on the desktop (check3.txt): passes.
+- Literal check on the desktop (check3.txt, check4.txt after the last changes): passes.
+- Chrome's compile of every corpus as one GPU job (chrome.log before the WGSL writer fix,
+  chrome2.log after it and the `VertexStorageWrite` refusal; written files from the laptop's
+  suite run): every converted shader's WGSL compiles in Chrome's WebGPU: corpus 185, games 519,
+  games DXIL 425, own 116, own DXIL 56, rig 79, rig DXIL 55, runner 1429, runner DXIL 1369. GLSL
+  ES files Chrome's WebGL 2 refuses: corpus 15, games 10, games DXIL 1, own 11, own DXIL 4, rig 3,
+  rig DXIL 3, runner 35, runner DXIL 26, every one for what GLSL ES 3.00 lacks (bitfield
+  operations, `findMSB`/`findLSB`, `textureGather`, multisampled samplers, `gl_PrimitiveID`; 6.5
+  gives those to the WebGL 2 back end, or they are absent there), as before.
+- After those: the laptop's corpora once more (suite-4.log, records updated: the runner's
+  `depth-bounds-1-vs` now `VertexStorageWrite`, nine runner shaders now report
+  `RasterizerOrderedView` instead of a view kind) and the desktop's whole suite as one GPU job
+  with Windows lint first (suite-gpu2.log, 00:03 to 00:08): lint clean, every test binary passes.
 
 Run 37, 2026-11-18, counts only (laptop i7-8750H, load 1.0 to 5.4 with another track building, 5
 cargo jobs, until it went down at about 20:25 and stayed down to the end of the run; desktop shared
