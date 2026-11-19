@@ -611,7 +611,7 @@ impl<B: Backend> Device<B> {
                         (SlotKind::Texture, Descriptor::ShaderResource(v)) => {
                             let view = self.shader_resource(&v, b)?;
                             self.note_clamp(&v, b)?;
-                            self.note_filtering(&v, b)?;
+                            self.note_filtering(Some(&v), b)?;
                             let components = dxgi(v.format)?.components();
                             self.bound_helpers.push((
                                 b.visibility,
@@ -664,7 +664,12 @@ impl<B: Backend> Device<B> {
                         (SlotKind::Sampler, Descriptor::Empty) => {
                             return Err(Error::Invalid("an empty sampler descriptor"));
                         }
-                        (kind, Descriptor::Empty) => self.null(kind, b)?,
+                        (kind, Descriptor::Empty) => {
+                            if kind == SlotKind::Texture {
+                                self.note_filtering(None, b)?;
+                            }
+                            self.null(kind, b)?
+                        }
                         _ => return Err(Error::Invalid("a descriptor of another kind")),
                     }
                 }
@@ -1025,13 +1030,21 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
-    /// Notes a texture the back end cannot filter in the view's format (a depth texture read as
-    /// its depth, or a float format without filtering), which the program then filters where a
-    /// filtering sampler samples it (`formats.rs`).
-    fn note_filtering(&mut self, v: &ResourceView, b: &StageBinding) -> Result<(), Error> {
-        if b.compared || !reconverted(b) {
+    /// Notes a texture the back end cannot filter: one the program declares as depth (the back
+    /// end's depth textures take no filtering sampler), or one null (`None`) or not in a format the
+    /// back end filters (a depth texture read as its depth, or a float format without filtering).
+    /// The program then filters it where a filtering sampler samples it (`formats.rs`).
+    fn note_filtering(&mut self, v: Option<&ResourceView>, b: &StageBinding) -> Result<(), Error> {
+        if !reconverted(b) {
             return Ok(());
         }
+        if b.compared {
+            self.bound_unfiltered.push((b.visibility, b.binding.slot()));
+            return Ok(());
+        }
+        let Some(v) = v else {
+            return Ok(());
+        };
         let stored = match self.resources.get(v.resource.0 as usize) {
             Some(Resource {
                 storage: Storage::Texture { desc, .. },
