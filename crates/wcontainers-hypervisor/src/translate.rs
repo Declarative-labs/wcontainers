@@ -157,6 +157,34 @@ mod tests {
         assert_eq!(exits, BTreeSet::from([at + PAGE_SIZE]));
     }
 
+    /// The code after a branch back before the piece's start is held when it comes back into the piece, and
+    /// starts a piece of its own when it only leaves.
+    #[test]
+    fn pieces_hold_the_rest_of_a_turn() {
+        let at = 0x40_1000;
+        let step = Arm64::MAX_LENGTH;
+        let turning = [
+            0xf100_05efu32, // subs x15, x15, #1
+            0x54ff_fea0,    // b.eq . - 0x2c
+            0x385f_f1d0,    // ldurb w16, [x14, #-1]
+            0x6b10_01bf,    // cmp w13, w16
+            0x54ff_ff81,    // b.ne . - 16
+            0xd65f_03c0,    // ret
+        ];
+        let (held, exits) = shape(&turning, at);
+        assert_eq!(held, (0..5).map(|k| at + k * step).collect());
+        assert_eq!(exits, BTreeSet::from([at + step - 0x2c, at + 5 * step]));
+        let leaving = [
+            0x5100_0a73u32, // sub w19, w19, #2
+            0x7100_067f,    // cmp w19, #1
+            0x54ff_ff88,    // b.hi . - 16
+            0xd65f_03c0,    // ret
+        ];
+        let (held, exits) = shape(&leaving, at);
+        assert_eq!(held, (0..3).map(|k| at + k * step).collect());
+        assert_eq!(exits, BTreeSet::from([at - 2 * step, at + 3 * step]));
+    }
+
     /// An answer whose position map does not decode fails loudly, never as the guest's illegal instruction.
     #[test]
     #[should_panic(expected = "the monitor's translate answer is broken: position map")]
