@@ -58,8 +58,8 @@ pub trait Native: Guest {
     /// Writes the host code of one decoded instruction, `bytes` at guest `address`, as its route says. Its
     /// spans start at the instruction, before its commit point, with the count already placed.
     fn carry(i: &Self::Instruction, bytes: &[u8], address: u64, code: &mut HostCode);
-    /// Writes the count's add.
-    fn count(code: &mut HostCode);
+    /// Writes the count's add of `events` counted events.
+    fn count(code: &mut HostCode, events: u32);
     /// Writes a call into the inside.
     fn call(code: &mut HostCode, call: InsideCall);
 }
@@ -333,11 +333,11 @@ impl HostCode {
         self.bytes[at..at + bytes.len()].copy_from_slice(bytes);
     }
 
-    /// Writes the count's add for an event at or after the current instruction in the same straight-line run:
-    /// from here until that event's commit point the count register is one ahead.
-    pub fn count(&mut self, bytes: &[u8]) {
+    /// Writes the count's add for `events` events at or after the current instruction in the same
+    /// straight-line run: from here the count register is that far ahead, one less at each event's commit point.
+    pub fn count(&mut self, bytes: &[u8], events: u32) {
         self.push(bytes);
-        self.state().lead += 1;
+        self.state().lead += events;
     }
 
     /// Writes the commit point; after it the guest goes on at `resume`.
@@ -415,9 +415,18 @@ pub fn counted<R>(address: u64, flow: &Flow<R>) -> bool {
     }
 }
 
+/// Where a straight-line run's count is added (docs/native.md section 4): one add of every counted event
+/// of the run, before the run's instruction at the index given, or `None` when the run has no event. `events`
+/// says, in order, whether each instruction of the run is one. The start of the run, measured cheapest.
+pub fn count_placement(events: &[bool]) -> Option<(usize, u32)> {
+    let total = events.iter().filter(|&&e| e).count();
+    let total = u32::try_from(total).expect("a run's events fit in u32");
+    (total > 0).then_some((0, total))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::counted;
+    use super::{count_placement, counted};
     use crate::{Flow, FlowKind, Through};
 
     fn direct(target: i64) -> Flow<u8> {
@@ -454,5 +463,12 @@ mod tests {
             };
             assert!(counted(at, &flow));
         }
+    }
+
+    #[test]
+    fn one_add_at_the_start_of_the_run() {
+        assert_eq!(count_placement(&[false, false]), None);
+        assert_eq!(count_placement(&[false, true]), Some((0, 1)));
+        assert_eq!(count_placement(&[true, false, true]), Some((0, 2)));
     }
 }

@@ -1,7 +1,7 @@
 //! The native output (docs/native.md section 3): host code of the guest's own architecture, each guest
 //! instruction carried over by its route, with the count's adds and the position map. No WebAssembly is made.
 
-use wcontainers_guest_cpu::{HostCode, InsideCall, Native, Route, counted};
+use wcontainers_guest_cpu::{HostCode, InsideCall, Native, Route, count_placement, counted};
 
 use crate::LookAhead;
 
@@ -12,9 +12,8 @@ use crate::LookAhead;
 ///
 /// The count's adds are written only when `exact_replay` is set: the process asked for exact replay
 /// (`ReplayDeterminism::Exact`, from which the caller derives it and which keys its cache of translations).
-/// Under definition E every counted event is a transfer and so ends its run: a run holds at most one event,
-/// and its add is placed at the start of the run (section 4). The position map keeps the count one ahead
-/// from the add to the event's commit point.
+/// `count_placement` decides where the run's one add goes (section 4). The position map keeps the count
+/// ahead by the events still to come from the add to each event's commit point.
 pub fn translate_native<G: Native>(
     code: &[u8],
     address: u64,
@@ -43,13 +42,13 @@ pub fn translate_native<G: Native>(
         }
     }
     let ends_itself = matches!(run.last()?.3, Route::Transfer | Route::Trap);
+    let events: Vec<bool> = run.iter().map(|r| r.4).collect();
+    let placement = count_placement(&events);
     let mut out = HostCode::new();
     for (k, (instruction, bytes, here, _, event)) in run.iter().enumerate() {
         out.start(*here, *event);
-        if k == 0 {
-            for _ in run.iter().filter(|r| r.4) {
-                G::count(&mut out);
-            }
+        if let Some((_, total)) = placement.filter(|&(at, _)| at == k) {
+            G::count(&mut out, total);
         }
         G::carry(instruction, &code[bytes.clone()], *here, &mut out);
     }

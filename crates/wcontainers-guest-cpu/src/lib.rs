@@ -21,7 +21,7 @@ pub use effects::{Effects, effects};
 #[cfg(feature = "translate")]
 pub use native::{
     Fixup, Held, HostCode, InsideCall, Native, NativeClass, NativeReason, Relocated, Resume, Route,
-    Side, Span, counted,
+    Side, Span, count_placement, counted,
 };
 #[cfg(feature = "translate")]
 pub use translate::*;

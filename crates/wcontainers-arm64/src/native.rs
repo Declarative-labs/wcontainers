@@ -206,9 +206,9 @@ impl Native for Arm64 {
         carry::carry(i, word, address, code);
     }
 
-    fn count(code: &mut HostCode) {
-        let add = encode::add_immediate(COUNT, COUNT, 1).expect("one fits");
-        code.count(&add.to_le_bytes());
+    fn count(code: &mut HostCode, events: u32) {
+        let add = encode::add_immediate(COUNT, COUNT, events.into()).expect("a run's events fit");
+        code.count(&add.to_le_bytes(), events);
     }
 
     fn call(code: &mut HostCode, call: InsideCall) {
