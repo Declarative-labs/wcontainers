@@ -86,6 +86,14 @@ The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three laye
   When `docker version` answers again: check no `wc-translator-` container is left, then restart the
   driver with the command above (it runs the failed or stopped chunks again first). Do not quit, restart
   or reset Docker Desktop from this track: other tracks' containers run in it.
+- The scratch script `.../p2/resume.sh` does that by itself, for a day from its start (started 2026-11-19
+  02:29, log `.../p2/resume.log`): when Docker has not answered for a minute it stops the driver, and when
+  Docker has answered for two minutes and no driver runs it removes any `wc-translator-` container and
+  restarts the driver with the command above (not on a checkout with uncommitted changes); it ends when
+  the driver logs "long runs ended". It never touches Docker. Is it running: `pgrep -fl '^bash .*p2/resume.sh'`.
+  Before stopping the driver by hand, stop it too (`stop-after-chunk.sh` now does so first), or it starts
+  the driver again two minutes later. Match the driver as `pgrep -f '^bash [^ ]*/long-runs\.sh$'`: the
+  looser pattern above also matches any shell whose command text holds the name.
 - Disk: each copy's `trees/<commit>/target/programs` keeps every built program, about 330 MB a chunk
   (the copy of 445e3cf had 19 GB after 54 chunks). After a restart, delete `trees/<old commit>/target` of
   every copy no longer running (done 2026-11-18 18:50: 48 GB freed; sources and logs kept).
