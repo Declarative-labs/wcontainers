@@ -2857,11 +2857,17 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
             let local = self.register(bit);
             Slot::of_bit::<G>(bit).load_into(&mut self.sink(), block, local);
         }
+        // The registers passed in only live in parameters, which liveness does not follow.
+        for (local, bit) in passed_in_only::<G>() {
+            Slot::of_bit::<G>(bit).load_into(&mut self.sink(), block, local);
+        }
     }
 
     fn ret(&mut self, target: u32) {
         pop_return_address::<G>(&mut self.sink());
         self.write_back_registers();
+        let block = self.fixed(G_THREAD_BLOCK);
+        crate::code::save_passed_in_only::<G>(&mut self.sink(), block);
         // The flags go back only when the caller asks for them.
         let flags = self.at.flags;
         let wanted = |e: &mut Self| {

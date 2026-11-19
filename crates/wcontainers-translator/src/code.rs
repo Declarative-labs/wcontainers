@@ -1096,6 +1096,23 @@ pub(crate) fn push_results<G: Guest>(s: &mut InstructionSink<'_>, block: Fixed) 
     }
 }
 
+/// The registers passed into pieces but not out of them, each with its parameter: a callee may change them,
+/// so a return leaves them in the thread block and the caller takes them from there.
+pub(crate) fn passed_in_only<G: Guest>() -> impl Iterator<Item = (u32, u32)> {
+    G::PASSED_IN
+        .iter()
+        .enumerate()
+        .filter(|(_, bit)| !G::PASSED_OUT.contains(bit))
+        .map(|(i, &bit)| (i as u32, bit))
+}
+
+/// Store the registers passed in only (see [`passed_in_only`]) into the thread block, before a return.
+pub(crate) fn save_passed_in_only<G: Guest>(s: &mut InstructionSink<'_>, block: Fixed) {
+    for (local, bit) in passed_in_only::<G>() {
+        Slot::of_bit::<G>(bit).store_from(s, block, local);
+    }
+}
+
 /// Store the passed registers of a piece (or the dispatcher) into the thread block.
 pub(crate) fn save_passed<G: Guest>(s: &mut InstructionSink<'_>, block: Fixed) {
     for (i, slot) in passed_slots::<G>().enumerate() {
@@ -1632,11 +1649,15 @@ impl<G: Guest> Emitter<G> for NoneEmitter<'_, G> {
                 None => s.drop(),
             };
         }
+        for (local, bit) in passed_in_only::<G>() {
+            Slot::of_bit::<G>(bit).load_into(&mut s, BLOCK, local);
+        }
     }
 
     fn ret(&mut self, target: u32) {
         let mut s = self.sink();
         pop_return_address::<G>(&mut s);
+        save_passed_in_only::<G>(&mut s, BLOCK);
         s.local_get(target);
         push_expected_return::<G>(&mut s);
         s.i64_eq().if_(BlockType::Empty);
