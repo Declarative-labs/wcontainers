@@ -130,11 +130,27 @@ Built:
   suggested for the owner. Not yet: the mounts with their options, the read-only and masked
   paths, the wait status's parts, and taking any of them at start.
 
+Whole suite at 6d973809 (code c8794411; `cargo test -j 4 -p wcontainers-abi -p wcontainers-kernel
+-p wcontainers-kernel-test --no-fail-fast -- --test-threads=2`, 05:15 to 07:34 on the 19th, load
+about 60 at the start, 85 at 05:26, 27 to 40 after; the LTP runner ran beside it with 1 job;
+scratch k6c9/suite.log): 273 passed, 1 failed, 11 ignored (the same eleven). The failure:
+terminal `splice_holds_the_pipe` (the streams track's test), ours "cat /dev/tty | cat: abc\r\n"
+where the reference showed it twice; alone it passed three times of three right after (load
+about 27 to 40). Ours depends on when the outside's input comes in real time, so a load-timed
+difference; the streams track's to look into, with the eighth run's `a_terminal_is_resized`.
+Affected tests before each commit (scratch k6c9/affected*.log and startvalues.log): backend 20
+of 20, sharedmap 2, rootbackend 3, filter 1, inet 26, busybox 4 (1 ignored), epoll 1, unixsock
+4, limits 1, userlimits 1, hello 3.
+
 Found:
 - Docker Desktop stopped at about 02:03 on the 19th ("Docker Desktop is unable to start") and was
   back at 02:39, and stopped again at about 02:50. Every LTP test after the first fall crashed
   in 0.1 s: the whole comparison's rows from 640 (fs:gf07) on were taken out of k6c7/whole.tsv
   (kept in k6c7/whole-e1d37089-docker-fall.tsv), so the same command continues it.
+- A mistake of this run: clearing leftover containers after Docker came back, I removed every
+  container named wc-kernel-*, which took one of another checkout's (the native track's busybox
+  test, wc-kernel-command-90366-2, already exited); that test may have failed once from it. Only
+  containers whose name carries this run's own process ids may be removed.
 - cve-2014-0196 may be what brings Docker Desktop down: both falls came while it ran on ours
   (slow runner, LTP_LIMIT 7200, 1 job; it started at about 01:59 and ended at 239 s, then was
   started again at 02:41 and ended at 594 s), each time with the test host reading end of file
@@ -4029,9 +4045,11 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 ## Next
 
 K6c, after the ninth run (this changes the eighth run's list just below):
-- The whole LTP comparison: continue k6c7/whole.tsv (639 done) with a runner at the ninth run's
-  last commit (`nix develop -c cargo build -p wcontainers-kernel-test --bin ltp`, copy
-  target/debug/ltp to scratch kernel/k6c9/ltp-z, then the eighth run's command with ltp-z).
+- The whole LTP comparison: k6c7/whole.tsv (639 done) was continued at 05:15 on the 19th with
+  1 job (the whole suite ran beside it) by scratch kernel/k6c9/ltp-z, built at c8794411 (the
+  ninth run's last code): `LTP_TAR=<scratch>/kernel/ltp/ltp-20260930.tar LTP_JOBS=1 LTP_LIMIT=900
+  nix develop -c <scratch>/kernel/k6c9/ltp-z ours <scratch>/kernel/k6c7/whole.tsv`, from the
+  checkout. If it stopped, the same command (2 jobs when nothing else runs) continues it.
   Rerun with it what the eighth and ninth runs changed among the first 639: tests creating files
   on the root (backend CREATE flags), TCP tests (TCP_CORK), tests mapping files (pages dropped on
   a change of size or time), and the hugetlb group.
