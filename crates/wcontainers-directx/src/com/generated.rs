@@ -593,7 +593,7 @@ impl ID3D11Device_Impl for Device_Impl {
     }
     fn CheckCounterInfo(&self, pcounterinfo: *mut D3D11_COUNTER_INFO) {
         let _call = self.call();
-        self.unserved("ID3D11Device::CheckCounterInfo")
+        self.check_counter_info(pcounterinfo)
     }
     fn CheckCounter(
         &self,
@@ -1581,7 +1581,7 @@ impl ID3D10Device_Impl for Device_Impl {
     }
     fn CheckCounterInfo(&self, pcounterinfo: *mut D3D10_COUNTER_INFO) {
         let _call = self.call();
-        self.unserved("ID3D10Device::CheckCounterInfo")
+        self.check_counter_info10(pcounterinfo)
     }
     fn CheckCounter(
         &self,
