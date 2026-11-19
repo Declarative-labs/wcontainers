@@ -219,6 +219,41 @@ crate's tests and the literals crate, which this track may not edit (docs/litera
 track's refused.rs, surface.rs and spec.rs tests, which would need the keys exported; two more were
 redefinitions of the translator's `contract::HOOKS` and `ENV`. Left for the orchestrator's ruling on hard case 1.
 
+J5's bar in this run. Docker Desktop answered again at 04:58. Run 3's left-over waiter (`j5run3/all.sh`, found
+still running) had started on ca519a78 at 04:59 when this run moved the scratch tree under it; both were stopped
+and that start set aside (j5run3/spoiled3), and `all.sh` was started once on the tree at 11aeb561 (the literal
+merge; the later commits of this run change no behaviour the kernel test crate can see: names, the driver's
+printed timings, its clock's start written as a Duration of the same value, the page it retrieves, 4,096
+either way). Its own target, kept from run 3's tries (not a clean build); `j5run3/ltp.sh` was made a no-op (the
+Mac form kept as `ltp-mac.sh`), since the whole LTP comparison is to run on the ARM machine. Verdict lists
+j5run3/f-*.txt, `j5run3/compare.sh` diffs them.
+- Stand-in (this Mac): 3,656.7 s with its build, load 62 to 40; 249 tests: 241 ok, 7 ignored, 1 failed:
+  `deadlines::deadlines_end_waits_while_others_compute` (ours "parent woke" then "child done", the reference
+  the other way round: the guest's parent sleeps 5 ms beside a child counting to 30 million, and the reference
+  in Docker Desktop's VM, at load about 70, did not wake its parent first; it passed on the stand-in on the ARM
+  machine and in run 2, and at full and none here).
+- Full (this Mac): 3,833.8 s, load 40 to 34. Every verdict equals the stand-in's but the known ones, the same
+  as run 2 (section "J5 run 2"): align and sharedviews pass with the back end (ignored on the stand-in, its
+  known failures), counterclock across saves ignored with the back end (its known failure), the four waiting
+  tests fail on the address ceiling (java `start_up_matches_reference` and `threads_and_collections_match_reference`,
+  node `system_program_matches_reference`, python `system_test_modules_match_reference`; "Could not allocate
+  compressed class space: 1073741824 bytes" and "address above the address space" warned), and deadlines
+  passes. The 19 streams tests the merge brought pass on both sides.
+- None (this Mac): 2,125.1 s, load 34 to 25; 241 tests (the eight of the K6b runtimes' files left out, as in
+  run 2). The same differences as at full, without the eight.
+- Bounded (this Mac, N 44 for seed 0): started 07:42 at load 25; running.
+- On the ARM machine (job runtime/20261119-135850-695599 at 7d246691, 12 jobs and 12 test threads; logs
+  fetched to j5run4/arm/j5, lists j5run4/arm/*.txt): stand-in 2,163 s, load 1 to 9; 249 tests, failing
+  exactly the manual's 25 reference differences plus procstatus fdinfo (the zig relocation) and
+  `terminal::splice_holds_the_pipe` (its 2.5 s of real time); deadlines passed. Full 2,917 s, load 9 to 7:
+  equal to the stand-in's but the known differences above, and two more: `outside::clients_talk_to_a_server_outside_as_linux`
+  and `outside::outside_connections_read_reset_after_a_restore` panic in the kernel, `assertion failed:
+  self.threads[&tid].call.wait.is_some()` (task.rs:206, a call that returned `Parked` with no wait), from
+  the back end's system call hook. Run alone five more times there (job 20261119-152844-2212446, two test
+  threads): the second failed 5 times of 5, the first once. On this Mac the outside file passed 6 runs of 6 at
+  full, and passed in the whole runs at full and none. Not settled yet (below). The machine went away during
+  the run at none; none and bounded there are lost.
+
 Left (waits on other tracks' constants, or a ruling): spec.rs's mounts, capabilities, limits, umask and
 read-only paths (the kernel's defaults, step 13), its JSON keys (hard case 1), and its other refusal reasons
 (hard case 2); image.rs's path syntax (`/`, `.`, `..`; the kernel's), root's id 0, `MOST_LINKS` (the kernel's
