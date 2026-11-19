@@ -59,9 +59,10 @@ pub mod form {
     pub const STR_Q: &str = "STR_Q_ldst_pos";
     pub const MRS: &str = "MRS_RS_systemmove";
     pub const MSR: &str = "MSR_SR_systemmove";
+    pub const SYS: &str = "SYS_CR_systeminstrs";
 
     /// Every form above.
-    pub const ALL: [&str; 47] = [
+    pub const ALL: [&str; 48] = [
         MOVZ,
         MOVK,
         UBFM,
@@ -109,6 +110,7 @@ pub mod form {
         STR_Q,
         MRS,
         MSR,
+        SYS,
     ];
 }
 
@@ -136,6 +138,10 @@ pub mod field {
     pub const OPTION: &str = "option";
     pub const IMM3: &str = "imm3";
     pub const IMM7: &str = "imm7";
+    pub const OP1: &str = "op1";
+    pub const CRN: &str = "CRn";
+    pub const CRM: &str = "CRm";
+    pub const OP2: &str = "op2";
     /// What the names of register fields start with.
     pub const REGISTER: &str = "R";
 }
@@ -503,6 +509,22 @@ pub fn compare_swap_of(name: &str, rs: Register, rt: Register, rn: Register) -> 
 /// `eret`: back to the level and address the exception registers hold.
 pub fn exception_return() -> u32 {
     word(form::ERET, &[]).expect("no fields")
+}
+
+/// The system instruction `tlbi vmalle1is`: every TLB entry of the EL1&0 regime, on every CPU of the inner
+/// shareable domain (Arm ARM, TLBI VMALLE1IS).
+const INVALIDATE_WHOLE_TLB: [(&str, u32); 4] = [
+    (field::OP1, 0),
+    (field::CRN, 8),
+    (field::CRM, 3),
+    (field::OP2, 0),
+];
+
+/// `tlbi vmalle1is`.
+pub fn invalidate_whole_tlb() -> u32 {
+    let mut fields = INVALIDATE_WHOLE_TLB.to_vec();
+    fields.push((field::RT, ZERO.into()));
+    word(form::SYS, &fields).expect("the system instruction's fields fit")
 }
 
 /// `brk #imm16`, `udf #imm16` or `hvc #imm16`, by form.
