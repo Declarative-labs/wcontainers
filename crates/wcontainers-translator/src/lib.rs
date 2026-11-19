@@ -7,6 +7,8 @@ mod code;
 pub mod contract;
 mod full;
 mod layout;
+#[cfg(feature = "native")]
+mod native;
 mod state;
 mod thread;
 
@@ -15,4 +17,6 @@ pub use code::{
 };
 #[cfg(feature = "measure")]
 pub use code::{Omit, translate_in_modules, translate_omitting};
+#[cfg(feature = "native")]
+pub use native::translate_native;
 pub use thread::thread_module;
