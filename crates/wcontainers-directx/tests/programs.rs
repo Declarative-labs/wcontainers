@@ -408,7 +408,7 @@ fn alpha_antialiased_lines_blend_their_coverage_as_direct3d_does() {
 
 /// The same lines as an indexed strip cut by the restart index.
 #[test]
-#[ignore = "the stage helper refuses indexed strips (StageIndexedStrip, the shaders track's), which removes the device"]
+#[ignore = "the shaders track's stage helper refuses indexed strips, which removes the device"]
 fn an_indexed_alpha_antialiased_strip_blends_its_coverage_as_direct3d_does() {
     antialiased_lines("aa_strip_indexed");
 }

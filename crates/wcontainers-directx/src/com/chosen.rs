@@ -16,6 +16,8 @@ mod webgpu {
     use windows::Win32::UI::WindowsAndMessaging::{GWLP_HINSTANCE, GetWindowLongPtrW};
     use windows::core::{Error, Result};
 
+    use wcontainers_direct3d_11::WARNING_PREFIX;
+
     pub type Chosen = wcontainers_gpu_webgpu::WebGpu;
 
     /// The environment variable naming WebGPU features taken as missing.
@@ -51,7 +53,7 @@ mod webgpu {
         {
             match name.parse::<wgpu::Features>() {
                 Ok(f) => descriptor.required_features.remove(f),
-                Err(_) => eprintln!("wcontainers direct3d 11: no WebGPU feature {name}"),
+                Err(_) => eprintln!("{WARNING_PREFIX}: no WebGPU feature {name}"),
             }
         }
         let (device, queue) = pollster::block_on(adapter.request_device(&descriptor)).ok()?;
