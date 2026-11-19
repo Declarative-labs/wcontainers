@@ -8,7 +8,7 @@ use wcontainers_gpu::{
     StencilOp, Topology, VertexFormat,
 };
 
-use wcontainers_directx_graphics_infrastructure::dxgi_vertex_format;
+use wcontainers_directx_graphics_infrastructure::{d3d, dxgi_vertex_format};
 use wcontainers_shaders::stage::{
     InputTopology, LINE_ADJACENCY_VERTICES, TRIANGLE_ADJACENCY_VERTICES, TRIANGLE_VERTICES,
 };
@@ -100,9 +100,6 @@ pub struct InputElement {
     pub per_instance: bool,
     pub step_rate: u32,
 }
-
-/// `D3D12_APPEND_ALIGNED_ELEMENT`.
-pub const APPEND_ALIGNED: u32 = u32::MAX;
 
 fn blend_factor(value: u32) -> Result<BlendFactor, Error> {
     use BlendFactor::*;
@@ -382,7 +379,7 @@ pub fn resolve_offsets(elements: &mut [InputElement]) -> Result<(), Error> {
         let slot = ends
             .get_mut(e.slot as usize)
             .ok_or(Error::Invalid("input slot out of range"))?;
-        if e.offset == APPEND_ALIGNED {
+        if e.offset == d3d::APPEND_ALIGNED_ELEMENT {
             e.offset = *slot;
         }
         let size = vertex_format(e.format)?.1;

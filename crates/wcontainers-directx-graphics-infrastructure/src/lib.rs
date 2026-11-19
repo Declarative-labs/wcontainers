@@ -4,6 +4,7 @@
 //! for. Fronts hold a [`SwapChain`] per DXGI swap chain and call it with their own back end.
 
 mod adapter;
+pub mod d3d;
 mod format;
 mod output;
 mod support;

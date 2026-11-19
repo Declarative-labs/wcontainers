@@ -2189,7 +2189,6 @@ code	crates/wcontainers-direct3d-12/src/device/pull.rs	int	put	9
 code	crates/wcontainers-direct3d-12/src/device/pull.rs	int	words	9
 code	crates/wcontainers-direct3d-12/src/device/pull.rs	str	Device<B>::fetch	"a per-instance element beyond 4 GiB"
 code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::clock_calibration	8
-code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::copy_into_value	8
 code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::create_query_heap	4
 code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::create_query_heap	7
 code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::predicate	160
@@ -2206,21 +2205,13 @@ code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::skips	8
 code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::skips	8
 code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::skips	8
 code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::skips	8
-code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::value_at	8
-code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::value_at	8
-code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Device<B>::write_value	8
 code	crates/wcontainers-direct3d-12/src/device/query.rs	int	Programs	4
-code	crates/wcontainers-direct3d-12/src/device/query.rs	int	value_size	16
-code	crates/wcontainers-direct3d-12/src/device/query.rs	int	value_size	8
-code	crates/wcontainers-direct3d-12/src/device/query.rs	int	value_size	88
 code	crates/wcontainers-direct3d-12/src/device/query.rs	str	Device<B>::own_program	"main"
 code	crates/wcontainers-direct3d-12/src/device/statistics.rs	int	Device<B>::counting_blocks	0xff
 code	crates/wcontainers-direct3d-12/src/device/statistics.rs	int	Device<B>::counting_blocks	0xff
-code	crates/wcontainers-direct3d-12/src/device/statistics.rs	int	Replay<B>::begin_statistics	11
 code	crates/wcontainers-direct3d-12/src/device/statistics.rs	int	Replay<B>::indexed_strip	0xff
 code	crates/wcontainers-direct3d-12/src/device/statistics.rs	int	Replay<B>::indexed_strip	4
 code	crates/wcontainers-direct3d-12/src/device/statistics.rs	int	Replay<B>::indexed_strip	57
-code	crates/wcontainers-direct3d-12/src/device/statistics.rs	int	Running	11
 code	crates/wcontainers-direct3d-12/src/device/statistics.rs	int	primitives	3
 code	crates/wcontainers-direct3d-12/src/device/statistics.rs	str	Device<B>::pixel_counting	"main"
 code	crates/wcontainers-direct3d-12/src/device/statistics.rs	str	counting_program	"@builtin(sample_index) i: u32"
@@ -2295,19 +2286,9 @@ code	crates/wcontainers-direct3d-12/src/list.rs	int	SamplerView	3
 code	crates/wcontainers-direct3d-12/src/list.rs	int	SamplerView	4
 code	crates/wcontainers-direct3d-12/src/resource.rs	int	HeapType::from_d3d12	3
 code	crates/wcontainers-direct3d-12/src/resource.rs	int	HeapType::from_d3d12	4
-code	crates/wcontainers-direct3d-12/src/resource.rs	int	ResourceDesc::footprints	10
-code	crates/wcontainers-direct3d-12/src/resource.rs	int	ResourceDesc::footprints	10
-code	crates/wcontainers-direct3d-12/src/resource.rs	int	ResourceDesc::footprints	20
 code	crates/wcontainers-direct3d-12/src/resource.rs	int	ResourceDesc::footprints	4
-code	crates/wcontainers-direct3d-12/src/resource.rs	int	ResourceDesc::footprints	4
-code	crates/wcontainers-direct3d-12/src/resource.rs	int	ResourceDesc::footprints	4
-code	crates/wcontainers-direct3d-12/src/resource.rs	int	ResourceDesc::footprints	64
 code	crates/wcontainers-direct3d-12/src/resource.rs	int	ResourceDesc::full_chain	64
 code	crates/wcontainers-direct3d-12/src/resource.rs	int	check_heap	0x8
-code	crates/wcontainers-direct3d-12/src/resource.rs	int	check_heap	10
-code	crates/wcontainers-direct3d-12/src/resource.rs	int	check_heap	20
-code	crates/wcontainers-direct3d-12/src/resource.rs	int	check_heap	4
-code	crates/wcontainers-direct3d-12/src/resource.rs	int	check_heap	64
 code	crates/wcontainers-direct3d-12/src/root.rs	bytestr	rts0_part	b"DXBC"
 code	crates/wcontainers-direct3d-12/src/root.rs	bytestr	serialize	b"DXBC"
 code	crates/wcontainers-direct3d-12/src/root.rs	int	RootSignatureDesc::at_version	3
@@ -22921,19 +22902,10 @@ redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	map::WRITE	WRITE = 2
 redefinition	crates/wcontainers-direct3d-11/tests/front.rs	int	a_geometry_shader_choosing_layers_and_viewports_draws_once_per_layer_and_viewport::LAYERS	LAYERS = 4
 redefinition	crates/wcontainers-direct3d-11/tests/front.rs	int	nv12_is_two_planes_viewed_apart_and_written_copied_and_mapped_as_joined_rows::NV12	NV12 = 103
 redefinition	crates/wcontainers-direct3d-11/tests/front.rs	int	yuy2_is_a_half_width_texture_of_pixel_pairs_viewed_as_rgba8::YUY2	YUY2 = 107
-redefinition	crates/wcontainers-direct3d-12/examples/check/cases.rs	int	PAGE	PAGE = 65536
 redefinition	crates/wcontainers-direct3d-12/examples/check/cases.rs	int	SIZE	SIZE = 64
 redefinition	crates/wcontainers-direct3d-12/examples/check_d3d12.rs	int	draw::SIZE	SIZE = 64
 redefinition	crates/wcontainers-direct3d-12/src/device/bind.rs	int	VERTEX	VERTEX = 1
 redefinition	crates/wcontainers-direct3d-12/src/device/geometry.rs	int	FILLED_BYTES	FILLED_BYTES = 32
-redefinition	crates/wcontainers-direct3d-12/src/device/geometry.rs	int	NO_RASTERIZED_STREAM	NO_RASTERIZED_STREAM = 4294967295
-redefinition	crates/wcontainers-direct3d-12/src/device/statistics.rs	int	CS_INVOCATIONS	CS_INVOCATIONS = 10
-redefinition	crates/wcontainers-direct3d-12/src/device/statistics.rs	int	C_INVOCATIONS	C_INVOCATIONS = 5
-redefinition	crates/wcontainers-direct3d-12/src/device/statistics.rs	int	C_PRIMITIVES	C_PRIMITIVES = 6
-redefinition	crates/wcontainers-direct3d-12/src/device/statistics.rs	int	IA_PRIMITIVES	IA_PRIMITIVES = 1
-redefinition	crates/wcontainers-direct3d-12/src/device/statistics.rs	int	IA_VERTICES	IA_VERTICES = 0
-redefinition	crates/wcontainers-direct3d-12/src/device/statistics.rs	int	PS_INVOCATIONS	PS_INVOCATIONS = 7
-redefinition	crates/wcontainers-direct3d-12/src/device/statistics.rs	int	VS_INVOCATIONS	VS_INVOCATIONS = 2
 redefinition	crates/wcontainers-direct3d-12/src/dxbc.rs	int	CUSTOMDATA	CUSTOMDATA = 53
 redefinition	crates/wcontainers-direct3d-12/src/dxbc.rs	int	DCL_RESOURCE	DCL_RESOURCE = 88
 redefinition	crates/wcontainers-direct3d-12/src/dxbc.rs	int	DCL_UAV_TYPED	DCL_UAV_TYPED = 156
@@ -22941,7 +22913,6 @@ redefinition	crates/wcontainers-direct3d-12/src/dxbc.rs	int	DIMENSION_BUFFER	DIM
 redefinition	crates/wcontainers-direct3d-12/src/list.rs	int	DSV_READ_ONLY_DEPTH	DSV_READ_ONLY_DEPTH = 1
 redefinition	crates/wcontainers-direct3d-12/src/list.rs	int	DSV_READ_ONLY_STENCIL	DSV_READ_ONLY_STENCIL = 2
 redefinition	crates/wcontainers-direct3d-12/src/resource.rs	int	DIMENSION_BUFFER	DIMENSION_BUFFER = 1
-redefinition	crates/wcontainers-direct3d-12/src/state.rs	int	APPEND_ALIGNED	APPEND_ALIGNED = 4294967295
 redefinition	crates/wcontainers-direct3d-12/tests/support/triangle.rs	int	RGBA8	RGBA8 = 28
 redefinition	crates/wcontainers-direct3d-12/tests/support/triangle.rs	int	SIZE	SIZE = 256
 redefinition	crates/wcontainers-directx-graphics-infrastructure/src/format.rs	int	dxgi::R16G16B16A16_FLOAT	R16G16B16A16_FLOAT = 10
@@ -23174,7 +23145,6 @@ restated	crates/wcontainers-direct3d-11/tests/front.rs	int	triangle_scene	256
 restated	crates/wcontainers-direct3d-11/tests/front.rs	int	triangle_scene	256
 restated	crates/wcontainers-direct3d-11/tests/front.rs	int	triangle_scene	256
 restated	crates/wcontainers-direct3d-11/tests/front.rs	int	triangle_scene	256
-restated	crates/wcontainers-direct3d-12/examples/check/cases.rs	int	Ctx::pixels	256u32
 restated	crates/wcontainers-direct3d-12/examples/check/cases.rs	int	alias_cpu	256
 restated	crates/wcontainers-direct3d-12/examples/check/cases.rs	int	custom_heap	256
 restated	crates/wcontainers-direct3d-12/examples/check/cases.rs	int	custom_heap	256
@@ -23191,7 +23161,6 @@ restated	crates/wcontainers-direct3d-12/examples/check/cases.rs	int	indirect_dis
 restated	crates/wcontainers-direct3d-12/examples/check/cases.rs	int	indirect_dispatch	1024
 restated	crates/wcontainers-direct3d-12/examples/check/cases.rs	int	indirect_dispatch	1024
 restated	crates/wcontainers-direct3d-12/examples/check/cases.rs	int	indirect_dispatch	2048
-restated	crates/wcontainers-direct3d-12/examples/check/cases.rs	int	predicated_resolve	256u32
 restated	crates/wcontainers-direct3d-12/examples/check/cases.rs	int	restart	0x10000
 restated	crates/wcontainers-direct3d-12/examples/check/cases.rs	int	restart	0xffff
 restated	crates/wcontainers-direct3d-12/examples/check/cases.rs	int	restart	0xffff

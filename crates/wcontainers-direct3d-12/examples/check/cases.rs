@@ -48,7 +48,7 @@ const SAMPLE_PS: &[u8] =
     include_bytes!("../../../wcontainers-graphics-test/shaders/dxbc/samplers.ps_sample.dxbc");
 const GEOMETRY_VS: &[u8] = own!("vs_geometry");
 const GEOMETRY_PS: &[u8] = own!("ps_geometry");
-const PAGE: u64 = 64 << 10;
+const PAGE: u64 = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT as u64;
 const SIZE: u32 = 64;
 
 pub const CASES: &[&str] = &[
@@ -419,7 +419,7 @@ impl Ctx {
         subresource: u32,
     ) -> Result<Vec<u8>> {
         unsafe {
-            let pitch = 256u32;
+            let pitch = D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
             let readback = self.committed(
                 D3D12_HEAP_TYPE_READBACK,
                 &buffer_desc(u64::from(pitch * SIZE), D3D12_RESOURCE_FLAG_NONE),
@@ -2235,7 +2235,7 @@ unsafe fn predicated_resolve(c: &Ctx) -> Result<String> {
             },
             D3D12_RESOURCE_STATE_COPY_DEST,
         )?;
-        let pitch = 256u32;
+        let pitch = D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
         let texels: Vec<u8> = (0..pitch * SIZE / 4)
             .flat_map(|_| 0x3949_5969u32.to_le_bytes())
             .collect();

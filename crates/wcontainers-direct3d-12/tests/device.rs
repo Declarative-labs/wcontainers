@@ -300,7 +300,8 @@ fn placed_resources_lie_in_their_heap_and_overlapping_buffers_inherit_bytes() {
     use wcontainers_gpu::SlowPath::AliasCopied;
     let mut device = Device::new(Recorder::new());
     let queue = device.create_queue().unwrap();
-    let page = 64 << 10;
+    let page =
+        wcontainers_directx_graphics_infrastructure::d3d::DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
     let heap = device
         .create_heap(4 * page, 0, HeapType::Default, 0)
         .unwrap();

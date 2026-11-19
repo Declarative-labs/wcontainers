@@ -2740,7 +2740,12 @@ struct Replay<B: Backend> {
     /// queries begun and not ended.
     statistics: Option<statistics::Running>,
     /// Each: heap, index, stream, and the primitives written and needed so far.
-    streams: Vec<(QueryHeapId, u32, u32, [u64; 2])>,
+    streams: Vec<(
+        QueryHeapId,
+        u32,
+        u32,
+        wcontainers_directx_graphics_infrastructure::d3d::StreamOutputStatistics,
+    )>,
     /// The bound stream output buffers.
     stream_views: [crate::list::StreamView; 4],
     /// The pass tracker holds the bound targets, for the occlusion and pixel counters.
@@ -3433,7 +3438,7 @@ impl<B: Backend> Replay<B> {
             if record.is_none() {
                 let threads = groups.iter().map(|&g| u64::from(g)).product::<u64>()
                     * d.pipelines[pid.0 as usize].group_threads;
-                s.add(statistics::CS_INVOCATIONS, threads);
+                s.values.cs_invocations += threads;
             }
         }
         self.settle(d)?;

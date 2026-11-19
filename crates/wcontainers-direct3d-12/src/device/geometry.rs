@@ -17,7 +17,7 @@ use wcontainers_shaders::stage::{
 
 use super::*;
 use pull::Bases;
-use wcontainers_directx_graphics_infrastructure::dxgi;
+use wcontainers_directx_graphics_infrastructure::{d3d, dxgi};
 
 /// What a pipeline with a geometry shader, stream output or hull and domain shaders adds.
 pub(super) struct Geometry<B: Backend> {
@@ -108,9 +108,6 @@ pub(super) fn writes_cull_distances(c: &Converted) -> bool {
         .any(|v| v.system == Some(wcontainers_gpu::SystemValue::CullDistance))
 }
 
-/// `D3D12_SO_NO_RASTERIZED_STREAM`.
-pub const NO_RASTERIZED_STREAM: u32 = u32::MAX;
-
 impl<B: Backend> Device<B> {
     /// The last stage before the rasteriser, a geometry or domain shader `code`, converted with
     /// `key`, and what it passes the pixel program: where it writes clip distances the back end
@@ -185,7 +182,7 @@ impl<B: Backend> Device<B> {
         let tessellated = !hs.is_empty();
         let rasterized = match so.map(|s| s.1) {
             None | Some(0) => true,
-            Some(NO_RASTERIZED_STREAM) => false,
+            Some(d3d::SO_NO_RASTERIZED_STREAM) => false,
             Some(_) => return Err(Error::NotImplemented("drawing a stream other than 0")),
         };
         let pulled: Vec<(u32, VertexFormat)> = inputs
@@ -944,8 +941,8 @@ impl<B: Backend> Replay<B> {
             let written = u32::from_le_bytes(bytes[..4].try_into().unwrap());
             let needed = u32::from_le_bytes(bytes[4..].try_into().unwrap());
             for q in self.streams.iter_mut().filter(|q| q.2 == 0) {
-                q.3[0] += u64::from(written);
-                q.3[1] += u64::from(needed);
+                q.3.primitives_written += u64::from(written);
+                q.3.primitives_storage_needed += u64::from(needed);
             }
         }
         Ok(())

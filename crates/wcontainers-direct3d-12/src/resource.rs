@@ -1,5 +1,9 @@
 //! Resource descriptions and how their bytes lie in buffers (`GetCopyableFootprints`).
 
+use wcontainers_directx_graphics_infrastructure::d3d::{
+    DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT, DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT,
+    SMALL_RESOURCE_PLACEMENT_ALIGNMENT,
+};
 use wcontainers_directx_graphics_infrastructure::dxgi::{R8_TYPELESS, R32_TYPELESS};
 use wcontainers_directx_graphics_infrastructure::dxgi_format;
 use wcontainers_gpu::Format;
@@ -96,7 +100,13 @@ pub fn check_heap_flags(flags: u32, committed: Option<bool>) -> Result<(), Error
 /// `CreateHeap`'s checks of what the description asks beyond its type: an alignment of 0, 64 KiB
 /// or 4 MiB, and no display flag (only committed resources are displayed).
 pub fn check_heap(alignment: u64, flags: u32) -> Result<(), Error> {
-    if ![0, 64 << 10, 4 << 20].contains(&alignment) {
+    if ![
+        0,
+        DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT,
+        DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT,
+    ]
+    .contains(&alignment)
+    {
         return Err(Error::Invalid("a heap's alignment"));
     }
     if flags & 0x8 != 0 {
@@ -328,15 +338,16 @@ impl ResourceDesc {
     /// small enough: 4 KiB for textures that are no target with at most 64 KiB, 64 KiB for
     /// multisampled ones with at most 4 MiB; any other alignment asked for is refused.
     pub fn allocation(&self) -> Result<(u64, u64), Error> {
-        const SMALL: u64 = 4 << 10;
-        const PAGE: u64 = 64 << 10;
-        const MSAA_PAGE: u64 = 4 << 20;
         /// `D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET` and `..._ALLOW_DEPTH_STENCIL`.
         const TARGETS: u32 = 0x3;
         let samples = u64::from(self.sample_count.max(1));
-        let natural = if samples > 1 { MSAA_PAGE } else { PAGE };
+        let natural = if samples > 1 {
+            DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT
+        } else {
+            DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT
+        };
         let bytes = if self.dimension == DIMENSION_BUFFER {
-            if ![0, PAGE].contains(&self.alignment) {
+            if ![0, DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT].contains(&self.alignment) {
                 return Err(Error::Invalid("a buffer's alignment"));
             }
             self.width
@@ -351,8 +362,14 @@ impl ResourceDesc {
                 let top = self.footprints(0, 1, 0)?.0[0];
                 let top = top.row_size * u64::from(top.rows) * u64::from(top.footprint.depth);
                 let small = match a {
-                    SMALL => samples == 1 && self.flags & TARGETS == 0 && top <= PAGE,
-                    PAGE => samples > 1 && top * samples <= MSAA_PAGE,
+                    SMALL_RESOURCE_PLACEMENT_ALIGNMENT => {
+                        samples == 1
+                            && self.flags & TARGETS == 0
+                            && top <= DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT
+                    }
+                    DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT => {
+                        samples > 1 && top * samples <= DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT
+                    }
                     _ => false,
                 };
                 if !small {
@@ -373,7 +390,13 @@ impl ResourceDesc {
         count: u32,
         base_offset: u64,
     ) -> Result<(Vec<FootprintInfo>, u64), Error> {
-        if ![0, 4 << 10, 64 << 10, 4 << 20].contains(&self.alignment) {
+        let alignments = [
+            0,
+            SMALL_RESOURCE_PLACEMENT_ALIGNMENT,
+            DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT,
+            DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT,
+        ];
+        if !alignments.contains(&self.alignment) {
             return Err(Error::Invalid("a resource's alignment"));
         }
         if self.dimension == DIMENSION_BUFFER {
