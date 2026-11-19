@@ -33,6 +33,17 @@ static void join(void) {
     }
 }
 
+// Waits until a joined thread is gone from /proc: Linux wakes the joiner when it clears the
+// thread's number (`mm_release`), before the thread's undo list is undone (`exit_sem`), and
+// takes its /proc entry away only after both.
+static void gone(long tid) {
+    char path[64];
+    snprintf(path, sizeof path, "/proc/self/task/%ld", tid);
+    while (access(path, F_OK) == 0) {
+        sched_yield();
+    }
+}
+
 // clone as the system call makes it (musl's wrapper refuses threads): the child runs `fn` on the
 // stack, then ends.
 static long raw_clone(long flags, void *top, volatile int *ctid, int (*fn)(void *)) {
@@ -175,11 +186,13 @@ int main(void) {
     // until the process ends.
     semid = semget(IPC_PRIVATE, 1, 0600);
     semctl(semid, 0, SETVAL, 5);
-    start(takes, THREAD | CLONE_FILES | CLONE_FS);
+    long taker = start(takes, THREAD | CLONE_FILES | CLONE_FS);
     join();
+    gone(taker);
     printf("own undo list: took %ld saw %ld now %d\n", seen[0], seen[1], semctl(semid, 0, GETVAL));
-    start(takes, THREAD | CLONE_FILES | CLONE_FS | CLONE_SYSVSEM);
+    taker = start(takes, THREAD | CLONE_FILES | CLONE_FS | CLONE_SYSVSEM);
     join();
+    gone(taker);
     printf("shared undo list: took %ld saw %ld now %d\n", seen[0], seen[1],
            semctl(semid, 0, GETVAL));
     semctl(semid, 0, IPC_RMID);

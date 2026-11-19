@@ -1,0 +1,21 @@
+[package]
+name = "wcontainers-guest-cpu"
+description = "What a guest CPU crate supplies: the interface the translator, the tests and the kernel are written against."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+zerocopy.workspace = true
+wasm-encoder = { version = "0.263.0", optional = true }
+
+[features]
+default = ["translate"]
+# The translation half: meanings, the Emitter and the analyses' facts, which need the standard library and
+# wasm-encoder. The kernel depends on the core alone, with this off.
+translate = ["dep:wasm-encoder"]
+
+[lints]
+workspace = true

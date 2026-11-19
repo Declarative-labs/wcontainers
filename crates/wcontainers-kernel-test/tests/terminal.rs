@@ -68,3 +68,9 @@ fn interactive_shell() {
 fn splice_holds_the_pipe() {
     compare("ttylock", &[]);
 }
+
+/// A canonical terminal in EXTPROC mode, whose reads pass its line ends (LTP's pty02).
+#[test]
+fn extproc_reads_match_reference() {
+    compare("ttyextproc", &[]);
+}

@@ -71,12 +71,13 @@ impl Report {
 
 /// Run a blob in Chrome at look-ahead none, starting at its first byte.
 pub fn translated(blob: &Blob) -> Report {
-    translated_with(blob, LookAhead::None, Omit::default())
+    translated_with(blob, (LookAhead::None, Optimise::Speed), Omit::default())
 }
 
-/// Run a blob in Chrome at a look-ahead, leaving out some checks only to measure them.
-pub fn translated_with(blob: &Blob, look_ahead: LookAhead, omit: Omit) -> Report {
-    repeated(blob, (look_ahead, Optimise::Speed), omit, 1)
+/// Run a blob in Chrome at a look-ahead, translated for speed or size, leaving out some checks only to
+/// measure them.
+pub fn translated_with(blob: &Blob, how: (LookAhead, Optimise), omit: Omit) -> Report {
+    repeated(blob, how, omit, 1)
 }
 
 /// [`translated_with`], running the program `repeat` times in the same instances, each run timed by itself.
@@ -159,6 +160,9 @@ fn run_in_chrome(
         Some("alignment") => 128 + 7,
         Some("undefined" | "unsupported") => 128 + 4,
         Some("breakpoint") => 128 + 5,
+        Some("divide error" | "float exception") => 128 + 8,
+        Some("general protection" | "overflow") => 128 + 11,
+        Some("stack fault") => 128 + 7,
         _ => panic!(
             "the program stopped without exiting in Chrome: {stopped} at {}",
             result["pc"]

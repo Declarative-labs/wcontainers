@@ -2,7 +2,9 @@
 
 use std::path::Path;
 
-use wcontainers_kernel_test::assert_same_output_seeded;
+use wcontainers_kernel_test::{
+    assert_same_output_on_backend_root_seeded, assert_same_output_seeded,
+};
 
 fn out() -> std::path::PathBuf {
     Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest")
@@ -19,6 +21,16 @@ fn threads_match_reference() {
 #[test]
 fn threads_survive_saving() {
     for run in assert_same_output_seeded(&out(), "threads", &[], 6) {
+        assert!(run.saved > 0);
+    }
+}
+
+/// The same with the root file system on the file backend, saved and brought back at moments
+/// drawn from each seed.
+#[test]
+fn threads_match_reference_on_backend_root() {
+    for run in assert_same_output_on_backend_root_seeded(&out(), "threads", &[], 6) {
+        assert!(run.warnings.is_empty(), "{:?}", run.warnings);
         assert!(run.saved > 0);
     }
 }
@@ -98,7 +110,7 @@ fn thread_credentials_match_reference() {
 }
 
 /// A signal sent to the process is taken by the thread Linux's `complete_signal` chooses, with the
-/// others in `pause`. On several CPUs the reference's choice races once in about ten runs.
+/// others in `pause`.
 #[test]
 fn process_signal_takers_match_reference() {
     for run in wcontainers_kernel_test::assert_same_output_one_cpu_seeded(&out(), "sigpick", &[], 0)

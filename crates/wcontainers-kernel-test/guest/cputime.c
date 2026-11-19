@@ -24,7 +24,22 @@ static void show(const char *when) {
            usage.ru_utime.tv_sec + usage.ru_stime.tv_sec < 1, ticks.tms_utime + ticks.tms_stime < 100);
 }
 
+// The user time /proc/self/stat shows grows with work done (field 14, in clock ticks).
+static unsigned long stat_utime(void) {
+    unsigned long utime = 0;
+    FILE *f = fopen("/proc/self/stat", "r");
+    if (f) {
+        fscanf(f, "%*d %*s %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu", &utime);
+        fclose(f);
+    }
+    return utime;
+}
+
 int main(void) {
+    int reads = 0;
+    while (stat_utime() == 0 && reads < 100000)
+        reads++;
+    printf("stat's user time grew: %d\n", stat_utime() > 0);
     show("start");
     struct timespec two = {2, 0};
     nanosleep(&two, 0);

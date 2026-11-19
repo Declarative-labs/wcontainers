@@ -580,5 +580,17 @@ int main(void) {
     fd = signalfd(-1, &set, 0);
     generic("signal descriptor", fd);
     close(fd);
+    // A process's /proc directory names it to pidfd_send_signal, and only to it.
+    int dir = open("/proc/self", O_RDONLY | O_DIRECTORY);
+    printf("proc dir signal 0: %ld\n", syscall(SYS_pidfd_send_signal, dir, 0, NULL, 0));
+    printf("proc dir signal thread scope: %ld\n",
+           syscall(SYS_pidfd_send_signal, dir, SIGCONT, NULL, 1));
+    long r = syscall(SYS_pidfd_getfd, dir, 0, 0);
+    printf("proc dir getfd: %ld %s\n", r, r < 0 ? strerror(errno) : "");
+    char task[64];
+    snprintf(task, sizeof task, "/proc/self/task/%d", getpid());
+    int thread = open(task, O_RDONLY | O_DIRECTORY);
+    r = syscall(SYS_pidfd_send_signal, thread, 0, NULL, 0);
+    printf("task dir signal: %ld %s\n", r, r < 0 ? strerror(errno) : "");
     return 0;
 }

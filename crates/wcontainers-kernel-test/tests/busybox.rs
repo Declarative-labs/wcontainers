@@ -173,9 +173,10 @@ fn system() {
 
 /// What these show depends on the root file system's own kind: on the reference it is overlayfs over
 /// ext4 (directory sizes of 4096, link counts of 1, hash order in listings, 4 KiB blocks per directory),
-/// and here, until the file backend exists, it is the in-memory kind.
+/// and here it is the in-memory kind, or on the backend the kind of the server's directory (tmpfs
+/// in tests).
 #[test]
-#[ignore = "known failure: the root file system is in memory until the file backend (K4); the reference's is overlayfs over ext4"]
+#[ignore = "known failure: the reference's root is overlayfs over ext4; ours is in memory or on the test backend's tmpfs, which show other sizes, link counts and listing order"]
 fn root_file_system() {
     all(&[
         &["ls", "-la", "/"],
