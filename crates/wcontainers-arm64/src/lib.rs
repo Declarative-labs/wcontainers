@@ -35,6 +35,8 @@ mod meaning;
 #[cfg(feature = "translate")]
 mod memory;
 #[cfg(feature = "translate")]
+mod native;
+#[cfg(feature = "translate")]
 mod simd;
 #[cfg(feature = "translate")]
 mod vector;

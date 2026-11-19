@@ -2475,8 +2475,10 @@ dependencies = [
 name = "wcontainers-arm64"
 version = "0.1.0"
 dependencies = [
+ "fastrand",
  "rustc_apfloat",
  "wasm-encoder 0.263.0",
+ "wasmparser 0.263.0",
  "wcontainers-abi",
  "wcontainers-guest-cpu",
  "yaxpeax-arch",
