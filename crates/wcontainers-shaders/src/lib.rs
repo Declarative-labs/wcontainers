@@ -143,11 +143,15 @@ pub fn convert(
     }];
     if let StageExtras::Geometry { .. } = reflection.extras {
         geometry_variant(variant)?;
-        let mut module = stage::passthrough(&reflection)?;
+        let named_layer = variant
+            .flags
+            .contains(VariantFlags::LAYER_FROM_STAGE)
+            .then(|| stage::named_layer_location(variant));
+        let mut module = stage::passthrough(&reflection, named_layer)?;
         if variant.flags.contains(VariantFlags::CLIP_DISTANCE) {
             // The pass-through is the last vertex stage: it passes the distances to the pixel program.
             let key = VariantKey {
-                flags: VariantFlags::CLIP_DISTANCE,
+                flags: VariantFlags::CLIP_DISTANCE | variant.flags & VariantFlags::LAYER_FROM_STAGE,
                 linked: variant.linked,
                 ..VariantKey::default()
             };

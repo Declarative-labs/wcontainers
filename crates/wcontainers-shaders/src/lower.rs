@@ -7,7 +7,10 @@
 //! plain expressions.
 
 use crate::ConvertError;
-use crate::ir::{self, Basic, Ir, Op, Ty, builtin, code, construct, interp, kind, scalar};
+use crate::ir::{
+    self, Basic, Ir, Op, Ty, atomic_op, builtin, code, construct, derivative, interp, kind, round,
+    scalar,
+};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
@@ -24,7 +27,7 @@ use naga::{FastHashMap as HashMap, FastHashSet as HashSet};
 use wcontainers_gpu::{
     DrawBaseSource, HelperSlot, HelperValue, Interpolation, ReflectedBinding, Reflection,
     ScalarKind as ValueKind, ShaderStage, SlotKind, SlowPath, SourceStage, StageExtras, StageValue,
-    SystemValue, TexelBufferRoute, VariantKey, helper_binding,
+    SystemValue, TexelBufferRoute, VariantFlags, VariantKey, helper_binding,
 };
 
 use crate::variant::texel::{TexelBuffer, TexelPlace};
@@ -38,6 +41,9 @@ type Result<T> = core::result::Result<T, ConvertError>;
 /// The clip and cull distances a vertex has in Direct3D 11 and 12, together
 /// (`D3D11_CLIP_OR_CULL_DISTANCE_COUNT`).
 const CLIP_OR_CULL_DISTANCES: u32 = 8;
+/// A declaration's atomic minimums or maximums: signed ones, unsigned ones.
+const SIGNED_EXTREMES: u8 = 1;
+const UNSIGNED_EXTREMES: u8 = SIGNED_EXTREMES << 1;
 /// The refusal of clip distances of a type the common form's array cannot hold.
 pub(super) const CLIP_DISTANCE_TYPE: &str = "ClipDistanceType";
 
@@ -216,7 +222,8 @@ struct Lowering<'a> {
     /// Images and samplers used in depth comparisons, by declaring id.
     compared: HashSet<u32>,
     /// Shared memory and storage buffers some atomic operation uses, by declaring id: their scalars
-    /// are declared atomic. The bits say which minimum and maximum it takes: 1 signed, 2 unsigned.
+    /// are declared atomic. The bits say which minimum and maximum it takes ([`SIGNED_EXTREMES`],
+    /// [`UNSIGNED_EXTREMES`]).
     atomic: HashMap<u32, u8>,
     semantics: HashMap<u32, (String, u32)>,
     discards: bool,
@@ -349,9 +356,19 @@ impl<'a> Lowering<'a> {
             scalar::I32 => Scalar::I32,
             scalar::U32 | scalar::UNKNOWN => Scalar::U32,
             scalar::F32 => Scalar::F32,
-            3 | 4 | 7 | 8 | 11 | 14..=17 => return Err(unsupported(crate::refusal::TYPE_16_BIT)),
-            6 | 10 => return Err(unsupported(crate::refusal::TYPE_64_BIT_INTEGER)),
-            13 => return Err(unsupported(crate::refusal::FLOAT_64)),
+            scalar::I8
+            | scalar::I16
+            | scalar::U8
+            | scalar::U16
+            | scalar::F16
+            | scalar::MIN_I16
+            | scalar::MIN_U16
+            | scalar::MIN_F16
+            | scalar::MIN_F10 => return Err(unsupported(crate::refusal::TYPE_16_BIT)),
+            scalar::I64 | scalar::U64 => {
+                return Err(unsupported(crate::refusal::TYPE_64_BIT_INTEGER));
+            }
+            scalar::F64 => return Err(unsupported(crate::refusal::FLOAT_64)),
             _ => return Err(malformed(format!("scalar type {s}"))),
         })
     }
@@ -400,8 +417,8 @@ impl<'a> Lowering<'a> {
     fn declared_ty(&self, dcl: u32) -> Result<Ty> {
         let mut t = self.ir.op(dcl)?.ty.clone();
         let scalar = match self.atomic.get(&dcl) {
-            Some(1) => scalar::I32,
-            Some(2 | 3) => scalar::U32,
+            Some(&SIGNED_EXTREMES) => scalar::I32,
+            Some(&s) if s & UNSIGNED_EXTREMES != 0 => scalar::U32,
             _ => return Ok(t),
         };
         if let [member] = &mut t.members[..] {
@@ -527,8 +544,8 @@ impl<'a> Lowering<'a> {
                 _ => continue,
             };
             let sign = match op.lits.first() {
-                Some(6 | 7) => 1,
-                Some(8 | 9) => 2,
+                Some(&atomic_op::S_MIN | &atomic_op::S_MAX) => SIGNED_EXTREMES,
+                Some(&atomic_op::U_MIN | &atomic_op::U_MAX) => UNSIGNED_EXTREMES,
                 _ => 0,
             };
             *self.atomic.entry(dcl).or_default() |= sign;
@@ -1601,6 +1618,25 @@ impl<'a> Lowering<'a> {
                 Expression::Literal(Literal::U32(self.variant.samples.into())),
             );
             return Ok(e.bitcast(f, body, count, Scalar::U32, Self::scalar(member.scalar)?));
+        }
+        if b == builtin::LAYER_INDEX && self.variant.flags.contains(VariantFlags::LAYER_FROM_STAGE)
+        {
+            // The layer the geometry stage's primitive names, which its pass-through passes.
+            let u32_ty = self.scalar_ty(Scalar::U32);
+            f.arguments.push(FunctionArgument {
+                name: Some(format!("b{b}")),
+                ty: u32_ty,
+                binding: Some(naga::Binding::Location {
+                    location: crate::stage::named_layer_location(self.variant),
+                    interpolation: Some(naga::Interpolation::Flat),
+                    sampling: None,
+                    blend_src: None,
+                    per_primitive: false,
+                }),
+            });
+            let index = f.arguments.len() as u32 - 1;
+            let v = e.add(f, body, Expression::FunctionArgument(index));
+            return Ok(e.bitcast(f, body, v, Scalar::U32, Self::scalar(member.scalar)?));
         }
         if let builtin::LAYER_INDEX | builtin::VIEWPORT_INDEX = b {
             // The draw's run's layer or viewport (a pixel shader's inputs; no stage before writes
@@ -3167,8 +3203,8 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                     naga::DerivativeAxis::Y
                 };
                 let ctrl = match op.lits.first() {
-                    Some(1) => naga::DerivativeControl::Coarse,
-                    Some(2) => naga::DerivativeControl::Fine,
+                    Some(&derivative::COARSE) => naga::DerivativeControl::Coarse,
+                    Some(&derivative::FINE) => naga::DerivativeControl::Fine,
                     _ => naga::DerivativeControl::None,
                 };
                 self.add(b, Expression::Derivative { axis, ctrl, expr })
@@ -3995,7 +4031,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 Expression::As {
                     expr: rounded,
                     kind: ScalarKind::Uint,
-                    convert: Some(4),
+                    convert: Some(Scalar::U32.width),
                 },
             )));
         }
@@ -4182,7 +4218,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             Expression::As {
                 expr: o,
                 kind: ScalarKind::Float,
-                convert: Some(4),
+                convert: Some(Scalar::U32.width),
             },
         );
         let zero = self.lit(b, Literal::U32(0));
@@ -4198,7 +4234,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             Expression::As {
                 expr: size,
                 kind: ScalarKind::Float,
-                convert: Some(4),
+                convert: Some(Scalar::U32.width),
             },
         );
         let shift = self.bin(b, BinaryOperator::Divide, o, size);
@@ -4456,9 +4492,9 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             c::F_FRACT => math(self, b, M::Fract, rs)?,
             c::F_ROUND => {
                 let f = match op.lits.first() {
-                    Some(1) => M::Trunc,
-                    Some(4) => M::Floor,
-                    Some(8) => M::Ceil,
+                    Some(&round::ZERO) => M::Trunc,
+                    Some(&round::NEGATIVE_INF) => M::Floor,
+                    Some(&round::POSITIVE_INF) => M::Ceil,
                     _ => M::Round,
                 };
                 math(self, b, f, rs)?
@@ -4576,7 +4612,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                     Expression::As {
                         expr: x,
                         kind: rs.kind,
-                        convert: Some(4),
+                        convert: Some(Scalar::U32.width),
                     },
                 )
             }
@@ -4587,7 +4623,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                     Expression::As {
                         expr: x,
                         kind: ScalarKind::Float,
-                        convert: Some(4),
+                        convert: Some(Scalar::U32.width),
                     },
                 )
             }

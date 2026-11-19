@@ -2,7 +2,9 @@
 //! what is refused. Drawn against real Direct3D 11 in `tests/geometry_draw.rs`.
 
 use std::path::Path;
-use wcontainers_gpu::{StageExtras, SystemValue, VariantKey, VertexFormat};
+use wcontainers_gpu::{
+    HelperValue, LinkedValues, StageExtras, SystemValue, VariantFlags, VariantKey, VertexFormat,
+};
 use wcontainers_shaders::{ConvertError, Converted, Source, convert, stage};
 
 fn own(name: &str) -> Vec<u8> {
@@ -222,6 +224,32 @@ fn layered_geometry_shaders_name_each_vertex_run() {
     )
     .unwrap();
     assert!(!stage::selects(&plain.reflection));
+}
+
+/// Under `LAYER_FROM_STAGE` the pass-through passes the named layer as a flat value after the linked
+/// values and reads the views' layer count, and the pixel shader reads its layer from that value.
+#[test]
+fn the_named_layer_passes_from_the_stage_to_the_pixel_shader() {
+    let key = VariantKey {
+        flags: VariantFlags::LAYER_FROM_STAGE,
+        linked: LinkedValues {
+            location: 1,
+            clip_distances: 0,
+        },
+        ..Default::default()
+    };
+    let gs = convert(Source::Dxbc(&own("gs_layers.dxbc")), &key, None).unwrap();
+    let passthrough = wgsl(&gs.modules[1]);
+    assert!(
+        passthrough.contains("@location(1) @interpolate(flat) named_layer: u32"),
+        "{passthrough}"
+    );
+    assert!(passthrough.contains("layer_count"), "{passthrough}");
+    let ps = convert(Source::Dxbc(&own("ps_layer.dxbc")), &key, None).unwrap();
+    let pixel = wgsl(&ps.modules[0]);
+    assert!(pixel.contains("@location(1) @interpolate(flat)"), "{pixel}");
+    let values: Vec<_> = ps.reflection.helpers.iter().map(|h| h.value).collect();
+    assert_eq!(values, [HelperValue::Viewport]);
 }
 
 #[test]
