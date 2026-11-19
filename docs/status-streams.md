@@ -5,10 +5,13 @@ The plan is docs/streams.md; the owner's rulings are in the brief (orchestrator/
 ## Where things stand
 
 S1 (stream ends for standard input, output, error and the terminal): built in the first run;
-the second run fixed everything the independent check found (see "S1, second run").
+the second run fixed everything the independent check found (see "S1, second run"); the third run
+named the literals the track had added and found nothing to fix in the interrupted second check's
+notes (see "S1, third run"). Complete, waiting for its independent check.
 
-What comes next: the independent check of S1 again. Not built and left open on purpose: ends
-made by connect, accept, export or import; `/dev/console` under `-t` (see the departures).
+What comes next: the independent check of S1, then S2 (orchestrator/next-embedder-interface.md,
+its last two sections). Not built and left open on purpose: ends made by connect, accept, export
+or import; `/dev/console` under `-t` (see the departures).
 
 What exists:
 - abi: `End`, `Host::stream_send`, `stream_credit`, `stream_close`; `Event::StreamData`,
@@ -39,6 +42,28 @@ What exists:
   from `SCHEDULE_SEED` (1 if unset); the reference once.
 - Everything: `RUST_TEST_THREADS=3 nix develop -c cargo test --no-fail-fast -j 4 -p wcontainers-abi
   -p wcontainers-kernel -p wcontainers-kernel-test`.
+
+## S1, third run
+
+- The second independent check was cut off by the session's restart. Its notes (scratch
+  streams/check2) hold no finding against the code: at 51e89a73 from a clean build the 19 stream
+  tests passed at seeds 1 to 3 and at 25 seeds from 1000; its own programs (a copy through a small
+  buffer with pauses, epoll on 0 with input in pieces, a shell on the terminal sent ^C, sendfile and
+  splice to a slow output, the terminal's output to a slow outside, input left unread at exit,
+  `tee | wc`, a terminal outside past its credit, events for ends that do not exist or go the wrong
+  way) all passed against Docker in the end; the failures in its first two logs were in its own test
+  file and fixed there. Its whole-suite run failed from 18:13 because Docker's daemon stopped
+  (`docker.sock: no such file`), not on anything of ours.
+- Literals: the check's list of gated literals on lines this track added (36, made with the
+  literal checker's `list` from phase-1-literals, run on this tree) is down to 3, each waiting for
+  its owner (see "Literals"). Named in kernel-test's reference.rs: the Docker client and its command
+  words (`reference::docker`, long options where a short one would read as another program's word,
+  `--force` and `--publish`), the containers' names (one `container_name`), a default container's
+  working directory (`ROOT_DIRECTORY`). In the kernel: the root user and group owning the end pipes
+  (`credentials::ROOT_UID`, `ROOT_GID`); the null device's path is gone from a message. The stream
+  tests' inputs that equalled an unrelated named value are written from their sizes (`1 << 9`,
+  `5 << 10`, `8 << 20`, `PAGE_SIZE` for a page-sized read, any `u16` for the text's numbers).
+- The literal check is not merged; see "Departures from the plan".
 
 ## S1, second run: the independent check's findings
 
@@ -184,16 +209,42 @@ small. Left as they are, each until its owner's constant is on a branch this one
   `container.rs`'s `start_failed` (125, 126, 127). Owner: the abi's `exit` module (runtime track,
   stage 1 of the literal README).
 - driver.rs's `wait_status & 0x7f`. Owner: the kernel's public `wait` module (kernel track, stage 4).
+- tty.rs's `slave_path` (`"/dev/pts/{index}"`): the run before joined two copies of it into this
+  one function. A path built from a directory needs the kernel's path separator, which has no name
+  yet and is the kernel track's (step 25 of its list); the mount table's `/dev/pts` is that track's
+  line too.
 - Other copies of `/wc`, `linux/arm64` and the Docker command words are in kernel-test files this
   track did not change (backend.rs, image.rs, layer1.rs, ltp.rs, runtimes.rs, busybox.rs). They can
   use the names above when the kernel track works its list. `ENVIRONMENT`'s `HOSTNAME=wc-kernel`
   restates `HOSTNAME`; not changed.
+- Naming the Docker words makes the checker read their copies in the kernel track's tests as
+  `restated` (16 lines in tests/go.rs, java.rs and python.rs, which run Docker themselves: true
+  copies, for that track to replace with `reference::docker`), and busybox.rs's two `"rm"` (the
+  shell's command, another fact that only shares the text). Before these names the same tests
+  already restated `PLATFORM` and `GUEST_DIRECTORY`.
 
-The literals check (branch phase-1-literals) was not merged in this run. Its last commits (16:22
-to 16:33) changed its rules minutes before this run began. Its status shows no checked milestone
-yet. So the baseline is not made here.
+What the checker counts in this track's crates (version 4 of the rules, `list` on this tree with no
+policy lines, so the kernel's generated Linux files are counted too): wcontainers-abi 4,
+wcontainers-kernel 11944 (9618 of them in src/linux and syscall/list.rs), wcontainers-kernel-test
+2443. That is what an init here would put in the baseline, less the generated files.
+
+How the added literals were checked: scratch streams/added-lits.sh runs the checker's `list`
+(scratch streams/bin/wcontainers-literals, the second check's build of phase-1-literals at
+f561838a) on this tree and keeps the gated findings on lines added since 2edbc451, working tree
+included. It prints the 3 lines above.
 
 ## Departures from the plan
+
+- The literal check is not adopted yet. The brief says to merge origin/phase-1-literals and follow
+  the adoption steps in its docs/literals.md; step 1 of those steps says a track does not merge
+  phase-1-literals directly, but merges its integration branch once that has the check, because a
+  later merge of an integration branch without the check would bring other tracks' literals as
+  `+` lines the track can neither fix nor add. Here that is real: the kernel track works in the same
+  crates and merges into phase-1 without the check, and phase-1-literals also carries main's other
+  tracks (runtime, x86, about 40,000 lines) that phase-1 does not have. Neither phase-1 nor main has
+  the check yet (checked at 18:30), and no other track has adopted it. A merge cannot be undone and
+  waiting can, so this run waited: it used the checker's `list` on this tree instead (see
+  "Literals"), and the next run merges phase-1 once phase-1 has the check, then runs `init` once.
 
 - With `-t`, Docker also bind-mounts the slave at `/dev/console`. Not built: `/dev/console` is
   absent, as without `-t` (ENOENT), so nothing pretends.
