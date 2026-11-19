@@ -939,7 +939,16 @@ or a seeded sample whose size is an argument) must have the same registers.
   (`hv_vm_config_get_max_ipa_size` 40 bits, the default 36, branch.out) and 2^39 on the Linux laptop (its
   CPU's 39 physical address bits, /proc/cpuinfo). Frames are taken as touched, so this bounds what the
   process's containers have touched at once; past it, a request for memory fails, counted and warned, as the
-  brief rules for a back end's ceiling.
+  brief rules for a back end's ceiling. The CPU side keeps what each range allows as ranges and gives a page
+  its frame at its first touch (a fault on a page with no frame that allows the access; a shared block's page
+  once, for every process showing it), so a mapping costs nothing until touched; a whole page the kernel
+  zeroes gives its frame back and reads as zeros until touched again. The guest's frames leave free Linux's
+  minimum watermark for that much memory (mm/page_alloc.c, `calculate_min_free_kbytes`), in whole blocks, for
+  the inside's heap, so the kernel can still refuse a request and end processes when the guest's memory is
+  full. A request the kernel makes then fails with ENOMEM; a touch has no answer the guest expects, so its
+  process is killed (`Exit::MemoryFaultWithoutRegisters`, SIGSEGV where Linux's out-of-memory killer sends
+  SIGKILL; the `Exit` set has no other kill). Both count "guest-physical space full", warned through the
+  kernel's warnings as every slow path is.
 
 ### 5.2 The inside
 
