@@ -1852,286 +1852,9 @@ code	crates/wcontainers-direct3d-11/src/device.rs	str	gpu_error	"wcontainers dir
 code	crates/wcontainers-direct3d-11/src/device.rs	str	gpu_sampler	"anisotropy above 16"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	gpu_sampler	"minimum and maximum filtering"
 code	crates/wcontainers-direct3d-11/src/error.rs	str	not_implemented	"wcontainers direct3d 11: not implemented: {what}"
-code	crates/wcontainers-direct3d-11/src/format.rs	int	copy_cast	18
-code	crates/wcontainers-direct3d-11/src/format.rs	int	copy_cast	39
-code	crates/wcontainers-direct3d-11/src/format.rs	int	copy_cast	4
-code	crates/wcontainers-direct3d-11/src/format.rs	int	copy_cast	41
-code	crates/wcontainers-direct3d-11/src/format.rs	int	copy_cast	43
-code	crates/wcontainers-direct3d-11/src/format.rs	int	copy_cast	67
-code	crates/wcontainers-direct3d-11/src/format.rs	int	copy_cast	69
-code	crates/wcontainers-direct3d-11/src/format.rs	int	copy_cast	70
-code	crates/wcontainers-direct3d-11/src/format.rs	int	copy_cast	72
-code	crates/wcontainers-direct3d-11/src/format.rs	int	copy_cast	73
-code	crates/wcontainers-direct3d-11/src/format.rs	int	copy_cast	78
-code	crates/wcontainers-direct3d-11/src/format.rs	int	copy_cast	79
-code	crates/wcontainers-direct3d-11/src/format.rs	int	copy_cast	81
-code	crates/wcontainers-direct3d-11/src/format.rs	int	copy_cast	82
-code	crates/wcontainers-direct3d-11/src/format.rs	int	copy_cast	84
-code	crates/wcontainers-direct3d-11/src/format.rs	int	copy_cast	9
-code	crates/wcontainers-direct3d-11/src/format.rs	int	copy_cast	94
-code	crates/wcontainers-direct3d-11/src/format.rs	int	copy_cast	99
-code	crates/wcontainers-direct3d-11/src/format.rs	int	depth_only	20
-code	crates/wcontainers-direct3d-11/src/format.rs	int	depth_only	40
-code	crates/wcontainers-direct3d-11/src/format.rs	int	depth_only	45
-code	crates/wcontainers-direct3d-11/src/format.rs	int	depth_only	55
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_srgb	29
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_srgb	72
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_srgb	75
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_srgb	78
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_srgb	91
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_srgb	93
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_srgb	99
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_typeless	15
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_typeless	19
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_typeless	23
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_typeless	27
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_typeless	33
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_typeless	39
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_typeless	44
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_typeless	48
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_typeless	5
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_typeless	53
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_typeless	60
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_typeless	70
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_typeless	73
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_typeless	76
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_typeless	79
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_typeless	82
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_typeless	9
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_typeless	90
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_typeless	92
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_typeless	94
-code	crates/wcontainers-direct3d-11/src/format.rs	int	is_typeless	97
-code	crates/wcontainers-direct3d-11/src/format.rs	int	never_target_or_storage	19
-code	crates/wcontainers-direct3d-11/src/format.rs	int	never_target_or_storage	22
-code	crates/wcontainers-direct3d-11/src/format.rs	int	never_target_or_storage	44
-code	crates/wcontainers-direct3d-11/src/format.rs	int	never_target_or_storage	47
-code	crates/wcontainers-direct3d-11/src/format.rs	int	never_target_or_storage	67
-code	crates/wcontainers-direct3d-11/src/format.rs	int	never_target_or_storage	84
-code	crates/wcontainers-direct3d-11/src/format.rs	int	never_target_or_storage	94
-code	crates/wcontainers-direct3d-11/src/format.rs	int	never_target_or_storage	99
-code	crates/wcontainers-direct3d-11/src/format.rs	int	nv12_plane	49
-code	crates/wcontainers-direct3d-11/src/format.rs	int	nv12_plane	50
-code	crates/wcontainers-direct3d-11/src/format.rs	int	nv12_plane	61
-code	crates/wcontainers-direct3d-11/src/format.rs	int	nv12_plane	62
-code	crates/wcontainers-direct3d-11/src/format.rs	int	srgb_twin	28
-code	crates/wcontainers-direct3d-11/src/format.rs	int	srgb_twin	28
-code	crates/wcontainers-direct3d-11/src/format.rs	int	srgb_twin	29
-code	crates/wcontainers-direct3d-11/src/format.rs	int	srgb_twin	29
-code	crates/wcontainers-direct3d-11/src/format.rs	int	srgb_twin	87
-code	crates/wcontainers-direct3d-11/src/format.rs	int	srgb_twin	87
-code	crates/wcontainers-direct3d-11/src/format.rs	int	srgb_twin	88
-code	crates/wcontainers-direct3d-11/src/format.rs	int	srgb_twin	88
-code	crates/wcontainers-direct3d-11/src/format.rs	int	srgb_twin	91
-code	crates/wcontainers-direct3d-11/src/format.rs	int	srgb_twin	91
-code	crates/wcontainers-direct3d-11/src/format.rs	int	srgb_twin	93
-code	crates/wcontainers-direct3d-11/src/format.rs	int	srgb_twin	93
-code	crates/wcontainers-direct3d-11/src/format.rs	int	storage_format	15
-code	crates/wcontainers-direct3d-11/src/format.rs	int	storage_format	19
-code	crates/wcontainers-direct3d-11/src/format.rs	int	storage_format	23
-code	crates/wcontainers-direct3d-11/src/format.rs	int	storage_format	27
-code	crates/wcontainers-direct3d-11/src/format.rs	int	storage_format	33
-code	crates/wcontainers-direct3d-11/src/format.rs	int	storage_format	39
-code	crates/wcontainers-direct3d-11/src/format.rs	int	storage_format	39
-code	crates/wcontainers-direct3d-11/src/format.rs	int	storage_format	44
-code	crates/wcontainers-direct3d-11/src/format.rs	int	storage_format	48
-code	crates/wcontainers-direct3d-11/src/format.rs	int	storage_format	5
-code	crates/wcontainers-direct3d-11/src/format.rs	int	storage_format	53
-code	crates/wcontainers-direct3d-11/src/format.rs	int	storage_format	53
-code	crates/wcontainers-direct3d-11/src/format.rs	int	storage_format	60
-code	crates/wcontainers-direct3d-11/src/format.rs	int	storage_format	70
-code	crates/wcontainers-direct3d-11/src/format.rs	int	storage_format	73
-code	crates/wcontainers-direct3d-11/src/format.rs	int	storage_format	76
-code	crates/wcontainers-direct3d-11/src/format.rs	int	storage_format	79
-code	crates/wcontainers-direct3d-11/src/format.rs	int	storage_format	82
-code	crates/wcontainers-direct3d-11/src/format.rs	int	storage_format	9
-code	crates/wcontainers-direct3d-11/src/format.rs	int	storage_format	90
-code	crates/wcontainers-direct3d-11/src/format.rs	int	storage_format	92
-code	crates/wcontainers-direct3d-11/src/format.rs	int	storage_format	94
-code	crates/wcontainers-direct3d-11/src/format.rs	int	storage_format	97
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	10
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	11
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	115
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	12
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	13
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	14
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	16
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	17
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	18
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	20
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	24
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	25
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	26
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	28
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	29
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	3
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	30
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	31
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	32
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	34
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	35
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	36
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	37
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	38
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	4
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	40
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	41
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	42
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	43
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	45
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	49
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	50
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	51
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	52
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	54
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	55
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	56
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	57
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	58
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	59
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	6
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	61
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	62
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	63
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	64
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	65
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	67
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	68
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	69
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	7
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	71
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	72
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	74
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	75
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	77
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	78
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	8
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	80
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	81
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	83
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	84
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	85
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	86
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	87
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	88
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	91
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	93
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	95
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	96
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	98
-code	crates/wcontainers-direct3d-11/src/format.rs	int	texture_format	99
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	14
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	15
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	15
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	18
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	19
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	19
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	22
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	23
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	23
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	25
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	27
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	27
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	32
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	33
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	33
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	38
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	39
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	39
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	4
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	43
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	44
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	44
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	47
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	48
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	48
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	5
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	5
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	52
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	53
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	53
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	59
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	60
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	60
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	64
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	70
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	70
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	72
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	73
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	73
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	75
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	76
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	76
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	78
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	79
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	79
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	8
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	81
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	82
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	82
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	84
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	87
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	88
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	9
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	9
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	90
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	90
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	91
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	92
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	92
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	93
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	94
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	94
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	96
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	97
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	97
-code	crates/wcontainers-direct3d-11/src/format.rs	int	typeless_group	99
-code	crates/wcontainers-direct3d-11/src/format.rs	int	unserved	132
 code	crates/wcontainers-direct3d-11/src/format.rs	int	unserved	189
 code	crates/wcontainers-direct3d-11/src/format.rs	int	unserved	191
 code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_alignment	4
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	10
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	11
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	12
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	13
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	14
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	16
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	17
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	18
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	24
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	25
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	26
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	28
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	3
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	30
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	31
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	32
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	34
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	35
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	36
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	37
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	38
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	4
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	41
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	42
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	43
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	49
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	50
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	51
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	52
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	54
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	56
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	57
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	58
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	59
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	6
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	61
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	62
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	63
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	64
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	7
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	8
-code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format	87
 code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_format_read_as	3
 code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_size	12
 code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_size	16
@@ -2139,18 +1862,6 @@ code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_size	3
 code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_size	4
 code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_size	6
 code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_size	8
-code	crates/wcontainers-direct3d-11/src/format.rs	int	view_format	20
-code	crates/wcontainers-direct3d-11/src/format.rs	int	view_format	21
-code	crates/wcontainers-direct3d-11/src/format.rs	int	view_format	22
-code	crates/wcontainers-direct3d-11/src/format.rs	int	view_format	28
-code	crates/wcontainers-direct3d-11/src/format.rs	int	view_format	30
-code	crates/wcontainers-direct3d-11/src/format.rs	int	view_format	40
-code	crates/wcontainers-direct3d-11/src/format.rs	int	view_format	41
-code	crates/wcontainers-direct3d-11/src/format.rs	int	view_format	45
-code	crates/wcontainers-direct3d-11/src/format.rs	int	view_format	46
-code	crates/wcontainers-direct3d-11/src/format.rs	int	view_format	47
-code	crates/wcontainers-direct3d-11/src/format.rs	int	view_format	55
-code	crates/wcontainers-direct3d-11/src/format.rs	int	view_format	56
 code	crates/wcontainers-direct3d-11/src/format.rs	str	unserved	"a DXGI format this front does not serve"
 code	crates/wcontainers-direct3d-11/src/object.rs	int	InputLayout	32
 code	crates/wcontainers-direct3d-11/src/object.rs	int	Shader	32
@@ -23990,13 +23701,6 @@ redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::TEXTURE2D	T
 redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::TEXTURECUBE	TEXTURECUBE = 128
 redefinition	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::buffer_span::R32_TYPELESS	R32_TYPELESS = 39
 redefinition	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_buffer_uav::COUNTER	COUNTER = 4
-redefinition	crates/wcontainers-direct3d-11/src/format.rs	int	NV12	NV12 = 103
-redefinition	crates/wcontainers-direct3d-11/src/format.rs	int	R16_UINT	R16_UINT = 57
-redefinition	crates/wcontainers-direct3d-11/src/format.rs	int	R32_UINT	R32_UINT = 42
-redefinition	crates/wcontainers-direct3d-11/src/format.rs	int	R8G8_TYPELESS	R8G8_TYPELESS = 48
-redefinition	crates/wcontainers-direct3d-11/src/format.rs	int	R8_TYPELESS	R8_TYPELESS = 60
-redefinition	crates/wcontainers-direct3d-11/src/format.rs	int	UNKNOWN	UNKNOWN = 0
-redefinition	crates/wcontainers-direct3d-11/src/format.rs	int	YUY2	YUY2 = 107
 redefinition	crates/wcontainers-direct3d-11/tests/front.rs	int	a_geometry_shader_choosing_layers_and_viewports_draws_once_per_layer_and_viewport::LAYERS	LAYERS = 4
 redefinition	crates/wcontainers-direct3d-11/tests/front.rs	int	nv12_is_two_planes_viewed_apart_and_written_copied_and_mapped_as_joined_rows::NV12	NV12 = 103
 redefinition	crates/wcontainers-direct3d-11/tests/front.rs	int	yuy2_is_a_half_width_texture_of_pixel_pairs_viewed_as_rgba8::YUY2	YUY2 = 107
@@ -24454,10 +24158,15 @@ restated	crates/wcontainers-gpu-webgpu/tests/blocks.rs	int	bc_copies_keep_the_bl
 restated	crates/wcontainers-gpu-webgpu/tests/blocks.rs	int	bc_copies_keep_the_blocks_natively_and_decoded	256
 restated	crates/wcontainers-gpu-webgpu/tests/blocks.rs	int	bc_copies_keep_the_blocks_natively_and_decoded	256
 restated	crates/wcontainers-gpu-webgpu/tests/blocks.rs	int	bc_copies_keep_the_blocks_natively_and_decoded	256
+restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	float	depth_and_stencil_parts_copy_and_read_back_exactly	16_777_215.0
+restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	float	depth_of	16_777_215.0
+restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	float	same_depth	16_777_215.0
+restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	depth_and_stencil_parts_copy_and_read_back_exactly	0xff_ffff
 restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	depth_and_stencil_parts_copy_and_read_back_exactly	1024
 restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	depth_and_stencil_parts_copy_and_read_back_exactly	1024
 restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	depth_and_stencil_parts_copy_and_read_back_exactly	4096
 restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	sixteen_bit_group_copies_into_depth_keep_the_bits	0x8000
+restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	source_words	0xff_ffff
 restated	crates/wcontainers-gpu-webgpu/tests/depth.rs	int	depth_bias_on_24_bit_depth_matches_direct3d	256
 restated	crates/wcontainers-gpu-webgpu/tests/direct3d.rs	float	decoded_step	2048.0
 restated	crates/wcontainers-gpu-webgpu/tests/direct3d.rs	float	generate_mips_of_r32float_without_filtering_match_direct3d	65536.0
@@ -24927,6 +24636,7 @@ script	crates/wcontainers-direct3d-12/examples/directx/com.py	int	line: body = m
 script	crates/wcontainers-directx/generate.py	int	line: body = f"self.child.{snake(name)}10({args})"	10
 script	crates/wcontainers-directx/generate.py	int	line: body = f"self.{snake(name)}10({args})"	10
 script	crates/wcontainers-directx/generate.py	int	line: body = f"self.{snake(name)}10({args})"	10
+script	crates/wcontainers-gpu-webgpu/frames/run	int	line: $4 ~ /^[0-9.]+$/ { split($2, at, " "); t = at[2]	9
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: build="git submodule update --init --recursive -q && set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j 3 -p wcontainers-direc	12
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: build="git submodule update --init --recursive -q && set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j 3 -p wcontainers-direc	3
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: build="git submodule update --init --recursive -q && set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j 3 -p wcontainers-direc	3
@@ -24935,6 +24645,7 @@ script	crates/wcontainers-gpu-webgpu/frames/run	int	line: build="git submodule u
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: load_limit=1800	1800
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: long=360	360
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: short=60	60
+script	crates/wcontainers-gpu-webgpu/frames/run	int	line: started=$(sed -n 's/.*started \([0-9:.]*\), ended.*/\1/p' <<<"$said" | tail -1)	9
 script	crates/wcontainers-gpu-webgpu/web/check	int	line: build+=" && cargo build --locked -j 3 -p wcontainers-gpu-webgpu --example scenes --target wasm32-unknown-unknown"	3
 script	crates/wcontainers-gpu-webgpu/web/check	int	line: build+=" && cargo build --locked -j 3 -p wcontainers-graphics-test --bin gt-compare"	3
 script	crates/wcontainers-gpu-webgpu/web/check	int	line: build+=" && cargo test --locked -j 3 -p wcontainers-gpu-webgpu --test suite --no-run"	3
