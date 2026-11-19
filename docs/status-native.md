@@ -122,7 +122,15 @@ Results (M5 Max; scratch native/n4r1; all on the Mac):
   none) split the free runs; or a guest register gone wrong at look-ahead none gives the kernel a wrong length. Because the kernel test
   now runs every program at both look-aheads, the whole kernel test fails until it is fixed.
 - carry (1,100,823 words), native_routes and encode: pass.
-- The suite before the push: suite.log (below, "Results of the suite").
+- The whole suite of what this track owns, once before the push (suite.log, 10:12 to about 10:40, load 31 to 47; guest-cpu,
+  arm64, the inside, the monitor, the policy crate and the literal check's tests, `--no-fail-fast`): one target failed,
+  the kernel test, at mappings at look-ahead none as above (hello, getppid, forks, code and blocks passed before it, both
+  look-aheads alike). Everything else passed: busybox 56 commands as the reference at look-ahead none and 256 alike (255
+  s); exits 4 programs both modes at 256; floor 21 cases and 1 measurement, 0 failed, 300 stops, delay median 2333 ns,
+  99th 4167; interrupts 3627 forced interrupts over 8 functions at 3 look-aheads, 0 failed; native 32,562 cases, 0
+  failing (seed 0x2545f4914f6cdd1d); probe 0 forms of 16 bytes or fewer differ (44 larger, as before); carry; the
+  literal check's tests. The translator with `native`: passed.
+- Literals: the check exits 0, no marks, nothing added to the baseline.
 
 What N4 still needs, in order:
 1. The mappings failure at look-ahead none, above.
