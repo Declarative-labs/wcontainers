@@ -175,6 +175,17 @@ the ends and was lost. Fixed by naming the ends when `start` is called (6ca181b8
 
 ## Measurements
 
+- Third run, the tests the literal changes can affect (`--test streams --test outside --test
+  busybox --test turns`, scratch streams/run3-tests.log, seeds 1 to 3): 29 passed, 1 ignored (as
+  before), 18:36 to 18:39 with the build, load 54 to 75.
+- Third run, whole suite at 540deca2 (scratch streams/run3-suite.log, the command in "How to run",
+  63 minutes with the build, load 67.4 at the start and 90.4 at the end): 234 passed, 0 failed,
+  6 ignored. `streams/verdicts.py base-suite.log run3-suite.log`: every one of the 220 tests from
+  before this work has the same verdict; the 20 others are the 19 stream tests and the abi's unit
+  test, all passing. Layer 1's three seeded sequence tests passed at their default counts.
+- Third run: clippy (`--all-targets -- -D warnings`) and `cargo fmt --check` on the abi, the
+  kernel and the test crate: clean.
+
 - Second run, stream tests (`tests/streams.rs`, 19 tests): seeds 1 to 3, 35.8 s, load 40 to 48
   (16:43); seeds 40 to 52 (`SCHEDULE_SEED=40 SCHEDULE_SEEDS=13`), all pass, 92.9 s, load about
   49 to 57 (16:47 to 16:49).
