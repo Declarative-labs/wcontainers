@@ -3736,7 +3736,14 @@ K6c, in this order (after the sixth run):
 5. The slow tests: the comparison's timeouts with LTP_LIMIT 7200 and 2 jobs, a sample first (gf01,
    fsx01, rwtest01, creat05, open04, float_bessel, hackbench01, cve-2014-0196), to show each
    gives the reference's verdict (msgstress01 did: pass in 2328 s) or is slow for a named cause.
-6. The Questions for the orchestrator (page residency; openat03 and copy_file_range03).
+   One command, for the orchestrator to start (hours; it continues its file when started again):
+   `LTP_TAR=<scratch>/ltp/ltp-20260930.tar LTP_JOBS=2 LTP_LIMIT=7200 nix develop -c
+   <scratch>/kernel/k6c6/ltp-b ours <scratch>/kernel/k6c6/slow.tsv gf01 fsx01 rwtest01 creat05
+   open04 float_bessel hackbench01 cve-2014-0196`.
+6. The Questions for the orchestrator (page residency; fork09, openat03 and copy_file_range03).
+   Layout randomization (aslr01) needs a decision too: Linux moves the mmap base, stack and heap
+   by up to 18 bits of pages, which in a 4 GiB address space would take a quarter of it; to
+   settle how much, or whether it falls under "the address space is small".
 7. Finalise the gap list, then the independent check (200 random tests plus every test on the
    gap list), the whole suite and three fresh layer 1 seeds (fresh seeds start at 9191013; this
    run used 9191100 and 9191101 for its own checks).
