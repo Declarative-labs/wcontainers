@@ -70,6 +70,86 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   and the suite (see "X4, run 7"). Run 8 (2026-11-19) fixed what the next check found: the whole workspace
   did not build (the wasmtime runtime's hook), and the orchestrator's question on 5-level paging had no answer
   here (see "For the orchestrator" and "X4, run 8"). Every part of X4's bar holds.
+- X5 (every default instruction): run 1 (2026-11-19) fixed the five findings of the last X4 check (Chrome
+  runs at once, the matrix slowdown explained, x86 loop-proof checks and a wider proof, x86 versions of
+  ARM64's X4 program tests, the block size's literals) and listed what X5 has left to write (see "X5, run
+  1"). X5's own work has not started: none of its bar holds yet.
+
+## X5, run 1 (2026-11-19)
+
+Machines: the Mac (load 29 to 44), the rented x86-64 machine (load 1 to 30), the rented ARM64 machine (load
+about 36, shared), the i7-8750H (load 0.2 to 0.6). Logs in scratch `x5/run1/`.
+
+The independent check's findings:
+- Chrome cases at once overwrote each other's files (minor): fixed in 14c8b424. Each run of the page (a
+  blob, a module load, a batch of layer 1 cases) gets its own directory, `target/browser/cases/<guest>/<name>/
+  <process>/<call>`, removed when the run ends. Checked at the check's seed: layer 2 x86, seed 8675309, 300
+  programs, all on the CPU, 100 in Chrome, 24 at once, on the rented x86-64 machine (`l2-chrome-parallel.log`,
+  35 s): 0 failing. So `WC_LAYER2_CHROME` can now be raised with `WC_LAYER2_JOBS` above 1.
+- The matrix slowdown of the flags change (minor): explained, not removed. On the i7-8750H (load 0.2 to 0.6),
+  `perf stat` of matrix (bench-6) in wasmtime, old (babfb595) and new (49a11539) builds alternating, three
+  rounds each (`perf` 5.15's events, user mode): instructions 14.55 to 14.68 G old, 14.84 to 14.97 G new;
+  uops from the decoded-uop cache (`idq.dsb_uops`) 13.51 to 13.68 G old against 6.40 to 6.42 G new; uops from
+  the legacy decoders (`idq.mite_uops`) 1.45 to 1.48 G old against 8.67 to 8.73 G new. The matrix module's
+  bytes are the same in both, so its machine code from wasmtime is the same too, placed elsewhere: in the new
+  build the hot loop is fed by the legacy decoders, which is what the i7-8750H (a Coffee Lake, with the
+  microcode for the jump-crossing-a-32-byte-boundary erratum) does when a loop's jumps fall badly against 32
+  and 64 byte lines. I expect that is the cause (the counters show the decoder switch; which jump and which
+  boundary was not looked at). It depends on where wasmtime puts the code, not on what the translator
+  emits; the same placement effect can go either way for any workload (search was 17% faster in the same
+  pairs). Not fixed: wasmtime offers no loop alignment, and padding our modules to move one loop would be
+  shaped around one program. The rented Sapphire Rapids machine, which has no such erratum, was not used to
+  confirm it.
+- No x86 test checked that the loop proofs take effect (minor): fixed in 75b1d921. x86's checks now hold
+  three counted loops, each once within three pages of data (768 turns, `loop not proven` must count 0) and
+  once running one page past the blob (2,048 turns, must count exactly 1, status 139 as natively): a count
+  down by `dec`/`jnz`, an index up by `inc`/`cmp`/`jb`, and clang -O2's initialising loop (a store through a
+  moving base, counted by a value stepped by 3 and compared for inequality with its last value). The last
+  was never proven: the proof of an inequality took only steps of 1 and -1. Fixed in adf45969 (the
+  translator, so ARM64 too): any step of size up to the proofs' largest is taken when the distance to the
+  bound is an exact multiple of it, which makes that meeting the first; otherwise the loop is not proven, as
+  before. Steps of 1 and -1 give the same turns as before. Without the fix the stride check fails ("counted
+  1 times, must be Exactly(0)"), seen. After it, on the rented x86-64 machine: x86's checks pass, layer 2 x86
+  at seed 1919, 2,000 programs, all on the CPU, 24 in Chrome, passes (`x86-proof.log`), and x86's existing
+  program tests pass; on the rented ARM64 machine the ARM64 checks, changes, layer 2, look-aheads and
+  program tests pass (`arm-proof.log`, 15 program tests among them).
+- ARM64's X4 program tests had no x86 versions (minor): written, with x86 sources of the assembly programs
+  (`programs/x86_64/deep_small_frames.S`, `big_frame.S`, `callee_moves_sp.S`, `callee_moves_sp_away.S`,
+  `callee_misaligns_sp.S`; x86 has no alignment fault, so the last one exits 77 where ARM64's faults).
+  `cut_functions_and_split_translations_match_linux` takes its list of programs to split; x86's leaves out
+  `differences`, which is ARM64's own program. On the rented x86-64 machine (`x86-programs*.log`): deep
+  recursion (at full: left a nearly full stack 530 times, continued 149,990 times for C; 2,680 and 999,640
+  for the million small frames), the moved stack, the frame past the budget and the cut and split programs
+  pass. Two FAIL and are left failing, recorded here: `programs_match_linux_x86_64` and
+  `stops_at_every_check_change_nothing_x86_64` reach `integers`, which uses `bswap` and `bsr`, whose
+  meanings are X5's and not yet written (status 132, illegal instruction, at none); their bench part passes
+  (77,656 to 116,974 stops). Not written for x86: `unwinding_matches_linux` and
+  `stacks_switched_by_the_program_match_linux` (`fibers.c` needs an x86 `switch.h`), `written_code`,
+  `differences` and the float programs; they come with the X5 to X7 instructions they need.
+- The block size's bare 4 and 16 (minor): fixed in 6a05efe3; the size comes from `size_of::<i32>()` and the
+  interface's new `BLOCK_ALIGNMENT` (the bytes of a 128-bit vector).
+
+X5's work left, all of it (the default-claim legacy forms without a meaning, from a scratch test over iced's
+`Code`s against `GuestTest::forms`, `gaps.txt`, 2026-11-19): 1,343 default forms, 660 written, 683 not. By
+iced feature: x87 (FPU, FPU287, FPU387, with CMOV and SSE3) 160 and MMX 60, both X7's; SSE 71, SSE2 94, SSE3
+10, SSSE3 32, SSE4.1 51, SSE4.2 12; INTEL8086 35 (16-bit branches and returns, `lahf`, `sahf`, `popfw`,
+`xlat`, `wait`, segment moves, far returns), INTEL186 1, INTEL286 8, INTEL386 56, INTEL486 8, X64 44 (`bsf`,
+`bsr`, `bswap`, `cmpxchg`, `xadd`, `shld`, `shrd`, `enter`, `loop` and its kin, `popfq`, `lar`, `lsl`,
+`verr`, `verw`, `sgdt`, `sidt`, `sldt`, `smsw`, `str`, far transfers, segment pushes and pops), CPUID 1,
+TSC 1, RDTSCP 1, CX8 1, CMPXCHG16B 1, POPCNT 3, LZCNT 3, BMI1 3, ADX 4, MOVBE 6, FSGSBASE 8, FXSR 4, CLFSH 1,
+SEP 1, MULTIBYTENOP 3; and the rep prefixes of the string instructions. Then MXCSR's two paths, NaN rules,
+CPUID's answers, the reciprocal formula with its 2^32-input test, the host-dependence mark for each meaning,
+the never-claimed list in layer 1, layer 3 Csmith for x86, and the passed-register lists.
+
+What comes next: X5 from the integer forms, `bswap`, `bsr` and `bsf` first (they make the two failing tests
+pass), then the rest of the list above in that order, each group with its layer 1 forms against the
+i7-8750H.
+
+Proof at the end of run 1 (rented x86-64 machine for builds and x86 tests, the ARM64 machine for ARM64
+tests): `cargo clippy` with `-D warnings` on the x86, interface, translator and test crates (all targets):
+clean; `cargo fmt --check`: clean; `cargo run -q -p wcontainers-literals -- check` on the Mac: exit 0.
+Baseline lines: wcontainers-translator-test 2111 (3 fewer), wcontainers-translator 73 (1 fewer),
+wcontainers-x86 142, wcontainers-guest-cpu 28. The whole suite was not run: the milestone is not complete.
 
 ## For the orchestrator
 
@@ -2227,6 +2307,10 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   timing there.
 
 ## Cases actually run
+
+- X5 run 1: layer 2 x86 at seed 8675309, 300 programs (100 in Chrome, 24 at once), and at seed 1919, 2,000
+  (24 in Chrome), every one also on the CPU; the ARM64 layer 2, changes and look-ahead tests once at their
+  defaults (seed 1) on the rented ARM64 machine; x86's checks three times (once without the proof fix).
 
 - X4 run 8: the track's suite once on the rented x86-64 machine at its defaults (seed 1); the x86 layer 1
   tests and the x86 reference's tests once at their defaults against the i7-8750H; the runtime's and the
