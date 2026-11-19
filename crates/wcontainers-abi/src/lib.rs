@@ -22,7 +22,7 @@ mod machine;
 mod memory;
 mod registers;
 
-pub use cpu::{Cpu, CpuError, MemoryId, SharedId, ThreadId};
+pub use cpu::{Cpu, CpuError, MemoryId, PerThreadWatch, SharedId, ThreadId};
 pub use exit::{Access, Exit, Next, Resume, Syscall};
 pub use host::{
     BackendRequestId, ConnectionId, CounterReading, End, Event, Host, HostError, Warning,
