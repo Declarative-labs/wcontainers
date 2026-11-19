@@ -491,7 +491,7 @@ impl AddressMap {
 
     /// The pages written since the embedder last asked, as ranges, and a fresh record from now
     /// (the first time: every page mapped writable).
-    pub fn take_changed(
+    pub fn take_dirty(
         &mut self,
         cpu: &mut dyn Cpu,
         memory: MemoryId,

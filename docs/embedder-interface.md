@@ -118,7 +118,7 @@ impl Process<'_> {
     pub fn memory_write(&mut self, address: u64, bytes: &[u8]) -> Result<(), MemoryError>;
     pub fn memory_watch(&mut self, range: Range<u64>, watch: Watch);
     pub fn memory_watch_thread(&mut self, thread: TaskId, range: Range<u64>, watch: Watch) -> Result<(), Unsupported>;
-    pub fn memory_changed(&mut self) -> Vec<Range<u64>>;
+    pub fn memory_take_dirty(&mut self) -> Vec<Range<u64>>;
 }
 
 impl Kernel {
@@ -160,7 +160,7 @@ pub enum MemoryError { NotMapped, NotRead, SharedNotWritable, InvalidRange, Exec
   (`mprotect`, `pkey_mprotect`, `mlock`, `mlock2`, `munlock`, `madvise`'s fork advice) keeps its
   watch and its place in the record of written pages. `Writes` watches writes; `All` watches reads, writes and running code (running
   code is reported as `Read`).
-- `memory_changed` answers the pages whose bytes the process changed since it was last asked, as
+- `memory_take_dirty` answers the pages whose bytes the process changed since it was last asked, as
   ranges: what its threads wrote, what the kernel's copies wrote for it, pages `mremap` moved (at
   their new place, as Linux's soft-dirty bits mark them) and pages `madvise` put back to zero or
   to their file (`MADV_DONTNEED`, `MADV_REMOVE`, and the old pages of `MREMAP_DONTUNMAP`). A new

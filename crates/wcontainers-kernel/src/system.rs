@@ -301,11 +301,11 @@ impl Process<'_> {
 
     /// The ranges the process (its threads, and the kernel for it) wrote since this was last
     /// asked; the first answer is every page mapped writable.
-    pub fn memory_changed(&mut self) -> Vec<Range<u64>> {
+    pub fn memory_take_dirty(&mut self) -> Vec<Range<u64>> {
         self.kernel.watching = true;
         let process = &self.kernel.processes[&self.pid];
         let memory = process.memory;
-        process.map.borrow_mut().take_changed(self.cpu, memory)
+        process.map.borrow_mut().take_dirty(self.cpu, memory)
     }
 }
 

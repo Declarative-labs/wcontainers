@@ -120,7 +120,7 @@ impl Recorder {
         assert!(info.memory_mapped() > 0, "{seen:?}: memory mapped");
         let _ = (info.ceiling_distance(), info.compute_used());
         let _ = process.execution_config();
-        let changed = process.memory_changed();
+        let changed = process.memory_take_dirty();
         if let Some(first) = changed.first() {
             let bytes = process
                 .memory_read(first.start..first.start + 1)
@@ -642,7 +642,7 @@ struct NextPage(Touches);
 impl Hooks for NextPage {
     fn on_process_starting(&mut self, mut process: Process<'_>) {
         if process.info().parent().is_some() {
-            process.memory_changed();
+            process.memory_take_dirty();
             process.memory_watch(page_of(BUFFER + 2 * PAGE_SIZE), Watch::Writes);
         }
     }
@@ -668,13 +668,13 @@ struct Changes(Arc<Mutex<Vec<std::ops::Range<u64>>>>);
 impl Hooks for Changes {
     fn on_process_starting(&mut self, mut process: Process<'_>) {
         if process.info().parent().is_some() {
-            process.memory_changed();
+            process.memory_take_dirty();
         }
     }
 
     fn on_process_exiting(&mut self, mut process: Process<'_>) {
         if process.info().parent().is_some() {
-            *self.0.lock().unwrap() = process.memory_changed();
+            *self.0.lock().unwrap() = process.memory_take_dirty();
         }
     }
 }
@@ -719,7 +719,7 @@ impl Hooks for Lazy {
     fn on_program_starting(&mut self, mut process: Process<'_>) {
         let mut saved = BTreeMap::new();
         let zeros = vec![0; PAGE_SIZE as usize];
-        for range in process.memory_changed() {
+        for range in process.memory_take_dirty() {
             for page in (range.start..range.end).step_by(PAGE_SIZE as usize) {
                 let bytes = process
                     .memory_read(page..page + PAGE_SIZE)
@@ -834,7 +834,7 @@ impl Hooks for Moves {
         if process.info().parent().is_none() {
             return;
         }
-        process.memory_changed();
+        process.memory_take_dirty();
         let zeros = vec![0; PAGE_SIZE as usize];
         for index in (0..MOVED - 1).chain([MOVED]) {
             let page = page_of(BUFFER + index * PAGE_SIZE);
@@ -867,7 +867,7 @@ impl Hooks for Moves {
 
     fn on_process_exiting(&mut self, mut process: Process<'_>) {
         if process.info().parent().is_some() {
-            *self.changed.lock().unwrap() = process.memory_changed();
+            *self.changed.lock().unwrap() = process.memory_take_dirty();
         }
     }
 }
@@ -958,7 +958,7 @@ impl Hooks for Attributes {
         if process.info().parent().is_none() {
             return;
         }
-        process.memory_changed();
+        process.memory_take_dirty();
         let lazy = page_of(BUFFER + PAGE_SIZE);
         let bytes = process.memory_read(lazy.clone()).expect("the buffer");
         process
@@ -991,7 +991,7 @@ impl Hooks for Attributes {
             return;
         }
         let written = process
-            .memory_changed()
+            .memory_take_dirty()
             .into_iter()
             .flat_map(|range| (range.start..range.end).step_by(PAGE_SIZE as usize))
             .filter(|page| buffer().contains(page))
