@@ -222,8 +222,16 @@ impl Native for Arm64 {
             Reg::Sp => Base::StackPointer,
             Reg::Zero => Base::Zero,
         };
-        if let Some(m) = i.memory_access() {
-            let (base, offset, index) = match m.address {
+        // A block's zeroing and a line's cleaning touch memory at the register's address, and fault there.
+        let address = match *i {
+            I::ZeroBlock { rn } | I::CleanCache { rn } => Some(Address::Offset {
+                base: rn,
+                offset: 0,
+            }),
+            _ => i.memory_access().map(|m| m.address),
+        };
+        if let Some(address) = address {
+            let (base, offset, index) = match address {
                 Address::Offset { base, offset } | Address::PreIndex { base, offset } => {
                     (register(base), offset, None)
                 }

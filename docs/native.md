@@ -622,7 +622,10 @@ counted "alignment checking asked for, not provided" (x86 plan lines 1514-1520).
   which are TF's and AC's). A form may be Copy or Aligned only if everything it touches is of the first two
   classes; a form touching a kept or answered one must be routed to the route that class names; a form
   whose meaning touches nothing at all (no register, flag, control, memory or hook) must be Nothing. A form
-  added to a guest crate is then routed or the test fails.
+  whose meaning touches memory on any route but Kernel, where the hardware makes the access, must give the
+  position map the access's operand, which a fault there is resolved from (ARM64's `dc zva` and `dc cvac`,
+  `cvau`, `civac` too, at the register's address). A form added to a guest crate is then routed or the
+  test fails.
 - The static test cannot see a form whose meaning gives a fixed answer where the hardware gives another
   (`sgdt`, `lsl`, a CTR_EL0 read). So a differential test runs every decoded form natively, as routed, at the
   guest's level inside the virtual machine, and through the WebAssembly output, from the same seeded
@@ -941,7 +944,8 @@ or a seeded sample whose size is an argument) must have the same registers.
   process's containers have touched at once; past it, a request for memory fails, counted and warned, as the
   brief rules for a back end's ceiling. The CPU side keeps what each range allows as ranges and gives a page
   its frame at its first touch (a fault on a page with no frame that allows the access; a shared block's page
-  once, for every process showing it), so a mapping costs nothing until touched; a whole page the kernel
+  once, for every process showing it; a cache maintenance fault sets the write bit with its CM bit and is a
+  read, as Linux takes it, arch/arm64/mm/fault.c `is_write_abort`), so a mapping costs nothing until touched; a whole page the kernel
   zeroes gives its frame back and reads as zeros until touched again. The guest's frames leave free Linux's
   minimum watermark for that much memory (mm/page_alloc.c, `calculate_min_free_kbytes`), in whole blocks, for
   the inside's heap, so the kernel can still refuse a request and end processes when the guest's memory is

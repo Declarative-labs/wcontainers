@@ -1,6 +1,7 @@
 //! Every decoded form has one route, and the route agrees with what the form's meaning touches: a form that is
-//! copied touches only what the hardware holds as presented, so no copied instruction can observe the host
-//! (docs/native.md section 3.4, the static test). Seeded: `WCONTAINERS_ROUTES_SEED` and
+//! copied touches only what the hardware holds as presented, so no copied instruction can observe the host,
+//! and an access the hardware makes has the operand its fault is resolved from (docs/native.md section 3.4,
+//! the static test). Seeded: `WCONTAINERS_ROUTES_SEED` and
 //! `WCONTAINERS_ROUTES_WORDS`, the words drawn per form, both decimal.
 
 use std::collections::BTreeMap;
@@ -8,7 +9,9 @@ use std::collections::BTreeMap;
 use wasm_encoder::{InstructionSink, ValType};
 use wasmparser::{BinaryReader, Operator, OperatorsReader};
 use wcontainers_arm64::{Arm64, Control, Hook, Host, Reg, Trap, decode, forms};
-use wcontainers_guest_cpu::{Access, Base, Emitter, Guest, Native, NativeClass, Route, Target};
+use wcontainers_guest_cpu::{
+    Access, Base, Emitter, Guest, Native, NativeClass, Route, Stopping, Target,
+};
 
 mod common;
 use common::{SWEPT_BITS, WORDS_PER_FORM, knob, words_of};
@@ -218,6 +221,14 @@ fn mismatch(route: Route, seen: &Seen, word: u32) -> Option<String> {
     }
     if !seen.memory.is_empty() && !ACCESS_ROUTES.contains(&route) {
         return Some("a memory access on a route that makes none".into());
+    }
+    // Every route but the inside's own runs the access on the hardware, whose fault the inside resolves from
+    // the access's operand.
+    if !seen.memory.is_empty()
+        && route != Route::Kernel
+        && !matches!(Arm64::stopping(&decode(word), 0), Stopping::Access(_))
+    {
+        return Some("a memory access whose fault has no operand to resolve it".into());
     }
     let touches = seen.registers
         || seen.this_address

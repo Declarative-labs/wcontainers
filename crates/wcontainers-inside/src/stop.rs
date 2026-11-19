@@ -16,7 +16,7 @@ use wcontainers_guest_cpu::position::{
     Base, Fixup, Held, InsideCall, Operand, Relocated, Resume, Side, Span, Stopping, span_at,
 };
 
-use crate::syndrome::{ALIGNMENT_FAULT, FAULT_STATUS, WRITE_NOT_READ};
+use crate::syndrome::{ALIGNMENT_FAULT, CACHE_MAINTENANCE, FAULT_STATUS, WRITE_NOT_READ};
 
 /// The general registers.
 pub const GENERAL: usize = RegisterBlock::ZERO.x.len();
@@ -469,7 +469,7 @@ pub fn resolve(
         } else {
             Stop::MemoryFault {
                 address: fault_address(first, exception.fault),
-                write: exception.syndrome & WRITE_NOT_READ != 0,
+                write: exception.syndrome & (WRITE_NOT_READ | CACHE_MAINTENANCE) == WRITE_NOT_READ,
             }
         }
     } else {
