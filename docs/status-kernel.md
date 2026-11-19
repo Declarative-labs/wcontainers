@@ -86,8 +86,10 @@ generated file, crates/wcontainers-kernel/src/linux/elf_uapi.rs (the kernel's ge
 copy, accepted). `cargo run -q -p wcontainers-literals -- check` passes (exit 0). It says the
 baseline "arrived by a merge and has not changed since: run init once"; a second `init` wrote
 the same file, so there was nothing to commit; the next change to the baseline (fcbc6807) only
-removed lines. Changes that could add lines, as the check lists them at fcbc6807:
-- 708289f32f51 the start (this branch's merge and init)
+removed lines, and the check counts it as "the init after the baseline arrived by a merge".
+Changes that could add lines, as the check lists them at ccd777e3:
+- 708289f32f51 the start (this branch's merge, with init run in it)
+- fcbc680781dd the init after the baseline arrived by a merge (it only removed 26 lines)
 - 68214b2eec10 the start (the literals branch's)
 - 89f882810517, 7119e3f3a527, c3bf56d4ed9f, 31ec396f9a4a new rules, for literals already in the
   tree (the literals branch's versions 1 to 4)
