@@ -80,9 +80,9 @@ pub struct Device<B: Backend> {
     /// Pixel shaders converted for a variant, by id.
     pub(crate) variants: HashMap<(u64, StageVariant), Variant<B>>,
     /// Counting programs of counted occlusion queries, by the vertex shader's id and variant and the
-    /// pixel shader's id; and the pixel counter's, by the vertex shader's id and variant and a
-    /// number no pixel shader has.
-    pub(crate) counting: HashMap<(u64, StageVariant, u64), Kept<B, B::Program>>,
+    /// pixel shader's id and variant; and the pixel counter's, by the vertex shader's id and variant
+    /// and a number no pixel shader has.
+    pub(crate) counting: HashMap<CountingKey, Kept<B, B::Program>>,
     /// Exact counts of counted occlusion queries, and the targets their draws drew on (the pass
     /// tracker holds them for the counter; the front opens and ends its own passes).
     pub(crate) counter: wcontainers_gpu::OcclusionCounter<B>,
@@ -133,6 +133,8 @@ pub(crate) struct Zeros<B: Backend> {
     pub storage: Option<Kept<B, B::Buffer>>,
     /// A texture of one zero texel per layer and its view, by view dimension and kind.
     pub textures: HashMap<(ViewDimension, FormatKind, u32), ZeroView<B>>,
+    /// The zero buffer's bytes as a constants texture, for empty slots read through textures.
+    pub constants: Option<WindowCopy<B>>,
     pub sampler: Option<Rc<Sampler<B>>>,
 }
 
@@ -141,6 +143,10 @@ pub(crate) struct ZeroView<B: Backend> {
     _texture: Kept<B, B::Texture>,
     view: Kept<B, B::TextureView>,
 }
+
+/// A counting program's vertex shader id and variant, and pixel shader id (or pixel counter's
+/// number) and variant.
+pub(crate) type CountingKey = (u64, StageVariant, u64, StageVariant);
 
 /// Bytes of the zero buffer: 4096 constants of 16 bytes.
 pub(crate) const ZERO_BYTES: u64 = 65536;
@@ -282,6 +288,7 @@ impl<B: Backend> Device<B> {
                 buffer: None,
                 storage: None,
                 textures: HashMap::new(),
+                constants: None,
                 sampler: None,
             },
             staged: HashMap::new(),
@@ -625,7 +632,7 @@ impl<B: Backend> Device<B> {
             .retain(|(v, _, p), _| !ids.contains(v) && !ids.contains(p));
         self.variants.retain(|(p, _), _| !ids.contains(p));
         self.counting
-            .retain(|(v, _, p), _| !ids.contains(v) && !ids.contains(p));
+            .retain(|(v, _, p, _), _| !ids.contains(v) && !ids.contains(p));
         self.layouts
             .retain(|(l, _, v), _| !ids.contains(l) && !ids.contains(v));
         self.bury_built();

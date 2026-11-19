@@ -1588,7 +1588,6 @@ code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"a d
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"a pixel shader reading past its vertex shader's outputs, under clip distances in the program"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"a sample mask without the back end's (SampleMaskInShader)"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"a topology without a geometry or hull shader"
-code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"counting the samples of a pixel shader variant"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"depth bias on lines and points"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"depth clamping or clip distances the back end lacks, without a pixel shader to apply them"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"dual-source blending without the back end's"

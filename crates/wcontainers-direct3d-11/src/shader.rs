@@ -435,6 +435,9 @@ pub struct StageVariant {
     /// reads them as storage buffers, past its declared array as Direct3D reads them
     /// (`ConstantsAsStorage`).
     pub constants_as_storage: u16,
+    /// Constant buffer slots past the back end's uniform buffers per stage: the program reads them
+    /// through textures the front copies the bound windows into (`ConstantsAsTexture`).
+    pub constants_as_texture: u16,
 }
 
 /// What a stencil view's components read in Direct3D: the stencil in the second.
@@ -468,6 +471,7 @@ impl StageVariant {
         }
         key.lod_bias = self.lod_bias;
         key.constants_as_storage = self.constants_as_storage;
+        key.constants_as_texture = self.constants_as_texture;
         key.border_in_shader = self.border_in_shader;
         key.mirror_once_in_shader = self.mirror_once_in_shader;
         key.filter_in_shader = self.filter_in_shader;
@@ -518,8 +522,24 @@ pub struct Helpers {
     pub values: Vec<HelperSlot>,
     pub merged: Vec<(u32, (u32, u32))>,
     pub pulled: Vec<(u32, u32)>,
-    /// The constant buffers read as storage buffers: (slot, binding).
-    pub stored: Vec<(u32, u32)>,
+    /// The constant buffers read through another kind of binding.
+    pub relocated: Vec<RelocatedConstants>,
+}
+
+/// A constant buffer slot a program reads through another kind of binding, at `binding`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RelocatedConstants {
+    pub slot: u32,
+    pub binding: u32,
+    pub read_as: ConstantsReadAs,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConstantsReadAs {
+    /// A read-only storage buffer (`AddedBinding::ConstantsAsStorage`).
+    Storage,
+    /// An RGBA32 unsigned texture of its 16-byte rows (`AddedBinding::ConstantsAsTexture`).
+    Texture,
 }
 
 impl Helpers {
@@ -545,13 +565,25 @@ impl Helpers {
                 _ => None,
             })
             .collect();
-        let stored = c
+        let relocated = c
             .reflection
             .bindings
             .iter()
-            .filter_map(|b| match b.added {
-                Some(AddedBinding::ConstantsAsStorage(slot)) => Some((slot, b.binding)),
-                _ => None,
+            .filter_map(|b| {
+                let (slot, read_as) = match b.added {
+                    Some(AddedBinding::ConstantsAsStorage(slot)) => {
+                        (slot, ConstantsReadAs::Storage)
+                    }
+                    Some(AddedBinding::ConstantsAsTexture(slot)) => {
+                        (slot, ConstantsReadAs::Texture)
+                    }
+                    _ => return None,
+                };
+                Some(RelocatedConstants {
+                    slot,
+                    binding: b.binding,
+                    read_as,
+                })
             })
             .collect();
         Helpers {
@@ -559,7 +591,7 @@ impl Helpers {
             values: c.reflection.helpers.clone(),
             merged,
             pulled,
-            stored,
+            relocated,
         }
     }
 
