@@ -4,9 +4,13 @@
 //! `ENOSYS`, is counted and warns. So does a number Linux does not have.
 
 mod clone;
+pub(crate) mod epoll;
+pub(crate) mod eventfd;
+mod fdinfo;
 mod files;
 pub(crate) mod futex;
 mod handle;
+pub(crate) mod inotify;
 mod io;
 mod ioctl;
 pub(crate) mod ipc;
@@ -22,6 +26,7 @@ mod seccomp;
 pub(crate) mod sem;
 mod signalfd;
 mod signals;
+pub(crate) mod socket;
 mod splice;
 mod system;
 mod time;
@@ -143,7 +148,7 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_ppoll, F(io::ppoll)),
         (__NR_pselect6, F(io::pselect6)),
         (__NR_fsync, S(io::fsync)),
-        (__NR_fdatasync, S(io::fsync)),
+        (__NR_fdatasync, S(io::fdatasync)),
         (__NR_syncfs, S(io::syncfs)),
         (__NR_sync, S(io::sync)),
         (__NR_cachestat, S(io::cachestat)),
@@ -153,6 +158,32 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_pidfd_send_signal, S(pidfd::pidfd_send_signal)),
         (__NR_process_mrelease, S(pidfd::process_mrelease)),
         (__NR_signalfd4, S(signalfd::signalfd4)),
+        (__NR_eventfd2, S(eventfd::eventfd2)),
+        (__NR_socket, S(socket::socket)),
+        (__NR_socketpair, S(socket::socketpair)),
+        (__NR_inotify_init1, S(inotify::inotify_init1)),
+        (__NR_inotify_add_watch, S(inotify::inotify_add_watch)),
+        (__NR_inotify_rm_watch, S(inotify::inotify_rm_watch)),
+        (__NR_sendmmsg, S(socket::sendmmsg)),
+        (__NR_recvmmsg, S(socket::recvmmsg)),
+        (__NR_bind, S(socket::bind)),
+        (__NR_listen, S(socket::listen)),
+        (__NR_accept, S(socket::accept)),
+        (__NR_accept4, S(socket::accept4)),
+        (__NR_connect, S(socket::connect)),
+        (__NR_getsockname, S(socket::getsockname)),
+        (__NR_getpeername, S(socket::getpeername)),
+        (__NR_sendto, S(socket::sendto)),
+        (__NR_recvfrom, S(socket::recvfrom)),
+        (__NR_sendmsg, S(socket::sendmsg)),
+        (__NR_recvmsg, S(socket::recvmsg)),
+        (__NR_shutdown, S(socket::shutdown)),
+        (__NR_setsockopt, S(socket::setsockopt)),
+        (__NR_getsockopt, S(socket::getsockopt)),
+        (__NR_epoll_create1, S(epoll::epoll_create1)),
+        (__NR_epoll_ctl, S(epoll::epoll_ctl)),
+        (__NR_epoll_pwait, F(epoll::epoll_pwait)),
+        (__NR_epoll_pwait2, F(epoll::epoll_pwait2)),
         (__NR_openat, S(files::openat)),
         (__NR_openat2, S(files::openat2)),
         (__NR_flock, F(files::flock)),
@@ -426,6 +457,40 @@ pub(crate) fn guest<'a>(kernel: &'a mut Kernel, cx: &'a mut Context<'_>, tid: Ti
         limits: &process.limits,
         may_lock_any,
     }
+}
+
+/// A path argument, copied once per call (`getname`): a call that waits takes the same bytes in
+/// its later runs, whatever memory holds by then. Empty is ENOENT unless `may_be_empty`.
+pub(crate) fn path_argument(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    address: u64,
+    may_be_empty: bool,
+) -> Result<alloc::vec::Vec<u8>, Errno> {
+    let mut taken = core::mem::take(kernel.thread_mut(tid).taken.get_mut());
+    let path = taken.path(address, || {
+        let path = guest(kernel, cx, tid).read_path_maybe_empty(address);
+        // A path in pages of a mapped backend file not read yet is copied once they have come.
+        match path {
+            Err(Errno::EFAULT)
+                if kernel
+                    .files
+                    .backend
+                    .as_ref()
+                    .is_some_and(|client| client.waits_for_pages(tid)) =>
+            {
+                Err(Errno::PARKED)
+            }
+            path => path,
+        }
+    });
+    *kernel.thread_mut(tid).taken.get_mut() = taken;
+    let path = path?;
+    if path.is_empty() && !may_be_empty {
+        return Err(Errno::ENOENT);
+    }
+    Ok(path)
 }
 
 pub(crate) fn all() -> impl Iterator<Item = crate::SystemCall> {

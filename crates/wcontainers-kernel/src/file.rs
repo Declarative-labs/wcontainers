@@ -41,15 +41,27 @@ pub(crate) struct OpenFile {
     /// Whether it was opened through the kernel's own mount of its file system (mq_open's
     /// `mq_mnt`), which has no mount flags, rather than through a mount in the file tree.
     pub internal_mount: bool,
+    /// For a file on a backend, its handle there.
+    pub backend: Option<Rc<crate::fs::backend::Handle>>,
+    /// The thread whose call took its position last (`io::lock_position`).
+    pub position_holder: Option<crate::process::Tid>,
+    /// The directory and name it was opened by, for its directory's inotify watches.
+    pub dentry: Option<(alloc::rc::Weak<RefCell<crate::fs::Inode>>, Vec<u8>)>,
 }
 
 /// The state of a file on the shared anonymous inode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone)]
 pub(crate) enum Anon {
     /// A signal descriptor and the signals it reads.
     Signals(u64),
     /// A timer descriptor and its timer.
     Timer(u64),
+    /// An event counter (`eventfd`).
+    Event(Rc<RefCell<crate::syscall::eventfd::Counter>>),
+    /// An epoll instance.
+    Epoll(crate::syscall::epoll::EpollRef),
+    /// An inotify instance.
+    Inotify(Rc<RefCell<crate::syscall::inotify::Instance>>),
 }
 
 /// The terminal side an open file reads and writes, and whether a hangup cut the file off.
@@ -99,7 +111,16 @@ impl OpenFile {
             direct_io,
             anon: None,
             internal_mount: false,
+            backend: None,
+            position_holder: None,
+            dentry: None,
         }))
+    }
+
+    /// Whether it was made by `O_TMPFILE`, whose dentry never takes a name (`d_tmpfile`): a link
+    /// given to its inode later names another.
+    pub fn unnamed(&self) -> bool {
+        self.flags & (O_TMPFILE & !O_DIRECTORY) != 0
     }
 
     pub fn readable(&self) -> bool {
@@ -135,6 +156,8 @@ pub(crate) struct FdTable {
     released: Vec<FileRef>,
     /// Whether a close let go of record locks, whose waiters try again.
     let_go_locks: bool,
+    /// Notices that closes took message queue requests away, for the kernel to send.
+    pub notices: Vec<(crate::syscall::socket::SocketRef, Vec<u8>)>,
 }
 
 impl FdTable {
@@ -208,14 +231,15 @@ impl FdTable {
     pub fn set(&mut self, fd: i32, descriptor: Descriptor, closer: Pid) -> bool {
         self.highest = self.highest.max(fd);
         let old = self.slots.insert(fd, descriptor);
-        old.map(|old| self.closed(old, closer)).is_some()
+        old.map(|old| self.closed(old, closer, false)).is_some()
     }
 
-    /// Closes a descriptor for process `closer`.
-    pub fn remove(&mut self, fd: i32, closer: Pid) -> Result<(), Errno> {
+    /// Closes a descriptor for process `closer`; `flushed` when the caller has already flushed a
+    /// backend file and had its answer.
+    pub fn remove(&mut self, fd: i32, closer: Pid, flushed: bool) -> Result<(), Errno> {
         let old = self.slots.remove(&fd).ok_or(Errno::EBADF)?;
         self.next_fd = self.next_fd.min(fd);
-        self.closed(old, closer);
+        self.closed(old, closer, flushed);
         Ok(())
     }
 
@@ -244,6 +268,7 @@ impl FdTable {
             lock_owner,
             released: Vec::new(),
             let_go_locks: false,
+            notices: Vec::new(),
             ..self.clone()
         }
     }
@@ -252,23 +277,31 @@ impl FdTable {
     pub fn close_all(&mut self, closer: Pid) {
         self.next_fd = 0;
         for (_, old) in core::mem::take(&mut self.slots) {
-            self.closed(old, closer);
+            self.closed(old, closer, false);
         }
     }
 
-    /// A descriptor was closed by process `closer`: the table's record locks on the file go
-    /// (`filp_flush`), unless it was opened only for its path.
-    fn closed(&mut self, descriptor: Descriptor, closer: Pid) {
+    /// A descriptor was closed by process `closer`: a backend file is flushed there unless that
+    /// was done (`filp_flush`; nothing waits for the answer, whose error only `close` reports),
+    /// and the table's record locks on the file go, unless it was opened only for its path.
+    fn closed(&mut self, descriptor: Descriptor, closer: Pid, flushed: bool) {
         {
             let file = descriptor.file.borrow();
+            if let Some(handle) = &file.backend
+                && !flushed
+            {
+                crate::fs::backend::flush_unwaited(handle, self.lock_owner);
+            }
             if !file.is_path() {
                 let mut node = file.node.borrow_mut();
                 self.let_go_locks |=
                     crate::locks::release_table(&mut node.record_locks, self.lock_owner);
                 // A queue's request to be told goes with a close by its process
                 // (`mqueue_flush_file`).
-                if let crate::fs::Content::Mqueue(queue) = &mut node.content {
-                    queue.flush(closer);
+                if let crate::fs::Content::Mqueue(queue) = &mut node.content
+                    && let Some(notice) = queue.flush(closer)
+                {
+                    self.notices.push(notice);
                 }
             }
         }
@@ -288,7 +321,7 @@ impl FdTable {
             .map(|(fd, _)| *fd)
             .collect();
         for fd in closing {
-            let _ = self.remove(fd, closer);
+            let _ = self.remove(fd, closer, false);
         }
     }
 }

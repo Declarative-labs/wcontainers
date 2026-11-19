@@ -11,7 +11,7 @@ use crate::counters::reason;
 use crate::linux::general::*;
 use crate::process::{Call, Channel, Leader, Pid, Report, Tid};
 use crate::schedule;
-use crate::{Context, Kernel, syscall};
+use crate::{Context, Errno, Kernel, syscall};
 
 impl Kernel {
     /// Chooses the thread to run, or says why none can run.
@@ -164,7 +164,28 @@ impl Kernel {
 
     /// Runs a system call, the first time or again after its thread was woken.
     fn system_call(&mut self, cx: &mut Context<'_>, tid: Tid, call: Syscall, again: bool) {
-        let outcome = syscall::dispatch(self, cx, tid, call, again);
+        self.threads[&tid].taken.borrow_mut().rewind();
+        self.begin_asking(tid);
+        let mut outcome = syscall::dispatch(self, cx, tid, call, again);
+        // A copy that reached pages of a mapped backend file not read yet found them not there:
+        // a call that failed for it runs again once they have come, as Linux's copy waits for
+        // the fault. One that did part of its work first keeps its short result (counted).
+        if let Some(client) = self.files.backend.clone()
+            && client.waits_for_pages(tid)
+        {
+            match outcome {
+                syscall::Outcome::Return(value) if !crate::errno::Errno::is_error_return(value) => {
+                    client.stop_waiting_for_pages(tid);
+                    self.counters
+                        .count(cx.host, reason::COPY_SHORT_OF_PAGES, call.number);
+                }
+                syscall::Outcome::Return(_) | syscall::Outcome::Restart => {
+                    outcome = syscall::Outcome::Parked;
+                }
+                syscall::Outcome::Parked | syscall::Outcome::Gone => {}
+            }
+        }
+        self.end_asking(tid, matches!(outcome, syscall::Outcome::Parked));
         if let Some(thread) = self.threads.get(&tid) {
             syscall::ipc::settle(self, cx, thread.process);
         }
@@ -174,11 +195,11 @@ impl Kernel {
         }
         match outcome {
             syscall::Outcome::Return(value) => {
-                self.finish_call(tid);
+                self.finish_call(cx, tid);
                 self.return_to_user(cx, tid, Resume::Return(value));
             }
             syscall::Outcome::Restart => {
-                self.finish_call(tid);
+                self.finish_call(cx, tid);
                 self.return_to_user(cx, tid, Resume::FromRegisters);
             }
             syscall::Outcome::Parked => {
@@ -188,16 +209,107 @@ impl Kernel {
         }
     }
 
+    /// A run of `tid`'s call starts: the backend's questions are asked as from its thread.
+    pub(crate) fn begin_asking(&self, tid: Tid) {
+        if let Some(client) = &self.files.backend {
+            let thread = &self.threads[&tid];
+            client.begin(crate::fs::backend::Asker {
+                tid,
+                uid: thread.credentials.fsuid,
+                gid: thread.credentials.fsgid,
+                pid: thread.process as u32,
+            });
+        }
+    }
+
+    /// The run of `tid`'s call ended, `parked` or not: a parked call that waits for the backend
+    /// waits on it, and a call that ended forgets its answers.
+    pub(crate) fn end_asking(&mut self, tid: Tid, parked: bool) {
+        let Some(client) = self.files.backend.clone() else {
+            return;
+        };
+        let waits = parked && client.waits(tid);
+        client.end(tid, !parked);
+        if waits
+            && self
+                .threads
+                .get(&tid)
+                .is_some_and(|thread| thread.call.wait.is_none())
+        {
+            self.park(tid, Channel::Backend);
+        }
+    }
+
+    /// Takes a lock a call keeps until it ends, while it waits too (Linux's mutexes a sleeping
+    /// call holds), on `channel`: the address of what it guards, under `Channel::Held`, or a pipe's
+    /// own channel. `holder` is the thread that took it last, which holds it while its call still
+    /// does. Parks while another thread's call holds it.
+    pub(crate) fn take_lock(
+        &mut self,
+        tid: Tid,
+        holder: Option<Tid>,
+        channel: Channel,
+    ) -> Result<(), Errno> {
+        if self.held_by_other(tid, holder, channel) {
+            self.park(tid, channel);
+            return Err(Errno::PARKED);
+        }
+        self.hold_lock(tid, channel);
+        Ok(())
+    }
+
+    /// Whether another thread's call holds the lock on `channel` that `holder` took last.
+    pub(crate) fn held_by_other(&self, tid: Tid, holder: Option<Tid>, channel: Channel) -> bool {
+        holder.is_some_and(|holder| {
+            holder != tid
+                && self
+                    .threads
+                    .get(&holder)
+                    .is_some_and(|thread| thread.call.holds.contains(&Some(channel)))
+        })
+    }
+
+    /// Marks the lock on `channel` as held by `tid`'s call until it ends.
+    pub(crate) fn hold_lock(&mut self, tid: Tid, channel: Channel) {
+        let holds = &mut self.thread_mut(tid).call.holds;
+        if !holds.contains(&Some(channel)) {
+            let free = holds
+                .iter_mut()
+                .find(|slot| slot.is_none())
+                .expect("a call holds at most two locks");
+            *free = Some(channel);
+        }
+    }
+
+    /// Lets go of the locks a call held: whoever waits for one tries again.
+    fn let_go(&mut self, holds: [Option<Channel>; 2]) {
+        for channel in holds.into_iter().flatten() {
+            self.wake(channel);
+        }
+    }
+
     /// Clears a finished call's slot; a named pipe's open still waiting gives up its end.
-    fn finish_call(&mut self, tid: Tid) {
+    fn finish_call(&mut self, cx: &mut Context<'_>, tid: Tid) {
         let thread = self.thread_mut(tid);
         let holds = core::mem::take(&mut thread.call).holds;
-        if let Some(address) = holds {
-            self.wake(Channel::Object(address));
-        }
+        let taken = thread.taken.get_mut().clear();
+        self.give_back(taken);
+        self.let_go(holds);
         let thread = self.thread_mut(tid);
         let opening = thread.opening.take();
         self.give_up_opening(opening);
+        if !self.released.is_empty() {
+            self.files_released(cx);
+        }
+    }
+
+    /// A call's files go: those only it held (their descriptors were closed meanwhile) are let
+    /// go as closed descriptors' are.
+    fn give_back(&mut self, taken: alloc::vec::Vec<crate::file::FileRef>) {
+        let only_held = taken
+            .into_iter()
+            .filter(|file| alloc::rc::Rc::strong_count(file) == 1);
+        self.released.extend(only_held);
     }
 
     /// Closes the end a named pipe's waiting open held, which the other end may wait on.
@@ -240,6 +352,11 @@ impl Kernel {
             {
                 self.woken.remove(index);
                 self.take_out_of_line(tid);
+                // The container's start has no registers: it runs on from where it got.
+                if self.is_starting(tid) {
+                    self.run_start(cx);
+                    continue;
+                }
                 let thread = &self.threads[&tid];
                 let mut registers = RegisterBlock::ZERO;
                 cx.cpu.registers(thread.cpu, &mut registers);
@@ -255,6 +372,15 @@ impl Kernel {
                     self.give_way();
                     self.take_turn(tid);
                 }
+                continue;
+            }
+            if self
+                .files
+                .backend
+                .as_ref()
+                .is_some_and(|client| client.has_outgoing())
+            {
+                self.send_to_backend(cx);
                 continue;
             }
             if let Some(tid) = self.signalled.pop_front() {
@@ -282,6 +408,15 @@ impl Kernel {
         self.last_now = cx.monotonic();
         for _ in 0..core::mem::take(&mut cx.refused) {
             self.counters.count(cx.host, reason::HOST_CANNOT, 0);
+        }
+        let unasked = self
+            .files
+            .backend
+            .as_ref()
+            .map_or(0, |client| client.unasked());
+        for _ in 0..unasked {
+            self.counters
+                .count(cx.host, reason::BACKEND_PAGES_UNASKED, 0);
         }
         self.counters.flush(cx.host);
     }
@@ -341,9 +476,18 @@ impl Kernel {
     /// Wakes every thread parked on `channel`, and for a change to an object also those waiting on
     /// any file's readiness.
     pub(crate) fn wake(&mut self, channel: Channel) {
+        self.wake_poll(channel, 0);
+    }
+
+    /// As [`Kernel::wake`] for a change to an object's readiness with the events in `key` (0 for
+    /// any), which epoll items watching it take (`wake_up_poll`).
+    pub(crate) fn wake_poll(&mut self, channel: Channel, key: u32) {
         let readiness = matches!(channel, Channel::Object(_)).then_some(Channel::Readiness);
         for tid in self.parked.on_either(channel, readiness) {
             self.wake_thread(tid);
+        }
+        if let Channel::Object(object) = channel {
+            syscall::epoll::notify(self, syscall::epoll::Queue::Object(object), key);
         }
     }
 
@@ -358,6 +502,7 @@ impl Kernel {
                 self.wake_thread(tid);
             }
         }
+        syscall::epoll::notify(self, syscall::epoll::Queue::Signals(pid), 0);
     }
 
     /// Wakes the threads of `pid`'s process parked on its children.
@@ -379,9 +524,13 @@ impl Kernel {
         if let Some(channel) = thread.call.wait.take() {
             thread.woken_at = Some(entry_now);
             let deadline = thread.call.deadline;
+            let filling = core::mem::take(&mut thread.filling);
             self.parked.remove(tid, channel, deadline);
-            self.woken.push_back(tid);
-            // Its registers still hold the call, which runs again before it goes on.
+            // Its registers still hold the call, which runs again before it goes on, or the
+            // instruction that touched pages it waited for, which touches them again.
+            if !filling {
+                self.woken.push_back(tid);
+            }
             self.make_runnable(tid, Resume::FromRegisters);
         }
     }
@@ -447,10 +596,10 @@ impl Kernel {
         if let Some(channel) = call.wait {
             self.parked.remove(tid, channel, call.deadline);
         }
-        if let Some(address) = call.holds {
-            self.thread_mut(tid).call.holds = None;
-            self.wake(Channel::Object(address));
-        }
+        self.thread_mut(tid).call.holds = Default::default();
+        let taken = self.thread_mut(tid).taken.get_mut().clear();
+        self.give_back(taken);
+        self.let_go(call.holds);
         if self.current == Some(tid) {
             self.current = None;
         }
@@ -462,6 +611,9 @@ impl Kernel {
     pub(crate) fn end_thread(&mut self, cx: &mut Context<'_>, tid: Tid) {
         syscall::futex::thread_end(self, cx, tid, true);
         syscall::timer::thread_end(self, tid);
+        if let Some(client) = &self.files.backend {
+            client.drop_call(tid);
+        }
         self.unschedule(tid);
         self.release_vfork(tid);
         syscall::sem::forget(self, tid);
@@ -504,6 +656,8 @@ impl Kernel {
         }
         let mut thread = self.threads.remove(&tid).expect("thread exists");
         thread.call = Call::default();
+        let taken = thread.taken.get_mut().clear();
+        self.give_back(taken);
         // Its own number goes with the first thread, and the descriptors naming it with it.
         if let Some(node) = thread.pidfd.take() {
             self.wake(syscall::pidfd::channel(&node));
@@ -758,28 +912,9 @@ impl Kernel {
         })
     }
 
-    /// Linux's `ptrace_may_access` with PTRACE_MODE_READ_FSCREDS: the caller's own process, or one
-    /// whose ids all match the caller's file system ids, that may be dumped and whose permitted
-    /// powers the caller's effective ones cover (`cap_ptrace_access_check`), unless the caller has
-    /// CAP_SYS_PTRACE.
+    /// Linux's `ptrace_may_access` with PTRACE_MODE_READ_FSCREDS ([`crate::fs::proc::ptrace_may_read`]).
     pub(crate) fn ptrace_may_read(&self, caller: Tid, target: Pid) -> bool {
-        if self.threads[&caller].process == target {
-            return true;
-        }
-        let Some(target_process) = self.processes.get(&target) else {
-            return false;
-        };
-        let (c, t) = (self.credentials(caller), self.task_credentials(target));
-        let traces = c.has(CAP_SYS_PTRACE);
-        let same = [t.uid, t.euid, t.suid].iter().all(|id| *id == c.fsuid)
-            && [t.gid, t.egid, t.sgid].iter().all(|id| *id == c.fsgid);
-        if !same && !traces {
-            return false;
-        }
-        if target_process.ended.is_none() && !target_process.map.borrow().dumpable && !traces {
-            return false;
-        }
-        t.permitted & !c.effective == 0 || traces
+        crate::fs::proc::ptrace_may_read(&self.processes, &self.threads, caller, target)
     }
 
     fn group_has_stopped(&self, group: Pid) -> bool {
@@ -880,24 +1015,79 @@ impl Kernel {
     /// Descriptors were closed: pipes and terminals may have lost an end, so every wait on a file
     /// looks again, and waits for locks do if locks were let go.
     pub(crate) fn files_released(&mut self, cx: &mut Context<'_>) {
+        // What a release lets go of (a socket's queue, a collected cycle) is released in turn.
+        // Cycles are looked for when a local socket is released (`unix_release_sock`).
+        loop {
+            let sockets = self.release_round(cx);
+            let collected = sockets && crate::syscall::socket::collect(self, cx);
+            if !collected && self.released.is_empty() {
+                break;
+            }
+        }
+    }
+
+    /// One round of [`Self::files_released`]; returns whether a local socket was released.
+    fn release_round(&mut self, cx: &mut Context<'_>) -> bool {
         let mut files = core::mem::take(&mut self.released);
+        let mut notices = core::mem::take(&mut self.notices);
         let mut let_go = false;
         for thread in self.threads.values() {
             let mut table = thread.files.borrow_mut();
             files.extend(table.take_released());
+            notices.append(&mut table.notices);
             let_go |= table.take_let_go_locks();
         }
+        for (socket, cookie) in notices {
+            crate::syscall::socket::netlink::send_from_kernel(self, cx, &socket, cookie);
+        }
+        let sockets = files.iter().any(|file| {
+            alloc::rc::Rc::strong_count(file) == 1
+                && crate::syscall::socket::of(file).is_some_and(|socket| socket.borrow().local())
+        });
         let nodes: alloc::vec::Vec<_> = files
             .iter()
             .map(|file| file.borrow().node.clone())
             .collect();
+        // A socket whose last file went is released (`sock_close`).
+        for file in &files {
+            if alloc::rc::Rc::strong_count(file) == 1
+                && let Some(socket) = crate::syscall::socket::of(file)
+            {
+                crate::syscall::socket::released(self, cx, &socket);
+            }
+        }
+        crate::syscall::socket::flush_outside(self, cx);
+        // An open file's last close (`__fput`): inotify's close event, and an instance lets go of
+        // its watches.
+        for file in &files {
+            if alloc::rc::Rc::strong_count(file) != 1 {
+                continue;
+            }
+            let instance = crate::syscall::inotify::of_file(file);
+            match instance {
+                Some(instance) => crate::syscall::inotify::released(&instance),
+                None => {
+                    let writer = file.borrow().flags & O_ACCMODE != O_RDONLY;
+                    let path = file.borrow().flags & O_PATH != 0;
+                    if !path {
+                        let mask = if writer {
+                            IN_CLOSE_WRITE
+                        } else {
+                            IN_CLOSE_NOWRITE
+                        };
+                        crate::syscall::inotify::file_changed(self, file, mask);
+                    }
+                    crate::syscall::inotify::closed(self, file);
+                }
+            }
+        }
         crate::syscall::pipe::released(self, cx, files);
         // An open file's last close lets go of its record and flock locks.
         for node in nodes {
             let mut node = node.borrow_mut();
             let_go |= crate::locks::release_dead(&mut node.record_locks);
             let flocks = node.flocks.len();
-            node.flocks.retain(|(holder, _)| holder.strong_count() > 0);
+            node.flocks.retain(|(holder, ..)| holder.strong_count() > 0);
             let_go |= node.flocks.len() != flocks;
         }
         if let_go {
@@ -909,5 +1099,6 @@ impl Kernel {
         for tid in woken {
             self.wake_thread(tid);
         }
+        sockets
     }
 }

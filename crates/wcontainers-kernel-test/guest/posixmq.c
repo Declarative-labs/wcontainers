@@ -8,12 +8,15 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/netlink.h>
+#include <mqueue.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/syscall.h>
@@ -30,6 +33,8 @@ struct event {
     int signo, notify;
     int pad[12];
 };
+
+static void thread_notifications(void);
 
 static void show(const char *what, long result) {
     if (result < 0)
@@ -501,6 +506,77 @@ static void notifications(void) {
     show("unregister not a queue", notify(0, NULL));
     close(q);
     syscall(SYS_mq_unlink, "n");
+    thread_notifications();
+}
+
+// A cookie that came to a netlink socket: its size, sender, first and last bytes.
+static void cookie_read(const char *what, int nl) {
+    unsigned char got[64];
+    struct sockaddr_nl from;
+    socklen_t length = sizeof from;
+    memset(&from, 0xff, sizeof from);
+    long n = recvfrom(nl, got, sizeof got, MSG_DONTWAIT, (struct sockaddr *)&from, &length);
+    if (n < 0) {
+        show(what, n);
+        return;
+    }
+    printf("%s: %ld bytes from family %d port %u groups %u, first %d last %d\n", what, n, from.nl_family,
+           from.nl_pid, from.nl_groups, got[0], got[n - 1]);
+}
+
+static void on_message(union sigval value) {
+    printf("thread told, value %d\n", value.sival_int);
+}
+
+// SIGEV_THREAD: the cookie goes to a netlink socket, marked woken by the first message and
+// removed when the request is taken away.
+static void thread_notifications(void) {
+    int q = mq_open_("t", O_CREAT | O_RDWR, 0600, NULL);
+    int nl = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+    char cookie[32];
+    memset(cookie, 7, sizeof cookie);
+    struct event e = {(unsigned long)cookie, nl, SIGEV_THREAD};
+    show("notify thread", notify(q, &e));
+    text("thread", q);
+    struct event again = {(unsigned long)cookie, nl, SIGEV_THREAD};
+    show("notify thread again", notify(q, &again));
+    cookie_read("nothing yet", nl);
+    send_(q, "a", 1, 0, NULL);
+    cookie_read("after a message", nl);
+    text("after the message", q);
+    char buffer[8192];
+    receive_(q, buffer, sizeof buffer, NULL, NULL);
+    show("notify thread for removal", notify(q, &e));
+    show("unregister", notify(q, NULL));
+    cookie_read("after unregister", nl);
+    show("notify thread before close", notify(q, &e));
+    close(q);
+    cookie_read("after close", nl);
+    q = mq_open_("t", O_RDWR, 0, NULL);
+    int unix_pair[2];
+    socketpair(AF_UNIX, SOCK_STREAM, 0, unix_pair);
+    struct event local = {(unsigned long)cookie, unix_pair[0], SIGEV_THREAD};
+    show("notify thread local socket", notify(q, &local));
+    struct event bad_queue = {(unsigned long)cookie, nl, SIGEV_THREAD};
+    show("notify thread not a queue", notify(nl, &bad_queue));
+    cookie_read("after refusals", nl);
+    // The C library's own SIGEV_THREAD: a thread of its own reads the cookie and calls back.
+    struct sigevent library = {.sigev_notify = SIGEV_THREAD, .sigev_notify_function = on_message,
+                               .sigev_value.sival_int = 42};
+    show("library notify", syscall(SYS_mq_notify, q, NULL));
+    show("library notify thread", mq_notify(q, &library));
+    send_(q, "b", 1, 0, NULL);
+    for (int i = 0; i < 100; i++) {
+        usleep(10000);
+        struct attr a;
+        getset(q, NULL, &a);
+        if (a.curmsgs == 1)
+            break;
+    }
+    usleep(200000);
+    close(q);
+    close(nl);
+    syscall(SYS_mq_unlink, "t");
 }
 
 static void limits(void) {

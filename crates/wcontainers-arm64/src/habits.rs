@@ -1,7 +1,9 @@
 //! Compiler habits the translator recognises. A habit only says what to expect: code built on it checks at run
 //! time that the guess holds, so a wrong guess costs speed, never correctness.
 
+use crate::Arm64;
 use crate::instruction::*;
+use wcontainers_guest_cpu::Guest;
 
 /// Where a jump through a register made from a switch statement can go: a bound check (`cmp` with an
 /// immediate, then `b.hi` or `b.hs`), a table of 1, 2 or 4 byte entries loaded from a known address, and a
@@ -77,7 +79,9 @@ pub fn jump_table(
 
 /// The index of the last instruction before `end` that writes `r`.
 fn last_def(before: &[(u64, Instruction)], r: Reg, end: usize) -> Option<usize> {
-    (0..end).rev().find(|&i| before[i].1.effects().defs.has(r))
+    (0..end).rev().find(|&i| {
+        Arm64::reg_bit(r).is_some_and(|b| crate::guest::effects(&before[i].1).defs.has_bit(b))
+    })
 }
 
 /// The blob offset a register holds before `end`, when an `adr`, or an `adrp` and an `add`, put it there.
@@ -121,7 +125,10 @@ fn bound(before: &[(u64, Instruction)]) -> Option<u64> {
         unreachable!()
     };
     let compare = before[..branch].iter().rposition(|(_, i)| {
-        i.effects().defs.intersect(crate::Registers::FLAGS) != crate::Registers::NONE
+        !crate::guest::effects(i)
+            .defs
+            .intersect(crate::guest::FLAGS)
+            .is_empty()
     })?;
     match before[compare].1 {
         Instruction::AddSub {

@@ -124,6 +124,16 @@ int main(void) {
     result("munmap second", munmap(b, 2 * PAGE));
     file_bytes("after both", fd, 96, 12);
 
+    // Growing a mapping over a file that already reaches further shows the file there.
+    result("file of three pages", ftruncate(fd, 3 * PAGE));
+    unsigned char *one = mmap(0, PAGE, PROT_READ, MAP_SHARED, fd, 0);
+    unsigned char *three = mremap(one, PAGE, 3 * PAGE, MREMAP_MAYMOVE);
+    result("mremap over the file", three == MAP_FAILED ? -1 : 0);
+    if (three != MAP_FAILED) {
+        memory_bytes("grown over the file", three + 2 * PAGE, 4);
+        munmap(three, 3 * PAGE);
+    }
+
     // Punching through a mapping.
     unsigned char *d = mmap(0, 3 * PAGE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     // Only the change in blocks: the pages a mapping's faults bring in are not known (counted).

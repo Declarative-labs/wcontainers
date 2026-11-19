@@ -1,0 +1,895 @@
+//! A container's root files: a plain tar of files, or an image in the OCI image layout, whose layers
+//! are applied in order with their whiteouts and whose configuration becomes the OCI runtime
+//! configuration by the image specification's conversion (`conversion.md`).
+
+use std::collections::{BTreeMap, HashMap};
+use std::fs::File;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+
+use oci_spec::image::{
+    ANNOTATION_CREATED, Descriptor, ImageConfiguration, ImageIndex, ImageManifest, MediaType,
+    OciLayout,
+};
+use oci_spec::runtime::{Spec, User};
+use sha2::{Digest as _, Sha256};
+use wcontainers_kernel::{Attributes, Kernel, NewFile};
+
+use crate::Error;
+
+/// One file of the root, as a tar entry gives it.
+#[derive(Clone, Debug)]
+struct Entry {
+    attributes: Attributes,
+    kind: Kind,
+}
+
+#[derive(Clone, Debug)]
+enum Kind {
+    Directory,
+    Regular(Vec<u8>),
+    Symlink(Vec<u8>),
+    HardLink(Vec<u8>),
+    CharacterDevice { major: u32, minor: u32 },
+    BlockDevice { major: u32, minor: u32 },
+    Fifo,
+}
+
+/// The root's files, and for an OCI image its configuration.
+pub struct Image {
+    /// By path from the root without a leading slash ("" is the root itself), so that a directory
+    /// comes before what is in it.
+    files: BTreeMap<Vec<u8>, Entry>,
+    configuration: Option<ImageConfiguration>,
+}
+
+/// Symbolic links followed in one lookup before it fails, as Linux's `MAXSYMLINKS`.
+const MOST_LINKS: usize = 40;
+
+impl Image {
+    /// A plain tar of the root's files, such as `docker export` writes.
+    pub fn tar(path: &Path) -> Result<Self, Error> {
+        let mut files = BTreeMap::new();
+        read_layer(open(path)?, path, false, &mut files)?;
+        Ok(Self {
+            files,
+            configuration: None,
+        })
+    }
+
+    /// An image in the OCI image layout (the directory `docker save` writes as a tar): the manifest for
+    /// `architecture` (as the image configuration names it, [`crate::BackEnd::ARCHITECTURE`]) on
+    /// Linux, its blobs checked against their digests and its layers applied in order.
+    pub fn oci(directory: &Path, architecture: &str) -> Result<Self, Error> {
+        let layout = directory.join("oci-layout");
+        let header = OciLayout::from_reader(open(&layout)?)
+            .map_err(|error| Error::Image(format!("{}: {error}", layout.display())))?;
+        if header.image_layout_version() != "1.0.0" {
+            return Err(Error::Image(format!(
+                "{}: image layout version {} is not 1.0.0",
+                layout.display(),
+                header.image_layout_version()
+            )));
+        }
+        let index_path = directory.join("index.json");
+        let index = ImageIndex::from_reader(open(&index_path)?)
+            .map_err(|error| Error::Image(format!("{}: {error}", index_path.display())))?;
+        let manifest = find_manifest(directory, index.manifests(), architecture)?;
+        let config_bytes = blob(directory, manifest.config())?;
+        let configuration = ImageConfiguration::from_reader(config_bytes.as_slice())
+            .map_err(|error| Error::Image(format!("the image configuration: {error}")))?;
+        if configuration.os().to_string() != "linux"
+            || configuration.architecture().to_string() != architecture
+        {
+            return Err(Error::Image(format!(
+                "the image is for {}/{}, not linux/{architecture}",
+                configuration.os(),
+                configuration.architecture()
+            )));
+        }
+        let mut files = BTreeMap::new();
+        for layer in manifest.layers() {
+            let bytes = blob(directory, layer)?;
+            let name = blob_path(directory, layer);
+            match layer.media_type() {
+                MediaType::ImageLayer | MediaType::ImageLayerNonDistributable => {
+                    read_layer(bytes.as_slice(), &name, true, &mut files)?;
+                }
+                MediaType::ImageLayerGzip | MediaType::ImageLayerNonDistributableGzip => {
+                    let reader = flate2::read::GzDecoder::new(bytes.as_slice());
+                    read_layer(reader, &name, true, &mut files)?;
+                }
+                MediaType::Other(other)
+                    if other == "application/vnd.docker.image.rootfs.diff.tar.gzip" =>
+                {
+                    let reader = flate2::read::GzDecoder::new(bytes.as_slice());
+                    read_layer(reader, &name, true, &mut files)?;
+                }
+                other => {
+                    return Err(Error::Image(format!(
+                        "layer {} has media type {other}, which this runtime does not unpack",
+                        layer.digest()
+                    )));
+                }
+            }
+        }
+        Ok(Self {
+            files,
+            configuration: Some(configuration),
+        })
+    }
+
+    /// The architecture an OCI image is for; none for a plain tar.
+    pub fn architecture(&self) -> Option<String> {
+        self.configuration
+            .as_ref()
+            .map(|configuration| configuration.architecture().to_string())
+    }
+
+    /// What to run: for an OCI image, the runtime's base configuration ([`crate::base_spec`]) with the
+    /// image configuration converted into it as `conversion.md` says; for a plain tar, the base
+    /// configuration, whose `process.args` the caller sets. Where the image names no user, the user
+    /// is root with the groups `/etc/group` lists it in, as Docker gives it.
+    pub fn spec(&self) -> Result<Spec, Error> {
+        let mut spec = crate::base_spec();
+        let mut process = spec.process().clone().unwrap_or_default();
+        process.set_user(self.root());
+        spec.set_process(Some(process.clone()));
+        let Some(configuration) = &self.configuration else {
+            return Ok(spec);
+        };
+        // Implicit annotations first, so that a label of the same key takes precedence.
+        let mut annotations: HashMap<String, String> = [
+            ("os", Some(configuration.os().to_string())),
+            (
+                "architecture",
+                Some(configuration.architecture().to_string()),
+            ),
+            ("variant", configuration.variant().clone()),
+            ("os.version", configuration.os_version().clone()),
+            (
+                "os.features",
+                configuration.os_features().as_ref().map(|f| f.join(",")),
+            ),
+            ("author", configuration.author().clone()),
+        ]
+        .into_iter()
+        .filter_map(|(name, value)| Some((format!("org.opencontainers.image.{name}"), value?)))
+        .chain(
+            configuration
+                .created()
+                .clone()
+                .map(|created| (ANNOTATION_CREATED.to_string(), created)),
+        )
+        .collect();
+        if let Some(config) = configuration.config() {
+            if let Some(volumes) = config.volumes().as_ref().filter(|v| !v.is_empty()) {
+                return Err(Error::Refused {
+                    field: "config.Volumes".to_string(),
+                    reason: format!(
+                        "{volumes:?}: a volume is a mount of a directory from outside, which needs \
+                         the shipped outside's file backend"
+                    ),
+                });
+            }
+            let mut args: Vec<String> = config.entrypoint().clone().unwrap_or_default();
+            args.extend(config.cmd().clone().unwrap_or_default());
+            process.set_args(Some(args));
+            process.set_env(Some(with_defaults(
+                process.env().clone().unwrap_or_default(),
+                config.env().clone().unwrap_or_default(),
+            )));
+            let cwd = config.working_dir().clone().filter(|cwd| !cwd.is_empty());
+            process.set_cwd(PathBuf::from(cwd.unwrap_or_else(|| "/".to_string())));
+            if let Some(user) = config.user().as_deref().filter(|user| !user.is_empty()) {
+                process.set_user(self.user(user)?);
+            }
+            if let Some(signal) = config.stop_signal() {
+                annotations.insert(
+                    "org.opencontainers.image.stopSignal".to_string(),
+                    signal.clone(),
+                );
+            }
+            if let Some(ports) = config.exposed_ports().as_ref().filter(|p| !p.is_empty()) {
+                annotations.insert(
+                    "org.opencontainers.image.exposedPorts".to_string(),
+                    ports.join(","),
+                );
+            }
+            annotations.extend(config.labels().clone().unwrap_or_default());
+        }
+        spec.set_process(Some(process));
+        spec.set_annotations(Some(annotations));
+        Ok(spec)
+    }
+
+    /// `process.user` for the image configuration's `User` (`user`, `uid`, `user:group`, `uid:gid`
+    /// and the mixed forms), names looked up in the root's `/etc/passwd` and `/etc/group`.
+    fn user(&self, text: &str) -> Result<User, Error> {
+        let passwd = self.table(b"etc/passwd");
+        let group = self.table(b"etc/group");
+        let (name, group_name) = match text.split_once(':') {
+            Some((name, group)) => (name, Some(group)),
+            None => (text, None),
+        };
+        let refused = |reason: String| Error::Refused {
+            field: "config.User".to_string(),
+            reason,
+        };
+        let account = passwd.iter().find(|fields| {
+            fields.first() == Some(&name)
+                || name
+                    .parse::<u32>()
+                    .is_ok_and(|uid| fields.get(2).and_then(|f| f.parse().ok()) == Some(uid))
+        });
+        let uid = match name.parse::<u32>() {
+            Ok(uid) => uid,
+            Err(_) => account
+                .and_then(|fields| fields.get(2)?.parse().ok())
+                .ok_or_else(|| refused(format!("no user {name} in /etc/passwd")))?,
+        };
+        let gid = match group_name {
+            Some(group_name) => match group_name.parse::<u32>() {
+                Ok(gid) => gid,
+                Err(_) => group
+                    .iter()
+                    .find(|fields| fields.first() == Some(&group_name))
+                    .and_then(|fields| fields.get(2)?.parse().ok())
+                    .ok_or_else(|| refused(format!("no group {group_name} in /etc/group")))?,
+            },
+            None => account
+                .and_then(|fields| fields.get(3)?.parse().ok())
+                .unwrap_or(0),
+        };
+        let mut user = User::default();
+        user.set_uid(uid);
+        user.set_gid(gid);
+        // Groups only for a user named without a group, as conversion.md says.
+        if group_name.is_none() && name.parse::<u32>().is_err() {
+            user.set_additional_gids(Some(self.groups(name, gid)));
+        }
+        Ok(user)
+    }
+
+    /// The user where the image names none: root, in its groups, as Docker gives it.
+    fn root(&self) -> User {
+        let passwd = self.table(b"etc/passwd");
+        let account = passwd.iter().find(|fields| fields.get(2) == Some(&"0"));
+        let gid = account
+            .and_then(|fields| fields.get(3)?.parse().ok())
+            .unwrap_or(0);
+        let mut user = User::default();
+        user.set_gid(gid);
+        let name = account.and_then(|fields| fields.first().copied());
+        user.set_additional_gids(Some(
+            name.map_or_else(|| vec![gid], |name| self.groups(name, gid)),
+        ));
+        user
+    }
+
+    /// The additional groups of the user `name` whose group is `gid`, as Docker gives them: `gid`,
+    /// then each group `/etc/group` lists the user in, in its order.
+    fn groups(&self, name: &str, gid: u32) -> Vec<u32> {
+        let members = self
+            .table(b"etc/group")
+            .into_iter()
+            .filter(|fields| {
+                fields
+                    .get(3)
+                    .is_some_and(|members| members.split(',').any(|m| m == name))
+            })
+            .filter_map(|fields| fields.get(2)?.parse().ok());
+        std::iter::once(gid).chain(members).collect()
+    }
+
+    /// The home directory of `uid` in the root's `/etc/passwd`, or `/` as runc has it.
+    pub(crate) fn home(&self, uid: u32) -> String {
+        self.table(b"etc/passwd")
+            .iter()
+            .find(|fields| fields.get(2).and_then(|f| f.parse().ok()) == Some(uid))
+            .and_then(|fields| fields.get(5))
+            .filter(|home| !home.is_empty())
+            .map_or_else(|| "/".to_string(), |home| home.to_string())
+    }
+
+    /// The lines of a colon-separated table in the root, such as `/etc/passwd`, split into fields.
+    fn table(&self, path: &[u8]) -> Vec<Vec<&str>> {
+        match self.lookup(path) {
+            Some(Entry {
+                kind: Kind::Regular(bytes),
+                ..
+            }) => std::str::from_utf8(bytes)
+                .unwrap_or("")
+                .lines()
+                .filter(|line| !line.starts_with('#'))
+                .map(|line| line.split(':').collect())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The file at `path` (from the root, with `/` between parts), following symbolic links.
+    fn lookup(&self, path: &[u8]) -> Option<&Entry> {
+        let mut parts: Vec<Vec<u8>> = split(path).rev().map(<[u8]>::to_vec).collect();
+        let mut at: Vec<Vec<u8>> = Vec::new();
+        let mut links = 0;
+        while let Some(part) = parts.pop() {
+            match part.as_slice() {
+                b"." => continue,
+                b".." => {
+                    at.pop();
+                    continue;
+                }
+                _ => {}
+            }
+            at.push(part);
+            let entry = self.files.get(&at.join(&b'/'))?;
+            if let Kind::Symlink(target) = &entry.kind {
+                links += 1;
+                if links > MOST_LINKS {
+                    return None;
+                }
+                at.pop();
+                if target.starts_with(b"/") {
+                    at.clear();
+                }
+                parts.extend(split(target).rev().map(<[u8]>::to_vec));
+            } else if !parts.is_empty() && !matches!(entry.kind, Kind::Directory) {
+                return None;
+            }
+        }
+        self.files.get(&at.join(&b'/'))
+    }
+
+    /// The program `process.args[0]` names, as runc finds it: a name with a slash from the working
+    /// directory, any other name in the directories of `PATH` in `env`, the first that is a file anyone
+    /// may run. A name not found is handed on as it is, for the kernel to fail as exec does.
+    pub(crate) fn program(&self, name: &str, env: &[String], cwd: &str) -> String {
+        if name.contains('/') {
+            return if name.starts_with('/') {
+                name.to_string()
+            } else {
+                format!("{}/{name}", cwd.trim_end_matches('/'))
+            };
+        }
+        let path = env
+            .iter()
+            .rev()
+            .find_map(|variable| variable.strip_prefix("PATH="))
+            .unwrap_or("");
+        path.split(':')
+            .filter(|directory| !directory.is_empty())
+            .map(|directory| format!("{}/{name}", directory.trim_end_matches('/')))
+            .find(|candidate| {
+                matches!(
+                    self.lookup(candidate.as_bytes()),
+                    Some(Entry { attributes, kind: Kind::Regular(_) }) if attributes.mode & 0o111 != 0
+                )
+            })
+            .unwrap_or_else(|| name.to_string())
+    }
+
+    /// Puts the files in a new kernel's root, directories before what they hold and hard links last.
+    pub(crate) fn add_to(&self, kernel: &mut Kernel) -> Result<(), Error> {
+        let hard_links = self
+            .files
+            .iter()
+            .filter(|(_, entry)| matches!(entry.kind, Kind::HardLink(_)));
+        let others = self
+            .files
+            .iter()
+            .filter(|(_, entry)| !matches!(entry.kind, Kind::HardLink(_)));
+        for (path, entry) in others.chain(hard_links) {
+            let file = match &entry.kind {
+                Kind::Directory => NewFile::Directory,
+                Kind::Regular(bytes) => NewFile::Regular(bytes),
+                Kind::Symlink(target) => NewFile::Symlink(target),
+                Kind::HardLink(target) => NewFile::HardLink(target),
+                &Kind::CharacterDevice { major, minor } => {
+                    NewFile::CharacterDevice { major, minor }
+                }
+                &Kind::BlockDevice { major, minor } => NewFile::BlockDevice { major, minor },
+                Kind::Fifo => NewFile::Fifo,
+            };
+            kernel
+                .add_file(path, entry.attributes, file)
+                .map_err(|error| {
+                    Error::Image(format!(
+                        "/{}: the kernel refused it ({error:?})",
+                        String::from_utf8_lossy(path)
+                    ))
+                })?;
+        }
+        Ok(())
+    }
+}
+
+/// The parts of a path, without empty ones.
+fn split(path: &[u8]) -> impl DoubleEndedIterator<Item = &[u8]> {
+    path.split(|byte| *byte == b'/')
+        .filter(|part| !part.is_empty())
+}
+
+fn open(path: &Path) -> Result<File, Error> {
+    File::open(path).map_err(|error| Error::Io {
+        path: path.to_path_buf(),
+        error,
+    })
+}
+
+fn blob_path(directory: &Path, descriptor: &Descriptor) -> PathBuf {
+    let digest = descriptor.digest();
+    directory
+        .join("blobs")
+        .join(digest.algorithm().to_string())
+        .join(digest.digest())
+}
+
+/// A blob's bytes, checked against its descriptor's size and digest.
+fn blob(directory: &Path, descriptor: &Descriptor) -> Result<Vec<u8>, Error> {
+    let path = blob_path(directory, descriptor);
+    let mut bytes = Vec::new();
+    open(&path)?
+        .read_to_end(&mut bytes)
+        .map_err(|error| Error::Io {
+            path: path.clone(),
+            error,
+        })?;
+    let digest = descriptor.digest();
+    if digest.algorithm().to_string() != "sha256" {
+        return Err(Error::Image(format!(
+            "{digest}: only sha256 digests are checked by this runtime"
+        )));
+    }
+    let found = format!("{:x}", Sha256::digest(&bytes));
+    if found != digest.digest() || bytes.len() as u64 != descriptor.size() {
+        return Err(Error::Image(format!(
+            "{}: its bytes do not match its descriptor (sha256 {found}, {} bytes)",
+            path.display(),
+            bytes.len()
+        )));
+    }
+    Ok(bytes)
+}
+
+/// The manifest for linux and `architecture` among an index's descriptors, through nested indexes.
+fn find_manifest(
+    directory: &Path,
+    descriptors: &[Descriptor],
+    architecture: &str,
+) -> Result<ImageManifest, Error> {
+    let fits = |descriptor: &Descriptor| {
+        descriptor.platform().as_ref().is_none_or(|platform| {
+            platform.os().to_string() == "linux"
+                && platform.architecture().to_string() == architecture
+        })
+    };
+    for descriptor in descriptors.iter().filter(|d| fits(d)) {
+        match descriptor.media_type() {
+            MediaType::ImageManifest => {
+                let bytes = blob(directory, descriptor)?;
+                let manifest = ImageManifest::from_reader(bytes.as_slice())
+                    .map_err(|error| Error::Image(format!("{}: {error}", descriptor.digest())))?;
+                // A manifest with no platform is taken when its configuration is an image's: an
+                // attestation's is not.
+                if *manifest.config().media_type() == MediaType::ImageConfig {
+                    return Ok(manifest);
+                }
+            }
+            MediaType::ImageIndex => {
+                let bytes = blob(directory, descriptor)?;
+                let index = ImageIndex::from_reader(bytes.as_slice())
+                    .map_err(|error| Error::Image(format!("{}: {error}", descriptor.digest())))?;
+                if let Ok(manifest) = find_manifest(directory, index.manifests(), architecture) {
+                    return Ok(manifest);
+                }
+            }
+            _ => {}
+        }
+    }
+    Err(Error::Image(format!(
+        "{}: no image manifest for linux/{architecture}",
+        directory.display()
+    )))
+}
+
+/// Applies one tar to the files: with `whiteouts`, as an OCI layer (`.wh.` names remove what lower
+/// layers hold, `.wh..wh..opq` empties a directory of it).
+fn read_layer(
+    reader: impl Read,
+    name: &Path,
+    whiteouts: bool,
+    files: &mut BTreeMap<Vec<u8>, Entry>,
+) -> Result<(), Error> {
+    let fail = |what: String| Error::Image(format!("{}: {what}", name.display()));
+    let mut archive = tar::Archive::new(reader);
+    let mut added: Vec<(Vec<u8>, Entry)> = Vec::new();
+    let mut removed: Vec<Vec<u8>> = Vec::new();
+    let mut emptied: Vec<Vec<u8>> = Vec::new();
+    for entry in archive.entries().map_err(|error| fail(error.to_string()))? {
+        let mut entry = entry.map_err(|error| fail(error.to_string()))?;
+        let header = entry.header().clone();
+        let path = clean(&entry.path_bytes()).ok_or_else(|| {
+            fail(format!(
+                "entry {} leaves the root",
+                String::from_utf8_lossy(&entry.path_bytes())
+            ))
+        })?;
+        if let Some(extensions) = entry.pax_extensions().map_err(|e| fail(e.to_string()))? {
+            for extension in extensions {
+                let extension = extension.map_err(|e| fail(e.to_string()))?;
+                if extension.key_bytes().starts_with(b"SCHILY.xattr.") {
+                    return Err(fail(format!(
+                        "/{} has extended attributes, which the kernel's files do not take yet",
+                        String::from_utf8_lossy(&path)
+                    )));
+                }
+            }
+        }
+        let (parent, base) = match path.iter().rposition(|byte| *byte == b'/') {
+            Some(at) => (&path[..at], &path[at + 1..]),
+            None => (&path[..0], &path[..]),
+        };
+        if whiteouts && let Some(hidden) = base.strip_prefix(b".wh.") {
+            if hidden == b".wh..opq" {
+                emptied.push(parent.to_vec());
+            } else {
+                removed.push(join(parent, hidden));
+            }
+            continue;
+        }
+        let link = || -> Result<Vec<u8>, Error> {
+            Ok(header
+                .link_name_bytes()
+                .ok_or_else(|| fail("a link without a target".to_string()))?
+                .into_owned())
+        };
+        let device = |number: std::io::Result<Option<u32>>| number.ok().flatten().unwrap_or(0);
+        let kind = match header.entry_type() {
+            tar::EntryType::Directory => Kind::Directory,
+            tar::EntryType::Regular | tar::EntryType::Continuous => {
+                let mut bytes = Vec::new();
+                entry
+                    .read_to_end(&mut bytes)
+                    .map_err(|error| fail(error.to_string()))?;
+                Kind::Regular(bytes)
+            }
+            tar::EntryType::Symlink => Kind::Symlink(link()?),
+            tar::EntryType::Link => Kind::HardLink(
+                clean(&link()?).ok_or_else(|| fail("a link out of the root".into()))?,
+            ),
+            tar::EntryType::Char => Kind::CharacterDevice {
+                major: device(header.device_major()),
+                minor: device(header.device_minor()),
+            },
+            tar::EntryType::Block => Kind::BlockDevice {
+                major: device(header.device_major()),
+                minor: device(header.device_minor()),
+            },
+            tar::EntryType::Fifo => Kind::Fifo,
+            tar::EntryType::XGlobalHeader => continue,
+            other => {
+                return Err(fail(format!(
+                    "entry /{} is of a kind this runtime does not unpack ({other:?})",
+                    String::from_utf8_lossy(&path)
+                )));
+            }
+        };
+        let number = |value: std::io::Result<u64>| value.map_err(|error| fail(error.to_string()));
+        let attributes = Attributes {
+            mode: header.mode().map_err(|error| fail(error.to_string()))? & 0o7777,
+            uid: number(header.uid())? as u32,
+            gid: number(header.gid())? as u32,
+            mtime_seconds: number(header.mtime())? as i64,
+        };
+        added.push((path, Entry { attributes, kind }));
+    }
+    for directory in emptied {
+        remove_below(files, &directory);
+    }
+    for path in removed {
+        remove_below(files, &path);
+        files.remove(&path);
+    }
+    for (path, entry) in added {
+        // A file put where a directory was replaces the directory and all in it.
+        if !matches!(entry.kind, Kind::Directory) {
+            remove_below(files, &path);
+        }
+        files.insert(path, entry);
+    }
+    Ok(())
+}
+
+/// Everything under the directory at `path`.
+fn remove_below(files: &mut BTreeMap<Vec<u8>, Entry>, path: &[u8]) {
+    if path.is_empty() {
+        files.retain(|key, _| key.is_empty());
+        return;
+    }
+    // Paths under it run from "path/" to just before "path0", '0' following '/'.
+    let first = [path, b"/"].concat();
+    let end = [path, b"0"].concat();
+    let below: Vec<Vec<u8>> = files
+        .range(first..end)
+        .map(|(key, _)| key.clone())
+        .collect();
+    for key in below {
+        files.remove(&key);
+    }
+}
+
+fn join(directory: &[u8], name: &[u8]) -> Vec<u8> {
+    if directory.is_empty() {
+        name.to_vec()
+    } else {
+        [directory, b"/", name].concat()
+    }
+}
+
+/// A path from the root without a leading slash, `.` parts or a trailing slash; none when `..` would
+/// leave the root.
+fn clean(path: &[u8]) -> Option<Vec<u8>> {
+    let mut parts: Vec<&[u8]> = Vec::new();
+    for part in split(path) {
+        match part {
+            b"." => {}
+            b".." => {
+                parts.pop()?;
+            }
+            _ => parts.push(part),
+        }
+    }
+    Some(parts.join(&b'/'))
+}
+
+/// The image's environment with the runtime's defaults (such as `PATH`) for the names it lacks, so
+/// that a default never removes or changes one of the image's variables.
+fn with_defaults(defaults: Vec<String>, image: Vec<String>) -> Vec<String> {
+    let name = |variable: &str| variable.split('=').next().unwrap_or("").to_string();
+    let named: Vec<String> = image.iter().map(|v| name(v)).collect();
+    defaults
+        .into_iter()
+        .filter(|default| !named.contains(&name(default)))
+        .chain(image)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A tar of (path, contents) pairs: a path ending in `/` is a directory, contents starting with
+    /// `->` a symbolic link.
+    fn layer(entries: &[(&str, &str)]) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        for (path, contents) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_uid(0);
+            header.set_gid(0);
+            header.set_mtime(0);
+            if path.ends_with('/') {
+                header.set_entry_type(tar::EntryType::Directory);
+                header.set_mode(0o755);
+                header.set_size(0);
+                builder
+                    .append_data(&mut header, path, std::io::empty())
+                    .unwrap();
+            } else if let Some(target) = contents.strip_prefix("->") {
+                header.set_entry_type(tar::EntryType::Symlink);
+                header.set_mode(0o777);
+                header.set_size(0);
+                builder.append_link(&mut header, path, target).unwrap();
+            } else {
+                header.set_entry_type(tar::EntryType::Regular);
+                header.set_mode(0o755);
+                header.set_size(contents.len() as u64);
+                builder
+                    .append_data(&mut header, path, contents.as_bytes())
+                    .unwrap();
+            }
+        }
+        builder.into_inner().unwrap()
+    }
+
+    fn image(layers: &[&[(&str, &str)]], config: Option<serde_json::Value>) -> Image {
+        let mut files = BTreeMap::new();
+        for entries in layers {
+            read_layer(
+                layer(entries).as_slice(),
+                Path::new("layer"),
+                true,
+                &mut files,
+            )
+            .unwrap();
+        }
+        let configuration = config.map(|config| {
+            serde_json::from_value(serde_json::json!({
+                "architecture": "arm64", "os": "linux",
+                "rootfs": {"type": "layers", "diff_ids": []},
+                "config": config,
+            }))
+            .unwrap()
+        });
+        Image {
+            files,
+            configuration,
+        }
+    }
+
+    fn paths(image: &Image) -> Vec<String> {
+        image
+            .files
+            .keys()
+            .map(|key| String::from_utf8_lossy(key).into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn whiteouts_remove_what_lower_layers_hold() {
+        let image = image(
+            &[
+                &[
+                    ("a/", ""),
+                    ("a/one", "1"),
+                    ("a/two", "2"),
+                    ("b/", ""),
+                    ("b/three", "3"),
+                    ("c", "4"),
+                ],
+                &[
+                    ("a/.wh.one", ""),
+                    ("b/.wh..wh..opq", ""),
+                    ("b/five", "5"),
+                    ("c/", ""),
+                ],
+            ],
+            None,
+        );
+        assert_eq!(paths(&image), ["a", "a/two", "b", "b/five", "c"]);
+        assert!(matches!(image.files[&b"c".to_vec()].kind, Kind::Directory));
+    }
+
+    #[test]
+    fn programs_are_found_through_path_and_links() {
+        let image = image(
+            &[&[
+                ("bin/", ""),
+                ("bin/busybox", "\x7fELF"),
+                ("bin/sh", "->busybox"),
+                ("usr/", ""),
+                ("usr/bin", "->../bin"),
+            ]],
+            None,
+        );
+        let env = ["PATH=/usr/local/bin:/usr/bin".to_string()];
+        assert_eq!(image.program("sh", &env, "/"), "/usr/bin/sh");
+        assert_eq!(image.program("ls", &env, "/"), "ls");
+        assert_eq!(image.program("./run", &env, "/tmp"), "/tmp/./run");
+    }
+
+    #[test]
+    fn the_image_configuration_is_converted() {
+        let image = image(
+            &[&[
+                ("etc/", ""),
+                (
+                    "etc/passwd",
+                    "root:x:0:0::/root:/bin/sh\nweb:x:100:101::/:/bin/sh\n",
+                ),
+                ("etc/group", "root:x:0:\nweb:x:101:\nlog:x:4:web,root\n"),
+            ]],
+            Some(serde_json::json!({
+                "User": "web", "Entrypoint": ["/serve"], "Cmd": ["--port", "80"],
+                "Env": ["A=1"], "WorkingDir": "/srv", "StopSignal": "SIGQUIT",
+                "Labels": {"name": "web"},
+            })),
+        );
+        let spec = image.spec().unwrap();
+        let process = spec.process().as_ref().unwrap();
+        assert_eq!(
+            process.args().as_ref().unwrap(),
+            &["/serve", "--port", "80"]
+        );
+        assert_eq!(
+            process.env().as_ref().unwrap(),
+            &[
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "A=1"
+            ]
+        );
+        assert_eq!(process.cwd(), Path::new("/srv"));
+        assert_eq!((process.user().uid(), process.user().gid()), (100, 101));
+        assert_eq!(
+            process.user().additional_gids().as_ref().unwrap(),
+            &[101, 4]
+        );
+        let annotations = spec.annotations().as_ref().unwrap();
+        assert_eq!(annotations["name"], "web");
+        assert_eq!(
+            annotations["org.opencontainers.image.stopSignal"],
+            "SIGQUIT"
+        );
+    }
+
+    #[test]
+    fn implicit_annotations_give_way_to_labels() {
+        let mut image = image(
+            &[&[]],
+            Some(serde_json::json!({
+                "Env": ["PATH=/bin"], "StopSignal": "SIGQUIT",
+                "Labels": {"org.opencontainers.image.stopSignal": "SIGINT",
+                           "org.opencontainers.image.os": "label"},
+            })),
+        );
+        let configuration = image.configuration.as_mut().unwrap();
+        configuration.set_variant(Some("v8".to_string()));
+        configuration.set_os_version(Some("6.1".to_string()));
+        configuration.set_os_features(Some(vec!["a".to_string(), "b".to_string()]));
+        configuration.set_author(Some("someone".to_string()));
+        configuration.set_created(Some("2026-11-18T00:00:00Z".to_string()));
+        let spec = image.spec().unwrap();
+        let annotations = spec.annotations().as_ref().unwrap();
+        let expected = [
+            ("os", "label"),
+            ("architecture", "arm64"),
+            ("variant", "v8"),
+            ("os.version", "6.1"),
+            ("os.features", "a,b"),
+            ("author", "someone"),
+            ("created", "2026-11-18T00:00:00Z"),
+            ("stopSignal", "SIGINT"),
+        ];
+        for (name, value) in expected {
+            assert_eq!(
+                annotations[&format!("org.opencontainers.image.{name}")],
+                value
+            );
+        }
+        assert_eq!(annotations.len(), expected.len());
+        let process = spec.process().as_ref().unwrap();
+        assert_eq!(process.env().as_ref().unwrap(), &["PATH=/bin"]);
+    }
+
+    /// With no `User`, as Docker: root, in its own group and then the groups that list it, in file
+    /// order.
+    #[test]
+    fn an_image_without_a_user_runs_as_root_in_its_groups() {
+        let files: &[(&str, &str)] = &[
+            ("etc/", ""),
+            (
+                "etc/passwd",
+                "root:x:0:0::/root:/bin/sh
+",
+            ),
+            (
+                "etc/group",
+                "root:x:0:root
+wheel:x:10:root
+bin:x:1:root,bin
+web:x:2:
+",
+            ),
+        ];
+        for image in [
+            image(&[files], Some(serde_json::json!({}))),
+            image(&[files], None),
+        ] {
+            let spec = image.spec().unwrap();
+            let user = spec.process().as_ref().unwrap().user().clone();
+            assert_eq!((user.uid(), user.gid()), (0, 0));
+            assert_eq!(user.additional_gids().as_ref().unwrap(), &[0, 0, 10, 1]);
+            assert_eq!(image.home(0), "/root");
+            assert_eq!(image.home(5), "/");
+        }
+    }
+
+    #[test]
+    fn volumes_are_refused_by_name() {
+        let image = image(&[&[]], Some(serde_json::json!({"Volumes": {"/data": {}}})));
+        match image.spec() {
+            Err(Error::Refused { field, .. }) => assert_eq!(field, "config.Volumes"),
+            other => panic!("{:?}", other.map(|_| ())),
+        }
+    }
+}

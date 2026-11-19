@@ -27,6 +27,19 @@ pub(super) struct Named {
 }
 
 /// What a descriptor names; EBADF for a file that is not one (`pidfd_pid`).
+/// `pidfd_to_pid`: as [`named`], and a process's `/proc/<pid>` directory names it too
+/// (`tgid_pidfd_to_pid`; not one under `task`).
+fn signal_target(kernel: &Kernel, file: &OpenFile) -> Result<Named, Errno> {
+    if let Content::Proc(crate::fs::proc::Entry::Process(task)) = &file.node.borrow().content
+        && !task.own
+    {
+        let pid = task.tid;
+        let exists = kernel.threads.contains_key(&pid) || kernel.processes.contains_key(&pid);
+        return Ok(Named { pid, exists });
+    }
+    named(kernel, file)
+}
+
 pub(super) fn named(kernel: &Kernel, file: &OpenFile) -> Result<Named, Errno> {
     let Content::Pidfd(pid, _) = file.node.borrow().content else {
         return Err(Errno::EBADF);
@@ -74,8 +87,9 @@ pub(super) fn poll(kernel: &Kernel, file: &OpenFile) -> u16 {
     }
 }
 
-/// A new open file naming `pid`, a process or thread which must exist: one inode per number, as
-/// pidfs keeps one per `struct pid`, owned by root with no file type (measured).
+/// A new open file naming `pid`, a process or thread, or one reaped since a socket's message or
+/// connection was made by it: one inode per number, as pidfs keeps one per `struct pid`, owned by
+/// root with no file type (measured).
 pub(super) fn make(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -107,9 +121,12 @@ pub(super) fn make(
                     name: LINK.to_vec(),
                 },
             )?;
-            match kernel.processes.get_mut(&pid) {
-                Some(process) => process.pidfd = Some(node.clone()),
-                None => kernel.thread_mut(pid).pidfd = Some(node.clone()),
+            // One made for a number since reaped (`PIDFD_STALE`) is kept by no process, so it
+            // names it gone.
+            if let Some(process) = kernel.processes.get_mut(&pid) {
+                process.pidfd = Some(node.clone());
+            } else if let Some(thread) = kernel.threads.get_mut(&pid) {
+                thread.pidfd = Some(node.clone());
             }
             node
         }
@@ -194,7 +211,7 @@ pub(super) fn pidfd_send_signal(
         _ => {
             let file = super::io::open_file(kernel, tid, fd)?;
             let file = file.borrow();
-            let target = named(kernel, &file)?;
+            let target = signal_target(kernel, &file)?;
             let scope = if file.flags & PIDFD_THREAD != 0 {
                 Scope::Thread
             } else {

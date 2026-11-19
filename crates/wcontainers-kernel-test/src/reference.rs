@@ -31,7 +31,32 @@ pub fn run_one_cpu(program: &Path, arguments: &[&str]) -> Outcome {
     run_with(program, arguments, &["--cpuset-cpus=0"])
 }
 
+/// As [`run`], with ports of this machine's loopback reaching the container's as (container
+/// port, outside port), and `beside` run while the container runs.
+pub fn run_published(
+    program: &Path,
+    arguments: &[&str],
+    published: &[(u16, u16)],
+    beside: impl FnOnce(),
+) -> Outcome {
+    let options: Vec<String> = published
+        .iter()
+        .flat_map(|(inner, outer)| ["-p".to_string(), format!("127.0.0.1:{outer}:{inner}")])
+        .collect();
+    let options: Vec<&str> = options.iter().map(String::as_str).collect();
+    run_beside(program, arguments, &options, beside)
+}
+
 fn run_with(program: &Path, arguments: &[&str], options: &[&str]) -> Outcome {
+    run_beside(program, arguments, options, || {})
+}
+
+fn run_beside(
+    program: &Path,
+    arguments: &[&str],
+    options: &[&str],
+    beside: impl FnOnce(),
+) -> Outcome {
     static RUNS: AtomicU32 = AtomicU32::new(0);
     let name = format!(
         "wc-kernel-reference-{}-{}",
@@ -53,8 +78,13 @@ fn run_with(program: &Path, arguments: &[&str], options: &[&str]) -> Outcome {
         .arg(IMAGE)
         .arg(Path::new("/wc").join(file))
         .args(arguments)
-        .output()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .expect("running docker");
+    beside();
+    let output = output.wait_with_output().expect("docker ran");
     let exit_code = output.status.code().expect("docker exited normally");
     assert!(
         !(125..=127).contains(&exit_code),

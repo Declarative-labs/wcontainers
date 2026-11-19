@@ -84,6 +84,7 @@ comparisons!(
     a_fractional_viewport_in_the_program_equals_webgpu_native,
     cube_array_and_3d_textures_equal_webgpu,
     cube_gathers_across_face_edges_equal_webgpu,
+    gathers_through_a_sampler_with_a_minimum_level_equal_webgpu,
     generate_mips_of_r32float_without_float_filtering_equals_webgpu,
     generate_mips_of_r32float_filtered_in_the_program_on_both_equals_webgpu,
     generate_mips_of_an_integer_twin_equals_webgpu,

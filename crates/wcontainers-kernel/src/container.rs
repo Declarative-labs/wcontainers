@@ -1,6 +1,7 @@
 //! Setting up the container: its root file system, the mounts a default Docker container has, and its
 //! first process.
 
+use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -10,9 +11,12 @@ use wcontainers_abi::{Cpu, Host, PAGE_SIZE, Resume, Stream};
 use crate::credentials::Credentials;
 use crate::file::{FdTable, OpenFile};
 use crate::fs::dev::DOCKER_DEVICES;
-use crate::fs::{self, Content, Directory, Kind, New, Node, Numbers, Regular, Time, encode_device};
+use crate::fs::mounts::Mount;
+use crate::fs::{
+    self, Content, Directory, FileSystem, Kind, New, Node, Numbers, Regular, Time, encode_device,
+};
 use crate::linux::general::*;
-use crate::linux_extra::{ST_NODEV, ST_NOEXEC, ST_NOSUID, ST_RELATIME};
+use crate::linux_extra::{ST_NODEV, ST_NOEXEC, ST_NOSUID, ST_RDONLY, ST_RELATIME};
 use crate::loader::Image;
 use crate::process::{Pid, Process, SIGNALS, Thread, Tid, docker_limits};
 use crate::{Context, Errno, Kernel};
@@ -56,6 +60,34 @@ pub struct Start<'a> {
     pub hostname: &'a [u8],
     /// Supplementary groups of the first process.
     pub groups: &'a [u32],
+    /// Where the file backend is mounted: `/` makes it the root file system, any other path a
+    /// volume as `docker run -v` mounts one; none for a container without one, whose root is in
+    /// memory.
+    pub backend: Option<&'a [u8]>,
+}
+
+/// The wait status of a container whose first program could not be started, with the exit status
+/// `docker run` reports (measured): 127 for a program not found, 126 for one it may not run, 125
+/// for anything else.
+fn start_failed(error: Errno) -> i32 {
+    let status = match error {
+        Errno::ENOENT => 127,
+        Errno::EACCES => 126,
+        _ => 125,
+    };
+    status << 8
+}
+
+/// The container's start while it runs: what the first process starts with, and how far it got.
+/// It runs again from where it got each time the backend answers, as a parked call does.
+pub(crate) struct Starting {
+    pid: Pid,
+    path: Vec<u8>,
+    arguments: Vec<Vec<u8>>,
+    environment: Vec<Vec<u8>>,
+    working_directory: Vec<u8>,
+    /// Whether the mounts are made.
+    mounted: bool,
 }
 
 /// One file of the root file system as it is now, for comparing what a container left behind.
@@ -176,6 +208,24 @@ fn mount_tmpfs(
     .expect("a new container's file systems have room");
     fs::mount(on, &root);
     root
+}
+
+fn fs_of(node: &Node) -> FileSystem {
+    node.borrow().fs.clone()
+}
+
+/// The file backend's mount at `path`: a FUSE file system that checks permissions itself and lets
+/// every user in (`fuse_show_options`).
+fn backend_mount(fs: FileSystem, path: &[u8]) -> Mount {
+    Mount {
+        fs,
+        root: "/",
+        point: path.to_vec(),
+        source: "wcontainers",
+        kind: "fuse",
+        options: "user_id=0,group_id=0,default_permissions,allow_other",
+        read_only_super: false,
+    }
 }
 
 /// The size Docker gives the tmpfs at `/dev` (runc's `size=65536k`) and at `/dev/shm` (its default
@@ -326,6 +376,7 @@ impl Kernel {
             caller: 0,
             caller_thread: 0,
             fs: self.files.proc_fs.clone(),
+            nsfs: self.files.nsfs.clone(),
             boot: self.boot,
             kept: &self.files.proc_kept,
             counters: &self.counters,
@@ -334,6 +385,7 @@ impl Kernel {
             root: &self.files.root,
             credentials: &credentials,
             proc: &view,
+            internal: core::cell::Cell::new(false),
         };
         f(&walk, &self.files.root)
     }
@@ -347,13 +399,10 @@ impl Kernel {
     }
 
     /// Starts the container: makes the mounts a default Docker container has and runs its first
-    /// process.
-    pub fn start(
-        &mut self,
-        cpu: &mut dyn Cpu,
-        host: &mut dyn Host,
-        start: &Start<'_>,
-    ) -> Result<(), Errno> {
+    /// process. With the root on the backend this waits for the backend's answers like any call,
+    /// so it may still be going on when this returns; a start that fails ends the container, and
+    /// [`Kernel::start_failure`] says why.
+    pub fn start(&mut self, cpu: &mut dyn Cpu, host: &mut dyn Host, start: &Start<'_>) {
         assert!(self.init.is_none(), "the container has already started");
         let mut cx = Context {
             cpu,
@@ -364,12 +413,15 @@ impl Kernel {
         let wall = cx.host.realtime_nanoseconds();
         self.boot = Time::from_nanoseconds(wall);
         self.boot_monotonic = cx.monotonic();
+        self.entry_now = self.boot_monotonic;
         self.wall_offset = wall.wrapping_sub(self.boot_monotonic);
         cx.host.random(&mut self.boot_id);
         cx.host.random(&mut self.files.generation_key);
         self.machine.memory_bytes = cx.cpu.address_space().end;
         self.hostname = start.hostname.to_vec();
-        self.make_mounts();
+        if let Some(path) = start.backend {
+            self.mount_backend(path);
+        }
 
         let pid = self.allocate_id();
         let root = self.files.root.clone();
@@ -408,6 +460,8 @@ impl Kernel {
             vdso: 0,
             execed: false,
             self_exec_id: 0,
+            // What Docker's first process inherits (measured).
+            coredump_filter: 0x23,
             terminal: None,
             terminal_old_group: None,
             actions: Rc::new(core::cell::RefCell::new(
@@ -429,31 +483,151 @@ impl Kernel {
         }));
         let thread = Thread::new(pid, wcontainers_abi::ThreadId(0), files, fs, credentials);
         self.threads.insert(pid, thread);
-        let result = self.start_first(&mut cx, pid, start);
-        if result.is_err() {
-            self.processes.remove(&pid);
-            self.threads.remove(&pid);
-            // Counts what was refused on the way.
-            self.settle(&mut cx);
-        }
-        result
+        let owned = |strings: &[&[u8]]| strings.iter().map(|string| string.to_vec()).collect();
+        self.starting = Some(Box::new(Starting {
+            pid,
+            path: start.path.to_vec(),
+            arguments: owned(start.arguments),
+            environment: owned(start.environment),
+            working_directory: start.working_directory.to_vec(),
+            mounted: false,
+        }));
+        self.run_start(&mut cx);
+        self.settle(&mut cx);
     }
 
-    fn start_first(
-        &mut self,
-        cx: &mut Context<'_>,
-        pid: Pid,
-        start: &Start<'_>,
-    ) -> Result<(), Errno> {
-        let cwd = self.with_walk(pid, |walk, process| {
-            walk.resolve(&process.cwd, start.working_directory, true)
-        })?;
+    /// Why the container's start failed, once it has.
+    pub fn start_failure(&self) -> Option<Errno> {
+        self.start_failure
+    }
+
+    /// Whether `tid` is the first process's thread while the container starts.
+    pub(crate) fn is_starting(&self, tid: Tid) -> bool {
+        self.starting
+            .as_ref()
+            .is_some_and(|starting| starting.pid == tid)
+    }
+
+    /// Runs the container's start, the first time or again once the backend has answered: each
+    /// part asks the backend as a call does, and a part done is not done again.
+    pub(crate) fn run_start(&mut self, cx: &mut Context<'_>) {
+        let Some(mut starting) = self.starting.take() else {
+            return;
+        };
+        let pid = starting.pid;
+        loop {
+            self.begin_asking(pid);
+            let result = if starting.mounted {
+                self.start_first(cx, &starting).map(|()| true)
+            } else {
+                let points = self.directories(pid, b"/dev").and_then(|dev| {
+                    let proc = self.directories(pid, b"/proc")?;
+                    Ok((dev, proc, self.directories(pid, b"/sys")?))
+                });
+                points.map(|(dev, proc, sys)| {
+                    self.make_mounts(&dev, &proc, &sys);
+                    starting.mounted = true;
+                    false
+                })
+            };
+            self.end_asking(pid, result == Err(Errno::PARKED));
+            match result {
+                // The mounts are made: the first program's part asks afresh.
+                Ok(false) => continue,
+                Ok(true) => {}
+                Err(Errno::PARKED) => self.starting = Some(starting),
+                Err(error) => {
+                    self.processes.remove(&pid);
+                    self.threads.remove(&pid);
+                    self.start_failure = Some(error);
+                    self.finished = Some(start_failed(error));
+                }
+            }
+            return;
+        }
+    }
+
+    /// The directory at `path`, with each missing part made as runc makes mount points and the
+    /// working directory (`MkdirAll` with mode 0755).
+    fn directories(&mut self, pid: Pid, path: &[u8]) -> Result<Node, Errno> {
+        let mut at = self.fs(pid).cwd.clone();
+        if path.starts_with(b"/") {
+            at = self.fs(pid).root.clone();
+        }
+        for part in path
+            .split(|byte| *byte == b'/')
+            .filter(|part| !part.is_empty())
+        {
+            at = match self.with_walk(pid, |walk, _| walk.resolve(&at, part, true)) {
+                Err(Errno::ENOENT) if crate::fs::backend::remote(&at).is_some() => {
+                    crate::fs::backend::mkdir(&at, part, 0o755, 0)?
+                }
+                Err(Errno::ENOENT) => make(
+                    &mut self.files.numbers,
+                    &at,
+                    part,
+                    S_IFDIR | 0o755,
+                    0,
+                    0,
+                    0,
+                    self.boot,
+                    Content::Directory(Directory::new()),
+                )?,
+                found => found?,
+            };
+        }
+        Ok(at)
+    }
+
+    /// Starts the first process: its working directory, its program loaded, then its standard
+    /// descriptors (`/dev/null` and the two pipes `docker run` reads), as runc sets them up.
+    fn start_first(&mut self, cx: &mut Context<'_>, starting: &Starting) -> Result<(), Errno> {
+        let pid = starting.pid;
+        let cwd = self.directories(pid, &starting.working_directory)?;
         if !cwd.borrow().is_directory() {
             return Err(Errno::ENOTDIR);
         }
+        self.fs_mut(pid).cwd = cwd;
         let null = self.with_walk(pid, |walk, process| {
             walk.resolve(&process.cwd, b"/dev/null", true)
         })?;
+        let program = crate::loader::open_program(self, cx.cpu, pid, &starting.path)?;
+        // The strings in the order and room of Linux's `do_execveat_common`.
+        let stack_limit = self.processes[&pid].limits[RLIMIT_STACK as usize].current;
+        let mut room = crate::loader::ArgumentRoom::new(
+            stack_limit,
+            starting.arguments.len(),
+            starting.environment.len(),
+        )?;
+        room.take(&starting.path)?;
+        let environment = starting.environment.clone();
+        let mut arguments = starting.arguments.clone();
+        for string in environment.iter().chain(&arguments) {
+            room.take(string)?;
+        }
+        room.first_argument(&mut arguments)?;
+        let image = match crate::loader::load(
+            self,
+            cx,
+            pid,
+            &starting.path,
+            program,
+            arguments,
+            environment,
+            room,
+        ) {
+            Ok(image) => image,
+            Err(crate::loader::Failed::Refused(error)) => return Err(error),
+            // Past the point of no return the first process dies of SIGSEGV before it runs.
+            Err(crate::loader::Failed::Fatal) => {
+                self.processes.remove(&pid);
+                self.threads.remove(&pid);
+                self.init = Some(pid);
+                self.finished = Some(SIGSEGV as i32);
+                self.counters.flush(cx.host);
+                return Ok(());
+            }
+        };
         let now = self.now(cx);
         let pipes: Vec<Node> = [Stream::Output, Stream::Error]
             .into_iter()
@@ -477,78 +651,38 @@ impl Kernel {
             })
             .collect();
         let limit = u64::MAX;
-        self.fs_mut(pid).cwd = cwd;
         let mut files = self.files_mut(pid);
-        files.add(
-            OpenFile::new(null, O_RDWR | O_LARGEFILE, b"/dev/null".to_vec(), 0),
-            false,
-            0,
-            limit,
-        )?;
-        for pipe in pipes {
-            files.add(
-                OpenFile::new(pipe, O_WRONLY, Vec::new(), 0),
+        files
+            .add(
+                OpenFile::new(null, O_RDWR | O_LARGEFILE, b"/dev/null".to_vec(), 0),
                 false,
                 0,
                 limit,
-            )?;
+            )
+            .expect("room for the first descriptors");
+        for pipe in pipes {
+            files
+                .add(
+                    OpenFile::new(pipe, O_WRONLY, Vec::new(), 0),
+                    false,
+                    0,
+                    limit,
+                )
+                .expect("room for the first descriptors");
         }
         drop(files);
-        let program = crate::loader::open_program(self, cx.cpu, pid, start.path)?;
-        // The strings in the order and room of Linux's `do_execveat_common`.
-        let stack_limit = self.processes[&pid].limits[RLIMIT_STACK as usize].current;
-        let mut room = crate::loader::ArgumentRoom::new(
-            stack_limit,
-            start.arguments.len(),
-            start.environment.len(),
-        )?;
-        room.take(start.path)?;
-        let environment: Vec<Vec<u8>> = start
-            .environment
-            .iter()
-            .map(|variable| variable.to_vec())
-            .collect();
-        let mut arguments: Vec<Vec<u8>> = start
-            .arguments
-            .iter()
-            .map(|argument| argument.to_vec())
-            .collect();
-        for string in environment.iter().chain(&arguments) {
-            room.take(string)?;
-        }
-        room.first_argument(&mut arguments)?;
-        let image = match crate::loader::load(
-            self,
-            cx,
-            pid,
-            start.path,
-            program,
-            arguments,
-            environment,
-            room,
-        ) {
-            Ok(image) => image,
-            Err(crate::loader::Failed::Refused(error)) => return Err(error),
-            // Past the point of no return the first process dies of SIGSEGV before it runs.
-            Err(crate::loader::Failed::Fatal) => {
-                self.processes.remove(&pid);
-                self.threads.remove(&pid);
-                self.init = Some(pid);
-                self.finished = Some(SIGSEGV as i32);
-                self.counters.flush(cx.host);
-                return Ok(());
+        let thread = match cx.cpu.thread_new(image.memory) {
+            Ok(thread) => thread,
+            Err(error) => {
+                cx.cpu.memory_drop(image.memory);
+                return Err(cx.cpu_error(error));
             }
         };
-        let thread = cx
-            .cpu
-            .thread_new(image.memory)
-            .map_err(|error| cx.cpu_error(error))?;
         self.thread_mut(pid).cpu = thread;
         self.install_image(cx, pid, pid, image);
         self.init = Some(pid);
         self.entry_now = cx.monotonic();
         self.make_runnable(pid, Resume::FromRegisters);
-        self.settle(cx);
         Ok(())
     }
 
@@ -634,8 +768,34 @@ impl Kernel {
         space
     }
 
-    /// The mounts and device files `docker run` sets up.
-    fn make_mounts(&mut self) {
+    /// Mounts the file backend at `path`: as the root file system at `/`, with the root's options
+    /// in Docker (`relatime`); elsewhere as Linux mounts a FUSE file system, with no set-user bits,
+    /// devices or access times (the reference's mount options).
+    fn mount_backend(&mut self, path: &[u8]) {
+        use crate::linux_extra::{ST_NOATIME, ST_NODEV, ST_NOSUID};
+        let is_root = path.iter().all(|byte| *byte == b'/');
+        let flags = if is_root {
+            ST_RELATIME
+        } else {
+            ST_NOSUID | ST_NODEV | ST_NOATIME
+        };
+        let fs = self.files.numbers.file_system(Kind::Fuse, flags);
+        let client = crate::fs::backend::Client::new(fs);
+        let root = client.root();
+        if is_root {
+            root.borrow_mut().place.mount_root = true;
+            self.files.root = root;
+        } else {
+            let point = directory_at(self, path, self.boot);
+            fs::mount(&point, &root);
+            self.files.mounts.push(backend_mount(fs_of(&root), path));
+        }
+        self.files.backend = Some(client);
+    }
+
+    /// The mounts and device files `docker run` sets up, on the directories `/dev`, `/proc` and
+    /// `/sys`.
+    fn make_mounts(&mut self, dev_point: &Node, proc_point: &Node, sys_point: &Node) {
         let now = self.boot;
         // tmpfs's default limits are half the machine's pages, in pages and in inodes
         // (`shmem_default_max_blocks`, `shmem_default_max_inodes`); Docker mounts `/dev` and
@@ -645,11 +805,14 @@ impl Kernel {
         if let Some(space) = &self.files.root.borrow().fs.space {
             space.set_limits(half, half);
         }
-        let dev_point = directory_at(self, b"/dev", now);
+        // Mount points are held while mounted, as Linux holds their dentries.
+        self.files
+            .mount_points
+            .extend([dev_point.clone(), proc_point.clone(), sys_point.clone()]);
         let dev_space = self.new_space(docker_size, half);
         let dev = mount_tmpfs(
             &mut self.files.numbers,
-            &dev_point,
+            dev_point,
             0o755,
             now,
             Kind::Tmpfs,
@@ -715,7 +878,7 @@ impl Kernel {
             .get(b"shm")
             .expect("shm");
         let shm_space = self.new_space(docker_size, half);
-        mount_tmpfs(
+        let shm = mount_tmpfs(
             &mut self.files.numbers,
             &shm_point,
             0o1777,
@@ -739,6 +902,7 @@ impl Kernel {
             ST_NOSUID | ST_NODEV | ST_NOEXEC | ST_RELATIME,
             None,
         );
+        let mqueue_fs = fs_of(&mqueue);
         self.ipc.mqueue_root = Some(mqueue);
         let pts_point = dev
             .borrow()
@@ -771,19 +935,88 @@ impl Kernel {
         pts.borrow_mut().ino = 1;
         ptmx.borrow_mut().ino = 2;
 
-        let proc_point = directory_at(self, b"/proc", now);
+        // sysfs, read-only as in a container without CAP_SYS_ADMIN, its root numbered 1.
+        let sys = mount_tmpfs(
+            &mut self.files.numbers,
+            sys_point,
+            0o555,
+            now,
+            Kind::Sysfs,
+            ST_RDONLY | ST_NOSUID | ST_NODEV | ST_NOEXEC | ST_RELATIME,
+            None,
+        );
+        sys.borrow_mut().ino = 1;
+
         let view = fs::proc::View {
             processes: &self.processes,
             threads: &self.threads,
             caller: 0,
             caller_thread: 0,
             fs: self.files.proc_fs.clone(),
+            nsfs: self.files.nsfs.clone(),
             boot: self.boot,
             kept: &self.files.proc_kept,
             counters: &self.counters,
         };
         let proc_root = fs::proc::root(&view);
-        fs::mount(&proc_point, &proc_root);
+        fs::mount(proc_point, &proc_root);
+
+        // Docker's order: the root, `/proc`, `/dev` and the mounts in it, the volumes (mounted
+        // already), then `/proc/sys` again, read-only.
+        let mount = |fs: FileSystem, point: &str, source, kind, options| Mount {
+            fs,
+            root: "/",
+            point: point.as_bytes().to_vec(),
+            source,
+            kind,
+            options,
+            read_only_super: false,
+        };
+        let root_fs = fs_of(&self.files.root);
+        let root = if root_fs.kind == Kind::Fuse {
+            backend_mount(root_fs, b"/")
+        } else {
+            mount(root_fs, "/", "tmpfs", "tmpfs", "")
+        };
+        let volumes = core::mem::take(&mut self.files.mounts);
+        self.files.mounts = alloc::vec![
+            root,
+            mount(proc_root.borrow().fs.clone(), "/proc", "proc", "proc", ""),
+            mount(
+                fs_of(&dev),
+                "/dev",
+                "tmpfs",
+                "tmpfs",
+                "size=65536k,mode=755"
+            ),
+            mount(
+                fs_of(&pts),
+                "/dev/pts",
+                "devpts",
+                "devpts",
+                "gid=5,mode=620,ptmxmode=666",
+            ),
+            Mount {
+                read_only_super: true,
+                ..mount(fs_of(&sys), "/sys", "sysfs", "sysfs", "")
+            },
+            mount(mqueue_fs, "/dev/mqueue", "mqueue", "mqueue", ""),
+            mount(fs_of(&shm), "/dev/shm", "shm", "tmpfs", "size=65536k"),
+        ];
+        self.files.mounts.extend(volumes);
+        self.files.mounts.push(Mount {
+            root: "/sys",
+            ..mount(
+                FileSystem {
+                    flags: self.files.proc_fs.flags | crate::linux_extra::ST_RDONLY,
+                    ..self.files.proc_fs.clone()
+                },
+                "/proc/sys",
+                "proc",
+                "proc",
+                "",
+            )
+        });
     }
 }
 

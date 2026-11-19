@@ -29,7 +29,15 @@ pub fn build(name: &str, link_flags: &[&str], out: &Path) -> PathBuf {
         .arg(&object)
         .args(link_flags));
     std::fs::remove_file(&object).expect("removing the object file");
-    std::fs::rename(&built, &program).expect("moving the program into place");
+    // A program already in place with the same bytes stays, so a container another test is starting
+    // from it (through Docker's shared directory) never sees its name replaced.
+    let same = std::fs::read(&program)
+        .is_ok_and(|old| old == std::fs::read(&built).expect("reading the built program"));
+    if same {
+        std::fs::remove_file(&built).expect("removing the duplicate program");
+    } else {
+        std::fs::rename(&built, &program).expect("moving the program into place");
+    }
     program
 }
 
