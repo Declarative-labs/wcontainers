@@ -26,6 +26,9 @@ pub struct Module {
 pub struct Declared {
     pub test: Vec<Module>,
     pub code: Vec<PathBuf>,
+    /// The code modules declared without `pub` (or inside a module declared so): other crates cannot
+    /// import what they hold.
+    pub private: Vec<PathBuf>,
 }
 
 /// Where a file's child modules live; `crate_root` says Cargo builds the file as a target's root.
@@ -63,15 +66,25 @@ fn collect(
     file: &Path,
     folder: &Path,
     inherited: bool,
+    private: bool,
     is_test: &dyn Fn(&[Attribute]) -> bool,
     out: &mut Declared,
 ) {
     for item in items {
         let Item::Mod(m) = item else { continue };
         let test = inherited || is_test(&m.attrs);
+        let private = private || !crate::scan::is_public(&m.vis);
         let name = m.ident.to_string();
         if let Some((_, inner)) = &m.content {
-            collect(inner, file, &folder.join(&name), test, is_test, out);
+            collect(
+                inner,
+                file,
+                &folder.join(&name),
+                test,
+                private,
+                is_test,
+                out,
+            );
             continue;
         }
         let module = match path_attribute(&m.attrs) {
@@ -93,6 +106,9 @@ fn collect(
         if test {
             out.test.push(module);
         } else {
+            if private {
+                out.private.push(module.file.clone());
+            }
             out.code.push(module.file);
         }
     }
@@ -111,6 +127,7 @@ pub fn declared(
         file,
         &module_folder(file, crate_root),
         is_test(&ast.attrs),
+        false,
         is_test,
         &mut out,
     );

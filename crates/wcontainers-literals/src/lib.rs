@@ -114,6 +114,8 @@ pub(crate) const WORKSPACE_TABLE: &str = "workspace";
 /// A crate manifest's targets that Cargo ships, and the key that places each one's root file.
 const LIB_TABLE: &str = "lib";
 const BIN_TABLES: &str = "bin";
+/// A crate manifest's targets that Cargo builds only for tests.
+const TEST_TABLES: &[&str] = &["test", "bench", "example"];
 const TARGET_PATH: &str = "path";
 pub(crate) const PACKAGE_TABLE: &str = "package";
 const BUILD_KEY: &str = "build";
@@ -232,6 +234,8 @@ struct SourceFile {
     role: FileRole,
     /// Cargo builds the file as the root of a shipped target named in its crate's manifest.
     crate_root: bool,
+    /// Other crates can import its public items: no private module declaration leads to it.
+    exposed: bool,
 }
 
 /// A path relative to the root, with `.` and `..` resolved by their names (`tests/../src/a.rs`).
@@ -255,28 +259,36 @@ struct Walk {
     rust: Vec<SourceFile>,
     scripts: Vec<(PathBuf, String)>,
     crate_dirs: BTreeSet<String>,
+    /// Folders git lists as one entry, so that nothing in them could be read: a submodule that is not
+    /// checked out, or a link to a folder.
+    closed: Vec<(String, String)>,
+}
+
+/// The root files of a crate's targets, relative to the workspace root, whatever their extension.
+#[derive(Default)]
+struct Roots {
+    /// Shipped targets (`[lib]`, `[[bin]]`, `package.build`): code wherever they sit.
+    shipped: Vec<String>,
+    /// Targets Cargo builds only for tests (`[[test]]`, `[[bench]]`, `[[example]]`).
+    test: Vec<String>,
 }
 
 impl Walk {
-    /// Files a source file of `crate_dir` at `path` (relative `rel`), by its kind and place.
-    fn add(
-        &mut self,
-        path: PathBuf,
-        rel: String,
-        crate_dir: &str,
-        policy: &Policy,
-        roots: &[String],
-    ) {
-        if path.extension().is_some_and(|e| e == RUST_EXTENSION) {
+    /// Files a source file of `crate_dir` at `path` (relative `rel`), by its kind and place. A target's
+    /// root is Rust whatever its extension, since Cargo builds it as one.
+    fn add(&mut self, path: PathBuf, rel: String, crate_dir: &str, policy: &Policy, roots: &Roots) {
+        let crate_root = roots.shipped.contains(&rel);
+        let test_root = roots.test.contains(&rel);
+        if crate_root || test_root || path.extension().is_some_and(|e| e == RUST_EXTENSION) {
             let in_crate = rel
                 .strip_prefix(crate_dir)
                 .map(|r| r.trim_start_matches(PATH_COMPONENT_SEPARATOR))
                 .unwrap_or(&rel);
-            let crate_root = roots.contains(&rel);
             let test = !crate_root
-                && TEST_DIRECTORIES
-                    .iter()
-                    .any(|t| in_crate.split(PATH_COMPONENT_SEPARATOR).next() == Some(*t));
+                && (test_root
+                    || TEST_DIRECTORIES
+                        .iter()
+                        .any(|t| in_crate.split(PATH_COMPONENT_SEPARATOR).next() == Some(*t)));
             let role = if test || policy.covers(PolicyKind::Test, &rel) {
                 FileRole::Test
             } else if policy.covers(PolicyKind::Generated, &rel) {
@@ -290,6 +302,7 @@ impl Walk {
                 crate_dir: crate_dir.to_string(),
                 role,
                 crate_root,
+                exposed: true,
             });
         } else if scripts::is_script(&path) {
             self.scripts.push((path, crate_dir.to_string()));
@@ -297,24 +310,58 @@ impl Walk {
     }
 }
 
-/// Every Rust file and script git tracks or would track under `root`, except `skip` policy.
-fn walk(root: &Path, policy: &Policy) -> Result<Walk, String> {
-    let out = history::run(root, LIST_FILES)?;
+/// The folder git keeps a repository in, inside a nested repository's folder.
+const GIT_FOLDER: &str = ".git";
+
+/// The files git lists under `dir` (relative to `root`, empty for the root itself), with the files of
+/// every nested repository in it (a submodule, or a repository inside the tree), of which git lists
+/// only the folder. A listed folder that is not a checked-out repository goes to `closed`.
+fn listed(
+    root: &Path,
+    dir: &str,
+    files: &mut Vec<String>,
+    closed: &mut Vec<String>,
+) -> Result<(), String> {
+    let at = root.join(dir);
+    let out = history::run(&at, LIST_FILES)?;
     if !out.status.success() {
         return Err(format!(
             "cannot list the files of {}: {}",
-            root.display(),
+            at.display(),
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    let listed = String::from_utf8_lossy(&out.stdout).into_owned();
-    let mut files: Vec<&str> = listed
+    for entry in String::from_utf8_lossy(&out.stdout)
         .split(LIST_END)
-        .filter(|r| !r.is_empty() && !policy.covers(PolicyKind::Skip, r))
-        .collect();
-    files.sort();
+        .filter(|r| !r.is_empty())
+    {
+        let entry = entry.trim_end_matches(PATH_COMPONENT_SEPARATOR);
+        let rel = match dir.is_empty() {
+            true => entry.to_string(),
+            false => [dir, entry].join(PATH_COMPONENT_SEPARATOR),
+        };
+        let path = root.join(&rel);
+        if !path.is_dir() {
+            files.push(rel);
+        } else if path.join(GIT_FOLDER).exists() {
+            listed(root, &rel, files, closed)?;
+        } else {
+            closed.push(rel);
+        }
+    }
+    Ok(())
+}
+
+/// Every Rust file and script git tracks or would track under `root`, in nested repositories too,
+/// and every target root a crate's manifest names, except `skip` policy.
+fn walk(root: &Path, policy: &Policy) -> Result<Walk, String> {
+    let (mut all, mut closed) = (Vec::new(), Vec::new());
+    listed(root, "", &mut all, &mut closed)?;
+    let skipped = |r: &String| policy.covers(PolicyKind::Skip, r);
+    all.retain(|r| !skipped(r));
+    closed.retain(|r| !skipped(r));
     let mut tree = Walk::default();
-    for rel in &files {
+    for rel in &all {
         if let Some(dir) = rel.strip_suffix(MANIFEST)
             && (dir.is_empty() || dir.ends_with(PATH_COMPONENT_SEPARATOR))
         {
@@ -322,20 +369,34 @@ fn walk(root: &Path, policy: &Policy) -> Result<Walk, String> {
                 .insert(dir.trim_end_matches(PATH_COMPONENT_SEPARATOR).to_string());
         }
     }
-    let roots: Vec<String> = tree
-        .crate_dirs
+    let mut roots = Roots::default();
+    for d in &tree.crate_dirs {
+        target_roots(root, d, &mut roots);
+    }
+    // A root git does not list (an ignored file) is still built, so it is scanned like a module.
+    let unlisted: Vec<String> = roots
+        .shipped
         .iter()
-        .flat_map(|d| target_roots(root, d))
+        .chain(&roots.test)
+        .filter(|r| !all.contains(r) && !skipped(r) && root.join(r).is_file())
+        .cloned()
         .collect();
-    for rel in files {
-        let crate_dir = tree
-            .crate_dirs
+    all.extend(unlisted);
+    all.sort();
+    all.dedup();
+    let crate_dirs = tree.crate_dirs.clone();
+    let crate_of = |rel: &str| {
+        crate_dirs
             .iter()
             .filter(|d| under(rel, d))
             .max_by_key(|d| d.len())
             .cloned()
-            .unwrap_or_default();
-        tree.add(root.join(rel), rel.to_string(), &crate_dir, policy, &roots);
+            .unwrap_or_default()
+    };
+    tree.closed = closed.iter().map(|r| (r.clone(), crate_of(r))).collect();
+    for rel in all {
+        let crate_dir = crate_of(&rel);
+        tree.add(root.join(&rel), rel, &crate_dir, policy, &roots);
     }
     Ok(tree)
 }
@@ -354,37 +415,46 @@ fn walk_folder(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The files of a crate that Cargo builds as shipped code wherever they sit (`[lib] path`, `[[bin]] path`,
-/// `package.build`), relative to the root: a crate root under tests/ is still code.
-fn target_roots(root: &Path, crate_dir: &str) -> Vec<String> {
+/// The root files a crate's manifest places (`path` of `[lib]`, `[[bin]]`, `[[test]]`, `[[bench]]`,
+/// `[[example]]`, and `package.build`), relative to the root, whatever their extension: a shipped
+/// root under tests/ is still code, and a root named `lib.txt` is still Rust.
+fn target_roots(root: &Path, crate_dir: &str, roots: &mut Roots) {
     let Ok(manifest) = std::fs::read_to_string(root.join(crate_dir).join(MANIFEST))
         .map_err(|_| ())
         .and_then(|t| t.parse::<toml::Table>().map_err(|_| ()))
     else {
-        return Vec::new();
+        return;
     };
     let path_of = |t: &toml::Value| {
         t.get(TARGET_PATH)
             .and_then(|p| p.as_str())
             .map(String::from)
     };
+    let tables = |name: &str| {
+        manifest
+            .get(name)
+            .and_then(|b| b.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(path_of)
+            .collect::<Vec<_>>()
+    };
     let lib = manifest.get(LIB_TABLE).and_then(path_of);
-    let bins = manifest
-        .get(BIN_TABLES)
-        .and_then(|b| b.as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(path_of);
     let build = manifest
         .get(PACKAGE_TABLE)
         .and_then(|p| p.get(BUILD_KEY))
         .and_then(|b| b.as_str())
         .map(String::from);
-    lib.into_iter()
-        .chain(bins)
-        .chain(build)
-        .map(|p| rel_string(&root.join(crate_dir).join(p), root))
-        .collect()
+    let place = |p: String| rel_string(&root.join(crate_dir).join(p), root);
+    roots.shipped.extend(
+        lib.into_iter()
+            .chain(tables(BIN_TABLES))
+            .chain(build)
+            .map(place),
+    );
+    roots
+        .test
+        .extend(TEST_TABLES.iter().flat_map(|t| tables(t)).map(place));
 }
 
 /// The checker's own source folder, relative to the root, when the checker's crate is in the tree.
@@ -462,6 +532,7 @@ fn mark_test_modules(root: &Path, files: &mut Vec<SourceFile>) {
                         crate_dir: crate_dir.clone(),
                         role,
                         crate_root: false,
+                        exposed: true,
                     });
                 }
             }
@@ -472,6 +543,27 @@ fn mark_test_modules(root: &Path, files: &mut Vec<SourceFile>) {
         from = declared.len();
         declared.extend(parallel(&new, declare));
         files.extend(new);
+    }
+    // A file declared privately is hidden, and so is every module it declares.
+    let mut hidden: HashSet<PathBuf> = declared
+        .iter()
+        .flat_map(|(_, d)| d.private.iter().map(|p| canonical(p)))
+        .collect();
+    loop {
+        let more: Vec<PathBuf> = files
+            .iter()
+            .zip(&declared)
+            .filter(|(f, _)| hidden.contains(&canonical(&f.path)))
+            .flat_map(|(_, (_, d))| d.code.iter().map(|p| canonical(p)))
+            .filter(|p| !hidden.contains(p))
+            .collect();
+        if more.is_empty() {
+            break;
+        }
+        hidden.extend(more);
+    }
+    for file in files.iter_mut() {
+        file.exposed = !hidden.contains(&canonical(&file.path));
     }
     let placed: Vec<PathBuf> = declared
         .iter()
@@ -540,6 +632,7 @@ fn scan_text(file: &SourceFile, text: &str, reference: Option<&str>) -> FileResu
                 file.role,
                 module,
                 scan::folder_of(&file.path),
+                file.exposed,
             );
             scan.scan_file(&ast);
             let marks = match reference {
@@ -576,7 +669,13 @@ fn item_key(path: &str, item: &str) -> String {
 /// added at a new version of the rules with. A constant also gives its place, and a mark its number.
 fn literal_keys(root: &Path, rel: &str, text: &str) -> HashSet<String> {
     let path = root.join(rel);
-    if path.extension().is_none_or(|e| e != RUST_EXTENSION) {
+    // A file that is neither Rust by its name nor a script is a target root of another extension.
+    let script = match path.extension().and_then(|e| e.to_str()) {
+        Some(RUST_EXTENSION) => false,
+        Some(ext) => scripts::SCRIPT_EXTENSIONS.contains(&ext),
+        None => text.starts_with(scripts::SHEBANG) && syn::parse_file(text).is_err(),
+    };
+    if script {
         return scripts::scan(rel, "", text, &|_, _| None)
             .iter()
             .map(Finding::rest_key)
@@ -588,6 +687,7 @@ fn literal_keys(root: &Path, rel: &str, text: &str) -> HashSet<String> {
         crate_dir: String::new(),
         role: FileRole::Code,
         crate_root: false,
+        exposed: true,
     };
     let scanned = scan_text(&file, text, None);
     let marks = scanned.marks.iter().map(|m| {
@@ -621,6 +721,10 @@ fn line_literal(line: &str) -> Option<(String, String)> {
     };
     Some((path, key))
 }
+
+/// Why a folder git lists as one entry is a finding.
+const CLOSED_FOLDER: &str =
+    "a folder git lists as one entry (a submodule not checked out, or a link to a folder)";
 
 fn unparsed(file: &SourceFile, message: &str, at: proc_macro2::LineColumn) -> Finding {
     Finding {
@@ -835,16 +939,28 @@ fn restated(all: &mut [Finding], index: &ValueIndex) {
         else {
             continue;
         };
-        let wanted = |c: Closeness| match f.list {
-            List::Test => matches!(c, Closeness::Upstream | Closeness::SameCrate),
-            _ => c == Closeness::Upstream,
+        // A test restates what its crate can name. A constant restates another crate's: the upstream
+        // one, or between unrelated crates the one more crates depend on, else the one that sorts
+        // first. Two names in one crate are left apart: a default equal to a maximum is two facts.
+        let crates = index.crates;
+        let wanted = |c: Closeness, d: &ConstDef| match (f.list, c) {
+            (List::Test, _) => matches!(c, Closeness::Upstream | Closeness::SameCrate),
+            (_, Closeness::Upstream) => true,
+            (_, Closeness::Elsewhere) => {
+                crates.owns(&d.crate_dir, &f.crate_dir)
+                    || (!crates.owns(&f.crate_dir, &d.crate_dir) && d.crate_dir < f.crate_dir)
+            }
+            (_, Closeness::SameCrate | Closeness::Reachable) => false,
         };
-        let own_words = specific_words(f.item.rsplit(PATH_SEPARATOR).next().unwrap_or_default());
+        // The same name and value is a redefinition, reported as one.
+        let own_name = f.item.rsplit(PATH_SEPARATOR).next().unwrap_or_default();
+        let own_words = specific_words(own_name);
         let named_alike = |d: &ConstDef| {
             !f.in_const
-                || specific_words(&d.bare)
-                    .iter()
-                    .any(|w| own_words.contains(w))
+                || (d.bare != own_name
+                    && specific_words(&d.bare)
+                        .iter()
+                        .any(|w| own_words.contains(w)))
         };
         let defs: Vec<(Closeness, &ConstDef)> = index
             .matches(
@@ -853,7 +969,7 @@ fn restated(all: &mut [Finding], index: &ValueIndex) {
                 Some((f.path.as_str(), f.item.as_str())),
             )
             .into_iter()
-            .filter(|(c, d)| wanted(*c) && d.scope == ConstScope::Code && named_alike(d))
+            .filter(|(c, d)| wanted(*c, d) && d.scope == ConstScope::Code && named_alike(d))
             .collect();
         if let Some(names) = ValueIndex::names(&defs) {
             let was = f.list.name();
@@ -1123,6 +1239,24 @@ fn scan_tree(root: &Path, policy: Policy) -> Result<Scanned, String> {
         consts: mut defs,
         marks: found,
     } = scan_all(&tree.rust, None);
+    all.extend(tree.closed.iter().map(|(rel, crate_dir)| {
+        let folder = SourceFile {
+            path: root.join(rel),
+            rel: rel.clone(),
+            crate_dir: crate_dir.clone(),
+            role: FileRole::Code,
+            crate_root: false,
+            exposed: true,
+        };
+        unparsed(
+            &folder,
+            CLOSED_FOLDER,
+            proc_macro2::LineColumn {
+                line: usize::default(),
+                column: usize::default(),
+            },
+        )
+    }));
     for (label, dir) in lock_references(root)? {
         let mut paths = Vec::new();
         walk_folder(&dir, &mut paths);
@@ -1135,6 +1269,7 @@ fn scan_tree(root: &Path, policy: Policy) -> Result<Scanned, String> {
                 crate_dir: String::new(),
                 role: FileRole::Code,
                 crate_root: false,
+                exposed: true,
             })
             .collect();
         defs.extend(scan_all(&files, Some(&label)).consts);
