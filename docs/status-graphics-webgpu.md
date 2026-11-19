@@ -213,7 +213,7 @@ Run 23 = G2c run 5, 2026-11-18:
   the commit right after it (2cc8ad76), as docs/literals.md step 4 says for a merge bringing new
   rules. Init proposed no `generated` lines. This crate's baseline lines: 239 at adoption (16 of
   them new under rules 5 to 7: restated values in tests, three WGSL texts in packed.rs, four
-  lines of frames/run), 217 after this run's sweep (22 fixed; a 23rd line, -webgl's `WINDOW` in its tests/suite.rs, left the baseline because this crate's same-named copy was renamed). The check's list of changes that
+  lines of frames/run), 214 after this run's sweep (25 fixed; a 23rd line, -webgl's `WINDOW` in its tests/suite.rs, left the baseline because this crate's same-named copy was renamed). The check's list of changes that
   could add lines, at 2cc8ad76 (10): 4bcacbf5 the start (the -webgl merge), 2cc8ad76 the init
   after the baseline arrived by a merge, c33381de the start, 1e337706 the init after the baseline
   arrived by a merge, 68214b2e the start, and 89f88281, 7119e3f3, c3bf56d4, 31ec396f, 0f187563 new
@@ -1299,6 +1299,27 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   depth-function]` (the example's binary).
 
 ## Measurements
+
+Run 23 (G2c), chocolate-doom's frame breakdown repeated at 9d7b6b0c (after this run's merges;
+Direct3D 11 front, wgpu on Direct3D 12). Desktop (i9-9900K, 16 threads, RTX 3080, driver
+621.01), each job alone in the queue; log scratch run23/frames-doom3.log. The first two tries
+stopped at `wpr -start` ("The profiles are already running"): another session on the desktop was
+recording the system then (wpr -status showed a recording in progress that none of this run's
+commands had started); it was left alone and the third try waited until wpr was free.
+- Load (typeperf, whole machine): short run 73.0 % mean (3.6 to 100) over its 81 s; long run
+  20.0 % (3.4 to 41.2) over 315 s, but that span is gpu-job's "started" to "ended" and includes
+  about 5 minutes of the job waiting for the alone slot (the program ran from 21:50:10 to
+  21:50:18), so it mostly measures the wait. frames/run now starts the span at the job's "alone from" line
+  (its time patterns written with digit classes, three script lines fewer in the baseline), not
+  yet run since.
+- Per frame over 300 frames: wall 0.594 ms (run 22: 2.435), CPU 1.690 ms: program 0.287, front
+  0.020, back end 0.007, wgpu 0.010, system 1.677 (1.767 of it ntdll in a thread of the NVIDIA
+  Direct3D 12 driver, nvwgf2umx.dll), driver -0.310 (the per-frame figure is the long run less the
+  short one, so a part that varies between the two runs can come out negative). Under the back
+  end's own functions 0.090 ms (back end 0.007, driver 0.050, system 0.033). Counts a frame:
+  MappedUploadWhole 3, bind_groups 1, buffer_bytes 496, pipeline_binds 3, renames 1,
+  spares_reused 1, texture_bytes 256,000. Same picture as run 22: our own code costs hundredths
+  of a millisecond a frame; nothing new on our side to fix.
 
 Run 22 (G2c), the frame breakdown at 62473782, with the load sampled within each recorded run.
 Desktop (i9-9900K, 16 threads, RTX 3080, driver 621.01), shared with the other tracks: each

@@ -24927,17 +24927,14 @@ script	crates/wcontainers-direct3d-12/examples/directx/com.py	int	line: body = m
 script	crates/wcontainers-directx/generate.py	int	line: body = f"self.child.{snake(name)}10({args})"	10
 script	crates/wcontainers-directx/generate.py	int	line: body = f"self.{snake(name)}10({args})"	10
 script	crates/wcontainers-directx/generate.py	int	line: body = f"self.{snake(name)}10({args})"	10
-script	crates/wcontainers-gpu-webgpu/frames/run	int	line: $4 ~ /^[0-9.]+$/ { split($2, at, " "); t = at[2]	9
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: build="git submodule update --init --recursive -q && set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j 3 -p wcontainers-direc	12
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: build="git submodule update --init --recursive -q && set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j 3 -p wcontainers-direc	3
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: build="git submodule update --init --recursive -q && set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j 3 -p wcontainers-direc	3
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: build="git submodule update --init --recursive -q && set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j 3 -p wcontainers-direc	3
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: build="git submodule update --init --recursive -q && set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j 3 -p wcontainers-direc	3
-script	crates/wcontainers-gpu-webgpu/frames/run	int	line: ended=$(sed -n 's/.*, ended \([0-9:.]*\):.*/\1/p' <<<"$said" | tail -1)	9
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: load_limit=1800	1800
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: long=360	360
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: short=60	60
-script	crates/wcontainers-gpu-webgpu/frames/run	int	line: started=$(sed -n 's/.*started \([0-9:.]*\), ended.*/\1/p' <<<"$said" | tail -1)	9
 script	crates/wcontainers-gpu-webgpu/web/check	int	line: build+=" && cargo build --locked -j 3 -p wcontainers-gpu-webgpu --example scenes --target wasm32-unknown-unknown"	3
 script	crates/wcontainers-gpu-webgpu/web/check	int	line: build+=" && cargo build --locked -j 3 -p wcontainers-graphics-test --bin gt-compare"	3
 script	crates/wcontainers-gpu-webgpu/web/check	int	line: build+=" && cargo test --locked -j 3 -p wcontainers-gpu-webgpu --test suite --no-run"	3
