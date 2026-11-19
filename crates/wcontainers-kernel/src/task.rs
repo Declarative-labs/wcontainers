@@ -163,7 +163,12 @@ impl Kernel {
         // The watched memory the call will touch is met before it acts, and its copies are
         // checked against what its description named.
         if self.watching {
-            self.process_of(tid).map.borrow_mut().watches.described = Some(alloc::vec::Vec::new());
+            // A copy into this memory by another process's call left nothing for this one.
+            {
+                let watches = &mut self.process_of(tid).map.borrow_mut().watches;
+                watches.touched = None;
+                watches.described = Some(alloc::vec::Vec::new());
+            }
             let mut memory = crate::system::CallMemory {
                 kernel: self,
                 cx,

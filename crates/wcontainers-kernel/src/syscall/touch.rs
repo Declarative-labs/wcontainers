@@ -599,8 +599,14 @@ pub(crate) fn touch(memory: &mut dyn Memory, call: Syscall) -> bool {
         __NR_getresuid | __NR_getresgid => [a0, a1, a2]
             .into_iter()
             .all(|id| sized(memory, id, int, write)),
-        __NR_getgroups => meet(memory, a1, (a0 as u32 as u64) * int as u64, write),
-        __NR_setgroups => meet(memory, a1, (a0 as u32 as u64) * int as u64, read),
+        __NR_getgroups | __NR_setgroups => {
+            let access = if number == __NR_getgroups {
+                write
+            } else {
+                read
+            };
+            meet(memory, a1, (a0 as i32).max(0) as u64 * int as u64, access)
+        }
         __NR_capget => {
             sized(memory, a0, size_of::<__user_cap_header_struct>(), write)
                 && sized(memory, a1, 2 * size_of::<__user_cap_data_struct>(), write)
