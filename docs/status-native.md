@@ -78,6 +78,49 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
 
+## N4 run 7 (2026-11-19): pieces run on past forward conditional branches
+
+Start: origin/main and origin/phase-1-literals had nothing new; T1 is still on no branch (origin/phase-1-translator
+d5dcb8a0). The brief's newest rule (13:50, 14:00) moves builds and suites to the rented machines: here the arm64,
+guest-cpu and translator tests and clippy ran on the rented ARM64 machine, and only what needs Hypervisor.framework, the
+literal check (it needs a git checkout) and the measurements ran on the Mac (-j 4). Logs are in scratch native/n4r8.
+
+Built:
+- A piece's guest end is its highest instruction's (4ffc3081). The inside took it from the last span, but code placed out
+  of line (a page test's other way, an exit) comes after the run's last instruction with an earlier instruction's span,
+  so at bounded look-ahead a piece's source was cut short and a change to its later instructions could go unnoticed by
+  "code changed after it ran" and by dropping pieces of a changed range. Found while building the next item; no test
+  showed it, and none is added yet (it needs a program that rewrites code after a page test in one piece).
+- A piece runs on past a forward conditional branch (9dd5cb3a; plan 3.2): the branch's taken side is an exit placed out
+  of line (its own branch still pointed straight at the target's piece once linked), the run goes on at the next
+  instruction, and each straight-line part between such branches has its own add, so the count is exact wherever the
+  piece is left. A backward conditional branch ends the piece as before, with its fall-through exit.
+
+Measured (M5 Max, all on the Mac, native runs of two builds alternating, 6 pairs each, ab.py beside the logs):
+- Running on past every conditional branch (n4r8/ab-cond.log, load 8 to 14): cycles new over old fib 1.294 [1.086 ..
+  1.404] (instructions 0.972), matrix 1.099 (instructions 1.000), search 0.971 (0.914), sieve 0.968, sort 0.986,
+  interpret 1.007, hash 0.999, walk 0.999, calls 0.997. With every piece aligned to the cache line (n4r8/ab-align.log)
+  fib was still 1.315. Run singly (n4r8/x), running on past forward branches only gave fib's old cycles (2.70 to 2.76 G
+  against 2.71 to 2.90) and past backward ones only its slow ones (3.76 G): the slow shape is fib's return sequence
+  placed right after its loop's backward branch. Why it costs a third more cycles with fewer instructions is not known
+  (no branch-miss counter is readable here).
+- Running on past forward branches only, as built (n4r8/ab-fwd.log, load 7 to 13): cycles new over old fib 0.981, sieve
+  0.921 [0.904 .. 1.162], matrix 0.965 [0.801 .. 0.999], sort 1.000, search 1.000, interpret 1.005, hash 1.000, walk
+  1.002, calls 0.997.
+- Tests after the change: the differential test at three look-aheads with new seeds, 0 failing each: none 32,320 cases
+  (seed 0x6e34720802), bounded 16 32,450 (0x6e34720803), bounded 256 32,383 (0x6e34720801) (n4r8/native-*.log, load 7
+  to 13); exits 4 programs both modes (661 pieces); interrupts 3478 forced interrupts at 3 look-aheads, 0 failed; kernel
+  alike at none and 256 with the reference, the benchmark set's count agreeing (blocks' KNOWN FAILURE on the WebAssembly
+  side only); the monitor's lib and carry tests pass; arm64, guest-cpu and the translator (native feature) pass on the
+  rented ARM64 machine, clippy with warnings denied clean there for arm64, the translator, the inside (host and
+  bare-metal) and the monitor (n4r8/arm2.log); the literal check exits 0 on the Mac, no marks; busybox 56 commands gave
+  the reference's output, exit code and files at none and 256 (n4r8/busybox.log, load 9 to 12).
+
+Plan: 3.2 says how pieces are made until T1; 5.2 now answers run 5's open point on 2 MiB entries (reservations: a 2 MiB
+run of frames reserved at a range's first touch, each page taking its own frame from it, the block entry made when every
+page has its frame, untouched frames taken back when memory runs short, counted "reservation broken"); 3.7 names that slow
+path. Not built yet.
+
 ## N4 run 6 (2026-11-19): a two-word page test, the bar on a quiet machine
 
 Start: origin/main and origin/phase-1-literals had nothing new; T1 is still on no branch. The run 5 status lines left

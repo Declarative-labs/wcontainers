@@ -143,7 +143,14 @@ rewritten) would change only that function (brief).
   is what the WebAssembly output and Linux report there.
 - **Pieces** are what the shared finder gives at the container's look-ahead, as for WebAssembly: one
   instruction (none), a stretch (bounded), or a function (full). A piece is the guest's instructions in
-  order, each carried over by its route (section 3.4); branches inside a piece are direct.
+  order, each carried over by its route (section 3.4); branches inside a piece are direct. As built until T1
+  (N4 run 7): a piece is the run from its start at the look-ahead's bound, ended by a transfer that does not
+  fall through, a trap or a backward conditional branch; it runs on past a forward conditional branch, whose
+  taken side is an exit placed out of line (linked like the others), and each straight-line part between
+  such branches has its own add, so the count is exact wherever the piece is left. A backward conditional
+  branch is a loop's back edge, already pointed straight at its target's piece, and its fall-through leaves
+  the loop: running on past it too was measured slower (fib +29% cycles, alternating pairs, the return
+  sequence then sitting right after the loop's branch; search -3%, sort -1.4%), so it ends the piece.
 - **A loaded translation** is the code for one range of guest bytes at one guest address. On disk (the cache)
   a translation does not depend on the address: it carries a list of the places that hold a guest address.
   Loading it into the code area writes those places for the address the range sits at (ARM64: `movz`/`movk`
@@ -760,6 +767,8 @@ these names (suggested; the owner chooses names):
 - "address above the ceiling" (a request for an address at or above the native ceiling fails until moving
   exists, section 6.2, K2);
 - "large entry split" (a 2 MiB entry broken into 4 KiB entries because one page of it changed, section 5.2);
+- "reservation broken" (a 2 MiB run of frames reserved for a range given back in part because guest-physical
+  memory ran short, section 5.2);
 - "back end refused by the probe", with the missing feature (section 5.8);
 - the float status reads the WebAssembly output also counts ("exact floating point requested"; "MXCSR's
   exception flags read while not kept"), under its names (section 3.4);
@@ -847,8 +856,8 @@ and native), and requires, at every stop, the same count for the same pc and the
 WebAssembly side runs at T2 (the WebAssembly output counting by `counted`); the native side's look-aheads
 at N4; both outputs together at N6. Seeded, with the seed and the number of programs and stops as
 arguments. N2 already checks the native side on guest functions: its emitter makes, at every look-ahead, the
-straight-line run from a piece's start (one instruction at none, at most n at bounded, to the first
-transfer at full), with the run's add at its start; at look-ahead none every boundary is a stop, and at each
+run from a piece's start (one instruction at none, at most n at bounded, to the first transfer that is not a
+forward conditional branch at full, section 3.2), with each straight-line part's add at the part's start; at look-ahead none every boundary is a stop, and at each
 look-ahead every stop and every forced interrupt (one at each host instruction the guest's level is about to
 run: after each stepped instruction, and at every return from the inside, which software step does not
 reach) must resolve to one of those boundaries, count included, in order, and the run must go on from it to
@@ -1068,6 +1077,18 @@ tell: permissions stay per 4 KiB page as the record says, and the kernel reports
 every back end (every mapped page as in memory, kernel/counters.rs:41-44). N4 also measures ARM64's
 contiguous bit (16 entries as one) for ranges that cannot take a block. Rejected: 4 KiB entries only (+8.5%
 cycles before any translation, most of section 8's margin).
+How a block's untouched frames come back (the open point of N4 run 5: guest-physical space is finite, so a
+block taken whole at a first touch could fill it where Linux would not): by reservation, the scheme of
+Navarro, Iyer, Druschel and Cox (OSDI 2002) that FreeBSD uses (the idea only). A first touch in a 2 MiB
+aligned range that may take a block reserves a 2 MiB aligned run of frames for it and gives the touched page
+the frame at its own offset in the run, mapped with a 4 KiB entry; later touches in the range take their
+frames from the same run. When every page of the range has its frame and the range is still alike, the
+table of 4 KiB entries is replaced by one block entry over the run (break before make, as a split), with no
+copy. The inside always knows which frames of a run no page has taken, so when the allocator has no free run
+or frame left it breaks reservations, oldest first, and takes those frames back, counted "reservation
+broken" and warned; the range keeps its 4 KiB entries. So guest-physical space never runs out where 4 KiB
+entries alone would not. Rejected: a block at the first touch (holds frames no page touched, the open point);
+promotion by copying 512 scattered frames into a new run (a 2 MiB copy, and a free run needed at that time).
 
 A later 16 KiB guest mode (brief) changes `PAGE_SIZE` and nothing in this design's shape: on ARM64 the floor
 takes the granule from it (TCR_EL1 TG0 and TG1, chosen from `PAGE_SIZE` in one place, which today knows
