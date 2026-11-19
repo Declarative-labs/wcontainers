@@ -10,13 +10,16 @@ use crate::LookAhead;
 /// early by a transfer or a trap (whose routes make their own exits). Each instruction is carried over by its
 /// route and the run's end falls through to an exit to the inside. `None` when no instruction starts there.
 ///
+/// The count's adds are written only when `exact_replay` is set: the process asked for exact replay
+/// (`ReplayDeterminism::Exact`, from which the caller derives it and which keys its cache of translations).
 /// Under definition E every counted event is a transfer and so ends its run: a run holds at most one event,
-/// and its add is placed at the start of the run, where it was measured cheapest (section 4). The position
-/// map keeps the count one ahead from the add to the event's commit point.
+/// and its add is placed at the start of the run (section 4). The position map keeps the count one ahead
+/// from the add to the event's commit point.
 pub fn translate_native<G: Native>(
     code: &[u8],
     address: u64,
     look_ahead: LookAhead,
+    exact_replay: bool,
 ) -> Option<HostCode> {
     let limit = match look_ahead {
         LookAhead::None => 1,
@@ -32,7 +35,7 @@ pub fn translate_native<G: Native>(
         let length = usize::from(length);
         let here = address.wrapping_add(at as u64);
         let route = G::route(&instruction);
-        let event = counted(here, &G::flow(&instruction));
+        let event = exact_replay && counted(here, &G::flow(&instruction));
         run.push((instruction, at..at + length, here, route, event));
         at += length;
         if matches!(route, Route::Transfer | Route::Trap) {
