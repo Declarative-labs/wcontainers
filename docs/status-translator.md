@@ -67,8 +67,10 @@ The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three laye
   below), same command. Stopped 08:12 after chunk 85 and restarted on 9d54ef3 (failure 6 below), same
   command. Stopped 14:58 after chunk 114 (chunk 115 had just started, no line) and restarted on 6b74146
   (failure 7 below), same command, chunk 113 first. Stopped 18:50 during chunk 127 (no line) after chunk
-  126 failed on Docker's outage, and restarted 18:51 on 99eda5e (failure 8 below), same command; that run
-  (driver pid 19707 at the time of writing) is the one going now, chunk 126 first. To stop it right after a chunk ends: the scratch script
+  126 failed on Docker's outage, and restarted 18:51 on 99eda5e (failure 8 below), same command. Stopped
+  21:16 after chunk 135 (chunk 136 had just started, no line) and restarted 21:17 on 6a705f8 (failure 9
+  below), same command; that run (driver pid 42129 at the time of writing) is the one going now, chunk 133
+  first. To stop it right after a chunk ends: the scratch script
   `.../p2/stop-after-chunk.sh` (waits up to 9 minutes for a ledger line, then stops the driver, its test
   and containers). One look at the progress, waiting up to 9 minutes for a new line: `.../p2/look.sh`. Use `WC_LONG_ACCEPT=c38b4ad
   WC_LONG_LIMIT=180` on any later restart too. Each restart appends to `driver.log`; the code it runs is the copy in
@@ -78,7 +80,7 @@ The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three laye
   every copy no longer running (done 2026-11-18 18:50: 48 GB freed; sources and logs kept).
 - Layer 3's progress in programs compared: `awk -F'\t' '$1=="layer=3" && $10=="result=pass" {split($4,c,"=");
   s+=c[2]} END {print s}' .../p2/long/ledger.txt`. Any chunk that did not pass: `grep -v result=pass
-  .../p2/long/ledger.txt` (each is one of failures 1 to 8 below; all but chunk 126's have passed again).
+  .../p2/long/ledger.txt` (each is one of failures 1 to 9 below).
 - After the last fix: the confirmation, 5 percent of each layer on the final commit with base seed 200 (not
   used before): the same command with `WC_LONG_PERCENT=5 WC_LONG_SEED=200` and a new `WC_LONG_DIR`.
 - Expected length (from P1's 1 percent rates at load about 30, not measured): about 50 hours, more at higher
@@ -251,7 +253,24 @@ Failures found by the run, each with its cause and fix:
    `a_programs_own_ending_is_its_result` (pass; Docker's behaviour in each was checked by hand first: no
    daemon gives status 1 and no id file, a refused mount 125 and no id file, a missing command 127 with
    the id file and the message). Layer 3 at 8 cases (seed 7, 7 compared, 1 in Chrome) passes on it, 23 s,
-   load 54 to 62. Chunks from 126 on run on 99eda5e; the translator is the same as on 6b74146.
+   load 54 to 62. Chunks from 126 on run on 99eda5e; the translator is the same as on 6b74146. Chunk 126
+   passed on it (437 compared, 938 s).
+9. Layer 3 chunk 133 (cases 66000 to 66499, 99eda5e): case 66482 (Csmith 100066782, clang -O3, fixed
+   position) failed the guard, before any translation ran: Linux ended the blob with SIGILL (132, four
+   times of four), the ordinary executable with SIGSEGV (139); the same on a replay. Built as the guard
+   builds it (with `-g`, in scratch `p2/c133`) and run under gdb in Docker, the executable prints a hash
+   line through a wild pointer and then jumps into the global `g_868` (pc 0x103940c, `udf #68` there),
+   data that an ordinary executable cannot run: SIGSEGV. The blob is one region that can be read, written
+   and run (`placement`, and the reference runner maps it so too), so there the same jump runs the data
+   and stops at the undefined word: SIGILL. Not the translator: once compared it matches Linux's SIGILL
+   in every setting and in Chrome. Change (a departure, see "Departures from the plan"): the guard takes
+   every ending of a program gone astray (SIGSEGV, SIGBUS, SIGILL, SIGTRAP) as one (test
+   `a_program_gone_astray_ends_the_same_by_any_of_its_signals`, which replaces
+   `a_memory_fault_ends_the_same_by_either_signal`). With it, Linux's signal numbers in the test crate's
+   files touched come from `linux-raw-sys` (0.12.1, Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT,
+   already in the workspace for the kernel test crate) and the 128 of a signalled status is one constant,
+   `programs::SIGNALLED` (`layer1.rs` and `browser.rs` still have their own copies: for the literal check
+   after P2). The case passes on the change, compared and in Chrome, 40 s at load 92 to 102.
 
 ## P1: close-out of M5 and the long-run driver
 
@@ -2569,8 +2588,14 @@ contract's bits, in both runners).
   differently still fails.
 - P2: the same guard takes SIGSEGV and SIGBUS as one ending, a memory fault (`same_ending`, failure 7 of
   P2): which of the two a stray access raises depends on what lies at its address, and an ordinary
-  executable has file pages past its file's end (SIGBUS) where a blob has none. Any other pair of endings
-  still fails. These two are the only changes to a test's checks in P2.
+  executable has file pages past its file's end (SIGBUS) where a blob has none.
+- P2: the same guard then took SIGILL and SIGTRAP into that one ending, "gone astray" (`same_ending` over
+  `ASTRAY`, failure 9 of P2): a stray jump into data faults (SIGSEGV) in an ordinary executable, whose
+  data cannot be run, but runs the data in a blob, which is one region that can be (`placement`), so it
+  ends by whatever the data decodes to. Any other pair of endings (a clean exit against a fault, a fault
+  against SIGKILL or SIGABRT) still fails. These three are the only changes to a test's checks in P2; in
+  each the blob is still compared with the translator exactly, and only cases the guard stopped before
+  any comparison are let through to it.
 - P2: the long-run driver gives each run its own zig cache (`WC_LONG_DIR/zig-cache`): zig processes
   sharing `~/.cache/zig` with other jobs deadlocked on its locks (failure 4 of P2).
 
