@@ -1658,7 +1658,6 @@ code	crates/wcontainers-direct3d-11/src/counting.rs	str	from_pixel_shader	"count
 code	crates/wcontainers-direct3d-11/src/counting.rs	str	without_pixel_shader	"@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }"
 code	crates/wcontainers-direct3d-11/src/counting.rs	str	without_pixel_shader	"main"
 code	crates/wcontainers-direct3d-11/src/counting.rs	str	without_pixel_shader	"the counting program of a draw without a pixel shader"
-code	crates/wcontainers-direct3d-11/src/desc.rs	int	BlendDesc	8
 code	crates/wcontainers-direct3d-11/src/desc.rs	int	SamplerDesc	3
 code	crates/wcontainers-direct3d-11/src/desc.rs	int	SamplerDesc	4
 code	crates/wcontainers-direct3d-11/src/desc.rs	int	SamplerDesc::default_state	0x15
