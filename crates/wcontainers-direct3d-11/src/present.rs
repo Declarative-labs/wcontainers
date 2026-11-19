@@ -68,6 +68,11 @@ impl<B: Backend> Device<B> {
         bind: u32,
     ) -> Result<Chain<B>> {
         self.live()?;
+        if !crate::format::displayed(desc.format, self.feature_level()) {
+            return Err(Error::InvalidArg(
+                "a back buffer format this feature level does not display",
+            ));
+        }
         self.bury();
         let chain =
             SwapChain::new(&mut self.backend, window, desc).map_err(|e| self.chain_lost(e))?;

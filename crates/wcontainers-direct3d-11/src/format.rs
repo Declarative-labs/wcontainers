@@ -2,8 +2,33 @@
 
 use wcontainers_gpu::{Format, IndexFormat, ScalarKind, VertexFormat};
 
+use crate::desc::level;
 use crate::error::{Error, Result, not_implemented};
-use wcontainers_directx_graphics_infrastructure::{dxgi, dxgi_vertex_format};
+use wcontainers_directx_graphics_infrastructure::{BACK_BUFFER_FORMATS, dxgi, dxgi_vertex_format};
+
+/// The back buffer formats Direct3D displays only from feature level 10_0: its 10Level9 format
+/// tables display the 8-bit ones alone.
+const DISPLAYED_FROM_10_0: [u32; 2] = [dxgi::R16G16B16A16_FLOAT, dxgi::R10G10B10A2_UNORM];
+
+/// Whether a swap chain of a device at feature level `level` takes back buffers of DXGI format
+/// `dxgi` (`D3D11_FORMAT_SUPPORT_DISPLAY`).
+pub fn displayed(dxgi: u32, level: u32) -> bool {
+    BACK_BUFFER_FORMATS.contains(&dxgi)
+        && (level >= level::L10_0 || !DISPLAYED_FROM_10_0.contains(&dxgi))
+}
+
+/// Whether `format` is signed normalised, which Direct3D blends only from feature level 10_1.
+pub fn signed_normalized(format: Format) -> bool {
+    matches!(
+        format,
+        Format::R8Snorm
+            | Format::Rg8Snorm
+            | Format::Rgba8Snorm
+            | Format::R16Snorm
+            | Format::Rg16Snorm
+            | Format::Rgba16Snorm
+    )
+}
 
 /// The DXGI formats the front names elsewhere. NV12 (a plane of 8-bit luma, then a plane of
 /// interleaved chroma pairs at half the width and height) is held as two textures

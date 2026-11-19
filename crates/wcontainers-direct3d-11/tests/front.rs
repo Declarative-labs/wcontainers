@@ -1567,6 +1567,28 @@ fn a_counted_occlusion_query_answers_once_the_gpu_has_its_count_and_a_flushing_p
 }
 
 #[test]
+fn format_support_follows_the_feature_level_for_display_and_signed_normalised_blending() {
+    use wcontainers_directx_graphics_infrastructure::dxgi;
+    let at = |l: u32| Device::new(Recorder::new(None), &[l]).unwrap();
+    let (l9, l10, l10_1) = (at(level::L9_3), at(level::L10_0), at(level::L10_1));
+    let has = |d: &Dev, f: u32, bit: u32| d.format_support(f) & bit != 0;
+    for f in [dxgi::R8G8B8A8_UNORM, dxgi::B8G8R8A8_UNORM_SRGB] {
+        assert!(has(&l9, f, support::DISPLAY));
+    }
+    for f in [dxgi::R16G16B16A16_FLOAT, dxgi::R10G10B10A2_UNORM] {
+        assert!(!has(&l9, f, support::DISPLAY));
+        assert!(has(&l10, f, support::DISPLAY));
+    }
+    assert!(!has(
+        &l10,
+        dxgi::R10G10B10_XR_BIAS_A2_UNORM,
+        support::DISPLAY
+    ));
+    assert!(!has(&l10, dxgi::R8G8B8A8_SNORM, support::BLENDABLE));
+    assert!(has(&l10_1, dxgi::R8G8B8A8_SNORM, support::BLENDABLE));
+}
+
+#[test]
 fn staging_read_backs_start_at_the_copy_and_maps_may_not_wait() {
     let mut dev = device();
     dev.backend.reads_need_submit = true;
