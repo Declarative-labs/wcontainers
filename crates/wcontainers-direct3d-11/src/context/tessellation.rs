@@ -148,7 +148,7 @@ impl<B: Backend> Device<B> {
                 Error::NotImplemented(what)
             }
             StageError::Convert(e) => {
-                eprintln!("wcontainers direct3d 11: the tessellation stages' programs: {e}");
+                eprintln!("{WARNING_PREFIX}: the tessellation stages' programs: {e}");
                 Error::NotImplemented("a tessellation stage the converter got wrong")
             }
             StageError::TopologyMismatch | StageError::Declaration => {

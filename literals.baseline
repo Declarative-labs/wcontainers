@@ -1416,7 +1416,6 @@ code	crates/wcontainers-arm64/src/vector.rs	int	narrow	8
 code	crates/wcontainers-direct3d-11/src/ahead.rs	int	Ahead	5
 code	crates/wcontainers-direct3d-11/src/ahead.rs	int	Ahead<B>::new	5
 code	crates/wcontainers-direct3d-11/src/ahead.rs	int	TupleKey	4
-code	crates/wcontainers-direct3d-11/src/ahead.rs	str	Device<B>::report_ahead	"wcontainers direct3d 11: built at start {started} recorded combinations: \\n             {started_drawn} drawn since, {} not ({} records not built); built ahea… #3373273ad562a70
 code	crates/wcontainers-direct3d-11/src/cache.rs	int	ModuleKeys	32
 code	crates/wcontainers-direct3d-11/src/cache.rs	int	ModuleKeys	32
 code	crates/wcontainers-direct3d-11/src/cache.rs	int	Record	32
@@ -1424,7 +1423,6 @@ code	crates/wcontainers-direct3d-11/src/cache.rs	int	Record	32
 code	crates/wcontainers-direct3d-11/src/cache.rs	int	Record	4
 code	crates/wcontainers-direct3d-11/src/cache.rs	int	Warm<B>::start	32
 code	crates/wcontainers-direct3d-11/src/cache.rs	int	Warm<B>::start	32
-code	crates/wcontainers-direct3d-11/src/cache.rs	str	append	"wcontainers direct3d 11: the cache file cannot be appended to ({e}); kept in memory"
 code	crates/wcontainers-direct3d-11/src/context.rs	int	ContextState	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	ContextState	4
 code	crates/wcontainers-direct3d-11/src/context.rs	int	ContextState<B>::new	128
@@ -1625,7 +1623,6 @@ code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::run_s
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::run_staged	"storage textures read through buffers behind a hull shader"
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::target_layers	"a geometry shader choosing a layer of a target view reinterpreting its texture"
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::target_layers	"a geometry shader choosing a layer of target views of different layer counts"
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	stage_error	"wcontainers direct3d 11: the stage helper's programs: {e}"
 code	crates/wcontainers-direct3d-11/src/context/split.rs	int	Device<B>::split_groups	0xf
 code	crates/wcontainers-direct3d-11/src/context/split.rs	int	Device<B>::split_groups	0xf
 code	crates/wcontainers-direct3d-11/src/context/split.rs	str	Device<B>::try_draw	"a draw run once per group of targets while queries run"
@@ -1641,7 +1638,6 @@ code	crates/wcontainers-direct3d-11/src/context/tessellation.rs	str	Device<B>::d
 code	crates/wcontainers-direct3d-11/src/context/tessellation.rs	str	Device<B>::draw_tessellated_output	"a tessellation stage that made no tessellated draw"
 code	crates/wcontainers-direct3d-11/src/context/tessellation.rs	str	Device<B>::run_tessellated	"a pixel shader reading helper constants behind a domain shader"
 code	crates/wcontainers-direct3d-11/src/context/tessellation.rs	str	Device<B>::run_tessellated	"storage textures read through buffers behind a hull shader"
-code	crates/wcontainers-direct3d-11/src/context/tessellation.rs	str	Device<B>::tessellation_error	"wcontainers direct3d 11: the tessellation stages' programs: {e}"
 code	crates/wcontainers-direct3d-11/src/context/through.rs	int	Device<B>::through_layout	5
 code	crates/wcontainers-direct3d-11/src/context/through.rs	int	Device<B>::through_layout	5
 code	crates/wcontainers-direct3d-11/src/context/through.rs	int	Device<B>::through_view	256
@@ -1823,12 +1819,8 @@ code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::create_shader	"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::create_shader	"typed buffers read through a texture (TexelBufferAsTexture)"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::create_view	"a depth view reinterpreting a typeless texture's bits as another format"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::create_view	"read-only depth-stencil views need feature level 11_0"
-code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::gpu	"wcontainers direct3d 11: device removed: the back end lost it"
-code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::poll_removed	"wcontainers direct3d 11: device removed: the back end lost it ({reason:?})"
-code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::remove	"wcontainers direct3d 11: device removed: {why}"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::zero_view	"an empty slot a shader reads as depth or stencil"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	check_buffer	"constant buffer sizes are multiples of 16"
-code	crates/wcontainers-direct3d-11/src/device.rs	str	gpu_error	"wcontainers direct3d 11: not implemented: the back end lacks {f:?}"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	gpu_sampler	"anisotropy above 16"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	gpu_sampler	"minimum and maximum filtering"
 code	crates/wcontainers-direct3d-11/src/format.rs	int	unserved	189
@@ -1846,7 +1838,6 @@ code	crates/wcontainers-direct3d-11/src/object.rs	int	InputLayout	32
 code	crates/wcontainers-direct3d-11/src/object.rs	int	Shader	32
 code	crates/wcontainers-direct3d-11/src/query.rs	str	Device<B>::create_query	"not a query Direct3D 11 has"
 code	crates/wcontainers-direct3d-11/src/query.rs	str	Device<B>::create_query	"per-stream stream output queries need feature level 11_0"
-code	crates/wcontainers-direct3d-11/src/query.rs	str	Device<B>::query_data	"wcontainers direct3d 11: timestamps reported disjoint: the back end writes none"
 code	crates/wcontainers-direct3d-11/src/record.rs	int	<Recorder as Backend>::read_back	4
 code	crates/wcontainers-direct3d-11/src/record.rs	int	<Recorder as Backend>::read_queries	8
 code	crates/wcontainers-direct3d-11/src/record.rs	int	Recorder::aspect	3

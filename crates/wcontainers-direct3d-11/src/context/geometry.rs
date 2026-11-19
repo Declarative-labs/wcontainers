@@ -65,7 +65,7 @@ fn stage_error(e: StageError) -> Error {
         StageError::Unsupported(what) => Error::NotImplemented(what),
         StageError::Convert(ConvertError::Unsupported(what)) => Error::NotImplemented(what),
         StageError::Convert(e) => {
-            eprintln!("wcontainers direct3d 11: the stage helper's programs: {e}");
+            eprintln!("{WARNING_PREFIX}: the stage helper's programs: {e}");
             Error::NotImplemented("a geometry stage the converter got wrong")
         }
         StageError::TopologyMismatch => {

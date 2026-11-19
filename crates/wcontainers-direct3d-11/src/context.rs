@@ -23,7 +23,7 @@ use crate::desc::{
 use crate::device::{
     Device, HelperBlocks, Linked, Variant, ZERO_BYTES, gpu_buffer, integer_format, resolvable,
 };
-use crate::error::{Error, Result, not_implemented};
+use crate::error::{Error, Result, WARNING_PREFIX, not_implemented};
 use crate::format;
 use crate::object::*;
 use crate::shader::{ConstantsReadAs, Helpers, RelocatedConstants, StageVariant};

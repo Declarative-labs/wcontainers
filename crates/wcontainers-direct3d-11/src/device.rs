@@ -16,7 +16,7 @@ use wcontainers_gpu::{
 
 use crate::context::ContextState;
 use crate::desc::*;
-use crate::error::{Error, Result, not_implemented};
+use crate::error::{Error, Result, WARNING_PREFIX, not_implemented};
 use crate::format;
 use crate::object::*;
 use crate::shader::{self, Helpers, StageVariant};
@@ -167,7 +167,7 @@ pub enum Removal {
 fn gpu_error(e: GpuError) -> Error {
     match e {
         GpuError::Absent(f) => {
-            eprintln!("wcontainers direct3d 11: not implemented: the back end lacks {f:?}");
+            eprintln!("{WARNING_PREFIX}: not implemented: the back end lacks {f:?}");
             Error::NotImplemented("a feature the back end lacks")
         }
         GpuError::OutOfMemory => Error::OutOfMemory,
@@ -463,7 +463,7 @@ impl<B: Backend> Device<B> {
         if self.removed.is_none()
             && let DeviceStatus::Lost(reason) = self.backend.status()
         {
-            eprintln!("wcontainers direct3d 11: device removed: the back end lost it ({reason:?})");
+            eprintln!("{WARNING_PREFIX}: device removed: the back end lost it ({reason:?})");
             self.removed = Some(Removal::Lost(reason));
         }
         self.removed
@@ -484,7 +484,7 @@ impl<B: Backend> Device<B> {
 
     fn remove(&mut self, why: &str) {
         if self.poll_removed().is_none() {
-            eprintln!("wcontainers direct3d 11: device removed: {why}");
+            eprintln!("{WARNING_PREFIX}: device removed: {why}");
             self.removed = Some(Removal::Unserved);
         }
     }
@@ -496,7 +496,7 @@ impl<B: Backend> Device<B> {
             GpuError::Absent(_) | GpuError::OutOfMemory => gpu_error(e),
             GpuError::DeviceLost => {
                 if self.poll_removed().is_none() {
-                    eprintln!("wcontainers direct3d 11: device removed: the back end lost it");
+                    eprintln!("{WARNING_PREFIX}: device removed: the back end lost it");
                     self.removed = Some(Removal::Lost(LossReason::Removed));
                 }
                 Error::DeviceRemoved
