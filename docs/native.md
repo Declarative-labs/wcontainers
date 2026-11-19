@@ -651,7 +651,10 @@ it first checks that the guest may read the address (a fault as a read otherwise
 check gives), then drops every piece whose guest code overlaps the line (the presented CTR_EL0's IminLine) in
 the announcing process and in every process that shows the line's frame through a shared block, counting
 "code changed after it ran" for each line that held one; the pieces are dropped when the running piece ends,
-so the announcing piece finishes as translated, as the WebAssembly output's block does. Native code never reads the guest's bytes after
+so the announcing piece finishes as translated, as the WebAssembly output's block does. When the kernel
+announces a range (unmapped, made not executable, mapped over) or a page stops being executable, the inside
+drops the range's pieces and counts "code changed after it ran" once if the guest bytes of a dropped piece
+are no longer those it was translated from (each piece keeps them). Native code never reads the guest's bytes after
 translating them, so a change the guest does not announce (ARM64) runs the old translation, as the
 WebAssembly output does.
 
