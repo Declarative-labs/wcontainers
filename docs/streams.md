@@ -45,9 +45,13 @@ At start, `Start::standard` (suggested) says what descriptors 0 to 2 are:
   or when nothing is outstanding and any room is free.
 - Data that comes is put in at once: into the pipe as one write packed into pages (readers woken,
   their I/O signals sent), or into the master as a master write (the slave's line discipline takes
-  it: echo, canonical editing, the signal keys). Since the room was promised it always fits.
-- A guest writer to that same pipe (by opening `/proc/<pid>/fd/0` for writing) may use only room not
-  promised; `F_SETPIPE_SZ` refuses (EBUSY) a size below what the pipe holds plus what is promised.
+  it: echo, canonical editing, the signal keys). On a terminal the room was promised, so it fits.
+- The pipe's room is not held for the outside: a guest writer to that same pipe (by opening
+  `/proc/<pid>/fd/0` for writing) uses it as on Linux, and `F_SETPIPE_SZ` refuses only a size below
+  what the pipe holds. The outside's bytes that then find no room wait in the pipe's inbox, at most
+  the credit given, and go in as readers make room, as the bytes a writer outside Linux has not yet
+  written wait in that writer. The outside closing its end lets go of the pipe's writer once the
+  inbox is in.
 - A guest read when nothing has come waits, or gets EAGAIN, as on a pipe or terminal with a slow
   writer; poll, select and epoll see the data when it comes.
 - Data past the kernel's credit (an outside that breaks the rule): the part past it is dropped and
@@ -66,8 +70,8 @@ At start, `Start::standard` (suggested) says what descriptors 0 to 2 are:
 
 ### Closing
 
-- The outside closes an input end: the kernel lets go of the pipe's writer: readers get what was
-  sent, then end of file (read 0, POLLHUP).
+- The outside closes an input end: the kernel lets go of the pipe's writer once what was sent is
+  in: readers get it, then end of file (read 0, POLLHUP).
 - The outside closes an output end: the kernel lets go of the pipe's reader: a later write gets
   SIGPIPE and EPIPE, as on a pipe whose reader closed; what the pipe held is dropped.
 - The outside closes a terminal end: the master is closed: the slave is hung up as Linux's pty
@@ -115,8 +119,8 @@ On this Mac's Docker (ARM64 Linux), `alpine:3.22`:
   `Event::TerminalInput` removed.
 - kernel: a table of ends, each holding the kernel's side as an ordinary open file (the pipe's
   writer or reader, the pty's master), its send credit and whether the kernel closed it. Pipes and
-  ptys need nothing special for it (the pipe's old "host reads it" field goes); each pipe and pty
-  keeps the room it promised. The ends are served when the kernel settles, once an event for an
+  ptys need nothing special for it (the pipe's old "host reads it" field goes); a pipe knows the end
+  that reads it and keeps the credit it gave and the inbox, a pty the room it promised. The ends are served when the kernel settles, once an event for an
   end or a wake on one of their pipes or terminals says something may have moved; a write to a pipe
   an end reads goes out at once when the pipe is empty and credit allows.
 - test host: the ends' other sides, with input fed in seeded pieces as credit allows (when the
@@ -124,4 +128,8 @@ On this Mac's Docker (ARM64 Linux), `alpine:3.22`:
   slower than a program reaches its next wait), output credit given all at once or slowly (or
   never), a scripted conversation (wait for some output, then send, resize or
   close) that the Docker reference follows too, and a check that the kernel never sends past
-  credit.
+  credit. A rule-breaking mode sends all its credit and a fixed excess each time.
+- A program compared with Docker must not show where its reads end (how much one read returned),
+  only what it read: the seed cuts our input into its own pieces and Docker's client cuts the
+  reference's into others, so both are right and differ. A reader that takes a stdio buffer and
+  leaves the rest (busybox `head -c`) is such a program; `dd bs=1` and the shell's `read` are not.

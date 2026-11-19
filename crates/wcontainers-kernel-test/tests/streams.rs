@@ -6,9 +6,10 @@ use std::path::{Path, PathBuf};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use wcontainers_kernel::reason;
-use wcontainers_kernel_test::assert_same_streams;
 use wcontainers_kernel_test::driver::Run;
+use wcontainers_kernel_test::reference::in_guest_directory;
 use wcontainers_kernel_test::streams::{Outside, Step};
+use wcontainers_kernel_test::{assert_same_streams, guest_directory_entry, image_command};
 
 fn out() -> PathBuf {
     Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest")
@@ -152,6 +153,8 @@ fn input_arrives_while_the_reader_waits() {
 
 #[test]
 fn children_inherit_the_standard_descriptors() {
+    // Each reader takes exactly what it shows (the shell's `read` and `dd` a byte at a time), so
+    // what each sees does not depend on how the input was cut into pieces.
     let outside = input(send_all(text(5, 20_000)));
     assert_same_streams(
         &out(),
@@ -159,10 +162,47 @@ fn children_inherit_the_standard_descriptors() {
         &[
             "sh",
             "-c",
-            "read first; echo \"first: $first\"; head -c 10 | od -c; cat | wc -c; echo error >&2",
+            "read first; echo \"first: $first\"; dd bs=1 count=10 2>/dev/null | od -c; cat | wc -c; \
+             echo error >&2",
         ],
         &outside,
     );
+}
+
+#[test]
+fn a_program_writing_its_own_input_pipe() {
+    // The input pipe's room is the writer inside's too: credit given outside does not hold it.
+    let outside = input(vec![expect("got"), Step::CloseInput]);
+    assert_same_streams(
+        &out(),
+        None,
+        &[
+            "sh",
+            "-c",
+            "echo hi > /proc/self/fd/0; read x; echo got $x; echo more > /proc/self/fd/0; cat",
+        ],
+        &outside,
+    );
+}
+
+#[test]
+fn a_terminal_closed_before_the_start_finished() {
+    // With the root on the backend the start waits; the outside lets go of the terminal before
+    // it is made, and the slave is hung up as when the master closes (no reference: Docker's
+    // client cannot go before the container starts).
+    std::fs::create_dir_all(out()).expect("creating the output directory");
+    let outside = Outside {
+        input: true,
+        terminal: Some((COLUMNS, ROWS)),
+        script: vec![Step::CloseInput],
+        ..Default::default()
+    };
+    let shell = image_command("sh");
+    let command = [shell.as_str(), "-c", "read x; exit 7"];
+    for run in run_ours(&out(), &command, outside, Some("/")) {
+        assert_eq!(run.outcome.exit_code, 7, "{:?}", run.outcome);
+        assert!(run.broken.is_empty(), "{:?}", run.broken);
+    }
 }
 
 #[test]
@@ -199,45 +239,65 @@ fn large_output_to_a_slow_outside() {
 
 #[test]
 fn output_after_the_outside_closed() {
+    let program = wcontainers_kernel_test::guest::build("stdout", &[], &out());
+    let directory = program.parent().expect("a directory");
     for signal in ["default", "ignore"] {
-        // The reference shows a closed reader inside the container (see `run_outside`).
-        let theirs = Outside::default();
-        let ours = Outside {
-            script: vec![expect("ready"), Step::CloseOutput],
-            ..Default::default()
-        };
-        let program = wcontainers_kernel_test::guest::build("stdout", &[], &out());
-        let reference = wcontainers_kernel_test::reference::run_outside(
-            program.parent().expect("a directory"),
-            &["/wc/stdout", "closed", "self", signal],
-            &theirs,
-        );
-        let runs = run_ours("stdout", &["closed", "outside", signal], ours);
-        for run in runs {
-            assert_eq!(run.outcome, reference);
-            assert!(run.broken.is_empty(), "{:?}", run.broken);
+        // As the first process, which a default SIGPIPE never kills, and as a shell's child,
+        // which it does.
+        for child in [false, true] {
+            let command = |whose: &str| {
+                let writer = format!("{} closed {whose} {signal}", in_guest_directory("stdout"));
+                match child {
+                    true => vec![
+                        image_command("sh"),
+                        "-c".to_string(),
+                        format!("{writer}; echo status $? >&2"),
+                    ],
+                    false => writer.split(' ').map(str::to_string).collect(),
+                }
+            };
+            // The reference shows a closed reader inside the container (see `run_outside`).
+            let theirs = command("self");
+            let theirs: Vec<&str> = theirs.iter().map(String::as_str).collect();
+            let reference = wcontainers_kernel_test::reference::run_outside(
+                directory,
+                &theirs,
+                &Outside::default(),
+            );
+            let ours = command("outside");
+            let ours: Vec<&str> = ours.iter().map(String::as_str).collect();
+            let outside = Outside {
+                script: vec![expect("ready"), Step::CloseOutput],
+                ..Default::default()
+            };
+            for run in run_ours(directory, &ours, outside, None) {
+                assert_eq!(run.outcome, reference, "{ours:?}");
+                assert!(run.broken.is_empty(), "{:?}", run.broken);
+            }
         }
     }
 }
 
-/// Our runs of a guest program with the outside given, under every schedule seed.
-fn run_ours(name: &str, arguments: &[&str], outside: Outside) -> Vec<Run> {
-    let program = wcontainers_kernel_test::guest::build(name, &[], &out());
-    let directory = program.parent().expect("a directory");
-    let path = format!("/wc/{name}");
-    let mut all = vec![path.as_str()];
-    all.extend_from_slice(arguments);
+/// Our runs of `command` (its first word a path) with the guest programs of `directory` at
+/// their place and the outside given, under every schedule seed.
+fn run_ours(
+    directory: &Path,
+    command: &[&str],
+    outside: Outside,
+    backend: Option<&str>,
+) -> Vec<Run> {
     let mut files = wcontainers_kernel_test::image::reference_image().to_vec();
     files.extend(wcontainers_kernel_test::image::host_directory(
-        directory, "wc",
+        directory,
+        guest_directory_entry(),
     ));
     let container = wcontainers_kernel_test::driver::Container {
         files: &files,
-        path: &path,
-        arguments: &all,
+        path: command[0],
+        arguments: command,
         environment: wcontainers_kernel_test::reference::ENVIRONMENT,
         working_directory: "/",
-        backend: None,
+        backend,
         cached: false,
         published: &[],
         address_space: wcontainers_kernel_test::standin::SPACE_32_BIT,
@@ -253,6 +313,20 @@ fn run_ours(name: &str, arguments: &[&str], outside: Outside) -> Vec<Run> {
             .expect("an outcome on our kernel")
         })
         .collect()
+}
+
+/// Our runs of a guest program with `arguments` and the outside given.
+fn run_guest(name: &str, arguments: &[&str], outside: Outside) -> Vec<Run> {
+    let program = wcontainers_kernel_test::guest::build(name, &[], &out());
+    let path = in_guest_directory(name);
+    let mut command = vec![path.as_str()];
+    command.extend_from_slice(arguments);
+    run_ours(
+        program.parent().expect("a directory"),
+        &command,
+        outside,
+        None,
+    )
 }
 
 /// The size a terminal starts at when the test gives the client one.
@@ -358,22 +432,33 @@ fn an_outside_sending_past_its_credit_is_cut_off() {
         excess: 100,
         ..Default::default()
     };
-    for run in run_ours("stdin", &["all", "4096", "0"], outside) {
+    for run in run_guest("stdin", &["all", "4096", "0"], outside) {
         let past: u64 = run
             .counters
             .iter()
             .filter(|counter| counter.reason == reason::STREAM_PAST_CREDIT)
             .map(|counter| counter.count)
             .sum();
-        assert!(past > 0, "the bytes past the credit were counted");
+        assert!(
+            run.sends_past_credit > 0,
+            "the outside went past its credit"
+        );
+        assert_eq!(
+            past, run.sends_past_credit,
+            "every send past the credit counted"
+        );
         let text = String::from_utf8_lossy(&run.outcome.stdout);
-        let total: usize = text
+        let total: u64 = text
             .split_whitespace()
             .skip_while(|word| *word != "total")
             .nth(1)
             .and_then(|total| total.parse().ok())
             .expect("a total");
-        assert!(total < sent.len(), "only what the credit allowed came in");
+        assert_eq!(
+            total, run.sent_within_credit,
+            "exactly what the credit allowed came in"
+        );
+        assert!(total < sent.len() as u64);
         assert!(
             run.warnings
                 .iter()
@@ -388,7 +473,7 @@ fn an_outside_that_never_reads_holds_the_writer_to_the_pipe() {
         output_pace: Some(0),
         ..Default::default()
     };
-    for run in run_ours("stdout", &["fill"], outside) {
+    for run in run_guest("stdout", &["fill"], outside) {
         assert!(run.broken.is_empty(), "{:?}", run.broken);
         assert!(run.outcome.stdout.is_empty());
         let report = String::from_utf8_lossy(&run.outcome.stderr).into_owned();

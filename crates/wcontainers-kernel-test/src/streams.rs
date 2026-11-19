@@ -52,7 +52,7 @@ pub struct Outside {
     /// How many bytes of output (not error) it takes at a time, and only when the container can go
     /// on no other way (none at all for 0); none to take everything as it comes.
     pub output_pace: Option<u64>,
-    /// Breaks the credit rule on purpose: sends this many bytes past its credit with each piece.
+    /// Breaks the credit rule on purpose: sends all its credit and this many bytes more each time.
     pub excess: u64,
 }
 
@@ -104,6 +104,9 @@ pub struct Streams {
     /// Credit the kernel gave on the input end and not yet used, and the most it ever was.
     pub input_credit: u64,
     pub most_input_credit: u64,
+    /// Input bytes sent within the credit, and sends that went past it.
+    pub sent_within_credit: u64,
+    pub sends_past_credit: u64,
     /// Credit given to the kernel on each output end and not yet used.
     given: BTreeMap<End, u64>,
     /// What came out: the output end's (or the terminal's) and the error end's.
@@ -248,13 +251,15 @@ pub trait StreamHost: wcontainers_abi::Host {
     fn choices(&mut self) -> &mut StdRng;
 }
 
-/// What the outside does at the start: credit for all the output when it takes everything.
+/// What the outside does at the start, which may still be waiting on the backend: credit for all
+/// the output when it takes everything, and the script's first steps that wait for nothing.
 pub fn begin(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost) {
     for end in host.streams().outside.outputs() {
         if host.streams().pace(end).is_none() {
             give(kernel, cpu, host, end, UNLIMITED);
         }
     }
+    act(kernel, cpu, host, false);
 }
 
 fn give(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost, end: End, bytes: u64) {
@@ -314,12 +319,21 @@ pub fn act(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost, i
                     return acted;
                 }
                 streams.since_sent = 0;
-                let most = credit.min(left.len() as u64).min(MOST_AT_ONCE);
-                let piece = host.choices().random_range(1..=most) as usize;
-                let excess = host.streams().outside.excess as usize;
-                let sent = &left[..(piece + excess).min(left.len())];
+                let excess = streams.outside.excess;
+                // Within the credit, a piece drawn from the seed; breaking the rule, all the
+                // credit and the excess past it.
+                let piece = match excess {
+                    0 => {
+                        let most = credit.min(left.len() as u64).min(MOST_AT_ONCE);
+                        host.choices().random_range(1..=most)
+                    }
+                    _ => credit.min(left.len() as u64),
+                } as usize;
+                let sent = &left[..(piece as u64 + excess).min(left.len() as u64) as usize];
                 let streams = host.streams();
                 streams.input_credit -= piece as u64;
+                streams.sent_within_credit += piece as u64;
+                streams.sends_past_credit += u64::from(sent.len() > piece);
                 streams.sending = Some(left[sent.len()..].to_vec());
                 if sent.len() == left.len() {
                     streams.sending = None;
