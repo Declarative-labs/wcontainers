@@ -6,9 +6,10 @@ use alloc::rc::Rc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use wcontainers_abi::{Cpu, Host, PAGE_SIZE, Resume, Stream};
+use wcontainers_abi::{Cpu, End, Host, PAGE_SIZE, Resume};
 
 use crate::credentials::{Credentials, ROOT_GID, ROOT_UID};
+use crate::ends::Standard;
 use crate::file::{FdTable, OpenFile};
 use crate::fs::dev::DOCKER_DEVICES;
 use crate::fs::mounts::Mount;
@@ -64,16 +65,29 @@ pub struct Start<'a> {
     /// volume as `docker run -v` mounts one; none for a container without one, whose root is in
     /// memory.
     pub backend: Option<&'a [u8]>,
+    /// What descriptors 0 to 2 are.
+    pub standard: Standard,
 }
 
+/// Where the first process's descriptor 0 opens when it has no input.
+pub const NULL_PATH: &str = "/dev/null";
+
+/// Where the container's devpts is mounted.
+pub const DEVPTS_PATH: &str = "/dev/pts";
+
+/// The exit statuses `docker run` reports when the first program could not be started
+/// (measured): a program not found, one it may not run, and anything else.
+pub const EXIT_NOT_FOUND: i32 = 127;
+pub const EXIT_NOT_RUNNABLE: i32 = 126;
+pub const EXIT_START_FAILED: i32 = 125;
+
 /// The wait status of a container whose first program could not be started, with the exit status
-/// `docker run` reports (measured): 127 for a program not found, 126 for one it may not run, 125
-/// for anything else.
+/// `docker run` reports.
 fn start_failed(error: Errno) -> i32 {
     let status = match error {
-        Errno::ENOENT => 127,
-        Errno::EACCES => 126,
-        _ => 125,
+        Errno::ENOENT => EXIT_NOT_FOUND,
+        Errno::EACCES => EXIT_NOT_RUNNABLE,
+        _ => EXIT_START_FAILED,
     };
     status << 8
 }
@@ -86,6 +100,7 @@ pub(crate) struct Starting {
     arguments: Vec<Vec<u8>>,
     environment: Vec<Vec<u8>>,
     working_directory: Vec<u8>,
+    standard: Standard,
     /// Whether the mounts are made.
     mounted: bool,
 }
@@ -668,6 +683,9 @@ impl Kernel {
         cx.host.random(&mut self.files.generation_key);
         self.machine.memory_bytes = cx.cpu.address_space().end;
         self.hostname = start.hostname.to_vec();
+        for end in start.standard.ends() {
+            self.ends.name(end);
+        }
         if let Some(path) = start.backend {
             self.mount_backend(path);
         }
@@ -743,6 +761,7 @@ impl Kernel {
             arguments: owned(start.arguments),
             environment: owned(start.environment),
             working_directory: start.working_directory.to_vec(),
+            standard: start.standard,
             mounted: false,
         }));
         self.run_start(&mut cx);
@@ -794,6 +813,7 @@ impl Kernel {
                     self.threads.remove(&pid);
                     self.start_failure = Some(error);
                     self.finished = Some(start_failed(error));
+                    self.close_unmade(cx, &starting.standard);
                 }
             }
             return;
@@ -833,7 +853,7 @@ impl Kernel {
     }
 
     /// Starts the first process: its working directory, its program loaded, then its standard
-    /// descriptors (`/dev/null` and the two pipes `docker run` reads), as runc sets them up.
+    /// descriptors on the ends named at start, as runc sets them up.
     fn start_first(&mut self, cx: &mut Context<'_>, starting: &Starting) -> Result<(), Errno> {
         let pid = starting.pid;
         let cwd = self.directories(pid, &starting.working_directory)?;
@@ -841,9 +861,12 @@ impl Kernel {
             return Err(Errno::ENOTDIR);
         }
         self.fs_mut(pid).cwd = cwd;
-        let null = self.with_walk(pid, |walk, process| {
-            walk.resolve(&process.cwd, b"/dev/null", true)
-        })?;
+        let null = match starting.standard {
+            Standard::Pipes { input: None, .. } => Some(self.with_walk(pid, |walk, process| {
+                walk.resolve(&process.cwd, NULL_PATH.as_bytes(), true)
+            })?),
+            _ => None,
+        };
         let program = crate::loader::open_program(self, cx.cpu, pid, &starting.path)?;
         // The strings in the order and room of Linux's `do_execveat_common`.
         let stack_limit = self.processes[&pid].limits[RLIMIT_STACK as usize].current;
@@ -877,53 +900,12 @@ impl Kernel {
                 self.threads.remove(&pid);
                 self.init = Some(pid);
                 self.finished = Some(SIGSEGV as i32);
+                self.close_unmade(cx, &starting.standard);
                 self.counters.flush(cx.host);
                 return Ok(());
             }
         };
-        let now = self.now(cx);
-        let pipes: Vec<Node> = [Stream::Output, Stream::Error]
-            .into_iter()
-            .map(|stream| {
-                let ino = self.files.numbers.ino();
-                fs::new_inode(
-                    self.files.pipe_fs.clone(),
-                    ino,
-                    New {
-                        mode: S_IFIFO | 0o600,
-                        uid: 0,
-                        gid: 0,
-                        rdev: 0,
-                        now,
-                        content: Content::Pipe(crate::pipe::Pipe::new(Some(stream))),
-                        parent: None,
-                        name: Vec::new(),
-                    },
-                )
-                .expect("a new container's file systems have room")
-            })
-            .collect();
-        let limit = u64::MAX;
-        let mut files = self.files_mut(pid);
-        files
-            .add(
-                OpenFile::new(null, O_RDWR | O_LARGEFILE, b"/dev/null".to_vec(), 0),
-                false,
-                0,
-                limit,
-            )
-            .expect("room for the first descriptors");
-        for pipe in pipes {
-            files
-                .add(
-                    OpenFile::new(pipe, O_WRONLY, Vec::new(), 0),
-                    false,
-                    0,
-                    limit,
-                )
-                .expect("room for the first descriptors");
-        }
-        drop(files);
+        self.standard_descriptors(cx, pid, starting.standard, null)?;
         let thread = match cx.cpu.thread_new(image.memory) {
             Ok(thread) => thread,
             Err(error) => {
@@ -937,6 +919,89 @@ impl Kernel {
         self.entry_now = cx.monotonic();
         self.make_runnable(pid, Resume::FromRegisters);
         Ok(())
+    }
+
+    /// Descriptors 0 to 2 of the first process on the ends named at start: pipes (with `/dev/null`
+    /// as 0 when there is no input end) or a terminal's slave, the kernel holding the other sides.
+    fn standard_descriptors(
+        &mut self,
+        cx: &mut Context<'_>,
+        pid: Pid,
+        standard: Standard,
+        null: Option<Node>,
+    ) -> Result<(), Errno> {
+        let limit = u64::MAX;
+        let mut descriptors = Vec::new();
+        match standard {
+            Standard::Pipes {
+                input,
+                output,
+                error,
+            } => {
+                descriptors.push(match (input, null) {
+                    (Some(end), _) => self.end_pipe(cx, end, O_RDONLY),
+                    (None, Some(null)) => {
+                        OpenFile::new(null, O_RDWR | O_LARGEFILE, NULL_PATH.into(), 0)
+                    }
+                    (None, None) => {
+                        unreachable!("the null device is found for a start with no input")
+                    }
+                });
+                descriptors.push(self.end_pipe(cx, output, O_WRONLY));
+                descriptors.push(self.end_pipe(cx, error, O_WRONLY));
+            }
+            Standard::Terminal { end, columns, rows } => {
+                let size = winsize {
+                    ws_row: rows,
+                    ws_col: columns,
+                    ws_xpixel: 0,
+                    ws_ypixel: 0,
+                };
+                let (master, slave) = crate::syscall::tty::start_terminal(self, cx, pid, size)?;
+                self.attach_end(cx, end, master);
+                descriptors.extend([slave.clone(), slave.clone(), slave]);
+            }
+        }
+        let mut files = self.files_mut(pid);
+        for file in descriptors {
+            files
+                .add(file, false, 0, limit)
+                .expect("room for the first descriptors");
+        }
+        Ok(())
+    }
+
+    /// A pipe for one standard descriptor: the side the guest gets (opened with `flags`), the end
+    /// holding the other.
+    fn end_pipe(&mut self, cx: &mut Context<'_>, end: End, flags: u32) -> crate::file::FileRef {
+        let now = self.now(cx);
+        let ino = self.files.numbers.ino();
+        let pipe = fs::new_inode(
+            self.files.pipe_fs.clone(),
+            ino,
+            New {
+                mode: crate::syscall::pipe::MODE,
+                uid: crate::credentials::ROOT_UID,
+                gid: crate::credentials::ROOT_GID,
+                rdev: 0,
+                now,
+                content: Content::Pipe(crate::pipe::Pipe::new()),
+                parent: None,
+                name: Vec::new(),
+            },
+        )
+        .expect("a new container's file systems have room");
+        let other = if flags == O_RDONLY {
+            O_WRONLY
+        } else {
+            O_RDONLY
+        };
+        let guest = OpenFile::new(pipe.clone(), flags, Vec::new(), 0);
+        let held = OpenFile::new(pipe.clone(), other, Vec::new(), 0);
+        crate::syscall::pipe::attach(&pipe, &guest);
+        crate::syscall::pipe::attach(&pipe, &held);
+        self.attach_end(cx, end, held);
+        guest
     }
 
     /// Replaces a process's program with a loaded image, as the last part of `execve` does.
@@ -1310,7 +1375,7 @@ impl Kernel {
             ),
             mount(
                 fs_of(&pts),
-                "/dev/pts",
+                DEVPTS_PATH,
                 "devpts",
                 "devpts",
                 "gid=5,mode=620,ptmxmode=666",

@@ -111,6 +111,7 @@ impl<B: BackEnd> Runtime<B> {
         let path = image.program(&accepted.args[0], &env, &accepted.cwd);
         let arguments: Vec<&[u8]> = accepted.args.iter().map(|a| a.as_bytes()).collect();
         let environment: Vec<&[u8]> = env.iter().map(|v| v.as_bytes()).collect();
+        let standard = outside.standard();
         kernel.start(
             &mut cpu,
             &mut outside,
@@ -122,8 +123,10 @@ impl<B: BackEnd> Runtime<B> {
                 hostname: accepted.hostname.as_bytes(),
                 groups: &accepted.groups,
                 backend: None,
+                standard,
             },
         );
+        outside.started(&mut kernel, &mut cpu);
         Ok(Container {
             kernel,
             cpu,

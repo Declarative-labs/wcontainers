@@ -213,7 +213,7 @@ const PATH_POOL: &[&str] = &[
     "a/../b",
     "nope/x",
     "a/x/",
-    "/dev/null",
+    wcontainers_kernel::NULL_PATH,
     "/dev/zero",
     "/dev/full",
     // The random devices: what a read of them puts anywhere is zeroed by both runners (see
@@ -236,13 +236,13 @@ const PATH_POOL: &[&str] = &[
     "/proc/self/cgroup",
     "/proc/self/limits",
     // devpts's root, which statx and the others answer by its own rules.
-    "/dev/pts",
+    wcontainers_kernel::DEVPTS_PATH,
     // The mqueue file system and a queue in it, which mq_open names "a".
     "/dev/mqueue",
     "/dev/mqueue/a",
     // Pseudo-terminals: the master, the first two slaves, and the controlling terminal, which no
     // sequence has (every open is O_NOCTTY).
-    "/dev/ptmx",
+    wcontainers_kernel::PTMX_PATH,
     "/dev/pts/0",
     "/dev/pts/1",
     "/dev/tty",
@@ -4538,8 +4538,10 @@ fn run_ours_on(
         hostname: reference::HOSTNAME.as_bytes(),
         groups: &[0, 0, 1, 2, 3, 4, 6, 10, 11, 20, 26, 27],
         backend: sequence.backend.then_some(BACKEND_ROOT.as_bytes()),
+        standard: crate::streams::Outside::default().standard(),
     };
     kernel.start(&mut cpu, &mut host, &start);
+    crate::streams::begin(&mut kernel, &mut cpu, &mut host);
     assert_eq!(kernel.start_failure(), None, "starting the runner");
     let memory = wcontainers_abi::MemoryId(1);
     let thread = match kernel.next() {

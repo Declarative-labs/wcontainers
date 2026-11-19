@@ -5,6 +5,9 @@ use std::collections::BTreeMap;
 use crate::image::{self, File, Kind};
 use crate::{driver, reference};
 
+/// Busybox's applet that removes files, which shares its name with Docker's command.
+pub const RM_APPLET: &str = "rm";
+
 /// What a file is, for comparing: type and permission bits, owner, group, and contents.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Shape {

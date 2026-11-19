@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use wcontainers_abi::{Cpu, Exit, Host, Next, Resume, ThreadId, Warning};
-pub use wcontainers_kernel::Kernel;
+pub use wcontainers_kernel::{Kernel, Standard};
 
 mod container;
 mod image;
@@ -146,6 +146,11 @@ pub trait Execution: Cpu + Sized {
 pub trait Outside: Host {
     /// What a run ended by the outside gives back.
     type End;
+    /// The first process's descriptors 0 to 2, whose other sides this outside holds.
+    fn standard(&self) -> Standard;
+    /// The kernel has started: hands it what this outside gives at once, such as credit on the
+    /// ends it reads.
+    fn started(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu);
     /// How the next turn ends, for the kernel's slice.
     fn turn(&mut self, slice_nanoseconds: Option<u64>) -> Turn;
     /// How far the running thread got since it was last heard from.

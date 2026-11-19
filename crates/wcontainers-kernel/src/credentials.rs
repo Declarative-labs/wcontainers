@@ -5,6 +5,11 @@ use alloc::vec::Vec;
 use crate::linux::general;
 use crate::linux_extra::{SECBIT_KEEP_CAPS, SECBIT_NO_SETUID_FIXUP, SECBIT_NOROOT};
 
+/// The container's root user and group (`GLOBAL_ROOT_UID`, `GLOBAL_ROOT_GID`), which own what the
+/// runtime makes for it.
+pub(crate) const ROOT_UID: u32 = 0;
+pub(crate) const ROOT_GID: u32 = 0;
+
 pub(crate) const CAP_CHOWN: u32 = general::CAP_CHOWN;
 pub(crate) const CAP_DAC_OVERRIDE: u32 = general::CAP_DAC_OVERRIDE;
 pub(crate) const CAP_DAC_READ_SEARCH: u32 = general::CAP_DAC_READ_SEARCH;
@@ -12,10 +17,6 @@ pub(crate) const CAP_FOWNER: u32 = general::CAP_FOWNER;
 pub(crate) const CAP_FSETID: u32 = general::CAP_FSETID;
 pub(crate) const CAP_SETGID: u32 = general::CAP_SETGID;
 pub(crate) const CAP_SETUID: u32 = general::CAP_SETUID;
-/// The user id of root (`GLOBAL_ROOT_UID`).
-pub(crate) const ROOT_UID: u32 = 0;
-/// The group id of root (`GLOBAL_ROOT_GID`).
-pub(crate) const ROOT_GID: u32 = 0;
 pub(crate) const CAP_MKNOD: u32 = general::CAP_MKNOD;
 pub(crate) const CAP_SYS_CHROOT: u32 = general::CAP_SYS_CHROOT;
 pub(crate) const CAP_SYS_ADMIN: u32 = general::CAP_SYS_ADMIN;

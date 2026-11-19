@@ -1,5 +1,5 @@
-//! The shipped outside for an operating system: its clocks and randomness, the container's output
-//! streams, free turns ended by a timer thread at the kernel's slice, and waiting in real time.
+//! The shipped outside for an operating system: its clocks and randomness, the container's
+//! standard output and error, free turns ended by a timer thread at the kernel's slice, and waiting in real time.
 //! Everything else the kernel may ask of a host (the file backend, the network, terminal input) it
 //! answers as not supported, which the kernel turns into the errors Linux gives without them.
 
@@ -10,10 +10,8 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use wcontainers_abi::{
-    BackendRequestId, ConnectionId, Cpu, Event, Host, HostError, Stream, Warning,
-};
-use wcontainers_kernel::Kernel;
+use wcontainers_abi::{BackendRequestId, ConnectionId, Cpu, End, Event, Host, HostError, Warning};
+use wcontainers_kernel::{Kernel, Standard};
 
 use crate::{Execution, Outside, StopFlag, Turn};
 
@@ -28,6 +26,14 @@ pub struct Warned {
     /// From the back end, not the kernel.
     pub cpu: bool,
 }
+
+/// The ends of the container's standard output and error.
+const OUTPUT: End = End(0);
+const ERROR: End = End(1);
+
+/// The reasons of warnings about the container's output this process could not write.
+const OUTPUT_NOT_WRITTEN: &str = "standard output not written";
+const ERROR_NOT_WRITTEN: &str = "standard error not written";
 
 /// The shipped outside.
 pub struct System {
@@ -175,10 +181,10 @@ impl Host for System {
         Err(HostError::NotSupported)
     }
 
-    fn output(&mut self, stream: Stream, bytes: &[u8]) {
-        let (writer, name) = match stream {
-            Stream::Output => (&mut self.output, "standard output not written"),
-            Stream::Error => (&mut self.error, "standard error not written"),
+    fn stream_send(&mut self, end: End, bytes: &[u8]) {
+        let (writer, name) = match end {
+            OUTPUT => (&mut self.output, OUTPUT_NOT_WRITTEN),
+            _ => (&mut self.error, ERROR_NOT_WRITTEN),
         };
         if let Err(error) = writer.write_all(bytes).and_then(|()| writer.flush()) {
             let detail = error.raw_os_error().map_or(u64::MAX, |code| code as u64);
@@ -197,6 +203,12 @@ impl Host for System {
             );
         }
     }
+
+    /// No end takes input: the kernel gives no credit.
+    fn stream_credit(&mut self, _: End, _: u64) {}
+
+    /// The writers stay open for this process's own use.
+    fn stream_close(&mut self, _: End) {}
 
     fn connect(&mut self, _: ConnectionId, _: &[u8], _: u16, _: bool) -> Result<(), HostError> {
         Err(HostError::NotSupported)
@@ -230,6 +242,29 @@ impl Host for System {
 impl Outside for System {
     /// The shipped outside never ends a run itself.
     type End = core::convert::Infallible;
+
+    /// Pipes to standard output and error, and `/dev/null` as standard input.
+    fn standard(&self) -> Standard {
+        Standard::Pipes {
+            input: None,
+            output: OUTPUT,
+            error: ERROR,
+        }
+    }
+
+    /// Takes everything the container writes, as it comes.
+    fn started(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
+        for end in [OUTPUT, ERROR] {
+            kernel.event(
+                cpu,
+                self,
+                Event::StreamCredit {
+                    end,
+                    bytes: u64::MAX,
+                },
+            );
+        }
+    }
 
     fn stop_flag(&mut self, flag: StopFlag) {
         let shared = Arc::new(Deadline {

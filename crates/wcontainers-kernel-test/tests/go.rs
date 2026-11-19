@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use wcontainers_kernel_test::reference::IMAGE;
+use wcontainers_kernel_test::reference::{IMAGE, PLATFORM, docker};
 use wcontainers_kernel_test::runtimes::{self, GO};
 
 /// A directory holding the program, built once per test binary.
@@ -17,10 +17,16 @@ fn directory() -> PathBuf {
 fn build() -> PathBuf {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("go");
     std::fs::create_dir_all(&out).expect("a directory for the program");
-    let built = std::process::Command::new("docker")
-        .args(["run", "--rm", "--platform", "linux/arm64", "--volume"])
+    let built = std::process::Command::new(docker::CLIENT)
+        .args([
+            docker::START_CONTAINER,
+            docker::REMOVE_ON_EXIT,
+            docker::PLATFORM_OPTION,
+            PLATFORM,
+            docker::VOLUME_OPTION,
+        ])
         .arg(format!("{}:/src:ro", runtimes::programs("go").display()))
-        .arg("--volume")
+        .arg(docker::VOLUME_OPTION)
         .arg(format!(
             "{}:/out",
             out.canonicalize().expect("the directory").display()

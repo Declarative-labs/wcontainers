@@ -12,6 +12,12 @@ use crate::pipe::Pipe;
 use crate::process::{Channel, Tid};
 use crate::{Context, Errno, Kernel};
 
+/// The type and permission bits of a pipe (`create_pipe_files`).
+pub(crate) const MODE: u32 = S_IFIFO | S_IRUSR | S_IWUSR;
+
+/// The thread number of no thread, for the outside's reads, which no call makes.
+const NO_THREAD: Tid = 0;
+
 /// The channel a pipe's waiters park on.
 pub(crate) fn channel(node: &Node) -> Channel {
     Channel::Object(alloc::rc::Rc::as_ptr(node) as *const () as usize)
@@ -47,7 +53,7 @@ pub(super) fn pipe2(
         kernel.files.pipe_fs.clone(),
         ino,
         New {
-            mode: S_IFIFO | 0o600,
+            mode: MODE,
             uid,
             gid,
             rdev: 0,
@@ -269,7 +275,7 @@ pub(super) fn hold(kernel: &mut Kernel, tid: Tid, file: &FileRef) {
     kernel.hold_lock(tid, Channel::Object(address));
 }
 
-pub(super) fn with_pipe<R>(file: &FileRef, f: impl FnOnce(&mut Pipe) -> R) -> R {
+pub(crate) fn with_pipe<R>(file: &FileRef, f: impl FnOnce(&mut Pipe) -> R) -> R {
     let node = file.borrow().node.clone();
     let mut inode = node.borrow_mut();
     let Content::Pipe(pipe) = &mut inode.content else {
@@ -361,7 +367,7 @@ pub(super) fn write(
     }
     lock(kernel, tid, file)?;
     let node = file.borrow().node.clone();
-    let host = with_pipe(file, |pipe| pipe.host);
+    let outside = with_pipe(file, |pipe| pipe.outside_reader);
     let first_run = !kernel.threads[&tid].call.started;
     let mut done = kernel.threads[&tid].call.progress;
     let nonblocking = super::io::nonblocking(kernel, tid, file);
@@ -418,16 +424,21 @@ pub(super) fn write(
         if done == total {
             break Ok(());
         }
-        if let Some(stream) = host {
-            // The host takes whole pages as they come; a page that cannot be read in full ends the
-            // write and is dropped.
-            let (bytes, faulted) = next(kernel, cx, done, PAGE_SIZE);
-            if faulted {
-                break Err(fault(kernel));
+        // An end outside reads it: with the pipe empty, bytes go out at once as far as its credit
+        // allows, a page at a time (a page that cannot be read in full ends the write, unsent).
+        if let Some(end) = outside
+            && with_pipe(file, |pipe| pipe.is_empty())
+        {
+            let credit = kernel.ends.credit(end);
+            if credit > 0 {
+                let (bytes, faulted) = next(kernel, cx, done, credit.min(PAGE_SIZE));
+                if faulted {
+                    break Err(fault(kernel));
+                }
+                kernel.ends.send(cx, end, &bytes);
+                done += bytes.len() as u64;
+                continue;
             }
-            cx.host.output(stream, &bytes);
-            done += bytes.len() as u64;
-            continue;
         }
         // The part that is not whole pages joins the last page if it fits; a fault in it ends the
         // write with nothing merged.
@@ -501,7 +512,7 @@ pub(super) fn write(
 
 /// Puts kernel bytes into a pipe without waiting, as splicing into a pipe does: a slot for each
 /// page the bytes came from (the first starting `in_page` bytes into its page), as many as fit, none
-/// of which a write adds to; the host's pipes take everything. Readers with `FASYNC` hear of them.
+/// of which a write adds to. Readers with `FASYNC` hear of them.
 pub(super) fn put(
     cx: &mut Context<'_>,
     kernel: &mut Kernel,
@@ -512,10 +523,6 @@ pub(super) fn put(
     let node = file.borrow().node.clone();
     let mut done = 0;
     let taken = with_pipe(file, |pipe| {
-        if let Some(stream) = pipe.host {
-            cx.host.output(stream, bytes);
-            return bytes.len();
-        }
         let mut piece = (PAGE_SIZE - in_page % PAGE_SIZE) as usize;
         while done < bytes.len() && !pipe.is_full() {
             let end = (done + piece).min(bytes.len());
@@ -531,4 +538,107 @@ pub(super) fn put(
         signal_ends(kernel, cx, &node, true);
     }
     taken as u64
+}
+
+/// The outside's bytes into a pipe whose writer its end holds, within its credit: put in as far as
+/// there is room and the readers woken, the rest kept until there is; with no reader left they are
+/// dropped, as a write with none fails. Returns how many were past the credit, which are dropped.
+pub(crate) fn from_outside(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    file: &FileRef,
+    bytes: &[u8],
+) -> usize {
+    let node = file.borrow().node.clone();
+    let (taken, delivered) = with_pipe(file, |pipe| {
+        let taken = bytes
+            .len()
+            .min(usize::try_from(pipe.promised).unwrap_or(usize::MAX));
+        pipe.promised -= taken as u64;
+        if pipe.readers() == 0 {
+            return (taken, 0);
+        }
+        // Bytes kept from before go in first.
+        let delivered = match pipe.inbox.is_empty() {
+            true => pipe.deliver(&bytes[..taken]),
+            false => 0,
+        };
+        pipe.inbox.extend_from_slice(&bytes[delivered..taken]);
+        (taken, delivered)
+    });
+    if delivered > 0 {
+        woken_by_outside(kernel, cx, &node);
+    }
+    bytes.len() - taken
+}
+
+/// Moves the outside's kept bytes into a pipe whose writer its end holds, as far as there is room
+/// (all are dropped once no reader is left). Returns whether any went in or were dropped.
+pub(crate) fn from_inbox(kernel: &mut Kernel, cx: &mut Context<'_>, file: &FileRef) -> bool {
+    let node = file.borrow().node.clone();
+    let (delivered, dropped) = with_pipe(file, |pipe| match pipe.readers() {
+        0 => (0, core::mem::take(&mut pipe.inbox).len()),
+        _ => (pipe.deliver_inbox(), 0),
+    });
+    if delivered > 0 {
+        woken_by_outside(kernel, cx, &node);
+    }
+    delivered + dropped > 0
+}
+
+fn woken_by_outside(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) {
+    kernel.wake_poll(channel(node), EPOLLIN | EPOLLRDNORM);
+    signal_ends(kernel, cx, node, true);
+}
+
+/// Credit to give the outside writing a pipe: the room its writes can take past what it may
+/// already send or has sent and waits, once that is worth a credit (a page, or any room with
+/// nothing outstanding).
+pub(crate) fn promise_outside(file: &FileRef) -> u64 {
+    with_pipe(file, |pipe| {
+        let outstanding = pipe.promised + pipe.inbox.len() as u64;
+        let room = pipe.room_outside().saturating_sub(outstanding);
+        if room < PAGE_SIZE && (outstanding > 0 || room == 0) {
+            return 0;
+        }
+        pipe.promised += room;
+        room
+    })
+}
+
+/// Whether a pipe the outside writes has no reader left.
+pub(crate) fn no_reader(file: &FileRef) -> bool {
+    with_pipe(file, |pipe| pipe.readers() == 0)
+}
+
+/// Whether the outside's bytes kept for a pipe are all in.
+pub(crate) fn inbox_empty(file: &FileRef) -> bool {
+    with_pipe(file, |pipe| pipe.inbox.is_empty())
+}
+
+/// Up to `most` bytes of a pipe whose reader an end holds, taken as a read takes them, writers
+/// woken; nothing while another call holds the pipe's lock.
+pub(crate) fn to_outside(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    file: &FileRef,
+    most: u64,
+) -> Vec<u8> {
+    let node = file.borrow().node.clone();
+    let holder = with_pipe(file, |pipe| pipe.held_by);
+    if kernel.held_by_other(NO_THREAD, holder, channel(&node)) {
+        return Vec::new();
+    }
+    let most = usize::try_from(most).unwrap_or(usize::MAX);
+    let bytes = with_pipe(file, |pipe| pipe.take_into(most, most).0);
+    if !bytes.is_empty() {
+        kernel.wake_poll(channel(&node), EPOLLOUT | EPOLLWRNORM);
+        signal_ends(kernel, cx, &node, false);
+    }
+    bytes
+}
+
+/// Whether a pipe whose reader an end holds is finished: empty, with no writer left.
+pub(crate) fn drained(file: &FileRef) -> bool {
+    with_pipe(file, |pipe| pipe.is_empty() && pipe.writers() == 0)
 }

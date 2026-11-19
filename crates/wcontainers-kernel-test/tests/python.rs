@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+use wcontainers_kernel_test::reference::{PLATFORM, docker};
 use wcontainers_kernel_test::runtimes::{self, PYTHON};
 
 /// This crate's Python programs, with CPython's `Lib/test` from the source release the image was
@@ -18,8 +19,14 @@ fn prepare() -> PathBuf {
     let lib = out.join("lib");
     if !lib.join("test").join("__init__.py").exists() {
         std::fs::create_dir_all(&lib).expect("a directory for the tests");
-        let fetched = std::process::Command::new("docker")
-            .args(["run", "--rm", "--platform", "linux/arm64", "--volume"])
+        let fetched = std::process::Command::new(docker::CLIENT)
+            .args([
+            docker::START_CONTAINER,
+            docker::REMOVE_ON_EXIT,
+            docker::PLATFORM_OPTION,
+            PLATFORM,
+            docker::VOLUME_OPTION,
+        ])
             .arg(format!("{}:/out", lib.canonicalize().expect("the directory").display()))
             .args([PYTHON, "sh", "-c"])
             .arg(

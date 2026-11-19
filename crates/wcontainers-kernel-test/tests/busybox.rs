@@ -1,7 +1,7 @@
 //! Single programs from busybox in the reference image run and match the reference in output, exit
 //! status and the files they leave behind.
 
-use wcontainers_kernel_test::busybox::compare;
+use wcontainers_kernel_test::busybox::{RM_APPLET, compare};
 
 /// Runs each command in both runners and compares, reporting every command that differs.
 fn all(commands: &[&[&str]]) {
@@ -64,8 +64,8 @@ fn files() {
         &["mkdir", "-p", "/tmp/a/b/c"],
         &["mkdir", "/etc/passwd"],
         &["touch", "-d", "2020-01-02 03:04:05", "/tmp/new"],
-        &["rm", "/etc/motd"],
-        &["rm", "-r", "/etc/apk"],
+        &[RM_APPLET, "/etc/motd"],
+        &[RM_APPLET, "-r", "/etc/apk"],
         &["rmdir", "/home"],
         &["mv", "/etc/motd", "/tmp/motd"],
         &["cp", "-a", "/etc/apk", "/tmp/apk"],
@@ -76,9 +76,9 @@ fn files() {
             "/etc/passwd",
             "/bin/sh",
             "/dev/shm",
-            "/dev/null",
+            wcontainers_kernel::NULL_PATH,
         ],
-        &["ls", "-la", "/dev/shm", "/dev/pts"],
+        &["ls", "-la", "/dev/shm", wcontainers_kernel::DEVPTS_PATH],
         &["ln", "-s", "/etc/passwd", "/tmp/link"],
         &["ln", "/etc/passwd", "/tmp/hard"],
         &["chmod", "4755", "/etc/motd"],

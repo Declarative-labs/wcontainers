@@ -47,7 +47,10 @@ fn listed(output: &[u8]) -> Vec<((String, String), String)> {
 fn device_listings_match_the_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     let program = guest::build("proclist", &[], &out);
-    let (ours, theirs) = run_both(&program, &["/dev", "/dev/pts", "/dev/shm"]);
+    let (ours, theirs) = run_both(
+        &program,
+        &["/dev", wcontainers_kernel::DEVPTS_PATH, "/dev/shm"],
+    );
     assert_eq!(ours.outcome.exit_code, theirs.exit_code);
     let show = |entries: Vec<((String, String), String)>| {
         entries

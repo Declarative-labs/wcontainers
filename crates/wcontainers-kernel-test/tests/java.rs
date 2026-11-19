@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use wcontainers_kernel::reason;
+use wcontainers_kernel_test::reference::{GUEST_DIRECTORY, PLATFORM, docker};
 use wcontainers_kernel_test::runtimes::{self, JAVA, JDK};
 
 /// Where an exception syndrome's class starts, and the class of a data abort from user space.
@@ -20,10 +21,16 @@ fn directory() -> PathBuf {
 fn compile() -> PathBuf {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("java");
     std::fs::create_dir_all(&out).expect("a directory for the classes");
-    let compiled = std::process::Command::new("docker")
-        .args(["run", "--rm", "--platform", "linux/arm64", "--volume"])
+    let compiled = std::process::Command::new(docker::CLIENT)
+        .args([
+            docker::START_CONTAINER,
+            docker::REMOVE_ON_EXIT,
+            docker::PLATFORM_OPTION,
+            PLATFORM,
+            docker::VOLUME_OPTION,
+        ])
         .arg(format!("{}:/src:ro", runtimes::programs("java").display()))
-        .arg("--volume")
+        .arg(docker::VOLUME_OPTION)
         .arg(format!(
             "{}:/out",
             out.canonicalize().expect("the directory").display()
@@ -56,7 +63,14 @@ fn start_up_matches_reference() {
 
 #[test]
 fn threads_and_collections_match_reference() {
-    let command = ["java", "-Xmx64m", "-XX:+UseG1GC", "-cp", "/wc", "Load"];
+    let command = [
+        "java",
+        "-Xmx64m",
+        "-XX:+UseG1GC",
+        "-cp",
+        GUEST_DIRECTORY,
+        "Load",
+    ];
     let runs = runtimes::assert_same(JAVA, &directory(), &command, saves(8_000));
     eprintln!("warned: {:?}", runtimes::warned(&runs));
     // The compiled loop's polls of the unreadable page faulted and the runtime's handler took

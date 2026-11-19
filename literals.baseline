@@ -1630,14 +1630,10 @@ code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as Outside>::ran
 code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as Outside>::ran	500
 code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as Outside>::ran	500
 code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as Outside>::stopped	- 1
-code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as Outside>::stopped	32
 code	crates/wcontainers-kernel-test/src/driver.rs	int	Injecting::new	0x5197
-code	crates/wcontainers-kernel-test/src/driver.rs	int	Injecting::new	0x5a7e
 code	crates/wcontainers-kernel-test/src/driver.rs	int	Injecting::new	0x6e07
 code	crates/wcontainers-kernel-test/src/driver.rs	int	Injecting::new	0x6e08
 code	crates/wcontainers-kernel-test/src/driver.rs	int	Injecting::new	10
-code	crates/wcontainers-kernel-test/src/driver.rs	int	TestHost::moved	0x5eed
-code	crates/wcontainers-kernel-test/src/driver.rs	int	TestHost::new	0x5eed
 code	crates/wcontainers-kernel-test/src/driver.rs	int	TestHost::repeatable	1_000_000_000
 code	crates/wcontainers-kernel-test/src/driver.rs	int	TestHost::repeatable	1_000_000_000
 code	crates/wcontainers-kernel-test/src/driver.rs	int	copied_run	65536
@@ -3598,11 +3594,6 @@ code	crates/wcontainers-kernel-test/src/layer1.rs	str	xattr_names	"user.a"
 code	crates/wcontainers-kernel-test/src/layer1.rs	str	xattr_names	"user.b"
 code	crates/wcontainers-kernel-test/src/lib.rs	int	schedule_seeds	3
 code	crates/wcontainers-kernel-test/src/lib.rs	str	assert_same_output	"\n"
-code	crates/wcontainers-kernel-test/src/lib.rs	str	assert_same_output_on_backend_root_seeded	"/"
-code	crates/wcontainers-kernel-test/src/lib.rs	str	run_both	"/wc/{}"
-code	crates/wcontainers-kernel-test/src/lib.rs	str	run_ours_on	"/"
-code	crates/wcontainers-kernel-test/src/lib.rs	str	run_ours_on	"wc"
-code	crates/wcontainers-kernel-test/src/lib.rs	str	same_output_seeded	"/wc/{}"
 code	crates/wcontainers-kernel-test/src/lib.rs	str	same_output_seeded	"\n"
 code	crates/wcontainers-kernel-test/src/lib.rs	str	schedule_seeds	"SCHEDULE_SEED"
 code	crates/wcontainers-kernel-test/src/lib.rs	str	schedule_seeds	"SCHEDULE_SEEDS"
@@ -3730,36 +3721,7 @@ code	crates/wcontainers-kernel-test/src/network.rs	int	local	4
 code	crates/wcontainers-kernel-test/src/network.rs	str	Network::connect	"0.0.0.0:0"
 code	crates/wcontainers-kernel-test/src/network.rs	str	Network::connect	"[::]:0"
 code	crates/wcontainers-kernel-test/src/network.rs	str	local	"16 bytes"
-code	crates/wcontainers-kernel-test/src/reference.rs	int	run_beside	125
-code	crates/wcontainers-kernel-test/src/reference.rs	int	run_beside	127
-code	crates/wcontainers-kernel-test/src/reference.rs	int	run_command	125
-code	crates/wcontainers-kernel-test/src/reference.rs	int	run_command	127
-code	crates/wcontainers-kernel-test/src/reference.rs	str	run_beside	"--hostname"
-code	crates/wcontainers-kernel-test/src/reference.rs	str	run_beside	"--name"
-code	crates/wcontainers-kernel-test/src/reference.rs	str	run_beside	"--platform"
-code	crates/wcontainers-kernel-test/src/reference.rs	str	run_beside	"--rm"
-code	crates/wcontainers-kernel-test/src/reference.rs	str	run_beside	"--volume"
-code	crates/wcontainers-kernel-test/src/reference.rs	str	run_beside	"/wc"
-code	crates/wcontainers-kernel-test/src/reference.rs	str	run_beside	"docker"
-code	crates/wcontainers-kernel-test/src/reference.rs	str	run_beside	"linux/arm64"
-code	crates/wcontainers-kernel-test/src/reference.rs	str	run_beside	"run"
-code	crates/wcontainers-kernel-test/src/reference.rs	str	run_beside	"wc-kernel-reference-{}-{}"
-code	crates/wcontainers-kernel-test/src/reference.rs	str	run_beside	"{}:/wc:ro"
-code	crates/wcontainers-kernel-test/src/reference.rs	str	run_command	"--hostname"
-code	crates/wcontainers-kernel-test/src/reference.rs	str	run_command	"--name"
-code	crates/wcontainers-kernel-test/src/reference.rs	str	run_command	"--platform"
-code	crates/wcontainers-kernel-test/src/reference.rs	str	run_command	"-f"
-code	crates/wcontainers-kernel-test/src/reference.rs	str	run_command	"docker"
-code	crates/wcontainers-kernel-test/src/reference.rs	str	run_command	"docker"
-code	crates/wcontainers-kernel-test/src/reference.rs	str	run_command	"docker"
-code	crates/wcontainers-kernel-test/src/reference.rs	str	run_command	"export"
-code	crates/wcontainers-kernel-test/src/reference.rs	str	run_command	"linux/arm64"
-code	crates/wcontainers-kernel-test/src/reference.rs	str	run_command	"rm"
-code	crates/wcontainers-kernel-test/src/reference.rs	str	run_command	"run"
-code	crates/wcontainers-kernel-test/src/reference.rs	str	run_command	"wc-kernel-command-{}-{}"
 code	crates/wcontainers-kernel-test/src/reference.rs	str	run_one_cpu	"--cpuset-cpus=0"
-code	crates/wcontainers-kernel-test/src/reference.rs	str	run_published	"-p"
-code	crates/wcontainers-kernel-test/src/reference.rs	str	run_published	"127.0.0.1:{outer}:{inner}"
 code	crates/wcontainers-kernel-test/src/runtimes.rs	char	program_path	'/'
 code	crates/wcontainers-kernel-test/src/runtimes.rs	char	program_path	'/'
 code	crates/wcontainers-kernel-test/src/runtimes.rs	char	program_path	'/'
@@ -3870,8 +3832,6 @@ code	crates/wcontainers-kernel/src/container.rs	bytestr	Kernel::make_mounts	b"ti
 code	crates/wcontainers-kernel/src/container.rs	bytestr	Kernel::run_start	b"/dev"
 code	crates/wcontainers-kernel/src/container.rs	bytestr	Kernel::run_start	b"/proc"
 code	crates/wcontainers-kernel/src/container.rs	bytestr	Kernel::run_start	b"/sys"
-code	crates/wcontainers-kernel/src/container.rs	bytestr	Kernel::start_first	b"/dev/null"
-code	crates/wcontainers-kernel/src/container.rs	bytestr	Kernel::start_first	b"/dev/null"
 code	crates/wcontainers-kernel/src/container.rs	bytestr	make_memory_management	b"hugepages"
 code	crates/wcontainers-kernel/src/container.rs	bytestr	make_memory_management	b"kernel"
 code	crates/wcontainers-kernel/src/container.rs	bytestr	make_memory_management	b"ksm"
@@ -3899,18 +3859,13 @@ code	crates/wcontainers-kernel/src/container.rs	int	Kernel::make_mounts	5
 code	crates/wcontainers-kernel/src/container.rs	int	Kernel::make_mounts	6
 code	crates/wcontainers-kernel/src/container.rs	int	Kernel::start	0o022
 code	crates/wcontainers-kernel/src/container.rs	int	Kernel::start	0x23
-code	crates/wcontainers-kernel/src/container.rs	int	Kernel::start_first	0o600
 code	crates/wcontainers-kernel/src/container.rs	int	directory_at	0o755
 code	crates/wcontainers-kernel/src/container.rs	int	new_root	0o755
-code	crates/wcontainers-kernel/src/container.rs	int	start_failed	125
-code	crates/wcontainers-kernel/src/container.rs	int	start_failed	126
-code	crates/wcontainers-kernel/src/container.rs	int	start_failed	127
 code	crates/wcontainers-kernel/src/container.rs	int	start_failed	8
 code	crates/wcontainers-kernel/src/container.rs	str	Kernel::make_mounts	"/"
 code	crates/wcontainers-kernel/src/container.rs	str	Kernel::make_mounts	"/"
 code	crates/wcontainers-kernel/src/container.rs	str	Kernel::make_mounts	"/dev"
 code	crates/wcontainers-kernel/src/container.rs	str	Kernel::make_mounts	"/dev/mqueue"
-code	crates/wcontainers-kernel/src/container.rs	str	Kernel::make_mounts	"/dev/pts"
 code	crates/wcontainers-kernel/src/container.rs	str	Kernel::make_mounts	"/dev/shm"
 code	crates/wcontainers-kernel/src/container.rs	str	Kernel::make_mounts	"/null"
 code	crates/wcontainers-kernel/src/container.rs	str	Kernel::make_mounts	"/proc"
@@ -5057,7 +5012,6 @@ code	crates/wcontainers-kernel/src/syscall/pidfd.rs	int	pidfd_info	80
 code	crates/wcontainers-kernel/src/syscall/pidfd.rs	int	pidfd_send_signal	12
 code	crates/wcontainers-kernel/src/syscall/pidfd.rs	int	pidfd_send_signal	4
 code	crates/wcontainers-kernel/src/syscall/pidfd.rs	int	pidfd_send_signal	8
-code	crates/wcontainers-kernel/src/syscall/pipe.rs	int	pipe2	0o600
 code	crates/wcontainers-kernel/src/syscall/pipe.rs	int	pipe2	4
 code	crates/wcontainers-kernel/src/syscall/pipe.rs	int	pipe2	4
 code	crates/wcontainers-kernel/src/syscall/pipe.rs	int	pipe2	8
@@ -6031,7 +5985,6 @@ code	crates/wcontainers-kernel/src/syscall/tty.rs	int	settings	8
 code	crates/wcontainers-kernel/src/syscall/tty.rs	int	settings	9
 code	crates/wcontainers-kernel/src/syscall/tty.rs	int	settings	9
 code	crates/wcontainers-kernel/src/syscall/tty.rs	int	update_time	7
-code	crates/wcontainers-kernel/src/syscall/tty.rs	str	open_peer	"/dev/pts/{index}"
 code	crates/wcontainers-kernel/src/syscall/xattr.rs	int	acl_normalized	4
 code	crates/wcontainers-kernel/src/syscall/xattr.rs	int	acl_normalized	4
 code	crates/wcontainers-kernel/src/syscall/xattr.rs	int	acl_normalized	8
@@ -6529,8 +6482,6 @@ code	crates/wcontainers-runtime/src/spec.rs	str	user	"uid"
 code	crates/wcontainers-runtime/src/spec.rs	str	user	"umask"
 code	crates/wcontainers-runtime/src/spec.rs	str	user	"username"
 code	crates/wcontainers-runtime/src/spec.rs	str	user	"{field}: the kernel starts with umask 0022; others need it to take the umask at start"
-code	crates/wcontainers-runtime/src/system.rs	str	<System as Host>::output	"standard error not written"
-code	crates/wcontainers-runtime/src/system.rs	str	<System as Host>::output	"standard output not written"
 code	crates/wcontainers-runtime/src/system.rs	str	<System as Outside>::stop_flag	"wcontainers timer"
 code	crates/wcontainers-translator-test/browser/src/lib.rs	int	translate	4
 code	crates/wcontainers-translator-test/browser/src/lib.rs	int	translate	8
@@ -8126,15 +8077,12 @@ restated	crates/wcontainers-kernel-test/tests/dispatch.rs	str	numbers_above_linu
 restated	crates/wcontainers-kernel-test/tests/dispatch.rs	str	numbers_in_gaps_match_reference	"400"
 restated	crates/wcontainers-kernel-test/tests/dispatch.rs	str	program	"syscall"
 restated	crates/wcontainers-kernel-test/tests/filter.rs	str	filters_match_reference	"trap"
-restated	crates/wcontainers-kernel-test/tests/go.rs	str	build	"run"
-restated	crates/wcontainers-kernel-test/tests/java.rs	str	compile	"run"
 restated	crates/wcontainers-kernel-test/tests/layer1.rs	int	sequences	1000
 restated	crates/wcontainers-kernel-test/tests/limits.rs	str	limits_match_reference	"memory"
 restated	crates/wcontainers-kernel-test/tests/lockwaits.rs	str	lock_waits_match_reference	"proc fields not tracked"
 restated	crates/wcontainers-kernel-test/tests/memory.rs	str	memory_matches_reference	"memory"
 restated	crates/wcontainers-kernel-test/tests/outside.rs	int	clients	300
 restated	crates/wcontainers-kernel-test/tests/python.rs	int	system_program_matches_reference	4_000
-restated	crates/wcontainers-kernel-test/tests/python.rs	str	prepare	"run"
 restated	crates/wcontainers-kernel-test/tests/splice.rs	str	splicing_matches_reference	"vmsplice pages copied"
 restated	crates/wcontainers-kernel-test/tests/standin.rs	int	CODE	0x10000
 restated	crates/wcontainers-kernel-test/tests/standin.rs	int	exits_are_exact	1_000_000
@@ -8307,8 +8255,6 @@ role	crates/wcontainers-kernel/src/container.rs	int	Kernel::make_mounts	0
 role	crates/wcontainers-kernel/src/container.rs	int	Kernel::make_mounts	0
 role	crates/wcontainers-kernel/src/container.rs	int	Kernel::make_mounts	0
 role	crates/wcontainers-kernel/src/container.rs	int	Kernel::make_mounts	0
-role	crates/wcontainers-kernel/src/container.rs	int	Kernel::start_first	0
-role	crates/wcontainers-kernel/src/container.rs	int	Kernel::start_first	0
 role	crates/wcontainers-kernel/src/container.rs	int	directory_at	0
 role	crates/wcontainers-kernel/src/container.rs	int	directory_at	0
 role	crates/wcontainers-kernel/src/container.rs	int	mount_tmpfs	0

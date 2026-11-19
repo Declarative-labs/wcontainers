@@ -69,6 +69,9 @@ impl PartialEq for FileSystem {
 /// The space each inode takes from tmpfs's inode limit (`BOGO_INODE_SIZE`).
 pub(crate) const INODE_SPACE: u64 = 1024;
 
+/// Between the names of a path.
+pub(crate) const PATH_SEPARATOR: u8 = b'/';
+
 /// A symbolic link target tmpfs keeps in the inode, with its zero, at most this long; a longer one
 /// takes a page (`SHORT_SYMLINK_LEN`).
 const SHORT_SYMLINK: usize = 128;
@@ -376,8 +379,8 @@ pub(crate) enum Content {
     Symlink(Vec<u8>),
     /// A device, a named pipe or a socket node; what opening it does depends on its type and number.
     Special,
-    /// A pipe: made by `pipe2`, a named pipe's while open, or one of the container's standard
-    /// output pipes, which the host reads.
+    /// A pipe: made by `pipe2`, a named pipe's while open, or one of the first process's standard
+    /// descriptors, whose other side an end holds.
     Pipe(crate::pipe::Pipe),
     /// A file or directory of the process information tree, made when it is looked up.
     Proc(proc::Entry),
