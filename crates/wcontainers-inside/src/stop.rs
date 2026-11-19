@@ -60,11 +60,16 @@ impl FloatStatus {
     /// The rule at every entry into the inside (docs/native.md section 3.4): when the flags are kept or the
     /// mode is not the default the thread takes the hardware's, else it keeps its own and the hardware's QC.
     pub fn enter(&mut self, hardware: u32) {
-        if self.tracking || self.fpcr != DEFAULT_MODE {
+        if self.kept() {
             self.fpsr = hardware;
         } else {
             self.fpsr |= hardware & QC;
         }
+    }
+
+    /// Whether the flags are exact: the program wrote FPSR, or the mode is not the default.
+    pub fn kept(&self) -> bool {
+        self.tracking || self.fpcr != DEFAULT_MODE
     }
 
     /// Takes the hardware's status whole.
@@ -115,6 +120,8 @@ pub enum Resolved {
     Stop(Stop, GuestState),
     /// The inside answered; the guest's level goes on from this.
     Again(Interrupted, RegisterPage),
+    /// As [`Resolved::Again`], before a read of the float status while its flags are not kept: a slow path.
+    FloatStatusNotKept(Interrupted, RegisterPage),
     /// A counter read: the guest's level goes on from this once the clock's reading is in general register
     /// `into` (none: nowhere), through [`set_register`].
     Clock {
@@ -366,6 +373,9 @@ pub fn resolve(
                 float.enter(h.fpsr);
                 let mut next = after_call(h);
                 next.fpsr = float.fpsr;
+                if span.stopping == Stopping::FloatStatusRead && !float.kept() {
+                    return Ok(Resolved::FloatStatusNotKept(next, page.clone()));
+                }
                 return Ok(Resolved::Again(next, page.clone()));
             }
             InsideCall::FloatAfter => {

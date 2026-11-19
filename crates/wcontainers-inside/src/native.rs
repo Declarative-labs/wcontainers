@@ -31,6 +31,9 @@ const SYSCALL_NUMBER: usize = 8;
 /// A slow path of the CPU side, apart from the translation's own ([`NativeReason`]).
 const MEMORY_COPIED_AT_FORK: &str = "memory copied at once when duplicated";
 
+/// A read of the float status while its flags are not kept, under the WebAssembly output's name.
+const FLOAT_STATUS_NOT_KEPT: &str = "exact floating point requested";
+
 /// One guest page as the CPU side keeps it.
 #[derive(Clone, Copy, Debug)]
 struct Page {
@@ -364,7 +367,11 @@ impl NativeCpu {
             t.state.x[0] = value;
         }
         self.take_hardware(thread, &t.vectors.clone());
-        let exit = self.run_taken(&mut t, clock);
+        let mut not_kept = 0;
+        let exit = self.run_taken(&mut t, clock, &mut not_kept);
+        if not_kept != 0 {
+            self.slow(FLOAT_STATUS_NOT_KEPT, not_kept, t.state.pc);
+        }
         self.threads.insert(thread, t);
         for (reason, count, detail) in core::mem::take(&mut self.unsent) {
             warn(Warning {
@@ -376,7 +383,14 @@ impl NativeCpu {
         exit
     }
 
-    fn run_taken(&mut self, t: &mut Thread, clock: &mut dyn FnMut() -> u64) -> Exit {
+    /// Runs `t` to its next exit, adding to `not_kept` each read of the float status while its flags are not
+    /// kept.
+    fn run_taken(
+        &mut self,
+        t: &mut Thread,
+        clock: &mut dyn FnMut() -> u64,
+        not_kept: &mut u64,
+    ) -> Exit {
         let memory = t.memory;
         self.memories[&memory].space.switch();
         TPIDR_EL0.set(t.tpidr);
@@ -428,6 +442,11 @@ impl NativeCpu {
                             Ok(Resolved::Again(next, next_page)) => {
                                 hardware = next;
                                 page = next_page;
+                            }
+                            Ok(Resolved::FloatStatusNotKept(next, next_page)) => {
+                                hardware = next;
+                                page = next_page;
+                                *not_kept += 1;
                             }
                             Ok(Resolved::Clock {
                                 into,

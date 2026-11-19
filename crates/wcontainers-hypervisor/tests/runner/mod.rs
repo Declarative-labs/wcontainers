@@ -825,7 +825,7 @@ fn resolve(
             };
             Resolved::Stop(stop, Box::new(whole(state, &trapped.hardware, float)))
         }
-        Ok(stop::Resolved::Again(next, page)) => {
+        Ok(stop::Resolved::Again(next, page) | stop::Resolved::FloatStatusNotKept(next, page)) => {
             Resolved::Again(Box::new(hardware_of(next, &trapped.hardware)), page)
         }
         Ok(stop::Resolved::Clock {
