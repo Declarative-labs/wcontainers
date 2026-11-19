@@ -48,6 +48,13 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
 
 ## For the orchestrator
 
+- J5 run 1: origin/phase-1-literals exists and its status records L1 done, and the brief says to merge it once
+  it has a passing milestone; this run's task names only the merge of origin/phase-1, so it is not merged and
+  no literals baseline is made here. Say if it should be merged in the next run.
+- J5 run 1: the kernel track's LTP harness is on origin/phase-1 (crates/wcontainers-kernel-test/src/bin/ltp.rs),
+  so its comparison is part of J5's bar. The one command for the long run is scratch `j5/ltp.sh NAME`
+  (section "How to run").
+
 - For the kernel track: threads.rs `priority_inheriting_futexes_match_reference` (guest/futexpi.c) compares our
   output line by line with one fresh reference run, but the reference's order of the waiters' "woke" and
   "unlock" lines varies from run to run on one CPU (three orders in 20 runs, J4a run 2; evidence under "J4a
@@ -87,6 +94,10 @@ detail of "jump through a register not recognised" is the jump's target (transla
   procedure linkage stubs, which load the entry and jump through a register.
 
 ## Asked of the kernel track
+
+Device numbers (J5 run 1): the local system's file backend shows a device node of a host directory with no
+device number (counted and warned), because Linux's encoding of one is the kernel's private
+`fs::encode_device`; exported, the backend would import it rather than write the encoding a second time.
 
 The kernel's defaults as public constants (J4a run 3, the owner's rule on bare numbers): the runtime's base
 configuration (spec.rs) must state what the kernel gives a container, and today writes it a second time: the
