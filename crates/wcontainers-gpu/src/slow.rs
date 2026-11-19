@@ -7,6 +7,9 @@ use alloc::vec::Vec;
 /// The reason [`SlowPath::StorageOffsetInShader`] shows.
 const STORAGE_OFFSET_IN_SHADER: &str = "storage view's offset added in the shader";
 
+/// The reason [`SlowPath::FloatBitsClearByDraw`] shows.
+const FLOAT_BITS_CLEAR_BY_DRAW: &str = "float colour clear made by a draw keeping its bits";
+
 /// Why something took the slow way. A variant whose description starts "Refused" names a valid request
 /// that failed because no exact route exists; it is counted and warned the same way. Serialised as its
 /// number (the shaders crate's cache), so a new reason goes at the end and none moves.
@@ -529,7 +532,7 @@ impl SlowPath {
                 "indirect draw skipped whole if it fetches past a vertex buffer's end"
             }
             SlowPath::StorageOffsetInShader => STORAGE_OFFSET_IN_SHADER,
-            SlowPath::FloatBitsClearByDraw => "float colour clear made by a draw keeping its bits",
+            SlowPath::FloatBitsClearByDraw => FLOAT_BITS_CLEAR_BY_DRAW,
         }
     }
 }
