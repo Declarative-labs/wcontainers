@@ -49,7 +49,7 @@ mod macos {
     use wcontainers_arm64::encode::{self, field};
     use wcontainers_arm64::forms::{self, Form};
     use wcontainers_arm64::{Arm64, Instruction as I, Reg, SystemRegister, decode};
-    use wcontainers_guest_cpu::Guest;
+    use wcontainers_guest_cpu::{Guest, Native, Route};
     use wcontainers_translator::LookAhead;
     use wcontainers_translator_test::layer1::{Case, Stop, cases, covered, excluded, translated};
     use wcontainers_translator_test::layout::CODE;
@@ -146,16 +146,16 @@ mod macos {
         (!form.mask & !form.should_mask & !registers).count_ones()
     }
 
-    /// For a form swept whole, every word of it layer 1 leaves out, each on the registers of one of `drawn` in
+    /// For a form swept whole, every word of it that `keep` takes, each on the registers of one of `drawn` in
     /// turn.
-    fn swept(form: &Form, drawn: &[Case], seed: u64) -> Vec<Case> {
+    fn swept(form: &Form, drawn: &[Case], seed: u64, keep: impl Fn(u32) -> bool) -> Vec<Case> {
         if !(1..=SWEPT_BITS).contains(&swept_bits(form)) {
             return Vec::new();
         }
         let mut rng = fastrand::Rng::with_seed(seed);
         let words: Vec<u32> = words_of(form, 1, &mut rng)
             .into_iter()
-            .filter(|&w| left_out(form, w))
+            .filter(|&w| keep(w))
             .collect();
         words
             .into_iter()
@@ -261,6 +261,7 @@ mod macos {
         let mut total = 0u64;
         let mut edge_cases = 0u64;
         let mut left_out_cases = 0u64;
+        let mut float_status_cases = 0u64;
         let mut pair_cases = 0u64;
         let mut stored = 0u64;
         let mut reasons: std::collections::BTreeMap<&str, u64> = Default::default();
@@ -273,8 +274,13 @@ mod macos {
             let edges: Vec<Case> = drawn.iter().filter_map(edge).collect();
             edge_cases += edges.len() as u64;
             let mut collided: Vec<Case> = drawn.iter().flat_map(|c| collisions(form, c)).collect();
-            collided.extend(swept(form, &drawn, seed));
+            collided.extend(swept(form, &drawn, seed, |w| left_out(form, w)));
             left_out_cases += collided.len() as u64;
+            // Every word routed for float status, with every register in its fields (words_of).
+            let float_status = swept(form, &drawn, seed, |w| {
+                !left_out(form, w) && Arm64::route(&decode(w)) == Route::FloatStatus
+            });
+            float_status_cases += float_status.len() as u64;
             for c in &collided {
                 *reasons
                     .entry(excluded(form, c.word).expect("a left out word"))
@@ -282,6 +288,7 @@ mod macos {
             }
             drawn.extend(edges);
             drawn.extend(collided);
+            drawn.extend(float_status);
             let cases = drawn.len();
             let (wasm, native) = std::thread::scope(|scope| {
                 let wasm = scope.spawn(|| on_threads(&drawn, jobs, translated));
@@ -354,7 +361,7 @@ mod macos {
         }
         runner.finish();
         println!(
-            "native against WebAssembly: {} forms, {count} drawn cases each, {edge_cases} of the bar's own, {left_out_cases} words layer 1 leaves out and {pair_cases} exclusive pairs ({stored} storing) beside them ({total} in all), seed {seed:#x}, {} failing, in {:?}, load {}",
+            "native against WebAssembly: {} forms, {count} drawn cases each, {edge_cases} of the bar's own, {left_out_cases} words layer 1 leaves out, {float_status_cases} float status words and {pair_cases} exclusive pairs ({stored} storing) beside them ({total} in all), seed {seed:#x}, {} failing, in {:?}, load {}",
             chosen.len(),
             failing.len(),
             started.elapsed(),
