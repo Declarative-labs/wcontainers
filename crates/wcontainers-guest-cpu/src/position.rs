@@ -4,9 +4,11 @@
 
 use alloc::vec::Vec;
 
+use serde::{Deserialize, Serialize};
+
 /// A call into the inside from translated code, named by the code it carries (ARM64 `brk`'s immediate).
 /// What it is about is the position map's span at the call.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u16)]
 pub enum InsideCall {
     /// Translated code ends here: the guest goes on where the span resumes.
@@ -49,7 +51,7 @@ impl InsideCall {
 }
 
 /// Which side of its instruction's commit point a host instruction is on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Side {
     /// Nothing of the guest instruction is done: a stop here is at the instruction.
     Before,
@@ -59,14 +61,14 @@ pub enum Side {
 
 /// Where a guest value is while it is not in its own register: in a host register, or at a byte offset of the
 /// thread's register page.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Held {
     Register(u8),
     Page(u16),
 }
 
 /// A guest register whose value is held elsewhere.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Relocated {
     /// The guest register, by number.
     pub guest: u8,
@@ -74,7 +76,7 @@ pub struct Relocated {
 }
 
 /// Where the guest goes on after a commit point.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Resume {
     /// This guest address.
     At(u64),
@@ -87,7 +89,7 @@ pub enum Resume {
 /// What the rest of a sequence would have done after its commit point (docs/native.md section 4), to the host
 /// registers and the register page: a stop makes its fix-ups first, then reads the guest's values where the
 /// span's relocations say they are.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Fixup {
     /// The host register, by number, gets the constant being built in it.
     Constant { register: u8, value: u64 },
@@ -110,7 +112,7 @@ pub enum Fixup {
 }
 
 /// What a stop at one host instruction means for the guest. A span holds from its start to the next span.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Span {
     /// Its first host byte, from the start of the code.
     pub start: u32,
@@ -126,9 +128,50 @@ pub struct Span {
     pub stopping: Stopping,
 }
 
+/// A slow path of the native output that translating alone can count, per site (docs/native.md section 3.7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NativeReason {
+    /// A stand-in's moves, or a read from the register page, around a guest instruction naming a withheld
+    /// register.
+    WithheldRegisterNamed,
+    /// The page test and probes in front of a load or store of more than 16 bytes.
+    AccessMayCrossPage,
+    /// The page test in front of a load or store of 16 bytes or fewer, which the host's model is not relied on
+    /// to do as the meaning does.
+    HostModelResultRouted,
+}
+
+impl NativeReason {
+    pub const ALL: [Self; 3] = [
+        Self::WithheldRegisterNamed,
+        Self::AccessMayCrossPage,
+        Self::HostModelResultRouted,
+    ];
+
+    /// The fixed names their counters and warnings carry, in the order of [`Self::ALL`].
+    const NAMES: [&'static str; Self::ALL.len()] = [
+        "withheld register named by the guest",
+        "access that may cross a page probed",
+        "host-model result routed",
+    ];
+
+    /// Its place in [`Self::ALL`].
+    pub fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|&r| r == self)
+            .expect("every reason is listed")
+    }
+
+    /// The fixed name its counter and warning carry.
+    pub fn name(self) -> &'static str {
+        Self::NAMES[self.index()]
+    }
+}
+
 /// What a stop in one guest instruction needs to know of it, found when translating so that the inside
 /// resolves a stop without decoding.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Stopping {
     /// Nothing beyond the span.
     #[default]
@@ -150,7 +193,7 @@ pub enum Stopping {
 }
 
 /// A register an address is formed from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Base {
     /// A general register by number.
     Register(u8),
@@ -163,14 +206,14 @@ pub enum Base {
 
 /// How a load or store forms the address of its first byte: the base, plus the offset, plus the index
 /// register's low `bits` bits extended (signed or not) and shifted left.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Operand {
     pub base: Base,
     pub offset: i64,
     pub index: Option<Index>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Index {
     pub register: Base,
     pub bits: u8,

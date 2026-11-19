@@ -2,7 +2,9 @@
 //! carried over to host code of the same architecture. It never says what an instruction computes; the
 //! hardware computes it, and the meanings stay the definition the routes are proven against.
 
-use crate::position::{Fixup, Held, InsideCall, Relocated, Resume, Side, Span, Stopping};
+use crate::position::{
+    Fixup, Held, InsideCall, NativeReason, Relocated, Resume, Side, Span, Stopping,
+};
 use crate::{Flow, FlowKind, Guest};
 
 /// How one decoded instruction is carried over (docs/native.md section 3.4).
@@ -65,46 +67,6 @@ pub trait Native: Guest {
     fn call(code: &mut HostCode, call: InsideCall);
     /// What a stop in one decoded instruction at guest `address` needs to know of it.
     fn stopping(i: &Self::Instruction, address: u64) -> Stopping;
-}
-
-/// A slow path of the native output that translating alone can count, per site (docs/native.md section 3.7).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum NativeReason {
-    /// A stand-in's moves, or a read from the register page, around a guest instruction naming a withheld
-    /// register.
-    WithheldRegisterNamed,
-    /// The page test and probes in front of a load or store of more than 16 bytes.
-    AccessMayCrossPage,
-    /// The page test in front of a load or store of 16 bytes or fewer, which the host's model is not relied on
-    /// to do as the meaning does.
-    HostModelResultRouted,
-}
-
-impl NativeReason {
-    pub const ALL: [Self; 3] = [
-        Self::WithheldRegisterNamed,
-        Self::AccessMayCrossPage,
-        Self::HostModelResultRouted,
-    ];
-
-    /// The fixed names their counters and warnings carry, in the order of [`Self::ALL`].
-    const NAMES: [&'static str; Self::ALL.len()] = [
-        "withheld register named by the guest",
-        "access that may cross a page probed",
-        "host-model result routed",
-    ];
-
-    fn index(self) -> usize {
-        Self::ALL
-            .iter()
-            .position(|&r| r == self)
-            .expect("every reason is listed")
-    }
-
-    /// The fixed name its counter and warning carry.
-    pub fn name(self) -> &'static str {
-        Self::NAMES[self.index()]
-    }
 }
 
 /// Host code with its position map, written one guest instruction after another.

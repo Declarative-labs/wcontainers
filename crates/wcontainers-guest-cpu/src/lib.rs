@@ -21,9 +21,11 @@ mod translate;
 #[cfg(feature = "translate")]
 pub use effects::{Effects, effects};
 #[cfg(feature = "translate")]
-pub use native::{HostCode, Native, NativeClass, NativeReason, Route, count_placement, counted};
+pub use native::{HostCode, Native, NativeClass, Route, count_placement, counted};
 pub mod position;
-pub use position::{Fixup, Held, InsideCall, Relocated, Resume, Side, Span, Stopping};
+pub use position::{
+    Fixup, Held, InsideCall, NativeReason, Relocated, Resume, Side, Span, Stopping,
+};
 #[cfg(feature = "translate")]
 pub use translate::*;
 
