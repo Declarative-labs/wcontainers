@@ -1164,6 +1164,54 @@ fn swizzled_slots_compose_what_they_read() {
     }
 }
 
+/// A mapped depth view read whole takes the mapping in the (depth, 0, 0, 1) it reads, by both routes;
+/// comparisons read the first component, so a mapping moving red away from it is refused by name.
+#[test]
+fn mapped_depth_views_compose_what_they_read() {
+    use wcontainers_gpu::ViewComponent as C;
+    let key = |map| VariantKey {
+        swizzled: vec![(0, map)],
+        ..VariantKey::default()
+    };
+    let code = own_pair("ps_shadow_wide");
+    let plain = both(&code, &VariantKey::default());
+    for (c, plain) in both(&code, &key([C::R, C::A, C::One, C::G]))
+        .iter()
+        .zip(&plain)
+    {
+        assert_ne!(wgsl(c), wgsl(plain));
+    }
+    both(&own_pair("ps_shadow"), &key([C::R, C::R, C::R, C::One]));
+    let moved = [C::Zero, C::R, C::A, C::G];
+    for name in ["ps_shadow", "ps_shadow_wide"] {
+        let code = own_pair(name);
+        for (route, source) in [Source::Dxbc(&code[0]), Source::Dxil(&code[1])]
+            .into_iter()
+            .enumerate()
+        {
+            match convert(source, &key(moved), None) {
+                Ok(c) => panic!("{name} route {route} converted:\n{}", wgsl(&c)),
+                Err(e) => assert_eq!(
+                    e,
+                    ConvertError::Unsupported(wcontainers_shaders::SWIZZLED_DEPTH)
+                ),
+            }
+        }
+    }
+}
+
+/// Wave minimums and maximums of signed values the converted DXIL holds as unsigned words read them
+/// as signed and give the result back as the words.
+#[test]
+fn wave_minimums_of_the_other_signedness_read_their_operands_as_named() {
+    let code = read("tests/own/ps_wave_signed.dxil");
+    let c = convert(Source::Dxil(&code), &VariantKey::default(), None).unwrap();
+    let text = wgsl(&c);
+    for op in ["subgroupMin(bitcast<i32>(", "subgroupMax(bitcast<i32>("] {
+        assert!(text.contains(op), "{op}: {text}");
+    }
+}
+
 /// Atomic minimums and maximums of the other signedness than their memory's other operations are
 /// compare-exchange loops, reported as the program's own slow path, by both routes.
 #[test]

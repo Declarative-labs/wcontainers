@@ -3088,11 +3088,16 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                     let argument_id = self.next()?;
 
                     let argument_lookup = self.lookup_expression.lookup(argument_id)?;
-                    let argument_handle = get_expr_handle!(argument_id, argument_lookup);
-                    if let Some(kind) = op_signedness(inst.op) {
-                        if self.int_kind(ctx, argument_lookup.type_id)? != Some(kind) {
-                            return Err(Error::UnsupportedSignedness(inst.op));
-                        }
+                    let mut argument_handle = get_expr_handle!(argument_id, argument_lookup);
+                    // A minimum or maximum of the other signedness than its value's type reads the
+                    // value in the signedness it names and gives the result the result type's.
+                    let value_kind = self.int_kind(ctx, argument_lookup.type_id)?;
+                    let op_kind = op_signedness(inst.op).filter(|&k| value_kind != Some(k));
+                    if op_kind.is_some() {
+                        emitter.start(ctx.expressions);
+                        argument_handle =
+                            Self::retype_int(ctx, argument_handle, value_kind, op_kind, span);
+                        block.extend(emitter.finish(ctx.expressions));
                     }
 
                     let exec_scope_const = self.lookup_constant.lookup(exec_scope_id)?;
@@ -3128,20 +3133,32 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                     };
 
                     let result_type = self.lookup_type.lookup(result_type_id)?;
+                    let operation_type = match op_kind {
+                        None => result_type.handle,
+                        Some(kind) => {
+                            let inner = match ctx.module.types[result_type.handle].inner {
+                                crate::TypeInner::Scalar(scalar) => {
+                                    crate::TypeInner::Scalar(crate::Scalar { kind, ..scalar })
+                                }
+                                crate::TypeInner::Vector { size, scalar } => {
+                                    crate::TypeInner::Vector {
+                                        size,
+                                        scalar: crate::Scalar { kind, ..scalar },
+                                    }
+                                }
+                                _ => return Err(Error::UnsupportedSignedness(inst.op)),
+                            };
+                            ctx.module
+                                .types
+                                .insert(crate::Type { name: None, inner }, span)
+                        }
+                    };
 
                     let result_handle = ctx.expressions.append(
                         crate::Expression::SubgroupOperationResult {
-                            ty: result_type.handle,
+                            ty: operation_type,
                         },
                         span,
-                    );
-                    self.lookup_expression.insert(
-                        result_id,
-                        LookupExpression {
-                            handle: result_handle,
-                            type_id: result_type_id,
-                            block_id,
-                        },
                     );
 
                     block.push(
@@ -3154,6 +3171,17 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                         span,
                     );
                     emitter.start(ctx.expressions);
+                    let result_kind = self.int_kind(ctx, result_type_id)?;
+                    let result_handle =
+                        Self::retype_int(ctx, result_handle, op_kind, result_kind, span);
+                    self.lookup_expression.insert(
+                        result_id,
+                        LookupExpression {
+                            handle: result_handle,
+                            type_id: result_type_id,
+                            block_id,
+                        },
+                    );
                 }
                 Op::GroupNonUniformBroadcastFirst
                 | Op::GroupNonUniformBroadcast

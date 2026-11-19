@@ -94,6 +94,7 @@ ps_rows_io.dxbc	ok
 ps_samples.dxbc	unsupported SampleCount
 ps_shade.dxbc	ok-wgsl glsl-write
 ps_shadow.dxbc	ok-wgsl glsl-write
+ps_shadow_wide.dxbc	ok-wgsl glsl-write
 ps_signed.dxbc	ok
 ps_size.dxbc	ok
 ps_spaces.dxbc	ok

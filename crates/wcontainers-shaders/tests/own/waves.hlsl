@@ -34,3 +34,16 @@ uint4 ps_wave(VsOut i) : SV_Target0 {
         first ^ (largest << 5) ^ (later << 11) ^ (WaveIsFirstLane() ? 0x80000000u : 0u)
     );
 }
+
+// Minimums and maximums of signed values over each wave, which the converted program holds as
+// unsigned words and reads in the signedness the operation names.
+uint4 ps_wave_signed(VsOut i) : SV_Target0 {
+    int2 p = int2(i.position.xy);
+    int key = p.x - 3 * p.y - 40;
+    return uint4(
+        asuint(WaveActiveMin(key)),
+        asuint(WaveActiveMax(key)),
+        asuint(WavePrefixSum(key)),
+        asuint(WaveActiveMin(-key)) ^ WaveActiveMax(uint(p.x))
+    );
+}

@@ -49,6 +49,7 @@ ps_rows.dxil	ok
 ps_rows_io.dxil	ok
 ps_samples.dxil	unsupported SampleCount
 ps_shadow.dxil	ok-wgsl glsl-write
+ps_shadow_wide.dxil	ok-wgsl glsl-write
 ps_signed.dxil	ok
 ps_spaces.dxil	ok
 ps_special.dxil	ok
@@ -58,6 +59,7 @@ ps_textured.dxil	ok
 ps_two.dxil	ok
 ps_twospaces.dxil	ok
 ps_wave.dxil	ok-wgsl glsl-write
+ps_wave_signed.dxil	ok-wgsl glsl-write
 vs_carry.dxil	ok
 vs_clip.dxil	ok-wgsl glsl-compile
 vs_clip_six.dxil	ok-wgsl glsl-compile

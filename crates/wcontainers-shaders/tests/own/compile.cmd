@@ -132,8 +132,11 @@ for %%e in (ps_fill ps_msarray) do (
   "%DXC%" -nologo -T ps_6_0 -E %%e -Gis -Fo %%e.dxil msarray.hlsl || exit /b 1
 )
 "%DXC%" -nologo -T ps_6_0 -E ps_wave -Gis -Fo ps_wave.dxil waves.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_wave_signed -Gis -Fo ps_wave_signed.dxil waves.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_shadow /Fo ps_shadow.dxbc shadow.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_shadow -Gis -Fo ps_shadow.dxil shadow.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_0 /E ps_shadow_wide /Fo ps_shadow_wide.dxbc shadow.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_shadow_wide -Gis -Fo ps_shadow_wide.dxil shadow.hlsl || exit /b 1
 for %%e in (ps_msloop ps_msswap) do (
   "%FXC%" /nologo /T ps_4_0 /E %%e /Fo %%e.dxbc msloop.hlsl || exit /b 1
 )

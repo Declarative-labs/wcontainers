@@ -4,6 +4,8 @@
 
 use wcontainers_gpu::ViewComponent;
 
+use crate::SWIZZLED_DEPTH;
+
 use super::*;
 
 /// The operands of an image expression: each handle in a fixed order.
@@ -84,6 +86,60 @@ fn copy(
     push(to, body, made)
 }
 
+/// The function of `module` that `owner` numbers, as [`owners`] numbers them.
+fn function_mut(module: &mut Module, owner: usize) -> &mut Function {
+    let count = module.functions.len();
+    match owner < count {
+        true => {
+            let handle = module.functions.iter().nth(owner).unwrap().0;
+            &mut module.functions[handle]
+        }
+        false => &mut module.entry_points[owner - count].function,
+    }
+}
+
+/// Maps the read `h` of a depth texture in `f`. A plain read is widened where it is read as
+/// (depth, 0, 0, 1), as Direct3D reads a depth view; that widening takes the mapped components. A
+/// read used as its depth alone, a comparison and a gather each take the first component, which
+/// stays the depth only where the mapping keeps red first.
+fn depth_mapped(f: &mut Function, h: Handle<Expression>, map: [ViewComponent; 4]) -> Result<()> {
+    use ViewComponent as C;
+    let plain = matches!(
+        f.expressions[h],
+        Expression::ImageSample {
+            depth_ref: None,
+            gather: None,
+            ..
+        } | Expression::ImageLoad { .. }
+    );
+    let widened = f.expressions.iter().find_map(|(w, e)| match e {
+        Expression::Compose { components, .. }
+            if components.len() == map.len() && components[0] == h =>
+        {
+            Some(w)
+        }
+        _ => None,
+    });
+    match widened {
+        Some(w) if plain => {
+            let Expression::Compose { components, .. } = f.expressions.get_mut(w) else {
+                unreachable!("found as a composition");
+            };
+            let read = [components[0], components[1], components[2], components[3]];
+            for (to, from) in components.iter_mut().zip(map) {
+                *to = match from {
+                    C::Zero => read[C::G as usize],
+                    C::One => read[C::A as usize],
+                    c => read[c as usize],
+                };
+            }
+            Ok(())
+        }
+        _ if map[0] == C::R => Ok(()),
+        _ => Err(ConvertError::Unsupported(SWIZZLED_DEPTH)),
+    }
+}
+
 pub(super) fn swizzled(
     module: &mut Module,
     mappings: &[(u32, [ViewComponent; 4])],
@@ -96,6 +152,7 @@ pub(super) fn swizzled(
     }
     let mut sites = Vec::new();
     let mut gathers = Vec::new();
+    let mut depths = Vec::new();
     for (owner, f) in owners(module) {
         for (h, e) in f.expressions.iter() {
             let (image, gather) = match *e {
@@ -118,7 +175,14 @@ pub(super) fn swizzled(
                     class: ImageClass::Sampled { .. },
                     ..
                 } => {}
-                _ => return Err(ConvertError::Unsupported("SwizzledDepth")),
+                TypeInner::Image {
+                    class: ImageClass::Depth { .. },
+                    ..
+                } => {
+                    depths.push((owner, h, map));
+                    continue;
+                }
+                _ => return Err(ConvertError::Unsupported(SWIZZLED_DEPTH)),
             }
             match gather {
                 Some(c) => {
@@ -132,6 +196,9 @@ pub(super) fn swizzled(
             }
         }
     }
+    for (owner, h, map) in depths {
+        depth_mapped(function_mut(module, owner), h, map)?;
+    }
     for (owner, h, to) in gathers {
         let component = match to {
             C::R => naga::SwizzleComponent::X,
@@ -139,14 +206,7 @@ pub(super) fn swizzled(
             C::B => naga::SwizzleComponent::Z,
             _ => naga::SwizzleComponent::W,
         };
-        let count = module.functions.len();
-        let f = match owner < count {
-            true => {
-                let handle = module.functions.iter().nth(owner).unwrap().0;
-                &mut module.functions[handle]
-            }
-            false => &mut module.entry_points[owner - count].function,
-        };
+        let f = function_mut(module, owner);
         if let Expression::ImageSample { gather, .. } = f.expressions.get_mut(h) {
             *gather = Some(component);
         }
