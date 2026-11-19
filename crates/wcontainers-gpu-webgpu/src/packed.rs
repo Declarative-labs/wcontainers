@@ -14,6 +14,7 @@ use wcontainers_gpu::{
     TextureRegion, TextureUsage, WriteMode,
 };
 
+use crate::memory::DX12_PLACEMENT_ALIGNMENT;
 use crate::{Texture, WebGpu};
 
 /// The format a texture of `format` is held in, where the back end converts it.
@@ -486,11 +487,17 @@ impl WebGpu {
         self.convert_by_draw(t.desc.format, into, held, &staged.0.raw(), extent);
     }
 
-    /// Texels of `format` one copy through a texture of raw blocks spans: as many as keep that
-    /// texture within the device's widest 2D texture, in whole blocks.
+    /// Texels of `format` one copy through a texture of raw blocks spans: whole blocks whose raw
+    /// bytes are a whole number of Direct3D 12 placements, so every run after the first starts
+    /// placed as Direct3D 12 wants; and few enough that the raw texture, widened by the texels of
+    /// one placement (where Direct3D 12 implementations move an unplaced copy back to a placed
+    /// offset), stays within the device's widest 2D texture.
     fn raw_run(&self, format: Format) -> u32 {
         let bw = format.block().0;
-        self.device.limits().max_texture_dimension_2d / raw_width(format, bw) * bw
+        let placement = (DX12_PLACEMENT_ALIGNMENT / u64::from(raw(format).block().2)) as u32;
+        let widest = self.device.limits().max_texture_dimension_2d;
+        let blocks = widest.saturating_sub(placement) / raw_width(format, bw);
+        (blocks / placement * placement).max(1) * bw
     }
 
     /// A copy between a buffer and a converted texture, on the GPU, in runs of columns as wide as

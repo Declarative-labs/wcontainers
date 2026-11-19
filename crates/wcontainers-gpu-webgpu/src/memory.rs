@@ -26,7 +26,7 @@ const QUERY_BYTES: u64 = wgpu::QUERY_SIZE as u64;
 
 /// Direct3D 12's alignment of a texture's rows placed in a buffer
 /// (`D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT`).
-const DX12_PLACEMENT_ALIGNMENT: u64 = 512;
+pub(crate) const DX12_PLACEMENT_ALIGNMENT: u64 = 512;
 
 /// The most bytes of pattern a non-zero clear uploads.
 const PATTERN_BLOCK: u64 = 64 * 1024;
