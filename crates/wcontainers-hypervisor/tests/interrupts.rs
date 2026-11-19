@@ -35,6 +35,8 @@ mod macos {
     use std::time::Instant;
 
     use wcontainers_abi::{PAGE_SIZE, RegisterBlock};
+    use wcontainers_arm64::carry::{COUNT, PAGE, SCRATCH};
+    use wcontainers_arm64::encode::{self, Register, field};
     use wcontainers_arm64::{Arm64, FPCR_BITS, FPSR_BITS, decode};
     use wcontainers_guest_cpu::{Guest, Native, Route, counted};
     use wcontainers_translator::LookAhead;
@@ -131,14 +133,25 @@ mod macos {
 
     /// Fix-ups on stand-ins: a constant built for a withheld register, a store exclusive whose status, data and
     /// base are all withheld, and a load pair into one register.
-    const WITHHELD: [u32; 6] = [
-        0x1000007b, // adr x27, #12
-        0xaa1b03e1, // mov x1, x27
-        0xc85f7f9b, // ldxr x27, [x28]
-        0xc81a7f9b, // stxr w26, x27, [x28]
-        0xa9400781, // ldp x1, x1, [x28]
-        0xd65f03c0, // ret
-    ];
+    fn withheld() -> &'static [u32] {
+        let named = |word: u32, fields: &[(&str, Register)]| {
+            fields.iter().fold(word, |w, &(f, r)| {
+                encode::replace(w, f, r.into()).expect("a register fits")
+            })
+        };
+        vec![
+            named(0x1000007b, &[(field::RD, SCRATCH)]), // adr t, #12
+            named(0xaa1b03e1, &[(field::RM, SCRATCH)]), // mov x1, t
+            named(0xc85f7f9b, &[(field::RT, SCRATCH), (field::RN, PAGE)]), // ldxr t, [page]
+            named(
+                0xc81a7f9b,
+                &[(field::RS, COUNT), (field::RT, SCRATCH), (field::RN, PAGE)],
+            ), // stxr wcount, t, [page]
+            named(0xa9400781, &[(field::RN, PAGE)]),    // ldp x1, x1, [page]
+            0xd65f03c0,                                 // ret
+        ]
+        .leak()
+    }
 
     /// System registers copied, answered and held as constants, a cache operation the inside answers, hints
     /// that are whole pieces, and float status writes followed by them.
@@ -399,8 +412,11 @@ mod macos {
             ("system", &SYSTEM, float_cases(seed, 13, 8, &system)),
             (
                 "withheld",
-                &WITHHELD,
-                vec![start(&[(28, writable)]), start(&[(28, read_only)])],
+                withheld(),
+                vec![
+                    start(&[(PAGE.into(), writable)]),
+                    start(&[(PAGE.into(), read_only)]),
+                ],
             ),
         ]
     }

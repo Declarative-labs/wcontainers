@@ -5,12 +5,13 @@
 pub type Register = u8;
 
 /// The progress count of definition E (section 4).
-pub const COUNT: Register = 26;
+pub const COUNT: Register = 18;
 /// The scratch register t.
-pub const SCRATCH: Register = 27;
+pub const SCRATCH: Register = 23;
 /// The thread's register page, which the guest's level reads and writes.
 pub const PAGE: Register = 28;
-/// The withheld registers, in the order the register page keeps their guest values.
+/// The withheld registers, in the order the register page keeps their guest values: the three general registers
+/// named least by the benchmark set's executed instructions and by real programs' code (docs/native.md section 3.3).
 pub const WITHHELD: [Register; 3] = [COUNT, SCRATCH, PAGE];
 
 /// Guest registers one sequence moves or borrows at most at once: `casp`'s two even pairs.
