@@ -909,18 +909,11 @@ fn caps(
             }
         }
         formats.uses[i] = uses;
-        let mut samples = 1u8;
-        for (flag, bit) in [
-            (wgpu::TextureFormatFeatureFlags::MULTISAMPLE_X2, 2),
-            (wgpu::TextureFormatFeatureFlags::MULTISAMPLE_X4, 4),
-            (wgpu::TextureFormatFeatureFlags::MULTISAMPLE_X8, 8),
-            (wgpu::TextureFormatFeatureFlags::MULTISAMPLE_X16, 16),
-        ] {
-            if flags.contains(flag) {
-                samples |= bit;
-            }
-        }
-        formats.samples[i] = samples;
+        formats.samples[i] = flags
+            .supported_sample_counts()
+            .into_iter()
+            .filter_map(|count| u8::try_from(count).ok())
+            .fold(0, |samples, count| samples | count);
     }
     let limits = Limits {
         max_texture_2d: l.max_texture_dimension_2d,
@@ -1277,23 +1270,24 @@ impl Backend for WebGpu {
     }
 
     fn create_sampler(&mut self, desc: &SamplerDesc) -> Result<Sampler, GpuError> {
-        let mut address = [wgpu::AddressMode::ClampToEdge; 3];
-        for (a, ours) in address.iter_mut().zip(desc.address) {
-            *a = convert::address(ours).ok_or(GpuError::Absent(match ours {
+        let address = |ours| {
+            convert::address(ours).ok_or(GpuError::Absent(match ours {
                 wcontainers_gpu::AddressMode::MirrorOnce => Features::MIRROR_ONCE,
                 _ => Features::BORDER_COLOR,
-            }))?;
-        }
+            }))
+        };
+        let [u, v, w] = desc.address;
+        let default_sampler = wgpu::SamplerDescriptor::default();
         let raw = self.device.create_sampler(&wgpu::SamplerDescriptor {
             label: None,
-            address_mode_u: address[0],
-            address_mode_v: address[1],
-            address_mode_w: address[2],
+            address_mode_u: address(u)?,
+            address_mode_v: address(v)?,
+            address_mode_w: address(w)?,
             mag_filter: convert::filter(desc.mag),
             min_filter: convert::filter(desc.min),
             mipmap_filter: convert::mip_filter(desc.mip),
             lod_min_clamp: f32::from_bits(desc.lod_range[0]).max(0.0),
-            lod_max_clamp: f32::from_bits(desc.lod_range[1]).min(32.0),
+            lod_max_clamp: f32::from_bits(desc.lod_range[1]).min(default_sampler.lod_max_clamp),
             compare: desc.compare.map(convert::compare),
             // Anisotropy applies only to fully linear filtering, in WebGPU as in Direct3D.
             anisotropy_clamp: if [desc.min, desc.mag, desc.mip].contains(&Filter::Nearest) {

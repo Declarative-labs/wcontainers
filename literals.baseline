@@ -5323,11 +5323,6 @@ code	crates/wcontainers-gpu-webgl/src/trace.rs	str	record::Traced<B>::new	"{path
 code	crates/wcontainers-gpu-webgpu/src/blocks.rs	str	WebGpu::read_now	"a copy source could not be read back"
 code	crates/wcontainers-gpu-webgpu/src/blocks.rs	str	WebGpu::write_blocks	"a block write into a texture holding no blocks"
 code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	Last	4
-code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	Last	4
-code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	Last	6
-code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	WebGpu::draw_in	3
-code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	color_value	3
-code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	color_value	4
 code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	color_value	4
 code	crates/wcontainers-gpu-webgpu/src/draw.rs	str	WebGpu::begin_pass_impl	"a pass with no attachment and no empty size"
 code	crates/wcontainers-gpu-webgpu/src/draw.rs	str	WebGpu::begin_pass_impl	"begin_pass inside a pass"
@@ -5359,11 +5354,6 @@ code	crates/wcontainers-gpu-webgpu/src/lib.rs	char	WebGpu::frame_report	','
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	char	WebGpu::frame_report	':'
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	char	WebGpu::frame_report	'{'
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	char	WebGpu::frame_report	'}'
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	float	<WebGpu as Backend>::create_sampler	32.0
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	int	<WebGpu as Backend>::create_sampler	3
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	int	caps	16
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	int	caps	4
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	int	caps	8
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::begin_query	"begin_query outside a pass with an occlusion set, or nested"
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::configure_surface	"the window takes no 8-bit unorm format to present in"
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::current_texture	"getting the window's texture failed validation"
@@ -5371,8 +5361,6 @@ code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::current_t
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::end_pass	"end_pass without a pass"
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::end_query	"end_query without a running query"
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::submit	"submit inside a pass"
-code	crates/wcontainers-gpu-webgpu/src/memory.rs	int	<wgpu::Texture as Spare>	5
-code	crates/wcontainers-gpu-webgpu/src/memory.rs	int	WebGpu::arena_slice	4
 code	crates/wcontainers-gpu-webgpu/src/memory.rs	str	WebGpu::aspect_as_colour	"a depth or stencil read by a draw needs a single-sampled bound source"
 code	crates/wcontainers-gpu-webgpu/src/memory.rs	str	WebGpu::aspect_as_colour	"the texture a depth or stencil read is drawn into could not be made"
 code	crates/wcontainers-gpu-webgpu/src/memory.rs	str	WebGpu::clear_buffer_impl	"clear_buffer inside a pass"
@@ -5473,12 +5461,6 @@ code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	widen_wgsl	"let c = vec4u(0
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	widen_wgsl	"{bytes} let c = vec4u(b.x, select(b.y, b.w, {odd}), b.z, 255u);"
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	widen_wgsl	"{bytes} let c = vec4u(b.y, select(b.x, b.z, {odd}), b.w, 255u);"
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	widen_wgsl	"{bytes} let c = vec4u(b.z, b.y, b.x, 255u);"
-code	crates/wcontainers-gpu-webgpu/src/vertex.rs	int	StreamPlan	4
-code	crates/wcontainers-gpu-webgpu/src/vertex.rs	int	source_size	3
-code	crates/wcontainers-gpu-webgpu/src/vertex.rs	int	source_size	4
-code	crates/wcontainers-gpu-webgpu/src/vertex.rs	int	source_size	6
-code	crates/wcontainers-gpu-webgpu/src/vertex.rs	int	widened	3
-code	crates/wcontainers-gpu-webgpu/src/vertex.rs	int	widened	4
 code	crates/wcontainers-gpu/src/backend.rs	float	generate_mips_by_draws	0.5
 code	crates/wcontainers-gpu/src/backend.rs	int	Backend::clear_rects	20
 code	crates/wcontainers-gpu/src/backend.rs	int	Backend::clear_rects	24

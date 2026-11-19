@@ -46,38 +46,32 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
         let o = p.op[i];
         let a = s + o.x;
         let w = d + o.y / 4u;
-        switch o.z {
+        if o.z == Bytes {
             // Bytes as they are, the last word padded with zeros.
-            case 0u: {
-                for (var k = 0u; k < o.w; k += 4u) {
-                    var v = 0u;
-                    for (var j = 0u; j < min(4u, o.w - k); j++) {
-                        v |= byte(a + k + j) << (j * 8u);
-                    }
-                    dst[w + k / 4u] = v;
+            for (var k = 0u; k < o.w; k += 4u) {
+                var v = 0u;
+                for (var j = 0u; j < min(4u, o.w - k); j++) {
+                    v |= byte(a + k + j) << (j * 8u);
                 }
+                dst[w + k / 4u] = v;
             }
+        } else if o.z == ThreeBytes {
             // Three bytes and the fourth component's one.
-            case 1u: {
-                dst[w] = byte(a) | (byte(a + 1u) << 8u) | (byte(a + 2u) << 16u) | (o.w << 24u);
-            }
+            dst[w] = byte(a) | (byte(a + 1u) << 8u) | (byte(a + 2u) << 16u) | (o.w << 24u);
+        } else if o.z == ThreeHalves {
             // Three 16-bit values and the fourth component's one.
-            case 2u: {
-                dst[w] = word(a);
-                dst[w + 1u] = byte(a + 4u) | (byte(a + 5u) << 8u) | (o.w << 16u);
-            }
+            dst[w] = word(a);
+            dst[w + 1u] = byte(a + 4u) | (byte(a + 5u) << 8u) | (o.w << 16u);
+        } else if o.z == Uint10_10_10_2 {
             // 10, 10, 10 and 2 unsigned bits as four 16-bit values.
-            case 3u: {
-                let v = word(a);
-                dst[w] = (v & 0x3ffu) | (((v >> 10u) & 0x3ffu) << 16u);
-                dst[w + 1u] = ((v >> 20u) & 0x3ffu) | ((v >> 30u) << 16u);
-            }
+            let v = word(a);
+            dst[w] = (v & 0x3ffu) | (((v >> 10u) & 0x3ffu) << 16u);
+            dst[w + 1u] = ((v >> 20u) & 0x3ffu) | ((v >> 30u) << 16u);
+        } else {
             // 11, 11 and 10-bit floats as 16-bit floats, and one.
-            default: {
-                let v = word(a);
-                dst[w] = half(v, 6u) | (half(v >> 11u, 6u) << 16u);
-                dst[w + 1u] = half(v >> 22u, 5u) | (0x3c00u << 16u);
-            }
+            let v = word(a);
+            dst[w] = half(v, 6u) | (half(v >> 11u, 6u) << 16u);
+            dst[w + 1u] = half(v >> 22u, 5u) | (0x3c00u << 16u);
         }
     }
 }
@@ -95,8 +89,8 @@ pub struct StreamPlan {
     src_stride: u32,
     /// Source bytes an element reaches from its start.
     span: u32,
-    /// Per attribute: source offset, shadow offset, operation, and its argument.
-    ops: Vec<[u32; 4]>,
+    /// One a attribute, as the program's `vec4u` operations.
+    ops: Vec<Operation>,
     /// The attributes as the pipeline reads them from the shadow.
     pub attributes: Vec<wgpu::VertexAttribute>,
 }
@@ -115,34 +109,114 @@ impl StreamPlan {
 /// The streams of one vertex layout that are read through shadows, by stream.
 pub type Plan = Rc<[Option<StreamPlan>]>;
 
-/// The format a lacking one is read as, its operation and argument (the fourth component's bits).
-fn widened(f: VertexFormat) -> Option<(wgpu::VertexFormat, u32, u32)> {
+/// What the program does with one attribute (`Operation::code`).
+#[derive(Clone, Copy, Debug)]
+#[repr(u32)]
+enum Code {
+    Bytes,
+    ThreeBytes,
+    ThreeHalves,
+    Uint10_10_10_2,
+    Float11_11_10,
+}
+
+impl Code {
+    const ALL: &[Code] = &[
+        Code::Bytes,
+        Code::ThreeBytes,
+        Code::ThreeHalves,
+        Code::Uint10_10_10_2,
+        Code::Float11_11_10,
+    ];
+}
+
+/// The program's text with each code defined under its name.
+fn program() -> String {
+    let codes: String = Code::ALL
+        .iter()
+        .map(|&code| format!("const {code:?}: u32 = {}u;\n", code as u32))
+        .collect();
+    with_group(&(codes + CONVERT_WGSL))
+}
+
+/// One attribute's operation, as the program reads it.
+#[derive(Clone, Copy, Debug)]
+struct Operation {
+    source_offset: u32,
+    shadow_offset: u32,
+    code: Code,
+    /// Bytes to copy for `Code::Bytes`; otherwise the fourth component's bits.
+    argument: u32,
+}
+
+impl Operation {
+    fn words(self) -> [u32; size_of::<Self>() / size_of::<u32>()] {
+        [
+            self.source_offset,
+            self.shadow_offset,
+            self.code as u32,
+            self.argument,
+        ]
+    }
+}
+
+/// A lacking format: the format it is read as, the program's code and argument (the fourth
+/// component's bits), and the bytes it takes in the source.
+struct Widened {
+    format: wgpu::VertexFormat,
+    code: Code,
+    argument: u32,
+    source_bytes: u32,
+}
+
+/// Three components read as the four of `four`, of which `one` is a single one.
+fn three_of(
+    four: wgpu::VertexFormat,
+    one: wgpu::VertexFormat,
+    code: Code,
+    argument: u32,
+) -> Widened {
+    Widened {
+        format: four,
+        code,
+        argument,
+        source_bytes: (four.size() - one.size()) as u32,
+    }
+}
+
+/// Bits packed into one word, read as `format`.
+fn packed(format: wgpu::VertexFormat, code: Code) -> Widened {
+    Widened {
+        format,
+        code,
+        argument: 0,
+        source_bytes: size_of::<u32>() as u32,
+    }
+}
+
+fn widened(f: VertexFormat) -> Option<Widened> {
+    use Code::{ThreeBytes, ThreeHalves};
     use VertexFormat::*;
     use wgpu::VertexFormat as W;
     Some(match f {
-        Uint8x3 => (W::Uint8x4, 1, 1),
-        Sint8x3 => (W::Sint8x4, 1, 1),
-        Unorm8x3 => (W::Unorm8x4, 1, u8::MAX.into()),
-        Snorm8x3 => (W::Snorm8x4, 1, i8::MAX as u32),
-        Uint16x3 => (W::Uint16x4, 2, 1),
-        Sint16x3 => (W::Sint16x4, 2, 1),
-        Unorm16x3 => (W::Unorm16x4, 2, u16::MAX.into()),
-        Snorm16x3 => (W::Snorm16x4, 2, i16::MAX as u32),
-        Float16x3 => (W::Float16x4, 2, half::f16::ONE.to_bits().into()),
-        Uint10_10_10_2 => (W::Uint16x4, 3, 0),
-        Float11_11_10 => (W::Float16x4, 4, 0),
+        Uint8x3 => three_of(W::Uint8x4, W::Uint8, ThreeBytes, 1),
+        Sint8x3 => three_of(W::Sint8x4, W::Sint8, ThreeBytes, 1),
+        Unorm8x3 => three_of(W::Unorm8x4, W::Unorm8, ThreeBytes, u8::MAX.into()),
+        Snorm8x3 => three_of(W::Snorm8x4, W::Snorm8, ThreeBytes, i8::MAX as u32),
+        Uint16x3 => three_of(W::Uint16x4, W::Uint16, ThreeHalves, 1),
+        Sint16x3 => three_of(W::Sint16x4, W::Sint16, ThreeHalves, 1),
+        Unorm16x3 => three_of(W::Unorm16x4, W::Unorm16, ThreeHalves, u16::MAX.into()),
+        Snorm16x3 => three_of(W::Snorm16x4, W::Snorm16, ThreeHalves, i16::MAX as u32),
+        Float16x3 => three_of(
+            W::Float16x4,
+            W::Float16,
+            ThreeHalves,
+            half::f16::ONE.to_bits().into(),
+        ),
+        Uint10_10_10_2 => packed(W::Uint16x4, Code::Uint10_10_10_2),
+        Float11_11_10 => packed(W::Float16x4, Code::Float11_11_10),
         _ => return None,
     })
-}
-
-/// Bytes a lacking format takes in the source.
-fn source_size(f: VertexFormat) -> u32 {
-    use VertexFormat::*;
-    match f {
-        Uint8x3 | Sint8x3 | Unorm8x3 | Snorm8x3 => 3,
-        Uint10_10_10_2 | Float11_11_10 => 4,
-        _ => 6,
-    }
 }
 
 /// The shadow streams of a layout, or None when WebGPU reads every stream as it is.
@@ -174,22 +248,32 @@ pub fn plan(desc: &VertexLayoutDesc) -> Option<Plan> {
                 .flatten()
                 .filter(|a| usize::from(a.stream) == s)
             {
-                let (format, op, arg, src) = match widened(a.format) {
-                    Some((format, op, arg)) => (format, op, arg, source_size(a.format)),
+                let w = match widened(a.format) {
+                    Some(w) => w,
                     None => {
                         let format = convert::vertex_format(a.format)?;
                         let bytes = format.size() as u32;
-                        (format, 0, bytes, bytes)
+                        Widened {
+                            format,
+                            code: Code::Bytes,
+                            argument: bytes,
+                            source_bytes: bytes,
+                        }
                     }
                 };
-                ops.push([a.offset, size, op, arg]);
+                ops.push(Operation {
+                    source_offset: a.offset,
+                    shadow_offset: size,
+                    code: w.code,
+                    argument: w.argument,
+                });
                 attributes.push(wgpu::VertexAttribute {
-                    format,
+                    format: w.format,
                     offset: u64::from(size),
                     shader_location: a.location,
                 });
-                size += (format.size() as u32).next_multiple_of(wgpu::VERTEX_ALIGNMENT as u32);
-                span = span.max(a.offset + src);
+                size += (w.format.size() as u32).next_multiple_of(wgpu::VERTEX_ALIGNMENT as u32);
+                span = span.max(a.offset + w.source_bytes);
             }
             Some(StreamPlan {
                 size: size.max(wgpu::VERTEX_ALIGNMENT as u32),
@@ -336,7 +420,12 @@ impl WebGpu {
             0,
         ];
         params.extend(head.iter().flat_map(|v| v.to_le_bytes()));
-        params.extend(p.ops.iter().flatten().flat_map(|v| v.to_le_bytes()));
+        params.extend(
+            p.ops
+                .iter()
+                .flat_map(|o| o.words())
+                .flat_map(u32::to_le_bytes),
+        );
         params.resize(PARAMS, 0);
         let uniform = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -391,7 +480,7 @@ impl WebGpu {
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: None,
-                source: wgpu::ShaderSource::Wgsl(with_group(CONVERT_WGSL).into()),
+                source: wgpu::ShaderSource::Wgsl(program().into()),
             });
         let entry = |binding, ty| wgpu::BindGroupLayoutEntry {
             binding,
@@ -431,5 +520,45 @@ impl WebGpu {
                 cache: None,
             });
         (pipeline, layout)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The conversion program, its codes defined, is valid WGSL for WebGPU.
+    #[test]
+    fn conversion_program_is_valid() {
+        let source = program();
+        let module = naga::front::wgsl::parse_str(&source)
+            .unwrap_or_else(|e| panic!("{}\n{source}", e.message()));
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        )
+        .validate(&module)
+        .unwrap_or_else(|e| panic!("{e:?}\n{source}"));
+    }
+
+    /// A lacking format's source bytes are its components' bytes.
+    #[test]
+    fn lacking_formats_take_their_bytes_in_the_source() {
+        use VertexFormat::*;
+        for (format, components, component) in [
+            (Uint8x3, 3, size_of::<u8>()),
+            (Snorm8x3, 3, size_of::<i8>()),
+            (Unorm16x3, 3, size_of::<u16>()),
+            (Float16x3, 3, size_of::<half::f16>()),
+            (Uint10_10_10_2, 1, size_of::<u32>()),
+            (Float11_11_10, 1, size_of::<u32>()),
+        ] {
+            let w = widened(format).unwrap_or_else(|| panic!("{format:?} is not widened"));
+            assert_eq!(
+                w.source_bytes as usize,
+                components * component,
+                "{format:?}"
+            );
+        }
     }
 }
