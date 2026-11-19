@@ -61,15 +61,14 @@ impl<B: Backend> Device<B> {
         let level = |n: u32| (n >> v.mip).max(1);
         let (width, height) = (level(desc.width), level(desc.height));
         let three_d = desc.dimension == TextureDimension::D3;
-        // `D3D12_UAV_DIMENSION`: 1D, 1D array, 2D, 2D array, 3D.
         let (first, layers) = match v.dimension {
-            2 | 4 => (v.first_layer, 1),
-            3 | 5 => (
+            UAV_DIMENSION_TEXTURE1D | UAV_DIMENSION_TEXTURE2D => (v.first_layer, 1),
+            UAV_DIMENSION_TEXTURE1DARRAY | UAV_DIMENSION_TEXTURE2DARRAY => (
                 v.first_layer,
                 v.layers
                     .min(desc.depth_or_layers.saturating_sub(v.first_layer)),
             ),
-            8 => {
+            UAV_DIMENSION_TEXTURE3D => {
                 let depth = level(desc.depth_or_layers);
                 (
                     v.first_layer,

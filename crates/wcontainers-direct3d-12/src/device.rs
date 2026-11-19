@@ -27,7 +27,8 @@ use crate::Error;
 use crate::address::AddressMap;
 use crate::list::{
     Command, CopyLocation, DSV_READ_ONLY_DEPTH, DSV_READ_ONLY_STENCIL, Descriptor, Rect,
-    TargetView, VertexBufferView, ViewportF,
+    TargetView, UAV_DIMENSION_TEXTURE1D, UAV_DIMENSION_TEXTURE1DARRAY, UAV_DIMENSION_TEXTURE2D,
+    UAV_DIMENSION_TEXTURE2DARRAY, UAV_DIMENSION_TEXTURE3D, VertexBufferView, ViewportF,
 };
 use crate::resource::{self, HeapType, ResourceDesc};
 use crate::root::{RootSignature, deserialize};
@@ -335,6 +336,11 @@ struct Heap {
 
 /// Where GPU descriptor handles start, far from GPU virtual addresses.
 const HANDLE_BASE: u64 = 1 << 56;
+
+/// The warning for a draw or dispatch recorded with no pipeline state set, which Direct3D 12
+/// leaves undefined: it is skipped.
+const NO_PIPELINE_SKIPPED: &str =
+    "warning: a draw or dispatch recorded with no pipeline state set was skipped";
 
 /// An event waiting for fences: the fences and values, whether any one reaching its value is
 /// enough, and the shell's token for the event.
@@ -971,7 +977,6 @@ impl<B: Backend> Device<B> {
         }
         // A vertex stage feeding another stage, not the pixel stage.
         let has_geometry = !desc.gs.is_empty() || tessellated;
-        let staged = has_geometry || desc.stream_output.is_some();
         let vs_typed = formats::typed_key(desc.vs, self.texel_route());
         let ps = if desc.ps.is_empty() {
             None
@@ -1016,6 +1021,9 @@ impl<B: Backend> Device<B> {
             ..vs_typed.clone()
         };
         let vs = self.convert(desc.vs, ShaderStage::Vertex, vs_key.clone())?;
+        // Cull distances, which the back ends lack, are drawn through the stage helper.
+        let staged =
+            has_geometry || desc.stream_output.is_some() || geometry::writes_cull_distances(&vs);
         let vertex_formats = match staged {
             true => None,
             false => {
@@ -2366,8 +2374,12 @@ impl<B: Backend> Device<B> {
                 )?;
                 // One-dimensional textures are stored as 2D ones of one row.
                 let layers = match v.dimension {
-                    2 | 4 => 0..1,
-                    3 | 5 | 8 => v.first_layer..v.first_layer.saturating_add(v.layers),
+                    UAV_DIMENSION_TEXTURE1D | UAV_DIMENSION_TEXTURE2D => 0..1,
+                    UAV_DIMENSION_TEXTURE1DARRAY
+                    | UAV_DIMENSION_TEXTURE2DARRAY
+                    | UAV_DIMENSION_TEXTURE3D => {
+                        v.first_layer..v.first_layer.saturating_add(v.layers)
+                    }
                     _ => return Err(Error::Invalid("an unordered access view's dimension")),
                 };
                 if !rects.is_empty() {
@@ -2939,7 +2951,9 @@ impl<B: Backend> Replay<B> {
             }
             Command::Topology(t) => {
                 self.api_topology = *t;
-                if !crate::state::staged_only(*t) {
+                if let Some((topology, _)) = crate::state::adjacency_dropped(*t, 0, 0) {
+                    self.topology = topology;
+                } else if !crate::state::staged_only(*t) {
                     self.topology = crate::state::topology(*t)?;
                 }
             }
@@ -3347,6 +3361,7 @@ impl<B: Backend> Replay<B> {
         record: Option<&(B::Buffer, u64)>,
     ) -> Result<(), Error> {
         let Some(pid) = self.pipeline else {
+            d.messages.push(NO_PIPELINE_SKIPPED.into());
             return Ok(());
         };
         if d.pipelines[pid.0 as usize].render.is_some() {
@@ -3414,11 +3429,11 @@ impl<B: Backend> Replay<B> {
     fn draw(
         &mut self,
         d: &mut Device<B>,
-        range: DrawRange<'_, B>,
+        mut range: DrawRange<'_, B>,
         record: Option<&(B::Buffer, u64)>,
     ) -> Result<(), Error> {
-        // A draw with no pipeline state draws nothing, as the hardware does.
         let Some(pid) = self.pipeline else {
+            d.messages.push(NO_PIPELINE_SKIPPED.into());
             return Ok(());
         };
         let r = d.pipelines[pid.0 as usize]
@@ -3453,10 +3468,46 @@ impl<B: Backend> Replay<B> {
         if geometry && !self.draw_geometry(d, pid, same_range(&range), record)? {
             return Ok(());
         }
+        // Without a geometry stage Direct3D ignores adjacent vertices: the list or strip of the
+        // others is drawn from generated indices (`AdjacencyDropped`).
+        let mut adjacency = None;
         if crate::state::staged_only(self.api_topology) {
-            return Err(Error::NotImplemented(
-                "adjacency or patch topologies without a geometry or hull shader",
-            ));
+            let DrawRange::Vertices {
+                first,
+                count,
+                first_instance,
+                instances,
+            } = range
+            else {
+                return Err(Error::NotImplemented(
+                    "indexed or indirect adjacency draws without a geometry shader",
+                ));
+            };
+            let (_, kept) = crate::state::adjacency_dropped(self.api_topology, first, count)
+                .ok_or(Error::NotImplemented(
+                    "patch topologies without a hull shader",
+                ))?;
+            d.backend.slow_paths().hit(SlowPath::AdjacencyDropped);
+            if kept.is_empty() {
+                return Ok(());
+            }
+            let index_size = size_of::<u32>() as u32;
+            let bytes: Vec<u8> = kept.iter().flat_map(|i| i.to_le_bytes()).collect();
+            let mut at = [0];
+            let ring = d.backend.write_buffer_ring(
+                wcontainers_gpu::RingKind::Indices,
+                &[&bytes],
+                index_size,
+                &mut at,
+            )?;
+            range = DrawRange::Indexed {
+                first: (at[0] / u64::from(index_size)) as u32,
+                count: kept.len() as u32,
+                base_vertex: 0,
+                first_instance,
+                instances,
+            };
+            adjacency = Some(ring);
         }
         // The bases as `HelperValue::DrawBase` holds them: base vertex, first instance.
         let bases = match &range {
@@ -3787,6 +3838,9 @@ impl<B: Backend> Replay<B> {
             })
         });
         let index = match (&range, &self.index) {
+            _ if adjacency.is_some() => adjacency
+                .take()
+                .map(|ring| (ring, 0, IndexFormat::U32, None)),
             (DrawRange::Indexed { .. } | DrawRange::IndexedIndirect { .. }, Some(v)) => {
                 let (id, offset) = d
                     .addresses
@@ -3797,7 +3851,7 @@ impl<B: Backend> Replay<B> {
                     wcontainers_directx_graphics_infrastructure::dxgi::R32_UINT => IndexFormat::U32,
                     _ => return Err(Error::Invalid("index format")),
                 };
-                Some((d.buffer(id)?.0.clone(), offset, format, id))
+                Some((d.buffer(id)?.0.clone(), offset, format, Some(id)))
             }
             (DrawRange::Indexed { .. } | DrawRange::IndexedIndirect { .. }, None) => {
                 return Err(Error::Invalid("an indexed draw with no index buffer"));
@@ -3811,13 +3865,13 @@ impl<B: Backend> Replay<B> {
         let strip_cut = d.render_mut(pid).strip_cut;
         let strips = matches!(self.topology, Topology::LineStrip | Topology::TriangleStrip);
         let rewrite = match &index {
-            Some((.., IndexFormat::U16, _)) => strips && strip_cut != 1,
-            Some((.., IndexFormat::U32, _)) => strips && strip_cut == 1,
-            Some((.., IndexFormat::U8, _)) | None => false,
+            Some((.., IndexFormat::U16, Some(_))) => strips && strip_cut != 1,
+            Some((.., IndexFormat::U32, Some(_))) => strips && strip_cut == 1,
+            Some(_) | None => false,
         };
         let (index, range) = match (index, range) {
             (
-                Some((buffer, offset, format, id)),
+                Some((buffer, offset, format, Some(id))),
                 DrawRange::Indexed {
                     first,
                     count,

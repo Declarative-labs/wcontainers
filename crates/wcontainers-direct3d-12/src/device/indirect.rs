@@ -106,6 +106,7 @@ impl<B: Backend> Replay<B> {
             return Ok(());
         }
         let Some(pid) = self.pipeline else {
+            d.messages.push(NO_PIPELINE_SKIPPED.into());
             return Ok(());
         };
         let call = *s.arguments.last().expect("a checked command signature");

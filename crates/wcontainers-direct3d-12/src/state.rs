@@ -408,15 +408,61 @@ pub fn topology(value: u32) -> Result<Topology, Error> {
         3 => Topology::LineStrip,
         4 => Topology::TriangleList,
         5 => Topology::TriangleStrip,
-        10..=13 => return Err(Error::NotImplemented("adjacency topologies")),
+        TOPOLOGY_LINELIST_ADJ..=TOPOLOGY_TRIANGLESTRIP_ADJ => {
+            return Err(Error::NotImplemented("adjacency topologies"));
+        }
         33..=64 => return Err(Error::NotImplemented("patch lists")),
         _ => return Err(Error::Invalid("unknown primitive topology")),
     })
 }
 
+/// Vertices of one triangle.
+pub(crate) const TRIANGLE_VERTICES: u32 = 3;
+/// `D3D_PRIMITIVE_TOPOLOGY_LINELIST_ADJ`, `_LINESTRIP_ADJ`, `_TRIANGLELIST_ADJ` and
+/// `_TRIANGLESTRIP_ADJ`.
+pub const TOPOLOGY_LINELIST_ADJ: u32 = 10;
+pub const TOPOLOGY_LINESTRIP_ADJ: u32 = 11;
+pub const TOPOLOGY_TRIANGLELIST_ADJ: u32 = 12;
+pub const TOPOLOGY_TRIANGLESTRIP_ADJ: u32 = 13;
+
+/// An adjacency topology drawn without a geometry stage, which ignores the adjacent vertices:
+/// the list or strip of its own vertices and the vertices of `first..first + count` it keeps;
+/// `None` for other topologies. Each vertex of a primitive with adjacency is followed by one
+/// adjacent vertex, but a line's ends, which have one before and after.
+pub fn adjacency_dropped(value: u32, first: u32, count: u32) -> Option<(Topology, Vec<u32>)> {
+    let line = 2;
+    let (topology, kept): (Topology, Vec<u32>) = match value {
+        TOPOLOGY_LINELIST_ADJ => {
+            let per = line * 2;
+            let kept = (0..count / per).flat_map(|p| (1..=line).map(move |v| p * per + v));
+            (Topology::LineList, kept.collect())
+        }
+        TOPOLOGY_LINESTRIP_ADJ => (Topology::LineStrip, (1..count.saturating_sub(1)).collect()),
+        TOPOLOGY_TRIANGLELIST_ADJ => {
+            let per = TRIANGLE_VERTICES * 2;
+            let kept =
+                (0..count / per).flat_map(|p| (0..TRIANGLE_VERTICES).map(move |v| p * per + v * 2));
+            (Topology::TriangleList, kept.collect())
+        }
+        TOPOLOGY_TRIANGLESTRIP_ADJ => {
+            // A strip of n vertices with adjacency holds n / 2 - 2 triangles, the strip of its
+            // even vertices.
+            let triangles = (count / 2).saturating_sub(TRIANGLE_VERTICES - 1);
+            let own = match triangles {
+                0 => 0,
+                t => t + TRIANGLE_VERTICES - 1,
+            };
+            (Topology::TriangleStrip, (0..own).map(|v| v * 2).collect())
+        }
+        _ => return None,
+    };
+    Some((topology, kept.into_iter().map(|v| first + v).collect()))
+}
+
 /// `D3D_PRIMITIVE_TOPOLOGY` values only a geometry or hull stage takes: adjacency and patches.
 pub fn staged_only(value: u32) -> bool {
-    (10..=13).contains(&value) || (33..=64).contains(&value)
+    (TOPOLOGY_LINELIST_ADJ..=TOPOLOGY_TRIANGLESTRIP_ADJ).contains(&value)
+        || (33..=64).contains(&value)
 }
 
 /// `D3D_PRIMITIVE_TOPOLOGY` as a geometry stage takes it.
@@ -427,10 +473,10 @@ pub fn input_topology(value: u32) -> Result<InputTopology, Error> {
         3 => InputTopology::LineStrip,
         4 => InputTopology::TriangleList,
         5 => InputTopology::TriangleStrip,
-        10 => InputTopology::LineListAdjacency,
-        11 => InputTopology::LineStripAdjacency,
-        12 => InputTopology::TriangleListAdjacency,
-        13 => InputTopology::TriangleStripAdjacency,
+        TOPOLOGY_LINELIST_ADJ => InputTopology::LineListAdjacency,
+        TOPOLOGY_LINESTRIP_ADJ => InputTopology::LineStripAdjacency,
+        TOPOLOGY_TRIANGLELIST_ADJ => InputTopology::TriangleListAdjacency,
+        TOPOLOGY_TRIANGLESTRIP_ADJ => InputTopology::TriangleStripAdjacency,
         33..=64 => InputTopology::PatchList((value - 32) as u8),
         _ => return Err(Error::Invalid("unknown primitive topology")),
     })
