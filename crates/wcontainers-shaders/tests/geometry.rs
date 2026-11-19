@@ -136,7 +136,9 @@ fn geometry_refusals_are_named() {
     };
     assert_eq!(
         convert(Source::Dxbc(&own("gs_quads.dxbc")), &key, None).err(),
-        Some(ConvertError::Unsupported("GeometryVariant"))
+        Some(ConvertError::Unsupported(
+            wcontainers_shaders::refusal::GEOMETRY_VARIANT
+        ))
     );
 }
 

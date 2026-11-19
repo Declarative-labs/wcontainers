@@ -305,9 +305,15 @@ pub(super) fn sample(
                 } => {}
                 ImageClass::Depth { multi: false } => {}
                 ImageClass::Depth { .. } => {
-                    return Err(ConvertError::Unsupported("FilterInShaderOnDepth"));
+                    return Err(ConvertError::Unsupported(
+                        crate::refusal::FILTER_IN_SHADER_ON_DEPTH,
+                    ));
                 }
-                _ => return Err(ConvertError::Unsupported("FilterInShaderOnInteger")),
+                _ => {
+                    return Err(ConvertError::Unsupported(
+                        crate::refusal::FILTER_IN_SHADER_ON_INTEGER,
+                    ));
+                }
             }
             match (dim, arrayed) {
                 (naga::ImageDimension::D2, false) if depth => Shape::Depth2D,
@@ -317,9 +323,15 @@ pub(super) fn sample(
                 (naga::ImageDimension::D2, true) => Shape::D2Array,
                 (naga::ImageDimension::D3, false) => Shape::D3,
                 (naga::ImageDimension::Cube, _) => {
-                    return Err(ConvertError::Unsupported("FilterInShaderOnCube"));
+                    return Err(ConvertError::Unsupported(
+                        crate::refusal::FILTER_IN_SHADER_ON_CUBE,
+                    ));
                 }
-                _ => return Err(ConvertError::Unsupported("FilterInShaderDimension")),
+                _ => {
+                    return Err(ConvertError::Unsupported(
+                        crate::refusal::FILTER_IN_SHADER_DIMENSION,
+                    ));
+                }
             }
         }
         _ => return Err(ConvertError::Malformed("a sample of no image".into())),
@@ -502,7 +514,7 @@ pub(super) fn sample(
     let u32_ty = scalar(module, Scalar::U32);
     let texture = sources
         .texture
-        .ok_or(ConvertError::Unsupported("TextureArgument"))?;
+        .ok_or(ConvertError::Unsupported(crate::refusal::TEXTURE_ARGUMENT))?;
     let components_at = helper_once(
         module,
         reflection,

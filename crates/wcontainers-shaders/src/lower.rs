@@ -327,7 +327,7 @@ impl<'a> Lowering<'a> {
         let Some(order) = &self.spaces else {
             return match space {
                 0 => Ok(register),
-                _ => Err(unsupported("RegisterSpace")),
+                _ => Err(unsupported(crate::refusal::REGISTER_SPACE)),
             };
         };
         let key = (rank(kind), space, register);
@@ -349,9 +349,9 @@ impl<'a> Lowering<'a> {
             scalar::I32 => Scalar::I32,
             scalar::U32 | scalar::UNKNOWN => Scalar::U32,
             scalar::F32 => Scalar::F32,
-            3 | 4 | 7 | 8 | 11 | 14..=17 => return Err(unsupported("Type16Bit")),
-            6 | 10 => return Err(unsupported("Type64BitInteger")),
-            13 => return Err(unsupported("Float64")),
+            3 | 4 | 7 | 8 | 11 | 14..=17 => return Err(unsupported(crate::refusal::TYPE_16_BIT)),
+            6 | 10 => return Err(unsupported(crate::refusal::TYPE_64_BIT_INTEGER)),
+            13 => return Err(unsupported(crate::refusal::FLOAT_64)),
             _ => return Err(malformed(format!("scalar type {s}"))),
         })
     }
@@ -415,7 +415,7 @@ impl<'a> Lowering<'a> {
         let member = match t.members[..] {
             [member] => member,
             [] => return Err(malformed("a declaration without a type".into())),
-            _ if atomic => return Err(unsupported("StructAtomic")),
+            _ if atomic => return Err(unsupported(crate::refusal::STRUCT_ATOMIC)),
             // A struct (dxbc-spirv's structured group-shared memory of members of several types),
             // each member at the next offset its alignment allows.
             _ => {
@@ -426,7 +426,7 @@ impl<'a> Lowering<'a> {
         let handle = if atomic {
             let s = Self::scalar(member.scalar)?;
             if member.size != 1 || !matches!(s, Scalar::U32 | Scalar::I32) {
-                return Err(unsupported("AtomicType"));
+                return Err(unsupported(crate::refusal::ATOMIC_TYPE));
             }
             self.ty(TypeInner::Atomic(s))
         } else {
@@ -629,7 +629,7 @@ impl<'a> Lowering<'a> {
                     _ if storage => {
                         let (dim, arrayed, multi) = image_dim(k)?;
                         if multi {
-                            return Err(unsupported("MultisampledStorage"));
+                            return Err(unsupported(crate::refusal::MULTISAMPLED_STORAGE));
                         }
                         let ty = self.storage_image(op, dim, arrayed)?;
                         self.resource(id, op, slot, ty, Some((k, arrayed)), false)?;
@@ -689,9 +689,9 @@ impl<'a> Lowering<'a> {
                 self.memory.insert(id, var);
             }
             code::DCL_TMP => return Err(malformed("temporary left after SSA".into())),
-            code::DCL_INPUT_TARGET => return Err(unsupported("InputTarget")),
-            36 | 37 => return Err(unsupported("PushData")),
-            47 => return Err(unsupported("StreamOutput")),
+            code::DCL_INPUT_TARGET => return Err(unsupported(crate::refusal::INPUT_TARGET)),
+            36 | 37 => return Err(unsupported(crate::refusal::PUSH_DATA)),
+            47 => return Err(unsupported(crate::refusal::STREAM_OUTPUT)),
             code::DCL_PARAM
             | code::ENTRY_POINT
             | code::DEBUG_NAME
@@ -709,13 +709,15 @@ impl<'a> Lowering<'a> {
     /// them or where elements narrower than a word are written.
     fn texel_buffer(&mut self, id: u32, op: &Op, storage: bool) -> Result<()> {
         let texture = match self.variant.texel_buffers {
-            TexelBufferRoute::Native => return Err(unsupported("TypedBuffer")),
+            TexelBufferRoute::Native => return Err(unsupported(crate::refusal::TYPED_BUFFER)),
             TexelBufferRoute::Storage => false,
             TexelBufferRoute::Texture if !storage => true,
-            TexelBufferRoute::Texture => return Err(unsupported("TypedBufferStorageAsTexture")),
+            TexelBufferRoute::Texture => {
+                return Err(unsupported(crate::refusal::TYPED_BUFFER_STORAGE_AS_TEXTURE));
+            }
         };
         if self.stage == SourceStage::Geometry {
-            return Err(unsupported("TypedBufferInGeometry"));
+            return Err(unsupported(crate::refusal::TYPED_BUFFER_IN_GEOMETRY));
         }
         let kind = if storage {
             SlotKind::Storage
@@ -731,7 +733,7 @@ impl<'a> Lowering<'a> {
         let format = formats
             .iter()
             .find(|(slot, _)| *slot == register)
-            .ok_or(unsupported("TypedBufferFormat"))?
+            .ok_or(unsupported(crate::refusal::TYPED_BUFFER_FORMAT))?
             .1;
         let member = op
             .ty
@@ -808,10 +810,12 @@ impl<'a> Lowering<'a> {
     fn texel_image(&mut self, id: u32, op: &Op, k: u64) -> Result<()> {
         let (_, arrayed, multi) = image_dim(k)?;
         if multi {
-            return Err(unsupported("MultisampledStorage"));
+            return Err(unsupported(crate::refusal::MULTISAMPLED_STORAGE));
         }
         if self.stage == SourceStage::Geometry {
-            return Err(unsupported("TexelsThroughBufferInGeometry"));
+            return Err(unsupported(
+                crate::refusal::TEXELS_THROUGH_BUFFER_IN_GEOMETRY,
+            ));
         }
         let register = self.declared_slot(SlotKind::Storage, op)?;
         let format = self
@@ -819,7 +823,7 @@ impl<'a> Lowering<'a> {
             .storage_formats
             .iter()
             .find(|(slot, _)| *slot == register)
-            .ok_or(unsupported("StorageFormat"))?
+            .ok_or(unsupported(crate::refusal::STORAGE_FORMAT))?
             .1;
         let member = op
             .ty
@@ -827,10 +831,12 @@ impl<'a> Lowering<'a> {
             .ok_or_else(|| malformed("storage image type".into()))?;
         let declared = Self::scalar(member.scalar)?;
         let layout = TexelBuffer::layout(format, declared.kind).map_err(|e| match e {
-            ConvertError::Unsupported("TypedBufferFormatAbsent") => {
-                unsupported("StorageFormatAbsent")
+            ConvertError::Unsupported(crate::refusal::TYPED_BUFFER_FORMAT_ABSENT) => {
+                unsupported(crate::refusal::STORAGE_FORMAT_ABSENT)
             }
-            ConvertError::Unsupported("TypedBufferFormatKind") => unsupported("StorageFormatKind"),
+            ConvertError::Unsupported(crate::refusal::TYPED_BUFFER_FORMAT_KIND) => {
+                unsupported(crate::refusal::STORAGE_FORMAT_KIND)
+            }
             e => e,
         })?;
         let ir = self.ir;
@@ -881,15 +887,16 @@ impl<'a> Lowering<'a> {
             .storage_formats
             .iter()
             .find(|(slot, _)| *slot == register)
-            .ok_or(unsupported("StorageFormat"))?
+            .ok_or(unsupported(crate::refusal::STORAGE_FORMAT))?
             .1;
-        let format = storage_format(format).ok_or(unsupported("StorageFormatAbsent"))?;
+        let format =
+            storage_format(format).ok_or(unsupported(crate::refusal::STORAGE_FORMAT_ABSENT))?;
         let member = op
             .ty
             .basic()
             .ok_or_else(|| malformed("storage image type".into()))?;
         if Self::scalar(member.scalar)?.kind != storage_kind(format) {
-            return Err(unsupported("StorageFormatKind"));
+            return Err(unsupported(crate::refusal::STORAGE_FORMAT_KIND));
         }
         let flags = op.lits.get(4).copied().unwrap_or(0);
         let access = if flags & ir::uav::READ_ONLY != 0 {
@@ -899,7 +906,7 @@ impl<'a> Lowering<'a> {
         } else {
             use naga::StorageFormat as S;
             if !matches!(format, S::R32Float | S::R32Uint | S::R32Sint) {
-                return Err(unsupported("ReadWriteStorageFormat"));
+                return Err(unsupported(crate::refusal::READ_WRITE_STORAGE_FORMAT));
             }
             naga::StorageAccess::LOAD | naga::StorageAccess::STORE
         };
@@ -945,11 +952,11 @@ impl<'a> Lowering<'a> {
             ));
         };
         if count != 1 {
-            return Err(unsupported("ResourceArray"));
+            return Err(unsupported(crate::refusal::RESOURCE_ARRAY));
         }
         let binding = slot
             .binding(self.slot(slot, space_index, register)?)
-            .ok_or(unsupported("BindingsBeyondLimit"))?;
+            .ok_or(unsupported(crate::refusal::BINDINGS_BEYOND_LIMIT))?;
         let prefix = match slot {
             SlotKind::Uniform => "cb",
             SlotKind::Sampler => "s",
@@ -1018,7 +1025,7 @@ impl<'a> Lowering<'a> {
             _ => None,
         };
         if self.geometry.is_some() && stream.is_some_and(|&s| s != 0) {
-            return Err(unsupported("GeometryStreams"));
+            return Err(unsupported(crate::refusal::GEOMETRY_STREAMS));
         }
         let ty = self.ir_ty(&op.ty)?;
         let name = format!("{}{id}", if input { "in" } else { "out" });
@@ -1102,9 +1109,9 @@ impl<'a> Lowering<'a> {
             return Ok(());
         }
         Err(unsupported(match b {
-            builtin::CLIP_DISTANCE => "ClipDistance",
-            builtin::CULL_DISTANCE => "CullDistance",
-            builtin::PRIMITIVE_ID => "PrimitiveId",
+            builtin::CLIP_DISTANCE => crate::refusal::CLIP_DISTANCE,
+            builtin::CULL_DISTANCE => crate::refusal::CULL_DISTANCE,
+            builtin::PRIMITIVE_ID => crate::refusal::PRIMITIVE_ID,
             builtin::LAYER_INDEX => "RenderTargetArrayIndex",
             builtin::VIEWPORT_INDEX => "ViewportArrayIndex",
             builtin::SAMPLE_COUNT => "SampleCount",
@@ -1227,7 +1234,7 @@ impl<'a> Lowering<'a> {
                 (io.var, io.location, io.builtin, io.interpolation);
             let member = io.ty.basic();
             if let Some((loc, comp)) = location {
-                let member = member.ok_or(unsupported("InputArray"))?;
+                let member = member.ok_or(unsupported(crate::refusal::INPUT_ARRAY))?;
                 let s = Self::scalar(member.scalar)?;
                 let arg = match locations.iter().find(|l| l.0 == loc) {
                     Some(l) => l.3,
@@ -1262,7 +1269,7 @@ impl<'a> Lowering<'a> {
                 self.reflect_value(id, true, Some(loc), comp, member, modes, None);
             } else {
                 let b = builtin.unwrap();
-                let member = member.ok_or(unsupported("BuiltInArray"))?;
+                let member = member.ok_or(unsupported(crate::refusal::BUILT_IN_ARRAY))?;
                 let v = self.builtin_input(&mut f, &mut body, &mut e, b, member)?;
                 let p = e.add(&mut f, &mut body, Expression::GlobalVariable(var));
                 e.stmt(
@@ -1373,7 +1380,10 @@ impl<'a> Lowering<'a> {
                 values.push(v);
                 continue;
             }
-            let member = io.ty.basic().ok_or(unsupported("BuiltInArray"))?;
+            let member = io
+                .ty
+                .basic()
+                .ok_or(unsupported(crate::refusal::BUILT_IN_ARRAY))?;
             let var = io.var;
             let p = e.add(&mut f, &mut body, Expression::GlobalVariable(var));
             let v = e.add(&mut f, &mut body, Expression::Load { pointer: p });
@@ -1400,7 +1410,7 @@ impl<'a> Lowering<'a> {
                 .1
                 .ty
                 .basic()
-                .ok_or(unsupported("OutputArray"))?;
+                .ok_or(unsupported(crate::refusal::OUTPUT_ARRAY))?;
             let s = Self::scalar(first.scalar)?;
             let s = if s == Scalar::BOOL { Scalar::U32 } else { s };
             let mut comps = Vec::new();
@@ -1415,7 +1425,10 @@ impl<'a> Lowering<'a> {
                     Some(&i) => {
                         let io = &self.io[i].1;
                         let (_, comp) = io.location.unwrap();
-                        let b = io.ty.basic().ok_or(unsupported("OutputArray"))?;
+                        let b = io
+                            .ty
+                            .basic()
+                            .ok_or(unsupported(crate::refusal::OUTPUT_ARRAY))?;
                         let p = e.add(&mut f, &mut body, Expression::GlobalVariable(io.var));
                         let v = e.add(&mut f, &mut body, Expression::Load { pointer: p });
                         let v = if b.size > 1 {
@@ -2483,7 +2496,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 };
                 match self.block(label, inner, None, &mut continuing)? {
                     Some(next) => label = next,
-                    None => return Err(unsupported("ContinueConstruct")),
+                    None => return Err(unsupported(crate::refusal::CONTINUE_CONSTRUCT)),
                 }
             }
         }
@@ -2530,10 +2543,10 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 } else if tr == merge && fa == header {
                     Ok(Some(cond))
                 } else {
-                    Err(unsupported("LoopLatch"))
+                    Err(unsupported(crate::refusal::LOOP_LATCH))
                 }
             }
-            _ => Err(unsupported("LoopLatch")),
+            _ => Err(unsupported(crate::refusal::LOOP_LATCH)),
         }
     }
 
@@ -2609,7 +2622,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 Ok(merge.filter(|&m| Some(m) != stop))
             }
             code::SWITCH => {
-                let merge = selection.ok_or(unsupported("SwitchWithoutMerge"))?;
+                let merge = selection.ok_or(unsupported(crate::refusal::SWITCH_WITHOUT_MERGE))?;
                 self.switch(label, term, merge, t, out)?;
                 Ok((Some(merge) != stop).then_some(merge))
             }
@@ -2722,7 +2735,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             if target != merge {
                 let falls = self.falls_into_case(target, merge, term)?;
                 if falls {
-                    return Err(unsupported("SwitchFallthrough"));
+                    return Err(unsupported(crate::refusal::SWITCH_FALLTHROUGH));
                 }
                 if !self.jump(target, inner, Some(merge), &mut body)? {
                     self.region(target, Some(merge), inner, &mut body)?;
@@ -2821,7 +2834,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                     && let o = ir.op(i)?
                     && !(o.code == c::CONSTANT && o.lits.first() == Some(&0))
                 {
-                    return Err(unsupported("ResourceArray"));
+                    return Err(unsupported(crate::refusal::RESOURCE_ARRAY));
                 }
                 return Ok(());
             }
@@ -2863,7 +2876,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             }
             // Rasterizer ordered views (WebGPU has no fragment interlock).
             c::ROV_SCOPED_LOCK_BEGIN | c::ROV_SCOPED_LOCK_END => {
-                return Err(unsupported("RasterizerOrderedView"));
+                return Err(unsupported(crate::refusal::RASTERIZER_ORDERED_VIEW));
             }
             c::BARRIER => {
                 let (exec, mem) = (op.lits[0], op.lits[2]);
@@ -2884,7 +2897,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             }
             c::EMIT_VERTEX | c::EMIT_PRIMITIVE => {
                 if op.lits.first().is_some_and(|&stream| stream != 0) {
-                    return Err(unsupported("GeometryStreams"));
+                    return Err(unsupported(crate::refusal::GEOMETRY_STREAMS));
                 }
                 let g = self.l.geometry.as_ref();
                 let function = g
@@ -2958,7 +2971,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             c::BUFFER_LOAD => match self.texel(r[0])? {
                 Some(dcl) => {
                     if op.ty.members.len() > 1 {
-                        return Err(unsupported("SparseFeedback"));
+                        return Err(unsupported(crate::refusal::SPARSE_FEEDBACK));
                     }
                     let index = self.get_as(b, r[1], Scalar::U32)?;
                     let want = op
@@ -3015,7 +3028,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             c::IMAGE_SAMPLE | c::IMAGE_GATHER => self.sample(b, op)?,
             c::IMAGE_LOAD if self.texel(r[0])?.is_some() => {
                 if op.flags & ir::flag::SPARSE_FEEDBACK != 0 {
-                    return Err(unsupported("SparseFeedback"));
+                    return Err(unsupported(crate::refusal::SPARSE_FEEDBACK));
                 }
                 let dcl = self.texel(r[0])?.unwrap();
                 let index = self.texel_at(b, dcl, r[2], r[3])?;
@@ -3119,7 +3132,9 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 };
                 self.add(b, Expression::ImageQuery { image, query })
             }
-            c::IMAGE_COMPUTE_LOD => return Err(unsupported("CalculateLevelOfDetail")),
+            c::IMAGE_COMPUTE_LOD => {
+                return Err(unsupported(crate::refusal::CALCULATE_LEVEL_OF_DETAIL));
+            }
             c::IMAGE_STORE => {
                 self.l.side_effects = true;
                 if let Some(dcl) = self.texel(r[0])? {
@@ -3261,7 +3276,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 let signed = what <= 7;
                 if signed != (s == Scalar::I32) {
                     if typed.is_some() {
-                        return Err(unsupported("AtomicSignedness"));
+                        return Err(unsupported(crate::refusal::ATOMIC_SIGNEDNESS));
                     }
                     let value = operand(self, b, 0)?;
                     let v = self.exchange_loop(b, pointer, s, value, what % 2 == 0)?;
@@ -3753,7 +3768,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         if element.size == 1 && n > 1 {
             let run = ty.members.get(m as usize..m as usize + n as usize);
             if !run.is_some_and(|r| r.iter().all(|&e| e == element)) {
-                return Err(unsupported("StructMembersAsVector"));
+                return Err(unsupported(crate::refusal::STRUCT_MEMBERS_AS_VECTOR));
             }
             return Ok(Place::Run(p, Index::Const(m), element));
         }
@@ -3835,7 +3850,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                         let q = self.add(b, Expression::Access { base: p, index: i });
                         self.add(b, Expression::Load { pointer: q })
                     }
-                    _ => return Err(unsupported("VectorLoadAcrossElements")),
+                    _ => return Err(unsupported(crate::refusal::VECTOR_LOAD_ACROSS_ELEMENTS)),
                 };
                 (v, element)
             }
@@ -3927,7 +3942,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                             },
                         );
                     }
-                    _ => return Err(unsupported("VectorStoreAcrossElements")),
+                    _ => return Err(unsupported(crate::refusal::VECTOR_STORE_ACROSS_ELEMENTS)),
                 }
             }
         }
@@ -3991,7 +4006,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         let r = &op.refs;
         let gather = op.code == code::IMAGE_GATHER;
         if op.flags & ir::flag::SPARSE_FEEDBACK != 0 {
-            return Err(unsupported("SparseFeedback"));
+            return Err(unsupported(crate::refusal::SPARSE_FEEDBACK));
         }
         let res = self.image(r[0])?;
         let (sampler_res, _) = self.buffer(r[1])?;
@@ -4029,7 +4044,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         } else {
             let (lod, bias, clamp, dx, dy) = (r[5], r[6], r[7], r[8], r[9]);
             if clamp != 0 {
-                return Err(unsupported("SampleClamp"));
+                return Err(unsupported(crate::refusal::SAMPLE_CLAMP));
             }
             if lod != 0 {
                 let is_zero = {
@@ -4039,7 +4054,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 // Level zero is naga's form for comparisons only (HLSL has no plain `SampleLevelZero`).
                 if depth_ref.is_some() {
                     if !is_zero {
-                        return Err(unsupported("SampleCompareLevel"));
+                        return Err(unsupported(crate::refusal::SAMPLE_COMPARE_LEVEL));
                     }
                     SampleLevel::Zero
                 } else if res.depth {
@@ -4048,7 +4063,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                     let v = f32::from_bits(o.lits.first().copied().unwrap_or_default() as u32);
                     let whole = v as i32;
                     if o.code != code::CONSTANT || whole as f32 != v || whole < 0 {
-                        return Err(unsupported("DepthSampleLevel"));
+                        return Err(unsupported(crate::refusal::DEPTH_SAMPLE_LEVEL));
                     }
                     SampleLevel::Exact(self.lit(b, Literal::I32(whole)))
                 } else {
@@ -4056,18 +4071,18 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 }
             } else if bias != 0 {
                 if depth_ref.is_some() {
-                    return Err(unsupported("SampleCompareBias"));
+                    return Err(unsupported(crate::refusal::SAMPLE_COMPARE_BIAS));
                 }
                 if res.depth {
-                    return Err(unsupported("DepthSampleBias"));
+                    return Err(unsupported(crate::refusal::DEPTH_SAMPLE_BIAS));
                 }
                 SampleLevel::Bias(self.get_as(b, bias, Scalar::F32)?)
             } else if dx != 0 {
                 if depth_ref.is_some() {
-                    return Err(unsupported("SampleCompareGradient"));
+                    return Err(unsupported(crate::refusal::SAMPLE_COMPARE_GRADIENT));
                 }
                 if res.depth {
-                    return Err(unsupported("DepthSampleGradient"));
+                    return Err(unsupported(crate::refusal::DEPTH_SAMPLE_GRADIENT));
                 }
                 let x = self.coords(b, k, dx, true)?;
                 let y = self.coords(b, k, dy, true)?;
@@ -4081,7 +4096,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             // A depth texture has only its first component in the common form; Direct3D gathers
             // the others' defaults, through the sampler's comparison where it compares.
             if res.depth && c != 0 {
-                return Err(unsupported("DepthGatherComponent"));
+                return Err(unsupported(crate::refusal::DEPTH_GATHER_COMPONENT));
             }
             Some(SwizzleComponent::XYZW[c.min(SwizzleComponent::XYZW.len() - 1)])
         } else {
@@ -4137,7 +4152,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
     fn offset_constant(&mut self, b: &mut Block, k: u64, id: u32) -> Result<Handle<Expression>> {
         let op = self.l.ir.op(id)?;
         if op.code != code::CONSTANT {
-            return Err(unsupported("DynamicOffset"));
+            return Err(unsupported(crate::refusal::DYNAMIC_OFFSET));
         }
         let mut comps: Vec<i32> = op.lits.iter().map(|&l| l as i32).collect();
         if matches!(k, kind::IMAGE_1D | kind::IMAGE_1D_ARRAY) {
@@ -4200,7 +4215,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
     fn image_load(&mut self, b: &mut Block, op: &Op) -> Result<Handle<Expression>> {
         let r = &op.refs;
         if op.flags & ir::flag::SPARSE_FEEDBACK != 0 {
-            return Err(unsupported("SparseFeedback"));
+            return Err(unsupported(crate::refusal::SPARSE_FEEDBACK));
         }
         let res = self.image(r[0])?;
         let (k, _) = res.image.unwrap();
@@ -4211,7 +4226,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         if offset != 0 {
             let o = self.l.ir.op(offset)?;
             if o.code != code::CONSTANT {
-                return Err(unsupported("DynamicOffset"));
+                return Err(unsupported(crate::refusal::DYNAMIC_OFFSET));
             }
             let s = self.scalar_of(coord)?;
             let s = if s.kind == ScalarKind::Sint {
@@ -4551,7 +4566,9 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                     },
                 )
             }
-            c::S_MUL_EXTENDED | c::U_MUL_EXTENDED => return Err(unsupported("MulExtended")),
+            c::S_MUL_EXTENDED | c::U_MUL_EXTENDED => {
+                return Err(unsupported(crate::refusal::MUL_EXTENDED));
+            }
             c::CONVERT_FTO_I => {
                 let x = self.get_as(b, r[0], Scalar::F32)?;
                 self.add(
@@ -4640,7 +4657,7 @@ impl Lowering<'_> {
 
     fn const_expr(&mut self, t: &Ty, lits: &[u64]) -> Result<Handle<Expression>> {
         let [m] = t.members[..] else {
-            return Err(unsupported("StructConstant"));
+            return Err(unsupported(crate::refusal::STRUCT_CONSTANT));
         };
         let s = Self::scalar(m.scalar)?;
         let mut elements = Vec::new();
@@ -4648,7 +4665,7 @@ impl Lowering<'_> {
             let mut comps = Vec::new();
             for &l in chunk {
                 if s == Scalar::F32 && !f32::from_bits(l as u32).is_finite() {
-                    return Err(unsupported("NonFiniteConstantArray"));
+                    return Err(unsupported(crate::refusal::NON_FINITE_CONSTANT_ARRAY));
                 }
                 comps.push(
                     self.module
@@ -4674,7 +4691,7 @@ impl Lowering<'_> {
             return Ok(elements[0]);
         }
         if t.dims.len() > 1 {
-            return Err(unsupported("NestedArrayConstant"));
+            return Err(unsupported(crate::refusal::NESTED_ARRAY_CONSTANT));
         }
         let ty = self.ir_ty(t)?;
         Ok(self.module.global_expressions.append(

@@ -85,7 +85,7 @@ fn element_of(module: &Module, ty: Handle<Type>) -> Result<(Handle<Type>, u32), 
             ..
         } => Ok((base, n.get())),
         TypeInner::Scalar(_) | TypeInner::Vector { .. } => Ok((ty, 1)),
-        _ => Err(ConvertError::Unsupported("StageValueType")),
+        _ => Err(ConvertError::Unsupported(crate::refusal::STAGE_VALUE_TYPE)),
     }
 }
 
@@ -253,7 +253,9 @@ pub(crate) fn lay_out(module: &mut Module) -> Result<Vec<Placed>, ConvertError> 
         // Vertex inputs keep their types; an array takes one argument per register.
         for (argument, ty, v) in &inputs {
             if v.component != 0 {
-                return Err(ConvertError::Unsupported("PackedVertexInput"));
+                return Err(ConvertError::Unsupported(
+                    crate::refusal::PACKED_VERTEX_INPUT,
+                ));
             }
             if v.rows == 1 {
                 w.f.arguments[*argument as usize].binding =

@@ -1,5 +1,5 @@
 //! Compute shaders with atomic operations, append, consume and counter views, storage textures
-//! (`compute.hlsl`), raw and structured shader resource views (`readonly.hlsl`) and typed buffers (`texels.hlsl`) on the WebGPU back end, against real Direct3D 11
+//! (`compute.hlsl`), raw and structured shader resource views (`readonly.hlsl`), division (`divide.hlsl`) and typed buffers (`texels.hlsl`) on the WebGPU back end, against real Direct3D 11
 //! running the same shaders on the same GPU. The values consumed and the texels read are seeded: `WCONTAINERS_COMPUTE_SEED` (default 1) and `WCONTAINERS_COMPUTE_CASES` seeds
 //! from it (default 4).
 
@@ -82,6 +82,7 @@ fn cases(seed: u64) -> Vec<Case> {
     let returned: Vec<u32> = (0..32).map(|_| next() >> 4).collect();
     let structured: Vec<u32> = (0..512).map(|_| next()).collect();
     let raw_read: Vec<u32> = (0..512).map(|_| next()).collect();
+    let operands = division_operands(&mut next, DIVIDE_GROUPS * DIVIDE_GROUP_SIZE);
     vec![
         Case {
             shader: "cs_atomics",
@@ -183,7 +184,53 @@ fn cases(seed: u64) -> Vec<Case> {
             ],
             groups: 2,
         },
+        Case {
+            shader: "cs_divide",
+            views: vec![
+                View {
+                    bytes: vec![0; size_of_val(operands.as_slice())],
+                    raw: false,
+                    counter: None,
+                    append: false,
+                    read: false,
+                    first: 0,
+                },
+                View {
+                    bytes: words(&operands),
+                    raw: false,
+                    counter: None,
+                    append: false,
+                    read: true,
+                    first: 0,
+                },
+            ],
+            groups: DIVIDE_GROUPS,
+        },
     ]
+}
+
+/// `cs_divide`'s workgroups and their size.
+const DIVIDE_GROUPS: u32 = 4;
+const DIVIDE_GROUP_SIZE: u32 = 64;
+
+/// `cs_divide`'s operands, an integer and a float divisor's bits for each invocation. Even ones
+/// divide a multiple of the divisor, so the exact quotient is an integer and its fraction zero.
+fn division_operands(next: &mut impl FnMut() -> u32, invocations: u32) -> Vec<u32> {
+    const DIVISORS: u32 = 3000;
+    const MULTIPLES: u32 = 64;
+    (0..invocations)
+        .flat_map(|i| {
+            let divisor = 1 + next() % DIVISORS;
+            if i % 2 == 0 {
+                [divisor * (next() % MULTIPLES), (divisor as f32).to_bits()]
+            } else {
+                [
+                    next(),
+                    (divisor as f32 / (1 + next() % DIVISORS) as f32).to_bits(),
+                ]
+            }
+        })
+        .collect()
 }
 
 /// The cases with each view moved to a seeded first element past seeded words (a multiple of four
@@ -919,6 +966,168 @@ const LOADED_SINTS: [Format; 10] = [
     Format::Rgb32Sint,
     Format::Rgba32Sint,
 ];
+
+/// `cs_image_array`'s elements and the side of its square of invocations, one per texel.
+const ARRAY_ELEMENTS: usize = 4;
+const ARRAY_SIDE: u32 = 8;
+
+/// What `cs_image_array` leaves in each element, from the seeded texels it starts with, by
+/// Direct3D's rules for its loads and stores (each texel's result is determined).
+fn image_array_expected(start: &[Vec<u32>]) -> Vec<Vec<u32>> {
+    let elements = ARRAY_ELEMENTS as u32;
+    let mut out = start.to_vec();
+    let at = |x: u32, y: u32| (y * ARRAY_SIDE + x) as usize;
+    for y in 0..ARRAY_SIDE {
+        for x in 0..ARRAY_SIDE {
+            let before = start[((x + 2 * y) % elements) as usize][at(x, y)];
+            let i = (x + y) % elements;
+            out[i as usize][at(x, y)] = before + x * 16 + y + 1;
+            out[(elements - 1 - i) as usize][at(x, y)] = before ^ 30001;
+        }
+    }
+    out
+}
+
+/// An array of storage textures (dxc's `cs_image_array`) through the WebGPU back end: an element
+/// read or stored into after a pick at run time is the one named, against the results
+/// Direct3D's rules give (the DXBC route refuses arrays; shader model 5.1 is not Direct3D 11's).
+/// Seeded texels: `WCONTAINERS_COMPUTE_SEED` and `WCONTAINERS_COMPUTE_CASES`.
+#[test]
+fn storage_texture_arrays_use_the_elements_picked() {
+    let mut b = webgpu();
+    let seed: u64 = std::env::var("WCONTAINERS_COMPUTE_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_COMPUTE_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(4);
+    let format = Format::R32Uint;
+    let key = VariantKey {
+        storage_formats: (0..ARRAY_ELEMENTS as u32).map(|s| (s, format)).collect(),
+        ..Default::default()
+    };
+    let c = convert(Source::Dxil(&bytecode("cs_image_array.dxil")), &key, None).unwrap();
+    let shader = b.create_shader(&c.modules[0]).unwrap();
+    let program = b.create_program(&Program::Compute(&shader)).unwrap();
+    let (width, height) = (ARRAY_SIDE, ARRAY_SIDE);
+    let texel = format.block().2;
+    let mut failures = Vec::new();
+    for seed in seed..seed + seeds {
+        let mut next = rng(seed);
+        let start: Vec<Vec<u32>> = (0..ARRAY_ELEMENTS)
+            .map(|_| (0..width * height).map(|_| next() >> 4).collect())
+            .collect();
+        let mut textures = Vec::new();
+        for texels in &start {
+            let texture = b
+                .create_texture(&TextureDesc {
+                    dimension: TextureDimension::D2,
+                    format,
+                    width,
+                    height,
+                    depth_or_layers: 1,
+                    mip_levels: 1,
+                    samples: 1,
+                    usage: TextureUsage::STORAGE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+                    cube: false,
+                    reinterpret: false,
+                })
+                .unwrap();
+            let view = b
+                .create_view(
+                    &texture,
+                    &TextureViewDesc {
+                        format,
+                        dimension: ViewDimension::D2,
+                        base_mip: 0,
+                        mip_count: 1,
+                        base_layer: 0,
+                        layer_count: 1,
+                        stencil: false,
+                    },
+                )
+                .unwrap();
+            b.write_texture(
+                &TextureRegion {
+                    texture: &texture,
+                    mip: 0,
+                    layer: 0,
+                    origin: Origin::default(),
+                    stencil: false,
+                },
+                Extent {
+                    width,
+                    height,
+                    depth_or_layers: 1,
+                },
+                &words(texels),
+                width * texel,
+                height,
+                WriteMode::Ordered,
+            );
+            textures.push((texture, view));
+        }
+        let entries: Vec<_> = c
+            .reflection
+            .bindings
+            .iter()
+            .map(|r| {
+                assert_eq!(r.kind, SlotKind::Storage, "{r:?}");
+                BindingEntry {
+                    binding: r.binding,
+                    stages: StageSet::COMPUTE,
+                    resource: BindingResource::StorageTexture {
+                        view: &textures[r.register as usize].1,
+                        writable: true,
+                    },
+                }
+            })
+            .collect();
+        assert_eq!(entries.len(), ARRAY_ELEMENTS);
+        let set = b.create_binding_set(&entries).unwrap();
+        b.dispatch(&DispatchCall {
+            program: &program,
+            bindings: [Some(&set), None, None, None],
+            immediates: &[],
+            groups: DispatchGroups::Direct([1, 1, 1]),
+        })
+        .unwrap();
+        let expected = image_array_expected(&start);
+        let mut apart = 0;
+        for (k, (texture, _)) in textures.iter().enumerate() {
+            let mut out = vec![0; (width * height * texel) as usize];
+            b.read_back_now(
+                &ReadSource::Texture {
+                    region: TextureRegion {
+                        texture,
+                        mip: 0,
+                        layer: 0,
+                        origin: Origin::default(),
+                        stencil: false,
+                    },
+                    extent: Extent {
+                        width,
+                        height,
+                        depth_or_layers: 1,
+                    },
+                },
+                &mut out,
+            )
+            .unwrap();
+            apart += out
+                .chunks(texel as usize)
+                .zip(&expected[k])
+                .filter(|(o, e)| u32::from_le_bytes((*o).try_into().unwrap()) != **e)
+                .count();
+        }
+        assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
+        eprintln!("seed {seed} cs_image_array: {apart} texels apart");
+        if apart > 0 {
+            failures.push(seed);
+        }
+    }
+    assert!(failures.is_empty(), "seeds {failures:?}");
+}
 
 /// Whether the device has `format` for a typed buffer view (`uav`: one written by the program).
 fn texel_supported(gpu: &Gpu, format: Format, uav: bool) -> bool {

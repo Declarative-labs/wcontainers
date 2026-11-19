@@ -1125,7 +1125,7 @@ fn inputs_evaluated_elsewhere_match_direct3d() {
         matches!(
             dxil,
             Err(wcontainers_shaders::ConvertError::Unsupported(
-                "InterpolateAt"
+                wcontainers_shaders::refusal::INTERPOLATE_AT
             ))
         ),
         "{dxil:?}"
@@ -1510,7 +1510,9 @@ fn multisampled_array_layers_read_as_direct3d_does() {
         };
         assert_eq!(
             convert(source, &VariantKey::default(), None).unwrap_err(),
-            wcontainers_shaders::ConvertError::Unsupported("MultisampledArrayTexture")
+            wcontainers_shaders::ConvertError::Unsupported(
+                wcontainers_shaders::refusal::MULTISAMPLED_ARRAY_TEXTURE
+            )
         );
         let mut setup = Setup::plain(SIZE);
         setup.layers = LAYERS;

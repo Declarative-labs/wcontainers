@@ -160,7 +160,8 @@ pub(super) fn swizzled(
                 Expression::ImageLoad { image, .. } => (image, None),
                 _ => continue,
             };
-            let g = global_of(f, image).ok_or(ConvertError::Unsupported("TextureArgument"))?;
+            let g = global_of(f, image)
+                .ok_or(ConvertError::Unsupported(crate::refusal::TEXTURE_ARGUMENT))?;
             let Some(slot) = slot_of(module, reflection, g, SlotKind::Texture) else {
                 continue;
             };

@@ -40,8 +40,16 @@ pub(super) fn early_tests(
         (0, _) => return Err(ConvertError::Unsupported("SampleCount")),
         (1, _) => false,
         (MULTI, false) => true,
-        (MULTI, true) => return Err(ConvertError::Unsupported("EarlyTestsPerSample")),
-        _ => return Err(ConvertError::Unsupported("EarlyTestsSamples")),
+        (MULTI, true) => {
+            return Err(ConvertError::Unsupported(
+                crate::refusal::EARLY_TESTS_PER_SAMPLE,
+            ));
+        }
+        _ => {
+            return Err(ConvertError::Unsupported(
+                crate::refusal::EARLY_TESTS_SAMPLES,
+            ));
+        }
     };
     let image = |module: &mut Module, class, binding, name: &str| {
         let ty = module.types.insert(

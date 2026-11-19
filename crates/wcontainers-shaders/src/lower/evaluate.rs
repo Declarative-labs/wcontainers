@@ -280,7 +280,7 @@ impl Lowering<'_> {
                 // The hardware's centroid is not Direct3D's rule everywhere, and the slopes between
                 // lanes interpolated at different places are not the value's.
                 if samples > 1 {
-                    return Err(unsupported("EvaluatedCentroidInput"));
+                    return Err(unsupported(crate::refusal::EVALUATED_CENTROID_INPUT));
                 }
                 zero
             } else {

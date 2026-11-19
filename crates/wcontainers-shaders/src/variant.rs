@@ -37,7 +37,7 @@ pub(crate) fn apply(
     reflection: &mut Reflection,
 ) -> Result<()> {
     if stage != ShaderStage::Fragment && !variant.targets_in_shader.is_empty() {
-        return Err(ConvertError::Unsupported("TargetsInShader"));
+        return Err(ConvertError::Unsupported(crate::refusal::TARGETS_IN_SHADER));
     }
     if variant.flags.contains(VariantFlags::STORAGE_OFFSET) {
         offset::storage_offsets(module, stage, reflection)?;
@@ -531,7 +531,9 @@ impl Wrapped {
             if let TypeInner::Struct { members, .. } = &module.types[a.ty].inner
                 && members.iter().any(|m| m.binding.as_ref().is_some_and(at))
             {
-                return Err(ConvertError::Unsupported("PulledInputInStruct"));
+                return Err(ConvertError::Unsupported(
+                    crate::refusal::PULLED_INPUT_IN_STRUCT,
+                ));
             }
         }
         Ok(None)
@@ -788,13 +790,17 @@ fn linked_out(
         w.changed = true;
     }
     if values.len() != usize::from(if distances { linked.clip_distances } else { 0 }) {
-        return Err(ConvertError::Unsupported("LinkedClipDistanceCount"));
+        return Err(ConvertError::Unsupported(
+            crate::refusal::LINKED_CLIP_DISTANCE_COUNT,
+        ));
     }
     let taken = w.outputs.iter().any(
         |o| matches!(o.binding, Binding::Location { location, .. } if location >= linked.location),
     );
     if taken {
-        return Err(ConvertError::Unsupported("LinkedLocationTaken"));
+        return Err(ConvertError::Unsupported(
+            crate::refusal::LINKED_LOCATION_TAKEN,
+        ));
     }
     values.extend(z);
     let vec4 = vector(module, 4, Scalar::F32);
@@ -871,7 +877,11 @@ fn clipped(
     let mask = match samples {
         0 => return Err(ConvertError::Unsupported("SampleCount")),
         1 => None,
-        4 if per_sample => return Err(ConvertError::Unsupported("ClipDistancePerSample")),
+        4 if per_sample => {
+            return Err(ConvertError::Unsupported(
+                crate::refusal::CLIP_DISTANCE_PER_SAMPLE,
+            ));
+        }
         4 => {
             let vec4 = vector(module, 4, Scalar::F32);
             let position = w.input(
@@ -940,7 +950,11 @@ fn clipped(
             }
             Some(mask)
         }
-        _ => return Err(ConvertError::Unsupported("ClipDistanceSamples")),
+        _ => {
+            return Err(ConvertError::Unsupported(
+                crate::refusal::CLIP_DISTANCE_SAMPLES,
+            ));
+        }
     };
     let (f, body) = (&mut w.f, &mut w.prologue);
     let outside = match mask {
@@ -986,7 +1000,9 @@ fn dual_source(w: &mut Wrapped) -> Result<()> {
         w.output(|b| matches!(b, Binding::Location { location, .. } if *location == n))
     };
     let (Some(first), Some(second)) = (target(w, 0), target(w, 1)) else {
-        return Err(ConvertError::Unsupported("DualSourceWithoutTwoTargets"));
+        return Err(ConvertError::Unsupported(
+            crate::refusal::DUAL_SOURCE_WITHOUT_TWO_TARGETS,
+        ));
     };
     for (at, source) in [(first, 0), (second, 1)] {
         if let Binding::Location {
@@ -1338,7 +1354,9 @@ fn constants_as_storage(
             continue;
         }
         if next >= SlotKind::Storage.first_binding() + SlotKind::Storage.slots() {
-            return Err(ConvertError::Unsupported("BindingsBeyondLimit"));
+            return Err(ConvertError::Unsupported(
+                crate::refusal::BINDINGS_BEYOND_LIMIT,
+            ));
         }
         let old = naga::ResourceBinding {
             group: b.set,
@@ -1823,11 +1841,13 @@ fn samples(
             else {
                 continue;
             };
-            let g = global_of(f, sampler).ok_or(ConvertError::Unsupported("SamplerArgument"))?;
+            let g = global_of(f, sampler)
+                .ok_or(ConvertError::Unsupported(crate::refusal::SAMPLER_ARGUMENT))?;
             let Some(s) = slot_of(module, reflection, g, SlotKind::Sampler) else {
                 continue;
             };
-            let t = global_of(f, image).ok_or(ConvertError::Unsupported("TextureArgument"))?;
+            let t = global_of(f, image)
+                .ok_or(ConvertError::Unsupported(crate::refusal::TEXTURE_ARGUMENT))?;
             let texture = slot_of(module, reflection, t, SlotKind::Texture);
             let in_texture_set = |set: u128, r: u32| r < u128::BITS && set & (1 << r) != 0;
             let in_sampler_set = |set: u16| s < u16::BITS && set & (1 << s) != 0;
@@ -1932,10 +1952,14 @@ fn samples(
             unreachable!()
         };
         if site.biased && depth_ref.is_some() {
-            return Err(ConvertError::Unsupported("LodBiasOnComparison"));
+            return Err(ConvertError::Unsupported(
+                crate::refusal::LOD_BIAS_ON_COMPARISON,
+            ));
         }
         if site.clamped.is_some() && depth_ref.is_some() {
-            return Err(ConvertError::Unsupported("MinLodOnComparison"));
+            return Err(ConvertError::Unsupported(
+                crate::refusal::MIN_LOD_ON_COMPARISON,
+            ));
         }
         if site.mirrored {
             // A comparison or a depth sample has no gradient form, a gather's texels would come in
@@ -2048,7 +2072,9 @@ fn samples(
                     }
                 );
                 if depth && matches!(level, SampleLevel::Zero | SampleLevel::Exact(_)) {
-                    return Err(ConvertError::Unsupported("LodBiasOnDepthLevel"));
+                    return Err(ConvertError::Unsupported(
+                        crate::refusal::LOD_BIAS_ON_DEPTH_LEVEL,
+                    ));
                 }
                 let bias = load_helper(&mut callee, &mut body, bias_at);
                 let add = |callee: &mut Function, body: &mut Block, e| {
@@ -2199,7 +2225,9 @@ fn mirror_once(
     );
     let level = match level {
         SampleLevel::Auto | SampleLevel::Bias(_) if depth => {
-            return Err(ConvertError::Unsupported("MirrorOnceOnDepth"));
+            return Err(ConvertError::Unsupported(
+                crate::refusal::MIRROR_ONCE_ON_DEPTH,
+            ));
         }
         SampleLevel::Auto | SampleLevel::Bias(_) => {
             let [mut x, mut y] = [naga::DerivativeAxis::X, naga::DerivativeAxis::Y].map(|axis| {
@@ -2354,7 +2382,8 @@ fn loads(
             let Expression::ImageLoad { image, .. } = *e else {
                 continue;
             };
-            let g = global_of(f, image).ok_or(ConvertError::Unsupported("TextureArgument"))?;
+            let g = global_of(f, image)
+                .ok_or(ConvertError::Unsupported(crate::refusal::TEXTURE_ARGUMENT))?;
             let Some(r) = slot_of(module, reflection, g, SlotKind::Texture) else {
                 continue;
             };
@@ -2465,9 +2494,11 @@ fn texture_info(
                 ImageQuery::NumSamples => true,
                 _ => continue,
             };
-            let g = global_of(f, image).ok_or(ConvertError::Unsupported("TextureArgument"))?;
-            let r = slot_of(module, reflection, g, SlotKind::Texture)
-                .ok_or(ConvertError::Unsupported("TextureInfoOfStorage"))?;
+            let g = global_of(f, image)
+                .ok_or(ConvertError::Unsupported(crate::refusal::TEXTURE_ARGUMENT))?;
+            let r = slot_of(module, reflection, g, SlotKind::Texture).ok_or(
+                ConvertError::Unsupported(crate::refusal::TEXTURE_INFO_OF_STORAGE),
+            )?;
             sites.push((owner, h, r, samples));
         }
     }

@@ -114,7 +114,12 @@ fn typed_buffers_convert_for_every_format_through_storage() {
         let c = convert(Source::Dxbc(&bytes), &key(f, f), None);
         if n >= FLOAT_FORMATS.len() - 2 {
             assert!(
-                matches!(c, Err(ConvertError::Unsupported("TypedBufferFormatAbsent"))),
+                matches!(
+                    c,
+                    Err(ConvertError::Unsupported(
+                        wcontainers_shaders::refusal::TYPED_BUFFER_FORMAT_ABSENT
+                    ))
+                ),
                 "{f:?}"
             );
             continue;
@@ -143,19 +148,34 @@ fn typed_buffers_convert_for_every_format_through_storage() {
         other => panic!("{:?}", other.map(|_| ())),
     };
     let plain = key(Format::Rgba32Float, Format::Rgba32Float);
-    assert_eq!(refused(&VariantKey::default()), "TypedBuffer");
+    assert_eq!(
+        refused(&VariantKey::default()),
+        wcontainers_shaders::refusal::TYPED_BUFFER
+    );
     let mut k = plain.clone();
     k.texel_formats.remove(0);
-    assert_eq!(refused(&k), "TypedBufferFormat");
+    assert_eq!(
+        refused(&k),
+        wcontainers_shaders::refusal::TYPED_BUFFER_FORMAT
+    );
     let mut k = plain.clone();
     k.texel_formats[1].1 = Format::Rgba16Float;
-    assert_eq!(refused(&k), "TypedBufferFormatKind");
+    assert_eq!(
+        refused(&k),
+        wcontainers_shaders::refusal::TYPED_BUFFER_FORMAT_KIND
+    );
     let mut k = plain.clone();
     k.storage_formats[1].1 = Format::Rg16Uint;
-    assert_eq!(refused(&k), "TypedBufferAtomicFormat");
+    assert_eq!(
+        refused(&k),
+        wcontainers_shaders::refusal::TYPED_BUFFER_ATOMIC_FORMAT
+    );
     let mut k = plain;
     k.texel_buffers = TexelBufferRoute::Texture;
-    assert_eq!(refused(&k), "TypedBufferStorageAsTexture");
+    assert_eq!(
+        refused(&k),
+        wcontainers_shaders::refusal::TYPED_BUFFER_STORAGE_AS_TEXTURE
+    );
 }
 
 #[test]
@@ -202,6 +222,8 @@ fn storage_textures_convert_through_buffers() {
     k.storage_formats.pop();
     assert!(matches!(
         convert(Source::Dxbc(&bytes), &k, None),
-        Err(ConvertError::Unsupported("StorageFormat"))
+        Err(ConvertError::Unsupported(
+            wcontainers_shaders::refusal::STORAGE_FORMAT
+        ))
     ));
 }

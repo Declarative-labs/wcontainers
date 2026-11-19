@@ -42,7 +42,7 @@ pub(super) fn split(
     // Each array with its layers' variables, layer 0 first.
     let mut split = Vec::new();
     for g in arrays {
-        let refused = ConvertError::Unsupported("MultisampledArrayTexture");
+        let refused = ConvertError::Unsupported(crate::refusal::MULTISAMPLED_ARRAY_TEXTURE);
         let slot = slot_of(module, reflection, g, SlotKind::Texture).ok_or(refused.clone())?;
         let count = layers
             .iter()
@@ -73,7 +73,9 @@ pub(super) fn split(
         let mut vars = alloc::vec![g];
         for layer in 1..count {
             if next >= SlotKind::Texture.first_binding() + SlotKind::Texture.slots() {
-                return Err(ConvertError::Unsupported("BindingsBeyondLimit"));
+                return Err(ConvertError::Unsupported(
+                    crate::refusal::BINDINGS_BEYOND_LIMIT,
+                ));
             }
             vars.push(module.global_variables.append(
                 GlobalVariable {

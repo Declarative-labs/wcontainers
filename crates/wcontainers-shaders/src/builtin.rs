@@ -24,8 +24,9 @@ pub fn storage_clear(
     format: Format,
     dimension: ViewDimension,
 ) -> Result<ShaderModule, ConvertError> {
-    let storage = crate::lower::storage_format(format)
-        .ok_or(ConvertError::Unsupported("StorageFormatAbsent"))?;
+    let storage = crate::lower::storage_format(format).ok_or(ConvertError::Unsupported(
+        crate::refusal::STORAGE_FORMAT_ABSENT,
+    ))?;
     // WGSL's name of a storage format is naga's variant name in lower case.
     let name = format!("{storage:?}").to_ascii_lowercase();
     let (texture, coordinates) = match dimension {
@@ -33,7 +34,7 @@ pub fn storage_clear(
         ViewDimension::D2Array => ("texture_storage_2d_array", "at.xy, at.z"),
         ViewDimension::D3 => ("texture_storage_3d", "at"),
         ViewDimension::Cube | ViewDimension::CubeArray => {
-            return Err(ConvertError::Unsupported("ClearDimension"));
+            return Err(ConvertError::Unsupported(crate::refusal::CLEAR_DIMENSION));
         }
     };
     let value = match format.kind() {
@@ -104,14 +105,16 @@ pub fn storage_clear_value(
     values: [u32; 4],
     float: bool,
 ) -> Result<[u32; 4], ConvertError> {
-    let absent = ConvertError::Unsupported("StorageFormatAbsent");
+    let absent = ConvertError::Unsupported(crate::refusal::STORAGE_FORMAT_ABSENT);
     if crate::lower::storage_format(format).is_none() {
         return Err(absent);
     }
     let (kind, components, _) = layout(vertex_format(format).ok_or(absent)?);
     if float {
         return match kind {
-            Kind::Uint | Kind::Sint => Err(ConvertError::Unsupported("FloatClearOfInteger")),
+            Kind::Uint | Kind::Sint => Err(ConvertError::Unsupported(
+                crate::refusal::FLOAT_CLEAR_OF_INTEGER,
+            )),
             // Denormal floats as zeros of their sign, as Direct3D's float arithmetic takes them.
             _ => Ok(values.map(|v| {
                 if v & 0x7f80_0000 == 0 {
@@ -134,7 +137,9 @@ pub fn storage_clear_value(
             Kind::Snorm => {
                 let max = (1i32 << (bits - 1)) - 1;
                 if signed < -max {
-                    return Err(ConvertError::Unsupported("SnormMostNegative"));
+                    return Err(ConvertError::Unsupported(
+                        crate::refusal::SNORM_MOST_NEGATIVE,
+                    ));
                 }
                 ((f64::from(signed) / f64::from(max)) as f32).to_bits()
             }

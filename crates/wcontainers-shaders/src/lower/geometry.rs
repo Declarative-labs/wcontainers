@@ -53,7 +53,7 @@ fn input_vertices(input: u64) -> Result<u32> {
         primitive::TRIANGLES => 3,
         primitive::TRIANGLES_ADJ => 6,
         // Patches as a geometry shader's input (without tessellation): not built.
-        p if p > primitive::PATCH => return Err(unsupported("GeometryPatchInput")),
+        p if p > primitive::PATCH => return Err(unsupported(crate::refusal::GEOMETRY_PATCH_INPUT)),
         _ => return Err(malformed("geometry input primitive".into())),
     })
 }
@@ -72,7 +72,7 @@ impl Lowering<'_> {
             _ => {
                 g.output = value;
                 if op.lits.get(1).is_some_and(|&mask| mask & !1 != 0) {
-                    return Err(unsupported("GeometryStreams"));
+                    return Err(unsupported(crate::refusal::GEOMETRY_STREAMS));
                 }
             }
         }
@@ -238,7 +238,8 @@ impl Lowering<'_> {
             })
             .map(|(_, io)| (io.var, io.ty.basic().map(|m| m.scalar)));
         if let Some((pos_var, pos_scalar)) = position {
-            let pos_scalar = Self::scalar(pos_scalar.ok_or(unsupported("BuiltInArray"))?)?;
+            let pos_scalar =
+                Self::scalar(pos_scalar.ok_or(unsupported(crate::refusal::BUILT_IN_ARRAY))?)?;
             let p = b.global(pos_var);
             let p = b.load(p);
             slots.push((p, pos_scalar.kind));
@@ -367,7 +368,7 @@ impl Lowering<'_> {
             .1
             .ty
             .basic()
-            .ok_or(unsupported("OutputArray"))?;
+            .ok_or(unsupported(crate::refusal::OUTPUT_ARRAY))?;
         let s = Self::scalar(first.scalar)?;
         let s = if s == Scalar::BOOL { Scalar::U32 } else { s };
         let mut comps = Vec::new();
@@ -382,7 +383,10 @@ impl Lowering<'_> {
                 Some(&i) => {
                     let io = &self.io[i].1;
                     let (_, comp) = io.location.unwrap();
-                    let m = io.ty.basic().ok_or(unsupported("OutputArray"))?;
+                    let m = io
+                        .ty
+                        .basic()
+                        .ok_or(unsupported(crate::refusal::OUTPUT_ARRAY))?;
                     let p = b.global(io.var);
                     let v = b.load(p);
                     let v = if m.size > 1 { b.field(v, c - comp) } else { v };
@@ -532,7 +536,7 @@ impl Lowering<'_> {
                     ),
                 ) => {
                     if !io.ty.dims.is_empty() || member.size != 1 || to == Scalar::BOOL {
-                        return Err(unsupported("GeometryInputShape"));
+                        return Err(unsupported(crate::refusal::GEOMETRY_INPUT_SHAPE));
                     }
                     let v = match which {
                         builtin::PRIMITIVE_ID => prim,
@@ -552,11 +556,11 @@ impl Lowering<'_> {
                     }
                     continue;
                 }
-                _ => return Err(unsupported("GeometryInput")),
+                _ => return Err(unsupported(crate::refusal::GEOMETRY_INPUT)),
             };
             // A value per input vertex, from its record's slot.
             if io.ty.dims[..] != [n] || to == Scalar::BOOL {
-                return Err(unsupported("GeometryInputShape"));
+                return Err(unsupported(crate::refusal::GEOMETRY_INPUT_SHAPE));
             }
             let (slot, comp) = match location {
                 Some((loc, comp)) => {
@@ -647,7 +651,10 @@ impl Lowering<'_> {
                 self.reflect_value(id, false, None, 0, member, 0, system);
                 continue;
             }
-            let member = io.ty.basic().ok_or(unsupported("OutputArray"))?;
+            let member = io
+                .ty
+                .basic()
+                .ok_or(unsupported(crate::refusal::OUTPUT_ARRAY))?;
             match (io.location, io.builtin) {
                 (Some((loc, comp)), _) => {
                     let modes = super::output_modes(&self.variant.output_interpolation, loc);
@@ -663,7 +670,7 @@ impl Lowering<'_> {
                     };
                     self.reflect_value(id, false, None, 0, member, 0, Some(system))
                 }
-                _ => return Err(unsupported("GeometryOutput")),
+                _ => return Err(unsupported(crate::refusal::GEOMETRY_OUTPUT)),
             }
         }
         self.reflection.extras = StageExtras::Geometry {
