@@ -8058,7 +8058,6 @@ code	crates/wcontainers-translator/src/full/proof.rs	int	Domain::of_extend	64
 code	crates/wcontainers-translator/src/full/proof.rs	int	FullEmitter<'_,G>::read	0xffff_ffff
 code	crates/wcontainers-translator/src/full/proof.rs	int	FullEmitter<'_,G>::region	12
 code	crates/wcontainers-translator/src/full/proof.rs	int	FullEmitter<'_,G>::step_value	32
-code	crates/wcontainers-translator/src/full/proof.rs	int	FullEmitter<'_,G>::turns	0xffff_ffff
 code	crates/wcontainers-translator/src/full/proof.rs	int	FullEmitter<'_,G>::turns	32
 code	crates/wcontainers-translator/src/full/proof.rs	int	counting_exit	32
 code	crates/wcontainers-translator/src/full/proof.rs	int	counting_exit	32
