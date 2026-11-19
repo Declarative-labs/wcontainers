@@ -63,56 +63,25 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   at the repository root (dae93301), the plan corrected (c16d0e00). The stale LTP run of run 2 (on 798f07ff,
   664 of 2,694 stand-in tests done) was stopped, since the merge changed the kernel under it. J5's bar is run
   again from a clean build at c16d0e00 (section "J5 run 3").
-- J5 stands at: everything is built and pushed (ca519a78 is the code; later commits are this file); the owned
-  suite passes; the bar on the merged code has not run to its end, because Docker Desktop stopped twice under
-  it and had not come back at 04:51 (section "J5 run 3"). Scratch `j5run3/all.sh` is left running: it waits
-  for Docker, then runs the whole kernel test crate at the stand-in, full, none and bounded on the scratch
-  tree j5run3/tree (ca519a78), then the whole LTP comparison, and stops (writing j5run3/spoiled.flag) if
-  Docker goes away again. Next: read j5run3/f-*.txt with `j5run3/compare.sh`, set every difference beside
-  run 2's list (section "J5 run 2"), then j5run3/ltp/whole-compare.txt; re-run with `all.sh` if
-  spoiled.flag exists (delete it, and set the spoiled logs aside first). The literal check still waits for the
-  orchestrator's answer (under "For the orchestrator"); a scratch trial merge passes after `init`.
+- J5 run 4 (2026-11-19, the task's run 3): origin/phase-1 had nothing new (still eb515b7a). The literal check is
+  adopted: origin/phase-1-literals (7668c010) merged and this branch's baseline started with its `init` in the
+  merge (11aeb561), as the brief says; a departure from docs/literals.md step 1 (Departures). Then parts of the
+  fix list, each its own commit (section "J5 run 4"). J5's bar is run again on 11aeb561 (section "J5 run 4").
 
 ## For the orchestrator
 
-- The literal check (J5 run 2): the brief says to merge origin/phase-1-literals into this branch and run its
-  init, but the check's own document at that branch's tip (docs/literals.md, "How a track adopts the check",
-  since 0eeb26e4) says a track does not merge phase-1-literals directly: the orchestrator merges it into main
-  and runs init there, and each track then merges main. Its reason applies here: this track merges
-  origin/phase-1 every run (the streams track's standard input comes that way), and once this branch has a
-  baseline, a merge bringing code the check has not seen gives `+` lines in the kernel's crates, which this
-  track may neither fix nor add to the baseline; and a second track's own start would fail as "started more
-  than once" when both reach main. So it is not merged. Tried instead in a scratch merge of 798f07ff with
-  origin/phase-1-literals at f561838a (a scratch worktree j5/lit, never pushed, removed after; logs j5/lit-check-before.txt,
-  lit-init.txt, lit-check-after.txt): before init the check failed with 103 `+` lines (51 in
-  wcontainers-runtime, 42 in wcontainers-wasmtime, 10 in the kernel test crate) and 87 `-` lines (main's
-  baseline of the J4a code, since changed; one is the translator test crate's); after `init` (no `proposed:` lines) `check` exits 0. The baseline
-  init wrote has 340 lines in wcontainers-runtime (spec.rs 250, mostly the kernel's defaults written again,
-  asked of the kernel track; image.rs 72), 88 in wcontainers-wasmtime, and 53 in the kernel test crate's
-  driver.rs. Merge phase-1-literals into main (or phase-1) and init there, and this track adopts it by
-  merging that, as the document says; or say to merge it directly regardless.
-- The literal check (J5 run 3): the same question, unanswered by this run's task, so it is still not merged
-  (the streams track, now on phase-1, waited for the same reason). Tried again in a scratch merge of c16d0e00
-  with origin/phase-1-literals at 7668c010 (scratch worktree j5run3/lit, never pushed, removed after; logs
-  j5run3/lit-check-before.txt, lit-init.txt, lit-check-after.txt): before `init` the check failed with 137
-  `+` lines (76 code, 56 restated, 3 redefinition, 2 role) and 134 `-` lines; `init` proposed nothing; after
-  it `check` exits 0. Its baseline then has 342 lines in wcontainers-runtime, 93 in wcontainers-wasmtime and
-  49 in the kernel test crate's driver.rs.
-- J5 run 3: Docker Desktop stopped twice under J5's bar ("Docker Desktop is unable to start", at 02:04 and at
-  02:51 on 2026-11-19; it answered again at 02:39 the first time, and not by 04:51 the second). This track did
-  not restart it, since it is shared. If it is to be restarted, that is the orchestrator's or the owner's
-  call; scratch `j5run3/all.sh` (left running, pid in `ps`) starts the bar by itself once it answers.
-- J5 run 3: run 2's LTP run was stopped (its code is no longer this branch's); the whole LTP comparison is
-  started again by scratch `j5run3/all.sh` after the whole-crate bar, on j5run3/tree at ca519a78 (results
-  j5run3/ltp/whole-*.tsv, whole-compare.txt; j5run3/after.done marks its end). If it is stopped,
-  `j5run3/ltp.sh whole` continues where its results files left off. Delete the worktree j5run3/tree after
-  (`git worktree remove --force`; its target is about 54 GB).
-- J5 run 2 (stopped in run 3): the whole LTP comparison was running, started by this track when the bar ended (scratch
-  `j5/after.sh`, which calls `j5/ltp.sh whole`; started 23:34 on 2026-11-18, detached, on the scratch worktree
-  j5/tree at 798f07ff). At 00:41 the stand-in half had 664 of 2,694 tests (the fs group's tests that run to
-  the 900 s limit take most of it); the back end's half follows and is expected (not measured) to take about
-  ten hours or more. It is the one part of J5's bar not yet read; scratch j5/after.done marks its end. If it
-  is stopped, `j5/ltp.sh whole` continues where its results files left off.
+- The literal check is adopted on this branch (J5 run 4, 11aeb561): origin/phase-1-literals at 7668c010 merged
+  directly and `init` run in the merge, as the brief says twice ("merge origin/phase-1-literals into your
+  branch", "merge that tip (one init at most)"), after two runs of asking whether docs/literals.md step 1
+  (the orchestrator merges it into main and inits there; tracks merge main) should rule instead, unanswered.
+  What follows from it: this branch's baseline covers the whole tree as it is on phase-1 plus this track's
+  work, so fast-forwarding phase-1 to this branch gives main the check with one init, which is what step 1
+  asks of the orchestrator; but another track that adopted on its own branch first would meet a second start.
+  And a later merge of origin/phase-1 that brings kernel code the check has not seen will fail the check here
+  with `+` lines this track may not fix or add, until main has the check. The streams track had waited.
+- Docker Desktop (J5 run 3 and 4): it stopped twice under run 3's bar, was still down at 04:52 and answered
+  again at 04:58 on 2026-11-19 (server 29.9.3); this track did not restart it. The rented ARM machine could
+  not be reached at 04:52 nor later in this run (`arm-run --status`), so the bar ran on the Mac.
 - J5 run 1: the kernel track's LTP harness is on origin/phase-1 (crates/wcontainers-kernel-test/src/bin/ltp.rs),
   so its comparison is part of J5's bar. The one command for the long run is scratch `j5/ltp.sh NAME`
   (section "How to run").
@@ -211,6 +180,51 @@ the capability sets, the resource limits, no_new_privs, a seccomp filter, sysctl
 leave a default mount out), the domain name, and the per-process values (`oomScoreAdj`, `ioPriority`,
 `scheduler`, `execCPUAffinity`, `personality`, `timeOffsets`); and the address-space size and the memory
 size the guest is told (plan section 8), which `Machine` holds once the kernel takes them.
+
+## J5 run 4 (2026-11-19; this Mac, Apple M5 Max, 18 cores, 128 GiB; other tracks running)
+
+The literal check (adopted in 11aeb561): `cargo run -q -p wcontainers-literals -- check` exits 0 at every commit of
+this run. `init` proposed no `generated` lines. Baseline lines of what this track owns, at adoption and now:
+wcontainers-runtime 325 and 268, wcontainers-wasmtime 117 and 99, the kernel test driver 39 and 32 (the whole
+file 8,168 and 8,085; the other line is the kernel test crate's tests/standin.rs `CODE`, whose redefinition
+ended when the back end tests stopped defining theirs). Marks: none. The list the check prints under "changes
+that could add lines to the baseline" (docs/literals.md step 3), at 5ae76e24:
+- 11aeb56141f3 the start
+- a571b70e0590 the init after the baseline arrived by a merge (the first change of the baseline after the
+  merge; it only deleted lines, as every later one)
+- 68214b2eec10 the start (the literals branch's own)
+- 89f882810517, 7119e3f3a527, c3bf56d4ed9f, 31ec396f9a4a, 0f1875633508: new rules, for literals already in the
+  tree (the literals branch's)
+
+Fixed from the fix list (each its own commit, each with its `-` lines deleted):
+- spec.rs (a571b70e): the four refusal reasons given more than once named (step 14 item 64); the umask
+  reason formats `UMASK`; two reasons whose line joins had lost their backslash (18 spaces in the message) mended.
+- image.rs (733046a1, 656f588e, 1588fb3b, dfe4c06b): the OCI layout's files and version, Docker's layer media
+  type, the whiteouts and the PAX extended attribute key (step 11 items 43 to 45, 49); the os and the digest
+  algorithm compared as oci-spec's `Os::Linux` and `DigestAlgorithm::Sha256` (42, 43); the annotations of
+  conversion.md as full keys, their list separator, the configuration fields refusals name (46 to 48); the
+  account tables' paths, field, member and comment separators, the `User` separator, Docker's /etc and its
+  three files (`docker_files` returns a Vec, step 12 items 50, 51); `PATH=`, the search path's separator and
+  the assignment character (53). The image tests use the constants.
+- files.rs's directory listing test reads a page (`PAGE_SIZE`).
+- The back end tests (86513c6d): `CODE` in six test files is `wcontainers_abi::LOWEST_ADDRESS` (step 16 item 71),
+  and lib.rs's test uses it and twice it.
+- The kernel test driver (5ae76e24, its own commit): its timing report prints durations, its repeatable clock
+  starts at one second as a `Duration`, its retrieve notice asks for a page.
+
+Tried and backed out: one constant per JSON key in spec.rs (hard case 1, option a; scratch
+j5run4/spec-keys-tried.patch). It removed 174 lines and added 267 `restated` ones: the keys are common words that
+test literals elsewhere hold ("root", "terminal", "options", "path", "sysctl"), 12 of them in the kernel test
+crate's tests and the literals crate, which this track may not edit (docs/literals.md step 8), and 249 in this
+track's refused.rs, surface.rs and spec.rs tests, which would need the keys exported; two more were
+redefinitions of the translator's `contract::HOOKS` and `ENV`. Left for the orchestrator's ruling on hard case 1.
+
+Left (waits on other tracks' constants, or a ruling): spec.rs's mounts, capabilities, limits, umask and
+read-only paths (the kernel's defaults, step 13), its JSON keys (hard case 1), and its other refusal reasons
+(hard case 2); image.rs's path syntax (`/`, `.`, `..`; the kernel's), root's id 0, `MOST_LINKS` (the kernel's
+`MAX_SYMLINKS`), Docker's hosts lines; files.rs's `.` and `..` (the kernel's); the back end's hook counts and
+code line size (the translator's); wcon's option words restated by surface.rs (a binary's constants cannot be
+imported by the tests); refused.rs's `"mounts"` and bind options.
 
 ## J5 run 3 (2026-11-19; this Mac, Apple M5 Max, 18 cores, 128 GiB; other tracks running)
 
@@ -1791,19 +1805,15 @@ array of slots in microseconds.
   tests' server) has its passthrough file system on Linux only, and on macOS it and fuser speak macFUSE's
   messages, not Linux's, which the kernel sends. It is written on fuse-abi's Linux types and rustix.
 - `root.path` stays refused (J5's task allowed either), for the reason in plan section 14.
-- The literal check is not merged (J5 run 2), though the brief says to merge origin/phase-1-literals: the
-  check's own adoption steps, which the brief says to follow, adopt it through main, and merging it here
-  would break the check at this track's next merge of origin/phase-1 (under "For the orchestrator"). Tried
-  in a scratch merge instead; it passes there after `init`. No literal of the fix list was fixed in this run,
-  so that the bar's whole-suite runs (about five hours) are on the code as pushed.
+- The literal check is merged directly (J5 run 4, 11aeb561), as the brief says, against its own adoption steps
+  (docs/literals.md step 1: through main). Runs 2 and 3 held it back on that step and asked; with no answer,
+  the brief's words rule. Consequences under "For the orchestrator".
 - `System` gained `standard` (J5 run 3), with no default: every system holds the other sides of the ends it
   names. The test driver's asserts that the terminal asked for is its outside's (it starts its kernels
   itself, so it is never asked). A terminal's resizing has no surface yet (the local system has no source of
   a new size); `ExecutionConfig` with `ThreadOrdering` and `ReplayDeterminism` is not built: only serial
   turns exist and the progress count is the translator track's, so the translator's configuration is still
   given to `Runtime::container` alone (plan section 20).
-- The literal check is still not merged in J5 run 3, for the same reason (under "For the orchestrator"); no
-  literal of the fix list was fixed, so that the bar is on the code as pushed.
 - `System` gained `serve_directory` (with a default that answers `Unsupported`, so the kernel test driver did
   not change) and `LocalSystem` gained `publish`: the surface had no way to name a host directory or a
   published port. Names suggested, the owner's (plan section 20).
