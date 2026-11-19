@@ -67,6 +67,14 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   adopted: origin/phase-1-literals (7668c010) merged and this branch's baseline started with its `init` in the
   merge (11aeb561), as the brief says; a departure from docs/literals.md step 1 (Departures). Then parts of the
   fix list, each its own commit (section "J5 run 4"). J5's bar is run again on 11aeb561 (section "J5 run 4").
+- J5 stands at: everything is built and pushed. On this Mac the whole kernel test crate gives the stand-in's
+  verdicts test by test at full, none and bounded, but the known differences and the four tests waiting on
+  the address ceiling. On the ARM machine two outside tests fail at full on a kernel assertion that allows no
+  already-woken parked call (asked of the kernel track). The one part not read is the whole LTP comparison:
+  running on this Mac since 09:05 (`j5run3/ltp-mac.sh whole`, about ten hours expected from run 2's pace, not
+  measured), or in about two hours on the ARM machine by `j5run4/ltp-arm.sh` (expected from its stand-in
+  pace, 1,253 results in about 40 minutes). Next: read j5run3/ltp/whole-compare.txt (or j5run4/arm/ltp's);
+  then delete the scratch worktree j5run3/tree (`git worktree remove --force`, its target about 54 GB).
 
 ## For the orchestrator
 
@@ -79,6 +87,11 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   asks of the orchestrator; but another track that adopted on its own branch first would meet a second start.
   And a later merge of origin/phase-1 that brings kernel code the check has not seen will fail the check here
   with `+` lines this track may not fix or add, until main has the check. The streams track had waited.
+- J5 run 4: the whole LTP comparison is the one part of J5's bar not read. It runs on this Mac (started 09:05,
+  `j5run3/ltp-mac.sh whole`, on j5run3/tree at f119fa27; log j5run3/ltp/whole.log; results continue where they
+  left off if stopped). The ARM machine went away three times in this run, the LTP run there among them;
+  `j5run4/ltp-arm.sh` is the one command there and fetches its results to j5run4/arm/ltp. Either comparison
+  file (whole-compare.txt) is the bar's last part. Delete j5run3/tree after.
 - Docker Desktop (J5 run 3 and 4): it stopped twice under run 3's bar, was still down at 04:52 and answered
   again at 04:58 on 2026-11-19 (server 29.9.3); this track did not restart it. The rented ARM machine could
   not be reached at 04:52 nor later in this run (`arm-run --status`), so the bar ran on the Mac.
