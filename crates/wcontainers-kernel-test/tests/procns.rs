@@ -23,3 +23,10 @@ fn mount_tables_match_reference_on_backend_root() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     wcontainers_kernel_test::assert_same_output_on_backend_root_seeded(&out, "mountinfo", &[], 0);
 }
+
+/// Docker's masks over `/proc` and `/sys` entries.
+#[test]
+fn masked_entries_match_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "masked", &[]);
+}

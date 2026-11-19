@@ -13,7 +13,10 @@
 #include <sys/sysmacros.h>
 #include <unistd.h>
 
-static const char *shown[] = {"/", "/proc", "/dev", "/dev/pts", "/sys", "/dev/mqueue", "/dev/shm", "/proc/sys"};
+static const char *shown[] = {"/",          "/proc",        "/dev",       "/dev/pts",
+                              "/sys",       "/dev/mqueue",  "/dev/shm",   "/proc/sys",
+                              "/proc/interrupts", "/proc/kcore", "/proc/keys", "/proc/scsi",
+                              "/proc/timer_list", "/sys/firmware"};
 
 struct mount {
     int id, parent;

@@ -122,6 +122,8 @@ pub(crate) struct Files {
     pub event_counters: Vec<alloc::rc::Weak<core::cell::RefCell<syscall::eventfd::Counter>>>,
     /// Changed attributes of the `/proc` entries that keep them.
     pub proc_kept: BTreeMap<u64, fs::proc::Kept>,
+    /// What Docker mounts over entries of `/proc`'s root, by name.
+    pub proc_masked: Vec<(&'static [u8], fs::Node)>,
     /// Every tmpfs's count of what it holds, for the machine's memory in use.
     pub spaces: Vec<Rc<fs::Space>>,
     /// Pseudo-terminal pairs by number, until both sides have closed.
@@ -307,6 +309,7 @@ impl Kernel {
                 generation_key: [0; 16],
                 event_counters: Vec::new(),
                 proc_kept: BTreeMap::new(),
+                proc_masked: Vec::new(),
                 spaces,
                 terminals: BTreeMap::new(),
                 backend: None,
@@ -646,6 +649,7 @@ impl Kernel {
             nsfs: self.files.nsfs.clone(),
             boot: self.boot,
             kept: &self.files.proc_kept,
+            masked: &self.files.proc_masked,
             counters: &self.counters,
         };
         let walk = fs::Walk {

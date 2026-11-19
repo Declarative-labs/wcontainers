@@ -33,6 +33,8 @@ pub(crate) struct View<'a> {
     pub boot: Time,
     /// Attributes changed on entries that keep them, by inode number.
     pub kept: &'a BTreeMap<u64, Kept>,
+    /// What is mounted over entries of the root, by name.
+    pub masked: &'a [(&'static [u8], Node)],
     pub counters: &'a crate::counters::Counters,
 }
 
@@ -331,11 +333,16 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("config.gz", Global::File(0o444)),
     ("cpuinfo", Global::File(0o444)),
     ("filesystems", Global::File(0o444)),
+    // Docker mounts over these, `scsi` and `timer_list` ([`View::masked`]); they are only listed.
+    ("interrupts", Global::File(0o444)),
+    ("kcore", Global::File(0o400)),
+    ("keys", Global::File(0o444)),
     ("kmsg", Global::File(0o400)),
     ("loadavg", Global::File(0o444)),
     ("meminfo", Global::File(0o444)),
     ("mounts", Global::Link("self/mounts")),
     ("net", Global::Link("self/net")),
+    ("scsi", Global::Directory),
     ("stat", Global::File(0o444)),
     ("swaps", Global::File(0o444)),
     ("sys", Global::Directory),
@@ -438,6 +445,7 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sysvipc/msg", Global::File(0o444)),
     ("sysvipc/sem", Global::File(0o444)),
     ("sysvipc/shm", Global::File(0o444)),
+    ("timer_list", Global::File(0o444)),
     ("uptime", Global::File(0o444)),
     ("version", Global::File(0o444)),
 ];
@@ -1108,6 +1116,11 @@ pub(crate) fn lookup(
     entry: &Entry,
     name: &[u8],
 ) -> Result<Node, Errno> {
+    if *entry == Entry::Root
+        && let Some((_, mask)) = view.masked.iter().find(|(masked, _)| *masked == name)
+    {
+        return Ok(mask.clone());
+    }
     let found = list(view, entry)
         .into_iter()
         .find(|(child, _, _)| child.as_slice() == name)

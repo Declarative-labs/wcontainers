@@ -501,6 +501,7 @@ impl Kernel {
             nsfs: self.files.nsfs.clone(),
             boot: self.boot,
             kept: &self.files.proc_kept,
+            masked: &self.files.proc_masked,
             counters: &self.counters,
         };
         let walk = fs::Walk {
@@ -962,8 +963,9 @@ impl Kernel {
             )
             .expect("a new container's file systems have room");
         }
+        let mut null = None;
         for (name, major, minor) in DOCKER_DEVICES {
-            make(
+            let device = make(
                 &mut self.files.numbers,
                 &dev,
                 name,
@@ -975,6 +977,9 @@ impl Kernel {
                 Content::Special,
             )
             .expect("a new container's file systems have room");
+            if *name == b"null" {
+                null = Some(device);
+            }
         }
         let links: [(&[u8], &[u8]); 6] = [
             (b"ptmx", b"pts/ptmx"),
@@ -1084,10 +1089,70 @@ impl Kernel {
             nsfs: self.files.nsfs.clone(),
             boot: self.boot,
             kept: &self.files.proc_kept,
+            masked: &self.files.proc_masked,
             counters: &self.counters,
         };
         let proc_root = fs::proc::root(&view);
         fs::mount(proc_point, &proc_root);
+
+        // Docker's masks: `/dev/null` bound over the files of `/proc` that tell of the host, and
+        // one empty read-only tmpfs over `/proc/scsi` and `/sys/firmware`.
+        let null = null.expect("Docker's devices hold /dev/null");
+        let mut empty_fs = self
+            .files
+            .numbers
+            .file_system(Kind::Tmpfs, ST_RDONLY | ST_RELATIME);
+        // Its one inode is held here once for each place it is mounted.
+        let empty_space = self.new_space(1, 2);
+        empty_fs.space = Some(empty_space.clone());
+        let empty_ino = self.files.numbers.ino();
+        let empty_root = |fs: FileSystem| {
+            fs::new_inode(
+                fs,
+                empty_ino,
+                New {
+                    mode: S_IFDIR | 0o1777,
+                    uid: 0,
+                    gid: 0,
+                    rdev: 0,
+                    now,
+                    content: Content::Directory(Directory::new()),
+                    parent: None,
+                    name: Vec::new(),
+                },
+            )
+            .expect("an empty tmpfs has room for its root")
+        };
+        let scsi = empty_root(empty_fs.clone());
+        {
+            let mut inode = scsi.borrow_mut();
+            inode.place.parent = Some(Rc::downgrade(&proc_root));
+            inode.place.name = b"scsi".to_vec();
+            inode.place.mount_root = true;
+        }
+        let firmware = make(
+            &mut self.files.numbers,
+            &sys,
+            b"firmware",
+            S_IFDIR | 0o755,
+            0,
+            0,
+            0,
+            now,
+            Content::Directory(Directory::new()),
+        )
+        .expect("a new container's file systems have room");
+        let firmware_root = empty_root(empty_fs.clone());
+        fs::mount(&firmware, &firmware_root);
+        // `size=4k,nr_inodes=1`, the root filling it.
+        empty_space.set_limits(1, 1);
+        self.files.proc_masked = alloc::vec![
+            (&b"interrupts"[..], null.clone()),
+            (b"kcore", null.clone()),
+            (b"keys", null.clone()),
+            (b"scsi", scsi),
+            (b"timer_list", null),
+        ];
 
         // Docker's order: the root, `/proc`, `/dev` and the mounts in it, the volumes (mounted
         // already), then `/proc/sys` again, read-only.
@@ -1143,6 +1208,38 @@ impl Kernel {
                 "proc",
                 "proc",
                 "",
+            )
+        });
+        let dev_fs = fs_of(&dev);
+        for name in ["interrupts", "kcore", "keys", "scsi", "timer_list"] {
+            let point = alloc::format!("/proc/{name}").into_bytes();
+            self.files.mounts.push(if name == "scsi" {
+                Mount {
+                    read_only_super: true,
+                    ..mount(
+                        empty_fs.clone(),
+                        "",
+                        "tmpfs",
+                        "tmpfs",
+                        "size=4k,nr_inodes=1",
+                    )
+                }
+            } else {
+                Mount {
+                    root: "/null",
+                    ..mount(dev_fs.clone(), "", "tmpfs", "tmpfs", "size=65536k,mode=755")
+                }
+            });
+            self.files.mounts.last_mut().expect("just pushed").point = point;
+        }
+        self.files.mounts.push(Mount {
+            read_only_super: true,
+            ..mount(
+                empty_fs,
+                "/sys/firmware",
+                "tmpfs",
+                "tmpfs",
+                "size=4k,nr_inodes=1",
             )
         });
     }
