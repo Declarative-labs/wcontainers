@@ -409,6 +409,8 @@ pub struct ConstDef {
     /// An associated constant inside `impl Trait for Type`, which the trait requires and which is
     /// therefore not a redefinition of the same name elsewhere.
     pub trait_impl: bool,
+    /// Other crates can import it (`pub`).
+    pub public: bool,
     pub value: Option<Value>,
 }
 

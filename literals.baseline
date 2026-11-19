@@ -1631,19 +1631,19 @@ code	crates/wcontainers-kernel-test/src/busybox.rs	str	shapes_of_image	"{major},
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	shapes_of_kernel	"{major},{minor}"
 code	crates/wcontainers-kernel-test/src/driver.rs	bytestr	notice	b"backend-file\0"
 code	crates/wcontainers-kernel-test/src/driver.rs	bytestr	notice	b"data"
-code	crates/wcontainers-kernel-test/src/driver.rs	float	<TestHost as Outside>::arrived	0.5
+code	crates/wcontainers-kernel-test/src/driver.rs	float	<TestHost as System>::arrived	0.5
 code	crates/wcontainers-kernel-test/src/driver.rs	float	report	1e3
 code	crates/wcontainers-kernel-test/src/driver.rs	float	report	1e6
 code	crates/wcontainers-kernel-test/src/driver.rs	float	report	1e6
 code	crates/wcontainers-kernel-test/src/driver.rs	float	report	1e6
 code	crates/wcontainers-kernel-test/src/driver.rs	int	<Injections as Default>::default	100
-code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as Outside>::ran	1000
-code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as Outside>::ran	1500
-code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as Outside>::ran	1500
-code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as Outside>::ran	500
-code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as Outside>::ran	500
-code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as Outside>::stopped	- 1
-code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as Outside>::stopped	32
+code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as System>::ran	1000
+code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as System>::ran	1500
+code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as System>::ran	1500
+code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as System>::ran	500
+code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as System>::ran	500
+code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as System>::stopped	- 1
+code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as System>::stopped	32
 code	crates/wcontainers-kernel-test/src/driver.rs	int	Injecting::new	0x5197
 code	crates/wcontainers-kernel-test/src/driver.rs	int	Injecting::new	0x5a7e
 code	crates/wcontainers-kernel-test/src/driver.rs	int	Injecting::new	0x6e07
@@ -1659,8 +1659,6 @@ code	crates/wcontainers-kernel-test/src/driver.rs	int	exit_code	0x7f
 code	crates/wcontainers-kernel-test/src/driver.rs	int	exit_code	0xff
 code	crates/wcontainers-kernel-test/src/driver.rs	int	exit_code	128
 code	crates/wcontainers-kernel-test/src/driver.rs	int	exit_code	8
-code	crates/wcontainers-kernel-test/src/driver.rs	int	look_ahead	0x1007_a4ead
-code	crates/wcontainers-kernel-test/src/driver.rs	int	look_ahead	64
 code	crates/wcontainers-kernel-test/src/driver.rs	int	moments	100
 code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	12
 code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	3
@@ -1705,7 +1703,6 @@ code	crates/wcontainers-kernel-test/src/generate.rs	str	linux_raw_sys_source	"sr
 code	crates/wcontainers-kernel-test/src/generate.rs	str	rustfmt	"--edition"
 code	crates/wcontainers-kernel-test/src/generate.rs	str	rustfmt	"--emit"
 code	crates/wcontainers-kernel-test/src/generate.rs	str	rustfmt	"2024"
-code	crates/wcontainers-kernel-test/src/generate.rs	str	rustfmt	"rustfmt output is UTF-8"
 code	crates/wcontainers-kernel-test/src/generate.rs	str	rustfmt	"rustfmt"
 code	crates/wcontainers-kernel-test/src/generate.rs	str	rustfmt	"stdout"
 code	crates/wcontainers-kernel-test/src/generate.rs	str	syscall_list	"];\n"
@@ -5876,13 +5873,15 @@ code	crates/wcontainers-kernel/src/vdso.rs	int	image	64
 code	crates/wcontainers-kernel/src/vdso.rs	int	image	7
 code	crates/wcontainers-kernel/src/vdso.rs	int	image	8
 code	crates/wcontainers-kernel/src/vdso.rs	int	image	8
-code	crates/wcontainers-runtime/src/container.rs	str	Runtime<B>::container	"HOME="
-code	crates/wcontainers-runtime/src/container.rs	str	Runtime<B>::container	"HOME={}"
+code	crates/wcontainers-runtime/src/container.rs	str	Runtime<E>::container	"HOME="
+code	crates/wcontainers-runtime/src/container.rs	str	Runtime<E>::container	"HOME={}"
 code	crates/wcontainers-runtime/src/image.rs	byte	Image::lookup	b'/'
 code	crates/wcontainers-runtime/src/image.rs	byte	Image::lookup	b'/'
 code	crates/wcontainers-runtime/src/image.rs	byte	clean	b'/'
 code	crates/wcontainers-runtime/src/image.rs	byte	read_layer	b'/'
 code	crates/wcontainers-runtime/src/image.rs	byte	split	b'/'
+code	crates/wcontainers-runtime/src/image.rs	bytestr	Image::add_to	b"etc"
+code	crates/wcontainers-runtime/src/image.rs	bytestr	Image::add_to	b"etc"
 code	crates/wcontainers-runtime/src/image.rs	bytestr	Image::groups	b"etc/group"
 code	crates/wcontainers-runtime/src/image.rs	bytestr	Image::home	b"etc/passwd"
 code	crates/wcontainers-runtime/src/image.rs	bytestr	Image::lookup	b"."
@@ -5893,6 +5892,9 @@ code	crates/wcontainers-runtime/src/image.rs	bytestr	Image::user	b"etc/group"
 code	crates/wcontainers-runtime/src/image.rs	bytestr	Image::user	b"etc/passwd"
 code	crates/wcontainers-runtime/src/image.rs	bytestr	clean	b"."
 code	crates/wcontainers-runtime/src/image.rs	bytestr	clean	b".."
+code	crates/wcontainers-runtime/src/image.rs	bytestr	docker_files	b"etc/hostname"
+code	crates/wcontainers-runtime/src/image.rs	bytestr	docker_files	b"etc/hosts"
+code	crates/wcontainers-runtime/src/image.rs	bytestr	docker_files	b"etc/resolv.conf"
 code	crates/wcontainers-runtime/src/image.rs	bytestr	join	b"/"
 code	crates/wcontainers-runtime/src/image.rs	bytestr	read_layer	b".wh."
 code	crates/wcontainers-runtime/src/image.rs	bytestr	read_layer	b".wh..opq"
@@ -5909,12 +5911,8 @@ code	crates/wcontainers-runtime/src/image.rs	char	Image::table	'#'
 code	crates/wcontainers-runtime/src/image.rs	char	Image::table	':'
 code	crates/wcontainers-runtime/src/image.rs	char	Image::user	':'
 code	crates/wcontainers-runtime/src/image.rs	char	with_defaults	'='
-code	crates/wcontainers-runtime/src/image.rs	int	Image::groups	3
-code	crates/wcontainers-runtime/src/image.rs	int	Image::home	5
-code	crates/wcontainers-runtime/src/image.rs	int	Image::program	0o111
-code	crates/wcontainers-runtime/src/image.rs	int	Image::root	3
-code	crates/wcontainers-runtime/src/image.rs	int	Image::user	3
-code	crates/wcontainers-runtime/src/image.rs	int	read_layer	0o7777
+code	crates/wcontainers-runtime/src/image.rs	int	docker_files	3
+code	crates/wcontainers-runtime/src/image.rs	str	Image::add_to	"/etc is not a directory, where the host name and name server files go"
 code	crates/wcontainers-runtime/src/image.rs	str	Image::home	"/"
 code	crates/wcontainers-runtime/src/image.rs	str	Image::oci	"1.0.0"
 code	crates/wcontainers-runtime/src/image.rs	str	Image::oci	"application/vnd.docker.image.rootfs.diff.tar.gzip"
@@ -5924,7 +5922,6 @@ code	crates/wcontainers-runtime/src/image.rs	str	Image::oci	"oci-layout"
 code	crates/wcontainers-runtime/src/image.rs	str	Image::program	"PATH="
 code	crates/wcontainers-runtime/src/image.rs	str	Image::program	"{}/{name}"
 code	crates/wcontainers-runtime/src/image.rs	str	Image::program	"{}/{name}"
-code	crates/wcontainers-runtime/src/image.rs	str	Image::root	"0"
 code	crates/wcontainers-runtime/src/image.rs	str	Image::spec	","
 code	crates/wcontainers-runtime/src/image.rs	str	Image::spec	","
 code	crates/wcontainers-runtime/src/image.rs	str	Image::spec	"/"
@@ -5974,7 +5971,7 @@ code	crates/wcontainers-runtime/src/spec.rs	str	accept	"root"
 code	crates/wcontainers-runtime/src/spec.rs	str	accept	"solaris"
 code	crates/wcontainers-runtime/src/spec.rs	str	accept	"the configuration is not a JSON object"
 code	crates/wcontainers-runtime/src/spec.rs	str	accept	"the kernel taking a domain name at start"
-code	crates/wcontainers-runtime/src/spec.rs	str	accept	"the shipped outside running host programs at the points the runtime \\n                 specification names"
+code	crates/wcontainers-runtime/src/spec.rs	str	accept	"the local system running host programs at the points the runtime \\n                 specification names"
 code	crates/wcontainers-runtime/src/spec.rs	str	accept	"uidMappings"
 code	crates/wcontainers-runtime/src/spec.rs	str	accept	"user namespaces in the kernel"
 code	crates/wcontainers-runtime/src/spec.rs	str	accept	"vm"
@@ -5999,6 +5996,8 @@ code	crates/wcontainers-runtime/src/spec.rs	str	base_spec	"readonlyPaths"
 code	crates/wcontainers-runtime/src/spec.rs	str	base_spec	"type"
 code	crates/wcontainers-runtime/src/spec.rs	str	base_spec	"uid"
 code	crates/wcontainers-runtime/src/spec.rs	str	base_spec	"user"
+code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	", "
+code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"destination"
 code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"destination"
 code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"destination"
 code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"destination"
@@ -6007,6 +6006,7 @@ code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"destination"
 code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"destination"
 code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"id-mapped mounts: user namespaces in the kernel"
 code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"mounts"
+code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"mounts[{index}]"
 code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"mounts[{index}]"
 code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"options"
 code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"options"
@@ -6020,7 +6020,7 @@ code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"{field}.{name}"
 code	crates/wcontainers-runtime/src/spec.rs	str	linux	"a field this runtime does not know"
 code	crates/wcontainers-runtime/src/spec.rs	str	linux	"cgroups: the kernel accounting CPU, memory, pids and I/O per group and enforcing \\n                 limits"
 code	crates/wcontainers-runtime/src/spec.rs	str	linux	"cgroupsPath"
-code	crates/wcontainers-runtime/src/spec.rs	str	linux	"device nodes in the kernel for each, with the outside behind them"
+code	crates/wcontainers-runtime/src/spec.rs	str	linux	"device nodes in the kernel for each, with the system behind them"
 code	crates/wcontainers-runtime/src/spec.rs	str	linux	"devices"
 code	crates/wcontainers-runtime/src/spec.rs	str	linux	"gidMappings"
 code	crates/wcontainers-runtime/src/spec.rs	str	linux	"intelRdt"
@@ -6115,6 +6115,8 @@ code	crates/wcontainers-runtime/src/spec.rs	str	namespaces	"linux.namespaces[{in
 code	crates/wcontainers-runtime/src/spec.rs	str	namespaces	"path"
 code	crates/wcontainers-runtime/src/spec.rs	str	namespaces	"type"
 code	crates/wcontainers-runtime/src/spec.rs	str	namespaces	"type"
+code	crates/wcontainers-runtime/src/spec.rs	str	path_name	"{parent}.{key}"
+code	crates/wcontainers-runtime/src/spec.rs	str	path_name	"{}[{index}]"
 code	crates/wcontainers-runtime/src/spec.rs	str	process	"a Windows host"
 code	crates/wcontainers-runtime/src/spec.rs	str	process	"a field this runtime does not know"
 code	crates/wcontainers-runtime/src/spec.rs	str	process	"a field this runtime does not know"
@@ -6164,10 +6166,8 @@ code	crates/wcontainers-runtime/src/spec.rs	str	root	"readonly"
 code	crates/wcontainers-runtime/src/spec.rs	str	root	"root.path"
 code	crates/wcontainers-runtime/src/spec.rs	str	root	"root.readonly"
 code	crates/wcontainers-runtime/src/spec.rs	str	root	"root.{name}"
-code	crates/wcontainers-runtime/src/spec.rs	str	root	"the root's files are the image argument; a root read from a directory of the host \\n                 needs the shipped outside's file backend"
-code	crates/wcontainers-runtime/src/spec.rs	str	spec_from_json	"a field this runtime does not know"
-code	crates/wcontainers-runtime/src/spec.rs	str	unread	"{path}.{name}"
-code	crates/wcontainers-runtime/src/spec.rs	str	unread	"{path}[{index}]"
+code	crates/wcontainers-runtime/src/spec.rs	str	root	"the root's files are the image argument; a root read from a directory of the host \\n                 needs the local system's file backend"
+code	crates/wcontainers-runtime/src/spec.rs	str	spec_from_json	"annotations.{key}"
 code	crates/wcontainers-runtime/src/spec.rs	str	user	"a Windows host"
 code	crates/wcontainers-runtime/src/spec.rs	str	user	"a field this runtime does not know"
 code	crates/wcontainers-runtime/src/spec.rs	str	user	"additionalGids"
@@ -6177,9 +6177,9 @@ code	crates/wcontainers-runtime/src/spec.rs	str	user	"uid"
 code	crates/wcontainers-runtime/src/spec.rs	str	user	"umask"
 code	crates/wcontainers-runtime/src/spec.rs	str	user	"username"
 code	crates/wcontainers-runtime/src/spec.rs	str	user	"{field}: the kernel starts with umask 0022; others need it to take the umask at start"
-code	crates/wcontainers-runtime/src/system.rs	str	<System as Host>::output	"standard error not written"
-code	crates/wcontainers-runtime/src/system.rs	str	<System as Host>::output	"standard output not written"
-code	crates/wcontainers-runtime/src/system.rs	str	<System as Outside>::stop_flag	"wcontainers timer"
+code	crates/wcontainers-runtime/src/system.rs	str	<LocalSystem as Host>::output	"standard error not written"
+code	crates/wcontainers-runtime/src/system.rs	str	<LocalSystem as Host>::output	"standard output not written"
+code	crates/wcontainers-runtime/src/system.rs	str	<LocalSystem as System>::stop_flag	"wcontainers timer"
 code	crates/wcontainers-translator-test/browser/src/lib.rs	int	translate	4
 code	crates/wcontainers-translator-test/browser/src/lib.rs	int	translate	8
 code	crates/wcontainers-translator-test/browser/src/lib.rs	str	contract	"align"
@@ -7594,36 +7594,18 @@ code	crates/wcontainers-wasmtime/build.rs	str	main	"cargo:rustc-env=WCONTAINERS_
 code	crates/wcontainers-wasmtime/build.rs	str	main	"wcontainers-guest-cpu"
 code	crates/wcontainers-wasmtime/build.rs	str	main	"wcontainers-translator"
 code	crates/wcontainers-wasmtime/build.rs	str	main	"wcontainers-translator"
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	int	main	125
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	int	run	0x7f
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	int	run	0x7f
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	int	run	128
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	int	run	8
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	str	run	"--"
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	str	run	"--cache"
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	str	run	"--config"
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	str	run	"--look-ahead"
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	str	run	"--oci"
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	str	run	"--size"
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	str	run	"--tar"
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	str	run	"back end"
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	str	run	"full"
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	str	run	"give one of --oci and --tar"
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	str	run	"kernel"
-code	crates/wcontainers-wasmtime/src/bin/wcontainers.rs	str	run	"none"
-code	crates/wcontainers-wasmtime/src/lib.rs	bytestr	Compiler<G>::file	b"wasmtime guest-memory-64 state-memory-32"
-code	crates/wcontainers-wasmtime/src/lib.rs	int	Code	32
-code	crates/wcontainers-wasmtime/src/lib.rs	int	CodeRange	32
-code	crates/wcontainers-wasmtime/src/lib.rs	int	Compiler<G>::compiled	32
-code	crates/wcontainers-wasmtime/src/lib.rs	int	Compiler<G>::parse	8
-code	crates/wcontainers-wasmtime/src/lib.rs	int	Compiler<G>::parse	8
-code	crates/wcontainers-wasmtime/src/lib.rs	int	Compiler<G>::parse	8
-code	crates/wcontainers-wasmtime/src/lib.rs	int	Compiler<G>::parse	8
-code	crates/wcontainers-wasmtime/src/lib.rs	int	Compiler<G>::parse	8
-code	crates/wcontainers-wasmtime/src/lib.rs	int	CpuSide<G>::copy_from	4
-code	crates/wcontainers-wasmtime/src/lib.rs	int	CpuSide<G>::new_process	65536
-code	crates/wcontainers-wasmtime/src/lib.rs	int	CpuSide<G>::slot_entry	4
-code	crates/wcontainers-wasmtime/src/lib.rs	int	Key	32
+code	crates/wcontainers-wasmtime/src/bin/wcon.rs	str	run	"--"
+code	crates/wcontainers-wasmtime/src/bin/wcon.rs	str	run	"--cache"
+code	crates/wcontainers-wasmtime/src/bin/wcon.rs	str	run	"--config"
+code	crates/wcontainers-wasmtime/src/bin/wcon.rs	str	run	"--look-ahead"
+code	crates/wcontainers-wasmtime/src/bin/wcon.rs	str	run	"--oci"
+code	crates/wcontainers-wasmtime/src/bin/wcon.rs	str	run	"--size"
+code	crates/wcontainers-wasmtime/src/bin/wcon.rs	str	run	"--tar"
+code	crates/wcontainers-wasmtime/src/bin/wcon.rs	str	run	"back end"
+code	crates/wcontainers-wasmtime/src/bin/wcon.rs	str	run	"full"
+code	crates/wcontainers-wasmtime/src/bin/wcon.rs	str	run	"give one of --oci and --tar"
+code	crates/wcontainers-wasmtime/src/bin/wcon.rs	str	run	"kernel"
+code	crates/wcontainers-wasmtime/src/bin/wcon.rs	str	run	"none"
 code	crates/wcontainers-wasmtime/src/lib.rs	int	code_line_changed	63
 code	crates/wcontainers-wasmtime/src/lib.rs	int	code_line_changed	64
 code	crates/wcontainers-wasmtime/src/lib.rs	int	hooks	3
@@ -7631,37 +7613,13 @@ code	crates/wcontainers-wasmtime/src/lib.rs	int	hooks	4
 code	crates/wcontainers-wasmtime/src/lib.rs	int	hooks	5
 code	crates/wcontainers-wasmtime/src/lib.rs	int	hooks	6
 code	crates/wcontainers-wasmtime/src/lib.rs	int	hooks	7
-code	crates/wcontainers-wasmtime/src/lib.rs	int	memory_fault	16
-code	crates/wcontainers-wasmtime/src/lib.rs	int	memory_fault	16
-code	crates/wcontainers-wasmtime/src/lib.rs	int	syscall	6
 code	crates/wcontainers-wasmtime/src/lib.rs	str	Compiler<G>::store	"partial-{}-{write}"
-code	crates/wcontainers-wasmtime/src/memory.rs	int	Layout::of	16
-code	crates/wcontainers-wasmtime/src/memory.rs	int	Layout::of	32
-code	crates/wcontainers-wasmtime/src/memory.rs	int	Layout::of	32
-code	crates/wcontainers-wasmtime/src/memory.rs	int	Layout::of	4
-code	crates/wcontainers-wasmtime/src/memory.rs	int	Layout::of	4
-code	crates/wcontainers-wasmtime/src/memory.rs	int	Layout::of	4
-code	crates/wcontainers-wasmtime/src/memory.rs	int	Layout::of	65536
-code	crates/wcontainers-wasmtime/src/memory.rs	int	copy_pages	3
-code	crates/wcontainers-wasmtime/src/memory.rs	int	copy_pages	62
-code	crates/wcontainers-wasmtime/src/memory.rs	int	copy_pages	8
-code	crates/wcontainers-wasmtime/src/memory.rs	int	copy_pages	8
-code	crates/wcontainers-wasmtime/src/memory.rs	int	copy_pages	8
-code	crates/wcontainers-wasmtime/src/memory.rs	int	copy_pages	8
-code	crates/wcontainers-wasmtime/src/memory.rs	int	copy_pages	8
 code	crates/wcontainers-wasmtime/src/memory.rs	str	<HostMemory as LinearMemory>::grow_to	"a memory grows only inside its reservation"
 code	crates/wcontainers-wasmtime/src/memory.rs	str	copy_pages	"/proc/self/pagemap"
 code	crates/wcontainers-wasmtime/src/memory.rs	str	copy_pages	"/proc/self/pagemap"
-code	crates/wcontainers-wasmtime/src/memory.rs	str	copy_pages	"8"
 code	crates/wcontainers-wasmtime/src/memory.rs	str	copy_pages	"mach_vm_copy"
 code	crates/wcontainers-wasmtime/src/memory.rs	str	copy_pages	"reading /proc/self/pagemap"
-code	crates/wcontainers-wasmtime/src/starts.rs	int	Found::add	4
-code	crates/wcontainers-wasmtime/src/starts.rs	int	dynamic_starts	0xffff_ffff
-code	crates/wcontainers-wasmtime/src/starts.rs	int	dynamic_starts	8
-code	crates/wcontainers-wasmtime/src/starts.rs	int	dynamic_starts	8
 code	crates/wcontainers-wasmtime/src/starts.rs	int	find_header	4
-code	crates/wcontainers-wasmtime/src/starts.rs	int	image_starts	8
-code	crates/wcontainers-wasmtime/src/starts.rs	int	unwind_starts	8
 policy	generated	crates/wcontainers-kernel/src/linux/auxvec.rs
 policy	generated	crates/wcontainers-kernel/src/linux/errno.rs
 policy	generated	crates/wcontainers-kernel/src/linux/general.rs
@@ -7743,6 +7701,8 @@ redefinition	crates/wcontainers-translator-test/tests/test_guest.rs	int	BLOCK_AT
 redefinition	crates/wcontainers-translator-test/tests/test_guest.rs	int	LOAD	LOAD = 65536
 redefinition	crates/wcontainers-translator-test/tests/test_guest.rs	int	PERMISSIONS_AT	PERMISSIONS_AT = 4096
 redefinition	crates/wcontainers-translator/src/contract.rs	str	PROBE	PROBE = "probe"
+redefinition	crates/wcontainers-wasmtime/src/lib.rs	int	Compiler<G>::parse::WORD	WORD = 8
+redefinition	crates/wcontainers-wasmtime/src/starts.rs	int	WORD	WORD = 8
 redefinition	crates/wcontainers-wasmtime/tests/cache.rs	int	CODE	CODE = 65536
 redefinition	crates/wcontainers-wasmtime/tests/code.rs	int	CODE	CODE = 65536
 redefinition	crates/wcontainers-wasmtime/tests/faults.rs	int	CODE	CODE = 65536
@@ -7750,6 +7710,12 @@ redefinition	crates/wcontainers-wasmtime/tests/fork.rs	int	CODE	CODE = 65536
 redefinition	crates/wcontainers-wasmtime/tests/turns.rs	int	CODE	CODE = 65536
 redefinition	crates/wcontainers-wasmtime/tests/views.rs	int	CODE	CODE = 65536
 restated	crates/wcontainers-abi/src/registers.rs	int	tests::layout_is_fixed	256
+restated	crates/wcontainers-kernel-test/backend/src/main.rs	str	main	"wc-backend [--cached] pipe <directory> | mount <directory> <mount point> <command>..."
+restated	crates/wcontainers-kernel-test/backend/src/main.rs	str	mount	"wc-backend: {error:?}"
+restated	crates/wcontainers-kernel-test/backend/src/main.rs	str	pipe	"wc-backend: {error:?}"
+restated	crates/wcontainers-kernel-test/src/generate.rs	str	generate	"// Generated by `cargo run -p wcontainers-kernel-test --bin generate-linux` from linux-raw-sys \\n             {version}\n// src/aarch64/{module}.rs, with gues… #901f09b86081cd7c
+restated	crates/wcontainers-kernel-test/src/generate.rs	str	layout_test	"// Generated by `cargo run -p wcontainers-kernel-test --bin generate-linux` from linux-raw-sys \\n         {version}. Do not edit.\n\n\\n         //! Every str… #14e603df99451e74
+restated	crates/wcontainers-kernel-test/src/generate.rs	str	syscall_list	"// Generated by `cargo run -p wcontainers-kernel-test --bin generate-linux` from linux-raw-sys \\n         {version}\n// src/aarch64/general.rs. Do not edit.\n… #529514a4fbc1f0ce
 restated	crates/wcontainers-kernel-test/src/layer1.rs	int	MAX_RW_COUNT	0x7fff_f000
 restated	crates/wcontainers-kernel-test/src/layer1.rs	int	linux_extra_ipc::IPC_NOWAIT	0o4000
 restated	crates/wcontainers-kernel-test/src/ltp.rs	str	tests::results_lines_round_trip	"page residency not tracked"
@@ -7757,8 +7723,11 @@ restated	crates/wcontainers-kernel-test/src/ltp.rs	str	tests::results_lines_roun
 restated	crates/wcontainers-kernel-test/src/ltp.rs	str	tests::results_lines_round_trip	"proc entry not built"
 restated	crates/wcontainers-kernel-test/src/standin.rs	int	copy_touched::CHUNK	4096
 restated	crates/wcontainers-kernel-test/tests/backend.rs	int	backend_notices_are_handled	400
+restated	crates/wcontainers-kernel-test/tests/boundary.rs	str	generated_files_are_current	"{} is out of date; run `cargo run -p wcontainers-kernel-test --bin generate-linux`"
+restated	crates/wcontainers-kernel-test/tests/busybox.rs	str	files	"8192"
 restated	crates/wcontainers-kernel-test/tests/busybox.rs	str	system	"env"
 restated	crates/wcontainers-kernel-test/tests/cpulimit.rs	str	cpu_limit_matches_reference	"core dump not written"
+restated	crates/wcontainers-kernel-test/tests/dispatch.rs	str	numbers_in_gaps_match_reference	"400"
 restated	crates/wcontainers-kernel-test/tests/dispatch.rs	str	program	"syscall"
 restated	crates/wcontainers-kernel-test/tests/filter.rs	str	filters_match_reference	"trap"
 restated	crates/wcontainers-kernel-test/tests/go.rs	str	build	"run"
@@ -7770,6 +7739,7 @@ restated	crates/wcontainers-kernel-test/tests/memory.rs	str	memory_matches_refer
 restated	crates/wcontainers-kernel-test/tests/outside.rs	int	clients	300
 restated	crates/wcontainers-kernel-test/tests/python.rs	int	system_program_matches_reference	4_000
 restated	crates/wcontainers-kernel-test/tests/python.rs	str	prepare	"run"
+restated	crates/wcontainers-kernel-test/tests/script.rs	int	scripts_match_reference	0o755
 restated	crates/wcontainers-kernel-test/tests/splice.rs	str	splicing_matches_reference	"vmsplice pages copied"
 restated	crates/wcontainers-kernel-test/tests/standin.rs	int	exits_are_exact	1_000_000
 restated	crates/wcontainers-kernel-test/tests/standin.rs	int	exits_are_exact	4096
@@ -7788,10 +7758,22 @@ restated	crates/wcontainers-kernel-test/tests/standin.rs	int	unaligned_exclusive
 restated	crates/wcontainers-kernel-test/tests/threads.rs	str	clone_sharing_matches_reference	"proc fields not tracked"
 restated	crates/wcontainers-kernel-test/tests/threads.rs	str	proc_task_matches_reference	"proc fields not tracked"
 restated	crates/wcontainers-kernel-test/tests/threads.rs	str	thread_credentials_match_reference	"proc fields not tracked"
+restated	crates/wcontainers-runtime/src/image.rs	int	tests::layer	0o755
+restated	crates/wcontainers-runtime/src/image.rs	int	tests::layer	0o755
 restated	crates/wcontainers-runtime/src/spec.rs	int	tests::a_whole_configuration_is_read_with_nothing_unread	1024
 restated	crates/wcontainers-runtime/src/spec.rs	int	tests::a_whole_configuration_is_read_with_nothing_unread	1024
 restated	crates/wcontainers-runtime/src/spec.rs	int	tests::a_whole_configuration_is_read_with_nothing_unread	1048576
+restated	crates/wcontainers-translator-test/reference/src/main.rs	str	main	"usage: wcontainers-reference cases | blob <file> <load> <stack top> <stack bytes> [<headers> <count>] | time <runs> <file> <load> <stack top> <stack bytes> [<h… #f6e51dcf9a177200
+restated	crates/wcontainers-translator-test/reference/src/main.rs	str	main	"wcontainers-reference: {info}"
+restated	crates/wcontainers-translator-test/src/bin/arm-forms.rs	str	NOTICE	"\\n# Every A64 instruction encoding, taken from Arm's machine readable specification\n# (AARCHMRS, BSD release {release}) by `cargo run -p wcontainers-translat… #a00fca9f6cd09923
 restated	crates/wcontainers-translator-test/src/layout.rs	int	BLOB_HWCAP	0x183
+restated	crates/wcontainers-translator-test/tests/benchmarks.rs	float	measure_calls_between_modules	1e9
+restated	crates/wcontainers-translator-test/tests/benchmarks.rs	float	measure_calls_between_modules	1e9
+restated	crates/wcontainers-translator-test/tests/benchmarks.rs	float	size	1e6
+restated	crates/wcontainers-translator-test/tests/binaries.rs	float	measure_binaries	1e3
+restated	crates/wcontainers-translator-test/tests/binaries.rs	float	measure_binaries	1e3
+restated	crates/wcontainers-translator-test/tests/binaries.rs	float	measure_binaries	1e6
+restated	crates/wcontainers-translator-test/tests/binaries.rs	float	measure_binaries	1e6
 restated	crates/wcontainers-translator-test/tests/changes.rs	int	plan	256
 restated	crates/wcontainers-translator-test/tests/changes.rs	int	programs_with_changes_match_none	1024
 restated	crates/wcontainers-translator-test/tests/changes.rs	int	start	0x1000
@@ -7815,9 +7797,14 @@ restated	crates/wcontainers-translator-test/tests/layer1.rs	int	designed_answers
 restated	crates/wcontainers-translator-test/tests/layer1.rs	int	step_edges_match_the_cpu	0x1000
 restated	crates/wcontainers-translator-test/tests/layer1.rs	int	words_in_no_form_are_illegal_as_on_the_cpu	0x1000
 restated	crates/wcontainers-translator-test/tests/layer3.rs	int	csmith_programs_match_linux	1000
+restated	crates/wcontainers-translator-test/tests/lookaheads.rs	float	measure_bound	1e9
+restated	crates/wcontainers-translator-test/tests/lookaheads.rs	float	measure_translating_at_run_time	1e3
+restated	crates/wcontainers-translator-test/tests/lookaheads.rs	float	measure_translating_at_run_time	1e3
 restated	crates/wcontainers-translator-test/tests/lookaheads.rs	int	measure_bound	1024
 restated	crates/wcontainers-translator-test/tests/lookaheads.rs	int	measure_bound	256
 restated	crates/wcontainers-translator-test/tests/output.rs	str	bench	"thread"
+restated	crates/wcontainers-translator-test/tests/programs.rs	float	measure	1e6
+restated	crates/wcontainers-translator-test/tests/programs.rs	float	switching_speed	1e9
 restated	crates/wcontainers-translator-test/tests/programs.rs	int	stops_at_every_check_change_nothing	1000
 restated	crates/wcontainers-translator-test/tests/smoke.rs	int	run_with	0x1000
 restated	crates/wcontainers-translator-test/tests/smoke.rs	int	run_with	1024
@@ -7833,12 +7820,24 @@ restated	crates/wcontainers-translator-test/tests/test_guest.rs	int	two_accesses
 restated	crates/wcontainers-translator-test/tests/test_guest.rs	str	<Test<F> as Guest>::probe_module	"probe"
 restated	crates/wcontainers-translator-test/tests/valid.rs	int	long_chains_translate_on_a_small_stack	256
 restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_compiler_copied_by_fork_is_dropped_there	400u32
+restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_dropped_threads_instances_serve_the_next_thread	0x10000
+restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_dropped_threads_instances_serve_the_next_thread	0x10000
+restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_dropped_threads_instances_serve_the_next_thread	0x10000
+restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_dropped_threads_instances_serve_the_next_thread	0x20000
+restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_dropped_threads_instances_serve_the_next_thread	0x20000
+restated	crates/wcontainers-wasmtime/src/lib.rs	int	tests::a_dropped_threads_instances_serve_the_next_thread	0x20000
 restated	crates/wcontainers-wasmtime/tests/refused.rs	int	(file)	1024
 restated	crates/wcontainers-wasmtime/tests/refused.rs	int	(file)	1024
+restated	crates/wcontainers-wasmtime/tests/refused.rs	int	image	0o755
 restated	crates/wcontainers-wasmtime/tests/refused.rs	str	(file)	"hooks"
 restated	crates/wcontainers-wasmtime/tests/refused.rs	str	(file)	"hooks"
+restated	crates/wcontainers-wasmtime/tests/surface.rs	int	tar_with	0o755
+restated	crates/wcontainers-wasmtime/tests/surface.rs	int	tar_with	0o755
+restated	crates/wcontainers-wasmtime/tests/surface.rs	str	a_program_not_in_the_path_is_not_found	"run"
+restated	crates/wcontainers-wasmtime/tests/surface.rs	str	a_threaded_program_matches_the_reference	"run"
 restated	crates/wcontainers-wasmtime/tests/surface.rs	str	reference	"run"
 restated	crates/wcontainers-wasmtime/tests/views.rs	int	read_through_the_other	0x10_0000
+role	crates/wcontainers-kernel-test/backend/src/main.rs	int	mount	1
 role	crates/wcontainers-kernel-test/src/bin/ltp.rs	int	main	2
 role	crates/wcontainers-kernel-test/src/bin/ltp.rs	int	usage	2
 role	crates/wcontainers-kernel-test/src/driver.rs	int	copied_run	0
@@ -7850,6 +7849,7 @@ role	crates/wcontainers-kernel-test/src/image.rs	int	host_directory	0
 role	crates/wcontainers-kernel-test/src/image.rs	int	host_directory	0
 role	crates/wcontainers-kernel-test/src/image.rs	int	host_directory	0
 role	crates/wcontainers-kernel-test/src/image.rs	int	host_directory	0
+role	crates/wcontainers-kernel-test/src/layer1.rs	int	build_on	0
 role	crates/wcontainers-kernel-test/src/layer1.rs	int	run_ours_on	0
 role	crates/wcontainers-kernel-test/src/layer1.rs	int	run_ours_on	0
 role	crates/wcontainers-kernel-test/src/layer1.rs	int	run_ours_on	0
@@ -7866,10 +7866,22 @@ role	crates/wcontainers-kernel-test/src/ltp.rs	int	run_one	0
 role	crates/wcontainers-kernel-test/src/ltp.rs	int	run_ours	-1
 role	crates/wcontainers-kernel-test/src/ltp.rs	int	run_ours	0
 role	crates/wcontainers-kernel-test/src/ltp.rs	int	verdict	0
+role	crates/wcontainers-kernel/src/container.rs	int	Kernel::directories	0
+role	crates/wcontainers-kernel/src/container.rs	int	Kernel::directories	0
 role	crates/wcontainers-kernel/src/container.rs	int	Kernel::install_image	0
 role	crates/wcontainers-kernel/src/container.rs	int	Kernel::install_image	0
+role	crates/wcontainers-kernel/src/container.rs	int	Kernel::make_mounts	0
+role	crates/wcontainers-kernel/src/container.rs	int	Kernel::make_mounts	0
+role	crates/wcontainers-kernel/src/container.rs	int	Kernel::make_mounts	0
+role	crates/wcontainers-kernel/src/container.rs	int	Kernel::make_mounts	0
+role	crates/wcontainers-kernel/src/container.rs	int	Kernel::make_mounts	0
+role	crates/wcontainers-kernel/src/container.rs	int	Kernel::make_mounts	0
+role	crates/wcontainers-kernel/src/container.rs	int	Kernel::make_mounts	0
+role	crates/wcontainers-kernel/src/container.rs	int	Kernel::make_mounts	0
 role	crates/wcontainers-kernel/src/container.rs	int	Kernel::start_first	0
 role	crates/wcontainers-kernel/src/container.rs	int	Kernel::start_first	0
+role	crates/wcontainers-kernel/src/container.rs	int	directory_at	0
+role	crates/wcontainers-kernel/src/container.rs	int	directory_at	0
 role	crates/wcontainers-kernel/src/container.rs	int	mount_tmpfs	0
 role	crates/wcontainers-kernel/src/container.rs	int	mount_tmpfs	0
 role	crates/wcontainers-kernel/src/container.rs	int	new_root	0
@@ -7903,6 +7915,8 @@ role	crates/wcontainers-kernel/src/credentials.rs	int	Credentials::for_program	0
 role	crates/wcontainers-kernel/src/credentials.rs	int	Credentials::for_program	0
 role	crates/wcontainers-kernel/src/credentials.rs	int	Credentials::for_program	0
 role	crates/wcontainers-kernel/src/file.rs	int	FdTable::close_all	0
+role	crates/wcontainers-kernel/src/fs/backend.rs	int	<Handle as Drop>::drop	0
+role	crates/wcontainers-kernel/src/fs/backend.rs	int	Client::ask_pages	0
 role	crates/wcontainers-kernel/src/fs/backend.rs	int	Client::node	0
 role	crates/wcontainers-kernel/src/fs/backend.rs	int	Client::node	0
 role	crates/wcontainers-kernel/src/fs/backend.rs	int	Client::notify_reply	0
@@ -7913,6 +7927,10 @@ role	crates/wcontainers-kernel/src/fs/backend.rs	int	Client::tell	0
 role	crates/wcontainers-kernel/src/fs/backend.rs	int	Client::tell	0
 role	crates/wcontainers-kernel/src/fs/backend.rs	int	Client::tell	0
 role	crates/wcontainers-kernel/src/fs/backend.rs	int	Client::tell	0
+role	crates/wcontainers-kernel/src/fs/backend.rs	int	read	0
+role	crates/wcontainers-kernel/src/fs/backend.rs	int	readdir	0
+role	crates/wcontainers-kernel/src/fs/backend.rs	int	write	0
+role	crates/wcontainers-kernel/src/fs/backend.rs	int	write_back	0
 role	crates/wcontainers-kernel/src/fs/mod.rs	int	permission	0
 role	crates/wcontainers-kernel/src/fs/proc.rs	int	namespace_node	0
 role	crates/wcontainers-kernel/src/fs/proc.rs	int	namespace_node	0
@@ -7924,14 +7942,21 @@ role	crates/wcontainers-kernel/src/signal.rs	int	Kernel::send_io_signal	0
 role	crates/wcontainers-kernel/src/signal.rs	int	Kernel::send_queued	0
 role	crates/wcontainers-kernel/src/signal.rs	int	Kernel::send_urgent_signal	0
 role	crates/wcontainers-kernel/src/syscall/clone.rs	int	make_child	0
+role	crates/wcontainers-kernel/src/syscall/clone.rs	int	make_child	0
+role	crates/wcontainers-kernel/src/syscall/clone.rs	int	make_thread	0
 role	crates/wcontainers-kernel/src/syscall/clone.rs	int	make_thread	0
 role	crates/wcontainers-kernel/src/syscall/clone.rs	int	wait4	0
 role	crates/wcontainers-kernel/src/syscall/clone.rs	int	wait4	0
 role	crates/wcontainers-kernel/src/syscall/clone.rs	int	wait4	0
 role	crates/wcontainers-kernel/src/syscall/files.rs	int	access	0
+role	crates/wcontainers-kernel/src/syscall/files.rs	int	change_owner_unwatched	0
+role	crates/wcontainers-kernel/src/syscall/files.rs	int	change_owner_unwatched	0
+role	crates/wcontainers-kernel/src/syscall/files.rs	int	change_owner_unwatched	0
+role	crates/wcontainers-kernel/src/syscall/io.rs	int	fcntl_other	0
 role	crates/wcontainers-kernel/src/syscall/io.rs	int	ppoll_typed	0
 role	crates/wcontainers-kernel/src/syscall/io.rs	int	ppoll_typed	0
 role	crates/wcontainers-kernel/src/syscall/io.rs	int	record_lock	0
+role	crates/wcontainers-kernel/src/syscall/io.rs	int	set_owner	0
 role	crates/wcontainers-kernel/src/syscall/io.rs	int	set_owner	0
 role	crates/wcontainers-kernel/src/syscall/io.rs	int	set_owner_of	0
 role	crates/wcontainers-kernel/src/syscall/ioctl.rs	int	set_async	0
@@ -7954,13 +7979,25 @@ role	crates/wcontainers-kernel/src/syscall/process.rs	int	getsid	0
 role	crates/wcontainers-kernel/src/syscall/process.rs	int	own_pid	0
 role	crates/wcontainers-kernel/src/syscall/process.rs	int	own_pid	0
 role	crates/wcontainers-kernel/src/syscall/process.rs	int	prlimit64	0
+role	crates/wcontainers-kernel/src/syscall/process.rs	int	setgid	0
 role	crates/wcontainers-kernel/src/syscall/process.rs	int	setpgid	0
+role	crates/wcontainers-kernel/src/syscall/process.rs	int	setpgid	0
+role	crates/wcontainers-kernel/src/syscall/process.rs	int	setuid	0
+role	crates/wcontainers-kernel/src/syscall/sem.rs	int	Semaphores::undo_list	1
+role	crates/wcontainers-kernel/src/syscall/sem.rs	int	exit_sem	0
 role	crates/wcontainers-kernel/src/syscall/signalfd.rs	int	signalfd4	-1
 role	crates/wcontainers-kernel/src/syscall/signals.rs	int	kill	-1
 role	crates/wcontainers-kernel/src/syscall/signals.rs	int	kill	-1
 role	crates/wcontainers-kernel/src/syscall/signals.rs	int	kill	0
 role	crates/wcontainers-kernel/src/syscall/signals.rs	int	kill	0
 role	crates/wcontainers-kernel/src/syscall/signals.rs	int	rt_sigqueueinfo	0
+role	crates/wcontainers-kernel/src/syscall/signals.rs	int	signal_members	0
+role	crates/wcontainers-kernel/src/syscall/signals.rs	int	signal_thread	0
+role	crates/wcontainers-kernel/src/syscall/signals.rs	int	signal_thread	0
+role	crates/wcontainers-kernel/src/syscall/socket/inet.rs	int	deliver_many	0
+role	crates/wcontainers-kernel/src/syscall/socket/inet.rs	int	tcp_send	0
+role	crates/wcontainers-kernel/src/syscall/socket/inet.rs	int	udp_deliver	0
+role	crates/wcontainers-kernel/src/syscall/socket/inet.rs	int	urgent_arrives	0
 role	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	Socket::new	0
 role	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	Socket::new	0
 role	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	getsockopt	0
@@ -7970,10 +8007,14 @@ role	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	recvmsg	0
 role	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	recvmsg	0
 role	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	recvmsg	0
 role	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	send_urgent	0
+role	crates/wcontainers-kernel/src/syscall/socket/netlink.rs	int	queue	0
+role	crates/wcontainers-kernel/src/syscall/socket/netlink.rs	int	send_from_kernel	0
 role	crates/wcontainers-kernel/src/syscall/socket/netlink.rs	int	send_from_kernel	0
 role	crates/wcontainers-kernel/src/syscall/socket/netlink.rs	int	send_from_kernel	0
 role	crates/wcontainers-kernel/src/syscall/socket/netlink.rs	int	send_from_kernel	0
 role	crates/wcontainers-kernel/src/syscall/socket/outside.rs	int	deliver	0
+role	crates/wcontainers-kernel/src/syscall/socket/outside.rs	int	deliver	0
+role	crates/wcontainers-kernel/src/syscall/socket/outside.rs	int	pull	0
 role	crates/wcontainers-kernel/src/syscall/socket/outside.rs	int	pull	0
 role	crates/wcontainers-kernel/src/syscall/system.rs	int	sched_getattr	0
 role	crates/wcontainers-kernel/src/syscall/system.rs	int	sched_setattr	0
@@ -7988,6 +8029,8 @@ role	crates/wcontainers-kernel/src/syscall/tty.rs	int	read_into	0
 role	crates/wcontainers-kernel/src/task.rs	int	Kernel::notify_parent	0
 role	crates/wcontainers-kernel/src/task.rs	int	Kernel::over_process_limit	0
 role	crates/wcontainers-kernel/src/task.rs	int	Kernel::send_parent_death_signals	0
+role	crates/wcontainers-runtime/src/image.rs	int	docker_file	0
+role	crates/wcontainers-runtime/src/image.rs	int	docker_file	0
 role	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	0
 role	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	1
 role	crates/wcontainers-translator-test/reference/src/main.rs	int	cases	2

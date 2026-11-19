@@ -26,17 +26,19 @@ pub enum Problem {
 }
 
 impl Problem {
-    pub fn note(self) -> &'static str {
+    pub fn note(self) -> String {
+        let form =
+            format!("`{LINE_COMMENT} {MARK_WORD} NUMBER{REASON_SEPARATOR} why no name fits`");
         match self {
-            Problem::NoReason => NO_REASON,
-            Problem::NotANumber => NOT_A_NUMBER,
+            Problem::NoReason => format!("{NO_REASON}{form}"),
+            Problem::NotANumber => format!("{NOT_A_NUMBER}{form}{TEXT_IS_NOT_MARKED}"),
         }
     }
 }
 
-const NO_REASON: &str =
-    "a mark needs a reason after the colon: `// standalone NUMBER: why no name fits`";
-const NOT_A_NUMBER: &str = "a mark names one number exactly as written: `// standalone NUMBER: reason`; text is never marked";
+const NO_REASON: &str = "a mark needs a reason in words after the colon: ";
+const NOT_A_NUMBER: &str = "a mark names one number exactly as written: ";
+const TEXT_IS_NOT_MARKED: &str = "; text is never marked";
 
 #[derive(Clone, Debug)]
 pub struct Mark {
@@ -114,7 +116,7 @@ pub fn parse(text: &str) -> Vec<Mark> {
         };
         let reason = if !is_number(literal) {
             Err(Problem::NotANumber)
-        } else if reason.is_empty() {
+        } else if !reason.contains(char::is_alphabetic) {
             Err(Problem::NoReason)
         } else {
             Ok(reason.to_string())

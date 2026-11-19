@@ -18,7 +18,7 @@ fn main() -> ExitCode {
             }
         }
         Err(e) => {
-            eprintln!("wcontainers-literals: {e}");
+            eprintln!("{}: {e}", env!("CARGO_PKG_NAME"));
             ExitCode::FAILURE
         }
     }

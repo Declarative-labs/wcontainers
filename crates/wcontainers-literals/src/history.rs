@@ -2,11 +2,12 @@
 //! started is reported with the commit that added it, unless a merge brought it from the other side,
 //! where the same rule is checked back to the merge base. These changes may add lines: the commit that
 //! starts the file on a first-parent chain; when that commit is a merge (the file arrived from another
-//! branch), the next change, which is the branch's `init`; and a change made where the checker's own
-//! source changed since the previous change (new rules), or the change after a merge that brought new
-//! rules. Every such change, on every side, is listed by every run, so that none passes unseen.
+//! branch), the next change, which is the branch's `init`; and a change where the rules have more
+//! versions than at the baseline's previous change (or than before a merge that brought them, for the
+//! change after it), which may add only literals that were already in the tree before it. Every such
+//! change, on every side, is listed by every run, so that none passes unseen.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -14,6 +15,8 @@ use crate::baseline::{self, Keys};
 
 const GIT: &str = "git";
 const GIT_IN: &str = "-C";
+/// Replace refs could turn any commit into another, such as a growth into the start.
+const NO_REPLACE: &str = "--no-replace-objects";
 const LOG: &str = "log";
 const FIRST_PARENT: &str = "--first-parent";
 /// A merge's diff shows only lines that differ from every parent: lines it made up itself.
@@ -63,19 +66,32 @@ const REMOVED: char = '-';
 /// Where uncommitted lines come from, in a report.
 pub const WORKING_TREE: &str = "the working tree";
 const SHORT_COMMIT: usize = 12;
-const DIFF: &str = "diff";
-const QUIET: &str = "--quiet";
 /// Why a change may add lines.
 const AT_START: &str = "the start";
 const AFTER_ARRIVAL: &str = "the init after the baseline arrived by a merge";
-const NEW_RULES: &str = "the checker's rules changed";
-const AFTER_NEW_RULES: &str = "the change after a merge that brought new rules";
+const NEW_RULES: &str = "new rules, for literals already in the tree";
+/// Why a line added at a change of the rules is still growth.
+const NOT_THERE_BEFORE: &str = "new rules, but the literal was not in the tree before the change";
 const SHALLOW: &str = "the git history is shallow, so the baseline's growth cannot be checked: fetch the whole history (git fetch --unshallow)";
+
+/// The keys of the literals in a file's text, given its path relative to the root.
+pub type FileLiterals<'a> = Box<dyn Fn(&str, &str) -> HashSet<String> + 'a>;
+
+/// What literals a file holds, to tell a literal that new rules found from one added with them.
+pub struct Literals<'a> {
+    /// The keys of the literals in a file's text, given its path relative to the root.
+    pub of_file: FileLiterals<'a>,
+    /// The path and key of the literal a baseline line stands for; none for a line that is not one.
+    pub of_line: fn(&str) -> Option<(String, String)>,
+    /// The file that counts the versions of the rules, relative to the root, when it is in the tree.
+    pub rules: Option<String>,
+}
 
 pub struct History {
     /// Every change, on every side, that was allowed to add lines, with why, oldest first per chain.
     pub additions: Vec<String>,
-    /// Lines added after the start that no parent had, each with the commit that added it.
+    /// Lines added after the start that no parent had, each with the commit that added it and why
+    /// that change could not.
     pub grown: Vec<(String, String)>,
     /// What is wrong with the history as a whole, each with what to do.
     pub problems: Vec<(String, &'static str)>,
@@ -90,6 +106,7 @@ pub struct History {
 
 pub fn run(root: &Path, args: &[&str]) -> Result<Output, String> {
     Command::new(GIT)
+        .arg(NO_REPLACE)
         .arg(GIT_IN)
         .arg(root)
         .args(args)
@@ -128,27 +145,31 @@ struct Diff {
 struct Walker<'a> {
     root: &'a Path,
     rel: &'a str,
-    /// The checker's own source folder, relative to the root, whose changes are new rules.
-    rules: Option<&'a str>,
+    literals: &'a Literals<'a>,
     additions: Vec<String>,
     seen: HashSet<(String, Option<String>)>,
     grown: Vec<(String, String)>,
     removed: BTreeSet<String>,
+    /// The literal keys of a file at a revision.
+    present: HashMap<(String, String), HashSet<String>>,
 }
+
+/// A change allowed to add lines: the commit, why, and for new rules the revisions whose trees must
+/// already hold every literal it adds.
+type Allowed = (String, &'static str, Option<Vec<String>>);
 
 /// What a first-parent chain says about its own start.
 #[derive(Default)]
 struct Chain {
     changes: usize,
     arrived: bool,
-    /// The changes allowed to add lines, with why.
-    allowed: Vec<(String, &'static str)>,
-    /// The last change, and whether a change after it may add lines (it was a merge with new rules).
+    allowed: Vec<Allowed>,
     last: Option<String>,
-    after_new_rules: bool,
+    /// The version of the rules the next change is compared with.
+    settled: usize,
 }
 
-const ATTRIBUTES: &str = "remove every attribute of literals.baseline from .gitattributes (and .git/info/attributes): attributes can hide its history";
+const ATTRIBUTES: &str = "remove every attribute of this file from .gitattributes (and .git/info/attributes): attributes can hide its history";
 const STARTED_TWICE: &str = "keep the one baseline that started on the literals branch: merge that branch, run init once, and never start another";
 const START_MOVED: &str = "rebuild the branch on top of its upstream without replacing the baseline's start: the start never changes once pushed";
 
@@ -165,12 +186,69 @@ impl Walker<'_> {
         )
     }
 
-    fn version(&self, revision: &str) -> Result<Option<String>, String> {
-        let out = run(self.root, &[SHOW, &self.in_revision(revision)])?;
+    fn file_at(&self, revision: &str, rel: &str) -> Result<Option<String>, String> {
+        let out = run(self.root, &[SHOW, &format!("{revision}{IN_REVISION}{rel}")])?;
         Ok(out
             .status
             .success()
             .then(|| String::from_utf8_lossy(&out.stdout).into_owned()))
+    }
+
+    fn version(&self, revision: &str) -> Result<Option<String>, String> {
+        self.file_at(revision, self.rel)
+    }
+
+    /// How many versions the rules have at a revision, or in the working tree.
+    fn rules_at(&self, revision: Option<&str>) -> Result<usize, String> {
+        let Some(rules) = &self.literals.rules else {
+            return Ok(usize::default());
+        };
+        let text = match revision {
+            Some(r) => self.file_at(r, rules)?,
+            None => std::fs::read_to_string(self.root.join(rules)).ok(),
+        };
+        Ok(text.map_or(usize::default(), |t| crate::rules::version(&t)))
+    }
+
+    /// The literal a baseline line stands for was in the tree at one of these revisions.
+    fn was_there(&mut self, revisions: &[String], line: &str) -> Result<bool, String> {
+        let Some((path, key)) = (self.literals.of_line)(line) else {
+            return Ok(false);
+        };
+        for revision in revisions {
+            let at = (revision.clone(), path.clone());
+            if !self.present.contains_key(&at) {
+                let keys = self
+                    .file_at(revision, &path)?
+                    .map(|text| (self.literals.of_file)(&path, &text))
+                    .unwrap_or_default();
+                self.present.insert(at.clone(), keys);
+            }
+            if self
+                .present
+                .get(&at)
+                .is_some_and(|keys| keys.contains(&key))
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// The lines of `added` whose literal none of `revisions` held, each with `commit` and why.
+    fn not_there(
+        &mut self,
+        revisions: &[String],
+        added: &[String],
+        commit: &str,
+    ) -> Result<Vec<(String, String)>, String> {
+        let mut out = Vec::new();
+        for line in added {
+            if !self.was_there(revisions, line)? {
+                out.push((line.clone(), format!("{commit} ({NOT_THERE_BEFORE})")));
+            }
+        }
+        Ok(out)
     }
 
     fn merge_base(&self, a: &str, b: &str) -> Result<Option<String>, String> {
@@ -285,17 +363,6 @@ impl Walker<'_> {
         Ok(roots)
     }
 
-    /// The checker's source differs between a commit and a later one, or the working tree.
-    fn rules_differ(&self, from: Option<&str>, to: Option<&str>) -> Result<bool, String> {
-        let (Some(rules), Some(from)) = (self.rules, from) else {
-            return Ok(false);
-        };
-        let mut args = vec![DIFF, QUIET, from];
-        args.extend(to);
-        args.extend([PATHS, rules]);
-        Ok(!run(self.root, &args)?.status.success())
-    }
-
     /// Where the file starts on a chain of changes down to `stop`, and which changes may add lines.
     fn start(&self, changes: &[Change], stop: Option<&str>) -> Result<Chain, String> {
         let started = match changes.first() {
@@ -308,24 +375,30 @@ impl Walker<'_> {
         let arrived = started && changes.first().is_some_and(|c| c.parents.len() > 1);
         let mut allowed = Vec::new();
         let mut previous = stop.map(String::from);
-        let mut after_new_rules = false;
+        let mut settled = match stop {
+            Some(s) => self.rules_at(Some(s))?,
+            None => usize::default(),
+        };
         for (i, change) in changes.iter().enumerate() {
-            let new_rules = self.rules_differ(previous.as_deref(), Some(&change.commit))?;
-            let why = if started && i == usize::default() {
-                Some(AT_START)
+            let version = self.rules_at(Some(&change.commit))?;
+            let new_rules = previous.is_some() && version > settled;
+            if started && i == usize::default() {
+                allowed.push((change.commit.clone(), AT_START, None));
             } else if arrived && i == 1 {
-                Some(AFTER_ARRIVAL)
+                allowed.push((change.commit.clone(), AFTER_ARRIVAL, None));
             } else if new_rules {
-                Some(NEW_RULES)
-            } else if after_new_rules {
-                Some(AFTER_NEW_RULES)
-            } else {
-                None
-            };
-            if let Some(why) = why {
-                allowed.push((change.commit.clone(), why));
+                // What the change may add was in the tree at the previous change, or on a side it merges.
+                let bases = previous
+                    .iter()
+                    .chain(change.parents.iter().skip(1))
+                    .cloned()
+                    .collect();
+                allowed.push((change.commit.clone(), NEW_RULES, Some(bases)));
             }
-            after_new_rules = new_rules && change.parents.len() > 1;
+            // A merge that brings new rules leaves the init to the change after it.
+            if !(new_rules && change.parents.len() > 1) {
+                settled = version;
+            }
             previous = Some(change.commit.clone());
         }
         Ok(Chain {
@@ -333,7 +406,7 @@ impl Walker<'_> {
             arrived,
             allowed,
             last: previous.filter(|_| !changes.is_empty()),
-            after_new_rules,
+            settled,
         })
     }
 
@@ -349,17 +422,29 @@ impl Walker<'_> {
             chain
                 .allowed
                 .iter()
-                .map(|(c, why)| format!("{} {why}", short(c))),
+                .map(|(c, why, _)| format!("{} {why}", short(c))),
         );
         for change in &changes {
-            let exempt = chain.allowed.iter().any(|(c, _)| *c == change.commit);
+            let allowed = chain.allowed.iter().find(|(c, ..)| *c == change.commit);
+            let exempt = allowed.is_some();
             if let Some((_, diff)) = diffs.iter().find(|(c, _)| *c == change.commit) {
-                if !exempt {
-                    self.grown.extend(
+                // A line removed after it grew is no longer growth.
+                for line in &diff.removed {
+                    if let Some(at) = self.grown.iter().position(|(l, _)| l == line) {
+                        self.grown.remove(at);
+                    }
+                }
+                match allowed {
+                    None => self.grown.extend(
                         diff.added
                             .iter()
                             .map(|l| (l.clone(), short(&change.commit))),
-                    );
+                    ),
+                    Some((_, _, Some(bases))) => {
+                        let grown = self.not_there(bases, &diff.added, &short(&change.commit))?;
+                        self.grown.extend(grown);
+                    }
+                    Some((_, _, None)) => {}
                 }
                 // A change that may rewrite the baseline may also drop lines new rules no longer need.
                 if !exempt {
@@ -393,7 +478,7 @@ fn multiset_minus(a: &Keys, b: &Keys) -> Vec<String> {
 pub fn read(
     root: &Path,
     rel: &str,
-    rules: Option<&str>,
+    literals: &Literals,
     working: &Keys,
 ) -> Result<History, String> {
     let shallow = text(root, &[REV_PARSE, IS_SHALLOW])?;
@@ -403,11 +488,12 @@ pub fn read(
     let mut walker = Walker {
         root,
         rel,
-        rules,
+        literals,
         additions: Vec::new(),
         seen: HashSet::new(),
         grown: Vec::new(),
         removed: BTreeSet::new(),
+        present: HashMap::new(),
     };
     let mut problems = Vec::new();
     let attributes = text(root, &[CHECK_ATTRIBUTES, &[rel]].concat())?;
@@ -437,9 +523,8 @@ pub fn read(
     };
     let fresh = chain.changes == usize::default();
     // The working tree may add lines like a change on top of the chain (an init with new rules).
-    let working_rules = walker.rules_differ(chain.last.as_deref(), None)?;
-    let may_init =
-        fresh || (chain.arrived && chain.changes == 1) || working_rules || chain.after_new_rules;
+    let working_rules = !fresh && walker.rules_at(None)? > chain.settled;
+    let may_init = fresh || (chain.arrived && chain.changes == 1) || working_rules;
     let merging = run(root, &[verify.as_slice(), &[MERGE_HEAD]].concat())?
         .status
         .success();
@@ -453,14 +538,24 @@ pub fn read(
             .unwrap_or_default();
     }
     let committed = committed.unwrap_or_default();
-    if !may_init {
-        let added = multiset_minus(working, &committed);
-        walker.grown.extend(
-            added
-                .into_iter()
-                .filter(|k| !from_merge.contains_key(k))
-                .map(|k| (k, WORKING_TREE.to_string())),
-        );
+    let added: Vec<String> = multiset_minus(working, &committed)
+        .into_iter()
+        .filter(|k| !from_merge.contains_key(k))
+        .collect();
+    if fresh || (chain.arrived && chain.changes == 1) {
+    } else if working_rules {
+        let bases: Vec<String> = chain
+            .last
+            .iter()
+            .cloned()
+            .chain(merging.then(|| MERGE_HEAD.to_string()))
+            .collect();
+        let grown = walker.not_there(&bases, &added, WORKING_TREE)?;
+        walker.grown.extend(grown);
+    } else if !may_init {
+        walker
+            .grown
+            .extend(added.into_iter().map(|k| (k, WORKING_TREE.to_string())));
     }
     if !may_init {
         walker.removed.extend(multiset_minus(&committed, working));
@@ -491,9 +586,9 @@ pub fn read(
     let compared = match &upstream {
         Some(up) => {
             let theirs = walker.start(&walker.changes(up, None)?, None)?.allowed;
-            for (commit, why) in theirs
+            for (commit, why, _) in theirs
                 .iter()
-                .filter(|(t, _)| !chain.allowed.iter().any(|(c, _)| c == t))
+                .filter(|(t, ..)| !chain.allowed.iter().any(|(c, ..)| c == t))
             {
                 problems.push((
                     format!(
@@ -515,7 +610,7 @@ pub fn read(
         )
     } else if may_init {
         format!(
-            "the checker's rules changed since {rel} last changed: this change may add lines (run init), then it only shrinks ({compared})"
+            "the rules have a new version since {rel} last changed: this change may add lines for literals already in the tree (run init), then it only shrinks ({compared})"
         )
     } else {
         format!(

@@ -105,14 +105,11 @@ pub fn numbers(text: &str) -> Vec<(usize, usize, String, i128)> {
 pub fn scan(
     rel: &str,
     crate_dir: &str,
-    path: &Path,
+    text: &str,
     matches: &dyn Fn(&Value, &str) -> Option<String>,
 ) -> Vec<Finding> {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
     let lines: Vec<&str> = text.lines().collect();
-    numbers(&text)
+    numbers(text)
         .into_iter()
         .filter_map(|(line, column, token, v)| {
             let value = Value::Int(v);

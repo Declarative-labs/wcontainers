@@ -1,6 +1,7 @@
 //! Walks one parsed Rust file and records every literal, with the item it sits in, and every constant
 //! definition, with its initialiser.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use proc_macro2::{Delimiter, Group, TokenStream, TokenTree};
@@ -78,7 +79,13 @@ const ERROR_CONSTRUCTORS: &[&str] = &["new", "other"];
 /// Macros that take a configuration predicate, which is attribute-like and skipped as attributes are.
 const ATTRIBUTE_LIKE_MACROS: &[&str] = &["cfg"];
 /// Attributes whose content is text or a configuration predicate, never a value of the program.
-const SKIPPED_ATTRIBUTES: &[&str] = &["doc", "cfg", "cfg_attr"];
+const SKIPPED_ATTRIBUTES: &[&str] = &["doc", "cfg"];
+/// `#[cfg_attr(predicate, attributes...)]`: the attributes after the predicate are read like any other.
+const CFG_ATTR: &str = "cfg_attr";
+/// Turns its tokens into a string literal.
+const STRINGIFY_MACRO: &str = "stringify";
+/// Wrap one value without changing what it is given to (`chown(p, Some(0), Some(0))`).
+const WRAPPERS: &[&str] = &["Some", "Ok"];
 /// Macros whose body defines named constants (flag values).
 const CONST_DEFINING_MACROS: &[&str] = &["bitflags"];
 const MATCHES_MACRO: &str = "matches";
@@ -118,6 +125,7 @@ const COUNTING_METHODS: &[&str] = &[
 const ROLE_WORDS: &[&str] = &[
     "uid", "gid", "euid", "egid", "suid", "sgid", "fsuid", "fsgid", "fd", "pid", "tid", "ppid",
     "pgid", "sid", "exit", "status", "stdin", "stdout", "stderr", "errno", "signal", "signo",
+    "user", "owner", "chown", "lchown", "fchown", "fchownat",
 ];
 /// Written before a negated literal.
 const NEGATIVE_SIGN: char = '-';
@@ -168,6 +176,20 @@ enum TokenMode {
     Message,
 }
 
+/// Where a constant can be seen from: an implementation of a trait's constant, and other crates.
+struct Exposure {
+    trait_impl: bool,
+    public: bool,
+}
+
+impl Exposure {
+    /// A constant of a macro or an enum's discriminant: on its own, and taken as public.
+    const PLAIN: Exposure = Exposure {
+        trait_impl: false,
+        public: true,
+    };
+}
+
 struct ImplScope {
     self_name: String,
     trait_impl: bool,
@@ -194,6 +216,10 @@ pub struct FileScan {
     return_hint: Option<String>,
     /// The function whose value the next block's last expression gives.
     value_hint: Option<String>,
+    /// The parameter names of the functions and closures the file defines, by name.
+    params: HashMap<String, Vec<Option<String>>>,
+    /// In the function being scanned, what each local name is given to (`exit` for `exit(code)`).
+    uses: HashMap<String, String>,
     included: Vec<PathBuf>,
     pub findings: Vec<Finding>,
     pub consts: Vec<ConstDef>,
@@ -223,6 +249,8 @@ impl FileScan {
             pattern_hint: None,
             return_hint: None,
             value_hint: None,
+            params: HashMap::new(),
+            uses: HashMap::new(),
             included: Vec::new(),
             findings: Vec::new(),
             consts: Vec::new(),
@@ -232,6 +260,9 @@ impl FileScan {
     /// Scans a whole file.
     pub fn scan_file(&mut self, ast: &syn::File) {
         collect_log_imports(&ast.items, &mut self.log_macros);
+        let mut signatures = Signatures::default();
+        signatures.visit_file(ast);
+        self.params = signatures.0;
         let test = ast.attrs.iter().any(is_test_attribute);
         self.test_depth += usize::from(test);
         self.visit_file(ast);
@@ -323,9 +354,62 @@ impl FileScan {
     /// An expression given to a name (an argument, a field, a variable, the other side of a
     /// comparison): a free number is reported with that name, anything else is visited.
     fn given(&mut self, e: &Expr, hint: Option<String>) {
-        match free_lit(e, false) {
-            Some((lit, negative)) => self.report(lit, negative, hint.as_deref()),
-            None => self.visit_expr(e),
+        if let Some((lit, negative)) = free_lit(e, false) {
+            return self.report(lit, negative, hint.as_deref());
+        }
+        let plain = expr_attrs(e).is_empty() && self.const_depth == usize::default();
+        match e {
+            // A wrapped value, and a value chosen by a branch, go to the same name.
+            Expr::Call(c) if plain && c.args.len() == 1 && is_wrapper(&c.func) => {
+                self.visit_expr(&c.func);
+                c.args.iter().for_each(|a| self.given(a, hint.clone()));
+            }
+            Expr::If(i) if plain => {
+                self.visit_expr(&i.cond);
+                self.value_hint = hint.clone();
+                self.visit_block(&i.then_branch);
+                self.value_hint = None;
+                if let Some((_, other)) = &i.else_branch {
+                    self.given(other, hint);
+                }
+            }
+            Expr::Block(b) if plain && b.label.is_none() => {
+                self.value_hint = hint;
+                self.visit_block(&b.block);
+                self.value_hint = None;
+            }
+            Expr::Match(m) if plain => self.match_expr(m, hint),
+            _ => self.visit_expr(e),
+        }
+    }
+
+    /// The name an argument of a call goes to: the function's, and the parameter's when the file
+    /// defines the function or closure.
+    fn argument_hint(&self, callee: Option<String>, index: usize) -> Option<String> {
+        let parameter = callee
+            .as_deref()
+            .and_then(|c| c.rsplit(HINT_SEPARATOR).next())
+            .and_then(|name| self.params.get(name))
+            .and_then(|p| p.get(index).cloned().flatten());
+        match (callee, parameter) {
+            (Some(c), Some(p)) => Some([c, p].join(HINT_SEPARATOR)),
+            (c, p) => c.or(p),
+        }
+    }
+
+    fn match_expr(&mut self, m: &syn::ExprMatch, body_hint: Option<String>) {
+        self.visit_expr(&m.expr);
+        let hint = hint_of(&m.expr);
+        for arm in &m.arms {
+            self.with_test(&arm.attrs, |s| {
+                s.pattern_hint = hint.clone();
+                s.visit_pat(&arm.pat);
+                s.pattern_hint = None;
+                if let Some((_, g)) = &arm.guard {
+                    s.visit_expr(g);
+                }
+                s.given(&arm.body, body_hint.clone());
+            });
         }
     }
 
@@ -339,7 +423,14 @@ impl FileScan {
                     .zip(&t.elems)
                     .for_each(|(p, e)| self.bound(p, e));
             }
-            _ => self.given(e, hint_of_pat(pat)),
+            _ => {
+                // A local name also goes to what it is later given to (`exit(code)`).
+                let hint = hint_of_pat(pat).map(|name| match self.uses.get(&name) {
+                    Some(used) => [name, used.clone()].join(HINT_SEPARATOR),
+                    None => name,
+                });
+                self.given(e, hint)
+            }
         }
     }
 
@@ -382,7 +473,7 @@ impl FileScan {
         qualified: String,
         ty: Option<&Type>,
         expr: Option<&Expr>,
-        trait_impl: bool,
+        exposure: Exposure,
         at: proc_macro2::Span,
     ) {
         let Some(expr) = expr else { return };
@@ -404,7 +495,8 @@ impl FileScan {
             expr: CExpr::lower(expr),
             ty: ty.and_then(int_type_of),
             scope,
-            trait_impl,
+            trait_impl: exposure.trait_impl,
+            public: exposure.public,
             value: None,
         });
     }
@@ -414,6 +506,7 @@ impl FileScan {
         ident: &syn::Ident,
         ty: &Type,
         expr: Option<&Expr>,
+        public: bool,
         visit_rest: impl FnOnce(&mut Self),
     ) {
         let bare = ident.to_string();
@@ -430,7 +523,14 @@ impl FileScan {
             None => (bare.clone(), false),
         };
         self.with_scope(bare.clone(), |s| {
-            s.record_const(bare, qualified, Some(ty), expr, trait_impl, ident.span());
+            s.record_const(
+                bare,
+                qualified,
+                Some(ty),
+                expr,
+                Exposure { trait_impl, public },
+                ident.span(),
+            );
             s.const_depth += 1;
             visit_rest(s);
             s.const_depth -= 1;
@@ -486,12 +586,12 @@ impl FileScan {
             _ => (false, false),
         };
         let hint = hint_of(&c.func);
-        for arg in &c.args {
+        for (i, arg) in c.args.iter().enumerate() {
             let sentence = matches!(arg, Expr::Lit(l) if matches!(&l.lit, Lit::Str(s) if s.value().contains(char::is_whitespace)));
             if message && is_str_lit(arg) && (sentence || !sentence_only) {
                 self.message(arg);
             } else {
-                self.given(arg, hint.clone());
+                self.given(arg, self.argument_hint(hint.clone(), i));
             }
         }
     }
@@ -591,6 +691,15 @@ impl FileScan {
             return;
         }
         if FileScan::cargo_variable(mac) {
+            return;
+        }
+        if name == STRINGIFY_MACRO {
+            // The tokens are the string it makes: a key written without quotes is still a key.
+            let text = mac.tokens.to_string();
+            if !text.is_empty() {
+                let lit = Lit::Str(syn::LitStr::new(&text, last.ident.span()));
+                self.report(&lit, false, None);
+            }
             return;
         }
         if let Some(start) = self.message_start(mac) {
@@ -709,6 +818,22 @@ impl FileScan {
     /// The literals inside an attribute (`#[repr(align(4096))]`). Its strings must be literals, so
     /// they are listed as messages, gated only when they write out the value of a string constant
     /// (`#[serde(rename = "st_uid")]` where a constant holds "st_uid").
+    fn attribute(&mut self, meta: &Meta) {
+        if SKIPPED_ATTRIBUTES.iter().any(|a| meta.path().is_ident(a)) {
+            return;
+        }
+        if meta.path().is_ident(CFG_ATTR) {
+            let inner = meta
+                .require_list()
+                .and_then(|l| l.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated));
+            if let Ok(inner) = inner {
+                inner.iter().skip(1).for_each(|m| self.attribute(m));
+            }
+            return;
+        }
+        self.attribute_numbers(meta.to_token_stream());
+    }
+
     fn attribute_numbers(&mut self, ts: TokenStream) {
         for tt in ts {
             match tt {
@@ -748,7 +873,14 @@ impl FileScan {
         let bare = name.to_string();
         let qualified = owner.map_or(bare.clone(), |o| format!("{o}{PATH_SEPARATOR}{bare}"));
         self.with_scope(qualified.clone(), |s| {
-            s.record_const(bare, qualified, None, Some(&expr), false, name.span());
+            s.record_const(
+                bare,
+                qualified,
+                None,
+                Some(&expr),
+                Exposure::PLAIN,
+                name.span(),
+            );
             s.const_depth += 1;
             s.visit_expr(&expr);
             s.const_depth -= 1;
@@ -756,7 +888,18 @@ impl FileScan {
         Some(end)
     }
 
-    fn function(&mut self, attrs: &[Attribute], sig: &syn::Signature, f: impl FnOnce(&mut Self)) {
+    fn function(
+        &mut self,
+        attrs: &[Attribute],
+        sig: &syn::Signature,
+        body: Option<&Block>,
+        f: impl FnOnce(&mut Self),
+    ) {
+        let mut uses = Uses::default();
+        if let Some(b) = body {
+            uses.visit_block(b);
+        }
+        let outer = std::mem::replace(&mut self.uses, uses.0);
         let formatter = sig.inputs.iter().any(|i| match i {
             syn::FnArg::Typed(t) => mentions(&t.ty.to_token_stream(), FORMATTER_TYPE),
             syn::FnArg::Receiver(_) => false,
@@ -772,6 +915,69 @@ impl FileScan {
         });
         self.return_hint = returns;
         self.value_hint = None;
+        self.uses = outer;
+    }
+}
+
+/// The parameter names of every function a file defines.
+#[derive(Default)]
+struct Signatures(HashMap<String, Vec<Option<String>>>);
+
+impl Signatures {
+    fn add(&mut self, sig: &syn::Signature) {
+        let names = sig
+            .inputs
+            .iter()
+            .filter_map(|i| match i {
+                syn::FnArg::Typed(t) => Some(hint_of_pat(&t.pat)),
+                syn::FnArg::Receiver(_) => None,
+            })
+            .collect();
+        self.0.insert(sig.ident.to_string(), names);
+    }
+}
+
+impl<'ast> Visit<'ast> for Signatures {
+    fn visit_signature(&mut self, sig: &'ast syn::Signature) {
+        self.add(sig);
+    }
+
+    fn visit_local(&mut self, l: &'ast syn::Local) {
+        if let (Pat::Ident(name), Some(init)) = (&l.pat, &l.init)
+            && let Expr::Closure(c) = &*init.expr
+        {
+            let names = c.inputs.iter().map(hint_of_pat).collect();
+            self.0.insert(name.ident.to_string(), names);
+        }
+        visit::visit_local(self, l);
+    }
+}
+
+/// What each bare local name in a function body is given to as an argument.
+#[derive(Default)]
+struct Uses(HashMap<String, String>);
+
+impl Uses {
+    fn add(&mut self, arg: &Expr, callee: Option<String>) {
+        if let (Expr::Path(p), Some(callee)) = (arg, callee)
+            && let Some(name) = p.path.get_ident()
+        {
+            self.0.entry(name.to_string()).or_insert(callee);
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for Uses {
+    fn visit_expr_call(&mut self, c: &'ast ExprCall) {
+        c.args.iter().for_each(|a| self.add(a, hint_of(&c.func)));
+        visit::visit_expr_call(self, c);
+    }
+
+    fn visit_expr_method_call(&mut self, m: &'ast ExprMethodCall) {
+        m.args
+            .iter()
+            .for_each(|a| self.add(a, Some(m.method.to_string())));
+        visit::visit_expr_method_call(self, m);
     }
 }
 
@@ -900,6 +1106,25 @@ pub fn is_free(lit: &Lit, negative: bool) -> bool {
             .is_ok_and(|v| FREE_NUMBERS.iter().any(|&u| u as f64 == sign(v))),
         _ => false,
     }
+}
+
+/// The expression inside any parentheses and invisible groups.
+fn unwrapped(e: &Expr) -> &Expr {
+    match e {
+        Expr::Paren(p) => unwrapped(&p.expr),
+        Expr::Group(g) => unwrapped(&g.expr),
+        _ => e,
+    }
+}
+
+/// Other crates can import it.
+fn is_public(vis: &syn::Visibility) -> bool {
+    matches!(vis, syn::Visibility::Public(_))
+}
+
+/// `Some` or `Ok`, which wrap a value without changing what it is given to.
+fn is_wrapper(func: &Expr) -> bool {
+    matches!(func, Expr::Path(p) if WRAPPERS.iter().any(|w| p.path.is_ident(w)))
 }
 
 /// The free literal of an expression that is only that, possibly in parentheses, negated or cast.
@@ -1135,10 +1360,7 @@ fn compact(t: &impl ToTokens) -> String {
 
 impl<'ast> Visit<'ast> for FileScan {
     fn visit_attribute(&mut self, attr: &'ast Attribute) {
-        if SKIPPED_ATTRIBUTES.iter().any(|a| attr.path().is_ident(a)) {
-            return;
-        }
-        self.attribute_numbers(attr.meta.to_token_stream());
+        self.attribute(&attr.meta);
     }
 
     fn visit_abi(&mut self, _: &'ast syn::Abi) {}
@@ -1237,15 +1459,19 @@ impl<'ast> Visit<'ast> for FileScan {
     }
 
     fn visit_item_fn(&mut self, f: &'ast syn::ItemFn) {
-        self.function(&[], &f.sig, |s| visit::visit_item_fn(s, f));
+        self.function(&[], &f.sig, Some(&f.block), |s| visit::visit_item_fn(s, f));
     }
 
     fn visit_impl_item_fn(&mut self, f: &'ast syn::ImplItemFn) {
-        self.function(&f.attrs, &f.sig, |s| visit::visit_impl_item_fn(s, f));
+        self.function(&f.attrs, &f.sig, Some(&f.block), |s| {
+            visit::visit_impl_item_fn(s, f)
+        });
     }
 
     fn visit_trait_item_fn(&mut self, f: &'ast syn::TraitItemFn) {
-        self.function(&f.attrs, &f.sig, |s| visit::visit_trait_item_fn(s, f));
+        self.function(&f.attrs, &f.sig, f.default.as_ref(), |s| {
+            visit::visit_trait_item_fn(s, f)
+        });
     }
 
     fn visit_item_mod(&mut self, m: &'ast syn::ItemMod) {
@@ -1286,7 +1512,14 @@ impl<'ast> Visit<'ast> for FileScan {
             None => bare.clone(),
         };
         self.with_scope(bare.clone(), |s| {
-            s.record_const(bare, qualified, None, Some(expr), false, v.ident.span());
+            s.record_const(
+                bare,
+                qualified,
+                None,
+                Some(expr),
+                Exposure::PLAIN,
+                v.ident.span(),
+            );
             s.const_depth += 1;
             s.visit_expr(expr);
             s.const_depth -= 1;
@@ -1309,7 +1542,7 @@ impl<'ast> Visit<'ast> for FileScan {
 
     fn visit_item_const(&mut self, c: &'ast syn::ItemConst) {
         let outer = std::mem::take(&mut self.impls);
-        self.const_item(&c.ident, &c.ty, Some(&c.expr), |s| {
+        self.const_item(&c.ident, &c.ty, Some(&c.expr), is_public(&c.vis), |s| {
             visit::visit_item_const(s, c)
         });
         self.impls = outer;
@@ -1317,7 +1550,7 @@ impl<'ast> Visit<'ast> for FileScan {
 
     fn visit_item_static(&mut self, c: &'ast syn::ItemStatic) {
         let outer = std::mem::take(&mut self.impls);
-        self.const_item(&c.ident, &c.ty, Some(&c.expr), |s| {
+        self.const_item(&c.ident, &c.ty, Some(&c.expr), is_public(&c.vis), |s| {
             visit::visit_item_static(s, c)
         });
         self.impls = outer;
@@ -1325,7 +1558,7 @@ impl<'ast> Visit<'ast> for FileScan {
 
     fn visit_impl_item_const(&mut self, c: &'ast syn::ImplItemConst) {
         self.with_test(&c.attrs, |s| {
-            s.const_item(&c.ident, &c.ty, Some(&c.expr), |s| {
+            s.const_item(&c.ident, &c.ty, Some(&c.expr), is_public(&c.vis), |s| {
                 visit::visit_impl_item_const(s, c)
             })
         });
@@ -1333,7 +1566,7 @@ impl<'ast> Visit<'ast> for FileScan {
 
     fn visit_trait_item_const(&mut self, c: &'ast syn::TraitItemConst) {
         let default = c.default.as_ref().map(|(_, e)| e);
-        self.const_item(&c.ident, &c.ty, default, |s| {
+        self.const_item(&c.ident, &c.ty, default, true, |s| {
             visit::visit_trait_item_const(s, c)
         });
     }
@@ -1350,9 +1583,9 @@ impl FileScan {
                 self.given(&b.left, hint_of(&b.right));
                 self.given(&b.right, hint_of(&b.left));
             }
-            Expr::Unary(u) if matches!(u.op, UnOp::Neg(_)) => match &*u.expr {
+            Expr::Unary(u) if matches!(u.op, UnOp::Neg(_)) => match unwrapped(&u.expr) {
                 Expr::Lit(l) => self.report(&l.lit, true, None),
-                inner => self.visit_expr(inner),
+                _ => self.visit_expr(&u.expr),
             },
             Expr::Index(i) => {
                 self.visit_expr(&i.expr);
@@ -1383,21 +1616,7 @@ impl FileScan {
                     self.visit_expr(rest);
                 }
             }
-            Expr::Match(m) => {
-                self.visit_expr(&m.expr);
-                let hint = hint_of(&m.expr);
-                for arm in &m.arms {
-                    self.with_test(&arm.attrs, |s| {
-                        s.pattern_hint = hint.clone();
-                        s.visit_pat(&arm.pat);
-                        s.pattern_hint = None;
-                        if let Some((_, g)) = &arm.guard {
-                            s.visit_expr(g);
-                        }
-                        s.visit_expr(&arm.body);
-                    });
-                }
-            }
+            Expr::Match(m) => self.match_expr(m, None),
             Expr::Return(r) => {
                 if let Some(value) = &r.expr {
                     self.given(value, self.return_hint.clone());
