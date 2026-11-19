@@ -12,6 +12,9 @@ copy /y %E%\dxgi.dll %C%\ours\ >nul
 for %%w in (real ours) do (
   echo %%w:
   pushd %C%\%%w
+  del /q %1.rgba 2>nul
   check_d3d12 case %1
   popd
 )
+echo case pictures:
+%C%\real\check_d3d12 compare-case-pictures %C%\real %C%\ours %1

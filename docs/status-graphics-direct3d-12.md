@@ -6,8 +6,8 @@ crates/wcontainers-direct3d-12.
 
 ## Where things stand
 
-Everything on G5's pass bar is done or on the written gap list (runs 35 to 39), ready for the
-independent check; the literal check passes (runs 36 to 39). Test files 186 of 198. Every failing file is on the gap list
+Everything on G5's pass bar is done or on the written gap list (runs 35 to 41), ready for the
+independent check; the literal check passes (runs 36 to 41). Test files 186 of 198. Every failing file is on the gap list
 with its cause: an absent feature reported as Direct3D 12 expects (8), a listed loss naming what
 the back end lacks (1), not to be matched (1), or a named item of the shaders track (2: one
 refused by name, one a value the converted program gives). None is the front's own unfinished
@@ -19,13 +19,27 @@ program"). Godot's 3D platformer converts every shader since the shaders track's
 run 38's filtering fix, stops only at the WebGPU back end's view usage (an sRGB view of a texture
 that also allows storage; "Asked of other tracks"): with that back end change applied for a run
 and not committed (scratch run38/srgb-view-usage.patch), it drew 1 of 518,400 pixels beyond 8 in
-each of frames 10, 60 and 120 (run38/g3d3.log; its one pipeline drawing alpha-antialiased lines is
-refused by name, a shaders item). The rig's Direct3D 12 scenes ("Scenes"): 95 outputs pass, 22
+each of frames 10, 60 and 120 (run38/g3d3.log, and the same in run 41, run41/g3d1.log, with its
+one pipeline drawing alpha-antialiased lines now made, through the stage helper since run 41,
+and drawing in none of those frames). The rig's Direct3D 12 scenes ("Scenes"): 95 outputs pass, 22
 fail, 3 absent, each failure named (the textures scene passes since run 38, with DXIL 1D
 textures). On wgpu's Direct3D 12 path (run 36's experiment, not kept) the three differences the
 Vulkan path makes were measured gone; what that path still lacks is other tracks' ("Next" 3).
 
-Latest results (run 39, 2026-11-19, desktop shared with other tracks; scratch run39/). At
+Latest results (run 41, 2026-11-19, desktop shared with other tracks; scratch run41/). At
+731791fe, the run's last code (logs *1.log, `bin/all41.sh 1`): the literal check passes
+(lit1.log); lint clean (lint1.log); the crates' 50 tests pass (test1.log); test files 186 of
+198, the same 12 failing as run 39 (full1.log, fail1.txt); own cases 30 of 30 equal (the new
+`antialiased-lines` among them; its picture 0 of 4096 pixels beyond 63, largest difference 38),
+draw 0 of 4096 pixels beyond 1 (check1.log); shader runner 214 of 302, the same 88 failing files
+(runner1.log, rfail1.txt); scenes 95 pass, 22 fail, 3 absent, the same outputs (scenes1.log);
+Wine's five dxgi tests 3 pass, the same 2 fail (dxgi1.log); Microsoft's two samples (2.9 and 2.6
+s) and Godot's 2D platformer (4 s) equal real (p1-*.log); Godot's 3D platformer still stops at
+the back end's sRGB view, and with the view patch for one run as run 38 (g3d1.log, above); bgfx
+37 747 to 883 pixels beyond 8 of 20,480 allowed, the overlay's text (p1-bgfx37.log); fence round
+trip `--alone` under "Measurements".
+
+Results of run 39 (2026-11-19, desktop shared with other tracks; scratch run39/). At
 8ffdc980, the run's last code (logs *2.log): the literal check passes (lit2.log); lint clean
 (lint2.log); the crates' 50 tests pass (test2.log); test files 186 of 198, the same 12 failing as
 run 38 (full2.log); own cases 29 of 29 equal (the new `layers` among them), draw 0 of 4096 pixels
@@ -174,6 +188,24 @@ milestone "G5 to the pass bar"):
   without unordered access): Godot's textures were refused there, and with them taken its 2D
   platformer draws every compared frame exactly as real Direct3D 12 does.
 
+- Run 41 (the eleventh run of the milestone's current form; run 40 stopped before committing
+  anything but the merge 2e1dc463 of the shaders track's run 45, and left the line route below
+  uncommitted, which this run checked, finished and committed): no branch had anything newer
+  (direct3d-11's ten commits touch nothing of this track's). Alpha-antialiased lines (8ba6aae0):
+  a pipeline with `AntialiasedLineEnable` and multisampling off, of line topology, with a pixel
+  shader and no geometry, tessellation or stream output stage, is drawn through the stage
+  helper's line route (`Stages::antialiased_lines`, `run_antialiased_lines` with viewport 0's
+  size per draw): the pixel shader converted with `VariantFlags::LINE_COVERAGE` and `linked`
+  past both programs' values, the vertex stage alone as compute, the final draw a triangle list
+  with culling off and solid fill (`AntialiasedLinesAsQuads`, counted and warned). Other
+  alpha-antialiased lines (after those stages, wireframe triangles) stay refused by name. New
+  own case `antialiased-lines`, whose picture is compared within 63 of 255 (`cases::PICTURES`,
+  `compare-case-pictures`; Departures): 0 of 4096 pixels beyond, largest difference 38
+  (run41/case1.log, check1.log, alone1.log). The primitive index (731791fe): a pixel shader
+  reading `SV_PrimitiveID` where the back end lacks `Features::PRIMITIVE_INDEX` is refused by name
+  (`PrimitiveIdAsGeometry`), as the Direct3D 11 front does; before, the back end refused its
+  module without a name. Not reached on this desktop. The topology types and fill modes are
+  named (`state::TOPOLOGY_TYPE_*`, `FILL_MODE_*`); 4 baseline lines deleted.
 - Run 39 (the tenth run of the milestone's current form): merged shaders (its runs 43 and 44:
   the interface change "a layer named past the views drawn into the first", `LAYER_FROM_STAGE`
   and `HelperValue::LayerCount`; the float layouts named; `stage::STREAM_BUFFERS` public); the
@@ -704,7 +736,10 @@ What the front does, by subject:
 - Refused with E_NOTIMPL and the reason printed (`wcontainers: <reason>: not implemented`):
   component mappings, stencil views and multisampled arrays of several layers read in vertex,
   geometry, hull or domain shaders (run 28), arrays of resources, min/max filters,
-  alpha-antialiased lines,
+  alpha-antialiased lines after a geometry or tessellation stage or stream output, or of
+  wireframe triangles (run 41; line lists and strips straight from the vertex shader are drawn
+  through the stage helper), a pixel shader reading its primitive index where the back end
+  lacks it (run 41, `PrimitiveIdAsGeometry`),
   depth bias on lines and points, forced sample counts, conservative rasterisation, raw and
   structured views at offsets the back end cannot bind, unordered access buffers in custom
   heaps the CPU sees,
@@ -782,7 +817,8 @@ gets E_NOTIMPL or a removed device, never a fake success.
 ## The pass bar's cases against real Direct3D 12 (own program)
 
 `check_d3d12 cases` runs each case in its own process with real Direct3D 12 and through ours and
-compares the lines (`examples/check/cases.rs`). Run 39: 29 of 29 equal (run39/check2.log, the
+compares the lines (`examples/check/cases.rs`). Run 41: 30 of 30 equal and the one picture
+within its tolerance (run41/check1.log). Run 39: 29 of 29 equal (run39/check2.log, the
 new `layers` among them; features, outputs and answers as run 34). Run 34: 28 of 28 equal (run34/check1.log;
 features 192 of 872 differ, one beyond real (above), outputs 22 of 110 and answers 7 of 40, none
 beyond). Run 29: 26 of 26 equal (run29/check1.log;
@@ -823,6 +859,14 @@ The cases and what each covers:
 - layers (run 39): a geometry shader naming one of four layers per instance through viewport 0
   or 1 into a target of two layers; the primitives naming layers 2 and 3 land in layer 0 with
   the pixel shader reading 2 and 3. Both layers compared pixel by pixel and by colour counts.
+- antialiased-lines (run 41): alpha-antialiased lines (`AntialiasedLineEnable`, multisampling
+  off, back faces culled, which lines ignore) blended over the target: a list of twelve spokes at
+  every 30 degrees, ends on and between pixel centres, and a strip. The case writes its picture
+  (`antialiased-lines.rgba`), which `compare-case-pictures` holds to real Direct3D 12's within 63
+  of 255 per channel (`cases::PICTURES`): Direct3D leaves the line's filter to the
+  implementation; the shaders track measured the RTX 3080 and WARP 128 apart and its own box
+  filter within 52 of the RTX 3080 (its status, run 45). Its line in `cases.txt` says only that
+  something was drawn.
 - timestamps (run 18): timestamps around a dispatch on the direct queue and around a copy on a
   copy queue timestamp heap, both queues' frequencies, and two clock calibrations 20 ms apart
   around the work; printed as relations (in order, inside the calibrations, the GPU and CPU
@@ -1280,11 +1324,14 @@ view is then invalid). Direct3D 12 allows it; the back end would make such a vie
 texture's usages less storage ("Asked of other tracks"). With that change applied for one run and
 not committed (scratch run38/srgb-view-usage.patch), it drew frames 10, 60 and 120 with 1 of
 518,400 pixels beyond 8 each, largest difference 48 (run38/g3d3.log). Its one pipeline drawing
-alpha-antialiased lines (`AntialiasedLineEnable` without multisampling) is refused by name: the
-converter's `VariantFlags::LINE_COVERAGE` (`AntialiasedLinesAsQuads`) is not built, a shaders
-item, and the front routes such pipelines once it is (the Direct3D 11 track waits on the same
-item). Godot then makes no such pipeline object and draws on; whether that pipeline reaches the
-compared frames is not known (the one differing pixel is not traced).
+alpha-antialiased lines (`AntialiasedLineEnable` without multisampling), refused by name until
+run 41, is now drawn through the stage helper's covered rectangles (`AntialiasedLinesAsQuads`,
+the shaders track's `LINE_COVERAGE`; own case `antialiased-lines`). With the back end patch
+applied again for one run (run 41, run41/g3d1.log), frames 10, 60 and 120 were as in run 38: 1
+of 518,400 pixels beyond 8 each, largest difference 48 at 921,317, and nothing of ours refused
+but `QueryVideoMemoryInfo`; the line pipeline is now made but draws in none of the 120 frames
+(its warning, "antialiased lines drawn as covered rectangles", is not printed), so it is not
+that pixel. The pixel is not traced.
 
 The rig's Direct3D 12 scenes: see "Scenes" for every failing output and its cause (shaders
 track items, and three differences measured in run 36 to be the driver's Vulkan path: the
@@ -1294,9 +1341,13 @@ item, "Next" 3).
 Refused by name in the front with no failing test here (run 35 adds the first four, of the
 routes it built for what the independent check of run 34 found refused and unlisted; the
 refusal of a texture the converted program declares one-dimensional was deleted in run 38, as the
-converter now makes DXIL 1D textures 2D ones of one row): alpha-antialiased lines
-(`AntialiasedLinesAsQuads`, the converter's unbuilt `LINE_COVERAGE`; Godot's 3D platformer has
-one such pipeline); a constant buffer
+converter now makes DXIL 1D textures 2D ones of one row; alpha-antialiased lines straight from
+the vertex shader are drawn since run 41): alpha-antialiased lines after a geometry or
+tessellation stage or stream output, or of wireframe triangles (the stage helper's line route
+takes the vertex stage's lines alone); a pixel shader reading its primitive index where the back
+end lacks `Features::PRIMITIVE_INDEX` (since run 41, as the Direct3D 11 front refuses it; not
+reached on this desktop, whose back end has it; the stage helper's `primitive_numbered` route is
+"Next"); a constant buffer
 view shorter than the program's block, or passing its buffer's end, of a buffer outside an upload
 heap (the GPU may write it, and its zero tail would need a copy before the pass; upload buffers
 are served from the program's bytes, `ConstantBufferGrown`); indexed or indirect adjacency draws
@@ -1335,10 +1386,6 @@ newly or again, with run 38's evidence:
   `R32_FLOAT` denormal (bits 0x1) to 0. Asked: where the API clears through a float that does
   not keep the bits (denormals, NaN payloads), clear another way (a copy from a buffer filled
   with the texel, or a draw writing the bits, as `IntegerClearByDraw` does for integers).
-- Shaders (G6), alpha-antialiased lines: `VariantFlags::LINE_COVERAGE`
-  (`AntialiasedLinesAsQuads`) is in the converter's unbuilt flags; the front refuses such
-  pipelines by name until then (Godot's 3D platformer makes one; the Direct3D 11 track asked the
-  same in its run 18).
 - Shaders (G6), clip distances through the culling stage: `Stages::culled`'s pass-through writes
   the vertex program's clip distances as a built-in, and takes no variant; on a back end without
   `Features::CLIP_DISTANCE` (wgpu's Direct3D 12 path, WebGL 2) the front refuses such pipelines
@@ -1399,9 +1446,12 @@ run 36).
    the five dxgi tests, the real programs and the `--alone` fence timing), reclassify the runner
    (bin/classify30.py) and read the refusals. The front's part as other tracks' items land: a
    texture of another type than its view: replace the refusal in `bind.rs` (`read_as`) by the
-   variant reading the slot in the view's type; alpha-antialiased lines once the converter builds
-   `LINE_COVERAGE`: route such pipelines through it (the refusal in `device.rs`, "alpha-antialiased
-   lines"). When the WebGPU back end's view usage lands, rerun Godot's 3D platformer (with run
+   variant reading the slot in the view's type; a pixel shader reading its primitive index where
+   the back end lacks `Features::PRIMITIVE_INDEX` (browsers' WebGPU without `primitive-index`):
+   route it through `Stages::primitive_numbered` (the shaders status, "for the fronts") as the
+   line route is routed, in place of run 41's refusal, once there is a way to compare it with
+   real Direct3D 12 on a back end without the feature (this desktop's has it). When the WebGPU
+   back end's view usage lands, rerun Godot's 3D platformer (with run
    38's patch it drew 1 pixel beyond 8 per frame; trace that pixel then).
 3. Draw on wgpu's Direct3D 12 path, as the Direct3D 11 track does and as browsers draw on
    Windows. Run 36 built it (scratch run36/dx12-path.patch: `system_on_device_thread!` sends the
@@ -1667,6 +1717,13 @@ Run 11's entries:
 
 ## No magic numbers (the owner's rule of 2026-11-18)
 
+Run 41: the check passes at 731791fe (run41/lit1.log). The front's topology types and fill modes
+are named once in `state.rs` (`TOPOLOGY_TYPE_UNDEFINED` to `_PATCH`, `FILL_MODE_WIREFRAME`,
+`_SOLID`, after Direct3D 12's names; a module `topology_type` with `UNDEFINED` was caught as a
+redefinition of the Direct3D 11 crate's `topology::UNDEFINED`, `D3D_PRIMITIVE_TOPOLOGY`'s, a
+different fact). 4 lines deleted. Baseline lines at the end of run 41: wcontainers-direct3d-12
+529, the infrastructure crate 63. Changes that could add lines: the same 18 as run 35.
+
 Run 39: the check passes at 8ffdc980 (run39/lit2.log, exit 0). Named this run, from
 fix-graphics.md items 3, 8 and 9 (whose owner is the infrastructure crate's `d3d` module): the
 pipeline and stream output statistics' layouts (`PipelineStatistics`, `StreamOutputStatistics`;
@@ -1817,6 +1874,12 @@ on a branch this one merges.
 
 ## Measurements
 
+- Run 41, fence-wait (own program, 2000 rounds, RTX 3080) as `gpu-job --alone` at 731791fe
+  (run41/alone1.log, 13:02; desktop CPU load 4 % before, Win32_Processor LoadPercentage; the load
+  after not printed): real first 6 µs, mean 1 µs, 99th percentile 1 µs, largest 6 µs; ours first
+  45 µs, mean 19 µs, 99th percentile 62 µs, largest 113 µs. Programs (not alone, shared desktop,
+  load not taken): Microsoft's samples 2.9 and 2.6 s, Godot's 2D platformer 4 s (p1-*.log).
+
 - Run 39, fence-wait (own program, 2000 rounds, RTX 3080) as `gpu-job --alone` at 8ffdc980
   (run39/alone2.log, 11:50; desktop CPU load 1 % before, Win32_Processor LoadPercentage; the
   load after not printed): real first 7 µs, mean 1 µs, 99th percentile 1 µs, largest 7 µs; ours
@@ -1911,6 +1974,13 @@ on a branch this one merges.
 - Real programs' times: under "Real program".
 
 ## Departures from the plan
+
+- Run 41: the own program's cases are compared line for line, exactly; `antialiased-lines` is
+  compared as a picture within 63 of 255 per channel instead. Direct3D 12 leaves the alpha-based
+  line filter to the implementation (the RTX 3080 and WARP differ by up to 128, measured by the
+  shaders track), so exact equality with one GPU is not Direct3D's verdict; the tolerance is the
+  shaders track's for the same route, and an aliased line (rows of 255 and 0 where the RTX 3080
+  gives 115 and 140) would exceed it (expected from those values, not measured).
 
 - Run 38: run 37 had planned a uint clear of a float format whose bits a colour clear does not
   keep (the denormal on wgpu's Direct3D 12 path) as the front's, by a copy from a filled buffer
