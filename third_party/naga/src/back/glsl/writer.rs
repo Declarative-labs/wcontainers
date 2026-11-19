@@ -3065,8 +3065,36 @@ impl<'a, W: Write> Writer<'a, W> {
                     false
                 };
 
-                // TODO: Boolean mix on desktop required GL_EXT_shader_integer_mix
-                if vec_select {
+                // `mix` with a boolean condition takes integer and boolean values from GLSL ES 3.10
+                // and GLSL 4.50 only; before, such a select is written one component at a time.
+                let value_ty = ctx.resolve_type(accept, &self.module.types);
+                let componentwise = match *value_ty {
+                    TypeInner::Vector { size, scalar }
+                        if vec_select
+                            && scalar.kind != crate::ScalarKind::Float
+                            && match self.options.version {
+                                Version::Embedded { version, .. } => version < 310,
+                                Version::Desktop(version) => version < 450,
+                            } =>
+                    {
+                        Some(size)
+                    }
+                    _ => None,
+                };
+                if let Some(size) = componentwise {
+                    self.write_value_type(value_ty)?;
+                    write!(self.out, "(")?;
+                    for (i, component) in back::COMPONENTS[..size as usize].iter().enumerate() {
+                        if i != 0 {
+                            write!(self.out, ", ")?;
+                        }
+                        for (e, after) in [(condition, " ? "), (accept, " : "), (reject, "")] {
+                            write!(self.out, "(")?;
+                            self.write_expr(e, ctx)?;
+                            write!(self.out, ").{component}{after}")?;
+                        }
+                    }
+                } else if vec_select {
                     // Glsl defines that for mix when the condition is a boolean the first element
                     // is picked if condition is false and the second if condition is true
                     write!(self.out, "mix(")?;
