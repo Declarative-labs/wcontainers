@@ -4,7 +4,8 @@
 //! and compute queues waiting on each other and on a late CPU signal, binary occlusion resolved,
 //! read back and used by `SetPredication`, `ExecuteIndirect`, pipeline and stream output
 //! statistics, geometry shaders, layers a geometry shader names, timestamps, views a vertex
-//! shader reads in the program, and alpha-antialiased lines (whose picture is compared within
+//! shader reads in the program, a depth bias on lines and points, debugging annotations, and
+//! alpha-antialiased lines (whose picture is compared within
 //! [`PICTURES`]' tolerance, as their filter is the implementation's own).
 
 use std::cell::Cell;
@@ -82,6 +83,8 @@ pub const CASES: &[&str] = &[
     "no-scissors",
     "early-per-primitive",
     "layers",
+    "line-bias",
+    "markers",
     ANTIALIASED_LINES,
 ];
 
@@ -132,6 +135,8 @@ pub fn run(name: &str) -> Result<String> {
             "no-scissors" => no_scissors(&c),
             "early-per-primitive" => early_per_primitive(&c),
             "layers" => layers(&c),
+            "line-bias" => line_bias(&c),
+            "markers" => markers(&c),
             ANTIALIASED_LINES => antialiased_lines(&c),
             _ => panic!("no case {name}"),
         }
@@ -3279,6 +3284,132 @@ unsafe fn early_per_primitive(c: &Ctx) -> Result<String> {
         list.DrawInstanced(4, 1, 6, 0);
         c.run(&list)?;
         Ok(format!("counts {}", words(&c.read(&counts, 0, 16)?)))
+    }
+}
+
+/// A line (row 8), three points (row 24) and a triangle (rows 40 to 63) at depth 0.5, each drawn
+/// by a pipeline of its topology type with a `DepthBias` of 100000 into D32 depth cleared to 0.5
+/// and tested `LESS_EQUAL`. Prints whether each band has lit pixels: a biased primitive fails the
+/// test. (How many a line lights is the rasteriser's: a listed loss.)
+unsafe fn line_bias(c: &Ctx) -> Result<String> {
+    unsafe {
+        const BIAS: i32 = 100_000;
+        const DEPTH: f32 = 0.5;
+        const BANDS: [(usize, usize); 3] = [(0, 16), (16, 32), (32, 64)];
+        let vs = compile(
+            "static const float2 at[8] = {
+                 float2(-1, 0.734375), float2(1, 0.734375),
+                 float2(-0.484375, 0.234375), float2(0.015625, 0.234375), float2(0.515625, 0.234375),
+                 float2(-1, -0.3), float2(1, -0.3), float2(0, -1) };
+             float4 main(uint id : SV_VertexID) : SV_Position { return float4(at[id], 0.5, 1); }",
+            s!("vs_5_0"),
+        )?;
+        let ps = compile(
+            "float4 main() : SV_Target { return float4(1, 1, 1, 1); }",
+            s!("ps_5_0"),
+        )?;
+        let root = c.root(&[], D3D12_ROOT_SIGNATURE_FLAG_NONE)?;
+        let code = |b: &[u8]| D3D12_SHADER_BYTECODE {
+            pShaderBytecode: b.as_ptr().cast(),
+            BytecodeLength: b.len(),
+        };
+        let pso = |kind| {
+            let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
+                pRootSignature: transmute_copy(&root),
+                VS: code(&vs),
+                PS: code(&ps),
+                SampleMask: u32::MAX,
+                RasterizerState: D3D12_RASTERIZER_DESC {
+                    FillMode: D3D12_FILL_MODE_SOLID,
+                    CullMode: D3D12_CULL_MODE_NONE,
+                    DepthClipEnable: true.into(),
+                    DepthBias: BIAS,
+                    ..Default::default()
+                },
+                DepthStencilState: D3D12_DEPTH_STENCIL_DESC {
+                    DepthEnable: true.into(),
+                    DepthWriteMask: D3D12_DEPTH_WRITE_MASK_ALL,
+                    DepthFunc: D3D12_COMPARISON_FUNC_LESS_EQUAL,
+                    ..Default::default()
+                },
+                DSVFormat: DXGI_FORMAT_D32_FLOAT,
+                PrimitiveTopologyType: kind,
+                NumRenderTargets: 1,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                ..Default::default()
+            };
+            desc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+            c.device
+                .CreateGraphicsPipelineState::<ID3D12PipelineState>(&desc)
+        };
+        let line = pso(D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE)?;
+        let point = pso(D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT)?;
+        let triangle = pso(D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE)?;
+        let depth = c.committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &D3D12_RESOURCE_DESC {
+                Format: DXGI_FORMAT_D32_FLOAT,
+                Flags: D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
+                ..target_desc()
+            },
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+        )?;
+        let dsv_heap: ID3D12DescriptorHeap =
+            c.device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
+                Type: D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
+                NumDescriptors: 1,
+                ..Default::default()
+            })?;
+        let dsv = dsv_heap.GetCPUDescriptorHandleForHeapStart();
+        c.device.CreateDepthStencilView(&depth, None, dsv);
+        let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        let (target, _heap, rtv) = c.target(&list)?;
+        list.OMSetRenderTargets(1, Some(&rtv), false, Some(&dsv));
+        list.ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, DEPTH, 0, None);
+        list.SetGraphicsRootSignature(&root);
+        for (pso, topology, count, first) in [
+            (&line, D3D_PRIMITIVE_TOPOLOGY_LINELIST, 2, 0),
+            (&point, D3D_PRIMITIVE_TOPOLOGY_POINTLIST, 3, 2),
+            (&triangle, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, 3, 5),
+        ] {
+            list.SetPipelineState(pso);
+            list.IASetPrimitiveTopology(topology);
+            list.DrawInstanced(count, 1, first, 0);
+        }
+        c.run(&list)?;
+        let pixels = c.pixels(&target, D3D12_RESOURCE_STATE_RENDER_TARGET)?;
+        let row = SIZE as usize * 4;
+        let lit =
+            |(from, to): (usize, usize)| pixels[from * row..to * row].chunks(4).any(|p| p[0] != 0);
+        let [l, p, t] = BANDS.map(lit);
+        Ok(format!("line {l} points {p} triangle {t}"))
+    }
+}
+
+/// Debugging annotations on a command list and a queue (`BeginEvent`, `SetMarker`, `EndEvent`),
+/// then the list's `Close` and a clear it records: prints the close's result and the cleared
+/// colour.
+unsafe fn markers(c: &Ctx) -> Result<String> {
+    unsafe {
+        let text = b"frame\0";
+        let (data, size) = (Some(text.as_ptr().cast()), text.len() as u32);
+        let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        let (target, _heap, rtv) = c.target(&list)?;
+        list.BeginEvent(0, data, size);
+        list.SetMarker(0, data, size);
+        list.ClearRenderTargetView(rtv, &[0.0, 1.0, 0.0, 1.0], None);
+        list.EndEvent();
+        c.queue.BeginEvent(0, data, size);
+        c.queue.SetMarker(0, data, size);
+        c.queue.EndEvent();
+        let closed = list.Close().map_err(|e| e.code());
+        c.queue.ExecuteCommandLists(&[Some(list.cast()?)]);
+        c.finish()?;
+        let pixels = c.pixels(&target, D3D12_RESOURCE_STATE_RENDER_TARGET)?;
+        Ok(format!("close {closed:?} colour {}", colours(&pixels)))
     }
 }
 

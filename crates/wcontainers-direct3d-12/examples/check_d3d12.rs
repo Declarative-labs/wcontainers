@@ -174,9 +174,19 @@ fn compare_pictures(a: &[u8], b: &[u8], tolerance: u8) -> bool {
     beyond == 0
 }
 
+/// Bits of `bits` answers above real Direct3D 12's on the RTX 3080 that the front serves:
+/// `R32G32B32_FLOAT`'s `SHADER_SAMPLE` and `SHADER_GATHER`, read from `rgba32float` textures.
+#[cfg(windows)]
+const SERVED_BEYOND_REAL: &[(&str, u64)] = &[(
+    "format_6.support1",
+    (support1::SHADER_SAMPLE | support1::SHADER_GATHER) as u64,
+)];
+#[cfg(windows)]
+use wcontainers_directx_graphics_infrastructure::support1;
+
 /// Prints each answer of ours beyond real Direct3D 12's (every differing one with `all`) and returns whether none of ours promises more than real
 /// Direct3D 12's on the same GPU: per line, `le` values may be lower, `ge` higher (or zero, not
-/// reported), `bits` a subset,
+/// reported), `bits` a subset (with `SERVED_BEYOND_REAL`'s bits),
 /// and an answer real Direct3D 12 refuses must be refused.
 #[cfg(windows)]
 fn compare_features(real: &str, ours: &str, verbose: bool) -> bool {
@@ -209,7 +219,13 @@ fn compare_features(real: &str, ours: &str, verbose: bool) -> bool {
                 "le" => o <= r,
                 // A bound: ours may be wider, or zero where the ability is absent.
                 "ge" => o >= r || o == 0,
-                "bits" => o & !r == 0,
+                "bits" => {
+                    let served = SERVED_BEYOND_REAL
+                        .iter()
+                        .find(|(k, _)| k == key)
+                        .map_or(0, |(_, bits)| *bits);
+                    o & !(r | served) == 0
+                }
                 _ => rule == "info",
             },
             _ if rule == "info" => true,
