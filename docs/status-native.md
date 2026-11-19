@@ -47,8 +47,8 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   system-call part now passes (78.0 ns [71.9 .. 82.7] against 100), and a three-word page test brought the compute part
   to +59.27% [+57.84 .. +60.45], which still fails against +21.2% (below, "N4 run 4"); run 5 built the untranslated run,
   left out the page test for aligned stack accesses, counted dynamic register uses and withheld x18, x23 and x28 (sort
-  -2.2% cycles): the compute part still fails, and the system-call part was undecided at a higher load (below, "N4 run
-  5"). T1's look-aheads come next.
+  -2.2% cycles): the compute part still fails at +55.40% [+54.62 .. +56.03], the system-call part passes (87.4 ns [82.8 ..
+  88.7]) (below, "N4 run 5"). T1's look-aheads come next.
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -110,6 +110,13 @@ Measured (M5 Max, all on the Mac):
   calls -20.0 (instructions -6 to -32%: the plain run's process also maps, protects and handles breakpoints). The system-call
   part was UNDECIDED at 60 pairs: back end 94.0 ns, 95% interval [88.4 .. 123.6] against 100 (run 4 at load 31 to 33: 78.0
   [71.9 .. 82.7]).
+- The speed test after the register change (n4r6/speed.log, 13:34 to 13:50, load 83 to 133, 15 pairs, look-ahead 256,
+  bootstrap seed 1 with 2000 resamples; share on performance cores 12 to 22%): compute part +55.40%, 95% interval [+54.62 ..
+  +56.03], FAILS against +21.2%. Native against plain, cycles: fib +68.7, sieve +39.8, hash +3.4, sort +84.3, interpret
+  +116.0, matrix +91.8, walk +23.4, search +48.1; calls +57.3 (instructions: sort +159.9, was +186.8). Untranslated: fib -4.6,
+  sieve +24.3, hash -3.3, sort -5.2, interpret -7.3, matrix -13.7, walk +21.2, search -10.7, calls -20.0. System-call part:
+  209.3 ns a call (median), the kernel's share 121.9 ns, the back end's 87.4 ns, 95% interval [82.8 .. 88.7], PASSES against
+  100 ns at 15 pairs.
 - The contiguous bit against 4 KiB entries, untranslated (n4r5/contig.log, 8 pairs each, load 80, a build of the session
   that was cut off, not in the repository): medians walk 11.85 against 12.08 G cycles (-1.9%), sieve 2.038 against 2.084
   (-2.2%). Not built: guest memory still has 4 KiB entries only (below).
@@ -119,7 +126,9 @@ Measured (M5 Max, all on the Mac):
 - Tests after the change: native 32,191 cases, 0 failing (seed 0x6e34720601, n4r6/native16.log); interrupts 3522 forced
   interrupts at 3 look-aheads, 0 failed; exits 4 programs both modes; floor 21 cases and 1 measurement; carry passes; kernel
   alike at none and 256 with the reference, the benchmark set's count agreeing (blocks' KNOWN FAILURE on the WebAssembly
-  side only); arm64's tests pass; the literal check exits 0, no marks.
+  side only); arm64's tests pass; the literal check exits 0, no marks, nothing added to the baseline (8148 lines, as at
+  the run's start). The differential test after its pairs followed the look-ahead: 32,588 cases at 256 (seed
+  0x6e3472060256) and 32,367 at none (seed 0x6e3472060201), 0 failing (n4r6/native-bounds.log, load 105 to 155).
 
 Looked at and not done:
 - Leaving out the jump's ceiling test (`ubfx`, `cbnz`) needs every target bit below the tag to reach the slot's address so
@@ -129,7 +138,25 @@ Looked at and not done:
   bitfield move; the code area would also have to move into the user half above the ceiling).
 - Guest memory with 2 MiB entries: the floor has blocks and their splitting (N1), but the native CPU side gives each guest
   page its own frame at its first touch (native.rs `back`). Untranslated, blocks already leave walk at +18.6% and sieve at
-  +22.3%, so they would move the bar by about a point; not built yet.
+  +22.3%, so they would move the bar by about a point; not built yet. Open point for the plan (5.2): a block taken at a
+  first touch holds 2 MiB of guest-physical frames for one touched page; the host pays only for touched bytes, but the
+  guest-physical space is finite, so a process touching one page in many 2 MiB ranges could find it full where Linux
+  would not. The plan does not yet say how such a block's untouched frames come back (split and return the frames the
+  host reports untouched, or blocks only for ranges the kernel has touched densely); it must before blocks are built.
+
+What N4 still needs, in order:
+1. The compute part of the bar: +55% against +21%. What is left that this track can do without others is small (2 MiB
+   entries, about a point, after the open point above; the jump's ceiling test, not measured). The rest is the owner's
+   decision 14 (the page test, about +11%), T1 (pieces with branches inside), and calls and returns (a jump sequence and
+   two indirect branches each; the call stub was measured slower, run 3). See "For the orchestrator".
+2. The system-call part passes (87.4 ns [82.8 .. 88.7] at load 83 to 105), after an undecided run at load 47 to 79 (94.0 ns
+   [88.4 .. 123.6] at 60 pairs); the independent check repeats it.
+3. T1 from the translator track, then bounded look-ahead as stretches and full look-ahead.
+4. Load-time addresses, the cache with the native key and disk files, loaded translations shared between processes.
+5. 2 MiB entries for guest memory (after the open point), the contiguous bit measured in the repository.
+6. For the independent check: the bar's measurements as alternating pairs again; the differential test at each look-ahead
+   with a new seed (`WCONTAINERS_NATIVE_BOUND`, its pairs now follow it); the count across look-aheads on the benchmark set
+   (the kernel test, none and 256).
 
 ## N4 run 4 (2026-11-19): the system-call part passes; a shorter page test
 
@@ -2004,6 +2031,16 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N4 run 5: the compute part of the speed bar is at +55.40% against +21.2% and this track has run out of changes of its own
+  that move it by more than a point or two. Where the cycles go, by the measurements so far: the Split route's page test
+  about +11 points (decision 14, the owner's: may it be left out for accesses of 16 bytes or fewer, which the reference
+  hardware does not split?); calls and returns, the largest part of fib, sort and calls.c's added instructions as the
+  code reads, their share of the cycles not measured on its own (each return a six-word jump and two indirect branches;
+  the call stub, which uses the return predictor, was measured slower); interpret's dispatch, a jump through a register; and
+  pieces that end at every branch (T1, still on no branch: may this track make it?). Without at least one of these the
+  bar cannot pass on this design. The system-call part passes (87.4 ns against 100), though one run at load 47 to 79 was
+  undecided at 60 pairs.
 
 - N4 run 4: the system-call part of the speed bar passes (78.0 ns against 100); the compute part still fails (+59.27%
   against +21.2%). T1 is still needed and still on no branch: may this track make it?
