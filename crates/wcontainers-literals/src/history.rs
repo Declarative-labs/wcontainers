@@ -5,8 +5,8 @@
 //! branch), the next change, which is the branch's `init`; and a change that brings more versions of
 //! the rules than its first parent has (unless that parent is an ancestor of another), or the commit
 //! right after a merge that brought them, which may add only literals that were already in the tree of
-//! a parent with fewer versions. Every such change, on every side, is listed by every run, so that none
-//! passes unseen.
+//! one of its parents (for the commit after a merge, of one of that merge's parents). Every such
+//! change, on every side, is listed by every run, so that none passes unseen.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::Write;
@@ -80,8 +80,7 @@ const AT_START: &str = "the start";
 const AFTER_ARRIVAL: &str = "the init after the baseline arrived by a merge";
 const NEW_RULES: &str = "new rules, for literals already in the tree";
 /// Why a line added at a change of the rules is still growth.
-const NOT_THERE_BEFORE: &str =
-    "new rules, but the literal was not in the tree of a parent under the older rules";
+const NOT_THERE_BEFORE: &str = "new rules, but the literal was not in the tree before the change";
 const SHALLOW: &str = "the git history is shallow, so the baseline's growth cannot be checked: fetch the whole history (git fetch --unshallow)";
 
 /// The keys of the literals in a file's text, given its path relative to the root.
@@ -228,9 +227,10 @@ impl Walker<'_> {
     }
 
     /// When a change with `version` versions of the rules on top of `parents` brings new rules, the
-    /// parents with fewer versions, whose trees must hold every literal it adds. It brings them when it
-    /// has more versions than its first parent, unless that parent is an ancestor of another: a merge
-    /// of a branch into its own older commit brings nothing that branch did not already have.
+    /// parents whose trees must hold every literal it adds: all of them, since a merge can make a
+    /// literal of either side newly gated. It brings them when it has more versions than its first
+    /// parent, unless that parent is an ancestor of another: a merge of a branch into its own older
+    /// commit brings nothing that branch did not already have.
     fn bases(
         &self,
         version: usize,
@@ -248,17 +248,11 @@ impl Walker<'_> {
                 return Ok(None);
             }
         }
-        Ok(Some(
-            parents
-                .iter()
-                .filter(|p| version_of(p) < version)
-                .cloned()
-                .collect(),
-        ))
+        Ok(Some(parents.to_vec()))
     }
 
     /// The bases of a change that brings new rules (see `bases`), or of the commit right after a merge
-    /// that brought them: that merge's parents with fewer versions than it.
+    /// that brought them: that merge's parents, so that a literal written into the merge gets no line.
     fn bases_after(
         &self,
         version: usize,
@@ -513,23 +507,20 @@ impl Walker<'_> {
         };
         let arrived = started && changes.first().is_some_and(|c| c.parents.len() > 1);
         let mut allowed = Vec::new();
-        // The versions of the rules at every change, its parents, and the parents of its first parent
-        // when that is a merge: read in two or three calls, whatever the length of the chain.
+        // The versions of the rules at every change, its first parent, and that parent's first parent
+        // when it is a merge: read in two or three calls, whatever the length of the chain.
         let firsts: Vec<String> = changes
             .iter()
             .filter_map(|c| c.parents.first().cloned())
             .collect();
         let parents = self.parents_of(&firsts)?;
-        let mut revisions: Vec<String> = changes
-            .iter()
-            .flat_map(|c| std::iter::once(&c.commit).chain(&c.parents))
-            .cloned()
-            .collect();
+        let mut revisions: Vec<String> = changes.iter().map(|c| c.commit.clone()).collect();
+        revisions.extend(firsts.iter().cloned());
         revisions.extend(
             parents
                 .values()
                 .filter(|p| p.len() > 1)
-                .flat_map(|p| p.iter().cloned()),
+                .filter_map(|p| p.first().cloned()),
         );
         revisions.sort();
         revisions.dedup();
@@ -546,9 +537,9 @@ impl Walker<'_> {
                 change.parents.first().and_then(|f| parents.get(f)),
                 &version,
             )? {
-                // What the change may add was in the tree of a parent under the older rules: the
-                // branch's own commit before the rules arrived, which an init run in or right after
-                // the merge that brings them finds.
+                // What the change may add was in the tree of a parent: a side it merges, or the
+                // branch's own commit before it, which an init run in or right after the merge that
+                // brings the rules finds.
                 allowed.push((change.commit.clone(), NEW_RULES, Some(bases)));
             }
         }

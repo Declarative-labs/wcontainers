@@ -935,23 +935,40 @@ fn a_merge_into_the_branch_s_own_older_commit_opens_nothing() {
     }
 }
 
-/// The same after a commit of the older branch's own, which makes its merge one that brings new
-/// rules: only literals in a tree under the older rules may get a line.
+/// A crate of its own with one constant.
+fn crate_with(root: &Path, name: &str, constant: &str) {
+    let dir = root.join(format!("crates/{name}"));
+    std::fs::create_dir_all(dir.join("src")).expect("crate folder");
+    std::fs::write(dir.join(MANIFEST), format!("[package]\nname = {name:?}\n")).expect("manifest");
+    std::fs::write(dir.join("src/lib.rs"), constant).expect("library");
+}
+
+/// A merge that brings new rules can make a literal of the newer side gated through something of the
+/// track's (a constant of the same name and value in another crate); init in or right after that
+/// merge adds its line, which the track could neither fix nor add otherwise.
 #[test]
-fn a_merge_into_a_fork_of_an_older_commit_adds_only_its_literals() {
+fn a_rules_merge_admits_a_newer_side_s_literal_the_track_makes_gated() {
     for commit in [true, false] {
-        let name = format!("window-fork-{commit}");
-        let root = merged_into_its_older_commit(&name, true, "4067", commit);
-        wcontainers_literals::init(&root).expect("init for the merge's new rules");
-        assert!(baseline(&root).contains(&key("late", "4067")));
+        let root = literals_and_track(&format!("window-combined-{commit}"));
+        crate_with(&root, "z", "pub const SHARED: u64 = 4059;\n");
+        commit_all(&root, "a constant on the branch with the new rules");
+        git(&root, &["checkout", "-q", "track"]);
+        crate_with(&root, "b", "pub const SHARED: u64 = 4059;\n");
+        commit_all(&root, "the same constant in a crate of the track's");
+        let mut merge = vec!["merge", "-q", "--no-ff", "--no-edit"];
+        if !commit {
+            merge.push("--no-commit");
+        }
+        merge.push("literals");
+        git(&root, &merge);
+        assert!(
+            !check(&root).clean,
+            "the merge makes the copy a redefinition"
+        );
+        wcontainers_literals::init(&root).expect("init for the new rules");
         commit_all(&root, "init");
         let out = check(&root);
-        let grown = lines_starting(&out, GROWN_MARK);
-        assert!(
-            grown.len() == 1 && grown[0].contains("4067"),
-            "{}",
-            out.report()
-        );
+        assert!(out.clean, "{}", out.report());
     }
 }
 
@@ -1124,6 +1141,22 @@ mod gets_through {
             "{}",
             out.report()
         );
+    }
+
+    /// A literal committed without its line after the rules arrived gets its line when its branch is
+    /// merged into a fork of a commit from before they arrived, with a commit of the fork's own: that
+    /// merge brings the rules, and a merge may add lines for literals of either side.
+    #[test]
+    fn a_branch_merged_into_a_fork_of_its_older_commit() {
+        for commit in [true, false] {
+            let name = format!("window-fork-{commit}");
+            let root = merged_into_its_older_commit(&name, true, "4067", commit);
+            wcontainers_literals::init(&root).expect("init for the merge's new rules");
+            assert!(baseline(&root).contains(&key("late", "4067")));
+            commit_all(&root, "init");
+            let out = check(&root);
+            assert!(out.clean, "{}", out.report());
+        }
     }
 
     /// A made-up version in two commits: one adds a literal without its line (that commit fails its
