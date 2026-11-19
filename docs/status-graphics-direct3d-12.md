@@ -550,7 +550,8 @@ checks on real Direct3D 12 are counted too, held to every other check, so the co
 198 (it was 193).
 
 Run 31 (2026-11-18, desktop shared with other tracks; scratch run31/full1.log, libraries at
-12966001 with the run's fix to aligned root views after it): 180 of 198. d3d12 (Wine) 10 of 10,
+12966001; again at 9467a66f, the run's last code, run31/full2.log: the same 18 failing): 180 of
+198. d3d12 (Wine) 10 of 10,
 vkd3d-d3d12 158 of 176, vkd3d-d3d12_invalid_usage 3 of 3, vkd3d-hlsl_d3d12 9 of 9. Newly passing:
 domain_shader_inputs, domain_shader_one_patch_constant_input, hull_shader_patch_constant_inputs,
 hull_shader_relative_addressing, line_tessellation, quad_tessellation (the stage helper after a
