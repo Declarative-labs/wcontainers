@@ -1946,6 +1946,18 @@ literal sweep):
   `CLEAR_AXES`), vector alignments from their size, and the resource variables' register
   prefixes are named. This crate's baseline lines (src, build.rs, tests, examples): 665 (804 at
   run 43's end); the check prints nothing to add (run44/check2.txt).
+- Tests at the run's last code (laptop i7-8750H, load 5 to 6 with another track building, 4
+  cargo jobs; desktop shared through the queue, 3 jobs): clippy with warnings denied clean; the
+  whole suite (`--include-ignored`, corpora dxbc, games, runner, glslang) passes but for the
+  runner corpus's long-known distance-4 entry (run44/suite4.log). Drawn on the RTX 3080:
+  compute_draw 7 of 7 with seeds 1 to 8 (`cs_escape` 0 words apart in all 32 comparisons) and
+  variant_draw 5 of 5 (run44/gpu2.log); before the last sweep step, pull_draw (4 seeds),
+  clear_draw (256 cases) and variant_draw passed (run44/gpu1.log). Chrome's compile of the own
+  corpora (`web/check`): every WGSL file compiles (own 121, own DXIL 63, `cs_escape` among
+  them); WebGL 2 refuses the same 12 and 5 GLSL files as in run 43, for what GLSL ES 3.00 lacks
+  (run44/chrome1.log).
+- Clean-up: the build folders of this run on the Mac's checkout, the laptop and the desktop
+  deleted at the end.
 
 Next (in order):
 - `LINE_COVERAGE` and the stage helper's line expansion (`AntialiasedLinesAsQuads`, plan 4.12):
