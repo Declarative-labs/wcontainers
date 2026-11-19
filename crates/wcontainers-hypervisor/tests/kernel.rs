@@ -2,9 +2,10 @@
 //! start through the link and runs its first process to its end in the kernel on the native CPU side, with the
 //! runtime's loop and the kernel test crate's policy, the host's services through the link. The same kernel,
 //! loop and policy run the same container on the WebAssembly output's CPU side on the host, through the same
-//! code over a link in memory. The wait status, the number of turns, every call of the host's services and
-//! the root's files at the end must agree. A program of this track's makes getppid calls: the virtual
-//! machine's exits must not grow with their number, as a system call is answered inside.
+//! code over a link in memory. The wait status, every call of the host's services and the root's files at the
+//! end must agree, and for a program with one thread the number of turns. A program of this track's makes
+//! getppid calls: the virtual machine's exits must not grow with their number, as a system call is answered
+//! inside. Another forks, execs itself and takes signals, so turns end at the limits the policy gives.
 //!
 //! `WCONTAINERS_KERNEL_SEED` seeds the policy and the host's random bytes.
 
@@ -46,6 +47,9 @@ mod macos {
     /// This track's program that makes as many getppid calls as its argument says.
     const GETPPID: &str = "getppid";
 
+    /// This track's program that forks, execs itself and takes signals.
+    const FORKS: &str = "forks";
+
     /// The getppid calls of the exit count (ten to the fifth, as the independent check asks), and twice as many.
     const GETPPID_CALLS: u64 = 10_u64.pow(5);
 
@@ -74,8 +78,9 @@ mod macos {
         (files, starting)
     }
 
-    /// Runs a container on both sides, checks they agree, and gives the native side's outcome.
-    fn both(seed: u64, name: &str, image: &[u8], arguments: &[String]) -> Outcome {
+    /// Runs a container on both sides, checks that the wait status, the calls of the host's services and the
+    /// root's files agree, and gives both outcomes, the native side's first.
+    fn both(seed: u64, name: &str, image: &[u8], arguments: &[String]) -> (Outcome, Outcome) {
         let (files, starting) = container(name, image.to_vec(), arguments);
         let native = native(seed, &files, &starting);
         let wasm = wasm(seed, &files, &starting);
@@ -91,7 +96,6 @@ mod macos {
             );
         }
         assert_eq!(native.status, wasm.status, "{name}: the wait status");
-        assert_eq!(native.turns, wasm.turns, "{name}: the turns");
         assert_eq!(
             native.host.calls, wasm.host.calls,
             "{name}: the calls of the host's services"
@@ -100,6 +104,15 @@ mod macos {
             native.root, wasm.root,
             "{name}: the root's files at the end"
         );
+        (native, wasm)
+    }
+
+    /// As [`both`], for a program with one thread, whose turns end only at its system calls: the turns agree
+    /// too. (Turns that end at a limit end at different places: the WebAssembly output counts progress by its
+    /// own stop checks, the native output by the count's definition.)
+    fn alone(seed: u64, name: &str, image: &[u8], arguments: &[String]) -> Outcome {
+        let (native, wasm) = both(seed, name, image, arguments);
+        assert_eq!(native.turns, wasm.turns, "{name}: the turns");
         native
     }
 
@@ -108,10 +121,10 @@ mod macos {
         let seed = setting(SEED_VARIABLE, DEFAULT_SEED);
         let started = Instant::now();
         let hello = compile(KERNEL_TEST_GUEST, HELLO, CLibrary::Without);
-        both(seed, HELLO, &hello, &[]);
+        alone(seed, HELLO, &hello, &[]);
         let getppid = compile(OWN_GUEST, GETPPID, CLibrary::Musl);
         let exits = [0, GETPPID_CALLS, 2 * GETPPID_CALLS]
-            .map(|calls| both(seed, GETPPID, &getppid, &[calls.to_string()]).exits);
+            .map(|calls| alone(seed, GETPPID, &getppid, &[calls.to_string()]).exits);
         println!(
             "getppid: {} exits with no calls, {} with {GETPPID_CALLS}, {} with {}",
             exits[0],
@@ -123,6 +136,9 @@ mod macos {
             exits[1], exits[2],
             "the virtual machine's exits grow with the number of system calls"
         );
+        let forks = compile(OWN_GUEST, FORKS, CLibrary::Musl);
+        let (native, _) = both(seed, FORKS, &forks, &[]);
+        print!("{FORKS}: {}", String::from_utf8_lossy(&native.host.stdout));
         println!(
             "kernel: ran alike to the end; seed {seed:#x}; in {:?}, load {}",
             started.elapsed(),
