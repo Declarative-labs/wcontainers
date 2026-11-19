@@ -3,7 +3,8 @@
 //   lifecycle: a thread, then a forked child that runs /bin/true, then an exit.
 //   paths: the other ways processes and numbers come and go, one after another.
 //   calls: prints how many calls it has, then in a child each, one call writes into the buffer.
-//   pages: in a child, writes known pages of the buffer, one of them by read().
+//   pages: in a child, writes known pages of the buffer, one of them by read(), and maps new
+//     memory over two others.
 //   span: in a child, an 8-byte store that ends just inside the buffer's second page.
 //   outgrow BYTES: maps BYTES at a time until refused; prints how many and the error.
 //   fixed ADDRESS: maps a page at ADDRESS with MAP_FIXED, then with MAP_FIXED_NOREPLACE.
@@ -28,6 +29,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -258,6 +260,64 @@ static void call_recvmmsg(void) {
     struct mmsghdr *message = (struct mmsghdr *)AT;
     int n = recvmmsg(fds[0], message, 1, MSG_DONTWAIT, NULL);
     printf("recvmmsg %d %d %.5s\n", n, n > 0 ? (int)message->msg_len : errno, buffer + 3 * page);
+}
+
+// A received message's header on the buffer's fourth page, apart from its data: the call writes
+// the header's lengths and flags back after taking the data. The calls are made directly, since
+// the C library's wrappers copy or clear the header themselves.
+static void prepare_message(int type, const char *text, size_t room) {
+    socketpair(AF_UNIX, type, 0, fds);
+    send(fds[1], text, strlen(text), 0);
+    struct iovec *iov = (struct iovec *)(buffer + 4 * page);
+    *iov = (struct iovec){AT, room};
+    *(struct msghdr *)(buffer + 3 * page) = (struct msghdr){.msg_iov = iov, .msg_iovlen = 1};
+}
+
+static void prepare_recvmsg_datagram(void) { prepare_message(SOCK_DGRAM, "datagram", 64); }
+static void prepare_recvmsg_stream(void) { prepare_message(SOCK_STREAM, "streamed", 5); }
+
+static void call_recvmsg_header(void) {
+    struct msghdr *message = (struct msghdr *)(buffer + 3 * page);
+    int n = syscall(SYS_recvmsg, fds[0], message, 0);
+    char rest[16];
+    int more = recv(fds[0], rest, sizeof rest, MSG_DONTWAIT);
+    printf("recvmsg header %d %.*s flags %d rest %d %.*s\n", n, n, AT, message->msg_flags, more,
+           more > 0 ? more : 0, rest);
+}
+
+// An mmsghdr whose header ends the buffer's fourth page and whose length starts the fifth.
+static void prepare_recvmmsg_split(void) {
+    socketpair(AF_UNIX, SOCK_DGRAM, 0, fds);
+    send(fds[1], "split", 5, 0);
+    struct iovec *iov = (struct iovec *)(buffer + 5 * page);
+    *iov = (struct iovec){AT, 64};
+    struct mmsghdr *message = (struct mmsghdr *)(buffer + 4 * page - offsetof(struct mmsghdr, msg_len));
+    *message = (struct mmsghdr){.msg_hdr = {.msg_iov = iov, .msg_iovlen = 1}};
+}
+
+static void call_recvmmsg_split(void) {
+    struct mmsghdr *message = (struct mmsghdr *)(buffer + 4 * page - offsetof(struct mmsghdr, msg_len));
+    int n = syscall(SYS_recvmmsg, fds[0], message, 1, MSG_DONTWAIT, NULL);
+    printf("recvmmsg split %d %u %.5s flags %d\n", n, message->msg_len, AT, message->msg_hdr.msg_flags);
+}
+
+// A size sched_setattr refuses, which it answers by writing the size it knows.
+static void prepare_sched_setattr(void) { *(unsigned *)AT = 1; }
+
+static void call_sched_setattr(void) {
+    int result = syscall(SYS_sched_setattr, 0, AT, 0);
+    printf("sched_setattr %d %d %u\n", result, result ? errno : 0, *(unsigned *)AT);
+}
+
+// A capability version capset does not know, which it answers by writing the one it prefers.
+static void prepare_capset(void) {
+    *(struct __user_cap_header_struct *)AT = (struct __user_cap_header_struct){1, 0};
+}
+
+static void call_capset(void) {
+    struct __user_cap_data_struct data[2] = {0};
+    int result = syscall(SYS_capset, AT, data);
+    printf("capset %d %d %x\n", result, result ? errno : 0, ((struct __user_cap_header_struct *)AT)->version);
 }
 
 static void call_msgrcv(void) {
@@ -514,6 +574,11 @@ static const struct {
     {NULL, call_parent_settid},
     {NULL, call_child_settid},
     {NULL, call_child_cleartid},
+    {prepare_recvmsg_datagram, call_recvmsg_header},
+    {prepare_recvmsg_stream, call_recvmsg_header},
+    {prepare_recvmmsg_split, call_recvmmsg_split},
+    {prepare_sched_setattr, call_sched_setattr},
+    {prepare_capset, call_capset},
 };
 
 static int calls(void) {
@@ -534,7 +599,8 @@ static int calls(void) {
     return 0;
 }
 
-// Writes pages 0, 2 and 5 of the buffer itself and page 7 by read().
+// Writes pages 0, 2 and 5 of the buffer itself and page 7 by read(), and maps new memory over
+// page 3 (writable) and page 4 (read-only).
 static int written_pages(void) {
     pid_t child = fork();
     if (child == 0) {
@@ -545,6 +611,8 @@ static int written_pages(void) {
         pipe(fds);
         write(fds[1], "page", 4);
         read(fds[0], buffer + 7 * page + 10, 4);
+        mmap(buffer + 3 * page, page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+        mmap(buffer + 4 * page, page, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
         _exit(0);
     }
     waitpid(child, NULL, 0);

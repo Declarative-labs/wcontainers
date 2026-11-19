@@ -153,7 +153,8 @@ pub enum MemoryError { NotMapped, NotRead, SharedNotWritable, InvalidRange, Exec
   `/proc/<pid>/mem`) refuse it: others share it. A range that ends before it starts, or bytes that
   would run past the last address, are `InvalidRange`; `memory_watch` acts on no page for them.
 - `memory_watch` is a setting: idempotent, nothing returned. It acts on the mapped pages
-  (`PAGE_SIZE`) the range touches. A watch belongs to the page's bytes: unmapping a page ends it,
+  (`PAGE_SIZE`) the range touches, and costs time in proportion to them, not to the range: ending
+  watches visits only the watched pages, setting them only the mapped ones. A watch belongs to the page's bytes: unmapping a page ends it,
   as does mapping something new over it; `mremap` takes it along to where the page moves; a
   fork's child has its parent's watches, as it has its memory, except on pages it gets fresh
   (`MADV_WIPEONFORK`); `execve` ends them all with the old memory. Changing a page's attributes
@@ -164,9 +165,12 @@ pub enum MemoryError { NotMapped, NotRead, SharedNotWritable, InvalidRange, Exec
   ranges: what its threads wrote, what the kernel's copies wrote for it, pages `mremap` moved (at
   their new place, as Linux's soft-dirty bits mark them) and pages `madvise` put back to zero or
   to their file (`MADV_DONTNEED`, `MADV_REMOVE`, and the old pages of `MREMAP_DONTUNMAP`). A new
-  mapping is not in it until written. The first answer is every page mapped writable, since
-  nothing was recorded before it; from then on the record costs one fault per page per interval. A
-  fork's child starts with no record.
+  mapping (mmap, also over pages that were mapped, heap and stack growth, a mapping grown by
+  `mremap`) is in it whatever it allows, as Linux marks a new mapping soft-dirty. The embedder's
+  own `memory_write` is not. The first answer is every page mapped writable, since nothing was
+  recorded before it; from then on the record costs one fault per page per interval. It is kept as
+  ranges, so a large new mapping costs no more than a small one. A fork's child starts with no
+  record.
 - `memory_watch_thread` is declared for executors that can watch one thread and not its siblings
   (the abi's `PerThreadWatch` subtrait of `Cpu`); no executor implements it today, and the kernel
   reaches the executor as `dyn Cpu`, so the call is refused by name (`Unsupported::PerThreadWatch`).
@@ -177,7 +181,9 @@ Before a call runs, the kernel walks the memory its arguments say it will touch
 (crates/wcontainers-kernel/src/syscall/touch.rs) and meets every watch on it, announcing
 `on_memory_accessing` for each watched page in order; what names more memory (an iovec array, a
 msghdr or mmsghdr array, a string pointer array, a futex_waitv array, a robust list) is met
-before it is read. If a watch stays, the thread waits and the call runs again from the start once
+before it is read, and what a call writes back into what it read (a received message's lengths and
+flags, `sched_setattr`'s size and the capability calls' version when they refuse them, a socket
+address's length) is met as a write. If a watch stays, the thread waits and the call runs again from the start once
 the watches change: nothing of it has happened. If a hook raises a watch while the walk goes on
 (sets one, or widens one to `All`), the walk starts again from its beginning once it reaches its
 end, since the page may lie behind it; so does a signal's walk. Only a walk that meets no raised
@@ -211,13 +217,14 @@ The kernel's own stores are met the same way before what makes them acts:
   again when it goes on.
 
 While the embedder watches anything, every copy a call makes is checked against what its
-description named. A copy outside it is counted (`copy outside the call's description`, with the
+description named: a read against anything named, a write against what was named as written
+(a range met as a read meets only `All` watches). A copy outside it is counted (`copy outside the call's description`, with the
 call's number). If such a copy meets a watched page, the copy treats the page as not there (as it
 treats a backend file's page not read yet), the hook is announced after the call, and a call that
 failed for it runs again from its instruction: anything it did before the copy is done again
 (counted: `watched memory met at a copy`). One that did part of its work first keeps its short
 result (counted: `call short of watched memory`). Both are gaps in the descriptions, not a second
-way of meeting watches; the tests run the shell scripts and 41 calls with watches and find none.
+way of meeting watches; the tests run the shell scripts and 46 calls with watches and find none.
 
 Left to the check, and why:
 - `semctl`'s `GETALL` and `SETALL` (their size is the set's), and the `*_INFO` commands of the IPC

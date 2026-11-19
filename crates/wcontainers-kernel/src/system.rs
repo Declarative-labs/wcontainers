@@ -434,7 +434,7 @@ impl crate::syscall::touch::Memory for CallMemory<'_, '_, '_> {
             .watches
             .described
         {
-            described.push((address, end));
+            described.push((address, end, access));
         }
         loop {
             let hit = self

@@ -502,28 +502,43 @@ fn life_cycle_hooks_fire_in_order_over_signals_threaded_exec_vfork_groups_and_un
 /// watched page still held what it held when the process started.
 type Touches = Arc<Mutex<Vec<(u32, u64, Access, bool)>>>;
 
+/// Pages of the buffer a process ended with changed though no hook announced them, by process,
+/// with the first changed address and its byte before and after.
+type Unannounced = Arc<Mutex<Vec<(u32, u64, u8, u8)>>>;
+
 /// Watches the buffer's writes in every process from its start; meets each watch inside the
-/// hook, or `later`, between steps through `Kernel::process`.
+/// hook, or `later`, between steps through `Kernel::process`. At each process's end, every page
+/// of the buffer whose bytes changed must have been announced in it, or in a child of it (a
+/// vfork child writes its parent's memory, which waits; no other child here writes the buffer).
 struct Watcher {
     later: bool,
     touches: Touches,
     pending: Vec<(TaskId, u64)>,
     at_start: BTreeMap<u32, Vec<u8>>,
+    parents: BTreeMap<u32, u32>,
+    announced: BTreeMap<u32, BTreeSet<u64>>,
+    unannounced: Unannounced,
 }
 
 impl Watcher {
-    fn new(later: bool, touches: Touches) -> Self {
+    fn new(later: bool, touches: Touches, unannounced: Unannounced) -> Self {
         Self {
             later,
             touches,
             pending: Vec::new(),
             at_start: BTreeMap::new(),
+            parents: BTreeMap::new(),
+            announced: BTreeMap::new(),
+            unannounced,
         }
     }
 }
 
 impl Hooks for Watcher {
     fn on_process_starting(&mut self, mut process: Process<'_>) {
+        if let Some(parent) = process.info().parent() {
+            self.parents.insert(process.id().0, parent.0);
+        }
         // The first process maps the buffer only once it runs.
         if let Ok(bytes) = process.memory_read(buffer()) {
             self.at_start.insert(process.id().0, bytes);
@@ -548,10 +563,42 @@ impl Hooks for Watcher {
             .lock()
             .unwrap()
             .push((process.id().0, address, access, unchanged));
+        let id = process.id().0;
+        for announced in [Some(id), self.parents.get(&id).copied()]
+            .into_iter()
+            .flatten()
+        {
+            self.announced
+                .entry(announced)
+                .or_default()
+                .insert(page.start);
+        }
         if self.later {
             self.pending.push((process.id(), address));
         } else {
             process.memory_watch(page, Watch::None);
+        }
+    }
+
+    fn on_process_exiting(&mut self, mut process: Process<'_>) {
+        let id = process.id().0;
+        let (Some(start), Ok(end)) = (self.at_start.get(&id), process.memory_read(buffer())) else {
+            return;
+        };
+        let announced = self.announced.remove(&id).unwrap_or_default();
+        for (index, (before, after)) in start
+            .chunks(PAGE_SIZE as usize)
+            .zip(end.chunks(PAGE_SIZE as usize))
+            .enumerate()
+        {
+            let page = BUFFER + index as u64 * PAGE_SIZE;
+            let first = before.iter().zip(after).position(|(old, new)| old != new);
+            if let Some(at) = first
+                && !announced.contains(&page)
+            {
+                let address = page + at as u64;
+                (self.unannounced.lock().unwrap()).push((id, address, before[at], after[at]));
+            }
         }
     }
 
@@ -589,12 +636,20 @@ fn a_watch_is_met_before_a_call_writes_and_the_result_is_unchanged() {
         );
         for later in [false, true] {
             let touches = Touches::default();
+            let unannounced = Unannounced::default();
             let run = run_embedder(
                 "calls",
-                Box::new(Watcher::new(later, touches.clone())),
+                Box::new(Watcher::new(later, touches.clone(), unannounced.clone())),
                 seed,
             );
             assert_eq!(stdout(&run), stdout(&plain), "seed {seed}, later {later}");
+            assert!(
+                unannounced.lock().unwrap().is_empty(),
+                "seed {seed}, later {later}: changed with no hook: {:?}, hooks {:?}, output {}",
+                unannounced.lock().unwrap(),
+                touches.lock().unwrap(),
+                stdout(&run)
+            );
             let touches = touches.lock().unwrap();
             let processes: BTreeSet<u32> = touches.iter().map(|touch| touch.0).collect();
             assert_eq!(
@@ -680,7 +735,7 @@ impl Hooks for Changes {
 }
 
 #[test]
-fn the_pages_written_are_exactly_those_a_program_wrote() {
+fn the_pages_changed_are_exactly_those_a_program_wrote_or_mapped_anew() {
     for seed in wcontainers_kernel_test::schedule_seeds() {
         let changed = Arc::new(Mutex::new(Vec::new()));
         let run = run_embedder("pages", Box::new(Changes(changed.clone())), seed);
@@ -693,7 +748,7 @@ fn the_pages_written_are_exactly_those_a_program_wrote() {
             .filter(|page| buffer().contains(page))
             .map(|page| (page - BUFFER) / PAGE_SIZE)
             .collect();
-        assert_eq!(in_buffer, [0, 2, 5, 7], "seed {seed}");
+        assert_eq!(in_buffer, [0, 2, 3, 4, 5, 7], "seed {seed}");
     }
 }
 

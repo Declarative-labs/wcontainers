@@ -5,6 +5,7 @@ use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::cell::Cell;
 
+use rangemap::RangeSet;
 use wcontainers_abi::{Cpu, LOWEST_ADDRESS, MemoryId, PAGE_SIZE, Permissions};
 
 use crate::fs::Node;
@@ -275,11 +276,12 @@ pub(crate) struct Watches {
     /// Watched pages by address; never `Watch::None`.
     pages: BTreeMap<u64, Watch>,
     /// Pages written since the embedder last asked; none until it first asks.
-    written: Option<BTreeSet<u64>>,
+    written: Option<RangeSet<u64>>,
     /// The first watched page a kernel copy for the running call found, and how it touched it.
     pub touched: Option<(u64, Access)>,
-    /// The ranges the running call's description named, against which its copies are checked.
-    pub described: Option<Vec<(u64, u64)>>,
+    /// The ranges the running call's description named and how, against which its copies are
+    /// checked.
+    pub described: Option<Vec<(u64, u64, Access)>>,
     /// The first address a copy of the running call reached outside its description.
     pub undescribed: Option<u64>,
     /// How many times a page's watch was raised (set, or widened to `All`): a walk over what a
@@ -288,18 +290,18 @@ pub(crate) struct Watches {
 }
 
 impl Watches {
-    /// Notes a copy of `[start, end)` that the running call's description did not name.
-    pub fn check_described(&mut self, start: u64, end: u64) {
+    /// Notes a copy of `[start, end)` as `access` that the running call's description did not
+    /// name: a write must lie in ranges named as written, which meet every watch.
+    pub fn check_described(&mut self, start: u64, end: u64, access: Access) {
         let Some(described) = &self.described else {
             return;
         };
         let mut at = start;
         while at < end {
-            match described
-                .iter()
-                .find(|(from, to)| (*from..*to).contains(&at))
-            {
-                Some((_, to)) => at = *to,
+            match described.iter().find(|(from, to, named)| {
+                (*from..*to).contains(&at) && (access == Access::Read || *named == Access::Write)
+            }) {
+                Some((_, to, _)) => at = *to,
                 None => {
                     self.undescribed.get_or_insert(at);
                     return;
@@ -369,11 +371,10 @@ impl Watches {
         let Some(written) = &mut self.written else {
             return false;
         };
-        let mut fresh = false;
-        let mut page = page_down(start);
-        while page < end {
-            fresh |= written.insert(page);
-            page += PAGE_SIZE;
+        let pages = page_down(start)..page_up(end);
+        let fresh = !pages.is_empty() && written.gaps(&pages).next().is_some();
+        if fresh {
+            written.insert(pages);
         }
         fresh
     }
@@ -404,11 +405,10 @@ impl Watches {
         for page in gone {
             self.pages.remove(&page);
         }
-        if let Some(written) = &mut self.written {
-            let gone: Vec<u64> = written.range(start..end).copied().collect();
-            for page in gone {
-                written.remove(&page);
-            }
+        if let Some(written) = &mut self.written
+            && start < end
+        {
+            written.remove(start..end);
         }
     }
 }
@@ -468,20 +468,39 @@ impl AddressMap {
         range: core::ops::Range<u64>,
         watch: Watch,
     ) -> bool {
+        // Only watched pages are visited to end watches, and only mapped ones to set them.
         let mut changed = false;
-        let mut page = range.start;
-        while page < range.end {
-            if self.find(page).is_some() {
-                let before = match watch {
-                    Watch::None => self.watches.pages.remove(&page),
-                    _ => self.watches.pages.insert(page, watch),
-                };
-                changed |= before != Some(watch) && !(before.is_none() && watch == Watch::None);
-                if watch_rank(watch) > before.map_or(0, watch_rank) {
-                    self.watches.raised += 1;
+        if range.is_empty() {
+            return changed;
+        }
+        if watch == Watch::None {
+            let ended: Vec<u64> = self
+                .watches
+                .pages
+                .range(range.clone())
+                .map(|(page, _)| *page)
+                .collect();
+            for page in &ended {
+                self.watches.pages.remove(page);
+            }
+            changed = !ended.is_empty();
+        } else {
+            let spans: Vec<(u64, u64)> = self
+                .mappings
+                .range(..range.end)
+                .map(|(_, mapping)| mapping)
+                .filter(|mapping| mapping.end > range.start)
+                .map(|mapping| (mapping.start.max(range.start), mapping.end.min(range.end)))
+                .collect();
+            for (from, to) in spans {
+                for page in (from..to).step_by(PAGE_SIZE as usize) {
+                    let before = self.watches.pages.insert(page, watch);
+                    changed |= before != Some(watch);
+                    if watch_rank(watch) > before.map_or(0, watch_rank) {
+                        self.watches.raised += 1;
+                    }
                 }
             }
-            page += PAGE_SIZE;
         }
         if changed {
             self.reapply(cpu, memory, range.start, range.end);
@@ -496,22 +515,16 @@ impl AddressMap {
         cpu: &mut dyn Cpu,
         memory: MemoryId,
     ) -> Vec<core::ops::Range<u64>> {
-        let pages: Vec<u64> = match self.watches.written.replace(BTreeSet::new()) {
-            Some(written) => written.into_iter().collect(),
+        let written = match self.watches.written.replace(RangeSet::new()) {
+            Some(written) => written,
             None => self
                 .mappings
                 .values()
                 .filter(|mapping| mapping.permissions.contains(Permissions::WRITE))
-                .flat_map(|mapping| (mapping.start..mapping.end).step_by(PAGE_SIZE as usize))
+                .map(|mapping| mapping.start..mapping.end)
                 .collect(),
         };
-        let mut ranges: Vec<core::ops::Range<u64>> = Vec::new();
-        for page in pages {
-            match ranges.last_mut() {
-                Some(last) if last.end == page => last.end += PAGE_SIZE,
-                _ => ranges.push(page..page + PAGE_SIZE),
-            }
-        }
+        let ranges = written.into_iter().collect();
         let starts: Vec<(u64, u64)> = self.mappings.values().map(|m| (m.start, m.end)).collect();
         for (start, end) in starts {
             self.reapply(cpu, memory, start, end);
@@ -842,6 +855,8 @@ impl AddressMap {
         mapping: Mapping,
     ) -> Result<(), Errno> {
         let removed = self.remove(mapping.start, mapping.end);
+        // New pages are new bytes, as Linux marks a new mapping soft-dirty.
+        self.watches.note_written(mapping.start, mapping.end);
         let had_code = removed
             .iter()
             .any(|old| old.permissions.contains(Permissions::EXECUTE));

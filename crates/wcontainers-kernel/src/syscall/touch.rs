@@ -10,6 +10,7 @@ use core::mem::{offset_of, size_of};
 
 use wcontainers_abi::{PAGE_SIZE, Syscall};
 
+use crate::linux::ctypes::{c_int, c_uint};
 use crate::linux::general::*;
 use crate::linux::ioctl::*;
 use crate::linux::net::{mmsghdr, msghdr};
@@ -20,8 +21,9 @@ use crate::linux::ptrace::{
 };
 use crate::linux::system::{new_utsname, sysinfo};
 use crate::linux_extra::{
-    IPC_SET, IPC_STAT, MSG_STAT, MSG_STAT_ANY, SEM_STAT, SEM_STAT_ANY, SHM_STAT, SHM_STAT_ANY,
-    frame, mq_attr, msqid64_ds, sched_attr, sembuf, semid64_ds, shmid64_ds, tms,
+    IPC_SET, IPC_STAT, MSG_STAT, MSG_STAT_ANY, SCHED_ATTR_SIZE_VER0, SEM_STAT, SEM_STAT_ANY,
+    SHM_STAT, SHM_STAT_ANY, frame, mq_attr, msqid64_ds, sched_attr, sembuf, semid64_ds, shmid64_ds,
+    tms,
 };
 use crate::memory::page_down;
 use crate::system::Access;
@@ -152,28 +154,40 @@ fn vectors(memory: &mut dyn Memory, array: u64, count: u64, access: Access) -> b
     })
 }
 
-/// A `struct msghdr`, read, then its name, control data and segments touched as `access`.
+/// A `struct msghdr`, read, then its name, control data and segments touched as `access`; a
+/// received message's lengths and flags go back into it.
 fn message(memory: &mut dyn Memory, header: u64, access: Access) -> bool {
     let Some(bytes) = fetch(memory, header, size_of::<msghdr>(), Access::Read) else {
         return false;
     };
+    let returned = [
+        (offset_of!(msghdr, msg_namelen), size_of::<c_int>()),
+        (offset_of!(msghdr, msg_controllen), size_of::<u64>()),
+        (offset_of!(msghdr, msg_flags), size_of::<c_uint>()),
+    ];
     bytes.is_empty()
-        || meet(
-            memory,
-            word(&bytes, offset_of!(msghdr, msg_name)),
-            half(&bytes, offset_of!(msghdr, msg_namelen)).into(),
-            access,
-        ) && meet(
-            memory,
-            word(&bytes, offset_of!(msghdr, msg_control)),
-            word(&bytes, offset_of!(msghdr, msg_controllen)),
-            access,
-        ) && vectors(
-            memory,
-            word(&bytes, offset_of!(msghdr, msg_iov)),
-            word(&bytes, offset_of!(msghdr, msg_iovlen)),
-            access,
-        )
+        || (access == Access::Read
+            || returned
+                .into_iter()
+                .all(|(at, size)| sized(memory, header + at as u64, size, Access::Write)))
+            && meet(
+                memory,
+                word(&bytes, offset_of!(msghdr, msg_name)),
+                half(&bytes, offset_of!(msghdr, msg_namelen)).into(),
+                access,
+            )
+            && meet(
+                memory,
+                word(&bytes, offset_of!(msghdr, msg_control)),
+                word(&bytes, offset_of!(msghdr, msg_controllen)),
+                access,
+            )
+            && vectors(
+                memory,
+                word(&bytes, offset_of!(msghdr, msg_iov)),
+                word(&bytes, offset_of!(msghdr, msg_iovlen)),
+                access,
+            )
 }
 
 /// A `struct mmsghdr` array: each message as `access`, and the length the call stores in it.
@@ -370,6 +384,52 @@ fn filter(memory: &mut dyn Memory, program: u64) -> bool {
             Access::Read,
         )
     }
+}
+
+/// `sched_setattr`'s structure as `sched_copy_attr` reads it: its size, then that many bytes; a
+/// size it refuses (E2BIG) is answered by writing the size it knows.
+fn sched_attributes(memory: &mut dyn Memory, address: u64) -> bool {
+    let size_word = size_of::<u32>();
+    let known = size_of::<sched_attr>();
+    let Some(bytes) = fetch(memory, address, size_word, Access::Read) else {
+        return false;
+    };
+    if bytes.is_empty() {
+        return true;
+    }
+    let size = match half(&bytes, 0) {
+        0 => SCHED_ATTR_SIZE_VER0,
+        size => size,
+    };
+    let refused = if size < SCHED_ATTR_SIZE_VER0 || u64::from(size) > PAGE_SIZE {
+        true
+    } else {
+        let Some(bytes) = fetch(memory, address, size as usize, Access::Read) else {
+            return false;
+        };
+        bytes
+            .get(known..)
+            .is_some_and(|past| past.iter().any(|byte| *byte != 0))
+    };
+    !refused || sized(memory, address, size_word, Access::Write)
+}
+
+/// The capability calls' header: an unknown version is answered by writing the one Linux
+/// prefers (`cap_validate_magic`).
+fn capability_header(memory: &mut dyn Memory, address: u64) -> bool {
+    let size = size_of::<__user_cap_header_struct>();
+    let Some(bytes) = fetch(memory, address, size, Access::Read) else {
+        return false;
+    };
+    let version = offset_of!(__user_cap_header_struct, version);
+    bytes.is_empty()
+        || [
+            _LINUX_CAPABILITY_VERSION_1,
+            _LINUX_CAPABILITY_VERSION_2,
+            _LINUX_CAPABILITY_VERSION_3,
+        ]
+        .contains(&half(&bytes, version))
+        || sized(memory, address, size, Access::Write)
 }
 
 /// The IPC control calls' buffer: written by the commands that show an object, read by
@@ -625,11 +685,11 @@ pub(crate) fn touch(memory: &mut dyn Memory, call: Syscall) -> bool {
             meet(memory, a1, (a0 as i32).max(0) as u64 * int as u64, access)
         }
         __NR_capget => {
-            sized(memory, a0, size_of::<__user_cap_header_struct>(), write)
+            capability_header(memory, a0)
                 && sized(memory, a1, 2 * size_of::<__user_cap_data_struct>(), write)
         }
         __NR_capset => {
-            sized(memory, a0, size_of::<__user_cap_header_struct>(), read)
+            capability_header(memory, a0)
                 && sized(memory, a1, 2 * size_of::<__user_cap_data_struct>(), read)
         }
         __NR_get_robust_list => {
@@ -729,18 +789,7 @@ pub(crate) fn touch(memory: &mut dyn Memory, call: Syscall) -> bool {
         __NR_sched_setparam => sized(memory, a1, int, read),
         __NR_sched_setscheduler => sized(memory, a2, int, read),
         __NR_getcpu => sized(memory, a0, int, write) && sized(memory, a1, int, write),
-        __NR_sched_setattr => {
-            let Some(bytes) = fetch(memory, a1, size_of::<u32>(), read) else {
-                return false;
-            };
-            bytes.is_empty() || {
-                let size = match half(&bytes, 0) {
-                    0 => size_of::<sched_attr>() as u64,
-                    size => size.into(),
-                };
-                meet(memory, a1, size, read)
-            }
-        }
+        __NR_sched_setattr => sched_attributes(memory, a1),
         __NR_sched_getattr => meet(memory, a1, a2.min(size_of::<sched_attr>() as u64), write),
         __NR_shmctl => ipc_control(
             memory,

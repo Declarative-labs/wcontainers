@@ -69,7 +69,7 @@ impl Guest<'_> {
             Access::Read
         };
         let watches = &mut self.map.borrow_mut().watches;
-        watches.check_described(address, address.saturating_add(length));
+        watches.check_described(address, address.saturating_add(length), access);
         if let Some(at) = watches.first_watched(address, address + done, access) {
             watches.touched.get_or_insert((at, access));
             done = at - address;

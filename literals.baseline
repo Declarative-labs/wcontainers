@@ -5124,10 +5124,7 @@ code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	recvmsg	1000
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	recvmsg	12
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	recvmsg	4
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	recvmsg	4
-code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	recvmsg	40
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	recvmsg	48
-code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	recvmsg	48
-code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	recvmsg	8
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	send_packet	17
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	send_packet	32
 code	crates/wcontainers-kernel/src/syscall/socket/mod.rs	int	send_packet	4096
