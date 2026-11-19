@@ -49,8 +49,10 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   i7-8750H at none and full. Run 2 (the same day) adopted the literal check, built x86's layer 2 emitter,
   the flag shapes and direct conditions, switch recognition for both compilers, the loop proofs' comparisons
   and bounded loads, `pushf` and `leave`, x86's check programs, and fixed a translator bug that lost every
-  register passed into a piece but not out of it across a return (see "X4, run 2"). Not done yet: the
-  benchmark set timed in Chrome on the x86 machine (natively and in wasmtime there is done), and layer 3.
+  register passed into a piece but not out of it across a return (see "X4, run 2"). Run 3 (the same day)
+  timed the benchmark set natively, in wasmtime and in Chrome on the x86 machine in alternating rounds,
+  built the frame checks plan 3.4 and 5.3 describe for x86 (one check for a run of pushes, none for a call's
+  callee, the return address covered), and found why interpret is slow (see "X4, run 3").
 
 Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0.5):
 - Suite: `WC_REFERENCE_X86_64=tom@192.168.2.240 nix develop -c cargo test -p wcontainers-guest-cpu -p
@@ -62,6 +64,67 @@ Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0
 - Clippy with `-D warnings` on the test crate (all targets), the interface, the translator, the browser
   crate and the runner for both CPUs; `cargo fmt --check`: clean.
 - origin/phase-1-translator: fetched at the start and end, nothing new since 8b5e420 (merged).
+
+## X4, run 3 (2026-11-18)
+
+Machines: the Mac (Apple M5 Max, load 90 to 110) and the i7-8750H (load 2.8 to 10.5 from other tracks'
+jobs, recorded beside every run in the logs). Logs in scratch `x4/run3/`.
+
+Done:
+- The benchmark set timed on the x86 machine natively, in wasmtime and in Chrome, in alternating rounds
+  (native, wasmtime, Chrome, then again; one run each a round, so a change of load falls on all three):
+  `time-blob rounds` and `time-rounds.sh` (see "How to run"). Chrome there is 158, unpacked into the track's
+  folder with Node and playwright-core (see "The x86 machine" and "Departures", X4).
+- Frame checks as plans 3.4 and 5.3 describe them for x86, which were not built: a move down makes no check
+  when the frame already covers its red zone; the check of a run of moves down (a prologue's pushes) reaches
+  down for all of them, so the run makes one check, not one a push; a call that pushes its return address
+  checks no frame for the callee (each callee checks its own); a check made where nothing is known covers
+  the return address at the stack pointer too, so the `ret` that reads it is unchecked. One function
+  (`frame_checked`) decides each check and the frame it leaves for both the forward pass and the check
+  plans. fib's function went from four frame checks and a checked `ret` to one check. Layer 2 x86 at seed 3,
+  1,000 programs, every one also on the CPU: 0 failing (336 faulted, 116 left to an address, 2,386 stacks
+  lost and 2,402 pieces forgotten in mixed runs). ARM64's layer 2, changes, checks, programs, look-aheads
+  and the test guest pass.
+- Why interpret is slow: its switch is clang's absolute table (`jmp [T + r*8]`, the benchmarks are built
+  without PIC at a fixed address), which plan 3.4 sends through the lookup because the translator never sees
+  the load address; every dispatch is counted as "jump through a register not recognised" (240,004 at each
+  of two jumps a run). That is plan behaviour, measured on real binaries at X9 for a decision; here it costs
+  interpret 33 times native in wasmtime and 166 to 184 in Chrome.
+- fib: per call the rest is the flags word packed into the thread block before the call (about 45
+  operations with parity), the passed-in-only registers stored at the return and loaded after the call,
+  and the callee-saved registers kept in the thread block across the call. Not changed.
+- Literal check: exit 0; baseline lines of this track's crates now wcontainers-x86 339, wcontainers-guest-cpu
+  28, wcontainers-translator 87, wcontainers-translator-test 2139 (4 fewer: the runner's name and its
+  `serve` command named once in `reference.rs`); the load probe, written three times in tests, is one
+  library function (`programs::load`) that reads `/proc/loadavg` on Linux as plan 7.5 says.
+
+Measured, the benchmark set (bench -O2, SCALE=1, each workload alone) translated at full for speed with every
+check, best of 5 alternating rounds on the i7-8750H, pinned off cores 2 and 8, times native in brackets:
+- Before the frame checks (5e89009, `rounds-5e89.log`, load 3.2 to 10.5): fib native 0.721 s, wasmtime
+  13.633 (18.90), Chrome 13.456 (18.66); sieve 0.727, 1.988 (2.74), 2.567 (3.53); hash 0.579, 0.693 (1.20),
+  1.408 (2.43); sort 0.624, 5.042 (8.08), 5.578 (8.94); interpret 0.345, 11.324 (32.80), 57.236 (165.76);
+  matrix 0.130, 0.927 (7.14), 1.000 (7.71); walk 3.924, 4.571 (1.17), 4.028 (1.03); search 0.201, 1.423
+  (7.09), 1.347 (6.70).
+- After (3542d8e, `rounds-3542.log`, load 2.8 to 8.0): fib 0.717, 8.522 (11.88), 8.255 (11.51); sieve 0.685,
+  2.205 (3.22), 2.604 (3.80); hash 0.579, 0.686 (1.18), 1.413 (2.44); sort 0.624, 4.595 (7.36), 5.427 (8.69);
+  interpret 0.343, 11.169 (32.56), 63.282 (184.49); matrix 0.136, 1.077 (7.94), 1.095 (8.07); walk 4.025,
+  4.444 (1.10), 3.933 (0.98); search 0.201, 1.313 (6.54), 1.418 (7.06).
+- Every run's output equalled the native one (the tool asserts it).
+- The frame checks alone, old (5e89009) and new (3542d8e) alternating in wasmtime, one run each a round, 5
+  rounds, i7-8750H at load 6.2 to 14.0 (`old-new.log`, `old-new.sh`): fib old 13.72 to 15.48 s, new 9.33 to
+  11.31 (best 13.72 against 9.33, 32% less); sort old 5.10 to 6.39, new 5.43 to 7.73 (old faster in four
+  pairs of five, though the new code makes fewer checks: within this load's noise, not explained); search old
+  1.47 to 2.17, new 1.32 to 1.73.
+- Between the two rounds runs the load differed (above), so their other differences are not the change's.
+- Not measured: the same set in Chrome and wasmtime on the Mac (plan 7.5's second part; the Mac's load of
+  about 100 makes any time there meaningless today).
+
+Not done (in order):
+1. interpret's absolute switch table (plan 3.4's decision, for X9) and fib's per-call costs (flags packed
+   for the callee, passed-in-only registers) are the two large slow spots; both are design questions, not
+   bugs.
+2. The canonical-address check's cost (plan 12, "measured at X4") is not measured.
+3. `programs_match_linux` for x86 still reaches `bsr` and `bswap` (X5's list); layer 3 is X5's.
 
 ## X4, run 2 (2026-11-18): partly done
 
@@ -1615,6 +1678,15 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## How to run
 
+- x86 benchmarks on the x86 machine (X4 run 3), natively, in wasmtime and in Chrome in alternating rounds,
+  one command there once the blobs and the tree are in place: `~/wcontainers-x86/time-rounds.sh <rounds>
+  [workloads]` (scratch `x4/run3/time-rounds.sh`; it runs `time-blob rounds x86_64 <rounds> <blobs>` off
+  cores 2 and 8 with the machine's Node, playwright-core and Chrome; output and load per run, then each
+  one's best and times native). Setup: blobs by `time-blob dump x86_64 bench -O2 <file> SCALE=1
+  WORKLOAD=<k>` here into `~/wcontainers-x86/blobs/bench-<k>.blob`; `git archive HEAD | ssh ... 'tar x -C
+  ~/wcontainers-x86/tree'`; there `. ~/.cargo/env && cargo build --release -p wcontainers-translator-test
+  --bin time-blob --target-dir ~/wcontainers-x86/target`. `time-blob native|wasmtime|chrome x86_64 <blob>
+  <runs>` times one way alone.
 - x86 (X4): layer 2 against the i7-8750H and against none, `WC_REFERENCE_X86_64=tom@192.168.2.240
   WC_LAYER2_CASES=10000 WC_LAYER2_NATIVE=10000 WC_LAYER2_JOBS=3 WC_LAYER2_SEED=<n> nix develop -c cargo test
   -p wcontainers-translator-test --test layer2 full_matches_none_and_the_cpu_x86_64 -- --nocapture`; the
@@ -1759,6 +1831,10 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   `~/wcontainers-x86/target` was deleted at the end of the run),
   `~/wcontainers-x86/blobs` (the eight benchmark blobs), `time-wasmtime.sh` and its `time-wasmtime.out`,
   `proof10/flags_across`. Installed: nothing.
+- Added in X4 run 3, all under `~/wcontainers-x86`: `node` (Node.js 24.22.3), `playwright-core`, `chrome`
+  (Chrome 158 unpacked from `google-chrome-stable_current_amd64.deb` with `dpkg-deb -x`; the system's Chrome
+  115 is untouched), `time-rounds.sh` (copy in scratch `x4/run3/`) and its logs `rounds-*.log`. Installed
+  system-wide: nothing.
 - Added in X2: `~/wcontainers-x86/reference/<hash>`, the reference runner the harness uploads (one file per
   build of it).
 - Not always idle: another track's atomic-cost measurement (`~/ordering-cost`, wasmtime) runs there at
@@ -1876,6 +1952,9 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
   itertools, either (all MIT or Apache-2.0, already common). Planned for X7 (x87 transcendentals); not yet a
   dependency.
 - rustc_apfloat 0.2.3: Apache-2.0 WITH LLVM-exception, already a dependency of wcontainers-arm64.
+- Test tools on the x86 machine since X4 run 3, none a dependency of anything: Node.js 24.22.3 (MIT, the
+  official linux-x64 tarball, checked against its SHA-256), playwright-core 1.63.0 (Apache-2.0, a copy of
+  the Nix shell's), Google Chrome 158.0.8127.36 (Google's terms; unpacked, not installed).
 - sandsifter: BSD-3 (Battelle); read only, nothing copied.
 - RISU: EPL-1.0; read only, nothing copied.
 - gex: AGPL-3.0; not read, nothing used.
@@ -1899,6 +1978,19 @@ X4 (each also written into the plan's text where the plan is wrong):
   "`None` at the start of a block that more than one edge enters", which this now matches).
 - `pushf` and `leave` are built at X4 (X5's list): the dump and gcc's -O0 frames need them.
 - `machine-code` takes the guest and the library as arguments (it read ARM64 programs only).
+- Run 3: the benchmark set is timed in Chrome on the x86 machine with Chrome 158 unpacked from Google's
+  package into `~/wcontainers-x86/chrome`, not the system's Chrome 115, which lacks 64-bit memories; the
+  browser runner (`run.mjs`) launches the executable `WC_CHROME_EXECUTABLE` names when it is set (its one
+  use: a machine whose installed Chrome is too old), else the installed Chrome as before. Not upgrading the
+  system's Chrome keeps the owner's own browser and profile untouched.
+- Run 3: a reference whose CPU is this machine's runs its runner directly when this machine is Linux (Docker
+  only elsewhere, as on the Mac for ARM64); that is what an SSH reference already does on the far machine, and
+  it lets `time-blob` time natively on the x86 machine itself.
+- Run 3: layer 3 (Csmith) for x86 is left to X5, whose pass bar names it (X4's bar names layer 2 and the
+  benchmarks only); x86 still lacks meanings Csmith's programs reach (bsr, bswap and the rest of X5's list).
+- Run 3: the frame check of a move down reaches down for the moves down that follow in its block, and a
+  frame known below the red zone is kept on a move down (dropped on a move up, as before). ARM64's output
+  changes where a function moves its stack pointer down twice in one block (one check instead of two).
 
 X3 (each also written into the plan's text where the plan is wrong):
 - Some SSE2 instructions (the moves, logic, adds, compares, interleaves, shuffles, shifts by an immediate and
