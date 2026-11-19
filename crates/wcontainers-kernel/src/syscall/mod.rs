@@ -31,6 +31,7 @@ mod splice;
 mod system;
 mod time;
 pub(crate) mod timer;
+pub(crate) mod touch;
 pub(crate) mod tty;
 mod xattr;
 

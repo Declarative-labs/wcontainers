@@ -6,7 +6,7 @@ use alloc::rc::Rc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use wcontainers_abi::{Cpu, End, Host, PAGE_SIZE, Resume};
+use wcontainers_abi::{Cpu, End, PAGE_SIZE, Resume};
 
 use crate::credentials::Credentials;
 use crate::ends::Standard;
@@ -67,6 +67,11 @@ pub struct Start<'a> {
     pub backend: Option<&'a [u8]>,
     /// What descriptors 0 to 2 are.
     pub standard: Standard,
+    /// The highest address the executor can give a process now, if below the end of its address
+    /// space; a request past it is announced as `System::on_process_outgrown`.
+    pub ceiling: Option<u64>,
+    /// How the first process is run.
+    pub execution: crate::ExecutionConfig,
 }
 
 /// Where the first process's descriptor 0 opens when it has no input.
@@ -409,8 +414,14 @@ impl Kernel {
     /// process. With the root on the backend this waits for the backend's answers like any call,
     /// so it may still be going on when this returns; a start that fails ends the container, and
     /// [`Kernel::start_failure`] says why.
-    pub fn start(&mut self, cpu: &mut dyn Cpu, host: &mut dyn Host, start: &Start<'_>) {
+    pub fn start(
+        &mut self,
+        cpu: &mut dyn Cpu,
+        host: &mut dyn crate::System,
+        start: &Start<'_>,
+    ) -> Result<(), crate::Unsupported> {
         assert!(self.init.is_none(), "the container has already started");
+        start.execution.supported()?;
         let mut cx = Context {
             cpu,
             host,
@@ -425,6 +436,9 @@ impl Kernel {
         cx.host.random(&mut self.boot_id);
         cx.host.random(&mut self.files.generation_key);
         self.machine.memory_bytes = cx.cpu.address_space().end;
+        self.ceiling = start.ceiling.map_or(self.machine.memory_bytes, |ceiling| {
+            ceiling.min(self.machine.memory_bytes)
+        });
         self.hostname = start.hostname.to_vec();
         for (end, sends) in start.standard.ends() {
             self.ends.name(end, sends);
@@ -433,7 +447,15 @@ impl Kernel {
             self.mount_backend(path);
         }
 
-        let pid = self.allocate_id();
+        let pid = match self.allocate_id(&mut cx) {
+            Ok(pid) => pid,
+            Err(error) => {
+                self.start_failure = Some(error);
+                self.finished = Some(start_failed(error));
+                self.close_unmade(&mut cx, &start.standard);
+                return Ok(());
+            }
+        };
         let root = self.files.root.clone();
         let credentials = Credentials::container_root(start.groups.to_vec());
         let process = Process {
@@ -444,7 +466,8 @@ impl Kernel {
             session: pid,
             memory: wcontainers_abi::MemoryId(0),
             map: Rc::new(core::cell::RefCell::new(crate::memory::AddressMap::new(
-                cx.cpu.address_space().end,
+                self.ceiling,
+                self.outgrown.clone(),
             ))),
             threads: vec![pid],
             limits: docker_limits(),
@@ -468,6 +491,7 @@ impl Kernel {
             peak_mapped: 0,
             started: cx.monotonic(),
             vdso: 0,
+            execution: start.execution,
             execed: false,
             self_exec_id: 0,
             // What Docker's first process inherits (measured).
@@ -505,6 +529,7 @@ impl Kernel {
         }));
         self.run_start(&mut cx);
         self.settle(&mut cx);
+        Ok(())
     }
 
     /// Why the container's start failed, once it has.
@@ -550,6 +575,7 @@ impl Kernel {
                 Err(error) => {
                     self.processes.remove(&pid);
                     self.threads.remove(&pid);
+                    self.ids_let_go.push(pid);
                     self.start_failure = Some(error);
                     self.finished = Some(start_failed(error));
                     self.close_unmade(cx, &starting.standard);
@@ -637,6 +663,7 @@ impl Kernel {
             Err(crate::loader::Failed::Fatal) => {
                 self.processes.remove(&pid);
                 self.threads.remove(&pid);
+                self.ids_let_go.push(pid);
                 self.init = Some(pid);
                 self.finished = Some(SIGSEGV as i32);
                 self.close_unmade(cx, &starting.standard);
@@ -816,6 +843,14 @@ impl Kernel {
         }
         self.files_released(cx);
         crate::shared::release(self, cx);
+        if old_memory.0 == 0 {
+            self.announce(cx, pid, |system, process| {
+                system.on_process_starting(process)
+            });
+        }
+        self.announce(cx, pid, |system, process| {
+            system.on_program_starting(process)
+        });
     }
 
     /// A tmpfs's count, kept for the machine's memory in use.

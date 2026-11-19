@@ -6,6 +6,7 @@ pub mod busybox;
 pub mod driver;
 pub mod generate;
 pub mod guest;
+pub mod hooks;
 pub mod image;
 pub mod layer1;
 pub mod libctest;

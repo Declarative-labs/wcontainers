@@ -500,8 +500,8 @@ fn place(
     environment: &[Vec<u8>],
     readable: bool,
 ) -> Result<Image, Failed> {
-    let end = cx.cpu.address_space().end;
-    let mut map = AddressMap::new(end);
+    let end = kernel.ceiling;
+    let mut map = AddressMap::new(end, kernel.outgrown.clone());
     let endian = LittleEndian;
     // In the order of Linux's `load_elf_binary`: the program's header and program headers, its
     // loader's name and header, the loader's program headers, then the properties.

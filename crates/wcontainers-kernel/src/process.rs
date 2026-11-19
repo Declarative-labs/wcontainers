@@ -111,6 +111,8 @@ pub(crate) struct Process {
     pub started: u64,
     /// Where the vDSO is mapped; its signal return code is there.
     pub vdso: u64,
+    /// How the embedder asked for it to be run.
+    pub execution: crate::ExecutionConfig,
     /// A change of user left the new user over RLIMIT_NPROC (`PF_NPROC_EXCEEDED`), which the next
     /// `execve` refuses if it still is.
     pub nproc_exceeded: bool,
@@ -307,6 +309,8 @@ pub(crate) struct Thread {
     /// Whether it waits for pages of a mapped file its program touched, so once woken it goes on
     /// from the instruction that touched them instead of running a call again.
     pub filling: bool,
+    /// Waits on a watch with a signal's frame to write: acts on its signals before it runs.
+    pub delivering: bool,
     /// The address and syndrome of the thread's last fault, which every later frame shows.
     pub fault: (u64, u64),
     /// Signals a fault forced on the thread, which even the first process acts on.
@@ -524,6 +528,9 @@ pub(crate) enum Channel {
     Held(usize),
     /// An event for an epoll instance (its address), which wakes one waiter at a time.
     Epoll(usize),
+    /// A change to the embedder's watches on a memory (its handle); no signal ends this wait, as
+    /// none ends a wait for the backend.
+    Watch(u32),
 }
 
 /// What `restart_syscall` runs again.
@@ -578,6 +585,7 @@ impl Thread {
             vruntime: 0,
             woken_at: None,
             filling: false,
+            delivering: false,
             fault: (0, 0),
             forced: 0,
             schedule: Schedule::default(),

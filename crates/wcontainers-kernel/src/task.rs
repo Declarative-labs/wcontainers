@@ -164,6 +164,18 @@ impl Kernel {
 
     /// Runs a system call, the first time or again after its thread was woken.
     fn system_call(&mut self, cx: &mut Context<'_>, tid: Tid, call: Syscall, again: bool) {
+        // The watched memory the call will touch is met before it acts.
+        if self.watching {
+            let mut memory = crate::system::CallMemory {
+                kernel: self,
+                cx,
+                tid,
+            };
+            if !syscall::touch::touch(&mut memory, call) {
+                self.wait_on_watch(tid, None, false);
+                return;
+            }
+        }
         self.threads[&tid].taken.borrow_mut().rewind();
         self.begin_asking(tid);
         let mut outcome = syscall::dispatch(self, cx, tid, call, again);
@@ -184,6 +196,55 @@ impl Kernel {
                 }
                 syscall::Outcome::Parked | syscall::Outcome::Gone => {}
             }
+        }
+        // A copy met a watched page the call's description did not name: a call that failed for
+        // it runs again once the watch is met; one that did part of its work keeps its short
+        // result (both counted).
+        let touched = match (self.watching, self.threads.get(&tid)) {
+            (true, Some(thread)) => self.processes[&thread.process]
+                .map
+                .borrow_mut()
+                .watches
+                .touched
+                .take(),
+            _ => None,
+        };
+        if let Some((address, access)) = touched {
+            let met = self.watch_touched(cx, tid, address, access);
+            match outcome {
+                syscall::Outcome::Return(value) if !crate::errno::Errno::is_error_return(value) => {
+                    self.counters
+                        .count(cx.host, reason::CALL_SHORT_OF_WATCHED_MEMORY, call.number);
+                }
+                syscall::Outcome::Return(_) | syscall::Outcome::Restart => {
+                    self.counters
+                        .count(cx.host, reason::WATCH_MET_AT_A_COPY, call.number);
+                    if met {
+                        // The thread runs its system call instruction again.
+                        let mut registers = RegisterBlock::ZERO;
+                        cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
+                        registers.pc -= size_of::<u32>() as u64;
+                        cx.cpu.set_registers(self.threads[&tid].cpu, &registers);
+                        outcome = syscall::Outcome::Restart;
+                    } else {
+                        self.wait_on_watch(tid, None, false);
+                        outcome = syscall::Outcome::Parked;
+                    }
+                }
+                syscall::Outcome::Parked | syscall::Outcome::Gone => {}
+            }
+        }
+        // A placement found no room below the executor's ceiling.
+        if self.ceiling < self.machine.memory_bytes
+            && let Some(bytes) = self.outgrown.take()
+            && let Some(thread) = self.threads.get(&tid)
+        {
+            let pid = thread.process;
+            self.counters
+                .count(cx.host, reason::PROCESS_OUTGROWN, call.number);
+            self.announce(cx, pid, |system, process| {
+                system.on_process_outgrown(process, bytes)
+            });
         }
         self.end_asking(tid, matches!(outcome, syscall::Outcome::Parked));
         if let Some(thread) = self.threads.get(&tid) {
@@ -408,6 +469,10 @@ impl Kernel {
             }
             break;
         }
+        if !self.ids_let_go.is_empty() {
+            self.release_ids(cx);
+        }
+        self.unsettled = false;
         self.last_now = cx.monotonic();
         for _ in 0..core::mem::take(&mut cx.refused) {
             self.counters.count(cx.host, reason::HOST_CANNOT, 0);
@@ -529,13 +594,23 @@ impl Kernel {
             thread.woken_at = Some(entry_now);
             let deadline = thread.call.deadline;
             let filling = core::mem::take(&mut thread.filling);
+            let delivering = core::mem::take(&mut thread.delivering);
+            let resume = thread.resume;
             self.parked.remove(tid, channel, deadline);
             // Its registers still hold the call, which runs again before it goes on, or the
-            // instruction that touched pages it waited for, which touches them again.
+            // instruction that touched pages it waited for, which touches them again; a frame
+            // that waited is written when it acts on its signals.
             if !filling {
                 self.woken.push_back(tid);
             }
-            self.make_runnable(tid, Resume::FromRegisters);
+            if delivering {
+                self.make_runnable(tid, resume);
+                if !self.signalled.contains(&tid) {
+                    self.signalled.push_back(tid);
+                }
+            } else {
+                self.make_runnable(tid, Resume::FromRegisters);
+            }
         }
     }
 
@@ -624,6 +699,7 @@ impl Kernel {
         syscall::sem::exit_sem(self, cx, tid);
         syscall::mqueue::forget(self, tid);
         let thread = self.threads.remove(&tid).expect("thread exists");
+        self.ids_let_go.push(tid);
         cx.cpu.thread_drop(thread.cpu);
         if let Some(node) = &thread.pidfd {
             self.wake(syscall::pidfd::channel(node));
@@ -667,6 +743,7 @@ impl Kernel {
             self.wake(syscall::pidfd::channel(&node));
         }
         self.threads.insert(pid, thread);
+        self.ids_let_go.push(tid);
         syscall::sem::renumber(self, tid, pid);
         for process in self.processes.values_mut() {
             if process.parent_thread == tid {
@@ -690,7 +767,11 @@ impl Kernel {
         if self.processes[&pid].ended.is_some() {
             return;
         }
+        self.announce(cx, pid, |system, process| {
+            system.on_process_exiting(process)
+        });
         let threads = self.processes[&pid].threads.clone();
+        self.ids_let_go.extend(&threads);
         // The threads' descriptor tables, closed where the process's files close.
         let mut tables = alloc::vec::Vec::new();
         let memory = self.processes[&pid].memory;
@@ -727,7 +808,7 @@ impl Kernel {
         process.report = None;
         process.pending = Default::default();
         let memory = process.memory;
-        let empty = crate::memory::AddressMap::new(cx.cpu.address_space().end);
+        let empty = crate::memory::AddressMap::new(self.ceiling, self.outgrown.clone());
         let map = core::mem::replace(
             &mut process.map,
             alloc::rc::Rc::new(core::cell::RefCell::new(empty)),
@@ -935,7 +1016,9 @@ impl Kernel {
         let exit_signal = process.exit_signal;
         let status = process.ended.expect("the process has ended");
         let Some(parent_process) = self.processes.get(&parent) else {
-            self.processes.remove(&pid);
+            if let Some(process) = self.processes.remove(&pid) {
+                self.let_go_of_ids(&process);
+            }
             return;
         };
         let action = parent_process.actions.borrow()[SIGCHLD as usize - 1];
@@ -978,6 +1061,7 @@ impl Kernel {
         let Some(process) = self.processes.remove(&pid) else {
             return;
         };
+        self.let_go_of_ids(&process);
         if let Some(node) = &process.pidfd {
             if let crate::fs::Content::Pidfd(_, exit) = &mut node.borrow_mut().content {
                 *exit = process.ended;

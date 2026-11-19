@@ -4456,8 +4456,12 @@ fn run_ours_on(
         groups: &[0, 0, 1, 2, 3, 4, 6, 10, 11, 20, 26, 27],
         backend: sequence.backend.then_some(BACKEND_ROOT.as_bytes()),
         standard: crate::streams::StreamClient::default().standard(),
+        ceiling: None,
+        execution: wcontainers_kernel::ExecutionConfig::default(),
     };
-    kernel.start(&mut cpu, &mut host, &start);
+    kernel
+        .start(&mut cpu, &mut host, &start)
+        .expect("the kernel runs a process serially with exact replay");
     crate::streams::begin(&mut kernel, &mut cpu, &mut host);
     assert_eq!(kernel.start_failure(), None, "starting the runner");
     let memory = wcontainers_abi::MemoryId(1);

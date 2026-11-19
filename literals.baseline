@@ -1523,7 +1523,6 @@ code	crates/wcontainers-kernel-test/src/busybox.rs	str	on_path	"/usr/local/sbin"
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	on_path	"/usr/sbin"
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	on_path	"/{}"
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	on_path	"{directory}/{command}"
-code	crates/wcontainers-kernel-test/src/busybox.rs	str	run_ours_on	"/"
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	shapes_of_image	"/{target}"
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	shapes_of_image	"/{}"
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	shapes_of_image	"{major},{minor}"
@@ -4209,8 +4208,6 @@ code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::send_queued	128
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::send_to_group	128
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::send_to_process	128
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::send_to_thread	128
-code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::setup_frame	15
-code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::setup_frame	15
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::setup_frame	16
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::setup_frame	16
 code	crates/wcontainers-kernel/src/signal.rs	int	Kernel::setup_frame	29

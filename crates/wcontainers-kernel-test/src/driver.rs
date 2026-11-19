@@ -7,8 +7,11 @@ use rand::{Rng, RngCore, SeedableRng};
 use wcontainers_abi::{
     BackendRequestId, ConnectionId, CounterReading, End, Event, Host, HostError, Next, Warning,
 };
-use wcontainers_kernel::{Errno, FileRecord, Kernel, Start};
+use wcontainers_kernel::{
+    Access, Errno, ExecutionConfig, FileRecord, Kernel, Process, Start, System, TaskId,
+};
 
+use crate::hooks::{Defaults, Hooks};
 use crate::standin::{StandIn, Unsupported};
 use crate::streams::{StreamClient, StreamHost, Streams};
 use crate::{image, reference, streams};
@@ -89,6 +92,8 @@ pub struct TestHost {
     pub(crate) backend: Option<crate::backend::Backend>,
     /// Connections to the outside and lookups.
     network: crate::network::Network,
+    /// What the test does at the kernel's hooks.
+    pub(crate) hooks: Box<dyn Hooks>,
 }
 
 impl TestHost {
@@ -105,6 +110,7 @@ impl TestHost {
             schedule: StdRng::seed_from_u64(seed ^ SCHEDULE_SALT),
             backend: None,
             network: Default::default(),
+            hooks: Box::new(Defaults),
         }
     }
 
@@ -162,6 +168,8 @@ impl TestHost {
             backend: self.backend.take(),
             // A new host has none of the old one's connections; its published ports go on.
             network: self.network.moved(),
+            // The test's hooks go on with the copy.
+            hooks: std::mem::replace(&mut self.hooks, Box::new(Defaults)),
         };
         host.wall_base = wall + wall_step - host.monotonic_nanoseconds();
         host
@@ -171,6 +179,40 @@ impl TestHost {
     pub fn skip_to(&mut self, until: u64) {
         let now = self.monotonic_nanoseconds();
         self.skipped += until.saturating_sub(now);
+    }
+}
+
+impl System for TestHost {
+    fn task_id_allocate(&mut self, previous: TaskId) -> TaskId {
+        self.hooks.task_id_allocate(previous)
+    }
+    fn task_id_free(&mut self, id: TaskId) {
+        self.hooks.task_id_free(id);
+    }
+    fn on_process_starting(&mut self, process: Process<'_>) {
+        self.hooks.on_process_starting(process);
+    }
+    fn on_program_starting(&mut self, process: Process<'_>) {
+        self.hooks.on_program_starting(process);
+    }
+    fn on_thread_starting(&mut self, process: Process<'_>, thread: TaskId) {
+        self.hooks.on_thread_starting(process, thread);
+    }
+    fn on_process_exiting(&mut self, process: Process<'_>) {
+        self.hooks.on_process_exiting(process);
+    }
+    fn on_process_outgrown(&mut self, process: Process<'_>, bytes: u64) {
+        self.hooks.on_process_outgrown(process, bytes);
+    }
+    fn on_memory_accessing(
+        &mut self,
+        process: Process<'_>,
+        thread: TaskId,
+        address: u64,
+        access: Access,
+    ) {
+        self.hooks
+            .on_memory_accessing(process, thread, address, access);
     }
 }
 
@@ -414,6 +456,10 @@ pub struct Prepared {
     pub echo: bool,
     /// The client of its standard streams.
     pub client: StreamClient,
+    /// What the test does at the kernel's hooks.
+    pub hooks: Box<dyn Hooks>,
+    /// The executor's ceiling given at start, if below the address space's end.
+    pub ceiling: Option<u64>,
 }
 
 /// Puts a container's files in a new kernel's root, unless the root is on the backend.
@@ -427,6 +473,8 @@ pub fn prepare(container: &Container<'_>) -> Prepared {
         groups: image::root_groups(container.files),
         echo: false,
         client: StreamClient::default(),
+        hooks: Box::new(Defaults),
+        ceiling: None,
     }
 }
 
@@ -442,6 +490,8 @@ pub fn run_prepared(
         groups,
         echo,
         client,
+        hooks,
+        ceiling,
     } = prepared;
     let mut at = moments_apart(seed ^ SAVES_SALT, injections.saves, injections.save_gap);
     let (signal, signals) = injections.signal.unwrap_or((0, 0));
@@ -458,6 +508,7 @@ pub fn run_prepared(
     let standard = client.standard();
     host.streams = Streams::new(client);
     host.streams.echo = echo;
+    host.hooks = hooks;
     host.network.published = container.published.iter().copied().collect();
     let root_on_backend = container.backend == Some("/");
     if container.backend.is_some() {
@@ -487,8 +538,12 @@ pub fn run_prepared(
         groups: &groups,
         backend: container.backend.map(str::as_bytes),
         standard,
+        ceiling,
+        execution: ExecutionConfig::default(),
     };
-    kernel.start(&mut cpu, &mut host, &start);
+    kernel
+        .start(&mut cpu, &mut host, &start)
+        .expect("the kernel runs a process serially with exact replay");
     streams::begin(&mut kernel, &mut cpu, &mut host);
     let status = loop {
         match kernel.next() {
@@ -581,6 +636,9 @@ pub fn run_prepared(
                 }
             }
             Next::Idle { until_nanoseconds } => {
+                if host.hooks.between_steps(&mut kernel, &mut cpu) {
+                    continue;
+                }
                 // An answer owed comes before any time passes.
                 if host
                     .backend

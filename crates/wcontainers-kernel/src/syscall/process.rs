@@ -379,7 +379,9 @@ pub(super) fn setpgid(
     {
         return Err(Errno::EPERM);
     }
-    kernel.processes.get_mut(&pid).expect("process").group = group;
+    let process = kernel.processes.get_mut(&pid).expect("process");
+    let old = core::mem::replace(&mut process.group, group);
+    kernel.ids_let_go.push(old);
     Ok(0)
 }
 
@@ -400,9 +402,11 @@ pub(super) fn setsid(
         return Err(Errno::EPERM);
     }
     let process = kernel.process_of_mut(tid);
+    let old = [process.session, process.group];
     process.session = pid;
     process.group = pid;
     process.terminal = None;
+    kernel.ids_let_go.extend(old);
     Ok(pid as u64)
 }
 

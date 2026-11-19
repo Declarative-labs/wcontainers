@@ -8,6 +8,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::memory::{AddressMap, Backing, page_down, page_up};
 use crate::process::{LIMITS, Limit};
+use crate::system::Access;
 use crate::{Errno, errno};
 
 /// One past the highest user address on ARM64 Linux with 48 bit virtual addresses (`TASK_SIZE_MAX`).
@@ -60,6 +61,25 @@ impl Guest<'_> {
         }
         if done > 0 && !self.read_in(address, address + done) {
             return 0;
+        }
+        // A page the embedder watches is not there for the copy until the watch is met.
+        let access = if wanted.contains(Permissions::WRITE) {
+            Access::Write
+        } else {
+            Access::Read
+        };
+        let watched = self
+            .map
+            .borrow()
+            .watches
+            .first_watched(address, address + done, access);
+        if let Some(at) = watched {
+            self.map
+                .borrow_mut()
+                .watches
+                .touched
+                .get_or_insert((at, access));
+            done = at - address;
         }
         done
     }
@@ -199,9 +219,12 @@ impl Guest<'_> {
     /// Makes the private file pages of a range about to be written the process's own copies, as a
     /// write fault would.
     fn copy_on_write(&mut self, address: u64, length: u64) -> Result<(), Errno> {
-        self.map
-            .borrow_mut()
-            .copy_on_write(self.cpu, self.memory, address, address + length)
+        let mut map = self.map.borrow_mut();
+        // The CPU side may write a page noted as written from now on.
+        if map.watches.note_written(address, address + length) {
+            map.reapply(self.cpu, self.memory, address, address + length);
+        }
+        map.copy_on_write(self.cpu, self.memory, address, address + length)
     }
 
     /// Copies as much of `bytes` as can be written, a page at a time, as a partial `copy_to_user`.

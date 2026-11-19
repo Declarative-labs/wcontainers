@@ -163,6 +163,14 @@ pub mod reason {
     /// An embedder sent more on an end than the credit the kernel gave; what was past it is
     /// dropped. Detail: the end.
     pub const STREAM_PAST_CREDIT: &str = "stream data past its credit";
+    /// A kernel copy met a page the embedder watches that the call's description did not name;
+    /// the call runs again once the watch is met. Detail: the call's number.
+    pub const WATCH_MET_AT_A_COPY: &str = "watched memory met at a copy";
+    /// A call did part of its work before a copy met a watched page, and keeps its short result.
+    /// Detail: the call's number.
+    pub const CALL_SHORT_OF_WATCHED_MEMORY: &str = "call short of watched memory";
+    /// A request for memory found no room below the executor's ceiling. Detail: the call's number.
+    pub const PROCESS_OUTGROWN: &str = "process outgrew the ceiling";
     /// An event arrived that no thread was waiting for.
     pub const EVENT_UNEXPECTED: &str = "event with no waiter";
     /// The CPU side answered that this host cannot make a memory, a thread or a block of shared

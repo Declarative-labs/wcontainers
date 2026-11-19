@@ -140,20 +140,45 @@ pub fn run_ours_seeded(command: &[&str], seed: u64) -> driver::Run {
     run_ours_on(command, seed, None)
 }
 
-/// As [`run_ours_seeded`], with the root file system on the backend (`Some("/")`) or in memory.
-fn run_ours_on(command: &[&str], seed: u64, backend: Option<&str>) -> driver::Run {
+/// As [`run_ours_seeded`], with what the test does at the kernel's hooks.
+pub fn run_ours_hooked(
+    command: &[&str],
+    seed: u64,
+    hooks: Box<dyn crate::hooks::Hooks>,
+) -> driver::Run {
     let path = on_path(command[0]);
-    let container = driver::Container {
+    let container = container(command, &path, None);
+    let prepared = driver::Prepared {
+        hooks,
+        ..driver::prepare(&container)
+    };
+    driver::run_prepared(prepared, &container, seed, Default::default())
+        .unwrap_or_else(|failure| panic!("{command:?}: no outcome on our kernel: {failure:?}"))
+}
+
+/// A container running a command of the reference image found at `path`.
+fn container<'a>(
+    command: &'a [&'a str],
+    path: &'a str,
+    backend: Option<&'a str>,
+) -> driver::Container<'a> {
+    driver::Container {
         files: image::reference_image(),
-        path: &path,
+        path,
         arguments: command,
         environment: reference::ENVIRONMENT,
-        working_directory: "/",
+        working_directory: reference::ROOT_DIRECTORY,
         backend,
         cached: false,
         published: &[],
         address_space: crate::standin::SPACE_32_BIT,
-    };
+    }
+}
+
+/// As [`run_ours_seeded`], with the root file system on the backend (`Some("/")`) or in memory.
+fn run_ours_on(command: &[&str], seed: u64, backend: Option<&str>) -> driver::Run {
+    let path = on_path(command[0]);
+    let container = container(command, &path, backend);
     driver::run(&container, seed)
         .unwrap_or_else(|failure| panic!("{command:?}: no outcome on our kernel: {failure:?}"))
 }

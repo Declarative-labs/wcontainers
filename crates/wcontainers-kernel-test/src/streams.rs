@@ -248,7 +248,7 @@ impl Found {
 }
 
 /// The host's streams and the seeded choices of a run, as [`act`] needs them.
-pub trait StreamHost: wcontainers_abi::Host {
+pub trait StreamHost: wcontainers_kernel::System {
     fn streams(&mut self) -> &mut Streams;
     fn choices(&mut self) -> &mut StdRng;
 }

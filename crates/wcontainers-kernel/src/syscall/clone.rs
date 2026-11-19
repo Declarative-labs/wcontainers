@@ -42,6 +42,17 @@ pub(super) fn clone(
         parent_tid,
     ) {
         Ok(child) => {
+            let process = kernel.threads[&child].process;
+            if flags & CLONE_THREAD != 0 {
+                let thread = crate::TaskId::of(child);
+                kernel.announce(cx, process, |system, process| {
+                    system.on_thread_starting(process, thread)
+                });
+            } else {
+                kernel.announce(cx, process, |system, process| {
+                    system.on_process_starting(process)
+                });
+            }
             // The parent's copy of the child's number, written after the child exists.
             if flags & CLONE_PARENT_SETTID != 0 {
                 let _ = guest(kernel, cx, tid).put(parent_tid, &child.to_le_bytes());
@@ -142,7 +153,7 @@ fn make_child(
         }
         return Ok(child);
     }
-    let child = kernel.allocate_id();
+    let child = kernel.allocate_id(cx)?;
     let parent = &kernel.processes[&pid];
     // The memory: a copy, or for vfork the parent's own until the child lets go of it.
     let borrow = flags & CLONE_VM != 0;
@@ -185,6 +196,7 @@ fn make_child(
         }
         map.set_lock_all(Lock::None);
         map.future_lock = Lock::None;
+        map.forget_written(cx.cpu, memory);
         alloc::rc::Rc::new(core::cell::RefCell::new(map))
     };
     let mut process = parent.clone();
@@ -308,7 +320,7 @@ fn make_thread(
         .cpu
         .thread_new(memory)
         .map_err(|error| cx.cpu_error(error))?;
-    let child = kernel.allocate_id();
+    let child = kernel.allocate_id(cx)?;
     let mut registers = RegisterBlock::ZERO;
     cx.cpu.registers(kernel.threads[&tid].cpu, &mut registers);
     registers.x[0] = 0;
