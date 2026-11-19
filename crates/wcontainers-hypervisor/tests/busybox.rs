@@ -2,7 +2,10 @@
 //! first process in the kernel inside the machine, with the root file system in memory and the translator at
 //! look-ahead none, and gives the reference's output, exit code and changed files (ARM64 Linux in Docker).
 //!
-//! `WCONTAINERS_KERNEL_SEED` seeds the policy and the host's random bytes.
+//! This track's own commands run the same way.
+//!
+//! `WCONTAINERS_KERNEL_SEED` seeds the policy and the host's random bytes; `WCONTAINERS_KERNEL_SEEDS` runs each
+//! command with that many seeds, it and the ones after it.
 
 #[cfg(target_os = "macos")]
 #[path = "../../wcontainers-inside/src/bin/native-kernel/protocol.rs"]
@@ -35,8 +38,11 @@ mod macos {
     use wcontainers_kernel_test::image::{self, Kind};
     use wcontainers_kernel_test::reference;
 
-    use crate::common::{be_signed, load_average, setting};
-    use crate::container::{DEFAULT_SEED, SEED_VARIABLE, native, summary};
+    use crate::common::{be_signed, load_average};
+    use crate::container::{native, seeds, summary};
+
+    /// This track's commands: a program that zeroes whole blocks.
+    const OWN: &[&[&str]] = &[&["sh", "-c", "bzip2 -c /etc/passwd | bzip2 -dc | md5sum"]];
 
     /// The run's name in the check's messages.
     const ROOT_IN_MEMORY: &str = "root in memory, native";
@@ -82,37 +88,42 @@ mod macos {
 
     pub fn main() {
         be_signed();
-        let seed = setting(SEED_VARIABLE, DEFAULT_SEED);
+        let seeds = seeds();
         let started = Instant::now();
         let image = image::reference_image();
         let files = files(image);
-        let commands: Vec<&[&str]> = TEXT.iter().chain(FILES).copied().collect();
+        let commands: Vec<&[&str]> = TEXT.iter().chain(FILES).chain(OWN).copied().collect();
         each(&commands, |command| {
-            let began = Instant::now();
-            // The reference's clock is the machine's: a file's time shown to the minute must match.
-            let wall_start = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("a clock after 1970")
-                .as_nanos() as u64;
-            let ours = native(seed, wall_start, &files, &starting(command, image));
-            println!(
-                "{command:?}: status {:#x} after {} turns, {} exits, {:?}, warned {:?}",
-                ours.status,
-                ours.turns,
-                ours.exits,
-                began.elapsed(),
-                summary(&ours.warnings)
-            );
-            let outcome = Outcome {
-                stdout: ours.host.stdout,
-                stderr: ours.host.stderr,
-                exit_code: exit_code(ours.status),
-            };
-            Reference::of(command).check(command, ROOT_IN_MEMORY, &outcome, &ours.root);
+            let reference = Reference::of(command);
+            for &seed in &seeds {
+                let began = Instant::now();
+                // The reference's clock is the machine's: a file's time shown to the minute must match.
+                let wall_start = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("a clock after 1970")
+                    .as_nanos() as u64;
+                let ours = native(seed, wall_start, &files, &starting(command, image));
+                println!(
+                    "{command:?} seed {seed:#x}: status {:#x} after {} turns, {} exits, {:?}, warned {:?}",
+                    ours.status,
+                    ours.turns,
+                    ours.exits,
+                    began.elapsed(),
+                    summary(&ours.warnings)
+                );
+                let outcome = Outcome {
+                    stdout: ours.host.stdout,
+                    stderr: ours.host.stderr,
+                    exit_code: exit_code(ours.status),
+                };
+                reference.check(command, ROOT_IN_MEMORY, &outcome, &ours.root);
+            }
         });
         println!(
-            "busybox: {} commands gave the reference's output, exit code and files; seed {seed:#x}; in {:?}, load {}",
+            "busybox: {} commands gave the reference's output, exit code and files with each of {} seeds from {:#x}; in {:?}, load {}",
             commands.len(),
+            seeds.len(),
+            seeds[0],
             started.elapsed(),
             load_average()
         );

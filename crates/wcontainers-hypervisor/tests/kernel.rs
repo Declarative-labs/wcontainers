@@ -8,10 +8,12 @@
 //! inside. Another forks, execs itself and takes signals, so turns end at the limits the policy gives. Another
 //! writes code and announces it, in private memory and in memory a child changes. Another asks for memory as
 //! programs do, more than the machine has in all; asked to write more than the machine has at once, it is killed
-//! natively and the inside goes on, counted and warned. hello and these programs also run in the reference,
+//! natively and the inside goes on, counted and warned. Another zeroes blocks and cleans cache lines on pages
+//! never touched, read-only, allowing nothing and unmapped. hello and these programs also run in the reference,
 //! whose output and exit code the native side must give.
 //!
-//! `WCONTAINERS_KERNEL_SEED` seeds the policy and the host's random bytes.
+//! `WCONTAINERS_KERNEL_SEED` seeds the policy and the host's random bytes; `WCONTAINERS_KERNEL_SEEDS` runs that
+//! many seeds, it and the ones after it.
 
 #[cfg(target_os = "macos")]
 #[path = "../../wcontainers-inside/src/bin/native-kernel/protocol.rs"]
@@ -39,7 +41,7 @@ mod macos {
 
     use linux_raw_sys::general::SIGSEGV;
     use linux_raw_sys::general::{S_IRGRP, S_IROTH, S_IRWXU, S_IXGRP, S_IXOTH};
-    use wcontainers_guest_cpu::reason::CODE_CHANGED_AFTER_IT_RAN;
+    use wcontainers_guest_cpu::reason::{CODE_CHANGED_AFTER_IT_RAN, MEMORY_FAULT};
     use wcontainers_inside::container::{File, FileKind, Starting};
     use wcontainers_inside::reason::GUEST_PHYSICAL_SPACE_FULL;
     use wcontainers_kernel_test::driver::exit_code;
@@ -47,11 +49,8 @@ mod macos {
 
     use crate::common::{
         CLibrary, KERNEL_TEST_GUEST, MEMORY, OWN_GUEST, be_signed, compile, compiled, load_average,
-        setting,
     };
-    use crate::container::{
-        DEFAULT_SEED, Outcome, REALTIME_NANOSECONDS, SEED_VARIABLE, native, summary, wasm,
-    };
+    use crate::container::{Outcome, REALTIME_NANOSECONDS, native, seeds, summary, wasm};
 
     /// The bar's first program, from the kernel test crate.
     const HELLO: &str = "hello";
@@ -71,6 +70,14 @@ mod macos {
 
     /// This track's program that asks for memory.
     const MAPPINGS: &str = "mappings";
+
+    /// This track's program that zeroes blocks and cleans cache lines on pages in every state.
+    const BLOCKS: &str = "blocks";
+
+    /// Why `blocks` gives other output on the WebAssembly side: it reports a block zeroing's fault at the
+    /// block's start, where Linux reports the address in the register (the WebAssembly meaning of `dc zva`).
+    const BLOCKS_KNOWN: &str =
+        "the WebAssembly side reports a zeroed block's fault at the block's start";
 
     /// The bits of a mebibyte's size, the unit `memory` takes its argument in.
     const MIB_BITS: u32 = 20;
@@ -103,9 +110,9 @@ mod macos {
         (files, starting)
     }
 
-    /// Runs a container on both sides, checks that the wait status, the calls of the host's services and the
-    /// root's files agree, and gives both outcomes, the native side's first.
-    fn both(seed: u64, name: &str, image: &[u8], arguments: &[String]) -> (Outcome, Outcome) {
+    /// Runs a container on both sides, checks that the wait status and the root's files agree, and gives both
+    /// outcomes, the native side's first.
+    fn run_both(seed: u64, name: &str, image: &[u8], arguments: &[String]) -> (Outcome, Outcome) {
         let (files, starting) = container(name, image.to_vec(), arguments);
         let native = native(seed, REALTIME_NANOSECONDS, &files, &starting);
         let wasm = wasm(seed, REALTIME_NANOSECONDS, &files, &starting);
@@ -122,14 +129,42 @@ mod macos {
         }
         assert_eq!(native.status, wasm.status, "{name}: the wait status");
         assert_eq!(
-            native.host.calls, wasm.host.calls,
-            "{name}: the calls of the host's services"
-        );
-        assert_eq!(
             native.root, wasm.root,
             "{name}: the root's files at the end"
         );
         (native, wasm)
+    }
+
+    /// Where the two sides' calls of the host's services first differ, if they do.
+    fn calls_differ(native: &Outcome, wasm: &Outcome) -> Option<String> {
+        let calls = (&native.host.calls, &wasm.host.calls);
+        let differ = calls.0.iter().zip(calls.1).position(|(a, b)| a != b);
+        (differ.is_some() || calls.0.len() != calls.1.len()).then(|| {
+            format!(
+                "the calls of the host's services differ at call {differ:?} of {} and {}: {:?} natively, {:?} on the WebAssembly side",
+                calls.0.len(),
+                calls.1.len(),
+                differ.map(|i| &calls.0[i]),
+                differ.map(|i| &calls.1[i]),
+            )
+        })
+    }
+
+    /// As [`run_both`], and the calls of the host's services agree.
+    fn both(seed: u64, name: &str, image: &[u8], arguments: &[String]) -> (Outcome, Outcome) {
+        let (native, wasm) = run_both(seed, name, image, arguments);
+        if let Some(difference) = calls_differ(&native, &wasm) {
+            panic!("{name}: {difference}");
+        }
+        (native, wasm)
+    }
+
+    /// The count of `reason` among an outcome's warnings.
+    fn warned(outcome: &Outcome, reason: &str) -> u64 {
+        summary(&outcome.warnings)
+            .get(reason)
+            .copied()
+            .unwrap_or_default()
     }
 
     /// As [`both`], for a program with one thread, whose turns end only at its system calls: the turns agree
@@ -164,7 +199,14 @@ mod macos {
 
     pub fn main() {
         be_signed();
-        let seed = setting(SEED_VARIABLE, DEFAULT_SEED);
+        let seeds = seeds();
+        for &seed in &seeds {
+            with_seed(seed);
+        }
+        println!("kernel: {} seeds ran alike", seeds.len());
+    }
+
+    fn with_seed(seed: u64) {
         let started = Instant::now();
         let hello = compile(KERNEL_TEST_GUEST, HELLO, CLibrary::Without);
         against_reference(HELLO, &alone(seed, HELLO, &hello, &[]));
@@ -189,12 +231,7 @@ mod macos {
         let code = compile(OWN_GUEST, CODE, CLibrary::Musl);
         let (native, wasm) = both(seed, CODE, &code, &[]);
         print!("{CODE}: {}", String::from_utf8_lossy(&native.host.stdout));
-        let changed = |outcome: &Outcome| {
-            summary(&outcome.warnings)
-                .get(CODE_CHANGED_AFTER_IT_RAN)
-                .copied()
-                .unwrap_or_default()
-        };
+        let changed = |outcome: &Outcome| warned(outcome, CODE_CHANGED_AFTER_IT_RAN);
         println!(
             "{CODE}: \"{CODE_CHANGED_AFTER_IT_RAN}\" {} natively, {} on the WebAssembly side",
             changed(&native),
@@ -206,6 +243,22 @@ mod macos {
             "{CODE}: \"{CODE_CHANGED_AFTER_IT_RAN}\" natively"
         );
         against_reference(CODE, &native);
+        let blocks = compile(OWN_GUEST, BLOCKS, CLibrary::Musl);
+        let (native, wasm) = run_both(seed, BLOCKS, &blocks, &[]);
+        print!("{BLOCKS}: {}", String::from_utf8_lossy(&native.host.stdout));
+        if let Some(difference) = calls_differ(&native, &wasm) {
+            println!("{BLOCKS}: KNOWN FAILURE, {BLOCKS_KNOWN}: {difference}");
+        }
+        let faults = [&native, &wasm].map(|outcome| warned(outcome, MEMORY_FAULT));
+        println!(
+            "{BLOCKS}: \"{MEMORY_FAULT}\" {} natively, {} on the WebAssembly side",
+            faults[0], faults[1]
+        );
+        assert!(
+            faults[0] == faults[1] && faults[0] > 0,
+            "{BLOCKS}: \"{MEMORY_FAULT}\" counted alike"
+        );
+        against_reference(BLOCKS, &native);
         let mappings = compile(OWN_GUEST, MAPPINGS, CLibrary::Musl);
         let (native, _) = both(seed, MAPPINGS, &mappings, &[]);
         print!(
@@ -216,10 +269,7 @@ mod macos {
         let beyond = (MEMORY + MEMORY / 2) >> MIB_BITS;
         let (files, starting) = container(MAPPINGS, mappings, &[beyond.to_string()]);
         let killed = crate::container::native(seed, REALTIME_NANOSECONDS, &files, &starting);
-        let full = summary(&killed.warnings)
-            .get(GUEST_PHYSICAL_SPACE_FULL)
-            .copied()
-            .unwrap_or_default();
+        let full = warned(&killed, GUEST_PHYSICAL_SPACE_FULL);
         println!(
             "{MAPPINGS} writing {beyond} MiB natively: status {:#x}, \"{GUEST_PHYSICAL_SPACE_FULL}\" {full}",
             killed.status

@@ -19,7 +19,7 @@ use wcontainers_runtime::{Ending, Kernel, drive};
 use wcontainers_wasmtime::{Compiler, CpuSide, LookAhead, Optimise};
 use zerocopy::FromZeros;
 
-use crate::common::{MEMORY, ONE_CPU, build, machine};
+use crate::common::{MEMORY, ONE_CPU, build, machine, setting};
 use crate::protocol::{self, Ended, PolicySeeds};
 
 /// The test program inside.
@@ -28,6 +28,19 @@ const PROGRAM: &str = "native-kernel";
 /// Seeds the policy and the host's random bytes.
 pub const SEED_VARIABLE: &str = "WCONTAINERS_KERNEL_SEED";
 pub const DEFAULT_SEED: u64 = 0x6b65_726e;
+
+/// How many seeds a run takes, the first and each one after it.
+pub const SEEDS_VARIABLE: &str = "WCONTAINERS_KERNEL_SEEDS";
+pub const DEFAULT_SEEDS: u64 = 1;
+
+/// The seeds a run takes: the first from [`SEED_VARIABLE`], then the ones after it, as many as
+/// [`SEEDS_VARIABLE`] says.
+pub fn seeds() -> Vec<u64> {
+    let first = setting(SEED_VARIABLE, DEFAULT_SEED);
+    (0..setting(SEEDS_VARIABLE, DEFAULT_SEEDS))
+        .map(|i| first.wrapping_add(i))
+        .collect()
+}
 
 /// The clocks the test host reads.
 const MONOTONIC_NANOSECONDS: u64 = 1_234_567;
