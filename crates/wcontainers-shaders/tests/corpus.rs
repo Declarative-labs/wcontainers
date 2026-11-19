@@ -198,7 +198,7 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
     };
     let pipeline = naga::back::glsl::PipelineOptions {
         shader_stage: stage,
-        entry_point: "main".into(),
+        entry_point: wcontainers_shaders::ENTRY_POINT.into(),
         multiview: None,
     };
     let mut glsl = String::new();
@@ -242,6 +242,14 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
 }
 
 fn run(dir: &Path, ext: &str, label: &str) -> BTreeMap<String, usize> {
+    let (counts, failures) = verdicts(dir, ext, label);
+    assert!(failures.is_empty(), "{failures}");
+    counts
+}
+
+/// Each shader's verdict against its record: the counts per class, and what differs (empty when
+/// every verdict is the recorded one).
+fn verdicts(dir: &Path, ext: &str, label: &str) -> (BTreeMap<String, usize>, String) {
     let out = std::env::var_os("WCONTAINERS_SHADERS_OUT").map(|o| PathBuf::from(o).join(label));
     if let Some(out) = &out {
         std::fs::create_dir_all(out).unwrap();
@@ -309,13 +317,16 @@ fn run(dir: &Path, ext: &str, label: &str) -> BTreeMap<String, usize> {
                 .any(|l| l.split('\t').next() == Some(f.as_str()))
         })
         .collect();
-    assert!(
-        differ.is_empty() && missing.is_empty(),
-        "{label}: verdicts differ from {}:\n{}\nmissing: {missing:?}",
-        expected_file.display(),
-        differ.join("\n")
-    );
-    counts
+    let failures = if differ.is_empty() && missing.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "{label}: verdicts differ from {}:\n{}\nmissing: {missing:?}",
+            expected_file.display(),
+            differ.join("\n")
+        )
+    };
+    (counts, failures)
 }
 
 /// Every verdict is the one recorded for that shader in `tests/expected/<corpus>.txt` (a conversion,
@@ -350,6 +361,22 @@ fn game_shaders_give_their_recorded_verdicts() {
     assert!(dxbc.values().sum::<usize>() > 0 && dxil.values().sum::<usize>() > 0);
 }
 
+/// The shaders of vkd3d's shader tests (the Direct3D 12 front's shader runner), compiled by fxc and
+/// by dxc, kept outside the repository like the plan's corpus (LGPL test data).
+#[test]
+#[ignore = "needs WCONTAINERS_RUNNER_SHADERS, vkd3d's shader tests compiled, kept outside the repository"]
+fn runner_shaders_give_their_recorded_verdicts() {
+    let dir = std::env::var_os("WCONTAINERS_RUNNER_SHADERS")
+        .expect("WCONTAINERS_RUNNER_SHADERS must name the directory of the compiled shader tests");
+    let (dxbc, dxbc_failures) = verdicts(Path::new(&dir), "dxbc", "runner");
+    let (dxil, dxil_failures) = verdicts(Path::new(&dir), "dxil", "runner-dxil");
+    assert!(
+        dxbc_failures.is_empty() && dxil_failures.is_empty(),
+        "{dxbc_failures}\n{dxil_failures}"
+    );
+    assert!(dxbc.values().sum::<usize>() > 0 && dxil.values().sum::<usize>() > 0);
+}
+
 #[test]
 fn rig_dxil_shaders_give_their_recorded_verdicts() {
     let dir =
@@ -361,8 +388,9 @@ fn rig_dxil_shaders_give_their_recorded_verdicts() {
 #[test]
 fn own_shaders_give_their_recorded_verdicts() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own");
-    run(&dir, "dxbc", "own");
-    run(&dir, "dxil", "own-dxil");
+    let (_, dxbc) = verdicts(&dir, "dxbc", "own");
+    let (_, dxil) = verdicts(&dir, "dxil", "own-dxil");
+    assert!(dxbc.is_empty() && dxil.is_empty(), "{dxbc}\n{dxil}");
 }
 
 /// The same HLSL compiled by fxc (DXBC) and by dxc (DXIL) gives the same values at the same locations,

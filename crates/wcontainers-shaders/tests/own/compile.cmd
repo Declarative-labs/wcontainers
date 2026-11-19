@@ -1,4 +1,4 @@
-@rem Compiles the entry points of own.hlsl, more.hlsl, spaces.hlsl, twospaces.hlsl, signed.hlsl, route.hlsl, values.hlsl, evaluate.hlsl, negate.hlsl, variants.hlsl, pull.hlsl, filter.hlsl, geometry.hlsl, compute.hlsl, texels.hlsl, tessellation.hlsl, layers.hlsl, uav.hlsl, arrays.hlsl, msarray.hlsl, early.hlsl, shadow.hlsl, msloop.hlsl (shader model 4.0) and waves.hlsl (dxc only) with
+@rem Compiles the entry points of own.hlsl, more.hlsl, spaces.hlsl, twospaces.hlsl, signed.hlsl, route.hlsl, values.hlsl, evaluate.hlsl, negate.hlsl, variants.hlsl, pull.hlsl, filter.hlsl, geometry.hlsl, compute.hlsl, texels.hlsl, tessellation.hlsl, layers.hlsl, uav.hlsl, arrays.hlsl, msarray.hlsl, early.hlsl, shadow.hlsl, msloop.hlsl (shader model 4.0), narrow.hlsl, components.hlsl and waves.hlsl (dxc only) with
 @rem the Windows SDK's fxc (ps_spaces, vs_transform, ps_textured, signed.hlsl's, route.hlsl's, values.hlsl's, negate.hlsl's, variants.hlsl's, pull.hlsl's, filter.hlsl's, the geometry, the compute and the typed buffer shaders also
 @rem with its dxc, IEEE-strict so NaN tests stay), beside this file.
 @echo off
@@ -36,6 +36,11 @@ for %%e in (ps_rows ps_clip) do (
   "%FXC%" /nologo /T ps_5_0 /E %%e /Fo %%e.dxbc route.hlsl || exit /b 1
   "%DXC%" -nologo -T ps_6_0 -E %%e -Gis -Fo %%e.dxil route.hlsl || exit /b 1
 )
+"%FXC%" /nologo /T ps_5_0 /E ps_component /Fo ps_component.dxbc components.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_component -Gis -Fo ps_component.dxil components.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_0 /E ps_narrow /Fo ps_narrow.dxbc narrow.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_narrow -Gis -Fo ps_narrow.dxil narrow.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_2 -enable-16bit-types -E ps_narrow16 -Gis -Fo ps_narrow16.dxil narrow.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_pack /Fo vs_pack.dxbc signed.hlsl || exit /b 1
 "%DXC%" -nologo -T vs_6_0 -E vs_pack -Gis -Fo vs_pack.dxil signed.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_rows_io /Fo vs_rows_io.dxbc signed.hlsl || exit /b 1

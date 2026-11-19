@@ -203,7 +203,7 @@ fn compute_form(
     Ok(wcontainers_gpu::ShaderModule {
         info: crate::validate(&module)?,
         module,
-        entry_point: "main".into(),
+        entry_point: crate::ENTRY_POINT.into(),
         stage: wcontainers_gpu::ShaderStage::Compute,
         key: *key.finalize().as_bytes(),
     })
@@ -217,7 +217,7 @@ pub fn stream_program() -> Result<wcontainers_gpu::ShaderModule> {
     Ok(wcontainers_gpu::ShaderModule {
         info: crate::validate(&module)?,
         module,
-        entry_point: "main".into(),
+        entry_point: crate::ENTRY_POINT.into(),
         stage: wcontainers_gpu::ShaderStage::Compute,
         key: *blake3::hash(text.as_bytes()).as_bytes(),
     })
@@ -231,7 +231,7 @@ pub fn tessellator_program() -> Result<wcontainers_gpu::ShaderModule> {
     Ok(wcontainers_gpu::ShaderModule {
         info: crate::validate(&module)?,
         module,
-        entry_point: "main".into(),
+        entry_point: crate::ENTRY_POINT.into(),
         stage: wcontainers_gpu::ShaderStage::Compute,
         key: *blake3::hash(text.as_bytes()).as_bytes(),
     })
@@ -393,7 +393,7 @@ pub(crate) fn vertex_as_compute(vertex: &Module, locations: &[u32]) -> Result<Mo
         Span::UNDEFINED,
     );
 
-    let mut b = Builder::new("main");
+    let mut b = Builder::new(crate::ENTRY_POINT);
     b.f.arguments.push(FunctionArgument {
         name: Some("id".into()),
         ty: uvec3,
@@ -500,7 +500,7 @@ pub(crate) fn vertex_as_compute(vertex: &Module, locations: &[u32]) -> Result<Mo
     }
     b.ret(None);
     module.entry_points.push(naga::EntryPoint {
-        name: "main".into(),
+        name: crate::ENTRY_POINT.into(),
         stage: naga::ShaderStage::Compute,
         early_depth_test: None,
         workgroup_size: [WORKGROUP, 1, 1],
@@ -559,7 +559,7 @@ pub(crate) fn clip_unpositioned(module: &mut Module) -> Result<()> {
     let callee = module.functions.append(inner, Span::UNDEFINED);
     let vec4 = build::vec4(module, Scalar::F32);
 
-    let mut b = Builder::new("main");
+    let mut b = Builder::new(crate::ENTRY_POINT);
     let mut passed = Vec::new();
     for (i, a) in arguments.into_iter().enumerate() {
         b.f.arguments.push(a);
@@ -650,7 +650,7 @@ pub(crate) fn passthrough(reflection: &Reflection) -> Result<Module> {
     let mut module = Module::default();
     let locations = locations(&reflection.outputs);
     let uvec4 = build::vec4(&mut module, Scalar::U32);
-    let mut b = Builder::new("main");
+    let mut b = Builder::new(crate::ENTRY_POINT);
     let mut members = Vec::new();
     let mut components = Vec::new();
     for slot in 0..=locations.len() {
@@ -771,7 +771,7 @@ pub(crate) fn passthrough(reflection: &Reflection) -> Result<Module> {
     let mut f = b.finish();
     f.result = Some(FunctionResult { ty, binding: None });
     module.entry_points.push(naga::EntryPoint {
-        name: "main".into(),
+        name: crate::ENTRY_POINT.into(),
         stage: naga::ShaderStage::Vertex,
         early_depth_test: None,
         workgroup_size: [0; 3],

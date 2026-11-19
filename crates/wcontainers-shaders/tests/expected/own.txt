@@ -54,6 +54,7 @@ hs_tri_pow2_point.dxbc	ok-wgsl glsl-write
 ps_cases.dxbc	ok-wgsl glsl-compile
 ps_clip.dxbc	ok
 ps_coarse.dxbc	ok
+ps_component.dxbc	ok-wgsl glsl-compile
 ps_contend.dxbc	ok-wgsl glsl-write
 ps_depth.dxbc	ok
 ps_deriv.dxbc	ok-wgsl glsl-write
@@ -80,6 +81,7 @@ ps_mirror.dxbc	ok
 ps_msarray.dxbc	unsupported MultisampledArrayTexture
 ps_msloop.dxbc	ok-wgsl glsl-compile
 ps_msswap.dxbc	ok-wgsl glsl-compile
+ps_narrow.dxbc	ok-wgsl glsl-compile
 ps_negate.dxbc	ok
 ps_offset.dxbc	ok
 ps_pack.dxbc	ok

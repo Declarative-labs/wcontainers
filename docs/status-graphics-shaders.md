@@ -49,8 +49,11 @@ plainly (22 of Godot's 3D platformer's fragment shaders stopped there); run 33 d
 real Direct3D 11, filtered depth textures in the program, built targets of another type than the
 program's output and constant buffers read past their declared array, and took dxbc-spirv's IR
 numbers from its own header; run 34 laid DXIL's stage values out as Direct3D's registers (packed
-values, arrays, matrices) and built DXBC's `InterpolateAt` and the per-sample position; what
-remains is under Next. Runs 21 to 33 merged origin/phase-2-graphics-webgpu,
+values, arrays, matrices) and built DXBC's `InterpolateAt` and the per-sample position; run 35
+widened DXIL's 16-bit integers, read constant components picked at run time, refused 64-bit types
+and other unbuilt features by name and added the shader runner's corpus; run 36 verified and
+committed run 35's work, dumped Godot's 3D platformer's refused shaders and swept the typed
+buffers' literals; what remains is under Next. Runs 21 to 33 merged origin/phase-2-graphics-webgpu,
 -webgl, -direct3d-11, -direct3d-12 and -rig (run 28: one conflict in the interface's `slow.rs`,
 the same three slow paths in two orders, ours kept).
 
@@ -1421,6 +1424,120 @@ matrices between stages, `InterpolateAt`, the position of a program run per samp
   `C:\wc\shaders-out`, `C:\wc\shaders-out34` were deleted; nothing was built on the laptop or in
   scratch (scratch run34-*.log and the fetched hex dumps are the evidence).
 
+Run 35 (the Direct3D 12 track's converter items: 16-bit integers, refusals by name, constant
+components picked at run time, the coverage output; a corpus of the runner's shaders):
+- Merged origin/phase-2-graphics-webgl and -direct3d-11 without conflicts; the shared line, -webgpu,
+  -direct3d-12 and -rig had nothing new. The laptop answered at the start (load 0.1 to 0.9) and
+  went down again at about 16:52 (no ping, to the end of the run); later builds and corpus runs ran
+  on the desktop (3 cargo jobs, shared) and only `cargo fmt`, `check` and `clippy -j 2` on the Mac.
+- A corpus of the Direct3D 12 front's shader runner: vkd3d's shader tests (the 280 hlsl and 15
+  d3dbc files in the Direct3D 12 track's scratch `run30/vkd3d-tests`; LGPL, test data, outside the
+  tree). Scratch `graphics-shaders/runner/extract.py` writes every shader section not expected to
+  fail to compile as HLSL (entry `main`) with a compile.cmd: fxc at shader model 4.0, 5.0 or 5.1 by
+  the file's `[require]`, dxc at 6.0 where it allows 6.0. 1951 sections; fxc and dxc 10.0.26100 on
+  the desktop compiled 1503 DXBC and 1517 DXIL (scratch `runner/blobs`; desktop
+  `C:\wc\shaders-runner\hlsl`, laptop `~/wcontainers-graphics/corpus/runner`). New ignored test
+  `runner_shaders_give_their_recorded_verdicts` (`WCONTAINERS_RUNNER_SHADERS`), records
+  `tests/expected/runner.txt` and `runner-dxil.txt`. It still fails on 1 DXIL shader dxil-spirv
+  rejects (`convert rejected`: distance-4 "Unknown type!"). Counts under Measurements.
+- 16-bit integers (DXIL; minimum precision `min16int`/`min16uint`, which dxc makes i16, and native
+  `int16_t`/`uint16_t`): new `src/dxil/widths.rs` widens them in the SPIR-V before naga reads it.
+  Each becomes a 32-bit word holding the 16 bits with zeros above: results that may carry past 16
+  bits (add, subtract, multiply, shift left, negate, signed division and remainder, conversions to
+  16 bits, GLSL.std.450's signed minimum, maximum, clamp, abs, sign and bit searches) are masked,
+  and operands read as signed (signed division, comparisons, arithmetic shift, conversion to float
+  or wider) are sign-extended first by two shifts. So every value equals the 16-bit one, as native
+  16-bit types require and minimum precision allows. A 16-bit integer in laid-out memory
+  (`Int16Storage`), between stages (`Int16StageValue`), under a bit cast to another width
+  (`Int16Bitcast`) or under an instruction not listed (a reader refusal naming it) is refused. 16-bit
+  floats stay what dxil-spirv makes them (32-bit for minimum precision; native `half` would need
+  WebGPU's shader-f16, not offered). Removes the runner's "invalid type width" (arithmetic-int-uniform,
+  arithmetic-uint, minimum-precision) and the u16 types naga refused (shader-interstage-interface):
+  18 runner shaders and 1 game shader convert now. New own `ps_narrow` (narrow.hlsl, fxc and dxc 6.0;
+  fxc refuses signed division of minimum precision, so it has none) and `ps_narrow16` (dxc 6.2 with
+  -enable-16bit-types: only unsigned arithmetic wraps, as signed overflow is undefined in HLSL),
+  drawn in `tests/draw.rs` (`ps_narrow` in the cases, new `native_16_bit_integers_draw_as_direct3d_12_does`).
+- 64-bit types (DXIL) are refused by name, `Int64` and `Float64`, where the reader fails on them or
+  the module keeps them (they were invalid modules or reader errors; 46 runner shaders).
+- Refused by name instead of failing (each was an invalid module, a malformed IR or a reader
+  error): DXBC gathers of a depth texture's other components (`DepthGatherComponent`, as DXIL;
+  gather-cmp), geometry shaders taking patches (`GeometryPatchInput`), hull shaders of no output
+  control points (`HullWithoutControlPoints`), rasterizer ordered views on both routes
+  (`RasterizerOrderedView`); DXIL by SPIR-V extension: `StencilRef`, `RenderTargetArrayIndex`,
+  `ViewportArrayIndex`; DXIL `CullDistance` and clip distances read by a pixel shader
+  (`ClipDistance`); DXIL geometry, hull and domain shaders before dxil-spirv runs
+  (`DxilGeometryShader`, `DxilHullShader`, `DxilDomainShader`: naga's reader has no such execution
+  models; 61 runner, rig and own shaders, which were "unsupported execution model", and one
+  geometry shader of patches dxil-spirv rejected).
+- DXBC clip distances declared in several registers (`SV_ClipDistance0` and `1`) are one array of
+  them all in order (clip-cull-distance-1's vertex shader was invalid), and the DXBC entry point's
+  output structure is laid out by its members' sizes and alignments (it put every member 16 bytes
+  apart, which a 5-element array overran).
+- DXIL coverage written by a pixel shader (`SV_Coverage` out): the result structure takes a u32, the
+  array's element 0, and the private array's start value (all samples) is made an array (the
+  rig's msaa.ps_coverage was "the sample mask stays an array"). Converts; not drawn yet.
+- DXIL constant components picked at run time (`ConstantComponentIndexing` before; new
+  `src/dxil/components.rs`): each read of dxil-spirv's second view of the buffer (scalars or pairs 4
+  bytes apart) is a call of a function reading the same bytes through the buffer's own 16-byte rows;
+  the second view goes. 3 runner shaders (expr-indexing, hard-copy-prop) convert, and one game
+  shader passes that step. New own `ps_component` (components.hlsl, fxc and dxc), drawn in
+  `tests/draw.rs`.
+- The compare-exchange helper of typed views (`texel_atomic`, DXIL) returned WGSL's predeclared
+  result structure, which WGSL cannot name (runner uav-atomics: Chrome's parse failed); it returns a
+  declared structure of the same members now.
+- No magic numbers in what this run touched: the 16-bit widths and masks from `u16::BITS`/`u16::MAX`,
+  SPIR-V's header word of the id bound `dxil::words::BOUND`, the extensions as one table, the
+  clip distance count `CLIP_OR_CULL_DISTANCES` and the patch limit `PATCH_MAX_POINTS` (named once,
+  from Direct3D's constants), a gather's last component from `XYZW.len()`, uniform strides by naga's
+  `Alignment::MIN_UNIFORM`, program types generated from dxbc-spirv's `ShaderType` (build.rs).
+
+Run 36 (run 35's work verified and committed; the merges; Godot's 3D platformer's refused shaders; a
+literal sweep step):
+- Run 35 ended with its work uncommitted and its last suite run cut off. This run ran the whole
+  suite on the laptop (back up, load 0.2 to 0.6): every test passed but the corpus records, where
+  run 35 had recorded on the desktop without glslang. Four records now say `ok-wgsl glsl-compile`
+  as glslang does (GLSL ES 3.00 has no `gl_SampleMask`, no `bitfieldExtract`, and no
+  `GL_ANGLE_clip_cull_distance` in glslang: msaa.ps_coverage, ps_component.dxbc,
+  clip-cull-distance-1-14-vs, coverage-1-ps). Committed as run 35's one commit.
+- Known failure, left failing: the runner corpus's `hlsl+distance-4-ps.dxil` ("convert rejected:
+  Unknown type!"). The cause: dxc 10.0.26100 writes a `PPC_FP128` record into that program's LLVM
+  type table (llvm-bcanalyzer-10 on the laptop), which dxil-spirv's bitcode reader does not know.
+  The program does not use the type. Not ours to patch (dxil-spirv is carried unmodified).
+- Merged origin/phase-2-graphics-webgpu, -webgl, -direct3d-11 and -direct3d-12 without conflicts.
+  Not merged: origin/phase-1-literals (below, "Departures").
+- The Direct3D 12 track's item "a DXBC vertex shader reading `Buffer<float4>` with
+  `DrawBaseSource::Arguments` fails validation (Index 3 is out of bounds)" was fixed in run 29
+  (`draw_arguments_keep_the_typed_views_place`); its status still lists it.
+- Godot's 3D platformer on Direct3D 12 (the Direct3D 12 track's real program, white in its run
+  31): the front was built from this branch with a temporary dump of every refused shader (not
+  committed; scratch `run36/godot.sh`, dumps in `run36/godot-dump`, each with its variant key) and
+  the program run once through the rig. 18 shaders were refused: 13 fragment shaders "malformed:
+  Invalid access into expression [N], indexed: true" (22 pipelines), 3 `ResourceArray` and 2
+  `StorageFormat` compute shaders. The 13: the reader makes a texture the program compares against
+  a depth texture, whose plain sample gives one value, and the split of texture arrays
+  (`dxil/arrays.rs`, which runs before `dxil/depth.rs` widens those samples) typed the function
+  first and failed on the program's `.x` of that sample. Fixed: the arrays pass types each function
+  with the plain depth reads standing as the four components they are widened to
+  (`depth::as_widened`). All 13 convert now (laptop); added to the games corpus as
+  `godot-pixel-<hash>.dxil` (scratch `games`, the laptop's `corpus/games`). Not yet drawn: the
+  Direct3D 12 track reruns Godot after merging.
+- Literal sweep, one step: `src/variant/texel.rs` takes the word size, the byte-to-word and
+  byte-to-bit shifts, the four-component width, the absent alpha's component, the helper array's
+  stride (from naga's layout of the type) and the conversion widths (`Scalar::I32.width`) from
+  their types; `WORD`, `WORD_SHIFT`, `BYTE_SHIFT` and `VEC4` are defined once in `src/build.rs`
+  (components.rs's own `WORD` and `ROW_COMPONENTS` now import them). Left in that file: the
+  small-float encodings (the plan's one codec module belongs to wcontainers-gpu, not on any merged
+  branch yet), the atomic function codes, component indices. Also: the programs' entry point name
+  is `ENTRY_POINT`, defined once in `lib.rs` and used by every converted and built program and the
+  tests (it was "main" in 18 places); `src/variant/early.rs` takes its multisampled count from
+  `FOUR_SAMPLES`, the relation bits from `CompareFn`'s codes, the helper rows' stride from naga's
+  layout and the conversion width from `Scalar::U32.width`. Left for later steps, by the audit's
+  list (`orchestrator/magic-literals/lists/graphics-shaders/wcontainers-shaders.txt`, 5491
+  findings at its count): lower.rs (291), ir.rs, variant.rs, pull.rs, dxil.rs, stage/helper.rs,
+  images.rs, hull.rs, stage.rs, the tests; the refusal names repeated as strings (one enum of
+  reasons would be the clean form, but the fronts match on the strings, so it is an interface
+  change to agree first).
+
 Next (in order):
 - The fronts (theirs, now possible): the Direct3D 12 runner's PackedStageValues and array files,
   eval-attrib and shader_eval_attribute (DXBC) rerun after merging; Direct3D 12's front can drop
@@ -1432,20 +1549,32 @@ Next (in order):
   reader: read the pointer's input, then the same slopes as `lower/evaluate.rs`), and the per-sample
   position there.
 - The magic-number sweep, continued a part per run (run 33's "Left").
-- The fronts (theirs, now possible since run 33): Godot's 3D platformer rerun on Direct3D 12 (its
-  22 shadow-map fragment shaders convert since run 32); a linear sampler that does not compare,
+- The fronts (theirs, now possible since run 36): Godot's 3D platformer rerun on Direct3D 12 (its
+  13 fragment shaders refused "Invalid access into expression" convert since run 36; its other
+  refusals are 3 `ResourceArray` and 2 `StorageFormat` compute shaders, as in its run 31). Then,
+  here, Godot's remaining refusals: arrays of storage views (`ResourceArray`) and the compute
+  shaders' storage formats (the front's key); a linear sampler that does not compare,
   bound with a depth texture, takes `filter_in_shader` for that texture slot (WebGPU refuses the
   pair natively); `targets_in_shader` with the target's format where a pixel output's type
   differs from its target's (replacing the Direct3D 12 front's `outputs_fit_targets` refusal; not
   for normalised formats); `constants_as_storage` where a shader indexes a constant buffer bound
   larger than its declaration (Direct3D 11's test_cb_relative_addressing).
-- The Direct3D 12 track's converter items (its status, "Asked of other tracks" and "Shader
-  runner", run 30), not yet in this list: a texture slot read in its view's type
-  where the program declares another, 16-bit and minimum-precision types ("invalid type width"),
-  `CalculateLevelOfDetail`, `SampleClamp`, `SparseFeedback`, `globallycoherent` storage, and the
-  converted programs naga refuses (color-clamping, conditional, entry-point-semantics, loop-sm3,
-  semantic-cascading, shader-interstage-interface, gather-cmp, switch) or that give other values
-  (min16float constants, frexp). Read each failing runner file's shader first.
+- The fronts (theirs, now possible since run 35): the Direct3D 12 front's runner files with 16-bit
+  integers (arithmetic-int-uniform, arithmetic-uint, minimum-precision,
+  shader-interstage-interface), constant components picked at run time (expr-indexing,
+  hard-copy-prop), coverage, uav-atomics and gather-cmp (now refused by name), rerun after
+  merging; the runner corpus here (`runner_shaders_give_their_recorded_verdicts`) is the
+  converter's side of the same files.
+- The Direct3D 12 track's converter items still open (its status, "Asked of other tracks" and
+  "Shader runner", run 30; the runner corpus's records name each): DXIL geometry, hull and domain
+  shaders (`DxilGeometryShader` and the others: naga's SPIR-V reader has no such execution models;
+  the stage helper takes them by the DXBC route only), a texture slot read in its view's type where
+  the program declares another (needs an interface field), `CalculateLevelOfDetail` (both routes;
+  the reader's `ImageQueryLod`), `SampleClamp` (image operand MinLod), `SparseFeedback`,
+  `globallycoherent` storage (memory operands at device scope), `CullDistance`, a DXIL pixel
+  shader's layer and viewport index (reader "unsupported builtin"), wave minimums and maximums of the
+  other signedness, native 16-bit floats (WebGPU's shader-f16, through a capability), and the
+  values that differ without a refusal (min16float constants, frexp; not investigated this run).
 - The Direct3D 11 track's items still open here: `LINE_COVERAGE` (alpha-antialiased lines),
   `GeometryStreams`, `PRIMITIVE_ID_FROM_STAGE`, and atg-simplecomputepc's division (not investigated; its shader
   is not in the games corpus).
@@ -1478,9 +1607,6 @@ Next (in order):
 - DXIL signed minimum and maximum on buffers dxil-spirv declares as unsigned words
   (`cs_atomics.dxil`, the D3D fronts' `AtomicSignedness`): a compare-exchange loop in the program
   (needs a named slow path) or the memory retyped where only signed ones use it.
-- DXIL's `ConstantComponentIndexing` (one game shader): the calls of `place_calls` (as
-  `nonfinite.rs` and `arrays.rs` use them) can read a scalar of a constant buffer through a helper
-  taking the index, so no arena rebuild is needed.
 - A drawn test of arrays of textures (`ps_array` or a compute shader picking `t[i]` per thread, against
   real Direct3D 12); implicit-derivative samples of an element picked at run time differ within a
   quad (the switch puts lanes of one quad in different cases): sample with gradients taken before
@@ -1761,6 +1887,57 @@ let reflection = &converted.reflection;
   conversion.
 
 ## Measurements
+
+Run 36, 2026-11-18, counts only (laptop i7-8750H, load 0.2 to 1.8, 5 cargo jobs; desktop shared
+through the queue, whose hazard group held each job for 10 to 30 minutes), logs in scratch
+`graphics-shaders/run36`:
+- Laptop, the whole suite with every corpus and glslang (suite-start.log, suite-2.log,
+  suite-4.log): every test passes but the runner corpus's known `distance-4` (Run 36 above). The
+  runner corpus as run 35 ended it: DXBC 1503 (1430 converting, 73 refused by name), DXIL 1517
+  (1370 converting, 133 refused by name, 13 refused by naga's reader, 1 rejected by dxil-spirv).
+  The games corpus: DXBC 529 as recorded; DXIL 443 (430 as recorded, and the 13 new Godot 3D
+  fragment shaders, which convert and need storage buffers and subgroups GLSL ES lacks:
+  `ok-wgsl glsl-write`). The 191-shader corpus, rig and own: as recorded.
+- Desktop, RTX 3080 (draw1-pueue.log, draw2.log): `draw`, 5 of 6 tests pass (every own, rig,
+  primitive index and wave case 0 texels apart, as before). `native_16_bit_integers_draw_as_direct3d_12_does`
+  (new in run 35, never run before) failed twice the same way: after its real Direct3D 12
+  reference draw, wgpu offered only WARP. The test now makes both back ends before the reference.
+- Desktop, the whole suite as one GPU job (`cargo test -p wcontainers-shaders -- --test-threads 1
+  --skip mutated`, default seeds and case counts, 19:45 to 19:47, suite-gpu2.log): 21 test
+  binaries, all pass, among them `native_16_bit_integers_draw_as_direct3d_12_does`, the own cases
+  with run 35's `ps_narrow` and `ps_component`, and the tessellation tests (a job of run 33 or 34 at
+  11:28 had failed 4 of 66 `stream_output_after_the_domain_stage` comparisons at 2 seeds; at the
+  default seed it passes here, as in run 34; 2 seeds not rerun).
+- Chrome 157.0.8103.78 on the desktop (WebGPU on Direct3D 12, chrome.log): the 13 new Godot
+  shaders' WGSL all compile (`web/check` on a directory of only those 13).
+- Windows lint (`cargo clippy -p wcontainers-shaders --all-targets -- -D warnings`, inside the
+  suite job's build): clean.
+- Not rerun this run: Chrome's compile of the other corpora (unchanged verdicts) and the
+  WebAssembly comparison.
+- Clean-up at the end: deleted the laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders`
+  and the copied Godot shaders there, the desktop's `C:\wc\target\phase-2-graphics-shaders`,
+  `C:\wc\shaders-dump36` and this branch's `programs` and `chrome` output folders under
+  `C:\wc\out`; no build output was made in scratch (logs, dumps and records kept there).
+- The rig: two jobs of one branch sent at once clobber each other's tree (the second sends its
+  tree, the first then fails with 125, "holds tree ..., not the sent ..."); send them one after the
+  other.
+
+Run 35, 2026-11-18, counts only (desktop shared through the queue, 3 cargo jobs, load not taken;
+the laptop down from 16:52), logs in scratch `graphics-shaders/run35`:
+- The runner corpus (verdict classes; DXBC 1503, DXIL 1517), at the start of the run (laptop, with
+  glslang) and at its end (desktop, glslang absent there, the records keep the laptop's
+  `glsl-compile` verdicts where the desktop says ok): DXBC converting 1429 then 1430, refused by
+  name 61 then 73, other failures 13 then 0. DXIL converting 1346 then 1370, refused by name 35
+  then 133, refused by naga's reader 93 then 13 (wave minimums and maximums of the other
+  signedness 2, a pixel shader's layer and viewport index 2, `CalculateLevelOfDetail` 4,
+  `SampleClamp` 2, sparse feedback 3), other failures 45 then 1 (dxil-spirv's rejection of distance-4).
+- The games corpus (DXBC 529, DXIL 430, desktop): every verdict as recorded; 3 DXIL changed this
+  run (one converts, one now `RenderTargetArrayIndex`, one past `ConstantComponentIndexing` to
+  `TypedBufferFormatKind`, the corpus test's views of mixed kinds); the run 34 record update (2
+  `PackedStageValues` now converting) was found by the laptop's first run.
+- The 191-shader corpus, rig and own: as recorded (laptop at the start; rig and own on the desktop
+  after every change). Not rerun this run: glslang over the new verdicts, Chrome's compile, the
+  WebAssembly comparison (the laptop was down).
 
 Run 33, 2026-11-18, counts only (laptop load 4 to 8, another track building; desktop shared through
 the queue's hazard group), logs in scratch `graphics-shaders/run33`:
@@ -2680,6 +2857,13 @@ were already there.
   WITH LLVM-exception, wasi-libc MIT-style and others), wasmtime (Apache-2.0 WITH LLVM-exception).
 
 ## Departures from the plan
+
+- The literal check (run 36): the brief asks every track to merge origin/phase-1-literals and adopt
+  `wcontainers-literals`. Not done here: this run's merge permission names only the
+  phase-2-graphics branches, and that branch brings 348 commits of the phase 1 crates and a
+  `rust-toolchain.toml` change into a branch the other five graphics tracks merge. It is better
+  merged once on the shared line (G1), which every graphics branch then takes; until then the
+  sweep is by hand, a step per run.
 
 - Storage offsets (run 28; not built yet, see Next): 4.5 said every converted program adds
   `StorageOffset`; it is a flag (`VariantFlags::STORAGE_OFFSET`) instead, so programs whose views are aligned (most, on Direct3D

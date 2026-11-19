@@ -58,7 +58,7 @@
 26480ad9d7d2ad54.dxil	ok
 269d549e10248fad.dxil	ok
 26ed1860124e3c43.dxil	unsupported StorageFormatKind
-277e12b2f0fb2fa7.dxil	spirv-reader invalid
+277e12b2f0fb2fa7.dxil	ok-wgsl glsl-write
 28df654177b8f65a.dxil	ok
 2af882d6fd50d4ff.dxil	ok
 2b212e266f770fad.dxil	ok
@@ -148,7 +148,7 @@
 62e4b0af40bff82a.dxil	ok
 63474dacaec3ab6f.dxil	ok
 639ccc1da8c21623.dxil	ok
-63af3b3d4206b484.dxil	unsupported PackedStageValues
+63af3b3d4206b484.dxil	ok
 63fe39875658be51.dxil	ok
 64ce7169b44c1513.dxil	ok
 668cc56e38f7976a.dxil	unsupported MultisampledArrayTexture
@@ -186,7 +186,7 @@
 7db6ce348412e5b7.dxil	ok
 7e13c2d32fa803da.dxil	ok
 7f2a3e7fd1ae56c3.dxil	ok
-7f90d7ebb19b5d14.dxil	unsupported ConstantComponentIndexing
+7f90d7ebb19b5d14.dxil	unsupported TypedBufferFormatKind
 7fbd955e876d9f01.dxil	ok-wgsl glsl-write
 802ec03830b6f5dc.dxil	ok
 80aa9bff211c2f81.dxil	ok
@@ -252,7 +252,7 @@ acf7f723bacad1a2.dxil	ok-wgsl glsl-write
 ade6d8600fff9ed5.dxil	ok
 af69e97f260937d0.dxil	ok
 aff1e91e65fe88ba.dxil	ok
-b18ea44db495ed14.dxil	unsupported PackedStageValues
+b18ea44db495ed14.dxil	ok
 b20eb22d0d7b5a18.dxil	ok
 b2291463f9b8c095.dxil	ok
 b2545567868009d3.dxil	ok
@@ -282,7 +282,7 @@ c1a217c6813653cf.dxil	ok
 c213907681789ad7.dxil	ok
 c33c04ef685e7e1b.dxil	ok
 c3863c3aeb33e6a9.dxil	ok
-c479fedfb3248b2d.dxil	spirv-reader unsupported
+c479fedfb3248b2d.dxil	unsupported RenderTargetArrayIndex
 c52b87e294ad5ec7.dxil	ok
 c5b1707b64601f4b.dxil	ok
 c5d1c59efc370632.dxil	ok
@@ -427,4 +427,17 @@ godot-compute-f8ba5aa849fe70e5.dxil	unsupported ResourceArray
 godot-compute-fcdd20873fda5f78.dxil	ok-wgsl glsl-write
 godot-fragment-2893de73bed23900.dxil	unsupported ResourceArray
 godot-fragment-f0e16912c4aaaddb.dxil	ok-wgsl glsl-write
+godot-pixel-3ce334b77ff19481.dxil	ok-wgsl glsl-write
+godot-pixel-4f1f1cfce08f5627.dxil	ok-wgsl glsl-write
+godot-pixel-683372801f6cdeef.dxil	ok-wgsl glsl-write
+godot-pixel-6c45dd7c62f78cdb.dxil	ok-wgsl glsl-write
+godot-pixel-6c790c72decb251a.dxil	ok-wgsl glsl-write
+godot-pixel-77afaad9b1afc36c.dxil	ok-wgsl glsl-write
+godot-pixel-7c3616d036375caa.dxil	ok-wgsl glsl-write
+godot-pixel-93fb6139263fd00a.dxil	ok-wgsl glsl-write
+godot-pixel-b672aecf523d5376.dxil	ok-wgsl glsl-write
+godot-pixel-bcba683d4c9e3430.dxil	ok-wgsl glsl-write
+godot-pixel-d073303300ab0bdb.dxil	ok-wgsl glsl-write
+godot-pixel-e58e8b8071c6514c.dxil	ok-wgsl glsl-write
+godot-pixel-fce09f62b8749734.dxil	ok-wgsl glsl-write
 godot-vertex-ae47f85da0f11cca.dxil	ok-wgsl glsl-write
