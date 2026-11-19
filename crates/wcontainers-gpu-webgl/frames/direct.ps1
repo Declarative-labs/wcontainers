@@ -33,22 +33,29 @@ foreach ($pair in $Environment.Split(';', [StringSplitOptions]::RemoveEmptyEntri
     $name, $value = $pair.Split('=', 2)
     $info.EnvironmentVariables[$name] = $value
 }
-$lines = [Collections.Concurrent.ConcurrentQueue[string]]::new()
+$lines = [Collections.Generic.List[string]]::new()
 $clock = [Diagnostics.Stopwatch]::StartNew()
-$process = New-Object Diagnostics.Process
-$process.StartInfo = $info
-$keep = { if ($null -ne $EventArgs.Data) { $Event.MessageData.Item1.Enqueue("$($Event.MessageData.Item2.Elapsed.TotalSeconds) $($EventArgs.Data)") } }
-$data = [Tuple]::Create($lines, $clock)
-$o = Register-ObjectEvent $process OutputDataReceived -Action $keep -MessageData $data
-$e = Register-ObjectEvent $process ErrorDataReceived -Action $keep -MessageData $data
-$process.Start() | Out-Null
-$process.BeginOutputReadLine()
-$process.BeginErrorReadLine()
-$ended = $process.WaitForExit($Seconds * 1000)
+$process = [Diagnostics.Process]::Start($info)
+# Both streams read line by line as the lines come, each kept with the time it came.
+$readers = @($process.StandardOutput, $process.StandardError)
+$pending = @($readers | ForEach-Object { $_.ReadLineAsync() })
+$ended = $false
+while ($clock.Elapsed.TotalSeconds -lt $Seconds) {
+    $read = $false
+    for ($i = 0; $i -lt $readers.Count; $i++) {
+        $task = $pending[$i]
+        if ($task -and $task.IsCompleted) {
+            $read = $true
+            if ($null -eq $task.Result) { $pending[$i] = $null; continue }
+            $lines.Add("$($clock.Elapsed.TotalSeconds) $($task.Result)")
+            $pending[$i] = $readers[$i].ReadLineAsync()
+        }
+    }
+    if ($process.HasExited -and -not ($pending | Where-Object { $_ })) { $ended = $true; break }
+    if (-not $read) { Start-Sleep -Milliseconds 10 }
+}
 if (-not $ended) { & taskkill.exe /T /F /PID $process.Id 2>&1 | Out-Null; $process.WaitForExit() }
-Unregister-Event $o.Name
-Unregister-Event $e.Name
-[IO.File]::WriteAllLines("$Out\output.log", [string[]]$lines.ToArray())
+[IO.File]::WriteAllLines("$Out\output.log", $lines.ToArray())
 "$(Split-Path -Leaf $Exe): $(if ($ended) { "exited with 0x{0:x8}" -f $process.ExitCode } else { "stopped after $Seconds s" })"
 Get-Content "$Out\output.log" | Select-String 'webgl: frames=' | Select-Object -Last 2 | ForEach-Object { $_.Line }
 cmd.exe /d /c "rd /s /q `"$bin`""
