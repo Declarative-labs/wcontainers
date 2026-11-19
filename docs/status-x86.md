@@ -112,12 +112,29 @@ Done:
 
 Measured:
 - Layer 2, seed 1: 1,000 programs, each also on the CPU, 0 failing (342 faulted), twice (before and after
-  the recognisers), 108 s each with 3 at once. Seed 2026: see below.
+  the recognisers), 108 s each with 3 at once.
+- Layer 2, seed 2026, 10,000 programs, each also on the CPU, one in Chrome (`l2-2026-10000.log`, 1,196 s,
+  Mac load 80 to 113): 1 failing, case 7461, status 135 (SIGBUS) at none, and the same on the CPU: the model
+  makes a pair loaded into one register two by taking the next register number, which for rbx is rsp, so
+  `pop rsp` set a random stack pointer. The emitter now takes the next of the model's registers (bdcc84c);
+  case 7461 then passes against none and the CPU. The rerun of all 10,000 is under "Proof" below.
+- The benchmark set (bench -O2, SCALE=1, each workload alone), x86-64 guest, translated at full for speed
+  with every check. Natively on the i7-8750H (best of 3, through the harness; its load 1.3 to 1.5 from other
+  tracks' jobs on the two cores left to them) and in wasmtime on the same machine (best of 3, `time-blob`
+  built there, pinned off cores 2 and 8, load 1.3 to 1.7), times native: fib 0.700 s native, 10.918 s
+  wasmtime (15.6); sieve 0.671, 2.004 (3.0); hash 0.553, 0.736 (1.33); sort 0.609, 5.008 (8.2); interpret
+  0.339, 10.994 (32.4); matrix 0.127, 0.909 (7.2); walk 3.679, 4.318 (1.17); search 0.194, 1.363 (7.0).
+  Outputs equal the native ones (`time-wasmtime.out` there, `measure-x86.log` here). The same translations
+  in wasmtime on the Mac (Apple M5 Max, load 96 to 115, so slow by an unknown amount): fib 5.057 s, sieve
+  0.901, hash 0.542, sort 2.133, interpret 5.334, matrix 0.377, walk 2.996, search 0.419. fib and interpret
+  are 15 to 32 times native: not looked into yet (calls and returns, and the passed-in-only registers stored
+  at every return, are the first suspects). Chrome on the x86 machine is not measured yet (plan 7.5).
 
 Not done (in order):
-1. The benchmark set in wasmtime and Chrome on the x86 machine. That machine has cargo (rustc 1.100) and
-   Chrome but no zig or wasmtime: the plan is a scratch copy of the tree there (`git archive`), zig in
-   `~/wcontainers-x86/zig`, and `measure_benchmarks_x86_64` run there with the reference on itself.
+1. The benchmark set in Chrome on the x86 machine (it has Chrome; the browser harness runs Chrome only on
+   the machine the tests run on, so it needs the test crate run there, with zig and a reference: it has no
+   zig, Docker or SSH key to itself). wasmtime there is done with `time-blob` (below). Then why fib and
+   interpret are so slow.
 2. Layer 3 (Csmith) for x86.
 3. `programs_match_linux` for x86 still reaches `bsr` and `bswap` in `integers` (X5's list).
 4. The first frame check covering a `Stack` return slot (plan 3.4) is not measured.
@@ -1589,7 +1606,12 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   WC_LAYER2_CASES=10000 WC_LAYER2_NATIVE=10000 WC_LAYER2_JOBS=3 WC_LAYER2_SEED=<n> nix develop -c cargo test
   -p wcontainers-translator-test --test layer2 full_matches_none_and_the_cpu_x86_64 -- --nocapture`; the
   checks, `--test checks x86_64`; flags across calls, `--test programs flags_across_calls_match_linux_x86_64`;
-  timings, `--release --test benchmarks measure_benchmarks_x86_64 -- --ignored --nocapture`. Scratch tools of
+  timings, `WC_BENCH_VARIANTS=1 WC_BENCH_CHROME=0 ... --release --test benchmarks measure_benchmarks_x86_64 --
+  --ignored --nocapture` (native on the reference, wasmtime here); wasmtime on the x86 machine: `cargo run
+  --release --bin time-blob -- dump x86_64 bench -O2 <file> SCALE=1 WORKLOAD=<k>` here for each workload, copy
+  the files and a `git archive` of the tree to `~/wcontainers-x86/{blobs,tree}` there, build `time-blob`
+  there (`cargo build --release -p wcontainers-translator-test --bin time-blob --target-dir
+  ~/wcontainers-x86/target`), and run scratch `x4/run2/time-wasmtime.sh 3` there. Scratch tools of
   run 2 (one layer 2 case disassembled and run, a blob dump, the missing meanings of the shared programs) are
   in scratch `x4/run2/tools/`: copy one into `tests/` to run it.
 - x86 (X3): layer 1 against the i7-8750H, `WC_REFERENCE_X86_64=tom@192.168.2.240 WC_LAYER1_CASES=1000
@@ -1720,6 +1742,10 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   2 to 10: nothing.
 - Added in X3 run 2: `~/wcontainers-x86/proof/len.sh` (a length probe over the old `stepper4`, for quick
   looks; the table's sweep uses the harness's runner instead).
+- Added in X4 run 2: `~/wcontainers-x86/tree` (a `git archive` of this branch), `~/wcontainers-x86/target`
+  (its release build of `time-blob`, about the size of wasmtime's build; delete when timings are done),
+  `~/wcontainers-x86/blobs` (the eight benchmark blobs), `time-wasmtime.sh` and its `time-wasmtime.out`,
+  `proof10/flags_across`. Installed: nothing.
 - Added in X2: `~/wcontainers-x86/reference/<hash>`, the reference runner the harness uploads (one file per
   build of it).
 - Not always idle: another track's atomic-cost measurement (`~/ordering-cost`, wasmtime) runs there at
