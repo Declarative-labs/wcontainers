@@ -36,6 +36,9 @@ pub(crate) struct StageRun<B: Backend> {
     /// The vertex stage's cull distances are applied by the helper, whose output the pass-through
     /// draws (`CullDistanceAsGeometry`).
     culled: bool,
+    /// The vertex stage's lines are drawn as the helper's rectangles, which the pass-through draws
+    /// with their coverage (`AntialiasedLinesAsQuads`).
+    lines: bool,
 }
 
 /// The bytes of the stage helper's filled sizes and primitive counts.
@@ -175,14 +178,16 @@ impl<B: Backend> Device<B> {
     }
 
     /// The stage helper of the bound shaders, made at their first draw together; `tess` are the
-    /// hull and domain shaders before the geometry shader object, when bound, and `vk` the vertex
-    /// shader's variant.
+    /// hull and domain shaders before the geometry shader object, when bound, `vk` the vertex
+    /// shader's variant and `lines` the pixel shader's key where the vertex stage's lines are drawn
+    /// alpha-antialiased.
     fn make_staged(
         &mut self,
         gs: &Geometry<B>,
         vs: &Shader<B>,
         vk: StageVariant,
         tess: Option<(&Shader<B>, &Shader<B>)>,
+        lines: Option<&VariantKey>,
     ) -> Result<StageRun<B>> {
         let vertex = self.pulled_vertex(vs, vk)?;
         // The geometry stage writes its outputs as the pixel shader interpolates them.
@@ -222,12 +227,17 @@ impl<B: Backend> Device<B> {
             }
         };
         let culled = vs.culled && geometry.is_none() && tess.is_none();
-        let (stages, domain) = match tess {
-            None if culled => (
+        let lines = lines.filter(|_| geometry.is_none() && tess.is_none());
+        let (stages, domain) = match (tess, lines) {
+            (None, Some(pixel)) => (
+                Stages::antialiased_lines(&mut self.backend, &vertex, pixel),
+                None,
+            ),
+            (None, None) if culled => (
                 Stages::culled(&mut self.backend, &vertex, gs.stream.as_ref()),
                 None,
             ),
-            None => (
+            (None, None) => (
                 Stages::new(
                     &mut self.backend,
                     &vertex,
@@ -236,7 +246,7 @@ impl<B: Backend> Device<B> {
                 ),
                 None,
             ),
-            Some((hs, ds)) => {
+            (Some((hs, ds)), _) => {
                 let (hull, domain) = self.tessellation_programs(hs, ds, geometry.is_some())?;
                 let drawn = match geometry {
                     None if gs.drawn => Some(self.domain_draw(&domain)?),
@@ -254,9 +264,9 @@ impl<B: Backend> Device<B> {
             }
         };
         let stages = stages.map_err(|e| self.staged_error(e))?;
-        // The cull route's pass-through, made for this conversion's outputs.
+        // The cull or line route's pass-through, made for this conversion's outputs.
         let (passthrough, passthrough_id) = match stages.passthrough() {
-            Some(module) if culled => {
+            Some(module) if culled || lines.is_some() => {
                 let gpu = self.backend.create_shader(module);
                 let gpu = self.gpu(gpu)?;
                 let id = self.id();
@@ -291,6 +301,7 @@ impl<B: Backend> Device<B> {
             run_helpers,
             domain,
             culled,
+            lines: lines.is_some(),
         })
     }
 
@@ -328,8 +339,9 @@ impl<B: Backend> Device<B> {
             texture_info: false,
             ..vk
         };
+        let own_route = (vs.culled || pk.line_coverage) && gs.stage.is_none();
         let passed = (StageVariant { pulled: 0, ..vk }) == StageVariant::default()
-            || (vs.culled && gs.stage.is_none() && drawn_variant == StageVariant::default());
+            || (own_route && drawn_variant == StageVariant::default());
         if !passed {
             return not_implemented("a vertex shader variant behind a geometry shader");
         }
@@ -355,16 +367,30 @@ impl<B: Backend> Device<B> {
             InputTopology::PatchList(_) => self.ctx.hs.clone().zip(self.ctx.ds.clone()),
             _ => None,
         };
+        // The pixel shader's key on the line route, whose coverage location its programs write.
+        let lines = match ps {
+            Some(p) if pk.line_coverage => Some(self.variant_key(p, pk, SourceStage::Pixel)),
+            _ => None,
+        };
         let key = (
             vs.gpu.id,
             self.ctx.layout.as_ref().map_or(0, |l| l.id),
             tess.as_ref().map_or([0; 2], |(h, d)| [h.gpu.id, d.gpu.id]),
             gs.id,
             ps.map_or(0, |p| p.gpu.id),
+            lines
+                .as_ref()
+                .map(wcontainers_shaders::stage::line_coverage_location),
         );
         let mut staged = match self.staged.remove(&key) {
             Some(s) => s,
-            None => self.make_staged(gs, vs, vk, tess.as_ref().map(|(h, d)| (&**h, &**d)))?,
+            None => self.make_staged(
+                gs,
+                vs,
+                vk,
+                tess.as_ref().map(|(h, d)| (&**h, &**d)),
+                lines.as_ref(),
+            )?,
         };
         let r = self.run_staged(
             gs,
@@ -410,13 +436,14 @@ impl<B: Backend> Device<B> {
         // The program of the pass-through (or the domain stage's) and pixel stages, and the pixel
         // stage's helpers.
         let culled = staged.culled;
+        let lines = staged.lines;
         let program = match (&gs.stage, &staged.domain) {
             _ if !gs.drawn => None,
-            (None, None) if culled => {
+            (None, None) if culled || lines => {
                 let vertex = staged
                     .passthrough
                     .as_ref()
-                    .expect("the cull route's pass-through")
+                    .expect("the cull or line route's pass-through")
                     .handle
                     .clone();
                 Some(self.stage_program(&vertex, staged.passthrough_id, ps, pk)?)
@@ -597,6 +624,13 @@ impl<B: Backend> Device<B> {
                 geometry_sets,
             };
             stages.run_after_domain(&mut self.backend, &draw, &later)
+        } else if lines {
+            // The rectangles' widths are in pixels of the first viewport, which the draw is in.
+            let size = ctx
+                .viewports
+                .first()
+                .map_or([0.0; 2], |v| [v.width, v.height]);
+            stages.run_antialiased_lines(&mut self.backend, &draw, size)
         } else {
             stages.run(&mut self.backend, &draw)
         };
@@ -618,7 +652,7 @@ impl<B: Backend> Device<B> {
             }
             self.stream_counted(f)?;
         }
-        if !geometry && !tessellated && !culled {
+        if !geometry && !tessellated && !culled && !lines {
             return Ok(gs.drawn);
         }
         let (Some(out), Some((program, ph))) = (out, program) else {
@@ -638,7 +672,7 @@ impl<B: Backend> Device<B> {
         let layout = staged
             .layout
             .as_ref()
-            .expect("a geometry or cull stage's layout")
+            .expect("a geometry, cull or line stage's layout")
             .handle
             .clone();
         if selects {

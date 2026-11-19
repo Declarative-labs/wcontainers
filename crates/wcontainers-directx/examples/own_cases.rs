@@ -7,8 +7,9 @@
 //! (`[earlydepthstencil]` with storage writes, depth writes off), `early_writes` (the same with
 //! depth writes on), `stencil` (a stencil view read after clears and a stencil draw),
 //! `msaa_lines` (lines under `MultisampleEnable`, each pixel's covered samples counted),
-//! `biased_lines` (a constant depth bias on a line and points) and `staged_bias` (the same bias on
-//! what geometry and tessellation stages rasterise). Shaders are compiled by
+//! `biased_lines` (a constant depth bias on a line and points), `staged_bias` (the same bias on
+//! what geometry and tessellation stages rasterise) and `aa_lines` (alpha-antialiased lines
+//! blended by their coverage). Shaders are compiled by
 //! the system's d3dcompiler_47.dll. Prints each answer and the resources' bytes as hex, for
 //! comparing with real Direct3D line by line.
 
@@ -1205,6 +1206,81 @@ fn main() -> windows::core::Result<()> {
                 }
                 print(&format!("staged bias {name} depth"), &depth, 2);
             }
+        }
+        "aa_lines" => {
+            // Alpha-antialiased lines (antialiased lines without multisampling, back faces culled,
+            // which lines never are), a list and a strip with colours from their vertices,
+            // blended by their alpha over opaque black.
+            let side = 32;
+            let target = make(
+                &Tex {
+                    w: side,
+                    h: side,
+                    format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                    samples: 1,
+                    bind: D3D11_BIND_RENDER_TARGET,
+                },
+                None,
+            )?;
+            let rt = rtv(&target);
+            let lines = vs("struct V { float4 p : SV_Position; float4 c : COLOR; };
+                V main(uint id : SV_VertexID) {
+                    float2 p[11] = { float2(-0.9, 0.53125), float2(0.9, 0.53125),
+                        float2(-0.8, 0), float2(0.8, 0),
+                        float2(-0.9, -0.9), float2(0.7, -0.2),
+                        float2(0.3, -0.95), float2(0.45, 0.95),
+                        float2(-0.95, 0.9), float2(-0.2, 0.7), float2(0.6, 0.85) };
+                    float4 c[3] = { float4(1, 0, 0, 1), float4(0, 1, 0, 1), float4(0, 0, 1, 1) };
+                    V v;
+                    v.p = float4(p[id], 0.5, 1);
+                    v.c = c[id % 3];
+                    return v;
+                }");
+            let coloured = ps(
+                "float4 main(float4 p : SV_Position, float4 c : COLOR) : SV_Target {
+                    return c;
+                }",
+            );
+            let mut raster = None;
+            let desc = D3D11_RASTERIZER_DESC {
+                FillMode: D3D11_FILL_SOLID,
+                CullMode: D3D11_CULL_BACK,
+                DepthClipEnable: true.into(),
+                AntialiasedLineEnable: true.into(),
+                ..Default::default()
+            };
+            unsafe { device.CreateRasterizerState(&desc, Some(&mut raster))? };
+            let mut blend_desc = D3D11_BLEND_DESC::default();
+            blend_desc.RenderTarget[0] = D3D11_RENDER_TARGET_BLEND_DESC {
+                BlendEnable: true.into(),
+                SrcBlend: D3D11_BLEND_SRC_ALPHA,
+                DestBlend: D3D11_BLEND_INV_SRC_ALPHA,
+                BlendOp: D3D11_BLEND_OP_ADD,
+                SrcBlendAlpha: D3D11_BLEND_ONE,
+                DestBlendAlpha: D3D11_BLEND_INV_SRC_ALPHA,
+                BlendOpAlpha: D3D11_BLEND_OP_ADD,
+                RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
+            };
+            let mut blend = None;
+            unsafe { device.CreateBlendState(&blend_desc, Some(&mut blend))? };
+            unsafe {
+                viewport(side, side);
+                context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0, 0.0, 0.0, 1.0]);
+                context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
+                context.OMSetBlendState(blend.as_ref(), None, u32::MAX);
+                context.RSSetState(raster.as_ref());
+                context.VSSetShader(lines.as_ref(), None);
+                context.PSSetShader(coloured.as_ref(), None);
+                context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+                context.Draw(8, 0);
+                context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINESTRIP);
+                context.Draw(3, 8);
+                context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                context.RSSetState(None);
+                context.OMSetBlendState(None, None, u32::MAX);
+                context.OMSetRenderTargets(None, None);
+            }
+            print("aa lines", &target, 4);
         }
         _ => println!("no case {case:?}"),
     }

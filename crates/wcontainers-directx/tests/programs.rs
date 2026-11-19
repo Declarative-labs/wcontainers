@@ -350,6 +350,61 @@ fn multisampled_lines_differ_from_direct3d_only_at_their_ends_and_edges() {
     assert_eq!(rest(&want), rest(&got));
 }
 
+/// The most a channel of an alpha-antialiased line's pixel may differ from real Direct3D's, in
+/// steps of 8 bits: the functional specification (3.4.4) leaves the coverage's filter to the
+/// implementation, and the RTX 3080 and WARP differ by up to 128 (the shaders track's
+/// `antialiased_lines_draw_as_direct3d_does`, which holds the stage helper's route to this).
+const ANTIALIASED_LINE_ALLOWANCE: u8 = 64;
+
+/// Alpha-antialiased lines, a list and a strip blended by their coverage: every channel within
+/// the allowance of real Direct3D's.
+#[test]
+fn alpha_antialiased_lines_blend_their_coverage_as_direct3d_does() {
+    let name = "aa_lines";
+    let (code, want) = run_with(
+        "own_cases",
+        &place(&format!("{name}-system"), false),
+        &[name],
+    );
+    assert_eq!(code, 0, "{want}");
+    let (code, got) = run_with("own_cases", &place(&format!("{name}-ours"), true), &[name]);
+    assert_eq!(code, 0, "{got}");
+    let prefix = "aa lines: row ";
+    let (w, g) = (hex_rows(&want, prefix), hex_rows(&got, prefix));
+    assert!(!w.is_empty());
+    assert_eq!((w.len(), w[0].len()), (g.len(), g[0].len()));
+    let texel = std::mem::size_of::<u32>();
+    let drawn = |rows: &[Vec<u8>]| {
+        rows.iter()
+            .flat_map(|r| r.chunks(texel))
+            .filter(|t| t[..texel - 1].iter().any(|c| *c != 0))
+            .count()
+    };
+    let (drawn_want, drawn_got) = (drawn(&w), drawn(&g));
+    assert!(drawn_want > 0 && drawn_got > 0, "{want}\n{got}");
+    let mut largest = 0;
+    for (y, (wr, gr)) in w.iter().zip(&g).enumerate() {
+        for (x, (a, b)) in wr.iter().zip(gr).enumerate() {
+            let d = a.abs_diff(*b);
+            largest = largest.max(d);
+            assert!(
+                d <= ANTIALIASED_LINE_ALLOWANCE,
+                "byte {x} of row {y}: {a} and {b}\n{want}\n{got}"
+            );
+        }
+    }
+    eprintln!(
+        "{drawn_want} pixels drawn by direct3d, {drawn_got} by ours, largest difference {largest}"
+    );
+    let rest = |t: &str| -> Vec<String> {
+        t.lines()
+            .filter(|l| !l.starts_with(prefix))
+            .map(str::to_owned)
+            .collect()
+    };
+    assert_eq!(rest(&want), rest(&got));
+}
+
 #[test]
 fn minimum_level_clamps_and_both_helper_blocks_as_direct3d_does() {
     let (code, want) = run("own_min_lod", &place("min-lod-system", false));

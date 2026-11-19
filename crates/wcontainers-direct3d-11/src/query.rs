@@ -19,6 +19,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use wcontainers_directx_graphics_infrastructure::d3d::{
+    PipelineStatistics, StreamOutputStatistics,
+};
 use wcontainers_gpu::{
     Backend, BufferDesc, BufferUsage, MapIntent, Object, QueryKind, ReadSource, ReadState, SlowPath,
 };
@@ -43,9 +46,9 @@ pub mod kind {
 }
 
 /// What `GetData` gives, as the words of its bytes: the largest answer is the pipeline
-/// statistics' eleven.
+/// statistics'.
 pub type Answer = [u64; ANSWER_WORDS];
-const ANSWER_WORDS: usize = statistic::CS_INVOCATIONS + 1;
+const ANSWER_WORDS: usize = size_of::<PipelineStatistics>() / size_of::<u64>();
 
 /// The words of a short answer.
 fn short(words: &[u64]) -> Answer {
@@ -56,13 +59,18 @@ fn short(words: &[u64]) -> Answer {
 
 /// `D3D11_QUERY_DATA_PIPELINE_STATISTICS`'s members, by word.
 pub mod statistic {
-    pub const IA_VERTICES: usize = 0;
-    pub const IA_PRIMITIVES: usize = 1;
-    pub const VS_INVOCATIONS: usize = 2;
-    pub const C_INVOCATIONS: usize = 5;
-    pub const C_PRIMITIVES: usize = 6;
-    pub const PS_INVOCATIONS: usize = 7;
-    pub const CS_INVOCATIONS: usize = 10;
+    use std::mem::offset_of;
+
+    use wcontainers_directx_graphics_infrastructure::d3d::PipelineStatistics;
+
+    const WORD: usize = size_of::<u64>();
+    pub const IA_VERTICES: usize = offset_of!(PipelineStatistics, ia_vertices) / WORD;
+    pub const IA_PRIMITIVES: usize = offset_of!(PipelineStatistics, ia_primitives) / WORD;
+    pub const VS_INVOCATIONS: usize = offset_of!(PipelineStatistics, vs_invocations) / WORD;
+    pub const C_INVOCATIONS: usize = offset_of!(PipelineStatistics, c_invocations) / WORD;
+    pub const C_PRIMITIVES: usize = offset_of!(PipelineStatistics, c_primitives) / WORD;
+    pub const PS_INVOCATIONS: usize = offset_of!(PipelineStatistics, ps_invocations) / WORD;
+    pub const CS_INVOCATIONS: usize = offset_of!(PipelineStatistics, cs_invocations) / WORD;
 }
 
 /// Slots of one occlusion set: WebGPU's most.
@@ -87,7 +95,7 @@ pub fn data_size(kind: u32) -> Option<u32> {
         kind::SO_STATISTICS..=kind::SO_STATISTICS_STREAM3
             if (kind - kind::SO_STATISTICS).is_multiple_of(2) =>
         {
-            2 * WORD_BYTES
+            size_of::<StreamOutputStatistics>()
         }
         kind::SO_OVERFLOW_PREDICATE..=kind::SO_OVERFLOW_PREDICATE_STREAM3 => BOOL_BYTES,
         _ => return None,

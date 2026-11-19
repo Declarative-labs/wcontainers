@@ -23,8 +23,7 @@ pub struct DeclEntry {
 /// each `None` where the program gave no array, and the rasterized stream.
 pub type Declaration<'a> = (Option<&'a [DeclEntry]>, Option<&'a [u32]>, u32);
 
-/// `D3D11_SO_NO_RASTERIZED_STREAM`.
-pub const NO_RASTERIZED_STREAM: u32 = u32::MAX;
+pub use wcontainers_directx_graphics_infrastructure::d3d::SO_NO_RASTERIZED_STREAM as NO_RASTERIZED_STREAM;
 /// The largest stride of a stream output buffer.
 const MAX_STRIDE: u32 = 2048;
 
