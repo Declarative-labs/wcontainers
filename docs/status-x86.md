@@ -50,8 +50,7 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   the flag shapes and direct conditions, switch recognition for both compilers, the loop proofs' comparisons
   and bounded loads, `pushf` and `leave`, x86's check programs, and fixed a translator bug that lost every
   register passed into a piece but not out of it across a return (see "X4, run 2"). Not done yet: the
-  benchmark set timed in wasmtime and Chrome on the x86 machine (only natively there so far), layer 3, and
-  the independent check's own runs.
+  benchmark set timed in Chrome on the x86 machine (natively and in wasmtime there is done), and layer 3.
 
 Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0.5):
 - Suite: `WC_REFERENCE_X86_64=tom@192.168.2.240 nix develop -c cargo test -p wcontainers-guest-cpu -p
@@ -117,7 +116,11 @@ Measured:
   Mac load 80 to 113): 1 failing, case 7461, status 135 (SIGBUS) at none, and the same on the CPU: the model
   makes a pair loaded into one register two by taking the next register number, which for rbx is rsp, so
   `pop rsp` set a random stack pointer. The emitter now takes the next of the model's registers (bdcc84c);
-  case 7461 then passes against none and the CPU. The rerun of all 10,000 is under "Proof" below.
+  case 7461 then passes against none and the CPU.
+- Layer 2, seed 2026, 10,000 programs again after that fix (bdcc84c, `l2-2026-10000-b.log`, 1,312 s, 3 at
+  once, Mac load about 90): every program at full (both settings, plain and stopping everywhere), bounded,
+  mixed, on the i7-8750H, and the first in Chrome: 0 failing; 3,368 faulted, 1,191 left to an address at
+  full, 23,893 stacks lost and 23,762 pieces forgotten in mixed runs. This is X4's layer 2 bar.
 - The benchmark set (bench -O2, SCALE=1, each workload alone), x86-64 guest, translated at full for speed
   with every check. Natively on the i7-8750H (best of 3, through the harness; its load 1.3 to 1.5 from other
   tracks' jobs on the two cores left to them) and in wasmtime on the same machine (best of 3, `time-blob`
