@@ -20,7 +20,9 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - N3 (the first real programs) is started, not done: run 1 settled the last check's five findings and built
   the inside's own stop resolution, its heap and the soft-float build (below, "N3 run 1"); run 2 built the
   inside's native `Cpu` side, piece loading and a thread run to its next exit, and the float state routines
-  (below, "N3 run 2"), compiled and linted but not yet run on the floor. Blocked for its
+  (below, "N3 run 2"); run 3 ran that CPU side on the floor for the first time: the kernel test crate's hello
+  and a program of this track's own give the same exits, registers and output as the WebAssembly output's CPU
+  side, with and without the count (below, "N3 run 3"). Blocked for its
   bar: R1 and R3 (the runtime's loop `no_std`, the `System` split into policy and services) are the runtime
   and kernel tracks' crates, which this track has not been agreed to change (see "For the orchestrator").
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
@@ -49,6 +51,58 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N3 run 3 (2026-11-19)
+
+Start: origin/main and origin/phase-1-literals had nothing new. Run 2's whole suite had been cut off, so it was run
+again before pushing run 2's commits (02:57 to 03:00, load 10 to 13, M5 Max; scratch native/n3r3/suite.log):
+guest-cpu, arm64, the inside and the monitor (floor 21 cases and 1 measurement, 0 failed; carry; native 32,562
+cases, 0 failing; interrupts 2500, 0 failed; probe 279 forms, 0 of 16 bytes or fewer differ, 44 larger differ as
+before), the literal check's tests, the translator with `native`; all passed. Literal check exit 0. Pushed
+(0feb0475).
+
+Built (each its own commit):
+- ed6bc030, the inside: the test program `native-exits` (never shipped). It holds one process and one thread on
+  `NativeCpu` and does what the host orders through its own requests after `routines::Request::END`: begin a
+  process (the first makes the CPU side, with or without the count), write, protect, read, set registers, run to
+  the next exit (the exit and the register block come back), finish. Every slow path the CPU side warns of is sent
+  to the host (`Warned`).
+- 659d53dd, the monitor: `tests/exits.rs`. Builds static ARM64 programs with no C library with zig (the kernel
+  test crate's `hello.c`, the bar's, and this track's `tests/guest/exits.c`: integer, division, float and vector
+  loops, calls through pointers, recursion, an FPSR read), loads their segments and a stack on both CPU sides,
+  runs them exit by exit on `NativeCpu` (in the machine, look-ahead none) and on the WebAssembly output's `CpuSide`
+  (look-ahead none, as the runtime's loop drives it), compares every exit and the whole register block, and
+  answers each system call alike (write; exit and exit_group; everything else ENOSYS). It runs itself twice,
+  without and with the count; `WCONTAINERS_EXITS_EXACT=0|1` runs one. `MEMORY` and `ONE_CPU` moved into the tests'
+  common module (the literal check found them defined twice).
+- The stop test's default count is 250 stops (was 300): the new dev-dependency on the runtime brings the kernel,
+  whose `RESERVED_PIDS` is also 300, and the literal check reads the test's 300 as restating it.
+
+Results (M5 Max; scratch native/n3r3/exits.log):
+- hello: status 3, "hello, world\n" and "hello, error\n", 3 exits, identical on both sides, both modes.
+- exits: status 33, seven lines, 8 exits, identical on both sides, both modes; 0.35 s a mode (load 8 to 18).
+  Native slow paths warned: "host-model result routed" 40, "access that may cross a page probed" 1.
+- Against the reference (ARM64 Linux in Docker on the rented Graviton machine, as the Mac's Docker Desktop would
+  not start at 03:25): hello gives the same output and status. exits gives the same six result lines and status,
+  but the FPSR it reads is 0x10 (IXC) on Linux and 0 on both our outputs: the WebAssembly output keeps no float
+  flags until a program writes FPSR, and the native output gives what it gives (plan 3.4). Found here: plan 3.4
+  says the inside counts such a read ("exact floating point requested"), but it does not: no `Stopping` names an
+  FPSR read, so nothing is counted or warned. Next: a `Stopping` for an FPSR read and the count in the inside.
+
+Dev-dependencies the monitor gained (test only): wcontainers-wasmtime and wcontainers-runtime (this workspace,
+MIT OR Apache-2.0), linux-raw-sys 0.12.1 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT, the version the
+kernel test crate uses).
+
+Literals: the check exits 0; no baseline line added.
+
+What comes next for N3, in order:
+1. The FPSR read while flags are not kept: counted and warned by the inside (above).
+2. Pieces of more than one instruction: `NativeCpu::load` sends one word; send to the page's end and let the
+   monitor halve what it translates when the answer does not fit the link; a piece's guest extent then decides
+   what `code_changed` drops (today only pieces starting in the range).
+3. A static musl program in the exits test (auxiliary vector on the stack, writev), closer to busybox.
+4. The `Host` through the link, the image's files at start, the kernel inside, then the loop and the test crate's
+   policy once R1 and R3 exist (see "For the orchestrator"); then the bar and the independent check's programs.
 
 ## N3 run 2 (2026-11-19)
 
@@ -591,6 +645,8 @@ From the checkout, in the Nix shell:
   7 minutes);
 - the monitor's translate answer through a link page: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor
   --lib`;
+- N3's native CPU side against the WebAssembly one on static programs: `nix develop -c cargo test -j 4 -p
+  wcontainers-hypervisor --test exits` (both modes; `WCONTAINERS_EXITS_EXACT=0` or `1` runs one; about 1 s);
 - N2's tests without the machine: `nix develop -c cargo test -j 4 -p wcontainers-arm64 --test native_routes --test encode --
   --nocapture` (knobs `WCONTAINERS_ROUTES_SEED`, `WCONTAINERS_ROUTES_WORDS`, `WCONTAINERS_ENCODE_SEED`,
   `WCONTAINERS_ENCODE_CASES`, decimal), `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test carry
