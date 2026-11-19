@@ -5355,8 +5355,6 @@ code	crates/wcontainers-gpu-webgpu/src/fill.rs	str	WebGpu::read_program	"texture
 code	crates/wcontainers-gpu-webgpu/src/fill.rs	str	WebGpu::read_program	"texture_2d<f32>"
 code	crates/wcontainers-gpu-webgpu/src/fill.rs	str	WebGpu::read_program	"texture_2d<u32>"
 code	crates/wcontainers-gpu-webgpu/src/fill.rs	str	WebGpu::read_program	"v.x"
-code	crates/wcontainers-gpu-webgpu/src/layout.rs	int	derive	128
-code	crates/wcontainers-gpu-webgpu/src/layout.rs	int	paired	128
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	char	WebGpu::frame_report	','
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	char	WebGpu::frame_report	':'
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	char	WebGpu::frame_report	'{'
@@ -13576,7 +13574,6 @@ code	crates/wcontainers-shaders/src/container.rs	int	Header	16
 code	crates/wcontainers-shaders/src/container.rs	int	Header	4
 code	crates/wcontainers-shaders/src/container.rs	int	chunks	4
 code	crates/wcontainers-shaders/src/container.rs	int	signature	4
-code	crates/wcontainers-shaders/src/dxbc.rs	int	declared_sizes	3
 code	crates/wcontainers-shaders/src/dxbc.rs	str	to_ir	"dxbc-spirv gave no reason"
 code	crates/wcontainers-shaders/src/dxbc.rs	str	to_ir	"the IR did not decode"
 code	crates/wcontainers-shaders/src/dxil.rs	bytestr	lower	b"ISG1"
@@ -13584,11 +13581,9 @@ code	crates/wcontainers-shaders/src/dxil.rs	bytestr	lower	b"OSG1"
 code	crates/wcontainers-shaders/src/dxil.rs	float	float_to_int_function	-2_147_483_648.0
 code	crates/wcontainers-shaders/src/dxil.rs	float	float_to_int_function	2_147_483_648.0
 code	crates/wcontainers-shaders/src/dxil.rs	float	float_to_int_function	4_294_967_296.0
-code	crates/wcontainers-shaders/src/dxil.rs	int	Resources	3
 code	crates/wcontainers-shaders/src/dxil.rs	int	atomic_signedness_differs	3
 code	crates/wcontainers-shaders/src/dxil.rs	int	atomic_signedness_differs	3
 code	crates/wcontainers-shaders/src/dxil.rs	int	atomic_signedness_differs	3
-code	crates/wcontainers-shaders/src/dxil.rs	int	declared_sizes	3
 code	crates/wcontainers-shaders/src/dxil.rs	int	evaluates_inputs	4
 code	crates/wcontainers-shaders/src/dxil.rs	int	float_to_int_function	0x7f80_0000
 code	crates/wcontainers-shaders/src/dxil.rs	int	float_to_int_function	0x7fff_ffff
@@ -13600,7 +13595,6 @@ code	crates/wcontainers-shaders/src/dxil.rs	int	helper_block	16
 code	crates/wcontainers-shaders/src/dxil.rs	int	helper_block	16
 code	crates/wcontainers-shaders/src/dxil.rs	int	helper_block	4
 code	crates/wcontainers-shaders/src/dxil.rs	int	helper_block	8
-code	crates/wcontainers-shaders/src/dxil.rs	int	to_spirv	3
 code	crates/wcontainers-shaders/src/dxil.rs	str	absent_extension	"RenderTargetArrayIndex"
 code	crates/wcontainers-shaders/src/dxil.rs	str	bindings	"BindingsBeyondLimit"
 code	crates/wcontainers-shaders/src/dxil.rs	str	bindings	"ResourceArray"
@@ -14137,23 +14131,11 @@ code	crates/wcontainers-shaders/src/stage.rs	bytestr	domain_program_for	b"domain
 code	crates/wcontainers-shaders/src/stage.rs	bytestr	vertex_program_for	b"vertex records"
 code	crates/wcontainers-shaders/src/stage.rs	float	tess::patch_bounds	64.0
 code	crates/wcontainers-shaders/src/stage.rs	float	tess::patch_bounds	64.0
-code	crates/wcontainers-shaders/src/stage.rs	int	clip_unpositioned	16
-code	crates/wcontainers-shaders/src/stage.rs	int	clip_unpositioned	16
-code	crates/wcontainers-shaders/src/stage.rs	int	passthrough	16
-code	crates/wcontainers-shaders/src/stage.rs	int	passthrough	16
-code	crates/wcontainers-shaders/src/stage.rs	int	passthrough	16
 code	crates/wcontainers-shaders/src/stage.rs	int	passthrough	3
-code	crates/wcontainers-shaders/src/stage.rs	int	passthrough	4
-code	crates/wcontainers-shaders/src/stage.rs	int	passthrough	4
-code	crates/wcontainers-shaders/src/stage.rs	int	record_words	4
 code	crates/wcontainers-shaders/src/stage.rs	int	tess::patch_bounds	3
 code	crates/wcontainers-shaders/src/stage.rs	int	tess::patch_bounds	6
 code	crates/wcontainers-shaders/src/stage.rs	int	tess::patch_bounds	66
-code	crates/wcontainers-shaders/src/stage.rs	int	values	4
-code	crates/wcontainers-shaders/src/stage.rs	int	values	4
 code	crates/wcontainers-shaders/src/stage.rs	int	vertex_as_compute	0xffff
-code	crates/wcontainers-shaders/src/stage.rs	int	vertex_as_compute	16
-code	crates/wcontainers-shaders/src/stage.rs	int	vertex_as_compute	4
 code	crates/wcontainers-shaders/src/stage.rs	int	vertex_as_compute	4
 code	crates/wcontainers-shaders/src/stage.rs	int	vertex_as_compute	4
 code	crates/wcontainers-shaders/src/stage.rs	int	vertex_as_compute	4
@@ -23702,14 +23684,6 @@ redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::SHADER_SAMP
 redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::TEXTURE2D	TEXTURE2D = 32
 redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::TEXTURECUBE	TEXTURECUBE = 128
 redefinition	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::buffer_span::R32_TYPELESS	R32_TYPELESS = 39
-redefinition	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_buffer_uav::COUNTER	COUNTER = 4
-redefinition	crates/wcontainers-direct3d-11/src/format.rs	int	NV12	NV12 = 103
-redefinition	crates/wcontainers-direct3d-11/src/format.rs	int	R16_UINT	R16_UINT = 57
-redefinition	crates/wcontainers-direct3d-11/src/format.rs	int	R32_UINT	R32_UINT = 42
-redefinition	crates/wcontainers-direct3d-11/src/format.rs	int	R8G8_TYPELESS	R8G8_TYPELESS = 48
-redefinition	crates/wcontainers-direct3d-11/src/format.rs	int	R8_TYPELESS	R8_TYPELESS = 60
-redefinition	crates/wcontainers-direct3d-11/src/format.rs	int	UNKNOWN	UNKNOWN = 0
-redefinition	crates/wcontainers-direct3d-11/src/format.rs	int	YUY2	YUY2 = 107
 redefinition	crates/wcontainers-direct3d-11/tests/front.rs	int	a_geometry_shader_choosing_layers_and_viewports_draws_once_per_layer_and_viewport::LAYERS	LAYERS = 4
 redefinition	crates/wcontainers-direct3d-11/tests/front.rs	int	nv12_is_two_planes_viewed_apart_and_written_copied_and_mapped_as_joined_rows::NV12	NV12 = 103
 redefinition	crates/wcontainers-direct3d-11/tests/front.rs	int	yuy2_is_a_half_width_texture_of_pixel_pairs_viewed_as_rgba8::YUY2	YUY2 = 107
@@ -24167,18 +24141,10 @@ restated	crates/wcontainers-gpu-webgpu/tests/blocks.rs	int	bc_copies_keep_the_bl
 restated	crates/wcontainers-gpu-webgpu/tests/blocks.rs	int	bc_copies_keep_the_blocks_natively_and_decoded	256
 restated	crates/wcontainers-gpu-webgpu/tests/blocks.rs	int	bc_copies_keep_the_blocks_natively_and_decoded	256
 restated	crates/wcontainers-gpu-webgpu/tests/blocks.rs	int	bc_copies_keep_the_blocks_natively_and_decoded	256
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	float	depth_and_stencil_parts_copy_and_read_back_exactly	16_777_215.0
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	float	depth_of	16_777_215.0
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	float	same_depth	16_777_215.0
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	depth_and_stencil_parts_copy_and_read_back_exactly	0xff_ffff
 restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	depth_and_stencil_parts_copy_and_read_back_exactly	1024
 restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	depth_and_stencil_parts_copy_and_read_back_exactly	1024
 restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	depth_and_stencil_parts_copy_and_read_back_exactly	4096
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	depth_of	0xff_ffff
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	float_depth_copies_keep_what_a_draw_can_write	0x4000_0000
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	float_depth_copies_keep_what_a_draw_can_write	0x8000_0000
 restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	sixteen_bit_group_copies_into_depth_keep_the_bits	0x8000
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	source_words	0xff_ffff
 restated	crates/wcontainers-gpu-webgpu/tests/depth.rs	int	depth_bias_on_24_bit_depth_matches_direct3d	256
 restated	crates/wcontainers-gpu-webgpu/tests/direct3d.rs	float	decoded_step	2048.0
 restated	crates/wcontainers-gpu-webgpu/tests/direct3d.rs	float	generate_mips_of_r32float_without_filtering_match_direct3d	65536.0
@@ -24648,17 +24614,14 @@ script	crates/wcontainers-direct3d-12/examples/directx/com.py	int	line: body = m
 script	crates/wcontainers-directx/generate.py	int	line: body = f"self.child.{snake(name)}10({args})"	10
 script	crates/wcontainers-directx/generate.py	int	line: body = f"self.{snake(name)}10({args})"	10
 script	crates/wcontainers-directx/generate.py	int	line: body = f"self.{snake(name)}10({args})"	10
-script	crates/wcontainers-gpu-webgpu/frames/run	int	line: $4 ~ /^[0-9.]+$/ { split($2, at, " "); t = at[2]	9
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: build="git submodule update --init --recursive -q && set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j 3 -p wcontainers-direc	12
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: build="git submodule update --init --recursive -q && set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j 3 -p wcontainers-direc	3
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: build="git submodule update --init --recursive -q && set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j 3 -p wcontainers-direc	3
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: build="git submodule update --init --recursive -q && set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j 3 -p wcontainers-direc	3
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: build="git submodule update --init --recursive -q && set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j 3 -p wcontainers-direc	3
-script	crates/wcontainers-gpu-webgpu/frames/run	int	line: ended=$(sed -n 's/.*, ended \([0-9:.]*\):.*/\1/p' <<<"$said" | tail -1)	9
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: load_limit=1800	1800
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: long=360	360
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: short=60	60
-script	crates/wcontainers-gpu-webgpu/frames/run	int	line: started=$(sed -n 's/.*started \([0-9:.]*\), ended.*/\1/p' <<<"$said" | tail -1)	9
 script	crates/wcontainers-gpu-webgpu/web/check	int	line: build+=" && cargo build --locked -j 3 -p wcontainers-gpu-webgpu --example scenes --target wasm32-unknown-unknown"	3
 script	crates/wcontainers-gpu-webgpu/web/check	int	line: build+=" && cargo build --locked -j 3 -p wcontainers-graphics-test --bin gt-compare"	3
 script	crates/wcontainers-gpu-webgpu/web/check	int	line: build+=" && cargo test --locked -j 3 -p wcontainers-gpu-webgpu --test suite --no-run"	3
