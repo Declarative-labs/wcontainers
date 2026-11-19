@@ -1,6 +1,7 @@
 // Calls that wait for the backend while another thread changes their arguments: Linux takes a
 // call's descriptor (fdget) and copies its path (getname) once, so each call acts once, on what it
-// named when it started. Also a thread that spins while another waits for the backend.
+// named when it started. Also a thread that spins while another waits for the backend, and two
+// threads making the same files with O_EXCL, of which one makes each.
 #define _GNU_SOURCE
 #include <dirent.h>
 #include <fcntl.h>
@@ -110,10 +111,43 @@ static void spin_while_waiting(void) {
     unlink("/data/spin");
 }
 
+#define EXCLUSIVE_NAMES 40
+
+static int created[EXCLUSIVE_NAMES];
+
+static void *create_exclusively(void *arg) {
+    for (int i = 0; i < EXCLUSIVE_NAMES; i++) {
+        char path[32];
+        snprintf(path, sizeof path, "/data/excl%02d", i);
+        int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_TRUNC, 0600);
+        if (fd >= 0) {
+            __atomic_fetch_add(&created[i], 1, __ATOMIC_RELAXED);
+            close(fd);
+        }
+    }
+    return 0;
+}
+
+static void create_exclusively_from_two_threads(void) {
+    pthread_t thread;
+    pthread_create(&thread, 0, create_exclusively, 0);
+    create_exclusively(0);
+    pthread_join(thread, 0);
+    int one = 0;
+    for (int i = 0; i < EXCLUSIVE_NAMES; i++) {
+        one += created[i] == 1;
+        char path[32];
+        snprintf(path, sizeof path, "/data/excl%02d", i);
+        unlink(path);
+    }
+    printf("O_EXCL: names made by exactly one thread %d of %d\n", one, EXCLUSIVE_NAMES);
+}
+
 int main(void) {
     setvbuf(stdout, 0, _IONBF, 0);
     pwrite_while_flipped();
     mkdir_while_flipped();
     spin_while_waiting();
+    create_exclusively_from_two_threads();
     return 0;
 }

@@ -1250,16 +1250,23 @@ pub(crate) fn readlink(node: &Node) -> Result<Vec<u8>, Errno> {
     Ok(body.to_vec())
 }
 
-/// The open flags FUSE sends: the access mode and status flags, without those only the kernel
-/// acts on (`fuse_do_open`, `fuse_create_open`), and O_TRUNC only when the backend takes it. The
-/// root's direct reads and writes follow the reference's overlay, checked here
-/// (`syscall::io::overlay_direct`), so the backend is not asked for its own.
+/// The flags an OPEN sends (`fuse_send_open`): the access mode and status flags, without those
+/// only the kernel acts on, and O_TRUNC only when the backend takes it.
 fn open_flags(client: &Client, flags: u32) -> u32 {
-    use crate::linux::general::{O_CREAT, O_DIRECT, O_EXCL, O_NOCTTY, O_TRUNC};
-    let mut flags = flags & !(O_CREAT | O_EXCL | O_NOCTTY);
+    use crate::linux::general::{O_CREAT, O_EXCL, O_TRUNC};
+    let mut flags = create_flags(client, flags) & !(O_CREAT | O_EXCL);
     if client.settled().flags & FUSE_ATOMIC_O_TRUNC == 0 {
         flags &= !O_TRUNC;
     }
+    flags
+}
+
+/// The flags a CREATE sends (`fuse_create_open`): all but O_NOCTTY, so the backend makes the file
+/// with O_EXCL and O_TRUNC as asked. The root's direct reads and writes follow the reference's
+/// overlay, checked here (`syscall::io::overlay_direct`), so the backend is not asked for its own.
+fn create_flags(client: &Client, flags: u32) -> u32 {
+    use crate::linux::general::{O_DIRECT, O_NOCTTY};
+    let mut flags = flags & !O_NOCTTY;
     if client.fs.kind == super::Kind::Overlay {
         flags &= !O_DIRECT;
     }
@@ -1317,7 +1324,7 @@ pub(crate) fn create(
     let (client, nodeid) = on_backend(directory);
     let (mode, umask) = masked(&client, mode, umask);
     let input = fuse_create_in {
-        flags: open_flags(&client, flags),
+        flags: create_flags(&client, flags),
         mode,
         umask,
         open_flags: 0,
@@ -1328,11 +1335,13 @@ pub(crate) fn create(
         &[input.as_bytes(), &name_part(name)],
     )?;
     let out: fuse_open_out = first(body.get(size_of::<fuse_entry_out>()..).unwrap_or(&[]))?;
+    // What the file is open with, as later requests send it.
+    let opened = open_flags(&client, flags);
     let handle = client.handle(|| Handle {
         client: client.clone(),
         nodeid: first::<fuse_entry_out>(&body).map_or(0, |entry| entry.nodeid),
         fh: out.fh,
-        flags: input.flags,
+        flags: opened,
         open_flags: out.open_flags,
         directory: false,
     });
@@ -1351,7 +1360,7 @@ pub(crate) fn tmpfile(
     let (client, nodeid) = on_backend(directory);
     let (mode, umask) = masked(&client, mode, umask);
     let input = fuse_create_in {
-        flags: open_flags(&client, flags),
+        flags: create_flags(&client, flags),
         mode,
         umask,
         open_flags: 0,
@@ -1365,11 +1374,13 @@ pub(crate) fn tmpfile(
         other => other?,
     };
     let out: fuse_open_out = first(body.get(size_of::<fuse_entry_out>()..).unwrap_or(&[]))?;
+    // What the file is open with, as later requests send it.
+    let opened = open_flags(&client, flags);
     let handle = client.handle(|| Handle {
         client: client.clone(),
         nodeid: first::<fuse_entry_out>(&body).map_or(0, |entry| entry.nodeid),
         fh: out.fh,
-        flags: input.flags,
+        flags: opened,
         open_flags: out.open_flags,
         directory: false,
     });

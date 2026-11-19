@@ -136,8 +136,9 @@ fn cached_shared_positions_match_reference() {
 }
 
 /// Calls waiting for the backend while another thread changes the descriptor or the path they
-/// named, and a thread spinning while another waits for the backend: each call acts once, on what
-/// it named when it started, and the spinning thread gives way when an answer comes.
+/// named, a thread spinning while another waits for the backend, and two threads making the same
+/// files with O_EXCL: each call acts once, on what it named when it started, the spinning thread
+/// gives way when an answer comes, and one thread makes each file.
 #[test]
 fn arguments_taken_once_match_reference() {
     let injections = driver::Injections {
