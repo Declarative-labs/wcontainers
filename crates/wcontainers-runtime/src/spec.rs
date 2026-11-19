@@ -165,6 +165,12 @@ const BIND_OPTIONS: &[&str] = &[BIND, RBIND];
 const READ_WRITE: &str = "rw";
 const HONOURED_OPTIONS: &[&str] = &[READ_WRITE, "private", "rprivate"];
 
+/// Refusal reasons given for more than one field.
+const UNKNOWN_FIELD: &str = "a field this runtime does not know";
+const NEEDS_USER_NAMESPACES: &str = "user namespaces in the kernel";
+const NEEDS_WINDOWS: &str = "a Windows host";
+const NEEDS_VALUE_AT_START: &str = "the kernel taking the value at start";
+
 fn refused(field: impl Into<String>, reason: impl Into<String>) -> Error {
     Error::Refused {
         field: field.into(),
@@ -223,11 +229,11 @@ pub(crate) fn accept(spec: &Spec) -> Result<Accepted, Error> {
                  specification names",
             )?,
             "linux" => linux(field)?,
-            "uidMappings" | "gidMappings" => absent(name, field, "user namespaces in the kernel")?,
+            "uidMappings" | "gidMappings" => absent(name, field, NEEDS_USER_NAMESPACES)?,
             "solaris" | "windows" | "vm" | "zos" => {
                 absent(name, field, "another kind of host than Linux")?;
             }
-            _ => return Err(refused(name, "a field this runtime does not know")),
+            _ => return Err(refused(name, UNKNOWN_FIELD)),
         }
     }
     // The kernel makes its mounts and namespaces whatever the configuration says, so leaving the lists
@@ -297,10 +303,7 @@ fn root(value: &Value) -> Result<(), Error> {
             )?,
             "readonly" => absent("root.readonly", field, "read-only mounts in the kernel")?,
             _ => {
-                return Err(refused(
-                    format!("root.{name}"),
-                    "a field this runtime does not know",
-                ));
+                return Err(refused(format!("root.{name}"), UNKNOWN_FIELD));
             }
         }
     }
@@ -353,7 +356,7 @@ fn check_mounts(value: &Value) -> Result<Option<Volume>, Error> {
         {
             return Err(refused(
                 format!("{field}.{name}"),
-                "id-mapped mounts: user namespaces in the kernel",
+                format!("id-mapped mounts: {NEEDS_USER_NAMESPACES}"),
             ));
         }
         if !kernel.iter().any(|ours| same(ours, mount)) {
@@ -457,7 +460,8 @@ fn check_bind_mount(index: usize, mount: &Value) -> Result<Volume, Error> {
         return Err(refused(
             &field,
             format!(
-                "{mount}: of the kernel's own mounts and bind mounts of host directories only these                  are made; other file systems need the kernel"
+                "{mount}: of the kernel's own mounts and bind mounts of host directories only these \
+                 are made; other file systems need the kernel"
             ),
         ));
     }
@@ -468,7 +472,8 @@ fn check_bind_mount(index: usize, mount: &Value) -> Result<Volume, Error> {
         return Err(refused(
             format!("{field}.options"),
             format!(
-                "{option}: a host directory is mounted read and write with no propagation; other                  options need the kernel's mounts to take them"
+                "{option}: a host directory is mounted read and write with no propagation; other \
+                 options need the kernel's mounts to take them"
             ),
         ));
     }
@@ -500,7 +505,7 @@ fn process(value: &Value) -> Result<(), Error> {
             "args" | "env" | "cwd" => {}
             "terminal" | "consoleSize" => {}
             "user" => user(field)?,
-            "commandLine" => absent(&path, field, "a Windows host")?,
+            "commandLine" => absent(&path, field, NEEDS_WINDOWS)?,
             "capabilities" => {
                 let sets = field.as_object().cloned().unwrap_or_default();
                 if let Some(set) = ["bounding", "effective", "permitted"]
@@ -527,10 +532,7 @@ fn process(value: &Value) -> Result<(), Error> {
                         "bounding" | "effective" | "permitted" => CAPABILITIES.to_vec(),
                         "inheritable" | "ambient" => Vec::new(),
                         _ => {
-                            return Err(refused(
-                                format!("{path}.{set}"),
-                                "a field this runtime does not know",
-                            ));
+                            return Err(refused(format!("{path}.{set}"), UNKNOWN_FIELD));
                         }
                     };
                     ours.sort_unstable();
@@ -573,9 +575,9 @@ fn process(value: &Value) -> Result<(), Error> {
                 absent(&path, field, "a security module in the kernel")?;
             }
             "oomScoreAdj" | "ioPriority" | "scheduler" | "execCPUAffinity" => {
-                absent(&path, field, "the kernel taking the value at start")?;
+                absent(&path, field, NEEDS_VALUE_AT_START)?;
             }
-            _ => return Err(refused(path, "a field this runtime does not know")),
+            _ => return Err(refused(path, UNKNOWN_FIELD)),
         }
     }
     Ok(())
@@ -601,13 +603,13 @@ fn user(value: &Value) -> Result<(), Error> {
                     return Err(refused(
                         path,
                         format!(
-                            "{field}: the kernel starts with umask 0022; others need it to take the umask at start"
+                            "{field}: the kernel starts with umask {UMASK:04o}; others need it to take the umask at start"
                         ),
                     ));
                 }
             }
-            "username" => absent(&path, field, "a Windows host")?,
-            _ => return Err(refused(path, "a field this runtime does not know")),
+            "username" => absent(&path, field, NEEDS_WINDOWS)?,
+            _ => return Err(refused(path, UNKNOWN_FIELD)),
         }
     }
     Ok(())
@@ -618,7 +620,7 @@ fn linux(value: &Value) -> Result<(), Error> {
         let path = format!("linux.{name}");
         match name.as_str() {
             "namespaces" => namespaces(field)?,
-            "uidMappings" | "gidMappings" => absent(&path, field, "user namespaces in the kernel")?,
+            "uidMappings" | "gidMappings" => absent(&path, field, NEEDS_USER_NAMESPACES)?,
             "sysctl" => absent(&path, field, "the kernel taking its settings at start")?,
             "resources" | "cgroupsPath" => absent(
                 &path,
@@ -643,9 +645,9 @@ fn linux(value: &Value) -> Result<(), Error> {
                 "read-only, masking and labelled mounts in the kernel",
             )?,
             "intelRdt" | "memoryPolicy" | "personality" | "timeOffsets" | "netDevices" => {
-                absent(&path, field, "the kernel taking the value at start")?;
+                absent(&path, field, NEEDS_VALUE_AT_START)?;
             }
-            _ => return Err(refused(path, "a field this runtime does not know")),
+            _ => return Err(refused(path, UNKNOWN_FIELD)),
         }
     }
     Ok(())
