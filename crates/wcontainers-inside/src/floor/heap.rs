@@ -4,26 +4,30 @@
 use core::alloc::Layout;
 use core::ptr::NonNull;
 
-use talc::base::Talc;
 use talc::base::binning::Binning;
+use talc::base::{CHUNK_UNIT, Talc};
+use talc::min_first_heap_size;
 use talc::source::Source;
 
 use super::with_frames;
 use crate::layout::{BLOCK_SIZE, linear};
 
-/// Takes one block of frames each time the heap runs out.
+/// Takes a run of blocks of frames each time the heap runs out, as many as the allocation needs.
 #[derive(Debug)]
 pub struct Blocks;
 
 // SAFETY: it only claims memory that nothing else uses, through the `Talc` it is given.
 unsafe impl Source for Blocks {
     fn acquire<B: Binning>(talc: &mut Talc<Self, B>, layout: Layout) -> Result<(), ()> {
-        if layout.size() + layout.align() > BLOCK_SIZE as usize {
-            return Err(());
+        // The allocation with its worst alignment, and talc's own chunk on either side of a claim.
+        let mut needed = layout.size() + layout.align() + CHUNK_UNIT + CHUNK_UNIT;
+        if !talc.is_metadata_established() {
+            needed += min_first_heap_size::<B>();
         }
-        let block = with_frames(|frames| frames.take_block()).map_err(|_| ())?;
-        // SAFETY: the block's frames are fresh and reached only through this heap from here on.
-        unsafe { talc.claim(linear(block) as *mut u8, BLOCK_SIZE as usize) }
+        let length = (needed as u64).next_multiple_of(BLOCK_SIZE);
+        let run = with_frames(|frames| frames.take_blocks(length / BLOCK_SIZE)).map_err(|_| ())?;
+        // SAFETY: the run's frames are fresh and reached only through this heap from here on.
+        unsafe { talc.claim(linear(run) as *mut u8, length as usize) }
             .map(|_: NonNull<u8>| ())
             .ok_or(())
     }

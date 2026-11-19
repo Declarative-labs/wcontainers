@@ -92,8 +92,13 @@ impl Frames {
 
     /// A run of frames that a block entry can map, never used since the host gave it, so it reads as zeros.
     pub fn take_block(&mut self) -> Result<u64, Full> {
+        self.take_blocks(1)
+    }
+
+    /// As [`Frames::take_block`], for `count` blocks one after the other.
+    pub fn take_blocks(&mut self, count: u64) -> Result<u64, Full> {
         let block = self.next.next_multiple_of(BLOCK_SIZE);
-        if block + BLOCK_SIZE > self.end {
+        if block + count * BLOCK_SIZE > self.end {
             return Err(full());
         }
         let mut gap = self.next;
@@ -101,7 +106,7 @@ impl Frames {
             self.give(gap);
             gap += PAGE_SIZE;
         }
-        self.next = block + BLOCK_SIZE;
+        self.next = block + count * BLOCK_SIZE;
         Ok(block)
     }
 
