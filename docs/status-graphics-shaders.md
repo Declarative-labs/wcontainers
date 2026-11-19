@@ -2215,6 +2215,9 @@ Run 46 (G6 reported complete with the gap list, for the independent check):
     cut, 12:03) was stopped.
   - Literal check (check2.txt, after the merges): passes, nothing to add; this crate's baseline
     lines (src, build.rs, tests, examples) 659, as at run 45's end.
+- Clean-up: the laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders` (6.9 GB) and
+  the desktop's `C:\wc\target\phase-2-graphics-shaders` deleted; scratch keeps the logs and
+  `run46/out` (47 MB, the files Chrome compiled).
 
 Next (in order). After the independent check of run 46's report, first its findings, then the gap
 list (top of this file) in the order the fronts need it:
