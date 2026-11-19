@@ -3,7 +3,7 @@
 
 #![allow(dead_code)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use wcontainers_hypervisor::{Host, Hypervisor, Loaded, Memory, VirtualMachine, load};
@@ -156,4 +156,52 @@ pub fn load_average() -> String {
     // SAFETY: fills three values.
     unsafe { libc::getloadavg(loads.as_mut_ptr(), loads.len() as i32) };
     format!("{:.1} {:.1} {:.1}", loads[0], loads[1], loads[2])
+}
+
+/// The kernel test crate's programs, of which `hello` is the bar's.
+pub const KERNEL_TEST_GUEST: &str = "../wcontainers-kernel-test/guest";
+
+/// Whether a program is linked with the C library.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CLibrary {
+    Without,
+    Musl,
+}
+
+/// The C compiler's target and the program's extension.
+const GUEST_TARGET: &str = "aarch64-linux-musl";
+const C_SOURCE: &str = "c";
+const OBJECT: &str = "o";
+
+/// Builds a static ARM64 Linux program from `directory/name.c` with zig's C compiler.
+pub fn compile(directory: &str, name: &str, library: CLibrary) -> Vec<u8> {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(directory)
+        .join(name)
+        .with_extension(C_SOURCE);
+    let out: PathBuf = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let object = out.with_extension(OBJECT);
+    // Compiled with the C library's headers; linked with its code or without it.
+    zig(Command::new("zig")
+        .args(["cc", "-target", GUEST_TARGET, "-O2", "-c", "-o"])
+        .arg(&object)
+        .arg(&source));
+    zig(Command::new("zig")
+        .args(["cc", "-target", GUEST_TARGET, "-static"])
+        .args((library == CLibrary::Without).then_some("-nostdlib"))
+        .arg("-o")
+        .arg(&out)
+        .arg(&object));
+    std::fs::read(&out).expect("the built program")
+}
+
+fn zig(command: &mut Command) {
+    let output = command
+        .output()
+        .expect("running zig cc; run the test inside `nix develop`");
+    assert!(
+        output.status.success(),
+        "{command:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

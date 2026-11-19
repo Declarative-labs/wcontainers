@@ -25,7 +25,6 @@ fn main() {
 #[cfg(target_os = "macos")]
 mod macos {
     use std::collections::BTreeMap;
-    use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::time::Instant;
 
@@ -49,7 +48,10 @@ mod macos {
     use wcontainers_wasmtime::{Compiler, CpuSide, LookAhead, Optimise};
     use zerocopy::{FromBytes, IntoBytes};
 
-    use crate::common::{MEMORY, ONE_CPU, be_signed, build, load_average, machine, setting};
+    use crate::common::{
+        CLibrary, KERNEL_TEST_GUEST, MEMORY, ONE_CPU, be_signed, build, compile, load_average,
+        machine, setting,
+    };
     use crate::protocol::{self, ExitWords, Order, OrderKind, ResumeWords, Warned};
 
     /// The test program inside.
@@ -61,9 +63,6 @@ mod macos {
     /// The guest's stack's size; its top is the end of the smaller address space of the two sides.
     const STACK_BYTES: u64 = 64 * PAGE_SIZE;
 
-    /// The kernel test crate's programs, of which `hello` is the bar's.
-    const KERNEL_TEST_GUEST: &str = "../wcontainers-kernel-test/guest";
-
     /// This test's own programs.
     const OWN_GUEST: &str = "tests/guest";
 
@@ -73,18 +72,6 @@ mod macos {
         (OWN_GUEST, "exits", CLibrary::Without),
         (OWN_GUEST, "libc", CLibrary::Musl),
     ];
-
-    /// Whether a program is linked with the C library.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum CLibrary {
-        Without,
-        Musl,
-    }
-
-    /// The C compiler's target and the program's extension.
-    const GUEST_TARGET: &str = "aarch64-linux-musl";
-    const C_SOURCE: &str = "c";
-    const OBJECT: &str = "o";
 
     /// The standard output's and standard error's descriptors.
     const DESCRIPTORS: usize = 3;
@@ -133,39 +120,6 @@ mod macos {
             load_average()
         );
         assert_eq!(failed, 0);
-    }
-
-    /// Builds a static ARM64 Linux program with no C library from `directory/name.c` with zig's C compiler.
-    fn compile(directory: &str, name: &str, library: CLibrary) -> Vec<u8> {
-        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join(directory)
-            .join(name)
-            .with_extension(C_SOURCE);
-        let out: PathBuf = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
-        let object = out.with_extension(OBJECT);
-        // The C library's headers are wanted, its code is not: compiled with them, linked without it.
-        zig(Command::new("zig")
-            .args(["cc", "-target", GUEST_TARGET, "-O2", "-c", "-o"])
-            .arg(&object)
-            .arg(&source));
-        zig(Command::new("zig")
-            .args(["cc", "-target", GUEST_TARGET, "-static"])
-            .args((library == CLibrary::Without).then_some("-nostdlib"))
-            .arg("-o")
-            .arg(&out)
-            .arg(&object));
-        std::fs::read(&out).expect("the built program")
-    }
-
-    fn zig(command: &mut Command) {
-        let output = command
-            .output()
-            .expect("running zig cc; run the test inside `nix develop`");
-        assert!(
-            output.status.success(),
-            "{command:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
     }
 
     /// A CPU side one process and thread are run on.
