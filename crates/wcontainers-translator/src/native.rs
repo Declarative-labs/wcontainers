@@ -23,7 +23,8 @@ struct Held<I> {
 /// The piece at guest `address`, whose bytes start `code`: what the code reaches from there in at most one
 /// instruction at look-ahead none, at most `n` at `Bounded(n)`, and up to the end of `code` at full, going on
 /// after every instruction that falls through (a call's return comes back through its entry slot) and to every
-/// direct branch's target inside `code`. Instructions are laid out in address order; a branch to an instruction
+/// direct branch's target inside `code`. A backward branch's next instruction, where a loop is left, is reached
+/// through an exit and starts a piece of its own (docs/native.md section 3.2). Instructions are laid out in address order; a branch to an instruction
 /// the piece holds goes straight to it, any other leaves through an exit, and a conditional branch's taken side
 /// is placed out of line. `None` when no instruction starts there.
 ///
@@ -131,7 +132,8 @@ fn reach<G: Native>(code: &[u8], address: u64, limit: usize) -> Vec<Held<G::Inst
             .and_then(|t| usize::try_from(t).ok())
             .filter(|&t| t < code.len() && address.wrapping_add(t as u64).is_multiple_of(G::ALIGN));
         work.extend(target);
-        if goes_on {
+        let backward = route == Route::Transfer && flow.target.is_some_and(|by| by <= 0);
+        if goes_on && !backward {
             work.push(at + length);
         }
         held.insert(
