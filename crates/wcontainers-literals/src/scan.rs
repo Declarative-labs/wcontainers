@@ -98,6 +98,12 @@ const WRAPPERS: &[&str] = &["Some", "Ok"];
 const CONST_DEFINING_MACROS: &[&str] = &["bitflags"];
 const MATCHES_MACRO: &str = "matches";
 const MACRO_RULES: &str = "macro_rules";
+/// Between `macro_rules` and the macro's name in an item path (`macro_rules! name`).
+const MACRO_ITEM_SEPARATOR: &str = "! ";
+/// Around a trait implementation's type and trait in an item path (`<Type as Trait>`).
+const TRAIT_IMPL_OPEN: &str = "<";
+const TRAIT_IMPL_AS: &str = " as ";
+const TRAIT_IMPL_CLOSE: &str = ">";
 /// `include!("file")` pulls Rust source into the file; it is scanned where it is included.
 const INCLUDE_MACRO: &str = "include";
 /// Macros that read a variable of the build's environment by a name written as a literal.
@@ -1513,9 +1519,10 @@ impl<'ast> Visit<'ast> for FileScan {
     fn visit_item_macro(&mut self, m: &'ast syn::ItemMacro) {
         match &m.ident {
             Some(name) if m.mac.path.is_ident(MACRO_RULES) => {
-                self.with_scope(format!("{MACRO_RULES}! {name}"), |s| {
-                    s.tokens(m.mac.tokens.clone(), TokenMode::All)
-                });
+                self.with_scope(
+                    [MACRO_RULES, MACRO_ITEM_SEPARATOR, &name.to_string()].concat(),
+                    |s| s.tokens(m.mac.tokens.clone(), TokenMode::All),
+                );
             }
             _ => self.mac(&m.mac),
         }
@@ -1595,7 +1602,14 @@ impl<'ast> Visit<'ast> for FileScan {
     fn visit_item_impl(&mut self, i: &'ast syn::ItemImpl) {
         let self_name = compact(&i.self_ty);
         let name = match &i.trait_ {
-            Some((_, t, _)) => format!("<{self_name} as {}>", compact(t)),
+            Some((_, t, _)) => [
+                TRAIT_IMPL_OPEN,
+                &self_name,
+                TRAIT_IMPL_AS,
+                &compact(t),
+                TRAIT_IMPL_CLOSE,
+            ]
+            .concat(),
             None => self_name.clone(),
         };
         self.impls.push(ImplScope {

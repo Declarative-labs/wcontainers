@@ -1,4 +1,4 @@
-//! The command line; see the library's `USAGE`.
+//! The command line; see the library's `usage()`.
 
 use std::process::ExitCode;
 

@@ -7,6 +7,7 @@ pub const RULES: &[&str] = &[
     "the rule of docs/literals.md as the literals track's milestone L1 left it",
     "roles through closures, Some, Ok, branches and bindings, and the words user and owner; a negated literal in parentheses; attributes inside a conditional attribute; stringify!; tests that write a named number as a float or a string; string constants and messages that write out another constant or the crate's own name",
     "target roots of any extension, the files of submodules, and a submodule that cannot be read; roles compared through a method, through an array, and the word code; concat! as one string; a byte string's text; a constant that restates, under a name sharing a word, one in a crate that does not depend on it",
+    "a test that writes a named value inside a constant of its own, whatever the constant is called",
 ];
 
 /// This file, relative to the workspace root when Cargo builds it there.

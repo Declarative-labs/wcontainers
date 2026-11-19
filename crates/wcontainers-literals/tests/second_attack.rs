@@ -7,7 +7,7 @@ mod common;
 use std::sync::OnceLock;
 
 use common::{Row, in_item, list, workspace};
-use wcontainers_literals::List;
+use wcontainers_literals::{List, MANIFEST};
 
 const ABI: &str = r#"pub const PAGE_SIZE: u64 = 4096;
 pub const PAGE_SHIFT: u32 = PAGE_SIZE.trailing_zeros();
@@ -69,7 +69,7 @@ pub fn k12_mark_inside_a_string() -> &'static str {
 "#;
 
 const FILES: &[(&str, &str)] = &[
-    ("Cargo.toml", "[workspace]\nmembers = [\"crates/*\"]\n"),
+    (MANIFEST, "[workspace]\nmembers = [\"crates/*\"]\n"),
     ("crates/abi/Cargo.toml", "[package]\nname = \"abi\"\n"),
     ("crates/abi/src/lib.rs", ABI),
     (

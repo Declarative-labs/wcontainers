@@ -9,7 +9,7 @@ mod common;
 use std::sync::OnceLock;
 
 use common::{Row, list, workspace};
-use wcontainers_literals::List;
+use wcontainers_literals::{List, MANIFEST};
 
 const ABI: &str = r#"pub const SIGNAL_KILL: i32 = 9;
 pub const PATH_SEPARATOR: &str = "::";
@@ -57,7 +57,7 @@ fn g05_test_writes_named_small_signal() { let sig = abi::SIGNAL_KILL; assert_eq!
 
 const FILES: &[(&str, &str)] = &[
     (
-        "Cargo.toml",
+        MANIFEST,
         "[workspace]\nmembers = [\"crates/*\"]\nexclude = [\"crates/victim/src/fs\"]\n",
     ),
     ("crates/abi/Cargo.toml", "[package]\nname = \"abi\"\n"),

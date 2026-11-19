@@ -12,7 +12,7 @@ mod common;
 use std::sync::OnceLock;
 
 use common::{Row, in_item, list, workspace};
-use wcontainers_literals::{List, NEW_MARK};
+use wcontainers_literals::{List, MANIFEST, NEW_MARK};
 
 const ABI: &str = r#"pub const PAGE_SIZE: u64 = 4096;
 pub const HOME_KEY: &str = "HOME";
@@ -82,7 +82,7 @@ fn h20_test_writes_page_as_string() { assert_eq!(abi::PAGE_SIZE.to_string(), "40
 "#;
 
 const FILES: &[(&str, &str)] = &[
-    ("Cargo.toml", "[workspace]\nmembers = [\"crates/*\"]\n"),
+    (MANIFEST, "[workspace]\nmembers = [\"crates/*\"]\n"),
     ("crates/abi/Cargo.toml", "[package]\nname = \"abi\"\n"),
     ("crates/abi/src/lib.rs", ABI),
     ("crates/other/Cargo.toml", "[package]\nname = \"other\"\n"),
