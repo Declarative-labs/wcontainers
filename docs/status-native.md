@@ -136,6 +136,11 @@ the benchmark set's count the same at both, and busybox's 56 commands gave the r
 translate.rs): a loop held whole with its branch back linked inside, the code after it an exit, a call's next
 instruction left out. literals.baseline did not change this run; no marks.
 
+The rest of the suite, once before the push, on the Mac (n4r9/suite-rest.log, load 12 to 16, exit 0 each): floor 21 cases
+and 1 measurement, 0 failed; probe 0 forms of 16 bytes or fewer differ (44 larger, the Split route's, as before);
+registers; carry; the inside's, the policy crate's and the literal check's tests pass. With the runs above that is the
+whole suite of what this track owns; only the speed test fails, on its compute part.
+
 What N4 still needs, in order:
 1. The compute part of the bar. What is left is mostly calls, returns and jumps through a register (two indirect
    branches each), interpret's dispatch, and the page test (decision 14); see "For the orchestrator".
