@@ -682,3 +682,9 @@ fn benchmarks_match_linux_x86_64() {
 fn flag_returns_match_linux_x86_64() {
     match_linux::<X86_64>(&[("flag_returns", Library::None)]);
 }
+
+/// Flags live across calls: through a callee that leaves them, set in part by one, and driving a loop.
+#[test]
+fn flags_across_calls_match_linux_x86_64() {
+    match_linux::<X86_64>(&[("flags_across", Library::None)]);
+}
