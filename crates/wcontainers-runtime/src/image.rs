@@ -8,8 +8,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use oci_spec::image::{
-    ANNOTATION_CREATED, Descriptor, ImageConfiguration, ImageIndex, ImageManifest, MediaType,
-    OciLayout,
+    ANNOTATION_CREATED, Descriptor, DigestAlgorithm, ImageConfiguration, ImageIndex, ImageManifest,
+    MediaType, OciLayout, Os,
 };
 use oci_spec::runtime::{Spec, User};
 use sha2::{Digest as _, Sha256};
@@ -58,6 +58,24 @@ const EXECUTABLE: u32 = S_IXUSR | S_IXGRP | S_IXOTH;
 const DIRECTORY_MODE: u32 = S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH;
 const FILE_MODE: u32 = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
 
+/// The OCI image layout's marker file, its version, its index and its blobs' directory
+/// (image-layout.md).
+const LAYOUT_FILE: &str = "oci-layout";
+const LAYOUT_VERSION: &str = "1.0.0";
+const INDEX_FILE: &str = "index.json";
+const BLOBS_DIRECTORY: &str = "blobs";
+
+/// Docker's media type of a gzip-compressed layer, which `docker save` writes.
+const DOCKER_LAYER_GZIP: &str = "application/vnd.docker.image.rootfs.diff.tar.gzip";
+
+/// The start of a whiteout's name, and the name of the whiteout that empties its directory
+/// (layer.md).
+const WHITEOUT_PREFIX: &[u8] = b".wh.";
+const OPAQUE_WHITEOUT: &[u8] = b".wh..wh..opq";
+
+/// The start of a PAX header key holding an extended attribute.
+const XATTR_PAX_PREFIX: &[u8] = b"SCHILY.xattr.";
+
 /// Fields of a line of `/etc/passwd` (name, password, uid, gid, comment, home, shell) and of
 /// `/etc/group` (name, password, gid, members), by their places (passwd(5), group(5)).
 mod field {
@@ -84,24 +102,24 @@ impl Image {
     /// `architecture` (as the image configuration names it, [`crate::Executor::ARCHITECTURE`]) on
     /// Linux, its blobs checked against their digests and its layers applied in order.
     pub fn oci(directory: &Path, architecture: &str) -> Result<Self, Error> {
-        let layout = directory.join("oci-layout");
+        let layout = directory.join(LAYOUT_FILE);
         let header = OciLayout::from_reader(open(&layout)?)
             .map_err(|error| Error::Image(format!("{}: {error}", layout.display())))?;
-        if header.image_layout_version() != "1.0.0" {
+        if header.image_layout_version() != LAYOUT_VERSION {
             return Err(Error::Image(format!(
-                "{}: image layout version {} is not 1.0.0",
+                "{}: image layout version {} is not {LAYOUT_VERSION}",
                 layout.display(),
                 header.image_layout_version()
             )));
         }
-        let index_path = directory.join("index.json");
+        let index_path = directory.join(INDEX_FILE);
         let index = ImageIndex::from_reader(open(&index_path)?)
             .map_err(|error| Error::Image(format!("{}: {error}", index_path.display())))?;
         let manifest = find_manifest(directory, index.manifests(), architecture)?;
         let config_bytes = blob(directory, manifest.config())?;
         let configuration = ImageConfiguration::from_reader(config_bytes.as_slice())
             .map_err(|error| Error::Image(format!("the image configuration: {error}")))?;
-        if configuration.os().to_string() != "linux"
+        if *configuration.os() != Os::Linux
             || configuration.architecture().to_string() != architecture
         {
             return Err(Error::Image(format!(
@@ -122,9 +140,7 @@ impl Image {
                     let reader = flate2::read::GzDecoder::new(bytes.as_slice());
                     read_layer(reader, &name, true, &mut files)?;
                 }
-                MediaType::Other(other)
-                    if other == "application/vnd.docker.image.rootfs.diff.tar.gzip" =>
-                {
+                MediaType::Other(other) if other == DOCKER_LAYER_GZIP => {
                     let reader = flate2::read::GzDecoder::new(bytes.as_slice());
                     read_layer(reader, &name, true, &mut files)?;
                 }
@@ -501,7 +517,7 @@ fn open(path: &Path) -> Result<File, Error> {
 fn blob_path(directory: &Path, descriptor: &Descriptor) -> PathBuf {
     let digest = descriptor.digest();
     directory
-        .join("blobs")
+        .join(BLOBS_DIRECTORY)
         .join(digest.algorithm().to_string())
         .join(digest.digest())
 }
@@ -517,7 +533,7 @@ fn blob(directory: &Path, descriptor: &Descriptor) -> Result<Vec<u8>, Error> {
             error,
         })?;
     let digest = descriptor.digest();
-    if digest.algorithm().to_string() != "sha256" {
+    if *digest.algorithm() != DigestAlgorithm::Sha256 {
         return Err(Error::Image(format!(
             "{digest}: only sha256 digests are checked by this runtime"
         )));
@@ -541,8 +557,7 @@ fn find_manifest(
 ) -> Result<ImageManifest, Error> {
     let fits = |descriptor: &Descriptor| {
         descriptor.platform().as_ref().is_none_or(|platform| {
-            platform.os().to_string() == "linux"
-                && platform.architecture().to_string() == architecture
+            *platform.os() == Os::Linux && platform.architecture().to_string() == architecture
         })
     };
     for descriptor in descriptors.iter().filter(|d| fits(d)) {
@@ -599,7 +614,7 @@ fn read_layer(
         if let Some(extensions) = entry.pax_extensions().map_err(|e| fail(e.to_string()))? {
             for extension in extensions {
                 let extension = extension.map_err(|e| fail(e.to_string()))?;
-                if extension.key_bytes().starts_with(b"SCHILY.xattr.") {
+                if extension.key_bytes().starts_with(XATTR_PAX_PREFIX) {
                     return Err(fail(format!(
                         "/{} has extended attributes, which the kernel's files do not take yet",
                         String::from_utf8_lossy(&path)
@@ -611,8 +626,8 @@ fn read_layer(
             Some(at) => (&path[..at], &path[at + 1..]),
             None => (&path[..0], &path[..]),
         };
-        if whiteouts && let Some(hidden) = base.strip_prefix(b".wh.") {
-            if hidden == b".wh..opq" {
+        if whiteouts && let Some(hidden) = base.strip_prefix(WHITEOUT_PREFIX) {
+            if base == OPAQUE_WHITEOUT {
                 emptied.push(parent.to_vec());
             } else {
                 removed.push(join(parent, hidden));
