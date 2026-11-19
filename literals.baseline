@@ -1434,7 +1434,6 @@ code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"fault witho
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"jump through a register not recognised"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"left to an address"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"loop not proven"
-code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"memory fault"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"software fused multiply-add"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"stopped by the flag"
 code	crates/wcontainers-guest-cpu/src/translate.rs	str	Reason::name	"system call not implemented"

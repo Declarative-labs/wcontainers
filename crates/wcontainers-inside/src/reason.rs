@@ -1,7 +1,7 @@
 //! The names of the native CPU side's slow paths, apart from the translation's own.
 
 pub use wcontainers_guest_cpu::reason::{
-    CODE_CHANGED_AFTER_IT_RAN, EXACT_FLOATING_POINT_REQUESTED,
+    CODE_CHANGED_AFTER_IT_RAN, EXACT_FLOATING_POINT_REQUESTED, MEMORY_FAULT,
 };
 
 /// Memory copied whole when a memory is duplicated.

@@ -32,7 +32,7 @@ use crate::layout::{Region, linear};
 use crate::reason::{
     ASKED_THE_HOST, CODE_AREA_EMPTIED, CODE_CHANGED_AFTER_IT_RAN, EXACT_FLOATING_POINT_REQUESTED,
     GUEST_PHYSICAL_SPACE_FULL, IDENTIFIERS_RAN_OUT, LARGE_ENTRY_SPLIT, MEMORY_COPIED_AT_FORK,
-    NOT_YET_TRANSLATED,
+    MEMORY_FAULT, NOT_YET_TRANSLATED,
 };
 use crate::routines::{FloatControl, Placed, Routines, Vectors};
 use crate::stop::{self, Exception, FloatStatus, GENERAL, GuestState, Interrupted, Resolved, Stop};
@@ -909,6 +909,7 @@ impl NativeCpu {
                         // The same instruction runs again, over the page's new frame.
                         Ok(true) => {}
                         Ok(false) => {
+                            self.slow(MEMORY_FAULT, 1, address);
                             return Exit::MemoryFault {
                                 address,
                                 access: if write { Access::Write } else { Access::Read },
