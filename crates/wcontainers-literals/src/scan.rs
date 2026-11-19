@@ -70,6 +70,14 @@ const LOG_TARGET: &str = "target";
 const MACRO_USE: &str = "macro_use";
 /// Methods whose string argument is an error message.
 const MESSAGE_METHODS: &[&str] = &["expect", "expect_err", "context", "wrap_err", "ok_or"];
+/// Methods whose closure argument returns an error message (`map_err(|_| "too large")`).
+const MESSAGE_CLOSURE_METHODS: &[&str] =
+    &["map_err", "ok_or_else", "with_context", "wrap_err_with"];
+/// Methods that compare their receiver with their argument (`uid.eq(&0)`), which so goes to the
+/// receiver's name.
+const COMPARISON_METHODS: &[&str] = &["eq", "ne", "lt", "le", "gt", "ge", "cmp", "partial_cmp"];
+/// Joins string literals into one string literal (`concat!("HO", "ME")`).
+const CONCAT_MACRO: &str = "concat";
 /// `Err("...")` carries a message.
 const ERR_CONSTRUCTOR: &str = "Err";
 /// `...Error::new(.., "...")`, `...Error::other("...")` and `...Error::Variant("a sentence")` carry a
@@ -125,7 +133,7 @@ const COUNTING_METHODS: &[&str] = &[
 const ROLE_WORDS: &[&str] = &[
     "uid", "gid", "euid", "egid", "suid", "sgid", "fsuid", "fsgid", "fd", "pid", "tid", "ppid",
     "pgid", "sid", "exit", "status", "stdin", "stdout", "stderr", "errno", "signal", "signo",
-    "user", "owner", "chown", "lchown", "fchown", "fchownat",
+    "user", "owner", "chown", "lchown", "fchown", "fchownat", "code",
 ];
 /// Written before a negated literal.
 const NEGATIVE_SIGN: char = '-';
@@ -208,6 +216,9 @@ pub struct FileScan {
     const_depth: usize,
     test_depth: usize,
     formatter_depth: usize,
+    /// Private modules around the scan (the file's own, when its declaration is private): other crates
+    /// cannot import what is inside one.
+    hidden_depth: usize,
     /// Log macros the file imports by their bare name.
     log_macros: Vec<String>,
     /// The name a match arm's pattern is compared with, for 0 and 1 in the pattern.
@@ -232,6 +243,7 @@ impl FileScan {
         role: FileRole,
         reference: Option<String>,
         folder: PathBuf,
+        exposed: bool,
     ) -> FileScan {
         FileScan {
             path,
@@ -245,6 +257,7 @@ impl FileScan {
             const_depth: usize::default(),
             test_depth: usize::default(),
             formatter_depth: usize::default(),
+            hidden_depth: usize::from(!exposed),
             log_macros: Vec::new(),
             pattern_hint: None,
             return_hint: None,
@@ -379,6 +392,9 @@ impl FileScan {
                 self.value_hint = None;
             }
             Expr::Match(m) if plain => self.match_expr(m, hint),
+            // Every element of an array goes to the name the array goes to (`let fds = [0, 1]`).
+            Expr::Array(a) if plain => a.elems.iter().for_each(|x| self.given(x, hint.clone())),
+            Expr::Reference(r) if plain => self.given(&r.expr, hint),
             _ => self.visit_expr(e),
         }
     }
@@ -496,7 +512,7 @@ impl FileScan {
             ty: ty.and_then(int_type_of),
             scope,
             trait_impl: exposure.trait_impl,
-            public: exposure.public,
+            public: exposure.public && self.hidden_depth == usize::default(),
             value: None,
         });
     }
@@ -553,15 +569,30 @@ impl FileScan {
             self.visit_angle_bracketed_generic_arguments(turbofish);
         }
         let message = MESSAGE_METHODS.contains(&method.as_str());
+        let closure_message = MESSAGE_CLOSURE_METHODS.contains(&method.as_str());
+        let hint = match COMPARISON_METHODS.contains(&method.as_str()) {
+            true => hint_of(&m.receiver),
+            false => Some(method.clone()),
+        };
         for arg in &m.args {
             if message && is_str_lit(arg) {
                 self.message(arg);
+            } else if let (true, Expr::Closure(c)) = (closure_message, arg)
+                && is_str_lit(unwrapped(&c.body))
+            {
+                self.visit_pat_list(c);
+                self.message(unwrapped(&c.body));
             } else if counting {
                 self.arithmetic(arg);
             } else {
-                self.given(arg, Some(method.clone()));
+                self.given(arg, hint.clone());
             }
         }
+    }
+
+    /// The parameters of a closure whose body is read apart.
+    fn visit_pat_list(&mut self, c: &syn::ExprClosure) {
+        c.inputs.iter().for_each(|p| self.visit_pat(p));
     }
 
     fn call(&mut self, c: &ExprCall) {
@@ -679,6 +710,28 @@ impl FileScan {
         true
     }
 
+    /// `concat!` of literals only: the string it makes is one literal like any other.
+    fn concat(&mut self, mac: &syn::Macro, span: proc_macro2::Span) -> bool {
+        let Ok(parts) = mac.parse_body_with(Punctuated::<Lit, Token![,]>::parse_terminated) else {
+            return false;
+        };
+        let mut text = String::new();
+        for part in &parts {
+            match part {
+                Lit::Str(s) => text.push_str(&s.value()),
+                Lit::Char(c) => text.push(c.value()),
+                Lit::Int(i) => text.push_str(i.base10_digits()),
+                Lit::Float(f) => text.push_str(f.base10_digits()),
+                Lit::Bool(b) => text.push_str(&b.value.to_string()),
+                _ => return false,
+            }
+        }
+        if !text.is_empty() {
+            self.report(&Lit::Str(syn::LitStr::new(&text, span)), false, None);
+        }
+        true
+    }
+
     fn mac(&mut self, mac: &syn::Macro) {
         let Some(last) = mac.path.segments.last() else {
             return;
@@ -691,6 +744,9 @@ impl FileScan {
             return;
         }
         if FileScan::cargo_variable(mac) {
+            return;
+        }
+        if name == CONCAT_MACRO && self.concat(mac, last.ident.span()) {
             return;
         }
         if name == STRINGIFY_MACRO {
@@ -959,6 +1015,12 @@ struct Uses(HashMap<String, String>);
 
 impl Uses {
     fn add(&mut self, arg: &Expr, callee: Option<String>) {
+        // An element of a local array or a reference to a local goes with it (`setuid(ids[0])`).
+        let arg = match unwrapped(arg) {
+            Expr::Index(i) => unwrapped(&i.expr),
+            Expr::Reference(r) => unwrapped(&r.expr),
+            other => other,
+        };
         if let (Expr::Path(p), Some(callee)) = (arg, callee)
             && let Some(name) = p.path.get_ident()
         {
@@ -1118,7 +1180,7 @@ fn unwrapped(e: &Expr) -> &Expr {
 }
 
 /// Other crates can import it.
-fn is_public(vis: &syn::Visibility) -> bool {
+pub fn is_public(vis: &syn::Visibility) -> bool {
     matches!(vis, syn::Visibility::Public(_))
 }
 
@@ -1133,6 +1195,7 @@ fn free_lit(e: &Expr, negative: bool) -> Option<(&Lit, bool)> {
         Expr::Paren(p) => free_lit(&p.expr, negative),
         Expr::Group(g) => free_lit(&g.expr, negative),
         Expr::Cast(c) => free_lit(&c.expr, negative),
+        Expr::Reference(r) => free_lit(&r.expr, negative),
         Expr::Unary(u) if matches!(u.op, UnOp::Neg(_)) => free_lit(&u.expr, !negative),
         Expr::Lit(l) if is_free(&l.lit, negative) => Some((&l.lit, negative)),
         _ => None,
@@ -1475,7 +1538,10 @@ impl<'ast> Visit<'ast> for FileScan {
     }
 
     fn visit_item_mod(&mut self, m: &'ast syn::ItemMod) {
+        let private = usize::from(!is_public(&m.vis));
+        self.hidden_depth += private;
         self.with_scope(m.ident.to_string(), |s| visit::visit_item_mod(s, m));
+        self.hidden_depth -= private;
     }
 
     fn visit_item_trait(&mut self, t: &'ast syn::ItemTrait) {

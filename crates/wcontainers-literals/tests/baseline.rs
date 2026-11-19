@@ -120,7 +120,7 @@ fn deleting_the_line_of_a_literal_still_there_fails() {
     let out = check(&root);
     assert!(!out.clean);
     assert!(
-        lines_starting(&out, &format!("{NEW_MARK}code"))
+        lines_starting(&out, &format!("{NEW_MARK}{}", List::Code.name()))
             .iter()
             .any(|l| l.contains(&format!("{FIELD_SEPARATOR}one{FIELD_SEPARATOR}4096"))),
         "{}",
@@ -401,7 +401,7 @@ fn a_track_adopts_the_check_by_merge_then_init_once() {
     git(&root, &["merge", "-q", "--no-edit", "literals"]);
     let out = check(&root);
     assert!(
-        lines_starting(&out, &format!("{NEW_MARK}code"))
+        lines_starting(&out, &format!("{NEW_MARK}{}", List::Code.name()))
             .iter()
             .any(|l| l.contains("31337")),
         "{}",

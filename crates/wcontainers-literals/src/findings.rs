@@ -132,7 +132,7 @@ const NAME_THE_ROLE: &str =
     "use the named constant for this id, descriptor or status, from libc or the crate that owns it";
 const NAME_IN_SCRIPT: &str =
     "pass the value in from where it is named, or name it once at the top of the script";
-const FIX_THE_FILE: &str = "make the file parse; nothing in it is checked until then";
+const FIX_THE_FILE: &str = "make it readable (a file that parses, a submodule checked out) or, for vendored code, ask the orchestrator for a skip policy line; nothing in it is checked until then";
 const FIX_THE_MARK: &str = "correct the mark as the note says, or remove it";
 const NOTHING_TO_DO: &str = "nothing: this list is not gated";
 

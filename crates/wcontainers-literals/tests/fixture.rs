@@ -130,7 +130,6 @@ redefinition	crates/a/src/lib.rs:51:11	int	tests::PAGE_SIZE	PAGE_SIZE = 4096	# a
 redefinition	crates/b/src/lib.rs:2:11	int	EINVAL	EINVAL = 22	# also Errno::EINVAL (crates/a/src/lib.rs:8), EINVAL (crates/b/src/other.rs:2)
 redefinition	crates/b/src/other.rs:1:11	int	PAGE_SIZE	PAGE_SIZE = 4096	# also PAGE_SIZE (crates/a/src/lib.rs:1), PAGE_SIZE (crates/a/src/lib.rs:51)
 redefinition	crates/b/src/other.rs:2:11	int	EINVAL	EINVAL = 22	# also Errno::EINVAL (crates/a/src/lib.rs:8), EINVAL (crates/b/src/lib.rs:2)
-restated	crates/a/src/lib.rs:51:28	int	tests::PAGE_SIZE	4096	# test literal restates PAGE_SIZE (crates/a/src/lib.rs:1)
 restated	crates/a/src/lib.rs:53:43	int	tests::t	4096	# test literal restates PAGE_SIZE (crates/a/src/lib.rs:1), DERIVED (crates/a/src/lib.rs:3)
 restated	crates/a/tests/it.rs:1:46	int	page	4096	# test literal restates PAGE_SIZE (crates/a/src/lib.rs:1), DERIVED (crates/a/src/lib.rs:3)
 role	crates/a/src/lib.rs:41:28	int	Buf::f	1	# given to exit
@@ -149,6 +148,7 @@ const	crates/a/src/lib.rs:12:74	int	Perm::EXEC	4
 const	crates/b/src/lib.rs:2:25	int	EINVAL	22	# = EINVAL (crates/b/src/other.rs:2), Errno::EINVAL (crates/a/src/lib.rs:8)
 const	crates/b/src/other.rs:1:28	int	PAGE_SIZE	0x1000	# = PAGE_SIZE (crates/a/src/lib.rs:1), DERIVED (crates/a/src/lib.rs:3)
 const	crates/b/src/other.rs:2:25	int	EINVAL	22	# = EINVAL (crates/b/src/lib.rs:2), Errno::EINVAL (crates/a/src/lib.rs:8)
+test	crates/a/src/lib.rs:51:28	int	tests::PAGE_SIZE	4096	# = PAGE_SIZE (crates/a/src/lib.rs:1), DERIVED (crates/a/src/lib.rs:3), PAGE_SIZE (crates/b/src/other.rs:1)
 test	crates/a/tests/it.rs:1:62	int	page	7u8
 test	crates/a/tests/it.rs:1:67	int	page	16
 free	crates/a/src/lib.rs:15:42	int	macro_rules! twice	2
