@@ -39,6 +39,8 @@ pub(crate) struct StageRun<B: Backend> {
 
 /// The bytes of the stage helper's filled sizes and primitive counts.
 const FILLED_BYTES: u64 = 32;
+/// The bytes of one filled size or primitive count.
+const COUNTER_BYTES: usize = size_of::<u32>();
 
 /// Direct3D's primitive topology as the stage helper takes it; `None` for patch lists.
 pub(super) fn input_topology(t: u32) -> Option<InputTopology> {
@@ -82,13 +84,13 @@ impl<B: Backend> Device<B> {
         }
     }
 
-    /// The 4-byte counter of the bytes stream output has filled `b` to, made at its first use.
+    /// The counter of the bytes stream output has filled `b` to, made at its first use.
     pub(super) fn filled_counter(&mut self, b: &Buffer<B>) -> Result<B::Buffer> {
         if let Some(f) = &*b.filled.borrow() {
             return Ok(f.handle.clone());
         }
         let f = self.backend.create_buffer(&wcontainers_gpu::BufferDesc {
-            size: 4,
+            size: COUNTER_BYTES as u64,
             usage: BufferUsage::STORAGE
                 | BufferUsage::COPY_SRC
                 | BufferUsage::COPY_DST
@@ -99,7 +101,7 @@ impl<B: Backend> Device<B> {
         // A buffer never written by stream output is filled to nothing.
         self.end_pass();
         self.backend
-            .write_buffer(&f, 0, &[0; 4], WriteMode::Ordered);
+            .write_buffer(&f, 0, &[0; COUNTER_BYTES], WriteMode::Ordered);
         let id = self.id();
         *b.filled.borrow_mut() = Some(Kept::new(f.clone(), id, Object::Buffer, &self.graveyard));
         Ok(f)
@@ -144,12 +146,12 @@ impl<B: Backend> Device<B> {
             return Ok(None);
         };
         self.end_pass();
-        let mut bytes = [0u8; 4];
+        let mut bytes = [0u8; COUNTER_BYTES];
         let read = self.backend.read_back_now(
             &ReadSource::Buffer {
                 buffer: &counter,
                 offset: 0,
-                size: 4,
+                size: COUNTER_BYTES as u64,
             },
             &mut bytes,
         );
@@ -499,7 +501,8 @@ impl<B: Backend> Device<B> {
             for (i, t) in self.ctx.so_targets.clone().iter().enumerate() {
                 if let Some(t) = t {
                     let c = self.filled_counter(t)?;
-                    self.backend.copy_buffer(&c, 0, f, 4 * i as u64, 4);
+                    let at = (COUNTER_BYTES * i) as u64;
+                    self.backend.copy_buffer(&c, 0, f, at, COUNTER_BYTES as u64);
                     counters[i] = Some(c);
                 }
             }
@@ -598,7 +601,8 @@ impl<B: Backend> Device<B> {
         if let Some(f) = &filled {
             for (i, c) in counters.iter().enumerate() {
                 if let Some(c) = c {
-                    self.backend.copy_buffer(f, 4 * i as u64, c, 0, 4);
+                    let at = (COUNTER_BYTES * i) as u64;
+                    self.backend.copy_buffer(f, at, c, 0, COUNTER_BYTES as u64);
                 }
             }
             self.stream_counted(f)?;
@@ -753,8 +757,9 @@ impl<B: Backend> Device<B> {
         );
         self.gpu(read)?;
         self.backend.slow_paths().hit(SlowPath::ReadBackWait);
-        let written = u32::from_le_bytes(bytes[..4].try_into().unwrap());
-        let needed = u32::from_le_bytes(bytes[4..].try_into().unwrap());
+        let (written, needed) = bytes.split_at(COUNTER_BYTES);
+        let written = u32::from_le_bytes(written.try_into().unwrap());
+        let needed = u32::from_le_bytes(needed.try_into().unwrap());
         self.queries.add_streamed(written.into(), needed.into());
         Ok(())
     }
