@@ -82,7 +82,7 @@ fn cases(seed: u64) -> Vec<Case> {
     let returned: Vec<u32> = (0..32).map(|_| next() >> 4).collect();
     let structured: Vec<u32> = (0..512).map(|_| next()).collect();
     let raw_read: Vec<u32> = (0..512).map(|_| next()).collect();
-    let operands = division_operands(&mut next);
+    let operands = division_operands(&mut next, DIVIDE_GROUPS * DIVIDE_GROUP_SIZE);
     vec![
         Case {
             shader: "cs_atomics",
@@ -204,18 +204,21 @@ fn cases(seed: u64) -> Vec<Case> {
                     first: 0,
                 },
             ],
-            groups: 4,
+            groups: DIVIDE_GROUPS,
         },
     ]
 }
 
+/// `cs_divide`'s workgroups and their size.
+const DIVIDE_GROUPS: u32 = 4;
+const DIVIDE_GROUP_SIZE: u32 = 64;
+
 /// `cs_divide`'s operands, an integer and a float divisor's bits for each invocation. Even ones
 /// divide a multiple of the divisor, so the exact quotient is an integer and its fraction zero.
-fn division_operands(next: &mut impl FnMut() -> u32) -> Vec<u32> {
-    const INVOCATIONS: u32 = 256;
-    const DIVISORS: u32 = 4096;
+fn division_operands(next: &mut impl FnMut() -> u32, invocations: u32) -> Vec<u32> {
+    const DIVISORS: u32 = 3000;
     const MULTIPLES: u32 = 64;
-    (0..INVOCATIONS)
+    (0..invocations)
         .flat_map(|i| {
             let divisor = 1 + next() % DIVISORS;
             if i % 2 == 0 {
@@ -979,7 +982,7 @@ fn image_array_expected(start: &[Vec<u32>]) -> Vec<Vec<u32>> {
             let before = start[((x + 2 * y) % elements) as usize][at(x, y)];
             let i = (x + y) % elements;
             out[i as usize][at(x, y)] = before + x * 16 + y + 1;
-            out[(elements - 1 - i) as usize][at(x, y)] = before ^ 4096;
+            out[(elements - 1 - i) as usize][at(x, y)] = before ^ 30001;
         }
     }
     out

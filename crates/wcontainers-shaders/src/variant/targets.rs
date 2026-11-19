@@ -14,7 +14,7 @@ use super::*;
 /// combining with the target's old value (`BlendInShader`).
 fn target_scalar(t: &TargetInShader) -> Result<Scalar> {
     if t.combine {
-        return Err(ConvertError::Unsupported("BlendInShader"));
+        return Err(ConvertError::Unsupported(crate::refusal::BLEND_IN_SHADER));
     }
     let format = t.format;
     match format.kind() {
@@ -22,9 +22,9 @@ fn target_scalar(t: &TargetInShader) -> Result<Scalar> {
         FormatKind::Sint => Ok(Scalar::I32),
         FormatKind::Float => match vertex_format(format).map(layout) {
             Some((Kind::Float, _, _)) => Ok(Scalar::F32),
-            _ => Err(ConvertError::Unsupported("NormAsInteger")),
+            _ => Err(ConvertError::Unsupported(crate::refusal::NORM_AS_INTEGER)),
         },
-        _ => Err(ConvertError::Unsupported("TargetsInShader")),
+        _ => Err(ConvertError::Unsupported(crate::refusal::TARGETS_IN_SHADER)),
     }
 }
 
@@ -39,7 +39,7 @@ fn retyped(
     let (own_count, own_scalar) = match module.types[ty].inner {
         TypeInner::Scalar(s) => (1, s),
         TypeInner::Vector { size, scalar } => (size as u32, scalar),
-        _ => return Err(ConvertError::Unsupported("TargetsInShader")),
+        _ => return Err(ConvertError::Unsupported(crate::refusal::TARGETS_IN_SHADER)),
     };
     let format_count = u32::BITS - t.format.components().leading_zeros();
     let count = own_count.max(format_count);

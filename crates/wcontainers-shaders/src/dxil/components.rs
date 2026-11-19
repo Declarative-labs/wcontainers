@@ -18,7 +18,7 @@ use naga::{
 type Result<T> = core::result::Result<T, ConvertError>;
 
 fn refused() -> ConvertError {
-    ConvertError::Unsupported("ConstantComponentIndexing")
+    ConvertError::Unsupported(crate::refusal::CONSTANT_COMPONENT_INDEXING)
 }
 
 /// The array a constant buffer's view holds: its element type and stride.

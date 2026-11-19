@@ -108,11 +108,14 @@ pub(crate) struct TexelBuffer {
 impl TexelBuffer {
     /// The bound view's format as the declaration (of scalar kind `declared`) reads it.
     pub(crate) fn layout(format: Format, declared: ScalarKind) -> Result<Layout> {
-        let v =
-            vertex_format(format).ok_or(ConvertError::Unsupported("TypedBufferFormatAbsent"))?;
+        let v = vertex_format(format).ok_or(ConvertError::Unsupported(
+            crate::refusal::TYPED_BUFFER_FORMAT_ABSENT,
+        ))?;
         let (kind, components, size) = layout(v);
         if natural(kind).kind != declared {
-            return Err(ConvertError::Unsupported("TypedBufferFormatKind"));
+            return Err(ConvertError::Unsupported(
+                crate::refusal::TYPED_BUFFER_FORMAT_KIND,
+            ));
         }
         Ok((kind, components, size))
     }
@@ -583,7 +586,11 @@ impl TexelBuffer {
     ) -> Result<Handle<Function>> {
         let s = match self.atomic {
             Some(s) if self.size == WORD && self.components.len() == 1 => s,
-            _ => return Err(ConvertError::Unsupported("TypedBufferAtomicFormat")),
+            _ => {
+                return Err(ConvertError::Unsupported(
+                    crate::refusal::TYPED_BUFFER_ATOMIC_FORMAT,
+                ));
+            }
         };
         let code = atomic_code(fun);
         if let Some(&(_, f)) = self.atomics.iter().find(|(c, _)| *c == code) {

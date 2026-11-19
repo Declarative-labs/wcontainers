@@ -473,7 +473,7 @@ fn storage_clears_match_direct3d() {
         // an integer format Direct3D 11 drops, which leaving the texels shows.
         let theirs = refused[before..]
             .first()
-            .is_some_and(|&r| r != "FloatClearOfInteger");
+            .is_some_and(|&r| r != wcontainers_shaders::refusal::FLOAT_CLEAR_OF_INTEGER);
         if apart > 0 && !theirs {
             failures.push(format!("seed {seed}"));
         }

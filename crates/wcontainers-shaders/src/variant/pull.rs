@@ -118,7 +118,9 @@ pub(super) fn pulled(
             continue;
         };
         if next >= SlotKind::Storage.first_binding() + SlotKind::Storage.slots() {
-            return Err(ConvertError::Unsupported("BindingsBeyondLimit"));
+            return Err(ConvertError::Unsupported(
+                crate::refusal::BINDINGS_BEYOND_LIMIT,
+            ));
         }
         let buffer = module.global_variables.append(
             GlobalVariable {
@@ -184,10 +186,12 @@ fn fetch(
     let (out, n) = match module.types[ty].inner {
         TypeInner::Scalar(s) => (s, 1),
         TypeInner::Vector { size, scalar } => (scalar, size as u32),
-        _ => return Err(ConvertError::Unsupported("PulledInputType")),
+        _ => return Err(ConvertError::Unsupported(crate::refusal::PULLED_INPUT_TYPE)),
     };
     if out.width != 4 {
-        return Err(ConvertError::Unsupported("PulledInputWidth"));
+        return Err(ConvertError::Unsupported(
+            crate::refusal::PULLED_INPUT_WIDTH,
+        ));
     }
     let (kind, components, size) = layout(format);
     let natural = match kind {

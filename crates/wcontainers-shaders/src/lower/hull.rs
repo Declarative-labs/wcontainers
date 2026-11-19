@@ -138,7 +138,7 @@ impl Lowering<'_> {
         let (points_in, points_out) = (t.points_in, t.points_out);
         if points_out == 0 {
             // A patch handing the domain shader no control points: not built.
-            return Err(unsupported("HullWithoutControlPoints"));
+            return Err(unsupported(crate::refusal::HULL_WITHOUT_CONTROL_POINTS));
         }
         if points_in == 0 || points_in > PATCH_MAX_POINTS || points_out > PATCH_MAX_POINTS {
             return Err(malformed("a hull shader's control point counts".into()));
@@ -170,7 +170,7 @@ impl Lowering<'_> {
             .chain(&constant_outputs)
             .any(|&l| l >= tess::LOCATIONS)
         {
-            return Err(unsupported("HullOutputLocation"));
+            return Err(unsupported(crate::refusal::HULL_OUTPUT_LOCATION));
         }
         let in_words = stage::record_words(inputs.len()) / 4;
         let point_words = 4 * point_outputs.len() as u32;
@@ -240,7 +240,7 @@ impl Lowering<'_> {
             match (location, bi) {
                 (Some((loc, comp)), _) => {
                     if io.ty.dims.len() != 1 || io.ty.dims[0] < points_in || to == Scalar::BOOL {
-                        return Err(unsupported("HullInputShape"));
+                        return Err(unsupported(crate::refusal::HULL_INPUT_SHAPE));
                     }
                     let slot = 1 + inputs.iter().position(|&l| l == loc).unwrap() as u32;
                     for k in 0..points_in {
@@ -267,7 +267,7 @@ impl Lowering<'_> {
                 }
                 (None, Some(builtin::POSITION)) => {
                     if io.ty.dims.len() != 1 || io.ty.dims[0] < points_in || member.size != 4 {
-                        return Err(unsupported("HullInputShape"));
+                        return Err(unsupported(crate::refusal::HULL_INPUT_SHAPE));
                     }
                     for k in 0..points_in {
                         let kk = b.u32(k);
@@ -287,7 +287,7 @@ impl Lowering<'_> {
                 }
                 (None, Some(which)) => {
                     if !io.ty.dims.is_empty() || member.size != 1 || to == Scalar::BOOL {
-                        return Err(unsupported("HullInputShape"));
+                        return Err(unsupported(crate::refusal::HULL_INPUT_SHAPE));
                     }
                     let value = match which {
                         builtin::PRIMITIVE_ID => x,
@@ -296,7 +296,7 @@ impl Lowering<'_> {
                             point_id = Some((var, to));
                             continue;
                         }
-                        _ => return Err(unsupported("HullInput")),
+                        _ => return Err(unsupported(crate::refusal::HULL_INPUT)),
                     };
                     let value = if to == Scalar::U32 {
                         value
@@ -310,7 +310,7 @@ impl Lowering<'_> {
                         self.reflect_value(id, true, None, 0, member, 0, system);
                     }
                 }
-                _ => return Err(unsupported("HullInput")),
+                _ => return Err(unsupported(crate::refusal::HULL_INPUT)),
             }
         }
 
@@ -395,7 +395,7 @@ impl Lowering<'_> {
             let (first, count) = match io.builtin {
                 Some(builtin::TESS_FACTOR_OUTER) => (0, 4),
                 Some(builtin::TESS_FACTOR_INNER) => (4, 2),
-                _ => return Err(unsupported("HullOutput")),
+                _ => return Err(unsupported(crate::refusal::HULL_OUTPUT)),
             };
             let var = io.var;
             let shape = io.ty.dims.first().copied().unwrap_or(1);
@@ -553,7 +553,7 @@ impl Lowering<'_> {
                 .ok_or_else(|| malformed("an input without a type".into()))?;
             let to = Self::scalar(member.scalar)?;
             if to == Scalar::BOOL {
-                return Err(unsupported("DomainInputShape"));
+                return Err(unsupported(crate::refusal::DOMAIN_INPUT_SHAPE));
             }
             match (location, bi) {
                 (Some((loc, comp)), _) => {
@@ -562,11 +562,11 @@ impl Lowering<'_> {
                     let (table, elements) = match (&dims[..], loc) {
                         ([n], tess::LOCATIONS) => (tess::POSITION_SLOT, Some(*n)),
                         (_, l) if l >= tess::LOCATIONS => {
-                            return Err(unsupported("DomainInputLocation"));
+                            return Err(unsupported(crate::refusal::DOMAIN_INPUT_LOCATION));
                         }
                         ([n], _) => (tess::SLOTS + loc, Some(*n)),
                         ([], _) => (tess::SLOTS + tess::LOCATIONS + loc, None),
-                        _ => return Err(unsupported("DomainInputShape")),
+                        _ => return Err(unsupported(crate::refusal::DOMAIN_INPUT_SHAPE)),
                     };
                     let slot = header_word(&mut b, table);
                     let none = b.u32(tess::NO_SLOT);
@@ -612,7 +612,7 @@ impl Lowering<'_> {
                 }
                 (None, Some(builtin::TESS_COORD)) => {
                     if member.size != 3 || to != Scalar::F32 || !dims.is_empty() {
-                        return Err(unsupported("DomainInputShape"));
+                        return Err(unsupported(crate::refusal::DOMAIN_INPUT_SHAPE));
                     }
                     let u = b.field(point, 0);
                     let u = b.bitcast(u, ScalarKind::Float);
@@ -631,7 +631,7 @@ impl Lowering<'_> {
                     b.store(g, value);
                 }
                 (None, Some(builtin::TESS_CONTROL_POINT_COUNT_IN)) => {
-                    let n = point_count.ok_or(unsupported("DomainPointCount"))?;
+                    let n = point_count.ok_or(unsupported(crate::refusal::DOMAIN_POINT_COUNT))?;
                     let value = b.u32(n);
                     let value = if to == Scalar::U32 {
                         value
@@ -669,7 +669,7 @@ impl Lowering<'_> {
                         b.store(p, value);
                     }
                 }
-                _ => return Err(unsupported("DomainInput")),
+                _ => return Err(unsupported(crate::refusal::DOMAIN_INPUT)),
             }
         }
         b.ret(None);

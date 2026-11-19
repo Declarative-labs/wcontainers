@@ -269,7 +269,7 @@ fn found_in(module: &Module, f: &Function) -> Result<Vec<Found>> {
     used.sort();
     used.dedup();
     if used.len() != pointers || used.len() != found.len() {
-        return Err(ConvertError::Unsupported("TexelPointerUse"));
+        return Err(ConvertError::Unsupported(crate::refusal::TEXEL_POINTER_USE));
     }
     Ok(found)
 }
@@ -557,11 +557,15 @@ fn storage_image(
         .storage_formats
         .iter()
         .find(|(s, _)| *s == slot)
-        .ok_or(ConvertError::Unsupported("StorageFormat"))?
+        .ok_or(ConvertError::Unsupported(crate::refusal::STORAGE_FORMAT))?
         .1;
-    let format = storage_format(format).ok_or(ConvertError::Unsupported("StorageFormatAbsent"))?;
+    let format = storage_format(format).ok_or(ConvertError::Unsupported(
+        crate::refusal::STORAGE_FORMAT_ABSENT,
+    ))?;
     if declared != Some(storage_kind(format)) {
-        return Err(ConvertError::Unsupported("StorageFormatKind"));
+        return Err(ConvertError::Unsupported(
+            crate::refusal::STORAGE_FORMAT_KIND,
+        ));
     }
     let access = match (uses.load, uses.store) {
         (true, false) => naga::StorageAccess::LOAD,
@@ -569,7 +573,9 @@ fn storage_image(
         (true, true) => {
             use naga::StorageFormat as S;
             if !matches!(format, S::R32Float | S::R32Uint | S::R32Sint) {
-                return Err(ConvertError::Unsupported("ReadWriteStorageFormat"));
+                return Err(ConvertError::Unsupported(
+                    crate::refusal::READ_WRITE_STORAGE_FORMAT,
+                ));
             }
             naga::StorageAccess::LOAD | naga::StorageAccess::STORE
         }
@@ -656,15 +662,19 @@ fn typed_buffer(
     stage: ShaderStage,
 ) -> Result<(TexelBuffer, Handle<Type>)> {
     let texture = match variant.texel_buffers {
-        TexelBufferRoute::Native => return Err(ConvertError::Unsupported("TypedBuffer")),
+        TexelBufferRoute::Native => {
+            return Err(ConvertError::Unsupported(crate::refusal::TYPED_BUFFER));
+        }
         TexelBufferRoute::Storage => false,
         TexelBufferRoute::Texture if !d.storage => true,
         TexelBufferRoute::Texture => {
-            return Err(ConvertError::Unsupported("TypedBufferStorageAsTexture"));
+            return Err(ConvertError::Unsupported(
+                crate::refusal::TYPED_BUFFER_STORAGE_AS_TEXTURE,
+            ));
         }
     };
     if uses.other {
-        return Err(ConvertError::Unsupported("TypedBufferUse"));
+        return Err(ConvertError::Unsupported(crate::refusal::TYPED_BUFFER_USE));
     }
     let formats = if d.storage {
         &variant.storage_formats
@@ -675,7 +685,9 @@ fn typed_buffer(
     let format = formats
         .iter()
         .find(|(s, _)| *s == slot)
-        .ok_or(ConvertError::Unsupported("TypedBufferFormat"))?
+        .ok_or(ConvertError::Unsupported(
+            crate::refusal::TYPED_BUFFER_FORMAT,
+        ))?
         .1;
     let declared = texel_kind(&module.types[module.global_variables[var].ty].inner)
         .ok_or_else(|| ConvertError::Malformed("a typed buffer's type".into()))?;
@@ -741,13 +753,17 @@ fn through_image(
         return Err(ConvertError::Malformed("a storage image's type".into()));
     };
     if class.is_multisampled() {
-        return Err(ConvertError::Unsupported("MultisampledStorage"));
+        return Err(ConvertError::Unsupported(
+            crate::refusal::MULTISAMPLED_STORAGE,
+        ));
     }
     if dim == ImageDimension::Cube {
         return Err(ConvertError::Malformed("a cube storage image".into()));
     }
     if uses.other {
-        return Err(ConvertError::Unsupported("TexelsThroughBufferUse"));
+        return Err(ConvertError::Unsupported(
+            crate::refusal::TEXELS_THROUGH_BUFFER_USE,
+        ));
     }
     let declared = texel_kind(inner)
         .ok_or_else(|| ConvertError::Malformed("a storage image's type".into()))?;
@@ -756,14 +772,14 @@ fn through_image(
         .storage_formats
         .iter()
         .find(|(s, _)| *s == slot)
-        .ok_or(ConvertError::Unsupported("StorageFormat"))?
+        .ok_or(ConvertError::Unsupported(crate::refusal::STORAGE_FORMAT))?
         .1;
     let layout = TexelBuffer::layout(format, declared).map_err(|e| match e {
-        ConvertError::Unsupported("TypedBufferFormatAbsent") => {
-            ConvertError::Unsupported("StorageFormatAbsent")
+        ConvertError::Unsupported(crate::refusal::TYPED_BUFFER_FORMAT_ABSENT) => {
+            ConvertError::Unsupported(crate::refusal::STORAGE_FORMAT_ABSENT)
         }
-        ConvertError::Unsupported("TypedBufferFormatKind") => {
-            ConvertError::Unsupported("StorageFormatKind")
+        ConvertError::Unsupported(crate::refusal::TYPED_BUFFER_FORMAT_KIND) => {
+            ConvertError::Unsupported(crate::refusal::STORAGE_FORMAT_KIND)
         }
         e => e,
     })?;
@@ -1280,7 +1296,7 @@ fn rewrite(f: &mut Function, plan: &Plan, typed: &[Texels]) {
 /// use.
 fn counter(module: &mut Module, var: Handle<GlobalVariable>, uses: Uses) -> Result<()> {
     if uses.load || uses.store || uses.size || uses.other {
-        return Err(ConvertError::Unsupported("CounterUse"));
+        return Err(ConvertError::Unsupported(crate::refusal::COUNTER_USE));
     }
     let ty = module.types.insert(
         Type {
@@ -1459,7 +1475,7 @@ pub(super) fn finish(
         let t = typed
             .iter_mut()
             .find(|t| t.var == a.image)
-            .ok_or(ConvertError::Unsupported("TexelPointerUse"))?;
+            .ok_or(ConvertError::Unsupported(crate::refusal::TEXEL_POINTER_USE))?;
         t.atomic(module, reflection, a)?;
     }
     for (plan, h) in functions.iter().zip(moved) {

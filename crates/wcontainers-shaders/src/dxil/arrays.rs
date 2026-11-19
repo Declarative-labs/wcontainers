@@ -16,7 +16,7 @@ use naga::{
 type Result<T> = core::result::Result<T, ConvertError>;
 
 fn refused() -> ConvertError {
-    ConvertError::Unsupported("ResourceArray")
+    ConvertError::Unsupported(crate::refusal::RESOURCE_ARRAY)
 }
 
 /// One use of an element picked at run time: the image expression using it, rewritten as a call.

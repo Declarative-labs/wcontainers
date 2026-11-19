@@ -18,5 +18,5 @@ void cs_image_array(uint3 id : SV_DispatchThreadID)
     uint before = images[(id.x + 2 * id.y) % 4][id.xy];
     uint i = (id.x + id.y) % 4;
     images[i][id.xy] = before + id.x * 16 + id.y + 1;
-    images[3 - i][id.xy] = before ^ 4096;
+    images[3 - i][id.xy] = before ^ 30001;
 }

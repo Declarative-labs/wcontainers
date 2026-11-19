@@ -54,7 +54,9 @@ pub(super) fn constants_as_texture(
             continue;
         }
         if next >= SlotKind::Texture.first_binding() + SlotKind::Texture.slots() {
-            return Err(ConvertError::Unsupported("BindingsBeyondLimit"));
+            return Err(ConvertError::Unsupported(
+                crate::refusal::BINDINGS_BEYOND_LIMIT,
+            ));
         }
         let old = naga::ResourceBinding {
             group: b.set,
@@ -143,7 +145,11 @@ pub(super) fn constants_as_texture(
                     };
                     (step, super::scalar(module, s))
                 }
-                _ => return Err(ConvertError::Unsupported("ConstantsAsTextureLayout")),
+                _ => {
+                    return Err(ConvertError::Unsupported(
+                        crate::refusal::CONSTANTS_AS_TEXTURE_LAYOUT,
+                    ));
+                }
             };
             steps.push(step);
             ty = next;
@@ -175,10 +181,16 @@ fn fetch(
     let (n, out) = match module.types[ty].inner {
         TypeInner::Scalar(s) => (1, s),
         TypeInner::Vector { size, scalar } => (size as u32, scalar),
-        _ => return Err(ConvertError::Unsupported("ConstantsAsTextureLayout")),
+        _ => {
+            return Err(ConvertError::Unsupported(
+                crate::refusal::CONSTANTS_AS_TEXTURE_LAYOUT,
+            ));
+        }
     };
     if out.width != 4 {
-        return Err(ConvertError::Unsupported("ConstantsAsTextureLayout"));
+        return Err(ConvertError::Unsupported(
+            crate::refusal::CONSTANTS_AS_TEXTURE_LAYOUT,
+        ));
     }
     let fixed: u32 = steps
         .iter()
@@ -192,7 +204,9 @@ fn fetch(
         .iter()
         .all(|s| matches!(s, Step::Fixed(_) | Step::Indexed(_, 16)));
     if n > 1 && (!whole_rows || fixed % 16 / 4 + n > 4) {
-        return Err(ConvertError::Unsupported("ConstantsAsTextureLayout"));
+        return Err(ConvertError::Unsupported(
+            crate::refusal::CONSTANTS_AS_TEXTURE_LAYOUT,
+        ));
     }
     let uvec2 = vector(module, 2, Scalar::U32);
     let mut f = Function {
