@@ -44,6 +44,9 @@ const CLIP_OR_CULL_DISTANCES: u32 = 8;
 /// A declaration's atomic minimums or maximums: signed ones, unsigned ones.
 const SIGNED_EXTREMES: u8 = 1;
 const UNSIGNED_EXTREMES: u8 = SIGNED_EXTREMES << 1;
+/// The component counts of three- and four-component vectors.
+const VEC3_SIZE: u8 = naga::VectorSize::Tri as u8;
+const VEC4_SIZE: u8 = naga::VectorSize::Quad as u8;
 /// The refusal of clip distances of a type the common form's array cannot hold.
 pub(super) const CLIP_DISTANCE_TYPE: &str = "ClipDistanceType";
 
@@ -1659,16 +1662,22 @@ impl<'a> Lowering<'a> {
             return Ok(e.bitcast(f, body, v, Scalar::U32, Self::scalar(member.scalar)?));
         }
         let (bi, size, s) = match b {
-            builtin::POSITION => (naga::BuiltIn::Position { invariant: false }, 4, Scalar::F32),
+            builtin::POSITION => (
+                naga::BuiltIn::Position { invariant: false },
+                VEC4_SIZE,
+                Scalar::F32,
+            ),
             builtin::VERTEX_ID => (naga::BuiltIn::VertexIndex, 1, Scalar::U32),
             builtin::INSTANCE_ID => (naga::BuiltIn::InstanceIndex, 1, Scalar::U32),
             builtin::IS_FRONT_FACE => (naga::BuiltIn::FrontFacing, 1, Scalar::BOOL),
             builtin::PRIMITIVE_ID => (naga::BuiltIn::PrimitiveIndex, 1, Scalar::U32),
             builtin::SAMPLE_ID => (naga::BuiltIn::SampleIndex, 1, Scalar::U32),
             builtin::SAMPLE_MASK => (naga::BuiltIn::SampleMask, 1, Scalar::U32),
-            builtin::WORKGROUP_ID => (naga::BuiltIn::WorkGroupId, 3, Scalar::U32),
-            builtin::GLOBAL_THREAD_ID => (naga::BuiltIn::GlobalInvocationId, 3, Scalar::U32),
-            builtin::LOCAL_THREAD_ID => (naga::BuiltIn::LocalInvocationId, 3, Scalar::U32),
+            builtin::WORKGROUP_ID => (naga::BuiltIn::WorkGroupId, VEC3_SIZE, Scalar::U32),
+            builtin::GLOBAL_THREAD_ID => {
+                (naga::BuiltIn::GlobalInvocationId, VEC3_SIZE, Scalar::U32)
+            }
+            builtin::LOCAL_THREAD_ID => (naga::BuiltIn::LocalInvocationId, VEC3_SIZE, Scalar::U32),
             _ => (naga::BuiltIn::LocalInvocationIndex, 1, Scalar::U32),
         };
         let ty = self.vec_ty(size, s)?;
@@ -1803,8 +1812,8 @@ fn system_value(b: u64) -> Option<SystemValue> {
 fn vector_size(n: u8) -> Result<VectorSize> {
     Ok(match n {
         2 => VectorSize::Bi,
-        3 => VectorSize::Tri,
-        4 => VectorSize::Quad,
+        VEC3_SIZE => VectorSize::Tri,
+        VEC4_SIZE => VectorSize::Quad,
         _ => return Err(malformed(format!("vector of {n}"))),
     })
 }
@@ -3015,7 +3024,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                         .basic()
                         .ok_or_else(|| malformed("typed load of an aggregate".into()))?;
                     let mut v = self.texel_load(b, dcl, index)?;
-                    if want.size < 4 {
+                    if want.size < VEC4_SIZE {
                         v = self.e.swizzle(&mut self.f, b, v, 0, want.size)?;
                     }
                     let from = self.l.texels[&dcl].scalar();
@@ -3278,7 +3287,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         };
         let (fun, value) = match what {
             // Load and store: atomic loads and stores in naga's form.
-            0 => {
+            atomic_op::LOAD => {
                 let v = match typed {
                     Some(dcl) => {
                         let v = self.texel_load(b, dcl, pointer)?;
@@ -3288,7 +3297,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 };
                 return Ok(Some(self.retyped(b, v, s, want)));
             }
-            1 => {
+            atomic_op::STORE => {
                 let value = operand(self, b, 0)?;
                 match typed {
                     Some(dcl) => self.texel_store(b, dcl, pointer, value, 1)?,
@@ -3296,8 +3305,8 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 }
                 return Ok(None);
             }
-            2 => (A::Exchange { compare: None }, operand(self, b, 0)?),
-            3 => {
+            atomic_op::EXCHANGE => (A::Exchange { compare: None }, operand(self, b, 0)?),
+            atomic_op::COMPARE_EXCHANGE => {
                 let compare = operand(self, b, 0)?;
                 (
                     A::Exchange {
@@ -3306,30 +3315,43 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                     operand(self, b, 1)?,
                 )
             }
-            4 => (A::Add, operand(self, b, 0)?),
-            5 => (A::Subtract, operand(self, b, 0)?),
-            6..=9 => {
-                let signed = what <= 7;
+            atomic_op::ADD => (A::Add, operand(self, b, 0)?),
+            atomic_op::SUB => (A::Subtract, operand(self, b, 0)?),
+            atomic_op::S_MIN..=atomic_op::U_MAX => {
+                let signed = what <= atomic_op::S_MAX;
                 if signed != (s == Scalar::I32) {
                     if typed.is_some() {
                         return Err(unsupported(crate::refusal::ATOMIC_SIGNEDNESS));
                     }
                     let value = operand(self, b, 0)?;
-                    let v = self.exchange_loop(b, pointer, s, value, what % 2 == 0)?;
+                    let v = self.exchange_loop(
+                        b,
+                        pointer,
+                        s,
+                        value,
+                        matches!(what, atomic_op::S_MIN | atomic_op::U_MIN),
+                    )?;
                     return Ok(want.is_some().then(|| self.retyped(b, v, s, want)));
                 }
-                let fun = if what % 2 == 0 { A::Min } else { A::Max };
+                let fun = match what {
+                    atomic_op::S_MIN | atomic_op::U_MIN => A::Min,
+                    _ => A::Max,
+                };
                 (fun, operand(self, b, 0)?)
             }
-            10 => (A::And, operand(self, b, 0)?),
-            11 => (A::InclusiveOr, operand(self, b, 0)?),
-            12 => (A::ExclusiveOr, operand(self, b, 0)?),
-            13 | 14 => {
+            atomic_op::AND => (A::And, operand(self, b, 0)?),
+            atomic_op::OR => (A::InclusiveOr, operand(self, b, 0)?),
+            atomic_op::XOR => (A::ExclusiveOr, operand(self, b, 0)?),
+            atomic_op::INC | atomic_op::DEC => {
                 let one = match s {
                     Scalar::I32 => Literal::I32(1),
                     _ => Literal::U32(1),
                 };
-                let fun = if what == 13 { A::Add } else { A::Subtract };
+                let fun = if what == atomic_op::INC {
+                    A::Add
+                } else {
+                    A::Subtract
+                };
                 (fun, self.lit(b, one))
             }
             _ => return Err(malformed(format!("atomic operation {what}"))),
@@ -3386,7 +3408,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         if compared {
             v = self.add(b, Expression::AccessIndex { base: v, index: 0 });
         }
-        if op.code == code::COUNTER_ATOMIC && what == 14 {
+        if op.code == code::COUNTER_ATOMIC && what == atomic_op::DEC {
             let one = self.lit(b, Literal::U32(1));
             v = self.bin(b, BinaryOperator::Subtract, v, one);
         }
@@ -3648,7 +3670,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         n: u8,
     ) -> Result<()> {
         let s = self.l.texels[&dcl].scalar();
-        let value = if n >= 4 {
+        let value = if n >= VEC4_SIZE {
             v
         } else {
             let zero = self.lit(
