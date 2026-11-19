@@ -291,6 +291,21 @@ fn gathers_equal_their_footprints() {
 }
 
 #[test]
+fn depth_textures_compared_and_read_plainly() {
+    sampled(checks::depth_textures_compared_and_read_plainly::<Angle>);
+}
+
+#[test]
+fn linear_values_interpolate_in_window_space() {
+    sampled(checks::linear_values_interpolate_in_window_space::<Angle>);
+}
+
+#[test]
+fn special_float_values_keep_their_bits() {
+    sampled(checks::special_float_values_keep_their_bits::<Angle>);
+}
+
+#[test]
 fn lists_draw_the_largest_index_as_a_vertex() {
     sampled(checks::lists_draw_the_largest_index_as_a_vertex::<Angle>);
 }

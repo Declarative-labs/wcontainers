@@ -104,6 +104,14 @@ pub fn write_glsl(
         entry_point: module.entry_point.clone(),
         multiview: None,
     };
+    let linear = linear_values(module);
+    let perspective;
+    let module = if linear.is_empty() {
+        module
+    } else {
+        perspective = linear_as_perspective(module)?;
+        &perspective
+    };
     let mut out = String::new();
     let mut writer = glsl::Writer::new(
         &mut out,
@@ -129,7 +137,267 @@ pub fn write_glsl(
         }
         out = flipped;
     }
+    let out = opaque_float_bits(linear_by_w(out, stage, &linear));
     Ok((gathers_by_samples(bit_functions(out)), reflection))
+}
+
+/// The uniform [`opaque_float_bits`] reads its bits through: never set, so 0 as GL leaves every
+/// uniform after a link.
+const ZERO: &str = "_wc_zero";
+
+/// Floats made from bits and negative zero literals, each given its bits through an exclusive or
+/// with a uniform zero, outside global constants (whose initialisers must be constant). ANGLE folds
+/// such constants and writes them as decimal literals into HLSL, where negative zero loses its
+/// sign and, in mozangle's build, a vector of them can turn into infinities; values it cannot fold
+/// keep their bits. Costs one integer operation per such call.
+fn opaque_float_bits(source: String) -> String {
+    const FROM_UINT: &str = "uintBitsToFloat(";
+    const FROM_INT: &str = "intBitsToFloat(";
+    const NEGATIVE_ZERO: &str = "-0.0";
+    const OPAQUE_UINT: &str = "_wc_from_bits(";
+    const OPAQUE_INT: &str = "_wc_from_int_bits(";
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let number = |c: char| c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E');
+    let mut out = String::with_capacity(source.len());
+    let mut changed = false;
+    for line in source.lines() {
+        if line.starts_with("const ") {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        let mut rest = line;
+        while let Some(c) = rest.chars().next() {
+            let free = !out.ends_with(ident);
+            let swap = if !free {
+                None
+            } else if let Some(after) = rest.strip_prefix(FROM_UINT) {
+                Some((OPAQUE_UINT.to_string(), after))
+            } else if let Some(after) = rest.strip_prefix(FROM_INT) {
+                Some((OPAQUE_INT.to_string(), after))
+            } else if let Some(after) = rest.strip_prefix(NEGATIVE_ZERO)
+                && !after.starts_with(number)
+                && !out.ends_with(number)
+            {
+                Some((format!("{OPAQUE_UINT}{:#x}u)", (-0f32).to_bits()), after))
+            } else {
+                None
+            };
+            match swap {
+                Some((with, after)) => {
+                    out.push_str(&with);
+                    rest = after;
+                    changed = true;
+                }
+                None => {
+                    out.push(c);
+                    rest = &rest[c.len_utf8()..];
+                }
+            }
+        }
+        out.push('\n');
+    }
+    if !changed {
+        return source;
+    }
+    let mut helpers = format!("uniform highp uint {ZERO};\n");
+    for (float, uint, int) in [
+        ("float", "uint", "int"),
+        ("vec2", "uvec2", "ivec2"),
+        ("vec3", "uvec3", "ivec3"),
+        ("vec4", "uvec4", "ivec4"),
+    ] {
+        helpers.push_str(&format!(
+            "{float} {OPAQUE_UINT}{uint} v) {{ return {FROM_UINT}v ^ {ZERO}); }}\n\
+             {float} {OPAQUE_INT}{int} v) {{ return {FROM_INT}v ^ int({ZERO})); }}\n"
+        ));
+    }
+    after_header(&out, &helpers)
+}
+
+/// The name naga's GLSL writer gives a value from the vertex to the fragment stage, before its
+/// location.
+const VARYING: &str = "_vs2fs_location";
+
+/// The line naga's GLSL writer opens the entry point with.
+const MAIN: &str = "void main() {";
+
+/// How naga's GLSL writer ends each return from the entry point, on a line of its own.
+const RETURN: &str = "return;";
+
+/// The varying carrying a linear value at `location` perspective-correct (see [`linear_by_w`]).
+const CARRIED: &str = "_wc_linear";
+
+/// The varying carrying the vertex's w at the centroid, for linear values sampled there.
+const CENTROID_W: &str = "_wc_linear_w";
+
+/// The locations of the values the stage writes (vertex) or reads (fragment) with linear
+/// interpolation, each with whether it is sampled at the centroid.
+fn linear_values(module: &ShaderModule) -> Vec<(u32, bool)> {
+    let bindings: Vec<naga::Binding> = match module.stage {
+        ShaderStage::Vertex => results(module).map(|(b, _)| b).collect(),
+        _ => arguments(module).collect(),
+    };
+    bindings
+        .into_iter()
+        .filter_map(|b| match b {
+            naga::Binding::Location {
+                location,
+                interpolation: Some(naga::Interpolation::Linear),
+                sampling,
+                ..
+            } => Some((location, sampling == Some(naga::Sampling::Centroid))),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `module` with its entry point's linear values made perspective-correct, so naga writes them
+/// (GLSL ES 3.00 has no `noperspective`); [`linear_by_w`] then carries them in GLSL.
+fn linear_as_perspective(module: &ShaderModule) -> Result<ShaderModule, String> {
+    let perspective = |b: &mut Option<naga::Binding>| {
+        if let Some(naga::Binding::Location { interpolation, .. }) = b
+            && *interpolation == Some(naga::Interpolation::Linear)
+        {
+            *interpolation = Some(naga::Interpolation::Perspective);
+        }
+    };
+    let mut out = module.module.clone();
+    let Some(entry) = out
+        .entry_points
+        .iter_mut()
+        .find(|e| e.name == module.entry_point)
+    else {
+        return Err("no such entry point".into());
+    };
+    let mut structs = Vec::new();
+    let mut values: Vec<(&mut Option<naga::Binding>, naga::Handle<naga::Type>)> = entry
+        .function
+        .arguments
+        .iter_mut()
+        .map(|a| (&mut a.binding, a.ty))
+        .collect();
+    values.extend(
+        entry
+            .function
+            .result
+            .as_mut()
+            .map(|r| (&mut r.binding, r.ty)),
+    );
+    for (binding, ty) in values {
+        match binding {
+            Some(_) => perspective(binding),
+            None => structs.push(ty),
+        }
+    }
+    for ty in structs {
+        let mut t = out.types[ty].clone();
+        if let naga::TypeInner::Struct { members, .. } = &mut t.inner {
+            for m in members {
+                perspective(&mut m.binding);
+            }
+        }
+        if t != out.types[ty] {
+            if out.types.get(&t).is_some() {
+                return Err("its struct of linear values exists perspective-correct too".into());
+            }
+            out.types.replace(ty, t);
+        }
+    }
+    Ok(ShaderModule {
+        module: out,
+        info: module.info.clone(),
+        entry_point: module.entry_point.clone(),
+        stage: module.stage,
+        key: module.key,
+    })
+}
+
+/// Carries the linear values at `linear` (from [`linear_values`]) through GLSL ES 3.00, which has
+/// no `noperspective`: the vertex stage writes each one times its w into a perspective-correct
+/// varying of its own (keeping the value itself for transform feedback), and the fragment stage
+/// divides by the w interpolated at the same place: `gl_FragCoord.w` (1 / w) at the centre, the
+/// vertex's w carried beside it at the centroid. A perspective-correct a·w over w is
+/// Σbᵢaᵢ, the value interpolated in window space, exactly; the same holds where clipping made
+/// the vertex.
+fn linear_by_w(source: String, stage: naga::ShaderStage, linear: &[(u32, bool)]) -> String {
+    if linear.is_empty() {
+        return source;
+    }
+    let vertex = stage == naga::ShaderStage::Vertex;
+    let any_centroid = linear.iter().any(|&(_, c)| c);
+    let names: Vec<(String, String, bool)> = linear
+        .iter()
+        .map(|&(l, c)| (format!("{VARYING}{l}"), format!("{CARRIED}{l}"), c))
+        .collect();
+    let direction = if vertex { "out" } else { "in" };
+    let mut out = String::with_capacity(source.len() * 2);
+    let mut in_main = false;
+    let mut declared_w = false;
+    for line in source.lines() {
+        if !in_main {
+            in_main = line == MAIN;
+            out.push_str(line);
+            out.push('\n');
+            // Each declaration of a linear value is followed by its carrier's.
+            if let Some((name, carried, _)) = names
+                .iter()
+                .find(|(n, _, _)| line.ends_with(&format!(" {n};")))
+            {
+                let carrier = line.replacen(name.as_str(), carried, 1);
+                if vertex {
+                    out.push_str(&carrier);
+                    out.push('\n');
+                } else {
+                    // The fragment stage reads only the carrier.
+                    out.truncate(out.len() - line.len() - 1);
+                    out.push_str(&carrier);
+                    out.push('\n');
+                }
+                if any_centroid && !declared_w {
+                    out.push_str(&format!("centroid {direction} float {CENTROID_W};\n"));
+                    declared_w = true;
+                }
+            }
+            continue;
+        }
+        if vertex {
+            if line.trim_start() == RETURN {
+                let indent = &line[..line.len() - RETURN.len()];
+                for (name, carried, _) in &names {
+                    out.push_str(&format!("{indent}{carried} = {name} * gl_Position.w;\n"));
+                }
+                if any_centroid {
+                    out.push_str(&format!("{indent}{CENTROID_W} = gl_Position.w;\n"));
+                }
+            }
+            out.push_str(line);
+        } else {
+            let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+            let mut rest = line;
+            'scan: while !rest.is_empty() {
+                for (name, carried, centroid) in &names {
+                    if let Some(after) = rest.strip_prefix(name.as_str())
+                        && !after.starts_with(ident)
+                        && !out.ends_with(ident)
+                    {
+                        out.push_str(&if *centroid {
+                            format!("({carried} / {CENTROID_W})")
+                        } else {
+                            format!("({carried} * gl_FragCoord.w)")
+                        });
+                        rest = after;
+                        continue 'scan;
+                    }
+                }
+                let next = rest.chars().next().map_or(0, char::len_utf8);
+                out.push_str(&rest[..next]);
+                rest = &rest[next..];
+            }
+        }
+        out.push('\n');
+    }
+    out
 }
 
 /// GLSL ES 3.10's bit functions as naga writes them, defined for GLSL ES 3.00, which lacks them
@@ -423,6 +691,495 @@ fn split_samplers(module: &ShaderModule) -> Result<Option<Split>, &'static str> 
     )))
 }
 
+/// The binding of the first copy [`plain_depth_reads`] makes, past those of [`split_samplers`].
+const PLAIN_DEPTH_BINDINGS: u32 = COPY_BINDINGS << 1;
+
+/// GLSL declares a depth texture as a shadow sampler, which only compares: naga's writer refuses a
+/// load from one and samples it only with a reference. Where a program also reads a depth texture
+/// plainly (sampled without a reference, loaded or gathered), each such read becomes a call to a
+/// function of its own that reads a copy of the texture's variable declared as a float texture, at a
+/// binding of its own (a depth texture sampled with comparison off gives its depth in red). The copies
+/// and the slots they stand for are returned with the rewritten module (None where nothing reads a
+/// depth texture plainly).
+fn plain_depth_reads(module: &ShaderModule) -> Result<Option<Split>, &'static str> {
+    use naga::{
+        Arena, Expression, Function, FunctionArgument, FunctionResult, GlobalVariable, Handle,
+        ImageClass, Range, SampleLevel, Scalar, Span, Statement, Type, TypeInner,
+    };
+    use std::collections::BTreeMap;
+    let m = &module.module;
+    let depth = |var: Handle<GlobalVariable>| {
+        matches!(
+            m.types[m.global_variables[var].ty].inner,
+            TypeInner::Image {
+                class: ImageClass::Depth { .. },
+                ..
+            }
+        )
+    };
+    // The plain reads: the function (by handle, or entry point by index) and the expression.
+    let functions = m.functions.iter().map(|(h, f)| (Ok(h), f));
+    let entries = m.entry_points.iter().enumerate();
+    let mut sites = Vec::new();
+    for (index, f) in functions.chain(entries.map(|(i, e)| (Err(i), &e.function))) {
+        for (h, e) in f.expressions.iter() {
+            let image = match *e {
+                Expression::ImageSample {
+                    image,
+                    depth_ref: None,
+                    ..
+                }
+                | Expression::ImageLoad { image, .. } => image,
+                _ => continue,
+            };
+            let info = match index {
+                Ok(f) => &module.info[f],
+                Err(i) => module.info.get_entry_point(i),
+            };
+            let TypeInner::Image {
+                class: ImageClass::Depth { .. },
+                ..
+            } = *info[image].ty.inner_with(&m.types)
+            else {
+                continue;
+            };
+            match f.expressions[image] {
+                Expression::GlobalVariable(var) if depth(var) => sites.push((index, h, var)),
+                _ => {
+                    return Err("webgl: a depth texture read plainly through a function \
+                                argument (not built)");
+                }
+            }
+        }
+    }
+    if sites.is_empty() {
+        return Ok(None);
+    }
+    let mut out = m.clone();
+    let mut copies: BTreeMap<Handle<GlobalVariable>, Handle<GlobalVariable>> = BTreeMap::new();
+    let mut own = Vec::new();
+    for &(_, _, var) in &sites {
+        if copies.contains_key(&var) {
+            continue;
+        }
+        let original = &m.global_variables[var];
+        let (
+            Some(binding),
+            TypeInner::Image {
+                dim,
+                arrayed,
+                class,
+            },
+        ) = (original.binding, &m.types[original.ty].inner)
+        else {
+            return Err("webgl: a depth texture without a binding");
+        };
+        let ImageClass::Depth { multi } = *class else {
+            unreachable!("a depth texture's class")
+        };
+        let inner = TypeInner::Image {
+            dim: *dim,
+            arrayed: *arrayed,
+            class: ImageClass::Sampled {
+                kind: naga::ScalarKind::Float,
+                multi,
+            },
+        };
+        let ty = out
+            .types
+            .insert(Type { name: None, inner }, Span::UNDEFINED);
+        let at = naga::ResourceBinding {
+            group: binding.group,
+            binding: PLAIN_DEPTH_BINDINGS + own.len() as u32,
+        };
+        own.push(((at.group, at.binding), (binding.group, binding.binding)));
+        let copy = GlobalVariable {
+            name: original.name.as_ref().map(|n| format!("{n}_plain")),
+            binding: Some(at),
+            ty,
+            ..original.clone()
+        };
+        copies.insert(var, out.global_variables.append(copy, Span::UNDEFINED));
+    }
+    // One function per read, made first, as a function calls only functions made before it.
+    let mut helpers = Arena::new();
+    let mut calls = Vec::new();
+    for &(index, h, var) in &sites {
+        let (f, info) = match index {
+            Ok(f) => (&m.functions[f], &module.info[f]),
+            Err(i) => (&m.entry_points[i].function, module.info.get_entry_point(i)),
+        };
+        let mut type_of = |e: Handle<Expression>| match &info[e].ty {
+            naga::proc::TypeResolution::Handle(t) => *t,
+            naga::proc::TypeResolution::Value(inner) => out.types.insert(
+                Type {
+                    name: None,
+                    inner: inner.clone(),
+                },
+                Span::UNDEFINED,
+            ),
+        };
+        let mut helper = Function {
+            name: Some(format!("_wc_plain_depth_{}", calls.len())),
+            ..Function::default()
+        };
+        let mut arguments = Vec::new();
+        // Each operand the read computes becomes an argument; textures, samplers and constant
+        // offsets are read where they are.
+        let mut operand = |e: Handle<Expression>, helper: &mut Function| -> Handle<Expression> {
+            match f.expressions[e] {
+                Expression::GlobalVariable(_)
+                | Expression::Constant(_)
+                | Expression::Literal(_)
+                | Expression::ZeroValue(_) => {
+                    return helper
+                        .expressions
+                        .append(f.expressions[e].clone(), Span::UNDEFINED);
+                }
+                _ => {}
+            }
+            helper.arguments.push(FunctionArgument {
+                name: None,
+                ty: type_of(e),
+                binding: None,
+            });
+            arguments.push(e);
+            let at = arguments.len() as u32 - 1;
+            helper
+                .expressions
+                .append(Expression::FunctionArgument(at), Span::UNDEFINED)
+        };
+        let image = helper
+            .expressions
+            .append(Expression::GlobalVariable(copies[&var]), Span::UNDEFINED);
+        // The first expression the helper emits: what precedes it is never emitted.
+        let mut emitted = None;
+        let read = match f.expressions[h].clone() {
+            Expression::ImageSample {
+                sampler,
+                gather,
+                coordinate,
+                array_index,
+                offset,
+                level,
+                clamp_to_edge,
+                ..
+            } => {
+                let sampler = operand(sampler, &mut helper);
+                let coordinate = operand(coordinate, &mut helper);
+                let array_index = array_index.map(|a| operand(a, &mut helper));
+                let integer_level = match level {
+                    SampleLevel::Exact(l) => info[l]
+                        .ty
+                        .inner_with(&m.types)
+                        .scalar_kind()
+                        .filter(|k| *k != naga::ScalarKind::Float),
+                    _ => None,
+                };
+                let level = match level {
+                    SampleLevel::Exact(l) => SampleLevel::Exact(operand(l, &mut helper)),
+                    SampleLevel::Bias(b) => SampleLevel::Bias(operand(b, &mut helper)),
+                    SampleLevel::Gradient { x, y } => SampleLevel::Gradient {
+                        x: operand(x, &mut helper),
+                        y: operand(y, &mut helper),
+                    },
+                    l => l,
+                };
+                let offset = match offset {
+                    None => None,
+                    Some(o) => {
+                        let (c, built) = constant(&f.expressions, o, &mut helper.expressions)?;
+                        emitted = built.then_some(c);
+                        Some(c)
+                    }
+                };
+                // A depth texture's level may be an integer, a float texture's is a float.
+                let level = match (level, integer_level) {
+                    (SampleLevel::Exact(l), Some(_)) => {
+                        let float = helper.expressions.append(
+                            Expression::As {
+                                expr: l,
+                                kind: naga::ScalarKind::Float,
+                                convert: Some(Scalar::F32.width),
+                            },
+                            Span::UNDEFINED,
+                        );
+                        emitted = emitted.or(Some(float));
+                        SampleLevel::Exact(float)
+                    }
+                    (l, _) => l,
+                };
+                Expression::ImageSample {
+                    image,
+                    sampler,
+                    gather,
+                    coordinate,
+                    array_index,
+                    offset,
+                    level,
+                    depth_ref: None,
+                    clamp_to_edge,
+                }
+            }
+            Expression::ImageLoad {
+                coordinate,
+                array_index,
+                sample,
+                level,
+                ..
+            } => Expression::ImageLoad {
+                image,
+                coordinate: operand(coordinate, &mut helper),
+                array_index: array_index.map(|a| operand(a, &mut helper)),
+                sample: sample.map(|s| operand(s, &mut helper)),
+                level: level.map(|l| operand(l, &mut helper)),
+            },
+            _ => unreachable!("a plain read"),
+        };
+        let gathers = matches!(
+            read,
+            Expression::ImageSample {
+                gather: Some(_),
+                ..
+            }
+        );
+        let first = helper.expressions.append(read, Span::UNDEFINED);
+        // The copy reads four components where the depth texture read one, its red.
+        let last = if gathers {
+            first
+        } else {
+            helper.expressions.append(
+                Expression::AccessIndex {
+                    base: first,
+                    index: 0,
+                },
+                Span::UNDEFINED,
+            )
+        };
+        let result = if gathers {
+            type_of(h)
+        } else {
+            out.types.insert(
+                Type {
+                    name: None,
+                    inner: TypeInner::Scalar(Scalar::F32),
+                },
+                Span::UNDEFINED,
+            )
+        };
+        helper.result = Some(FunctionResult {
+            ty: result,
+            binding: None,
+        });
+        helper.body.push(
+            Statement::Emit(Range::new_from_bounds(emitted.unwrap_or(first), last)),
+            Span::UNDEFINED,
+        );
+        helper
+            .body
+            .push(Statement::Return { value: Some(last) }, Span::UNDEFINED);
+        calls.push((index, h, helpers.append(helper, Span::UNDEFINED), arguments));
+    }
+    // The program's own functions after the helpers, every call moved to the new handles.
+    let mut moved = BTreeMap::new();
+    let old = std::mem::replace(&mut out.functions, helpers);
+    for (h, f) in old.iter() {
+        moved.insert(h, out.functions.append(f.clone(), old.get_span(h)));
+    }
+    let renumber = |f: &mut Function| {
+        for (_, e) in f.expressions.iter_mut() {
+            if let Expression::CallResult(c) = e {
+                *c = moved[c];
+            }
+        }
+        each_statement(&mut f.body, &mut |s| {
+            if let Statement::Call { function, .. } = s {
+                *function = moved[function];
+            }
+        });
+    };
+    for (_, f) in out.functions.iter_mut().skip(calls.len()) {
+        renumber(f);
+    }
+    for e in &mut out.entry_points {
+        renumber(&mut e.function);
+    }
+    for (index, h, helper, arguments) in calls {
+        let f = match index {
+            Ok(f) => out.functions.get_mut(moved[&f]),
+            Err(i) => &mut out.entry_points[i].function,
+        };
+        f.expressions[h] = Expression::CallResult(helper);
+        let handles: Vec<_> = f.expressions.iter().map(|(e, _)| e).collect();
+        let call = Statement::Call {
+            function: helper,
+            arguments,
+            result: Some(h),
+        };
+        if !call_in_place(&mut f.body, h, &handles, call) {
+            return Err("webgl: a plain depth read outside an emitted range");
+        }
+    }
+    let info = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::all(),
+    )
+    .validate(&out)
+    .map_err(|_| "webgl: a depth texture's plain copy does not validate")?;
+    Ok(Some((
+        ShaderModule {
+            module: out,
+            info,
+            entry_point: module.entry_point.clone(),
+            stage: module.stage,
+            key: module.key,
+        },
+        own,
+    )))
+}
+
+/// Copies the constant expression `e` of `from` into `to`, its leaves before what is built from them
+/// (leaves are never emitted), for an offset, which must be constant. True where the copy is built
+/// from leaves, and so must be emitted.
+fn constant(
+    from: &naga::Arena<naga::Expression>,
+    e: naga::Handle<naga::Expression>,
+    to: &mut naga::Arena<naga::Expression>,
+) -> Result<(naga::Handle<naga::Expression>, bool), &'static str> {
+    use naga::Expression;
+    let leaf = |e: &Expression| {
+        matches!(
+            e,
+            Expression::Literal(_) | Expression::Constant(_) | Expression::ZeroValue(_)
+        )
+    };
+    match &from[e] {
+        l if leaf(l) => Ok((to.append(l.clone(), naga::Span::UNDEFINED), false)),
+        Expression::Compose { ty, components } if components.iter().all(|&c| leaf(&from[c])) => {
+            let components = components
+                .iter()
+                .map(|&c| to.append(from[c].clone(), naga::Span::UNDEFINED))
+                .collect();
+            let ty = *ty;
+            Ok((
+                to.append(
+                    Expression::Compose { ty, components },
+                    naga::Span::UNDEFINED,
+                ),
+                true,
+            ))
+        }
+        _ => Err("webgl: a plain depth read's offset is not a vector of constants"),
+    }
+}
+
+/// Calls `f` on every statement of `block` and of the blocks inside it.
+fn each_statement(block: &mut naga::Block, f: &mut impl FnMut(&mut naga::Statement)) {
+    use naga::Statement;
+    for (s, _) in block.span_iter_mut() {
+        f(s);
+        match s {
+            Statement::Block(b) => each_statement(b, f),
+            Statement::If { accept, reject, .. } => {
+                each_statement(accept, f);
+                each_statement(reject, f);
+            }
+            Statement::Switch { cases, .. } => {
+                for c in cases {
+                    each_statement(&mut c.body, f);
+                }
+            }
+            Statement::Loop {
+                body, continuing, ..
+            } => {
+                each_statement(body, f);
+                each_statement(continuing, f);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Puts `call`, whose result is `at`, where `at` was emitted in `block` (or a block inside it): the
+/// emitted range is split around it. `handles` are the function's expressions by index. False where
+/// no range emits `at`.
+fn call_in_place(
+    block: &mut naga::Block,
+    at: naga::Handle<naga::Expression>,
+    handles: &[naga::Handle<naga::Expression>],
+    call: naga::Statement,
+) -> bool {
+    use naga::{Block, Range, Span, Statement};
+    let found = block.span_iter_mut().position(|(s, _)| match s {
+        Statement::Emit(r) => r.index_range().contains(&(at.index() as u32)),
+        _ => false,
+    });
+    if let Some(k) = found {
+        let Some((Statement::Emit(r), span)) = block.span_iter_mut().nth(k) else {
+            unreachable!("the emit found")
+        };
+        let span = span.copied().unwrap_or(Span::UNDEFINED);
+        let range = r.index_range();
+        let mut split = Vec::new();
+        let range_of =
+            |a: u32, b: u32| Range::new_from_bounds(handles[a as usize], handles[b as usize]);
+        if range.start < at.index() as u32 {
+            split.push(Statement::Emit(range_of(
+                range.start,
+                at.index() as u32 - 1,
+            )));
+        }
+        split.push(call);
+        if at.index() as u32 + 1 < range.end {
+            split.push(Statement::Emit(range_of(
+                at.index() as u32 + 1,
+                range.end - 1,
+            )));
+        }
+        let mut replaced = Block::with_capacity(split.len());
+        for s in split {
+            replaced.push(s, span);
+        }
+        block.splice(k..=k, replaced);
+        return true;
+    }
+    let mut call = Some(call);
+    for (s, _) in block.span_iter_mut() {
+        let inner: Vec<&mut Block> = match s {
+            Statement::Block(b) => vec![b],
+            Statement::If { accept, reject, .. } => vec![accept, reject],
+            Statement::Switch { cases, .. } => cases.iter_mut().map(|c| &mut c.body).collect(),
+            Statement::Loop {
+                body, continuing, ..
+            } => vec![body, continuing],
+            _ => continue,
+        };
+        for b in inner {
+            if contains_emit(b, at) {
+                return call_in_place(b, at, handles, call.take().expect("one call"));
+            }
+        }
+    }
+    false
+}
+
+/// Whether `block` or a block inside it emits `at`.
+fn contains_emit(block: &naga::Block, at: naga::Handle<naga::Expression>) -> bool {
+    use naga::Statement;
+    block.iter().any(|s| match s {
+        Statement::Emit(r) => r.index_range().contains(&(at.index() as u32)),
+        Statement::Block(b) => contains_emit(b, at),
+        Statement::If { accept, reject, .. } => {
+            contains_emit(accept, at) || contains_emit(reject, at)
+        }
+        Statement::Switch { cases, .. } => cases.iter().any(|c| contains_emit(&c.body, at)),
+        Statement::Loop {
+            body, continuing, ..
+        } => contains_emit(body, at) || contains_emit(continuing, at),
+        _ => false,
+    })
+}
+
 /// The slot a global variable of `module` is bound at.
 fn slot(module: &naga::Module, var: naga::Handle<naga::GlobalVariable>) -> Option<Slot> {
     module.global_variables[var]
@@ -438,13 +1195,24 @@ pub fn compile(
     module: &ShaderModule,
     flip_y: bool,
 ) -> Result<ShaderObj, GpuError> {
+    let plain = plain_depth_reads(module).map_err(GpuError::Invalid)?;
+    let module = plain.as_ref().map_or(module, |p| &p.0);
     let split = split_samplers(module).map_err(GpuError::Invalid)?;
-    let (module, own) = match &split {
-        Some((m, own)) => (m, &own[..]),
-        None => (module, &[][..]),
-    };
-    let (source, reflection) = write_glsl(module, flip_y)
-        .map_err(|_| GpuError::Invalid("webgl: naga could not write the shader as GLSL ES 3.00"))?;
+    // Every copy's slot with its texture's: a sampler's copy of a plain copy stands for the texture.
+    let mut own: Vec<(Slot, Slot)> = plain.as_ref().map_or(Vec::new(), |p| p.1.clone());
+    if let Some((_, copies)) = &split {
+        for &(copy, of) in copies {
+            let texture = own.iter().find(|(c, _)| *c == of).map_or(of, |o| o.1);
+            own.push((copy, texture));
+        }
+    }
+    let module = split.as_ref().map_or(module, |s| &s.0);
+    let own = &own[..];
+    // What the back end lacks is refused by `needs` before this, so a refusal here is the front's.
+    let (source, reflection) = write_glsl(module, flip_y).map_err(|e| {
+        eprintln!("wcontainers webgl: naga could not write the shader as GLSL ES 3.00: {e}");
+        GpuError::Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
+    })?;
     // A copy's slot is its texture's.
     let slot = |m: &naga::Module, var| {
         let at = slot(m, var)?;
@@ -558,10 +1326,6 @@ fn arguments(module: &ShaderModule) -> impl Iterator<Item = naga::Binding> + '_ 
         })
 }
 
-/// The features a shader needs that a back end may lack, read from its inputs and outputs, the
-/// globals its entry point uses, its types and its expressions. Storage that a fragment program only
-/// reads is named by `FRAGMENT_STORAGE_WRITE`, as binding sets name it: the interface has no bit of
-/// its own for it.
 /// How many uniform blocks the GLSL of `module`'s entry point declares: one per uniform buffer it
 /// reads.
 pub fn uniform_blocks(module: &ShaderModule) -> u32 {
@@ -580,6 +1344,10 @@ pub fn uniform_blocks(module: &ShaderModule) -> u32 {
         .count() as u32
 }
 
+/// The features a shader needs that a back end may lack, read from its inputs and outputs, the
+/// globals its entry point uses, its types and its expressions. Storage that a fragment program only
+/// reads is named by `FRAGMENT_STORAGE_WRITE`, as binding sets name it: the interface has no bit of
+/// its own for it.
 pub fn needs(module: &ShaderModule) -> Features {
     use naga::{
         AddressSpace, Binding, BuiltIn, Expression, ImageClass, ImageQuery, Sampling, ScalarKind,
@@ -674,6 +1442,10 @@ pub fn needs(module: &ShaderModule) -> Features {
                 Expression::SubgroupBallotResult | Expression::SubgroupOperationResult { .. } => {
                     Features::SUBGROUPS
                 }
+                Expression::Derivative {
+                    ctrl: naga::DerivativeControl::Fine,
+                    ..
+                } => Features::FINE_DERIVATIVES,
                 _ => Features::empty(),
             };
         }
@@ -777,7 +1549,7 @@ fn outputs(module: &ShaderModule) -> Vec<(String, u32)> {
     found.sort();
     found
         .into_iter()
-        .map(|(location, bytes)| (format!("_vs2fs_location{location}"), bytes))
+        .map(|(location, bytes)| (format!("{VARYING}{location}"), bytes))
         .collect()
 }
 
@@ -1171,6 +1943,39 @@ mod tests {
         assert!(glsl.contains("gl_ClipDistance = _tmp_return.d;"), "{glsl}");
     }
 
+    /// A depth texture compared against and read plainly, in the entry point, a function and a
+    /// loop, writes as GLSL ES 3.00: the plain reads go through a float copy at a binding of its own
+    /// standing for the texture's, the comparison stays on the shadow sampler.
+    #[test]
+    fn plain_depth_reads_write_through_a_float_copy() {
+        let wgsl = "
+            @group(0) @binding(16) var s: sampler;
+            @group(0) @binding(17) var c: sampler_comparison;
+            @group(0) @binding(32) var t: texture_depth_2d;
+            fn plain(uv: vec2<f32>) -> f32 { return textureSampleLevel(t, s, uv, 0); }
+            @fragment fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+                var sum = textureSampleCompare(t, c, p.xy, 0.5);
+                for (var i = 0; i < 2; i++) {
+                    sum += textureLoad(t, vec2<i32>(p.xy) + i, 0);
+                }
+                let g = textureGather(t, s, p.xy, vec2<i32>(1, -1));
+                return vec4<f32>(sum, plain(p.xy), textureSample(t, s, p.zw), g.x);
+            }";
+        let module = ShaderModule::from_wgsl(wgsl, "fs", ShaderStage::Fragment).expect("validates");
+        assert!(
+            write_glsl(&module, false).is_err(),
+            "naga writes it as it is"
+        );
+        let (plain, own) = plain_depth_reads(&module)
+            .expect("rewrites")
+            .expect("reads plainly");
+        assert_eq!(own, [((0, PLAIN_DEPTH_BINDINGS), (0, 32))]);
+        let (glsl, _) = write_glsl(&plain, false).expect("writes");
+        assert!(glsl.contains("sampler2DShadow"), "{glsl}");
+        assert!(glsl.contains("texelFetch("), "{glsl}");
+        assert_eq!(glsl.matches("_wc_plain_depth_").count(), 8, "{glsl}");
+    }
+
     /// The attributes a layout converts are declared as GL reads them and turned into what the
     /// program reads at the start of `main`; others stay.
     #[test]
@@ -1198,6 +2003,75 @@ mod tests {
         assert_eq!(out.matches("float _wc_small_float(").count(), 1);
         let main = out.find("void main() {").expect("main");
         assert!(out[main..].contains("_p2vs_location3 = vec3(vec4(_wc_small_float("));
+    }
+
+    /// Linear values are carried times w beside the values themselves and divided by the w at
+    /// the same place; locations sharing a prefix stay apart.
+    #[test]
+    fn linear_values_are_carried_times_w() {
+        let wgsl = "
+            struct V {
+                @builtin(position) p: vec4<f32>,
+                @location(1) @interpolate(linear) a: vec2<f32>,
+                @location(10) @interpolate(linear, centroid) b: f32,
+                @location(2) c: f32,
+            }
+            @vertex fn vs(@location(0) p: vec4<f32>) -> V { return V(p, p.xy, p.z, p.w); }
+            @fragment fn fs(v: V) -> @location(0) vec4<f32> { return vec4<f32>(v.a, v.b, v.c); }";
+        let write = |entry: &str, stage| {
+            let module = ShaderModule::from_wgsl(wgsl, entry, stage).expect("validates");
+            write_glsl(&module, false).expect("writes").0
+        };
+        let vs = write("vs", ShaderStage::Vertex);
+        for line in [
+            "smooth out vec2 _vs2fs_location1;",
+            "smooth out vec2 _wc_linear1;",
+            "smooth centroid out float _wc_linear10;",
+            "centroid out float _wc_linear_w;",
+            "    _wc_linear1 = _vs2fs_location1 * gl_Position.w;",
+            "    _wc_linear10 = _vs2fs_location10 * gl_Position.w;",
+            "    _wc_linear_w = gl_Position.w;",
+        ] {
+            assert!(vs.lines().any(|l| l == line), "{line} in\n{vs}");
+        }
+        assert!(!vs.contains("_wc_linear2"), "{vs}");
+        let fs = write("fs", ShaderStage::Fragment);
+        assert!(!fs.contains("_vs2fs_location1;"), "{fs}");
+        assert!(!fs.contains("_vs2fs_location10"), "{fs}");
+        for text in [
+            "smooth in vec2 _wc_linear1;",
+            "smooth centroid in float _wc_linear10;",
+            "centroid in float _wc_linear_w;",
+            "(_wc_linear1 * gl_FragCoord.w)",
+            "(_wc_linear10 / _wc_linear_w)",
+            "_vs2fs_location2",
+        ] {
+            assert!(fs.contains(text), "{text} in\n{fs}");
+        }
+    }
+
+    /// Floats from bits and negative zero literals read their bits through the uniform zero;
+    /// global constants and other numbers stay.
+    #[test]
+    fn float_bits_are_kept_from_folding() {
+        let source = "#version 300 es\nprecision highp float;\nconst float k = -0.0;\n\
+                      void main() { a = uintBitsToFloat(uvec4(1u)); b = intBitsToFloat(i); \
+                      c = vec2(-0.0, -0.05); d = myuintBitsToFloat(x); e = 1e-0; }\n";
+        let out = opaque_float_bits(source.into());
+        let main = &out[out.find("void main").expect("main")..];
+        assert_eq!(
+            main,
+            "void main() { a = _wc_from_bits(uvec4(1u)); b = _wc_from_int_bits(i); \
+             c = vec2(_wc_from_bits(0x80000000u), -0.05); d = myuintBitsToFloat(x); e = 1e-0; }\n"
+        );
+        assert!(out.contains("const float k = -0.0;"), "{out}");
+        assert!(out.contains("uniform highp uint _wc_zero;"), "{out}");
+        assert!(
+            out.contains("vec4 _wc_from_bits(uvec4 v) { return uintBitsToFloat(v ^ _wc_zero); }"),
+            "{out}"
+        );
+        let plain = "#version 300 es\nvoid main() { a = 1.0 - 0.0; }\n";
+        assert_eq!(opaque_float_bits(plain.into()), plain);
     }
 
     #[test]

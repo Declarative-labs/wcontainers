@@ -1342,6 +1342,7 @@ pub fn half_floats_read_back_as_stored<H: Host>() {
             })
             .collect();
         let drawn = b.slow_paths().count(SlowPath::CopyThroughBuffer);
+        let converted = b.slow_paths().count(SlowPath::FormatConverted);
         let source = ReadSource::Texture {
             region: TextureRegion { ..region },
             extent: part,
@@ -1373,9 +1374,18 @@ pub fn half_floats_read_back_as_stored<H: Host>() {
             want,
             "{format:?} copied into a buffer"
         );
-        if format != Format::B5g6r5Unorm {
-            assert!(b.slow_paths().count(SlowPath::CopyThroughBuffer) >= drawn + 3);
-        }
+        // 16-bit and packed floats through their bits drawn into a twin; B5G6R5 packed again on
+        // the host, each of the three reads.
+        let (path, before) = if format == Format::B5g6r5Unorm {
+            (SlowPath::FormatConverted, converted)
+        } else {
+            (SlowPath::CopyThroughBuffer, drawn)
+        };
+        assert!(
+            b.slow_paths().count(path) >= before + 3,
+            "{format:?}: {path:?} counted {} times in three reads",
+            b.slow_paths().count(path) - before
+        );
         assert_eq!(b.status(), DeviceStatus::Ok);
         b.destroy(Object::Buffer(out));
         b.destroy(Object::Texture(t));
@@ -1909,6 +1919,418 @@ pub fn gathers_equal_their_footprints<H: Host>() {
         b.destroy(Object::Texture(t));
     }
     b.destroy(Object::BindingSet(set));
+}
+
+/// One depth texture compared against and read plainly by the same program, as shadow maps are:
+/// pixel (x, y) of an 8 by 8 target reads texel (x / 2, y / 2) of a 4 by 4 one.
+const DEPTH_READ_BOTH_WAYS: &str = "
+@group(0) @binding(16) var nearest: sampler;
+@group(0) @binding(17) var less: sampler_comparison;
+@group(0) @binding(32) var td: texture_depth_2d;
+@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(f32((v & 1u) << 2u) - 1.0, f32((v & 2u) << 1u) - 1.0, 0.0, 1.0);
+}
+fn steps(d: f32) -> u32 { return u32(round(d * 16.0)); }
+fn plain(uv: vec2<f32>, level: i32) -> f32 { return textureSampleLevel(td, nearest, uv, level); }
+@fragment fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<u32> {
+    let uv = p.xy / 8.0;
+    let compared = textureSampleCompareLevel(td, less, uv, 0.4);
+    let loaded = textureLoad(td, vec2<i32>(p.xy) / 2, 0);
+    var g = vec4<f32>(0.0);
+    if (p.x < 4.0) {
+        g = textureGather(td, nearest, uv, vec2<i32>(1, 0));
+    } else {
+        g = textureGather(td, nearest, uv);
+    }
+    return vec4<u32>(u32(compared), steps(plain(uv, 0)), steps(loaded),
+        steps(g.w) | (steps(g.y) << 8u));
+}
+";
+
+/// GLSL declares a depth texture as a shadow sampler, which only compares; a program that also
+/// samples, loads or gathers it plainly reads a float copy of its variable. Every read equals the
+/// texel the interface defines, with the comparison in the same program, and the plain reads in a
+/// function, in a branch and with a constant offset.
+pub fn depth_textures_compared_and_read_plainly<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    let k = Kit::new(&mut b);
+    let side = 4;
+    let depths: Vec<u8> = (0..side * side)
+        .flat_map(|i| (i as f32 / 16.0).to_le_bytes())
+        .collect();
+    let td = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        Format::Depth32Float,
+        [side, side, 1],
+        1,
+        TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+        false,
+    );
+    b.write_texture(
+        &TextureRegion {
+            texture: &td,
+            mip: 0,
+            layer: 0,
+            origin: Origin::default(),
+            stencil: false,
+        },
+        Extent {
+            width: side,
+            height: side,
+            depth_or_layers: 1,
+        },
+        &depths,
+        side * 4,
+        side,
+        WriteMode::Ordered,
+    );
+    let vd = kit::view(
+        &mut b,
+        &td,
+        Format::Depth32Float,
+        ViewDimension::D2,
+        0,
+        1,
+        0,
+        1,
+    );
+    let sampler = |b: &mut H::Backend, compare| {
+        b.create_sampler(&SamplerDesc {
+            min: Filter::Nearest,
+            mag: Filter::Nearest,
+            mip: Filter::Nearest,
+            address: [AddressMode::Clamp; 3],
+            lod_range: [0f32.to_bits(), 0f32.to_bits()],
+            anisotropy: 1,
+            compare,
+            border: BorderColor::TransparentBlack,
+        })
+        .expect("create_sampler")
+    };
+    let nearest = sampler(&mut b, None);
+    let less = sampler(&mut b, Some(CompareFn::Less));
+    let entries = [
+        (16, BindingResource::Sampler(&nearest)),
+        (17, BindingResource::Sampler(&less)),
+        (32, BindingResource::Texture(&vd)),
+    ]
+    .map(|(binding, resource)| BindingEntry {
+        binding,
+        stages: StageSet::FRAGMENT,
+        resource,
+    });
+    let set = b.create_binding_set(&entries).expect("create_binding_set");
+    let f = Format::Rgba32Uint;
+    let target = 8;
+    let out = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        f,
+        [target, target, 1],
+        1,
+        TextureUsage::RENDER | TextureUsage::COPY_SRC,
+        false,
+    );
+    let view = kit::target(&mut b, &out, f, 0, 0);
+    let vp = [kit::viewport(0.0, 0.0, target as f32, target as f32)];
+    let program = kit::program(&mut b, DEPTH_READ_BOTH_WAYS, "vs", "fs");
+    b.begin_pass(&kit::pass(&view, [0; 4], None));
+    b.draw(&kit::call(
+        &k,
+        &program,
+        Some(&set),
+        &vp,
+        Topology::TriangleList,
+        3,
+    ));
+    b.end_pass();
+    let texel_size = f.block().2 as usize;
+    let got = kit::read(&mut b, &out, 0, 0, [target, target, 1], texel_size, false);
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    let side = side as i32;
+    let texel = |x: i32, y: i32| (y.clamp(0, side - 1) * side + x.clamp(0, side - 1)) as u32;
+    for (i, t) in got.as_chunks::<16>().0.iter().enumerate() {
+        let got: [u32; 4] =
+            core::array::from_fn(|c| u32::from_le_bytes(t[c * 4..c * 4 + 4].try_into().unwrap()));
+        let (x, y) = (i as i32 % target as i32, i as i32 / target as i32);
+        let at = texel(x / 2, y / 2);
+        // The footprint's corner: the texel below and left of the sample point, (x + 0.5) / 2 - 0.5.
+        let shift = i32::from(x < target as i32 / 2);
+        let corner = ((x - 1).div_euclid(2) + shift, (y - 1).div_euclid(2));
+        let gather = footprint(corner, texel);
+        let want = [
+            u32::from(0.4 < at as f32 / 16.0),
+            at,
+            at,
+            gather[3] | (gather[1] << 8),
+        ];
+        assert_eq!(got, want, "pixel ({x}, {y})");
+    }
+    b.destroy(Object::Program(program));
+    b.destroy(Object::BindingSet(set));
+    for v in [view, vd] {
+        b.destroy(Object::TextureView(v));
+    }
+    for t in [out, td] {
+        b.destroy(Object::Texture(t));
+    }
+    for s in [nearest, less] {
+        b.destroy(Object::Sampler(s));
+    }
+}
+
+/// Two triangles whose vertices have different w (the second crossing the far plane, so it is
+/// clipped), each value being its vertex's position on screen in clip space: linear values (at the
+/// centre and at the centroid) are the fragment's own position, as window-space interpolation
+/// gives; the perspective-correct one differs, which shows the draw tells them apart.
+const LINEAR: &str = "
+const SIDE: f32 = 32.0;
+var<private> SCREEN: array<vec3<f32>, 6> = array<vec3<f32>, 6>(
+    vec3<f32>(-0.95, -0.9, 1.0), vec3<f32>(-0.05, -0.6, 3.0), vec3<f32>(-0.6, 0.95, 0.5),
+    vec3<f32>(0.05, -0.95, 2.0), vec3<f32>(0.95, 0.2, 0.7), vec3<f32>(0.3, 0.9, 1.5),
+);
+var<private> DEPTH: array<f32, 6> = array<f32, 6>(0.5, 0.5, 0.5, 0.5, 0.5, 1.6);
+struct V {
+    @builtin(position) p: vec4<f32>,
+    @location(0) @interpolate(linear) a: vec2<f32>,
+    @location(1) @interpolate(linear, centroid) b: f32,
+    @location(2) @interpolate(perspective) c: f32,
+}
+@vertex fn vs(@builtin(vertex_index) i: u32) -> V {
+    let s = SCREEN[i];
+    return V(vec4<f32>(s.xy * s.z, DEPTH[i] * s.z, s.z), s.xy, s.x, s.x);
+}
+@fragment fn fs(v: V) -> @location(0) vec4<f32> {
+    let at = vec2<f32>(v.p.x / SIDE * 2.0 - 1.0, 1.0 - v.p.y / SIDE * 2.0);
+    return vec4<f32>(v.a - at, v.b - at.x, v.c - at.x);
+}";
+
+/// Linear (`noperspective`) values, which GLSL ES 3.00 lacks, interpolate in window space: at the
+/// centre and at the centroid, in a triangle drawn whole and one clipped at the far plane.
+pub fn linear_values_interpolate_in_window_space<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    let k = Kit::new(&mut b);
+    let f = Format::Rgba32Float;
+    if !b.caps().formats.get(f).contains(FormatUse::RENDER) {
+        not_run_because(format!("{f:?} does not render here"));
+        return;
+    }
+    let side = 32;
+    let out = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        f,
+        [side, side, 1],
+        1,
+        TextureUsage::RENDER | TextureUsage::COPY_SRC,
+        false,
+    );
+    let view = kit::target(&mut b, &out, f, 0, 0);
+    let vp = [kit::viewport(0.0, 0.0, side as f32, side as f32)];
+    let program = kit::program(&mut b, LINEAR, "vs", "fs");
+    let outside = f32::MAX;
+    b.begin_pass(&kit::pass(&view, [outside.to_bits(); 4], None));
+    b.draw(&kit::call(
+        &k,
+        &program,
+        None,
+        &vp,
+        Topology::TriangleList,
+        6,
+    ));
+    b.end_pass();
+    let got = kit::read(
+        &mut b,
+        &out,
+        0,
+        0,
+        [side, side, 1],
+        f.block().2 as usize,
+        false,
+    );
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    let floats: Vec<f32> = got
+        .as_chunks::<{ size_of::<f32>() }>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
+        .collect();
+    let texels: Vec<[f32; 4]> = floats.as_chunks::<4>().0.to_vec();
+    let drawn: Vec<(usize, [f32; 4])> = texels
+        .into_iter()
+        .enumerate()
+        .filter(|(_, t)| t[0] != outside)
+        .collect();
+    // The vertices as LINEAR has them: screen x, y and w.
+    let screen = [
+        [-0.95f64, -0.9, 1.0],
+        [-0.05, -0.6, 3.0],
+        [-0.6, 0.95, 0.5],
+        [0.05, -0.95, 2.0],
+        [0.95, 0.2, 0.7],
+        [0.3, 0.9, 1.5],
+    ];
+    // The perspective-correct value the host expects at (x, y) in clip space: the triangle whose
+    // window-space weights are least negative there.
+    let perspective = |x: f64, y: f64| {
+        let weights = |t: &[[f64; 3]]| {
+            let [a, b, c] = [t[0], t[1], t[2]];
+            let area = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
+            let l1 = ((x - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (y - a[1])) / area;
+            let l2 = ((b[0] - a[0]) * (y - a[1]) - (x - a[0]) * (b[1] - a[1])) / area;
+            [1.0 - l1 - l2, l1, l2]
+        };
+        let (t, l) = screen
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|t| (t, weights(t)))
+            .max_by(|p, q| {
+                let least = |l: &[f64; 3]| l.iter().copied().fold(f64::MAX, f64::min);
+                least(&p.1).total_cmp(&least(&q.1))
+            })
+            .expect("two triangles");
+        let (mut over_w, mut sum) = (0.0, 0.0);
+        for (v, l) in t.iter().zip(l) {
+            over_w += l / v[2];
+            sum += l * v[0] / v[2];
+        }
+        sum / over_w
+    };
+    // Window-space interpolation in 32-bit floats through w from 0.5 to 3, against how far the
+    // GPU's own perspective-correct interpolation is from the host's.
+    let tolerance = 1e-3;
+    let (mut linear_off, mut perspective_off, mut gpu_off) = (0f64, 0f64, 0f64);
+    for (i, t) in &drawn {
+        let (x, y) = (i % side as usize, i / side as usize);
+        for (c, what) in [
+            (0, "linear x"),
+            (1, "linear y"),
+            (2, "linear at the centroid"),
+        ] {
+            assert!(
+                t[c].abs() < tolerance,
+                "pixel ({x}, {y}): {what} is {} from the window-space value",
+                t[c]
+            );
+            linear_off = linear_off.max(f64::from(t[c].abs()));
+        }
+        let half = f64::from(side) / 2.0;
+        let (cx, cy) = ((x as f64 + 0.5) / half - 1.0, 1.0 - (y as f64 + 0.5) / half);
+        perspective_off = perspective_off.max(f64::from(t[3].abs()));
+        gpu_off = gpu_off.max((f64::from(t[3]) + cx - perspective(cx, cy)).abs());
+    }
+    println!(
+        "linear values at most {linear_off:e} from window space; the GPU's perspective-correct \
+         ones at most {gpu_off:e} from the host's, {perspective_off} from window space"
+    );
+    // The whole triangle covers about a fifth of the target, the clipped one less.
+    assert!(
+        drawn.len() > (side * side / 8) as usize,
+        "{} pixels drawn",
+        drawn.len()
+    );
+    assert!(
+        perspective_off > 0.05,
+        "the perspective-correct value is at most {perspective_off} from the linear one"
+    );
+    b.destroy(Object::Program(program));
+    b.destroy(Object::TextureView(view));
+    b.destroy(Object::Texture(out));
+}
+
+/// Infinities and negative zero written into an `rgba32float` target, each way a program can hold
+/// them: as a constant, from a local variable of their bits (as the DXBC converter writes
+/// non-finite constants), as a literal negative zero, and from a uniform buffer.
+const SPECIAL: &str = "
+struct U { bits: vec4<u32> }
+@group(0) @binding(0) var<uniform> u: U;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(f32(i & 1u) * 4.0 - 1.0, f32(i >> 1u) * 4.0 - 1.0, 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    var held = vec4<u32>(0x7f800000u, 0x80000000u, 0xff800000u, 0x3fc00000u);
+    switch u32(p.x) {
+        case 0u: { return bitcast<vec4<f32>>(vec4<u32>(0x7f800000u, 0x80000000u, 0xff800000u, 0x3fc00000u)); }
+        case 1u: { return bitcast<vec4<f32>>(held); }
+        case 2u: { return vec4<f32>(bitcast<f32>(0x7f800000u), -0.0, bitcast<f32>(0xff800000u), 1.5); }
+        default: { return bitcast<vec4<f32>>(u.bits); }
+    }
+}";
+
+/// Special float values reach the target with their bits by every route a program holds them.
+pub fn special_float_values_keep_their_bits<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    let k = Kit::new(&mut b);
+    let f = Format::Rgba32Float;
+    if !b.caps().formats.get(f).contains(FormatUse::RENDER) {
+        not_run_because(format!("{f:?} does not render here"));
+        return;
+    }
+    let want = [0x7f80_0000u32, 0x8000_0000, 0xff80_0000, 0x3fc0_0000];
+    let bits: Vec<u8> = want.iter().flat_map(|w| w.to_le_bytes()).collect();
+    let ub = buffer(&mut b, BufferUsage::UNIFORM, &bits);
+    let set = b
+        .create_binding_set(&[BindingEntry {
+            binding: 0,
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::UniformBuffer(BufferRange {
+                buffer: &ub,
+                offset: 0,
+                size: bits.len() as u64,
+            }),
+        }])
+        .expect("create_binding_set");
+    let routes = ["a constant", "a variable", "literals", "a uniform"];
+    let width = routes.len() as u32;
+    let out = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        f,
+        [width, 1, 1],
+        1,
+        TextureUsage::RENDER | TextureUsage::COPY_SRC,
+        false,
+    );
+    let view = kit::target(&mut b, &out, f, 0, 0);
+    let vp = [kit::viewport(0.0, 0.0, width as f32, 1.0)];
+    let program = kit::program(&mut b, SPECIAL, "vs", "fs");
+    b.begin_pass(&kit::pass(&view, [0; 4], None));
+    b.draw(&kit::call(
+        &k,
+        &program,
+        Some(&set),
+        &vp,
+        Topology::TriangleList,
+        3,
+    ));
+    b.end_pass();
+    let texel = f.block().2 as usize;
+    let got = kit::read(&mut b, &out, 0, 0, [width, 1, 1], texel, false);
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    let wrong: Vec<String> = routes
+        .iter()
+        .zip(got.chunks_exact(texel))
+        .filter_map(|(route, t)| {
+            let t: Vec<u32> = t
+                .as_chunks::<{ size_of::<u32>() }>()
+                .0
+                .iter()
+                .map(|c| u32::from_le_bytes(*c))
+                .collect();
+            (t != want).then(|| format!("{route}: {t:08x?}"))
+        })
+        .collect();
+    assert!(wrong.is_empty(), "want {want:08x?}; {}", wrong.join("; "));
+    b.destroy(Object::Program(program));
+    b.destroy(Object::BindingSet(set));
+    b.destroy(Object::Buffer(ub));
+    b.destroy(Object::TextureView(view));
+    b.destroy(Object::Texture(out));
 }
 
 /// Copies within one float format are blits, taking no slow path, where the probe found blits keep
@@ -5050,7 +5472,8 @@ pub fn absent_features_are_refused<H: Host>() {
         | Features::BORDER_COLOR
         | Features::DEPTH_BOUNDS
         | Features::STENCIL_PER_FACE
-        | Features::TEXEL_BUFFERS;
+        | Features::TEXEL_BUFFERS
+        | Features::FINE_DERIVATIVES;
     assert!(
         !caps.features.intersects(never),
         "declared what is not built: {:?}",
@@ -5328,11 +5751,29 @@ pub fn absent_features_are_refused<H: Host>() {
             "primitive_index",
             Features::PRIMITIVE_INDEX,
         ),
+        (
+            fragment(
+                "",
+                "@builtin(position) p: vec4<f32>",
+                "return vec4<f32>(dpdxFine(p.x), dpdyFine(p.y), fwidthFine(p.x), 1.0);",
+            ),
+            "fine derivatives",
+            Features::FINE_DERIVATIVES,
+        ),
     ];
     for (wgsl, what, f) in wgsl_absent {
         let m = extensions::module_all(&wgsl, "fs", ShaderStage::Fragment);
         by_caps(b.create_shader(&m).map(drop), f, what);
     }
+    // Coarse derivatives are GLSL's plain ones, which may be coarse: no bit names them.
+    let coarse = fragment(
+        "",
+        "@builtin(position) p: vec4<f32>",
+        "return vec4<f32>(dpdxCoarse(p.x), dpdyCoarse(p.y), fwidthCoarse(p.x), 1.0);",
+    );
+    let m = extensions::module_all(&coarse, "fs", ShaderStage::Fragment);
+    let made = b.create_shader(&m).expect("coarse derivatives");
+    b.destroy(Object::Shader(made));
     for (wgsl, what, f) in [
         (
             "@group(0) @binding(0) var<storage, read> s: array<vec4<f32>>;\n\
@@ -5868,11 +6309,17 @@ pub fn bgra_textures_keep_their_byte_order<H: Host>() {
             false,
         );
         b.write_texture(&region!(&t), extent(4, 2), &bgra, 16, 2, WriteMode::Ordered);
-        assert!(b.slow_paths().count(SlowPath::FormatConverted) > before);
+        let written = b.slow_paths().count(SlowPath::FormatConverted);
+        assert!(written > before);
         assert_eq!(
             kit::read(&mut b, &t, 0, 0, [4, 2, 1], 4, false),
             bgra,
             "{format:?} now"
+        );
+        let read = b.slow_paths().count(SlowPath::FormatConverted);
+        assert!(
+            read > written,
+            "{format:?}: a read swapping on the host is not counted"
         );
         let rb = b
             .read_back(&ReadSource::Texture {
@@ -5885,6 +6332,7 @@ pub fn bgra_textures_keep_their_byte_order<H: Host>() {
         let mut later = vec![0; 32];
         b.finish_read(rb, &mut later);
         assert_eq!(later, bgra, "{format:?} later");
+        assert!(b.slow_paths().count(SlowPath::FormatConverted) > read);
         // Loaded through a view of its own format, texel (0, 0) is red 200 (sRGB decoded for the
         // sRGB format).
         let view = kit::view(&mut b, &t, format, ViewDimension::D2, 0, 1, 0, 1);
