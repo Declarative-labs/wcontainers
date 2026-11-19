@@ -13,6 +13,10 @@ pub const DECIMAL_POINT: char = '.';
 pub const WORD_JOINER: char = '_';
 /// Starts an absolute path.
 const PATH_ROOT: char = '/';
+/// Joins a name to a number that is part of it (`UTF-8`, `SHA-256`).
+const NAME_HYPHEN: char = '-';
+/// Ends text that only labels or scales what it follows (`"{name}:"`, `"{pct}%"`).
+const LABEL_ENDINGS: &[char] = &[':', '%'];
 /// Characters after which a `/` starts a path rather than joining two words (`and/or`).
 const PATH_STARTERS: &[char] = &['(', '[', '{', '}', '=', ':', '\'', '"', '`', ','];
 
@@ -46,8 +50,11 @@ pub fn has_number(text: &str) -> bool {
     let mut i = usize::default();
     while let Some(&c) = chars.get(i) {
         let prev = i.checked_sub(1).and_then(|p| chars.get(p)).copied();
-        let starts_word =
-            prev.is_none_or(|p| !(p.is_alphanumeric() || p == WORD_JOINER || p == DECIMAL_POINT));
+        let before = i.checked_sub(2).and_then(|p| chars.get(p)).copied();
+        let in_name = prev == Some(NAME_HYPHEN) && before.is_some_and(char::is_alphabetic);
+        let starts_word = !in_name
+            && prev
+                .is_none_or(|p| !(p.is_alphanumeric() || p == WORD_JOINER || p == DECIMAL_POINT));
         if !(c.is_ascii_digit() && starts_word) {
             i += 1;
             continue;
@@ -111,7 +118,8 @@ pub fn data_like(text: &str) -> bool {
     let written: String = without_placeholders(text)
         .split(PLACEHOLDER_STANDIN)
         .collect();
-    !written.is_empty() && !written.chars().all(|c| c.is_lowercase())
+    let label = written.chars().count() == 1 && text.ends_with(LABEL_ENDINGS);
+    !written.is_empty() && !label && !written.chars().all(|c| c.is_lowercase())
 }
 
 /// Text that may stand as a message: it holds no value and is not data.

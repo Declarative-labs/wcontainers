@@ -23,6 +23,8 @@ pub struct Crates {
     /// Packages from outside the workspace that each crate depends on, directly or through its
     /// workspace dependencies.
     external: HashMap<String, BTreeSet<String>>,
+    /// Each crate's package name.
+    names: HashMap<String, String>,
 }
 
 fn table_entries(manifest: &toml::Table) -> Vec<(&String, &toml::Value)> {
@@ -68,6 +70,7 @@ impl Crates {
             .unwrap_or_default();
         let mut direct: HashMap<String, BTreeSet<String>> = HashMap::new();
         let mut external: HashMap<String, BTreeSet<String>> = HashMap::new();
+        let mut names = HashMap::new();
         for dir in crate_dirs {
             let Some(manifest) = std::fs::read_to_string(root.join(dir).join(MANIFEST))
                 .ok()
@@ -75,6 +78,13 @@ impl Crates {
             else {
                 continue;
             };
+            if let Some(name) = manifest
+                .get(crate::PACKAGE_TABLE)
+                .and_then(|p| p.get(crate::PACKAGE_NAME))
+                .and_then(|n| n.as_str())
+            {
+                names.insert(dir.clone(), name.to_string());
+            }
             for (name, spec) in table_entries(&manifest) {
                 let inherited = spec
                     .get(WORKSPACE_KEY)
@@ -106,7 +116,10 @@ impl Crates {
                 }
             }
         }
-        let mut crates = Crates::default();
+        let mut crates = Crates {
+            names,
+            ..Crates::default()
+        };
         for dir in crate_dirs {
             let mut seen = BTreeSet::new();
             let mut todo: Vec<&String> = direct.get(dir).into_iter().flatten().collect();
@@ -152,6 +165,11 @@ impl Crates {
     /// How many crates this one depends on; fewer means more fundamental.
     pub fn depth(&self, dir: &str) -> usize {
         self.reach.get(dir).map_or(usize::default(), BTreeSet::len)
+    }
+
+    /// The crate's package name.
+    pub fn package(&self, dir: &str) -> Option<&str> {
+        self.names.get(dir).map(String::as_str)
     }
 
     /// The crate depends, directly or not, on this package from outside the workspace.

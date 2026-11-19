@@ -26,10 +26,10 @@ mod scripts;
 mod text;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
+
+use rayon::prelude::*;
 
 pub use baseline::BASELINE_FILE;
 use deps::Crates;
@@ -115,9 +115,9 @@ pub(crate) const WORKSPACE_TABLE: &str = "workspace";
 const LIB_TABLE: &str = "lib";
 const BIN_TABLES: &str = "bin";
 const TARGET_PATH: &str = "path";
-const PACKAGE_TABLE: &str = "package";
+pub(crate) const PACKAGE_TABLE: &str = "package";
 const BUILD_KEY: &str = "build";
-const PACKAGE_NAME: &str = "name";
+pub(crate) const PACKAGE_NAME: &str = "name";
 /// A crate's source folder.
 const SOURCE_FOLDER: &str = "src";
 /// A crate's folders of test code, by their position in the crate (not anywhere in a path).
@@ -234,12 +234,20 @@ struct SourceFile {
     crate_root: bool,
 }
 
+/// A path relative to the root, with `.` and `..` resolved by their names (`tests/../src/a.rs`).
 fn rel_string(path: &Path, root: &Path) -> String {
     let rel = path.strip_prefix(root).unwrap_or(path);
-    rel.components()
-        .map(|c| c.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join(PATH_COMPONENT_SEPARATOR)
+    let mut parts = Vec::new();
+    for c in rel.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                parts.pop();
+            }
+            _ => parts.push(c.as_os_str().to_string_lossy()),
+        }
+    }
+    parts.join(PATH_COMPONENT_SEPARATOR)
 }
 
 #[derive(Default)]
@@ -406,29 +414,9 @@ fn has_generated_marker(path: &Path) -> bool {
     })
 }
 
-/// Runs `f` on every item on every core; the order of the results is not the order of the items.
-fn parallel<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
-    let next = AtomicUsize::new(usize::default());
-    let workers = std::thread::available_parallelism()
-        .unwrap_or(NonZeroUsize::MIN)
-        .get();
-    std::thread::scope(|s| {
-        let handles: Vec<_> = (usize::default()..workers)
-            .map(|_| {
-                s.spawn(|| {
-                    let mut out = Vec::new();
-                    while let Some(item) = items.get(next.fetch_add(1, Ordering::Relaxed)) {
-                        out.push(f(item));
-                    }
-                    out
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .flat_map(|h| h.join().expect("scanner thread panicked"))
-            .collect()
-    })
+/// Runs `f` on every item on rayon's threads (as many as `RAYON_NUM_THREADS` says, or one per core).
+fn parallel<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync + Send) -> Vec<R> {
+    items.par_iter().map(f).collect()
 }
 
 /// Files declared as modules under a test-only attribute become test files, with their own modules;
@@ -740,6 +728,22 @@ impl<'a> ValueIndex<'a> {
         defs
     }
 
+    /// The constants with this value that the crate could import or already has: public ones, its own,
+    /// and the reference crates'.
+    fn importable(
+        &self,
+        value: &Value,
+        crate_dir: &str,
+        own: Option<(&str, &str)>,
+    ) -> Vec<(Closeness, &'a ConstDef)> {
+        self.matches(value, crate_dir, own)
+            .into_iter()
+            .filter(|(_, d)| {
+                d.public || d.crate_dir == crate_dir || matches!(d.scope, ConstScope::Reference(_))
+            })
+            .collect()
+    }
+
     /// The constants with this value that the crate can name: its own and its upstream crates'.
     fn nameable(
         &self,
@@ -788,6 +792,21 @@ fn distinctive(value: &Value) -> bool {
     }
 }
 
+/// The number a test literal writes in another type: a float with no fraction (`4096.0`) or a string
+/// of digits (`"4096"`).
+fn written_number(f: &Finding) -> Option<Value> {
+    match (&f.value, f.kind) {
+        (Some(Value::Str(s)), _) => s.parse::<i128>().ok().map(Value::Int),
+        (_, Kind::Float) => syn::parse_str::<syn::LitFloat>(&f.literal)
+            .ok()?
+            .base10_parse::<f64>()
+            .ok()
+            .filter(|v| v.fract() == f64::default())
+            .map(|v| Value::Int(v as i128)),
+        _ => None,
+    }
+}
+
 /// The specific words of a constant's name: its words other than [`GENERIC_WORDS`].
 fn specific_words(name: &str) -> Vec<String> {
     scan::words(name)
@@ -805,7 +824,15 @@ fn restated(all: &mut [Finding], index: &ValueIndex) {
         .iter_mut()
         .filter(|f| matches!(f.list, List::Test | List::Const))
     {
-        let Some(value) = f.value.as_ref().filter(|v| distinctive(v)) else {
+        let written = match f.list {
+            List::Test => written_number(f),
+            _ => None,
+        };
+        let Some(value) = written
+            .as_ref()
+            .or(f.value.as_ref())
+            .filter(|v| distinctive(v))
+        else {
             continue;
         };
         let wanted = |c: Closeness| match f.list {
@@ -844,25 +871,42 @@ fn name_like(word: &str) -> bool {
             .any(|c| c.is_uppercase() || c.is_ascii_digit() || NAME_CHARACTERS.contains(&c))
 }
 
-/// Messages that write out, word for word, the value of a named string constant the crate can reach:
-/// the name belongs in the message through its constant.
-fn named_in_messages(all: &mut [Finding], index: &ValueIndex) {
-    for f in all.iter_mut().filter(|f| f.list == List::Message) {
-        let Some(Value::Str(message)) = &f.value else {
+/// What a crate's own package name is to be written with.
+const OWN_NAME: &str = "the crate's own name: write it with env!(\"CARGO_PKG_NAME\")";
+
+/// Messages and string constants that write out, word for word, the value of another string constant
+/// the crate can reach, or the crate's own package name: the name belongs there through its constant.
+/// A constant whose whole value is the word is a name of its own, which redefinitions cover.
+fn named_in_text(all: &mut [Finding], index: &ValueIndex, crates: &Crates) {
+    for f in all
+        .iter_mut()
+        .filter(|f| matches!(f.list, List::Message | List::Const))
+    {
+        let Some(Value::Str(written)) = &f.value else {
             continue;
         };
-        let text = text::without_placeholders(message);
+        let constant = f.list == List::Const;
+        let own = constant.then_some((f.path.as_str(), f.item.as_str()));
+        let package = crates.package(&f.crate_dir);
+        let text = text::without_placeholders(written);
         let named = text
             .split_whitespace()
             .map(|w| w.trim_matches(WORD_PUNCTUATION))
-            .filter(|w| name_like(w))
+            .filter(|w| package == Some(*w) || name_like(w))
             .find_map(|w| {
-                let defs = index.nameable(&Value::Str(w.to_string()), &f.crate_dir, None);
+                if package == Some(w) {
+                    return Some((w.to_string(), OWN_NAME.to_string()));
+                }
+                if constant && w == text.trim() {
+                    return None;
+                }
+                let defs = index.nameable(&Value::Str(w.to_string()), &f.crate_dir, own);
                 ValueIndex::names(&defs).map(|names| (w.to_string(), names))
             });
         if let Some((word, names)) = named {
+            let was = f.list.name();
             f.list = List::Restated;
-            f.note = format!("message writes out {word}, which is {names}");
+            f.note = format!("{was} writes out {word}, which is {names}");
         }
     }
 }
@@ -967,9 +1011,9 @@ fn apply_marks(all: &mut Vec<Finding>, found: &[FileMark], index: &ValueIndex) -
         let named = covered
             .iter()
             .filter_map(|&i| all[i].value.as_ref())
-            .find_map(|v| ValueIndex::names(&index.nameable(v, crate_dir, None)));
+            .find_map(|v| ValueIndex::names(&index.matches(v, crate_dir, None)));
         let problem = match (&mark.reason, covered.is_empty(), named) {
-            (Err(p), ..) => Some(p.note().to_string()),
+            (Err(p), ..) => Some(p.note()),
             (Ok(_), true, _) => Some(format!(
                 "no unnamed number {} in code on line {} below the mark",
                 mark.literal, mark.target
@@ -1101,7 +1145,7 @@ fn scan_tree(root: &Path, policy: Policy) -> Result<Scanned, String> {
     let index = ValueIndex::new(&defs, &crates);
     for f in all.iter_mut().filter(|f| f.list != List::Message) {
         if let Some(v) = &f.value {
-            let note = ValueIndex::note(&index.matches(
+            let note = ValueIndex::note(&index.importable(
                 v,
                 &f.crate_dir,
                 Some((f.path.as_str(), f.item.as_str())),
@@ -1116,7 +1160,7 @@ fn scan_tree(root: &Path, policy: Policy) -> Result<Scanned, String> {
         }
     }
     restated(&mut all, &index);
-    named_in_messages(&mut all, &index);
+    named_in_text(&mut all, &index, &crates);
     all.extend(redefinitions(&defs, &crates));
     let marks = apply_marks(&mut all, &found, &index);
     for (path, crate_dir) in &tree.scripts {
@@ -1127,7 +1171,7 @@ fn scan_tree(root: &Path, policy: Policy) -> Result<Scanned, String> {
             &rel_string(path, root),
             crate_dir,
             &text,
-            &|v, c| ValueIndex::note(&index.matches(v, c, None)),
+            &|v, c| ValueIndex::note(&index.importable(v, c, None)),
         ));
     }
     all.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
@@ -1339,7 +1383,7 @@ pub fn check(root: &Path) -> Result<Outcome, String> {
             Some(n) if *n > usize::default() => *n -= 1,
             _ => lines.push(format!(
                 "{NEW_MARK}{f}{FIELD_SEPARATOR}{DO}{}",
-                f.list.instruction()
+                f.instruction()
             )),
         }
     }

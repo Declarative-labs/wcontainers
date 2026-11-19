@@ -3,8 +3,10 @@
 //! change, and only for literals that were already in the tree (see the history module). Every change of
 //! the rules that finds more appends an entry here.
 
-pub const RULES: &[&str] =
-    &["the rule of docs/literals.md as the literals track's milestone L1 left it"];
+pub const RULES: &[&str] = &[
+    "the rule of docs/literals.md as the literals track's milestone L1 left it",
+    "roles through closures, Some, Ok, branches and bindings, and the words user and owner; a negated literal in parentheses; attributes inside a conditional attribute; stringify!; tests that write a named number as a float or a string; string constants and messages that write out another constant or the crate's own name",
+];
 
 /// This file, relative to the workspace root when Cargo builds it there.
 pub const SOURCE: &str = file!();

@@ -105,6 +105,7 @@ impl List {
 
     /// What to do about a finding of this list that the baseline does not accept.
     pub fn instruction(self) -> &'static str {
+        // A code finding with a note starts with USE_THE_NOTE (see `Finding::instruction`).
         match self {
             List::Code => NAME_IT,
             List::Redefinition => IMPORT_IT,
@@ -123,10 +124,12 @@ impl List {
     }
 }
 
-const NAME_IT: &str = "use the constant the note names if it is this fact; otherwise derive it, import it from the standard library or a crate that has it, or define it once as a named constant; a number that truly stands alone may carry a mark (docs/literals.md)";
+const NAME_IT: &str = "derive it, import it from the standard library or a crate that has it, or define it once as a named constant; a number that truly stands alone may carry a mark (docs/literals.md)";
+const USE_THE_NOTE: &str = "use the constant the note names if it is this fact; otherwise ";
 const IMPORT_IT: &str = "delete this copy and import the constant the note names";
 const WRITE_THE_NAME: &str = "write it with the constant the note names";
-const NAME_THE_ROLE: &str = "use the named constant for this id, descriptor or status (libc, linux-raw-sys or the crate that owns it)";
+const NAME_THE_ROLE: &str =
+    "use the named constant for this id, descriptor or status, from libc or the crate that owns it";
 const NAME_IN_SCRIPT: &str =
     "pass the value in from where it is named, or name it once at the top of the script";
 const FIX_THE_FILE: &str = "make the file parse; nothing in it is checked until then";
@@ -192,6 +195,13 @@ impl Finding {
             self.kind,
             &self.literal,
         )
+    }
+
+    /// What to do about this finding when the baseline does not accept it.
+    pub fn instruction(&self) -> String {
+        let named = self.list == List::Code && !self.note.is_empty();
+        let first = if named { USE_THE_NOTE } else { "" };
+        format!("{first}{}", self.list.instruction())
     }
 
     /// The literal as shown: cut at [`MAX_LITERAL_CHARS`].
