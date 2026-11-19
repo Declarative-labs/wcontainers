@@ -90,7 +90,7 @@ fn output_ready(
     nonblock: bool,
     readers_first: bool,
 ) -> Result<(), Errno> {
-    let full = with_pipe(output, |pipe| pipe.host.is_none() && pipe.is_full());
+    let full = with_pipe(output, |pipe| pipe.is_full());
     let readers = with_pipe(output, |pipe| pipe.readers());
     if readers == 0 && (readers_first || full) {
         sigpipe(kernel, cx, tid);
@@ -108,18 +108,14 @@ fn output_ready(
     Err(park(kernel, tid, output))
 }
 
-/// Puts a slot's bytes into the host's pipe, or the slot into a pipe the kernel holds.
-fn into_output(cx: &mut Context<'_>, output: &FileRef, moved: impl FnOnce(&mut crate::pipe::Pipe)) {
+/// Puts a slot into the output pipe.
+fn into_output(output: &FileRef, moved: impl FnOnce(&mut crate::pipe::Pipe)) {
     let node = output.borrow().node.clone();
     let mut inode = node.borrow_mut();
     let Content::Pipe(pipe) = &mut inode.content else {
         unreachable!("the file is a pipe");
     };
     moved(pipe);
-    if let Some(stream) = pipe.host {
-        let bytes = pipe.take_into(usize::MAX, usize::MAX).0;
-        cx.host.output(stream, &bytes);
-    }
 }
 
 pub(super) fn splice(
@@ -262,7 +258,7 @@ fn pipe_to_pipe(
         let Some(front) = with_pipe(input, |pipe| pipe.front_len()) else {
             break;
         };
-        if with_pipe(output, |pipe| pipe.host.is_none() && pipe.is_full()) {
+        if with_pipe(output, |pipe| pipe.is_full()) {
             break;
         }
         let wanted = (length - moved).min(usize::MAX as u64) as usize;
@@ -273,9 +269,7 @@ fn pipe_to_pipe(
             unreachable!("the file is a pipe");
         };
         let mut count = 0;
-        into_output(cx, output, |target| {
-            count = source.move_front(target, wanted)
-        });
+        into_output(output, |target| count = source.move_front(target, wanted));
         moved += count as u64;
     }
     if moved > 0 {
@@ -311,13 +305,7 @@ pub(super) fn file_to_pipe(
     if super::socket::of(input).is_some() {
         return socket_to_pipe(kernel, cx, tid, input, output, length, nonblock, false);
     }
-    let free = with_pipe(output, |pipe| {
-        if pipe.host.is_some() {
-            pipe.capacity as u64
-        } else {
-            (pipe.capacity - pipe.occupancy()) as u64
-        }
-    });
+    let free = with_pipe(output, |pipe| pipe.free_pages() as u64);
     let length = length.min(free * PAGE_SIZE);
     verify_area(*at, length)?;
     let length = length.min(MAX_RW_COUNT);
@@ -430,13 +418,7 @@ fn socket_to_pipe(
     } else {
         0
     };
-    let free = with_pipe(output, |pipe| {
-        if pipe.host.is_some() {
-            pipe.capacity as u64
-        } else {
-            (pipe.capacity - pipe.occupancy()) as u64
-        }
-    });
+    let free = with_pipe(output, |pipe| pipe.free_pages() as u64);
     let length = length.min(free * PAGE_SIZE).min(MAX_RW_COUNT);
     let bytes = super::socket::receive_bytes(kernel, cx, tid, input, length, flags)?;
     if bytes.is_empty() {
@@ -610,7 +592,7 @@ pub(super) fn tee(
             result = Err(Errno::EPIPE);
             break;
         }
-        if with_pipe(&output, |pipe| pipe.host.is_none() && pipe.is_full()) {
+        if with_pipe(&output, |pipe| pipe.is_full()) {
             break;
         }
         let wanted = (length - copied).min(usize::MAX as u64) as usize;
@@ -620,7 +602,7 @@ pub(super) fn tee(
             unreachable!("the file is a pipe");
         };
         let mut count = None;
-        into_output(cx, &output, |target| {
+        into_output(&output, |target| {
             count = source.copy_slot(index, target, wanted)
         });
         let Some(count) = count else {
@@ -708,14 +690,14 @@ fn vmsplice_to_pipe(
                     result = Err(Errno::EPIPE);
                     break 'parts;
                 }
-                if with_pipe(pipe, |pipe| pipe.host.is_none() && pipe.is_full()) {
+                if with_pipe(pipe, |pipe| pipe.is_full()) {
                     result = Err(Errno::EAGAIN);
                     break 'parts;
                 }
                 let piece =
                     ((PAGE_SIZE - (at + done as u64) % PAGE_SIZE) as usize).min(bytes.len() - done);
                 let slot = bytes[done..done + piece].to_vec();
-                into_output(cx, pipe, |target| target.push_spliced(slot));
+                into_output(pipe, |target| target.push_spliced(slot));
                 done += piece;
                 total += piece as u64;
             }

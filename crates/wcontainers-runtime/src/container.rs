@@ -138,6 +138,7 @@ impl<E: Executor> Runtime<E> {
         system.stop_flag(cpu.stop_flag());
         let arguments: Vec<&[u8]> = accepted.args.iter().map(|a| a.as_bytes()).collect();
         let environment: Vec<&[u8]> = env.iter().map(|v| v.as_bytes()).collect();
+        let standard = system.standard(None);
         kernel.start(
             &mut cpu,
             &mut system,
@@ -149,6 +150,7 @@ impl<E: Executor> Runtime<E> {
                 hostname: accepted.hostname.as_bytes(),
                 groups: &accepted.groups,
                 backend: accepted.volume.as_ref().map(|v| v.destination.as_bytes()),
+                standard,
             },
         );
         Ok(Container {

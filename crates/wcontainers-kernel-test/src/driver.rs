@@ -6,13 +6,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use rand::rngs::StdRng;
 use rand::{Rng, RngCore, SeedableRng};
 use wcontainers_abi::{
-    BackendRequestId, ConnectionId, CounterReading, Cpu, Event, Host, HostError, Stream, Warning,
+    BackendRequestId, ConnectionId, CounterReading, Cpu, End, Event, Host, HostError, Warning,
 };
-use wcontainers_kernel::{Errno, FileRecord, Kernel, Start};
-use wcontainers_runtime::{Ending, Execution, System, Turn};
+use wcontainers_kernel::{Errno, FileRecord, Kernel, Standard, Start};
+use wcontainers_runtime::{Ending, Execution, System, TerminalSize, Turn};
 
 use crate::standin::Unsupported;
-use crate::{image, reference};
+use crate::streams::{Outside, StreamHost, Streams};
+use crate::{image, reference, streams};
 
 /// Why a run on our kernel gave no outcome.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -178,6 +179,18 @@ pub struct Run {
     pub saved: usize,
     /// How many turns on the CPU side it took.
     pub turns: u64,
+    /// The most input credit the kernel had given and not seen used.
+    pub most_input_credit: u64,
+    /// Input bytes the outside sent within the credit it held, and how many of its sends went past
+    /// that credit (only when it breaks the rule on purpose).
+    pub sent_within_credit: u64,
+    pub sends_past_credit: u64,
+    /// What the kernel did against the credit rules on its ends.
+    pub broken: Vec<String>,
+    /// Whether the kernel closed every output end once the container ended.
+    pub outputs_closed: bool,
+    /// Whether the kernel closed the input end before the outside did.
+    pub input_closed: bool,
 }
 
 /// The host used in tests. Randomness comes from a seed so runs repeat exactly. When the kernel is idle
@@ -187,8 +200,8 @@ pub struct TestHost {
     /// How far the clocks have jumped ahead.
     skipped: u64,
     random: StdRng,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
+    /// The other sides of the container's ends.
+    pub(crate) streams: Streams,
     warnings: Vec<Warned>,
     /// A clock that moves only when the driver says, so a run repeats exactly; none for the wall
     /// clock (layer 1, where the reference runs beside it).
@@ -203,9 +216,6 @@ pub struct TestHost {
     pub(crate) backend: Option<crate::backend::Backend>,
     /// Connections to the outside and lookups.
     network: crate::network::Network,
-    /// Whether what the container writes also goes to this process's own streams as it comes,
-    /// so a run that is stopped still shows it.
-    echo: bool,
     /// The CPU side's own slow paths.
     cpu_warnings: Vec<Warned>,
     /// What a driven run has done to it between turns; none outside one.
@@ -234,7 +244,7 @@ impl Injecting {
         Self {
             seed,
             injections,
-            at: moments_apart(seed ^ 0x5a7e, injections.saves, injections.save_gap),
+            at: moments_apart(seed ^ SAVES_SALT, injections.saves, injections.save_gap),
             signal,
             signal_at: moments(seed ^ 0x5197, signals),
             // Notices come close together, so that a short program meets many of them.
@@ -254,15 +264,13 @@ impl TestHost {
             started: Instant::now(),
             skipped: 0,
             random: StdRng::seed_from_u64(seed),
-            stdout: Vec::new(),
-            stderr: Vec::new(),
+            streams: Streams::default(),
             warnings: Vec::new(),
             virtual_now: None,
             wall_base: 0,
-            schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
+            schedule: StdRng::seed_from_u64(seed ^ SCHEDULE_SALT),
             backend: None,
             network: Default::default(),
-            echo: false,
             cpu_warnings: Vec::new(),
             injecting: None,
         }
@@ -301,17 +309,15 @@ impl TestHost {
             started: Instant::now(),
             skipped: self.skipped,
             random: StdRng::seed_from_u64(seed),
-            stdout: self.stdout.clone(),
-            stderr: self.stderr.clone(),
+            streams: self.streams.clone(),
             warnings: self.warnings.clone(),
             virtual_now: self.virtual_now.map(|_| 0),
             wall_base: 0,
-            schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
+            schedule: StdRng::seed_from_u64(seed ^ SCHEDULE_SALT),
             // The backend and the answers it owes go on with the copy.
             backend: self.backend.take(),
             // A new host has none of the old one's connections; its published ports go on.
             network: self.network.moved(),
-            echo: self.echo,
             cpu_warnings: self.cpu_warnings.clone(),
             injecting: self.injecting.take(),
         };
@@ -376,18 +382,16 @@ impl Host for TestHost {
         Ok(())
     }
 
-    fn output(&mut self, stream: Stream, bytes: &[u8]) {
-        if self.echo {
-            use std::io::Write;
-            let _ = match stream {
-                Stream::Output => std::io::stdout().write_all(bytes),
-                Stream::Error => std::io::stderr().write_all(bytes),
-            };
-        }
-        match stream {
-            Stream::Output => self.stdout.extend_from_slice(bytes),
-            Stream::Error => self.stderr.extend_from_slice(bytes),
-        }
+    fn stream_send(&mut self, end: End, bytes: &[u8]) {
+        self.streams.send(end, bytes);
+    }
+
+    fn stream_credit(&mut self, end: End, bytes: u64) {
+        self.streams.credit(end, bytes);
+    }
+
+    fn stream_close(&mut self, end: End) {
+        self.streams.close(end);
     }
 
     fn connect(
@@ -434,6 +438,16 @@ impl Host for TestHost {
     }
 }
 
+impl StreamHost for TestHost {
+    fn streams(&mut self) -> &mut Streams {
+        &mut self.streams
+    }
+
+    fn choices(&mut self) -> &mut StdRng {
+        &mut self.schedule
+    }
+}
+
 /// The exit code `docker run` gives for a wait status.
 pub fn exit_code(wait_status: i32) -> i32 {
     let signal = wait_status & 0x7f;
@@ -466,6 +480,20 @@ pub struct Container<'a> {
     /// Where each process's address space ends: the host's memories are 32 or 64 bit
     /// ([`crate::standin::SPACE_32_BIT`], [`crate::standin::SPACE_64_BIT`]).
     pub address_space: u64,
+}
+
+/// As [`run_injected`], with the outside of the container's standard streams.
+pub fn run_outside(
+    container: &Container<'_>,
+    outside: Outside,
+    seed: u64,
+    injections: Injections,
+) -> Result<Run, Failure> {
+    let prepared = Prepared {
+        outside,
+        ..prepare(container)
+    };
+    run_prepared(prepared, container, seed, injections)
 }
 
 /// Runs a container on our kernel and the stand-in CPU until its first process ends.
@@ -546,6 +574,8 @@ pub struct Prepared {
     pub groups: Vec<u32>,
     /// Whether the container's output also goes to this process's streams as it comes.
     pub echo: bool,
+    /// The outside of its standard streams.
+    pub outside: Outside,
 }
 
 /// Puts a container's files in a new kernel's root, unless the root is on the backend.
@@ -558,6 +588,7 @@ pub fn prepare(container: &Container<'_>) -> Prepared {
         kernel,
         groups: image::root_groups(container.files),
         echo: false,
+        outside: Outside::default(),
     }
 }
 
@@ -579,6 +610,7 @@ pub fn run_prepared(
         mut kernel,
         groups,
         echo,
+        outside,
     } = prepared;
     #[cfg(feature = "runtime")]
     let (_alone, _shared);
@@ -595,7 +627,9 @@ pub fn run_prepared(
     let mut cpu = back_end(seed, container.address_space);
     let mut host = TestHost::repeatable(seed, injections.wall_start);
     host.injecting = Some(Injecting::new(seed, injections));
-    host.echo = echo;
+    let standard = outside.standard();
+    host.streams = Streams::new(outside);
+    host.streams.echo = echo;
     host.network.published = container.published.iter().copied().collect();
     let root_on_backend = container.backend == Some("/");
     if container.backend.is_some() {
@@ -624,10 +658,12 @@ pub fn run_prepared(
         hostname: reference::HOSTNAME.as_bytes(),
         groups: &groups,
         backend: container.backend.map(str::as_bytes),
+        standard,
     };
     #[cfg(feature = "runtime")]
     let started = Instant::now();
     kernel.start(&mut cpu, &mut host, &start);
+    streams::begin(&mut kernel, &mut cpu, &mut host);
     let status = match wcontainers_runtime::drive(&mut kernel, &mut cpu, &mut host) {
         Ok(Ending::Finished { status }) => status,
         Ok(Ending::Ended(run)) => return Ok(run),
@@ -639,6 +675,8 @@ pub fn run_prepared(
     };
     #[cfg(feature = "runtime")]
     report(&cpu, container, started.elapsed());
+    let input_closed = host.streams.input_closed_by_kernel();
+    let outputs_closed = streams::finish(&mut kernel, &mut cpu, &mut host);
     if let Some(error) = kernel.start_failure() {
         // Never in a copy: no save is made before the first program runs.
         return Err(Failure::Start(error));
@@ -652,8 +690,8 @@ pub fn run_prepared(
     let turns = host.injecting().turns;
     let run = Run {
         outcome: Outcome {
-            stdout: host.stdout,
-            stderr: host.stderr,
+            stdout: host.streams.stdout,
+            stderr: host.streams.stderr,
             exit_code: exit_code(status),
         },
         warnings: host.warnings,
@@ -662,6 +700,12 @@ pub fn run_prepared(
         files,
         saved,
         turns,
+        most_input_credit: host.streams.most_input_credit,
+        sent_within_credit: host.streams.sent_within_credit,
+        sends_past_credit: host.streams.sends_past_credit,
+        broken: host.streams.broken,
+        outputs_closed,
+        input_closed,
     };
     Ok(finish(run, report))
 }
@@ -715,6 +759,7 @@ impl System for TestHost {
         };
         TURNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         network_events(kernel, cpu, self, Duration::ZERO);
+        streams::act(kernel, cpu, self, false);
         // The backend's answers arrive at moments and in an order drawn from the seed.
         while self
             .backend
@@ -775,7 +820,7 @@ impl System for TestHost {
             }
             *cpu = cpu.restored();
             let injecting = self.injecting();
-            let seed = injecting.seed ^ ((injecting.saved as u64) << 32);
+            let seed = injecting.seed ^ ((injecting.saved as u64) << u32::BITS);
             let wall_step = injecting.injections.wall_step;
             *self = self.moved(seed, wall_step);
             kernel.restore(cpu, self);
@@ -803,12 +848,16 @@ impl System for TestHost {
                 return;
             }
         }
+        if streams::act(kernel, cpu, self, true) {
+            return;
+        }
         let Some(until) = until_nanoseconds else {
             panic!(
-                "the kernel is idle with nothing to wake it, and this host has no events; \
-                 output so far:\n{}{}",
-                String::from_utf8_lossy(&self.stdout),
-                String::from_utf8_lossy(&self.stderr)
+                "the kernel is idle with nothing to wake it, and this host has no events \
+                 (the outside waits at {:?}); output so far:\n{}{}",
+                self.streams.stuck_at(),
+                String::from_utf8_lossy(&self.streams.stdout),
+                String::from_utf8_lossy(&self.streams.stderr)
             );
         };
         let now = self.monotonic_nanoseconds();
@@ -830,7 +879,22 @@ impl System for TestHost {
             detail: warning.detail,
         });
     }
+
+    /// What the test's outside is; a test that asks for a terminal says so there too.
+    fn standard(&mut self, terminal: Option<TerminalSize>) -> Standard {
+        assert_eq!(
+            terminal.map(|size| (size.columns, size.rows)),
+            self.streams.outside.terminal,
+            "the terminal asked for is the outside's"
+        );
+        self.streams.outside.standard()
+    }
 }
+
+/// Mixed into a run's seed for the schedule's choices and the moments of saves, so that each
+/// draws apart from the host's own randomness.
+const SCHEDULE_SALT: u64 = 0x5eed;
+const SAVES_SALT: u64 = 0x5a7e;
 
 /// The longest the driver waits for the outside when nothing else can happen.
 const NETWORK_PATIENCE: Duration = Duration::from_secs(10);
@@ -1048,6 +1112,15 @@ fn encode(run: &Run) -> Vec<u8> {
     number(&mut out, run.outcome.exit_code as u64);
     number(&mut out, run.saved as u64);
     number(&mut out, run.turns);
+    number(&mut out, run.most_input_credit);
+    number(&mut out, run.sent_within_credit);
+    number(&mut out, run.sends_past_credit);
+    number(&mut out, run.outputs_closed.into());
+    number(&mut out, run.input_closed.into());
+    number(&mut out, run.broken.len() as u64);
+    for broken in &run.broken {
+        bytes(&mut out, broken.as_bytes());
+    }
     for warnings in [&run.warnings, &run.cpu_warnings] {
         number(&mut out, warnings.len() as u64);
         for warned in warnings {
@@ -1100,6 +1173,12 @@ fn decode(input: &[u8]) -> Run {
     let exit_code = reader.number() as i32;
     let saved = reader.number() as usize;
     let turns = reader.number();
+    let most_input_credit = reader.number();
+    let sent_within_credit = reader.number();
+    let sends_past_credit = reader.number();
+    let outputs_closed = reader.number() != 0;
+    let input_closed = reader.number() != 0;
+    let broken = (0..reader.number()).map(|_| reader.text()).collect();
     let mut warned = || -> Vec<Warned> {
         (0..reader.number())
             .map(|_| Warned {
@@ -1142,5 +1221,11 @@ fn decode(input: &[u8]) -> Run {
         files,
         saved,
         turns,
+        most_input_credit,
+        sent_within_credit,
+        sends_past_credit,
+        broken,
+        outputs_closed,
+        input_closed,
     }
 }

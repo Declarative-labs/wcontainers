@@ -11,14 +11,12 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use wcontainers_abi::{
-    BackendRequestId, ConnectionId, Cpu, Event, Host, HostError, Stream, Warning,
-};
-use wcontainers_kernel::Kernel;
+use wcontainers_abi::{BackendRequestId, ConnectionId, Cpu, End, Event, Host, HostError, Warning};
+use wcontainers_kernel::{Kernel, Standard};
 
 use crate::files::Files;
 use crate::net::{Arrivals, Network};
-use crate::{Execution, StopFlag, System, Turn};
+use crate::{Execution, StopFlag, System, TerminalSize, Turn};
 
 /// A warning as the system keeps it: the kernel's or the back end's, by reason.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,11 +30,26 @@ pub struct Warned {
     pub cpu: bool,
 }
 
+/// The ends this system names.
+#[repr(u32)]
+enum Named {
+    Output,
+    Error,
+}
+
+const OUTPUT: End = End(Named::Output as u32);
+const ERROR: End = End(Named::Error as u32);
+
 /// The local system.
 pub struct LocalSystem {
     started: Instant,
     output: Box<dyn Write + Send>,
     error: Box<dyn Write + Send>,
+    /// Output ends not yet given their credit: all the system will ever take, as it writes
+    /// everything as it comes.
+    credit_owed: Vec<End>,
+    /// Ends the kernel closed, which the system lets go of in turn.
+    closing: Vec<End>,
     warnings: Vec<Warned>,
     timer: Option<Timer>,
     files: Option<Files>,
@@ -71,6 +84,8 @@ impl LocalSystem {
             started: Instant::now(),
             output,
             error,
+            credit_owed: Vec::new(),
+            closing: Vec::new(),
             warnings: Vec::new(),
             timer: None,
             files: None,
@@ -100,12 +115,30 @@ impl LocalSystem {
         })
     }
 
-    /// Hands the kernel what arrived: the file backend's replies and the network's events.
-    /// Whether anything did.
+    /// Hands the kernel what arrived: the output ends' credit and closes, the file backend's
+    /// replies and the network's events. Whether anything did.
     fn deliver(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+        let credit_owed = std::mem::take(&mut self.credit_owed);
+        let closing = std::mem::take(&mut self.closing);
         let replies = std::mem::take(&mut self.replies);
         let arrivals = self.arrivals.take();
-        let any = !replies.is_empty() || !arrivals.is_empty();
+        let any = !credit_owed.is_empty()
+            || !closing.is_empty()
+            || !replies.is_empty()
+            || !arrivals.is_empty();
+        for end in credit_owed {
+            kernel.event(
+                cpu,
+                self,
+                Event::StreamCredit {
+                    end,
+                    bytes: u64::MAX,
+                },
+            );
+        }
+        for end in closing {
+            kernel.event(cpu, self, Event::StreamClosed { end });
+        }
         for (request, reply) in replies {
             kernel.event(
                 cpu,
@@ -264,10 +297,10 @@ impl Host for LocalSystem {
         Ok(())
     }
 
-    fn output(&mut self, stream: Stream, bytes: &[u8]) {
-        let (writer, name) = match stream {
-            Stream::Output => (&mut self.output, "standard output not written"),
-            Stream::Error => (&mut self.error, "standard error not written"),
+    fn stream_send(&mut self, end: End, bytes: &[u8]) {
+        let (writer, name) = match end {
+            ERROR => (&mut self.error, "standard error not written"),
+            _ => (&mut self.output, "standard output not written"),
         };
         if let Err(error) = writer.write_all(bytes).and_then(|()| writer.flush()) {
             let detail = error.raw_os_error().map_or(u64::MAX, |code| code as u64);
@@ -285,6 +318,13 @@ impl Host for LocalSystem {
                 false,
             );
         }
+    }
+
+    /// No end this system names takes input.
+    fn stream_credit(&mut self, _: End, _: u64) {}
+
+    fn stream_close(&mut self, end: End) {
+        self.closing.push(end);
     }
 
     fn connect(
@@ -410,6 +450,16 @@ impl System for LocalSystem {
 
     fn cpu_warning(&mut self, warning: Warning<'_>) {
         self.keep(warning, true);
+    }
+
+    /// Pipes, with no input; a terminal is not given.
+    fn standard(&mut self, _: Option<TerminalSize>) -> Standard {
+        self.credit_owed = vec![OUTPUT, ERROR];
+        Standard::Pipes {
+            input: None,
+            output: OUTPUT,
+            error: ERROR,
+        }
     }
 }
 

@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use wcontainers_abi::{Cpu, Exit, Host, Next, Resume, ThreadId, Warning};
-pub use wcontainers_kernel::Kernel;
+pub use wcontainers_kernel::{Kernel, Standard};
 
 mod container;
 mod errno;
@@ -22,6 +22,13 @@ pub use image::Image;
 pub use oci_spec;
 pub use spec::{base_spec, bind_mount, spec_from_json};
 pub use system::{LocalSystem, Warned};
+
+/// A terminal's size in characters.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TerminalSize {
+    pub columns: u16,
+    pub rows: u16,
+}
 
 /// How a turn ends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,6 +171,9 @@ pub trait System: Host {
     fn idle(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu, until_nanoseconds: Option<u64>);
     /// A slow path of the back end, apart from the kernel's warnings.
     fn cpu_warning(&mut self, warning: Warning<'_>);
+    /// Names the ends of the first process's descriptors 0 to 2, whose other sides the system holds:
+    /// a terminal of this size when the configuration asks for one, else pipes.
+    fn standard(&mut self, terminal: Option<TerminalSize>) -> Standard;
     /// The back end's stop flag, before the first turn, for a system that gives free turns; one that
     /// counts every turn needs none.
     fn stop_flag(&mut self, _flag: StopFlag) {}

@@ -14,19 +14,14 @@ pub mod network;
 pub mod reference;
 pub mod runtimes;
 pub mod standin;
+pub mod streams;
 
 use std::path::Path;
 
 /// Runs a program from a host directory on our kernel and in the reference, with the same arguments, in
 /// a container of the reference image with the directory at `/wc`, and returns both.
 pub fn run_both(program: &Path, arguments: &[&str]) -> (driver::Run, driver::Outcome) {
-    let name = format!(
-        "/wc/{}",
-        program
-            .file_name()
-            .expect("program has a name")
-            .to_string_lossy()
-    );
+    let name = reference::in_guest_directory(program.file_name().expect("program has a name"));
     let mut all = vec![name.as_str()];
     all.extend_from_slice(arguments);
     let ours = run_ours(
@@ -115,13 +110,13 @@ fn run_ours_on(
     published: &[(u16, u16)],
 ) -> driver::Run {
     let mut files = image::reference_image().to_vec();
-    files.extend(image::host_directory(directory, "wc"));
+    files.extend(image::host_directory(directory, guest_directory_entry()));
     let container = driver::Container {
         files: &files,
         path,
         arguments,
         environment: reference::ENVIRONMENT,
-        working_directory: "/",
+        working_directory: reference::ROOT_DIRECTORY,
         backend,
         cached: false,
         published,
@@ -182,7 +177,14 @@ pub fn assert_same_output_on_backend_root_seeded(
     arguments: &[&str],
     saves: usize,
 ) -> Vec<driver::Run> {
-    same_output_seeded(out, name, arguments, saves, reference::run, Some("/"))
+    same_output_seeded(
+        out,
+        name,
+        arguments,
+        saves,
+        reference::run,
+        Some(reference::ROOT_DIRECTORY),
+    )
 }
 
 /// As [`assert_same_output_seeded`], with the reference on one CPU like the made-up machine.
@@ -205,10 +207,7 @@ fn same_output_seeded(
 ) -> Vec<driver::Run> {
     let program = guest::build(name, &[], out);
     let theirs = reference(&program, arguments);
-    let path = format!(
-        "/wc/{}",
-        program.file_name().expect("a name").to_string_lossy()
-    );
+    let path = reference::in_guest_directory(program.file_name().expect("a name"));
     let mut all = vec![path.as_str()];
     all.extend_from_slice(arguments);
     let directory = program.parent().expect("program has a directory");
@@ -232,4 +231,110 @@ fn same_output_seeded(
         runs.push(ours);
     }
     runs
+}
+
+/// Runs `command` (the guest program `program` built into `out` and run from `/wc`, or else a
+/// command of the image) with the outside given, in the reference once and on our kernel under
+/// every seed of [`schedule_seeds`]; checks that both give the same, that the kernel kept the credit
+/// rules and closed its output ends; returns our runs.
+pub fn assert_same_streams(
+    out: &Path,
+    program: Option<&str>,
+    command: &[&str],
+    outside: &streams::Outside,
+) -> Vec<driver::Run> {
+    assert_same_streams_on(out, program, command, outside, None)
+}
+
+/// As [`assert_same_streams`], with the file backend mounted at `backend` (`/` for the root).
+pub fn assert_same_streams_on(
+    out: &Path,
+    program: Option<&str>,
+    command: &[&str],
+    outside: &streams::Outside,
+    backend: Option<&str>,
+) -> Vec<driver::Run> {
+    let mut all: Vec<String> = command.iter().map(|part| part.to_string()).collect();
+    let directory = match program {
+        Some(name) => {
+            let built = guest::build(name, &[], out);
+            all.insert(0, reference::in_guest_directory(name));
+            built
+                .parent()
+                .expect("program has a directory")
+                .to_path_buf()
+        }
+        None => {
+            std::fs::create_dir_all(out).expect("creating the output directory");
+            out.to_path_buf()
+        }
+    };
+    let all: Vec<&str> = all.iter().map(String::as_str).collect();
+    let theirs = reference::run_outside(&directory, &all, outside);
+    let mut files = image::reference_image().to_vec();
+    files.extend(image::host_directory(&directory, guest_directory_entry()));
+    // The image's commands are found on its PATH, as the reference's are.
+    let path = match program {
+        Some(_) => all[0].to_string(),
+        None => image_command(all[0]),
+    };
+    let environment = streams_environment(outside);
+    let container = driver::Container {
+        files: &files,
+        path: &path,
+        arguments: &all,
+        environment: &environment,
+        working_directory: reference::ROOT_DIRECTORY,
+        backend,
+        cached: false,
+        published: &[],
+        address_space: standin::SPACE_32_BIT,
+    };
+    let mut runs = Vec::new();
+    for seed in schedule_seeds() {
+        let ours = driver::run_outside(
+            &container,
+            outside.clone(),
+            seed,
+            driver::Injections::default(),
+        )
+        .unwrap_or_else(|failure| panic!("no outcome on our kernel: {failure:?}"));
+        assert_eq!(ours.broken, Vec::<String>::new(), "seed {seed}");
+        assert!(ours.outputs_closed, "seed {seed}: an output end left open");
+        let show = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+        assert_eq!(
+            (show(&ours.outcome.stdout), show(&ours.outcome.stderr)),
+            (show(&theirs.stdout), show(&theirs.stderr)),
+            "seed {seed}"
+        );
+        assert_eq!(ours.outcome, theirs, "seed {seed}");
+        runs.push(ours);
+    }
+    runs
+}
+
+/// The image's entry for [`reference::GUEST_DIRECTORY`] (its name under the root).
+pub fn guest_directory_entry() -> &'static str {
+    Path::new(reference::GUEST_DIRECTORY)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("the guest directory has a name")
+}
+
+/// The path of a command of the image, found on its PATH as the reference finds it.
+pub fn image_command(name: &str) -> String {
+    Path::new(reference::IMAGE_BINARIES)
+        .join(name)
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// The environment a container with the outside given starts with, as `docker run` gives it.
+pub fn streams_environment(outside: &streams::Outside) -> Vec<&'static str> {
+    let mut environment = reference::ENVIRONMENT.to_vec();
+    // Docker puts it before HOME, the last.
+    if outside.terminal.is_some() {
+        environment.insert(environment.len() - 1, reference::TERMINAL_VARIABLE);
+    }
+    environment
 }

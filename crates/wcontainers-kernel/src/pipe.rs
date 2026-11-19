@@ -1,15 +1,14 @@
 //! Pipes and named pipes, as Linux's `fs/pipe.c` keeps them: a ring of page-sized slots, small writes
 //! merged into the last slot, reads that take what is there, and waits that park until the other end
 //! moves.
-//! The container's standard output pipes are pipes whose reader is the host, which takes every byte
-//! as it is written.
+//! A pipe whose other side is an end outside knows that end, and the credit it has given it.
 
 use alloc::collections::VecDeque;
 use alloc::rc::Weak;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use wcontainers_abi::{PAGE_SIZE, Stream};
+use wcontainers_abi::{End, PAGE_SIZE};
 
 use crate::file::{FileRef, OpenFile};
 use crate::linux::general::*;
@@ -39,8 +38,13 @@ pub(crate) struct Pipe {
     /// The open files of its ends, for counting readers and writers, each with the count of writers
     /// it has seen opened (`f_pipe`), which a named pipe's `POLLHUP` needs.
     ends: Vec<(Weak<RefCell<OpenFile>>, u32)>,
-    /// The host reads this pipe, at once: one of the container's standard streams.
-    pub host: Option<Stream>,
+    /// Bytes a writer outside may still send (credit given on its end) that have not come.
+    pub promised: u64,
+    /// Bytes a writer outside sent within its credit that found no room yet (a writer inside took
+    /// it), as a writer outside Linux holds what it has not written.
+    pub inbox: Vec<u8>,
+    /// The end whose kernel side is this pipe's reader: a write goes straight to it.
+    pub outside_reader: Option<End>,
     /// How many times a reader and a writer has opened it (`r_counter`, `w_counter`).
     pub opened_readers: u32,
     pub opened_writers: u32,
@@ -54,9 +58,8 @@ pub(crate) struct Pipe {
 
 impl Pipe {
     /// An unnamed pipe, made with one reader and one writer.
-    pub fn new(host: Option<Stream>) -> Self {
+    pub fn new() -> Self {
         Self {
-            host,
             opened_readers: 1,
             opened_writers: 1,
             ..Self::named()
@@ -69,7 +72,9 @@ impl Pipe {
             slots: VecDeque::new(),
             capacity: DEFAULT_SLOTS,
             ends: Vec::new(),
-            host: None,
+            promised: 0,
+            inbox: Vec::new(),
+            outside_reader: None,
             opened_readers: 0,
             opened_writers: 0,
             held_by: None,
@@ -126,9 +131,6 @@ impl Pipe {
     }
 
     pub fn readers(&self) -> usize {
-        if self.host.is_some() {
-            return 1;
-        }
         self.count(OpenFile::readable)
     }
 
@@ -149,7 +151,55 @@ impl Pipe {
     }
 
     pub fn is_full(&self) -> bool {
-        self.slots.len() >= self.capacity
+        self.free_pages() == 0
+    }
+
+    /// Pages a writer may fill.
+    pub fn free_pages(&self) -> usize {
+        self.capacity.saturating_sub(self.slots.len())
+    }
+
+    /// Bytes the outside's writes can take: the free pages and the room left in a last page they
+    /// may join.
+    pub fn room_outside(&self) -> u64 {
+        let free = self.capacity.saturating_sub(self.slots.len()) as u64 * PAGE_SIZE;
+        let tail = match self.slots.back() {
+            Some(last) if last.merge => PAGE_SIZE - last.page.len() as u64,
+            _ => 0,
+        };
+        free + tail
+    }
+
+    /// Puts in what fits of the outside's bytes, filling the last page it may join and then new
+    /// pages. Returns how many went in.
+    pub fn deliver(&mut self, bytes: &[u8]) -> usize {
+        let fits = bytes
+            .len()
+            .min(usize::try_from(self.room_outside()).unwrap_or(usize::MAX));
+        let mut rest = &bytes[..fits];
+        if let Some(last) = self.slots.back_mut().filter(|last| last.merge) {
+            let joined = rest.len().min(PAGE_SIZE as usize - last.page.len());
+            last.page.extend_from_slice(&rest[..joined]);
+            rest = &rest[joined..];
+        }
+        for page in rest.chunks(PAGE_SIZE as usize) {
+            self.slots.push_back(Slot {
+                page: page.to_vec(),
+                read: 0,
+                packet: false,
+                merge: true,
+            });
+        }
+        fits
+    }
+
+    /// Moves what fits of the inbox in. Returns how many bytes went in.
+    pub fn deliver_inbox(&mut self) -> usize {
+        let inbox = core::mem::take(&mut self.inbox);
+        let fits = self.deliver(&inbox);
+        self.inbox = inbox;
+        self.inbox.drain(..fits);
+        fits
     }
 
     /// Takes up to `count` bytes, slot by slot, into a buffer of which only the first `room` bytes

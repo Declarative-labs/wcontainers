@@ -355,8 +355,8 @@ pub(crate) enum Content {
     Symlink(Vec<u8>),
     /// A device, a named pipe or a socket node; what opening it does depends on its type and number.
     Special,
-    /// A pipe: made by `pipe2`, a named pipe's while open, or one of the container's standard
-    /// output pipes, which the host reads.
+    /// A pipe: made by `pipe2`, a named pipe's while open, or one of the first process's standard
+    /// descriptors, whose other side an end holds.
     Pipe(crate::pipe::Pipe),
     /// A file or directory of the process information tree, made when it is looked up.
     Proc(proc::Entry),
