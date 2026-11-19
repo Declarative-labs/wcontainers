@@ -83,7 +83,7 @@ pub(super) const VERTEX: u32 = 1;
 pub(super) const GEOMETRY: u32 = 4;
 pub(super) const PIXEL: u32 = 5;
 /// The bytes of one constant register, the step of a constant buffer's size.
-const CONSTANT_REGISTER: u64 = size_of::<[u32; 4]>() as u64;
+pub(super) const CONSTANT_REGISTER: u64 = size_of::<[u32; 4]>() as u64;
 
 /// Whether the program of binding `b`'s stage is converted again for what is bound to it:
 /// compute and pixel stages, and vertex stages drawn directly (run by the back end's vertex

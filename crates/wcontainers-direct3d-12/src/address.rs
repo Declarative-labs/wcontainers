@@ -8,11 +8,15 @@
 
 use std::collections::BTreeMap;
 
+use wcontainers_directx_graphics_infrastructure::d3d::DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
+
+/// `D3D12_GPU_VIRTUAL_ADDRESS`.
+pub type GpuVirtualAddress = u64;
+
 /// The step between descriptors of every heap type (`GetDescriptorHandleIncrementSize`).
 pub const DESCRIPTOR_SIZE: u64 = 64;
-/// Alignment of each range handed out, as resources are placed at 64 KiB
-/// (`D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT`). Zero is never handed out.
-const ALIGN: u64 = 1 << 16;
+/// Alignment of each range handed out, as resources are placed. Zero is never handed out.
+const ALIGN: u64 = DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
 
 /// Ranges of numbers, each owned by one object `T`.
 #[derive(Debug)]

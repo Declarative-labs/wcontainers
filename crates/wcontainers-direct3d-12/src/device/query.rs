@@ -5,18 +5,21 @@
 //! counts a small compute program zeroes when the predicate skips them, so nothing waits.
 
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, BufferRange, QueryKind, RingKind, ShaderModule,
+    BindingEntry, BindingResource, BufferRange, QueryKind, RingKind, ShaderModule, SlotKind,
 };
 
+use super::bind::CONSTANT_REGISTER;
 use super::*;
 use wcontainers_directx_graphics_infrastructure::d3d::{
-    PipelineStatistics, StreamOutputStatistics,
+    DrawIndexedArguments, PipelineStatistics, StreamOutputStatistics,
 };
 
 /// `D3D12_QUERY_HEAP_TYPE` values.
 const HEAP_OCCLUSION: u32 = 0;
 const HEAP_TIMESTAMP: u32 = 1;
+const HEAP_VIDEO_DECODE_STATISTICS: u32 = 4;
 const HEAP_COPY_QUEUE_TIMESTAMP: u32 = 5;
+const HEAP_PIPELINE_STATISTICS1: u32 = 7;
 pub(super) const HEAP_PIPELINE_STATISTICS: u32 = 2;
 pub(super) const HEAP_SO_STATISTICS: u32 = 3;
 /// `D3D12_QUERY_TYPE` values.
@@ -29,6 +32,14 @@ pub const QUERY_SO_STATISTICS: std::ops::RangeInclusive<u32> = 4..=7;
 
 /// An exact occlusion count, the value of `D3D12_QUERY_TYPE_OCCLUSION`.
 type OcclusionCount = u64;
+
+/// The bytes of each answer `ResolveQueryData` writes of the back end's queries (occlusion and
+/// timestamps, both 64-bit).
+const ANSWER_BYTES: u64 = size_of::<u64>() as u64;
+
+/// The value `SetPredication` tests.
+type PredicateValue = u64;
+const PREDICATE_BYTES: u64 = size_of::<PredicateValue>() as u64;
 
 /// The bytes of one query's value the front writes, by heap type.
 fn value_size(heap: u32) -> Option<u64> {
@@ -44,36 +55,58 @@ fn value_size(heap: u32) -> Option<u64> {
 /// The bytes of one counted field of a query's value.
 const FIELD_BYTES: u64 = size_of::<u64>() as u64;
 
-/// One argument record of a predicated draw or dispatch: five words, the count first.
-const RECORD: u64 = 20;
+/// One argument record of a predicated draw or dispatch, as large as the largest arguments (an
+/// indexed draw's), the count first.
+const RECORD: u64 = size_of::<DrawIndexedArguments>() as u64;
+const RECORD_WORDS: u64 = RECORD / STORAGE_WORD;
 
-/// Turns resolved any-sample answers into exactly 0 or 1, in place.
-const BINARY: &str = "
-@group(0) @binding(160) var<storage, read_write> values: array<u32>;
-struct Range { first: u32, count: u32 }
-@group(0) @binding(0) var<uniform> range: Range;
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3u) {
-    if id.x >= range.count { return; }
-    let i = range.first + id.x * 2u;
+/// The binding of the buffer the front's own programs read: the first texture slot.
+pub(super) const OWN_SOURCE: u32 = SlotKind::Texture.first_binding();
+/// The binding of the buffer they write: the first storage slot.
+pub(super) const OWN_RESULT: u32 = SlotKind::Storage.first_binding();
+/// The binding of their uniform block of parameters.
+pub(super) const OWN_PARAMETERS: u32 = SlotKind::Uniform.first_binding();
+/// The threads of each of their workgroups.
+pub(super) const OWN_GROUP: u32 = 64;
+/// Their entry point.
+pub(super) const OWN_ENTRY: &str = wcontainers_shaders::ENTRY_POINT;
+
+/// Turns resolved any-sample answers into exactly 0 or 1, in place: an answer is two words.
+fn binary_source() -> String {
+    let words = ANSWER_BYTES / STORAGE_WORD;
+    format!(
+        "
+@group(0) @binding({OWN_RESULT}) var<storage, read_write> values: array<u32>;
+struct Range {{ first: u32, count: u32 }}
+@group(0) @binding({OWN_PARAMETERS}) var<uniform> range: Range;
+@compute @workgroup_size({OWN_GROUP})
+fn {OWN_ENTRY}(@builtin(global_invocation_id) id: vec3u) {{
+    if id.x >= range.count {{ return; }}
+    let i = range.first + id.x * {words}u;
     values[i] = select(0u, 1u, (values[i] | values[i + 1u]) != 0u);
     values[i + 1u] = 0u;
+}}
+"
+    )
 }
-";
 
-/// Zeroes the count of each argument record the predicate skips.
-const PREDICATE: &str = "
-@group(0) @binding(32) var<storage, read> predicate: array<u32>;
-@group(0) @binding(160) var<storage, read_write> records: array<u32>;
-struct Test { word: u32, skip_if_zero: u32, count: u32 }
-@group(0) @binding(0) var<uniform> test: Test;
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3u) {
-    if id.x >= test.count { return; }
+/// Zeroes the count of each argument record the predicate skips: the predicate is two words.
+fn predicate_source() -> String {
+    format!(
+        "
+@group(0) @binding({OWN_SOURCE}) var<storage, read> predicate: array<u32>;
+@group(0) @binding({OWN_RESULT}) var<storage, read_write> records: array<u32>;
+struct Test {{ word: u32, skip_if_zero: u32, count: u32 }}
+@group(0) @binding({OWN_PARAMETERS}) var<uniform> test: Test;
+@compute @workgroup_size({OWN_GROUP})
+fn {OWN_ENTRY}(@builtin(global_invocation_id) id: vec3u) {{
+    if id.x >= test.count {{ return; }}
     let zero = (predicate[test.word] | predicate[test.word + 1u]) == 0u;
-    if zero == (test.skip_if_zero != 0u) { records[id.x * 5u] = 0u; }
+    if zero == (test.skip_if_zero != 0u) {{ records[id.x * {RECORD_WORDS}u] = 0u; }}
+}}
+"
+    )
 }
-";
 
 /// A query heap: its `D3D12_QUERY_HEAP_TYPE`, the interface query set of binary occlusion and
 /// timestamps, and the values the front writes as each query ends.
@@ -145,33 +178,54 @@ pub(super) enum Own {
     Restart,
 }
 
-/// The front's own compute programs, made at first use.
-pub(super) struct Programs<B: Backend>([Option<B::Program>; 4]);
+impl Own {
+    const ALL: &[Own] = &[Own::Binary, Own::Predicate, Own::Expand, Own::Restart];
 
-/// 32-bit indices of a strip from 16-bit (`wide` 0) or 32-bit ones, `cut` becoming 0xffffffff.
-const RESTART: &str = "
-@group(0) @binding(32) var<storage, read> src: array<u32>;
-@group(0) @binding(160) var<storage, read_write> dst: array<u32>;
-struct Restart { first: u32, count: u32, wide: u32, cut: u32 }
-@group(0) @binding(0) var<uniform> p: Restart;
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3u) {
-    if id.x >= p.count { return; }
+    fn source(self) -> String {
+        match self {
+            Own::Binary => binary_source(),
+            Own::Predicate => predicate_source(),
+            Own::Expand => super::indirect::expand_source(),
+            Own::Restart => restart_source(),
+        }
+    }
+}
+
+/// The front's own compute programs, made at first use.
+pub(super) struct Programs<B: Backend>([Option<B::Program>; Own::ALL.len()]);
+
+/// 32-bit indices of a strip from 16-bit (`wide` 0) or 32-bit ones, `cut` becoming the 32-bit
+/// restart value.
+fn restart_source() -> String {
+    let short = IndexFormat::U16;
+    let (bits, short_max) = (short.size() * u8::BITS, short.restart_value());
+    let restart = IndexFormat::U32.restart_value();
+    format!(
+        "
+@group(0) @binding({OWN_SOURCE}) var<storage, read> src: array<u32>;
+@group(0) @binding({OWN_RESULT}) var<storage, read_write> dst: array<u32>;
+struct Restart {{ first: u32, count: u32, wide: u32, cut: u32 }}
+@group(0) @binding({OWN_PARAMETERS}) var<uniform> p: Restart;
+@compute @workgroup_size({OWN_GROUP})
+fn {OWN_ENTRY}(@builtin(global_invocation_id) id: vec3u) {{
+    if id.x >= p.count {{ return; }}
     let i = p.first + id.x;
     var v: u32;
-    if p.wide == 0u {
-        v = (src[i >> 1u] >> ((i & 1u) * 16u)) & 0xffffu;
-    } else {
+    if p.wide == 0u {{
+        v = (src[i >> 1u] >> ((i & 1u) * {bits}u)) & {short_max}u;
+    }} else {{
         v = src[i];
-    }
-    if p.cut != 0u && v == p.cut { v = 0xffffffffu; }
+    }}
+    if p.cut != 0u && v == p.cut {{ v = {restart}u; }}
     dst[id.x] = v;
+}}
+"
+    )
 }
-";
 
 impl<B: Backend> Default for Programs<B> {
     fn default() -> Self {
-        Programs([None, None, None, None])
+        Programs(std::array::from_fn(|_| None))
     }
 }
 
@@ -195,8 +249,12 @@ impl<B: Backend> Device<B> {
                 return Err(Error::NotImplemented("timestamps on this back end"));
             }
             HEAP_PIPELINE_STATISTICS | HEAP_SO_STATISTICS => None,
-            4 => return Err(Error::NotImplemented("video decode statistics queries")),
-            7 => return Err(Error::NotImplemented("mesh shader pipeline statistics")),
+            HEAP_VIDEO_DECODE_STATISTICS => {
+                return Err(Error::NotImplemented("video decode statistics queries"));
+            }
+            HEAP_PIPELINE_STATISTICS1 => {
+                return Err(Error::NotImplemented("mesh shader pipeline statistics"));
+            }
             _ => return Err(Error::Invalid("unknown query heap type")),
         };
         let values = match value_size(kind) {
@@ -248,13 +306,7 @@ impl<B: Backend> Device<B> {
         if let Some(p) = &self.programs.0[which as usize] {
             return Ok(p.clone());
         }
-        let source = match which {
-            Own::Binary => BINARY,
-            Own::Predicate => PREDICATE,
-            Own::Expand => super::indirect::EXPAND,
-            Own::Restart => RESTART,
-        };
-        let module = ShaderModule::from_wgsl(source, "main", ShaderStage::Compute)?;
+        let module = ShaderModule::from_wgsl(&which.source(), OWN_ENTRY, ShaderStage::Compute)?;
         let shader = self.backend.create_shader(&module)?;
         let program = self.backend.create_program(&Program::Compute(&shader));
         self.backend.destroy(Object::Shader(shader));
@@ -280,12 +332,12 @@ impl<B: Backend> Device<B> {
             .backend
             .write_buffer_ring(RingKind::Data, &[&bytes], align, &mut offset)?;
         let mut entries = vec![BindingEntry {
-            binding: 0,
+            binding: OWN_PARAMETERS,
             stages: StageSet::COMPUTE,
             resource: BindingResource::UniformBuffer(BufferRange {
                 buffer: &ring,
                 offset: offset[0],
-                size: bytes.len().next_multiple_of(16) as u64,
+                size: (bytes.len() as u64).next_multiple_of(CONSTANT_REGISTER),
             }),
         }];
         for (binding, buffer, size, writable) in storage {
@@ -310,7 +362,7 @@ impl<B: Backend> Device<B> {
             program: &program,
             bindings,
             immediates: &[],
-            groups: DispatchGroups::Direct([threads.div_ceil(64), 1, 1]),
+            groups: DispatchGroups::Direct([threads.div_ceil(OWN_GROUP), 1, 1]),
         })?;
         self.backend.destroy(Object::BindingSet(set));
         Ok(())
@@ -368,7 +420,7 @@ impl<B: Backend> Device<B> {
             }
             return Ok(());
         }
-        let size = u64::from(count) * 8;
+        let size = u64::from(count) * ANSWER_BYTES;
         let set = h.set.clone().expect("a heap with a query set");
         let scratch = self.scratch(
             size,
@@ -380,7 +432,7 @@ impl<B: Backend> Device<B> {
             self.run_own(
                 Own::Binary,
                 &[0, count],
-                &[(160, &scratch, size, true)],
+                &[(OWN_RESULT, &scratch, size, true)],
                 count,
             )?;
         }
@@ -503,7 +555,7 @@ impl<B: Backend> Device<B> {
             self.backend.slow_paths().hit(SlowPath::ReadBackWait);
             self.backend.wait_read(&read);
         }
-        let mut bytes = [0u8; 8];
+        let mut bytes = [0u8; size_of::<u64>()];
         self.backend.finish_read(read, &mut bytes);
         self.backend.destroy(Object::QuerySet(set));
         Ok((u64::from_le_bytes(bytes), cpu))
@@ -519,13 +571,13 @@ impl<B: Backend> Device<B> {
         op: u32,
         covered: &[Command],
     ) -> Result<Predicate<B>, Error> {
-        if op > 1 || !offset.is_multiple_of(8) {
+        if op > 1 || !offset.is_multiple_of(PREDICATE_BYTES) {
             return Err(Error::Invalid("a predicate's operation or offset"));
         }
         let (buffer, _) = self.buffer(resource)?;
         let buffer = buffer.clone();
         let width = self.resources[resource.0 as usize].desc.width;
-        if offset + 8 > width {
+        if offset + PREDICATE_BYTES > width {
             return Err(Error::Invalid("a predicate past its buffer's end"));
         }
         let mut words: Vec<u32> = Vec::new();
@@ -554,13 +606,18 @@ impl<B: Backend> Device<B> {
         )?;
         self.backend
             .write_buffer(&records, 0, &bytes, WriteMode::Ordered);
-        let count = (words.len() / 5) as u32;
+        let count = (words.len() as u64 / RECORD_WORDS) as u32;
         self.run_own(
             Own::Predicate,
-            &[(offset / 4) as u32, u32::from(op == 0), count],
+            &[(offset / STORAGE_WORD) as u32, u32::from(op == 0), count],
             &[
-                (32, &buffer, width.next_multiple_of(STORAGE_WORD), false),
-                (160, &records, bytes.len() as u64, true),
+                (
+                    OWN_SOURCE,
+                    &buffer,
+                    width.next_multiple_of(STORAGE_WORD),
+                    false,
+                ),
+                (OWN_RESULT, &records, bytes.len() as u64, true),
             ],
             count,
         )?;
@@ -578,19 +635,23 @@ impl<B: Backend> Device<B> {
                 self.upload(p.resource)?;
                 let (buffer, _) = self.buffer(p.resource)?;
                 let buffer = buffer.clone();
-                let scratch = self.scratch(8, BufferUsage::COPY_DST | BufferUsage::READ_BACK)?;
-                self.backend.copy_buffer(&buffer, p.offset, &scratch, 0, 8);
-                let mut bytes = [0u8; 8];
+                let scratch = self.scratch(
+                    PREDICATE_BYTES,
+                    BufferUsage::COPY_DST | BufferUsage::READ_BACK,
+                )?;
+                self.backend
+                    .copy_buffer(&buffer, p.offset, &scratch, 0, PREDICATE_BYTES);
+                let mut bytes = [0u8; size_of::<PredicateValue>()];
                 self.backend.read_back_now(
                     &ReadSource::Buffer {
                         buffer: &scratch,
                         offset: 0,
-                        size: 8,
+                        size: PREDICATE_BYTES,
                     },
                     &mut bytes,
                 )?;
                 self.backend.destroy(Object::Buffer(scratch));
-                let v = u64::from_le_bytes(bytes);
+                let v = PredicateValue::from_le_bytes(bytes);
                 p.value = Some(v);
                 v
             }

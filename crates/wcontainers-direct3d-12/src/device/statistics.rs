@@ -17,6 +17,7 @@ use wcontainers_gpu::{
 
 use super::*;
 use wcontainers_directx_graphics_infrastructure::d3d;
+use wcontainers_shaders::ENTRY_POINT;
 
 /// The bytes of the pixel counter: one u64.
 const COUNTER_BYTES: u64 = size_of::<u64>() as u64;
@@ -47,9 +48,10 @@ fn counting_program(per_sample: bool) -> String {
     format!(
         "@group({HELPER_SET}) @binding({COUNTER_BINDING})
 var<storage, read_write> count: array<atomic<u32>, 2>;
-@fragment fn main({input}) {{
-    if atomicAdd(&count[0], 1u) == 0xffffffffu {{ atomicAdd(&count[1], 1u); }}
-}}"
+@fragment fn {ENTRY_POINT}({input}) {{
+    if atomicAdd(&count[0], 1u) == {low_max}u {{ atomicAdd(&count[1], 1u); }}
+}}",
+        low_max = u32::MAX
     )
 }
 
@@ -118,7 +120,7 @@ impl<B: Backend> Device<B> {
         }
         let code = counting_program(r.targets.samples > 1 && r.per_sample);
         let vertex = r.vertex.clone();
-        let fragment = ShaderModule::from_wgsl(&code, "main", ShaderStage::Fragment)?;
+        let fragment = ShaderModule::from_wgsl(&code, ENTRY_POINT, ShaderStage::Fragment)?;
         let vertex = self.backend.create_shader(&vertex)?;
         let fragment = match self.backend.create_shader(&fragment) {
             Ok(f) => f,
@@ -352,7 +354,8 @@ impl<B: Backend> Replay<B> {
         let Some(view) = self.index else {
             return Err(Error::Invalid("an indexed draw with no index buffer"));
         };
-        let size: u64 = if view.format == 57 { 2 } else { 4 };
+        let format = super::index_format(view.format).ok_or(Error::Invalid("index format"))?;
+        let size = u64::from(format.size());
         let (id, offset) = d
             .addresses
             .find(view.address)
@@ -367,8 +370,11 @@ impl<B: Backend> Replay<B> {
         let data = d.read_now(id, offset + start, bytes)?;
         let line = self.topology == Topology::LineStrip;
         let (mut vertices, mut prims) = (0, 0);
-        let indices: Vec<&[u8]> = data.chunks(size as usize).collect();
-        for run in indices.split(|i| i.iter().all(|&b| b == 0xff)) {
+        let indices: Vec<u32> = data
+            .chunks(size as usize)
+            .map(|i| i.iter().rev().fold(0, |v, &b| v << u8::BITS | u32::from(b)))
+            .collect();
+        for run in indices.split(|&i| i == format.restart_value()) {
             let n = run.len() as u64;
             vertices += n;
             prims += n.saturating_sub(if line { 1 } else { 2 });

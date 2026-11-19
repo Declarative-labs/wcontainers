@@ -40,3 +40,33 @@ pub struct StreamOutputStatistics {
     pub primitives_written: u64,
     pub primitives_storage_needed: u64,
 }
+
+/// `D3D11_DRAW_INSTANCED_INDIRECT_ARGS` and `D3D12_DRAW_ARGUMENTS`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct DrawArguments {
+    pub vertex_count_per_instance: u32,
+    pub instance_count: u32,
+    pub start_vertex_location: u32,
+    pub start_instance_location: u32,
+}
+
+/// `D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS` and `D3D12_DRAW_INDEXED_ARGUMENTS`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct DrawIndexedArguments {
+    pub index_count_per_instance: u32,
+    pub instance_count: u32,
+    pub start_index_location: u32,
+    pub base_vertex_location: i32,
+    pub start_instance_location: u32,
+}
+
+/// `D3D12_DISPATCH_ARGUMENTS`, and the three group counts `DispatchIndirect` reads in Direct3D 11.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct DispatchArguments {
+    pub thread_group_count_x: u32,
+    pub thread_group_count_y: u32,
+    pub thread_group_count_z: u32,
+}
