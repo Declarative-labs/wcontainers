@@ -53,7 +53,7 @@ pub fn shapes_of_image(files: &[File]) -> BTreeMap<String, Shape> {
     out
 }
 
-fn shapes_of_kernel(files: &[wcontainers_kernel::FileRecord]) -> BTreeMap<String, Shape> {
+pub fn shapes_of_kernel(files: &[wcontainers_kernel::FileRecord]) -> BTreeMap<String, Shape> {
     files
         .iter()
         .map(|file| {
@@ -111,7 +111,7 @@ pub fn changes(
 }
 
 /// Where Docker finds a command: the first directory of the image's PATH that has it.
-fn on_path(command: &str) -> String {
+pub fn on_path(command: &str) -> String {
     [
         "/usr/local/sbin",
         "/usr/local/bin",
@@ -163,9 +163,7 @@ fn run_ours_on(command: &[&str], seed: u64, backend: Option<&str>) -> driver::Ru
 /// the file backend, with `/` as the working directory, and asserts that output, exit status and
 /// the files changed are the same each time. Returns our run with the root in memory.
 pub fn compare(command: &[&str]) -> driver::Run {
-    let base = shapes_of_image(image::reference_image());
-    let (theirs, their_files) = reference::run_command(command);
-    let their_changes = changes(&base, &shapes_of_image(&their_files));
+    let theirs = Reference::of(command);
     let mut runs = [None, Some("/")].map(|backend| {
         let root = if backend.is_some() {
             "root on the backend"
@@ -184,19 +182,56 @@ pub fn compare(command: &[&str]) -> driver::Run {
             backend.is_some(),
             "{command:?}, {root}: {messages} messages to the backend"
         );
-        let our_changes = changes(&base, &shapes_of_kernel(&ours.files));
+        theirs.check(command, root, &ours.outcome, &ours.files);
+        Some(ours)
+    });
+    runs[0].take().expect("the run with the root in memory")
+}
+
+/// What a command did in the reference: its outcome and the files it changed.
+pub struct Reference {
+    pub outcome: driver::Outcome,
+    pub changes: BTreeMap<String, Option<Shape>>,
+}
+
+impl Reference {
+    /// Runs `command` in the reference.
+    pub fn of(command: &[&str]) -> Reference {
+        let (outcome, files) = reference::run_command(command);
+        let changes = changes(
+            &shapes_of_image(image::reference_image()),
+            &shapes_of_image(&files),
+        );
+        Reference { outcome, changes }
+    }
+
+    /// Asserts that a run of `command` on our kernel (named `root` in messages) gave the reference's output
+    /// and exit code and left `files` changed as the reference did.
+    pub fn check(
+        &self,
+        command: &[&str],
+        root: &str,
+        ours: &driver::Outcome,
+        files: &[wcontainers_kernel::FileRecord],
+    ) {
+        let theirs = &self.outcome;
+        let their_changes = &self.changes;
+        let our_changes = changes(
+            &shapes_of_image(image::reference_image()),
+            &shapes_of_kernel(files),
+        );
         assert_eq!(
-            String::from_utf8_lossy(&ours.outcome.stdout),
+            String::from_utf8_lossy(&ours.stdout),
             String::from_utf8_lossy(&theirs.stdout),
             "{command:?}, {root}: standard output"
         );
         assert_eq!(
-            String::from_utf8_lossy(&ours.outcome.stderr),
+            String::from_utf8_lossy(&ours.stderr),
             String::from_utf8_lossy(&theirs.stderr),
             "{command:?}, {root}: standard error"
         );
         assert_eq!(
-            ours.outcome.exit_code, theirs.exit_code,
+            ours.exit_code, theirs.exit_code,
             "{command:?}, {root}: exit code"
         );
         let differing: Vec<String> = our_changes
@@ -207,7 +242,7 @@ pub fn compare(command: &[&str]) -> driver::Run {
             .filter(|path| our_changes.get(*path) != their_changes.get(*path))
             .map(|path| {
                 format!(
-                    "{path}: ours {}, theirs {}",
+                    "\n{path}: ours {}, theirs {}",
                     describe(our_changes.get(path)),
                     describe(their_changes.get(path))
                 )
@@ -215,12 +250,10 @@ pub fn compare(command: &[&str]) -> driver::Run {
             .collect();
         assert!(
             differing.is_empty(),
-            "{command:?}, {root}: files changed differently:\n{}",
-            differing.join("\n")
+            "{command:?}, {root}: files changed differently:{}",
+            differing.concat()
         );
-        Some(ours)
-    });
-    runs[0].take().expect("the run with the root in memory")
+    }
 }
 
 fn describe(change: Option<&Option<Shape>>) -> String {
@@ -241,3 +274,105 @@ fn describe(change: Option<&Option<Shape>>) -> String {
         }
     }
 }
+
+/// Runs `run` on each command, catching what fails, and asserts that none did, reporting every one that did.
+pub fn each(commands: &[&[&str]], run: impl Fn(&[&str])) {
+    let mut failed = Vec::new();
+    for command in commands {
+        // Each command's run is its own: what one leaves behind after a panic is not looked at again.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(command)));
+        if let Err(error) = result {
+            let message = error
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| error.downcast_ref::<&str>().map(|text| text.to_string()))
+                .unwrap_or_default();
+            failed.push(format!("\n\n{command:?}: {message}"));
+        }
+    }
+    assert!(
+        failed.is_empty(),
+        "{} of {} differ:{}",
+        failed.len(),
+        commands.len(),
+        failed.concat()
+    );
+}
+
+/// Commands that read and write text.
+pub const TEXT: &[&[&str]] = &[
+    &["echo", "hello", "world"],
+    &["printf", "%s-%d\\n", "a", "42"],
+    &["cat", "/etc/passwd"],
+    &["cat", "/nonexistent"],
+    &["cat", "/etc/hostname/"],
+    &["cat", "/dev/null/"],
+    &["head", "-n", "3", "/etc/group"],
+    &["tail", "-c", "20", "/etc/os-release"],
+    &["wc", "/etc/passwd"],
+    &["sort", "-r", "/etc/shells"],
+    &["grep", "-n", "root", "/etc/passwd"],
+    &["grep", "nothing-matches", "/etc/passwd"],
+    &["sed", "-n", "2,3p", "/etc/passwd"],
+    &["awk", "-F:", "{print $1}", "/etc/passwd"],
+    &["cut", "-d:", "-f1,3", "/etc/group"],
+    &["tr", "a-z", "A-Z"],
+    &["seq", "1", "5"],
+    &["md5sum", "/bin/busybox"],
+    &["sha256sum", "/etc/passwd"],
+    &["base64", "/etc/hostname"],
+    &["od", "-An", "-tx1", "-N", "16", "/bin/busybox"],
+    &["expr", "6", "*", "7"],
+    &["basename", "/a/b/c.txt", ".txt"],
+    &["true"],
+    &["false"],
+];
+
+/// Commands that make, change and remove files.
+pub const FILES: &[&[&str]] = &[
+    &["ls", "-R", "/etc/apk"],
+    &["mkdir", "-p", "/tmp/a/b/c"],
+    &["mkdir", "/etc/passwd"],
+    &["touch", "-d", "2020-01-02 03:04:05", "/tmp/new"],
+    &["rm", "/etc/motd"],
+    &["rm", "-r", "/etc/apk"],
+    &["rmdir", "/home"],
+    &["mv", "/etc/motd", "/tmp/motd"],
+    &["cp", "-a", "/etc/apk", "/tmp/apk"],
+    &[
+        "stat",
+        "-c",
+        "%n %s %f %u %g %h",
+        "/etc/passwd",
+        "/bin/sh",
+        "/dev/shm",
+        "/dev/null",
+    ],
+    &["ls", "-la", "/dev/shm", "/dev/pts"],
+    &["ln", "-s", "/etc/passwd", "/tmp/link"],
+    &["ln", "/etc/passwd", "/tmp/hard"],
+    &["chmod", "4755", "/etc/motd"],
+    &["chown", "1:2", "/etc/motd"],
+    &["readlink", "-f", "/bin/sh"],
+    &["realpath", "/usr/../etc/./passwd"],
+    &[
+        "dd",
+        "if=/dev/zero",
+        "of=/tmp/zero",
+        "bs=1024",
+        "count=8",
+        "status=noxfer",
+    ],
+    &["tee", "/tmp/out"],
+    &["truncate", "-s", "10000", "/tmp/sparse"],
+    &["mknod", "/tmp/null", "c", "1", "3"],
+    &["mkfifo", "/tmp/fifo"],
+    &["test", "-w", "/etc/passwd"],
+    &["pwd"],
+    &["fallocate", "-l", "8192", "/tmp/f"],
+    &["install", "-m", "755", "/etc/passwd", "/tmp/p"],
+    &["readahead", "/etc/passwd"],
+    &["fsync", "/etc/passwd"],
+    &["cmp", "/bin/busybox", "/bin/sh"],
+    &["xxd", "-l", "16", "/bin/busybox"],
+];

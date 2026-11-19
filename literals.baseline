@@ -1603,7 +1603,6 @@ code	crates/wcontainers-kernel-test/src/busybox.rs	int	type_bits	0o060000
 code	crates/wcontainers-kernel-test/src/busybox.rs	int	type_bits	0o100000
 code	crates/wcontainers-kernel-test/src/busybox.rs	int	type_bits	0o120000
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	compare	"/"
-code	crates/wcontainers-kernel-test/src/busybox.rs	str	compare	"\n"
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	compare	"root in memory"
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	compare	"root on the backend"
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	compared	"/dev"
@@ -7709,7 +7708,6 @@ restated	crates/wcontainers-kernel-test/src/ltp.rs	str	tests::results_lines_roun
 restated	crates/wcontainers-kernel-test/src/ltp.rs	str	tests::results_lines_round_trip	"proc entry not built"
 restated	crates/wcontainers-kernel-test/tests/backend.rs	int	backend_notices_are_handled	400
 restated	crates/wcontainers-kernel-test/tests/boundary.rs	str	generated_files_are_current	"{} is out of date; run `cargo run -p wcontainers-kernel-test --bin generate-linux`"
-restated	crates/wcontainers-kernel-test/tests/busybox.rs	str	files	"8192"
 restated	crates/wcontainers-kernel-test/tests/busybox.rs	str	system	"env"
 restated	crates/wcontainers-kernel-test/tests/cpulimit.rs	str	cpu_limit_matches_reference	"core dump not written"
 restated	crates/wcontainers-kernel-test/tests/dispatch.rs	str	numbers_in_gaps_match_reference	"400"
