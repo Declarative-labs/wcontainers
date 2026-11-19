@@ -32,7 +32,9 @@ const HARDWARE: Host = Host {
 /// What is wrong with the piece of `word`, if anything.
 fn fault(word: u32) -> Option<String> {
     let i = decode(word);
-    let piece = translate_native::<Arm64>(&word.to_le_bytes(), AT, LookAhead::None)
+    let unpaid = translate_native::<Arm64>(&word.to_le_bytes(), AT, LookAhead::None, false)
+        .expect("a word decodes");
+    let piece = translate_native::<Arm64>(&word.to_le_bytes(), AT, LookAhead::None, true)
         .expect("a word decodes");
     let add = encode::add_immediate(COUNT, COUNT, 1).expect("fits");
     let event = counted(AT, &Arm64::flow(&i));
@@ -110,6 +112,16 @@ fn fault(word: u32) -> Option<String> {
     if adds != u32::from(event) {
         return Some(format!("{adds} adds for {event}"));
     }
+    // Without exact replay the piece is the same less the add.
+    let add_bytes = add.to_le_bytes();
+    let less_add = match event {
+        true => piece.bytes.strip_prefix(&add_bytes[..]),
+        false => Some(&piece.bytes[..]),
+    };
+    let unpaid_leads = unpaid.spans.iter().all(|s| s.lead == 0);
+    if !unpaid_leads || less_add.is_none_or(|rest| !branches_aside(rest, &unpaid.bytes)) {
+        return Some("without exact replay the piece is not the same less the count's add".into());
+    }
     // A literal load's crossing is known when translating: its probes are written with no test.
     let literal_crossing = match (i, i.memory_access()) {
         (
@@ -161,6 +173,21 @@ fn fault(word: u32) -> Option<String> {
         }
     }
     None
+}
+
+/// Whether two pieces are the same but for where their branches point (one is a word shorter in front).
+fn branches_aside(a: &[u8], b: &[u8]) -> bool {
+    let unit = Arm64::MAX_LENGTH as usize;
+    a.len() == b.len()
+        && a.chunks(unit).zip(b.chunks(unit)).all(|(x, y)| {
+            let word = |c: &[u8]| u32::from_le_bytes(c.try_into().expect("a word"));
+            let (x, y) = (word(x), word(y));
+            x == y
+                || matches!(
+                    (encode::retarget(x, 0), encode::retarget(y, 0)),
+                    (Ok(p), Ok(q)) if p == q
+                )
+        })
 }
 
 #[test]

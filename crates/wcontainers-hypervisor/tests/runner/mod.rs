@@ -486,8 +486,9 @@ impl Runner {
 
     /// Runs one layer 1 case as the native output's piece.
     pub fn case(&mut self, case: &Case) -> NativeOutcome {
-        let piece = translate_native::<Arm64>(&case.word.to_le_bytes(), CODE, LookAhead::None)
-            .expect("a decoded word");
+        let piece =
+            translate_native::<Arm64>(&case.word.to_le_bytes(), CODE, LookAhead::None, true)
+                .expect("a decoded word");
         let mut data = vec![0u8; DATA_BYTES as usize];
         fill(case.seed, &mut data);
         self.write(DATA, &data);

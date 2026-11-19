@@ -95,7 +95,7 @@ impl Runner {
         for k in 0..words.len() {
             let from = k * Arm64::MAX_LENGTH as usize;
             let guest = CODE + from as u64;
-            let code = translate_native::<Arm64>(&image[from..], guest, look_ahead)
+            let code = translate_native::<Arm64>(&image[from..], guest, look_ahead, true)
                 .expect("a decoded word");
             pieces.push(Placed {
                 guest,
