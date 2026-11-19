@@ -2545,6 +2545,8 @@ dependencies = [
  "wcontainers-arm64",
  "wcontainers-guest-cpu",
  "wcontainers-inside",
+ "wcontainers-kernel",
+ "wcontainers-kernel-test",
  "wcontainers-kernel-test-policy",
  "wcontainers-runtime",
  "wcontainers-translator",

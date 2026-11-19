@@ -44,6 +44,10 @@ wcontainers-wasmtime = { path = "../wcontainers-wasmtime" }
 wcontainers-runtime = { path = "../wcontainers-runtime" }
 # The kernel test's policy, the same on both sides.
 wcontainers-kernel-test-policy = { path = "../wcontainers-kernel-test-policy" }
+# The root's files at a container's end.
+wcontainers-kernel = { path = "../wcontainers-kernel" }
+# The busybox test's commands, reference image and check against the reference (GPL-2.0-only, test only).
+wcontainers-kernel-test = { path = "../wcontainers-kernel-test" }
 # The system calls the exits test answers, by Linux's numbers.
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "errno", "auxvec", "no_std"] }
 
@@ -53,6 +57,10 @@ harness = false
 
 [[test]]
 name = "kernel"
+harness = false
+
+[[test]]
+name = "busybox"
 harness = false
 
 [[test]]
