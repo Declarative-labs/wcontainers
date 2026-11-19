@@ -79,7 +79,7 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   crc32), rep string instructions on both paths, rdtsc and rdtscp from the clock, cpuid from a designed
   table, and the integer, move and blend instructions of SSE2 to SSE4.2 (see "X5, run 2"). Not yet: the
   float instructions, MXCSR, the segment and far-transfer instructions, `enter`, `fxsave`, the string
-  compares of SSE4.2, and the rest of the bar.
+  compares of SSE4.2, and the rest of the bar. 864 of the 1,295 default legacy forms are written.
 
 ## X5, run 2 (2026-11-19)
 
@@ -142,6 +142,27 @@ is partly zero is to be seen on the reference first); `fxsave`, `fxrstor` (with 
 `enter`; the segment and descriptor instructions (`mov` to and from segment registers, `push`/`pop fs/gs`,
 `lar`, `lsl`, `verr`, `verw`, `sldt`, `smsw`, `str`, `sgdt`, `sidt`, `lss`/`lfs`/`lgs`) and the far
 transfers (`call far`, `jmp far`, `retf`, `iret`), which need the selectors as thread state.
+
+Also found and fixed: SSE4.1's `pextrw` to memory panicked in its meaning (the seed 2611 run found it);
+`size_of_memory` knew no float or 2- to 8-byte packed operand (`Float32`, `Packed64_UInt16`, ...).
+
+Literals: the x86 crate's baseline lines 142 to 127 (the new SSE code's sizes come from `size_of`, the shift
+kinds from the operand widths, and the old `16`s of `simd.rs` became `XMM_BYTES`); the test crate's 2,111 to
+2,109; translator 73 and interface 28 unchanged. `cargo run -q -p wcontainers-literals -- check` exits 0 (on
+the Mac).
+
+The suite at the end (50bad34a with this file): on the rented x86-64 machine (a new one, load 1 to 8),
+`cargo test --release --no-fail-fast -p wcontainers-guest-cpu -p wcontainers-x86 -p wcontainers-arm64 -p
+wcontainers-translator -p wcontainers-translator-test`, 2,045 s (`suite-x86b.log`): every x86 test passes
+(the program tests, deep recursion and stops at every check among them) but the three the machine's
+5-level paging changes (`every_form_matches_the_cpu_x86_64`, `sample_matches_the_cpu_in_chrome_x86_64`,
+`the_x86_64_reference_refuses_what_linux_refuses`); the 32 ARM64 tests that need an ARM64 reference fail
+there, as before. Their verdicts: the first and the refusal test pass against the i7-8750H (seed 2611 run
+above, and the refusal test on the Mac); the Chrome sample was not run against the laptop this run. On the
+rented ARM64 machine (load about 24) the ARM64 tests pass but the two layer 1 tests its manual keeps on the
+Mac (`suite-arm.log`), which this run did not run on the Mac; nothing this run changed is ARM64's.
+Lint: `cargo clippy -D warnings` on the x86, interface, translator and test crates, all targets, and `cargo
+fmt --check`, clean (the Mac).
 
 What comes next, in this order: the float forms with MXCSR's two paths and tracking, the NaN rules and the
 probe (plan 5.8); `ldmxcsr`/`stmxcsr`; the reciprocal formula and its 2^32-input test; the SSE4.2 string
@@ -2482,6 +2503,14 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   `WC_LOOKAHEAD_CASES` 4, validity at `PROPTEST_CASES` 256 (`PROPTEST_RNG_SEED` 1) and `WC_VALID_WORDS` 16
   (that one from its own fixed seed).
   No run raised a knob. The test guest's programs and the byte-for-byte comparison are not random.
+- X5 run 2, layer 1 against the i7-8750H (`WC_LAYER1_JOBS` 3, translated side on the Mac): the 67 integer
+  forms at 1,000 a form, seed 1; the 20 string forms at 1,000, seed 4; `popfw`/`popfq` at 1,000, seed 5;
+  135 SSE integer, move and blend forms at 100 (seed 31) and 1,000 (seed 4242); `crc32` 5 forms at 1,000
+  (seed 77); `xlat` at 1,000 (seed 78); `pextrw` 4 forms at 1,000 (seed 79); 145 forms at 200 (seed 8080)
+  after the literal changes; every x86 layer 1 test at 100 a form (seed 2611: 919 forms, 100 cases in no
+  form, 88 hand-made cases). All 0 failing but the two `pextrw` forms to memory in the seed 2611 run
+  (fixed, then seed 79) and the Chrome sample, which cannot run on the Mac (a page resource 404: it runs on
+  the rented x86-64 machine).
 
 ## Measurements
 
