@@ -8,12 +8,12 @@ use aarch64_cpu::registers::{ESR_EL1, FAR_EL1, MDSCR_EL1, Read, SPSR_EL1, TPIDRR
 use wcontainers_abi::PAGE_SIZE;
 use wcontainers_inside::floor::tables::large_entry_splits;
 use wcontainers_inside::floor::{
-    self, AddressSpace, Floor, Taken, UserRegisters, code, counter, counter_frequency, enter_user,
-    guest_read_only, guest_read_write, heap, make_code_visible, process_code, register_page,
-    set_stop_word, with_frames, write_frame,
+    self, AddressSpace, Floor, Frames, Full, Taken, UserRegisters, code, counter,
+    counter_frequency, enter_user, guest_read_only, guest_read_write, heap, make_code_visible,
+    process_code, register_page, set_stop_word, with_frames, write_frame,
 };
 use wcontainers_inside::layout::{
-    BLOCK_LEVEL, BLOCK_SIZE, LEAF_LEVEL, MIRROR, Region, level_span, linear,
+    BLOCK_LEVEL, BLOCK_SIZE, LEAF_LEVEL, MIRROR, Region, TOP_LEVEL, level_span, linear,
 };
 use wcontainers_inside::link::{GiveBack, Start};
 
@@ -213,16 +213,21 @@ struct Cases {
     next_asid: u16,
 }
 
+/// Runs `f` over the frames; the cases are sized to fit guest-physical memory.
+fn frames<T>(f: impl FnOnce(&mut Frames) -> Result<T, Full>) -> T {
+    with_frames(f).expect("the cases fit guest-physical memory")
+}
+
 impl Cases {
     /// A page of the code area holding `bytes`, made visible.
     fn code_page(&mut self, bytes: &[u8]) -> u64 {
         let va = self.next_code;
         self.next_code += PAGE_SIZE;
         let global = self.floor.global;
-        with_frames(|frames| {
-            let frame = frames.take();
+        frames(|frames| {
+            let frame = frames.take()?;
             write_frame(frame, 0, bytes);
-            global.map(frames, va, frame, code());
+            global.map(frames, va, frame, code())
         });
         make_code_visible(va, bytes.len() as u64);
         va
@@ -237,7 +242,7 @@ impl Cases {
     fn process(&mut self) -> AddressSpace {
         self.next_asid += 1;
         let (global, asid) = (self.floor.global, self.next_asid);
-        with_frames(|frames| AddressSpace::new(frames, &global, asid))
+        frames(|frames| AddressSpace::new(frames, &global, asid))
     }
 
     fn execute_only(&mut self) {
@@ -300,10 +305,10 @@ impl Cases {
     fn guest_no_execute(&mut self) {
         let space = self.process();
         let page = self.guest_page();
-        with_frames(|frames| {
-            let frame = frames.take();
+        frames(|frames| {
+            let frame = frames.take()?;
             write_frame(frame, 0, code_of::mark_a());
-            space.user.map(frames, page, frame, guest_read_write());
+            space.user.map(frames, page, frame, guest_read_write())
         });
         let ran = run(&space, page, 0, 0);
         let passed = ran.class == class(ESR_EL1::EC::Value::InstrAbortLowerEL)
@@ -348,10 +353,10 @@ impl Cases {
         let branch = self.code_page(code_of::branch());
         let space = self.process();
         let page = self.guest_page();
-        with_frames(|frames| {
-            let frame = frames.take();
+        frames(|frames| {
+            let frame = frames.take()?;
             write_frame(frame, 0, &MARK_A.to_le_bytes());
-            space.user.map(frames, page, frame, guest_read_write());
+            space.user.map(frames, page, frame, guest_read_write())
         });
         let tagged = page | (TAG << TAG_SHIFT);
         let loaded = run(&space, load, tagged, 0);
@@ -400,11 +405,11 @@ impl Cases {
         mark: u64,
         attributes: aarch64_paging::descriptor::El1Attributes,
     ) -> u64 {
-        with_frames(|frames| {
-            let frame = frames.take();
+        frames(|frames| {
+            let frame = frames.take()?;
             write_frame(frame, 0, &mark.to_le_bytes());
-            space.inside.map(frames, va, frame, attributes);
-            frame
+            space.inside.map(frames, va, frame, attributes)?;
+            Ok(frame)
         })
     }
 
@@ -437,11 +442,7 @@ impl Cases {
         let va = Region::Threads.base();
         self.inside_page(&space, va, MARK_A, register_page());
         let before = run(&space, store, va, MARK_B);
-        with_frames(|frames| {
-            space
-                .inside
-                .protect(frames, va, guest_read_only(), space.asid)
-        });
+        frames(|frames| space.inside.protect(frames, va, guest_read_only()));
         let after = run(&space, store, va, MARK_A);
         let passed = called(&before, 0) && refused(&after, va, true);
         report(
@@ -462,10 +463,10 @@ impl Cases {
             (self.process(), MARK_B, code_of::mark_b()),
         ];
         for (space, mark, mirror_code) in sides.iter_mut() {
-            with_frames(|frames| {
-                let frame = frames.take();
+            frames(|frames| {
+                let frame = frames.take()?;
                 write_frame(frame, 0, mirror_code);
-                space.inside.map(frames, MIRROR, frame, process_code());
+                space.inside.map(frames, MIRROR, frame, process_code())
             });
             make_code_visible_in(space, MIRROR, mirror_code.len() as u64);
             self.inside_page(space, Region::Threads.base(), *mark, register_page());
@@ -508,13 +509,13 @@ impl Cases {
         let writer_asid = self.next_asid;
         self.next_asid += 1;
         let reader_asid = self.next_asid;
-        let (writer, reader) = with_frames(|frames| {
-            let frame = frames.take();
-            let writer = process.view(frames, writer_asid);
-            let reader = process.view(frames, reader_asid);
-            writer.user.map(frames, page, frame, guest_read_write());
-            reader.user.map(frames, page, frame, guest_read_only());
-            (writer, reader)
+        let (writer, reader) = frames(|frames| {
+            let frame = frames.take()?;
+            let writer = process.view(frames, writer_asid)?;
+            let reader = process.view(frames, reader_asid)?;
+            writer.user.map(frames, page, frame, guest_read_write())?;
+            reader.user.map(frames, page, frame, guest_read_only())?;
+            Ok((writer, reader))
         });
         let mut passed = true;
         for round in 0..ROUNDS {
@@ -533,6 +534,41 @@ impl Cases {
         );
     }
 
+    fn shared_inside_views(&mut self) {
+        let store = self.code_page(code_of::store());
+        let process = self.process();
+        self.next_asid += 1;
+        let first_asid = self.next_asid;
+        self.next_asid += 1;
+        let second_asid = self.next_asid;
+        let (first, second) = frames(|frames| {
+            Ok((
+                process.view(frames, first_asid)?,
+                process.view(frames, second_asid)?,
+            ))
+        });
+        let va = Region::Threads.base();
+        self.inside_page(&process, va, MARK_A, register_page());
+        let mut passed = true;
+        for round in 0..ROUNDS {
+            let stored_first = run(&first, store, va, round);
+            let stored_second = run(&second, store, va, round);
+            frames(|frames| process.inside.protect(frames, va, guest_read_only()));
+            let refused_second = run(&second, store, va, MARK_B);
+            frames(|frames| process.inside.protect(frames, va, register_page()));
+            passed &= called(&stored_first, 0)
+                && called(&stored_second, 0)
+                && refused(&refused_second, va, true);
+        }
+        report(
+            Case::SharedInsideViews,
+            passed,
+            format_args!(
+                "two views of one process share the inside's half: a page made read-only after both stored refuses the other view's store at once, {ROUNDS} rounds, identifiers {first_asid} and {second_asid}"
+            ),
+        );
+    }
+
     fn adjacent_pages(&mut self) {
         let store = self.code_page(code_of::store());
         let load = self.code_page(code_of::load());
@@ -540,13 +576,13 @@ impl Cases {
         let first = self.guest_page();
         let second = self.guest_page();
         let host_page = self.floor.start.host_page;
-        let frame = with_frames(|frames| {
-            let frame = frames.take_block();
-            space.user.map(frames, first, frame, guest_read_write());
+        let frame = frames(|frames| {
+            let frame = frames.take_block()?;
+            space.user.map(frames, first, frame, guest_read_write())?;
             space
                 .user
-                .map(frames, second, frame + PAGE_SIZE, guest_read_only());
-            frame
+                .map(frames, second, frame + PAGE_SIZE, guest_read_only())?;
+            Ok(frame)
         });
         let same_host_page = frame / host_page == (frame + PAGE_SIZE) / host_page;
         let wrote_first = run(&space, store, first, MARK_A);
@@ -575,11 +611,11 @@ impl Cases {
         let space = self.process();
         let base = self.next_guest.next_multiple_of(BLOCK_SIZE);
         self.next_guest = base + BLOCK_SIZE;
-        with_frames(|frames| {
-            let block = frames.take_block();
+        frames(|frames| {
+            let block = frames.take_block()?;
             space
                 .user
-                .map_block(frames, base, block, guest_read_write());
+                .map_block(frames, base, block, guest_read_write())
         });
         let pages = BLOCK_SIZE / PAGE_SIZE;
         let level_before = space.user.find(base).map(|(_, level)| level);
@@ -589,11 +625,7 @@ impl Cases {
         }
         let changed = base + (pages / 2) * PAGE_SIZE;
         let splits = large_entry_splits();
-        with_frames(|frames| {
-            space
-                .user
-                .protect(frames, changed, guest_read_only(), space.asid)
-        });
+        frames(|frames| space.user.protect(frames, changed, guest_read_only()));
         let level_after = space.user.find(base).map(|(_, level)| level);
         let counted = large_entry_splits() - splits;
         passed &= level_after == Some(LEAF_LEVEL) && counted == 1;
@@ -766,12 +798,12 @@ impl Cases {
 
     fn give_back(&mut self) {
         let length = GIVE_BACK_BLOCKS * BLOCK_SIZE;
-        let first = with_frames(|frames| {
-            let first = frames.take_block();
+        let first = frames(|frames| {
+            let first = frames.take_block()?;
             for _ in 1..GIVE_BACK_BLOCKS {
-                frames.take_block();
+                frames.take_block()?;
             }
-            first
+            Ok(first)
         });
         let mut at = first;
         while at < first + length {
@@ -872,7 +904,7 @@ impl core::fmt::Write for Line {
 fn second(floor: Floor) {
     let mut cases = Cases {
         floor,
-        next_code: Region::Code.base() + level_span(1),
+        next_code: Region::Code.base() + level_span(TOP_LEVEL + 1),
         next_guest: GUEST,
         next_asid: SECOND_CPU_ASIDS,
     };
@@ -913,6 +945,7 @@ extern "C" fn floor_main(start: &Start) -> ! {
         cases.protect_inside_page();
         cases.two_containers();
         cases.thread_views();
+        cases.shared_inside_views();
         cases.adjacent_pages();
         cases.block();
         cases.late_code();

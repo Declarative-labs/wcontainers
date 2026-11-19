@@ -102,9 +102,10 @@ pub fn boot_registers(
     let mair = MAIR_EL1::Attr0_Normal_Outer::WriteBack_NonTransient_ReadWriteAlloc
         + MAIR_EL1::Attr0_Normal_Inner::WriteBack_NonTransient_ReadWriteAlloc
         + MAIR_EL1::Attr1_Device::nonGathering_nonReordering_EarlyWriteAck;
-    // Linux's EL0 settings: cache maintenance and `dc zva` allowed, unaligned plain accesses allowed, no
-    // pointer authentication or branch targets, `wfi` and `wfe` trapped; exception entry and return
-    // synchronise context; privileged access to user memory is never blocked.
+    // The guest's level as the WebAssembly output presents it: cache maintenance and `dc zva` allowed,
+    // unaligned plain accesses allowed, no pointer authentication or branch targets; `wfi` and `wfe` trap
+    // (none is ever emitted), and CTR_EL0 traps (its reads are answered with the presented value). Exception
+    // entry and return synchronise context; privileged access to user memory is never blocked.
     let sctlr = SctlrEl1::M
         | SctlrEl1::C
         | SctlrEl1::I

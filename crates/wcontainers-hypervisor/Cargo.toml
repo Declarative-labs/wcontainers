@@ -26,9 +26,6 @@ applevisor-sys = "1.0.0"
 [build-dependencies]
 # The names of the build environment.
 wcontainers-inside = { path = "../wcontainers-inside" }
-# What the guest's architecture says the floor sets up (stack pointer alignment).
-wcontainers-arm64 = { path = "../wcontainers-arm64" }
-wcontainers-guest-cpu = { path = "../wcontainers-guest-cpu" }
 
 [dev-dependencies]
 # The stop test's seeded waits.

@@ -339,7 +339,7 @@ mod macos {
     ) -> bool {
         let page = link_page(&shared.memory, &shared.loaded, index);
         let text = String::from_utf8_lossy(page.data()).into_owned();
-        if let Some(request) = link::Request::from_word(page.request) {
+        if let Some(request) = link::Request::from_word(page.head.request) {
             match request {
                 link::Request::Print => println!("cpu {index}: {text}"),
                 link::Request::Fatal => {
@@ -360,8 +360,8 @@ mod macos {
             }
             return true;
         }
-        let Some(request) = protocol::Request::from_word(page.request) else {
-            println!("cpu {index}: unknown request {:#x}", page.request);
+        let Some(request) = protocol::Request::from_word(page.head.request) else {
+            println!("cpu {index}: unknown request {:#x}", page.head.request);
             shared.fatal.store(true, Ordering::Relaxed);
             return false;
         };

@@ -15,6 +15,9 @@ pub const ENTRIES: u64 = PAGE_SIZE / ENTRY_BYTES;
 /// Levels of translation tables in each half.
 pub const LEVELS: u32 = 4;
 
+/// The level of the top-level table.
+pub const TOP_LEVEL: u32 = 0;
+
 /// The level whose entries map single pages.
 pub const LEAF_LEVEL: u32 = LEVELS - 1;
 
@@ -56,12 +59,12 @@ pub enum Region {
 impl Region {
     /// The region's first address.
     pub const fn base(self) -> u64 {
-        INSIDE_HALF + self as u64 * level_span(0)
+        INSIDE_HALF + self as u64 * level_span(TOP_LEVEL)
     }
 
     /// The region's top-level index.
     pub const fn index(self) -> u64 {
-        level_index(self.base(), 0)
+        level_index(self.base(), TOP_LEVEL)
     }
 }
 

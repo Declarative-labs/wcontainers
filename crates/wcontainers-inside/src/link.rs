@@ -31,18 +31,25 @@ pub struct Start {
 /// Words a [`Link`] holds a request's message or its answer in.
 pub const LINK_WORDS: usize = 8;
 
-/// Bytes of text or data a [`Link`] carries.
-pub const LINK_BYTES: usize = PAGE_SIZE as usize - (LINK_WORDS + 2) * size_of::<u64>();
-
-/// One request and its answer.
+/// The words of a [`Link`] before its bytes.
 #[repr(C)]
-pub struct Link {
+pub struct LinkHead {
     /// The request's word ([`Message::REQUEST`]).
     pub request: u64,
     /// The request's [`Message`] in, its answer out.
     message: [u64; LINK_WORDS],
-    /// Bytes used of `bytes`.
+    /// Bytes used of the link's bytes.
     pub length: u64,
+}
+
+/// Bytes of text or data a [`Link`] carries: the rest of its page.
+pub const LINK_BYTES: usize = PAGE_SIZE as usize - size_of::<LinkHead>();
+
+/// One request and its answer.
+#[repr(C)]
+pub struct Link {
+    /// The request and its message.
+    pub head: LinkHead,
     /// Text or data.
     pub bytes: [u8; LINK_BYTES],
 }
@@ -61,29 +68,29 @@ impl Link {
     /// Writes `value` as the message or answer.
     pub fn put<T: IntoBytes + Immutable>(&mut self, value: &T) {
         const { assert!(size_of::<T>() <= size_of::<[u64; LINK_WORDS]>()) };
-        let words = self.message.as_mut_bytes();
+        let words = self.head.message.as_mut_bytes();
         words.fill(0);
         words[..size_of::<T>()].copy_from_slice(value.as_bytes());
     }
 
     /// Reads the message or answer as `T`.
     pub fn get<T: FromBytes + KnownLayout + Immutable>(&self) -> T {
-        T::read_from_prefix(self.message.as_bytes())
+        T::read_from_prefix(self.head.message.as_bytes())
             .expect("a message fits its link")
             .0
     }
 
     /// Writes `message` and `bytes` as a request.
     pub fn ask<M: Message>(&mut self, message: &M, bytes: &[u8]) {
-        self.request = M::REQUEST;
+        self.head.request = M::REQUEST;
         self.put(message);
-        self.length = bytes.len() as u64;
+        self.head.length = bytes.len() as u64;
         self.bytes[..bytes.len()].copy_from_slice(bytes);
     }
 
     /// The bytes the request carries.
     pub fn data(&self) -> &[u8] {
-        &self.bytes[..self.length as usize]
+        &self.bytes[..self.head.length as usize]
     }
 }
 

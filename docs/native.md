@@ -2,9 +2,9 @@
 
 Status: plan, 2026-11-18 (N0 and its five checks; corrected at the start of N1 for the last check's findings
 and the orchestrator's rulings: the count is E, K2 carries the memory size, routing is the default for
-host-model results, the owner's names). The names the owner has chosen are used: `Executor` (today's
-`BackEnd`), `System` (today's `Outside`), `LocalSystem` (today's shipped outside), `GuestMachine`,
-`TranslatorSettings`, `TaskId`. Lines cited in code are at 68013b31, where the old names still stand.
+host-model results, the owner's names). The names the owner has chosen are used: `Executor`, `System`,
+`LocalSystem`, `GuestMachine`, `TranslatorSettings`, `TaskId` (main has them since 787f8ceb, merged here at
+N2). Lines cited in code are at 68013b31, except the runtime's interface in section 6.2, cited at 787f8ceb.
 
 Words used here:
 - **native output**: the translator's second output, machine code of the guest's own architecture.
@@ -972,9 +972,12 @@ ID_AA64MMFR0_EL1 ASIDBits 2, idregs.out) and the 12-bit PCID on x86-64 (the lapt
 `invpcid`, /proc/cpuinfo; whether its KVM passes them on is checked at N8). When they run out, the floor
 starts a new generation and invalidates the whole TLB once, as Linux does on both architectures, counted
 "address-space identifiers ran out". A change the kernel makes to one process's tables is followed by the
-invalidation of those pages for its identifier (ARM64 `tlbi vale1is` with the identifier, last level only,
-since the tables above the page are unchanged; `tlbi vae1is`, every level, only where an entry's level
-changes, as when a block is split into a table of pages; x86-64 `invpcid`), broadcast to the other virtual CPUs as section 5.3 says. Rejected: global heap entries with a full
+invalidation of those pages for every identifier (ARM64 `tlbi vaae1is`, every identifier and every level,
+through `aarch64-paging`'s `El1And0::invalidate_va`, one primitive both for a page whose permissions change
+in a table several views share, a process's inside half among its threads, and for a block split into a
+table of pages; x86-64 `invpcid`), broadcast to the other virtual CPUs as section 5.3 says. It also drops
+other processes' entries at that address, which costs them a walk and no correctness; N4 measures it if
+copy-on-write shows it. Rejected: global heap entries with a full
 invalidation at every switch between containers (a cost at every turn that changes container), and
 different heap addresses per container (a save could then come back only where its addresses are free).
 
@@ -1092,8 +1095,9 @@ next exit, as `LocalSystem`'s would.
 - **An event from outside** is a real interrupt raised from a host thread: Hypervisor.framework's
   `hv_gic_set_spi` (Apple's documentation, macOS 15 and later; the round 3 prototype made the same GIC with
   `hv_gic_create`, hvfrun.c, but raised only its timer through it), KVM's `KVM_IRQFD` or `KVM_IRQ_LINE` with
-  the in-kernel interrupt controller (Documentation/virt/kvm/api.rst). Neither is tried yet; N1 and N8 do,
-  and measure the time to arrival. It lands in the inside's vector at an instruction boundary, and section
+  the in-kernel interrupt controller (Documentation/virt/kvm/api.rst). N1 measured `hv_gic_set_spi` on this
+  M5: from another host thread to the inside's handler, medians 2.4 to 4.1 µs over its runs
+  (docs/status-native.md); KVM's is tried at N8. It lands in the inside's vector at an instruction boundary, and section
   4's map makes the position exact.
 - **The host stopping a virtual CPU** (a save, ending the container, the user's stop): `hv_vcpus_exit` or a
   signal to the virtual CPU's thread with `immediate_exit`. Measured: 420 stops with Hypervisor.framework, pc
@@ -1256,13 +1260,13 @@ the virtual machine, the loop must run there too, or every system call would lea
 ### 6.2 What changes, and who owns it
 
 The runtime's user surface changes; these are interface changes, the owner's (decision 1):
-- `Executor: Execution` (today's `BackEnd`, rt/container.rs:19) cannot hold: the native back end's `Execution` and `Cpu` side
+- `Executor: Execution` (rt/container.rs:19) cannot hold: the native back end's `Execution` and `Cpu` side
   live inside the virtual machine, and the host side holds only a handle.
-- `Runtime::container<O: System>` (today's `Outside`, rt/container.rs:85) takes a user's type, which cannot be compiled into
+- `Runtime::container<S: System>` (rt/container.rs:96) takes a user's type, which cannot be compiled into
   the inside, a separate `no_std` program built for another target (section 5.2).
-- `Container::outside` and `outside_mut` (rt/container.rs:169-176) return host references to a `System` that
+- `Container::system` and `system_mut` (rt/container.rs:182-188) return host references to a `System` that
   is no longer wholly on the host.
-- `System::stop_flag` (today's `Outside::stop_flag`, rt/lib.rs:166) hands over a `StopFlag` that holds an `Arc` and a `Mutex` and writes a
+- `System::stop_flag` (rt/lib.rs:166) hands over a `StopFlag` that holds an `Arc` and a `Mutex` and writes a
   flag word (rt/lib.rs:35-89); natively a raise is an interrupt.
 
 The changes:
@@ -1270,19 +1274,19 @@ The changes:
   `Execution`, `Step`, `Stepper` and the policy trait below move into a part of the runtime crate built
   without the standard library (with `alloc`). `StopFlag` stays in the std part and leaves the policy trait
   (R2). No behaviour changes for the WebAssembly back end.
-- **R2 (runtime track): the container steps a place the back end names.** `Executor` (today's `BackEnd`) drops its `Execution`
+- **R2 (runtime track): the container steps a place the back end names.** `Executor` drops its `Execution`
   bound and its `stop_flag`, and names the place its loop runs: here (the kernel, the `Execution`, the policy
-  and the `Stepper` as today's fields, rt/container.rs:137-163) or inside a virtual machine (a handle whose
+  and the `Stepper` as today's fields, rt/container.rs:150-155) or inside a virtual machine (a handle whose
   `step` hands one step to the pool and whose `run` runs `Stepper::drive` inside, section 6.1). It gives a
   stop handle whose `raise` writes the flag word (WebAssembly) or
   raises an interrupt (native), in place of `System::stop_flag`. `step`, `idle` and `run` keep their
   meaning, `Step` is unchanged, and `back_end` stays.
-- **R3 (runtime track, and the kernel track for its test crate): the `System` in two halves.** `System` (today's `Outside`)
+- **R3 (runtime track, and the kernel track for its test crate): the `System` in two halves.** `System`
   (rt/lib.rs:146-167) splits into a **policy** (`turn`, `ran`, `arrived`, `stopped`, the decision half of
   `idle`, `cpu_warning`: what needs the kernel, `no_std`, run where the loop runs) and **services** (the
   `Host` calls the kernel makes for output, files, network, randomness, the wall clock, and the waiting half
   of `idle`: std, on the host, called directly by the WebAssembly back end and through the link by the
-  native one). `Runtime::container` takes a policy and the user's services; `outside()` and `outside_mut()`
+  native one). `Runtime::container` takes a policy and the user's services; `system()` and `system_mut()`
   become `services()` and `services_mut()`. `LocalSystem` (rt/system.rs:230-302) splits so, its
   deadline thread staying the WebAssembly back end's way to end a free turn. The test crate's `System` (ktest,
   `TestHost`) splits so too, its seeded `turn` and `ran` in the policy. A policy is a type the inside is
@@ -1741,8 +1745,8 @@ choice. The count's definition is E (section 4).
    that means a machine with EL2 enabled, which section 5.1 otherwise has no use for: with EL2 disabled, as
    planned, every PMU access exits to the host and the virtual CPU reports no PMU; with EL2 enabled the
    framework emulates the PMU only when PMUVer is set, which the host can do (hv_vm_config.h; measured,
-   section 5.1). Whether that emulated counter counts EL0 instructions and raises an overflow interrupt is
-   untried. KVM documents a virtual PMU (Documentation/virt/kvm/api.rst), untried on the laptop. Costs a few
+   section 5.1). Whether that emulated counter counts EL0 instructions and raises an overflow interrupt was
+   tried at N1 (below). KVM documents a virtual PMU (Documentation/virt/kvm/api.rst), untried on the laptop. Costs a few
    interrupts and up to a margin's worth of steps per limited turn, on test runs only, and on
    Hypervisor.framework the floor entering at EL2 and running at EL1 below it.
    Recommended: let N1 and N8 try C (N1: EL2 enabled, PMUVer set by the host, an overflow interrupt after a

@@ -82,6 +82,8 @@ cases! {
     ProtectInsidePage,
     TwoContainers,
     ThreadViews,
+    /// A change in the inside's half, which a process's views share, reaches every view.
+    SharedInsideViews,
     AdjacentPages,
     Block,
     LateCode,

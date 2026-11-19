@@ -24,7 +24,7 @@ use spin::Mutex;
 use wcontainers_abi::PAGE_SIZE;
 
 pub use entry::{Taken, UserRegisters, enter_user};
-pub use tables::{Frames, Table};
+pub use tables::{Frames, Full, Table, space_full};
 
 use crate::layout::{
     ATTRIBUTE_NORMAL, GIC_DISTRIBUTOR, GIC_REDISTRIBUTORS, MEMORY_BASE, Region, linear,
@@ -90,7 +90,7 @@ pub fn send<M: Message>(message: &M, text: fmt::Arguments) {
     let _ = out.write_fmt(text);
     let link = link_page();
     link.ask(message, &[]);
-    link.length = out.length as u64;
+    link.head.length = out.length as u64;
     doorbell();
 }
 
@@ -141,7 +141,8 @@ impl Floor {
         };
         if start.cpu == 0 {
             *FRAMES.lock() = Some(Frames::new(start.free, MEMORY_BASE + start.memory));
-            with_frames(|frames| global.reserve_top(frames, Region::Code.base()));
+            with_frames(|frames| global.reserve_top(frames, Region::Code.base()))
+                .expect("the boot frames fit guest-physical memory");
         }
         Floor {
             start: *start,
@@ -223,25 +224,25 @@ pub struct AddressSpace {
 
 impl AddressSpace {
     /// An empty process sharing the global entries of `global`.
-    pub fn new(frames: &mut Frames, global: &Table, asid: u16) -> AddressSpace {
-        let inside = Table::new(frames);
+    pub fn new(frames: &mut Frames, global: &Table, asid: u16) -> Result<AddressSpace, Full> {
+        let inside = Table::new(frames)?;
         inside.share_top(global, Region::Linear.base());
         inside.share_top(global, Region::Code.base());
-        AddressSpace {
-            user: Table::new(frames),
+        Ok(AddressSpace {
+            user: Table::new(frames)?,
             inside,
             asid,
-        }
+        })
     }
 
     /// The same inside half with its own table for the guest's half and its own identifier: one thread's
     /// view of its process's pages.
-    pub fn view(&self, frames: &mut Frames, asid: u16) -> AddressSpace {
-        AddressSpace {
-            user: Table::new(frames),
+    pub fn view(&self, frames: &mut Frames, asid: u16) -> Result<AddressSpace, Full> {
+        Ok(AddressSpace {
+            user: Table::new(frames)?,
             inside: self.inside,
             asid,
-        }
+        })
     }
 
     /// Switches to this view. No TLB invalidation: entries are tagged by identifier.
