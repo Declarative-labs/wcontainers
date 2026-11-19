@@ -5,7 +5,9 @@
 //! code over a link in memory. The wait status, every call of the host's services and the root's files at the
 //! end must agree, and for a program with one thread the number of turns. A program of this track's makes
 //! getppid calls: the virtual machine's exits must not grow with their number, as a system call is answered
-//! inside. Another forks, execs itself and takes signals, so turns end at the limits the policy gives.
+//! inside. Another forks, execs itself and takes signals, so turns end at the limits the policy gives. Another
+//! writes code and announces it, in private memory and in memory a child changes. hello and these two also run
+//! in the reference, whose output and exit code the native side must give.
 //!
 //! `WCONTAINERS_KERNEL_SEED` seeds the policy and the host's random bytes.
 
@@ -35,9 +37,11 @@ mod macos {
 
     use linux_raw_sys::general::{S_IRGRP, S_IROTH, S_IRWXU, S_IXGRP, S_IXOTH};
     use wcontainers_inside::container::{File, FileKind, Starting};
+    use wcontainers_kernel_test::driver::exit_code;
+    use wcontainers_kernel_test::reference;
 
     use crate::common::{
-        CLibrary, KERNEL_TEST_GUEST, OWN_GUEST, be_signed, compile, load_average, setting,
+        CLibrary, KERNEL_TEST_GUEST, OWN_GUEST, be_signed, compile, compiled, load_average, setting,
     };
     use crate::container::{
         DEFAULT_SEED, Outcome, REALTIME_NANOSECONDS, SEED_VARIABLE, native, summary, wasm,
@@ -51,6 +55,9 @@ mod macos {
 
     /// This track's program that forks, execs itself and takes signals.
     const FORKS: &str = "forks";
+
+    /// This track's program that writes code and announces it.
+    const CODE: &str = "code";
 
     /// The getppid calls of the exit count (ten to the fifth, as the independent check asks), and twice as many.
     const GETPPID_CALLS: u64 = 10_u64.pow(5);
@@ -118,12 +125,33 @@ mod macos {
         native
     }
 
+    /// Checks the native side's output and exit code against the program's run in the reference.
+    fn against_reference(name: &str, native: &Outcome) {
+        let reference = reference::run(&compiled(name), &[]);
+        assert_eq!(
+            String::from_utf8_lossy(&native.host.stdout),
+            String::from_utf8_lossy(&reference.stdout),
+            "{name}: standard output against the reference"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&native.host.stderr),
+            String::from_utf8_lossy(&reference.stderr),
+            "{name}: standard error against the reference"
+        );
+        assert_eq!(
+            exit_code(native.status),
+            reference.exit_code,
+            "{name}: the exit code against the reference"
+        );
+        println!("{name}: the reference's output and exit code");
+    }
+
     pub fn main() {
         be_signed();
         let seed = setting(SEED_VARIABLE, DEFAULT_SEED);
         let started = Instant::now();
         let hello = compile(KERNEL_TEST_GUEST, HELLO, CLibrary::Without);
-        alone(seed, HELLO, &hello, &[]);
+        against_reference(HELLO, &alone(seed, HELLO, &hello, &[]));
         let getppid = compile(OWN_GUEST, GETPPID, CLibrary::Musl);
         let exits = [0, GETPPID_CALLS, 2 * GETPPID_CALLS]
             .map(|calls| alone(seed, GETPPID, &getppid, &[calls.to_string()]).exits);
@@ -141,6 +169,11 @@ mod macos {
         let forks = compile(OWN_GUEST, FORKS, CLibrary::Musl);
         let (native, _) = both(seed, FORKS, &forks, &[]);
         print!("{FORKS}: {}", String::from_utf8_lossy(&native.host.stdout));
+        against_reference(FORKS, &native);
+        let code = compile(OWN_GUEST, CODE, CLibrary::Musl);
+        let (native, _) = both(seed, CODE, &code, &[]);
+        print!("{CODE}: {}", String::from_utf8_lossy(&native.host.stdout));
+        against_reference(CODE, &native);
         println!(
             "kernel: ran alike to the end; seed {seed:#x}; in {:?}, load {}",
             started.elapsed(),

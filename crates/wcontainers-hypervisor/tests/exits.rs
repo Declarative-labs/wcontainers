@@ -43,6 +43,7 @@ mod macos {
         boot, link as link_page, routines, translate,
     };
     use wcontainers_inside::link::{self, Fatal, LINK_BYTES, Link, Start};
+    use wcontainers_inside::reason::IDENTIFIERS_RAN_OUT;
     use wcontainers_inside::{routines as inside_routines, translation};
     use wcontainers_runtime::{Answer, Carry, Execution, Leaving, Turn};
     use wcontainers_wasmtime::{Compiler, CpuSide, LookAhead, Optimise};
@@ -70,6 +71,9 @@ mod macos {
         (OWN_GUEST, "libc", CLibrary::Musl),
     ];
 
+    /// Address-space identifiers: every one the hardware's 16 bits name.
+    const IDENTIFIERS: u64 = 1 << u16::BITS;
+
     /// The standard output's and standard error's descriptors.
     const DESCRIPTORS: usize = 3;
 
@@ -95,22 +99,35 @@ mod macos {
         let mut native = NativeSide::start(exact);
         let compiler = Compiler::<Arm64>::new(None);
         let mut failed = 0;
-        for &(directory, name, library) in PROGRAMS {
-            let image = compile(directory, name, library);
+        let mut compare_one = |native: &mut NativeSide, name: &str, image: &[u8]| {
             let mut wasm = WasmSide::new(&compiler);
             native.begin(exact);
-            match compare(&image, name, &mut native, &mut wasm) {
+            match compare(image, name, native, &mut wasm) {
                 Ok(outcome) => println!("{name} (exact {exact}): {outcome}"),
                 Err(why) => {
                     failed += 1;
                     println!("{name} (exact {exact}) FAILED: {why}");
                 }
             }
+        };
+        for &(directory, name, library) in PROGRAMS {
+            compare_one(&mut native, name, &compile(directory, name, library));
         }
+        // More memories one after another than there are address-space identifiers: a new generation of them,
+        // and every memory's tables given back, or they would not fit the machine's memory.
+        let (directory, name, library) = PROGRAMS[0];
+        for _ in 0..IDENTIFIERS {
+            native.begin(exact);
+        }
+        compare_one(&mut native, name, &compile(directory, name, library));
+        assert!(
+            native.warnings.contains_key(IDENTIFIERS_RAN_OUT),
+            "{IDENTIFIERS_RAN_OUT} after {IDENTIFIERS} memories"
+        );
         println!(
             "exits, exact {exact}: {} programs, {failed} failed; {} native pieces; native slow paths {:?}; in \
              {:?}, load {}",
-            PROGRAMS.len(),
+            PROGRAMS.len() + 1,
             native.translations,
             native.warnings,
             started.elapsed(),
@@ -222,7 +239,6 @@ mod macos {
                         protocol::Request::Warned => {
                             let Warned { count, .. } = link.get();
                             let reason = String::from_utf8_lossy(link.data()).into_owned();
-                            println!("warning: {reason} ({count})");
                             self.warnings.insert(reason, count);
                         }
                     }
