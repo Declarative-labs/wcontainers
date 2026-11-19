@@ -541,17 +541,21 @@ tr/code.rs:124-127), under "withheld register named by the guest" (section 3.7).
 architecture leaves to the implementation, and the meanings give them a result: a load or store with write
 back whose transfer register is its base (`ldr x0, [x0], #8`), and a load pair into one register (`ldp x1,
 x1, [x0]`). The meaning does the access with the base's old value and writes back after it
-(arm64/meaning.rs:628-636), so a load's write back wins and a store stores the old base. The hardware does
+(arm64/meaning.rs:628-636), so a load's write back wins and a store stores the old base; a load pair writes
+rt2, then rt, then the base (arm64/meaning.rs:1286-1303), so into one register the first word lands. The hardware does
 not run them: the independent check measured `ldr x0, [x0], #8`, `ldr x0, [x0, #8]!`, `ldp x1, x1, [x0]` and
 `str x0, [x0], #8` raising SIGILL on this M5 (check-n0d/unpred.out, three runs), and another host may do
 something else. So `Native` routes these encodings by their register fields, not only by form: the
 colliding transfer register is replaced by t, which makes the host instruction defined and gives the
 meaning's result in one instruction, the commit point (a load: `ldr t, [x0], #8`, the loaded value
-discarded, x0 written back; a load pair: `ldp t, x1, [x0]`, x1 the second word; a store: `mov t, x0` then
-`str t, [x0], #8`, storing the old base). The Exclusive route's own sequences keep the meaning's order for
-its collisions (above). The differential test draws each form's register fields as well as their values,
-with every collision among them (transfer and base, the two transfer registers, status and data or base),
-so each such encoding is run against the WebAssembly output (N2).
+discarded, x0 written back; a load pair into one register: `ldp x1, xzr, [x0]`, x1 the first word; a load
+pair whose base is a transfer register: that register becomes t; a store: `mov t, x0` then `str t, [x0],
+#8`, storing the old base). The Exclusive route's own sequences keep the meaning's order for its collisions
+(above). Layer 1's drawn cases leave these words out (they are excluded from comparison with the real
+reference), so the differential test makes them itself: beside each drawn case it runs every word
+layer 1's `excluded` names that the case's word becomes with two register fields made one (transfer and
+base, the two transfer registers, status and data or base), and for forms swept whole (system register
+moves, hints) every excluded value of their other fields, each run against the WebAssembly output (N2).
 
 Float arithmetic is copied. The WebAssembly output's `Hook::Float` (arm64/float.rs:5-8, called at
 float.rs:216, :643 and :700) is its own way, in software, to compute what the hardware computes natively for

@@ -590,16 +590,19 @@ fn collision(out: &mut Out, i: &I, word: u32) {
             let save = encode::move_register(SCRATCH, number(rt));
             access(out, &m, None, &[save], replace(word, field::RT, SCRATCH));
         }
+        // The meaning writes rt2, then rt, then the base: into one register the first word lands.
         I::LoadPair { rt, rt2, .. } => {
-            let first = if rt == rt2 || base == Some(rt) {
+            let first = if base == Some(rt) {
                 SCRATCH
             } else {
                 number(rt)
             };
-            let second = match base == Some(rt2) {
-                true if first == SCRATCH => ZERO,
-                true => SCRATCH,
-                false => number(rt2),
+            let second = if rt == rt2 {
+                ZERO
+            } else if base == Some(rt2) {
+                SCRATCH
+            } else {
+                number(rt2)
             };
             let changed = replace(replace(word, field::RT, first), field::RT2, second);
             access(out, &m, None, &[], changed);
