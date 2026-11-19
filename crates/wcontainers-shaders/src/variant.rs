@@ -2476,7 +2476,18 @@ fn loads(
     Ok(())
 }
 
-/// Texture level and sample counts read from the helper block instead of asked of the texture.
+/// What a texture query asks under [`VariantFlags::TEXTURE_INFO`].
+#[derive(Clone, Copy)]
+enum TextureInfo {
+    Levels,
+    Samples,
+    /// The size at a level (level 0 where none), zero where the level is at or past the helper's
+    /// level count, as Direct3D's `resinfo` answers for an empty slot or a level past the view's.
+    Size(Option<Handle<Expression>>),
+}
+
+/// Texture level and sample counts read from the helper block instead of asked of the texture, and
+/// sizes zero where the helper's level count leaves the level asked out.
 fn texture_info(
     module: &mut Module,
     stage: ShaderStage,
@@ -2489,40 +2500,127 @@ fn texture_info(
             let Expression::ImageQuery { image, query } = *e else {
                 continue;
             };
-            let samples = match query {
-                ImageQuery::NumLevels => false,
-                ImageQuery::NumSamples => true,
-                _ => continue,
+            let info = match query {
+                ImageQuery::NumLevels => TextureInfo::Levels,
+                ImageQuery::NumSamples => TextureInfo::Samples,
+                ImageQuery::Size { level } => TextureInfo::Size(level),
+                ImageQuery::NumLayers => continue,
             };
             let g = global_of(f, image)
                 .ok_or(ConvertError::Unsupported(crate::refusal::TEXTURE_ARGUMENT))?;
-            let r = slot_of(module, reflection, g, SlotKind::Texture).ok_or(
-                ConvertError::Unsupported(crate::refusal::TEXTURE_INFO_OF_STORAGE),
-            )?;
-            sites.push((owner, h, r, samples));
+            let r = match (slot_of(module, reflection, g, SlotKind::Texture), info) {
+                (Some(r), _) => r,
+                // A storage texture's size is its own; it has no level count in the helpers.
+                (None, TextureInfo::Size(_)) => continue,
+                (None, _) => {
+                    return Err(ConvertError::Unsupported(
+                        crate::refusal::TEXTURE_INFO_OF_STORAGE,
+                    ));
+                }
+            };
+            sites.push((owner, h, image, r, info));
         }
     }
-    for (owner, h, texture, samples) in sites {
-        let value = if samples {
-            HelperValue::TextureSamples { texture }
-        } else {
-            HelperValue::TextureLevels { texture }
+    for (owner, h, image, texture, info) in sites {
+        let value = match info {
+            TextureInfo::Samples => HelperValue::TextureSamples { texture },
+            TextureInfo::Levels | TextureInfo::Size(_) => HelperValue::TextureLevels { texture },
         };
         let u32_ty = scalar(module, Scalar::U32);
         let at = helper_once(module, reflection, stage, value, u32_ty);
+        let TextureInfo::Size(level) = info else {
+            let mut callee = Function {
+                name: Some(helper_name(value)),
+                result: Some(FunctionResult {
+                    ty: u32_ty,
+                    binding: None,
+                }),
+                ..Default::default()
+            };
+            let mut body = Block::new();
+            let v = load_helper(&mut callee, &mut body, at);
+            body.push(Statement::Return { value: Some(v) }, Span::UNDEFINED);
+            callee.body = body;
+            outlined.add(owner, h, callee, Vec::new());
+            continue;
+        };
+        let f = function(module, owner).clone();
+        let mut operands = alloc::vec![image];
+        operands.extend(level);
+        operands.push(h);
+        let types = types_of(module, &f, &operands)?;
+        let size_ty = *types.last().unwrap();
         let mut callee = Function {
-            name: Some(helper_name(value)),
+            name: Some(format!("texture_size_{texture}")),
             result: Some(FunctionResult {
-                ty: u32_ty,
+                ty: size_ty,
                 binding: None,
             }),
             ..Default::default()
         };
         let mut body = Block::new();
-        let v = load_helper(&mut callee, &mut body, at);
-        body.push(Statement::Return { value: Some(v) }, Span::UNDEFINED);
+        let arguments = operands.len() - 1;
+        let mut args = Vec::new();
+        for (i, &ty) in types[..arguments].iter().enumerate() {
+            callee.arguments.push(FunctionArgument {
+                name: None,
+                ty,
+                binding: None,
+            });
+            args.push(push(
+                &mut callee,
+                &mut body,
+                Expression::FunctionArgument(i as u32),
+            ));
+        }
+        let size = push(
+            &mut callee,
+            &mut body,
+            Expression::ImageQuery {
+                image: args[0],
+                query: ImageQuery::Size {
+                    level: args.get(1).copied(),
+                },
+            },
+        );
+        // Direct3D's level is unsigned, so a negative one is past every count.
+        let asked = match args.get(1) {
+            Some(&l) => push(
+                &mut callee,
+                &mut body,
+                Expression::As {
+                    expr: l,
+                    kind: naga::ScalarKind::Uint,
+                    convert: None,
+                },
+            ),
+            None => callee
+                .expressions
+                .append(Expression::Literal(Literal::U32(0)), Span::UNDEFINED),
+        };
+        let levels = load_helper(&mut callee, &mut body, at);
+        let past = binary(
+            &mut callee,
+            &mut body,
+            naga::BinaryOperator::GreaterEqual,
+            asked,
+            levels,
+        );
+        let zero = callee
+            .expressions
+            .append(Expression::ZeroValue(size_ty), Span::UNDEFINED);
+        let value = push(
+            &mut callee,
+            &mut body,
+            Expression::Select {
+                condition: past,
+                accept: zero,
+                reject: size,
+            },
+        );
+        body.push(Statement::Return { value: Some(value) }, Span::UNDEFINED);
         callee.body = body;
-        outlined.add(owner, h, callee, Vec::new());
+        outlined.add(owner, h, callee, operands[..arguments].to_vec());
     }
     Ok(())
 }

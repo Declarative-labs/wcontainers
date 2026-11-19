@@ -966,6 +966,52 @@ fn variants_draw_as_the_native_feature_does() {
             }
         }
 
+        // An empty slot asked its size and level count, and a size at a level past the count, from
+        // the helper's level count against real Direct3D 11: ours binds a texture of 4 levels
+        // either way, so only the helper's count can make its size zero.
+        for (shader, levels, unbound) in [("ps_levels", 0u32, true), ("ps_levels_past", 4, false)] {
+            let code = [
+                bytecode(&format!("vs_transform.{route}")),
+                bytecode(&format!("{shader}.{route}")),
+            ];
+            let mut variant = grid_draw(&code, dxil, &grid);
+            variant.setup.levels = 4;
+            variant.setup.ps_key.flags = VariantFlags::TEXTURE_INFO;
+            variant.setup.helpers[1] = helper_block(
+                variant.ps,
+                &variant.setup.ps_key,
+                &[(
+                    HelperValue::TextureLevels { texture: 0 },
+                    &levels.to_le_bytes(),
+                )],
+            );
+            let (d3d11, _) = direct3d_11(
+                &d3d,
+                "vs_transform",
+                shader,
+                Format::Rgba8Unorm,
+                [1.0, 0.75, 0.5, 1.5],
+                true,
+                &Reference {
+                    levels: 4,
+                    unbound,
+                    ..Default::default()
+                },
+            );
+            for (back_end, texels) in [
+                ("webgpu", ours(&mut gpu, &variant, ProvokingVertex::First)),
+                ("webgl", ours(&mut gl, &variant, ProvokingVertex::Last)),
+            ] {
+                results.push(compare(
+                    format!("texture_info {shader} {route} {back_end} against direct3d 11"),
+                    &d3d11,
+                    &texels,
+                    Format::Rgba8Unorm,
+                    (0, 0),
+                ));
+            }
+        }
+
         // The targets' sample count fixed by the variant, against real Direct3D 11 on one sample.
         if !dxil {
             let code = [bytecode("vs_transform.dxbc"), bytecode("ps_samples.dxbc")];

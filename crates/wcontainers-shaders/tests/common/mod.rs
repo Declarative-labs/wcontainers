@@ -181,6 +181,8 @@ pub struct Reference {
     pub texel_buffers: Vec<TexelData>,
     /// The target's sample count, where more than one: it is resolved for reading.
     pub samples: u32,
+    /// The pixel shader's texture slot left empty.
+    pub unbound: bool,
 }
 
 /// A draw's range with bases, direct or from an argument buffer; an indexed draw's indices are 0, 1,
@@ -278,7 +280,9 @@ pub fn direct3d_11(
         unsafe { gpu.context.SetResourceMinLOD(&resource, clamp) };
     }
     let view = gpu.srv(&texture.cast().unwrap(), None).unwrap();
-    let views: Vec<Option<ID3D11ShaderResourceView>> = if reference.texel_buffers.is_empty() {
+    let views: Vec<Option<ID3D11ShaderResourceView>> = if reference.unbound {
+        vec![None]
+    } else if reference.texel_buffers.is_empty() {
         vec![Some(view)]
     } else {
         reference

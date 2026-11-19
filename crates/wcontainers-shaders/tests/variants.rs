@@ -383,6 +383,11 @@ fn pixel_variants_convert_on_both_routes() {
         );
         let text = wgsl(&c);
         assert!(!text.contains("textureNumLevels"), "{text}");
+        // The size is asked of the texture and chosen against the helper's level count.
+        assert!(
+            text.contains("textureDimensions") && text.contains("select("),
+            "{text}"
+        );
     }
 }
 
