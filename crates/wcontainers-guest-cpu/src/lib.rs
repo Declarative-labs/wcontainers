@@ -12,10 +12,14 @@
 #[cfg(feature = "translate")]
 mod effects;
 #[cfg(feature = "translate")]
+mod native;
+#[cfg(feature = "translate")]
 mod translate;
 
 #[cfg(feature = "translate")]
 pub use effects::{Effects, effects};
+#[cfg(feature = "translate")]
+pub use native::{Native, NativeClass, Route, counted};
 #[cfg(feature = "translate")]
 pub use translate::*;
 
