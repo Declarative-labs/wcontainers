@@ -50,8 +50,9 @@ check, as the round's task asks.
 - Results: Wine's d3d11 file 142 of 165, d3d10core 107 of 111, scenes 135, 0, 4, WebGL 2 scenes
   2, 0, 137, the three real programs of the pass bar matching; the release library 13,786,112
   bytes on WebGPU and 9,355,264 on WebGL 2; building ahead as at round 2 run 1 (Measurements).
-- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 was deleted (Measurements
-  says its size); nothing was installed on the desktop, and no build was made on the Mac.
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (20.8 GB, debug and
+  release builds of both back ends) was deleted; nothing was installed on the desktop, and no
+  build was made on the Mac (the checkout has no target folder).
 
 G4 round 2, run 2 (2026-11-19, about 05:00 to 07:00 Pacific). Worked on the independent check's
 findings. The milestone is not complete: the WebGL 2 cases, alpha-antialiased lines and the
