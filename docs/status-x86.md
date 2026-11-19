@@ -127,6 +127,11 @@ Proof of run 3 (the Mac, Apple M5; scratch `x3/run3/`):
   The check's own run of this seed failed `Btr_rm64_r64`.
 - Cases in no form, 10,000 at seed 5150 (`noform-5150-10000.log`, 352 s, Mac load 113 at the end): passed.
 - The x86 crate's tests (tables 4, lengths 2, facts 3) and the harness's two new unit tests: passed.
+- Suite of what this track owns at 9c77810 (`WC_REFERENCE_X86_64=tom@192.168.2.240 nix develop -c cargo test
+  -p wcontainers-guest-cpu -p wcontainers-arm64 -p wcontainers-translator -p wcontainers-translator-test -p
+  wcontainers-x86 --no-fail-fast`, `suite.log`, 15:13 to 16:00, Mac load 56 at the start, 124 at its
+  highest, 72 at the end): 99 passed, 0 failed, 12 ignored. Both runners passed their start check (ARM64's in
+  Docker, x86's on the i7-8750H).
 - Clippy with `-D warnings` on the x86, test and interface crates (all targets) and on the reference runner
   for both CPUs; `cargo fmt --check`: clean.
 
