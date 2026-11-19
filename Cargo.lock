@@ -3808,8 +3808,11 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "naga",
+ "rand 0.9.5",
+ "rand_chacha",
  "serde",
  "serde_json",
+ "spirv",
  "wcontainers-shaders",
 ]
 

@@ -1,17 +1,75 @@
 //! Candidate A's second step: SPIR-V written from NIR, read by naga into a validated module.
 
 use crate::ConvertError;
-use naga::valid::{ModuleInfo, ValidationFlags, Validator};
-use wcontainers_shaders::WEBGPU_CAPABILITIES;
+use naga::valid::{Capabilities, ModuleInfo, ValidationFlags, Validator};
 
-/// Reads SPIR-V words into a naga module and validates it with WebGPU's core capabilities.
+/// Words before a SPIR-V module's first instruction: magic, version, generator, bound, schema.
+pub const HEADER_WORDS: usize = 5;
+/// An instruction's first word holds its word count in the high half and its opcode in the low half.
+const WORD_COUNT_SHIFT: u32 = u16::BITS;
+/// Between the errors of a chain.
+const CHAIN_SEPARATOR: &str = ": ";
+
+/// A module's instructions after its header, each as its opcode and all its words, ending at the
+/// first one whose length does not fit.
+pub fn instructions(words: &[u32]) -> impl Iterator<Item = (u32, &[u32])> {
+    let mut rest = words.get(HEADER_WORDS..).unwrap_or_default();
+    std::iter::from_fn(move || {
+        let first = *rest.first()?;
+        let count = (first >> WORD_COUNT_SHIFT) as usize;
+        let inst = rest.get(..count).filter(|_| count > 0)?;
+        rest = &rest[count..];
+        Some((u32::from(first as u16), inst))
+    })
+}
+
+/// The module without `Index 0` decorations, which say what no decoration says (the first input of
+/// blending) and which naga's reader takes for dual-source blending.
+fn without_index_zero(words: &[u32]) -> Vec<u32> {
+    let mut out = words[..HEADER_WORDS.min(words.len())].to_vec();
+    for (opcode, inst) in instructions(words) {
+        let index_zero = opcode == spirv::Op::Decorate as u32
+            && matches!(inst, [_, _, d, 0] if *d == spirv::Decoration::Index as u32);
+        if !index_zero {
+            out.extend_from_slice(inst);
+        }
+    }
+    out
+}
+
+/// What the common form allows the module: the shaders crate's capabilities, and immediates where the
+/// module reads them (the back ends size them from its `Immediate` globals).
+fn capabilities(module: &naga::Module) -> Capabilities {
+    let immediates = module
+        .global_variables
+        .iter()
+        .any(|(_, g)| g.space == naga::AddressSpace::Immediate);
+    let mut capabilities = wcontainers_shaders::capabilities(module);
+    capabilities.set(Capabilities::IMMEDIATES, immediates);
+    capabilities
+}
+
+/// Reads SPIR-V words into a naga module and validates it with what the common form allows it.
 pub fn read(words: &[u32]) -> Result<(naga::Module, ModuleInfo), ConvertError> {
     let options = naga::front::spv::Options::default();
+    let words = without_index_zero(words);
     let module = naga::front::spv::Frontend::new(words.iter().copied(), &options)
         .parse()
-        .map_err(|e| ConvertError::Reader(e.to_string()))?;
-    let info = Validator::new(ValidationFlags::all(), WEBGPU_CAPABILITIES)
+        .map_err(|e| ConvertError::Reader(chain(&e)))?;
+    let info = Validator::new(ValidationFlags::all(), capabilities(&module))
         .validate(&module)
-        .map_err(|e| ConvertError::Invalid(e.into_inner().to_string()))?;
+        .map_err(|e| ConvertError::Invalid(chain(e.as_inner())))?;
     Ok((module, info))
+}
+
+/// An error with every error beneath it, outermost first.
+pub fn chain(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut next = error.source();
+    while let Some(e) = next {
+        text.push_str(CHAIN_SEPARATOR);
+        text.push_str(&e.to_string());
+        next = e.source();
+    }
+    text
 }

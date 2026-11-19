@@ -9,10 +9,20 @@ repository.workspace = true
 
 [dependencies]
 naga = { workspace = true, features = ["spv-in"] }
+spirv = "0.4"
 wcontainers-shaders = { path = "../wcontainers-shaders" }
 
 [dev-dependencies]
 naga = { workspace = true, features = ["spv-in", "spv-out", "wgsl-in"] }
+rand = "0.9.2"
+rand_chacha = "0.9.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[test]]
+name = "corpus"
+path = "tests/corpus/main.rs"
+harness = false
 
 [build-dependencies]
 cc = "1"

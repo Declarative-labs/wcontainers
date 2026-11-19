@@ -16,8 +16,34 @@
 #define WC_SPIRV_MAJOR 1
 #define WC_SPIRV_MINOR 3
 
-/* Options Mesa's passes read from the shader; the routes ask for nothing lowered beyond NIR's own. */
-static const struct nir_shader_compiler_options compiler_options = {0};
+/* What the routes take: NIR with the operations the common form lacks lowered by NIR itself (the
+ * drivers report the same, so the NIR they hand over has this shape). */
+static const struct nir_shader_compiler_options compiler_options = {
+   .io_options = nir_io_has_intrinsics | nir_io_mediump_is_32bit,
+   .lower_scmp = true,
+   .lower_fdph = true,
+   .lower_flrp32 = true,
+   .lower_fsat = true,
+   .lower_hadd = true,
+   .lower_iadd_sat = true,
+   .lower_fisnormal = true,
+   .lower_extract_byte = true,
+   .lower_extract_word = true,
+   .lower_insert_byte = true,
+   .lower_insert_word = true,
+   .lower_mul_high = true,
+   .lower_uadd_carry = true,
+   .lower_usub_borrow = true,
+   .lower_uadd_sat = true,
+   .lower_usub_sat = true,
+   .lower_mul_2x32_64 = true,
+   .lower_int64_options = (nir_lower_int64_options)~0,
+   .lower_uniforms_to_ubo = true,
+   .has_fsub = true,
+   .has_isub = true,
+   .compact_arrays = true,
+   .float_mul_add32 = nir_float_muladd_support_keep_weak_ffma,
+};
 
 static mesa_shader_stage
 mesa_stage(enum wc_stage stage)
@@ -64,7 +90,10 @@ optimize(nir_shader *nir)
       NIR_PASS(progress, nir, nir_opt_constant_folding);
       NIR_PASS(progress, nir, nir_opt_algebraic);
    } while (progress);
-   NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_function_temp, NULL);
+   NIR_PASS(_, nir, nir_lower_int64);
+   NIR_PASS(_, nir, nir_remove_dead_variables,
+            nir_var_function_temp | nir_var_shader_in | nir_var_shader_out | nir_var_system_value,
+            NULL);
 }
 
 struct nir_shader *
