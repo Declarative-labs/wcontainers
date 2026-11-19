@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
@@ -12,6 +13,16 @@
 #include "util/util_log.h"
 
 namespace wcs {
+
+// A resource class of Direct3D 12, which the DXIL boundary gives as each resource's descriptor set.
+enum class ResourceClass : uint32_t {
+  eConstants,
+  eView,
+  eStorage,
+  eSampler,
+  // An unordered access view's counter, at its view's binding.
+  eCounter,
+};
 
 // Keeps the first error dxbc-spirv reports on this thread while it lives, as the reason a call failed.
 class ErrorLog : public dxbc_spv::util::Logger {

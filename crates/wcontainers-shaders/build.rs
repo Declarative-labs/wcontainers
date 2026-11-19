@@ -51,10 +51,14 @@ const DXBC_SPIRV: &[&str] = &[
     "util/util_swizzle.cpp",
 ];
 
+/// An enum of a C++ header: the header, the enum's name, the Rust module its constants go in and their
+/// type.
+type HeaderEnum = (&'static str, &'static str, &'static str, &'static str);
+
 /// dxbc-spirv's enums the lowering reads, by header and C++ name: the module of `ir.rs` each becomes,
 /// and the type its constants take where they are compared (the serialised IR's literal operands are
 /// u64).
-const IR_ENUMS: &[(&str, &str, &str, &str)] = &[
+const IR_ENUMS: &[HeaderEnum] = &[
     ("ir/ir.h", "ScalarType", "scalar", "u8"),
     ("ir/ir.h", "OpCode", "code", "u16"),
     ("ir/ir.h", "OpFlag", "flag", "u8"),
@@ -68,6 +72,9 @@ const IR_ENUMS: &[(&str, &str, &str, &str)] = &[
     ("dxbc/dxbc_signature.h", "SignatureSysval", "sysval", "u32"),
     ("dxbc/dxbc_parser.h", "ShaderType", "program", "u32"),
 ];
+
+/// This crate's own C++ boundary's enums, in the same form, so both sides share one table.
+const BOUNDARY_ENUMS: &[HeaderEnum] = &[("cpp/boundary.h", "ResourceClass", "class", "u32")];
 
 const DXIL_SPIRV: &[&str] = &[
     "debug/logging.cpp",
@@ -199,7 +206,7 @@ fn main() {
     compile(&build, "wcs_assertion", &objects);
 
     ir_codes(
-        root,
+        &[(root, IR_ENUMS), (Path::new("."), BOUNDARY_ENUMS)],
         &PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("ir_codes.rs"),
     );
 
@@ -225,11 +232,15 @@ fn main() {
     }
 }
 
-/// Writes `IR_ENUMS` as Rust constants from dxbc-spirv's own headers, so the numbers the lowering
-/// compares are dxbc-spirv's, never retyped: `eSetCsWorkgroupSize` becomes `SET_CS_WORKGROUP_SIZE`.
-fn ir_codes(root: &Path, out: &Path) {
+/// Writes each list's enums, read from the headers under its directory, as Rust constants, so the
+/// numbers the lowering compares are the C++ side's own, never retyped: `eSetCsWorkgroupSize` becomes
+/// `SET_CS_WORKGROUP_SIZE`.
+fn ir_codes(lists: &[(&Path, &[HeaderEnum])], out: &Path) {
     let mut rust = String::new();
-    for (file, cpp, module, ty) in IR_ENUMS {
+    for (root, file, cpp, module, ty) in lists
+        .iter()
+        .flat_map(|(root, enums)| enums.iter().map(move |e| (root, e.0, e.1, e.2, e.3)))
+    {
         let header = root.join(file);
         let text = std::fs::read_to_string(&header).unwrap();
         let start = text
@@ -237,9 +248,7 @@ fn ir_codes(root: &Path, out: &Path) {
             .unwrap_or_else(|| panic!("{}: no enum {cpp}", header.display()));
         let body = &text[start..];
         let body = &body[body.find('{').unwrap() + 1..body.find("};").unwrap()];
-        rust += &format!(
-            "/// dxbc-spirv's `{cpp}`, from its `{file}`.\n#[allow(dead_code)]\npub mod {module} {{\n"
-        );
+        rust += &format!("/// `{cpp}`, from `{file}`.\n#[allow(dead_code)]\npub mod {module} {{\n");
         let mut values: Vec<(String, u64)> = Vec::new();
         for entry in without_comments(body).split(',') {
             let entry = entry.trim();

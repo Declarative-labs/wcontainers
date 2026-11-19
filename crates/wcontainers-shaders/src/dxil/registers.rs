@@ -1,8 +1,9 @@
 //! Stage values laid out as Direct3D lays them out. dxc packs small values into the components of one
 //! register and gives arrays and matrices consecutive registers; WGSL takes one value of a scalar or
 //! vector type per location. Between stages each register becomes one value: a value alone in it
-//! keeps its type, values sharing it become four components; a vertex program's inputs and a pixel
-//! program's targets keep their own types, their arrays split per register.
+//! keeps its type, values sharing it become four components; a vertex program's inputs keep their own
+//! types and a pixel program's targets take the register's four components (as the target's format may
+//! have more than the value, which WebGPU refuses), their arrays split per register.
 
 use alloc::vec::Vec;
 use naga::{
@@ -371,7 +372,8 @@ pub(crate) fn lay_out(module: &mut Module) -> Result<Vec<Placed>, ConvertError> 
             });
         }
     } else {
-        // Targets keep their types; an array gives one output per register.
+        // Targets take four components of their own scalar, zero past the value's; an array gives one
+        // output per register.
         for v in &values {
             if v.component != 0 {
                 return Err(ConvertError::Malformed(
@@ -385,9 +387,30 @@ pub(crate) fn lay_out(module: &mut Module) -> Result<Vec<Placed>, ConvertError> 
                 } else {
                     whole
                 };
+                let (scalar, width) = shape(module, v.element);
+                let ty = vector(module, COMPONENTS as u8, scalar);
+                let value = if width == COMPONENTS {
+                    value
+                } else {
+                    let components = (0..COMPONENTS)
+                        .map(|c| match (c < width, width) {
+                            (true, 1) => value,
+                            (true, _) => index(&mut w, value, c),
+                            (false, _) => w
+                                .f
+                                .expressions
+                                .append(Expression::Literal(zero(scalar)), naga::Span::UNDEFINED),
+                        })
+                        .collect();
+                    push(
+                        &mut w.f,
+                        &mut w.body,
+                        Expression::Compose { ty, components },
+                    )
+                };
                 kept.push(Output {
                     name: None,
-                    ty: v.element,
+                    ty,
                     binding: with_location(&v.binding, v.register + row),
                     value,
                 });
