@@ -15,6 +15,8 @@ mod decode_forms;
 #[cfg(feature = "translate")]
 mod decode_simd;
 #[cfg(feature = "translate")]
+pub mod encode;
+#[cfg(feature = "translate")]
 pub mod exact;
 #[cfg(feature = "translate")]
 mod float;

@@ -1,0 +1,369 @@
+//! The few ARM64 instructions the native output writes of its own (docs/native.md section 3.6): each word is
+//! its form's fixed bits from Arm's table ([`crate::forms`]) with the named fields filled in, so no opcode or
+//! bit position is written here.
+
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
+use wcontainers_guest_cpu::Guest;
+
+use crate::Arm64;
+use crate::forms::{self, Form};
+
+/// The forms the native output writes, by Arm's names.
+pub mod form {
+    pub const MOVZ: &str = "MOVZ_64_movewide";
+    pub const MOVK: &str = "MOVK_64_movewide";
+    pub const UBFM: &str = "UBFM_64M_bitfield";
+    pub const BFM: &str = "BFM_64M_bitfield";
+    pub const AND_IMMEDIATE: &str = "AND_64_log_imm";
+    pub const EOR_IMMEDIATE: &str = "EOR_64_log_imm";
+    pub const ADD_IMMEDIATE: &str = "ADD_64_addsub_imm";
+    pub const SUB_IMMEDIATE: &str = "SUB_64_addsub_imm";
+    pub const CBZ: &str = "CBZ_64_compbranch";
+    pub const CBNZ: &str = "CBNZ_64_compbranch";
+    pub const TBNZ: &str = "TBNZ_only_testbranch";
+    pub const B: &str = "B_only_branch_imm";
+    pub const BL: &str = "BL_only_branch_imm";
+    pub const BR: &str = "BR_64_branch_reg";
+    pub const BLR: &str = "BLR_64_branch_reg";
+    pub const RET: &str = "RET_64R_branch_reg";
+    pub const LDR: &str = "LDR_64_ldst_pos";
+    pub const STR: &str = "STR_64_ldst_pos";
+    pub const LDRB: &str = "LDRB_32_ldst_pos";
+    pub const LDADDB: &str = "LDADDB_32_memop";
+    pub const CAS: &str = "CAS_C64_comswap";
+    pub const BRK: &str = "BRK_EX_exception";
+    pub const UDF: &str = "UDF_only_perm_undef";
+
+    /// Every form above.
+    pub const ALL: [&str; 23] = [
+        MOVZ,
+        MOVK,
+        UBFM,
+        BFM,
+        AND_IMMEDIATE,
+        EOR_IMMEDIATE,
+        ADD_IMMEDIATE,
+        SUB_IMMEDIATE,
+        CBZ,
+        CBNZ,
+        TBNZ,
+        B,
+        BL,
+        BR,
+        BLR,
+        RET,
+        LDR,
+        STR,
+        LDRB,
+        LDADDB,
+        CAS,
+        BRK,
+        UDF,
+    ];
+}
+
+/// Arm's names of the fields filled in.
+pub mod field {
+    pub const RD: &str = "Rd";
+    pub const RN: &str = "Rn";
+    pub const RT: &str = "Rt";
+    pub const RS: &str = "Rs";
+    pub const IMM16: &str = "imm16";
+    pub const HW: &str = "hw";
+    pub const IMMR: &str = "immr";
+    pub const IMMS: &str = "imms";
+    pub const N: &str = "N";
+    pub const IMM12: &str = "imm12";
+    pub const SH: &str = "sh";
+    pub const IMM19: &str = "imm19";
+    pub const IMM14: &str = "imm14";
+    pub const IMM26: &str = "imm26";
+    pub const B5: &str = "b5";
+    pub const B40: &str = "b40";
+}
+
+/// A register number: 0 to 30, or [`ZERO`].
+pub type Register = u8;
+
+/// The register number that is the zero register (or the stack pointer, as the field's form reads it).
+pub const ZERO: Register = 31;
+
+/// The bytes of one instruction: branch offsets count in them.
+const UNIT: i64 = Arm64::MAX_LENGTH as i64;
+
+/// The bits of a move's immediate.
+const MOVE_BITS: u32 = u16::BITS;
+
+/// An encoding whose values do not fit its fields.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DoesNotFit;
+
+fn table() -> &'static HashMap<&'static str, &'static Form> {
+    static TABLE: OnceLock<HashMap<&'static str, &'static Form>> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        form::ALL
+            .iter()
+            .map(|&name| {
+                let found = forms::all()
+                    .iter()
+                    .find(|f| f.name == name)
+                    .unwrap_or_else(|| panic!("{name} is not in Arm's table"));
+                (name, found)
+            })
+            .collect()
+    })
+}
+
+fn field_of(name: &str, field: &str) -> (u32, u32) {
+    table()[name]
+        .fields
+        .iter()
+        .find(|(f, ..)| f == field)
+        .map(|&(_, low, width)| (low, width))
+        .unwrap_or_else(|| panic!("{name} has no field {field}"))
+}
+
+/// The bits of a field.
+fn width(name: &str, field: &str) -> u32 {
+    field_of(name, field).1
+}
+
+/// The word of form `name` with `fields` filled in; a value too wide for its field does not fit.
+pub fn word(name: &str, fields: &[(&str, u32)]) -> Result<u32, DoesNotFit> {
+    let form = table()[name];
+    let mut word = form.value & form.mask;
+    for &(field, value) in fields {
+        let (low, width) = field_of(name, field);
+        if u64::from(value) >> width != 0 {
+            return Err(DoesNotFit);
+        }
+        word |= value << low;
+    }
+    Ok(word)
+}
+
+/// A signed field of `bits` bits holding `value` in units of `unit`, as branch offsets are.
+fn signed(value: i64, unit: i64, bits: u32) -> Result<u32, DoesNotFit> {
+    if value % unit != 0 {
+        return Err(DoesNotFit);
+    }
+    let scaled = value / unit;
+    let half = 1i64 << (bits - 1);
+    if scaled < -half || scaled >= half {
+        return Err(DoesNotFit);
+    }
+    Ok((scaled as u32) & ((1u32 << bits) - 1))
+}
+
+/// `movz rd, #imm16, lsl #(16 * half)`.
+pub fn movz(rd: Register, imm16: u16, half: u32) -> u32 {
+    let fields = [
+        (field::RD, rd.into()),
+        (field::IMM16, imm16.into()),
+        (field::HW, half),
+    ];
+    word(form::MOVZ, &fields).expect("a move fits")
+}
+
+/// `movk rd, #imm16, lsl #(16 * half)`.
+pub fn movk(rd: Register, imm16: u16, half: u32) -> u32 {
+    let fields = [
+        (field::RD, rd.into()),
+        (field::IMM16, imm16.into()),
+        (field::HW, half),
+    ];
+    word(form::MOVK, &fields).expect("a move fits")
+}
+
+/// The moves that build `value` in `rd`: a `movz` of its lowest half, then a `movk` for each higher half that
+/// is not zero.
+pub fn move_constant(rd: Register, value: u64) -> Vec<u32> {
+    let halves = u64::BITS / MOVE_BITS;
+    let half = |h: u32| (value >> (h * MOVE_BITS)) as u16;
+    std::iter::once(movz(rd, half(0), 0))
+        .chain(
+            (1..halves)
+                .filter(|&h| half(h) != 0)
+                .map(|h| movk(rd, half(h), h)),
+        )
+        .collect()
+}
+
+fn bitfield(name: &str, rd: Register, rn: Register, immr: u32, imms: u32) -> u32 {
+    let fields = [
+        (field::RD, rd.into()),
+        (field::RN, rn.into()),
+        (field::IMMR, immr),
+        (field::IMMS, imms),
+    ];
+    word(name, &fields).expect("a bit field of a whole register fits")
+}
+
+/// `ubfx rd, rn, #lsb, #bits`: `bits` bits from `lsb`, at the bottom.
+pub fn ubfx(rd: Register, rn: Register, lsb: u32, bits: u32) -> u32 {
+    bitfield(form::UBFM, rd, rn, lsb, lsb + bits - 1)
+}
+
+/// `ubfiz rd, rn, #lsb, #bits`: the low `bits` bits moved up to `lsb`, the rest zero.
+pub fn ubfiz(rd: Register, rn: Register, lsb: u32, bits: u32) -> u32 {
+    bitfield(form::UBFM, rd, rn, (u64::BITS - lsb) % u64::BITS, bits - 1)
+}
+
+/// `bfxil rd, rn, #lsb, #bits`: `bits` bits of `rn` from `lsb` into the bottom of `rd`, the rest kept.
+pub fn bfxil(rd: Register, rn: Register, lsb: u32, bits: u32) -> u32 {
+    bitfield(form::BFM, rd, rn, lsb, lsb + bits - 1)
+}
+
+/// The N, immr and imms of a 64-bit logical immediate, if `value` is one: a run of ones, rotated, repeated in
+/// elements of 2 to 64 bits.
+pub fn logical_immediate(value: u64) -> Option<(u32, u32, u32)> {
+    if value == 0 || value == u64::MAX {
+        return None;
+    }
+    let mut size = u64::BITS;
+    while size > 2 {
+        let half = size / 2;
+        let mask = (1u64 << half) - 1;
+        if value & mask != (value >> half) & mask {
+            break;
+        }
+        size = half;
+    }
+    let mask = u64::MAX >> (u64::BITS - size);
+    let element = value & mask;
+    let ones = element.count_ones();
+    let run = (1u64 << ones) - 1;
+    let ror = |r: u32| ((run >> r) | (run << ((size - r) % size))) & mask;
+    let immr = (0..size).find(|&r| ror(r) == element)?;
+    // imms: ones above a zero mark the element's size, and below them the run's length less one.
+    let imms_mask = (1u32 << width(form::AND_IMMEDIATE, field::IMMS)) - 1;
+    let imms = (!(2 * size - 1) & imms_mask) | (ones - 1);
+    Some((u32::from(size == u64::BITS), immr, imms))
+}
+
+fn logical(name: &str, rd: Register, rn: Register, value: u64) -> Result<u32, DoesNotFit> {
+    let (n, immr, imms) = logical_immediate(value).ok_or(DoesNotFit)?;
+    let fields = [
+        (field::RD, rd.into()),
+        (field::RN, rn.into()),
+        (field::N, n),
+        (field::IMMR, immr),
+        (field::IMMS, imms),
+    ];
+    word(name, &fields)
+}
+
+/// `and rd, rn, #value`.
+pub fn and_immediate(rd: Register, rn: Register, value: u64) -> Result<u32, DoesNotFit> {
+    logical(form::AND_IMMEDIATE, rd, rn, value)
+}
+
+/// `eor rd, rn, #value`.
+pub fn eor_immediate(rd: Register, rn: Register, value: u64) -> Result<u32, DoesNotFit> {
+    logical(form::EOR_IMMEDIATE, rd, rn, value)
+}
+
+/// `add rd, rn, #value` (`sub` for a negative value), the immediate shifted when that is the only way it
+/// fits.
+pub fn add_immediate(rd: Register, rn: Register, value: i64) -> Result<u32, DoesNotFit> {
+    let name = if value < 0 {
+        form::SUB_IMMEDIATE
+    } else {
+        form::ADD_IMMEDIATE
+    };
+    let magnitude = value.unsigned_abs();
+    let bits = width(name, field::IMM12);
+    let (imm, shifted) = if magnitude >> bits == 0 {
+        (magnitude, 0)
+    } else if magnitude.trailing_zeros() >= bits && magnitude >> (2 * bits) == 0 {
+        (magnitude >> bits, 1)
+    } else {
+        return Err(DoesNotFit);
+    };
+    let fields = [
+        (field::RD, rd.into()),
+        (field::RN, rn.into()),
+        (field::IMM12, imm as u32),
+        (field::SH, shifted),
+    ];
+    word(name, &fields)
+}
+
+/// `cbz rt, offset` (`nonzero`: `cbnz`), the offset in bytes from this instruction.
+pub fn compare_branch(nonzero: bool, rt: Register, offset: i64) -> Result<u32, DoesNotFit> {
+    let name = if nonzero { form::CBNZ } else { form::CBZ };
+    let imm19 = signed(offset, UNIT, width(name, field::IMM19))?;
+    word(name, &[(field::RT, rt.into()), (field::IMM19, imm19)])
+}
+
+/// `tbnz rt, #bit, offset`.
+pub fn test_branch_nonzero(rt: Register, bit: u32, offset: i64) -> Result<u32, DoesNotFit> {
+    let imm14 = signed(offset, UNIT, width(form::TBNZ, field::IMM14))?;
+    let low = width(form::TBNZ, field::B40);
+    let fields = [
+        (field::RT, rt.into()),
+        (field::B5, bit >> low),
+        (field::B40, bit & ((1 << low) - 1)),
+        (field::IMM14, imm14),
+    ];
+    word(form::TBNZ, &fields)
+}
+
+/// `b offset` (`link`: `bl`).
+pub fn branch(link: bool, offset: i64) -> Result<u32, DoesNotFit> {
+    let name = if link { form::BL } else { form::B };
+    let imm26 = signed(offset, UNIT, width(name, field::IMM26))?;
+    word(name, &[(field::IMM26, imm26)])
+}
+
+/// `br rn`, `blr rn` or `ret rn`, by form.
+pub fn branch_register(name: &str, rn: Register) -> u32 {
+    word(name, &[(field::RN, rn.into())]).expect("a register fits")
+}
+
+/// `ldr rt, [rn, #offset]`, `str` or `ldrb`, by form, the offset a multiple of the access's `unit`.
+pub fn load_store(
+    name: &str,
+    rt: Register,
+    rn: Register,
+    offset: u64,
+    unit: u64,
+) -> Result<u32, DoesNotFit> {
+    if !offset.is_multiple_of(unit) {
+        return Err(DoesNotFit);
+    }
+    let scaled = u32::try_from(offset / unit).map_err(|_| DoesNotFit)?;
+    let fields = [
+        (field::RT, rt.into()),
+        (field::RN, rn.into()),
+        (field::IMM12, scaled),
+    ];
+    word(name, &fields)
+}
+
+/// `staddb ws, [rn]`: `ldaddb` into the zero register.
+pub fn store_add_byte(rs: Register, rn: Register) -> u32 {
+    let fields = [
+        (field::RS, rs.into()),
+        (field::RN, rn.into()),
+        (field::RT, ZERO.into()),
+    ];
+    word(form::LDADDB, &fields).expect("registers fit")
+}
+
+/// `cas xs, xt, [rn]`.
+pub fn compare_swap(rs: Register, rt: Register, rn: Register) -> u32 {
+    let fields = [
+        (field::RS, rs.into()),
+        (field::RT, rt.into()),
+        (field::RN, rn.into()),
+    ];
+    word(form::CAS, &fields).expect("registers fit")
+}
+
+/// `brk #imm16`, or `udf #imm16`, by form.
+pub fn exception(name: &str, imm16: u16) -> u32 {
+    word(name, &[(field::IMM16, imm16.into())]).expect("the immediate fits its field")
+}
