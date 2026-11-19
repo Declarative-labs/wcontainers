@@ -804,6 +804,10 @@ fn native_16_bit_integers_draw_as_direct3d_12_does() {
         dxil: true,
         dxil_against_11: false,
     };
+    // The back ends first: wgpu then finds the GPU's adapter whatever the reference draw does to
+    // the process's Direct3D 12 device.
+    let mut wgpu_backend = webgpu();
+    let mut gl = webgl();
     let gpu12 = wcontainers_graphics_test::d3d12::create(
         wcontainers_graphics_test::Driver::Hardware,
         false,
@@ -814,8 +818,6 @@ fn native_16_bit_integers_draw_as_direct3d_12_does() {
     let code = [bytecode("vs_transform.dxil"), bytecode("ps_narrow16.dxil")];
     let grid = grid();
     let draw = Draw::own(&case, &code, true, &grid);
-    let mut wgpu_backend = webgpu();
-    let mut gl = webgl();
     let provoking = if gl.caps().has(Features::PROVOKING_VERTEX_FIRST) {
         ProvokingVertex::First
     } else {
