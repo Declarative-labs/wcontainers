@@ -15,7 +15,7 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - The literal check is merged (its second version of the rules, phase-1-literals at 7119e3f3, in 21321c7e)
   and this branch's baseline started at e4b998bd. The check fails, on main's code only: see "Literals".
 - main is merged (787f8ceb, N2 run 1): the owner's names are in the plan's text and its runtime citations.
-- N2 (the native ARM64 output) is in progress, run 1 done: see "N2" below for what is built, what is
+- N2 (the native ARM64 output) is in progress, runs 1 and 2 done: see "N2" below for what is built, what is
   measured and exactly what comes next. N3 needs decision 1 (R1, R3). N6 needs K2 (below).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
   and 10's final choice, which N1's trial narrows: option C does not work on Hypervisor.framework (below),
@@ -71,22 +71,65 @@ Done (each its own commit, in other tracks' crates as plan 6.2 G1 allows):
 - The existing tests of wcontainers-guest-cpu and wcontainers-arm64 pass unchanged; nothing in the
   translator crate or the WebAssembly output was touched.
 
+Run 2 (2026-11-18; merged phase-1-literals ace0433d, docs only, in 4eaf24a9; main had nothing new):
+- 285bfaf4, wcontainers-guest-cpu: the position map and the code it describes. `HostCode` (host bytes and
+  `Span`s, written one guest instruction after another: `start`, `count`, `push`, `commit`, `after`,
+  `relocate`/`home`, `fixup`/`fixed`, `defer` for code out of line placed by `finish` after the piece's exits,
+  `span(offset)`); a `Span` holds the guest instruction, the side of its commit point, the count's lead, where
+  the guest goes on (`Resume::At`, `Through` a register untagged, `Slot` an entry slot's address), the
+  relocated guest values (`Held` in a host register or a register page word) and the fix-ups (`Constant`,
+  `Remember`, `Forget`, `FloatStatus`, section 4's closed set). `InsideCall` names the calls into the inside
+  by code (`Exit`, `Answer`, `FloatBefore`, `FloatAfter`, `Trap`, `Misaligned`, `Unreachable`). `Native`
+  gained `carry`, `count` and `call`.
+- c9fd9b8e, wcontainers-translator, feature `native` (off by default; nothing else in the crate changed):
+  `translate_native::<G>(code, address)`, the piece of one instruction at look-ahead none: the count's add at
+  the start of the run when `counted` says so (the placement measured cheapest in run 1), the route's host
+  code, then an exit to the inside unless the route is a transfer (which makes its own) or a trap.
+- 91fdb7f9, wcontainers-arm64: `carry.rs`, every route's host sequence; `mirror.rs` (in the `no_std` core):
+  the entry mirror's facts, `REACH_BITS` 45, `SLOT_BYTES` 16, `SLOT_SHIFT` and `MIRROR` derived from them.
+  The withheld registers are x26 (count), x27 (t), x28 (register page) as named constants; `RegisterPage` is
+  the register page's `#[repr(C)]` layout (withheld guest values, saved stand-ins, the exclusive monitor), its
+  offsets taken with `offset_of!`. Stand-ins: the guest's x27 stands in t itself; another withheld register
+  named gets t when the route needs no t, else a guest register the instruction does not touch (saved to the
+  page and restored); `casp` pairs move as even pairs. Which fields to rewrite is found by trying the word's
+  register fields against the meaning's effects (no table of fields per form). `access` is the one place a
+  guest access is emitted: the alignment test (skipped for a stack-pointer base, SA0's), the page test and
+  probes out of line for every access of more than one byte, then the copied instruction. The encoder gained
+  the forms these use (`replace` and `retarget` change a field of a copied word through its own form), and
+  its old `store_add_byte` and `compare_swap` became the general `load_add` and `compare_swap_of`.
+- ab0891f2: the inside takes `MIRROR` from wcontainers-arm64's core and asserts its layout puts the mirror
+  there (one definition); crates/wcontainers-hypervisor/tests/carry.rs is the structure test (below).
+- Tests: crates/wcontainers-hypervisor/tests/carry.rs carries every presented form's drawn words through
+  `translate_native` and checks each piece: every host word decodes as an instruction we present, spans cover
+  every byte in order, nothing but the count's add touches x26, the add is first and the lead is 1 before the
+  commit point of a counted instruction and 0 everywhere else, every call into the inside is on the side of
+  the commit point its kind needs, and no exit leaves a value relocated. Knobs `WCONTAINERS_CARRY_SEED`,
+  `WCONTAINERS_CARRY_WORDS` (decimal). Passed with seed 11507291218515648293, 64 words per form: 1,050,058
+  words of every route. The words drawn are shared with the routing test (tests/common/mod.rs in arm64).
+- The existing tests of wcontainers-guest-cpu, wcontainers-arm64, the inside and the monitor pass (floor: 21
+  cases and 1 measurement, 0 failed, load 70); the literal check shows only main's 53 findings, as before.
+
 Not done yet, in order (the next run starts here):
-1. The native emitter in wcontainers-translator behind a cargo feature (`native`), generic over
-   `G: Guest + Native`, at look-ahead none: each route's host sequence (plan 3.4); `access` as the one place
-   a guest access is emitted (the page test and probes for Split, the alignment test); the stand-in rule for
-   the three withheld registers (x26 to x28 until N4 chooses); the count's add at the start of the event's
-   straight-line run (the placement chosen below); calls into the inside as `brk #code`, the position map
-   saying which instruction and route; and the position map itself: per run of host code the guest
-   instruction, the side of the commit point, the count register's lead, the relocated values, the fix-up.
-2. A runner on the floor: a program in the inside package (as floor-cases is) that maps guest pages, loads
-   seeded registers and memory, runs translated code at EL0, answers its calls into the inside (Kernel,
-   Float status and Trap routes as the meanings do, plan 4's fix-ups), and reports registers, flags,
-   FPSR/FPCR, memory and the stop. A fault's address comes from the guest instruction, untagged as `untag`
-   does (the third check's tagged-store finding).
-3. The differential test against the WebAssembly output under wasmtime, at least 1000 seeded cases per
-   form, with the cases the bar lists (plan 9, N2).
-4. A forced interrupt at every host offset (EL1 software step, plan 4), the behaviour probe and its time.
+1. A runner on the floor: a program in the inside package (as floor-cases is; `src/bin/native-cases`
+   suggested) that maps layer 1's data area (crates/wcontainers-translator-test/src/layer1.rs: `DATA`,
+   `DATA_WRITABLE` read-write, the rest read-only) and the code region readable (literal loads read it) at
+   their guest addresses, the piece's host code execute-only in the code area, a register page, then loads a
+   case's registers, flags, vectors, FPSR/FPCR and runs the piece at EL0. It reports the exception (ESR, FAR,
+   ELR), every register and the register page. The host side resolves the stop through the piece's
+   `HostCode::span`: relocations back, roll back or forward, fix-ups, the count less the lead, and answers
+   the calls (`Exit`: landed at the resume; `Answer`: the Kernel route's meaning; `FloatBefore`/`After`: plan
+   3.4's rule; `Trap`, `Misaligned`, `Unreachable`; a fault in the mirror range: the slot's guest address).
+   A fault's address comes from the guest instruction, untagged as `untag` does (plan 3.4).
+2. The differential test against layer 1's `translated` (WebAssembly under wasmtime), using layer 1's `Case`
+   and `cases(form)` with a seeded proptest runner, 1000 cases per form or more, giving layer 1's `Outcome`;
+   plus the bar's own cases (misaligned and tagged targets, misaligned atomics, store-exclusive faults,
+   `clrex` between the pair, the hint space with full-width x30, float status forms after flag-raising
+   operations with tracking on and off and FPCR default and not, every load and store across a page with
+   each page refusing, every register collision, bases with bit 55 set). Layer 1's cases carry no
+   exclusive monitor: the exclusive cases need it seeded on both sides.
+3. A forced interrupt at every host offset (EL1 software step, plan 4) with the reported count and pc
+   checked; the behaviour probe passing on this M5 with its time recorded.
+4. E's cost measured again on the real emitter's output, and the independent check's own runs.
 
 ## E's cost by placement (N2 run 1)
 
@@ -153,7 +196,9 @@ checked equal. M5 Max, macOS 27.2, 2026-11-18 16:44 to 16:57, load 37 to 73. One
 From the checkout, in the Nix shell:
 - N2 so far: `nix develop -c cargo test -j 4 -p wcontainers-arm64 --test native_routes --test encode --
   --nocapture` (knobs `WCONTAINERS_ROUTES_SEED`, `WCONTAINERS_ROUTES_WORDS`, `WCONTAINERS_ENCODE_SEED`,
-  `WCONTAINERS_ENCODE_CASES`, decimal) and `nix develop -c cargo test -j 4 -p wcontainers-guest-cpu`;
+  `WCONTAINERS_ENCODE_CASES`, decimal), `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test carry
+  -- --nocapture` (knobs `WCONTAINERS_CARRY_SEED`, `WCONTAINERS_CARRY_WORDS`) and `nix develop -c cargo test
+  -j 4 -p wcontainers-guest-cpu`; lint the emitter with `--features wcontainers-translator/native`;
 - N1's bar: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test floor` (about half a second
   once the cases program is built, which the test does first; the test signs a copy of itself ad hoc with crates/wcontainers-hypervisor/hypervisor.entitlements and runs
   that, since Hypervisor.framework refuses an unsigned binary); the stop test's knobs are environment
@@ -446,6 +491,24 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 ./mirror` without the framework; the KVM runs as in kvm-laptop.out from ~/native-plan/vm on the laptop.
 
 ## Departures from the plan
+
+- N2 run 2, where the ARM64 sequences live: in wcontainers-arm64 (carry.rs), with `access`; the translator's
+  native module is the generic loop. The translator knows no one CPU.
+- N2 run 2, the entry mirror's facts are wcontainers-arm64's (mirror.rs, in its `no_std` core), and the inside
+  imports `MIRROR` and checks its layout; so the inside depends on wcontainers-arm64's core.
+- N2 run 2, at look-ahead none every exit is a call into the inside whose span gives where the guest goes on,
+  and calls are made in the plain form (x30 built by moves, then the exit or `br t`): the slot form with its
+  call stub comes with the mirror at N4. A jump through a register goes to its slot's address; with no slot
+  mapped yet, the fault there is the plan's missing slot and gives the target.
+- N2 run 2, the jump sequence's `bfxil` reads t (`bfxil t, t, #2, #2`, the same bits as the plan's
+  `bfxil t, xN, #0, #2`), so a withheld xN is read from the register page into t only.
+- N2 run 2, a store exclusive compares its address with `sub t, xN, t` (extended form, which reads the stack
+  pointer too) and the 56-bit mask, not `eor`. A load exclusive always reads the monitor's value again from
+  memory after its load, for every form, not only for a pair into one register.
+- N2 run 2, a literal load's page crossing is decided at translation time from its guest address.
+- N2 run 2, the structure test is in the monitor's crate, which dev-depends on the translator with `native`:
+  the same test in wcontainers-arm64 made it depend on the translator, and the literal check then read the
+  two crates' `PROBE` constants the other way round.
 
 - N2, `Route::Collision`: the plan's register-field collisions (plan 3.4, "Encodings Arm leaves CONSTRAINED
   UNPREDICTABLE") are a route of their own, so the routing test and the emitter see them by name.

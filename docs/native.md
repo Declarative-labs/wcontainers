@@ -115,7 +115,9 @@ hardware does for free. Rejected too: Cranelift or LLVM as the native emitter (a
 code that is already the host's own; slower to translate, and the guest's exact instruction would be lost to
 the compiler's choices).
 
-The place where a guest memory access is emitted is one function of the native emitter (`access`), which
+The place where a guest memory access is emitted is one function of the native output (`access`; for ARM64 in
+the guest crate's carrying code, crates/wcontainers-arm64/src/carry.rs, since the translator knows no one
+CPU: the translator's native module is the generic part, the piece, the count's add and the exits), which
 today copies the instruction as it is (or puts the alignment test of section 3.4 in front), because the
 virtual machine's page tables enforce the guest's permissions. Every route that emits a guest access emits it
 through `access`: copied loads and stores, the Aligned route's accesses, the Rebase route's literal loads,
@@ -660,8 +662,8 @@ WebAssembly output does.
   the x86 track's decoder), whose block encoder fixes relative branches; RIP-relative operands are not left
   to it, since none would reach guest memory from the code area, and are rebuilt by the Rebase route
   (section 3.4). ARM64's
-  forms we emit (branches, `movz`/`movk`, `ubfx`/`ubfiz`/`bfxil`, `and`/`eor` immediate, `add`/`sub`
-  immediate, `cbz`/`cbnz`, loads and stores with an immediate offset, `cas`, `mrs`) are a small encoder of
+  forms we emit (branches, `movz`/`movk`, `ubfx`/`ubfiz`/`bfxil`/`bfi`, `and`/`eor` immediate, `add`/`sub`
+  immediate and extended register, `eor`/`orr` register, `ldp`, `ldadd` of every size, `cbz`/`cbnz`, loads and stores with an immediate offset, `cas`, `mrs`) are a small encoder of
   ours: fixed 4-byte fields, purpose-built, in the guest crate (arm64/encode.rs, since the translator knows no
   one CPU), each word its form's fixed bits and fields as Arm's form table gives them (arm64/forms.rs). Rejected: `dynasmrt` 5.1.0 (MPL-2.0, a file-level copyleft
   licence, and an assembler driven by macros where we need a few encodings at run time).
