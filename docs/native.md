@@ -3,8 +3,11 @@
 Status: plan, 2026-11-18 (N0 and its five checks; corrected at the start of N1 for the last check's findings
 and the orchestrator's rulings: the count is E, K2 carries the memory size, routing is the default for
 host-model results, the owner's names). The names the owner has chosen are used: `Executor`, `System`,
-`LocalSystem`, `GuestMachine`, `TranslatorSettings`, `TaskId` (main has them since 787f8ceb, merged here at
-N2). Lines cited in code are at 68013b31, except the runtime's interface in section 6.2, cited at 787f8ceb.
+`LocalSystem`, `GuestMachine`, `TranslatorConfig` (was `TranslatorSettings`), `ExecutionConfig`,
+`ThreadOrdering`, `ReplayDeterminism`, `TaskId` (main has `Executor`, `System`, `LocalSystem`,
+`GuestMachine`, `TaskId` and the translator's settings under their old name since 787f8ceb, merged here at
+N2; the configuration types are the owner's rulings of 2026-11-18, late night, not yet in code on a branch
+merged here). Lines cited in code are at 68013b31, except the runtime's interface in section 6.2, cited at 787f8ceb.
 
 Words used here:
 - **native output**: the translator's second output, machine code of the guest's own architecture.
@@ -1044,41 +1047,52 @@ maps another region (brief: leaving for more memory), up to the bound of section
   containers at once from the start. The design allows it for one container: interprocessor interrupts
   through the interrupt controller for stops and for TLB shootdown when the kernel changes a table, as
   tr/contract.rs:17-27 asks of any runner.
-- **Threads, as agreed with the owner in discussion** (not built; nothing here closes it off). Every group
-  of threads that shares memory has a setting the embedder may change at any stop: take turns; parallel
-  with page ownership recorded; parallel optimistic; parallel unrecorded. Groups always run in parallel
-  with each other. How each part is met here:
+- **Threads and replay, as the owner ruled** (2026-11-18, late night; not built; nothing here closes it
+  off). A process is resumed with `ExecutionConfig<E> { thread_ordering: ThreadOrdering, replay_determinism:
+  ReplayDeterminism, translator: E::TranslatorConfig }`, `ThreadOrdering { Serial, Parallel }` and
+  `ReplayDeterminism { Exact, External, None }`; both may change at any stop. Processes always run in
+  parallel with each other. The progress count is written in translated code if and only if
+  `replay_determinism` is `Exact` (`translate_native`'s `exact_replay`, derived from that field by its
+  caller, which keys its cache of translations by it; built in N2). With `External`, kernel entries (and,
+  when Parallel, locking and atomic instructions) are put in order and logged, with no count; with `None`
+  nothing is recorded. Under (Parallel, Exact) the kernel gives the count and exact positions for all it
+  controls, and the order of memory accesses between threads is the embedder's, through per-thread watches.
+  How each part is met here:
   - One virtual CPU per running guest thread: the pool of section 5.1 hands a virtual CPU to each thread
     that runs, not only to each container; a stop is an interrupt to that virtual CPU (a software
     generated interrupt through the GIC from inside, `hv_vcpus_exit` or a raised interrupt from the host).
   - Each guest thread has its own table root: a thread's record holds its own TTBR0 root (ARM64) or CR3
     (x86-64) and its own address-space identifier, which the floor loads at every switch. Threads of one
-    group share every lower table whose entries are the same for all of them and have their own where a
-    page's permission differs between them (a page held by another thread for writing is invalid in this
-    thread's view, a page several threads read is read-only in each). A change to a shared page's entry is
-    written into every view holding it and invalidated for each identifier, broadcast. Under take turns
-    every thread of a process has the process's one root, as today. N1 builds and tests the per-thread
-    root (two threads of one process, one page writable in one view and read-only in the other, switched
-    back and forth with no invalidation).
+    process share every lower table whose entries are the same for all of them and have their own where a
+    page's permission differs between them. This is what serves the embedder's watches: `memory_watch`
+    per process on every executor, and `memory_watch_thread` per thread, since this executor implements
+    `PerThreadWatch`: a watched page is invalid (Watch::All) or read-only (Watch::Writes) in the views
+    the watch covers, so a touch faults to the inside, which calls `on_memory_accessing` and lets the
+    thread go on once the watch is gone. A change to a shared page's entry is written into every view
+    holding it and invalidated for each identifier, broadcast. Under Serial every thread of a process may
+    keep the process's one root, as today. N1 built and tested the per-thread root (two threads of one
+    process, one page writable in one view and read-only in the other, switched back and forth with no
+    invalidation).
+  - `memory_changed`: the ranges written since last asked come from the page tables' written marks (ARM64
+    hardware dirty state, DBM, where the CPU has it, else a write-protect and first-write fault; x86-64's
+    dirty bit), read and cleared by the inside per page, with the same invalidation as a permission change.
   - The kernel inside is entered by one caller at a time for now: a lock in the inside around every kernel
     entry (a system call, a fault the kernel resolves, a stop); a virtual CPU that finds it held waits in
     the inside, not on the host.
-  - Take turns: today's shape, one virtual CPU per group, the kernel choosing the thread.
-  - Page ownership recorded: a touch of a page the thread does not hold faults in its own view (above), and
-    the kernel resolves it (the holder's view loses the page or its write permission, invalidated and
-    broadcast, the toucher's gains it) and logs the transfer with both threads' positions; replay replays
-    the transfers in order.
-  - Optimistic: only locking and atomic instructions and kernel entries are put in order. The atomic forms
-    are already routed (Aligned and Exclusive routes, section 3.4), so ordering them is one change there:
-    each takes a ticket from a counter in the inside's memory before its commit point, logged. Its cost is
-    measured when the owner rules.
-  - Unrecorded: plain parallel runs, nothing logged.
-  - A page's holder may be elsewhere (another machine, through the embedder): its entry is invalid in
-    every view here, so the touch faults to the inside, and the kernel's `page_request` goes out through
-    the link (section 5.6); the embedder answers by `page_give` (the page's bytes into a fresh frame here),
-    `page_take` (the inside unmaps the page and hands its bytes out) or `page_copy` (a read-only copy here),
-    each one link message of one page.
-  - The setting changes at a stop: the floor rebuilds the group's views from the kernel's record.
+  - Serial: today's shape, one virtual CPU per process, the kernel choosing the thread.
+  - Parallel with External: only locking and atomic instructions and kernel entries are put in order. The
+    atomic forms are already routed (Aligned and Exclusive routes, section 3.4), so ordering them is one
+    change there: each takes a ticket from a counter in the inside's memory before its commit point,
+    logged. Its cost is measured when it is built.
+  - Parallel with None: plain parallel runs, nothing logged.
+  - Holding states, ownership recording and pages on other machines are the embedder's, composed from the
+    watches and the hooks (the kernel knows nothing of "elsewhere"); a page carried in or out is one link
+    message of one page (section 5.6).
+  - A setting changes at a stop: the floor rebuilds the process's views from the kernel's record.
+- **The embedder's `System` runs inside** (the owner's word on decision 1, 2026-11-18, late night): its hooks
+  and its loop around `run` execute in the virtual machine beside the kernel, as plain function calls; only
+  its services that need the host (files, network, time, carrying pages and streams to other machines) leave
+  the machine, through the link. The exact split of the trait is shown to the owner as code (N3).
 - **Dirty pages and point-in-time copies** (the other project's design.md section 7): a mark write-protects
   every writable private page, the first write records it; a point-in-time copy also copies the frame aside
   first. Both are the write locks of runtime.md section 8 in real page tables.
