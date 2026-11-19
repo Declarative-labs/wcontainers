@@ -366,6 +366,10 @@ impl Kernel {
             if !self.files.terminals.is_empty() {
                 syscall::tty::released(self, cx);
             }
+            if core::mem::take(&mut self.aio_polls_due) {
+                syscall::aio::polled(self, cx);
+                continue;
+            }
             // A woken thread's call runs again when its turn comes, as Linux's waiter goes on in its
             // call once it is scheduled.
             if let Some(tid) = self.next_to_run()
@@ -513,6 +517,8 @@ impl Kernel {
         }
         if let Channel::Object(object) = channel {
             syscall::epoll::notify(self, syscall::epoll::Queue::Object(object), key);
+            self.aio_polls_due |=
+                syscall::aio::notify(self, syscall::epoll::Queue::Object(object), key);
         }
     }
 
@@ -528,6 +534,7 @@ impl Kernel {
             }
         }
         syscall::epoll::notify(self, syscall::epoll::Queue::Signals(pid), 0);
+        self.aio_polls_due |= syscall::aio::notify(self, syscall::epoll::Queue::Signals(pid), 0);
     }
 
     /// Wakes the threads of `pid`'s process parked on its children.

@@ -145,7 +145,7 @@ fn waiting(epoll: &EpollRef) -> Channel {
 
 /// The queue a file's readiness hangs on, for a file `vfs_poll` can ask (`file_can_poll`); none
 /// for a file that cannot be polled. A file whose readiness never changes has no queue.
-fn queue_of(kernel: &Kernel, tid: Tid, file: &FileRef) -> Result<Option<Queue>, Errno> {
+pub(crate) fn queue_of(kernel: &Kernel, tid: Tid, file: &FileRef) -> Result<Option<Queue>, Errno> {
     let object = |channel: Channel| match channel {
         Channel::Object(object) => Ok(Some(Queue::Object(object))),
         _ => unreachable!("a file's channel is an object"),

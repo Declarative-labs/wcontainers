@@ -1,6 +1,7 @@
 //! Native asynchronous I/O (`fs/aio.c`): a context is a ring of completion events mapped into
 //! the process. io_submit's reads, writes and syncs run within the call, as Linux's buffered I/O
-//! does, and post their events there; io_getevents takes them.
+//! does, and post their events there; a poll request whose file is not ready waits, and posts its
+//! event when the file's readiness changes; io_getevents takes them.
 
 use alloc::vec::Vec;
 
@@ -27,6 +28,24 @@ pub(crate) struct Ring {
     /// The events asked for, counted against `aio-max-nr`.
     max_reqs: u32,
     tail: u32,
+    /// Poll requests waiting for their files' events, in the order they came.
+    polls: Vec<Poll>,
+}
+
+/// A poll request waiting for its file's events (`struct poll_iocb`).
+struct Poll {
+    file: crate::file::FileRef,
+    /// The events it waits for, with EPOLLERR and EPOLLHUP.
+    events: u32,
+    data: u64,
+    /// The request's address in the program, by which io_cancel names it.
+    request: u64,
+    resfd: Option<crate::file::FileRef>,
+    /// What its file's readiness hangs on.
+    queue: super::epoll::Queue,
+    /// A wake reached it: with the events the wake named, which it posts, or with none named (0),
+    /// when its file is polled again (`aio_poll_wake`).
+    woken: Option<u32>,
 }
 
 impl Ring {
@@ -144,6 +163,7 @@ pub(super) fn io_setup(
         nr,
         max_reqs: asked,
         tail: 0,
+        polls: Vec::new(),
     });
     if let Err(error) = guest(kernel, cx, tid).write(context, &address.to_le_bytes()) {
         destroy(kernel, cx, tid, kernel.aio.len() - 1);
@@ -270,7 +290,8 @@ fn submit_one(
     }
     // `aio_get_req`: a slot in the ring for its event.
     let (_, unread) = waiting(kernel, cx, tid, index);
-    if unread + 1 >= kernel.aio[index].nr {
+    let ring = &kernel.aio[index];
+    if unread + ring.polls.len() as u32 + 1 >= ring.nr {
         return Err(Errno::EAGAIN);
     }
     let file = super::io::file(kernel, tid, u64::from(fd))?;
@@ -340,13 +361,31 @@ fn submit_one(
                 other => other,
             }
         }
+        // `aio_poll`: events within poll's 16 bits and no field poll has no use for; a file ready
+        // for one of them answers at once, else the request waits.
         IOCB_CMD_POLL => {
-            return Err(kernel.counters.refuse(
-                cx.host,
-                reason::FLAG_NOT_BUILT,
-                (u64::from(__NR_io_submit) << 32) | u64::from(opcode),
-                Errno::EINVAL,
-            ));
+            if buffer > u64::from(u16::MAX) || offset != 0 || length != 0 || rw_flags != 0 {
+                return Err(Errno::EINVAL);
+            }
+            let events = buffer as u32 | EPOLLERR | EPOLLHUP;
+            let mask = u32::from(super::io::poll_mask(kernel, tid, &file)) & events;
+            if mask == 0 {
+                // A file with no wait queue cannot be waited on (`apt.error`).
+                let Ok(Some(queue)) = super::epoll::queue_of(kernel, tid, &file) else {
+                    return Err(Errno::EINVAL);
+                };
+                kernel.aio[index].polls.push(Poll {
+                    file,
+                    events,
+                    data,
+                    request,
+                    resfd: eventfd,
+                    queue,
+                    woken: None,
+                });
+                return Ok(());
+            }
+            Ok(u64::from(mask))
         }
         _ => return Err(Errno::EINVAL),
     };
@@ -357,6 +396,50 @@ fn submit_one(
     };
     complete(kernel, cx, tid, index, [data, request, res, 0], eventfd);
     Ok(())
+}
+
+/// Readiness changed on `queue` with the events in `key` (0 for any): a waiting poll request on
+/// it takes the wake unless it names none of its events (`aio_poll_wake`); whether one did.
+pub(crate) fn notify(kernel: &mut Kernel, queue: super::epoll::Queue, key: u32) -> bool {
+    let mut took = false;
+    for poll in kernel.aio.iter_mut().flat_map(|ring| ring.polls.iter_mut()) {
+        if poll.queue == queue && (key == 0 || key & poll.events != 0) {
+            // The first wake decides: one naming events completes the request with them.
+            poll.woken.get_or_insert(key);
+            took = true;
+        }
+    }
+    took
+}
+
+/// Poll requests that took wakes post their events: those the wake named, or else what their
+/// file's poll gives now, if any of theirs (`aio_poll_complete_work`); the others wait on.
+pub(crate) fn polled(kernel: &mut Kernel, cx: &mut Context<'_>) {
+    prune(kernel);
+    for index in 0..kernel.aio.len() {
+        let Some(&tid) = kernel.processes[&kernel.aio[index].pid].threads.first() else {
+            continue;
+        };
+        let mut at = 0;
+        while at < kernel.aio[index].polls.len() {
+            let poll = &mut kernel.aio[index].polls[at];
+            let mask = match poll.woken.take() {
+                None => 0,
+                Some(0) => {
+                    let poll = &kernel.aio[index].polls[at];
+                    u32::from(super::io::poll_mask(kernel, tid, &poll.file)) & poll.events
+                }
+                Some(named) => named,
+            };
+            if mask == 0 {
+                at += 1;
+                continue;
+            }
+            let poll = kernel.aio[index].polls.remove(at);
+            let event = [poll.data, poll.request, u64::from(mask), 0];
+            complete(kernel, cx, tid, index, event, poll.resfd);
+        }
+    }
 }
 
 /// A read or write request run as the matching call: at its offset, or where a file without
@@ -525,7 +608,24 @@ pub(super) fn io_cancel(
     if key != KIOCB_KEY {
         return Err(Errno::EINVAL);
     }
-    lookup(kernel, cx, tid, context).ok_or(Errno::EINVAL)?;
-    // Every request has finished within its io_submit, so none is left to cancel.
-    Err(Errno::EINVAL)
+    let index = lookup(kernel, cx, tid, context).ok_or(Errno::EINVAL)?;
+    // Only a waiting poll request is left to cancel (`aio_poll_cancel`): it posts its event with
+    // no events, and the call says the cancel is under way.
+    let Some(at) = kernel.aio[index]
+        .polls
+        .iter()
+        .position(|poll| poll.request == request)
+    else {
+        return Err(Errno::EINVAL);
+    };
+    let poll = kernel.aio[index].polls.remove(at);
+    complete(
+        kernel,
+        cx,
+        tid,
+        index,
+        [poll.data, poll.request, 0, 0],
+        poll.resfd,
+    );
+    Err(Errno::EINPROGRESS)
 }

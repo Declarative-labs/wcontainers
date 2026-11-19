@@ -157,6 +157,9 @@ pub struct Kernel {
     dnotified: Vec<(alloc::rc::Weak<core::cell::RefCell<file::OpenFile>>, i32)>,
     /// Every process's asynchronous I/O contexts.
     aio: Vec<syscall::aio::Ring>,
+    /// A file's readiness changed while asynchronous poll requests wait, for the kernel to look
+    /// at them again.
+    aio_polls_due: bool,
     /// Parked threads whose wait ended, in line to run, whose calls are run again when their turn
     /// comes.
     woken: VecDeque<Tid>,
@@ -255,6 +258,7 @@ impl Kernel {
             notices: Vec::new(),
             dnotified: Vec::new(),
             aio: Vec::new(),
+            aio_polls_due: false,
             woken: VecDeque::new(),
             signalled: VecDeque::new(),
             monotonic_offset: 0,
