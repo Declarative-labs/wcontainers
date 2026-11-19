@@ -511,8 +511,10 @@ pub enum TexelBufferRoute {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TargetInShader {
     pub target: u8,
-    /// The guest's format, which the program encodes its output into
-    /// ([`crate::SlowPath::NormAsInteger`]).
+    /// The guest's format. A normalised one, which the front stores as the integer format of the same
+    /// bits, the program encodes its output into ([`crate::SlowPath::NormAsInteger`]); into any other
+    /// the program writes its output's bits as the format's type, widened with zeros to the format's
+    /// components, as Direct3D writes an output of another type than its target.
     pub format: Format,
     /// The program combines its output with the target's old value, read from a copy at
     /// [`TARGET_COPY_BINDING`], by [`HelperValue::TargetCombine`] ([`crate::SlowPath::BlendInShader`],

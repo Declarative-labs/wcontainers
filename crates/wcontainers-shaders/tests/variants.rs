@@ -3,7 +3,8 @@
 use std::path::Path;
 use wcontainers_gpu::{
     AddedBinding, DrawBaseSource, Format, HelperSlot, HelperValue, Interpolation, LinkedValues,
-    SlotKind, TexelBufferRoute, VariantFlags, VariantKey, VertexFormat,
+    ScalarKind, SlotKind, SystemValue, TargetInShader, TexelBufferRoute, VariantFlags, VariantKey,
+    VertexFormat,
 };
 use wcontainers_shaders::{ConvertError, Source, convert};
 
@@ -380,6 +381,84 @@ fn pixel_variants_convert_on_both_routes() {
     }
 }
 
+/// A target whose format takes another type than the program's output gets the output's bits as the
+/// format's type, as Direct3D writes them; normalised formats and combining are refused by name.
+#[test]
+fn targets_of_another_type_take_the_outputs_bits() {
+    let target = |format, combine| VariantKey {
+        targets_in_shader: vec![TargetInShader {
+            target: 0,
+            format,
+            combine,
+        }],
+        ..Default::default()
+    };
+    let scalar = |c: &wcontainers_shaders::Converted| {
+        let o = c.reflection.outputs.iter();
+        o.filter(|o| o.system == Some(SystemValue::Target(0)))
+            .map(|o| o.scalar)
+            .collect::<Vec<_>>()
+    };
+    for (pair, format, cast, kind) in [
+        (
+            "ps_textured",
+            Format::Rgba32Uint,
+            "bitcast<vec4<u32>>",
+            ScalarKind::Uint,
+        ),
+        (
+            "ps_textured",
+            Format::R32Sint,
+            "bitcast<vec4<i32>>",
+            ScalarKind::Sint,
+        ),
+        (
+            "ps_integer",
+            Format::Rgba32Float,
+            "bitcast<vec4<f32>>",
+            ScalarKind::Float,
+        ),
+    ] {
+        let dxbc = read(&format!("tests/own/{pair}.dxbc"));
+        let dxil = std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/own/{pair}.dxil")),
+        );
+        let mut sources = vec![Source::Dxbc(&dxbc)];
+        sources.extend(dxil.as_deref().ok().map(Source::Dxil));
+        for source in sources {
+            let c = convert(source, &target(format, false), None).unwrap();
+            let text = wgsl(&c);
+            assert!(text.contains(cast), "{pair}: {text}");
+            assert_eq!(scalar(&c), [kind], "{pair}");
+        }
+    }
+    // The same type: the program is unchanged.
+    let code = own_pair("ps_textured");
+    let plain = convert(Source::Dxbc(&code[0]), &VariantKey::default(), None).unwrap();
+    let same = convert(
+        Source::Dxbc(&code[0]),
+        &target(Format::Rgba32Float, false),
+        None,
+    )
+    .unwrap();
+    assert_eq!(wgsl(&plain), wgsl(&same));
+    for (key, name) in [
+        (target(Format::Rgba8Unorm, false), "NormAsInteger"),
+        (target(Format::Rgba32Float, true), "BlendInShader"),
+    ] {
+        let got = convert(Source::Dxbc(&code[0]), &key, None).map(|_| ());
+        assert_eq!(got, Err(ConvertError::Unsupported(name)));
+    }
+    let vs = own_pair("vs_transform");
+    let got = convert(
+        Source::Dxbc(&vs[0]),
+        &target(Format::Rgba32Uint, false),
+        None,
+    )
+    .map(|_| ());
+    assert_eq!(got, Err(ConvertError::Unsupported("TargetsInShader")));
+}
+
 /// The minimum level-of-detail clamp: samples go through the merged sampler of their pair in the helper
 /// set, composed with the sampler's bias in one callee; loads and gathers are checked against the
 /// clamp; comparisons are refused, since their out-of-bounds answer depends on the sampler's function.
@@ -481,6 +560,28 @@ fn constants_read_as_storage_are_added_bindings() {
         assert_eq!(b.binding, SlotKind::Storage.first_binding());
         assert_eq!(b.added, Some(AddedBinding::ConstantsAsStorage(0)));
         assert!(wgsl(&c).contains("var<storage>"), "{}", wgsl(&c));
+        // Its registers are runtime-sized, so an index past the declared array reads the buffer.
+        let m = &c.modules[0].module;
+        let (_, g) = m
+            .global_variables
+            .iter()
+            .find(|(_, g)| g.binding.is_some_and(|r| r.binding == b.binding))
+            .unwrap();
+        let array = match &m.types[g.ty].inner {
+            naga::TypeInner::Struct { members, .. } => members.last().unwrap().ty,
+            _ => g.ty,
+        };
+        assert!(
+            matches!(
+                m.types[array].inner,
+                naga::TypeInner::Array {
+                    size: naga::ArraySize::Dynamic,
+                    ..
+                }
+            ),
+            "{}",
+            wgsl(&c)
+        );
     }
 }
 
@@ -837,20 +938,32 @@ fn filtering_in_the_program_reads_texels_with_loads() {
         }
         assert!(!wgsl(&c).contains("textureGather"), "{name}");
     }
-    for (name, reason) in [
-        ("samplers.ps_compare", "FilterInShaderOnComparison"),
-        ("textures.ps_cube", "FilterInShaderOnCube"),
-    ] {
-        assert_eq!(
-            convert(
-                Source::Dxbc(&rig(&format!("dxbc/{name}.dxbc"))),
-                &every,
-                None
-            )
-            .map(|_| ()),
-            Err(ConvertError::Unsupported(reason))
-        );
+    // Comparisons take depth textures, which back ends compare and filter natively; the plain reads
+    // of a depth texture are filtered from its loads.
+    let c = convert(
+        Source::Dxbc(&rig("dxbc/samplers.ps_compare.dxbc")),
+        &every,
+        None,
+    )
+    .unwrap();
+    assert!(wgsl(&c).contains("textureSampleCompare"), "{}", wgsl(&c));
+    let shadow = own_pair("ps_shadow");
+    for c in both(&shadow, &every) {
+        let text = wgsl(&c);
+        assert!(text.contains("textureSampleCompare"), "{text}");
+        assert!(text.contains("filter_sample"), "{text}");
+        assert!(!text.contains("textureSample("), "{text}");
+        assert!(!text.contains("textureGather("), "{text}");
     }
+    assert_eq!(
+        convert(
+            Source::Dxbc(&rig("dxbc/textures.ps_cube.dxbc")),
+            &every,
+            None
+        )
+        .map(|_| ()),
+        Err(ConvertError::Unsupported("FilterInShaderOnCube"))
+    );
 }
 
 /// A four-channel float storage texture both read and written (shader model 6's half writes) has

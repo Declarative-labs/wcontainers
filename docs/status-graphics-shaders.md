@@ -45,8 +45,12 @@ the hull shader reads, and geometry shaders choosing layers and viewports; run 3
 compare-exchange loops end on every lane (the Direct3D 11 track's display driver reset), converted
 the primitive index in pixel shaders natively, and struct values used whole and narrower vertex
 outputs feeding the stage helper; run 32 converted DXIL textures both compared against and read
-plainly (22 of Godot's 3D platformer's fragment shaders stopped there); what remains is under
-Next. Runs 21 to 32 merged origin/phase-2-graphics-webgpu,
+plainly (22 of Godot's 3D platformer's fragment shaders stopped there); run 33 drew them against
+real Direct3D 11, filtered depth textures in the program, built targets of another type than the
+program's output and constant buffers read past their declared array, and took dxbc-spirv's IR
+numbers from its own header; run 34 laid DXIL's stage values out as Direct3D's registers (packed
+values, arrays, matrices) and built DXBC's `InterpolateAt` and the per-sample position; what
+remains is under Next. Runs 21 to 33 merged origin/phase-2-graphics-webgpu,
 -webgl, -direct3d-11, -direct3d-12 and -rig (run 28: one conflict in the interface's `slow.rs`,
 the same three slow paths in two orders, ours kept).
 
@@ -1277,23 +1281,173 @@ Run 32 (what the fronts wait on: Godot's 3D platformer on Direct3D 12, the Direc
   `C:\wc\target\phase-2-graphics-shaders`. No build output was made in scratch (scratch `run32/out`
   holds the written shaders Chrome compiled, 18 MB, kept as evidence).
 
+Run 33 (what the fronts wait on: depth textures read plainly drawn, the Direct3D 12 track's
+rt-format-mismatch, the Direct3D 11 track's test_cb_relative_addressing; the literal sweep):
+- Merged origin/phase-2-graphics (interface: storage binding sizes a multiple of four) and -webgpu,
+  without conflicts; -webgl, -direct3d-11, -direct3d-12 and -rig had nothing new.
+- Depth textures both compared against and read plainly, drawn: new `tests/shadow_draw.rs`
+  (`ps_shadow`, fxc and dxc builds, over a seeded 16-bit depth texture written from the CPU as
+  Depth16Unorm, against real Direct3D 11 drawing the fxc build over R16_UNORM of the same bits;
+  comparisons sampled and at level zero, plain samples implicit and at level zero, a load at the
+  pixel, a gather; `WCONTAINERS_SHADOW_SEED`, `WCONTAINERS_SHADOW_CASES`, default 4). Point plain
+  sampling with point and with linear comparison filtering: 0 texels apart on both routes. A
+  linear plain sampler on a depth texture is refused by the WebGPU back end ("a filtering sampler
+  with a texture this device cannot filter; fronts filter in the program"), as WebGPU filters no
+  depth texture through a sampler that does not compare. So `filter_in_shader` now reads depth
+  textures (`FilterInShaderOnDepth` remains only for multisampled ones): the library's loads give
+  (depth, 0, 0, 1), a depth sample takes the first component, an integer level is converted; and a
+  comparison of a texture in `filter_in_shader` stays native when the texture is a depth texture
+  (it was `FilterInShaderOnComparison`; still refused for border colours in the program). The
+  drawn test takes that variant for its linear plain scenes (results under Measurements).
+- Targets of another type than the program's output (`VariantKey::targets_in_shader`, the Direct3D
+  12 track's rt-format-mismatch; refused as `TargetsInShader` before): `variant/targets.rs` writes
+  the output's bits as the format's type (`bitcast`) and widens it with zeros to the format's
+  components, as Direct3D writes it, and the reflection's output takes the format's kind. A program
+  whose outputs already fit is not rewritten. Normalised formats stay refused (`NormAsInteger`: the
+  encoding into a format stored as integers is not built), combining stays `BlendInShader`, a
+  stage other than pixel `TargetsInShader`. Interface doc change below. Test
+  `targets_of_another_type_take_the_outputs_bits`; drawn in `variant_draw` (`targets_in_shader`
+  cases: ps_textured's float4 into an R32G32B32A32_UINT target on both routes, fxc's ps_integer's
+  uint4 into R32G32B32A32_FLOAT, against real Direct3D 11 drawing the same into those targets).
+- Constant buffers read as storage (`constants_as_storage`) are now runtime-sized: an index past
+  the array the shader declares reads the bound buffer's bytes, as Direct3D does (the Direct3D 11
+  track's test_cb_relative_addressing, which reads past it and got the clamped last element), and a
+  buffer smaller than the declaration binds. The front takes the variant where a shader indexes a
+  constant buffer bound larger than its declaration (theirs). Test
+  `constants_read_as_storage_are_added_bindings` checks the runtime-sized array on both routes; not
+  drawn past the declaration yet (needs an own shader reading past it; the front's Wine test is the
+  drawn check).
+- No magic numbers (the brief's last sections; the audit's list for this crate is
+  `orchestrator/magic-literals/final/lists/graphics-shaders/wcontainers-shaders.txt`, 6319 lines,
+  of which 1372 "code"): dxbc-spirv's IR numbers are no longer retyped. build.rs reads the enums
+  `ScalarType`, `OpCode`, `OpFlag`, `BuiltIn`, `ResourceKind`, `ShaderStage`, `PrimitiveType`,
+  `InterpolationMode`, `Construct` and `UavFlag` from dxbc-spirv's `ir/ir.h` and writes them as
+  modules of constants that `ir.rs` includes (`eSetCsWorkgroupSize` becomes
+  `SET_CS_WORKGROUP_SIZE`; where the derived name differs from the old hand-written one the uses
+  were renamed: `CONVERT_FTO_F`, `F_LOG_2`, `IMAGE_2DMS`, `construct::STRUCTURED_LOOP`, ...). That
+  removes the 298 findings of `ir.rs`. The bare flag tests in `lower.rs` (`flags & 8` for sparse
+  feedback, `& 2` and `& 4` for read-only and write-only views) now use `ir::flag::SPARSE_FEEDBACK`
+  and `ir::uav::READ_ONLY`/`WRITE_ONLY`, and the variant key's set tests in `variant.rs`'s
+  `samples` compare with `u128::BITS` and `u16::BITS` (the fields' widths) instead of 128 and 16.
+  The wrapped entry point's output struct is laid out by naga's `Layouter` (sizes and alignments of
+  the members' types) instead of 4, 8 and 16. SPIR-V opcodes are the `spirv` crate's `Op` (dxil.rs's
+  retyped 21, 32, 236 to 239 and the pointer-giving opcodes), and SPIR-V's physical layout (the
+  5-word header, the word count in the high 16 bits) is one module, `dxil::words`, used by dxil.rs
+  and dxil/images.rs. The drawing tests' filtering allowance is one constant,
+  `common::FILTER_ALLOWANCE`. The helper block's members take their size from their type and
+  their alignment from naga's `Layouter` (arrays and structs at `Alignment::MIN_UNIFORM`, the
+  block's size rounded to it), so `helper` and `helper_once` lost their size argument (17 callers
+  passed 4, 8, 16, 32 or 48). Left, in the list's order: operand positions of IR instructions
+  (`lits.get(4)` and the like: named per instruction from dxbc-spirv's `ir.md`), the stage
+  helper's own blocks and records (stage/helper.rs, stage.rs), DXBC container offsets, WGSL layout
+  rules elsewhere, and the
+  tests (3635 findings, mostly test data, which is free, and constants the tests should import).
+  Nothing another crate owns was defined here; the shared facts (`WORD` in wcontainers-gpu and the
+  like) wait on their owners' constants.
+- At the end of the run the build folders were deleted: the laptop's
+  `~/wcontainers-graphics/target/phase-2-graphics-shaders` (5.2 GB) and the desktop's
+  `C:\wc\target\phase-2-graphics-shaders`. No build output was made in scratch (`run33` holds
+  logs, 288 KB). On the Mac only `cargo check`/`clippy -j 2` ran, in this checkout's own target;
+  each change to build.rs rebuilds the C++ there (its hash covers build.rs), so build.rs is best
+  changed with the laptop's loop.
+
+Run 34 (the Direct3D 12 track's converter items: values dxc packs into one register, arrays and
+matrices between stages, `InterpolateAt`, the position of a program run per sample; the sweep):
+- Merged origin/phase-2-graphics (interface: `STORAGE_WORD`, bindings of their declared kind),
+  -webgl and -direct3d-11 without conflicts; -webgpu, -direct3d-12 and -rig had nothing new. The
+  Linux laptop was down all run (no answer to ping), so every build and test ran on the desktop
+  (3 cargo jobs) and the Mac ran only `cargo fmt`.
+- DXIL stage values laid out as Direct3D's registers (new `src/dxil/registers.rs`): before naga
+  reads the SPIR-V, every stage variable's location becomes `register * 4 + component` (the
+  component dxil-spirv decorates and naga's reader drops), so packed values stay apart; then the
+  entry point is rewrapped: between stages (vertex outputs, pixel inputs) one value per register:
+  a value alone at a register's first component keeps its type (the other stage reads it alone
+  too), values sharing a register become four components, their kind the values' own where they
+  agree and u32 words read as each where not; arrays and matrices (`float4 c[2] : COLOR`, `float2x3`) take one
+  register per row; vertex inputs and targets keep their own types, arrays split per register.
+  Values are written position first, then registers in order, then other built-ins. A first
+  version made every register four components: the dxc build of `ps_primid` (a pixel shader
+  reading `SV_PrimitiveID`) behind `vs_transform` then failed wgpu's Direct3D 12 pipeline creation
+  (E_INVALIDARG, cause not found), so lone values keep their types as before. The
+  reflection lists each value at its register and first component, named from the signature
+  (signature system values now from dxbc-spirv's `SignatureSysval`, generated by build.rs). This
+  removes `PackedStageValues` (runner instance-id, interface-packing, many-semantics,
+  return-semantics, eval-attrib's vertex shaders, 2 game shaders) and the arrays naga refused as
+  entry point values (color-clamping, conditional, entry-point-semantics, semantic-cascading:
+  "The type [n] cannot be used for user-defined entry point inputs or outputs"). Tests: new
+  `dxil_values_between_stages_take_whole_registers` (corpus.rs) and drawn `vs_pack`/`ps_pack`
+  (dxc build, before refused) and new `vs_rows_io`/`ps_rows_io` (signed.hlsl: an array, a
+  matrix, packed floats, a flat uint and float sharing a register) in `tests/draw.rs`: 0 texels
+  apart from real Direct3D 12 (DXIL) and 11 (DXBC) on WebGPU and WebGL 2.
+- `InterpolateAt` on the DXBC route (`eval_snapped`, `eval_sample_index`, `eval_centroid`; new
+  `src/lower/evaluate.rs`): the entry point, where every lane of a quad runs, stores each evaluated
+  input's slopes (of v times w where perspective-correct, from derivatives, exact for an affine
+  value), w at the input's place and that place; the evaluation is the value plus the slopes times
+  the distance (over w moved the same way). Places: offsets as given, samples at Direct3D's
+  standard positions of the variant's `samples` (1 or 4; other counts `SampleCount`), the centroid
+  by Direct3D's rule (the centre when every sample is covered, else the first covered sample, from
+  the sample mask). An evaluated input itself declared `centroid` with several samples is refused
+  (`EvaluatedCentroidInput`: its interpolation place is the hardware's). DXIL's GLSL.std.450
+  `InterpolateAt*` is refused by name (`InterpolateAt`, before a reader error); naga's reader has
+  no form for it.
+- The position of a pixel program run per sample, with several samples, is moved to the pixel's
+  centre unless declared `sample`, and to Direct3D's centroid where declared `centroid` (the
+  D3D12 track's eval-attrib lines 54 to 188), by the same slopes. DXBC only (DXIL: not yet).
+- Drawn test `inputs_evaluated_elsewhere_match_direct3d` (variant_draw.rs; new
+  `tests/own/evaluate.hlsl`, fxc build: `eval_snapped` of a perspective and of a linear input,
+  `eval_centroid`, `eval_sample_index` of the next sample, `eval_snapped` of an input declared
+  `sample`, and the position in a program run per sample, each through a steep wave so a place a
+  sixteenth of a pixel off moves a texel by several steps): through the WebGPU back end against
+  real Direct3D 11 on the RTX 3080, one sample 4 of 4096 texels differ by 1 step, four samples
+  (resolved) 6 of 4096 by 1 step; allowed: the filtering allowance (2 steps). How far a wrong place
+  would move the picture is estimated, not measured. The dxc build is checked to be refused as
+  `InterpolateAt`.
+- No magic numbers, this run: dxil.rs's signature offsets (28, 32, 4, 8, 12, 20, 24) and
+  dxbc.rs's shader model reader now take offsets from `#[repr(C)]` layouts of the container's
+  header, chunk header, signature header and element and the code chunk's header (new
+  `src/container.rs`, `offset_of!`/`size_of`), shared by both; Direct3D's `D3D_NAME` codes in
+  the DXIL reflection come from dxbc-spirv's header; the sample positions' sixteenths are
+  `SAMPLE_POSITION_STEPS` (was `/ 16.0` twice); shader model 5.1's numbering is
+  `DIRECT3D_12_NUMBERING`. The new code takes its widths from naga's types (`VectorSize::Quad`,
+  the swizzle size by width). Left as run 33 listed it.
+
+- Desktop, RTX 3080, shared, through the queue (16:17 to 16:19): `draw` (5 tests), `variant_draw`
+  (5), `pull_draw`, `early_draw`, `shadow_draw`, `geometry_draw`, `filter_draw` (2 seeds) all pass.
+  The whole suite (`cargo test -p wcontainers-shaders -- --test-threads 1 --skip mutated`, default
+  seeds and case counts, ignored corpus and fuzz tests not run) passed as one GPU job (16:28 to
+  16:30, run34-suite.log). Not rerun this run (the laptop was down): the 191-shader corpus, the
+  games corpus, glslang, Chrome's compile and the WebAssembly comparison.
+- At the end the desktop's `C:\wc\target\phase-2-graphics-shaders` and the WGSL output folders
+  `C:\wc\shaders-out`, `C:\wc\shaders-out34` were deleted; nothing was built on the laptop or in
+  scratch (scratch run34-*.log and the fetched hex dumps are the evidence).
+
 Next (in order):
-- The magic-number sweep (run 32's counts): IR codes from dxbc-spirv's headers in one place, then
-  sizes and offsets derived from the types, file by file, tests importing the same constants.
-- A drawn test of depth textures read plainly (`ps_shadow` against real Direct3D 11 and 12, a
-  16-bit depth texture), then Godot's 3D platformer through the Direct3D 12 front (theirs).
+- The fronts (theirs, now possible): the Direct3D 12 runner's PackedStageValues and array files,
+  eval-attrib and shader_eval_attribute (DXBC) rerun after merging; Direct3D 12's front can drop
+  the refusals naming `PackedStageValues` and `InterpolateAt` for DXBC. Both fronts' statuses
+  (G4 run 21, G5 run 30) still list `EarlyTestsInShader` and `StorageOffset` as unbuilt here: both
+  were built in run 29 (`VariantFlags::EARLY_TESTS`, `STORAGE_OFFSET`); `samples` must be set in a
+  pixel program's key where it evaluates inputs at samples or the centroid or runs per sample.
+- `InterpolateAt` on the DXIL route (GLSL.std.450 `InterpolateAt*` in the carried naga's SPIR-V
+  reader: read the pointer's input, then the same slopes as `lower/evaluate.rs`), and the per-sample
+  position there.
+- The magic-number sweep, continued a part per run (run 33's "Left").
+- The fronts (theirs, now possible since run 33): Godot's 3D platformer rerun on Direct3D 12 (its
+  22 shadow-map fragment shaders convert since run 32); a linear sampler that does not compare,
+  bound with a depth texture, takes `filter_in_shader` for that texture slot (WebGPU refuses the
+  pair natively); `targets_in_shader` with the target's format where a pixel output's type
+  differs from its target's (replacing the Direct3D 12 front's `outputs_fit_targets` refusal; not
+  for normalised formats); `constants_as_storage` where a shader indexes a constant buffer bound
+  larger than its declaration (Direct3D 11's test_cb_relative_addressing).
 - The Direct3D 12 track's converter items (its status, "Asked of other tracks" and "Shader
-  runner", run 30), not yet in this list: `InterpolateAt` (DXBC `eval_*`), `SV_Position` in a
-  per-sample shader (Direct3D gives the pixel centre), `TargetsInShader` writing an output of
-  another type than its target with the target's format, a texture slot read in its view's type
+  runner", run 30), not yet in this list: a texture slot read in its view's type
   where the program declares another, 16-bit and minimum-precision types ("invalid type width"),
   `CalculateLevelOfDetail`, `SampleClamp`, `SparseFeedback`, `globallycoherent` storage, and the
   converted programs naga refuses (color-clamping, conditional, entry-point-semantics, loop-sm3,
   semantic-cascading, shader-interstage-interface, gather-cmp, switch) or that give other values
   (min16float constants, frexp). Read each failing runner file's shader first.
 - The Direct3D 11 track's items still open here: `LINE_COVERAGE` (alpha-antialiased lines),
-  `GeometryStreams`, `PRIMITIVE_ID_FROM_STAGE`, constants read past the declared array
-  (test_cb_relative_addressing), and atg-simplecomputepc's division (not investigated; its shader
+  `GeometryStreams`, `PRIMITIVE_ID_FROM_STAGE`, and atg-simplecomputepc's division (not investigated; its shader
   is not in the games corpus).
 - The fronts (theirs), now possible: `VariantFlags::STORAGE_OFFSET` where a raw or structured view's
   offset is not a multiple of `min_storage_offset_alignment` (binding from the largest multiple of
@@ -1391,17 +1545,15 @@ Next (in order):
 - The real programs' shaders (every converted one compiles in Chrome since run 10), what is left
   after run 24: DXBC 13 of 529 (views of mixed kinds in the corpus test 8, layers written by 3
   geometry shaders and 1 vertex shader, a multisampled array texture), DXIL 13 of 361 (views of
-  mixed kinds 7, `PackedStageValues` 2, `ConstantComponentIndexing`, a multisampled array
-  texture, two reader refusals).
+  mixed kinds 7, `PackedStageValues` 2 (built in run 34, the games corpus not rerun: the laptop
+  was down), `ConstantComponentIndexing`, a multisampled array texture, two reader refusals).
 - The cache in a front: G4 and G5 call `convert_cached` and `record_combination`; the browser host
   keeps the bytes in the origin private file system. Building ahead from `combinations` at start.
 - Older items, still open:
-- DXIL inputs and outputs as the DXBC route lays them out: one four-component value per register
-  (now each value keeps its own width, so a Direct3D 12 vertex shader writing a float4 that a pixel
-  shader reads as float2 fails WebGPU's pipeline check), and elements dxc packs into one register
-  (dxil-spirv gives them a SPIR-V component; naga's reader drops it, so two values claim one
-  location; refused as `PackedStageValues` until then). Both fit one wrapper, the one `draw_bases`
-  already makes.
+- DXIL values alone in a register keep their own width (run 34; making them four components broke
+  the Direct3D 12 pipeline of `ps_primid`, cause not found), so a Direct3D 12 vertex shader writing
+  a float4 that a pixel shader reads as float2 still fails WebGPU's pipeline check; packed values
+  are done (run 34).
 - Send the carried naga changes upstream (below).
 - naga SPIR-V reader fixes for DXIL (6.2): typed buffers ("unsupported image dimension"), storage
   images without a format, `OpIsHelperInvocationEXT` (`IsHelperLane()`, wave operations), the sample mask kept as
@@ -1609,6 +1761,26 @@ let reflection = &converted.reflection;
   conversion.
 
 ## Measurements
+
+Run 33, 2026-11-18, counts only (laptop load 4 to 8, another track building; desktop shared through
+the queue's hazard group), logs in scratch `graphics-shaders/run33`:
+- Desktop, RTX 3080 (draw3.log, then draw4.log after the allowance): `shadow_draw` seeds 1 to 4, 4
+  filter scenes, fxc and dxc builds, 32 comparisons against real Direct3D 11: point plain sampling
+  (with point and with linear comparisons) 0 of 4096 texels apart in all 16; linear plain sampling
+  through `filter_in_shader` 2361 to 2376 of 4096 texels differ in the green channel (two linear
+  samples summed), largest 0.0065, inside twice `FILTER_ALLOWANCE` (1/128 each); every other
+  channel exact. `variant_draw`: the three `targets_in_shader` cases 0 of 4096 texels apart, the
+  other variants as before (4 tests pass). `filter_draw` 2 seeds: 108 comparisons, 0 failed.
+- Laptop (suite1.log, the tree before the last layout and SPIR-V changes; suite2.log after):
+  `cargo test --no-fail-fast -p wcontainers-shaders -- --include-ignored --skip mutated` all pass,
+  the corpus test 9 of 9 (every corpus's verdicts as recorded, so dxbc-spirv's numbers read from
+  its header convert every shader as before), 412 s for the corpus binary. suite3.log, after the
+  helper blocks' sizes and alignments were derived: the same, all pass, clippy with warnings denied
+  clean (corpus binary 509 s, laptop load about 6).
+- Desktop, RTX 3080 (draw5.log, after that change, Windows clippy clean): `variant_draw`,
+  `early_draw` (8 scenes), `pull_draw`, `clear_draw` (64 cases), `geometry_draw` (2 seeds),
+  `compute_draw` (2 seeds) and `shadow_draw` all pass against real Direct3D 11 (every comparison
+  printed 0 failed). draw4.log: `draw` 5 of 5 pass.
 
 Run 32, 2026-11-18, counts only (laptop load 1.8 to 4.1, another track building; desktop shared
 through the queue), logs in scratch `graphics-shaders/run32`:
@@ -2736,6 +2908,12 @@ were already there.
   `glGetBufferSubData`, which ANGLE's GLES lacks (`read_back_now` works).
 
 ## Interface changes
+
+- Run 33, `TargetInShader::format`'s doc (commit "interface: a target written in the program takes
+  the output's bits where its format is not normalised"): it said only that the program encodes
+  into the guest's format (`NormAsInteger`); a target of another type than the program's output
+  (Direct3D 12's rt-format-mismatch) needs the field too, and for a format that is not normalised
+  the program writes the output's bits as the format's type. Doc only.
 
 - Run 29, `CompareFn`'s variants numbered 1 to 8 (Direct3D's numbers) as the codes
   `HelperValue::EarlyTests` holds, zero there a test that is off (its doc said "u32 codes" without

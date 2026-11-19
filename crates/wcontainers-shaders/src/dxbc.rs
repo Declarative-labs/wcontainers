@@ -62,26 +62,12 @@ pub fn to_ir(dxbc: &[u8]) -> Result<Ir, ConvertError> {
     }
     let mut ir = ir.ok_or_else(|| ConvertError::Malformed("the IR did not decode".into()))?;
     declared_sizes(&mut ir, &declared);
-    ir.spaces = shader_model(dxbc) >= Some((5, 1));
+    ir.spaces = crate::container::shader_model(dxbc) >= Some(DIRECT3D_12_NUMBERING);
     Ok(ir)
 }
 
-/// The program's shader model, from its SHEX or SHDR chunk's version token.
-fn shader_model(dxbc: &[u8]) -> Option<(u32, u32)> {
-    let word = |at: usize| {
-        dxbc.get(at..at + 4)
-            .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
-    };
-    let chunks = word(28)? as usize;
-    (0..chunks).find_map(|i| {
-        let at = word(32 + 4 * i)? as usize;
-        let fourcc = dxbc.get(at..at + 4)?;
-        (fourcc == b"SHEX" || fourcc == b"SHDR").then(|| {
-            let version = word(at + 8)?;
-            Some((version >> 4 & 0xf, version & 0xf))
-        })?
-    })
-}
+/// The first shader model whose resources Direct3D 12 numbers by register space.
+const DIRECT3D_12_NUMBERING: (u32, u32) = (5, 1);
 
 /// The largest constant buffer dxbc-spirv declares for one it cannot size.
 const MAX_CONSTANTS: u32 = 4096;

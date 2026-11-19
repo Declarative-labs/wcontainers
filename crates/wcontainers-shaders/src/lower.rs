@@ -29,6 +29,7 @@ use wcontainers_gpu::{
 
 use crate::variant::texel::{TexelBuffer, TexelPlace};
 
+mod evaluate;
 mod geometry;
 mod hull;
 
@@ -223,6 +224,8 @@ struct Lowering<'a> {
     /// Under Direct3D 12's numbering (shader model 5.1), every resource's (kind rank, space,
     /// register), sorted: a resource's slot is its place among its kind's.
     spaces: Option<Vec<(u32, u32, u32)>>,
+    /// Inputs a pixel program takes at other places in the pixel.
+    evaluated: evaluate::Evaluated,
 }
 
 impl<'a> Lowering<'a> {
@@ -307,6 +310,7 @@ impl<'a> Lowering<'a> {
             }),
             texels: HashMap::default(),
             spaces,
+            evaluated: evaluate::Evaluated::default(),
         })
     }
 
@@ -529,6 +533,9 @@ impl<'a> Lowering<'a> {
                 break;
             }
             self.declare_op(id, op)?;
+        }
+        if self.stage == SourceStage::Pixel {
+            self.declare_evaluated()?;
         }
         if let SourceStage::Vertex = self.stage
             && self.variant.draw_base != DrawBaseSource::None
@@ -879,9 +886,9 @@ impl<'a> Lowering<'a> {
             return Err(unsupported("StorageFormatKind"));
         }
         let flags = op.lits.get(4).copied().unwrap_or(0);
-        let access = if flags & 2 != 0 {
+        let access = if flags & ir::uav::READ_ONLY != 0 {
             naga::StorageAccess::LOAD
-        } else if flags & 4 != 0 {
+        } else if flags & ir::uav::WRITE_ONLY != 0 {
             naga::StorageAccess::STORE
         } else {
             use naga::StorageFormat as S;
@@ -1272,6 +1279,7 @@ impl<'a> Lowering<'a> {
             }
         }
 
+        self.evaluate_prologue(&mut f, &mut body, &mut e)?;
         let main = self.functions[&self.main];
         e.stmt(
             &f,
@@ -1559,7 +1567,6 @@ impl<'a> Lowering<'a> {
                 ShaderStage::Fragment,
                 value,
                 u32_ty,
-                4,
             );
             let p = e.add(f, body, Expression::GlobalVariable(var));
             let p = e.add(f, body, Expression::AccessIndex { base: p, index });
@@ -1844,8 +1851,8 @@ fn image_dim(k: u64) -> Result<(ImageDimension, bool, bool)> {
     Ok(match k {
         kind::IMAGE_1D | kind::IMAGE_2D => (ImageDimension::D2, false, false),
         kind::IMAGE_1D_ARRAY | kind::IMAGE_2D_ARRAY => (ImageDimension::D2, true, false),
-        kind::IMAGE_2D_MS => (ImageDimension::D2, false, true),
-        kind::IMAGE_2D_MS_ARRAY => (ImageDimension::D2, true, true),
+        kind::IMAGE_2DMS => (ImageDimension::D2, false, true),
+        kind::IMAGE_2DMS_ARRAY => (ImageDimension::D2, true, true),
         kind::IMAGE_CUBE => (ImageDimension::Cube, false, false),
         kind::IMAGE_CUBE_ARRAY => (ImageDimension::Cube, true, false),
         kind::IMAGE_3D => (ImageDimension::D3, false, false),
@@ -2396,7 +2403,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 return Ok(());
             }
             let lop = self.l.ir.op(label)?;
-            if lop.lits.last() == Some(&construct::LOOP) && t.header != Some(label) {
+            if lop.lits.last() == Some(&construct::STRUCTURED_LOOP) && t.header != Some(label) {
                 let merge = lop.refs[0];
                 self.lower_loop(label, t, out)?;
                 label = merge;
@@ -2535,7 +2542,8 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
     ) -> Result<Option<u32>> {
         self.contents(label, out)?;
         let lop = self.l.ir.op(label)?;
-        let selection = (lop.lits.last() == Some(&construct::SELECTION)).then(|| lop.refs[0]);
+        let selection =
+            (lop.lits.last() == Some(&construct::STRUCTURED_SELECTION)).then(|| lop.refs[0]);
         let term = self.l.ir.op(self.blocks[&label].last)?;
         match term.code {
             code::BRANCH => {
@@ -2974,7 +2982,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             }
             c::IMAGE_SAMPLE | c::IMAGE_GATHER => self.sample(b, op)?,
             c::IMAGE_LOAD if self.texel(r[0])?.is_some() => {
-                if op.flags & 8 != 0 {
+                if op.flags & ir::flag::SPARSE_FEEDBACK != 0 {
                     return Err(unsupported("SparseFeedback"));
                 }
                 let dcl = self.texel(r[0])?.unwrap();
@@ -3019,7 +3027,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 let res = self.image(r[0])?;
                 let (k, arrayed) = res.image.unwrap();
                 let image = self.add(b, Expression::GlobalVariable(res.var));
-                let level = if matches!(k, kind::IMAGE_2D_MS | kind::IMAGE_2D_MS_ARRAY)
+                let level = if matches!(k, kind::IMAGE_2DMS | kind::IMAGE_2DMS_ARRAY)
                     || r[1] == 0
                     || res.storage
                 {
@@ -3102,7 +3110,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 }
             }
             c::INTERPOLATE_AT_CENTROID | c::INTERPOLATE_AT_SAMPLE | c::INTERPOLATE_AT_OFFSET => {
-                return Err(unsupported("InterpolateAt"));
+                self.evaluate(b, op)?
             }
             c::DERIV_X | c::DERIV_Y => {
                 let expr = self.get(b, r[0])?;
@@ -3950,7 +3958,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
     fn sample(&mut self, b: &mut Block, op: &Op) -> Result<Handle<Expression>> {
         let r = &op.refs;
         let gather = op.code == code::IMAGE_GATHER;
-        if op.flags & 8 != 0 {
+        if op.flags & ir::flag::SPARSE_FEEDBACK != 0 {
             return Err(unsupported("SparseFeedback"));
         }
         let res = self.image(r[0])?;
@@ -4154,7 +4162,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
 
     fn image_load(&mut self, b: &mut Block, op: &Op) -> Result<Handle<Expression>> {
         let r = &op.refs;
-        if op.flags & 8 != 0 {
+        if op.flags & ir::flag::SPARSE_FEEDBACK != 0 {
             return Err(unsupported("SparseFeedback"));
         }
         let res = self.image(r[0])?;
@@ -4204,7 +4212,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         }
         let (sample, level) = if res.storage {
             (None, None)
-        } else if matches!(k, kind::IMAGE_2D_MS | kind::IMAGE_2D_MS_ARRAY) {
+        } else if matches!(k, kind::IMAGE_2DMS | kind::IMAGE_2DMS_ARRAY) {
             (Some(self.get(b, sample)?), None)
         } else if mip != 0 {
             (None, Some(self.get(b, mip)?))
@@ -4391,8 +4399,8 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             }
             c::F_SQRT => math(self, b, M::Sqrt, rs)?,
             c::F_RSQ => math(self, b, M::InverseSqrt, rs)?,
-            c::F_EXP2 => math(self, b, M::Exp2, rs)?,
-            c::F_LOG2 => math(self, b, M::Log2, rs)?,
+            c::F_EXP_2 => math(self, b, M::Exp2, rs)?,
+            c::F_LOG_2 => math(self, b, M::Log2, rs)?,
             c::F_FRACT => math(self, b, M::Fract, rs)?,
             c::F_ROUND => {
                 let f = match op.lits.first() {
@@ -4507,7 +4515,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 )
             }
             c::S_MUL_EXTENDED | c::U_MUL_EXTENDED => return Err(unsupported("MulExtended")),
-            c::CONVERT_F_TO_I => {
+            c::CONVERT_FTO_I => {
                 let x = self.get_as(b, r[0], Scalar::F32)?;
                 self.add(
                     b,
@@ -4518,7 +4526,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                     },
                 )
             }
-            c::CONVERT_I_TO_F => {
+            c::CONVERT_ITO_F => {
                 let x = self.get(b, r[0])?;
                 self.add(
                     b,
@@ -4529,7 +4537,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                     },
                 )
             }
-            c::CONVERT_F_TO_F | c::CONVERT_I_TO_I | c::CAST => {
+            c::CONVERT_FTO_F | c::CONVERT_ITO_I | c::CAST => {
                 let from = operand(self)?;
                 let x = self.get(b, r[0])?;
                 if from.kind == rs.kind {
@@ -4547,8 +4555,8 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                     )
                 }
             }
-            c::CONVERT_F32_TO_PACKED_F16 => math(self, b, M::Pack2x16float, Scalar::F32)?,
-            c::CONVERT_PACKED_F16_TO_F32 => math(self, b, M::Unpack2x16float, Scalar::U32)?,
+            c::CONVERT_F32TO_PACKED_F16 => math(self, b, M::Pack2x16float, Scalar::F32)?,
+            c::CONVERT_PACKED_F16TO_F32 => math(self, b, M::Unpack2x16float, Scalar::U32)?,
             other => return Err(malformed(format!("opcode {other}"))),
         })
     }

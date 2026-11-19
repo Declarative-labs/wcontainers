@@ -58,13 +58,13 @@ pub(super) fn prepare(words: &mut [u32]) -> Vec<Declared> {
     // A pointer's or array's element type.
     let mut elements = BTreeMap::new();
     let mut variables = Vec::new();
-    let mut at = 5;
+    let mut at = super::words::HEADER;
     while at < words.len() {
-        let count = (words[at] >> 16) as usize;
+        let count = (words[at] >> super::words::COUNT_SHIFT) as usize;
         let Some(w) = words.get(at..at + count).filter(|_| count > 0) else {
             break;
         };
-        match Op::from_u32(w[0] & 0xffff) {
+        match Op::from_u32(w[0] & super::words::OPCODE_MASK) {
             Some(Op::Decorate) if count >= 4 => {
                 if w[2] == Decoration::DescriptorSet as u32 {
                     sets.insert(w[1], w[3]);

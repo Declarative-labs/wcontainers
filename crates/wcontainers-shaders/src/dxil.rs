@@ -5,8 +5,10 @@ mod arrays;
 mod depth;
 mod images;
 mod nonfinite;
+mod registers;
 
 use crate::ConvertError;
+use crate::container::{Element, signature};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -210,6 +212,10 @@ pub(crate) fn lower(
     variant: &VariantKey,
 ) -> Result<(Module, Reflection, ShaderStage), ConvertError> {
     let (mut spirv, mut resources) = to_spirv(dxil, variant.samples)?;
+    if evaluates_inputs(&spirv) {
+        return Err(ConvertError::Unsupported("InterpolateAt"));
+    }
+    registers::encode(&mut spirv);
     let declared = images::prepare(&mut spirv);
     let options = naga::front::spv::Options {
         adjust_coordinate_space: false,
@@ -262,6 +268,10 @@ pub(crate) fn lower(
     };
     module.entry_points[0].name = "main".into();
     module.entry_points[0].early_depth_test = None;
+    let placed = match stage {
+        ShaderStage::Compute => Vec::new(),
+        _ => registers::lay_out(&mut module)?,
+    };
     if stage == ShaderStage::Vertex {
         output_interpolation(&mut module, &variant.output_interpolation);
     }
@@ -283,15 +293,22 @@ pub(crate) fn lower(
     }
     let ep = &module.entry_points[0].function;
     let inputs = signature(dxil, b"ISG1");
+    let outputs = signature(dxil, b"OSG1");
+    let pixel = stage == ShaderStage::Fragment;
     for a in &ep.arguments {
         let into = &mut reflection.inputs;
-        stage_values(&module, a.ty, a.binding.as_ref(), false, &inputs, into);
+        stage_values(&module, a.ty, a.binding.as_ref(), &inputs, into);
     }
     if let Some(r) = &ep.result {
-        let outputs = signature(dxil, b"OSG1");
-        let pixel = stage == ShaderStage::Fragment;
         let into = &mut reflection.outputs;
-        stage_values(&module, r.ty, r.binding.as_ref(), pixel, &outputs, into);
+        stage_values(&module, r.ty, r.binding.as_ref(), &outputs, into);
+    }
+    for p in &placed {
+        let (signature, into) = match p.output {
+            false => (&inputs, &mut reflection.inputs),
+            true => (&outputs, &mut reflection.outputs),
+        };
+        into.push(placed_value(&module, p, pixel && p.output, signature));
     }
     let slots = bindings(&mut module, &resources, set, &mut reflection)?;
     reflection.sampled_pairs = sampled_pairs(&module, &slots)?;
@@ -452,15 +469,13 @@ fn unconverted(module: &Module) -> Result<(), ConvertError> {
     }) {
         return Err(ConvertError::Unsupported("Texture1DArray"));
     }
-    // Every built-in the entry point reads or writes, with its type, and every location it reads
-    // (`false`) or writes (`true`).
+    // Every built-in the entry point reads or writes, with its type.
     let mut builtins = Vec::new();
-    let mut locations = Vec::new();
-    let mut add = |ty: Handle<Type>, binding: Option<&Binding>, output: bool| {
-        let mut one = |ty, binding: Option<&Binding>| match binding {
-            Some(Binding::BuiltIn(b)) => builtins.push((*b, ty)),
-            Some(Binding::Location { location, .. }) => locations.push((output, *location)),
-            None => {}
+    let mut add = |ty: Handle<Type>, binding: Option<&Binding>| {
+        let mut one = |ty, binding: Option<&Binding>| {
+            if let Some(Binding::BuiltIn(b)) = binding {
+                builtins.push((*b, ty));
+            }
         };
         match (binding, &module.types[ty].inner) {
             (None, TypeInner::Struct { members, .. }) => {
@@ -472,16 +487,10 @@ fn unconverted(module: &Module) -> Result<(), ConvertError> {
         }
     };
     for a in &ep.function.arguments {
-        add(a.ty, a.binding.as_ref(), false);
+        add(a.ty, a.binding.as_ref());
     }
-    let result = ep.function.result.as_ref();
-    if let Some(r) = result {
-        add(r.ty, r.binding.as_ref(), true);
-    }
-    // dxc packs small values into one register's components; WGSL gives each value a location.
-    locations.sort_unstable();
-    if locations.windows(2).any(|w| w[0] == w[1]) {
-        return Err(ConvertError::Unsupported("PackedStageValues"));
+    if let Some(r) = ep.function.result.as_ref() {
+        add(r.ty, r.binding.as_ref());
     }
     if ep.stage != naga::ShaderStage::Fragment
         && builtins.iter().any(|(b, _)| *b == BuiltIn::PrimitiveIndex)
@@ -1226,89 +1235,22 @@ fn helper_block(module: &mut Module, reflection: &mut Reflection) -> Handle<Glob
     )
 }
 
-/// An element of a DXIL container's input or output signature.
-struct Element {
-    semantic: String,
-    index: u32,
-    /// Direct3D's system value name (`D3D_NAME`), 0 for none.
-    system: u32,
-    register: u32,
-    mask: u8,
-}
-
-/// The elements of the container's signature chunk `tag` (`ISG1` or `OSG1`: 32-byte elements).
-fn signature(container: &[u8], tag: &[u8; 4]) -> Vec<Element> {
-    let word = |b: &[u8], at: usize| {
-        b.get(at..at + 4)
-            .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
-    };
-    let mut out = Vec::new();
-    let Some(count) = word(container, 28) else {
-        return out;
-    };
-    for i in 0..count as usize {
-        let Some(at) = word(container, 32 + 4 * i).map(|a| a as usize) else {
-            break;
-        };
-        if container.get(at..at + 4) != Some(&tag[..]) {
-            continue;
-        }
-        let size = word(container, at + 4).unwrap_or(0) as usize;
-        let Some(chunk) = container.get(at + 8..at + 8 + size) else {
-            break;
-        };
-        let (n, first) = (word(chunk, 0).unwrap_or(0), word(chunk, 4).unwrap_or(0));
-        for e in 0..n as usize {
-            let at = first as usize + 32 * e;
-            let (Some(name), Some(index), Some(system), Some(register), Some(&mask)) = (
-                word(chunk, at + 4),
-                word(chunk, at + 8),
-                word(chunk, at + 12),
-                word(chunk, at + 20),
-                chunk.get(at + 24),
-            ) else {
-                break;
-            };
-            let semantic = chunk
-                .get(name as usize..)
-                .and_then(|s| s.split(|&c| c == 0).next())
-                .map(|s| String::from_utf8_lossy(s).into_owned())
-                .unwrap_or_default();
-            out.push(Element {
-                semantic,
-                index,
-                system,
-                register,
-                mask,
-            });
-        }
-    }
-    out
-}
-
-/// The reflection's inputs or outputs: the entry point's values, named from the signature.
+/// The reflection's built-in inputs or outputs: the entry point's, named from the signature.
 fn stage_values(
     module: &Module,
     ty: Handle<Type>,
     binding: Option<&Binding>,
-    pixel_output: bool,
     signature: &[Element],
     out: &mut Vec<StageValue>,
 ) {
+    use crate::ir::sysval;
     if let TypeInner::Struct { ref members, .. } = module.types[ty].inner {
         for m in members {
-            stage_values(
-                module,
-                m.ty,
-                m.binding.as_ref(),
-                pixel_output,
-                signature,
-                out,
-            );
+            stage_values(module, m.ty, m.binding.as_ref(), signature, out);
         }
         return;
     }
-    let Some(binding) = binding else {
+    let Some(Binding::BuiltIn(b)) = binding else {
         return;
     };
     let (kind, size) = match module.types[ty].inner {
@@ -1317,68 +1259,109 @@ fn stage_values(
         TypeInner::Array { .. } => (ScalarKind::Float, 1),
         _ => return,
     };
-    let scalar = match kind {
-        ScalarKind::Float => ValueKind::Float,
-        ScalarKind::Sint => ValueKind::Sint,
-        _ => ValueKind::Uint,
+    let (system, code) = match b {
+        BuiltIn::Position { .. } => (SystemValue::Position, sysval::POSITION),
+        BuiltIn::VertexIndex => (SystemValue::VertexId, sysval::VERTEX_ID),
+        BuiltIn::InstanceIndex => (SystemValue::InstanceId, sysval::INSTANCE_ID),
+        BuiltIn::PrimitiveIndex => (SystemValue::PrimitiveId, sysval::PRIMITIVE_ID),
+        BuiltIn::FrontFacing => (SystemValue::FrontFacing, sysval::IS_FRONT_FACE),
+        BuiltIn::SampleIndex => (SystemValue::SampleIndex, sysval::SAMPLE_INDEX),
+        BuiltIn::SampleMask => (SystemValue::Coverage, sysval::COVERAGE),
+        BuiltIn::FragDepth => (SystemValue::Depth, sysval::DEPTH),
+        BuiltIn::ClipDistances => (SystemValue::ClipDistance, sysval::CLIP_DISTANCE),
+        _ => return,
     };
-    let (location, interpolation, system, element) = match *binding {
-        Binding::Location {
-            location,
-            interpolation,
-            sampling,
-            ..
-        } => {
-            use naga::{Interpolation as I, Sampling as S};
-            let interpolation = match (interpolation, sampling) {
-                _ if scalar != ValueKind::Float => Interpolation::Flat,
-                (Some(I::Flat), _) => Interpolation::Flat,
-                (Some(I::Linear), Some(S::Centroid)) => Interpolation::LinearCentroid,
-                (Some(I::Linear), Some(S::Sample)) => Interpolation::LinearSample,
-                (Some(I::Linear), _) => Interpolation::Linear,
-                (_, Some(S::Centroid)) => Interpolation::PerspectiveCentroid,
-                (_, Some(S::Sample)) => Interpolation::PerspectiveSample,
-                _ => Interpolation::Perspective,
-            };
-            let system = pixel_output.then_some(SystemValue::Target(location as u8));
-            let element = signature
-                .iter()
-                .find(|e| e.register == location && (e.system == 0 || e.system == 64));
-            (location, interpolation, system, element)
-        }
-        Binding::BuiltIn(b) => {
-            let (system, code) = match b {
-                BuiltIn::Position { .. } => (SystemValue::Position, 1),
-                BuiltIn::VertexIndex => (SystemValue::VertexId, 6),
-                BuiltIn::InstanceIndex => (SystemValue::InstanceId, 8),
-                BuiltIn::PrimitiveIndex => (SystemValue::PrimitiveId, 7),
-                BuiltIn::FrontFacing => (SystemValue::FrontFacing, 9),
-                BuiltIn::SampleIndex => (SystemValue::SampleIndex, 10),
-                BuiltIn::SampleMask => (SystemValue::Coverage, 66),
-                BuiltIn::FragDepth => (SystemValue::Depth, 65),
-                BuiltIn::ClipDistances => (SystemValue::ClipDistance, 2),
-                _ => return,
-            };
-            let element = signature.iter().find(|e| e.system == code);
-            let interpolation = if scalar == ValueKind::Float {
-                Interpolation::Perspective
-            } else {
-                Interpolation::Flat
-            };
-            (0, interpolation, Some(system), element)
-        }
+    let element = signature.iter().find(|e| e.system == code);
+    let scalar = value_kind(kind);
+    let interpolation = if scalar == ValueKind::Float {
+        Interpolation::Perspective
+    } else {
+        Interpolation::Flat
     };
     out.push(StageValue {
         semantic: element.map(|e| e.semantic.clone()).unwrap_or_default(),
         semantic_index: element.map_or(0, |e| e.index),
-        register: element.map_or(location, |e| e.register),
+        register: element.map_or(0, |e| e.register),
         mask: element.map_or(((1u32 << size) - 1) as u8, |e| e.mask),
         scalar,
         interpolation,
-        system,
-        location,
+        system: Some(system),
+        location: 0,
         component: 0,
     });
+}
+
+fn value_kind(kind: ScalarKind) -> ValueKind {
+    match kind {
+        ScalarKind::Float => ValueKind::Float,
+        ScalarKind::Sint => ValueKind::Sint,
+        _ => ValueKind::Uint,
+    }
+}
+
+/// The reflection of a value at a register, named from the signature, with the interpolation its
+/// register has in the finished entry point.
+fn placed_value(
+    module: &Module,
+    p: &registers::Placed,
+    pixel_output: bool,
+    signature: &[Element],
+) -> StageValue {
+    use crate::ir::sysval;
+    let (kind, size) = match module.types[p.ty].inner {
+        TypeInner::Vector { size, scalar } => (scalar.kind, size as u32),
+        TypeInner::Scalar(s) => (s.kind, 1),
+        _ => (ScalarKind::Float, 1),
+    };
+    let scalar = value_kind(kind);
+    let ep = &module.entry_points[0].function;
+    let at = |b: &Option<Binding>| match b {
+        Some(Binding::Location {
+            location,
+            interpolation,
+            sampling,
+            ..
+        }) if *location == p.register => Some((*interpolation, *sampling)),
+        _ => None,
+    };
+    let modes = if p.output {
+        ep.result.as_ref().and_then(|r| {
+            at(&r.binding).or_else(|| match &module.types[r.ty].inner {
+                TypeInner::Struct { members, .. } => members.iter().find_map(|m| at(&m.binding)),
+                _ => None,
+            })
+        })
+    } else {
+        ep.arguments.iter().find_map(|a| at(&a.binding))
+    };
+    use naga::{Interpolation as I, Sampling as S};
+    let interpolation = match modes.unwrap_or_default() {
+        _ if scalar != ValueKind::Float => Interpolation::Flat,
+        (Some(I::Flat), _) => Interpolation::Flat,
+        (Some(I::Linear), Some(S::Centroid)) => Interpolation::LinearCentroid,
+        (Some(I::Linear), Some(S::Sample)) => Interpolation::LinearSample,
+        (Some(I::Linear), _) => Interpolation::Linear,
+        (_, Some(S::Centroid)) => Interpolation::PerspectiveCentroid,
+        (_, Some(S::Sample)) => Interpolation::PerspectiveSample,
+        _ => Interpolation::Perspective,
+    };
+    let element = signature.iter().find(|e| {
+        e.register == p.register
+            && (e.system == sysval::NONE || e.system == sysval::TARGET)
+            && e.mask.trailing_zeros() == p.component
+    });
+    let own_mask = (((1u32 << size) - 1) << p.component) as u8;
+    StageValue {
+        semantic: element.map(|e| e.semantic.clone()).unwrap_or_default(),
+        semantic_index: element.map_or(0, |e| e.index),
+        register: p.register,
+        mask: element.map_or(own_mask, |e| e.mask),
+        scalar,
+        interpolation,
+        system: pixel_output.then_some(SystemValue::Target(p.register as u8)),
+        location: p.register,
+        component: p.component as u8,
+    }
 }
 
 /// The (texture slot, sampler slot) pairs the program samples with, in the order its code first uses
@@ -1486,34 +1469,79 @@ fn bindings(
     Ok(slots)
 }
 
+/// SPIR-V's physical layout (its specification, 2.3 and 2.2.1): the header's words before the first
+/// instruction, and where an instruction's first word keeps its word count and its opcode.
+pub(crate) mod words {
+    pub const HEADER: usize = 5;
+    pub const COUNT_SHIFT: u32 = u16::BITS;
+    pub const OPCODE_MASK: u32 = u16::MAX as u32;
+}
+
+/// Whether `spirv` takes an input at another place in the pixel (GLSL.std.450's `InterpolateAt*`),
+/// which naga's reader has no form for.
+fn evaluates_inputs(spirv: &[u32]) -> bool {
+    use spirv::{GlslStd450Op as GLOp, Op};
+    const EVALUATIONS: [GLOp; 3] = [
+        GLOp::InterpolateAtCentroid,
+        GLOp::InterpolateAtSample,
+        GLOp::InterpolateAtOffset,
+    ];
+    let mut at = words::HEADER;
+    while at < spirv.len() {
+        let count = (spirv[at] >> words::COUNT_SHIFT) as usize;
+        if count == 0 || at + count > spirv.len() {
+            return false;
+        }
+        // OpExtInst: result type, result, set, instruction.
+        let instruction = at + 4;
+        if spirv[at] & words::OPCODE_MASK == Op::ExtInst as u32
+            && instruction < at + count
+            && EVALUATIONS.iter().any(|&e| e as u32 == spirv[instruction])
+        {
+            return true;
+        }
+        at += count;
+    }
+    false
+}
+
 /// Whether an atomic minimum or maximum in `spirv` is of the other signedness than the integers it
 /// works on, which naga's reader makes a compare-exchange loop.
 fn atomic_signedness_differs(spirv: &[u32]) -> bool {
+    use spirv::Op;
     use std::collections::HashMap;
-    const TYPE_INT: u32 = 21;
-    const TYPE_POINTER: u32 = 32;
-    // OpAtomicSMin, OpAtomicSMax; OpAtomicUMin, OpAtomicUMax.
-    const SIGNED: [u32; 2] = [236, 238];
-    const UNSIGNED: [u32; 2] = [237, 239];
+    const SIGNED: [Op; 2] = [Op::AtomicSMin, Op::AtomicSMax];
+    const UNSIGNED: [Op; 2] = [Op::AtomicUMin, Op::AtomicUMax];
     // The instructions giving pointers: variables, access chains, texel pointers, parameters.
-    const POINTERS: [u32; 6] = [59, 65, 66, 67, 60, 55];
+    const POINTERS: [Op; 6] = [
+        Op::Variable,
+        Op::AccessChain,
+        Op::InBoundsAccessChain,
+        Op::PtrAccessChain,
+        Op::ImageTexelPointer,
+        Op::FunctionParameter,
+    ];
     // Signedness of integer types, pointee of pointer types, type of each result.
     let mut signed = HashMap::new();
     let mut pointee = HashMap::new();
     let mut types = HashMap::new();
     let mut atomics = Vec::new();
-    let mut at = 5;
+    let mut at = words::HEADER;
     while at < spirv.len() {
-        let (count, op) = ((spirv[at] >> 16) as usize, spirv[at] & 0xffff);
+        let count = (spirv[at] >> words::COUNT_SHIFT) as usize;
         if count == 0 || at + count > spirv.len() {
             return false;
         }
+        let Some(op) = Op::from_u32(spirv[at] & words::OPCODE_MASK) else {
+            at += count;
+            continue;
+        };
         let w = &spirv[at + 1..at + count];
         match op {
-            TYPE_INT if w.len() >= 3 => {
+            Op::TypeInt if w.len() >= 3 => {
                 signed.insert(w[0], w[2] != 0);
             }
-            TYPE_POINTER if w.len() >= 3 => {
+            Op::TypePointer if w.len() >= 3 => {
                 pointee.insert(w[0], w[2]);
             }
             _ if (SIGNED.contains(&op) || UNSIGNED.contains(&op)) && w.len() >= 3 => {

@@ -26,6 +26,9 @@ enum Shape {
     D2,
     D2Array,
     D3,
+    /// Depth textures, read as Direct3D reads a depth view: (depth, 0, 0, 1).
+    Depth2D,
+    Depth2DArray,
 }
 
 impl Shape {
@@ -55,6 +58,18 @@ impl Shape {
                 "vec3<f32>(1.0)",
                 "8u",
                 "textureLoad(t, c, level)",
+            ),
+            Shape::Depth2D => (
+                "texture_depth_2d",
+                "vec3<f32>(1.0, 1.0, 0.0)",
+                "4u",
+                "vec4<f32>(textureLoad(t, c.xy, level), 0.0, 0.0, 1.0)",
+            ),
+            Shape::Depth2DArray => (
+                "texture_depth_2d_array",
+                "vec3<f32>(1.0, 1.0, 0.0)",
+                "4u",
+                "vec4<f32>(textureLoad(t, c.xy, layer, level), 0.0, 0.0, 1.0)",
             ),
         };
         format!(
@@ -252,6 +267,14 @@ pub(super) fn sample(
     else {
         unreachable!()
     };
+    let operand_types = types_of(module, &f, &[image])?;
+    let depth = matches!(
+        module.types[operand_types[0]].inner,
+        TypeInner::Image {
+            class: ImageClass::Depth { multi: false },
+            ..
+        }
+    );
     if depth_ref.is_some() {
         return Err(ConvertError::Unsupported(if sources.by_texture {
             "FilterInShaderOnComparison"
@@ -280,12 +303,15 @@ pub(super) fn sample(
                     kind: ScalarKind::Float,
                     multi: false,
                 } => {}
+                ImageClass::Depth { multi: false } => {}
                 ImageClass::Depth { .. } => {
                     return Err(ConvertError::Unsupported("FilterInShaderOnDepth"));
                 }
                 _ => return Err(ConvertError::Unsupported("FilterInShaderOnInteger")),
             }
             match (dim, arrayed) {
+                (naga::ImageDimension::D2, false) if depth => Shape::Depth2D,
+                (naga::ImageDimension::D2, true) if depth => Shape::Depth2DArray,
                 (naga::ImageDimension::D1, false) => Shape::D1,
                 (naga::ImageDimension::D2, false) => Shape::D2,
                 (naga::ImageDimension::D2, true) => Shape::D2Array,
@@ -392,7 +418,7 @@ pub(super) fn sample(
                 components: alloc::vec![size, one, one],
             },
         ),
-        Shape::D2 | Shape::D2Array => push(
+        Shape::D2 | Shape::D2Array | Shape::Depth2D | Shape::Depth2DArray => push(
             &mut callee,
             &mut body,
             Expression::Compose {
@@ -471,7 +497,6 @@ pub(super) fn sample(
             sampler: sources.sampler,
         },
         vec4f,
-        16,
     );
     let border = load_helper(&mut callee, &mut body, border_at);
     let u32_ty = scalar(module, Scalar::U32);
@@ -484,7 +509,6 @@ pub(super) fn sample(
         stage,
         HelperValue::TextureComponents { texture },
         u32_ty,
-        4,
     );
     let components = load_helper(&mut callee, &mut body, components_at);
     let (function, arguments) = match gather {
@@ -542,7 +566,23 @@ pub(super) fn sample(
                 }
                 SampleLevel::Exact(_) => {
                     let z = zero(&mut callee, &mut body);
-                    (z, z, true, args[next])
+                    // A depth texture's level is an integer.
+                    let lod = match module.types[types[next]].inner {
+                        TypeInner::Scalar(Scalar {
+                            kind: ScalarKind::Float,
+                            ..
+                        }) => args[next],
+                        _ => push(
+                            &mut callee,
+                            &mut body,
+                            Expression::As {
+                                expr: args[next],
+                                kind: ScalarKind::Float,
+                                convert: Some(Scalar::F32.width),
+                            },
+                        ),
+                    };
+                    (z, z, true, lod)
                 }
                 SampleLevel::Zero => {
                     let z = zero(&mut callee, &mut body);
@@ -564,7 +604,6 @@ pub(super) fn sample(
                     stage,
                     HelperValue::TextureLevels { texture },
                     u32_ty,
-                    4,
                 );
                 load_helper(&mut callee, &mut body, at)
             } else {
@@ -614,6 +653,10 @@ pub(super) fn sample(
         },
         Span::UNDEFINED,
     );
+    // A depth sample gives the depth alone.
+    if matches!(module.types[result].inner, TypeInner::Scalar(_)) {
+        value = index(&mut callee, &mut body, value, 0);
+    }
     if let Some(clamp_at) = sources.clamp {
         // A gather reads level 0 only, which a clamp of one or more leaves out.
         let read = gather.is_some().then(|| f32_lit(&mut callee, 0.0));
