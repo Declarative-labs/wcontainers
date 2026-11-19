@@ -16,9 +16,6 @@ use wcontainers_directx_graphics_infrastructure::{DisplayMode, OutputDesc};
 
 use super::*;
 
-/// `MONITORINFOF_PRIMARY`.
-const PRIMARY: u32 = 1;
-
 unsafe extern "system" fn collect(m: HMONITOR, _: HDC, _: *mut RECT, list: LPARAM) -> BOOL {
     // SAFETY: `monitors` passes its list.
     unsafe { (*(list.0 as *mut Vec<HMONITOR>)).push(m) };
@@ -66,7 +63,9 @@ pub fn monitors() -> Vec<(OutputDesc, HMONITOR)> {
         };
         let r = info.monitorInfo.rcMonitor;
         out.push((
-            info.monitorInfo.dwFlags & PRIMARY == 0,
+            info.monitorInfo.dwFlags
+                & windows::Win32::UI::WindowsAndMessaging::MONITORINFOF_PRIMARY
+                == 0,
             OutputDesc {
                 name: String::from_utf16_lossy(&info.szDevice[..name_len]),
                 desktop: [r.left, r.top, r.right, r.bottom],

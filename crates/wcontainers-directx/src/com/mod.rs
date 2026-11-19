@@ -315,6 +315,14 @@ pub struct Child {
 }
 
 impl Child {
+    /// The program released its last reference to this child, at `address`: under Direct3D 10's
+    /// behaviour the device's immediate context unbinds it.
+    pub fn released(&self, address: usize) {
+        if let Ok(d) = self.device.cast_object_ref::<device::Device>() {
+            d.unbind_released(address);
+        }
+    }
+
     /// A child holding `device`'s reference.
     pub fn new(device: ID3D11Device) -> Self {
         Child {
@@ -371,15 +379,6 @@ impl Child {
             .clone()
     }
 }
-
-/// `D3D11_CREATE_DEVICE_DEBUG`.
-const CREATE_DEBUG: u32 = 0x2;
-/// `D3D_DRIVER_TYPE_UNKNOWN`, `_HARDWARE` and `_SOFTWARE`.
-const DRIVER_UNKNOWN: i32 = 0;
-const DRIVER_HARDWARE: i32 = 1;
-const DRIVER_SOFTWARE: i32 = 4;
-/// The only version `D3D11CreateDevice` takes.
-const D3D11_SDK_VERSION: u32 = 7;
 
 type CreateDevice = unsafe extern "system" fn(
     *mut c_void,
@@ -464,9 +463,22 @@ pub unsafe extern "system" fn D3D11CreateDevice(
 }
 
 /// The feature levels Direct3D 11 knows, which a program's list may name.
-const KNOWN_LEVELS: [u32; 11] = [
-    0x1000, 0x9100, 0x9200, 0x9300, 0xa000, 0xa100, 0xb000, 0xb100, 0xc000, 0xc100, 0xc200,
-];
+const KNOWN_LEVELS: [windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL; 11] = {
+    use windows::Win32::Graphics::Direct3D::*;
+    [
+        D3D_FEATURE_LEVEL_1_0_CORE,
+        D3D_FEATURE_LEVEL_9_1,
+        D3D_FEATURE_LEVEL_9_2,
+        D3D_FEATURE_LEVEL_9_3,
+        D3D_FEATURE_LEVEL_10_0,
+        D3D_FEATURE_LEVEL_10_1,
+        D3D_FEATURE_LEVEL_11_0,
+        D3D_FEATURE_LEVEL_11_1,
+        D3D_FEATURE_LEVEL_12_0,
+        D3D_FEATURE_LEVEL_12_1,
+        D3D_FEATURE_LEVEL_12_2,
+    ]
+};
 
 /// `D3D11CreateDevice` for the program.
 ///
@@ -499,17 +511,20 @@ unsafe fn create_for_program(
     }
     // With an adapter the driver type is unknown; without one it is named. A software rasteriser's
     // module goes with the software driver alone.
-    if adapter.is_null() == (driver_type == DRIVER_UNKNOWN)
-        || software.is_invalid() == (driver_type == DRIVER_SOFTWARE)
-        || sdk_version != D3D11_SDK_VERSION
+    use windows::Win32::Graphics::Direct3D::{
+        D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_SOFTWARE, D3D_DRIVER_TYPE_UNKNOWN,
+    };
+    if adapter.is_null() == (driver_type == D3D_DRIVER_TYPE_UNKNOWN.0)
+        || software.is_invalid() == (driver_type == D3D_DRIVER_TYPE_SOFTWARE.0)
+        || sdk_version != windows::Win32::Graphics::Direct3D11::D3D11_SDK_VERSION
     {
         return E_INVALIDARG;
     }
-    if adapter.is_null() && driver_type != DRIVER_HARDWARE {
+    if adapter.is_null() && driver_type != D3D_DRIVER_TYPE_HARDWARE.0 {
         warn_once("D3D11CreateDevice with a software, reference, WARP or null driver");
         return DXGI_ERROR_UNSUPPORTED;
     }
-    if flags & CREATE_DEBUG != 0 {
+    if flags & windows::Win32::Graphics::Direct3D11::D3D11_CREATE_DEVICE_DEBUG.0 != 0 {
         return DXGI_ERROR_SDK_COMPONENT_MISSING;
     }
     // No list is Direct3D's default list; an empty one names no level to make.
@@ -521,13 +536,16 @@ unsafe fn create_for_program(
             .map(|l| l.0 as u32)
             .collect()
     };
-    if asked.iter().any(|l| !KNOWN_LEVELS.contains(l)) {
+    if asked
+        .iter()
+        .any(|&l| !KNOWN_LEVELS.iter().any(|k| k.0 as u32 == l))
+    {
         return E_INVALIDARG;
     }
     if !levels.is_null() && asked.is_empty() {
         return DXGI_ERROR_UNSUPPORTED;
     }
-    let (d, c, l) = match create_device(&asked, flags) {
+    let (d, c, l) = match create_device(&asked, flags, false) {
         Ok(made) => made,
         Err(e) => return e.code(),
     };
