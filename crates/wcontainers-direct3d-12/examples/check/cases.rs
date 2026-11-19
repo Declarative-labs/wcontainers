@@ -3,7 +3,8 @@
 //! (buffers written by a copy, a storage view and the CPU; identical textures at one offset), copy
 //! and compute queues waiting on each other and on a late CPU signal, binary occlusion resolved,
 //! read back and used by `SetPredication`, `ExecuteIndirect`, pipeline and stream output
-//! statistics, geometry shaders, timestamps, and views a vertex shader reads in the program.
+//! statistics, geometry shaders, layers a geometry shader names, timestamps, and views a vertex
+//! shader reads in the program.
 
 use std::cell::Cell;
 use std::fmt::Write;
@@ -79,6 +80,7 @@ pub const CASES: &[&str] = &[
     "vertex-views",
     "no-scissors",
     "early-per-primitive",
+    "layers",
 ];
 
 /// Runs case `name` and returns its line of results.
@@ -115,6 +117,7 @@ pub fn run(name: &str) -> Result<String> {
             "vertex-views" => vertex_views(&c),
             "no-scissors" => no_scissors(&c),
             "early-per-primitive" => early_per_primitive(&c),
+            "layers" => layers(&c),
             _ => panic!("no case {name}"),
         }
     }
@@ -405,6 +408,16 @@ impl Ctx {
         texture: &ID3D12Resource,
         state: D3D12_RESOURCE_STATES,
     ) -> Result<Vec<u8>> {
+        unsafe { self.subresource_pixels(texture, state, 0) }
+    }
+
+    /// The same, of subresource `subresource`.
+    unsafe fn subresource_pixels(
+        &self,
+        texture: &ID3D12Resource,
+        state: D3D12_RESOURCE_STATES,
+        subresource: u32,
+    ) -> Result<Vec<u8>> {
         unsafe {
             let pitch = 256u32;
             let readback = self.committed(
@@ -438,7 +451,7 @@ impl Ctx {
                     pResource: transmute_copy(texture),
                     Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
                     Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-                        SubresourceIndex: 0,
+                        SubresourceIndex: subresource,
                     },
                 },
                 None,
@@ -2546,6 +2559,111 @@ unsafe fn geometry(c: &Ctx) -> Result<String> {
         // Each pixel in place, then how many of each colour.
         let pixels = c.pixels(&target, D3D12_RESOURCE_STATE_RENDER_TARGET)?;
         Ok(format!("{} {}", words(&pixels), colours(&pixels)))
+    }
+}
+
+/// The layers `gs_layers` names, one per instance; the target has half as many.
+const NAMED_LAYERS: u32 = 4;
+/// Viewport 1 of the layers case (left, top, width, height), inside the target.
+const INNER_VIEWPORT: [f32; 4] = [8.0, 4.0, 40.0, 48.0];
+
+/// A geometry shader naming one of four layers per instance, through viewport 0 or 1, drawing
+/// into a target of two layers: primitives naming a layer past the target's are drawn into its
+/// first layer, and the pixel shader reads the layer each names.
+unsafe fn layers(c: &Ctx) -> Result<String> {
+    unsafe {
+        let root = c.root(&[], D3D12_ROOT_SIGNATURE_FLAG_NONE)?;
+        let code = |b: &[u8]| D3D12_SHADER_BYTECODE {
+            pShaderBytecode: b.as_ptr().cast(),
+            BytecodeLength: b.len(),
+        };
+        let mut blend = D3D12_BLEND_DESC::default();
+        blend.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8;
+        let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
+            pRootSignature: transmute_copy(&root),
+            VS: code(own!("vs_fullscreen")),
+            GS: code(own!("gs_layers")),
+            PS: code(own!("ps_layer")),
+            BlendState: blend,
+            SampleMask: u32::MAX,
+            RasterizerState: D3D12_RASTERIZER_DESC {
+                FillMode: D3D12_FILL_MODE_SOLID,
+                CullMode: D3D12_CULL_MODE_NONE,
+                DepthClipEnable: true.into(),
+                ..Default::default()
+            },
+            PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+            NumRenderTargets: 1,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            ..Default::default()
+        };
+        desc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+        let pso: ID3D12PipelineState = c.device.CreateGraphicsPipelineState(&desc)?;
+        let layers = NAMED_LAYERS / 2;
+        let target = c.committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &D3D12_RESOURCE_DESC {
+                DepthOrArraySize: layers as u16,
+                ..target_desc()
+            },
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+        )?;
+        let heap: ID3D12DescriptorHeap =
+            c.device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
+                Type: D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+                NumDescriptors: 1,
+                ..Default::default()
+            })?;
+        let rtv = heap.GetCPUDescriptorHandleForHeapStart();
+        c.device.CreateRenderTargetView(&target, None, rtv);
+        let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        list.ClearRenderTargetView(rtv, &[0.0, 0.0, 0.0, 1.0], None);
+        list.OMSetRenderTargets(1, Some(&rtv), false, None);
+        list.SetGraphicsRootSignature(&root);
+        list.SetPipelineState(&pso);
+        let size = SIZE as f32;
+        list.RSSetViewports(&[
+            D3D12_VIEWPORT {
+                Width: size,
+                Height: size,
+                MaxDepth: 1.0,
+                ..Default::default()
+            },
+            D3D12_VIEWPORT {
+                TopLeftX: INNER_VIEWPORT[0],
+                TopLeftY: INNER_VIEWPORT[1],
+                Width: INNER_VIEWPORT[2],
+                Height: INNER_VIEWPORT[3],
+                MaxDepth: 1.0,
+                ..Default::default()
+            },
+        ]);
+        let all = RECT {
+            left: 0,
+            top: 0,
+            right: SIZE as i32,
+            bottom: SIZE as i32,
+        };
+        list.RSSetScissorRects(&[all, all]);
+        list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        list.DrawInstanced(3, 1, 0, 0);
+        c.run(&list)?;
+        let mut out = String::new();
+        for layer in 0..layers {
+            let pixels =
+                c.subresource_pixels(&target, D3D12_RESOURCE_STATE_RENDER_TARGET, layer)?;
+            write!(
+                out,
+                "layer {layer} {} {} | ",
+                words(&pixels),
+                colours(&pixels)
+            )
+            .unwrap();
+        }
+        Ok(out)
     }
 }
 

@@ -275,9 +275,8 @@ struct Render<B: Backend> {
     /// primitive index, which a primitive drawn alone would read as zero.
     per_primitive: Option<early::PerPrimitive<B>>,
     alpha_to_coverage: bool,
-    /// Where the pixel program applies the vertex program's clip distances
-    /// (`ClipDistanceInShader`), the values they pass; default where it does not.
-    linked: LinkedValues,
+    /// What the last vertex stage passes the pixel program; default where it passes nothing.
+    linked: Link,
     /// Every per-instance element steps by one instance.
     instances_step_by_one: bool,
     /// The geometry stage, for pipelines with a geometry shader.
@@ -1097,14 +1096,16 @@ impl<B: Backend> Device<B> {
             )?),
             false => None,
         };
-        // A geometry stage's clip distances the back end lacks, applied by the pixel program.
+        // What a geometry stage passes the pixel program: clip distances the back end lacks, and
+        // the layer it names.
         if let (Some(m), Some(p), Some(key)) = (&made, &mut ps, &mut ps_key)
-            && m.linked != LinkedValues::default()
+            && m.linked != Link::default()
         {
-            key.flags |= VariantFlags::CLIP_DISTANCE;
-            key.linked = m.linked;
+            m.linked.apply(key);
             *p = self.convert(desc.ps, ShaderStage::Fragment, key.clone())?;
-            slow_paths.push(SlowPath::ClipDistanceInShader);
+            if m.linked.flags.contains(VariantFlags::CLIP_DISTANCE) {
+                slow_paths.push(SlowPath::ClipDistanceInShader);
+            }
         }
         let reads_bases = !has_geometry
             && vs
@@ -1305,7 +1306,10 @@ impl<B: Backend> Device<B> {
             };
         let linked = match &made {
             Some(m) if m.shader.is_some() => m.linked,
-            _ => vs_typed.linked,
+            _ => Link {
+                flags: vs_typed.flags & VariantFlags::CLIP_DISTANCE,
+                values: vs_typed.linked,
+            },
         };
         let render = Render {
             blend: self.backend.create_blend(&blend)?,
@@ -1579,15 +1583,12 @@ impl<B: Backend> Device<B> {
                 ShaderStage::Fragment,
             )?
         } else {
-            let key = VariantKey {
-                flags: match linked == LinkedValues::default() {
-                    true => VariantFlags::COUNTING,
-                    false => VariantFlags::COUNTING | VariantFlags::CLIP_DISTANCE,
-                },
-                linked,
+            let mut key = VariantKey {
+                flags: VariantFlags::COUNTING,
                 samples,
                 ..formats::typed_key(&pixel, self.texel_route())
             };
+            linked.apply(&mut key);
             self.convert(&pixel, ShaderStage::Fragment, key)?
                 .modules
                 .swap_remove(0)
@@ -4760,6 +4761,22 @@ fn clip_distances(outputs: &[StageValue]) -> u8 {
         .filter(|v| v.system == Some(SystemValue::ClipDistance))
         .map(|v| v.mask.count_ones() as u8)
         .sum()
+}
+
+/// What a pipeline's last vertex stage passes its pixel program beside its outputs: the flags
+/// that pass them (`CLIP_DISTANCE`, `LAYER_FROM_STAGE`) and where (`VariantKey::linked`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Link {
+    flags: VariantFlags,
+    values: LinkedValues,
+}
+
+impl Link {
+    /// Sets the link in `key`, the pixel program's or the last vertex stage's.
+    fn apply(self, key: &mut VariantKey) {
+        key.flags |= self.flags;
+        key.linked = self.values;
+    }
 }
 
 /// The location past every value `values` lists (a stage's outputs and the next stage's inputs),

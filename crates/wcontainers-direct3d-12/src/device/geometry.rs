@@ -91,9 +91,9 @@ pub(super) struct Made<B: Backend> {
     /// A geometry shader after the domain stage.
     pub late: Option<Converted>,
     pub output: Option<Topology>,
-    /// Where the pixel program applies the geometry stage's clip distances
-    /// (`ClipDistanceInShader`), the values they pass; default where it does not.
-    pub linked: LinkedValues,
+    /// What the last stage passes the pixel program: clip distances the back end lacks
+    /// (`ClipDistanceInShader`) and the layer a geometry shader names; default where nothing.
+    pub linked: Link,
 }
 
 /// `D3D12_SHADER_VISIBILITY_HULL` and `_DOMAIN`.
@@ -113,34 +113,52 @@ pub const NO_RASTERIZED_STREAM: u32 = u32::MAX;
 
 impl<B: Backend> Device<B> {
     /// The last stage before the rasteriser, a geometry or domain shader `code`, converted with
-    /// `key`; where it writes clip distances the back end lacks, converted so that it (a geometry
-    /// shader's pass-through) passes them to the pixel program, which applies them with the
-    /// values returned (`ClipDistanceInShader`).
+    /// `key`, and what it passes the pixel program: where it writes clip distances the back end
+    /// lacks, its pass-through passes them and the pixel program applies them
+    /// (`ClipDistanceInShader`); where a geometry shader names a layer, its pass-through passes it,
+    /// the pixel program reads it there, and a primitive naming a layer past the views is drawn
+    /// into their first layer, as Direct3D draws it (`LAYER_FROM_STAGE`).
     fn last_stage_converted(
         &mut self,
         code: &[u8],
         stage: SourceStage,
         key: VariantKey,
         pixel_inputs: Option<&[StageValue]>,
-    ) -> Result<(Converted, LinkedValues), Error> {
+    ) -> Result<(Converted, Link), Error> {
         let converted = self.convert_staged(code, stage, key.clone())?;
         let outputs = &converted.reflection.outputs;
-        let clip_distances = super::clip_distances(outputs);
-        if clip_distances == 0 || self.backend.caps().has(Features::CLIP_DISTANCE) {
-            return Ok((converted, LinkedValues::default()));
+        let clip_distances = match self.backend.caps().has(Features::CLIP_DISTANCE) {
+            true => 0,
+            false => super::clip_distances(outputs),
+        };
+        let mut flags = VariantFlags::empty();
+        if clip_distances != 0 {
+            pixel_inputs.ok_or(Error::NotImplemented(super::CLIP_WITHOUT_PIXEL_SHADER))?;
+            flags |= VariantFlags::CLIP_DISTANCE;
         }
-        let inputs = pixel_inputs.ok_or(Error::NotImplemented(super::CLIP_WITHOUT_PIXEL_SHADER))?;
-        let linked = LinkedValues {
-            location: super::linked_location(outputs.iter().chain(inputs)),
-            clip_distances,
+        if stage == SourceStage::Geometry
+            && outputs
+                .iter()
+                .any(|o| o.system == Some(SystemValue::RenderTargetArrayIndex))
+        {
+            flags |= VariantFlags::LAYER_FROM_STAGE;
+        }
+        if flags.is_empty() {
+            return Ok((converted, Link::default()));
+        }
+        let link = Link {
+            flags,
+            values: LinkedValues {
+                location: super::linked_location(
+                    outputs.iter().chain(pixel_inputs.unwrap_or_default()),
+                ),
+                clip_distances,
+            },
         };
-        let key = VariantKey {
-            flags: key.flags | VariantFlags::CLIP_DISTANCE,
-            linked,
-            ..key
-        };
+        let mut key = key;
+        link.apply(&mut key);
         let converted = self.convert_staged(code, stage, key)?;
-        Ok((converted, linked))
+        Ok((converted, link))
     }
 
     /// The stages of a pipeline with a geometry shader `gs` (or none, empty), stream output `so`,
@@ -194,7 +212,7 @@ impl<B: Backend> Device<B> {
             output_interpolation: interpolation.to_vec(),
             ..VariantKey::default()
         };
-        let mut linked = LinkedValues::default();
+        let mut linked = Link::default();
         let (shader, domain, late) = match (gs.is_empty(), tessellated) {
             (false, false) => {
                 let (gs, l) = self.last_stage_converted(
@@ -746,8 +764,8 @@ impl<B: Backend> Replay<B> {
     /// bound target views (`LayerSplit`) and per viewport (`MultiViewportSplit`): each run draws
     /// into that layer's views through that viewport, its pass-through program keeping the
     /// primitives that name the run (`stage::PASSTHROUGH_HELPERS`) and its pixel program reading
-    /// the run's layer and viewport. Primitives naming a layer or viewport past those bound are
-    /// not drawn.
+    /// the layer and viewport. A primitive naming a layer past the views' is drawn in the first
+    /// layer's run, as Direct3D draws it; one naming a viewport past those bound is not drawn.
     #[allow(clippy::too_many_arguments)]
     fn draw_runs(
         &mut self,
@@ -788,7 +806,7 @@ impl<B: Backend> Replay<B> {
                 let mut blocks = vec![(
                     wcontainers_gpu::helper_binding(ShaderStage::Vertex),
                     StageSet::VERTEX,
-                    passthrough_block(run, selects.block),
+                    passthrough_block(run, layers, selects),
                 )];
                 if pixel.size != 0 {
                     blocks.push((
@@ -1009,16 +1027,19 @@ impl<B: Backend> Replay<B> {
     }
 }
 
-/// The pass-through program's helper block of `size` bytes for the run `run` (layer, viewport) of
-/// a draw split per layer or viewport.
-fn passthrough_block(run: [u32; 2], size: u32) -> Vec<u8> {
-    use wcontainers_shaders::stage::PASSTHROUGH_HELPERS;
+/// The pass-through program's helper block for the run `run` (layer, viewport) of a draw split
+/// per layer or viewport into views of `layers` layers; a pass-through choosing layers also reads
+/// their count (`LAYER_FROM_STAGE`).
+fn passthrough_block(run: [u32; 2], layers: u32, selects: Selects) -> Vec<u8> {
+    use wcontainers_shaders::stage::{PASSTHROUGH_HELPERS, PASSTHROUGH_LAYER_COUNT};
     let word = size_of::<u32>();
-    let mut block = vec![0u8; size as usize];
-    for slot in PASSTHROUGH_HELPERS {
+    let mut block = vec![0u8; selects.block as usize];
+    let count = selects.layer.then_some(&PASSTHROUGH_LAYER_COUNT);
+    for slot in PASSTHROUGH_HELPERS.iter().chain(count) {
         let value = match slot.value {
             HelperValue::Layer => run[0],
             HelperValue::Viewport => run[1],
+            HelperValue::LayerCount => layers,
             other => unreachable!("the pass-through reads its run alone, not {other:?}"),
         };
         let at = slot.offset as usize;
