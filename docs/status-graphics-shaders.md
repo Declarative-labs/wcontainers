@@ -2,13 +2,15 @@
 
 Branch `phase-2-graphics-shaders`. Plan: `docs/phase-2-graphics.md`, sections 6, 7, 8 and G6 in 12.
 
-## G6: the pass bar item by item, and the gap list (run 47, after the check of run 46)
+## G6: the pass bar item by item, and the gap list (run 48)
 
 G6 is NOT complete: the gap list below holds parts of the milestone that are not built (A1 to A10).
 Run 46 reported it complete with this list so that the independent check would run; the check
 (run 47's findings) agreed the list is honest but counted the gaps as missing parts, and found
 run 46's results stale and three gap causes wrong. Run 47 fixed those findings (see "Run 47");
-the gap list is now worked in the order the fronts need it ("Next"). Every item of section 12's
+the gap list is now worked in the order the fronts need it ("Next"); run 48 did the Direct3D 12
+front's two named items (arrays of views in shader model 5.1 DXBC, the evaluated attribute's
+-1.16e-10; see "Run 48"). Every item of section 12's
 pass bar is either met, with the test that shows it, or on the gap list with its cause, the front
 that waits on it and what it would take. Commands are under "How to run"; results at run 47's code
 are under "Run 47" (run 46's were taken before its own last corpus change and are superseded).
@@ -28,7 +30,7 @@ The pass bar, item by item:
      (`StorageFormatKind`/`TypedBufferFormatKind`, DXBC 8, DXIL 15: gap A2),
      `MultisampledArrayTexture` 1 and 1 (converts with the front's `texture_layers`; the corpus has
      no key), `RenderTargetArrayIndex` 1 and 1 (absent, as above).
-   - Also recorded: the rig's (79 DXBC, 72 DXIL), our own (132, 84) and vkd3d's shader runner
+   - Also recorded: the rig's (79 DXBC, 72 DXIL), our own (137, 85) and vkd3d's shader runner
      files (1503 DXBC, 1517 DXIL).
 2. Every converted shader compiles in Chrome for each back end that can run it
    (`web/check`, one GPU job). WGSL: every converted shader of every corpus. GLSL ES 3.00 (WebGL 2):
@@ -65,7 +67,10 @@ The pass bar, item by item:
    - `compute_draw`: `storage_formats` (`storage_textures_match_direct3d`), `texel_buffers` and
      `texel_formats` (`typed_buffers_match_direct3d`), `texels_through_buffer`
      (`storage_textures_through_buffers_match_direct3d`), `STORAGE_OFFSET`
-     (`storage_views_at_any_first_element_match_direct3d`).
+     (`storage_views_at_any_first_element_match_direct3d`), `register_ranges`
+     (`buffer_arrays_use_the_elements_picked`: arrays of constant and typed buffers, two declared
+     without a length, sized by the ranges, against Direct3D's rules; not against real Direct3D 12,
+     which no drawn test here drives yet).
    - `filter_draw`: `filter_in_shader`, `border_in_shader` (against real Direct3D 11 and WARP;
      anisotropic filtering a known failure, Known gaps: since run 47 only the modes that take a
      footprint from derivatives are counted as known, an explicit level or a gather must match). `shadow_draw`: `filter_in_shader` on
@@ -179,9 +184,9 @@ The gap list (every item of the pass bar not met):
   texel, where the pixel program clips by the interpolated distance and leaves the edges as drawn.
   Waits: nobody (a texel on an edge). Takes: clipping the triangles in the stage helper's compute
   (the polygon cut at each plane, as the rasteriser does), then the same seeds compared again.
-- Also open but not on the pass bar's words, for the fronts' real programs: `ResourceArray` (arrays
-  of views in shader model 5.1 DXBC, the Direct3D 12 front's resource_arrays), the evaluated
-  attribute's -1.16e-10 (shader_eval_attribute), `InterpolateAt` on the DXIL route,
+- Also open but not on the pass bar's words, for the fronts' real programs: `ResourceArray` on the
+  DXIL route for arrays of typed buffers and arrays declared without a length (the DXBC route takes
+  both since run 48), `InterpolateAt` on the DXIL route,
   `CalculateLevelOfDetail`, `SampleClamp`, `globallycoherent` storage, DXIL signed atomic minimum
   and maximum on unsigned words, early tests on 24-bit depth (not measured), comparison filtering
   with a border colour (needs the comparison in `SamplerState`); and dxil-spirv's crashes on signed
@@ -196,7 +201,8 @@ The gap list (every item of the pass bar not met):
 ## Where things stand
 
 Run 46 reported G6 complete with the gap list above, for the independent check; run 47 fixed the
-check's findings and G6 stays open on the gap list. Milestone G6a
+check's findings and G6 stays open on the gap list; run 48 worked its first item (the Direct3D 12
+front's arrays and evaluated attribute). Milestone G6a
 (first slice): done in run 3; runs 4, 5, 6, 8 and 9 fixed what the independent checks
 of runs 3, 4, 5, 7 and 8 found (listed under "Run 4" to "Run 9" below); run 7 drew run 6's fixes on
 the GPU. Milestone G6 in full (section 12's pass bar) is not done: run 9 (the first run on it) fixed
@@ -2248,6 +2254,60 @@ Run 46 (G6 reported complete with the gap list, for the independent check):
   the desktop's `C:\wc\target\phase-2-graphics-shaders` deleted; scratch keeps the logs and
   `run46/out` (47 MB, the files Chrome compiled).
 
+Run 48 (the gap list in the fronts' order, item 1: the Direct3D 12 front's two named items):
+- Merged origin/phase-2-graphics-direct3d-12 (its status only; the other branches had nothing new).
+- Arrays of views in shader model 5.1 DXBC (`ResourceArray`, the Direct3D 12 front's
+  resource_arrays and the runner's unbounded-array-5.1): every element of an array of samplers,
+  constant buffers, textures, typed buffers or storage views is a binding of its own at its
+  register (its own slot under Direct3D 12's numbering, a reflected binding of count 1, per-slot
+  variant fields per element); an instruction using an element picked at run time is lowered once
+  per element inside a switch on the index (nested where it picks two), its result carried out
+  through locals; an index past the array takes the last element (Direct3D leaves it undefined).
+  An array declared without a length takes the rest of the layout's range holding its first
+  register, from the new key field `VariantKey::register_ranges` (Interface changes); without
+  one it is refused by name, `UnboundedResourceArray`. The DXIL route still refuses arrays of
+  typed buffers and unbounded arrays (`ResourceArray`).
+- Tests: `variants` (native): `texture_arrays_are_a_texture_per_element` and
+  `storage_texture_arrays_are_a_storage_texture_per_element` by both routes (fxc 5.1 builds of
+  `ps_array` and `cs_image_array` added), `buffer_arrays_are_a_binding_per_element` (new
+  `cs_buffer_array`: two constant buffers, three and an unbounded two typed buffers, two and an
+  unbounded two storage typed buffers; the refusal without ranges, the DXIL build's refusal).
+  `compute_draw` on the RTX 3080 (WebGPU): `storage_texture_arrays_use_the_elements_picked` by
+  both routes, 8 seeds each, 0 texels apart; `buffer_arrays_use_the_elements_picked`, 8 seeds, 0
+  words apart (gpu1.log). Both compare with the results Direct3D's rules give, not with a real
+  Direct3D 12 picture.
+- The evaluated attribute (shader_eval_attribute, d3d12.c:34067: `EvaluateAttributeAtSample(attr,
+  sample) - ref` gave -1.16e-10 where Direct3D gives 0): an input that a program run per sample
+  reads only through evaluations at samples, and that shares its location with nothing, is now
+  interpolated at its own sample (its reflection says so, so the front's
+  `output_interpolation` makes the vertex program agree), and an evaluation at the place an input
+  was interpolated is that value itself (a select, so no w division rounds it). New drawn test
+  `an_input_evaluated_at_its_own_sample_is_exact` (`vs_eval_exact`/`ps_eval_exact`, the difference
+  scaled by 2^32 into the picture) against Direct3D 11 at 4 samples on the RTX 3080: 0 of 4,096
+  texels differ (gpu2.log); with run 47's evaluate.rs the same test gives 2,457 differing texels,
+  largest 128 (gpu3-before.log). `inputs_evaluated_elsewhere_match_direct3d` still passes (3 and
+  4 texels a step apart, as before).
+- Literals: the moved declaration code's literals named (`ir::resource_literal`, `u64::BITS`,
+  `ir::uav::READ_ONLY`); this crate's baseline lines 612, down from 619; the check passes with
+  nothing to add or delete (desktop, check3.txt).
+- Results at this run's code (logs in scratch `graphics-shaders`, files `run48-*` and `run48/`):
+  - Laptop (i7-8750H, 4 cargo jobs under choom, load 0.9 at the end, nothing else running), the
+    whole suite with every corpus and glslang (`--include-ignored --skip mutated
+    --no-fail-fast`, run48-suite2.log): 88 tests pass, 1 fails, the runner's distance-4 entry
+    (A1, left failing); every corpus's verdicts equal their records (own and own DXIL gained the
+    new files: `cs_buffer_array.dxbc` `UnboundedResourceArray` (the corpus key has no ranges),
+    `cs_buffer_array.dxil` `ResourceArray`, `ps_eval_exact.dxbc` `SampleCount` (no samples in the
+    corpus key), the others convert). Clippy with warnings denied, this crate and the interface's,
+    Linux and Windows: clean.
+  - Desktop, RTX 3080, every test binary of this crate in one GPU job at default seeds
+    (run48-gpu-all.log; shared queue, 3 cargo jobs, load not taken): 123 pass, 0 fail, 5 ignored;
+    the filter test's 396 comparisons with 32 known (anisotropic footprint) as in run 47.
+  - Chrome on the RTX 3080 (`web/check` on this run's written files, run48/chrome.log, one GPU
+    job, 4 min 40 s): every WGSL file compiles (own 127, three more than run 47; the rest as
+    run 47). WebGL 2 compiles 3,576 GLSL files and refuses the same 40 as run 47, each of a
+    shader whose record names a need the back end declares absent.
+- Clean-up: below, at the end of the run.
+
 Run 47 (the check of run 46's report: every finding fixed or recorded):
 - Merged nothing new: every branch named in the task was already in this branch.
 - Corpus records (blocking): the corpus test writes GLSL ES with the WebGL 2 back end's own
@@ -2308,9 +2368,10 @@ Run 47 (the check of run 46's report: every finding fixed or recorded):
   `run47/out` (49 MB, the files Chrome compiled).
 
 Next (in order). The gap list (top of this file) in the order the fronts need it:
-1. The Direct3D 12 front's two named items: `ResourceArray` (arrays of views in shader model 5.1
-   DXBC, its resource_arrays test) and the evaluated attribute's -1.16e-10
-   (shader_eval_attribute).
+1. Done in run 48 (the Direct3D 12 front's resource_arrays and shader_eval_attribute); the front's
+   part is under "Asked of other tracks". Left of it here: arrays of typed buffers and unbounded
+   arrays on the DXIL route (`ResourceArray` there), and a drawn test of arrays against real
+   Direct3D 12.
 2. The Direct3D 11 front's: the primitive's number behind a geometry shader (the rig's geometry
    scene), `GeometryStreams` (test_so_statistics_query), then `GeometryAsReplay` and lines on
    WebGL 2 (A5).
@@ -2542,6 +2603,14 @@ The older list, kept for its detail:
   back end's writing; multisampled reads are absent there.
 
 ## Asked of other tracks
+
+- The Direct3D 12 track (run 48): for resource_arrays and the runner's unbounded-array-5.1, give
+  every shader model 5.1 program's key the bound root signature's descriptor ranges as
+  `VariantKey::register_ranges` (kind, space, registers; a range of unbounded length cannot size
+  an array and stays refused), or only after a plain conversion is refused
+  `UnboundedResourceArray`, and bind each element of an array at its reflected (space, register)
+  as any binding. For shader_eval_attribute nothing new: the pixel program's reflection now asks
+  `PerspectiveSample` for such an input, which the front's `output_interpolation` already passes.
 
 - The WebGL 2 track (run 47): keep the public `glsl` module this branch added to
   `wcontainers-gpu-webgl` (re-exports of `shader::{write, needs, GlslSettings, ShaderText}`; the
@@ -4186,6 +4255,13 @@ were already there.
   `glGetBufferSubData`, which ANGLE's GLES lacks (`read_back_now` works).
 
 ## Interface changes
+
+- Run 48, `VariantKey::register_ranges: Vec<(SlotKind, u32, Range<u32>)>` (commit "interface: gave
+  the variant key the binding layout's register ranges ..."; plan text in 6.4's Direct3D 12 sets):
+  an array declared without a length (Direct3D 12's unbounded descriptor ranges inside a root
+  signature range of finite length) has as many elements as the range has registers past its
+  first, which the program alone does not say; the key carries them so that the conversion stays
+  a function of the source and the key.
 
 - Run 33, `TargetInShader::format`'s doc (commit "interface: a target written in the program takes
   the output's bits where its format is not normalised"): it said only that the program encodes
