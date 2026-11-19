@@ -2,11 +2,13 @@
 //! one piece after another, inside Hypervisor.framework, at every look-ahead setting. At look-ahead none every
 //! instruction boundary is a stop, which gives the run's boundaries; each is checked against definition E's
 //! count, and the end against the WebAssembly output under wasmtime at every look-ahead. Then, at every
-//! look-ahead, the function runs whole and an interrupt is forced after every number of host instructions it
-//! executes (software step): the guest state the position map resolves there (registers, pc, count and the
-//! rest) must be one of the boundaries, in order, and every boundary must be reached by some interrupt. So the
-//! count at every stop is the same at every look-ahead. It runs itself as a copy signed with the hypervisor
-//! entitlement.
+//! look-ahead, the function runs whole and an interrupt is forced at every host instruction it is about to run
+//! (found by software step and at every return from the inside): the guest state the position map resolves
+//! there (registers, pc, count and the rest) must be one of the boundaries, in order, every boundary at an
+//! instruction the run carries in host bytes must be reached by some interrupt, and the run going on from there
+//! must end as the unbroken one. So the count at
+//! every stop is the same at every look-ahead. Each case runs from seeded starting states (flags, thread
+//! pointer, vectors, data area). It runs itself as a copy signed with the hypervisor entitlement.
 
 #[cfg(target_os = "macos")]
 mod common;
@@ -32,18 +34,15 @@ fn main() {
 mod macos {
     use std::time::Instant;
 
-    use wcontainers_abi::{Access, Exit, PAGE_SIZE, Permissions, RegisterBlock};
+    use wcontainers_abi::{PAGE_SIZE, RegisterBlock};
     use wcontainers_arm64::{Arm64, FPCR_BITS, FPSR_BITS, decode};
-    use wcontainers_guest_cpu::{Guest, counted};
+    use wcontainers_guest_cpu::{Guest, Native, Route, counted};
     use wcontainers_translator::LookAhead;
-    use wcontainers_translator_test::layer1::{Case, Stop};
-    use wcontainers_translator_test::layout::{
-        CODE, CODE_SPAN, DATA, DATA_BYTES, DATA_WRITABLE, fill,
-    };
-    use wcontainers_translator_test::runner::{Machine, Stopped, Syscalls};
+    use wcontainers_translator_test::layer1::Case;
+    use wcontainers_translator_test::layout::{CODE, DATA, DATA_WRITABLE};
 
-    use crate::common::{be_signed, load_average};
-    use crate::runner::function::Run;
+    use crate::common::{be_signed, load_average, setting};
+    use crate::runner::function::{Run, same_end, webassembly};
     use crate::runner::{GuestState, Runner, nzcv};
 
     /// Where the functions return to: an address with no code.
@@ -53,7 +52,12 @@ mod macos {
     /// The general registers: x0 to x30, then sp, flags and the thread pointer in a case.
     const GENERAL: usize = RegisterBlock::ZERO.x.len();
     const LINK: usize = GENERAL - 1;
-    const SEED: u64 = 0x1405_7b7e_f767_814f;
+    const SEED_VARIABLE: &str = "WCONTAINERS_INTERRUPTS_SEED";
+    const STARTS_VARIABLE: &str = "WCONTAINERS_INTERRUPTS_STARTS";
+    /// The seed unless told otherwise.
+    const DEFAULT_SEED: u64 = 0x1405_7b7e_f767_814f;
+    /// Seeded starting states per case unless told otherwise.
+    const DEFAULT_STARTS: u64 = 1;
     /// A bounded look-ahead shorter than most of the functions' straight-line runs, so that runs are cut.
     const SHORT: u32 = 3;
     /// Every look-ahead the functions run at; look-ahead none first, whose stops are every boundary.
@@ -136,6 +140,32 @@ mod macos {
         0xd65f03c0, // ret
     ];
 
+    /// System registers copied, answered and held as constants, a cache operation the inside answers, hints
+    /// that are whole pieces, and float status writes followed by them.
+    const SYSTEM: [u32; 21] = [
+        0xd53bd042, // mrs x2, tpidr_el0
+        0xd51bd043, // msr tpidr_el0, x3
+        0xd503201f, // nop
+        0xd53b4204, // mrs x4, nzcv
+        0xd51b4206, // msr nzcv, x6
+        0xd53b00e5, // mrs x5, dczid_el0
+        0xd50b7530, // ic ivau, x16
+        0x1e6e1000, // fmov d0, #1.0
+        0x1e611001, // fmov d1, #3.0
+        0x1e611802, // fdiv d2, d0, d1
+        0xd51b442d, // msr fpsr, x13
+        0xd503201f, // nop
+        0xd503203f, // yield
+        0xd53b4427, // mrs x7, fpsr
+        0xd503201f, // nop
+        0x91000631, // add x17, x17, #1
+        0xd503201f, // nop
+        0xd51b4408, // msr fpcr, x8
+        0xd503201f, // nop
+        0x9a9081ee, // csel x14, x15, x16, hi
+        0xd65f03c0, // ret
+    ];
+
     /// Every float status form after a float operation that raised flags.
     const FLOAT: [u32; 13] = [
         0x1e6e1000, // fmov d0, #1.0
@@ -153,10 +183,10 @@ mod macos {
         0xd65f03c0, // ret
     ];
 
-    /// A case's starting state with the registers given, the flags, thread pointer and vectors drawn from the
-    /// seed.
-    fn start(registers: &[(usize, u64)]) -> Case {
-        let mut rng = fastrand::Rng::with_seed(SEED);
+    /// A case's starting state with the registers given, the flags, thread pointer, vectors and data area drawn
+    /// from `seed`.
+    fn start(seed: u64, registers: &[(usize, u64)]) -> Case {
+        let mut rng = fastrand::Rng::with_seed(seed);
         let mut all = [0u64; GENERAL + 3];
         for &(r, v) in registers {
             all[r] = v;
@@ -171,90 +201,34 @@ mod macos {
             vectors: std::array::from_fn(|_| rng.u128(..)),
             float: [0, 0],
             tracking: false,
-            seed: SEED,
+            seed,
         }
     }
 
-    /// The float function's cases: tracking on and off, FPCR default and not, each writing the other mode.
-    fn float_cases() -> Vec<Case> {
+    /// The float status cases: tracking on and off, FPCR default and not, each writing the other mode into
+    /// `fpcr_written` and every status bit into `fpsr_written`.
+    fn float_cases(
+        seed: u64,
+        fpsr_written: usize,
+        fpcr_written: usize,
+        others: &[(usize, u64)],
+    ) -> Vec<Case> {
         let mut cases = Vec::new();
         for fpcr in [0, FPCR_BITS] {
             for tracking in [false, true] {
                 let written = FPCR_BITS & !fpcr;
-                let mut case = start(&[(8, FPSR_BITS.into()), (10, written.into())]);
+                let mut registers = vec![
+                    (fpsr_written, FPSR_BITS.into()),
+                    (fpcr_written, written.into()),
+                ];
+                registers.extend_from_slice(others);
+                let mut case = start(seed, &registers);
                 case.float = [0, fpcr];
                 case.tracking = tracking;
                 cases.push(case);
             }
         }
         cases
-    }
-
-    /// The WebAssembly output's run of the function at `look_ahead`: its stop, registers and data area.
-    fn webassembly(
-        words: &[u32],
-        case: &Case,
-        look_ahead: LookAhead,
-    ) -> (Stop, RegisterBlock, Vec<u8>) {
-        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-        let slots = u32::try_from(words.len()).expect("a short function");
-        let mut machine = Machine::new(CODE + CODE_SPAN, CODE, slots, Syscalls::Stop);
-        machine.set_permissions(
-            DATA..DATA + DATA_WRITABLE,
-            Permissions::READ | Permissions::WRITE,
-        );
-        machine.set_permissions(DATA + DATA_WRITABLE..DATA + DATA_BYTES, Permissions::READ);
-        machine.set_permissions(
-            CODE - CODE_SPAN..CODE + CODE_SPAN,
-            Permissions::READ | Permissions::EXECUTE,
-        );
-        let mut data = vec![0u8; DATA_BYTES as usize];
-        fill(case.seed, &mut data);
-        machine.write(DATA, &data);
-        let starts: Vec<u64> = (0..bytes.len() as u64)
-            .step_by(Arm64::MAX_LENGTH as usize)
-            .collect();
-        machine.load(&bytes, 0..bytes.len() as u64, CODE, &starts, look_ahead);
-        let mut registers = RegisterBlock::ZERO;
-        registers.x.copy_from_slice(&case.registers[..GENERAL]);
-        registers.sp = case.registers[GENERAL];
-        registers.pc = CODE;
-        [registers.fpsr, registers.fpcr] = case.float;
-        registers.pstate = case.registers[GENERAL + 1];
-        registers.tpidr_el0 = case.registers[GENERAL + 2];
-        registers.v = case.vectors.map(|v| [v as u64, (v >> u64::BITS) as u64]);
-        machine.set_registers(&registers);
-        if case.tracking {
-            machine.track_float_flags();
-        }
-        let (stopped, after) = machine.run();
-        machine.read(DATA, &mut data);
-        let stop = match stopped {
-            Stopped::NoCode(address)
-            | Stopped::Exit(Exit::MemoryFault {
-                address,
-                access: Access::Execute,
-            }) => Stop::Landed(address),
-            Stopped::Exit(Exit::MemoryFault { address, .. }) => Stop::MemoryFault(address),
-            Stopped::Exit(Exit::AlignmentFault { address }) => Stop::Alignment(address),
-            other => panic!("not a stop these functions make: {other:?}"),
-        };
-        (stop, after, data)
-    }
-
-    /// Whether the WebAssembly output's end is the native one's.
-    fn same_end(stop: Stop, after: &RegisterBlock, native_stop: Stop, last: &GuestState) -> bool {
-        stop == native_stop
-            && after.x == last.x
-            && after.sp == last.sp
-            && after.pc == last.pc
-            && after
-                .v
-                .map(|[low, high]| u128::from(high) << u64::BITS | u128::from(low))
-                == last.v
-            && [after.fpsr, after.fpcr] == last.float
-            && after.pstate == last.flags
-            && after.tpidr_el0 == last.thread
     }
 
     /// What one function's checks found.
@@ -267,7 +241,7 @@ mod macos {
     /// Runs one function's checks from one case.
     fn check(runner: &mut Runner, name: &str, words: &[u32], case: &Case, tally: &mut Tally) {
         let mut fail = |what: String| {
-            println!("FAIL {name}: {what}");
+            println!("FAIL {name} (starting state {:#x}): {what}", case.seed);
             tally.failed += 1;
         };
         // Look-ahead none stops at every boundary: they are the run's boundaries.
@@ -326,7 +300,7 @@ mod macos {
             }
             let mut reached = vec![false; boundaries.len()];
             let mut from = 0;
-            for budget in 0..=stepped.steps {
+            for budget in 0..stepped.landings {
                 let run: Run = runner.run_function(&function, case, RETURNS, Some(budget));
                 let (state, _) = run.interrupted.as_ref().expect("an interrupt").clone();
                 tally.forced += 1;
@@ -335,7 +309,7 @@ mod macos {
                     || run.data != whole.data
                 {
                     fail(format!(
-                        "at {look_ahead:?}, going on after an interrupt after {budget} host instructions ends {:?} {:x?}, unbroken {:?} {:x?}",
+                        "at {look_ahead:?}, going on after an interrupt at landing point {budget} ends {:?} {:x?}, unbroken {:?} {:x?}",
                         run.stop,
                         run.trace.last(),
                         whole.stop,
@@ -348,12 +322,22 @@ mod macos {
                         reached[from] = true;
                     }
                     None => fail(format!(
-                        "at {look_ahead:?}, interrupt after {budget} host instructions: {state:x?}\n  boundary {from}: {:x?}",
+                        "at {look_ahead:?}, interrupt at landing point {budget}: {state:x?}\n  boundary {from}: {:x?}",
                         boundaries[from]
                     )),
                 }
             }
-            if let Some(k) = reached.iter().position(|r| !r) {
+            // In a run of more than one instruction the Nothing route carries no host bytes: the host
+            // instruction before it is the one before its successor, which the position map names, with
+            // the same count and registers. Only a stop asked for at that pc (replay's check) lands there.
+            let carried = |state: &GuestState| {
+                look_ahead == LookAhead::None
+                    || words
+                        .get(((state.pc - CODE) / Arm64::MAX_LENGTH) as usize)
+                        .is_none_or(|&word| Arm64::route(&decode(word)) != Route::Nothing)
+            };
+            if let Some(k) = (0..boundaries.len()).find(|&k| !reached[k] && carried(&boundaries[k]))
+            {
                 fail(format!(
                     "at {look_ahead:?} no interrupt reached boundary {k}: {:x?}",
                     boundaries[k]
@@ -361,9 +345,9 @@ mod macos {
             }
             runner.unload();
             lines.push(format!(
-                "{look_ahead:?} {} pieces run, {} host instructions",
+                "{look_ahead:?} {} pieces run, {} landing points",
                 whole.trace.len() - 1,
-                stepped.steps
+                stepped.landings
             ));
         }
         println!(
@@ -375,15 +359,21 @@ mod macos {
         );
     }
 
-    pub fn main() {
-        be_signed();
-        let started = Instant::now();
-        let mut runner = Runner::start();
+    /// The functions and their cases, starting states drawn from `seed`.
+    fn functions(seed: u64) -> Vec<(&'static str, &'static [u32], Vec<Case>)> {
+        let start = |registers: &[(usize, u64)]| start(seed, registers);
         let words = 8;
         let writable = DATA + PAGE_SIZE / 2;
         let read_only = DATA + DATA_WRITABLE + PAGE_SIZE / 2;
         let misaligned = writable + size_of::<u32>() as u64;
-        let functions: [(&str, &[u32], Vec<Case>); 7] = [
+        let mut rng = fastrand::Rng::with_seed(seed);
+        let system = [
+            (3, rng.u64(..)),
+            (6, rng.u64(..) & nzcv()),
+            (15, rng.u64(..)),
+            (16, DATA),
+        ];
+        vec![
             ("sum", &SUM, vec![start(&[(0, DATA), (1, words)])]),
             ("calls", &CALLS, vec![start(&[])]),
             (
@@ -405,24 +395,42 @@ mod macos {
                     start(&[(0, writable), (1, misaligned)]),
                 ],
             ),
-            ("float", &FLOAT, float_cases()),
+            ("float", &FLOAT, float_cases(seed, 8, 10, &[])),
+            ("system", &SYSTEM, float_cases(seed, 13, 8, &system)),
             (
                 "withheld",
                 &WITHHELD,
                 vec![start(&[(28, writable)]), start(&[(28, read_only)])],
             ),
-        ];
+        ]
+    }
+
+    pub fn main() {
+        be_signed();
+        let started = Instant::now();
+        let seed = setting(SEED_VARIABLE, DEFAULT_SEED);
+        let starts = setting(STARTS_VARIABLE, DEFAULT_STARTS);
+        let mut runner = Runner::start();
+        let mut seeds = fastrand::Rng::with_seed(seed);
         let mut tally = Tally::default();
-        for (name, words, cases) in &functions {
-            for case in cases {
-                check(&mut runner, name, words, case, &mut tally);
+        let mut cases = 0;
+        let mut names = 0;
+        for draw in 0..starts {
+            // The first starting state is the seed's own, so a failing one replays with it alone.
+            let draw_seed = if draw == 0 { seed } else { seeds.u64(..) };
+            let functions = functions(draw_seed);
+            names = functions.len();
+            for (name, words, function_cases) in &functions {
+                for case in function_cases {
+                    check(&mut runner, name, words, case, &mut tally);
+                    cases += 1;
+                }
             }
         }
         runner.finish();
         println!(
-            "forced interrupts: {} over {} functions at {} look-aheads, {} failed, in {:?}, load {}",
+            "forced interrupts: {} over {names} functions ({cases} cases from {starts} starting states, seed {seed:#x}) at {} look-aheads, {} failed, in {:?}, load {}",
             tally.forced,
-            functions.len(),
             LOOK_AHEADS.len(),
             tally.failed,
             started.elapsed(),

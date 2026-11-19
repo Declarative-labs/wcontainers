@@ -1,6 +1,9 @@
 //! Guest functions: a piece for each instruction's address at one look-ahead, placed one after another and
-//! run from piece to piece, with an interrupt forced after any number of host instructions by software step
-//! (docs/native.md section 4).
+//! run from piece to piece, with an interrupt forced at any host instruction the guest's level is about to run,
+//! found by software step and at every return from the inside (docs/native.md section 4).
+
+use wcontainers_abi::{Access, Permissions};
+use wcontainers_translator_test::runner::{Machine, Stopped, Syscalls};
 
 use super::*;
 
@@ -23,8 +26,9 @@ pub struct Run {
     /// The guest's state at each instruction boundary reached: the first at the entry, the last at the stop.
     pub trace: Vec<GuestState>,
     pub stop: Stop,
-    /// Host instructions stepped.
-    pub steps: u64,
+    /// The landing points counted: each host instruction the guest's level was about to run, reached by a
+    /// step or by a return from the inside.
+    pub landings: u64,
     /// The state a forced interrupt resolved to, and how many boundaries had been passed before it.
     pub interrupted: Option<(GuestState, usize)>,
     /// The data area at the end.
@@ -114,9 +118,10 @@ impl Runner {
         }
     }
 
-    /// Runs `function` from the state of `case` (its word unused) until it returns to `returns` or stops,
-    /// stepping every host instruction when `budget` is given and resolving an interrupt after that many, then
-    /// going on from the state the interrupt resolved to, as the inside returns to it.
+    /// Runs `function` from the state of `case` (its word unused) until it returns to `returns` or stops. With a
+    /// `budget`, every landing point is counted (each host instruction the guest's level is about to run, reached
+    /// by a step or by a return from the inside) and an interrupt is taken at the one of that index, after which
+    /// the guest goes on from the state it resolved to, as the inside returns to it.
     pub fn run_function(
         &mut self,
         function: &Function,
@@ -138,97 +143,169 @@ impl Runner {
         hardware.pc = function.pieces[current].va;
         let entry_span = &function.pieces[current].code.spans[0];
         let mut trace = vec![guest_state(entry_span, &hardware, &page, &block)];
-        let mut steps = 0;
-        let end = |runner: &Runner, trace, stop, steps, interrupted| {
+        let end = |runner: &Runner, trace, stop, landings, interrupted| {
             let mut now = vec![0u8; DATA_BYTES as usize];
             runner.read(DATA, &mut now);
             Run {
                 trace,
                 stop,
-                steps,
+                landings,
                 interrupted,
                 data: now,
             }
         };
         let mut stepping = budget.is_some();
+        let mut landings = 0;
+        // Whether the hardware's pc is a landing point no step reached: the entry and every return from the
+        // inside.
+        let mut returned = true;
         let mut interrupt: Option<(GuestState, usize)> = None;
-        if budget == Some(0) {
+        loop {
+            let mut taken = None;
+            if stepping && returned {
+                if Some(landings) == budget {
+                    taken = Some((hardware.clone(), page.clone()));
+                }
+                landings += 1;
+            }
+            if taken.is_none() {
+                let trapped = self.enter(&hardware, &page, stepping);
+                returned = false;
+                let class = ESR_EL1::EC.read(trapped.syndrome);
+                if class == ESR_EL1::EC::Value::SoftwareStepLowerEL as u64 {
+                    if Some(landings) == budget {
+                        taken = Some((trapped.hardware, trapped.page));
+                    } else {
+                        // An interrupt that is no stop goes back to the host instruction it came from, with
+                        // the hardware as it was.
+                        hardware = trapped.hardware;
+                        page = trapped.page;
+                    }
+                    landings += 1;
+                } else {
+                    let p = &function.pieces[current];
+                    match resolve(&p.code, p.va, &function.words, &trapped, &mut block) {
+                        Resolved::Again(h, next) => {
+                            (hardware, page) = (*h, next);
+                            returned = true;
+                        }
+                        Resolved::Stop(Stop::Landed(to), state) => {
+                            trace.push((*state).clone());
+                            match at(to).filter(|_| to != returns) {
+                                Some(k) => {
+                                    current = k;
+                                    (hardware, page) = rejoin(&state, trapped.page, &block);
+                                    hardware.pc = function.pieces[k].va;
+                                    returned = true;
+                                }
+                                None => {
+                                    return end(self, trace, Stop::Landed(to), landings, interrupt);
+                                }
+                            }
+                        }
+                        Resolved::Stop(stop, state) => {
+                            trace.push(*state);
+                            return end(self, trace, stop, landings, interrupt);
+                        }
+                    }
+                }
+            }
+            let Some((h, interrupted_page)) = taken else {
+                continue;
+            };
+            // A stop: the inside takes the guest's float status as at every entry, and the guest goes on
+            // from the state it resolved to, as the inside returns to it, at that address's piece.
+            block.enter(h.fpsr);
             let p = &function.pieces[current];
-            let state = interrupted(p, &hardware, &page, &mut block, &|va, b| self.read(va, b));
-            interrupt = Some((state, 0));
+            let state = interrupted(p, &h, &interrupted_page, &mut block, &|va, b| {
+                self.read(va, b)
+            });
             stepping = false;
-        }
-        // An interrupt that is a stop: the guest goes on from the state it resolved to, as the inside
-        // returns to it, at that address's piece.
-        if let Some((state, _)) = &interrupt {
+            interrupt = Some((state.clone(), trace.len() - 1));
             match at(state.pc).filter(|_| state.pc != returns) {
                 Some(k) => {
                     current = k;
-                    (hardware, page) = rejoin(state, page.clone(), &block);
+                    (hardware, page) = rejoin(&state, interrupted_page, &block);
                     hardware.pc = function.pieces[k].va;
                 }
                 None => {
                     let to = state.pc;
-                    trace.push(state.clone());
-                    return end(self, trace, Stop::Landed(to), 0, interrupt);
-                }
-            }
-        }
-        loop {
-            let trapped = self.enter(&hardware, &page, stepping);
-            let class = ESR_EL1::EC.read(trapped.syndrome);
-            if class == ESR_EL1::EC::Value::SoftwareStepLowerEL as u64 {
-                steps += 1;
-                if Some(steps) == budget {
-                    // A stop: the inside takes the guest's float status as at every entry.
-                    block.enter(trapped.hardware.fpsr);
-                    let p = &function.pieces[current];
-                    let state =
-                        interrupted(p, &trapped.hardware, &trapped.page, &mut block, &|va, b| {
-                            self.read(va, b)
-                        });
-                    stepping = false;
-                    match at(state.pc).filter(|_| state.pc != returns) {
-                        Some(k) => {
-                            current = k;
-                            (hardware, page) = rejoin(&state, trapped.page, &block);
-                            hardware.pc = function.pieces[k].va;
-                            interrupt = Some((state, trace.len() - 1));
-                        }
-                        None => {
-                            let to = state.pc;
-                            interrupt = Some((state.clone(), trace.len() - 1));
-                            trace.push(state);
-                            return end(self, trace, Stop::Landed(to), steps, interrupt);
-                        }
-                    }
-                    continue;
-                }
-                // An interrupt that is no stop goes back to the host instruction it came from, with the
-                // hardware as it was.
-                hardware = trapped.hardware;
-                page = trapped.page;
-                continue;
-            }
-            let p = &function.pieces[current];
-            match resolve(&p.code, p.va, &function.words, &trapped, &mut block) {
-                Resolved::Again(h, next) => (hardware, page) = (*h, next),
-                Resolved::Stop(Stop::Landed(to), state) => {
-                    trace.push((*state).clone());
-                    match at(to).filter(|_| to != returns) {
-                        Some(k) => {
-                            current = k;
-                            (hardware, page) = rejoin(&state, trapped.page, &block);
-                            hardware.pc = function.pieces[k].va;
-                        }
-                        None => return end(self, trace, Stop::Landed(to), steps, interrupt),
-                    }
-                }
-                Resolved::Stop(stop, state) => {
-                    trace.push(*state);
-                    return end(self, trace, stop, steps, interrupt);
+                    trace.push(state);
+                    return end(self, trace, Stop::Landed(to), landings, interrupt);
                 }
             }
         }
     }
+}
+
+/// The WebAssembly output's run of `words` at the code address from the state of `case`, at `look_ahead`: its
+/// stop, registers and data area.
+pub fn webassembly(
+    words: &[u32],
+    case: &Case,
+    look_ahead: LookAhead,
+) -> (Stop, RegisterBlock, Vec<u8>) {
+    let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+    let slots = u32::try_from(words.len()).expect("a short function");
+    let mut machine = Machine::new(CODE + CODE_SPAN, CODE, slots, Syscalls::Stop);
+    machine.set_permissions(
+        DATA..DATA + DATA_WRITABLE,
+        Permissions::READ | Permissions::WRITE,
+    );
+    machine.set_permissions(DATA + DATA_WRITABLE..DATA + DATA_BYTES, Permissions::READ);
+    machine.set_permissions(
+        CODE - CODE_SPAN..CODE + CODE_SPAN,
+        Permissions::READ | Permissions::EXECUTE,
+    );
+    let mut data = vec![0u8; DATA_BYTES as usize];
+    fill(case.seed, &mut data);
+    machine.write(DATA, &data);
+    let starts: Vec<u64> = (0..bytes.len() as u64)
+        .step_by(Arm64::MAX_LENGTH as usize)
+        .collect();
+    machine.load(&bytes, 0..bytes.len() as u64, CODE, &starts, look_ahead);
+    let mut registers = RegisterBlock::ZERO;
+    registers.x.copy_from_slice(&case.registers[..GENERAL]);
+    registers.sp = case.registers[CASE_SP];
+    registers.pc = CODE;
+    [registers.fpsr, registers.fpcr] = case.float;
+    registers.pstate = case.registers[CASE_FLAGS];
+    registers.tpidr_el0 = case.registers[CASE_THREAD];
+    registers.v = case.vectors.map(|v| [v as u64, (v >> u64::BITS) as u64]);
+    machine.set_registers(&registers);
+    if case.tracking {
+        machine.track_float_flags();
+    }
+    let (stopped, after) = machine.run();
+    machine.read(DATA, &mut data);
+    let stop = match stopped {
+        Stopped::NoCode(address)
+        | Stopped::Exit(wcontainers_abi::Exit::MemoryFault {
+            address,
+            access: Access::Execute,
+        }) => Stop::Landed(address),
+        Stopped::Exit(wcontainers_abi::Exit::MemoryFault { address, .. }) => {
+            Stop::MemoryFault(address)
+        }
+        Stopped::Exit(wcontainers_abi::Exit::AlignmentFault { address }) => {
+            Stop::Alignment(address)
+        }
+        other => panic!("not a stop these functions make: {other:?}"),
+    };
+    (stop, after, data)
+}
+
+/// Whether the WebAssembly output's end is the native one's.
+pub fn same_end(stop: Stop, after: &RegisterBlock, native_stop: Stop, last: &GuestState) -> bool {
+    stop == native_stop
+        && after.x == last.x
+        && after.sp == last.sp
+        && after.pc == last.pc
+        && after
+            .v
+            .map(|[low, high]| u128::from(high) << u64::BITS | u128::from(low))
+            == last.v
+        && [after.fpsr, after.fpcr] == last.float
+        && after.pstate == last.flags
+        && after.tpidr_el0 == last.thread
 }
