@@ -33,15 +33,15 @@ impl wcontainers_gpu_test::Host for Native {
     }
 
     fn window(b: &mut WebGpu) -> u32 {
-        const WINDOW: u32 = 1;
+        const NATIVE_WINDOW_HANDLE: u32 = 1;
         let surface = INSTANCE.with(|i| {
             let instance = i.borrow();
             let instance = instance.as_ref().expect("make() first");
             // SAFETY: the window is never destroyed while the test runs.
             unsafe { instance.create_surface_unsafe(window::open()) }.expect("a surface")
         });
-        b.add_window(WINDOW, surface);
-        WINDOW
+        b.add_window(NATIVE_WINDOW_HANDLE, surface);
+        NATIVE_WINDOW_HANDLE
     }
 
     fn shown(b: &mut WebGpu, _: u32) -> Vec<u8> {
@@ -204,7 +204,7 @@ mod window {
     type Answer = Arc<Mutex<Option<Result<Vec<u8>, String>>>>;
 
     /// The window's side in pixels.
-    const SIDE: usize = 4;
+    const WINDOW_SIDE: usize = 4;
 
     thread_local! {
         static WINDOW: RefCell<Option<(Retained<NSWindow>, Retained<CAMetalLayer>)>> =
@@ -218,7 +218,7 @@ mod window {
         // Connects the process to the window server, whose events tell windows they are visible.
         app.finishLaunching();
         let screen = NSScreen::mainScreen(mtm).expect("a screen");
-        let side = SIDE as f64 / screen.backingScaleFactor();
+        let side = WINDOW_SIDE as f64 / screen.backingScaleFactor();
         // In the middle of the screen, clear of the Dock and menu bar.
         let free = screen.visibleFrame();
         let at = NSPoint::new(
@@ -306,15 +306,20 @@ mod window {
             CGImage::height(image),
             CGImage::bits_per_pixel(image),
         );
-        if size != (SIDE, SIDE, 32) {
+        if size != (WINDOW_SIDE, WINDOW_SIDE, 32) {
             return Err(format!("a capture of {size:?} (width, height, bits)"));
         }
         let pitch = CGImage::bytes_per_row(image);
         let bytes = CGDataProvider::data(CGImage::data_provider(image).as_deref())
             .ok_or("a capture without bytes")?
             .to_vec();
-        Ok((0..SIDE)
-            .flat_map(|y| bytes[y * pitch..][..SIDE * 4].as_chunks::<4>().0.to_vec())
+        Ok((0..WINDOW_SIDE)
+            .flat_map(|y| {
+                bytes[y * pitch..][..WINDOW_SIDE * 4]
+                    .as_chunks::<4>()
+                    .0
+                    .to_vec()
+            })
             .flat_map(|p| [p[2], p[1], p[0], 255])
             .collect())
     }
@@ -334,8 +339,8 @@ mod window {
                 &window,
             );
             let config = SCStreamConfiguration::new();
-            config.setWidth(SIDE);
-            config.setHeight(SIDE);
+            config.setWidth(WINDOW_SIDE);
+            config.setHeight(WINDOW_SIDE);
             config.setColorSpaceName(kCGColorSpaceSRGB);
             config.setPixelFormat(u32::from_be_bytes(*b"BGRA"));
             config.setShowsCursor(false);

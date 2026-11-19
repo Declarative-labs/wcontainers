@@ -9,6 +9,13 @@ use wgpu::{BindGroupLayoutEntry, BindingType, ShaderStages};
 /// The texture bindings whose bit a layout key may set start here (plan section 6.4).
 const FIRST_TEXTURE_BINDING: u32 = 32;
 
+/// The bit of a layout key that stands for texture `binding`, if it has one.
+pub fn texture_bit(binding: u32) -> Option<u32> {
+    binding
+        .checked_sub(FIRST_TEXTURE_BINDING)
+        .filter(|bit| *bit < u128::BITS)
+}
+
 /// The entries of each bind group, sorted by binding, or a rule the program broke.
 pub type GroupEntries = [Vec<BindGroupLayoutEntry>; MAX_BINDING_SETS];
 
@@ -19,10 +26,7 @@ pub fn paired(module: &naga::Module, info: &naga::valid::FunctionInfo) -> [u128;
     let mut sets = [0; MAX_BINDING_SETS];
     for k in info.sampling_set.iter() {
         if let Some(b) = &module.global_variables[k.image].binding
-            && let Some(bit) = b
-                .binding
-                .checked_sub(FIRST_TEXTURE_BINDING)
-                .filter(|bit| *bit < 128)
+            && let Some(bit) = texture_bit(b.binding)
             && let Some(set) = sets.get_mut(b.group as usize)
         {
             *set |= 1u128 << bit;
@@ -58,10 +62,7 @@ pub fn derive(
             let Some(b) = &module.global_variables[image].binding else {
                 return false;
             };
-            b.binding
-                .checked_sub(FIRST_TEXTURE_BINDING)
-                .filter(|bit| *bit < 128)
-                .is_some_and(|bit| of(b.group as usize) & (1u128 << bit) != 0)
+            texture_bit(b.binding).is_some_and(|bit| of(b.group as usize) & (1u128 << bit) != 0)
         };
         let sampled = |image| bit_in(image, &|g| sampled.get(g).copied().unwrap_or(0));
         let unfilterable = |image| {

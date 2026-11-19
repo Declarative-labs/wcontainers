@@ -22,6 +22,9 @@ use wcontainers_gpu::TextureUsage;
 use super::counted::{Held, public_count};
 use super::*;
 
+/// `IDXGISwapChain::Present`'s largest sync interval.
+const MAX_SYNC_INTERVAL: u32 = 4;
+
 #[implement(IDXGIFactory6)]
 pub struct Factory {
     pub(super) private: Private,
@@ -310,7 +313,7 @@ impl SwapChain_Impl {
     }
 
     pub(super) fn present(&self, sync_interval: u32, flags: DXGI_PRESENT) -> HRESULT {
-        if sync_interval > 4 {
+        if sync_interval > MAX_SYNC_INTERVAL {
             return DXGI_ERROR_INVALID_CALL;
         }
         // A window nobody can see takes no frames, as DXGI answers.

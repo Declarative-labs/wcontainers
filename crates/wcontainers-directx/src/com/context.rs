@@ -17,7 +17,13 @@ use windows::core::{
 
 use wcontainers_direct3d_11::desc::{Box3, Viewport, map};
 use wcontainers_direct3d_11::object::Resource;
-use wcontainers_direct3d_11::{COMPUTE, DOMAIN, GEOMETRY, HULL, PIXEL, UAV_SLOTS, VERTEX, format};
+use wcontainers_direct3d_11::query::Answer;
+use wcontainers_direct3d_11::{
+    COMPUTE, DOMAIN, GEOMETRY, HULL, PIXEL, STAGES, UAV_SLOTS, VERTEX, format,
+};
+
+/// Stream output target slots.
+const SO_SLOTS: usize = D3D11_SO_BUFFER_SLOT_COUNT as usize;
 
 use super::counted::{Counted, Held};
 use super::*;
@@ -168,14 +174,14 @@ struct Bound {
     hs: Option<Held<HullShader_Impl>>,
     ds: Option<Held<DomainShader_Impl>>,
     /// The stream output targets.
-    so_targets: [Option<Held<Buffer_Impl>>; 4],
+    so_targets: [Option<Held<Buffer_Impl>>; SO_SLOTS],
     /// Per stage (vertex, pixel, compute, geometry, hull, domain), per slot.
-    constant_buffers: [Vec<Option<Held<Buffer_Impl>>>; 6],
+    constant_buffers: [Vec<Option<Held<Buffer_Impl>>>; STAGES],
     /// Per stage and slot, the constants bound (first, count); none for the whole buffer.
-    constant_ranges: [Vec<Option<(u32, u32)>>; 6],
-    resources: [Vec<Option<Held<ShaderResourceView_Impl>>>; 6],
-    samplers: [Vec<Option<Held<SamplerState_Impl>>>; 6],
-    uavs: [Vec<Option<Held<UnorderedAccessView_Impl>>>; 3],
+    constant_ranges: [Vec<Option<(u32, u32)>>; STAGES],
+    resources: [Vec<Option<Held<ShaderResourceView_Impl>>>; STAGES],
+    samplers: [Vec<Option<Held<SamplerState_Impl>>>; STAGES],
+    uavs: [Vec<Option<Held<UnorderedAccessView_Impl>>>; COMPUTE + 1],
     layout: Option<Held<InputLayout_Impl>>,
     /// Per slot: buffer, stride and offset.
     vertex_buffers: Vec<(Option<Held<Buffer_Impl>>, u32, u32)>,
@@ -572,7 +578,7 @@ impl Context {
         list: *const Option<ID3D11Buffer>,
         offsets: *const u32,
     ) {
-        if n > 4 {
+        if n as usize > SO_SLOTS {
             self.run("SOSetTargets", |_| {
                 Err(wcontainers_direct3d_11::Error::InvalidArg(
                     "more than four stream output targets",
@@ -588,7 +594,7 @@ impl Context {
             (0..h.len()).map(|i| unsafe { *offsets.add(i) }).collect()
         };
         if self.run("SOSetTargets", move |f| f.so_set_targets(&b, &o)) {
-            let mut targets: [Option<Held<Buffer_Impl>>; 4] = Default::default();
+            let mut targets: [Option<Held<Buffer_Impl>>; SO_SLOTS] = Default::default();
             for (t, h) in targets.iter_mut().zip(h) {
                 *t = h;
             }
@@ -801,7 +807,7 @@ impl Context {
                 bound.constant_ranges[stage].get(slot),
             ) {
                 (Some(Some(_)), Some(Some(r))) => *r,
-                _ => (0, 4096),
+                _ => (0, D3D11_REQ_CONSTANT_BUFFER_ELEMENT_COUNT),
             };
             unsafe {
                 if !first.is_null() {
@@ -1331,8 +1337,8 @@ impl Context {
             )),
             Some(v) => {
                 if size != 0 {
-                    let mut bytes = [0u8; 88];
-                    for (b, w) in bytes.chunks_mut(8).zip(v) {
+                    let mut bytes = [0u8; size_of::<Answer>()];
+                    for (b, w) in bytes.chunks_mut(size_of::<u64>()).zip(v) {
                         b.copy_from_slice(&w.to_le_bytes());
                     }
                     unsafe {
@@ -2551,7 +2557,7 @@ impl Context {
             });
             let targets = fronts(&b.so_targets, |t| &*t.front);
             self.run("SOSetTargets", move |f| {
-                f.so_set_targets(&targets, &[u32::MAX; 4])
+                f.so_set_targets(&targets, &[u32::MAX; SO_SLOTS])
             });
             let layout = b.layout.as_ref().map(|l| (*l.front).clone());
             let topology = b.topology.0 as u32;

@@ -1416,7 +1416,7 @@ code	crates/wcontainers-arm64/src/vector.rs	int	narrow	8
 code	crates/wcontainers-direct3d-11/src/ahead.rs	int	Ahead	5
 code	crates/wcontainers-direct3d-11/src/ahead.rs	int	Ahead<B>::new	5
 code	crates/wcontainers-direct3d-11/src/ahead.rs	int	TupleKey	4
-code	crates/wcontainers-direct3d-11/src/ahead.rs	str	Device<B>::report_ahead	"wcontainers direct3d 11: built at start {started} recorded combinations: \\r\n             {started_drawn} drawn since, {} not ({} records not built); built ah… #ea4acaf01f29ca3c
+code	crates/wcontainers-direct3d-11/src/ahead.rs	str	Device<B>::report_ahead	"wcontainers direct3d 11: built at start {started} recorded combinations: \\n             {started_drawn} drawn since, {} not ({} records not built); built ahea… #3373273ad562a70
 code	crates/wcontainers-direct3d-11/src/cache.rs	int	ModuleKeys	32
 code	crates/wcontainers-direct3d-11/src/cache.rs	int	ModuleKeys	32
 code	crates/wcontainers-direct3d-11/src/cache.rs	int	Record	32
@@ -1588,7 +1588,6 @@ code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"a d
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"a pixel shader reading past its vertex shader's outputs, under clip distances in the program"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"a sample mask without the back end's (SampleMaskInShader)"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"a topology without a geometry or hull shader"
-code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"counting the samples of a pixel shader variant"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"depth bias on lines and points"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"depth clamping or clip distances the back end lacks, without a pixel shader to apply them"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"dual-source blending without the back end's"
@@ -1597,12 +1596,12 @@ code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"lin
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"more vertex inputs fetched in the program than the back end's storage bindings"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once	"patches without hull and domain shaders"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::draw_once::macro_rules! with_call	"an index buffer"
-code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::early_tests	"early depth-stencil tests before storage writes behind a geometry or \\r\n                 tessellation stage"
+code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::early_tests	"early depth-stencil tests before storage writes behind a geometry or \\n                 tessellation stage"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::open_pass	"occlusion queries over a depth buffer larger than its targets"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::prepare_pixel_counted	"@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }"
-code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::prepare_pixel_counted	"@fragment fn main(@builtin(sample_index) i: u32) -> @location(0) vec4<f32> {\r\n                     return vec4<f32>(1.0);\r\n                 }"
+code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::prepare_pixel_counted	"@fragment fn main(@builtin(sample_index) i: u32) -> @location(0) vec4<f32> {\n                     return vec4<f32>(1.0);\n                 }"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::prepare_pixel_counted	"main"
-code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::prepare_pixel_counted	"struct Out { @location(0) count: vec4<f32>, @builtin(sample_mask) mask: u32 }\r\n                 @fragment fn main(@builtin(sample_mask) covered: u32) -> Out … #7f3eb120b3d481a4
+code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::prepare_pixel_counted	"struct Out { @location(0) count: vec4<f32>, @builtin(sample_mask) mask: u32 }\n                 @fragment fn main(@builtin(sample_mask) covered: u32) -> Out {\… #dc4dd7c6c2d83fe6
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::prepare_pixel_counted	"the pixel counter's program on this back end"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::set_constant_ranges	"a constant range not in multiples of 16 constants, or past 4096"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::try_dispatch	"a compute shader sampling in a way the back end's sampler lacks (a bias, a resource clamp, border or mirror-once addressing, an unfilterable format)"
@@ -1631,11 +1630,11 @@ code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::strea
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::stream_counted	8
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::draw_output	"depth bias on lines and points"
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::draw_output	"lines drawn by the quadrilateral or alpha-antialiased rule"
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::draw_staged	"a draw through a geometry shader or stream output while a counted occlusion or \\r\n                 statistics query runs"
+code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::draw_staged	"a draw through a geometry shader or stream output while a counted occlusion or \\n                 statistics query runs"
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::draw_staged	"a geometry shader reading helper constants"
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::draw_staged	"a vertex shader variant behind a geometry shader"
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::draw_staged	"an indirect draw through a geometry shader or stream output"
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::make_staged	"clip distances from a domain shader before a geometry shader, without the \\r\n                         back end's"
+code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::make_staged	"clip distances from a domain shader before a geometry shader, without the \\n                         back end's"
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::run_staged	"a pixel shader reading helper constants behind a domain shader"
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::run_staged	"storage textures read through buffers behind a geometry shader"
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::run_staged	"storage textures read through buffers behind a hull shader"
@@ -1650,7 +1649,7 @@ code	crates/wcontainers-direct3d-11/src/context/split.rs	str	Device<B>::try_draw
 code	crates/wcontainers-direct3d-11/src/context/tessellation.rs	int	Device<B>::run_tessellated	3
 code	crates/wcontainers-direct3d-11/src/context/tessellation.rs	int	Device<B>::run_tessellated	3
 code	crates/wcontainers-direct3d-11/src/context/tessellation.rs	int	patch_points	32
-code	crates/wcontainers-direct3d-11/src/context/tessellation.rs	str	Device<B>::draw_tessellated	"a draw through hull and domain shaders while a counted occlusion or statistics \\r\n                 query runs"
+code	crates/wcontainers-direct3d-11/src/context/tessellation.rs	str	Device<B>::draw_tessellated	"a draw through hull and domain shaders while a counted occlusion or statistics \\n                 query runs"
 code	crates/wcontainers-direct3d-11/src/context/tessellation.rs	str	Device<B>::draw_tessellated	"a hull or domain shader reading helper constants"
 code	crates/wcontainers-direct3d-11/src/context/tessellation.rs	str	Device<B>::draw_tessellated	"a vertex shader variant behind a hull shader"
 code	crates/wcontainers-direct3d-11/src/context/tessellation.rs	str	Device<B>::draw_tessellated	"an indirect draw through hull and domain shaders"
@@ -1697,7 +1696,6 @@ code	crates/wcontainers-direct3d-11/src/desc.rs	int	SamplerDesc::default_state	4
 code	crates/wcontainers-direct3d-11/src/device.rs	float	gpu_sampler	32.0
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::buffer_span	4
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::buffer_span	4
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::buffer_span	4
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::check_texture	0xb000
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::check_texture	32
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::check_texture	6
@@ -1710,9 +1708,6 @@ code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_blend_st
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_blend_state	5
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_blend_state	8
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_blend_state	8
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_buffer_uav	4
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_buffer_uav	4
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_buffer_uav	4
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_input_layout	32
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_input_layout	32
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_input_layout	32
@@ -1831,7 +1826,7 @@ code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::check_texture	"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::check_texture	"a cube texture below 10_1 has exactly six faces"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::check_texture	"a multisampled texture of more than one layer"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::check_texture	"samples all at the pixel's centre"
-code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::check_texture	"textures with misc flags other than a cube, mip generation, a level clamp, shared \\r\n                 and GDI-compatible"
+code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::check_texture	"textures with misc flags other than a cube, mip generation, a level clamp, shared \\n                 and GDI-compatible"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::check_texture	"unordered access needs feature level 11_0"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::create_blend_state	"blend factors or operations per target below feature level 10_1"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::create_buffer	"buffers with misc flags other than structured, raw, indirect and shared"
@@ -1865,18 +1860,6 @@ code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_size	8
 code	crates/wcontainers-direct3d-11/src/format.rs	str	unserved	"a DXGI format this front does not serve"
 code	crates/wcontainers-direct3d-11/src/object.rs	int	InputLayout	32
 code	crates/wcontainers-direct3d-11/src/object.rs	int	Shader	32
-code	crates/wcontainers-direct3d-11/src/query.rs	int	Answer	11
-code	crates/wcontainers-direct3d-11/src/query.rs	int	Device<B>::begin_query	11
-code	crates/wcontainers-direct3d-11/src/query.rs	int	Device<B>::end_query	11
-code	crates/wcontainers-direct3d-11/src/query.rs	int	Device<B>::query_data	8
-code	crates/wcontainers-direct3d-11/src/query.rs	int	data_size	16
-code	crates/wcontainers-direct3d-11/src/query.rs	int	data_size	16
-code	crates/wcontainers-direct3d-11/src/query.rs	int	data_size	4
-code	crates/wcontainers-direct3d-11/src/query.rs	int	data_size	4
-code	crates/wcontainers-direct3d-11/src/query.rs	int	data_size	6
-code	crates/wcontainers-direct3d-11/src/query.rs	int	data_size	8
-code	crates/wcontainers-direct3d-11/src/query.rs	int	data_size	88
-code	crates/wcontainers-direct3d-11/src/query.rs	int	short	11
 code	crates/wcontainers-direct3d-11/src/query.rs	str	Device<B>::create_query	"not a query Direct3D 11 has"
 code	crates/wcontainers-direct3d-11/src/query.rs	str	Device<B>::create_query	"per-stream stream output queries need feature level 11_0"
 code	crates/wcontainers-direct3d-11/src/query.rs	str	Device<B>::query_data	"wcontainers direct3d 11: timestamps reported disjoint: the back end writes none"
@@ -2193,10 +2176,13 @@ code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	view_mapping	4
 code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	view_mapping	4
 code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	view_mapping	5
 code	crates/wcontainers-direct3d-12/src/device/bind.rs	int	view_mapping	7
-code	crates/wcontainers-direct3d-12/src/device/bind.rs	str	Device<B>::arguments_set	"warning: a draw or dispatch reading a root argument unset since its root \\r\n                 signature was set was skipped"
-code	crates/wcontainers-direct3d-12/src/device/bind.rs	str	Device<B>::note_clamp	"a minimum level-of-detail clamp in a vertex or geometry shader or past \\r\n                 texture slot 127"
+code	crates/wcontainers-direct3d-12/src/device/bind.rs	str	Device<B>::arguments_set	"warning: a draw or dispatch reading a root argument unset since its root \\n                 signature was set was skipped"
+code	crates/wcontainers-direct3d-12/src/device/bind.rs	str	Device<B>::note_clamp	"a minimum level-of-detail clamp in a vertex or geometry shader or past \\n                 texture slot 127"
 code	crates/wcontainers-direct3d-12/src/device/bind.rs	str	Device<B>::sampler	"sampling in the program through a sampler slot past 15"
 code	crates/wcontainers-direct3d-12/src/device/bind.rs	str	Device<B>::storage_texture	"storage views of part of a 3D texture"
+code	crates/wcontainers-direct3d-12/src/device/early.rs	int	Replay<B>::draw_per_primitive	3
+code	crates/wcontainers-direct3d-12/src/device/early.rs	int	Replay<B>::draw_per_primitive	3
+code	crates/wcontainers-direct3d-12/src/device/early.rs	int	Replay<B>::draw_per_primitive	3
 code	crates/wcontainers-direct3d-12/src/device/formats.rs	int	Bound	4
 code	crates/wcontainers-direct3d-12/src/device/formats.rs	int	Device<B>::stage_bound	128
 code	crates/wcontainers-direct3d-12/src/device/formats.rs	int	Device<B>::stage_bound	4
@@ -2297,7 +2283,7 @@ code	crates/wcontainers-direct3d-12/src/device/statistics.rs	int	Running	11
 code	crates/wcontainers-direct3d-12/src/device/statistics.rs	int	primitives	3
 code	crates/wcontainers-direct3d-12/src/device/statistics.rs	str	Device<B>::pixel_counting	"main"
 code	crates/wcontainers-direct3d-12/src/device/statistics.rs	str	counting_program	"@builtin(sample_index) i: u32"
-code	crates/wcontainers-direct3d-12/src/device/statistics.rs	str	counting_program	"@group({HELPER_SET}) @binding({COUNTER_BINDING})\r\nvar<storage, read_write> count: array<atomic<u32>, 2>;\r\n@fragment fn main({input}) {{\r\n    if atomicAdd… #cb18241b07b5a1f8
+code	crates/wcontainers-direct3d-12/src/device/statistics.rs	str	counting_program	"@group({HELPER_SET}) @binding({COUNTER_BINDING})\nvar<storage, read_write> count: array<atomic<u32>, 2>;\n@fragment fn main({input}) {{\n    if atomicAdd(&coun… #c22bca51eb9f9f40
 code	crates/wcontainers-direct3d-12/src/device/through.rs	int	Device<B>::texels_through	256
 code	crates/wcontainers-direct3d-12/src/device/through.rs	int	Device<B>::texels_through	3
 code	crates/wcontainers-direct3d-12/src/device/through.rs	int	Device<B>::texels_through	4
@@ -2687,28 +2673,16 @@ code	crates/wcontainers-directx/src/com/chosen.rs	str	webgl::make	"wcontainers d
 code	crates/wcontainers-directx/src/com/chosen.rs	str	webgl::own_directory	"\\"
 code	crates/wcontainers-directx/src/com/chosen.rs	str	webgpu::add_window	"wcontainers direct3d 11: no surface for the window: {e}"
 code	crates/wcontainers-directx/src/com/context.rs	int	<Bound as Default>::default	4
-code	crates/wcontainers-directx/src/com/context.rs	int	Bound	3
 code	crates/wcontainers-directx/src/com/context.rs	int	Bound	4
-code	crates/wcontainers-directx/src/com/context.rs	int	Bound	4
-code	crates/wcontainers-directx/src/com/context.rs	int	Bound	6
-code	crates/wcontainers-directx/src/com/context.rs	int	Bound	6
-code	crates/wcontainers-directx/src/com/context.rs	int	Bound	6
-code	crates/wcontainers-directx/src/com/context.rs	int	Bound	6
 code	crates/wcontainers-directx/src/com/context.rs	int	Context::clear_render_target_view	4
 code	crates/wcontainers-directx/src/com/context.rs	int	Context::clear_unordered_access_view_float	4
 code	crates/wcontainers-directx/src/com/context.rs	int	Context::clear_unordered_access_view_uint	4
 code	crates/wcontainers-directx/src/com/context.rs	int	Context::clear_view	4
 code	crates/wcontainers-directx/src/com/context.rs	int	Context::dispatch_indirect	3
-code	crates/wcontainers-directx/src/com/context.rs	int	Context::get_constant_ranges	4096
-code	crates/wcontainers-directx/src/com/context.rs	int	Context::get_data	8
-code	crates/wcontainers-directx/src/com/context.rs	int	Context::get_data	88
 code	crates/wcontainers-directx/src/com/context.rs	int	Context::om_get_blend_state	4
 code	crates/wcontainers-directx/src/com/context.rs	int	Context::om_set_blend_state	4
 code	crates/wcontainers-directx/src/com/context.rs	int	Context::om_set_blend_state	4
-code	crates/wcontainers-directx/src/com/context.rs	int	Context::reapply	4
 code	crates/wcontainers-directx/src/com/context.rs	int	Context::set_scissor_rects	4
-code	crates/wcontainers-directx/src/com/context.rs	int	Context::so_set_targets	4
-code	crates/wcontainers-directx/src/com/context.rs	int	Context::so_set_targets	4
 code	crates/wcontainers-directx/src/com/context.rs	str	Context::after_list	"ClearState"
 code	crates/wcontainers-directx/src/com/context.rs	str	Context::begin	"Begin"
 code	crates/wcontainers-directx/src/com/context.rs	str	Context::clear_depth_stencil_view	"ClearDepthStencilView"
@@ -2772,16 +2746,7 @@ code	crates/wcontainers-directx/src/com/context.rs	str	Context::update_subresour
 code	crates/wcontainers-directx/src/com/context.rs	str	Context::update_subresource	"UpdateSubresource"
 code	crates/wcontainers-directx/src/com/context.rs	str	Context::vs_set_shader	"VSSetShader"
 code	crates/wcontainers-directx/src/com/context.rs	str	settle	"wcontainers direct3d 11: {what} dropped: {why}"
-code	crates/wcontainers-directx/src/com/convert.rs	int	LogicOps	8
-code	crates/wcontainers-directx/src/com/convert.rs	int	blend_split	8
-code	crates/wcontainers-directx/src/com/convert.rs	int	blend_split	8
-code	crates/wcontainers-directx/src/com/convert.rs	int	blend_stored	8
-code	crates/wcontainers-directx/src/com/convert.rs	int	depth_stencil_stored	0xff
-code	crates/wcontainers-directx/src/com/convert.rs	int	depth_stencil_stored	0xff
-code	crates/wcontainers-directx/src/com/convert.rs	int	sampler_stored	0x40
-code	crates/wcontainers-directx/src/com/convert.rs	int	sampler_stored	3
 code	crates/wcontainers-directx/src/com/convert.rs	int	sampler_stored	4
-code	crates/wcontainers-directx/src/com/convert.rs	int	sampler_stored	7
 code	crates/wcontainers-directx/src/com/convert.rs	int	srv	6
 code	crates/wcontainers-directx/src/com/convert.rs	int	srv	6
 code	crates/wcontainers-directx/src/com/convert.rs	int	srv_back	6
@@ -2799,23 +2764,8 @@ code	crates/wcontainers-directx/src/com/d3d10core.rs	str	D3D10CoreGetVersion	"d3
 code	crates/wcontainers-directx/src/com/d3d10core.rs	str	D3D10CreateDevice	"d3d10.dll"
 code	crates/wcontainers-directx/src/com/d3d10core.rs	str	D3D10CreateDevice1	"d3d10_1.dll"
 code	crates/wcontainers-directx/src/com/d3d10core.rs	str	create10	"D3D10CreateDevice with a software, reference, WARP or null driver"
-code	crates/wcontainers-directx/src/com/device.rs	int	Device_Impl::check_multisample_quality_levels	132
-code	crates/wcontainers-directx/src/com/device.rs	int	Device_Impl::check_multisample_quality_levels	189
-code	crates/wcontainers-directx/src/com/device.rs	int	Device_Impl::check_multisample_quality_levels	191
-code	crates/wcontainers-directx/src/com/device.rs	int	Device_Impl::check_multisample_quality_levels	32
-code	crates/wcontainers-directx/src/com/device.rs	int	Device_Impl::create_blend_state	8
-code	crates/wcontainers-directx/src/com/device.rs	int	Device_Impl::create_compute_shader	0xa000
-code	crates/wcontainers-directx/src/com/device.rs	int	Device_Impl::create_device_context_state	0x9100
-code	crates/wcontainers-directx/src/com/device.rs	int	Device_Impl::geometry_shader	0xa000
-code	crates/wcontainers-directx/src/com/device.rs	int	Device_Impl::offer_resources	3
-code	crates/wcontainers-directx/src/com/device.rs	int	Device_Impl::set_maximum_frame_latency	16
-code	crates/wcontainers-directx/src/com/device.rs	int	Device_Impl::tessellation_shader	0xb000
-code	crates/wcontainers-directx/src/com/device.rs	int	Device_Impl::unserved_shader	0xa000
-code	crates/wcontainers-directx/src/com/device.rs	int	create_device	3
 code	crates/wcontainers-directx/src/com/device.rs	int	create_device	3
 code	crates/wcontainers-directx/src/com/device.rs	int	create_device	4
-code	crates/wcontainers-directx/src/com/device.rs	int	words	4
-code	crates/wcontainers-directx/src/com/device.rs	int	words	4
 code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::create_blend_state1	"logic operations"
 code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::create_compute_shader	"class linkage"
 code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::create_compute_shader	"compute shaders without the back end's compute programs"
@@ -2828,12 +2778,9 @@ code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::rasterizer_st
 code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::tessellation_shader	"class linkage"
 code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::tessellation_shader	"hull and domain shaders without the back end's compute programs"
 code	crates/wcontainers-directx/src/com/device.rs	str	Device_Impl::texture_of	"target views of buffers"
-code	crates/wcontainers-directx/src/com/dxgi.rs	int	Adapter::get_desc1	32
 code	crates/wcontainers-directx/src/com/factory.rs	cstr	wc_CreateDXGIFactory	c"CreateDXGIFactory"
 code	crates/wcontainers-directx/src/com/factory.rs	cstr	wc_CreateDXGIFactory1	c"CreateDXGIFactory1"
 code	crates/wcontainers-directx/src/com/factory.rs	cstr	wc_CreateDXGIFactory2	c"CreateDXGIFactory2"
-code	crates/wcontainers-directx/src/com/factory.rs	int	caller_is_program	1024
-code	crates/wcontainers-directx/src/com/factory.rs	int	system_directory	260
 code	crates/wcontainers-directx/src/com/factory.rs	str	system_directory	"\\"
 code	crates/wcontainers-directx/src/com/factory.rs	str	wc_CreateDXGIFactory	"dxgi.dll"
 code	crates/wcontainers-directx/src/com/factory.rs	str	wc_CreateDXGIFactory1	"dxgi.dll"
@@ -2936,10 +2883,6 @@ code	crates/wcontainers-directx/src/com/objects.rs	int	Dc::new	4
 code	crates/wcontainers-directx/src/com/objects.rs	int	Dc::pitch	4
 code	crates/wcontainers-directx/src/com/objects.rs	int	Dc::read	3
 code	crates/wcontainers-directx/src/com/objects.rs	int	macro_rules! texture	3
-code	crates/wcontainers-directx/src/com/output.rs	int	Output::get_desc	31
-code	crates/wcontainers-directx/src/com/output.rs	int	Output::get_desc	32
-code	crates/wcontainers-directx/src/com/output.rs	int	monitors	32
-code	crates/wcontainers-directx/src/com/swapchain.rs	int	SwapChain_Impl::present	4
 code	crates/wcontainers-directx/src/com/swapchain.rs	str	Factory_Impl::make	"fullscreen swap chains"
 code	crates/wcontainers-directx/src/com/swapchain.rs	str	Factory_Impl::make	"multisampled or stereo swap chains"
 code	crates/wcontainers-directx/src/com/swapchain.rs	str	SwapChain_Impl::set_fullscreen_state	"fullscreen swap chains"
@@ -4776,7 +4719,7 @@ code	crates/wcontainers-gpu-webgl/src/convert.rs	int	bits	8
 code	crates/wcontainers-gpu-webgl/src/convert.rs	int	bits	8
 code	crates/wcontainers-gpu-webgl/src/convert.rs	int	program	32
 code	crates/wcontainers-gpu-webgl/src/convert.rs	int	uvec	4
-code	crates/wcontainers-gpu-webgl/src/convert.rs	str	program	"#version 300 es\r\nprecision highp float;\r\nprecision highp int;\r\nuniform highp {prefix}sampler{sampler} src;\r\nuniform ivec3 at;\r\n{output}\r\n// The bit… #8db3281e7f2ec689
+code	crates/wcontainers-gpu-webgl/src/convert.rs	str	program	"#version 300 es\nprecision highp float;\nprecision highp int;\nuniform highp {prefix}sampler{sampler} src;\nuniform ivec3 at;\n{output}\n// The bits of a half … #2a602e9a8e5a74fd
 code	crates/wcontainers-gpu-webgl/src/convert.rs	str	program	"2D"
 code	crates/wcontainers-gpu-webgl/src/convert.rs	str	program	"Cube"
 code	crates/wcontainers-gpu-webgl/src/convert.rs	str	program	"floatBitsToUint(v)"
@@ -4796,7 +4739,7 @@ code	crates/wcontainers-gpu-webgl/src/convert.rs	str	program	"uintBitsToFloat(r.
 code	crates/wcontainers-gpu-webgl/src/convert.rs	str	program	"uniform highp vec2 unit;"
 code	crates/wcontainers-gpu-webgl/src/convert.rs	str	program	"unpackHalf2x16(r.{c}).x"
 code	crates/wcontainers-gpu-webgl/src/convert.rs	str	program	"uvec4"
-code	crates/wcontainers-gpu-webgl/src/convert.rs	str	program	"uvec4(small_bits(v.x, 6u) | small_bits(v.y, 6u) << 11u \\r\n                             | small_bits(v.z, 5u) << 22u, 0u, 0u, 0u)"
+code	crates/wcontainers-gpu-webgl/src/convert.rs	str	program	"uvec4(small_bits(v.x, 6u) | small_bits(v.y, 6u) << 11u \\n                             | small_bits(v.z, 5u) << 22u, 0u, 0u, 0u)"
 code	crates/wcontainers-gpu-webgl/src/convert.rs	str	program	"v"
 code	crates/wcontainers-gpu-webgl/src/convert.rs	str	program	"vec4"
 code	crates/wcontainers-gpu-webgl/src/convert.rs	str	program	"vec4"
@@ -4821,7 +4764,7 @@ code	crates/wcontainers-gpu-webgl/src/depth.rs	str	build_probe	"z"
 code	crates/wcontainers-gpu-webgl/src/depth.rs	str	build_stencil_write	"at"
 code	crates/wcontainers-gpu-webgl/src/depth.rs	str	build_stencil_write	"bit"
 code	crates/wcontainers-gpu-webgl/src/depth.rs	str	build_stencil_write	"the stencil write program lacks a uniform"
-code	crates/wcontainers-gpu-webgl/src/depth.rs	str	fragment	"#version 300 es\r\nprecision highp float;\r\nprecision highp int;\r\nuniform highp {sampler} src;\r\nuniform ivec3 at;\r\nuniform uint scale;\r\nout highp uvec… #61eadd9eb3f599ca
+code	crates/wcontainers-gpu-webgl/src/depth.rs	str	fragment	"#version 300 es\nprecision highp float;\nprecision highp int;\nuniform highp {sampler} src;\nuniform ivec3 at;\nuniform uint scale;\nout highp uvec4 o;\n{towar… #7c8d25c723916456
 code	crates/wcontainers-gpu-webgl/src/depth.rs	str	fragment	"COORD"
 code	crates/wcontainers-gpu-webgl/src/depth.rs	str	fragment	"FETCH"
 code	crates/wcontainers-gpu-webgl/src/depth.rs	str	fragment	"FETCH.r"
@@ -4835,7 +4778,7 @@ code	crates/wcontainers-gpu-webgl/src/depth.rs	str	fragment	"u"
 code	crates/wcontainers-gpu-webgl/src/depth.rs	str	fragment	"{u}sampler2D"
 code	crates/wcontainers-gpu-webgl/src/depth.rs	str	fragment	"{u}sampler2DArray"
 code	crates/wcontainers-gpu-webgl/src/depth.rs	str	fragment	"{u}samplerCube"
-code	crates/wcontainers-gpu-webgl/src/depth.rs	str	stencil_write	"#version 300 es\r\nprecision highp float;\r\nprecision highp int;\r\nuniform highp {sampler} src;\r\nuniform ivec3 at;\r\nuniform uint bit;\r\nvoid main() {{\r… #6df063724d32bca1
+code	crates/wcontainers-gpu-webgl/src/depth.rs	str	stencil_write	"#version 300 es\nprecision highp float;\nprecision highp int;\nuniform highp {sampler} src;\nuniform ivec3 at;\nuniform uint bit;\nvoid main() {{\n    ivec2 p … #1755b9fd02dce315
 code	crates/wcontainers-gpu-webgl/src/depth.rs	str	stencil_write	"ivec3(p, at.z)"
 code	crates/wcontainers-gpu-webgl/src/depth.rs	str	stencil_write	"p"
 code	crates/wcontainers-gpu-webgl/src/depth.rs	str	stencil_write	"usampler2D"
@@ -4980,19 +4923,19 @@ code	crates/wcontainers-gpu-webgl/src/lib.rs	int	Gl::stencil_by_draw	8
 code	crates/wcontainers-gpu-webgl/src/lib.rs	int	Gl::upload_blocks	4
 code	crates/wcontainers-gpu-webgl/src/lib.rs	int	Gl::upload_blocks	4
 code	crates/wcontainers-gpu-webgl/src/lib.rs	int	gl_rect	4
-code	crates/wcontainers-gpu-webgl/src/lib.rs	str	<Gl as Backend>::begin_pass	"a pass drawing into formats with and without alpha together without \\r\n                     OES_draw_buffers_indexed"
+code	crates/wcontainers-gpu-webgl/src/lib.rs	str	<Gl as Backend>::begin_pass	"a pass drawing into formats with and without alpha together without \\n                     OES_draw_buffers_indexed"
 code	crates/wcontainers-gpu-webgl/src/lib.rs	str	<Gl as Backend>::begin_query	"begin_query outside a pass"
 code	crates/wcontainers-gpu-webgl/src/lib.rs	str	<Gl as Backend>::begin_query	"begin_query without an occlusion set or with a query running"
-code	crates/wcontainers-gpu-webgl/src/lib.rs	str	<Gl as Backend>::capture_vertices	"capture_vertices into a buffer without CAPTURE, at an offset not a multiple of 4, \\r\n                 or into a range smaller than the vertices the draw make… #e63aa932905da190
-code	crates/wcontainers-gpu-webgl/src/lib.rs	str	<Gl as Backend>::capture_vertices	"capture_vertices of a program with no location outputs, outputs that are not \\r\n                 32-bit, or other than one target per output"
-code	crates/wcontainers-gpu-webgl/src/lib.rs	str	<Gl as Backend>::capture_vertices	"capture_vertices reaching below vertex 0 by a negative base vertex, or past \\r\n                         vertex 2^31 - 1"
+code	crates/wcontainers-gpu-webgl/src/lib.rs	str	<Gl as Backend>::capture_vertices	"capture_vertices into a buffer without CAPTURE, at an offset not a multiple of 4, \\n                 or into a range smaller than the vertices the draw makes"
+code	crates/wcontainers-gpu-webgl/src/lib.rs	str	<Gl as Backend>::capture_vertices	"capture_vertices of a program with no location outputs, outputs that are not \\n                 32-bit, or other than one target per output"
+code	crates/wcontainers-gpu-webgl/src/lib.rs	str	<Gl as Backend>::capture_vertices	"capture_vertices reaching below vertex 0 by a negative base vertex, or past \\n                         vertex 2^31 - 1"
 code	crates/wcontainers-gpu-webgl/src/lib.rs	str	<Gl as Backend>::copy_texture	"copies between these depth and colour formats"
 code	crates/wcontainers-gpu-webgl/src/lib.rs	str	<Gl as Backend>::copy_texture	"copies of these formats"
 code	crates/wcontainers-gpu-webgl/src/lib.rs	str	<Gl as Backend>::copy_texture_to_buffer	"a copy out of a format that cannot be read back"
 code	crates/wcontainers-gpu-webgl/src/lib.rs	str	<Gl as Backend>::create_vertex_layout	"webgl: vertex stride above 255"
 code	crates/wcontainers-gpu-webgl/src/lib.rs	str	<Gl as Backend>::create_view	"WEBGL_stencil_texturing"
-code	crates/wcontainers-gpu-webgl/src/lib.rs	str	<Gl as Backend>::draw_fan_or_loop	"a fan or loop whose 32-bit indices hold both 0 and 2^32 - 1 \\r\n                                 without restart"
-code	crates/wcontainers-gpu-webgl/src/lib.rs	str	<Gl as Backend>::draw_fan_or_loop	"a fan or loop without restart whose lowered 32-bit \\r\n                                         indices need a base vertex past 2^31 - 1"
+code	crates/wcontainers-gpu-webgl/src/lib.rs	str	<Gl as Backend>::draw_fan_or_loop	"a fan or loop whose 32-bit indices hold both 0 and 2^32 - 1 \\n                                 without restart"
+code	crates/wcontainers-gpu-webgl/src/lib.rs	str	<Gl as Backend>::draw_fan_or_loop	"a fan or loop without restart whose lowered 32-bit \\n                                         indices need a base vertex past 2^31 - 1"
 code	crates/wcontainers-gpu-webgl/src/lib.rs	str	<Gl as Backend>::end_pass	"a pass ended with its occlusion query running"
 code	crates/wcontainers-gpu-webgl/src/lib.rs	str	<Gl as Backend>::end_query	"end_query with no query running"
 code	crates/wcontainers-gpu-webgl/src/lib.rs	str	<Gl as Backend>::resolve	"a resolve from one sample or into several"
@@ -5008,7 +4951,7 @@ code	crates/wcontainers-gpu-webgl/src/lib.rs	str	Gl::copy_by_draw	"the copy prog
 code	crates/wcontainers-gpu-webgl/src/lib.rs	str	Gl::copy_by_draw	"unit"
 code	crates/wcontainers-gpu-webgl/src/lib.rs	str	Gl::copy_host_kept	"copies into textures kept on the host from formats GL cannot read back"
 code	crates/wcontainers-gpu-webgl/src/lib.rs	str	Gl::copy_samples	"a copy of a multisampled texture other than whole into one of its sample count"
-code	crates/wcontainers-gpu-webgl/src/lib.rs	str	Gl::copy_samples	"a copy of integer samples, which cannot be averaged and need the absent \\r\n                     MULTISAMPLE_READ"
+code	crates/wcontainers-gpu-webgl/src/lib.rs	str	Gl::copy_samples	"a copy of integer samples, which cannot be averaged and need the absent \\n                     MULTISAMPLE_READ"
 code	crates/wcontainers-gpu-webgl/src/lib.rs	str	Gl::copy_samples	"copies of multisampled depth and stencil"
 code	crates/wcontainers-gpu-webgl/src/lib.rs	str	Gl::copy_samples	"copies of multisampled textures of this format"
 code	crates/wcontainers-gpu-webgl/src/lib.rs	str	Gl::depth_by_draw	"WEBGL_stencil_texturing"
@@ -5019,7 +4962,7 @@ code	crates/wcontainers-gpu-webgl/src/lib.rs	str	Gl::draw_from	"depth and stenci
 code	crates/wcontainers-gpu-webgl/src/lib.rs	str	Gl::draw_from	"front and back stencil references differ"
 code	crates/wcontainers-gpu-webgl/src/lib.rs	str	Gl::draw_from	"negative stream offsets after the base vertex"
 code	crates/wcontainers-gpu-webgl/src/lib.rs	str	Gl::draw_unrestarted	"a draw whose 32-bit indices hold both 0 and 2^32 - 1 without restart"
-code	crates/wcontainers-gpu-webgl/src/lib.rs	str	Gl::draw_unrestarted	"a draw without restart whose lowered 32-bit indices need a base vertex past \\r\n                 2^31 - 1"
+code	crates/wcontainers-gpu-webgl/src/lib.rs	str	Gl::draw_unrestarted	"a draw without restart whose lowered 32-bit indices need a base vertex past \\n                 2^31 - 1"
 code	crates/wcontainers-gpu-webgl/src/lib.rs	str	Gl::draw_unrestarted	"indices past the end of the index buffer"
 code	crates/wcontainers-gpu-webgl/src/lib.rs	str	Gl::host_current	"draws from this signed normalised format"
 code	crates/wcontainers-gpu-webgl/src/lib.rs	str	Gl::host_current	"the bits of signed normalised texels drawn into after a write of their smallest value"
@@ -5182,7 +5125,7 @@ code	crates/wcontainers-gpu-webgl/src/shader.rs	str	bit_functions	"bitCount"
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	bit_functions	"bitfieldReverse(v.{c})"
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	bit_functions	"findLSB"
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	bit_functions	"findMSB"
-code	crates/wcontainers-gpu-webgl/src/shader.rs	str	bit_functions	"highp uint _wc_ones(int n) { return n >= 32 ? 0xffffffffu : (1u << uint(n)) - 1u; }\r\n         highp uint bitfieldExtract(highp uint v, int o, int n) { return… #dbc34ed2984559d5
+code	crates/wcontainers-gpu-webgl/src/shader.rs	str	bit_functions	"highp uint _wc_ones(int n) { return n >= 32 ? 0xffffffffu : (1u << uint(n)) - 1u; }\n         highp uint bitfieldExtract(highp uint v, int o, int n) { return n… #9f561d891d60b39b
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	bit_functions	"ivec"
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	bit_functions	"uvec"
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	bit_functions	"w"
@@ -5194,9 +5137,9 @@ code	crates/wcontainers-gpu-webgl/src/shader.rs	str	convert_inputs	"_wc_raw{l}.z
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	convert_inputs	"_wc_small_float(uint"
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	convert_inputs	"uint"
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	convert_inputs	"uint"
-code	crates/wcontainers-gpu-webgl/src/shader.rs	str	convert_inputs	"uvec4(_wc_raw{l} & 1023u, (_wc_raw{l} >> 10) & 1023u, \\r\n                     (_wc_raw{l} >> 20) & 1023u, _wc_raw{l} >> 30)"
+code	crates/wcontainers-gpu-webgl/src/shader.rs	str	convert_inputs	"uvec4(_wc_raw{l} & 1023u, (_wc_raw{l} >> 10) & 1023u, \\n                     (_wc_raw{l} >> 20) & 1023u, _wc_raw{l} >> 30)"
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	convert_inputs	"vec4"
-code	crates/wcontainers-gpu-webgl/src/shader.rs	str	convert_inputs	"vec4(_wc_small_float(_wc_raw{l} & 2047u, 6u), \\r\n                     _wc_small_float((_wc_raw{l} >> 11) & 2047u, 6u), \\r\n                     _wc_small_fl… #774e03ee11ea6ae9
+code	crates/wcontainers-gpu-webgl/src/shader.rs	str	convert_inputs	"vec4(_wc_small_float(_wc_raw{l} & 2047u, 6u), \\n                     _wc_small_float((_wc_raw{l} >> 11) & 2047u, 6u), \\n                     _wc_small_float(… #8b4fa97a6c3bb275
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	convert_inputs	"void main() {"
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	convert_inputs	"void main() {"
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	finish	"the link already failed"
@@ -5204,10 +5147,10 @@ code	crates/wcontainers-gpu-webgl/src/shader.rs	str	finish	"{name}_size"
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	gathers_by_samples	"Offset("
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	gathers_by_samples	"_wc_gather"
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	gathers_by_samples	"_wc_gather_offset"
-code	crates/wcontainers-gpu-webgl/src/shader.rs	str	gathers_by_samples	"highp vec4 _wc_gather_offset(highp sampler2DShadow s, ivec2 n, highp vec2 p, highp float r, ivec2 o) {\n\\r\n        highp vec2 size = vec2(n); highp vec2 b = … #eb991dd8c9485799
+code	crates/wcontainers-gpu-webgl/src/shader.rs	str	gathers_by_samples	"highp vec4 _wc_gather_offset(highp sampler2DShadow s, ivec2 n, highp vec2 p, highp float r, ivec2 o) {\n\\n        highp vec2 size = vec2(n); highp vec2 b = fl… #5d0a963446e8ec0f
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	gathers_by_samples	"i"
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	gathers_by_samples	"u"
-code	crates/wcontainers-gpu-webgl/src/shader.rs	str	gathers_by_samples	"void _wc_face(highp vec3 d, out highp vec3 m, out highp vec3 u, out highp vec3 v) {\n\\r\n        highp vec3 a = abs(d);\n\\r\n        if (a.x >= a.y && a.x >=… #5ea99145b414a4e0
+code	crates/wcontainers-gpu-webgl/src/shader.rs	str	gathers_by_samples	"void _wc_face(highp vec3 d, out highp vec3 m, out highp vec3 u, out highp vec3 v) {\n\\n        highp vec3 a = abs(d);\n\\n        if (a.x >= a.y && a.x >= a.z… #4f08f219578d6ce4
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	opaque_float_bits	"const "
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	opaque_float_bits	"float"
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	opaque_float_bits	"int"
@@ -5323,13 +5266,6 @@ code	crates/wcontainers-gpu-webgl/src/trace.rs	str	record::Traced<B>::new	"{path
 code	crates/wcontainers-gpu-webgpu/src/blocks.rs	str	WebGpu::read_now	"a copy source could not be read back"
 code	crates/wcontainers-gpu-webgpu/src/blocks.rs	str	WebGpu::write_blocks	"a block write into a texture holding no blocks"
 code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	Last	4
-code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	Last	4
-code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	Last	6
-code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	WebGpu::binding_set	128
-code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	WebGpu::binding_set	32
-code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	WebGpu::draw_in	3
-code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	color_value	3
-code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	color_value	4
 code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	color_value	4
 code	crates/wcontainers-gpu-webgpu/src/draw.rs	str	WebGpu::begin_pass_impl	"a pass with no attachment and no empty size"
 code	crates/wcontainers-gpu-webgpu/src/draw.rs	str	WebGpu::begin_pass_impl	"begin_pass inside a pass"
@@ -5357,17 +5293,10 @@ code	crates/wcontainers-gpu-webgpu/src/fill.rs	str	WebGpu::read_program	"texture
 code	crates/wcontainers-gpu-webgpu/src/fill.rs	str	WebGpu::read_program	"texture_2d<f32>"
 code	crates/wcontainers-gpu-webgpu/src/fill.rs	str	WebGpu::read_program	"texture_2d<u32>"
 code	crates/wcontainers-gpu-webgpu/src/fill.rs	str	WebGpu::read_program	"v.x"
-code	crates/wcontainers-gpu-webgpu/src/layout.rs	int	derive	128
-code	crates/wcontainers-gpu-webgpu/src/layout.rs	int	paired	128
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	char	WebGpu::frame_report	','
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	char	WebGpu::frame_report	':'
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	char	WebGpu::frame_report	'{'
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	char	WebGpu::frame_report	'}'
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	float	<WebGpu as Backend>::create_sampler	32.0
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	int	<WebGpu as Backend>::create_sampler	3
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	int	caps	16
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	int	caps	4
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	int	caps	8
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::begin_query	"begin_query outside a pass with an occlusion set, or nested"
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::configure_surface	"the window takes no 8-bit unorm format to present in"
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::current_texture	"getting the window's texture failed validation"
@@ -5375,8 +5304,6 @@ code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::current_t
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::end_pass	"end_pass without a pass"
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::end_query	"end_query without a running query"
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::submit	"submit inside a pass"
-code	crates/wcontainers-gpu-webgpu/src/memory.rs	int	<wgpu::Texture as Spare>	5
-code	crates/wcontainers-gpu-webgpu/src/memory.rs	int	WebGpu::arena_slice	4
 code	crates/wcontainers-gpu-webgpu/src/memory.rs	str	WebGpu::aspect_as_colour	"a depth or stencil read by a draw needs a single-sampled bound source"
 code	crates/wcontainers-gpu-webgpu/src/memory.rs	str	WebGpu::aspect_as_colour	"the texture a depth or stencil read is drawn into could not be made"
 code	crates/wcontainers-gpu-webgpu/src/memory.rs	str	WebGpu::clear_buffer_impl	"clear_buffer inside a pass"
@@ -5448,7 +5375,7 @@ code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	pack_wgsl	"t.y"
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	pack_wgsl	"t.z"
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	pack_wgsl	"{pair} let w = p0.x | (p0.y << 8u) | (p0.z << 16u) | (p1.y << 24u);"
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	pack_wgsl	"{pair} let w = p0.y | (p0.x << 8u) | (p1.y << 16u) | (p0.z << 24u);"
-code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	program	"@group(0) @binding(0) var<uniform> at: vec4<u32>;\n\\r\n             @group(0) @binding(1) var src: texture_2d<u32>;\n\\r\n             fn repeat(x: u32, n: u3… #7f7643ff5888b2ee
+code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	program	"@group(0) @binding(0) var<uniform> at: vec4<u32>;\n\\n             @group(0) @binding(1) var src: texture_2d<u32>;\n\\n             fn repeat(x: u32, n: u32) -… #68fc31ef009bf1c6
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	program	"texture_2d<f32>"
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	program	"texture_3d<f32>"
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	program	"vec2u(at.x + x, at.y + y)"
@@ -5456,8 +5383,8 @@ code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	program	"vec3u(at.x + x, at
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	scalar	"f32"
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	scalar	"i32"
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	scalar	"u32"
-code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	three_channel_program	"@group(0) @binding(0) var<uniform> at: vec4<u32>;\n\\r\n             @group(0) @binding(1) var src: texture_2d<u32>;\n\\r\n             fn bits(i: u32, j: u32)… #fabc551594fb2b88
-code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	three_channel_program	"@group(0) @binding(0) var<uniform> at: vec4<u32>;\n\\r\n             @group(0) @binding(1) var src: {texture};\n\\r\n             @fragment fn convert(@builtin… #e3a45c9065177f3b
+code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	three_channel_program	"@group(0) @binding(0) var<uniform> at: vec4<u32>;\n\\n             @group(0) @binding(1) var src: texture_2d<u32>;\n\\n             fn bits(i: u32, j: u32) -> … #887771e99c9d67ae
+code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	three_channel_program	"@group(0) @binding(0) var<uniform> at: vec4<u32>;\n\\n             @group(0) @binding(1) var src: {texture};\n\\n             @fragment fn convert(@builtin(pos… #f74c296da37c685f
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	three_channel_program	"bitcast<vec4u>"
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	three_channel_program	"bitcast<{t}>"
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	three_channel_program	"texture_2d<{t}>"
@@ -5477,12 +5404,6 @@ code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	widen_wgsl	"let c = vec4u(0
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	widen_wgsl	"{bytes} let c = vec4u(b.x, select(b.y, b.w, {odd}), b.z, 255u);"
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	widen_wgsl	"{bytes} let c = vec4u(b.y, select(b.x, b.z, {odd}), b.w, 255u);"
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	widen_wgsl	"{bytes} let c = vec4u(b.z, b.y, b.x, 255u);"
-code	crates/wcontainers-gpu-webgpu/src/vertex.rs	int	StreamPlan	4
-code	crates/wcontainers-gpu-webgpu/src/vertex.rs	int	source_size	3
-code	crates/wcontainers-gpu-webgpu/src/vertex.rs	int	source_size	4
-code	crates/wcontainers-gpu-webgpu/src/vertex.rs	int	source_size	6
-code	crates/wcontainers-gpu-webgpu/src/vertex.rs	int	widened	3
-code	crates/wcontainers-gpu-webgpu/src/vertex.rs	int	widened	4
 code	crates/wcontainers-gpu/src/backend.rs	float	generate_mips_by_draws	0.5
 code	crates/wcontainers-gpu/src/backend.rs	int	Backend::clear_rects	20
 code	crates/wcontainers-gpu/src/backend.rs	int	Backend::clear_rects	24
@@ -5557,7 +5478,7 @@ code	crates/wcontainers-gpu/src/helpers.rs	str	Builtin::source	"@fragment fn fs(
 code	crates/wcontainers-gpu/src/helpers.rs	str	Builtin::source	"@fragment fn fs() -> @location(0) vec4<f32> { return bitcast<vec4<f32>>(params.value); }"
 code	crates/wcontainers-gpu/src/helpers.rs	str	Builtin::source	"@fragment fn fs() -> @location(0) vec4<i32> { return bitcast<vec4<i32>>(params.value); }"
 code	crates/wcontainers-gpu/src/helpers.rs	str	Builtin::source	"@fragment fn fs() -> @location(0) vec4<u32> { return params.value; }"
-code	crates/wcontainers-gpu/src/helpers.rs	str	Builtin::source	"@group(0) @binding(32) var src: {ty}<{t}>;\n\\r\n                     @fragment fn fs(@builtin(position) p: vec4<f32>{input}) -> @location(0) vec4<{t}> {{\n   … #a2713f637f289bf5
+code	crates/wcontainers-gpu/src/helpers.rs	str	Builtin::source	"@group(0) @binding(32) var src: {ty}<{t}>;\n\\n                     @fragment fn fs(@builtin(position) p: vec4<f32>{input}) -> @location(0) vec4<{t}> {{\n    \… #16d5f76b93e5abb9
 code	crates/wcontainers-gpu/src/helpers.rs	str	Builtin::source	"f32"
 code	crates/wcontainers-gpu/src/helpers.rs	str	Builtin::source	"i32"
 code	crates/wcontainers-gpu/src/helpers.rs	str	Builtin::source	"i32(i)"
@@ -5574,8 +5495,8 @@ code	crates/wcontainers-gpu/src/helpers.rs	str	mip_source	"cube_dir(c, params.ex
 code	crates/wcontainers-gpu/src/helpers.rs	str	mip_source	"cube_dir(c, params.extra.z)"
 code	crates/wcontainers-gpu/src/helpers.rs	str	mip_source	"f32"
 code	crates/wcontainers-gpu/src/helpers.rs	str	mip_source	"i32"
-code	crates/wcontainers-gpu/src/helpers.rs	str	mip_source	"let a = mix(mix(at(i), at(i + vec3<i32>(1, 0, 0)), f.x), \\r\n         mix(at(i + vec3<i32>(0, 1, 0)), at(i + vec3<i32>(1, 1, 0)), f.x), f.y);\n    \\r\n      … #ce84316b306cb9cc
-code	crates/wcontainers-gpu/src/helpers.rs	str	mip_source	"let r = mix(mix(at(i), at(i + vec2<i32>(1, 0)), f.x), \\r\n         mix(at(i + vec2<i32>(0, 1)), at(i + vec2<i32>(1, 1)), f.x), f.y);"
+code	crates/wcontainers-gpu/src/helpers.rs	str	mip_source	"let a = mix(mix(at(i), at(i + vec3<i32>(1, 0, 0)), f.x), \\n         mix(at(i + vec3<i32>(0, 1, 0)), at(i + vec3<i32>(1, 1, 0)), f.x), f.y);\n    \\n         l… #9136780127185c20
+code	crates/wcontainers-gpu/src/helpers.rs	str	mip_source	"let r = mix(mix(at(i), at(i + vec2<i32>(1, 0)), f.x), \\n         mix(at(i + vec2<i32>(0, 1)), at(i + vec2<i32>(1, 1)), f.x), f.y);"
 code	crates/wcontainers-gpu/src/helpers.rs	str	mip_source	"r"
 code	crates/wcontainers-gpu/src/helpers.rs	str	mip_source	"texture_2d"
 code	crates/wcontainers-gpu/src/helpers.rs	str	mip_source	"texture_2d_array"
@@ -5620,7 +5541,7 @@ code	crates/wcontainers-gpu/src/occlusion.rs	int	primitives	3
 code	crates/wcontainers-gpu/src/occlusion.rs	str	OcclusionCounter<B>::sum_on_gpu	"main"
 code	crates/wcontainers-gpu/src/occlusion.rs	str	summing_source	"0"
 code	crates/wcontainers-gpu/src/occlusion.rs	str	summing_source	"1u"
-code	crates/wcontainers-gpu/src/occlusion.rs	str	summing_source	"@group(0) @binding(0) var counts: {ty};\r\n@group(0) @binding(1) var<storage, read_write> sum: array<atomic<u32>, 2>;\r\nvar<workgroup> part: array<atomic<u32>… #4ba7c3096dbad3b6
+code	crates/wcontainers-gpu/src/occlusion.rs	str	summing_source	"@group(0) @binding(0) var counts: {ty};\n@group(0) @binding(1) var<storage, read_write> sum: array<atomic<u32>, 2>;\nvar<workgroup> part: array<atomic<u32>, 2>… #1c97d23e3ce25cf8
 code	crates/wcontainers-gpu/src/occlusion.rs	str	summing_source	"s"
 code	crates/wcontainers-gpu/src/occlusion.rs	str	summing_source	"textureNumSamples(counts)"
 code	crates/wcontainers-gpu/src/occlusion.rs	str	summing_source	"texture_2d<f32>"
@@ -5762,7 +5683,7 @@ code	crates/wcontainers-graphics-test-forward/build.rs	str	census	"    (\"{inter
 code	crates/wcontainers-graphics-test-forward/build.rs	str	census	".balign 32\n.globl wc_census_thunks\nwc_census_thunks:\n"
 code	crates/wcontainers-graphics-test-forward/build.rs	str	census	".balign 32\n{own}lock inc qword ptr [rip + {{counts}} + {}]\n2:\njmp qword ptr [rip + {{originals}} + {}]\n"
 code	crates/wcontainers-graphics-test-forward/build.rs	str	census	".balign 64\n.globl wc_wrapper_thunks\nwc_wrapper_thunks:\n"
-code	crates/wcontainers-graphics-test-forward/build.rs	str	census	".balign 64\n{own}lock inc qword ptr [rip + {{wrapped}} + {}]\n2:\nmov rcx, qword ptr [rcx + 8]\n\\r\n                 mov rax, qword ptr [rcx]\njmp qword ptr [… #b918f2a21625ed17
+code	crates/wcontainers-graphics-test-forward/build.rs	str	census	".balign 64\n{own}lock inc qword ptr [rip + {{wrapped}} + {}]\n2:\nmov rcx, qword ptr [rcx + 8]\n\\n                 mov rax, qword ptr [rcx]\njmp qword ptr [ra… #8396e85bedcefdb1
 code	crates/wcontainers-graphics-test-forward/build.rs	str	census	"ID3D11DeviceContext4"
 code	crates/wcontainers-graphics-test-forward/build.rs	str	census	"];\n"
 code	crates/wcontainers-graphics-test-forward/build.rs	str	census	"cargo::rerun-if-changed={}"
@@ -5777,7 +5698,7 @@ code	crates/wcontainers-graphics-test-forward/build.rs	str	census	"um"
 code	crates/wcontainers-graphics-test-forward/build.rs	str	main	"    ({library}, None, {}),"
 code	crates/wcontainers-graphics-test-forward/build.rs	str	main	"    ({library}, Some(c\"{label}\"), {}),"
 code	crates/wcontainers-graphics-test-forward/build.rs	str	main	"    \"{name}.dll {} (data)\","
-code	crates/wcontainers-graphics-test-forward/build.rs	str	main	".globl {thunk}\n{thunk}:\n\\r\n                 push rcx\npush rdx\npush r8\npush r9\nsub rsp, 0x68\n\\r\n                 movdqu xmmword ptr [rsp + 0x20], xmm… #e2a8bbcbc9ac8e4e
+code	crates/wcontainers-graphics-test-forward/build.rs	str	main	".globl {thunk}\n{thunk}:\n\\n                 push rcx\npush rdx\npush r8\npush r9\nsub rsp, 0x68\n\\n                 movdqu xmmword ptr [rsp + 0x20], xmm0\nm… #3a2661d45e91e4a8
 code	crates/wcontainers-graphics-test-forward/build.rs	str	main	"CARGO_CFG_TARGET_ARCH"
 code	crates/wcontainers-graphics-test-forward/build.rs	str	main	"CARGO_CFG_TARGET_OS"
 code	crates/wcontainers-graphics-test-forward/build.rs	str	main	"OUT_DIR"
@@ -11404,14 +11325,14 @@ code	crates/wcontainers-kernel/src/fs/proc.rs	str	contents	"4194304\n"
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	contents	"65536\n"
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	contents	"Linux version {} (wcontainers) {}"
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	contents	"Linux\n"
-code	crates/wcontainers-kernel/src/fs/proc.rs	str	contents	"MemTotal:       {total:8} kB\nMemFree:        {free:8} kB\n\\r\n                         MemAvailable:   {free:8} kB\nBuffers:               0 kB\n\\r\n       … #fe85222f32d6c825
-code	crates/wcontainers-kernel/src/fs/proc.rs	str	contents	"cpu  0 0 0 0 0 0 0 0 0 0\ncpu0 0 0 0 0 0 0 0 0 0 0\nintr 0\nctxt 0\nbtime {}\n\\r\n                         processes {}\nprocs_running 1\nprocs_blocked 0\nsof… #f228d7fa0b6bb533
+code	crates/wcontainers-kernel/src/fs/proc.rs	str	contents	"MemTotal:       {total:8} kB\nMemFree:        {free:8} kB\n\\n                         MemAvailable:   {free:8} kB\nBuffers:               0 kB\n\\n           … #409f0ba50c3c5647
+code	crates/wcontainers-kernel/src/fs/proc.rs	str	contents	"cpu  0 0 0 0 0 0 0 0 0 0\ncpu0 0 0 0 0 0 0 0 0 0 0\nintr 0\nctxt 0\nbtime {}\n\\n                         processes {}\nprocs_running 1\nprocs_blocked 0\nsofti… #a6709b4f91b9103d
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	contents	"cpuinfo"
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	contents	"filesystems"
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	contents	"loadavg"
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	contents	"meminfo"
-code	crates/wcontainers-kernel/src/fs/proc.rs	str	contents	"nodev\tsysfs\nnodev\ttmpfs\nnodev\tproc\nnodev\tsockfs\nnodev\tpipefs\n\\r\n                     nodev\tdevpts\nnodev\tfuse\nnodev\tmqueue\n"
-code	crates/wcontainers-kernel/src/fs/proc.rs	str	contents	"processor\t: 0\nBogoMIPS\t: 48.00\nFeatures\t: fp asimd crc32 atomics\n\\r\n                         CPU implementer\t: 0x00\nCPU architecture: 8\nCPU variant\… #3d76d946a5b632af
+code	crates/wcontainers-kernel/src/fs/proc.rs	str	contents	"nodev\tsysfs\nnodev\ttmpfs\nnodev\tproc\nnodev\tsockfs\nnodev\tpipefs\n\\n                     nodev\tdevpts\nnodev\tfuse\nnodev\tmqueue\n"
+code	crates/wcontainers-kernel/src/fs/proc.rs	str	contents	"processor\t: 0\nBogoMIPS\t: 48.00\nFeatures\t: fp asimd crc32 atomics\n\\n                         CPU implementer\t: 0x00\nCPU architecture: 8\nCPU variant\t:… #23c8c1c779312a23
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	contents	"stat"
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	contents	"sys/dev/tty/ldisc_autoload"
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	contents	"sys/dev/tty/legacy_tiocsti"
@@ -11450,8 +11371,8 @@ code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"Hard Limit"
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"Limit"
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"Name:\t{}"
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"Soft Limit"
-code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"State:\t{} ({})\nTgid:\t{}\nNgid:\t0\nPid:\t{}\nPPid:\t{}\n\\r\n                 TracerPid:\t0\nUid:\t{}\t{}\t{}\t{}\nGid:\t{}\t{}\t{}\t{}\nFDSize:\t{}\nGroups… #870a68c91df7c7b0
-code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"Threads:\t{}\nSigBlk:\t{:016x}\nSigIgn:\t{:016x}\nSigCgt:\t{:016x}\n\\r\n                 CapInh:\t{:016x}\nCapPrm:\t{:016x}\nCapEff:\t{:016x}\nCapBnd:\t{:016x… #32ee3fde7f3612ca
+code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"State:\t{} ({})\nTgid:\t{}\nNgid:\t0\nPid:\t{}\nPPid:\t{}\n\\n                 TracerPid:\t0\nUid:\t{}\t{}\t{}\t{}\nGid:\t{}\t{}\t{}\t{}\nFDSize:\t{}\nGroups:\… #ba8d1fc8c3b2a85e
+code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"Threads:\t{}\nSigBlk:\t{:016x}\nSigIgn:\t{:016x}\nSigCgt:\t{:016x}\n\\n                 CapInh:\t{:016x}\nCapPrm:\t{:016x}\nCapEff:\t{:016x}\nCapBnd:\t{:016x}\… #a15edc79758058d6
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"Umask:\t{:04o}"
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"Units"
 code	crates/wcontainers-kernel/src/fs/proc.rs	str	process_file	"VmSize:\t{:8} kB"
@@ -12761,7 +12682,7 @@ code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	int	tcp	10_000_000
 code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	int	tcp	30
 code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	int	tcp	4
 code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	contents	"00000000000000000000000000000001 01 80 10 80       lo\n"
-code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	dev	"Inter-|   Receive                                                |  Transmit\n \\r\n         face |bytes    packets errs drop fifo frame compressed multicast|b… #6b8985a00dea56e4
+code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	dev	"Inter-|   Receive                                                |  Transmit\n \\n         face |bytes    packets errs drop fifo frame compressed multicast|byt… #91785bea6464919c
 code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	dev	"{:8} {:7} {:4} {:4} {:4} {:5} {:10} {:9} {:8} {:7} {:4} {:4} {:4} {:5} {:7} {:10}"
 code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	dev	"{name:>6}:"
 code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	endpoint	":{:04X}"
@@ -12769,8 +12690,8 @@ code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	endpoint	"{:08X
 code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	endpoint	"{:08X}"
 code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	route	"Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT"
 code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	route	"{}\t{destination:08X}\t{gateway:08X}\t{flags:04X}\t0\t0\t0\t{mask:08X}\t0\t0\t0"
-code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	tcp	"  sl  local_address                         remote_address                        \\r\n             st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout in… #f0208c7b54357cff
-code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	tcp	"  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  \\r\n             timeout inode"
+code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	tcp	"  sl  local_address                         remote_address                        \\n             st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inod… #79d8c8736c86b561
+code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	tcp	"  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  \\n             timeout inode"
 code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	tcp	" {TCP_SYN_RECV:02X} {:08X}:{:08X} 01:{:08X} {fires:08X} {uid:5} {:8} 0 0 {:016x}"
 code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	tcp	" {TCP_TIME_WAIT:02X} {:08X}:{:08X} 03:{left:08X} 00000000 {:5} {:8} 0 3 {:016x}"
 code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	tcp	" {state:02X} {:08X}:{:08X} 00:00000000 00000000 {uid:5} {:8} {ino} {refs} {:016x} {tail}"
@@ -12778,8 +12699,8 @@ code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	tcp	"100 0 0 10
 code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	tcp	"100 0 0 10 0"
 code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	tcp	"20 {ato} {quick} 10 -1"
 code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	tcp	"{number:4}: "
-code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	udp	"   sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  \\r\n             timeout inode ref pointer drops"
-code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	udp	"  sl  local_address                         remote_address                        \\r\n             st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout in… #ca18a28d10617c81
+code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	udp	"   sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  \\n             timeout inode ref pointer drops"
+code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	udp	"  sl  local_address                         remote_address                        \\n             st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inod… #39fc885f710ac05b
 code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	udp	" {state:02X} {:08X}:{:08X} 00:00000000 00000000 {:5} {:8} {} 2 {:016x} {}"
 code	crates/wcontainers-kernel/src/syscall/socket/procnet.rs	str	udp	"{:5}: "
 code	crates/wcontainers-kernel/src/syscall/socket/resolver.rs	int	answer	0xff
@@ -13201,7 +13122,7 @@ code	crates/wcontainers-runtime/src/spec.rs	str	accept	"root"
 code	crates/wcontainers-runtime/src/spec.rs	str	accept	"solaris"
 code	crates/wcontainers-runtime/src/spec.rs	str	accept	"the configuration is not a JSON object"
 code	crates/wcontainers-runtime/src/spec.rs	str	accept	"the kernel taking a domain name at start"
-code	crates/wcontainers-runtime/src/spec.rs	str	accept	"the shipped outside running host programs at the points the runtime \\r\n                 specification names"
+code	crates/wcontainers-runtime/src/spec.rs	str	accept	"the shipped outside running host programs at the points the runtime \\n                 specification names"
 code	crates/wcontainers-runtime/src/spec.rs	str	accept	"uidMappings"
 code	crates/wcontainers-runtime/src/spec.rs	str	accept	"user namespaces in the kernel"
 code	crates/wcontainers-runtime/src/spec.rs	str	accept	"vm"
@@ -13245,7 +13166,7 @@ code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"type"
 code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"type"
 code	crates/wcontainers-runtime/src/spec.rs	str	check_mounts	"{field}.{name}"
 code	crates/wcontainers-runtime/src/spec.rs	str	linux	"a field this runtime does not know"
-code	crates/wcontainers-runtime/src/spec.rs	str	linux	"cgroups: the kernel accounting CPU, memory, pids and I/O per group and enforcing \\r\n                 limits"
+code	crates/wcontainers-runtime/src/spec.rs	str	linux	"cgroups: the kernel accounting CPU, memory, pids and I/O per group and enforcing \\n                 limits"
 code	crates/wcontainers-runtime/src/spec.rs	str	linux	"cgroupsPath"
 code	crates/wcontainers-runtime/src/spec.rs	str	linux	"device nodes in the kernel for each, with the outside behind them"
 code	crates/wcontainers-runtime/src/spec.rs	str	linux	"devices"
@@ -13391,7 +13312,7 @@ code	crates/wcontainers-runtime/src/spec.rs	str	root	"readonly"
 code	crates/wcontainers-runtime/src/spec.rs	str	root	"root.path"
 code	crates/wcontainers-runtime/src/spec.rs	str	root	"root.readonly"
 code	crates/wcontainers-runtime/src/spec.rs	str	root	"root.{name}"
-code	crates/wcontainers-runtime/src/spec.rs	str	root	"the root's files are the image argument; a root read from a directory of the host \\r\n                 needs the shipped outside's file backend"
+code	crates/wcontainers-runtime/src/spec.rs	str	root	"the root's files are the image argument; a root read from a directory of the host \\n                 needs the shipped outside's file backend"
 code	crates/wcontainers-runtime/src/spec.rs	str	spec_from_json	"a field this runtime does not know"
 code	crates/wcontainers-runtime/src/spec.rs	str	unread	"{path}.{name}"
 code	crates/wcontainers-runtime/src/spec.rs	str	unread	"{path}[{index}]"
@@ -16515,8 +16436,8 @@ code	third_party/naga/src/back/glsl/writer.rs	str	Writer<'a,W>::write	"uniform "
 code	third_party/naga/src/back/glsl/writer.rs	str	Writer<'a,W>::write	"uniform uint {BASE_VERTEX_BINDING};"
 code	third_party/naga/src/back/glsl/writer.rs	str	Writer<'a,W>::write	"uniform uint {FIRST_INSTANCE_BINDING};"
 code	third_party/naga/src/back/glsl/writer.rs	str	Writer<'a,W>::write	"{separator}{format_str}"
-code	third_party/naga/src/back/glsl/writer.rs	str	Writer<'a,W>::write	"{struct_name} {defined_func_name}({arg_type_name} arg) {{\r\n    {other_type_name} other = arg == {arg_type_name}(0) ? {other_type_name}(0) : {other_type_name}… #daa50d4dee0a23da
-code	third_party/naga/src/back/glsl/writer.rs	str	Writer<'a,W>::write	"{struct_name} {defined_func_name}({arg_type_name} arg) {{\r\n    {other_type_name} other;\r\n    {arg_type_name} fract = {called_func_name}(arg, other);\r\n   … #eae58a1a8c37b9c9
+code	third_party/naga/src/back/glsl/writer.rs	str	Writer<'a,W>::write	"{struct_name} {defined_func_name}({arg_type_name} arg) {{\n    {other_type_name} other = arg == {arg_type_name}(0) ? {other_type_name}(0) : {other_type_name}({… #cd782c201e800226
+code	third_party/naga/src/back/glsl/writer.rs	str	Writer<'a,W>::write	"{struct_name} {defined_func_name}({arg_type_name} arg) {{\n    {other_type_name} other;\n    {arg_type_name} fract = {called_func_name}(arg, other);\n    retur… #182ed87eb04fc8a9
 code	third_party/naga/src/back/glsl/writer.rs	str	Writer<'a,W>::write_array_size	"["
 code	third_party/naga/src/back/glsl/writer.rs	str	Writer<'a,W>::write_array_size	"]"
 code	third_party/naga/src/back/glsl/writer.rs	str	Writer<'a,W>::write_array_size	"{size}"
@@ -17311,7 +17232,7 @@ code	third_party/naga/src/back/hlsl/help.rs	str	super::Writer<'_,W>::write_loade
 code	third_party/naga/src/back/hlsl/help.rs	str	super::Writer<'_,W>::write_loaded_scalar_to_storage_loaded_value	"1.0"
 code	third_party/naga/src/back/hlsl/help.rs	str	super::Writer<'_,W>::write_loaded_scalar_to_storage_loaded_value	"1u"
 code	third_party/naga/src/back/hlsl/help.rs	str	super::Writer<'_,W>::write_loaded_scalar_to_storage_loaded_value	"1uL"
-code	third_party/naga/src/back/hlsl/help.rs	str	super::Writer<'_,W>::write_loaded_scalar_to_storage_loaded_value	"{ty}4 {IMAGE_STORAGE_LOAD_SCALAR_WRAPPER}{ty}({ty} {ARGUMENT_VARIABLE_NAME}) {{\\r\n    {ty}4 {RETURN_VARIABLE_NAME} = {ty}4({ARGUMENT_VARIABLE_NAME}, {zero}, … #7c32964924924fee
+code	third_party/naga/src/back/hlsl/help.rs	str	super::Writer<'_,W>::write_loaded_scalar_to_storage_loaded_value	"{ty}4 {IMAGE_STORAGE_LOAD_SCALAR_WRAPPER}{ty}({ty} {ARGUMENT_VARIABLE_NAME}) {{\\n    {ty}4 {RETURN_VARIABLE_NAME} = {ty}4({ARGUMENT_VARIABLE_NAME}, {zero}, {z… #74ddeec49de3d680
 code	third_party/naga/src/back/hlsl/help.rs	str	super::Writer<'_,W>::write_mat_cx2_typedef_and_functions	"typedef struct {{ "
 code	third_party/naga/src/back/hlsl/help.rs	str	super::Writer<'_,W>::write_mat_cx2_typedef_and_functions	"void __set_col_of_mat{}x2_f{bit_width}(__mat{}x2_f{bit_width} mat, uint idx, {type_name}2 value) {{"
 code	third_party/naga/src/back/hlsl/help.rs	str	super::Writer<'_,W>::write_mat_cx2_typedef_and_functions	"void __set_el_of_mat{}x2_f{bit_width}(__mat{}x2_f{bit_width} mat, uint idx, uint vec_idx, {type_name} value) {{"
@@ -17342,7 +17263,7 @@ code	third_party/naga/src/back/hlsl/help.rs	str	super::Writer<'_,W>::write_speci
 code	third_party/naga/src/back/hlsl/help.rs	str	super::Writer<'_,W>::write_special_functions	"modf"
 code	third_party/naga/src/back/hlsl/help.rs	str	super::Writer<'_,W>::write_special_functions	"sign(arg) * "
 code	third_party/naga/src/back/hlsl/help.rs	str	super::Writer<'_,W>::write_special_functions	"whole"
-code	third_party/naga/src/back/hlsl/help.rs	str	super::Writer<'_,W>::write_special_functions	"{struct_name} {defined_func_name}({arg_type_name} arg) {{\r\n    {arg_type_name} other;\r\n    {struct_name} result;\r\n    result.fract = {sign_multiplier}{ca… #27aa1cbc190ed638
+code	third_party/naga/src/back/hlsl/help.rs	str	super::Writer<'_,W>::write_special_functions	"{struct_name} {defined_func_name}({arg_type_name} arg) {{\n    {arg_type_name} other;\n    {struct_name} result;\n    result.fract = {sign_multiplier}{called_f… #647fb617e93ea938
 code	third_party/naga/src/back/hlsl/help.rs	str	super::Writer<'_,W>::write_texture_coordinates	")"
 code	third_party/naga/src/back/hlsl/help.rs	str	super::Writer<'_,W>::write_texture_coordinates	")"
 code	third_party/naga/src/back/hlsl/help.rs	str	super::Writer<'_,W>::write_texture_coordinates	", "
@@ -18869,8 +18790,8 @@ code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	".
 code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	".commit_triangle_intersection();"
 code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	".get_candidate_intersection_type() == {RT_NAMESPACE}::intersection_type::bounding_box && ("
 code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	".get_candidate_intersection_type() == {RT_NAMESPACE}::intersection_type::triangle) {{"
-code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	".get_committed_distance();\r\n{current_level}}}\r\n{current_level}if ("
-code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	".get_committed_intersection_type() != {RT_NAMESPACE}::intersection_type::none) {{\r\n{current_level}{INDENT}current_max_t = "
+code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	".get_committed_distance();\n{current_level}}}\n{current_level}if ("
+code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	".get_committed_intersection_type() != {RT_NAMESPACE}::intersection_type::none) {{\n{current_level}{INDENT}current_max_t = "
 code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	".get_ray_min_distance()"
 code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	".next();"
 code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	".reset(ray,"
@@ -18890,10 +18811,10 @@ code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"t
 code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{current_level}"
 code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{current_level}"
 code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{current_level}"
-code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{current_level}float current_max_t = {tmax_tracker_expr_name};\r\n{current_level}if ("
+code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{current_level}float current_max_t = {tmax_tracker_expr_name};\n{current_level}if ("
 code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{current_level}float t = "
 code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{current_level}if ("
-code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{current_level}params.force_opacity(\r\n{current_level}    (desc.flags & {f_opaque}) != 0 ? {RT_NAMESPACE}::forced_opacity::opaque : (\r\n{current_level}      … #bdcfc0a86f11e152
+code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{current_level}params.force_opacity(\n{current_level}    (desc.flags & {f_opaque}) != 0 ? {RT_NAMESPACE}::forced_opacity::opaque : (\n{current_level}        (d… #4e6220b77770b956
 code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{current_level}{name} = "
 code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{current_level}{tracker_expr_name} = {tracker_expr_name} | ({name} ? {}: {});"
 code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{init_level}"
@@ -18908,7 +18829,7 @@ code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{
 code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{inner_level}params.accept_any_intersection((desc.flags & {flag}) != 0);"
 code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{inner_level}params.set_opacity_cull_mode(cull_mode);"
 code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{inner_level}{RT_NAMESPACE}::intersection_params params;"
-code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{inner_level}{RT_NAMESPACE}::opacity_cull_mode cull_mode = \r\n{inner_level}{INDENT}(desc.flags & {f_opaque}) != 0 ? {RT_NAMESPACE}::opacity_cull_mode::opaque … #2a8ed04b5172142e
+code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{inner_level}{RT_NAMESPACE}::opacity_cull_mode cull_mode = \n{inner_level}{INDENT}(desc.flags & {f_opaque}) != 0 ? {RT_NAMESPACE}::opacity_cull_mode::opaque : … #38683bba770e82a4
 code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{inner_level}{RT_NAMESPACE}::ray ray = {RT_NAMESPACE}::ray(desc.origin, desc.dir, desc.tmin, desc.tmax);"
 code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{inner_level}{naga_ray_desc_ty} desc = "
 code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{inner_level}}}"
@@ -18920,7 +18841,7 @@ code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{
 code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{level}if ("
 code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{level}if ("
 code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{level}{INDENT}}}"
-code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{level}{INDENT}}}\r\n{level}}}"
+code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{level}{INDENT}}}\n{level}}}"
 code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{level}{{"
 code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{level}}}"
 code	third_party/naga/src/back/msl/ray.rs	str	Writer<W>::write_ray_query_stmt	"{level}}}"
@@ -19810,7 +19731,7 @@ code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_functions	"}};
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_functions	"}};"
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_global_constants	";"
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_global_constants	"constant {ty_name} {name} = "
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_type_defs	"\\r\ntemplate <typename A>\r\n{struct_name} {defined_func_name}(\r\n    {address_space_name} A *atomic_ptr,\r\n    {arg_type_name} cmp,\r\n    {arg_type_name} … #79583e2176a43d6b
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_type_defs	"\\ntemplate <typename A>\n{struct_name} {defined_func_name}(\n    {address_space_name} A *atomic_ptr,\n    {arg_type_name} cmp,\n    {arg_type_name} v\n) {{\n … #4630fd79b15c1ebf
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_type_defs	"atomic_compare_exchange_weak_explicit"
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_type_defs	"device"
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_type_defs	"double"
@@ -19829,7 +19750,7 @@ code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_type_defs	"thr
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_type_defs	"typedef {base_name} {name}[1];"
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_type_defs	"typedef {ty_name} {name};"
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_type_defs	"{NAMESPACE}::{}{}"
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_type_defs	"{struct_name} {defined_func_name}({arg_type_name} arg) {{\r\n    {other_type_name} other;\r\n    {arg_type_name} fract = {NAMESPACE}::{called_func_name}(arg, o… #28b293460706d167
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_type_defs	"{struct_name} {defined_func_name}({arg_type_name} arg) {{\n    {other_type_name} other;\n    {arg_type_name} fract = {NAMESPACE}::{called_func_name}(arg, other… #3084d5597efaba7f
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_type_defs	"{}T {WRAPPED_ARRAY_FIELD};"
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_type_defs	"{}char _pad{}[{}];"
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_type_defs	"{}char _pad{}[{}];"
@@ -19846,44 +19767,44 @@ code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_type_defs	"}};
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_type_defs	"}};"
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"float {name}(metal::uchar b0) {{"
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"float {name}(metal::uchar b0) {{"
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"float {name}(metal::ushort b0, \\r\n                                  metal::ushort b1) {{"
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"float {name}(metal::ushort b0, \\r\n                                  metal::ushort b1) {{"
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"float {name}(metal::ushort b0, \\r\n                                  metal::ushort b1) {{"
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"float {name}(uint b0, \\r\n                                  uint b1, \\r\n                                  uint b2, \\r\n                                  ui… #1288db1a37fe55e5
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"float {name}(metal::ushort b0, \\n                                  metal::ushort b1) {{"
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"float {name}(metal::ushort b0, \\n                                  metal::ushort b1) {{"
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"float {name}(metal::ushort b0, \\n                                  metal::ushort b1) {{"
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"float {name}(uint b0, \\n                                  uint b1, \\n                                  uint b2, \\n                                  uint b3)… #88954649de656007
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"int {name}(metal::uchar b0) {{"
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"int {name}(metal::ushort b0, \\r\n                                metal::ushort b1) {{"
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"int {name}(uint b0, \\r\n                                uint b1, \\r\n                                uint b2, \\r\n                                uint b3) {… #c2bffcac94a682
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float2 {name}(metal::uchar b0, \\r\n                                          metal::uchar b1) {{"
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float2 {name}(metal::uchar b0, \\r\n                                          metal::uchar b1) {{"
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float2 {name}(metal::ushort b0, \\r\n                                          metal::ushort b1, \\r\n                                          metal::u… #c5a90fd1b78e935c
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float2 {name}(metal::ushort b0, \\r\n                                          metal::ushort b1, \\r\n                                          metal::u… #c5a90fd1b78e935c
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float2 {name}(uint b0, \\r\n                                          uint b1, \\r\n                                          uint b2, \\r\n            … #bcabbea1a27d91e8
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float2 {name}(uint b0, \\r\n                                          uint b1, \\r\n                                          uint b2, \\r\n            … #cea817b9b42bbcbc
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float3 {name}(uint b0, \\r\n                                          uint b1, \\r\n                                          uint b2, \\r\n            … #6af0a15644ca4145
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float4 {name}(metal::uchar b0, \\r\n                                          metal::uchar b1, \\r\n                                          metal::uch… #b9fa3bbc3c97cbe6
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float4 {name}(metal::uchar b0, \\r\n                                          metal::uchar b1, \\r\n                                          metal::uch… #b9fa3bbc3c97cbe6
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float4 {name}(metal::uchar b0, \\r\n                                          metal::uchar b1, \\r\n                                          metal::uch… #b9fa3bbc3c97cbe6
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float4 {name}(metal::ushort b0, \\r\n                                          metal::ushort b1, \\r\n                                          metal::u… #5f06a0be4333db52
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float4 {name}(metal::ushort b0, \\r\n                                        metal::ushort b1, \\r\n                                        metal::ushor… #58e1150483d67eba
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float4 {name}(uint b0, \\r\n                                          uint b1, \\r\n                                          uint b2, \\r\n            … #5864560c74f00596
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float4 {name}(uint b0, \\r\n                                          uint b1, \\r\n                                          uint b2, \\r\n            … #a989c0c165a34372
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float4 {name}(uint b0, \\r\n                                          uint b1, \\r\n                                          uint b2, \\r\n            … #fd6401e3bfec5b0c
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::int2 {name}(metal::uchar b0, \\r\n                                        metal::uchar b1) {{"
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::int2 {name}(metal::ushort b0, \\r\n                                        metal::ushort b1, \\r\n                                        metal::ushort … #eb0ddd6a6508bc61
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::int2 {name}(uint b0, \\r\n                                        uint b1, \\r\n                                        uint b2, \\r\n                  … #418f828a951a6b25
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::int3 {name}(uint b0, \\r\n                                        uint b1, \\r\n                                        uint b2, \\r\n                  … #cebd6b251edf34ec
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::int4 {name}(metal::uchar b0, \\r\n                                        metal::uchar b1, \\r\n                                        metal::uchar b2,… #46775c73b37b31d3
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::int4 {name}(metal::ushort b0, \\r\n                                        metal::ushort b1, \\r\n                                        metal::ushort … #3a4e1bd767ae898f
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::int4 {name}(uint b0, \\r\n                                        uint b1, \\r\n                                        uint b2, \\r\n                  … #1d377ab4493ab169
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::uint {name}(metal::uint b0, \\r\n                                        metal::uint b1) {{"
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::uint2 {name}(metal::uchar b0, \\r\n                                         metal::uchar b1) {{"
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::uint2 {name}(metal::uint b0, \\r\n                                         metal::uint b1, \\r\n                                         metal::uint b2,… #1216787161c2e7d4
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::uint4 {name}(metal::uchar b0, \\r\n                                         metal::uchar b1, \\r\n                                         metal::uchar … #721f63a471a5aabe
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::uint4 {name}(metal::uint b0, \\r\n                                         metal::uint b1, \\r\n                                         metal::uint b2,… #ad2109a64d54757a
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"int {name}(metal::ushort b0, \\n                                metal::ushort b1) {{"
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"int {name}(uint b0, \\n                                uint b1, \\n                                uint b2, \\n                                uint b3) {{"
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float2 {name}(metal::uchar b0, \\n                                          metal::uchar b1) {{"
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float2 {name}(metal::uchar b0, \\n                                          metal::uchar b1) {{"
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float2 {name}(metal::ushort b0, \\n                                          metal::ushort b1, \\n                                          metal::ushor… #5622277d911f8ef6
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float2 {name}(metal::ushort b0, \\n                                          metal::ushort b1, \\n                                          metal::ushor… #5622277d911f8ef6
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float2 {name}(uint b0, \\n                                          uint b1, \\n                                          uint b2, \\n                  … #3306a0e66d9c2c8e
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float2 {name}(uint b0, \\n                                          uint b1, \\n                                          uint b2, \\n                  … #c2927c498e68580a
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float3 {name}(uint b0, \\n                                          uint b1, \\n                                          uint b2, \\n                  … #c439d4beec3bba73
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float4 {name}(metal::uchar b0, \\n                                          metal::uchar b1, \\n                                          metal::uchar b… #49bf857d3804e560
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float4 {name}(metal::uchar b0, \\n                                          metal::uchar b1, \\n                                          metal::uchar b… #49bf857d3804e560
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float4 {name}(metal::uchar b0, \\n                                          metal::uchar b1, \\n                                          metal::uchar b… #49bf857d3804e560
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float4 {name}(metal::ushort b0, \\n                                          metal::ushort b1, \\n                                          metal::ushor… #1c1d9afc8fd4f7e4
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float4 {name}(metal::ushort b0, \\n                                        metal::ushort b1, \\n                                        metal::ushort b2… #3efe948146d3ec7c
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float4 {name}(uint b0, \\n                                          uint b1, \\n                                          uint b2, \\n                  … #1c892128ff6e35e4
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float4 {name}(uint b0, \\n                                          uint b1, \\n                                          uint b2, \\n                  … #60681e49fea6cea6
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::float4 {name}(uint b0, \\n                                          uint b1, \\n                                          uint b2, \\n                  … #7a7fa3e4b27e2900
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::int2 {name}(metal::uchar b0, \\n                                        metal::uchar b1) {{"
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::int2 {name}(metal::ushort b0, \\n                                        metal::ushort b1, \\n                                        metal::ushort b2, … #cbe8dd156606747
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::int2 {name}(uint b0, \\n                                        uint b1, \\n                                        uint b2, \\n                        … #178e0e4ec3b20b9f
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::int3 {name}(uint b0, \\n                                        uint b1, \\n                                        uint b2, \\n                        … #e0f463bf9ee8b1b2
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::int4 {name}(metal::uchar b0, \\n                                        metal::uchar b1, \\n                                        metal::uchar b2, \\n… #de954512056c1681
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::int4 {name}(metal::ushort b0, \\n                                        metal::ushort b1, \\n                                        metal::ushort b2, … #18b29e1abbeae91d
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::int4 {name}(uint b0, \\n                                        uint b1, \\n                                        uint b2, \\n                        … #8d89fa1ff9ba626b
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::uint {name}(metal::uint b0, \\n                                        metal::uint b1) {{"
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::uint2 {name}(metal::uchar b0, \\n                                         metal::uchar b1) {{"
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::uint2 {name}(metal::uint b0, \\n                                         metal::uint b1, \\n                                         metal::uint b2, \\n… #b9d4478c22989eca
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::uint4 {name}(metal::uchar b0, \\n                                         metal::uchar b1, \\n                                         metal::uchar b2, … #8e7e713f839caeb4
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"metal::uint4 {name}(metal::uint b0, \\n                                         metal::uint b1, \\n                                         metal::uint b2, \\n… #95b4277577bf1c1c
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"uint {name}(metal::uchar b0) {{"
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"uint {name}(uint b0, \\r\n                                 uint b1, \\r\n                                 uint b2, \\r\n                                 uint b… #b9f1996253b7c02d
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"uint2 {name}(uint b0, \\r\n                                  uint b1, \\r\n                                  uint b2, \\r\n                                  ui… #33254a1e5d7f895d
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"uint3 {name}(uint b0, \\r\n                                  uint b1, \\r\n                                  uint b2, \\r\n                                  ui… #47668580e9c72194
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"uint {name}(uint b0, \\n                                 uint b1, \\n                                 uint b2, \\n                                 uint b3) {{"
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"uint2 {name}(uint b0, \\n                                  uint b1, \\n                                  uint b2, \\n                                  uint b3,… #fa7ccd5767a71847
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"uint3 {name}(uint b0, \\n                                  uint b1, \\n                                  uint b2, \\n                                  uint b3,… #c7be7ffc9460cb0a
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"unpackFloat16"
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"unpackFloat16x2"
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"unpackFloat16x4"
@@ -19925,7 +19846,7 @@ code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_func
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"unpackUnorm8x2"
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"unpackUnorm8x4"
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"unpackUnorm8x4Bgra"
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{NAMESPACE}::uint4 {name}(uint b0, \\r\n                                  uint b1, \\r\n                                  uint b2, \\r\n                       … #d6d1f36ae27f1122
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{NAMESPACE}::uint4 {name}(uint b0, \\n                                  uint b1, \\n                                  uint b2, \\n                             … #75ab6124be0bcd88
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return (b3 << 24 | b2 << 16 | b1 << 8 | b0);"
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return as_type<float>(b3 << 24 | b2 << 16 | b1 << 8 | b0);"
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return as_type<int>(b3 << 24 | b2 << 16 | b1 << 8 | b0);"
@@ -19935,38 +19856,38 @@ code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_func
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return float(metal::max(-1.0f, as_type<char>(b0) / 127.0f));"
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return int(as_type<char>(b0));"
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return int(as_type<short>(metal::ushort(b1 << 8 | b0)));"
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::float2(as_type<float>(b3 << 24 | b2 << 16 | b1 << 8 | b0), \\r\n                                            as_type<float>(b7 << 24 | b6 << 16 … #92d0c061f4a5ef98
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::float2(as_type<half>(metal::ushort(b1 << 8 | b0)), \\r\n                                            as_type<half>(metal::ushort(b3 << 8 | b2)))… #88f9c8198b8b3de8
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::float2(float(b0) / 255.0f, \\r\n                                            float(b1) / 255.0f);"
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::float2(float(b1 << 8 | b0) / 65535.0f, \\r\n                                            float(b3 << 8 | b2) / 65535.0f);"
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::float2(metal::max(-1.0f, as_type<char>(b0) / 127.0f), \\r\n                                            metal::max(-1.0f, as_type<char>(b1) / 12… #32d1d6c92e0402ed
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::float3(as_type<float>(b3 << 24 | b2 << 16 | b1 << 8 | b0), \\r\n                                            as_type<float>(b7 << 24 | b6 << 16 … #fbde544837cbbd36
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::float4(as_type<float>(b3 << 24 | b2 << 16 | b1 << 8 | b0), \\r\n                                            as_type<float>(b7 << 24 | b6 << 16 … #6ebee3dd17a72974
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::float4(as_type<half>(metal::ushort(b1 << 8 | b0)), \\r\n                                          as_type<half>(metal::ushort(b3 << 8 | b2)), \… #f8f1eb83174743d4
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::float4(float(b0) / 255.0f, \\r\n                                            float(b1) / 255.0f, \\r\n                                          … #74e279f8f68bed9c
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::float4(float(b1 << 8 | b0) / 65535.0f, \\r\n                                            float(b3 << 8 | b2) / 65535.0f, \\r\n                  … #46414e228b32cf34
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::float4(float(b2) / 255.0f, \\r\n                                            float(b1) / 255.0f, \\r\n                                          … #56d1fdad4c515310
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::float4(metal::max(-1.0f, as_type<char>(b0) / 127.0f), \\r\n                                            metal::max(-1.0f, as_type<char>(b1) / 12… #a0d853888d0e8300
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::float4(metal::unpack_snorm2x16_to_float(b3 << 24 | b2 << 16 | b1 << 8 | b0), \\r\n                                            metal::unpack_sno… #d89b2e8af6d03b66
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::int2(as_type<char>(b0), \\r\n                                          as_type<char>(b1));"
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::int2(as_type<int>(b3 << 24 | b2 << 16 | b1 << 8 | b0), \\r\n                                          as_type<int>(b7 << 24 | b6 << 16 | b5 << … #ba875452fc1d516d
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::int2(as_type<short>(metal::ushort(b1 << 8 | b0)), \\r\n                                          as_type<short>(metal::ushort(b3 << 8 | b2)));"
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::int3(as_type<int>(b3 << 24 | b2 << 16 | b1 << 8 | b0), \\r\n                                          as_type<int>(b7 << 24 | b6 << 16 | b5 << … #543574dfacce69b2
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::int4(as_type<char>(b0), \\r\n                                          as_type<char>(b1), \\r\n                                          as_typ… #8d8d8cd31bba8a43
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::int4(as_type<int>(b3 << 24 | b2 << 16 | b1 << 8 | b0), \\r\n                                          as_type<int>(b7 << 24 | b6 << 16 | b5 << … #cb476eb2a0d16d23
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::int4(as_type<short>(metal::ushort(b1 << 8 | b0)), \\r\n                                          as_type<short>(metal::ushort(b3 << 8 | b2)), \… #d3aa1511c3682a8f
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::float2(as_type<float>(b3 << 24 | b2 << 16 | b1 << 8 | b0), \\n                                            as_type<float>(b7 << 24 | b6 << 16 | … #17c30ff0cc41ef12
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::float2(as_type<half>(metal::ushort(b1 << 8 | b0)), \\n                                            as_type<half>(metal::ushort(b3 << 8 | b2)));"
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::float2(float(b0) / 255.0f, \\n                                            float(b1) / 255.0f);"
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::float2(float(b1 << 8 | b0) / 65535.0f, \\n                                            float(b3 << 8 | b2) / 65535.0f);"
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::float2(metal::max(-1.0f, as_type<char>(b0) / 127.0f), \\n                                            metal::max(-1.0f, as_type<char>(b1) / 127.… #8d45fc95cdd8e0bf
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::float3(as_type<float>(b3 << 24 | b2 << 16 | b1 << 8 | b0), \\n                                            as_type<float>(b7 << 24 | b6 << 16 | … #6121030c5801aae6
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::float4(as_type<float>(b3 << 24 | b2 << 16 | b1 << 8 | b0), \\n                                            as_type<float>(b7 << 24 | b6 << 16 | … #bbcb6fad0261f206
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::float4(as_type<half>(metal::ushort(b1 << 8 | b0)), \\n                                          as_type<half>(metal::ushort(b3 << 8 | b2)), \\n… #a10960a05639d78a
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::float4(float(b0) / 255.0f, \\n                                            float(b1) / 255.0f, \\n                                            fl… #7cad502740e1fd6e
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::float4(float(b1 << 8 | b0) / 65535.0f, \\n                                            float(b3 << 8 | b2) / 65535.0f, \\n                      … #cea0e73cd339eec2
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::float4(float(b2) / 255.0f, \\n                                            float(b1) / 255.0f, \\n                                            fl… #4bf0fdcde3f8d612
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::float4(metal::max(-1.0f, as_type<char>(b0) / 127.0f), \\n                                            metal::max(-1.0f, as_type<char>(b1) / 127.… #1cb1a618b1cfe3ce
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::float4(metal::unpack_snorm2x16_to_float(b3 << 24 | b2 << 16 | b1 << 8 | b0), \\n                                            metal::unpack_snorm… #134c35d2f28864a0
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::int2(as_type<char>(b0), \\n                                          as_type<char>(b1));"
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::int2(as_type<int>(b3 << 24 | b2 << 16 | b1 << 8 | b0), \\n                                          as_type<int>(b7 << 24 | b6 << 16 | b5 << 8 … #f5524f536a38728f
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::int2(as_type<short>(metal::ushort(b1 << 8 | b0)), \\n                                          as_type<short>(metal::ushort(b3 << 8 | b2)));"
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::int3(as_type<int>(b3 << 24 | b2 << 16 | b1 << 8 | b0), \\n                                          as_type<int>(b7 << 24 | b6 << 16 | b5 << 8 … #b9399df20f0d8efe
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::int4(as_type<char>(b0), \\n                                          as_type<char>(b1), \\n                                          as_type<ch… #cb96803a87b452d9
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::int4(as_type<int>(b3 << 24 | b2 << 16 | b1 << 8 | b0), \\n                                          as_type<int>(b7 << 24 | b6 << 16 | b5 << 8 … #87938fd27da83e8d
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::int4(as_type<short>(metal::ushort(b1 << 8 | b0)), \\n                                          as_type<short>(metal::ushort(b3 << 8 | b2)), \\n… #fd9cb01764776255
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::uint(b1 << 8 | b0);"
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::uint2(b0, b1);"
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::uint2(b1 << 8 | b0, \\r\n                                           b3 << 8 | b2);"
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::uint2(b1 << 8 | b0, \\n                                           b3 << 8 | b2);"
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::uint4(b0, b1, b2, b3);"
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::uint4(b1 << 8 | b0, \\r\n                                           b3 << 8 | b2, \\r\n                                           b5 << 8 | b4,… #eea227a9d02eeb86
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::uint4(b1 << 8 | b0, \\n                                           b3 << 8 | b2, \\n                                           b5 << 8 | b4, \\n… #8f89d44649b08f58
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::unpack_snorm2x16_to_float(b1 << 8 | b0).x;"
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::unpack_snorm2x16_to_float(b3 << 24 | b2 << 16 | b1 << 8 | b0);"
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return metal::unpack_unorm10a2_to_float(b3 << 24 | b2 << 16 | b1 << 8 | b0);"
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return uint(b0);"
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return uint2((b3 << 24 | b2 << 16 | b1 << 8 | b0), \\r\n                                    (b7 << 24 | b6 << 16 | b5 << 8 | b4));"
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return uint3((b3 << 24 | b2 << 16 | b1 << 8 | b0), \\r\n                                    (b7 << 24 | b6 << 16 | b5 << 8 | b4), \\r\n                      … #241db5813801f900
-code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return {NAMESPACE}::uint4((b3 << 24 | b2 << 16 | b1 << 8 | b0), \\r\n                                    (b7 << 24 | b6 << 16 | b5 << 8 | b4), \\r\n         … #132c43842f62719a
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return uint2((b3 << 24 | b2 << 16 | b1 << 8 | b0), \\n                                    (b7 << 24 | b6 << 16 | b5 << 8 | b4));"
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return uint3((b3 << 24 | b2 << 16 | b1 << 8 | b0), \\n                                    (b7 << 24 | b6 << 16 | b5 << 8 | b4), \\n                          … #4c77b2c6f0438310
+code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"{}return {NAMESPACE}::uint4((b3 << 24 | b2 << 16 | b1 << 8 | b0), \\n                                    (b7 << 24 | b6 << 16 | b5 << 8 | b4), \\n             … #94a3dc3848f3e00
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"}}"
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"}}"
 code	third_party/naga/src/back/msl/writer.rs	str	Writer<W>::write_unpacking_function	"}}"
@@ -23614,25 +23535,12 @@ policy	generated	third_party/wgpu/src/backend/webgpu/webgpu_sys/mod.rs
 redefinition	crates/wcontainers-arm64/src/host.rs	str	PROBE	PROBE = "probe"
 redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	map::READ	READ = 1
 redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	map::WRITE	WRITE = 2
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::BLENDABLE	BLENDABLE = 32768
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::DEPTH_STENCIL	DEPTH_STENCIL = 65536
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::IA_INDEX_BUFFER	IA_INDEX_BUFFER = 4
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::IA_VERTEX_BUFFER	IA_VERTEX_BUFFER = 2
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::MIP	MIP = 4096
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::MULTISAMPLE_LOAD	MULTISAMPLE_LOAD = 4194304
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::MULTISAMPLE_RENDERTARGET	MULTISAMPLE_RENDERTARGET = 2097152
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::MULTISAMPLE_RESOLVE	MULTISAMPLE_RESOLVE = 262144
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::RENDER_TARGET	RENDER_TARGET = 16384
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::SHADER_LOAD	SHADER_LOAD = 256
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::SHADER_SAMPLE	SHADER_SAMPLE = 512
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::TEXTURE2D	TEXTURE2D = 32
-redefinition	crates/wcontainers-direct3d-11/src/desc.rs	int	support::TEXTURECUBE	TEXTURECUBE = 128
-redefinition	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::buffer_span::R32_TYPELESS	R32_TYPELESS = 39
 redefinition	crates/wcontainers-direct3d-11/tests/front.rs	int	a_geometry_shader_choosing_layers_and_viewports_draws_once_per_layer_and_viewport::LAYERS	LAYERS = 4
 redefinition	crates/wcontainers-direct3d-11/tests/front.rs	int	nv12_is_two_planes_viewed_apart_and_written_copied_and_mapped_as_joined_rows::NV12	NV12 = 103
 redefinition	crates/wcontainers-direct3d-11/tests/front.rs	int	yuy2_is_a_half_width_texture_of_pixel_pairs_viewed_as_rgba8::YUY2	YUY2 = 107
 redefinition	crates/wcontainers-direct3d-12/examples/check/cases.rs	int	PAGE	PAGE = 65536
 redefinition	crates/wcontainers-direct3d-12/examples/check/cases.rs	int	SIZE	SIZE = 64
+redefinition	crates/wcontainers-direct3d-12/examples/check/cases.rs	int	early_per_primitive::SIDE	SIDE = 4
 redefinition	crates/wcontainers-direct3d-12/examples/check_d3d12.rs	int	draw::SIZE	SIZE = 64
 redefinition	crates/wcontainers-direct3d-12/src/device/bind.rs	int	VERTEX	VERTEX = 1
 redefinition	crates/wcontainers-direct3d-12/src/device/geometry.rs	int	FILLED_BYTES	FILLED_BYTES = 32
@@ -23693,14 +23601,6 @@ redefinition	crates/wcontainers-gpu-test/src/suite/routes.rs	int	fill_modes_draw
 redefinition	crates/wcontainers-gpu-test/src/suite/routes.rs	int	values_pass_between_programs_by_location::N	N = 4
 redefinition	crates/wcontainers-gpu-test/src/suite/routes.rs	int	vertices_pulled_from_storage_match_the_fetched_ones::N	N = 8
 redefinition	crates/wcontainers-gpu-webgl/examples/draw-cost.rs	int	SIZE	SIZE = 256
-redefinition	crates/wcontainers-gpu-webgl/tests/suite.rs	int	<Angle as wcontainers_gpu_test::Host>::window::WINDOW	WINDOW = 1
-redefinition	crates/wcontainers-gpu-webgpu/examples/scenes/features.rs	int	WIDTH	WIDTH = 64
-redefinition	crates/wcontainers-gpu-webgpu/examples/scenes/pulled.rs	int	INSTANCES	INSTANCES = 16
-redefinition	crates/wcontainers-gpu-webgpu/examples/scenes/pulled.rs	int	SIZE	SIZE = 256
-redefinition	crates/wcontainers-gpu-webgpu/examples/scenes/suite.rs	int	<Chrome as wcontainers_gpu_test::Host>::window::WINDOW	WINDOW = 1
-redefinition	crates/wcontainers-gpu-webgpu/tests/host/mod.rs	int	<Native as wcontainers_gpu_test::Host>::window::WINDOW	WINDOW = 1
-redefinition	crates/wcontainers-gpu-webgpu/tests/host/mod.rs	int	window::SIDE	SIDE = 4
-redefinition	crates/wcontainers-gpu-webgpu/tests/writes.rs	int	written_bytes_are_counted_and_reported::SIDE	SIDE = 4
 redefinition	crates/wcontainers-gpu/src/backend/tests.rs	int	absent_features_say_which::BLOCK	BLOCK = 100
 redefinition	crates/wcontainers-gpu/src/backend/tests.rs	int	call::BLOCK	BLOCK = 100
 redefinition	crates/wcontainers-graphics-test/src/d3d11/scenes/blend.rs	int	SIZE	SIZE = 256
@@ -24075,8 +23975,6 @@ restated	crates/wcontainers-gpu-webgpu/examples/scenes/pulled.rs	float	object	10
 restated	crates/wcontainers-gpu-webgpu/examples/scenes/pulled.rs	float	object	512.0
 restated	crates/wcontainers-gpu-webgpu/examples/scenes/pulled.rs	int	OBJECTS	256
 restated	crates/wcontainers-gpu-webgpu/examples/scenes/pulled.rs	int	pulled_set	256
-restated	crates/wcontainers-gpu-webgpu/examples/scenes/queries.rs	int	paged_sets	4096
-restated	crates/wcontainers-gpu-webgpu/examples/scenes/queries.rs	int	paged_sets	4096
 restated	crates/wcontainers-gpu-webgpu/examples/scenes/timestamps.rs	float	APART_MS	300.0
 restated	crates/wcontainers-gpu-webgpu/examples/scenes/timestamps.rs	int	ROUNDS	2048
 restated	crates/wcontainers-gpu-webgpu/examples/scenes/timestamps.rs	int	SIZE	512
@@ -24095,18 +23993,10 @@ restated	crates/wcontainers-gpu-webgpu/tests/blocks.rs	int	bc_copies_keep_the_bl
 restated	crates/wcontainers-gpu-webgpu/tests/blocks.rs	int	bc_copies_keep_the_blocks_natively_and_decoded	256
 restated	crates/wcontainers-gpu-webgpu/tests/blocks.rs	int	bc_copies_keep_the_blocks_natively_and_decoded	256
 restated	crates/wcontainers-gpu-webgpu/tests/blocks.rs	int	bc_copies_keep_the_blocks_natively_and_decoded	256
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	float	depth_and_stencil_parts_copy_and_read_back_exactly	16_777_215.0
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	float	depth_of	16_777_215.0
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	float	same_depth	16_777_215.0
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	depth_and_stencil_parts_copy_and_read_back_exactly	0xff_ffff
 restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	depth_and_stencil_parts_copy_and_read_back_exactly	1024
 restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	depth_and_stencil_parts_copy_and_read_back_exactly	1024
 restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	depth_and_stencil_parts_copy_and_read_back_exactly	4096
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	depth_of	0xff_ffff
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	float_depth_copies_keep_what_a_draw_can_write	0x4000_0000
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	float_depth_copies_keep_what_a_draw_can_write	0x8000_0000
 restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	sixteen_bit_group_copies_into_depth_keep_the_bits	0x8000
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	source_words	0xff_ffff
 restated	crates/wcontainers-gpu-webgpu/tests/depth.rs	int	depth_bias_on_24_bit_depth_matches_direct3d	256
 restated	crates/wcontainers-gpu-webgpu/tests/direct3d.rs	float	decoded_step	2048.0
 restated	crates/wcontainers-gpu-webgpu/tests/direct3d.rs	float	generate_mips_of_r32float_without_filtering_match_direct3d	65536.0
@@ -24114,7 +24004,6 @@ restated	crates/wcontainers-gpu-webgpu/tests/raster.rs	int	wireframe_fill_matche
 restated	crates/wcontainers-gpu-webgpu/tests/writes.rs	int	byte_granular_buffer_operations_match_a_model::SIZE	1024
 restated	crates/wcontainers-gpu-webgpu/tests/writes.rs	int	ordered_writes_are_staged_in_one_ring	256
 restated	crates/wcontainers-gpu-webgpu/tests/writes.rs	int	ordered_writes_are_staged_in_one_ring	256
-restated	crates/wcontainers-gpu-webgpu/tests/writes.rs	int	queries_carry_across_splits_in_a_set_of_the_largest_size	4096
 restated	crates/wcontainers-gpu-webgpu/tests/writes.rs	int	writes_take_effect_in_command_order	300
 restated	crates/wcontainers-gpu-webgpu/tests/writes.rs	int	writes_take_effect_in_command_order	300
 restated	crates/wcontainers-gpu/src/backend/tests.rs	int	Recorder::new	16384
@@ -24147,9 +24036,9 @@ restated	crates/wcontainers-graphics-test/src/scene.rs	int	WIDTH	256
 restated	crates/wcontainers-kernel-test/backend/src/main.rs	str	main	"wc-backend [--cached] pipe <directory> | mount <directory> <mount point> <command>..."
 restated	crates/wcontainers-kernel-test/backend/src/main.rs	str	mount	"wc-backend: {error:?}"
 restated	crates/wcontainers-kernel-test/backend/src/main.rs	str	pipe	"wc-backend: {error:?}"
-restated	crates/wcontainers-kernel-test/src/generate.rs	str	generate	"// Generated by `cargo run -p wcontainers-kernel-test --bin generate-linux` from linux-raw-sys \\r\n             {version}\n// src/aarch64/{module}.rs, with gu… #dfe4597843890bfa
-restated	crates/wcontainers-kernel-test/src/generate.rs	str	layout_test	"// Generated by `cargo run -p wcontainers-kernel-test --bin generate-linux` from linux-raw-sys \\r\n         {version}. Do not edit.\n\n\\r\n         //! Every… #1378e73356685788
-restated	crates/wcontainers-kernel-test/src/generate.rs	str	syscall_list	"// Generated by `cargo run -p wcontainers-kernel-test --bin generate-linux` from linux-raw-sys \\r\n         {version}\n// src/aarch64/general.rs. Do not edit.… #cd08a350be110962
+restated	crates/wcontainers-kernel-test/src/generate.rs	str	generate	"// Generated by `cargo run -p wcontainers-kernel-test --bin generate-linux` from linux-raw-sys \\n             {version}\n// src/aarch64/{module}.rs, with gues… #901f09b86081cd7c
+restated	crates/wcontainers-kernel-test/src/generate.rs	str	layout_test	"// Generated by `cargo run -p wcontainers-kernel-test --bin generate-linux` from linux-raw-sys \\n         {version}. Do not edit.\n\n\\n         //! Every str… #14e603df99451e74
+restated	crates/wcontainers-kernel-test/src/generate.rs	str	syscall_list	"// Generated by `cargo run -p wcontainers-kernel-test --bin generate-linux` from linux-raw-sys \\n         {version}\n// src/aarch64/general.rs. Do not edit.\n… #529514a4fbc1f0ce
 restated	crates/wcontainers-kernel-test/src/ltp.rs	str	tests::results_lines_round_trip	"page residency not tracked"
 restated	crates/wcontainers-kernel-test/src/ltp.rs	str	tests::results_lines_round_trip	"proc entry not built"
 restated	crates/wcontainers-kernel-test/src/ltp.rs	str	tests::results_lines_round_trip	"proc entry not built"
@@ -24256,7 +24145,7 @@ restated	crates/wcontainers-shaders/tests/variants.rs	str	filtering_in_the_progr
 restated	crates/wcontainers-translator-test/reference/src/main.rs	int	PAGE	4096
 restated	crates/wcontainers-translator-test/reference/src/main.rs	str	main	"usage: wcontainers-reference cases | blob <file> <load> <stack top> <stack bytes> [<headers> <count>] | time <runs> <file> <load> <stack top> <stack bytes> [<h… #f6e51dcf9a177200
 restated	crates/wcontainers-translator-test/reference/src/main.rs	str	main	"wcontainers-reference: {info}"
-restated	crates/wcontainers-translator-test/src/bin/arm-forms.rs	str	NOTICE	"\\r\n# Every A64 instruction encoding, taken from Arm's machine readable specification\r\n# (AARCHMRS, BSD release {release}) by `cargo run -p wcontainers-tran… #68360f890ef87b5d
+restated	crates/wcontainers-translator-test/src/bin/arm-forms.rs	str	NOTICE	"\\n# Every A64 instruction encoding, taken from Arm's machine readable specification\n# (AARCHMRS, BSD release {release}) by `cargo run -p wcontainers-translat… #a00fca9f6cd09923
 restated	crates/wcontainers-translator-test/src/layout.rs	int	BLOB_HWCAP	0x183
 restated	crates/wcontainers-translator-test/src/programs.rs	int	LOAD	0x40_0000
 restated	crates/wcontainers-translator-test/tests/benchmarks.rs	float	measure_calls_between_modules	1e9
@@ -24343,8 +24232,8 @@ restated	third_party/naga/src/front/wgsl/parse/lexer.rs	str	test_variable_decl	"
 restated	third_party/naga/src/proc/overloads/one_bits_iter.rs	int	in_order	1024
 restated	third_party/naga/src/proc/overloads/one_bits_iter.rs	int	in_order	512
 restated	third_party/naga/src/valid/immediates.rs	int	tests::range_full_256	256
-restated	third_party/wgpu/src/api/instance.rs	str	Instance::new	"No wgpu backend feature that is implemented for the target platform was enabled. \\r\n                 See `wgpu::Instance::enabled_backend_features()` for mor… #d63044a0f08dab1c
-restated	third_party/wgpu/src/backend/webgpu.rs	str	<WebSurface as dispatch::SurfaceInterface>::configure	"Surface configuration failed: {err:?}. The browser may not support \\r\n                     this canvas format (for example, Firefox does not yet support \\r\… #188d50eb26e293aa
+restated	third_party/wgpu/src/api/instance.rs	str	Instance::new	"No wgpu backend feature that is implemented for the target platform was enabled. \\n                 See `wgpu::Instance::enabled_backend_features()` for more … #28b3addeaaf7efca
+restated	third_party/wgpu/src/backend/webgpu.rs	str	<WebSurface as dispatch::SurfaceInterface>::configure	"Surface configuration failed: {err:?}. The browser may not support \\n                     this canvas format (for example, Firefox does not yet support \\n   … #5825687f6403c04c
 restated	third_party/wgpu/src/backend/wgpu_core.rs	str	default_error_handler	"Handling wgpu errors as fatal by default"
 restated	third_party/wgpu/src/backend/wgpu_core.rs	str	default_error_handler	"wgpu error: {err}\n"
 restated	third_party/wgpu/src/macros/mod.rs	int	make_spirv_be_pass	0x07230203
@@ -24580,17 +24469,14 @@ script	crates/wcontainers-direct3d-12/examples/directx/com.py	int	line: body = m
 script	crates/wcontainers-directx/generate.py	int	line: body = f"self.child.{snake(name)}10({args})"	10
 script	crates/wcontainers-directx/generate.py	int	line: body = f"self.{snake(name)}10({args})"	10
 script	crates/wcontainers-directx/generate.py	int	line: body = f"self.{snake(name)}10({args})"	10
-script	crates/wcontainers-gpu-webgpu/frames/run	int	line: $4 ~ /^[0-9.]+$/ { split($2, at, " "); t = at[2]	9
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: build="git submodule update --init --recursive -q && set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j 3 -p wcontainers-direc	12
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: build="git submodule update --init --recursive -q && set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j 3 -p wcontainers-direc	3
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: build="git submodule update --init --recursive -q && set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j 3 -p wcontainers-direc	3
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: build="git submodule update --init --recursive -q && set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j 3 -p wcontainers-direc	3
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: build="git submodule update --init --recursive -q && set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j 3 -p wcontainers-direc	3
-script	crates/wcontainers-gpu-webgpu/frames/run	int	line: ended=$(sed -n 's/.*, ended \([0-9:.]*\):.*/\1/p' <<<"$said" | tail -1)	9
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: load_limit=1800	1800
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: long=360	360
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: short=60	60
-script	crates/wcontainers-gpu-webgpu/frames/run	int	line: started=$(sed -n 's/.*started \([0-9:.]*\), ended.*/\1/p' <<<"$said" | tail -1)	9
 script	crates/wcontainers-gpu-webgpu/web/check	int	line: build+=" && cargo build --locked -j 3 -p wcontainers-gpu-webgpu --example scenes --target wasm32-unknown-unknown"	3
 script	crates/wcontainers-gpu-webgpu/web/check	int	line: build+=" && cargo build --locked -j 3 -p wcontainers-graphics-test --bin gt-compare"	3
 script	crates/wcontainers-gpu-webgpu/web/check	int	line: build+=" && cargo test --locked -j 3 -p wcontainers-gpu-webgpu --test suite --no-run"	3

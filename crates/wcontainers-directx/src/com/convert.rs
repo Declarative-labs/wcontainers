@@ -589,10 +589,12 @@ pub fn srv_back(v: &ViewDesc) -> D3D11_SHADER_RESOURCE_VIEW_DESC {
 pub fn sampler_stored(d: &D3D11_SAMPLER_DESC) -> D3D11_SAMPLER_DESC {
     let mut d = *d;
     let filter = d.Filter.0 as u32;
-    if filter & 0x40 == 0 {
+    if filter & D3D11_ANISOTROPIC_FILTERING_BIT == 0 {
         d.MaxAnisotropy = 0;
     }
-    if (filter >> 7) & 3 != 1 {
+    if (filter >> D3D11_FILTER_REDUCTION_TYPE_SHIFT) & D3D11_FILTER_REDUCTION_TYPE_MASK
+        != D3D11_FILTER_REDUCTION_TYPE_COMPARISON.0 as u32
+    {
         d.ComparisonFunc = D3D11_COMPARISON_NEVER;
     }
     if ![d.AddressU, d.AddressV, d.AddressW].contains(&D3D11_TEXTURE_ADDRESS_BORDER) {
@@ -618,10 +620,11 @@ pub fn sampler(d: &D3D11_SAMPLER_DESC) -> SamplerDesc {
     }
 }
 
-/// The description Direct3D keeps: a target that does not blend holds the default factors and
-/// operations, and without independent blending every target is the first.
 /// Each target's logic operation enable and operation (Direct3D 11.1).
-pub type LogicOps = [(windows::core::BOOL, D3D11_LOGIC_OP); 8];
+pub type LogicOps = [(windows::core::BOOL, D3D11_LOGIC_OP); TARGETS];
+
+/// Render target slots.
+pub const TARGETS: usize = D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT as usize;
 
 /// A Direct3D 11.1 blend description as Direct3D 11's and its logic operations.
 pub fn blend_split(d: &D3D11_BLEND_DESC1) -> (D3D11_BLEND_DESC, LogicOps) {
@@ -630,7 +633,7 @@ pub fn blend_split(d: &D3D11_BLEND_DESC1) -> (D3D11_BLEND_DESC, LogicOps) {
         IndependentBlendEnable: d.IndependentBlendEnable,
         ..Default::default()
     };
-    let mut logic = [(false.into(), D3D11_LOGIC_OP_NOOP); 8];
+    let mut logic = [(false.into(), D3D11_LOGIC_OP_NOOP); TARGETS];
     for ((o, l), t) in out
         .RenderTarget
         .iter_mut()
@@ -650,7 +653,7 @@ pub fn blend_split(d: &D3D11_BLEND_DESC1) -> (D3D11_BLEND_DESC, LogicOps) {
         *l = (t.LogicOpEnable, t.LogicOp);
     }
     if !d.IndependentBlendEnable.as_bool() {
-        logic = [logic[0]; 8];
+        logic = [logic[0]; TARGETS];
     }
     (out, logic)
 }
@@ -695,10 +698,12 @@ pub fn rasterizer_of1(d: &D3D11_RASTERIZER_DESC1) -> D3D11_RASTERIZER_DESC {
     }
 }
 
+/// The description Direct3D keeps: a target that does not blend holds the default factors and
+/// operations, and without independent blending every target is the first.
 pub fn blend_stored(d: &D3D11_BLEND_DESC) -> D3D11_BLEND_DESC {
     let mut d = *d;
     if !d.IndependentBlendEnable.as_bool() {
-        d.RenderTarget = [d.RenderTarget[0]; 8];
+        d.RenderTarget = [d.RenderTarget[0]; TARGETS];
     }
     for t in &mut d.RenderTarget {
         if !t.BlendEnable.as_bool() {
@@ -731,8 +736,8 @@ pub fn depth_stencil_stored(d: &D3D11_DEPTH_STENCIL_DESC) -> D3D11_DEPTH_STENCIL
             StencilPassOp: D3D11_STENCIL_OP_KEEP,
             StencilFunc: D3D11_COMPARISON_ALWAYS,
         };
-        d.StencilReadMask = 0xff;
-        d.StencilWriteMask = 0xff;
+        d.StencilReadMask = D3D11_DEFAULT_STENCIL_READ_MASK as u8;
+        d.StencilWriteMask = D3D11_DEFAULT_STENCIL_WRITE_MASK as u8;
         d.FrontFace = face;
         d.BackFace = face;
     }
