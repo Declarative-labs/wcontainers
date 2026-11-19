@@ -35,6 +35,7 @@ use wcontainers_gpu::{
 };
 
 pub use draw::Counters;
+pub use fill::UNORM24_MAX;
 pub use probe::Depth24;
 #[cfg(target_arch = "wasm32")]
 pub use wait::block_on;
@@ -755,7 +756,8 @@ fn caps(
         | Features::SEPARATE_SAMPLERS
         | Features::CLIP_DEPTH_ZERO_ONE
         | Features::DEPTH_BIAS_CLAMP
-        | Features::TEXTURE_LEVEL_QUERY;
+        | Features::TEXTURE_LEVEL_QUERY
+        | Features::FINE_DERIVATIVES;
     for (wgpu_feature, ours) in [
         (wgpu::Features::DEPTH_CLIP_CONTROL, Features::DEPTH_CLAMP),
         (wgpu::Features::CLIP_DISTANCES, Features::CLIP_DISTANCE),

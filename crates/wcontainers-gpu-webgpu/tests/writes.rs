@@ -671,7 +671,9 @@ fn queries_carry_across_splits_in_a_set_of_the_largest_size() {
     let mut b = device();
     let p = draw::prepare(&mut b, scene::Scene::Triangle, draw::Twist::None).unwrap();
     let t = draw::targets(&mut b, None).unwrap();
-    let queries = b.create_query_set(QueryKind::OcclusionAny, 4096).unwrap();
+    let queries = b
+        .create_query_set(QueryKind::OcclusionAny, wgpu::QUERY_SET_MAX_QUERIES)
+        .unwrap();
     let results = buffer(&mut b, 24, BufferUsage::empty(), MapIntent::Rarely);
     let mut pass = PassDesc {
         colors: Default::default(),
@@ -717,7 +719,10 @@ fn queries_carry_across_splits_in_a_set_of_the_largest_size() {
         .collect();
     let rgba = finish(&mut b, rb, (scene::WIDTH * scene::HEIGHT * 4) as usize);
     assert_eq!(b.status(), DeviceStatus::Ok);
-    eprintln!("query results in a set of 4096: {words:?}");
+    eprintln!(
+        "query results in a set of {}: {words:?}",
+        wgpu::QUERY_SET_MAX_QUERIES
+    );
     assert!(words[0] != 0 && words[1] != 0 && words[2] == 0, "{words:?}");
     assert_eq!(b.slow_paths().count(SlowPath::WriteSplitPass), 3);
     assert_eq!(b.slow_paths().count(SlowPath::QueriesSegmented), 3);
@@ -841,7 +846,7 @@ fn ordered_writes_are_staged_in_one_ring() {
 fn written_bytes_are_counted_and_reported() {
     use wcontainers_gpu::{TextureDesc, TextureDimension};
     const BUFFER_BYTES: usize = 64;
-    const SIDE: u32 = 4;
+    const TEXTURE_SIDE: u32 = 4;
     let mut b = device();
     let buffer = b
         .create_buffer(&BufferDesc {
@@ -854,8 +859,8 @@ fn written_bytes_are_counted_and_reported() {
         .create_texture(&TextureDesc {
             dimension: TextureDimension::D2,
             format: Format::Rgba8Unorm,
-            width: SIDE,
-            height: SIDE,
+            width: TEXTURE_SIDE,
+            height: TEXTURE_SIDE,
             depth_or_layers: 1,
             mip_levels: 1,
             samples: 1,
@@ -868,7 +873,7 @@ fn written_bytes_are_counted_and_reported() {
     b.write_buffer(&buffer, 0, &[1; BUFFER_BYTES], WriteMode::Discard);
     b.write_buffer(&buffer, 0, &[2; BUFFER_BYTES / 2], WriteMode::Ordered);
     let texel = Format::Rgba8Unorm.block().2;
-    let texels = vec![3; (SIDE * SIDE * texel) as usize];
+    let texels = vec![3; (TEXTURE_SIDE * TEXTURE_SIDE * texel) as usize];
     b.write_texture(
         &TextureRegion {
             texture: &texture,
@@ -878,13 +883,13 @@ fn written_bytes_are_counted_and_reported() {
             stencil: false,
         },
         Extent {
-            width: SIDE,
-            height: SIDE,
+            width: TEXTURE_SIDE,
+            height: TEXTURE_SIDE,
             depth_or_layers: 1,
         },
         &texels,
-        SIDE * texel,
-        SIDE,
+        TEXTURE_SIDE * texel,
+        TEXTURE_SIDE,
         WriteMode::Discard,
     );
     b.submit();

@@ -1,5 +1,6 @@
 //! The meaning of AdvSIMD floating point, on the paths of [`crate::float`].
 
+use crate::Arm64;
 use crate::exact::Operation;
 use crate::float::{
     Op, Source, binary_fast, by_hook, convert, from_integer, lanes, low, op, paths, round,
@@ -22,7 +23,7 @@ fn width(shape: Shape) -> u8 {
 }
 
 /// Copy a v128 local into a fresh one, applying a float op.
-fn applied<E: Emitter + ?Sized>(e: &mut E, x: u32, o: Op, size: u8) -> u32 {
+fn applied<E: Emitter<Arm64> + ?Sized>(e: &mut E, x: u32, o: Op, size: u8) -> u32 {
     let y = e.local(ValType::V128);
     let mut s = e.sink();
     s.local_get(x);
@@ -42,7 +43,14 @@ enum Holds {
 }
 
 /// Push the mask of lanes where `a` compared with `b` holds.
-fn compare<E: Emitter + ?Sized>(e: &mut E, holds: Holds, size: u8, count: u8, a: u32, b: u32) {
+fn compare<E: Emitter<Arm64> + ?Sized>(
+    e: &mut E,
+    holds: Holds,
+    size: u8,
+    count: u8,
+    a: u32,
+    b: u32,
+) {
     let signaling = !matches!(holds, Holds::Equal);
     let finish = move |e: &mut E| {
         let mut s = e.sink();
@@ -112,7 +120,7 @@ fn operation_of(op: SimdOp) -> Operation {
 }
 
 /// Push the binary operation on `count` lanes of two locals.
-fn binary<E: Emitter + ?Sized>(
+fn binary<E: Emitter<Arm64> + ?Sized>(
     e: &mut E,
     operation: Operation,
     size: u8,
@@ -126,7 +134,7 @@ fn binary<E: Emitter + ?Sized>(
 }
 
 /// Write the meaning of an AdvSIMD floating point operation, leaving the destination's new value.
-pub(crate) fn emit<E: Emitter + ?Sized>(
+pub(crate) fn emit<E: Emitter<Arm64> + ?Sized>(
     e: &mut E,
     op_: SimdOp,
     shape: Shape,
@@ -342,7 +350,7 @@ pub(crate) fn emit<E: Emitter + ?Sized>(
 
 /// Push the fast estimate (frecpe, frsqrte, frecpx) of the float of `size` bytes in the i64 local `x`, by
 /// Arm's `FPRecipEstimate`, `FPRSqrtEstimate` and `FPRecpX` with FPCR at its default.
-fn estimate<E: Emitter + ?Sized>(e: &mut E, op_: SimdOp, size: u8, x: u32) {
+fn estimate<E: Emitter<Arm64> + ?Sized>(e: &mut E, op_: SimdOp, size: u8, x: u32) {
     let (fraction_bits, exponent_bits): (i64, i64) = if size == 8 { (52, 11) } else { (23, 8) };
     let bits = 8 * i64::from(size);
     let sign = 1i64.wrapping_shl(bits as u32 - 1) & if size == 8 { -1 } else { 0xffff_ffff };
@@ -456,7 +464,7 @@ fn estimate<E: Emitter + ?Sized>(e: &mut E, op_: SimdOp, size: u8, x: u32) {
 }
 
 /// The table part of `FPRecipEstimate` for a finite, non-zero, not tiny float.
-fn recip_table<E: Emitter + ?Sized>(
+fn recip_table<E: Emitter<Arm64> + ?Sized>(
     e: &mut E,
     _x: u32,
     size: u8,
@@ -554,7 +562,7 @@ fn recip_table<E: Emitter + ?Sized>(
 }
 
 /// The table part of `FPRSqrtEstimate` for a positive, finite, non-zero float.
-fn recip_sqrt_table<E: Emitter + ?Sized>(
+fn recip_sqrt_table<E: Emitter<Arm64> + ?Sized>(
     e: &mut E,
     size: u8,
     exponent: u32,

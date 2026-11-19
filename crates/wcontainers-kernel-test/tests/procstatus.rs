@@ -1,5 +1,6 @@
-//! `/proc/self/status`'s descriptor table size and groups, and the maps lines of shared anonymous
-//! memory, compared with real ARM64 Linux; and the counted approximations of `/proc`.
+//! `/proc/self/status`'s descriptor table size and groups, the maps lines of shared anonymous
+//! memory and `/proc/<pid>/fdinfo` for every kind of descriptor, compared with real ARM64 Linux;
+//! and the counted approximations of `/proc`.
 
 use std::path::Path;
 
@@ -18,6 +19,12 @@ fn status_and_maps_match_reference() {
 }
 
 #[test]
+fn fdinfo_matches_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "fdinfo", &[]);
+}
+
+#[test]
 fn private_mapping_sees_later_writes() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     assert_same_output(&out, "procstatus", &["private"]);
@@ -31,7 +38,7 @@ fn entries_not_built_are_counted() {
     // The reference has the first two; a name Linux has not is not counted.
     assert_eq!(
         String::from_utf8_lossy(&theirs.stdout),
-        "/proc/self/mountinfo: 1\n/proc/sys/kernel/random/entropy_avail: 1\n/proc/nonexistent: 0\n"
+        "/proc/self/mountstats: 1\n/proc/sys/kernel/random/entropy_avail: 1\n/proc/nonexistent: 0\n"
     );
     let not_built: u64 = ours
         .counters

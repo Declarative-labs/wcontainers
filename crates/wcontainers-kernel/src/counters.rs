@@ -48,6 +48,10 @@ pub mod reason {
     /// A `/proc` entry Linux has and this kernel does not build was looked up; it answers ENOENT.
     /// Detail: the directory's index in Linux's list of entries, times 1024, plus the name's.
     pub const PROC_ENTRY_NOT_BUILT: &str = "proc entry not built";
+    /// A name Linux has in `/sys` was looked up there; sysfs here holds none of its entries, so it
+    /// answers ENOENT. Detail: the name's index in the reference's `/sys` (block, bus, class, dev,
+    /// devices, firmware, fs, kernel, module).
+    pub const SYS_ENTRY_NOT_BUILT: &str = "sys entry not built";
     /// A `/proc` file was made whose fields this kernel does not track all of (those show 0 or are
     /// left out). Detail: which file (0 `stat`, 1 `statm`, 2 `status`, 3 `mounts`, 4 `meminfo`).
     pub const PROC_FIELDS_NOT_TRACKED: &str = "proc fields not tracked";
@@ -57,6 +61,102 @@ pub mod reason {
     pub const FAULT_SYNDROME_APPROXIMATED: &str = "fault syndrome approximated";
     /// The time between a thread being woken and it running, measured, not a slow path. Detail: none.
     pub const WAKE_TO_RUN: &str = "wake to run";
+    /// One message to the file backend and the time until its answer, measured: every file call on
+    /// the backend sends its messages, with no cache in phase one. Detail: the FUSE opcode.
+    pub const BACKEND_MESSAGE: &str = "backend message";
+    /// A notice the backend sent unasked and the kernel handled, measured, not a slow path. Detail:
+    /// the notice's code.
+    pub const BACKEND_NOTICE: &str = "backend notice";
+    /// The host could not hand a message to the backend; the call that asked gets ENOTCONN, as from
+    /// a FUSE connection that is gone. Detail: the FUSE opcode.
+    pub const BACKEND_UNREACHABLE: &str = "backend unreachable";
+    /// A mapped backend file's pages were written back whole, changed or not, since which pages a
+    /// shared mapping wrote is not known (Linux writes back only dirty pages). Detail: none.
+    pub const BACKEND_PAGES_WRITTEN_WHOLE: &str = "backend pages written whole";
+    /// The kernel touched pages of a mapped backend file not read yet where no call or fault runs
+    /// to wait for them (a signal frame written there): they are not asked for, and the touch is a
+    /// fault, where Linux would read them. Detail: none.
+    pub const BACKEND_PAGES_UNASKED: &str = "backend pages needed outside a call";
+    /// A call copied part of its bytes, then reached pages of a mapped backend file not read yet:
+    /// it ends with what it did, as at a fault, where Linux's copy would wait for the pages.
+    /// Detail: the call's number.
+    pub const COPY_SHORT_OF_PAGES: &str = "copy short of backend pages";
+    /// The backend said a mapped file's bytes changed (INVAL_INODE): its mapped pages, and reads of
+    /// it while mapped, keep the bytes they had, where Linux reads them again (plan section 15).
+    /// Detail: the node number.
+    pub const BACKEND_CHANGE_NOT_MAPPED: &str = "backend change not seen by mapped pages";
+    /// A parked call asked the backend a question other than the one an earlier run of it had
+    /// answered (what the call read changed while it waited, which the locks a waiting call holds
+    /// do not cover): that answer and the ones after it were dropped and the question sent, so the
+    /// backend may have done an earlier one's work too. Detail: the FUSE opcode.
+    pub const BACKEND_ASKED_AGAIN: &str = "backend question asked again";
+    /// A socket of an address family that is not built. Detail: the family.
+    pub const FAMILY_NOT_BUILT: &str = "socket family not built";
+    /// A socket option that is not built. Detail: the level times 2^32 plus the option.
+    pub const OPTION_NOT_BUILT: &str = "socket option not built";
+    /// A socket option set, or a send flag given, whose effect on what the other end sees and
+    /// when is not built: TCP_CORK, TCP_FASTOPEN_CONNECT and TCP's MSG_MORE (bytes go at once,
+    /// where Linux holds them). The option is kept and read back. Detail: the level times 2^32
+    /// plus the option, or the flag for MSG_MORE.
+    pub const OPTION_NOT_ACTED_ON: &str = "socket option not acted on";
+    /// A socket of a built family whose kind or protocol is not built: raw packets, ping, SCTP,
+    /// MPTCP, UDP-Lite (plan section 15). Answered as Linux without the power or the protocol.
+    /// Detail: the family times 2^32, plus the kind times 2^16, plus the protocol.
+    pub const PROTOCOL_NOT_BUILT: &str = "socket protocol not built";
+    /// A netlink request Linux answers that is not built: answered EOPNOTSUPP, as Linux does
+    /// for a request with no handler. Detail: the message type, plus 2^16 for a dump.
+    pub const NETLINK_REQUEST_NOT_BUILT: &str = "netlink request not built";
+    /// The neighbour table was dumped after packets left by eth0: the entries those make on
+    /// Linux (the gateway's, which the host's own network stands for, and groups' and
+    /// broadcasts') are not built, so only the loopback entries were given. Detail: none.
+    pub const NEIGHBOURS_NOT_BUILT: &str = "neighbour entries not built";
+    /// A name query to the container's name server asked for something other than an address of
+    /// the Internet class, which the host's lookup cannot answer: "not implemented" was answered.
+    /// Detail: the query type (0 for a message with other than one standard question).
+    pub const NAME_QUERY_NOT_ANSWERED: &str = "name query not answered";
+    /// A netlink answer about an interface carried its traffic counters, which are not kept here
+    /// and read zero. Detail: none.
+    pub const INTERFACE_COUNTERS_NOT_KEPT: &str = "interface counters not kept";
+    /// A TCP send found no room: how much a connection holds is a fixed model here (the sender's
+    /// SO_SNDBUF of unread bytes), where Linux's depends on timing (window and buffer growth).
+    /// Detail: none.
+    pub const TCP_ROOM_MODELLED: &str = "tcp room modelled";
+    /// TCP_INFO was read of a connection: its round trip times, rates, windows past the
+    /// handshake, segment counts and the like come from this TCP's model (every segment arrives
+    /// and is acknowledged at once), where Linux's depend on timing. Detail: none.
+    pub const TCP_INFO_MODELLED: &str = "tcp info modelled";
+    /// A UDP datagram to a multicast group or a broadcast address left by eth0: the container's
+    /// own sockets were given it, but the host carries no multicast or broadcast, so the network
+    /// outside never sees it (plan section 15). Detail: none.
+    pub const MULTICAST_NOT_SENT_OUT: &str = "multicast or broadcast not sent outside";
+    /// A TCP connect found the listener's backlog full: it waits for room and completes when an
+    /// accept makes some, where Linux drops the handshake and retries after 1, 3, 7 seconds and so
+    /// on. Detail: none.
+    pub const TCP_BACKLOG_WAIT: &str = "tcp connect waits for backlog room";
+    /// A connection from outside came to a listener with TCP_DEFER_ACCEPT: the host has no way to
+    /// hold it back until data comes, so it is accepted at once. Detail: none.
+    pub const OUTSIDE_NOT_DEFERRED: &str = "outside connection not deferred";
+    /// A listener the outside could reach (bound to the any address or eth0's) was refused by the
+    /// host's listen, or an accept from it failed: the host cannot accept from outside (plan
+    /// section 9) or its port is taken there. It goes on listening inside the container. Detail:
+    /// the port.
+    pub const OUTSIDE_LISTEN_FAILED: &str = "listening outside failed";
+    /// A receiver asked for the TTL, hop limit, type of service or class of a datagram from
+    /// outside or from the name server, which the host does not report: 64 and 0 were given.
+    /// Detail: none.
+    pub const OUTSIDE_HEADER_MADE_UP: &str = "outside datagram header made up";
+    /// An outside destination refused a datagram from a socket that asked for queued errors: the
+    /// socket hears of it, but the host does not say what the datagram held, so no error is
+    /// queued. Detail: none.
+    pub const OUTSIDE_ERROR_NOT_QUEUED: &str = "outside datagram error not queued";
+    /// A notice from the backend that Linux refuses, with nothing done: a body of the wrong size,
+    /// or a DELETE whose parent and name are not the child's. Linux answers the backend's write of
+    /// it with the error; no hook carries that back. Detail: the notice's code times 2^32 plus the
+    /// error number.
+    pub const BACKEND_NOTICE_REFUSED: &str = "backend notice refused";
+    /// An answer or notice from the backend that the kernel could not read or does not handle.
+    /// Detail: the request number, or the notice's code.
+    pub const BACKEND_UNEXPECTED: &str = "backend message unexpected";
     /// vmsplice copied the caller's pages into a pipe; Linux puts the pages themselves there, so a
     /// later change to them shows in what is read. Detail: the call number.
     pub const VMSPLICE_COPIED: &str = "vmsplice pages copied";
@@ -65,6 +165,10 @@ pub mod reason {
     /// The CPU side answered that this host cannot make a memory, a thread or a block of shared
     /// pages at all; the guest's call fails with ENOSYS. Detail: none.
     pub const HOST_CANNOT: &str = "host cannot do this";
+    /// A mapping asked for at an address Linux's address space has and the host's does not (plan
+    /// section 15, the address space is small): a fixed one is refused (ENOMEM), a hint is placed
+    /// elsewhere. Detail: the address.
+    pub const ADDRESS_ABOVE_SPACE: &str = "address above the address space";
 
     /// Every reason that means something Linux has is not built here, each answered through
     /// `Counters::refuse`: the status file's list of what is missing comes
@@ -79,8 +183,13 @@ pub mod reason {
         ADVICE_NOT_BUILT,
         DEVICE_NOT_BUILT,
         PROC_ENTRY_NOT_BUILT,
+        SYS_ENTRY_NOT_BUILT,
         SECCOMP_LISTENER_NOT_IMPLEMENTED,
         CROSS_PROCESS_NOT_BUILT,
+        FAMILY_NOT_BUILT,
+        OPTION_NOT_BUILT,
+        PROTOCOL_NOT_BUILT,
+        NETLINK_REQUEST_NOT_BUILT,
     ];
 }
 

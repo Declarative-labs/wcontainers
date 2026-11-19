@@ -1,34 +1,38 @@
 //! Layer 3 against real ARM64 Linux: Csmith's random programs and the hand-picked ones, built with clang
 //! and gcc at every optimisation level, of fixed position and position independent code, at look-ahead none
-//! and full, at bounded look-ahead of an N picked from the blob, and with pieces of all three mixed and events
-//! injected (see `mixed`).
+//! and full (for speed and for size, plain and with the thread stopping at every stop check), at bounded
+//! look-ahead of an N picked from the blob, and with pieces of all three mixed and events injected (see
+//! `mixed`).
 //!
 //! `WC_LAYER3_CASES` Csmith programs (default 4), seeded from `WC_LAYER3_SEED` (default 1): case `i` is
 //! Csmith seed `seed * 1_000_003 + i`, with the compiler, level and position picked from the same number,
 //! so a failure replays from the two values: `WC_LAYER3_FROM=i` (default 0) starts at case `i`. The first
-//! `WC_LAYER3_CHROME` of them that end in time (default one) also run in Chrome, at none and full.
+//! `WC_LAYER3_CHROME` of them that end in time (default one) also run in Chrome, at none and full in both
+//! settings.
 //! `WC_LAYER3_JOBS` cases run at once (default one). A line every thousand cases shows progress.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use wcontainers_translator::contract::Reason;
-use wcontainers_translator::{LookAhead, Omit};
+use wcontainers_translator::{LookAhead, Omit, Optimise};
 use wcontainers_translator_test::browser;
+use wcontainers_translator_test::jobs::at_once;
 use wcontainers_translator_test::layer3::{
     Compiler, LEVELS, Position, build, csmith, native_in_time, ordinary,
 };
 use wcontainers_translator_test::mixed::mixed;
 use wcontainers_translator_test::programs::{
-    Blob, Ran, native, ran as outcome, reachable_memory, ready, translated,
+    Blob, Ran, native, ran as outcome, reachable_memory, ready, translated_for,
+    translated_stopping_everywhere,
 };
 
 fn setting(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect("a number"))
 }
 
-/// Run a blob at none and full; compare with Linux, and full with none in registers and memory. Gives
-/// Linux's run, or nothing when the program did not end in time there. `ordinary` runs the program built
-/// as an ordinary Linux executable.
+/// Run a blob at none and full in both settings; compare with Linux, and full with none in registers and
+/// memory. Gives Linux's run, or nothing when the program did not end in time there. `ordinary` runs the
+/// program built as an ordinary Linux executable.
 fn compare(blob: &Blob, ordinary: impl Fn() -> Ran) -> Result<Option<Ran>, String> {
     let Some(theirs) = native_in_time(blob) else {
         return Ok(None);
@@ -48,11 +52,22 @@ fn compare(blob: &Blob, ordinary: impl Fn() -> Ran) -> Result<Option<Ran>, Strin
         }
     }
     let mut finals = Vec::new();
-    for look_ahead in [LookAhead::None, LookAhead::Full] {
-        let (ours, mut machine, registers) = translated(blob, look_ahead);
+    for (look_ahead, optimise, stopping) in [
+        (LookAhead::None, Optimise::Speed, false),
+        (LookAhead::Full, Optimise::Speed, false),
+        (LookAhead::Full, Optimise::Size, false),
+        (LookAhead::Full, Optimise::Speed, true),
+        (LookAhead::Full, Optimise::Size, true),
+    ] {
+        let how = (look_ahead, optimise);
+        let (ours, mut machine, registers) = if stopping {
+            translated_stopping_everywhere(blob, how)
+        } else {
+            translated_for(blob, how)
+        };
         if ours != theirs {
             return Err(format!(
-                "{} at {look_ahead:?}: ours {:?} status {}, Linux {:?} status {}",
+                "{} at {look_ahead:?} for {optimise:?}, stopping everywhere {stopping}: ours {:?} status {}, Linux {:?} status {}",
                 blob.name,
                 String::from_utf8_lossy(&ours.stdout),
                 ours.status,
@@ -65,7 +80,7 @@ fn compare(blob: &Blob, ordinary: impl Fn() -> Ran) -> Result<Option<Ran>, Strin
         }
         finals.push((registers, reachable_memory(&mut machine, blob)));
     }
-    if finals[0] != finals[1] {
+    if finals[1..].iter().any(|full| *full != finals[0]) {
         return Err(format!("{}: full differs from none at the end", blob.name));
     }
     // Bounded of an N and pieces mixed with events injected, both from the blob's own hash.
@@ -97,13 +112,17 @@ fn compare(blob: &Blob, ordinary: impl Fn() -> Ran) -> Result<Option<Ran>, Strin
     Ok(Some(theirs))
 }
 
-/// Run a blob in Chrome at none and full and compare with Linux's run.
+/// Run a blob in Chrome at none and at full for speed and for size, and compare with Linux's run.
 fn compare_in_chrome(blob: &Blob, theirs: &Ran) -> Result<(), String> {
-    for look_ahead in [LookAhead::None, LookAhead::Full] {
-        let ours = browser::translated_with(blob, look_ahead, Omit::default());
+    for how in [
+        (LookAhead::None, Optimise::Speed),
+        (LookAhead::Full, Optimise::Speed),
+        (LookAhead::Full, Optimise::Size),
+    ] {
+        let ours = browser::translated_with(blob, how, Omit::default());
         if ours.ran != *theirs {
             return Err(format!(
-                "{} in Chrome at {look_ahead:?}: ours {:?} status {}, Linux {:?} status {}",
+                "{} in Chrome at {how:?}: ours {:?} status {}, Linux {:?} status {}",
                 blob.name,
                 String::from_utf8_lossy(&ours.ran.stdout),
                 ours.ran.status,
@@ -138,44 +157,33 @@ fn csmith_programs_match_linux() {
     let from = setting("WC_LAYER3_FROM", 0);
     let chrome = setting("WC_LAYER3_CHROME", 1);
     let jobs = setting("WC_LAYER3_JOBS", 1).max(1);
-    let (next, in_chrome) = (AtomicU64::new(0), AtomicU64::new(0));
+    let in_chrome = AtomicU64::new(0);
     let (ran, too_long, done) = (AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0));
     let failures = Mutex::new(Vec::new());
-    let work = || {
-        loop {
-            let i = next.fetch_add(1, Ordering::Relaxed);
-            if i >= cases {
-                return;
+    at_once(jobs, cases, |i| {
+        let number = seed.wrapping_mul(1_000_003).wrapping_add(from + i);
+        let (source, compiler, level, position) = csmith_case(number);
+        let blob = build(&source, compiler, level, position);
+        let own = || ordinary(&source, compiler, level, position);
+        let checked = compare(&blob, own).and_then(|theirs| match theirs {
+            Some(theirs) if in_chrome.fetch_add(1, Ordering::Relaxed) < chrome => {
+                compare_in_chrome(&blob, &theirs).map(|()| Some(theirs))
             }
-            let number = seed.wrapping_mul(1_000_003).wrapping_add(from + i);
-            let (source, compiler, level, position) = csmith_case(number);
-            let blob = build(&source, compiler, level, position);
-            let own = || ordinary(&source, compiler, level, position);
-            let checked = compare(&blob, own).and_then(|theirs| match theirs {
-                Some(theirs) if in_chrome.fetch_add(1, Ordering::Relaxed) < chrome => {
-                    compare_in_chrome(&blob, &theirs).map(|()| Some(theirs))
-                }
-                other => Ok(other),
-            });
-            match checked {
-                Ok(Some(_)) => ran.fetch_add(1, Ordering::Relaxed),
-                Ok(None) => too_long.fetch_add(1, Ordering::Relaxed),
-                Err(report) => {
-                    eprintln!("csmith {number} (case {}): {report}", from + i);
-                    failures.lock().unwrap().push(number);
-                    0
-                }
-            };
-            let done = done.fetch_add(1, Ordering::Relaxed) + 1;
-            if done.is_multiple_of(1000) {
-                let failing = failures.lock().unwrap().len();
-                eprintln!("layer 3: {done} of {cases} done, {failing} failing so far");
+            other => Ok(other),
+        });
+        match checked {
+            Ok(Some(_)) => ran.fetch_add(1, Ordering::Relaxed),
+            Ok(None) => too_long.fetch_add(1, Ordering::Relaxed),
+            Err(report) => {
+                eprintln!("csmith {number} (case {}): {report}", from + i);
+                failures.lock().unwrap().push(number);
+                0
             }
-        }
-    };
-    std::thread::scope(|scope| {
-        for _ in 0..jobs {
-            scope.spawn(work);
+        };
+        let done = done.fetch_add(1, Ordering::Relaxed) + 1;
+        if done.is_multiple_of(1000) {
+            let failing = failures.lock().unwrap().len();
+            eprintln!("layer 3: {done} of {cases} done, {failing} failing so far");
         }
     });
     let mut failures = failures.into_inner().unwrap();

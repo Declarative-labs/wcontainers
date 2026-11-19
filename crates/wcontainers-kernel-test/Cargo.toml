@@ -12,15 +12,25 @@ publish = false
 [dependencies]
 wcontainers-abi.workspace = true
 wcontainers-kernel = { path = "../wcontainers-kernel" }
+wcontainers-runtime = { path = "../wcontainers-runtime" }
+wcontainers-wasmtime = { path = "../wcontainers-wasmtime", optional = true }
+wcontainers-arm64 = { path = "../wcontainers-arm64", optional = true }
 unicorn-engine = "2.1.5"
 memmap2 = "0.9.12"
-linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "errno", "auxvec", "system", "ioctl", "prctl", "net", "ptrace", "no_std"] }
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "errno", "auxvec", "system", "ioctl", "prctl", "net", "ptrace", "netlink", "if_arp", "no_std"] }
 cargo_metadata = "0.23.1"
 libc = "0.2.191"
 regex = "1.13.1"
 rand = "0.9.2"
 tar = "0.4.46"
 proptest = "1.12.0"
+fuse-abi = { version = "0.2.0", default-features = false, features = ["linux", "zerocopy"] }
+zerocopy.workspace = true
+
+[features]
+# Every test runs with the translator's WebAssembly behind the kernel (the runtime's WebAssembly back end)
+# instead of the stand-in CPU, at the look-ahead `LOOK_AHEAD` names: full (also when unset), none or bounded.
+runtime = ["dep:wcontainers-wasmtime", "dep:wcontainers-arm64"]
 
 [lints]
 workspace = true

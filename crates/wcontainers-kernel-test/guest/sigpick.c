@@ -37,15 +37,24 @@ static void *idle(void *arg) {
     return NULL;
 }
 
-// A child sends the signal, so the sender is not one of the threads.
+// A child sends the signal, so the sender is not one of the threads. It waits for the parent's
+// word first: the C library's fork blocks every signal until it returns in the parent.
 static void send_from_child(void) {
     int before = handled;
     pid_t parent = getpid();
+    int go[2];
+    pipe(go);
     pid_t child = fork();
     if (child == 0) {
+        char byte;
+        close(go[1]);
+        read(go[0], &byte, 1);
         kill(parent, SIGUSR1);
         _exit(0);
     }
+    close(go[0]);
+    write(go[1], "g", 1);
+    close(go[1]);
     waitpid(child, NULL, 0);
     while (handled == before) {
         struct timespec ts = {0, 1000000};

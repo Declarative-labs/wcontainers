@@ -502,7 +502,7 @@ impl WebGpu {
                         .formats
                         .get(v.0.format)
                         .contains(FormatUse::FILTER);
-                    if let Some(bit) = e.binding.checked_sub(32).filter(|b| *b < 128)
+                    if let Some(bit) = crate::layout::texture_bit(e.binding)
                         && !filterable
                     {
                         layout_key.unfilterable_textures |= 1u128 << bit;
@@ -840,7 +840,7 @@ impl WebGpu {
                     t.write_mask = wgpu::ColorWrites::empty();
                     t.blend = None;
                 }
-                Some((self.no_fragment(), "none", targets))
+                Some((self.no_fragment(), crate::fill::NO_FRAGMENT, targets))
             }
         };
         let raster = &call.raster.0.desc;

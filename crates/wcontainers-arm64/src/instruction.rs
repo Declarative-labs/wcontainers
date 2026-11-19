@@ -2,7 +2,7 @@
 //! decoder can be replaced.
 
 /// Operand width of an integer instruction.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Width {
     W32,
     X64,

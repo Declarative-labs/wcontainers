@@ -17,8 +17,8 @@ const RECORD: u64 = 128;
 
 /// The signals a descriptor reads, if it is one.
 pub(super) fn mask_of(file: &OpenFile) -> Option<u64> {
-    match file.anon {
-        Some(Anon::Signals(mask)) => Some(mask),
+    match &file.anon {
+        Some(Anon::Signals(mask)) => Some(*mask),
         _ => None,
     }
 }
@@ -94,7 +94,7 @@ pub(super) fn read(
             if done > 0 {
                 break;
             }
-            if file.borrow().flags & O_NONBLOCK != 0 {
+            if super::io::nonblocking(kernel, tid, file) {
                 return Err(Errno::EAGAIN);
             }
             if kernel.signal_pending(tid) {

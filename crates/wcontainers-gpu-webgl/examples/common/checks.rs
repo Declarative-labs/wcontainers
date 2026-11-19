@@ -2242,6 +2242,139 @@ pub fn linear_values_interpolate_in_window_space<H: Host>() {
     b.destroy(Object::Texture(out));
 }
 
+/// A full-screen triangle with the window x of each fragment interpolated per sample; one program
+/// writes what it sees of its sample, the other writes the sample mask.
+const PER_SAMPLE: &str = "
+const SIDE: f32 = 8.0;
+struct V { @builtin(position) p: vec4<f32>, @location(0) @interpolate(perspective, sample) x: f32 }
+@vertex fn vs(@builtin(vertex_index) i: u32) -> V {
+    let c = vec2<f32>(f32((i & 1u) << 2u) - 1.0, f32((i & 2u) << 1u) - 1.0);
+    return V(vec4<f32>(c, 0.0, 1.0), (c.x + 1.0) * SIDE / 2.0);
+}
+@fragment fn fs_samples(v: V, @builtin(sample_index) s: u32, @builtin(sample_mask) inside: u32)
+    -> @location(0) vec4<f32> {
+    return vec4<f32>(f32(s) / 3.0, abs(fract(v.x) - 0.5) * 2.0, 0.0, f32(countOneBits(inside)) / 4.0);
+}
+struct O { @location(0) c: vec4<f32>, @builtin(sample_mask) m: u32 }
+@fragment fn fs_mask(v: V) -> O {
+    return O(vec4<f32>(1.0), select(1u, 6u, v.p.x > SIDE / 2.0));
+}";
+
+/// Programs run once per sample where they read the sample number (`SAMPLE_SHADING`, with
+/// OES_sample_variables and OES_shader_multisample_interpolation in Chrome): into four samples,
+/// each run sees its own number, only its own bit of the coverage, and the value interpolated at
+/// its own place; a program writing the sample mask writes only the samples it names.
+pub fn programs_run_per_sample_and_write_the_sample_mask<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    let f = Format::Rgba8Unorm;
+    let samples = 4;
+    if !b.caps().has(Features::SAMPLE_SHADING) {
+        not_run(Features::SAMPLE_SHADING);
+        return;
+    }
+    if !b.caps().formats.takes_samples(f, samples) {
+        not_run_because(format!("{f:?} takes no {samples} samples here"));
+        return;
+    }
+    let k = Kit::new(&mut b);
+    let side = 8;
+    let whole = [kit::viewport(0.0, 0.0, side as f32, side as f32)];
+    let mut resolved = Vec::new();
+    for entry in ["fs_samples", "fs_mask"] {
+        // Sample numbers and per-sample values need naga's multisampled shading capability.
+        let [vs, fs] =
+            [("vs", ShaderStage::Vertex), (entry, ShaderStage::Fragment)].map(|(e, s)| {
+                let m = extensions::module_all(PER_SAMPLE, e, s);
+                b.create_shader(&m).expect("create_shader")
+            });
+        let program = b
+            .create_program(&Program::Render {
+                vertex: &vs,
+                fragment: Some(&fs),
+            })
+            .expect("create_program");
+        let ms = b
+            .create_texture(&TextureDesc {
+                dimension: TextureDimension::D2,
+                format: f,
+                width: side,
+                height: side,
+                depth_or_layers: 1,
+                mip_levels: 1,
+                samples,
+                usage: TextureUsage::RENDER,
+                cube: false,
+                reinterpret: false,
+            })
+            .expect("create_texture");
+        let ms_view = kit::target(&mut b, &ms, f, 0, 0);
+        let single = kit::texture(
+            &mut b,
+            TextureDimension::D2,
+            f,
+            [side, side, 1],
+            1,
+            TextureUsage::RENDER | TextureUsage::COPY_SRC,
+            false,
+        );
+        let single_view = kit::target(&mut b, &single, f, 0, 0);
+        let mut pass = kit::pass(&ms_view, [0; 4], None);
+        if let Some(c) = &mut pass.colors[0] {
+            c.resolve = Some(&single_view);
+        }
+        b.begin_pass(&pass);
+        b.draw(&kit::call(
+            &k,
+            &program,
+            None,
+            &whole,
+            Topology::TriangleList,
+            3,
+        ));
+        b.end_pass();
+        resolved.push(kit::read(
+            &mut b,
+            &single,
+            0,
+            0,
+            [side, side, 1],
+            f.block().2 as usize,
+            false,
+        ));
+        b.destroy(Object::Program(program));
+        b.destroy(Object::Shader(vs));
+        b.destroy(Object::Shader(fs));
+        b.destroy(Object::TextureView(single_view));
+        b.destroy(Object::Texture(single));
+        b.destroy(Object::TextureView(ms_view));
+        b.destroy(Object::Texture(ms));
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    // A resolve averages the samples: n of four samples at 255 give n * 255 / 4.
+    let of_four = |n: u32| ((n * u32::from(u8::MAX)) as f64 / f64::from(samples)).round() as i32;
+    let near = |got: u8, want: i32, what: &str, at: usize| {
+        assert!(
+            (i32::from(got) - want).abs() <= 1,
+            "pixel {at}: {what} resolved to {got}, not {want}"
+        );
+    };
+    for (at, t) in resolved[0].as_chunks::<4>().0.iter().enumerate() {
+        // The numbers 0 to 3 over 3 average a half; so do the distances of the four sample
+        // places from the pixel's centre on Direct3D's pattern, where the centre gives 0.
+        near(t[0], of_four(2), "the sample number", at);
+        near(t[1], of_four(2), "the value interpolated at the sample", at);
+        near(t[3], of_four(1), "the coverage each run reads", at);
+    }
+    for (at, t) in resolved[1].as_chunks::<4>().0.iter().enumerate() {
+        let right = at % side as usize >= side as usize / 2;
+        let want = of_four(if right { 2 } else { 1 });
+        for c in t {
+            near(*c, want, "the mask written", at);
+        }
+    }
+}
+
 /// Infinities and negative zero written into an `rgba32float` target, each way a program can hold
 /// them: as a constant, from a local variable of their bits (as the DXBC converter writes
 /// non-finite constants), as a literal negative zero, and from a uniform buffer.

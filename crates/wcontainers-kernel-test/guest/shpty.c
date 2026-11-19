@@ -38,7 +38,8 @@ static void read_until(const char *until) {
         if (shown - start >= length && memcmp(screen + shown - length, until, length) == 0)
             return;
         struct pollfd p = {.fd = master, .events = POLLIN};
-        if (poll(&p, 1, 20000) <= 0) {
+        // Generous: the shared reference machine has taken over 20 s to show a first prompt.
+        if (poll(&p, 1, 120000) <= 0) {
             printf("timed out waiting for %s\n", until);
             print_screen();
             kill(shell, SIGKILL);

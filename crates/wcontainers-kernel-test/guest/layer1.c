@@ -22,7 +22,9 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <sched.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,6 +32,7 @@
 #include <time.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/sysmacros.h>
@@ -365,6 +368,81 @@ static void remove_tree(int directory_fd, const char *name) {
     unlinkat(directory_fd, name, AT_REMOVEDIR);
 }
 
+// Loopback packets: Linux may hand one to its receiver after the send returned, from ksoftirqd
+// under load. In a sequence with internet sockets the child takes a ticket before each call's
+// report and then waits, with no system call a sequence's filter could refuse, until the parent
+// has read that report and seen every CPU's receive backlog empty (/proc/net/softnet_stat). Off
+// where that file cannot be opened.
+struct settling {
+    _Atomic uint64_t asked, done;
+};
+static struct settling *settling;
+static int softnet = -1;
+
+static int uses_internet(uint64_t (*sequence)[CALL_WORDS], uint32_t calls) {
+    for (uint32_t index = 0; index < calls; index++) {
+        if (sequence[index][0] == SYS_socket && (sequence[index][1] == AF_INET || sequence[index][1] == AF_INET6)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// The packets waiting in every CPU's backlog: softnet_stat's twelfth field, one line a CPU.
+static long backlog(void) {
+    static char text[16384];
+    ssize_t got = pread(softnet, text, sizeof text - 1, 0);
+    if (got <= 0) {
+        return 0;
+    }
+    text[got] = 0;
+    long total = 0;
+    for (char *line = text; line && *line; line = strchr(line, '\n'), line = line ? line + 1 : 0) {
+        char *field = line;
+        for (int skip = 0; field && skip < 11; skip++) {
+            field = strchr(field, ' ');
+            field = field ? field + 1 : 0;
+        }
+        if (field) {
+            total += strtol(field, 0, 16);
+        }
+    }
+    return total;
+}
+
+// Waits, up to a second, until the backlogs are seen empty twice with a yield between.
+static void settle_loopback(void) {
+    struct timespec pause = {0, 50000}, start, now;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    do {
+        if (backlog() == 0) {
+            sched_yield();
+            if (backlog() == 0) {
+                return;
+            }
+        }
+        nanosleep(&pause, 0);
+        clock_gettime(CLOCK_MONOTONIC, &now);
+    } while ((now.tv_sec - start.tv_sec) * 1000000000L + (now.tv_nsec - start.tv_nsec) < 1000000000L);
+}
+
+static uint64_t take_ticket(void) {
+    return atomic_fetch_add(&settling->asked, 1) + 1;
+}
+
+// Spins on the shared page, for at most two seconds of the CPU's own counter.
+static void wait_settled(uint64_t ticket) {
+    uint64_t frequency, start, now;
+    __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(frequency));
+    __asm__ volatile("isb; mrs %0, cntvct_el0" : "=r"(start));
+    while (atomic_load(&settling->done) < ticket) {
+        __asm__ volatile("yield; isb; mrs %0, cntvct_el0" : "=r"(now));
+        if (now - start > 2 * frequency) {
+            return;
+        }
+    }
+}
+
 // Remakes the devices a sequence can name. The container's first /dev/null stays held from outside
 // the container once removed (measured: its inode is never given back), so it is remade once before
 // the first sequence too, and each sequence starts with one hidden inode in /dev, as ours does.
@@ -421,8 +499,21 @@ static void remake_devices(void) {
     chmod("/dev/pts/ptmx", 0666);
 }
 
-int main(void) {
+// With an argument, the directory the file backend is mounted on, which sequences on it work in
+// and which is emptied after each as /dev/shm is.
+int main(int argc, char **argv) {
+    const char *backend = argc > 1 ? argv[1] : 0;
+    if (chdir("/") != 0) {
+        return 1;
+    }
     remake_devices();
+    softnet = open("/proc/net/softnet_stat", O_RDONLY | O_CLOEXEC);
+    if (softnet >= 0) {
+        settling = mmap(0, 4096, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+        if (settling == MAP_FAILED) {
+            return 1;
+        }
+    }
     struct stat mqueue_root;
     if (stat("/dev/mqueue", &mqueue_root) != 0) {
         return 1;
@@ -459,8 +550,12 @@ int main(void) {
         if (pipe(report) != 0) {
             return 1;
         }
+        int internet = settling && uses_internet(sequence, calls);
         pid_t child = fork();
         if (child == 0) {
+            if (softnet >= 0) {
+                close(softnet);
+            }
             dup2(report[1], 1);
             close(report[0]);
             close(report[1]);
@@ -470,6 +565,17 @@ int main(void) {
             memcpy(ARENA, arena_init, length);
             memcpy(before, ARENA, ARENA_SIZE);
             setsid();
+            // Our caller is the container's first process, which Linux keeps from a SIGPIPE it has
+            // no handler for; ignored here too, a write with no reader is EPIPE on both sides.
+            signal(SIGPIPE, SIG_IGN);
+            // The same for I/O signals: a terminal given FIOASYNC or O_ASYNC names the caller as
+            // the owner (`__tty_fasync`), so SIGIO, or what F_SETSIG chooses, reaches it. Set
+            // directly, since the C library refuses its own signals 32 to 34.
+            static const int io_signals[] = {SIGHUP, SIGTRAP, SIGFPE, SIGTTOU, SIGIO, 32, 64};
+            for (unsigned index = 0; index < sizeof io_signals / sizeof io_signals[0]; index++) {
+                uint64_t ignored[4] = {(uint64_t)SIG_IGN, 0, 0, 0};
+                syscall(SYS_rt_sigaction, io_signals[index], ignored, 0, 8);
+            }
             self_pid = getpid();
             uint64_t self = (uint64_t)self_pid;
             int terminal = opens_terminal(sequence, calls);
@@ -514,12 +620,16 @@ int main(void) {
                 if (sequence[index][0] == SYS_getcwd) {
                     unshared |= in_proc(AT_FDCWD);
                 }
+                uint64_t ticket = internet ? take_ticket() : 0;
                 write_all(1, &result, 8);
                 write_all(1, &unshared, 4);
                 report_changes(1);
                 clear_machine(&sequence[index][7], result);
                 if (terminal) {
                     settle_terminals();
+                }
+                if (internet) {
+                    wait_settled(ticket);
                 }
             }
             static unsigned char page[4096];
@@ -563,6 +673,11 @@ int main(void) {
                 break;
             }
             used += got;
+            uint64_t asked = internet ? atomic_load(&settling->asked) : 0;
+            if (internet && asked > atomic_load(&settling->done)) {
+                settle_loopback();
+                atomic_store(&settling->done, asked);
+            }
         }
         close(report[0]);
         int status;
@@ -590,6 +705,17 @@ int main(void) {
         }
         chown("/dev/shm", 0, 0);
         chmod("/dev/shm", 01777);
+        DIR *mounted = backend ? opendir(backend) : 0;
+        while (mounted && (entry = readdir(mounted))) {
+            if (strcmp(entry->d_name, ".") && strcmp(entry->d_name, "..")) {
+                remove_tree(dirfd(mounted), entry->d_name);
+            }
+        }
+        if (mounted) {
+            closedir(mounted);
+            chown(backend, 0, 0);
+            chmod(backend, 01777);
+        }
         // Every shared memory segment goes; the slots and sequence numbers carry over.
         static unsigned char segment_status[112];
         long highest = syscall(SYS_shmctl, 0, 3, segment_status);

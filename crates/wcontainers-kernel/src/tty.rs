@@ -375,7 +375,9 @@ impl Tty {
         } else {
             ld.commit_head
         };
-        head - ld.read_tail
+        // With EXTPROC a canonical terminal's reads pass its line end, and Linux's unsigned
+        // difference wraps.
+        head.wrapping_sub(ld.read_tail)
     }
 
     /// What `TIOCINQ` reports: the bytes a read could take, the end-of-file marks left out in

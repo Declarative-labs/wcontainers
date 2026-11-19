@@ -23,12 +23,12 @@ use crate::draw;
 type B = WebGpu;
 type Buffer = <B as Backend>::Buffer;
 
-/// The side of the square target.
-pub const SIZE: u32 = 256;
+/// The side of the square target, the reference scenes' width.
+pub const TARGET_SIDE: u32 = crate::scene::WIDTH;
 /// Objects, one draw each.
 pub const OBJECTS: u32 = 256;
 /// Instances a draw.
-pub const INSTANCES: u32 = 16;
+pub const INSTANCES_PER_DRAW: u32 = 16;
 /// Streams a draw at most, one attribute each: the vertex attributes WebGPU guarantees.
 pub const MOST_STREAMS: u32 = 16;
 /// Streams a draw at least: the quad, where, how large and what colour.
@@ -81,7 +81,7 @@ impl Timing {
     /// One line of what was measured.
     pub fn line(&self) -> String {
         format!(
-            "{}: {} streams, {OBJECTS} draws of {INSTANCES} instances; first frame CPU {:.3} ms GPU {:.3} ms; median of {} later frames CPU {:.3} ms GPU {:.3} ms; {} bind groups made",
+            "{}: {} streams, {OBJECTS} draws of {INSTANCES_PER_DRAW} instances; first frame CPU {:.3} ms GPU {:.3} ms; median of {} later frames CPU {:.3} ms GPU {:.3} ms; {} bind groups made",
             self.route.name(),
             self.streams,
             self.cpu_ms[0],
@@ -158,13 +158,13 @@ fn object(b: &mut B, k: u32, streams: u32) -> Result<Vec<Buffer>> {
     .collect();
     let cell = 2.0 / 16.0;
     let (x, y) = ((k % 16) as f32 * cell - 1.0, (k / 16) as f32 * cell - 1.0);
-    let at: Vec<[f32; 4]> = (0..INSTANCES)
+    let at: Vec<[f32; 4]> = (0..INSTANCES_PER_DRAW)
         .map(|j| {
             let sub = cell / 4.0;
             [x + (j % 4) as f32 * sub, y + (j / 4) as f32 * sub, 0.0, 0.0]
         })
         .collect();
-    let scale = vec![[cell / 5.0, cell / 5.0, 0.0, 0.0]; INSTANCES as usize];
+    let scale = vec![[cell / 5.0, cell / 5.0, 0.0, 0.0]; INSTANCES_PER_DRAW as usize];
     let usage = BufferUsage::VERTEX | BufferUsage::STORAGE;
     let mut buffers = vec![
         draw::buffer(b, &quad, BufferUsage::VERTEX)?,
@@ -172,7 +172,7 @@ fn object(b: &mut B, k: u32, streams: u32) -> Result<Vec<Buffer>> {
         draw::buffer(b, &floats(&scale), usage)?,
     ];
     for part in 3..streams {
-        let colour: Vec<[f32; 4]> = (0..INSTANCES)
+        let colour: Vec<[f32; 4]> = (0..INSTANCES_PER_DRAW)
             .map(|j| {
                 if part == 3 {
                     [k as f32 / 512.0, j as f32 / 32.0, 0.5, 1.0]
@@ -205,7 +205,7 @@ fn pulled_set(b: &mut B, pull: &Buffer, o: &[Buffer]) -> Result<<B as Backend>::
                 range: BufferRange {
                     buffer,
                     offset: 0,
-                    size: u64::from(INSTANCES) * 16,
+                    size: u64::from(INSTANCES_PER_DRAW) * 16,
                 },
                 writable: false,
             },
@@ -223,8 +223,8 @@ fn run(b: &mut B, route: Route, streams: u32, frames: u32, now: fn() -> f64) -> 
     let (target, view) = draw::texture_2d(
         b,
         Format::Rgba8Unorm,
-        SIZE,
-        SIZE,
+        TARGET_SIDE,
+        TARGET_SIDE,
         TextureUsage::RENDER | TextureUsage::COPY_SRC,
     )?;
     let program = draw::program(b, &source(pulled, streams))?;
@@ -311,8 +311,8 @@ fn run(b: &mut B, route: Route, streams: u32, frames: u32, now: fn() -> f64) -> 
                 viewports: &[Viewport {
                     x: 0,
                     y: 0,
-                    width: (SIZE as f32).to_bits(),
-                    height: (SIZE as f32).to_bits(),
+                    width: (TARGET_SIDE as f32).to_bits(),
+                    height: (TARGET_SIDE as f32).to_bits(),
                     min_depth: 0,
                     max_depth: 1.0f32.to_bits(),
                 }],
@@ -324,7 +324,7 @@ fn run(b: &mut B, route: Route, streams: u32, frames: u32, now: fn() -> f64) -> 
                     first: 0,
                     count: 6,
                     first_instance: 0,
-                    instances: INSTANCES,
+                    instances: INSTANCES_PER_DRAW,
                 },
             });
         }
@@ -357,15 +357,15 @@ fn run(b: &mut B, route: Route, streams: u32, frames: u32, now: fn() -> f64) -> 
                 stencil: false,
             },
             extent: Extent {
-                width: SIZE,
-                height: SIZE,
+                width: TARGET_SIDE,
+                height: TARGET_SIDE,
                 depth_or_layers: 1,
             },
         })
         .map_err(gpu)?;
     b.submit();
     b.wait_read(&rb);
-    timing.picture = vec![0; (SIZE * SIZE * 4) as usize];
+    timing.picture = vec![0; (TARGET_SIDE * TARGET_SIDE * 4) as usize];
     b.finish_read(rb, &mut timing.picture);
     ensure!(
         b.status() == DeviceStatus::Ok,

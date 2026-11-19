@@ -3,9 +3,9 @@
 // <pkg-dir> holds wasm-bindgen's output for the scenes example; <list-file> is the native suite's
 // `--list --format terse` output, so a test the browser host lacks fails instead of going unrun.
 // Writes one line per test (`<name>: ok` or `<name>: FAILED <message>`) to <out-file>; exit 1 on
-// any failure.
+// any failure, NO_ADAPTER (the environment's) where Chrome gave no adapter.
 import { readFile, writeFile } from 'node:fs/promises';
-import { serve, launch } from './chrome.mjs';
+import { serve, launch, adapter, NoAdapter, exitCode } from './chrome.mjs';
 
 const [pkg, out, list] = process.argv.slice(2);
 if (!list) throw new Error('usage: node suite.mjs <pkg-dir> <out-file> <list-file>');
@@ -15,17 +15,12 @@ const server = await serve(pkg);
 const browser = await launch();
 const lines = [];
 let passed = 0;
+let noAdapter = false;
 try {
-  // An adapter request just after Chrome starts can fail while its GPU process comes up.
   const warm = await browser.newPage();
   await warm.goto(`http://127.0.0.1:${server.address().port}/suite.html`);
-  let adapter = false;
-  for (let attempt = 1; !adapter && attempt <= 10; attempt++) {
-    adapter = await warm.evaluate(async () => (await navigator.gpu.requestAdapter()) !== null).catch(() => false);
-    if (!adapter) await warm.waitForTimeout(200);
-  }
+  await adapter(warm);
   await warm.close();
-  if (!adapter) throw new Error('no WebGPU adapter');
   for (const test of tests) {
     const page = await browser.newPage();
     page.on('console', (m) => console.log(`${test}: console: ${m.text()}`));
@@ -43,6 +38,10 @@ try {
     console.log(line);
     lines.push(line);
   }
+} catch (e) {
+  if (!(e instanceof NoAdapter)) throw e;
+  console.log(`chrome: ${e.message}`);
+  noAdapter = true;
 } finally {
   await browser.close();
   server.close();
@@ -50,4 +49,4 @@ try {
 const summary = `suite in chrome: ${passed} passed; ${tests.length - passed} failed`;
 console.log(summary);
 await writeFile(out, `${lines.join('\n')}\n${summary}\n`);
-process.exitCode = passed === tests.length ? 0 : 1;
+process.exitCode = exitCode(noAdapter, passed !== tests.length);

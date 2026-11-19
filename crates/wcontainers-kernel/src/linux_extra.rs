@@ -13,6 +13,7 @@ pub(crate) const ST_NODEV: u32 = 0x0004;
 pub(crate) const ST_NOEXEC: u32 = 0x0008;
 /// Always set: the flags are meaningful.
 pub(crate) const ST_VALID: u32 = 0x0020;
+pub(crate) const ST_NOATIME: u32 = 0x0400;
 pub(crate) const ST_RELATIME: u32 = 0x1000;
 
 // Values from Linux's uapi headers newer than the ones linux-raw-sys 0.12.1 was generated from.
@@ -38,6 +39,10 @@ pub(crate) const ACL_GROUP_OBJ: u16 = 0x04;
 pub(crate) const ACL_GROUP: u16 = 0x08;
 pub(crate) const ACL_MASK: u16 = 0x10;
 pub(crate) const ACL_OTHER: u16 = 0x20;
+/// Access control list permission bits (`ACL_READ`, `ACL_WRITE`, `ACL_EXECUTE`).
+pub(crate) const ACL_PERMISSIONS: u16 = 0x04 | 0x02 | 0x01;
+/// The id of an entry that names no user or group (`ACL_UNDEFINED_ID`).
+pub(crate) const ACL_UNDEFINED_ID: u32 = u32::MAX;
 
 /// `personality` bits `execve` clears when a program gains privileges (`PER_CLEAR_ON_SETID`, from
 /// `linux/personality.h`'s `READ_IMPLIES_EXEC`, `ADDR_NO_RANDOMIZE`, `ADDR_COMPAT_LAYOUT` and
@@ -168,6 +173,9 @@ pub(crate) const FILEID_INO64_GEN: i32 = 0x81;
 pub(crate) const FILEID_INVALID: i32 = 0xff;
 /// The handle type kernfs and pidfs give: a 64-bit inode number.
 pub(crate) const FILEID_KERNFS: i32 = 0xfe;
+/// The handle type nsfs gives (`FILEID_NSFS`, not in linux-raw-sys): a namespace's id, type and
+/// number.
+pub(crate) const FILEID_NSFS: i32 = 0xf1;
 
 // The encoding of CPU clock ids below zero, from Linux's `linux/posix-timers_types.h`, which is not a
 // uapi header: the C library's `clock_getcpuclockid` and `pthread_getcpuclockid` make these ids.
@@ -596,6 +604,9 @@ pub(crate) const MSG_MSG_SIZE: u64 = 48;
 pub(crate) const TREE_NODE_SIZE: u64 = 48;
 pub(crate) const FILENT_SIZE: u64 = 80;
 pub(crate) const NOTIFY_COOKIE_LEN: u64 = 32;
+/// What the last byte of a SIGEV_THREAD cookie says (`linux/mqueue.h`).
+pub(crate) const NOTIFY_WOKENUP: u8 = 1;
+pub(crate) const NOTIFY_REMOVED: u8 = 2;
 pub(crate) const MQUEUE_MAGIC: u32 = 0x1980_0202;
 pub(crate) const SIGEVENT_SIZE: u64 = 64;
 /// The highest signal number (`_NSIG`).
@@ -613,3 +624,68 @@ pub(crate) struct mq_attr {
     pub mq_curmsgs: i64,
     pub reserved: [i64; 4],
 }
+
+/// The longest name a FUSE backend may answer with (`FUSE_NAME_MAX`, Linux's internal
+/// `fs/fuse/fuse_i.h`).
+pub(crate) const FUSE_NAME_MAX: usize = 1024;
+
+// Values from Linux's kernel-side `linux/net.h`, which no uapi header carries.
+
+/// One more than the largest socket kind (`SOCK_PACKET` is 10).
+pub(crate) const SOCK_MAX: u32 = 11;
+
+/// `recvmmsg`'s flag to wait only for the first message (`linux/socket.h`, not in uapi).
+pub(crate) const MSG_WAITFORONE: u32 = 0x10000;
+
+/// epoll's requests for busy polling's parameters, `_IOW` and `_IOR` of an 8 byte
+/// `struct epoll_params` (`linux/eventpoll.h`, which linux-raw-sys does not generate).
+pub(crate) const EPIOCSPARAMS: u32 = 0x4008_8a01;
+pub(crate) const EPIOCGPARAMS: u32 = 0x8008_8a02;
+
+/// The control message carrying a sender's process descriptor (`linux/socket.h`, not in uapi).
+pub(crate) const SCM_PIDFD: u32 = 0x04;
+
+/// The one extended attribute a socket's inode has, its protocol's name (`linux/xattr.h`, not in
+/// uapi).
+pub(crate) const XATTR_NAME_SOCKPROTONAME: &[u8] = b"system.sockprotoname";
+
+/// TCP's states as `/proc/net/tcp` shows them (`net/tcp_states.h`, which only the kernel's own
+/// headers hold); UDP shows the first and seventh.
+pub(crate) const TCP_ESTABLISHED: u8 = 1;
+pub(crate) const TCP_SYN_SENT: u8 = 2;
+pub(crate) const TCP_SYN_RECV: u8 = 3;
+pub(crate) const TCP_FIN_WAIT2: u8 = 5;
+pub(crate) const TCP_TIME_WAIT: u8 = 6;
+pub(crate) const TCP_CLOSE: u8 = 7;
+pub(crate) const TCP_CLOSE_WAIT: u8 = 8;
+pub(crate) const TCP_LISTEN: u8 = 10;
+
+/// Where a queued socket error came from (`linux/errqueue.h`, which linux-raw-sys does not
+/// generate).
+pub(crate) const SO_EE_ORIGIN_ICMP: u8 = 2;
+pub(crate) const SO_EE_ORIGIN_ICMP6: u8 = 3;
+pub(crate) const SO_EE_ORIGIN_TIMESTAMPING: u8 = 4;
+/// Which send timestamp an error queue entry carries (`linux/errqueue.h`).
+pub(crate) const SCM_TSTAMP_SND: u32 = 0;
+pub(crate) const SCM_TSTAMP_SCHED: u32 = 1;
+/// The ICMP and ICMPv6 type and code of an unreachable port (`linux/icmp.h`, `linux/icmpv6.h`).
+pub(crate) const ICMP_DEST_UNREACH: u8 = 3;
+pub(crate) const ICMP_PORT_UNREACH: u8 = 3;
+pub(crate) const ICMPV6_DEST_UNREACH: u8 = 1;
+pub(crate) const ICMPV6_PORT_UNREACH: u8 = 4;
+
+/// UDP's own options (`linux/udp.h`, which linux-raw-sys does not generate).
+pub(crate) const UDP_CORK: u32 = 1;
+pub(crate) const UDPLITE_SEND_CSCOV: u32 = 10;
+pub(crate) const UDPLITE_RECV_CSCOV: u32 = 11;
+pub(crate) const UDP_ENCAP: u32 = 100;
+pub(crate) const UDP_NO_CHECK6_TX: u32 = 101;
+pub(crate) const UDP_NO_CHECK6_RX: u32 = 102;
+pub(crate) const UDP_SEGMENT: u32 = 103;
+pub(crate) const UDP_GRO: u32 = 104;
+
+/// `rtm_flags` of a route answer (`in_route.h`): the route is to this host, a broadcast or a
+/// multicast group.
+pub(crate) const RTCF_LOCAL: u32 = 0x8000_0000;
+pub(crate) const RTCF_BROADCAST: u32 = 0x1000_0000;
+pub(crate) const RTCF_MULTICAST: u32 = 0x2000_0000;

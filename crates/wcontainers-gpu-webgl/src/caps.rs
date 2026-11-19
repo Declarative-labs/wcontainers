@@ -64,6 +64,12 @@ pub fn caps(
     ] {
         features.set(feature, ext.contains(name));
     }
+    // Programs run per sample where they read the sample number, and read and write the mask.
+    features.set(
+        Features::SAMPLE_SHADING,
+        ext.contains(crate::platform::SAMPLE_VARIABLES)
+            && ext.contains(crate::platform::MULTISAMPLE_INTERPOLATION),
+    );
     // CLIP_DISTANCE and CULL_DISTANCE stay absent although WEBGL_clip_cull_distance is there: with
     // the distances written and enabled, Chrome on the RTX 3080 clipped nothing (not found why).
     let anisotropic = ext.contains("EXT_texture_filter_anisotropic");

@@ -4,11 +4,251 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## Where things stand
 
-M5 (real code at scale): built in four runs (under "M5, fourth run" back to "M5, first run"); every part
-is built and recorded, and refinements are listed under "M5, fourth run, what comes next". M0 to M4 and S1 are built; their work is recorded
-below, newest first. The long runs to the plan's pass bars (layer 1 at 10,000 a form, layer 2 at one million
-programs, layer 3 at 100,000) are run once by the orchestrator at the end of the translator track; commands
-under "How to run".
+M0 to M5, S1 and P1 are built; their work is recorded below, newest first. P2 (the long runs to the plan's
+pass bars) is under way and its driver is running detached (layer 3 now): see "P2" just below for how to
+check it is alive (do that first; never start a second one), watch it, restart it, and what is left. Refinements of M5 that remain are listed under "M5, fourth run, what comes next".
+
+## P2: the long runs to the pass bars
+
+The P1 check's findings, each fixed or answered:
+- A chunk stopped at the time limit or failing was never run again on that commit. Now only a chunk that
+  passed on an accepted commit is skipped; one that failed or was stopped runs again on the next start (its
+  old line stays in the ledger, so a retry is visible). Checked on a made-up ledger (pass, fail, stopped,
+  pass on another commit: only the first held) and by a real run with `WC_LONG_LIMIT=1` (4 chunks stopped,
+  no container left).
+- Layer 3's bar is now counted in programs compared with Linux, not programs made: the driver runs chunks
+  until the programs compared reach the bar (at most twice the chunks the bar would take if every program
+  were compared, so a broken reference cannot run for ever). The ledger's `cases` for layer 3 is the programs
+  compared; `sample` gives those also in Chrome, those made and those that did not end on Linux in time.
+- Layer 3's chunks are 500 programs, not 1,000, so a chunk stays well inside the 90 minute limit at high
+  load (the check measured 5.1 s a program at load 55 to 113: about 43 minutes for 500, extrapolated).
+- One unreadable unwind entry (a bad CIE pointer) ended all reading of `.eh_frame`. Now the entries are walked
+  by their lengths (gimli's reader) and each function's entry parsed alone (`fde_from_offset`), so a bad one
+  is skipped, counted and warned; reading stops only where a length cannot be read. New test
+  `a_bad_unwind_entry_loses_only_itself` (musl with one CIE pointer broken: failed before with 11 of 22
+  starts, passes now). On seven good binaries (busybox, musl, rg, git, python, go, java) the starts found are
+  the same as before, means by means.
+- Finding 6 of the M5 check (the two lookup designs' memory as process memory): not measured, on purpose. The
+  old design cannot hold Node or Bun in Chrome (over Chrome's 10,000,000 table entries), so no memory figure
+  could change the choice; the old design is gone from the tree, and bringing it back from 0d312ab to run Node
+  would take the cores the long runs hold for a figure with no use.
+- `origin/phase-1` moved to df81eff ten seconds after P1's merge; among the shared and translator files it
+  differs from this branch by one line of `Cargo.lock`. Not merged again (nothing needs it); for the
+  orchestrator.
+- "How to run" for layer 3 brought up to date.
+
+The driver also changed in one more way: while it ran, each chunk's `cargo test` built whatever was in the
+checkout, and the tests build the reference runner and the browser translator from the working tree, so work
+on a fix in the checkout would have run in the next chunk under the old commit. Now the driver refuses a tree
+with uncommitted changes, exports the commit (`git archive`) to `WC_LONG_DIR/trees/<commit>`, and builds and
+runs there (target directory `WC_LONG_DIR/target`, shared by every copy). To run a fix, stop the driver,
+commit, and start it again with `WC_LONG_ACCEPT`. Checked: layer 1 at 1 percent from the copy (seed 31,
+commit a31bb6f) passed, 121,500 cases and 1,215 in Chrome, 70 s, load 10 to 11; the copy built its own
+reference runner and browser translator.
+
+The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three layers at 100 percent, 6 at once):
+- Directory: `/Users/thomaseaton/Documents/GitHub/pyro-parked/wcontainers-scratch/translator/p2/long`
+  (`ledger.txt`, `driver.log`, `logs/`, `trees/`, `target/`).
+- Alive? `pgrep -fl long-runs.sh` and look for the line `bash .../long-runs.sh` (any shell whose command
+  text holds the name matches too, a watcher's included; never start a second driver beside it). What it is doing: `tail -3
+  .../p2/long/driver.log`. Done so far: `cut -f1,2,4,6,7,10 .../p2/long/ledger.txt`.
+- Restart after a stop or a fix (from the checkout root, all committed):
+  `WC_LONG_DIR=/Users/thomaseaton/Documents/GitHub/pyro-parked/wcontainers-scratch/translator/p2/long WC_LONG_SEED=100 WC_LONG_ACCEPT=c38b4ad nohup nix develop -c crates/wcontainers-translator-test/long-runs.sh >> .../p2/long/driver.log 2>&1 &`
+  It skips every chunk that passed on c38b4ad or later and runs the rest. To stop it: `pkill -f long-runs.sh`,
+  then stop its `cargo test` and remove its containers (`docker ps -aq --filter name=wc-translator- | xargs
+  docker rm -f`).
+- Restarted 2026-11-16 16:44 on 92b0866 (the square root fix below) with `WC_LONG_ACCEPT=c38b4ad`: layer 1
+  chunks 1, 2 and 4 kept from c38b4ad, chunk 3 run again. Chunk 5 had started on c38b4ad and was stopped
+  (no ledger line). Restarted again 2026-11-16 22:59 on 445e3cf (the layer 2 generator fix), same command;
+  it is that run (driver pid 87380 at the time of writing) that is going now. Use `WC_LONG_ACCEPT=c38b4ad`
+  on any later restart too. Each restart appends to `driver.log`; the code it runs is the copy in
+  `trees/<commit>`, so commits in the checkout do not reach it until it is restarted.
+- Layer 3's progress in programs compared: `awk -F'\t' '$1=="layer=3" && $10=="result=pass" {split($4,c,"=");
+  s+=c[2]} END {print s}' .../p2/long/ledger.txt`. Any chunk that did not pass: `grep -v result=pass
+  .../p2/long/ledger.txt` (two lines so far: layer 1 chunk 3 and layer 2 chunk 22, both fixed and passed
+  again).
+- After the last fix: the confirmation, 5 percent of each layer on the final commit with base seed 200 (not
+  used before): the same command with `WC_LONG_PERCENT=5 WC_LONG_SEED=200` and a new `WC_LONG_DIR`.
+- Expected length (from P1's 1 percent rates at load about 30, not measured): about 50 hours, more at higher
+  load.
+
+Progress (from the ledger):
+- Layer 1 done, 2026-11-16 15:55 to 18:11: 10 of 10 chunks passed, 1,215 forms x 10,000 cases (12,150,000)
+  and 100 a form in Chrome (121,500); chunks 1, 2 and 4 on c38b4ad, 3 and 5 to 10 on 92b0866; 7,253 s of
+  chunks (576 to 881 s each), load 10 to 30 for most of it, up to 189 (another job on the machine) in chunks
+  9 and 10. Chunk 3 failed once on c38b4ad (failure 1 below) and passed on 92b0866.
+- Layer 2 done, 2026-11-16 18:11 to 2026-11-17 02:37: 40 of 40 chunks passed, 1,000,000 programs, 1,000 also
+  on the CPU and 200 in Chrome (at none, and full in both settings); chunks 1 to 21 and 23 on 92b0866, 22
+  and 24 to 40 on 445e3cf; 29,589 s of chunks (628 to 1,230 s each), load mostly 8 to 35, peaks of 111 and
+  64 from other jobs. Chunk 22 failed once on 92b0866 (failure 2 below) and passed on 445e3cf.
+- Layer 3 started 2026-11-17 02:37 (chunks of 500 until 100,000 compared), on 445e3cf. At 05:56: 12 chunks
+  passed, 5,246 compared (of 6,000 made; 12.6 percent did not end on Linux in time), 60 also in Chrome, 0
+  mismatches; 573 to 2,384 s a chunk (most 620 to 770; chunk 8 took 2,384 s and chunk 11 1,263 s at load
+  30 to 130, no failure), load 12 to 130. At about 440 compared in about 700 s a chunk, the rest (about 216
+  chunks) is expected to take about 42 hours more (an extrapolation).
+- Layer 3 at 2026-11-17 11:05: 30 chunks passed, 13,128 compared, 0 mismatches, still on 445e3cf; chunks
+  took 573 to 2,639 s (median 709 s), load 14 to 80. From 05:33 to 11:05 it passed 18 chunks, about 18
+  minutes a chunk with the gaps between chunks; at that pace the rest (about 199 chunks) is about 60 hours
+  (an extrapolation).
+- 46 to 82 of each chunk's 500 programs (9 to 16 percent) do not end on Linux within the reference's 20 s
+  alarm and are not compared (counted in `sample`). Across chunks 1 to 30 the count does not follow the load
+  at the chunk's start (47 at load 65, 82 at load 13), so it is Csmith's programs that loop or run long,
+  not the load.
+
+What is left of P2, in order:
+1. Let layer 3 run to 100,000 compared. Look at the ledger now and then; treat any failing chunk as a real
+   mismatch: replay it with the ledger's `replay=` command, shrink, find the cause, write a failing test,
+   fix, commit, stop the driver between chunks, restart it with the command above.
+2. After the last fix, the confirmation run on the final commit at 5 percent of each layer with base seed
+   200 (one command above), in a new directory.
+3. The whole suite of the three crates on the final code once the driver has ended (not run at the end of
+   this run: the driver holds the 6 jobs this machine allows; the crates' own unit tests, `exact` and
+   `binaries` were run on the final code, and layers 1 and 2 of the long run cover the rest of the changes).
+4. Record the totals, the commits each chunk ran on (in the ledger), and the wall-clock time and load here.
+
+Failures found by the run, each with its cause and fix:
+1. Layer 1 chunk 3 (seed 100002, c38b4ad): `FSQRT_D_floatdp1`, the root of a denormal (0x19) rounding up
+   (FPCR 0x2400000) gave one ulp too many and raised inexact; Linux gives the exact root 0x1e84000000000000.
+   Cause: `ieee-apsqrt` runs its Newton steps in the rounding mode asked for and calls a root exact only when
+   its square comes out equal, so with rounding up it settles one ulp above any exact root (the root of 9.0
+   gave 3 plus an ulp). The earlier scaling of denormals had hidden one case of it. Fix (92b0866): the
+   square root is the host's root, correctly rounded to nearest, moved one ulp for the directed modes by the
+   sign of the remainder m - r * r (apfloat's fused multiply-add, exact for m scaled into 1 to 4);
+   `ieee-apsqrt` is gone. Infinity is answered before the root, as zero is. Test:
+   `wcontainers-arm64` `tests/exact.rs` `square_roots_round_as_asked` (exact squares k^2 * 2^j, normal and
+   denormal, and their neighbours, every mode, single and double, checked by exact squares in quad
+   precision, and infinities): 50,807 wrong before, 0 after. The failing form and the other two square root
+   forms at 1,000 cases seed 100002, and at 10,000 cases seeds 5001 to 5003: 0 failing (load 16 to 24).
+2. Layer 2 chunk 22 (seed 100, case 525010, 92b0866): Linux ended the program with SIGILL, every translation
+   ran it to the end. The CPU stopped at `ldp q15, q15, [x14], #-64` (found with a temporary SIGILL report
+   in a scratch copy of the reference runner): a pair loaded into one register, which Arm leaves constrained
+   unpredictable and this CPU treats as undefined. Cause, in the test's generator, not the translator:
+   `through` moved a transfer register off a written-back base for vector accesses too, though a vector
+   register is never the base, so q14/q15 through x14 became q15/q15. Fix (445e3cf): vector accesses are
+   left as `fitted` made them; and layer 2 now checks every word of each program against layer 1's
+   `excluded` rules before running it (this check failed on the case before the fix). A scratch sweep of
+   50,000 programs of seed 100: 170 such words before the fix, none after, and no other word left out.
+   About 0.3 percent of layer 2's programs held such a word before; only the CPU sample could notice, and
+   chunks 1 to 21 and 23 (passed before the fix) compared those translations with each other only. With the
+   fix, cases from 525000 make some programs differently than before. Restarted 22:59 on 445e3cf, same
+   command; chunk 22 runs again.
+
+## P1: close-out of M5 and the long-run driver
+
+Merge: `origin/phase-1` merged into `phase-1-translator` (a fast forward to 7bf2809; the integration branch
+already held this branch). The shared crate's two changes from the kernel half (`CounterReading::detail`, set to
+0 by the runner, and `Host::output(Stream, bytes)`) need nothing more here: the three crates build and lint, and
+their whole suite passed after the merge (debug, `RAYON_NUM_THREADS=4`, `--test-threads=4`: 69 passed, 7 ignored,
+16.7 minutes, load 26 to 36).
+
+The independent check's findings (`m5-check-findings.json`), each fixed:
+- The size setting now runs in Chrome in the normal tests: `tests/browser.rs` runs every program at full and at
+  bounded made at run time in both settings; layer 3's Chrome sample, layer 2's new Chrome sample, the
+  unwinding, stack switching, written code, deep recursion and cut function tests and `checks.rs`'s Chrome test
+  run full in both settings. `browser::translated_with` takes the setting with the look-ahead.
+- Layers 2 and 3 compare full with none in registers and memory, plain and stopping at every check, in both
+  settings, every case. The programs tests (`match_linux`, `every_look_ahead_matches`, stops at every check)
+  do the same.
+- A normal test, `tests/binaries.rs` `small_binaries_translate_and_load`, translates busybox and musl whole in
+  both settings, validates every module, loads them in wasmtime and in Chrome (a refusal fails), and checks that
+  every piece is counted once by the means that found it (13.6 s in release, load 37).
+- "Found by the translator" is now split by means: `Translation::found`, by `Means` (given, call targets, built
+  addresses, followed (look-ahead none only), kept reducible, cuts for the translator's own limit or an
+  engine's). The old figure counted the reducibility and size cuts as found: busybox 3,100 "found" were 2,000
+  call targets, 130 built addresses and 970 entries kept reducible. Output bytes are unchanged.
+- Reading `.eh_frame` counts and warns of every entry it cannot read (`Binary::unwind_errors`, printed by
+  `measure_binaries`; the normal test requires 0 for busybox and musl). All nine binaries: 0.
+- The elfconv comparison is one command in the repository:
+  `nix develop -c crates/wcontainers-translator-test/elfconv.sh` (see "How to run").
+- The engines' figures and the static counters are taken again on the final code (below), replacing the stale
+  ones.
+- Not done: the two lookup designs' memory as process memory (finding 6, not blocking); still worked out from
+  table sizes only.
+
+Each binary, final code (`measure_binaries`, release, `RAYON_NUM_THREADS=6`, nothing else of this half
+running; the seven small ones together at load 21 to 31, then Node alone at load 21 to 31, then Bun alone at
+load 23 to 31). Bytes of WebAssembly (the same as the fourth run's, byte for byte in size), translation time,
+pieces by means (given / call targets / built addresses / kept reducible / cuts), wasmtime's compile time and
+machine code, Chrome making the modules compiled at first call / at once and how much its processes grew
+(noise about 100 MB; python's first call figure came out at -120 MB). Instances took at most 17 ms in wasmtime.
+- busybox: speed 32,472,392, 0.24 s, 420 / 2,000 / 130 / 970 / 0, wasmtime 2.33 s to 51.2 MB, Chrome 0.01 /
+  0.06 s, 60 / 342 MB; size 13,533,418, 0.29 s, wasmtime 1.11 s to 27.5 MB, Chrome 0.00 / 0.03 s, 43 / 198 MB.
+- musl: speed 14,546,689, 0.08 s, 1,513 / 250 / 30 / 31 / 0, 0.99 s to 22.6 MB, 0.00 / 0.03 s, 39 / 194 MB;
+  size 6,996,354, 0.05 s, 0.57 s to 13.5 MB, 0.00 / 0.02 s, 31 / 139 MB.
+- rg: speed 137,298,326, 0.55 s, 5,073 / 154 / 22 / 714 / 0, 16.03 s to 188.4 MB, 0.03 / 0.42 s, 175 / 1,314
+  MB; size 41,973,706, 0.32 s, 4.52 s to 72.1 MB, 0.01 / 0.10 s, 81 / 642 MB.
+- git: speed 107,719,042, 0.55 s, 6,084 / 245 / 5 / 2,975 / 0, 8.08 s to 169.2 MB, 0.03 / 0.17 s, 150 / 985 MB;
+  size 43,777,767, 0.35 s, 3.82 s to 87.7 MB, 0.01 / 0.09 s, 88 / 547 MB.
+- python: speed 137,603,117, 0.56 s, 5,878 / 1,263 / 72 / 655 / 374, 10.20 s to 210.3 MB, 0.03 / 0.22 s, -120
+  / 1,336 MB; size 57,678,120, 0.43 s, 4.37 s to 112.7 MB, 0.01 / 0.12 s, 109 / 794 MB.
+- java: speed 543,298,928, 2.38 s, 46,890 / 242 / 131 / 2,000 / 0, 43.59 s to 867.4 MB, 0.11 / 0.89 s, 660 /
+  4,644 MB; size 235,237,352, 1.91 s, 20.01 s to 519.3 MB, 0.06 / 0.45 s, 350 / 2,471 MB.
+- go: speed 347,710,233, 1.10 s, 17,595 / 57 / 2,106 / 1,101 / 0, 24.51 s to 546.0 MB, 0.07 / 0.47 s, 426 /
+  2,949 MB; size 148,076,420, 0.91 s, 11.39 s to 315.6 MB, 0.04 / 0.25 s, 224 / 1,619 MB.
+- node: speed 2,515,099,638 in 3 modules, 12.85 s, 99,365 / 498 / 2,009 / 18,685 / 29, wasmtime 189.74 s to
+  3,810.2 MB (alone: so the third run's 194 s was not slowed by Chrome; the first run's 89.6 s was on other
+  code), Chrome 0.46 s at first call (2,938 MB), compiled at once the page crashed; size 895,334,387 in 1
+  module, 7.32 s, 80.86 s to 1,895.3 MB, Chrome 0.21 / 2.77 s, 305 / 8,781 MB.
+- bun: speed 3,761,902,687 in 4 modules, 17.69 s, 64,343 / 819 / 2,215 / 10,312 / 65,849, wasmtime 340.33 s
+  to 5,532.9 MB, Chrome 0.71 s at first call (4,154 MB), compiled at once the page crashed; size 1,058,185,079
+  in 2 modules, 8.98 s, 139.54 s to 2,117.5 MB, Chrome 0.22 / 4.04 s, 1,441 / 7,724 MB.
+- Places that may take each slow path, speed / size (left to an address; jump through a register not
+  recognised; stopped by the flag; memory fault; loop not proven; engine stack nearly full; unsupported
+  instruction reached where any):
+  busybox 37,300 / 21,950; 528 / 459; 15,318 / 8,004; 63,243 / 35,589; 346 / 326; 5,932 / 3,342.
+  musl 11,567 / 7,473; 57 / 45; 7,310 / 3,788; 21,020 / 11,175; 414 / 377; 2,668 / 1,384.
+  rg 109,780 / 43,806; 510 / 473; 30,807 / 14,625; 204,956 / 76,469; 2,403 / 2,262; 10,912 / 5,044.
+  git 145,137 / 82,366; 341 / 317; 37,113 / 19,990; 235,899 / 126,213; 896 / 827; 15,163 / 8,931.
+  python 113,812 / 68,542; 2,766 / 2,531; 31,049 / 17,229; 292,111 / 169,776; 1,822 / 1,774; 13,245 / 7,849.
+  java 466,074 / 312,032; 3,579 / 3,212; 114,920 / 61,903; 1,143,350 / 693,667; 4,786 / 4,367; 51,636 /
+  32,337; 8 / 6.
+  go 232,053 / 148,546; 391 / 286; 71,564 / 46,397; 883,594 / 553,930; 3,315 / 3,135; 28,393 / 18,144; 40 / 39.
+  node 1,885,890 / 1,047,843; 8,143 / 6,025; 484,150 / 240,461; 5,036,524 / 2,393,326; 25,426 / 22,657;
+  185,164 / 98,982; 102 / 99.
+  bun 3,455,257 / 1,268,611; 8,913 / 6,346; 629,509 / 308,535; 6,234,847 / 2,258,415; 32,887 / 30,158; 257,328
+  / 136,310; 54 / 52.
+
+elfconv against ours on the final code, with the one command (`elfconv.sh`, best of 3, wasmtime only; load 26
+to 59 while it ran). Times native, each against its own native build (elfconv's programs are static glibc builds
+by clang 16, ours flat blobs by zig's clang, so only the ratios compare): fib elfconv 9.00 / ours 5.70; sieve
+1.12 / 1.46; hash elfconv's program fails ("No lifted instruction at (0x40103c) was executed") / 0.99; sort
+7.44 / 3.39; interpret 16.56 / 3.70; matrix 1.30 / 3.03; walk 0.95 / 1.00; search 1.50 / 1.95. As in M5:
+elfconv ahead on loops over memory, well behind on calls and the interpreter, and wrong on hash. The script now
+also compares each elfconv program's output with the native one. Not compared in Chrome.
+
+### P1, the long-run driver
+
+One command, `crates/wcontainers-translator-test/long-runs.sh` (how to start it under "How to run"). What it
+does:
+- Each layer is cut into chunks, each one test run with 6 jobs: layer 1 in ten seeds (`SEED*1000+k`) of 1,000
+  cases a form, 10 a form in Chrome each; layer 2 in 40 chunks of 25,000 programs by case offset
+  (`WC_LAYER2_FROM`), 25 of each on the CPU and 5 in Chrome; layer 3 in 100 chunks of 1,000 Csmith programs by
+  case offset, 10 of each in Chrome. `WC_LONG_PERCENT` scales every count (at 1 percent each layer is one
+  chunk).
+- New knobs it needed: `WC_LAYER1_JOBS`; layer 2's `WC_LAYER2_FROM`, `WC_LAYER2_JOBS` and `WC_LAYER2_CHROME`
+  (layer 2 had no Chrome sample; its cases are now each made from the seed and the case number, so a failing
+  case replays alone). Each layer's cases run on one pool of threads (`src/jobs.rs`, rayon) that the translator
+  and wasmtime share, so a chunk keeps to its jobs: with separate threads and the translator's pool at one
+  thread, layer 2 ran at one core, and at the default pool size it would take three times the jobs.
+- One line a chunk is appended to `ledger.txt` in `WC_LONG_DIR` (tab separated key=value: layer, chunk, knobs,
+  cases, sample on the CPU and in Chrome, mismatches, seconds, load at start and end, commit, result; a failing
+  or stopped chunk adds what failed, a replay command and its log). Each chunk's log is kept under `logs/`.
+- Run again, chunks the ledger holds for an accepted commit (`WC_LONG_ACCEPT` up to HEAD; default HEAD alone)
+  are skipped; a run on a tree with changes to the crates is recorded with `-changed` and never skipped. A chunk
+  past `WC_LONG_LIMIT` minutes (default 90) is stopped, recorded as `stopped`, its reference containers removed,
+  and the run goes on. Do not change the crates while it runs: each chunk's `cargo test` would build the change.
+
+Proven at 1 percent (seed 7, commit c999db7, the whole run 1,758 s, load 24 to 31; ledger and logs in
+scratch `p1/long2`):
+- layer 1: 1 chunk, 1215 forms x 100 cases (121,500) and 1215 in Chrome, 0 mismatches, 60 s, load 26 to 27.
+- layer 2: 1 chunk, 10,000 programs, 10 on the CPU and 2 in Chrome, 0 mismatches, 260 s, load 27 to 31.
+- layer 3: 1 chunk, 1,000 Csmith programs: 888 compared, 112 did not end on Linux in time, 10 also in Chrome,
+  0 mismatches, 1,437 s, load 24 to 31.
+- Run again: all three skipped, in 2 s. A layer 3 chunk with `WC_LONG_LIMIT=1` was stopped after 60 s,
+  recorded as stopped with its replay command, and left no container.
+- So the whole run, from these rates at load about 30 (expected, not measured): layer 1 about 1.7 hours (ten
+  chunks of about 10 minutes), layer 2 about 7.2 hours (40 chunks of about 11 minutes), layer 3 about 40 hours
+  (100 chunks of about 24 minutes): about 49 hours in all. Each chunk is well under the 90 minute limit.
 
 ## M5, fourth run
 
@@ -71,8 +311,7 @@ translation time, speed / size:
   176,121,046, 10.92 s (third run: 72.74 s / 52.08 s).
 - node 2,515,099,638 in 3 modules (62.9), 380,762,969, 14.74 s / 895,334,387 in 1 module (22.4),
   155,537,459, 8.11 s (third run: 18.79 s / 9.27 s).
-- The engines' figures (compile time, machine code, Chrome's memory) under "M5, third run" are for that
-  run's code, 3 to 6% larger; not taken again.
+- The engines' figures on this code are under "P1" (taken again there, alone).
 
 What a call between two modules costs, again on this run's code (`measure_calls`, best of 3, load 24 to 32):
 wasmtime speed 2.81 ns, size 2.20 ns; Chrome speed 2.71 ns (0.135 s in one module, 0.406 s a module a
@@ -92,8 +331,7 @@ M5, fourth run, what comes next (the milestone's parts are all built and recorde
 2. Size mode: a proven loop with loops inside it still has only its checked copy.
 3. A split translation is emitted twice (Node and Bun only), as each module's code depends on which pieces
    it holds.
-4. The engines' compile times and memory on this run's code alone, without Chrome or the other half beside
-   them.
+4. (Done in P1: the engines' figures on this code, taken alone.)
 
 ## M5, third run
 
@@ -157,7 +395,8 @@ modules).
 
 Static counters: each code module now carries how many places in its code may take each slow path
 (`CodeModule::sites`, by reason; floating point paths, decided by a hook at run time, are not counted), and
-`measure_binaries` prints them. Speed / size settings (load 22 to 11):
+`measure_binaries` prints them. The figures below are stale (the size setting's were taken before later changes
+of this run); the current ones are under "P1". Speed / size settings (load 22 to 11):
 - busybox: left to an address 37,300 / 21,944; jump through a register not recognised 528 / 459; stopped by the
   flag 15,318 / 7,662; memory fault 63,243 / 35,346; loop not proven 346 / 0; engine stack nearly full 5,932 /
   3,342.
@@ -171,7 +410,7 @@ Static counters: each code module now carries how many places in its code may ta
   instruction reached 40 / 39.
 - (The size setting has fewer places because a function has no loop pieces, which repeat their loop's code.)
 
-Each binary in each setting with both engines, on the final code of this run (`measure_binaries`, release,
+Each binary in each setting with both engines, on the final code of this run, superseded by "P1" (`measure_binaries`, release,
 `RAYON_NUM_THREADS=6`, one run, load 24 to 36). Bytes of WebAssembly; translation time; wasmtime's compile time
 and bytes of machine code; Chrome's time to make the modules compiled at first call / at once, and how much
 the resident memory of Chrome's processes grew from before the worker started to after the modules and their
@@ -1853,31 +2092,47 @@ contract's bits, in both runners).
 
 ## How to run
 
+- The long runs to the plan's pass bars, resumable, one command (from the repository root, detached; it runs
+  for days): `WC_LONG_DIR=<scratch directory> nohup nix develop -c crates/wcontainers-translator-test/long-runs.sh > <log> 2>&1 &`.
+  Knobs (`WC_LONG_PERCENT`, `WC_LONG_LAYERS`, `WC_LONG_SEED`, `WC_LONG_ACCEPT`, `WC_LONG_JOBS`,
+  `WC_LONG_LIMIT`) and the ledger's fields are described at the top of the script and under "P1, the long-run
+  driver" and "P2". To carry on after a stop, run the same command again; to keep chunks that passed on an
+  older commit, set `WC_LONG_ACCEPT=<that commit>`. It refuses uncommitted changes and runs its own copy of
+  the commit. The run under way and its exact command are under "P2".
+- The benchmark set against elfconv: `nix develop -c crates/wcontainers-translator-test/elfconv.sh` (needs
+  Docker and the image `ghcr.io/yomaytk/elfconv:arm64`; converted programs kept in `target/elfconv`;
+  `WC_BENCH_RUNS` best of, default 3).
 - Everything: `nix develop -c cargo test -p wcontainers-arm64 -p wcontainers-translator -p wcontainers-translator-test`
   (includes the Chrome test; it needs Google Chrome installed and Docker running).
 - Lint the two side packages too: from `crates/wcontainers-translator-test/browser`,
   `nix develop ../../.. -c cargo clippy --target wasm32-unknown-unknown --target-dir ../../../target/browser -- -D warnings`;
   from `.../reference`, `nix develop ../../.. -c cargo clippy --release --target-dir ../../../target/reference -- -D warnings`.
 - Layer 3: `WC_LAYER3_CASES=100000 WC_LAYER3_SEED=<n> WC_LAYER3_CHROME=100 WC_LAYER3_JOBS=6 nix develop -c cargo test --release -p wcontainers-translator-test --test layer3 -- --nocapture 2>&1 | grep -v "wcontainers warning"`
-  (defaults 4 Csmith programs, seed 1, the first 1 that ends in time also in Chrome at none and full, one at
-  a time; the hand-picked programs are 48 builds each run). Needs Docker, Chrome, and network once to make
+  (defaults 4 Csmith programs, seed 1, the first 1 that ends in time also in Chrome at none and at full in
+  both settings, one at a time; the hand-picked programs are 48 builds each run). Programs that do not end on
+  Linux in time (11 to 13 percent) are made but not compared. Needs Docker, Chrome, and network once to make
   the gcc image. Keep `WC_LAYER3_JOBS` at 6 or below: wider runs beside the other half's tests pushed the
-  load past 300. At the third run's rate (2000 programs in 14 minutes, 12 at once) 100,000 took about 12
-  hours at 12 at once; at 6, expect about twice that (not measured). Replay one program: the same seed with `WC_LAYER3_FROM=<case>` and `WC_LAYER3_CASES=1` (a failure
-  prints its case and its Csmith number, `seed * 1000003 + case`).
+  load past 300. For the bar use the driver; P1's 1 percent run took 1,437 s for 1,000 programs at 6 at once
+  (load 24 to 31), the P1 check 762 s for 150 (load 55 to 113). Replay one program: the same seed with
+  `WC_LAYER3_FROM=<case>` and `WC_LAYER3_CASES=1` (a failure prints its case and its Csmith number,
+  `seed * 1000003 + case`).
 - Floating point and vector timing: `nix develop -c cargo test --release -p wcontainers-translator-test --test programs floats_speed -- --ignored --nocapture`
   (`WC_BENCH_RUNS`, `WC_BENCH_WORKLOADS` 1 to 4, `WC_BENCH_CHROME=0` as for the benchmarks).
 - Every form valid WebAssembly: `WC_VALID_WORDS=<n> nix develop -c cargo test -p wcontainers-translator --test valid`.
 - Layer 1, long: `WC_LAYER1_CASES=10000 WC_LAYER1_CHROME=100 WC_LAYER1_SEED=<n> nix develop -c cargo test --release -p wcontainers-translator-test --test layer1 -- --nocapture 2>&1 | grep -v "wcontainers warning"`
   (defaults: 64 cases, seed 1, 1 case a form in Chrome, 1000 cases to a Chrome page; 6075 took 25.5 s).
+  `WC_LAYER1_JOBS` forms at once (default 1), each job with its own reference container.
   Replay a failure: same seed and cases, plus `WC_LAYER1_FORMS=<form name>` (the wasmtime run only). The
   filter drops the runners' warnings (memory faults and stops), one per case.
 - Decoding against Arm's forms: `WC_DECODE_CASES` (default 64 per form), `WC_DECODE_WORDS` (random words
   from the whole space, default 200,000), `WC_DECODE_SEED` (default 1).
 - Words in no form against the CPU: part of the layer 1 command; `WC_LAYER1_CASES` words.
 - Translator proptest: `PROPTEST_CASES`, `PROPTEST_RNG_SEED` (default seed 1).
-- Layer 2: `WC_LAYER2_CASES=1000000 WC_LAYER2_SEED=<n> WC_LAYER2_NATIVE=<k> nix develop -c cargo test --release -p wcontainers-translator-test --test layer2 -- --nocapture`
-  (defaults 64 cases, seed 1, 8 of them on the CPU; each CPU case starts a container, about 0.3 s).
+- Layer 2: `WC_LAYER2_CASES=<n> WC_LAYER2_SEED=<s> WC_LAYER2_FROM=<first case> WC_LAYER2_JOBS=6 WC_LAYER2_NATIVE=<k> WC_LAYER2_CHROME=<c> nix develop -c cargo test --release -p wcontainers-translator-test --test layer2 -- --nocapture`
+  (defaults 64 cases, seed 1, from case 0, one at a time, the first 8 on the CPU, the first 1 in Chrome; each
+  CPU case starts a container, about 0.3 s, and each Chrome case Chrome three times). Since P1 case `i` is made
+  from the seed and `i` alone, so a failure replays with `WC_LAYER2_FROM=i WC_LAYER2_CASES=1`; seeds of earlier
+  runs give other programs than they did then.
 - Bounded look-ahead of random N against none (C programs, every piece but the first made at run time):
   `WC_LOOKAHEAD_CASES=<n> WC_LOOKAHEAD_SEED=<s> nix develop -c cargo test --release -p wcontainers-translator-test --test lookaheads -- --nocapture`
   (defaults 4 a program, seed 1). Layers 2 and 3 also run every case at bounded look-ahead of a random N and
@@ -1893,6 +2148,8 @@ contract's bits, in both runners).
 - Permissions changed at random stops and system calls: `WC_CHANGES_CASES=100000 WC_CHANGES_SEED=<n> WC_CHANGES_PROGRAM_SEEDS=<k> nix develop -c cargo test --release -p wcontainers-translator-test --test changes -- --nocapture 2>&1 | grep -v "^wcontainers warning"`
   (defaults 64 random programs, seed 1, 3 seeds for each C program; since the eleventh run about 33 ms
   a random program at load 16 to 21, as every program now calls a function that makes a system call).
+- Real binaries, as a check (busybox and musl, both settings, in the normal suite):
+  `nix develop -c cargo test --release -p wcontainers-translator-test --test binaries`.
 - Real binaries (M5): `WC_BINARIES=busybox,musl nix develop -c cargo test --release -p wcontainers-translator-test --test binaries measure_binaries -- --ignored --nocapture 2>&1 | grep -v "^chrome:"`
   (names: busybox, musl, rg, git, node, python, bun, java, go; all when unset; each is taken from its Docker
   image into `target/binaries` once, which needs network). Node and Bun take minutes each and 15 to 20 GB of
@@ -1907,6 +2164,16 @@ contract's bits, in both runners).
   translates for size). About 15 minutes.
 
 ## Cases actually run
+
+- P1, release unless said: after the merge, every test of the three crates (debug, 69 passed, 7 ignored).
+  After the changes: layer 2, 64 cases seed 1 (8 on the CPU); 64 cases seed 1 with 4 jobs and 1 in Chrome;
+  600 cases seed 1 with 6 jobs, 2 on the CPU, 1 in Chrome (19 s, load 20 to 22); layer 1, 1215 forms x 16
+  cases, seed 1, 6 jobs (12 s); layer 3, 4 Csmith programs seed 1 and the hand-picked builds, then 24 seed 5
+  with 6 jobs, 2 in Chrome (46 s, load 27); checks, Chrome and programs tests; the new binaries test: all
+  passing. The 1 percent run of the long-run driver (seed 7) above: 121,500 layer 1 cases, 10,000 layer 2
+  programs, 1,000 Csmith programs, 0 mismatches. Last, every test of the three crates on the final code
+  (debug, `RAYON_NUM_THREADS=4`, `--test-threads=4`, Chrome and the defaults of every layer included): 70
+  passed, 7 ignored (the measurements), 20.5 minutes, load 20 to 43.
 
 - M3 close-out, second run (fifth run), release: layer 2 with the area check, the generator fixed and the
   translator before the structure proof change: seed 4, 1000 cases (none on the CPU; with the generator fix
@@ -2123,9 +2390,9 @@ contract's bits, in both runners).
 
 ## Next
 
-1. M5 is built; refinements under "M5, fourth run, what comes next". Then M6 as the plan says.
-2. At the end of the translator track, the long runs to the pass bars, started by the orchestrator
-   (commands under "How to run"; layer 3 expected to take about a day at 6 at once).
+1. The long runs to the pass bars, started by the orchestrator with the driver (under "How to run"; its
+   length from the 1 percent run is under "P1, the long-run driver").
+2. Refinements of M5 under "M5, fourth run, what comes next".
 
 ## Known gaps (behave as the plan says: illegal instruction, counted, warned)
 
@@ -2171,6 +2438,18 @@ contract's bits, in both runners).
 
 ## Departures from the plan
 
+- P2: layer 3's bar of 100,000 Csmith programs is read as 100,000 compared with Linux; programs that do not
+  end on Linux in time are made and counted apart, not compared, so more than 100,000 are made.
+- P2: the long-run driver runs an exported copy of one commit in the run's directory rather than the
+  checkout, so a fix being worked on cannot leak into chunks recorded under an older commit.
+
+- P1: the long-run driver is a shell script (`long-runs.sh`), not Rust: it only runs test commands one after
+  another and keeps a ledger.
+- P1: layer 2 now runs a sample in Chrome (the task for P1 asks for one; the plan asks for a sample of each
+  layer in Chrome). Its cases are each made from the seed and the case number, so a layer can be cut into
+  chunks by case offset and run at once; the seeds of earlier runs no longer give the programs they gave.
+- P1: the plan's pass bar for layer 1 counts 10,000 cases a form; the driver runs them as ten seeds of 1,000
+  cases a form, which is 10,000 different cases a form.
 - M5, fourth run: the translator's maps use `rustc-hash` (an established crate, already a dependency)
   instead of std's SipHash: keys are guest offsets, and translation speed is a goal while hash flooding is
   not a risk here (a hostile binary can only slow its own translation).
@@ -2399,6 +2678,10 @@ contract's bits, in both runners).
   `memory_may_move(false)`).
 
 ## Shared crate (wcontainers-abi)
+
+- P1: no change by this half. The merge of `origin/phase-1` brought the kernel half's two changes
+  (`CounterReading::detail`, `Host::output(Stream, bytes)` in place of `Host::terminal_output`); the runner
+  already sets `detail` to 0, as it counts by reason only, and nothing here implements `Host`.
 
 - M5, second run: no change. The array of slots, its imports and the exact slot are in the translator's
   contract (`contract.rs`).

@@ -142,7 +142,14 @@ fn signal_members(
 ) -> Result<u64, Errno> {
     let mut result = Err(Errno::ESRCH);
     let mut any = false;
-    for target in targets {
+    // The caller's own process comes last: a signal that ends it here ends its thread at once,
+    // where Linux's sender goes on to the rest of the group first.
+    let own = kernel.threads[&tid].process;
+    let ordered = targets
+        .iter()
+        .filter(|target| **target != own)
+        .chain(targets.iter().filter(|target| **target == own));
+    for target in ordered {
         match signal_process(kernel, cx, tid, *target, signal, info) {
             Ok(()) => any = true,
             Err(error) => result = Err(error),
