@@ -210,6 +210,16 @@ Progress (from the ledger):
   translator job there at a time, as the manual asks). Its ledger lines are marked "run downward from chunk
   181 by the translator track after its upward run" (script `run-chunk-gap.sh`, `run-chunk.sh` with only
   that mark changed); log `gap.log`. Is it running: `pgrep -fl 'chain.sh|harvest.sh|up.sh|gap.sh|down.sh'`.
+- The owner's rule of 2026-11-19 13:50 (no building or testing on the Mac; the brief's last section): from
+  13:47 `resume2.sh` and `arm-up/chain.sh` are stopped (so nothing starts a Mac driver again; `gap.sh 181`
+  ran on to its end). Chunk 181 passed on the rented machine at 13:47, so the Mac's long-run driver, in chunk
+  180 then, was left to finish that chunk and then finds the bar reached and ends by itself. The Mac's
+  confirmation driver was left to finish its chunk 6 and is then stopped by `p2/stop-confirm-after-chunk.sh`
+  (log `stop-confirm.log`: waits for its ledger line, stops the driver's whole tree, removes the containers of
+  the test it had just begun). The confirmation's remaining chunks run at once on the rented machine:
+  `arm-confirm/par.sh 10 7 8 9 10 11 12` (log `par.log`; `run-chunk-par.sh` is `run-chunk.sh` with the first
+  chunk syncing the export of 8c7a4b5 and the others running beside it with `--no-sync`, 10 jobs each, and the
+  guard reading only the Mac's ledger lines, since its driver is stopped).
 - 46 to 82 of each chunk's 500 programs (9 to 16 percent) do not end on Linux within the reference's 20 s
   alarm and are not compared (counted in `sample`). Across chunks 1 to 30 the count does not follow the load
   at the chunk's start (47 at load 65, 82 at load 13), so it is Csmith's programs that loop or run long,
