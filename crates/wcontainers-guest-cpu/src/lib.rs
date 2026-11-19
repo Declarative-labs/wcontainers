@@ -23,6 +23,7 @@ pub use effects::{Effects, effects};
 #[cfg(feature = "translate")]
 pub use native::{HostCode, Native, NativeClass, Route, count_placement, counted};
 pub mod position;
+pub mod reason;
 pub use position::{
     Fixup, Held, InsideCall, NativeReason, Relocated, Resume, Side, Span, Stopping,
 };

@@ -49,8 +49,7 @@ pub mod reason {
     /// A write to a page of a block that the neighbouring page shows too is made one instruction at
     /// a time, since one write could cross from one copy of the block's page into the other.
     pub const WRITE_STEPPED: &str = "write next to another view made one instruction at a time";
-    /// Code of a range already translated was announced changed, so it is translated at run time only.
-    pub const CODE_CHANGED_AFTER_IT_RAN: &str = "code changed after it ran";
+    pub use wcontainers_guest_cpu::reason::CODE_CHANGED_AFTER_IT_RAN;
     /// Code ran outside every range the kernel announced.
     pub const CODE_OUTSIDE_ANNOUNCED_RANGE: &str = "code outside an announced range";
     /// The thread left `run` because code it may be running was dropped.
