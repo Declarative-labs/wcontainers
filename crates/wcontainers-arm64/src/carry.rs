@@ -52,14 +52,19 @@ const Q_BYTES: u8 = size_of::<u128>() as u8;
 /// The bytes of a half-word access.
 const H_BYTES: u8 = size_of::<u16>() as u8;
 /// The stack pointer's alignment when it is a base (SA0): a quadword.
-const STACK_ALIGNMENT: u64 = size_of::<u128>() as u64;
+pub const STACK_ALIGNMENT: u64 = size_of::<u128>() as u64;
 
 /// The bytes of one instruction.
 const INSTRUCTION: u64 = Arm64::MAX_LENGTH;
+
+/// A call into the inside: `brk` with the call's code.
+pub(crate) fn call_word(call: InsideCall) -> u32 {
+    encode::exception(form::BRK, call.code())
+}
 /// The low bits of a branch target that an aligned one has clear.
 const ALIGNMENT_BITS: u32 = INSTRUCTION.trailing_zeros();
 /// The lowest bit of the tag the top byte holds.
-const TAG_LOW: u32 = u64::BITS - u8::BITS;
+pub const TAG_LOW: u32 = u64::BITS - u8::BITS;
 /// `adrp`'s pages, which are 4 KiB whatever the translation granule (Arm ARM, ADRP).
 const ADRP_PAGE: u64 = 1 << 12;
 /// What the hardware computes for the float meanings: fused multiply-adds and Arm's not-a-numbers.
@@ -530,7 +535,19 @@ fn access(out: &mut Out, m: &MemoryAccess, align: Option<u32>, prefix: &[u32], w
             encode::add_immediate(SCRATCH, SCRATCH, i64::from(m.bytes) - 1)
                 .expect("an access is short"),
         );
-        let mut probes = first_byte(&m.address);
+        let mut probes = Vec::new();
+        // The probes go through t, so the check SA0 makes of a stack pointer base comes before them.
+        if base == Reg::Sp {
+            let skip = 2 * INSTRUCTION as i64;
+            probes.extend([
+                encode::add_immediate(SCRATCH, number(base), 0).expect("zero fits"),
+                encode::and_immediate(SCRATCH, SCRATCH, STACK_ALIGNMENT - 1)
+                    .expect("a power of two less one is a logical immediate"),
+                encode::compare_branch(false, SCRATCH, skip).expect("fits"),
+                call_word(InsideCall::Misaligned),
+            ]);
+        }
+        probes.extend(first_byte(&m.address));
         let last = i64::from(m.bytes) - 1;
         if m.write {
             probes.push(encode::load_add(form::LDADDB, ZERO, ZERO, SCRATCH));

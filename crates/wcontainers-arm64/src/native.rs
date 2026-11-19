@@ -4,7 +4,7 @@ use wcontainers_guest_cpu::{HostCode, InsideCall, Native, NativeClass, Route};
 
 use crate::Arm64;
 use crate::carry::{self, COUNT};
-use crate::encode::{self, form};
+use crate::encode;
 use crate::exact::Operation;
 use crate::instruction::{Address, Instruction as I, Reg, SystemRegister};
 use crate::meaning::{Control, Hook};
@@ -210,6 +210,6 @@ impl Native for Arm64 {
     }
 
     fn call(code: &mut HostCode, call: InsideCall) {
-        code.push(&encode::exception(form::BRK, call.code()).to_le_bytes());
+        code.push(&carry::call_word(call).to_le_bytes());
     }
 }
