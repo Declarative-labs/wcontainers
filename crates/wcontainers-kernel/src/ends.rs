@@ -8,7 +8,6 @@ use alloc::vec::Vec;
 use wcontainers_abi::End;
 
 use crate::file::FileRef;
-use crate::fs::Node;
 use crate::process::Channel;
 use crate::syscall::{pipe, tty};
 use crate::{Context, Kernel, reason};
@@ -58,7 +57,10 @@ struct Held {
 #[derive(Default)]
 pub(crate) struct Ends {
     held: BTreeMap<End, Held>,
-    /// The channels of the pipes and terminals the ends hold, whose wakes mean something moved.
+    /// Pipes' writers whose end the outside closed while bytes it sent waited for room: let go of
+    /// once those are in, as a writer outside Linux closes after writing what it holds.
+    draining: Vec<FileRef>,
+    /// The channels of the pipes and terminals held, whose wakes mean something moved.
     watched: Vec<Channel>,
     /// Something may have moved since the ends were last served.
     pub moved: bool,
@@ -85,31 +87,12 @@ impl Ends {
         );
     }
 
-    /// Gives a named end the kernel's side of it.
-    pub fn attach(&mut self, end: End, file: FileRef) {
-        self.watched.push(match tty::end(&file) {
-            Some((pty, ..)) => tty::channel(&pty),
-            None => pipe::channel(&file.borrow().node),
-        });
-        self.moved = true;
-        // An end the outside has closed already is let go of with the file.
-        if let Some(held) = self.held.get_mut(&end) {
-            held.file = Some(file);
-        }
-    }
-
-    /// The end that reads a pipe, if one does and has not closed.
-    pub fn reader_of(&self, node: &Node) -> Option<End> {
-        self.held.iter().find_map(|(end, held)| {
-            let file = held.file.as_ref()?.borrow();
-            (!held.closed && file.readable() && alloc::rc::Rc::ptr_eq(&file.node, node))
-                .then_some(*end)
-        })
-    }
-
     /// Bytes the kernel may still send on an end.
     pub fn credit(&self, end: End) -> u64 {
-        self.held.get(&end).map_or(0, |held| held.credit)
+        self.held
+            .get(&end)
+            .filter(|held| !held.closed)
+            .map_or(0, |held| held.credit)
     }
 
     /// Sends bytes out of an end, within its credit.
@@ -132,6 +115,14 @@ enum Side {
     Terminal,
 }
 
+/// The channel whose wakes mean an end's pipe or terminal moved.
+fn channel(file: &FileRef) -> Channel {
+    match tty::end(file) {
+        Some((pty, ..)) => tty::channel(&pty),
+        None => pipe::channel(&file.borrow().node),
+    }
+}
+
 fn side(file: &FileRef) -> Side {
     if tty::end(file).is_some() {
         Side::Terminal
@@ -143,6 +134,33 @@ fn side(file: &FileRef) -> Side {
 }
 
 impl Kernel {
+    /// Gives a named end the kernel's side of it; if the outside has closed the end already, the
+    /// file is let go of at once, as a close.
+    pub(crate) fn attach_end(&mut self, cx: &mut Context<'_>, end: End, file: FileRef) {
+        let Some(held) = self.ends.held.get_mut(&end) else {
+            self.released.push(file);
+            self.files_released(cx);
+            return;
+        };
+        if let Side::PipeOut = side(&file) {
+            pipe::with_pipe(&file, |pipe| pipe.outside_reader = Some(end));
+        }
+        self.ends.watched.push(channel(&file));
+        self.ends.moved = true;
+        held.file = Some(file);
+    }
+
+    /// Lets go of an end's file, as a close of it.
+    fn let_go_of_end(&mut self, cx: &mut Context<'_>, file: FileRef) {
+        let watched = &mut self.ends.watched;
+        let mine = channel(&file);
+        if let Some(at) = watched.iter().position(|seen| *seen == mine) {
+            watched.swap_remove(at);
+        }
+        self.released.push(file);
+        self.files_released(cx);
+    }
+
     /// `Event::StreamData`: bytes from outside, within the credit given; what is past it is
     /// dropped and counted. Bytes after the kernel closed the end are dropped, as a write to a pipe
     /// with no reader fails.
@@ -186,15 +204,21 @@ impl Kernel {
                 .count(cx.host, reason::EVENT_UNEXPECTED, end.0.into());
             return;
         };
-        if let Some(file) = held.file {
-            match side(&file) {
-                Side::PipeIn => pipe::with_pipe(&file, |pipe| pipe.promised = 0),
-                Side::Terminal => tty::end(&file).expect("a terminal").0.borrow_mut().promised = 0,
-                Side::PipeOut => {}
+        let Some(file) = held.file else {
+            return;
+        };
+        match side(&file) {
+            Side::PipeIn => {
+                pipe::with_pipe(&file, |pipe| pipe.promised = 0);
+                if !pipe::inbox_empty(&file) {
+                    self.ends.draining.push(file);
+                    return;
+                }
             }
-            self.released.push(file);
-            self.files_released(cx);
+            Side::Terminal => tty::end(&file).expect("a terminal").0.borrow_mut().promised = 0,
+            Side::PipeOut => pipe::with_pipe(&file, |pipe| pipe.outside_reader = None),
         }
+        self.let_go_of_end(cx, file);
     }
 
     /// `Event::TerminalResized`: a terminal end's new size.
@@ -227,6 +251,13 @@ impl Kernel {
             return false;
         }
         let mut moved = false;
+        for file in core::mem::take(&mut self.ends.draining) {
+            moved |= pipe::from_inbox(self, cx, &file);
+            match pipe::inbox_empty(&file) {
+                true => self.let_go_of_end(cx, file),
+                false => self.ends.draining.push(file),
+            }
+        }
         let ends: Vec<End> = self.ends.held.keys().copied().collect();
         for end in ends {
             let held = &self.ends.held[&end];
@@ -244,6 +275,9 @@ impl Kernel {
                     self.ends.send(cx, end, &bytes);
                     moved = true;
                 }
+            }
+            if let Side::PipeIn = side {
+                moved |= pipe::from_inbox(self, cx, &file);
             }
             let finished = match side {
                 Side::PipeOut => pipe::drained(&file),

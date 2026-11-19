@@ -366,7 +366,7 @@ pub(super) fn write(
     }
     lock(kernel, tid, file)?;
     let node = file.borrow().node.clone();
-    let outside = kernel.ends.reader_of(&node);
+    let outside = with_pipe(file, |pipe| pipe.outside_reader);
     let first_run = !kernel.threads[&tid].call.started;
     let mut done = kernel.threads[&tid].call.progress;
     let nonblocking = super::io::nonblocking(kernel, tid, file);
@@ -514,9 +514,9 @@ pub(super) fn put(
     taken as u64
 }
 
-/// The outside's bytes into a pipe whose writer its end holds, within the room promised: put in at
-/// once and the readers woken; with no reader left they are dropped, as a write with none fails.
-/// Returns how many were past the promise, which are dropped.
+/// The outside's bytes into a pipe whose writer its end holds, within its credit: put in as far as
+/// there is room and the readers woken, the rest kept until there is; with no reader left they are
+/// dropped, as a write with none fails. Returns how many were past the credit, which are dropped.
 pub(crate) fn from_outside(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -529,25 +529,50 @@ pub(crate) fn from_outside(
             .len()
             .min(usize::try_from(pipe.promised).unwrap_or(usize::MAX));
         pipe.promised -= taken as u64;
-        let delivered = taken > 0 && pipe.readers() > 0;
-        if delivered {
-            pipe.deliver(&bytes[..taken]);
+        if pipe.readers() == 0 {
+            return (taken, 0);
         }
+        // Bytes kept from before go in first.
+        let delivered = match pipe.inbox.is_empty() {
+            true => pipe.deliver(&bytes[..taken]),
+            false => 0,
+        };
+        pipe.inbox.extend_from_slice(&bytes[delivered..taken]);
         (taken, delivered)
     });
-    if delivered {
-        kernel.wake_poll(channel(&node), EPOLLIN | EPOLLRDNORM);
-        signal_ends(kernel, cx, &node, true);
+    if delivered > 0 {
+        woken_by_outside(kernel, cx, &node);
     }
     bytes.len() - taken
 }
 
-/// Room to promise the outside writing a pipe: what its writes can take past what is promised,
-/// once that is worth a credit (a page, or any room with nothing promised), now promised.
+/// Moves the outside's kept bytes into a pipe whose writer its end holds, as far as there is room
+/// (all are dropped once no reader is left). Returns whether any went in or were dropped.
+pub(crate) fn from_inbox(kernel: &mut Kernel, cx: &mut Context<'_>, file: &FileRef) -> bool {
+    let node = file.borrow().node.clone();
+    let (delivered, dropped) = with_pipe(file, |pipe| match pipe.readers() {
+        0 => (0, core::mem::take(&mut pipe.inbox).len()),
+        _ => (pipe.deliver_inbox(), 0),
+    });
+    if delivered > 0 {
+        woken_by_outside(kernel, cx, &node);
+    }
+    delivered + dropped > 0
+}
+
+fn woken_by_outside(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) {
+    kernel.wake_poll(channel(node), EPOLLIN | EPOLLRDNORM);
+    signal_ends(kernel, cx, node, true);
+}
+
+/// Credit to give the outside writing a pipe: the room its writes can take past what it may
+/// already send or has sent and waits, once that is worth a credit (a page, or any room with
+/// nothing outstanding).
 pub(crate) fn promise_outside(file: &FileRef) -> u64 {
     with_pipe(file, |pipe| {
-        let room = pipe.room_outside().saturating_sub(pipe.promised);
-        if room < PAGE_SIZE && (pipe.promised > 0 || room == 0) {
+        let outstanding = pipe.promised + pipe.inbox.len() as u64;
+        let room = pipe.room_outside().saturating_sub(outstanding);
+        if room < PAGE_SIZE && (outstanding > 0 || room == 0) {
             return 0;
         }
         pipe.promised += room;
@@ -558,6 +583,11 @@ pub(crate) fn promise_outside(file: &FileRef) -> u64 {
 /// Whether a pipe the outside writes has no reader left.
 pub(crate) fn no_reader(file: &FileRef) -> bool {
     with_pipe(file, |pipe| pipe.readers() == 0)
+}
+
+/// Whether the outside's bytes kept for a pipe are all in.
+pub(crate) fn inbox_empty(file: &FileRef) -> bool {
+    with_pipe(file, |pipe| pipe.inbox.is_empty())
 }
 
 /// Up to `most` bytes of a pipe whose reader an end holds, taken as a read takes them, writers

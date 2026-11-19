@@ -695,7 +695,7 @@ impl Kernel {
                     ws_ypixel: 0,
                 };
                 let (master, slave) = crate::syscall::tty::start_terminal(self, cx, pid, size)?;
-                self.ends.attach(end, master);
+                self.attach_end(cx, end, master);
                 descriptors.extend([slave.clone(), slave.clone(), slave]);
             }
         }
@@ -737,7 +737,7 @@ impl Kernel {
         let held = OpenFile::new(pipe.clone(), other, Vec::new(), 0);
         crate::syscall::pipe::attach(&pipe, &guest);
         crate::syscall::pipe::attach(&pipe, &held);
-        self.ends.attach(end, held);
+        self.attach_end(cx, end, held);
         guest
     }
 
