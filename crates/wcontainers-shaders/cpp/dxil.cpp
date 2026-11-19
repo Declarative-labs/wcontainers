@@ -52,23 +52,25 @@ struct Blob {
 };
 
 // Every resource the shader declares, as (class, space, register) triples: dxil-spirv is told to bind
-// each at descriptor set = its class and binding = its index here, so resources of different classes
-// at one register stay apart. Classes: 0 constant buffer, 1 shader resource view, 2 unordered access
-// view, 3 sampler, 4 an unordered access view's counter (binding: its view's index).
+// each at descriptor set = its class (`wcs::ResourceClass`) and binding = its index here, so resources
+// of different classes at one register stay apart; a counter takes its view's index.
 struct Resources {
   std::vector<uint32_t> table;
 
-  uint32_t index(uint32_t cls, const dxil_spv_d3d_binding& d) {
-    for (size_t i = 0; i + 2 < table.size(); i += 3)
-      if (table[i] == cls && table[i + 1] == d.register_space && table[i + 2] == d.register_index)
-        return uint32_t(i / 3);
-    table.insert(table.end(), { cls, d.register_space, d.register_index });
-    return uint32_t(table.size() / 3 - 1);
+  // The words of one triple.
+  static constexpr size_t TRIPLE = 3;
+
+  uint32_t index(wcs::ResourceClass cls, const dxil_spv_d3d_binding& d) {
+    for (size_t i = 0; i + TRIPLE <= table.size(); i += TRIPLE)
+      if (table[i] == uint32_t(cls) && table[i + 1] == d.register_space && table[i + 2] == d.register_index)
+        return uint32_t(i / TRIPLE);
+    table.insert(table.end(), { uint32_t(cls), d.register_space, d.register_index });
+    return uint32_t(table.size() / TRIPLE - 1);
   }
 
-  static void bind(dxil_spv_vulkan_binding* vk, uint32_t set, uint32_t binding) {
+  static void bind(dxil_spv_vulkan_binding* vk, wcs::ResourceClass set, uint32_t binding) {
     *vk = { };
-    vk->set = set;
+    vk->set = uint32_t(set);
     vk->binding = binding;
     vk->descriptor_type = DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_IDENTITY;
   }
@@ -83,28 +85,31 @@ struct Resources {
 
   static dxil_spv_bool srv(void* self, const dxil_spv_d3d_binding* d, dxil_spv_srv_vulkan_binding* vk) {
     *vk = { };
-    bind(&vk->buffer_binding, 1, static_cast<Resources*>(self)->index(1, *d));
+    bind(&vk->buffer_binding, wcs::ResourceClass::eView,
+         static_cast<Resources*>(self)->index(wcs::ResourceClass::eView, *d));
     untyped(*d, &vk->buffer_binding);
     return DXIL_SPV_TRUE;
   }
 
   static dxil_spv_bool sampler(void* self, const dxil_spv_d3d_binding* d, dxil_spv_vulkan_binding* vk) {
-    bind(vk, 3, static_cast<Resources*>(self)->index(3, *d));
+    bind(vk, wcs::ResourceClass::eSampler,
+         static_cast<Resources*>(self)->index(wcs::ResourceClass::eSampler, *d));
     return DXIL_SPV_TRUE;
   }
 
   static dxil_spv_bool uav(void* self, const dxil_spv_uav_d3d_binding* d, dxil_spv_uav_vulkan_binding* vk) {
     *vk = { };
-    uint32_t i = static_cast<Resources*>(self)->index(2, d->d3d_binding);
-    bind(&vk->buffer_binding, 2, i);
+    uint32_t i = static_cast<Resources*>(self)->index(wcs::ResourceClass::eStorage, d->d3d_binding);
+    bind(&vk->buffer_binding, wcs::ResourceClass::eStorage, i);
     untyped(d->d3d_binding, &vk->buffer_binding);
-    bind(&vk->counter_binding, 4, i);
+    bind(&vk->counter_binding, wcs::ResourceClass::eCounter, i);
     return DXIL_SPV_TRUE;
   }
 
   static dxil_spv_bool cbv(void* self, const dxil_spv_d3d_binding* d, dxil_spv_cbv_vulkan_binding* vk) {
     *vk = { };
-    bind(&vk->vulkan.uniform_binding, 0, static_cast<Resources*>(self)->index(0, *d));
+    bind(&vk->vulkan.uniform_binding, wcs::ResourceClass::eConstants,
+         static_cast<Resources*>(self)->index(wcs::ResourceClass::eConstants, *d));
     return DXIL_SPV_TRUE;
   }
 };

@@ -262,10 +262,18 @@ fn stream_output_also_drawn_as_direct3d_does() {
 }
 
 #[test]
-#[ignore = "known failure: early depth-stencil tests before storage writes are not served \
-            (EarlyTestsInShader, shaders track); the front refuses the draw"]
-fn early_depth_tests_with_storage_writes_as_direct3d_does() {
+fn early_depth_tests_before_storage_writes_as_direct3d_does() {
     case("early");
+}
+
+#[test]
+fn early_depth_tests_before_storage_writes_writing_depth_as_direct3d_does() {
+    case("early_writes");
+}
+
+#[test]
+fn stencil_views_read_the_stencil_as_direct3d_does() {
+    case("stencil");
 }
 
 #[test]

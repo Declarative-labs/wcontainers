@@ -252,12 +252,31 @@ pub struct View<B: Backend> {
     /// elements the view's one-row texture holds, copied in at a pass's start and out at its end
     /// (`ReinterpretCopy`).
     pub buffer: Option<(Rc<Buffer<B>>, u64)>,
+    /// A depth-stencil view's stencil aspect, read by pixel programs running their forced early
+    /// tests themselves; made at the first such draw.
+    pub stencil_aspect: RefCell<Option<Kept<B, B::TextureView>>>,
+    /// A drawn view's layers as views of one layer each, which a geometry shader choosing a layer
+    /// draws into one run at a time (`LayerSplit`); made at the first such draw.
+    pub layers: RefCell<Vec<Rc<View<B>>>>,
 }
 
 impl<B: Backend> View<B> {
     /// Whether the view reads stencil (`X24_TYPELESS_G8_UINT`, `X32_TYPELESS_G8X24_UINT`).
     pub fn reads_stencil(&self) -> bool {
-        matches!(self.desc.format, 22 | 47)
+        use wcontainers_directx_graphics_infrastructure::dxgi;
+        matches!(
+            self.desc.format,
+            dxgi::X32_TYPELESS_G8X24_UINT | dxgi::X24_TYPELESS_G8_UINT
+        )
+    }
+
+    /// The kind of values programs read through the view: unsigned integers for a stencil view.
+    pub fn read_kind(&self) -> FormatKind {
+        if self.reads_stencil() {
+            FormatKind::Uint
+        } else {
+            self.format.kind()
+        }
     }
 
     /// Whether what is drawn into the view is copied out of the texture the pass draws into.
@@ -422,6 +441,11 @@ pub struct Shader<B: Backend> {
     pub typed: Vec<crate::shader::TypedView>,
     /// The texture slots it declares as multisampled arrays, a bit each.
     pub layered: u128,
+    /// The constant buffer slots it indexes at run time, a bit each.
+    pub indexed_constants: u16,
+    /// The clip distances it writes where the back end has none, which its programs apply
+    /// themselves (`ClipDistanceInShader`): the location of the values it adds and their count.
+    pub clip: Option<(u32, u8)>,
 }
 
 /// A geometry shader object: the geometry stage and the stream output of its declaration. Made

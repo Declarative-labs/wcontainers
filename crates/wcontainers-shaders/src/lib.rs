@@ -75,6 +75,9 @@ pub const WEBGPU_CAPABILITIES: Capabilities = Capabilities::MULTISAMPLED_SHADING
     .union(Capabilities::CUBE_ARRAY_TEXTURES)
     .union(Capabilities::SHADER_FLOAT16_IN_FLOAT32);
 
+/// The name of every converted and built program's entry point.
+pub const ENTRY_POINT: &str = "main";
+
 /// What goes into every content key besides the source and the variant: this crate's version and the
 /// BLAKE3 hash of everything that makes the module (the converters' C++ as built, this crate's Rust
 /// and the carried naga).
@@ -108,7 +111,7 @@ pub fn convert(
     let mut modules = vec![ShaderModule {
         module,
         info,
-        entry_point: "main".into(),
+        entry_point: ENTRY_POINT.into(),
         stage,
         key,
     }];
@@ -118,7 +121,7 @@ pub fn convert(
         modules.push(ShaderModule {
             info: validate(&module)?,
             module,
-            entry_point: "main".into(),
+            entry_point: ENTRY_POINT.into(),
             stage: ShaderStage::Vertex,
             key: cache::module_key(key, 1),
         });

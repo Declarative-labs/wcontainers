@@ -10,6 +10,7 @@ use wcontainers_gpu::{
 };
 
 use crate::cache::Record;
+use crate::context::VERTEX_SLOTS;
 use crate::device::Device;
 use crate::object::{Blend, DepthStencil, InputLayout, Rasterizer, Shader};
 use crate::{PIXEL, VERTEX};
@@ -22,7 +23,7 @@ pub(crate) struct Tuple<B: Backend> {
     depth_stencil: Rc<DepthStencil<B>>,
     raster: Rc<Rasterizer<B>>,
     layout: Option<Rc<InputLayout>>,
-    strides: [u32; 32],
+    strides: [u32; VERTEX_SLOTS],
     targets: TargetLayout,
     topology: Topology,
     layouts: [BindingLayoutKey; MAX_BINDING_SETS],
@@ -30,8 +31,8 @@ pub(crate) struct Tuple<B: Backend> {
 
 type TupleKey = (
     [u64; 4],
-    [u32; 32],
-    [Option<Format>; 8],
+    [u32; VERTEX_SLOTS],
+    [Option<Format>; wcontainers_gpu::MAX_COLOR_TARGETS],
     Option<Format>,
     u32,
     u8,
@@ -150,22 +151,28 @@ fn covers<B: Backend>(vs: &Shader<B>, ps: &Shader<B>) -> bool {
 }
 
 /// Whether the pixel shader's colour outputs are of the kinds (float, unsigned or signed) of
-/// `targets`' formats: a combination built ahead with targets of another kind would be refused.
-fn writes<B: Backend>(ps: &Shader<B>, targets: &wcontainers_gpu::TargetLayout) -> bool {
+/// the formats `target` gives for each target: a pipeline with targets of another kind is refused
+/// by the back ends.
+pub(crate) fn writes<B: Backend>(
+    ps: &Shader<B>,
+    target: impl Fn(usize) -> Option<wcontainers_gpu::Format>,
+) -> bool {
     ps.reflection.outputs.iter().all(|o| {
         let Some(SystemValue::Target(n)) = o.system else {
             return true;
         };
-        let Some(Some(f)) = targets.colors.get(usize::from(n)) else {
-            return true;
-        };
-        let kind = match f.kind() {
-            wcontainers_gpu::FormatKind::Uint => ScalarKind::Uint,
-            wcontainers_gpu::FormatKind::Sint => ScalarKind::Sint,
-            _ => ScalarKind::Float,
-        };
-        kind == o.scalar
+        target(usize::from(n)).is_none_or(|f| fits_target(o.scalar, f))
     })
+}
+
+/// Whether an output of `scalar`'s kind is of the kind (float, unsigned or signed) of `format`.
+pub(crate) fn fits_target(scalar: ScalarKind, format: wcontainers_gpu::Format) -> bool {
+    let kind = match format.kind() {
+        wcontainers_gpu::FormatKind::Uint => ScalarKind::Uint,
+        wcontainers_gpu::FormatKind::Sint => ScalarKind::Sint,
+        _ => ScalarKind::Float,
+    };
+    kind == scalar
 }
 
 /// The input layout gives the vertex shader every input it reads, at its location and of its type.
@@ -219,7 +226,7 @@ impl<B: Backend> Device<B> {
         let sets = [set_id(VERTEX), set_id(PIXEL)];
         let strides = self.strides();
         let mut targets = TargetLayout {
-            colors: [None; 8],
+            colors: [None; wcontainers_gpu::MAX_COLOR_TARGETS],
             depth_stencil: ctx.depth.as_ref().map(|d| d.format),
             samples,
         };
@@ -321,7 +328,10 @@ impl<B: Backend> Device<B> {
         let Ok((program, _)) = self.program(&vs, plain, Some(&ps), plain) else {
             return;
         };
-        for t in picked.into_iter().filter(|t| writes(&ps, &t.targets)) {
+        for t in picked
+            .into_iter()
+            .filter(|t| writes(&ps, |n| t.targets.colors.get(n).copied().flatten()))
+        {
             let Ok(vertex_layout) = self.vertex_layout_for(t.layout.clone(), t.strides, &vs) else {
                 return;
             };

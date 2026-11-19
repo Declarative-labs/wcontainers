@@ -101,9 +101,18 @@ pub struct Context {
     empty: RefCell<Bound>,
     /// Whether the call running came through Direct3D 10's device.
     pub(super) calling10: Cell<bool>,
-    /// `ID3D11Multithread`: the program's `Enter` calls not yet left, and its protection flag.
-    entered: Cell<u32>,
-    protected: Cell<bool>,
+}
+
+/// Whether `h` holds the object at `address`.
+fn holds<O: Counted>(h: &Option<Held<O>>, address: usize) -> bool {
+    h.as_ref().is_some_and(|h| h.address() == address)
+}
+
+/// The slots of `list` holding the object at `address`.
+fn slots<O: Counted>(list: &[Option<Held<O>>], address: usize) -> Vec<u32> {
+    (0..list.len() as u32)
+        .filter(|&i| holds(&list[i as usize], address))
+        .collect()
 }
 
 /// A context's lasting state.
@@ -115,6 +124,18 @@ pub struct Kept {
     /// The immediate context's state object, once the program swaps one in; a library reference,
     /// as Direct3D's context holds none of the program's on it.
     state: RefCell<Option<Held<DeviceContextState_Impl>>>,
+    /// `ID3D11Multithread`: the program's `Enter` calls not yet left, and its protection flag.
+    entered: Cell<u32>,
+    protected: Cell<bool>,
+}
+
+impl Kept {
+    /// Whether the active context state emulates Direct3D 10; not while a swap changes it.
+    pub(super) fn emulates10(&self) -> bool {
+        self.state
+            .try_borrow()
+            .is_ok_and(|s| s.as_ref().is_some_and(|s| s.emulates10))
+    }
 }
 
 /// A context state object (`CreateDeviceContextState`): the bindings it holds while another is
@@ -148,8 +169,6 @@ struct Bound {
     ds: Option<Held<DomainShader_Impl>>,
     /// The stream output targets.
     so_targets: [Option<Held<Buffer_Impl>>; 4],
-    /// The offsets the stream output targets were bound at, as given (Direct3D 10 hands them back).
-    so_offsets: [u32; 4],
     /// Per stage (vertex, pixel, compute, geometry, hull, domain), per slot.
     constant_buffers: [Vec<Option<Held<Buffer_Impl>>>; 6],
     /// Per stage and slot, the constants bound (first, count); none for the whole buffer.
@@ -182,7 +201,6 @@ impl Default for Bound {
             hs: None,
             ds: None,
             so_targets: Default::default(),
-            so_offsets: [0; 4],
             constant_buffers: Default::default(),
             constant_ranges: Default::default(),
             resources: Default::default(),
@@ -261,8 +279,6 @@ impl Context {
             kept,
             empty: RefCell::new(Bound::default()),
             calling10: Cell::new(false),
-            entered: Cell::new(0),
-            protected: Cell::new(false),
         }
     }
 
@@ -571,8 +587,6 @@ impl Context {
         } else {
             (0..h.len()).map(|i| unsafe { *offsets.add(i) }).collect()
         };
-        let mut kept = [0; 4];
-        kept[..o.len()].copy_from_slice(&o);
         if self.run("SOSetTargets", move |f| f.so_set_targets(&b, &o)) {
             let mut targets: [Option<Held<Buffer_Impl>>; 4] = Default::default();
             for (t, h) in targets.iter_mut().zip(h) {
@@ -580,15 +594,16 @@ impl Context {
             }
             let mut bound = self.kept.bound.borrow_mut();
             bound.so_targets = targets;
-            bound.so_offsets = kept;
         }
     }
 
-    /// The stream output targets' offsets as bound, for Direct3D 10's `SOGetTargets`.
+    /// The stream output targets' offsets for Direct3D 10's `SOGetTargets`: whatever offset a
+    /// target was bound at, Direct3D 10 answers all ones for it, and zero for an empty slot.
     pub(super) fn so_get_offsets(&self, n: u32, out: *mut u32) {
-        let kept = self.seen().so_offsets;
+        let seen = self.seen();
         for i in 0..n as usize {
-            unsafe { out.add(i).write(kept.get(i).copied().unwrap_or(0)) };
+            let bound = seen.so_targets.get(i).is_some_and(Option::is_some);
+            unsafe { out.add(i).write(if bound { u32::MAX } else { 0 }) };
         }
     }
 
@@ -605,11 +620,102 @@ impl Context {
     /// Whether a context state emulating Direct3D 10 is active on this context: Direct3D 11's
     /// calls on it then do nothing, and Direct3D 10's device's run here.
     pub(super) fn emulates10(&self) -> bool {
-        self.kept
-            .state
-            .borrow()
-            .as_ref()
-            .is_some_and(|s| s.emulates10)
+        self.kept.emulates10()
+    }
+
+    /// Empties every slot holding the object at `address`, which the program released for the
+    /// last time, as if the program had bound nothing there (Direct3D 10's device holds no
+    /// reference on what it binds). Rasterizer, blend and depth-stencil states stay bound: the
+    /// device keeps those (Wine's test_state_refcounting reads a released rasterizer state back
+    /// from real Direct3D 10, and a released sampler as none).
+    pub(super) fn unbind_released(&self, address: usize) {
+        let was = self.calling10.replace(true);
+        let found = {
+            let b = self.kept.bound.borrow();
+            [
+                holds(&b.vs, address),
+                holds(&b.ps, address),
+                holds(&b.gs, address),
+                holds(&b.layout, address),
+                holds(&b.index.0, address),
+                holds(&b.predication.0, address),
+            ]
+        };
+        let [vs, ps, gs, layout, index, predicate] = found;
+        if vs {
+            self.vs_set_shader(Ref::default(), std::ptr::null(), 0);
+        }
+        if ps {
+            self.ps_set_shader(Ref::default(), std::ptr::null(), 0);
+        }
+        if gs {
+            self.gs_set_shader(Ref::default(), std::ptr::null(), 0);
+        }
+        if layout {
+            self.ia_set_input_layout(Ref::default());
+        }
+        if index {
+            self.ia_set_index_buffer(Ref::default(), DXGI_FORMAT::default(), 0);
+        }
+        if predicate {
+            let value = self.kept.bound.borrow().predication.1;
+            self.set_predication(Ref::default(), value.into());
+        }
+        let stages = self.kept.bound.borrow().resources.len();
+        for stage in 0..stages {
+            let found = slots(&self.kept.bound.borrow().resources[stage], address);
+            for slot in found {
+                self.set_shader_resources(stage, slot, 1, &None);
+            }
+            let found = slots(&self.kept.bound.borrow().samplers[stage], address);
+            for slot in found {
+                self.set_samplers(stage, slot, 1, &None);
+            }
+            let found = slots(&self.kept.bound.borrow().constant_buffers[stage], address);
+            for slot in found {
+                self.set_constant_buffers(
+                    stage,
+                    slot,
+                    1,
+                    &None,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                );
+            }
+        }
+        let vertex: Vec<u32> = {
+            let b = self.kept.bound.borrow();
+            let buffers: Vec<_> = b.vertex_buffers.iter().map(|v| v.0.clone()).collect();
+            slots(&buffers, address)
+        };
+        for slot in vertex {
+            self.ia_set_vertex_buffers(slot, 1, &None, &0, &0);
+        }
+        let targets = {
+            let b = self.kept.bound.borrow();
+            let hit = !slots(&b.targets, address).is_empty() || holds(&b.depth, address);
+            hit.then(|| {
+                let list: Vec<Option<ID3D11RenderTargetView>> = b
+                    .targets
+                    .iter()
+                    .map(|t| {
+                        t.as_ref()
+                            .filter(|h| h.address() != address)
+                            .map(|h| h.public())
+                    })
+                    .collect();
+                let depth: Option<ID3D11DepthStencilView> = b
+                    .depth
+                    .as_ref()
+                    .filter(|h| h.address() != address)
+                    .map(|h| h.public());
+                (list, depth)
+            })
+        };
+        if let Some((list, depth)) = targets {
+            self.om_set_render_targets(list.len() as u32, list.as_ptr(), Ref::from(&depth));
+        }
+        self.calling10.set(was);
     }
 
     pub(super) fn so_get_targets(&self, n: u32, out: *mut Option<ID3D11Buffer>) {
@@ -1065,6 +1171,10 @@ impl Context {
     }
 
     fn set_viewports(&self, list: Vec<D3D11_VIEWPORT>) {
+        // More viewports than a pipeline has is invalid: Direct3D keeps the bound ones.
+        if list.len() > D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE as usize {
+            return;
+        }
         let v: Vec<Viewport> = list
             .iter()
             .map(|v| Viewport {
@@ -1411,12 +1521,14 @@ impl Context {
     /// `ID3D11Multithread::Enter`: the library's lock, held until `Leave`.
     pub(super) fn enter(&self) {
         std::mem::forget(lock());
-        self.entered.set(self.entered.get() + 1);
+        let entered = &self.kept.entered;
+        entered.set(entered.get() + 1);
     }
 
     pub(super) fn leave(&self) {
-        if self.entered.get() > 0 {
-            self.entered.set(self.entered.get() - 1);
+        let entered = &self.kept.entered;
+        if entered.get() > 0 {
+            entered.set(entered.get() - 1);
             // SAFETY: this thread holds the lock taken by its `Enter`, and the call's own above it.
             unsafe { unlock() };
         }
@@ -1424,11 +1536,11 @@ impl Context {
 
     /// Calls are serialised by the library's lock whatever the flag says; it is kept and reported.
     pub(super) fn set_multithread_protected(&self, on: BOOL) -> BOOL {
-        self.protected.replace(on.as_bool()).into()
+        self.kept.protected.replace(on.as_bool()).into()
     }
 
     pub(super) fn get_multithread_protected(&self) -> BOOL {
-        self.protected.get().into()
+        self.kept.protected.get().into()
     }
 
     /// Annotations, answered as Direct3D answers them when no profiling tool is attached.

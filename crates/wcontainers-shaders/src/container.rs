@@ -95,6 +95,16 @@ pub(crate) fn shader_model(container: &[u8]) -> Option<(u32, u32)> {
     ))
 }
 
+/// The program's type (`ir::program`), from the version token of its code chunk (`DXIL`, `SHEX` or
+/// `SHDR`): the token's high half.
+pub(crate) fn program_type(container: &[u8]) -> Option<u32> {
+    let code = chunks(container, b"DXIL")
+        .chain(chunks(container, b"SHEX"))
+        .chain(chunks(container, b"SHDR"))
+        .next()?;
+    Some(word(code, offset_of!(CodeHeader, version))? >> u16::BITS)
+}
+
 /// An element of an input or output signature.
 pub(crate) struct Element {
     pub(crate) semantic: alloc::string::String,

@@ -8,11 +8,14 @@ use std::ffi::c_void;
 
 use windows::Win32::Foundation::HMODULE;
 use windows::Win32::Graphics::Direct3D::{D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_10_0};
-use windows::Win32::Graphics::Direct3D10::ID3D10Device;
+use windows::Win32::Graphics::Direct3D10::{
+    D3D10_CREATE_DEVICE_DEBUG, D3D10_CREATE_DEVICE_SINGLETHREADED, D3D10_DRIVER_TYPE_HARDWARE,
+    D3D10_SDK_VERSION, ID3D10Device, ID3D10Multithread,
+};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_SDK_VERSION, ID3D11Device1, ID3D11DeviceContext1, ID3DDeviceContextState,
 };
-use windows::Win32::Graphics::Dxgi::DXGI_ERROR_UNSUPPORTED;
+use windows::Win32::Graphics::Dxgi::{DXGI_ERROR_UNSUPPORTED, IDXGIFactory1};
 use windows::core::{HRESULT, Interface};
 
 use super::{factory, lock};
@@ -54,7 +57,10 @@ pub unsafe extern "system" fn D3D10CoreCreateDevice(
         return windows::Win32::Foundation::E_INVALIDARG;
     }
     unsafe { *out = std::ptr::null_mut() };
-    match make(flags, level) {
+    // The factory the system's runtime made: one of DXGI 1.0 answers no later interface.
+    let dxgi10 = unsafe { windows::core::IUnknown::from_raw_borrowed(&factory) }
+        .is_none_or(|f| f.cast::<IDXGIFactory1>().is_err());
+    match make(flags, level, dxgi10) {
         Ok(device) => {
             unsafe { *out = device.into_raw() };
             windows::Win32::Foundation::S_OK
@@ -63,10 +69,11 @@ pub unsafe extern "system" fn D3D10CoreCreateDevice(
     }
 }
 
-fn make(flags: u32, level: D3D_FEATURE_LEVEL) -> windows::core::Result<ID3D10Device> {
+/// The device; `dxgi10` gives it the adapter of a factory of DXGI 1.0.
+fn make(flags: u32, level: D3D_FEATURE_LEVEL, dxgi10: bool) -> windows::core::Result<ID3D10Device> {
     let (device, context, _) = {
         let _lock = lock();
-        super::create_device(&[level.0 as u32], flags)?
+        super::create_device(&[level.0 as u32], flags, dxgi10)?
     };
     let device1: ID3D11Device1 = device.cast()?;
     let context1: ID3D11DeviceContext1 = context.cast()?;
@@ -81,6 +88,13 @@ fn make(flags: u32, level: D3D_FEATURE_LEVEL) -> windows::core::Result<ID3D10Dev
             Some(&mut state),
         )?;
         context1.SwapDeviceContextState(state.as_ref(), None);
+        // Direct3D 10's device serialises its calls unless made single-threaded.
+        if flags & D3D10_CREATE_DEVICE_SINGLETHREADED.0 as u32 == 0 {
+            // The answer is the earlier setting, off on a new device.
+            let _ = device
+                .cast::<ID3D10Multithread>()?
+                .SetMultithreadProtected(true);
+        }
     }
     device.cast()
 }
@@ -110,9 +124,10 @@ pub unsafe extern "system" fn D3D10CreateDevice(
     }
     unsafe {
         create10(
+            adapter.is_null(),
             driver_type,
             flags,
-            sdk_version == SDK_VERSION,
+            sdk_version == D3D10_SDK_VERSION,
             D3D_FEATURE_LEVEL_10_0,
             out,
         )
@@ -153,15 +168,20 @@ pub unsafe extern "system" fn D3D10CreateDevice1(
             None => DXGI_ERROR_UNSUPPORTED,
         };
     }
-    unsafe { create10(driver_type, flags, sdk_version == SDK_VERSION_1, level, out) }
+    unsafe {
+        create10(
+            adapter.is_null(),
+            driver_type,
+            flags,
+            sdk_version == D3D10_1_SDK_VERSION,
+            level,
+            out,
+        )
+    }
 }
 
-/// `D3D10_SDK_VERSION` and `D3D10_1_SDK_VERSION`.
-const SDK_VERSION: u32 = 29;
-const SDK_VERSION_1: u32 = 0x20;
-/// `D3D10_DRIVER_TYPE_HARDWARE` and `D3D10_CREATE_DEVICE_DEBUG`.
-const DRIVER_HARDWARE: i32 = 0;
-const CREATE_DEBUG: u32 = 2;
+/// d3d10_1.h's `D3D10_1_SDK_VERSION`, which the windows crate does not carry.
+const D3D10_1_SDK_VERSION: u32 = 0x20;
 
 type CreateDevice10 =
     unsafe extern "system" fn(*mut c_void, i32, HMODULE, u32, u32, *mut *mut c_void) -> HRESULT;
@@ -176,8 +196,10 @@ type CreateDevice101 = unsafe extern "system" fn(
 ) -> HRESULT;
 
 /// Direct3D 10's device creation for the program: the hardware driver only (the software, WARP,
-/// reference and null drivers are not served), no debug layer.
+/// reference and null drivers are not served), no debug layer. Without an adapter the device's
+/// is one of a factory of DXGI 1.0, as Direct3D 10 makes it; a given adapter stands for ours.
 unsafe fn create10(
+    no_adapter: bool,
     driver_type: i32,
     flags: u32,
     sdk_ok: bool,
@@ -190,14 +212,14 @@ unsafe fn create10(
     if !sdk_ok || out.is_null() {
         return windows::Win32::Foundation::E_INVALIDARG;
     }
-    if driver_type != DRIVER_HARDWARE {
+    if driver_type != D3D10_DRIVER_TYPE_HARDWARE.0 {
         super::warn_once("D3D10CreateDevice with a software, reference, WARP or null driver");
         return DXGI_ERROR_UNSUPPORTED;
     }
-    if flags & CREATE_DEBUG != 0 {
+    if flags & D3D10_CREATE_DEVICE_DEBUG.0 as u32 != 0 {
         return windows::Win32::Graphics::Dxgi::DXGI_ERROR_SDK_COMPONENT_MISSING;
     }
-    match make(flags, level) {
+    match make(flags, level, no_adapter) {
         Ok(device) => {
             unsafe { *out = device.into_raw() };
             windows::Win32::Foundation::S_OK
