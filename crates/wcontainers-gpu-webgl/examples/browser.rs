@@ -203,6 +203,7 @@ suite!(
     gathers_equal_their_footprints,
     depth_textures_compared_and_read_plainly,
     linear_values_interpolate_in_window_space,
+    programs_run_per_sample_and_write_the_sample_mask,
     special_float_values_keep_their_bits,
     vertices_captured_with_and_without_rasterising,
     captured_indices_drawn_both_ways,

@@ -27,7 +27,7 @@ pub(super) fn ioctl(
     [fd, request, argument, ..]: Args,
 ) -> Result<u64, Errno> {
     let fd = fd as i32;
-    let file = kernel.files(tid).file(fd)?;
+    let file = kernel.call_file(tid, fd)?;
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
     }
@@ -228,12 +228,13 @@ pub(super) fn set_async(
     let has_fasync = {
         let file = file.borrow();
         let inode = file.node.borrow();
-        match inode.content {
+        match &inode.content {
             Content::Pipe(_) => true,
             Content::Special => matches!(
                 Device::from_number(inode.rdev),
                 Some(Device::Random | Device::Urandom)
             ),
+            Content::Socket(_) => true,
             _ => false,
         }
     };
@@ -269,7 +270,7 @@ fn clone_range(
     destination: &FileRef,
     source: i32,
 ) -> Result<u64, Errno> {
-    let source = kernel.files(tid).file(source)?;
+    let source = kernel.call_file(tid, source)?;
     if source.borrow().is_path() {
         return Err(Errno::EBADF);
     }
@@ -378,6 +379,17 @@ fn own(
     if matches!(file.borrow().node.borrow().content, Content::Pidfd(..)) {
         return super::pidfd::ioctl(kernel, cx, tid, file, request, argument);
     }
+    let epoll = super::epoll::of(&file.borrow());
+    if let Some(epoll) = epoll {
+        return super::epoll::ioctl(kernel, cx, tid, &epoll, request, argument);
+    }
+    let inotify = super::inotify::of(&file.borrow());
+    if let Some(instance) = inotify {
+        return super::inotify::ioctl(kernel, cx, tid, &instance, request, argument);
+    }
+    if let Some(socket) = super::socket::of(file) {
+        return super::socket::ioctl(kernel, cx, tid, file, &socket, request, argument);
+    }
     // `timerfd_ioctl`.
     if super::timer::of(&file.borrow()).is_some() {
         return match request {
@@ -386,6 +398,13 @@ fn own(
             }
             _ => Err(Errno::ENOTTY),
         };
+    }
+    let namespace = match file.borrow().node.borrow().content {
+        Content::Namespace(namespace) => Some(namespace),
+        _ => None,
+    };
+    if let Some(namespace) = namespace {
+        return namespace_ioctl(kernel, cx, tid, namespace, request, argument);
     }
     let (unread, device) = {
         let file = file.borrow();
@@ -604,4 +623,53 @@ fn set_attributes(
     inode.fsflags = flags;
     inode.ctime = now;
     Some(Ok(0))
+}
+
+/// `ns_ioctl`: a namespace's type, the user namespace that owns it (the machine's first, which
+/// owns every namespace here and has no owner the caller may reach), its parent (the pid and user
+/// namespaces' are out of reach, the others have none), and the user namespace's owner (root);
+/// the requests of single types are not built.
+fn namespace_ioctl(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    namespace: crate::fs::proc::Namespace,
+    request: u32,
+    argument: u64,
+) -> Result<u64, Errno> {
+    use crate::fs::proc::Namespace;
+    use crate::linux::ioctl::{NS_GET_NSTYPE, NS_GET_OWNER_UID, NS_GET_PARENT, NS_GET_USERNS};
+    match request {
+        NS_GET_NSTYPE => Ok(namespace.clone_flag().into()),
+        NS_GET_USERNS if namespace != Namespace::User => {
+            let user = Namespace::User;
+            let node =
+                crate::fs::proc::namespace_node(kernel.files.nsfs.clone(), kernel.boot, user);
+            let opener = kernel.credentials(tid).serial;
+            let file = crate::file::OpenFile::new(node, O_RDONLY, user.link(), opener);
+            let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
+            Ok(kernel.files_mut(tid).add(file, true, 0, limit)? as u64)
+        }
+        NS_GET_USERNS => Err(Errno::EPERM),
+        NS_GET_PARENT
+            if matches!(
+                namespace,
+                Namespace::Pid | Namespace::PidForChildren | Namespace::User
+            ) =>
+        {
+            Err(Errno::EPERM)
+        }
+        NS_GET_PARENT => Err(Errno::EINVAL),
+        NS_GET_OWNER_UID if namespace == crate::fs::proc::Namespace::User => guest(kernel, cx, tid)
+            .put(argument, &0u32.to_le_bytes())
+            .map(|()| 0),
+        NS_GET_OWNER_UID => Err(Errno::EINVAL),
+        _ if (request >> 8) & 0xff == 0xb7 => Err(kernel.counters.refuse(
+            cx.host,
+            crate::counters::reason::IOCTL_NOT_BUILT,
+            request.into(),
+            Errno::ENOTTY,
+        )),
+        _ => Err(Errno::ENOTTY),
+    }
 }

@@ -64,14 +64,19 @@ pub enum Event<'a> {
     },
     /// The backend sent a FUSE notice that was not asked for, such as "this file changed".
     BackendNotice { notice: &'a [u8] },
-    /// A connection finished connecting, or failed with a Linux error number.
+    /// A connection finished connecting, or failed with a Linux error number (such as ECONNREFUSED,
+    /// ETIMEDOUT or ENETUNREACH).
     Connected {
         connection: ConnectionId,
         error: i32,
     },
-    /// A connection has bytes to receive, room to send, or has closed. Try again.
+    /// A connection has bytes to receive, room to send, or has closed: try again. Sent once after
+    /// a [`Host::receive`] or [`Host::send`] answered [`HostError::WouldBlock`], or after
+    /// connecting, when that changes.
     ConnectionReady { connection: ConnectionId },
-    /// A name lookup finished. `addresses` holds 4 byte or 16 byte addresses one after another.
+    /// A name lookup finished. `addresses` holds 16 byte addresses one after another, IPv4 ones
+    /// as IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`). `error` is 0 when the name was found (with any addresses, perhaps none), ENOENT when no
+    /// such name exists, and another Linux error number when the lookup failed.
     LookedUp {
         request: u64,
         addresses: &'a [u8],
@@ -104,7 +109,9 @@ pub trait Host {
     fn output(&mut self, stream: Stream, bytes: &[u8]);
 
     /// Start connecting to an outside address (4 or 16 bytes) and port. The result arrives as
-    /// [`Event::Connected`]. `stream` is true for TCP and false for UDP.
+    /// [`Event::Connected`]. `stream` is true for TCP and false for UDP. A UDP connection may be
+    /// sent on and received from at once; each send is one datagram and each receive gives one
+    /// (what does not fit is lost).
     fn connect(
         &mut self,
         connection: ConnectionId,
@@ -114,15 +121,22 @@ pub trait Host {
     ) -> Result<(), HostError>;
     /// Send bytes; returns how many were taken.
     fn send(&mut self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError>;
-    /// Receive bytes; returns how many arrived. Zero means the other end finished sending.
+    /// Receive bytes; returns how many arrived. Zero means the other end finished sending;
+    /// [`HostError::Closed`] means the connection was reset.
     fn receive(&mut self, connection: ConnectionId, into: &mut [u8]) -> Result<usize, HostError>;
+    /// No more bytes will be sent on a TCP connection; the other end reads its end. Receiving
+    /// goes on.
+    fn finish(&mut self, connection: ConnectionId);
     fn close(&mut self, connection: ConnectionId);
     /// Start looking up a name. The result arrives as [`Event::LookedUp`] with the same request number.
     fn look_up(&mut self, request: u64, name: &str) -> Result<(), HostError>;
-    /// Start accepting connections from outside on a port. Each arrives as [`Event::ConnectionReady`] on
-    /// `listener`, and is then taken with [`Host::accept`].
+    /// Start accepting TCP connections from outside to the container's port `port`. While some
+    /// wait, [`Event::ConnectionReady`] comes on `listener` (once after this call, and again after
+    /// [`Host::accept`] answered [`HostError::WouldBlock`]); each is taken with [`Host::accept`].
+    /// [`Host::close`] on `listener` stops it.
     fn listen(&mut self, listener: ConnectionId, port: u16) -> Result<(), HostError>;
-    /// Take one waiting connection from a listener and give it the number `connection`.
+    /// Take one waiting connection from a listener and give it the number `connection`, used then
+    /// as one made by [`Host::connect`]. [`HostError::WouldBlock`] when none waits.
     fn accept(&mut self, listener: ConnectionId, connection: ConnectionId)
     -> Result<(), HostError>;
 }

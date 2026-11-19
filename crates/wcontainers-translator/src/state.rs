@@ -1,65 +1,59 @@
 //! Where registers are kept when they are not in a piece's locals: the thread block in the state memory, laid
-//! out as [`wcontainers_abi::RegisterBlock`]. Every access pushes the block's place first, then reads or
-//! writes at the register's fixed offset from it.
+//! out as the guest says. Every access pushes the block's place first, then reads or writes at the
+//! register's fixed offset from it.
 
 use crate::code::{Fixed, MEMORY_STATE};
-use crate::contract;
+use crate::layout::Layout;
 use crate::thread::memarg;
-use core::mem::offset_of;
 use wasm_encoder::{InstructionSink, ValType};
-use wcontainers_abi::RegisterBlock as B;
-use wcontainers_arm64::{Control, Emitter, Flag};
+use wcontainers_guest_cpu::{Emitter, Guest, Ty};
 
-/// One register's place in the thread block.
+/// One register's place in the thread block, and the type it is read as.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Slot {
-    X(u8),
-    Sp,
-    Pc,
-    /// The low half of `pstate`, which holds the four flag bits; the high half is always zero.
-    Flags,
-    Vector(u8),
-    /// A register kept only in the thread's state.
-    Control(Control),
+pub(crate) struct Slot {
+    offset: u64,
+    ty: ValType,
 }
 
 impl Slot {
-    /// The slot of a register bit as `wcontainers_arm64::Registers` numbers them (not the flags).
-    pub(crate) fn of_bit(bit: u32) -> Slot {
-        match bit {
-            0..31 => Slot::X(bit as u8),
-            31 => Slot::Sp,
-            _ => Slot::Vector((bit - 64) as u8),
+    /// The slot of a register bit (not a flag).
+    pub(crate) fn of_bit<G: Guest>(bit: u32) -> Slot {
+        let bit = G::bit(bit);
+        Slot {
+            offset: bit.offset.into(),
+            ty: match bit.ty {
+                Ty::I32 => ValType::I32,
+                Ty::I64 => ValType::I64,
+                Ty::V128 => ValType::V128,
+            },
         }
     }
 
-    fn offset(self) -> u64 {
-        (match self {
-            Slot::X(n) => offset_of!(B, x) + 8 * usize::from(n),
-            Slot::Sp => offset_of!(B, sp),
-            Slot::Pc => offset_of!(B, pc),
-            Slot::Flags => offset_of!(B, pstate),
-            Slot::Vector(n) => offset_of!(B, v) + 16 * usize::from(n),
-            Slot::Control(c) => match c {
-                Control::ThreadPointer => offset_of!(B, tpidr_el0),
-                Control::Fpcr => offset_of!(B, fpcr),
-                Control::Fpsr => offset_of!(B, fpsr),
-                Control::FloatTracking => contract::FLOAT_TRACKING,
-                Control::ExclusiveBytes => contract::EXCLUSIVE_BYTES,
-                Control::ExclusiveAddress => contract::EXCLUSIVE_ADDRESS,
-                Control::ExclusiveLow => contract::EXCLUSIVE_VALUE,
-                Control::ExclusiveHigh => contract::EXCLUSIVE_VALUE + 8,
-            },
-        }) as u64
+    pub(crate) fn pc<G: Guest>() -> Slot {
+        Slot {
+            offset: G::PC_OFFSET as u64,
+            ty: ValType::I64,
+        }
+    }
+
+    /// The i32 flags word.
+    pub(crate) fn flags<G: Guest>() -> Slot {
+        Slot {
+            offset: G::FLAGS_WORD_OFFSET as u64,
+            ty: ValType::I32,
+        }
+    }
+
+    /// A register kept only in the thread's state.
+    pub(crate) fn control<G: Guest>(control: G::Control) -> Slot {
+        Slot {
+            offset: G::control_offset(control) as u64,
+            ty: G::control_ty(control),
+        }
     }
 
     pub(crate) fn ty(self) -> ValType {
-        match self {
-            Slot::Flags => ValType::I32,
-            Slot::Vector(_) => ValType::V128,
-            Slot::Control(c) => c.ty(),
-            _ => ValType::I64,
-        }
+        self.ty
     }
 
     /// Read the register, with the block's place already pushed.
@@ -74,8 +68,8 @@ impl Slot {
 
     /// [`Slot::load`] from the state memory at another index.
     pub(crate) fn load_from(self, s: &mut InstructionSink<'_>, memory: u32) {
-        let at = self.offset();
-        match self.ty() {
+        let at = self.offset;
+        match self.ty {
             ValType::I32 => s.i32_load(memarg(memory, at, 2)),
             ValType::V128 => s.v128_load(memarg(memory, at, 4)),
             _ => s.i64_load(memarg(memory, at, 3)),
@@ -84,8 +78,8 @@ impl Slot {
 
     /// [`Slot::store`] to the state memory at another index.
     pub(crate) fn store_to(self, s: &mut InstructionSink<'_>, memory: u32) {
-        let at = self.offset();
-        match self.ty() {
+        let at = self.offset;
+        match self.ty {
             ValType::I32 => s.i32_store(memarg(memory, at, 2)),
             ValType::V128 => s.v128_store(memarg(memory, at, 4)),
             _ => s.i64_store(memarg(memory, at, 3)),
@@ -107,26 +101,45 @@ impl Slot {
     }
 }
 
-/// Push one flag, 0 or 1, from the block.
-pub(crate) fn load_flag(s: &mut InstructionSink<'_>, block: Fixed, flag: Flag) {
+/// Push one flag, 0 or 1, from the block's flags word.
+pub(crate) fn load_flag<G: Guest>(s: &mut InstructionSink<'_>, block: Fixed, flag: G::Flag) {
+    let (_, bit, _) = G::FLAGS[G::flag_index(flag)];
     block.push(s);
-    Slot::Flags.load(s);
-    s.i32_const(flag.bit() as i32).i32_shr_u();
-    if flag != Flag::N {
+    Slot::flags::<G>().load(s);
+    s.i32_const(bit as i32).i32_shr_u();
+    if bit != 31 {
         s.i32_const(1).i32_and();
     }
 }
 
-/// Write the four flags to the block, each pushed as 0 or 1 by `push`.
-pub(crate) fn store_flags<E: Emitter>(e: &mut E, block: Fixed, push: impl Fn(&mut E, Flag)) {
-    block.push(&mut e.sink());
-    for (i, flag) in Flag::ALL.into_iter().enumerate() {
-        push(e, flag);
-        let mut s = e.sink();
-        s.i32_const(flag.bit() as i32).i32_shl();
+/// Push the flags word from the tracked flags, each pushed by `flag` as 0 or 1, in `Guest::FLAGS` order.
+pub(crate) fn push_word<G: Guest>(
+    s: &mut InstructionSink<'_>,
+    mut flag: impl FnMut(&mut InstructionSink<'_>, G::Flag),
+) {
+    for (i, &(f, bit, _)) in G::FLAGS.iter().enumerate() {
+        flag(s, f);
+        s.i32_const(bit as i32).i32_shl();
         if i > 0 {
             s.i32_or();
         }
     }
-    Slot::Flags.store(&mut e.sink());
+}
+
+/// Write the tracked flags to the block, each pushed as 0 or 1 by `push`.
+pub(crate) fn store_flags<G: Guest, E: Emitter<G>>(
+    e: &mut E,
+    block: Fixed,
+    push: impl Fn(&mut E, G::Flag),
+) {
+    block.push(&mut e.sink());
+    for (i, &(flag, bit, _)) in G::FLAGS.iter().enumerate() {
+        push(e, flag);
+        let mut s = e.sink();
+        s.i32_const(bit as i32).i32_shl();
+        if i > 0 {
+            s.i32_or();
+        }
+    }
+    Slot::flags::<G>().store(&mut e.sink());
 }

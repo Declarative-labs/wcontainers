@@ -499,16 +499,20 @@ fn group() -> impl Strategy<Value = Op> {
 
 /// Accesses fitted to their base: Arm leaves a transfer register that is also a base written back, or a pair
 /// loaded into one register, unpredictable (the CPU may raise illegal instruction). With `keep`, no access
-/// loads into the base either.
+/// loads into the base either. Vector registers are never the base, and `fitted` already keeps a vector
+/// pair's two apart.
 fn through(base: u8, accesses: Vec<GroupAccess>, keep: bool) -> Vec<GroupAccess> {
     accesses
         .into_iter()
         .map(|mut a| {
+            if a.vector {
+                return a;
+            }
             let writes_back = !matches!(a.indexing, Indexing::Offset);
             if writes_back || (keep && a.load) {
                 a.rt = other(a.rt, &[base]);
             }
-            if a.bytes == 16 && !a.vector {
+            if a.bytes == 16 {
                 let base = (writes_back || (keep && a.load)).then_some(base);
                 let first = a.load.then_some(a.rt);
                 let not: Vec<u8> = base.into_iter().chain(first).collect();

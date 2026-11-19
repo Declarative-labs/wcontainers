@@ -2,9 +2,9 @@
 //! traces, in the Firefox profiler's format) of one program run twice, to two last frames: per frame,
 //! the difference of the two runs divided by the difference of their frames, so start-up and
 //! shut-down cancel. Each sample goes to the innermost frame of a known part (the program, the
-//! Direct3D front, this back end, wgpu, naga, the shader converter, the driver, the system),
-//! library code (`core`, `alloc`, `std`, `hashbrown`) to its caller's part; and the samples under
-//! a back end frame are split the same way.
+//! Direct3D front, the WebGPU or WebGL 2 back end, wgpu, ANGLE, naga, the shader converter, the
+//! driver, the system), library code (`core`, `alloc`, `std`, `hashbrown`) to its caller's part;
+//! and the samples under a back end frame are split the same way.
 //!
 //! Our libraries (those loaded from under `\\wc\\`) are named from their PDBs, found by library
 //! name in the given directories; a sample in code inlined into a function counts as that
@@ -28,13 +28,14 @@ use anyhow::{Context, Result, anyhow, ensure};
 use serde_json::Value;
 
 /// The parts a sample can belong to, in printing order.
-const PARTS: [&str; 11] = [
+const PARTS: [&str; 12] = [
     "program",
     "rig forwarder",
     "front",
     "interface",
     "back end",
     "wgpu",
+    "angle",
     "naga",
     "shaders",
     "driver",
@@ -49,7 +50,7 @@ fn part_of_function(name: &str) -> Option<&'static str> {
     let name = name.strip_prefix("dyn ").unwrap_or(name);
     let krate = name.split("::").next()?;
     Some(match krate {
-        "wcontainers_gpu_webgpu" => "back end",
+        "wcontainers_gpu_webgpu" | "wcontainers_gpu_webgl" | "glow" | "khronos_egl" => "back end",
         "wcontainers_gpu" => "interface",
         "wgpu" | "wgpu_core" | "wgpu_hal" | "wgpu_types" | "gpu_allocator" | "gpu_descriptor"
         | "range_alloc" | "ash" | "windows" | "windows_core" | "parking_lot"
@@ -74,6 +75,8 @@ fn part_of_library(lib: &str, ours: bool) -> &'static str {
     let l = lib.to_ascii_lowercase();
     if l.starts_with("wcontainers_graphics_test_forward") {
         "rig forwarder"
+    } else if l.starts_with("libglesv2") || l.starts_with("libegl") {
+        "angle"
     } else if ours {
         "unknown"
     } else if l.starts_with("nv")

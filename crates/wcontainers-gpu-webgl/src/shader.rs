@@ -18,8 +18,8 @@ pub struct ShaderObj {
     pub id: u64,
     pub stage: ShaderStage,
     pub raw: glow::Shader,
-    /// Combined samplers by GLSL name: the texture's slot and its sampler's.
-    pub textures: Vec<(String, Slot, Option<Slot>)>,
+    /// Combined samplers by GLSL name.
+    pub textures: Vec<Combined>,
     /// Uniform blocks by GLSL name.
     pub blocks: Vec<(String, Slot)>,
     /// The GLSL, for the log of a program that fails to build and for capture programs.
@@ -29,6 +29,17 @@ pub struct ShaderObj {
     pub immediates: Vec<Immediate>,
     /// How many clip distances a vertex shader writes.
     pub clip_distances: u8,
+}
+
+/// A combined sampler of a shader: its GLSL name, the texture's slot and its sampler's, and
+/// whether gathers read it, so its unit takes the sampler's twin whose minimum level of detail is
+/// 0 (see [`gathers_at_level_zero`]).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Combined {
+    pub name: String,
+    pub texture: Slot,
+    pub sampler: Option<Slot>,
+    pub level_zero: bool,
 }
 
 /// A vertex shader and an optional fragment shader.
@@ -62,8 +73,9 @@ pub struct ProgramObj {
 /// What a finished link decided.
 #[derive(Debug)]
 pub struct Linked {
-    /// Texture unit n samples the texture in slot `.0` through the sampler in slot `.1`.
-    pub units: Vec<(Slot, Option<Slot>)>,
+    /// Texture unit n samples the texture in slot `.0` through the sampler in slot `.1`, or its
+    /// twin whose minimum level of detail is 0 where `.2` is set.
+    pub units: Vec<(Slot, Option<Slot>, bool)>,
     /// Unit n's hidden size uniform (see [`sizes_from_uniforms`]), with the value it holds.
     pub sizes: Vec<Option<(glow::UniformLocation, std::cell::Cell<[i32; 3]>)>>,
     /// Uniform block binding point n reads the uniform buffer in this slot.
@@ -78,12 +90,32 @@ pub struct Linked {
     pub held: std::cell::RefCell<Vec<u8>>,
 }
 
-/// Writes `module` as GLSL ES 3.00. Without EXT_clip_control the last vertex stage negates y as its
-/// last step, so row 0 is the top of the picture on both origin routes.
+/// What the context's GLSL ES 3.00 takes beyond the core language, and how the picture is turned.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GlslSettings {
+    /// Without EXT_clip_control the last vertex stage negates y as its last step, so row 0 is the
+    /// top of the picture on both origin routes.
+    pub flip_y: bool,
+    /// NV_shader_noperspective_interpolation's `noperspective`, which linear values take where the
+    /// context has it; elsewhere they are carried times w ([`linear_by_w`]).
+    pub noperspective: bool,
+}
+
+/// The directive of NV_shader_noperspective_interpolation.
+pub const NOPERSPECTIVE_EXTENSION: &str = "GL_NV_shader_noperspective_interpolation";
+
+/// The directive of OES_shader_multisample_interpolation, which gives the `sample` qualifier.
+pub const SAMPLE_QUALIFIER_EXTENSION: &str = "GL_OES_shader_multisample_interpolation";
+
+/// The combined samplers whose units take a sampler's level-zero twin, each with the name whose
+/// slots it binds (see [`gathers_at_level_zero`]).
+pub type LevelZero = Vec<(String, String)>;
+
+/// Writes `module` as GLSL ES 3.00.
 pub fn write_glsl(
     module: &ShaderModule,
-    flip_y: bool,
-) -> Result<(String, glsl::ReflectionInfo), String> {
+    settings: GlslSettings,
+) -> Result<(String, glsl::ReflectionInfo, LevelZero), String> {
     let stage = match module.stage {
         ShaderStage::Vertex => naga::ShaderStage::Vertex,
         ShaderStage::Fragment => naga::ShaderStage::Fragment,
@@ -104,13 +136,13 @@ pub fn write_glsl(
         entry_point: module.entry_point.clone(),
         multiview: None,
     };
-    let linear = linear_values(module);
-    let perspective;
-    let module = if linear.is_empty() {
+    let qualified = qualified_values(module);
+    let plain;
+    let module = if qualified.is_empty() {
         module
     } else {
-        perspective = linear_as_perspective(module)?;
-        &perspective
+        plain = qualifiers_removed(module)?;
+        &plain
     };
     let mut out = String::new();
     let mut writer = glsl::Writer::new(
@@ -123,7 +155,7 @@ pub fn write_glsl(
     )
     .map_err(|e| e.to_string())?;
     let reflection = writer.write().map_err(|e| e.to_string())?;
-    if flip_y && stage == naga::ShaderStage::Vertex {
+    if settings.flip_y && stage == naga::ShaderStage::Vertex {
         // naga writes each `gl_Position = ...;` on a line of its own, just before the entry returns.
         let mut flipped = String::with_capacity(out.len() + 64);
         for line in out.lines() {
@@ -137,8 +169,79 @@ pub fn write_glsl(
         }
         out = flipped;
     }
-    let out = opaque_float_bits(linear_by_w(out, stage, &linear));
-    Ok((gathers_by_samples(bit_functions(out)), reflection))
+    let out = qualifiers_written(out, &qualified, settings.noperspective);
+    let carried: Vec<Qualified> = if settings.noperspective {
+        Vec::new()
+    } else {
+        qualified.into_iter().filter(|q| q.linear).collect()
+    };
+    let out = opaque_float_bits(linear_by_w(out, stage, &carried));
+    let (out, level_zero) = gathers_at_level_zero(gathers_by_samples(bit_functions(out)));
+    Ok((out, reflection, level_zero))
+}
+
+/// What [`gathers_by_samples`] makes of each gather's first argument, before its name.
+const GATHER_CALLS: &[&str] = &["_wc_gather(", "_wc_gather_offset("];
+
+/// The name of the second sampler uniform of a texture both gathered and read otherwise, after the
+/// first's.
+const GATHERED: &str = "_wc_gathered";
+
+/// Gathers sample level 0 of the view by `textureLod`, which GL clamps to the sampler's minimum
+/// level of detail, while Direct3D and WebGPU gather from level 0 whatever it is. So each combined
+/// sampler gathers read is bound with the sampler's twin whose minimum is 0: the uniform itself
+/// where only gathers read it, else a second uniform (and unit) of its own that the gathers read.
+/// Returns the names whose units take the twin, each with the name whose slots it binds.
+fn gathers_at_level_zero(source: String) -> (String, LevelZero) {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == NAME_PUNCTUATION;
+    let mut names: Vec<String> = Vec::new();
+    for call in GATHER_CALLS {
+        for (at, _) in source.match_indices(call) {
+            let rest = &source[at + call.len()..];
+            let name = &rest[..rest.find(ARGUMENT_GAP).unwrap_or(0)];
+            // The calls gathers_by_samples makes size their first argument right after it.
+            if rest[name.len()..].starts_with(&format!(", textureSize({name}, 0)"))
+                && !names.iter().any(|n| n == name)
+            {
+                names.push(name.to_string());
+            }
+        }
+    }
+    let mut out = source;
+    let mut level_zero = Vec::new();
+    for name in names {
+        let declaration = |l: &str| l.starts_with(UNIFORM) && l.ends_with(&format!(" {name};"));
+        // Whether anything but its declaration and the gathers names it.
+        let mut rest = out.clone();
+        for call in GATHER_CALLS {
+            rest = rest.replace(&format!("{call}{name}, textureSize({name}, 0)"), "");
+        }
+        let elsewhere = rest.lines().filter(|l| !declaration(l)).any(|l| {
+            l.match_indices(name.as_str()).any(|(at, _)| {
+                !l[..at].ends_with(ident) && !l[at + name.len()..].starts_with(ident)
+            })
+        });
+        if !elsewhere {
+            level_zero.push((name.clone(), name));
+            continue;
+        }
+        let alias = format!("{name}{GATHERED}");
+        for call in GATHER_CALLS {
+            out = out.replace(&format!("{call}{name}, "), &format!("{call}{alias}, "));
+        }
+        let mut declared = String::with_capacity(out.len() + alias.len());
+        for line in out.lines() {
+            declared.push_str(line);
+            declared.push(LINE_END);
+            if declaration(line) {
+                declared.push_str(&line.replacen(&format!(" {name};"), &format!(" {alias};"), 1));
+                declared.push(LINE_END);
+            }
+        }
+        out = declared;
+        level_zero.push((alias, name));
+    }
+    (out, level_zero)
 }
 
 /// The uniform [`opaque_float_bits`] reads its bits through: never set, so 0 as GL leaves every
@@ -228,12 +331,69 @@ const RETURN: &str = "return;";
 /// The varying carrying a linear value at `location` perspective-correct (see [`linear_by_w`]).
 const CARRIED: &str = "_wc_linear";
 
-/// The varying carrying the vertex's w at the centroid, for linear values sampled there.
-const CENTROID_W: &str = "_wc_linear_w";
+/// The varying carrying the vertex's w, before the qualifier it is sampled with, for linear values
+/// sampled at the centroid or per sample.
+const CARRIED_W: &str = "_wc_linear_w_";
 
-/// The locations of the values the stage writes (vertex) or reads (fragment) with linear
-/// interpolation, each with whether it is sampled at the centroid.
-fn linear_values(module: &ShaderModule) -> Vec<(u32, bool)> {
+/// GLSL's qualifiers of values between the stages.
+const SMOOTH: &str = "smooth";
+const NOPERSPECTIVE: &str = "noperspective";
+const IN: &str = "in";
+const OUT: &str = "out";
+
+/// GLSL's auxiliary qualifier of each place a value is sampled other than the centre.
+const AUXILIARY: [(naga::Sampling, &str); 2] = [
+    (naga::Sampling::Centroid, "centroid"),
+    (naga::Sampling::Sample, "sample"),
+];
+
+/// What separates the words of a declaration naga writes.
+const WORD_GAP: &str = " ";
+
+/// What ends each line of GLSL.
+const LINE_END: char = '\n';
+
+/// What separates the arguments of a call.
+const ARGUMENT_GAP: char = ',';
+
+/// What GLSL takes in names besides letters and digits.
+const NAME_PUNCTUATION: char = '_';
+
+/// How a sampler uniform's declaration starts.
+const UNIFORM: &str = "uniform ";
+
+/// Why a module's entry point cannot be rewritten: it is not there.
+const NO_ENTRY_POINT: &str = "no such entry point";
+
+/// Why a module's linear or per-sample values cannot be made plain: their struct exists plainly
+/// too, and naga's arena keeps one of each type.
+const PLAIN_STRUCT_EXISTS: &str = "its struct of linear or per-sample values exists plainly too";
+
+/// A value between the stages that naga cannot qualify in GLSL ES 3.00 as the module does: linear
+/// (GLSL ES 3.00 has no `noperspective`), or sampled per sample (`sample` is GLSL ES 3.20's).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Qualified {
+    location: u32,
+    linear: bool,
+    sampling: Option<naga::Sampling>,
+}
+
+impl Qualified {
+    /// The auxiliary qualifier it is sampled with.
+    fn auxiliary(self) -> Option<&'static str> {
+        AUXILIARY
+            .iter()
+            .find(|(s, _)| Some(*s) == self.sampling)
+            .map(|(_, q)| *q)
+    }
+
+    fn per_sample(self) -> bool {
+        self.sampling == Some(naga::Sampling::Sample)
+    }
+}
+
+/// The values the stage writes (vertex) or reads (fragment) that are linear or sampled per sample.
+fn qualified_values(module: &ShaderModule) -> Vec<Qualified> {
     let bindings: Vec<naga::Binding> = match module.stage {
         ShaderStage::Vertex => results(module).map(|(b, _)| b).collect(),
         _ => arguments(module).collect(),
@@ -243,23 +403,37 @@ fn linear_values(module: &ShaderModule) -> Vec<(u32, bool)> {
         .filter_map(|b| match b {
             naga::Binding::Location {
                 location,
-                interpolation: Some(naga::Interpolation::Linear),
+                interpolation,
                 sampling,
                 ..
-            } => Some((location, sampling == Some(naga::Sampling::Centroid))),
+            } => Some(Qualified {
+                location,
+                linear: interpolation == Some(naga::Interpolation::Linear),
+                sampling,
+            })
+            .filter(|q| q.linear || q.per_sample()),
             _ => None,
         })
         .collect()
 }
 
-/// `module` with its entry point's linear values made perspective-correct, so naga writes them
-/// (GLSL ES 3.00 has no `noperspective`); [`linear_by_w`] then carries them in GLSL.
-fn linear_as_perspective(module: &ShaderModule) -> Result<ShaderModule, String> {
-    let perspective = |b: &mut Option<naga::Binding>| {
-        if let Some(naga::Binding::Location { interpolation, .. }) = b
-            && *interpolation == Some(naga::Interpolation::Linear)
+/// `module` with its entry point's linear values made perspective-correct and its values sampled
+/// per sample sampled at the centre, so naga writes them; [`qualifiers_written`] and
+/// [`linear_by_w`] then qualify them in GLSL.
+fn qualifiers_removed(module: &ShaderModule) -> Result<ShaderModule, String> {
+    let plain = |b: &mut Option<naga::Binding>| {
+        if let Some(naga::Binding::Location {
+            interpolation,
+            sampling,
+            ..
+        }) = b
         {
-            *interpolation = Some(naga::Interpolation::Perspective);
+            if *interpolation == Some(naga::Interpolation::Linear) {
+                *interpolation = Some(naga::Interpolation::Perspective);
+            }
+            if *sampling == Some(naga::Sampling::Sample) {
+                *sampling = Some(naga::Sampling::Center);
+            }
         }
     };
     let mut out = module.module.clone();
@@ -268,7 +442,7 @@ fn linear_as_perspective(module: &ShaderModule) -> Result<ShaderModule, String> 
         .iter_mut()
         .find(|e| e.name == module.entry_point)
     else {
-        return Err("no such entry point".into());
+        return Err(NO_ENTRY_POINT.into());
     };
     let mut structs = Vec::new();
     let mut values: Vec<(&mut Option<naga::Binding>, naga::Handle<naga::Type>)> = entry
@@ -286,7 +460,7 @@ fn linear_as_perspective(module: &ShaderModule) -> Result<ShaderModule, String> 
     );
     for (binding, ty) in values {
         match binding {
-            Some(_) => perspective(binding),
+            Some(_) => plain(binding),
             None => structs.push(ty),
         }
     }
@@ -294,12 +468,12 @@ fn linear_as_perspective(module: &ShaderModule) -> Result<ShaderModule, String> 
         let mut t = out.types[ty].clone();
         if let naga::TypeInner::Struct { members, .. } = &mut t.inner {
             for m in members {
-                perspective(&mut m.binding);
+                plain(&mut m.binding);
             }
         }
         if t != out.types[ty] {
             if out.types.get(&t).is_some() {
-                return Err("its struct of linear values exists perspective-correct too".into());
+                return Err(PLAIN_STRUCT_EXISTS.into());
             }
             out.types.replace(ty, t);
         }
@@ -313,24 +487,84 @@ fn linear_as_perspective(module: &ShaderModule) -> Result<ShaderModule, String> 
     })
 }
 
-/// Carries the linear values at `linear` (from [`linear_values`]) through GLSL ES 3.00, which has
-/// no `noperspective`: the vertex stage writes each one times its w into a perspective-correct
-/// varying of its own (keeping the value itself for transform feedback), and the fragment stage
-/// divides by the w interpolated at the same place: `gl_FragCoord.w` (1 / w) at the centre, the
-/// vertex's w carried beside it at the centroid. A perspective-correct a·w over w is
-/// Σbᵢaᵢ, the value interpolated in window space, exactly; the same holds where clipping made
-/// the vertex.
-fn linear_by_w(source: String, stage: naga::ShaderStage, linear: &[(u32, bool)]) -> String {
+/// The declarations of `qualified` values given back what [`qualifiers_removed`] took: `sample`
+/// under OES_shader_multisample_interpolation, and with `noperspective` (where the context has
+/// NV_shader_noperspective_interpolation) `noperspective` in place of `smooth`.
+fn qualifiers_written(source: String, qualified: &[Qualified], noperspective: bool) -> String {
+    let per_sample = qualified.iter().any(|q| q.per_sample());
+    let linear = noperspective && qualified.iter().any(|q| q.linear);
+    if !per_sample && !linear {
+        return source;
+    }
+    let mut out = String::with_capacity(source.len() * 2);
+    let mut in_main = false;
+    for (i, line) in source.lines().enumerate() {
+        in_main |= line == MAIN;
+        let declared = qualified
+            .iter()
+            .find(|q| line.ends_with(&format!(" {VARYING}{};", q.location)))
+            .filter(|_| !in_main);
+        match declared {
+            Some(q) => {
+                let mut words: Vec<&str> = line.split(WORD_GAP).collect();
+                if let Some(at) = words.iter().position(|w| *w == IN || *w == OUT) {
+                    if q.per_sample() {
+                        words.extend(q.auxiliary());
+                        words[at..].rotate_right(1);
+                    }
+                    if q.linear && noperspective {
+                        for w in &mut words[..at] {
+                            if *w == SMOOTH {
+                                *w = NOPERSPECTIVE;
+                            }
+                        }
+                    }
+                }
+                out.push_str(&words.join(WORD_GAP));
+            }
+            None => out.push_str(line),
+        }
+        out.push(LINE_END);
+        // The directives come right after the version.
+        if i == 0 {
+            for (wanted, extension) in [
+                (per_sample, SAMPLE_QUALIFIER_EXTENSION),
+                (linear, NOPERSPECTIVE_EXTENSION),
+            ] {
+                if wanted {
+                    out.push_str(&format!("#extension {extension} : require\n"));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Carries the linear values `linear` through GLSL ES 3.00 without `noperspective`: the vertex
+/// stage writes each one times its w into a perspective-correct varying of its own (keeping the
+/// value itself for transform feedback), and the fragment stage divides by the w interpolated at
+/// the same place: `gl_FragCoord.w` (1 / w) at the centre, the vertex's w carried beside it at the
+/// centroid or per sample. A perspective-correct a·w over w is Σbᵢaᵢ, the value interpolated in
+/// window space, exactly; the same holds where clipping made the vertex.
+fn linear_by_w(source: String, stage: naga::ShaderStage, linear: &[Qualified]) -> String {
     if linear.is_empty() {
         return source;
     }
     let vertex = stage == naga::ShaderStage::Vertex;
-    let any_centroid = linear.iter().any(|&(_, c)| c);
-    let names: Vec<(String, String, bool)> = linear
+    let mut auxiliaries: Vec<&str> = linear.iter().filter_map(|q| q.auxiliary()).collect();
+    auxiliaries.sort();
+    auxiliaries.dedup();
+    let names: Vec<(String, String, Option<&str>)> = linear
         .iter()
-        .map(|&(l, c)| (format!("{VARYING}{l}"), format!("{CARRIED}{l}"), c))
+        .map(|q| {
+            (
+                format!("{VARYING}{}", q.location),
+                format!("{CARRIED}{}", q.location),
+                q.auxiliary(),
+            )
+        })
         .collect();
-    let direction = if vertex { "out" } else { "in" };
+    let direction = if vertex { OUT } else { IN };
     let mut out = String::with_capacity(source.len() * 2);
     let mut in_main = false;
     let mut declared_w = false;
@@ -354,8 +588,10 @@ fn linear_by_w(source: String, stage: naga::ShaderStage, linear: &[(u32, bool)])
                     out.push_str(&carrier);
                     out.push('\n');
                 }
-                if any_centroid && !declared_w {
-                    out.push_str(&format!("centroid {direction} float {CENTROID_W};\n"));
+                if !declared_w {
+                    for a in &auxiliaries {
+                        out.push_str(&format!("{a} {direction} float {CARRIED_W}{a};\n"));
+                    }
                     declared_w = true;
                 }
             }
@@ -367,8 +603,8 @@ fn linear_by_w(source: String, stage: naga::ShaderStage, linear: &[(u32, bool)])
                 for (name, carried, _) in &names {
                     out.push_str(&format!("{indent}{carried} = {name} * gl_Position.w;\n"));
                 }
-                if any_centroid {
-                    out.push_str(&format!("{indent}{CENTROID_W} = gl_Position.w;\n"));
+                for a in &auxiliaries {
+                    out.push_str(&format!("{indent}{CARRIED_W}{a} = gl_Position.w;\n"));
                 }
             }
             out.push_str(line);
@@ -376,15 +612,14 @@ fn linear_by_w(source: String, stage: naga::ShaderStage, linear: &[(u32, bool)])
             let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
             let mut rest = line;
             'scan: while !rest.is_empty() {
-                for (name, carried, centroid) in &names {
+                for (name, carried, auxiliary) in &names {
                     if let Some(after) = rest.strip_prefix(name.as_str())
                         && !after.starts_with(ident)
                         && !out.ends_with(ident)
                     {
-                        out.push_str(&if *centroid {
-                            format!("({carried} / {CENTROID_W})")
-                        } else {
-                            format!("({carried} * gl_FragCoord.w)")
+                        out.push_str(&match auxiliary {
+                            Some(a) => format!("({carried} / {CARRIED_W}{a})"),
+                            None => format!("({carried} * gl_FragCoord.w)"),
                         });
                         rest = after;
                         continue 'scan;
@@ -1193,7 +1428,7 @@ pub fn compile(
     gl: &glow::Context,
     id: u64,
     module: &ShaderModule,
-    flip_y: bool,
+    settings: GlslSettings,
 ) -> Result<ShaderObj, GpuError> {
     let plain = plain_depth_reads(module).map_err(GpuError::Invalid)?;
     let module = plain.as_ref().map_or(module, |p| &p.0);
@@ -1209,8 +1444,10 @@ pub fn compile(
     let module = split.as_ref().map_or(module, |s| &s.0);
     let own = &own[..];
     // What the back end lacks is refused by `needs` before this, so a refusal here is the front's.
-    let (source, reflection) = write_glsl(module, flip_y).map_err(|e| {
-        eprintln!("wcontainers webgl: naga could not write the shader as GLSL ES 3.00: {e}");
+    let (source, reflection, level_zero) = write_glsl(module, settings).map_err(|e| {
+        crate::platform::report(&format!(
+            "wcontainers webgl: naga could not write the shader as GLSL ES 3.00: {e}"
+        ));
         GpuError::Invalid("webgl: naga could not write the shader as GLSL ES 3.00")
     })?;
     // A copy's slot is its texture's.
@@ -1225,17 +1462,33 @@ pub fn compile(
         .collect();
     let source = sizes_from_uniforms(source, &names);
     let m = &module.module;
-    let mut textures: Vec<_> = reflection
+    let mut textures: Vec<Combined> = reflection
         .texture_mapping
         .iter()
         .filter_map(|(name, map)| {
-            Some((
-                name.clone(),
-                slot(m, map.texture)?,
-                map.sampler.and_then(|s| slot(m, s)),
-            ))
+            Some(Combined {
+                name: name.clone(),
+                texture: slot(m, map.texture)?,
+                sampler: map.sampler.and_then(|s| slot(m, s)),
+                level_zero: false,
+            })
         })
         .collect();
+    for (unit, of) in level_zero {
+        let Some(c) = textures.iter_mut().find(|c| c.name == of) else {
+            continue;
+        };
+        if unit == of {
+            c.level_zero = true;
+        } else {
+            let twin = Combined {
+                name: unit,
+                level_zero: true,
+                ..c.clone()
+            };
+            textures.push(twin);
+        }
+    }
     textures.sort();
     let mut blocks: Vec<_> = reflection
         .uniforms
@@ -1702,7 +1955,13 @@ pub fn finish(gl: &glow::Context, program: &ProgramObj) -> Result<Linked, String
                     immediates.push((location, *offset, *ty));
                 }
             }
-            for (name, texture, sampler) in &s.textures {
+            for Combined {
+                name,
+                texture,
+                sampler,
+                level_zero,
+            } in &s.textures
+            {
                 let location = gl.get_uniform_location(raw, name);
                 let size = gl
                     .get_uniform_location(raw, &format!("{name}_size"))
@@ -1715,7 +1974,7 @@ pub fn finish(gl: &glow::Context, program: &ProgramObj) -> Result<Linked, String
                 if let Some(location) = &location {
                     gl.uniform_1_i32(Some(location), units.len() as i32);
                 }
-                units.push((*texture, *sampler));
+                units.push((*texture, *sampler, *level_zero));
                 sizes.push(size);
             }
             for (name, slot) in &s.blocks {
@@ -1935,7 +2194,7 @@ mod tests {
             .collect();
         assert_eq!(distances.len(), 1);
         assert_eq!(distances[0].1, 2);
-        let (glsl, _) = write_glsl(&module, false).expect("writes");
+        let (glsl, _, _) = write_glsl(&module, GlslSettings::default()).expect("writes");
         assert!(
             glsl.contains("#extension GL_ANGLE_clip_cull_distance"),
             "{glsl}"
@@ -1963,14 +2222,14 @@ mod tests {
             }";
         let module = ShaderModule::from_wgsl(wgsl, "fs", ShaderStage::Fragment).expect("validates");
         assert!(
-            write_glsl(&module, false).is_err(),
+            write_glsl(&module, GlslSettings::default()).is_err(),
             "naga writes it as it is"
         );
         let (plain, own) = plain_depth_reads(&module)
             .expect("rewrites")
             .expect("reads plainly");
         assert_eq!(own, [((0, PLAIN_DEPTH_BINDINGS), (0, 32))]);
-        let (glsl, _) = write_glsl(&plain, false).expect("writes");
+        let (glsl, _, _) = write_glsl(&plain, GlslSettings::default()).expect("writes");
         assert!(glsl.contains("sampler2DShadow"), "{glsl}");
         assert!(glsl.contains("texelFetch("), "{glsl}");
         assert_eq!(glsl.matches("_wc_plain_depth_").count(), 8, "{glsl}");
@@ -1987,7 +2246,7 @@ mod tests {
                 return p + c + vec4<f32>(u) + vec4<f32>(f, 0.0);
             }";
         let module = ShaderModule::from_wgsl(wgsl, "vs", ShaderStage::Vertex).expect("validates");
-        let (glsl, _) = write_glsl(&module, false).expect("writes");
+        let (glsl, _, _) = write_glsl(&module, GlslSettings::default()).expect("writes");
         let convert = 1 << 2 | 2 << 4 | 3 << 6;
         let out = convert_inputs(&glsl, convert).expect("converts");
         for line in [
@@ -2020,17 +2279,19 @@ mod tests {
             @fragment fn fs(v: V) -> @location(0) vec4<f32> { return vec4<f32>(v.a, v.b, v.c); }";
         let write = |entry: &str, stage| {
             let module = ShaderModule::from_wgsl(wgsl, entry, stage).expect("validates");
-            write_glsl(&module, false).expect("writes").0
+            write_glsl(&module, GlslSettings::default())
+                .expect("writes")
+                .0
         };
         let vs = write("vs", ShaderStage::Vertex);
         for line in [
             "smooth out vec2 _vs2fs_location1;",
             "smooth out vec2 _wc_linear1;",
             "smooth centroid out float _wc_linear10;",
-            "centroid out float _wc_linear_w;",
+            "centroid out float _wc_linear_w_centroid;",
             "    _wc_linear1 = _vs2fs_location1 * gl_Position.w;",
             "    _wc_linear10 = _vs2fs_location10 * gl_Position.w;",
-            "    _wc_linear_w = gl_Position.w;",
+            "    _wc_linear_w_centroid = gl_Position.w;",
         ] {
             assert!(vs.lines().any(|l| l == line), "{line} in\n{vs}");
         }
@@ -2041,10 +2302,78 @@ mod tests {
         for text in [
             "smooth in vec2 _wc_linear1;",
             "smooth centroid in float _wc_linear10;",
-            "centroid in float _wc_linear_w;",
+            "centroid in float _wc_linear_w_centroid;",
             "(_wc_linear1 * gl_FragCoord.w)",
-            "(_wc_linear10 / _wc_linear_w)",
+            "(_wc_linear10 / _wc_linear_w_centroid)",
             "_vs2fs_location2",
+        ] {
+            assert!(fs.contains(text), "{text} in\n{fs}");
+        }
+    }
+
+    /// With NV_shader_noperspective_interpolation linear values are declared `noperspective` and
+    /// read as they are; values sampled per sample are declared `sample` on both sides, under
+    /// their directives, carried times w beside a per-sample w where they are linear too.
+    #[test]
+    fn linear_and_per_sample_values_take_their_qualifiers() {
+        let wgsl = "
+            struct V {
+                @builtin(position) p: vec4<f32>,
+                @location(1) @interpolate(linear) a: vec2<f32>,
+                @location(3) @interpolate(perspective, sample) b: f32,
+                @location(4) @interpolate(linear, sample) c: f32,
+            }
+            @vertex fn vs(@location(0) p: vec4<f32>) -> V { return V(p, p.xy, p.z, p.w); }
+            @fragment fn fs(v: V) -> @location(0) vec4<f32> { return vec4<f32>(v.a, v.b, v.c); }";
+        let parsed = naga::front::wgsl::parse_str(wgsl).expect("parses");
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&parsed)
+        .expect("validates");
+        let write = |entry: &str, stage, noperspective| {
+            let module = ShaderModule {
+                module: parsed.clone(),
+                info: info.clone(),
+                entry_point: entry.into(),
+                stage,
+                key: [0; 32],
+            };
+            let settings = GlslSettings {
+                flip_y: false,
+                noperspective,
+            };
+            write_glsl(&module, settings).expect("writes").0
+        };
+        let sample = format!("#extension {SAMPLE_QUALIFIER_EXTENSION} : require");
+        let linear = format!("#extension {NOPERSPECTIVE_EXTENSION} : require");
+        let vs = write("vs", ShaderStage::Vertex, true);
+        for line in [
+            sample.as_str(),
+            linear.as_str(),
+            "noperspective out vec2 _vs2fs_location1;",
+            "smooth sample out float _vs2fs_location3;",
+            "noperspective sample out float _vs2fs_location4;",
+        ] {
+            assert!(vs.lines().any(|l| l == line), "{line} in\n{vs}");
+        }
+        assert!(!vs.contains(CARRIED), "{vs}");
+        let fs = write("fs", ShaderStage::Fragment, true);
+        for line in [
+            "noperspective in vec2 _vs2fs_location1;",
+            "smooth sample in float _vs2fs_location3;",
+            "noperspective sample in float _vs2fs_location4;",
+        ] {
+            assert!(fs.lines().any(|l| l == line), "{line} in\n{fs}");
+        }
+        let fs = write("fs", ShaderStage::Fragment, false);
+        assert!(!fs.contains(&linear), "{fs}");
+        for text in [
+            "smooth sample in float _wc_linear4;",
+            "sample in float _wc_linear_w_sample;",
+            "(_wc_linear4 / _wc_linear_w_sample)",
+            "(_wc_linear1 * gl_FragCoord.w)",
         ] {
             assert!(fs.contains(text), "{text} in\n{fs}");
         }

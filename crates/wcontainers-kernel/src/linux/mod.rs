@@ -32,8 +32,10 @@ pub mod ctypes {
 pub mod auxvec;
 pub mod errno;
 pub mod general;
+pub mod if_arp;
 pub mod ioctl;
 pub mod net;
+pub mod netlink;
 pub mod prctl;
 pub mod ptrace;
 pub mod system;

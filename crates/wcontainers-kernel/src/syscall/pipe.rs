@@ -80,7 +80,7 @@ pub(super) fn pipe2(
     let write_fd = match files.add(writer, close_on_exec, 0, limit) {
         Ok(fd) => fd,
         Err(error) => {
-            let _ = files.remove(read_fd, pid);
+            let _ = files.remove(read_fd, pid, false);
             drop(files);
             kernel.files_released(cx);
             return Err(error);
@@ -92,8 +92,8 @@ pub(super) fn pipe2(
     bytes[4..].copy_from_slice(&write_fd.to_le_bytes());
     if let Err(error) = guest(kernel, cx, tid).write(fds, &bytes) {
         let mut files = kernel.files_mut(tid);
-        let _ = files.remove(read_fd, pid);
-        let _ = files.remove(write_fd, pid);
+        let _ = files.remove(read_fd, pid, false);
+        let _ = files.remove(write_fd, pid, false);
         drop(files);
         kernel.files_released(cx);
         return Err(error);
@@ -112,9 +112,16 @@ pub(crate) fn attach(node: &Node, file: &FileRef) {
 /// close and makes one at the next open (`fifo_open`).
 pub(super) fn named(node: &Node) {
     let mut inode = node.borrow_mut();
-    if !matches!(&inode.content, Content::Pipe(pipe) if pipe.is_open()) {
-        inode.content = Content::Pipe(Pipe::named());
+    if matches!(&inode.content, Content::Pipe(pipe) if pipe.is_open()) {
+        return;
     }
+    let mut pipe = Pipe::named();
+    pipe.backend = match core::mem::replace(&mut inode.content, Content::Special) {
+        Content::Pipe(old) => old.backend,
+        Content::Backend(remote) => Some(alloc::rc::Rc::new(remote)),
+        _ => None,
+    };
+    inode.content = Content::Pipe(pipe);
 }
 
 /// `fifo_open` for a new open file of a named pipe: it counts as an end at once; a reader waits for
@@ -214,7 +221,9 @@ pub(super) fn signal_ends(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node
 }
 
 /// `pipe_release` of each file given up that was its last holder: a pipe left with readers and no
-/// writers or the other way round sends both kinds of end their I/O signals. Releases run last given
+/// writers or the other way round wakes every waiter and epoll item of either end
+/// (`wake_up_interruptible_all`, which edge-triggered items take as an event) and sends both
+/// kinds of end their I/O signals. Releases run last given
 /// up first, as `fput`'s task works do on the way back to the program, and the file is gone from the
 /// pipe's ends first, as `__fput` takes it off before the release.
 pub(crate) fn released(kernel: &mut Kernel, cx: &mut Context<'_>, files: Vec<FileRef>) {
@@ -227,6 +236,7 @@ pub(crate) fn released(kernel: &mut Kernel, cx: &mut Context<'_>, files: Vec<Fil
             _ => false,
         };
         if lost_a_side {
+            kernel.wake_poll(channel(&node), 0);
             signal_ends(kernel, cx, &node, true);
             signal_ends(kernel, cx, &node, false);
         }
@@ -241,14 +251,7 @@ pub(super) fn lock(kernel: &mut Kernel, tid: Tid, file: &FileRef) -> Result<(), 
         unreachable!("a pipe's channel is its object");
     };
     let holder = with_pipe(file, |pipe| pipe.held_by);
-    let held = holder.is_some_and(|holder| {
-        holder != tid
-            && kernel
-                .threads
-                .get(&holder)
-                .is_some_and(|thread| thread.call.holds == Some(address))
-    });
-    if held {
+    if kernel.held_by_other(tid, holder, Channel::Object(address)) {
         kernel.park(tid, Channel::Object(address));
         return Err(Errno::PARKED);
     }
@@ -262,7 +265,7 @@ pub(super) fn hold(kernel: &mut Kernel, tid: Tid, file: &FileRef) {
         unreachable!("a pipe's channel is its object");
     };
     with_pipe(file, |pipe| pipe.held_by = Some(tid));
-    kernel.thread_mut(tid).call.holds = Some(address);
+    kernel.hold_lock(tid, Channel::Object(address));
 }
 
 pub(super) fn with_pipe<R>(file: &FileRef, f: impl FnOnce(&mut Pipe) -> R) -> R {
@@ -291,7 +294,7 @@ pub(super) fn read(
     if with_pipe(file, |pipe| pipe.is_empty()) {
         let (writers, nonblocking) = (
             with_pipe(file, |pipe| pipe.writers()),
-            file.borrow().flags & O_NONBLOCK != 0,
+            super::io::nonblocking(kernel, tid, file),
         );
         if writers == 0 {
             return Ok(0);
@@ -337,7 +340,7 @@ pub(super) fn read(
         return Err(Errno::EFAULT);
     }
     let done = taken.len();
-    kernel.wake(channel(&node));
+    kernel.wake_poll(channel(&node), EPOLLOUT | EPOLLWRNORM);
     signal_ends(kernel, cx, &node, false);
     Ok(done as u64)
 }
@@ -360,10 +363,8 @@ pub(super) fn write(
     let host = with_pipe(file, |pipe| pipe.host);
     let first_run = !kernel.threads[&tid].call.started;
     let mut done = kernel.threads[&tid].call.progress;
-    let (nonblocking, packet) = {
-        let file = file.borrow();
-        (file.flags & O_NONBLOCK != 0, file.flags & O_DIRECT != 0)
-    };
+    let nonblocking = super::io::nonblocking(kernel, tid, file);
+    let packet = file.borrow().flags & O_DIRECT != 0;
     // Up to `most` bytes from `done` on, across segments, as far as the buffer can be read; and
     // whether a fault stopped it short.
     let next = |kernel: &mut Kernel, cx: &mut Context<'_>, done: u64, most: u64| {
@@ -444,20 +445,25 @@ pub(super) fn write(
         if kernel.signal_pending(tid) {
             break Err(Errno::ERESTARTSYS);
         }
-        // Readers hear of what came before each wait (not again after a wake that found no room).
+        // Readers hear of what came before each wait, and are woken for it (not again after a
+        // wake that found no room: writers wait on the same channel, and two that found the
+        // pipe full would wake each other for ever).
         let call = kernel.threads[&tid].call;
-        if !call.started || call.progress != done {
+        let new = !call.started || call.progress != done;
+        if new {
             signal_ends(kernel, cx, &node, true);
         }
         let thread = kernel.thread_mut(tid);
         thread.call.started = true;
         thread.call.progress = done;
-        kernel.wake(channel(&node));
+        if new {
+            kernel.wake_poll(channel(&node), EPOLLIN | EPOLLRDNORM);
+        }
         kernel.park(tid, channel(&node));
         return Err(Errno::PARKED);
     };
     if done > 0 {
-        kernel.wake(channel(&node));
+        kernel.wake_poll(channel(&node), EPOLLIN | EPOLLRDNORM);
     }
     signal_ends(kernel, cx, &node, true);
     match result {
@@ -493,7 +499,7 @@ pub(super) fn put(
         }
         done
     });
-    kernel.wake(channel(&node));
+    kernel.wake_poll(channel(&node), EPOLLIN | EPOLLRDNORM);
     // `splice_file_to_pipe`'s `wakeup_pipe_readers`.
     if taken > 0 {
         signal_ends(kernel, cx, &node, true);

@@ -16,6 +16,12 @@ static void p(const char *what, long r) { printf("%s = %ld errno %d\n", what, r,
 static void queued_signals(void) {
     struct rlimit limit = {5, 5};
     setrlimit(RLIMIT_SIGPENDING, &limit);
+    // The count is per user, and the reference's root is shared with every container on its machine,
+    // whose pending signals count too; a user of our own counts only ours.
+    if (setresuid(61873, 61873, 61873) != 0) {
+        perror("setresuid");
+        exit(1);
+    }
     sigset_t all;
     sigfillset(&all);
     sigprocmask(SIG_BLOCK, &all, NULL);

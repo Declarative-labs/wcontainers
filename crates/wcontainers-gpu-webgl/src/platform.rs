@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use wcontainers_gpu::LossReason;
 
 /// The WebGL extension names, with the GL names ANGLE reports for each natively.
-const EXTENSIONS: [(&str, &str); 22] = [
+const EXTENSIONS: &[(&str, &str)] = &[
     ("EXT_clip_control", "GL_EXT_clip_control"),
     ("WEBGL_provoking_vertex", "GL_ANGLE_provoking_vertex"),
     ("EXT_color_buffer_float", "GL_EXT_color_buffer_float"),
@@ -54,7 +54,25 @@ const EXTENSIONS: [(&str, &str); 22] = [
         "GL_EXT_texture_mirror_clamp_to_edge",
     ),
     ("WEBGL_clip_cull_distance", "GL_ANGLE_clip_cull_distance"),
+    (
+        NOPERSPECTIVE_INTERPOLATION,
+        crate::shader::NOPERSPECTIVE_EXTENSION,
+    ),
+    (SAMPLE_VARIABLES, "GL_OES_sample_variables"),
+    (
+        MULTISAMPLE_INTERPOLATION,
+        crate::shader::SAMPLE_QUALIFIER_EXTENSION,
+    ),
 ];
+
+/// The WebGL extension giving GLSL's `noperspective` qualifier.
+pub const NOPERSPECTIVE_INTERPOLATION: &str = "NV_shader_noperspective_interpolation";
+
+/// The WebGL extension giving the sample number, position and mask to fragment programs.
+pub const SAMPLE_VARIABLES: &str = "OES_sample_variables";
+
+/// The WebGL extension giving GLSL's `sample` qualifier.
+pub const MULTISAMPLE_INTERPOLATION: &str = "OES_shader_multisample_interpolation";
 
 /// GL_GPU_DISJOINT_EXT of EXT_disjoint_timer_query, which glow does not define.
 pub const GPU_DISJOINT: u32 = 0x8FBB;
@@ -69,6 +87,14 @@ pub fn extensions(gl: &glow::Context, off: &[&str]) -> BTreeSet<&'static str> {
         })
         .map(|(web, _)| *web)
         .collect()
+}
+
+/// Writes `line` on the host's error output: standard error natively, the console in the browser.
+pub fn report(line: &str) {
+    #[cfg(not(target_arch = "wasm32"))]
+    eprintln!("{line}");
+    #[cfg(target_arch = "wasm32")]
+    web_sys::console::error_1(&line.into());
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -842,6 +868,9 @@ mod web {
             "EXT_texture_mirror_clamp_to_edge",
             "WEBGL_clip_cull_distance",
             "WEBGL_blend_func_extended",
+            NOPERSPECTIVE_INTERPOLATION,
+            SAMPLE_VARIABLES,
+            MULTISAMPLE_INTERPOLATION,
         ] {
             let _ = context.get_extension(name);
         }

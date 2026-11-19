@@ -46,6 +46,10 @@ fn scripts_match_reference() {
                     arguments: &["/wc/missing"],
                     environment: wcontainers_kernel_test::reference::ENVIRONMENT,
                     working_directory: "/",
+                    backend: None,
+                    cached: false,
+                    published: &[],
+                    address_space: wcontainers_kernel_test::standin::SPACE_32_BIT,
                 },
                 0,
             );

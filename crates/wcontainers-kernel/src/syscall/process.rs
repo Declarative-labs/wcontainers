@@ -162,9 +162,9 @@ fn exec(
         return Err(Errno::EINVAL);
     }
     let path = if flags & AT_EMPTY_PATH != 0 {
-        guest(kernel, cx, tid).read_path_maybe_empty(path)?
+        super::path_argument(kernel, cx, tid, path, true)?
     } else {
-        guest(kernel, cx, tid).read_path(path)?
+        super::path_argument(kernel, cx, tid, path, false)?
     };
     let pid = kernel.threads[&tid].process;
     // A change of user that went over RLIMIT_NPROC fails here, if it still is over.
@@ -196,7 +196,7 @@ fn exec(
         let cwd = kernel.fs(tid).cwd.clone();
         crate::loader::program_of(kernel, cx.cpu, tid, cwd, Vec::new())?
     } else if path.is_empty() {
-        let file = kernel.files(tid).file(dirfd)?;
+        let file = kernel.call_file(tid, dirfd)?;
         let (node, full) = {
             let file = file.borrow();
             (file.node.clone(), file.path.clone())
@@ -905,9 +905,11 @@ pub(super) fn rt_sigaction(
                 | SA_RESTORER,
         );
         kernel.process_of(tid).actions.borrow_mut()[index] = new;
+        let pid = kernel.threads[&tid].process;
         if crate::signal::action_ignores(new.sa_handler_kernel, signal as u32) {
-            let pid = kernel.threads[&tid].process;
             kernel.flush_pending(pid, signal as u32);
+        } else if previous.sa_handler_kernel == crate::linux_extra::SIG_IGN {
+            super::timer::unignore(kernel, cx, pid, signal as u32);
         }
     }
     if old != 0 {

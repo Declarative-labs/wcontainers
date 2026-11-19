@@ -26,7 +26,7 @@ pub(super) fn start(kernel: &Kernel, tid: Tid, dirfd: u64, path: &[u8]) -> Resul
     if dirfd == AT_FDCWD {
         return Ok(kernel.fs(tid).cwd.clone());
     }
-    let node = kernel.files(tid).file(dirfd)?.borrow().node.clone();
+    let node = kernel.call_file(tid, dirfd)?.borrow().node.clone();
     if !path.is_empty() && !node.borrow().is_directory() {
         return Err(Errno::ENOTDIR);
     }
@@ -44,9 +44,9 @@ pub(super) fn lookup(
     follow: bool,
 ) -> Result<Node, Errno> {
     let path = if flags & AT_EMPTY_PATH != 0 {
-        guest(kernel, cx, tid).read_path_maybe_empty(address)?
+        super::path_argument(kernel, cx, tid, address, true)?
     } else {
-        guest(kernel, cx, tid).read_path(address)?
+        super::path_argument(kernel, cx, tid, address, false)?
     };
     if path.is_empty() {
         return empty_path_node(kernel, tid, dirfd);
@@ -62,7 +62,7 @@ fn parent(
     dirfd: u64,
     address: u64,
 ) -> Result<crate::fs::Parent, Errno> {
-    let path = guest(kernel, cx, tid).read_path(address)?;
+    let path = super::path_argument(kernel, cx, tid, address, false)?;
     let at = start(kernel, tid, dirfd, &path)?;
     kernel.with_walk(tid, |walk, _| walk.parent(&at, &path))
 }
@@ -210,6 +210,11 @@ pub(super) fn create(
         )),
         other => other,
     };
+    if crate::fs::backend::remote(directory).is_some() {
+        let node = create_on_backend(kernel, tid, directory, name, mode, rdev, content)?;
+        super::inotify::created(kernel, directory, name, &node);
+        return Ok(node);
+    }
     let now = kernel.now(cx);
     let (uid, gid, inherit) = new_owner(directory, credentials(kernel, tid));
     let mut mode = mode;
@@ -234,7 +239,39 @@ pub(super) fn create(
         content,
     )?;
     touch_directory(directory, now);
+    super::inotify::created(kernel, directory, name, &node);
     Ok(node)
+}
+
+/// Makes an inode in a directory on the backend: the backend chooses its owner, and only a
+/// set-group bit the maker may not set goes first (`mode_strip_sgid`).
+fn create_on_backend(
+    kernel: &Kernel,
+    tid: Tid,
+    directory: &Node,
+    name: &[u8],
+    mode: u32,
+    rdev: u64,
+    content: Content,
+) -> Result<Node, Errno> {
+    let umask = kernel.fs(tid).umask;
+    let credentials = credentials(kernel, tid);
+    let mut mode = mode;
+    if mode & S_ISGID != 0
+        && mode & S_IFMT != S_IFDIR
+        && directory.borrow().mode & S_ISGID != 0
+        && !credentials.in_group(directory.borrow().gid, true)
+        && !credentials.has(CAP_FSETID)
+    {
+        mode &= !S_ISGID;
+    }
+    match (mode & S_IFMT, content) {
+        (S_IFDIR, _) => crate::fs::backend::mkdir(directory, name, mode, umask),
+        (S_IFLNK, Content::Symlink(target)) => {
+            crate::fs::backend::symlink(directory, name, &target)
+        }
+        _ => crate::fs::backend::mknod(directory, name, mode, rdev as u32, umask),
+    }
 }
 
 pub(super) fn openat(
@@ -247,7 +284,7 @@ pub(super) fn openat(
     // is read or walked (`do_sys_openat2`'s `FD_ADD`).
     open_flags(flags as u32)?;
     free_descriptor(kernel, tid)?;
-    let path = guest(kernel, cx, tid).read_path(path)?;
+    let path = super::path_argument(kernel, cx, tid, path, false)?;
     open(kernel, cx, tid, dirfd, &path, flags as u32, mode as u32)
 }
 
@@ -304,7 +341,7 @@ pub(super) fn openat2(
             .counters
             .refuse_flag(cx.host, __NR_openat2, how.resolve, Errno::ENOSYS));
     }
-    let path = guest(kernel, cx, tid).read_path(path)?;
+    let path = super::path_argument(kernel, cx, tid, path, false)?;
     let flags = flags | (how.flags as u32 & O_CLOEXEC);
     open(kernel, cx, tid, dirfd, &path, flags, how.mode as u32)
 }
@@ -380,12 +417,7 @@ pub(super) fn open(
         return named_opened(kernel, cx, tid, file, flags);
     }
     if flags & (O_TMPFILE & !O_DIRECTORY) != 0 {
-        return Err(kernel.counters.refuse_flag(
-            cx.host,
-            __NR_openat,
-            O_TMPFILE.into(),
-            Errno::EOPNOTSUPP,
-        ));
+        return open_tmpfile(kernel, cx, tid, dirfd, path, flags, mode);
     }
     // Access mode 3 asks for both permissions and gives neither, as on Linux.
     let accmode = flags & O_ACCMODE;
@@ -411,6 +443,8 @@ pub(super) fn open(
             Err(error) => return Err(error),
         }
     };
+    // The backend's handle of what it opens, which this open asks it for.
+    let mut handle = None;
     let (node, created) = match found {
         Some(node) => {
             if creating && flags & O_EXCL != 0 {
@@ -439,6 +473,7 @@ pub(super) fn open(
                         Err(Errno::ENOENT) if creating => {
                             let target = match &node.borrow().content {
                                 Content::Symlink(target) => target.clone(),
+                                Content::Backend(_) => crate::fs::backend::readlink(&node)?,
                                 _ => return Err(Errno::ENOENT),
                             };
                             return open(
@@ -476,17 +511,31 @@ pub(super) fn open(
                 return Err(Errno::EACCES);
             }
             let umask = kernel.fs(tid).umask;
-            let node = create(
-                kernel,
-                cx,
-                tid,
-                &parent.directory,
-                &parent.name,
-                S_IFREG | (mode & 0o7777 & !umask),
-                0,
-                Content::Regular(Regular::default()),
-            )?;
-            (node, true)
+            if crate::fs::backend::remote(&parent.directory).is_some() {
+                let (node, made) = crate::fs::backend::create(
+                    &parent.directory,
+                    &parent.name,
+                    S_IFREG | (mode & 0o7777 & !umask),
+                    umask,
+                    flags,
+                )?;
+                // `lookup_open`'s `fsnotify_create` for a file the open made.
+                super::inotify::created(kernel, &parent.directory, &parent.name, &node);
+                handle = Some(made);
+                (node, true)
+            } else {
+                let node = create(
+                    kernel,
+                    cx,
+                    tid,
+                    &parent.directory,
+                    &parent.name,
+                    S_IFREG | (mode & 0o7777 & !umask),
+                    0,
+                    Content::Regular(Regular::default()),
+                )?;
+                (node, true)
+            }
         }
     };
     let file_type = node.borrow().file_type();
@@ -571,6 +620,11 @@ pub(super) fn open(
         }
         if let Content::Proc(entry) = node.borrow().content {
             proc::open_check(&kernel.processes, &entry)?;
+            if let proc::Entry::FdInfos(task) | proc::Entry::FdInfo(task, _) = entry
+                && !kernel.ptrace_may_read(tid, task.pid)
+            {
+                return Err(Errno::EACCES);
+            }
         }
         // Linux's `do_dentry_open` refuses direct I/O after the open itself, before truncating.
         // A named pipe's and a terminal's are refused once they are open (below).
@@ -580,6 +634,36 @@ pub(super) fn open(
             && !node.borrow().takes_direct_io()
         {
             return Err(Errno::EINVAL);
+        }
+        // `fuse_open`: a regular file or directory on the backend is opened there, truncated by
+        // the backend when it takes O_TRUNC with the open and with SETATTR otherwise.
+        if handle.is_none()
+            && matches!(file_type, S_IFREG | S_IFDIR)
+            && crate::fs::backend::remote(&node).is_some()
+        {
+            let opened = crate::fs::backend::open(&node, flags)?;
+            if flags & O_TRUNC != 0 {
+                if crate::fs::backend::truncates_on_open(&opened) {
+                    // `fuse_finish_open`: the file is empty now.
+                    if let Content::Backend(remote) = &node.borrow().content {
+                        remote.set_size(0);
+                    }
+                } else {
+                    // `handle_truncate`'s `do_truncate`.
+                    super::io::lock_backend_writes(kernel, tid, &node)?;
+                    crate::fs::backend::setattr(
+                        &node,
+                        crate::fs::backend::Change {
+                            size: Some(0),
+                            fh: Some(opened.fh),
+                            ..Default::default()
+                        },
+                    )?;
+                }
+                crate::shared::backend_cut(cx, &node, 0, u64::MAX);
+                crate::shared::changed(kernel, cx, &node)?;
+            }
+            handle = Some(opened);
         }
         // A file this open made is not truncated (`do_open`'s `FMODE_CREATED`): a new queue keeps
         // the size it shows.
@@ -601,7 +685,13 @@ pub(super) fn open(
         }
     }
     let follows = flags & O_NOFOLLOW == 0;
-    let full_path = if follows {
+    let remote = crate::fs::backend::remote(&node).is_some();
+    // A path on the backend is known from the walk: walking it again would ask the backend again.
+    let full_path = if remote && !parent.name.is_empty() && !parent.trailing_slash {
+        path_in(kernel, tid, &parent.directory, &parent.name)
+    } else if remote {
+        path_in(kernel, tid, &node, b"")
+    } else if follows {
         kernel
             .with_walk(tid, |walk, _| walk.locate(&at, path))
             .map(|(_, full)| full)
@@ -621,6 +711,23 @@ pub(super) fn open(
         credentials(kernel, tid).serial,
     );
     file.borrow_mut().created = created;
+    file.borrow_mut().backend = handle;
+    // The name it was opened by, if it was not reached through a link. A backend directory's
+    // last name walked is the one the backend answered for this inode.
+    let named = !parent.name.is_empty()
+        && (crate::fs::backend::remote(&parent.directory).is_some()
+            || parent
+                .directory
+                .borrow()
+                .directory()
+                .and_then(|entries| entries.get(&parent.name))
+                .is_some_and(|found| Rc::ptr_eq(&found, &node)));
+    if named {
+        file.borrow_mut().dentry = Some((Rc::downgrade(&parent.directory), parent.name.clone()));
+    }
+    if flags & O_PATH == 0 {
+        super::inotify::file_changed(kernel, &file, IN_OPEN);
+    }
     if let Some(device) = terminal {
         super::tty::open(kernel, cx, tid, &file, device, flags)?;
         return named_opened(kernel, cx, tid, file, flags);
@@ -630,6 +737,102 @@ pub(super) fn open(
         return named_opened(kernel, cx, tid, file, flags);
     }
     install(kernel, tid, file, flags)
+}
+
+/// `do_tmpfile`: the directory is found, its mount writable and the directory too, then a file
+/// with no name is made in it and opened (`shmem_tmpfile`). Its descriptor's link and its events
+/// name it `#` and its number in the directory (`d_tmpfile`). Without `O_EXCL` a link may name it
+/// later. On the backend it is the backend's to make.
+fn open_tmpfile(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    dirfd: u64,
+    path: &[u8],
+    flags: u32,
+    mode: u32,
+) -> Result<u64, Errno> {
+    let at = start(kernel, tid, dirfd, path)?;
+    let directory = kernel.with_walk(tid, |walk, _| walk.resolve(&at, path, true))?;
+    {
+        let inode = directory.borrow();
+        if !inode.is_directory() {
+            return Err(Errno::ENOTDIR);
+        }
+        if inode.fs.read_only() {
+            return Err(Errno::EROFS);
+        }
+        let caller = kernel.threads[&tid].process;
+        crate::fs::permission(&inode, credentials(kernel, tid), W_OK | X_OK, caller)?;
+    }
+    let umask = kernel.fs(tid).umask;
+    if crate::fs::backend::remote(&directory).is_some() {
+        let (node, handle) =
+            crate::fs::backend::tmpfile(&directory, S_IFREG | (mode & 0o7777), umask, flags)?;
+        let ino = node.borrow().ino;
+        node.borrow_mut().linkable = flags & O_EXCL == 0;
+        let file = tmpfile_opened(kernel, tid, &directory, node, ino, flags);
+        file.borrow_mut().backend = Some(handle);
+        return install(kernel, tid, file, flags);
+    }
+    // Only tmpfs has `tmpfile`.
+    if fixed_names(&directory) || only_queues(&directory) {
+        return Err(Errno::EOPNOTSUPP);
+    }
+    let now = kernel.now(cx);
+    let (uid, gid, _) = new_owner(&directory, credentials(kernel, tid));
+    let mut mode = S_IFREG | (mode & 0o7777 & !umask);
+    if mode & S_ISGID != 0
+        && !credentials(kernel, tid).in_group(gid, true)
+        && !credentials(kernel, tid).has(CAP_FSETID)
+    {
+        mode &= !S_ISGID;
+    }
+    let ino = kernel.files.numbers.ino();
+    let name = alloc::format!("#{ino}").into_bytes();
+    let node = crate::fs::new_inode(
+        directory.borrow().fs.clone(),
+        ino,
+        crate::fs::New {
+            mode,
+            uid,
+            gid,
+            rdev: 0,
+            now,
+            content: Content::Regular(Regular::default()),
+            parent: Some(directory.clone()),
+            name: name.clone(),
+        },
+    )?;
+    {
+        let mut inode = node.borrow_mut();
+        inode.nlink = 0;
+        inode.linkable = flags & O_EXCL == 0;
+    }
+    let file = tmpfile_opened(kernel, tid, &directory, node, ino, flags);
+    install(kernel, tid, file, flags)
+}
+
+/// The open file of a file made with no name in `directory`, named `#` and its number there.
+fn tmpfile_opened(
+    kernel: &mut Kernel,
+    tid: Tid,
+    directory: &Node,
+    node: Node,
+    ino: u64,
+    flags: u32,
+) -> crate::file::FileRef {
+    let name = alloc::format!("#{ino}").into_bytes();
+    let file = OpenFile::new(
+        node,
+        (flags | O_LARGEFILE) & !(O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC | O_CLOEXEC),
+        path_in(kernel, tid, directory, &name),
+        credentials(kernel, tid).serial,
+    );
+    file.borrow_mut().created = true;
+    file.borrow_mut().dentry = Some((Rc::downgrade(directory), name));
+    super::inotify::file_changed(kernel, &file, IN_OPEN);
+    file
 }
 
 /// A named pipe or a terminal once open: direct I/O is refused only now (`do_dentry_open` checks it
@@ -685,13 +888,18 @@ pub(super) fn proc_contents(
     entry: &proc::Entry,
 ) -> Result<Vec<u8>, Errno> {
     use proc::ProcessFile;
+    match *entry {
+        proc::Entry::NetFile(_, file) => return Ok(super::socket::proc_net(kernel, cx, file)),
+        proc::Entry::FdInfo(task, fd) => return super::fdinfo::contents(kernel, task, fd),
+        _ => {}
+    }
     // Fields not tracked show 0, and the mount table leaves out Docker's masks of `/proc` and the
     // mounts not built.
     let untracked = match entry {
         proc::Entry::ProcessFile(_, ProcessFile::Stat) => Some(0),
         proc::Entry::ProcessFile(_, ProcessFile::Statm) => Some(1),
         proc::Entry::ProcessFile(_, ProcessFile::Status) => Some(2),
-        proc::Entry::ProcessFile(_, ProcessFile::Mounts) => Some(3),
+        proc::Entry::ProcessFile(_, ProcessFile::Mounts | ProcessFile::Mountinfo) => Some(3),
         proc::Entry::Global(index) if proc::GLOBAL[*index].0 == "meminfo" => Some(4),
         _ => None,
     };
@@ -703,7 +911,6 @@ pub(super) fn proc_contents(
     let uptime = cx.monotonic().saturating_sub(kernel.boot_monotonic);
     let mut fresh = [0u8; 16];
     cx.host.random(&mut fresh);
-    let mounts = mount_table();
     let memory_in_use = kernel.memory_in_use();
     let cpu = &mut *cx.cpu;
     let mut read_memory = |process: &crate::process::Process, start: u64, length: u64| {
@@ -730,22 +937,11 @@ pub(super) fn proc_contents(
             boot_id: kernel_ref.boot_id,
             fresh_random: fresh,
             read_memory: &mut read_memory,
-            mounts: &mounts,
+            mounts: &kernel_ref.files.mounts,
             memory_in_use,
         };
         proc::contents(&mut source, entry)
     })
-}
-
-/// The mounts of a default Docker container, as `/proc/<pid>/mounts` lists them here.
-fn mount_table() -> alloc::string::String {
-    alloc::string::String::from(
-        "tmpfs / tmpfs rw,relatime 0 0\n\
-         proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n\
-         tmpfs /dev tmpfs rw,nosuid,size=65536k,mode=755 0 0\n\
-         mqueue /dev/mqueue mqueue rw,nosuid,nodev,noexec,relatime 0 0\n\
-         shm /dev/shm tmpfs rw,nosuid,nodev,noexec,relatime,size=65536k 0 0\n",
-    )
 }
 
 pub(super) fn mkdirat(
@@ -837,13 +1033,56 @@ pub(super) fn mknodat(
     Ok(0)
 }
 
+/// Makes a node at a path the kernel holds, as `mknodat` would with that path (a local socket's
+/// `bind`): EEXIST if the name is taken.
+pub(super) fn make_node(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    path: &[u8],
+    mode: u32,
+) -> Result<Node, Errno> {
+    let at = start(kernel, tid, AT_FDCWD as u64, path)?;
+    let parent = kernel.with_walk(tid, |walk, _| walk.parent(&at, path))?;
+    if parent.name.is_empty() {
+        return Err(Errno::EEXIST);
+    }
+    check_absent(kernel, tid, &parent)?;
+    if parent.trailing_slash {
+        return Err(Errno::ENOENT);
+    }
+    may_change(kernel, tid, &parent.directory)?;
+    changes_names(&parent.directory)?;
+    create(
+        kernel,
+        cx,
+        tid,
+        &parent.directory,
+        &parent.name,
+        mode,
+        0,
+        Content::Special,
+    )
+}
+
+/// The node at a path the kernel holds, links followed (a local socket's `connect`).
+pub(super) fn lookup_path(
+    kernel: &mut Kernel,
+    _: &mut Context<'_>,
+    tid: Tid,
+    path: &[u8],
+) -> Result<Node, Errno> {
+    let at = start(kernel, tid, AT_FDCWD as u64, path)?;
+    kernel.with_walk(tid, |walk, _| walk.resolve(&at, path, true))
+}
+
 pub(super) fn symlinkat(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
     [target, dirfd, path, ..]: Args,
 ) -> Result<u64, Errno> {
-    let target = guest(kernel, cx, tid).read_path(target)?;
+    let target = super::path_argument(kernel, cx, tid, target, false)?;
     let parent = parent(kernel, cx, tid, dirfd, path)?;
     if parent.name.is_empty() {
         return Err(Errno::EEXIST);
@@ -880,9 +1119,9 @@ pub(super) fn linkat(
     // With `AT_EMPTY_PATH`, a walk from a descriptor needs the credentials it was opened with or
     // `CAP_DAC_READ_SEARCH`, else the name is not found (Linux's `LOOKUP_LINKAT_EMPTY` in `path_init`).
     if flags & AT_EMPTY_PATH != 0 && old_dirfd as i32 != AT_FDCWD {
-        let path = guest(kernel, cx, tid).read_path_maybe_empty(old_path)?;
+        let path = super::path_argument(kernel, cx, tid, old_path, true)?;
         if !path.starts_with(b"/") {
-            let file = kernel.files(tid).file(old_dirfd as i32)?;
+            let file = kernel.call_file(tid, old_dirfd as i32)?;
             let credentials = credentials(kernel, tid);
             if file.borrow().opener != credentials.serial
                 && !credentials.has(crate::credentials::CAP_DAC_READ_SEARCH)
@@ -920,11 +1159,24 @@ pub(super) fn linkat(
     if node.borrow().is_directory() {
         return Err(Errno::EPERM);
     }
-    if node.borrow().nlink == 0 {
-        return Err(Errno::ENOENT);
+    // A file made with O_TMPFILE may be named once (`I_LINKABLE`).
+    let first_name = {
+        let inode = node.borrow();
+        if inode.nlink == 0 && !inode.linkable {
+            return Err(Errno::ENOENT);
+        }
+        inode.nlink == 0
+    };
+    if crate::fs::backend::remote(&node).is_some() {
+        crate::fs::backend::link(&node, &parent.directory, &parent.name)?;
+        super::inotify::inode_changed(kernel, &node, IN_ATTRIB);
+        super::inotify::created(kernel, &parent.directory, &parent.name, &node);
+        return Ok(0);
     }
-    // tmpfs counts each link as an inode (`shmem_link`).
-    if let Some(space) = &node.borrow().fs.space {
+    // tmpfs counts each link but a file's first as an inode (`shmem_link`).
+    if let Some(space) = &node.borrow().fs.space
+        && !first_name
+    {
         space.take_ispace(crate::fs::INODE_SPACE)?;
     }
     let now = kernel.now(cx);
@@ -932,14 +1184,17 @@ pub(super) fn linkat(
         let mut inode = node.borrow_mut();
         inode.nlink += 1;
         inode.ctime = now;
+        inode.linkable = false;
     }
     parent
         .directory
         .borrow_mut()
         .directory_mut()
         .expect("directory")
-        .insert(&parent.name, node);
+        .insert(&parent.name, node.clone());
     touch_directory(&parent.directory, now);
+    super::inotify::inode_changed(kernel, &node, IN_ATTRIB);
+    super::inotify::created(kernel, &parent.directory, &parent.name, &node);
     Ok(0)
 }
 
@@ -953,7 +1208,7 @@ pub(super) fn unlinkat(
     if flags & !AT_REMOVEDIR != 0 {
         return Err(Errno::EINVAL);
     }
-    let raw = guest(kernel, cx, tid).read_path(path)?;
+    let raw = super::path_argument(kernel, cx, tid, path, false)?;
     let parent = parent(kernel, cx, tid, dirfd, path)?;
     let removing_directory = flags & AT_REMOVEDIR != 0;
     if parent.name.is_empty() {
@@ -1006,6 +1261,13 @@ pub(super) fn unlinkat(
             return Err(Errno::ENOTEMPTY);
         }
     }
+    // `fuse_rmdir`: the backend removes it, and the directory is dead here (`clear_nlink`).
+    if crate::fs::backend::remote(&parent.directory).is_some() {
+        crate::fs::backend::remove(&parent.directory, &parent.name, true)?;
+        node.borrow_mut().nlink = 0;
+        super::inotify::removed(kernel, &parent.directory, &parent.name, &node);
+        return Ok(0);
+    }
     let now = kernel.now(cx);
     parent
         .directory
@@ -1017,6 +1279,7 @@ pub(super) fn unlinkat(
     node.borrow_mut().nlink = 0;
     parent.directory.borrow_mut().nlink -= 1;
     node.borrow_mut().ctime = now;
+    super::inotify::removed(kernel, &parent.directory, &parent.name, &node);
     Ok(0)
 }
 
@@ -1039,6 +1302,15 @@ pub(super) fn remove_from(
     if fixed_names(directory) {
         return Err(Errno::EPERM);
     }
+    // `fuse_unlink`: the backend removes the name; the inode's links are its to say.
+    if crate::fs::backend::remote(directory).is_some() {
+        crate::fs::backend::remove(directory, name, false)?;
+        let mut inode = node.borrow_mut();
+        inode.nlink = inode.nlink.saturating_sub(1);
+        drop(inode);
+        super::inotify::removed(kernel, directory, name, node);
+        return Ok(());
+    }
     let now = kernel.now(cx);
     directory
         .borrow_mut()
@@ -1050,6 +1322,8 @@ pub(super) fn remove_from(
     give_back_link(&inode);
     inode.nlink -= 1;
     inode.ctime = now;
+    drop(inode);
+    super::inotify::removed(kernel, directory, name, node);
     Ok(())
 }
 
@@ -1240,13 +1514,46 @@ fn rename(
     {
         return Err(Errno::ENOTEMPTY);
     }
+    // `fuse_rename2`: the backend moves the names; a directory moved keeps its new place here,
+    // and a replaced target has a link fewer (`fuse_rename_common`).
+    if crate::fs::backend::remote(&from.directory).is_some() {
+        crate::fs::backend::rename(&from.directory, &from.name, &to.directory, &to.name, flags)?;
+        let place = |node: &Node, directory: &Node, name: &[u8]| {
+            let mut inode = node.borrow_mut();
+            inode.place.parent = Some(Rc::downgrade(directory));
+            inode.place.name = name.to_vec();
+            if inode.is_directory() {
+                inode.place.held_parent = Some(directory.clone());
+            }
+        };
+        place(&source, &to.directory, &to.name);
+        if let Some(target) = &target {
+            if flags & RENAME_EXCHANGE != 0 {
+                place(target, &from.directory, &from.name);
+            } else {
+                let mut inode = target.borrow_mut();
+                inode.nlink = if inode.is_directory() {
+                    0
+                } else {
+                    inode.nlink.saturating_sub(1)
+                };
+            }
+        }
+        super::inotify::renamed(
+            kernel,
+            (&from.directory, &from.name),
+            (&to.directory, &to.name),
+            &source,
+            target.as_ref(),
+            flags & RENAME_EXCHANGE != 0,
+        );
+        return Ok(0);
+    }
     let now = kernel.now(cx);
     let set_place = |node: &Node, directory: &Node, name: &[u8]| {
         let mut inode = node.borrow_mut();
-        if inode.is_directory() {
-            inode.place.parent = Some(Rc::downgrade(directory));
-            inode.place.name = name.to_vec();
-        }
+        inode.place.parent = Some(Rc::downgrade(directory));
+        inode.place.name = name.to_vec();
         inode.ctime = now;
     };
     let entries = |directory: &Node| {
@@ -1256,7 +1563,7 @@ fn rename(
         }
     };
     if flags & RENAME_EXCHANGE != 0 {
-        let target = target.expect("checked");
+        let target = target.clone().expect("checked");
         entries(&from.directory)(&mut |d| d.replace(&from.name, target.clone()));
         entries(&to.directory)(&mut |d| d.replace(&to.name, source.clone()));
         set_place(&target, &from.directory, &from.name);
@@ -1321,6 +1628,14 @@ fn rename(
     }
     touch_directory(&from.directory, now);
     touch_directory(&to.directory, now);
+    super::inotify::renamed(
+        kernel,
+        (&from.directory, &from.name),
+        (&to.directory, &to.name),
+        &source,
+        target.as_ref(),
+        flags & RENAME_EXCHANGE != 0,
+    );
     Ok(0)
 }
 
@@ -1334,9 +1649,7 @@ pub(super) fn readlinkat(
     if size <= 0 {
         return Err(Errno::EINVAL);
     }
-    let empty = guest(kernel, cx, tid)
-        .read_path_maybe_empty(path)?
-        .is_empty();
+    let empty = super::path_argument(kernel, cx, tid, path, true)?.is_empty();
     let node = lookup(kernel, cx, tid, dirfd, path, AT_EMPTY_PATH, false)?;
     if matches!(node.borrow().content, Content::Symlink(_)) {
         super::io::accessed(kernel, cx, &node, 0);
@@ -1347,6 +1660,10 @@ pub(super) fn readlinkat(
         let inode = node.borrow();
         match &inode.content {
             Content::Symlink(target) => (target.clone(), 0),
+            Content::Backend(_) if inode.file_type() == S_IFLNK => {
+                drop(inode);
+                (crate::fs::backend::readlink(&node)?, 0)
+            }
             Content::Proc(entry) if inode.file_type() == S_IFLNK => {
                 let entry = *entry;
                 drop(inode);
@@ -1412,7 +1729,7 @@ pub(super) fn stat_of(kernel: &Kernel, node: &Node) -> stat {
                 as i64,
             _ => inode.size() as i64,
         },
-        st_blksize: inode.fs.kind.block_size() as i32,
+        st_blksize: inode.block_size() as i32,
         __pad2: 0,
         st_blocks: inode.blocks() as i64,
         st_atime: inode.atime.seconds,
@@ -1447,7 +1764,7 @@ fn empty_path_node(kernel: &Kernel, tid: Tid, dirfd: u64) -> Result<Node, Errno>
     if dirfd as i32 == AT_FDCWD {
         return Ok(kernel.fs(tid).cwd.clone());
     }
-    Ok(kernel.files(tid).file(dirfd as i32)?.borrow().node.clone())
+    Ok(kernel.call_file(tid, dirfd as i32)?.borrow().node.clone())
 }
 
 pub(super) fn newfstatat(
@@ -1480,6 +1797,7 @@ pub(super) fn newfstatat(
         }
     };
     count_unknown_blocks(kernel, cx, &node);
+    crate::fs::backend::fresh(&node)?;
     let value = stat_of(kernel, &node);
     guest(kernel, cx, tid).write_value(buffer, &value)?;
     Ok(0)
@@ -1491,8 +1809,9 @@ pub(super) fn fstat(
     tid: Tid,
     [fd, buffer, ..]: Args,
 ) -> Result<u64, Errno> {
-    let node = kernel.files(tid).file(fd as i32)?.borrow().node.clone();
+    let node = kernel.call_file(tid, fd as i32)?.borrow().node.clone();
     count_unknown_blocks(kernel, cx, &node);
+    crate::fs::backend::fresh(&node)?;
     let value = stat_of(kernel, &node);
     guest(kernel, cx, tid).write_value(buffer, &value)?;
     Ok(0)
@@ -1530,6 +1849,13 @@ pub(super) fn statx(
             flags & AT_SYMLINK_NOFOLLOW == 0,
         )?
     };
+    // `fuse_update_get_attr`: asking for nothing FUSE has, or not to sync, takes the attributes the
+    // inode holds from the backend's last answer.
+    if mask as u32 & (STATX_BASIC_STATS | STATX_BTIME) != 0
+        && flags & AT_STATX_SYNC_TYPE != AT_STATX_DONT_SYNC
+    {
+        crate::fs::backend::fresh(&node)?;
+    }
     count_unknown_blocks(kernel, cx, &node);
     let plain = stat_of(kernel, &node);
     let inode = node.borrow();
@@ -1563,7 +1889,7 @@ pub(super) fn statx(
     };
     let mut out: statx = zerocopy::FromZeros::new_zeroed();
     out.stx_mask = reported;
-    out.stx_blksize = inode.fs.kind.block_size();
+    out.stx_blksize = inode.block_size();
     out.stx_nlink = plain.st_nlink;
     out.stx_uid = plain.st_uid;
     out.stx_gid = plain.st_gid;
@@ -1689,6 +2015,7 @@ fn access(
 }
 
 /// Changes an inode's permission bits as `chmod` does.
+/// As [`change_mode_unwatched`], telling the inode's inotify watches.
 fn change_mode(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -1696,6 +2023,21 @@ fn change_mode(
     node: &Node,
     mode: u32,
 ) -> Result<u64, Errno> {
+    let result = change_mode_unwatched(kernel, cx, tid, node, mode);
+    if result.is_ok() {
+        super::inotify::changed(kernel, node, None, IN_ATTRIB);
+    }
+    result
+}
+
+fn change_mode_unwatched(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    node: &Node,
+    mode: u32,
+) -> Result<u64, Errno> {
+    crate::fs::backend::fresh(node)?;
     let credentials = credentials(kernel, tid).clone();
     let now = kernel.now(cx);
     // A read-only mount refuses before anything else, as `mnt_want_write` comes first.
@@ -1704,6 +2046,10 @@ fn change_mode(
     }
     if node.borrow().is_anonymous() {
         return Err(Errno::EOPNOTSUPP);
+    }
+    // `notify_change`: an immutable inode takes no change of mode, owner or times.
+    if node.borrow().immutable() {
+        return Err(Errno::EPERM);
     }
     // A process's entries refuse mode changes, as Linux's `proc_setattr` does. The others take them.
     if let Content::Proc(entry) = node.borrow().content
@@ -1725,6 +2071,16 @@ fn change_mode(
         && (inode.mode ^ mode) & 0o111 != 0
     {
         return Err(Errno::EPERM);
+    }
+    if let Content::Backend(_) = inode.content {
+        let mode = (inode.mode & S_IFMT) | mode;
+        drop(inode);
+        let change = crate::fs::backend::Change {
+            mode: Some(mode),
+            ..Default::default()
+        };
+        crate::fs::backend::setattr(node, change)?;
+        return Ok(0);
     }
     inode.mode = (inode.mode & S_IFMT) | mode;
     inode.ctime = now;
@@ -1752,7 +2108,7 @@ pub(super) fn fchmod(
     tid: Tid,
     [fd, mode, ..]: Args,
 ) -> Result<u64, Errno> {
-    let file = kernel.files(tid).file(fd as i32)?;
+    let file = kernel.call_file(tid, fd as i32)?;
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
     }
@@ -1796,6 +2152,7 @@ pub(super) fn fchmodat2(
 }
 
 /// Changes an inode's owner and group as `chown` does; `u32::MAX` leaves one as it is.
+/// As [`change_owner_unwatched`], telling the inode's inotify watches.
 fn change_owner(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -1804,6 +2161,22 @@ fn change_owner(
     uid: u32,
     gid: u32,
 ) -> Result<u64, Errno> {
+    let result = change_owner_unwatched(kernel, cx, tid, node, uid, gid);
+    if result.is_ok() {
+        super::inotify::changed(kernel, node, None, IN_ATTRIB);
+    }
+    result
+}
+
+fn change_owner_unwatched(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    node: &Node,
+    uid: u32,
+    gid: u32,
+) -> Result<u64, Errno> {
+    crate::fs::backend::fresh(node)?;
     let credentials = credentials(kernel, tid).clone();
     let now = kernel.now(cx);
     let mut inode = node.borrow_mut();
@@ -1812,6 +2185,9 @@ fn change_owner(
     }
     if inode.is_anonymous() {
         return Err(Errno::EOPNOTSUPP);
+    }
+    if inode.immutable() {
+        return Err(Errno::EPERM);
     }
     let changes_uid = uid != u32::MAX && uid != inode.uid;
     let changes_gid = gid != u32::MAX && gid != inode.gid;
@@ -1846,6 +2222,26 @@ fn change_owner(
             return Ok(0);
         }
     }
+    // `fuse_setattr` without the backend killing privileges: a file's set-user bit, and its
+    // set-group bit when group execution is on, go with the same message.
+    if let Content::Backend(_) = inode.content {
+        let mut mode = inode.mode;
+        if !inode.is_directory() {
+            mode &= !S_ISUID;
+            if mode & (S_ISGID | S_IXGRP) == S_ISGID | S_IXGRP {
+                mode &= !S_ISGID;
+            }
+        }
+        let change = crate::fs::backend::Change {
+            uid: (uid != u32::MAX).then_some(uid),
+            gid: (gid != u32::MAX).then_some(gid),
+            mode: (mode != inode.mode).then_some(mode),
+            ..Default::default()
+        };
+        drop(inode);
+        crate::fs::backend::setattr(node, change)?;
+        return Ok(0);
+    }
     if uid != u32::MAX {
         inode.uid = uid;
     }
@@ -1865,7 +2261,7 @@ pub(super) fn fchown(
     tid: Tid,
     [fd, uid, gid, ..]: Args,
 ) -> Result<u64, Errno> {
-    let file = kernel.files(tid).file(fd as i32)?;
+    let file = kernel.call_file(tid, fd as i32)?;
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
     }
@@ -1918,7 +2314,7 @@ pub(super) fn utimensat(
             return Err(Errno::EINVAL);
         }
         // Linux's `do_utimes_fd` takes no `O_PATH` descriptor.
-        let file = kernel.files(tid).file(dirfd as i32)?;
+        let file = kernel.call_file(tid, dirfd as i32)?;
         let file = file.borrow();
         if file.is_path() {
             return Err(Errno::EBADF);
@@ -1952,6 +2348,7 @@ pub(super) fn utimensat(
             }
         }
     }
+    crate::fs::backend::fresh(&node)?;
     let now = kernel.now(cx);
     let credentials = credentials(kernel, tid).clone();
     let mut inode = node.borrow_mut();
@@ -1977,11 +2374,13 @@ pub(super) fn utimensat(
             Err(Errno::EOPNOTSUPP)
         };
     }
-    // A process's directory refuses every change (measured on the reference).
+    // A process's directory refuses every change (measured on the reference), as does an immutable
+    // inode (`notify_change`).
     if matches!(
         inode.content,
         Content::Proc(crate::fs::proc::Entry::Process(_))
-    ) {
+    ) || inode.immutable()
+    {
         return Err(Errno::EPERM);
     }
     let owner = credentials.owns_or_capable(inode.uid);
@@ -1990,6 +2389,27 @@ pub(super) fn utimensat(
             return Err(Errno::EPERM);
         }
         crate::fs::permission(&inode, &credentials, W_OK, kernel.threads[&tid].process)?;
+    }
+    // `iattr_to_fattr`: "now" is the backend's own clock; a time left alone is not sent.
+    if let Content::Backend(_) = inode.content {
+        drop(inode);
+        let sent = |time: Option<&__kernel_timespec>| match time {
+            None => Some(None),
+            Some(time) if time.tv_nsec == i64::from(UTIME_NOW) => Some(None),
+            Some(time) if time.tv_nsec == i64::from(UTIME_OMIT) => None,
+            Some(time) => Some(Some(Time {
+                seconds: time.tv_sec,
+                nanoseconds: time.tv_nsec as u32,
+            })),
+        };
+        let change = crate::fs::backend::Change {
+            atime: sent(wanted.as_ref().map(|wanted| &wanted[0])),
+            mtime: sent(wanted.as_ref().map(|wanted| &wanted[1])),
+            ..Default::default()
+        };
+        crate::fs::backend::setattr(&node, change)?;
+        super::inotify::changed(kernel, &node, None, IN_ATTRIB);
+        return Ok(0);
     }
     let pick = |time: Option<&__kernel_timespec>, old: Time| match time {
         None => Some(now),
@@ -2012,10 +2432,26 @@ pub(super) fn utimensat(
     inode.ctime = now;
     drop(inode);
     keep_proc(kernel, &node);
+    super::inotify::changed(kernel, &node, None, IN_ATTRIB);
     Ok(0)
 }
 
+/// As [`truncate_node_unwatched`], telling the inode's inotify watches.
 fn truncate_node(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    node: &Node,
+    length: u64,
+) -> Result<u64, Errno> {
+    let result = truncate_node_unwatched(kernel, cx, tid, node, length);
+    if result.is_ok() {
+        super::inotify::changed(kernel, node, None, IN_MODIFY);
+    }
+    result
+}
+
+fn truncate_node_unwatched(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
@@ -2057,6 +2493,40 @@ fn truncate_node(
         inode.mtime = now;
         inode.ctime = now;
         inode.drop_privileges(!may_keep_privileges);
+        return Ok(0);
+    }
+    if crate::fs::backend::remote(node).is_some() {
+        super::io::lock_backend_writes(kernel, tid, node)?;
+        crate::fs::backend::fresh(node)?;
+        let (size, mode, file_type) = {
+            let inode = node.borrow();
+            (inode.size(), inode.mode, inode.file_type())
+        };
+        if file_type != S_IFREG {
+            return Err(if file_type == S_IFDIR {
+                Errno::EISDIR
+            } else {
+                Errno::EINVAL
+            });
+        }
+        super::io::new_size_ok(kernel, cx, tid, size, length)?;
+        // `do_truncate`'s privileges to remove go with the size (`fuse_setattr`).
+        let mut kept = mode;
+        if !may_keep_privileges {
+            kept &= !S_ISUID;
+            if kept & (S_ISGID | S_IXGRP) == S_ISGID | S_IXGRP {
+                kept &= !S_ISGID;
+            }
+        }
+        let change = crate::fs::backend::Change {
+            size: Some(length),
+            mode: (kept != mode).then_some(kept),
+            ..Default::default()
+        };
+        crate::fs::backend::setattr(node, change)?;
+        // `fuse_do_setattr`'s `truncate_pagecache`: mapped pages past the end are gone.
+        crate::shared::backend_cut(cx, node, length, u64::MAX);
+        crate::shared::changed(kernel, cx, node)?;
         return Ok(0);
     }
     {
@@ -2124,7 +2594,7 @@ pub(super) fn ftruncate(
     if (length as i64) < 0 {
         return Err(Errno::EINVAL);
     }
-    let file = kernel.files(tid).file(fd as i32)?;
+    let file = kernel.call_file(tid, fd as i32)?;
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
     }
@@ -2135,17 +2605,39 @@ pub(super) fn ftruncate(
     if !file.borrow().writable() || node.borrow().file_type() != S_IFREG {
         return Err(Errno::EINVAL);
     }
-    truncate_node(kernel, cx, tid, &node, length)
+    // Told through the file, under the name it was opened by (`fsnotify_change` on its dentry).
+    let result = truncate_node_unwatched(kernel, cx, tid, &node, length);
+    if result.is_ok() {
+        super::inotify::file_changed(kernel, &file, IN_MODIFY);
+    }
+    result
 }
 
+/// As [`fallocate_unwatched`], telling the file's watches of a change (`vfs_fallocate`'s
+/// `fsnotify_modify`).
 pub(super) fn fallocate(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    args: Args,
+) -> Result<u64, Errno> {
+    let result = fallocate_unwatched(kernel, cx, tid, args);
+    if result.is_ok()
+        && let Ok(file) = kernel.call_file(tid, args[0] as i32)
+    {
+        super::inotify::file_changed(kernel, &file, IN_MODIFY);
+    }
+    result
+}
+
+fn fallocate_unwatched(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
     [fd, mode, offset, length, ..]: Args,
 ) -> Result<u64, Errno> {
     // In the order of Linux's `vfs_fallocate`; tmpfs takes keeping the size and punching holes.
-    let file = kernel.files(tid).file(fd as i32)?;
+    let file = kernel.call_file(tid, fd as i32)?;
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
     }
@@ -2192,6 +2684,32 @@ pub(super) fn fallocate(
         .checked_add(length)
         .filter(|end| *end <= largest)
         .ok_or(Errno::EFBIG)?;
+    // `fuse_file_fallocate`: keeping the size, punching holes and zeroing ranges go to the backend.
+    if let Some(handle) = file.borrow().backend.clone() {
+        if mode & !(FALLOC_FL_KEEP_SIZE | FALLOC_FL_PUNCH_HOLE | FALLOC_FL_ZERO_RANGE) != 0 {
+            return Err(Errno::EOPNOTSUPP);
+        }
+        // Allocating while keeping the size takes no lock.
+        if mode & (FALLOC_FL_PUNCH_HOLE | FALLOC_FL_ZERO_RANGE) != 0
+            || mode & FALLOC_FL_KEEP_SIZE == 0
+        {
+            super::io::lock_backend_writes(kernel, tid, &node)?;
+        }
+        crate::fs::backend::fallocate(&handle, mode, offset, length)?;
+        // `fuse_file_fallocate`: a punched or zeroed range reads as zero from mapped pages too,
+        // and the file ends at least where the range does unless its size is kept.
+        if mode & (FALLOC_FL_PUNCH_HOLE | FALLOC_FL_ZERO_RANGE) != 0 {
+            crate::shared::backend_cut(cx, &node, offset, end);
+        }
+        if let Content::Backend(remote) = &node.borrow().content
+            && mode & FALLOC_FL_KEEP_SIZE == 0
+            && remote.size.get() < end
+        {
+            remote.set_size(end);
+        }
+        crate::shared::changed(kernel, cx, &node)?;
+        return Ok(0);
+    }
     if node.borrow().is_secret()
         || node.borrow().is_anonymous()
         || matches!(node.borrow().content, Content::Mqueue(_))
@@ -2310,7 +2828,7 @@ pub(super) fn fchdir(
     tid: Tid,
     [fd, ..]: Args,
 ) -> Result<u64, Errno> {
-    let node = kernel.files(tid).file(fd as i32)?.borrow().node.clone();
+    let node = kernel.call_file(tid, fd as i32)?.borrow().node.clone();
     change_directory(kernel, tid, node)
 }
 
@@ -2355,9 +2873,25 @@ pub(super) fn umask(
 /// What `statfs` reports for the file system holding `node`: tmpfs's limits and what is in use
 /// (`shmem_statfs`; a limit of zero, as on the internal mount, reports nothing), and nothing for
 /// the others (`simple_statfs`).
-fn statfs_of(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) -> statfs {
-    let inode = node.borrow();
+fn statfs_of(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) -> Result<statfs, Errno> {
     let mut out: statfs = zerocopy::FromZeros::new_zeroed();
+    // `fuse_statfs`: what the backend says, with no file system id (`convert_fuse_statfs`).
+    if crate::fs::backend::remote(node).is_some() {
+        let st = crate::fs::backend::statfs(node)?;
+        let inode = node.borrow();
+        out.f_type = inode.fs.kind.magic() as i64;
+        out.f_bsize = i64::from(st.bsize);
+        out.f_frsize = i64::from(if st.frsize == 0 { st.bsize } else { st.frsize });
+        out.f_blocks = st.blocks as i64;
+        out.f_bfree = st.bfree as i64;
+        out.f_bavail = st.bavail as i64;
+        out.f_files = st.files as i64;
+        out.f_ffree = st.ffree as i64;
+        out.f_namelen = i64::from(st.namelen);
+        out.f_flags = i64::from(inode.fs.flags | crate::linux_extra::ST_VALID);
+        return Ok(out);
+    }
+    let inode = node.borrow();
     out.f_type = inode.fs.kind.magic() as i64;
     out.f_bsize = wcontainers_abi::PAGE_SIZE as i64;
     out.f_namelen = 255;
@@ -2385,7 +2919,7 @@ fn statfs_of(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) -> statfs {
         val: [(major << 8 | minor) as i32, 0],
     };
     out.f_flags = i64::from(inode.fs.flags | crate::linux_extra::ST_VALID);
-    out
+    Ok(out)
 }
 
 pub(super) fn statfs(
@@ -2394,8 +2928,17 @@ pub(super) fn statfs(
     tid: Tid,
     [path, buffer, ..]: Args,
 ) -> Result<u64, Errno> {
-    let node = lookup(kernel, cx, tid, AT_FDCWD as u64, path, 0, true)?;
-    let out = statfs_of(kernel, cx, &node);
+    let path = super::path_argument(kernel, cx, tid, path, false)?;
+    let at = start(kernel, tid, AT_FDCWD as u64, &path)?;
+    // A descriptor's link to a file opened through the kernel's own mount reaches that mount.
+    let (node, internal) = kernel.with_walk(tid, |walk, _| {
+        let node = walk.resolve(&at, &path, true)?;
+        Ok((node, walk.internal.get()))
+    })?;
+    let mut out = statfs_of(kernel, cx, &node)?;
+    if internal {
+        out.f_flags = i64::from(crate::linux_extra::ST_VALID);
+    }
     guest(kernel, cx, tid).write_value(buffer, &out)?;
     Ok(0)
 }
@@ -2406,9 +2949,9 @@ pub(super) fn fstatfs(
     tid: Tid,
     [fd, buffer, ..]: Args,
 ) -> Result<u64, Errno> {
-    let file = kernel.files(tid).file(fd as i32)?;
+    let file = kernel.call_file(tid, fd as i32)?;
     let node = file.borrow().node.clone();
-    let mut out = statfs_of(kernel, cx, &node);
+    let mut out = statfs_of(kernel, cx, &node)?;
     if file.borrow().internal_mount {
         out.f_flags = i64::from(crate::linux_extra::ST_VALID);
     }
@@ -2457,7 +3000,7 @@ fn flock_typed(
         LOCK_UN => None,
         _ => return Err(Errno::EINVAL),
     };
-    let file = kernel.files(tid).file(fd as i32)?;
+    let file = kernel.call_file(tid, fd as i32)?;
     let usable = {
         let file = file.borrow();
         file.readable() || file.writable()
@@ -2468,12 +3011,14 @@ fn flock_typed(
     let node = file.borrow().node.clone();
     let mut inode = node.borrow_mut();
     let own = alloc::rc::Rc::downgrade(&file);
-    inode.flocks.retain(|(holder, _)| holder.strong_count() > 0);
+    inode
+        .flocks
+        .retain(|(holder, ..)| holder.strong_count() > 0);
     // The file's own lock is dropped first, so a refused change loses it, as on Linux.
     if let Some(index) = inode
         .flocks
         .iter()
-        .position(|(holder, _)| holder.ptr_eq(&own))
+        .position(|(holder, ..)| holder.ptr_eq(&own))
     {
         if Some(inode.flocks[index].1) == exclusive {
             return Ok(Some(0));
@@ -2490,10 +3035,11 @@ fn flock_typed(
     let conflict = inode
         .flocks
         .iter()
-        .any(|(_, held_exclusive)| exclusive || *held_exclusive);
+        .any(|(_, held_exclusive, _)| exclusive || *held_exclusive);
     if conflict {
         return if wait { Ok(None) } else { Err(Errno::EAGAIN) };
     }
-    inode.flocks.push((own, exclusive));
+    let pid = kernel.threads[&tid].process;
+    inode.flocks.push((own, exclusive, pid));
     Ok(Some(0))
 }

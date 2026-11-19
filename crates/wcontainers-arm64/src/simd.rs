@@ -1,6 +1,7 @@
 //! The meaning of AdvSIMD data processing: WebAssembly SIMD where it has the operation, else element by
 //! element on i64 values.
 
+use crate::Arm64;
 use crate::float::{low, vector};
 use crate::instruction::*;
 use crate::meaning::{Control, Emitter};
@@ -55,7 +56,7 @@ pub(crate) struct Input {
 /// Push a v128 built element by element: lanes `out_first..out_first + count` of `out` bytes each get what
 /// `f` pushes (an i64) from the inputs' lanes, each in an i64 local; the other lanes come from `base`, or
 /// are zero. `f` also gets an i32 local to set when it saturated.
-pub(crate) fn map<E: Emitter + ?Sized>(
+pub(crate) fn map<E: Emitter<Arm64> + ?Sized>(
     e: &mut E,
     out: u8,
     count: u8,
@@ -86,7 +87,7 @@ pub(crate) fn map<E: Emitter + ?Sized>(
 }
 
 /// FPSR.QC is set when the local is not zero.
-fn saturation<E: Emitter + ?Sized>(e: &mut E, saturated: u32) {
+fn saturation<E: Emitter<Arm64> + ?Sized>(e: &mut E, saturated: u32) {
     e.sink().local_get(saturated).if_(BlockType::Empty);
     e.get_control(Control::Fpsr);
     e.sink().i32_const(1 << 27).i32_or();
@@ -96,12 +97,18 @@ fn saturation<E: Emitter + ?Sized>(e: &mut E, saturated: u32) {
 
 /// Push the i64 in `value` (exact as a signed number) clamped to the range of `bits` bits, signed or not,
 /// noting saturation.
-fn clamp<E: Emitter + ?Sized>(e: &mut E, value: u32, bits: u32, signed: bool, saturated: u32) {
+fn clamp<E: Emitter<Arm64> + ?Sized>(
+    e: &mut E,
+    value: u32,
+    bits: u32,
+    signed: bool,
+    saturated: u32,
+) {
     clamp_from(e, value, bits, signed, true, saturated);
 }
 
 /// [`clamp`] of a value that is exact as a signed number, or (`from_signed` false) as an unsigned one.
-fn clamp_from<E: Emitter + ?Sized>(
+fn clamp_from<E: Emitter<Arm64> + ?Sized>(
     e: &mut E,
     value: u32,
     bits: u32,
@@ -156,7 +163,7 @@ fn clamp_from<E: Emitter + ?Sized>(
 }
 
 /// Push the 64 bit saturating sum or difference of two i64 locals.
-fn saturate64<E: Emitter + ?Sized>(
+fn saturate64<E: Emitter<Arm64> + ?Sized>(
     e: &mut E,
     a: u32,
     b: u32,
@@ -219,7 +226,7 @@ fn saturate64<E: Emitter + ?Sized>(
 /// Push a shift of the i64 `value` (holding a `bits` bit element, extended) by the signed amount in
 /// `amount`: left when positive, right (arithmetic when `signed`) when negative, rounding right shifts when
 /// `rounding`. Amounts past the width give what the bits shifted out leave. Not saturating.
-fn shift_by<E: Emitter + ?Sized>(
+fn shift_by<E: Emitter<Arm64> + ?Sized>(
     e: &mut E,
     value: u32,
     amount: u32,
@@ -297,7 +304,7 @@ fn extend(s: &mut InstructionSink<'_>, bits: u32, signed: bool) {
 
 /// Push a saturating left shift of the i64 `value` (a `bits` bit element, extended as `from_signed`) by
 /// the non-negative amount in `amount`, saturating to `to_signed`.
-fn saturating_shift_left<E: Emitter + ?Sized>(
+fn saturating_shift_left<E: Emitter<Arm64> + ?Sized>(
     e: &mut E,
     value: u32,
     amount: u32,
@@ -384,7 +391,7 @@ fn pairs(element: u8, whole: bool, odd: bool) -> [u8; 16] {
 }
 
 /// Push the even and odd elements of `rn`:`rm` into two fresh locals.
-pub(crate) fn split_pairs<E: Emitter + ?Sized>(
+pub(crate) fn split_pairs<E: Emitter<Arm64> + ?Sized>(
     e: &mut E,
     element: u8,
     whole: bool,
@@ -475,7 +482,13 @@ fn int_binary(s: &mut InstructionSink<'_>, op: SimdOp, element: u8) -> bool {
 
 /// The scalar meaning of an integer operation on extended i64 lane values, pushing the result.
 #[allow(clippy::too_many_arguments)]
-fn int_lane<E: Emitter + ?Sized>(e: &mut E, op: SimdOp, bits: u32, v: &[u32], saturated: u32) {
+fn int_lane<E: Emitter<Arm64> + ?Sized>(
+    e: &mut E,
+    op: SimdOp,
+    bits: u32,
+    v: &[u32],
+    saturated: u32,
+) {
     use SimdOp as S;
     let (a, b) = (v[0], *v.get(1).unwrap_or(&v[0]));
     let d = *v.get(2).unwrap_or(&v[0]);
@@ -813,7 +826,7 @@ fn int_lane<E: Emitter + ?Sized>(e: &mut E, op: SimdOp, bits: u32, v: &[u32], sa
     }
 }
 
-fn absolute_difference<E: Emitter + ?Sized>(e: &mut E, a: u32, b: u32) {
+fn absolute_difference<E: Emitter<Arm64> + ?Sized>(e: &mut E, a: u32, b: u32) {
     e.sink()
         .local_get(a)
         .local_get(b)
@@ -828,7 +841,7 @@ fn absolute_difference<E: Emitter + ?Sized>(e: &mut E, a: u32, b: u32) {
 }
 
 /// 64 bit suqadd (signed destination plus unsigned value) and usqadd (unsigned destination plus signed).
-fn suqadd64<E: Emitter + ?Sized>(e: &mut E, d: u32, n: u32, signed: bool, saturated: u32) {
+fn suqadd64<E: Emitter<Arm64> + ?Sized>(e: &mut E, d: u32, n: u32, signed: bool, saturated: u32) {
     let (r, bad) = (e.local(ValType::I64), e.local(ValType::I32));
     let mut s = e.sink();
     s.local_get(d).local_get(n).i64_add().local_set(r);
@@ -879,7 +892,7 @@ fn suqadd64<E: Emitter + ?Sized>(e: &mut E, d: u32, n: u32, signed: bool, satura
 }
 
 /// Arm's `RecipEstimate` of the 9 bit value in `a`, pushed.
-pub(crate) fn recip_estimate<E: Emitter + ?Sized>(e: &mut E, a: u32) {
+pub(crate) fn recip_estimate<E: Emitter<Arm64> + ?Sized>(e: &mut E, a: u32) {
     e.sink()
         .i64_const(1 << 19)
         .local_get(a)
@@ -896,7 +909,7 @@ pub(crate) fn recip_estimate<E: Emitter + ?Sized>(e: &mut E, a: u32) {
 
 /// Arm's `RecipSqrtEstimate` of the 9 bit value in `a` (128 to 511), pushed: the least b of at least 512
 /// with a * (b + 1)^2 at least 2^28, found from a square root and corrected by one either way.
-pub(crate) fn recip_sqrt_estimate<E: Emitter + ?Sized>(e: &mut E, a: u32) {
+pub(crate) fn recip_sqrt_estimate<E: Emitter<Arm64> + ?Sized>(e: &mut E, a: u32) {
     let (scaled, c) = (e.local(ValType::I64), e.local(ValType::I64));
     let mut s = e.sink();
     s.local_get(a)
@@ -977,7 +990,7 @@ pub(crate) fn recip_sqrt_estimate<E: Emitter + ?Sized>(e: &mut E, a: u32) {
 }
 
 /// Write the meaning of an AdvSIMD data processing instruction.
-pub(crate) fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
+pub(crate) fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruction) {
     match *instruction {
         Instruction::Simd {
             op,
@@ -1102,7 +1115,7 @@ fn width(shape: Shape) -> u8 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn simd<E: Emitter + ?Sized>(
+fn simd<E: Emitter<Arm64> + ?Sized>(
     e: &mut E,
     op: SimdOp,
     shape: Shape,
