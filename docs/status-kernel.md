@@ -117,8 +117,11 @@ LTP reruns at c7d3e686 (scratch k6c6/a.tsv, ltp-a, 2 jobs, LTP_LIMIT 1800, load 
 now the reference's verdict: cve-2016-7042 (broken: add_key refused by Docker's profile),
 send02, ioctl10, pipe15, cve-2017-2618, autogroup01 (broken, as the reference: EROFS),
 dirtyc0w, cve-2016-5195, cve-2017-1000405, thp04. io_submit04 was still broken there (the RWF
-flags, built after); shmctl05 twice was still running at the end. Started at c2a9b17f (k6c6/b.tsv):
-io_submit04, madvise12, fork09.
+flags, built after). shmctl05 (syscalls and syscalls-ipc) ran out 1800 s both times without
+ending fuzzy sync's minimum sampling period (the reference passes in 44 s: two threads racing,
+which here take turns on one CPU and spin with sched_yield): slower than the limit, cause still to
+be shown. At c2a9b17f (k6c6/b.tsv, ltp-b, LTP_LIMIT 3600): io_submit04 and madvise12 pass, as the
+reference; fork09 still running at the end of the run.
 
 LTP table at this run's end (not a whole comparison yet):
 - The whole comparison at b37c8a43 (scratch k6c5/whole.tsv, still running, 3 jobs): 651 of
@@ -129,9 +132,9 @@ LTP table at this run's end (not a whole comparison yet):
   cve-2017-2671 ping; cve-2021-26708 vsock).
 - Matching as far as reruns show: 4075 of 4226 (the fourth run's 4062, the fifth run's
   remap_file_pages01 and 02 and swapping01, and this run's 10 above).
-- Differing 151, by cause: slower than the limit about 90 (msgstress01 among them, shown to pass
-  in 2328 s with a 3600 s limit); built since and awaiting rerun: io_submit04, madvise12,
-  shmctl05 twice; a harness cause 3 (fork09, openat03, copy_file_range03; Questions); not built
+- Matching also, rerun after: io_submit04 and madvise12 (so 4077 of 4226).
+- Differing 149, by cause: slower than the limit about 90 (msgstress01 among them, shown to pass
+  in 2328 s with a 3600 s limit; shmctl05 twice, slower than 1800 s, above); a harness cause 3 (fork09, openat03, copy_file_range03; Questions); not built
   and not a section 15 cause: smaps (mlock05), pagemap (mmap12), page residency (mincore03,
   mlock201; Questions), vma01, transparent huge pages (thp01 to 03, sys_thp01), hugetlb memfd
   (memfd_create04), layout randomization (aslr01), the cgroup2 mount (controllers); a section 15
