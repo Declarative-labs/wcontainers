@@ -229,7 +229,7 @@ impl Table {
     }
 
     /// Gives the page at `va` new attributes, keeping its frame, and invalidates it for every identifier, so
-    /// every view sharing this table sees the change. A block holding it is first split into pages with the
+    /// every table root sharing this table sees the change. A block holding it is first split into pages with the
     /// block's attributes, break before make.
     pub fn protect(
         &self,
@@ -304,7 +304,7 @@ pub fn barrier() {
 }
 
 /// Invalidates every cached entry of the walk for `va`, of every identifier and level, on every virtual
-/// CPU: one primitive for a page whose permissions change in a table views share, and for a block that
+/// CPU: one primitive for a page whose permissions change in a table several table roots share, and for a block that
 /// becomes a table.
 fn invalidate(va: u64) {
     barrier::dsb(ISHST);

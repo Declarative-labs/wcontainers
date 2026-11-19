@@ -81,9 +81,9 @@ cases! {
     RegisterPage,
     ProtectInsidePage,
     TwoContainers,
-    ThreadViews,
-    /// A change in the inside's half, which a process's views share, reaches every view.
-    SharedInsideViews,
+    ThreadTableRoots,
+    /// A change in the inside's half, which a process's table roots share, reaches every one.
+    SharedInsideHalf,
     AdjacentPages,
     Block,
     LateCode,

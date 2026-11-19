@@ -214,7 +214,7 @@ pub fn set_stop_word(value: u64) {
     TPIDRRO_EL0.set(value);
 }
 
-/// One process's view: its tables for the guest's half and for the inside's half, and its identifier.
+/// One address space: its tables for the guest's half and for the inside's half, and its identifier.
 #[derive(Clone, Copy, Debug)]
 pub struct AddressSpace {
     pub user: Table,
@@ -236,8 +236,12 @@ impl AddressSpace {
     }
 
     /// The same inside half with its own table for the guest's half and its own identifier: one thread's
-    /// view of its process's pages.
-    pub fn view(&self, frames: &mut Frames, asid: u16) -> Result<AddressSpace, Full> {
+    /// own table root over its process's pages.
+    pub fn thread_address_space(
+        &self,
+        frames: &mut Frames,
+        asid: u16,
+    ) -> Result<AddressSpace, Full> {
         Ok(AddressSpace {
             user: Table::new(frames)?,
             inside: self.inside,
@@ -245,7 +249,7 @@ impl AddressSpace {
         })
     }
 
-    /// Switches to this view. No TLB invalidation: entries are tagged by identifier.
+    /// Switches to this address space. No TLB invalidation: entries are tagged by identifier.
     pub fn switch(&self) {
         let asid = u64::from(self.asid);
         TTBR0_EL1.write(

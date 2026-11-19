@@ -36,7 +36,7 @@ const TAG_SHIFT: u32 = u64::BITS - u8::BITS;
 /// Guest addresses the cases map their data at.
 const GUEST: u64 = 0x10_0000;
 
-/// Times the cases that switch views go back and forth.
+/// Times the cases that switch table roots go back and forth.
 const ROUNDS: u64 = 24;
 
 /// Doorbell round trips timed.
@@ -498,7 +498,7 @@ impl Cases {
         );
     }
 
-    fn thread_views(&mut self) {
+    fn thread_table_roots(&mut self) {
         let store = self.code_page(code_of::store());
         let load = self.code_page(code_of::load());
         let process = self.process();
@@ -509,8 +509,8 @@ impl Cases {
         let reader_asid = self.next_asid;
         let (writer, reader) = frames(|frames| {
             let frame = frames.take()?;
-            let writer = process.view(frames, writer_asid)?;
-            let reader = process.view(frames, reader_asid)?;
+            let writer = process.thread_address_space(frames, writer_asid)?;
+            let reader = process.thread_address_space(frames, reader_asid)?;
             writer.user.map(frames, page, frame, guest_read_write())?;
             reader.user.map(frames, page, frame, guest_read_only())?;
             Ok((writer, reader))
@@ -524,7 +524,7 @@ impl Cases {
                 called(&wrote, 0) && refused(&refused_write, page, true) && called(&read, round);
         }
         report(
-            Case::ThreadViews,
+            Case::ThreadTableRoots,
             passed,
             format_args!(
                 "two threads of one process with their own table roots see one page writable and read-only: {ROUNDS} rounds, identifiers {writer_asid} and {reader_asid}, no invalidation"
@@ -532,7 +532,7 @@ impl Cases {
         );
     }
 
-    fn shared_inside_views(&mut self) {
+    fn shared_inside_half(&mut self) {
         let store = self.code_page(code_of::store());
         let process = self.process();
         self.next_asid += 1;
@@ -541,8 +541,8 @@ impl Cases {
         let second_asid = self.next_asid;
         let (first, second) = frames(|frames| {
             Ok((
-                process.view(frames, first_asid)?,
-                process.view(frames, second_asid)?,
+                process.thread_address_space(frames, first_asid)?,
+                process.thread_address_space(frames, second_asid)?,
             ))
         });
         let va = Region::Threads.base();
@@ -559,10 +559,10 @@ impl Cases {
                 && refused(&refused_second, va, true);
         }
         report(
-            Case::SharedInsideViews,
+            Case::SharedInsideHalf,
             passed,
             format_args!(
-                "two views of one process share the inside's half: a page made read-only after both stored refuses the other view's store at once, {ROUNDS} rounds, identifiers {first_asid} and {second_asid}"
+                "two table roots of one process share the inside's half: a page made read-only after both stored refuses the other root's store at once, {ROUNDS} rounds, identifiers {first_asid} and {second_asid}"
             ),
         );
     }
@@ -942,8 +942,8 @@ extern "C" fn floor_main(start: &Start) -> ! {
         cases.register_page();
         cases.protect_inside_page();
         cases.two_containers();
-        cases.thread_views();
-        cases.shared_inside_views();
+        cases.thread_table_roots();
+        cases.shared_inside_half();
         cases.adjacent_pages();
         cases.block();
         cases.late_code();
