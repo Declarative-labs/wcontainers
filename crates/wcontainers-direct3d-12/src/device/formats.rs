@@ -27,7 +27,8 @@ pub(super) type Slot = (bool, u32);
 /// slots whose bias (`lod_bias`) and addressing (`border_in_shader`) it applies, the
 /// storage slots it reads through buffers (`texels_through_buffer`), and the texture
 /// slots under a minimum level-of-detail clamp (`min_lod_clamped`) and filtered in the
-/// program (`filter_in_shader`).
+/// program (`filter_in_shader`), and whether a pixel stage runs its early tests itself
+/// (`VariantFlags::EARLY_TESTS`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Bound {
     formats: Vec<(Slot, Format)>,
@@ -40,6 +41,7 @@ pub(super) struct Bound {
     filtered: u128,
     /// Storage views at offsets the back end cannot bind (`VariantFlags::STORAGE_OFFSET`).
     offsets: bool,
+    early: bool,
 }
 
 /// A program made for what is bound, with its helper layout; `None` where the conversion
@@ -185,6 +187,7 @@ fn keyed(base: &VariantKey, made: &[(Slot, Format)], bound: Option<&Bound>) -> V
         key.min_lod_clamped = b.clamped;
         key.filter_in_shader = b.filtered;
         key.flags.set(VariantFlags::STORAGE_OFFSET, b.offsets);
+        key.flags.set(VariantFlags::EARLY_TESTS, b.early);
         key.swizzled = b.swizzled.clone();
         key.texture_layers = b.layers.clone();
     }
@@ -403,8 +406,10 @@ impl<B: Backend> Device<B> {
             }
         }
         let offsets = self.bound_offsets.contains(&f.visibility);
+        let early = self.early_draw && f.visibility == bind::PIXEL;
         if formats == f.made
             && !offsets
+            && !early
             && lod_bias == 0
             && border == 0
             && clamped == 0
@@ -447,6 +452,7 @@ impl<B: Backend> Device<B> {
             clamped,
             filtered,
             offsets,
+            early,
         }))
     }
 
