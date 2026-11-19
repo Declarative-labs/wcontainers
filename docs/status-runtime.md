@@ -43,8 +43,12 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
 - Also built in J4a run 3, from the brief's later sections: a property of a config.json the specification
   does not define, and every annotation, is ignored and named for a warning (read through `serde_ignored`),
   in place of being refused (section "J4a run 3").
-- J4a is complete: its bar passes at full, none and bounded (section "J4a run 3"). Next: J5 (plan section
-  16).
+- J4a is complete: its bar passes at full, none and bounded (section "J4a run 3").
+- J5 run 1 (2026-11-18): the six findings of J4a run 3's check are settled first (their section below);
+  origin/phase-1 had nothing new to merge (still 2edbc451). Then J5: the local system's file backend and
+  network, one bind mount of the configuration honoured, `root.path` kept refused with why, wcon's
+  `--volume` and `--publish`, and the whole kernel test crate at three look-aheads against the stand-in
+  (section "J5 run 1").
 
 ## For the orchestrator
 
@@ -140,6 +144,53 @@ the capability sets, the resource limits, no_new_privs, a seccomp filter, sysctl
 leave a default mount out), the domain name, and the per-process values (`oomScoreAdj`, `ioPriority`,
 `scheduler`, `execCPUAffinity`, `personality`, `timeOffsets`); and the address-space size and the memory
 size the guest is told (plan section 8), which `Machine` holds once the kernel takes them.
+
+## J5 run 1 (2026-11-18; this Mac, Apple M5 Max, 18 cores, 128 GiB; other tracks running)
+
+Built:
+- The local system's file backend (crates/wcontainers-runtime/src/files.rs, 1,157 lines with its unit test): a
+  host directory served in Linux's FUSE messages for the kernel's file backend; plan section 14 says how.
+  Served inside `backend_send`, the reply handed to the kernel at the next exit or idle.
+- The local system's network (src/net.rs): host sockets connected without waiting (socket2), one thread
+  waiting on their readiness (polling), lookups on threads, each arrival raising the stop flag and waking
+  `idle`; container ports reached from the host only where `LocalSystem::publish` puts them.
+- Host errors to Linux's numbers by name (src/errno.rs), shared by both.
+- One bind mount after the kernel's six mounts honoured (spec.rs `check_bind_mount`; `System::serve_directory`;
+  `bind_mount`), its other forms refused by name (refused.rs: a second one, `ro`, over `/`, a relative
+  source; a missing source fails as the host's error). `root.path` stays refused: plan section 14 says why.
+- wcon: `--volume SOURCE:DESTINATION` and `--publish ADDRESS:PORT:CONTAINER_PORT`. Tried by hand (alpine
+  from the OCI layout): a file of the host directory read, one written there, and `nc -l` in the container
+  answering `nc 127.0.0.1 PORT` on the host.
+- Nothing in the shipped outside is test-only: files.rs, net.rs, errno.rs and system.rs have no test hooks;
+  their tests are `#[cfg(test)]` modules and the surface tests.
+
+Tests added (all pass, this Mac, load 85 to 135): surface.rs `a_host_directory_is_served_through_a_bind_mount`
+(reads, writes, renames, links hard and soft, chmod, removes, a 1,228,800 byte write truncated, a 70,000 byte
+write, errors for missing names; the same output as `docker run --volume` and the same files left on the
+host, compared by path, kind, size, mode, contents and link target),
+`a_tcp_connection_from_the_host_reaches_a_published_port` (as `docker run --publish`),
+`a_connection_from_the_container_reaches_a_host_server` (ours by the Mac's outward address, the reference by
+`host.docker.internal`); refused.rs's four bind mount refusals and
+`a_bind_mount_of_a_host_directory_is_accepted`; files.rs `a_file_is_made_written_read_listed_and_removed`
+(FUSE messages straight to the backend, a name with a slash refused).
+
+The owned suite at 14840e23 (scratch j5/owned-1.log; 133.6 s, load 135.8 at the end): 130 passed, 1 ignored
+(`run_with_the_cache`, as before), 0 failed. The unit tests of both crates on ARM64 Linux in Docker at
+5c5787d0's code (j5/linux/lib-2.log): 15 passed. The first try (lib.log) found that the Linux-only part of
+`page_copies_are_exact` had not built since J4a run 3's sweep (it used the pagemap constants without
+importing them); fixed in 5c5787d0.
+
+The LTP harness with the back end (scratch j5/ltp.sh, ten tests: syscalls chdir01, fork01, getpid01, mkdir02,
+open01, pipe01, read01, rename01, socket01, write01; j5/ltp/trial*; load 89 to 96): the stand-in and the
+runtime at full gave the same ten verdicts ("10 verdicts match, 0 differ"; pass 7, broken 2, fail 1, as the
+kernel track's own results file has them). The runtime took 1.3 to 12.9 s a test (translation), the
+stand-in 0.2 to 0.9 s. The whole suite is the orchestrator's long run (section "How to run").
+
+A first whole-crate run at full on 77e50ddc (before this run's changes; j5/d-full.log, 4,036.5 s, load 98 to 54)
+found the four tests listed under Departures as waiting (the address ceiling); every other verdict equal to
+J3's stand-in run, but for the three known ones (align's misaligned stack pointer and sharedviews' code
+written through one view pass with the back end where the stand-in is the known failure; counterclock's
+across saves is the back end's known failure).
 
 ## Findings of J4a run 3's check, and how each was settled (J5 run 1)
 
@@ -1239,6 +1290,17 @@ J3 run 1 deleted its 15 GB of old identities' files, and target/debug/incrementa
 edits made while it runs uses a scratch `git worktree` (J3: j3/tree, its own target, deleted at the end of the
 run). Scratch is pyro-parked/wcontainers-scratch/runtime; J1's logs are in its `j1/` and `j1run2/`, J2's in
 `j2/` to `j2run5/`, J3's in `j3/`.
+- J5's bar, all four runs in one command on a scratch worktree (`git worktree add --detach j5/tree <commit>`):
+  scratch `j5/final.sh` (stand-in, then full, none and bounded; logs j5/f-*.log, verdicts j5/f-*.txt as
+  `binary::test verdict`, made by j5/verdicts.py). One run: `j5/suite.sh NAME full|none|bounded|standin
+  [test arguments]`. By hand: `LOOK_AHEAD=<l> nix develop -c cargo test -j 4 -p wcontainers-kernel-test
+  --features runtime --no-fail-fast -- --test-threads 3` (leave the feature out for the stand-in).
+- The Linux Test Project, stand-in against the back end at full, one command: scratch `j5/ltp.sh NAME
+  [selection...]` (LTP_JOBS 3; results j5/ltp/NAME-standin.tsv and NAME-runtime.tsv, their comparison
+  NAME-compare.txt). It needs the image's files: `crates/wcontainers-kernel-test/ltp/build.sh j5/ltp` once
+  (j5/ltp/ltp-20260930.tar, 719 MB). The orchestrator's whole run: `j5/ltp.sh whole`.
+- The file backend and network through the surface: `nix develop -c cargo test -j 4 -p wcontainers-wasmtime
+  --test surface -- --test-threads 3 a_host_directory a_tcp_connection a_connection_from`.
 - J4a's bar at one look-ahead: `LOOK_AHEAD=<full|none|bounded> nix develop -c cargo test -j 4 -p
   wcontainers-kernel-test --features runtime --no-fail-fast --test threads --test turns --test timers --test
   deadlines --test cputime --test cpulimit --test clocks --test lockwaits --test rseqabort --test priorities
