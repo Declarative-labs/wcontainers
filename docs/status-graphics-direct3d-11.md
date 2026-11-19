@@ -48,6 +48,11 @@ empty slot's `resinfo`, and reading atg-simplemsaa_pc's edge pixels).
   `format_support_follows_the_feature_level_for_display_and_signed_normalised_blending`.
 - Measured (Measurements): the release module sizes and building-ahead hits on five programs.
 - Results: see Measurements (this run's entry) and the Wine section.
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (21.0 GB, debug and
+  release builds of both back ends) and the checkout's own target on the Mac (591 MB, from
+  `cargo check`) were deleted; the scratch worktree wt-format (no build) was removed. Kept on the
+  desktop: the LF worktree C:\wc\src\phase-2-graphics-direct3d-11-lf (sources only, for the
+  literal check). Nothing was installed on the desktop.
 
 G4 run 25 (2026-11-18, about 20:20 to 23:30 Pacific). Merged origin/phase-2-graphics-webgpu,
 -shaders, -direct3d-12 and -webgl cleanly (-graphics and -rig had nothing new). The WebGL 2
@@ -598,6 +603,14 @@ and depth buffers larger than their targets.
 ## Wine's Direct3D 11 tests through ours
 
 Files passing (the bar: real Direct3D's verdict for every test, except the gap list):
+- d3d11: every failing test on the gap list. G4 round 2 run 1 (2026-11-19, RTX 3080 through the
+  queue's hazard group, not alone, rigfix/wine.sh): 140 pass of 165 at e5f14b32
+  (logs/g4t1k-wine.log) and at 7347836f (logs/g4t1n-wine.log), the same 25 failing as at run 25;
+  at 7347836f test_create_shader and test_swapchain_formats fail only on absent features and
+  test_format_support on 46 checks (106 before).
+- d3d10core: every failing test on the gap list. Round 2 run 1: 103 of 111 at e5f14b32
+  (logs/g4t1k-wine10.log), 105 of 111 at 7347836f (logs/g4t1n-wine10.log): test_format_support
+  and test_swapchain_formats pass; none lost.
 - d3d11: not passing. G4 run 25 (2026-11-18, RTX 3080 through the queue's hazard group, not
   alone, rigfix/wine.sh, at fb182c2b's tree): 140 pass of the 165 run (25 fail;
   logs/g4s13i-wine.log, 22:28:46 to 22:31:51 desktop time). The same 25 tests fail as at run 24;
@@ -770,8 +783,8 @@ absent are formats-b5g6r5_unorm.png and the support line of formats-support.caps
 `B5G6R5_UNORM` target on WebGPU), levels-results.caps (11_1: logic operations),
 samplers-reduction.png (min/max filtering).
 
-The WebGL 2 cases (scenes through the library built on the WebGL 2 back end, 10_0; run 25's full
-run: 92 match, 21 fail, 30 absent, logs/g4s13i-webgl.log; this run's in Measurements):
+The WebGL 2 cases (scenes through the library built on the WebGL 2 back end, 10_0; 92 match, 21
+fail, 30 absent at 7347836f, as at run 25, logs/g4t1n-webgl.log):
 - Absent, 30: outputs of scenes asking for 10_1 or 11_0, which the WebGL 2 build does not offer
   (compute 4, depth from the shader 2, the device scene, indirect draws, tessellation, BC6/7,
   cube arrays, gathers, the eight multisampling outputs, the four target outputs, the copy of BC
@@ -1161,6 +1174,11 @@ clean with warnings denied. The library tests run without `WC_GPU_CACHE`, so wit
 
 ## Departures from the plan
 
+- Round 2 run 1: G4 is reported complete with items of this front still on the gap list (named
+  there as this front's, not as gaps), and with items waiting on the shaders, interface and
+  infrastructure tracks, as this round's task asked, so that the independent check runs on the
+  front as it stands. The plan's bar counts only absent features as gaps; those items are work.
+
 - Run 25: origin/phase-1-literals was merged into this branch directly. docs/literals.md says a
   track adopts the check through main; the brief (2026-11-18, late) says to merge
   origin/phase-1-literals and adopt it now, and the WebGL 2 track's branch, which this branch
@@ -1464,7 +1482,12 @@ None in G4 runs 3 to 12.
   (156 s of tests), d3d10core 103 of 111 (100.5 s), the same failing tests as at run 25; every
   Direct3D 11 scene through the whole library 135 pass, 0 fail, 4 absent; the WebGL 2 build's
   scenes: the job's output was cut off at the samplers scene (ssh exit 255), rerun at the end
-  (FINAL_WEBGL). Real programs through the whole library, 120 frames each, single runs:
+  at 7347836f: 92 match, 21 fail, 30 absent, as at run 25 (logs/g4t1n-webgl.log).
+- Same run, at 7347836f (logs/g4t1n-*, 03:29 to 04:12 desktop time, the queue as above): library
+  com 15 and programs 30 with 1 ignored, passing; Wine's d3d11 file 140 of 165 (154 s of tests,
+  the same 25 failing, now each for the causes in the Gap list), d3d10core 105 of 111 (95.9 s;
+  test_format_support and test_swapchain_formats now pass); scenes through the whole library
+  135, 0, 4; the WebGL 2 build 92, 21, 30. Real programs through the whole library, 120 frames each, single runs:
   every compared frame as on real Direct3D for sdk-tutorial02, 04 to 07 (0.9 s each),
   chocolate-doom 3.2 s, atg-simplelightingpc 3.1 s, atg-simpleinstancingpc 3.4 s,
   atg-simplebezierpc 8.7 s, godot-platformer-2d-d3d11 13.7 s, godot-platformer-3d-d3d11 42.4 s,
