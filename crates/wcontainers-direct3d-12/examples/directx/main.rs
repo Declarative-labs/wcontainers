@@ -121,8 +121,13 @@ pub unsafe extern "system" fn wc_CreateDXGIFactory(
     riid: *const GUID,
     out: *mut *mut c_void,
 ) -> HRESULT {
-    // SAFETY: the caller's pointers, passed on.
-    unsafe { wc_CreateDXGIFactory2(0, riid, out) }
+    if gpu::on_device_thread() {
+        // SAFETY: the caller's pointers, passed on.
+        return unsafe { wc_CreateDXGIFactory2(0, riid, out) };
+    }
+    let factory = crate::abi::version_1_0_factory(Factory::new(0).into());
+    // SAFETY: as the caller passed them.
+    unsafe { hand_out(&factory, riid, out) }
 }
 
 /// The first adapter of the DXGI this process loads (ours where it lies beside the program, else

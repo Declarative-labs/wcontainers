@@ -8,13 +8,11 @@
 
 use super::*;
 use crate::list::{DSV_READ_ONLY_DEPTH, DSV_READ_ONLY_STENCIL};
+use crate::state::TRIANGLE_VERTICES;
 use wcontainers_gpu::{
     BindingEntry, BindingResource, DepthStencilDesc, EARLY_DEPTH_BINDING, EARLY_STENCIL_BINDING,
     FrontFace, StencilOp,
 };
-
-/// Vertices of one triangle.
-const TRIANGLE_VERTICES: u32 = 3;
 
 /// The texture bound as the stencil a program tests early where the view's format has none, of
 /// the depth view's sample count `samples`; the program then never reads it (its stencil test is
@@ -167,6 +165,11 @@ impl<B: Backend> Replay<B> {
             .render
             .as_ref()
             .ok_or(Error::Invalid("drawing with a compute pipeline state"))?;
+        if crate::state::staged_only(self.api_topology) {
+            return Err(Error::NotImplemented(
+                "early tests in the program per primitive of an adjacency draw",
+            ));
+        }
         if r.per_primitive.is_none() {
             return Err(Error::NotImplemented(
                 "early depth-stencil tests per primitive of a pixel shader reading its primitive \

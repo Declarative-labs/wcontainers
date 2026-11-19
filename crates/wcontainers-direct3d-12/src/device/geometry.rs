@@ -97,6 +97,14 @@ pub(super) struct Made<B: Backend> {
 const HULL: u32 = 2;
 pub(super) const DOMAIN: u32 = 3;
 
+/// Whether converted vertex program `c` writes cull distances.
+pub(super) fn writes_cull_distances(c: &Converted) -> bool {
+    c.reflection
+        .outputs
+        .iter()
+        .any(|v| v.system == Some(wcontainers_gpu::SystemValue::CullDistance))
+}
+
 /// `D3D12_SO_NO_RASTERIZED_STREAM`.
 pub const NO_RASTERIZED_STREAM: u32 = u32::MAX;
 
@@ -131,12 +139,19 @@ impl<B: Backend> Device<B> {
             .iter()
             .map(|(e, location)| Ok((*location, vertex_format(e.format)?.0)))
             .collect::<Result<_, Error>>()?;
+        let direct = gs.is_empty() && !tessellated;
         let vertex = self.convert(
             vs,
             ShaderStage::Vertex,
             VariantKey {
                 pulled,
                 draw_base: DrawBaseSource::Helpers,
+                // A vertex stage the rasteriser follows writes its outputs as the pixel stage
+                // interpolates them.
+                output_interpolation: match direct {
+                    true => interpolation.to_vec(),
+                    false => Vec::new(),
+                },
                 ..formats::typed_key(vs, self.texel_route())
             },
         )?;
@@ -202,6 +217,9 @@ impl<B: Backend> Device<B> {
                 late.as_ref(),
                 so.map(|s| &s.0),
             ),
+            _ if direct && writes_cull_distances(&vertex) => {
+                Stages::culled(&mut self.backend, &vertex, so.map(|s| &s.0))
+            }
             _ => Stages::new(
                 &mut self.backend,
                 &vertex,

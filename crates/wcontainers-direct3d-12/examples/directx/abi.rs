@@ -209,3 +209,50 @@ pub unsafe fn heap_let_go(this: *mut c_void) {
     // SAFETY: as the caller promises.
     unsafe { (heap_unknown().Release)(this) };
 }
+
+/// A factory `CreateDXGIFactory` made, which does not offer `IDXGIFactory1`, as Windows 10's does
+/// not (Wine's test_create_factory checks it on real DXGI).
+pub fn version_1_0_factory(
+    factory: windows::Win32::Graphics::Dxgi::IDXGIFactory7,
+) -> windows::Win32::Graphics::Dxgi::IDXGIFactory7 {
+    use windows::Win32::Graphics::Dxgi::IDXGIFactory7_Vtbl;
+    static VTBL: OnceLock<IDXGIFactory7_Vtbl> = OnceLock::new();
+    let slot = factory.as_raw() as *mut *const IDXGIFactory7_Vtbl;
+    // SAFETY: an interface pointer points to its vtable pointer, in the object's own memory; the
+    // copy is a bitwise copy of a table of function pointers, whose first part is `IUnknown`'s.
+    unsafe {
+        let original = &**slot;
+        *slot = VTBL.get_or_init(|| {
+            let mut v = std::ptr::read(original);
+            let unknown = &mut *(&raw mut v).cast::<IUnknown_Vtbl>();
+            FACTORY_QUERY.get_or_init(|| unknown.QueryInterface);
+            unknown.QueryInterface = version_1_0_query;
+            v
+        });
+    }
+    factory
+}
+
+/// The factory vtable's own `QueryInterface`.
+static FACTORY_QUERY: OnceLock<
+    unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
+> = OnceLock::new();
+
+unsafe extern "system" fn version_1_0_query(
+    this: *mut c_void,
+    iid: *const GUID,
+    out: *mut *mut c_void,
+) -> HRESULT {
+    use windows::Win32::Foundation::E_NOINTERFACE;
+    use windows::Win32::Graphics::Dxgi::IDXGIFactory1;
+    // SAFETY: called as COM calls it, on a live factory.
+    unsafe {
+        if iid.as_ref() == Some(&IDXGIFactory1::IID) {
+            if !out.is_null() {
+                *out = std::ptr::null_mut();
+            }
+            return E_NOINTERFACE;
+        }
+        FACTORY_QUERY.get().expect("set before the vtable is used")(this, iid, out)
+    }
+}
