@@ -249,10 +249,17 @@ pub(super) fn split(module: &mut Module, resources: &mut Resources) -> Result<()
             return Err(refused());
         }
     }
-    // The types of what the helpers take and give.
+    // The types of what the helpers take and give, with plain reads of depth textures typed as
+    // the four components `depth::widen` makes them give.
+    let vec4 = (!dynamic.is_empty()).then(|| super::depth::vec4(module));
+    let functions = module.functions.iter().map(|(_, f)| f);
+    let all: Vec<&Function> = functions
+        .chain(module.entry_points.iter().map(|ep| &ep.function))
+        .collect();
     let mut plans = Vec::new();
     for &(i, h, a, index) in &dynamic {
-        let f = all[i];
+        let vec4 = vec4.expect("a run-time pick");
+        let f = &super::depth::as_widened(module, all[i], vec4)?;
         let mut typifier = naga::front::Typifier::new();
         let ctx = naga::proc::ResolveContext::with_locals(module, &f.local_variables, &f.arguments);
         let mut e = f.expressions[h].clone();

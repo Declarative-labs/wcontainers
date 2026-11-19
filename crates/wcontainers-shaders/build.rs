@@ -66,6 +66,7 @@ const IR_ENUMS: &[(&str, &str, &str, &str)] = &[
     ("ir/ir.h", "Construct", "construct", "u64"),
     ("ir/ir.h", "UavFlag", "uav", "u64"),
     ("dxbc/dxbc_signature.h", "SignatureSysval", "sysval", "u32"),
+    ("dxbc/dxbc_parser.h", "ShaderType", "program", "u32"),
 ];
 
 const DXIL_SPIRV: &[&str] = &[

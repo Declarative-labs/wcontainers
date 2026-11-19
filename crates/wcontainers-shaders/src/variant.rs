@@ -460,7 +460,7 @@ impl Wrapped {
         let callee = module.functions.append(inner, Span::UNDEFINED);
 
         let mut f = Function {
-            name: Some("main".into()),
+            name: Some(crate::ENTRY_POINT.into()),
             arguments: arguments.clone(),
             ..Default::default()
         };
