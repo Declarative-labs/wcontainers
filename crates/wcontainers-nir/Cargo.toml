@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+blake3 = { version = "1", default-features = false }
 naga = { workspace = true, features = ["spv-in"] }
 spirv = "0.4"
 wcontainers-gpu = { path = "../wcontainers-gpu" }
@@ -27,6 +28,7 @@ path = "tests/corpus/main.rs"
 harness = false
 
 [build-dependencies]
+blake3 = { version = "1", default-features = false }
 cc = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

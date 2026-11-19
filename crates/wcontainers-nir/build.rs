@@ -63,6 +63,14 @@ const SYSTEM_LIBRARIES: &[&str] = &["stdc++", "m", "dl"];
 const MESA_DEPENDENCIES: &[&str] = &["zlib", "threads"];
 const INTROSPECTED_DEPENDENCIES: &str = "meson-info/intro-dependencies.json";
 const LINK_ARG: &str = "cargo::rustc-link-arg=";
+/// What `mesa/build` records of the Mesa it built (the commit and the options), and the variable
+/// that hands it to the crate, part of the converter's version.
+const MADE_FROM: &str = "wcontainers-made-from";
+const MESA_BUILD_VARIABLE: &str = "WCONTAINERS_MESA_MADE_FROM";
+const RUSTC_ENV: &str = "cargo::rustc-env=";
+/// Between a variable and its value in `RUSTC_ENV`, and between the parts of the version.
+const ASSIGN: &str = "=";
+const VERSION_PARTS: &str = "+";
 const SEARCH_FLAG: &str = "-L";
 const LIBRARY_FLAG: &str = "-l";
 const LIBRARY_PREFIX: &str = "lib";
@@ -103,6 +111,15 @@ fn main() {
     for name in SYSTEM_LIBRARIES {
         println!("{LINK_DYNAMIC}{name}");
     }
+    let made_from = build.join(MADE_FROM);
+    println!("{RERUN_IF_CHANGED}{}", made_from.display());
+    let recorded = std::fs::read_to_string(&made_from).expect("mesa/build records what it built");
+    let commit = recorded
+        .lines()
+        .next()
+        .expect("the record starts with the commit");
+    let options = blake3::hash(recorded.as_bytes()).to_hex();
+    println!("{RUSTC_ENV}{MESA_BUILD_VARIABLE}{ASSIGN}{commit}{VERSION_PARTS}{options}");
     println!("{CFG}");
 }
 

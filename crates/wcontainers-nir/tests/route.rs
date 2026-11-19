@@ -77,3 +77,15 @@ fn resources_are_numbered_by_kind_in_the_stage_set() {
     let expected: Vec<_> = bindings.iter().map(|b| (b.set, b.binding)).collect();
     assert_eq!(bound, expected);
 }
+
+#[test]
+fn the_key_follows_the_nir() {
+    let key = |wgsl| {
+        Nir::from_spirv(&spirv(wgsl), Stage::Compute, ENTRY_POINT)
+            .unwrap()
+            .key()
+            .unwrap()
+    };
+    assert_eq!(key(COMPUTE), key(COMPUTE));
+    assert_ne!(key(COMPUTE), key(&COMPUTE.replace("3u", "5u")));
+}

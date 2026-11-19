@@ -40,6 +40,8 @@ static const struct nir_shader_compiler_options compiler_options = {
    .lower_mul_2x32_64 = true,
    .lower_int64_options = (nir_lower_int64_options)~0,
    .lower_uniforms_to_ubo = true,
+   /* The common form's instance index counts from the draw's first instance, as Vulkan's does. */
+   .instance_id_includes_base_index = true,
    .has_fsub = true,
    .has_isub = true,
    .compact_arrays = true,
@@ -91,6 +93,7 @@ optimize(nir_shader *nir)
       NIR_PASS(progress, nir, nir_opt_constant_folding);
       NIR_PASS(progress, nir, nir_opt_algebraic);
    } while (progress);
+   NIR_PASS(_, nir, nir_lower_system_values);
    NIR_PASS(_, nir, nir_lower_int64);
    NIR_PASS(_, nir, nir_remove_dead_variables,
             nir_var_function_temp | nir_var_shader_in | nir_var_shader_out | nir_var_system_value,

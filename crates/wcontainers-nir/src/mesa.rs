@@ -162,6 +162,18 @@ impl Nir {
         }
     }
 
+    /// The cache's key of what a route converts from this NIR (plan 15.3): BLAKE3 of NIR's serialised
+    /// bytes and the converter's version ([`CONVERTER_VERSION`]). Taken before the route changes the
+    /// shader.
+    pub fn key(&self) -> Result<[u8; blake3::OUT_LEN], ConvertError> {
+        let bytes = self.serialized()?;
+        Ok(*blake3::Hasher::new()
+            .update(&bytes)
+            .update(CONVERTER_VERSION.as_bytes())
+            .finalize()
+            .as_bytes())
+    }
+
     /// NIR's serialised bytes, the cache's key with the converter's version (plan 15.3).
     pub fn serialized(&self) -> Result<Vec<u8>, ConvertError> {
         let mut bytes = Bytes {
@@ -204,6 +216,14 @@ impl Drop for Nir {
         unsafe { wc_nir_free(self.0) };
     }
 }
+
+/// The converter's version in the cache's key: this crate's version and the Mesa it links (commit and
+/// build options, from `mesa/build`'s record).
+pub const CONVERTER_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    "+mesa.",
+    env!("WCONTAINERS_MESA_MADE_FROM")
+);
 
 /// The steps named in `ConvertError::Mesa`.
 pub const SPIRV_TO_NIR: &str = "spirv_to_nir";
