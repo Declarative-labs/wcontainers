@@ -36,6 +36,10 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   (guest pages now get their frames at the first touch) and its minor ones (below, "N3 run 9"); run 10 settled the next
   check's blocking finding (a faulting `dc zva` or `dc c*` panicked the inside) and its three minor ones (below, "N3 run
   10"). N3 is done, for its independent check.
+- N4 (linking and speed) is started, not done: run 1 settled the last check's findings and built pieces to the end of
+  their page at the monitor's look-ahead, filled entry slots, linked direct exits, turns with a count limit run in
+  steps, and the count test across look-aheads (below, "N4 run 1"). One known failure: the kernel test's mappings
+  program at look-ahead none.
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -62,6 +66,82 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N4 run 1 (2026-11-19): the last check's findings, linking, and the count across look-aheads
+
+Start: origin/main and origin/phase-1-literals had nothing new.
+
+The check's findings:
+- Minor, a broken translate answer reached the guest as SIGILL: settled (f3d10d94). `translation::piece` gives none only
+  when the answer has no code (no instruction starts there); a code length, map length or position map it cannot read
+  panics in the inside ("the monitor's translate answer is broken: ..."), which the floor reports as fatal. New test
+  `translate::tests::a_broken_answer_panics`.
+- Minor, R1 and the first R3 have no ruling: unchanged, still open for the orchestrator (For the orchestrator).
+- Minor, blocks.c's known failure on the WebAssembly side: unchanged, it is the translator track's (memory.rs `ZeroBlock`);
+  still printed as KNOWN FAILURE with the other comparisons asserted.
+
+Built (commits 1294466c, 8ab7015f, c124adda, 30b64277, 2a43b341):
+- Encoder: `move_constant` starts with `movn` when more halves are all ones than zero (form MOVN added), so a slot's
+  address takes three moves.
+- guest-cpu (`Native`, this track's change there): `Native::exit(code, target)` and `HostCode::exits`
+  (`position::DirectExit { start, target }`), each direct exit's first byte and guest target.
+- arm64 (`Native` for ARM64): a direct branch, a call's target, both ways of a conditional branch and a piece's fall-through
+  end leave through `exit`: the target's slot address built in t, `br t` (a target at or over 2^45 calls the inside, which
+  reports it as the jump's `bad` path does). `carry::link_words` gives the words the inside fills.
+- translator (native emitter, this track's change there): a piece's end falls through to `G::exit`.
+- The inside: a load sends the guest code from the pc to its page's end (at most one link's bytes), and the monitor
+  translates at its look-ahead (`translate::answer(link, look_ahead)`), cutting a piece shorter when its code would not fit
+  the link. Each loaded piece fills its entry slot in the process's mirror (slot pages mapped per process at first use,
+  given back with the memory) and is linked: every exit to it, and each of its exits to a loaded piece, gets a `b` over
+  its first word (when in reach); a dropped piece's slot is emptied (`udf`, from the encoder) and every exit to it gets its
+  word back. A stop is resolved against the piece whose host code holds the pc (a pc in the mirror: the slot path; an
+  interrupt inside a filled slot now resolves to its own target). The guest's announcement of changed code ends the run
+  there and goes on in a new translation. A turn with a count limit runs in single steps (MDSCR_EL1.SS) and ends at the
+  first step whose count reached the limit: slow path "turn with a count limit run in steps", per turn (a departure).
+- Unsent slow-path warnings keep each reason's latest count only (a run that took one millions of times held them all).
+- `NativeCpu::positions()`: how many stops and a hash (rustc-hash's FxHasher) of each stop's count and pc in order. The
+  test program native-kernel sends it with `Ended`.
+- Tests: knob `WCONTAINERS_NATIVE_BOUND` (instructions per piece at most; 1 is look-ahead none; default the translator's
+  `BOUND`, 256). The kernel and busybox tests run every native container at look-ahead none and at that bound and assert
+  that status, turns, stops, the positions' hash, every host call, the output and the root's files agree (the count test
+  across look-aheads, native side). The exits test runs at the knob's look-ahead.
+
+Results (M5 Max; scratch native/n4r1; all on the Mac):
+- exits: 4 programs, 0 failed, both modes, at 256 (906 pieces) and at none (4742 pieces, as before).
+- kernel at 256 alone, before the comparison was added (kernel-256.log, 09:55, load 45 to 60, 57 s): every program as
+  before, blocks' KNOWN FAILURE on the WebAssembly side only; getppid's exits of the machine 1102 / 1107 / 1107.
+- busybox at 256 (busybox-256.log, 09:56 to 10:00, load 41 to 53): 56 commands as the reference, 245 s. bzip2's pipeline
+  12,618 exits of the machine and 453 ms (N3 run 10: 36,299 and 779 ms). busybox at none (busybox-1.log): 56 as the
+  reference.
+- KNOWN FAILURE, open: the kernel test's mappings program at look-ahead none ends with the inside out of heap ("memory
+  allocation of 268435456 bytes failed", kernel-1b.log and kernel-1c.log, twice alike); at 256 it passes. Not found yet. No
+  structure of the native CPU side needs one 256 MiB allocation; the kernel makes buffers as long as a range it is asked
+  to copy or zero (shared.rs, user.rs: `vec![0; length]`), and the inside's heap needs that many contiguous 2 MiB blocks
+  of guest-physical memory (heap.rs). Two suspects, neither checked: such a buffer that did fit at N3 no longer finds
+  128 free blocks in a row because code pages and the mirror's slot pages (taken one frame at a time, many more at
+  none) split the free runs; or a guest register gone wrong at look-ahead none gives the kernel a wrong length. Because the kernel test
+  now runs every program at both look-aheads, the whole kernel test fails until it is fixed.
+- carry (1,100,823 words), native_routes and encode: pass.
+- The suite before the push: suite.log (below, "Results of the suite").
+
+What N4 still needs, in order:
+1. The mappings failure at look-ahead none, above.
+2. The speed method of section 8 and its bar: a test that builds bench.c (crates/wcontainers-translator-test/programs)
+   per workload as a static Linux program, runs it in native-kernel and measures the process's cycles and instructions
+   (`proc_pid_rusage`) as alternating pairs with a plain run on the host. The plain run cannot be the same file on macOS
+   (it calls `svc #0` with Linux's numbers and is linked under 4 GiB, which macOS keeps unmapped); round 3's `hvfrun
+   native` runs bench.c's workloads built with a host hook (scratch native/n2-count). How the two builds are made alike
+   (same compiler and flags) is still to settle. Expected, not measured: calls and returns are slow now (a return is the
+   jump sequence and two indirect branches through the slot, no return-address predictor), so fib and calls will be far
+   over the bar until the call stub.
+3. The call stub (plan 3.2: `blr` from the slot, `ret t`) and its measurement against plain calls.
+4. Bounded look-ahead as the finder's stretches and full look-ahead (functions): both need T1 (the finder apart from the
+   WebAssembly plans, in the translator track's crate). Today a piece is a straight-line run, ended by a transfer, a trap,
+   the bound or its page's end.
+5. Load-time addresses and the cache with the native key and disk files; sharing loaded translations between processes
+   (then links stay within one loaded translation, as the plan says).
+6. The dynamic register uses counted and the three withheld registers chosen; 2 MiB entries and their splitting with the
+   contiguous bit measured; the Split route's page test measured.
 
 ## N3 run 10 (2026-11-19): the independent check of run 9, and how each finding was settled
 
@@ -1119,7 +1199,10 @@ checked equal. M5 Max, macOS 27.2, 2026-11-18 16:44 to 16:57, load 37 to 73. One
 
 ## How to run
 
-From the checkout, in the Nix shell:
+From the checkout, in the Nix shell (on the Mac set CARGO_INCREMENTAL=0):
+- the look-ahead the monitor translates at in the exits, kernel and busybox tests: `WCONTAINERS_NATIVE_BOUND`, the most
+  instructions in a piece (1 is look-ahead none; default 256); the kernel and busybox tests run every native container at
+  look-ahead none and at that bound and require them to agree, the count at every stop included;
 - N2's tests on the machine (each signs a copy of itself, as the floor test does):
   `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test native` (knobs `WCONTAINERS_NATIVE_CASES`
   drawn cases per form, default 16; `WCONTAINERS_NATIVE_SEED`; `WCONTAINERS_NATIVE_FORMS` a comma-separated
@@ -1297,6 +1380,8 @@ end (ceiling just under 4 GiB) and the native one (2^45), which replay across th
 
 ## Licences of what N1 added (crates.io, 2026-11-18)
 
+- N4 run 1: rustc-hash 2.1.3 (MIT OR Apache-2.0), in the inside, already in the workspace's lock file.
+
 N2 run 4: the monitor builds src/hvf_vector.c with `cc` 1.11.2 (MIT OR Apache-2.0, already in Cargo.lock),
 and its tests use `proptest` 1.12.0 (MIT OR Apache-2.0) and the workspace's wcontainers-translator-test.
 
@@ -1471,6 +1556,12 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 ## Departures from the plan
 
+- N4 run 1: plan 5.5 said a turn with a count limit is refused as `Failure` once pieces are linked, until decision 10.
+  It runs in single steps instead (exact, no check in translated code, a counted slow path only in such turns), so the
+  test crate's policy keeps working at every look-ahead; the plan says so now. A piece is cut shorter where its host code
+  would not fit one link page (not a slow path: the piece is only shorter). A slot's moves are three `movk`s that rely on
+  t holding the slot's own address (asserted at build time), not moves that build the whole address.
+
 - N3 run 9, a touch for which no frame is left kills its process with the kernel's SIGSEGV kill
   (`Exit::MemoryFaultWithoutRegisters`); Linux's out-of-memory killer sends SIGKILL. The abi's `Exit` has no other way to
   say "kill this process" and is not this track's crate (For the orchestrator).
@@ -1603,6 +1694,10 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N4 run 1: turns with a count limit now run in single steps once pieces are linked (a departure, below); please confirm
+  or rule (decision 10 is still the owner's). N4's full look-ahead and the finder's stretches need T1 in the translator
+  track's crate: may this track make it, or will that track? R1 and the first R3 still wait for a ruling.
 
 - N3 run 10: for the translator track (crates/wcontainers-arm64/src/memory.rs, `ZeroBlock`): the WebAssembly output
   reports a `dc zva` fault at the 64-byte block's start; Linux reports the address in the register (si_addr, measured in
