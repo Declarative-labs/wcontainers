@@ -134,6 +134,8 @@ struct Tail {
     call: Option<InsideCall>,
     /// Where it goes back to in the main line.
     back: Option<usize>,
+    /// The words that are branches to [`Self::back`], placed with offset 0.
+    back_from: Vec<usize>,
 }
 
 /// Points the branch at `from` at the next byte.
@@ -156,7 +158,13 @@ impl Tail {
         for f in self.fixups {
             code.fixup(f);
         }
-        for w in self.words {
+        for (k, w) in self.words.into_iter().enumerate() {
+            let w = if self.back_from.contains(&k) {
+                let back = self.back.expect("a branch back has a place to go");
+                encode::retarget(w, back as i64 - code.offset() as i64).expect("a piece is short")
+            } else {
+                w
+            };
             code.push(&w.to_le_bytes());
         }
         if let Some(call) = self.call {
@@ -217,6 +225,7 @@ impl Out<'_> {
             fixups: Vec::new(),
             call: None,
             back: None,
+            back_from: Vec::new(),
         };
         tail(&mut t);
         self.code.defer(move |code| t.place(code));
@@ -397,19 +406,20 @@ fn carry_route(out: &mut Out, route: Route, i: &I, word: u32) {
     let next = out.next();
     match route {
         Route::Copy => match i.memory_access() {
-            Some(m) => access(out, &m, None, &[], word),
+            Some(m) => access(out, &m, one_element(i), None, &[], word),
             None => out.commit(word, next),
         },
         Route::Split => access(
             out,
             &i.memory_access().expect("a load or store"),
+            one_element(i),
             None,
             &[],
             word,
         ),
         Route::Aligned => {
             let m = i.memory_access().expect("an access");
-            access(out, &m, Some(m.bytes), &[], word);
+            access(out, &m, false, Some(m.bytes), &[], word);
         }
         Route::Collision => collision(out, i, word),
         Route::Nothing => out.code.after(next),
@@ -549,10 +559,43 @@ fn page_test(bytes: u32) -> NativeReason {
     }
 }
 
+/// Whether an access of `bytes` at `address` is at the address its base has modulo `bytes`, so that a base aligned
+/// to `bytes` keeps an access of one element in one aligned run of that many bytes, which no page boundary splits.
+fn aligned_with_base(address: &Address, bytes: u32) -> bool {
+    let run = i64::from(bytes);
+    bytes.is_power_of_two()
+        && match *address {
+            Address::Offset { base, offset } | Address::PreIndex { base, offset } => {
+                base != Reg::Sp && offset.rem_euclid(run) == 0
+            }
+            Address::PostIndex { base, .. } => base != Reg::Sp,
+            Address::Indexed { base, shift, .. } => {
+                base != Reg::Sp && u32::from(shift) >= bytes.trailing_zeros()
+            }
+            Address::Literal { .. } => false,
+        }
+}
+
+/// Whether an instruction accesses one element, not a pair.
+fn one_element(i: &I) -> bool {
+    matches!(
+        i,
+        I::Load { .. } | I::Store { .. } | I::LoadVector { .. } | I::StoreVector { .. }
+    )
+}
+
 /// The one place a guest access is emitted (section 3.1): the alignment test when the form must be aligned
 /// (`align` bytes), the page test and probes when it may cross a page, then `prefix` and the copied instruction
-/// `word`, the commit point.
-fn access(out: &mut Out, m: &MemoryAccess, align: Option<u32>, prefix: &[u32], word: u32) {
+/// `word`, the commit point. An access of one element (`one_element`) at its base's alignment tests only that
+/// the base is aligned to its size, and the exact page test runs out of line when it is not.
+fn access(
+    out: &mut Out,
+    m: &MemoryAccess,
+    one_element: bool,
+    align: Option<u32>,
+    prefix: &[u32],
+    word: u32,
+) {
     let base = base_of(&m.address).expect("a literal access is rebased");
     // The stack pointer's alignment is the hardware's to check (SA0).
     if let Some(align) = align.filter(|&a| a > 1 && base != Reg::Sp) {
@@ -568,7 +611,7 @@ fn access(out: &mut Out, m: &MemoryAccess, align: Option<u32>, prefix: &[u32], w
     if align.is_none() && m.bytes > 1 && may_cross_page(m) {
         out.code.slow(page_test(m.bytes));
         let test = page_test_words(&m.address, m.bytes);
-        out.put_all(&test[..test.len() - 1]);
+        let (crossing, before) = test.split_last().expect("a test ends in its branch");
         let mut probes = Vec::new();
         // The probes go through t, so the check SA0 makes of a stack pointer base comes before them.
         if base == Reg::Sp {
@@ -594,11 +637,33 @@ fn access(out: &mut Out, m: &MemoryAccess, align: Option<u32>, prefix: &[u32], w
                     .expect("an access is short"),
             );
         }
-        let resume_at = out.code.offset() + INSTRUCTION as usize;
-        out.tail(*test.last().expect("a test ends in its branch"), |t| {
-            t.words = probes;
-            t.back = Some(resume_at);
-        });
+        if one_element && aligned_with_base(&m.address, m.bytes) {
+            out.put(
+                encode::and_immediate(SCRATCH, number(base), u64::from(m.bytes) - 1)
+                    .expect("a power of two less one is a logical immediate"),
+            );
+            let resume_at = out.code.offset() + INSTRUCTION as usize;
+            // Out of line: the exact test, whose branch skips the way back when the access crosses.
+            let skip = encode::retarget(*crossing, 2 * INSTRUCTION as i64).expect("fits");
+            out.tail(
+                encode::compare_branch(true, SCRATCH, 0).expect("fits"),
+                |t| {
+                    t.words.extend_from_slice(before);
+                    t.words.push(skip);
+                    t.back_from.push(t.words.len());
+                    t.words.push(encode::branch(false, 0).expect("fits"));
+                    t.words.extend(probes);
+                    t.back = Some(resume_at);
+                },
+            );
+        } else {
+            out.put_all(before);
+            let resume_at = out.code.offset() + INSTRUCTION as usize;
+            out.tail(*crossing, |t| {
+                t.words = probes;
+                t.back = Some(resume_at);
+            });
+        }
     }
     out.put_all(prefix);
     let next = out.next();
@@ -616,10 +681,17 @@ fn collision(out: &mut Out, i: &I, word: u32) {
     let replace =
         |w: u32, f: &str, r: Register| encode::replace(w, f, r.into()).expect("a register fits");
     match *i {
-        I::Load { .. } => access(out, &m, None, &[], replace(word, field::RT, SCRATCH)),
+        I::Load { .. } => access(out, &m, true, None, &[], replace(word, field::RT, SCRATCH)),
         I::Store { rt, .. } => {
             let save = encode::move_register(SCRATCH, number(rt));
-            access(out, &m, None, &[save], replace(word, field::RT, SCRATCH));
+            access(
+                out,
+                &m,
+                true,
+                None,
+                &[save],
+                replace(word, field::RT, SCRATCH),
+            );
         }
         // The meaning writes rt2, then rt, then the base: into one register the first word lands.
         I::LoadPair { rt, rt2, .. } => {
@@ -636,7 +708,7 @@ fn collision(out: &mut Out, i: &I, word: u32) {
                 number(rt2)
             };
             let changed = replace(replace(word, field::RT, first), field::RT2, second);
-            access(out, &m, None, &[], changed);
+            access(out, &m, false, None, &[], changed);
         }
         I::LoadVectorPair { bytes, rt, .. } => vector_pair_into_one(out, &m, bytes, rt),
         I::StorePair { rt, rt2, .. } => {
@@ -644,7 +716,7 @@ fn collision(out: &mut Out, i: &I, word: u32) {
             let save = encode::move_register(SCRATCH, number(base));
             let pick = |r: Reg| if r == base { SCRATCH } else { number(r) };
             let changed = replace(replace(word, field::RT, pick(rt)), field::RT2, pick(rt2));
-            access(out, &m, None, &[save], changed);
+            access(out, &m, false, None, &[save], changed);
         }
         _ => unreachable!("only loads and stores collide"),
     }
@@ -684,7 +756,7 @@ fn vector_pair_into_one(out: &mut Out, m: &MemoryAccess, bytes: u8, rt: u8) {
         SCRATCH
     };
     let load = encode::load_store(name, rt, from, 0, 1).expect("fits");
-    access(out, m, None, &prefix, load);
+    access(out, m, false, None, &prefix, load);
     if post.is_some() {
         let base = number(base);
         out.code.fixup(Fixup::Move {
@@ -985,7 +1057,7 @@ fn exclusive(out: &mut Out, i: &I) {
             } else {
                 encode::load_store(sized(total).0, number(rt), SCRATCH, 0, 1).expect("fits")
             };
-            access(out, &m, Some(total), &untag, load);
+            access(out, &m, false, Some(total), &untag, load);
             let remember = |address| Fixup::Remember {
                 bytes,
                 pair,
