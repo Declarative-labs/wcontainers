@@ -49,12 +49,33 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   network, one bind mount of the configuration honoured, `root.path` kept refused with why, wcon's
   `--volume` and `--publish`, and the whole kernel test crate at three look-aheads against the stand-in
   (section "J5 run 1").
+- J5 run 2 (2026-11-18, after the session restarted; the task numbers it run 1): origin/phase-1 had nothing new
+  (still 2edbc451). The renames and the unknown-property change were already built in J4a run 3 (checked:
+  no `Outside`, `BackEnd`, `Tuning` or old `Machine` is left in the owned crates, the driver or the plan but
+  for the translator runner's own `Machine` the plan's table cites). The literal check is tried in a scratch
+  merge, not merged (Departures; "For the orchestrator"). J5's bar is run from a clean build on 798f07ff, the
+  code as it stands, and the whole LTP comparison after it (section "J5 run 2").
 
 ## For the orchestrator
 
-- J5 run 1: origin/phase-1-literals exists and its status records L1 done, and the brief says to merge it once
-  it has a passing milestone; this run's task names only the merge of origin/phase-1, so it is not merged and
-  no literals baseline is made here. Say if it should be merged in the next run.
+- The literal check (J5 run 2): the brief says to merge origin/phase-1-literals into this branch and run its
+  init, but the check's own document at that branch's tip (docs/literals.md, "How a track adopts the check",
+  since 0eeb26e4) says a track does not merge phase-1-literals directly: the orchestrator merges it into main
+  and runs init there, and each track then merges main. Its reason applies here: this track merges
+  origin/phase-1 every run (the streams track's standard input comes that way), and once this branch has a
+  baseline, a merge bringing code the check has not seen gives `+` lines in the kernel's crates, which this
+  track may neither fix nor add to the baseline; and a second track's own start would fail as "started more
+  than once" when both reach main. So it is not merged. Tried instead in a scratch merge of 798f07ff with
+  origin/phase-1-literals at f561838a (scratch j5/lit, not pushed; logs j5/lit-check-before.txt,
+  lit-init.txt, lit-check-after.txt): before init the check failed with 103 `+` lines (51 in
+  wcontainers-runtime, 42 in wcontainers-wasmtime, 10 in the kernel test crate) and 87 `-` lines (main's
+  baseline of the J4a code, since changed; one is the translator test crate's); after `init` (no `proposed:` lines) `check` exits 0. The baseline
+  init wrote has 340 lines in wcontainers-runtime (spec.rs 250, mostly the kernel's defaults written again,
+  asked of the kernel track; image.rs 72), 88 in wcontainers-wasmtime, and 53 in the kernel test crate's
+  driver.rs. Merge phase-1-literals into main (or phase-1) and init there, and this track adopts it by
+  merging that, as the document says; or say to merge it directly regardless.
+- J5 run 2: the whole LTP comparison is run by this track after the bar (scratch `j5/after.sh`, which calls
+  `j5/ltp.sh whole`), since the harness is on origin/phase-1.
 - J5 run 1: the kernel track's LTP harness is on origin/phase-1 (crates/wcontainers-kernel-test/src/bin/ltp.rs),
   so its comparison is part of J5's bar. The one command for the long run is scratch `j5/ltp.sh NAME`
   (section "How to run").
@@ -145,7 +166,17 @@ leave a default mount out), the domain name, and the per-process values (`oomSco
 `scheduler`, `execCPUAffinity`, `personality`, `timeOffsets`); and the address-space size and the memory
 size the guest is told (plan section 8), which `Machine` holds once the kernel takes them.
 
-## J5 run 1 (2026-11-18; this Mac, Apple M5 Max, 18 cores, 128 GiB; other tracks running)
+## J5 run 2 (2026-11-18; this Mac, Apple M5 Max, 18 cores, 128 GiB; other tracks running)
+
+- Run 1's last runs of the bar were spoiled: a stand-in run overlapped one that was being stopped, and a run at
+  full lost Docker partway (its daemon restarted: "failed to connect to the docker API"); the bar it had
+  started at 32aa568c was 11 minutes in when this run began, and was stopped, so the bar runs on the code as
+  it stands. Those logs are in scratch j5/run1-stale. suite.sh now writes Docker's server version in each
+  log's header.
+- J5's bar from a clean build (a new scratch worktree j5/tree at 798f07ff, its own empty target and
+  translation cache): scratch `j5/final.sh`, then the whole LTP comparison by `j5/after.sh`. Results below
+  when they end.
+- No code changed in this run, so that the bar is on the code that is pushed.
 
 Built:
 - The local system's file backend (crates/wcontainers-runtime/src/files.rs, 1,157 lines with its unit test): a
@@ -186,7 +217,7 @@ runtime at full gave the same ten verdicts ("10 verdicts match, 0 differ"; pass 
 kernel track's own results file has them). The runtime took 1.3 to 12.9 s a test (translation), the
 stand-in 0.2 to 0.9 s. The whole suite is the orchestrator's long run (section "How to run").
 
-A first whole-crate run at full on 77e50ddc (before this run's changes; j5/d-full.log, 4,036.5 s, load 98 to 54)
+A first whole-crate run at full on 77e50ddc (before this run's changes; j5/run1-stale/d-full.log, 4,036.5 s, load 98 to 54)
 found the four tests listed under Departures as waiting (the address ceiling); every other verdict equal to
 J3's stand-in run, but for the three known ones (align's misaligned stack pointer and sharedviews' code
 written through one view pass with the back end where the stand-in is the known failure; counterclock's
@@ -1625,6 +1656,11 @@ array of slots in microseconds.
   tests' server) has its passthrough file system on Linux only, and on macOS it and fuser speak macFUSE's
   messages, not Linux's, which the kernel sends. It is written on fuse-abi's Linux types and rustix.
 - `root.path` stays refused (J5's task allowed either), for the reason in plan section 14.
+- The literal check is not merged (J5 run 2), though the brief says to merge origin/phase-1-literals: the
+  check's own adoption steps, which the brief says to follow, adopt it through main, and merging it here
+  would break the check at this track's next merge of origin/phase-1 (under "For the orchestrator"). Tried
+  in a scratch merge instead; it passes there after `init`. No literal of the fix list was fixed in this run,
+  so that the bar's whole-suite runs (about five hours) are on the code as pushed.
 - `System` gained `serve_directory` (with a default that answers `Unsupported`, so the kernel test driver did
   not change) and `LocalSystem` gained `publish`: the surface had no way to name a host directory or a
   published port. Names suggested, the owner's (plan section 20).
