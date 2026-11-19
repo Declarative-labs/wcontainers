@@ -11,9 +11,13 @@ use windows::Win32::Graphics::Direct3D10::{
     ID3D10Device, ID3D10Device1, ID3D10Device1_Vtbl, ID3D10Multithread, ID3D10Multithread_Vtbl,
 };
 use windows::Win32::Graphics::Direct3D11::*;
-use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT;
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_FORMAT, DXGI_FORMAT_A4B4G4R4_UNORM, DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE,
+    DXGI_FORMAT_V408,
+};
 use windows::Win32::Graphics::Dxgi::{
-    DXGI_OFFER_RESOURCE_PRIORITY, IDXGIAdapter, IDXGIAdapter1, IDXGIDevice3, IDXGIDevice3_Vtbl,
+    DXGI_OFFER_RESOURCE_PRIORITY, DXGI_OFFER_RESOURCE_PRIORITY_HIGH,
+    DXGI_OFFER_RESOURCE_PRIORITY_LOW, IDXGIAdapter, IDXGIAdapter1, IDXGIDevice3, IDXGIDevice3_Vtbl,
     IDXGIResource,
 };
 use windows::core::{
@@ -27,6 +31,10 @@ use wcontainers_gpu::SourceStage;
 
 use super::counted::{Counted, Held};
 use super::*;
+
+/// `IDXGIDevice1::SetMaximumFrameLatency`'s default and its largest value.
+const DEFAULT_FRAME_LATENCY: u32 = 3;
+const MAX_FRAME_LATENCY: u32 = 16;
 
 #[implement(ID3D11Device3, IDXGIDevice3, ID3D10Device1, ID3D10Multithread)]
 pub struct Device {
@@ -85,9 +93,9 @@ where
 
 /// A description's fields as words, for comparing descriptions without their padding.
 fn words<T: Copy>(d: &T) -> Vec<u32> {
-    assert!(size_of::<T>().is_multiple_of(4));
+    assert!(size_of::<T>().is_multiple_of(size_of::<u32>()));
     let p = (d as *const T).cast::<u32>();
-    (0..size_of::<T>() / 4)
+    (0..size_of::<T>() / size_of::<u32>())
         .map(|i| unsafe { p.add(i).read_unaligned() })
         .collect()
 }
@@ -149,7 +157,7 @@ pub fn create_device(
         adapter: adapter.into(),
         flags,
         exception_mode: Cell::new(0),
-        frame_latency: Cell::new(3),
+        frame_latency: Cell::new(DEFAULT_FRAME_LATENCY),
         text_filter: Cell::new((0, 0)),
         offers_d3d10: Cell::new(false),
         states: States::default(),
@@ -811,7 +819,7 @@ impl Device_Impl {
         }
         // 10_x takes shader model 4 compute shaders where raw and structured buffers come with
         // them (`D3D10_X_HARDWARE_OPTIONS`); the front checks the model against the level.
-        if self.front.borrow().feature_level() < 0xa000 || !self.compute() {
+        if self.front.borrow().feature_level() < desc::level::L10_0 || !self.compute() {
             return Err(missing(
                 "compute shaders without the back end's compute programs",
             ));
@@ -840,7 +848,7 @@ impl Device_Impl {
         }
         let code = unsafe { std::slice::from_raw_parts(bytecode.cast::<u8>(), length) };
         let level = self.front.borrow().feature_level();
-        if level < 0xa000
+        if level < desc::level::L10_0
             || wcontainers_direct3d_11::shader::stage(code).ok() != Some(stage)
             || wcontainers_direct3d_11::shader::check_model(code, level).is_err()
         {
@@ -921,7 +929,7 @@ impl Device_Impl {
                 missing("class linkage")
             });
         }
-        if self.front.borrow().feature_level() < 0xa000 {
+        if self.front.borrow().feature_level() < desc::level::L10_0 {
             return Err(E_INVALIDARG.into());
         }
         let code = unsafe { std::slice::from_raw_parts(bytecode.cast::<u8>(), length) };
@@ -976,7 +984,7 @@ impl Device_Impl {
                 .unserved_shader(bytecode, length, stage, what)
                 .expect_err("refused"));
         }
-        if bytecode.is_null() || self.front.borrow().feature_level() < 0xb000 {
+        if bytecode.is_null() || self.front.borrow().feature_level() < desc::level::L11_0 {
             return Err(E_INVALIDARG.into());
         }
         let code = unsafe { std::slice::from_raw_parts(bytecode.cast::<u8>(), length) };
@@ -1015,7 +1023,11 @@ impl Device_Impl {
         out: OutRef<ID3D11BlendState>,
     ) -> Result<()> {
         let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
-        self.blend_state(d, [(false.into(), D3D11_LOGIC_OP_NOOP); 8], out)
+        self.blend_state(
+            d,
+            [(false.into(), D3D11_LOGIC_OP_NOOP); convert::TARGETS],
+            out,
+        )
     }
 
     pub(super) fn create_blend_state1(
@@ -1212,11 +1224,13 @@ impl Device_Impl {
         samples: u32,
     ) -> Result<u32> {
         // Values that name no DXGI format.
-        let f = format.0 as u32;
-        if !matches!(f, 0..=132 | 189..=191) {
+        const LAST_VIDEO: i32 = DXGI_FORMAT_V408.0;
+        const FIRST_FEEDBACK: i32 = DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE.0;
+        const LAST: i32 = DXGI_FORMAT_A4B4G4R4_UNORM.0;
+        if !matches!(format.0, 0..=LAST_VIDEO | FIRST_FEEDBACK..=LAST) {
             return Err(E_INVALIDARG.into());
         }
-        if samples == 0 || samples > 32 {
+        if samples == 0 || samples > D3D11_MAX_MULTISAMPLE_SAMPLE_COUNT {
             return Err(windows::Win32::Foundation::E_FAIL.into());
         }
         Ok(self
@@ -1415,7 +1429,7 @@ impl Device_Impl {
                 let top = self.front.borrow().feature_level();
                 l.iter()
                     .copied()
-                    .find(|l| (0x9100..=top).contains(&(l.0 as u32)))
+                    .find(|l| (desc::level::L9_1..=top).contains(&(l.0 as u32)))
             });
         let Some(level) = level else {
             if let Some(c) = chosen {
@@ -1461,7 +1475,7 @@ impl Device_Impl {
     /// DXGI's frame latency, kept and reported; presents queue at most wgpu's two frames whatever
     /// it is.
     pub(super) fn set_maximum_frame_latency(&self, n: u32) -> Result<()> {
-        if n > 16 {
+        if n > MAX_FRAME_LATENCY {
             return Err(windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.into());
         }
         self.frame_latency.set(n);
@@ -1492,7 +1506,10 @@ impl Device_Impl {
         resources: *const Option<IDXGIResource>,
         priority: DXGI_OFFER_RESOURCE_PRIORITY,
     ) -> Result<()> {
-        if !(1..=3).contains(&priority.0) || !all_given(count, resources) {
+        if !(DXGI_OFFER_RESOURCE_PRIORITY_LOW.0..=DXGI_OFFER_RESOURCE_PRIORITY_HIGH.0)
+            .contains(&priority.0)
+            || !all_given(count, resources)
+        {
             return Err(E_INVALIDARG.into());
         }
         Ok(())

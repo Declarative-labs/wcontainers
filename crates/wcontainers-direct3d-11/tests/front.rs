@@ -2340,6 +2340,83 @@ fn a_constant_window_shorter_than_its_block_is_read_through_a_copy_zero_past_it(
 }
 
 #[test]
+fn constant_buffers_past_the_back_ends_uniform_buffers_are_read_through_texture_copies() {
+    let mut dev = device();
+    let limit = dev.backend.caps().limits.uniform_buffers_per_stage as usize;
+    let target = dev
+        .create_texture(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
+        .unwrap();
+    let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
+    begin(&mut dev, &rtv, None, 16.0);
+    let v = dev
+        .create_shader(&corpus("common.vs_full"), SourceStage::Vertex)
+        .unwrap();
+    // Reads fourteen constant buffer slots.
+    let p = dev
+        .create_shader(&corpus("constants.ps_slots"), SourceStage::Pixel)
+        .unwrap();
+    dev.vs_set_shader(Some(v));
+    dev.ps_set_shader(Some(p));
+    dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+    // Of one to fourteen constants.
+    let constants: [u32; 14] = std::array::from_fn(|i| i as u32 + 1);
+    assert!(constants.len() > limit);
+    let buffers: Vec<_> = constants
+        .iter()
+        .map(|&n| {
+            let desc = BufferDesc {
+                byte_width: n * 16,
+                usage: usage::DEFAULT,
+                bind_flags: bind::CONSTANT_BUFFER,
+                ..Default::default()
+            };
+            let bytes = vec![1; desc.byte_width as usize];
+            Some(dev.create_buffer(&desc, Some(&bytes)).unwrap())
+        })
+        .collect();
+    dev.set_constant_buffers(PIXEL, 0, &buffers).unwrap();
+    let copies_of = |log: &[String], b: &Option<Rc<Buffer<Recorder>>>| {
+        let id = b.as_ref().unwrap().handle();
+        log.iter()
+            .filter(|l| l.starts_with(&format!("copy_buffer_to_texture {id} ")))
+            .count()
+    };
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    // The last slots are copied once while unwritten; the first stay uniform buffers.
+    assert_eq!(
+        copies_of(&log, &buffers[constants.len() - 1]),
+        1,
+        "{log:#?}"
+    );
+    assert_eq!(copies_of(&log, &buffers[0]), 0, "{log:#?}");
+    let set = &log[find(&log, "create_binding_set")];
+    let uniforms = set.matches("=uniform ").count();
+    assert!(uniforms <= limit, "{set}");
+    assert_eq!(
+        set.matches("=texture ").count(),
+        constants.len() - uniforms,
+        "{set}"
+    );
+    // Written, the copy is made again before the next draw.
+    let from = dev.backend.log.len();
+    let last = buffers[constants.len() - 1].clone().unwrap();
+    let bytes = vec![2; last.desc.byte_width as usize];
+    dev.update_subresource(&Resource::Buffer(last), 0, None, &bytes, 0, 0)
+        .unwrap();
+    dev.draw(3, 0);
+    let log = log_from(&dev, from);
+    assert_eq!(
+        copies_of(&log, &buffers[constants.len() - 1]),
+        1,
+        "{log:#?}"
+    );
+}
+
+#[test]
 fn constants_rewritten_between_draws_make_no_binding_set_and_split_no_pass() {
     let mut dev = device();
     let elements = [

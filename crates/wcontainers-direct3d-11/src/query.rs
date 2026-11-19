@@ -41,11 +41,12 @@ pub mod kind {
 
 /// What `GetData` gives, as the words of its bytes: the largest answer is the pipeline
 /// statistics' eleven.
-pub type Answer = [u64; 11];
+pub type Answer = [u64; ANSWER_WORDS];
+const ANSWER_WORDS: usize = statistic::CS_INVOCATIONS + 1;
 
 /// The words of a short answer.
 fn short(words: &[u64]) -> Answer {
-    let mut a = [0; 11];
+    let mut a = [0; ANSWER_WORDS];
     a[..words.len()].copy_from_slice(words);
     a
 }
@@ -66,15 +67,22 @@ const SET_SLOTS: u32 = 4096;
 
 /// The bytes `GetData` writes for a query of `kind`, or none for a kind Direct3D 11 does not have.
 pub fn data_size(kind: u32) -> Option<u32> {
-    Some(match kind {
-        kind::EVENT | kind::OCCLUSION_PREDICATE => 4,
-        kind::OCCLUSION | kind::TIMESTAMP => 8,
-        kind::TIMESTAMP_DISJOINT => 16,
-        kind::PIPELINE_STATISTICS => 88,
-        kind::SO_STATISTICS..=kind::SO_STATISTICS_STREAM3 if (kind - 6).is_multiple_of(2) => 16,
-        kind::SO_OVERFLOW_PREDICATE..=kind::SO_OVERFLOW_PREDICATE_STREAM3 => 4,
+    const BOOL_BYTES: usize = size_of::<i32>();
+    const WORD_BYTES: usize = size_of::<u64>();
+    let bytes = match kind {
+        kind::EVENT | kind::OCCLUSION_PREDICATE => BOOL_BYTES,
+        kind::OCCLUSION | kind::TIMESTAMP => WORD_BYTES,
+        kind::TIMESTAMP_DISJOINT => 2 * WORD_BYTES,
+        kind::PIPELINE_STATISTICS => size_of::<Answer>(),
+        kind::SO_STATISTICS..=kind::SO_STATISTICS_STREAM3
+            if (kind - kind::SO_STATISTICS).is_multiple_of(2) =>
+        {
+            2 * WORD_BYTES
+        }
+        kind::SO_OVERFLOW_PREDICATE..=kind::SO_OVERFLOW_PREDICATE_STREAM3 => BOOL_BYTES,
         _ => return None,
-    })
+    };
+    Some(bytes as u32)
 }
 
 /// Whether `kind` is a stream output statistics query or overflow predicate.
@@ -265,7 +273,7 @@ impl<B: Backend> Device<B> {
                 if !self.queries.statistics.iter().any(|r| Rc::ptr_eq(r, q)) {
                     self.queries.statistics.push(q.clone());
                 }
-                *q.state.borrow_mut() = State::Statistics([0; 11]);
+                *q.state.borrow_mut() = State::Statistics([0; ANSWER_WORDS]);
                 let r = self
                     .pixel_counter
                     .begin(&mut self.backend, &mut self.passes);
@@ -309,7 +317,7 @@ impl<B: Backend> Device<B> {
             self.queries.statistics.retain(|r| !Rc::ptr_eq(r, q));
             let counts = match *q.state.borrow() {
                 State::Statistics(c) => c,
-                _ => [0; 11],
+                _ => [0; ANSWER_WORDS],
             };
             *q.state.borrow_mut() = State::Done(counts);
             if was && !self.queries.statistics.is_empty() {
@@ -425,7 +433,7 @@ impl<B: Backend> Device<B> {
         }
         let mut any = 0;
         for r in reads {
-            let mut bytes = [0u8; 8];
+            let mut bytes = [0u8; size_of::<u64>()];
             self.backend.finish_read(r, &mut bytes);
             any |= u64::from(u64::from_le_bytes(bytes) != 0);
         }
