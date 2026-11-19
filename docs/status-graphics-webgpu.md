@@ -239,6 +239,23 @@ Run 24 = G2c run 6, 2026-11-18 to 19:
   start, 196 now. The check's list of changes that could add lines (12): run 23's ten, and
   81489a2f the start and 5657abb6 the init after the baseline arrived by a merge (the Direct3D 11
   track's adoption, merged in).
+- Full run at 3b3aa3bb (desktop, RTX 3080, NVIDIA 621.01, shared through the GPU queue; scratch
+  run24/full-1.log): lint of both builds clean, the literal check exits 0, then both APIs: 265
+  passed, 5 ignored, 0 failed in all (Vulkan and Direct3D 12 together; the two new unit tests on
+  each, the ignored tests as in run 21), the shared suite 44 of 44 on each API. web/check at
+  0f06945d (the status commit after 3b3aa3bb, same code; scratch run24/webcheck.log,
+  pictures in run24/web) passed whole: the twelve pictures and the viewports equal Direct3D 11's
+  at tolerance 0, the twists differ, vertex formats through shadows (seed 188, 64 vertices each)
+  as they mean in Chrome, the shared suite 44 of 44 in Chrome 157.0.8103.78 on the RTX 3080
+  (D3D12, discrete, not a fallback), subgroups, the primitive index and fine derivatives declared
+  and drawn; Chrome's timestamps without developer features were multiples of 65,536 ns again
+  (131,072 in run 23), stretches 9.830 and 19.595 ms. Every page got an adapter at its first
+  launch, so the relaunch is still not seen working.
+- Frame time: the breakdowns stand (Measurements, runs 22 and 23); nothing in this run changes a
+  frame's path but the vertex conversion's parameters, which are the same words as before.
+- Removed at the end: the desktop's C:\wc\target\phase-2-graphics-webgpu (8.99 GB) and the
+  checkout's own target on the Mac (510 MB of `cargo check`). Scratch holds logs and pictures
+  (401 MB). Nothing new installed on the desktop.
 
 Run 23 = G2c run 5, 2026-11-18:
 - Merged origin/phase-2-graphics-shaders, -direct3d-11, -direct3d-12 and -webgl (the moves left
