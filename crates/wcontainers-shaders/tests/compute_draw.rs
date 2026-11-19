@@ -1,5 +1,5 @@
 //! Compute shaders with atomic operations, append, consume and counter views, storage textures
-//! (`compute.hlsl`) and typed buffers (`texels.hlsl`) on the WebGPU back end, against real Direct3D 11
+//! (`compute.hlsl`), raw and structured shader resource views (`readonly.hlsl`) and typed buffers (`texels.hlsl`) on the WebGPU back end, against real Direct3D 11
 //! running the same shaders on the same GPU. The values consumed and the texels read are seeded: `WCONTAINERS_COMPUTE_SEED` (default 1) and `WCONTAINERS_COMPUTE_CASES` seeds
 //! from it (default 4).
 
@@ -21,9 +21,10 @@ use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::core::Interface;
 
-/// One storage view: its buffer's bytes before the dispatch, the view's first element (4 bytes)
-/// in it, whether it is a raw buffer, the count its counter starts at (none: no counter), and
-/// whether it is an append or consume view.
+/// One buffer view: its buffer's bytes before the dispatch, the view's first element (4 bytes)
+/// in it, whether it is a raw buffer, the count its counter starts at (none: no counter), whether
+/// it is an append or consume view, and whether it is a shader resource view (read only) rather
+/// than an unordered access one.
 #[derive(Clone)]
 struct View {
     bytes: Vec<u8>,
@@ -31,6 +32,20 @@ struct View {
     raw: bool,
     counter: Option<u32>,
     append: bool,
+    read: bool,
+}
+
+/// The view a binding of the program stands for: the one of its kind (shader resource views at
+/// texture slots, unordered access views and their counters at the others) at its register.
+fn view_of(case: &Case, r: &wcontainers_gpu::ReflectedBinding) -> usize {
+    let read = r.kind == SlotKind::Texture;
+    case.views
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| v.read == read)
+        .nth(r.register as usize)
+        .map(|(i, _)| i)
+        .unwrap()
 }
 
 /// One case: a shader, its views by slot and its workgroups.
@@ -65,6 +80,8 @@ fn cases(seed: u64) -> Vec<Case> {
     raw[650] = i32::MIN as u32;
     let consumed: Vec<u32> = (0..256).map(|_| next() >> 4).collect();
     let returned: Vec<u32> = (0..32).map(|_| next() >> 4).collect();
+    let structured: Vec<u32> = (0..512).map(|_| next()).collect();
+    let raw_read: Vec<u32> = (0..512).map(|_| next()).collect();
     vec![
         Case {
             shader: "cs_atomics",
@@ -74,6 +91,7 @@ fn cases(seed: u64) -> Vec<Case> {
                     raw: true,
                     counter: None,
                     append: false,
+                    read: false,
                     first: 0,
                 },
                 View {
@@ -81,6 +99,7 @@ fn cases(seed: u64) -> Vec<Case> {
                     raw: false,
                     counter: None,
                     append: false,
+                    read: false,
                     first: 0,
                 },
                 View {
@@ -88,6 +107,7 @@ fn cases(seed: u64) -> Vec<Case> {
                     raw: false,
                     counter: Some(0),
                     append: false,
+                    read: false,
                     first: 0,
                 },
                 View {
@@ -95,6 +115,7 @@ fn cases(seed: u64) -> Vec<Case> {
                     raw: false,
                     counter: Some(0),
                     append: true,
+                    read: false,
                     first: 0,
                 },
                 View {
@@ -102,6 +123,7 @@ fn cases(seed: u64) -> Vec<Case> {
                     raw: false,
                     counter: Some(256),
                     append: true,
+                    read: false,
                     first: 0,
                 },
             ],
@@ -114,6 +136,7 @@ fn cases(seed: u64) -> Vec<Case> {
                 raw: true,
                 counter: None,
                 append: false,
+                read: false,
                 first: 0,
             }],
             groups: 2,
@@ -125,9 +148,40 @@ fn cases(seed: u64) -> Vec<Case> {
                 raw: false,
                 counter: Some(32),
                 append: false,
+                read: false,
                 first: 0,
             }],
             groups: 1,
+        },
+        Case {
+            shader: "cs_readonly",
+            views: vec![
+                View {
+                    bytes: vec![0; 2048],
+                    raw: false,
+                    counter: None,
+                    append: false,
+                    read: false,
+                    first: 0,
+                },
+                View {
+                    bytes: words(&structured),
+                    raw: false,
+                    counter: None,
+                    append: false,
+                    read: true,
+                    first: 0,
+                },
+                View {
+                    bytes: words(&raw_read),
+                    raw: true,
+                    counter: None,
+                    append: false,
+                    read: true,
+                    first: 0,
+                },
+            ],
+            groups: 2,
         },
     ]
 }
@@ -161,13 +215,18 @@ fn direct3d(gpu: &Gpu, case: &Case) -> Ran {
     let shader = gpu.cs(&bytecode(&format!("{}.dxbc", case.shader))).unwrap();
     let mut buffers = Vec::new();
     let mut views = Vec::new();
+    let mut read_views = Vec::new();
     for v in &case.views {
         let buffer = gpu
             .buffer(
                 &D3D11_BUFFER_DESC {
                     ByteWidth: v.bytes.len() as u32,
                     Usage: D3D11_USAGE_DEFAULT,
-                    BindFlags: D3D11_BIND_UNORDERED_ACCESS.0 as u32,
+                    BindFlags: if v.read {
+                        D3D11_BIND_SHADER_RESOURCE.0 as u32
+                    } else {
+                        D3D11_BIND_UNORDERED_ACCESS.0 as u32
+                    },
                     MiscFlags: if v.raw {
                         D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS.0 as u32
                     } else {
@@ -179,6 +238,31 @@ fn direct3d(gpu: &Gpu, case: &Case) -> Ran {
                 Some(&v.bytes),
             )
             .unwrap();
+        if v.read {
+            let desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
+                Format: if v.raw {
+                    DXGI_FORMAT_R32_TYPELESS
+                } else {
+                    DXGI_FORMAT_UNKNOWN
+                },
+                ViewDimension: D3D_SRV_DIMENSION_BUFFEREX,
+                Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
+                    BufferEx: D3D11_BUFFEREX_SRV {
+                        FirstElement: v.first,
+                        NumElements: v.bytes.len() as u32 / 4 - v.first,
+                        Flags: if v.raw {
+                            D3D11_BUFFEREX_SRV_FLAG_RAW.0 as u32
+                        } else {
+                            0
+                        },
+                    },
+                },
+            };
+            read_views.push(Some(gpu.srv(&buffer.clone().into(), Some(&desc)).unwrap()));
+            views.push(None);
+            buffers.push(buffer);
+            continue;
+        }
         let flags = if v.raw {
             D3D11_BUFFER_UAV_FLAG_RAW.0 as u32
         } else if v.append {
@@ -206,7 +290,13 @@ fn direct3d(gpu: &Gpu, case: &Case) -> Ran {
         views.push(Some(gpu.uav(&buffer.clone().into(), Some(&desc)).unwrap()));
         buffers.push(buffer);
     }
-    let initial: Vec<u32> = case.views.iter().map(|v| v.counter.unwrap_or(!0)).collect();
+    let initial: Vec<u32> = case
+        .views
+        .iter()
+        .filter(|v| !v.read)
+        .map(|v| v.counter.unwrap_or(!0))
+        .collect();
+    let bound: Vec<_> = views.iter().filter(|v| v.is_some()).cloned().collect();
     let counts = gpu
         .buffer(
             &D3D11_BUFFER_DESC {
@@ -220,10 +310,11 @@ fn direct3d(gpu: &Gpu, case: &Case) -> Ran {
     unsafe {
         let c = &gpu.context;
         c.CSSetShader(&shader, None);
+        c.CSSetShaderResources(0, Some(&read_views));
         c.CSSetUnorderedAccessViews(
             0,
-            views.len() as u32,
-            Some(views.as_ptr()),
+            bound.len() as u32,
+            Some(bound.as_ptr()),
             Some(initial.as_ptr()),
         );
         c.Dispatch(case.groups, 1, 1);
@@ -232,7 +323,9 @@ fn direct3d(gpu: &Gpu, case: &Case) -> Ran {
                 c.CopyStructureCount(&counts, 4 * i as u32, view.as_ref().unwrap());
             }
         }
-        let none: Vec<Option<ID3D11UnorderedAccessView>> = vec![None; views.len()];
+        let none: Vec<Option<ID3D11UnorderedAccessView>> = vec![None; bound.len()];
+        let unread: Vec<Option<ID3D11ShaderResourceView>> = vec![None; read_views.len()];
+        c.CSSetShaderResources(0, Some(&unread));
         c.CSSetUnorderedAccessViews(0, none.len() as u32, Some(none.as_ptr()), None);
     }
     let counts = gpu.read_buffer(&counts).unwrap();
@@ -283,8 +376,8 @@ fn ours<B: Backend>(b: &mut B, case: &Case, dxil: bool) -> Result<Ran, ConvertEr
     // below its start; the rest goes into the helper block.
     let alignment = b.caps().limits.min_storage_offset_alignment as u64;
     let start = |r: &wcontainers_gpu::ReflectedBinding| {
-        let first = 4 * case.views[r.register as usize].first as u64;
-        if r.kind != SlotKind::Storage || r.stride == 0 {
+        let first = 4 * case.views[view_of(case, r)].first as u64;
+        if r.stride == 0 {
             return (first, 0);
         }
         let step = lcm(alignment, r.stride as u64);
@@ -320,9 +413,9 @@ fn ours<B: Backend>(b: &mut B, case: &Case, dxil: bool) -> Result<Ran, ConvertEr
         .bindings
         .iter()
         .map(|r| {
-            let slot = r.register as usize;
+            let slot = view_of(case, r);
             let range = match r.kind {
-                SlotKind::Storage => {
+                SlotKind::Storage | SlotKind::Texture => {
                     let (base, _) = start(r);
                     BufferRange {
                         buffer: &buffers[slot],
@@ -342,7 +435,7 @@ fn ours<B: Backend>(b: &mut B, case: &Case, dxil: bool) -> Result<Ran, ConvertEr
                 stages: StageSet::COMPUTE,
                 resource: BindingResource::StorageBuffer {
                     range,
-                    writable: true,
+                    writable: r.kind != SlotKind::Texture,
                 },
             }
         })

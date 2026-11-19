@@ -1,6 +1,7 @@
 cs_atomics.dxil	ok-wgsl glsl-write
 cs_decrement.dxil	ok-wgsl glsl-write
 cs_images.dxil	unsupported StorageFormatKind
+cs_readonly.dxil	ok-wgsl glsl-write
 cs_shared.dxil	ok-wgsl glsl-write
 cs_texels.dxil	unsupported TypedBufferFormatKind
 cs_through.dxil	unsupported StorageFormatKind
@@ -53,6 +54,7 @@ ps_special.dxil	ok
 ps_table.dxil	ok
 ps_texels.dxil	unsupported TypedBufferFormatKind
 ps_textured.dxil	ok
+ps_two.dxil	ok
 ps_twospaces.dxil	ok
 ps_wave.dxil	ok-wgsl glsl-write
 vs_carry.dxil	ok

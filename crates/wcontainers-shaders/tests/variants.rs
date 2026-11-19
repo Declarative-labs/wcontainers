@@ -1137,6 +1137,51 @@ fn atomics_of_the_other_signedness_are_exchange_loops() {
     }
 }
 
+/// Raw and structured shader resource views are storage buffers at texture slots: by both routes
+/// they give their element's size, and reading views from an offset gives each of them, and the
+/// storage view, a helper value.
+#[test]
+fn shader_resource_buffers_give_their_stride_and_offsets() {
+    let code = own_pair("cs_readonly");
+    for c in both(&code, &VariantKey::default()) {
+        let read: Vec<_> = c
+            .reflection
+            .bindings
+            .iter()
+            .filter(|b| b.kind == SlotKind::Texture)
+            .collect();
+        assert_eq!(read.len(), 2, "{:?}", c.reflection.bindings);
+        let word = core::mem::size_of::<u32>() as u32;
+        assert!(read.iter().all(|b| b.stride == word), "{read:?}");
+    }
+    let key = VariantKey {
+        flags: VariantFlags::STORAGE_OFFSET,
+        ..Default::default()
+    };
+    for c in both(&code, &key) {
+        let mut offsets: Vec<_> = c
+            .reflection
+            .helpers
+            .iter()
+            .filter_map(|h| match h.value {
+                HelperValue::StorageOffset { set, binding } => Some((set, binding)),
+                _ => None,
+            })
+            .collect();
+        offsets.sort();
+        let mut moved: Vec<_> = c
+            .reflection
+            .bindings
+            .iter()
+            .filter(|b| b.stride != 0)
+            .map(|b| (b.set, b.binding))
+            .collect();
+        moved.sort();
+        assert_eq!(offsets.len(), 3, "{:?}", c.reflection.helpers);
+        assert_eq!(offsets, moved, "{:?}", c.reflection.bindings);
+    }
+}
+
 /// Every storage view (not the counters) gives its element's size, by both routes; reading views from
 /// an offset (`STORAGE_OFFSET`) gives each of them a helper value and a valid module.
 #[test]
