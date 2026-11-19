@@ -1608,7 +1608,6 @@ code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::update_set	"an
 code	crates/wcontainers-direct3d-11/src/context.rs	str	Device<B>::write_helpers	"minimum level-of-detail clamps on textures both draw stages sample"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	uint_element	"a clear of a typed buffer view of a packed or BGR format"
 code	crates/wcontainers-direct3d-11/src/context.rs	str	uint_element	"a clear of a typed buffer view of this format"
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::auto_count	4
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::run_staged	3
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::run_staged	3
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::run_staged	3
@@ -1834,7 +1833,6 @@ code	crates/wcontainers-direct3d-11/src/device.rs	str	check_buffer	"constant buf
 code	crates/wcontainers-direct3d-11/src/device.rs	str	gpu_error	"wcontainers direct3d 11: not implemented: the back end lacks {f:?}"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	gpu_sampler	"anisotropy above 16"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	gpu_sampler	"minimum and maximum filtering"
-code	crates/wcontainers-direct3d-11/src/error.rs	str	not_implemented	"wcontainers direct3d 11: not implemented: {what}"
 code	crates/wcontainers-direct3d-11/src/format.rs	int	unserved	189
 code	crates/wcontainers-direct3d-11/src/format.rs	int	unserved	191
 code	crates/wcontainers-direct3d-11/src/format.rs	int	vertex_alignment	4
