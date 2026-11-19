@@ -4,6 +4,9 @@
 
 use alloc::vec::Vec;
 
+/// The reason [`SlowPath::StorageOffsetInShader`] shows.
+const STORAGE_OFFSET_IN_SHADER: &str = "storage view's offset added in the shader";
+
 /// Why something took the slow way. A variant whose description starts "Refused" names a valid request
 /// that failed because no exact route exists; it is counted and warned the same way. Serialised as its
 /// number (the shaders crate's cache), so a new reason goes at the end and none moves.
@@ -521,7 +524,7 @@ impl SlowPath {
             SlowPath::IndirectFetchPastEnd => {
                 "indirect draw skipped whole if it fetches past a vertex buffer's end"
             }
-            SlowPath::StorageOffsetInShader => "storage view's offset added in the shader",
+            SlowPath::StorageOffsetInShader => STORAGE_OFFSET_IN_SHADER,
         }
     }
 }
