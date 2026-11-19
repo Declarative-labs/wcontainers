@@ -13326,37 +13326,6 @@ code	crates/wcontainers-shaders/build.rs	str	main	"wcs_assertion"
 code	crates/wcontainers-shaders/build.rs	str	without_comments	"*/"
 code	crates/wcontainers-shaders/build.rs	str	without_comments	"/*"
 code	crates/wcontainers-shaders/build.rs	str	without_comments	"//"
-code	crates/wcontainers-shaders/src/builtin.rs	int	clear_groups	3
-code	crates/wcontainers-shaders/src/builtin.rs	int	clear_groups	3
-code	crates/wcontainers-shaders/src/builtin.rs	int	clear_groups	3
-code	crates/wcontainers-shaders/src/builtin.rs	int	clear_params	3
-code	crates/wcontainers-shaders/src/builtin.rs	int	clear_params	3
-code	crates/wcontainers-shaders/src/builtin.rs	int	clear_params	4
-code	crates/wcontainers-shaders/src/builtin.rs	int	clear_params	4
-code	crates/wcontainers-shaders/src/builtin.rs	int	clear_params	48
-code	crates/wcontainers-shaders/src/builtin.rs	int	clear_params	48
-code	crates/wcontainers-shaders/src/builtin.rs	int	small_float	0x1f
-code	crates/wcontainers-shaders/src/builtin.rs	int	small_float	0x7f80_0000
-code	crates/wcontainers-shaders/src/builtin.rs	int	small_float	0x8000
-code	crates/wcontainers-shaders/src/builtin.rs	int	small_float	10
-code	crates/wcontainers-shaders/src/builtin.rs	int	small_float	112
-code	crates/wcontainers-shaders/src/builtin.rs	int	small_float	14
-code	crates/wcontainers-shaders/src/builtin.rs	int	small_float	16
-code	crates/wcontainers-shaders/src/builtin.rs	int	small_float	16
-code	crates/wcontainers-shaders/src/builtin.rs	int	small_float	23
-code	crates/wcontainers-shaders/src/builtin.rs	int	small_float	23
-code	crates/wcontainers-shaders/src/builtin.rs	int	small_float	23
-code	crates/wcontainers-shaders/src/builtin.rs	int	small_float	31
-code	crates/wcontainers-shaders/src/builtin.rs	int	small_float	5
-code	crates/wcontainers-shaders/src/builtin.rs	int	storage_clear_value	0x7f80_0000
-code	crates/wcontainers-shaders/src/builtin.rs	int	storage_clear_value	0x8000_0000
-code	crates/wcontainers-shaders/src/builtin.rs	int	storage_clear_value	32
-code	crates/wcontainers-shaders/src/builtin.rs	int	storage_clear_value	32
-code	crates/wcontainers-shaders/src/builtin.rs	int	storage_clear_value	32
-code	crates/wcontainers-shaders/src/builtin.rs	int	storage_clear_value	32
-code	crates/wcontainers-shaders/src/builtin.rs	int	storage_clear_value	4
-code	crates/wcontainers-shaders/src/builtin.rs	int	storage_clear_value	4
-code	crates/wcontainers-shaders/src/builtin.rs	int	storage_clear_value	4
 code	crates/wcontainers-shaders/src/builtin.rs	str	storage_clear	"at"
 code	crates/wcontainers-shaders/src/builtin.rs	str	storage_clear	"at.xy"
 code	crates/wcontainers-shaders/src/builtin.rs	str	storage_clear	"at.xy, at.z"
@@ -13511,8 +13480,6 @@ code	crates/wcontainers-shaders/src/lib.rs	str	unbuilt	"StoragePacked"
 code	crates/wcontainers-shaders/src/lower.rs	float	FunctionLowering<'l,'a>::coords	0.5
 code	crates/wcontainers-shaders/src/lower.rs	int	Emit::swizzle	3
 code	crates/wcontainers-shaders/src/lower.rs	int	Emit::swizzle	4
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::arithmetic	0x7f80_0000
-code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::arithmetic	0x7fff_ffff
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::arithmetic	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::atomic	3
 code	crates/wcontainers-shaders/src/lower.rs	int	FunctionLowering<'l,'a>::depth_vec4	4
@@ -13571,10 +13538,6 @@ code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::storage_image	4
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::struct_ty	4u32
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::texel_buffer	4
 code	crates/wcontainers-shaders/src/lower.rs	int	Lowering<'a>::texel_image	4
-code	crates/wcontainers-shaders/src/lower.rs	int	basic_align	16
-code	crates/wcontainers-shaders/src/lower.rs	int	basic_align	4
-code	crates/wcontainers-shaders/src/lower.rs	int	basic_align	8
-code	crates/wcontainers-shaders/src/lower.rs	int	basic_size	4
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::atomic	"atomic on a vector"
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::atomic	"atomic without its operation"
 code	crates/wcontainers-shaders/src/lower.rs	str	FunctionLowering<'l,'a>::image	"not an image"
@@ -13615,12 +13578,6 @@ code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::new	"entry point 
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::new	"no entry point"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::new	"unknown stage"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::resource_in	"a resource declaration without its register"
-code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::resource_in	"c"
-code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::resource_in	"cb"
-code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::resource_in	"s"
-code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::resource_in	"t"
-code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::resource_in	"u"
-code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::resource_in	"{prefix}{register}_space{space_index}"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::storage_image	"storage image type"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::texel_buffer	"typed buffer type"
 code	crates/wcontainers-shaders/src/lower.rs	str	Lowering<'a>::texel_image	"storage image type"
@@ -13851,85 +13808,8 @@ code	crates/wcontainers-shaders/src/variant/layers.rs	str	layer_load	"layer_load
 code	crates/wcontainers-shaders/src/variant/layers.rs	str	split	"a multisampled array load without a layer and sample"
 code	crates/wcontainers-shaders/src/variant/layers.rs	str	split	"texture_layers"
 code	crates/wcontainers-shaders/src/variant/layers.rs	str	split	"{n}_layer{layer}"
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	decode	32
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	decode	32
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	decode	32
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	fetch	3
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	fetch	3
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	fetch	3
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	fetch	3
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	fetch	32
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	fetch	4
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	fetch	4
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	fetch	4
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	fetch	4
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	10
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	10
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	10
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	10
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	10
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	10
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	10
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	10
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	10
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	11
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	11
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	11
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	16
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	16
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	16
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	16
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	16
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	20
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	20
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	22
 code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	3
 code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	3
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	3
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	30
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	30
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	32
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	32
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	32
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	4
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	4
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	4
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	8
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	8
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	8
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	8
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	8
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	8
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	8
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	8
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	layout	8
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	pulled	4
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	pulled	4
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	small_float	0x1f
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	small_float	0x7f80_0000
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	small_float	10
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	small_float	112
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	small_float	14
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	small_float	15
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	small_float	16
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	small_float	16
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	small_float	23
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	small_float	23
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	small_float	31
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	small_float	31
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	small_float	4
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	small_float	5
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	unorm	0x7f_ffff
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	unorm	126
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	unorm	23
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	unorm	32
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	unorm	32i32
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	unorm	7
-code	crates/wcontainers-shaders/src/variant/pull.rs	int	unorm	8
-code	crates/wcontainers-shaders/src/variant/pull.rs	str	fetch	"instance"
-code	crates/wcontainers-shaders/src/variant/pull.rs	str	fetch	"pull_{location}"
-code	crates/wcontainers-shaders/src/variant/pull.rs	str	fetch	"vertex"
-code	crates/wcontainers-shaders/src/variant/pull.rs	str	pulled	"pulled_{location}"
 code	crates/wcontainers-shaders/src/variant/swizzle.rs	int	swizzled	4
 code	crates/wcontainers-shaders/src/variant/swizzle.rs	int	swizzled	4
 code	crates/wcontainers-shaders/src/variant/swizzle.rs	str	swizzled	"a texture read that is not a vector"
@@ -13944,25 +13824,6 @@ code	crates/wcontainers-shaders/src/variant/texel.rs	int	atomic_code	5
 code	crates/wcontainers-shaders/src/variant/texel.rs	int	atomic_code	6
 code	crates/wcontainers-shaders/src/variant/texel.rs	int	atomic_code	7
 code	crates/wcontainers-shaders/src/variant/texel.rs	int	atomic_code	8
-code	crates/wcontainers-shaders/src/variant/texel.rs	int	small_float	0x1e
-code	crates/wcontainers-shaders/src/variant/texel.rs	int	small_float	0x1f
-code	crates/wcontainers-shaders/src/variant/texel.rs	int	small_float	0x7f80_0000
-code	crates/wcontainers-shaders/src/variant/texel.rs	int	small_float	0x7f_ffff
-code	crates/wcontainers-shaders/src/variant/texel.rs	int	small_float	0x7fff_ffff
-code	crates/wcontainers-shaders/src/variant/texel.rs	int	small_float	0x80_0000
-code	crates/wcontainers-shaders/src/variant/texel.rs	int	small_float	10
-code	crates/wcontainers-shaders/src/variant/texel.rs	int	small_float	112
-code	crates/wcontainers-shaders/src/variant/texel.rs	int	small_float	113
-code	crates/wcontainers-shaders/src/variant/texel.rs	int	small_float	136
-code	crates/wcontainers-shaders/src/variant/texel.rs	int	small_float	143
-code	crates/wcontainers-shaders/src/variant/texel.rs	int	small_float	15
-code	crates/wcontainers-shaders/src/variant/texel.rs	int	small_float	16
-code	crates/wcontainers-shaders/src/variant/texel.rs	int	small_float	16
-code	crates/wcontainers-shaders/src/variant/texel.rs	int	small_float	23
-code	crates/wcontainers-shaders/src/variant/texel.rs	int	small_float	23
-code	crates/wcontainers-shaders/src/variant/texel.rs	int	small_float	31
-code	crates/wcontainers-shaders/src/variant/texel.rs	int	small_float	31
-code	crates/wcontainers-shaders/src/variant/texel.rs	int	small_float	5
 code	crates/wcontainers-shaders/src/variant/texel.rs	str	TexelBuffer::at	"x"
 code	crates/wcontainers-shaders/src/variant/texel.rs	str	TexelBuffer::at	"y"
 code	crates/wcontainers-shaders/src/variant/texel.rs	str	TexelBuffer::at	"z"

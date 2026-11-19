@@ -29,8 +29,8 @@ use wcontainers_gpu::{
 mod helper;
 mod tessellate;
 pub use helper::{
-    DomainSets, FinalDraw, InputTopology, StageDraw, StageError, StageIndex, Stages, StreamOutput,
-    StreamOutputEntry, StreamTargets, TessellatedDraw,
+    DomainSets, FinalDraw, InputTopology, STREAM_BUFFERS, StageDraw, StageError, StageIndex,
+    Stages, StreamOutput, StreamOutputEntry, StreamTargets, TessellatedDraw,
 };
 pub use tessellate::{Tessellation, Tessellator};
 
