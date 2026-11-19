@@ -109,8 +109,14 @@ pub enum Origin {
 /// Names the build of the translator and its guests, made from their sources by the build script.
 const TRANSLATOR_BUILD: &str = env!("WCONTAINERS_TRANSLATOR_BUILD");
 
-/// The back end and its output's memory widths, as the cache key names them.
-const OUTPUT_FORM: &str = "wasmtime guest-memory-64 state-memory-32";
+/// The back end and its output's memory widths (guest memory 64 bit, state memory 32 bit), as the
+/// cache key names them.
+fn output_form() -> String {
+    format!("wasmtime guest-memory-{} state-memory-{}", u64::BITS, u32::BITS)
+}
+
+/// The middle of a cache file's name while it is being written.
+const PARTIAL: &str = "partial";
 
 /// The first bytes of a cache file.
 const CACHE_MAGIC: &[u8; 8] = b"wcxlate1";
@@ -185,7 +191,7 @@ impl<G: Guest> Compiler<G> {
         let mut hasher = blake3::Hasher::new();
         hasher.update(TRANSLATOR_BUILD.as_bytes());
         // The back end, the guest, the host's answer, and the output's memory widths.
-        hasher.update(OUTPUT_FORM.as_bytes());
+        hasher.update(output_form().as_bytes());
         hasher.update(&(G::ID as u32).to_le_bytes());
         hasher.update(&G::host_key(self.host).to_le_bytes());
         hasher.update(&key.offer.to_le_bytes());
@@ -260,7 +266,7 @@ impl<G: Guest> Compiler<G> {
         // A name no other writer uses, in this process or another sharing the directory.
         static WRITES: AtomicU64 = AtomicU64::new(0);
         let write = WRITES.fetch_add(1, Ordering::Relaxed);
-        let partial = file.with_extension(format!("partial-{}-{write}", std::process::id()));
+        let partial = file.with_extension(format!("{PARTIAL}-{}-{write}", std::process::id()));
         let written = std::fs::create_dir_all(file.parent().expect("a directory"))
             .and_then(|()| std::fs::write(&partial, &bytes))
             .and_then(|()| std::fs::rename(&partial, file));

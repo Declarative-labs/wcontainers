@@ -173,7 +173,7 @@ pub unsafe fn copy_pages(from: *const u8, to: *mut u8, runs: &[Range<usize>]) {
         // after a fork of the host process is not this one.
         use std::os::unix::fs::FileExt;
         use zerocopy::IntoBytes;
-        let pagemap = std::fs::File::open("/proc/self/pagemap").expect("/proc/self/pagemap");
+        let pagemap = std::fs::File::open(PAGEMAP).expect(PAGEMAP);
         let page = host_page() as usize;
         let mut entries: Vec<u64> = Vec::new();
         for run in runs {
@@ -184,7 +184,7 @@ pub unsafe fn copy_pages(from: *const u8, to: *mut u8, runs: &[Range<usize>]) {
                     entries.as_mut_bytes(),
                     ((from as usize + run.start) / page * PAGEMAP_ENTRY) as u64,
                 )
-                .expect("reading /proc/self/pagemap");
+                .unwrap_or_else(|error| panic!("reading {PAGEMAP}: {error}"));
             let held = |index: usize| {
                 u64::from_le(entries[index]) & (PAGEMAP_PRESENT | PAGEMAP_SWAPPED) != 0
             };
@@ -224,6 +224,8 @@ pub unsafe fn copy_pages(from: *const u8, to: *mut u8, runs: &[Range<usize>]) {
 
 /// Bytes of one entry of Linux's `/proc/self/pagemap`, and its bits for a page present in memory and
 /// one swapped out (Linux's Documentation/admin-guide/mm/pagemap.rst).
+#[cfg(target_os = "linux")]
+const PAGEMAP: &str = "/proc/self/pagemap";
 #[cfg(target_os = "linux")]
 const PAGEMAP_ENTRY: usize = size_of::<u64>();
 #[cfg(target_os = "linux")]
@@ -347,7 +349,7 @@ mod tests {
             .expect("paging out");
             use std::os::unix::fs::FileExt;
             let mut entry = [0u8; PAGEMAP_ENTRY];
-            std::fs::File::open("/proc/self/pagemap")
+            std::fs::File::open(super::PAGEMAP)
                 .unwrap()
                 .read_exact_at(
                     &mut entry,

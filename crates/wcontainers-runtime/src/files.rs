@@ -1008,3 +1008,150 @@ impl Files {
         Ok(out)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One request's bytes: the header, then the body's parts.
+    fn request(opcode: fuse_opcode, node: u64, unique: u64, parts: &[&[u8]]) -> Vec<u8> {
+        let length = size_of::<fuse_in_header>() + parts.iter().map(|p| p.len()).sum::<usize>();
+        let header = fuse_in_header {
+            len: length as u32,
+            opcode: opcode as u32,
+            unique,
+            nodeid: node,
+            ..Default::default()
+        };
+        let mut bytes = header.as_bytes().to_vec();
+        for part in parts {
+            bytes.extend_from_slice(part);
+        }
+        bytes
+    }
+
+    /// The reply's error and body.
+    fn reply(files: &mut Files, message: &[u8]) -> (i32, Vec<u8>) {
+        let reply = files.serve(message).expect("a reply");
+        let (header, body) = fuse_out_header::read_from_prefix(&reply).unwrap();
+        assert_eq!(header.len as usize, reply.len());
+        (header.error, body.to_vec())
+    }
+
+    /// A file made, written, read back, looked up again, listed and removed through FUSE's messages,
+    /// as the host directory shows it.
+    #[test]
+    fn a_file_is_made_written_read_listed_and_removed() {
+        // Beside the test program, in the build directory.
+        let program = std::env::current_exe().unwrap();
+        let directory = program.with_file_name(format!("wc-files-unit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut files = Files::new(&directory).unwrap();
+        let init = fuse_init_in {
+            major: FUSE_KERNEL_VERSION,
+            minor: FUSE_KERNEL_MINOR_VERSION,
+            flags: GRANTED,
+            ..Default::default()
+        };
+        let (error, _) = reply(
+            &mut files,
+            &request(fuse_opcode::FUSE_INIT, 0, 1, &[init.as_bytes()]),
+        );
+        assert_eq!(error, 0);
+        let create = fuse_create_in {
+            flags: linux::O_RDWR,
+            mode: linux::S_IFREG | 0o640,
+            umask: 0o022,
+            open_flags: 0,
+        };
+        let message = request(
+            fuse_opcode::FUSE_CREATE,
+            FUSE_ROOT_ID,
+            2,
+            &[create.as_bytes(), b"made\0"],
+        );
+        let (error, body) = reply(&mut files, &message);
+        assert_eq!(error, 0);
+        let (entry, rest) = fuse_entry_out::read_from_prefix(&body).unwrap();
+        let (open, _) = fuse_open_out::read_from_prefix(rest).unwrap();
+        assert_eq!(entry.attr.mode, linux::S_IFREG | 0o640);
+        let write = fuse_write_in {
+            fh: open.fh,
+            size: 5,
+            ..Default::default()
+        };
+        let message = request(
+            fuse_opcode::FUSE_WRITE,
+            entry.nodeid,
+            3,
+            &[write.as_bytes(), b"hello"],
+        );
+        let (error, body) = reply(&mut files, &message);
+        assert_eq!(
+            (
+                error,
+                fuse_write_out::read_from_prefix(&body).unwrap().0.size
+            ),
+            (0, 5)
+        );
+        let read = fuse_read_in {
+            fh: open.fh,
+            size: 64,
+            ..Default::default()
+        };
+        let message = request(fuse_opcode::FUSE_READ, entry.nodeid, 4, &[read.as_bytes()]);
+        assert_eq!(reply(&mut files, &message), (0, b"hello".to_vec()));
+        assert_eq!(std::fs::read(directory.join("made")).unwrap(), b"hello");
+        let message = request(fuse_opcode::FUSE_LOOKUP, FUSE_ROOT_ID, 5, &[b"made\0"]);
+        let (error, body) = reply(&mut files, &message);
+        assert_eq!(error, 0);
+        assert_eq!(
+            fuse_entry_out::read_from_prefix(&body).unwrap().0.nodeid,
+            entry.nodeid
+        );
+        let message = request(
+            fuse_opcode::FUSE_OPENDIR,
+            FUSE_ROOT_ID,
+            6,
+            &[&[0; size_of::<fuse_open_in>()]],
+        );
+        let (error, body) = reply(&mut files, &message);
+        assert_eq!(error, 0);
+        let listing = fuse_read_in {
+            fh: fuse_open_out::read_from_prefix(&body).unwrap().0.fh,
+            size: 4096,
+            ..Default::default()
+        };
+        let message = request(
+            fuse_opcode::FUSE_READDIR,
+            FUSE_ROOT_ID,
+            7,
+            &[listing.as_bytes()],
+        );
+        let (error, body) = reply(&mut files, &message);
+        assert_eq!(error, 0);
+        let mut names = Vec::new();
+        let mut rest = &body[..];
+        while let Ok((dirent, after)) = fuse_dirent::read_from_prefix(rest) {
+            names.push(after[..dirent.namelen as usize].to_vec());
+            let size =
+                (size_of::<fuse_dirent>() + dirent.namelen as usize).next_multiple_of(DIRENT_ALIGN);
+            rest = &rest[size..];
+        }
+        names.sort();
+        assert_eq!(names, [b".".to_vec(), b"..".to_vec(), b"made".to_vec()]);
+        let message = request(fuse_opcode::FUSE_UNLINK, FUSE_ROOT_ID, 8, &[b"made\0"]);
+        assert_eq!(reply(&mut files, &message).0, 0);
+        let message = request(fuse_opcode::FUSE_LOOKUP, FUSE_ROOT_ID, 9, &[b"made\0"]);
+        assert_eq!(reply(&mut files, &message).0, -(linux_errno::ENOENT as i32));
+        let message = request(
+            fuse_opcode::FUSE_LOOKUP,
+            FUSE_ROOT_ID,
+            10,
+            &[b"../escape\0"],
+        );
+        assert_eq!(reply(&mut files, &message).0, -(linux_errno::EINVAL as i32));
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+}
