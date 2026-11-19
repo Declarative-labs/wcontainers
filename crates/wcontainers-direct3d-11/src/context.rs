@@ -354,7 +354,6 @@ const PIXEL_CENTRE: f32 = 0.5;
 /// Draws refused by name.
 pub(crate) const ALPHA_ANTIALIASED_LINES: &str =
     "alpha-antialiased lines (AntialiasedLinesAsQuads)";
-const LINE_BIAS_INTO_FLOAT_DEPTH: &str = "a depth bias on lines or points into float depth";
 const VIEWPORT_BEHIND_GEOMETRY: &str =
     "a viewport the back end would round, behind a geometry stage";
 
@@ -2069,10 +2068,35 @@ impl<B: Backend> Device<B> {
         (retyped, self.format_list_id(formats))
     }
 
+    /// Lines and points are drawn without the bound depth bias, as Direct3D draws them (measured
+    /// on the reference: `own_cases biased_lines`), through a twin of the raster block without it.
+    fn bias_dropped(&self) -> bool {
+        let r = &self
+            .ctx
+            .raster
+            .as_ref()
+            .unwrap_or(&self.defaults.raster)
+            .desc;
+        (r.depth_bias != 0 || r.slope_scaled_depth_bias != 0.0)
+            && self.ctx.depth.is_some()
+            && !self.draws_triangles()
+    }
+
+    /// The bound topology is of triangles.
+    fn draws_triangles(&self) -> bool {
+        matches!(
+            plain_topology(self.ctx.topology),
+            Some(Topology::TriangleList | Topology::TriangleStrip)
+        ) || matches!(
+            self.ctx.topology,
+            topology::TRIANGLELIST_ADJ | topology::TRIANGLESTRIP_ADJ
+        )
+    }
+
     /// The smallest step of the bound depth target's format where the pixel program adds the depth
-    /// bias (`DepthBiasInShader`): on lines and points, which the back ends do not bias; where the
-    /// back end lacks the bias clamp; or where it moves 24-bit depth it stores as float by float
-    /// steps. Refused for float depth, whose step varies with the depth.
+    /// bias to triangles (`DepthBiasInShader`): where the back end lacks the bias clamp, or where
+    /// it moves 24-bit depth it stores as float by float steps. Refused for float depth, whose step
+    /// varies with the depth.
     fn bias_step(&self) -> Result<Option<f32>> {
         let r = &self
             .ctx
@@ -2093,22 +2117,12 @@ impl<B: Backend> Device<B> {
         );
         let unclamped = r.depth_bias_clamp != 0.0 && !caps.has(Features::DEPTH_BIAS_CLAMP);
         let float_steps = r.depth_bias != 0 && d24 && !caps.has(Features::DEPTH24_UNORM);
-        let unbiased = !matches!(
-            plain_topology(self.ctx.topology),
-            Some(Topology::TriangleList | Topology::TriangleStrip)
-        ) && !matches!(
-            self.ctx.topology,
-            topology::TRIANGLELIST_ADJ | topology::TRIANGLESTRIP_ADJ
-        );
-        if !unclamped && !float_steps && !unbiased {
+        if (!unclamped && !float_steps) || !self.draws_triangles() {
             return Ok(None);
         }
         let bits = match depth.format {
             Format::Depth16Unorm => 16,
             _ if d24 => 24,
-            _ if unbiased => {
-                return not_implemented(LINE_BIAS_INTO_FLOAT_DEPTH);
-            }
             _ => {
                 return not_implemented("a depth bias clamp on float depth without the back end's");
             }
@@ -3934,6 +3948,7 @@ impl<B: Backend> Device<B> {
             return not_implemented("a sample mask without the back end's (SampleMaskInShader)");
         }
         let depth_bias = self.bias_step()?.is_some();
+        let unbiased = depth_bias || self.bias_dropped();
         // A fitted pass draws with the scissor test on, cut to the area every attachment covers.
         let scissored = self.fitted_targets()
             && !self
@@ -3943,9 +3958,9 @@ impl<B: Backend> Device<B> {
                 .unwrap_or(&self.defaults.raster)
                 .desc
                 .scissor;
-        let masked_key = (masks || depth_bias || scissored).then_some((
+        let masked_key = (masks || unbiased || scissored).then_some((
             if masks { mask } else { u32::MAX },
-            depth_bias,
+            unbiased,
             scissored,
         ));
         let masked = match masked_key {
@@ -5364,12 +5379,11 @@ pub(crate) fn layout_desc(
     desc
 }
 
-/// The raster block of `desc` with sample mask `key.0`, and without its depth bias where `key.1`
-/// (the pixel program adds it).
-/// A raster block's twin: its sample mask, without the depth bias (the pixel program adds it),
-/// and with the scissor test on (a fitted pass).
+/// A raster block's twin: its sample mask, without the depth bias (the pixel program adds it, or
+/// the draw is of lines or points), and with the scissor test on (a fitted pass).
 pub(crate) type RasterKey = (u32, bool, bool);
 
+/// The raster block of `desc` as twin `key`.
 fn twin_block(
     desc: &crate::desc::RasterizerDesc,
     caps: &wcontainers_gpu::Caps,
