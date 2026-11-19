@@ -1659,15 +1659,6 @@ code	crates/wcontainers-direct3d-11/src/counting.rs	str	without_pixel_shader	"@f
 code	crates/wcontainers-direct3d-11/src/counting.rs	str	without_pixel_shader	"main"
 code	crates/wcontainers-direct3d-11/src/counting.rs	str	without_pixel_shader	"the counting program of a draw without a pixel shader"
 code	crates/wcontainers-direct3d-11/src/desc.rs	int	BlendDesc	8
-code	crates/wcontainers-direct3d-11/src/desc.rs	int	BlendDesc::default_state	0xf
-code	crates/wcontainers-direct3d-11/src/desc.rs	int	BlendDesc::default_state	8
-code	crates/wcontainers-direct3d-11/src/desc.rs	int	BlendDesc::dual_source	16
-code	crates/wcontainers-direct3d-11/src/desc.rs	int	BlendDesc::dual_source	19
-code	crates/wcontainers-direct3d-11/src/desc.rs	int	DepthStencilDesc::default_state	0xff
-code	crates/wcontainers-direct3d-11/src/desc.rs	int	DepthStencilDesc::default_state	0xff
-code	crates/wcontainers-direct3d-11/src/desc.rs	int	DepthStencilDesc::default_state	8
-code	crates/wcontainers-direct3d-11/src/desc.rs	int	RasterizerDesc::default_state	3
-code	crates/wcontainers-direct3d-11/src/desc.rs	int	RasterizerDesc::default_state	3
 code	crates/wcontainers-direct3d-11/src/desc.rs	int	SamplerDesc	3
 code	crates/wcontainers-direct3d-11/src/desc.rs	int	SamplerDesc	4
 code	crates/wcontainers-direct3d-11/src/desc.rs	int	SamplerDesc::default_state	0x15
@@ -1685,16 +1676,12 @@ code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::check_texture	6
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::check_texture	87
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::check_texture	90
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::check_texture	91
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_blend_state	5
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_blend_state	5
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_blend_state	8
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_blend_state	8
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_input_layout	32
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_input_layout	32
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_input_layout	32
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_input_layout	32
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_rasterizer_state	3
-code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_rasterizer_state	3
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_texture	16
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_texture	4
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::create_texture	6
@@ -1722,40 +1709,9 @@ code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::zero_view	6
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Device<B>::zero_view	6
 code	crates/wcontainers-direct3d-11/src/device.rs	int	LayoutKey	32
 code	crates/wcontainers-direct3d-11/src/device.rs	int	Variant	32
-code	crates/wcontainers-direct3d-11/src/device.rs	int	blend_factor	10
-code	crates/wcontainers-direct3d-11/src/device.rs	int	blend_factor	11
-code	crates/wcontainers-direct3d-11/src/device.rs	int	blend_factor	14
-code	crates/wcontainers-direct3d-11/src/device.rs	int	blend_factor	15
-code	crates/wcontainers-direct3d-11/src/device.rs	int	blend_factor	16
-code	crates/wcontainers-direct3d-11/src/device.rs	int	blend_factor	17
-code	crates/wcontainers-direct3d-11/src/device.rs	int	blend_factor	18
-code	crates/wcontainers-direct3d-11/src/device.rs	int	blend_factor	3
-code	crates/wcontainers-direct3d-11/src/device.rs	int	blend_factor	4
-code	crates/wcontainers-direct3d-11/src/device.rs	int	blend_factor	5
-code	crates/wcontainers-direct3d-11/src/device.rs	int	blend_factor	6
-code	crates/wcontainers-direct3d-11/src/device.rs	int	blend_factor	7
-code	crates/wcontainers-direct3d-11/src/device.rs	int	blend_factor	8
-code	crates/wcontainers-direct3d-11/src/device.rs	int	blend_factor	9
-code	crates/wcontainers-direct3d-11/src/device.rs	int	blend_op	3
-code	crates/wcontainers-direct3d-11/src/device.rs	int	blend_op	4
-code	crates/wcontainers-direct3d-11/src/device.rs	int	check_blend_factor	10
-code	crates/wcontainers-direct3d-11/src/device.rs	int	check_blend_factor	11
-code	crates/wcontainers-direct3d-11/src/device.rs	int	check_blend_factor	14
-code	crates/wcontainers-direct3d-11/src/device.rs	int	check_blend_factor	16
-code	crates/wcontainers-direct3d-11/src/device.rs	int	check_blend_factor	17
-code	crates/wcontainers-direct3d-11/src/device.rs	int	check_blend_factor	19
-code	crates/wcontainers-direct3d-11/src/device.rs	int	check_blend_factor	3
-code	crates/wcontainers-direct3d-11/src/device.rs	int	check_blend_factor	4
-code	crates/wcontainers-direct3d-11/src/device.rs	int	check_blend_factor	9
 code	crates/wcontainers-direct3d-11/src/device.rs	int	check_buffer	16
 code	crates/wcontainers-direct3d-11/src/device.rs	int	check_buffer	2048
 code	crates/wcontainers-direct3d-11/src/device.rs	int	check_buffer	4
-code	crates/wcontainers-direct3d-11/src/device.rs	int	compare_fn	3
-code	crates/wcontainers-direct3d-11/src/device.rs	int	compare_fn	4
-code	crates/wcontainers-direct3d-11/src/device.rs	int	compare_fn	5
-code	crates/wcontainers-direct3d-11/src/device.rs	int	compare_fn	6
-code	crates/wcontainers-direct3d-11/src/device.rs	int	compare_fn	7
-code	crates/wcontainers-direct3d-11/src/device.rs	int	compare_fn	8
 code	crates/wcontainers-direct3d-11/src/device.rs	int	gpu_sampler	0x10
 code	crates/wcontainers-direct3d-11/src/device.rs	int	gpu_sampler	0x4
 code	crates/wcontainers-direct3d-11/src/device.rs	int	gpu_sampler	0x40
@@ -1783,7 +1739,6 @@ code	crates/wcontainers-direct3d-11/src/device.rs	int	level_texture_limits	512
 code	crates/wcontainers-direct3d-11/src/device.rs	int	level_texture_limits	512
 code	crates/wcontainers-direct3d-11/src/device.rs	int	level_texture_limits	8192
 code	crates/wcontainers-direct3d-11/src/device.rs	int	level_texture_limits	8192
-code	crates/wcontainers-direct3d-11/src/device.rs	int	raster_block	3
 code	crates/wcontainers-direct3d-11/src/device.rs	int	sampler_state	3
 code	crates/wcontainers-direct3d-11/src/device.rs	int	sampler_state	4
 code	crates/wcontainers-direct3d-11/src/device.rs	int	sampler_state	5
@@ -1791,12 +1746,6 @@ code	crates/wcontainers-direct3d-11/src/device.rs	int	sampler_state	6
 code	crates/wcontainers-direct3d-11/src/device.rs	int	sampler_state	7
 code	crates/wcontainers-direct3d-11/src/device.rs	int	sampler_state	9
 code	crates/wcontainers-direct3d-11/src/device.rs	int	sampler_state	9
-code	crates/wcontainers-direct3d-11/src/device.rs	int	stencil_op	3
-code	crates/wcontainers-direct3d-11/src/device.rs	int	stencil_op	4
-code	crates/wcontainers-direct3d-11/src/device.rs	int	stencil_op	5
-code	crates/wcontainers-direct3d-11/src/device.rs	int	stencil_op	6
-code	crates/wcontainers-direct3d-11/src/device.rs	int	stencil_op	7
-code	crates/wcontainers-direct3d-11/src/device.rs	int	stencil_op	8
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::buffer_span	"a buffer view at an offset the back end does not bind at (StorageOffset)"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::buffer_span	"typed buffer views read through a texture (TexelBufferAsTexture)"
 code	crates/wcontainers-direct3d-11/src/device.rs	str	Device<B>::check_format	"a format the back end lacks"
