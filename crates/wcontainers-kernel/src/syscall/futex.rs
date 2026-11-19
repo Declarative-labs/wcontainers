@@ -1091,7 +1091,7 @@ pub(crate) fn thread_end(
 }
 
 /// The most entries `exit_robust_list` follows (`ROBUST_LIST_LIMIT`).
-const ROBUST_LIST_LIMIT: usize = 2048;
+pub(crate) const ROBUST_LIST_LIMIT: usize = 2048;
 
 /// `exit_robust_list`: each lock on the list (and the one being taken or let go) that the thread
 /// holds is marked as its owner's death, and a plain one with waiters wakes one.

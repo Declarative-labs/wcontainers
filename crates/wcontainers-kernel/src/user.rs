@@ -68,17 +68,10 @@ impl Guest<'_> {
         } else {
             Access::Read
         };
-        let watched = self
-            .map
-            .borrow()
-            .watches
-            .first_watched(address, address + done, access);
-        if let Some(at) = watched {
-            self.map
-                .borrow_mut()
-                .watches
-                .touched
-                .get_or_insert((at, access));
+        let watches = &mut self.map.borrow_mut().watches;
+        watches.check_described(address, address.saturating_add(length));
+        if let Some(at) = watches.first_watched(address, address + done, access) {
+            watches.touched.get_or_insert((at, access));
             done = at - address;
         }
         done

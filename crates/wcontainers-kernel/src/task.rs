@@ -131,14 +131,10 @@ impl Kernel {
             // The slice timer, or a signal or event that needed the thread back; one that gives
             // way leaves its restartable sequence.
             Exit::Stop => {
-                let resume = if self.resched {
-                    self.rseq_preempted(cx, tid)
-                } else {
-                    Some(Resume::Continue)
-                };
-                if let Some(resume) = resume {
-                    self.return_to_user(cx, tid, resume);
+                if self.resched && self.threads[&tid].rseq.is_some() {
+                    self.thread_mut(tid).rseq_event = true;
                 }
+                self.return_to_user(cx, tid, Resume::Continue);
             }
             Exit::MemoryFault { address, access } => self.memory_fault(cx, tid, address, access),
             Exit::MemoryFaultWithoutRegisters => self.fatal_fault(cx, tid, SIGSEGV),
@@ -164,8 +160,10 @@ impl Kernel {
 
     /// Runs a system call, the first time or again after its thread was woken.
     fn system_call(&mut self, cx: &mut Context<'_>, tid: Tid, call: Syscall, again: bool) {
-        // The watched memory the call will touch is met before it acts.
+        // The watched memory the call will touch is met before it acts, and its copies are
+        // checked against what its description named.
         if self.watching {
+            self.process_of(tid).map.borrow_mut().watches.described = Some(alloc::vec::Vec::new());
             let mut memory = crate::system::CallMemory {
                 kernel: self,
                 cx,
@@ -197,18 +195,21 @@ impl Kernel {
                 syscall::Outcome::Parked | syscall::Outcome::Gone => {}
             }
         }
-        // A copy met a watched page the call's description did not name: a call that failed for
-        // it runs again once the watch is met; one that did part of its work keeps its short
-        // result (both counted).
-        let touched = match (self.watching, self.threads.get(&tid)) {
-            (true, Some(thread)) => self.processes[&thread.process]
-                .map
-                .borrow_mut()
-                .watches
-                .touched
-                .take(),
-            _ => None,
+        // A copy outside the call's description is counted. If it met a watched page, a call that
+        // failed for it runs again once the watch is met, doing again what it did before the
+        // copy; one that did part of its work keeps its short result (both counted).
+        let (touched, undescribed) = match (self.watching, self.threads.get(&tid)) {
+            (true, Some(thread)) => {
+                let watches = &mut self.processes[&thread.process].map.borrow_mut().watches;
+                watches.described = None;
+                (watches.touched.take(), watches.undescribed.take())
+            }
+            _ => (None, None),
         };
+        if undescribed.is_some() {
+            self.counters
+                .count(cx.host, reason::COPY_UNDESCRIBED, call.number);
+        }
         if let Some((address, access)) = touched {
             let met = self.watch_touched(cx, tid, address, access);
             match outcome {
@@ -770,6 +771,19 @@ impl Kernel {
         self.announce(cx, pid, |system, process| {
             system.on_process_exiting(process)
         });
+        // The container ends with its first process, and the rest are killed first, as Linux's
+        // first process of a namespace kills them on its way out (`zap_pid_ns_processes`).
+        if self.init == Some(pid) {
+            let others: alloc::vec::Vec<Pid> = self
+                .processes
+                .iter()
+                .filter(|(other, process)| **other != pid && process.ended.is_none())
+                .map(|(other, _)| *other)
+                .collect();
+            for other in others {
+                self.end_process(cx, other, SIGKILL as i32);
+            }
+        }
         let threads = self.processes[&pid].threads.clone();
         self.ids_let_go.extend(&threads);
         // The threads' descriptor tables, closed where the process's files close.
@@ -808,7 +822,11 @@ impl Kernel {
         process.report = None;
         process.pending = Default::default();
         let memory = process.memory;
-        let empty = crate::memory::AddressMap::new(self.ceiling, self.outgrown.clone());
+        let empty = crate::memory::AddressMap::new(
+            self.machine.memory_bytes,
+            self.ceiling,
+            self.outgrown.clone(),
+        );
         let map = core::mem::replace(
             &mut process.map,
             alloc::rc::Rc::new(core::cell::RefCell::new(empty)),
@@ -821,6 +839,7 @@ impl Kernel {
         if !self.memory_in_use_elsewhere(pid, memory) {
             cx.cpu.memory_drop(memory);
         }
+        self.update_watching();
         for files in tables {
             self.put_files(files, pid);
         }
@@ -832,8 +851,14 @@ impl Kernel {
         crate::shared::release(self, cx);
         self.files_released(cx);
         if self.init == Some(pid) {
-            // The container ends with its first process; Docker kills the rest.
+            // Nothing carries any number once the container has ended.
             self.finished = Some(wait_status);
+            let carried: alloc::vec::Vec<Pid> = self
+                .processes
+                .values()
+                .flat_map(|process| [process.pid, process.group, process.session])
+                .collect();
+            self.ids_let_go.extend(carried);
             return;
         }
         self.orphan_children(cx, pid);

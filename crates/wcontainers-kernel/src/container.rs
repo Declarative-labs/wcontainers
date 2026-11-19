@@ -466,6 +466,7 @@ impl Kernel {
             session: pid,
             memory: wcontainers_abi::MemoryId(0),
             map: Rc::new(core::cell::RefCell::new(crate::memory::AddressMap::new(
+                self.machine.memory_bytes,
                 self.ceiling,
                 self.outgrown.clone(),
             ))),
@@ -843,6 +844,7 @@ impl Kernel {
         }
         self.files_released(cx);
         crate::shared::release(self, cx);
+        self.update_watching();
         if old_memory.0 == 0 {
             self.announce(cx, pid, |system, process| {
                 system.on_process_starting(process)

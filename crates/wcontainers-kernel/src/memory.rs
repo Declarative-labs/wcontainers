@@ -233,8 +233,11 @@ pub(crate) struct AddressMap {
     mappings: BTreeMap<u64, Mapping>,
     /// Ranges that have been mapped at some time, so may hold old bytes. Start to end.
     used: BTreeMap<u64, u64>,
-    /// One past the highest address.
+    /// One past the highest address: the container's address width.
     pub end: u64,
+    /// One past the highest address the executor can give now; nothing is placed above it, and a
+    /// request that would reach past it has outgrown it.
+    pub ceiling: u64,
     /// New mappings with no address go below this, highest first.
     pub mmap_base: u64,
     pub brk_start: u64,
@@ -266,11 +269,35 @@ pub(crate) struct Watches {
     written: Option<BTreeSet<u64>>,
     /// The first watched page a kernel copy for the running call found, and how it touched it.
     pub touched: Option<(u64, Access)>,
+    /// The ranges the running call's description named, against which its copies are checked.
+    pub described: Option<Vec<(u64, u64)>>,
+    /// The first address a copy of the running call reached outside its description.
+    pub undescribed: Option<u64>,
 }
 
 impl Watches {
+    /// Notes a copy of `[start, end)` that the running call's description did not name.
+    pub fn check_described(&mut self, start: u64, end: u64) {
+        let Some(described) = &self.described else {
+            return;
+        };
+        let mut at = start;
+        while at < end {
+            match described
+                .iter()
+                .find(|(from, to)| (*from..*to).contains(&at))
+            {
+                Some((_, to)) => at = *to,
+                None => {
+                    self.undescribed.get_or_insert(at);
+                    return;
+                }
+            }
+        }
+    }
+
     /// Whether anything narrows what the CPU side allows.
-    fn narrows(&self) -> bool {
+    pub fn narrows(&self) -> bool {
         !self.pages.is_empty() || self.written.is_some()
     }
 
@@ -298,6 +325,13 @@ impl Watches {
             .get(&page_down(address))
             .copied()
             .unwrap_or(Watch::None)
+    }
+
+    /// Whether the record of written pages holds back writing the page of `address`.
+    pub fn holds_back_write(&self, address: u64) -> bool {
+        self.written
+            .as_ref()
+            .is_some_and(|written| !written.contains(&page_down(address)))
     }
 
     /// The first address in `[start, end)` whose page is watched for `access`.
@@ -350,13 +384,15 @@ impl Watches {
 }
 
 impl AddressMap {
-    pub fn new(end: u64, outgrown: Rc<Cell<Option<u64>>>) -> Self {
+    /// A map of `end`'s width whose stack's top is at the ceiling.
+    pub fn new(end: u64, ceiling: u64, outgrown: Rc<Cell<Option<u64>>>) -> Self {
         Self {
             mappings: BTreeMap::new(),
             used: BTreeMap::new(),
             end,
+            ceiling,
             // Linux leaves at least 128 MiB below the stack's top for the stack and its gap.
-            mmap_base: page_down(end - (128 << 20)),
+            mmap_base: page_down(ceiling - (128 << 20)),
             brk_start: 0,
             brk: 0,
             data_size: 0,
@@ -450,8 +486,12 @@ impl AddressMap {
         ranges
     }
 
-    /// Ends the record of written pages, as a fork's child starts with none.
-    pub fn forget_written(&mut self, cpu: &mut dyn Cpu, memory: MemoryId) {
+    /// A fork's child's copy: no record of written pages, and nothing of its parent's running
+    /// call.
+    pub fn start_child(&mut self, cpu: &mut dyn Cpu, memory: MemoryId) {
+        self.watches.touched = None;
+        self.watches.described = None;
+        self.watches.undescribed = None;
         if self.watches.written.take().is_some() {
             let starts: Vec<(u64, u64)> =
                 self.mappings.values().map(|m| (m.start, m.end)).collect();
@@ -645,6 +685,16 @@ impl AddressMap {
             at = mapping.end;
         }
         free + self.mmap_base.saturating_sub(at)
+    }
+
+    /// Whether a request for `length` bytes ending at `end` reaches past the ceiling; if so it is
+    /// noted as outgrown.
+    pub fn crosses_ceiling(&self, end: u64, length: u64) -> bool {
+        if end <= self.ceiling {
+            return false;
+        }
+        self.outgrown.set(Some(length));
+        true
     }
 
     /// Free space for `length` bytes, the highest below the mmap base, as Linux's top-down search.

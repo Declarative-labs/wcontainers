@@ -563,13 +563,25 @@ impl Kernel {
     }
 
     /// A free process and thread number from the embedder's task ids, skipping any still carried
-    /// as Linux's `alloc_pid` does; EAGAIN once every number has been tried.
+    /// as Linux's `alloc_pid` does (counted); EAGAIN for a number out of range, or once every
+    /// number has been tried.
     fn allocate_id(&mut self, cx: &mut Context<'_>) -> Result<i32, Errno> {
         for _ in RESERVED_PIDS..PID_MAX {
-            self.last_id = cx.host.task_id_allocate(TaskId::of(self.last_id)).pid();
-            if (1..PID_MAX).contains(&self.last_id) && !self.carried(self.last_id) {
-                return Ok(self.last_id);
+            let id = cx.host.task_id_allocate(TaskId::of(self.last_id)).pid();
+            if !(1..PID_MAX).contains(&id) {
+                return Err(self.counters.refuse(
+                    cx.host,
+                    reason::TASK_ID_OUT_OF_RANGE,
+                    id as u32 as u64,
+                    Errno::EAGAIN,
+                ));
             }
+            self.last_id = id;
+            if !self.carried(id) {
+                return Ok(id);
+            }
+            self.counters
+                .count(cx.host, reason::TASK_ID_CARRIED, id as u64);
         }
         Err(Errno::EAGAIN)
     }
@@ -590,7 +602,7 @@ impl Kernel {
         ids.sort_unstable();
         ids.dedup();
         for id in ids {
-            if !self.carried(id) {
+            if self.finished.is_some() || !self.carried(id) {
                 cx.host.task_id_free(TaskId::of(id));
             }
         }

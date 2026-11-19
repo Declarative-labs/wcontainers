@@ -501,7 +501,7 @@ fn place(
     readable: bool,
 ) -> Result<Image, Failed> {
     let end = kernel.ceiling;
-    let mut map = AddressMap::new(end, kernel.outgrown.clone());
+    let mut map = AddressMap::new(kernel.machine.memory_bytes, end, kernel.outgrown.clone());
     let endian = LittleEndian;
     // In the order of Linux's `load_elf_binary`: the program's header and program headers, its
     // loader's name and header, the loader's program headers, then the properties.
@@ -855,7 +855,10 @@ fn place_elf(
         }
         let start = page_down(address);
         let stop = page_up(address.checked_add(segment_memory).ok_or(Errno::ENOEXEC)?);
-        if start < LOWEST_ADDRESS || stop > map.end - STACK_LIMIT {
+        if start < LOWEST_ADDRESS
+            || stop > map.end - STACK_LIMIT
+            || map.crosses_ceiling(stop + STACK_LIMIT, stop - start)
+        {
             return Err(Errno::ENOMEM);
         }
         let permissions = segment_permissions(segment.p_flags(endian).0);

@@ -42,6 +42,11 @@ pub(super) fn clone(
         parent_tid,
     ) {
         Ok(child) => {
+            // The parent's copy of the child's number, written after the child exists and
+            // before the embedder hears of it.
+            if flags & CLONE_PARENT_SETTID != 0 {
+                let _ = guest(kernel, cx, tid).put(parent_tid, &child.to_le_bytes());
+            }
             let process = kernel.threads[&child].process;
             if flags & CLONE_THREAD != 0 {
                 let thread = crate::TaskId::of(child);
@@ -52,10 +57,6 @@ pub(super) fn clone(
                 kernel.announce(cx, process, |system, process| {
                     system.on_process_starting(process)
                 });
-            }
-            // The parent's copy of the child's number, written after the child exists.
-            if flags & CLONE_PARENT_SETTID != 0 {
-                let _ = guest(kernel, cx, tid).put(parent_tid, &child.to_le_bytes());
             }
             if flags & CLONE_VFORK != 0 {
                 let call = &mut kernel.thread_mut(tid).call;
@@ -196,7 +197,7 @@ fn make_child(
         }
         map.set_lock_all(Lock::None);
         map.future_lock = Lock::None;
-        map.forget_written(cx.cpu, memory);
+        map.start_child(cx.cpu, memory);
         alloc::rc::Rc::new(core::cell::RefCell::new(map))
     };
     let mut process = parent.clone();

@@ -64,7 +64,7 @@ pub(super) fn brk(
     {
         return Ok(old);
     }
-    if new_end > map.end {
+    if new_end > map.end || map.crosses_ceiling(new_end, new_end - old_end) {
         return Ok(old);
     }
     // Linux's `check_data_rlimit` on the heap and the program's data, then `may_expand_vm` on the
@@ -192,13 +192,16 @@ pub(super) fn do_mmap(
         if address < LOWEST_ADDRESS {
             return Err(Errno::EPERM);
         }
+        if map.crosses_ceiling(address + length, length) {
+            return Err(Errno::ENOMEM);
+        }
         address
     } else {
         let hint = page_down(address);
         let hint_fits = hint >= LOWEST_ADDRESS
             && hint
                 .checked_add(length)
-                .is_some_and(|end| end <= map.end && map.free_for_placement(hint, end));
+                .is_some_and(|end| end <= map.ceiling && map.free_for_placement(hint, end));
         if hint != 0 && hint_fits {
             hint
         } else {
@@ -1104,7 +1107,7 @@ fn remap_at(
     // Grow in place when the range is the end of its mapping and the space after is free.
     let old_end = old + old_length;
     let grown_end = old.saturating_add(new_length);
-    if mapping.end == old_end && grown_end <= map.end && !map.any_mapped(old_end, grown_end) {
+    if mapping.end == old_end && grown_end <= map.ceiling && !map.any_mapped(old_end, grown_end) {
         let mut extra = mapping.cut_public(old_end, grown_end);
         if let Backing::File { file_end, .. } = &mut extra.backing {
             *file_end = (*file_end).min(grown_end).max(old_end);
@@ -1161,7 +1164,8 @@ fn remap_to(
         return Err(Errno::ENOMEM);
     }
     let destination = if request.flags & MREMAP_FIXED != 0 {
-        if request.new_address + request.new_length > map.end {
+        let end = request.new_address + request.new_length;
+        if end > map.end || map.crosses_ceiling(end, request.new_length) {
             return Err(Errno::ENOMEM);
         }
         request.new_address
@@ -1169,7 +1173,7 @@ fn remap_to(
         // The address is a hint, taken when the space there is free.
         let hint = request.new_address;
         if hint >= LOWEST_ADDRESS
-            && hint + request.new_length <= map.end
+            && hint + request.new_length <= map.ceiling
             && !map.any_mapped(hint, hint + request.new_length)
         {
             hint

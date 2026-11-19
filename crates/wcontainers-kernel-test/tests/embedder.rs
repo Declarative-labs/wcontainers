@@ -18,11 +18,9 @@ fn out() -> PathBuf {
     Path::new(env!("CARGO_TARGET_TMPDIR")).join("embedder")
 }
 
-/// The guest's fixed buffer and its pages, as embedder.c places it.
+/// Where embedder.c is told to map its buffer, and how many pages.
 const BUFFER: u64 = 0x3700_0000;
 const PAGES: u64 = 8;
-/// How many children embedder.c's `calls` makes, one call each.
-const CALLS: usize = 12;
 
 fn buffer() -> std::ops::Range<u64> {
     BUFFER..BUFFER + PAGES * PAGE_SIZE
@@ -35,11 +33,16 @@ fn page_of(address: u64) -> std::ops::Range<u64> {
 
 /// Runs embedder.c in `mode` on our kernel with the test's hooks.
 fn run_embedder(mode: &str, hooks: Box<dyn Hooks>, seed: u64) -> Run {
-    run_embedder_below(mode, hooks, seed, None)
+    run_embedder_below(&[mode], hooks, seed, None)
 }
 
-/// As [`run_embedder`], with the executor's ceiling given at start.
-fn run_embedder_below(mode: &str, hooks: Box<dyn Hooks>, seed: u64, ceiling: Option<u64>) -> Run {
+/// As [`run_embedder`], with more arguments and the executor's ceiling given at start.
+fn run_embedder_below(
+    mode: &[&str],
+    hooks: Box<dyn Hooks>,
+    seed: u64,
+    ceiling: Option<u64>,
+) -> Run {
     let program = wcontainers_kernel_test::guest::build("embedder", &[], &out());
     let mut files = wcontainers_kernel_test::image::reference_image().to_vec();
     files.extend(wcontainers_kernel_test::image::host_directory(
@@ -47,7 +50,9 @@ fn run_embedder_below(mode: &str, hooks: Box<dyn Hooks>, seed: u64, ceiling: Opt
         guest_directory_entry(),
     ));
     let path = in_guest_directory("embedder");
-    let command = [path.as_str(), mode];
+    let (buffer, pages) = (format!("{BUFFER:#x}"), PAGES.to_string());
+    let mut command = vec![path.as_str(), mode[0], buffer.as_str(), pages.as_str()];
+    command.extend(&mode[1..]);
     let container = driver::Container {
         files: &files,
         path: &path,
@@ -196,7 +201,8 @@ fn life_cycle_hooks_fire_in_order_over_fork_exec_threads_and_exit() {
             seen.borrow()
         );
         // The first process (1), its thread (2), whose number goes back once it has ended, then
-        // a child (3) that runs a program, ends, and is reaped; then the first process ends.
+        // a child (3) that runs a program, ends, and is reaped; then the first process ends and
+        // with the container nothing carries its number.
         let expected = [
             Seen::Starting {
                 id: 1,
@@ -213,6 +219,7 @@ fn life_cycle_hooks_fire_in_order_over_fork_exec_threads_and_exit() {
             Seen::Exiting(3),
             Seen::Free(3),
             Seen::Exiting(1),
+            Seen::Free(1),
         ];
         assert_eq!(*seen.borrow(), expected, "seed {seed}");
     }
@@ -249,6 +256,7 @@ fn task_ids_come_from_the_embedder_and_go_back_once_nothing_carries_them() {
             Seen::Exiting(1002),
             Seen::Free(1002),
             Seen::Exiting(1001),
+            Seen::Free(1001),
         ];
         assert_eq!(*seen.borrow(), expected, "seed {seed}");
     }
@@ -274,7 +282,7 @@ fn a_request_past_the_ceiling_is_announced_and_fails_as_out_of_memory() {
     for seed in wcontainers_kernel_test::schedule_seeds() {
         let seen = Rc::new(RefCell::new(Vec::new()));
         let run = run_embedder_below(
-            "outgrow",
+            &["outgrow"],
             Box::new(Outgrown(seen.clone())),
             seed,
             Some(CEILING),
@@ -305,21 +313,137 @@ fn a_request_past_the_ceiling_is_announced_and_fails_as_out_of_memory() {
     }
 }
 
+#[test]
+fn a_fixed_request_past_the_ceiling_is_announced_and_fails_as_out_of_memory() {
+    let address = format!("{:#x}", CEILING + CEILING / 4);
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let run = run_embedder_below(
+            &["fixed", &address],
+            Box::new(Outgrown(seen.clone())),
+            seed,
+            Some(CEILING),
+        );
+        let text = stdout(&run);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        assert!(
+            lines.iter().all(|line| !line.ends_with(" mapped")),
+            "{text}"
+        );
+        assert_eq!(
+            seen.borrow()
+                .iter()
+                .map(|(bytes, _)| *bytes)
+                .collect::<Vec<_>>(),
+            [PAGE_SIZE, PAGE_SIZE]
+        );
+        assert_eq!(counted(&run, reason::PROCESS_OUTGROWN), 2);
+        assert_eq!(counted(&run, reason::ADDRESS_ABOVE_SPACE), 0);
+        // Below the address space's end and with no ceiling, both are mapped, as on Linux.
+        let run = run_embedder_below(&["fixed", &address], Box::new(Defaults), seed, None);
+        assert_eq!(stdout(&run), "fixed mapped\nnoreplace mapped\n");
+    }
+}
+
+#[test]
+fn life_cycle_hooks_fire_in_order_over_signals_threaded_exec_vfork_groups_and_unwanted_children() {
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let recorder = Recorder::default();
+        let seen = recorder.seen.clone();
+        let run = run_embedder("paths", Box::new(recorder), seed);
+        assert_eq!(
+            stdout(&run),
+            "signalled 15\nthreaded exec 0\nvfork 0\ngroups left\nunwanted 1\n",
+            "{:?}",
+            run.outcome
+        );
+        let starting = |id, parent| Seen::Starting {
+            id,
+            parent: Some(parent),
+        };
+        let mut expected = vec![
+            Seen::Starting {
+                id: 1,
+                parent: None,
+            },
+            Seen::Program(1),
+            // Killed by a signal, then reaped.
+            starting(2, 1),
+            Seen::Exiting(2),
+            Seen::Free(2),
+            // Its second thread runs a program and takes the process's number; its own goes.
+            starting(3, 1),
+            Seen::Thread { id: 3, thread: 4 },
+            Seen::Program(3),
+            Seen::Free(4),
+            Seen::Exiting(3),
+            Seen::Free(3),
+            // vfork.
+            starting(5, 1),
+            Seen::Program(5),
+            Seen::Exiting(5),
+            Seen::Free(5),
+        ];
+        // A group leader reaped while its group lives on: its number goes only once the
+        // grandchild leaves the group, by setpgid and then by setsid, after a child in between.
+        for leader in [6, 9] {
+            let (grandchild, between) = (leader + 1, leader + 2);
+            expected.extend([
+                starting(leader, 1),
+                starting(grandchild, leader),
+                Seen::Exiting(leader),
+                starting(between, 1),
+                Seen::Exiting(between),
+                Seen::Free(between),
+                Seen::Free(leader),
+                Seen::Exiting(grandchild),
+                Seen::Free(grandchild),
+            ]);
+        }
+        // A child its parent does not want goes as it ends; then the container ends.
+        expected.extend([
+            starting(12, 1),
+            Seen::Exiting(12),
+            Seen::Free(12),
+            Seen::Exiting(1),
+            Seen::Free(1),
+        ]);
+        assert_eq!(*seen.borrow(), expected, "seed {seed}");
+    }
+}
+
 /// What a watching test saw at each hook: the process, the address, how, and whether the
-/// buffer still held what it held before the access.
+/// watched page still held what it held when the process started.
 type Touches = Rc<RefCell<Vec<(u32, u64, Access, bool)>>>;
 
-/// Watches the buffer's writes in every child; meets each watch inside the hook, or `later`,
-/// between steps through `Kernel::process`.
+/// Watches the buffer's writes in every process from its start; meets each watch inside the
+/// hook, or `later`, between steps through `Kernel::process`.
 struct Watcher {
     later: bool,
     touches: Touches,
     pending: Vec<(TaskId, u64)>,
+    at_start: BTreeMap<u32, Vec<u8>>,
+}
+
+impl Watcher {
+    fn new(later: bool, touches: Touches) -> Self {
+        Self {
+            later,
+            touches,
+            pending: Vec::new(),
+            at_start: BTreeMap::new(),
+        }
+    }
 }
 
 impl Hooks for Watcher {
     fn on_process_starting(&mut self, mut process: Process<'_>) {
-        process.memory_watch(buffer(), Watch::Writes);
+        // The first process maps the buffer only once it runs.
+        if let Ok(bytes) = process.memory_read(buffer()) {
+            self.at_start.insert(process.id().0, bytes);
+            process.memory_watch(buffer(), Watch::Writes);
+        }
     }
 
     fn on_memory_accessing(
@@ -329,16 +453,19 @@ impl Hooks for Watcher {
         address: u64,
         access: Access,
     ) {
-        let before = process
-            .memory_read(address..address + 1)
+        let page = page_of(address);
+        let now = process
+            .memory_read(page.clone())
             .expect("the buffer is mapped");
+        let offset = (page.start - BUFFER) as usize;
+        let unchanged = self.at_start[&process.id().0][offset..offset + now.len()] == now[..];
         self.touches
             .borrow_mut()
-            .push((process.id().0, address, access, before == b"x"));
+            .push((process.id().0, address, access, unchanged));
         if self.later {
             self.pending.push((process.id(), address));
         } else {
-            process.memory_watch(page_of(address), Watch::None);
+            process.memory_watch(page, Watch::None);
         }
     }
 
@@ -352,44 +479,99 @@ impl Hooks for Watcher {
     }
 }
 
+/// How many calls embedder.c's `calls` makes, from its first line.
+fn calls_made(run: &Run) -> usize {
+    let text = stdout(run);
+    let first = text.lines().next().unwrap_or_default();
+    first
+        .strip_prefix("calls ")
+        .and_then(|count| count.parse().ok())
+        .unwrap_or_else(|| panic!("no count of calls: {text}"))
+}
+
 #[test]
 fn a_watch_is_met_before_a_call_writes_and_the_result_is_unchanged() {
     for seed in wcontainers_kernel_test::schedule_seeds() {
         let plain = run_embedder("calls", Box::new(Defaults), seed);
         assert_eq!(plain.outcome.exit_code, 0, "{:?}", plain.outcome);
+        let calls = calls_made(&plain);
         assert_eq!(
             stdout(&plain).lines().count(),
-            CALLS + 1,
+            calls + 2,
             "{}",
             stdout(&plain)
         );
         for later in [false, true] {
             let touches = Touches::default();
-            let watcher = Watcher {
-                later,
-                touches: touches.clone(),
-                pending: Vec::new(),
-            };
-            let run = run_embedder("calls", Box::new(watcher), seed);
+            let run = run_embedder(
+                "calls",
+                Box::new(Watcher::new(later, touches.clone())),
+                seed,
+            );
             assert_eq!(stdout(&run), stdout(&plain), "seed {seed}, later {later}");
             let touches = touches.borrow();
-            let children: BTreeSet<u32> = touches.iter().map(|touch| touch.0).collect();
+            let processes: BTreeSet<u32> = touches.iter().map(|touch| touch.0).collect();
             assert_eq!(
-                children.len(),
-                CALLS,
+                processes.len(),
+                calls,
                 "seed {seed}, later {later}: {touches:?}"
             );
-            for (id, address, access, before) in touches.iter() {
+            for (id, address, access, unchanged) in touches.iter() {
                 assert!(buffer().contains(address), "{id}: {address:#x}");
                 assert_eq!(*access, Access::Write);
                 assert!(
-                    before,
-                    "{id}: the buffer at {address:#x} changed before the hook"
+                    unchanged,
+                    "{id}: the page of {address:#x} changed before the hook: {touches:?} {}",
+                    stdout(&run)
                 );
             }
-            assert_eq!(counted(&run, reason::WATCH_MET_AT_A_COPY), 0);
-            assert_eq!(counted(&run, reason::CALL_SHORT_OF_WATCHED_MEMORY), 0);
+            for counter in [
+                reason::COPY_UNDESCRIBED,
+                reason::WATCH_MET_AT_A_COPY,
+                reason::CALL_SHORT_OF_WATCHED_MEMORY,
+            ] {
+                assert_eq!(counted(&run, counter), 0, "{counter}: {:?}", run.counters);
+            }
         }
+    }
+}
+
+#[test]
+fn an_access_that_ends_before_a_watched_page_does_not_announce_it() {
+    for seed in wcontainers_kernel_test::schedule_seeds() {
+        let touches = Touches::default();
+        let run = run_embedder("span", Box::new(NextPage(touches.clone())), seed);
+        assert_eq!(run.outcome.exit_code, 0, "{:?}", run.outcome);
+        assert!(
+            touches.borrow().is_empty(),
+            "seed {seed}: {:?}",
+            touches.borrow()
+        );
+    }
+}
+
+/// Keeps a record of written pages and watches the buffer's third page in every child.
+struct NextPage(Touches);
+
+impl Hooks for NextPage {
+    fn on_process_starting(&mut self, mut process: Process<'_>) {
+        if process.info().parent().is_some() {
+            process.memory_changed();
+            process.memory_watch(page_of(BUFFER + 2 * PAGE_SIZE), Watch::Writes);
+        }
+    }
+
+    fn on_memory_accessing(
+        &mut self,
+        mut process: Process<'_>,
+        _: TaskId,
+        address: u64,
+        access: Access,
+    ) {
+        self.0
+            .borrow_mut()
+            .push((process.id().0, address, access, true));
+        process.memory_watch(page_of(address), Watch::None);
     }
 }
 
@@ -530,6 +712,12 @@ fn lazy_memory_runs_the_shell_scripts_as_the_reference_does() {
                 "{label}: exit code"
             );
             assert!(*filled.borrow() > 0, "{label}: nothing was filled");
+            let undescribed: Vec<_> = ours
+                .counters
+                .iter()
+                .filter(|counter| counter.reason == reason::COPY_UNDESCRIBED)
+                .collect();
+            assert!(undescribed.is_empty(), "{label}: {undescribed:?}");
             assert!(
                 written_past.borrow().is_empty(),
                 "{label}: written past the watch: {:x?}",

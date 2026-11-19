@@ -9,6 +9,7 @@ use wcontainers_abi::{Cpu, Host};
 
 use crate::memory::{page_down, page_up};
 use crate::process::{Channel, Pid};
+use crate::syscall::touch::{Ending, ThreadEnd};
 use crate::{Kernel, PID_MAX, RESERVED_PIDS};
 
 /// A process or thread id: one space for both, as Linux's `pid_t`.
@@ -258,7 +259,7 @@ impl Process<'_> {
             .borrow_mut()
             .set_watch(self.cpu, memory, start..end, watch);
         if changed {
-            self.kernel.watching |= watch != Watch::None;
+            self.kernel.update_watching();
             self.kernel.wake(Channel::Watch(memory.0));
             self.kernel.unsettled = true;
         }
@@ -301,6 +302,15 @@ impl Kernel {
 }
 
 impl Kernel {
+    /// Notes whether any process's pages are watched or recorded, which calls and faults then
+    /// look at.
+    pub(crate) fn update_watching(&mut self) {
+        self.watching = self
+            .processes
+            .values()
+            .any(|process| process.map.borrow().watches.narrows());
+    }
+
     /// Announces a hook about process `pid` to the embedder.
     pub(crate) fn announce(
         &mut self,
@@ -367,6 +377,16 @@ pub(crate) struct CallMemory<'k, 'c, 'x> {
 impl crate::syscall::touch::Memory for CallMemory<'_, '_, '_> {
     fn touch(&mut self, address: u64, length: u64, access: Access) -> bool {
         let end = address.saturating_add(length);
+        if let Some(described) = &mut self
+            .kernel
+            .process_of(self.tid)
+            .map
+            .borrow_mut()
+            .watches
+            .described
+        {
+            described.push((address, end));
+        }
         loop {
             let hit = self
                 .kernel
@@ -395,6 +415,51 @@ impl crate::syscall::touch::Memory for CallMemory<'_, '_, '_> {
             .cpu
             .registers(self.kernel.threads[&self.tid].cpu, &mut registers);
         registers.sp
+    }
+
+    fn thread_ends(&mut self, ending: Ending) -> Vec<ThreadEnd> {
+        self.kernel.thread_ends(self.tid, ending)
+    }
+
+    fn resuming(&mut self) -> bool {
+        self.kernel.threads[&self.tid].call.started
+    }
+
+    fn writable(&mut self, fd: u64) -> Option<bool> {
+        let file = self.kernel.call_file(self.tid, fd as i32).ok()?;
+        Some(file.borrow().writable())
+    }
+}
+
+impl Kernel {
+    /// What the ends of the threads `ending` names touch, as `thread_end` will: a thread's word
+    /// for its joiners is cleared only while others still use the memory.
+    pub(crate) fn thread_ends(&self, tid: crate::process::Tid, ending: Ending) -> Vec<ThreadEnd> {
+        let pid = self.threads[&tid].process;
+        let process = &self.processes[&pid];
+        let shared = self.memory_in_use_elsewhere(pid, process.memory);
+        let threads = &process.threads;
+        let end = |tid: crate::process::Tid, others_use_memory: bool| {
+            let thread = &self.threads[&tid];
+            ThreadEnd {
+                tid,
+                clear_child_tid: others_use_memory.then_some(thread.clear_child_tid),
+                robust_list: thread.robust_list.0,
+            }
+        };
+        match ending {
+            Ending::Caller => alloc::vec![end(tid, shared || threads.len() > 1)],
+            Ending::Process => threads
+                .iter()
+                .enumerate()
+                .map(|(index, &thread)| end(thread, shared || index + 1 < threads.len()))
+                .collect(),
+            Ending::Others => threads
+                .iter()
+                .filter(|thread| **thread != tid)
+                .map(|&thread| end(thread, true))
+                .collect(),
+        }
     }
 }
 
