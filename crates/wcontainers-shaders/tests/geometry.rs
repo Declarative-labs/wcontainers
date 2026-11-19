@@ -167,7 +167,7 @@ fn geometry_clip_distances_reach_the_pass_through() {
         .map_or(0, |l| l + 1);
     let key = VariantKey {
         flags: wcontainers_gpu::VariantFlags::CLIP_DISTANCE,
-        linked: wcontainers_gpu::LinkedValues {
+        linked: LinkedValues {
             location,
             clip_distances: 3,
         },
@@ -310,6 +310,62 @@ fn cull_distances_take_the_stage_helpers_route() {
     }
     // Without cull distances the route is refused.
     assert!(stage::cull_programs(&vertex()).is_err());
+}
+
+/// A vertex shader's lines (`vs_line`: a colour and a flat number) take the stage helper's line route
+/// by both routes: records of the position and both locations, the colour taken along the line and
+/// the number from the first vertex, and a pass-through writing the coverage at the pixel program's
+/// coverage location without perspective, where the pixel program made with `LINE_COVERAGE` reads it.
+/// Drawn in `tests/line_draw.rs`.
+#[test]
+fn antialiased_lines_take_the_stage_helpers_route() {
+    let key = VariantKey {
+        pulled: vec![(0, VertexFormat::Float32x3), (1, VertexFormat::Float32x4)],
+        ..Default::default()
+    };
+    for (route, dxil) in [("dxbc", false), ("dxil", true)] {
+        let read = |code| match dxil {
+            false => Source::Dxbc(code),
+            true => Source::Dxil(code),
+        };
+        let vs_code = own(&format!("vs_line.{route}"));
+        let ps_code = own(&format!("ps_line.{route}"));
+        let vs = convert(read(&vs_code), &key, None).unwrap_or_else(|e| panic!("{route}: {e}"));
+        let location = stage::locations(&vs.reflection.outputs)
+            .last()
+            .map_or(0, |l| l + 1);
+        let ps_key = VariantKey {
+            flags: VariantFlags::LINE_COVERAGE,
+            linked: LinkedValues {
+                location,
+                clip_distances: 0,
+            },
+            ..Default::default()
+        };
+        let programs =
+            stage::line_programs(&vs, &ps_key).unwrap_or_else(|e| panic!("{route}: {e}"));
+        assert_eq!(programs.locations.len(), 2, "{route}");
+        assert_eq!((programs.interpolated, programs.linear), (1, 0), "{route}");
+        let coverage = stage::line_coverage_location(&ps_key);
+        assert_eq!(coverage, location, "{route}");
+        let passthrough = wgsl(&programs.passthrough);
+        assert!(
+            passthrough.contains(&format!("@location({coverage}) @interpolate(linear")),
+            "{route}: {passthrough}"
+        );
+        let ps = convert(read(&ps_code), &ps_key, None).unwrap_or_else(|e| panic!("{route}: {e}"));
+        let fragment = wgsl(&ps.modules[0]);
+        assert!(
+            fragment.contains(&format!("@location({coverage}) @interpolate(linear")),
+            "{route}: {fragment}"
+        );
+    }
+}
+
+#[test]
+fn the_line_program_validates() {
+    let program = stage::line_program().unwrap();
+    assert!(wgsl(&program).contains("fn main"));
 }
 
 #[test]

@@ -127,8 +127,9 @@ pub(crate) fn apply(
                 flags.contains(VariantFlags::CLIP_DISTANCE) && variant.linked.clip_distances > 0;
             let clamp = flags.contains(VariantFlags::DEPTH_CLAMP);
             let early = flags.contains(VariantFlags::EARLY_TESTS);
+            let line = flags.contains(VariantFlags::LINE_COVERAGE);
             let targets = targets::needed(module, &variant.targets_in_shader)?;
-            if counting || mask || dual || bias || distances || clamp || early || targets {
+            if counting || mask || dual || bias || distances || clamp || early || line || targets {
                 let bias = bias.then(|| {
                     let vec4 = vector(module, 4, Scalar::F32);
                     helper(module, reflection, stage, HelperValue::DepthBias, vec4)
@@ -175,6 +176,13 @@ pub(crate) fn apply(
                         variant.samples,
                         per_sample,
                         bias,
+                    )?;
+                }
+                if line {
+                    line_coverage(
+                        module,
+                        &mut w,
+                        crate::stage::line_coverage_location(variant),
                     )?;
                 }
                 targets::targets_in_shader(module, &mut w, &variant.targets_in_shader, reflection)?;
@@ -676,8 +684,11 @@ impl Wrapped {
         }
         // The wrapped program's own result no longer leaves the stage: its members lose their
         // bindings, so an output a rewrite replaced (clip distances) asks nothing of the language.
+        // A result of the same outputs is the same type, which stays bound.
+        let result = f.result.as_ref().map(|r| r.ty);
         if self.changed
             && let Some((ty, false)) = self.original
+            && result != Some(ty)
             && let TypeInner::Struct { members, span } = &module.types[ty].inner
         {
             let unbound = Type {
@@ -998,6 +1009,88 @@ fn clipped(
     if let Some(mask) = mask {
         sample_mask(module, w, mask);
     }
+    Ok(())
+}
+
+/// How far past a line's axis and past each of its ends the coverage filter reaches, in pixels: the
+/// stage helper's rectangle around the line reaches as far.
+pub(crate) const LINE_REACH_ACROSS: f32 = (LINE_WIDTH + COVERAGE_BOX) / 2.0;
+pub(crate) const LINE_REACH_ALONG: f32 = COVERAGE_BOX / 2.0;
+/// The width of a line Direct3D antialiases, and the side of the box its coverage is taken over, in
+/// pixels.
+const LINE_WIDTH: f32 = 1.0;
+const COVERAGE_BOX: f32 = 1.0;
+
+/// Target 0's alpha multiplied by the coverage of the line the fragment is drawn for
+/// (`VariantFlags::LINE_COVERAGE`), from the distances the stage helper's rectangle passes at
+/// `location`: from the line's axis, along it from its first end, and its length, in pixels. The
+/// coverage is the area of a pixel-sized box at the fragment that the line, a rectangle
+/// [`LINE_WIDTH`] wide, covers.
+fn line_coverage(module: &mut Module, w: &mut Wrapped, location: u32) -> Result<()> {
+    use naga::BinaryOperator::{Add, Multiply, Subtract};
+    let vec4 = vector(module, 4, Scalar::F32);
+    let Some(at) = w.output(|b| matches!(b, Binding::Location { location: 0, .. })) else {
+        // Without target 0 there is no alpha to multiply.
+        return Ok(());
+    };
+    if w.outputs[at].ty != vec4 {
+        return Err(ConvertError::Unsupported(
+            crate::refusal::LINE_COVERAGE_TARGET,
+        ));
+    }
+    let values = w.input(
+        module,
+        |b| matches!(b, Binding::Location { location: l, .. } if *l == location),
+        Binding::Location {
+            location,
+            interpolation: Some(naga::Interpolation::Linear),
+            sampling: Some(naga::Sampling::Center),
+            blend_src: None,
+            per_primitive: false,
+        },
+        vec4,
+    );
+    let (f, body) = (&mut w.f, &mut w.body);
+    use crate::stage::coverage;
+    let [across, along, length] =
+        [coverage::ACROSS, coverage::ALONG, coverage::LENGTH].map(|i| index(f, body, values, i));
+    let zero = f32_lit(f, 0.0);
+    let one = f32_lit(f, 1.0);
+    let half_width = f32_lit(f, LINE_WIDTH / 2.0);
+    let below_axis = f32_lit(f, -LINE_WIDTH / 2.0);
+    let half_box = f32_lit(f, COVERAGE_BOX / 2.0);
+    // The box's overlap with the line across its axis, and along it.
+    let distance = math(f, body, MathFunction::Abs, [across, across]);
+    let low = binary(f, body, Subtract, distance, half_box);
+    let high = binary(f, body, Add, distance, half_box);
+    let low = math(f, body, MathFunction::Max, [low, below_axis]);
+    let high = math(f, body, MathFunction::Min, [high, half_width]);
+    let across_part = binary(f, body, Subtract, high, low);
+    let start = binary(f, body, Subtract, along, half_box);
+    let end = binary(f, body, Add, along, half_box);
+    let start = math(f, body, MathFunction::Max, [start, zero]);
+    let end = math(f, body, MathFunction::Min, [end, length]);
+    let along_part = binary(f, body, Subtract, end, start);
+    let [across_part, along_part] = [across_part, along_part].map(|p| {
+        let p = math(f, body, MathFunction::Max, [p, zero]);
+        math(f, body, MathFunction::Min, [p, one])
+    });
+    let coverage = binary(f, body, Multiply, across_part, along_part);
+    let value = w.outputs[at].value;
+    let mut components: Vec<_> = (0..crate::build::VEC4)
+        .map(|i| index(f, body, value, i))
+        .collect();
+    let alpha = crate::build::ALPHA as usize;
+    components[alpha] = binary(f, body, Multiply, components[alpha], coverage);
+    w.outputs[at].value = push(
+        f,
+        body,
+        Expression::Compose {
+            ty: vec4,
+            components,
+        },
+    );
+    w.changed = true;
     Ok(())
 }
 

@@ -55,6 +55,8 @@ pub const INTERPOLATE_AT: &str = "InterpolateAt";
 pub const INT_16_BITCAST: &str = "Int16Bitcast";
 pub const INT_16_STAGE_VALUE: &str = "Int16StageValue";
 pub const INT_16_STORAGE: &str = "Int16Storage";
+/// Line coverage for a program whose target 0 is not four floats, which has no alpha to multiply.
+pub const LINE_COVERAGE_TARGET: &str = "LineCoverageTarget";
 pub const LINKED_CLIP_DISTANCE_COUNT: &str = "LinkedClipDistanceCount";
 pub const LINKED_LOCATION_TAKEN: &str = "LinkedLocationTaken";
 pub const LOD_BIAS_ON_COMPARISON: &str = "LodBiasOnComparison";

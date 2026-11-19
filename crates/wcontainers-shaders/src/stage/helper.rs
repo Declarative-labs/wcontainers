@@ -233,6 +233,53 @@ struct CullValues {
     pad: [u32; 2],
 }
 
+/// The line program and what its corners hold.
+struct Lines<B: Backend> {
+    program: B::Program,
+    passthrough: ShaderModule,
+    /// Slots the pass-through reads after the position: the locations, the clip distances and the
+    /// coverage.
+    drawn_slots: u32,
+    interpolated: u32,
+    linear: u32,
+}
+
+/// The line program's values (`lines.wgsl`'s `Values`), read through its layout.
+#[repr(C)]
+#[allow(dead_code, reason = "read through its layout")]
+struct LineValues {
+    units: u32,
+    primitives: u32,
+    count: u32,
+    strip: u32,
+    in_words: u32,
+    out_words: u32,
+    index_base: u32,
+    interpolated: u32,
+    linear: u32,
+    pad: u32,
+    half_width: f32,
+    half_height: f32,
+    reach_across: f32,
+    reach_along: f32,
+    pad_end: [u32; 2],
+}
+
+/// The line program's bindings: its values, the vertex records, and the corners followed by the index
+/// list.
+const LINE_VALUES_BINDING: u32 = 0;
+const LINE_RECORDS_BINDING: u32 = 1;
+const LINE_CORNERS_BINDING: u32 = 2;
+/// Corners of a line's rectangle, and the indices of its two triangles.
+const LINE_CORNERS: u32 = 4;
+const LINE_INDICES: u32 = 2 * TRIANGLE_VERTICES;
+/// The vertices of a line.
+const LINE_VERTICES: u32 = 2;
+/// A draw on the line route of another topology than lines.
+const LINE_TOPOLOGY: &str = "AntialiasedLinesTopology";
+/// The line route run without the viewport's size, or another route with it.
+const LINE_VIEWPORT: &str = "the viewport's size, given to the line route alone";
+
 /// The cull program's bindings: its values, and the records followed by the index list.
 const CULL_VALUES_BINDING: u32 = 0;
 const CULL_DATA_BINDING: u32 = 1;
@@ -335,6 +382,7 @@ pub struct Stages<B: Backend> {
     domain: Option<Domain<B>>,
     stream: Option<Stream<B>>,
     cull: Option<Cull<B>>,
+    lines: Option<Lines<B>>,
     /// Words per vertex record.
     in_words: u32,
     records: Option<Owned<B>>,
@@ -395,6 +443,7 @@ impl<B: Backend> Stages<B> {
             domain: None,
             stream,
             cull: None,
+            lines: None,
             in_words: super::record_words(read.len()),
             records: None,
             out: None,
@@ -449,9 +498,56 @@ impl<B: Backend> Stages<B> {
                 cull_word: (1 + drawn_slots) * crate::build::VEC4,
                 distances: programs.cull_distances,
             }),
+            lines: None,
             in_words: super::record_words(
                 (drawn_slots + super::distance_slots(programs.cull_distances)) as usize,
             ),
+            records: None,
+            out: None,
+            unused,
+            unused_stride,
+        })
+    }
+
+    /// Makes the compute programs of `vertex` (converted with every input pulled) drawing its lines
+    /// antialiased for a pixel program converted with `pixel` (its key, with
+    /// `VariantFlags::LINE_COVERAGE`): each draw through [`Self::run_antialiased_lines`] runs it and
+    /// writes a rectangle around each line, which the final draw draws through [`Self::passthrough`]
+    /// with culling off ([`SlowPath::AntialiasedLinesAsQuads`]).
+    pub fn antialiased_lines(
+        backend: &mut B,
+        vertex: &Converted,
+        pixel: &wcontainers_gpu::VariantKey,
+    ) -> Result<Self, StageError> {
+        let programs = super::line_programs(vertex, pixel)?;
+        let shader = backend.create_shader(&programs.compute)?;
+        let vertex_program = backend.create_program(&Program::Compute(&shader))?;
+        let shader = backend.create_shader(&super::line_program()?)?;
+        let program = backend.create_program(&Program::Compute(&shader))?;
+        let record_slots =
+            programs.locations.len() as u32 + super::distance_slots(programs.clip_distances);
+        let unused_stride =
+            u64::from(backend.caps().limits.min_storage_offset_alignment).max(UNUSED_RANGE_BYTES);
+        let unused = backend.create_buffer(&BufferDesc {
+            size: UNUSED_RANGES * unused_stride,
+            usage: BufferUsage::STORAGE,
+            intent: MapIntent::Rarely,
+        })?;
+        Ok(Stages {
+            vertex: vertex_program,
+            geometry: None,
+            hull: None,
+            domain: None,
+            stream: None,
+            cull: None,
+            lines: Some(Lines {
+                program,
+                passthrough: programs.passthrough,
+                drawn_slots: record_slots + 1,
+                interpolated: programs.interpolated,
+                linear: programs.linear,
+            }),
+            in_words: super::record_words(record_slots as usize),
             records: None,
             out: None,
             unused,
@@ -590,6 +686,7 @@ impl<B: Backend> Stages<B> {
             domain: domain_stage,
             stream,
             cull: None,
+            lines: None,
             in_words: super::record_words(read.len()),
             records: None,
             out: None,
@@ -624,6 +721,9 @@ impl<B: Backend> Stages<B> {
         if let Some(c) = self.cull {
             backend.destroy(Object::Program(c.program));
         }
+        if let Some(l) = self.lines {
+            backend.destroy(Object::Program(l.program));
+        }
         for owned in [self.records, self.out].into_iter().flatten() {
             backend.destroy(Object::Buffer(owned.buffer));
         }
@@ -633,10 +733,11 @@ impl<B: Backend> Stages<B> {
     /// The vertex program of the draw after a geometry stage or the cull program, for the front's
     /// program with its pixel program.
     pub fn passthrough(&self) -> Option<&ShaderModule> {
-        match (&self.geometry, &self.cull) {
-            (Some(g), _) => Some(&g.passthrough),
-            (None, Some(c)) => Some(&c.passthrough),
-            (None, None) => None,
+        match (&self.geometry, &self.cull, &self.lines) {
+            (Some(g), _, _) => Some(&g.passthrough),
+            (None, Some(c), _) => Some(&c.passthrough),
+            (None, None, Some(l)) => Some(&l.passthrough),
+            (None, None, None) => None,
         }
     }
 
@@ -652,10 +753,11 @@ impl<B: Backend> Stages<B> {
 
     /// The vertex layout of that draw.
     pub fn vertex_layout(&self) -> Option<VertexLayoutDesc> {
-        let (words, slots) = match (&self.geometry, &self.cull) {
-            (Some(g), _) => (g.out_words, g.out_locations),
-            (None, Some(c)) => (self.in_words, c.drawn_slots),
-            (None, None) => return None,
+        let (words, slots) = match (&self.geometry, &self.cull, &self.lines) {
+            (Some(g), _, _) => (g.out_words, g.out_locations),
+            (None, Some(c), _) => (self.in_words, c.drawn_slots),
+            (None, None, Some(l)) => (self.in_words + crate::build::VEC4, l.drawn_slots),
+            (None, None, None) => return None,
         };
         let mut desc = VertexLayoutDesc {
             streams: [None; wcontainers_gpu::MAX_VERTEX_STREAMS],
@@ -685,7 +787,18 @@ impl<B: Backend> Stages<B> {
         backend: &mut B,
         draw: &StageDraw<'_, B>,
     ) -> Result<Option<FinalDraw<B>>, StageError> {
-        self.run_with(backend, draw, None)
+        self.run_with(backend, draw, None, None)
+    }
+
+    /// [`Self::run`] for a helper made by [`Self::antialiased_lines`], whose draw's viewport is
+    /// `viewport` pixels wide and high.
+    pub fn run_antialiased_lines(
+        &mut self,
+        backend: &mut B,
+        draw: &StageDraw<'_, B>,
+        viewport: [f32; 2],
+    ) -> Result<Option<FinalDraw<B>>, StageError> {
+        self.run_with(backend, draw, None, Some(viewport))
     }
 
     /// [`Self::run`] for a helper made by [`Self::tessellated_with`] with a geometry shader or stream
@@ -696,7 +809,7 @@ impl<B: Backend> Stages<B> {
         draw: &StageDraw<'_, B>,
         later: &DomainSets<'_, B>,
     ) -> Result<Option<FinalDraw<B>>, StageError> {
-        self.run_with(backend, draw, Some(later))
+        self.run_with(backend, draw, Some(later), None)
     }
 
     fn run_with(
@@ -704,10 +817,16 @@ impl<B: Backend> Stages<B> {
         backend: &mut B,
         draw: &StageDraw<'_, B>,
         later: Option<&DomainSets<'_, B>>,
+        viewport: Option<[f32; 2]>,
     ) -> Result<Option<FinalDraw<B>>, StageError> {
         if self.domain.is_some() != later.is_some() {
             return Err(StageError::Convert(ConvertError::Malformed(
                 DOMAIN_SETS.into(),
+            )));
+        }
+        if self.lines.is_some() != viewport.is_some() {
+            return Err(StageError::Convert(ConvertError::Malformed(
+                LINE_VIEWPORT.into(),
             )));
         }
         let (first, count, base_vertex, first_instance, instances) = match draw.range {
@@ -729,8 +848,8 @@ impl<B: Backend> Stages<B> {
         use InputTopology as T;
         let (n, strip) = match draw.topology {
             T::PointList => (1, false),
-            T::LineList => (2, false),
-            T::LineStrip => (2, true),
+            T::LineList => (LINE_VERTICES, false),
+            T::LineStrip => (LINE_VERTICES, true),
             T::TriangleList => (TRIANGLE_VERTICES, false),
             T::TriangleStrip => (TRIANGLE_VERTICES, true),
             T::LineListAdjacency => (LINE_ADJACENCY_VERTICES, false),
@@ -748,6 +867,11 @@ impl<B: Backend> Stages<B> {
             }
             (_, None) if patches => return Err(StageError::TopologyMismatch),
             (Some(g), None) if n != g.input_vertices => return Err(StageError::TopologyMismatch),
+            (None, None)
+                if self.lines.is_some() && !matches!(draw.topology, T::LineList | T::LineStrip) =>
+            {
+                return Err(StageError::Unsupported(LINE_TOPOLOGY));
+            }
             (None, None) if n > TRIANGLE_VERTICES && self.cull.is_some() => {
                 return Err(StageError::Unsupported(CULL_DISTANCE_ADJACENCY));
             }
@@ -766,7 +890,10 @@ impl<B: Backend> Stages<B> {
             true => (count + 1).saturating_sub(n),
         };
         let streamed = self.stream.is_some() && draw.stream_output.is_some();
-        let drawn = self.geometry.is_some() || self.hull.is_some() || self.cull.is_some();
+        let drawn = self.geometry.is_some()
+            || self.hull.is_some()
+            || self.cull.is_some()
+            || self.lines.is_some();
         if primitives == 0 || instances == 0 || (!drawn && !streamed) {
             return Ok(None);
         }
@@ -835,7 +962,21 @@ impl<B: Backend> Stages<B> {
                     index_base,
                 )
             }
-            None => (0, 0, 0),
+            None => match &self.lines {
+                Some(_) => {
+                    let units = u64::from(primitives) * u64::from(instances);
+                    let corner_words = units
+                        * u64::from(LINE_CORNERS)
+                        * u64::from(self.in_words + crate::build::VEC4);
+                    let index_base =
+                        u32::try_from(corner_words).map_err(|_| GpuError::OutOfMemory)?;
+                    let bytes = (corner_words + units * u64::from(LINE_INDICES)) * u64::from(WORD);
+                    let usage = BufferUsage::STORAGE | BufferUsage::VERTEX | BufferUsage::INDEX;
+                    grow(backend, &mut self.out, bytes, usage)?;
+                    (0, bytes, index_base)
+                }
+                None => (0, 0, 0),
+            },
         };
 
         let (index_bytes, index_offset, indices) = match &draw.index {
@@ -971,6 +1112,64 @@ impl<B: Backend> Stages<B> {
                     _ => Topology::TriangleList,
                 },
                 count: primitives * instances * n,
+                tessellated: None,
+            });
+        }
+        if let (Some(l), Some([width, height])) = (&self.lines, viewport) {
+            backend.slow_paths().hit(SlowPath::AntialiasedLinesAsQuads);
+            let units = primitives * instances;
+            let mut lv = [0u32; word_at(size_of::<LineValues>())];
+            let at = |offset| word_at(offset);
+            lv[at(offset_of!(LineValues, units))] = units;
+            lv[at(offset_of!(LineValues, primitives))] = primitives;
+            lv[at(offset_of!(LineValues, count))] = count;
+            lv[at(offset_of!(LineValues, strip))] = strip.into();
+            lv[at(offset_of!(LineValues, in_words))] = self.in_words;
+            lv[at(offset_of!(LineValues, out_words))] = self.in_words + crate::build::VEC4;
+            lv[at(offset_of!(LineValues, index_base))] = index_base;
+            lv[at(offset_of!(LineValues, interpolated))] = l.interpolated;
+            lv[at(offset_of!(LineValues, linear))] = l.linear;
+            lv[at(offset_of!(LineValues, half_width))] = (width / 2.0).to_bits();
+            lv[at(offset_of!(LineValues, half_height))] = (height / 2.0).to_bits();
+            lv[at(offset_of!(LineValues, reach_across))] =
+                crate::variant::LINE_REACH_ACROSS.to_bits();
+            lv[at(offset_of!(LineValues, reach_along))] =
+                crate::variant::LINE_REACH_ALONG.to_bits();
+            let bytes = words_as_bytes(&lv);
+            let mut offsets = [0u64];
+            let ring = backend.write_buffer_ring(
+                RingKind::Data,
+                &[&bytes],
+                limits.min_uniform_offset_alignment,
+                &mut offsets,
+            )?;
+            let out = &self.out.as_ref().unwrap().buffer;
+            let set = backend.create_binding_set(&[
+                BindingEntry {
+                    binding: LINE_VALUES_BINDING,
+                    stages: StageSet::COMPUTE,
+                    resource: BindingResource::UniformBuffer(BufferRange {
+                        buffer: &ring,
+                        offset: offsets[0],
+                        size: bytes.len() as u64,
+                    }),
+                },
+                storage(LINE_RECORDS_BINDING, records, record_bytes, false),
+                storage(LINE_CORNERS_BINDING, out, out_bytes, true),
+            ])?;
+            let mut sets = [None; MAX_BINDING_SETS];
+            sets[super::STAGE_SET as usize] = Some(&set);
+            backend.dispatch(&DispatchCall {
+                program: &l.program,
+                bindings: sets,
+                immediates: &[],
+                groups: groups(units, 1),
+            })?;
+            last = Some(FinalDraw {
+                buffer: out.clone(),
+                index_offset: Some(u64::from(index_base) * u64::from(WORD)),
+                topology: Topology::TriangleList,
+                count: units * LINE_INDICES,
                 tessellated: None,
             });
         }

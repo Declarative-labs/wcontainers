@@ -2195,6 +2195,18 @@ Next (in order):
   the pixel shader, `stages.vertex_layout()`, `buffer` as stream 0, indices (u32) from `buffer` at
   `index_offset` when given, its topology, restart on, `count` vertices or indices, one instance.
   `tests/geometry_draw.rs` does exactly this.
+- Alpha-antialiased lines (Direct3D 10 and 11's `AntialiasedLineEnable` with `MultisampleEnable`
+  off, on a line list or strip without a geometry or hull stage; WebGPU, `Features::COMPUTE`; since
+  run 45): convert the pixel shader with `VariantFlags::LINE_COVERAGE` and `linked` (its location
+  one past every location either program lists, as for clip distances), and the vertex shader with
+  every input pulled, `draw_base: Helpers` and the same `linked`. `Stages::antialiased_lines(backend,
+  &vertex, &pixel_key)` once per pair; per draw `stages.run_antialiased_lines(backend, &draw,
+  [viewport width, viewport height])`, then draw the `FinalDraw` as after a geometry stage, with
+  culling off (a triangle list, u32 indices). The pixel program multiplies target 0's alpha by the
+  coverage; a target 0 that is not four floats is refused (`LineCoverageTarget`). Refused by name:
+  cull distances on the same vertex shader (`AntialiasedLinesCullDistance`), other topologies
+  (`AntialiasedLinesTopology`), indexed strips (`StageIndexedStrip`, as on every route).
+  `tests/line_draw.rs` does exactly this.
 - Cull distances from a vertex shader without a geometry or hull stage (WebGPU, `Features::COMPUTE`,
   the back end without `Features::CULL_DISTANCE`; since run 39): the vertex shader converted as for
   a geometry shader (every input pulled, `draw_base: Helpers`, its other flags as for a plain draw,

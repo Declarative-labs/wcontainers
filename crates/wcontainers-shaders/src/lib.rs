@@ -234,7 +234,6 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
     } = variant;
     let unbuilt_flags = [
         (VariantFlags::PROVOKING_LAST, "ProvokingRewrite"),
-        (VariantFlags::LINE_COVERAGE, "AntialiasedLinesAsQuads"),
         (
             VariantFlags::PRIMITIVE_ID_FROM_STAGE,
             "PrimitiveIdAsGeometry",
