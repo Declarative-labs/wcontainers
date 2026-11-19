@@ -248,7 +248,10 @@ j5run3/f-*.txt, `j5run3/compare.sh` diffs them.
   passes. The 19 streams tests the merge brought pass on both sides.
 - None (this Mac): 2,125.1 s, load 34 to 25; 241 tests (the eight of the K6b runtimes' files left out, as in
   run 2). The same differences as at full, without the eight.
-- Bounded (this Mac, N 44 for seed 0): started 07:42 at load 25; running.
+- Bounded (this Mac, N 44 for seed 0): 4,715.6 s, load 25 to 56. The same differences as at full.
+- So on this Mac every verdict at full, none and bounded equals the stand-in's, test by test, but the known
+  ones, the four waiting tests, and deadlines (the reference's, above; run again on the stand-in alone 4 times
+  after the bar, all passed: j5run4/deadlines-standin.log).
 - On the ARM machine (job runtime/20261119-135850-695599 at 7d246691, 12 jobs and 12 test threads; logs
   fetched to j5run4/arm/j5, lists j5run4/arm/*.txt): stand-in 2,163 s, load 1 to 9; 249 tests, failing
   exactly the manual's 25 reference differences plus procstatus fdinfo (the zig relocation) and
@@ -269,6 +272,20 @@ j5run3/f-*.txt, `j5run3/compare.sh` diffs them.
   there, and was not run more). This is
   the kernel's code (asked of the kernel track, below); the two tests are listed as failing there for it.
   The machine went away during the run at none; none and bounded there are lost.
+
+The whole LTP comparison: started on the ARM machine at 16:10 UTC (job 20261119-161031-589993, 12 jobs; the
+image's files exported from the machine's `wc-kernel-ltp:20260930` by ltp/build.sh); the machine went away at
+1,253 of 2,694 stand-in results (kept in j5run4/arm/ltp, not counted). Started again on this Mac at 09:05 on
+f119fa27 by `j5run3/ltp-mac.sh whole` (detached; three jobs; results j5run3/ltp/whole-standin.tsv,
+whole-runtime.tsv, whole-compare.txt; it continues where its results files left off if stopped).
+
+The owned suite at f119fa27 (scratch j5run4/owned.log; 194.1 s with its build, load 33 to 50): 135 passed, 1
+ignored (`run_with_the_cache`, as before), 0 failed. The literal check's own tests (j5run4/literals-tests.log):
+all pass.
+
+A trial of the public surface through wcon (j5run4/trial; debug build): alpine 3.22 from the OCI layout, a host
+directory at /data and the container's 8080 published on 127.0.0.1: the container printed the host's file,
+wrote one the host then read, and answered a TCP connection from the host ("ping" in, "pong" out), status 0.
 
 Left (waits on other tracks' constants, or a ruling): spec.rs's mounts, capabilities, limits, umask and
 read-only paths (the kernel's defaults, step 13), its JSON keys (hard case 1), and its other refusal reasons
