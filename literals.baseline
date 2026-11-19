@@ -5614,8 +5614,6 @@ code	crates/wcontainers-gpu-webgpu/src/blocks.rs	str	WebGpu::write_blocks	"a blo
 code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	Last	4
 code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	Last	4
 code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	Last	6
-code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	WebGpu::binding_set	128
-code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	WebGpu::binding_set	32
 code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	WebGpu::draw_in	3
 code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	color_value	3
 code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	color_value	4
@@ -5646,8 +5644,6 @@ code	crates/wcontainers-gpu-webgpu/src/fill.rs	str	WebGpu::read_program	"texture
 code	crates/wcontainers-gpu-webgpu/src/fill.rs	str	WebGpu::read_program	"texture_2d<f32>"
 code	crates/wcontainers-gpu-webgpu/src/fill.rs	str	WebGpu::read_program	"texture_2d<u32>"
 code	crates/wcontainers-gpu-webgpu/src/fill.rs	str	WebGpu::read_program	"v.x"
-code	crates/wcontainers-gpu-webgpu/src/layout.rs	int	derive	128
-code	crates/wcontainers-gpu-webgpu/src/layout.rs	int	paired	128
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	char	WebGpu::frame_report	','
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	char	WebGpu::frame_report	':'
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	char	WebGpu::frame_report	'{'
@@ -24066,14 +24062,6 @@ redefinition	crates/wcontainers-gpu-test/src/suite/routes.rs	int	fill_modes_draw
 redefinition	crates/wcontainers-gpu-test/src/suite/routes.rs	int	values_pass_between_programs_by_location::N	N = 4
 redefinition	crates/wcontainers-gpu-test/src/suite/routes.rs	int	vertices_pulled_from_storage_match_the_fetched_ones::N	N = 8
 redefinition	crates/wcontainers-gpu-webgl/examples/draw-cost.rs	int	SIZE	SIZE = 256
-redefinition	crates/wcontainers-gpu-webgl/tests/suite.rs	int	<Angle as wcontainers_gpu_test::Host>::window::WINDOW	WINDOW = 1
-redefinition	crates/wcontainers-gpu-webgpu/examples/scenes/features.rs	int	WIDTH	WIDTH = 64
-redefinition	crates/wcontainers-gpu-webgpu/examples/scenes/pulled.rs	int	INSTANCES	INSTANCES = 16
-redefinition	crates/wcontainers-gpu-webgpu/examples/scenes/pulled.rs	int	SIZE	SIZE = 256
-redefinition	crates/wcontainers-gpu-webgpu/examples/scenes/suite.rs	int	<Chrome as wcontainers_gpu_test::Host>::window::WINDOW	WINDOW = 1
-redefinition	crates/wcontainers-gpu-webgpu/tests/host/mod.rs	int	<Native as wcontainers_gpu_test::Host>::window::WINDOW	WINDOW = 1
-redefinition	crates/wcontainers-gpu-webgpu/tests/host/mod.rs	int	window::SIDE	SIDE = 4
-redefinition	crates/wcontainers-gpu-webgpu/tests/writes.rs	int	written_bytes_are_counted_and_reported::SIDE	SIDE = 4
 redefinition	crates/wcontainers-gpu/src/backend/tests.rs	int	absent_features_say_which::BLOCK	BLOCK = 100
 redefinition	crates/wcontainers-gpu/src/backend/tests.rs	int	call::BLOCK	BLOCK = 100
 redefinition	crates/wcontainers-graphics-test/src/d3d11/scenes/blend.rs	int	SIZE	SIZE = 256
@@ -24448,8 +24436,6 @@ restated	crates/wcontainers-gpu-webgpu/examples/scenes/pulled.rs	float	object	10
 restated	crates/wcontainers-gpu-webgpu/examples/scenes/pulled.rs	float	object	512.0
 restated	crates/wcontainers-gpu-webgpu/examples/scenes/pulled.rs	int	OBJECTS	256
 restated	crates/wcontainers-gpu-webgpu/examples/scenes/pulled.rs	int	pulled_set	256
-restated	crates/wcontainers-gpu-webgpu/examples/scenes/queries.rs	int	paged_sets	4096
-restated	crates/wcontainers-gpu-webgpu/examples/scenes/queries.rs	int	paged_sets	4096
 restated	crates/wcontainers-gpu-webgpu/examples/scenes/timestamps.rs	float	APART_MS	300.0
 restated	crates/wcontainers-gpu-webgpu/examples/scenes/timestamps.rs	int	ROUNDS	2048
 restated	crates/wcontainers-gpu-webgpu/examples/scenes/timestamps.rs	int	SIZE	512
@@ -24468,18 +24454,10 @@ restated	crates/wcontainers-gpu-webgpu/tests/blocks.rs	int	bc_copies_keep_the_bl
 restated	crates/wcontainers-gpu-webgpu/tests/blocks.rs	int	bc_copies_keep_the_blocks_natively_and_decoded	256
 restated	crates/wcontainers-gpu-webgpu/tests/blocks.rs	int	bc_copies_keep_the_blocks_natively_and_decoded	256
 restated	crates/wcontainers-gpu-webgpu/tests/blocks.rs	int	bc_copies_keep_the_blocks_natively_and_decoded	256
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	float	depth_and_stencil_parts_copy_and_read_back_exactly	16_777_215.0
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	float	depth_of	16_777_215.0
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	float	same_depth	16_777_215.0
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	depth_and_stencil_parts_copy_and_read_back_exactly	0xff_ffff
 restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	depth_and_stencil_parts_copy_and_read_back_exactly	1024
 restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	depth_and_stencil_parts_copy_and_read_back_exactly	1024
 restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	depth_and_stencil_parts_copy_and_read_back_exactly	4096
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	depth_of	0xff_ffff
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	float_depth_copies_keep_what_a_draw_can_write	0x4000_0000
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	float_depth_copies_keep_what_a_draw_can_write	0x8000_0000
 restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	sixteen_bit_group_copies_into_depth_keep_the_bits	0x8000
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	source_words	0xff_ffff
 restated	crates/wcontainers-gpu-webgpu/tests/depth.rs	int	depth_bias_on_24_bit_depth_matches_direct3d	256
 restated	crates/wcontainers-gpu-webgpu/tests/direct3d.rs	float	decoded_step	2048.0
 restated	crates/wcontainers-gpu-webgpu/tests/direct3d.rs	float	generate_mips_of_r32float_without_filtering_match_direct3d	65536.0
@@ -24487,7 +24465,6 @@ restated	crates/wcontainers-gpu-webgpu/tests/raster.rs	int	wireframe_fill_matche
 restated	crates/wcontainers-gpu-webgpu/tests/writes.rs	int	byte_granular_buffer_operations_match_a_model::SIZE	1024
 restated	crates/wcontainers-gpu-webgpu/tests/writes.rs	int	ordered_writes_are_staged_in_one_ring	256
 restated	crates/wcontainers-gpu-webgpu/tests/writes.rs	int	ordered_writes_are_staged_in_one_ring	256
-restated	crates/wcontainers-gpu-webgpu/tests/writes.rs	int	queries_carry_across_splits_in_a_set_of_the_largest_size	4096
 restated	crates/wcontainers-gpu-webgpu/tests/writes.rs	int	writes_take_effect_in_command_order	300
 restated	crates/wcontainers-gpu-webgpu/tests/writes.rs	int	writes_take_effect_in_command_order	300
 restated	crates/wcontainers-gpu/src/backend/tests.rs	int	Recorder::new	16384
