@@ -157,11 +157,18 @@ rewritten) would change only that function (brief).
   direct branch once the target is translated (one aligned 4-byte write on ARM64, a rel32 on x86-64, while no
   virtual CPU runs that code, then the architecture's instruction-cache maintenance). A branch to a guest
   address outside the loaded translation goes through the process's own lookup (the mirror below, or x86-64's
-  cache), since another process sharing these frames may map something else there.
+  cache), since another process sharing these frames may map something else there. As built at N4 run 1
+  (ARM64): pieces are not yet shared between processes (each process loads its own), so every direct exit is
+  written as the jump to its target's slot (the slot's address built in t, two or three moves as the encoder
+  gives them, and `br t`) and is linked within its process: the inside writes a `b` to the target's piece over
+  the exit's first word when either of the two is loaded, and writes the first word back when the target's
+  piece is dropped. The emitter hands the inside each exit's offset and target with the position map.
 - **Jumps through a register and returns, ARM64.** The entry mirror holds a 16-byte slot for every guest
   address G below 2^45, at the slot address `mask | (G << 2)`, `mask` being the logical immediate
   0xffff_8000_0000_0000; the mirror fills the top half of the TTBR1 half and the inside and the code area sit
-  in its lower half. A slot holds its piece's address made in three moves and a `br` (it reaches any piece);
+  in its lower half. A slot holds its piece's address made in three moves and a `br` (it reaches any piece;
+  as built, three `movk`s of bits 0 to 47, since a slot is entered only by a `br t` or `ret t` whose t holds
+  the slot's own address, whose bits above 47 are the code area's too, a fact the inside asserts at build time);
   a slot with no piece holds `udf`; a slot page not yet needed is not mapped. The mirror is per process
   (section 5.3). A jump through xN is:
   `ubfx t, xN, #45, #11; cbnz t, bad; ubfiz t, xN, #2, #45; bfxil t, xN, #0, #2; eor t, t, #mask; br t`
@@ -699,8 +706,8 @@ these names (suggested; the owner chooses names):
   reported to the policy at each exit of a run with the count so far and the last exit's request word as its
   detail (section 5.6; a breakdown by request kind is the monitor's, which sees each request);
 - "code area emptied": guest-physical memory has no frame for a new piece, so every loaded piece is dropped
-  and the code area is used again from its start (between pieces only: nothing is linked before N4, and
-  none runs); a piece that does not fit even then ends its process as `MemoryFaultWithoutRegisters`;
+  and the code area is used again from its start (between runs of translated code: every slot is emptied and
+  every link undone with it); a piece that does not fit even then ends its process as `MemoryFaultWithoutRegisters`;
 - "code changed after it ran", as runtime.md;
 - "stop deferred to the end of a string instruction" (x86-64, section 4);
 - "single step through host instructions" (x86-64, a thread with TF set: every host instruction a ring 0
@@ -1186,9 +1193,13 @@ next exit, as `LocalSystem`'s would.
   back to the inside, which so sees every instruction boundary: it ends the turn at the first boundary where
   the thread's count has gone `n` past the turn's start, with no check in translated code (built at N3, run 6;
   the count must be in the pieces, so a process without exact replay refuses such a turn as `Failure`,
-  "turn limit without the count"). Once pieces are linked (N4) the inside no longer sees every boundary, and
-  until the owner rules on decision 10 such a turn is answered as `Failure` there (named "turn limited by a
-  count alone"), never by running past it. A turn with no limit (`limit: None`, which the test crate's
+  "turn limit without the count"). Once pieces are linked (N4) the inside no longer sees every boundary, so
+  until the owner rules on decision 10 such a turn runs one host instruction at a time: the inside sets EL1's
+  software step of EL0 (MDSCR_EL1.SS, and SPSR_EL1.SS at each entry, as N1's step case measured), resolves the
+  position at every step exception through the map as for an interrupt, and ends the turn at the first one
+  whose count has reached the limit. It is exact at every look-ahead and costs an exception per host
+  instruction, only in such turns: the slow path "turn with a count limit run in steps", counted per turn.
+  Translated code is the same with or without it. A turn with no limit (`limit: None`, which the test crate's
   `System` gives when the kernel gives no slice: a single thread with no deadline and no CPU timer) runs until
   it exits.
 - **An event from outside** is a real interrupt raised from a host thread: Hypervisor.framework's

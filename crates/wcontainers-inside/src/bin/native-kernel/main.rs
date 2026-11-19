@@ -59,11 +59,14 @@ mod kernel {
                 warned.reason.as_bytes(),
             );
         }
+        let (stops, positions) = cpu.positions();
         loop {
             floor::ask(
                 &Ended {
                     status: i64::from(status) as u64,
                     turns: policy.turns,
+                    stops,
+                    positions,
                 },
                 &[],
             );

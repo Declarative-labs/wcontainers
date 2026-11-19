@@ -153,6 +153,8 @@ pub struct Outcome {
     pub exits: u64,
     /// The root's files when the container ended.
     pub root: Vec<FileRecord>,
+    /// How many times its threads stopped and the hash of their positions, natively.
+    pub positions: Option<(u64, u64)>,
 }
 
 /// Each warning's reason with its last count.
@@ -163,8 +165,40 @@ pub fn summary(warnings: &[Warned]) -> std::collections::BTreeMap<&str, u64> {
         .collect()
 }
 
-/// Runs the container in the kernel inside the machine, its wall clock starting at `wall_start`.
+/// Runs the container in the kernel inside the machine, its wall clock starting at `wall_start`, at look-ahead
+/// none and at the bound [`look_ahead`] gives, which must agree in everything the guest and its host see and in
+/// the count at every stop; gives the bounded run's outcome.
 pub fn native(seed: u64, wall_start: u64, files: &[File], starting: &Starting) -> Outcome {
+    let none = native_at(LookAhead::None, seed, wall_start, files, starting);
+    let bounded = look_ahead();
+    let outcome = native_at(bounded, seed, wall_start, files, starting);
+    let what = |o: &Outcome| {
+        (
+            o.status,
+            o.turns,
+            o.positions,
+            o.host.calls.clone(),
+            o.host.stdout.clone(),
+            o.host.stderr.clone(),
+            o.root.clone(),
+        )
+    };
+    assert_eq!(
+        what(&none),
+        what(&outcome),
+        "look-ahead none and {bounded:?} differ"
+    );
+    outcome
+}
+
+/// Runs the container in the kernel inside the machine at `look_ahead`, its wall clock starting at `wall_start`.
+fn native_at(
+    look_ahead: LookAhead,
+    seed: u64,
+    wall_start: u64,
+    files: &[File],
+    starting: &Starting,
+) -> Outcome {
     static PROGRAM_IMAGE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
     let program = PROGRAM_IMAGE.get_or_init(|| build(PROGRAM));
     let (machine, memory, loaded, start) = machine(program, MEMORY, ONE_CPU);
@@ -180,7 +214,6 @@ pub fn native(seed: u64, wall_start: u64, files: &[File], starting: &Starting) -
     };
     let mut warnings = Vec::new();
     let mut exits = 0;
-    let look_ahead = look_ahead();
     loop {
         exits += 1;
         match cpu.run().expect("running") {
@@ -228,7 +261,12 @@ pub fn native(seed: u64, wall_start: u64, files: &[File], starting: &Starting) -
                     });
                 }
                 protocol::Request::Ended => {
-                    let Ended { status, turns } = link.get();
+                    let Ended {
+                        status,
+                        turns,
+                        stops,
+                        positions,
+                    } = link.get();
                     return Outcome {
                         status: status as i32,
                         turns,
@@ -236,6 +274,7 @@ pub fn native(seed: u64, wall_start: u64, files: &[File], starting: &Starting) -
                         warnings,
                         exits,
                         root: monitor.root,
+                        positions: Some((stops, positions)),
                     };
                 }
             }
@@ -300,5 +339,6 @@ pub fn wasm(seed: u64, wall_start: u64, files: &[File], starting: &Starting) -> 
         warnings: policy.warnings,
         exits: 0,
         root: ring.monitor.root,
+        positions: None,
     }
 }

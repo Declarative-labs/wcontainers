@@ -37,6 +37,8 @@ safe-mmio = "0.4.0"
 spin = { version = "0.10.0", default-features = false, features = ["spin_mutex", "lock_api"] }
 # What each range of a process allows, and which ranges show a shared block.
 rangemap = { version = "1.8.0", default-features = false }
+# The hash of the positions of a CPU side's stops.
+rustc-hash = { version = "2.1.3", default-features = false }
 # The heap.
 talc = { version = "5.1.1", default-features = false }
 
