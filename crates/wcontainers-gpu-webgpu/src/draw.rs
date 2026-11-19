@@ -17,7 +17,7 @@ use wcontainers_gpu::{
 use crate::{Buffer, Sampler, TextureView, WebGpu, convert, layout};
 
 /// How many objects the caches made, which tests read to prove the caching.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct Counters {
     /// Render and compute pipelines built.
     pub pipelines: u64,
