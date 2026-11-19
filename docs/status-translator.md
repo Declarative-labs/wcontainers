@@ -119,6 +119,12 @@ The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three laye
   ledger line. By then chunks 182 to 197 and 201 to 211 had passed there. `arm-up/up-resume.sh` (detached,
   20 hours from 08:52, log `up-resume.log`) warms the cache and starts `up.sh` again when a machine answers;
   the top-down loop is the other agent's.
+- Confirmation run, layers 1 and 2, started 2026-11-19 09:30 on the Mac beside the long run, on 1f9c030
+  (its crates are 6a705f8's; a later fix would mean running it again): `CARGO_BUILD_JOBS=4
+  WC_LONG_DIR=.../p2/confirm WC_LONG_PERCENT=5 WC_LONG_SEED=200 WC_LONG_LAYERS=1,2 WC_LONG_JOBS=3
+  WC_LONG_LIMIT=180` with the driver command above (3 jobs: what the Mac allows beside the long run's 6).
+  Layer 3 of it comes after its zig cache is warmed. `resume.sh` and `watch.sh` now tell the long run's
+  driver from this one by its working directory (`lsof`), so neither takes one for the other.
 - Docker on the Mac came back at 04:58 (someone started it); `resume.sh` restarted the driver at 05:01 on
   398df57 (only this file changed since 6a705f8); chunk 153 ran first and passed.
 - Disk: each copy's `trees/<commit>/target/programs` keeps every built program, about 330 MB a chunk
