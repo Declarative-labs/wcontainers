@@ -254,22 +254,31 @@ fn texel_copy<'a>(
     }
 }
 
-/// Adds 64-bit counts of spare query slots into resolved results, pair by pair; a pair whose
-/// slot has the top bit set replaces the result instead (a query not begun in its own slot).
-const QUERY_SUM_WGSL: &str = "
+/// The top bit of a pair's spare slot: the pair replaces the result instead of adding to it (a
+/// query not begun in its own slot).
+const REPLACE: u32 = 1 << (u32::BITS - 1);
+
+/// Adds 64-bit counts of spare query slots into resolved results, pair by pair, or replaces a
+/// result where the slot has `REPLACE`.
+fn query_sum_wgsl() -> String {
+    format!(
+        "
 @group(0) @binding(0) var<storage, read_write> sums: array<vec2<u32>>;
 @group(0) @binding(1) var<storage, read> spare: array<vec2<u32>>;
 @group(0) @binding(2) var<storage, read> pairs: array<vec2<u32>>;
-@compute @workgroup_size(1) fn add() {
-    for (var k = 0u; k < arrayLength(&pairs); k++) {
+@compute @workgroup_size(1) fn add() {{
+    for (var k = 0u; k < arrayLength(&pairs); k++) {{
         let p = pairs[k];
-        let a = select(sums[p.x], vec2(0u), p.y >= 0x80000000u);
-        let b = spare[p.y & 0x7fffffffu];
+        let a = select(sums[p.x], vec2(0u), p.y >= {REPLACE}u);
+        let b = spare[p.y & {}u];
         let low = a.x + b.x;
         sums[p.x] = vec2(low, a.y + b.y + select(0u, 1u, low < a.x));
-    }
+    }}
+}}
+",
+        !REPLACE
+    )
 }
-";
 
 /// The staging ring's first size; it is made twice as large when a submit's staged bytes do not
 /// fit.
@@ -1601,7 +1610,7 @@ impl WebGpu {
                     .iter()
                     .enumerate()
                     .flat_map(move |(k, &(page, slot))| {
-                        let replace = if k == 0 && !s.own { 1 << 31 } else { 0 };
+                        let replace = if k == 0 && !s.own { REPLACE } else { 0 };
                         [at_of(i), base(page, slot) | replace]
                     })
             })
@@ -1674,7 +1683,7 @@ impl WebGpu {
                 .device
                 .create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: None,
-                    source: wgpu::ShaderSource::Wgsl(QUERY_SUM_WGSL.into()),
+                    source: wgpu::ShaderSource::Wgsl(query_sum_wgsl().into()),
                 });
             let pipeline = self
                 .device
@@ -1682,7 +1691,7 @@ impl WebGpu {
                     label: None,
                     layout: None,
                     module: &module,
-                    entry_point: Some("add"),
+                    entry_point: None,
                     compilation_options: Default::default(),
                     cache: None,
                 });

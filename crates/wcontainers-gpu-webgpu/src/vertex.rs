@@ -426,7 +426,7 @@ impl WebGpu {
                 label: None,
                 layout: Some(&pipeline_layout),
                 module: &module,
-                entry_point: Some("main"),
+                entry_point: None,
                 compilation_options: Default::default(),
                 cache: None,
             });

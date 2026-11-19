@@ -7,7 +7,7 @@
 //! (`prepare_timings`, prepare.rs), checks timestamps (`timestamps`, timestamps.rs) and the formats
 //! held converted (`converted`, converted.rs) and the vertex formats WebGPU lacks
 //! (`vertex_formats`, vertices.rs), checks query sets past 4096 and the query ring (`query_sets`,
-//! queries.rs), checks subgroups and the primitive index (`program_features`, features.rs),
+//! queries.rs), checks subgroups, the primitive index and fine derivatives (`program_features`, features.rs),
 //! measures instance data fetched in the program (`pulled_costs`,
 //! pulled.rs), and web/suite.html runs the shared suite (suite.rs).
 
@@ -230,10 +230,13 @@ mod web {
         let (mut b, _) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
         let mut lines = Vec::new();
         for f in super::features::Feature::ALL {
-            if offered.iter().any(|o| o == f.web_name()) && !b.caps().has(f.declared()) {
+            let offers = f
+                .web_name()
+                .is_none_or(|name| offered.iter().any(|o| o == name));
+            if offers && !b.caps().has(f.declared()) {
                 return Err(js(format!(
                     "the adapter offers {}, the device does not declare it",
-                    f.web_name()
+                    f.name()
                 )));
             }
             lines.push(super::features::check(&mut b, f).map_err(js)?);

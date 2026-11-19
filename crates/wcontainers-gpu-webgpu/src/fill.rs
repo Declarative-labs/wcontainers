@@ -4,11 +4,29 @@
 //! texture to be copied out, `DepthReadByDraw`; plan section 4.2; a frame drawn into the window's
 //! format, `PresentConverted`, 4.9), and the empty fragment stage of programs without one.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, ops::Range};
 
 use wcontainers_gpu::{Format, FormatKind, SlowPath, TargetLayout};
 
 use crate::{Stream, WebGpu, convert};
+
+/// The vertices of the triangle covering the viewport.
+pub(crate) const COVER_VERTICES: Range<u32> = 0..3;
+
+/// Bits of 24-bit unorm depth (`depth24plus` as this back end reads and writes it).
+const UNORM24_BITS: u32 = 24;
+
+/// The largest 24-bit unorm depth's integer.
+pub(crate) const UNORM24_MAX: u32 = (1 << UNORM24_BITS) - 1;
+
+/// Bits of a stencil value: the stencil draw's programs, one a bit.
+const STENCIL_BITS: usize = u8::BITS as usize;
+
+/// The name of the empty fragment stage.
+pub(crate) const NO_FRAGMENT: &str = "none";
+
+/// A uniform of four words, as the programs' `vec4`.
+type Words = [u32; 4];
 
 /// A triangle covering the viewport.
 const COVER_WGSL: &str = "
@@ -102,7 +120,7 @@ struct DepthProgram {
 /// per bit setting it where the source has it.
 struct StencilProgram {
     clear: wgpu::RenderPipeline,
-    bits: [wgpu::RenderPipeline; 8],
+    bits: [wgpu::RenderPipeline; STENCIL_BITS],
     layout: wgpu::BindGroupLayout,
 }
 
@@ -170,25 +188,33 @@ fn loader_layout(
     (layout, pipeline_layout)
 }
 
-/// The source of a stencil draw's own program: the first instance names the bit, 8 the clear.
-const STENCIL_WGSL: &str = "
+/// The instance of a stencil draw that clears: past every bit's.
+const STENCIL_CLEAR: u32 = STENCIL_BITS as u32;
+
+/// The source of a stencil draw's own program: the first instance names the bit, `STENCIL_CLEAR`
+/// the clear.
+fn stencil_wgsl() -> String {
+    format!(
+        "
 @group(0) @binding(0) var<uniform> shift: vec4<i32>;
 @group(0) @binding(1) var src: texture_2d<u32>;
-struct Covered {
+struct Covered {{
     @builtin(position) p: vec4f,
     @location(0) @interpolate(flat) bit: u32,
-}
-@vertex fn cover(@builtin(vertex_index) i: u32, @builtin(instance_index) bit: u32) -> Covered {
+}}
+@vertex fn cover(@builtin(vertex_index) i: u32, @builtin(instance_index) bit: u32) -> Covered {{
     let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
     return Covered(vec4f(p * 2.0 - 1.0, 0.0, 1.0), bit);
-}
-@fragment fn stencil(c: Covered) {
+}}
+@fragment fn stencil(c: Covered) {{
     let s = textureLoad(src, vec2i(c.p.xy) + shift.xy, 0).x;
-    if c.bit < 8u && ((s >> c.bit) & 1u) == 0u {
+    if c.bit < {STENCIL_CLEAR}u && ((s >> c.bit) & 1u) == 0u {{
         discard;
-    }
+    }}
+}}
+"
+    )
 }
-";
 
 /// The fragment stage of a present draw: the frame's texel at the same place.
 const PRESENT_WGSL: &str = "
@@ -212,11 +238,11 @@ const RESOLVE_WGSL: &str = "
 }
 ";
 
-/// A 16-byte uniform buffer holding `words`.
-fn uniform(device: &wgpu::Device, words: [u32; 4]) -> wgpu::Buffer {
+/// A uniform buffer holding `words`.
+fn uniform(device: &wgpu::Device, words: Words) -> wgpu::Buffer {
     let b = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        size: size_of::<[u32; 4]>() as u64,
+        size: size_of::<Words>() as u64,
         usage: wgpu::BufferUsages::UNIFORM,
         mapped_at_creation: true,
     });
@@ -261,7 +287,9 @@ impl WebGpu {
             .get_or_insert_with(|| {
                 device.create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: None,
-                    source: wgpu::ShaderSource::Wgsl("@fragment fn none() {}".into()),
+                    source: wgpu::ShaderSource::Wgsl(
+                        format!("@fragment fn {NO_FRAGMENT}() {{}}").into(),
+                    ),
                 })
             })
             .clone()
@@ -280,12 +308,11 @@ impl WebGpu {
             .clone()
     }
 
-    /// A program drawing a whole target of `format` from one bound texture, the fragment stage
-    /// `entry` of `source`.
+    /// A program drawing a whole target of `format` from one bound texture, the fragment stage of
+    /// `source`.
     fn texel_program(
         &mut self,
         source: &str,
-        entry: &str,
         multisampled: bool,
         format: wgpu::TextureFormat,
     ) -> DepthProgram {
@@ -316,7 +343,7 @@ impl WebGpu {
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &cover,
-                entry_point: Some("cover"),
+                entry_point: None,
                 compilation_options: Default::default(),
                 buffers: &[],
             },
@@ -325,7 +352,7 @@ impl WebGpu {
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &module,
-                entry_point: Some(entry),
+                entry_point: None,
                 compilation_options: Default::default(),
                 targets: &[Some(format.into())],
             }),
@@ -345,7 +372,7 @@ impl WebGpu {
     ) {
         self.slow.hit(SlowPath::ResolveByDraw);
         if !self.fills.resolves.contains_key(&format) {
-            let program = self.texel_program(RESOLVE_WGSL, "average", true, format);
+            let program = self.texel_program(RESOLVE_WGSL, true, format);
             self.fills.resolves.insert(format, program);
         }
         let program = &self.fills.resolves[&format];
@@ -371,7 +398,7 @@ impl WebGpu {
             });
         rp.set_pipeline(&pipeline);
         rp.set_bind_group(0, &group, &[]);
-        rp.draw(0..3, 0..1);
+        rp.draw(COVER_VERTICES, 0..1);
     }
 
     /// Draws `frame` into `window`, a texture of its size in the window's own format
@@ -380,7 +407,7 @@ impl WebGpu {
         self.slow.hit(SlowPath::PresentConverted);
         let format = window.format();
         if !self.fills.presents.contains_key(&format) {
-            let program = self.texel_program(PRESENT_WGSL, "copy", false, format);
+            let program = self.texel_program(PRESENT_WGSL, false, format);
             self.fills.presents.insert(format, program);
         }
         let program = &self.fills.presents[&format];
@@ -412,7 +439,7 @@ impl WebGpu {
             });
         rp.set_pipeline(&pipeline);
         rp.set_bind_group(0, &group, &[]);
-        rp.draw(0..3, 0..1);
+        rp.draw(COVER_VERTICES, 0..1);
     }
 
     /// Converts between the held texels of a texture of the converted `format` (level `held.1`,
@@ -504,7 +531,7 @@ impl WebGpu {
             rp.set_scissor_rect(at[0], at[1], size[0], size[1]);
             rp.set_pipeline(&pipeline);
             rp.set_bind_group(0, &group, &[]);
-            rp.draw(0..3, 0..1);
+            rp.draw(COVER_VERTICES, 0..1);
         }
     }
 
@@ -568,7 +595,7 @@ impl WebGpu {
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
                     module: &cover,
-                    entry_point: Some("cover"),
+                    entry_point: None,
                     compilation_options: Default::default(),
                     buffers: &[],
                 },
@@ -577,7 +604,7 @@ impl WebGpu {
                 multisample: wgpu::MultisampleState::default(),
                 fragment: Some(wgpu::FragmentState {
                     module: &module,
-                    entry_point: Some("convert"),
+                    entry_point: None,
                     compilation_options: Default::default(),
                     targets: &[Some(target.into())],
                 }),
@@ -595,7 +622,7 @@ impl WebGpu {
         rp: &mut wgpu::RenderPass<'static>,
         targets: &TargetLayout,
         index: usize,
-        bits: [u32; 4],
+        bits: Words,
     ) {
         self.slow.hit(SlowPath::IntegerClearByDraw);
         let pipeline = match self.fills.clears.get(&(*targets, index)) {
@@ -622,7 +649,7 @@ impl WebGpu {
         });
         rp.set_pipeline(&pipeline);
         rp.set_bind_group(0, &group, &[]);
-        rp.draw(0..3, 0..1);
+        rp.draw(COVER_VERTICES, 0..1);
     }
 
     fn clear_pipeline(&mut self, targets: &TargetLayout, index: usize) -> wgpu::RenderPipeline {
@@ -686,7 +713,7 @@ impl WebGpu {
             layout: Some(pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &cover,
-                entry_point: Some("cover"),
+                entry_point: None,
                 compilation_options: Default::default(),
                 buffers: &[],
             },
@@ -698,7 +725,7 @@ impl WebGpu {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &module,
-                entry_point: Some("clear"),
+                entry_point: None,
                 compilation_options: Default::default(),
                 targets: &colors,
             }),
@@ -807,17 +834,20 @@ impl WebGpu {
             rp.set_scissor_rect(x, y, size[0], size[1]);
             rp.set_pipeline(&pipeline);
             rp.set_bind_group(0, &group, &[]);
-            rp.draw(0..3, 0..1);
+            rp.draw(COVER_VERTICES, 0..1);
         }
     }
 
     fn depth_program(&mut self, format: wgpu::TextureFormat, how: DepthSource) -> DepthProgram {
         let cover = self.cover();
         let (texture, depth) = match how {
-            DepthSource::Float => ("texture_2d<f32>", "v.x"),
-            DepthSource::FloatBits => ("texture_2d<u32>", "bitcast<f32>(v.x)"),
-            DepthSource::Unorm24 => ("texture_2d<u32>", "f32(v.x & 0xffffffu) / 16777215.0"),
-            DepthSource::Unorm16 => ("texture_2d<u32>", "f32(v.x) / 65535.0"),
+            DepthSource::Float => ("texture_2d<f32>", "v.x".into()),
+            DepthSource::FloatBits => ("texture_2d<u32>", "bitcast<f32>(v.x)".into()),
+            DepthSource::Unorm24 => (
+                "texture_2d<u32>",
+                format!("f32(v.x & {UNORM24_MAX}u) / {UNORM24_MAX}.0"),
+            ),
+            DepthSource::Unorm16 => ("texture_2d<u32>", format!("f32(v.x) / {}.0", u16::MAX)),
         };
         let source = format!(
             "@group(0) @binding(0) var<uniform> shift: vec4<i32>;\n\
@@ -846,7 +876,7 @@ impl WebGpu {
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
                     module: &cover,
-                    entry_point: Some("cover"),
+                    entry_point: None,
                     compilation_options: Default::default(),
                     buffers: &[],
                 },
@@ -861,7 +891,7 @@ impl WebGpu {
                 multisample: wgpu::MultisampleState::default(),
                 fragment: Some(wgpu::FragmentState {
                     module: &module,
-                    entry_point: Some("depth"),
+                    entry_point: None,
                     compilation_options: Default::default(),
                     targets: &[],
                 }),
@@ -939,11 +969,11 @@ impl WebGpu {
             rp.set_bind_group(0, &group, &[]);
             rp.set_pipeline(&clear);
             rp.set_stencil_reference(0);
-            rp.draw(0..3, 8..9);
+            rp.draw(COVER_VERTICES, STENCIL_CLEAR..STENCIL_CLEAR + 1);
             rp.set_stencil_reference(u8::MAX.into());
             for (bit, pipeline) in (0u32..).zip(&bits) {
                 rp.set_pipeline(pipeline);
-                rp.draw(0..3, bit..bit + 1);
+                rp.draw(COVER_VERTICES, bit..bit + 1);
             }
         }
     }
@@ -953,7 +983,7 @@ impl WebGpu {
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: None,
-                source: wgpu::ShaderSource::Wgsl(STENCIL_WGSL.into()),
+                source: wgpu::ShaderSource::Wgsl(stencil_wgsl().into()),
             });
         let (layout, pipeline_layout) = loader_layout(&self.device, wgpu::TextureSampleType::Uint);
         let depth = format.has_depth_aspect();
@@ -970,7 +1000,7 @@ impl WebGpu {
                     layout: Some(&pipeline_layout),
                     vertex: wgpu::VertexState {
                         module: &module,
-                        entry_point: Some("cover"),
+                        entry_point: None,
                         compilation_options: Default::default(),
                         buffers: &[],
                     },
@@ -990,7 +1020,7 @@ impl WebGpu {
                     multisample: wgpu::MultisampleState::default(),
                     fragment: Some(wgpu::FragmentState {
                         module: &module,
-                        entry_point: Some("stencil"),
+                        entry_point: None,
                         compilation_options: Default::default(),
                         targets: &[],
                     }),
@@ -1003,7 +1033,7 @@ impl WebGpu {
             bits: std::array::from_fn(|bit| make(1 << bit)),
             layout,
         };
-        self.counters.pipelines += 9;
+        self.counters.pipelines += program.bits.len() as u64 + 1;
         program
     }
 
@@ -1070,7 +1100,7 @@ impl WebGpu {
             rp.set_scissor_rect(0, 0, size[0], size[1]);
             rp.set_pipeline(&pipeline);
             rp.set_bind_group(0, &group, &[]);
-            rp.draw(0..3, 0..1);
+            rp.draw(COVER_VERTICES, 0..1);
         }
     }
 
@@ -1079,10 +1109,16 @@ impl WebGpu {
         // The conversions are exact: a unorm value stored as the nearest float is within half a
         // step of its integer after one correctly rounded multiply.
         let (texture, value) = match read {
-            AspectRead::Unorm16 => ("texture_2d<f32>", "u32(round(v.x * 65535.0))"),
-            AspectRead::Unorm24 => ("texture_2d<f32>", "u32(round(v.x * 16777215.0))"),
-            AspectRead::Float => ("texture_2d<f32>", "bitcast<u32>(v.x)"),
-            AspectRead::Stencil => ("texture_2d<u32>", "v.x"),
+            AspectRead::Unorm16 => (
+                "texture_2d<f32>",
+                format!("u32(round(v.x * {}.0))", u16::MAX),
+            ),
+            AspectRead::Unorm24 => (
+                "texture_2d<f32>",
+                format!("u32(round(v.x * {UNORM24_MAX}.0))"),
+            ),
+            AspectRead::Float => ("texture_2d<f32>", "bitcast<u32>(v.x)".into()),
+            AspectRead::Stencil => ("texture_2d<u32>", "v.x".into()),
         };
         let source = format!(
             "@group(0) @binding(0) var<uniform> shift: vec4<i32>;\n\
@@ -1111,7 +1147,7 @@ impl WebGpu {
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
                     module: &cover,
-                    entry_point: Some("cover"),
+                    entry_point: None,
                     compilation_options: Default::default(),
                     buffers: &[],
                 },
@@ -1120,7 +1156,7 @@ impl WebGpu {
                 multisample: wgpu::MultisampleState::default(),
                 fragment: Some(wgpu::FragmentState {
                     module: &module,
-                    entry_point: Some("read"),
+                    entry_point: None,
                     compilation_options: Default::default(),
                     targets: &[Some(target.into())],
                 }),

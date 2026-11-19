@@ -1,5 +1,6 @@
-//! Program features the device declares where the adapter has them, each drawn where declared:
-//! subgroup operations and the primitive index. Shared by tests/features.rs and the browser page.
+//! Program features the device declares, each drawn where declared: subgroup operations and the
+//! primitive index where the adapter has them, fine derivatives always (WGSL's core). Shared by
+//! tests/features.rs and the browser page.
 
 use crate::draw;
 use crate::renames::{Kit, begin, finish, kit};
@@ -30,6 +31,23 @@ enable subgroups;
     let b = subgroupBallot(true);
     let counted = countOneBits(b.x) + countOneBits(b.y) + countOneBits(b.z) + countOneBits(b.w);
     return vec4f(select(0.0, 1.0, all), select(0.0, 1.0, ones == counted && ones > 0u), 0.0, 1.0);
+}
+"#;
+
+/// Every pixel: red where `dpdxFine` of x times y is the pixel's own y, green where `dpdyFine` of it
+/// is the pixel's own x, blue where `fwidthFine` is their sum. Coarse derivatives give one pixel of
+/// each 2 by 2 quad's row or column the other's value, which differs by one.
+pub const FINE_WGSL: &str = r#"
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+    let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
+}
+@fragment fn ps(@builtin(position) p: vec4f) -> @location(0) vec4f {
+    let f = p.x * p.y;
+    let across = dpdxFine(f) == p.y;
+    let down = dpdyFine(f) == p.x;
+    let width = fwidthFine(f) == p.x + p.y;
+    return vec4f(select(0.0, 1.0, across), select(0.0, 1.0, down), select(0.0, 1.0, width), 1.0);
 }
 "#;
 
@@ -69,33 +87,51 @@ const UNORM8_MAX: f32 = {UNORM8_MAX}.0;
 pub enum Feature {
     Subgroups,
     PrimitiveIndex,
+    FineDerivatives,
 }
 
 impl Feature {
-    pub const ALL: [Feature; 2] = [Feature::Subgroups, Feature::PrimitiveIndex];
+    pub const ALL: [Feature; 3] = [
+        Feature::Subgroups,
+        Feature::PrimitiveIndex,
+        Feature::FineDerivatives,
+    ];
 
     /// What the interface calls it.
     pub fn declared(self) -> Features {
         match self {
             Feature::Subgroups => Features::SUBGROUPS,
             Feature::PrimitiveIndex => Features::PRIMITIVE_INDEX,
+            Feature::FineDerivatives => Features::FINE_DERIVATIVES,
         }
     }
 
-    /// What wgpu calls it.
+    /// What wgpu calls it; none where WebGPU's core has it.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-    pub fn wgpu(self) -> wgpu::Features {
+    pub fn wgpu(self) -> Option<wgpu::Features> {
         match self {
-            Feature::Subgroups => wgpu::Features::SUBGROUP,
-            Feature::PrimitiveIndex => wgpu::Features::PRIMITIVE_INDEX,
+            Feature::Subgroups => Some(wgpu::Features::SUBGROUP),
+            Feature::PrimitiveIndex => Some(wgpu::Features::PRIMITIVE_INDEX),
+            Feature::FineDerivatives => None,
         }
     }
 
-    /// What WebGPU calls it (`GPUFeatureName`).
-    pub fn web_name(self) -> &'static str {
+    /// What WebGPU calls it (`GPUFeatureName`); none where its core has it.
+    pub fn web_name(self) -> Option<&'static str> {
         match self {
-            Feature::Subgroups => "subgroups",
-            Feature::PrimitiveIndex => "primitive-index",
+            Feature::Subgroups => Some("subgroups"),
+            Feature::PrimitiveIndex => Some("primitive-index"),
+            Feature::FineDerivatives => None,
+        }
+    }
+
+    /// What the checks' lines call it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Feature::FineDerivatives => "fine derivatives",
+            _ => self
+                .web_name()
+                .expect("an optional feature has its WebGPU name"),
         }
     }
 
@@ -103,6 +139,7 @@ impl Feature {
         match self {
             Feature::Subgroups => WAVES_WGSL.into(),
             Feature::PrimitiveIndex => primitives_wgsl(),
+            Feature::FineDerivatives => FINE_WGSL.into(),
         }
     }
 
@@ -110,6 +147,7 @@ impl Feature {
     fn expected(self) -> Vec<u8> {
         match self {
             Feature::Subgroups => [UNORM8_MAX, UNORM8_MAX, 0, UNORM8_MAX].repeat(WIDTH as usize),
+            Feature::FineDerivatives => [UNORM8_MAX; 4].repeat(WIDTH as usize),
             Feature::PrimitiveIndex => (0..WIDTH)
                 .flat_map(|x| {
                     let primitive = (x * TRIANGLES / WIDTH) as u8;
@@ -121,7 +159,7 @@ impl Feature {
 
     fn vertices(self) -> u32 {
         match self {
-            Feature::Subgroups => PER_TRIANGLE,
+            Feature::Subgroups | Feature::FineDerivatives => PER_TRIANGLE,
             Feature::PrimitiveIndex => PER_TRIANGLE * TRIANGLES,
         }
     }
@@ -160,7 +198,7 @@ pub fn shader(
 /// feature defines it; one line saying what was found, or the failed check.
 pub fn check(b: &mut WebGpu, feature: Feature) -> Result<String, String> {
     if !b.caps().has(feature.declared()) {
-        return Ok(format!("{}: absent", feature.web_name()));
+        return Ok(format!("{}: absent", feature.name()));
     }
     let vs = shader(b, feature, ShaderStage::Vertex).map_err(|e| format!("{e:?}"))?;
     let ps = shader(b, feature, ShaderStage::Fragment).map_err(|e| format!("{e:?}"))?;
@@ -178,19 +216,19 @@ pub fn check(b: &mut WebGpu, feature: Feature) -> Result<String, String> {
     draw_vertices(b, &k, &set, feature.vertices());
     let got = finish(b, &k, TEXEL);
     if b.status() != DeviceStatus::Ok {
-        return Err(format!("{}: device {:?}", feature.web_name(), b.status()));
+        return Err(format!("{}: device {:?}", feature.name(), b.status()));
     }
     if got != feature.expected() {
         return Err(format!(
             "{}: drawn {:?}, not {:?}",
-            feature.web_name(),
+            feature.name(),
             got,
             feature.expected()
         ));
     }
     Ok(format!(
         "{}: declared, {WIDTH} pixels drawn as it defines",
-        feature.web_name()
+        feature.name()
     ))
 }
 
