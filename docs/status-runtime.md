@@ -55,6 +55,13 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   for the translator runner's own `Machine` the plan's table cites). The literal check is tried in a scratch
   merge, not merged (Departures; "For the orchestrator"). J5's bar is run from a clean build on 798f07ff, the
   code as it stands, and the whole LTP comparison after it (section "J5 run 2").
+- J5 stands at: the kernel test crate's verdicts equal the stand-in's at full, none and bounded but for the
+  tests listed with reasons (section "J5 run 2"); the surface tests of the file backend and the network pass
+  in the owned suite; the whole LTP comparison is running detached and not yet read. Next: when scratch
+  j5/after.done exists, read j5/ltp/whole-compare.txt, record it, and look at every test whose verdict
+  differs (a back end slower than the stand-in can time out where the stand-in does not: both run with the
+  harness's default limit of 900 s). Then delete the scratch worktree j5/tree (`git worktree remove --force`;
+  its target is 54 GB). The literal check waits for the orchestrator's answer.
 
 ## For the orchestrator
 
@@ -66,7 +73,7 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   baseline, a merge bringing code the check has not seen gives `+` lines in the kernel's crates, which this
   track may neither fix nor add to the baseline; and a second track's own start would fail as "started more
   than once" when both reach main. So it is not merged. Tried instead in a scratch merge of 798f07ff with
-  origin/phase-1-literals at f561838a (scratch j5/lit, not pushed; logs j5/lit-check-before.txt,
+  origin/phase-1-literals at f561838a (a scratch worktree j5/lit, never pushed, removed after; logs j5/lit-check-before.txt,
   lit-init.txt, lit-check-after.txt): before init the check failed with 103 `+` lines (51 in
   wcontainers-runtime, 42 in wcontainers-wasmtime, 10 in the kernel test crate) and 87 `-` lines (main's
   baseline of the J4a code, since changed; one is the translator test crate's); after `init` (no `proposed:` lines) `check` exits 0. The baseline
@@ -74,8 +81,12 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   asked of the kernel track; image.rs 72), 88 in wcontainers-wasmtime, and 53 in the kernel test crate's
   driver.rs. Merge phase-1-literals into main (or phase-1) and init there, and this track adopts it by
   merging that, as the document says; or say to merge it directly regardless.
-- J5 run 2: the whole LTP comparison is run by this track after the bar (scratch `j5/after.sh`, which calls
-  `j5/ltp.sh whole`), since the harness is on origin/phase-1.
+- J5 run 2: the whole LTP comparison is running, started by this track when the bar ended (scratch
+  `j5/after.sh`, which calls `j5/ltp.sh whole`; started 23:34 on 2026-11-18, detached, on the scratch worktree
+  j5/tree at 798f07ff). At 00:41 the stand-in half had 664 of 2,694 tests (the fs group's tests that run to
+  the 900 s limit take most of it); the back end's half follows and is expected (not measured) to take about
+  ten hours or more. It is the one part of J5's bar not yet read; scratch j5/after.done marks its end. If it
+  is stopped, `j5/ltp.sh whole` continues where its results files left off.
 - J5 run 1: the kernel track's LTP harness is on origin/phase-1 (crates/wcontainers-kernel-test/src/bin/ltp.rs),
   so its comparison is part of J5's bar. The one command for the long run is scratch `j5/ltp.sh NAME`
   (section "How to run").
