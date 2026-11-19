@@ -66,16 +66,19 @@ The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three laye
   run's own zig cache), same command. Stopped 04:32 after chunk 71 and restarted on 33afa1e (failure 5
   below), same command. Stopped 08:12 after chunk 85 and restarted on 9d54ef3 (failure 6 below), same
   command. Stopped 14:58 after chunk 114 (chunk 115 had just started, no line) and restarted on 6b74146
-  (failure 7 below), same command; that run (driver pid 20716 at the time of writing) is the one going
-  now, chunk 113 first. To stop it right after a chunk ends: the scratch script
+  (failure 7 below), same command, chunk 113 first. Stopped 18:50 during chunk 127 (no line) after chunk
+  126 failed on Docker's outage, and restarted 18:51 on 99eda5e (failure 8 below), same command; that run
+  (driver pid 19707 at the time of writing) is the one going now, chunk 126 first. To stop it right after a chunk ends: the scratch script
   `.../p2/stop-after-chunk.sh` (waits up to 9 minutes for a ledger line, then stops the driver, its test
   and containers). One look at the progress, waiting up to 9 minutes for a new line: `.../p2/look.sh`. Use `WC_LONG_ACCEPT=c38b4ad
   WC_LONG_LIMIT=180` on any later restart too. Each restart appends to `driver.log`; the code it runs is the copy in
   `trees/<commit>`, so commits in the checkout do not reach it until it is restarted.
+- Disk: each copy's `trees/<commit>/target/programs` keeps every built program, about 330 MB a chunk
+  (the copy of 445e3cf had 19 GB after 54 chunks). After a restart, delete `trees/<old commit>/target` of
+  every copy no longer running (done 2026-11-18 18:50: 48 GB freed; sources and logs kept).
 - Layer 3's progress in programs compared: `awk -F'\t' '$1=="layer=3" && $10=="result=pass" {split($4,c,"=");
   s+=c[2]} END {print s}' .../p2/long/ledger.txt`. Any chunk that did not pass: `grep -v result=pass
-  .../p2/long/ledger.txt` (two lines so far: layer 1 chunk 3 and layer 2 chunk 22, both fixed and passed
-  again).
+  .../p2/long/ledger.txt` (each is one of failures 1 to 8 below; all but chunk 126's have passed again).
 - After the last fix: the confirmation, 5 percent of each layer on the final commit with base seed 200 (not
   used before): the same command with `WC_LONG_PERCENT=5 WC_LONG_SEED=200` and a new `WC_LONG_DIR`.
 - Expected length (from P1's 1 percent rates at load about 30, not measured): about 50 hours, more at higher
@@ -106,13 +109,17 @@ Progress (from the ledger):
   starts 7 to 104. From 2026-11-17 05:33 to 2026-11-18 10:25 (about 29 hours, with about 5 hours lost to
   the stopped, hung and killed chunks) layer 3 went from 12 to 92 chunks; at about 16 minutes a chunk the
   remaining about 136 chunks are expected to take about 36 hours (an extrapolation).
+- Layer 3 at 2026-11-18 18:50: 125 chunks passed, 54,740 compared, 0 mismatches of the translator; by
+  commit as above plus 9d54ef3 to chunk 114 and 6b74146 for 113 and 115 to 125. Chunks on 6b74146 took
+  738 to 1,879 s at load 37 to 76. The remaining about 45,260 compared are about 103 chunks; at about 18
+  minutes a chunk that is about 31 hours (an extrapolation).
 - 46 to 82 of each chunk's 500 programs (9 to 16 percent) do not end on Linux within the reference's 20 s
   alarm and are not compared (counted in `sample`). Across chunks 1 to 30 the count does not follow the load
   at the chunk's start (47 at load 65, 82 at load 13), so it is Csmith's programs that loop or run long,
   not the load.
 
 What is left of P2, in order:
-1. Let layer 3 run to 100,000 compared (at 13:42 on 2026-11-18: 108 chunks passed, 47,289 compared). First
+1. Let layer 3 run to 100,000 compared (at 18:50 on 2026-11-18: 125 chunks passed, 54,740 compared). First
    check the driver is alive (`pgrep -fl long-runs.sh`, the `bash .../long-runs.sh` line). Treat any failing
    chunk as a real mismatch until shown otherwise: read its log (`logs/layer3-<k>-<commit>.log`, the line
    `csmith <n> (case <i>): ...`), replay it with the ledger's `replay=` command, find the cause, write a
@@ -226,6 +233,25 @@ Failures found by the run, each with its cause and fix:
    "Departures from the plan"): the guard takes SIGSEGV and SIGBUS as one ending (`same_ending`, test
    `a_memory_fault_ends_the_same_by_either_signal`, which did not build before); any other pair of endings
    still fails. Layer 3 at 8 cases (seed 7) and the case itself pass on the change.
+8. Layer 3 chunk 126 (cases 62500 to 62999, 6b74146): the reference, not the translator. Docker's Linux
+   machine stopped at 18:14 (Docker's log: "The guest OS stopped the virtual machine"; it came back by
+   18:18; who or what stopped it is not known, this half did not). From then each worker's builds failed
+   (`gcc failed`, a panic for that case), and `native` took Docker's own failure for Linux's ending
+   (status 125 from Docker, or 1 when it could not reach its daemon, with no output), so the case was
+   reported as a mismatch ("ours checksum ..., Linux "" status 125"). Worse, a program that never ends,
+   which Linux's 20 s alarm normally keeps out of the comparison, then ran translated without end: at
+   18:49 the test's six workers were all in guest code with no new line since 18:16, so the chunk would
+   have run to the 180 minute limit. Its test was stopped (ledger: fail, `cases=?`, exit status 101) and
+   the driver with it. Change (99eda5e, in the tests only, no translator code): every reference
+   container (the blob's run, the ordinary executable's run, the timing run) goes through one primitive,
+   `programs::run_container`, which fails the case when Docker made no container (no `--cidfile` written)
+   or the container did not start (Docker's own status 125 to 127 with its "Error response from daemon"
+   message); a program's own ending, even 125, is still its result. Tests (`tests/programs.rs`):
+   `a_container_docker_does_not_make_fails_the_case`, `a_container_that_does_not_start_fails_the_case`,
+   `a_programs_own_ending_is_its_result` (pass; Docker's behaviour in each was checked by hand first: no
+   daemon gives status 1 and no id file, a refused mount 125 and no id file, a missing command 127 with
+   the id file and the message). Layer 3 at 8 cases (seed 7, 7 compared, 1 in Chrome) passes on it, 23 s,
+   load 54 to 62. Chunks from 126 on run on 99eda5e; the translator is the same as on 6b74146.
 
 ## P1: close-out of M5 and the long-run driver
 
