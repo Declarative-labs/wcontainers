@@ -29,9 +29,9 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   loop and the test crate's policy, alike with the WebAssembly side, and counts the machine's exits over 100,000 getppid calls:
   4 more than with none, the same with 200,000 (below, "N3 run 5"); run 6 built the bar's test (busybox `text` and `files` in the
   kernel inside, against the reference), the root's files sent back, turns that end at their limit (between pieces, at
-  look-ahead none) and a fork, exec and signal program alike on both outputs (below, "N3 run 6"). Not done: the bar has not run
-  against the reference (Docker on the Mac and the rented machine were down all run; checked against the kernel test crate's
-  stand-in CPU on Alpine's minirootfs instead, 55 of 55 alike).
+  look-ahead none) and a fork, exec and signal program alike on both outputs; Docker came back at 04:59 and the bar passed
+  against the reference, 55 of 55 commands, and hello and the fork program give the reference's output and status (below,
+  "N3 run 6"). N3 is done, for its independent check.
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -118,13 +118,22 @@ Alpine's minirootfs (scratch only, never in the repository) was used for develop
 
 Literals: the check exits 0; two baseline lines left (both in the kernel test crate's busybox files), none added.
 
-What comes next for N3, in order:
-1. The bar against the reference, once Docker runs on the Mac: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test
-   busybox` (needs alpine:3.22 for linux/arm64 pulled). Then forks.c against the reference: build it as the kernel test does
-   (`zig cc -target aarch64-linux-musl -O2 -static`), `docker run --rm --platform linux/arm64 -v <dir>:/wc:ro alpine:3.22
-   /wc/forks`; expected the three lines above and exit 3.
-2. The kernel test crate's own tests once Docker is back (`cargo test -p wcontainers-kernel-test --test busybox` at least, after
-   8f902f1c; and run 5's `TestHost` change).
+Against the reference, once Docker Desktop came back (04:59, M5 Max):
+- The bar (busybox-bar.log): `cargo test -p wcontainers-hypervisor --test busybox`: "busybox: 55 commands gave the reference's
+  output, exit code and files", 46 s with Docker's runs (load 5.6 to 24). alpine:3.22 image 49340b346798.
+- forks.c built with zig as the kernel test does and run three times in `docker run --platform linux/arm64 alpine:3.22`
+  (scratch native/n3r6/forks): the same three lines as both our outputs and exit 3, each time.
+- hello (the kernel test crate's) in Docker: "hello, world", "hello, error", exit 3, as natively (status 0x300).
+- The kernel test crate's tests my changes can reach (ktest.log, load 40 to 65): busybox 4 passed and 1 ignored (its known
+  failure `root_file_system`, as before), hello 1, processes 4, threads 13, timers 4, turns 2; all passed. That also confirms
+  run 5's `TestHost` change on those tests.
+- Left behind: no container (checked with `docker ps -a`).
+
+What comes next:
+1. N3's independent check. How to run it: the bar `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test busybox`
+   (Docker), the kernel test (hello, getppid exit count, forks) `--test kernel`, the exits test `--test exits`.
+2. N4 (linking and speed). It must bring back plan 5.5's refusal of a turn with a limit once pieces are linked (or have
+   decision 10's ruling), since the inside then no longer sees every boundary.
 3. R3's rest (backend answers, network events, notices and signals to the policy; `TestHost`'s `System` on `TestPolicy`).
 
 ## N3 run 5 (2026-11-19)
@@ -1309,8 +1318,7 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 ## For the orchestrator
 
-- N3 run 6: the bar is built but has not run against the reference: Docker Desktop on the Mac was "unable to start" all run and
-  the rented ARM machine was unreachable. The bar must run on the Mac (Hypervisor.framework). Also: wcontainers-kernel-test
+- N3 run 6: the bar passed against the reference on the Mac once Docker Desktop came back (04:59). Also: wcontainers-kernel-test
   changed again (8f902f1c: the busybox commands and the reference check made public for the native test; no behaviour change),
   and the monitor now has that GPL-2.0-only crate as a dev-dependency (test only, never shipped). For the owner: a native turn
   with a limit now ends exactly at look-ahead none, by the inside between pieces (no check in translated code); decision 10 is
