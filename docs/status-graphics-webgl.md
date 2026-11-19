@@ -37,6 +37,15 @@ nothing new; no interface change among them). The run's own work:
   its corpora lists GLSL ES files Chrome refuses for what GLSL ES 3.00 lacks; those are the
   converters' raw naga GLSL, not this back end's (bit functions and gathers are built here,
   multisampled reads and the primitive index absent).
+- The literal check at the head: exit 0, 0 marks. This crate's baseline lines 630 to 629: the
+  rename of `compile` to `write` moved the clip and cull distance limit's 8, now one named
+  constant (`shader::CLIP_AND_CULL_DISTANCES`). In the LF worktree only the submodules the
+  shaders crate builds from may be checked out (its "After cloning"): dxil-spirv's other
+  submodules had been checked out there and gave 8,255 `+` lines; deinit'd, with
+  third_party/spirv-headers checked out again.
+- At the end the desktop's C:\wc\target\phase-2-graphics-webgl (16.9 GB) and this checkout's
+  target (0.3 GB, from `cargo check`) were deleted. Kept: C:\wc\out\webgl\g3b8 (the diagnostic's
+  memory samples, under 1 MB), the LF worktree. Nothing installed.
 
 G3b run 7, 2026-11-18 22:30 to 2026-11-19 about 02:00 Pacific. Merged origin/phase-1-literals
 (the seventh rules), -webgpu, -direct3d-11, -direct3d-12 and -shaders (the shared line and -rig

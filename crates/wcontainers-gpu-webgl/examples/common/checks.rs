@@ -1527,7 +1527,15 @@ pub fn programs_of_equal_shaders_draw_until_each_is_destroyed<H: Host>() {
     let f = Format::Rgba8Unorm;
     let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
     let side = 4;
-    let t = kit::texture(&mut b, TextureDimension::D2, f, [side, side, 1], 1, usage, false);
+    let t = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        f,
+        [side, side, 1],
+        1,
+        usage,
+        false,
+    );
     let view = kit::target(&mut b, &t, f, 0, 0);
     let viewports = [kit::viewport(0.0, 0.0, side as f32, side as f32)];
     let make = |b: &mut H::Backend, fs: &str| {
@@ -1548,7 +1556,14 @@ pub fn programs_of_equal_shaders_draw_until_each_is_destroyed<H: Host>() {
     };
     let draw = |b: &mut H::Backend, p: &<H::Backend as Backend>::Program| {
         b.begin_pass(&kit::pass(&view, [0; 4], None));
-        b.draw(&kit::call(&k, p, None, &viewports, Topology::TriangleStrip, 4));
+        b.draw(&kit::call(
+            &k,
+            p,
+            None,
+            &viewports,
+            Topology::TriangleStrip,
+            4,
+        ));
         b.end_pass();
         kit::read(b, &t, 0, 0, [side, side, 1], 4, false)
     };
@@ -1565,11 +1580,19 @@ pub fn programs_of_equal_shaders_draw_until_each_is_destroyed<H: Host>() {
     assert_eq!(draw(&mut b, &first.2), red, "the first");
     assert_eq!(draw(&mut b, &other.2), green, "the other");
     destroy(&mut b, first);
-    assert_eq!(draw(&mut b, &second.2), red, "the second, the first destroyed");
+    assert_eq!(
+        draw(&mut b, &second.2),
+        red,
+        "the second, the first destroyed"
+    );
     destroy(&mut b, second);
     assert_eq!(draw(&mut b, &other.2), green, "the other, both destroyed");
     let again = make(&mut b, "red");
-    assert_eq!(draw(&mut b, &again.2), red, "made again after both were destroyed");
+    assert_eq!(
+        draw(&mut b, &again.2),
+        red,
+        "made again after both were destroyed"
+    );
     destroy(&mut b, again);
     destroy(&mut b, other);
     assert_eq!(b.status(), DeviceStatus::Ok);
