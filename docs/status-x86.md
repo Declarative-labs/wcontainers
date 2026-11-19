@@ -176,6 +176,8 @@ Measured (plan 5.2 and 12 say so too):
   section stripped (265,961 gzip -9, 203,533 brotli -q 11), or 1,136,812 with `wasm-tools strip`, which keeps
   the name section (299,537 and 229,131). iced-x86's own functions and statics in it are 156,416 bytes
   (115,635 of code, 40,781 of data), 36,056 gzip and 27,565 brotli compressed alone. Mac load 22.9.
+  A lower bound on what the decoder adds: the sum is of link-map symbols named for iced, so iced code inlined
+  into `wcontainers_x86`'s own functions is not counted.
 
 Proof of run 2 (the Mac, Apple M5; the i7-8750H's load given with each):
 - Kernel-only forms, 49 forms, 1,000 cases a form, seed 1, 4 at once (`x3/run2/kernel-l1-1000.log`): passed.

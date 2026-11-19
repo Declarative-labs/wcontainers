@@ -3043,7 +3043,7 @@ apply unchanged.
   from the link map of the release browser build for x86 (`--Map`, every custom section stripped): 872,638
   bytes, 203,533 brotli (`-q 11`); iced-x86's own functions and statics in it are 156,416 bytes (115,635 of
   code, 40,781 of data), 27,565 brotli compressed alone (a scratch cdylib of the decoder alone gave 46,880,
-  section 2).
+  section 2). A lower bound: iced code inlined into the x86 crate's own functions is not counted.
 - The lookup array's memory on real x86 programs (four bytes per byte of code, expected).
 - What a CPU without MPX hardware does with `0F 1A` and `0F 1B`: a NOP, expected from the manual's
   reserved-NOP space; the reference has MPX, which Linux leaves off, and runs them as NOPs (section 2,
