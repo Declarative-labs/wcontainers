@@ -132,7 +132,13 @@ The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three laye
   (its crates are 6a705f8's; a later fix would mean running it again): `CARGO_BUILD_JOBS=4
   WC_LONG_DIR=.../p2/confirm WC_LONG_PERCENT=5 WC_LONG_SEED=200 WC_LONG_LAYERS=1,2 WC_LONG_JOBS=3
   WC_LONG_LIMIT=180` with the driver command above (3 jobs: what the Mac allows beside the long run's 6).
-  Layer 3 of it comes after its zig cache is warmed. `resume.sh` and `watch.sh` now tell the long run's
+  Layers 1 and 2 passed (607,500 cases, 825 s; 2 x 25,000 programs, 1,517 and 1,539 s; load 44 to 89).
+  Layer 3 of it started 10:44 on 8c7a4b5 (status-only change since 1f9c030) after its cache was warmed
+  (`confirm/warm.log`), same command with `WC_LONG_LAYERS=3` and no `WC_LONG_ACCEPT` (so it accepts 8c7a4b5
+  on; a restart needs `WC_LONG_ACCEPT=8c7a4b5`): about 37 minutes a chunk at 3 jobs, load 19 to 49. Its
+  chunks from 12 downward run on the rented machine once the long run's runners there end
+  (`arm-confirm/down.sh 12`, log `down.log`, started 12:20; `run-chunk.sh` there is the long run's with seed
+  200, `WC_LAYER3_JOBS=3` in the knobs, the confirmation ledger and an export of 8c7a4b5). `resume.sh` and `watch.sh` now tell the long run's
   driver from this one by its working directory (`lsof`), so neither takes one for the other.
 - Docker on the Mac came back at 04:58 (someone started it); `resume.sh` restarted the driver at 05:01 on
   398df57 (only this file changed since 6a705f8); chunk 153 ran first and passed.
