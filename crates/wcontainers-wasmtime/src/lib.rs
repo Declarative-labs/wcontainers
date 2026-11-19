@@ -125,6 +125,9 @@ const PARTIAL: &str = "partial";
 /// The first bytes of a cache file.
 const CACHE_MAGIC: &[u8; 8] = b"wcxlate1";
 
+/// Bytes of each count and length in a cache file.
+const CACHE_WORD: usize = size_of::<u64>();
+
 /// What a compiled translation is kept under.
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct Key {
@@ -230,19 +233,18 @@ impl<G: Guest> Compiler<G> {
             rest = after;
             Some(taken)
         };
-        const WORD: usize = size_of::<u64>();
         let word = |bytes: &[u8]| u64::from_le_bytes(bytes.try_into().expect("a word"));
-        let count = word(take(WORD)?);
+        let count = word(take(CACHE_WORD)?);
         let (mut modules, mut pieces) = (Vec::new(), Vec::new());
         for _ in 0..count {
-            let length = usize::try_from(word(take(WORD)?)).ok()?;
-            let list: Vec<u64> = take(length.checked_mul(WORD)?)?
-                .as_chunks::<WORD>()
+            let length = usize::try_from(word(take(CACHE_WORD)?)).ok()?;
+            let list: Vec<u64> = take(length.checked_mul(CACHE_WORD)?)?
+                .as_chunks::<CACHE_WORD>()
                 .0
                 .iter()
                 .map(|bytes| u64::from_le_bytes(*bytes))
                 .collect();
-            let length = usize::try_from(word(take(WORD)?)).ok()?;
+            let length = usize::try_from(word(take(CACHE_WORD)?)).ok()?;
             // SAFETY: the file was written by `store` from wasmtime's own serialisation, and
             // wasmtime checks it was made by a compatible engine and build.
             let module = unsafe { Module::deserialize(engine, take(length)?) }.ok()?;

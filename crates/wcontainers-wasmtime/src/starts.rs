@@ -122,7 +122,7 @@ pub fn image_starts(memory: &impl Guest, range: Range<u64>) -> Option<(Vec<u64>,
 fn find_header(memory: &impl Guest, start: u64) -> Option<u64> {
     let mut page = start & !(PAGE_SIZE - 1);
     for _ in 0..SEARCH_PAGES {
-        let mut magic = [0u8; 4];
+        let mut magic = [0u8; elf::ELFMAG.len()];
         if memory.readable(page) && memory.read(page, &mut magic) && magic == elf::ELFMAG {
             return Some(page);
         }
