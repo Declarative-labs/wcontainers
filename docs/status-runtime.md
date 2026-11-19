@@ -15,8 +15,11 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   at full, none and bounded, but the known differences (align, sharedviews, counterclock) and the four tests
   waiting on the address ceiling (java x2, node, python). On the ARM machine two outside tests fail at full on a
   kernel `debug_assert` (task.rs:206) that allows no already-woken parked call: asked of the kernel track.
-- The whole LTP comparison: LTP_RESULT_PLACEHOLDER
-- Next: LTP_NEXT_PLACEHOLDER
+- The whole LTP comparison at full (ARM machine, after the hang's fix d4fe761b): 4,226 tests, 4,204 verdicts
+  equal to the stand-in's. Of the 22 others, 16 are the stand-in running past the 900 s limit where the back
+  end and real Linux pass, 2 wait on the address ceiling (pth_str01, pth_str03), and 4 are the back end slower
+  than the limit (gf16, gf17, mmapstress09, mmapstress10), run again with a longer limit (section "J5 run 5").
+- Next: WHOLE_NEXT
 
 ## For the orchestrator
 
@@ -191,7 +194,18 @@ scratch j5run5, the second part's from j5run6.
   `TestHost` is behind a lock as `TestSystem` (the driver's change, its own part of the same commit, since
   neither builds alone). `Host`, the kernel's interface in wcontainers-abi, still takes `&mut self`; both
   systems answer it through `Mutex::get_mut`, with no locking (For the kernel track).
-- WAIT_RERUN
+- The back end's side of the whole LTP comparison again after the fix (ARM machine, job
+  runtime/20261119-200250-2726719, started 12:02 on this Mac's working tree at d4fe761b, 594ef218 being written
+  then; 12 jobs; 4,435 s, load 31 to 21 on 96 cores; against the stand-in results of the run above; fetched to
+  j5run6/arm-ltp). 4,226 tests compared: 4,204 verdicts match, 22 differ, 0 not run:
+  - 16 where the stand-in ran past its 900 s limit and the back end passed: the eight above (gf07, gf09, gf10,
+    gf11, iogen01, cve-2017-17052, fsx22, mtest06_3) and scsi_debug.part1 rwtest01 and rwtest02 (four each;
+    775 s to 785 s with the back end, 63 s to 69 s on real Linux). Real Linux passes all of them
+    (ltp/reference-20260930.tsv). No hang is left: every rwtest05 passes on both sides, and fs rwtest01 to 04
+    and scsi_debug rwtest03 and 04 run past the limit on both sides (real Linux passes them in about 64 s).
+  - 2 waiting on the address ceiling: sched pth_str01 and pth_str03 (above).
+  - 4 slower than the 900 s limit with the back end (still ending turns): fs gf16, gf17, mm mmapstress09,
+    mmapstress10. Run again with a 3,600 s limit at the start of the whole-suite job below.
 
 ## J5 run 4 (2026-11-19; this Mac, Apple M5 Max, 18 cores, 128 GiB; other tracks running)
 
