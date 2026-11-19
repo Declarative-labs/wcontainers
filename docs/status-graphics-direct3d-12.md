@@ -137,6 +137,8 @@ milestone "G5 to the pass bar"):
   bound as a 2D view of that layer (Godot's 3D platformer), and the dimension refusal names
   both dimensions. The desktop's copy now has `core.autocrlf` false and only the submodules the
   build needs (with Windows line ends the literal check read multi-line strings differently).
+  At the end the desktop's build folder of this branch (8,520,160,351 bytes) was deleted; no
+  build output was made in scratch or on the Mac.
 - Run 34 (the fifth run of the milestone's current form): merged shaders (its runs 35 to 37:
   storage offsets of shader resource slots, DXIL targets of four components, 16-bit integers,
   constant components picked at run time, Godot's 3D fragment shaders), webgpu, webgl,
