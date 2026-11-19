@@ -3,8 +3,8 @@
 //!
 //! Usage: `time-blob dump <guest> <program> <optimisation> <out file> [define ...]` builds a program (no
 //! library) and writes its blob, its code size first as eight little-endian bytes; `time-blob time <guest>
-//! <blob file> <runs>` translates it for speed, runs it that many times and prints the output's length and
-//! status and the best time the guest ran.
+//! <blob file> <runs>` translates it for speed, runs it that many times and prints the status, the best time the
+//! guest ran and the output.
 
 use wcontainers_arm64::Arm64;
 use wcontainers_translator::{LookAhead, Omit, Optimise};
@@ -43,10 +43,11 @@ fn run<G: GuestTest>(file: &str, runs: u32) {
         let (ran, _, _, time) =
             translated_omitting::<G>(&blob, (LookAhead::Full, Optimise::Speed), Omit::default());
         best = best.min(time.as_secs_f64());
-        outcome = Some((ran.stdout.len(), ran.status));
+        outcome = Some((ran.stdout, ran.status));
     }
-    let (length, status) = outcome.expect("one run at least");
-    println!("{file}: {length} bytes out, status {status}, best of {runs} {best:.3} s");
+    let (out, status) = outcome.expect("one run at least");
+    let out = String::from_utf8_lossy(&out);
+    println!("{file}: status {status}, best of {runs} {best:.3} s, output {out:?}");
 }
 
 fn main() {
