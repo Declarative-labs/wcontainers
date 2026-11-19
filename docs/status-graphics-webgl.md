@@ -25,8 +25,10 @@ phase-1-literals (Magic literals). Fixed what the check of run 4 found:
   new check `special_float_values_keep_their_bits` passes on ANGLE and in Chrome.
 - The frame-time measurement: the front's share is still not measured, and a program with many
   draws still did not record (Measurements, run G3b-5).
-- At the end the desktop's C:\wc\target\phase-2-graphics-webgl and this checkout's own target
-  (from `cargo check`) were deleted. Nothing was installed on the desktop.
+- At the end the desktop's C:\wc\target\phase-2-graphics-webgl (12.8 GB: the debug,
+  WebAssembly, Direct3D 11 WebGL 2 and recording builds) and this checkout's own target (0.3 GB,
+  from `cargo check`) were deleted; no build folder was made in scratch. Nothing was installed on
+  the desktop.
 
 G3b run 4, 2026-11-18 (about 14:15 to 15:45 Pacific). Merged origin/phase-2-graphics (52 new
 commits; it held every track branch's newest work: storage words, binding kinds, indirect draws
