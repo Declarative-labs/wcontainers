@@ -5263,13 +5263,6 @@ code	crates/wcontainers-gpu-webgl/src/trace.rs	str	record::Traced<B>::new	"{path
 code	crates/wcontainers-gpu-webgpu/src/blocks.rs	str	WebGpu::read_now	"a copy source could not be read back"
 code	crates/wcontainers-gpu-webgpu/src/blocks.rs	str	WebGpu::write_blocks	"a block write into a texture holding no blocks"
 code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	Last	4
-code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	Last	4
-code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	Last	6
-code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	WebGpu::binding_set	128
-code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	WebGpu::binding_set	32
-code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	WebGpu::draw_in	3
-code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	color_value	3
-code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	color_value	4
 code	crates/wcontainers-gpu-webgpu/src/draw.rs	int	color_value	4
 code	crates/wcontainers-gpu-webgpu/src/draw.rs	str	WebGpu::begin_pass_impl	"a pass with no attachment and no empty size"
 code	crates/wcontainers-gpu-webgpu/src/draw.rs	str	WebGpu::begin_pass_impl	"begin_pass inside a pass"
@@ -5297,17 +5290,10 @@ code	crates/wcontainers-gpu-webgpu/src/fill.rs	str	WebGpu::read_program	"texture
 code	crates/wcontainers-gpu-webgpu/src/fill.rs	str	WebGpu::read_program	"texture_2d<f32>"
 code	crates/wcontainers-gpu-webgpu/src/fill.rs	str	WebGpu::read_program	"texture_2d<u32>"
 code	crates/wcontainers-gpu-webgpu/src/fill.rs	str	WebGpu::read_program	"v.x"
-code	crates/wcontainers-gpu-webgpu/src/layout.rs	int	derive	128
-code	crates/wcontainers-gpu-webgpu/src/layout.rs	int	paired	128
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	char	WebGpu::frame_report	','
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	char	WebGpu::frame_report	':'
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	char	WebGpu::frame_report	'{'
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	char	WebGpu::frame_report	'}'
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	float	<WebGpu as Backend>::create_sampler	32.0
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	int	<WebGpu as Backend>::create_sampler	3
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	int	caps	16
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	int	caps	4
-code	crates/wcontainers-gpu-webgpu/src/lib.rs	int	caps	8
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::begin_query	"begin_query outside a pass with an occlusion set, or nested"
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::configure_surface	"the window takes no 8-bit unorm format to present in"
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::current_texture	"getting the window's texture failed validation"
@@ -5315,8 +5301,6 @@ code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::current_t
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::end_pass	"end_pass without a pass"
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::end_query	"end_query without a running query"
 code	crates/wcontainers-gpu-webgpu/src/lib.rs	str	<WebGpu as Backend>::submit	"submit inside a pass"
-code	crates/wcontainers-gpu-webgpu/src/memory.rs	int	<wgpu::Texture as Spare>	5
-code	crates/wcontainers-gpu-webgpu/src/memory.rs	int	WebGpu::arena_slice	4
 code	crates/wcontainers-gpu-webgpu/src/memory.rs	str	WebGpu::aspect_as_colour	"a depth or stencil read by a draw needs a single-sampled bound source"
 code	crates/wcontainers-gpu-webgpu/src/memory.rs	str	WebGpu::aspect_as_colour	"the texture a depth or stencil read is drawn into could not be made"
 code	crates/wcontainers-gpu-webgpu/src/memory.rs	str	WebGpu::clear_buffer_impl	"clear_buffer inside a pass"
@@ -5417,12 +5401,6 @@ code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	widen_wgsl	"let c = vec4u(0
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	widen_wgsl	"{bytes} let c = vec4u(b.x, select(b.y, b.w, {odd}), b.z, 255u);"
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	widen_wgsl	"{bytes} let c = vec4u(b.y, select(b.x, b.z, {odd}), b.w, 255u);"
 code	crates/wcontainers-gpu-webgpu/src/packed.rs	str	widen_wgsl	"{bytes} let c = vec4u(b.z, b.y, b.x, 255u);"
-code	crates/wcontainers-gpu-webgpu/src/vertex.rs	int	StreamPlan	4
-code	crates/wcontainers-gpu-webgpu/src/vertex.rs	int	source_size	3
-code	crates/wcontainers-gpu-webgpu/src/vertex.rs	int	source_size	4
-code	crates/wcontainers-gpu-webgpu/src/vertex.rs	int	source_size	6
-code	crates/wcontainers-gpu-webgpu/src/vertex.rs	int	widened	3
-code	crates/wcontainers-gpu-webgpu/src/vertex.rs	int	widened	4
 code	crates/wcontainers-gpu/src/backend.rs	float	generate_mips_by_draws	0.5
 code	crates/wcontainers-gpu/src/backend.rs	int	Backend::clear_rects	20
 code	crates/wcontainers-gpu/src/backend.rs	int	Backend::clear_rects	24
@@ -23695,14 +23673,6 @@ redefinition	crates/wcontainers-gpu-test/src/suite/routes.rs	int	fill_modes_draw
 redefinition	crates/wcontainers-gpu-test/src/suite/routes.rs	int	values_pass_between_programs_by_location::N	N = 4
 redefinition	crates/wcontainers-gpu-test/src/suite/routes.rs	int	vertices_pulled_from_storage_match_the_fetched_ones::N	N = 8
 redefinition	crates/wcontainers-gpu-webgl/examples/draw-cost.rs	int	SIZE	SIZE = 256
-redefinition	crates/wcontainers-gpu-webgl/tests/suite.rs	int	<Angle as wcontainers_gpu_test::Host>::window::WINDOW	WINDOW = 1
-redefinition	crates/wcontainers-gpu-webgpu/examples/scenes/features.rs	int	WIDTH	WIDTH = 64
-redefinition	crates/wcontainers-gpu-webgpu/examples/scenes/pulled.rs	int	INSTANCES	INSTANCES = 16
-redefinition	crates/wcontainers-gpu-webgpu/examples/scenes/pulled.rs	int	SIZE	SIZE = 256
-redefinition	crates/wcontainers-gpu-webgpu/examples/scenes/suite.rs	int	<Chrome as wcontainers_gpu_test::Host>::window::WINDOW	WINDOW = 1
-redefinition	crates/wcontainers-gpu-webgpu/tests/host/mod.rs	int	<Native as wcontainers_gpu_test::Host>::window::WINDOW	WINDOW = 1
-redefinition	crates/wcontainers-gpu-webgpu/tests/host/mod.rs	int	window::SIDE	SIDE = 4
-redefinition	crates/wcontainers-gpu-webgpu/tests/writes.rs	int	written_bytes_are_counted_and_reported::SIDE	SIDE = 4
 redefinition	crates/wcontainers-gpu/src/backend/tests.rs	int	absent_features_say_which::BLOCK	BLOCK = 100
 redefinition	crates/wcontainers-gpu/src/backend/tests.rs	int	call::BLOCK	BLOCK = 100
 redefinition	crates/wcontainers-graphics-test/src/d3d11/scenes/blend.rs	int	SIZE	SIZE = 256
@@ -24077,8 +24047,6 @@ restated	crates/wcontainers-gpu-webgpu/examples/scenes/pulled.rs	float	object	10
 restated	crates/wcontainers-gpu-webgpu/examples/scenes/pulled.rs	float	object	512.0
 restated	crates/wcontainers-gpu-webgpu/examples/scenes/pulled.rs	int	OBJECTS	256
 restated	crates/wcontainers-gpu-webgpu/examples/scenes/pulled.rs	int	pulled_set	256
-restated	crates/wcontainers-gpu-webgpu/examples/scenes/queries.rs	int	paged_sets	4096
-restated	crates/wcontainers-gpu-webgpu/examples/scenes/queries.rs	int	paged_sets	4096
 restated	crates/wcontainers-gpu-webgpu/examples/scenes/timestamps.rs	float	APART_MS	300.0
 restated	crates/wcontainers-gpu-webgpu/examples/scenes/timestamps.rs	int	ROUNDS	2048
 restated	crates/wcontainers-gpu-webgpu/examples/scenes/timestamps.rs	int	SIZE	512
@@ -24097,18 +24065,10 @@ restated	crates/wcontainers-gpu-webgpu/tests/blocks.rs	int	bc_copies_keep_the_bl
 restated	crates/wcontainers-gpu-webgpu/tests/blocks.rs	int	bc_copies_keep_the_blocks_natively_and_decoded	256
 restated	crates/wcontainers-gpu-webgpu/tests/blocks.rs	int	bc_copies_keep_the_blocks_natively_and_decoded	256
 restated	crates/wcontainers-gpu-webgpu/tests/blocks.rs	int	bc_copies_keep_the_blocks_natively_and_decoded	256
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	float	depth_and_stencil_parts_copy_and_read_back_exactly	16_777_215.0
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	float	depth_of	16_777_215.0
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	float	same_depth	16_777_215.0
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	depth_and_stencil_parts_copy_and_read_back_exactly	0xff_ffff
 restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	depth_and_stencil_parts_copy_and_read_back_exactly	1024
 restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	depth_and_stencil_parts_copy_and_read_back_exactly	1024
 restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	depth_and_stencil_parts_copy_and_read_back_exactly	4096
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	depth_of	0xff_ffff
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	float_depth_copies_keep_what_a_draw_can_write	0x4000_0000
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	float_depth_copies_keep_what_a_draw_can_write	0x8000_0000
 restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	sixteen_bit_group_copies_into_depth_keep_the_bits	0x8000
-restated	crates/wcontainers-gpu-webgpu/tests/copies.rs	int	source_words	0xff_ffff
 restated	crates/wcontainers-gpu-webgpu/tests/depth.rs	int	depth_bias_on_24_bit_depth_matches_direct3d	256
 restated	crates/wcontainers-gpu-webgpu/tests/direct3d.rs	float	decoded_step	2048.0
 restated	crates/wcontainers-gpu-webgpu/tests/direct3d.rs	float	generate_mips_of_r32float_without_filtering_match_direct3d	65536.0
@@ -24116,7 +24076,6 @@ restated	crates/wcontainers-gpu-webgpu/tests/raster.rs	int	wireframe_fill_matche
 restated	crates/wcontainers-gpu-webgpu/tests/writes.rs	int	byte_granular_buffer_operations_match_a_model::SIZE	1024
 restated	crates/wcontainers-gpu-webgpu/tests/writes.rs	int	ordered_writes_are_staged_in_one_ring	256
 restated	crates/wcontainers-gpu-webgpu/tests/writes.rs	int	ordered_writes_are_staged_in_one_ring	256
-restated	crates/wcontainers-gpu-webgpu/tests/writes.rs	int	queries_carry_across_splits_in_a_set_of_the_largest_size	4096
 restated	crates/wcontainers-gpu-webgpu/tests/writes.rs	int	writes_take_effect_in_command_order	300
 restated	crates/wcontainers-gpu-webgpu/tests/writes.rs	int	writes_take_effect_in_command_order	300
 restated	crates/wcontainers-gpu/src/backend/tests.rs	int	Recorder::new	16384
@@ -24579,17 +24538,14 @@ script	crates/wcontainers-direct3d-12/examples/directx/com.py	int	line: body = m
 script	crates/wcontainers-directx/generate.py	int	line: body = f"self.child.{snake(name)}10({args})"	10
 script	crates/wcontainers-directx/generate.py	int	line: body = f"self.{snake(name)}10({args})"	10
 script	crates/wcontainers-directx/generate.py	int	line: body = f"self.{snake(name)}10({args})"	10
-script	crates/wcontainers-gpu-webgpu/frames/run	int	line: $4 ~ /^[0-9.]+$/ { split($2, at, " "); t = at[2]	9
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: build="git submodule update --init --recursive -q && set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j 3 -p wcontainers-direc	12
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: build="git submodule update --init --recursive -q && set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j 3 -p wcontainers-direc	3
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: build="git submodule update --init --recursive -q && set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j 3 -p wcontainers-direc	3
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: build="git submodule update --init --recursive -q && set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j 3 -p wcontainers-direc	3
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: build="git submodule update --init --recursive -q && set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j 3 -p wcontainers-direc	3
-script	crates/wcontainers-gpu-webgpu/frames/run	int	line: ended=$(sed -n 's/.*, ended \([0-9:.]*\):.*/\1/p' <<<"$said" | tail -1)	9
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: load_limit=1800	1800
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: long=360	360
 script	crates/wcontainers-gpu-webgpu/frames/run	int	line: short=60	60
-script	crates/wcontainers-gpu-webgpu/frames/run	int	line: started=$(sed -n 's/.*started \([0-9:.]*\), ended.*/\1/p' <<<"$said" | tail -1)	9
 script	crates/wcontainers-gpu-webgpu/web/check	int	line: build+=" && cargo build --locked -j 3 -p wcontainers-gpu-webgpu --example scenes --target wasm32-unknown-unknown"	3
 script	crates/wcontainers-gpu-webgpu/web/check	int	line: build+=" && cargo build --locked -j 3 -p wcontainers-graphics-test --bin gt-compare"	3
 script	crates/wcontainers-gpu-webgpu/web/check	int	line: build+=" && cargo test --locked -j 3 -p wcontainers-gpu-webgpu --test suite --no-run"	3

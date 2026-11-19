@@ -13,7 +13,7 @@ use wcontainers_gpu_webgpu::WebGpu;
 /// Bytes of an `Rgba8Unorm` texel.
 const TEXEL: u32 = size_of::<[u8; 4]>() as u32;
 /// Pixels of the one-row target each check draws into.
-const WIDTH: u32 = 64;
+const TARGET_WIDTH: u32 = 64;
 /// The largest value of an 8-bit normalised channel.
 const UNORM8_MAX: u8 = u8::MAX;
 
@@ -146,11 +146,13 @@ impl Feature {
     /// The pixels the program draws into the row, as `Rgba8Unorm` bytes.
     fn expected(self) -> Vec<u8> {
         match self {
-            Feature::Subgroups => [UNORM8_MAX, UNORM8_MAX, 0, UNORM8_MAX].repeat(WIDTH as usize),
-            Feature::FineDerivatives => [UNORM8_MAX; 4].repeat(WIDTH as usize),
-            Feature::PrimitiveIndex => (0..WIDTH)
+            Feature::Subgroups => {
+                [UNORM8_MAX, UNORM8_MAX, 0, UNORM8_MAX].repeat(TARGET_WIDTH as usize)
+            }
+            Feature::FineDerivatives => [UNORM8_MAX; 4].repeat(TARGET_WIDTH as usize),
+            Feature::PrimitiveIndex => (0..TARGET_WIDTH)
                 .flat_map(|x| {
-                    let primitive = (x * TRIANGLES / WIDTH) as u8;
+                    let primitive = (x * TRIANGLES / TARGET_WIDTH) as u8;
                     [primitive, 0, 0, UNORM8_MAX]
                 })
                 .collect(),
@@ -209,7 +211,7 @@ pub fn check(b: &mut WebGpu, feature: Feature) -> Result<String, String> {
                 fragment: Some(&ps),
             })
             .map_err(|e| format!("{e:?}"))?,
-        ..kit(b, Format::Rgba8Unorm, WIDTH, &draw::opaque())
+        ..kit(b, Format::Rgba8Unorm, TARGET_WIDTH, &draw::opaque())
     };
     let set = b.create_binding_set(&[]).map_err(|e| format!("{e:?}"))?;
     begin(b, &k, [0.0; 4]);
@@ -227,7 +229,7 @@ pub fn check(b: &mut WebGpu, feature: Feature) -> Result<String, String> {
         ));
     }
     Ok(format!(
-        "{}: declared, {WIDTH} pixels drawn as it defines",
+        "{}: declared, {TARGET_WIDTH} pixels drawn as it defines",
         feature.name()
     ))
 }

@@ -39,13 +39,13 @@ impl wcontainers_gpu_test::Host for Chrome {
     }
 
     fn window(b: &mut WebGpu) -> u32 {
-        const WINDOW: u32 = 1;
+        const CANVAS_WINDOW_HANDLE: u32 = 1;
         let surface = INSTANCE.with_borrow(|i| {
             let instance = i.as_ref().expect("make() first");
             instance.create_surface(wgpu::SurfaceTarget::Canvas(make_canvas()))
         });
-        b.add_window(WINDOW, surface.expect("a surface"));
-        WINDOW
+        b.add_window(CANVAS_WINDOW_HANDLE, surface.expect("a surface"));
+        CANVAS_WINDOW_HANDLE
     }
 
     fn shown(_: &mut WebGpu, _: u32) -> Vec<u8> {

@@ -25,7 +25,7 @@ use wcontainers_gpu::{
     FormatKind, FormatUse, LoadOp, MapIntent, Origin, PassDesc, ReadSource, SlowPath, StageSet,
     StoreOp, TextureRegion, TextureUsage, Topology, Viewport, WriteMode,
 };
-use wcontainers_gpu_webgpu::WebGpu;
+use wcontainers_gpu_webgpu::{UNORM24_MAX, WebGpu};
 
 type Tex = <WebGpu as Backend>::Texture;
 type View = <WebGpu as Backend>::TextureView;
@@ -193,7 +193,7 @@ fn source_words(format: Format) -> Vec<u32> {
     (0..W * H)
         .map(|i| match format {
             Format::Depth24Plus | Format::Depth24PlusStencil8 => {
-                0xab00_0000 | (i.wrapping_mul(0x0012_3457) & 0xff_ffff)
+                0xab00_0000 | (i.wrapping_mul(0x0012_3457) & UNORM24_MAX)
             }
             _ => (i as f32 / 31.0 + if i % 3 == 0 { 1.0 / 3.0 } else { 0.0 })
                 .min(1.0)
@@ -206,7 +206,7 @@ fn source_words(format: Format) -> Vec<u32> {
 fn depth_of(format: Format, word: u32) -> f32 {
     match format {
         Format::Depth24Plus | Format::Depth24PlusStencil8 => {
-            (f64::from(word & 0xff_ffff) / 16_777_215.0) as f32
+            (f64::from(word & UNORM24_MAX) / f64::from(UNORM24_MAX)) as f32
         }
         _ => f32::from_bits(word),
     }
@@ -218,7 +218,7 @@ fn depth_of(format: Format, word: u32) -> f32 {
 fn same_depth(format: Format, got: f32, want: f32) -> bool {
     match format {
         Format::Depth24Plus | Format::Depth24PlusStencil8 => {
-            (f64::from(got) - f64::from(want)).abs() * 16_777_215.0 < 1.001
+            (f64::from(got) - f64::from(want)).abs() * f64::from(UNORM24_MAX) < 1.001
         }
         _ => got.to_bits() == want.to_bits(),
     }
@@ -437,16 +437,16 @@ fn drawable(word: u32, got: u32) -> bool {
 fn float_depth_copies_keep_what_a_draw_can_write() {
     let mut b = device();
     let mut words: Vec<u32> = vec![
-        0x3e80_0000, // 0.25
-        0x4000_0000, // 2
-        0xbf00_0000, // -0.5
-        0x8000_0000, // -0
+        0.25f32.to_bits(),
+        2.0f32.to_bits(),
+        (-0.5f32).to_bits(),
+        (-0.0f32).to_bits(),
         0x0000_1234, // a denormal
         0x7fc0_0001, // NaN
-        0x3f80_0000, // 1
-        0x3dfc_d6ea, // 0.1234
+        1.0f32.to_bits(),
+        0.1234f32.to_bits(),
     ];
-    words.resize((W * H) as usize, 0x3f00_0000);
+    words.resize((W * H) as usize, 0.5f32.to_bits());
     let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
     let (src, _) = draw::texture_2d(
         &mut b,
@@ -653,7 +653,7 @@ fn depth_and_stencil_parts_copy_and_read_back_exactly() {
             .iter()
             .map(|d| {
                 if unorm24 {
-                    (f64::from(*d) * 16_777_215.0).round() as u32
+                    (f64::from(*d) * f64::from(UNORM24_MAX)).round() as u32
                 } else {
                     d.to_bits()
                 }
@@ -672,7 +672,7 @@ fn depth_and_stencil_parts_copy_and_read_back_exactly() {
         }
         if unorm24 {
             let off: Vec<_> = (0..words.len())
-                .filter(|i| (words[*i] & 0xff_ffff).abs_diff(whole[*i]) > 1)
+                .filter(|i| (words[*i] & UNORM24_MAX).abs_diff(whole[*i]) > 1)
                 .collect();
             assert!(
                 off.is_empty(),
