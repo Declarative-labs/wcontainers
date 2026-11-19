@@ -681,3 +681,22 @@ fn flag_returns_match_linux_x86_64() {
 fn flags_across_calls_match_linux_x86_64() {
     match_linux::<X86_64>(&[("flags_across", Library::None)]);
 }
+
+/// gcc's and clang's own switch tables on a 32-bit index, which full recognises: no jump leaves through
+/// the lookup.
+#[test]
+fn compilers_switches_match_linux_x86_64() {
+    const NAME: &str = "switches";
+    match_linux::<X86_64>(&[(NAME, Library::None)]);
+    for optimisation in LEVELS {
+        let blob = build::<X86_64>(NAME, optimisation, Library::None);
+        for optimise in [Optimise::Speed, Optimise::Size] {
+            let (_, machine, _) = translated_for::<X86_64>(&blob, (LookAhead::Full, optimise));
+            assert_eq!(
+                machine.count(Reason::JumpThroughRegisterNotRecognised),
+                0,
+                "{NAME} at {optimisation}, {optimise:?}"
+            );
+        }
+    }
+}

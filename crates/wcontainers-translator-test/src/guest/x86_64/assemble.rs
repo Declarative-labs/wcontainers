@@ -906,10 +906,12 @@ impl Emitter {
     }
 
     /// A switch on the low bits of a register through a position-independent table of 32-bit distances,
-    /// reversed so the table is not just the index: gcc's form (`notrack`, the sum in the index's register)
-    /// for an index in an even register, clang's (the sum in the table's) for one in an odd.
+    /// reversed so the table is not just the index, after the guard on the 32-bit index the way the compilers
+    /// write it for `switch (unsigned)`: gcc's form (the table's address, then `mov t32, t32`, `notrack`) for
+    /// an index in an even register, clang's (`mov u32, t32` into the register the entry is loaded into,
+    /// then the table's address) for one in an odd.
     fn switch(&mut self, index: u8, cases: &[Vec<Op>]) -> Asm {
-        let (t, table_base) = (R12, R13);
+        let (t, u) = (R12, R13);
         let n = cases.len() as u32;
         let end = self.label();
         let labels: Vec<Label> = cases.iter().map(|_| self.label()).collect();
@@ -920,17 +922,19 @@ impl Emitter {
         self.a.and(d(t), mask)?;
         self.a.cmp(d(t), n - 1)?;
         self.jcc(cc(ConditionCode::a), end)?;
-        self.address(table_base, table)?;
-        self.a.movsxd(
-            q(t),
-            dword_ptr(q(table_base) + q(t) * size_of::<i32>() as u32),
-        )?;
+        let entry = |base: u8, at: u8| dword_ptr(q(base) + q(at) * size_of::<i32>() as u32);
         if index.is_multiple_of(2) {
-            self.a.add(q(t), q(table_base))?;
+            self.address(u, table)?;
+            self.a.mov(d(t), d(t))?;
+            self.a.movsxd(q(t), entry(u, t))?;
+            self.a.add(q(t), q(u))?;
             self.a.notrack().jmp(q(t))?;
         } else {
-            self.a.add(q(table_base), q(t))?;
-            self.a.jmp(q(table_base))?;
+            self.a.mov(d(u), d(t))?;
+            self.address(t, table)?;
+            self.a.movsxd(q(u), entry(t, u))?;
+            self.a.add(q(u), q(t))?;
+            self.a.jmp(q(u))?;
         }
         for (&label, case) in labels.iter().zip(cases) {
             self.place(label)?;

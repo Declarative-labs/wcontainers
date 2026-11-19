@@ -49,6 +49,14 @@ fn writes(i: &Instruction, r: u8) -> bool {
     first || both || implicit
 }
 
+/// The source of `mov r32, s32`, which zero-extends `s32` into `r`.
+fn zero_extended(i: &Instruction) -> Option<General> {
+    let word = u32::BITS as u8;
+    (i.iced.mnemonic() == Mnemonic::Mov && wide_register(i, 0)?.width == word)
+        .then(|| wide_register(i, 1).filter(|s| s.width == word))
+        .flatten()
+}
+
 /// The blob offset `lea r, [rip + d]` at `at` builds.
 fn rip_relative(at: u64, i: &Instruction) -> Option<u64> {
     (i.iced.mnemonic() == Mnemonic::Lea && i.iced.memory_base() == Register::RIP)
@@ -108,7 +116,10 @@ pub fn jump_table(
         return None;
     }
     let table = rip_relative(*lea_at, lea)?;
-    // The guard: `cmp index, k` and `ja` (k + 1 cases) or `jae` (k), with the index unchanged since.
+    // The guard: `cmp index, k` and `ja` (k + 1 cases) or `jae` (k), with the index unchanged since, or
+    // only zero-extended into the register the load reads (`mov r32, index32`, both compilers' form for a
+    // 32-bit index).
+    let mut index = index;
     let mut count = None;
     for (k, (_, i)) in walk.iter().enumerate().skip(load + 1) {
         let ins = &i.iced;
@@ -136,7 +147,7 @@ pub fn jump_table(
             break;
         }
         if writes(i, index.number) {
-            return None;
+            index = zero_extended(i)?;
         }
     }
     let count = count.filter(|&n| n > 0)?;
