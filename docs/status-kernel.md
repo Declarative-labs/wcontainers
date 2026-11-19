@@ -153,9 +153,8 @@ harness cause as fork09 (Questions), where the reference passes in 36 s; rwtest0
 (the reference passes in 64 s): it runs `rwtest -i 60s`, writing and reading back for 60 seconds
 of the guest's clock, which on the repeatable clock moves with the stand-in's instructions, so
 the test runs for 60 s of instructions however slow the stand-in is (a named cause: the test's
-length is guest time; not a verdict). open04, float_bessel, hackbench01, cve-2014-0196 did not
-run (the runner was stopped with the whole comparison at 23:08 and not restarted, to keep the
-test threads within the limit); its command, with those four names, continues it.
+length is guest time; not a verdict). open04, float_bessel, hackbench01 and cve-2014-0196 are
+still running in it (open04 at the eighth run's end); its command continues it if it stopped.
 
 LTP, at 22:15 on the 18th (scratch k6c7/whole.tsv, still running at fcbc6807, about 150 tests
 an hour at load 95 to 135): 544 done; differing, all known: controllers:controllers (above),
