@@ -5,7 +5,7 @@ use wcontainers_kernel::{Access, Kernel, Process, TaskId, task_id_after};
 
 /// A test's side of the kernel's hooks and task id calls, for the tests that act at some of them;
 /// each left alone does nothing, or for task ids, counts as the kernel's default does.
-pub trait Hooks {
+pub trait Hooks: Send {
     fn task_id_allocate(&mut self, previous: TaskId) -> TaskId {
         task_id_after(previous)
     }

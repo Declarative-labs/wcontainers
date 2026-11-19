@@ -226,7 +226,7 @@ pub(crate) struct Counters {
 
 impl Counters {
     /// Counts one occurrence and warns the host.
-    pub fn count(&mut self, host: &mut dyn Host, reason: &'static str, detail: u64) {
+    pub fn count(&mut self, host: &dyn Host, reason: &'static str, detail: u64) {
         let count = self.counts.entry((reason, detail)).or_insert(0);
         *count += 1;
         host.warn(Warning {
@@ -241,7 +241,7 @@ impl Counters {
     /// feature.
     pub fn refuse(
         &mut self,
-        host: &mut dyn Host,
+        host: &dyn Host,
         reason: &'static str,
         detail: u64,
         answer: crate::Errno,
@@ -254,7 +254,7 @@ impl Counters {
     /// A flag or form of call `number` that is not built, as [`Counters::refuse`] counts it.
     pub fn refuse_flag(
         &mut self,
-        host: &mut dyn Host,
+        host: &dyn Host,
         number: u32,
         flags: u64,
         answer: crate::Errno,
@@ -276,7 +276,7 @@ impl Counters {
     }
 
     /// Counts and warns of every noted occurrence.
-    pub fn flush(&mut self, host: &mut dyn Host) {
+    pub fn flush(&mut self, host: &dyn Host) {
         for (reason, detail) in core::mem::take(self.noted.get_mut()) {
             self.count(host, reason, detail);
         }

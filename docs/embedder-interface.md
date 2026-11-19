@@ -13,18 +13,18 @@ a provided default, so an embedder that implements none of it gets a counter for
 hooks.
 
 ```rust
-pub trait System: Host {
+pub trait System: Host + Sync {
     // Services: the kernel asks and uses the answer.
-    fn task_id_allocate(&mut self, previous: TaskId) -> TaskId { task_id_after(previous) }
-    fn task_id_free(&mut self, id: TaskId) {}
+    fn task_id_allocate(&self, previous: TaskId) -> TaskId { task_id_after(previous) }
+    fn task_id_free(&self, id: TaskId) {}
 
     // Hooks: the kernel announces; synchronous, nothing returned.
-    fn on_process_starting(&mut self, process: Process<'_>) {}
-    fn on_program_starting(&mut self, process: Process<'_>) {}
-    fn on_thread_starting(&mut self, process: Process<'_>, thread: TaskId) {}
-    fn on_process_exiting(&mut self, process: Process<'_>) {}
-    fn on_process_outgrown(&mut self, process: Process<'_>, bytes: u64) {}
-    fn on_memory_accessing(&mut self, process: Process<'_>, thread: TaskId, address: u64, access: Access) {}
+    fn on_process_starting(&self, process: Process<'_>) {}
+    fn on_program_starting(&self, process: Process<'_>) {}
+    fn on_thread_starting(&self, process: Process<'_>, thread: TaskId) {}
+    fn on_process_exiting(&self, process: Process<'_>) {}
+    fn on_process_outgrown(&self, process: Process<'_>, bytes: u64) {}
+    fn on_memory_accessing(&self, process: Process<'_>, thread: TaskId, address: u64, access: Access) {}
 }
 
 /// A process or thread id: one space for both, as Linux's `pid_t`.
@@ -32,8 +32,11 @@ pub struct TaskId(pub u32);
 pub fn task_id_after(previous: TaskId) -> TaskId; // the default counter, wrapping as `alloc_pid`
 ```
 
-Kernel calls that take the embedder take `&mut dyn System`: `Kernel::start`, `exit`, `event`,
-`kill`, `restore`.
+Every method of `System` and of the abi's `Host` takes `&self`, and `System` requires `Sync`, so
+that the kernel may later call hooks for different processes at the same time (the owner's ruling
+of 2026-11-19); the embedder synchronizes what it changes (atomics, or its own locks; the test host
+keeps its state and the test's hooks each behind a `Mutex`). Kernel calls that take the embedder
+take `&dyn System`: `Kernel::start`, `exit`, `event`, `kill`, `restore`.
 
 ### Task ids
 

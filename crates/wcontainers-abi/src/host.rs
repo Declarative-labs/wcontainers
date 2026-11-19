@@ -94,54 +94,53 @@ pub enum Event<'a> {
 /// interface is not optional.
 pub trait Host {
     /// Nanoseconds on a clock that never goes backwards.
-    fn monotonic_nanoseconds(&mut self) -> u64;
+    fn monotonic_nanoseconds(&self) -> u64;
     /// Nanoseconds since 1970 by the wall clock.
-    fn realtime_nanoseconds(&mut self) -> u64;
+    fn realtime_nanoseconds(&self) -> u64;
     /// Fill with random bytes fit for cryptography.
-    fn random(&mut self, into: &mut [u8]);
+    fn random(&self, into: &mut [u8]);
 
-    fn warn(&mut self, warning: Warning<'_>);
+    fn warn(&self, warning: Warning<'_>);
 
     /// Send one FUSE request to the file backend. The reply arrives as [`Event::BackendReply`], unless the
     /// request is one FUSE defines as having no reply.
-    fn backend_send(&mut self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError>;
+    fn backend_send(&self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError>;
 
     /// Bytes out of an end, never more than the credit the embedder gave on it.
-    fn stream_send(&mut self, end: End, bytes: &[u8]);
+    fn stream_send(&self, end: End, bytes: &[u8]);
     /// The embedder may send this many more bytes on an end (added to what it may send already).
-    fn stream_credit(&mut self, end: End, bytes: u64);
+    fn stream_credit(&self, end: End, bytes: u64);
     /// The kernel sends nothing more on an end, data or credit; the embedder frees it by closing it.
-    fn stream_close(&mut self, end: End);
+    fn stream_close(&self, end: End);
 
     /// Start connecting to an outside address (4 or 16 bytes) and port. The result arrives as
     /// [`Event::Connected`]. `stream` is true for TCP and false for UDP. A UDP connection may be
     /// sent on and received from at once; each send is one datagram and each receive gives one
     /// (what does not fit is lost).
     fn connect(
-        &mut self,
+        &self,
         connection: ConnectionId,
         address: &[u8],
         port: u16,
         stream: bool,
     ) -> Result<(), HostError>;
     /// Send bytes; returns how many were taken.
-    fn send(&mut self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError>;
+    fn send(&self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError>;
     /// Receive bytes; returns how many arrived. Zero means the other end finished sending;
     /// [`HostError::Closed`] means the connection was reset.
-    fn receive(&mut self, connection: ConnectionId, into: &mut [u8]) -> Result<usize, HostError>;
+    fn receive(&self, connection: ConnectionId, into: &mut [u8]) -> Result<usize, HostError>;
     /// No more bytes will be sent on a TCP connection; the other end reads its end. Receiving
     /// goes on.
-    fn finish(&mut self, connection: ConnectionId);
-    fn close(&mut self, connection: ConnectionId);
+    fn finish(&self, connection: ConnectionId);
+    fn close(&self, connection: ConnectionId);
     /// Start looking up a name. The result arrives as [`Event::LookedUp`] with the same request number.
-    fn look_up(&mut self, request: u64, name: &str) -> Result<(), HostError>;
+    fn look_up(&self, request: u64, name: &str) -> Result<(), HostError>;
     /// Start accepting TCP connections from outside to the container's port `port`. While some
     /// wait, [`Event::ConnectionReady`] comes on `listener` (once after this call, and again after
     /// [`Host::accept`] answered [`HostError::WouldBlock`]); each is taken with [`Host::accept`].
     /// [`Host::close`] on `listener` stops it.
-    fn listen(&mut self, listener: ConnectionId, port: u16) -> Result<(), HostError>;
+    fn listen(&self, listener: ConnectionId, port: u16) -> Result<(), HostError>;
     /// Take one waiting connection from a listener and give it the number `connection`, used then
     /// as one made by [`Host::connect`]. [`HostError::WouldBlock`] when none waits.
-    fn accept(&mut self, listener: ConnectionId, connection: ConnectionId)
-    -> Result<(), HostError>;
+    fn accept(&self, listener: ConnectionId, connection: ConnectionId) -> Result<(), HostError>;
 }

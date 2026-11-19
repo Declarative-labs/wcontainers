@@ -417,7 +417,7 @@ impl Kernel {
     pub fn start(
         &mut self,
         cpu: &mut dyn Cpu,
-        host: &mut dyn crate::System,
+        host: &dyn crate::System,
         start: &Start<'_>,
     ) -> Result<(), crate::Unsupported> {
         assert!(self.init.is_none(), "the container has already started");

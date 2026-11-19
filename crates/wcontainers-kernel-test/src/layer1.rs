@@ -4381,12 +4381,12 @@ pub fn run_ours_with(
 ) -> SequenceResult {
     let mut host = TestHost::new(0);
     if sequence.backend {
-        host.backend = Some(backend.take().unwrap_or_else(|| {
+        host.state().backend = Some(backend.take().unwrap_or_else(|| {
             crate::backend::Backend::start(&crate::backend::out(), None, sequence.cached)
         }));
     }
     let (result, mut host) = run_ours_on(sequence, runner, theirs, host);
-    if let Some(mut server) = host.backend.take() {
+    if let Some(mut server) = host.state().backend.take() {
         // Unmounted, as the reference's runner's mount lets go of everything a sequence looked up.
         server.destroy();
         server.empty();
@@ -4460,7 +4460,7 @@ fn run_ours_on(
         execution: wcontainers_kernel::ExecutionConfig::default(),
     };
     kernel
-        .start(&mut cpu, &mut host, &start)
+        .start(&mut cpu, &host, &start)
         .expect("the kernel runs a process serially with exact replay");
     crate::streams::begin(&mut kernel, &mut cpu, &mut host);
     assert_eq!(kernel.start_failure(), None, "starting the runner");
@@ -4474,7 +4474,7 @@ fn run_ours_on(
     // The reference's runner kills a sequence that has not ended by its deadline; a sleep that would
     // end later is killed here too.
     let deadline =
-        wcontainers_abi::Host::monotonic_nanoseconds(&mut host) + DEADLINE_SECONDS * 1_000_000_000;
+        wcontainers_abi::Host::monotonic_nanoseconds(&host) + DEADLINE_SECONDS * 1_000_000_000;
     let call = |kernel: &mut Kernel,
                 cpu: &mut BufferCpu,
                 host: &mut TestHost,
@@ -4519,7 +4519,7 @@ fn run_ours_on(
                 Next::Run { resume, .. } => panic!("a call ended with {resume:?}"),
                 Next::Finished { status } => return Err(status),
                 // An answer the backend owes comes before any time passes.
-                Next::Idle { .. } if host.backend.as_ref().is_some_and(|b| b.waiting()) => {
+                Next::Idle { .. } if host.state().backend.as_ref().is_some_and(|b| b.waiting()) => {
                     crate::driver::deliver(kernel, cpu, host);
                 }
                 // Waiting for ever: the runner kills such a sequence at its deadline.

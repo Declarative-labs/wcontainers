@@ -115,41 +115,41 @@ pub enum MemoryError {
 
 /// What an embedder implements: the abi's services, the task ids, and the hooks. Every hook is
 /// synchronous, fires only when every operation on its process is legal, and never nests.
-pub trait System: Host {
+pub trait System: Host + Sync {
     /// A free id for a new process or thread; `previous` is the id handed out last.
-    fn task_id_allocate(&mut self, previous: TaskId) -> TaskId {
+    fn task_id_allocate(&self, previous: TaskId) -> TaskId {
         task_id_after(previous)
     }
     /// No process, thread, process group or session carries `id` any more.
-    fn task_id_free(&mut self, id: TaskId) {
+    fn task_id_free(&self, id: TaskId) {
         let _ = id;
     }
 
     /// A process made by fork, or the container's first process, before its first instruction.
-    fn on_process_starting(&mut self, process: Process<'_>) {
+    fn on_process_starting(&self, process: Process<'_>) {
         let _ = process;
     }
     /// A process whose exec has loaded a new program, before the program's first instruction.
-    fn on_program_starting(&mut self, process: Process<'_>) {
+    fn on_program_starting(&self, process: Process<'_>) {
         let _ = process;
     }
     /// A new thread in an existing process, before its first instruction.
-    fn on_thread_starting(&mut self, process: Process<'_>, thread: TaskId) {
+    fn on_thread_starting(&self, process: Process<'_>, thread: TaskId) {
         let _ = (process, thread);
     }
     /// A process about to be torn down, its final state still readable.
-    fn on_process_exiting(&mut self, process: Process<'_>) {
+    fn on_process_exiting(&self, process: Process<'_>) {
         let _ = process;
     }
     /// A request for `bytes` of memory is about to cross the ceiling; if the process is still here
     /// when this returns, the request fails as out of memory.
-    fn on_process_outgrown(&mut self, process: Process<'_>, bytes: u64) {
+    fn on_process_outgrown(&self, process: Process<'_>, bytes: u64) {
         let _ = (process, bytes);
     }
     /// A thread is about to access a watched page; if the watch is gone when this returns the
     /// thread carries on, otherwise it waits until the process's watches change.
     fn on_memory_accessing(
-        &mut self,
+        &self,
         process: Process<'_>,
         thread: TaskId,
         address: u64,
@@ -335,14 +335,14 @@ impl Kernel {
         &mut self,
         cx: &mut crate::Context<'_>,
         pid: Pid,
-        hook: impl FnOnce(&mut dyn System, Process<'_>),
+        hook: impl FnOnce(&dyn System, Process<'_>),
     ) {
         let process = Process {
             kernel: self,
             cpu: &mut *cx.cpu,
             pid,
         };
-        hook(&mut *cx.host, process);
+        hook(cx.host, process);
     }
 }
 

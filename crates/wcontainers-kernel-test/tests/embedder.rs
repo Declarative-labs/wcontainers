@@ -2,10 +2,9 @@
 //! embedder, watches met before a call has any effect, the record of written pages, and lazy
 //! memory built from the two primitives running the shell's scripts as the reference does.
 
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use wcontainers_abi::{Cpu, PAGE_SIZE};
@@ -101,10 +100,10 @@ enum Seen {
 /// hook nest, and with `pool` hands out its own task ids, reusing freed ones first.
 #[derive(Default)]
 struct Recorder {
-    seen: Rc<RefCell<Vec<Seen>>>,
-    depth: Rc<RefCell<u32>>,
+    seen: Arc<Mutex<Vec<Seen>>>,
+    depth: Arc<Mutex<u32>>,
     pool: Option<(u32, Vec<u32>)>,
-    allocated: Rc<RefCell<Vec<u32>>>,
+    allocated: Arc<Mutex<Vec<u32>>>,
 }
 
 impl Recorder {
@@ -112,11 +111,11 @@ impl Recorder {
     /// none may announce another hook.
     fn enter(&self, process: &mut Process<'_>, seen: Seen) {
         assert_eq!(
-            *self.depth.borrow(),
+            *self.depth.lock().unwrap(),
             0,
             "a hook nested in another: {seen:?}"
         );
-        *self.depth.borrow_mut() += 1;
+        *self.depth.lock().unwrap() += 1;
         let info = process.info();
         assert!(info.memory_mapped() > 0, "{seen:?}: memory mapped");
         let _ = (info.ceiling_distance(), info.compute_used());
@@ -134,8 +133,8 @@ impl Recorder {
                 .memory_watch_thread(TaskId(0), buffer(), Watch::All)
                 .is_err()
         );
-        self.seen.borrow_mut().push(seen);
-        *self.depth.borrow_mut() -= 1;
+        self.seen.lock().unwrap().push(seen);
+        *self.depth.lock().unwrap() -= 1;
     }
 }
 
@@ -148,17 +147,21 @@ impl Hooks for Recorder {
             *next += 1;
             *next
         });
-        self.allocated.borrow_mut().push(id);
+        self.allocated.lock().unwrap().push(id);
         TaskId(id)
     }
 
     fn task_id_free(&mut self, id: TaskId) {
-        assert_eq!(*self.depth.borrow(), 0, "a task id freed inside a hook");
+        assert_eq!(
+            *self.depth.lock().unwrap(),
+            0,
+            "a task id freed inside a hook"
+        );
         if let Some((_, freed)) = &mut self.pool {
             assert!(!freed.contains(&id.0), "{id:?} freed twice");
             freed.push(id.0);
         }
-        self.seen.borrow_mut().push(Seen::Free(id.0));
+        self.seen.lock().unwrap().push(Seen::Free(id.0));
     }
 
     fn on_process_starting(&mut self, mut process: Process<'_>) {
@@ -200,7 +203,7 @@ fn life_cycle_hooks_fire_in_order_over_fork_exec_threads_and_exit() {
             "{:?} {:?} {:?}",
             run.outcome,
             run.counters,
-            seen.borrow()
+            seen.lock().unwrap()
         );
         // The first process (1), its thread (2), whose number goes back once it has ended, then
         // a child (3) that runs a program, ends, and is reaped; then the first process ends and
@@ -223,7 +226,7 @@ fn life_cycle_hooks_fire_in_order_over_fork_exec_threads_and_exit() {
             Seen::Exiting(1),
             Seen::Free(1),
         ];
-        assert_eq!(*seen.borrow(), expected, "seed {seed}");
+        assert_eq!(*seen.lock().unwrap(), expected, "seed {seed}");
     }
 }
 
@@ -238,7 +241,11 @@ fn task_ids_come_from_the_embedder_and_go_back_once_nothing_carries_them() {
         let run = run_embedder("lifecycle", Box::new(recorder), seed);
         assert_eq!(stdout(&run), "child 0\n", "{:?}", run.outcome);
         // The thread's number, freed when it ended, is the child's.
-        assert_eq!(*allocated.borrow(), [1001, 1002, 1002], "seed {seed}");
+        assert_eq!(
+            *allocated.lock().unwrap(),
+            [1001, 1002, 1002],
+            "seed {seed}"
+        );
         let expected = [
             Seen::Starting {
                 id: 1001,
@@ -260,17 +267,18 @@ fn task_ids_come_from_the_embedder_and_go_back_once_nothing_carries_them() {
             Seen::Exiting(1001),
             Seen::Free(1001),
         ];
-        assert_eq!(*seen.borrow(), expected, "seed {seed}");
+        assert_eq!(*seen.lock().unwrap(), expected, "seed {seed}");
     }
 }
 
 /// Records each `on_process_outgrown`: the bytes asked for and the distance left to the ceiling.
-struct Outgrown(Rc<RefCell<Vec<(u64, u64)>>>);
+struct Outgrown(Arc<Mutex<Vec<(u64, u64)>>>);
 
 impl Hooks for Outgrown {
     fn on_process_outgrown(&mut self, process: Process<'_>, bytes: u64) {
         self.0
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .push((bytes, process.info().ceiling_distance()));
     }
 }
@@ -283,7 +291,7 @@ const CEILING: u64 = 1 << 30;
 fn a_request_past_the_ceiling_is_announced_and_fails_as_out_of_memory() {
     let piece = format!("{PIECE:#x}");
     for seed in wcontainers_kernel_test::schedule_seeds() {
-        let seen = Rc::new(RefCell::new(Vec::new()));
+        let seen = Arc::new(Mutex::new(Vec::new()));
         let run = run_embedder_below(
             &["outgrow", &piece],
             Some(Box::new(Outgrown(seen.clone()))),
@@ -296,21 +304,21 @@ fn a_request_past_the_ceiling_is_announced_and_fails_as_out_of_memory() {
         assert_eq!(words[2], "ENOMEM", "{text}");
         let pieces: u64 = words[1].parse().expect("a count");
         assert!(pieces > 0 && pieces * PIECE < CEILING, "{text}");
-        let seen = seen.borrow();
+        let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 1, "{seen:?}");
         let (bytes, distance) = seen[0];
         assert_eq!(bytes, PIECE);
         assert!(distance < PIECE, "{distance}");
         assert_eq!(counted(&run, reason::PROCESS_OUTGROWN), 1);
         // With no ceiling below the address space's end, nothing is announced.
-        let seen_without = Rc::new(RefCell::new(Vec::new()));
+        let seen_without = Arc::new(Mutex::new(Vec::new()));
         let run = run_embedder_below(
             &["outgrow", &piece],
             Some(Box::new(Outgrown(seen_without.clone()))),
             seed,
             None,
         );
-        assert!(seen_without.borrow().is_empty());
+        assert!(seen_without.lock().unwrap().is_empty());
         let more: u64 = stdout(&run)
             .split_whitespace()
             .nth(1)
@@ -325,7 +333,7 @@ fn a_request_past_the_ceiling_is_announced_and_fails_as_out_of_memory() {
 fn a_fixed_request_past_the_ceiling_is_announced_and_fails_as_out_of_memory() {
     let address = format!("{:#x}", CEILING + CEILING / 4);
     for seed in wcontainers_kernel_test::schedule_seeds() {
-        let seen = Rc::new(RefCell::new(Vec::new()));
+        let seen = Arc::new(Mutex::new(Vec::new()));
         let run = run_embedder_below(
             &["fixed", &address],
             Some(Box::new(Outgrown(seen.clone()))),
@@ -340,7 +348,8 @@ fn a_fixed_request_past_the_ceiling_is_announced_and_fails_as_out_of_memory() {
             "{text}"
         );
         assert_eq!(
-            seen.borrow()
+            seen.lock()
+                .unwrap()
                 .iter()
                 .map(|(bytes, _)| *bytes)
                 .collect::<Vec<_>>(),
@@ -358,7 +367,7 @@ fn a_fixed_request_past_the_ceiling_is_announced_and_fails_as_out_of_memory() {
 fn heap_growth_past_the_ceiling_is_announced_and_fails_as_out_of_memory() {
     let growth = format!("{CEILING:#x}");
     for seed in wcontainers_kernel_test::schedule_seeds() {
-        let seen = Rc::new(RefCell::new(Vec::new()));
+        let seen = Arc::new(Mutex::new(Vec::new()));
         let run = run_embedder_below(
             &["brk", &growth],
             Some(Box::new(Outgrown(seen.clone()))),
@@ -367,7 +376,8 @@ fn heap_growth_past_the_ceiling_is_announced_and_fails_as_out_of_memory() {
         );
         assert_eq!(stdout(&run), "brk refused\n", "{:?}", run.outcome);
         assert_eq!(
-            seen.borrow()
+            seen.lock()
+                .unwrap()
                 .iter()
                 .map(|(bytes, _)| *bytes)
                 .collect::<Vec<_>>(),
@@ -402,7 +412,7 @@ fn the_first_process_is_announced_ending_before_the_others_it_takes_along() {
             Seen::Free(1),
             Seen::Free(2),
         ];
-        assert_eq!(*seen.borrow(), expected, "seed {seed}");
+        assert_eq!(*seen.lock().unwrap(), expected, "seed {seed}");
     }
 }
 
@@ -469,13 +479,13 @@ fn life_cycle_hooks_fire_in_order_over_signals_threaded_exec_vfork_groups_and_un
             Seen::Exiting(1),
             Seen::Free(1),
         ]);
-        assert_eq!(*seen.borrow(), expected, "seed {seed}");
+        assert_eq!(*seen.lock().unwrap(), expected, "seed {seed}");
     }
 }
 
 /// What a watching test saw at each hook: the process, the address, how, and whether the
 /// watched page still held what it held when the process started.
-type Touches = Rc<RefCell<Vec<(u32, u64, Access, bool)>>>;
+type Touches = Arc<Mutex<Vec<(u32, u64, Access, bool)>>>;
 
 /// Watches the buffer's writes in every process from its start; meets each watch inside the
 /// hook, or `later`, between steps through `Kernel::process`.
@@ -520,7 +530,8 @@ impl Hooks for Watcher {
         let offset = (page.start - BUFFER) as usize;
         let unchanged = self.at_start[&process.id().0][offset..offset + now.len()] == now[..];
         self.touches
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .push((process.id().0, address, access, unchanged));
         if self.later {
             self.pending.push((process.id(), address));
@@ -569,7 +580,7 @@ fn a_watch_is_met_before_a_call_writes_and_the_result_is_unchanged() {
                 seed,
             );
             assert_eq!(stdout(&run), stdout(&plain), "seed {seed}, later {later}");
-            let touches = touches.borrow();
+            let touches = touches.lock().unwrap();
             let processes: BTreeSet<u32> = touches.iter().map(|touch| touch.0).collect();
             assert_eq!(
                 processes.len(),
@@ -603,9 +614,9 @@ fn an_access_that_ends_before_a_watched_page_does_not_announce_it() {
         let run = run_embedder("span", Box::new(NextPage(touches.clone())), seed);
         assert_eq!(run.outcome.exit_code, 0, "{:?}", run.outcome);
         assert!(
-            touches.borrow().is_empty(),
+            touches.lock().unwrap().is_empty(),
             "seed {seed}: {:?}",
-            touches.borrow()
+            touches.lock().unwrap()
         );
     }
 }
@@ -629,14 +640,15 @@ impl Hooks for NextPage {
         access: Access,
     ) {
         self.0
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .push((process.id().0, address, access, true));
         process.memory_watch(page_of(address), Watch::None);
     }
 }
 
 /// Asks for the written pages when a child starts and again when it ends.
-struct Changes(Rc<RefCell<Vec<std::ops::Range<u64>>>>);
+struct Changes(Arc<Mutex<Vec<std::ops::Range<u64>>>>);
 
 impl Hooks for Changes {
     fn on_process_starting(&mut self, mut process: Process<'_>) {
@@ -647,7 +659,7 @@ impl Hooks for Changes {
 
     fn on_process_exiting(&mut self, mut process: Process<'_>) {
         if process.info().parent().is_some() {
-            *self.0.borrow_mut() = process.memory_changed();
+            *self.0.lock().unwrap() = process.memory_changed();
         }
     }
 }
@@ -655,11 +667,12 @@ impl Hooks for Changes {
 #[test]
 fn the_pages_written_are_exactly_those_a_program_wrote() {
     for seed in wcontainers_kernel_test::schedule_seeds() {
-        let changed = Rc::new(RefCell::new(Vec::new()));
+        let changed = Arc::new(Mutex::new(Vec::new()));
         let run = run_embedder("pages", Box::new(Changes(changed.clone())), seed);
         assert_eq!(run.outcome.exit_code, 0, "{:?}", run.outcome);
         let in_buffer: Vec<u64> = changed
-            .borrow()
+            .lock()
+            .unwrap()
             .iter()
             .flat_map(|range| (range.start..range.end).step_by(PAGE_SIZE as usize))
             .filter(|page| buffer().contains(page))
@@ -674,9 +687,9 @@ fn the_pages_written_are_exactly_those_a_program_wrote() {
 /// its parent's copy. A page found changed when it is filled was written past its watch.
 #[derive(Default)]
 struct Lazy {
-    saved: BTreeMap<u32, Rc<BTreeMap<u64, Vec<u8>>>>,
-    filled: Rc<RefCell<u64>>,
-    written_past: Rc<RefCell<Vec<u64>>>,
+    saved: BTreeMap<u32, Arc<BTreeMap<u64, Vec<u8>>>>,
+    filled: Arc<Mutex<u64>>,
+    written_past: Arc<Mutex<Vec<u64>>>,
 }
 
 impl Hooks for Lazy {
@@ -701,7 +714,7 @@ impl Hooks for Lazy {
             }
             process.memory_watch(range, Watch::All);
         }
-        self.saved.insert(process.id().0, Rc::new(saved));
+        self.saved.insert(process.id().0, Arc::new(saved));
     }
 
     fn on_memory_accessing(
@@ -716,13 +729,13 @@ impl Hooks for Lazy {
         let bytes = &saved[&page.start];
         let now = process.memory_read(page.clone()).expect("a mapped page");
         if now.iter().any(|byte| *byte != 0) {
-            self.written_past.borrow_mut().push(page.start);
+            self.written_past.lock().unwrap().push(page.start);
         }
         process
             .memory_write(page.start, bytes)
             .expect("a mapped page");
         process.memory_watch(page, Watch::None);
-        *self.filled.borrow_mut() += 1;
+        *self.filled.lock().unwrap() += 1;
     }
 }
 
@@ -771,7 +784,7 @@ fn lazy_memory_runs_the_shell_scripts_as_the_reference_does() {
                 ours.outcome.exit_code, theirs.exit_code,
                 "{label}: exit code"
             );
-            assert!(*filled.borrow() > 0, "{label}: nothing was filled");
+            assert!(*filled.lock().unwrap() > 0, "{label}: nothing was filled");
             let undescribed: Vec<_> = ours
                 .counters
                 .iter()
@@ -779,9 +792,9 @@ fn lazy_memory_runs_the_shell_scripts_as_the_reference_does() {
                 .collect();
             assert!(undescribed.is_empty(), "{label}: {undescribed:?}");
             assert!(
-                written_past.borrow().is_empty(),
+                written_past.lock().unwrap().is_empty(),
                 "{label}: written past the watch: {:x?}",
-                written_past.borrow()
+                written_past.lock().unwrap()
             );
         }
     }
@@ -797,8 +810,8 @@ const MOVED_TO: u64 = BUFFER + 2 * PAGES * PAGE_SIZE;
 #[derive(Default)]
 struct Moves {
     saved: BTreeMap<u64, Vec<u8>>,
-    touches: Rc<RefCell<Vec<(u64, Access)>>>,
-    changed: Rc<RefCell<Vec<std::ops::Range<u64>>>>,
+    touches: Arc<Mutex<Vec<(u64, Access)>>>,
+    changed: Arc<Mutex<Vec<std::ops::Range<u64>>>>,
 }
 
 impl Hooks for Moves {
@@ -827,7 +840,7 @@ impl Hooks for Moves {
         address: u64,
         access: Access,
     ) {
-        self.touches.borrow_mut().push((address, access));
+        self.touches.lock().unwrap().push((address, access));
         let page = page_of(address);
         if let Some(bytes) = self.saved.remove(&page.start) {
             process
@@ -839,7 +852,7 @@ impl Hooks for Moves {
 
     fn on_process_exiting(&mut self, mut process: Process<'_>) {
         if process.info().parent().is_some() {
-            *self.changed.borrow_mut() = process.memory_changed();
+            *self.changed.lock().unwrap() = process.memory_changed();
         }
     }
 }
@@ -868,11 +881,12 @@ fn watches_and_the_record_follow_pages_moved_or_dropped() {
             .collect();
         expected.push((page(MOVED_TO, MOVED - 1), Access::Write));
         expected.push((page(BUFFER, MOVED), Access::Write));
-        assert_eq!(*touches.borrow(), expected, "seed {seed}");
+        assert_eq!(*touches.lock().unwrap(), expected, "seed {seed}");
         // Written since the child started: every moved page where it landed, and the dropped one.
         let watched = BUFFER..page(MOVED_TO, MOVED);
         let written: Vec<u64> = changed
-            .borrow()
+            .lock()
+            .unwrap()
             .iter()
             .flat_map(|range| (range.start..range.end).step_by(PAGE_SIZE as usize))
             .filter(|at| watched.contains(at))
@@ -884,13 +898,13 @@ fn watches_and_the_record_follow_pages_moved_or_dropped() {
 }
 
 /// Tries to write into a child's read-only shared page at its start.
-struct SharedWrite(u64, Rc<RefCell<Vec<Result<(), MemoryError>>>>);
+struct SharedWrite(u64, Arc<Mutex<Vec<Result<(), MemoryError>>>>);
 
 impl Hooks for SharedWrite {
     fn on_process_starting(&mut self, mut process: Process<'_>) {
         if process.info().parent().is_some() {
             let result = process.memory_write(self.0, b"y");
-            self.1.borrow_mut().push(result);
+            self.1.lock().unwrap().push(result);
         }
     }
 }
@@ -900,7 +914,7 @@ fn a_read_only_shared_page_is_not_written_by_the_embedder() {
     let at = BUFFER + PAGES * PAGE_SIZE;
     let address = format!("{at:#x}");
     for seed in wcontainers_kernel_test::schedule_seeds() {
-        let results = Rc::new(RefCell::new(Vec::new()));
+        let results = Arc::new(Mutex::new(Vec::new()));
         let run = run_embedder_below(
             &["shared", &address],
             Some(Box::new(SharedWrite(at, results.clone()))),
@@ -908,7 +922,10 @@ fn a_read_only_shared_page_is_not_written_by_the_embedder() {
             None,
         );
         assert_eq!(stdout(&run), "file x mapped x\n", "{:?}", run.outcome);
-        assert_eq!(*results.borrow(), [Err(MemoryError::SharedNotWritable)]);
+        assert_eq!(
+            *results.lock().unwrap(),
+            [Err(MemoryError::SharedNotWritable)]
+        );
     }
 }
 
@@ -917,8 +934,8 @@ fn a_read_only_shared_page_is_not_written_by_the_embedder() {
 #[derive(Default)]
 struct Attributes {
     saved: BTreeMap<u64, Vec<u8>>,
-    touches: Rc<RefCell<Vec<(u64, Access)>>>,
-    changed: Rc<RefCell<Vec<Vec<u64>>>>,
+    touches: Arc<Mutex<Vec<(u64, Access)>>>,
+    changed: Arc<Mutex<Vec<Vec<u64>>>>,
 }
 
 impl Hooks for Attributes {
@@ -945,7 +962,7 @@ impl Hooks for Attributes {
         access: Access,
     ) {
         let page = page_of(address);
-        self.touches.borrow_mut().push((page.start, access));
+        self.touches.lock().unwrap().push((page.start, access));
         if let Some(bytes) = self.saved.remove(&page.start) {
             process
                 .memory_write(page.start, &bytes)
@@ -965,7 +982,7 @@ impl Hooks for Attributes {
             .filter(|page| buffer().contains(page))
             .map(|page| (page - BUFFER) / PAGE_SIZE)
             .collect();
-        self.changed.borrow_mut().push(written);
+        self.changed.lock().unwrap().push(written);
     }
 }
 
@@ -1008,21 +1025,26 @@ fn watches_and_the_record_stay_through_attribute_changes() {
                 ]
             })
             .collect();
-        assert_eq!(*touches.borrow(), expected, "seed {seed}");
-        assert_eq!(*changed.borrow(), vec![vec![0, 1, 2]; count], "seed {seed}");
+        assert_eq!(*touches.lock().unwrap(), expected, "seed {seed}");
+        assert_eq!(
+            *changed.lock().unwrap(),
+            vec![vec![0, 1, 2]; count],
+            "seed {seed}"
+        );
     }
 }
 
 /// A child's information when it starts and when it is about to end.
 #[derive(Default)]
-struct Spends(Rc<RefCell<Vec<(u64, Duration)>>>);
+struct Spends(Arc<Mutex<Vec<(u64, Duration)>>>);
 
 impl Spends {
     fn note(&self, process: &Process<'_>) {
         if process.info().parent().is_some() {
             let info = process.info();
             self.0
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .push((info.ceiling_distance(), info.compute_used()));
         }
     }
@@ -1059,7 +1081,7 @@ fn the_distance_to_the_ceiling_and_the_compute_used_are_the_processes_own() {
                 .map(|part| part.parse().expect("a number"))
                 .collect();
             let printed = Duration::new(used[0], used[1] as u32);
-            let notes = notes.borrow();
+            let notes = notes.lock().unwrap();
             let [(distance_before, used_before), (distance_after, used_after)] = notes[..] else {
                 panic!("{label}: {notes:?}");
             };

@@ -1,5 +1,6 @@
 //! The driver loop and a host for tests: runs a program on the kernel with the stand-in CPU.
 
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rand::rngs::StdRng;
@@ -73,6 +74,13 @@ pub struct Run {
 /// until a time, the host's clocks jump to it instead of waiting. With `NoHooks` the kernel's own
 /// provided defaults answer every hook and task id call.
 pub struct TestHost<H = NoHooks> {
+    state: Mutex<HostState>,
+    /// What the test does at the kernel's hooks.
+    hooks: Mutex<H>,
+}
+
+/// What the test host changes as the kernel asks.
+pub(crate) struct HostState {
     started: Instant,
     /// How far the clocks have jumped ahead.
     skipped: u64,
@@ -93,14 +101,28 @@ pub struct TestHost<H = NoHooks> {
     pub(crate) backend: Option<crate::backend::Backend>,
     /// Connections to the outside and lookups.
     network: crate::network::Network,
-    /// What the test does at the kernel's hooks.
-    pub(crate) hooks: H,
+}
+
+impl HostState {
+    fn monotonic_nanoseconds(&self) -> u64 {
+        match self.virtual_now {
+            Some(now) => now + self.skipped,
+            None => self.started.elapsed().as_nanos() as u64 + self.skipped,
+        }
+    }
+
+    fn realtime_nanoseconds(&self) -> u64 {
+        match self.virtual_now {
+            Some(_) => self.wall_base + self.monotonic_nanoseconds(),
+            None => wall_clock() + self.skipped,
+        }
+    }
 }
 
 impl TestHost {
     /// A host whose clock is the wall clock's.
     pub fn new(seed: u64) -> Self {
-        Self {
+        Self::of(HostState {
             started: Instant::now(),
             skipped: 0,
             random: StdRng::seed_from_u64(seed),
@@ -111,48 +133,44 @@ impl TestHost {
             schedule: StdRng::seed_from_u64(seed ^ SCHEDULE_SALT),
             backend: None,
             network: Default::default(),
-            hooks: NoHooks,
-        }
+        })
     }
 
     /// A host whose clocks move only with the work run and the waits skipped, both from the seed,
     /// so the kernel's choices repeat exactly for a seed.
     pub fn repeatable(seed: u64) -> Self {
-        let mut host = Self {
-            virtual_now: Some(1_000_000_000),
-            ..Self::new(seed)
-        };
-        host.wall_base = wall_clock() - 1_000_000_000;
+        let mut host = Self::new(seed);
+        let state = host.state();
+        state.virtual_now = Some(1_000_000_000);
+        state.wall_base = wall_clock() - 1_000_000_000;
         host
-    }
-
-    /// The same host with the test's side of the kernel's hooks.
-    fn with_hooks(self, hooks: Box<dyn Hooks>) -> TestHost<Box<dyn Hooks>> {
-        TestHost {
-            started: self.started,
-            skipped: self.skipped,
-            random: self.random,
-            streams: self.streams,
-            warnings: self.warnings,
-            virtual_now: self.virtual_now,
-            wall_base: self.wall_base,
-            schedule: self.schedule,
-            backend: self.backend,
-            network: self.network,
-            hooks,
-        }
     }
 
     /// Advances a repeatable clock by the time one turn on the CPU side took: between 0.5 and 1.5
     /// nanoseconds for each instruction it ran (a CPU's speed varies with its caches and its load),
     /// and between 0.5 and 1.5 microseconds more, both drawn from the schedule. The speed moves the
     /// points where the scheduler switches threads, so seeds give different interleavings.
-    fn ran(schedule: &mut StdRng, virtual_now: &mut Option<u64>, instructions: u64) {
-        let picoseconds = schedule.random_range(INSTRUCTION_PICOSECONDS);
+    fn ran(state: &mut HostState, instructions: u64) {
+        let picoseconds = state.schedule.random_range(INSTRUCTION_PICOSECONDS);
         let step = instructions.saturating_mul(picoseconds) / 1000
-            + schedule.random_range(TURN_NANOSECONDS);
-        if let Some(now) = virtual_now {
+            + state.schedule.random_range(TURN_NANOSECONDS);
+        if let Some(now) = &mut state.virtual_now {
             *now += step;
+        }
+    }
+
+    fn of(state: HostState) -> Self {
+        Self {
+            state: Mutex::new(state),
+            hooks: Mutex::new(NoHooks),
+        }
+    }
+
+    /// The same host with the test's side of the kernel's hooks.
+    fn with_hooks(self, hooks: Box<dyn Hooks>) -> TestHost<Box<dyn Hooks>> {
+        TestHost {
+            state: self.state,
+            hooks: Mutex::new(hooks),
         }
     }
 }
@@ -170,100 +188,113 @@ fn wall_clock() -> u64 {
         .as_nanos() as u64
 }
 
-impl<H> TestHost<H>
-where
-    Self: Host,
-{
+impl<H> TestHost<H> {
+    /// The host's state, reached without the lock by its only holder.
+    pub(crate) fn state(&mut self) -> &mut HostState {
+        self.state.get_mut().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The host's state, for the kernel's calls.
+    fn locked(&self) -> MutexGuard<'_, HostState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The test's hooks, for the kernel's calls; hooks never nest, so this is never held twice.
+    fn hooks(&self) -> MutexGuard<'_, H> {
+        self.hooks.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// The host a saved container is brought back on. What the container wrote has already left;
     /// the monotonic clock reads from an earlier start than this one's (a kernel that did not carry
     /// its clock over would see it go back) and the wall clock goes on from the save (a repeatable
     /// one without the time the save took, moved on by `wall_step`); randomness and the length of
     /// turns come from `seed`.
-    fn moved(mut self, seed: u64, wall_step: u64) -> Self {
-        let wall = self.realtime_nanoseconds();
-        let mut host = Self {
+    fn moved(self, seed: u64, wall_step: u64) -> Self {
+        let mut old = self
+            .state
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner);
+        let wall = old.realtime_nanoseconds();
+        let mut state = HostState {
             started: Instant::now(),
-            skipped: self.skipped,
+            skipped: old.skipped,
             random: StdRng::seed_from_u64(seed),
-            streams: self.streams,
-            warnings: self.warnings,
-            virtual_now: self.virtual_now.map(|_| 0),
+            streams: old.streams,
+            warnings: old.warnings,
+            virtual_now: old.virtual_now.map(|_| 0),
             wall_base: 0,
             schedule: StdRng::seed_from_u64(seed ^ SCHEDULE_SALT),
             // The backend and the answers it owes go on with the copy.
-            backend: self.backend,
+            backend: old.backend,
             // A new host has none of the old one's connections; its published ports go on.
-            network: self.network.moved(),
+            network: old.network.moved(),
+        };
+        state.wall_base = wall + wall_step - state.monotonic_nanoseconds();
+        Self {
+            state: Mutex::new(state),
             // The test's hooks go on with the copy.
             hooks: self.hooks,
-        };
-        host.wall_base = wall + wall_step - host.monotonic_nanoseconds();
-        host
+        }
     }
 
     /// Moves the clocks forward to a time on the monotonic clock, as if the host had waited.
     pub fn skip_to(&mut self, until: u64) {
-        let now = self.monotonic_nanoseconds();
-        self.skipped += until.saturating_sub(now);
+        let state = self.state();
+        let now = state.monotonic_nanoseconds();
+        state.skipped += until.saturating_sub(now);
     }
 }
 
 impl System for TestHost {}
 
 impl System for TestHost<Box<dyn Hooks>> {
-    fn task_id_allocate(&mut self, previous: TaskId) -> TaskId {
-        self.hooks.task_id_allocate(previous)
+    fn task_id_allocate(&self, previous: TaskId) -> TaskId {
+        self.hooks().task_id_allocate(previous)
     }
-    fn task_id_free(&mut self, id: TaskId) {
-        self.hooks.task_id_free(id);
+    fn task_id_free(&self, id: TaskId) {
+        self.hooks().task_id_free(id);
     }
-    fn on_process_starting(&mut self, process: Process<'_>) {
-        self.hooks.on_process_starting(process);
+    fn on_process_starting(&self, process: Process<'_>) {
+        self.hooks().on_process_starting(process);
     }
-    fn on_program_starting(&mut self, process: Process<'_>) {
-        self.hooks.on_program_starting(process);
+    fn on_program_starting(&self, process: Process<'_>) {
+        self.hooks().on_program_starting(process);
     }
-    fn on_thread_starting(&mut self, process: Process<'_>, thread: TaskId) {
-        self.hooks.on_thread_starting(process, thread);
+    fn on_thread_starting(&self, process: Process<'_>, thread: TaskId) {
+        self.hooks().on_thread_starting(process, thread);
     }
-    fn on_process_exiting(&mut self, process: Process<'_>) {
-        self.hooks.on_process_exiting(process);
+    fn on_process_exiting(&self, process: Process<'_>) {
+        self.hooks().on_process_exiting(process);
     }
-    fn on_process_outgrown(&mut self, process: Process<'_>, bytes: u64) {
-        self.hooks.on_process_outgrown(process, bytes);
+    fn on_process_outgrown(&self, process: Process<'_>, bytes: u64) {
+        self.hooks().on_process_outgrown(process, bytes);
     }
     fn on_memory_accessing(
-        &mut self,
+        &self,
         process: Process<'_>,
         thread: TaskId,
         address: u64,
         access: Access,
     ) {
-        self.hooks
+        self.hooks()
             .on_memory_accessing(process, thread, address, access);
     }
 }
 
 impl<H> Host for TestHost<H> {
-    fn monotonic_nanoseconds(&mut self) -> u64 {
-        match self.virtual_now {
-            Some(now) => now + self.skipped,
-            None => self.started.elapsed().as_nanos() as u64 + self.skipped,
-        }
+    fn monotonic_nanoseconds(&self) -> u64 {
+        self.locked().monotonic_nanoseconds()
     }
 
-    fn realtime_nanoseconds(&mut self) -> u64 {
-        match self.virtual_now {
-            Some(_) => self.wall_base + self.monotonic_nanoseconds(),
-            None => wall_clock() + self.skipped,
-        }
+    fn realtime_nanoseconds(&self) -> u64 {
+        self.locked().realtime_nanoseconds()
     }
 
-    fn random(&mut self, into: &mut [u8]) {
-        self.random.fill_bytes(into);
+    fn random(&self, into: &mut [u8]) {
+        self.locked().random.fill_bytes(into);
     }
 
-    fn warn(&mut self, warning: Warning<'_>) {
+    fn warn(&self, warning: Warning<'_>) {
         // Only a missing call's detail is a call number.
         let name = if warning.reason == wcontainers_kernel::reason::NOT_IMPLEMENTED {
             wcontainers_kernel::system_call_name(warning.detail).unwrap_or("")
@@ -277,15 +308,16 @@ impl<H> Host for TestHost<H> {
                 warning.reason, warning.detail, warning.count
             );
         }
-        self.warnings.push(Warned {
+        self.locked().warnings.push(Warned {
             reason: warning.reason.to_string(),
             count: warning.count,
             detail: warning.detail,
         });
     }
 
-    fn backend_send(&mut self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError> {
-        let backend = self.backend.as_mut().ok_or(HostError::NotSupported)?;
+    fn backend_send(&self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError> {
+        let mut state = self.locked();
+        let backend = state.backend.as_mut().ok_or(HostError::NotSupported)?;
         // The answer to a RETRIEVE this host sent in the server's place stays here.
         if request.0 & RETRIEVED == RETRIEVED {
             return Ok(());
@@ -294,59 +326,57 @@ impl<H> Host for TestHost<H> {
         Ok(())
     }
 
-    fn stream_send(&mut self, end: End, bytes: &[u8]) {
-        self.streams.send(end, bytes);
+    fn stream_send(&self, end: End, bytes: &[u8]) {
+        self.locked().streams.send(end, bytes);
     }
 
-    fn stream_credit(&mut self, end: End, bytes: u64) {
-        self.streams.credit(end, bytes);
+    fn stream_credit(&self, end: End, bytes: u64) {
+        self.locked().streams.credit(end, bytes);
     }
 
-    fn stream_close(&mut self, end: End) {
-        self.streams.close(end);
+    fn stream_close(&self, end: End) {
+        self.locked().streams.close(end);
     }
 
     fn connect(
-        &mut self,
+        &self,
         connection: ConnectionId,
         address: &[u8],
         port: u16,
         stream: bool,
     ) -> Result<(), HostError> {
-        self.network.connect(connection.0, address, port, stream)
+        self.locked()
+            .network
+            .connect(connection.0, address, port, stream)
     }
 
-    fn send(&mut self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError> {
-        self.network.send(connection.0, bytes)
+    fn send(&self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError> {
+        self.locked().network.send(connection.0, bytes)
     }
 
-    fn receive(&mut self, connection: ConnectionId, into: &mut [u8]) -> Result<usize, HostError> {
-        self.network.receive(connection.0, into)
+    fn receive(&self, connection: ConnectionId, into: &mut [u8]) -> Result<usize, HostError> {
+        self.locked().network.receive(connection.0, into)
     }
 
-    fn finish(&mut self, connection: ConnectionId) {
-        self.network.finish(connection.0);
+    fn finish(&self, connection: ConnectionId) {
+        self.locked().network.finish(connection.0);
     }
 
-    fn close(&mut self, connection: ConnectionId) {
-        self.network.close(connection.0);
+    fn close(&self, connection: ConnectionId) {
+        self.locked().network.close(connection.0);
     }
 
-    fn look_up(&mut self, request: u64, name: &str) -> Result<(), HostError> {
-        self.network.look_up(request, name);
+    fn look_up(&self, request: u64, name: &str) -> Result<(), HostError> {
+        self.locked().network.look_up(request, name);
         Ok(())
     }
 
-    fn listen(&mut self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
-        self.network.listen(listener.0, port)
+    fn listen(&self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
+        self.locked().network.listen(listener.0, port)
     }
 
-    fn accept(
-        &mut self,
-        listener: ConnectionId,
-        connection: ConnectionId,
-    ) -> Result<(), HostError> {
-        self.network.accept(listener.0, connection.0)
+    fn accept(&self, listener: ConnectionId, connection: ConnectionId) -> Result<(), HostError> {
+        self.locked().network.accept(listener.0, connection.0)
     }
 }
 
@@ -355,11 +385,11 @@ where
     Self: System,
 {
     fn streams(&mut self) -> &mut Streams {
-        &mut self.streams
+        &mut self.state().streams
     }
 
     fn choices(&mut self) -> &mut StdRng {
-        &mut self.schedule
+        &mut self.state().schedule
     }
 }
 
@@ -558,13 +588,14 @@ where
     let mut report: Option<i32> = None;
     let mut cpu = StandIn::with_space(container.address_space);
     let standard = client.standard();
-    host.streams = Streams::new(client);
-    host.streams.echo = echo;
-    host.network.published = container.published.iter().copied().collect();
+    let state = host.state();
+    state.streams = Streams::new(client);
+    state.streams.echo = echo;
+    state.network.published = container.published.iter().copied().collect();
     let root_on_backend = container.backend == Some(reference::ROOT_DIRECTORY);
     if container.backend.is_some() {
         let image = root_on_backend.then_some(container.files);
-        host.backend = Some(crate::backend::Backend::start(
+        host.state().backend = Some(crate::backend::Backend::start(
             &crate::backend::out(),
             image,
             container.cached,
@@ -593,7 +624,7 @@ where
         execution: ExecutionConfig::default(),
     };
     kernel
-        .start(&mut cpu, &mut host, &start)
+        .start(&mut cpu, &host, &start)
         .expect("the kernel runs a process serially with exact replay");
     streams::begin(&mut kernel, &mut cpu, &mut host);
     let status = loop {
@@ -605,16 +636,20 @@ where
             } => {
                 // The seed chooses where in its slice each turn ends, so a run repeats for a seed
                 // and threads interleave differently under different seeds.
-                let mut slice_nanoseconds =
-                    slice_nanoseconds.map(|slice| host.schedule.random_range(1..=slice.max(1)));
+                let mut slice_nanoseconds = slice_nanoseconds
+                    .map(|slice| host.state().schedule.random_range(1..=slice.max(1)));
                 // An answer owed arrives during the turn, at a moment drawn from the seed: the
                 // host raises the running thread's stop flag then, as the boundary says.
                 if host
+                    .state()
                     .backend
                     .as_ref()
                     .is_some_and(|backend| backend.waiting())
                 {
-                    let arrival = host.schedule.random_range(1..=ANSWER_ARRIVES_WITHIN);
+                    let arrival = host
+                        .state()
+                        .schedule
+                        .random_range(1..=ANSWER_ARRIVES_WITHIN);
                     slice_nanoseconds = Some(slice_nanoseconds.map_or(arrival, |s| s.min(arrival)));
                 }
                 let exit = match cpu.run(thread, resume, slice_nanoseconds) {
@@ -625,38 +660,31 @@ where
                     }
                     Err(unsupported) => return Err(Failure::StandIn(unsupported)),
                 };
-                TestHost::ran(
-                    &mut host.schedule,
-                    &mut host.virtual_now,
-                    cpu.last_instructions,
-                );
+                TestHost::ran(host.state(), cpu.last_instructions);
 
-                kernel.exit(&mut cpu, &mut host, exit);
+                kernel.exit(&mut cpu, &host, exit);
                 turns += 1;
                 TURNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 network_events(&mut kernel, &mut cpu, &mut host, Duration::ZERO);
                 streams::act(&mut kernel, &mut cpu, &mut host, false);
                 // The backend's answers arrive at moments and in an order drawn from the seed.
                 while host
+                    .state()
                     .backend
                     .as_ref()
                     .is_some_and(|backend| backend.waiting())
-                    && host.schedule.random_bool(ANSWER_NOW_CHANCE)
+                    && host.state().schedule.random_bool(ANSWER_NOW_CHANCE)
                 {
                     deliver(&mut kernel, &mut cpu, &mut host);
                 }
                 while notice_at.first() == Some(&turns) {
                     notice_at.remove(0);
                     let notice = notice(&mut notices);
-                    kernel.event(
-                        &mut cpu,
-                        &mut host,
-                        Event::BackendNotice { notice: &notice },
-                    );
+                    kernel.event(&mut cpu, &host, Event::BackendNotice { notice: &notice });
                 }
                 while signal_at.first() == Some(&turns) {
                     signal_at.remove(0);
-                    kernel.kill(&mut cpu, &mut host, signal);
+                    kernel.kill(&mut cpu, &host, signal);
                 }
                 while at.first() == Some(&turns) {
                     at.remove(0);
@@ -680,22 +708,28 @@ where
                             copy => {
                                 libc::close(ends[1]);
                                 // The copy alone holds the network from here on.
-                                drop(std::mem::take(&mut host.network));
+                                drop(std::mem::take(&mut host.state().network));
                                 return Ok(finish(copied_run(copy, ends[0]), report));
                             }
                         }
                     }
                     cpu = cpu.restored();
                     host = host.moved(seed ^ ((saved as u64) << u32::BITS), injections.wall_step);
-                    kernel.restore(&mut cpu, &mut host);
+                    kernel.restore(&mut cpu, &host);
                 }
             }
             Next::Idle { until_nanoseconds } => {
-                if host.hooks.between_steps(&mut kernel, &mut cpu) {
+                if host
+                    .hooks
+                    .get_mut()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .between_steps(&mut kernel, &mut cpu)
+                {
                     continue;
                 }
                 // An answer owed comes before any time passes.
                 if host
+                    .state()
                     .backend
                     .as_ref()
                     .is_some_and(|backend| backend.waiting())
@@ -705,7 +739,7 @@ where
                 }
                 // The outside answers in real time: a wait for it goes on as long as the kernel's
                 // next timer, and at most ten seconds.
-                if host.network.waiting() {
+                if host.state().network.waiting() {
                     let now = host.monotonic_nanoseconds();
                     let wait = until_nanoseconds.map_or(NETWORK_PATIENCE, |until| {
                         Duration::from_nanos(until.saturating_sub(now)).min(NETWORK_PATIENCE)
@@ -718,46 +752,50 @@ where
                     continue;
                 }
                 let Some(until) = until_nanoseconds else {
+                    let streams = &host.state().streams;
                     panic!(
                         "the kernel is idle with nothing to wake it, and this host has no events \
                          (the client waits at {:?}); output so far:\n{}{}",
-                        host.streams.stuck_at(),
-                        String::from_utf8_lossy(&host.streams.stdout),
-                        String::from_utf8_lossy(&host.streams.stderr)
+                        streams.stuck_at(),
+                        String::from_utf8_lossy(&streams.stdout),
+                        String::from_utf8_lossy(&streams.stderr)
                     );
                 };
-                let now = host.monotonic_nanoseconds();
-                host.skipped += until.saturating_sub(now);
-                kernel.event(&mut cpu, &mut host, Event::Timer);
+                host.skip_to(until);
+                kernel.event(&mut cpu, &host, Event::Timer);
             }
             Next::Finished { status } => break status,
         }
     };
-    let input_closed = host.streams.input_closed_by_kernel();
+    let input_closed = host.state().streams.input_closed_by_kernel();
     let outputs_closed = streams::finish(&mut kernel, &mut cpu, &mut host);
     if let Some(error) = kernel.start_failure() {
         // Never in a copy: no save is made before the first program runs.
         return Err(Failure::Start(error));
     }
-    let files = match &host.backend {
+    let state = host
+        .state
+        .into_inner()
+        .unwrap_or_else(PoisonError::into_inner);
+    let files = match &state.backend {
         Some(backend) if root_on_backend => image::records(&backend.files()),
         _ => kernel.root_files(&mut cpu),
     };
     let run = Run {
         outcome: Outcome {
-            stdout: host.streams.stdout,
-            stderr: host.streams.stderr,
+            stdout: state.streams.stdout,
+            stderr: state.streams.stderr,
             exit_code: exit_code(status),
         },
-        warnings: host.warnings,
+        warnings: state.warnings,
         counters: kernel.counters().collect(),
         files,
         saved,
         turns,
-        most_input_credit: host.streams.most_input_credit,
-        sent_within_credit: host.streams.sent_within_credit,
-        sends_past_credit: host.streams.sends_past_credit,
-        broken: host.streams.broken,
+        most_input_credit: state.streams.most_input_credit,
+        sent_within_credit: state.streams.sent_within_credit,
+        sends_past_credit: state.streams.sends_past_credit,
+        broken: state.streams.broken,
         outputs_closed,
         input_closed,
     };
@@ -793,10 +831,10 @@ fn network_events<H>(
 where
     TestHost<H>: System,
 {
-    if !host.network.waiting() {
+    if !host.state().network.waiting() {
         return false;
     }
-    let owed = host.network.take(wait);
+    let owed = host.state().network.take(wait);
     for event in &owed {
         event.with(|event| kernel.event(cpu, host, event));
     }
@@ -904,10 +942,11 @@ pub(crate) fn deliver<H>(
 ) where
     TestHost<H>: System,
 {
-    let Some(message) = host
+    let state = host.state();
+    let Some(message) = state
         .backend
         .as_mut()
-        .and_then(|backend| backend.next(&mut host.schedule))
+        .and_then(|backend| backend.next(&mut state.schedule))
     else {
         return;
     };
