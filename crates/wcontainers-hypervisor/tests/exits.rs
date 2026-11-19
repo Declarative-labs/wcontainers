@@ -111,8 +111,10 @@ mod macos {
             }
         }
         println!(
-            "exits, exact {exact}: {} programs, {failed} failed; native slow paths {:?}; in {:?}, load {}",
+            "exits, exact {exact}: {} programs, {failed} failed; {} native pieces; native slow paths {:?}; in \
+             {:?}, load {}",
             PROGRAMS.len(),
+            native.translations,
             native.warnings,
             started.elapsed(),
             load_average()
@@ -168,6 +170,8 @@ mod macos {
         loaded: Loaded,
         /// Each slow path's count, as last warned.
         warnings: BTreeMap<String, u64>,
+        /// Pieces translated.
+        translations: u64,
     }
 
     impl NativeSide {
@@ -183,6 +187,7 @@ mod macos {
                 memory,
                 loaded,
                 warnings: BTreeMap::new(),
+                translations: 0,
             };
             side.serve();
             side.begin(exact);
@@ -239,6 +244,7 @@ mod macos {
                     }
                 } else if translation::Request::from_word(word).is_some() {
                     translate::translate(link).expect("a piece fits the link");
+                    self.translations += 1;
                 } else if inside_routines::Request::from_word(word).is_some() {
                     routines::answer(link, &self.memory);
                 } else {

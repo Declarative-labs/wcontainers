@@ -87,7 +87,10 @@ Results (M5 Max; scratch native/n3r3/exits.log):
   but the FPSR it reads is 0x10 (IXC) on Linux and 0 on both our outputs: the WebAssembly output keeps no float
   flags until a program writes FPSR, and the native output gives what it gives (plan 3.4). Found here: plan 3.4
   says the inside counts such a read ("exact floating point requested"), but it does not: no `Stopping` names an
-  FPSR read, so nothing is counted or warned. Next: a `Stopping` for an FPSR read and the count in the inside.
+  FPSR read, so nothing was counted or warned. Settled: `Stopping::FloatStatusRead` (34011b54, guest-cpu and
+  arm64), and the inside counts and warns such a read under that name when the flags are not kept (5859b7b9);
+  the exits program now warns it once natively, as the WebAssembly side does. Native test after the change: 32,562
+  cases, 0 failing; interrupts 2500, 0 failed; arm64 and guest-cpu suites pass.
 
 Dev-dependencies the monitor gained (test only): wcontainers-wasmtime and wcontainers-runtime (this workspace,
 MIT OR Apache-2.0), linux-raw-sys 0.12.1 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT, the version the
@@ -96,13 +99,14 @@ kernel test crate uses).
 Literals: the check exits 0; no baseline line added.
 
 What comes next for N3, in order:
-1. The FPSR read while flags are not kept: counted and warned by the inside (above).
-2. Pieces of more than one instruction: `NativeCpu::load` sends one word; send to the page's end and let the
-   monitor halve what it translates when the answer does not fit the link; a piece's guest extent then decides
-   what `code_changed` drops (today only pieces starting in the range).
-3. A static musl program in the exits test (auxiliary vector on the stack, writev), closer to busybox.
-4. The `Host` through the link, the image's files at start, the kernel inside, then the loop and the test crate's
+1. A static musl program in the exits test (auxiliary vector on the stack, writev), closer to busybox.
+2. The `Host` through the link, the image's files at start, the kernel inside, then the loop and the test crate's
    policy once R1 and R3 exist (see "For the orchestrator"); then the bar and the independent check's programs.
+3. At N4 (bounded and full look-ahead, whose pieces are straight runs): `NativeCpu::load` sends the code to the
+   page's end, the monitor translates what fits the link (halving), and `code_changed` drops every piece whose
+   guest extent meets the range (today: pieces starting in it, right while a piece is one instruction). Tried this
+   run and taken out again: at look-ahead none the emitter translates one instruction whatever it is given
+   (translator native.rs, `LookAhead::None => 1`), so it changed nothing (356 pieces either way) but the copying.
 
 ## N3 run 2 (2026-11-19)
 
