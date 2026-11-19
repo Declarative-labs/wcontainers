@@ -1,6 +1,7 @@
 //! The kernel inside: a test program run by the monitor's kernel test, never shipped. It takes a container's
 //! files and start through the link, starts its first process in the kernel on [`NativeCpu`], and runs it to
-//! its end with the runtime's loop and the kernel test crate's policy, the host's services through the link.
+//! its end with the runtime's loop and the kernel test crate's policy, the host's services through the link,
+//! then sends the root's files back.
 
 #![cfg_attr(target_os = "none", no_std, no_main)]
 
@@ -38,6 +39,7 @@ mod kernel {
             Ok(Ending::Ended(never)) => match never {},
             Err(unbuilt) => panic!("the native back end cannot run this yet: {unbuilt:?}"),
         };
+        container::send_root(&mut Doorbell, &kernel, &mut cpu);
         for warned in &policy.warnings {
             floor::ask(
                 &Warned {

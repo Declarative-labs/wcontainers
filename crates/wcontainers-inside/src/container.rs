@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
 use wcontainers_abi::{Cpu, Host};
-use wcontainers_kernel::{Attributes, Errno, Kernel, NewFile, Start};
+use wcontainers_kernel::{Attributes, Errno, FileRecord, Kernel, NewFile, Start};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use crate::link::{Link, Ring};
@@ -16,6 +16,8 @@ crate::requests! {
     NextFile {} -> Length;
     /// The container's [`Starting`], by postcard in the answer's bytes.
     StartContainer {} -> Length;
+    /// One file of the root as it is now, a [`FileRecord`] by postcard in the request's bytes.
+    RootFile {} -> ();
 }
 
 /// Bytes of an answer's record; 0 after the image's last file.
@@ -76,6 +78,22 @@ pub struct Starting {
     pub backend: Option<Vec<u8>>,
 }
 
+/// The fields of the kernel's [`FileRecord`], for postcard.
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "FileRecord")]
+struct FileRecordFields {
+    path: Vec<u8>,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    contents: Vec<u8>,
+    rdev: u64,
+}
+
+/// A [`FileRecord`] as a [`RootFile`] request carries it.
+#[derive(Serialize, Deserialize)]
+struct Kept(#[serde(with = "FileRecordFields")] FileRecord);
+
 /// A file the kernel refused, with its path and the kernel's error.
 #[derive(Debug)]
 pub struct Refused {
@@ -134,24 +152,42 @@ pub fn start<R: Ring>(
     Ok(())
 }
 
-/// The monitor's half: answers `request` with the next of `files` or with `starting`, giving the answer's
-/// bytes.
-pub fn answer(
-    request: Request,
-    link: &mut Link,
-    files: &mut dyn Iterator<Item = File>,
-    starting: &Starting,
-) -> Vec<u8> {
-    let bytes = match request {
-        Request::NextFile => files.next().map(|file| postcard::to_allocvec(&file)),
-        Request::StartContainer => Some(postcard::to_allocvec(starting)),
+/// Sends every file of `kernel`'s root as it is now, after the container has run.
+pub fn send_root<R: Ring>(ring: &mut R, kernel: &Kernel, cpu: &mut dyn Cpu) {
+    for record in kernel.root_files(cpu) {
+        let bytes = postcard::to_allocvec(&Kept(record)).expect("a record postcard can write");
+        ring.ask(&RootFile {}, &bytes);
     }
-    .map(|record| record.expect("a record postcard can write"))
-    .unwrap_or_default();
-    link.put(&Length {
-        length: bytes.len() as u64,
-    });
-    bytes
+}
+
+/// The monitor's half of a container: the image's files still to send, its start, and the root's files sent
+/// back.
+pub struct Monitor<'a> {
+    pub files: &'a mut dyn Iterator<Item = File>,
+    pub starting: &'a Starting,
+    pub root: Vec<FileRecord>,
+}
+
+impl Monitor<'_> {
+    /// Answers `request`, which carried `carried`, giving the answer's bytes.
+    pub fn answer(&mut self, request: Request, link: &mut Link, carried: &[u8]) -> Vec<u8> {
+        let bytes = match request {
+            Request::NextFile => self.files.next().map(|file| postcard::to_allocvec(&file)),
+            Request::StartContainer => Some(postcard::to_allocvec(self.starting)),
+            Request::RootFile => {
+                let Kept(record) =
+                    postcard::from_bytes(carried).expect("a record the inside wrote");
+                self.root.push(record);
+                None
+            }
+        }
+        .map(|record| record.expect("a record postcard can write"))
+        .unwrap_or_default();
+        link.put(&Length {
+            length: bytes.len() as u64,
+        });
+        bytes
+    }
 }
 
 #[cfg(test)]
@@ -162,7 +198,12 @@ mod tests {
 
     use zerocopy::FromZeros;
 
-    use super::{File, FileKind, NextFile, Request, StartContainer, Starting, record};
+    use wcontainers_kernel::FileRecord;
+
+    use super::{
+        File, FileKind, Kept, Monitor, NextFile, Request, RootFile, StartContainer, Starting,
+        record,
+    };
     use crate::link::{LINK_BYTES, Link, Parts, Ring};
 
     /// The link and the monitor's half in one place, answering from a list of files and a start.
@@ -171,6 +212,7 @@ mod tests {
         parts: Parts,
         files: vec::IntoIter<File>,
         starting: Starting,
+        root: Vec<FileRecord>,
     }
 
     impl Ring for Loopback {
@@ -178,11 +220,17 @@ mod tests {
             &mut self.link
         }
         fn ring(&mut self) {
-            let Some(_) = self.parts.request(&mut self.link) else {
+            let Some(carried) = self.parts.request(&mut self.link) else {
                 return;
             };
             let request = Request::from_word(self.link.head.request).expect("a container request");
-            let answer = super::answer(request, &mut self.link, &mut self.files, &self.starting);
+            let mut monitor = Monitor {
+                files: &mut self.files,
+                starting: &self.starting,
+                root: core::mem::take(&mut self.root),
+            };
+            let answer = monitor.answer(request, &mut self.link, &carried);
+            self.root = monitor.root;
             self.parts.answer(&mut self.link, answer);
         }
     }
@@ -227,6 +275,7 @@ mod tests {
             parts: Parts::default(),
             files: files.clone().into_iter(),
             starting: starting.clone(),
+            root: Vec::new(),
         };
         let mut got = Vec::new();
         while let Some(file) = record::<_, _, File>(&mut ring, &NextFile {}) {
@@ -237,5 +286,21 @@ mod tests {
             record::<_, _, Starting>(&mut ring, &StartContainer {}),
             Some(starting)
         );
+        let root: Vec<FileRecord> = [0, 1, LINK_BYTES, 3 * LINK_BYTES + 5]
+            .iter()
+            .map(|&length| FileRecord {
+                path: alloc::format!("/file{length}").into_bytes(),
+                mode: 0o100644,
+                uid: 1,
+                gid: 2,
+                contents: (0..length).map(|i| i as u8).collect(),
+                rdev: 3,
+            })
+            .collect();
+        for record in &root {
+            let bytes = postcard::to_allocvec(&Kept(record.clone())).expect("a record");
+            ring.ask(&RootFile {}, &bytes);
+        }
+        assert_eq!(ring.root, root);
     }
 }
