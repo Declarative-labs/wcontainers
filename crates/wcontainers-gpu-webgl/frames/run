@@ -10,16 +10,19 @@
 # last two reports. Profiles and logs stay on the desktop in C:\wc\out\webgl\frames.
 #   crates/wcontainers-gpu-webgl/frames/run <short s> <long s> <name> <process> <exe> <cwd> [<arguments> [<environment>]]
 set -euo pipefail
+# The most jobs a build of ours may give cargo on the shared desktop.
+cargo_jobs=3
 here=$(cd "$(dirname "$0")" && pwd)
 rig=$here/../../../tools/graphics-rig
 # shellcheck source=tools/graphics-rig/common.sh
 . "$rig/common.sh"
-[ $# -ge 6 ] || { echo "usage: run <short s> <long s> <name> <process> <exe> <cwd> [<arguments> [<environment>]]" >&2; exit 2; }
-short=$1 long=$2 program=$3 process=$4 exe=$5 cwd=$6 arguments=${7:-} environment=${8:-}
+usage="usage: run <short s> <long s> <name> <process> <exe> <cwd> [<arguments> [<environment>]]"
+short=${1:?$usage} long=${2:?$usage} program=${3:?$usage} process=${4:?$usage} exe=${5:?$usage} cwd=${6:?$usage}
+arguments=${7:-} environment=${8:-}
 T='%CARGO_TARGET_DIR%\webgl-frames'
 L="$T\\release"
 O='C:\wc\out\webgl\frames'
-"$rig/remote" "set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j 3 -p wcontainers-directx --features webgl --target-dir $T && cargo build --locked --release -j 3 -p wcontainers-gpu-webgpu --example frames && (if not exist $O mkdir $O)"
+"$rig/remote" "set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j $cargo_jobs -p wcontainers-directx --features webgl --target-dir $T && cargo build --locked --release -j $cargo_jobs -p wcontainers-gpu-webgpu --example frames && (if not exist $O mkdir $O)"
 run() {
     "$rig/gpu-job" --desktop -- "powershell -NoProfile -ExecutionPolicy Bypass -File crates\\wcontainers-gpu-webgl\\frames\\direct.ps1 -Exe $exe -Cwd $cwd -Arguments \"$arguments\" -Environment \"$environment\" -Seconds $1 -Library $L -Out $O\\$program-$1"
 }

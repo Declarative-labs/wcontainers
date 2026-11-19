@@ -5512,10 +5512,6 @@ code	crates/wcontainers-gpu-webgl/src/shader.rs	str	gathers_by_samples	"highp ve
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	gathers_by_samples	"i"
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	gathers_by_samples	"u"
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	gathers_by_samples	"void _wc_face(highp vec3 d, out highp vec3 m, out highp vec3 u, out highp vec3 v) {\n\\n        highp vec3 a = abs(d);\n\\n        if (a.x >= a.y && a.x >= a.z… #4f08f219578d6ce4
-code	crates/wcontainers-gpu-webgl/src/shader.rs	str	linear_as_perspective	"its struct of linear values exists perspective-correct too"
-code	crates/wcontainers-gpu-webgl/src/shader.rs	str	linear_as_perspective	"no such entry point"
-code	crates/wcontainers-gpu-webgl/src/shader.rs	str	linear_by_w	"in"
-code	crates/wcontainers-gpu-webgl/src/shader.rs	str	linear_by_w	"out"
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	opaque_float_bits	"const "
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	opaque_float_bits	"float"
 code	crates/wcontainers-gpu-webgl/src/shader.rs	str	opaque_float_bits	"int"

@@ -193,12 +193,12 @@ const GATHERED: &str = "_wc_gathered";
 /// where only gathers read it, else a second uniform (and unit) of its own that the gathers read.
 /// Returns the names whose units take the twin, each with the name whose slots it binds.
 fn gathers_at_level_zero(source: String) -> (String, LevelZero) {
-    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == NAME_PUNCTUATION;
     let mut names: Vec<String> = Vec::new();
     for call in GATHER_CALLS {
         for (at, _) in source.match_indices(call) {
             let rest = &source[at + call.len()..];
-            let name = &rest[..rest.find(',').unwrap_or(0)];
+            let name = &rest[..rest.find(ARGUMENT_GAP).unwrap_or(0)];
             // The calls gathers_by_samples makes size their first argument right after it.
             if rest[name.len()..].starts_with(&format!(", textureSize({name}, 0)"))
                 && !names.iter().any(|n| n == name)
@@ -210,7 +210,7 @@ fn gathers_at_level_zero(source: String) -> (String, LevelZero) {
     let mut out = source;
     let mut level_zero = Vec::new();
     for name in names {
-        let declaration = |l: &str| l.starts_with("uniform ") && l.ends_with(&format!(" {name};"));
+        let declaration = |l: &str| l.starts_with(UNIFORM) && l.ends_with(&format!(" {name};"));
         // Whether anything but its declaration and the gathers names it.
         let mut rest = out.clone();
         for call in GATHER_CALLS {
@@ -232,10 +232,10 @@ fn gathers_at_level_zero(source: String) -> (String, LevelZero) {
         let mut declared = String::with_capacity(out.len() + alias.len());
         for line in out.lines() {
             declared.push_str(line);
-            declared.push('\n');
+            declared.push(LINE_END);
             if declaration(line) {
                 declared.push_str(&line.replacen(&format!(" {name};"), &format!(" {alias};"), 1));
-                declared.push('\n');
+                declared.push(LINE_END);
             }
         }
         out = declared;
@@ -338,10 +338,36 @@ const CARRIED_W: &str = "_wc_linear_w_";
 /// GLSL's qualifiers of values between the stages.
 const SMOOTH: &str = "smooth";
 const NOPERSPECTIVE: &str = "noperspective";
-const CENTROID: &str = "centroid";
-const SAMPLE: &str = "sample";
 const IN: &str = "in";
 const OUT: &str = "out";
+
+/// GLSL's auxiliary qualifier of each place a value is sampled other than the centre.
+const AUXILIARY: [(naga::Sampling, &str); 2] = [
+    (naga::Sampling::Centroid, "centroid"),
+    (naga::Sampling::Sample, "sample"),
+];
+
+/// What separates the words of a declaration naga writes.
+const WORD_GAP: &str = " ";
+
+/// What ends each line of GLSL.
+const LINE_END: char = '\n';
+
+/// What separates the arguments of a call.
+const ARGUMENT_GAP: char = ',';
+
+/// What GLSL takes in names besides letters and digits.
+const NAME_PUNCTUATION: char = '_';
+
+/// How a sampler uniform's declaration starts.
+const UNIFORM: &str = "uniform ";
+
+/// Why a module's entry point cannot be rewritten: it is not there.
+const NO_ENTRY_POINT: &str = "no such entry point";
+
+/// Why a module's linear or per-sample values cannot be made plain: their struct exists plainly
+/// too, and naga's arena keeps one of each type.
+const PLAIN_STRUCT_EXISTS: &str = "its struct of linear or per-sample values exists plainly too";
 
 /// A value between the stages that naga cannot qualify in GLSL ES 3.00 as the module does: linear
 /// (GLSL ES 3.00 has no `noperspective`), or sampled per sample (`sample` is GLSL ES 3.20's).
@@ -355,11 +381,10 @@ struct Qualified {
 impl Qualified {
     /// The auxiliary qualifier it is sampled with.
     fn auxiliary(self) -> Option<&'static str> {
-        match self.sampling {
-            Some(naga::Sampling::Centroid) => Some(CENTROID),
-            Some(naga::Sampling::Sample) => Some(SAMPLE),
-            _ => None,
-        }
+        AUXILIARY
+            .iter()
+            .find(|(s, _)| Some(*s) == self.sampling)
+            .map(|(_, q)| *q)
     }
 
     fn per_sample(self) -> bool {
@@ -417,7 +442,7 @@ fn qualifiers_removed(module: &ShaderModule) -> Result<ShaderModule, String> {
         .iter_mut()
         .find(|e| e.name == module.entry_point)
     else {
-        return Err("no such entry point".into());
+        return Err(NO_ENTRY_POINT.into());
     };
     let mut structs = Vec::new();
     let mut values: Vec<(&mut Option<naga::Binding>, naga::Handle<naga::Type>)> = entry
@@ -448,7 +473,7 @@ fn qualifiers_removed(module: &ShaderModule) -> Result<ShaderModule, String> {
         }
         if t != out.types[ty] {
             if out.types.get(&t).is_some() {
-                return Err("its struct of linear or per-sample values exists plainly too".into());
+                return Err(PLAIN_STRUCT_EXISTS.into());
             }
             out.types.replace(ty, t);
         }
@@ -481,10 +506,11 @@ fn qualifiers_written(source: String, qualified: &[Qualified], noperspective: bo
             .filter(|_| !in_main);
         match declared {
             Some(q) => {
-                let mut words: Vec<&str> = line.split(' ').collect();
+                let mut words: Vec<&str> = line.split(WORD_GAP).collect();
                 if let Some(at) = words.iter().position(|w| *w == IN || *w == OUT) {
                     if q.per_sample() {
-                        words.insert(at, SAMPLE);
+                        words.extend(q.auxiliary());
+                        words[at..].rotate_right(1);
                     }
                     if q.linear && noperspective {
                         for w in &mut words[..at] {
@@ -494,11 +520,11 @@ fn qualifiers_written(source: String, qualified: &[Qualified], noperspective: bo
                         }
                     }
                 }
-                out.push_str(&words.join(" "));
+                out.push_str(&words.join(WORD_GAP));
             }
             None => out.push_str(line),
         }
-        out.push('\n');
+        out.push(LINE_END);
         // The directives come right after the version.
         if i == 0 {
             for (wanted, extension) in [
