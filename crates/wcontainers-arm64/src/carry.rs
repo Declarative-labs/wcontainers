@@ -771,11 +771,17 @@ fn transfer(out: &mut Out, i: &I, word: u32) {
                 word = encode::replace(word, field::RT, SCRATCH.into()).expect("a register fits");
             }
             let taken = out.code.offset();
-            out.put(encode::retarget(word, 0).expect("a branch"));
+            let unlinked = encode::retarget(word, 0).expect("a branch");
+            out.put(unlinked);
             out.code.after(next);
             exit(out.code, at.wrapping_add(INSTRUCTION));
             out.land(taken);
             let target = at.wrapping_add_signed(offset);
+            // The test's own branch goes straight to the target's piece once it is linked.
+            if target >> REACH_BITS == 0 {
+                let back = encode::retarget(word, -(INSTRUCTION as i64)).expect("a branch");
+                out.code.branch_exit(taken, target, unlinked ^ back);
+            }
             out.code.after(Resume::At(target));
             exit(out.code, target);
         }

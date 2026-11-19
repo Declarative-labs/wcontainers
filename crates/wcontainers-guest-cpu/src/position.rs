@@ -136,6 +136,9 @@ pub struct DirectExit {
     pub start: u32,
     /// The guest address it goes to.
     pub target: u64,
+    /// Where the word is a branch the loader points at the target's piece itself, the bits holding its offset in
+    /// instructions; otherwise a direct branch replaces the word.
+    pub retarget: Option<u32>,
 }
 
 /// A slow path of the native output that translating alone can count, per site (docs/native.md section 3.7).

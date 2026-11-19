@@ -181,8 +181,23 @@ impl HostCode {
     /// Writes the first bytes of an exit to the direct guest `target`, which a loader may link.
     pub fn exit(&mut self, bytes: &[u8], target: u64) {
         let start = u32::try_from(self.offset()).expect("host code fits in u32 offsets");
-        self.exits.push(DirectExit { start, target });
+        self.exits.push(DirectExit {
+            start,
+            target,
+            retarget: None,
+        });
         self.push(bytes);
+    }
+
+    /// Records the branch written at `at` as one more exit to the direct guest `target`, which a loader may point
+    /// at the target's piece through the offset bits `field`.
+    pub fn branch_exit(&mut self, at: usize, target: u64, field: u32) {
+        let start = u32::try_from(at).expect("host code fits in u32 offsets");
+        self.exits.push(DirectExit {
+            start,
+            target,
+            retarget: Some(field),
+        });
     }
 
     /// Writes bytes over earlier ones (a branch whose target is now known).
