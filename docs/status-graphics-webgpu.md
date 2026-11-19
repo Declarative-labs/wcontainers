@@ -30,7 +30,10 @@ third part of the sweep, both full runs and web/check again. Run 24 is G2c run 6
 Direct3D 11 and literals branches merged (-direct3d-12 and -shaders not, for the literal check),
 nothing new asked, a fourth part of the sweep. Run 25 is G2c run 7 (below): -direct3d-11 and
 -webgl merged (-direct3d-12 and -shaders still not, for the literal check), nothing new asked,
-the frame report written through serde, both full runs and web/check. Every request found is built and
+the frame report written through serde, both full runs and web/check. Run 26 is G2c run 8
+(below): every graphics branch merged (-direct3d-12 and -shaders too, now that the shaders
+track adopted the check), nothing new asked, the literal check moved to an LF worktree on the
+desktop, both full runs, web/check and two frame breakdowns. Every request found is built and
 tested or refused by name
 (list below). Earlier runs follow ("Run 5" to "Run 10" are G2 runs 1 to 6; G2a runs 1 to 4 after them).
 
@@ -206,6 +209,50 @@ graphics branch), and where each stands:
   tests/features.rs `fine_derivatives_are_declared_and_difference_each_pixel_on_its_own` (Vulkan
   and Direct3D 12) and in Chrome by web/check (`program_features`). Before, the bit was not
   declared.
+
+Run 26 = G2c run 8, 2026-11-19:
+- Merged origin/phase-2-graphics-direct3d-11 (20 commits; it held -webgl's, -direct3d-12's
+  per-primitive early tests and -shaders' run 37) and origin/phase-2-graphics-shaders (its run
+  38, with its adoption of the literal check). -webgl and -direct3d-12 then had nothing left;
+  the shared line, -rig and phase-1-literals had nothing new. So every graphics branch is merged
+  again. The shaders merge conflicted only in literals.baseline, where the Direct3D 11 side had
+  removed 14 of its own lines the shaders side still had: kept neither (docs/literals.md).
+  Nothing in this crate, the interface or the suite crate changed; the carried naga's WGSL
+  writer now writes member bindings only on entry point inputs and outputs (shaders track).
+- Read the new text of the four status files. Nothing new is asked of this back end. The
+  Direct3D 11 front notes it does not check the back end's combined uniform-buffer limit for a
+  program's two stages (its own check); the shaders track refuses vertex programs writing
+  storage views by name (`VertexStorageWrite`: WebGPU's vertex stage has none, so not this back
+  end's to build) and lists cull distances and the layered item as its and the fronts' work.
+- The literal check first failed on the merged tree (8,386 `+` lines): this track ran it in the
+  desktop's own checkout, which is CRLF (core.autocrlf true) and has the shaders crate's nested
+  submodules checked out. The shaders and Direct3D 11 tracks' baselines are made in LF trees
+  with only dxbc-spirv, dxil-spirv and dxil-spirv's third_party/spirv-headers checked out (the
+  shaders track's own instructions), and the merge brought those keys. The check is now run as
+  the WebGL track runs it, in an LF worktree of the desktop's repository
+  (C:\wc\src\phase-2-graphics-webgpu-lf, How to run), and exits 0 at bf7ddf71 with 0 marks. A
+  first attempt at a union of both baselines was wrong (it re-added lines the check counts as
+  growth) and was not committed. This crate's baseline lines: 192 (unchanged; the shaders init
+  rekeyed packed.rs's three multi-line strings to LF). Changes that could add lines (16): run
+  24's twelve, and bd53fbb4 and 949667f2 new rules, 53789ba3 the start, cd5f44a1 the init after
+  the baseline arrived by a merge (the shaders track's adoption, merged in).
+- Literal sweep: no part this run (no code changed, so every result below is at the merged
+  tree).
+- Full run at bf7ddf71 (desktop, RTX 3080, NVIDIA 621.01, shared through the GPU queue; scratch
+  run26/lint2.log and full-1.log): lint of both builds clean; after `cargo clean` of this crate
+  and the suite crate, both APIs: 265 passed, 5 ignored, 0 failed (the ignored tests as in run
+  21), the shared suite 44 of 44 on each API. web/check at the same tree (run26/webcheck.log,
+  pictures in run26/web) passed whole after cleaning the WebAssembly build: the twelve pictures
+  and the viewports equal Direct3D 11's at tolerance 0, the twists differ, the shared suite 44
+  of 44 in Chrome 157.0.8103.78 on the RTX 3080 (D3D12, discrete, not a fallback), subgroups,
+  the primitive index and fine derivatives declared and drawn; timestamps without developer
+  features in 65,536 ns steps, stretches 9.830 and 19.530 ms. Every page got an adapter at its
+  first launch, so the relaunch is still not seen working.
+- Frame time: bgfx-01-cubes-d3d12 (the Direct3D 12 front changed most) and chocolate-doom again
+  (Measurements, run 26).
+- Removed at the end: the desktop's C:\wc\target\phase-2-graphics-webgpu (11.47 GB). No build
+  folder on the Mac or in scratch (scratch run26: logs and pictures). Added on the desktop: the
+  LF worktree (Installed on the desktop).
 
 Run 25 = G2c run 7, 2026-11-19:
 - Merged origin/phase-2-graphics-direct3d-11 (3 commits: constant buffers past the back end's
@@ -1364,6 +1411,18 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
 - The random byte test with other seeds and lengths: `set WEBGPU_SEED=<n>&& set WEBGPU_CASES=<n>&&
   cargo test -j 3 -p wcontainers-gpu-webgpu --test writes byte_granular -- --nocapture` as the job's
   command (it prints the seed, the count, and how many no-overwrite writes it made).
+- The literal check: commit first, then run it at HEAD in the desktop's LF worktree (the
+  desktop's own checkout is CRLF, which changes the keys of multi-line strings, and has nested
+  submodules the other tracks' baselines do not scan): `tools/graphics-rig/remote "cd /d
+  C:\wc\src\phase-2-graphics-webgpu-lf && git -c core.autocrlf=false checkout -q -f --detach
+  <commit> && git -c core.autocrlf=false submodule update --init -q
+  crates/wcontainers-shaders/dxbc-spirv crates/wcontainers-shaders/dxil-spirv && git -C
+  crates/wcontainers-shaders/dxil-spirv -c core.autocrlf=false submodule update --init -q
+  third_party/spirv-headers && set GIT_CONFIG_COUNT=1&& set GIT_CONFIG_KEY_0=core.autocrlf&& set
+  GIT_CONFIG_VALUE_0=false&& set RAYON_NUM_THREADS=3&& cargo run -j 3 -q -p wcontainers-literals
+  -- check"` (scratch lit-check.sh does exactly this at HEAD). It must print no `+`, `-`, `~`,
+  `>` or `!` line. If the worktree is missing: `git -c core.autocrlf=false worktree add --detach
+  C:\wc\src\phase-2-graphics-webgpu-lf <commit>` in C:\wc\src\phase-2-graphics-webgpu.
 - Lint: `tools/graphics-rig/remote cargo clippy --locked -j 3 -p wcontainers-gpu-webgpu
   --all-targets -- -D warnings`, and the same with `--target wasm32-unknown-unknown --examples` for
   the WebAssembly build.
@@ -1410,6 +1469,31 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   depth-function]` (the example's binary).
 
 ## Measurements
+
+Run 26 (G2c), frame breakdowns at bf7ddf71 (every graphics branch merged; no code of this
+crate changed). Desktop (i9-9900K, 16 threads, RTX 3080, driver 621.01), each job alone in the
+queue, load by typeperf over each recorded job from its "alone from"; log scratch
+run26/frames.log. The rig again marked bgfx FAIL for nvapi64.dll loaded from System32 and
+chocolate-doom "frames differ", as in runs 21 to 25; both drew their frames.
+- bgfx-01-cubes-d3d12 (Direct3D 12 front, wgpu on Vulkan): load short run 9.6 % (6.7 to 11.1,
+  3 s), long run 12.3 % (5.1 to 22.4, 22 s). Per frame over 300 frames: wall 15.793 ms, CPU
+  209.463 ms: program 0.287, front 0.450, back end 0.037, wgpu 0.060, naga and driver near zero
+  (-0.007 and -0.040, the long run less the short), system 208.677. Under the back end 3.223 ms,
+  of it 3.063 ms `memcpy` (vcruntime140) in `write_buffer_impl`: 14,680,328 bytes a frame in 4
+  `MappedUploadWhole` writes, as in runs 21 and 22 (the Direct3D 12 front's whole-buffer
+  uploads, Next 6). The GPU thread: 10.227 ms in ntdll under wgpu's Vulkan `acquire_texture`
+  (the display wait, Next 7). Not ours: 98.887 ms in the NVIDIA Vulkan driver's threads, 66.333
+  in its Direct3D 12 driver's, spinning. Counts a frame: 251 pipeline binds, 125
+  `PixelInvocationsCounted`, 1 `UnalignedBufferEdge`, as in run 22.
+- chocolate-doom (Direct3D 11 front, wgpu on Direct3D 12): load short run 6.9 % (5.0 to 10.4,
+  4 s), long run 10.3 % (3.6 to 19.1, 34 s). Per frame over 300 frames: wall 0.803 ms, CPU
+  3.747 ms: program 0.230, front 0.030, back end 0.013, wgpu 0.027, naga 0.003, driver 0.323,
+  system 3.120 (2.317 of it ntdll in a thread of the NVIDIA Direct3D 12 driver). Under the back
+  end's own functions 0.100 ms (back end 0.013, wgpu 0.017, driver 0.050, system 0.020). Counts a
+  frame: MappedUploadWhole 3, bind_groups 1, buffer_bytes 496, pipeline_binds 3, renames 1,
+  spares_reused 1, texture_bytes 256,000, the same as runs 21 to 25.
+- What is ours and cheap: nothing new. The back end's own code is 0.01 to 0.04 ms a frame in
+  both; atg-simpleinstancingpc's breakdown (the third program) stands from run 22.
 
 Run 25 (G2c), chocolate-doom's frame breakdown at 5bdc9a93 (after this run's merges and the
 frame report through serde; Direct3D 11 front, wgpu on Direct3D 12). Desktop (i9-9900K, 16
@@ -2056,12 +2140,11 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
    `force_loop_bounding` takes Direct3D's time, but lets a guest's endless loop be undefined in
    the driver's compiler, as on real Direct3D.
 3. Merge the graphics branches at the start of each run and read the fronts' status files
-   again; then both full runs, web/check and the literal check. -direct3d-12 and -shaders are
-   not merged since run 24: each brings literals the check counts as growth in crates this track
-   may not edit (Run 24). Merge them once they have adopted the check (or named those values),
-   and run the check before committing such a merge. Keep `cargo run -q -p wcontainers-literals -- check` passing (run through
-   `tools/graphics-rig/remote`); when a merge brings a newer version of its rules, run `init`
-   before committing that merge or in the commit right after it.
+   again; then both full runs, web/check and the literal check. Every graphics branch is merged
+   as of run 26. Run the check before committing a merge that touches literals.baseline, in the
+   LF worktree (How to run; never in the desktop's CRLF checkout); when a merge brings a newer
+   version of its rules, run `init` there before committing that merge or in the commit right
+   after it.
 4. (Done by the Direct3D 11 track in its G4 run 24: the stencil views reading 0 were its
    binding check's.)
 5. For the Direct3D 11 track: `B8G8R8X8_UNORM` vertices it now asks of the interface (a format
@@ -2102,12 +2185,15 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
   ruled (G1c, `Backend::prepare`'s doc and plan 4.3): no index format in `PrepareDesc`, and a
   back end like this one prepares strips for both, so this is now the plan, not a departure.
 
-- Run 24 did not merge -direct3d-12 and -shaders, though the task says to merge the graphics
-  branches each run: both have not adopted the literal check, and merging either makes the check
-  fail on literals in their crates that this track may neither fix nor add to the baseline (the
-  brief: keep the check passing; docs/literals.md step 6: never add a line). Nothing in their new
-  commits is needed by this back end or its tests. The merge commits were made locally, checked,
-  and dropped before any push.
+- Runs 24 and 25 did not merge -direct3d-12 and -shaders, though the task says to merge the
+  graphics branches each run: neither had adopted the literal check, and merging either made the
+  check fail on literals in their crates that this track may neither fix nor add to the baseline
+  (the brief: keep the check passing; docs/literals.md step 6: never add a line). Nothing in
+  their commits was needed by this back end or its tests. Both are merged since run 26.
+- The literal check runs in an LF worktree of the desktop's repository, not in the checkout the
+  rig's `remote` builds in (run 26): that checkout is CRLF and has the shaders crate's nested
+  submodules, so it keys and scans differently from the tree every other track's baseline was
+  made in. The baseline's keys are those of the committed (LF) files.
 
 - BGRX (`Bgrx8Unorm`, `Bgrx8UnormSrgb`) is held as BGRA with alpha one, so its unused X byte reads
   back as 255. The RTX 3080's Direct3D 11 keeps the X byte as written, from the host (128 of 128
@@ -2282,6 +2368,11 @@ objc2-core-foundation, objc2-core-graphics, objc2-quartz-core and objc2-screen-c
 each Zlib OR Apache-2.0 OR MIT (their Cargo.toml files; most already in the lock file through wgpu).
 
 ## Installed on the desktop
+
+- C:\wc\src\phase-2-graphics-webgpu-lf (run 26): a git worktree of this branch's desktop
+  repository with LF line ends and the shaders crate's two submodules (and dxil-spirv's
+  spirv-headers), for the literal check only; 0.05 GB of source (the submodules' objects live in
+  the repository's .git). Builds go to C:\wc\target\phase-2-graphics-webgpu as the rig's do.
 
 - samply 0.13.1 (run 19, MIT OR Apache-2.0, a profiling tool for the frame breakdown only, never
   a dependency): its release zip (14.9 MB) in C:\wc\downloads\samply-0.13.1, unpacked into
