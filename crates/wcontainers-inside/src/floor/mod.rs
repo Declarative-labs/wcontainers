@@ -287,17 +287,21 @@ impl AddressSpace {
         })
     }
 
-    /// Switches to this address space. No TLB invalidation: entries are tagged by identifier.
+    /// Switches to this address space, unless it is the one in use. No TLB invalidation: entries are tagged by
+    /// identifier.
     pub fn switch(&self) {
         let asid = u64::from(self.asid);
-        TTBR0_EL1.write(
-            TTBR0_EL1::ASID.val(asid)
-                + TTBR0_EL1::BADDR.val(self.user.root >> TTBR0_EL1::BADDR.shift),
-        );
-        TTBR1_EL1.write(
-            TTBR1_EL1::ASID.val(asid)
-                + TTBR1_EL1::BADDR.val(self.inside.root >> TTBR1_EL1::BADDR.shift),
-        );
+        let user = (TTBR0_EL1::ASID.val(asid)
+            + TTBR0_EL1::BADDR.val(self.user.root >> TTBR0_EL1::BADDR.shift))
+        .value;
+        let inside = (TTBR1_EL1::ASID.val(asid)
+            + TTBR1_EL1::BADDR.val(self.inside.root >> TTBR1_EL1::BADDR.shift))
+        .value;
+        if TTBR0_EL1.get() == user && TTBR1_EL1.get() == inside {
+            return;
+        }
+        TTBR0_EL1.set(user);
+        TTBR1_EL1.set(inside);
         barrier::isb(SY);
     }
 }

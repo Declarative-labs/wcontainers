@@ -956,12 +956,15 @@ impl NativeCpu {
         let memory = t.memory;
         self.memories[&memory].space.switch();
         TPIDR_EL0.set(t.tpidr);
+        // MDSCR_EL1 is the hypervisor's to answer, so it is written only for a stepped turn.
         if until.is_some() {
             self.slow(TURN_LIMIT_STEPPED, 1, t.state.pc);
             MDSCR_EL1.modify(MDSCR_EL1::SS::SoftwareStepEnabled);
         }
         let exit = self.run_pieces(t, clock, until, not_kept);
-        MDSCR_EL1.modify(MDSCR_EL1::SS::SoftwareStepDisabled);
+        if until.is_some() {
+            MDSCR_EL1.modify(MDSCR_EL1::SS::SoftwareStepDisabled);
+        }
         exit
     }
 
