@@ -4,6 +4,12 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
+K6c, seventh run: origin/phase-1 and origin/phase-1-literals are merged and the literals check
+is adopted (it passes; the baseline only shrank after its start); huge page memory files with
+none reserved and /sys/kernel/mm/transparent_hugepage (set to never) are built. A whole LTP
+comparison at the merge (708289f3) was started and runs on. K6c is not complete. See "K6c,
+seventh run".
+
 K6c, sixth run: fork09's hang was the test host (fixed: it reads the backend's answers while a
 send waits), and IOCB_CMD_POLL, guard pages (MADV_GUARD_*), an asynchronous request's RWF flags
 and Docker's masks over /proc and /sys are built. The whole LTP comparison at b37c8a43 is still
@@ -62,6 +68,56 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## K6c, seventh run
+
+Merged (the brief's standing order): origin/phase-1 (the translator's work and main's merges of
+the kernel through K6b), then origin/phase-1-literals, which brings main as it was with the
+literals check. Two conflicts: the test host's turn loop moved into `wcontainers_runtime::drive`
+on main; this branch's changes to it (the kernel's share of each turn passed after the kernel's
+first clock reading, `PROGRESS` counting backend answers, a root served from an image) were
+carried into the `Outside` implementation; align.rs's header names the exclusive monitor test
+again. A small LTP sample on the merge matched its earlier verdicts (abort01, fork01, read01,
+io_submit04, madvise12, cve-2016-7042).
+
+The literals check (docs/literals.md): `init` ran in the merge commit 708289f3; it proposed one
+generated file, crates/wcontainers-kernel/src/linux/elf_uapi.rs (the kernel's generated Linux
+copy, accepted). `cargo run -q -p wcontainers-literals -- check` passes (exit 0). It says the
+baseline "arrived by a merge and has not changed since: run init once"; a second `init` wrote
+the same file, so there was nothing to commit; the next change to the baseline (fcbc6807) only
+removed lines. Changes that could add lines, as the check lists them at fcbc6807:
+- 708289f32f51 the start (this branch's merge and init)
+- 68214b2eec10 the start (the literals branch's)
+- 89f882810517, 7119e3f3a527, c3bf56d4ed9f, 31ec396f9a4a new rules, for literals already in the
+  tree (the literals branch's versions 1 to 4)
+The baseline went from 8592 lines at the start to 8566 at fcbc6807 (26 lines removed: the files
+this run touched had their literals named).
+
+Built, each tested against the reference:
+- Huge page memory files (`hugetlb_file_setup` on a machine that offers the sizes and reserves
+  none): memfd_create with MFD_HUGETLB makes a file on the internal hugetlbfs of its size
+  (64 KiB, 2 MiB default, 32 MiB, 1 GiB; others ENODEV); it has no write (EINVAL), takes sizes in
+  whole huge pages, reads holes as zeros, fallocate finds no page (ENOSPC), a punch holds
+  nothing to free, seals as tmpfs's; statfs gives hugetlbfs's magic and the huge page as block.
+  Mapping it is ENOMEM (no page to reserve), an odd offset EINVAL; anonymous MAP_HUGETLB is
+  ENOMEM and a size not offered EINVAL; shmget SHM_HUGETLB the same after its permission check.
+  With MAP_NORESERVE or SHM_NORESERVE Linux maps and faults on every touch: refused, counted
+  "call flag not built". memfd `huge_page_memory_files_match_reference` (no longer ignored;
+  guest/memfd.c's huge part), mapflags and sysvshm pass. Layer 1 now makes huge page memory
+  files (default size, three offered, one not); seed 9191103, 200 sequences in memory, 32 on the
+  backend, 32 on the caching backend, matched (load about 60). For memfd_create04.
+- /sys/kernel/mm/transparent_hugepage as the reference's tree (settings, khugepaged, nine sizes
+  with their counts), set to what this kernel does: `enabled` never, every size never but the
+  PMD's (inherit), every count 0; /proc/config.gz now says CONFIG_TRANSPARENT_HUGEPAGE_NEVER.
+  sysfs `transparent_huge_pages_match_reference` (the copied settings by value; the ones that
+  say what a machine does by mode). For thp02, thp03, sys_thp01 (they look for the tree; the
+  reference passes them). See Departures.
+
+Found: the sixth run's whole comparison (k6c5/whole.tsv at b37c8a43) and its suite stopped at
+18:15 when Docker's daemon went away (every later test "crash" or failed to reach Docker); the
+attempt to continue it at 13ca7e85 (k6c7/whole-b37c8a43-before-docker-fall.tsv) died with that
+run. Commit 13ca7e85 (a woken thread's call runs first when charging the kernel's time gives it
+the turn) was not recorded by that run; it is in the suite this run runs.
 
 ## K6c, sixth run
 
@@ -1679,7 +1735,6 @@ Ignored tests (each attribute gives the reason):
 - align `misaligned_stack_pointer_matches_reference`: unicorn (QEMU) never checks stack pointer
   alignment, so the stand-in never reports `Exit::AlignmentFault` for it. The kernel's handling of
   that exit is tested through a misaligned jump in tests/faults.rs, which QEMU does report.
-- memfd `huge_page_memory_files`: hugetlbfs is not built (see Partial).
 - cachestat `mapped_file_pages`: the page a private mapping's read fault brings into a tmpfs file is
   counted by the reference and not known here (counted "page residency not tracked").
 
@@ -1805,8 +1860,9 @@ What layer 1 does not generate, and why:
   play area), core size limits above zero (core dumps are not written, counted).
 - setpriority and getpriority by user, ioprio by user (they reach the reference's runner).
 - openat2's restricted lookups (not built) and RESOLVE_CACHED (depends on Linux's caches); huge page
-  memory files and anonymous huge pages (MAP_HUGETLB without a file: hugetlbfs is not built; with a
-  file it is generated, EINVAL); MAP_POPULATE and MAP_LOCKED on file mappings (which pages a file
+  memory files (generated in memfd_create since K6c's seventh run) and anonymous huge pages
+  (MAP_HUGETLB without a file: ENOMEM, as none is reserved; with a plain file it is generated,
+  EINVAL); MAP_POPULATE and MAP_LOCKED on file mappings (which pages a file
   mapping's faults bring in is not known here, and statfs shows them); madvise's MADV_COLLAPSE,
   MADV_GUARD_INSTALL and MADV_GUARD_REMOVE (not built, counted; tests/mapflags.rs checks the counter); seccomp listeners and the rseq time slice flag (not built); filter loads of the
   instruction pointer (the runners' differ); alternate signal stacks that could hold either caller's
@@ -2054,8 +2110,9 @@ Partial (inside the list above), each with its reason:
   counted). FIFREEZE, FITHAW, FIBMAP and the random devices' pool requests need powers Docker's root lacks; with
   them they answer as tmpfs does (nothing to freeze or thaw, no block map) and what is given to the
   pool cannot change the host's generator.
-- mmap: MAP_HUGETLB on anonymous memory counted, ENOMEM (no huge pages; on a plain file EINVAL, as
-  Linux). MAP_DROPPABLE memory is never dropped (nothing presses on memory here); it is wiped at
+- mmap: MAP_HUGETLB on anonymous memory and any mapping of a hugetlbfs file ENOMEM, as Linux
+  with no huge page reserved (sizes not offered EINVAL; on a plain file EINVAL); with MAP_NORESERVE
+  (which Linux maps and faults on every touch) refused and counted "call flag not built". MAP_DROPPABLE memory is never dropped (nothing presses on memory here); it is wiped at
   fork. MAP_SHARED anonymous is a shared mapping of
   an internal file. A private file mapping copies a page at its first write (above). MAP_SYNC
   EOPNOTSUPP, as tmpfs.
@@ -2111,8 +2168,9 @@ Partial (inside the list above), each with its reason:
   MADV_GUARD_INSTALL and MADV_GUARD_REMOVE are built (K6c, sixth run).
 - io_submit: every opcode Linux has is built (IOCB_CMD_POLL in K6c's sixth run); reads, writes and
   syncs finish within the call, so io_cancel finds only waiting poll requests.
-- memfd_create: MFD_HUGETLB counted, ENOSYS (no hugetlbfs); the reference makes such files, and
-  ours shows /sys/kernel/mm/hugepages, so this is a difference still to build (memfd_create04).
+- memfd_create: MFD_HUGETLB makes a file on the internal hugetlbfs of its size (K6c, seventh run):
+  sizes not offered ENODEV, no write (EINVAL), sizes in whole huge pages, reads of holes,
+  fallocate ENOSPC, punching a no-op, seals; mapping it ENOMEM as above.
 - mincore: every mapped page reported in memory, counted "page residency not tracked".
 - Extended attributes: tmpfs's space limit for them (ENOSPC) is not modelled.
 - ioprio_get, ioprio_set: kept per thread; nothing does I/O by it.
@@ -2129,8 +2187,8 @@ Partial (inside the list above), each with its reason:
   named pipe's buffer is made with its inode and kept, so its pages are not counted (Linux makes it
   at the first open and frees it at the last close).
 - cachestat, stat's blocks: pages a mapped file's faults bring in are not known (counted).
-- shmget: SHM_HUGETLB counted "call flag not built", ENOMEM (the reference, with no huge pages
-  reserved, answers ENOMEM). shmctl SHM_INFO's resident pages are those the kernel wrote (counted "page
+- shmget: SHM_HUGETLB ENOMEM as the reference with no huge page reserved (sizes not offered
+  EINVAL, then EPERM); with SHM_NORESERVE refused and counted "call flag not built". shmctl SHM_INFO's resident pages are those the kernel wrote (counted "page
   residency not tracked"). A call that both adds and removes mappings of one segment (munmap of the
   middle of an attachment: two pieces made, one closed) sets only the attach time; Linux sets both.
 - vmsplice: copies the pages when called (counted "vmsplice pages copied"); Linux's pipe holds the
@@ -2196,7 +2254,7 @@ Missing (5, each counted "system call not implemented" and ENOSYS), with what ea
 - `/proc/<pid>/mounts` and `mountinfo` do not list Docker's masks of `/proc`, `/sys` or its
   cgroup2 mount, or the files Docker binds over /etc/hostname, /etc/hosts and /etc/resolv.conf
   (counted "proc fields not tracked", detail 3).
-- xattr space limits; huge page memory files.
+- xattr space limits; mappings of huge pages that reserve none (MAP_NORESERVE, SHM_NORESERVE).
 - Running a program does not move its access time (Linux's `kernel_read` of the program does).
 - An madvise range that reaches `[vvar]`: Linux's is VM_PFNMAP, so it is EINVAL there (measured);
   whether ours answers the same since the vDSO was built is not checked.
@@ -3053,6 +3111,19 @@ All on this shared Mac; noisy, not benchmarks.
 
 ## Departures from the plan
 
+- K6c, seventh run: the literals branch was merged straight into this branch, as the brief
+  orders, though docs/literals.md's adoption steps say a track should wait for main to hold the
+  check (main did not yet). When main gets the check and its own init, merging main will bring a
+  second history of the baseline: keep both sides' lines, run the check and delete what it
+  prints with `-`.
+- K6c, seventh run: /sys/kernel/mm/transparent_hugepage says `never` (and /proc/config.gz
+  CONFIG_TRANSPARENT_HUGEPAGE_NEVER) where the reference says `always`: this kernel never makes a
+  transparent huge page, and saying so is the truthful setting; memory behaves the same either
+  way. Every count is 0.
+- K6c, seventh run: huge pages are offered and never reserved (the made-up machine's choice,
+  as a default container cannot reserve any); a mapping that reserves none (MAP_NORESERVE,
+  SHM_NORESERVE), which Linux makes and faults on at every touch, is refused and counted.
+
 - K6c, second run: LTP on ours runs with the root on the file backend (the K6a departure of an
   in-memory root is gone), and the backend's root presents itself as overlayfs, as the
   reference's does; direct I/O on it follows the reference's upper layer's alignment
@@ -3411,10 +3482,8 @@ Every answer to something Linux has and this kernel does not build goes through 
 or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The names:
 - "system call not implemented": the Missing list above (detail: the call number).
 - "call flag not built": a flag or form of a built call (detail: call number times 2^32 plus the
-  flags): mmap MAP_HUGETLB (ENOMEM), memfd_create MFD_HUGETLB (ENOSYS), openat2's restricted lookups (ENOSYS), rseq's time slice flag (EINVAL), NUMA
-  futexes (EINVAL), pipe2's O_NOTIFICATION_PIPE (EINVAL),
-  shmget's SHM_HUGETLB
-  (ENOMEM).
+  flags): mmap and shmget of huge pages with MAP_NORESERVE or SHM_NORESERVE (ENOMEM), openat2's restricted lookups (ENOSYS), rseq's time slice flag (EINVAL), NUMA
+  futexes (EINVAL), pipe2's O_NOTIFICATION_PIPE (EINVAL).
 - "fcntl command not built": F_GETDELEG and F_SETDELEG (EINVAL, as Linux without them). Commands Linux does not know are a plain EINVAL, uncounted.
 - "prctl option not built": options Linux has on ARM64 that are not built (EINVAL; see Partial):
   PR_SET_MM's forms, PR_GET_TIMING, PR_SET_TIMING, the TSC, perf event, MCE, SVE, SME, pointer
@@ -3722,48 +3791,40 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 
 ## Next
 
-K6c, in this order (after the sixth run):
-1. Read the whole LTP comparison at b37c8a43 (scratch k6c5/whole.tsv, started 15:31 on the 18th
-   with 3 jobs, LTP_LIMIT 900, 651 of 4226 done by 18:00; it continues its file when started
-   again with the command under "K6c, fifth run"; `ltp compare` against
-   crates/wcontainers-kernel-test/ltp/reference-20260930.tsv), commit it as
-   ours-20260930-b37c8a43.tsv, and rerun at the newest code what later commits touch:
-   cve-2016-7042, send02, ioctl10, cve-2017-2618, io_submit04, madvise12 (and those already
-   rerun in k6c6/a.tsv). Read k6c6/a.tsv (shmctl05) and k6c6/b.tsv (io_submit04, madvise12,
-   fork09). Write the table from it.
-2. fork09: the hang was the test host (fixed in the sixth run); now the test server's
-   connection resets after the EMFILE at 524273 files (K6c, sixth run). Find why the server
-   ended; a harness fault, but it must give a verdict, not a crash.
-3. Not section 15, to build, largest first (IOCB_CMD_POLL, MADV_GUARD_* and Docker's masks are
-   built): the cgroup2 mount at /sys/fs/cgroup (read-only,
-   Docker's: files in scratch k6c3/cgroup-reference.txt, values live: cgroup.procs, pids.current,
-   memory.current, cpu.stat; runtimes read cpu.max and memory.max) for controllers:controllers;
-   Docker's masked paths (/proc/keys, /proc/kcore, /proc/timer_list, /proc/interrupts as /dev/null
-   binds, /proc/scsi and /sys/firmware as empty read-only tmpfs, /proc/bus, /proc/fs, /proc/irq,
-   /proc/sysrq-trigger read-only binds; the reference's mountinfo shows each) for cve-2016-7042;
-   MADV_GUARD_INSTALL and REMOVE (madvise12; per-page markers kept through mprotect, fork and
-   mremap); IOCB_CMD_POLL (io_submit04); smaps and pagemap (mlock05, mmap12; they need page
-   residency, see Questions); hugetlb memfd files (memfd_create04: ours answers ENOSYS, which is
-   wrong for a machine that shows /sys/kernel/mm/hugepages; a hugetlbfs file with none reserved
-   would be made, ENODEV for sizes not offered); layout randomization (aslr01; randomize_va_space
-   is 2 on the reference). Then TCP_CORK holding and TCP_NODELAY pushing held bytes.
-4. IPV6_RTHDR (setsockopt11, cve-2026-53362): a routing header on IPv6 packets the host's
-   connections cannot carry; proposed for the gap list under "the network is not Linux's network
-   stack" (both tests also use UDP_CORK over IPv6 with splice and tst_pollute_memory).
-5. The slow tests: the comparison's timeouts with LTP_LIMIT 7200 and 2 jobs, a sample first (gf01,
-   fsx01, rwtest01, creat05, open04, float_bessel, hackbench01, cve-2014-0196), to show each
-   gives the reference's verdict (msgstress01 did: pass in 2328 s) or is slow for a named cause.
-   One command, for the orchestrator to start (hours; it continues its file when started again):
-   `LTP_TAR=<scratch>/ltp/ltp-20260930.tar LTP_JOBS=2 LTP_LIMIT=7200 nix develop -c
-   <scratch>/kernel/k6c6/ltp-b ours <scratch>/kernel/k6c6/slow.tsv gf01 fsx01 rwtest01 creat05
-   open04 float_bessel hackbench01 cve-2014-0196`.
-6. The Questions for the orchestrator (page residency; fork09, openat03 and copy_file_range03).
-   Layout randomization (aslr01) needs a decision too: Linux moves the mmap base, stack and heap
-   by up to 18 bits of pages, which in a 4 GiB address space would take a quarter of it; to
-   settle how much, or whether it falls under "the address space is small".
-7. Finalise the gap list, then the independent check (200 random tests plus every test on the
-   gap list), the whole suite and three fresh layer 1 seeds (fresh seeds start at 9191013; this
-   run used 9191100 and 9191101 for its own checks).
+K6c, in this order (after the seventh run):
+1. The whole LTP comparison at 708289f3 (the merge) runs detached: scratch k6c7/whole.tsv, 2
+   jobs, LTP_LIMIT 900, started 18:34 on the 18th; it continues its file when started again with
+   the same command (`LTP_TAR=<scratch>/kernel/ltp/ltp-20260930.tar LTP_JOBS=2 LTP_LIMIT=900 nix
+   develop -c <scratch>/kernel/k6c7/ltp-w ours <scratch>/kernel/k6c7/whole.tsv`, from the
+   checkout). When it ends: `ltp compare crates/wcontainers-kernel-test/ltp/reference-20260930.tsv
+   <scratch>/kernel/k6c7/whole.tsv`, commit it as ltp/ours-20260930-708289f3.tsv, rerun at the
+   newest code what later commits touch (memfd_create04, thp01 to 03, sys_thp01 and the hugetlb
+   group for fcbc6807), and write the table from it. At 19:20 it had 495 done: 493 matching,
+   2 differing (controllers:controllers and af_alg07, both known).
+2. fork09 alone with Docker's events kept (scratch k6c7/f.tsv, f.out, fork09-events.log, LTP_LIMIT
+   3600): read why the test server's connection reset (an exit code or OOM kill of the
+   wc-kernel-backend container in the events log). It must give a verdict, not a crash.
+3. Not section 15, to build, largest first: the cgroup2 mount at /sys/fs/cgroup (read-only,
+   Docker's, about 90 files: scratch k6c3/cgroup-reference.txt has names, modes and values; live:
+   cgroup.procs, cgroup.threads, pids.current and .peak, memory.current and .peak, memory.stat,
+   cpu.stat, the pressure files; runtimes read cpu.max and memory.max) for controllers:controllers,
+   then rerun the whole controllers group (its verdicts may move with the mount); then TCP_CORK
+   holding and TCP_NODELAY pushing held bytes.
+4. The Questions for the orchestrator: page residency (mincore03, mlock201, mlock05's smaps,
+   mmap12's pagemap, vma01), layout randomization (aslr01), the harness causes (fork09, openat03,
+   copy_file_range03), IPV6_RTHDR (setsockopt11, cve-2026-53362) for the gap list.
+5. The slow tests: one command for the orchestrator (hours; it continues its file):
+   `LTP_TAR=<scratch>/kernel/ltp/ltp-20260930.tar LTP_JOBS=2 LTP_LIMIT=7200 nix develop -c
+   <scratch>/kernel/k6c7/ltp-w ours <scratch>/kernel/k6c7/slow.tsv gf01 fsx01 rwtest01 creat05
+   open04 float_bessel hackbench01 cve-2014-0196`, to show each gives the reference's verdict or
+   is slow for a named cause; then the rest of the timeouts the whole comparison lists.
+6. Finalise the gap list, then the independent check (thirty random tests and every test on the
+   gap list), the whole suite and three fresh layer 1 seeds (fresh seeds start at 9191013; the
+   runs' own checks used 9191100 to 9191103).
+7. The brief's asks beyond the plan (O_EXCL on a backend CREATE: `fuse_create_open` keeps
+   O_CREAT, O_EXCL and O_TRUNC and drops only O_NOCTTY, where `open_flags` drops all four;
+   FUSE_AUTO_INVAL_DATA and mapped blocks; host addresses guests can see; mapping placement and
+   the memory ceiling; the runtime's start values) are not started.
 
 After K6b (fifth run), in this order (none of these holds K6b):
 1. inotify on a backend root (tests/inotify.rs, ignored with its reason): IN_EXCL_UNLINK needs
