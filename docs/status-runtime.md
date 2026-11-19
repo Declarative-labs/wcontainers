@@ -4,77 +4,19 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
 
 ## Where things stand
 
-- J0 (the plan), J1 (first light) and J2 (processes and the rest of the boundary) are done; their records are
-  below.
-- J3 run 1 (2026-11-18): the six findings of J2 run 5's check are settled first (their section below); origin/phase-1
-  (the kernel through K6b, 2edbc451) is merged (db247ebf), which needed one back end fix (fff0aa77); then J3
-  is built: free turns, the library surface on the OCI runtime configuration, OCI images and plain tars, the
-  shipped outside, and the command line program. J3's bar passes (below).
-- J3 run 2 (2026-11-18): the nine findings of J3 run 1's check are settled (their section below, with the
-  bar run again).
-- Asked of the kernel track (next heading but one): standard input, and the values `Start` would need to
-  honour the fields refused today.
-- J3 is complete but for what waits on others: standard input (the kernel's interface), and the fields
-  refused until the kernel takes them.
-- The kernel test crate changed in J3 only in the merge's settled conflicts (driver.rs, standin.rs, and
-  layer1.rs's call of the driver's `back_end`; db247ebf) and in one line each of driver.rs and standin.rs for
-  the free kind of `Turn` (5d86b31d, with the runtime crate, since neither builds alone).
-- J4a run 1 (2026-11-18): the six open findings of J3's last check are settled first (their section below);
-  origin/phase-1 had nothing new to merge (still 2edbc451). Then J4a, as the orchestrator split J4: its bar is
-  run (section "J4a run 1" below). Plan section 16's J4 is corrected to J4a and J4b.
-- Waiting on the owner, as ruled: J4b (equal counts across look-ahead settings and on the stand-in), the
-  stand-in's count and the loop's count of the kernel's changes of pc (the orchestrator confirmed these wait
-  for the progress unit); standard input, output and the terminal (the kernel track builds them on the
-  general stream the owner is settling; nothing of input is built here, and `process.terminal` and
-  `process.consoleSize` stay refused by name).
-- The kernel test crate changed in J4a in tests/repeats.rs: added in run 1 (5492ba0a), and in run 2 made to
-  compare the files a container left too (b001897c); and in run 2 in the driver: `Injections::wall_start`, the
-  wall clock's reading at the start (the machine's clock when none), which repeats.rs gives every run of a
-  seed (87319389); in run 3 repeats.rs gained a program whose threads only compute (6d26eb6f), and the
-  driver draws bounded look-ahead up to the translator's bound (105c6463) and implements `System` (the
-  rename, 5bec4f91, with the runtime crate since neither builds alone). Each its own commit.
-- J4a run 2 (2026-11-18): the five findings of J4a run 1's check are settled (their section below): a dropped
-  thread's instances are now given to the next thread given its block (the blocking one). origin/phase-1 had
-  nothing new to merge (still 2edbc451). The bar is run again (section "J4a run 2").
-- J4a run 3 (2026-11-18): the six findings of J4a run 2's check are settled or answered (their section
-  below); the owned crates are swept for bare numbers (section "Bare numbers"); the owner's names of
-  2026-11-18 are built, each its own commit, and the plan corrected (section "J4a run 3"). origin/phase-1
-  had nothing new to merge (still 2edbc451). The bar is run again (section "J4a run 3").
-- Also built in J4a run 3, from the brief's later sections: a property of a config.json the specification
-  does not define, and every annotation, is ignored and named for a warning (read through `serde_ignored`),
-  in place of being refused (section "J4a run 3").
-- J4a is complete: its bar passes at full, none and bounded (section "J4a run 3").
-- J5 run 1 (2026-11-18): the six findings of J4a run 3's check are settled first (their section below);
-  origin/phase-1 had nothing new to merge (still 2edbc451). Then J5: the local system's file backend and
-  network, one bind mount of the configuration honoured, `root.path` kept refused with why, wcon's
-  `--volume` and `--publish`, and the whole kernel test crate at three look-aheads against the stand-in
-  (section "J5 run 1").
-- J5 run 2 (2026-11-18, after the session restarted; the task numbers it run 1): origin/phase-1 had nothing new
-  (still 2edbc451). The renames and the unknown-property change were already built in J4a run 3 (checked:
-  no `Outside`, `BackEnd`, `Tuning` or old `Machine` is left in the owned crates, the driver or the plan but
-  for the translator runner's own `Machine` the plan's table cites). The literal check is tried in a scratch
-  merge, not merged (Departures; "For the orchestrator"). J5's bar is run from a clean build on 798f07ff, the
-  code as it stands, and the whole LTP comparison after it (section "J5 run 2").
-- J5 run 3 (2026-11-19): origin/phase-1 brought the streams track's ends (eb515b7a) and is merged
-  (d4bfedfe; the driver's conflicts settled, the local system's output and error made ends). Then the brief's
-  later sections still open here are built, each its own commit: standard input and the terminal on the
-  local system (9714527c: `System::standard`, `LocalSystem::input`, `process.terminal` and
-  `process.consoleSize` honoured, wcon's `--interactive` and `--tty`), the `Config` names (9f8ac2b6), AGENTS.md
-  at the repository root (dae93301), the plan corrected (c16d0e00). The stale LTP run of run 2 (on 798f07ff,
-  664 of 2,694 stand-in tests done) was stopped, since the merge changed the kernel under it. J5's bar is run
-  again from a clean build at c16d0e00 (section "J5 run 3").
-- J5 run 4 (2026-11-19, the task's run 3): origin/phase-1 had nothing new (still eb515b7a). The literal check is
-  adopted: origin/phase-1-literals (7668c010) merged and this branch's baseline started with its `init` in the
-  merge (11aeb561), as the brief says; a departure from docs/literals.md step 1 (Departures). Then parts of the
-  fix list, each its own commit (section "J5 run 4"). J5's bar is run again on 11aeb561 (section "J5 run 4").
-- J5 stands at: everything is built and pushed. On this Mac the whole kernel test crate gives the stand-in's
-  verdicts test by test at full, none and bounded, but the known differences and the four tests waiting on
-  the address ceiling. On the ARM machine two outside tests fail at full on a kernel assertion that allows no
-  already-woken parked call (asked of the kernel track). The one part not read is the whole LTP comparison:
-  running on this Mac since 09:05 (`j5run3/ltp-mac.sh whole`, about ten hours expected from run 2's pace, not
-  measured), or in about two hours on the ARM machine by `j5run4/ltp-arm.sh` (expected from its stand-in
-  pace, 1,253 results in about 40 minutes). Next: read j5run3/ltp/whole-compare.txt (or j5run4/arm/ltp's);
-  then delete the scratch worktree j5run3/tree (`git worktree remove --force`, its target about 54 GB).
+- J0 (the plan), J1, J2, J3 and J4a are done and on main; their records are below.
+- J5 (files outside, sockets, network, the whole suite): everything is built, committed and pushed. Run 1 built
+  the local system's file backend and network, one bind mount, wcon's `--volume` and `--publish`; run 3 merged
+  the streams track's ends (d4bfedfe) and built standard input and the terminal, the `Config` names and
+  AGENTS.md; run 4 adopted the literal check (11aeb561) and fixed parts of its list; run 5 fixed a few more and
+  ran the whole LTP comparison on the ARM machine. The renames and the unknown-property change were built in
+  J4a run 3 and J5 run 3 (checked again in run 5: no old name is left in what this track owns).
+- J5's bar on this Mac (run 4, 11aeb561): the whole kernel test crate gives the stand-in's verdicts test by test
+  at full, none and bounded, but the known differences (align, sharedviews, counterclock) and the four tests
+  waiting on the address ceiling (java x2, node, python). On the ARM machine two outside tests fail at full on a
+  kernel `debug_assert` (task.rs:206) that allows no already-woken parked call: asked of the kernel track.
+- The whole LTP comparison: LTP_RESULT_PLACEHOLDER
+- Next: LTP_NEXT_PLACEHOLDER
 
 ## For the orchestrator
 
@@ -87,11 +29,9 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   asks of the orchestrator; but another track that adopted on its own branch first would meet a second start.
   And a later merge of origin/phase-1 that brings kernel code the check has not seen will fail the check here
   with `+` lines this track may not fix or add, until main has the check. The streams track had waited.
-- J5 run 4: the whole LTP comparison is the one part of J5's bar not read. It runs on this Mac (started 09:05,
-  `j5run3/ltp-mac.sh whole`, on j5run3/tree at f119fa27; log j5run3/ltp/whole.log; results continue where they
-  left off if stopped). The ARM machine went away three times in this run, the LTP run there among them;
-  `j5run4/ltp-arm.sh` is the one command there and fetches its results to j5run4/arm/ltp. Either comparison
-  file (whole-compare.txt) is the bar's last part. Delete j5run3/tree after.
+- J5 run 5: the whole LTP comparison ran on the ARM machine (section "J5 run 5"). The Mac's run of it
+  (`j5run3/ltp-mac.sh whole`, on f119fa27, 2,422 stand-in results in about three hours) was stopped as no
+  longer needed, and the scratch worktree j5run3/tree deleted.
 - Docker Desktop (J5 run 3 and 4): it stopped twice under run 3's bar, was still down at 04:52 and answered
   again at 04:58 on 2026-11-19 (server 29.9.3); this track did not restart it. The rented ARM machine could
   not be reached at 04:52 nor later in this run (`arm-run --status`), so the bar ran on the Mac.
@@ -144,6 +84,16 @@ detail of "jump through a register not recognised" is the jump's target (transla
   procedure linkage stubs, which load the entry and jump through a register.
 
 ## Asked of the kernel track
+
+`Host` by `&self` and `Sync` (J5 run 5): the owner's ruling of 2026-11-19 makes every method of the embedder's
+trait take `&self`. `System` does now; `Host` (wcontainers-abi) still takes `&mut self`, so `LocalSystem` and
+the test driver forward its calls to their locked state through `Mutex::get_mut`. With `Host` by `&self` the
+forwarding goes.
+
+Placing mappings when the top-down range is full (J5 run 5): `AddressMap::find_free` searches from the mmap
+base down to the break and answers ENOMEM there; Linux then searches bottom-up from the bottom
+(`arch_get_unmapped_area_topdown`). With the back end's 4 GiB the top-down range is about 1.2 GiB, and LTP
+pth_str01 and pth_str03 run out of it (glibc's 64 MiB thread arenas); 2.6 GiB below the program stay unused.
 
 The outside tests' assertion (J5 run 4): task.rs:206 `debug_assert!(self.threads[&tid].call.wait.is_some())`
 fails for a stream `read` whose second `outside::pull` (inet.rs:3739, after `receive_stream` parked the reader)
@@ -200,6 +150,48 @@ the capability sets, the resource limits, no_new_privs, a seccomp filter, sysctl
 leave a default mount out), the domain name, and the per-process values (`oomScoreAdj`, `ioPriority`,
 `scheduler`, `execCPUAffinity`, `personality`, `timeOffsets`); and the address-space size and the memory
 size the guest is told (plan section 8), which `Machine` holds once the kernel takes them.
+
+## J5 run 5 (2026-11-19, the task's run 4; this Mac, Apple M5 Max, 18 cores, 128 GiB; other tracks running; and the rented ARM machine)
+
+The session restarted in the middle of this run; what the first part did is read back from its commits and
+scratch j5run5, the second part's from j5run6.
+
+- origin/phase-1 had nothing new (still eb515b7a).
+- Literal fixes (each its own commit): the local system's never-ending deadline named (23d049b0); the cache
+  file's word named apart from the image's and the ELF magic sized from its constant (7a5d5cca). The owned
+  suite after them: exit 0 in 139.6 s at load 69 to 52 (j5run5/owned.log).
+- The whole LTP comparison on the ARM machine (job runtime/20261119-174140-119998 on 7a5d5cca, 12 jobs; fetched
+  to j5run4/arm/ltp and kept as j5run5/arm/ltp-before-fix): stand-in 4,243 s at load 14 to 27, back end at
+  full 4,178 s at load 27 to 37. 4,226 tests compared: 4,197 verdicts match, 29 differ:
+  - 15 hangs at full: fs and scsi_debug.part1 rwtest01, 02 and 05. Found and fixed (d4fe761b, below).
+  - 10 where the stand-in ran past its 900 s limit and the back end passed: fs gf07, gf09, gf10, gf11, iogen01,
+    cve-2017-17052, ltp-aiodio.part3 fsx22, mm mtest06_3; and sched pth_str01 and pth_str03, which pass on the
+    stand-in and are "broken" with the back end (below). Real Linux passes every one of the eight
+    (ltp/reference-20260930.tsv), so the back end agrees with Linux there and the stand-in is slower.
+  - 4 slower than the 900 s limit with the back end (still ending turns, no hang): fs gf16 and gf17 (stand-in
+    424 s and 426 s), mm mmapstress09 and 10 (163 s, 234 s); real Linux passes them in 124 s, 123 s, 17 s,
+    16 s.
+- The hangs (d4fe761b): every read of code flushed the shared views when any page of the process was under the
+  view lock, which locked again the page a write had just been let through for, before the write was made, so
+  the instruction faulted for ever. Now the views are brought up to date only when the code read is on viewed
+  pages, a new run is translated, or a step is running. On this Mac at full (j5run5/rw): rwtest05 hang in 150 s
+  before, pass in 1.9 s after; rwtest01 and 02 pass in 674 s and 743 s (load about 50). The tests the change can
+  touch passed at full and none (j5run5/fix-tests.log).
+- pth_str01 and pth_str03 are the address ceiling, measured: `pthread_create` answers EAGAIN after about 20
+  threads, at full and none (j5run5/pth). Through wcon on this Mac with the LTP image (j5run6/pth-arena.out):
+  pth_str01 fails as in the harness, and passes with `MALLOC_ARENA_MAX=1`. So it is glibc's 64 MiB heap per
+  thread arena (plus 8 MiB stacks) filling the space the kernel places mappings in: from the mmap base below the
+  stack (just under 0xf7000000) down to the program's break (0xaa000000 and a little), about 1.2 GiB. They join
+  the tests waiting on the address ceiling. Asked of the kernel track: Linux's top-down search falls back to a
+  bottom-up one when the top-down range is full (`arch_get_unmapped_area_topdown`), which would use the 2.6 GiB
+  below the program; the kernel's `AddressMap::find_free` does not.
+- The owner's ruling of 2026-11-19 on `System` (its own commit): every method of `System` takes `&self` and
+  `System: Sync`. `LocalSystem` keeps what it changes behind one lock (`LocalState`) and its timer in a
+  `OnceLock`; a turn's deadline is atomics only, as before, so a turn takes no lock. The kernel test driver's
+  `TestHost` is behind a lock as `TestSystem` (the driver's change, its own part of the same commit, since
+  neither builds alone). `Host`, the kernel's interface in wcontainers-abi, still takes `&mut self`; both
+  systems answer it through `Mutex::get_mut`, with no locking (For the kernel track).
+- WAIT_RERUN
 
 ## J5 run 4 (2026-11-19; this Mac, Apple M5 Max, 18 cores, 128 GiB; other tracks running)
 
@@ -1553,6 +1545,9 @@ run). Scratch is pyro-parked/wcontainers-scratch/runtime; J1's logs are in its `
   stand-in's). One run: `j5/suite.sh NAME full|none|bounded|standin
   [test arguments]`. By hand: `LOOK_AHEAD=<l> nix develop -c cargo test -j 4 -p wcontainers-kernel-test
   --features runtime --no-fail-fast -- --test-threads 3` (leave the feature out for the stand-in).
+- The whole Linux Test Project comparison on the rented ARM machine, one command: scratch `j5run4/ltp-arm.sh`
+  (builds the image's files there once, runs the stand-in, then the back end at full, then compares; fetches
+  target/ltp to j5run4/arm/ltp; exit 125 when the machine is gone). On this Mac: `j5run3/ltp-mac.sh whole`.
 - The Linux Test Project, stand-in against the back end at full, one command: scratch `j5/ltp.sh NAME
   [selection...]` (LTP_JOBS 3; results j5/ltp/NAME-standin.tsv and NAME-runtime.tsv, their comparison
   NAME-compare.txt). It needs the image's files: `crates/wcontainers-kernel-test/ltp/build.sh j5/ltp` once
