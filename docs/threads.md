@@ -1591,8 +1591,8 @@ kernel test crate's runs are today: one thread at a time, counted turns.
 - **The config in force.** Two processes given different configs come to share a file mapping, and
   later stop sharing it. `Process::execution_config()` answers what each was given throughout; the
   config in force and both counters change at the `mmap` and back; a process given `None` that joins
-  an `Exact` neighbour runs code with the count from that entry on, and the two replay exactly from
-  there.
+  an `Exact` neighbour is recorded with positions from that entry on (from code with the count, once
+  the translator has it; in counted turns until then), and the two replay exactly from there.
 - **Reaching across groups.** Guest programs for each case of 4.5 where one group reaches another: a
   writer through a shared mapping beside a reader through a private mapping of the same file; a `write`
   to a file another process maps; a file made shorter, and a file made longer, while another process
