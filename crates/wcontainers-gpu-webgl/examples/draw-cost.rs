@@ -11,7 +11,7 @@ mod kit;
 use kit::Kit;
 use wasm_bindgen::prelude::*;
 use wcontainers_gpu::*;
-use wcontainers_gpu_webgl::WebGl;
+use wcontainers_gpu_webgl::Gl;
 use wcontainers_gpu_webgpu::{WebGpu, block_on};
 
 /// A quad at the uniform's place, in its colour.
@@ -146,13 +146,13 @@ impl<B: Backend> Scene<B> {
 
 /// The scene on the WebGL 2 back end, on a canvas's context.
 #[wasm_bindgen]
-pub struct GlCost(WebGl, Scene<WebGl>);
+pub struct GlCost(Gl, Scene<Gl>);
 
 #[wasm_bindgen]
 impl GlCost {
     #[wasm_bindgen(constructor)]
     pub fn new(context: web_sys::WebGl2RenderingContext) -> GlCost {
-        let mut b = WebGl::on_canvas(context, &[]);
+        let mut b = Gl::on_canvas(context, &[]);
         let s = Scene::new(&mut b);
         GlCost(b, s)
     }

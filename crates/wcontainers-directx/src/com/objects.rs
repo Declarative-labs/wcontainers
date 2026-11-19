@@ -794,7 +794,10 @@ pub struct InputLayout {
     pub(super) child: Child,
 }
 
-counted!(InputLayout => InputLayout_Impl { main: ID3D11InputLayout, ID3D11InputLayout_Vtbl });
+counted!(InputLayout => InputLayout_Impl {
+    main: ID3D11InputLayout, ID3D11InputLayout_Vtbl;
+    d3d10: ID3D10InputLayout, ID3D10InputLayout_Vtbl, -2;
+});
 
 impl InputLayout {
     pub fn new(front: Rc<front::InputLayout>, device: ID3D11Device) -> Self {
@@ -831,7 +834,10 @@ pub struct VertexShader {
     pub(super) child: Child,
 }
 
-counted!(VertexShader => VertexShader_Impl { main: ID3D11VertexShader, ID3D11VertexShader_Vtbl });
+counted!(VertexShader => VertexShader_Impl {
+    main: ID3D11VertexShader, ID3D11VertexShader_Vtbl;
+    d3d10: ID3D10VertexShader, ID3D10VertexShader_Vtbl, -2;
+});
 
 impl VertexShader {
     pub fn new(front: Rc<front::Shader<Chosen>>, device: ID3D11Device) -> Self {
@@ -847,7 +853,10 @@ pub struct PixelShader {
     pub(super) child: Child,
 }
 
-counted!(PixelShader => PixelShader_Impl { main: ID3D11PixelShader, ID3D11PixelShader_Vtbl });
+counted!(PixelShader => PixelShader_Impl {
+    main: ID3D11PixelShader, ID3D11PixelShader_Vtbl;
+    d3d10: ID3D10PixelShader, ID3D10PixelShader_Vtbl, -2;
+});
 
 impl PixelShader {
     pub fn new(front: Rc<front::Shader<Chosen>>, device: ID3D11Device) -> Self {
@@ -863,7 +872,10 @@ pub struct GeometryShader {
     pub(super) child: Child,
 }
 
-counted!(GeometryShader => GeometryShader_Impl { main: ID3D11GeometryShader, ID3D11GeometryShader_Vtbl });
+counted!(GeometryShader => GeometryShader_Impl {
+    main: ID3D11GeometryShader, ID3D11GeometryShader_Vtbl;
+    d3d10: ID3D10GeometryShader, ID3D10GeometryShader_Vtbl, -2;
+});
 
 impl GeometryShader {
     pub fn new(front: Rc<front::Geometry<Chosen>>, device: ID3D11Device) -> Self {
@@ -924,15 +936,18 @@ impl ComputeShader {
     }
 }
 
-/// A query or predicate: its interface, and whether `QueryInterface` answers `ID3D11Predicate`.
+/// A query or predicate: its interfaces (Direct3D 11's and 10's), and whether `QueryInterface` answers `ID3D11Predicate`.
 macro_rules! asynchronous {
-    ($name:ident, $imp:ident, $iface:ident $(| $also:ident)*, $vtbl:ident) => {
+    ($name:ident, $imp:ident, $iface:ident $(| $also:ident)*, $vtbl:ident, $iface10:ident, $vtbl10:ident) => {
         pub struct $name {
             pub front: Locked<Rc<wcontainers_direct3d_11::query::Query<Chosen>>>,
             pub(super) child: Child,
         }
 
-        counted!($name => $imp { main: $iface $(| $also)*, $vtbl });
+        counted!($name => $imp {
+            main: $iface $(| $also)*, $vtbl;
+            d3d10: $iface10, $vtbl10, -2;
+        });
 
         impl $name {
             pub fn new(
@@ -965,7 +980,9 @@ asynchronous!(
     Query,
     Query_Impl,
     ID3D11Query1 | ID3D11Query,
-    ID3D11Query1_Vtbl
+    ID3D11Query1_Vtbl,
+    ID3D10Query,
+    ID3D10Query_Vtbl
 );
 
 impl Query {
@@ -984,7 +1001,9 @@ asynchronous!(
     Predicate,
     Predicate_Impl,
     ID3D11Predicate,
-    ID3D11Predicate_Vtbl
+    ID3D11Predicate_Vtbl,
+    ID3D10Predicate,
+    ID3D10Predicate_Vtbl
 );
 
 /// The front query behind a query or predicate of ours.

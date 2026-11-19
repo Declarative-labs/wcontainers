@@ -95,10 +95,12 @@ pub struct TextureObj {
     stencil_mode: Cell<bool>,
     /// Its bytes on the host, for formats GL cannot read back.
     host: Option<host::HostCopy>,
-    /// Draws wrote texels its host copy lacks (signed normalised formats with EXT_render_snorm).
-    drawn: Cell<bool>,
-    /// Its host copy may hold a signed normalised minimum, which a draw reads as the value above.
-    minimum: Cell<bool>,
+    /// The levels, by bit, draws wrote texels of that its host copy lacks (signed normalised
+    /// formats with EXT_render_snorm).
+    drawn: Cell<u32>,
+    /// The levels, by bit, whose host copy may hold a signed normalised minimum, which a draw reads
+    /// as the value above.
+    minimum: Cell<u32>,
     /// The format a block-compressed texture is stored in when decoded.
     decoded: Option<Format>,
 }
@@ -151,7 +153,8 @@ pub struct ReadbackObj {
 
 #[derive(Debug)]
 pub struct FenceObj {
-    sync: glow::Fence,
+    /// None where the context was lost when the fence was made.
+    sync: Option<glow::Fence>,
     done: Cell<bool>,
 }
 
@@ -338,6 +341,8 @@ pub struct Gl {
     stale_buffers: u32,
     /// How many sRGB twins exist, so draws look at their textures only when some do.
     twins: u32,
+    /// The colour targets of the pass, by bit, whose alpha draws leave (`format::alpha_one`).
+    pass_alpha_one: u8,
     /// GL's last compile or link log, for tests and bug reports.
     last_log: String,
     surface: Option<SurfaceState>,
@@ -449,6 +454,7 @@ impl Gl {
             pass: None,
             stale_buffers: 0,
             twins: 0,
+            pass_alpha_one: 0,
             last_log: String::new(),
             surface: None,
             depth_read: Default::default(),
@@ -737,6 +743,23 @@ impl Gl {
         self.next_id
     }
 
+    /// Loses the device for an error GL has recorded since the last look: a bug of ours or a lost
+    /// context. Called where the back end has just waited for the GPU, so the look costs no wait.
+    fn gl_errors(&mut self) {
+        // SAFETY: a plain GL query.
+        let error = unsafe { self.gl.get_error() };
+        let reason = match error {
+            glow::NO_ERROR => return,
+            glow::OUT_OF_MEMORY => LossReason::OutOfMemory,
+            glow::CONTEXT_LOST => LossReason::Reset,
+            _ => LossReason::Error,
+        };
+        if self.lost.is_none() {
+            self.last_log = format!("GL error {error:#x}");
+        }
+        self.fail(reason);
+    }
+
     /// Records an error on GL's side as device loss, which fronts report in their API's words.
     fn fail(&mut self, reason: LossReason) {
         if self.lost.is_none() {
@@ -860,8 +883,8 @@ impl Gl {
             stencil_mode: Cell::new(false),
             host: None,
             decoded: None,
-            drawn: Cell::new(false),
-            minimum: Cell::new(false),
+            drawn: Cell::new(0),
+            minimum: Cell::new(0),
         })))
     }
 
@@ -1228,20 +1251,19 @@ impl Gl {
         true
     }
 
-    /// Whether a copy reads and writes one subresource (a level's layers, or a 3D level's slices,
-    /// that both regions cover), which every GL route refuses as a feedback loop.
+    /// Whether a copy reads and writes one subresource (layers of a level that both regions cover,
+    /// or one level of a 3D texture, whose slices GL copies into as one image), which every GL
+    /// route refuses as a feedback loop.
     fn within_one_subresource(
         &self,
         src: &TextureRegion<'_, Self>,
         dst: &TextureRegion<'_, Self>,
         extent: Extent,
     ) -> bool {
-        let first = |r: &TextureRegion<'_, Self>| match r.texture.desc.dimension {
-            TextureDimension::D3 => r.origin.z,
-            _ => r.layer,
-        };
-        let (s, d, n) = (first(src), first(dst), extent.depth_or_layers);
-        Rc::ptr_eq(&src.texture.0, &dst.texture.0) && src.mip == dst.mip && s < d + n && d < s + n
+        let (s, d, n) = (src.layer, dst.layer, extent.depth_or_layers);
+        Rc::ptr_eq(&src.texture.0, &dst.texture.0)
+            && src.mip == dst.mip
+            && (src.texture.desc.dimension == TextureDimension::D3 || (s < d + n && d < s + n))
     }
 
     /// A copy within one subresource, through a buffer holding the source region
@@ -1647,6 +1669,7 @@ impl Gl {
             comp_kept: kept,
             n: 1,
             swap: false,
+            rgb565: false,
         });
         let at = [region.origin.x as i32, region.origin.y as i32];
         for i in 0..extent.depth_or_layers {
@@ -2110,16 +2133,17 @@ impl Gl {
         self.write_texture(dst, into, &packed, cols * bytes, rows, WriteMode::Ordered);
     }
 
-    /// Before the host copy of `t` is read: where draws wrote its texels since (signed normalised
-    /// formats with EXT_render_snorm), each level is drawn into a texture of its signed integer twin,
-    /// which reads back as stored, and written into the host copy ([`SlowPath::HostCopyReadBack`]).
-    /// A draw reads the smallest value as the one above it, so where the host copy may hold it,
-    /// the texels are not recovered.
-    fn host_current(&mut self, t: &Texture) -> Result<(), GpuError> {
-        if !t.drawn.get() {
+    /// Before the levels of `levels` (by bit) of the host copy of `t` are read: where draws wrote
+    /// their texels since (signed normalised formats with EXT_render_snorm), each is drawn into a
+    /// texture of its signed integer twin, which reads back as stored, and written into the host
+    /// copy ([`SlowPath::HostCopyReadBack`]). A draw reads the smallest value as the one above it,
+    /// so in a level whose host copy may hold it, the texels are not recovered.
+    fn host_current(&mut self, t: &Texture, levels: u32) -> Result<(), GpuError> {
+        let drawn = t.drawn.get() & levels;
+        if drawn == 0 {
             return Ok(());
         }
-        if t.minimum.get() {
+        if drawn & t.minimum.get() != 0 {
             return Err(self.unbuilt(
                 "the bits of signed normalised texels drawn into after a write of their smallest value",
             ));
@@ -2135,7 +2159,7 @@ impl Gl {
             Format::Rg16Snorm => Format::Rg16Sint,
             _ => Format::Rgba16Sint,
         };
-        for mip in 0..d.mip_levels {
+        for mip in (0..d.mip_levels).filter(|m| drawn & (1 << m) != 0) {
             let extent = Extent {
                 width: (d.width >> mip).max(1),
                 height: (d.height >> mip).max(1),
@@ -2176,7 +2200,7 @@ impl Gl {
             let row = (extent.width * texel) as usize;
             h.write(&d, mip, [0; 3], size, &bytes, row, extent.height as usize);
         }
-        t.drawn.set(false);
+        t.drawn.set(t.drawn.get() & !drawn);
         Ok(())
     }
 
@@ -2346,8 +2370,8 @@ impl Gl {
     }
 
     /// Calls `read` on a region of a texture GL cannot read, drawn into a colour texture it can:
-    /// depth as colour ([`SlowPath::DepthReadByDraw`]), 16-bit floats as the bits of their unsigned
-    /// integer twin ([`SlowPath::CopyThroughBuffer`]); None for other textures. Then lets the
+    /// depth as colour ([`SlowPath::DepthReadByDraw`]), 16-bit and packed floats as the bits of
+    /// their unsigned integer twin ([`SlowPath::CopyThroughBuffer`]); None for other textures. Then lets the
     /// colour texture go.
     fn through_draw<R>(
         &mut self,
@@ -2358,7 +2382,7 @@ impl Gl {
         let format = region.texture.desc.format;
         let scratch = if depth::stored(format).is_some() {
             self.depth_by_draw(region, extent)
-        } else if let Some(twin) = format::half_twin(format)
+        } else if let Some(twin) = format::bits_twin(format)
             && region.texture.host.is_none()
         {
             self.bits_by_draw(region, extent, twin)
@@ -2421,7 +2445,7 @@ impl Gl {
         dst: &mut [u8],
     ) -> Result<(), GpuError> {
         if let Some(h) = &region.texture.host {
-            self.host_current(region.texture)?;
+            self.host_current(region.texture, 1 << region.mip)?;
             let corner = Self::corner(region);
             let size = [extent.width, extent.height, extent.depth_or_layers];
             h.read(&region.texture.desc, region.mip, corner, size, dst);
@@ -2467,6 +2491,12 @@ impl Gl {
             if !wide.is_empty() {
                 read.repack(&wide, out);
             }
+        }
+        // readPixels has waited for the GPU; an error it shows leaves the bytes unread.
+        let lost = self.lost.is_some();
+        self.gl_errors();
+        if !lost && self.lost.is_some() {
+            return Err(GpuError::DeviceLost);
         }
         Ok(())
     }
@@ -3069,7 +3099,13 @@ impl Gl {
                 self.invalid("a second-source blend with more than one colour target".into());
                 return;
             }
-            state::blend(&self.gl, &mut self.values, &call.blend.0.1, &self.platform);
+            state::blend(
+                &self.gl,
+                &mut self.values,
+                &call.blend.0.1,
+                &self.platform,
+                self.pass_alpha_one,
+            );
             self.applied.blend = call.blend.0.0;
         }
         let (gl, v) = (&self.gl, &mut self.values);
@@ -3264,6 +3300,9 @@ impl Backend for Gl {
 
     fn status(&mut self) -> DeviceStatus {
         self.platform.current();
+        if let Some(reason) = self.platform.lost() {
+            self.fail(reason);
+        }
         match self.lost {
             Some(reason) => DeviceStatus::Lost(reason),
             None => DeviceStatus::Ok,
@@ -3401,8 +3440,8 @@ impl Backend for Gl {
                 host::HostCopy::new(desc)
             }),
             decoded,
-            drawn: Cell::new(false),
-            minimum: Cell::new(false),
+            drawn: Cell::new(0),
+            minimum: Cell::new(0),
         })))
     }
 
@@ -3528,6 +3567,12 @@ impl Backend for Gl {
         let missing = shader::needs(module).difference(self.caps.features);
         if !missing.is_empty() {
             return Err(GpuError::Absent(missing));
+        }
+        // GL would refuse the link, which the first draw finds as a lost device.
+        if shader::uniform_blocks(module) > self.caps.limits.uniform_buffers_per_stage {
+            return Err(GpuError::Invalid(
+                "a stage reads more uniform buffers than Limits::uniform_buffers_per_stage",
+            ));
         }
         let id = self.id();
         let shader = shader::compile(&self.gl, id, module, self.flip_y)?;
@@ -3922,25 +3967,29 @@ impl Backend for Gl {
         );
         let (pitch, per_layer) = (row_pitch as usize, rows_per_layer as usize);
         let snorm = format::signed_normalised(t.desc.format);
-        if snorm && host::covers_texture(&t.desc, region.mip, corner, size) {
-            // Every texel is the host's again.
-            t.drawn.set(false);
-            t.minimum.set(false);
+        let level = 1 << region.mip;
+        if snorm && host::covers_level(&t.desc, region.mip, corner, size) {
+            // Every texel of the level is the host's again.
+            t.drawn.set(t.drawn.get() & !level);
+            t.minimum.set(t.minimum.get() & !level);
         }
         let wrote_minimum = snorm
             && host::write_holds_minimum(&t.desc, region.mip, corner, size, data, pitch, per_layer);
         if wrote_minimum {
             // Texels drawn since are read back while a draw still reads them exactly.
-            if !t.minimum.get() {
-                let _ = self.host_current(t);
+            if t.minimum.get() & level == 0 {
+                let _ = self.host_current(t, level);
             }
-            t.minimum.set(true);
+            t.minimum.set(t.minimum.get() | level);
         }
         if let Some(h) = &region.texture.host {
             h.write(&t.desc, region.mip, corner, size, data, pitch, per_layer);
-            if t.minimum.get() && !wrote_minimum && !t.drawn.get() {
-                // The host copy holds every texel; this write may have replaced the last minimum.
-                t.minimum.set(h.holds_minimum(t.desc.format));
+            if t.minimum.get() & level != 0 && !wrote_minimum && t.drawn.get() & level == 0 {
+                // The host copy holds every texel of the level; this write may have replaced its
+                // last minimum.
+                if !h.holds_minimum(t.desc.format, region.mip) {
+                    t.minimum.set(t.minimum.get() & !level);
+                }
             }
             if host::compressed(region.texture.desc.format).is_some() {
                 return self.upload_blocks(region, extent);
@@ -3964,6 +4013,11 @@ impl Backend for Gl {
                 for r in 0..rows {
                     let at = (layer * rows_per_layer as usize + r) * row_pitch as usize;
                     format::swap_red_blue(&mut swapped[at..at + row]);
+                    if format::alpha_one(region.texture.desc.format) {
+                        for t in swapped[at..at + row].as_chunks_mut::<4>().0 {
+                            t[3] = 255;
+                        }
+                    }
                 }
             }
             return self.upload(
@@ -4022,17 +4076,44 @@ impl Backend for Gl {
             if v.texture.host.is_none() {
                 continue;
             }
-            // A pass replacing every texel of a texture of one subresource leaves no minimum.
-            let d = v.texture.desc;
+            // A pass replacing every texel of a level of one slice leaves no minimum there.
+            let (t, mip) = (&v.texture, v.desc.base_mip);
             let replaced = pass
                 .colors
                 .get(i)
                 .and_then(Option::as_ref)
                 .is_some_and(|c| !matches!(c.load, LoadOp::Load));
-            if replaced && d.mip_levels == 1 && d.depth_or_layers == 1 {
-                v.texture.minimum.set(false);
+            if replaced && host::slices(&t.desc, mip) == 1 {
+                t.minimum.set(t.minimum.get() & !(1 << mip));
             }
-            v.texture.drawn.set(true);
+            t.drawn.set(t.drawn.get() | 1 << mip);
+        }
+        // Targets whose alpha draws leave; slots without a target follow them.
+        let colors = &views[..MAX_COLOR_TARGETS];
+        let kept = |v: &&TextureView| format::alpha_one(v.texture.desc.format);
+        let alpha_one = if colors.iter().flatten().any(kept) {
+            let mut bits = 0u8;
+            for (i, v) in colors.iter().enumerate() {
+                if v.as_ref().is_none_or(kept) {
+                    bits |= 1 << i;
+                }
+            }
+            if colors.iter().flatten().any(|v| !kept(v))
+                && !self.caps.has(Features::INDEPENDENT_BLEND)
+            {
+                self.unbuilt(
+                    "a pass drawing into formats with and without alpha together without \
+                     OES_draw_buffers_indexed",
+                );
+                return;
+            }
+            bits
+        } else {
+            0
+        };
+        if self.pass_alpha_one != alpha_one {
+            self.pass_alpha_one = alpha_one;
+            self.applied.blend = 0;
         }
         let fb = self.framebuffer(key, &views);
         let gl = &self.gl;
@@ -4065,9 +4146,11 @@ impl Backend for Gl {
             for (i, c) in pass.colors.iter().enumerate() {
                 let Some(c) = c else { continue };
                 let point = glow::COLOR_ATTACHMENT0 + i as u32;
-                let whole = whole(c.view);
+                let format = c.view.texture.desc.format;
+                // A target without alpha keeps its alpha of one, which a discard would lose.
+                let whole = whole(c.view) && !format::alpha_one(format);
                 match c.load {
-                    LoadOp::Clear(value) => match c.view.texture.desc.format.kind() {
+                    LoadOp::Clear(value) => match format.kind() {
                         FormatKind::Uint => {
                             gl.clear_buffer_u32_slice(glow::COLOR, i as u32, &value)
                         }
@@ -4076,7 +4159,11 @@ impl Backend for Gl {
                             i as u32,
                             &value.map(|x| x as i32),
                         ),
-                        _ => gl.clear_buffer_f32_slice(glow::COLOR, i as u32, &value.map(f)),
+                        _ => gl.clear_buffer_f32_slice(
+                            glow::COLOR,
+                            i as u32,
+                            &format::clear_value(format, value).map(f),
+                        ),
                     },
                     LoadOp::DontCare if whole => start_discard.push(point),
                     LoadOp::DontCare | LoadOp::Load => {}
@@ -4298,7 +4385,9 @@ impl Backend for Gl {
         self.platform.current();
         // Signed normalised texels drawn since their host copy was whole are drawn on the GPU where
         // they hold no smallest value.
-        let by_draw = src.texture.drawn.get() && !src.texture.minimum.get();
+        let level = 1 << src.mip;
+        let by_draw =
+            src.texture.drawn.get() & level != 0 && src.texture.minimum.get() & level == 0;
         if (src.texture.host.is_some() && !by_draw) || dst.texture.host.is_some() {
             return self.copy_host_kept(src, dst, extent);
         }
@@ -4493,7 +4582,7 @@ impl Backend for Gl {
             );
             let mut packed = vec![0; row * rows * extent.depth_or_layers as usize];
             if let Some(h) = &src.texture.host {
-                if self.host_current(src.texture).is_err() {
+                if self.host_current(src.texture, 1 << src.mip).is_err() {
                     return;
                 }
                 let size = [extent.width, extent.height, extent.depth_or_layers];
@@ -4641,33 +4730,34 @@ impl Backend for Gl {
 
     fn submit(&mut self) -> Fence {
         self.platform.current();
-        let gl = &self.gl;
+        // GL's errors are read where the back end waits anyway (`gl_errors`): in the browser
+        // `getError` waits for the GPU process. A lost context is seen here without waiting.
+        if let Some(reason) = self.platform.lost() {
+            self.fail(reason);
+        }
         // SAFETY: plain GL calls.
         let sync = unsafe {
-            // An error GL reports here is a bug of ours or a lost context: the device is lost.
-            match gl.get_error() {
-                glow::NO_ERROR => {}
-                glow::OUT_OF_MEMORY => self.lost = self.lost.or(Some(LossReason::OutOfMemory)),
-                glow::CONTEXT_LOST => self.lost = self.lost.or(Some(LossReason::Reset)),
-                _ => self.lost = self.lost.or(Some(LossReason::Error)),
-            }
-            let sync = gl
-                .fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0)
-                .expect("a sync object");
-            gl.flush();
+            let sync = self.gl.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0).ok();
+            self.gl.flush();
             sync
         };
+        if sync.is_none() {
+            self.last_log = "no sync object: the context is lost".into();
+            self.fail(LossReason::Reset);
+        }
         Handle(Rc::new(FenceObj {
+            done: Cell::new(sync.is_none()),
             sync,
-            done: Cell::new(false),
         }))
     }
 
     fn fence_done(&mut self, fence: &Fence) -> bool {
         self.platform.current();
-        if !fence.done.get() {
+        if !fence.done.get()
+            && let Some(sync) = fence.sync
+        {
             // SAFETY: a plain query of a live sync object.
-            let status = unsafe { self.gl.get_sync_status(fence.sync) };
+            let status = unsafe { self.gl.get_sync_status(sync) };
             fence.done.set(status == glow::SIGNALED);
         }
         fence.done.get()
@@ -4675,22 +4765,26 @@ impl Backend for Gl {
 
     fn wait_fence(&mut self, fence: &Fence) {
         self.platform.current();
-        if fence.done.get() {
+        let Some(sync) = fence.sync.filter(|_| !fence.done.get()) else {
             return;
-        }
+        };
         // SAFETY: plain GL calls. WebGL cannot wait on a sync object (its longest wait is zero), and
         // finish returns only when every earlier command has completed.
         unsafe {
             #[cfg(target_arch = "wasm32")]
-            self.gl.finish();
+            {
+                let _ = sync;
+                self.gl.finish();
+            }
             #[cfg(not(target_arch = "wasm32"))]
             while self
                 .gl
-                .client_wait_sync(fence.sync, glow::SYNC_FLUSH_COMMANDS_BIT, 1_000_000_000)
+                .client_wait_sync(sync, glow::SYNC_FLUSH_COMMANDS_BIT, 1_000_000_000)
                 == glow::TIMEOUT_EXPIRED
             {}
         }
         fence.done.set(true);
+        self.gl_errors();
     }
 
     fn read_back(&mut self, src: &ReadSource<'_, Self>) -> Result<Readback, GpuError> {
@@ -4708,7 +4802,7 @@ impl Backend for Gl {
         if let ReadSource::Texture { region, extent } = src
             && let Some(h) = &region.texture.host
         {
-            self.host_current(region.texture)?;
+            self.host_current(region.texture, 1 << region.mip)?;
             let (bw, bh, bytes) = region.texture.desc.format.block();
             let size = extent.width.div_ceil(bw) * extent.height.div_ceil(bh) * bytes;
             let mut kept = vec![0; (size * extent.depth_or_layers) as usize];
@@ -4895,7 +4989,7 @@ impl Backend for Gl {
         let sync = readback.borrow().sync;
         if let Some(sync) = sync {
             let fence = Handle(Rc::new(FenceObj {
-                sync,
+                sync: Some(sync),
                 done: Cell::new(false),
             }));
             self.wait_fence(&fence);
@@ -5205,9 +5299,11 @@ impl Backend for Gl {
                     (ClearValue::Color(c), FormatKind::Sint) => {
                         gl.clear_buffer_i32_slice(glow::COLOR, 0, &c.map(|x| x as i32))
                     }
-                    (ClearValue::Color(c), _) => {
-                        gl.clear_buffer_f32_slice(glow::COLOR, 0, &c.map(f))
-                    }
+                    (ClearValue::Color(c), _) => gl.clear_buffer_f32_slice(
+                        glow::COLOR,
+                        0,
+                        &format::clear_value(view.texture.desc.format, c).map(f),
+                    ),
                     (ClearValue::DepthStencil { .. }, _) => match (depth, stencil) {
                         (Some(d), Some(s)) => {
                             gl.clear_buffer_depth_stencil(glow::DEPTH_STENCIL, 0, f(d), s.into())

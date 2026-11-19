@@ -503,9 +503,20 @@ and none with a linear filter (min, mag or mip) where the program pairs it with 
 set. A uniform or storage binding is at least the size of the block the program declares there (a
 runtime-sized array counted as one element), as WebGPU's `minBindingSize` and WebGL 2's
 `UNIFORM_BLOCK_DATA_SIZE` require (`ConstantBufferGrown`, 5.1). A storage binding's size is a
-multiple of four, as WebGPU's bind group rule requires; a front whose API's view or range is not
-rounds its bytes up to it within the buffer (the API's out-of-range rules then cover the bytes
-added), as the Vulkan driver does with a descriptor's range (15.4).
+whole number of words (`STORAGE_WORD`, four bytes), as WebGPU's bind group rule requires; a front
+whose API's view or range is not rounds its bytes up (the API's out-of-range rules then cover the
+bytes added), as the Vulkan driver does with a descriptor's range (15.4). So that a range reaching
+the end of its buffer stays inside it rounded, a front whose API makes buffers of other sizes and
+may bind them as storage makes them with their size rounded up to a whole number of words
+(`BufferDesc`'s doc): the OpenGL driver for every buffer object (`glBufferData` of six bytes bound
+whole as a shader storage buffer), the Direct3D fronts for buffers with unordered access or
+shader resource bindings, and the Vulkan driver by its memory requirements (15.4). Every binding
+the program reads is bound, whatever the draw then covers or fetches, with the kind the program
+declares there (`BindingEntry`'s doc): the WebGPU back end takes its binding layouts from the
+program, so a uniform buffer where the program declares storage, a read-only storage binding of a
+block the program writes, or a texture view of another dimension, sample type or multisampling
+is refused by WebGPU at the draw. The recording back end refuses each before it rasterises or
+drops anything.
 `prepare` takes the layout keys too (`PrepareDesc::layouts`; the zero key, every texture filterable, is
 what a Direct3D 12 pipeline state is prepared with before any descriptor is known), and the cache
 records them, so a combination first seen with other keys is prepared at the next start. The pipeline
@@ -2761,9 +2772,17 @@ lists (checked in Mesa's main branch, 2026-11-18): `meson.options` (a new choice
 `gallium-drivers` and `vulkan-drivers` lists), the top-level `meson.build` (the
 `with_gallium_wcontainers` and Vulkan flags, as `with_gallium_zink` and `with_microsoft_vk` are made
 there), `src/gallium/meson.build` (the driver's `subdir` and its `driver_*` dependency),
-`src/meson.build` (the Vulkan driver's `subdir`), and the WGL target: `wgl.c`'s
-`wgl_screen_create_by_name` picks a screen by `#ifdef GALLIUM_*` blocks, one per driver, so ours gets
-one, and `libgl-gdi`'s meson file links the driver. The Rust side fills `pipe_screen` and
+`src/meson.build` (the Vulkan driver's `subdir`), and the WGL target, whose `wgl.c` branches per
+driver in three places (checked in Mesa's main branch, 2026-11-18): `wgl_screen_create_by_name`
+picks a screen by `#ifdef GALLIUM_*` blocks, one per driver, so ours gets one (setting a
+`use_wcontainers` flag, as `use_zink` is set); `wgl_screen_create`'s `drivers[]` list (the
+`GALLIUM_DRIVER` variable's choice first, then `d3d12`, `zink`, `llvmpipe`, `softpipe`) gets ours
+after the variable's choice, so the test build draws through it by default and
+`GALLIUM_DRIVER=llvmpipe` still picks the software reference; and `wgl_present` gets a branch on
+that flag calling `pipe_screen::flush_frontbuffer`, as Zink's does, which our driver serves by
+presenting the interface's surface (`wgl_create_framebuffer` returns nothing for drivers other
+than d3d12, and stw then keeps its own framebuffer, so it is left as it is). `libgl-gdi`'s meson
+file links the driver. The Rust side fills `pipe_screen` and
 `pipe_context` itself from bindings that `bindgen` (BSD-3-Clause, to confirm at G9) makes of the
 pinned headers. So the driver is Rust, as the project's rules ask, and Mesa's build links it as a
 prebuilt library.
@@ -2772,7 +2791,9 @@ What the driver does, by the plan's earlier sections: `create_*_state` makes blo
 marks dirty, `draw_vbo` names blocks and binding sets, `pipe_context::blit` and clears go through
 Gallium's `util_blitter` drawing with our own blocks, queries through the interface's queries and the
 occlusion counter, `resource_copy_region` through `copy_texture` (copies within one subresource of
-every format, G1c), maps through the interface's write modes (5.3). Shaders arrive as NIR and go
+every format, G1c), maps through the interface's write modes (5.3), buffer objects made a whole
+number of storage words in size so that one bound whole as a shader storage buffer stays inside it
+(4.5). Shaders arrive as NIR and go
 through the NIR route (15.3) into the common form, then the shaders crate's `convert` with the
 variant key the draw needs. Versions, as 5.3 and 5.4: 4.6 core on WebGPU (64-bit floats by Mesa's
 soft-float lowering, `F64Emulated`), 3.1 on WebGL 2 (no multisampled textures there). Caps report
@@ -2845,16 +2866,17 @@ The GPL and SGI files stay in the submodule's tree, never copied into this repos
 
 **The MIT-headed WebGPU driver for Mesa.** It is `gex_wgpu` in `github.com/MercuryWorkshop/mesa-wink`
 (branch `wink`). Checked at the source on 2026-11-18 (and by G1c's independent check, every file of
-the directory): its C sources, `gex_wgpu_screen.c` (2,647,356 bytes, one file) among them, start
+the directory; the head of `wink` read again at 21:57 UTC that day): its C sources,
+`gex_wgpu_screen.c` (2,659,872 bytes at that head, one file) among them, start
 `SPDX-License-Identifier: MIT`; its build and test files do not: `meson.build` (which begins
 `gex_emdawn_dir = get_option(...)`, no header), the `native/` build scripts, its README, CI lists
 and log carry no licence. The repository declares no licence (GitHub's licence field is empty; it
 carries Mesa's own `docs/license.rst` and `licenses/`, which say each file's SPDX tag governs, and
 these files have none), so those files are of unknown licence, and building the driver needs its
-`meson.build`. It is not a GitHub fork. It is still being worked on: on the `wink` branch its directory last
-changed on 2026-10-28 (commit 41e1c1dfab) and the branch's head is of 2026-11-11, but the newest
-commit on any branch (2026-11-13, branch `fr/tbo-align`, 4a3419242a) changes `gex_wgpu` itself
-(buffer texture ranges at a 16-byte alignment). Its
+`meson.build`. It is not a GitHub fork. It is still being worked on, daily: the head of `wink`
+(5f8a8bc255, 2026-11-18, fence syncs on a remote context) changes `gex_wgpu` itself, as did an
+earlier commit on another branch (2026-11-13, `fr/tbo-align`, 4a3419242a, buffer texture ranges
+at a 16-byte alignment); the repository was pushed to again later that day. Its
 meson file requires Tint and emdawnwebgpu (Dawn's `webgpu.h` for Emscripten), and it also builds
 natively against Dawn (`gex_wgpu_native.c`). Its shader compiler (NIR to SPIR-V by Zink's
 `nir_to_spirv`, then Tint to WGSL) is `src/wink/compiler`, shared with the same repository's Vulkan
@@ -3054,9 +3076,10 @@ only with `clip-distances` (checked in `wvk_physical_device.c`).
   `shaders.adoc`). Third, `nir_lower_robust_access` runs, its filter taking uniform and storage
   buffer loads, stores and atomics: a load whose last byte passes the size reads at offset 0
   instead, and a store or atomic past it is not executed (the atomic gives zero, an undefined
-  value being allowed). That pass's own comment says Mesa's Vulkan drivers get buffer robustness
-  from `nir_lower_explicit_io` instead, with `nir_address_format_64bit_bounded_global`; that
-  format makes 64-bit global addresses (`load_global_constant_bounded` and its kin, checked:
+  value being allowed). That pass's own comment says only that Vulkan drivers get buffer
+  robustness lowered through `nir_lower_explicit_io`, naming no address format; the bounded one
+  that pass offers, `nir_address_format_64bit_bounded_global` (defined in `nir_defines.h`), makes
+  64-bit global addresses (`load_global_constant_bounded` and its kin, checked:
   `nir_defines.h`, `nir_lower_explicit_io.c`), which the common form cannot hold since WebGPU has
   no buffer addresses, so this route keeps the index and offset form, which `nir_lower_explicit_io`
   does not bound, and bounds it with this pass. The sizes the pass reads (`get_ubo_size`,
