@@ -14,6 +14,13 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
+K6c, eleventh run: the owner's ruling is built (every host call takes the host shared, the host
+trait requires `Sync`); the brief's backend batching was measured slower and not kept; the
+questions left open since the fifth run are decided in the gap list (Known gaps, first part), so
+the gap list is final; the slow LTP tests ran with a two-hour limit on the ARM64 machine; the
+whole suite ran at the final code on the ARM64 machine and its Mac-only tests on the Mac. See
+"K6c, eleventh run".
+
 K6c, tenth run: the LTP comparison on our kernel moved off the Mac (it is what brought Docker
 Desktop down: "For the orchestrator") to the rented ARM64 machine, where the whole comparison
 ran: 4126 of 4226 match, 40 differ by a section 15 cause, 43 are slower than 900 s (running
@@ -98,6 +105,25 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## K6c, eleventh run
+
+origin/phase-1 and origin/phase-1-literals had nothing new to merge.
+
+Built and measured:
+- The owner's ruling (brief, 2026-11-19): every `Host` call takes `&self` and `Host: Sync`; the
+  kernel holds `&dyn Host`. The test host keeps what the calls change behind locks (`Mutex` for
+  its randomness, warnings, ends, backend and network, atomics for the repeatable clock); the
+  runtime crate's `System` keeps its writers and warnings behind locks (Departures). Kernel code
+  is unchanged otherwise. hello and streams passed on the Mac before the commit.
+- The brief's backend batching (crates/wcontainers-kernel-test/src/backend.rs, connect): requests
+  were held and written together before each turn and when an answer was awaited. Timed on the
+  Mac against the code before it, alternately (scratch k6c11/nodelay.log, test threads 3):
+  backend.rs 143 s and 190 s before, 170 s and 211 s after; rootbackend.rs 24 s and 34 s
+  before, 26 s and 30 s after (load 19 to 38 throughout). The backend tests were slower with it
+  in both rounds, so it was not kept and TCP_NODELAY stays. The LTP comparison, whose traffic
+  brought Docker Desktop down, now runs only on the ARM64 machine (no vsock link there).
+- Literals: the check passes; the baseline did not change (8494 lines).
 
 ## K6c, tenth run
 
