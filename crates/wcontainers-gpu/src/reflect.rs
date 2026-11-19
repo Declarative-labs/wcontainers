@@ -375,6 +375,10 @@ pub enum HelperValue {
     /// the run's viewport under [`crate::SlowPath::MultiViewportSplit`], zero where no earlier stage
     /// writes one.
     Viewport,
+    /// The layer count of the draw's target views (u32), which the pass-through after a geometry stage
+    /// made with [`VariantFlags::LAYER_FROM_STAGE`] reads: it draws a primitive naming a layer at or
+    /// past the count in the run of layer 0, as Direct3D draws it into the views' first layer.
+    LayerCount,
 }
 
 /// Where one helper value sits in the helper constants.
@@ -464,6 +468,12 @@ bitflags! {
         /// into its binding, which the front binds from below the view's start
         /// ([`crate::BindingResource::StorageBuffer`]).
         const STORAGE_OFFSET = 1 << 14;
+        /// The layer each primitive of a geometry stage names passes to the pixel shader as a flat
+        /// u32 after [`VariantKey::linked`]'s values, and the pixel shader reads its layer index from
+        /// it, not from [`HelperValue::Layer`]; the geometry stage's pass-through, made so, draws a
+        /// primitive naming a layer at or past [`HelperValue::LayerCount`] in the run of layer 0
+        /// ([`crate::SlowPath::LayerSplit`]). The front sets it in both programs' keys.
+        const LAYER_FROM_STAGE = 1 << 15;
     }
 }
 
@@ -527,8 +537,9 @@ pub struct TargetInShader {
 /// The values a vertex program adds for its pixel program, which is converted apart: four-component
 /// f32 values from `location` holding the vertex program's `clip_distances` clip distances (with
 /// [`VariantFlags::CLIP_DISTANCE`], zero without), then its unclamped clip z (with
-/// [`VariantFlags::DEPTH_CLAMP`]). `location` is one past every location either program's reflection
-/// lists.
+/// [`VariantFlags::DEPTH_CLAMP`]), then the layer a geometry stage names (one flat u32, with
+/// [`VariantFlags::LAYER_FROM_STAGE`]). `location` is one past every location either program's
+/// reflection lists.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
