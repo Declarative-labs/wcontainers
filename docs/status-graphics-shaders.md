@@ -1910,7 +1910,53 @@ Run 43 (the Direct3D 11 track's layered item, the literal sweep):
   (`ps_primid`) and cull distances (`vs_cull`, which the fronts draw through the stage helper)
   (run43/chrome1.log).
 
+Run 44 (what the fronts asked in their latest runs, Godot on Direct3D 12, the escape loop, the
+literal sweep):
+- Merged origin/phase-2-graphics-direct3d-11 (one conflict in `literals.baseline`, lines of our
+  `dxil.rs` this branch had removed: kept neither) and -direct3d-12; the others had nothing new.
+- Godot's 3D platformer through the Direct3D 12 front at this branch's merged tree (with a
+  temporary dump of refused shaders in the front, not committed; scratch run44/godot.sh): no
+  shader is refused any more (the dump stayed empty), so the three `StorageFormatKind` compute
+  shaders of the Direct3D 12 track's run 37 convert since run 42's numbering. What still stops
+  it: one pipeline of alpha-antialiased lines (`AntialiasedLinesAsQuads`, ours, Next), the WebGPU
+  back end's sRGB view of a texture allowing storage (theirs), and samplers filtering textures the
+  device cannot filter, which the front would route to `filter_in_shader` (theirs). Frames differ
+  in every pixel (run44/godot-run.log, godot-output.log).
+- Both fronts' new asks about clip distances behind the stage helper are built (runs 38 and
+  39): the pass-through takes the key of the conversion it comes from, so the fronts must convert
+  the geometry shader (or, on the cull route, the vertex shader) with `CLIP_DISTANCE` and the
+  pixel shader's `linked`. Written into "How the Direct3D fronts call `convert`".
+  `stage::STREAM_BUFFERS` is now exported, as the Direct3D 11 track asked.
+- The Direct3D 11 track's atg-simplecomputepc question, further: new own `cs_escape`
+  (divide.hlsl; fxc and dxc), the program's Mandelbrot loop as written (`do .. while (count <
+  most && sq.x + sq.y < 4.0)`, count over the scale, its fraction) on seeded points inside the
+  main cardioid (full count) and right of the set, against real Direct3D 11 on the RTX 3080 in
+  both compute_draw tests. With the first version's points anywhere in the set's square the
+  DXBC build was 0 words apart on seeds 1 to 4 and the DXIL build one point near the set's edge
+  4 steps apart on seed 3 (231 for 235; such counts follow every rounding, which Direct3D leaves
+  free), so the points were moved off the edge (run44/gpu1.log). So the loop's count and the
+  quotient are Direct3D's on the DXBC route the front uses; what is left for that program is the
+  colour map's sampling at u = 0 (the front's sampler and the texture's addressing).
+- Literal sweep: the float layout facts (f32's fraction, exponent bias and masks; the small
+  floats' exponent bits, mask and bias; the half's width) are named once in `build` and used by
+  the vertex fetch's decoding (`variant/pull.rs`), the typed-texel encoder (`variant/texel.rs`),
+  the clear values (`builtin.rs`) and the lowering's NaN test; vertex format widths come from
+  `u8::BITS`, `u16::BITS` and `u32::BITS`, packed formats' fields are named widths with their
+  shifts summed, the clear block's size comes from a `repr(C)` struct (`CLEAR_PARAMS_BYTES`,
+  `CLEAR_AXES`), vector alignments from their size, and the resource variables' register
+  prefixes are named. This crate's baseline lines (src, build.rs, tests, examples): 665 (804 at
+  run 43's end); the check prints nothing to add (run44/check2.txt).
+
 Next (in order):
+- `LINE_COVERAGE` and the stage helper's line expansion (`AntialiasedLinesAsQuads`, plan 4.12):
+  since run 44 the only refusal left in Godot's 3D platformer on Direct3D 12 that is ours (one
+  pipeline of alpha-antialiased lines), and the Direct3D 11 track's item. Then
+  `PRIMITIVE_ID_FROM_STAGE` (a pass-through drawing the vertex stage's records without an index
+  buffer, reading the index list itself and passing `vertex_index / n` as the primitive's number).
+- The fronts (theirs): clip distances behind the stage helper need `CLIP_DISTANCE` and `linked`
+  in the key of the conversion the pass-through comes from (the geometry shader's, or the vertex
+  shader's on the cull route); built since runs 38 and 39 ("How the Direct3D fronts call
+  `convert`"). `stage::STREAM_BUFFERS` is public since run 44.
 - The Direct3D 11 front (theirs, now possible since run 43): test_layered_rendering's nine checks:
   set `LAYER_FROM_STAGE` and `linked` in the geometry and pixel shaders' keys and write the views'
   layer count at `stage::PASSTHROUGH_LAYER_COUNT` in the pass-through's block. The same for the
@@ -2230,6 +2276,17 @@ let reflection = &converted.reflection;
   the raster block keeps depth clipping on (the program keeps z inside), and those draws lose early
   depth tests (the program writes depth). Check the vertex program's locations plus the added ones
   against the back end's inter-stage limit.
+- `CLIP_DISTANCE` behind the stage helper (built since runs 38 and 39; both fronts asked for it
+  in their latest runs, from creation-time conversions): the stage helper's pass-throughs take
+  the key of the conversion they come from, so the key must carry `CLIP_DISTANCE` and the pixel
+  shader's `linked`. Geometry stage: convert the geometry shader per pixel shader with
+  `CLIP_DISTANCE` and `linked` (as the vertex shader is converted); its `modules[1]`, the
+  pass-through `Stages::new` takes, then passes the distances at `linked.location` and writes no
+  `ClipDistances` built-in. Cull route (`Stages::culled`): convert the vertex shader with every
+  input pulled, `draw_base: Helpers`, `CLIP_DISTANCE` and `linked`; `cull_programs` passes its
+  linked values on as any output location. `tests/geometry_draw.rs` draws both (`vs_cull` writes
+  a clip distance beside its cull distances; the `gs_clip` cases) on wgpu's Direct3D 12 path,
+  which has no clip distances, against real Direct3D 11.
 - `mirror_once_in_shader` (without `Features::MIRROR_ONCE`): bind the sampler with each mirror-once
   axis made `Clamp`, and write `SamplerState { sampler }` (nine words: min, mag, mip filter, the three
   address modes of the API's sampler as `AddressMode as u32`, anisotropy, then the level range as
