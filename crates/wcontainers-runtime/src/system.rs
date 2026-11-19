@@ -7,7 +7,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -61,6 +61,13 @@ const INPUT_THREAD: &str = "wcontainers input";
 
 /// The local system.
 pub struct LocalSystem {
+    state: Mutex<LocalState>,
+    /// Set with the stop flag, before the first turn.
+    timer: OnceLock<Timer>,
+}
+
+/// What the local system changes as the kernel asks.
+struct LocalState {
     started: Instant,
     output: Box<dyn Write + Send>,
     error: Box<dyn Write + Send>,
@@ -76,7 +83,6 @@ pub struct LocalSystem {
     input_closed: bool,
     input_credit: Arc<InputCredit>,
     warnings: Vec<Warned>,
-    timer: Option<Timer>,
     files: Option<Files>,
     /// The file backend's replies not yet handed to the kernel.
     replies: Vec<(BackendRequestId, Vec<u8>)>,
@@ -88,6 +94,7 @@ pub struct LocalSystem {
 
 /// Raises the stop flag at the deadline the last turn set, on its own thread.
 struct Timer {
+    started: Instant,
     shared: Arc<Deadline>,
     thread: Option<JoinHandle<()>>,
 }
@@ -108,7 +115,7 @@ struct Deadline {
 impl LocalSystem {
     /// A system writing the container's standard output and error to these streams.
     pub fn new(output: Box<dyn Write + Send>, error: Box<dyn Write + Send>) -> Self {
-        Self {
+        let state = LocalState {
             started: Instant::now(),
             output,
             error,
@@ -119,12 +126,15 @@ impl LocalSystem {
             input_closed: false,
             input_credit: Arc::default(),
             warnings: Vec::new(),
-            timer: None,
             files: None,
             replies: Vec::new(),
             arrivals: Arc::default(),
             network: None,
             published: Vec::new(),
+        };
+        Self {
+            state: Mutex::new(state),
+            timer: OnceLock::new(),
         }
     }
 
@@ -132,18 +142,41 @@ impl LocalSystem {
     /// does; without it, descriptor 0 is `/dev/null`. Read on a thread of its own, never more than
     /// the kernel has room for.
     pub fn input(&mut self, input: Box<dyn Read + Send>) {
-        self.input = Some(input);
+        self.state_mut().input = Some(input);
     }
 
     /// Lets connections from the host at `at` reach the container's TCP port `port`, as `docker run
     /// --publish` does. Nothing outside reaches a port not published.
     pub fn publish(&mut self, port: u16, at: SocketAddr) {
-        self.published.push((port, at));
-        if let Some(network) = &mut self.network {
+        let state = self.state_mut();
+        state.published.push((port, at));
+        if let Some(network) = &mut state.network {
             network.publish(port, at);
         }
     }
 
+    /// Every warning so far, the kernel's and the back end's.
+    pub fn warnings(&self) -> Vec<Warned> {
+        self.state().warnings.clone()
+    }
+
+    fn state(&self) -> MutexGuard<'_, LocalState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn state_mut(&mut self) -> &mut LocalState {
+        self.state.get_mut().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Drops the deadline of the turn that ended.
+    fn turn_over(&self) {
+        if let Some(timer) = self.timer.get() {
+            timer.shared.at.store(NEVER, Ordering::SeqCst);
+        }
+    }
+}
+
+impl LocalState {
     fn network(&mut self) -> &mut Network {
         self.network.get_or_insert_with(|| {
             let mut network = Network::new(self.arrivals.clone());
@@ -254,20 +287,8 @@ impl LocalSystem {
         }
     }
 
-    /// Every warning so far, the kernel's and the back end's.
-    pub fn warnings(&self) -> &[Warned] {
-        &self.warnings
-    }
-
     fn now(&self) -> u64 {
-        self.started.elapsed().as_nanos() as u64
-    }
-
-    /// Drops the deadline of the turn that ended.
-    fn turn_over(&self) {
-        if let Some(timer) = &self.timer {
-            timer.shared.at.store(NEVER, Ordering::SeqCst);
-        }
+        nanoseconds_since(self.started)
     }
 
     fn keep(&mut self, warning: Warning<'_>, cpu: bool) {
@@ -294,8 +315,8 @@ impl Drop for LocalSystem {
     /// Stops the timer thread, and the input's reader once it next waits for room (one blocked
     /// reading is left to end with the process).
     fn drop(&mut self) {
-        self.input_credit.stop();
-        if let Some(timer) = &mut self.timer {
+        self.state_mut().input_credit.stop();
+        if let Some(timer) = self.timer.get_mut() {
             *timer
                 .shared
                 .gone
@@ -327,7 +348,7 @@ fn time(shared: &Deadline, started: Instant, flag: &StopFlag) {
         if shared.at.load(Ordering::SeqCst) != at {
             continue;
         }
-        let now = started.elapsed().as_nanos() as u64;
+        let now = nanoseconds_since(started);
         if at <= now {
             // A deadline a turn ended before, or moved, is not raised.
             if shared
@@ -352,6 +373,10 @@ fn time(shared: &Deadline, started: Instant, flag: &StopFlag) {
             }
         };
     }
+}
+
+fn nanoseconds_since(started: Instant) -> u64 {
+    started.elapsed().as_nanos() as u64
 }
 
 /// The room the kernel gave for input and the reader has not used, shared with the reader.
@@ -429,7 +454,7 @@ fn read_input(mut input: Box<dyn Read + Send>, credit: &InputCredit, arrivals: &
     }
 }
 
-impl Host for LocalSystem {
+impl Host for LocalState {
     fn monotonic_nanoseconds(&mut self) -> u64 {
         self.now()
     }
@@ -539,36 +564,119 @@ impl Host for LocalSystem {
     }
 }
 
+/// The kernel's calls, with the system held alone.
+impl Host for LocalSystem {
+    fn monotonic_nanoseconds(&mut self) -> u64 {
+        self.state_mut().monotonic_nanoseconds()
+    }
+
+    fn realtime_nanoseconds(&mut self) -> u64 {
+        self.state_mut().realtime_nanoseconds()
+    }
+
+    fn random(&mut self, into: &mut [u8]) {
+        self.state_mut().random(into);
+    }
+
+    fn warn(&mut self, warning: Warning<'_>) {
+        self.state_mut().warn(warning);
+    }
+
+    fn backend_send(&mut self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError> {
+        self.state_mut().backend_send(request, message)
+    }
+
+    fn stream_send(&mut self, end: End, bytes: &[u8]) {
+        self.state_mut().stream_send(end, bytes);
+    }
+
+    fn stream_credit(&mut self, end: End, bytes: u64) {
+        self.state_mut().stream_credit(end, bytes);
+    }
+
+    fn stream_close(&mut self, end: End) {
+        self.state_mut().stream_close(end);
+    }
+
+    fn connect(
+        &mut self,
+        connection: ConnectionId,
+        address: &[u8],
+        port: u16,
+        stream: bool,
+    ) -> Result<(), HostError> {
+        self.state_mut().connect(connection, address, port, stream)
+    }
+
+    fn send(&mut self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError> {
+        self.state_mut().send(connection, bytes)
+    }
+
+    fn receive(&mut self, connection: ConnectionId, into: &mut [u8]) -> Result<usize, HostError> {
+        self.state_mut().receive(connection, into)
+    }
+
+    fn finish(&mut self, connection: ConnectionId) {
+        self.state_mut().finish(connection);
+    }
+
+    fn close(&mut self, connection: ConnectionId) {
+        self.state_mut().close(connection);
+    }
+
+    fn look_up(&mut self, request: u64, name: &str) -> Result<(), HostError> {
+        self.state_mut().look_up(request, name)
+    }
+
+    fn listen(&mut self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
+        self.state_mut().listen(listener, port)
+    }
+
+    fn accept(
+        &mut self,
+        listener: ConnectionId,
+        connection: ConnectionId,
+    ) -> Result<(), HostError> {
+        self.state_mut().accept(listener, connection)
+    }
+}
+
 impl System for LocalSystem {
     /// The local system never ends a run itself.
     type End = core::convert::Infallible;
 
-    fn stop_flag(&mut self, flag: StopFlag) {
-        self.arrivals.set_flag(flag.clone());
+    fn stop_flag(&self, flag: StopFlag) {
+        let state = self.state();
+        state.arrivals.set_flag(flag.clone());
         let shared = Arc::new(Deadline {
             at: AtomicU64::new(NEVER),
             sleeping: AtomicU64::new(NEVER),
             gone: Mutex::new(false),
             wake: Condvar::new(),
         });
-        let started = self.started;
-        let thread = {
-            let shared = shared.clone();
-            std::thread::Builder::new()
-                .name(TIMER_THREAD.to_string())
-                .spawn(move || time(&shared, started, &flag))
-                .expect("a timer thread")
-        };
-        self.timer = Some(Timer {
-            shared,
-            thread: Some(thread),
+        let started = state.started;
+        self.timer.get_or_init(|| {
+            let thread = {
+                let shared = shared.clone();
+                std::thread::Builder::new()
+                    .name(TIMER_THREAD.to_string())
+                    .spawn(move || time(&shared, started, &flag))
+                    .expect("a timer thread")
+            };
+            Timer {
+                started,
+                shared,
+                thread: Some(thread),
+            }
         });
     }
 
     /// A free turn, ended by the timer thread when the kernel's slice has passed.
-    fn turn(&mut self, slice_nanoseconds: Option<u64>) -> Turn {
-        let at = slice_nanoseconds.map_or(NEVER, |slice| self.now().saturating_add(slice));
-        if let Some(timer) = &self.timer {
+    fn turn(&self, slice_nanoseconds: Option<u64>) -> Turn {
+        if let Some(timer) = self.timer.get() {
+            let at = slice_nanoseconds.map_or(NEVER, |slice| {
+                nanoseconds_since(timer.started).saturating_add(slice)
+            });
             let shared = &timer.shared;
             shared.at.store(at, Ordering::SeqCst);
             // The thread sleeps to a later deadline or none: it must wake for this one.
@@ -581,51 +689,60 @@ impl System for LocalSystem {
     }
 
     /// Time is the host's clock, not progress.
-    fn ran(&mut self, _: u64) {}
+    fn ran(&self, _: u64) {}
 
-    fn arrived(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
-        self.deliver(kernel, cpu);
+    fn arrived(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+        self.state().deliver(kernel, cpu);
         false
     }
 
     /// The turn is over, so its deadline is dropped: an idle past it raises nothing.
-    fn stopped<E: Execution>(&mut self, _: &mut Kernel, _: &mut E) -> ControlFlow<Self::End> {
+    fn stopped<E: Execution>(&self, _: &mut Kernel, _: &mut E) -> ControlFlow<Self::End> {
         self.turn_over();
         ControlFlow::Continue(())
     }
 
     /// Hands over what arrived, or else waits until the kernel's next timer or an arrival. With
-    /// neither to come, the container waits for ever, as it would on Linux.
-    fn idle(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu, until_nanoseconds: Option<u64>) {
-        if self.deliver(kernel, cpu) {
-            return;
-        }
-        let left =
-            until_nanoseconds.map(|until| Duration::from_nanos(until.saturating_sub(self.now())));
-        if left != Some(Duration::ZERO) {
-            self.arrivals.wait(left);
-            self.deliver(kernel, cpu);
-        }
-        if until_nanoseconds.is_some_and(|until| self.now() >= until) {
-            kernel.event(cpu, self, Event::Timer);
+    /// neither to come, the container waits for ever, as it would on Linux. The state is not held
+    /// while waiting.
+    fn idle(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu, until_nanoseconds: Option<u64>) {
+        let (arrivals, now) = {
+            let mut state = self.state();
+            if state.deliver(kernel, cpu) {
+                return;
+            }
+            (state.arrivals.clone(), state.now())
+        };
+        let left = until_nanoseconds.map(|until| Duration::from_nanos(until.saturating_sub(now)));
+        let mut state = if left == Some(Duration::ZERO) {
+            self.state()
+        } else {
+            arrivals.wait(left);
+            let mut state = self.state();
+            state.deliver(kernel, cpu);
+            state
+        };
+        if until_nanoseconds.is_some_and(|until| state.now() >= until) {
+            kernel.event(cpu, &mut *state, Event::Timer);
         }
     }
 
-    fn serve_directory(&mut self, source: &Path) -> std::io::Result<()> {
-        self.files = Some(Files::new(source)?);
+    fn serve_directory(&self, source: &Path) -> std::io::Result<()> {
+        self.state().files = Some(Files::new(source)?);
         Ok(())
     }
 
-    fn cpu_warning(&mut self, warning: Warning<'_>) {
-        self.keep(warning, true);
+    fn cpu_warning(&self, warning: Warning<'_>) {
+        self.state().keep(warning, true);
     }
 
     /// The terminal asked for, or pipes; with an input, its reader starts.
-    fn standard(&mut self, terminal: Option<TerminalSize>) -> Standard {
+    fn standard(&self, terminal: Option<TerminalSize>) -> Standard {
+        let mut state = self.state();
         let standard = match terminal {
             Some(size) => {
-                self.credit_owed = vec![TERMINAL];
-                self.input_end = self.input.is_some().then_some(TERMINAL);
+                state.credit_owed = vec![TERMINAL];
+                state.input_end = state.input.is_some().then_some(TERMINAL);
                 Standard::Terminal {
                     end: TERMINAL,
                     columns: size.columns,
@@ -633,18 +750,18 @@ impl System for LocalSystem {
                 }
             }
             None => {
-                self.credit_owed = vec![OUTPUT, ERROR];
-                self.input_end = self.input.is_some().then_some(INPUT);
+                state.credit_owed = vec![OUTPUT, ERROR];
+                state.input_end = state.input.is_some().then_some(INPUT);
                 Standard::Pipes {
-                    input: self.input_end,
+                    input: state.input_end,
                     output: OUTPUT,
                     error: ERROR,
                 }
             }
         };
-        if let Some(input) = self.input.take() {
-            let credit = self.input_credit.clone();
-            let arrivals = self.arrivals.clone();
+        if let Some(input) = state.input.take() {
+            let credit = state.input_credit.clone();
+            let arrivals = state.arrivals.clone();
             std::thread::Builder::new()
                 .name(INPUT_THREAD.to_string())
                 .spawn(move || read_input(input, &credit, &arrivals))
@@ -667,14 +784,14 @@ mod tests {
 
     fn system() -> (LocalSystem, StopFlag) {
         let flag = StopFlag::default();
-        let mut system = LocalSystem::new(Box::new(std::io::sink()), Box::new(std::io::sink()));
+        let system = LocalSystem::new(Box::new(std::io::sink()), Box::new(std::io::sink()));
         system.stop_flag(flag.clone());
         (system, flag)
     }
 
     #[test]
     fn a_turn_past_its_deadline_is_stopped() {
-        let (mut system, flag) = system();
+        let (system, flag) = system();
         system.turn(Some(SLICE.as_nanos() as u64));
         std::thread::sleep(PAST_IT);
         assert!(flag.take());
@@ -682,12 +799,12 @@ mod tests {
 
     #[test]
     fn an_idle_past_an_ended_turns_deadline_raises_nothing() {
-        let (mut system, flag) = system();
+        let (system, flag) = system();
         system.turn(Some(LONG_SLICE.as_nanos() as u64));
         system.turn_over();
         std::thread::sleep(PAST_IT);
         assert!(!flag.take());
-        let timer = system.timer.as_ref().expect("a timer");
+        let timer = system.timer.get().expect("a timer");
         assert_eq!(timer.shared.at.load(Ordering::SeqCst), NEVER);
     }
 }

@@ -153,34 +153,34 @@ pub trait Execution: Cpu + Sized {
     fn restored(&self) -> Self;
 }
 
-/// What surrounds the kernel: its [`Host`], and what the loop asks between turns.
-pub trait System: Host {
+/// What surrounds the kernel: its [`Host`], and what the loop asks between turns, by shared reference
+/// so that the system synchronizes what it changes.
+pub trait System: Host + Sync {
     /// What a run ended by the system gives back.
     type End;
     /// How the next turn ends, for the kernel's slice.
-    fn turn(&mut self, slice_nanoseconds: Option<u64>) -> Turn;
+    fn turn(&self, slice_nanoseconds: Option<u64>) -> Turn;
     /// How far the running thread got since it was last heard from.
-    fn ran(&mut self, progress: u64);
+    fn ran(&self, progress: u64);
     /// Hands the kernel what arrived since the last exit; whether something needs the thread out of
     /// `run` before the kernel is asked what is next.
-    fn arrived(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool;
+    fn arrived(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool;
     /// No thread is in `run`: does what [`System::arrived`] asked for, and may end the run.
-    fn stopped<E: Execution>(&mut self, kernel: &mut Kernel, cpu: &mut E)
-    -> ControlFlow<Self::End>;
+    fn stopped<E: Execution>(&self, kernel: &mut Kernel, cpu: &mut E) -> ControlFlow<Self::End>;
     /// Nothing can run: waits for an event, or until the time on the monotonic clock, and hands it to
     /// the kernel.
-    fn idle(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu, until_nanoseconds: Option<u64>);
+    fn idle(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu, until_nanoseconds: Option<u64>);
     /// A slow path of the back end, apart from the kernel's warnings.
-    fn cpu_warning(&mut self, warning: Warning<'_>);
+    fn cpu_warning(&self, warning: Warning<'_>);
     /// Names the ends of the first process's descriptors 0 to 2, whose other sides the system holds:
     /// a terminal of this size when the configuration asks for one, else pipes.
-    fn standard(&mut self, terminal: Option<TerminalSize>) -> Standard;
+    fn standard(&self, terminal: Option<TerminalSize>) -> Standard;
     /// The back end's stop flag, before the first turn, for a system that gives free turns; one that
     /// counts every turn needs none.
-    fn stop_flag(&mut self, _flag: StopFlag) {}
+    fn stop_flag(&self, _flag: StopFlag) {}
     /// Serves a directory of the host as the kernel's file backend, for a bind mount of the
     /// configuration, before the first turn. A system that cannot answers `Unsupported`.
-    fn serve_directory(&mut self, _source: &std::path::Path) -> std::io::Result<()> {
+    fn serve_directory(&self, _source: &std::path::Path) -> std::io::Result<()> {
         Err(std::io::ErrorKind::Unsupported.into())
     }
 }

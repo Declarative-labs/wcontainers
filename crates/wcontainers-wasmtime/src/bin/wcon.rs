@@ -170,7 +170,7 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
         reason, count, cpu, ..
     } in container.system().warnings()
     {
-        let side = if *cpu { "back end" } else { "kernel" };
+        let side = if cpu { "back end" } else { "kernel" };
         eprintln!("wcon: {side}: {reason}: {count}");
     }
     // As a shell reports it.

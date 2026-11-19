@@ -179,7 +179,11 @@ stand-in's own exits with no kernel.
   `stopped(kernel, cpu: &mut E) -> ControlFlow<Self::End>` does that something once no thread is in `run`
   (a save, section 11, which replaces the back end with `cpu.restored()` in the copy) and may end the run
   with its own result; `idle(kernel, cpu, until)` waits for an event or the time; `cpu_warning(warning)`
-  is told each slow path of the back end, kept apart from the kernel's `Host::warn`. Implemented by the
+  is told each slow path of the back end, kept apart from the kernel's `Host::warn`. These take `&self`, and
+  `System` requires `Sync` (the owner's ruling of 2026-11-19), so that the kernel may later call them for
+  different processes at once: a system keeps what they change in atomics or behind its own lock. `Host`'s
+  calls, the kernel's interface, still take `&mut self` until the kernel track changes them; a system with a
+  lock answers them through `Mutex::get_mut`, with no locking. Implemented by the
   shipped outside (J3), by the test outside (J1), and by any user who brings their own: the outside is a
   type the user supplies, never built into the loop.
 
@@ -785,7 +789,7 @@ methods as exports, `Cpu` and `Host` as imports) is asked of the kernel track.
   (section 11), on macOS mach2, and, at build time only, blake3, cargo_metadata and cargo-lock (the build identity). The split keeps wasmtime out of every build that does not run WebAssembly
   (the kernel tests on the stand-in, a later native back end).
 - No new test crate. The kernel test crate's driver calls `drive`; its stand-in implements `Execution`; its
-  `TestHost` implements `System`, holding the per-turn work the driver loop does today (backend answers,
+  `TestHost`, behind a lock as `TestSystem`, implements `System`, holding the per-turn work the driver loop does today (backend answers,
   notices, signals and saves at the seed's moments, the repeatable clock). A cargo feature `runtime` of that
   crate puts `CpuSide<Arm64>` behind every one of its tests (layers 1 to 3). One loop, one set of tests, the
   back end chosen when the test binary is built. This is the one change outside the runtime's own crates;

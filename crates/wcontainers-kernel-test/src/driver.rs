@@ -1,6 +1,7 @@
 //! The driver loop and a host for tests: runs a program on the kernel with the stand-in CPU.
 
 use std::ops::ControlFlow;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rand::rngs::StdRng;
@@ -666,7 +667,13 @@ pub fn run_prepared(
     let started = Instant::now();
     kernel.start(&mut cpu, &mut host, &start);
     streams::begin(&mut kernel, &mut cpu, &mut host);
-    let status = match wcontainers_runtime::drive(&mut kernel, &mut cpu, &mut host) {
+    let mut system = TestSystem(Mutex::new(host));
+    let ending = wcontainers_runtime::drive(&mut kernel, &mut cpu, &mut system);
+    let mut host = system
+        .0
+        .into_inner()
+        .unwrap_or_else(PoisonError::into_inner);
+    let status = match ending {
         Ok(Ending::Finished { status }) => status,
         Ok(Ending::Ended(run)) => return Ok(run),
         // A copy cannot hand a failure back; it says what it was and ends.
@@ -718,10 +725,8 @@ impl TestHost {
     }
 }
 
-impl System for TestHost {
-    /// The run of a copy made at a save, as the process it was copied from gets it.
-    type End = Run;
-
+/// What the loop asks of the test host between turns.
+impl TestHost {
     fn turn(&mut self, slice_nanoseconds: Option<u64>) -> Turn {
         // The seed chooses where in its slice each turn ends, so a run repeats for a seed and
         // threads interleave differently under different seeds.
@@ -803,7 +808,7 @@ impl System for TestHost {
             unsafe {
                 assert_eq!(libc::pipe(ends.as_mut_ptr()), 0, "a pipe for the copy");
                 match libc::fork() {
-                    -1 => panic!("fork failed"),
+                    failed if failed < 0 => panic!("fork failed"),
                     0 => {
                         libc::close(ends[0]);
                         std::panic::set_hook(Box::new(|info| panic_in_copy(&info.to_string())));
@@ -890,6 +895,129 @@ impl System for TestHost {
             "the terminal asked for is the outside's"
         );
         self.streams.outside.standard()
+    }
+}
+
+/// The test host behind a lock, as the loop's [`System`].
+struct TestSystem(Mutex<TestHost>);
+
+impl TestSystem {
+    fn host(&self) -> MutexGuard<'_, TestHost> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn host_mut(&mut self) -> &mut TestHost {
+        self.0.get_mut().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl System for TestSystem {
+    /// The run of a copy made at a save, as the process it was copied from gets it.
+    type End = Run;
+
+    fn turn(&self, slice_nanoseconds: Option<u64>) -> Turn {
+        self.host().turn(slice_nanoseconds)
+    }
+
+    fn ran(&self, progress: u64) {
+        self.host().ran(progress);
+    }
+
+    fn arrived(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+        self.host().arrived(kernel, cpu)
+    }
+
+    fn stopped<E: Execution>(&self, kernel: &mut Kernel, cpu: &mut E) -> ControlFlow<Run> {
+        self.host().stopped(kernel, cpu)
+    }
+
+    fn idle(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu, until_nanoseconds: Option<u64>) {
+        self.host().idle(kernel, cpu, until_nanoseconds);
+    }
+
+    fn cpu_warning(&self, warning: Warning<'_>) {
+        self.host().cpu_warning(warning);
+    }
+
+    fn standard(&self, terminal: Option<TerminalSize>) -> Standard {
+        self.host().standard(terminal)
+    }
+}
+
+/// The kernel's calls, with the system held alone.
+impl Host for TestSystem {
+    fn monotonic_nanoseconds(&mut self) -> u64 {
+        self.host_mut().monotonic_nanoseconds()
+    }
+
+    fn realtime_nanoseconds(&mut self) -> u64 {
+        self.host_mut().realtime_nanoseconds()
+    }
+
+    fn random(&mut self, into: &mut [u8]) {
+        self.host_mut().random(into);
+    }
+
+    fn warn(&mut self, warning: Warning<'_>) {
+        self.host_mut().warn(warning);
+    }
+
+    fn backend_send(&mut self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError> {
+        self.host_mut().backend_send(request, message)
+    }
+
+    fn stream_send(&mut self, end: End, bytes: &[u8]) {
+        self.host_mut().stream_send(end, bytes);
+    }
+
+    fn stream_credit(&mut self, end: End, bytes: u64) {
+        self.host_mut().stream_credit(end, bytes);
+    }
+
+    fn stream_close(&mut self, end: End) {
+        self.host_mut().stream_close(end);
+    }
+
+    fn connect(
+        &mut self,
+        connection: ConnectionId,
+        address: &[u8],
+        port: u16,
+        stream: bool,
+    ) -> Result<(), HostError> {
+        self.host_mut().connect(connection, address, port, stream)
+    }
+
+    fn send(&mut self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError> {
+        self.host_mut().send(connection, bytes)
+    }
+
+    fn receive(&mut self, connection: ConnectionId, into: &mut [u8]) -> Result<usize, HostError> {
+        self.host_mut().receive(connection, into)
+    }
+
+    fn finish(&mut self, connection: ConnectionId) {
+        self.host_mut().finish(connection);
+    }
+
+    fn close(&mut self, connection: ConnectionId) {
+        self.host_mut().close(connection);
+    }
+
+    fn look_up(&mut self, request: u64, name: &str) -> Result<(), HostError> {
+        self.host_mut().look_up(request, name)
+    }
+
+    fn listen(&mut self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
+        self.host_mut().listen(listener, port)
+    }
+
+    fn accept(
+        &mut self,
+        listener: ConnectionId,
+        connection: ConnectionId,
+    ) -> Result<(), HostError> {
+        self.host_mut().accept(listener, connection)
     }
 }
 
