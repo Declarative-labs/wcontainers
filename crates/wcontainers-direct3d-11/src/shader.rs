@@ -414,6 +414,9 @@ pub struct StageVariant {
     pub linked: u32,
     /// Depth is clamped in the programs (`DepthClampInShader`), where the back end clips it alone.
     pub depth_clamp: bool,
+    /// The vertex program maps positions onto a viewport the back end would round
+    /// (`ViewportInShader`).
+    pub viewport_adjust: bool,
     /// The clip distances the programs apply themselves, where the back end has none
     /// (`ClipDistanceInShader`).
     pub clip_distances: u8,
@@ -525,6 +528,9 @@ impl StageVariant {
         }
         if self.depth_clamp {
             key.flags |= VariantFlags::DEPTH_CLAMP;
+        }
+        if self.viewport_adjust {
+            key.flags |= VariantFlags::VIEWPORT_ADJUST;
         }
         if self.clip_distances != 0 {
             key.flags |= VariantFlags::CLIP_DISTANCE;
@@ -837,6 +843,7 @@ fn answer(r: core::result::Result<Converted, ConvertError>, modules: usize) -> R
                         | HelperValue::TexelBufferView { .. }
                         | HelperValue::TexelLayout { .. }
                         | HelperValue::DepthRange
+                        | HelperValue::ViewportAdjust
                         | HelperValue::TextureLevels { .. }
                         | HelperValue::TextureSamples { .. }
                         | HelperValue::EarlyTests

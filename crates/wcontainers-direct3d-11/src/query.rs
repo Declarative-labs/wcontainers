@@ -71,6 +71,10 @@ const SET_SLOTS: u32 = 4096;
 /// The bytes of a counted stretch's sum: the occlusion counter writes a u64.
 const SUM_BYTES: u64 = size_of::<u64>() as u64;
 
+/// Counted stretches' sums one buffer holds, so a frame of many stretches makes few buffers: as
+/// many as an occlusion set's slots.
+const SUMS_PER_BUFFER: u64 = SET_SLOTS as u64;
+
 /// The bytes `GetData` writes for a query of `kind`, or none for a kind Direct3D 11 does not have.
 pub fn data_size(kind: u32) -> Option<u32> {
     const BOOL_BYTES: usize = size_of::<i32>();
@@ -136,11 +140,14 @@ fn answered_at_end(kind: u32) -> bool {
 /// An occlusion set, shared by the stretches counted into it.
 type Set<B> = Rc<Kept<B, <B as Backend>::QuerySet>>;
 
-/// A stretch of an occlusion query: a slot of a set (predicates), or the buffer the occlusion
-/// counter wrote a counted query's stretch into.
+/// A buffer of counted stretches' sums, shared by the stretches written into it.
+type Sums<B> = Rc<Kept<B, <B as Backend>::Buffer>>;
+
+/// A stretch of an occlusion query: a slot of a set (predicates), or the place in a buffer the
+/// occlusion counter wrote a counted query's stretch into.
 enum Part<B: Backend> {
     Slot { set: Set<B>, slot: u32 },
-    Sum(Rc<Kept<B, B::Buffer>>),
+    Sum { sums: Sums<B>, offset: u64 },
 }
 
 enum State<B: Backend> {
@@ -194,6 +201,8 @@ pub(crate) struct Queries<B: Backend> {
     used: bool,
     /// The set passes count into, and its next free slot.
     set: Option<(Set<B>, u32)>,
+    /// The buffer counted stretches write their sums into, and its next free offset.
+    sums: Option<(Sums<B>, u64)>,
     /// The set the open pass counts into, and the slot of its open stretch.
     pub(crate) pass_set: Option<Set<B>>,
     stretch: Option<u32>,
@@ -212,6 +221,7 @@ impl<B: Backend> Queries<B> {
             made: std::time::Instant::now(),
             used: false,
             set: None,
+            sums: None,
             pass_set: None,
             stretch: None,
             submits: 0,
@@ -503,9 +513,9 @@ impl<B: Backend> Device<B> {
         for p in parts {
             let r = match p {
                 Part::Slot { set, slot } => self.backend.read_queries(&set.handle, *slot, 1),
-                Part::Sum(sum) => self.backend.read_back(&ReadSource::Buffer {
-                    buffer: &sum.handle,
-                    offset: 0,
+                Part::Sum { sums, offset } => self.backend.read_back(&ReadSource::Buffer {
+                    buffer: &sums.handle,
+                    offset: *offset,
                     size: SUM_BYTES,
                 }),
             };
@@ -521,23 +531,35 @@ impl<B: Backend> Device<B> {
             return Ok(());
         }
         self.end_pass();
-        let sum = self.backend.create_buffer(&BufferDesc {
-            size: SUM_BYTES,
-            usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
-            intent: MapIntent::Rarely,
-        });
-        let sum = self.gpu(sum)?;
-        let id = self.id();
-        let sum = Rc::new(Kept::new(sum, id, Object::Buffer, &self.graveyard));
+        let (sums, offset) = match self.queries.sums.take() {
+            Some((sums, offset)) if offset < SUMS_PER_BUFFER * SUM_BYTES => (sums, offset),
+            _ => {
+                let made = self.backend.create_buffer(&BufferDesc {
+                    size: SUMS_PER_BUFFER * SUM_BYTES,
+                    usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+                    intent: MapIntent::Rarely,
+                });
+                let made = self.gpu(made)?;
+                let id = self.id();
+                (
+                    Rc::new(Kept::new(made, id, Object::Buffer, &self.graveyard)),
+                    0,
+                )
+            }
+        };
         let r = self
             .counter
-            .end_into(&mut self.backend, &mut self.passes, &sum.handle, 0);
+            .end_into(&mut self.backend, &mut self.passes, &sums.handle, offset);
         self.gpu(r)?;
         for q in &self.queries.counted {
             if let State::Running(parts) = &mut *q.state.borrow_mut() {
-                parts.push(Part::Sum(sum.clone()));
+                parts.push(Part::Sum {
+                    sums: sums.clone(),
+                    offset,
+                });
             }
         }
+        self.queries.sums = Some((sums, offset + SUM_BYTES));
         Ok(())
     }
 

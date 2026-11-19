@@ -132,6 +132,8 @@ on_resource = {
     ("IDXGIResource", "SetEvictionPriority"): "{ self.set_eviction_priority(evictionpriority.0); Ok(()) }",
     ("IDXGISurface", "GetDesc"): "self.get_desc_dxgi()",
     ("IDXGIResource", "GetEvictionPriority"): "Ok(DXGI_RESOURCE_PRIORITY(self.get_eviction_priority()))",
+    ("IDXGIResource", "GetSharedHandle"): "self.shared_handle()",
+    ("IDXGIResource1", "CreateSharedHandle"): "self.nt_shared_handle()",
 }
 # Direct3D 10's device on the device: calls of the same form as Direct3D 11's served by those, the
 # counters and shared resources not served, every other by a method named with a 10 after it.

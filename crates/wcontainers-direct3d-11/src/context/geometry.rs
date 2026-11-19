@@ -831,8 +831,9 @@ impl<B: Backend> Device<B> {
             .unwrap_or(&self.defaults.raster)
             .desc;
         let lines = matches!(out.topology, Topology::LineList | Topology::LineStrip);
-        if lines && (desc.multisample || desc.antialiased_lines) {
-            return not_implemented("lines drawn by the quadrilateral or alpha-antialiased rule");
+        // As the plain draw's lines (`ContextState::draw`).
+        if lines && desc.antialiased_lines && !desc.multisample {
+            return not_implemented(super::ALPHA_ANTIALIASED_LINES);
         }
         if (desc.depth_bias != 0 || desc.slope_scaled_depth_bias != 0.0)
             && !matches!(
@@ -844,6 +845,9 @@ impl<B: Backend> Device<B> {
         }
         if self.ctx.viewports.is_empty() || out.count == 0 {
             return Ok(());
+        }
+        if self.viewport_in_shader().is_some() {
+            return not_implemented(super::VIEWPORT_BEHIND_GEOMETRY);
         }
         self.open_pass();
         if !self.open_stretch() {
