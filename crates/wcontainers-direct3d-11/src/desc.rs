@@ -1,6 +1,8 @@
 //! Direct3D 11's descriptions as plain data, with the API's own numbers (as `d3d11.h` defines them), so
 //! the Windows shell and the call buffer pass them through unchanged.
 
+use wcontainers_gpu::MAX_COLOR_TARGETS;
+
 /// `D3D11_USAGE`.
 pub mod usage {
     pub const DEFAULT: u32 = 0;
@@ -200,6 +202,39 @@ impl SamplerDesc {
     }
 }
 
+/// `D3D11_BLEND`.
+pub mod blend {
+    pub const ZERO: u32 = 1;
+    pub const ONE: u32 = 2;
+    pub const SRC_COLOR: u32 = 3;
+    pub const INV_SRC_COLOR: u32 = 4;
+    pub const SRC_ALPHA: u32 = 5;
+    pub const INV_SRC_ALPHA: u32 = 6;
+    pub const DEST_ALPHA: u32 = 7;
+    pub const INV_DEST_ALPHA: u32 = 8;
+    pub const DEST_COLOR: u32 = 9;
+    pub const INV_DEST_COLOR: u32 = 10;
+    pub const SRC_ALPHA_SAT: u32 = 11;
+    pub const BLEND_FACTOR: u32 = 14;
+    pub const INV_BLEND_FACTOR: u32 = 15;
+    pub const SRC1_COLOR: u32 = 16;
+    pub const INV_SRC1_COLOR: u32 = 17;
+    pub const SRC1_ALPHA: u32 = 18;
+    pub const INV_SRC1_ALPHA: u32 = 19;
+}
+
+/// `D3D11_BLEND_OP`.
+pub mod blend_operation {
+    pub const ADD: u32 = 1;
+    pub const SUBTRACT: u32 = 2;
+    pub const REV_SUBTRACT: u32 = 3;
+    pub const MIN: u32 = 4;
+    pub const MAX: u32 = 5;
+}
+
+/// `D3D11_COLOR_WRITE_ENABLE_ALL`.
+pub const COLOR_WRITE_ENABLE_ALL: u8 = 0xf;
+
 /// `D3D11_RENDER_TARGET_BLEND_DESC`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TargetBlend {
@@ -218,7 +253,7 @@ pub struct TargetBlend {
 pub struct BlendDesc {
     pub alpha_to_coverage: bool,
     pub independent: bool,
-    pub targets: [TargetBlend; 8],
+    pub targets: [TargetBlend; MAX_COLOR_TARGETS],
 }
 
 impl BlendDesc {
@@ -227,7 +262,7 @@ impl BlendDesc {
         self.targets.iter().filter(|t| t.enable).any(|t| {
             [t.src, t.dst, t.src_alpha, t.dst_alpha]
                 .iter()
-                .any(|f| (16..=19).contains(f))
+                .any(|f| (blend::SRC1_COLOR..=blend::INV_SRC1_ALPHA).contains(f))
         })
     }
 
@@ -235,21 +270,48 @@ impl BlendDesc {
     pub fn default_state() -> Self {
         let target = TargetBlend {
             enable: false,
-            src: 2,
-            dst: 1,
-            op: 1,
-            src_alpha: 2,
-            dst_alpha: 1,
-            op_alpha: 1,
-            write_mask: 0xf,
+            src: blend::ONE,
+            dst: blend::ZERO,
+            op: blend_operation::ADD,
+            src_alpha: blend::ONE,
+            dst_alpha: blend::ZERO,
+            op_alpha: blend_operation::ADD,
+            write_mask: COLOR_WRITE_ENABLE_ALL,
         };
         BlendDesc {
             alpha_to_coverage: false,
             independent: false,
-            targets: [target; 8],
+            targets: [target; MAX_COLOR_TARGETS],
         }
     }
 }
+
+/// `D3D11_COMPARISON_FUNC`.
+pub mod comparison {
+    pub const NEVER: u32 = 1;
+    pub const LESS: u32 = 2;
+    pub const EQUAL: u32 = 3;
+    pub const LESS_EQUAL: u32 = 4;
+    pub const GREATER: u32 = 5;
+    pub const NOT_EQUAL: u32 = 6;
+    pub const GREATER_EQUAL: u32 = 7;
+    pub const ALWAYS: u32 = 8;
+}
+
+/// `D3D11_STENCIL_OP`.
+pub mod stencil_operation {
+    pub const KEEP: u32 = 1;
+    pub const ZERO: u32 = 2;
+    pub const REPLACE: u32 = 3;
+    pub const INCR_SAT: u32 = 4;
+    pub const DECR_SAT: u32 = 5;
+    pub const INVERT: u32 = 6;
+    pub const INCR: u32 = 7;
+    pub const DECR: u32 = 8;
+}
+
+/// `D3D11_DEFAULT_STENCIL_READ_MASK` and `D3D11_DEFAULT_STENCIL_WRITE_MASK`.
+pub const DEFAULT_STENCIL_MASK: u8 = u8::MAX;
 
 /// `D3D11_DEPTH_STENCILOP_DESC`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -277,22 +339,35 @@ impl DepthStencilDesc {
     /// What a depth-stencil state of `None` means.
     pub fn default_state() -> Self {
         let face = StencilFaceDesc {
-            fail: 1,
-            depth_fail: 1,
-            pass: 1,
-            func: 8,
+            fail: stencil_operation::KEEP,
+            depth_fail: stencil_operation::KEEP,
+            pass: stencil_operation::KEEP,
+            func: comparison::ALWAYS,
         };
         DepthStencilDesc {
             depth_enable: true,
             depth_write: true,
-            depth_func: 2,
+            depth_func: comparison::LESS,
             stencil_enable: false,
-            stencil_read_mask: 0xff,
-            stencil_write_mask: 0xff,
+            stencil_read_mask: DEFAULT_STENCIL_MASK,
+            stencil_write_mask: DEFAULT_STENCIL_MASK,
             front: face,
             back: face,
         }
     }
+}
+
+/// `D3D11_FILL_MODE`.
+pub mod fill_mode {
+    pub const WIREFRAME: u32 = 2;
+    pub const SOLID: u32 = 3;
+}
+
+/// `D3D11_CULL_MODE`.
+pub mod cull_mode {
+    pub const NONE: u32 = 1;
+    pub const FRONT: u32 = 2;
+    pub const BACK: u32 = 3;
 }
 
 /// `D3D11_RASTERIZER_DESC`.
@@ -314,8 +389,8 @@ impl RasterizerDesc {
     /// What a rasterizer state of `None` means.
     pub fn default_state() -> Self {
         RasterizerDesc {
-            fill: 3,
-            cull: 3,
+            fill: fill_mode::SOLID,
+            cull: cull_mode::BACK,
             depth_clip: true,
             ..Default::default()
         }
