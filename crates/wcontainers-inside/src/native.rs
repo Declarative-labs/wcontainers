@@ -369,6 +369,8 @@ impl NativeCpu {
         self.take_hardware(thread, &t.vectors.clone());
         let mut not_kept = 0;
         let exit = self.run_taken(&mut t, clock, &mut not_kept);
+        // The guest's level writes its thread pointer itself.
+        t.tpidr = TPIDR_EL0.get();
         if not_kept != 0 {
             self.slow(FLOAT_STATUS_NOT_KEPT, not_kept, t.state.pc);
         }
