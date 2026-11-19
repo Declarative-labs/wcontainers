@@ -111,7 +111,11 @@ Measured (M5 Max, all on the Mac):
   guest-cpu and the translator with the native feature pass on the rented ARM64 machine (n4r7/suite-arm.log), and the
   carry test there too (n4r7-arm64.log); clippy with warnings denied for arm64 (with and without its default features)
   and the hypervisor crate passes there; the literal check exits 0 on the Mac, no marks, the baseline 8148 lines as at
-  the run's start. The Mac suites: below.
+  the run's start. The Mac suites (n4r7/suite-mac.log, load 4 to 8, exit 0): floor every case passing; exits 4 programs
+  both modes; interrupts 3498 forced interrupts at 3 look-aheads, 0 failed; kernel alike at none and 256 with the
+  reference, the benchmark set's count agreeing (blocks' KNOWN FAILURE on the WebAssembly side only, as before); busybox
+  56 commands with the reference's output, exit code and files; carry and the libraries pass. The differential test at
+  look-ahead none: 32,507 cases, 0 failing (seed 0x6e34720702, n4r7/native-none.log).
 
 What N4 still needs, in order:
 1. The compute part of the bar: +47.5% against +21.2% (quiet machine). Where the rest goes, by the instruction counts:
