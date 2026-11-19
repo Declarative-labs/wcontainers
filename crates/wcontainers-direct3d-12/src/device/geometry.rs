@@ -40,6 +40,44 @@ pub(super) struct Geometry<B: Backend> {
     /// Where a geometry shader or stream output follows the domain stage, which then runs as
     /// compute work too: the geometry shader's helper block when there is one.
     pub after_domain: Option<Option<Helpers>>,
+    /// The last stage writes a layer (`SV_RenderTargetArrayIndex`) and a viewport
+    /// (`SV_ViewportArrayIndex`): the draw after it is drawn once per layer of the bound views
+    /// (`LayerSplit`) and per viewport (`MultiViewportSplit`).
+    pub selects: Selects,
+}
+
+/// Whether a geometry stage writes a layer and a viewport, and the bytes of the pass-through
+/// program's helper block naming the run (`stage::PASSTHROUGH_HELPERS`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Selects {
+    pub layer: bool,
+    pub viewport: bool,
+    pub block: u32,
+}
+
+impl Selects {
+    fn of(r: &wcontainers_gpu::Reflection, passthrough: Option<&ShaderModule>) -> Self {
+        let writes = |v| r.outputs.iter().any(|o| o.system == Some(v));
+        Selects {
+            layer: writes(wcontainers_gpu::SystemValue::RenderTargetArrayIndex),
+            viewport: writes(wcontainers_gpu::SystemValue::ViewportArrayIndex),
+            block: passthrough.map_or(0, run_block_size),
+        }
+    }
+}
+
+/// The size of the uniform block at the vertex stage's helper binding of `module`, as its
+/// layout pads it; zero without one.
+fn run_block_size(module: &ShaderModule) -> u32 {
+    let m = &module.module;
+    let binding = naga::ResourceBinding {
+        group: HELPER_SET,
+        binding: wcontainers_gpu::helper_binding(ShaderStage::Vertex),
+    };
+    m.global_variables
+        .iter()
+        .find(|(_, v)| v.space == naga::AddressSpace::Uniform && v.binding == Some(binding))
+        .map_or(0, |(_, v)| m.types[v.ty].inner.size(m.to_ctx()))
 }
 
 /// A pipeline's stages as made: what draws need, the converted stages whose bindings the
@@ -177,10 +215,13 @@ impl<B: Backend> Device<B> {
             ));
             stage_error(e)
         })?;
-        if stages.selects() {
+        let selects = last
+            .map(|s| Selects::of(&s.reflection, stages.passthrough()))
+            .unwrap_or_default();
+        if stages.selects() != (selects.layer || selects.viewport) {
             stages.destroy(&mut self.backend);
-            return Err(Error::NotImplemented(
-                "a geometry shader choosing a layer or viewport",
+            return Err(Error::Invalid(
+                "the stage helper and the geometry shader disagree on its layer and viewport",
             ));
         }
         let layout = match (stages.vertex_layout(), tessellated) {
@@ -221,6 +262,7 @@ impl<B: Backend> Device<B> {
                 domain: domain.as_ref().map(Helpers::of),
                 after_domain: (tessellated && (late.is_some() || so.is_some()))
                     .then(|| late.as_ref().map(Helpers::of)),
+                selects,
             },
             vertex,
             shader,
@@ -361,7 +403,7 @@ impl<B: Backend> Replay<B> {
                 &fetch.inputs,
                 StageSet::COMPUTE,
                 None,
-                None,
+                Vec::new(),
             )?);
         }
         let mut geometry_sets = d
@@ -370,8 +412,12 @@ impl<B: Backend> Replay<B> {
         if middle_helpers.size != 0 {
             let block = d.stage_block(&middle_helpers, middle)?;
             let compute = wcontainers_gpu::helper_binding(ShaderStage::Compute);
-            geometry_sets[HELPER_SET as usize] =
-                Some(d.helper_blocks(&[(compute, StageSet::COMPUTE, block)], &[], &[], None)?);
+            geometry_sets[HELPER_SET as usize] = Some(d.helper_blocks(
+                &[(compute, StageSet::COMPUTE, block)],
+                &[],
+                &[],
+                Vec::new(),
+            )?);
         }
         // The sets of the domain stage run as compute and of a geometry stage after it.
         let compute = wcontainers_gpu::helper_binding(ShaderStage::Compute);
@@ -388,7 +434,7 @@ impl<B: Backend> Replay<B> {
                         &[(vertex, StageSet::COMPUTE, block)],
                         &[],
                         &[],
-                        None,
+                        Vec::new(),
                     )?);
                 }
                 let mut late_sets = Default::default();
@@ -409,7 +455,7 @@ impl<B: Backend> Replay<B> {
                             &[(compute, StageSet::COMPUTE, block)],
                             &[],
                             &[],
-                            None,
+                            Vec::new(),
                         )?);
                     }
                 }
@@ -483,7 +529,10 @@ impl<B: Backend> Replay<B> {
                     dxgi::R32_UINT => IndexFormat::U32,
                     _ => return Err(Error::Invalid("index format")),
                 };
-                let size = d.resources[id.0 as usize].desc.width.next_multiple_of(4);
+                let size = d.resources[id.0 as usize]
+                    .desc
+                    .width
+                    .next_multiple_of(STORAGE_WORD);
                 Some((d.buffer(id)?.0.clone(), size, offset, format))
             }
             (DrawRange::Indexed { .. }, None) => {
@@ -592,14 +641,124 @@ impl<B: Backend> Replay<B> {
                 )
             })
             .collect();
+        let selects = d.pipelines[pid.0 as usize]
+            .render
+            .as_ref()
+            .and_then(|r| r.geometry.as_ref())
+            .map_or(Selects::default(), |g| g.selects);
+        if selects.layer || selects.viewport {
+            self.draw_runs(d, pid, &out, bound_depth, pixel_sets, &reads, selects)?;
+            return Ok(false);
+        }
         if !blocks.is_empty() || !reads.is_empty() {
-            pixel_sets[HELPER_SET as usize] = Some(d.helper_blocks(&blocks, &reads, &[], None)?);
+            pixel_sets[HELPER_SET as usize] =
+                Some(d.helper_blocks(&blocks, &reads, &[], Vec::new())?);
         }
         if !self.pass_open {
             self.open_pass(d, pid)?;
         }
-        self.draw_output(d, pid, &out, bound_depth, pixel_sets);
+        self.draw_output(d, pid, &out, bound_depth, &pixel_sets, 0);
         Ok(false)
+    }
+
+    /// The draw after a geometry stage writing a layer or a viewport, once per layer of the
+    /// bound target views (`LayerSplit`) and per viewport (`MultiViewportSplit`): each run draws
+    /// into that layer's views through that viewport, its pass-through program keeping the
+    /// primitives that name the run (`stage::PASSTHROUGH_HELPERS`) and its pixel program reading
+    /// the run's layer and viewport. Primitives naming a layer or viewport past those bound are
+    /// not drawn.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_runs(
+        &mut self,
+        d: &mut Device<B>,
+        pid: PipelineId,
+        out: &FinalDraw<B>,
+        bound_depth: Option<Format>,
+        mut sets: [Option<B::BindingSet>; wcontainers_gpu::MAX_BINDING_SETS],
+        reads: &[(u32, StageSet, BufferRange<&B::Buffer>)],
+        selects: Selects,
+    ) -> Result<(), Error> {
+        // Each run is a pass of its own, which a query would have to span.
+        if self.query.is_some() || self.counted.is_some() || self.statistics.is_some() {
+            return Err(Error::NotImplemented(
+                "a draw split per layer or viewport while a query runs",
+            ));
+        }
+        let layers = match selects.layer {
+            true => self.target_layers(d)?,
+            false => 1,
+        };
+        let viewports = match selects.viewport {
+            true => self.viewports.len().max(1) as u32,
+            false => 1,
+        };
+        if selects.layer {
+            d.backend.slow_paths().hit(SlowPath::LayerSplit);
+        }
+        if selects.viewport {
+            d.backend.slow_paths().hit(SlowPath::MultiViewportSplit);
+        }
+        // Clears waiting for the views are of every layer; each run's pass loads its own.
+        self.settle(d)?;
+        let pixel = d.pipelines[pid.0 as usize].helpers.clone();
+        for layer in 0..layers {
+            for viewport in 0..viewports {
+                let run = [layer, viewport];
+                let mut blocks = vec![(
+                    wcontainers_gpu::helper_binding(ShaderStage::Vertex),
+                    StageSet::VERTEX,
+                    passthrough_block(run, selects.block),
+                )];
+                if pixel.size != 0 {
+                    blocks.push((
+                        wcontainers_gpu::helper_binding(ShaderStage::Fragment),
+                        StageSet::FRAGMENT,
+                        d.run_block(&pixel, bind::PIXEL, run)?,
+                    ));
+                }
+                sets[HELPER_SET as usize] =
+                    Some(d.helper_blocks(&blocks, reads, &[], Vec::new())?);
+                self.end_pass(d)?;
+                self.pass_layer = layer;
+                let opened = self.open_pass(d, pid);
+                self.pass_layer = 0;
+                opened?;
+                self.draw_output(d, pid, out, bound_depth, &sets, viewport as usize);
+            }
+        }
+        // The next draw opens a pass on the views' first layer again.
+        self.end_pass(d)
+    }
+
+    /// The layers of the bound target views, which a layered draw's runs cover.
+    fn target_layers(&self, d: &Device<B>) -> Result<u32, Error> {
+        let views = self.colors.iter().filter_map(|c| match c {
+            Descriptor::RenderTarget(v) => Some(v),
+            _ => None,
+        });
+        let depth = match &self.depth {
+            Some(Descriptor::DepthStencil { view, .. }) => Some(view),
+            _ => None,
+        };
+        let mut layers = None;
+        for v in views.chain(depth) {
+            let three_d = matches!(
+                d.resources.get(v.resource.0 as usize).map(|r| &r.storage),
+                Some(Storage::Texture { desc, .. }) if desc.dimension == TextureDimension::D3
+            );
+            if three_d {
+                return Err(Error::NotImplemented(
+                    "a draw choosing the slice of a 3D texture's target view",
+                ));
+            }
+            if layers.is_some_and(|l| l != v.layers) {
+                return Err(Error::NotImplemented(
+                    "a draw choosing a layer of target views of different layer counts",
+                ));
+            }
+            layers = Some(v.layers);
+        }
+        Ok(layers.unwrap_or(1).max(1))
     }
 
     /// The stream output targets of a draw: the bound buffers and a scratch buffer holding their
@@ -700,7 +859,8 @@ impl<B: Backend> Replay<B> {
         pid: PipelineId,
         out: &FinalDraw<B>,
         bound_depth: Option<Format>,
-        sets: [Option<B::BindingSet>; wcontainers_gpu::MAX_BINDING_SETS],
+        sets: &[Option<B::BindingSet>; wcontainers_gpu::MAX_BINDING_SETS],
+        viewport: usize,
     ) {
         let p = &d.pipelines[pid.0 as usize];
         let r = p.render.as_ref().expect("a graphics pipeline");
@@ -751,13 +911,37 @@ impl<B: Backend> Replay<B> {
             }),
             topology: out.topology,
             restart: out.index_offset.is_some() && out.tessellated.is_none(),
-            // The helper refuses geometry shaders choosing a viewport.
-            viewports: &self.viewports[..self.viewports.len().min(1)],
-            scissors: &self.scissors[..self.scissors.len().min(1)],
+            // A run of a draw split per viewport draws through that viewport and its scissor.
+            viewports: self
+                .viewports
+                .get(viewport..viewport + 1)
+                .unwrap_or(&self.viewports[..self.viewports.len().min(1)]),
+            scissors: self
+                .scissors
+                .get(viewport..viewport + 1)
+                .unwrap_or(&self.scissors[..self.scissors.len().min(1)]),
             blend_constant: self.blend_constant,
             stencil_reference: [self.stencil_reference; 2],
             immediates: &[],
             range,
         });
     }
+}
+
+/// The pass-through program's helper block of `size` bytes for the run `run` (layer, viewport) of
+/// a draw split per layer or viewport.
+fn passthrough_block(run: [u32; 2], size: u32) -> Vec<u8> {
+    use wcontainers_shaders::stage::PASSTHROUGH_HELPERS;
+    let word = size_of::<u32>();
+    let mut block = vec![0u8; size as usize];
+    for slot in PASSTHROUGH_HELPERS {
+        let value = match slot.value {
+            HelperValue::Layer => run[0],
+            HelperValue::Viewport => run[1],
+            other => unreachable!("the pass-through reads its run alone, not {other:?}"),
+        };
+        let at = slot.offset as usize;
+        block[at..at + word].copy_from_slice(&value.to_le_bytes());
+    }
+    block
 }

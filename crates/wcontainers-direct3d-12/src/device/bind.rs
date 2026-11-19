@@ -775,6 +775,14 @@ impl<B: Backend> Device<B> {
             false => offset - offset % step,
         };
         let rest = offset - start;
+        // The converter gives an element stride, and adds the rest, only to the storage buffers
+        // of unordered access slots; one of a shader resource slot would read from `start`.
+        if rest != 0 && b.binding.stride == 0 {
+            return Err(Error::NotImplemented(
+                "a raw or structured shader resource view at an offset the back end cannot bind \
+                 (StorageOffset of shader resource slots)",
+            ));
+        }
         if !rest.is_multiple_of(stride) {
             return Err(Error::NotImplemented(
                 "a buffer view starting inside one of the program's elements",
@@ -853,7 +861,9 @@ impl<B: Backend> Device<B> {
         let align = u64::from(self.backend.caps().limits.min_storage_offset_alignment);
         let start = offset - offset % align;
         let rest = offset - start;
-        let bound = (rest + size).max(4).min(width.next_multiple_of(4) - start);
+        let bound = (rest + size)
+            .max(STORAGE_WORD)
+            .min(width.next_multiple_of(STORAGE_WORD) - start);
         self.backend
             .slow_paths()
             .hit(SlowPath::TexelBufferAsStorage);
@@ -884,7 +894,12 @@ impl<B: Backend> Device<B> {
                 "a storage range at an offset the back end cannot bind",
             ));
         }
-        if offset + size > self.resources[id.0 as usize].desc.width.next_multiple_of(4) {
+        if offset + size
+            > self.resources[id.0 as usize]
+                .desc
+                .width
+                .next_multiple_of(STORAGE_WORD)
+        {
             return Err(Error::Invalid("a buffer view past its buffer's end"));
         }
         if writable && self.resources[id.0 as usize].heap == HeapType::Shared {
@@ -897,7 +912,7 @@ impl<B: Backend> Device<B> {
         Ok(Held::Storage {
             buffer: self.buffer(id)?.0.clone(),
             offset,
-            size: size.next_multiple_of(4),
+            size: size.next_multiple_of(STORAGE_WORD),
             writable,
         })
     }

@@ -310,7 +310,7 @@ impl<B: Backend> Device<B> {
     /// A buffer of the front's own for the length of one replay.
     pub(super) fn scratch(&mut self, size: u64, usage: BufferUsage) -> Result<B::Buffer, Error> {
         let buffer = self.backend.create_buffer(&BufferDesc {
-            size: size.next_multiple_of(4),
+            size: size.next_multiple_of(STORAGE_WORD),
             usage,
             intent: MapIntent::Rarely,
         })?;
@@ -550,7 +550,7 @@ impl<B: Backend> Device<B> {
             Own::Predicate,
             &[(offset / 4) as u32, u32::from(op == 0), count],
             &[
-                (32, &buffer, width.next_multiple_of(4), false),
+                (32, &buffer, width.next_multiple_of(STORAGE_WORD), false),
                 (160, &records, bytes.len() as u64, true),
             ],
             count,
