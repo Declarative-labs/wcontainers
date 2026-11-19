@@ -55,13 +55,16 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   for the translator runner's own `Machine` the plan's table cites). The literal check is tried in a scratch
   merge, not merged (Departures; "For the orchestrator"). J5's bar is run from a clean build on 798f07ff, the
   code as it stands, and the whole LTP comparison after it (section "J5 run 2").
-- J5 stands at: the kernel test crate's verdicts equal the stand-in's at full, none and bounded but for the
-  tests listed with reasons (section "J5 run 2"); the surface tests of the file backend and the network pass
-  in the owned suite; the whole LTP comparison is running detached and not yet read. Next: when scratch
-  j5/after.done exists, read j5/ltp/whole-compare.txt, record it, and look at every test whose verdict
-  differs (a back end slower than the stand-in can time out where the stand-in does not: both run with the
-  harness's default limit of 900 s). Then delete the scratch worktree j5/tree (`git worktree remove --force`;
-  its target is 54 GB). The literal check waits for the orchestrator's answer.
+- J5 run 3 (2026-11-19): origin/phase-1 brought the streams track's ends (eb515b7a) and is merged
+  (d4bfedfe; the driver's conflicts settled, the local system's output and error made ends). Then the brief's
+  later sections still open here are built, each its own commit: standard input and the terminal on the
+  local system (9714527c: `System::standard`, `LocalSystem::input`, `process.terminal` and
+  `process.consoleSize` honoured, wcon's `--interactive` and `--tty`), the `Config` names (9f8ac2b6), AGENTS.md
+  at the repository root (dae93301), the plan corrected (c16d0e00). The stale LTP run of run 2 (on 798f07ff,
+  664 of 2,694 stand-in tests done) was stopped, since the merge changed the kernel under it. J5's bar is run
+  again from a clean build at c16d0e00 (section "J5 run 3").
+- J5 stands at: see section "J5 run 3" for the bar's state. The literal check still waits for the
+  orchestrator's answer (under "For the orchestrator"); a scratch trial merge passes after `init`.
 
 ## For the orchestrator
 
@@ -81,7 +84,19 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   asked of the kernel track; image.rs 72), 88 in wcontainers-wasmtime, and 53 in the kernel test crate's
   driver.rs. Merge phase-1-literals into main (or phase-1) and init there, and this track adopts it by
   merging that, as the document says; or say to merge it directly regardless.
-- J5 run 2: the whole LTP comparison is running, started by this track when the bar ended (scratch
+- The literal check (J5 run 3): the same question, unanswered by this run's task, so it is still not merged
+  (the streams track, now on phase-1, waited for the same reason). Tried again in a scratch merge of c16d0e00
+  with origin/phase-1-literals at 7668c010 (scratch worktree j5run3/lit, never pushed, removed after; logs
+  j5run3/lit-check-before.txt, lit-init.txt, lit-check-after.txt): before `init` the check failed with 137
+  `+` lines (76 code, 56 restated, 3 redefinition, 2 role) and 134 `-` lines; `init` proposed nothing; after
+  it `check` exits 0. Its baseline then has 342 lines in wcontainers-runtime, 93 in wcontainers-wasmtime and
+  49 in the kernel test crate's driver.rs.
+- J5 run 3: run 2's LTP run was stopped (its code is no longer this branch's); the whole LTP comparison is
+  started again by scratch `j5run3/all.sh` after the whole-crate bar, on j5run3/tree at c16d0e00 (results
+  j5run3/ltp/whole-*.tsv, whole-compare.txt; j5run3/after.done marks its end). If it is stopped,
+  `j5run3/ltp.sh whole` continues where its results files left off. Delete the worktree j5run3/tree after
+  (`git worktree remove --force`; its target is about 54 GB).
+- J5 run 2 (stopped in run 3): the whole LTP comparison was running, started by this track when the bar ended (scratch
   `j5/after.sh`, which calls `j5/ltp.sh whole`; started 23:34 on 2026-11-18, detached, on the scratch worktree
   j5/tree at 798f07ff). At 00:41 the stand-in half had 664 of 2,694 tests (the fs group's tests that run to
   the 900 s limit take most of it); the back end's half follows and is expected (not measured) to take about
@@ -156,7 +171,10 @@ in a free turn carrying the host thread's CPU time spent in the guest's code, wh
 place of the monotonic difference. This is the kernel's interface (and touches the progress unit the owner is
 ruling on), so nothing is built here.
 
-Standard input: by the orchestrator's ruling of 2026-11-18 the owner is settling one general way for a stream
+Standard input: settled. The streams track's ends (docs/streams.md) came with origin/phase-1 in J5 run 3 and
+the local system uses them. What follows is the record of what was asked.
+
+Standard input (the record): by the orchestrator's ruling of 2026-11-18 the owner is settling one general way for a stream
 to leave a kernel (an end outside carrying data, a window for flow control, and closed), and the kernel track
 builds standard input, output and the terminal on it. The request below is kept as the record of what was
 asked; it is not an interim design. What was asked (the brief: settle before J3 fixes the input and output
@@ -182,6 +200,40 @@ the capability sets, the resource limits, no_new_privs, a seccomp filter, sysctl
 leave a default mount out), the domain name, and the per-process values (`oomScoreAdj`, `ioPriority`,
 `scheduler`, `execCPUAffinity`, `personality`, `timeOffsets`); and the address-space size and the memory
 size the guest is told (plan section 8), which `Machine` holds once the kernel takes them.
+
+## J5 run 3 (2026-11-19; this Mac, Apple M5 Max, 18 cores, 128 GiB; other tracks running)
+
+Built (each its own commit; the owned suite, the stand-in's and the back end's streams tests pass, below):
+- The merge of origin/phase-1 (d4bfedfe): the kernel test driver's conflicts settled (its runs go through the
+  runtime's loop as before; the streams track's `streams::begin` after the start, `streams::act` after every
+  exit and when idle, `streams::finish` at the end, all inside the driver's `System` hooks), and the local
+  system's output and error became ends: `System::standard` names the ends of descriptors 0 to 2 when the
+  container is made; the local system gives each output end all the credit it will ever take at the first
+  exit (it writes everything as it comes), and lets go of each end the kernel closes.
+- Standard input and the terminal (9714527c): `LocalSystem::input(reader)` (as `docker run --interactive`) is
+  read on a thread of its own, never more than the kernel's credit, each piece an arrival that raises the
+  stop flag and wakes `idle` (the network's arrival queue moved to its own module, src/arrivals.rs, for both);
+  its end of file lets go of a pipe's end and leaves a terminal's end open; a read error is counted and
+  warned ("standard input not read"). `process.terminal` and `process.consoleSize` are honoured (0 by 0
+  without a size, as `docker run --tty` gives a client with no terminal; a size past 65,535 is refused by
+  name, `process.consoleSize.width` or `.height`). wcon gained `--interactive` and `--tty`.
+- Tests: surface.rs `standard_input_matches_docker_interactive` (100,000 lines, more than a pipe holds, read
+  with `read` and `sort`; and the same program without input against `docker run` without `-i`),
+  `a_terminal_matches_docker_tty` (tty, size, `-t 0`, the terminal's file kind, error on the one stream, the
+  status), `the_command_line_program_passes_its_input`; refused.rs's `process_terminal` and
+  `process_console_size` refusals became `process_console_size_too_wide`; the command line program's refusal
+  test now uses `process.user.uid`.
+- Renames (9f8ac2b6): `RuntimeSettings` to `RuntimeConfig`, `TranslatorSettings` to `TranslatorConfig`
+  (the `Executor`'s associated type too), `translator_settings` to `translator_config`.
+- AGENTS.md at the repository root with the owner's conventions, `Config` applied (dae93301).
+
+Tests run before the commits (this Mac, load 46 to 99; logs in scratch j5run3): with the back end at full,
+the kernel test crate's streams (19) and hello (1) pass (merge-streams-full.log); on the stand-in, streams'
+19 pass; the owned crates' lib tests (15), surface (16 then 19, 1 ignored as before) and refused (76) pass.
+
+J5's bar from a clean build (a new scratch worktree j5run3/tree at c16d0e00, its own empty target; scratch
+`j5run3/all.sh`: `final.sh`, the whole kernel test crate on the stand-in and at full, none and bounded,
+then `ltp.sh whole`), started at 01:00 on 2026-11-19 at load about 50: results below when read.
 
 ## J5 run 2 (2026-11-18; this Mac, Apple M5 Max, 18 cores, 128 GiB; other tracks running)
 
@@ -1715,11 +1767,21 @@ array of slots in microseconds.
   would break the check at this track's next merge of origin/phase-1 (under "For the orchestrator"). Tried
   in a scratch merge instead; it passes there after `init`. No literal of the fix list was fixed in this run,
   so that the bar's whole-suite runs (about five hours) are on the code as pushed.
+- `System` gained `standard` (J5 run 3), with no default: every system holds the other sides of the ends it
+  names. The test driver's asserts that the terminal asked for is its outside's (it starts its kernels
+  itself, so it is never asked). A terminal's resizing has no surface yet (the local system has no source of
+  a new size); `ExecutionConfig` with `ThreadOrdering` and `ReplayDeterminism` is not built: only serial
+  turns exist and the progress count is the translator track's, so the translator's configuration is still
+  given to `Runtime::container` alone (plan section 20).
+- The literal check is still not merged in J5 run 3, for the same reason (under "For the orchestrator"); no
+  literal of the fix list was fixed, so that the bar is on the code as pushed.
 - `System` gained `serve_directory` (with a default that answers `Unsupported`, so the kernel test driver did
   not change) and `LocalSystem` gained `publish`: the surface had no way to name a host directory or a
   published port. Names suggested, the owner's (plan section 20).
 
 ## Dependencies
+
+J5 run 3 added none.
 
 Added in J5 run 1 to wcontainers-runtime (licences read from the registry's manifests on 2026-11-18), for the
 local system's file backend and network: fuse-abi 0.2.0 (MIT OR Apache-2.0; the kernel's, Linux's FUSE
