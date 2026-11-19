@@ -4,6 +4,9 @@
 
 use alloc::vec::Vec;
 
+/// The reason [`SlowPath::StorageOffsetInShader`] shows.
+const STORAGE_OFFSET_IN_SHADER: &str = "storage view's offset added in the shader";
+
 /// Why something took the slow way. A variant whose description starts "Refused" names a valid request
 /// that failed because no exact route exists; it is counted and warned the same way. Serialised as its
 /// number (the shaders crate's cache), so a new reason goes at the end and none moves.
@@ -275,11 +278,14 @@ pub enum SlowPath {
     /// knows: one reading past a stream's end is skipped whole by the back end, where the API reads
     /// zeros (a listed loss; counted at each such draw, as any of them may).
     IndirectFetchPastEnd,
+    /// A storage buffer bound from below its view's start, with the rest added to every address in
+    /// the program (`VariantFlags::STORAGE_OFFSET`).
+    StorageOffsetInShader,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 106] = [
+    pub const ALL: [SlowPath; 107] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -386,6 +392,7 @@ impl SlowPath {
         SlowPath::AtomicExchangeLoop,
         SlowPath::SequentialBuffersCopied,
         SlowPath::IndirectFetchPastEnd,
+        SlowPath::StorageOffsetInShader,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -517,6 +524,7 @@ impl SlowPath {
             SlowPath::IndirectFetchPastEnd => {
                 "indirect draw skipped whole if it fetches past a vertex buffer's end"
             }
+            SlowPath::StorageOffsetInShader => STORAGE_OFFSET_IN_SHADER,
         }
     }
 }
@@ -601,7 +609,8 @@ mod tests {
             PrimitiveIdAsGeometry RowsRepacked ResolveInStoredFormat ResolveByDraw \
             PatternClearCopied ConstantBufferGrown IntegerClearByDraw StencilWrittenByDraw \
             PresentConverted CaptureExpanded CopyWithinTexture PixelInvocationsCounted \
-            SwizzleInShader AtomicExchangeLoop SequentialBuffersCopied IndirectFetchPastEnd";
+            SwizzleInShader AtomicExchangeLoop SequentialBuffersCopied IndirectFetchPastEnd \
+            StorageOffsetInShader";
         let held: Vec<_> = HELD.split_whitespace().collect();
         assert!(held.len() <= SlowPath::ALL.len());
         for (i, name) in held.iter().enumerate() {

@@ -61,6 +61,8 @@ enum Form {
 pub(super) const VERTEX: u32 = 1;
 pub(super) const GEOMETRY: u32 = 4;
 pub(super) const PIXEL: u32 = 5;
+/// `D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY`.
+const SRV_DIMENSION_2D_MS_ARRAY: u32 = 7;
 
 /// Whether the program of binding `b`'s stage is converted again for what is bound to it:
 /// compute and pixel stages, and vertex stages drawn directly (run by the back end's vertex
@@ -775,14 +777,6 @@ impl<B: Backend> Device<B> {
             false => offset - offset % step,
         };
         let rest = offset - start;
-        // The converter gives an element stride, and adds the rest, only to the storage buffers
-        // of unordered access slots; one of a shader resource slot would read from `start`.
-        if rest != 0 && b.binding.stride == 0 {
-            return Err(Error::NotImplemented(
-                "a raw or structured shader resource view at an offset the back end cannot bind \
-                 (StorageOffset of shader resource slots)",
-            ));
-        }
         if !rest.is_multiple_of(stride) {
             return Err(Error::NotImplemented(
                 "a buffer view starting inside one of the program's elements",
@@ -795,12 +789,16 @@ impl<B: Backend> Device<B> {
         self.bound_helpers
             .push((b.visibility, value, pull::words(&[rest as u32])));
         if rest != 0 {
+            self.backend
+                .slow_paths()
+                .hit(SlowPath::StorageOffsetInShader);
             self.bound_offsets.push(b.visibility);
         }
         self.storage_range(id, start, rest + size, writable)
     }
 
-    /// A raw or structured buffer view, read or written as a storage buffer.
+    /// A raw or structured buffer view, read or written as a storage buffer. A typed view the
+    /// program declares raw or structured is its elements' bytes, as the hardware addresses them.
     fn buffer_view(
         &mut self,
         v: &ResourceView,
@@ -810,11 +808,7 @@ impl<B: Backend> Device<B> {
         let raw = v.flags & 1 != 0;
         let element = match (raw, v.stride) {
             (true, _) => 4,
-            (false, 0) => {
-                return Err(Error::NotImplemented(
-                    "typed buffer views bound as storage buffers",
-                ));
-            }
+            (false, 0) => u64::from(dxgi(v.format)?.block().2),
             (false, stride) => u64::from(stride),
         };
         if !matches!(
@@ -1153,6 +1147,15 @@ impl<B: Backend> Device<B> {
                 "a texture read as another type than its view's format",
             ));
         }
+        // Direct3D leaves a view of another dimension than the declaration undefined, and the
+        // back end refuses the binding; a multisampled array is read as a texture per layer.
+        if v.dimension != SRV_DIMENSION_2D_MS_ARRAY
+            && b.shape.is_some_and(|s| s.dimension != dimension)
+        {
+            return Err(Error::NotImplemented(
+                "a shader resource view of another dimension than the program declares",
+            ));
+        }
         let desc = TextureViewDesc {
             format,
             dimension,
@@ -1162,7 +1165,7 @@ impl<B: Backend> Device<B> {
             layer_count,
             stencil,
         };
-        if v.dimension != 7 {
+        if v.dimension != SRV_DIMENSION_2D_MS_ARRAY {
             return self.texture_view(resource, desc);
         }
         if layer_count != 1 && !matches!(b.visibility, 0 | PIXEL) {

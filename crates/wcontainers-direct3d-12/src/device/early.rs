@@ -13,6 +13,9 @@ use wcontainers_gpu::{
     FrontFace, StencilOp,
 };
 
+/// Vertices of one triangle.
+const TRIANGLE_VERTICES: u32 = 3;
+
 /// The texture bound as the stencil a program tests early where the view's format has none, of
 /// the depth view's sample count `samples`; the program then never reads it (its stencil test is
 /// off).
@@ -198,10 +201,10 @@ impl<B: Backend> Replay<B> {
         let (per, step) = match (self.topology, indexed) {
             (Topology::PointList, _) => (1, 1),
             (Topology::LineList, _) => (2, 2),
-            (Topology::TriangleList, _) => (3, 3),
+            (Topology::TriangleList, _) => (TRIANGLE_VERTICES, TRIANGLE_VERTICES),
             // An indexed strip's restart index cuts it where a primitive alone would not.
             (Topology::LineStrip, false) => (2, 1),
-            (Topology::TriangleStrip, false) => (3, 1),
+            (Topology::TriangleStrip, false) => (TRIANGLE_VERTICES, 1),
             _ => {
                 return Err(Error::NotImplemented(
                     "early depth-stencil tests per primitive of an indexed strip",
