@@ -117,6 +117,9 @@ pub struct GlslSettings {
     pub noperspective: bool,
 }
 
+/// Clip and cull distances together: what WEBGL_clip_cull_distance guarantees, Direct3D's limit.
+pub const CLIP_AND_CULL_DISTANCES: u32 = 8;
+
 /// The directive of NV_shader_noperspective_interpolation.
 pub const NOPERSPECTIVE_EXTENSION: &str = "GL_NV_shader_noperspective_interpolation";
 
@@ -1554,8 +1557,7 @@ pub fn write(module: &ShaderModule, settings: GlslSettings) -> Result<ShaderText
     let cull_distances = results(module)
         .find(|(b, _)| *b == naga::Binding::BuiltIn(naga::BuiltIn::CullDistance))
         .map_or(0, |(_, n)| n);
-    // WEBGL_clip_cull_distance guarantees eight of each and eight together, Direct3D's limit.
-    if clip_distances + cull_distances > 8 {
+    if clip_distances + cull_distances > CLIP_AND_CULL_DISTANCES {
         return Err(GpuError::Invalid(
             "webgl: more than eight clip and cull distances",
         ));
