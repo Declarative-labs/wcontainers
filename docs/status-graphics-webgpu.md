@@ -213,7 +213,7 @@ Run 23 = G2c run 5, 2026-11-18:
   the commit right after it (2cc8ad76), as docs/literals.md step 4 says for a merge bringing new
   rules. Init proposed no `generated` lines. This crate's baseline lines: 239 at adoption (16 of
   them new under rules 5 to 7: restated values in tests, three WGSL texts in packed.rs, four
-  lines of frames/run), 214 after this run's sweep (25 fixed; a 23rd line, -webgl's `WINDOW` in its tests/suite.rs, left the baseline because this crate's same-named copy was renamed). The check's list of changes that
+  lines of frames/run), 214 after this run's sweep (25 fixed; a 26th line, -webgl's `WINDOW` in its tests/suite.rs, left the baseline because this crate's same-named copy was renamed). The check's list of changes that
   could add lines, at 2cc8ad76 (10): 4bcacbf5 the start (the -webgl merge), 2cc8ad76 the init
   after the baseline arrived by a merge, c33381de the start, 1e337706 the init after the baseline
   arrived by a merge, 68214b2e the start, and 89f88281, 7119e3f3, c3bf56d4, 31ec396f, 0f187563 new
@@ -244,6 +244,15 @@ Run 23 = G2c run 5, 2026-11-18:
   22), so a browser's timestamp step is not fixed; the check's 10 and 20 ms stretches still read
   9.830 and 19.530 ms. Every page got an adapter at its first launch, so Chrome's relaunch is
   still not seen working.
+- Frame time: chocolate-doom's breakdown repeated after the merges (Measurements, run 23); the
+  other two programs' breakdowns stand from run 22.
+- After this run's tests, -direct3d-11, -direct3d-12, -shaders and -phase-1-literals moved (9, 2,
+  5 and 4 commits; the literals branch changes its rules.rs, so its merge needs `init` before
+  committing it or right after). Not merged: every result above is at b3ca1b92 (the later
+  commits change only frames/run, the baseline and this file).
+- Removed at the end: the desktop's C:\wc\target\phase-2-graphics-webgpu (11.37 GB). No build
+  folder was made on the Mac or in scratch (scratch holds logs and pictures, 396 MB). Nothing new
+  installed on the desktop.
 
 Run 22 = G2c run 4, 2026-11-18:
 - Merged origin/phase-2-graphics-direct3d-11, -shaders and -webgl (the commits left over from run
@@ -1928,8 +1937,9 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
    timestamp workload's 1.3 and 1.5 times): wgpu's `create_shader_module_trusted` without
    `force_loop_bounding` takes Direct3D's time, but lets a guest's endless loop be undefined in
    the driver's compiler, as on real Direct3D.
-3. Merge the graphics branches at the start of each run and read the fronts' status files
-   again. Keep `cargo run -q -p wcontainers-literals -- check` passing (run through
+3. Merge the graphics branches at the start of each run (now -direct3d-11, -direct3d-12,
+   -shaders and -phase-1-literals, which moved after run 23's tests) and read the fronts' status
+   files again; then both full runs, web/check and the literal check. Keep `cargo run -q -p wcontainers-literals -- check` passing (run through
    `tools/graphics-rig/remote`); when a merge brings a newer version of its rules, run `init`
    before committing that merge or in the commit right after it.
 4. For the Direct3D 11 track (not this back end's code): Wine's test_depth_stencil_sampling reads 0 for
