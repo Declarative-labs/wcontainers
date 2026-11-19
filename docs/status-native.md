@@ -104,6 +104,14 @@ Results (M5 Max; scratch native/n3r6):
   alike in output, exit code and files, 18.7 s for all, load 3.6. The first try (busybox-dev2.log) differed only in `ls -la`'s
   times, which led to c51b60e4. Each command 9,000 to 15,000 exits of the machine, 0.15 to 0.27 s (md5sum of busybox 2.0 s).
 
+The whole suite of what this track owns, at the run's end (04:44 to 04:47, load 3.3 to 10.2, M5 Max; scratch
+native/n3r6/suite-end.log, and suite-end-monitor.log for the inside and monitor again with `--no-fail-fast`): guest-cpu, arm64,
+runtime and the policy crate, the literal check's tests, the translator with `native`: passed. The inside and the monitor:
+everything passed (exits 3 programs, 0 failed, both modes; floor 21 cases and 1 measurement, 0 failed; carry; kernel alike,
+forks included; native 32,562 cases, 0 failing; interrupts 2500, 0 failed; probe 0 forms of 16 bytes or fewer differ, 44
+larger as before; unit tests) except tests/busybox.rs, which fails at its start because Docker cannot run (`docker create` of
+the reference image, kernel-test image.rs:108): left failing, for the environment, not the code. Literal check exit 0.
+
 Dependencies: no new crate from outside. The monitor's tests gained wcontainers-kernel (this workspace, MIT OR Apache-2.0) and
 wcontainers-kernel-test (this workspace, GPL-2.0-only for its unicorn-engine; a dev-dependency, test only, never shipped).
 Alpine's minirootfs (scratch only, never in the repository) was used for development alone.
