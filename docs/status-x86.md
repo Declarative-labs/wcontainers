@@ -63,7 +63,87 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   Run 6 (2026-11-19) gave the two ARM64 layer 1 tests their Mac verdict through a Docker engine of its own in
   a Linux VM on the Mac (Docker Desktop still does not start), ran the whole suite on the Mac that way (every
   test passes), ran layer 2 at 10,000 again at a new seed, and worked the literal list down again (x86 crate
-  187 to 142 baseline lines) (see "X4, run 6"). Every part of X4's bar holds.
+  187 to 142 baseline lines) (see "X4, run 6"). Run 7 (2026-11-19) fixed what the independent check of X4
+  found: with look-ahead nothing is emitted or worked out for flags nobody reads (it was, for shifts, rotates,
+  bit tests and the carry instructions, against what the plan and this file said), x86's "general registers
+  only" programs had SSE in them, bare page sizes in files X4 changed; then layer 2 at 10,000 at a new seed
+  and the suite (see "X4, run 7"). Every part of X4's bar holds.
+
+## X4, run 7 (2026-11-19)
+
+Machines: the Mac (load 16 to 66), the i7-8750H (load 0.6 to 12.3), the rented ARM64 machine. Logs in scratch
+`x4/run7/`.
+
+The independent check's findings:
+- Flags nobody reads (blocking): fixed. `Emitter::flags_live` (look-ahead none: always true; full: the
+  existing `flags_needed_after` of the instruction) says whether anything may read the flags an instruction
+  sets before every one is set again. When it is false, `FullEmitter::set_flags` emits nothing (no copies into
+  the shape's locals, no flag state), on both guests, and x86's meanings leave out what they work out only for
+  the flags: a shift's or rotate's CF and OF, a bit test's CF, the kept flags of `Each` (rotates, bt and its
+  kin, clc, stc, cmc), `inc` and `dec`'s kept CF and their constant, and the high half and overflow of a
+  two- or three-operand `imul`. The check's loop (`mov rax,rdi; shr rax,29; add rdi,rax; dec ecx; jnz`) now
+  holds for the `shr` only its shift (scratch `shr-dead.wat`). Plan 5.1's "As built" says so.
+- `-mgeneral-regs-only` (minor): fixed. zig ignores it for its vectoriser, so x86's "general registers only"
+  builds held SSE: bench -O2 254 instructions naming an xmm register, buffers 412, walks 238, tables 67.
+  `GENERAL_ONLY` for x86 is now `-mcpu=x86_64-sse-sse2-mmx` (as ARM64's leaves out its vector unit through
+  `-mcpu`): 0 in every program at -O2 and -Os, the check's own `check_flags.c` among them (scratch `gen/`).
+  So x86's benchmark set is different programs from run 7 on: every x86 benchmark number recorded before
+  this run is of the build with SSE.
+- Bare page sizes (minor): `full.rs` (the frame check's step and the checks' grouping), `code.rs` (the
+  permission checks: offset in the page, the page size, the shift to a page number) and `programs.rs`
+  (placement) take them from `wcontainers_abi::PAGE_SIZE`; 14 baseline lines fewer. Values unchanged.
+- Cases run (minor): "Cases actually run" now lists runs 4 and 5; run 4's sentence that nothing was worked
+  out for flags nobody reads is corrected where it stands.
+
+Measured:
+- Output sizes, `measure_x86_64` at babfb595 (before the flags change, same programs) and 49a11539 (after),
+  release, on the Mac (`measure-old.log`, `measure-new.log`): look-ahead none is the same byte for byte; at
+  full, WebAssembly (gzipped) bench -O2 508,352 to 488,786 (92,224 to 84,551), integers -O2 187,822 to
+  177,351, tables -O2 86,805 to 82,319, integers -O0 184,854 to 184,250, tables -O0 133,178 to 132,754, hello
+  -O2 119,343 to 118,196.
+- User-mode instructions of one wasmtime run of each workload on the i7-8750H (`counts.sh`, both builds,
+  twice in opposite order, the two counts of each within 0.02%; `counts-run7.log`, load 2.2 to 3.5): fib,
+  sieve, interpret and walk unchanged (within 0.01%); hash 10.658 G to 10.655 G (-0.03%); sort -0.006%;
+  search 18.459 G to 18.007 G (-2.4%); matrix 14.610 G to 14.861 G (+1.7%). The matrix module is the same
+  bytes at both builds, on the Mac and on the i7-8750H (md5 98a29304, `mx-*.wasm`), so that +1.7% does not
+  come from translated code: not explained. Hash's +1.9% of run 4 is not explained by dead flags either:
+  removing them moves hash by 0.03% (I expect wasmtime's compiler already dropped them; not checked).
+- Tests of the change: the x86 crate's tests; layer 2 x86 at seed 9393, 1,000 programs, every one also on
+  the CPU (`l2-seed9393.log`): 0 failing (361 faulted); every x86 test of the test crate against the i7-8750H
+  (`x86-tests.log`, layer 1 at its defaults among them): pass.
+- X4's layer 2 bar at a new seed after the change (49a11539, seed 5353, 10,000 programs, every one at full in
+  both settings, plain and stopping everywhere, bounded, mixed, against none and on the i7-8750H, the first in
+  Chrome; `l2-seed5353-10000.log`, 1,154 s, 3 at once; Mac load 22 to 34, i7-8750H 1.2 to 3.6): 10,000 with 0
+  mismatches; 3,408 faulted, 1,244 left to an address at full, 24,105 stacks lost and 23,827 pieces
+  forgotten. The i7-8750H was unreachable for a few minutes in the middle (ping: host down); the harness
+  reconnected and no case failed.
+- ARM64 after the change (`set_flags` is the translator's, so ARM64's output at full changes too): the ARM64
+  tests of the test crate on the rented machine (`arm-arm64.log`) showed one test target failing, but the
+  command kept only the last 400 lines of output, so which one is lost and that run decides nothing; the
+  suite on the Mac below runs every ARM64 test, layer 1 among them.
+
+Proof at the end of run 7 (at 49a11539; the Mac, load 26 to 66 from other tracks; the i7-8750H as reference,
+load 1.2 to 4.7; Docker through the VM of run 6, with `target/programs` mounted writable):
+- Suite (the command of run 3 with `DOCKER_HOST` set, `-j4`, `suite.log`, 2,523 s): 447 passed, 0 failed, 13
+  ignored.
+- `cargo run -q -p wcontainers-literals -- check`: exit 0. `cargo fmt --check`; clippy with `-D warnings` on
+  the x86, interface, translator, ARM64 and test crates (all targets): clean. Baseline lines: wcontainers-x86
+  142, wcontainers-translator-test 2114, wcontainers-guest-cpu 28, wcontainers-translator 74.
+
+Timings on the i7-8750H (load 3.5 to 12.3 from other jobs, so far from quiet; one run a round):
+- The flags change alone, babfb595 against 49a11539 in wasmtime as alternating pairs (`pairs.sh 5 3 4 6 8`,
+  `pairs-run7.log`, load 3.5 to 8.2): the same build's runs spread by up to 1.9 times between rounds (sort
+  4.97 to 9.83 s), more than any difference between the builds, so the times decide nothing. Best of 5, old
+  then new: hash 0.764, 0.768 s; sort 4.97, 4.98; matrix 1.903, 1.368; search 2.655, 2.471.
+- The benchmark set as the general-register programs of this run, at 49a11539, natively, in wasmtime and in
+  Chrome 158 in alternating rounds (`time-rounds.sh 3`, `rounds-run7.log`, load 4.4 to 12.3), best of 3, times
+  native in brackets: fib native 0.901 s, wasmtime 10.380 (11.53), Chrome 9.760 (10.84); sieve 0.912, 2.802
+  (3.07), 3.894 (4.27); hash 0.673, 0.824 (1.22), 1.743 (2.59); sort 0.796, 5.622 (7.06), 6.975 (8.76);
+  interpret 0.382, 11.347 (29.73), 61.911 (162.19); matrix 0.214, 1.444 (6.74), 1.264 (5.90); walk 4.942,
+  5.568 (1.13), 4.750 (0.96); search 0.319, 1.405 (4.41), 1.697 (5.32). Every output equalled the native one.
+  These are other programs than run 3's (no SSE) at a higher load, so they do not compare with run 3's.
+
+What comes next: nothing of X4's bar is open. The VM is stopped and kept as in run 6.
 
 ## X4, run 6 (2026-11-19)
 
@@ -176,8 +256,9 @@ The independent check's findings, each fixed:
   counts no "jump through a register not recognised" at every level and in both settings. Without the fix
   it fails (1,400 such jumps at -O0).
 - Lazy flags of shifts (blocking): shl, sal, shr and sar keep a `Shift` shape (three locals, or eight when the
-  count may be zero), so their PF, ZF and SF are worked out only when read, and nothing is worked out for
-  flags nobody reads. Rotates, bt and its kin, clc, stc and cmc hand the six flags over each in a local
+  count may be zero), so their PF, ZF and SF are worked out only when read. (This said too that nothing was
+  worked out for flags nobody reads; that was wrong until run 7: CF and OF were still worked out, and the
+  shape's locals and the flag state written, for flags nothing read.) Rotates, bt and its kin, clc, stc and cmc hand the six flags over each in a local
   (`Flags::Each`) instead of packing a word and unpacking it. How this departs from plan 5.1's text is under
   "Departures", X4; plan 5.1's "As built" paragraph is rewritten. Layer 2's emitter now also writes shifts
   and rotates by immediates 0 to 64, bt, bts, btr and btc, and clc, stc and cmc.
@@ -1899,6 +1980,11 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   ControlPath=none -N -L $LIMA_HOME/d.sock:/var/run/docker.sock lima-x &`, and run the tests with
   `DOCKER_HOST=unix://$LIMA_HOME/d.sock`. `limactl stop x` when done; `limactl delete x` frees its disk.
 
+- Two builds as alternating pairs on the x86 machine (X4 run 7): `~/wcontainers-x86/pairs.sh <rounds>
+  <workloads>` times `variants/old` and `variants/new` in wasmtime, one run each a round, the order flipped
+  every round. Copy each commit with `git archive` to its own tree there and touch its sources before building
+  it into a shared target folder (the archives' file times are the commit's, and cargo otherwise keeps the
+  first build).
 - Comparing builds on the x86 machine (X4 run 4): put each build's `time-blob` in `~/wcontainers-x86/variants/`
   (built from a `git archive` of its commit in `~/wcontainers-x86/tree`, `-j 4`, under `choom -n 600`), then
   `~/wcontainers-x86/counts.sh "<workloads>" <variant>...` counts user-mode instructions of one wasmtime run
@@ -2064,6 +2150,11 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   (Chrome 158 unpacked from `google-chrome-stable_current_amd64.deb` with `dpkg-deb -x`; the system's Chrome
   115 is untouched), `time-rounds.sh` (copy in scratch `x4/run3/`) and its logs `rounds-*.log`. Installed
   system-wide: nothing.
+- Added in X4 run 7, all under `~/wcontainers-x86`: `tree-old` (babfb595) beside `tree` (49a11539), `variants/old`
+  and `variants/new` (their `time-blob`), `build-variants.sh`, `pairs.sh` and its `pairs-run7.log`,
+  `counts-run7.log`, `rounds-run7.log`, `wasm-mode.py` (a scratch mode that writes a blob's modules, patched
+  into both trees' `time-blob` only there) and `mx-*.wasm`; `blobs/` now holds the general-register blobs
+  and `blobs-sse/` the earlier ones. The build folders `target` and `target-w` were deleted at the end.
 - Added in X2: `~/wcontainers-x86/reference/<hash>`, the reference runner the harness uploads (one file per
   build of it).
 - Not always idle: another track's atomic-cost measurement (`~/ordering-cost`, wasmtime) runs there at
@@ -2072,9 +2163,20 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## Cases actually run
 
+- X4 run 7: layer 2 x86 at seed 9393, 1,000 programs, and at seed 5353, 10,000, every one also on the CPU;
+  every x86 test of the test crate once at its defaults; the ARM64 tests of the test crate once on the rented
+  machine and the suite once on the Mac, at their defaults (see "X4, run 7").
 - X4 run 6: layer 1 x86 at seed 6006, 500 cases a form, the 96 conditional forms; layer 2 x86 at seed 7171,
   1,000 programs, and at seed 8282, 10,000, every one also on the CPU; layer 1 ARM64 at the defaults (64 a
   form, seed 1) twice on the Mac; the suite once at its defaults (see "X4, run 6").
+- X4 run 5: none of its own (the ARM64 tests of the test crate once on the rented ARM64 machine at their
+  defaults, seed 1; the suite once on the Mac at its defaults); `lengths_are_the_reference_cpus`, x86's
+  programs and checks against the i7-8750H, and `measure_x86_64` once each after the literal changes.
+- X4 run 4: layer 1 x86 at seed 4405, 1,000 cases a form, the 123 shift, rotate, bit test and carry forms
+  (3 of them again alone at the same seed after an SSH outage); layer 2 x86 at seed 4, 500 programs, at seed
+  5, 1,000, and at seed 31337, 10,000 (3 of them again alone after the outage), every one also on the CPU;
+  the instruction counts of the eight workloads for three builds, and 5 rounds of three builds in wasmtime on
+  the x86 machine; the suite once at its defaults (see "X4, run 4").
 - X4 run 3: layer 2 x86 at seed 3, 1,000 programs, every one also on the CPU; at seed 7777, 10,000 (see "X4,
   run 3"); the tests of layer 2 (both guests at their defaults, seed 1), changes, checks, programs,
   look-aheads and the test guest once after the frame change; the suite at the end; the benchmark set 5
