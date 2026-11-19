@@ -2872,7 +2872,7 @@ forms are excluded.
 recursion, tail calls, calls and jumps through registers, jump tables in both x86 compiler styles, frames,
 groups of accesses through one base, walks, lookups, system calls, a final dump of every register and
 the flags) with an x86 emitter written with iced's `CodeAssembler` (test only) that adds what x86 has:
-read-change-write memory operands, string instructions with and without rep, push and pop, calls through
+read-change-write memory operands, string instructions without rep (with rep at X5, which builds them), push and pop, calls through
 memory, partial flag writes (inc and dec before a jcc on CF), red-zone use in leaf functions, and `pushfq`
 for the dump. ARM64 keeps its dynasm emitter behind the same model, and its programs for a given seed stay
 byte for byte what they are today.

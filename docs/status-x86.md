@@ -1988,6 +1988,18 @@ X4 (each also written into the plan's text where the plan is wrong):
 - The translator's walk back for `jump_table` crosses a conditional branch's fall-through (plan 3.2 says
   "`None` at the start of a block that more than one edge enters", which this now matches).
 - `pushf` and `leave` are built at X4 (X5's list): the dump and gcc's -O0 frames need them.
+- Run 4: plan 5.1's nine-local `Shift` shape is built with three locals (result, CF, OF) when the count is
+  known not to be zero and eight when it may be (the count and PF, AF, ZF, SF as they were besides): CF and OF
+  are chosen at the shift between their new and earlier values, which saves two locals and the work at each
+  read. Plan 5.1's `Bits` shape is not used for bt and its kin, clc, stc and cmc, nor for rotates: they change
+  only CF (and OF), so they hand the six flags over each in a local (`Flags::Each`), which needs no shape and
+  no flags-word function. `Bits` comes with bsf, bsr, popcnt, lzcnt and tzcnt at X5 (plan 5.1 says so now).
+- Run 4: plan 7.4 says x86's layer 2 emitter adds string instructions with and without rep; it has them
+  without rep only (lods and stos, both directions). Rep strings are X5's instructions (plan 9), so their
+  layer 2 form comes with them at X5.
+- Run 4: the `measure` test (programs.rs) measures at full from the entry besides none from every
+  instruction, and runs for x86 too (`measure_x86_64`), so that output size and compile time at full are
+  measured for each guest (plan 9's preface).
 - `machine-code` takes the guest and the library as arguments (it read ARM64 programs only).
 - Run 3: the benchmark set is timed in Chrome on the x86 machine with Chrome 158 unpacked from Google's
   package into `~/wcontainers-x86/chrome`, not the system's Chrome 115, which lacks 64-bit memories; the
