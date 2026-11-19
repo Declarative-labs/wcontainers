@@ -4,41 +4,22 @@
 // Each side uses its own half.
 #![allow(dead_code)]
 
-use wcontainers_abi::Next;
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 wcontainers_inside::requests! {
     first: wcontainers_inside::container::Request::END;
-    /// The container started: what the kernel runs next, as [`NextKind`]'s word with its thread and status, and
-    /// the thread's register block in the link's bytes when it is one to run.
-    Started { kind, thread, status } -> ();
+    /// What the test crate's policy is made from. Answered with [`PolicySeeds`].
+    Policy {} -> PolicySeeds;
+    /// A slow path or refusal the policy kept: its reason in the link's bytes.
+    Warned { count, detail } -> ();
+    /// The container's first process ended with the wait status `status` after `turns` turns.
+    Ended { status, turns } -> ();
 }
 
-/// What a [`Started`] says the kernel does next.
-#[repr(u64)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NextKind {
-    Run,
-    Idle,
-    Finished,
-}
-
-impl Started {
-    pub fn of(next: Next) -> Started {
-        match next {
-            Next::Run { thread, .. } => Started {
-                kind: NextKind::Run as u64,
-                thread: thread.0.into(),
-                ..Started::default()
-            },
-            Next::Idle { .. } => Started {
-                kind: NextKind::Idle as u64,
-                ..Started::default()
-            },
-            Next::Finished { status } => Started {
-                kind: NextKind::Finished as u64,
-                status: i64::from(status) as u64,
-                ..Started::default()
-            },
-        }
-    }
+/// The test crate's policy's seed and the wall clock's reading at the start.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, FromBytes, IntoBytes, Immutable, KnownLayout)]
+pub struct PolicySeeds {
+    pub seed: u64,
+    pub wall_start: u64,
 }

@@ -191,7 +191,7 @@ mod tests {
     fn files_and_start_arrive_whole() {
         let file = |path: &str, kind| File {
             path: path.as_bytes().to_vec(),
-            mode: 0o644,
+            mode: 0o640,
             uid: 1,
             gid: 2,
             mtime_seconds: -3,

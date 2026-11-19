@@ -1,6 +1,6 @@
 //! The kernel inside: a test program run by the monitor's kernel test, never shipped. It takes a container's
-//! files and start through the link, starts its first process in the kernel on [`NativeCpu`] with the host's
-//! services through the link, and says what the kernel runs next.
+//! files and start through the link, starts its first process in the kernel on [`NativeCpu`], and runs it to
+//! its end with the runtime's loop and the kernel test crate's policy, the host's services through the link.
 
 #![cfg_attr(target_os = "none", no_std, no_main)]
 
@@ -12,33 +12,49 @@ mod protocol;
 
 #[cfg(target_os = "none")]
 mod kernel {
-    use wcontainers_abi::{Cpu, Next, RegisterBlock};
     use wcontainers_inside::container;
     use wcontainers_inside::floor::{self, Doorbell, Floor};
     use wcontainers_inside::host::LinkHost;
     use wcontainers_inside::link::Start;
     use wcontainers_inside::native::NativeCpu;
     use wcontainers_kernel::Kernel;
-    use zerocopy::IntoBytes;
+    use wcontainers_kernel_test_policy::TestPolicy;
+    use wcontainers_runtime::{Ending, drive};
 
-    use crate::protocol::Started;
+    use crate::protocol::{Ended, Policy, PolicySeeds, Warned};
 
     #[unsafe(no_mangle)]
     extern "C" fn floor_main(start: &Start) -> ! {
         let floor = Floor::boot(start);
         let mut cpu = NativeCpu::new(floor.global, false).expect("frames for the CPU side");
-        let mut host = LinkHost { ring: Doorbell };
+        let PolicySeeds { seed, wall_start } = floor::ask(&Policy {}, &[]);
+        let mut policy = TestPolicy::new(LinkHost { ring: Doorbell }, seed, wall_start);
         let mut kernel = Kernel::new();
-        if let Err(refused) = container::start(&mut Doorbell, &mut kernel, &mut cpu, &mut host) {
+        if let Err(refused) = container::start(&mut Doorbell, &mut kernel, &mut cpu, &mut policy) {
             panic!("the kernel refused a file: {refused:?}");
         }
-        let next = kernel.next();
-        let mut block = RegisterBlock::ZERO;
-        if let Next::Run { thread, .. } = next {
-            cpu.registers(thread, &mut block);
+        let status = match drive(&mut kernel, &mut cpu, &mut policy) {
+            Ok(Ending::Finished { status }) => status,
+            Ok(Ending::Ended(never)) => match never {},
+            Err(unbuilt) => panic!("the native back end cannot run this yet: {unbuilt:?}"),
+        };
+        for warned in &policy.warnings {
+            floor::ask(
+                &Warned {
+                    count: warned.count,
+                    detail: warned.detail,
+                },
+                warned.reason.as_bytes(),
+            );
         }
         loop {
-            floor::ask(&Started::of(next), block.as_bytes());
+            floor::ask(
+                &Ended {
+                    status: i64::from(status) as u64,
+                    turns: policy.turns,
+                },
+                &[],
+            );
         }
     }
 }

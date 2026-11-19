@@ -42,6 +42,8 @@ proptest = "1.12.0"
 # The exits test's other side: the WebAssembly output's CPU side, run as the runtime's loop runs it.
 wcontainers-wasmtime = { path = "../wcontainers-wasmtime" }
 wcontainers-runtime = { path = "../wcontainers-runtime" }
+# The kernel test's policy, the same on both sides.
+wcontainers-kernel-test-policy = { path = "../wcontainers-kernel-test-policy" }
 # The system calls the exits test answers, by Linux's numbers.
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "errno", "auxvec", "no_std"] }
 

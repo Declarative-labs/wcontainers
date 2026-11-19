@@ -1,10 +1,11 @@
-//! N3's kernel inside the machine: the test program `native-kernel` takes a container's files and start
-//! through the link and starts its first process in the kernel on the native CPU side, with the host's
-//! services through the link. The same kernel starts the same container on the WebAssembly output's CPU side
-//! on the host, through the same code over a link in memory. What the kernel runs next, the first thread's
-//! registers and every call the kernel makes of its host must agree.
+//! N3's kernel and loop inside the machine: the test program `native-kernel` takes a container's files and
+//! start through the link and runs its first process to its end in the kernel on the native CPU side, with the
+//! runtime's loop and the kernel test crate's policy, the host's services through the link. The same kernel,
+//! loop and policy run the same container on the WebAssembly output's CPU side on the host, through the same
+//! code over a link in memory. The wait status, the number of turns and every call of the host's services
+//! must agree.
 //!
-//! `WCONTAINERS_KERNEL_SEED` seeds the host's random bytes.
+//! `WCONTAINERS_KERNEL_SEED` seeds the policy and the host's random bytes.
 
 #[cfg(target_os = "macos")]
 #[path = "../../wcontainers-inside/src/bin/native-kernel/protocol.rs"]
@@ -29,9 +30,7 @@ mod macos {
 
     use linux_raw_sys::general::{S_IRGRP, S_IROTH, S_IRWXU, S_IXGRP, S_IXOTH};
 
-    use wcontainers_abi::{
-        BackendRequestId, ConnectionId, Cpu, Host, HostError, RegisterBlock, Stream, Warning,
-    };
+    use wcontainers_abi::{BackendRequestId, ConnectionId, Host, HostError, Stream, Warning};
     use wcontainers_arm64::Arm64;
     use wcontainers_hypervisor::{
         Exit as VcpuExit, Loaded, Memory, Register, VirtualCpu, VirtualMachine, boot,
@@ -40,15 +39,16 @@ mod macos {
     use wcontainers_inside::container::{self, File, FileKind, Starting};
     use wcontainers_inside::link::{self, Fatal, Link, Parts, Ring};
     use wcontainers_inside::{host, routines as inside_routines, translation};
-    use wcontainers_runtime::Kernel;
+    use wcontainers_kernel_test_policy::{TestPolicy, Warned};
+    use wcontainers_runtime::{Ending, Kernel, drive};
     use wcontainers_wasmtime::{Compiler, CpuSide, LookAhead, Optimise};
-    use zerocopy::{FromBytes, FromZeros};
+    use zerocopy::FromZeros;
 
     use crate::common::{
         CLibrary, KERNEL_TEST_GUEST, MEMORY, ONE_CPU, be_signed, build, compile, load_average,
         machine, setting,
     };
-    use crate::protocol::{self, Started};
+    use crate::protocol::{self, Ended, PolicySeeds};
 
     /// The test program inside.
     const PROGRAM: &str = "native-kernel";
@@ -57,7 +57,7 @@ mod macos {
     const HELLO: &str = "hello";
 
     const SEED_VARIABLE: &str = "WCONTAINERS_KERNEL_SEED";
-    const DEFAULT_SEED: u64 = 0x5eed;
+    const DEFAULT_SEED: u64 = 0x6b65_726e;
 
     /// The clocks the test host reads.
     const MONOTONIC_NANOSECONDS: u64 = 1_234_567;
@@ -156,11 +156,13 @@ mod macos {
         }
     }
 
-    /// What one side's kernel did at the start.
+    /// What one side's run did.
     struct Outcome {
-        started: Started,
-        block: RegisterBlock,
+        status: i32,
+        turns: u64,
         calls: Vec<String>,
+        /// The CPU side's slow paths and the policy's refusals.
+        warnings: Vec<Warned>,
     }
 
     pub fn main() {
@@ -188,50 +190,26 @@ mod macos {
         };
         let native = native(seed, &files, &starting);
         let wasm = wasm(seed, &files, &starting);
+        for (side, outcome) in [("native", &native), ("WebAssembly", &wasm)] {
+            println!(
+                "{HELLO} on the {side} side: status {:#x} after {} turns, {} host calls, warned {:?}",
+                outcome.status,
+                outcome.turns,
+                outcome.calls.len(),
+                outcome.warnings
+            );
+        }
+        assert_eq!(native.status, wasm.status, "the wait status");
+        assert_eq!(native.turns, wasm.turns, "the turns");
+        assert_eq!(native.calls, wasm.calls, "the calls of the host's services");
         println!(
-            "{HELLO}: native {:?}, WebAssembly {:?}; {} host calls; seed {seed:#x}",
-            native.started,
-            wasm.started,
-            native.calls.len()
-        );
-        assert_eq!(
-            (
-                native.started.kind,
-                native.started.thread,
-                native.started.status
-            ),
-            (wasm.started.kind, wasm.started.thread, wasm.started.status),
-            "what the kernel runs next"
-        );
-        assert_eq!(
-            native.started.kind,
-            protocol::NextKind::Run as u64,
-            "the first thread runs"
-        );
-        assert_eq!(native.calls, wasm.calls, "the kernel's calls of its host");
-        // The stack's top is placed from each side's ceiling until the kernel places low first (K2).
-        assert_eq!(
-            RegisterBlock {
-                sp: 0,
-                ..native.block
-            },
-            RegisterBlock {
-                sp: 0,
-                ..wasm.block
-            },
-            "the first thread's registers but its stack pointer"
-        );
-        println!(
-            "kernel: started alike, first pc {:#x}, stack pointers {:#x} and {:#x}; in {:?}, load {}",
-            native.block.pc,
-            native.block.sp,
-            wasm.block.sp,
+            "kernel: ran alike to the end; seed {seed:#x}; in {:?}, load {}",
             started.elapsed(),
             load_average()
         );
     }
 
-    /// Starts the container in the kernel inside the machine.
+    /// Runs the container in the kernel inside the machine.
     fn native(seed: u64, files: &[File], starting: &Starting) -> Outcome {
         let program = build(PROGRAM);
         let (machine, memory, loaded, start) = machine(&program, MEMORY, ONE_CPU);
@@ -240,6 +218,7 @@ mod macos {
         let mut host = Recorded::new(seed);
         let mut parts = Parts::default();
         let mut files = files.iter().cloned();
+        let mut warnings = Vec::new();
         loop {
             match cpu.run().expect("running") {
                 VcpuExit::Doorbell => {}
@@ -276,12 +255,25 @@ mod macos {
                 parts.answer(link, answer);
             } else {
                 match protocol::Request::from_word(word).expect("a request of the set") {
-                    protocol::Request::Started => {
+                    protocol::Request::Policy => link.put(&PolicySeeds {
+                        seed,
+                        wall_start: REALTIME_NANOSECONDS,
+                    }),
+                    protocol::Request::Warned => {
+                        let protocol::Warned { count, detail } = link.get();
+                        warnings.push(Warned {
+                            reason: String::from_utf8_lossy(link.data()).into_owned(),
+                            count,
+                            detail,
+                        });
+                    }
+                    protocol::Request::Ended => {
+                        let Ended { status, turns } = link.get();
                         return Outcome {
-                            started: link.get(),
-                            block: RegisterBlock::read_from_bytes(link.data())
-                                .expect("a register block"),
+                            status: status as i32,
+                            turns,
                             calls: host.calls,
+                            warnings,
                         };
                     }
                 }
@@ -316,11 +308,11 @@ mod macos {
         }
     }
 
-    /// Starts the container in the same kernel on the host, on the WebAssembly output's CPU side.
+    /// Runs the container in the same kernel, loop and policy on the host, on the WebAssembly output's CPU side.
     fn wasm(seed: u64, files: &[File], starting: &Starting) -> Outcome {
         let compiler = Compiler::<Arm64>::new(None);
         let mut cpu = CpuSide::new(compiler, LookAhead::None, Optimise::Speed, ());
-        let mut host = Recorded::new(seed);
+        let mut policy = TestPolicy::new(Recorded::new(seed), seed, REALTIME_NANOSECONDS);
         let mut kernel = Kernel::new();
         let mut ring = Loopback {
             link: Box::new(Link::new_zeroed()),
@@ -328,17 +320,18 @@ mod macos {
             files: files.iter().cloned(),
             starting,
         };
-        container::start(&mut ring, &mut kernel, &mut cpu, &mut host)
+        container::start(&mut ring, &mut kernel, &mut cpu, &mut policy)
             .expect("files the kernel takes");
-        let next = kernel.next();
-        let mut block = RegisterBlock::ZERO;
-        if let wcontainers_abi::Next::Run { thread, .. } = next {
-            cpu.registers(thread, &mut block);
-        }
+        let status = match drive(&mut kernel, &mut cpu, &mut policy) {
+            Ok(Ending::Finished { status }) => status,
+            Ok(Ending::Ended(never)) => match never {},
+            Err(never) => match never {},
+        };
         Outcome {
-            started: Started::of(next),
-            block,
-            calls: host.calls,
+            status,
+            turns: policy.turns,
+            calls: policy.services.calls,
+            warnings: policy.warnings,
         }
     }
 }

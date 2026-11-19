@@ -17,6 +17,8 @@ wcontainers-guest-cpu = { path = "../wcontainers-guest-cpu", default-features = 
 wcontainers-kernel = { path = "../wcontainers-kernel" }
 # The loop, which runs inside beside the kernel.
 wcontainers-runtime = { path = "../wcontainers-runtime", default-features = false }
+# The kernel test crate's policy, which the inside is built with beside the shipped one.
+wcontainers-kernel-test-policy = { path = "../wcontainers-kernel-test-policy" }
 # The container's files and start as the link carries them.
 serde = { version = "1.0.229", default-features = false, features = ["derive", "alloc"] }
 # The position map, the container's files and its start as the link carries them.
