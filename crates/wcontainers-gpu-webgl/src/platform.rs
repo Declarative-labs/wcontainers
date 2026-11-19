@@ -5,35 +5,6 @@ use glow::HasContext;
 use std::collections::BTreeSet;
 use wcontainers_gpu::LossReason;
 
-/// GL_UPPER_LEFT_EXT and GL_ZERO_TO_ONE_EXT, and their defaults, for `clipControlEXT`.
-pub const UPPER_LEFT: u32 = 0x8CA2;
-pub const LOWER_LEFT: u32 = 0x8CA1;
-pub const ZERO_TO_ONE: u32 = 0x935F;
-pub const NEGATIVE_ONE_TO_ONE: u32 = 0x935E;
-
-/// GL_FIRST_VERTEX_CONVENTION and GL_LAST_VERTEX_CONVENTION (GL's initial one), for
-/// `provokingVertexWEBGL` and `glProvokingVertexANGLE`.
-pub const FIRST_VERTEX: u32 = 0x8E4D;
-pub const LAST_VERTEX: u32 = 0x8E4E;
-
-/// GL_LINE and GL_FILL, for `polygonModeWEBGL` and `glPolygonModeANGLE`.
-pub const LINE: u32 = 0x1B01;
-pub const FILL: u32 = 0x1B02;
-/// GL_POLYGON_OFFSET_LINE of WEBGL_polygon_mode.
-pub const POLYGON_OFFSET_LINE: u32 = 0x2A02;
-/// GL_DEPTH_CLAMP_EXT.
-pub const DEPTH_CLAMP: u32 = 0x864F;
-/// GL_MIRROR_CLAMP_TO_EDGE_EXT.
-pub const MIRROR_CLAMP_TO_EDGE: u32 = 0x8743;
-/// GL_CLIP_DISTANCE0_EXT; distance n is enabled at this plus n.
-pub const CLIP_DISTANCE0: u32 = 0x3000;
-/// The second-source blend factors of WEBGL_blend_func_extended: GL_SRC1_COLOR_EXT,
-/// GL_ONE_MINUS_SRC1_COLOR_EXT, GL_SRC1_ALPHA_EXT and GL_ONE_MINUS_SRC1_ALPHA_EXT.
-pub const SRC1_COLOR: u32 = 0x88F9;
-pub const ONE_MINUS_SRC1_COLOR: u32 = 0x88FA;
-pub const SRC1_ALPHA: u32 = 0x8589;
-pub const ONE_MINUS_SRC1_ALPHA: u32 = 0x88FB;
-
 /// The WebGL extension names, with the GL names ANGLE reports for each natively.
 const EXTENSIONS: [(&str, &str); 22] = [
     ("EXT_clip_control", "GL_EXT_clip_control"),
@@ -85,9 +56,7 @@ const EXTENSIONS: [(&str, &str); 22] = [
     ("WEBGL_clip_cull_distance", "GL_ANGLE_clip_cull_distance"),
 ];
 
-/// GL_TIMESTAMP_EXT, GL_QUERY_COUNTER_BITS_EXT and GL_GPU_DISJOINT_EXT.
-pub const TIMESTAMP: u32 = 0x8E28;
-const QUERY_COUNTER_BITS: u32 = 0x8864;
+/// GL_GPU_DISJOINT_EXT of EXT_disjoint_timer_query, which glow does not define.
 pub const GPU_DISJOINT: u32 = 0x8FBB;
 
 /// The extensions the back end uses that the context has, by WebGL name, less those switched off.
@@ -281,7 +250,7 @@ mod native {
             }
         }
 
-        /// Fills polygons (`FILL`) or draws their edges (`LINE`), for both faces.
+        /// Fills polygons (`glow::FILL`) or draws their edges (`glow::LINE`), for both faces.
         pub fn polygon_mode(&self, mode: u32) {
             if let Some(f) = self.polygon_mode {
                 // SAFETY: the pointer was loaded for this context's glPolygonModeANGLE.
@@ -308,7 +277,7 @@ mod native {
             let mut bits = 0;
             if let Some(f) = self.get_queryiv {
                 // SAFETY: the pointer was loaded for this context's glGetQueryivEXT.
-                unsafe { f(TIMESTAMP, QUERY_COUNTER_BITS, &mut bits) };
+                unsafe { f(glow::TIMESTAMP, glow::QUERY_COUNTER_BITS, &mut bits) };
             }
             bits.max(0) as u32
         }
@@ -697,7 +666,7 @@ mod web {
             call(&self.indexed[4], &args);
         }
 
-        /// Fills polygons (`FILL`) or draws their edges (`LINE`), for both faces.
+        /// Fills polygons (`glow::FILL`) or draws their edges (`glow::LINE`), for both faces.
         pub fn polygon_mode(&self, mode: u32) {
             call(
                 &self.polygon_mode,
@@ -732,8 +701,8 @@ mod web {
             };
             f.call2(
                 &self.context,
-                &JsValue::from(TIMESTAMP),
-                &JsValue::from(QUERY_COUNTER_BITS),
+                &JsValue::from(glow::TIMESTAMP),
+                &JsValue::from(glow::QUERY_COUNTER_BITS),
             )
             .ok()
             .and_then(|v| v.as_f64())
