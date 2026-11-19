@@ -750,8 +750,9 @@ impl<B: Backend> Device<B> {
     }
 
     /// A storage buffer of the program's own slot `b`: bytes `offset..offset + size` of buffer
-    /// `id`, bound from the largest offset at or below `offset` that is a multiple of both the
-    /// back end's storage alignment and the program's element, with the rest in the program's
+    /// `id`; where the back end cannot bind it at `offset`, bound from the largest offset below
+    /// it that is a multiple of both its storage alignment and the program's element, with the
+    /// rest in the program's
     /// helper constants (`HelperValue::StorageOffset`), which a program made with
     /// `VariantFlags::STORAGE_OFFSET` adds to its addresses.
     fn own_storage(
@@ -768,7 +769,11 @@ impl<B: Backend> Device<B> {
             .map(|k| align * k)
             .find(|s| s.is_multiple_of(stride))
             .unwrap_or(align * stride);
-        let start = offset - offset % step;
+        // A view the back end binds where it starts needs no rest.
+        let start = match offset.is_multiple_of(align) {
+            true => offset,
+            false => offset - offset % step,
+        };
         let rest = offset - start;
         if !rest.is_multiple_of(stride) {
             return Err(Error::NotImplemented(
