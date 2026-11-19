@@ -53,7 +53,9 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   +21.2%, and the system-call part passes at 67.9 ns [63.4 .. 71.7] (below, "N4 run 6"); run 7 fixed where a piece's
   guest code ends, made pieces run on past forward conditional branches and wrote how 2 MiB entries get their frames
   (reservations): the compute part is +45.38% [+44.74 .. +45.87] quiet, still failing, the system-call part passes at
-  69.1 ns (below, "N4 run 7"). T1's look-aheads come next.
+  69.1 ns (below, "N4 run 7"); run 8 built bounded and full look-ahead by the native emitter's own walk (a departure
+  from T1) and a test for run 7's fix: the compute part is +44.67% [+44.16 .. +44.98], still failing, the system-call
+  part passes at 71.9 ns (below, "N4 run 8").
 - The literal check's seventh version of the rules is merged (1a889ca2, N2 run 5; init changed nothing) and
   the check passes on the whole tree (exit 0).
 - The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
@@ -80,6 +82,60 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 - The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
   thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
   `page_request`, `page_give`, `page_take`, `page_copy`.
+
+## N4 run 8 (2026-11-19): bounded and full look-ahead by the native emitter's own walk
+
+Start: origin/main and origin/phase-1-literals had nothing new; T1 is still on no branch and the orchestrator has not
+answered, so this run took the departure below. Heavy builds of the arm64, guest-cpu and translator crates and their
+clippy ran on the rented ARM64 machine (n4r9/arm1.log, arm2.log); what needs Hypervisor.framework, Docker or a git
+checkout ran on the Mac (-j 4 or less). Logs are in scratch native/n4r9.
+
+Built:
+- `Native::link` (26d9be75): the emitter points a direct exit at host code of the same piece, as the inside links exits.
+- Pieces are what the code reaches from their start within the look-ahead (2ede934e, 5c54000d; plan 3.2): the walk
+  follows fall-through and direct branch targets on the start's guest page, not a call's next instruction and not a
+  backward branch's next instruction; instructions are laid out in address order, branches to instructions the piece
+  holds go straight there, each straight-line part has its own add. None is one instruction, bounded n at most n, full
+  the whole page. This is the departure from T1 (below).
+- A test for run 7's piece-end fix (9d73ecf4): tests/guest/code.c now runs a function whose load's page test is the
+  last host code of its piece, rewrites only an instruction on the function's second cache line and announces only
+  that line. With run 7's fix taken out, the native side gave "7 7" at look-ahead 256 and "7 8" at none, and the test
+  failed (n4r9/kernel-bug.log); with it, "7 8" at both, as the reference gives. The WebAssembly side gives "7 7": a
+  known failure of that side, printed as such (kernel.rs `CODE_KNOWN`), the native output still checked against the
+  reference. For the WebAssembly output's owners, below.
+
+Measured (M5 Max, native runs of two builds alternating, ab.py):
+- Following a backward branch's next instruction (the first build, n4r9/ab-reach.log, 6 pairs, load 4 to 7): cycles new
+  over run 7's pieces fib 1.368 (instructions 0.983), sort 0.949, search 0.970, interpret 0.980, others within 1%. It is
+  fib's return sequence right after its loop's branch again (run 7's finding).
+- Not following it, as committed (n4r9/ab-reach-noback.log, 6 pairs, load 6 to 7): fib 0.995, sort 0.960, search 0.978,
+  interpret 0.897, sieve 1.000, matrix 1.088; instructions 1.000 for every one, so only the layout changed.
+- Layout (n4r9/ab-align.log, 4 pairs each, load 4 to 6, not committed): pieces started at 64 bytes gave matrix 1.013,
+  interpret 0.904, sort 0.960, fib 0.980, sieve 1.022; loop heads inside a piece padded to 16, 32 or 64 bytes on top
+  were worse for matrix (1.024, 1.087, 1.131). Matrix moves by up to 9% with layout alone; no alignment is kept.
+
+Speed bar (n4r9/speed.log and speed.jsonl, 15:00 to 15:17, load 7 to 14, 15 pairs, look-ahead 256, seed 1, 2000
+resamples): compute part +44.67%, 95% interval [+44.16 .. +44.98], FAILS against +21.2%. Native against plain, cycles
+(instructions): fib +56.6 (+86.3; only 70% of the native runs on performance cores), sieve +18.2 (+31.8), hash +2.9
+(+27.1), sort +78.6 (+144.2), interpret +90.0 (+105.0), matrix +38.5 (+66.0), walk +17.1 (+81.3), search +83.0 (+45.5);
+calls +60.3 (+114.9). Untranslated against plain, cycles: fib -0.7, sieve +7.2, hash -2.5, sort -4.3, interpret -5.8,
+matrix -13.8, walk +16.2, search -9.1, calls -18.7. System-call part: 165.7 ns a call, the kernel's share 93.7 ns, the
+back end's 71.9 ns [70.9 .. 72.7], PASSES against 100 ns.
+
+Tests after the change: exits 4 programs both modes, 0 failed (424 and 426 pieces against 661 in run 7); forced
+interrupts 3443 at none, bounded 3 and full, 0 failed; kernel alike at none and 256 with the reference, the benchmark
+set's count the same at both (n4r9/kernel4.log, load 7 to 16); busybox 56 commands gave the reference's output, exit
+code and files at none and 256 (n4r9/busybox.log, load 8 to 16); arm64, guest-cpu and the translator (native feature)
+pass and clippy with warnings denied is clean on the rented ARM64 machine (arm64, translator, guest-cpu, inside, and the
+no_std cores); hypervisor and translator clippy clean on the Mac; the literal check exits 0.
+
+What N4 still needs, in order:
+1. The compute part of the bar. What is left is mostly calls, returns and jumps through a register (two indirect
+   branches each), interpret's dispatch, and the page test (decision 14); see "For the orchestrator".
+2. Load-time addresses, the cache with the native key and disk files, loaded translations shared between processes.
+3. 2 MiB entries by reservation (plan 5.2), with the contiguous bit measured in the repository.
+4. For the independent check: the bar's measurements as alternating pairs again; the differential test at each
+   look-ahead with a new seed; the count across look-aheads on the benchmark set (the kernel test, none and 256).
 
 ## N4 run 7 (2026-11-19): pieces run on past forward conditional branches
 
@@ -2016,6 +2072,12 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 ## Departures from the plan
 
+- N4 run 8: native pieces at bounded and full look-ahead are found by the native emitter itself, not by the shared
+  finder (T1, asked of the orchestrator since N4 run 1 with no answer). The shared finder's functions hold what a native
+  piece cannot enter (code after a call, which the return reaches through its slot; jump tables' targets) and are cut for
+  WebAssembly's structured control, and the count is E, so how pieces are cut changes nothing the guest or replay sees.
+  The walk is about 40 lines in crates/wcontainers-translator/src/native.rs. Full look-ahead is everything the start
+  reaches on its own guest page. Plan 3.1, 3.2, 6.2 and N4 say so now.
 - N4 run 7: until T1, a piece runs on past forward conditional branches by the emitter's own rule (plan 3.2 says pieces are
   what the shared finder gives); it is the straight-line runs of N2 with side exits, no second finder, and goes when T1
   gives stretches. The plan says so now.
@@ -2168,6 +2230,13 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   crates' translating (`std`) half, so the monitor reads it and passes it to the inside's boot registers.
 
 ## For the orchestrator
+
+- N4 run 8: T1 had no answer, so native pieces at bounded and full look-ahead are now found by the native emitter's own
+  walk (Departures). The compute part is +44.67% against +21.2%. The two ways to remove one of the two indirect branches
+  of each call, return and jump through a register (run 7, below) still wait for a ruling; this track has no change
+  left of its own that moves the bar by more than a few points. For the WebAssembly output's owners: after a function
+  ran, rewriting only an instruction on its second cache line and announcing only that line leaves the WebAssembly
+  side running the old code (tests/guest/code.c's last line: "7 7" there, "7 8" natively and in Linux).
 
 - N4 run 7: pieces now run on past forward conditional branches (small gains: sieve -8%, matrix -3.5%, fib -2% cycles);
   running on past backward ones too made fib 29% slower, so it is not done. Without the jump's ceiling test fib and sort

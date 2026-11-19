@@ -83,8 +83,8 @@ The translator today is one crate whose finding and emitting are both in it:
   :269-296 build WebAssembly functions and are not part of it), `LookAhead` and `Optimise`
   (tr/code.rs:21-45), and the piece list a translation hands back (`CodeModule::pieces`,
   tr/code.rs:122-130). Today the finder is `pub(crate)` and built inside `plan` together with the
-  WebAssembly plans (tr/full.rs:44-113). Change T1 (section 6.2) moves it into a module of its own that both
-  emitters call.
+  WebAssembly plans (tr/full.rs:44-113). Change T1 (section 6.2) would move it into a module of its own that
+  both emitters call; as built the native emitter finds its pieces itself (section 3.2), so T1 is not needed.
 - The finder is not free of WebAssembly, and stays so: `Code::decode` gives every instruction its `effects`
   (tr/code.rs:543-548), which `wcontainers_guest_cpu::effects` finds by running the instruction's meaning
   into a recording emitter (gcpu/effects.rs:43-64, `G::emit` at :62). So a native build carries the meanings
@@ -141,16 +141,26 @@ rewritten) would change only that function (brief).
   FSC 0xf), a store to it faults (case 5), and EL0 cannot run a UXN page (case 4, EC 0x20). The floor reports
   any guest fault in the inside's half to the kernel as a fault at an address where nothing is mapped, which
   is what the WebAssembly output and Linux report there.
-- **Pieces** are what the shared finder gives at the container's look-ahead, as for WebAssembly: one
-  instruction (none), a stretch (bounded), or a function (full). A piece is the guest's instructions in
-  order, each carried over by its route (section 3.4); branches inside a piece are direct. As built until T1
-  (N4 run 7): a piece is the run from its start at the look-ahead's bound, ended by a transfer that does not
-  fall through, a trap or a backward conditional branch; it runs on past a forward conditional branch, whose
-  taken side is an exit placed out of line (linked like the others), and each straight-line part between
-  such branches has its own add, so the count is exact wherever the piece is left. A backward conditional
-  branch is a loop's back edge, already pointed straight at its target's piece, and its fall-through leaves
-  the loop: running on past it too was measured slower (fib +29% cycles, alternating pairs, the return
-  sequence then sitting right after the loop's branch; search -3%, sort -1.4%), so it ends the piece.
+- **Pieces** are what the code reaches from a start within the look-ahead: one instruction (none), at most
+  n instructions (bounded n), or everything up to the end of the guest page the start is on (full), found by
+  the native emitter itself (N4 run 8, a departure from T1, below). From the start it follows each
+  instruction that falls through and each direct branch's target on that page, in the order the code runs;
+  it does not follow a call's next instruction (the return comes back to it through its slot, so it starts
+  a piece of its own), nor a backward branch's next instruction, where a loop is left (measured: following
+  it put fib's return sequence right after its loop's branch and cost fib +37% cycles in alternating pairs;
+  leaving it out kept fib's cycles and gave interpret -10%, sort -4%, search -2%, matrix +9% against the
+  pieces of run 7, every workload's instructions unchanged, n4r9/ab-reach-noback.log). The instructions are
+  laid out in address order, each carried over by its route (section 3.4). A branch to an instruction the
+  piece holds goes straight to it (the emitter links it as a loader links an exit, `Native::link`), any
+  other target is an exit; a conditional branch's taken side is an exit placed out of line. Each
+  straight-line part (entered only at its start, ended by a branch or where the next instruction is not the
+  next in the piece) has its own add, so the count is exact wherever the piece is entered or left.
+  Why not the shared finder (T1): its functions hold what a native piece cannot enter (code after a call,
+  which the return reaches through its slot; the targets of a jump table, reached through their slots) and
+  are cut where WebAssembly's structured control needs it (irreducible flow, block limits), which native
+  code does not; and the count is E, a function of each instruction and its own address, so it does not
+  depend on how pieces are cut. Pieces stop at the end of the start's guest page, since each page's code
+  may change on its own; a piece that goes on onto the next page leaves through an exit.
 - **A loaded translation** is the code for one range of guest bytes at one guest address. On disk (the cache)
   a translation does not depend on the address: it carries a list of the places that hold a guest address.
   Loading it into the code area writes those places for the address the range sits at (ARM64: `movz`/`movk`
@@ -1510,7 +1520,8 @@ The changes:
   and a merge is received through the link and handed to the destination kernel, which may be under either
   back end. Nothing here closes it off.
 - **T1 (translator track): the finder apart from the WebAssembly plans** (section 3.1), a module both
-  emitters call, so a WebAssembly-only build has no native emitter. A native build still carries the meanings
+  emitters call, so a WebAssembly-only build has no native emitter. Not needed as built (N4 run 8): native
+  pieces are found by the native emitter (section 3.2). A native build still carries the meanings
   and wasm-encoder, since the finder's `effects` come from the meanings (section 3.1); it makes and runs no
   WebAssembly.
 - **T2 (translator track): the shared `counted` function** and the count in the WebAssembly output from it,
@@ -1805,9 +1816,9 @@ the ruling).
   through the link at the end. Beside the bar, tests/kernel.rs runs a program of this track's that forks,
   execs itself and takes signals (its turns end at the policy's limits, between pieces, section 5.5) on both
   outputs.
-- **N4, linking and speed.** Needs T1 (the finder apart from the WebAssembly plans, section 6.2; today
-  `plan` and `Finder` are private to the translator, tr/full.rs:44 and :228), by the translator track or by
-  this track if it agrees. Bounded and full look-ahead, load-time addresses, linked exits, the entry
+- **N4, linking and speed.** Pieces at bounded and full look-ahead are found by the native emitter
+  (section 3.2), so N4 does not wait for T1 (the shared finder made reachable, section 6.2), which no
+  other part of this plan needs now. Bounded and full look-ahead, load-time addresses, linked exits, the entry
   mirror, the call stub, the cache with the native key and disk files; the dynamic register uses of section
   3.3 counted and the three withheld registers chosen; 2 MiB entries and their splitting (section 5.2), with
   the contiguous bit measured against 4 KiB entries for ranges that cannot take a block; the Split route's
