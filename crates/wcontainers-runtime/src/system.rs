@@ -1,9 +1,9 @@
-//! The local system for an operating system: its clocks and randomness, the container's output
-//! streams, a directory of the host as the file backend, the host's network, free turns ended by a
+//! The local system for an operating system: its clocks and randomness, the container's standard
+//! input, output and error (or its terminal), a directory of the host as the file backend, the host's network, free turns ended by a
 //! timer thread at the kernel's slice or by an arrival from outside, and waiting in real time.
 
 use core::ops::ControlFlow;
-use std::io::Write;
+use std::io::{ErrorKind, Read, Write};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -11,11 +11,14 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use wcontainers_abi::{BackendRequestId, ConnectionId, Cpu, End, Event, Host, HostError, Warning};
+use wcontainers_abi::{
+    BackendRequestId, ConnectionId, Cpu, End, Event, Host, HostError, PAGE_SIZE, Warning,
+};
 use wcontainers_kernel::{Kernel, Standard};
 
+use crate::arrivals::{Arrival, Arrivals};
 use crate::files::Files;
-use crate::net::{Arrivals, Network};
+use crate::net::Network;
 use crate::{Execution, StopFlag, System, TerminalSize, Turn};
 
 /// A warning as the system keeps it: the kernel's or the back end's, by reason.
@@ -33,12 +36,22 @@ pub struct Warned {
 /// The ends this system names.
 #[repr(u32)]
 enum Named {
+    Input,
     Output,
     Error,
+    Terminal,
 }
 
+const INPUT: End = End(Named::Input as u32);
 const OUTPUT: End = End(Named::Output as u32);
 const ERROR: End = End(Named::Error as u32);
+const TERMINAL: End = End(Named::Terminal as u32);
+
+/// The most the input's reader reads at once: a page, the unit a pipe's room is granted in.
+const INPUT_PIECE: u64 = PAGE_SIZE;
+
+/// Why the standard input stopped early.
+const INPUT_NOT_READ: &str = "standard input not read";
 
 /// The local system.
 pub struct LocalSystem {
@@ -50,6 +63,12 @@ pub struct LocalSystem {
     credit_owed: Vec<End>,
     /// Ends the kernel closed, which the system lets go of in turn.
     closing: Vec<End>,
+    /// The container's standard input, until its reader starts.
+    input: Option<Box<dyn Read + Send>>,
+    /// The end the input goes in by, once named, and whether the system has let go of it.
+    input_end: Option<End>,
+    input_closed: bool,
+    input_credit: Arc<InputCredit>,
     warnings: Vec<Warned>,
     timer: Option<Timer>,
     files: Option<Files>,
@@ -86,6 +105,10 @@ impl LocalSystem {
             error,
             credit_owed: Vec::new(),
             closing: Vec::new(),
+            input: None,
+            input_end: None,
+            input_closed: false,
+            input_credit: Arc::default(),
             warnings: Vec::new(),
             timer: None,
             files: None,
@@ -94,6 +117,13 @@ impl LocalSystem {
             network: None,
             published: Vec::new(),
         }
+    }
+
+    /// Gives the container's first process `input` as its standard input, as `docker run --interactive`
+    /// does; without it, descriptor 0 is `/dev/null`. Read on a thread of its own, never more than
+    /// the kernel has room for.
+    pub fn input(&mut self, input: Box<dyn Read + Send>) {
+        self.input = Some(input);
     }
 
     /// Lets connections from the host at `at` reach the container's TCP port `port`, as `docker run
@@ -149,12 +179,18 @@ impl LocalSystem {
                 },
             );
         }
-        for arrival in &arrivals {
-            let Some(network) = &mut self.network else {
-                break;
-            };
-            if let Some(event) = network.event(arrival) {
-                kernel.event(cpu, self, event);
+        for arrival in arrivals {
+            match arrival {
+                Arrival::Input(bytes) => self.give_input(kernel, cpu, &bytes),
+                Arrival::InputEnded(error) => self.input_ended(kernel, cpu, error),
+                arrival => {
+                    let Some(network) = &mut self.network else {
+                        continue;
+                    };
+                    if let Some(event) = network.event(&arrival) {
+                        kernel.event(cpu, self, event);
+                    }
+                }
             }
         }
         if let Some(files) = &mut self.files {
@@ -170,6 +206,43 @@ impl LocalSystem {
             }
         }
         any
+    }
+
+    /// Hands the kernel bytes of the input, unless one side has let go of its end.
+    fn give_input(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu, bytes: &[u8]) {
+        if let Some(end) = self.input_end.filter(|_| !self.input_closed) {
+            kernel.event(cpu, self, Event::StreamData { end, bytes });
+        }
+    }
+
+    /// The input ended: the system lets go of a pipe's end, so the guest reads end of file. A
+    /// terminal's end stays, since its output goes on; the guest reads nothing more from it.
+    fn input_ended(
+        &mut self,
+        kernel: &mut Kernel,
+        cpu: &mut dyn Cpu,
+        error: Option<std::io::Error>,
+    ) {
+        if let Some(error) = error {
+            let detail = error.raw_os_error().map_or(u64::MAX, |code| code as u64);
+            let count = self
+                .warnings
+                .iter()
+                .find(|w| w.reason == INPUT_NOT_READ)
+                .map_or(1, |w| w.count + 1);
+            self.keep(
+                Warning {
+                    reason: INPUT_NOT_READ,
+                    detail,
+                    count,
+                },
+                false,
+            );
+        }
+        if self.input_end == Some(INPUT) && !self.input_closed {
+            self.input_closed = true;
+            kernel.event(cpu, self, Event::StreamClosed { end: INPUT });
+        }
     }
 
     /// Every warning so far, the kernel's and the back end's.
@@ -209,7 +282,10 @@ impl LocalSystem {
 }
 
 impl Drop for LocalSystem {
+    /// Stops the timer thread, and the input's reader once it next waits for room (one blocked
+    /// reading is left to end with the process).
     fn drop(&mut self) {
+        self.input_credit.stop();
         if let Some(timer) = &mut self.timer {
             *timer
                 .shared
@@ -269,6 +345,81 @@ fn time(shared: &Deadline, started: Instant, flag: &StopFlag) {
     }
 }
 
+/// The room the kernel gave for input and the reader has not used, shared with the reader.
+#[derive(Default)]
+struct InputCredit {
+    state: Mutex<Credit>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct Credit {
+    bytes: u64,
+    stopped: bool,
+}
+
+impl InputCredit {
+    fn give(&self, bytes: u64) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.bytes = state.bytes.saturating_add(bytes);
+        self.changed.notify_all();
+    }
+
+    fn stop(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .stopped = true;
+        self.changed.notify_all();
+    }
+
+    /// Waits for room, and takes up to `most` bytes of it; none once stopped.
+    fn wait(&self, most: u64) -> Option<u64> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            if state.stopped {
+                return None;
+            }
+            if state.bytes > 0 {
+                let taken = state.bytes.min(most);
+                state.bytes -= taken;
+                return Some(taken);
+            }
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    /// Gives back room taken and not used.
+    fn unused(&self, bytes: u64) {
+        self.give(bytes);
+    }
+}
+
+/// The input's reader: reads within the room the kernel gave, and hands each piece over.
+fn read_input(mut input: Box<dyn Read + Send>, credit: &InputCredit, arrivals: &Arrivals) {
+    let mut buffer = vec![0; INPUT_PIECE as usize];
+    while let Some(room) = credit.wait(INPUT_PIECE) {
+        match input.read(&mut buffer[..room as usize]) {
+            Ok(0) => {
+                arrivals.push(Arrival::InputEnded(None));
+                return;
+            }
+            Ok(read) => {
+                credit.unused(room - read as u64);
+                arrivals.push(Arrival::Input(buffer[..read].to_vec()));
+            }
+            Err(error) if error.kind() == ErrorKind::Interrupted => credit.unused(room),
+            Err(error) => {
+                arrivals.push(Arrival::InputEnded(Some(error)));
+                return;
+            }
+        }
+    }
+}
+
 impl Host for LocalSystem {
     fn monotonic_nanoseconds(&mut self) -> u64 {
         self.now()
@@ -320,10 +471,18 @@ impl Host for LocalSystem {
         }
     }
 
-    /// No end this system names takes input.
-    fn stream_credit(&mut self, _: End, _: u64) {}
+    /// Room for input; the kernel gives none on an end that takes nothing.
+    fn stream_credit(&mut self, end: End, bytes: u64) {
+        if Some(end) == self.input_end {
+            self.input_credit.give(bytes);
+        }
+    }
 
     fn stream_close(&mut self, end: End) {
+        if Some(end) == self.input_end {
+            self.input_credit.stop();
+            self.input_closed = true;
+        }
         self.closing.push(end);
     }
 
@@ -452,14 +611,37 @@ impl System for LocalSystem {
         self.keep(warning, true);
     }
 
-    /// Pipes, with no input; a terminal is not given.
-    fn standard(&mut self, _: Option<TerminalSize>) -> Standard {
-        self.credit_owed = vec![OUTPUT, ERROR];
-        Standard::Pipes {
-            input: None,
-            output: OUTPUT,
-            error: ERROR,
+    /// The terminal asked for, or pipes; with an input, its reader starts.
+    fn standard(&mut self, terminal: Option<TerminalSize>) -> Standard {
+        let standard = match terminal {
+            Some(size) => {
+                self.credit_owed = vec![TERMINAL];
+                self.input_end = self.input.is_some().then_some(TERMINAL);
+                Standard::Terminal {
+                    end: TERMINAL,
+                    columns: size.columns,
+                    rows: size.rows,
+                }
+            }
+            None => {
+                self.credit_owed = vec![OUTPUT, ERROR];
+                self.input_end = self.input.is_some().then_some(INPUT);
+                Standard::Pipes {
+                    input: self.input_end,
+                    output: OUTPUT,
+                    error: ERROR,
+                }
+            }
+        };
+        if let Some(input) = self.input.take() {
+            let credit = self.input_credit.clone();
+            let arrivals = self.arrivals.clone();
+            std::thread::Builder::new()
+                .name("wcontainers input".to_string())
+                .spawn(move || read_input(input, &credit, &arrivals))
+                .expect("an input thread");
         }
+        standard
     }
 }
 

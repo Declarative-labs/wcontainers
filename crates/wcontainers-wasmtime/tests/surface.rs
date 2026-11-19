@@ -110,19 +110,31 @@ fn images() -> &'static (PathBuf, PathBuf) {
 }
 
 fn reference(command: &str) -> Outcome {
-    let output = Command::new("docker")
-        .args([
-            "run",
-            "--rm",
-            "--platform",
-            "linux/arm64",
-            IMAGE,
-            "sh",
-            "-c",
-        ])
+    reference_with(&[], None, command)
+}
+
+/// As [`reference`], with more options for `docker run` and, when given, `input` as its standard
+/// input (none at all otherwise).
+fn reference_with(options: &[&str], input: Option<&[u8]>, command: &str) -> Outcome {
+    let mut child = Command::new("docker")
+        .args(["run", "--rm", "--platform", "linux/arm64"])
+        .args(options)
+        .args([IMAGE, "sh", "-c"])
         .arg(command)
-        .output()
+        .stdin(match input {
+            Some(_) => std::process::Stdio::piped(),
+            None => std::process::Stdio::null(),
+        })
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .unwrap();
+    if let Some(input) = input {
+        let mut stdin = child.stdin.take().unwrap();
+        let input = input.to_vec();
+        std::thread::spawn(move || stdin.write_all(&input));
+    }
+    let output = child.wait_with_output().unwrap();
     Outcome {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -607,6 +619,9 @@ fn a_second_process_starts_from_the_cache() {
     let _ = std::fs::remove_dir_all(&cache);
 }
 
+/// A user the kernel cannot start the first process as.
+const UNHONOURED_UID: u32 = 1000;
+
 /// The command line program runs the pipeline from the OCI image and from the plain tar as the
 /// reference does, and fails naming a refused field, having warned of a property it ignored.
 #[test]
@@ -630,11 +645,9 @@ fn the_command_line_program_runs_a_container() {
         assert_eq!(output.status.code(), Some(expected.exit_code));
     }
     let config = scratch().join(format!("config-{}.json", std::process::id()));
-    let mut spec = with_args(base_spec(), &["sh"]);
-    let mut process = spec.process().clone().unwrap();
-    process.set_terminal(Some(true));
-    spec.set_process(Some(process));
+    let spec = with_args(base_spec(), &["sh"]);
     let mut json = serde_json::to_value(&spec).unwrap();
+    json["process"]["user"]["uid"] = json!(UNHONOURED_UID);
     json["futureField"] = json!(true);
     std::fs::write(&config, serde_json::to_vec(&json).unwrap()).unwrap();
     let output = Command::new(program)
@@ -649,7 +662,7 @@ fn the_command_line_program_runs_a_container() {
     assert_eq!(output.status.code(), Some(125));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("process.terminal is not supported"),
+        stderr.contains("process.user.uid is not supported"),
         "{stderr}"
     );
     assert!(stderr.contains("ignored: futureField: 1"), "{stderr}");
@@ -1081,4 +1094,82 @@ fn a_program_not_in_the_path_is_not_found() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(127));
+}
+
+/// What a program that reads its standard input is given: more than a pipe holds, so it comes in
+/// as the kernel makes room.
+fn input_lines() -> Vec<u8> {
+    const LINES: u32 = 100_000;
+    (1..=LINES)
+        .map(|n| format!("{n}\n"))
+        .collect::<String>()
+        .into_bytes()
+}
+
+/// Reads its input with the shell's `read`, which shows nothing of how the input was cut, and
+/// with programs that read all of it.
+const INPUT_COMMAND: &str = "read first; echo first $first; stat -L -c %F /proc/self/fd/0; \
+     sort -n -r | head -2; read after || echo end of input";
+
+/// Standard input from the system reaches the first process as `docker run --interactive` gives
+/// it: a pipe, read to its end.
+#[test]
+fn standard_input_matches_docker_interactive() {
+    let (layout, _) = images();
+    let image = Image::oci(layout, "arm64").unwrap();
+    let spec = with_args(image.spec().unwrap(), &["sh", "-c", INPUT_COMMAND]);
+    let input = input_lines();
+    let (stdout, stderr) = (Captured::default(), Captured::default());
+    let mut system = LocalSystem::new(Box::new(stdout.clone()), Box::new(stderr.clone()));
+    system.input(Box::new(std::io::Cursor::new(input.clone())));
+    let mut container = container_on(&spec, &image, None, system);
+    let Ok(Ending::Finished { status }) = container.run();
+    assert_eq!(
+        outcome(status, &stdout, &stderr),
+        reference_with(&["--interactive"], Some(&input), INPUT_COMMAND)
+    );
+    // Without input, descriptor 0 is the null device, as without `--interactive`.
+    let (outcome_without, _) = ours(&spec, &image, None);
+    assert_eq!(outcome_without, reference(INPUT_COMMAND));
+}
+
+/// What a program on a terminal sees of it.
+const TERMINAL_COMMAND: &str = "tty; stty size; [ -t 0 ] && echo on a terminal; \
+     stat -L -c %F /proc/self/fd/1; echo to error >&2; exit 3";
+
+/// `process.terminal` gives the first process a terminal as `docker run --tty` does (its size 0 by
+/// 0, as a client with no terminal of its own has), with all it shows on the one stream.
+#[test]
+fn a_terminal_matches_docker_tty() {
+    let (layout, _) = images();
+    let image = Image::oci(layout, "arm64").unwrap();
+    let mut spec = with_args(image.spec().unwrap(), &["sh", "-c", TERMINAL_COMMAND]);
+    let mut process = spec.process().clone().unwrap();
+    process.set_terminal(Some(true));
+    spec.set_process(Some(process));
+    let (outcome, _) = ours(&spec, &image, None);
+    assert_eq!(outcome, reference_with(&["--tty"], None, TERMINAL_COMMAND));
+}
+
+/// The command line program's `--interactive` gives the container its own standard input.
+#[test]
+fn the_command_line_program_passes_its_input() {
+    let (_, files) = images();
+    let input = input_lines();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_wcon"))
+        .args(["--tar", files.to_str().unwrap(), "--interactive"])
+        .args(["--look-ahead", &look_ahead_argument()])
+        .args(["--", "sh", "-c", INPUT_COMMAND])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let given = input.clone();
+    let writer = std::thread::spawn(move || stdin.write_all(&given));
+    let output = child.wait_with_output().unwrap();
+    writer.join().unwrap().unwrap();
+    let expected = reference_with(&["--interactive"], Some(&input), INPUT_COMMAND);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), expected.stdout);
+    assert_eq!(output.status.code(), Some(expected.exit_code));
 }

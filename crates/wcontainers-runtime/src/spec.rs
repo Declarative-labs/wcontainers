@@ -4,7 +4,7 @@
 use oci_spec::runtime::Spec;
 use serde_json::{Value, json};
 
-use crate::Error;
+use crate::{Error, TerminalSize};
 
 /// The powers the kernel gives the first process: a default Docker container's.
 const CAPABILITIES: &[&str] = &[
@@ -133,6 +133,8 @@ pub(crate) struct Accepted {
     pub hostname: String,
     pub groups: Vec<u32>,
     pub uid: u32,
+    /// The terminal the first process has, when it has one.
+    pub terminal: Option<TerminalSize>,
     /// The bind mount of a host directory, if one is given.
     pub volume: Option<Volume>,
 }
@@ -269,6 +271,7 @@ pub(crate) fn accept(spec: &Spec) -> Result<Accepted, Error> {
             .unwrap_or_else(|| "localhost".to_string()),
         groups: process.user().additional_gids().clone().unwrap_or_default(),
         uid: process.user().uid(),
+        terminal: terminal(process)?,
         volume,
     })
 }
@@ -404,6 +407,33 @@ pub fn bind_mount(source: &std::path::Path, destination: &str) -> oci_spec::runt
     mount
 }
 
+/// The terminal `process.terminal` asks for, of `process.consoleSize`'s size (0 by 0 without one, as
+/// `docker run --tty` gives when its client has no terminal); the size is ignored without a
+/// terminal, as the specification says.
+fn terminal(process: &oci_spec::runtime::Process) -> Result<Option<TerminalSize>, Error> {
+    if process.terminal() != Some(true) {
+        return Ok(None);
+    }
+    let Some(size) = process.console_size() else {
+        return Ok(Some(TerminalSize::default()));
+    };
+    let fit = |value: u64, name: &str| {
+        u16::try_from(value).map_err(|_| {
+            refused(
+                format!("process.consoleSize.{name}"),
+                format!(
+                    "{value}: a terminal's size is at most {} characters",
+                    u16::MAX
+                ),
+            )
+        })
+    };
+    Ok(Some(TerminalSize {
+        columns: fit(size.width(), "width")?,
+        rows: fit(size.height(), "height")?,
+    }))
+}
+
 /// A bind mount of a host directory, read and write, at an absolute path other than the root.
 fn check_bind_mount(index: usize, mount: &Value) -> Result<Volume, Error> {
     let field = format!("mounts[{index}]");
@@ -460,12 +490,7 @@ fn process(value: &Value) -> Result<(), Error> {
         let path = format!("process.{name}");
         match name.as_str() {
             "args" | "env" | "cwd" => {}
-            "terminal" => absent(
-                &path,
-                field,
-                "a terminal: standard input in the kernel's interface and the terminal surface",
-            )?,
-            "consoleSize" => absent(&path, field, "a terminal (see process.terminal)")?,
+            "terminal" | "consoleSize" => {}
             "user" => user(field)?,
             "commandLine" => absent(&path, field, "a Windows host")?,
             "capabilities" => {

@@ -9,85 +9,17 @@ use std::net::{
     IpAddr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket,
 };
 use std::os::fd::AsFd;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
-use std::time::Duration;
 
 use polling::{Event as Interest, Events, Poller};
 use socket2::{Domain, Protocol, Socket as RawSocket, Type};
 use wcontainers_abi::{ConnectionId, Event, HostError};
 use wcontainers_kernel::linux::errno as linux_errno;
 
-use crate::StopFlag;
+use crate::arrivals::{Arrival, Arrivals};
 use crate::errno;
-
-/// What arrived from outside for the kernel.
-pub(crate) enum Arrival {
-    /// A socket can be read or written, or a connection finished connecting.
-    Ready {
-        id: u32,
-        readable: bool,
-        writable: bool,
-    },
-    Connected(u32, i32),
-    LookedUp(u64, Vec<u8>, i32),
-}
-
-/// Arrivals from the network's threads, which wake an idle system and end a free turn.
-#[derive(Default)]
-pub(crate) struct Arrivals {
-    queue: Mutex<Vec<Arrival>>,
-    /// Whether the queue may hold something: read at every exit without the lock.
-    pending: AtomicBool,
-    changed: Condvar,
-    flag: Mutex<Option<StopFlag>>,
-}
-
-impl Arrivals {
-    pub(crate) fn push(&self, arrival: Arrival) {
-        self.queue
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(arrival);
-        self.pending.store(true, Ordering::SeqCst);
-        self.changed.notify_all();
-        if let Some(flag) = &*self.flag.lock().unwrap_or_else(PoisonError::into_inner) {
-            flag.raise();
-        }
-    }
-
-    pub(crate) fn set_flag(&self, flag: StopFlag) {
-        *self.flag.lock().unwrap_or_else(PoisonError::into_inner) = Some(flag);
-    }
-
-    /// What arrived, if anything did.
-    pub(crate) fn take(&self) -> Vec<Arrival> {
-        if !self.pending.swap(false, Ordering::SeqCst) {
-            return Vec::new();
-        }
-        std::mem::take(&mut *self.queue.lock().unwrap_or_else(PoisonError::into_inner))
-    }
-
-    /// Waits until something arrives or `timeout` passes (for ever when none).
-    pub(crate) fn wait(&self, timeout: Option<Duration>) {
-        let queue = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
-        if !queue.is_empty() {
-            return;
-        }
-        let _queue = match timeout {
-            Some(timeout) => self
-                .changed
-                .wait_timeout(queue, timeout)
-                .map(|(guard, _)| guard)
-                .unwrap_or_else(|poisoned| poisoned.into_inner().0),
-            None => self
-                .changed
-                .wait(queue)
-                .unwrap_or_else(PoisonError::into_inner),
-        };
-    }
-}
 
 enum Socket {
     Stream(TcpStream),
@@ -411,6 +343,8 @@ impl Network {
     /// The event the kernel is told for one arrival; none when it tells nothing new.
     pub(crate) fn event<'a>(&mut self, arrival: &'a Arrival) -> Option<Event<'a>> {
         match *arrival {
+            // The standard input's, which the system hands over itself.
+            Arrival::Input(_) | Arrival::InputEnded(_) => None,
             Arrival::Connected(id, error) => Some(Event::Connected {
                 connection: ConnectionId(id),
                 error,

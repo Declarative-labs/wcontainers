@@ -2,11 +2,13 @@
 //!
 //! wcon (--oci DIRECTORY | --tar FILE) [--config config.json] [--cache DIRECTORY]
 //!      [--look-ahead full|none|N] [--size] [--volume SOURCE:DESTINATION]
-//!      [--publish ADDRESS:PORT:CONTAINER_PORT]... [-- ARGUMENTS...]
+//!      [--publish ADDRESS:PORT:CONTAINER_PORT]... [--interactive] [--tty] [-- ARGUMENTS...]
 //!
 //! What runs is the OCI image's configuration converted, or the runtime's base configuration for a
 //! plain tar, or `--config`'s; the arguments, when given, replace `process.args`. `--volume` adds a
 //! bind mount of a host directory to it; `--publish` lets the host reach a TCP port of the container.
+//! `--interactive` gives the container this program's standard input, and `--tty` sets
+//! `process.terminal`, as `docker run` takes them.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -66,6 +68,8 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
     };
     let volume: Option<String> = arguments.opt_value_from_str("--volume")?;
     let published: Vec<String> = arguments.values_from_str("--publish")?;
+    let interactive = arguments.contains("--interactive");
+    let tty = arguments.contains("--tty");
     let optimise = if arguments.contains("--size") {
         Optimise::Size
     } else {
@@ -108,14 +112,22 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
         mounts.push(bind_mount(source.as_ref(), destination));
         spec.set_mounts(Some(mounts));
     }
-    if !command.is_empty() {
+    if !command.is_empty() || tty {
         let mut process = spec.process().clone().unwrap_or_default();
-        process.set_args(Some(command));
+        if !command.is_empty() {
+            process.set_args(Some(command));
+        }
+        if tty {
+            process.set_terminal(Some(true));
+        }
         spec.set_process(Some(process));
     }
 
     let runtime = Runtime::<Back>::new(&RuntimeSettings { cache });
     let mut system = LocalSystem::new(Box::new(std::io::stdout()), Box::new(std::io::stderr()));
+    if interactive {
+        system.input(Box::new(std::io::stdin()));
+    }
     for publish in published {
         let (at, port) = publish
             .rsplit_once(SEPARATOR)

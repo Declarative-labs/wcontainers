@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use wcontainers_abi::{Cpu, Exit, Host, Next, Resume, ThreadId, Warning};
 pub use wcontainers_kernel::{Kernel, Standard};
 
+mod arrivals;
 mod container;
 mod errno;
 pub mod files;

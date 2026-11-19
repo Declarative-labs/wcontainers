@@ -138,7 +138,7 @@ impl<E: Executor> Runtime<E> {
         system.stop_flag(cpu.stop_flag());
         let arguments: Vec<&[u8]> = accepted.args.iter().map(|a| a.as_bytes()).collect();
         let environment: Vec<&[u8]> = env.iter().map(|v| v.as_bytes()).collect();
-        let standard = system.standard(None);
+        let standard = system.standard(accepted.terminal);
         kernel.start(
             &mut cpu,
             &mut system,

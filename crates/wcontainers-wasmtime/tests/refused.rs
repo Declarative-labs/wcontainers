@@ -185,9 +185,10 @@ refused! {
     process_absent: "process", |v| { v.as_object_mut().unwrap().remove("process"); };
     process_args_empty: "process.args", |v| v["process"]["args"] = json!([]);
     process_cwd_relative: "process.cwd", |v| v["process"]["cwd"] = json!("tmp");
-    process_terminal: "process.terminal", |v| v["process"]["terminal"] = json!(true);
-    process_console_size: "process.consoleSize", |v| v["process"]["consoleSize"] =
-        json!({"height": 24, "width": 80});
+    process_console_size_too_wide: "process.consoleSize.width", |v| {
+        v["process"]["terminal"] = json!(true);
+        v["process"]["consoleSize"] = json!({"height": 24, "width": u32::from(u16::MAX) + 1});
+    };
     process_user_uid: "process.user.uid", |v| v["process"]["user"]["uid"] = json!(1000);
     process_user_gid: "process.user.gid", |v| v["process"]["user"]["gid"] = json!(1000);
     process_user_umask: "process.user.umask", |v| v["process"]["user"]["umask"] = json!(0o077);
