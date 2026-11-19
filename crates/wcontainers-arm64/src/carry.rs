@@ -32,6 +32,7 @@ const BORROWED: usize = 4;
 
 /// The thread's register page (section 3.3).
 #[repr(C)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RegisterPage {
     /// The guest's values of the withheld registers.
     pub withheld: [u64; WITHHELD.len()],
@@ -50,6 +51,8 @@ const W_BYTES: u8 = size_of::<u32>() as u8;
 const Q_BYTES: u8 = size_of::<u128>() as u8;
 /// The bytes of a half-word access.
 const H_BYTES: u8 = size_of::<u16>() as u8;
+/// The stack pointer's alignment when it is a base (SA0): a quadword.
+const STACK_ALIGNMENT: u64 = size_of::<u128>() as u64;
 
 /// The bytes of one instruction.
 const INSTRUCTION: u64 = Arm64::MAX_LENGTH;
@@ -268,18 +271,22 @@ fn uses_scratch(route: Route) -> bool {
     !matches!(route, Route::Copy | Route::Constant)
 }
 
-/// `word` with registers `from` named `to` instead (a pair moves by its first register's field): the register
-/// fields that name them as general registers are found by trying them against the meaning's effects.
+/// `word` with registers `from` named `to` instead (a pair moves by its first register's field, and any other
+/// field naming one of the pair moves with it): the register fields that name them as general registers are
+/// found by trying them against the meaning's effects.
 fn substitute(word: u32, from: &[Register], to: &[Register]) -> u32 {
     let form = forms::form(word).expect("a decoded word has a form");
-    let fields: Vec<&str> = form
+    let fields: Vec<(&str, Register)> = form
         .fields
         .iter()
         .filter(|(name, _, width)| {
             name.starts_with(field::REGISTER) && *width == encode::REGISTER_BITS
         })
-        .map(|(name, ..)| name.as_str())
-        .filter(|name| form.field(word, name) == Some(from[0].into()))
+        .filter_map(|(name, ..)| {
+            let named = form.field(word, name)?;
+            let k = from.iter().position(|&f| u32::from(f) == named)?;
+            Some((name.as_str(), to[k]))
+        })
         .collect();
     let original = decode(word);
     let (uses, defs) = touched(&original);
@@ -300,8 +307,8 @@ fn substitute(word: u32, from: &[Register], to: &[Register]) -> u32 {
                 .iter()
                 .enumerate()
                 .filter(|(k, _)| subset >> k & 1 != 0)
-                .fold(word, |w, (_, f)| {
-                    encode::replace(w, f, to[0].into()).expect("a register fits")
+                .fold(word, |w, (_, &(f, r))| {
+                    encode::replace(w, f, r.into()).expect("a register fits")
                 })
         })
         .find(|&w| {
@@ -340,12 +347,12 @@ pub(crate) fn carry(i: &I, word: u32, address: u64, code: &mut HostCode) {
                 groups.push(pair);
             }
         }
-    } else {
-        groups = WITHHELD
-            .into_iter()
-            .filter(|&w| named(w))
-            .map(|w| vec![w])
-            .collect();
+    }
+    // Each other withheld register named moves alone (a `casp`'s base among them).
+    for w in WITHHELD {
+        if named(w) && !groups.iter().any(|g| g.contains(&w)) {
+            groups.push(vec![w]);
+        }
     }
     let mut avoid = uses.union(defs);
     let mut scratch_free = !uses_scratch(route);
@@ -678,7 +685,7 @@ fn transfer(out: &mut Out, i: &I, word: u32) {
 }
 
 /// The link register.
-const LINK: Register = 30;
+pub const LINK: Register = 30;
 
 /// A jump through a register to the entry slot of its target (section 3.2).
 fn jump(out: &mut Out, op: BranchRegister, rn: Reg) {
@@ -789,7 +796,23 @@ fn exclusive(out: &mut Out, i: &I) {
         } => {
             let total = u32::from(bytes) * if pair { 2 } else { 1 };
             let m = i.memory_access().expect("an access");
-            let untag = encode::ubfx(SCRATCH, number(rn), 0, TAG_LOW);
+            // The access goes through t, so a stack pointer base gets the check SA0 would make, and `ubfx`,
+            // which reads register 31 as zero, takes it from t.
+            let untag = if rn == Reg::Sp {
+                let copy = encode::add_immediate(SCRATCH, number(rn), 0).expect("zero fits");
+                out.put(copy);
+                out.put(
+                    encode::and_immediate(SCRATCH, SCRATCH, STACK_ALIGNMENT - 1)
+                        .expect("a power of two less one is a logical immediate"),
+                );
+                out.tail(
+                    encode::compare_branch(true, SCRATCH, 0).expect("fits"),
+                    |t| t.call = Some(InsideCall::Misaligned),
+                );
+                vec![copy, encode::ubfx(SCRATCH, SCRATCH, 0, TAG_LOW)]
+            } else {
+                vec![encode::ubfx(SCRATCH, number(rn), 0, TAG_LOW)]
+            };
             let load = if pair {
                 let name = if bytes == X_BYTES {
                     form::LDP_64
@@ -801,7 +824,7 @@ fn exclusive(out: &mut Out, i: &I) {
             } else {
                 encode::load_store(sized(total).0, number(rt), SCRATCH, 0, 1).expect("fits")
             };
-            access(out, &m, Some(total), &[untag], load);
+            access(out, &m, Some(total), &untag, load);
             let remember = |address| Fixup::Remember {
                 bytes,
                 pair,

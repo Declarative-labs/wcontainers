@@ -242,3 +242,21 @@ fn every_encoding_decodes_as_meant() {
     assert!(encode::and_immediate(0, 0, 0).is_err());
     println!("seed {seed}, {cases} cases, {logical} logical immediates");
 }
+
+/// The exception forms, which the CPU we present decodes as traps or not at all, read back by Arm's table.
+#[test]
+fn exception_forms_read_back() {
+    for name in [form::BRK, form::UDF, form::HVC] {
+        for imm in [0, 1, u16::MAX] {
+            let word = encode::exception(name, imm);
+            let found = wcontainers_arm64::forms::form(word).expect("a form");
+            assert_eq!(found.name, name);
+            assert_eq!(found.field(word, field::IMM16), Some(imm.into()));
+        }
+    }
+    let eret = encode::exception_return();
+    assert_eq!(
+        wcontainers_arm64::forms::form(eret).map(|f| f.name.as_str()),
+        Some(form::ERET)
+    );
+}

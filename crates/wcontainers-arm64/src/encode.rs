@@ -54,9 +54,11 @@ pub mod form {
     pub const CASH: &str = "CASH_C32_comswap";
     pub const CAS_32: &str = "CAS_C32_comswap";
     pub const CASP: &str = "CASP_CP64_comswappr";
+    pub const HVC: &str = "HVC_EX_exception";
+    pub const ERET: &str = "ERET_64E_branch_reg";
 
     /// Every form above.
-    pub const ALL: [&str; 42] = [
+    pub const ALL: [&str; 44] = [
         MOVZ,
         MOVK,
         UBFM,
@@ -99,6 +101,8 @@ pub mod form {
         CASH,
         CAS_32,
         CASP,
+        HVC,
+        ERET,
     ];
 }
 
@@ -489,7 +493,12 @@ pub fn compare_swap_of(name: &str, rs: Register, rt: Register, rn: Register) -> 
     word(name, &fields).expect("registers fit")
 }
 
-/// `brk #imm16`, or `udf #imm16`, by form.
+/// `eret`: back to the level and address the exception registers hold.
+pub fn exception_return() -> u32 {
+    word(form::ERET, &[]).expect("no fields")
+}
+
+/// `brk #imm16`, `udf #imm16` or `hvc #imm16`, by form.
 pub fn exception(name: &str, imm16: u16) -> u32 {
     word(name, &[(field::IMM16, imm16.into())]).expect("the immediate fits its field")
 }
