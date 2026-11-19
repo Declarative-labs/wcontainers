@@ -2125,6 +2125,14 @@ Next (in order):
   `helper_binding(Vertex)` in set 3) and the pixel shader's `HelperValue::Layer`/`Viewport` are the
   run's. Each run draws only the vertices that name it (others are placed outside the clip volume).
   `tests/geometry_draw.rs` (`layered_geometry_draws_as_direct3d_11_does`) does this.
+  A primitive naming a layer at or past the views' layer count (since run 43): set
+  `VariantFlags::LAYER_FROM_STAGE` and the same `linked` (location one past every location either
+  program lists, as for clip distances) in the geometry shader's key and the pixel shader's. The
+  pass-through then reads `stage::PASSTHROUGH_LAYER_COUNT` (the views' layer count, u32, at byte 8
+  of the same block) beside `PASSTHROUGH_HELPERS`, keeps such primitives in layer 0's run and passes
+  the named layer as a flat u32 at `linked.location` plus the linked values' slots; the pixel
+  shader reads its layer from there and no longer lists `HelperValue::Layer`
+  (`layers_past_the_views_draw_into_the_first_as_direct3d_11_does`; Wine's test_layered_rendering).
 - `Stages::destroy(backend)` releases its programs and buffers.
 - A vertex shader writing no `SV_Position` (feeding stream output, a geometry or a hull shader)
   converts: its program writes the position (0, 0, 0, -1), outside every clip volume, so drawn it
@@ -3705,3 +3713,10 @@ were already there.
   ..."): under the flag a size asked at a level at or past `HelperValue::TextureLevels` reads
   zero, so a front binds it where a slot asked its size is empty (zero levels written there), on
   any back end; doc of the flag and plan 4.12 only, no new field.
+
+- `VariantFlags::LAYER_FROM_STAGE` and `HelperValue::LayerCount` (run 43, commit "interface: a
+  layer named past the views drawn into the first ..."): the Direct3D 11 track's layered item. A
+  flag in both programs' keys (as `CLIP_DISTANCE`), the named layer a flat u32 after `linked`'s
+  values (doc of `LinkedValues`), and the views' layer count a value of the pass-through's block;
+  plan 4.12's layered drawing says so. Fronts that do not set the flag see no change
+  (`PASSTHROUGH_HELPERS` keeps its two values).
