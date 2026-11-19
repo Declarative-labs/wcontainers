@@ -59,8 +59,18 @@ mod macos {
     /// The environment variable that sets the stop test's seed.
     const SEED_VARIABLE: &str = "WCONTAINERS_FLOOR_SEED";
 
+    /// The highest percentile of the stop delays reported.
+    const HIGHEST_PERCENTILE: u64 = 99;
+
+    /// The whole that a percentile is a part of.
+    const PERCENT: u64 = 100;
+
+    /// Stops above the highest percentile reported, so that it rests on more than the one slowest stop.
+    const STOPS_ABOVE_HIGHEST_PERCENTILE: u64 = 3;
+
     /// Stops the stop test makes unless told otherwise.
-    const DEFAULT_STOPS: u64 = 250;
+    const DEFAULT_STOPS: u64 =
+        STOPS_ABOVE_HIGHEST_PERCENTILE * PERCENT / (PERCENT - HIGHEST_PERCENTILE);
 
     /// The stop test's seed unless told otherwise.
     const DEFAULT_SEED: u64 = 0x9e37_79b9_7f4a_7c15;
@@ -420,13 +430,13 @@ mod macos {
         sorted.sort_by(f64::total_cmp);
         let at = |q: f64| sorted[((sorted.len() - 1) as f64 * q) as usize];
         println!(
-            "stop delay from the decision to the virtual CPU's exit, {} stops, seed {:#x}, nanoseconds: min {:.0} median {:.0} 90th {:.0} 99th {:.0} max {:.0}",
+            "stop delay from the decision to the virtual CPU's exit, {} stops, seed {:#x}, nanoseconds: min {:.0} median {:.0} 90th {:.0} {HIGHEST_PERCENTILE}th {:.0} max {:.0}",
             sorted.len(),
             settings.seed,
             sorted[0],
             at(0.5),
             at(0.9),
-            at(0.99),
+            at(HIGHEST_PERCENTILE as f64 / PERCENT as f64),
             sorted[sorted.len() - 1]
         );
     }
