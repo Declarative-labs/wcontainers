@@ -119,6 +119,8 @@ pub const MISC_TEXTURECUBE: u32 = 0x4;
 pub const MISC_SHARED: u32 = 0x2;
 /// `D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX`: shared with a keyed mutex (not served).
 pub const MISC_SHARED_KEYEDMUTEX: u32 = 0x100;
+/// `D3D11_RESOURCE_MISC_SHARED_NTHANDLE`: shared through an NT handle (not served).
+pub const MISC_SHARED_NTHANDLE: u32 = 0x800;
 /// `D3D11_RESOURCE_MISC_GDI_COMPATIBLE`: GDI draws into it through `IDXGISurface1::GetDC`.
 pub const MISC_GDI_COMPATIBLE: u32 = 0x200;
 /// `D3D11_RESOURCE_MISC_RESOURCE_CLAMP`: the texture takes `SetResourceMinLOD`.

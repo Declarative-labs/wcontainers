@@ -201,19 +201,44 @@ fn level_texture_limits(level: u32) -> [u32; 4] {
     }
 }
 
-/// The highest feature level `backend` serves (plan section 9): 11_0 with compute, 10_0 without.
-pub fn top_level(caps: &wcontainers_gpu::Caps) -> u32 {
-    if caps.has(Features::COMPUTE) {
-        level::L11_0
-    } else {
-        level::L10_0
+/// The color targets a pass takes at feature level `level`.
+fn level_targets(level: u32) -> u32 {
+    match level {
+        level::L9_1 | level::L9_2 => 1,
+        level::L9_3 => 4,
+        _ => MAX_COLOR_TARGETS as u32,
     }
+}
+
+/// Whether `caps` serves every requirement of feature level `level` (plan section 9): its texture
+/// sizes and targets within the adapter's limits; from 10_0 `D32_FLOAT_S8X24_UINT` targets, float
+/// targets, and the geometry stage and stream output, which only the stage helper's compute route
+/// serves (`GeometryAsReplay` is not built); at 11_0 compute.
+fn serves(caps: &wcontainers_gpu::Caps, level: u32) -> bool {
+    let limits = &caps.limits;
+    let [extent, cube_extent, volume, layers] = level_texture_limits(level);
+    let sized = limits.max_texture_2d >= extent
+        && limits.max_texture_cube >= cube_extent
+        && limits.max_texture_3d >= volume
+        && limits.max_texture_layers >= layers
+        && limits.color_targets >= level_targets(level);
+    let renders = |f: Format, u: FormatUse| caps.formats.get(f).contains(u);
+    sized
+        && (level < level::L10_0
+            || (renders(Format::Depth32FloatStencil8, FormatUse::DEPTH_STENCIL)
+                && renders(Format::Rgba32Float, FormatUse::RENDER)
+                && caps.has(Features::COMPUTE)))
+}
+
+/// The highest feature level `caps` serves, if any.
+pub fn top_level(caps: &wcontainers_gpu::Caps) -> Option<u32> {
+    DEFAULT_LEVELS.into_iter().find(|&l| serves(caps, l))
 }
 
 impl<B: Backend> Device<B> {
     /// Makes the device at the first of `levels` (or of Direct3D's default list) the back end serves.
     pub fn new(mut backend: B, levels: &[u32]) -> Result<Self> {
-        let top = top_level(backend.caps());
+        let top = top_level(backend.caps()).ok_or(Error::Unsupported)?;
         let asked: &[u32] = if levels.is_empty() {
             &DEFAULT_LEVELS
         } else {
@@ -309,10 +334,10 @@ impl<B: Backend> Device<B> {
     pub fn format_support(&self, dxgi: u32) -> u32 {
         use crate::desc::support::*;
         let mut bits = 0;
-        if format::vertex_format(dxgi).is_some() {
+        if format::vertex_format(dxgi).is_some() && format::level_vertex_buffer(dxgi, self.level) {
             bits |= IA_VERTEX_BUFFER;
         }
-        if format::index_format(dxgi).is_some() {
+        if format::index_format(dxgi).is_some() && format::level_index_buffer(dxgi, self.level) {
             bits |= IA_INDEX_BUFFER;
         }
         // A typeless format is reported as its storage: textures of it, not its uses (its members').
@@ -382,7 +407,9 @@ impl<B: Backend> Device<B> {
         if format::depth_only(dxgi) {
             bits &= !(SHADER_LOAD | SHADER_SAMPLE | MULTISAMPLE_LOAD);
         }
-        if self.level < crate::desc::level::L10_1 && format::signed_normalized(f) {
+        if self.level < crate::desc::level::L10_1 && format::signed_normalized(f)
+            || !format::level_blended(dxgi, self.level)
+        {
             bits &= !BLENDABLE;
         }
         if format::displayed(dxgi, self.level) {
@@ -813,9 +840,14 @@ impl<B: Backend> Device<B> {
                 "the format does not support the bind flags",
             ));
         }
-        if d.misc_flags & MISC_SHARED != 0 && d.misc_flags & MISC_SHARED_KEYEDMUTEX != 0 {
+        // Sharing is from 10_0, of exactly one kind: shared or with a keyed mutex, either through an
+        // NT handle or not.
+        let sharing = d.misc_flags & (MISC_SHARED | MISC_SHARED_KEYEDMUTEX);
+        if (sharing != 0 || d.misc_flags & MISC_SHARED_NTHANDLE != 0)
+            && (self.level < level::L10_0 || !sharing.is_power_of_two())
+        {
             return Err(Error::InvalidArg(
-                "shared and shared with a keyed mutex exclude each other",
+                "sharing below 10_0, or not of exactly one kind",
             ));
         }
         let format = format::storage_format(d.format, d.bind_flags & bind::DEPTH_STENCIL != 0)?;

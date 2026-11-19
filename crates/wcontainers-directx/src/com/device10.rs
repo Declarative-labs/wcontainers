@@ -90,6 +90,18 @@ fn misc11(misc: u32) -> u32 {
     m
 }
 
+/// The CPU access a Direct3D 10 texture is made with: Direct3D 10's runtime takes a default
+/// texture bound as a shader resource or render target with CPU access, and makes it without any
+/// (its maps then fail as on any default texture).
+fn cpu_access10(usage: D3D11_USAGE, bind: u32, cpu: u32) -> u32 {
+    let ignored = (D3D11_BIND_SHADER_RESOURCE.0 | D3D11_BIND_RENDER_TARGET.0) as u32;
+    if usage == D3D11_USAGE_DEFAULT && bind & ignored != 0 {
+        0
+    } else {
+        cpu
+    }
+}
+
 fn viewport11(v: &D3D10_VIEWPORT) -> D3D11_VIEWPORT {
     D3D11_VIEWPORT {
         TopLeftX: v.TopLeftX as f32,
@@ -814,6 +826,7 @@ impl Device_Impl {
         let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
         let mut d: D3D11_TEXTURE1D_DESC = unsafe { convert::same_fields(d) };
         d.MiscFlags = misc11(d.MiscFlags);
+        d.CPUAccessFlags = cpu_access10(d.Usage, d.BindFlags, d.CPUAccessFlags);
         let mut t = None;
         self.create_texture1_d(&d, init.cast(), OutRef::from(&mut t))?;
         t.ok_or(E_INVALIDARG)?.cast()
@@ -827,6 +840,7 @@ impl Device_Impl {
         let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
         let mut d: D3D11_TEXTURE2D_DESC = unsafe { convert::same_fields(d) };
         d.MiscFlags = misc11(d.MiscFlags);
+        d.CPUAccessFlags = cpu_access10(d.Usage, d.BindFlags, d.CPUAccessFlags);
         let mut t = None;
         self.create_texture2_d(&d, init.cast(), OutRef::from(&mut t))?;
         t.ok_or(E_INVALIDARG)?.cast()
@@ -840,6 +854,7 @@ impl Device_Impl {
         let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
         let mut d: D3D11_TEXTURE3D_DESC = unsafe { convert::same_fields(d) };
         d.MiscFlags = misc11(d.MiscFlags);
+        d.CPUAccessFlags = cpu_access10(d.Usage, d.BindFlags, d.CPUAccessFlags);
         let mut t = None;
         self.create_texture3_d(&d, init.cast(), OutRef::from(&mut t))?;
         t.ok_or(E_INVALIDARG)?.cast()

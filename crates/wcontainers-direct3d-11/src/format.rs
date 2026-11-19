@@ -17,6 +17,60 @@ pub fn displayed(dxgi: u32, level: u32) -> bool {
         && (level >= level::L10_0 || !DISPLAYED_FROM_10_0.contains(&dxgi))
 }
 
+/// What Microsoft's 10Level9 format tables ("Format support for Direct3D Feature 10Level9 9.1
+/// hardware" and "9.3 hardware") give feature levels 9_1 to 9_3, each format with the first of them
+/// that has it: vertex buffers, blended targets and index buffers.
+const LEVEL9_VERTEX_BUFFERS: [(u32, u32); 12] = [
+    (dxgi::R32G32B32A32_FLOAT, level::L9_1),
+    (dxgi::R32G32B32_FLOAT, level::L9_1),
+    (dxgi::R16G16B16A16_SNORM, level::L9_1),
+    (dxgi::R16G16B16A16_SINT, level::L9_1),
+    (dxgi::R32G32_FLOAT, level::L9_1),
+    (dxgi::R8G8B8A8_UNORM, level::L9_1),
+    (dxgi::R8G8B8A8_UINT, level::L9_1),
+    (dxgi::R16G16_SNORM, level::L9_1),
+    (dxgi::R16G16_SINT, level::L9_1),
+    (dxgi::R32_FLOAT, level::L9_1),
+    (dxgi::R16G16B16A16_FLOAT, level::L9_3),
+    (dxgi::R16G16_FLOAT, level::L9_3),
+];
+const LEVEL9_BLENDED: [(u32, u32); 11] = [
+    (dxgi::R8G8B8A8_UNORM, level::L9_1),
+    (dxgi::R8G8B8A8_UNORM_SRGB, level::L9_1),
+    (dxgi::R8G8_UNORM, level::L9_1),
+    (dxgi::R8_UNORM, level::L9_1),
+    (dxgi::A8_UNORM, level::L9_1),
+    (dxgi::B5G6R5_UNORM, level::L9_1),
+    (dxgi::B8G8R8A8_UNORM, level::L9_1),
+    (dxgi::B8G8R8A8_UNORM_SRGB, level::L9_1),
+    (dxgi::B8G8R8X8_UNORM, level::L9_1),
+    (dxgi::B8G8R8X8_UNORM_SRGB, level::L9_1),
+    (dxgi::R16G16B16A16_FLOAT, level::L9_3),
+];
+// 32-bit indices are from 9_2 (Microsoft's feature level table, "Direct3D feature levels").
+const LEVEL9_INDEX_BUFFERS: [(u32, u32); 2] = [(R16_UINT, level::L9_1), (R32_UINT, level::L9_2)];
+
+/// Whether `table` of the 10Level9 tables gives DXGI format `dxgi` at feature level `level`;
+/// from 10_0 the tables do not limit.
+fn level9_has(table: &[(u32, u32)], dxgi: u32, level: u32) -> bool {
+    level >= level::L10_0 || table.iter().any(|&(f, from)| f == dxgi && level >= from)
+}
+
+/// Whether vertex buffers of `dxgi` are reported at feature level `level`.
+pub fn level_vertex_buffer(dxgi: u32, level: u32) -> bool {
+    level9_has(&LEVEL9_VERTEX_BUFFERS, dxgi, level)
+}
+
+/// Whether targets of `dxgi` are reported blendable at feature level `level`.
+pub fn level_blended(dxgi: u32, level: u32) -> bool {
+    level9_has(&LEVEL9_BLENDED, dxgi, level)
+}
+
+/// Whether index buffers of `dxgi` are reported at feature level `level`.
+pub fn level_index_buffer(dxgi: u32, level: u32) -> bool {
+    level9_has(&LEVEL9_INDEX_BUFFERS, dxgi, level)
+}
+
 /// Whether `format` is signed normalised, which Direct3D blends only from feature level 10_1.
 pub fn signed_normalized(format: Format) -> bool {
     matches!(

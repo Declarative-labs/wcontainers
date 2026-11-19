@@ -4028,14 +4028,14 @@ impl IDXGIResource1_Impl for Buffer_Impl {
         lpname: &windows::core::PCWSTR,
     ) -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
         let _lock = lock();
-        Err(missing("IDXGIResource1::CreateSharedHandle"))
+        self.nt_shared_handle()
     }
 }
 
 impl IDXGIResource_Impl for Buffer_Impl {
     fn GetSharedHandle(&self) -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
         let _lock = lock();
-        Err(missing("IDXGIResource::GetSharedHandle"))
+        self.shared_handle()
     }
     fn GetUsage(&self) -> windows::core::Result<DXGI_USAGE> {
         let _lock = lock();
@@ -4278,14 +4278,14 @@ impl IDXGIResource1_Impl for Texture1D_Impl {
         lpname: &windows::core::PCWSTR,
     ) -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
         let _lock = lock();
-        Err(missing("IDXGIResource1::CreateSharedHandle"))
+        self.nt_shared_handle()
     }
 }
 
 impl IDXGIResource_Impl for Texture1D_Impl {
     fn GetSharedHandle(&self) -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
         let _lock = lock();
-        Err(missing("IDXGIResource::GetSharedHandle"))
+        self.shared_handle()
     }
     fn GetUsage(&self) -> windows::core::Result<DXGI_USAGE> {
         let _lock = lock();
@@ -4536,14 +4536,14 @@ impl IDXGIResource1_Impl for Texture2D_Impl {
         lpname: &windows::core::PCWSTR,
     ) -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
         let _lock = lock();
-        Err(missing("IDXGIResource1::CreateSharedHandle"))
+        self.nt_shared_handle()
     }
 }
 
 impl IDXGIResource_Impl for Texture2D_Impl {
     fn GetSharedHandle(&self) -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
         let _lock = lock();
-        Err(missing("IDXGIResource::GetSharedHandle"))
+        self.shared_handle()
     }
     fn GetUsage(&self) -> windows::core::Result<DXGI_USAGE> {
         let _lock = lock();
@@ -4793,14 +4793,14 @@ impl IDXGIResource1_Impl for Texture3D_Impl {
         lpname: &windows::core::PCWSTR,
     ) -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
         let _lock = lock();
-        Err(missing("IDXGIResource1::CreateSharedHandle"))
+        self.nt_shared_handle()
     }
 }
 
 impl IDXGIResource_Impl for Texture3D_Impl {
     fn GetSharedHandle(&self) -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
         let _lock = lock();
-        Err(missing("IDXGIResource::GetSharedHandle"))
+        self.shared_handle()
     }
     fn GetUsage(&self) -> windows::core::Result<DXGI_USAGE> {
         let _lock = lock();

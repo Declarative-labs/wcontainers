@@ -18,7 +18,7 @@ use wcontainers_gpu::{
 
 use crate::desc::{
     self, Box3, DSV_READ_ONLY_DEPTH, DSV_READ_ONLY_STENCIL, DepthStencilDesc, SubresourceData,
-    TexDim, TextureDesc, Viewport, map, topology, usage,
+    TexDim, TextureDesc, Viewport, level, map, topology, usage,
 };
 use crate::device::{
     Device, HelperBlocks, Linked, Variant, ZERO_BYTES, gpu_buffer, integer_format, resolvable,
@@ -344,6 +344,15 @@ fn plain_topology(t: u32) -> Option<Topology> {
 const PER_PIXEL: u64 = u64::MAX;
 const PER_PIXEL_MASKED: u64 = u64::MAX - 1;
 const PER_SAMPLE: u64 = u64::MAX - 2;
+
+/// A viewport the vertex program maps positions onto (`ViewportInShader`): the whole-pixel
+/// viewport the back end draws with, the scale and offset of clip x and y
+/// (`HelperValue::ViewportAdjust`), and the pixels the API's viewport covers.
+struct ShaderViewport {
+    viewport: Viewport,
+    adjust: [f32; 4],
+    pixels: ScissorRect,
+}
 
 /// How a draw runs its pixel shader's forced early depth and stencil tests.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2047,8 +2056,9 @@ impl<B: Backend> Device<B> {
     }
 
     /// The smallest step of the bound depth target's format where the pixel program adds the depth
-    /// bias (`DepthBiasInShader`): where the back end lacks the bias clamp, or moves 24-bit depth it
-    /// stores as float by float steps. Refused for float depth, whose step varies with the depth.
+    /// bias (`DepthBiasInShader`): on lines and points, which the back ends do not bias; where the
+    /// back end lacks the bias clamp; or where it moves 24-bit depth it stores as float by float
+    /// steps. Refused for float depth, whose step varies with the depth.
     fn bias_step(&self) -> Result<Option<f32>> {
         let r = &self
             .ctx
@@ -2069,17 +2079,78 @@ impl<B: Backend> Device<B> {
         );
         let unclamped = r.depth_bias_clamp != 0.0 && !caps.has(Features::DEPTH_BIAS_CLAMP);
         let float_steps = r.depth_bias != 0 && d24 && !caps.has(Features::DEPTH24_UNORM);
-        if !unclamped && !float_steps {
+        let unbiased = !matches!(
+            plain_topology(self.ctx.topology),
+            Some(Topology::TriangleList | Topology::TriangleStrip)
+        ) && !matches!(
+            self.ctx.topology,
+            topology::TRIANGLELIST_ADJ | topology::TRIANGLESTRIP_ADJ
+        );
+        if !unclamped && !float_steps && !unbiased {
             return Ok(None);
         }
         let bits = match depth.format {
             Format::Depth16Unorm => 16,
             _ if d24 => 24,
+            _ if unbiased => {
+                return not_implemented("a depth bias on lines or points into float depth");
+            }
             _ => {
                 return not_implemented("a depth bias clamp on float depth without the back end's");
             }
         };
         Ok(Some(1.0 / ((1u32 << bits) - 1) as f32))
+    }
+
+    /// Direct3D's first viewport as the vertex program maps it within a whole-pixel one, where
+    /// the back end would not draw it exactly (`ViewportInShader`): a fractional one on a back end
+    /// without `FRACTIONAL_VIEWPORT`, and below feature level 11_0 a negative fractional origin,
+    /// which Direct3D then keeps exact and the back end, as Direct3D from 11_0, rounds down.
+    fn viewport_in_shader(&self) -> Option<ShaderViewport> {
+        let v = *self.ctx.viewports.first()?;
+        let fractional = |f: f32| f.fract() != 0.0;
+        let rounded = |o: f32| o < 0.0 && fractional(o);
+        let inexact = !self.backend.caps().has(Features::FRACTIONAL_VIEWPORT)
+            && [v.x, v.y, v.width, v.height].into_iter().any(fractional);
+        if !inexact && (self.feature_level() >= level::L11_0 || !(rounded(v.x) || rounded(v.y))) {
+            return None;
+        }
+        // Per axis: the enclosing whole-pixel origin and size, the scale and offset of clip
+        // coordinates onto the API's viewport within it, and the pixels whose centres it covers.
+        let axis = |o: f32, size: f32| {
+            let start = o.floor();
+            let whole = (o + size).ceil() - start;
+            let offset = (2.0 * (o - start) + size) / whole - 1.0;
+            let first = (o - 0.5).ceil().max(0.0);
+            let end = (o + size - 0.5).ceil().max(first);
+            (
+                start,
+                whole,
+                size / whole,
+                offset,
+                first as u32,
+                (end - first) as u32,
+            )
+        };
+        let (x, width, scale_x, offset_x, left, columns) = axis(v.x, v.width);
+        let (y, height, scale_y, offset_y, top, rows) = axis(v.y, v.height);
+        Some(ShaderViewport {
+            viewport: Viewport {
+                x,
+                y,
+                width,
+                height,
+                ..v
+            },
+            // Clip y grows upwards, window y downwards.
+            adjust: [scale_x, scale_y, offset_x, -offset_y],
+            pixels: ScissorRect {
+                x: left,
+                y: top,
+                width: columns,
+                height: rows,
+            },
+        })
     }
 
     /// The sampler bound to `stage`'s `slot`.
@@ -3559,6 +3630,13 @@ impl<B: Backend> Device<B> {
                     words[..2].copy_from_slice(&self.texel_view(stage, binding));
                     2
                 }
+                HelperValue::ViewportAdjust => {
+                    let adjust = self
+                        .viewport_in_shader()
+                        .map_or([1.0, 1.0, 0.0, 0.0], |a| a.adjust);
+                    words[..4].copy_from_slice(&adjust.map(f32::to_bits));
+                    4
+                }
                 HelperValue::DepthRange => {
                     let v = self.ctx.viewports.first().copied().unwrap_or_default();
                     words[..2].copy_from_slice(&[v.min_depth.to_bits(), v.max_depth.to_bits()]);
@@ -3928,7 +4006,12 @@ impl<B: Backend> Device<B> {
         let clip_distances = clip.map_or(0, |c| c.1);
         // Behind a hull shader the domain program passes the clip distances.
         let vertex_clip = if tessellated { 0 } else { clip_distances };
+        let shader_viewport = self.viewport_in_shader();
+        if shader_viewport.is_some() {
+            self.backend.slow_paths().hit(SlowPath::ViewportInShader);
+        }
         let vk = StageVariant {
+            viewport_adjust: shader_viewport.is_some(),
             from_arguments: indirect && vs.helpers.size > 0,
             pulled,
             linked: if vertex_clip == 0 && !clamps {
@@ -4171,8 +4254,9 @@ impl<B: Backend> Device<B> {
                 (t, r, Some(ring))
             }
         };
-        // Direct3D draws lines by the quadrilateral rule when the state asks for multisampling and
-        // alpha-antialiased when it asks for antialiased lines; the back ends draw aliased lines.
+        // Direct3D draws lines alpha-antialiased when the state asks for antialiased lines without
+        // multisampling (`AntialiasedLinesAsQuads`, not built); with multisampling it draws them by
+        // the quadrilateral rule, here by the back end's (a listed loss, plan 4.12).
         let raster = &self
             .ctx
             .raster
@@ -4180,15 +4264,10 @@ impl<B: Backend> Device<B> {
             .unwrap_or(&self.defaults.raster)
             .desc;
         if matches!(topology, Topology::LineList | Topology::LineStrip)
-            && (raster.multisample || raster.antialiased_lines)
+            && raster.antialiased_lines
+            && !raster.multisample
         {
-            return not_implemented("lines drawn by the quadrilateral or alpha-antialiased rule");
-        }
-        // The back ends bias triangles only.
-        if (raster.depth_bias != 0 || raster.slope_scaled_depth_bias != 0.0)
-            && !matches!(topology, Topology::TriangleList | Topology::TriangleStrip)
-        {
-            return not_implemented("depth bias on lines and points");
+            return not_implemented("alpha-antialiased lines (AntialiasedLinesAsQuads)");
         }
         let nothing = matches!(
             gpu_range,
@@ -4279,7 +4358,7 @@ impl<B: Backend> Device<B> {
                 };
                 // Without a shader choosing one (none is served), Direct3D draws through the first viewport
                 // and scissor rectangle; with no rectangle set, the scissor test passes nothing.
-                let v = ctx.viewports[0];
+                let v = shader_viewport.as_ref().map_or(ctx.viewports[0], |a| a.viewport);
                 let viewport = GpuViewport {
                     x: v.x.to_bits(),
                     y: v.y.to_bits(),
@@ -4301,6 +4380,15 @@ impl<B: Backend> Device<B> {
                     _ if !raster.desc.scissor => &[],
                     Some(rect) => std::slice::from_ref(rect),
                     None => &no_rect,
+                };
+                // A viewport mapped in the program draws only the pixels the API's covers.
+                let mut covered = Vec::new();
+                let scissors: &[ScissorRect] = match &shader_viewport {
+                    Some(a) => {
+                        wcontainers_gpu::cut_scissors(scissors, a.pixels, &mut covered);
+                        &covered
+                    }
+                    None => scissors,
                 };
                 // A fitted pass draws only where every attachment is.
                 let mut cut = Vec::new();
