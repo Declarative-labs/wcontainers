@@ -209,7 +209,9 @@ milestone "G5 to the pass bar"):
   before committing or pushing anything else. This run merged direct3d-11 (c261e247: its own
   crate, the shared programs' tests and the baseline, nothing of this track's), checked the
   literal check there, pushed both merges, and took the next part of the literal sweep (4518fd0e,
-  "No magic numbers"). The shared line, webgpu, webgl and rig had nothing new.
+  "No magic numbers"). The shared line, webgpu, webgl and rig had nothing new. At the end the
+  desktop's build folder of this branch (8,394,851,094 bytes) was deleted; no build output was
+  made in scratch or on the Mac.
 - Run 41 (the eleventh run of the milestone's current form; run 40 stopped before committing
   anything but the merge 2e1dc463 of the shaders track's run 45, and left the line route below
   uncommitted, which this run checked, finished and committed): no branch had anything newer
