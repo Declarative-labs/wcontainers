@@ -117,8 +117,10 @@ Measured:
   layer 1 on the same machine for part of it): the spread between rounds (interpret 11.2 to 29.8 s) was far
   larger than any difference between the builds, so the times decide nothing. Counted instead as user-mode
   instructions of one run (`perf stat -e instructions:u`, `counts.sh`; repeated runs agree to 0.01%):
-- The shapes (b1ccb5ba against c72c85c5): hash 10.507 G to 10.710 G (+1.9%, its loop's `shr $29` flags are
-  never read; not explained), sort 54.72 G to 53.74 G (-1.8%), the others within 0.15%.
+- The shapes (b1ccb5ba against c72c85c5): hash 10.507 G to 10.710 G (+1.9%, not explained: its loop's
+  `shr $29` flags are never read, and the WebAssembly of that loop at full, read in run 4 (scratch
+  `hashloop.wat`, from `scratch_dump.rs`), holds for each shift only its result, CF and OF and three copies into
+  the shape's locals that nothing reads, besides the flags state constant every flag setter stores), sort 54.72 G to 53.74 G (-1.8%), the others within 0.15%.
 - The canonical-address check (c72c85c5 against the same with the check emptied): fib 1.4%, sort 2.0%,
   interpret 1.4%, search 4.4% of their instructions; sieve, hash and matrix move by up to 1.7% the other way,
   which is the noise of code layout.
