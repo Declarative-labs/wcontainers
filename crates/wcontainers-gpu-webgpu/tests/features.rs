@@ -1,5 +1,6 @@
-//! Program features (subgroups, the primitive index): declared exactly where the adapter has them,
-//! drawn as they define where declared, and refused by name on a device made without them.
+//! Program features: subgroups and the primitive index declared exactly where the adapter has them,
+//! drawn as they define where declared, and refused by name on a device made without them; fine
+//! derivatives (WGSL's core) declared and drawn on every device.
 //!
 //! Needs a GPU; `WEBGPU_API` as in tests/scenes.rs.
 
@@ -32,6 +33,7 @@ fn backends() -> wgpu::Backends {
 }
 
 fn declared_drawn_and_refused_without(feature: Feature) {
+    let wanted = feature.wgpu().expect("an optional feature");
     let instance = draw::instance(backends());
     let (mut b, name) =
         pollster::block_on(draw::device_without(&instance, wgpu::Features::empty())).unwrap();
@@ -39,14 +41,13 @@ fn declared_drawn_and_refused_without(feature: Feature) {
         power_preference: wgpu::PowerPreference::HighPerformance,
         ..Default::default()
     }))
-    .map(|a| a.features().contains(feature.wgpu()))
+    .map(|a| a.features().contains(wanted))
     .unwrap_or(false);
     eprintln!("{name}: adapter has {feature:?}: {has}");
     assert_eq!(b.caps().has(feature.declared()), has);
     let line = features::check(&mut b, feature).unwrap();
     eprintln!("{line}");
-    let (mut without, _) =
-        pollster::block_on(draw::device_without(&instance, feature.wgpu())).unwrap();
+    let (mut without, _) = pollster::block_on(draw::device_without(&instance, wanted)).unwrap();
     assert!(!without.caps().has(feature.declared()));
     assert!(matches!(
         features::shader(&mut without, feature, ShaderStage::Fragment),
@@ -64,4 +65,16 @@ fn subgroup_operations_run_where_declared_and_are_refused_elsewhere() {
 #[test]
 fn the_primitive_index_reads_each_triangles_number_where_declared() {
     declared_drawn_and_refused_without(Feature::PrimitiveIndex);
+}
+
+/// Fine derivatives in a fragment program: each pixel differenced within its own row and column of
+/// its quad.
+#[test]
+fn fine_derivatives_are_declared_and_difference_each_pixel_on_its_own() {
+    let instance = draw::instance(backends());
+    let (mut b, name) =
+        pollster::block_on(draw::device_without(&instance, wgpu::Features::empty())).unwrap();
+    assert!(b.caps().has(Feature::FineDerivatives.declared()), "{name}");
+    let line = features::check(&mut b, Feature::FineDerivatives).unwrap();
+    eprintln!("{name}: {line}");
 }
