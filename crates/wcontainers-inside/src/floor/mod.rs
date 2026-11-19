@@ -252,6 +252,12 @@ pub fn set_stop_word(value: u64) {
     TPIDRRO_EL0.set(value);
 }
 
+/// The address-space identifier of no process: the idle address space's.
+pub const IDLE_IDENTIFIER: u16 = 0;
+
+/// The address-space identifier the first process takes.
+pub const FIRST_PROCESS_IDENTIFIER: u16 = IDLE_IDENTIFIER + 1;
+
 /// One address space: its tables for the guest's half and for the inside's half, and its identifier.
 #[derive(Clone, Copy, Debug)]
 pub struct AddressSpace {

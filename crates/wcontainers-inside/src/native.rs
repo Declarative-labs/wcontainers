@@ -27,9 +27,9 @@ use wcontainers_guest_cpu::position::{NativeReason, Span};
 use wcontainers_runtime::{Answer, Carry, Execution, Turn};
 
 use crate::floor::{
-    self, AddressSpace, Frames, Full, Table, Taken, UserRegisters, code, enter_user,
-    guest_no_access, guest_read_only, guest_read_write, inside_code, make_code_visible,
-    process_code, with_frames,
+    self, AddressSpace, FIRST_PROCESS_IDENTIFIER, Frames, Full, IDLE_IDENTIFIER, Table, Taken,
+    UserRegisters, code, enter_user, guest_no_access, guest_read_only, guest_read_write,
+    inside_code, make_code_visible, process_code, with_frames,
 };
 use crate::layout::{Region, linear};
 use crate::link::LINK_BYTES;
@@ -43,9 +43,6 @@ use crate::stop::{
     self, Exception, FloatStatus, GENERAL, GuestState, Interrupted, Resolved, SYSCALL_NUMBER, Stop,
 };
 use crate::translation::{self, Field, LinkWords, Linking, Translate};
-
-/// The identifier of no process: the idle address space's.
-const IDLE_IDENTIFIER: u16 = 0;
 
 const _: () = assert!(
     MIRROR >> mirror::SLOT_MOVED_BITS == Region::Code.base() >> mirror::SLOT_MOVED_BITS,
@@ -352,7 +349,7 @@ impl NativeCpu {
             shared: BTreeMap::new(),
             threads: BTreeMap::new(),
             next_id: 0,
-            next_asid: Some(IDLE_IDENTIFIER + 1),
+            next_asid: Some(FIRST_PROCESS_IDENTIFIER),
             idle,
             asked_reported: 0,
             full_reported: 0,

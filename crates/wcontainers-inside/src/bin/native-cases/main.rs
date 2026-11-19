@@ -14,15 +14,12 @@ mod cases {
     use aarch64_paging::descriptor::El1Attributes;
     use wcontainers_abi::PAGE_SIZE;
     use wcontainers_inside::floor::{
-        self, AddressSpace, Floor, Frames, Full, code, guest_read_only, guest_read_write,
-        inside_code, make_code_visible, register_page, with_frames,
+        self, AddressSpace, FIRST_PROCESS_IDENTIFIER, Floor, Frames, Full, code, guest_read_only,
+        guest_read_write, inside_code, make_code_visible, register_page, with_frames,
     };
     use wcontainers_inside::link::Start;
 
     use crate::protocol::{Code, Done, GATE_OFFSET, Kind, Map, Next, Region};
-
-    /// The guest's process's identifier.
-    const ASID: u16 = 1;
 
     /// Runs `f` over the frames; the host sizes the regions to fit guest-physical memory.
     fn frames<T>(f: impl FnOnce(&mut Frames) -> Result<T, Full>) -> T {
@@ -71,7 +68,8 @@ mod cases {
     #[unsafe(no_mangle)]
     extern "C" fn floor_main(start: &Start) -> ! {
         let floor = Floor::boot(start);
-        let space = frames(|frames| AddressSpace::new(frames, &floor.global, ASID));
+        let space =
+            frames(|frames| AddressSpace::new(frames, &floor.global, FIRST_PROCESS_IDENTIFIER));
         let mut frame = 0;
         let mut gate = None;
         loop {
