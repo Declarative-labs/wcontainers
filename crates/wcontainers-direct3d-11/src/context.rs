@@ -6,13 +6,14 @@ use std::rc::Rc;
 use wcontainers_gpu::{
     AspectOps, Backend, BindingEntry, BindingResource, BufferRange, ClearValue, ColorAttachment,
     ColorTarget, CountedDraw, DRAW_ARGUMENTS_BINDING, DepthAttachment, DispatchCall,
-    DispatchGroups, DrawCall, DrawRange, EmptyPass, Extent, Features, Filter, Format, FormatKind,
-    FormatUse, HELPER_SET, HelperValue, IndexBinding, IndexFormat, Interpolation, LoadOp,
-    MAX_BINDING_SETS, Object, Origin, PassDesc, PassOps, PassTargets, Program, ReadSource,
-    ReadState, RingKind, SamplerDesc as GpuSampler, ScissorRect, ShaderModule, ShaderStage,
-    SlotKind, SlowPath, SourceStage, StageSet, StepMode, StoreOp, Target, TextureRegion,
-    TextureUsage, Topology, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc,
-    VertexStream, Viewport as GpuViewport, WriteMode, helper_binding,
+    DispatchGroups, DrawCall, DrawRange, EARLY_DEPTH_BINDING, EARLY_STENCIL_BINDING, EmptyPass,
+    Extent, Features, Filter, Format, FormatKind, FormatUse, HELPER_SET, HelperValue, IndexBinding,
+    IndexFormat, Interpolation, LoadOp, MAX_BINDING_SETS, Object, Origin, PassDesc, PassOps,
+    PassTargets, Program, ReadSource, ReadState, RingKind, SamplerDesc as GpuSampler, ScissorRect,
+    ShaderModule, ShaderStage, SlotKind, SlowPath, SourceStage, StageSet, StencilOp, StepMode,
+    StoreOp, Target, TextureRegion, TextureUsage, TextureViewDesc, Topology, VariantKey,
+    VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream, ViewDimension,
+    Viewport as GpuViewport, WriteMode, helper_binding,
 };
 
 use crate::desc::{
@@ -70,7 +71,7 @@ fn set_of(stage: usize) -> u32 {
 type VertexSlot<B> = (Rc<Buffer<B>>, u32, u32);
 
 /// Direct3D 11's vertex buffer slots and viewports.
-const VERTEX_SLOTS: usize = 32;
+pub(crate) const VERTEX_SLOTS: usize = 32;
 const VIEWPORTS: usize = 16;
 
 /// A clear recorded but not yet run: it becomes the next pass's load, or a `clear_texture`.
@@ -133,6 +134,14 @@ pub struct ContextState<B: Backend> {
     /// The input layout whose pulled streams the vertex stage's set binds (its id; zero for none).
     pulled_set: u64,
     pass_open: bool,
+    /// The draw runs its pixel shader's forced early tests in the program, so the pass it opens
+    /// holds the depth-stencil attachment read-only (`EarlyTestsInShader`).
+    early: bool,
+    /// The open pass was opened so.
+    pass_early: bool,
+    /// The draw is the testing run of one primitive of a draw whose forced early tests are run per
+    /// primitive (`EarlyTestsPerPrimitive`), and the API draw's bases its helpers give.
+    early_run: Option<[u32; 2]>,
     /// The resources the open pass's draws wrote as storage and read as shader resources, by
     /// address and sorted: a draw using one the other way ends the pass (`UsageScopeSplit`).
     pass_written: Vec<usize>,
@@ -196,6 +205,9 @@ impl<B: Backend> ContextState<B> {
             windows: Default::default(),
             pulled_set: 0,
             pass_open: false,
+            early: false,
+            pass_early: false,
+            early_run: None,
             pass_written: Vec::new(),
             pass_read: Vec::new(),
             fitted: None,
@@ -304,6 +316,28 @@ fn plain_topology(t: u32) -> Option<Topology> {
 const PER_PIXEL: u64 = u64::MAX;
 const PER_PIXEL_MASKED: u64 = u64::MAX - 1;
 const PER_SAMPLE: u64 = u64::MAX - 2;
+
+/// How a draw runs its pixel shader's forced early depth and stencil tests.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Early {
+    /// The back end's tests serve: no early tests forced, or nothing they hold back.
+    No,
+    /// In the program, against a read-only attachment (`EarlyTestsInShader`).
+    InProgram,
+    /// In the program, one primitive at a time, as the draw writes depth or stencil
+    /// (`EarlyTestsPerPrimitive`).
+    PerPrimitive,
+}
+
+/// The vertices of one primitive of a list topology, as Direct3D numbers them; none for strips.
+fn list_vertices(t: Topology) -> Option<u32> {
+    match t {
+        Topology::PointList => Some(1),
+        Topology::LineList => Some(2),
+        Topology::TriangleList => Some(3),
+        _ => None,
+    }
+}
 
 /// Whether topology `t` is a strip, whose indexed draws restart at a cut index.
 fn strip_topology(t: u32) -> bool {
@@ -1306,12 +1340,14 @@ impl<B: Backend> Device<B> {
         if self.ctx.pass_open {
             return;
         }
-        // A clear becomes a load only where the attachment is all the view sees.
+        // A clear becomes a load only where the attachment is all the view sees, and is written
+        // by the pass.
         let bound = |v: &Rc<View<B>>, ctx: &ContextState<B>| {
             v.desc.layer_count == 1
                 && (ctx.targets.iter().flatten().any(|t| Rc::ptr_eq(t, v))
-                    || ctx.depth.as_ref().is_some_and(|d| Rc::ptr_eq(d, v)))
+                    || !ctx.early && ctx.depth.as_ref().is_some_and(|d| Rc::ptr_eq(d, v)))
         };
+        let flags = self.read_only_flags();
         let (mine, others): (Vec<_>, Vec<_>) = std::mem::take(&mut self.ctx.clears)
             .into_iter()
             .partition(|c| bound(&c.view, &self.ctx));
@@ -1347,7 +1383,6 @@ impl<B: Backend> Device<B> {
                 ops.depth.load = d.map_or(LoadOp::Load, LoadOp::Clear);
                 ops.stencil.load = s.map_or(LoadOp::Load, LoadOp::Clear);
             }
-            let flags = depth.as_ref().map_or(0, |v| v.desc.read_only);
             ops.depth.read_only =
                 flags & DSV_READ_ONLY_DEPTH != 0 && ops.depth.load == LoadOp::Load;
             ops.stencil.read_only =
@@ -1371,6 +1406,7 @@ impl<B: Backend> Device<B> {
             if let Ok(area) = self.gpu(r) {
                 self.ctx.fitted = area;
                 self.ctx.pass_open = true;
+                self.ctx.pass_early = self.ctx.early;
                 self.ctx.empty_pass = None;
             }
             return;
@@ -1406,7 +1442,6 @@ impl<B: Backend> Device<B> {
                     store: StoreOp::Store,
                 }
             }
-            let flags = v.desc.read_only;
             DepthAttachment {
                 view: &v.gpu.handle,
                 depth: (kind != FormatKind::Stencil)
@@ -1431,6 +1466,7 @@ impl<B: Backend> Device<B> {
             occlusion: occlusion.as_ref().map(|s| &s.handle),
         });
         self.ctx.pass_open = true;
+        self.ctx.pass_early = self.ctx.early;
         self.ctx.empty_pass = empty;
     }
 
@@ -1967,8 +2003,8 @@ impl<B: Backend> Device<B> {
     }
 
     /// The strides of the bound vertex buffers in the slots the input layout reads, zero elsewhere.
-    pub(crate) fn strides(&self) -> [u32; 32] {
-        let mut strides = [0u32; 32];
+    pub(crate) fn strides(&self) -> [u32; VERTEX_SLOTS] {
+        let mut strides = [0u32; VERTEX_SLOTS];
         if let Some(l) = &self.ctx.layout {
             for e in &l.elements {
                 strides[e.slot as usize] = self.ctx.vertex_buffers[e.slot as usize]
@@ -2833,7 +2869,7 @@ impl<B: Backend> Device<B> {
     /// Makes, at the first draw needing it, the bound depth-stencil state's twin writing nothing
     /// the bound read-only depth-stencil view marks (Direct3D writes neither aspect through it).
     fn fit_depth_stencil(&mut self) -> Result<()> {
-        let flags = self.ctx.depth.as_ref().map_or(0, |v| v.desc.read_only);
+        let flags = self.read_only_flags();
         let bound = self.bound_depth_stencil();
         let Some(desc) = read_only_twin(&bound.desc, flags) else {
             return Ok(());
@@ -2846,6 +2882,139 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
+    /// The aspects of the bound depth-stencil view the pass only reads: those the view marks, or
+    /// both where the draw runs its early tests in the program.
+    fn read_only_flags(&self) -> u32 {
+        let marked = self.ctx.depth.as_ref().map_or(0, |v| v.desc.read_only);
+        if self.ctx.early {
+            marked | DSV_READ_ONLY_DEPTH | DSV_READ_ONLY_STENCIL
+        } else {
+            marked
+        }
+    }
+
+    /// Whether the draw runs its pixel shader `ps`'s forced early depth and stencil tests in the
+    /// program (`EarlyTestsInShader`): a shader with `[earlydepthstencil]` and storage writes,
+    /// under a depth or stencil test. Those writes happen only for fragments passing the tests,
+    /// which the back ends run after the shader.
+    fn early_tests(&self, ps: Option<&Rc<Shader<B>>>) -> Result<Early> {
+        let forced = ps.is_some_and(|ps| {
+            matches!(
+                ps.reflection.extras,
+                wcontainers_gpu::StageExtras::Pixel {
+                    early_tests: true,
+                    side_effects: true,
+                    ..
+                }
+            )
+        });
+        let Some(view) = self.ctx.depth.as_ref().filter(|_| forced) else {
+            return Ok(Early::No);
+        };
+        let d = &self.bound_depth_stencil().desc;
+        if !d.depth_enable && !d.stencil_enable {
+            return Ok(Early::No);
+        }
+        let marked = view.desc.read_only;
+        let mut ops = [d.front, d.back]
+            .into_iter()
+            .flat_map(|f| [f.fail, f.depth_fail, f.pass]);
+        let keeps = ops.try_fold(true, |all, op| {
+            Ok::<_, Error>(all && crate::device::stencil_op(op)? == StencilOp::Keep)
+        })?;
+        let writes_depth = d.depth_enable && d.depth_write && marked & DSV_READ_ONLY_DEPTH == 0;
+        let writes_stencil = d.stencil_enable
+            && d.stencil_write_mask != 0
+            && !keeps
+            && marked & DSV_READ_ONLY_STENCIL == 0;
+        if self.ctx.gs.is_some() || self.ctx.hs.is_some() || self.ctx.ds.is_some() {
+            return not_implemented(
+                "early depth-stencil tests before storage writes behind a geometry or \
+                 tessellation stage",
+            );
+        }
+        Ok(
+            if (writes_depth || writes_stencil) && self.ctx.early_run.is_none() {
+                Early::PerPrimitive
+            } else {
+                Early::InProgram
+            },
+        )
+    }
+
+    /// A draw whose forced early tests run in the program while it writes depth or stencil
+    /// (`EarlyTestsPerPrimitive`): each primitive is drawn twice, first with the tests in the
+    /// program against a read-only attachment (its colour and storage writes), then without a
+    /// pixel shader or targets, making the API's depth and stencil writes.
+    fn draw_early_per_primitive(
+        &mut self,
+        range: Range,
+        first_instance: u32,
+        instances: u32,
+    ) -> Result<()> {
+        let per = plain_topology(self.ctx.topology)
+            .and_then(list_vertices)
+            .ok_or(Error::NotImplemented(
+                "early depth-stencil tests per primitive of a strip or patch topology",
+            ))?;
+        if instances != 1 {
+            return not_implemented("early depth-stencil tests per primitive of instanced draws");
+        }
+        // What the second run of each primitive would do again, and must not.
+        if self.queries.running_any() || self.ctx.so_targets.iter().any(Option::is_some) {
+            return not_implemented(
+                "early depth-stencil tests per primitive while queries run or with stream output",
+            );
+        }
+        let (count, bases) = match range {
+            Range::Vertices { count, start } => (count, [start, first_instance]),
+            Range::Indexed { count, base, .. } => (count, [base as u32, first_instance]),
+            Range::Indirect { .. } => {
+                return not_implemented(
+                    "early depth-stencil tests per primitive of indirect draws",
+                );
+            }
+        };
+        self.backend
+            .slow_paths()
+            .hit(SlowPath::EarlyTestsPerPrimitive);
+        let targets = self.ctx.targets.clone();
+        let ps = self.ctx.ps.clone();
+        let mut r = Ok(());
+        for p in 0..count / per {
+            let one = match range {
+                Range::Vertices { start, .. } => Range::Vertices {
+                    count: per,
+                    start: start + p * per,
+                },
+                Range::Indexed { start, base, .. } => Range::Indexed {
+                    count: per,
+                    start: start + p * per,
+                    base,
+                },
+                Range::Indirect { .. } => unreachable!("refused above"),
+            };
+            self.end_pass();
+            self.ctx.early_run = Some(bases);
+            r = self.draw_once(one, first_instance, instances, None);
+            self.ctx.early_run = None;
+            if r.is_err() {
+                break;
+            }
+            self.end_pass();
+            self.ctx.targets = vec![None; targets.len()];
+            self.ctx.ps = None;
+            r = self.draw_once(one, first_instance, instances, None);
+            self.ctx.targets = targets.clone();
+            self.ctx.ps = ps.clone();
+            if r.is_err() {
+                break;
+            }
+        }
+        self.end_pass();
+        r
+    }
+
     fn bound_depth_stencil(&self) -> Rc<DepthStencil<B>> {
         self.ctx
             .depth_stencil
@@ -2856,7 +3025,7 @@ impl<B: Backend> Device<B> {
     /// The depth-stencil state a draw uses: the bound one, or its twin `fit_depth_stencil` made.
     pub(crate) fn drawn_depth_stencil(&self) -> Rc<DepthStencil<B>> {
         let bound = self.bound_depth_stencil();
-        let flags = self.ctx.depth.as_ref().map_or(0, |v| v.desc.read_only);
+        let flags = self.read_only_flags();
         let twin = bound
             .read_only
             .borrow()
@@ -3077,6 +3246,25 @@ impl<B: Backend> Device<B> {
                     });
                     1
                 }
+                HelperValue::EarlyTests => {
+                    let d = &self.bound_depth_stencil().desc;
+                    let code = |on: bool, f: u32| -> Result<u32> {
+                        Ok(if on {
+                            crate::device::compare_fn(f)? as u32
+                        } else {
+                            0
+                        })
+                    };
+                    let values = [
+                        code(d.depth_enable, d.depth_func)?,
+                        code(d.stencil_enable, d.front.func)?,
+                        code(d.stencil_enable, d.back.func)?,
+                        u32::from(self.ctx.stencil_ref as u8),
+                        u32::from(d.stencil_read_mask),
+                    ];
+                    words[..values.len()].copy_from_slice(&values);
+                    values.len()
+                }
                 _ => unreachable!("refused at conversion"),
             };
             for (k, w) in words[..n].iter().enumerate() {
@@ -3113,6 +3301,16 @@ impl<B: Backend> Device<B> {
             }
         }
         let samplers: Vec<u64> = merged.iter().map(|m| m.3).collect();
+        let early = if helpers[1]
+            .values
+            .iter()
+            .any(|h| h.value == HelperValue::EarlyTests)
+        {
+            Some(self.early_views()?)
+        } else {
+            None
+        };
+        let early_id = early.as_ref().map_or(0, |e| e.0);
         let blocks = [&blocks[0][..], &blocks[1][..]];
         let arguments = args.map_or(0, |(b, ..)| b.gpu.borrow().id);
         if self.helper_blocks.as_ref().is_some_and(|h| {
@@ -3120,6 +3318,7 @@ impl<B: Backend> Device<B> {
                 && h.blocks[0] == blocks[0]
                 && h.blocks[1] == blocks[1]
                 && h.samplers == samplers
+                && h.early == early_id
         }) {
             return Ok(());
         }
@@ -3184,6 +3383,18 @@ impl<B: Backend> Device<B> {
                 resource: BindingResource::Sampler(s),
             });
         }
+        if let Some((_, depth, stencil)) = &early {
+            for (binding, view) in [
+                (EARLY_DEPTH_BINDING, depth),
+                (EARLY_STENCIL_BINDING, stencil),
+            ] {
+                entries.push(BindingEntry {
+                    binding,
+                    stages: StageSet::FRAGMENT,
+                    resource: BindingResource::Texture(view),
+                });
+            }
+        }
         let set = self.backend.create_binding_set(&entries);
         drop(entries);
         drop(args);
@@ -3193,9 +3404,45 @@ impl<B: Backend> Device<B> {
             blocks: blocks.map(<[u8]>::to_vec),
             arguments,
             samplers,
+            early: early_id,
             set: Kept::new(set, id, Object::BindingSet, &self.graveyard),
         });
         Ok(())
+    }
+
+    /// The bound depth-stencil view's id and its depth and stencil aspects as early tests in the
+    /// program read them; for a format without stencil, a texture of unsigned zeros stands in.
+    fn early_views(&mut self) -> Result<(u64, B::TextureView, B::TextureView)> {
+        let view = self
+            .ctx
+            .depth
+            .clone()
+            .expect("early tests only with a depth-stencil view bound");
+        let stencil = if view.format.kind() == FormatKind::DepthStencil {
+            if view.stencil_aspect.borrow().is_none() {
+                let gpu = self.backend.create_view(
+                    &view.texture.gpu.handle,
+                    &TextureViewDesc {
+                        format: view.format,
+                        dimension: ViewDimension::D2,
+                        base_mip: view.desc.first_mip,
+                        mip_count: 1,
+                        base_layer: view.desc.first_layer,
+                        layer_count: 1,
+                        stencil: true,
+                    },
+                );
+                let gpu = self.gpu(gpu)?;
+                let id = self.id();
+                *view.stencil_aspect.borrow_mut() =
+                    Some(Kept::new(gpu, id, Object::TextureView, &self.graveyard));
+            }
+            let kept = view.stencil_aspect.borrow();
+            kept.as_ref().expect("made above").handle.clone()
+        } else {
+            self.zero_view(ViewDimension::D2, FormatKind::Uint, 1)?
+        };
+        Ok((view.gpu.id, view.gpu.handle.clone(), stencil))
     }
 
     /// A draw in one run; `args` holds an indirect draw's arguments.
@@ -3217,6 +3464,16 @@ impl<B: Backend> Device<B> {
         if self.ctx.sample_mask & 1 == 0 || instances == 0 {
             return Ok(());
         }
+        let early = match self.early_tests(self.ctx.ps.as_ref())? {
+            Early::PerPrimitive => {
+                return self.draw_early_per_primitive(range, first_instance, instances);
+            }
+            e => e == Early::InProgram,
+        };
+        if self.ctx.pass_open && self.ctx.pass_early != early {
+            self.end_pass();
+        }
+        self.ctx.early = early;
         self.fit_depth_stencil()?;
         // A mask leaving out samples of multisampled targets draws through a twin of the raster
         // block made with it.
@@ -3255,6 +3512,15 @@ impl<B: Backend> Device<B> {
             None => None,
         };
         let ps = self.ctx.ps.clone();
+        // Direct3D writes the bits of an output of another kind (float, unsigned, signed) than
+        // its target; the back ends refuse such a pipeline.
+        if ps.as_ref().is_some_and(|p| {
+            !crate::ahead::writes(p, |n| {
+                self.ctx.targets.get(n).cloned().flatten().map(|v| v.format)
+            })
+        }) {
+            return not_implemented("a pixel shader output of another kind than its target");
+        }
         let dual_source = ps.is_some()
             && self
                 .ctx
@@ -3316,8 +3582,18 @@ impl<B: Backend> Device<B> {
                 dual_source,
                 depth_bias,
                 linked,
+                early_tests: early,
                 ..self.stage_variant(PIXEL, p, target_samples)
             });
+        let pk = if early {
+            self.backend.slow_paths().hit(SlowPath::EarlyTestsInShader);
+            StageVariant {
+                samples: target_samples,
+                ..pk
+            }
+        } else {
+            pk
+        };
         if clamps {
             self.backend.slow_paths().hit(SlowPath::DepthClampInShader);
         }
@@ -3433,7 +3709,9 @@ impl<B: Backend> Device<B> {
                 Range::Indexed { base, .. } => (base as u32, None),
                 Range::Indirect { indexed, offset } => (0, args.map(|b| (b, offset, indexed))),
             };
-            self.write_helpers(&helpers, [base, first_instance], arguments)?;
+            // One primitive's run gives the API draw's bases.
+            let bases = self.ctx.early_run.unwrap_or([base, first_instance]);
+            self.write_helpers(&helpers, bases, arguments)?;
         }
         if !self.queries.statistics.is_empty() {
             self.count_draw_statistics(range, instances, args)?;
@@ -3513,31 +3791,6 @@ impl<B: Backend> Device<B> {
             && (raster.multisample || raster.antialiased_lines)
         {
             return not_implemented("lines drawn by the quadrilateral or alpha-antialiased rule");
-        }
-        // A pixel shader forcing early depth-stencil tests writes storage only for fragments that
-        // pass them; the back ends test after the shader (`EarlyTestsInShader` is not served).
-        let early = ps.as_ref().is_some_and(|ps| {
-            matches!(
-                ps.reflection.extras,
-                wcontainers_gpu::StageExtras::Pixel {
-                    early_tests: true,
-                    side_effects: true,
-                    ..
-                }
-            )
-        });
-        if early && self.ctx.depth.is_some() {
-            let ds = &self
-                .ctx
-                .depth_stencil
-                .as_ref()
-                .unwrap_or(&self.defaults.depth_stencil)
-                .desc;
-            if ds.depth_enable || ds.stencil_enable {
-                return not_implemented(
-                    "early depth-stencil tests before a pixel shader's storage writes",
-                );
-            }
         }
         // The back ends bias triangles only.
         if (raster.depth_bias != 0 || raster.slope_scaled_depth_bias != 0.0)

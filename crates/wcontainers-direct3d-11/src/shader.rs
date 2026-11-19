@@ -362,6 +362,9 @@ pub struct StageVariant {
     /// Level and sample counts are read from the helper constants, where the back end cannot
     /// query them (`TextureInfoInHelpers`).
     pub texture_info: bool,
+    /// The pixel program runs its forced early depth and stencil tests itself, against the
+    /// pass's read-only depth-stencil attachment (`EarlyTestsInShader`).
+    pub early_tests: bool,
 }
 
 /// What a stencil view's components read in Direct3D: the stencil in the second.
@@ -411,6 +414,9 @@ impl StageVariant {
         }
         if self.texture_info {
             key.flags |= VariantFlags::TEXTURE_INFO;
+        }
+        if self.early_tests {
+            key.flags |= VariantFlags::EARLY_TESTS;
         }
         if self.from_arguments {
             key.draw_base = DrawBaseSource::Arguments;
@@ -664,6 +670,7 @@ fn answer(r: core::result::Result<Converted, ConvertError>, modules: usize) -> R
                         | HelperValue::DepthRange
                         | HelperValue::TextureLevels { .. }
                         | HelperValue::TextureSamples { .. }
+                        | HelperValue::EarlyTests
                 )
             }) =>
         {

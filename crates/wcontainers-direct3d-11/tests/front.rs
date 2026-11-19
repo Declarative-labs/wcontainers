@@ -778,10 +778,13 @@ fn creation_checks_refuse_what_direct3d_refuses() {
         dev.create_shader(&corpus("geometry.gs_points"), SourceStage::Vertex),
         Err(Error::InvalidArg(_))
     ));
-    // Valid, but read a value the converter does not provide yet.
+    // Valid, but read a value the back end does not provide (the recording back end has no
+    // primitive index), and the stage helper's route is not built.
     assert!(matches!(
         dev.create_shader(&corpus("geometry.ps_id"), SourceStage::Pixel),
-        Err(Error::NotImplemented("PrimitiveId"))
+        Err(Error::NotImplemented(
+            "the primitive index without the back end's (PrimitiveIdAsGeometry)"
+        ))
     ));
     let missing = dev.create_input_layout(&[element("POSITION", RG32F, 0)], &corpus("triangle.vs"));
     assert!(matches!(missing, Err(Error::InvalidArg(_))));

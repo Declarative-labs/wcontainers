@@ -3,8 +3,9 @@
 //! views), `split` (a pixel shader's storage view read by the next draw on the same targets),
 //! `depth_filter` (an `R32_FLOAT` depth and a colour texture sampled through one linear
 //! sampler), `deep` (a depth buffer larger than its target), `msaa_copy` (a copy between
-//! multisampled textures), `stream` (stream output whose stream is also drawn) and `early`
-//! (`[earlydepthstencil]` with storage writes, depth writes off and on). Shaders are compiled by
+//! multisampled textures), `stream` (stream output whose stream is also drawn), `early`
+//! (`[earlydepthstencil]` with storage writes, depth writes off) and `early_writes` (the same with
+//! depth writes on). Shaders are compiled by
 //! the system's d3dcompiler_47.dll. Prints each answer and the resources' bytes as hex, for
 //! comparing with real Direct3D line by line.
 
@@ -679,7 +680,7 @@ fn main() -> windows::core::Result<()> {
             print("target", &target, 4);
             print_buffer("stream", so.as_ref().unwrap(), 128);
         }
-        "early" => {
+        "early" | "early_writes" => {
             let target = make(
                 &Tex {
                     w: 4,
@@ -721,7 +722,9 @@ fn main() -> windows::core::Result<()> {
                     return float4(g, z, 0, 1);
                 }");
             let rt = rtv(&target);
-            for (name, writes) in [("writes off", false), ("writes on", true)] {
+            let writes = case == "early_writes";
+            {
+                let name = if writes { "writes on" } else { "writes off" };
                 let ds_desc = D3D11_DEPTH_STENCIL_DESC {
                     DepthEnable: true.into(),
                     DepthWriteMask: if writes {
