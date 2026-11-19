@@ -908,6 +908,70 @@ pub fn copies_within_a_typeless_group<H: Host>() {
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
 
+/// Copies between 8-bit sRGB and plain normalised formats keep every byte: a texture holding every
+/// byte value in every component is copied whole into the other format and read back. On WebGL 2 a
+/// draw decodes and encodes on the GPU, so the hardware's sRGB conversion must give back each byte.
+pub fn srgb_copies_keep_every_byte<H: Host>() {
+    use crate::kit;
+    let mut b = H::make();
+    let pairs = [
+        (Format::Rgba8Unorm, Format::Rgba8UnormSrgb),
+        (Format::Rgba8UnormSrgb, Format::Rgba8Unorm),
+        (Format::Bgra8Unorm, Format::Bgra8UnormSrgb),
+        (Format::Bgra8UnormSrgb, Format::Bgra8Unorm),
+    ];
+    let side = (usize::from(u8::MAX) + 1).isqrt() as u32;
+    let size = [side, side, 1];
+    let texel = Format::Rgba8Unorm.block().2;
+    // Texel i holds i, its complement, i with its bits reversed and i again.
+    let bytes: Vec<u8> = (0..=u8::MAX)
+        .flat_map(|i| [i, !i, i.reverse_bits(), i])
+        .collect();
+    let usage = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
+    let whole = Extent {
+        width: side,
+        height: side,
+        depth_or_layers: 1,
+    };
+    for (from, to) in pairs {
+        let src = kit::texture(&mut b, TextureDimension::D2, from, size, 1, usage, false);
+        let dst = kit::texture(&mut b, TextureDimension::D2, to, size, 1, usage, false);
+        b.write_texture(
+            &layer_at(&src, 0, 0, 0, false),
+            whole,
+            &bytes,
+            side * texel,
+            side,
+            WriteMode::Ordered,
+        );
+        let before = b.slow_paths().count(SlowPath::CopyThroughBuffer);
+        b.copy_texture(
+            &layer_at(&src, 0, 0, 0, false),
+            &layer_at(&dst, 0, 0, 0, false),
+            whole,
+        );
+        let counted = b.slow_paths().count(SlowPath::CopyThroughBuffer) - before;
+        let got = read_typeless(&mut b, &dst, to, size);
+        assert_eq!(b.status(), DeviceStatus::Ok, "{from:?} to {to:?}");
+        let texel = texel as usize;
+        let wrong = got
+            .chunks_exact(texel)
+            .zip(bytes.chunks_exact(texel))
+            .position(|(g, w)| g != w);
+        if let Some(i) = wrong {
+            let at = i * texel..(i + 1) * texel;
+            panic!(
+                "{from:?} to {to:?}: texel {i} is {:?}, written {:?}",
+                &got[at.clone()],
+                &bytes[at]
+            );
+        }
+        println!("{from:?} to {to:?}: every byte kept, {counted} slow copies counted");
+        b.destroy(Object::Texture(src));
+        b.destroy(Object::Texture(dst));
+    }
+}
+
 /// `texels` texels of `format` from `seed`; in 16-bit and 32-bit floats every third component is
 /// one of the infinities, NaNs with payloads (signalling and quiet, of either sign), denormals and
 /// signed zeros, whose bits a copy must keep.
@@ -1442,6 +1506,95 @@ pub fn two_devices_on_one_thread_keep_their_own_objects<H: Host>() {
         [44; 16],
         "second device after the first is dropped"
     );
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// Two colours from one module, for shaders of equal text made more than once.
+const COLOURS: &str = "
+@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(f32((v & 1u) << 2u) - 1.0, f32((v & 2u) << 1u) - 1.0, 0.0, 1.0);
+}
+@fragment fn red() -> @location(0) vec4<f32> { return vec4<f32>(1.0, 0.0, 0.0, 1.0); }
+@fragment fn green() -> @location(0) vec4<f32> { return vec4<f32>(0.0, 1.0, 0.0, 1.0); }
+";
+
+/// Programs of shaders of equal text each draw, whichever of them was destroyed first, and draw
+/// again when made after the last was destroyed.
+pub fn programs_of_equal_shaders_draw_until_each_is_destroyed<H: Host>() {
+    use crate::kit;
+    let mut b = H::make();
+    let k = kit::Kit::new(&mut b);
+    let f = Format::Rgba8Unorm;
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let side = 4;
+    let t = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        f,
+        [side, side, 1],
+        1,
+        usage,
+        false,
+    );
+    let view = kit::target(&mut b, &t, f, 0, 0);
+    let viewports = [kit::viewport(0.0, 0.0, side as f32, side as f32)];
+    let make = |b: &mut H::Backend, fs: &str| {
+        let module = |entry, stage| ShaderModule::from_wgsl(COLOURS, entry, stage).expect("WGSL");
+        let v = b
+            .create_shader(&module("vs", ShaderStage::Vertex))
+            .expect("create_shader");
+        let f = b
+            .create_shader(&module(fs, ShaderStage::Fragment))
+            .expect("create_shader");
+        let p = b
+            .create_program(&Program::Render {
+                vertex: &v,
+                fragment: Some(&f),
+            })
+            .expect("create_program");
+        (v, f, p)
+    };
+    let draw = |b: &mut H::Backend, p: &<H::Backend as Backend>::Program| {
+        b.begin_pass(&kit::pass(&view, [0; 4], None));
+        b.draw(&kit::call(
+            &k,
+            p,
+            None,
+            &viewports,
+            Topology::TriangleStrip,
+            4,
+        ));
+        b.end_pass();
+        kit::read(b, &t, 0, 0, [side, side, 1], 4, false)
+    };
+    let destroy = |b: &mut H::Backend, (v, f, p)| {
+        b.destroy(Object::Program(p));
+        b.destroy(Object::Shader(v));
+        b.destroy(Object::Shader(f));
+    };
+    let red = [u8::MAX, 0, 0, u8::MAX].repeat((side * side) as usize);
+    let green = [0, u8::MAX, 0, u8::MAX].repeat((side * side) as usize);
+    let first = make(&mut b, "red");
+    let second = make(&mut b, "red");
+    let other = make(&mut b, "green");
+    assert_eq!(draw(&mut b, &first.2), red, "the first");
+    assert_eq!(draw(&mut b, &other.2), green, "the other");
+    destroy(&mut b, first);
+    assert_eq!(
+        draw(&mut b, &second.2),
+        red,
+        "the second, the first destroyed"
+    );
+    destroy(&mut b, second);
+    assert_eq!(draw(&mut b, &other.2), green, "the other, both destroyed");
+    let again = make(&mut b, "red");
+    assert_eq!(
+        draw(&mut b, &again.2),
+        red,
+        "made again after both were destroyed"
+    );
+    destroy(&mut b, again);
+    destroy(&mut b, other);
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
 

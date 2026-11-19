@@ -5,6 +5,83 @@ Plan: docs/phase-2-graphics.md, sections 4, 5.8, 6.5, 10 and 12 (G3).
 
 ## Where things stand
 
+G3b run 8, 2026-11-19 (about 01:20 to 03:00 Pacific). Merged origin/phase-2-graphics-webgpu, which held
+the newest -direct3d-11 and -shaders (the shared line, -direct3d-12, -rig and phase-1-literals had
+nothing new; no interface change among them). The run's own work:
+- filter_draw's lost device (Next 0 of run 7): cause found and the loss removed. The recorded
+  stream (scratch g3b7/filter.bin) replayed natively with changes (scratch g3b8/diag, a
+  diagnostic kept out of the tree; Measurements, run G3b-8) showed that the test's 419 programs
+  are four distinct ones (six distinct shaders) made again for every draw, that each live GL
+  program of them held about 650 KB of the adapter's memory (354 MB to 629 MB over 419), and
+  that ANGLE's device is lost at the 419th with every program alive, also with the shaders
+  deleted after the link; it is not lost when each program is destroyed after its draw, nor when
+  shaders of equal content are made once (the adapter's memory then does not rise). So shaders
+  whose GLSL and bindings are equal are now one GL shader, counted by handles
+  (`Gl::shaders`, `shader::ShaderText`), and their programs one GL program (the program cache
+  by shader pair already did this for one shader made once). The module's `key` is not the key:
+  tests make every module with key 0. A front that makes the same shader again (a game's
+  re-created materials, the shaders crate's tests) no longer pays a compile, a link and the
+  driver's memory each time. New check `programs_of_equal_shaders_draw_until_each_is_destroyed`.
+  The 16 seeds of the shaders crate's filter_draw in one process (unchanged, it still destroys
+  nothing), which lost the device in runs 3 to 7: no loss, all 792 comparisons drawn, every
+  WebGL 2 one passing but the test's known anisotropic ones (its two failures are the WebGPU
+  back end's own sampler; Measurements, run G3b-8). The recorded
+  stream replayed in Chrome 157 (where run 7 lost the context at its first frame): all 419
+  draws, 0 calls failed, the device Ok, `PipelineMiss` 2 (so the dxbc and dxil routes' shaders
+  write equal GLSL, and the stream's 419 programs are two GL programs).
+  Distinct large programs by the hundred stay unbounded (Known failures).
+- Re-read the Direct3D 11, shaders and shared status files after the merge: nothing new asks
+  anything of this back end. The front's WebGL 2 build's constants and queries scenes now match
+  (its run 25); its 21 failing outputs are four scenes it refuses by name (raster: polygon mode,
+  absent on mozangle; views; geometry and stream output). The shaders track's Chrome compile of
+  its corpora lists GLSL ES files Chrome refuses for what GLSL ES 3.00 lacks; those are the
+  converters' raw naga GLSL, not this back end's (bit functions and gathers are built here,
+  multisampled reads and the primitive index absent).
+- The literal check at the head: exit 0, 0 marks. This crate's baseline lines 630 to 629: the
+  rename of `compile` to `write` moved the clip and cull distance limit's 8, now one named
+  constant (`shader::CLIP_AND_CULL_DISTANCES`). In the LF worktree only the submodules the
+  shaders crate builds from may be checked out (its "After cloning"): dxil-spirv's other
+  submodules had been checked out there and gave 8,255 `+` lines; deinit'd, with
+  third_party/spirv-headers checked out again.
+- At the end the desktop's C:\wc\target\phase-2-graphics-webgl (16.9 GB) and this checkout's
+  target (0.3 GB, from `cargo check`) were deleted. Kept: C:\wc\out\webgl\g3b8 (the diagnostic's
+  memory samples, under 1 MB), the LF worktree. Nothing installed.
+
+G3b run 7, 2026-11-18 22:30 to 2026-11-19 about 02:00 Pacific. Merged origin/phase-1-literals
+(the seventh rules), -webgpu, -direct3d-11, -direct3d-12 and -shaders (the shared line and -rig
+had nothing new; no interface change among them touches this back end). The run's own work:
+- The ATG samples' wait inside texture writes (Next 1 of run 6) is found and removed. It was not a
+  texture the front writes: every second frame this back end refreshes the sRGB twin of the
+  swap chain's BGRA buffer (`fresh`, `copy_whole`), and that copy went through a pixel buffer
+  (`copy_through_pbo`), whose unpack ANGLE does by mapping the buffer on the CPU, waiting for
+  the GPU. Copies between textures whose texels have the same bytes now go by a draw where one
+  carries both formats and neither is a float (`copy_same_bytes`), so they stay on the GPU; the
+  copy draw (convert.rs) now also carries 8-bit sRGB and BGRA formats. SimpleLightingPC's time
+  under the back end's functions went from 16.3 ms to 0.06 ms a frame (Measurements, run G3b-7).
+  New check `srgb_copies_keep_every_byte` (every byte value through each 8-bit sRGB pair) passes
+  on ANGLE and in Chrome.
+- The 0xc0000005 seen in run 6: read. Every such crash on this route (five, in the ATG samples
+  only) is at one place in the system's d3d11.dll (offset 0x96777, version 10.0.19041.5794), at
+  start-up, before any frame, in about one run in four; Microsoft's public symbols name no
+  function there. ANGLE's calls reach that library through the front's forwarding by caller.
+  Cause not found (Known failures).
+- filter_draw's lost device (Next 0): still neither built nor refused, but now reproduced in
+  Chrome's own ANGLE, by replaying the test's WebGL 2 calls recorded natively (the recording
+  back end gained `renderer` and `last_log`, which the shaders crate's tests call). Details
+  under Known failures.
+- Re-read the Direct3D 11, shaders and shared status files after the merges: nothing new asks
+  anything of this back end (the front's primitive index and run-time indexed constants on
+  WebGL 2 are its own routes).
+- bgfx-01-cubes through the WebGL 2 build still draws nothing (no frame report in 10 s; the Direct3D
+  11 track's ground), so a program with many draws a frame is still not measured.
+- The literal check after the merges: one `init` for the seventh rules (as docs/literals.md step
+  4 says), then the lines the merges left without their literals removed. Exit 0 at the head.
+- At the end the desktop's C:\wc\target\phase-2-graphics-webgl (21.5 GB: the debug, WebAssembly,
+  Direct3D 11 WebGL 2 debug and release builds and the frames example) and this checkout's
+  target (0.7 GB, from `cargo check`) were deleted. Kept: C:\wc\out\webgl\frames (1.17 GB, the
+  frame breakdowns' profiles and logs) and the LF worktree, whose shaders submodules are now
+  checked out (Installed on the desktop).
+
 G3b run 6, 2026-11-18 (about 19:30 to 22:20 Pacific). Merged origin/phase-2-graphics-webgpu,
 -direct3d-11, -direct3d-12 and -shaders (the shared line and -rig had nothing new; no interface
 change among them needed anything here), and, as the brief now asks, origin/phase-1-literals
@@ -227,6 +304,18 @@ end. The git log has each run's commits.
 
 Read after merging (status-graphics-direct3d-11.md at 66e54fa6, status-graphics-shaders.md at
 93fed7c1, status-graphics.md). Each request and where it stands:
+- (Run 8) The shaders track's filter_draw losing ANGLE's device (runs 3 to 7, below): built.
+  Its programs were copies of a few shaders made again for every draw, each a GL program holding
+  about 650 KB of the adapter's memory; shaders of equal GLSL are now one GL shader and their
+  programs one GL program, so its 16 seeds in one process draw every comparison natively and its
+  recorded stream replays whole in Chrome (Where things stand, Measurements, run G3b-8). Distinct
+  large programs by the hundred stay a known failure with no limit to declare.
+- (Run 8) Pass bar of G3b, where it stands: every request above built or refused by name; the
+  shared suite as before in Chrome and on ANGLE (newest Measurements); slow paths counted as
+  listed under Done; the frame-time measurement under Measurements, runs G3b-2 to G3b-7
+  (SimpleLightingPC, WebGL 2 28.1 us a draw against WebGPU 53.8 us on the same frames). Known
+  failures left: the ATG samples' start-up crash in the system's d3d11.dll, and no real program
+  with many draws a frame measured (bgfx draws nothing through the front's WebGL 2 build).
 - Reading half floats back (Direct3D 11's mips and targets scenes: a staging texture of a format
   the back end cannot read back): built. `R16Float`, `Rg16Float` and `Rgba16Float` now have
   `COPY_OUT`: read back now, later and into buffers through their bits drawn into the unsigned
@@ -1596,6 +1685,117 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   reduced performance" (and the same for WebGPU). Per-draw timings taken there (G3's later work)
   must say so; whether a headed Chrome differs is not measured.
 
+## Measurements, run G3b-8
+
+- filter_draw's stream replayed natively on mozangle's ANGLE, changed by mode (scratch
+  g3b8/diag/stream-diag.rs and .cmd, put into examples/ for the run only; desktop, RTX 3080,
+  `gpu-job --alone`, 01:39 to 01:43 desktop time, nothing else on the GPU; logs
+  g3b8/diag1-task.log, adapter memory each second in g3b8/*-0.csv). The stream holds 419 draws,
+  each with a new program from new shaders; six distinct shaders (naga expression counts 51, 64,
+  742, 742, 821, 821), so four distinct programs. Each mode spent about 39 to 41 s before its
+  first 24 draws (the four links among it). At the code before this run:
+  - as recorded: device lost at draw 419 (read back of that draw), the adapter's dedicated
+    memory 354 MB before the draws, rising about 32 MB a second with the draws to 629 MB, then
+    352 MB after the process ended;
+  - shaders destroyed right after their program was made: lost at draw 419, memory to 616 MB;
+  - each draw's program and shaders destroyed after it: no loss, memory to 492 MB (the textures
+    and buffers each draw makes stay alive);
+  - shaders of equal content made once (so programs too, by the back end's pair cache): no
+    loss, memory stayed at 352 to 353 MB, and draws 25 to 419 took 0.5 s, against 8.6 s as
+    recorded.
+  The memory rose by about 255 MB over the last 395 programs: about 650 KB a live program.
+- The shaders crate's `tests/filter_draw.rs`, seeds 1 to 16 in one process
+  (`WCONTAINERS_FILTER_CASES=16`, `gpu-job --alone --desktop`, desktop 02:08 to 02:09, nothing
+  else on the GPU; log g3b8/job2.log), at 7c26c4b8's tree: 792 comparisons, no device lost; 2
+  failed, "9 Rgba8Unorm bias dxbc webgpu's own sampler" and the same through dxil (the WebGPU
+  back end's native sampler, not this back end); 64 known anisotropic failures, the shaders
+  track's tap footprint, on both back ends. Every other WebGL 2 comparison passes.
+- filter.bin replayed in Chrome 157 on the RTX 3080 at 7c26c4b8 (`gpu-job --alone --desktop`,
+  log g3b8/replay.log), twice per back end: WebGL 2 "1 frames, 0 calls failed; Ok ... slow
+  paths: PipelineMiss 2" both times (run 7: context lost at frame 0); WebGPU "0 calls failed;
+  Ok ... ReadBackWait 419, PipelineMiss 419" (it builds a pipeline for every program).
+- The whole run at 7c26c4b8 (lint of every build first, clean; all.cmd, `gpu-job --desktop`,
+  not alone, desktop 02:25 to 02:28; log g3b8/all.log, outputs C:\wc\out\webgl\g3b8-all):
+  as run 7's, each suite count one higher for the new check. Unit tests 15 and the trace round
+  trip pass. Natively the suite 105 of 105 with every extension, 77 passed and 28 failed on each
+  route without EXT_clip_control (the known ones: the suite's own raster blocks). In Chrome 102
+  passed, 3 not run, 0 failed; without EXT_clip_control, and without it and
+  WEBGL_provoking_vertex, 72 passed, 3 not run, 30 failed (known, as natively); without stencil
+  texturing, the BC extensions, noperspective and float blits 94 passed, 11 not run, 0 failed.
+  Against WebGPU natively 9 of 10 and in Chrome 11 of 13 (the known r32float mip and exact-tie
+  differences); BC through GL exactly equal to Direct3D 11, BC decoded on the host the known
+  failure.
+- Every Direct3D 11 scene through the front's WebGL 2 build on ANGLE at 7c26c4b8 (`scenes
+  --api d3d11 --dll d3d11.dll=...webgl...`, desktop 02:42; log g3b8/d3d11-scenes.log): 92
+  passed, 21 failed, 30 absent (run 7: 88, 27, 30), as the front's run 25 found. The 21 are all
+  the outputs of raster, views, geometry and streamout, each of which the front refuses by name
+  (`E_NOTIMPL`): polygon mode (absent on mozangle, built in Chrome), texture views, and the
+  geometry stage and stream output (compute programs); none differs from real Direct3D 11.
+
+## Measurements, run G3b-7
+
+- The frame-time breakdown after the twin refresh by draw (84f45baf; method and machine as in run
+  G3b-6: desktop i9-9900K, 16 threads, RTX 3080, driver 32.0.16.2101; frames/run 3 10 30; each
+  program run alone in the queue's hazard group, other tracks' builds and remote commands beside;
+  load is the whole machine's `% Processor Time` from `typeperf` every 2 s, over each recorded
+  run). Logs: scratch g3b7/frames-atg2.log, frames-inst2.log; load g3b7/load-atg2.csv,
+  load-inst.csv.
+  - atg-simplelightingpc (59.92 frames a second: 512 frames from 8.91 s to 17.46 s), per frame:
+    front 0.020 ms, back end 0.005 ms, ANGLE 0.083 ms, the driver 0.28 ms, the program 0.028 ms;
+    under the back end's functions 0.060 ms (ANGLE 0.046). Before (run G3b-6): 16.3 ms under the
+    back end's functions, 12.8 of them waiting in `Gl::upload`; ANGLE 2.34 ms. Under the back end's
+    functions only ANGLE's part is above 0.01 ms a frame now. Load: short run 4.3 % (2.8 to
+    8.9), long run 3.7 % (2.4 to 7.8). The run before the fix (scratch g3b7/frames-atg.log, its
+    long run finished by g3b7/finish-frames.sh after the Mac's client was stopped) still had
+    0.76 s a second under `Gl::upload` from `copy_through_pbo`, which a temporary print (not
+    committed; g3b7/pbo-diag.log) showed to be `Bgra8UnormSrgb` to `Bgra8Unorm`, 1280 by 720,
+    every second frame: the twin refresh.
+  - atg-simpleinstancingpc (59.98 frames a second: 512 frames from 9.06 s to 17.60 s): its short
+    recorded run crashed at start-up (the 0xc0000005 under Known failures), so the difference of
+    the two runs counts the long run's start-up and over-states every part, by up to half. As
+    upper bounds a frame: front 0.039 ms, back end 0.005 ms, ANGLE 0.21 ms, driver 0.65 ms; under
+    the back end's functions 0.26 ms (run G3b-6: 16.1 ms). Load over the long run 5.2 % (2.2 to
+    16.0).
+  - Counts a frame, both samples: `CopyThroughBuffer` every second frame (the twin refresh, now a
+    draw), 3 and 5 `MappedUploadWhole` (the front).
+- Per draw in Chrome on the same frames (SimpleLightingPC's recorded stream replayed, run G3b-2's
+  method; `gpu-job --alone --desktop`, Chrome 157.0.8103.78, scratch g3b7/replay.log, desktop
+  00:54): WebGL 2 28.1 us a draw, whole frame median 0.360 ms (calls untimed), inside the back end
+  0.330 ms; WebGPU 53.8 us a draw, whole frame 0.725 ms, inside the back end 0.700 ms. Run G3b-3
+  had 23.3 against 53.9 us and 0.27 against 0.73 ms; the twin refresh is now a draw, counted
+  `CopyThroughBuffer` 291 times in 580 frames. The front does not run in Chrome yet (no
+  WebAssembly build of it), so its share is the native one above.
+- bgfx-01-cubes through frames/run (`--d3d11`): no `webgl: frames=` line in its 10 s run, only
+  ANGLE's two device warnings; it draws nothing through the WebGL 2 build, as in runs 2 and 5.
+- The full run after the merges (all.cmd, scratch g3b7/all1.log, desktop 22:57 to 23:04, queued
+  beside other tracks' work, not timed), at 4dd6c481: unit tests 15 of 15. Chrome 100 passed, 3
+  not run, 0 failed with every extension; 92 passed and 11 not run on the reduced route; 70
+  passed, 3 not run, 30 failed without EXT_clip_control, the same without it and
+  WEBGL_provoking_vertex. ANGLE 103 of 103 with every extension, 75 of 103 on both reduced
+  routes (every failure the suite's own raster blocks). Against WebGPU natively 9 of 10, in
+  Chrome 11 of 13 routes (the known two). BC reference 1 of 2 (the known decoded route). Clippy
+  with warnings denied, native and wasm32: clean.
+- The copy and twin checks after each change (some.cmd, scratch g3b7/srgb2.log and twin1.log):
+  16 of 16 and 18 of 18, on ANGLE and in Chrome.
+- The full run at the last code commit (13e75e3d: all.cmd, with clippy as its build,
+  scratch g3b7/all2.log, desktop 01:16 to 01:21, queued beside other tracks' work, not timed):
+  unit tests 15 of 15, the trace round trip (`--features record --test trace`) 1 of 1. Chrome
+  101 passed, 3 not run (clip and cull distances, timestamps, fractional bias), 0 failed with
+  every extension; 93 passed and 11 not run on the reduced route; 71 passed, 3 not run and 30
+  failed without EXT_clip_control, the same without it and WEBGL_provoking_vertex. ANGLE 104 of
+  104 with every extension, 76 of 104 on both reduced routes (every failure
+  `Absent(CLIP_DEPTH_ZERO_ONE)` or `Absent(PROVOKING_VERTEX_FIRST)` from the suite's own raster
+  blocks). Against WebGPU natively 9 of 10, in Chrome 11 of 13 routes (the known two). BC
+  reference 1 of 2 (the known decoded route). Clippy with warnings denied: native all targets,
+  `record` with the trace test, wasm32 (browser, draw-cost; replay with `trace`): clean.
+- The Direct3D 11 front's scenes through its WebGL 2 build, natively on ANGLE (rig `scenes --api
+  d3d11 --dll d3d11.dll=...\webgl\debug\wcontainers_directx.dll`, desktop 01:08 to 01:16,
+  scratch g3b7/d3d11-scenes1.log): 88 pass, 27 fail, 30 absent, as in runs 4 to 6; the same six
+  scenes stop in the front (constants 3, geometry 8, queries 3, raster 5, streamout 4, views 4
+  outputs); formats (bgra8_srgb among them, drawn through the twin), targets, mips and samplers
+  pass with largest difference 0 where shown.
+- The literal check at the head: exit 0, 0 marks (g3b7/check5.log).
+
 ## Measurements, run G3b-6
 
 - The frame-time breakdown, 2026-11-18 20:33 to 21:42 desktop time: desktop (i9-9900K, 16
@@ -2087,6 +2287,25 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 
 ## Known failures
 
+- (G3b run 7) Real programs through the Direct3D 11 front's WebGL 2 build sometimes end with
+  0xc0000005 at start-up, before any frame: five times in about twenty runs of SimpleLightingPC
+  and SimpleInstancingPC (2026-11-18 21:06, 21:33, 2026-11-19 00:18, 00:40, and run 6's), never
+  in chocolate-doom's. The Application log puts every one in C:\Windows\System32\d3d11.dll
+  (10.0.19041.5794) at offset 0x96777, after ANGLE has made its devices. Microsoft's public
+  symbols for that build (d3d11.pdb 7D7427C8F5CAFC4FA22F64E4FA1C5C26 age 1) name no function
+  there; the nearest public symbol is a short thunk 0x14a27 bytes before, so the place is in a
+  private function. ANGLE's calls reach that library through the front's forwarding by caller.
+  Cause not found; next would be a crash dump (no dump tool is installed on the desktop).
+
+- (G3b run 8) Hundreds of distinct large programs alive at once are not bounded by any limit
+  this back end declares. On the RTX 3080 each live GL program of the filter test's pixel
+  shader (about 800 naga expressions, its tap loops compiled by ANGLE into one large Direct3D
+  shader) holds about 650 KB of the adapter's memory, and ANGLE's device (Chrome's too) was
+  removed with about 420 of them alive, near 275 MB above the idle adapter, far from its 10 GB.
+  Copies of one shader are now one GL program, so the filter test no longer meets it; distinct
+  programs of that size were not tried by the hundred (a replay of the stream spends about 40 s
+  before its first 24 draws, which make its four). GL reports no size of a compiled program, so no limit can be declared from it.
+  Closed by run 8 for the filter test (copies of one shader), kept below as the record:
 - (G3b run 4, corrected in run 5) Natively, the shaders track's `tests/filter_draw.rs` loses
   mozangle's ANGLE device (Direct3D 11 "Failed to map D3D11 resource", reported as a lost device
   with GL error 0x502) after about 400 of its programs are alive at once; with its programs
@@ -2095,6 +2314,16 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   with no loss. So it depends on what the programs are (the filter test's are large tap loops,
   which ANGLE compiles into large Direct3D shaders) or on what is made per program. The cause
   inside ANGLE is not found; a real program keeping hundreds of large shaders alive may meet it.
+  (G3b run 7) Chrome's own ANGLE meets it too: the test's WebGL 2 draws, recorded natively with
+  the `record` feature (the diagnostic copy of the test, scratch g3b7/diag, every program kept
+  alive; stream scratch g3b7/filter.bin, 3.8 MB), replayed in Chrome 157 on the RTX 3080
+  (`gpu-job --alone --desktop`, desktop 01:07, scratch g3b7/replay2.log) lose the context the
+  same way: "GL_INVALID_OPERATION ... Renderer11::mapResource ... HRESULT 0x887A0005 (removal
+  reason 0x887A0005): Failed to map D3D11 resource", then CONTEXT_LOST_WEBGL. No display reset
+  was logged and the queue was not held. While the native run drew, the adapter's dedicated
+  memory (whole machine, `typeperf` each second, scratch g3b7/diag-keep.csv) rose from 354 MB to
+  616 MB in about 12 s, and fell back when the process ended. Neither built nor refused: no
+  count or size is known that bounds it, so no limit can be declared honestly yet.
 
 - (run 17) `decoded_on_the_host_equals_direct3d_11` (tests/bc_reference.rs): BC1 to BC5 decoded by
   bcdec_rs, the route of browsers without the BC extensions, are up to 13 8-bit steps from what the
@@ -2226,6 +2455,19 @@ const, 499 unit-test and 4,736 test findings, 2 redefinitions, 15 "restated").
   - Naming the value "sample" as a constant made another crate's test restate it
     (wcontainers-directx examples/own_min_lod.rs); the qualifiers are now a table instead, as
     docs/literals.md step 8 asks.
+
+- (G3b run 7) Merged origin/phase-1-literals at its seventh rules (through -direct3d-11, which
+  carried them) and ran `init` once in the commit after the merge (949667f2), as step 4 of
+  docs/literals.md says. The LF worktree needed the shaders crate's submodules checked out
+  first: without them `init` dropped their 12,547 script lines and wrote two `unparsed` lines.
+  The merge of -webgpu after it conflicted in the baseline; resolved by keeping every line of
+  both sides (each as often as the side holding it most), then deleting the 470 `-` lines the
+  check printed (4dd6c481). This crate's baseline lines: 627 after run 6, 631 after the init
+  (the seventh rules found four), 630 at the head; exit 0, 0 marks. Changes that could add
+  lines, as the check lists them: run 6's list, plus bd53fbb448e2 and 949667f2 (new rules,
+  for literals already in the tree), and the starts and inits of the Direct3D 11 and WebGPU
+  branches' own baselines, merged in (81489a2f8fab and 5657abb6ba15; 4bcacbf5c5b9 and
+  2cc8ad761bf6).
 
 ## Departures from the plan
 
@@ -2535,6 +2777,9 @@ const, 499 unit-test and 4,736 test findings, 2 redefinitions, 15 "restated").
 
 ## Installed on the desktop
 
+- (G3b run 7) In the LF worktree C:\wc\src\phase-2-graphics-webgl-lf: the shaders crate's
+  submodules (dxbc-spirv 0.01 GB, dxil-spirv 0.06 GB), which the literal check scans.
+
 - (G3b run 6) C:\wc\src\phase-2-graphics-webgl-lf: a git worktree of this branch's desktop
   repository with LF line ends, for the literal check (How to run); source only, its size not
   measured. C:\wc\out\webgl\frames: the breakdown's profiles and logs. Nothing installed.
@@ -2599,22 +2844,19 @@ const, 499 unit-test and 4,736 test findings, 2 redefinitions, 15 "restated").
 
 ## Next
 
-G3b: every finding of the check of run 5 is fixed or recorded (run 6). In this order:
-0. filter_draw's lost device (Known failures): not settled, neither built nor refused. What about
-   the shaders track's large tap-loop programs makes mozangle's ANGLE remove its Direct3D 11
-   device after about 400 live ones (800 small programs do not) is not found, and Chrome's own
-   ANGLE was not tried. Next: keep those programs alive one by one, natively and in Chrome (the
-   back end's reports now reach the console), watching ANGLE's memory; if a count or size bounds
-   it, declare it through a limit the front can read (an interface change), else find the leak.
-1. The ATG samples' frames wait about 12.7 ms of 16.7 in texture writes (`Gl::upload`,
-   `texSubImage` of a texture the GPU still reads, through ANGLE): find which texture the front
-   writes each frame and write it without the wait (a fresh texture for a whole write, as
-   buffers are orphaned); then measure again. Also read the 0xc0000005 of one SimpleLightingPC
-   run (Measurements, run G3b-6), and record a program with many draws a frame (bgfx drew
-   nothing through the WebGL 2 build in run 5).
-2. Which texture's twin SimpleLightingPC refreshes every second frame (`CopyThroughBuffer` on
-   half the frames; likely an sRGB view of its swap chain's buffer), and whether a draw or a blit
-   can refresh it without the pixel buffer.
+G3b: every finding of the check of run 5 is fixed or recorded (run 6); run 7 removed the ATG
+samples' wait; run 8 removed filter_draw's lost device (copies of one shader are one GL
+program). In this order:
+0. Distinct large programs by the hundred (Known failures, run 8): if a real program meets it,
+   measure the adapter's memory per live program there; a bound on bytes of compiled code is
+   what would need declaring, and GL reports none.
+1. (Run 7: the ATG samples' wait was the twin refresh through a pixel buffer; now a draw.) The
+   start-up crash in the system's d3d11.dll (Known failures): take a crash dump. A program with
+   many draws a frame: bgfx draws nothing through the WebGL 2 build (the Direct3D 11 track's to
+   read); measure the next real program that does.
+2. The twin is refreshed every second frame (SimpleLightingPC's BGRA swap chain buffer and its
+   sRGB twin, 1280 by 720): a draw now, but tracking which of the pair the front writes could
+   avoid the copy altogether.
 3. Global GLSL constants holding negative zero or bits made floats are still folded by ANGLE
    (`opaque_float_bits` cannot reach a constant initialiser); naga writes them only for named
    module constants, which the converters do not make today.

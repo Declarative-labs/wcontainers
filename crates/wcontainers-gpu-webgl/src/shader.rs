@@ -12,12 +12,28 @@ pub type Slot = (u32, u32);
 /// GLSL name, its offset in the immediates and its type.
 pub type Immediate = (String, u32, glsl::GlslUniformType);
 
-/// A compiled shader and what its program must bind.
+/// A compiled shader. Shaders of equal text share one, so their programs share one GL program.
 #[derive(Debug)]
 pub struct ShaderObj {
     pub id: u64,
-    pub stage: ShaderStage,
     pub raw: glow::Shader,
+    /// How many handles name it.
+    pub handles: std::cell::Cell<u32>,
+    pub text: Rc<ShaderText>,
+}
+
+impl core::ops::Deref for ShaderObj {
+    type Target = ShaderText;
+
+    fn deref(&self) -> &ShaderText {
+        &self.text
+    }
+}
+
+/// A shader's GLSL and what its program must bind.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ShaderText {
+    pub stage: ShaderStage,
     /// Combined samplers by GLSL name.
     pub textures: Vec<Combined>,
     /// Uniform blocks by GLSL name.
@@ -34,7 +50,7 @@ pub struct ShaderObj {
 /// A combined sampler of a shader: its GLSL name, the texture's slot and its sampler's, and
 /// whether gathers read it, so its unit takes the sampler's twin whose minimum level of detail is
 /// 0 (see [`gathers_at_level_zero`]).
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Combined {
     pub name: String,
     pub texture: Slot,
@@ -100,6 +116,9 @@ pub struct GlslSettings {
     /// context has it; elsewhere they are carried times w ([`linear_by_w`]).
     pub noperspective: bool,
 }
+
+/// Clip and cull distances together: what WEBGL_clip_cull_distance guarantees, Direct3D's limit.
+pub const CLIP_AND_CULL_DISTANCES: u32 = 8;
 
 /// The directive of NV_shader_noperspective_interpolation.
 pub const NOPERSPECTIVE_EXTENSION: &str = "GL_NV_shader_noperspective_interpolation";
@@ -1455,13 +1474,8 @@ fn slot(module: &naga::Module, var: naga::Handle<naga::GlobalVariable>) -> Optio
         .map(|b| (b.group, b.binding))
 }
 
-/// Compiles a shader. The compile status is read when its program links, so compiles can overlap.
-pub fn compile(
-    gl: &glow::Context,
-    id: u64,
-    module: &ShaderModule,
-    settings: GlslSettings,
-) -> Result<ShaderObj, GpuError> {
+/// Writes a shader's GLSL and what its program must bind.
+pub fn write(module: &ShaderModule, settings: GlslSettings) -> Result<ShaderText, GpuError> {
     let plain = plain_depth_reads(module).map_err(GpuError::Invalid)?;
     let module = plain.as_ref().map_or(module, |p| &p.0);
     let split = split_samplers(module).map_err(GpuError::Invalid)?;
@@ -1543,17 +1557,13 @@ pub fn compile(
     let cull_distances = results(module)
         .find(|(b, _)| *b == naga::Binding::BuiltIn(naga::BuiltIn::CullDistance))
         .map_or(0, |(_, n)| n);
-    // WEBGL_clip_cull_distance guarantees eight of each and eight together, Direct3D's limit.
-    if clip_distances + cull_distances > 8 {
+    if clip_distances + cull_distances > CLIP_AND_CULL_DISTANCES {
         return Err(GpuError::Invalid(
             "webgl: more than eight clip and cull distances",
         ));
     }
-    let raw = start_compile(gl, module.stage, &source)?;
-    Ok(ShaderObj {
-        id,
+    Ok(ShaderText {
         stage: module.stage,
-        raw,
         textures,
         blocks,
         source,
@@ -1786,8 +1796,9 @@ fn sizes_from_uniforms(source: String, names: &[&str]) -> String {
     out
 }
 
-/// Starts compiling GLSL of `stage`.
-fn start_compile(
+/// Starts compiling GLSL of `stage`. The compile status is read when its program links, so compiles
+/// can overlap.
+pub fn start_compile(
     gl: &glow::Context,
     stage: ShaderStage,
     source: &str,
@@ -1869,13 +1880,13 @@ pub fn relink(
     let (vertex, fragment) = &program.stages;
     let fresh = |s: &ShaderObj, source: String| -> Result<Rc<ShaderObj>, GpuError> {
         Ok(Rc::new(ShaderObj {
+            id: s.id,
             raw: start_compile(gl, s.stage, &source)?,
-            textures: s.textures.clone(),
-            blocks: s.blocks.clone(),
-            source,
-            outputs: s.outputs.clone(),
-            immediates: s.immediates.clone(),
-            ..*s
+            handles: std::cell::Cell::new(1),
+            text: Rc::new(ShaderText {
+                source,
+                ..(*s.text).clone()
+            }),
         }))
     };
     let source = match convert {

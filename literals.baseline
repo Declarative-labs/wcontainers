@@ -5057,7 +5057,6 @@ code	crates/wcontainers-gpu-webgl/src/shader.rs	char	write_glsl	'\n'
 code	crates/wcontainers-gpu-webgl/src/shader.rs	int	Linked	3
 code	crates/wcontainers-gpu-webgl/src/shader.rs	int	ProgramObj	4
 code	crates/wcontainers-gpu-webgl/src/shader.rs	int	bit_functions	4
-code	crates/wcontainers-gpu-webgl/src/shader.rs	int	compile	8
 code	crates/wcontainers-gpu-webgl/src/shader.rs	int	convert_inputs	1024
 code	crates/wcontainers-gpu-webgl/src/shader.rs	int	convert_inputs	16u32
 code	crates/wcontainers-gpu-webgl/src/shader.rs	int	convert_inputs	3
