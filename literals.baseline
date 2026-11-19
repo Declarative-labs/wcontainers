@@ -7989,7 +7989,6 @@ redefinition	crates/wcontainers-kernel-test/src/network.rs	int	EHOSTUNREACH	EHOS
 redefinition	crates/wcontainers-kernel-test/src/network.rs	int	ENETUNREACH	ENETUNREACH = 101
 redefinition	crates/wcontainers-kernel-test/src/network.rs	int	ENOENT	ENOENT = 2
 redefinition	crates/wcontainers-kernel-test/src/network.rs	int	ETIMEDOUT	ETIMEDOUT = 110
-redefinition	crates/wcontainers-kernel-test/src/reference.rs	str	IMAGE	IMAGE = "alpine:3.22"
 redefinition	crates/wcontainers-kernel-test/src/standin.rs	int	copy_touched::CHUNK	CHUNK = 4096
 redefinition	crates/wcontainers-kernel-test/tests/java.rs	int	ESR_EC_DABT_LOW	ESR_EC_DABT_LOW = 36
 redefinition	crates/wcontainers-kernel-test/tests/java.rs	int	ESR_EC_SHIFT	ESR_EC_SHIFT = 26
@@ -8054,6 +8053,7 @@ redefinition	crates/wcontainers-wasmtime/tests/cache.rs	int	CODE	CODE = 65536
 redefinition	crates/wcontainers-wasmtime/tests/code.rs	int	CODE	CODE = 65536
 redefinition	crates/wcontainers-wasmtime/tests/faults.rs	int	CODE	CODE = 65536
 redefinition	crates/wcontainers-wasmtime/tests/fork.rs	int	CODE	CODE = 65536
+redefinition	crates/wcontainers-wasmtime/tests/surface.rs	str	IMAGE	IMAGE = "alpine:3.22"
 redefinition	crates/wcontainers-wasmtime/tests/turns.rs	int	CODE	CODE = 65536
 redefinition	crates/wcontainers-wasmtime/tests/views.rs	int	CODE	CODE = 65536
 restated	crates/wcontainers-abi/src/registers.rs	int	tests::layout_is_fixed	256

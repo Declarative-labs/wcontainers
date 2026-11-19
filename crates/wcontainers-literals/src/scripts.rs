@@ -134,7 +134,7 @@ pub fn scan(
                 note: matches(&value, crate_dir).unwrap_or_default(),
                 value: Some(value),
                 crate_dir: crate_dir.to_string(),
-                in_const: false,
+                in_const: None,
             })
         })
         .collect()

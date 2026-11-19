@@ -50,8 +50,10 @@ impl Value {
                 .map(Value::Int),
             Lit::Byte(b) if !negative => Some(Value::Byte(b.value())),
             Lit::Str(s) => Some(Value::Str(s.value())),
-            // A byte string of text is the same text (`b"etc/group"` and `"etc/group"`).
+            // A byte string or a C string of text is the same text (`b"etc/group"`, `c"etc/group"`
+            // and `"etc/group"`).
             Lit::ByteStr(s) => String::from_utf8(s.value()).ok().map(Value::Str),
+            Lit::CStr(s) => s.value().into_string().ok().map(Value::Str),
             Lit::Char(c) => Some(Value::Char(c.value())),
             _ => None,
         }
@@ -411,8 +413,10 @@ pub struct ConstDef {
     /// An associated constant inside `impl Trait for Type`, which the trait requires and which is
     /// therefore not a redefinition of the same name elsewhere.
     pub trait_impl: bool,
-    /// Other crates can import it (`pub`).
+    /// Other crates can import it (`pub`, outside any function, in public modules).
     pub public: bool,
+    /// Defined inside a function, where nothing outside it can name it.
+    pub local: bool,
     pub value: Option<Value>,
 }
 
@@ -635,6 +639,8 @@ fn resolve(
         .iter()
         .copied()
         .filter(|&c| c != at && defs[c].namespace() == defs[at].namespace())
+        // Code cannot name a test's constant: tests are built only for themselves.
+        .filter(|&c| defs[at].scope == ConstScope::Test || defs[c].scope != ConstScope::Test)
         .filter(|&c| match &wanted_type {
             Some(t) => defs[c].owner_type() == Some(t.as_str()),
             None => !defs[c].associated(),
