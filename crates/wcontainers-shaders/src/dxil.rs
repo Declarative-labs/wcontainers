@@ -923,7 +923,10 @@ const FLOAT_BYTES: u8 = core::mem::size_of::<f32>() as u8;
 
 fn float_to_int_function(module: &mut Module, (kind, size): FloatToInt) -> Function {
     let mut ty = |kind| {
-        let scalar = Scalar { kind, width: FLOAT_BYTES };
+        let scalar = Scalar {
+            kind,
+            width: FLOAT_BYTES,
+        };
         let inner = match size {
             None => TypeInner::Scalar(scalar),
             Some(size) => TypeInner::Vector { size, scalar },
@@ -956,7 +959,13 @@ fn float_to_int_function(module: &mut Module, (kind, size): FloatToInt) -> Funct
     let (above, below, max, min, zero) = if kind == ScalarKind::Sint {
         let (max, min) = (Literal::I32(i32::MAX), Literal::I32(i32::MIN));
         // i32::MIN as f32 is exact, and the first float above the range is its negation.
-        (-(i32::MIN as f32), i32::MIN as f32, max, min, Literal::I32(0))
+        (
+            -(i32::MIN as f32),
+            i32::MIN as f32,
+            max,
+            min,
+            Literal::I32(0),
+        )
     } else {
         let (max, zero) = (Literal::U32(u32::MAX), Literal::U32(0));
         // u32::MAX rounds up to 2^32, the first float above the range.

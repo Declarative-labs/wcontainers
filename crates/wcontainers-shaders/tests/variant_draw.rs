@@ -131,6 +131,12 @@ fn variants_draw_as_the_native_feature_does() {
         &[windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0],
     )
     .unwrap();
+    let warp = wcontainers_graphics_test::d3d11::create(
+        wcontainers_graphics_test::Driver::Warp,
+        false,
+        &[windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
     let grid = grid();
     let mut results = Vec::new();
     for (route, dxil) in [("dxbc", false), ("dxil", true)] {
@@ -985,25 +991,45 @@ fn variants_draw_as_the_native_feature_does() {
                     &levels.to_le_bytes(),
                 )],
             );
-            let (d3d11, _) = direct3d_11(
-                &d3d,
-                "vs_transform",
-                shader,
-                Format::Rgba8Unorm,
-                [1.0, 0.75, 0.5, 1.5],
-                true,
-                &Reference {
-                    levels: 4,
-                    unbound,
-                    ..Default::default()
-                },
-            );
+            let reference = Reference {
+                levels: 4,
+                unbound,
+                ..Default::default()
+            };
+            let drawn = |d: &wcontainers_graphics_test::d3d11::Gpu| {
+                direct3d_11(
+                    d,
+                    "vs_transform",
+                    shader,
+                    Format::Rgba8Unorm,
+                    [1.0, 0.75, 0.5, 1.5],
+                    true,
+                    &reference,
+                )
+                .0
+            };
+            // The RTX 3080 answers a size past the level count as one texel, WARP and the
+            // specification as zero, which the program follows: WARP is this case's reference.
+            let (d3d11, against) = match unbound {
+                true => (drawn(&d3d), "direct3d 11"),
+                false => (drawn(&warp), "warp"),
+            };
             for (back_end, texels) in [
                 ("webgpu", ours(&mut gpu, &variant, ProvokingVertex::First)),
                 ("webgl", ours(&mut gl, &variant, ProvokingVertex::Last)),
             ] {
+                if !unbound {
+                    let hardware = compare(
+                        format!("{shader} {route} {back_end} against the gpu's direct3d 11"),
+                        &drawn(&d3d),
+                        &texels,
+                        Format::Rgba8Unorm,
+                        (0, 0),
+                    );
+                    eprintln!("not required: {} texels differ", hardware.count);
+                }
                 results.push(compare(
-                    format!("texture_info {shader} {route} {back_end} against direct3d 11"),
+                    format!("texture_info {shader} {route} {back_end} against {against}"),
                     &d3d11,
                     &texels,
                     Format::Rgba8Unorm,
