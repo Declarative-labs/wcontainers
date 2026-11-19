@@ -461,8 +461,9 @@ bitflags! {
         /// biased as the raster block says (with [`VariantFlags::DEPTH_BIAS`]) and clamped to
         /// [`HelperValue::DepthRange`] ([`crate::SlowPath::DepthClampInShader`]).
         const DEPTH_CLAMP = 1 << 12;
-        /// The pixel shader reads its primitive index from a flat value the stage helper's draw passes,
-        /// not from the built-in ([`crate::SlowPath::PrimitiveIdAsGeometry`]).
+        /// The pixel shader reads its primitive index from a flat value the stage helper's draw passes
+        /// after the [`VariantKey::linked`] values, not from the built-in
+        /// ([`crate::SlowPath::PrimitiveIdAsGeometry`]).
         const PRIMITIVE_ID_FROM_STAGE = 1 << 13;
         /// Every storage buffer of the program's own slots (raw and structured views; not counters,
         /// typed views or bindings a variant adds) is read from [`HelperValue::StorageOffset`] bytes
@@ -540,7 +541,8 @@ pub struct TargetInShader {
 /// [`VariantFlags::CLIP_DISTANCE`], zero without), then its unclamped clip z (with
 /// [`VariantFlags::DEPTH_CLAMP`]), then the layer a geometry stage names (one flat u32, with
 /// [`VariantFlags::LAYER_FROM_STAGE`]), then the line coverage values (four f32 interpolated without
-/// perspective, with [`VariantFlags::LINE_COVERAGE`]). `location` is one past every location either
+/// perspective, with [`VariantFlags::LINE_COVERAGE`]), then the primitive's number (one flat u32,
+/// with [`VariantFlags::PRIMITIVE_ID_FROM_STAGE`]). `location` is one past every location either
 /// program's reflection lists.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
