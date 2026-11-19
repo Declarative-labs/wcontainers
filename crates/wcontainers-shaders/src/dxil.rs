@@ -43,6 +43,13 @@ unsafe extern "C" {
         out_words: *mut usize,
         error: *mut *mut c_char,
     ) -> c_int;
+    fn wcs_dxil_declared_registers(
+        data: *const u8,
+        size: usize,
+        out: *mut *mut u32,
+        out_words: *mut usize,
+        error: *mut *mut c_char,
+    ) -> c_int;
     fn wcs_free(p: *mut c_void);
 }
 
@@ -114,18 +121,34 @@ fn to_spirv(dxil: &[u8], samples: u8) -> Result<(Vec<u32>, Resources), ConvertEr
     Ok((spirv, resources))
 }
 
-/// (space, register, size in bytes) of every constant buffer the DXIL declares.
-fn constant_sizes(dxil: &[u8]) -> Result<Vec<u32>, ConvertError> {
+/// A C side reader of the DXIL's resource list, giving words it allocated.
+type ListReader =
+    unsafe extern "C" fn(*const u8, usize, *mut *mut u32, *mut usize, *mut *mut c_char) -> c_int;
+
+/// The words `read` gives for `dxil`.
+fn resource_list(dxil: &[u8], read: ListReader) -> Result<Vec<u32>, ConvertError> {
     let mut out = core::ptr::null_mut();
     let mut n = 0;
     let mut error = core::ptr::null_mut();
     // SAFETY: the pointers are valid for the call; the C side allocates `out` and `error` with malloc.
-    let status =
-        unsafe { wcs_dxil_constant_sizes(dxil.as_ptr(), dxil.len(), &mut out, &mut n, &mut error) };
+    let status = unsafe { read(dxil.as_ptr(), dxil.len(), &mut out, &mut n, &mut error) };
     if status != 0 {
         return Err(ConvertError::Rejected(reason(error)));
     }
     Ok(words(out, n))
+}
+
+/// (space, register, size in bytes) of every constant buffer the DXIL declares.
+fn constant_sizes(dxil: &[u8]) -> Result<Vec<u32>, ConvertError> {
+    resource_list(dxil, wcs_dxil_constant_sizes)
+}
+
+/// Every register the DXIL's resource list declares, used by the program or not, as resources.
+fn declared_registers(dxil: &[u8]) -> Result<Resources, ConvertError> {
+    Ok(resource_list(dxil, wcs_dxil_declared_registers)?
+        .as_chunks::<TRIPLE>()
+        .0
+        .to_vec())
 }
 
 /// The largest constant buffer, in bytes, which dxil-spirv declares for every dynamically indexed one.
@@ -342,7 +365,13 @@ pub(crate) fn lower(
         };
         into.push(placed_value(&module, p, pixel && p.output, signature));
     }
-    let slots = bindings(&mut module, &resources, set, &mut reflection)?;
+    let slots = bindings(
+        &mut module,
+        &resources,
+        &declared_registers(dxil)?,
+        set,
+        &mut reflection,
+    )?;
     reflection.sampled_pairs = sampled_pairs(&module, &slots)?;
     draw_bases(&mut module, variant, &mut reflection)?;
     images::finish(
@@ -1525,8 +1554,9 @@ fn sampled_pairs(
 }
 
 /// Numbers every resource by Direct3D 12's rule (6.4): within the stage's set, each kind's slots are
-/// the program's own resources of that kind in (space, register) order, from the kind's first
-/// binding, so register spaces and registers of any size fit while the program has no more resources
+/// the registers of that kind the DXIL's resource list declares (`declared`, used by the program or
+/// not, so the numbering is the one a front reads from the container) in (space, register) order,
+/// from the kind's first binding, so register spaces and registers of any size fit while the program has no more resources
 /// of a kind than its range holds. Kinds follow Direct3D's register classes as on the DXBC route
 /// (shader resource views, buffers among them, are textures; unordered access views are storage); a
 /// counter takes its view's slot. A slot (`binding - kind.first_binding()`) is what the variant's
@@ -1534,6 +1564,7 @@ fn sampled_pairs(
 fn bindings(
     module: &mut Module,
     resources: &Resources,
+    declared_registers: &Resources,
     set: u32,
     reflection: &mut Reflection,
 ) -> Result<Vec<(Handle<GlobalVariable>, u32)>, ConvertError> {
@@ -1548,14 +1579,8 @@ fn bindings(
         let &[class, space, register] = resources
             .get(binding.binding as usize)
             .ok_or_else(|| ConvertError::Malformed("a binding past the resource list".into()))?;
-        let kind = match binding.group {
-            CONSTANTS => SlotKind::Uniform,
-            VIEW => SlotKind::Texture,
-            STORAGE => SlotKind::Storage,
-            SAMPLER => SlotKind::Sampler,
-            COUNTER => SlotKind::Counter,
-            _ => return Err(ConvertError::Malformed("a resource of no class".into())),
-        };
+        let kind = slot_kind(binding.group)
+            .ok_or_else(|| ConvertError::Malformed("a resource of no class".into()))?;
         if binding.group != class && !(binding.group == COUNTER && class == STORAGE) {
             return Err(ConvertError::Malformed(
                 "a resource of another class".into(),
@@ -1568,9 +1593,13 @@ fn bindings(
         SlotKind::Counter => SlotKind::Storage as u32,
         k => k as u32,
     };
+    let listed = declared_registers
+        .iter()
+        .filter_map(|&[class, space, register]| Some((rank(slot_kind(class)?), space, register)));
     let mut order: Vec<(u32, u32, u32)> = declared
         .iter()
         .map(|&(_, kind, space, register)| (rank(kind), space, register))
+        .chain(listed)
         .collect();
     order.sort_unstable();
     order.dedup();
@@ -1599,6 +1628,18 @@ fn bindings(
         slots.push((handle, slot));
     }
     Ok(slots)
+}
+
+/// The slot kind of a resource class (`cpp/boundary.h`).
+fn slot_kind(class: u32) -> Option<SlotKind> {
+    match class {
+        CONSTANTS => Some(SlotKind::Uniform),
+        VIEW => Some(SlotKind::Texture),
+        STORAGE => Some(SlotKind::Storage),
+        SAMPLER => Some(SlotKind::Sampler),
+        COUNTER => Some(SlotKind::Counter),
+        _ => None,
+    }
 }
 
 /// SPIR-V's physical layout (its specification, 2.3 and 2.2.1): the header's words before the first
@@ -1748,4 +1789,67 @@ fn atomic_signedness_differs(spirv: &[u32]) -> bool {
             .and_then(|p| signed.get(p))
             .is_some_and(|&memory_signed| memory_signed != op_signed)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Registers the resource list declares but the program leaves unused still take their slots, as
+    /// a front reading the container numbers them.
+    #[test]
+    fn declared_but_unused_registers_keep_their_slots() {
+        let mut module = Module::default();
+        let ty = module.types.insert(
+            Type {
+                name: None,
+                inner: TypeInner::Image {
+                    dim: naga::ImageDimension::D2,
+                    arrayed: false,
+                    class: naga::ImageClass::Storage {
+                        format: naga::StorageFormat::R32Sint,
+                        access: naga::StorageAccess::LOAD,
+                    },
+                },
+            },
+            Span::UNDEFINED,
+        );
+        // The program uses u1 and u3 of space 0; the resource list declares u0 to u3.
+        let used = [1, 3];
+        let resources: Resources = used.iter().map(|&r| [STORAGE, 0, r]).collect();
+        let vars: Vec<_> = (0..used.len() as u32)
+            .map(|binding| {
+                module.global_variables.append(
+                    naga::GlobalVariable {
+                        name: None,
+                        space: AddressSpace::Handle,
+                        binding: Some(naga::ResourceBinding {
+                            group: STORAGE,
+                            binding,
+                        }),
+                        ty,
+                        init: None,
+                        memory_decorations: Default::default(),
+                    },
+                    Span::UNDEFINED,
+                )
+            })
+            .collect();
+        let declared: Resources = (0..=used[1]).map(|r| [STORAGE, 0, r]).collect();
+        let mut reflection = Reflection {
+            stage: SourceStage::Compute,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            bindings: Vec::new(),
+            helpers: Vec::new(),
+            helper_size: 0,
+            sampled_pairs: Vec::new(),
+            extras: StageExtras::None,
+            slow_paths: Vec::new(),
+        };
+        let slots = bindings(&mut module, &resources, &declared, 0, &mut reflection).unwrap();
+        assert_eq!(slots, [(vars[0], used[0]), (vars[1], used[1])]);
+        let slots: Vec<u32> = reflection.bindings.iter().map(|b| b.slot()).collect();
+        assert_eq!(slots, used);
+    }
 }
