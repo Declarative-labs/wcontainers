@@ -121,7 +121,11 @@ flags, built after). shmctl05 (syscalls and syscalls-ipc) ran out 1800 s both ti
 ending fuzzy sync's minimum sampling period (the reference passes in 44 s: two threads racing,
 which here take turns on one CPU and spin with sched_yield): slower than the limit, cause still to
 be shown. At c2a9b17f (k6c6/b.tsv, ltp-b, LTP_LIMIT 3600): io_submit04 and madvise12 pass, as the
-reference; fork09 still running at the end of the run.
+reference; fork09 no longer hangs but crashed after 1737 s: the same EMFILE at 524273 files and
+TBROK, then the test host's read from the backend failed with "Connection reset by peer"
+(backend.rs:314), so the server's connection ended (the server likely failed while out of
+descriptors; its standard error was not kept). Next: keep the server container's output (`docker
+logs`, or no `--rm` for the run) and find why it ended.
 
 LTP table at this run's end (not a whole comparison yet):
 - The whole comparison at b37c8a43 (scratch k6c5/whole.tsv, still running, 3 jobs): 651 of
@@ -3719,7 +3723,9 @@ K6c, in this order (after the sixth run):
    cve-2016-7042, send02, ioctl10, cve-2017-2618, io_submit04, madvise12 (and those already
    rerun in k6c6/a.tsv). Read k6c6/a.tsv (shmctl05) and k6c6/b.tsv (io_submit04, madvise12,
    fork09). Write the table from it.
-2. (Done in the sixth run: fork09's hang was the test host.)
+2. fork09: the hang was the test host (fixed in the sixth run); now the test server's
+   connection resets after the EMFILE at 524273 files (K6c, sixth run). Find why the server
+   ended; a harness fault, but it must give a verdict, not a crash.
 3. Not section 15, to build, largest first (IOCB_CMD_POLL, MADV_GUARD_* and Docker's masks are
    built): the cgroup2 mount at /sys/fs/cgroup (read-only,
    Docker's: files in scratch k6c3/cgroup-reference.txt, values live: cgroup.procs, pids.current,
