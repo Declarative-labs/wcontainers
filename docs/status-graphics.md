@@ -53,7 +53,7 @@ branches into it at the start and end of every run, keeps the whole workspace bu
   check"): the recorder holds every draw rule before it drops a draw past a stream, and refuses
   a binding of another kind than the program declares; a buffer a storage binding reaches the
   end of is a whole number of words (`STORAGE_WORD`); the random sequences drop such draws and
-  count them. Start merges: webgpu and shaders; end merges: webgpu and direct3d-11 (no
+  count them. Start merges: webgpu and shaders; end merges: webgpu, direct3d-11 and webgl (no
   conflict, no owned file, no "interface:" commit); the others had nothing new.
 
 ## G1c's eighth check, and how each finding was settled (run 9)
@@ -595,8 +595,10 @@ outside its bound range (which the interface allows; stopped so tests find each 
   them; the rest had nothing new. End check after them (scratch `g1c9/logs/end-check.log`,
   laptop, load 5.5 to 7.2): the whole workspace checks, the owned crates' clippy and docs are
   clean with warnings denied, their 240 tests pass; `wcontainers-direct3d-11`'s `front` test
-  still fails its one test named under "Known failures". The laptop's build folder deleted
-  after; no folder was made on the desktop.
+  still fails its one test named under "Known failures". A last fetch brought webgl's G3b run 3
+  (five commits, no owned file, no "interface:" commit), merged without conflict; the whole
+  workspace checks after it (`g1c9/logs/end-check2.log`, load 6.3 to 8.6). The laptop's build
+  folder deleted after; no folder was made on the desktop.
 
 - Run 8: webgpu (its G2c run 2: depth or stencil copies within one subresource, subgroups,
   stencil views), direct3d-12 (its G5 run 30, with one "interface:" commit, f6c1fb42, covered under
