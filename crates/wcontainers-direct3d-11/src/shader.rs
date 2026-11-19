@@ -3,8 +3,9 @@
 
 use wcontainers_gpu::{
     AddedBinding, CLAMPED_SAMPLER_BINDING, DrawBaseSource, Format, FormatKind, HELPER_SET,
-    HelperSlot, HelperValue, LinkedValues, SlotKind, SourceStage, TexelBufferRoute, VariantFlags,
-    VariantKey, ViewComponent,
+    HelperSlot, HelperValue, LinkedValues, ShaderModule, ShaderStage, SlotKind, SourceStage,
+    StageValue, SystemValue, TexelBufferRoute, VariantFlags, VariantKey, ViewComponent,
+    helper_binding,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source};
 
@@ -120,12 +121,16 @@ impl TypedView {
 }
 
 const DCL_RESOURCE: u32 = 88;
+const DCL_CONSTANT_BUFFER: u32 = 89;
+/// A constant buffer declaration's flag (in the dimension's bits) for a buffer indexed at run time.
+const CONSTANT_BUFFER_DYNAMIC_INDEXED: u32 = 1;
 const DCL_UAV_TYPED: u32 = 156;
 const DIMENSION_BUFFER: u32 = 1;
 const DIMENSION_TEXTURE2DMSARRAY: u32 = 9;
 
-/// A texture or typed storage declaration of a DXBC program: its opcode, resource dimension,
-/// register and return type token.
+/// A texture, typed storage or constant buffer declaration of a DXBC program: its opcode, resource
+/// dimension (a constant buffer's access pattern), register and return type token (zero for a
+/// constant buffer).
 struct Declared {
     opcode: u32,
     dimension: u32,
@@ -133,8 +138,8 @@ struct Declared {
     returns: u32,
 }
 
-/// The `dcl_resource` and `dcl_uav_typed` declarations of a DXBC container's program, in the token
-/// format of Microsoft's `d3d11TokenizedProgramFormat.hpp`.
+/// The `dcl_resource`, `dcl_uav_typed` and `dcl_constantbuffer` declarations of a DXBC container's
+/// program, in the token format of Microsoft's `d3d11TokenizedProgramFormat.hpp`.
 fn declarations(bytecode: &[u8]) -> Result<Vec<Declared>> {
     const CUSTOMDATA: u32 = 53;
     let bad = Error::InvalidArg("malformed DXBC program");
@@ -156,9 +161,13 @@ fn declarations(bytecode: &[u8]) -> Result<Vec<Declared>> {
         if length == 0 || i + length > words {
             return Err(bad);
         }
-        if matches!(opcode & 0x7ff, DCL_RESOURCE | DCL_UAV_TYPED) {
+        if matches!(
+            opcode & 0x7ff,
+            DCL_RESOURCE | DCL_UAV_TYPED | DCL_CONSTANT_BUFFER
+        ) {
             // The opcode's extended tokens, the operand and its own, its indices (one immediate in
-            // shader model 5.0; the identifier and the range's bounds in 5.1), the return type.
+            // shader model 5.0, two for a constant buffer's register and size; the identifier and
+            // the range's bounds in 5.1), the return type.
             let mut j = i + 1;
             let mut extended = opcode >> 31 != 0;
             while extended {
@@ -174,15 +183,19 @@ fn declarations(bytecode: &[u8]) -> Result<Vec<Declared>> {
             }
             let indices = (operand >> 20 & 3) as usize;
             let register = match indices {
-                1 => token(j)?,
+                1 | 2 => token(j)?,
                 3 => token(j + 1)?,
                 _ => return Err(bad),
+            };
+            let returns = match opcode & 0x7ff {
+                DCL_CONSTANT_BUFFER => 0,
+                _ => token(j + indices)?,
             };
             found.push(Declared {
                 opcode: opcode & 0x7ff,
                 dimension: opcode >> 11 & 0x1f,
                 register,
-                returns: token(j + indices)?,
+                returns,
             });
         }
         i += length;
@@ -214,6 +227,38 @@ pub fn typed_views(bytecode: &[u8]) -> Result<Vec<TypedView>> {
         });
     }
     Ok(views)
+}
+
+/// The location past every value `outputs` and `inputs` (of the next stage) list, where the values
+/// the programs add for each other pass (`VariantKey::linked`).
+pub fn linked_location<'a>(values: impl IntoIterator<Item = &'a StageValue>) -> u32 {
+    values
+        .into_iter()
+        .map(|v| v.location + 1)
+        .max()
+        .unwrap_or(0)
+        .max(1)
+}
+
+/// The clip distances `outputs` write.
+pub fn clip_distances(outputs: &[StageValue]) -> u8 {
+    outputs
+        .iter()
+        .filter(|v| v.system == Some(SystemValue::ClipDistance))
+        .map(|v| v.mask.count_ones() as u8)
+        .sum()
+}
+
+/// The constant buffer slots a DXBC container's program indexes at run time, a bit each.
+pub fn indexed_constants(bytecode: &[u8]) -> Result<u16> {
+    Ok(declarations(bytecode)?
+        .iter()
+        .filter(|d| {
+            d.opcode == DCL_CONSTANT_BUFFER
+                && d.dimension & CONSTANT_BUFFER_DYNAMIC_INDEXED != 0
+                && d.register < u16::BITS
+        })
+        .fold(0, |m, d| m | 1 << d.register))
 }
 
 /// The texture slots a DXBC container's program declares as multisampled arrays, a bit each.
@@ -310,6 +355,17 @@ fn signature(bytecode: &[u8], tags: &[([u8; 4], usize, bool)]) -> Result<Vec<Sig
 /// Direct3D's system value names of the vertex and instance ids, which no input element feeds.
 const VERTEX_ID: u32 = 6;
 const INSTANCE_ID: u32 = 8;
+/// Direct3D's system value names of the layer and viewport a primitive is drawn into.
+const RENDER_TARGET_ARRAY_INDEX: u32 = 4;
+const VIEWPORT_ARRAY_INDEX: u32 = 5;
+
+/// Whether the shader writes the layer or viewport a primitive is drawn into, which only a geometry
+/// shader may on a device not offering it from every stage feeding the rasteriser (this one).
+pub fn writes_layer_or_viewport(bytecode: &[u8]) -> Result<bool> {
+    Ok(output_signature(bytecode)?
+        .iter()
+        .any(|e| matches!(e.system, RENDER_TARGET_ARRAY_INDEX | VIEWPORT_ARRAY_INDEX)))
+}
 
 impl SignatureElement {
     /// The input assembler generates it; no input element feeds it. Direct3D goes by the name too:
@@ -353,9 +409,14 @@ pub struct StageVariant {
     /// The formats of the bound typed views, one for each the shader declares, by the device's
     /// number for the list; zero for the plain program's placeholders.
     pub formats: u32,
-    /// Depth is clamped in the programs (`DepthClampInShader`), their added value at this
-    /// location; zero where the back end clamps.
+    /// Where the values the programs add for each other pass (`VariantKey::linked`); zero where
+    /// they add none.
     pub linked: u32,
+    /// Depth is clamped in the programs (`DepthClampInShader`), where the back end clips it alone.
+    pub depth_clamp: bool,
+    /// The clip distances the programs apply themselves, where the back end has none
+    /// (`ClipDistanceInShader`).
+    pub clip_distances: u8,
     /// Texture slots whose bound view reads stencil, which Direct3D gives in the second component
     /// and the interface's stencil views in the first (`SwizzleInShader`).
     pub stencil: u128,
@@ -365,6 +426,15 @@ pub struct StageVariant {
     /// The pixel program runs its forced early depth and stencil tests itself, against the
     /// pass's read-only depth-stencil attachment (`EarlyTestsInShader`).
     pub early_tests: bool,
+    /// Targets the pixel program writes an output of another kind (float, unsigned, signed) than
+    /// their format to, as the format's type (`VariantKey::targets_in_shader`), and the device's
+    /// number for their formats, in target order.
+    pub retyped: u8,
+    pub retyped_formats: u32,
+    /// Constant buffer slots the program indexes at run time, bound larger than it declares: it
+    /// reads them as storage buffers, past its declared array as Direct3D reads them
+    /// (`ConstantsAsStorage`).
+    pub constants_as_storage: u16,
 }
 
 /// What a stencil view's components read in Direct3D: the stencil in the second.
@@ -397,6 +467,7 @@ impl StageVariant {
             }
         }
         key.lod_bias = self.lod_bias;
+        key.constants_as_storage = self.constants_as_storage;
         key.border_in_shader = self.border_in_shader;
         key.mirror_once_in_shader = self.mirror_once_in_shader;
         key.filter_in_shader = self.filter_in_shader;
@@ -421,11 +492,16 @@ impl StageVariant {
         if self.from_arguments {
             key.draw_base = DrawBaseSource::Arguments;
         }
-        if self.linked != 0 {
+        if self.depth_clamp {
             key.flags |= VariantFlags::DEPTH_CLAMP;
+        }
+        if self.clip_distances != 0 {
+            key.flags |= VariantFlags::CLIP_DISTANCE;
+        }
+        if self.linked != 0 {
             key.linked = LinkedValues {
                 location: self.linked,
-                clip_distances: 0,
+                clip_distances: self.clip_distances,
             };
         }
         key
@@ -442,6 +518,8 @@ pub struct Helpers {
     pub values: Vec<HelperSlot>,
     pub merged: Vec<(u32, (u32, u32))>,
     pub pulled: Vec<(u32, u32)>,
+    /// The constant buffers read as storage buffers: (slot, binding).
+    pub stored: Vec<(u32, u32)>,
 }
 
 impl Helpers {
@@ -467,11 +545,43 @@ impl Helpers {
                 _ => None,
             })
             .collect();
+        let stored = c
+            .reflection
+            .bindings
+            .iter()
+            .filter_map(|b| match b.added {
+                Some(AddedBinding::ConstantsAsStorage(slot)) => Some((slot, b.binding)),
+                _ => None,
+            })
+            .collect();
         Helpers {
             size: c.reflection.helper_size,
             values: c.reflection.helpers.clone(),
             merged,
             pulled,
+            stored,
+        }
+    }
+
+    /// The helper constants of the vertex program `passthrough` drawing a geometry stage that
+    /// chooses a layer or viewport: the run it keeps (`stage::PASSTHROUGH_HELPERS`), in the block
+    /// its module declares at the vertex stage's helper binding.
+    pub fn of_passthrough(passthrough: &ShaderModule) -> Self {
+        let module = &passthrough.module;
+        let binding = helper_binding(ShaderStage::Vertex);
+        let size = module
+            .global_variables
+            .iter()
+            .find(|(_, g)| {
+                g.binding
+                    .as_ref()
+                    .is_some_and(|b| b.group == HELPER_SET && b.binding == binding)
+            })
+            .map_or(0, |(_, g)| module.types[g.ty].inner.size(module.to_ctx()));
+        Helpers {
+            size,
+            values: wcontainers_shaders::stage::PASSTHROUGH_HELPERS.to_vec(),
+            ..Helpers::default()
         }
     }
 }
@@ -671,6 +781,8 @@ fn answer(r: core::result::Result<Converted, ConvertError>, modules: usize) -> R
                         | HelperValue::TextureLevels { .. }
                         | HelperValue::TextureSamples { .. }
                         | HelperValue::EarlyTests
+                        | HelperValue::Layer
+                        | HelperValue::Viewport
                 )
             }) =>
         {

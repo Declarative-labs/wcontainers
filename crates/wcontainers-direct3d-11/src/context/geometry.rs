@@ -5,6 +5,7 @@
 //! with the pixel program; without one the draw is drawn as usual after its stream output.
 
 use super::*;
+use crate::desc::{ViewDesc, bind};
 use wcontainers_gpu::BufferUsage;
 use wcontainers_shaders::ConvertError;
 use wcontainers_shaders::stage::{
@@ -23,6 +24,8 @@ pub(crate) struct StageRun<B: Backend> {
     /// (none where the plain one serves), and the id programs of it are cached by.
     passthrough: Option<Kept<B, B::Shader>>,
     passthrough_id: u64,
+    /// The pass-through's helper constants, where the geometry stage chooses a layer or viewport.
+    run_helpers: Rc<Helpers>,
 }
 
 /// The bytes of the stage helper's filled sizes and primitive counts.
@@ -179,6 +182,10 @@ impl<B: Backend> Device<B> {
             gs.stream.as_ref(),
         )
         .map_err(|e| self.staged_error(e))?;
+        let run_helpers = match &geometry {
+            Some(c) if stages.selects() => Rc::new(Helpers::of_passthrough(&c.modules[1])),
+            _ => Rc::default(),
+        };
         let layout = match stages.vertex_layout() {
             Some(desc) => {
                 let gpu = self.backend.create_vertex_layout(&desc);
@@ -194,6 +201,7 @@ impl<B: Backend> Device<B> {
             layout,
             passthrough,
             passthrough_id,
+            run_helpers,
         })
     }
 
@@ -288,6 +296,7 @@ impl<B: Backend> Device<B> {
     ) -> Result<bool> {
         let geometry = gs.stage.is_some();
         let drawn = gs.drawn && geometry;
+        let selects = staged.stages.as_ref().is_some_and(Stages::selects);
         let bases = [if indexed { base } else { start }, first_instance];
         // The program of the pass-through and pixel stages, and the pixel stage's helpers.
         let program = if drawn {
@@ -314,27 +323,29 @@ impl<B: Backend> Device<B> {
         self.grow_constants()?;
         self.refresh_windows()?;
         let pulled = staged.vertex_helpers.pulled.clone();
-        self.update_set(VERTEX, &pulled)?;
+        self.update_set(VERTEX, &pulled, &[])?;
         let vertex_helpers = staged.vertex_helpers.clone();
         let vertex_block = self.helper_block(&vertex_helpers, VERTEX, bases, None)?;
         if geometry {
-            self.update_set(GEOMETRY, &[])?;
+            self.update_set(GEOMETRY, &[], &[])?;
         }
         if let Some((_, ph)) = &program {
-            self.update_set(PIXEL, &[])?;
+            self.update_set(PIXEL, &[], &ph.stored)?;
             if !self.ctx.through[PIXEL].is_empty() {
                 return not_implemented(
                     "storage textures read through buffers behind a geometry shader",
                 );
             }
-            if ph.size > 0 || !ph.merged.is_empty() {
+            // Runs per layer or viewport write theirs at each run.
+            if !selects && (ph.size > 0 || !ph.merged.is_empty()) {
                 self.write_helpers(&[Rc::default(), ph.clone()], bases, None)?;
             }
         }
         let vertex_set = self.compute_helper_set(&vertex_block)?;
-        let pixel_helpers = if program
-            .as_ref()
-            .is_some_and(|p| p.1.size > 0 || !p.1.merged.is_empty())
+        let pixel_helpers = if !selects
+            && program
+                .as_ref()
+                .is_some_and(|p| p.1.size > 0 || !p.1.merged.is_empty())
         {
             self.helper_blocks.as_ref().map(|h| h.set.handle.clone())
         } else {
@@ -450,7 +461,7 @@ impl<B: Backend> Device<B> {
         if !geometry {
             return Ok(gs.drawn);
         }
-        let (Some(out), Some((program, _))) = (out, program) else {
+        let (Some(out), Some((program, ph))) = (out, program) else {
             return Ok(false);
         };
         let layout = staged
@@ -459,7 +470,12 @@ impl<B: Backend> Device<B> {
             .expect("a geometry stage's layout")
             .handle
             .clone();
-        self.draw_output(&layout, &program, pixel_helpers.as_ref(), raster, &out)?;
+        if selects {
+            let run = staged.run_helpers.clone();
+            self.draw_runs(&layout, &program, [&run, &ph], raster, &out, bases)?;
+        } else {
+            self.draw_output(&layout, &program, pixel_helpers.as_ref(), raster, &out, 0)?;
+        }
         if twin_writes {
             self.twins_out(PIXEL);
         }
@@ -587,8 +603,124 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
+    /// The draw of a geometry stage's output that chooses a layer or viewport: once per layer of
+    /// the bound views, into views of that layer alone (`LayerSplit`), and per bound viewport
+    /// (`MultiViewportSplit`), each run keeping the primitives that name it, with its layer and
+    /// viewport in the helpers `[pass-through, pixel]`. A primitive naming a layer or viewport
+    /// past the bound ones is in no run.
+    fn draw_runs(
+        &mut self,
+        layout: &B::VertexLayout,
+        program: &B::Program,
+        helpers: [&Rc<Helpers>; 2],
+        raster: Option<&B::Raster>,
+        out: &FinalDraw<B>,
+        bases: [u32; 2],
+    ) -> Result<()> {
+        let layers = self.target_layers()?;
+        let viewports = self.ctx.viewports.len() as u32;
+        if layers > 1 {
+            self.backend.slow_paths().hit(SlowPath::LayerSplit);
+        }
+        if viewports > 1 {
+            self.backend.slow_paths().hit(SlowPath::MultiViewportSplit);
+        }
+        let bound = (self.ctx.targets.clone(), self.ctx.depth.clone());
+        let mut r = Ok(());
+        for layer in 0..layers {
+            if layers > 1 {
+                r = self.bind_layer(&bound, layer);
+                if r.is_err() {
+                    break;
+                }
+            }
+            for viewport in 0..viewports {
+                self.ctx.run = [layer, viewport];
+                r = self
+                    .write_helpers(&[helpers[0].clone(), helpers[1].clone()], bases, None)
+                    .and_then(|()| {
+                        let set = self.helper_blocks.as_ref().map(|h| h.set.handle.clone());
+                        self.draw_output(layout, program, set.as_ref(), raster, out, viewport)
+                    });
+                if r.is_err() {
+                    break;
+                }
+            }
+            if r.is_err() {
+                break;
+            }
+        }
+        if layers > 1 {
+            self.end_pass();
+            (self.ctx.targets, self.ctx.depth) = bound;
+        }
+        self.ctx.run = [0; 2];
+        self.helper_blocks = None;
+        r
+    }
+
+    /// The layers of the bound target and depth views, which are alike in a layered draw.
+    fn target_layers(&self) -> Result<u32> {
+        let mut views = self.ctx.targets.iter().flatten().chain(&self.ctx.depth);
+        let Some(first) = views.next() else {
+            return Ok(1);
+        };
+        let layers = first.desc.layer_count;
+        let mut views = self.ctx.targets.iter().flatten().chain(&self.ctx.depth);
+        if views.any(|v| v.desc.layer_count != layers) {
+            return not_implemented(
+                "a geometry shader choosing a layer of target views of different layer counts",
+            );
+        }
+        let mut views = self.ctx.targets.iter().flatten().chain(&self.ctx.depth);
+        if layers > 1 && views.any(|v| v.copied()) {
+            return not_implemented(
+                "a geometry shader choosing a layer of a target view reinterpreting its texture",
+            );
+        }
+        Ok(layers)
+    }
+
+    /// Binds layer `layer` of each of the `bound` targets and depth view, after ending the pass.
+    #[allow(clippy::type_complexity)]
+    fn bind_layer(
+        &mut self,
+        (targets, depth): &(Vec<Option<Rc<View<B>>>>, Option<Rc<View<B>>>),
+        layer: u32,
+    ) -> Result<()> {
+        self.end_pass();
+        for (i, t) in targets.iter().enumerate() {
+            self.ctx.targets[i] = match t {
+                Some(v) => Some(self.layer_view(v, layer, bind::RENDER_TARGET)?),
+                None => None,
+            };
+        }
+        self.ctx.depth = match depth {
+            Some(v) => Some(self.layer_view(v, layer, bind::DEPTH_STENCIL)?),
+            None => None,
+        };
+        Ok(())
+    }
+
+    /// Layer `layer` of the drawn view `v` (bound as `kind`) as a view of that layer alone.
+    fn layer_view(&mut self, v: &Rc<View<B>>, layer: u32, kind: u32) -> Result<Rc<View<B>>> {
+        if v.layers.borrow().is_empty() {
+            let mut made = Vec::with_capacity(v.desc.layer_count as usize);
+            for l in 0..v.desc.layer_count {
+                let desc = ViewDesc {
+                    first_layer: v.desc.first_layer + l,
+                    layer_count: 1,
+                    ..v.desc
+                };
+                made.push(self.create_view(&v.texture, Some(&desc), kind)?);
+            }
+            *v.layers.borrow_mut() = made;
+        }
+        Ok(v.layers.borrow()[layer as usize].clone())
+    }
+
     /// The draw of a geometry or domain stage's output through `layout`, in a pass opened for it,
-    /// with `helpers` in the helper set.
+    /// with `helpers` in the helper set, through viewport and scissor rectangle `viewport`.
     pub(super) fn draw_output(
         &mut self,
         layout: &B::VertexLayout,
@@ -596,6 +728,7 @@ impl<B: Backend> Device<B> {
         helpers: Option<&B::BindingSet>,
         raster: Option<&B::Raster>,
         out: &FinalDraw<B>,
+        viewport: u32,
     ) -> Result<()> {
         let desc = &self
             .ctx
@@ -625,7 +758,8 @@ impl<B: Backend> Device<B> {
             self.open_stretch();
         }
         let ctx = &self.ctx;
-        let v = ctx.viewports[0];
+        let v = ctx.viewports[viewport as usize];
+        let rect = ctx.scissors.get(viewport as usize);
         let viewport = GpuViewport {
             x: v.x.to_bits(),
             y: v.y.to_bits(),
@@ -643,7 +777,7 @@ impl<B: Backend> Device<B> {
             width: 0,
             height: 0,
         }];
-        let scissors: &[ScissorRect] = match ctx.scissors.first() {
+        let scissors: &[ScissorRect] = match rect {
             _ if !bound_raster.desc.scissor => &[],
             Some(rect) => std::slice::from_ref(rect),
             None => &no_rect,

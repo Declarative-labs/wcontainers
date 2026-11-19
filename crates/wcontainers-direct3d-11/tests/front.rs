@@ -2852,3 +2852,85 @@ fn targets_blended_differently_without_the_back_ends_draw_once_per_group_from_sa
     assert!(copies[0] < begins[0] && begins[0] < copies[1] && copies[1] < begins[1]);
     assert_eq!(dev.backend.slow_paths().count(SlowPath::TargetsSplit), 1);
 }
+
+#[test]
+fn a_geometry_shader_choosing_layers_and_viewports_draws_once_per_layer_and_viewport() {
+    const LAYERS: u32 = 4;
+    let mut dev = device();
+    let target = dev
+        .create_texture(
+            &TextureDesc {
+                array_size: LAYERS,
+                ..tex2d(16, 16, RGBA8, bind::RENDER_TARGET)
+            },
+            &[],
+        )
+        .unwrap();
+    let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
+    dev.om_set_render_targets(&[Some(rtv)], None).unwrap();
+    let whole = Viewport {
+        width: 16.0,
+        height: 16.0,
+        max_depth: 1.0,
+        ..Default::default()
+    };
+    let viewports = [whole, Viewport { x: 8.0, ..whole }];
+    dev.rs_set_viewports(&viewports);
+    let vs = dev
+        .create_shader(&own("vs_fullscreen"), SourceStage::Vertex)
+        .unwrap();
+    let ps = dev
+        .create_shader(&own("ps_layer"), SourceStage::Pixel)
+        .unwrap();
+    let gs = dev.create_geometry_shader(&own("gs_layers"), None).unwrap();
+    dev.vs_set_shader(Some(vs));
+    dev.ps_set_shader(Some(ps));
+    dev.gs_set_shader(Some(gs));
+    dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    // A view of each layer alone, a pass on each, and in each a draw through each viewport.
+    let layer_views: Vec<&String> = log
+        .iter()
+        .filter(|l| l.starts_with("create_view") && l.contains("layers "))
+        .collect();
+    assert_eq!(layer_views.len(), LAYERS as usize, "{log:#?}");
+    for (i, v) in layer_views.iter().enumerate() {
+        assert!(v.ends_with(&format!("layers {i}+1")), "{v}");
+    }
+    let passes = log.iter().filter(|l| l.starts_with("begin_pass")).count();
+    assert_eq!(passes, LAYERS as usize, "{log:#?}");
+    let draws: Vec<&String> = log.iter().filter(|l| l.starts_with("draw ")).collect();
+    assert_eq!(draws.len(), LAYERS as usize * viewports.len(), "{log:#?}");
+    for (i, d) in draws.iter().enumerate() {
+        let v = viewports[i % viewports.len()];
+        let expected = format!("viewports [[{:?}, {:?},", v.x, v.y);
+        assert!(d.contains(&expected), "{d}");
+    }
+    // Each run's layer and viewport in the pass-through's helpers, after the stage helper's.
+    let vertex = wcontainers_gpu::helper_binding(wcontainers_gpu::ShaderStage::Vertex);
+    let staged = find(&log, "create_view");
+    let runs: Vec<[u32; 2]> = log
+        .iter()
+        .enumerate()
+        .skip(staged)
+        .filter(|(_, l)| {
+            l.starts_with("create_binding_set") && l.contains(&format!(" {vertex}=uniform "))
+        })
+        .map(|(i, _)| {
+            let w = helper_words(&dev, &log[i..], vertex);
+            [w[0], w[1]]
+        })
+        .collect();
+    let expected: Vec<[u32; 2]> = (0..LAYERS)
+        .flat_map(|l| (0..viewports.len() as u32).map(move |v| [l, v]))
+        .collect();
+    assert_eq!(runs, expected, "{log:#?}");
+    assert_eq!(dev.backend.slow_paths().count(SlowPath::LayerSplit), 1);
+    assert_eq!(
+        dev.backend.slow_paths().count(SlowPath::MultiViewportSplit),
+        1
+    );
+}

@@ -226,12 +226,12 @@ impl<B: Backend> Device<B> {
         self.grow_constants()?;
         self.refresh_windows()?;
         let pulled = run.vertex_helpers.pulled.clone();
-        self.update_set(VERTEX, &pulled)?;
+        self.update_set(VERTEX, &pulled, &[])?;
         let vertex_helpers = run.vertex_helpers.clone();
         let vertex_block = self.helper_block(&vertex_helpers, VERTEX, bases, None)?;
-        self.update_set(HULL, &[])?;
-        self.update_set(DOMAIN, &[])?;
-        self.update_set(PIXEL, &[])?;
+        self.update_set(HULL, &[], &[])?;
+        self.update_set(DOMAIN, &[], &[])?;
+        self.update_set(PIXEL, &[], &ph.stored)?;
         if [HULL, DOMAIN, PIXEL]
             .iter()
             .any(|&s| !self.ctx.through[s].is_empty())
@@ -308,7 +308,7 @@ impl<B: Backend> Device<B> {
         ]);
         let set = self.gpu(set)?;
         let layout = run.no_streams.handle.clone();
-        self.draw_output(&layout, &program, Some(&set), raster, &out)?;
+        self.draw_output(&layout, &program, Some(&set), raster, &out, 0)?;
         if twin_writes {
             self.twins_out(PIXEL);
         }

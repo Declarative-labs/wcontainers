@@ -161,16 +161,18 @@ pub(crate) fn writes<B: Backend>(
         let Some(SystemValue::Target(n)) = o.system else {
             return true;
         };
-        let Some(f) = target(usize::from(n)) else {
-            return true;
-        };
-        let kind = match f.kind() {
-            wcontainers_gpu::FormatKind::Uint => ScalarKind::Uint,
-            wcontainers_gpu::FormatKind::Sint => ScalarKind::Sint,
-            _ => ScalarKind::Float,
-        };
-        kind == o.scalar
+        target(usize::from(n)).is_none_or(|f| fits_target(o.scalar, f))
     })
+}
+
+/// Whether an output of `scalar`'s kind is of the kind (float, unsigned or signed) of `format`.
+pub(crate) fn fits_target(scalar: ScalarKind, format: wcontainers_gpu::Format) -> bool {
+    let kind = match format.kind() {
+        wcontainers_gpu::FormatKind::Uint => ScalarKind::Uint,
+        wcontainers_gpu::FormatKind::Sint => ScalarKind::Sint,
+        _ => ScalarKind::Float,
+    };
+    kind == scalar
 }
 
 /// The input layout gives the vertex shader every input it reads, at its location and of its type.
