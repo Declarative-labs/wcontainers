@@ -6,7 +6,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use rand::rngs::StdRng;
 use rand::{Rng, RngCore, SeedableRng};
 use wcontainers_abi::{
-    BackendRequestId, ConnectionId, CounterReading, Cpu, End, Event, Host, HostError, Warning,
+    BackendRequestId, ConnectionId, CounterReading, Cpu, End, Event, Host, HostError, PAGE_SIZE,
+    Warning,
 };
 use wcontainers_kernel::{Errno, FileRecord, Kernel, Standard, Start};
 use wcontainers_runtime::{Ending, Execution, System, TerminalSize, Turn};
@@ -128,16 +129,16 @@ fn report(cpu: &Back, container: &Container<'_>, took: Duration) {
         })
         .collect();
     eprintln!(
-        "cpu side: {} translations ({} at run time), {} made ({:.1} ms translating, {:.1} ms compiling), {} from disk ({:.1} ms), {} from memory; run {:.1} ms",
+        "cpu side: {} translations ({} at run time), {} made ({:.1?} translating, {:.1?} compiling), {} from disk ({:.1?}), {} from memory; run {:.1?}",
         translated.len(),
         at_run_time,
         made.len(),
-        translating as f64 / 1e6,
-        compiling as f64 / 1e6,
+        Duration::from_nanos(translating),
+        Duration::from_nanos(compiling),
         disk.len(),
-        disk.iter().sum::<u64>() as f64 / 1e6,
+        Duration::from_nanos(disk.iter().sum::<u64>()),
         translated.len() - made.len() - disk.len(),
-        took.as_secs_f64() * 1e3
+        took
     );
     for t in translated.iter().filter(|t| !t.at_run_time) {
         eprintln!(
@@ -280,11 +281,12 @@ impl TestHost {
     /// so the kernel's choices repeat exactly for a seed, with the wall clock reading `wall_start`
     /// (the machine's clock when none) at the start.
     pub fn repeatable(seed: u64, wall_start: Option<u64>) -> Self {
+        let start = Duration::from_secs(1).as_nanos() as u64;
         let mut host = Self {
-            virtual_now: Some(1_000_000_000),
+            virtual_now: Some(start),
             ..Self::new(seed)
         };
-        host.wall_base = wall_start.unwrap_or_else(wall_clock) - 1_000_000_000;
+        host.wall_base = wall_start.unwrap_or_else(wall_clock) - start;
         host
     }
 }
@@ -991,7 +993,7 @@ fn notice(random: &mut StdRng) -> Vec<u8> {
                 notify_unique: RETRIEVED | node,
                 nodeid: node,
                 offset: 0,
-                size: 4096,
+                size: PAGE_SIZE as u32,
                 padding: 0,
             }
             .as_bytes()

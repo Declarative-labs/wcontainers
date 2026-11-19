@@ -1604,14 +1604,8 @@ code	crates/wcontainers-kernel-test/src/busybox.rs	str	shapes_of_image	"{major},
 code	crates/wcontainers-kernel-test/src/busybox.rs	str	shapes_of_kernel	"{major},{minor}"
 code	crates/wcontainers-kernel-test/src/driver.rs	bytestr	notice	b"backend-file\0"
 code	crates/wcontainers-kernel-test/src/driver.rs	bytestr	notice	b"data"
-code	crates/wcontainers-kernel-test/src/driver.rs	float	report	1e3
-code	crates/wcontainers-kernel-test/src/driver.rs	float	report	1e6
-code	crates/wcontainers-kernel-test/src/driver.rs	float	report	1e6
-code	crates/wcontainers-kernel-test/src/driver.rs	float	report	1e6
 code	crates/wcontainers-kernel-test/src/driver.rs	int	<Injections as Default>::default	100
 code	crates/wcontainers-kernel-test/src/driver.rs	int	<TestHost as System>::stopped	- 1
-code	crates/wcontainers-kernel-test/src/driver.rs	int	TestHost::repeatable	1_000_000_000
-code	crates/wcontainers-kernel-test/src/driver.rs	int	TestHost::repeatable	1_000_000_000
 code	crates/wcontainers-kernel-test/src/driver.rs	int	copied_run	65536
 code	crates/wcontainers-kernel-test/src/driver.rs	int	decode::Reader<'_>::number	8
 code	crates/wcontainers-kernel-test/src/driver.rs	int	exit_code	0x7f
@@ -1623,7 +1617,6 @@ code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	12
 code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	3
 code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	4
 code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	4
-code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	4096
 code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	6
 code	crates/wcontainers-kernel-test/src/driver.rs	int	notice	8
 code	crates/wcontainers-kernel-test/src/driver.rs	str	back_end	"translations"
