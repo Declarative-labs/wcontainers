@@ -491,9 +491,6 @@ fn count(d: &[f32], allowance: f32) -> (usize, f32) {
 /// How far the level of detail is moved to find a texel's other side of a decision.
 const SHIFT: f32 = 1.0 / 256.0;
 
-/// The difference allowed: a filter's weights at 8 bits on either side, on values of at most one.
-const ALLOWANCE: f32 = 1.0 / 128.0;
-
 #[test]
 fn filtering_in_the_program_matches_direct3d() {
     let seed: u64 = std::env::var("WCONTAINERS_FILTER_SEED").map_or(1, |s| s.parse().unwrap());
@@ -537,9 +534,9 @@ fn filtering_in_the_program_matches_direct3d() {
                 let reference = direct3d_11(&d3d, format, &texels, &case, mode);
                 let software = direct3d_11(&warp, format, &texels, &case, mode);
                 let between = differences(&reference, &software);
-                let (apart, largest) = count(&between, ALLOWANCE);
+                let (apart, largest) = count(&between, FILTER_ALLOWANCE);
                 println!(
-                    "  {format:?} {name} direct3d on the gpu against warp: {apart} of {} texels past {ALLOWANCE}, largest {largest}",
+                    "  {format:?} {name} direct3d on the gpu against warp: {apart} of {} texels past {FILTER_ALLOWANCE}, largest {largest}",
                     SIZE * SIZE
                 );
                 for route in ["dxbc", "dxil"] {
@@ -565,14 +562,16 @@ fn filtering_in_the_program_matches_direct3d() {
                         let picture = draw(0.0);
                         let gpu_apart = differences(&reference, &picture);
                         let soft_apart = differences(&software, &picture);
-                        let (gpu_count, gpu_largest) = count(&gpu_apart, ALLOWANCE);
-                        let (soft_count, soft_largest) = count(&soft_apart, ALLOWANCE);
+                        let (gpu_count, gpu_largest) = count(&gpu_apart, FILTER_ALLOWANCE);
+                        let (soft_count, soft_largest) = count(&soft_apart, FILTER_ALLOWANCE);
                         // Texels equal to neither Direct3D, then those still so with the level of
                         // detail moved by 1/256 either way: a texel whose level of detail lies
                         // that close to a decision (magnification, the nearest level) may fall
                         // either side, as the GPU and warp themselves do.
                         let mut neither: Vec<usize> = (0..gpu_apart.len())
-                            .filter(|&n| gpu_apart[n] > ALLOWANCE && soft_apart[n] > ALLOWANCE)
+                            .filter(|&n| {
+                                gpu_apart[n] > FILTER_ALLOWANCE && soft_apart[n] > FILTER_ALLOWANCE
+                            })
                             .collect();
                         let first = neither.len();
                         if !neither.is_empty() {
@@ -582,11 +581,11 @@ fn filtering_in_the_program_matches_direct3d() {
                                     differences(
                                         &reference[n * 16..n * 16 + 16],
                                         &m[n * 16..n * 16 + 16],
-                                    )[0] > ALLOWANCE
+                                    )[0] > FILTER_ALLOWANCE
                                         && differences(
                                             &software[n * 16..n * 16 + 16],
                                             &m[n * 16..n * 16 + 16],
-                                        )[0] > ALLOWANCE
+                                        )[0] > FILTER_ALLOWANCE
                                 })
                             });
                         }
@@ -594,10 +593,10 @@ fn filtering_in_the_program_matches_direct3d() {
                         // texel to the implementation (a point sample on a texel's edge, a level
                         // blended otherwise): a third answer there is counted, not failed.
                         let before = neither.len();
-                        neither.retain(|&n| between[n] <= ALLOWANCE);
+                        neither.retain(|&n| between[n] <= FILTER_ALLOWANCE);
                         let third = before - neither.len();
                         println!(
-                            "  {format:?} {name} {route} {back_end}: {} of {} texels past {ALLOWANCE} from both ({first} before moving the level of detail, {third} more where they differ); from the gpu {gpu_count} (largest {gpu_largest}), from warp {soft_count} (largest {soft_largest})",
+                            "  {format:?} {name} {route} {back_end}: {} of {} texels past {FILTER_ALLOWANCE} from both ({first} before moving the level of detail, {third} more where they differ); from the gpu {gpu_count} (largest {gpu_largest}), from warp {soft_count} (largest {soft_largest})",
                             neither.len(),
                             SIZE * SIZE
                         );
@@ -655,14 +654,14 @@ fn filtering_in_the_program_matches_direct3d() {
                         );
                         let native = differences(&webgpu_texels, &own);
                         let soft = differences(&software, &webgpu_texels);
-                        let (apart, largest) = count(&native, ALLOWANCE);
+                        let (apart, largest) = count(&native, FILTER_ALLOWANCE);
                         let neither = (0..native.len())
-                            .filter(|&n| native[n] > ALLOWANCE && soft[n] > ALLOWANCE)
+                            .filter(|&n| native[n] > FILTER_ALLOWANCE && soft[n] > FILTER_ALLOWANCE)
                             .count();
                         let (own_apart, own_largest) =
-                            count(&differences(&reference, &own), ALLOWANCE);
+                            count(&differences(&reference, &own), FILTER_ALLOWANCE);
                         println!(
-                            "  {format:?} {name} {route} webgpu against its own sampler: {neither} of {} texels past {ALLOWANCE} from it and warp; from it {apart} (largest {largest}); its own sampler from direct3d on the gpu {own_apart} (largest {own_largest})",
+                            "  {format:?} {name} {route} webgpu against its own sampler: {neither} of {} texels past {FILTER_ALLOWANCE} from it and warp; from it {apart} (largest {largest}); its own sampler from direct3d on the gpu {own_apart} (largest {own_largest})",
                             SIZE * SIZE
                         );
                         compared += 1;
