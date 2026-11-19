@@ -75,7 +75,7 @@ mod macos {
     }
 
     /// The bytes of an instruction.
-    const WORD: u64 = size_of::<u32>() as u64;
+    const WORD: u64 = Arm64::MAX_LENGTH;
 
     impl Named {
         fn new(base: u64, bytes: &[u8]) -> Named {
