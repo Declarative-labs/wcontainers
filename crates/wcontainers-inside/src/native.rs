@@ -353,13 +353,15 @@ impl NativeCpu {
         Ok(())
     }
 
-    /// Runs `thread` from `resume` to its next exit. `clock` reads the monotonic clock for the guest's counter
-    /// reads. An interrupt is [`Exit::Stop`], left pending for the caller to take.
+    /// Runs `thread` from `resume` to its next exit, or to the first instruction boundary where its count has
+    /// reached `until`, which is [`Exit::Stop`]. `clock` reads the monotonic clock for the guest's counter reads.
+    /// An interrupt is [`Exit::Stop`], left pending for the caller to take.
     pub fn run(
         &mut self,
         thread: ThreadId,
         resume: Resume,
         clock: &mut dyn FnMut() -> u64,
+        until: Option<u64>,
     ) -> Exit {
         let mut t = self.threads.remove(&thread).expect("a thread of this side");
         if let Resume::Return(value) = resume {
@@ -367,7 +369,7 @@ impl NativeCpu {
         }
         self.take_hardware(thread, &t.vectors.clone());
         let mut not_kept = 0;
-        let exit = self.run_taken(&mut t, clock, &mut not_kept);
+        let exit = self.run_taken(&mut t, clock, until, &mut not_kept);
         // The guest's level writes its thread pointer itself.
         t.tpidr = TPIDR_EL0.get();
         if not_kept != 0 {
@@ -393,12 +395,14 @@ impl NativeCpu {
         self.threads[&thread].state.count
     }
 
-    /// Runs `t` to its next exit, adding to `not_kept` each read of the float status while its flags are not
-    /// kept.
+    /// Runs `t` to its next exit or to `until`, adding to `not_kept` each read of the float status while its
+    /// flags are not kept. Each piece is one instruction and comes back here (look-ahead none, nothing linked),
+    /// so every instruction boundary is seen.
     fn run_taken(
         &mut self,
         t: &mut Thread,
         clock: &mut dyn FnMut() -> u64,
+        until: Option<u64>,
         not_kept: &mut u64,
     ) -> Exit {
         let memory = t.memory;
@@ -492,6 +496,9 @@ impl NativeCpu {
                 }
             };
             match stop {
+                Stop::Landed(_) if until.is_some_and(|until| t.state.count >= until) => {
+                    return Exit::Stop;
+                }
                 Stop::Landed(_) => {}
                 Stop::Syscall => {
                     let mut call = Syscall {
@@ -894,23 +901,28 @@ impl Cpu for NativeCpu {
     }
 }
 
-/// What the native back end cannot run yet.
+/// What the native back end refuses to run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Unbuilt {
-    /// A turn that ends after a number of units of progress: ending a turn at a count is decision 10's.
-    TurnWithLimit,
+pub enum Refused {
+    /// A turn that ends after a number of units of progress, for a process whose pieces carry no count.
+    TurnLimitWithoutCount,
 }
 
-/// The turn's end is supported: one with no end but a stop.
-fn supported(turn: Turn) -> Result<(), Unbuilt> {
-    match turn {
-        Turn::Counted { limit: None } | Turn::Free => Ok(()),
-        Turn::Counted { limit: Some(_) } => Err(Unbuilt::TurnWithLimit),
+impl NativeCpu {
+    /// The count at which `turn`, starting on `thread` now, ends.
+    fn turn_end(&self, thread: ThreadId, turn: Turn) -> Result<Option<u64>, Refused> {
+        match turn {
+            Turn::Counted { limit: None } | Turn::Free => Ok(None),
+            Turn::Counted { limit: Some(_) } if !self.exact_replay => {
+                Err(Refused::TurnLimitWithoutCount)
+            }
+            Turn::Counted { limit: Some(limit) } => Ok(Some(self.count(thread) + limit)),
+        }
     }
 }
 
 impl Execution for NativeCpu {
-    type Failure = Unbuilt;
+    type Failure = Refused;
 
     /// Counter reads are told no progress; the progress made before one is handed with the exit that follows.
     fn run(
@@ -919,11 +931,11 @@ impl Execution for NativeCpu {
         mut resume: Resume,
         turn: Turn,
         answer: &mut dyn Answer,
-    ) -> Result<(), Unbuilt> {
-        supported(turn)?;
+    ) -> Result<(), Refused> {
+        let mut until = self.turn_end(thread, turn)?;
         loop {
             let before = self.count(thread);
-            let exit = NativeCpu::run(self, thread, resume, &mut || answer.clock(0));
+            let exit = NativeCpu::run(self, thread, resume, &mut || answer.clock(0), until);
             self.send_warnings(&mut |warning| answer.warn(warning));
             let progress = self.count(thread) - before;
             match answer.exit(self, exit, progress) {
@@ -931,7 +943,7 @@ impl Execution for NativeCpu {
                     resume: next,
                     turn: next_turn,
                 } => {
-                    supported(next_turn)?;
+                    until = self.turn_end(thread, next_turn)?;
                     resume = next;
                 }
                 Carry::Leave(_) => return Ok(()),

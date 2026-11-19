@@ -27,7 +27,8 @@ mod kernel {
     #[unsafe(no_mangle)]
     extern "C" fn floor_main(start: &Start) -> ! {
         let floor = Floor::boot(start);
-        let mut cpu = NativeCpu::new(floor.global, false).expect("frames for the CPU side");
+        // The test crate's policy counts its turns, which needs the count in every piece.
+        let mut cpu = NativeCpu::new(floor.global, true).expect("frames for the CPU side");
         let PolicySeeds { seed, wall_start } = floor::ask(&Policy {}, &[]);
         let mut policy = TestPolicy::new(LinkHost { ring: Doorbell }, seed, wall_start);
         let mut kernel = Kernel::new();
@@ -37,7 +38,7 @@ mod kernel {
         let status = match drive(&mut kernel, &mut cpu, &mut policy) {
             Ok(Ending::Finished { status }) => status,
             Ok(Ending::Ended(never)) => match never {},
-            Err(unbuilt) => panic!("the native back end cannot run this yet: {unbuilt:?}"),
+            Err(refused) => panic!("the native back end refused: {refused:?}"),
         };
         container::send_root(&mut Doorbell, &kernel, &mut cpu);
         for warned in &policy.warnings {
