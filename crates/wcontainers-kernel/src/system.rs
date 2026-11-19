@@ -397,3 +397,36 @@ impl crate::syscall::touch::Memory for CallMemory<'_, '_, '_> {
         registers.sp
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_serial_exact_runs_and_the_rest_are_refused_by_name() {
+        let config = |thread_ordering, replay_determinism| ExecutionConfig {
+            thread_ordering,
+            replay_determinism,
+        };
+        assert_eq!(ExecutionConfig::default().supported(), Ok(()));
+        assert_eq!(
+            config(ThreadOrdering::Parallel, ReplayDeterminism::Exact).supported(),
+            Err(Unsupported::ThreadOrdering(ThreadOrdering::Parallel))
+        );
+        for replay in [ReplayDeterminism::External, ReplayDeterminism::None] {
+            assert_eq!(
+                config(ThreadOrdering::Serial, replay).supported(),
+                Err(Unsupported::ReplayDeterminism(replay))
+            );
+        }
+    }
+
+    #[test]
+    fn the_default_task_ids_count_and_wrap_past_the_low_ones() {
+        assert_eq!(task_id_after(TaskId(0)), TaskId(1));
+        assert_eq!(
+            task_id_after(TaskId::of(PID_MAX - 1)),
+            TaskId::of(RESERVED_PIDS)
+        );
+    }
+}
