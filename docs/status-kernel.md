@@ -15,10 +15,11 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 ## Where things stand
 
 K6c, tenth run: the LTP comparison on our kernel moved off the Mac (it is what brought Docker
-Desktop down: "For the orchestrator") to the rented ARM64 machine, which was lost after 1260 of
-4226 tests (1231 match; every difference is one already known); the cgroup2 mount at
-/sys/fs/cgroup is built; the flake builds the workspace on ARM64 Linux and the test programs
-link there. K6c is not complete. See "K6c, tenth run".
+Desktop down: "For the orchestrator") to the rented ARM64 machine, where the whole comparison
+ran: 4126 of 4226 match, 40 differ by a section 15 cause, 43 are slower than 900 s (running
+again with a two-hour limit), 14 wait for the owner's answers and 3 are the reference's own
+failures. The cgroup2 mount and status's VmData are built; the flake builds the workspace on
+ARM64 Linux and the test programs link there. K6c is not complete. See "K6c, tenth run".
 
 K6c, ninth run: the brief's second bug is fixed (a mapped backend file's pages are dropped when
 its attributes show a change, as `fuse_change_attributes` and `fuse_reverse_inval_inode` do);
@@ -134,8 +135,14 @@ Moved and built:
   reference (the root's inode number is the host's cgroup's there, left out).
   controllers:controllers (ours passed where the reference skips "V1 controller required, but
   mounted on V2") should now skip; not yet rerun (the comparison below ran before it).
+- /proc/<pid>/status shows VmPin (0), VmData (private writable mappings that are not stacks),
+  VmStk (stacks) and VmSwap (0, no swap) in Linux's order after VmSize and VmLck, as
+  `vm_stat_account` sorts mappings; VmPeak, VmHWM, VmRSS, the Rss lines, VmExe, VmLib and VmPTE
+  are still left out (residency, the loader's addresses, page tables). mapflags prints VmData's
+  change as private and shared writable memory is mapped and made read-only and writable again,
+  and VmPin and VmSwap: equal to the reference. LTP's in6_02 reads VmData.
 - Literals: the cgroup values are one constant each or one table; proc's first global inode
-  number is named. Baseline 8499 to 8498.
+  number and the status memory lines are named. Baseline 8499 to 8494.
 
 The whole LTP comparison on the ARM64 machine (`LTP_TAR=<its tar> LTP_JOBS=12 LTP_LIMIT=900
 cargo run -p wcontainers-kernel-test --bin ltp -- ours target/ltp-k6c10/whole.tsv`, code
@@ -148,6 +155,41 @@ cve-2019-8912 and irqbalance01: one CPU; cve-2017-2671 ping sockets; cve-2021-26
 controllers:controllers, now built; aslr01, below), slower than 900 s 19 (cve-2011-0999,
 cve-2017-17052, dio30, gf01, gf06 to gf11, gf16 to gf18, gf29, rwtest01 to 04, iogen01). The
 groups done: can to kernel_misc, ltp-aio-stress, ltp-aiodio parts 1 and 2 and part of 3.
+
+It was continued on the replacement machine (17:41 to 18:48 UTC, the same command at
+93b5b8f1, whose only kernel change is the cgroup2 mount; load 14 at the start, 20 to 33 at the
+end). The whole comparison, committed as ltp/ours-20260930-93b5b8f1.tsv (scratch
+k6c10/compare.txt): 4124 of 4226 match, 102 differ. Rerun at c2963599 (k6c10/arm/rerun.tsv):
+the whole controllers group, 351 tests, matches (controllers:controllers now skips as the
+reference does), and in6_02 passes (it read VmData from /proc/self/status, built below), so
+4126 match and 100 differ, each named below.
+
+The LTP table at this run's end (4226 tests, verdicts of the ARM64 machine):
+- Matching: 4126.
+- A section 15 cause, 40: tracing (ptrace01, 02, 03, 05, 06, 11); no raw packets
+  (cve-2017-7308, setsockopt02, sendto02: AF_PACKET; asapi_01 to 03: raw IPv6; cve-2017-2671:
+  ping sockets); not Linux's network stack (cve-2018-5803 and test_1_to_1_initmsg_connect:
+  SCTP; cve-2021-26708: vsock); /proc and /sys a chosen subset (sysfs sys_kernel01,
+  sys_clocksource01, sys_clockevents01, sys_cpu_topology01 and 02, sys_cpu_vulnerabilities01,
+  sys_cpu_cache01, sys_bdi01, sys_rtc01, sys_net01, sys_block_queue01, sys_block_size01,
+  sys_mm_swap01; mm kallsyms); one CPU (af_alg07, cve-2019-8912, irqbalance01, getcwd04,
+  writev03); the small address space (mtest01, mtest01w, mtest06, fork14, mallinfo2_01).
+- Slower than 900 s, 43 rows (31 names; the scsi_debug rwtests are listed four times): gf01,
+  gf06 to gf11, gf16 to gf18, gf29, rwtest01 to 04 (fs and scsi_debug), iogen01, fsx22, dio30
+  (file access, section 15 until the cache), and cve-2011-0999, cve-2017-17052, mtest06_3,
+  thp01, sched_stress, msgstress01 and shmctl05 (syscalls and syscalls-ipc), which are not file
+  access: the stand-in CPU is slow, which is the test machine's, not a section 15 cause. All
+  31 run again with LTP_LIMIT 7200 on the ARM machine (scratch k6c10/slow-attach.log, results
+  target/ltp-k6c10/slow.tsv there). On this machine cve-2014-0196, open04, float_bessel,
+  hackbench01, fork09's and creat05's file counts and the gf tests not listed came in under
+  900 s.
+- Waiting for the owner, 14 (Questions): page residency (mincore03, mlock201, mlock05's smaps,
+  mmap12's pagemap, vma01), layout randomization (aslr01), IPV6_RTHDR (setsockopt11,
+  cve-2026-53362), the test backend's limits (fork09, creat05, fcntl12, fcntl12_64: the server
+  holds host descriptors for each open file and stops near 524273, so the guest's opens fail
+  before RLIMIT_NOFILE; openat03: no TMPFILE) and the two clocks (copy_file_range03).
+- The reference's own failures, 3: clock_nanosleep02, select02 and prctl09 failed in the
+  reference's one run under load and pass when it runs them again (fourth run), as ours does.
 
 Layer 1 at beee6e96 on the Mac (load 18 to 25): seeds 9191105, 9191106 and 9191107, each 300
 sequences in memory, 32 on the backend and 32 on the caching backend, matched (scratch
@@ -4133,6 +4175,11 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 ## Next
 
 K6c, after the tenth run (this replaces the ninth run's first two items just below):
+0. The whole comparison is done (item 1 is how to run it again). Read the slow tests' run:
+   `arm-run --fetch kernel target/ltp-k6c10/slow.tsv <scratch>/kernel/k6c10/arm/`, then `ltp
+   compare` it; any still past 7200 s needs its cause measured. If the machine was lost, start
+   the same job (its command is in k6c10/slow-attach.log's first lines) after item 1's image
+   build. The LTP comparison never runs on the Mac.
 1. Continue the whole LTP comparison on the ARM64 machine only, never on the Mac. On a new
    machine: build the image (`arm-run <checkout> --name kernel -- 'mkdir -p target/ltp-data &&
    sh crates/wcontainers-kernel-test/ltp/build.sh $PWD/target/ltp-data'`, 5 minutes), put the
