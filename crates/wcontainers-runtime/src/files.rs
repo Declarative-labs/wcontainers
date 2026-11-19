@@ -80,7 +80,7 @@ type Answer = Result<Vec<u8>, Fail>;
 struct Node {
     parent: u64,
     name: CString,
-    identity: (u64, u64),
+    identity: Identity,
     lookups: u64,
     /// A directory's own descriptor, through which the names in it are reached.
     directory: Option<OwnedFd>,
@@ -100,7 +100,7 @@ struct Listed {
 /// One host directory served.
 pub struct Files {
     nodes: HashMap<u64, Node>,
-    identities: HashMap<(u64, u64), u64>,
+    identities: HashMap<Identity, u64>,
     handles: HashMap<u64, Handle>,
     last: u64,
     counts: HashMap<&'static str, u64>,
@@ -111,8 +111,11 @@ fn host_error(error: HostErrno) -> Result<Fail, HostErrno> {
     errno::linux(error).ok_or(error)
 }
 
-fn identity(stat: &host::Stat) -> (u64, u64) {
-    (stat.st_dev as u64, stat.st_ino)
+/// A host file's device and inode.
+type Identity = (host::Dev, u64);
+
+fn identity(stat: &host::Stat) -> Identity {
+    (stat.st_dev, stat.st_ino)
 }
 
 /// Linux's type bits and directory entry type for a host file type.
@@ -259,7 +262,8 @@ impl Files {
         if matches!(file, FileType::CharacterDevice | FileType::BlockDevice) {
             self.slow(reason::DEVICE_NODE, stat.st_ino);
         }
-        let permissions = Mode::from_raw_mode(stat.st_mode as _).bits() as u32 & PERMISSIONS;
+        let mode: u32 = Mode::from_raw_mode(stat.st_mode as _).bits() as _;
+        let permissions = mode & PERMISSIONS;
         fuse_attr {
             ino: stat.st_ino,
             size: stat.st_size as u64,
@@ -271,7 +275,7 @@ impl Files {
             mtimensec: stat.st_mtime_nsec as u32,
             ctimensec: stat.st_ctime_nsec as u32,
             mode: kind(file).0 | permissions,
-            nlink: stat.st_nlink as u32,
+            nlink: stat.st_nlink as _,
             uid: stat.st_uid,
             gid: stat.st_gid,
             rdev: 0,
