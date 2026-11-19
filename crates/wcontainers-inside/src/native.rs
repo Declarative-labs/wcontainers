@@ -15,6 +15,7 @@ use wcontainers_abi::{
 use wcontainers_arm64::mirror::REACH_BITS;
 use wcontainers_arm64::thread_state::{FPCR_BITS, RegisterPage};
 use wcontainers_guest_cpu::position::{NativeReason, Span};
+use wcontainers_runtime::{Answer, Carry, Execution, Turn};
 
 use crate::floor::{
     self, AddressSpace, Full, Table, Taken, UserRegisters, code, enter_user, guest_no_access,
@@ -353,14 +354,12 @@ impl NativeCpu {
     }
 
     /// Runs `thread` from `resume` to its next exit. `clock` reads the monotonic clock for the guest's counter
-    /// reads; `warn` takes every slow path since the last run. An interrupt is [`Exit::Stop`], left pending for
-    /// the caller to take.
+    /// reads. An interrupt is [`Exit::Stop`], left pending for the caller to take.
     pub fn run(
         &mut self,
         thread: ThreadId,
         resume: Resume,
         clock: &mut dyn FnMut() -> u64,
-        warn: &mut dyn FnMut(Warning<'_>),
     ) -> Exit {
         let mut t = self.threads.remove(&thread).expect("a thread of this side");
         if let Resume::Return(value) = resume {
@@ -375,6 +374,11 @@ impl NativeCpu {
             self.slow(FLOAT_STATUS_NOT_KEPT, not_kept, t.state.pc);
         }
         self.threads.insert(thread, t);
+        exit
+    }
+
+    /// Hands `warn` every slow path taken since it was last called.
+    pub fn send_warnings(&mut self, warn: &mut dyn FnMut(Warning<'_>)) {
         for (reason, count, detail) in core::mem::take(&mut self.unsent) {
             warn(Warning {
                 reason,
@@ -382,7 +386,11 @@ impl NativeCpu {
                 detail,
             });
         }
-        exit
+    }
+
+    /// The progress count of `thread` so far.
+    fn count(&self, thread: ThreadId) -> u64 {
+        self.threads[&thread].state.count
     }
 
     /// Runs `t` to its next exit, adding to `not_kept` each read of the float status while its flags are not
@@ -883,5 +891,55 @@ impl Cpu for NativeCpu {
         if self.live == Some(thread) {
             (self.load_vectors)(&from.v);
         }
+    }
+}
+
+/// What the native back end cannot run yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unbuilt {
+    /// A turn that ends after a number of units of progress: ending a turn at a count is decision 10's.
+    TurnWithLimit,
+}
+
+/// The turn's end is supported: one with no end but a stop.
+fn supported(turn: Turn) -> Result<(), Unbuilt> {
+    match turn {
+        Turn::Counted { limit: None } | Turn::Free => Ok(()),
+        Turn::Counted { limit: Some(_) } => Err(Unbuilt::TurnWithLimit),
+    }
+}
+
+impl Execution for NativeCpu {
+    type Failure = Unbuilt;
+
+    /// Counter reads are told no progress; the progress made before one is handed with the exit that follows.
+    fn run(
+        &mut self,
+        thread: ThreadId,
+        mut resume: Resume,
+        turn: Turn,
+        answer: &mut dyn Answer,
+    ) -> Result<(), Unbuilt> {
+        supported(turn)?;
+        loop {
+            let before = self.count(thread);
+            let exit = NativeCpu::run(self, thread, resume, &mut || answer.clock(0));
+            self.send_warnings(&mut |warning| answer.warn(warning));
+            let progress = self.count(thread) - before;
+            match answer.exit(self, exit, progress) {
+                Carry::On {
+                    resume: next,
+                    turn: next_turn,
+                } => {
+                    supported(next_turn)?;
+                    resume = next;
+                }
+                Carry::Leave(_) => return Ok(()),
+            }
+        }
+    }
+
+    fn restored(&self) -> Self {
+        unimplemented!("a save of the native back end is N7's")
     }
 }

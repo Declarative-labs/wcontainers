@@ -71,7 +71,8 @@ mod exits {
                 }
                 OrderKind::Run => {
                     let resume = ResumeWords::resume(order.address, order.value);
-                    let exit = cpu.run(thread, resume, &mut counter, &mut |warning| {
+                    let exit = cpu.run(thread, resume, &mut counter);
+                    cpu.send_warnings(&mut |warning| {
                         floor::ask(
                             &Warned {
                                 count: warning.count,
