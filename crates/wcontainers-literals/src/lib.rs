@@ -34,7 +34,7 @@ pub use baseline::BASELINE_FILE;
 use deps::Crates;
 use eval::{ConstDef, ConstScope, Value};
 pub use findings::{FIELD_SEPARATOR, Kind, LOCATION_SEPARATOR, List, PATH_SEPARATOR};
-use findings::{FILE_SCOPE, Finding, NOTE_MARK, PATH_COMPONENT_SEPARATOR, clean_literal};
+use findings::{FILE_SCOPE, Finding, NOTE_MARK, PATH_COMPONENT_SEPARATOR, Position, clean_literal};
 pub use history::WORKING_TREE;
 pub use marks::MARK_WORD;
 pub use rules::SOURCE as RULES_SOURCE;
@@ -801,7 +801,7 @@ fn unparsed(file: &SourceFile, message: &str, at: proc_macro2::LineColumn) -> Fi
         value: None,
         note: String::new(),
         crate_dir: file.crate_dir.clone(),
-        in_const: false,
+        in_const: None,
     }
 }
 
@@ -1004,8 +1004,8 @@ fn specific_words(name: &str) -> Vec<String> {
 /// can name; a literal in a named constant of code only when the two names also share a specific word
 /// (`LOCAL_PAGE` and `PAGE_SIZE`), so that a different fact of the same value can be given its own
 /// name. A test's note names what the file can import, or says that the constant must first be made
-/// importable. A test constant that `test_copies` holds is a redefinition only.
-fn restated(all: &mut [Finding], index: &ValueIndex, test_copies: &HashSet<(String, String)>) {
+/// importable. A literal in a test constant that `test_copies` holds is that redefinition only.
+fn restated(all: &mut [Finding], index: &ValueIndex, test_copies: &HashSet<(String, Position)>) {
     for f in all
         .iter_mut()
         .filter(|f| matches!(f.list, List::Test | List::Const))
@@ -1037,14 +1037,17 @@ fn restated(all: &mut [Finding], index: &ValueIndex, test_copies: &HashSet<(Stri
         let test = f.list == List::Test;
         // A test's constant that `redefinitions` reports as a copy is that redefinition only; any
         // other test literal is gated on its value whatever its constant is called.
-        if test && f.in_const && test_copies.contains(&(f.path.clone(), f.item.clone())) {
+        if test
+            && f.in_const
+                .is_some_and(|at| test_copies.contains(&(f.path.clone(), at)))
+        {
             continue;
         }
         // Between constants of code, the same name and value is a redefinition, reported as one.
         let own_name = f.item.rsplit(PATH_SEPARATOR).next().unwrap_or_default();
         let own_words = specific_words(own_name);
         let named_alike = |d: &ConstDef| {
-            !f.in_const
+            f.in_const.is_none()
                 || test
                 || (d.bare != own_name
                     && specific_words(&d.bare)
@@ -1126,10 +1129,10 @@ fn named_in_text(all: &mut [Finding], index: &ValueIndex, crates: &Crates) {
 }
 
 /// Redefinitions, and the test constants among them reported as copies of a constant of code,
-/// generated code or a reference crate, by file and item.
+/// generated code or a reference crate, by file and the position of the constant's name.
 struct Redefinitions {
     findings: Vec<Finding>,
-    test_copies: HashSet<(String, String)>,
+    test_copies: HashSet<(String, Position)>,
 }
 
 /// Constants that restate, by the same name and value, a constant defined elsewhere; reported on the
@@ -1193,7 +1196,7 @@ fn redefinitions(defs: &[ConstDef], index: &ValueIndex) -> Redefinitions {
             .filter(|o| o.scope != ConstScope::Test)
             .collect();
         if d.scope == ConstScope::Test && !owners.is_empty() {
-            out.test_copies.insert((d.path.clone(), d.item.clone()));
+            out.test_copies.insert((d.path.clone(), (d.line, d.column)));
         }
         let hidden = if owners.is_empty()
             || owners
@@ -1218,7 +1221,7 @@ fn redefinitions(defs: &[ConstDef], index: &ValueIndex) -> Redefinitions {
                 also.join(NOTE_LIST_SEPARATOR)
             ),
             crate_dir: d.crate_dir.clone(),
-            in_const: true,
+            in_const: Some((d.line, d.column)),
         });
     }
     out
@@ -1324,7 +1327,7 @@ fn apply_marks(all: &mut Vec<Finding>, found: &[FileMark], index: &ValueIndex) -
         value: None,
         note,
         crate_dir: fm.crate_dir.clone(),
-        in_const: false,
+        in_const: None,
     }));
     report
 }
