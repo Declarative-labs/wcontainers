@@ -587,11 +587,11 @@ fn translated_in_one_page(cases: &[Case]) -> Vec<Outcome> {
     let states: Vec<crate::browser::StateCase> = cases
         .iter()
         .map(|case| {
-            let mut state = vec![0u8; contract::THREAD_STATE_SIZE];
+            let mut state = vec![0u8; contract::thread_state_size::<wcontainers_arm64::Arm64>()];
             let registers = start_registers(case);
             state[..size_of::<RegisterBlock>()].copy_from_slice(registers.as_bytes());
             if case.tracking {
-                state[contract::FLOAT_TRACKING..contract::FLOAT_TRACKING + 4]
+                state[wcontainers_arm64::FLOAT_TRACKING..wcontainers_arm64::FLOAT_TRACKING + 4]
                     .copy_from_slice(&1u32.to_le_bytes());
             }
             crate::browser::StateCase {

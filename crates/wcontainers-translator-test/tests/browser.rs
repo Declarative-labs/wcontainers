@@ -1,8 +1,8 @@
 //! C programs give the same output and exit status in Chrome, translated at look-ahead none and full, and at
-//! bounded look-ahead from the first instruction with every other piece added while the program runs, as on
-//! real ARM64 Linux.
+//! bounded look-ahead from the first instruction with every other piece added while the program runs, for
+//! speed and for size, as on real ARM64 Linux.
 
-use wcontainers_translator::{LookAhead, Omit};
+use wcontainers_translator::{LookAhead, Omit, Optimise};
 use wcontainers_translator_test::browser;
 use wcontainers_translator_test::programs::{Library, build, native};
 
@@ -30,9 +30,17 @@ fn programs_match_linux_in_chrome() {
             }
             built.push(blob.bytes.clone());
             let theirs = native(&blob);
-            for look_ahead in [LookAhead::None, LookAhead::Full, LookAhead::AT_RUN_TIME] {
-                let ours = browser::translated_with(&blob, look_ahead, Omit::default());
-                let what = format!("{name} at {optimisation}, look-ahead {look_ahead:?}");
+            for (look_ahead, optimise) in [
+                (LookAhead::None, Optimise::Speed),
+                (LookAhead::Full, Optimise::Speed),
+                (LookAhead::Full, Optimise::Size),
+                (LookAhead::AT_RUN_TIME, Optimise::Speed),
+                (LookAhead::AT_RUN_TIME, Optimise::Size),
+            ] {
+                let how = (look_ahead, optimise);
+                let ours = browser::translated_with(&blob, how, Omit::default());
+                let what =
+                    format!("{name} at {optimisation}, look-ahead {look_ahead:?} for {optimise:?}");
                 assert_eq!(
                     String::from_utf8_lossy(&ours.ran.stdout),
                     String::from_utf8_lossy(&theirs.stdout),

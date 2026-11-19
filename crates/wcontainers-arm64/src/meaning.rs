@@ -3,24 +3,11 @@
 //! A meaning talks to an [`Emitter`], which decides where registers and flags live and how control leaves.
 //! Each look-ahead is one emitter; none of them carries instruction logic of its own.
 
+use crate::Arm64;
 use crate::instruction::*;
 use wasm_encoder::{BlockType, InstructionSink, MemArg, MemArgTarget, ValType};
 
-/// What a memory access does, for the permission check.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Access {
-    Read,
-    Write,
-}
-
-/// Where control goes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Target {
-    /// This many bytes from the current instruction.
-    Relative(i64),
-    /// The guest address in this i64 local.
-    Address(u32),
-}
+pub use wcontainers_guest_cpu::{Access, Emitter, Target};
 
 /// Why an instruction stops the thread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,77 +128,8 @@ pub enum Flags {
     Packed(u32),
 }
 
-/// Where a meaning's registers, flags and control flow go. Each look-ahead implements it.
-///
-/// Meanings keep two rules an emitter may rely on: `set` and `set_vector` are never called inside a part
-/// of the meaning that runs only sometimes, and an instruction that calls `set_flags` once does so
-/// unconditionally. Locals a meaning gets from `local` are only used within that instruction, except those
-/// named in the `Flags` it passes to `set_flags`.
-pub trait Emitter {
-    /// The body being written.
-    fn sink(&mut self) -> InstructionSink<'_>;
-    /// A fresh local of this type.
-    fn local(&mut self, ty: ValType) -> u32;
-    /// Push a register as an i64. The zero register reads as zero.
-    fn get(&mut self, r: Reg);
-    /// Pop an i64 into a register. Writes to the zero register are dropped.
-    fn set(&mut self, r: Reg);
-    /// Push the guest address of this instruction plus `by`.
-    fn this_address(&mut self, by: i64);
-    fn set_flags(&mut self, flags: Flags);
-    /// Push one flag as an i32 0 or 1.
-    fn flag(&mut self, flag: Flag);
-    /// Push SIMD and floating point register `n` as a v128.
-    fn get_vector(&mut self, n: u8);
-    /// Pop a v128 into SIMD and floating point register `n`.
-    fn set_vector(&mut self, n: u8);
-    /// Push a register kept only in the thread's state, as a value of [`Control::ty`].
-    fn get_control(&mut self, control: Control);
-    /// Pop a value of [`Control::ty`] into a register kept only in the thread's state.
-    fn set_control(&mut self, control: Control);
-    /// Call a hook with its arguments pushed; it leaves its results.
-    fn hook(&mut self, hook: Hook);
-    /// What the host's engine does where WebAssembly leaves it open.
-    fn host(&self) -> Host;
-    /// Floating point takes the slow path when FPCR is not zero or FPSR's flags are kept. Push whether it
-    /// does, as an i32 not zero when it does, and return true: the meaning then writes both paths. Or, as
-    /// nothing of the instruction is written yet, carry on from this instruction in other code when it does,
-    /// and return false: the meaning then writes only the fast path.
-    fn float_mode(&mut self) -> bool {
-        self.get_control(Control::Fpcr);
-        self.get_control(Control::FloatTracking);
-        self.sink().i32_or();
-        true
-    }
-    /// Whether the stack pointer is known here to be a multiple of 16, so its alignment needs no check.
-    fn stack_aligned(&mut self) -> bool {
-        false
-    }
-    /// Untag the address in this i64 local in place (see [`untag`]), then stop the thread with a memory
-    /// fault unless `bytes` bytes at it may be accessed this way.
-    fn check(&mut self, address: u32, bytes: u32, access: Access);
-    /// Go to the target. Nothing after it in this instruction runs.
-    fn jump(&mut self, target: Target);
-    /// Pop an i32 and go to the target if it is not zero.
-    fn jump_if(&mut self, target: Target);
-    /// Call the target with the next instruction as the return address. x30 is already set.
-    fn call(&mut self, target: Target);
-    /// Return to the address in this i64 local.
-    fn ret(&mut self, target: u32);
-    /// The system call instruction: x8 is the number, x0 to x5 the arguments, x0 the result.
-    fn syscall(&mut self);
-    fn trap(&mut self, trap: Trap);
-    /// Carry on with the next instruction. Ends every instruction that does not leave by itself.
-    fn next(&mut self);
-
-    /// Push whether a condition holds, as an i32.
-    fn condition(&mut self, cond: Cond) {
-        condition_from_flags(self, cond);
-    }
-}
-
 /// Push whether a condition holds, worked out from the four flags.
-pub fn condition_from_flags<E: Emitter + ?Sized>(e: &mut E, cond: Cond) {
+pub fn condition_from_flags<E: Emitter<Arm64> + ?Sized>(e: &mut E, cond: Cond) {
     match cond.0 >> 1 {
         0 => e.flag(Flag::Z),
         1 => e.flag(Flag::C),
@@ -491,7 +409,7 @@ macro_rules! op {
     };
 }
 
-pub(crate) fn constant<E: Emitter + ?Sized>(e: &mut E, w: Width, value: u64) {
+pub(crate) fn constant<E: Emitter<Arm64> + ?Sized>(e: &mut E, w: Width, value: u64) {
     match w {
         Width::W32 => e.sink().i32_const(value as u32 as i32),
         Width::X64 => e.sink().i64_const(value as i64),
@@ -499,7 +417,7 @@ pub(crate) fn constant<E: Emitter + ?Sized>(e: &mut E, w: Width, value: u64) {
 }
 
 /// Push a register at a width.
-pub(crate) fn get<E: Emitter + ?Sized>(e: &mut E, r: Reg, w: Width) {
+pub(crate) fn get<E: Emitter<Arm64> + ?Sized>(e: &mut E, r: Reg, w: Width) {
     e.get(r);
     if w == Width::W32 {
         e.sink().i32_wrap_i64();
@@ -507,7 +425,7 @@ pub(crate) fn get<E: Emitter + ?Sized>(e: &mut E, r: Reg, w: Width) {
 }
 
 /// Pop a value of a width into a register; 32 bit results clear the top half.
-pub(crate) fn set<E: Emitter + ?Sized>(e: &mut E, r: Reg, w: Width) {
+pub(crate) fn set<E: Emitter<Arm64> + ?Sized>(e: &mut E, r: Reg, w: Width) {
     if w == Width::W32 {
         e.sink().i64_extend_i32_u();
     }
@@ -515,13 +433,13 @@ pub(crate) fn set<E: Emitter + ?Sized>(e: &mut E, r: Reg, w: Width) {
 }
 
 /// Pop a value of a width into a fresh local.
-pub(crate) fn save<E: Emitter + ?Sized>(e: &mut E, w: Width) -> u32 {
+pub(crate) fn save<E: Emitter<Arm64> + ?Sized>(e: &mut E, w: Width) -> u32 {
     let local = e.local(ty(w));
     e.sink().local_set(local);
     local
 }
 
-fn shift_by<E: Emitter + ?Sized>(e: &mut E, w: Width, shift: Shift, amount: u8) {
+fn shift_by<E: Emitter<Arm64> + ?Sized>(e: &mut E, w: Width, shift: Shift, amount: u8) {
     if amount == 0 {
         return;
     }
@@ -535,7 +453,7 @@ fn shift_by<E: Emitter + ?Sized>(e: &mut E, w: Width, shift: Shift, amount: u8) 
 }
 
 /// Push a register widened as `extend` says, as an i64.
-pub(crate) fn extended<E: Emitter + ?Sized>(e: &mut E, r: Reg, extend: Extend) {
+pub(crate) fn extended<E: Emitter<Arm64> + ?Sized>(e: &mut E, r: Reg, extend: Extend) {
     e.get(r);
     match (extend.signed, extend.from_bits) {
         (_, 64) => {}
@@ -555,7 +473,7 @@ pub(crate) fn extended<E: Emitter + ?Sized>(e: &mut E, r: Reg, extend: Extend) {
 }
 
 /// Push the second source at a width.
-fn operand<E: Emitter + ?Sized>(e: &mut E, w: Width, operand: Operand) {
+fn operand<E: Emitter<Arm64> + ?Sized>(e: &mut E, w: Width, operand: Operand) {
     match operand {
         Operand::Imm(v) => constant(e, w, v),
         Operand::Shifted { rm, shift, amount } => {
@@ -573,7 +491,7 @@ fn operand<E: Emitter + ?Sized>(e: &mut E, w: Width, operand: Operand) {
 }
 
 /// `a + b + carry` with flags if asked; `b` is already on the stack, `a` in a local.
-fn add_with<E: Emitter + ?Sized>(
+fn add_with<E: Emitter<Arm64> + ?Sized>(
     e: &mut E,
     w: Width,
     a: u32,
@@ -641,7 +559,7 @@ pub fn untag(sink: &mut InstructionSink<'_>, local: u32) {
 
 /// The address of a load or store as the program computed it, in a fresh i64 local for the check to untag,
 /// and the write back to make after the access: the base register and what to add to the tagged address.
-pub(crate) fn address<E: Emitter + ?Sized>(
+pub(crate) fn address<E: Emitter<Arm64> + ?Sized>(
     e: &mut E,
     address: Address,
 ) -> (u32, Option<(Reg, u32, i64)>) {
@@ -707,7 +625,7 @@ pub(crate) fn address<E: Emitter + ?Sized>(
 }
 
 /// The write back of a pre or post indexed access, after the access itself.
-pub(crate) fn write_back<E: Emitter + ?Sized>(e: &mut E, update: Option<(Reg, u32, i64)>) {
+pub(crate) fn write_back<E: Emitter<Arm64> + ?Sized>(e: &mut E, update: Option<(Reg, u32, i64)>) {
     if let Some((base, local, offset)) = update {
         e.sink().local_get(local);
         if offset != 0 {
@@ -727,7 +645,7 @@ pub(crate) fn memory(offset: u64) -> MemArg {
 }
 
 /// Load from the address in `local` plus `offset`, leaving an i64.
-pub(crate) fn load<E: Emitter + ?Sized>(
+pub(crate) fn load<E: Emitter<Arm64> + ?Sized>(
     e: &mut E,
     local: u32,
     offset: u64,
@@ -755,7 +673,13 @@ pub(crate) fn load<E: Emitter + ?Sized>(
 }
 
 /// Store the low `bytes` of a register at the address in `local` plus `offset`.
-pub(crate) fn store<E: Emitter + ?Sized>(e: &mut E, local: u32, offset: u64, bytes: u8, rt: Reg) {
+pub(crate) fn store<E: Emitter<Arm64> + ?Sized>(
+    e: &mut E,
+    local: u32,
+    offset: u64,
+    bytes: u8,
+    rt: Reg,
+) {
     e.sink().local_get(local);
     if offset != 0 {
         e.sink().i64_const(offset as i64).i64_add();
@@ -772,7 +696,7 @@ pub(crate) fn store<E: Emitter + ?Sized>(e: &mut E, local: u32, offset: u64, byt
 }
 
 /// Load `bytes` from the address in `local` plus `offset` into the low bytes of a v128, the rest zero.
-fn load_vector<E: Emitter + ?Sized>(e: &mut E, local: u32, offset: u64, bytes: u8) {
+fn load_vector<E: Emitter<Arm64> + ?Sized>(e: &mut E, local: u32, offset: u64, bytes: u8) {
     if bytes < 4 {
         e.sink().v128_const(0);
     }
@@ -792,7 +716,7 @@ fn load_vector<E: Emitter + ?Sized>(e: &mut E, local: u32, offset: u64, bytes: u
 }
 
 /// Store the low `bytes` of vector register `rt` at the address in `local` plus `offset`.
-fn store_vector<E: Emitter + ?Sized>(e: &mut E, local: u32, offset: u64, bytes: u8, rt: u8) {
+fn store_vector<E: Emitter<Arm64> + ?Sized>(e: &mut E, local: u32, offset: u64, bytes: u8, rt: u8) {
     e.sink().local_get(local);
     if offset != 0 {
         e.sink().i64_const(offset as i64).i64_add();
@@ -810,7 +734,7 @@ fn store_vector<E: Emitter + ?Sized>(e: &mut E, local: u32, offset: u64, bytes: 
 }
 
 /// Swap neighbouring groups of `size` bits, in every group of `2 * size`.
-fn swap<E: Emitter + ?Sized>(e: &mut E, w: Width, value: u32, size: u32) {
+fn swap<E: Emitter<Arm64> + ?Sized>(e: &mut E, w: Width, value: u32, size: u32) {
     let pattern = (0..64)
         .filter(|bit| (bit / size).is_multiple_of(2))
         .fold(0u64, |m, bit| m | 1 << bit);
@@ -845,7 +769,7 @@ fn bitfield_masks(w: Width, immr: u8, imms: u8) -> (u64, u64) {
 }
 
 /// The high 64 bits of an unsigned 128 bit product of two i64 locals, pushed.
-fn multiply_high<E: Emitter + ?Sized>(e: &mut E, a: u32, b: u32) {
+fn multiply_high<E: Emitter<Arm64> + ?Sized>(e: &mut E, a: u32, b: u32) {
     let half = |e: &mut E, local: u32, high: bool| {
         e.sink().local_get(local);
         if high {
@@ -891,7 +815,7 @@ fn multiply_high<E: Emitter + ?Sized>(e: &mut E, a: u32, b: u32) {
 }
 
 /// Write the meaning of one instruction.
-pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
+pub fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruction) {
     use Instruction as I;
     match *instruction {
         // Without flags, a plain addition or subtraction; adding zero is a copy.
@@ -1342,7 +1266,7 @@ pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
             address: form,
         } => {
             let (at, update) = address(e, form);
-            e.check(at, bytes.into(), Access::Read);
+            e.check(at, bytes.into(), Access::Read, 0);
             load(e, at, 0, bytes, signed);
             e.set(rt);
             write_back(e, update);
@@ -1354,7 +1278,7 @@ pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
             address: form,
         } => {
             let (at, update) = address(e, form);
-            e.check(at, bytes.into(), Access::Write);
+            e.check(at, bytes.into(), Access::Write, 0);
             store(e, at, 0, bytes, rt);
             write_back(e, update);
             e.next();
@@ -1367,7 +1291,7 @@ pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
             address: form,
         } => {
             let (at, update) = address(e, form);
-            e.check(at, 2 * u32::from(bytes), Access::Read);
+            e.check(at, 2 * u32::from(bytes), Access::Read, 0);
             let signed = signed.then_some(Width::X64);
             load(e, at, 0, bytes, signed);
             let first = save(e, Width::X64);
@@ -1385,7 +1309,7 @@ pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
             address: form,
         } => {
             let (at, update) = address(e, form);
-            e.check(at, 2 * u32::from(bytes), Access::Write);
+            e.check(at, 2 * u32::from(bytes), Access::Write, 0);
             store(e, at, 0, bytes, rt);
             store(e, at, bytes.into(), bytes, rt2);
             write_back(e, update);
@@ -1397,7 +1321,7 @@ pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
             address: form,
         } => {
             let (at, update) = address(e, form);
-            e.check(at, bytes.into(), Access::Read);
+            e.check(at, bytes.into(), Access::Read, 0);
             load_vector(e, at, 0, bytes);
             e.set_vector(rt);
             write_back(e, update);
@@ -1409,7 +1333,7 @@ pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
             address: form,
         } => {
             let (at, update) = address(e, form);
-            e.check(at, bytes.into(), Access::Write);
+            e.check(at, bytes.into(), Access::Write, 0);
             store_vector(e, at, 0, bytes, rt);
             write_back(e, update);
             e.next();
@@ -1421,7 +1345,7 @@ pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
             address: form,
         } => {
             let (at, update) = address(e, form);
-            e.check(at, 2 * u32::from(bytes), Access::Read);
+            e.check(at, 2 * u32::from(bytes), Access::Read, 0);
             load_vector(e, at, 0, bytes);
             let first = e.local(ValType::V128);
             e.sink().local_set(first);
@@ -1439,7 +1363,7 @@ pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
             address: form,
         } => {
             let (at, update) = address(e, form);
-            e.check(at, 2 * u32::from(bytes), Access::Write);
+            e.check(at, 2 * u32::from(bytes), Access::Write, 0);
             store_vector(e, at, 0, bytes, rt);
             store_vector(e, at, bytes.into(), bytes, rt2);
             write_back(e, update);
@@ -1578,7 +1502,14 @@ pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
 }
 
 /// crc32 and crc32c, bit by bit on the reflected polynomial.
-fn crc32<E: Emitter + ?Sized>(e: &mut E, castagnoli: bool, bytes: u8, rd: Reg, rn: Reg, rm: Reg) {
+fn crc32<E: Emitter<Arm64> + ?Sized>(
+    e: &mut E,
+    castagnoli: bool,
+    bytes: u8,
+    rd: Reg,
+    rn: Reg,
+    rm: Reg,
+) {
     let polynomial: i64 = if castagnoli { 0x82f6_3b78 } else { 0xedb8_8320 };
     let crc = e.local(ValType::I64);
     e.get(rn);
@@ -1610,7 +1541,7 @@ fn crc32<E: Emitter + ?Sized>(e: &mut E, castagnoli: bool, bytes: u8, rd: Reg, r
 }
 
 /// x30 = the address of the next instruction.
-pub(crate) fn link_register<E: Emitter + ?Sized>(e: &mut E) {
+pub(crate) fn link_register<E: Emitter<Arm64> + ?Sized>(e: &mut E) {
     e.this_address(4);
     e.set(Reg::X(30));
 }

@@ -15,7 +15,19 @@ use linux_raw_sys::ptrace as seccomp;
 use wcontainers_abi::{Event, Exit, Next, Syscall};
 use wcontainers_kernel::{Kernel, Start};
 
-use crate::buffer::BufferCpu;
+/// The CPU side the sequences run over: the buffer CPU, or with the `runtime` feature the WebAssembly
+/// back end's memories, permission tables, blocks of shared pages and fork copies.
+#[cfg(not(feature = "runtime"))]
+type Layer1Cpu = crate::buffer::BufferCpu;
+#[cfg(feature = "runtime")]
+type Layer1Cpu = crate::driver::Back;
+
+fn layer1_cpu() -> Layer1Cpu {
+    #[cfg(not(feature = "runtime"))]
+    return crate::buffer::BufferCpu::new();
+    #[cfg(feature = "runtime")]
+    return crate::driver::back_end(0, crate::standin::SPACE_32_BIT);
+}
 use crate::driver::TestHost;
 use crate::image::{File, Kind};
 use crate::{guest, reference};
@@ -4455,7 +4467,7 @@ fn run_ours_on(
     theirs: &SequenceResult,
     mut host: TestHost,
 ) -> (SequenceResult, TestHost) {
-    let mut cpu = BufferCpu::new();
+    let mut cpu = layer1_cpu();
     let mut kernel = Kernel::new();
     let files = [
         File {
@@ -4523,7 +4535,7 @@ fn run_ours_on(
     let deadline =
         wcontainers_abi::Host::monotonic_nanoseconds(&mut host) + DEADLINE_SECONDS * 1_000_000_000;
     let call = |kernel: &mut Kernel,
-                cpu: &mut BufferCpu,
+                cpu: &mut Layer1Cpu,
                 host: &mut TestHost,
                 call: Call|
      -> Result<i64, i32> {
@@ -4653,7 +4665,7 @@ fn run_ours_on(
     let pid = call(&mut kernel, &mut cpu, &mut host, own).expect("getpid") as u64;
     // The runner's `clear_range`: zeros up to the first page the process cannot write.
     let clear = |kernel: &mut Kernel,
-                 cpu: &mut BufferCpu,
+                 cpu: &mut Layer1Cpu,
                  host: &mut TestHost,
                  mut at: u64,
                  mut length: u64| {

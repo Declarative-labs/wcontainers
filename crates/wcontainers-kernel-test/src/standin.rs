@@ -551,6 +551,39 @@ impl StandIn {
     }
 }
 
+/// The stand-in behind the runtime's loop: one turn of Unicorn's for each exit, and its progress is the
+/// instructions it ran.
+impl wcontainers_runtime::Execution for StandIn {
+    type Failure = Unsupported;
+
+    fn run(
+        &mut self,
+        thread: ThreadId,
+        mut resume: Resume,
+        mut turn: wcontainers_runtime::Turn,
+        answer: &mut dyn wcontainers_runtime::Answer,
+    ) -> Result<(), Unsupported> {
+        loop {
+            let wcontainers_runtime::Turn::Counted { limit } = turn else {
+                panic!("the stand-in counts every turn");
+            };
+            let exit = StandIn::run(self, thread, resume, limit)?;
+            let progress = self.last_instructions;
+            match answer.exit(self, exit, progress) {
+                wcontainers_runtime::Carry::On {
+                    resume: next,
+                    turn: then,
+                } => (resume, turn) = (next, then),
+                wcontainers_runtime::Carry::Leave(_) => return Ok(()),
+            }
+        }
+    }
+
+    fn restored(&self) -> Self {
+        StandIn::restored(self)
+    }
+}
+
 impl Default for StandIn {
     fn default() -> Self {
         Self::new()

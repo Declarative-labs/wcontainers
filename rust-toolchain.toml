@@ -2,5 +2,6 @@
 channel = "1.99.0"
 profile = "minimal"
 components = ["rustfmt", "clippy", "rust-src"]
-# wasm32 is what we ship; aarch64 Linux is for the reference runners that execute on real ARM64 Linux.
-targets = ["wasm32-unknown-unknown", "aarch64-unknown-linux-musl"]
+# wasm32 is what we ship; aarch64 Linux is for the reference runners that execute on real ARM64 Linux;
+# wasm32v1-none, which has no standard library, checks that what the kernel uses builds without it.
+targets = ["wasm32-unknown-unknown", "aarch64-unknown-linux-musl", "wasm32v1-none"]

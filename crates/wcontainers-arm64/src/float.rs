@@ -7,6 +7,7 @@
 //! default or the program has asked for the exception flags ([`Control::FloatTracking`]), and for fused
 //! multiply-add on hosts without a fused one.
 
+use crate::Arm64;
 use crate::exact::Operation;
 use crate::instruction::*;
 use crate::meaning::{Emitter, Flags, Hook};
@@ -15,7 +16,7 @@ use wasm_encoder::{BlockType, InstructionSink, ValType};
 
 /// Push a value of `ty` from `slow` when the slow path must be taken, else from `fast`. Where the emitter
 /// carries on elsewhere in that case, only `fast` is written here.
-pub(crate) fn paths<E: Emitter + ?Sized>(
+pub(crate) fn paths<E: Emitter<Arm64> + ?Sized>(
     e: &mut E,
     ty: ValType,
     slow: impl FnOnce(&mut E),
@@ -127,7 +128,7 @@ pub(crate) fn op(s: &mut InstructionSink<'_>, op: Op, size: u8) {
 }
 
 /// Push a mask of the lanes of `local` that are not-a-numbers.
-fn is_nan<E: Emitter + ?Sized>(e: &mut E, size: u8, local: u32) {
+fn is_nan<E: Emitter<Arm64> + ?Sized>(e: &mut E, size: u8, local: u32) {
     e.sink().local_get(local).local_get(local);
     op(&mut e.sink(), Op::IsNan, size);
 }
@@ -143,7 +144,7 @@ fn int_eq(s: &mut InstructionSink<'_>, size: u8) {
 
 /// Push `result` with every not-a-number lane replaced by Arm's choice from `operands`, in Arm's order:
 /// the first signaling one quieted, else the first quiet one, else the default.
-fn arm_nans<E: Emitter + ?Sized>(e: &mut E, size: u8, result: u32, operands: &[u32]) {
+fn arm_nans<E: Emitter<Arm64> + ?Sized>(e: &mut E, size: u8, result: u32, operands: &[u32]) {
     let quiet = splat_bits(size, quiet_bit(size));
     let chosen = e.local(ValType::V128);
     e.sink()
@@ -193,7 +194,7 @@ impl Source {
 
 /// Push a v128 whose first `lanes` lanes of `element` bytes come from the software path, one hook call a
 /// lane, and whose other lanes are zero. `finish` turns the hook's i64 into the lane's value.
-pub(crate) fn by_hook<E: Emitter + ?Sized>(
+pub(crate) fn by_hook<E: Emitter<Arm64> + ?Sized>(
     e: &mut E,
     operation: Operation,
     size: u8,
@@ -221,7 +222,7 @@ pub(crate) fn by_hook<E: Emitter + ?Sized>(
 /// Push the result of a float operation on `lanes` lanes: the slow path in exact mode (or always, for a
 /// fused one on a host without), else `fast`, which pushes a v128 from the operands (in Arm's order), with
 /// not-a-numbers fixed where the host needs it and `nans` says the result can be one.
-pub(crate) fn lanes<E: Emitter + ?Sized>(
+pub(crate) fn lanes<E: Emitter<Arm64> + ?Sized>(
     e: &mut E,
     operation: Operation,
     size: u8,
@@ -262,7 +263,7 @@ pub(crate) fn constant(s: &mut InstructionSink<'_>, size: u8, value: f64) {
 }
 
 /// Push the fused `addend + a * b` of three v128 locals.
-fn fused<E: Emitter + ?Sized>(e: &mut E, size: u8, addend: u32, a: u32, b: u32) {
+fn fused<E: Emitter<Arm64> + ?Sized>(e: &mut E, size: u8, addend: u32, a: u32, b: u32) {
     let mut s = e.sink();
     s.local_get(a).local_get(b).local_get(addend);
     if size == 8 {
@@ -273,7 +274,7 @@ fn fused<E: Emitter + ?Sized>(e: &mut E, size: u8, addend: u32, a: u32, b: u32) 
 }
 
 /// Push a mask of lanes where one of two locals is infinite and the other zero.
-fn infinity_times_zero<E: Emitter + ?Sized>(e: &mut E, size: u8, a: u32, b: u32) {
+fn infinity_times_zero<E: Emitter<Arm64> + ?Sized>(e: &mut E, size: u8, a: u32, b: u32) {
     for (x, y) in [(a, b), (b, a)] {
         let mut s = e.sink();
         s.local_get(x);
@@ -289,7 +290,7 @@ fn infinity_times_zero<E: Emitter + ?Sized>(e: &mut E, size: u8, a: u32, b: u32)
 }
 
 /// Push a v128 of the signs of `a * b` (the sign bits of `a` xor `b`).
-fn product_sign<E: Emitter + ?Sized>(e: &mut E, size: u8, a: u32, b: u32) {
+fn product_sign<E: Emitter<Arm64> + ?Sized>(e: &mut E, size: u8, a: u32, b: u32) {
     let sign = splat_bits(size, 1 << (8 * size - 1));
     e.sink()
         .local_get(a)
@@ -301,7 +302,7 @@ fn product_sign<E: Emitter + ?Sized>(e: &mut E, size: u8, a: u32, b: u32) {
 
 /// Round to an integer, ties away from zero, lane by lane: the integer part, plus one away from zero when
 /// what is left is at least a half.
-fn round_away<E: Emitter + ?Sized>(e: &mut E, size: u8, x: u32) {
+fn round_away<E: Emitter<Arm64> + ?Sized>(e: &mut E, size: u8, x: u32) {
     let t = e.local(ValType::V128);
     let sign = splat_bits(size, 1 << (8 * size - 1));
     let mut s = e.sink();
@@ -322,7 +323,7 @@ fn round_away<E: Emitter + ?Sized>(e: &mut E, size: u8, x: u32) {
 }
 
 /// Push the fast rounding of a v128 local to integral values.
-pub(crate) fn round<E: Emitter + ?Sized>(e: &mut E, size: u8, x: u32, rounding: Rounding) {
+pub(crate) fn round<E: Emitter<Arm64> + ?Sized>(e: &mut E, size: u8, x: u32, rounding: Rounding) {
     let o = match rounding {
         Rounding::Away => return round_away(e, size, x),
         Rounding::Nearest | Rounding::Current | Rounding::CurrentExact => Op::Nearest,
@@ -350,7 +351,7 @@ fn binary_operation(op: FloatBinary) -> Operation {
 }
 
 /// Push the fast lanewise result of a binary operation on two v128 locals.
-pub(crate) fn binary_fast<E: Emitter + ?Sized>(
+pub(crate) fn binary_fast<E: Emitter<Arm64> + ?Sized>(
     e: &mut E,
     operation: Operation,
     size: u8,
@@ -420,7 +421,13 @@ pub(crate) fn binary_fast<E: Emitter + ?Sized>(
 }
 
 /// Push the fast result of frecps (`2 - a * b`) or frsqrts (`(3 - a * b) / 2`) on two v128 locals, fused.
-pub(crate) fn step_fast<E: Emitter + ?Sized>(e: &mut E, size: u8, a: u32, b: u32, sqrt: bool) {
+pub(crate) fn step_fast<E: Emitter<Arm64> + ?Sized>(
+    e: &mut E,
+    size: u8,
+    a: u32,
+    b: u32,
+    sqrt: bool,
+) {
     let (negated, k, result) = (
         e.local(ValType::V128),
         e.local(ValType::V128),
@@ -471,7 +478,7 @@ pub(crate) fn step_fast<E: Emitter + ?Sized>(e: &mut E, size: u8, a: u32, b: u32
 }
 
 /// Write the meaning of a scalar floating point instruction.
-pub(crate) fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
+pub(crate) fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruction) {
     use Instruction as I;
     match *instruction {
         I::Float {
@@ -661,7 +668,7 @@ pub(crate) fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
 }
 
 /// Read a vector register into a fresh local.
-pub(crate) fn vector<E: Emitter + ?Sized>(e: &mut E, n: u8) -> u32 {
+pub(crate) fn vector<E: Emitter<Arm64> + ?Sized>(e: &mut E, n: u8) -> u32 {
     let local = e.local(ValType::V128);
     e.get_vector(n);
     e.sink().local_set(local);
@@ -669,7 +676,7 @@ pub(crate) fn vector<E: Emitter + ?Sized>(e: &mut E, n: u8) -> u32 {
 }
 
 /// Keep only the low `bytes` of the v128 on the stack.
-pub(crate) fn low<E: Emitter + ?Sized>(e: &mut E, bytes: u8) {
+pub(crate) fn low<E: Emitter<Arm64> + ?Sized>(e: &mut E, bytes: u8) {
     if bytes < 16 {
         let mask = if bytes == 8 {
             u64::MAX as i128
@@ -681,7 +688,7 @@ pub(crate) fn low<E: Emitter + ?Sized>(e: &mut E, bytes: u8) {
 }
 
 /// Push the packed NZCV (an i64) of comparing lane 0 of two v128 locals.
-fn compare<E: Emitter + ?Sized>(e: &mut E, signaling: bool, size: u8, a: u32, b: u32) {
+fn compare<E: Emitter<Arm64> + ?Sized>(e: &mut E, signaling: bool, size: u8, a: u32, b: u32) {
     let slow = |e: &mut E| {
         e.sink()
             .i32_const(Operation::Compare { signaling }.encode(size))
@@ -695,7 +702,7 @@ fn compare<E: Emitter + ?Sized>(e: &mut E, signaling: bool, size: u8, a: u32, b:
     paths(e, ValType::I64, slow, |e| compare_fast(e, size, a, b));
 }
 
-fn compare_fast<E: Emitter + ?Sized>(e: &mut E, size: u8, a: u32, b: u32) {
+fn compare_fast<E: Emitter<Arm64> + ?Sized>(e: &mut E, size: u8, a: u32, b: u32) {
     let mut s = e.sink();
     // N: less; Z: equal; C: greater, equal or unordered; V: unordered.
     let scalar = |s: &mut InstructionSink<'_>, x: u32| {
@@ -735,7 +742,7 @@ fn compare_fast<E: Emitter + ?Sized>(e: &mut E, size: u8, a: u32, b: u32) {
 /// The fast conversion of lane 0 of a v128 local to an integer, pushed as an i64 (the low `bits`
 /// meaningful, zero extended).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn to_integer_fast<E: Emitter + ?Sized>(
+pub(crate) fn to_integer_fast<E: Emitter<Arm64> + ?Sized>(
     e: &mut E,
     x: u32,
     lane: u8,
@@ -774,7 +781,7 @@ pub(crate) fn to_integer_fast<E: Emitter + ?Sized>(
 
 /// Push a v128 holding, in its first `lanes` lanes of `size` bytes, the integers (`bits` wide) of the same
 /// lanes of `x` converted to floats and divided by 2 to the `fraction_bits`.
-pub(crate) fn from_integer<E: Emitter + ?Sized>(
+pub(crate) fn from_integer<E: Emitter<Arm64> + ?Sized>(
     e: &mut E,
     x: u32,
     size: u8,
@@ -804,7 +811,7 @@ pub(crate) fn from_integer<E: Emitter + ?Sized>(
     });
 }
 
-fn from_integer_fast<E: Emitter + ?Sized>(
+fn from_integer_fast<E: Emitter<Arm64> + ?Sized>(
     e: &mut E,
     x: u32,
     size: u8,
@@ -851,7 +858,7 @@ fn from_integer_fast<E: Emitter + ?Sized>(
 /// Push the conversion of the first `lanes` lanes of `from` bytes in local `x` (starting at lane `first`
 /// when `upper`) to `to` bytes each, packed from lane 0. Not-a-numbers keep their sign and the top of their
 /// payload, quieted, on every host.
-pub(crate) fn convert<E: Emitter + ?Sized>(
+pub(crate) fn convert<E: Emitter<Arm64> + ?Sized>(
     e: &mut E,
     x: u32,
     from: u8,
@@ -883,7 +890,7 @@ pub(crate) fn convert<E: Emitter + ?Sized>(
 
 /// Push the bits (an i64) of the float whose bits are in `bits`, converted from `from` to `to` bytes,
 /// rounding to nearest.
-fn convert_bits<E: Emitter + ?Sized>(e: &mut E, bits: u32, from: u8, to: u8, odd: bool) {
+fn convert_bits<E: Emitter<Arm64> + ?Sized>(e: &mut E, bits: u32, from: u8, to: u8, odd: bool) {
     let (from_fraction, from_exponent) = parts(from);
     let (to_fraction, to_exponent) = parts(to);
     let exponent_mask = (1i64 << from_exponent) - 1;
@@ -960,7 +967,7 @@ fn parts(size: u8) -> (u32, u32) {
 
 /// Push the bits of a half precision number in `bits` as `to` (4 or 8) bytes; exact. Infinities convert;
 /// not-a-numbers are replaced by the caller.
-fn half_to<E: Emitter + ?Sized>(e: &mut E, bits: u32, to: u8) {
+fn half_to<E: Emitter<Arm64> + ?Sized>(e: &mut E, bits: u32, to: u8) {
     let magnitude = e.local(ValType::F32);
     let mut s = e.sink();
     let exponent = |s: &mut InstructionSink<'_>| {
@@ -1012,7 +1019,7 @@ fn half_to<E: Emitter + ?Sized>(e: &mut E, bits: u32, to: u8) {
 
 /// Push the bits of the single or double precision number in `bits` as half precision, rounded to nearest
 /// with ties to even. Not-a-numbers are replaced by the caller.
-fn to_half<E: Emitter + ?Sized>(e: &mut E, bits: u32, from: u8) {
+fn to_half<E: Emitter<Arm64> + ?Sized>(e: &mut E, bits: u32, from: u8) {
     let [double, biased, shift, q] = [(); 4].map(|_| e.local(ValType::I64));
     let mut s = e.sink();
     s.local_get(bits);
@@ -1134,7 +1141,7 @@ fn to_half<E: Emitter + ?Sized>(e: &mut E, bits: u32, from: u8) {
 
 /// Push the bits of the double in `bits` rounded to odd as single precision (fcvtxn): rounded towards
 /// zero, with the lowest bit set when anything was lost. Not-a-numbers are replaced by the caller.
-fn to_single_odd<E: Emitter + ?Sized>(e: &mut E, bits: u32) {
+fn to_single_odd<E: Emitter<Arm64> + ?Sized>(e: &mut E, bits: u32) {
     let (x, r) = (e.local(ValType::F64), e.local(ValType::F32));
     let mut s = e.sink();
     s.local_get(bits)

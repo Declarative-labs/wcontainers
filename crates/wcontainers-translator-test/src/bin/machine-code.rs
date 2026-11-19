@@ -26,13 +26,14 @@ fn main() {
         depth: omitted.contains("depth"),
     };
     let blob = build_with(program, optimisation, Library::None, &defines);
-    let mut translation = translate_omitting(
+    let mut translation = translate_omitting::<wcontainers_arm64::Arm64>(
         &blob.bytes,
         0..blob.code_bytes,
         &[0],
         LookAhead::Full,
         Optimise::Speed,
         wcontainers_translator_test::runner::probe(),
+        (),
         omit,
     )
     .expect("translation");
