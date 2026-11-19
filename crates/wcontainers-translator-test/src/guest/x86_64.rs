@@ -10,6 +10,7 @@ use crate::reference::Target;
 use iced_x86::{
     Code, Decoder, DecoderOptions, Encoder, Formatter, Instruction, InstructionInfoFactory,
     IntelFormatter, MemoryOperand, Mnemonic, OpAccess, OpCodeOperandKind as K, OpKind, Register,
+    RepPrefixKind,
 };
 use proptest::prelude::*;
 use std::sync::OnceLock;
@@ -220,6 +221,10 @@ impl GuestTest for X86_64 {
             DecoderOptions::NONE,
         )
         .decode();
+        // AC is never held (plan 5.1): a popped AC reads back clear by design.
+        if matches!(instruction.mnemonic(), Mnemonic::Popf | Mnemonic::Popfq) {
+            expected.state.0[RFLAGS] &= !u128::from(wcontainers_x86::ALIGNMENT_CHECK);
+        }
         if instruction.mnemonic() == Mnemonic::Syscall {
             const R11: usize = 11;
             expected.state.0[R11] &= !u128::from(wcontainers_x86::TF);
@@ -291,6 +296,8 @@ impl GuestTest for X86_64 {
                 Some("int 0x80: a 32-bit system call on the reference")
             }
             Code::Sysenter => Some("sysenter: a 32-bit system call on the reference"),
+            Code::Rdtsc | Code::Rdtscp => Some(TIME_STAMP_BY_DESIGN),
+            Code::Cpuid => Some(CPUID_BY_DESIGN),
             _ => None,
         }
     }
@@ -506,41 +513,55 @@ fn build(code: Code, ops: &[Operand]) -> Option<Instruction> {
 }
 
 /// A string instruction of `code`, with this address size and segment for rsi.
-fn string(code: Code, address_size: u32, segment: Register) -> Option<Instruction> {
+fn string(
+    code: Code,
+    address_size: u32,
+    segment: Register,
+    rep: RepPrefixKind,
+) -> Option<Instruction> {
     use Code::*;
-    use iced_x86::RepPrefixKind::None as N;
+    let n = rep;
     let made = match code {
-        Movsb_m8_m8 => Instruction::with_movsb(address_size, segment, N),
-        Movsw_m16_m16 => Instruction::with_movsw(address_size, segment, N),
-        Movsd_m32_m32 => Instruction::with_movsd(address_size, segment, N),
-        Movsq_m64_m64 => Instruction::with_movsq(address_size, segment, N),
-        Cmpsb_m8_m8 => Instruction::with_cmpsb(address_size, segment, N),
-        Cmpsw_m16_m16 => Instruction::with_cmpsw(address_size, segment, N),
-        Cmpsd_m32_m32 => Instruction::with_cmpsd(address_size, segment, N),
-        Cmpsq_m64_m64 => Instruction::with_cmpsq(address_size, segment, N),
-        Lodsb_AL_m8 => Instruction::with_lodsb(address_size, segment, N),
-        Lodsw_AX_m16 => Instruction::with_lodsw(address_size, segment, N),
-        Lodsd_EAX_m32 => Instruction::with_lodsd(address_size, segment, N),
-        Lodsq_RAX_m64 => Instruction::with_lodsq(address_size, segment, N),
-        Stosb_m8_AL => Instruction::with_stosb(address_size, N),
-        Stosw_m16_AX => Instruction::with_stosw(address_size, N),
-        Stosd_m32_EAX => Instruction::with_stosd(address_size, N),
-        Stosq_m64_RAX => Instruction::with_stosq(address_size, N),
-        Scasb_AL_m8 => Instruction::with_scasb(address_size, N),
-        Scasw_AX_m16 => Instruction::with_scasw(address_size, N),
-        Scasd_EAX_m32 => Instruction::with_scasd(address_size, N),
-        Scasq_RAX_m64 => Instruction::with_scasq(address_size, N),
-        Insb_m8_DX => Instruction::with_insb(address_size, N),
-        Insw_m16_DX => Instruction::with_insw(address_size, N),
-        Insd_m32_DX => Instruction::with_insd(address_size, N),
-        Outsb_DX_m8 => Instruction::with_outsb(address_size, segment, N),
-        Outsw_DX_m16 => Instruction::with_outsw(address_size, segment, N),
-        Outsd_DX_m32 => Instruction::with_outsd(address_size, segment, N),
+        Movsb_m8_m8 => Instruction::with_movsb(address_size, segment, n),
+        Movsw_m16_m16 => Instruction::with_movsw(address_size, segment, n),
+        Movsd_m32_m32 => Instruction::with_movsd(address_size, segment, n),
+        Movsq_m64_m64 => Instruction::with_movsq(address_size, segment, n),
+        Cmpsb_m8_m8 => Instruction::with_cmpsb(address_size, segment, n),
+        Cmpsw_m16_m16 => Instruction::with_cmpsw(address_size, segment, n),
+        Cmpsd_m32_m32 => Instruction::with_cmpsd(address_size, segment, n),
+        Cmpsq_m64_m64 => Instruction::with_cmpsq(address_size, segment, n),
+        Lodsb_AL_m8 => Instruction::with_lodsb(address_size, segment, n),
+        Lodsw_AX_m16 => Instruction::with_lodsw(address_size, segment, n),
+        Lodsd_EAX_m32 => Instruction::with_lodsd(address_size, segment, n),
+        Lodsq_RAX_m64 => Instruction::with_lodsq(address_size, segment, n),
+        Stosb_m8_AL => Instruction::with_stosb(address_size, n),
+        Stosw_m16_AX => Instruction::with_stosw(address_size, n),
+        Stosd_m32_EAX => Instruction::with_stosd(address_size, n),
+        Stosq_m64_RAX => Instruction::with_stosq(address_size, n),
+        Scasb_AL_m8 => Instruction::with_scasb(address_size, n),
+        Scasw_AX_m16 => Instruction::with_scasw(address_size, n),
+        Scasd_EAX_m32 => Instruction::with_scasd(address_size, n),
+        Scasq_RAX_m64 => Instruction::with_scasq(address_size, n),
+        Insb_m8_DX => Instruction::with_insb(address_size, n),
+        Insw_m16_DX => Instruction::with_insw(address_size, n),
+        Insd_m32_DX => Instruction::with_insd(address_size, n),
+        Outsb_DX_m8 => Instruction::with_outsb(address_size, segment, n),
+        Outsw_DX_m16 => Instruction::with_outsw(address_size, segment, n),
+        Outsd_DX_m32 => Instruction::with_outsd(address_size, segment, n),
         _ => return None,
     };
     made.ok()
 }
 
+/// In a hundred rep string cases: counts of zero, counts that run past the data area, and (of the rest)
+/// destinations just above their sources.
+const ZERO_COUNTS: u64 = 12;
+const LONG_COUNTS: u64 = 12;
+const OVERLAPPED: u64 = 8;
+/// Why layer 1 leaves out `cpuid`.
+const CPUID_BY_DESIGN: &str = "cpuid: the claims and designed leaves, not the CPU's";
+/// Why layer 1 leaves out `rdtsc` and `rdtscp`.
+const TIME_STAMP_BY_DESIGN: &str = "the time stamp counter: answered by design";
 /// How near an edge of the address space a memory operand drawn there points.
 const EDGE_BYTES: u64 = 64;
 /// In a hundred: bit offsets aimed with their operand, and reserved NOPs drawn with REX.W.
@@ -607,17 +628,49 @@ fn case(code: Code, seed: u64) -> Option<Case> {
     let mut memory = None;
     let instruction = if let Some(i) = {
         let segment = [Register::None, Register::FS, Register::GS][draw.below(3) as usize];
-        string(code, if address32 { 32 } else { 64 }, segment)
+        let reps = [
+            RepPrefixKind::None,
+            RepPrefixKind::Repe,
+            RepPrefixKind::Repne,
+        ];
+        let rep = reps[draw.below(reps.len() as u64) as usize];
+        string(code, if address32 { 32 } else { 64 }, segment, rep)
     } {
         // Each of rsi and rdi where the draw says.
         let bytes = u64::from(memory_size(&i));
-        for field in [6, 7] {
+        let [rcx, rsi, rdi] = [
+            wcontainers_x86::RCX,
+            wcontainers_x86::RSI,
+            wcontainers_x86::RDI,
+        ]
+        .map(usize::from);
+        for field in [rsi, rdi] {
             let to = target(&mut draw, bytes);
             state[field] = if address32 {
                 (u128::from(draw.next()) << 32 | u128::from(to as u32)) & u128::from(u64::MAX)
             } else {
                 to.into()
             };
+        }
+        if i.has_rep_prefix() || i.has_repne_prefix() {
+            // A count that mostly stays in the data area, sometimes runs past it, and is sometimes zero;
+            // rdi sometimes just above rsi, where a forward copy repeats what it wrote.
+            let count = if draw.chance(ZERO_COUNTS) {
+                0
+            } else if draw.chance(LONG_COUNTS) {
+                draw.below(DATA_BYTES / bytes + EDGE_BYTES)
+            } else {
+                draw.below(EDGE_BYTES)
+            };
+            state[rcx] = if address32 {
+                state[rcx] & !u128::from(u32::MAX) | u128::from(count)
+            } else {
+                count.into()
+            };
+            if draw.chance(OVERLAPPED) {
+                state[rdi] =
+                    (state[rsi] + u128::from(draw.below(EDGE_BYTES))) & u128::from(u64::MAX);
+            }
         }
         i
     } else {
@@ -1149,6 +1202,55 @@ fn hand_cases() -> Vec<Designed> {
             compared: true,
         },
     ]
+    .into_iter()
+    .chain(cpuid_cases())
+    .collect()
+}
+
+/// `cpuid` gives the table's answer for its leaf and sub-leaf, read from the low halves of rax and rcx, with
+/// the upper halves of all four registers cleared (plan 5.10).
+fn cpuid_cases() -> Vec<Designed> {
+    use wcontainers_x86::cpuid::{EXTENDED, MAX_BASIC, MAX_EXTENDED, answer, leaves, sub_leaves};
+    const CPUID: [u8; 2] = [0x0f, 0xa2];
+    const HIGH: u128 = 0x5a5a_5a5a << u32::BITS;
+    let [rax, rbx, rcx, rdx] = [
+        wcontainers_x86::RAX,
+        wcontainers_x86::RBX,
+        wcontainers_x86::RCX,
+        wcontainers_x86::RDX,
+    ]
+    .map(usize::from);
+    // Every leaf with each of its sub-leaves, the first past them and the last; leaves past the highest.
+    let asked: Vec<(u32, u32)> = leaves()
+        .chain([MAX_BASIC + 1, EXTENDED - 1, MAX_EXTENDED + 1, u32::MAX])
+        .flat_map(|leaf| {
+            (0..=sub_leaves(leaf))
+                .chain([u32::MAX])
+                .map(move |sub_leaf| (leaf, sub_leaf))
+        })
+        .collect();
+    asked
+        .into_iter()
+        .map(|(leaf, sub_leaf)| {
+            let mut case = plain(&CPUID);
+            case.state.0[rax] = HIGH | u128::from(leaf);
+            case.state.0[rcx] = HIGH | u128::from(sub_leaf);
+            case.state.0[rbx] = HIGH;
+            case.state.0[rdx] = HIGH;
+            let mut fields: Vec<(usize, u128)> = [rax, rbx, rcx, rdx]
+                .into_iter()
+                .zip(answer(false, leaf, sub_leaf).map(u128::from))
+                .collect();
+            fields.push((RIP, (CODE + CPUID.len() as u64).into()));
+            Designed {
+                name: Box::leak(format!("cpuid {leaf:#x} {sub_leaf:#x}").into_boxed_str()),
+                case,
+                stop: Some(Stop::Landed(CODE + CPUID.len() as u64)),
+                fields,
+                compared: false,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

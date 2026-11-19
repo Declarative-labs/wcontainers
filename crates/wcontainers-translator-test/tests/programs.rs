@@ -380,8 +380,10 @@ fn match_linux_at<G: GuestTest>(programs: &[(&str, Library)], hows: &[(LookAhead
 /// Stopping at every stop check (so full pieces carry on after the stop hook at every loop turn and entry,
 /// entering themselves again) changes nothing: the same output as Linux, and the same registers and memory
 /// at the end as at none with no stops.
-fn stops_at_every_check_change_nothing<G: GuestTest>() {
-    for (name, defines) in [("bench", &["SCALE=0"][..]), ("integers", &[][..])] {
+/// Stops at every check change nothing in the shared programs and in the guest's own `programs`.
+fn stops_at_every_check_change_nothing<G: GuestTest>(programs: &[(&str, &[&str])]) {
+    let shared: [(&str, &[&str]); 2] = [("bench", &["SCALE=0"]), ("integers", &[])];
+    for &(name, defines) in shared.iter().chain(programs) {
         for optimisation in ["-O0", "-O2"] {
             let blob = build_with::<G>(name, optimisation, Library::None, defines);
             let theirs = native::<G>(&blob);
@@ -644,7 +646,7 @@ fn blobs_are_told_the_hwcap_of_the_abi_arm64() {
 
 #[test]
 fn stops_at_every_check_change_nothing_arm64() {
-    stops_at_every_check_change_nothing::<Arm64>();
+    stops_at_every_check_change_nothing::<Arm64>(&[]);
 }
 
 #[test]
@@ -716,6 +718,12 @@ fn shift_flags_across_calls_match_linux_x86_64() {
     match_linux::<X86_64>(&[("shift_flags", Library::None)]);
 }
 
+/// rep string instructions on their bulk passes and one element at a time.
+#[test]
+fn rep_strings_match_linux_x86_64() {
+    match_linux::<X86_64>(&[("strings", Library::None)]);
+}
+
 #[test]
 fn programs_match_linux_x86_64() {
     programs_match_linux::<X86_64>();
@@ -748,5 +756,5 @@ fn cut_functions_and_split_translations_match_linux_x86_64() {
 
 #[test]
 fn stops_at_every_check_change_nothing_x86_64() {
-    stops_at_every_check_change_nothing::<X86_64>();
+    stops_at_every_check_change_nothing::<X86_64>(&[("strings", &[])]);
 }

@@ -23,6 +23,7 @@ mod operand;
 mod simd;
 
 pub mod claims;
+pub mod cpuid;
 pub mod encoding;
 
 #[cfg(feature = "translate")]
@@ -130,6 +131,8 @@ pub const OF: u64 = 1 << 11;
 pub const TF: u64 = 1 << 8;
 pub const DF: u64 = 1 << 10;
 pub const NT: u64 = 1 << 14;
+/// Alignment checking, which the translator never holds.
+pub const ALIGNMENT_CHECK: u64 = 1 << 18;
 pub const ID: u64 = 1 << 21;
 /// The six arithmetic flags.
 pub const ARITHMETIC_FLAGS: u64 = CF | PF | AF | ZF | SF | OF;

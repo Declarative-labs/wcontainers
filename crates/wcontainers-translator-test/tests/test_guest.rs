@@ -909,13 +909,13 @@ fn the_test_guest_decodes_its_program() {
 /// Where the program is placed.
 const LOAD: u64 = 0x10000;
 /// Readable and writable data, with nothing allowed in the page after it.
-const DATA: u64 = 0x40000;
+const DATA: u64 = LOAD << 2;
 /// The stack pointer at the start, the top of readable and writable pages from 0x70000.
-const STACK: u64 = 0x80000;
+const STACK: u64 = DATA << 1;
 const MEMORY_BYTES: u64 = 0x100000;
 const BLOCK_AT: usize = 0;
 const PERMISSIONS_AT: usize = 4096;
-const SLOTS_AT: usize = 8192;
+const SLOTS_AT: usize = PERMISSIONS_AT * 2;
 
 /// A hook call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

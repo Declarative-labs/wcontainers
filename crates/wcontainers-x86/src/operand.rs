@@ -116,11 +116,14 @@ pub fn set_general<E: Emitter<X86_64> + ?Sized>(e: &mut E, g: General, value: u3
     e.set(g.number);
 }
 
+/// The module's memory that is the guest's.
+pub const GUEST_MEMORY: u32 = 0;
+
 pub fn memory() -> MemArg {
     MemArg {
         offset: 0,
         align: 0,
-        target: MemArgTarget::Memory(0),
+        target: MemArgTarget::Memory(GUEST_MEMORY),
         ordering: None,
     }
 }
@@ -350,8 +353,12 @@ pub fn setcc(m: Mnemonic) -> Option<Condition> {
 pub fn stack_bytes(i: &Instruction) -> u32 {
     let ins = &i.iced;
     let width = match ins.op_kind(0) {
-        // `pushf` and `leave` with 66 move a word; they have no operand.
-        _ if matches!(ins.code(), iced_x86::Code::Pushfw | iced_x86::Code::Leavew) => {
+        // `pushf`, `popf` and `leave` with 66 move a word; they have no operand.
+        _ if matches!(
+            ins.code(),
+            iced_x86::Code::Pushfw | iced_x86::Code::Popfw | iced_x86::Code::Leavew
+        ) =>
+        {
             u16::BITS as u8
         }
         OpKind::Register => general(ins.op_register(0)).map_or(64, |g| g.width),

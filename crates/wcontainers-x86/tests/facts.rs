@@ -51,6 +51,11 @@ fn what_may_vary_between_cpus() {
         (&[0x0f, 0xae, 0x3b], false),
         (&[0xf3, 0x48, 0x0f, 0xae, 0xc0], false),
         (&[0xf3, 0x48, 0x0f, 0xae, 0xd8], false),
+        // Answered by design: rdtsc, rdtscp, cpuid; popf holds AC clear and does not step on TF.
+        (&[0x0f, 0x31], true),
+        (&[0x0f, 0x01, 0xf9], true),
+        (&[0x0f, 0xa2], true),
+        (&[0x9d], true),
         // Linux's 32-bit system call gates, general protection by design.
         (&[0xcd, 0x80], true),
         (&[0x0f, 0x34], true),

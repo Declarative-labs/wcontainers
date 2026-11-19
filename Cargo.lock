@@ -1542,6 +1542,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a611d15b50743feb4c76b7d03edcb0e64f399c26961e4efe6975bc398be6aa3d"
 
 [[package]]
+name = "raw-cpuid"
+version = "11.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "498cd0dc59d73224351ee52a95fee0f1a617a2eae0e7d9d720cc622c73a54186"
+dependencies = [
+ "bitflags",
+]
+
+[[package]]
 name = "rayon"
 version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2457,6 +2466,7 @@ name = "wcontainers-x86"
 version = "0.1.0"
 dependencies = [
  "iced-x86",
+ "raw-cpuid",
  "wasm-encoder 0.263.0",
  "wcontainers-abi",
  "wcontainers-guest-cpu",

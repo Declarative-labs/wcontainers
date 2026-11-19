@@ -668,12 +668,15 @@ fn the_x86_64_reference_refuses_what_linux_refuses() {
     assert_eq!((landed.signal, landed.code), STEP);
     assert_eq!(get(&landed, "rax"), data_word(0x40));
     let mut state = start();
-    state[at("gs_base")] = (1 << 47) - 0x2000;
+    state[at("gs_base")] = (wcontainers_x86::USER_END - 2 * wcontainers_abi::PAGE_SIZE).into();
     let landed = reference
         .case(&[0x90], SEED, &state)
         .expect("the runner")
         .landed();
-    assert_eq!(get(&landed, "gs_base"), (1 << 47) - 0x2000);
+    assert_eq!(
+        get(&landed, "gs_base"),
+        u128::from(wcontainers_x86::USER_END - 2 * wcontainers_abi::PAGE_SIZE)
+    );
 }
 
 /// A flat blob prints and exits with its status; another stops by its own illegal instruction, with its stop

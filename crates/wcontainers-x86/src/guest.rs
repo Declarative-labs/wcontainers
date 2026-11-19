@@ -18,9 +18,11 @@ pub enum Control {
     Rflags,
 }
 
-/// No hooks yet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Hook {}
+pub enum Hook {
+    /// `() -> i64`: the clock in nanoseconds, which `rdtsc` and `rdtscp` give as a 1 GHz counter.
+    Clock,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Trap {
@@ -42,7 +44,17 @@ pub enum Trap {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reason {
     AvxNotOffered,
+    AvxAskedAndToldNo,
     ThirtyTwoBitSystemCall,
+    StringCompared,
+    StringLoaded,
+    StringAddress32,
+    StringDirectionDown,
+    StringTrapFlag,
+    StringOverlap,
+    StringRangeNotAllowed,
+    TrapFlagNotStepped,
+    AlignmentCheckNotProvided,
 }
 
 /// What the container offers beyond the default claims: the AVX setting (x86-64-v3).
@@ -294,10 +306,19 @@ impl Guest for X86_64 {
     const FLOAT_CONTROLS: &'static [Control] = &[];
 
     type Hook = Hook;
-    const HOOKS: &'static [HookType] = &[];
+    const HOOKS: &'static [HookType] = &[HookType {
+        name: "clock",
+        params: &[],
+        results: &[ValType::I64],
+        registers: Registers::NONE,
+        state: StateBytes::NONE,
+        body: HookBody::Clock,
+    }];
 
     fn hook_index(h: Hook) -> usize {
-        match h {}
+        match h {
+            Hook::Clock => 0,
+        }
     }
 
     fn run_hook(hook: usize, _args: &[i64], _state: &mut [u8]) -> HookDone {
@@ -329,8 +350,45 @@ impl Guest for X86_64 {
             "an AVX instruction was reached while AVX is not offered",
         ),
         (
+            Reason::AvxAskedAndToldNo,
+            "a program asked whether AVX is available and was told no",
+        ),
+        (
             Reason::ThirtyTwoBitSystemCall,
             "32-bit system call from 64-bit code, not provided",
+        ),
+        (
+            Reason::StringCompared,
+            "rep cmps or scas, one element at a time: they stop on data",
+        ),
+        (Reason::StringLoaded, "rep lods, one element at a time"),
+        (
+            Reason::StringAddress32,
+            "rep string instruction with 32-bit addresses, one element at a time",
+        ),
+        (
+            Reason::StringDirectionDown,
+            "rep movs or stos with the direction flag set, one element at a time",
+        ),
+        (
+            Reason::StringTrapFlag,
+            "rep movs or stos with the trap flag set, one element at a time",
+        ),
+        (
+            Reason::StringOverlap,
+            "rep movs onto a destination inside its source, one element at a time",
+        ),
+        (
+            Reason::StringRangeNotAllowed,
+            "rep movs or stos over memory not all accessible, one element at a time",
+        ),
+        (
+            Reason::TrapFlagNotStepped,
+            "popf set the trap flag: single steps are not taken",
+        ),
+        (
+            Reason::AlignmentCheckNotProvided,
+            "alignment checking asked for, not provided",
         ),
     ];
 
@@ -451,6 +509,14 @@ impl Guest for X86_64 {
             OpKind::Register => Through::Register(general(ins.op_register(0)).unwrap().number),
             _ => Through::Memory,
         };
+        if is_string(i) && (ins.has_rep_prefix() || ins.has_repne_prefix()) {
+            // Each pass goes back to the instruction while elements remain.
+            return Flow {
+                falls_through: true,
+                target: Some(0),
+                kind: FlowKind::Plain,
+            };
+        }
         match ins.mnemonic() {
             Jmp if ins.op_kind(0) == OpKind::NearBranch64 => Flow {
                 falls_through: false,
@@ -553,6 +619,10 @@ impl Guest for X86_64 {
                 Some(through(RBP, 0, stack_bytes(i), AccessKind::Read)),
                 None,
             ],
+            Popf | Popfq => [
+                Some(through(RSP, 0, stack_bytes(i), AccessKind::Read)),
+                None,
+            ],
             Pop => {
                 let bytes = stack_bytes(i);
                 let pop = through(RSP, 0, bytes, AccessKind::Read);
@@ -607,7 +677,7 @@ impl Guest for X86_64 {
             },
             Pop if writes_rsp => StackMove::Unknown,
             Leave => StackMove::Unknown,
-            Pop => StackMove::By {
+            Pop | Popf | Popfq => StackMove::By {
                 delta: stack_bytes(i).into(),
                 before_access: false,
             },
@@ -757,6 +827,9 @@ impl Guest for X86_64 {
         }
         match ins.mnemonic() {
             Int => ins.immediate8() == crate::LINUX_32_BIT_SYSTEM_CALL,
+            // Answered by design: the clock, not the CPU's own counter; the claims and designed leaves, not the
+            // CPU's; AC held clear and TF not stepped.
+            Rdtsc | Rdtscp | Cpuid | Popf | Popfq => true,
             // Intel leaves the result of 16 bits undefined.
             Bswap => crate::meaning::width(i, 0) == crate::operand::W16,
             m => matches!(

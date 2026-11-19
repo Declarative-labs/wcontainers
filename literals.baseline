@@ -7460,13 +7460,11 @@ code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	case	40
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	case	40
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	case	5
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	case	6
-code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	case	6
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	case	64
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	case	64
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	case	64
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	case	64
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	case	64
-code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	case	7
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	case	7
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	case	8
 code	crates/wcontainers-translator-test/src/guest/x86_64.rs	int	case	8
@@ -8196,7 +8194,6 @@ code	crates/wcontainers-x86/src/lib.rs	int	X86Block	16
 code	crates/wcontainers-x86/src/lib.rs	int	X86Block	16
 code	crates/wcontainers-x86/src/meaning.rs	int	divide_128	12
 code	crates/wcontainers-x86/src/meaning.rs	int	high_product	6
-code	crates/wcontainers-x86/src/meaning.rs	int	string	-2
 code	crates/wcontainers-x86/src/operand.rs	int	general	16
 code	crates/wcontainers-x86/src/operand.rs	int	general	20
 code	crates/wcontainers-x86/src/operand.rs	int	general	21

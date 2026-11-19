@@ -3,9 +3,9 @@
 use crate::claims::{GROUP_AVX, GROUP_KERNEL, GROUP_NEVER};
 use crate::decode::{Instruction, claim_group};
 use crate::flags::{Flag, Flags, KEPT_BY_SHIFT, Unmoved};
-use crate::guest::{Control, Reason, Trap};
+use crate::guest::{Control, Hook, Reason, Trap};
 use crate::operand::*;
-use crate::{ALWAYS, ARITHMETIC_FLAGS, DF, X86_64};
+use crate::{ALIGNMENT_CHECK, ALWAYS, ARITHMETIC_FLAGS, DF, ID, NT, TF, X86_64};
 use iced_x86::{Mnemonic, OpKind};
 use wasm_encoder::{BlockType, ValType};
 use wcontainers_guest_cpu::{Access, Emitter, Target};
@@ -53,31 +53,29 @@ pub fn written(i: &Instruction) -> bool {
     let ins = &i.iced;
     let m = ins.mnemonic();
     if is_string(i) {
-        return !ins.has_rep_prefix()
-            && !ins.has_repne_prefix()
-            && matches!(
-                m,
-                Movsb
-                    | Movsw
-                    | Movsd
-                    | Movsq
-                    | Stosb
-                    | Stosw
-                    | Stosd
-                    | Stosq
-                    | Lodsb
-                    | Lodsw
-                    | Lodsd
-                    | Lodsq
-                    | Cmpsb
-                    | Cmpsw
-                    | Cmpsd
-                    | Cmpsq
-                    | Scasb
-                    | Scasw
-                    | Scasd
-                    | Scasq
-            );
+        return matches!(
+            m,
+            Movsb
+                | Movsw
+                | Movsd
+                | Movsq
+                | Stosb
+                | Stosw
+                | Stosd
+                | Stosq
+                | Lodsb
+                | Lodsw
+                | Lodsd
+                | Lodsq
+                | Cmpsb
+                | Cmpsw
+                | Cmpsd
+                | Cmpsq
+                | Scasb
+                | Scasw
+                | Scasd
+                | Scasq
+        );
     }
     if crate::simd::written(i) {
         return true;
@@ -99,7 +97,8 @@ pub fn written(i: &Instruction) -> bool {
                     | Btr | Btc | Jrcxz | Jecxz | Pushf | Pushfq | Leave | Bsf | Bsr | Tzcnt
                     | Lzcnt | Popcnt | Bswap | Movbe | Xadd | Cmpxchg | Cmpxchg8b | Cmpxchg16b
                     | Shld | Shrd | Adcx | Adox | Loop | Loope | Loopne | Lahf | Sahf | Clflush
-                    | Rdfsbase | Rdgsbase | Wrfsbase | Wrgsbase
+                    | Rdfsbase | Rdgsbase | Wrfsbase | Wrgsbase | Popf | Popfq | Rdtsc
+                    | Rdtscp | Cpuid
             ))
         // Far transfers through memory: a selector with the offset.
         && !(matches!(m, Call | Jmp) && is_memory(i, 0) && memory_bytes(i) != SLOT)
@@ -208,6 +207,9 @@ fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
             push_value(e, i, None, value);
         }
         Pop => pop(e, i),
+        Popf | Popfq => pop_flags(e, i),
+        Rdtsc | Rdtscp => time_stamp(e, m == Rdtscp),
+        Cpuid => cpuid(e),
         Leave => {
             // rsp = rbp, then pop rbp (bp with 66), the read checked before anything changes.
             let bytes = stack_bytes(i);
@@ -803,28 +805,66 @@ fn syscall<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
     e.syscall();
 }
 
-/// Movs, stos, lods, cmps and scas, one element.
+/// The bytes one bulk pass of `rep movs` or `rep stos` moves at most, so a stop waits for no more than this.
+pub const BULK_STRING_BYTES: u64 = 1 << 20;
+
+/// What each element of a string instruction does.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StringKind {
+    Move,
+    Store,
+    Load,
+    Compare,
+    Scan,
+}
+
+impl StringKind {
+    fn of(m: Mnemonic) -> Self {
+        use Mnemonic::*;
+        match m {
+            Movsb | Movsw | Movsd | Movsq => StringKind::Move,
+            Stosb | Stosw | Stosd | Stosq => StringKind::Store,
+            Lodsb | Lodsw | Lodsd | Lodsq => StringKind::Load,
+            Cmpsb | Cmpsw | Cmpsd | Cmpsq => StringKind::Compare,
+            _ => StringKind::Scan,
+        }
+    }
+
+    /// It reads at rsi.
+    fn source(self) -> bool {
+        matches!(
+            self,
+            StringKind::Move | StringKind::Load | StringKind::Compare
+        )
+    }
+
+    /// It reads or writes at rdi.
+    fn destination(self) -> bool {
+        self != StringKind::Load
+    }
+}
+
+/// Movs, stos, lods, cmps and scas: one element, or with a repeat prefix as many as rcx says.
 fn string<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
-    use Mnemonic::*;
-    let bytes = element_bytes(i);
-    let w = (bytes * u8::BITS) as u8;
-    let source = matches!(
-        m,
-        Movsb
-            | Movsw
-            | Movsd
-            | Movsq
-            | Lodsb
-            | Lodsw
-            | Lodsd
-            | Lodsq
-            | Cmpsb
-            | Cmpsw
-            | Cmpsd
-            | Cmpsq
-    );
-    let destination = !matches!(m, Lodsb | Lodsw | Lodsd | Lodsq);
-    let source_at = source.then(|| {
+    let kind = StringKind::of(m);
+    if i.iced.has_rep_prefix() || i.iced.has_repne_prefix() {
+        repeated_string(e, i, kind);
+        return;
+    }
+    let (source_at, destination_at) = string_addresses(e, i, kind);
+    if let Some(flags) = string_element(e, i, kind, source_at, destination_at) {
+        e.set_flags(flags);
+    }
+    string_advance(e, i, kind, None, None);
+}
+
+/// The addresses of an element: rsi with its segment base, and rdi.
+fn string_addresses<E: Emitter<X86_64> + ?Sized>(
+    e: &mut E,
+    i: &Instruction,
+    kind: StringKind,
+) -> (Option<u32>, Option<u32>) {
+    let source_at = kind.source().then(|| {
         let at = register_address(e, i, RSI, 0);
         if let Some(base) = segment(i) {
             e.get(base);
@@ -832,44 +872,58 @@ fn string<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) 
         }
         at
     });
-    let destination_at = destination.then(|| register_address(e, i, RDI, 0));
-    let writes = matches!(
-        m,
-        Movsb | Movsw | Movsd | Movsq | Stosb | Stosw | Stosd | Stosq
-    );
-    let destination_access = if writes { Access::Write } else { Access::Read };
+    let destination_at = kind.destination().then(|| register_address(e, i, RDI, 0));
+    (source_at, destination_at)
+}
+
+/// One element's checks and work, and for cmps and scas the flags it sets; rsi, rdi and rcx are left as
+/// they are.
+fn string_element<E: Emitter<X86_64> + ?Sized>(
+    e: &mut E,
+    i: &Instruction,
+    kind: StringKind,
+    source_at: Option<u32>,
+    destination_at: Option<u32>,
+) -> Option<Flags> {
+    let bytes = element_bytes(i);
+    let w = (bytes * u8::BITS) as u8;
+    let destination_access = if matches!(kind, StringKind::Move | StringKind::Store) {
+        Access::Write
+    } else {
+        Access::Read
+    };
     // The CPU's order: cmps reads [rdi] before [rsi]; movs reads [rsi] before writing [rdi].
     let mut checks = [
         source_at.map(|at| (at, Access::Read)),
         destination_at.map(|at| (at, destination_access)),
     ];
-    if matches!(m, Cmpsb | Cmpsw | Cmpsd | Cmpsq) {
+    if kind == StringKind::Compare {
         checks.reverse();
     }
     for (which, (at, access)) in checks.into_iter().flatten().enumerate() {
         e.check(at, bytes, access, which as u8);
     }
     let acc = accumulator(w);
-    match m {
-        Movsb | Movsw | Movsd | Movsq => {
+    match kind {
+        StringKind::Move => {
             let value = e.local(ValType::I64);
             load(e, source_at.unwrap(), bytes);
             e.sink().local_set(value);
             store(e, destination_at.unwrap(), bytes, value);
         }
-        Stosb | Stosw | Stosd | Stosq => {
+        StringKind::Store => {
             let value = e.local(ValType::I64);
             get_general(e, acc);
             e.sink().local_set(value);
             store(e, destination_at.unwrap(), bytes, value);
         }
-        Lodsb | Lodsw | Lodsd | Lodsq => {
+        StringKind::Load => {
             let value = e.local(ValType::I64);
             load(e, source_at.unwrap(), bytes);
             e.sink().local_set(value);
             set_general(e, acc, value);
         }
-        _ => {
+        StringKind::Compare | StringKind::Scan => {
             let (a, b) = (e.local(ValType::I64), e.local(ValType::I64));
             match source_at {
                 Some(at) => load(e, at, bytes),
@@ -885,7 +939,7 @@ fn string<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) 
                 .i64_sub()
                 .local_set(result);
             truncate(e, result, w);
-            e.set_flags(Flags::Sub {
+            return Some(Flags::Sub {
                 width: w,
                 a,
                 b,
@@ -895,32 +949,314 @@ fn string<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) 
             });
         }
     }
-    // Each register used moves by an element, down when DF is set.
+    None
+}
+
+/// Move rsi and rdi past one element, or past the count of them in the i64 local `elements`, down when DF
+/// is set; with `ran`, an i32 local, only when it is not zero.
+fn string_advance<E: Emitter<X86_64> + ?Sized>(
+    e: &mut E,
+    i: &Instruction,
+    kind: StringKind,
+    elements: Option<u32>,
+    ran: Option<u32>,
+) {
+    let bytes = element_bytes(i);
     let step = e.local(ValType::I64);
-    e.get_control(Control::Rflags);
     e.sink()
-        .i64_const(crate::DF.trailing_zeros().into())
-        .i64_shr_u()
-        .i64_const(1)
+        .i64_const(-i64::from(bytes))
+        .i64_const(bytes.into());
+    e.get_control(Control::Rflags);
+    let mut s = e.sink();
+    s.i64_const(DF as i64)
         .i64_and()
-        .i64_const(-2 * i64::from(bytes))
-        .i64_mul()
-        .i64_const(bytes.into())
-        .i64_add()
-        .local_set(step);
-    for (used, register) in [(source, RSI), (destination, RDI)] {
+        .i64_const(0)
+        .i64_ne()
+        .select();
+    if let Some(n) = elements {
+        s.local_get(n).i64_mul();
+    }
+    s.local_set(step);
+    for (used, number) in [(kind.source(), RSI), (kind.destination(), RDI)] {
         if used {
             let moved = e.local(ValType::I64);
-            e.get(register);
+            e.get(number);
             e.sink().local_get(step).i64_add().local_set(moved);
-            let g = General {
-                number: register,
-                width: if i.address32 { W32 } else { W64 },
-                high: false,
-            };
-            set_general(e, g, moved);
+            match ran {
+                // A 32-bit register left as it is, upper half and all, when no element ran.
+                Some(ran) if i.address32 => {
+                    e.sink().local_get(moved);
+                    e.sink().i64_const(mask(W32));
+                    e.sink().i64_and();
+                    e.get(number);
+                    e.sink().local_get(ran).select().local_set(moved);
+                    set_general(e, register(number, W64), moved);
+                }
+                _ => set_general(
+                    e,
+                    register(number, if i.address32 { W32 } else { W64 }),
+                    moved,
+                ),
+            }
         }
     }
+}
+
+/// A string instruction with a repeat prefix. Each pass ends on an element boundary with exact rcx, rsi
+/// and rdi and jumps back to the instruction while elements remain, so the stop check runs between passes
+/// and a stop can land between any two elements.
+fn repeated_string<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, kind: StringKind) {
+    let count_register = register(RCX, if i.address32 { W32 } else { W64 });
+    if i.address32 {
+        // With 32-bit addresses the reference writes ecx before anything else, and for movs and stos esi
+        // and edi too, clearing their upper halves even when no element is done.
+        let bulk = matches!(kind, StringKind::Move | StringKind::Store);
+        for (used, number) in [(true, RCX), (bulk && kind.source(), RSI), (bulk, RDI)] {
+            if used {
+                let g = register(number, W32);
+                let value = e.local(ValType::I64);
+                get_general(e, g);
+                e.sink().local_set(value);
+                set_general(e, g, value);
+            }
+        }
+    }
+    if matches!(kind, StringKind::Compare | StringKind::Scan) {
+        repeated_compare(e, i, kind, count_register);
+        return;
+    }
+    get_general(e, count_register);
+    e.sink().i64_eqz();
+    e.jump_if(Target::Relative(i.iced.len() as i64));
+    let elements = e.local(ValType::I64);
+    if kind != StringKind::Load && !i.address32 {
+        bulk_or_element(e, i, kind, elements);
+    } else {
+        e.warn(if kind == StringKind::Load {
+            Reason::StringLoaded
+        } else {
+            Reason::StringAddress32
+        });
+        let (source_at, destination_at) = string_addresses(e, i, kind);
+        string_element(e, i, kind, source_at, destination_at);
+        e.sink().i64_const(1).local_set(elements);
+    }
+    let left = e.local(ValType::I64);
+    get_general(e, count_register);
+    e.sink().local_get(elements).i64_sub().local_set(left);
+    set_general(e, count_register, left);
+    string_advance(e, i, kind, Some(elements), None);
+    e.sink().local_get(left).i64_const(0).i64_ne();
+    e.jump_if(Target::Relative(0));
+}
+
+/// `repe` and `repne` `cmps` and `scas`, one element a pass. The flags change only on the pass that ends
+/// the instruction: the reference CPU shows the flags from before it at a fault or a trap-flag stop part
+/// way, and a count of zero keeps them.
+fn repeated_compare<E: Emitter<X86_64> + ?Sized>(
+    e: &mut E,
+    i: &Instruction,
+    kind: StringKind,
+    count_register: General,
+) {
+    e.warn(Reason::StringCompared);
+    let old = each_with(e, &[]);
+    let ran = e.local(ValType::I32);
+    get_general(e, count_register);
+    e.sink()
+        .i64_eqz()
+        .i32_eqz()
+        .local_tee(ran)
+        .if_(BlockType::Empty);
+    let (source_at, destination_at) = string_addresses(e, i, kind);
+    let flags = string_element(e, i, kind, source_at, destination_at).expect("a compare");
+    e.sink().end();
+    let Flags::Sub { result, .. } = flags else {
+        unreachable!("a compare's flags")
+    };
+    let (elements, left) = (e.local(ValType::I64), e.local(ValType::I64));
+    get_general(e, count_register);
+    e.sink()
+        .local_get(ran)
+        .i64_extend_i32_u()
+        .local_tee(elements)
+        .i64_sub()
+        .local_set(left);
+    set_general(e, count_register, left);
+    string_advance(e, i, kind, Some(elements), Some(ran));
+    // It ends when the count runs out, or when repe finds a difference or repne an equal pair.
+    let ends = e.local(ValType::I32);
+    {
+        let mut s = e.sink();
+        s.local_get(left).i64_eqz().local_get(result).i64_eqz();
+        if !i.iced.has_repne_prefix() {
+            s.i32_eqz();
+        }
+        s.i32_or().local_get(ran).i32_and().local_set(ends);
+    }
+    let each = Flag::ALL.map(|_| e.local(ValType::I32));
+    for (k, flag) in Flag::ALL.into_iter().enumerate() {
+        crate::flags::flag_value(&mut e.sink(), flags, flag);
+        e.sink()
+            .local_get(old[k])
+            .local_get(ends)
+            .select()
+            .local_set(each[k]);
+    }
+    e.set_flags(Flags::Each(each));
+    e.sink().local_get(ran).local_get(ends).i32_eqz().i32_and();
+    e.jump_if(Target::Relative(0));
+}
+
+/// The bulk pass of `rep movs` and `rep stos` when it gives what elements one at a time would (DF and TF
+/// clear, no copy onto a destination starting inside its source, every byte of both ranges allowed), else
+/// one element counted with the reason. Leaves the elements done in the i64 local `elements`.
+fn bulk_or_element<E: Emitter<X86_64> + ?Sized>(
+    e: &mut E,
+    i: &Instruction,
+    kind: StringKind,
+    elements: u32,
+) {
+    let bytes = element_bytes(i);
+    let (source_at, destination_at) = string_addresses(e, i, kind);
+    let destination = destination_at.expect("a destination");
+    let most = (BULK_STRING_BYTES / u64::from(bytes)) as i64;
+    let count = e.local(ValType::I64);
+    get_general(e, register(RCX, W64));
+    let length = e.local(ValType::I64);
+    e.sink()
+        .local_tee(count)
+        .i64_const(most)
+        .local_get(count)
+        .i64_const(most)
+        .i64_lt_u()
+        .select()
+        .local_tee(elements)
+        .i64_const(bytes.into())
+        .i64_mul()
+        .local_set(length);
+    let rflags = e.local(ValType::I64);
+    e.get_control(Control::Rflags);
+    e.sink().local_set(rflags);
+    // A forward copy onto a destination 1 to length - 1 bytes above its source repeats what it wrote.
+    let overlap = e.local(ValType::I32);
+    match source_at {
+        Some(source) => e
+            .sink()
+            .local_get(destination)
+            .local_get(source)
+            .i64_sub()
+            .i64_const(1)
+            .i64_sub()
+            .local_get(length)
+            .i64_const(1)
+            .i64_sub()
+            .i64_lt_u()
+            .local_set(overlap),
+        None => e.sink().i32_const(0).local_set(overlap),
+    };
+    let readable = source_at.map(|at| e.check_range(at, length, Access::Read));
+    let writable = e.check_range(destination, length, Access::Write);
+    {
+        let mut s = e.sink();
+        s.local_get(rflags)
+            .i64_const((DF | TF) as i64)
+            .i64_and()
+            .i64_eqz()
+            .local_get(overlap)
+            .i32_eqz()
+            .i32_and()
+            .local_get(writable)
+            .i32_and();
+        if let Some(readable) = readable {
+            s.local_get(readable).i32_and();
+        }
+        s.if_(BlockType::Empty);
+    }
+    match source_at {
+        Some(source) => {
+            e.sink()
+                .local_get(destination)
+                .local_get(source)
+                .local_get(length)
+                .memory_copy(GUEST_MEMORY, GUEST_MEMORY);
+        }
+        None => bulk_store(e, i, destination, length),
+    }
+    e.sink().else_();
+    for (bit, reason) in [
+        (DF, Reason::StringDirectionDown),
+        (TF, Reason::StringTrapFlag),
+    ] {
+        e.sink()
+            .local_get(rflags)
+            .i64_const(bit as i64)
+            .i64_and()
+            .i64_const(0)
+            .i64_ne()
+            .if_(BlockType::Empty);
+        e.warn(reason);
+        e.sink().else_();
+    }
+    e.sink().local_get(overlap).if_(BlockType::Empty);
+    e.warn(Reason::StringOverlap);
+    e.sink().else_();
+    e.warn(Reason::StringRangeNotAllowed);
+    e.sink().end().end().end();
+    string_element(e, i, kind, source_at, destination_at);
+    e.sink().i64_const(1).local_set(elements).end();
+}
+
+/// `rep stos` over a checked range: one fill when the value is one byte repeated (every `stosb`, and zero),
+/// else a store of each element.
+fn bulk_store<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, at: u32, length: u32) {
+    let bytes = element_bytes(i);
+    let w = (bytes * u8::BITS) as u8;
+    let value = e.local(ValType::I64);
+    get_general(e, accumulator(w));
+    e.sink().local_set(value);
+    let repeated = (u64::MAX / u64::from(u8::MAX)) as i64 & mask(w);
+    let fill = |e: &mut E| {
+        e.sink()
+            .local_get(at)
+            .local_get(value)
+            .i32_wrap_i64()
+            .local_get(length)
+            .memory_fill(GUEST_MEMORY);
+    };
+    if w == W8 {
+        fill(e);
+        return;
+    }
+    e.sink()
+        .local_get(value)
+        .i64_const(u8::MAX.into())
+        .i64_and()
+        .i64_const(repeated)
+        .i64_mul()
+        .local_get(value)
+        .i64_eq()
+        .if_(BlockType::Empty);
+    fill(e);
+    e.sink().else_();
+    let end = e.local(ValType::I64);
+    e.sink()
+        .local_get(at)
+        .local_get(length)
+        .i64_add()
+        .local_set(end)
+        .loop_(BlockType::Empty);
+    store(e, at, bytes, value);
+    e.sink()
+        .local_get(at)
+        .i64_const(bytes.into())
+        .i64_add()
+        .local_tee(at)
+        .local_get(end)
+        .i64_lt_u()
+        .br_if(0)
+        .end()
+        .end();
 }
 
 /// The bits of a shift's count the CPU uses at width `w`: six at 64 bits, else five.
@@ -2456,6 +2792,169 @@ fn load_flags<E: Emitter<X86_64> + ?Sized>(e: &mut E) {
         },
         value,
     );
+}
+
+/// `cpuid`: eax, ebx, ecx and edx from the table of [`crate::cpuid`] by the leaf in eax and the sub-leaf in
+/// ecx, their upper halves cleared.
+fn cpuid<E: Emitter<X86_64> + ?Sized>(e: &mut E) {
+    use crate::cpuid::{EXTENDED, MAX_BASIC, MAX_EXTENDED};
+    let avx = e.offer().avx;
+    let (leaf, sub_leaf) = (e.local(ValType::I32), e.local(ValType::I32));
+    get_general(e, register(RCX, W32));
+    e.sink().i32_wrap_i64().local_set(sub_leaf);
+    get_general(e, register(RAX, W32));
+    // Above the highest basic or extended leaf, the highest basic one.
+    e.sink().i32_wrap_i64().local_set(leaf);
+    e.sink()
+        .i32_const(MAX_BASIC as i32)
+        .local_get(leaf)
+        .local_get(leaf)
+        .i32_const(MAX_BASIC as i32)
+        .i32_gt_u()
+        .local_get(leaf)
+        .i32_const(EXTENDED as i32)
+        .i32_lt_u()
+        .i32_and()
+        .local_get(leaf)
+        .i32_const(MAX_EXTENDED as i32)
+        .i32_gt_u()
+        .i32_or()
+        .select()
+        .local_set(leaf);
+    if !avx {
+        e.sink()
+            .local_get(leaf)
+            .i32_const(crate::cpuid::FEATURES_LEAF as i32)
+            .i32_eq()
+            .local_get(leaf)
+            .i32_const(crate::cpuid::EXTENDED_FEATURES_LEAF as i32)
+            .i32_eq()
+            .local_get(sub_leaf)
+            .i32_eqz()
+            .i32_and()
+            .i32_or()
+            .if_(BlockType::Empty);
+        e.warn(Reason::AvxAskedAndToldNo);
+        e.sink().end();
+    }
+    let out = [(); crate::cpuid::OUTPUTS].map(|_| e.local(ValType::I32));
+    let set = |e: &mut E, answer: crate::cpuid::Registers| {
+        let mut s = e.sink();
+        for (local, value) in out.iter().zip(answer) {
+            s.i32_const(value as i32).local_set(*local);
+        }
+    };
+    for l in crate::cpuid::leaves() {
+        e.sink()
+            .local_get(leaf)
+            .i32_const(l as i32)
+            .i32_eq()
+            .if_(BlockType::Empty);
+        let subs = crate::cpuid::sub_leaves(l);
+        set(e, crate::cpuid::answer(avx, l, subs));
+        if crate::cpuid::echoes_sub_leaf(l) {
+            e.sink()
+                .local_get(sub_leaf)
+                .i32_const(u8::MAX.into())
+                .i32_and()
+                .local_set(out[crate::cpuid::ECX]);
+        }
+        for sub in 0..subs {
+            e.sink()
+                .local_get(sub_leaf)
+                .i32_const(sub as i32)
+                .i32_eq()
+                .if_(BlockType::Empty);
+            set(e, crate::cpuid::answer(avx, l, sub));
+            e.sink().end();
+        }
+        e.sink().end();
+    }
+    for (number, local) in [RAX, RBX, RCX, RDX].into_iter().zip(out) {
+        let value = e.local(ValType::I64);
+        e.sink()
+            .local_get(local)
+            .i64_extend_i32_u()
+            .local_set(value);
+        set_general(e, register(number, W64), value);
+    }
+}
+
+/// `rdtsc`: edx:eax the clock hook's nanoseconds, a 1 GHz counter; `rdtscp` also ecx 0, the processor
+/// number, which a guest thread does not know.
+fn time_stamp<E: Emitter<X86_64> + ?Sized>(e: &mut E, processor: bool) {
+    let (time, low, high) = (
+        e.local(ValType::I64),
+        e.local(ValType::I64),
+        e.local(ValType::I64),
+    );
+    e.hook(Hook::Clock);
+    e.sink()
+        .local_tee(time)
+        .i64_const(mask(W32))
+        .i64_and()
+        .local_set(low)
+        .local_get(time)
+        .i64_const(W32.into())
+        .i64_shr_u()
+        .local_set(high);
+    set_general(e, register(RAX, W64), low);
+    set_general(e, register(RDX, W64), high);
+    if processor {
+        let zero = e.local(ValType::I64);
+        e.sink().i64_const(0).local_set(zero);
+        set_general(e, register(RCX, W64), zero);
+    }
+}
+
+/// The bits outside the six flags that `popf` writes at CPL 3; it leaves IOPL, IF, RF, VIF and VIP, and AC
+/// is never held (section 5.1 of the plan).
+const POPPED_CONTROL: u64 = TF | DF | NT | ID;
+
+/// `popf`: the six flags and TF, DF, NT and ID from the stack, of them only the low 16 bits with 66.
+fn pop_flags<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
+    let bytes = stack_bytes(i);
+    let from = e.local(ValType::I64);
+    e.get(RSP);
+    e.sink().local_set(from);
+    e.check(from, bytes, Access::Read, 0);
+    let value = e.local(ValType::I64);
+    load(e, from, bytes);
+    e.sink().local_set(value);
+    e.sink().local_get(from).i64_const(bytes.into()).i64_add();
+    e.set(RSP);
+    let written = (POPPED_CONTROL as i64) & mask((bytes * u8::BITS) as u8);
+    e.get_control(Control::Rflags);
+    e.sink()
+        .i64_const(!written)
+        .i64_and()
+        .local_get(value)
+        .i64_const(written)
+        .i64_and()
+        .i64_or();
+    e.set_control(Control::Rflags);
+    for (bit, reason) in [
+        (TF, Reason::TrapFlagNotStepped),
+        (ALIGNMENT_CHECK, Reason::AlignmentCheckNotProvided),
+    ] {
+        e.sink()
+            .local_get(value)
+            .i64_const(bit as i64)
+            .i64_and()
+            .i64_const(0)
+            .i64_ne()
+            .if_(BlockType::Empty);
+        e.warn(reason);
+        e.sink().end();
+    }
+    let word = e.local(ValType::I32);
+    e.sink()
+        .local_get(value)
+        .i32_wrap_i64()
+        .i32_const(ARITHMETIC_FLAGS as i32)
+        .i32_and()
+        .local_set(word);
+    e.set_flags(Flags::Packed(word));
 }
 
 /// `sahf`: SF, ZF, AF, PF and CF from ah; OF as it was.
