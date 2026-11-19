@@ -101,7 +101,7 @@ impl Buffer {
         Buffer {
             front: Locked::new(front),
             child: Child::new(device),
-            priority: Cell::new(NORMAL_PRIORITY),
+            priority: Cell::new(DXGI_RESOURCE_PRIORITY_NORMAL.0),
         }
     }
 
@@ -143,9 +143,6 @@ impl Buffer {
     }
 }
 
-/// The eviction priority of a new resource, `DXGI_RESOURCE_PRIORITY_NORMAL`.
-const NORMAL_PRIORITY: u32 = 0x7800_0000;
-
 /// DXGI's usage of a resource of these bind flags.
 fn dxgi_usage(bind: u32) -> DXGI_USAGE {
     let mut u = 0;
@@ -184,7 +181,7 @@ macro_rules! texture {
                 $name {
                     front: Locked::new(front),
                     child: Child::new(device),
-                    priority: Cell::new(NORMAL_PRIORITY),
+                    priority: Cell::new(DXGI_RESOURCE_PRIORITY_NORMAL.0),
                     dc: Cell::new(None),
                 }
             }

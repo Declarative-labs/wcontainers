@@ -134,7 +134,7 @@ unsafe fn ours(riid: *const GUID, out: *mut *mut c_void) -> HRESULT {
     let Some(caps) = super::caps() else {
         return DXGI_ERROR_UNSUPPORTED;
     };
-    let factory: IDXGIFactory6 = Factory::new(Adapter::new(caps).into()).into();
+    let factory: IDXGIFactory6 = Factory::new(Adapter::new(caps, false).into()).into();
     // SAFETY: both pointers were checked and come from the caller.
     unsafe { factory.query(riid, out) }
 }
