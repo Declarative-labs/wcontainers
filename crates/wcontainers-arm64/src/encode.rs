@@ -56,9 +56,12 @@ pub mod form {
     pub const CASP: &str = "CASP_CP64_comswappr";
     pub const HVC: &str = "HVC_EX_exception";
     pub const ERET: &str = "ERET_64E_branch_reg";
+    pub const STR_Q: &str = "STR_Q_ldst_pos";
+    pub const MRS: &str = "MRS_RS_systemmove";
+    pub const MSR: &str = "MSR_SR_systemmove";
 
     /// Every form above.
-    pub const ALL: [&str; 44] = [
+    pub const ALL: [&str; 47] = [
         MOVZ,
         MOVK,
         UBFM,
@@ -103,6 +106,9 @@ pub mod form {
         CASP,
         HVC,
         ERET,
+        STR_Q,
+        MRS,
+        MSR,
     ];
 }
 
@@ -502,4 +508,56 @@ pub fn exception_return() -> u32 {
 /// `brk #imm16`, `udf #imm16` or `hvc #imm16`, by form.
 pub fn exception(name: &str, imm16: u16) -> u32 {
     word(name, &[(field::IMM16, imm16.into())]).expect("the immediate fits its field")
+}
+
+/// The moves of the float status registers between them and general register `rt`, found by trying every
+/// system register a move can name and keeping those the native routing and stops single out, so no system
+/// register number is written here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FloatStatusMoves {
+    pub read_fpsr: u32,
+    pub read_fpcr: u32,
+    pub write_fpsr: u32,
+    pub write_fpcr: u32,
+}
+
+/// The one word of `form_name` with register `rt` that `wanted` picks out of all its system registers.
+fn only_move(
+    form_name: &str,
+    rt: Register,
+    wanted: impl Fn(&crate::instruction::Instruction) -> bool,
+) -> u32 {
+    let form = table()[form_name];
+    let (rt_low, rt_width) = field_of(form_name, field::RT);
+    let mut found = (0..=!form.mask)
+        .step_by(1 << (rt_low + rt_width))
+        .map(|free| form.word(free) | (u32::from(rt) << rt_low))
+        .filter(|&word| form.presented(word) && wanted(&crate::decode::decode(word)));
+    let word = found.next().expect("a move of the register");
+    assert_eq!(found.next(), None, "one move of the register");
+    word
+}
+
+impl FloatStatusMoves {
+    pub fn with(rt: Register) -> FloatStatusMoves {
+        use wcontainers_guest_cpu::{Native, Route, Stopping};
+        let float_status = |i: &_| <Arm64 as Native>::route(i) == Route::FloatStatus;
+        let status_write = |i: &_| <Arm64 as Native>::stopping(i, 0) == Stopping::FloatStatusWrite;
+        let write_fpsr = only_move(form::MSR, rt, status_write);
+        let write_fpcr = only_move(form::MSR, rt, |i| float_status(i) && !status_write(i));
+        let read_fpsr = only_move(form::MRS, rt, float_status);
+        let mrs = table()[form::MRS];
+        let msr = table()[form::MSR];
+        let read_fpcr = mrs.word(write_fpcr & !msr.mask);
+        assert!(
+            mrs.presented(read_fpcr),
+            "the read of the register FPCR's write names"
+        );
+        FloatStatusMoves {
+            read_fpsr,
+            read_fpcr,
+            write_fpsr,
+            write_fpcr,
+        }
+    }
 }
