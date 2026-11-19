@@ -63,7 +63,8 @@ fn translate(link: &mut Link, look_ahead: LookAhead) {
 mod tests {
     use std::collections::BTreeSet;
 
-    use wcontainers_arm64::Arm64;
+    use wcontainers_abi::PAGE_SIZE;
+    use wcontainers_arm64::{Arm64, encode};
     use wcontainers_guest_cpu::Guest;
     use wcontainers_inside::link::Link;
     use wcontainers_inside::translation::{self, Translate};
@@ -140,7 +141,7 @@ mod tests {
     #[test]
     fn pieces_hold_loops_and_leave_calls() {
         let at = 0x40_1000;
-        let step = u64::from(Arm64::MAX_LENGTH);
+        let step = Arm64::MAX_LENGTH;
         let looping = [
             0xd100_0400u32, // sub x0, x0, #1
             0xb5ff_ffe0,    // cbnz x0, . - 4
@@ -149,13 +150,11 @@ mod tests {
         let (held, exits) = shape(&looping, at);
         assert_eq!(held, BTreeSet::from([at, at + step]));
         assert_eq!(exits, BTreeSet::from([at + 2 * step]));
-        let calling = [
-            0x9400_0040u32, // bl . + 0x100
-            0xd65f_03c0,    // ret
-        ];
-        let (held, exits) = shape(&calling, at);
+        let page = i64::try_from(PAGE_SIZE).expect("a page fits i64");
+        let call = encode::branch(true, page).expect("a call to the next page");
+        let (held, exits) = shape(&[call, looping[2]], at);
         assert_eq!(held, BTreeSet::from([at]));
-        assert_eq!(exits, BTreeSet::from([at + 0x100]));
+        assert_eq!(exits, BTreeSet::from([at + PAGE_SIZE]));
     }
 
     /// An answer whose position map does not decode fails loudly, never as the guest's illegal instruction.
