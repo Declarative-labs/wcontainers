@@ -154,53 +154,45 @@ fn make_child(
         }
         return Ok(child);
     }
-    let child = kernel.allocate_id(cx)?;
-    let parent = &kernel.processes[&pid];
     // The memory: a copy, or for vfork the parent's own until the child lets go of it.
     let borrow = flags & CLONE_VM != 0;
-    let memory = if borrow {
-        parent.memory
+    let parent = &kernel.processes[&pid];
+    let (memory, map) = if borrow {
+        (parent.memory, parent.map.clone())
     } else {
-        cx.cpu
+        let memory = cx
+            .cpu
             .memory_duplicate(parent.memory)
-            .map_err(|error| cx.cpu_error(error))?
-    };
-    let map = if borrow {
-        parent.map.clone()
-    } else {
-        let mut map = parent.map.borrow().clone();
-        // `dup_mmap`: what the child does not get goes, what it gets wiped is zeroed, and nothing
-        // stays locked.
-        let mappings: alloc::vec::Vec<_> = map.iter().cloned().collect();
-        for mapping in mappings {
-            let wipe = mapping.on_fork.wipe
-                || matches!(mapping.backing, crate::memory::Backing::Droppable);
-            let length = mapping.end - mapping.start;
-            if mapping.on_fork.skip {
-                map.remove(mapping.start, mapping.end);
-                cx.cpu
-                    .set_permissions(
-                        memory,
-                        mapping.start,
-                        length,
-                        wcontainers_abi::Permissions::empty(),
-                    )
-                    .map_err(errno::from_cpu)?;
-                cx.cpu
-                    .zero(memory, mapping.start, length)
-                    .map_err(errno::from_cpu)?;
-            } else if wipe {
-                cx.cpu
-                    .zero(memory, mapping.start, length)
-                    .map_err(errno::from_cpu)?;
-                map.forget_watches(cx.cpu, memory, mapping.start, mapping.end);
+            .map_err(|error| cx.cpu_error(error))?;
+        match copy_map(cx.cpu, &parent.map.borrow(), memory) {
+            Ok(map) => (memory, alloc::rc::Rc::new(core::cell::RefCell::new(map))),
+            Err(error) => {
+                cx.cpu.memory_drop(memory);
+                return Err(error);
             }
         }
-        map.set_lock_all(Lock::None);
-        map.future_lock = Lock::None;
-        map.start_child(cx.cpu, memory);
-        alloc::rc::Rc::new(core::cell::RefCell::new(map))
     };
+    // As `copy_process`, the number is taken last, so no failure before it holds one.
+    let made = match cx.cpu.thread_new(memory) {
+        Ok(thread_cpu) => match kernel.allocate_id(cx) {
+            Ok(child) => Ok((thread_cpu, child)),
+            Err(error) => {
+                cx.cpu.thread_drop(thread_cpu);
+                Err(error)
+            }
+        },
+        Err(error) => Err(cx.cpu_error(error)),
+    };
+    let (thread_cpu, child) = match made {
+        Ok(made) => made,
+        Err(error) => {
+            if !borrow {
+                cx.cpu.memory_drop(memory);
+            }
+            return Err(error);
+        }
+    };
+    let parent = &kernel.processes[&pid];
     let mut process = parent.clone();
     if flags & CLONE_SIGHAND == 0 {
         let actions = *process.actions.borrow();
@@ -234,10 +226,6 @@ fn make_child(
         process.parent_thread = tid;
         process.exit_signal = exit_signal;
     }
-    let thread_cpu = cx
-        .cpu
-        .thread_new(memory)
-        .map_err(|error| cx.cpu_error(error))?;
     let mut registers = RegisterBlock::ZERO;
     cx.cpu.registers(kernel.threads[&tid].cpu, &mut registers);
     registers.x[0] = 0;
@@ -291,6 +279,42 @@ fn make_child(
     Ok(child)
 }
 
+/// `dup_mmap`: a fork's child's map over its copy of the memory. What the child does not get goes,
+/// what it gets wiped is zeroed, and nothing stays locked.
+fn copy_map(
+    cpu: &mut dyn wcontainers_abi::Cpu,
+    parent: &crate::memory::AddressMap,
+    memory: wcontainers_abi::MemoryId,
+) -> Result<crate::memory::AddressMap, Errno> {
+    let mut map = parent.clone();
+    let mappings: alloc::vec::Vec<_> = map.iter().cloned().collect();
+    for mapping in mappings {
+        let wipe =
+            mapping.on_fork.wipe || matches!(mapping.backing, crate::memory::Backing::Droppable);
+        let length = mapping.end - mapping.start;
+        if mapping.on_fork.skip {
+            map.remove(mapping.start, mapping.end);
+            cpu.set_permissions(
+                memory,
+                mapping.start,
+                length,
+                wcontainers_abi::Permissions::empty(),
+            )
+            .map_err(errno::from_cpu)?;
+            cpu.zero(memory, mapping.start, length)
+                .map_err(errno::from_cpu)?;
+        } else if wipe {
+            cpu.zero(memory, mapping.start, length)
+                .map_err(errno::from_cpu)?;
+            map.forget_watches(cpu, memory, mapping.start, mapping.end);
+        }
+    }
+    map.set_lock_all(Lock::None);
+    map.future_lock = Lock::None;
+    map.start_child(cpu, memory);
+    Ok(map)
+}
+
 /// `copy_files` and `copy_fs`: a new thread or process shares its maker's descriptor table and file
 /// system context when the flags say so, and otherwise has copies of its own.
 fn share_or_copy(thread: &mut crate::process::Thread, flags: u32, child: Tid) {
@@ -322,7 +346,13 @@ fn make_thread(
         .cpu
         .thread_new(memory)
         .map_err(|error| cx.cpu_error(error))?;
-    let child = kernel.allocate_id(cx)?;
+    let child = match kernel.allocate_id(cx) {
+        Ok(child) => child,
+        Err(error) => {
+            cx.cpu.thread_drop(thread_cpu);
+            return Err(error);
+        }
+    };
     let mut registers = RegisterBlock::ZERO;
     cx.cpu.registers(kernel.threads[&tid].cpu, &mut registers);
     registers.x[0] = 0;
