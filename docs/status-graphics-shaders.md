@@ -2079,6 +2079,9 @@ jobs, load not taken), logs in scratch `graphics-shaders/run39`:
   1, two line cases one texel each at a clipped line end.
 - Laptop, every corpus with glslang (corpus2.txt, then suite1.txt and suite2.txt after the record
   update): all pass but the runner corpus's known `distance-4`.
+- Clean-up at the end: the laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders`
+  (5.3 GB) and the desktop's `C:\wc\target\phase-2-graphics-shaders` and
+  `C:\wc\scratch-shaders-out` deleted; no build folder was made on the Mac or in scratch.
 - Desktop, after the sweep step: Windows lint clean (winlint2.txt), then the whole suite as one
   GPU job (`cargo test -p wcontainers-shaders --no-fail-fast -- --test-threads 1 --skip mutated`,
   suite-gpu.txt): 21 test binaries, all pass.
@@ -2978,7 +2981,9 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   back with scp (its output is long). It runs on the desktop because the laptop's git 2.25 lacks an
   `ls-files` option it uses. Never run `remote` while one of this branch's GPU jobs waits in the
   queue: it changes the desktop's tree and the waiting job then stops ("holds tree ..., not the
-  sent ..."). Lines it prints with `-` are to be deleted from `literals.baseline`.
+  sent ..."). Lines it prints with `-` are to be deleted from `literals.baseline`. The desktop's
+  copy `C:\wc\src\phase-2-graphics-shaders` has `core.autocrlf` set to false (run 39): with
+  Windows line ends the check reads multi-line strings differently and fails on other crates'.
 - A GPU job running several test binaries needs `--no-fail-fast`, or the first failing binary
   ends the job before the others run.
 - Linux laptop (no GPU), one command from the Mac: `tools/graphics-rig/linux <command>`. It copies the
