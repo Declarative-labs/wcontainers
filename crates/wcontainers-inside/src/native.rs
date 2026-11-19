@@ -870,14 +870,18 @@ impl NativeCpu {
             self.slow(EXACT_FLOATING_POINT_REQUESTED, not_kept, t.state.pc);
         }
         self.stops += 1;
-        self.positions.write_u64(t.state.count);
-        self.positions.write_u64(t.state.pc);
+        if !matches!(exit, Exit::MemoryFaultWithoutRegisters) {
+            self.positions.write_u64(t.state.count);
+            self.positions.write_u64(t.state.pc);
+        }
         self.threads.insert(thread, t);
         exit
     }
 
     /// How many times a thread stopped, and a hash of each stop's position (its count and pc) in order: the
-    /// same under every look-ahead, since the count is defined on the guest's instructions alone.
+    /// same under every look-ahead, since the count is defined on the guest's instructions alone. A stop where
+    /// guest-physical memory ran out has no position in it: where that happens depends on what the inside holds
+    /// for itself, which the look-ahead changes.
     pub fn positions(&self) -> (u64, u64) {
         (self.stops, self.positions.finish())
     }
