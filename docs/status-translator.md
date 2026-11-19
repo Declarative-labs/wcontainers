@@ -97,6 +97,16 @@ The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three laye
   Before stopping the driver by hand, stop it too (`stop-after-chunk.sh` now does so first), or it starts
   the driver again two minutes later. Match the driver as `pgrep -f '^bash [^ ]*/long-runs\.sh$'`: the
   looser pattern above also matches any shell whose command text holds the name.
+- Rented ARM64 machine (AWS Graviton4, Linux 7.0.0-1017-aws; manual in the orchestrator's scratch
+  `cloud/arm-machine.md`): from 2026-11-19 03:00 a separate agent of the orchestrator ran layer 3 chunks
+  there from the top down, at the driver's commit e8677a0, and appended passed ones to the same ledger in
+  the driver's format with an 11th field `ran=rented ARM64 Linux machine ...` (the driver skips them; their
+  `seconds` and `load` are that machine's). Its notes, logs and table: scratch `translator/p2/arm`
+  (`README.md`, `chunks.tsv`). It first ran chunk 152 there with the Mac's verdicts in every field (not in
+  the ledger). In the ledger from there: chunks 198, 199 and 200 (441, 448 and 426 compared, 0 mismatches).
+  Chunk 197 was lost when the spot machine was taken away at 04:08 (no ledger line; the driver runs it when
+  it gets there). At 04:15 the machine could not be reached (`arm-run --status`) and its down loop had
+  stopped.
 - Disk: each copy's `trees/<commit>/target/programs` keeps every built program, about 330 MB a chunk
   (the copy of 445e3cf had 19 GB after 54 chunks). After a restart, delete `trees/<old commit>/target` of
   every copy no longer running (done 2026-11-18 18:50: 48 GB freed; sources and logs kept).
@@ -142,6 +152,9 @@ Progress (from the ledger):
   6a705f8 18 (chunks 133 and 136 to 152). On 99eda5e and 6a705f8 chunks took 671 to 1,819 s at load 25
   to 152. The remaining about 33,500 compared are about 77 chunks; at about 16 minutes a chunk (the pace
   from 21:17 to 02:05) that is about 21 hours once Docker is back (an extrapolation).
+- Layer 3 at 2026-11-19 04:15: 155 chunks passed, 67,820 compared, 0 mismatches of the translator: chunks
+  1 to 152 on the Mac as above, and 198 to 200 on the rented machine. Docker on the Mac down since 02:52,
+  the rented machine gone since 04:08, so nothing runs.
 - 46 to 82 of each chunk's 500 programs (9 to 16 percent) do not end on Linux within the reference's 20 s
   alarm and are not compared (counted in `sample`). Across chunks 1 to 30 the count does not follow the load
   at the chunk's start (47 at load 65, 82 at load 13), so it is Csmith's programs that loop or run long,
@@ -2607,6 +2620,13 @@ contract's bits, in both runners).
 - Layer 1 checks only words the CPU we present has. Whether undefined words really raise SIGILL on a CPU
   without the feature is checked against Arm's list, not against a CPU (the reference CPU has newer
   features than the one we present).
+- Layer 1 differs on the rented Graviton4 in two forms (found by the orchestrator's setup): `MSR FPSR`
+  keeps bits 28 and 29 there, and `CPP RCTX` runs there. Both are reference differences, not something
+  left undefined: the CPU we present is 64 bit only at EL0 (`ID_AA64PFR0_EL1` EL0 field 1), where FPSR's
+  bits 31 to 28 are reserved, and keeps only `FPSR_BITS` (reads zero, writes ignored, one of the two
+  behaviours Arm allows a reserved bit, and the M5's); it has no `FEAT_SPECRES` (not in
+  `OFFERED_FEATURES`), so `CPP RCTX` is an undefined instruction, as on the M5. The Graviton has
+  `FEAT_SPECRES` and keeps those bits, so layer 1 runs on the Mac. Read from the code, not run.
 
 ## Departures from the plan
 
