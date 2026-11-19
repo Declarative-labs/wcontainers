@@ -1620,7 +1620,6 @@ code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::draw_
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::draw_staged	"a geometry shader reading helper constants"
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::draw_staged	"a vertex shader variant behind a geometry shader"
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::draw_staged	"an indirect draw through a geometry shader or stream output"
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::make_staged	"clip distances from a domain shader before a geometry shader, without the \\n                         back end's"
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::run_staged	"a pixel shader reading helper constants behind a domain shader"
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::run_staged	"storage textures read through buffers behind a geometry shader"
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::run_staged	"storage textures read through buffers behind a hull shader"
