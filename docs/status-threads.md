@@ -1,10 +1,116 @@
 # Status of the parallel-threads plan
 
 2026-11-18. The plan is docs/threads.md. Nothing is built. The plan was written, checked by an independent
-agent, corrected for that check's nine findings, checked again, and corrected for the second check's ten
-findings (both lists below). It stops here until the owner has ruled on its section 16.
+agent three times, and corrected after each check (the three lists are below, newest first). It stops
+here until the owner has ruled on its section 16.
+
+## The third check's findings, and how each was settled
+
+Three blocking and four smaller. All seven were right in what they found. One is corrected in a detail
+(finding 3: one of its two examples is not forbidden), and settling it turned up a second fault of the
+same kind that the check did not have. Each was checked against the code or by experiment before it was
+settled. The full text of the findings is in
+wcontainers-scratch/orchestrator/threads-plan-open-findings.json.
+
+1. **The plan was built on rulings the owner had replaced** (blocking). The brief and the interface
+   notes were read to their ends again; the brief's last three sections and the notes' last two are what
+   the plan now follows. Changed throughout:
+   - `ThreadOrdering { Serial, Parallel }` and the guarantee as a field of `ExecutionConfig`; no getter
+     on the ordering; `ParallelOptimistic` is the pair (`Parallel`, `External`) (section 2, with what
+     each of the six pairs means and pays).
+   - The rule for a group whose processes were given different configs now covers both fields: the
+     strictest of each (section 3, decision 1). It also says what a guarantee covers between groups: a
+     `None` process is not recorded, so nothing it does to others is repeated.
+   - The count is only in the code of a process in force `Exact`, and is a field of the cache key (7.2).
+     T1 and 4.6 no longer assume every `Serial` group replays exactly: a thread in force `None` is not
+     asked about at the recording point, and runs free turns.
+   - A design for `External` (4.6): entries in order with no position; a digest of what the kernel took
+     from the thread for each entry; a replay that is thrown away when a digest differs; what replays
+     surely (a process with one thread that takes no signal while it computes) and what may not. The
+     `Parallel` half (atomic instructions in one order) is described from the prototype's results and
+     recommended against (decision 3). A new milestone, T8, builds the `Serial` half.
+   - (`Parallel`, `Exact`): the rule "stops only at a kernel entry of its own" is now for groups in
+     force `Serial` or `Exact`, each for its own reason (4.4 item 5). A change of the kernel's in such a
+     group is a call-in, never a group stop in place (4.5). Three uses of holding a thread in place
+     stay there, all of which only order memory accesses.
+   - No setter: section 6 keeps the weighing short, as the brief asked for it, and says it is settled.
+     `suspend` in a hook of a (`Parallel`, `Exact`) process answers an error, because it cannot stop
+     the others at positions. The in-hook call (`Process::replace_execution_config`) is weighed and
+     recommended (decision 9).
+   - The process closure is gone as a rule: "a group ends at the kernel's edge" (section 3).
+   - The decisions the rulings already made left section 16. It has ten, from twelve.
+2. **A permission change could be torn** (blocking). Confirmed in the code: a piece relies on what it
+   found out until its thread's next stop point (tr/contract.rs:17-20); a loop with no call and no
+   system call keeps its known pages (tr/full.rs:1130-1146); a guest hook sets neither flag
+   (guest-cpu/effects.rs:137-142); the stop check is the only place that forgets
+   (tr/full.rs:2162-2177). Settled in 4.5, with the test in section 12:
+   - a thread is held only at a stop point. The mark that says "may be in guest code" stays on in the
+     clock hook, the float hook and `warn`, which may neither wait nor touch the memory;
+   - the three hooks that must wait or touch the memory (code changed, the 128 bit atomic, x86's
+     misaligned locked access) are made stop points: the translator saves every register before them
+     and forgets what it knew after them, as at a stop check whose hook ran. This is a change to
+     translated code, on those three paths only, asked of the translator track;
+   - the load code hook is a stop point by where it is called. That a piece keeps nothing across a call
+     or a jump out of itself is the contract's own rule; it was checked for loops (tr/full.rs:1143-1146)
+     and is left for the translator track to confirm for checks that cover several accesses;
+   - found with it: a guest hook saves only its own registers (tr/full.rs:2553-2569), so the earlier
+     plan's "a held thread's registers are saved" was also wrong for those hooks. It now holds, because
+     a held thread is at a stop point;
+   - section 8's "setting a watch stops one thread" has the same cure.
+3. **"Plain accesses are compiled to the host's plain accesses, in program order" was false for
+   wasmtime** (blocking). Confirmed by experiment, then taken further (items 10 to 13 below).
+   - The check's case (a), a repeated load merged into the first, is right, and x86 forbids the result.
+     Shown with two threads: a sequence lock's reader accepted 931,346 torn reads of 1,670,130 on the
+     x86 laptop.
+   - The check's case (c), a store forwarded to a later load, is **not** forbidden by x86: a thread
+     reads its own store from its store buffer, so "store 7 to x, load y, load x gives 7" is always a
+     legal outcome there. The plan says so (7.6) and does not treat it as a fault.
+   - **A third thing the same pass does, which the check did not have, is forbidden on both
+     architectures**: it drops a store of a value the thread has just loaded from the same address,
+     also under a branch. Seen in the machine code and with two threads (57,368 of 57,368 rounds on
+     this Mac, 199,975 of 199,975 on the laptop). So ARM64 guests in parallel were wrong too, not only
+     x86 guests.
+   - The check's suggested cure, atomic loads for x86 guests, works (0 failures) but costs a load-heavy
+     loop up to 1.48 times, and 1.97 times with the alignment test; and it does nothing for ARM64
+     guests on ARM64 hosts.
+   - The cure the plan takes: compile the code of parallel groups with that pass off. Measured: 0
+     failures of either kind on the x86 laptop, 0 dropped stores on this Mac, and 0.0% to 1.8% more
+     instructions on the benchmark set. Cranelift's setting for it exists but nothing reads it in the
+     pinned version (measured and read in the source), so it needs a small fix sent to wasmtime's
+     project and carried as a patch meanwhile (decision 4).
+   - That cost would fall on `Serial` runs too if there were one form of code. So the plan now has two
+     forms, by the ordering a process was given (7.2). The Serial form is today's code with a shared
+     import and pays nothing; the byte, the tested fence and the compiler setting are the Parallel
+     form's. This reverses the earlier "one translation for both orderings", with the three choices and
+     their measured costs side by side as the brief asks. With no setter, a process never changes form
+     while it is in a kernel, which was the main cost of two forms before.
+   - T6's ordering tests gained the three shapes the standard four do not have (section 12).
+   - The two smaller ARM64 cases: `isb` becomes the tested fence in the Parallel form (7.3); an address
+     dependency that cannot change the address is a written difference (7.3, decision 6).
+4. **Decision 12 left out its main cost** (not blocking). Right: under the earlier recommendation every
+   page that arrives for a waiting thread would stop the whole container. The cost is now stated, the
+   narrow alternative is weighed, and the recommendation changed: one call that brings one process's
+   group to a stop and announces a hook (section 5, decision 8). The narrow call is rejected because a
+   `Serial` group's running thread has its process's executor records locked, so it must be stopped
+   anyway.
+5. **The plan broke its own lock order** (not blocking). The exception is stated in 4.5 and its rules
+   are in 7.2: a `Serial` process's lock is reached from outside only by a try-lock that panics.
+   Found with it: the earlier text let a `Cpu` call wait for a thread that was on its way out of
+   `Execution::run`. With a try-lock that would have panicked, so a thread that was asked in now lets
+   its process's lock go before it makes the entry.
+6. **`raise_stop` writes the whole stop word** (not blocking). Confirmed (tr/code.rs:693-699). It becomes
+   an atomic or of the thread's own bit (4.5), with a test (section 12). The claim that translated code
+   never writes the word is gone.
+7. **"The architecture's broadcast invalidation, as Linux does" had no source** (not blocking). Right.
+   Section 10 now says each held virtual CPU drops its own cached translations before it is let go, on
+   both architectures, with Intel's manual named for why x86 needs it, and ARM64's broadcast form left
+   as something the native track may measure.
 
 ## The second check's findings, and how each was settled
+
+This list and the first check's below are kept as they were written. Where the third check changed what
+they say (one form of code for both orderings, the byte in every run, a thread held inside any hook,
+the three-value ordering), the list above holds.
 
 All ten were right, and each was checked against the code before it was settled. None is argued
 against. Nothing new was measured for this run: the second checker's two experiments are recorded below
@@ -177,6 +283,19 @@ check suggested, and two more problems turned up while settling them; both are s
   and the interface notes were read to their ends again: the brief's last section corrects `Settings`
   to `Config` and names `run`, and the notes' last sections give `run_until_finished` and `StopReason`.
 
+- For the third check's findings: the brief's last three sections and the interface notes' last two;
+  wcontainers-scratch/orchestrator/threads-plan-open-findings.json and progress-count-cost.json; the
+  translator's contract, its stop check, how a guest hook is emitted and how loops keep their known
+  pages (tr/contract.rs whole, tr/full.rs:1105-1160, :2110-2180, :2553-2569, :2746-2750,
+  tr/code.rs:680-700, :1150-1210, :1285-1310, tr/thread.rs:110-140, guest-cpu/effects.rs:100-175); the
+  executor's clock and stop hooks (wt/lib.rs:2095-2140, :1780-1820); docs/runtime.md sections 7, 9 and
+  12 on the cache key, the progress count and replay; cranelift-codegen 0.137.1's alias analysis and
+  where it is called (src/alias_analysis.rs:1-125, src/egraph/mod.rs:540-580, src/context.rs:180-200)
+  and its setting (cranelift-codegen-meta 0.137.1, src/shared/settings.rs:60-68); docs/native.md at
+  ab448e58 on barriers, invalidation and threads (lines 348-362, 987, 1028-1064). The native and x86
+  branches have moved since the plan pinned them (origin/phase-2-native is at a7099033 and
+  origin/phase-2-x86 at cbbb05ee); the plan's line numbers stay those of the pinned commits.
+
 ## What the first agent left
 
 No docs/threads.md was in the checkout, committed or not. In wcontainers-scratch/threads it left a clone of
@@ -328,6 +447,97 @@ check2/host/src/sb.wat. Two host threads, each with its own `Store` and `Instanc
 - So item 6's "not covered: wasmtime with two threads" is now covered for this test. Build output was
   deleted on both machines.
 
+### Third run, for the third check's findings
+
+Everything is under wcontainers-scratch/threads/check4, with noalias-cost.sh and logs/noalias-cost.log
+beside it. The laptop was in use by other tracks during these runs (a Chrome benchmark and two other
+experiments were running), so its load was 5 to 9 and its timings are noisier than the first run's.
+Counts are not affected.
+
+**10. What wasmtime's compiler does to plain accesses, read in its output.** check4/shapes.wat, six
+functions on a shared 64 bit memory, compiled with wasmtime 49.0.2's `wasmtime compile` from `nix
+develop` on this Mac (load 110 to 113) and read with `wasmtime objdump`
+(shapes-mac-wasmtime49-default.dis).
+- "Load x, load y, load x": two guest loads; the first is used twice.
+- The same with each load atomic when its address is aligned and plain when not: all three loads kept,
+  in both arms.
+- "r = [x]; f = [y]; if f then [x] = r": no store in the function. The same with no branch: no store.
+- The same with the middle load atomic: the store is there.
+- "[x] = v; f = [y]; [x] = v": one store.
+- Compiled again with `-C cranelift-enable_alias_analysis=false`: `diff` of the two disassemblies is
+  empty (shapes-mac-wasmtime49-noalias.dis). In cranelift-codegen 0.137.1 the setting is defined
+  (cranelift-codegen-meta src/shared/settings.rs:60-68) and nothing in cranelift-codegen's source reads
+  it (`grep -rn enable_alias_analysis src` finds only the settings test's listing).
+
+**11. The same with two threads.** check4/host: a Rust program on wasmtime 50.0.1, two host threads,
+each with its own `Store` and `Instance`, on one shared 64 bit `SharedMemory`; the module is
+check4/host/src/tso.wat. It is built against a scratch copy of cranelift-codegen 0.137.1
+(wcontainers-scratch/threads/cranelift-codegen-patched; the change is
+check4/cranelift-skip-alias-analysis.patch): with `WC_NO_ALIAS=1` in the environment the optimiser
+treats every load and store as it treats one the analysis has nothing to say about. Without the
+variable the copy behaves as the released crate. Built with `cargo build --release --offline`, two jobs
+on this Mac and five on the laptop (cores 3, 4, 5, 9, 10, 11).
+- *Sequence lock.* A writer makes a count odd, writes two words, makes the count even, all plain stores.
+  A reader loads the count, the two words and the count again, and accepts when the count was even and
+  unchanged. Three readers: plain loads; each load atomic when aligned; atomic loads. The figure is
+  accepted reads whose two words differed, of all accepted reads.
+  - The laptop, cores 4 and 10, 20,000,000 writes (tso-x86.log, load 7.7). Pass on: 931,346 of
+    1,670,130; 0 of 3,692; 0 of 21,038. Pass off: 0 of 33,327; 0 of 7,535; 0 of 20,804.
+  - The laptop, 200,000,000 writes (tso-x86-long.log, load 5.3). Pass on: 9,288,492 of 15,869,202; 0 of
+    24,783; 0 of 98,511. Pass off: 0 of 109,791; 0 of 19,103; 0 of 120,155.
+  - This Mac, 20,000,000 writes (tso-mac.log, load 129). Pass on: 7,784 of 3,311,008; 20 of 1,821,534; 1
+    of 237,583. Pass off: 82,860 of 4,204,412; 7 of 131,353; 2 of 113,583. Every form fails on this
+    host: it reorders the writer's plain stores, and plain loads too. That is the weaker-host case of
+    the plan's section 9, where x86 guests are kept `Serial`.
+  - The correct readers accept few reads because the writer never rests; the longer run was made to
+    have more of them.
+- *Store-back.* Thread 0: r = [x]; a wait of 200 empty rounds; f = [flag]; if f then [x] = r. Thread 1:
+  [x] = 1; `atomic.fence`; [flag] = 1. The two meet before and after each round. The figure is rounds
+  with r = 0, f = 1 and x = 1 at the end, of rounds with r = 0 and f = 1.
+  - This Mac, 200,000 rounds (load 129). Pass on: plain loads 57,368 of 57,368; loads atomic when
+    aligned 0 of 41,951; atomic loads 0 of 120,649. Pass off: 0 of 61,447; 0 of 28,571; 0 of 65,136.
+  - The laptop, 200,000 rounds (load 7.7). Pass on: 199,975 of 199,975; 0 of 199,625; 0 of 199,882. Pass
+    off: 0 of 199,977; 0 of 199,911; 0 of 199,874. With 1,000,000 rounds (load 5.3): pass on 999,877 of
+    999,877; pass off 0 of 999,730.
+- Why the outcome is forbidden. Thread 1's store to x is before its store to flag, with a full barrier
+  between. Thread 0 stores to x only after it has seen the flag, and a store is not made before the
+  branch it is under is decided. So thread 0's store is the later one and x ends as r. The compiler
+  leaves the store out because r is "what x holds".
+- Not covered: the same shapes through the translator; V8.
+
+**12. What that pass is worth to a single-threaded run.** noalias-cost.sh, on this Mac inside `nix
+develop <this checkout> -c`. The translator's benchmark test in the scratch clone (`exp/`, the first
+run's, with the patched Cranelift copy, a shared guest memory by `WC_SHARED_GUEST=1`, and a count of
+the instructions the process retired during the run alone, read with `proc_pid_rusage` before and after
+`Machine::run`). Each workload in its own process, the pass on and off alternating, three rounds, full
+look-ahead, every check, wasmtime 50.0.1. Every run's output was checked against the native run's.
+Load 123 to 142 (logs/noalias-cost.log).
+- Thousand millions of instructions, mean of three, on then off: fib 81.513 and 81.948 (+0.53%); sieve
+  13.842 and 13.844 (+0.01%); hash 7.801 and 7.804 (+0.04%); sort 31.437 and 31.439 (+0.01%); interpret
+  22.512 and 22.734 (+0.99%); matrix 7.716 and 7.725 (+0.11%); walk 16.578 and 16.879 (+1.82%); search
+  6.777 and 6.778 (+0.00%). Geometric mean +0.44%.
+- The three runs of one workload and one setting differed by 0.02% to 0.10%, so the three larger
+  differences are real and the rest are not shown.
+- Times at this load vary far more than this (best of three, on then off, in seconds: fib 2.883 and
+  2.791; walk 3.315 and 3.026) and say nothing.
+- Not covered: an x86 host; programs larger than the benchmark set; what the pass costs to compile.
+
+**13. Atomic loads in place of plain ones, single-threaded, on an x86 host.** check4/kernels: the
+generator of wcontainers-scratch/ordering-cost with two forms added, "loads" (atomic loads, plain
+stores) and "lchk" (each load's address tested for alignment: atomic when aligned, plain when not; plain
+stores), on a shared 64 bit memory. The laptop, wasmtime 49.0.2, `taskset -c 4`, seven rounds with the
+forms alternated, best of seven (kernels/bench-x86.log, load 5.2 to 7.0). Checksums agreed in every
+form.
+- Seconds for plain, atomic loads, tested loads: sum of 64 bit words 1.253, 1.855, 2.467; pointer chase
+  1.354, 1.366, 1.395; byte scan, copy and 16 bit sum 2.239, 2.170, 2.526; recursive calls with a frame
+  in memory 1.225, 1.217, 1.533; fill and copy 0.428, 0.438, 0.477; the copy with both buffers one byte
+  off alignment 0.435 plain and 0.449 tested.
+- So atomic loads cost 0.97 to 1.48 times and tested loads 1.03 to 1.97 times. Byte loads have no
+  alignment to test, which is why the byte kernel does not move with atomic loads.
+
+Build output was deleted afterwards on both machines (the scratch `target` folders and the compiled
+modules); sources, logs and the patched crate's source are kept.
+
 ## What was not measured
 
 Listed in docs/threads.md section 15. The ones that matter most to the plan's decisions:
@@ -336,6 +546,10 @@ Listed in docs/threads.md section 15. The ones that matter most to the plan's de
   it costs between nothing and 11.4 ns by the work around it;
 - how often real programs run barriers and 128 bit atomics: the cost of each is measured, their number
   is not;
+- what switching the compiler's alias analysis off costs on an x86 host and on large programs, and
+  whether V8 does what that pass does;
+- what the digest of `External` costs, and what calling a group in for every change of the kernel's
+  costs a (`Parallel`, `Exact`) group;
 - the runtime's host-supplied mapping as a wasmtime shared memory: read in wasmtime's source, not run;
 - the ordering tests as guest programs through the translator: only hand-written tests were run (items
   4, 6 and 9);
@@ -347,20 +561,34 @@ Listed in docs/threads.md section 15. The ones that matter most to the plan's de
 
 ## What the plan asks of other tracks
 
-- The x86 track: lock prefixes and `xchg` with memory as WebAssembly atomic operations, with a hook for
-  misaligned ones; `cmpxchg16b` as a 128 bit pair behind the byte; `mfence` as the tested fence; all
-  measured on `Serial` runs before they land (docs/threads.md 7.3). Its rule for code on a live stack
-  frame (its lines 1898-1905) is used again for watches (section 8), so it is built once.
-- The native track: `dmb`, `dsb` and `mfence` copied instead of dropped; the exclusive load's fix-up made
-  safe for threads in parallel; an interrupt from one virtual CPU to another inside the machine measured;
-  a request to stop kept until the thread's next entry; a stop lock per memory and the count of drops
-  (section 10). Nothing before its own thread milestone.
-- The translator track: the progress count, which exact positions at full speed already wait for; the
-  byte's place in the contract. The stop word's meaning to translated code does not change.
+- wasmtime's project: a fix that makes Cranelift's `enable_alias_analysis` setting do what it says
+  (check4/cranelift-skip-alias-analysis.patch is the experiment's form of it, switched by an environment
+  variable; the real one reads the setting). Until a release has it, a patched `cranelift-codegen`
+  (decision 4).
+- The translator track: the progress count, now only in the code of a process in force `Exact`, and in
+  both forms by ordering; the Parallel form (barriers and 128 bit atomics behind the byte, `isb` among
+  the barriers); the mark for hooks that are stop points, with all registers saved before them and
+  what the piece knew forgotten after them; a word on whether a check that covers several accesses can
+  span a call or a jump out of the piece; `raise_stop` as an atomic or. The stop word's meaning to
+  translated code does not change.
+- The x86 track: for the Parallel form, lock prefixes and `xchg` with memory as WebAssembly atomic
+  operations, with a hook, made a stop point, for misaligned ones; `cmpxchg16b` as a 128 bit pair
+  behind the byte; `mfence` as the tested fence; the sequence lock and the store-back among its
+  ordering tests (docs/threads.md 7.3, section 9). Its Serial form does not change. Its rule for code on
+  a live stack frame (its lines 1898-1905) is used again for watches (section 8), so it is built once.
+- The native track: `dmb`, `dsb`, `isb` and `mfence` copied instead of dropped; the exclusive load's
+  fix-up made safe for threads in parallel; each held virtual CPU dropping its own cached translations
+  before it is let go; an interrupt from one virtual CPU to another inside the machine measured; a
+  request to stop kept until the thread's next entry; a stop lock per memory and the count of drops;
+  call-ins, not group stops, for a change of the kernel's in a group in force `Exact` (section 10).
+  Nothing before its own thread milestone.
 - The kernel track's K7: the kernel as a WebAssembly module built for a shared memory, for more than one
   caller (4.2).
-- The embedder interface: `ExecutionConfig` at the container's start; `suspend` and `resume`; memory
-  watches before T4; who shares memory with whom; the hook's thread made optional (decision 10); where
-  `kernel.process(id)` may be called and how `suspend` stops a process (sections 5 and 6, decision 12).
+- The embedder interface: `ExecutionConfig` with both fields at the container's start; `suspend` and
+  `resume`; the config in force beside the config given; memory watches before T4, with a thread's
+  position readable while it is held; who shares memory with whom, and shared pages marked watched when
+  one process of a group leaves; the hook's thread made optional and
+  `Process::replace_execution_config` (decision 9); `Kernel::process_call_in` and its hook (decision 8).
 - The runtime track: the renames to `RuntimeConfig`, `TranslatorConfig`, `run` and `run_until_finished`
-  in the code, which this plan already uses.
+  in the code, which this plan already uses; two wasmtime engines in the executor, and the cache key's
+  two new fields (7.2).
