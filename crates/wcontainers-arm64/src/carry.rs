@@ -58,7 +58,7 @@ pub const STACK_ALIGNMENT: u64 = size_of::<u128>() as u64;
 const INSTRUCTION: u64 = Arm64::MAX_LENGTH;
 
 /// A call into the inside: `brk` with the call's code.
-pub(crate) fn call_word(call: InsideCall) -> u32 {
+pub fn call_word(call: InsideCall) -> u32 {
     encode::exception(form::BRK, call.code())
 }
 /// The low bits of a branch target that an aligned one has clear.

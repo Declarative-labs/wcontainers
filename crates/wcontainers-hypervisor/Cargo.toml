@@ -52,5 +52,9 @@ harness = false
 name = "interrupts"
 harness = false
 
+[[test]]
+name = "probe"
+harness = false
+
 [lints]
 workspace = true

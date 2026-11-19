@@ -13,7 +13,7 @@ pub mod function;
 use aarch64_cpu::registers::{ESR_EL1, MDSCR_EL1, SPSR_EL1};
 use wcontainers_abi::{PAGE_SIZE, RegisterBlock};
 use wcontainers_arm64::carry::{
-    COUNT, LINK, PAGE, RegisterPage, STACK_ALIGNMENT, TAG_LOW, WITHHELD,
+    COUNT, LINK, PAGE, RegisterPage, STACK_ALIGNMENT, TAG_LOW, WITHHELD, call_word,
 };
 use wcontainers_arm64::encode::{self, form};
 use wcontainers_arm64::mirror::{MIRROR, SLOT_SHIFT};
@@ -529,6 +529,74 @@ impl Runner {
         }
     }
 
+    /// Runs a case's word copied as it is with nothing in front, the behaviour probe's way (docs/native.md
+    /// section 5.8): what the hardware itself did, in layer 1's terms.
+    pub fn raw(&mut self, case: &Case) -> Outcome {
+        let mut data = vec![0u8; DATA_BYTES as usize];
+        fill(case.seed, &mut data);
+        self.write(DATA, &data);
+        self.write(CODE, &case.word.to_le_bytes());
+        let mut piece = case.word.to_le_bytes().to_vec();
+        piece.extend(call_word(InsideCall::Exit).to_le_bytes());
+        self.load(&piece);
+        let mut x = [0u64; GENERAL];
+        x.copy_from_slice(&case.registers[..GENERAL]);
+        let hardware = Hardware {
+            x,
+            sp: case.registers[CASE_SP],
+            pc: PIECES,
+            state: case.registers[CASE_FLAGS],
+            thread: case.registers[CASE_THREAD],
+            v: case.vectors,
+            fpsr: case.float[0],
+            fpcr: case.float[1],
+        };
+        let trapped = self.enter(&hardware, &RegisterPage::default(), false);
+        self.unload();
+        let h = &trapped.hardware;
+        let i = decode(case.word);
+        let class = ESR_EL1::EC.read(trapped.syndrome);
+        let status = ESR_EL1::ISS.read(trapped.syndrome) & FAULT_STATUS;
+        let first = || access_address(&i, CODE, &h.x, h.sp);
+        let next = CODE + Arm64::MAX_LENGTH;
+        let (stop, pc) = if class == ESR_EL1::EC::Value::Brk64 as u64 {
+            (Stop::Landed(next), next)
+        } else if class == ESR_EL1::EC::Value::SPAlignmentFault as u64 {
+            (Stop::Alignment(h.sp), CODE)
+        } else if class == ESR_EL1::EC::Value::DataAbortLowerEL as u64 {
+            if status == ALIGNMENT_FAULT {
+                (Stop::Alignment(first()), CODE)
+            } else {
+                (
+                    Stop::MemoryFault(fault_address(first(), trapped.fault)),
+                    CODE,
+                )
+            }
+        } else {
+            (Stop::Other(class as u32, trapped.fault), CODE)
+        };
+        let mut now = vec![0u8; DATA_BYTES as usize];
+        self.read(DATA, &mut now);
+        let changed = now
+            .iter()
+            .zip(&data)
+            .enumerate()
+            .filter(|(_, (a, b))| a != b)
+            .map(|(k, (a, _))| (k as u32, *a))
+            .collect();
+        let state = GuestState {
+            x: h.x,
+            sp: h.sp,
+            pc,
+            flags: h.state & nzcv(),
+            thread: h.thread,
+            v: h.v,
+            float: case.float,
+            count: 0,
+        };
+        outcome(stop, &state, changed)
+    }
+
     /// Ends the program.
     pub fn finish(mut self) {
         self.link().put(&Code::default());
@@ -711,7 +779,7 @@ fn access_first(i: &I, at: u64, x: &[u64; GENERAL], sp: u64) -> u64 {
 
 /// The page boundaries of the data area where a page refuses: below it nothing is mapped, then the writable
 /// pages, the read-only page, and nothing again.
-const REFUSING: [u64; 3] = [DATA, DATA + DATA_WRITABLE, DATA + DATA_BYTES];
+pub const REFUSING: [u64; 3] = [DATA, DATA + DATA_WRITABLE, DATA + DATA_BYTES];
 
 /// The kinds of the bar's own cases made from a drawn load or store.
 const EDGE_KINDS: u64 = 4;
@@ -721,6 +789,29 @@ const EDGE_KINDS: u64 = 4;
 /// within it; the same with a tag in the base's top byte; the base with bit 55 set; or, for a form that checks
 /// alignment, the base moved off it. `None` for a form with no base register to move.
 pub fn edge(case: &Case) -> Option<Case> {
+    let seed = case.seed;
+    let (i, bytes, _, _) = base_of(case)?;
+    let within = (seed >> u8::BITS) % bytes.max(2);
+    let boundary = REFUSING[(seed >> u16::BITS) as usize % REFUSING.len()];
+    let mut edge = across(case, boundary, within)?;
+    let (_, _, slot, crossing) = base_of(&edge)?;
+    let original = case.registers[slot];
+    let tag = (seed >> u32::BITS) << TAG_LOW;
+    edge.registers[slot] = match seed % EDGE_KINDS {
+        0 => crossing,
+        1 => crossing | tag & !(1 << (TAG_LOW - 1)),
+        2 => original | tag | 1 << (TAG_LOW - 1),
+        _ if matches!(Arm64::route(&i), Route::Aligned | Route::Exclusive) => {
+            original + within.max(1)
+        }
+        _ => crossing,
+    };
+    Some(edge)
+}
+
+/// A load or store case's instruction, its access's bytes, the slot of its base register in the case's
+/// registers and the base's value; `None` for an instruction with no base register to move.
+fn base_of(case: &Case) -> Option<(I, u64, usize, u64)> {
     let i = decode(case.word);
     let m = i.memory_access()?;
     let (base, index) = match m.address {
@@ -738,32 +829,30 @@ pub fn edge(case: &Case) -> Option<Case> {
         Reg::Sp => CASE_SP,
         Reg::Zero => return None,
     };
+    Some((i, m.bytes.into(), slot, case.registers[slot]))
+}
+
+/// The case with its access's base moved so that the access starts `within` bytes before `boundary`.
+pub fn across(case: &Case, boundary: u64, within: u64) -> Option<Case> {
+    let (i, _, slot, _) = base_of(case)?;
     let mut x = [0u64; GENERAL];
     x.copy_from_slice(&case.registers[..GENERAL]);
     let mut sp = case.registers[CASE_SP];
-    match base {
-        Reg::Sp => sp = 0,
-        _ => x[slot] = 0,
+    if slot == CASE_SP {
+        sp = 0;
+    } else {
+        x[slot] = 0;
     }
-    // The base that puts the access's first byte at a given address.
+    // The access's first byte with a base of zero.
     let delta = access_first(&i, CODE, &x, sp);
-    let seed = case.seed;
-    let bytes = u64::from(m.bytes);
-    let within = (seed >> u8::BITS) % bytes.max(2);
-    let boundary = REFUSING[(seed >> u16::BITS) as usize % REFUSING.len()];
-    let crossing = boundary.wrapping_sub(within).wrapping_sub(delta);
-    let tag = (seed >> u32::BITS) << TAG_LOW;
-    let mut edge = case.clone();
-    edge.registers[slot] = match seed % EDGE_KINDS {
-        0 => crossing,
-        1 => crossing | tag & !(1 << (TAG_LOW - 1)),
-        2 => case.registers[slot] | tag | 1 << (TAG_LOW - 1),
-        _ if matches!(Arm64::route(&i), Route::Aligned | Route::Exclusive) => {
-            case.registers[slot] + within.max(1)
-        }
-        _ => crossing,
-    };
-    Some(edge)
+    let mut moved = case.clone();
+    moved.registers[slot] = boundary.wrapping_sub(within).wrapping_sub(delta);
+    Some(moved)
+}
+
+/// The bytes a case's access moves, when it is a load or store with a base register.
+pub fn access_bytes(case: &Case) -> Option<u64> {
+    base_of(case).map(|(_, bytes, ..)| bytes)
 }
 
 /// Where a fault's address is reported: the access's first byte when it is in the page that refused, else
