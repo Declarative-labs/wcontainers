@@ -1218,9 +1218,9 @@ fn multisampled_lines_draw_by_the_back_ends_rule_and_alpha_antialiased_lines_are
 }
 
 #[test]
-fn depth_bias_on_lines_and_points_is_added_in_the_program_into_normalised_depth() {
+fn lines_and_points_are_drawn_without_the_depth_bias_as_direct3d_draws_them() {
     use wcontainers_directx_graphics_infrastructure::dxgi;
-    for (depth_format, drawn) in [(dxgi::D16_UNORM, true), (D32F, false)] {
+    for depth_format in [dxgi::D16_UNORM, D32F] {
         let mut dev = device();
         let target = dev
             .create_texture(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
@@ -1260,13 +1260,30 @@ fn depth_bias_on_lines_and_points_is_added_in_the_program_into_normalised_depth(
             dev.ia_set_primitive_topology(t);
             dev.draw(2, 0);
         }
-        assert_eq!(dev.removed.is_none(), drawn);
-        if drawn {
-            assert_eq!(
-                dev.backend.slow_paths().count(SlowPath::DepthBiasInShader),
-                before + 2
-            );
-        }
+        assert!(dev.removed.is_none());
+        assert_eq!(
+            dev.backend.slow_paths().count(SlowPath::DepthBiasInShader),
+            before
+        );
+        // Each draw's raster block's bias: the triangle's, then none.
+        let log = &dev.backend.log;
+        let biased: Vec<bool> = log
+            .iter()
+            .filter_map(|l| l.strip_prefix("draw "))
+            .map(|l| {
+                let raster = l
+                    .split(" raster ")
+                    .nth(1)
+                    .unwrap()
+                    .split(' ')
+                    .next()
+                    .unwrap();
+                let made = format!("create_raster {raster} ");
+                let block = log.iter().find(|m| m.starts_with(&made)).unwrap();
+                !block.ends_with("bias 0 0 0")
+            })
+            .collect();
+        assert_eq!(biased, [true, false, false]);
     }
 }
 

@@ -21,8 +21,11 @@ pub enum Error {
 
 pub type Result<T> = core::result::Result<T, Error>;
 
+/// What this front's warnings on standard error start with.
+pub(crate) const WARNING_PREFIX: &str = "wcontainers direct3d 11";
+
 /// Returns `NotImplemented` after warning once on standard error.
 pub fn not_implemented<T>(what: &'static str) -> Result<T> {
-    eprintln!("wcontainers direct3d 11: not implemented: {what}");
+    eprintln!("{WARNING_PREFIX}: not implemented: {what}");
     Err(Error::NotImplemented(what))
 }
