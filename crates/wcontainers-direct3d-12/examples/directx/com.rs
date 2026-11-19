@@ -58,10 +58,10 @@ impl IDXGIFactory4_Impl for Factory_Impl {
     }
     fn EnumWarpAdapter(
         &self,
-        _riid: *const windows_core::GUID,
-        _ppvadapter: *mut *mut core::ffi::c_void,
+        riid: *const windows_core::GUID,
+        ppvadapter: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("EnumWarpAdapter"))
+        Factory::EnumWarpAdapter(self, riid, ppvadapter)
     }
 }
 

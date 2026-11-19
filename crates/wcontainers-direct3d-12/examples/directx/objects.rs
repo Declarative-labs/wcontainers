@@ -27,7 +27,7 @@ use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
-use windows::core::{AsImpl, BOOL, GUID, HRESULT, Interface, Ref, Result, implement};
+use windows::core::{AsImpl, BOOL, GUID, HRESULT, IUnknownImpl, Interface, Ref, Result, implement};
 
 use crate::base::{Base, HasBase};
 use crate::gpu;
@@ -97,21 +97,21 @@ pub struct Factory {
 }
 
 impl Factory {
-    pub fn EnumAdapters1(&self, adapter: u32) -> Result<IDXGIAdapter1> {
+    /// The one adapter; it holds the factory, its parent.
+    pub fn EnumAdapters1(this: &Factory_Impl, adapter: u32) -> Result<IDXGIAdapter1> {
         if adapter != 0 {
             return Err(DXGI_ERROR_NOT_FOUND.into());
         }
-        let desc = gpu::call(|d| AdapterDesc::from_caps(d.backend().caps()));
-        Ok(IDXGIAdapter4::from(Adapter(desc)).into())
+        Ok(Adapter::of(this.to_interface()).into())
     }
 
-    pub fn EnumAdapters(&self, adapter: u32) -> Result<IDXGIAdapter> {
-        self.EnumAdapters1(adapter)?.cast()
+    pub fn EnumAdapters(this: &Factory_Impl, adapter: u32) -> Result<IDXGIAdapter> {
+        Self::EnumAdapters1(this, adapter)?.cast()
     }
 
     /// One adapter, first for every preference.
     pub fn EnumAdapterByGpuPreference(
-        &self,
+        this: &Factory_Impl,
         adapter: u32,
         preference: DXGI_GPU_PREFERENCE,
         riid: *const GUID,
@@ -120,7 +120,15 @@ impl Factory {
         if !(0..=2).contains(&preference.0) {
             return Err(E_INVALIDARG.into());
         }
-        give(self.EnumAdapters1(adapter)?, riid, out)
+        give(Self::EnumAdapters1(this, adapter)?, riid, out)
+    }
+
+    /// No software adapter: the back end offers none, so a request is refused as not implemented.
+    pub fn EnumWarpAdapter(&self, _riid: *const GUID, out: *mut *mut c_void) -> Result<()> {
+        // SAFETY: the caller's pointer, when not null.
+        let out = unsafe { out.as_mut() }.ok_or(DXGI_ERROR_INVALID_CALL)?;
+        *out = std::ptr::null_mut();
+        Err(self.unsupported("EnumWarpAdapter"))
     }
 
     /// Presents never tear: the host shows whole frames.
@@ -167,7 +175,7 @@ impl Factory {
     }
 
     pub fn EnumAdapterByLuid(
-        &self,
+        this: &Factory_Impl,
         luid: &LUID,
         riid: *const GUID,
         out: *mut *mut c_void,
@@ -176,7 +184,7 @@ impl Factory {
         if (luid.LowPart, luid.HighPart) != (ours.LowPart, ours.HighPart) {
             return Err(E_INVALIDARG.into());
         }
-        give(self.EnumAdapters1(0)?, riid, out)
+        give(Self::EnumAdapters1(this, 0)?, riid, out)
     }
 
     pub fn new(flags: u32) -> Self {
@@ -283,9 +291,18 @@ pub fn adapter_luid() -> LUID {
 /// methods through the adapter `EnumAdapters` gives without asking for them. Video memory
 /// budgets and reservations answer E_NOTIMPL (no browser reports memory).
 #[implement(IDXGIAdapter4)]
-pub struct Adapter(AdapterDesc);
+pub struct Adapter {
+    desc: AdapterDesc,
+    factory: IDXGIFactory7,
+}
 
 impl Adapter {
+    /// The adapter `factory` enumerates, holding it as its parent.
+    pub fn of(factory: IDXGIFactory7) -> IDXGIAdapter4 {
+        let desc = gpu::call(|d| AdapterDesc::from_caps(d.backend().caps()));
+        Adapter { desc, factory }.into()
+    }
+
     /// The flags say only what is known: no preemption finer than a submission is promised, and
     /// fences are Direct3D 12's (monitored) ones.
     pub fn GetDesc3(&self) -> Result<DXGI_ADAPTER_DESC3> {
@@ -325,7 +342,7 @@ impl Adapter {
     }
 
     pub fn GetDesc1(&self) -> Result<DXGI_ADAPTER_DESC1> {
-        let d = &self.0;
+        let d = &self.desc;
         Ok(DXGI_ADAPTER_DESC1 {
             Description: d.description_utf16(),
             VendorId: d.vendor_id,
@@ -359,18 +376,24 @@ impl Adapter {
         })
     }
 
-    /// The host's monitors, the primary first.
-    /// A new factory: adapters do not keep the one that enumerated them.
+    /// The factory that enumerated it.
     pub fn GetParent(&self, riid: *const GUID, out: *mut *mut c_void) -> Result<()> {
-        give::<IDXGIFactory7>(Factory::new(0).into(), riid, out)
+        give(self.factory.clone(), riid, out)
     }
 
-    pub fn EnumOutputs(&self, output: u32) -> Result<IDXGIOutput> {
+    /// The host's monitors, the primary first; each holds the adapter, its parent.
+    pub fn EnumOutputs(this: &Adapter_Impl, output: u32) -> Result<IDXGIOutput> {
         let (desc, monitor) = crate::present::outputs()
             .into_iter()
             .nth(output as usize)
             .ok_or(DXGI_ERROR_NOT_FOUND)?;
-        Ok(IDXGIOutput6::from(crate::present::Output { desc, monitor }).into())
+        let adapter = this.to_interface();
+        Ok(IDXGIOutput6::from(crate::present::Output {
+            desc,
+            monitor,
+            adapter,
+        })
+        .into())
     }
 }
 
