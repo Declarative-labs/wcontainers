@@ -109,6 +109,8 @@ pub enum MemoryError {
     /// Part of the range is shared memory the process may not write, which Linux's forced
     /// writes refuse too.
     SharedNotWritable,
+    /// The range ends before it starts, or past the last address.
+    InvalidRange,
     /// The executor refused.
     Executor(wcontainers_abi::CpuError),
 }
@@ -229,9 +231,14 @@ impl Process<'_> {
 
     /// The bytes of a mapped range, whatever its pages allow.
     pub fn memory_read(&mut self, range: Range<u64>) -> Result<Vec<u8>, MemoryError> {
+        let length = range
+            .end
+            .checked_sub(range.start)
+            .and_then(|length| usize::try_from(length).ok())
+            .ok_or(MemoryError::InvalidRange)?;
         let process = &self.kernel.processes[&self.pid];
         process.map.borrow().readable_whole(range.clone())?;
-        let mut bytes = alloc::vec![0; (range.end - range.start) as usize];
+        let mut bytes = alloc::vec![0; length];
         self.cpu
             .read(process.memory, range.start, &mut bytes)
             .map_err(MemoryError::Executor)?;
@@ -242,7 +249,9 @@ impl Process<'_> {
     /// the process.
     pub fn memory_write(&mut self, address: u64, bytes: &[u8]) -> Result<(), MemoryError> {
         let process = &self.kernel.processes[&self.pid];
-        let end = address + bytes.len() as u64;
+        let end = address
+            .checked_add(bytes.len() as u64)
+            .ok_or(MemoryError::InvalidRange)?;
         let mut map = process.map.borrow_mut();
         map.readable_whole(address..end)?;
         if map.iter().any(|mapping| {

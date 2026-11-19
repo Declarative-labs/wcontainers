@@ -350,7 +350,8 @@ pub fn run_with_client(
                         &mut slave_fd,
                         std::ptr::null_mut(),
                         std::ptr::null_mut(),
-                        &mut size
+                        // Linux takes the size as a constant pointer, macOS as a mutable one.
+                        &raw mut size
                     ),
                     0,
                     "openpty"

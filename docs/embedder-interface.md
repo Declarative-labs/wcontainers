@@ -137,7 +137,7 @@ impl ProcessInfo<'_> {
 
 pub enum Watch { None, Writes, All }
 pub enum Access { Read, Write }
-pub enum MemoryError { NotMapped, NotRead, SharedNotWritable, Executor(CpuError) }
+pub enum MemoryError { NotMapped, NotRead, SharedNotWritable, InvalidRange, Executor(CpuError) }
 ```
 
 - Hooks receive the handle by value (the owner's agreement of the night of 2026-11-18), so a later
@@ -150,7 +150,8 @@ pub enum MemoryError { NotMapped, NotRead, SharedNotWritable, Executor(CpuError)
   page of a backend file not read yet is `NotRead`. A write makes a private file page the
   process's own copy first, and is not counted as written by the process. A shared page the
   process may not write is refused (`SharedNotWritable`), as Linux's forced writes (ptrace,
-  `/proc/<pid>/mem`) refuse it: others share it.
+  `/proc/<pid>/mem`) refuse it: others share it. A range that ends before it starts, or bytes that
+  would run past the last address, are `InvalidRange`; `memory_watch` acts on no page for them.
 - `memory_watch` is a setting: idempotent, nothing returned. It acts on the mapped pages
   (`PAGE_SIZE`) the range touches. A watch belongs to the page's bytes: unmapping a page ends it,
   as does mapping something new over it; `mremap` takes it along to where the page moves; a

@@ -133,6 +133,21 @@ impl Recorder {
                 .memory_watch_thread(TaskId(0), buffer(), Watch::All)
                 .is_err()
         );
+        // Ranges that end before they start or past the last address are refused, not obeyed.
+        let reversed = std::ops::Range {
+            start: BUFFER + PAGE_SIZE,
+            end: BUFFER,
+        };
+        assert_eq!(
+            process.memory_read(reversed.clone()),
+            Err(MemoryError::InvalidRange)
+        );
+        assert_eq!(
+            process.memory_write(u64::MAX, &[0, 0]),
+            Err(MemoryError::InvalidRange)
+        );
+        process.memory_watch(reversed, Watch::All);
+        process.memory_watch(u64::MAX - 1..u64::MAX, Watch::All);
         self.seen.lock().unwrap().push(seen);
         *self.depth.lock().unwrap() -= 1;
     }
