@@ -73,7 +73,82 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
 - X5 (every default instruction): run 1 (2026-11-19) fixed the five findings of the last X4 check (Chrome
   runs at once, the matrix slowdown explained, x86 loop-proof checks and a wider proof, x86 versions of
   ARM64's X4 program tests, the block size's literals) and listed what X5 has left to write (see "X5, run
-  1"). X5's own work has not started: none of its bar holds yet.
+  1"). X5's own work has not started: none of its bar holds yet. Run 2 (the same day) wrote the integer
+  forms (bit scans and counts, byte swaps, xadd, cmpxchg and the pair forms, shld and shrd, adcx and adox,
+  loop and its kin, lahf and sahf, popf, clflush, the FS and GS base instructions, xlat, movnti, the fences,
+  crc32), rep string instructions on both paths, rdtsc and rdtscp from the clock, cpuid from a designed
+  table, and the integer, move and blend instructions of SSE2 to SSE4.2 (see "X5, run 2"). Not yet: the
+  float instructions, MXCSR, the segment and far-transfer instructions, `enter`, `fxsave`, the string
+  compares of SSE4.2, and the rest of the bar.
+
+## X5, run 2 (2026-11-19)
+
+Machines: the rented x86-64 machine until it was taken away (a spot notice at about 13:53); then the Mac
+(Apple M5 Max, load 5 to 13) for builds and the translated side, with the i7-8750H (load 0.1 to 1.9) as the
+reference over SSH (`WC_REFERENCE_X86_64`), at -j 4, as `mac-gate.sh` allowed ("MAC ALLOWED", the x86
+machine down). Logs in scratch `x5/run2/`. The laptop has no zig, so the program tests cannot run on it
+alone.
+
+What was written, each checked in layer 1 against the i7-8750H (all 0 failing):
+- Committed in 1ec4684e (written before this run's restart, layer 1 seed 1, 1,000 a form, 67 forms,
+  `l1-a-1000.log`): `bsf`, `bsr`, `tzcnt`, `lzcnt`, `popcnt`, `bswap`, `movbe`, `xadd`, `cmpxchg`,
+  `cmpxchg8b`, `cmpxchg16b`, `shld`, `shrd`, `adcx`, `adox`, `loop`, `loope`, `loopne`, `lahf`, `sahf`,
+  `clflush`, `rdfsbase`, `rdgsbase`, `wrfsbase`, `wrgsbase`.
+- rep string instructions (plan 5.6): `rep movs` and `rep stos` in bulk passes of at most 1 MiB
+  (`memory.copy`, `memory.fill` for a repeated byte, else a store loop) when DF and TF are clear, the copy
+  does not land inside its source and every byte of both ranges is allowed; otherwise one element a pass,
+  counted with its reason. `repe`/`repne` `cmps` and `scas` and `rep lods` one element a pass. Every pass
+  ends on an element with exact rcx, rsi and rdi and jumps back to the instruction, so the stop check runs
+  between any two elements. Layer 1, the 20 string forms with repeat prefixes drawn (counts of zero, past
+  the data, overlapping), 1,000 a form, seed 4 (`l1-string-1000c.log`); `programs/x86_64/strings.c` (every
+  element size, a copy longer than a pass, backwards, overlapping, compares with their flags, a count of
+  zero) matches Linux at none and full and with a stop at every check.
+- `popf` (and `popfw`): the six flags, TF, DF, NT and ID; AC is held clear (plan 5.1) and counted; TF is
+  kept but not stepped until X6 (see "Departures"). Layer 1, 2 forms, 1,000 a form, seed 5, with AC masked
+  as the plan says (`l1-popf-1000.log`).
+- `rdtsc` and `rdtscp`: the clock hook's nanoseconds as a 1 GHz counter, ecx 0 for `rdtscp`. Answered by
+  design, so excluded from layer 1.
+- `cpuid` (plan 5.10): `crates/wcontainers-x86/src/cpuid.rs` is the table, one `answer(avx, leaf,
+  sub_leaf)`; the meaning emits a test per leaf and sub-leaf from it. Vendor GenuineIntel, the reference's
+  family 6, model 0x9E, stepping 10, the brand "wcontainers x86-64", the default claims or with the AVX
+  setting the v3 level and its XSAVE leaf, caches and topology of our own (see "Departures"), leaf 0x15's
+  1 GHz counter, invariant TSC, 48-bit linear addresses, leaves past the highest as the highest basic one.
+  "a program asked whether AVX is available and was told no" is counted for leaf 1 and leaf 7 sub-leaf 0
+  when the setting is off. Checked by `crates/wcontainers-x86/tests/cpuid.rs`, which reads the table back
+  through the raw-cpuid crate, and by 59 designed cases in layer 1 (every leaf with each sub-leaf, the next
+  and the last, leaves past the highest) that the translated `cpuid` gives the table's answer with the upper
+  halves cleared.
+- `xlat`: its address takes al zero-extended, in the meaning's address, in its access description (`Extend`
+  from 8 bits) and in `memory_fault`, which ignored an index's extension before and so called a fault at a
+  non-canonical `xlat` address a page fault; layer 1 builds `xlat` cases (`Xlat_m8`, 1,000, seed 78, 0
+  failing). `crc32` (CRC-32C a bit at a time, no table: 5 forms, 1,000 a form, seed 77, 0 failing).
+  `movnti`, `lfence`, `mfence`, `sfence` (one thread at a time: nothing to order).
+- SSE2 to SSE4.2 integer, move and blend forms on xmm registers: the saturating adds and subtracts, `pavg`,
+  `pmullw`, `pmulhw`, `pmulhuw`, `pmaddwd`, `psadbw`, the packs, the shifts by a register, the min and max
+  of every width, `pmulld`, `pmuldq`, `pcmpeqq`, `pcmpgtq`, `pshufb`, `pabs`, `psign`, `palignr`, the
+  horizontal adds and subtracts, `pmaddubsw`, `pmulhrsw`, `pmovsx`, `pmovzx`, `ptest`, `pblendw`,
+  `pblendvb`, `blendps`, `blendpd`, `blendvps`, `blendvpd`, `pextrb/d/q`, `extractps`, `pinsrb/d/q`,
+  `insertps`, `phminposuw`, `mpsadbw`, `lddqu`, `movntdqa`, `movntdq`, `movntps`, `movntpd`, `movddup`,
+  `movshdup`, `movsldup`, `movhlps`, `movlhps`, `movhps`, `movhpd`, `movlps`, `movlpd`, `movss`, `movsd`.
+  135 forms, layer 1 at 100 a form, seed 31: 0 failing (`l1-sse-100b.log`, 102 s); at 1,000 a form, seed
+  4242: 0 failing (`l1-sse-1000.log`, 618 s, the Mac at load 7 to 13, the laptop at 0.1 to 1). The first run found the memory sizes of float and packed operands under 16 bytes missing
+  (`Float32`, `Packed64_UInt16` and the rest): fixed in `size_of_memory`, checked against iced's sizes.
+
+The gap list (scratch `x5/run2/gaps4.txt`, the default legacy forms iced decodes for Intel in 64-bit mode,
+1,295): 864 written. Left: x87 160 and MMX 60 (X7's); the float forms of SSE to SSE4.1 (arithmetic, compares,
+conversions, `sqrt`, `min`, `max`, `round`, `dpps`, the SSE3 horizontal ones); `pcmpestri`, `pcmpestrm`,
+`pcmpistri`, `pcmpistrm`; `ldmxcsr`, `stmxcsr`; `maskmovdqu` (which bytes the CPU checks when the mask
+is partly zero is to be seen on the reference first); `fxsave`, `fxrstor` (with x87, X7); `wait`;
+`enter`; the segment and descriptor instructions (`mov` to and from segment registers, `push`/`pop fs/gs`,
+`lar`, `lsl`, `verr`, `verw`, `sldt`, `smsw`, `str`, `sgdt`, `sidt`, `lss`/`lfs`/`lgs`) and the far
+transfers (`call far`, `jmp far`, `retf`, `iret`), which need the selectors as thread state.
+
+What comes next, in this order: the float forms with MXCSR's two paths and tracking, the NaN rules and the
+probe (plan 5.8); `ldmxcsr`/`stmxcsr`; the reciprocal formula and its 2^32-input test; the SSE4.2 string
+compares; the segment, descriptor and far-transfer instructions with the reference cases plan 5.3 asks for
+(`iretq`'s partly mapped frames); `enter`; the host-dependence mark reviewed for every new meaning; the
+never-claimed list in layer 1 at 100 a form; layer 3 Csmith at 1,000; the passed-register lists; then the
+whole bar.
 
 ## X5, run 1 (2026-11-19)
 
@@ -2444,6 +2519,8 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
   itertools, either (all MIT or Apache-2.0, already common). Planned for X7 (x87 transcendentals); not yet a
   dependency.
 - rustc_apfloat 0.2.3: Apache-2.0 WITH LLVM-exception, already a dependency of wcontainers-arm64.
+- raw-cpuid 11.6.0: MIT (its Cargo.toml), with bitflags 2 (MIT OR Apache-2.0, already in the workspace).
+  Since X5 run 2 a dev-dependency of `wcontainers-x86` only: the CPUID test reads our table back through it.
 - Test tools on the x86 machine since X4 run 3, none a dependency of anything: Node.js 24.22.3 (MIT, the
   official linux-x64 tarball, checked against its SHA-256), playwright-core 1.63.0 (Apache-2.0, a copy of
   the Nix shell's), Google Chrome 158.0.8127.36 (Google's terms; unpacked, not installed).
@@ -2709,6 +2786,22 @@ X2 (each also written into the plan's text in the same commit):
   (plan 7.3, X2 run 9).
 - A local reference and layer 3's gcc image use Alpine 3.24.2 by digest, not `alpine:latest`; the gcc image
   is named by the SHA-256 of its recipe, so a changed recipe makes a new image (plan 7.3, X2 run 9).
+
+- CPUID's topology (X5 run 2). The brief asks that the processor-count and topology leaves agree with the
+  CPU count the kernel reports, which may differ between machines, with no count fixed in translated code.
+  The plan named no shape. Chosen: every logical processor is a package of its own (leaf 1: one logical
+  processor, APIC identifier 0, no HTT; leaf 0xB: one SMT level and one core level of one processor each;
+  leaf 4: each cache shared by one processor). That agrees with any count, so nothing is read at run time.
+  The kernel's /proc/cpuinfo should say the same (each CPU its own physical id) at X10.
+- `popf` that sets TF (X5 run 2): until X6 builds stepping (plan 5.1), the bit is kept and shows in `pushf`,
+  but no single step is taken; counted and warned "popf set the trap flag: single steps are not taken". The
+  plan's `raise_stop` path comes with X6.
+- Unreachable forms (X5 run 2): iced decodes `0F 18 /0` to `/3` (prefetch) and `0F 1F /0` (the multi-byte
+  NOP) as reserved NOPs with the decoder options x86 uses, which is what the CPU does with them (nothing, no
+  fault), so `Prefetch*` and `Nop_rm*` never reach a meaning and are counted as reserved NOPs. The 16-bit
+  near branches, `retnw` and `ud0` without ModRM exist only in iced's AMD decoding (iced's documentation:
+  Intel ignores 66 on those branches), so the gap list counts only forms with `intel_decoder64()`. Taken from
+  iced, not checked separately on the reference.
 
 ## Decisions taken in the plan that the owner may want to hear about
 

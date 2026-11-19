@@ -448,8 +448,16 @@ impl Guest for X86_64 {
                 None => {}
             }
             match access.index {
-                Some(Index::Register { reg, shift, .. }) => {
-                    start = start.wrapping_add(value(reg) << shift);
+                Some(Index::Register { reg, shift, extend }) => {
+                    // Only the index's own bits (`xlat`'s al), extended as the description says.
+                    let unused = u64::BITS - u32::from(extend.from_bits);
+                    let moved = value(reg) << unused;
+                    let index = if extend.signed {
+                        ((moved as i64) >> unused) as u64
+                    } else {
+                        moved >> unused
+                    };
+                    start = start.wrapping_add(index << shift);
                 }
                 Some(Index::BitOffset {
                     reg,

@@ -698,6 +698,26 @@ fn case(code: Code, seed: u64) -> Option<Case> {
                         Operand::M(m)
                     }
                 }
+                // `xlat`: rbx (ebx) plus al, through a drawn segment.
+                K::seg_rBX_al => {
+                    let drawn = memory_operand(&mut draw, false, address32);
+                    let base = if address32 {
+                        Register::EBX
+                    } else {
+                        Register::RBX
+                    };
+                    let m = MemoryOperand {
+                        base,
+                        index: Register::AL,
+                        scale: 1,
+                        displacement: 0,
+                        displ_size: 0,
+                        is_broadcast: false,
+                        segment_prefix: drawn.segment_prefix,
+                    };
+                    memory = Some(m);
+                    Operand::M(m)
+                }
                 K::xmm_or_mem if draw.chance(40) => Operand::R(xmm(&mut draw)),
                 K::xmm_or_mem => {
                     let m = memory_operand(&mut draw, false, address32);
@@ -873,11 +893,16 @@ fn bit_offset_move(instruction: &Instruction, state: &[u128]) -> u64 {
 
 /// The value of a register an address is made of, from the state: a general register at its width, a
 /// segment's base (FS and GS; the others are zero in 64-bit mode).
+/// rax's field.
+const RAX_FIELD: usize = wcontainers_x86::RAX as usize;
+
 fn register_value(r: Register, state: &[u128]) -> Option<u64> {
     match r {
         Register::FS => Some(state[FS] as u64),
         Register::GS => Some(state[GS] as u64),
         Register::ES | Register::CS | Register::SS | Register::DS => Some(0),
+        // `xlat`'s index.
+        Register::AL => Some(state[RAX_FIELD] as u64 & u64::from(u8::MAX)),
         _ => {
             let value = state[field_of(r)?] as u64;
             Some(match r.size() {
@@ -1024,7 +1049,8 @@ fn memory_operand(draw: &mut Draw, offset_only: bool, address32: bool) -> Memory
 
 /// Set the registers (or the segment base) so the operand's address is `to`.
 fn aim(draw: &mut Draw, state: &mut [u128], m: &MemoryOperand, to: u64, address32: bool) {
-    let index_value = field_of(m.index).map_or(0, |n| state[n] as u64);
+    // Only the index register's own width counts (`xlat`'s al).
+    let index_value = register_value(m.index, state).unwrap_or(0);
     let scaled = index_value.wrapping_mul(u64::from(m.scale));
     match field_of(m.base) {
         Some(b) if field_of(m.index) != Some(b) => {

@@ -181,8 +181,9 @@ pub fn address<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> u32 {
                 e.get(g.number);
                 e.sink().i64_add();
             }
+            // `xlat`'s index is al, zero-extended.
             if let Some(g) = general(ins.memory_index()) {
-                e.get(g.number);
+                get_general(e, g);
                 let scale = ins.memory_index_scale().trailing_zeros();
                 let mut s = e.sink();
                 if scale > 0 {
@@ -229,9 +230,12 @@ pub fn size_of_memory(size: MemorySize) -> u32 {
     use MemorySize::*;
     match size {
         UInt8 | Int8 => 1,
-        UInt16 | Int16 | WordOffset => 2,
-        UInt32 | Int32 | DwordOffset | SegPtr16 => 4,
-        UInt64 | Int64 | QwordOffset => 8,
+        UInt16 | Int16 | WordOffset | Packed16_UInt8 | Packed16_Int8 => 2,
+        UInt32 | Int32 | DwordOffset | SegPtr16 | Float32 | Packed32_UInt8 | Packed32_Int8
+        | Packed32_UInt16 | Packed32_Int16 => 4,
+        UInt64 | Int64 | QwordOffset | Float64 | Packed64_UInt8 | Packed64_Int8
+        | Packed64_UInt16 | Packed64_Int16 | Packed64_UInt32 | Packed64_Int32
+        | Packed64_Float32 => 8,
         UInt128 | Int128 | Packed128_UInt8 | Packed128_Int8 | Packed128_UInt16
         | Packed128_Int16 | Packed128_UInt32 | Packed128_Int32 | Packed128_UInt64
         | Packed128_Int64 | Packed128_Float32 | Packed128_Float64 => 16,
@@ -254,12 +258,15 @@ pub fn memory_use(i: &Instruction) -> Option<AccessKind> {
     Some(match (at, ins.mnemonic()) {
         // A nop's memory operand is never reached: no access, no check, no fault.
         (_, Nop | Reservednop | Lea) => return None,
-        (0, Cmp | Test | Push | Call | Jmp | Mul | Imul | Div | Idiv | Bt | Clflush) => {
+        (0, Cmp | Test | Push | Call | Jmp | Mul | Imul | Div | Idiv | Bt | Clflush | Xlatb) => {
             AccessKind::Read
         }
-        (0, Mov | Pop | Movaps | Movups | Movapd | Movupd | Movdqa | Movdqu | Movq | Movd) => {
-            AccessKind::Write
-        }
+        (
+            0,
+            Mov | Pop | Movaps | Movups | Movapd | Movupd | Movdqa | Movdqu | Movq | Movd | Movnti
+            | Movntdq | Movntps | Movntpd | Movss | Movsd | Movlps | Movlpd | Movhps | Movhpd
+            | Pextrb | Pextrw | Pextrd | Pextrq | Extractps,
+        ) => AccessKind::Write,
         (0, m) if setcc(m).is_some() => AccessKind::Write,
         (0, _) => AccessKind::ReadWrite,
         (_, Xchg) => AccessKind::ReadWrite,
@@ -412,7 +419,7 @@ pub fn operand_access(i: &Instruction, kind: AccessKind) -> MemoryAccess<u8> {
             reg: g.number,
             shift: ins.memory_index_scale().trailing_zeros() as u8,
             extend: Extend {
-                from_bits: 64,
+                from_bits: g.width,
                 signed: false,
             },
         }),

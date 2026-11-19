@@ -98,7 +98,7 @@ pub fn written(i: &Instruction) -> bool {
                     | Lzcnt | Popcnt | Bswap | Movbe | Xadd | Cmpxchg | Cmpxchg8b | Cmpxchg16b
                     | Shld | Shrd | Adcx | Adox | Loop | Loope | Loopne | Lahf | Sahf | Clflush
                     | Rdfsbase | Rdgsbase | Wrfsbase | Wrgsbase | Popf | Popfq | Rdtsc
-                    | Rdtscp | Cpuid
+                    | Rdtscp | Cpuid | Xlatb | Movnti | Lfence | Mfence | Sfence | Crc32
             ))
         // Far transfers through memory: a selector with the offset.
         && !(matches!(m, Call | Jmp) && is_memory(i, 0) && memory_bytes(i) != SLOT)
@@ -140,7 +140,9 @@ fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
     match m {
         Add | Adc | Sub | Sbb | Cmp | And | Or | Xor | Test => arithmetic(e, i, m),
         Inc | Dec | Neg | Not => unary(e, i, m),
-        Mov | Movzx => {
+        // One thread runs at a time, so the fences order nothing more.
+        Lfence | Mfence | Sfence => {}
+        Mov | Movzx | Movnti => {
             let mem = checked(e, i);
             let value = read(e, i, 1, mem);
             write(e, i, 0, mem, value);
@@ -210,6 +212,15 @@ fn meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) -> bool {
         Popf | Popfq => pop_flags(e, i),
         Rdtsc | Rdtscp => time_stamp(e, m == Rdtscp),
         Cpuid => cpuid(e),
+        Crc32 => crc32(e, i),
+        // al = [rbx + al].
+        Xlatb => {
+            let at = checked(e, i).expect("a memory operand");
+            let value = e.local(ValType::I64);
+            load(e, at, memory_bytes(i));
+            e.sink().local_set(value);
+            set_general(e, register(RAX, W8), value);
+        }
         Leave => {
             // rsp = rbp, then pop rbp (bp with 66), the read checked before anything changes.
             let bytes = stack_bytes(i);
@@ -2792,6 +2803,48 @@ fn load_flags<E: Emitter<X86_64> + ?Sized>(e: &mut E) {
         },
         value,
     );
+}
+
+/// CRC-32C's polynomial, bit-reflected (Intel SDM Vol. 2A, CRC32).
+const CRC32C_POLYNOMIAL: i32 = 0x82f6_3b78_u32 as i32;
+
+/// `crc32`: the CRC-32C of the source's bytes, low first, continued from the destination's low 32 bits, a bit
+/// at a time; the destination's upper half cleared.
+fn crc32<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
+    let mem = checked(e, i);
+    let value = read(e, i, 1, mem);
+    let bits = u32::from(width(i, 1));
+    let destination = general(i.iced.op_register(0)).expect("a general register");
+    let crc = e.local(ValType::I32);
+    get_general(e, register(destination.number, W32));
+    e.sink().i32_wrap_i64().local_set(crc);
+    for chunk in 0..bits.div_ceil(u32::BITS) {
+        let mut s = e.sink();
+        s.local_get(crc)
+            .local_get(value)
+            .i64_const((chunk * u32::BITS).into())
+            .i64_shr_u()
+            .i32_wrap_i64()
+            .i32_xor()
+            .local_set(crc);
+        for _ in 0..bits.min(u32::BITS) {
+            s.local_get(crc)
+                .i32_const(1)
+                .i32_shr_u()
+                .i32_const(CRC32C_POLYNOMIAL)
+                .i32_const(0)
+                .local_get(crc)
+                .i32_const(1)
+                .i32_and()
+                .i32_sub()
+                .i32_and()
+                .i32_xor()
+                .local_set(crc);
+        }
+    }
+    let result = e.local(ValType::I64);
+    e.sink().local_get(crc).i64_extend_i32_u().local_set(result);
+    set_general(e, register(destination.number, W64), result);
 }
 
 /// `cpuid`: eax, ebx, ecx and edx from the table of [`crate::cpuid`] by the leaf in eax and the sub-leaf in
