@@ -56,7 +56,8 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   new seed: X4's pass bar holds (see "X4, run 3"). Run 4 (2026-11-19) fixed what the independent check of X4
   found: switch tables as the compilers really write them for a 32-bit index, the lazy `Shift` shape and
   the flags of rotates and bit tests, the literal check's closing version merged, and the measurements the
-  check found missing (see "X4, run 4").
+  check found missing (see "X4, run 4"); the whole suite's ARM64 tests that need Docker on the Mac could not
+  run, because Docker Desktop would not start, and must be run again.
 
 ## X4, run 4 (2026-11-19)
 
@@ -142,7 +143,17 @@ Measured:
   stopped in the same SSH outage; each run again alone (`l2-seed31337-again.log`): 0 failing. So 10,000 with 0
   mismatches.
 
-Proof at the end of run 4: the whole suite (below).
+Proof at the end of run 4 (the Mac, load 7 to 10; the i7-8750H as reference, load 4.6 to 6.9):
+- Suite (the command of run 3, scratch `x4/run4/suite.log`, at 5122abd0's code): 422 passed, 25 failed, 13
+  ignored. All 25 failures are ARM64 tests whose reference runs in Docker on the Mac: Docker Desktop there
+  says "Docker Desktop is unable to start" (`docker info`), so every one panics with "the reference in
+  Docker: the reference did not answer" (289 such panics, plus layer 3's "the gcc image did not build").
+  Docker is the owner's and was left alone. This run changed no file of the translator, ARM64 or interface
+  crates (`git diff --stat fc712bf3..HEAD`), so ARM64's output cannot have changed; those 25 must be run
+  again once Docker works. Every x86 test, the literal check's tests and the ARM64 tests without Docker
+  passed. The runner panic "mid > len" in the log is the refusal test's own.
+- `cargo run -q -p wcontainers-literals -- check`: exit 0. `cargo fmt --check` and clippy with `-D warnings` on
+  the x86, translator and test crates (all targets): clean.
 
 Left for later (in order; none is in X4's bar):
 1. interpret's absolute switch table (plan 3.4's decision, for X9).
