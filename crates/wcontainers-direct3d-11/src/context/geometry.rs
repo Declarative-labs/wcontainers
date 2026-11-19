@@ -8,7 +8,7 @@ use super::tessellation::DomainDraw;
 use super::*;
 use crate::desc::{ViewDesc, bind};
 use crate::device::COUNTER_BYTES;
-use wcontainers_gpu::BufferUsage;
+use wcontainers_gpu::{BufferUsage, VariantFlags};
 use wcontainers_shaders::ConvertError;
 use wcontainers_shaders::Converted;
 use wcontainers_shaders::stage::{
@@ -187,16 +187,32 @@ impl<B: Backend> Device<B> {
         let vertex = self.pulled_vertex(vs, vk)?;
         // The geometry stage writes its outputs as the pixel shader interpolates them.
         let interpolation = interpolation(self.ctx.ps.as_deref());
+        // A stage naming layers passes the layer named to the pixel program, past both
+        // programs' values (`LAYER_FROM_STAGE`), as the draw's pixel variant reads it.
+        let layer_named = gs
+            .stage
+            .as_ref()
+            .is_some_and(|(s, _)| crate::shader::names_layer(&s.reflection.outputs));
         let (geometry, passthrough, passthrough_id) = match &gs.stage {
             None => (None, None, 0),
-            Some((shader, plain)) if interpolation.is_empty() => {
+            Some((shader, plain)) if interpolation.is_empty() && !layer_named => {
                 (Some(plain.clone()), None, shader.gpu.id)
             }
             Some((shader, _)) => {
-                let key = VariantKey {
+                let mut key = VariantKey {
                     output_interpolation: interpolation,
-                    ..crate::shader::base_key(SourceStage::Geometry, &shader.typed, shader.layered)
+                    ..crate::shader::geometry_key(&shader.typed, shader.layered, shader.clip)
                 };
+                if layer_named {
+                    key.flags |= VariantFlags::LAYER_FROM_STAGE;
+                    key.linked.location = crate::shader::linked_location(
+                        shader
+                            .reflection
+                            .outputs
+                            .iter()
+                            .chain(self.ctx.ps.iter().flat_map(|p| &p.reflection.inputs)),
+                    );
+                }
                 let c = crate::shader::convert_geometry(&shader.bytecode, &key)?;
                 let gpu = self.backend.create_shader(&c.modules[1]);
                 let gpu = self.gpu(gpu)?;
@@ -258,7 +274,9 @@ impl<B: Backend> Device<B> {
             _ => (passthrough, passthrough_id),
         };
         let run_helpers = match &geometry {
-            Some(c) if stages.selects() => Rc::new(Helpers::of_passthrough(&c.modules[1])),
+            Some(c) if stages.selects() => {
+                Rc::new(Helpers::of_passthrough(&c.modules[1], layer_named))
+            }
             _ => Rc::default(),
         };
         let layout = match stages.vertex_layout() {
@@ -795,7 +813,7 @@ impl<B: Backend> Device<B> {
                 }
             }
             for viewport in 0..viewports {
-                self.ctx.run = [layer, viewport];
+                self.ctx.run = [layer, viewport, layers];
                 r = self
                     .write_helpers(&[helpers[0].clone(), helpers[1].clone()], bases, None)
                     .and_then(|()| {
@@ -814,7 +832,7 @@ impl<B: Backend> Device<B> {
             self.end_pass();
             (self.ctx.targets, self.ctx.depth) = bound;
         }
-        self.ctx.run = [0; 2];
+        self.ctx.run = [0; 3];
         self.helper_blocks = None;
         r
     }
@@ -900,14 +918,6 @@ impl<B: Backend> Device<B> {
         // As the plain draw's lines (`ContextState::draw`).
         if lines && desc.antialiased_lines && !desc.multisample {
             return not_implemented(super::ALPHA_ANTIALIASED_LINES);
-        }
-        if (desc.depth_bias != 0 || desc.slope_scaled_depth_bias != 0.0)
-            && !matches!(
-                out.topology,
-                Topology::TriangleList | Topology::TriangleStrip
-            )
-        {
-            return not_implemented("depth bias on lines and points");
         }
         if self.ctx.viewports.is_empty() || out.count == 0 {
             return Ok(());

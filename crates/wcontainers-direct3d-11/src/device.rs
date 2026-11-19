@@ -216,10 +216,6 @@ const L9_3_TARGETS: u32 = 4;
 const CULL_DISTANCES_UNSERVED: &str = "cull distances past the vertex stage, or without the back end's or its compute programs \
      (CullDistanceAsGeometry)";
 
-/// Refused: clip distances written by a geometry shader where the back end has none.
-const GEOMETRY_CLIP_DISTANCES_UNSERVED: &str =
-    "clip distances from a geometry shader without the back end's (ClipDistanceInShader)";
-
 /// Refused: sharing below 10_0, or of more or fewer than one kind.
 const SHARING_INVALID: &str = "sharing below 10_0, or not of exactly one kind";
 
@@ -2038,9 +2034,25 @@ impl<B: Backend> Device<B> {
         } else {
             let typed = shader::typed_views(bytecode)?;
             let layered = shader::multisampled_arrays(bytecode)?;
-            let key = shader::base_key(SourceStage::Geometry, &typed, layered);
-            let converted = shader::convert_geometry(bytecode, &key)?;
-            let stage = self.geometry_stage(bytecode, &converted, typed, layered)?;
+            let key = shader::geometry_key(&typed, layered, None);
+            let mut converted = shader::convert_geometry(bytecode, &key)?;
+            // A pass-through writing clip distances the back end lacks passes them on for the
+            // pixel program to apply, at the location past the stage's outputs.
+            let clip = (wcontainers_shaders::capabilities(&converted.modules[1].module)
+                .contains(naga::valid::Capabilities::CLIP_DISTANCES)
+                && !self.backend.caps().has(Features::CLIP_DISTANCE))
+            .then(|| {
+                let outputs = &converted.reflection.outputs;
+                (
+                    shader::linked_location(outputs),
+                    shader::clip_distances(outputs),
+                )
+            });
+            if clip.is_some() {
+                let key = shader::geometry_key(&typed, layered, clip);
+                converted = shader::convert_geometry(bytecode, &key)?;
+            }
+            let stage = self.geometry_stage(bytecode, &converted, typed, layered, clip)?;
             Some((stage, converted))
         };
         let id = self.id();
@@ -2060,16 +2072,9 @@ impl<B: Backend> Device<B> {
         converted: &wcontainers_shaders::Converted,
         typed: Vec<shader::TypedView>,
         layered: u128,
+        clip: Option<(u32, u8)>,
     ) -> Result<Rc<Shader<B>>> {
         let compute = &converted.modules[0];
-        // The pass-through passing a geometry shader's clip distances on where the back end has
-        // none (`ClipDistanceInShader` behind a geometry stage) is not built here.
-        if wcontainers_shaders::capabilities(&converted.modules[1].module)
-            .contains(naga::valid::Capabilities::CLIP_DISTANCES)
-            && !self.backend.caps().has(Features::CLIP_DISTANCE)
-        {
-            return not_implemented(GEOMETRY_CLIP_DISTANCES_UNSERVED);
-        }
         self.live()?;
         self.bury();
         let gpu = self.backend.create_shader(&converted.modules[1]);
@@ -2088,7 +2093,7 @@ impl<B: Backend> Device<B> {
             reads_samples: false,
             helpers: Rc::new(shader::Helpers::of(converted)),
             indexed_constants: shader::indexed_constants(bytecode)?,
-            clip: None,
+            clip,
             culled: false,
             typed,
             layered,
