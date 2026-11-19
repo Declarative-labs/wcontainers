@@ -24,6 +24,15 @@ enum class ResourceClass : uint32_t {
   eCounter,
 };
 
+// The words of one entry of a table a boundary returns: a resource's (class, space, register), a
+// constant buffer's (space, register, size in bytes).
+enum class TableWord : uint32_t {
+  eFirst,
+  eSecond,
+  eThird,
+  eCount,
+};
+
 // Keeps the first error dxbc-spirv reports on this thread while it lives, as the reason a call failed.
 class ErrorLog : public dxbc_spv::util::Logger {
 public:

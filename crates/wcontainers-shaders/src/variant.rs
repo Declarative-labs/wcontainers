@@ -268,6 +268,10 @@ fn index(
     push(f, body, Expression::AccessIndex { base, index: i })
 }
 
+/// The member names of `build::DrawArguments` in the block.
+const ARGUMENTS_OFFSET: &str = "arguments_offset";
+const INDEXED: &str = "indexed";
+
 /// Reads member `member` of the stage's helper block.
 fn load_helper(
     f: &mut Function,
@@ -340,7 +344,7 @@ fn helper(
     let span = naga::proc::Alignment::MIN_UNIFORM.round_up(offset + size);
     let block = module.types.insert(
         Type {
-            name: Some("Helpers".into()),
+            name: Some(crate::build::HELPERS_TYPE.into()),
             inner: TypeInner::Struct { members, span },
         },
         Span::UNDEFINED,
@@ -354,7 +358,7 @@ fn helper(
         }
         None => module.global_variables.append(
             GlobalVariable {
-                name: Some("helpers".into()),
+                name: Some(crate::build::HELPERS.into()),
                 space: AddressSpace::Uniform,
                 binding: Some(binding),
                 ty: block,
@@ -1455,13 +1459,13 @@ fn draw_arguments(
         ))?;
     let u32_ty = scalar(module, Scalar::U32);
     let i32_ty = scalar(module, Scalar::I32);
-    let member = |name: &str, offset| StructMember {
+    let member = |name: &str, offset: usize| StructMember {
         name: Some(name.into()),
         ty: u32_ty,
         binding: None,
-        offset,
+        offset: offset as u32,
     };
-    // The bases' three members (offsets 0, 4 and 8) become the arguments' place; later members stay.
+    // The bases' members become the arguments' place; later members stay.
     let TypeInner::Struct { members, span } =
         &module.types[module.global_variables[helpers].ty].inner
     else {
@@ -1469,17 +1473,21 @@ fn draw_arguments(
     };
     let mut members = members.clone();
     let span = *span;
-    members.splice(
-        ..3,
-        [
-            member("arguments_offset", 0),
-            member("indexed", 4),
-            member("draw", 8),
-        ],
-    );
+    {
+        use crate::build::{DRAW, DrawArguments};
+        use core::mem::offset_of;
+        members.splice(
+            ..DrawArguments::MEMBERS,
+            [
+                member(ARGUMENTS_OFFSET, offset_of!(DrawArguments, offset)),
+                member(INDEXED, offset_of!(DrawArguments, indexed)),
+                member(DRAW, offset_of!(DrawArguments, draw)),
+            ],
+        );
+    }
     let ty = module.types.insert(
         Type {
-            name: Some("Helpers".into()),
+            name: Some(crate::build::HELPERS_TYPE.into()),
             inner: TypeInner::Struct { members, span },
         },
         Span::UNDEFINED,
@@ -1518,9 +1526,9 @@ fn draw_arguments(
         let mut f = Function {
             name: Some(
                 if signed {
-                    "base_vertex"
+                    crate::build::BASE_VERTEX
                 } else {
-                    "first_instance"
+                    crate::build::FIRST_INSTANCE
                 }
                 .into(),
             ),

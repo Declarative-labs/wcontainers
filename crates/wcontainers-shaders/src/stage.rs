@@ -52,10 +52,10 @@ pub(crate) const PATCHES_BINDING: u32 = 3;
 /// The tessellator's points, which the domain stage's compute form reads.
 pub(crate) const POINTS_BINDING: u32 = 4;
 /// Vertices of a triangle, the most a primitive without adjacency has.
-pub(crate) const TRIANGLE_VERTICES: u32 = 3;
+pub const TRIANGLE_VERTICES: u32 = 3;
 /// Vertices of a line and of a triangle with adjacency.
-pub(crate) const LINE_ADJACENCY_VERTICES: u32 = 4;
-pub(crate) const TRIANGLE_ADJACENCY_VERTICES: u32 = 6;
+pub const LINE_ADJACENCY_VERTICES: u32 = 4;
+pub const TRIANGLE_ADJACENCY_VERTICES: u32 = 6;
 /// Invocations per workgroup of the helper's compute programs.
 pub(crate) const WORKGROUP: u32 = 64;
 

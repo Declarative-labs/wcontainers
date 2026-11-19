@@ -1118,22 +1118,9 @@ impl<'a> Lowering<'a> {
     /// The vertex stage's helper constants: the draw's bases at offset 0 (for bases from an indirect
     /// draw's arguments too, which the variant pass then reads from them).
     fn helper_block(&mut self) -> Result<()> {
-        let i32_ty = self.scalar_ty(Scalar::I32);
-        let u32_ty = self.scalar_ty(Scalar::U32);
-        let members = vec![
-            member("base_vertex", i32_ty, 0),
-            member("first_instance", u32_ty, 4),
-            member("draw", u32_ty, 8),
-        ];
-        let ty = self.module.types.insert(
-            Type {
-                name: Some("Helpers".into()),
-                inner: TypeInner::Struct { members, span: 16 },
-            },
-            Span::UNDEFINED,
-        );
+        let (ty, size) = crate::build::draw_bases_block(&mut self.module);
         let var = self.global(
-            "helpers".into(),
+            crate::build::HELPERS.into(),
             AddressSpace::Uniform,
             Some(ResourceBinding {
                 group: wcontainers_gpu::HELPER_SET,
@@ -1147,7 +1134,7 @@ impl<'a> Lowering<'a> {
             value: HelperValue::DrawBase,
             offset: 0,
         });
-        self.reflection.helper_size = 16;
+        self.reflection.helper_size = size;
         Ok(())
     }
 
@@ -1762,15 +1749,6 @@ fn system_value(b: u64) -> Option<SystemValue> {
         builtin::VIEWPORT_INDEX => SystemValue::ViewportArrayIndex,
         _ => return None,
     })
-}
-
-fn member(name: &str, ty: Handle<Type>, offset: u32) -> StructMember {
-    StructMember {
-        name: Some(name.into()),
-        ty,
-        binding: None,
-        offset,
-    }
 }
 
 fn vector_size(n: u8) -> Result<VectorSize> {

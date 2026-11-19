@@ -19,6 +19,79 @@ pub(crate) const BYTE_SHIFT: u32 = u8::BITS.trailing_zeros();
 /// The components of a four-component vector.
 pub(crate) const VEC4: u32 = VectorSize::Quad as u32;
 
+/// The name of each program's helper constants and of their block's type.
+pub(crate) const HELPERS: &str = "helpers";
+pub(crate) const HELPERS_TYPE: &str = "Helpers";
+
+/// The draw's bases at the start of the vertex stage's helper constants
+/// (`HelperValue::DrawBase`), as fronts write them.
+#[repr(C)]
+pub(crate) struct DrawBases {
+    pub base_vertex: i32,
+    pub first_instance: u32,
+    pub draw: u32,
+}
+
+/// Where an indirect draw's arguments are, in place of [`DrawBases`] (`HelperValue::DrawArguments`).
+#[repr(C)]
+pub(crate) struct DrawArguments {
+    pub offset: u32,
+    pub indexed: u32,
+    pub draw: u32,
+}
+
+impl DrawArguments {
+    /// Its members, which take the place of [`DrawBases`]' as many.
+    pub const MEMBERS: usize = core::mem::size_of::<DrawArguments>() / core::mem::size_of::<u32>();
+}
+
+/// The member names of [`DrawBases`] in the block.
+pub(crate) const BASE_VERTEX: &str = "base_vertex";
+pub(crate) const FIRST_INSTANCE: &str = "first_instance";
+pub(crate) const DRAW: &str = "draw";
+
+/// The helper block's type holding only [`DrawBases`], and its size in bytes: a whole number of
+/// four-word slots, as a uniform block is laid out.
+pub(crate) fn draw_bases_block(module: &mut Module) -> (Handle<Type>, u32) {
+    use core::mem::offset_of;
+    let mut scalar = |scalar| {
+        module.types.insert(
+            Type {
+                name: None,
+                inner: TypeInner::Scalar(scalar),
+            },
+            Span::UNDEFINED,
+        )
+    };
+    let (i32_ty, u32_ty) = (scalar(Scalar::I32), scalar(Scalar::U32));
+    let member = |name: &str, ty, offset: usize| naga::StructMember {
+        name: Some(name.into()),
+        ty,
+        binding: None,
+        offset: offset as u32,
+    };
+    let span = (core::mem::size_of::<DrawBases>() as u32).next_multiple_of(WORD * VEC4);
+    let ty = module.types.insert(
+        Type {
+            name: Some(HELPERS_TYPE.into()),
+            inner: TypeInner::Struct {
+                members: alloc::vec![
+                    member(BASE_VERTEX, i32_ty, offset_of!(DrawBases, base_vertex)),
+                    member(
+                        FIRST_INSTANCE,
+                        u32_ty,
+                        offset_of!(DrawBases, first_instance)
+                    ),
+                    member(DRAW, u32_ty, offset_of!(DrawBases, draw)),
+                ],
+                span,
+            },
+        },
+        Span::UNDEFINED,
+    );
+    (ty, span)
+}
+
 /// Builds one function, statement by statement, into the innermost open block.
 pub(crate) struct Builder {
     pub f: Function,
