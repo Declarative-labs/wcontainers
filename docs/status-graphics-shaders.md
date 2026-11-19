@@ -2303,6 +2303,9 @@ Run 47 (the check of run 46's report: every finding fixed or recorded):
     this crate's baseline lines (src, build.rs, tests, examples) 619, down from 659. The 41 lines
     deleted include one of another crate (the kernel's netlink `HEADER = 16`, listed only as the
     pair of this crate's old `HEADER`), deleted as the check said.
+- Clean-up: the laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders` (5.8 GB) and the
+  desktop's `C:\wc\target\phase-2-graphics-shaders` deleted; scratch keeps the logs and
+  `run47/out` (49 MB, the files Chrome compiled).
 
 Next (in order). The gap list (top of this file) in the order the fronts need it:
 1. The Direct3D 12 front's two named items: `ResourceArray` (arrays of views in shader model 5.1
