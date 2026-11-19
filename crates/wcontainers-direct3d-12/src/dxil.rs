@@ -18,6 +18,16 @@ const TYPED_BUFFER: i64 = 10;
 /// `DXIL::ResourceKind::Texture2DMSArray`.
 const TEXTURE_2D_MS_ARRAY: i64 = 8;
 
+/// A resource record's fields (`DXIL.rst`, "Resources"): id, variable and name come first.
+const SPACE: usize = 3;
+const LOWER_BOUND: usize = 4;
+const RANGE_SIZE: usize = 5;
+const KIND: usize = 6;
+/// The extended properties: after the kind, a shader resource view's sample count; an unordered
+/// access view's globally coherent, counter and rasterizer ordered flags.
+const SRV_EXTENDED: usize = 8;
+const UAV_EXTENDED: usize = 10;
+
 /// A module-level metadata entry, as far as the resource list needs.
 enum Md {
     /// A node's operands (`None` for a null operand).
@@ -146,25 +156,39 @@ impl Reader {
         }
     }
 
-    /// The typed views of one list of the resource list: shader resource views (`storage`
-    /// false, typed buffers only) or unordered access views (textures and typed buffers).
-    fn views(&self, list: Option<usize>, storage: bool, out: &mut Vec<TypedView>) -> Option<()> {
-        // Fields: id, variable, name, space, lower bound, range size, kind, then for shader
-        // resource views the sample count and the extended properties, for unordered access
-        // views globally coherent, counter, rasterizer ordered and the extended properties.
-        let extended = if storage { 10 } else { 8 };
+    /// The resources of one list of the resource list: each one's fields, its resource kind and
+    /// the (space, register) places of its elements, with every place of the list sorted for the
+    /// slots.
+    fn declared(&self, list: Option<usize>) -> Option<Declarations<'_>> {
         let resources = self.node(list).unwrap_or_default();
-        // Every view of the list as (space, register), for the slots.
+        let mut declared = Vec::with_capacity(resources.len());
         let mut places = Vec::with_capacity(resources.len());
         for &resource in resources {
             let fields = self.node(resource)?;
-            let place = |at: usize| u32::try_from(self.integer(*fields.get(at)?)?).ok();
-            places.push((place(3)?, place(4)?));
+            let integer = |at: usize| self.integer(*fields.get(at)?);
+            let space = u32::try_from(integer(SPACE)?).ok()?;
+            let first = u32::try_from(integer(LOWER_BOUND)?).ok()?;
+            // An unbounded range is one place: the converter refuses such arrays.
+            let count = u32::try_from(integer(RANGE_SIZE)?)
+                .ok()
+                .filter(|&c| c != u32::MAX)
+                .unwrap_or(1);
+            let elements: Vec<(u32, u32)> = (0..count)
+                .map(|i| Some((space, first.checked_add(i)?)))
+                .collect::<Option<_>>()?;
+            places.extend_from_slice(&elements);
+            declared.push((fields, integer(KIND)?, elements));
         }
-        let all = sorted_places(&places);
-        for (&resource, place) in resources.iter().zip(places) {
-            let fields = self.node(resource)?;
-            let kind = self.integer(*fields.get(6)?)?;
+        Some((declared, sorted_places(&places)))
+    }
+
+    /// The typed views of one list of the resource list: shader resource views (`storage`
+    /// false, typed buffers only) or unordered access views (textures and typed buffers), one
+    /// per element of an array, as the converter declares a view per element.
+    fn views(&self, list: Option<usize>, storage: bool, out: &mut Vec<TypedView>) -> Option<()> {
+        let extended = if storage { UAV_EXTENDED } else { SRV_EXTENDED };
+        let (declared, all) = self.declared(list)?;
+        for (fields, kind, elements) in declared {
             let typed = match storage {
                 true => (1..=TYPED_BUFFER).contains(&kind),
                 false => kind == TYPED_BUFFER,
@@ -172,16 +196,23 @@ impl Reader {
             if !typed {
                 continue;
             }
-            out.push(TypedView {
+            let component = self.kind(*fields.get(extended)?)?;
+            out.extend(elements.into_iter().map(|place| TypedView {
                 storage,
                 buffer: kind == TYPED_BUFFER,
                 slot: slot(&all, place),
-                kind: self.kind(*fields.get(extended)?)?,
-            });
+                kind: component,
+            }));
         }
         Some(())
     }
 }
+
+/// A resource of the resource list: its fields, its resource kind and its elements' places.
+type Declared<'a> = (&'a [Option<usize>], i64, Vec<(u32, u32)>);
+
+/// A list's resources, and every place of the list sorted.
+type Declarations<'a> = (Vec<Declared<'a>>, Vec<(u32, u32)>);
 
 /// A class's (space, register) places, sorted, each once.
 pub(crate) fn sorted_places(places: &[(u32, u32)]) -> Vec<(u32, u32)> {
@@ -234,25 +265,15 @@ pub fn multisampled_arrays(code: &[u8]) -> Option<Vec<u32>> {
     let Some(list) = list else {
         return Some(Vec::new());
     };
-    let resources = reader
-        .node(*reader.node(Some(list))?.first()?)
-        .unwrap_or_default();
-    let mut places = Vec::with_capacity(resources.len());
-    let mut arrays = Vec::new();
-    for &resource in resources {
-        let fields = reader.node(resource)?;
-        let integer = |at: usize| reader.integer(*fields.get(at)?);
-        let place = (
-            u32::try_from(integer(3)?).ok()?,
-            u32::try_from(integer(4)?).ok()?,
-        );
-        places.push(place);
-        if integer(6)? == TEXTURE_2D_MS_ARRAY {
-            arrays.push(place);
-        }
-    }
-    let all = sorted_places(&places);
-    Some(arrays.into_iter().map(|p| slot(&all, p)).collect())
+    let (declared, all) = reader.declared(*reader.node(Some(list))?.first()?)?;
+    Some(
+        declared
+            .into_iter()
+            .filter(|d| d.1 == TEXTURE_2D_MS_ARRAY)
+            .flat_map(|d| d.2)
+            .map(|p| slot(&all, p))
+            .collect(),
+    )
 }
 
 #[cfg(test)]
@@ -305,6 +326,16 @@ mod tests {
                 view(true, false, 3, Kind::Sint),
             ]
         );
+    }
+
+    #[test]
+    fn arrays_of_storage_textures_are_a_view_per_element() {
+        // arrays.hlsl's cs_image_array: RWTexture2D<uint> images[4] at u0.
+        let code = include_bytes!("../../wcontainers-shaders/tests/own/cs_image_array.dxil");
+        let mut views = typed_views(code).unwrap();
+        views.sort_by_key(|v| v.slot);
+        let elements: Vec<_> = (0..4).map(|s| view(true, false, s, Kind::Uint)).collect();
+        assert_eq!(views, elements);
     }
 
     #[test]

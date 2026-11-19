@@ -91,6 +91,9 @@ pub(super) struct Made<B: Backend> {
     /// A geometry shader after the domain stage.
     pub late: Option<Converted>,
     pub output: Option<Topology>,
+    /// Where the pixel program applies the geometry stage's clip distances
+    /// (`ClipDistanceInShader`), the values they pass; default where it does not.
+    pub linked: LinkedValues,
 }
 
 /// `D3D12_SHADER_VISIBILITY_HULL` and `_DOMAIN`.
@@ -109,6 +112,37 @@ pub(super) fn writes_cull_distances(c: &Converted) -> bool {
 pub const NO_RASTERIZED_STREAM: u32 = u32::MAX;
 
 impl<B: Backend> Device<B> {
+    /// The last stage before the rasteriser, a geometry or domain shader `code`, converted with
+    /// `key`; where it writes clip distances the back end lacks, converted so that it (a geometry
+    /// shader's pass-through) passes them to the pixel program, which applies them with the
+    /// values returned (`ClipDistanceInShader`).
+    fn last_stage_converted(
+        &mut self,
+        code: &[u8],
+        stage: SourceStage,
+        key: VariantKey,
+        pixel_inputs: Option<&[StageValue]>,
+    ) -> Result<(Converted, LinkedValues), Error> {
+        let converted = self.convert_staged(code, stage, key.clone())?;
+        let outputs = &converted.reflection.outputs;
+        let clip_distances = super::clip_distances(outputs);
+        if clip_distances == 0 || self.backend.caps().has(Features::CLIP_DISTANCE) {
+            return Ok((converted, LinkedValues::default()));
+        }
+        let inputs = pixel_inputs.ok_or(Error::NotImplemented(super::CLIP_WITHOUT_PIXEL_SHADER))?;
+        let linked = LinkedValues {
+            location: super::linked_location(outputs.iter().chain(inputs)),
+            clip_distances,
+        };
+        let key = VariantKey {
+            flags: key.flags | VariantFlags::CLIP_DISTANCE,
+            linked,
+            ..key
+        };
+        let converted = self.convert_staged(code, stage, key)?;
+        Ok((converted, linked))
+    }
+
     /// The stages of a pipeline with a geometry shader `gs` (or none, empty), stream output `so`,
     /// or hull and domain shaders `hs` and `ds` (or none): `vs` converted with every input of
     /// `inputs` fetched in the program, the last stage before the pixel stage writing its
@@ -123,6 +157,7 @@ impl<B: Backend> Device<B> {
         inputs: &[(InputElement, u32)],
         interpolation: &[(u32, Interpolation)],
         so: Option<&(StreamOutput, u32)>,
+        pixel_inputs: Option<&[StageValue]>,
     ) -> Result<Made<B>, Error> {
         if !self.backend.caps().has(Features::COMPUTE) {
             return Err(Error::NotImplemented(
@@ -159,12 +194,18 @@ impl<B: Backend> Device<B> {
             output_interpolation: interpolation.to_vec(),
             ..VariantKey::default()
         };
+        let mut linked = LinkedValues::default();
         let (shader, domain, late) = match (gs.is_empty(), tessellated) {
-            (false, false) => (
-                Some(self.convert_staged(gs, SourceStage::Geometry, interpolated)?),
-                None,
-                None,
-            ),
+            (false, false) => {
+                let (gs, l) = self.last_stage_converted(
+                    gs,
+                    SourceStage::Geometry,
+                    interpolated,
+                    pixel_inputs,
+                )?;
+                linked = l;
+                (Some(gs), None, None)
+            }
             (_, true) => {
                 let hull = self.convert_staged(
                     hs,
@@ -180,10 +221,31 @@ impl<B: Backend> Device<B> {
                     },
                     false => formats::typed_key(ds, self.texel_route()),
                 };
-                let domain = self.convert_staged(ds, SourceStage::Domain, domain_key)?;
+                let domain = match gs.is_empty() {
+                    true => {
+                        let (domain, l) = self.last_stage_converted(
+                            ds,
+                            SourceStage::Domain,
+                            domain_key,
+                            pixel_inputs,
+                        )?;
+                        linked = l;
+                        domain
+                    }
+                    false => self.convert_staged(ds, SourceStage::Domain, domain_key)?,
+                };
                 let late = match gs.is_empty() {
                     true => None,
-                    false => Some(self.convert_staged(gs, SourceStage::Geometry, interpolated)?),
+                    false => {
+                        let (gs, l) = self.last_stage_converted(
+                            gs,
+                            SourceStage::Geometry,
+                            interpolated,
+                            pixel_inputs,
+                        )?;
+                        linked = l;
+                        Some(gs)
+                    }
                 };
                 (Some(hull), Some(domain), late)
             }
@@ -287,6 +349,7 @@ impl<B: Backend> Device<B> {
             domain,
             late,
             output,
+            linked,
         })
     }
 }
