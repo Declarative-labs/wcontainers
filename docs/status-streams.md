@@ -13,12 +13,16 @@ orchestrator/brief-streams.md and orchestrator/next-embedder-interface.md.
   check's twelve findings settled in the fifth run (see "S2 second check findings"); its third
   check's eight findings settled in the sixth run (see "S2 third check findings"); its fourth
   check's seven findings and the owner's two rulings of 2026-11-19 (`&self` with `Sync`, and
-  `memory_take_dirty`) settled in the seventh run (see "S2 fourth check findings").
+  `memory_take_dirty`) settled in the seventh run (see "S2 fourth check findings"), and the whole
+  suite's verdicts unchanged after them (see "Measurements").
 - What comes next: S2's fifth independent check. Not built and left open on purpose: export of a
   process (`suspend`, `resume`, `SuspendedProcess`, `ExportedProcess`; where they attach is in
   docs/embedder-interface.md), the report of which processes share memory and the watch put on
   shared pages when one leaves (it comes with `suspend`), `set_thread_ordering`, the inspection
   hooks, `StopReason`; ends made by connect, accept, export or import; `/dev/console` under `-t`.
+  Ruled on 2026-11-19 but not part of S2: `type ProcessState` (to wait for the reviewable-rust
+  layout, as ruled) and the system call proxy (`intercept_system_call_request` and `_response`;
+  its `memory_written` still open).
 
 ## How to run
 
@@ -389,6 +393,22 @@ Found on the way, fixed:
   kernel runs inside the test process, so its work is in the CPU time, which is unchanged within
   1 %; the wall difference is not explained by it (the tests also wait on Docker's reference).
   Measured only on this loaded Mac; a quiet machine would settle the threads wall time.
+
+- Seventh run, after the fourth check's fixes (bf36978b; the commits after it are documents):
+  the embedder tests (17, seeds 1 to 3), faults, memory, orphans, processes, rseqabort, shell,
+  sigframe, threads and zombie passed on this Mac (scratch streams/s2e/fixes-1.log, ending 12:42,
+  load 30; embedder 101 s). Clippy with warnings denied over the three crates passed on the ARM
+  machine (s2e/clippy-arm-2.log) and here. Whole suite on the ARM machine, the command in "How to
+  run" with `-j $ARM_JOBS` (s2e/suite-arm.log, 2312 s, 12:44 to 13:22, machine load 40 falling to
+  21): 565 passed, 28 failed, 6 ignored; the 28 are the 26 of the manual's list plus
+  `terminal::splice_holds_the_pipe` and the literal check's `the_workspace_keeps_to_its_baseline`,
+  as in the fifth run. Their 20 binaries passed on this Mac (s2e/mac-only-4.log, 12:54 to 12:57,
+  load 20 to 98; an earlier try, mac-only-3.log, failed at `docker create` when Docker's socket
+  closed, nothing of the kernel), and the literal check's tests and the check passed here
+  (s2e/literals-mac.log, 13:23, load 115; 7589 baseline lines). Combined (s2e/combined.log): 599 tests, 593 passed, 6 ignored,
+  none failed. `streams/verdicts.py s2d/suite.log s2e/combined.log`: every test of the sixth run's
+  suite has the same verdict; the two tests added are new and pass. Speed not measured again (the
+  fourth check measured it on the ARM machine at 319aeede; the no-hook path is unchanged since).
 
 ## Literals
 
