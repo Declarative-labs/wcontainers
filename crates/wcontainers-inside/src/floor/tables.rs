@@ -40,17 +40,24 @@ pub fn space_full() -> u64 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Full;
 
-/// Counts a refused request and warns at the first.
+/// Counts a refused request.
 fn full() -> Full {
-    if SPACE_FULL.fetch_add(1, Ordering::Relaxed) == 0 {
-        super::send(
-            &crate::link::Print {},
-            format_args!(
-                "warning: guest-physical space full: a request for memory failed (counted)"
-            ),
-        );
-    }
+    SPACE_FULL.fetch_add(1, Ordering::Relaxed);
     Full
+}
+
+/// The unit of Linux's free-memory watermark formula, a kibibyte.
+const WATERMARK_UNIT: u64 = 1 << 10;
+
+/// Linux keeps free the square root of this many times its memory in kibibytes, in kibibytes
+/// (mm/page_alloc.c, `calculate_min_free_kbytes`).
+const WATERMARK_SCALE: u64 = 16;
+
+/// The bytes at the end of `memory` bytes of guest-physical memory that only the inside may take, so its heap
+/// can still grow when the guest's memory is full: Linux's minimum free-memory watermark, in whole blocks.
+const fn kept_for_inside(memory: u64) -> u64 {
+    ((memory / WATERMARK_UNIT * WATERMARK_SCALE).isqrt() * WATERMARK_UNIT)
+        .next_multiple_of(BLOCK_SIZE)
 }
 
 /// Frames of guest-physical memory, given out one page (or one aligned block) at a time.
@@ -58,16 +65,28 @@ pub struct Frames {
     next: u64,
     end: u64,
     free: u64,
+    /// The bytes before `end` the guest's memory may not take.
+    kept: u64,
 }
 
 impl Frames {
     /// Frames from `start` (aligned up to a page) to `end`.
     pub const fn new(start: u64, end: u64) -> Frames {
+        let next = start.next_multiple_of(PAGE_SIZE);
         Frames {
-            next: start.next_multiple_of(PAGE_SIZE),
+            next,
             end,
             free: 0,
+            kept: kept_for_inside(end.saturating_sub(next)),
         }
+    }
+
+    /// A zeroed frame for the guest's memory, which leaves the frames kept for the inside alone.
+    pub fn take_for_guest(&mut self) -> Result<u64, Full> {
+        if self.free == 0 && self.next + PAGE_SIZE + self.kept > self.end {
+            return Err(full());
+        }
+        self.take()
     }
 
     /// A zeroed frame.
@@ -309,14 +328,7 @@ impl Table {
         // SAFETY: as above.
         unsafe { ptr::write_volatile(slot, pages | table_or_page()) };
         barrier();
-        if LARGE_ENTRY_SPLITS.fetch_add(1, Ordering::Relaxed) == 0 {
-            super::send(
-                &crate::link::Print {},
-                format_args!(
-                    "warning: large entry split: a block was broken into pages because one page of it changed (counted)"
-                ),
-            );
-        }
+        LARGE_ENTRY_SPLITS.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 

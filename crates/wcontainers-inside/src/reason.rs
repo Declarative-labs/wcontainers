@@ -1,12 +1,11 @@
 //! The names of the native CPU side's slow paths, apart from the translation's own.
 
-pub use wcontainers_guest_cpu::reason::CODE_CHANGED_AFTER_IT_RAN;
+pub use wcontainers_guest_cpu::reason::{
+    CODE_CHANGED_AFTER_IT_RAN, EXACT_FLOATING_POINT_REQUESTED,
+};
 
 /// Memory copied whole when a memory is duplicated.
 pub const MEMORY_COPIED_AT_FORK: &str = "memory copied at once when duplicated";
-
-/// A read of the float status while its flags are not kept, under the WebAssembly output's name.
-pub const FLOAT_STATUS_NOT_KEPT: &str = "exact floating point requested";
 
 /// A piece asked of the host because none is loaded for that address.
 pub const NOT_YET_TRANSLATED: &str = "code not yet translated here";
@@ -19,3 +18,9 @@ pub const CODE_AREA_EMPTIED: &str = "code area emptied";
 
 /// Every live memory given a new identifier and the whole TLB invalidated, because identifiers ran out.
 pub const IDENTIFIERS_RAN_OUT: &str = "address-space identifiers ran out";
+
+/// Every request for a frame refused because guest-physical memory is used up.
+pub const GUEST_PHYSICAL_SPACE_FULL: &str = "guest-physical space full";
+
+/// Every block of memory broken into pages because one page of it changed.
+pub const LARGE_ENTRY_SPLIT: &str = "large entry split";

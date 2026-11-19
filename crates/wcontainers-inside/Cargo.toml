@@ -35,6 +35,8 @@ arm-gic = "0.11.0"
 safe-mmio = "0.4.0"
 # Locks shared by the virtual CPUs.
 spin = { version = "0.10.0", default-features = false, features = ["spin_mutex", "lock_api"] }
+# What each range of a process allows, and which ranges show a shared block.
+rangemap = { version = "1.8.0", default-features = false }
 # The heap.
 talc = { version = "5.1.1", default-features = false }
 
