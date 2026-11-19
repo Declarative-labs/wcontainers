@@ -604,7 +604,7 @@ fn collision(out: &mut Out, i: &I, word: u32) {
         }
         // The meaning writes rt2, then rt, then the base: into one register the first word lands.
         I::LoadPair { rt, rt2, .. } => {
-            let first = if base == Some(rt) {
+            let first = if base == Some(rt) || (rt == rt2 && rt == Reg::Zero) {
                 SCRATCH
             } else {
                 number(rt)
@@ -619,6 +619,7 @@ fn collision(out: &mut Out, i: &I, word: u32) {
             let changed = replace(replace(word, field::RT, first), field::RT2, second);
             access(out, &m, None, &[], changed);
         }
+        I::LoadVectorPair { bytes, rt, .. } => vector_pair_into_one(out, &m, bytes, rt),
         I::StorePair { rt, rt2, .. } => {
             let base = base.expect("a store pair collides only with its written back base");
             let save = encode::move_register(SCRATCH, number(base));
@@ -627,6 +628,52 @@ fn collision(out: &mut Out, i: &I, word: u32) {
             access(out, &m, None, &[save], changed);
         }
         _ => unreachable!("only loads and stores collide"),
+    }
+}
+
+/// A vector load pair into one register, which no host instruction does: the first element alone is loaded
+/// from t, after the pair's page test, and a written back base gets its new value from t after it (a fix-up).
+fn vector_pair_into_one(out: &mut Out, m: &MemoryAccess, bytes: u8, rt: u8) {
+    let (base, offset, post) = match m.address {
+        Address::Offset { base, offset } => (base, offset, None),
+        Address::PreIndex { base, offset } => (base, offset, Some(false)),
+        Address::PostIndex { base, offset } => (base, offset, Some(true)),
+        _ => unreachable!("a pair has an immediate offset"),
+    };
+    let mut prefix = Vec::new();
+    // The load goes through t unless the base is written back after it, so a stack pointer base gets the check
+    // SA0 would make.
+    if base == Reg::Sp && post != Some(true) {
+        let skip = 2 * INSTRUCTION as i64;
+        prefix.extend([
+            encode::add_immediate(SCRATCH, ZERO, 0).expect("zero fits"),
+            encode::and_immediate(SCRATCH, SCRATCH, STACK_ALIGNMENT - 1)
+                .expect("a power of two less one is a logical immediate"),
+            encode::compare_branch(false, SCRATCH, skip).expect("fits"),
+            call_word(InsideCall::Misaligned),
+        ]);
+    }
+    prefix.extend(first_byte(&Address::Offset { base, offset }));
+    let name = match bytes {
+        Q_BYTES => form::LDR_Q,
+        X_BYTES => form::LDR_D,
+        _ => form::LDR_S,
+    };
+    let from = if post == Some(true) {
+        number(base)
+    } else {
+        SCRATCH
+    };
+    let load = encode::load_store(name, rt, from, 0, 1).expect("fits");
+    access(out, m, None, &prefix, load);
+    if post.is_some() {
+        let base = number(base);
+        out.code.fixup(Fixup::Move {
+            register: base,
+            from: SCRATCH,
+        });
+        out.put(encode::add_immediate(base, SCRATCH, 0).expect("zero fits"));
+        out.code.fixed();
     }
 }
 
@@ -848,7 +895,11 @@ fn exclusive(out: &mut Out, i: &I) {
             } else {
                 vec![encode::ubfx(SCRATCH, number(rn), 0, TAG_LOW)]
             };
-            let load = if pair {
+            // A pair into the zero register twice loads its first element alone: the whole pair is in one page
+            // once aligned.
+            let load = if pair && rt == rt2 && rt == Reg::Zero {
+                encode::load_store(sized(bytes.into()).0, ZERO, SCRATCH, 0, 1).expect("fits")
+            } else if pair {
                 let name = if bytes == X_BYTES {
                     form::LDP_64
                 } else {

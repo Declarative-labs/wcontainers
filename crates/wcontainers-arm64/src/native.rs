@@ -113,7 +113,8 @@ impl Native for Arm64 {
                 ..
             } => {
                 let base = written_back(&address);
-                if same(rt, rt2) || base.is_some_and(|b| same(b, rt) || same(b, rt2)) {
+                // One register twice is open even when it is the zero register.
+                if rt == rt2 || base.is_some_and(|b| same(b, rt) || same(b, rt2)) {
                     Route::Collision
                 } else {
                     access_route(u32::from(bytes) * 2, &address)
@@ -134,6 +135,7 @@ impl Native for Arm64 {
             I::LoadVector { bytes, address, .. } | I::StoreVector { bytes, address, .. } => {
                 access_route(bytes.into(), &address)
             }
+            I::LoadVectorPair { rt, rt2, .. } if rt == rt2 => Route::Collision,
             I::LoadVectorPair { bytes, address, .. }
             | I::StoreVectorPair { bytes, address, .. } => {
                 access_route(u32::from(bytes) * 2, &address)
