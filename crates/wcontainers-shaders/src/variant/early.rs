@@ -7,14 +7,23 @@ use super::{
     load_helper, push, scalar, vector,
 };
 use crate::ConvertError;
+use crate::build::VEC4;
 use naga::{
     AddressSpace, Binding, Block, BuiltIn, Expression, Function, GlobalVariable, Handle,
     ImageClass, ImageDimension, Literal, Module, Scalar, ScalarKind, Span, Statement,
     SwizzleComponent, Type, TypeInner, VectorSize,
 };
 use wcontainers_gpu::{
-    EARLY_DEPTH_BINDING, EARLY_STENCIL_BINDING, HELPER_SET, HelperValue, Reflection, ShaderStage,
+    CompareFn, EARLY_DEPTH_BINDING, EARLY_STENCIL_BINDING, HELPER_SET, HelperValue, Reflection,
+    ShaderStage,
 };
+
+/// The multisampled count the program tests, that of Direct3D's standard pattern it knows.
+const MULTI: u8 = FOUR_SAMPLES.len() as u8;
+/// The relations a [`CompareFn`] code minus one holds as bits.
+const LESS: u32 = CompareFn::Less as u32 - 1;
+const EQUAL: u32 = CompareFn::Equal as u32 - 1;
+const GREATER: u32 = CompareFn::Greater as u32 - 1;
 
 /// Adds the early tests to the wrapped pixel program's prologue. `samples` is the targets' sample
 /// count; `bias` the helper member of the raster block's depth bias, where the variant adds it.
@@ -30,8 +39,8 @@ pub(super) fn early_tests(
     let multi = match (samples, per_sample) {
         (0, _) => return Err(ConvertError::Unsupported("SampleCount")),
         (1, _) => false,
-        (4, false) => true,
-        (4, true) => return Err(ConvertError::Unsupported("EarlyTestsPerSample")),
+        (MULTI, false) => true,
+        (MULTI, true) => return Err(ConvertError::Unsupported("EarlyTestsPerSample")),
         _ => return Err(ConvertError::Unsupported("EarlyTestsSamples")),
     };
     let image = |module: &mut Module, class, binding, name: &str| {
@@ -77,14 +86,15 @@ pub(super) fn early_tests(
         "early_stencil",
     );
     let u32_ty = scalar(module, Scalar::U32);
-    let rows = vector(module, 4, Scalar::U32);
+    let rows = vector(module, VEC4 as u8, Scalar::U32);
+    let stride = module.types[rows].inner.size(module.to_ctx());
     let rows = module.types.insert(
         Type {
             name: None,
             inner: TypeInner::Array {
                 base: rows,
                 size: naga::ArraySize::Constant(core::num::NonZeroU32::new(2).unwrap()),
-                stride: 16,
+                stride,
             },
         },
         Span::UNDEFINED,
@@ -96,7 +106,7 @@ pub(super) fn early_tests(
         HelperValue::EarlyTests,
         rows,
     );
-    let vec4 = vector(module, 4, Scalar::F32);
+    let vec4 = vector(module, VEC4 as u8, Scalar::F32);
     let position = w.input(
         module,
         |b| matches!(b, Binding::BuiltIn(BuiltIn::Position { .. })),
@@ -143,7 +153,7 @@ pub(super) fn early_tests(
         Expression::As {
             expr: xy,
             kind: ScalarKind::Uint,
-            convert: Some(4),
+            convert: Some(Scalar::U32.width),
         },
     );
     let codes = load_helper(f, body, tests);
@@ -291,9 +301,9 @@ fn compare(
         )
     };
     let none = u32_lit(f, 0);
-    let greater = relation(f, body, Greater, 4, none);
-    let equal = relation(f, body, Equal, 2, greater);
-    let relation = relation(f, body, Less, 1, equal);
+    let greater = relation(f, body, Greater, GREATER, none);
+    let equal = relation(f, body, Equal, EQUAL, greater);
+    let relation = relation(f, body, Less, LESS, equal);
     let one = u32_lit(f, 1);
     let passing = binary(f, body, Subtract, code, one);
     let passed = binary(f, body, And, passing, relation);

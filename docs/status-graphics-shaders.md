@@ -1527,7 +1527,16 @@ literal sweep step):
   their types; `WORD`, `WORD_SHIFT`, `BYTE_SHIFT` and `VEC4` are defined once in `src/build.rs`
   (components.rs's own `WORD` and `ROW_COMPONENTS` now import them). Left in that file: the
   small-float encodings (the plan's one codec module belongs to wcontainers-gpu, not on any merged
-  branch yet), the atomic function codes, component indices.
+  branch yet), the atomic function codes, component indices. Also: the programs' entry point name
+  is `ENTRY_POINT`, defined once in `lib.rs` and used by every converted and built program and the
+  tests (it was "main" in 18 places); `src/variant/early.rs` takes its multisampled count from
+  `FOUR_SAMPLES`, the relation bits from `CompareFn`'s codes, the helper rows' stride from naga's
+  layout and the conversion width from `Scalar::U32.width`. Left for later steps, by the audit's
+  list (`orchestrator/magic-literals/lists/graphics-shaders/wcontainers-shaders.txt`, 5491
+  findings at its count): lower.rs (291), ir.rs, variant.rs, pull.rs, dxil.rs, stage/helper.rs,
+  images.rs, hull.rs, stage.rs, the tests; the refusal names repeated as strings (one enum of
+  reasons would be the clean form, but the fronts match on the strings, so it is an interface
+  change to agree first).
 
 Next (in order):
 - The fronts (theirs, now possible): the Direct3D 12 runner's PackedStageValues and array files,
