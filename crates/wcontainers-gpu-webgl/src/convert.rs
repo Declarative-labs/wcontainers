@@ -10,6 +10,8 @@ use wcontainers_gpu::Format;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     Unorm,
+    /// Unorm whose colour components are sRGB-encoded; alpha is linear.
+    Srgb,
     Snorm,
     Half,
     /// R11G11B10's unsigned floats: 6, 6 and 5 bits of mantissa, packed into one 32-bit word.
@@ -28,7 +30,8 @@ fn bits(format: Format) -> Option<(Kind, [u32; 4])> {
     use Kind::*;
     let n = |kind, width| Some((kind, [width; 4]));
     match format {
-        F::R8Unorm | F::Rg8Unorm | F::Rgba8Unorm => n(Unorm, 8),
+        F::R8Unorm | F::Rg8Unorm | F::Rgba8Unorm | F::Bgra8Unorm => n(Unorm, 8),
+        F::Rgba8UnormSrgb | F::Bgra8UnormSrgb => n(Srgb, u8::BITS),
         F::R8Snorm | F::Rg8Snorm | F::Rgba8Snorm => n(Snorm, 8),
         F::R8Uint | F::Rg8Uint | F::Rgba8Uint => n(Uint, 8),
         F::R8Sint | F::Rg8Sint | F::Rgba8Sint => n(Sint, 8),
@@ -51,6 +54,21 @@ fn bits(format: Format) -> Option<(Kind, [u32; 4])> {
     }
 }
 
+/// GLSL functions between sRGB-encoded and linear values (IEC 61966-2-1).
+const SRGB_FUNCTIONS: &str = "highp vec3 srgb_encode(highp vec3 c) {
+    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, greaterThan(c, vec3(0.0031308)));
+}
+highp vec3 srgb_decode(highp vec3 c) {
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), greaterThan(c, vec3(0.04045)));
+}
+";
+
+/// The bits of an 8-bit sRGB texel `v`, sampled as its linear value.
+const SRGB_BITS: &str = "uvec4(vec4(srgb_encode(v.rgb), v.a) * 255.0 + 0.5)";
+
+/// The linear value an 8-bit sRGB target encodes as the bits `r`.
+const SRGB_VALUE: &str = "vec4(srgb_decode(vec3(r.rgb) / 255.0), float(r.a) / 255.0)";
+
 /// The GLSL vector of `w`'s values as unsigned integers.
 fn uvec(w: [u32; 4], f: impl Fn(u32) -> u64) -> String {
     let c: Vec<String> = w.iter().map(|w| format!("{}u", f(*w))).collect();
@@ -72,7 +90,7 @@ pub fn depth_unit(format: Format) -> Option<[f32; 2]> {
 
 /// The fragment program copying `src` (sampled as `sampler`: "2D", "2DArray", "3D" or "Cube", where
 /// `at.z` is the layer, slice or face) into a target
-/// of `dst`, or None where a format's bits are not recovered this way (sRGB, packed floats, formats
+/// of `dst`, or None where a format's bits are not recovered this way (packed floats, formats
 /// GL ES lacks) or `dst` cannot be drawn into. From a signed normalised format the bits are exact
 /// only where it holds no smallest value (-128 samples as -127 does); into one, never (a draw writes
 /// -127 for -1), so it is refused.
@@ -97,9 +115,16 @@ pub fn program(src: Format, dst: Format, sampler: &str) -> Option<String> {
         "Cube" => ("textureLod(src, towards(q), 0.0)", crate::depth::TOWARDS),
         _ => ("texelFetch(src, ivec3(q, at.z), 0)", ""),
     };
+    let srgb = if [from, to].contains(&Kind::Srgb) {
+        SRGB_FUNCTIONS
+    } else {
+        Default::default()
+    };
+    let towards = [towards, srgb].concat();
     let half = |c: &str| format!("half_bits(v.{c})");
     let decode = match from {
         Kind::Unorm => format!("uvec4(v * vec4({max}) + 0.5)"),
+        Kind::Srgb => SRGB_BITS.into(),
         // Rounded once, as the depth read back by draw is.
         Kind::Depth(b) => {
             let one = (1u64 << b) - 1;
@@ -127,7 +152,13 @@ pub fn program(src: Format, dst: Format, sampler: &str) -> Option<String> {
     let unhalf = |c: &str| format!("unpackHalf2x16(r.{c}).x");
     let shift = uvec(wt, |w| u64::from(32 - w));
     let (out, encode) = match to {
-        Kind::Unorm => ("vec4", format!("vec4(r) / vec4({max})")),
+        Kind::Unorm | Kind::Srgb => (
+            "vec4",
+            match to {
+                Kind::Srgb => SRGB_VALUE.into(),
+                _ => format!("vec4(r) / vec4({max})"),
+            },
+        ),
         Kind::Depth(b) => (
             "",
             format!(

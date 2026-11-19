@@ -376,6 +376,11 @@ fn bgrx_textures_hold_alpha_one() {
 }
 
 #[test]
+fn srgb_copies_keep_every_byte() {
+    sampled(checks::srgb_copies_keep_every_byte::<Angle>);
+}
+
+#[test]
 fn sampled_views_are_whole_textures_of_one_mip_range() {
     sampled(checks::sampled_views_are_whole_textures_of_one_mip_range::<Angle>);
 }

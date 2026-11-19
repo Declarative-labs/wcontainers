@@ -908,6 +908,70 @@ pub fn copies_within_a_typeless_group<H: Host>() {
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
 
+/// Copies between 8-bit sRGB and plain normalised formats keep every byte: a texture holding every
+/// byte value in every component is copied whole into the other format and read back. On WebGL 2 a
+/// draw decodes and encodes on the GPU, so the hardware's sRGB conversion must give back each byte.
+pub fn srgb_copies_keep_every_byte<H: Host>() {
+    use crate::kit;
+    let mut b = H::make();
+    let pairs = [
+        (Format::Rgba8Unorm, Format::Rgba8UnormSrgb),
+        (Format::Rgba8UnormSrgb, Format::Rgba8Unorm),
+        (Format::Bgra8Unorm, Format::Bgra8UnormSrgb),
+        (Format::Bgra8UnormSrgb, Format::Bgra8Unorm),
+    ];
+    let side = (usize::from(u8::MAX) + 1).isqrt() as u32;
+    let size = [side, side, 1];
+    let texel = Format::Rgba8Unorm.block().2;
+    // Texel i holds i, its complement, i with its bits reversed and i again.
+    let bytes: Vec<u8> = (0..=u8::MAX)
+        .flat_map(|i| [i, !i, i.reverse_bits(), i])
+        .collect();
+    let usage = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
+    let whole = Extent {
+        width: side,
+        height: side,
+        depth_or_layers: 1,
+    };
+    for (from, to) in pairs {
+        let src = kit::texture(&mut b, TextureDimension::D2, from, size, 1, usage, false);
+        let dst = kit::texture(&mut b, TextureDimension::D2, to, size, 1, usage, false);
+        b.write_texture(
+            &layer_at(&src, 0, 0, 0, false),
+            whole,
+            &bytes,
+            side * texel,
+            side,
+            WriteMode::Ordered,
+        );
+        let before = b.slow_paths().count(SlowPath::CopyThroughBuffer);
+        b.copy_texture(
+            &layer_at(&src, 0, 0, 0, false),
+            &layer_at(&dst, 0, 0, 0, false),
+            whole,
+        );
+        let counted = b.slow_paths().count(SlowPath::CopyThroughBuffer) - before;
+        let got = read_typeless(&mut b, &dst, to, size);
+        assert_eq!(b.status(), DeviceStatus::Ok, "{from:?} to {to:?}");
+        let texel = texel as usize;
+        let wrong = got
+            .chunks_exact(texel)
+            .zip(bytes.chunks_exact(texel))
+            .position(|(g, w)| g != w);
+        if let Some(i) = wrong {
+            let at = i * texel..(i + 1) * texel;
+            panic!(
+                "{from:?} to {to:?}: texel {i} is {:?}, written {:?}",
+                &got[at.clone()],
+                &bytes[at]
+            );
+        }
+        println!("{from:?} to {to:?}: every byte kept, {counted} slow copies counted");
+        b.destroy(Object::Texture(src));
+        b.destroy(Object::Texture(dst));
+    }
+}
+
 /// `texels` texels of `format` from `seed`; in 16-bit and 32-bit floats every third component is
 /// one of the infinities, NaNs with payloads (signalling and quiet, of either sign), denormals and
 /// signed zeros, whose bits a copy must keep.

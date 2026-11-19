@@ -216,6 +216,7 @@ suite!(
     srgb_views_of_block_compressed_textures,
     bgra_textures_keep_their_byte_order,
     bgrx_textures_hold_alpha_one,
+    srgb_copies_keep_every_byte,
     sampled_views_are_whole_textures_of_one_mip_range,
     generate_mipmap_equals_the_draws,
     sixteen_bit_normalised_formats_follow_their_extension,

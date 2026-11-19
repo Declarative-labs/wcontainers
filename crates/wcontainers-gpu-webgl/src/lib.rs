@@ -4483,7 +4483,11 @@ impl Backend for Gl {
                 to,
                 Format::R16Float | Format::Rg16Float | Format::Rgba16Float
             );
-            if as_stored && from.block() == to.block() {
+            // Integer and normalised texels go by draw where one carries them: the pixel buffer's
+            // unpack waits for its pack on the CPU (ANGLE maps it), a draw stays on the GPU.
+            if !float && !format::float_bits(to) && self.copy_by_draw(src, dst, extent) {
+                self.slow.hit(SlowPath::CopyThroughBuffer);
+            } else if as_stored && from.block() == to.block() {
                 self.copy_through_pbo(src, dst, extent);
             } else if half {
                 // A draw writes half floats from 32-bit ones, which lose NaN payloads; the host
