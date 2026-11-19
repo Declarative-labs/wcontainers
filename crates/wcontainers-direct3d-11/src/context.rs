@@ -163,9 +163,10 @@ pub struct ContextState<B: Backend> {
     /// primitive (`EarlyTestsPerPrimitive`), and the API draw's bases its helpers give.
     early_run: Option<[u32; 2]>,
     /// The layer and viewport of the draw's run after a geometry shader choosing them
-    /// (`LayerSplit`, `MultiViewportSplit`), which pixel programs read as theirs, and the layer
-    /// count of the drawn views; zero otherwise.
-    run: [u32; 3],
+    /// (`LayerSplit`, `MultiViewportSplit`), which pixel programs read as theirs; zero otherwise.
+    run: [u32; 2],
+    /// The layer count of that run's views, which the pass-through reads (`LAYER_FROM_STAGE`).
+    run_layers: u32,
     /// Per stage, the constant buffer slots its set binds as storage buffers.
     relocated: [u32; STAGES],
     /// The resources the open pass's draws wrote as storage and read as shader resources, by
@@ -235,7 +236,8 @@ impl<B: Backend> ContextState<B> {
             early: false,
             pass_early: false,
             early_run: None,
-            run: [0; 3],
+            run: [0; 2],
+            run_layers: 0,
             relocated: [0; STAGES],
             pass_written: Vec::new(),
             pass_read: Vec::new(),
@@ -3748,7 +3750,7 @@ impl<B: Backend> Device<B> {
                     1
                 }
                 HelperValue::LayerCount => {
-                    words[0] = self.ctx.run[2];
+                    words[0] = self.ctx.run_layers;
                     1
                 }
                 _ => unreachable!("refused at conversion"),

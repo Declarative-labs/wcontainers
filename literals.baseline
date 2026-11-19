@@ -1616,7 +1616,6 @@ code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::run_s
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::stream_counted	16
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::stream_counted	8
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	int	Device<B>::stream_counted	8
-code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::draw_output	"depth bias on lines and points"
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::draw_staged	"a draw through a geometry shader or stream output while a counted occlusion or \\n                 statistics query runs"
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::draw_staged	"a geometry shader reading helper constants"
 code	crates/wcontainers-direct3d-11/src/context/geometry.rs	str	Device<B>::draw_staged	"a vertex shader variant behind a geometry shader"

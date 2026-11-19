@@ -813,7 +813,8 @@ impl<B: Backend> Device<B> {
                 }
             }
             for viewport in 0..viewports {
-                self.ctx.run = [layer, viewport, layers];
+                self.ctx.run = [layer, viewport];
+                self.ctx.run_layers = layers;
                 r = self
                     .write_helpers(&[helpers[0].clone(), helpers[1].clone()], bases, None)
                     .and_then(|()| {
@@ -832,7 +833,8 @@ impl<B: Backend> Device<B> {
             self.end_pass();
             (self.ctx.targets, self.ctx.depth) = bound;
         }
-        self.ctx.run = [0; 3];
+        self.ctx.run = [0; 2];
+        self.ctx.run_layers = 0;
         self.helper_blocks = None;
         r
     }
