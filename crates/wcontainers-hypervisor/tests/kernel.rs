@@ -46,8 +46,8 @@ mod macos {
     use wcontainers_kernel_test::reference;
 
     use crate::common::{
-        BENCH, CALLS, CLibrary, KERNEL_TEST_GUEST, MEMORY, OWN_GUEST, be_signed, benchmark,
-        compile, compiled, load_average,
+        BENCH, CALLS, CLibrary, KERNEL_TEST_GUEST, MEMORY, OWN_GUEST, PROGRAMS_DIRECTORY,
+        be_signed, compile, compiled, freestanding, load_average,
     };
     use crate::container::{
         Outcome, REALTIME_NANOSECONDS, native, one_program as container, seeds, summary, wasm,
@@ -202,7 +202,8 @@ mod macos {
         );
         // The benchmark set at its small size, whose count at every stop must agree across look-aheads.
         for name in [BENCH, CALLS] {
-            let image = std::fs::read(benchmark(name, name, &[], None)).expect("the built program");
+            let built = freestanding(PROGRAMS_DIRECTORY, name, name, &[], None);
+            let image = std::fs::read(built).expect("the built program");
             let native = alone(seed, name, &image, &[]);
             print!("{name}: {}", String::from_utf8_lossy(&native.host.stdout));
             against_reference(name, &native);

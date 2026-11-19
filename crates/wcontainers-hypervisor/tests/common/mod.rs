@@ -228,40 +228,46 @@ pub const BENCH: &str = "bench";
 pub const CALLS: &str = "calls";
 
 /// Where the benchmark programs' sources are, from this package.
-const PROGRAMS_DIRECTORY: &str = "../wcontainers-translator-test/programs";
+pub const PROGRAMS_DIRECTORY: &str = "../wcontainers-translator-test/programs";
 
 /// Where the speed test places a benchmark program: under the native ceiling, and above the low addresses macOS
 /// keeps for itself (it moves a mapping asked for under 0x70_0000_0000 elsewhere).
 pub const IMAGE_BASE: u64 = 1 << 40;
 
-/// The benchmark programs' compiler flags beside the target. x18 is the platform's own on macOS, which may change it
+/// A freestanding program's compiler flags beside the target. x18 is the platform's own on macOS, which may change it
 /// at any time, so no side's code uses it (zig's C compiler takes that as a feature of the processor, and drops
 /// `-ffixed-x18`).
-const BENCHMARK_FLAGS: [&str; 3] = ["-O2", "-ffreestanding", "-mcpu=generic+reserve_x18"];
+const FREESTANDING_FLAGS: [&str; 3] = ["-O2", "-ffreestanding", "-mcpu=generic+reserve_x18"];
 
-/// The benchmark programs' linker flags beside the place. Each segment starts a page: the kernel maps a writable
+/// A freestanding program's linker flags beside the place. Each segment starts a page: the kernel maps a writable
 /// segment with no bytes in the file only from the first page boundary after its start (see the status file).
-const BENCHMARK_LINK_FLAGS: [&str; 3] = ["-static", "-z", "separate-loadable-segments"];
+const FREESTANDING_LINK_FLAGS: [&str; 3] = ["-static", "-z", "separate-loadable-segments"];
 
-/// Builds the benchmark program `name` from `source` with `defines`, placed at `base` (the linker's own place when
-/// none), and gives its path.
-pub fn benchmark(name: &str, source: &str, defines: &[String], base: Option<u64>) -> PathBuf {
+/// Builds the freestanding static program `name` from `directory/source.c` with `defines`, placed at `base` (the
+/// linker's own place when none), and gives its path.
+pub fn freestanding(
+    directory: &str,
+    name: &str,
+    source: &str,
+    defines: &[String],
+    base: Option<u64>,
+) -> PathBuf {
     let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(PROGRAMS_DIRECTORY)
+        .join(directory)
         .join(source)
         .with_extension(C_SOURCE);
     let out = compiled(name);
     let object = out.with_extension(OBJECT);
     zig(Command::new("zig")
         .args(["cc", "-target", GUEST_TARGET, "-c"])
-        .args(BENCHMARK_FLAGS)
+        .args(FREESTANDING_FLAGS)
         .args(defines.iter().map(|define| format!("-D{define}")))
         .arg("-o")
         .arg(&object)
         .arg(&source));
     zig(Command::new("zig")
         .arg("ld.lld")
-        .args(BENCHMARK_LINK_FLAGS)
+        .args(FREESTANDING_LINK_FLAGS)
         .args(base.map(|base| format!("--image-base={base:#x}")))
         .arg("-o")
         .arg(&out)

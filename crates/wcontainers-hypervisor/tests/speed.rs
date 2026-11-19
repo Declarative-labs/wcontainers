@@ -5,12 +5,15 @@
 //! breakpoint put where each `svc` was, so both sides run the workloads' code as the same bytes at the same
 //! addresses. The bar: the geometric mean over the eight workloads of each one's median cycles ratio, with a 95%
 //! interval from a seeded bootstrap over the pairs, against E's cost plus ten points; when the interval holds the
-//! bar, the runs go on with twice the pairs, up to sixty.
+//! bar, the runs go on with twice the pairs, up to sixty. The system-call part: a program making a million getppid
+//! calls against the same program with a nop in each call's place, both in the kernel inside, in alternating pairs,
+//! the kernel's own share of a call measured beside each pair over a CPU side that runs no instructions (layer 1's
+//! method); the back end's share of a call, the per-call time less the kernel's, against 100 ns by the same rule.
 //!
 //! `WCONTAINERS_SPEED_PAIRS` sets the pairs to start with, `WCONTAINERS_SPEED_SEED` and
 //! `WCONTAINERS_SPEED_RESAMPLES` the bootstrap, `WCONTAINERS_SPEED_RAW` the file every pair is appended to and
-//! `WCONTAINERS_SPEED_PROGRAMS` a comma-separated list of the programs to run (all by default; the bar needs the
-//! eight workloads); `WCONTAINERS_NATIVE_BOUND` the look-ahead.
+//! `WCONTAINERS_SPEED_PROGRAMS` a comma-separated list of the programs to run (all by default; the compute part
+//! needs the eight workloads, and `syscalls` names the system-call part); `WCONTAINERS_NATIVE_BOUND` the look-ahead.
 
 #[cfg(target_os = "macos")]
 #[path = "../../wcontainers-inside/src/bin/native-kernel/protocol.rs"]
@@ -42,18 +45,25 @@ mod macos {
     use std::sync::Mutex;
     use std::time::Instant;
 
-    use linux_raw_sys::general::{__NR_exit, __NR_exit_group, __NR_write, _STK_LIM};
+    use linux_raw_sys::general::{
+        __NR_exit, __NR_exit_group, __NR_getppid, __NR_write, _STK_LIM, S_IRWXU,
+    };
     use object::Endianness;
     use object::elf::{PF_R, PF_W, PF_X, PT_LOAD};
     use object::read::elf::{ElfFile64, FileHeader, ProgramHeader};
+    use wcontainers_abi::{Exit, Next, Resume, Syscall};
     use wcontainers_arm64::encode::{self, form};
     use wcontainers_arm64::{Instruction, decode};
     use wcontainers_inside::stop::SYSCALL_NUMBER;
+    use wcontainers_kernel::{Kernel, Start};
+    use wcontainers_kernel_test::buffer::BufferCpu;
+    use wcontainers_kernel_test::driver::TestHost;
     use wcontainers_kernel_test::driver::exit_code;
+    use wcontainers_kernel_test::image::{File, Kind, add_files};
 
     use crate::common::{
-        BENCH, CALLS, IMAGE_BASE, be_signed, benchmark, compiled, load_average, look_ahead,
-        page_size, setting,
+        BENCH, CALLS, IMAGE_BASE, OWN_GUEST, PROGRAMS_DIRECTORY, be_signed, compiled, freestanding,
+        load_average, look_ahead, page_size, setting,
     };
     use crate::container::{DEFAULT_SEED, REALTIME_NANOSECONDS, native_at, one_program, program};
 
@@ -111,6 +121,18 @@ mod macos {
     const PERCENT: f64 = 100.0;
     /// The share of the bootstrap's results the interval holds.
     const CONFIDENCE: f64 = 0.95;
+
+    /// The system-call part's program, which makes getppid calls, and its build with a nop in each call's place.
+    const ANSWERED: &str = "answered";
+    const NOTHING: &str = "nothing";
+    /// The define that builds [`NOTHING`].
+    const NOTHING_DEFINE: &str = "NOTHING";
+    /// The calls each run of the system-call part makes, as section 8's method has it.
+    const SYSTEM_CALLS_MADE: u64 = 10_u64.pow(6);
+    /// The back end's share of a system call answered inside, at most (section 8's second part).
+    const SYSTEM_CALL_BAR_NANOSECONDS: f64 = 100.0;
+    /// The name [`PROGRAMS_VARIABLE`] gives the system-call part.
+    const SYSTEM_CALLS: &str = "syscalls";
 
     /// `RUSAGE_INFO_V6` of macOS's sys/resource.h.
     const RUSAGE_INFO_V6: c_int = 6;
@@ -651,7 +673,7 @@ mod macos {
             .filter(|(name, ..)| wanted_program(name))
             .map(|(name, source, defines, in_bar)| Program {
                 name: name.to_owned(),
-                image: benchmark(name, source, &defines, Some(IMAGE_BASE)),
+                image: freestanding(PROGRAMS_DIRECTORY, name, source, &defines, Some(IMAGE_BASE)),
                 in_bar,
                 pairs: Vec::new(),
                 expected: None,
@@ -674,33 +696,216 @@ mod macos {
             load_average(),
             raw_path.display()
         );
-        loop {
+        let compute = loop {
             for program in &mut programs {
                 run_pairs(program, wanted, &inside, &mut raw);
                 summarize(program);
             }
             if programs.iter().filter(|p| p.in_bar).count() != WORKLOADS.len() {
-                println!("speed: not every workload ran, so no verdict on the bar");
-                return;
+                println!("speed: not every workload ran, so no verdict on the compute part");
+                break None;
             }
             let (estimate, lower, upper) = bar_estimate(&programs, seed, resamples);
+            let said = verdict(percent(lower), percent(upper), bar);
             println!(
-                "speed: geometric mean of the median cycles ratios {:+.2}%, {:.0}% interval [{:+.2} .. {:+.2}] (seed {seed:#x}, {resamples} resamples, {wanted} pairs), bar {bar:+.1}%, load {}",
+                "speed: geometric mean of the median cycles ratios {:+.2}%, {:.0}% interval [{:+.2} .. {:+.2}] (seed {seed:#x}, {resamples} resamples, {wanted} pairs), bar {bar:+.1}%, load {}: {said:?}",
                 percent(estimate),
                 CONFIDENCE * PERCENT,
                 percent(lower),
                 percent(upper),
                 load_average()
             );
-            if percent(upper) <= bar {
-                println!("speed: the bar passes");
-                return;
+            if said != Verdict::Undecided || wanted * 2 > MOST_PAIRS {
+                break Some(said);
             }
-            assert!(percent(lower) <= bar, "speed: the bar fails");
-            assert!(
-                wanted * 2 <= MOST_PAIRS,
-                "speed: undecided at {wanted} pairs; run it on a quieter machine"
+            wanted *= 2;
+        };
+        let system_calls =
+            wanted_program(SYSTEM_CALLS).then(|| system_calls(&inside, seed, resamples, &mut raw));
+        for (part, said) in [("compute", compute), ("system calls", system_calls)] {
+            match said {
+                Some(Verdict::Fails) => panic!("speed: the {part} part of the bar fails"),
+                Some(Verdict::Undecided) => panic!(
+                    "speed: the {part} part is undecided at {MOST_PAIRS} pairs; run it on a quieter machine"
+                ),
+                Some(Verdict::Passes) | None => {}
+            }
+        }
+    }
+
+    /// What the decision rule makes of an interval against a bar.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Verdict {
+        Passes,
+        Fails,
+        Undecided,
+    }
+
+    fn verdict(lower: f64, upper: f64, bar: f64) -> Verdict {
+        if upper <= bar {
+            Verdict::Passes
+        } else if lower > bar {
+            Verdict::Fails
+        } else {
+            Verdict::Undecided
+        }
+    }
+
+    /// The kernel's own share of a getppid call, in nanoseconds, by layer 1's method: the calls handed straight to
+    /// the kernel over a CPU side that runs no instructions, the first process being `image`.
+    fn kernel_share(image: &[u8]) -> f64 {
+        let mut cpu = BufferCpu::new();
+        let mut host = TestHost::new(DEFAULT_SEED);
+        let mut kernel = Kernel::new();
+        add_files(
+            &mut kernel,
+            &[File {
+                path: ANSWERED.to_owned(),
+                mode: S_IRWXU,
+                uid: 0,
+                gid: 0,
+                mtime: 0,
+                kind: Kind::Regular(image.to_vec()),
+            }],
+        );
+        let (_, starting) = one_program(ANSWERED, image.to_vec(), &[]);
+        let arguments: Vec<&[u8]> = starting.arguments.iter().map(Vec::as_slice).collect();
+        let environment: Vec<&[u8]> = starting.environment.iter().map(Vec::as_slice).collect();
+        kernel.start(
+            &mut cpu,
+            &mut host,
+            &Start {
+                path: &starting.path,
+                arguments: &arguments,
+                environment: &environment,
+                working_directory: &starting.working_directory,
+                hostname: &starting.hostname,
+                groups: &starting.groups,
+                backend: None,
+            },
+        );
+        assert_eq!(kernel.start_failure(), None, "starting {ANSWERED}");
+        let next = kernel.next();
+        assert!(
+            matches!(next, Next::Run { .. }),
+            "{ANSWERED} runs: {next:?}"
+        );
+        let call = Exit::Syscall(Syscall {
+            number: __NR_getppid.into(),
+            arguments: Default::default(),
+        });
+        let started = Instant::now();
+        for _ in 0..SYSTEM_CALLS_MADE {
+            kernel.exit(&mut cpu, &mut host, call);
+            match kernel.next() {
+                Next::Run {
+                    resume: Resume::Return(_),
+                    ..
+                } => {}
+                other => panic!("getppid answered with {other:?}"),
+            }
+        }
+        started.elapsed().as_nanos() as f64 / SYSTEM_CALLS_MADE as f64
+    }
+
+    /// One pair of the system-call part: the per-call time of the native runs, and the kernel's share beside it,
+    /// in nanoseconds.
+    struct CallPair {
+        per_call: f64,
+        kernel: f64,
+    }
+
+    /// The back end's share of a call over `pairs`: the median per-call time less the kernel's share's median.
+    fn back_end_share(pairs: &[&CallPair]) -> f64 {
+        let mut per_call: Vec<f64> = pairs.iter().map(|p| p.per_call).collect();
+        let mut kernel: Vec<f64> = pairs.iter().map(|p| p.kernel).collect();
+        median(&mut per_call) - median(&mut kernel)
+    }
+
+    /// The system-call part of the bar (section 8): `answered`'s getppid calls in the kernel inside against the same
+    /// program with a nop in each call's place, in alternating pairs, each pair's difference of wall times over the
+    /// calls made being the per-call time, with the kernel's own share measured beside each pair; the back end's
+    /// share is the per-call time less the kernel's, with a seeded bootstrap's interval over the pairs.
+    fn system_calls(inside: &Path, seed: u64, resamples: u64, raw: &mut std::fs::File) -> Verdict {
+        let build = |name: &str, nothing: bool| {
+            let mut defines = vec![
+                format!("CALLS={SYSTEM_CALLS_MADE}"),
+                format!("GETPPID={__NR_getppid}"),
+                format!("EXIT_GROUP={__NR_exit_group}"),
+            ];
+            defines.extend(nothing.then(|| NOTHING_DEFINE.to_owned()));
+            freestanding(OWN_GUEST, name, ANSWERED, &defines, None)
+        };
+        let answered = build(ANSWERED, false);
+        let nothing = build(NOTHING, true);
+        let image = std::fs::read(&nothing).expect("the built program");
+        for side in [&answered, &nothing] {
+            run(NATIVE, side, inside);
+        }
+        let mut pairs: Vec<CallPair> = Vec::new();
+        let mut wanted = setting(PAIRS_VARIABLE, DEFAULT_PAIRS);
+        loop {
+            while (pairs.len() as u64) < wanted {
+                let index = pairs.len();
+                let order = if index.is_multiple_of(2) {
+                    [&answered, &nothing]
+                } else {
+                    [&nothing, &answered]
+                };
+                let load = load_average();
+                let [first, second] = order.map(|image| run(NATIVE, image, inside));
+                let (calls, none) = if order[0] == &answered {
+                    (first, second)
+                } else {
+                    (second, first)
+                };
+                // Only answered calls give the loop a parent to add up, and its exit status says whether it did.
+                assert_eq!(
+                    (calls.status, none.status),
+                    (i32::from(true), i32::from(false)),
+                    "{ANSWERED}'s exit codes"
+                );
+                let per_call = (calls.wall_nanoseconds as f64 - none.wall_nanoseconds as f64)
+                    / SYSTEM_CALLS_MADE as f64;
+                let kernel = kernel_share(&image);
+                writeln!(
+                    raw,
+                    "{{\"program\":\"{SYSTEM_CALLS}\",\"pair\":{index},\"load\":\"{load}\",\"calls\":{},\"nothing\":{},\"kernel_ns\":{kernel}}}",
+                    json(&calls),
+                    json(&none)
+                )
+                .expect("writing the raw pairs");
+                pairs.push(CallPair { per_call, kernel });
+            }
+            let all: Vec<&CallPair> = pairs.iter().collect();
+            let estimate = back_end_share(&all);
+            let mut random = fastrand::Rng::with_seed(seed);
+            let mut shares: Vec<f64> = (0..resamples)
+                .map(|_| {
+                    let drawn: Vec<&CallPair> = (0..pairs.len())
+                        .map(|_| &pairs[random.usize(..pairs.len())])
+                        .collect();
+                    back_end_share(&drawn)
+                })
+                .collect();
+            shares.sort_by(f64::total_cmp);
+            let tail = (1.0 - CONFIDENCE) / 2.0;
+            let at = |share: f64| shares[((shares.len() - 1) as f64 * share).round() as usize];
+            let (lower, upper) = (at(tail), at(1.0 - tail));
+            let said = verdict(lower, upper, SYSTEM_CALL_BAR_NANOSECONDS);
+            let mut per_call: Vec<f64> = pairs.iter().map(|p| p.per_call).collect();
+            let mut kernel: Vec<f64> = pairs.iter().map(|p| p.kernel).collect();
+            println!(
+                "speed: system calls over {} pairs: {:.1} ns a call (median), the kernel's share {:.1} ns (median), the back end's {estimate:.1} ns, {:.0}% interval [{lower:.1} .. {upper:.1}] (seed {seed:#x}, {resamples} resamples), bar {SYSTEM_CALL_BAR_NANOSECONDS} ns, load {}: {said:?}",
+                pairs.len(),
+                median(&mut per_call),
+                median(&mut kernel),
+                CONFIDENCE * PERCENT,
+                load_average()
             );
+            if said != Verdict::Undecided || wanted * 2 > MOST_PAIRS {
+                return said;
+            }
             wanted *= 2;
         }
     }
