@@ -5,6 +5,8 @@ use core::mem::offset_of;
 
 use wcontainers_abi::RegisterBlock;
 
+use crate::layout::{VECTOR_BYTES, VECTOR_TABLE_BYTES};
+
 /// A thread's registers at the guest's level, as the floor saves them when it takes an exception from there.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -27,12 +29,6 @@ pub enum Taken {
     /// A fast interrupt or a system error, never expected.
     Other,
 }
-
-/// Bytes of the vector table, whose base VBAR_EL1 needs aligned to its size.
-const VECTORS_BYTES: usize = 2048;
-
-/// Vectors in the table: four kinds of exception from each of four sources.
-const VECTORS: usize = 16;
 
 /// Bytes saved for each pair of registers on the floor's stack.
 const PAIR: usize = 2 * size_of::<u64>();
@@ -160,8 +156,8 @@ floor_from_user:
     ldp x29, x30, [sp], #{pair}
     ret
 "#,
-    vectors_bytes = const VECTORS_BYTES,
-    entry = const VECTORS_BYTES / VECTORS,
+    vectors_bytes = const VECTOR_TABLE_BYTES,
+    entry = const VECTOR_BYTES,
     pair = const PAIR,
     word = const size_of::<u64>(),
     synchronous = const Taken::Synchronous as u64,

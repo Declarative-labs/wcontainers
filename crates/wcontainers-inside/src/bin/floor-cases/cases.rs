@@ -16,6 +16,7 @@ use wcontainers_inside::layout::{
     BLOCK_LEVEL, BLOCK_SIZE, LEAF_LEVEL, MIRROR, Region, TOP_LEVEL, level_span, linear,
 };
 use wcontainers_inside::link::{GiveBack, Start};
+use wcontainers_inside::syndrome::FAULT_STATUS;
 
 use crate::protocol::{
     Case, Done, Echo, Footprint, Lower, Measurement, Nothing, RaiseLater, Report, StartCpu,
@@ -55,9 +56,6 @@ const GIVE_BACK_BLOCKS: u64 = 32;
 
 /// Instructions the software step case steps through before its system call.
 const STEPS: u64 = 8;
-
-/// The data or instruction fault status code in ESR_EL1's ISS.
-const FAULT_STATUS: u64 = 0b11_1111;
 
 /// The permission fault status code, plus the level the fault happened at.
 const PERMISSION_FAULT: u64 = 0b00_1100;

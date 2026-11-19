@@ -100,3 +100,12 @@ pub const ATTRIBUTE_NORMAL: u64 = 0;
 
 /// The memory attribute index of device memory in MAIR_EL1.
 pub const ATTRIBUTE_DEVICE: u64 = 1;
+
+/// Bytes of the exception vector table, whose base VBAR_EL1 needs aligned to its size.
+pub const VECTOR_TABLE_BYTES: u64 = 2048;
+
+/// Vectors in the table: four kinds of exception from each of four sources.
+pub const VECTORS: u64 = 16;
+
+/// Bytes of one vector's entry.
+pub const VECTOR_BYTES: u64 = VECTOR_TABLE_BYTES / VECTORS;

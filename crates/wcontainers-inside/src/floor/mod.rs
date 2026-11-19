@@ -293,6 +293,11 @@ pub fn process_code() -> El1Attributes {
     code() | El1Attributes::NON_GLOBAL
 }
 
+/// Code the inside runs that it did not bring in its image: read and run by the inside only.
+pub fn inside_code() -> El1Attributes {
+    normal() | El1Attributes::READ_ONLY | El1Attributes::UXN
+}
+
 /// A register page: the guest's level reads and writes it; one process's only.
 pub fn register_page() -> El1Attributes {
     guest_read_write()
