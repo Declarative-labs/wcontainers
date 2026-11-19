@@ -720,8 +720,6 @@ pub struct LinkWords {
     pub moves: [(u32, u32); SLOT_MOVES],
     /// The slot's jump through t.
     pub jump: u32,
-    /// A call stub's slot's call through t, in place of the jump.
-    pub call: u32,
     /// A direct branch with no offset, and its offset's bits.
     pub branch: (u32, u32),
     /// An empty slot's first word.
@@ -740,7 +738,6 @@ pub fn link_words() -> LinkWords {
     LinkWords {
         moves,
         jump: encode::branch_register(form::BR, SCRATCH),
-        call: encode::branch_register(form::BLR, SCRATCH),
         branch: (clear, clear ^ back),
         empty: encode::exception(form::UDF, 0),
     }
@@ -755,9 +752,7 @@ fn transfer(out: &mut Out, i: &I, word: u32) {
     match *i {
         I::Branch { link, offset } => {
             let target = at.wrapping_add_signed(offset);
-            if stub(i, at) {
-                called(out, Resume::At(target));
-            } else if link {
+            if link {
                 out.build(Reg::X(LINK), return_address, Resume::At(target));
             } else {
                 out.code.after(Resume::At(target));
@@ -792,33 +787,6 @@ fn transfer(out: &mut Out, i: &I, word: u32) {
 /// The link register.
 pub const LINK: Register = 30;
 
-/// Whether the call at `address` is made through its own entry slot (section 3.2): a `bl`, or a `blr` through any
-/// register but x30, which the slot's call would overwrite, whose return address has a slot.
-pub(crate) fn stub(i: &I, address: u64) -> bool {
-    let call = match *i {
-        I::Branch { link, .. } => link,
-        I::BranchRegister { op, rn } => op == BranchRegister::Blr && rn != Reg::X(LINK),
-        _ => false,
-    };
-    call && address.wrapping_add(INSTRUCTION) >> REACH_BITS == 0
-}
-
-/// The start of a call stub: the slot's call made the call, leaving the slot address of the return address in
-/// x30, which one instruction makes the guest's return address; then the call's add, behind its commit point.
-fn called(out: &mut Out, resume: Resume) {
-    let counted = out.code.owes();
-    out.code.after(resume);
-    out.code.fixup(Fixup::Constant {
-        register: LINK,
-        value: out.address.wrapping_add(INSTRUCTION),
-    });
-    out.put(encode::ubfx(LINK, LINK, SLOT_SHIFT, REACH_BITS));
-    out.code.fixed();
-    if counted {
-        Arm64::count(out.code, 1);
-    }
-}
-
 /// A jump through a register to the entry slot of its target (section 3.2).
 fn jump(out: &mut Out, op: BranchRegister, rn: Reg) {
     let n = number(rn);
@@ -829,11 +797,6 @@ fn jump(out: &mut Out, op: BranchRegister, rn: Reg) {
         (n, Held::Register(n))
     };
     let return_address = out.address.wrapping_add(INSTRUCTION);
-    let through_slot =
-        op == BranchRegister::Blr && stub(&I::BranchRegister { op, rn }, out.address);
-    if through_slot {
-        called(out, Resume::Through(held));
-    }
     if withheld {
         out.code.slow(NativeReason::WithheldRegisterNamed);
         out.put(load_page(SCRATCH, withheld_slot(n)));
@@ -848,7 +811,7 @@ fn jump(out: &mut Out, op: BranchRegister, rn: Reg) {
         encode::compare_branch(true, SCRATCH, 0).expect("fits"),
         |t| {
             t.resume = Some(Resume::Through(held));
-            if op == BranchRegister::Blr && !through_slot {
+            if op == BranchRegister::Blr {
                 t.fixups.push(Fixup::Constant {
                     register: LINK,
                     value: return_address,
@@ -868,10 +831,9 @@ fn jump(out: &mut Out, op: BranchRegister, rn: Reg) {
     );
     let slot = Resume::Slot(Held::Register(SCRATCH));
     match op {
-        BranchRegister::Br => out.commit(encode::branch_register(form::BR, SCRATCH), slot),
-        // Foreseen from the return-address stack, which the call stubs' slots fill with return addresses' slots.
-        BranchRegister::Ret => out.commit(encode::branch_register(form::RET, SCRATCH), slot),
-        BranchRegister::Blr if through_slot => {
+        // A return goes by `br` too until calls push the return address's slot (the call stub): a `ret` would be
+        // foreseen from a return-address stack that holds none of the guest's.
+        BranchRegister::Br | BranchRegister::Ret => {
             out.commit(encode::branch_register(form::BR, SCRATCH), slot)
         }
         BranchRegister::Blr => {

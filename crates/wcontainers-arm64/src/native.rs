@@ -220,10 +220,6 @@ impl Native for Arm64 {
         carry::exit(code, target);
     }
 
-    fn stub(i: &I, address: u64) -> bool {
-        carry::stub(i, address)
-    }
-
     fn stopping(i: &I, _address: u64) -> Stopping {
         let register = |r: Reg| match r {
             Reg::X(n) => Base::Register(n),
