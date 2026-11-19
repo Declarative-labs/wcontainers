@@ -19,8 +19,8 @@ pub fn knob(name: &str, default: u64) -> u64 {
 /// that values the decoder picks out one by one (the system registers of a move) are all seen.
 pub const SWEPT_BITS: u32 = 16;
 
-/// The words of a form to try: every value of its non-register bits when they are few, else `draws` drawn,
-/// each with drawn register fields.
+/// The words of a form to try, each with drawn register fields: when its non-register bits are few, every value
+/// of them, swept again with other register fields until there are at least `draws`; else `draws` drawn.
 pub fn words_of(form: &forms::Form, draws: u64, rng: &mut fastrand::Rng) -> Vec<u32> {
     let free = !form.mask & !form.should_mask;
     let registers = form
@@ -40,7 +40,7 @@ pub fn words_of(form: &forms::Form, draws: u64, rng: &mut fastrand::Rng) -> Vec<
     loop {
         words.push(form.word(value | (rng.u32(..) & registers)));
         value = value.wrapping_sub(swept) & swept;
-        if value == 0 {
+        if value == 0 && words.len() as u64 >= draws {
             break;
         }
     }
