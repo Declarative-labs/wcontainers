@@ -266,6 +266,10 @@ impl Native for Arm64 {
                 register: SystemRegister::Fpsr,
                 ..
             } => Stopping::FloatStatusWrite,
+            I::ReadSystem {
+                register: SystemRegister::Fpsr,
+                ..
+            } => Stopping::FloatStatusRead,
             _ if Self::route(i) == Route::Trap => Stopping::Illegal,
             _ => Stopping::Plain,
         }

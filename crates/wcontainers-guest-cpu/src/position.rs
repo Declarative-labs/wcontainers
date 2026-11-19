@@ -190,6 +190,8 @@ pub enum Stopping {
     Illegal,
     /// A write of the float status register: from then on its flags are kept exact.
     FloatStatusWrite,
+    /// A read of the float status register, a slow path while its flags are not kept.
+    FloatStatusRead,
 }
 
 /// A register an address is formed from.
