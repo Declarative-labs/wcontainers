@@ -221,7 +221,6 @@ fn view_sizes_and_level_counts_at_10_0_as_direct3d_does() {
 }
 
 #[test]
-#[ignore = "known failure: an empty slot's size reads 1 by 1 (its stand-in's), where Direct3D gives 0"]
 fn an_empty_slots_size_and_level_count_at_10_0_as_direct3d_does() {
     level10("resinfo_empty");
 }
@@ -279,6 +278,11 @@ fn stencil_views_read_the_stencil_as_direct3d_does() {
 #[test]
 fn a_depth_bias_on_lines_and_points_as_direct3d_does() {
     case("biased_lines");
+}
+
+#[test]
+fn a_depth_bias_on_what_geometry_and_tessellation_stages_rasterise_as_direct3d_does() {
+    case("staged_bias");
 }
 
 /// The rows of `text`'s lines starting `prefix`, each a row of bytes written in hex.

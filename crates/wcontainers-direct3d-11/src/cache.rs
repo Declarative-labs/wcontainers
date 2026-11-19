@@ -1,6 +1,7 @@
 //! The cache of plan section 8 in this front: shaders converted once across runs, and every state
 //! combination a program draws recorded and built at its next start (plan 4.4, step 3).
 
+use crate::error::WARNING_PREFIX;
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::{Mutex, PoisonError};
@@ -49,9 +50,7 @@ fn append(s: &mut Store, bytes: &[u8]) {
         return;
     }
     if let Err(e) = s.out.write_all(bytes).and_then(|()| s.out.flush()) {
-        eprintln!(
-            "wcontainers direct3d 11: the cache file cannot be appended to ({e}); kept in memory"
-        );
+        eprintln!("{WARNING_PREFIX}: the cache file cannot be appended to ({e}); kept in memory");
         s.failed = true;
     }
 }

@@ -240,6 +240,13 @@ pub fn linked_location<'a>(values: impl IntoIterator<Item = &'a StageValue>) -> 
         .max(1)
 }
 
+/// `outputs` name the layer each primitive is drawn into.
+pub fn names_layer(outputs: &[StageValue]) -> bool {
+    outputs
+        .iter()
+        .any(|v| v.system == Some(SystemValue::RenderTargetArrayIndex))
+}
+
 /// The clip distances `outputs` write.
 pub fn clip_distances(outputs: &[StageValue]) -> u8 {
     outputs
@@ -420,6 +427,9 @@ pub struct StageVariant {
     /// The clip distances the programs apply themselves, where the back end has none
     /// (`ClipDistanceInShader`).
     pub clip_distances: u8,
+    /// The pixel program reads its layer from the one a geometry stage names, passed after the
+    /// linked values (`VariantFlags::LAYER_FROM_STAGE`).
+    pub layer_from_stage: bool,
     /// Texture slots whose bound view reads stencil, which Direct3D gives in the second component
     /// and the interface's stencil views in the first (`SwizzleInShader`).
     pub stencil: u128,
@@ -535,6 +545,9 @@ impl StageVariant {
         if self.clip_distances != 0 {
             key.flags |= VariantFlags::CLIP_DISTANCE;
         }
+        if self.layer_from_stage {
+            key.flags |= VariantFlags::LAYER_FROM_STAGE;
+        }
         if self.linked != 0 {
             key.linked = LinkedValues {
                 location: self.linked,
@@ -631,7 +644,7 @@ impl Helpers {
     /// The helper constants of the vertex program `passthrough` drawing a geometry stage that
     /// chooses a layer or viewport: the run it keeps (`stage::PASSTHROUGH_HELPERS`), in the block
     /// its module declares at the vertex stage's helper binding.
-    pub fn of_passthrough(passthrough: &ShaderModule) -> Self {
+    pub fn of_passthrough(passthrough: &ShaderModule, layer_from_stage: bool) -> Self {
         let module = &passthrough.module;
         let binding = helper_binding(ShaderStage::Vertex);
         let size = module
@@ -643,9 +656,13 @@ impl Helpers {
                     .is_some_and(|b| b.group == HELPER_SET && b.binding == binding)
             })
             .map_or(0, |(_, g)| module.types[g.ty].inner.size(module.to_ctx()));
+        let mut values = wcontainers_shaders::stage::PASSTHROUGH_HELPERS.to_vec();
+        if layer_from_stage {
+            values.push(wcontainers_shaders::stage::PASSTHROUGH_LAYER_COUNT);
+        }
         Helpers {
             size,
-            values: wcontainers_shaders::stage::PASSTHROUGH_HELPERS.to_vec(),
+            values,
             ..Helpers::default()
         }
     }
@@ -686,6 +703,18 @@ pub fn convert(
             r => return Ok((answer(r, 1)?, samples)),
         }
     }
+}
+
+/// The key of a geometry shader declaring `typed`, whose pass-through passes `clip`'s clip
+/// distances at its location (`ClipDistanceInShader`).
+pub fn geometry_key(typed: &[TypedView], layered: u128, clip: Option<(u32, u8)>) -> VariantKey {
+    let (linked, clip_distances) = clip.unwrap_or_default();
+    StageVariant {
+        linked,
+        clip_distances,
+        ..StageVariant::default()
+    }
+    .key(SourceStage::Geometry, typed, layered, &[])
 }
 
 /// The variant every shader of `stage` declaring `typed` and the multisampled arrays `layered` is
@@ -877,6 +906,7 @@ fn answer(r: core::result::Result<Converted, ConvertError>, modules: usize) -> R
                         | HelperValue::EarlyTests
                         | HelperValue::Layer
                         | HelperValue::Viewport
+                        | HelperValue::LayerCount
                 )
             }) =>
         {

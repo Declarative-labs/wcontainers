@@ -1,6 +1,7 @@
 //! Building ahead (plan 4.4): the state tuples each vertex shader is drawn with, counted per draw, and
 //! the pipelines of a new pair of shaders prepared with them before the pair's first draw.
 
+use crate::error::WARNING_PREFIX;
 use std::cmp::Ordering;
 use std::rc::{Rc, Weak};
 
@@ -364,7 +365,7 @@ impl<B: Backend> Device<B> {
         }
         self.ahead.reported = counts;
         eprintln!(
-            "wcontainers direct3d 11: built at start {started} recorded combinations: \
+            "{WARNING_PREFIX}: built at start {started} recorded combinations: \
              {started_drawn} drawn since, {} not ({} records not built); built ahead {} \
              combinations: {drawn} drawn since, {not} not; {missed} built at their first draw",
             started - started_drawn,

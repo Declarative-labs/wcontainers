@@ -16,8 +16,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use wcontainers_gpu::{
-    DrawBaseSource, Format, ShaderModule, SlotKind, SystemValue, TexelBufferRoute, VariantKey,
-    VertexFormat,
+    DrawBaseSource, Format, ShaderModule, SlotKind, SystemValue, TexelBufferRoute, VariantFlags,
+    VariantKey, VertexFormat,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source, cache, capabilities, convert, stage};
 
@@ -45,6 +45,15 @@ fn view_keys() -> [(Format, VariantKey); 3] {
     })
 }
 
+/// The key a front asks for on WebGL 2 where it asks `key` on WebGPU: texture level and sample counts
+/// from the helpers (no `Features::TEXTURE_LEVEL_QUERY` there).
+fn webgl_key(key: &VariantKey) -> VariantKey {
+    VariantKey {
+        flags: key.flags | VariantFlags::TEXTURE_INFO,
+        ..key.clone()
+    }
+}
+
 /// One line per variant key a front asks for today under which the shader converts: the key's name,
 /// the content key and the BLAKE3 hash of the cache record. Fails if a record does not decode to
 /// the same record or converting again gives other bytes.
@@ -57,6 +66,7 @@ fn records(path: &Path, file: &str) -> Result<String, String> {
     };
     let mut keys = vec![
         ("plain".to_string(), VariantKey::default()),
+        ("webgl".to_string(), webgl_key(&VariantKey::default())),
         (
             "draw-base-helpers".to_string(),
             VariantKey {
@@ -226,6 +236,13 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
         return format!("wgsl-validate {}", e.as_inner());
     }
 
+    // GLSL ES is written from the module the WebGL 2 back end's front asks for, whose language
+    // cannot ask texture level and sample counts.
+    let webgl = match convert(source(&bytes), &webgl_key(&key), None) {
+        Ok(c) => c,
+        Err(e) => return format!("ok-wgsl glsl-key {}", named(e)),
+    };
+    let m = &webgl.modules[0];
     let stage = m.module.entry_points[0].stage;
     // The options the WebGL 2 back end writes with (`wcontainers-gpu-webgl`'s `write_glsl`, on a
     // context with EXT_clip_control, so without its y flip).
