@@ -132,6 +132,10 @@ for %%e in (gs_tess_point gs_tess_line gs_tess_tri) do (
 "%DXC%" -nologo -T ps_6_0 -E ps_halves -Gis -Fo ps_halves.dxil uav.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_array -Gis -Fo ps_array.dxil arrays.hlsl || exit /b 1
 "%DXC%" -nologo -T cs_6_0 -E cs_image_array -Gis -Fo cs_image_array.dxil arrays.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_1 /E ps_array /Fo ps_array.dxbc arrays.hlsl || exit /b 1
+"%FXC%" /nologo /T cs_5_1 /E cs_image_array /Fo cs_image_array.dxbc arrays.hlsl || exit /b 1
+"%FXC%" /nologo /T cs_5_1 /E cs_buffer_array /enable_unbounded_descriptor_tables /Fo cs_buffer_array.dxbc arrays.hlsl || exit /b 1
+"%DXC%" -nologo -T cs_6_0 -E cs_buffer_array -Gis -Fo cs_buffer_array.dxil arrays.hlsl || exit /b 1
 "%FXC%" /nologo /T cs_5_0 /E cs_one_d /Fo cs_one_d.dxbc one_d.hlsl || exit /b 1
 "%DXC%" -nologo -T cs_6_0 -E cs_one_d -Gis -Fo cs_one_d.dxil one_d.hlsl || exit /b 1
 for %%e in (ps_fill ps_msarray) do (
@@ -151,6 +155,8 @@ for %%e in (ps_msloop ps_msswap) do (
 "%DXC%" -nologo -T vs_6_0 -E vs_evaluate -Gis -Fo vs_evaluate.dxil evaluate.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_evaluate /Fo ps_evaluate.dxbc evaluate.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_evaluate -Gis -Fo ps_evaluate.dxil evaluate.hlsl || exit /b 1
+"%FXC%" /nologo /T vs_5_0 /E vs_eval_exact /Fo vs_eval_exact.dxbc evaluate.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_0 /E ps_eval_exact /Fo ps_eval_exact.dxbc evaluate.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_line /Fo vs_line.dxbc lines.hlsl || exit /b 1
 "%DXC%" -nologo -T vs_6_0 -E vs_line -Gis -Fo vs_line.dxil lines.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_line /Fo ps_line.dxbc lines.hlsl || exit /b 1

@@ -1255,6 +1255,57 @@ fn inputs_evaluated_elsewhere_match_direct3d() {
     assert!(failures.is_empty(), "differ: {failures:?}");
 }
 
+/// An input evaluated at the sample being run (`ps_eval_exact`, Direct3D 12's
+/// shader_eval_attribute) is exactly the value interpolated there, as on Direct3D 11 at four
+/// samples: the program scales any difference so that the smallest shows, and every texel must match.
+#[test]
+fn an_input_evaluated_at_its_own_sample_is_exact() {
+    let mut gpu = webgpu();
+    let d3d = wcontainers_graphics_test::d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let grid = grid();
+    let code = [
+        bytecode("vs_eval_exact.dxbc"),
+        bytecode("ps_eval_exact.dxbc"),
+    ];
+    let samples = LAYER_SAMPLES as u8;
+    let (reference, _) = direct3d_11(
+        &d3d,
+        "vs_eval_exact",
+        "ps_eval_exact",
+        Format::Rgba8Unorm,
+        [1.0, 0.75, 0.5, 1.5],
+        true,
+        &Reference {
+            samples: samples.into(),
+            ..Default::default()
+        },
+    );
+    let mut ours_draw = grid_draw(&code, false, &grid);
+    ours_draw.setup.samples = samples.into();
+    ours_draw.setup.ps_key.samples = samples;
+    let texels = ours(&mut gpu, &ours_draw, ProvokingVertex::First);
+    let r = compare(
+        format!("evaluated at its own sample, {samples} samples, webgpu against direct3d 11"),
+        &reference,
+        &texels,
+        Format::Rgba8Unorm,
+        (0, 0),
+    );
+    eprintln!(
+        "{}: {} of {} texels differ, largest difference {}",
+        r.name,
+        r.count,
+        SIZE * SIZE,
+        r.largest
+    );
+    assert_eq!((r.count, r.largest), (0, 0), "{}", r.name);
+}
+
 /// Formats the typed buffer views of `ps_texels` take: textures of every back end, so both routes
 /// read them.
 const PIXEL_FLOATS: [Format; 14] = [

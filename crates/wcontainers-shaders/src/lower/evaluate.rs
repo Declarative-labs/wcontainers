@@ -66,6 +66,11 @@ impl Lowering<'_> {
         if dcls.is_empty() && !self.position_moved() {
             return Ok(());
         }
+        if self.per_sample() {
+            for &dcl in &dcls {
+                self.interpolate_at_sample(dcl, evaluating);
+            }
+        }
         let vec2 = self.vec_ty(2, Scalar::F32)?;
         let f32_ty = self.scalar_ty(Scalar::F32);
         self.evaluated.w_slope =
@@ -96,6 +101,35 @@ impl Lowering<'_> {
             self.evaluated.inputs.push((dcl, companions));
         }
         Ok(())
+    }
+
+    /// Interpolates input `dcl` at the sample being run where the program runs per sample, reads it
+    /// only through evaluations at samples and shares its location with nothing, so that an
+    /// evaluation at that sample is the interpolated value itself, as the hardware gives it.
+    fn interpolate_at_sample(&mut self, dcl: u32, evaluating: impl Fn(u16) -> bool) {
+        let used_otherwise = self.ir.ops.iter().any(|op| {
+            op.refs.first() == Some(&dcl)
+                && (op.code == code::INPUT_LOAD
+                    || evaluating(op.code) && op.code != code::INTERPOLATE_AT_SAMPLE)
+        });
+        let Some(&i) = self.io_index.get(&dcl) else {
+            return;
+        };
+        let location = self.io[i].1.location.map(|(l, _)| l);
+        let shared = self
+            .io
+            .iter()
+            .filter(|(_, io)| location.is_some() && io.location.map(|(l, _)| l) == location)
+            .count()
+            > 1;
+        let io = &mut self.io[i].1;
+        if !used_otherwise
+            && !shared
+            && location.is_some()
+            && io.interpolation & (interp::FLAT | interp::CENTROID) == 0
+        {
+            io.interpolation |= interp::SAMPLE;
+        }
     }
 
     /// The position is declared at a place WGSL does not give it: the centre in a program run per
@@ -415,7 +449,26 @@ impl FunctionLowering<'_, '_> {
         let w_there = self.bin(b, BinaryOperator::Add, w, w_along);
         let scaled = self.bin(b, BinaryOperator::Multiply, v, w);
         let there = self.bin(b, BinaryOperator::Add, scaled, along);
-        Ok(self.bin(b, BinaryOperator::Divide, there, w_there))
+        let there = self.bin(b, BinaryOperator::Divide, there, w_there);
+        // At the place the value was interpolated, the value itself, unrounded by the w division.
+        let vec2 = self.l.vec_ty(2, Scalar::F32)?;
+        let zero = self.add(b, Expression::ZeroValue(vec2));
+        let same = self.bin(b, BinaryOperator::Equal, d, zero);
+        let same = self.add(
+            b,
+            Expression::Relational {
+                fun: naga::RelationalFunction::All,
+                argument: same,
+            },
+        );
+        Ok(self.add(
+            b,
+            Expression::Select {
+                condition: same,
+                accept: v,
+                reject: there,
+            },
+        ))
     }
 }
 
