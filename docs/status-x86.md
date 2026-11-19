@@ -44,6 +44,10 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   the reference runner's own memory, `may_vary`, the reserved NOPs' prefixes, and five smaller ones, and did
   the first part of the literal sweep (see "X3, run 3"). What is left for later milestones is under "X3:
   what comes next".
+- X4 (x86 at full look-ahead): run 1 (2026-11-18) fixed the X3 check's seven findings and a translator bug
+  that lost every x86 callee's flags at full look-ahead; hello world and the benchmark set match the
+  i7-8750H at none and full. Not done yet: the layer 2 emitter, lazy flag shapes and direct conditions,
+  switches, loop proofs, layer 3 and the timings on the x86 machine (see "X4, run 1").
 
 Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0.5):
 - Suite: `WC_REFERENCE_X86_64=tom@192.168.2.240 nix develop -c cargo test -p wcontainers-guest-cpu -p
@@ -55,6 +59,64 @@ Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0
 - Clippy with `-D warnings` on the test crate (all targets), the interface, the translator, the browser
   crate and the runner for both CPUs; `cargo fmt --check`: clean.
 - origin/phase-1-translator: fetched at the start and end, nothing new since 8b5e420 (merged).
+
+## X4, run 1 (2026-11-18): partly done
+
+Fixed first, the independent check of X3's seven findings (all minor):
+- Plan 7.2 said `presented`, `REFERENCE_HAS` and layer 1's `Err` rule came at X3; they come with X5's
+  never-claimed list (plan and "Departures", X3, now say so).
+- "Departures", X3, now lists every default-claimed instruction X3 left without a meaning (shld, shrd, push
+  and pop of fs and gs, mov of segment registers, the far transfers, enter, lahf, sahf, popf, popcnt, lzcnt,
+  tzcnt, movbe, adcx, adox, crc32, cmpxchg8b and 16b, the fs and gs base instructions, rdtsc, cpuid, the
+  fences, movnti, besides those it named).
+- `tests/no_std.rs` builds the x86 crate's core too.
+- `may_vary` is true for the kernel-only instructions a kernel can grant to user code (rdpmc, in, out, ins,
+  outs, cli, sti); `tests/facts.rs` checks four of them.
+- Literals: the FXSAVE area is a typed struct (`wcontainers_x86::Fxsave`), so MXCSR's and the xmm registers'
+  offsets are field offsets and the harness reads fields, not byte ranges; `FCW_AT_START`, `MXCSR_AT_START`,
+  `X87_REGISTER_BITS`, `ARITHMETIC_FLAGS`, `MODE_BITS` (iced's bitness), `RSP_NUMBER` and the registers
+  `RBP`, `R8`, `R9`, `R10` are named and used (`PASSED_IN`, `PASSED_OUT`, `SYSCALL`, `rsp_based`, DF's shift
+  in the string instructions); the harness names `EDGE_BYTES`, `AIMED_BIT_OFFSETS`, `DRAWN_REX_W` and the
+  unit test's draw count; the reference runner takes the legacy FP area's size and MXCSR's place from libc's
+  `user_fpregs_struct`. Left in the runner: its own 0x37f and 0x1f80 (it has no dependency on the x86 crate).
+- The reference server ends when no request comes for 15 minutes (`IDLE_MILLISECONDS`), so a runner whose
+  connection died without closing does not stay on the x86 machine; its case child ends with it.
+- x86's `smoke()` panic names X5.
+- The decoder's share of the browser build is recorded as a lower bound (plan 12 too).
+
+Built and found:
+- A translator bug that broke every x86 program at full look-ahead whose caller reads flags a callee left:
+  a return tested the caller's flags-wanted bit by wrapping `L_RETURN & FLAGS_WANTED` to i32, which drops
+  x86's bit 62, so a callee never wrote its flags back. Now `code::push_flags_wanted` wraps only when the
+  bit is in the low word (ARM64's bit 0: the same bytes as before) and compares otherwise. Found by hello
+  world's final registers at full against none; `programs/x86_64/flag_returns.c` (flags handed back after a
+  direct call, through a register and memory, nested, after a tail jump, before pops) fails before the fix
+  and passes after (`flag_returns_match_linux_x86_64`).
+- x86 at full look-ahead today: `hello_matches_linux_x86_64` (every optimisation level, none and full in
+  both settings) and `benchmarks_match_linux_x86_64` (the benchmark set at none and full, both settings,
+  against the i7-8750H) pass. `programs_match_linux` is not run for x86: `integers` at -O0 reaches `leave`,
+  which has no meaning yet (X5's list above).
+- `machine-code` takes the guest and the library (`machine-code x86_64 bench -O2 none <out> SCALE=1
+  WORKLOAD=2`), for reading x86's WebAssembly.
+- Literal check: main has no `wcontainers-literals` yet, and `docs/literals.md` on `phase-1-literals` (third
+  version) says a track adopts the check by merging main once main has it, never the literals branch
+  directly; so nothing was merged (see "Departures", X4).
+
+What comes next for X4, in order:
+1. x86's layer 2 emitter (`GuestTest::assemble`, with iced's `code_asm`), mapping every model operation to
+   x86 forms that have meanings (plan 7.4), then layer 2 at 10,000 programs against the CPU and against none.
+2. Lazy flags as plan 5.1 has them: the `Shift` and `Bits` shapes, `SHAPES` for the flags-word functions,
+   `condition_direct` (cmp or test plus jcc as one comparison), then reading the WebAssembly of two
+   benchmarks' hot loops for flag updates emitted and never read.
+3. `jump_table` for both compiler styles (gcc and clang PIC tables: `lea r, [rip + T]; movsxd r2, [r + i *
+   4]; add r2, r; jmp r2`; absolute tables stay counted), `branch_comparison` and `loaded_max` for the loop
+   proofs, the first frame check covering the return slot (plan 3.4).
+4. Layer 3 (Csmith) for x86 against the i7-8750H at every look-ahead.
+5. The benchmark set timed on the x86 machine: natively (the harness already times a blob there), and in
+   wasmtime there, which needs the test crate (or a small runner) built on that machine; record its load.
+   Then report beside ARM64's figures in docs/status-translator.md.
+6. The independent check's items: new seeds for layers 2 and 3, the benchmarks run again, the fast call path
+   read for any way to return to the wrong place.
 
 ## X3: what comes next
 
@@ -1706,6 +1768,12 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
   (MIT), era2m_softfloat 0.2.1 (BSD-3-Clause-Clear). Nothing copied.
 
 ## Departures from the plan
+
+X4 (each also written into the plan's text where the plan is wrong):
+- The literal check is not adopted yet, against the brief's "merge origin/phase-1-literals": its own
+  `docs/literals.md` (0eeb26e4) says a track merges main once main has the check, never the literals branch
+  directly, and main has no `wcontainers-literals` yet. The task names no merge either.
+- `machine-code` takes the guest and the library as arguments (it read ARM64 programs only).
 
 X3 (each also written into the plan's text where the plan is wrong):
 - Some SSE2 instructions (the moves, logic, adds, compares, interleaves, shuffles, shifts by an immediate and
