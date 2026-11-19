@@ -122,7 +122,8 @@ milestone "G5 to the pass bar"):
   bound where the program declares a raw or structured buffer is read as its elements' bytes
   (`buffer_view`), as real Direct3D 12 does on this GPU (register_space binds `R32_UINT` views to
   `ByteAddressBuffer` and `StructuredBuffer<uint>` declarations), instead of refused. Test files
-  184 of 198.
+  184 of 198. At the end the desktop's build folder of this branch (8,228,781,297 bytes) was
+  deleted; no build output was made in scratch or on the Mac.
 - Run 33 (the fourth run of the milestone's current form; run 32 was cut off before it
   committed, and its uncommitted work was finished here): no graphics branch had anything new
   but direct3d-11, which changed nothing of this track's or of the interface (not merged). The
