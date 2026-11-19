@@ -1757,6 +1757,39 @@ pub(crate) mod words {
     pub const BOUND: usize = 3;
     pub const COUNT_SHIFT: u32 = u16::BITS;
     pub const OPCODE_MASK: u32 = u16::MAX as u32;
+
+    /// `OpDecorate`'s words (3.32.2): the target, the decoration, then its first literal.
+    pub mod decorate {
+        pub const TARGET: usize = 1;
+        pub const DECORATION: usize = 2;
+        pub const LITERAL: usize = 3;
+        pub const WORDS: usize = LITERAL + 1;
+    }
+
+    /// `OpTypeInt`'s words (3.32.6): the result, the width, then the signedness.
+    pub mod type_int {
+        pub const SIGNEDNESS: usize = 3;
+        pub const WORDS: usize = SIGNEDNESS + 1;
+    }
+
+    /// `OpTypeImage`'s words (3.32.6) up to its format; the access qualifier may follow.
+    pub mod type_image {
+        pub const SAMPLED_TYPE: usize = 2;
+        pub const DIM: usize = 3;
+        pub const SAMPLED: usize = 7;
+        pub const FORMAT: usize = 8;
+        pub const WORDS: usize = FORMAT + 1;
+        /// `Sampled` of an image used without a sampler: a storage image.
+        pub const STORAGE: u32 = 2;
+    }
+
+    /// `OpTypePointer`'s and `OpVariable`'s third word: the pointee type, the storage class.
+    pub const POINTER_TYPE: usize = 3;
+    pub const VARIABLE_STORAGE_CLASS: usize = 3;
+    pub const POINTER_WORDS: usize = POINTER_TYPE + 1;
+
+    /// `OpExtInst`'s instruction number (3.32.4), after the result type, result and set.
+    pub const EXT_INSTRUCTION: usize = 4;
 }
 
 /// Whether `spirv` takes an input at another place in the pixel (GLSL.std.450's `InterpolateAt*`),
@@ -1774,8 +1807,7 @@ fn evaluates_inputs(spirv: &[u32]) -> bool {
         if count == 0 || at + count > spirv.len() {
             return false;
         }
-        // OpExtInst: result type, result, set, instruction.
-        let instruction = at + 4;
+        let instruction = at + words::EXT_INSTRUCTION;
         if spirv[at] & words::OPCODE_MASK == Op::ExtInst as u32
             && instruction < at + count
             && EVALUATIONS.iter().any(|&e| e as u32 == spirv[instruction])

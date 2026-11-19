@@ -53,9 +53,15 @@ impl Declared {
     }
 }
 
+/// How many pointer and array levels are looked through from a variable to its image type.
+const ELEMENT_LEVELS: usize = 4;
+
 /// Finds the typed buffers and storage images the SPIR-V declares, and rewrites the image types of
 /// typed buffers and formatless storage images in place into ones naga's reader takes.
 pub(super) fn prepare(words: &mut [u32]) -> Vec<Declared> {
+    use super::words::{
+        POINTER_TYPE, POINTER_WORDS, VARIABLE_STORAGE_CLASS, decorate, type_image, type_int,
+    };
     let mut sets = BTreeMap::new();
     let mut bindings = BTreeMap::new();
     let mut kinds = BTreeMap::new();
@@ -70,15 +76,16 @@ pub(super) fn prepare(words: &mut [u32]) -> Vec<Declared> {
             break;
         };
         match Op::from_u32(w[0] & super::words::OPCODE_MASK) {
-            Some(Op::Decorate) if count >= 4 => {
-                if w[2] == Decoration::DescriptorSet as u32 {
-                    sets.insert(w[1], w[3]);
-                } else if w[2] == Decoration::Binding as u32 {
-                    bindings.insert(w[1], w[3]);
+            Some(Op::Decorate) if count >= decorate::WORDS => {
+                let (target, literal) = (w[decorate::TARGET], w[decorate::LITERAL]);
+                if w[decorate::DECORATION] == Decoration::DescriptorSet as u32 {
+                    sets.insert(target, literal);
+                } else if w[decorate::DECORATION] == Decoration::Binding as u32 {
+                    bindings.insert(target, literal);
                 }
             }
-            Some(Op::TypeInt) if count >= 4 => {
-                let kind = if w[3] != 0 {
+            Some(Op::TypeInt) if count >= type_int::WORDS => {
+                let kind = if w[type_int::SIGNEDNESS] != 0 {
                     ScalarKind::Sint
                 } else {
                     ScalarKind::Uint
@@ -88,29 +95,34 @@ pub(super) fn prepare(words: &mut [u32]) -> Vec<Declared> {
             Some(Op::TypeFloat) if count >= 3 => {
                 kinds.insert(w[1], ScalarKind::Float);
             }
-            Some(Op::TypeImage) if count >= 9 => {
+            Some(Op::TypeImage) if count >= type_image::WORDS => {
                 images.insert(w[1], at);
             }
-            Some(Op::TypePointer) if count >= 4 => {
-                elements.insert(w[1], w[3]);
+            Some(Op::TypePointer) if count >= POINTER_WORDS => {
+                elements.insert(w[1], w[POINTER_TYPE]);
             }
             Some(Op::TypeArray | Op::TypeRuntimeArray) if count >= 3 => {
                 elements.insert(w[1], w[2]);
             }
-            Some(Op::Variable) if count >= 4 && w[3] == StorageClass::UniformConstant as u32 => {
+            Some(Op::Variable)
+                if count >= POINTER_WORDS
+                    && w[VARIABLE_STORAGE_CLASS] == StorageClass::UniformConstant as u32 =>
+            {
                 variables.push((w[1], w[2]));
             }
             _ => {}
         }
         at += count;
     }
-    let buffer = |words: &[u32], i: usize| words[i + 3] == Dim::DimBuffer as u32;
-    let formatless =
-        |words: &[u32], i: usize| words[i + 7] == 2 && words[i + 8] == ImageFormat::Unknown as u32;
+    let buffer = |words: &[u32], i: usize| words[i + type_image::DIM] == Dim::DimBuffer as u32;
+    let storage = |words: &[u32], i: usize| words[i + type_image::SAMPLED] == type_image::STORAGE;
+    let formatless = |words: &[u32], i: usize| {
+        storage(words, i) && words[i + type_image::FORMAT] == ImageFormat::Unknown as u32
+    };
     let mut declared = Vec::new();
     for (ty, id) in variables {
         let mut element = ty;
-        for _ in 0..4 {
+        for _ in 0..ELEMENT_LEVELS {
             match elements.get(&element) {
                 Some(&e) => element = e,
                 None => break,
@@ -119,7 +131,7 @@ pub(super) fn prepare(words: &mut [u32]) -> Vec<Declared> {
         let (Some(&i), Some(&binding)) = (images.get(&element), bindings.get(&id)) else {
             continue;
         };
-        let storage = words[i + 7] == 2;
+        let storage = storage(words, i);
         if buffer(words, i) || storage {
             declared.push(Declared {
                 set: sets.get(&id).copied().unwrap_or(0),
@@ -131,16 +143,16 @@ pub(super) fn prepare(words: &mut [u32]) -> Vec<Declared> {
     }
     for &i in images.values() {
         if formatless(words, i) {
-            let placeholder = match kinds.get(&words[i + 2]) {
+            let placeholder = match kinds.get(&words[i + type_image::SAMPLED_TYPE]) {
                 Some(ScalarKind::Float) => ImageFormat::R32f,
                 Some(ScalarKind::Sint) => ImageFormat::R32i,
                 Some(ScalarKind::Uint) => ImageFormat::R32ui,
                 _ => continue,
             };
-            words[i + 8] = placeholder as u32;
+            words[i + type_image::FORMAT] = placeholder as u32;
         }
         if buffer(words, i) {
-            words[i + 3] = Dim::Dim1D as u32;
+            words[i + type_image::DIM] = Dim::Dim1D as u32;
         }
     }
     declared
