@@ -1719,6 +1719,15 @@ waits costs the reference's deadline). A sequence that runs past 60 s in the ref
 
 Everything a reviewer should know about what is not compared, in one place.
 
+- K6c: the bar is the LTP verdicts (`ltp ours` then `ltp compare` against
+  crates/wcontainers-kernel-test/ltp/reference-20260930.tsv, the reference run once at load 20 to
+  30), each difference either fixed or named on the gap list with its section 15 cause; tests
+  slower than the time limit on the stand-in are timeouts, not verdicts, until a longer limit
+  shows theirs. One test is `LTP_TAR=<tar> nix develop -c cargo run -p wcontainers-kernel-test
+  --bin ltp -- ours <results> <test>` (and `reference` for Docker's). The literals check: `cargo
+  run -q -p wcontainers-literals -- check` (exit 0); its baseline had 8592 lines at its start
+  (708289f3) and may only shrink.
+
 - K6a: LTP compares verdicts only (from exit codes), not output or the counts in each test's
   summary. The reference ran once, so its own flaky tests (timing tests under load, such as
   clock_nanosleep02 failing there) are in the bar as they came. Our runs used LTP_LIMIT=300 for
