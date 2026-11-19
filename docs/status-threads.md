@@ -1,9 +1,129 @@
 # Status of the parallel-threads plan
 
-2026-11-18. The plan is docs/threads.md. Nothing is built. The plan was written, checked by an independent
-agent five times, and corrected after each check (the five lists are below, newest first). The fifth
-correction is the last round: it has had no check of its own, and the plan says so at its top, under
-"Known faults". It stops here until the owner has ruled on its section 16.
+2026-11-19. The plan is docs/threads.md. Nothing is built. The plan was written, checked by an independent
+agent six times, and corrected after each check (the six lists are below, newest first). The sixth
+correction has had no check of its own, and the plan says so at its top, under "Known faults". It
+stops here until the owner has ruled on its section 16.
+
+## The sixth check's findings, and how each was settled
+
+Two blocking and six smaller. None is argued against: all eight were right. Each was checked against
+the code, and against docs/native.md where it names it, before it was settled. Four small experiments
+were run for this correction (items 19 to 22 under "What was measured"), and the sixth checker's own
+model is recorded as item 18.
+
+1. **Two call-ins could wait on each other for ever** (blocking). Right. The checker's model was read
+   and run again; it reaches the stuck state in four steps. The code was read for the cure's premise:
+   a woken call runs again from its start, from the thread's saved registers (kernel/task.rs:1-6,
+   :343-375). Settled in 4.3 and 4.5:
+   - a mark keeps a group's threads out of guest code and nothing else. A thread whose call was woken
+     for a call-in (a "waiter") is put forward whatever is called in, its own group included;
+   - when its call has run it goes back to guest code only if its own group is not called in by
+     another call; otherwise it stays ready with its call answered. This is the part the check said
+     its control did not settle;
+   - a waiter of a `Serial` group is still chosen only when none of its group's threads runs, so the
+     lock rule of 7.2 is untouched; the sibling in its way is asked in at once (section 5);
+   - a mark belongs to its call and names a memory. It comes off when the call has run or its thread
+     is ended.
+   4.5 no longer says "nothing can wait in a circle" for a reason that 4.3 contradicts. It gives the
+   three things a waiter needs, none of which is another mark coming off. The rules were modelled and
+   searched (item 19): the checker's case and a larger one, on one to four processors. Section 12
+   has the test, "two call-ins that want each other's groups", with a count in the test build,
+   "call-in with nothing to move it".
+   - Found with it: a call must name every group it needs at once, its own included when it joins.
+     Named one at a time, a woken call could have to park again for the next, with its first mark
+     still on. 4.5 says so, and the model checks that a woken call never parks again for its
+     call-in.
+   - Found with it: section 5's condition counted a thread with a slice as "due in" for a waiter
+     too. A slice can be milliseconds, and a whole group stands still meanwhile. A waiter's way is
+     now cleared at once.
+2. **A process given `None` changed the shared scheduler with entries that were never logged**
+   (blocking). Right, and the claim "a replay cannot get stuck" was false with such a process
+   present. The code was read: every return charges the thread and moves the queue's least weighted
+   time (`account`, kernel/task.rs:77-86), which woken threads are placed against (:555-560), and
+   the tick and the slice read the queue's length (:43-53, :88-104). Settled in section 3 and 4.6
+   as one rule: **a kernel is recorded whole, or not at all.**
+   - A system says at the start whether it orders entries. If not, nothing is asked or logged,
+     whatever the configs say: that is where the ruling's "with `None` nothing is recorded" holds.
+   - If it does, every entry of every thread is asked about and logged, and no process runs below
+     `External`. A process given `None` there runs in force `External`, counted and warned.
+   - What the kernel takes from the system inside an entry (the clock it charges by, ids, random
+     bytes) is part of the record, as the host's answers are today (docs/runtime.md section 12).
+   - The check's own alternative was to log choices and charges for `None` threads. The plan logs all
+     of an entry or none: with choices and charges only, what a `None` process writes to a pipe or
+     a file would go unchecked, and an `Exact` reader could differ with nobody told.
+   - This changes what the owner ruled for one case, so it is put to him as the second question of
+     decision 1, with three other answers and what each costs.
+   - T1's bar no longer runs a `None` process unlogged beside an `Exact` one. Until T8 builds
+     `External`, a recorded kernel accepts only `Exact` (section 13). The test moved to T8, with the
+     check's case as one of its runs (section 12, "a kernel is recorded whole").
+   - Found with it: **a replay that has left its recording must end, not wait.** With `External` a
+     process may make other entries than it did. The earlier form answered `Later` to a choice of
+     the wrong thread, and `next` then made the same choice for ever. 4.6 now names four ways the
+     replaying system sees that the replay has left its recording, each of which ends it, and the
+     one case no rule of the kernel's can end (a thread that computes on and never makes its due
+     entry). Section 12 has a test from changed logs.
+   - Found with it: (`Parallel`, `External`) runs `Serial` until it is built, so in a recorded kernel
+     threads run at the same time only as (`Parallel`, `Exact`). Sections 2 and 3 say so.
+3. **`suspend` would take `Rc` clones out from under the kernel's lock.** Right: `FileRef`
+   (kernel/file.rs:94) and `Map`, `Handlers`, `Files`, `Fs` (kernel/process.rs:243, :247, :251, :262)
+   are shared across fork and the `CLONE_` flags, and every descriptor lookup hands out a clone
+   (kernel/file.rs:181, kernel/syscall/io.rs:33). Nothing is wrong in T1, which has no `suspend`.
+   Settled in 4.2 as a rule asked of the interface track: what `suspend` hands out shares no `Rc`
+   with what stays; a shared object's reference is kept in the kernel under a key; a dropped value
+   lets go under the lock, at the kernel's next entry. Of the check's three suggestions this is the
+   third ("suspend detaches what it shares"). The first (`!Send`, dropped only under the lock) was
+   rejected because a `resume` from another thread is what the value is for; the second (`Arc`
+   first) because every descriptor call would pay for it.
+4. **A `System` method called from a guest hook could enter the kernel and hang a group stop.** Right
+   (rt/lib.rs:291-299: the clock's answer calls `ran` and `monotonic_nanoseconds`, `warn` calls
+   `cpu_warning`; the clock hook is wt/lib.rs:2124-2131). Settled in 4.2 with both of the check's
+   suggestions: the three methods' doc comments say they may not call the kernel or wait for anyone
+   who does, and a mark of the worker's makes such a call a panic that names it. The mark is looked
+   at where the kernel is entered from outside the loop, not at a system call. That choice was
+   measured (item 21): the test at every take of the lock moved a round by up to 1 ns on the
+   laptop. What cannot be checked is said: a system that waits in `ran` for a lock of its own that
+   a caller of the kernel holds.
+5. **The interface was not mapped onto the native executor.** Right. docs/native.md was read at
+   ab448e58 and at its head (a7099033), which has the owner's later word that the embedder's
+   `System` runs inside the virtual machine (lines 1092-1095). Section 10 now has the map: every
+   call the kernel makes at an entry is on the inside half, with no crossing; calls into the kernel
+   are made by the system's code inside; a host program asks through the link and gets a copy, as
+   native.md's decision 11 recommends; the lock's holder is the virtual CPU's number, with the
+   reason that is sound. Sections 5 and 6 and decisions 8 and 9 no longer say "any host thread"
+   without saying what that is there. KVM's bound was read on the laptop (item 22):
+   `KVM_CAP_MAX_VCPUS` 4096.
+6. **The native output copied barriers always, and so charged every `Serial` run.** Right. Settled in
+   section 10: the native output has the same two forms by ordering as the WebAssembly output. Its
+   Serial form emits nothing for `dmb`, `dsb` and `isb`, as native.md has it today, and leaves
+   `mfence` and lock prefixes out on x86-64; its Parallel form copies them. So `Serial` pays
+   nothing, and there is nothing to put to the owner beyond decision 7's sentence. What the
+   barriers would have cost was measured as hardware instructions (item 20): 1.2 to 8.2 ns each on
+   this Mac, `mfence` 17.2 ns on the laptop.
+7. **The executor's lock could not be let go before the kernel's in today's structure.** Right: the
+   entry is over inside `Answer::exit` (rt/lib.rs:264-289), called from inside the executor's loop
+   (wt/lib.rs:2325), which puts the store back only afterwards (:2336-2344). Settled in 4.2 and 7.2
+   by the check's first suggestion: `Carry::Leave` carries the kernel's handle, and the executor
+   lets its own lock go and then drops it. Section 12's lock-rule test has a run for it.
+8. **The known fault of a pinned thread with no worker was reached by default** (the check's last
+   finding). Right: the processors are the container's and the worker count defaulted to the
+   host's. Settled in section 5: a live run has one worker for each processor, and the setting
+   `RuntimeConfig::host_threads` is gone. Known fault 2 is rewritten: what is left open is running
+   fewer workers than processors, which is not designed, and what a container with more processors
+   than its host has cores costs, which is not measured. Decision 2 asks the owner to confirm it.
+
+Section 16 still has ten decisions. Decision 1 gained the second question (what `None` means in a
+recorded kernel). Decision 2 gained the worker for each processor. Decision 8 says who "any thread" is
+on the native executor and what a call from a guest hook gets. Decision 9 says its calls are on the
+inside half there, and gained `Carry::Leave` with the handle and the rule for `SuspendedProcess`.
+Decision 10 lost `RuntimeConfig::host_threads` and gained "recorded kernel" and "waiter".
+
+Read for this correction: the brief and the interface notes to their ends; the sixth checker's model
+and its two logs (wcontainers-scratch/threads/check6); docs/native.md at ab448e58 (sections 3.4, 5.1,
+5.3 to 5.6, 6.1 to 6.3 and its decisions) and what its head changed since (`git diff ab448e58
+origin/phase-2-native -- docs/native.md`); kernel/task.rs:1-6, :40-106, :340-376, :548-586;
+kernel/file.rs:94, :181; kernel/process.rs:238-264; rt/lib.rs:100-170, :190-300; wt/lib.rs:2110-2140,
+:2236-2345; docs/runtime.md section 12.
 
 ## The fifth check's findings, and how each was settled
 
@@ -854,6 +974,100 @@ control that shows the test can see a mix. 200,000,000 rounds a run, five runs a
   emits, since the module is hand-written; any other version of either compiler. The plan makes it
   a test of each version (docs/threads.md section 12).
 
+### By the plan's sixth checker
+
+**18. Two call-ins that want each other's groups, as a model.** check6/callin_model.py and its two
+logs (Python 3, this Mac, load about 118 by the checker's note). A model of 4.3's and 4.5's rules as
+they were at abfc95e2, searched breadth-first: P1 with threads A1 and S1, P2 with A2, all `Serial`,
+two processors; A1 and A2 each make one call that reaches the other's group; any thread may give way
+or end. It reaches a state where nothing can move after four steps, having seen 67 states
+(callin_model.log). With `--control`, where a waiter is put forward whatever its own group's mark
+says, no such state exists in 106 states (callin_model-control.log). Read and run again for this
+correction, with the same result.
+
+### Sixth run, for the sixth check's findings
+
+Everything is in wcontainers-scratch/threads/run7, and on the laptop in ~/threads-plan/run7. Build
+output was deleted on both machines; sources and logs are kept. Builds used three jobs at most. On
+the laptop no system package was installed, and cores 2 and 8 were not used.
+
+**19. The corrected call-in rules, as a model** (for finding 1). run7/callin/callin_model2.py and
+callin_model2.log; Python 3.15.0 with `-I`, this Mac at load 117 to 124 for the logged runs (134 to
+154 for a first set, which gave the same counts); each search takes seconds.
+What is modelled, as 4.3 and 4.5 now state it:
+- a call names a set of groups, asks their running threads in and parks; it is woken when none of
+  them has a thread in guest code; a group is called in while a pending call names it;
+- a waiter is put forward whatever is called in; in a `Serial` group only when none of its threads is
+  in guest code, and before the group's other threads; a `Parallel` group puts forward every ready
+  thread, and only its waiters while it is called in;
+- when its call has run, the thread goes back to guest code if its group is not called in, and stays
+  ready otherwise;
+- the kernel asks in a thread that stands in a waiter's way;
+- any thread may make its one call, come in, or end; a thread that waits for a call-in may be ended,
+  and its call-in goes with it.
+Two cases. `check6` is the checker's own. `three` is two `Serial` groups of two threads and one
+`Parallel` group of two, where each of four threads makes one call chosen freely from a menu:
+reaching another group, reaching two, joining its own group to another, or calling its own group in.
+What is checked, and what was found:
+- states reached: `check6` 156; `three` 4,998, 55,053, 60,743 and 62,189 on 1, 2, 3 and 4 processors;
+- no state where a thread has not ended and no step is possible;
+- from every state the state where every thread has ended can be reached;
+- the steps assert, and none failed: never two threads of a `Serial` group in guest code; a call's
+  work only while no thread of a group it names, or of its own `Serial` group, is in guest code; a
+  thread enters guest code only when its group is not called in; a woken call never has to park
+  again;
+- with only the steps the kernel forces (an asked thread comes in; a waiter is chosen when a
+  processor is free; a thread in a waiter's way is asked in): from every state every path ends with
+  no call-in pending, the longest in 9 steps, and none goes round;
+- with `--old`, the rule before this correction: in `check6` two states, and in `three` 656, end with
+  a call-in pending and nothing forced left to do. Those are the checker's stuck state and its
+  kin. This model lets a waiting thread be ended, which the checker's does not, and that step is the
+  only one left in those states. With it left out (`--no-kill`) the earlier rule reaches a state
+  where nothing can move, in four steps in both cases, and the rule now reaches none (137 states in
+  `check6`, 53,526 in `three` on two processors), with every check above still passing.
+What it does not cover: masks, weighted time, more than six threads, a call that parks for
+something else after its call-in, the merging of two groups after a join (a join is modelled as a
+call that names both groups, and the groups stay apart afterwards), and the code. Section 12's test is for the code.
+
+**20. A barrier as a hardware instruction, single-threaded** (for finding 6).
+run7/native-barrier/barrier.c: a round is a store to one word, the barrier, a load of another word,
+both words `volatile`; 200,000,000 rounds, best of seven, the forms taken in turn inside each repeat.
+At user level, with no virtual machine.
+- This Mac (`cc -O2 -march=armv8.1-a`, Apple clang 21.0.0; barrier-mac.log, load 158 before and 162
+  after), nanoseconds a round: nothing 0.24; `dmb ishld` 1.46; `dmb ishst` 1.47; `dmb ish` 1.56; `dsb
+  ish` 5.02; `isb` 8.40; an atomic add in place of the barrier 1.67. `otool -tv` shows the barrier
+  instructions in the program.
+- The laptop (`gcc -O2`, gcc 9.4.0, `taskset -c 4`; barrier-x86.log, load 2.6): nothing 0.51;
+  `mfence` 17.69; a locked add in place of the barrier 6.43. `objdump -d` shows them.
+- So a copied barrier would cost a `Serial` run 1.2 to 8.2 ns each on this Mac and `mfence` 17.2 ns
+  on the laptop. `mfence` here agrees with the 19 ns that `atomic.fence` cost in wasmtime on the
+  laptop (item 5).
+- What it does not cover: the same instructions at the guest's level inside the native executor's
+  virtual machine (nothing traps there, so the same is expected), `sfence` and `lfence`, and any
+  other processor. Run once on each machine.
+
+**21. A per-thread flag tested at every take of an uncontended lock** (for finding 4). run7/flag: item
+15's program with a fifth form, which is its third form (the lock, the holder's name read and stored)
+with a `thread_local!` `Cell<bool>` read and tested before the lock is taken, and a cold function
+that panics behind the test. Same rounds, repeats and kinds of work. Built with `cargo build
+--release -j 3`, on this Mac under `nix develop` of this checkout.
+- This Mac (flag-mac.log, load 126 before and 143 after), third form and fifth, nanoseconds a round:
+  register work 4.760 and 4.888; memory work 8.470 and 8.375.
+- The laptop, `taskset -c 4`, three runs (flag-x86.log, flag-x86-again.log, load 1.6 to 2.5):
+  register work 11.870 and 11.175, 11.758 and 11.143, 11.869 and 11.143; memory work 14.114 and
+  15.104, 14.114 and 15.040, 13.959 and 14.953.
+- So on this Mac the test cannot be told from the noise. On the laptop it moves a round by -0.6 to
+  -0.7 ns with register work and by +0.9 to +1.0 ns with memory work, the same in each of three
+  runs. A cost that changes sign with the work around it is most likely where the code landed, not
+  the load itself; but it is of the lock's own size, so the plan keeps the test off the system call
+  (4.2).
+
+**22. How many virtual CPUs KVM allows one machine** (for finding 5). run7/kvm/maxvcpus.py:
+`KVM_CHECK_EXTENSION` on /dev/kvm for three capabilities, with Linux's own numbers
+(include/uapi/linux/kvm.h). The laptop, Linux 7.3.4, load 2.7 (maxvcpus-x86.log): `KVM_GET_API_VERSION`
+12; `KVM_CAP_NR_VCPUS` 12; `KVM_CAP_MAX_VCPUS` 4096; `KVM_CAP_MAX_VCPU_ID` 16384. No virtual machine
+was made. KVM on ARM64 was not read: no such machine is at hand.
+
 ### By the plan's fifth checker
 
 **17. A host-supplied mapping as a wasmtime shared memory.** check5/hostmem (its source and
@@ -904,7 +1118,13 @@ Listed in docs/threads.md section 15. The ones that matter most to the plan's de
 - a timer sent by the local system's timer thread while every processor is busy, and how many
   threads a real program's timers bring in. The design brings in one at most for each expiry;
 - whether the frame rule's claim about a thread on a second stack shows in a run: it was read in the
-  translator (tr/full.rs:2835-2853), not run. Section 12 has the test.
+  translator (tr/full.rs:2835-2853), not run. Section 12 has the test;
+- the call-in rules in code: they were searched as a model (item 19), not built;
+- what the question and the digest cost a process given `None` in a recorded kernel: T8 measures it;
+- a container with more processors than its host has cores, where the host takes a worker off its
+  core while it holds the kernel's lock: T1's build measures it;
+- a barrier inside the native executor's virtual machine: item 20 is at user level on hardware;
+- `KVM_CAP_MAX_VCPUS` on an ARM64 host.
 
 ## What the plan asks of other tracks
 
@@ -928,7 +1148,11 @@ Listed in docs/threads.md section 15. The ones that matter most to the plan's de
   misses a thread that has moved to another stack inside a call. It should use the plan's test, by
   the page (a page that allowed reading and writing), and the plan's one piece of code for a thread
   that gives up its frames (4.5).
-- The native track: `dmb`, `dsb`, `isb` and `mfence` copied instead of dropped; the exclusive load's
+- The native track: two forms of native code by ordering, under the same cache key field as the
+  WebAssembly output's: the Serial form emits nothing for `dmb`, `dsb`, `isb` and `mfence` and leaves
+  lock prefixes out, the Parallel form copies them (section 10); this plan's calls on the inside half
+  of its split of `System`, with a recording system's log kept inside and sent out in batches, and
+  the mark for a guest hook kept for each virtual CPU (section 10, 4.2); the exclusive load's
   fix-up made safe for threads in parallel; each held virtual CPU dropping its own cached translations
   before it is let go; an interrupt from one virtual CPU to another inside the machine measured; a
   request to stop kept until the thread's next entry; a stop lock per memory and the count of drops;
@@ -943,8 +1167,12 @@ Listed in docs/threads.md section 15. The ones that matter most to the plan's de
   (section 3, decision 1); memory watches before T4, with a thread's position readable while it is
   held; who shares memory with whom, and shared pages marked watched when one process of a group
   leaves; the hook's thread made optional (decision 9); `Kernel::process_call_in` and its hook, and
-  `kernel.process(id)` at any time with the rule for which operations answer an error (decision 8).
+  `kernel.process(id)` at any time with the rule for which operations answer an error (decision 8);
+  a `SuspendedProcess` that shares no `Rc` with what stays in the kernel, with the references it
+  shares kept inside under a key and let go under the lock (4.2).
   No longer asked: `Process::replace_execution_config` (section 6).
 - The runtime track: the renames to `RuntimeConfig`, `TranslatorConfig`, `run` and `run_until_finished`
   in the code, which this plan already uses; two wasmtime engines in the executor, and the cache key's
-  two new fields (7.2).
+  two new fields (7.2); `Carry::Leave` carrying the kernel's handle (4.2); the doc comments of `ran`,
+  the clock's answer and `cpu_warning` (4.2); one worker for each processor in `run_until_finished`
+  (section 5).
