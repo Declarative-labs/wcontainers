@@ -3702,8 +3702,8 @@ impl<B: Backend> Replay<B> {
                     .find(v.address)
                     .ok_or(Error::Invalid("an index buffer view of no buffer"))?;
                 let format = match v.format {
-                    57 => IndexFormat::U16,
-                    42 => IndexFormat::U32,
+                    wcontainers_directx_graphics_infrastructure::dxgi::R16_UINT => IndexFormat::U16,
+                    wcontainers_directx_graphics_infrastructure::dxgi::R32_UINT => IndexFormat::U32,
                     _ => return Err(Error::Invalid("index format")),
                 };
                 Some((d.buffer(id)?.0.clone(), offset, format, id))

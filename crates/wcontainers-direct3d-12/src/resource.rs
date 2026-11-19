@@ -1,5 +1,6 @@
 //! Resource descriptions and how their bytes lie in buffers (`GetCopyableFootprints`).
 
+use wcontainers_directx_graphics_infrastructure::dxgi::{R8_TYPELESS, R32_TYPELESS};
 use wcontainers_directx_graphics_infrastructure::dxgi_format;
 use wcontainers_gpu::Format;
 
@@ -21,9 +22,6 @@ pub const FLAG_DENY_SHADER_RESOURCE: u32 = 8;
 pub const PITCH_ALIGNMENT: u64 = 256;
 /// Subresources in a buffer start at multiples of this (`D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT`).
 pub const PLACEMENT_ALIGNMENT: u64 = 512;
-/// `DXGI_FORMAT_R32_TYPELESS` and `DXGI_FORMAT_R8_TYPELESS`: the depth and stencil planes' formats.
-const R32_TYPELESS: u32 = 39;
-const R8_TYPELESS: u32 = 60;
 
 /// `D3D12_RESOURCE_DESC`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
