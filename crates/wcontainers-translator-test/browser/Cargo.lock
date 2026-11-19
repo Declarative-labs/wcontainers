@@ -465,6 +465,7 @@ version = "0.1.0"
 dependencies = [
  "iced-x86",
  "wasm-encoder",
+ "wcontainers-abi",
  "wcontainers-guest-cpu",
  "zerocopy",
 ]
